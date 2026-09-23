@@ -24,19 +24,19 @@ SyncOutcomeError — инструмент снятия отчитался вер
 from __future__ import annotations
 
 import logging
-from collections.abc import Mapping, Sequence
+from collections.abc import Sequence
 from enum import StrEnum
-from typing import Any, ClassVar, LiteralString
+from typing import Any, ClassVar
 from uuid import UUID
 
 from psycopg import sql
-from psycopg.rows import DictRow
 from psycopg.types.json import Jsonb
 from pydantic import BaseModel, ConfigDict
 
 from boba.catalog import SourceDiff, SourceKinds, SourceSnapshot, TreeScope
 from boba.catalog_service.config import CatalogConfig
 from boba.catalog_service.records import (
+    CatalogStoreError,
     ConnectionNotSyncedError,
     ConnectionVersion,
     ConnectionVersionNotFoundError,
@@ -52,8 +52,14 @@ from boba.catalog_service.records import (
     UnknownSourceKindError,
     VersionOrigin,
 )
-from boba.catalog_service.store_base import CatalogStoreBase, Cursor
-from boba.db.postgres import AsyncPostgresPool
+from boba.catalog_service.store_base import CatalogStoreBase
+from boba.db.postgres import (
+    Cursor,
+    PgQuery,
+    PgQueryBuilder,
+    PostgresPool,
+    PostgresSchema,
+)
 from boba.db.postgres.catalog import (
     CatalogDomain,
     DomainVersions,
@@ -62,7 +68,7 @@ from boba.db.postgres.catalog import (
     SnapshotReader,
     SnapshotTable,
     SnapshotTables,
-    StagingTable,
+    StagingTables,
 )
 
 logger = logging.getLogger(__name__)
@@ -105,6 +111,14 @@ class SyncsColumn(StrEnum):
     VERSION = "version"
 
 
+class ConstraintKind(StrEnum):
+    """Виды ограничений pg_constraint, которые снимает перевод таблиц снимков."""
+
+    PRIMARY = "p"
+    UNIQUE = "u"
+    FOREIGN = "f"
+
+
 class NewVersion(BaseModel):
     """Шапка версии подключения к записи: номер, вид, число объектов и
     происхождение."""
@@ -127,34 +141,39 @@ class LegacyStaging:
 
 class ConnectionStore(CatalogStoreBase):
     """Хранилище подключений: строки снимков и связи — в схеме домена
-    (db_schema), версии и синхронизации — в схеме приложения (app_schema)
-    рядом с ProcessStore; прав не знает. Подключение блокируется на время
-    записи версии и старта синхронизации advisory-замком по его id."""
+    ({schema}), версии и синхронизации — в схеме приложения ({app}) рядом с
+    ProcessStore; прав не знает. Подключение блокируется на время записи
+    версии и старта синхронизации advisory-замком по его id."""
 
     LOCK_PREFIX: ClassVar[str] = "catalog.connection"
-    TABLES: ClassVar[type[StrEnum]] = ConnectionTable
-    PREFIXED: ClassVar[Mapping[str, type[StrEnum]]] = {
-        "cv": VersionsColumn,
-        "sy": SyncsColumn,
-    }
     LABEL: ClassVar[str] = "catalog connections"
 
     def __init__(
         self,
         cfg: CatalogConfig,
         kinds: SourceKinds,
-        pool: AsyncPostgresPool | None = None,
+        pool: PostgresPool | None = None,
     ) -> None:
         super().__init__(cfg, cfg.db_schema, pool)
-        self._app = cfg.app_schema
+        self._app = PostgresSchema(cfg.app_schema)
         self._kinds = kinds
         self._tables = SnapshotTables(kinds)
         self._domain = CatalogDomain(cfg.db_schema, self._tables)
         self._reader = SnapshotReader(cfg.db_schema, kinds)
+        self._staging = StagingTables(cfg.db_schema)
+        self._legacy_staging = StagingTables(cfg.app_schema)
 
     @property
     def kinds(self) -> SourceKinds:
         return self._kinds
+
+    def _query(self) -> PgQueryBuilder:
+        return PgQueryBuilder(
+            schema=self._schema.ident,
+            app=self._app.ident,
+            version_columns=self._column_list(VersionsColumn),
+            sync_columns=self._column_list(SyncsColumn),
+        )
 
     def snapshot_class(self, kind: str) -> type[SourceSnapshot]:
         """Класс снимка вида подключения.
@@ -167,113 +186,131 @@ class ConnectionStore(CatalogStoreBase):
 
         return self._kinds.snapshot_class(kind)
 
-    def _named_table(self, table: StrEnum) -> sql.Identifier:
-        """Таблицы версий и синхронизаций живут в схеме приложения."""
-        return sql.Identifier(self._app, table.value)
-
     async def setup(self) -> None:
         """Схемы и таблицы; повтор безвреден. Таблицы прежних выпусков
         переводятся на месте: таблицы приложения из схемы домена — в схему
         приложения, таблицы снимков — на суррогатный ключ без связи с
         версиями; иная раскладка — отказ с расхождением колонок."""
-        async with self._guarded("setup"):
-            await self._apply_ddl((), self._app)
-            await self._migrate()
-            await self._apply_ddl(self._ddl(), self._app)
-            await self._check_layouts(self._domain.layouts())
-            await self._check_layouts(self._app_layouts(), self._app)
+        await self._apply_ddl((), self._app.name)
+        await self._migrate()
+        await self._apply_ddl(self._ddl(), self._app.name)
+        await self._check_layouts(self._domain.layouts())
+        await self._check_layouts(self._app_layouts(), self._app.name)
 
         logger.info(
-            "catalog connections ready: %s (domain), %s (app)", self._schema, self._app
+            "catalog connections ready: %s (domain), %s (app)",
+            self.schema,
+            self._app.name,
         )
 
     async def _migrate(self) -> None:
         """Перевод прежних выпусков на месте одной транзакцией."""
         async with self._transaction("migrate older releases") as cur:
             for table in ConnectionTable:
-                await self._move_to_app(cur, table.value)
+                await self._schema.move_table(cur.connection, table.value, self._app)
 
             for spec in self._tables.all():
                 await self._migrate_snapshot_table(cur, spec)
 
-            await self._drop_legacy_staging(cur)
-
-    async def _move_to_app(self, cur: Cursor, table: str) -> None:
-        """Таблица приложения, оставшаяся в схеме домена, переезжает; пустой
-        дубль, созданный там прежним выпуском рядом с уже переехавшей, — сносится."""
-        await self._move_table(cur, self._schema, self._app, table)
-
-    async def _drop_legacy_staging(self, cur: Cursor) -> None:
-        await StagingTable.drop_matching(cur, self._app, LegacyStaging.PATTERN)
+            await self._legacy_staging.drop_matching(cur, LegacyStaging.PATTERN)
 
     async def _migrate_snapshot_table(self, cur: Cursor, spec: SnapshotTable) -> None:
         """Таблица снимка прежнего выпуска: внешние ключи снимаются, ключ
         строки — bigserial id, прежний ключ версии — unique."""
-        if not await self._table_exists(cur, self._schema, spec.table):
+        if not await self._schema.has_table(cur.connection, spec.table):
             return
 
-        table = self._snapshot_table(spec)
-        for name in await self._constraints(cur, spec.table, "f"):
-            await cur.execute(
-                sql.SQL("alter table {} drop constraint {}").format(
-                    table, sql.Identifier(name)
-                )
-            )
+        table = spec.ident(self.schema)
+        for name in await self._constraints(cur, spec.table, ConstraintKind.FOREIGN):
+            await self._drop_constraint(cur, table, name)
 
-        await cur.execute(
-            "select data_type from information_schema.columns "
-            "where table_schema = %(schema)s and table_name = %(table)s "
-            "and column_name = %(column)s",
-            {
-                "schema": self._schema,
-                "table": spec.table,
-                "column": SnapshotKey.ID.value,
-            },
+        id_type = (
+            self._query()
+            .add(
+                """
+                select data_type
+                from information_schema.columns
+                where table_schema = %(table_schema)s
+                  and table_name = %(table)s
+                  and column_name = %(column)s
+                """,
+                table_schema=self.schema,
+                table=spec.table,
+                column=SnapshotKey.ID.value,
+            )
+            .build()
         )
+        await cur.execute(id_type.text, id_type.params)
         id_column = await cur.fetchone()
         if id_column is not None and id_column["data_type"] == "bigint":
             return
 
-        for name in await self._constraints(cur, spec.table, "p"):
-            await cur.execute(
-                sql.SQL("alter table {} drop constraint {}").format(
-                    table, sql.Identifier(name)
-                )
-            )
+        for name in await self._constraints(cur, spec.table, ConstraintKind.PRIMARY):
+            await self._drop_constraint(cur, table, name)
 
         if id_column is not None:
-            await cur.execute(
-                sql.SQL("alter table {} drop column {}").format(
-                    table, sql.Identifier(SnapshotKey.ID.value)
-                )
+            drop_id = (
+                PgQueryBuilder(table=table, column=sql.Identifier(SnapshotKey.ID.value))
+                .add("alter table {table} drop column {column}")
+                .build()
             )
+            await cur.execute(drop_id.text, drop_id.params)
 
-        await cur.execute(
-            sql.SQL("alter table {} add column {} bigserial primary key").format(
-                table, sql.Identifier(SnapshotKey.ID.value)
-            )
+        add_id = (
+            PgQueryBuilder(table=table, column=sql.Identifier(SnapshotKey.ID.value))
+            .add("alter table {table} add column {column} bigserial primary key")
+            .build()
         )
-        if not await self._constraints(cur, spec.table, "u"):
-            await cur.execute(
-                sql.SQL("alter table {} add constraint {} unique ({})").format(
-                    table, sql.Identifier(f"{spec.table}_key"), spec.native_key()
-                )
-            )
+        await cur.execute(add_id.text, add_id.params)
 
-    async def _constraints(self, cur: Cursor, table: str, kind: str) -> list[str]:
-        """Имена ограничений таблицы домена данного вида (p, u, f)."""
-        await cur.execute(
-            """
-            select c.conname
-            from pg_constraint c
-                join pg_class r on r.oid = c.conrelid
-                join pg_namespace n on n.oid = r.relnamespace
-            where c.contype = %(kind)s
-              and n.nspname = %(schema)s and r.relname = %(table)s
-            """,
-            {"kind": kind, "schema": self._schema, "table": table},
+        if await self._constraints(cur, spec.table, ConstraintKind.UNIQUE):
+            return
+
+        add_key = (
+            PgQueryBuilder(
+                table=table,
+                constraint=sql.Identifier(f"{spec.table}_key"),
+                key=spec.native_key(),
+            )
+            .add("alter table {table} add constraint {constraint} unique ({key})")
+            .build()
         )
+        await cur.execute(add_key.text, add_key.params)
+
+    async def _drop_constraint(
+        self, cur: Cursor, table: sql.Identifier, name: str
+    ) -> None:
+        drop = (
+            PgQueryBuilder(table=table, constraint=sql.Identifier(name))
+            .add("alter table {table} drop constraint {constraint}")
+            .build()
+        )
+        await cur.execute(drop.text, drop.params)
+
+    async def _constraints(
+        self, cur: Cursor, table: str, kind: ConstraintKind
+    ) -> list[str]:
+        """Имена ограничений таблицы домена данного вида."""
+        query = (
+            self._query()
+            .add(
+                """
+                select c.conname
+                from pg_constraint c
+                    join pg_class r on r.oid = c.conrelid
+                    join pg_namespace n on n.oid = r.relnamespace
+                where c.contype = %(kind)s
+                  and n.nspname = %(nspname)s and r.relname = %(table)s
+                """,
+                kind=kind.value,
+                nspname=self.schema,
+                table=table,
+            )
+            .build()
+        )
+        await cur.execute(query.text, query.params)
         rows = await cur.fetchall()
+
         names: list[str] = []
         for row in rows:
             names.append(str(row["conname"]))
@@ -286,68 +323,72 @@ class ConnectionStore(CatalogStoreBase):
             ConnectionTable.VERSIONS.value: list(VersionsColumn),
         }
 
-    def _ddl(self) -> tuple[sql.Composed, ...]:
-        statements: list[sql.Composed] = [
-            self._sql(
+    def _ddl(self) -> tuple[PgQuery, ...]:
+        statements: list[PgQuery] = [
+            self._query()
+            .add(
                 """
-                create table if not exists {connection_syncs} (
-                    {sy_id}              uuid primary key,
-                    {sy_connection_id}   uuid not null,
-                    {sy_connection_name} text not null,
-                    {sy_kind}            text not null,
-                    {sy_started_by}      uuid not null,
-                    {sy_started_at}      timestamptz not null default now(),
-                    {sy_finished_at}     timestamptz null,
-                    {sy_status}          text not null,
-                    {sy_scope}           jsonb not null default '{{}}'::jsonb,
-                    {sy_objects_total}   integer null,
-                    {sy_objects_done}    integer not null default 0,
-                    {sy_error}           text null,
-                    {sy_version}         integer null
+                create table if not exists {app}.connection_syncs (
+                    id              uuid primary key,
+                    connection_id   uuid not null,
+                    connection_name text not null,
+                    kind            text not null,
+                    started_by      uuid not null,
+                    started_at      timestamptz not null default now(),
+                    finished_at     timestamptz null,
+                    status          text not null,
+                    scope           jsonb not null default '{{}}'::jsonb,
+                    objects_total   integer null,
+                    objects_done    integer not null default 0,
+                    error           text null,
+                    version         integer null
                 )
                 """
-            ),
-            self._sql(
+            )
+            .build(),
+            self._query()
+            .add(
                 """
-                create table if not exists {connection_versions} (
-                    {cv_connection_id}   uuid not null,
-                    {cv_version}         integer not null,
-                    {cv_connection_name} text not null,
-                    {cv_kind}            text not null,
-                    {cv_taken_at}        timestamptz not null default now(),
-                    {cv_taken_by}        uuid not null,
-                    {cv_sync_id}         uuid null
-                                         references {connection_syncs} ({sy_id}),
-                    {cv_objects_total}   integer not null default 0,
-                    {cv_server_version}  text null,
-                    primary key ({cv_connection_id}, {cv_version})
+                create table if not exists {app}.connection_versions (
+                    connection_id   uuid not null,
+                    version         integer not null,
+                    connection_name text not null,
+                    kind            text not null,
+                    taken_at        timestamptz not null default now(),
+                    taken_by        uuid not null,
+                    sync_id         uuid null
+                                    references {app}.connection_syncs (id),
+                    objects_total   integer not null default 0,
+                    server_version  text null,
+                    primary key (connection_id, version)
                 )
                 """
-            ),
+            )
+            .build(),
         ]
         statements.extend(self._domain.ddl())
         return tuple(statements)
-
-    def _snapshot_table(self, spec: SnapshotTable) -> sql.Identifier:
-        return sql.Identifier(self._schema, spec.table)
 
     # --- подключения глазами каталога ---
 
     async def synced_connections(self) -> Sequence[SyncedConnection]:
         """Подключения с версиями снимка по последней версии каждого."""
-        async with self._transaction("list synced connections") as cur:
-            await cur.execute(
-                sql.Composed(
-                    [
-                        sql.SQL("select * from ("),
-                        self._latest_select(""),
-                        self._sql(
-                            ") latest order by {cv_connection_name}, {cv_connection_id}"
-                        ),
-                    ]
-                )
+        query = (
+            self._query()
+            .add(
+                """
+                select * from (
+                    select distinct on (connection_id)
+                        {version_columns}
+                    from {app}.connection_versions
+                    order by connection_id, version desc
+                ) latest
+                order by connection_name, connection_id
+                """
             )
-            rows = await cur.fetchall()
+            .build()
+        )
+        rows = await self._rows(query, "list synced connections")
 
         synced: list[SyncedConnection] = []
         for latest in self._parse_all(ConnectionVersion, rows):
@@ -364,7 +405,6 @@ class ConnectionStore(CatalogStoreBase):
             return await self._synced_or_none(cur, connection_id)
 
     # --- версии ---
-    # --- версии ---
 
     async def write_version(
         self, connection_id: UUID, snapshot: SourceSnapshot, origin: VersionOrigin
@@ -376,7 +416,7 @@ class ConnectionStore(CatalogStoreBase):
         async with self._transaction(
             f"write version of connection {connection_id}"
         ) as cur:
-            await self._advisory_lock(cur, self.LOCK_PREFIX, connection_id)
+            await self._lock(cur, self.LOCK_PREFIX, connection_id)
             return await self._write_version(cur, connection_id, snapshot, origin)
 
     async def _write_version(
@@ -389,8 +429,8 @@ class ConnectionStore(CatalogStoreBase):
         """Ошибки:
         SnapshotKindMismatchError — прежние версии другого вида.
         """
-        versions = DomainVersions(self._schema, type(snapshot))
-        version = await self._latest_domain_version(cur, versions, connection_id) + 1
+        latest = await self._latest_domain_version(cur, type(snapshot), connection_id)
+        version = latest + 1
         await self._insert_snapshot(cur, connection_id, version, snapshot)
         header = NewVersion(
             connection_id=connection_id,
@@ -402,11 +442,47 @@ class ConnectionStore(CatalogStoreBase):
         await self._version_header(cur, header)
         return await self._version(cur, connection_id, version)
 
+    def _domain_versions(self, snapshot: type[SourceSnapshot]) -> DomainVersions:
+        """Версии подключения по корневой таблице снимка этого вида."""
+        root = self._tables.of_snapshot(snapshot)[0]
+
+        return DomainVersions(self.schema, root.table)
+
+    def _family_tables(self, snapshot: type[SourceSnapshot]) -> list[str]:
+        """Таблицы семейств снимка: по ним считаются объекты версии.
+
+        Ошибки:
+        CatalogStoreError — семейство ссылается на часть, которой нет у снимка.
+        """
+        specs = self._tables.of_snapshot(snapshot)
+        tables: list[str] = []
+        for family in snapshot.families():
+            tables.append(self._table_of(specs, snapshot, family.part))
+
+        return tables
+
+    def _table_of(
+        self,
+        specs: Sequence[SnapshotTable],
+        snapshot: type[SourceSnapshot],
+        part: str,
+    ) -> str:
+        for spec in specs:
+            if spec.part.name == part:
+                return spec.table
+
+        msg = (
+            f"{self.LABEL}: snapshot of a {snapshot.source_kind()} source has no "
+            f"part {part!r}"
+        )
+        raise CatalogStoreError(msg)
+
     async def _latest_domain_version(
-        self, cur: Cursor, versions: DomainVersions, connection_id: UUID
+        self, cur: Cursor, snapshot: type[SourceSnapshot], connection_id: UUID
     ) -> int:
         """Последняя версия подключения по строкам домена; 0 — строк нет."""
-        await cur.execute(versions.latest_query(), {"connection_id": connection_id})
+        query = self._domain_versions(snapshot).latest(connection_id)
+        await cur.execute(query.text, query.params)
         row = await cur.fetchone()
         if row is None:
             return 0
@@ -423,47 +499,43 @@ class ConnectionStore(CatalogStoreBase):
         await self._require_same_kind(cur, connection_id, header.kind)
 
         origin = header.origin
-
-        await cur.execute(
-            self._sql(
+        query = (
+            self._query()
+            .add(
                 """
-                insert into {connection_versions}
-                    ({cv_connection_id}, {cv_version}, {cv_connection_name}, {cv_kind},
-                     {cv_taken_by}, {cv_sync_id}, {cv_objects_total},
-                     {cv_server_version})
+                insert into {app}.connection_versions
+                    (connection_id, version, connection_name, kind,
+                     taken_by, sync_id, objects_total,
+                     server_version)
                 values
                     (%(connection_id)s, %(version)s, %(connection_name)s, %(kind)s,
                      %(taken_by)s, %(sync_id)s, %(objects_total)s, %(server_version)s)
-                """
-            ),
-            {
-                "connection_id": connection_id,
-                "version": header.version,
-                "connection_name": origin.connection_name,
-                "kind": header.kind,
-                "taken_by": origin.taken_by,
-                "sync_id": origin.sync_id,
-                "objects_total": header.objects_total,
-                "server_version": origin.server_version,
-            },
+                """,
+                connection_id=connection_id,
+                version=header.version,
+                connection_name=origin.connection_name,
+                kind=header.kind,
+                taken_by=origin.taken_by,
+                sync_id=origin.sync_id,
+                objects_total=header.objects_total,
+                server_version=origin.server_version,
+            )
+            .build()
         )
+        await cur.execute(query.text, query.params)
 
     async def versions_of(self, connection_id: UUID) -> Sequence[ConnectionVersion]:
-        async with self._transaction(f"versions of connection {connection_id}") as cur:
-            await cur.execute(
-                self._version_select(
-                    " where {cv_connection_id} = %(connection_id)s"
-                    " order by {cv_version}"
-                ),
-                {"connection_id": connection_id},
+        query = (
+            self._version_query()
+            .add(
+                "where connection_id = %(connection_id)s order by version",
+                connection_id=connection_id,
             )
-            rows = await cur.fetchall()
+            .build()
+        )
+        rows = await self._rows(query, f"versions of connection {connection_id}")
 
-        versions: list[ConnectionVersion] = []
-        for row in rows:
-            versions.append(self._parse(ConnectionVersion, row))
-
-        return versions
+        return self._parse_all(ConnectionVersion, rows)
 
     async def version_of(self, connection_id: UUID, version: int) -> ConnectionVersion:
         async with self._transaction(
@@ -536,7 +608,7 @@ class ConnectionStore(CatalogStoreBase):
         async with self._transaction(
             f"forget versions of connection {connection_id}"
         ) as cur:
-            await self._advisory_lock(cur, self.LOCK_PREFIX, connection_id)
+            await self._lock(cur, self.LOCK_PREFIX, connection_id)
             running = await self._running_sync(cur, connection_id)
             if running is not None:
                 raise SyncRunningError(connection_id, running.id)
@@ -544,31 +616,36 @@ class ConnectionStore(CatalogStoreBase):
             synced = await self._synced_or_none(cur, connection_id)
             if synced is not None:
                 for spec in self._tables.of_kind(synced.kind):
-                    await cur.execute(
-                        sql.SQL("delete from {} where {} = %(connection_id)s").format(
-                            self._snapshot_table(spec),
-                            sql.Identifier(SnapshotKey.CONNECTION_ID.value),
-                        ),
-                        {"connection_id": connection_id},
-                    )
+                    await self._delete_rows(cur, spec, connection_id)
 
-            await self._drop_staging(cur, connection_id)
-            await cur.execute(
-                self._sql(
+            await self._staging.drop_of(cur, connection_id)
+            versions = (
+                self._query()
+                .add(
                     """
-                    delete from {connection_versions}
-                    where {cv_connection_id} = %(connection_id)s
-                    """
-                ),
-                {"connection_id": connection_id},
+                    delete from {app}.connection_versions
+                    where connection_id = %(connection_id)s
+                    """,
+                    connection_id=connection_id,
+                )
+                .build()
             )
+            await cur.execute(versions.text, versions.params)
             return cur.rowcount
 
-    async def _drop_staging(self, cur: Cursor, connection_id: UUID) -> None:
-        """Staging снятия подключения в схеме домена, оставшийся после
-        сорвавшегося инструмента."""
-        pattern = StagingTable.pattern_of(connection_id)
-        await StagingTable.drop_matching(cur, self._schema, pattern)
+    async def _delete_rows(
+        self, cur: Cursor, spec: SnapshotTable, connection_id: UUID
+    ) -> None:
+        """Строки всех версий подключения в таблице части."""
+        query = (
+            PgQueryBuilder(table=spec.ident(self.schema))
+            .add(
+                "delete from {table} where connection_id = %(connection_id)s",
+                connection_id=connection_id,
+            )
+            .build()
+        )
+        await cur.execute(query.text, query.params)
 
     # --- синхронизации ---
 
@@ -582,36 +659,38 @@ class ConnectionStore(CatalogStoreBase):
         SyncRunningError — у подключения уже идёт синхронизация.
         """
         connection_id = request.connection.id
+        insert = (
+            self._query()
+            .add(
+                """
+                insert into {app}.connection_syncs
+                    (id, connection_id, connection_name, kind,
+                     started_by, status, scope)
+                values
+                    (%(id)s, %(connection_id)s, %(connection_name)s, %(kind)s,
+                     %(started_by)s, %(status)s, %(scope)s)
+                """,
+                id=sync_id,
+                connection_id=connection_id,
+                connection_name=request.connection.name,
+                kind=request.connection.kind,
+                started_by=started_by,
+                status=SyncStatus.RUNNING.value,
+                scope=Jsonb(request.scope.model_dump(mode="json")),
+            )
+            .build()
+        )
+
         action = f"start sync of connection {connection_id}"
         async with self._transaction(action) as cur:
-            await self._advisory_lock(cur, self.LOCK_PREFIX, connection_id)
+            await self._lock(cur, self.LOCK_PREFIX, connection_id)
             await self._require_same_kind(cur, connection_id, request.connection.kind)
 
             running = await self._running_sync(cur, connection_id)
             if running is not None:
                 raise SyncRunningError(connection_id, running.id)
 
-            await cur.execute(
-                self._sql(
-                    """
-                    insert into {connection_syncs}
-                        ({sy_id}, {sy_connection_id}, {sy_connection_name}, {sy_kind},
-                         {sy_started_by}, {sy_status}, {sy_scope})
-                    values
-                        (%(id)s, %(connection_id)s, %(connection_name)s, %(kind)s,
-                         %(started_by)s, %(status)s, %(scope)s)
-                    """
-                ),
-                {
-                    "id": sync_id,
-                    "connection_id": connection_id,
-                    "connection_name": request.connection.name,
-                    "kind": request.connection.kind,
-                    "started_by": started_by,
-                    "status": SyncStatus.RUNNING.value,
-                    "scope": Jsonb(request.scope.model_dump(mode="json")),
-                },
-            )
+            await cur.execute(insert.text, insert.params)
             return await self._sync(cur, sync_id)
 
     async def record_sync(self, sync_id: UUID, outcome: SnapshotOutcome) -> Sync:
@@ -627,15 +706,18 @@ class ConnectionStore(CatalogStoreBase):
         async with self._transaction(f"record sync {sync_id}") as cur:
             sync = await self._sync(cur, sync_id, lock=True)
             self._require_running(sync)
-            await self._advisory_lock(cur, self.LOCK_PREFIX, sync.connection_id)
+            await self._lock(cur, self.LOCK_PREFIX, sync.connection_id)
             snapshot_class = self._kinds.snapshot_class(sync.kind)
-            versions = DomainVersions(self._schema, snapshot_class)
             connection_id = sync.connection_id
-            latest = await self._latest_domain_version(cur, versions, connection_id)
+            latest = await self._latest_domain_version(
+                cur, snapshot_class, connection_id
+            )
             if latest < outcome.version:
                 raise SyncOutcomeError(sync_id, outcome.version, latest)
 
-            objects = await self._domain_objects(cur, versions, sync, outcome.version)
+            objects = await self._domain_objects(
+                cur, snapshot_class, connection_id, outcome.version
+            )
             header = NewVersion(
                 connection_id=connection_id,
                 version=outcome.version,
@@ -649,34 +731,38 @@ class ConnectionStore(CatalogStoreBase):
                 ),
             )
             await self._version_header(cur, header)
-            await cur.execute(
-                self._sql(
+            close = (
+                self._query()
+                .add(
                     """
-                    update {connection_syncs}
-                    set {sy_status} = %(status)s,
-                        {sy_finished_at} = now(),
-                        {sy_objects_total} = %(objects)s,
-                        {sy_objects_done} = %(objects)s,
-                        {sy_version} = %(version)s
-                    where {sy_id} = %(id)s
-                    """
-                ),
-                {
-                    "id": sync_id,
-                    "status": SyncStatus.DONE.value,
-                    "objects": objects,
-                    "version": outcome.version,
-                },
+                    update {app}.connection_syncs
+                    set status = %(status)s,
+                        finished_at = now(),
+                        objects_total = %(objects)s,
+                        objects_done = %(objects)s,
+                        version = %(version)s
+                    where id = %(id)s
+                    """,
+                    id=sync_id,
+                    status=SyncStatus.DONE.value,
+                    objects=objects,
+                    version=outcome.version,
+                )
+                .build()
             )
+            await cur.execute(close.text, close.params)
             return await self._sync(cur, sync_id)
 
     async def _domain_objects(
-        self, cur: Cursor, versions: DomainVersions, sync: Sync, version: int
+        self,
+        cur: Cursor,
+        snapshot: type[SourceSnapshot],
+        connection_id: UUID,
+        version: int,
     ) -> int:
-        await cur.execute(
-            versions.objects_query(),
-            {"connection_id": sync.connection_id, "version": version},
-        )
+        tables = self._family_tables(snapshot)
+        query = self._domain_versions(snapshot).objects(tables, connection_id, version)
+        await cur.execute(query.text, query.params)
         row = await cur.fetchone()
         if row is None:
             return 0
@@ -691,21 +777,27 @@ class ConnectionStore(CatalogStoreBase):
         Ошибки:
         SyncClosedError — синхронизация уже закрыта.
         """
+        close = (
+            self._query()
+            .add(
+                """
+                update {app}.connection_syncs
+                set status = %(status)s,
+                    finished_at = now(),
+                    error = %(error)s
+                where id = %(id)s
+                """,
+                id=sync_id,
+                status=status.value,
+                error=error,
+            )
+            .build()
+        )
+
         async with self._transaction(f"close sync {sync_id} as {status.value}") as cur:
             sync = await self._sync(cur, sync_id, lock=True)
             self._require_running(sync)
-            await cur.execute(
-                self._sql(
-                    """
-                    update {connection_syncs}
-                    set {sy_status} = %(status)s,
-                        {sy_finished_at} = now(),
-                        {sy_error} = %(error)s
-                    where {sy_id} = %(id)s
-                    """
-                ),
-                {"id": sync_id, "status": status.value, "error": error},
-            )
+            await cur.execute(close.text, close.params)
             return await self._sync(cur, sync_id)
 
     async def get_sync(self, sync_id: UUID) -> Sync:
@@ -714,64 +806,54 @@ class ConnectionStore(CatalogStoreBase):
 
     async def syncs_of(self, connection_id: UUID) -> Sequence[Sync]:
         """Синхронизации подключения, новые первыми."""
-        async with self._transaction(f"syncs of connection {connection_id}") as cur:
-            tail: LiteralString = (
-                " where {sy_connection_id} = %(connection_id)s"
-                " order by {sy_started_at} desc"
+        query = (
+            self._sync_query()
+            .add(
+                "where connection_id = %(connection_id)s order by started_at desc",
+                connection_id=connection_id,
             )
-            await cur.execute(self._sync_select(tail), {"connection_id": connection_id})
-            rows = await cur.fetchall()
+            .build()
+        )
+        rows = await self._rows(query, f"syncs of connection {connection_id}")
 
-        return self._syncs_of(rows)
+        return self._parse_all(Sync, rows)
 
     # --- внутреннее: синхронизации ---
 
-    SYNC_SELECT: ClassVar[LiteralString] = """
-        select {sy_id}, {sy_connection_id}, {sy_connection_name}, {sy_kind},
-               {sy_started_by}, {sy_started_at}, {sy_finished_at}, {sy_status},
-               {sy_scope}, {sy_objects_total}, {sy_objects_done}, {sy_error},
-               {sy_version}
-        from {connection_syncs}
-        """
-
-    def _sync_select(self, tail: LiteralString) -> sql.Composed:
-        return sql.Composed([self._sql(self.SYNC_SELECT), self._sql(tail)])
+    def _sync_query(self) -> PgQueryBuilder:
+        """Строки синхронизаций; условие вызывающий добавляет следующим куском."""
+        return self._query().add("select {sync_columns} from {app}.connection_syncs")
 
     async def _sync(self, cur: Cursor, sync_id: UUID, *, lock: bool = False) -> Sync:
-        tail: LiteralString = " where {sy_id} = %(id)s"
-        if lock:
-            tail = " where {sy_id} = %(id)s for update"
+        query = self._sync_query().add("where id = %(id)s", id=sync_id)
+        query.when(lock, "for update")
+        built = query.build()
 
-        await cur.execute(self._sync_select(tail), {"id": sync_id})
+        await cur.execute(built.text, built.params)
         row = await cur.fetchone()
         if row is None:
             raise SyncNotFoundError(sync_id)
 
         return self._parse(Sync, row)
 
-    def _syncs_of(self, rows: Sequence[DictRow]) -> Sequence[Sync]:
-        syncs: list[Sync] = []
-        for row in rows:
-            syncs.append(self._parse(Sync, row))
-
-        return syncs
-
     async def _running_sync(self, cur: Cursor, connection_id: UUID) -> Sync | None:
-        await cur.execute(
-            self._sync_select(
-                " where {sy_connection_id} = %(connection_id)s"
-                " and {sy_status} = %(status)s"
-            ),
-            {"connection_id": connection_id, "status": SyncStatus.RUNNING.value},
+        query = (
+            self._sync_query()
+            .add(
+                "where connection_id = %(connection_id)s and status = %(status)s",
+                connection_id=connection_id,
+                status=SyncStatus.RUNNING.value,
+            )
+            .build()
         )
+        await cur.execute(query.text, query.params)
         row = await cur.fetchone()
         if row is None:
             return None
 
         return self._parse(Sync, row)
 
-    @staticmethod
-    def _require_running(sync: Sync) -> None:
+    def _require_running(self, sync: Sync) -> None:
         if sync.status is SyncStatus.RUNNING:
             return
 
@@ -793,10 +875,21 @@ class ConnectionStore(CatalogStoreBase):
     async def _synced_or_none(
         self, cur: Cursor, connection_id: UUID
     ) -> SyncedConnection | None:
-        await cur.execute(
-            self._latest_select(" where {cv_connection_id} = %(connection_id)s"),
-            {"connection_id": connection_id},
+        query = (
+            self._query()
+            .add(
+                """
+                select distinct on (connection_id)
+                    {version_columns}
+                from {app}.connection_versions
+                where connection_id = %(connection_id)s
+                order by connection_id, version desc
+                """,
+                connection_id=connection_id,
+            )
+            .build()
         )
+        await cur.execute(query.text, query.params)
         row = await cur.fetchone()
         if row is None:
             return None
@@ -810,47 +903,25 @@ class ConnectionStore(CatalogStoreBase):
 
         return synced
 
-    VERSION_SELECT: ClassVar[LiteralString] = """
-        select {cv_connection_id}, {cv_version}, {cv_connection_name}, {cv_kind},
-               {cv_taken_at}, {cv_taken_by}, {cv_sync_id}, {cv_objects_total},
-               {cv_server_version}
-        from {connection_versions}
-        """
-
-    def _version_select(self, tail: LiteralString) -> sql.Composed:
-        return sql.Composed([self._sql(self.VERSION_SELECT), self._sql(tail)])
-
-    LATEST_SELECT: ClassVar[LiteralString] = """
-        select distinct on ({cv_connection_id})
-               {cv_connection_id}, {cv_version}, {cv_connection_name}, {cv_kind},
-               {cv_taken_at}, {cv_taken_by}, {cv_sync_id}, {cv_objects_total},
-               {cv_server_version}
-        from {connection_versions}
-        """
-    LATEST_ORDER: ClassVar[LiteralString] = (
-        " order by {cv_connection_id}, {cv_version} desc"
-    )
-
-    def _latest_select(self, where: LiteralString) -> sql.Composed:
-        """Последняя версия каждого подключения под условием where."""
-        return sql.Composed(
-            [
-                self._sql(self.LATEST_SELECT),
-                self._sql(where),
-                self._sql(self.LATEST_ORDER),
-            ]
+    def _version_query(self) -> PgQueryBuilder:
+        """Строки версий; условие вызывающий добавляет следующим куском."""
+        return self._query().add(
+            "select {version_columns} from {app}.connection_versions"
         )
 
     async def _version(
         self, cur: Cursor, connection_id: UUID, version: int
     ) -> ConnectionVersion:
-        await cur.execute(
-            self._version_select(
-                " where {cv_connection_id} = %(connection_id)s"
-                " and {cv_version} = %(version)s"
-            ),
-            {"connection_id": connection_id, "version": version},
+        query = (
+            self._version_query()
+            .add(
+                "where connection_id = %(connection_id)s and version = %(version)s",
+                connection_id=connection_id,
+                version=version,
+            )
+            .build()
         )
+        await cur.execute(query.text, query.params)
         row = await cur.fetchone()
         if row is None:
             raise ConnectionVersionNotFoundError(connection_id, version)
@@ -870,4 +941,5 @@ class ConnectionStore(CatalogStoreBase):
             if not rows:
                 continue
 
-            await cur.executemany(spec.insert(self._schema), rows)
+            insert = spec.insert(self.schema)
+            await cur.executemany(insert.text, rows)

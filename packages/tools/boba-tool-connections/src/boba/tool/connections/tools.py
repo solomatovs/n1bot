@@ -22,13 +22,8 @@ from psycopg import sql
 from psycopg.rows import dict_row
 from pydantic import BaseModel, ConfigDict, Field
 
-from boba.access.grants import (
-    ConnectionFilter,
-    ConnectionNames,
-    SubjectGrantsQuery,
-    SubjectRowColumn,
-)
-from boba.db.postgres import PayloadPostgres, SqlNames
+from boba.access.grants import ConnectionFilter, SubjectGrantsQuery, SubjectRowColumn
+from boba.db.postgres import PayloadPostgres, PgQuery, PgQueryBuilder
 from boba.db.postgres.connection import PostgresConfig
 from boba.identity.context import Subject
 from boba.toolkit.entry import ToolMain
@@ -94,13 +89,12 @@ class GrantedConnections:
     async def search(self, subject: Subject, flt: ConnectionFilter) -> TableResult:
         """Соединения субъекта, прошедшие фильтры."""
         unique = flt.model_copy(update={"unique_only": True})
+        query = self._query(subject, unique)
 
         conn = await PayloadPostgres.connect_config(self._cfg.connection)
         try:
             async with conn.cursor(row_factory=dict_row) as cur:
-                await cur.execute(
-                    self._query(unique), SubjectGrantsQuery.params(subject, unique)
-                )
+                await cur.execute(query.text, query.params)
                 found = await cur.fetchall()
         finally:
             await conn.close()
@@ -121,12 +115,14 @@ class GrantedConnections:
                 CatalogColumn.DESCRIPTION.value: open_fields.description,
             }
 
-    def _query(self, flt: ConnectionFilter) -> sql.Composed:
-        names = SqlNames.mapping(
-            self._cfg.db_schema, ConnectionNames.tables(), ConnectionNames.columns()
-        )
+    def _query(self, subject: Subject, flt: ConnectionFilter) -> PgQuery:
+        grants = SubjectGrantsQuery(subject, flt)
 
-        return sql.SQL(SubjectGrantsQuery.text(flt)).format(**names)
+        return (
+            PgQueryBuilder(schema=sql.Identifier(self._cfg.db_schema))
+            .add(grants.text(), **grants.params())
+            .build()
+        )
 
     @classmethod
     def _note(cls, count: int, flt: ConnectionFilter) -> str | None:

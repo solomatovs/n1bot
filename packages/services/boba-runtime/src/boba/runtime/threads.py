@@ -10,27 +10,21 @@ DataRejectedError — треда нет, у него нет автора либ�
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
-from psycopg import sql
-from psycopg.rows import tuple_row
 from psycopg.types.json import Jsonb
 
 from boba.chat.threads import (
-    ChatTable,
     ChatThreads,
     DataRejectedError,
-    DataUnavailableError,
     StoredThread,
     ThreadsColumn,
     ThreadUpsert,
     ThreadUpserted,
 )
-from boba.db.postgres import SqlNames
-from boba.identity.api import UsersColumn
 from boba.runtime.table import PgTable
 
 __all__ = ["ThreadsTable"]
@@ -39,40 +33,24 @@ __all__ = ["ThreadsTable"]
 class ThreadsTable(PgTable, ChatThreads):
     """threads приложения рядом с users той же схемы."""
 
-    def _threads(self) -> sql.Identifier:
-        return SqlNames.table(self._schema, ChatTable.THREADS)
-
-    def _row_columns(self) -> sql.Composed:
-        return sql.SQL(", ").join(
-            [
-                SqlNames.ident(ThreadsColumn.ID),
-                SqlNames.ident(ThreadsColumn.CREATED_AT),
-                SqlNames.ident(ThreadsColumn.NAME),
-                SqlNames.ident(ThreadsColumn.USER_ID),
-                SqlNames.ident(ThreadsColumn.TAGS),
-                SqlNames.ident(ThreadsColumn.META),
-            ]
-        )
-
-    @staticmethod
-    def _stored(row: tuple[Any, ...]) -> StoredThread:
-        name = row[2]
+    def _stored(self, row: Mapping[str, Any]) -> StoredThread:
+        name = row[ThreadsColumn.NAME.value]
         if name is None:
             name = ""
 
-        tags = row[4]
+        tags = row[ThreadsColumn.TAGS.value]
         if tags is None:
             tags = ()
 
-        meta = row[5]
+        meta = row[ThreadsColumn.META.value]
         if meta is None:
             meta = {}
 
         return StoredThread(
-            id=row[0],
-            created_at=row[1],
+            id=row[ThreadsColumn.ID.value],
+            created_at=row[ThreadsColumn.CREATED_AT.value],
             name=name,
-            user_id=row[3],
+            user_id=row[ThreadsColumn.USER_ID.value],
             tags=tuple(tags),
             meta=meta,
         )
@@ -80,256 +58,191 @@ class ThreadsTable(PgTable, ChatThreads):
     async def setup(self) -> None:
         """Создаёт таблицу threads и индекс по владельцу; повтор безвреден."""
         ddl = (
-            sql.SQL(
+            self._query()
+            .add(
                 """
-                create table if not exists {threads} (
-                    {id}         uuid primary key,
-                    {created_at} timestamptz not null,
-                    {name}       text,
-                    {user_id}    uuid,
-                    {tags}       text[],
-                    {meta}       jsonb
+                create table if not exists {schema}.threads (
+                    id         uuid primary key,
+                    created_at timestamptz not null,
+                    name       text,
+                    user_id    uuid,
+                    tags       text[],
+                    meta       jsonb
                 )
                 """
-            ).format(
-                threads=self._threads(),
-                id=SqlNames.ident(ThreadsColumn.ID),
-                created_at=SqlNames.ident(ThreadsColumn.CREATED_AT),
-                name=SqlNames.ident(ThreadsColumn.NAME),
-                user_id=SqlNames.ident(ThreadsColumn.USER_ID),
-                tags=SqlNames.ident(ThreadsColumn.TAGS),
-                meta=SqlNames.ident(ThreadsColumn.META),
-            ),
-            sql.SQL(
+            )
+            .build(),
+            self._query()
+            .add(
                 """
                 create index if not exists idx_threads_user_id
-                    on {threads} ({user_id})
+                    on {schema}.threads (user_id)
                 """
-            ).format(
-                threads=self._threads(),
-                user_id=SqlNames.ident(ThreadsColumn.USER_ID),
-            ),
+            )
+            .build(),
         )
-        await self._run(ddl, "threads.setup")
+
+        await self._apply_ddl(ddl)
 
     async def get(self, thread_id: UUID) -> StoredThread | None:
-        query = sql.SQL("select {cols} from {threads} where {id} = %(id)s").format(
-            cols=self._row_columns(),
-            threads=self._threads(),
-            id=SqlNames.ident(ThreadsColumn.ID),
-        )
-        try:
-            pool = await self._pool()
-            async with (
-                pool.connection() as conn,
-                conn.cursor(row_factory=tuple_row) as cur,
-            ):
-                await cur.execute(query, {"id": thread_id})
-                row = await cur.fetchone()
-        except Exception as exc:
-            detail = (
-                f"reading thread {thread_id} in {self._schema}.threads failed: {exc}"
+        query = (
+            self._query()
+            .add(
+                """
+                select id, created_at, name, user_id, tags, meta
+                from {schema}.threads
+                where id = %(id)s
+                """,
+                id=thread_id,
             )
-            raise DataUnavailableError("get_thread", detail) from exc
-
+            .build()
+        )
+        row = await self._row(query, "get_thread")
         if row is None:
             return None
 
         return self._stored(row)
 
     async def upsert(self, change: ThreadUpsert) -> ThreadUpserted:
-        query = sql.SQL(
-            """
-            insert into {threads} as t (
-                {id},
-                {created_at},
-                {name},
-                {user_id},
-                {tags},
-                {meta}
-            )
-            values (
-                %(id)s,
-                %(created_at)s,
-                %(name)s,
-                %(user_id)s,
-                %(tags)s,
-                %(meta_set)s
-            )
-            on conflict ({id}) do update set
-                {name}    = coalesce(excluded.{name}, t.{name}),
-                {user_id} = coalesce(excluded.{user_id}, t.{user_id}),
-                {tags}    = coalesce(excluded.{tags}, t.{tags}),
-                {meta}    = (coalesce(t.{meta}, '{{}}'::jsonb) - %(meta_del)s::text[])
-                            || %(meta_set)s::jsonb
-            returning
-                {user_id},
-                {name},
-                (xmax = 0) as inserted
-            """
-        ).format(
-            threads=self._threads(),
-            id=SqlNames.ident(ThreadsColumn.ID),
-            created_at=SqlNames.ident(ThreadsColumn.CREATED_AT),
-            name=SqlNames.ident(ThreadsColumn.NAME),
-            user_id=SqlNames.ident(ThreadsColumn.USER_ID),
-            tags=SqlNames.ident(ThreadsColumn.TAGS),
-            meta=SqlNames.ident(ThreadsColumn.META),
-        )
-
         tags = None
         if change.tags is not None:
             tags = list(change.tags)
 
-        params = {
-            "id": change.id,
-            "created_at": datetime.now(UTC),
-            "name": change.name,
-            "user_id": change.user_id,
-            "tags": tags,
-            "meta_set": Jsonb(dict(change.meta_set)),
-            "meta_del": list(change.meta_del),
-        }
-        try:
-            pool = await self._pool()
-            async with (
-                pool.connection() as conn,
-                conn.cursor(row_factory=tuple_row) as cur,
-            ):
-                await cur.execute(query, params)
-                row = await cur.fetchone()
-        except Exception as exc:
-            detail = (
-                f"upsert of thread {change.id} into {self._schema}.threads "
-                f"failed: {exc}"
+        query = (
+            self._query()
+            .add(
+                """
+                insert into {schema}.threads as t (
+                    id,
+                    created_at,
+                    name,
+                    user_id,
+                    tags,
+                    meta
+                )
+                values (
+                    %(id)s,
+                    %(created_at)s,
+                    %(name)s,
+                    %(user_id)s,
+                    %(tags)s,
+                    %(meta_set)s
+                )
+                on conflict (id) do update set
+                    name    = coalesce(excluded.name, t.name),
+                    user_id = coalesce(excluded.user_id, t.user_id),
+                    tags    = coalesce(excluded.tags, t.tags),
+                    meta    = (coalesce(t.meta, '{{}}'::jsonb) - %(meta_del)s::text[])
+                              || %(meta_set)s::jsonb
+                returning
+                    user_id,
+                    name,
+                    (xmax = 0) as inserted
+                """,
+                id=change.id,
+                created_at=datetime.now(UTC),
+                name=change.name,
+                user_id=change.user_id,
+                tags=tags,
+                meta_set=Jsonb(dict(change.meta_set)),
+                meta_del=list(change.meta_del),
             )
-            raise DataUnavailableError("update_thread", detail) from exc
+            .build()
+        )
+        row = self._returning(
+            await self._row(query, "update_thread"), f"upsert of thread {change.id}"
+        )
 
-        if row is None:
-            detail = (
-                f"upsert of thread {change.id} into {self._schema}.threads "
-                "returned no row"
-            )
-            raise DataUnavailableError("update_thread", detail)
-
-        name = row[1]
+        name = row[ThreadsColumn.NAME.value]
         if name is None:
             name = ""
 
-        return ThreadUpserted(user_id=row[0], name=name, inserted=bool(row[2]))
+        return ThreadUpserted(
+            user_id=row[ThreadsColumn.USER_ID.value],
+            name=name,
+            inserted=bool(row["inserted"]),
+        )
 
     async def delete(self, thread_id: UUID) -> UUID | None:
-        query = sql.SQL(
-            "delete from {threads} where {id} = %(id)s returning {user_id}"
-        ).format(
-            threads=self._threads(),
-            id=SqlNames.ident(ThreadsColumn.ID),
-            user_id=SqlNames.ident(ThreadsColumn.USER_ID),
-        )
-        try:
-            pool = await self._pool()
-            async with (
-                pool.connection() as conn,
-                conn.cursor(row_factory=tuple_row) as cur,
-            ):
-                await cur.execute(query, {"id": thread_id})
-                row = await cur.fetchone()
-        except Exception as exc:
-            detail = (
-                f"deleting thread {thread_id} in {self._schema}.threads failed: {exc}"
+        query = (
+            self._query()
+            .add(
+                "delete from {schema}.threads where id = %(id)s returning user_id",
+                id=thread_id,
             )
-            raise DataUnavailableError("delete_thread", detail) from exc
-
+            .build()
+        )
+        row = await self._row(query, "delete_thread")
         if row is None:
             return None
 
-        return row[0]
+        return row[ThreadsColumn.USER_ID.value]
 
     async def list_of(self, user_id: UUID, limit: int) -> Sequence[StoredThread]:
-        query = sql.SQL(
-            """
-            select
-                {cols}
-            from
-                {threads}
-            where
-                {user_id} = %(user_id)s
-            order by
-                {created_at} desc
-            limit
-                %(limit)s
-            """
-        ).format(
-            cols=self._row_columns(),
-            threads=self._threads(),
-            user_id=SqlNames.ident(ThreadsColumn.USER_ID),
-            created_at=SqlNames.ident(ThreadsColumn.CREATED_AT),
-        )
-        try:
-            pool = await self._pool()
-            async with (
-                pool.connection() as conn,
-                conn.cursor(row_factory=tuple_row) as cur,
-            ):
-                await cur.execute(query, {"user_id": user_id, "limit": limit})
-                rows = await cur.fetchall()
-        except Exception as exc:
-            detail = (
-                f"listing up to {limit} threads of user {user_id} in "
-                f"{self._schema}.threads failed: {exc}"
+        query = (
+            self._query()
+            .add(
+                """
+                select
+                    id, created_at, name, user_id, tags, meta
+                from
+                    {schema}.threads
+                where
+                    user_id = %(user_id)s
+                order by
+                    created_at desc
+                limit
+                    %(limit)s
+                """,
+                user_id=user_id,
+                limit=limit,
             )
-            raise DataUnavailableError("list_threads", detail) from exc
+            .build()
+        )
+        rows = await self._rows(query, "list_threads")
 
-        return [self._stored(row) for row in rows]
+        threads: list[StoredThread] = []
+        for row in rows:
+            threads.append(self._stored(row))
+
+        return threads
 
     async def get_thread_author(self, thread_id: str) -> str:
-        query = sql.SQL(
-            """
-            select
-                u.{identifier}
-            from
-                {threads} t
-                inner join {users} u on
-                    t.{user_id} = u.{id}
-            where
-                t.{thread_id} = %(id)s
-            """
-        ).format(
-            identifier=SqlNames.ident(UsersColumn.IDENTIFIER),
-            threads=self._threads(),
-            users=SqlNames.table(self._schema, ChatTable.USERS),
-            user_id=SqlNames.ident(ThreadsColumn.USER_ID),
-            id=SqlNames.ident(UsersColumn.ID),
-            thread_id=SqlNames.ident(ThreadsColumn.ID),
-        )
-
         try:
-            pool = await self._pool()
-            async with (
-                pool.connection() as conn,
-                conn.cursor(row_factory=tuple_row) as cur,
-            ):
-                await cur.execute(query, {"id": UUID(thread_id)})
-                row = await cur.fetchone()
+            key = UUID(thread_id)
         except ValueError as exc:
             detail = f"thread id must be a uuid, got {thread_id!r}: {exc}"
             raise DataRejectedError("get_thread_author", detail) from exc
-        except Exception as exc:
-            detail = (
-                f"reading the author of thread {thread_id} in "
-                f"{self._schema}.threads failed: {exc}"
+
+        query = (
+            self._query()
+            .add(
+                """
+                select
+                    u.identifier
+                from
+                    {schema}.threads t
+                    inner join {schema}.users u on
+                        t.user_id = u.id
+                where
+                    t.id = %(id)s
+                """,
+                id=key,
             )
-            raise DataUnavailableError("get_thread_author", detail) from exc
+            .build()
+        )
+        row = await self._row(query, "get_thread_author")
 
         if row is None:
-            detail = f"thread {thread_id} not found in {self._schema}.threads"
+            detail = f"thread {thread_id} not found in {self.schema}.threads"
             raise DataRejectedError("get_thread_author", detail)
 
-        if row[0] is None:
+        identifier = row["identifier"]
+        if identifier is None:
             detail = (
-                f"thread {thread_id} in {self._schema}.threads has no users row "
+                f"thread {thread_id} in {self.schema}.threads has no users row "
                 "joined by user_id"
             )
             raise DataRejectedError("get_thread_author", detail)
 
-        return row[0]
+        return identifier

@@ -1,6 +1,6 @@
 """Синхронизация подключения на живом Postgres: фейковый инструмент снятия в
 субпроцессе кладёт образец PgSample в домен каталога тем же SnapshotWriter,
-что и настоящий pg_schema_snapshot; хост по его итогу записывает версию.
+что и инструмент снятия; хост по его итогу записывает версию.
 Проверяются полный проход, diff между двумя проходами, устаревание привязок
 процесса, отмена посреди порций, отказы инструмента и его итога, права и
 события шины."""
@@ -28,7 +28,7 @@ from boba.catalog_service import (
     SyncStatus,
 )
 from boba.db.postgres import AsyncPostgresPool
-from boba.db.postgres.catalog import StagingTable
+from boba.db.postgres.catalog import StagingTables
 from boba.db.postgres.connection import PostgresConfig
 from boba.db.postgres.snapshot import PgSnapshot
 from boba.db.postgres.snapshot_sample import PgSample
@@ -85,8 +85,8 @@ def _scope(scenario: FakeSyncScenario) -> SyncScope:
 
 async def _staging_tables(pool: AsyncPostgresPool) -> list[str]:
     async with pool.connection() as conn, conn.cursor() as cur:
-        pattern = StagingTable.pattern_of(CONNECTION_ID)
-        return await StagingTable.names_in(cur, CONFIG.db_schema, pattern)
+        staging = StagingTables(CONFIG.db_schema)
+        return await staging.names_in(cur, staging.pattern_of(CONNECTION_ID))
 
 
 async def test_full_sync_writes_a_version(

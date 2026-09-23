@@ -160,19 +160,23 @@ async def _user_id_of(config: Any, identifier: str) -> str:
     from psycopg import sql
 
     from boba.chat.threads import ChatTable
-    from boba.db.postgres import AsyncPostgresPool, SqlNames
-    from boba.identity.api import UsersColumn
+    from boba.db.postgres import AsyncPostgresPool, PgQueryBuilder
 
     pool = AsyncPostgresPool(config.data_layer.postgres)
     await pool.open()
     try:
-        query = sql.SQL("select {id} from {users} where {identifier} = %s").format(
-            id=SqlNames.ident(UsersColumn.ID),
-            users=SqlNames.table(config.data_layer.db_schema, ChatTable.USERS),
-            identifier=SqlNames.ident(UsersColumn.IDENTIFIER),
+        query = (
+            PgQueryBuilder(
+                users=sql.Identifier(config.data_layer.db_schema, ChatTable.USERS.value)
+            )
+            .add(
+                "select id from {users} where identifier = %(identifier)s",
+                identifier=identifier,
+            )
+            .build()
         )
         async with pool.connection() as conn:
-            cursor = await conn.execute(query, (identifier,))
+            cursor = await conn.execute(query.text, query.params)
             row = await cursor.fetchone()
     finally:
         await pool.close()

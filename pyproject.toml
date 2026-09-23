@@ -61,6 +61,9 @@ pythonpath = [
     "packages/apps/ix/ix-vector/src",
     "packages/apps/ix/ix-search-lab/src",
     "packages/apps/ix/cfl-indexer/src",
+    "packages/apps/ix/ch-meta-scraper/src",
+    "packages/tools/boba-tool-describer/src",
+    "packages/tools/boba-tool-mail/src",
 ]
 addopts = ["--strict-markers", "-m", "not integration and not ui and not load and not run"]
 markers = [
@@ -140,6 +143,8 @@ extraPaths = [
     "packages/apps/ix/ix-vector/src",
     "packages/apps/ix/ix-search-lab/src",
     "packages/apps/ix/cfl-indexer/src",
+    "packages/apps/ix/ch-meta-scraper/src",
+    "packages/tools/boba-tool-describer/src",
 ]
 venvPath = "."
 venv = ".venv"

@@ -691,7 +691,6 @@ class PgSnapshot(SourceSnapshot):
     """
 
     TABLE_PREFIX: ClassVar[str] = "pg"
-    SYNC_TOOL: ClassVar[str] = "pg_schema_snapshot"
     OBJECT_PARTS: ClassVar[tuple[str, ...]] = (
         PgPart.RELATIONS,
         PgPart.ROUTINES,

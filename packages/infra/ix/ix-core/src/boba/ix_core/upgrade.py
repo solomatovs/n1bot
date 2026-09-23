@@ -32,8 +32,8 @@ from psycopg import sql
 from psycopg.postgres import types as pg_types
 
 from boba.db.postgres import AsyncPostgresPool, PostgresError
-from boba.db.postgres.names import PostgresSchema
 from boba.db.postgres.query import PgQueryBuilder
+from boba.db.postgres.schema import PostgresSchema
 from boba.ix_core.aspects import (
     AspectDeclarationError,
     ContractColumn,
@@ -142,7 +142,8 @@ class SchemaUpgrade:
     async def _check_declarations(
         self, conn: psycopg.AsyncConnection[Any], registry: IxRegistry
     ) -> None:
-        if not await PostgresSchema.exists(conn, registry.db_schema, "surface_aspect"):
+        schema = PostgresSchema(registry.db_schema)
+        if not await schema.has_table(conn, "surface_aspect"):
             return
 
         declarations = await registry.read_declarations(conn, ())
@@ -215,7 +216,8 @@ class SchemaUpgrade:
     async def _check_index_tables(
         self, conn: psycopg.AsyncConnection[Any], registry: IxRegistry
     ) -> None:
-        if not await PostgresSchema.exists(conn, registry.db_schema, "index_table"):
+        schema = PostgresSchema(registry.db_schema)
+        if not await schema.has_table(conn, "index_table"):
             return
 
         await registry.read_tables(conn)
@@ -279,7 +281,8 @@ class SchemaUpgrade:
     async def _check_urls(
         self, conn: psycopg.AsyncConnection[Any], registry: IxRegistry
     ) -> None:
-        if not await PostgresSchema.exists(conn, registry.db_schema, "surface_url"):
+        schema = PostgresSchema(registry.db_schema)
+        if not await schema.has_table(conn, "surface_url"):
             return
 
         await registry.read_urls(conn)
@@ -289,7 +292,8 @@ class SchemaUpgrade:
     async def _check_prompts(
         self, conn: psycopg.AsyncConnection[Any], registry: IxRegistry
     ) -> None:
-        if not await PostgresSchema.exists(conn, registry.db_schema, "surface_prompt"):
+        schema = PostgresSchema(registry.db_schema)
+        if not await schema.has_table(conn, "surface_prompt"):
             return
 
         await registry.read_prompts(conn)
@@ -303,7 +307,7 @@ class SchemaUpgrade:
         self, conn: psycopg.AsyncConnection[Any], db_schema: str
     ) -> None:
         for table in ("node", "edge"):
-            if await PostgresSchema.exists(conn, db_schema, table):
+            if await PostgresSchema(db_schema).has_table(conn, table):
                 continue
 
             raise SchemaUpgradeError(

@@ -38,7 +38,7 @@ from boba.db.postgres.catalog import (
     SnapshotOutcome,
     SnapshotTables,
     SnapshotWriter,
-    StagingTable,
+    StagingTables,
 )
 from boba.db.postgres.connection import PostgresConfig
 from boba.db.postgres.snapshot import PgSnapshot
@@ -174,8 +174,8 @@ def _sorted(snapshot: SourceSnapshot) -> dict[str, list[SourceRecord]]:
 
 async def _staging_tables(pool: AsyncPostgresPool, connection_id: UUID) -> list[str]:
     async with pool.connection() as conn, conn.cursor() as cur:
-        pattern = StagingTable.pattern_of(connection_id)
-        return await StagingTable.names_in(cur, SCHEMA, pattern)
+        staging = StagingTables(SCHEMA)
+        return await staging.names_in(cur, staging.pattern_of(connection_id))
 
 
 def _part_tables() -> list[PartTable]:

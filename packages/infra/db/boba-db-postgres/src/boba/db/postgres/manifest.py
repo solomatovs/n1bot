@@ -7,17 +7,14 @@ PostgresError — пробное соединение не открылось и
 
 from __future__ import annotations
 
-from psycopg import sql
-
 from boba.connections.base import ConnectionBase, ConnectionTypeError
 from boba.connections.manifest import ConnectionTypeManifest
 from boba.db.postgres.connection import PostgresConfig
 from boba.db.postgres.payload import PayloadPostgres
+from boba.db.postgres.query import PgQueryBuilder
 from boba.db.postgres.snapshot import PgSourceKind
 
 __all__ = ["MANIFEST"]
-
-PROBE_SQL = sql.SQL("select version()")
 
 
 async def _probe(connection: ConnectionBase) -> str:
@@ -25,10 +22,11 @@ async def _probe(connection: ConnectionBase) -> str:
         msg = f"postgres probe expects a PostgresConfig, got kind {connection.kind!r}"
         raise ConnectionTypeError(msg)
 
+    probe = PgQueryBuilder().add("select version()").build()
     conn = await PayloadPostgres.connect_config(connection)
     try:
         async with conn.cursor() as cur:
-            await cur.execute(PROBE_SQL)
+            await cur.execute(probe.text, probe.params)
             row = await cur.fetchone()
     finally:
         await conn.close()

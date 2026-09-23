@@ -11,7 +11,6 @@ from __future__ import annotations
 
 from typing import Self
 
-from psycopg import sql
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from boba.db.postgres.connection import PostgresConfig
@@ -71,24 +70,6 @@ class PostgresStoreSchema(BaseModel):
             )
             raise ValueError(msg)
         return self
-
-    def chunks_ident(self) -> sql.Identifier:
-        return sql.Identifier(self.pg_schema, self.chunks_table)
-
-    def collections_ident(self) -> sql.Identifier:
-        return sql.Identifier(self.pg_schema, self.collections_table)
-
-    def sources_ident(self) -> sql.Identifier:
-        return sql.Identifier(self.pg_schema, self.sources_table)
-
-    def schema_ident(self) -> sql.Identifier:
-        return sql.Identifier(self.pg_schema)
-
-    def chunks_name_literal(self) -> sql.Literal:
-        return sql.Literal(self.chunks_table)
-
-    def schema_name_literal(self) -> sql.Literal:
-        return sql.Literal(self.pg_schema)
 
 
 class PostgresStoreConfig(BaseModel):

@@ -11,15 +11,13 @@ from __future__ import annotations
 import json
 import logging
 from collections.abc import Mapping
-from typing import Any
+from typing import Any, ClassVar
 from uuid import UUID, uuid4
 
-import psycopg
-from psycopg import sql
 from psycopg.types.json import Json
 from pydantic import BaseModel
 
-from boba.db.postgres import AsyncPostgresPool, PostgresError, SqlNames
+from boba.db.postgres import PgQuery, PostgresPool, PostgresTable
 from boba.db.postgres.connection import PostgresConfig
 from boba.identity.context import Scope
 from boba.messaging import PayloadMissingError, PayloadRef, PayloadStore
@@ -36,12 +34,16 @@ class PayloadStoreError(Exception):
 
 
 class PayloadBody:
-    """Приводит тело к JSON перед записью: модель — дампом, строку и словарь — как
-    есть, объект с полем content — его содержимым, остальное — строкой.
+    """Тело сообщения в форме JSON перед записью: модель — дампом, строка и
+    словарь — как есть, объект с полем content — его содержимым, остальное —
+    строкой.
     """
 
-    @classmethod
-    def of(cls, payload: object) -> Any:
+    def __init__(self, payload: object) -> None:
+        self._payload = payload
+
+    def render(self) -> Any:
+        payload = self._payload
         if isinstance(payload, BaseModel):
             return payload.model_dump(mode="json")
 
@@ -53,222 +55,161 @@ class PayloadBody:
 
         content = getattr(payload, "content", None)
         if content is not None:
-            return cls.of(content)
+            return PayloadBody(content).render()
 
         return str(payload)
 
 
-class PgPayloadStore(PayloadStore):
+class PgPayloadStore(PostgresTable, PayloadStore):
     """Кладёт тела сообщений в live_payloads и отдаёт их по ссылке; ссылка хранит
     область и uuid строки. Колонка body — json, а не jsonb: jsonb переупорядочивает
     ключи, а порядок аргументов и колонок результата виден пользователю.
     """
 
-    def __init__(self, cfg: PostgresConfig, db_schema: str) -> None:
-        self._cfg = cfg
-        self._schema = db_schema
-        self._pool_ref: AsyncPostgresPool | None = None
+    LABEL: ClassVar[str] = "payloads"
 
-    async def _pool(self) -> AsyncPostgresPool:
-        if self._pool_ref is None:
-            self._pool_ref = await AsyncPostgresPool.get(self._cfg)
+    def __init__(
+        self, cfg: PostgresConfig, db_schema: str, pool: PostgresPool | None = None
+    ) -> None:
+        super().__init__(cfg, db_schema, pool)
+        self._scope_kind_check = ScopeKindCheck(db_schema)
 
-        return self._pool_ref
+    def _failure(self, action: str, exc: Exception) -> Exception:
+        return PayloadStoreError(self._detail(action, exc))
 
-    def _table(self) -> sql.Identifier:
-        return SqlNames.table(self._schema, LiveTable.PAYLOADS)
+    def _scope_id(self, scope: Scope) -> UUID:
+        try:
+            return scope.uuid()
+        except ValueError as exc:
+            raise PayloadStoreError(f"payloads: {exc}") from exc
 
     async def setup(self) -> None:
         """Создаёт live_payloads; схему готовит шина."""
-        ddl = (
-            sql.SQL(
+        ddl: tuple[PgQuery, ...] = (
+            self._query()
+            .add(
                 """
-                create unlogged table if not exists {payloads} (
-                    {scope_kind} text not null,
-                    {scope_id}   uuid not null,
-                    {id}         uuid primary key,
-                    {body}       json not null,
-                    {at}         timestamptz not null default now()
+                create unlogged table if not exists {schema}.live_payloads (
+                    scope_kind text not null,
+                    scope_id   uuid not null,
+                    id         uuid primary key,
+                    body       json not null,
+                    at         timestamptz not null default now()
                 )
                 """
-            ).format(
-                payloads=self._table(),
-                **{
-                    column.value: SqlNames.ident(column)
-                    for column in LivePayloadsColumn
-                },
-            ),
-            sql.SQL(
+            )
+            .build(),
+            self._query()
+            .add(
                 """
-                alter table {payloads}
-                    alter column {body} type json using {body}::text::json
+                alter table {schema}.live_payloads
+                    alter column body type json using body::text::json
                 """
-            ).format(
-                payloads=self._table(), body=SqlNames.ident(LivePayloadsColumn.BODY)
-            ),
-            sql.SQL(
+            )
+            .build(),
+            self._query()
+            .add(
                 """
                 create index if not exists idx_live_payloads_scope
-                on {payloads} ({scope_kind}, {scope_id})
+                on {schema}.live_payloads (scope_kind, scope_id)
                 """
-            ).format(
-                payloads=self._table(),
-                scope_kind=SqlNames.ident(LivePayloadsColumn.SCOPE_KIND),
-                scope_id=SqlNames.ident(LivePayloadsColumn.SCOPE_ID),
-            ),
-            ScopeKindCheck.of(self._schema, LiveTable.PAYLOADS),
-        )
-        pool = await self._pool()
-        try:
-            async with pool.connection() as conn, conn.transaction():
-                for statement in ddl:
-                    await conn.execute(statement, prepare=False)
-        except (psycopg.Error, PostgresError) as exc:
-            msg = f"payloads: setup of {self._schema}.live_payloads failed: {exc}"
-            raise PayloadStoreError(msg) from exc
-
-    @staticmethod
-    def _scope_id(scope: Scope) -> UUID:
-        try:
-            return UUID(scope.id)
-        except ValueError as exc:
-            msg = (
-                f"payloads: scope {scope.kind.value} id must be a uuid, "
-                f"got {scope.id!r}: {exc}"
             )
-            raise PayloadStoreError(msg) from exc
+            .build(),
+            self._scope_kind_check.of(LiveTable.PAYLOADS),
+        )
+
+        await self._apply_ddl(ddl)
 
     async def put(self, scope: Scope, payload: object) -> PayloadRef:
         ref = PayloadRef(scope=scope, id=uuid4().hex)
-        pool = await self._pool()
-        try:
-            async with pool.cursor() as cur:
-                await cur.execute(
-                    sql.SQL(
-                        """
-                        insert into {payloads} ({scope_kind}, {scope_id}, {id}, {body})
-                        values (%(scope_kind)s, %(scope_id)s, %(id)s, %(body)s)
-                        """
-                    ).format(
-                        payloads=self._table(),
-                        scope_kind=SqlNames.ident(LivePayloadsColumn.SCOPE_KIND),
-                        scope_id=SqlNames.ident(LivePayloadsColumn.SCOPE_ID),
-                        id=SqlNames.ident(LivePayloadsColumn.ID),
-                        body=SqlNames.ident(LivePayloadsColumn.BODY),
-                    ),
-                    {
-                        "scope_kind": scope.kind.value,
-                        "scope_id": self._scope_id(scope),
-                        "id": UUID(ref.id),
-                        "body": Json(PayloadBody.of(payload)),
-                    },
-                    prepare=False,
-                )
-        except (psycopg.Error, PostgresError) as exc:
-            msg = (
-                f"payloads: insert of {ref.id} for {scope.render()} into "
-                f"{self._schema}.live_payloads failed: {exc}"
+        query = (
+            self._query()
+            .add(
+                """
+                insert into {schema}.live_payloads (scope_kind, scope_id, id, body)
+                values (%(scope_kind)s, %(scope_id)s, %(id)s, %(body)s)
+                """,
+                scope_kind=scope.kind.value,
+                scope_id=self._scope_id(scope),
+                id=UUID(ref.id),
+                body=Json(PayloadBody(payload).render()),
             )
-            raise PayloadStoreError(msg) from exc
+            .build()
+        )
+
+        await self._execute(
+            query, f"insert of {ref.id} for {scope.render()} into live_payloads"
+        )
 
         return ref
 
     async def get(self, ref: PayloadRef) -> object:
-        pool = await self._pool()
-        try:
-            async with pool.cursor() as cur:
-                await cur.execute(
-                    sql.SQL(
-                        """
-                        select {body} from {payloads}
-                        where 1=1
-                            and {id} = %(id)s
-                            and {scope_kind} = %(scope_kind)s
-                            and {scope_id} = %(scope_id)s
-                        """
-                    ).format(
-                        payloads=self._table(),
-                        body=SqlNames.ident(LivePayloadsColumn.BODY),
-                        id=SqlNames.ident(LivePayloadsColumn.ID),
-                        scope_kind=SqlNames.ident(LivePayloadsColumn.SCOPE_KIND),
-                        scope_id=SqlNames.ident(LivePayloadsColumn.SCOPE_ID),
-                    ),
-                    {
-                        "id": UUID(ref.id),
-                        "scope_kind": ref.scope.kind.value,
-                        "scope_id": self._scope_id(ref.scope),
-                    },
-                    prepare=False,
-                )
-                row = await cur.fetchone()
-        except (psycopg.Error, PostgresError) as exc:
-            msg = (
-                f"payloads: reading {ref.id} for {ref.scope.render()} in "
-                f"{self._schema}.live_payloads failed: {exc}"
+        query = (
+            self._query()
+            .add(
+                """
+                select body from {schema}.live_payloads
+                where 1=1
+                    and id = %(id)s
+                    and scope_kind = %(scope_kind)s
+                    and scope_id = %(scope_id)s
+                """,
+                id=UUID(ref.id),
+                scope_kind=ref.scope.kind.value,
+                scope_id=self._scope_id(ref.scope),
             )
-            raise PayloadStoreError(msg) from exc
+            .build()
+        )
+        row = await self._row(
+            query, f"reading {ref.id} for {ref.scope.render()} in live_payloads"
+        )
 
         if row is None:
             msg = (
                 f"payload {ref.id} of {ref.scope.render()} is gone: no row in "
-                f"{self._schema}.live_payloads"
+                f"{self.schema}.live_payloads"
             )
             raise PayloadMissingError(msg)
 
-        return row[0]
+        return row[LivePayloadsColumn.BODY.value]
 
     async def purge(self, scope: Scope) -> int:
-        pool = await self._pool()
-        try:
-            async with pool.cursor() as cur:
-                await cur.execute(
-                    sql.SQL(
-                        """
-                        delete from {payloads}
-                        where 1=1
-                            and {scope_kind} = %(scope_kind)s
-                            and {scope_id} = %(scope_id)s
-                        """
-                    ).format(
-                        payloads=self._table(),
-                        scope_kind=SqlNames.ident(LivePayloadsColumn.SCOPE_KIND),
-                        scope_id=SqlNames.ident(LivePayloadsColumn.SCOPE_ID),
-                    ),
-                    {"scope_kind": scope.kind.value, "scope_id": self._scope_id(scope)},
-                    prepare=False,
-                )
-                return cur.rowcount
-        except (psycopg.Error, PostgresError) as exc:
-            msg = (
-                f"payloads: delete of {scope.render()} from "
-                f"{self._schema}.live_payloads failed: {exc}"
+        query = (
+            self._query()
+            .add(
+                """
+                delete from {schema}.live_payloads
+                where 1=1
+                    and scope_kind = %(scope_kind)s
+                    and scope_id = %(scope_id)s
+                """,
+                scope_kind=scope.kind.value,
+                scope_id=self._scope_id(scope),
             )
-            raise PayloadStoreError(msg) from exc
+            .build()
+        )
+
+        return await self._execute(
+            query, f"delete of {scope.render()} from live_payloads"
+        )
 
     async def purge_idle(self, max_age_sec: int) -> int:
         """Удаляет тела старше max_age_sec, потому что их сообщения уже никто не
         читает; возвращает число удалённых.
         """
-        pool = await self._pool()
-        try:
-            async with pool.cursor() as cur:
-                await cur.execute(
-                    sql.SQL(
-                        """
-                        delete from {payloads}
-                        where
-                            {at} + make_interval(secs => %(age)s) < now()
-                        """
-                    ).format(
-                        payloads=self._table(), at=SqlNames.ident(LivePayloadsColumn.AT)
-                    ),
-                    {"age": max_age_sec},
-                    prepare=False,
-                )
-                return cur.rowcount
-        except (psycopg.Error, PostgresError) as exc:
-            msg = (
-                f"payloads: delete of bodies older than {max_age_sec}s from "
-                f"{self._schema}.live_payloads failed: {exc}"
+        query = (
+            self._query()
+            .add(
+                """
+                delete from {schema}.live_payloads
+                where
+                    at + make_interval(secs => %(age)s) < now()
+                """,
+                age=max_age_sec,
             )
-            raise PayloadStoreError(msg) from exc
+            .build()
+        )
+
+        return await self._execute(
+            query, f"delete of bodies older than {max_age_sec}s from live_payloads"
+        )

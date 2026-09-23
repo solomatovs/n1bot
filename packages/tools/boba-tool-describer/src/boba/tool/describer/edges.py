@@ -181,97 +181,50 @@ class EdgeEnd(BaseModel):
     url: str
 
 
-class EdgeSql:
-    """Тексты SQL таблицы edge; концы ищутся по таблице узлов."""
-
-    FIND_END: ClassVar[str] = """
-select
-    id,
-    url_address
-from
-    {node}
-where 1=1
-    and scope_id = %(scope_id)s
-    and address = %(address)s
-"""
-    KNOWN_ENDS: ClassVar[str] = """
-select
-    url_address
-from
-    {node}
-where
-    scope_id = %(scope_id)s
-order by
-    id
-"""
-    UPSERT: ClassVar[str] = """
-insert into {edge} (
-    source_id,
-    target_id,
-    kind,
-    description
-)
-values (
-    %(source_id)s,
-    %(target_id)s,
-    %(kind)s,
-    %(description)s
-)
-on conflict (source_id, target_id, kind)
-do update set
-    description = excluded.description,
-    s__wrt_ts   = now()
-returning
-    (xmax = 0) as inserted
-"""
-    LIST: ClassVar[str] = """
-select
-    e.id,
-    s.url_address as source,
-    t.url_address as target,
-    e.kind,
-    e.description
-from
-    {edge} e
-    inner join {node} s on s.id = e.source_id
-    inner join {node} t on t.id = e.target_id
-where
-    s.scope_id = %(scope_id)s
-order by
-    e.id
-"""
-    DELETE: ClassVar[str] = """
-delete from {edge} e
-using {node} s
-where 1=1
-    and e.source_id = s.id
-    and s.scope_id = %(scope_id)s
-    and e.id = any(%(ids)s)
-returning
-    e.id
-"""
-
-
 class EdgeTable:
-    """Рёбра одной сессии: запись, список и удаление в области."""
+    """Рёбра одной сессии: запись, список и удаление в области; концы ищутся
+    по таблице узлов своим SQL."""
 
     def __init__(self, session: DescriberSession) -> None:
         self._conn = session.conn
-        self._names = session.names
+        self._session = session
 
     async def upsert(self, scope: ScopeKey, spec: EdgeSpec) -> EdgeWrite:
         source = await self._end(scope, spec.source)
         target = await self._end(scope, spec.target)
-
-        params = {
-            "source_id": source.id,
-            "target_id": target.id,
-            "kind": spec.kind.value,
-            "description": spec.description,
-        }
+        query = (
+            self._session.query()
+            .add(
+                """
+                insert into {schema}.edge (
+                    source_id,
+                    target_id,
+                    kind,
+                    description
+                )
+                values (
+                    %(source_id)s,
+                    %(target_id)s,
+                    %(kind)s,
+                    %(description)s
+                )
+                on conflict (source_id, target_id, kind)
+                do update set
+                    description = excluded.description,
+                    s__wrt_ts   = now()
+                returning
+                    (xmax = 0) as inserted
+                """,
+                source_id=source.id,
+                target_id=target.id,
+                kind=spec.kind.value,
+                description=spec.description,
+            )
+            .build()
+        )
 
         async with self._conn.cursor(row_factory=dict_row) as cur:
-            await cur.execute(self._names.render(EdgeSql.UPSERT), params)
+            await cur.execute(query.text, query.params)
             row = await cur.fetchone()
 
         if row is None:
@@ -290,10 +243,33 @@ class EdgeTable:
         )
 
     async def list(self, scope: ScopeKey) -> Sequence[EdgeRecord]:
-        records: list[EdgeRecord] = []
+        query = (
+            self._session.query()
+            .add(
+                """
+                select
+                    e.id,
+                    s.url_address as source,
+                    t.url_address as target,
+                    e.kind,
+                    e.description
+                from
+                    {schema}.edge e
+                    inner join {schema}.node s on s.id = e.source_id
+                    inner join {schema}.node t on t.id = e.target_id
+                where
+                    s.scope_id = %(scope_id)s
+                order by
+                    e.id
+                """,
+                scope_id=scope.id,
+            )
+            .build()
+        )
 
+        records: list[EdgeRecord] = []
         async with self._conn.cursor(row_factory=dict_row) as cur:
-            await cur.execute(self._names.render(EdgeSql.LIST), {"scope_id": scope.id})
+            await cur.execute(query.text, query.params)
 
             for row in await cur.fetchall():
                 records.append(
@@ -312,18 +288,35 @@ class EdgeTable:
         """Снять рёбра области одним запросом: область — условие удаления,
         нехватка вернувшихся id — откат транзакции."""
         wanted = list(ids)
-        params = {"scope_id": scope.id, "ids": wanted}
+        query = (
+            self._session.query()
+            .add(
+                """
+                delete from {schema}.edge e
+                using {schema}.node s
+                where 1=1
+                    and e.source_id = s.id
+                    and s.scope_id = %(scope_id)s
+                    and e.id = any(%(ids)s)
+                returning
+                    e.id
+                """,
+                scope_id=scope.id,
+                ids=wanted,
+            )
+            .build()
+        )
 
         async with self._conn.transaction():
             removed: set[int] = set()
 
             async with self._conn.cursor(row_factory=dict_row) as cur:
-                await cur.execute(self._names.render(EdgeSql.DELETE), params)
+                await cur.execute(query.text, query.params)
 
                 for row in await cur.fetchall():
                     removed.add(int(row[EdgeColumn.ID.value]))
 
-            missing = MissingIds.of(wanted, removed)
+            missing = MissingIds(wanted, removed).ids()
             if missing:
                 raise EdgeIdsMissingError(missing)
 
@@ -331,10 +324,27 @@ class EdgeTable:
 
     async def _end(self, scope: ScopeKey, address: Address) -> EdgeEnd:
         """Конец ребра по адресу; нет — EdgeEndMissingError с известными url."""
-        params = {"scope_id": scope.id, "address": Jsonb(address.to_json())}
+        query = (
+            self._session.query()
+            .add(
+                """
+                select
+                    id,
+                    url_address
+                from
+                    {schema}.node
+                where 1=1
+                    and scope_id = %(scope_id)s
+                    and address = %(address)s
+                """,
+                scope_id=scope.id,
+                address=Jsonb(address.to_json()),
+            )
+            .build()
+        )
 
         async with self._conn.cursor(row_factory=dict_row) as cur:
-            await cur.execute(self._names.render(EdgeSql.FIND_END), params)
+            await cur.execute(query.text, query.params)
             row = await cur.fetchone()
 
         if row is None:
@@ -343,12 +353,27 @@ class EdgeTable:
         return EdgeEnd(id=row[EdgeColumn.ID.value], url=row[EdgeColumn.URL.value])
 
     async def _known_ends(self, scope: ScopeKey) -> list[str]:
-        known: list[str] = []
-
-        async with self._conn.cursor(row_factory=dict_row) as cur:
-            await cur.execute(
-                self._names.render(EdgeSql.KNOWN_ENDS), {"scope_id": scope.id}
+        query = (
+            self._session.query()
+            .add(
+                """
+                select
+                    url_address
+                from
+                    {schema}.node
+                where
+                    scope_id = %(scope_id)s
+                order by
+                    id
+                """,
+                scope_id=scope.id,
             )
+            .build()
+        )
+
+        known: list[str] = []
+        async with self._conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(query.text, query.params)
 
             for row in await cur.fetchall():
                 known.append(row[EdgeColumn.URL.value])

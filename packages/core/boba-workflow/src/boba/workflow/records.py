@@ -73,6 +73,18 @@ class RunsColumn(StrEnum):
     STARTED_AT = "started_at"
     FINISHED_AT = "finished_at"
 
+    @classmethod
+    def stored(cls) -> tuple[RunsColumn, ...]:
+        """Колонки строки StoredRun: status выводится из state и не читается."""
+        columns: list[RunsColumn] = []
+        for column in cls:
+            if column is cls.STATUS:
+                continue
+
+            columns.append(column)
+
+        return tuple(columns)
+
 
 class WorkflowStoreError(Exception):
     """База отказала или строка не сохранилась."""

@@ -6,41 +6,19 @@ DataUnavailableError — пул, соединение или запрос отк
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
-from typing import Any
-
-from psycopg import sql
+from typing import ClassVar
 
 from boba.chat.threads import DataUnavailableError
-from boba.db.postgres import PostgresError, PostgresTable
+from boba.db.postgres import PostgresTable
 
 __all__ = ["PgTable"]
 
 
 class PgTable(PostgresTable):
-    """Таблица схемы чата: DDL и запросы с упаковкой отказа в DataUnavailableError."""
+    """Таблица схемы чата: базовый класс UsersTable, ThreadsTable, ElementsTable
+    и FeedbacksTable; отказ базы уходит DataUnavailableError с именем операции."""
 
-    async def _run(self, statements: Sequence[sql.Composed], operation: str) -> None:
-        try:
-            await self._apply_ddl(statements)
-        except PostgresError as exc:
-            detail = f"ddl in schema {self._schema} failed: {exc}"
-            raise DataUnavailableError(operation, detail) from exc
+    LABEL: ClassVar[str] = "chat"
 
-    async def _execute_as(
-        self, query: sql.Composed, params: Mapping[str, Any], operation: str
-    ) -> None:
-        try:
-            await self._execute(query, params)
-        except PostgresError as exc:
-            detail = f"statement in schema {self._schema} failed: {exc}"
-            raise DataUnavailableError(operation, detail) from exc
-
-    async def _fetch_as(
-        self, query: sql.Composed, params: Mapping[str, Any], operation: str
-    ) -> list[tuple[Any, ...]]:
-        try:
-            return await self._fetch(query, params)
-        except PostgresError as exc:
-            detail = f"query in schema {self._schema} failed: {exc}"
-            raise DataUnavailableError(operation, detail) from exc
+    def _failure(self, action: str, exc: Exception) -> Exception:
+        return DataUnavailableError(action, self._detail(action, exc))

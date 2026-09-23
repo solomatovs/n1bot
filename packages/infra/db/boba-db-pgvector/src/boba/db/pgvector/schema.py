@@ -1,16 +1,20 @@
-"""Создание схемы KB при старте приложения: идемпотентный DDL на каждом запуске."""
+"""Создание схемы KB при старте приложения: идемпотентный DDL на каждом запуске.
+
+Ошибки:
+KbMigrationError — миграций нет или размерность вектора негодна.
+PostgresError — пул недоступен.
+psycopg.Error — DDL отклонён не по правам.
+"""
 
 from __future__ import annotations
 
 import logging
-from typing import ClassVar
 
-from psycopg import AsyncConnection, sql
 from psycopg.errors import InsufficientPrivilege
 
+from boba.db.pgvector.config import PostgresStoreConfig
 from boba.db.pgvector.migrations import Migrations
-from boba.db.pgvector.store import PostgresStoreConfig
-from boba.db.postgres import AsyncPostgresPool
+from boba.db.postgres import AsyncPostgresPool, PostgresSchema
 
 __all__ = ["KbSchema"]
 
@@ -18,55 +22,45 @@ logger = logging.getLogger(__name__)
 
 
 class KbSchema:
-    """Приводит схему базы знаний к актуальному виду."""
-
-    SETUP_LOCK: ClassVar[str] = "boba-kb-setup"
-    """Ключ advisory-lock, под которым процессы по очереди применяют миграции."""
+    """Приводит схему базы знаний к актуальному виду: схема, миграции под
+    замком DDL и векторный индекс под размерность модели. Здесь только DDL,
+    векторных значений не летает, поэтому берётся общий пул процесса, а не
+    отдельный пул store с адаптером vector. Без прав на DDL считаем, что
+    администратор всё завёл сам."""
 
     def __init__(self, cfg: PostgresStoreConfig, *, dim: int) -> None:
         self._cfg = cfg
         self._dim = dim
-
-    async def _ensure_schema(self, conn: AsyncConnection) -> None:
-        """Схема под таблицы KB; без прав на CREATE считаем, что её завёл админ."""
-        name = self._cfg.tables.pg_schema
-        await conn.execute(
-            sql.SQL("CREATE SCHEMA IF NOT EXISTS {}").format(sql.Identifier(name)),
-            prepare=False,
-        )
+        self._schema = PostgresSchema(cfg.tables.pg_schema)
+        self._migrations = Migrations(cfg.tables)
 
     async def setup(self) -> None:
-        """Создать схему, применить миграции и векторный индекс под модель.
-
-        Здесь только DDL, векторных значений не летает, поэтому берётся общий
-        пул процесса, а не отдельный пул store с адаптером vector.
-        """
         pool = await AsyncPostgresPool.get(self._cfg.connection)
         async with pool.connection() as conn:
             try:
                 # несколько процессов стартуют разом: DDL под одним advisory-lock,
                 # иначе каталог отвечает «tuple concurrently updated»
                 async with conn.transaction():
-                    await conn.execute(
-                        "select pg_advisory_xact_lock(hashtextextended(%(key)s, 0))",
-                        {"key": self.SETUP_LOCK},
-                        prepare=False,
-                    )
-                    await self._ensure_schema(conn)
-                    await Migrations.apply_bootstrap(conn, schema_cfg=self._cfg.tables)
-            except InsufficientPrivilege:
+                    await self._schema.ddl_lock().acquire(conn)
+                    await self._schema.ensure(conn)
+                    await self._migrations.apply(conn)
+            except InsufficientPrivilege as exc:
                 logger.info(
-                    "no permission operationassuming an administrator created it",
+                    "no permission for the kb migrations in schema %s, assuming an "
+                    "administrator applied them: %s",
+                    self._schema.name,
+                    exc,
                 )
 
         async with pool.connection() as conn:
             try:
-                await Migrations.ensure_vector_index(
-                    conn, dim=self._dim, schema_cfg=self._cfg.tables
-                )
-            except InsufficientPrivilege:
+                await self._migrations.ensure_vector_index(conn, self._dim)
+            except InsufficientPrivilege as exc:
                 logger.info(
-                    "no permission operationassuming an administrator created it",
+                    "no permission for the kb vector index in schema %s, assuming an "
+                    "administrator created it: %s",
+                    self._schema.name,
+                    exc,
                 )
 
         logger.info(

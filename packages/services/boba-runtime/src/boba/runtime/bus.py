@@ -28,10 +28,17 @@ from psycopg.rows import DictRow
 from psycopg.types.json import Jsonb
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
 
-from boba.db.postgres import AsyncPostgresPool, PostgresError, PostgresSchema, SqlNames
+from boba.db.postgres import (
+    AsyncPostgresPool,
+    Cursor,
+    PgQuery,
+    PgQueryBuilder,
+    PostgresError,
+    PostgresPool,
+    PostgresTable,
+)
 from boba.db.postgres.connection import PostgresConfig
 from boba.identity.context import Scope, ScopeKind
-from boba.identity.locks import LiveLocksColumn
 from boba.messaging import (
     AnyCommand,
     AnyMessage,
@@ -106,23 +113,31 @@ ReconnectHandler = Callable[[], Awaitable[None]]
 
 
 class ScopeKindCheck:
-    """Check-ограничение на вид области: одно и то же у всех live-таблиц."""
+    """Check-ограничение на вид области, одно и то же у всех live-таблиц;
+    DDL для своей таблицы собирает её владелец (шина, блокировки, тела)."""
 
-    KINDS: ClassVar[tuple[str, ...]] = ("chat", "workflow", "job", "user")
+    def __init__(self, schema: str) -> None:
+        self._schema = schema
 
-    @classmethod
-    def of(cls, schema: str, table: LiveTable) -> sql.Composed:
-        constraint = sql.Identifier(f"{table.value}_scope_kind_check")
-        kinds = sql.SQL(", ").join([sql.Literal(kind) for kind in cls.KINDS])
+    def of(self, table: LiveTable) -> PgQuery:
+        kinds: list[sql.Composable] = []
+        for kind in ScopeKind:
+            kinds.append(sql.Literal(kind.value))
 
-        return sql.SQL(
-            """
-            alter table {table}
-                drop constraint if exists {constraint},
-                add constraint {constraint} check (scope_kind in ({kinds}))
-            """
-        ).format(
-            table=SqlNames.table(schema, table), constraint=constraint, kinds=kinds
+        return (
+            PgQueryBuilder(
+                table=sql.Identifier(self._schema, table.value),
+                constraint=sql.Identifier(f"{table.value}_scope_kind_check"),
+                kinds=sql.SQL(", ").join(kinds),
+            )
+            .add(
+                """
+                alter table {table}
+                    drop constraint if exists {constraint},
+                    add constraint {constraint} check (scope_kind in ({kinds}))
+                """
+            )
+            .build()
         )
 
 
@@ -313,11 +328,12 @@ class LiveListener(BusWatch):
     async def _listen_once(self) -> None:
         conn = await AsyncPostgresPool.dedicated(self._cfg)
         self._conn = conn
-        await conn.execute(
-            sql.SQL("listen {channel}").format(
-                channel=sql.Identifier(LiveChannel.LIVE.value)
-            )
+        listen = (
+            PgQueryBuilder(channel=sql.Identifier(LiveChannel.LIVE.value))
+            .add("listen {channel}")
+            .build()
         )
+        await conn.execute(listen.text, listen.params)
         self._set_state(ListenerState.LISTENING)
         self._connections += 1
         self._ready.set()
@@ -349,28 +365,26 @@ class LiveListener(BusWatch):
             await conn.close()
 
 
-class PgMessageBus(MessageBus):
+class PgMessageBus(PostgresTable, MessageBus):
     """Шина процесса на таблицах схемы чата: публикует через пул соединений,
     принимает через LiveListener; один экземпляр на процесс.
     """
 
-    SETUP_LOCK: ClassVar[str] = "boba-live-setup"
-    """Ключ advisory-lock, под которым процессы по очереди создают live-таблицы."""
+    LABEL: ClassVar[str] = "message bus"
 
-    def __init__(
+    def __init__(  # noqa: PLR0913 — шина собирается из подключения и имён кластера
         self,
         cfg: PostgresConfig,
         db_schema: str,
         instance: str,
         app: AppName,
         cluster: ClusterConfig,
+        pool: PostgresPool | None = None,
     ) -> None:
-        self._cfg = cfg
-        self._schema = db_schema
+        super().__init__(cfg, db_schema, pool)
         self._instance = instance
         self._app = app
         self._cluster = cluster
-        self._pool_ref: AsyncPostgresPool | None = None
         self._listener = LiveListener(cfg, self._on_pointer, self._catch_up_all)
         self._listeners: dict[Scope, list[Listener]] = {}
         self._command_listeners: list[CommandListener] = []
@@ -378,6 +392,7 @@ class PgMessageBus(MessageBus):
         self._scope_locks: dict[Scope, asyncio.Lock] = {}
         self._envelope = TypeAdapter(AnyMessage)
         self._command_body = TypeAdapter(AnyCommand)
+        self._scope_kind_check = ScopeKindCheck(db_schema)
 
     @property
     def instance(self) -> str:
@@ -387,47 +402,22 @@ class PgMessageBus(MessageBus):
     def listener(self) -> LiveListener:
         return self._listener
 
-    async def _pool(self) -> AsyncPostgresPool:
-        if self._pool_ref is None:
-            self._pool_ref = await AsyncPostgresPool.get(self._cfg)
-
-        return self._pool_ref
-
-    def _table(self, table: LiveTable) -> sql.Identifier:
-        return SqlNames.table(self._schema, table)
-
-    def _sequence(self, sequence: LiveSequence) -> sql.Identifier:
-        return SqlNames.table(self._schema, sequence)
+    def _failure(self, action: str, exc: Exception) -> Exception:
+        return MessageBusError(self._detail(action, exc))
 
     def _sequence_name(self, sequence: LiveSequence) -> sql.Literal:
         """Имя последовательности литералом regclass для nextval/setval."""
-        return sql.Literal(self._sequence(sequence).as_string())
+        return sql.Literal(sql.Identifier(self.schema, sequence.value).as_string())
 
     async def setup(self) -> None:
         """Создаёт схему и таблицы шины (live_instances, live_events, live_commands);
         live_locks и live_payloads создают их владельцы после шины.
         """
-        pool = await self._pool()
-
-        try:
-            async with pool.connection() as conn, conn.transaction():
-                # процессы кластера стартуют разом: DDL по очереди под advisory-lock
-                await conn.execute(
-                    "select pg_advisory_xact_lock(hashtextextended(%(key)s, 0))",
-                    {"key": self.SETUP_LOCK},
-                    prepare=False,
-                )
-                await PostgresSchema.ensure(conn, self._schema)
-
-                for query in self._ddl():
-                    await conn.execute(query, prepare=False)
-        except (psycopg.Error, PostgresError) as exc:
-            msg = f"message bus: setup of schema {self._schema} failed: {exc}"
-            raise MessageBusError(msg) from exc
+        await self._apply_ddl(self._ddl())
 
         logger.info("message bus ready: instance %s", self._instance)
 
-    def _ddl(self) -> tuple[sql.Composed, ...]:
+    def _ddl(self) -> tuple[PgQuery, ...]:
         """DDL-шаги setup; порядок захвата таблиц — events раньше commands.
 
         Номер события берётся из общей последовательности: seq области не должен
@@ -439,11 +429,11 @@ class PgMessageBus(MessageBus):
         AccessExclusive, и обратный порядок даёт дедлок между стартующим узлом
         и чисткой соседа (advisory-lock сериализует только setup'ы).
         """
-        instances = self._table(LiveTable.INSTANCES)
         return (
-            sql.SQL(
+            self._query()
+            .add(
                 """
-                create unlogged table if not exists {instances} (
+                create unlogged table if not exists {schema}.live_instances (
                     instance_id  text primary key,
                     app          text not null check (app in ('chainlit', 'studio')),
                     host         text not null,
@@ -451,10 +441,12 @@ class PgMessageBus(MessageBus):
                     heartbeat_at timestamptz not null default now()
                 )
                 """
-            ).format(instances=instances),
-            sql.SQL(
+            )
+            .build(),
+            self._query()
+            .add(
                 """
-                create unlogged table if not exists {events} (
+                create unlogged table if not exists {schema}.live_events (
                     scope_kind text not null
                         check (scope_kind in ('chat', 'workflow', 'job', 'user')),
                     scope_id   uuid not null,
@@ -466,28 +458,29 @@ class PgMessageBus(MessageBus):
                     primary key (scope_kind, scope_id, seq)
                 )
                 """
-            ).format(events=self._table(LiveTable.EVENTS)),
-            ScopeKindCheck.of(self._schema, LiveTable.EVENTS),
-            sql.SQL(
-                """
-                create sequence if not exists {events_seq} as bigint
-                """
-            ).format(events_seq=self._sequence(LiveSequence.EVENTS)),
-            sql.SQL(
+            )
+            .build(),
+            self._scope_kind_check.of(LiveTable.EVENTS),
+            self._query()
+            .add("create sequence if not exists {schema}.live_events_seq as bigint")
+            .build(),
+            self._query()
+            .add(
                 """
                 select setval({events_seq_name}, m.next, false)
-                from (select coalesce(max({seq}), 0) + 1 as next from {events}) m
-                where not (select is_called from {events_seq})
-                """
-            ).format(
+                from (
+                    select coalesce(max(seq), 0) + 1 as next
+                    from {schema}.live_events
+                ) m
+                where not (select is_called from {schema}.live_events_seq)
+                """,
                 events_seq_name=self._sequence_name(LiveSequence.EVENTS),
-                events_seq=self._sequence(LiveSequence.EVENTS),
-                events=self._table(LiveTable.EVENTS),
-                seq=SqlNames.ident(LiveEventsColumn.SEQ),
-            ),
-            sql.SQL(
+            )
+            .build(),
+            self._query()
+            .add(
                 """
-                create unlogged table if not exists {commands} (
+                create unlogged table if not exists {schema}.live_commands (
                     id          bigint generated always as identity primary key,
                     scope_kind  text not null
                         check (scope_kind in ('chat', 'workflow', 'job', 'user')),
@@ -500,21 +493,26 @@ class PgMessageBus(MessageBus):
                     taken_at    timestamptz
                 )
                 """
-            ).format(commands=self._table(LiveTable.COMMANDS)),
-            sql.SQL(
+            )
+            .build(),
+            self._query()
+            .add(
                 """
-                alter table {commands}
+                alter table {schema}.live_commands
                     drop constraint if exists live_commands_by_instance_fkey,
                     drop constraint if exists live_commands_taken_by_fkey
                 """
-            ).format(commands=self._table(LiveTable.COMMANDS)),
-            sql.SQL(
+            )
+            .build(),
+            self._query()
+            .add(
                 """
                 create index if not exists idx_live_commands_scope
-                on {commands} (scope_kind, scope_id)
+                on {schema}.live_commands (scope_kind, scope_id)
                 """
-            ).format(commands=self._table(LiveTable.COMMANDS)),
-            ScopeKindCheck.of(self._schema, LiveTable.COMMANDS),
+            )
+            .build(),
+            self._scope_kind_check.of(LiveTable.COMMANDS),
         )
 
     async def start(self) -> None:
@@ -523,16 +521,11 @@ class PgMessageBus(MessageBus):
     async def stop(self) -> None:
         await self._listener.stop()
 
-    @staticmethod
-    def _scope_id(scope: Scope) -> UUID:
+    def _scope_id(self, scope: Scope) -> UUID:
         try:
-            return UUID(scope.id)
+            return scope.uuid()
         except ValueError as exc:
-            msg = (
-                f"message bus: scope {scope.kind.value} id must be a uuid, "
-                f"got {scope.id!r}: {exc}"
-            )
-            raise MessageBusError(msg) from exc
+            raise MessageBusError(f"message bus: {exc}") from exc
 
     async def publish(self, scope: Scope, message: AnyMessage, token: LockToken) -> int:
         self._listener.ensure_alive()
@@ -545,119 +538,92 @@ class PgMessageBus(MessageBus):
             raise MessageTooLargeError(msg)
 
         scope_id = self._scope_id(scope)
-        pool = await self._pool()
-
-        try:
-            async with pool.connection() as conn, conn.transaction():
-                await conn.execute(
-                    "select pg_advisory_xact_lock(hashtextextended(%(key)s, 0))",
-                    {"key": scope.render()},
-                    prepare=False,
+        insert = (
+            self._query()
+            .add(
+                """
+                insert into {schema}.live_events
+                    (scope_kind, scope_id, seq, kind, origin, body)
+                values (
+                    %(scope_kind)s,
+                    %(scope_id)s,
+                    nextval({events_seq_name}),
+                    %(kind)s,
+                    %(origin)s,
+                    %(body)s
                 )
-                if message.kind.requires_lock:
-                    await self._fence(conn, scope, scope_id, token)
-
-                cur = await conn.execute(
-                    sql.SQL(
-                        """
-                        insert into {events}
-                            ({scope_kind}, {scope_id}, {seq}, {kind}, {origin}, {body})
-                        values (
-                            %(scope_kind)s,
-                            %(scope_id)s,
-                            nextval({events_seq}),
-                            %(kind)s,
-                            %(origin)s,
-                            %(body)s
-                        )
-                        returning {seq}
-                        """
-                    ).format(
-                        events=self._table(LiveTable.EVENTS),
-                        events_seq=self._sequence_name(LiveSequence.EVENTS),
-                        scope_kind=SqlNames.ident(LiveEventsColumn.SCOPE_KIND),
-                        scope_id=SqlNames.ident(LiveEventsColumn.SCOPE_ID),
-                        seq=SqlNames.ident(LiveEventsColumn.SEQ),
-                        kind=SqlNames.ident(LiveEventsColumn.KIND),
-                        origin=SqlNames.ident(LiveEventsColumn.ORIGIN),
-                        body=SqlNames.ident(LiveEventsColumn.BODY),
-                    ),
-                    {
-                        "scope_kind": scope.kind.value,
-                        "scope_id": scope_id,
-                        "kind": message.kind.value,
-                        "origin": self._instance,
-                        "body": Jsonb(message.model_dump(mode="json")),
-                    },
-                    prepare=False,
-                )
-                row = await cur.fetchone()
-                if row is None:
-                    msg = (
-                        f"message bus: insert of {message.kind} into "
-                        f"{self._schema}.live_events for {scope.render()} "
-                        "returned no seq"
-                    )
-                    raise MessageBusError(msg)
-
-                seq = int(row[0])
-                pointer = Pointer(
-                    kind=PointerKind.EVENT,
-                    scope_kind=scope.kind,
-                    scope_id=scope_id,
-                    seq=seq,
-                )
-                await conn.execute(
-                    "select pg_notify(%(channel)s, %(payload)s)",
-                    {"channel": LiveChannel.LIVE.value, "payload": pointer.render()},
-                    prepare=False,
-                )
-        except (psycopg.Error, PostgresError) as exc:
-            msg = (
-                f"message bus: publish of {message.kind} to {scope.render()} "
-                f"failed: {exc}"
+                returning seq
+                """,
+                events_seq_name=self._sequence_name(LiveSequence.EVENTS),
+                scope_kind=scope.kind.value,
+                scope_id=scope_id,
+                kind=message.kind.value,
+                origin=self._instance,
+                body=Jsonb(message.model_dump(mode="json")),
             )
-            raise MessageBusError(msg) from exc
+            .build()
+        )
+
+        action = f"publish of {message.kind} to {scope.render()}"
+        async with self._transaction(action) as cur:
+            await self._advisory_lock(cur, scope.render())
+            if message.kind.requires_lock:
+                await self._fence(cur, scope, scope_id, token)
+
+            await cur.execute(insert.text, insert.params)
+            row = self._returning(
+                await cur.fetchone(),
+                f"insert of {message.kind} into live_events for {scope.render()}",
+            )
+            seq = int(row[LiveEventsColumn.SEQ.value])
+            pointer = Pointer(
+                kind=PointerKind.EVENT,
+                scope_kind=scope.kind,
+                scope_id=scope_id,
+                seq=seq,
+            )
+            await self._notify(cur, pointer)
 
         return seq
 
+    async def _notify(self, cur: Cursor, pointer: Pointer) -> None:
+        notify = (
+            self._query()
+            .add(
+                "select pg_notify(%(channel)s, %(payload)s)",
+                channel=LiveChannel.LIVE.value,
+                payload=pointer.render(),
+            )
+            .build()
+        )
+        await cur.execute(notify.text, notify.params)
+
     async def _fence(
-        self,
-        conn: psycopg.AsyncConnection[Any],
-        scope: Scope,
-        scope_id: UUID,
-        token: LockToken,
+        self, cur: Cursor, scope: Scope, scope_id: UUID, token: LockToken
     ) -> None:
         """Проверяет, что блокировка держателя жива и token совпадает; иначе
         публикация отвергается LockLostError.
         """
-        cur = await conn.execute(
-            sql.SQL(
+        query = (
+            self._query()
+            .add(
                 """
                 select
                     1
-                from {locks}
+                from {schema}.live_locks
                 where 1=1
-                    and {scope_kind} = %(scope_kind)s
-                    and {scope_id} = %(scope_id)s
-                    and {token} = %(token)s
-                    and {heartbeat} + make_interval(secs => {ttl}) >= now()
-                """
-            ).format(
-                locks=self._table(LiveTable.LOCKS),
-                scope_kind=SqlNames.ident(LiveLocksColumn.SCOPE_KIND),
-                scope_id=SqlNames.ident(LiveLocksColumn.SCOPE_ID),
-                token=SqlNames.ident(LiveLocksColumn.TOKEN),
-                heartbeat=SqlNames.ident(LiveLocksColumn.HEARTBEAT_AT),
-                ttl=SqlNames.ident(LiveLocksColumn.TTL_SEC),
-            ),
-            {
-                "scope_kind": scope.kind.value,
-                "scope_id": scope_id,
-                "token": token.value,
-            },
-            prepare=False,
+                    and scope_kind = %(scope_kind)s
+                    and scope_id = %(scope_id)s
+                    and token = %(token)s
+                    and heartbeat_at + make_interval(secs => ttl_sec) >= now()
+                """,
+                scope_kind=scope.kind.value,
+                scope_id=scope_id,
+                token=token.value,
+            )
+            .build()
         )
+        await cur.execute(query.text, query.params)
         row = await cur.fetchone()
         if row is None:
             msg = (
@@ -669,73 +635,51 @@ class PgMessageBus(MessageBus):
     async def command(self, scope: Scope, command: AnyCommand) -> int:
         self._listener.ensure_alive()
         scope_id = self._scope_id(scope)
-        pool = await self._pool()
-
-        try:
-            async with pool.connection() as conn, conn.transaction():
-                cur = await conn.execute(
-                    sql.SQL(
-                        """
-                        insert into {commands} (
-                            {scope_kind},
-                            {scope_id},
-                            {action},
-                            {body},
-                            {by_instance}
-                        )
-                        values (
-                            %(scope_kind)s,
-                            %(scope_id)s,
-                            %(action)s,
-                            %(body)s,
-                            %(by_instance)s
-                        )
-                        returning {id}
-                        """
-                    ).format(
-                        commands=self._table(LiveTable.COMMANDS),
-                        scope_kind=SqlNames.ident(LiveCommandsColumn.SCOPE_KIND),
-                        scope_id=SqlNames.ident(LiveCommandsColumn.SCOPE_ID),
-                        action=SqlNames.ident(LiveCommandsColumn.ACTION),
-                        body=SqlNames.ident(LiveCommandsColumn.BODY),
-                        by_instance=SqlNames.ident(LiveCommandsColumn.BY_INSTANCE),
-                        id=SqlNames.ident(LiveCommandsColumn.ID),
-                    ),
-                    {
-                        "scope_kind": scope.kind.value,
-                        "scope_id": scope_id,
-                        "action": command.kind.value,
-                        "body": Jsonb(command.model_dump(mode="json")),
-                        "by_instance": self._instance,
-                    },
-                    prepare=False,
+        insert = (
+            self._query()
+            .add(
+                """
+                insert into {schema}.live_commands (
+                    scope_kind,
+                    scope_id,
+                    action,
+                    body,
+                    by_instance
                 )
-                row = await cur.fetchone()
-                if row is None:
-                    msg = (
-                        f"message bus: insert of command {command.kind} into "
-                        f"{self._schema}.live_commands for {scope.render()} "
-                        "returned no id"
-                    )
-                    raise MessageBusError(msg)
-
-                command_id = int(row[0])
-                pointer = Pointer(
-                    kind=PointerKind.COMMAND,
-                    scope_kind=scope.kind,
-                    scope_id=scope_id,
-                    seq=command_id,
+                values (
+                    %(scope_kind)s,
+                    %(scope_id)s,
+                    %(action)s,
+                    %(body)s,
+                    %(by_instance)s
                 )
-                await conn.execute(
-                    "select pg_notify(%(channel)s, %(payload)s)",
-                    {"channel": LiveChannel.LIVE.value, "payload": pointer.render()},
-                    prepare=False,
-                )
-        except (psycopg.Error, PostgresError) as exc:
-            msg = (
-                f"message bus: command {command.kind} to {scope.render()} failed: {exc}"
+                returning id
+                """,
+                scope_kind=scope.kind.value,
+                scope_id=scope_id,
+                action=command.kind.value,
+                body=Jsonb(command.model_dump(mode="json")),
+                by_instance=self._instance,
             )
-            raise MessageBusError(msg) from exc
+            .build()
+        )
+
+        action = f"command {command.kind} to {scope.render()}"
+        async with self._transaction(action) as cur:
+            await cur.execute(insert.text, insert.params)
+            row = self._returning(
+                await cur.fetchone(),
+                f"insert of command {command.kind} into live_commands for "
+                f"{scope.render()}",
+            )
+            command_id = int(row[LiveCommandsColumn.ID.value])
+            pointer = Pointer(
+                kind=PointerKind.COMMAND,
+                scope_kind=scope.kind,
+                scope_id=scope_id,
+                seq=command_id,
+            )
+            await self._notify(cur, pointer)
 
         return command_id
 
@@ -776,82 +720,71 @@ class PgMessageBus(MessageBus):
 
     async def replay(self, scope: Scope, after_seq: int) -> Sequence[Envelope]:
         rows = await self._rows_after(scope, after_seq)
-        return [self._to_envelope(scope, row) for row in rows]
+
+        envelopes: list[Envelope] = []
+        for row in rows:
+            envelopes.append(self._to_envelope(scope, row))
+
+        return envelopes
 
     async def take(self, scope: Scope, command_id: int, instance: str) -> bool:
-        pool = await self._pool()
-
-        try:
-            async with pool.cursor() as cur:
-                await cur.execute(
-                    sql.SQL(
-                        """
-                        update {commands}
-                        set {taken_by} = %(instance)s,
-                            {taken_at} = now()
-                        where 1=1
-                            and {id} = %(id)s
-                            and {taken_by} is null
-                        """
-                    ).format(
-                        commands=self._table(LiveTable.COMMANDS),
-                        taken_by=SqlNames.ident(LiveCommandsColumn.TAKEN_BY),
-                        taken_at=SqlNames.ident(LiveCommandsColumn.TAKEN_AT),
-                        id=SqlNames.ident(LiveCommandsColumn.ID),
-                    ),
-                    {"instance": instance, "id": command_id},
-                    prepare=False,
-                )
-                return cur.rowcount == 1
-        except (psycopg.Error, PostgresError) as exc:
-            msg = (
-                f"message bus: take of command {command_id} by {instance} failed: {exc}"
+        query = (
+            self._query()
+            .add(
+                """
+                update {schema}.live_commands
+                set taken_by = %(instance)s,
+                    taken_at = now()
+                where 1=1
+                    and id = %(id)s
+                    and taken_by is null
+                """,
+                instance=instance,
+                id=command_id,
             )
-            raise MessageBusError(msg) from exc
+            .build()
+        )
+        taken = await self._execute(
+            query, f"take of command {command_id} by {instance}"
+        )
+
+        return taken == 1
 
     async def purge(self, scope: Scope) -> int:
         scope_id = self._scope_id(scope)
-        pool = await self._pool()
-        params = {"scope_kind": scope.kind.value, "scope_id": scope_id}
+        events = (
+            self._query()
+            .add(
+                """
+                delete from {schema}.live_events
+                where 1=1
+                    and scope_kind = %(scope_kind)s
+                    and scope_id = %(scope_id)s
+                """,
+                scope_kind=scope.kind.value,
+                scope_id=scope_id,
+            )
+            .build()
+        )
+        commands = (
+            self._query()
+            .add(
+                """
+                delete from {schema}.live_commands
+                where 1=1
+                    and scope_kind = %(scope_kind)s
+                    and scope_id = %(scope_id)s
+                """,
+                scope_kind=scope.kind.value,
+                scope_id=scope_id,
+            )
+            .build()
+        )
 
-        try:
-            async with pool.connection() as conn, conn.transaction():
-                cur = await conn.execute(
-                    sql.SQL(
-                        """
-                        delete from {events}
-                        where 1=1
-                            and {scope_kind} = %(scope_kind)s
-                            and {scope_id} = %(scope_id)s
-                        """
-                    ).format(
-                        events=self._table(LiveTable.EVENTS),
-                        scope_kind=SqlNames.ident(LiveEventsColumn.SCOPE_KIND),
-                        scope_id=SqlNames.ident(LiveEventsColumn.SCOPE_ID),
-                    ),
-                    params,
-                    prepare=False,
-                )
-                removed = cur.rowcount
-                await conn.execute(
-                    sql.SQL(
-                        """
-                        delete from {commands}
-                        where 1=1
-                            and {scope_kind} = %(scope_kind)s
-                            and {scope_id} = %(scope_id)s
-                        """
-                    ).format(
-                        commands=self._table(LiveTable.COMMANDS),
-                        scope_kind=SqlNames.ident(LiveCommandsColumn.SCOPE_KIND),
-                        scope_id=SqlNames.ident(LiveCommandsColumn.SCOPE_ID),
-                    ),
-                    params,
-                    prepare=False,
-                )
-        except (psycopg.Error, PostgresError) as exc:
-            msg = f"message bus: purge of {scope.render()} failed: {exc}"
-            raise MessageBusError(msg) from exc
+        async with self._transaction(f"purge of {scope.render()}") as cur:
+            await cur.execute(events.text, events.params)
+            removed = cur.rowcount
+            await cur.execute(commands.text, commands.params)
 
         self._last_seen.pop(scope, None)
         return removed
@@ -860,113 +793,85 @@ class PgMessageBus(MessageBus):
         """Возвращает долю занятой очереди уведомлений Postgres: 0 — пусто, 1 —
         полна.
         """
-        pool = await self._pool()
-        try:
-            async with pool.cursor() as cur:
-                await cur.execute("select pg_notification_queue_usage()", prepare=False)
-                row = await cur.fetchone()
-        except (psycopg.Error, PostgresError) as exc:
-            msg = f"message bus: select pg_notification_queue_usage() failed: {exc}"
-            raise MessageBusError(msg) from exc
-
+        query = (
+            self._query().add("select pg_notification_queue_usage() as usage").build()
+        )
+        row = await self._row(query, "select pg_notification_queue_usage()")
         if row is None:
             return 0.0
 
-        return float(row[0])
+        return float(row["usage"])
 
     async def purge_idle(self, max_age_sec: int) -> int:
         """Удаляет события и команды областей, в которых ничего не происходило дольше
         max_age_sec; возвращает число удалённых событий.
         """
-        pool = await self._pool()
-        try:
-            async with pool.connection() as conn, conn.transaction():
-                cur = await conn.execute(
-                    sql.SQL(
-                        """
-                        delete from {events} e
-                        where not exists (
-                            select 1 from {events} f
-                            where 1=1
-                              and f.{scope_kind} = e.{scope_kind}
-                              and f.{scope_id} = e.{scope_id}
-                              and f.{at} + make_interval(secs => %(age)s) >= now()
-                         )
-                        """
-                    ).format(
-                        events=self._table(LiveTable.EVENTS),
-                        scope_kind=SqlNames.ident(LiveEventsColumn.SCOPE_KIND),
-                        scope_id=SqlNames.ident(LiveEventsColumn.SCOPE_ID),
-                        at=SqlNames.ident(LiveEventsColumn.AT),
-                    ),
-                    {"age": max_age_sec},
-                    prepare=False,
-                )
-                removed = cur.rowcount
-                await conn.execute(
-                    sql.SQL(
-                        """
-                        delete from {commands}
-                        where 1=1
-                        and {at} + make_interval(secs => %(age)s) < now()
-                        """
-                    ).format(
-                        commands=self._table(LiveTable.COMMANDS),
-                        at=SqlNames.ident(LiveCommandsColumn.AT),
-                    ),
-                    {"age": max_age_sec},
-                    prepare=False,
-                )
-        except (psycopg.Error, PostgresError) as exc:
-            msg = f"message bus: purge of scopes idle for {max_age_sec}s failed: {exc}"
-            raise MessageBusError(msg) from exc
+        events = (
+            self._query()
+            .add(
+                """
+                delete from {schema}.live_events e
+                where not exists (
+                    select 1 from {schema}.live_events f
+                    where 1=1
+                      and f.scope_kind = e.scope_kind
+                      and f.scope_id = e.scope_id
+                      and f.at + make_interval(secs => %(age)s) >= now()
+                 )
+                """,
+                age=max_age_sec,
+            )
+            .build()
+        )
+        commands = (
+            self._query()
+            .add(
+                """
+                delete from {schema}.live_commands
+                where 1=1
+                and at + make_interval(secs => %(age)s) < now()
+                """,
+                age=max_age_sec,
+            )
+            .build()
+        )
+
+        action = f"purge of scopes idle for {max_age_sec}s"
+        async with self._transaction(action) as cur:
+            await cur.execute(events.text, events.params)
+            removed = cur.rowcount
+            await cur.execute(commands.text, commands.params)
 
         return removed
 
     async def _rows_after(self, scope: Scope, after_seq: int) -> Sequence[DictRow]:
         scope_id = self._scope_id(scope)
-        pool = await self._pool()
-
-        try:
-            async with pool.dict_cursor() as cur:
-                await cur.execute(
-                    sql.SQL(
-                        """
-                        select
-                            {seq},
-                            {origin},
-                            {body},
-                            {at}
-                        from {events}
-                        where 1=1
-                            and {scope_kind} = %(scope_kind)s
-                            and {scope_id} = %(scope_id)s
-                            and {seq} > %(after)s
-                        order by {seq}
-                        """
-                    ).format(
-                        events=self._table(LiveTable.EVENTS),
-                        scope_kind=SqlNames.ident(LiveEventsColumn.SCOPE_KIND),
-                        scope_id=SqlNames.ident(LiveEventsColumn.SCOPE_ID),
-                        seq=SqlNames.ident(LiveEventsColumn.SEQ),
-                        origin=SqlNames.ident(LiveEventsColumn.ORIGIN),
-                        body=SqlNames.ident(LiveEventsColumn.BODY),
-                        at=SqlNames.ident(LiveEventsColumn.AT),
-                    ),
-                    {
-                        "scope_kind": scope.kind.value,
-                        "scope_id": scope_id,
-                        "after": after_seq,
-                    },
-                    prepare=False,
-                )
-                return await cur.fetchall()
-        except (psycopg.Error, PostgresError) as exc:
-            msg = (
-                f"message bus: read of {scope.render()} after seq {after_seq} "
-                f"failed: {exc}"
+        query = (
+            self._query()
+            .add(
+                """
+                select
+                    seq,
+                    origin,
+                    body,
+                    at
+                from {schema}.live_events
+                where 1=1
+                    and scope_kind = %(scope_kind)s
+                    and scope_id = %(scope_id)s
+                    and seq > %(after)s
+                order by seq
+                """,
+                scope_kind=scope.kind.value,
+                scope_id=scope_id,
+                after=after_seq,
             )
-            raise MessageBusError(msg) from exc
+            .build()
+        )
+
+        return await self._rows(
+            query, f"read of {scope.render()} after seq {after_seq}"
+        )
 
     def _to_envelope(self, scope: Scope, row: DictRow) -> Envelope:
         message = self._envelope.validate_python(row[LiveEventsColumn.BODY.value])
@@ -1032,31 +937,17 @@ class PgMessageBus(MessageBus):
         if not self._command_listeners:
             return
 
-        pool = await self._pool()
-        try:
-            async with pool.dict_cursor() as cur:
-                await cur.execute(
-                    sql.SQL(
-                        """
-                        select {body}, {at} from {commands} where {id} = %(id)s
-                        """
-                    ).format(
-                        commands=self._table(LiveTable.COMMANDS),
-                        body=SqlNames.ident(LiveCommandsColumn.BODY),
-                        at=SqlNames.ident(LiveCommandsColumn.AT),
-                        id=SqlNames.ident(LiveCommandsColumn.ID),
-                    ),
-                    {"id": pointer.seq},
-                    prepare=False,
-                )
-                row = await cur.fetchone()
-        except (psycopg.Error, PostgresError) as exc:
-            msg = (
-                f"message bus: read of command {pointer.seq} for "
-                f"{pointer.scope.render()} failed: {exc}"
+        query = (
+            self._query()
+            .add(
+                "select body, at from {schema}.live_commands where id = %(id)s",
+                id=pointer.seq,
             )
-            raise MessageBusError(msg) from exc
-
+            .build()
+        )
+        row = await self._row(
+            query, f"read of command {pointer.seq} for {pointer.scope.render()}"
+        )
         if row is None:
             return
 

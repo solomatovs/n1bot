@@ -28,7 +28,7 @@ import logging
 import secrets
 from collections.abc import Iterator, Mapping, Sequence
 from enum import StrEnum
-from typing import Any, ClassVar, LiteralString
+from typing import Any, ClassVar
 from uuid import UUID, uuid4
 
 from psycopg import sql
@@ -87,8 +87,14 @@ from boba.catalog_service.records import (
     UpgradeTarget,
     Version,
 )
-from boba.catalog_service.store_base import CatalogStoreBase, Cursor
-from boba.db.postgres import AsyncPostgresPool, SqlNames
+from boba.catalog_service.store_base import CatalogStoreBase
+from boba.db.postgres import (
+    Cursor,
+    PgQuery,
+    PgQueryBuilder,
+    PostgresPool,
+    PostgresSchema,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -242,8 +248,7 @@ class EntityRows:
         EntityKind.FLOW,
     )
 
-    @classmethod
-    def columns_of(cls, kind: EntityKind) -> tuple[StrEnum, ...]:
+    def columns_of(self, kind: EntityKind) -> tuple[StrEnum, ...]:
         """Колонки, которые пишет публикация."""
         if kind is EntityKind.GROUP:
             return tuple(GroupsColumn)
@@ -253,8 +258,7 @@ class EntityRows:
 
         return tuple(FlowsColumn)
 
-    @staticmethod
-    def row_of(process_id: UUID, entity: CatalogEntity) -> dict[str, Any]:
+    def row_of(self, process_id: UUID, entity: CatalogEntity) -> dict[str, Any]:
         """Параметры insert по сущности; jsonb и массивы в форме psycopg."""
         if isinstance(entity, Group):
             row = entity.model_dump()
@@ -292,8 +296,7 @@ class EntityRows:
             "description": entity.description,
         }
 
-    @staticmethod
-    def node_of(row: DictRow) -> Node:
+    def node_of(self, row: Mapping[str, Any]) -> Node:
         ref = ObjectRef(
             connection_id=row["connection_id"],
             kind=ObjectKind(row["object_kind"]),
@@ -313,8 +316,7 @@ class EntityRows:
             note=row["note"],
         )
 
-    @staticmethod
-    def flow_of(row: DictRow) -> Flow:
+    def flow_of(self, row: Mapping[str, Any]) -> Flow:
         """Поток из строки flows; пары колонок в форме JSON разбирает модель."""
         links: list[ColumnLink] = []
         for payload in row["columns"]:
@@ -334,7 +336,8 @@ class ProcessStore(CatalogStoreBase):
 
     Создаётся провайдером рантайма по секции [catalog] и живёт под
     CatalogService, который проверяет права и шлёт события; сам store прав не
-    знает.
+    знает. Списки колонок строк идут в запросы именами {draft_columns},
+    {version_columns} и {share_columns}.
     """
 
     PUBLISH_LOCK: ClassVar[str] = "catalog.publish"
@@ -352,63 +355,42 @@ class ProcessStore(CatalogStoreBase):
         CatalogTable.UPGRADE_RUNS: UpgradeRunsColumn,
     }
 
-    TABLES: ClassVar[type[StrEnum]] = CatalogTable
-    PREFIXED: ClassVar[Mapping[str, type[StrEnum]]] = {
-        "p": ProcessesColumn,
-        "g": GroupsColumn,
-        "n": NodesColumn,
-        "f": FlowsColumn,
-        "v": VersionsColumn,
-        "dr": DraftsColumn,
-        "op": DraftOpsColumn,
-        "sh": SharesColumn,
-        "up": UpgradesColumn,
-        "ur": UpgradeRunsColumn,
-    }
-    COLUMN_LISTS: ClassVar[Mapping[str, LiteralString]] = {
-        "draft_columns": (
-            "{dr_id}, {dr_process_id}, {dr_name}, {dr_base_version}, {dr_status}, "
-            "{dr_pins}, {dr_created_by}, {dr_created_at}"
-        ),
-        "version_columns": (
-            "{v_process_id}, {v_number}, {v_operations}, {v_author}, {v_pins}, "
-            "{v_published_at}"
-        ),
-        "share_columns": (
-            "{sh_token}, {sh_process_id}, {sh_created_by}, {sh_created_at}, "
-            "{sh_revoked_at}"
-        ),
-    }
-
-    def __init__(
-        self, cfg: CatalogConfig, pool: AsyncPostgresPool | None = None
-    ) -> None:
+    def __init__(self, cfg: CatalogConfig, pool: PostgresPool | None = None) -> None:
         super().__init__(cfg, cfg.app_schema, pool)
+        self._entities = EntityRows()
+
+    def _query(self) -> PgQueryBuilder:
+        return PgQueryBuilder(
+            schema=self._schema.ident,
+            draft_columns=self._column_list(DraftsColumn),
+            version_columns=self._column_list(VersionsColumn),
+            share_columns=self._column_list(SharesColumn),
+        )
 
     async def setup(self) -> None:
         """Схема приложения и таблицы; повтор безвреден. Таблицы выпуска, где
         процессы жили в схеме домена, переезжают на месте; иная раскладка —
         отказ с расхождением колонок."""
-        async with self._guarded("setup"):
-            await self._apply_ddl(())
-            await self._move_from_domain()
-            await self._apply_ddl(self._ddl())
-            await self._check_layouts(self._layouts())
+        await self._apply_ddl(())
+        await self._move_from_domain()
+        await self._apply_ddl(self._ddl())
+        await self._check_layouts(self._layouts())
 
-        logger.info("catalog processes ready: %s", self._schema)
+        logger.info("catalog processes ready: %s", self.schema)
 
     async def _move_from_domain(self) -> None:
         """Таблицы процессов, оставшиеся в схеме домена, — в схему приложения;
         пустые дубли в схеме домена сносятся."""
         domain = self._cfg.db_schema
-        if domain == self._schema:
+        if domain == self.schema:
             return
 
+        source = PostgresSchema(domain)
         async with self._transaction(
             "move process tables from the domain schema"
         ) as cur:
             for table in CatalogTable:
-                await self._move_table(cur, domain, self._schema, table.value)
+                await source.move_table(cur.connection, table.value, self._schema)
 
     def _layouts(self) -> dict[str, list[str]]:
         layouts: dict[str, list[str]] = {}
@@ -421,195 +403,223 @@ class ProcessStore(CatalogStoreBase):
 
         return layouts
 
-    def _ddl(self) -> tuple[sql.Composed, ...]:
+    def _ddl(self) -> tuple[PgQuery, ...]:
         return (
-            self._sql(
+            self._query()
+            .add(
                 """
-                create table if not exists {processes} (
-                    {p_id}          uuid primary key,
-                    {p_name}        text not null unique,
-                    {p_description} text not null default '',
-                    {p_owner_id}    uuid not null,
-                    {p_created_at}  timestamptz not null default now()
+                create table if not exists {schema}.processes (
+                    id          uuid primary key,
+                    name        text not null unique,
+                    description text not null default '',
+                    owner_id    uuid not null,
+                    created_at  timestamptz not null default now()
                 )
                 """
-            ),
-            self._sql(
+            )
+            .build(),
+            self._query()
+            .add(
                 """
-                create table if not exists {groups} (
-                    {g_id}          uuid primary key,
-                    {g_process_id}  uuid not null references {processes} ({p_id})
-                                    on delete cascade,
-                    {g_name}        text not null,
-                    unique ({g_process_id}, {g_name}) deferrable initially deferred
+                create table if not exists {schema}.groups (
+                    id          uuid primary key,
+                    process_id  uuid not null references {schema}.processes (id)
+                                on delete cascade,
+                    name        text not null,
+                    unique (process_id, name) deferrable initially deferred
                 )
                 """
-            ),
-            self._sql(
+            )
+            .build(),
+            self._query()
+            .add(
                 """
-                create table if not exists {nodes} (
-                    {n_id}            uuid primary key,
-                    {n_process_id}    uuid not null references {processes} ({p_id})
-                                      on delete cascade,
-                    {n_group_id}      uuid null references {groups} ({g_id})
-                                      deferrable initially deferred,
-                    {n_x}             double precision null,
-                    {n_y}             double precision null,
-                    {n_width}         double precision null,
-                    {n_connection_id} uuid not null,
-                    {n_object_kind}   text not null,
-                    {n_path}          text[] not null,
-                    {n_alias}         text null,
-                    {n_note}          text not null default '',
-                    unique ({n_process_id}, {n_connection_id}, {n_object_kind},
-                            {n_path})
+                create table if not exists {schema}.nodes (
+                    id            uuid primary key,
+                    process_id    uuid not null references {schema}.processes (id)
+                                  on delete cascade,
+                    group_id      uuid null references {schema}.groups (id)
+                                  deferrable initially deferred,
+                    x             double precision null,
+                    y             double precision null,
+                    width         double precision null,
+                    connection_id uuid not null,
+                    object_kind   text not null,
+                    path          text[] not null,
+                    alias         text null,
+                    note          text not null default '',
+                    unique (process_id, connection_id, object_kind, path)
                         deferrable initially deferred
                 )
                 """
-            ),
-            self._sql(
+            )
+            .build(),
+            self._query()
+            .add(
                 """
-                create table if not exists {flows} (
-                    {f_id}           uuid primary key,
-                    {f_process_id}   uuid not null references {processes} ({p_id})
-                                     on delete cascade,
-                    {f_from_node_id} uuid not null references {nodes} ({n_id})
-                                     deferrable initially deferred,
-                    {f_to_node_id}   uuid not null references {nodes} ({n_id})
-                                     deferrable initially deferred,
-                    {f_columns}      jsonb not null default '[]'::jsonb,
-                    {f_description}  text not null default ''
+                create table if not exists {schema}.flows (
+                    id           uuid primary key,
+                    process_id   uuid not null references {schema}.processes (id)
+                                 on delete cascade,
+                    from_node_id uuid not null references {schema}.nodes (id)
+                                 deferrable initially deferred,
+                    to_node_id   uuid not null references {schema}.nodes (id)
+                                 deferrable initially deferred,
+                    columns      jsonb not null default '[]'::jsonb,
+                    description  text not null default ''
                 )
                 """
-            ),
-            self._sql(
+            )
+            .build(),
+            self._query()
+            .add(
                 """
-                create table if not exists {process_versions} (
-                    {v_process_id}   uuid not null references {processes} ({p_id})
-                                     on delete cascade,
-                    {v_number}       integer not null,
-                    {v_operations}   jsonb not null,
-                    {v_author}       jsonb not null,
-                    {v_pins}         jsonb not null default '{{}}'::jsonb,
-                    {v_published_at} timestamptz not null default now(),
-                    primary key ({v_process_id}, {v_number})
+                create table if not exists {schema}.process_versions (
+                    process_id   uuid not null references {schema}.processes (id)
+                                 on delete cascade,
+                    number       integer not null,
+                    operations   jsonb not null,
+                    author       jsonb not null,
+                    pins         jsonb not null default '{{}}'::jsonb,
+                    published_at timestamptz not null default now(),
+                    primary key (process_id, number)
                 )
                 """
-            ),
-            self._sql(
+            )
+            .build(),
+            self._query()
+            .add(
                 """
-                create table if not exists {drafts} (
-                    {dr_id}           uuid primary key,
-                    {dr_process_id}   uuid null references {processes} ({p_id})
-                                      on delete cascade,
-                    {dr_name}         text not null,
-                    {dr_base_version} integer not null,
-                    {dr_status}       text not null,
-                    {dr_pins}         jsonb not null default '{{}}'::jsonb,
-                    {dr_created_by}   uuid not null,
-                    {dr_created_at}   timestamptz not null default now()
+                create table if not exists {schema}.drafts (
+                    id           uuid primary key,
+                    process_id   uuid null references {schema}.processes (id)
+                                 on delete cascade,
+                    name         text not null,
+                    base_version integer not null,
+                    status       text not null,
+                    pins         jsonb not null default '{{}}'::jsonb,
+                    created_by   uuid not null,
+                    created_at   timestamptz not null default now()
                 )
                 """
-            ),
-            self._sql(
+            )
+            .build(),
+            self._query()
+            .add(
                 """
-                create table if not exists {draft_ops} (
-                    {op_draft_id}   uuid not null references {drafts} ({dr_id})
-                                    on delete cascade,
-                    {op_seq}        integer not null,
-                    {op_author}     jsonb not null,
-                    {op_operations} jsonb not null,
-                    {op_created_at} timestamptz not null default now(),
-                    primary key ({op_draft_id}, {op_seq})
+                create table if not exists {schema}.draft_ops (
+                    draft_id   uuid not null references {schema}.drafts (id)
+                               on delete cascade,
+                    seq        integer not null,
+                    author     jsonb not null,
+                    operations jsonb not null,
+                    created_at timestamptz not null default now(),
+                    primary key (draft_id, seq)
                 )
                 """
-            ),
-            self._sql(
+            )
+            .build(),
+            self._query()
+            .add(
                 """
-                create table if not exists {shares} (
-                    {sh_token}      text primary key,
-                    {sh_process_id} uuid not null references {processes} ({p_id})
-                                    on delete cascade,
-                    {sh_created_by} uuid not null,
-                    {sh_created_at} timestamptz not null default now(),
-                    {sh_revoked_at} timestamptz null
+                create table if not exists {schema}.shares (
+                    token      text primary key,
+                    process_id uuid not null references {schema}.processes (id)
+                               on delete cascade,
+                    created_by uuid not null,
+                    created_at timestamptz not null default now(),
+                    revoked_at timestamptz null
                 )
                 """
-            ),
-            self._sql(
+            )
+            .build(),
+            self._query()
+            .add(
                 """
-                create table if not exists {process_upgrade_runs} (
-                    {ur_id}          uuid primary key,
-                    {ur_target}      text not null,
-                    {ur_process_id}  uuid null references {processes} ({p_id})
-                                     on delete cascade,
-                    {ur_draft_id}    uuid null references {drafts} ({dr_id})
-                                     on delete cascade,
-                    {ur_started_by}  uuid not null,
-                    {ur_started_at}  timestamptz not null default now(),
-                    {ur_finished_at} timestamptz null,
-                    {ur_status}      text not null,
-                    {ur_total}       integer not null default 0,
-                    {ur_done}        integer not null default 0,
-                    {ur_moved}       integer not null default 0,
-                    {ur_blocked}     integer not null default 0,
-                    {ur_error}       text null
+                create table if not exists {schema}.process_upgrade_runs (
+                    id          uuid primary key,
+                    target      text not null,
+                    process_id  uuid null references {schema}.processes (id)
+                                on delete cascade,
+                    draft_id    uuid null references {schema}.drafts (id)
+                                on delete cascade,
+                    started_by  uuid not null,
+                    started_at  timestamptz not null default now(),
+                    finished_at timestamptz null,
+                    status      text not null,
+                    total       integer not null default 0,
+                    done        integer not null default 0,
+                    moved       integer not null default 0,
+                    blocked     integer not null default 0,
+                    error       text null
                 )
                 """
-            ),
-            self._sql(
+            )
+            .build(),
+            self._query()
+            .add(
                 """
-                create table if not exists {process_upgrades} (
-                    {up_id}          uuid primary key,
-                    {up_run_id}      uuid not null references {process_upgrade_runs}
-                                     ({ur_id}) on delete cascade,
-                    {up_process_id}  uuid null references {processes} ({p_id})
-                                     on delete cascade,
-                    {up_draft_id}    uuid null references {drafts} ({dr_id})
-                                     on delete cascade,
-                    {up_status}      text not null,
-                    {up_pins_before} jsonb not null,
-                    {up_pins_after}  jsonb not null,
-                    {up_problems}    jsonb not null,
-                    {up_version}     integer null,
-                    {up_author}      jsonb not null,
-                    {up_at}          timestamptz not null default now()
+                create table if not exists {schema}.process_upgrades (
+                    id          uuid primary key,
+                    run_id      uuid not null
+                                references {schema}.process_upgrade_runs (id)
+                                on delete cascade,
+                    process_id  uuid null references {schema}.processes (id)
+                                on delete cascade,
+                    draft_id    uuid null references {schema}.drafts (id)
+                                on delete cascade,
+                    status      text not null,
+                    pins_before jsonb not null,
+                    pins_after  jsonb not null,
+                    problems    jsonb not null,
+                    version     integer null,
+                    author      jsonb not null,
+                    at          timestamptz not null default now()
                 )
                 """
-            ),
-            self._sql(
+            )
+            .build(),
+            self._query()
+            .add(
                 """
                 create index if not exists process_upgrades_process_at
-                    on {process_upgrades} ({up_process_id}, {up_at} desc)
+                    on {schema}.process_upgrades (process_id, at desc)
                 """
-            ),
-            self._sql(
+            )
+            .build(),
+            self._query()
+            .add(
                 """
                 create index if not exists process_upgrades_draft_at
-                    on {process_upgrades} ({up_draft_id}, {up_at} desc)
+                    on {schema}.process_upgrades (draft_id, at desc)
                 """
-            ),
+            )
+            .build(),
             *self._migrations(),
         )
 
-    def _migrations(self) -> tuple[sql.Composed, ...]:
+    def _migrations(self) -> tuple[PgQuery, ...]:
         """Перевод таблиц прежних выпусков на месте: ширина карточки у узла,
         запуск у итога upgrade (итоги без запуска остаются от выпуска, где
         upgrade был синхронным вызовом — им запуск не нужен)."""
         return (
-            self._sql(
+            self._query()
+            .add(
                 """
-                alter table {nodes}
-                    add column if not exists {n_width} double precision null
+                alter table {schema}.nodes
+                    add column if not exists width double precision null
                 """
-            ),
-            self._sql(
+            )
+            .build(),
+            self._query()
+            .add(
                 """
-                alter table {process_upgrades}
-                    add column if not exists {up_run_id} uuid null
-                        references {process_upgrade_runs} ({ur_id}) on delete cascade
+                alter table {schema}.process_upgrades
+                    add column if not exists run_id uuid null
+                        references {schema}.process_upgrade_runs (id) on delete cascade
                 """
-            ),
+            )
+            .build(),
         )
 
     # --- процессы ---
@@ -621,24 +631,26 @@ class ProcessStore(CatalogStoreBase):
         ProcessNameTakenError — имя занято.
         """
         process_id = uuid4()
+        insert = (
+            self._query()
+            .add(
+                """
+                insert into {schema}.processes
+                    (id, name, description, owner_id)
+                values
+                    (%(id)s, %(name)s, %(description)s, %(owner_id)s)
+                """,
+                id=process_id,
+                name=spec.name,
+                description=spec.description,
+                owner_id=owner_id,
+            )
+            .build()
+        )
+
         async with self._transaction(f"create process {spec.name!r}") as cur:
             try:
-                await cur.execute(
-                    self._sql(
-                        """
-                        insert into {processes}
-                            ({p_id}, {p_name}, {p_description}, {p_owner_id})
-                        values
-                            (%(id)s, %(name)s, %(description)s, %(owner_id)s)
-                        """
-                    ),
-                    {
-                        "id": process_id,
-                        "name": spec.name,
-                        "description": spec.description,
-                        "owner_id": owner_id,
-                    },
-                )
+                await cur.execute(insert.text, insert.params)
             except UniqueViolation as exc:
                 raise ProcessNameTakenError(spec.name) from exc
 
@@ -649,9 +661,8 @@ class ProcessStore(CatalogStoreBase):
             return await self._process(cur, process_id)
 
     async def list_processes(self) -> Sequence[Process]:
-        async with self._transaction("list processes") as cur:
-            await cur.execute(self._process_select(" order by p.{p_name}, p.{p_id}"))
-            rows = await cur.fetchall()
+        query = self._process_query().add("order by p.name, p.id").build()
+        rows = await self._rows(query, "list processes")
 
         return self._parse_all(Process, rows)
 
@@ -661,23 +672,25 @@ class ProcessStore(CatalogStoreBase):
         Ошибки:
         ProcessNameTakenError — имя занято другим процессом.
         """
+        update = (
+            self._query()
+            .add(
+                """
+                update {schema}.processes
+                set name = %(name)s, description = %(description)s
+                where id = %(id)s
+                """,
+                id=process_id,
+                name=spec.name,
+                description=spec.description,
+            )
+            .build()
+        )
+
         async with self._transaction(f"update process {process_id}") as cur:
             await self._process(cur, process_id)
             try:
-                await cur.execute(
-                    self._sql(
-                        """
-                        update {processes}
-                        set {p_name} = %(name)s, {p_description} = %(description)s
-                        where {p_id} = %(id)s
-                        """
-                    ),
-                    {
-                        "id": process_id,
-                        "name": spec.name,
-                        "description": spec.description,
-                    },
-                )
+                await cur.execute(update.text, update.params)
             except UniqueViolation as exc:
                 raise ProcessNameTakenError(spec.name) from exc
 
@@ -685,36 +698,40 @@ class ProcessStore(CatalogStoreBase):
 
     async def delete_process(self, process_id: UUID) -> bool:
         """Процесс со всем содержимым; False — процесса не было."""
-        async with self._transaction(f"delete process {process_id}") as cur:
-            await cur.execute(
-                self._sql("delete from {processes} where {p_id} = %(id)s"),
-                {"id": process_id},
-            )
-            return cur.rowcount > 0
+        query = (
+            self._query()
+            .add("delete from {schema}.processes where id = %(id)s", id=process_id)
+            .build()
+        )
+        removed = await self._execute(query, f"delete process {process_id}")
+
+        return removed > 0
 
     async def usage_of_connection(self, connection_id: UUID) -> Sequence[NodeUsage]:
         """Опубликованные узлы над объектами подключения по процессам."""
-        query = self._sql(
-            """
-            select
-                p.{p_id} as process_id,
-                p.{p_name} as process_name,
-                count(*) as nodes
-            from
-                {nodes} n
-                join {processes} p on p.{p_id} = n.{n_process_id}
-            where
-                n.{n_connection_id} = %(connection_id)s
-            group by
-                p.{p_id}, p.{p_name}
-            order by
-                p.{p_name}
-            """
+        query = (
+            self._query()
+            .add(
+                """
+                select
+                    p.id as process_id,
+                    p.name as process_name,
+                    count(*) as nodes
+                from
+                    {schema}.nodes n
+                    join {schema}.processes p on p.id = n.process_id
+                where
+                    n.connection_id = %(connection_id)s
+                group by
+                    p.id, p.name
+                order by
+                    p.name
+                """,
+                connection_id=connection_id,
+            )
+            .build()
         )
-
-        async with self._transaction(f"usage of connection {connection_id}") as cur:
-            await cur.execute(query, {"connection_id": connection_id})
-            rows = await cur.fetchall()
+        rows = await self._rows(query, f"usage of connection {connection_id}")
 
         return self._parse_all(NodeUsage, rows)
 
@@ -732,22 +749,27 @@ class ProcessStore(CatalogStoreBase):
             return await self._current_version(cur, process_id)
 
     async def versions(self, process_id: UUID) -> Sequence[Version]:
-        query = self._sql(
-            """
-            select
-                {version_columns}
-            from
-                {process_versions}
-            where
-                {v_process_id} = %(process_id)s
-            order by
-                {v_number}
-            """
+        query = (
+            self._query()
+            .add(
+                """
+                select
+                    {version_columns}
+                from
+                    {schema}.process_versions
+                where
+                    process_id = %(process_id)s
+                order by
+                    number
+                """,
+                process_id=process_id,
+            )
+            .build()
         )
 
         async with self._transaction(f"versions of process {process_id}") as cur:
             await self._process(cur, process_id)
-            await cur.execute(query, {"process_id": process_id})
+            await cur.execute(query.text, query.params)
             rows = await cur.fetchall()
 
         return self._parse_all(Version, rows)
@@ -771,47 +793,48 @@ class ProcessStore(CatalogStoreBase):
         """Черновик над текущей опубликованной версией процесса; без процесса —
         черновик нового процесса над пустым снимком, имя станет именем процесса
         при публикации."""
-        query = self._sql(
-            """
-            insert into {drafts} (
-                {dr_id},
-                {dr_process_id},
-                {dr_name},
-                {dr_base_version},
-                {dr_status},
-                {dr_pins},
-                {dr_created_by}
-            )
-            values (
-                %(id)s,
-                %(process_id)s,
-                %(name)s,
-                %(base_version)s,
-                %(status)s,
-                %(pins)s,
-                %(created_by)s
-            )
-            returning
-                {draft_columns}
-            """
-        )
-
         async with self._transaction(f"create draft {name!r}") as cur:
             current = 0
             if process_id is not None:
                 await self._process(cur, process_id)
                 current = await self._current_version(cur, process_id)
 
-            params = {
-                "id": uuid4(),
-                "process_id": process_id,
-                "name": name,
-                "base_version": current,
-                "status": DraftStatus.OPEN.value,
-                "pins": Jsonb(self._pins_json(pins)),
-                "created_by": created_by,
-            }
-            await cur.execute(query, params)
+            insert = (
+                self._query()
+                .add(
+                    """
+                    insert into {schema}.drafts (
+                        id,
+                        process_id,
+                        name,
+                        base_version,
+                        status,
+                        pins,
+                        created_by
+                    )
+                    values (
+                        %(id)s,
+                        %(process_id)s,
+                        %(name)s,
+                        %(base_version)s,
+                        %(status)s,
+                        %(pins)s,
+                        %(created_by)s
+                    )
+                    returning
+                        {draft_columns}
+                    """,
+                    id=uuid4(),
+                    process_id=process_id,
+                    name=name,
+                    base_version=current,
+                    status=DraftStatus.OPEN.value,
+                    pins=Jsonb(self._pins_json(pins)),
+                    created_by=created_by,
+                )
+                .build()
+            )
+            await cur.execute(insert.text, insert.params)
             row = self._returning(
                 await cur.fetchone(), f"insert into drafts for draft {name!r}"
             )
@@ -822,53 +845,57 @@ class ProcessStore(CatalogStoreBase):
         async with self._transaction(f"get draft {draft_id}") as cur:
             return await self._draft(cur, draft_id, lock=False)
 
-    DRAFT_SELECT: ClassVar[LiteralString] = "select {draft_columns} from {drafts}"
-
     async def open_drafts(self) -> Sequence[Draft]:
         """Открытые черновики всех процессов: для проверки, где стоит подключение."""
-        return await self._drafts(
-            "list open drafts",
-            " where {dr_status} = %(status)s",
-            {"status": DraftStatus.OPEN.value},
+        query = (
+            self._draft_query()
+            .add("where status = %(status)s", status=DraftStatus.OPEN.value)
+            .add("order by created_at, id")
+            .build()
         )
+        rows = await self._rows(query, "list open drafts")
+
+        return self._parse_all(Draft, rows)
 
     async def drafts_of_author(self, created_by: UUID) -> Sequence[Draft]:
         """Открытые черновики автора по всем процессам и без процесса: для
         плоского списка панели."""
-        return await self._drafts(
-            f"list drafts of {created_by}",
-            " where {dr_status} = %(status)s and {dr_created_by} = %(created_by)s",
-            {"status": DraftStatus.OPEN.value, "created_by": created_by},
+        query = (
+            self._draft_query()
+            .add(
+                "where status = %(status)s and created_by = %(created_by)s",
+                status=DraftStatus.OPEN.value,
+                created_by=created_by,
+            )
+            .add("order by created_at, id")
+            .build()
         )
-
-    async def _drafts(
-        self, action: str, tail: LiteralString, params: Mapping[str, Any]
-    ) -> Sequence[Draft]:
-        """Черновики по условию tail в порядке создания."""
-        order: LiteralString = " order by {dr_created_at}, {dr_id}"
-        query = self._sql(self.DRAFT_SELECT + tail + order)
-        async with self._transaction(action) as cur:
-            await cur.execute(query, params)
-            rows = await cur.fetchall()
+        rows = await self._rows(query, f"list drafts of {created_by}")
 
         return self._parse_all(Draft, rows)
 
     async def rename_draft(self, draft_id: UUID, name: str) -> Draft:
         """Новое имя открытого черновика."""
-        query = self._sql(
-            """
-            update {drafts}
-            set {dr_name} = %(name)s
-            where {dr_id} = %(draft_id)s
-            returning
-                {draft_columns}
-            """
+        update = (
+            self._query()
+            .add(
+                """
+                update {schema}.drafts
+                set name = %(name)s
+                where id = %(draft_id)s
+                returning
+                    {draft_columns}
+                """,
+                draft_id=draft_id,
+                name=name,
+            )
+            .build()
         )
 
         async with self._transaction(f"rename draft {draft_id}") as cur:
             draft = await self._draft(cur, draft_id, lock=True)
             self._require_open(draft)
-            await cur.execute(query, {"draft_id": draft_id, "name": name})
+            await cur.execute(update.text, update.params)
             row = self._returning(
                 await cur.fetchone(),
                 f"update of drafts for draft {draft_id} while renaming it to {name!r}",
@@ -921,25 +948,6 @@ class ProcessStore(CatalogStoreBase):
         DraftConflictError — expected_seq отстал.
         CatalogOpError — порция не применима к снимку черновика.
         """
-        insert = self._sql(
-            """
-            insert into {draft_ops} (
-                {op_draft_id},
-                {op_seq},
-                {op_author},
-                {op_operations}
-            )
-            values (
-                %(draft_id)s,
-                %(seq)s,
-                %(author)s,
-                %(operations)s
-            )
-            returning
-                {op_created_at}
-            """
-        )
-
         async with self._transaction(f"append ops to draft {draft_id}") as cur:
             draft = await self._draft(cur, draft_id, lock=True)
             self._require_open(draft)
@@ -954,13 +962,33 @@ class ProcessStore(CatalogStoreBase):
             ops.apply(state, resolver)
 
             seq = current_seq + 1
-            params = {
-                "draft_id": draft_id,
-                "seq": seq,
-                "author": Jsonb(author.model_dump(mode="json")),
-                "operations": Jsonb(ops.model_dump(mode="json")),
-            }
-            await cur.execute(insert, params)
+            insert = (
+                self._query()
+                .add(
+                    """
+                    insert into {schema}.draft_ops (
+                        draft_id,
+                        seq,
+                        author,
+                        operations
+                    )
+                    values (
+                        %(draft_id)s,
+                        %(seq)s,
+                        %(author)s,
+                        %(operations)s
+                    )
+                    returning
+                        created_at
+                    """,
+                    draft_id=draft_id,
+                    seq=seq,
+                    author=Jsonb(author.model_dump(mode="json")),
+                    operations=Jsonb(ops.model_dump(mode="json")),
+                )
+                .build()
+            )
+            await cur.execute(insert.text, insert.params)
             row = self._returning(
                 await cur.fetchone(),
                 f"insert into draft_ops for draft {draft_id} seq {seq}",
@@ -983,7 +1011,6 @@ class ProcessStore(CatalogStoreBase):
         DraftStaleError — базовая версия черновика отстала, нужен rebase.
         ProcessNameTakenError — имя черновика нового процесса уже занято.
         """
-
         async with self._transaction(f"publish draft {draft_id}") as cur:
             draft = await self._draft(cur, draft_id, lock=True)
             self._require_open(draft)
@@ -991,7 +1018,7 @@ class ProcessStore(CatalogStoreBase):
             if process_id is None:
                 process_id = await self._attach_process(cur, draft)
 
-            await self._advisory_lock(cur, self.PUBLISH_LOCK, process_id)
+            await self._lock(cur, self.PUBLISH_LOCK, process_id)
 
             current = await self._current_version(cur, process_id)
             if draft.base_version != current:
@@ -1025,7 +1052,7 @@ class ProcessStore(CatalogStoreBase):
         """
         async with self._transaction(f"publish pins of process {process_id}") as cur:
             await self._process(cur, process_id)
-            await self._advisory_lock(cur, self.PUBLISH_LOCK, process_id)
+            await self._lock(cur, self.PUBLISH_LOCK, process_id)
             number = await self._current_version(cur, process_id) + 1
             return await self._insert_version(
                 cur, process_id, number, OperationList(root=()), author, pins
@@ -1041,26 +1068,27 @@ class ProcessStore(CatalogStoreBase):
         pins: Mapping[UUID, int],
     ) -> Version:
         """Строка новой версии процесса в открытой транзакции."""
-        await cur.execute(
-            self._sql(
+        insert = (
+            self._query()
+            .add(
                 """
-                insert into {process_versions} (
-                    {v_process_id}, {v_number}, {v_operations}, {v_author}, {v_pins}
+                insert into {schema}.process_versions (
+                    process_id, number, operations, author, pins
                 )
                 values (
                     %(process_id)s, %(number)s, %(operations)s, %(author)s, %(pins)s
                 )
                 returning {version_columns}
-                """
-            ),
-            {
-                "process_id": process_id,
-                "number": number,
-                "operations": Jsonb(operations.model_dump(mode="json")),
-                "author": Jsonb(author.model_dump(mode="json")),
-                "pins": Jsonb(self._pins_json(pins)),
-            },
+                """,
+                process_id=process_id,
+                number=number,
+                operations=Jsonb(operations.model_dump(mode="json")),
+                author=Jsonb(author.model_dump(mode="json")),
+                pins=Jsonb(self._pins_json(pins)),
+            )
+            .build()
         )
+        await cur.execute(insert.text, insert.params)
         row = self._returning(
             await cur.fetchone(), f"insert of version {number} of process {process_id}"
         )
@@ -1070,108 +1098,120 @@ class ProcessStore(CatalogStoreBase):
     async def record_upgrade(self, upgrade: Upgrade) -> Upgrade:
         """Итог upgrade в историю: последняя запись по процессу (черновику)
         показывается в списке и на странице."""
-        query = self._sql(
-            """
-            insert into {process_upgrades} (
-                {up_id},
-                {up_run_id},
-                {up_process_id},
-                {up_draft_id},
-                {up_status},
-                {up_pins_before},
-                {up_pins_after},
-                {up_problems},
-                {up_version},
-                {up_author}
-            )
-            values (
-                %(id)s,
-                %(run_id)s,
-                %(process_id)s,
-                %(draft_id)s,
-                %(status)s,
-                %(pins_before)s,
-                %(pins_after)s,
-                %(problems)s,
-                %(version)s,
-                %(author)s
-            )
-            returning
-                {up_at}
-            """
-        )
         problems: list[dict[str, Any]] = []
         for problem in upgrade.problems:
             problems.append(problem.model_dump(mode="json"))
 
-        params = {
-            "id": upgrade.id,
-            "run_id": upgrade.run_id,
-            "process_id": upgrade.process_id,
-            "draft_id": upgrade.draft_id,
-            "status": upgrade.status.value,
-            "pins_before": Jsonb(self._pins_json(upgrade.pins_before)),
-            "pins_after": Jsonb(self._pins_json(upgrade.pins_after)),
-            "problems": Jsonb(problems),
-            "version": upgrade.version,
-            "author": Jsonb(upgrade.author.model_dump(mode="json")),
-        }
-        async with self._transaction(f"record upgrade {upgrade.id}") as cur:
-            await cur.execute(query, params)
-            row = self._returning(
-                await cur.fetchone(),
-                f"insert into process_upgrades for upgrade {upgrade.id}",
+        insert = (
+            self._query()
+            .add(
+                """
+                insert into {schema}.process_upgrades (
+                    id,
+                    run_id,
+                    process_id,
+                    draft_id,
+                    status,
+                    pins_before,
+                    pins_after,
+                    problems,
+                    version,
+                    author
+                )
+                values (
+                    %(id)s,
+                    %(run_id)s,
+                    %(process_id)s,
+                    %(draft_id)s,
+                    %(status)s,
+                    %(pins_before)s,
+                    %(pins_after)s,
+                    %(problems)s,
+                    %(version)s,
+                    %(author)s
+                )
+                returning
+                    at
+                """,
+                id=upgrade.id,
+                run_id=upgrade.run_id,
+                process_id=upgrade.process_id,
+                draft_id=upgrade.draft_id,
+                status=upgrade.status.value,
+                pins_before=Jsonb(self._pins_json(upgrade.pins_before)),
+                pins_after=Jsonb(self._pins_json(upgrade.pins_after)),
+                problems=Jsonb(problems),
+                version=upgrade.version,
+                author=Jsonb(upgrade.author.model_dump(mode="json")),
             )
+            .build()
+        )
+        row = self._returning(
+            await self._row(insert, f"record upgrade {upgrade.id}"),
+            f"insert into process_upgrades for upgrade {upgrade.id}",
+        )
 
         return upgrade.model_copy(update={"at": row["at"]})
 
     async def last_upgrade_of_process(self, process_id: UUID) -> Upgrade | None:
-        tail: LiteralString = """
-            where {up_process_id} = %(id)s and {up_draft_id} is null
-            order by {up_at} desc limit 1
-        """
-        return await self._last_upgrade(tail, process_id)
+        query = (
+            self._upgrade_query()
+            .add(
+                """
+                where process_id = %(id)s and draft_id is null
+                order by at desc limit 1
+                """,
+                id=process_id,
+            )
+            .build()
+        )
+
+        return await self._last_upgrade(query, process_id)
 
     async def last_upgrade_of_draft(self, draft_id: UUID) -> Upgrade | None:
-        tail: LiteralString = """
-            where {up_draft_id} = %(id)s order by {up_at} desc limit 1
-        """
-        return await self._last_upgrade(tail, draft_id)
+        query = (
+            self._upgrade_query()
+            .add("where draft_id = %(id)s order by at desc limit 1", id=draft_id)
+            .build()
+        )
 
-    UPGRADE_SELECT: ClassVar[LiteralString] = """
-        select
-            {up_id},
-            {up_run_id},
-            {up_process_id},
-            {up_draft_id},
-            {up_status},
-            {up_pins_before},
-            {up_pins_after},
-            {up_problems},
-            {up_version},
-            {up_author},
-            {up_at}
-        from
-            {process_upgrades}
-        """
+        return await self._last_upgrade(query, draft_id)
 
-    async def _last_upgrade(self, tail: LiteralString, target: UUID) -> Upgrade | None:
-        query = sql.Composed([self._sql(self.UPGRADE_SELECT), self._sql(tail)])
-        async with self._transaction(f"last upgrade of {target}") as cur:
-            await cur.execute(query, {"id": target})
-            row = await cur.fetchone()
+    def _upgrade_query(self) -> PgQueryBuilder:
+        """Строки итогов upgrade; условие вызывающий добавляет следующим куском."""
+        return self._query().add(
+            """
+            select
+                id,
+                run_id,
+                process_id,
+                draft_id,
+                status,
+                pins_before,
+                pins_after,
+                problems,
+                version,
+                author,
+                at
+            from
+                {schema}.process_upgrades
+            """
+        )
 
+    async def _last_upgrade(self, query: PgQuery, target: UUID) -> Upgrade | None:
+        row = await self._row(query, f"last upgrade of {target}")
         if row is None:
             return None
 
         return self._parse(Upgrade, row)
 
     async def upgrades_of_run(self, run_id: UUID) -> Sequence[Upgrade]:
-        tail: LiteralString = " where {up_run_id} = %(id)s order by {up_at}"
-        query = sql.Composed([self._sql(self.UPGRADE_SELECT), self._sql(tail)])
-        async with self._transaction(f"upgrades of run {run_id}") as cur:
-            await cur.execute(query, {"id": run_id})
-            rows = await cur.fetchall()
+        query = (
+            self._upgrade_query()
+            .add("where run_id = %(id)s order by at", id=run_id)
+            .build()
+        )
+        rows = await self._rows(query, f"upgrades of run {run_id}")
 
         return self._parse_all(Upgrade, rows)
 
@@ -1179,29 +1219,32 @@ class ProcessStore(CatalogStoreBase):
 
     async def start_upgrade_run(self, run: UpgradeRun) -> UpgradeRun:
         """Запись запуска со статусом running."""
-        query = self._sql(
-            """
-            insert into {process_upgrade_runs} (
-                {ur_id}, {ur_target}, {ur_process_id}, {ur_draft_id},
-                {ur_started_by}, {ur_status}, {ur_total}
+        insert = (
+            self._query()
+            .add(
+                """
+                insert into {schema}.process_upgrade_runs (
+                    id, target, process_id, draft_id,
+                    started_by, status, total
+                )
+                values (
+                    %(id)s, %(target)s, %(process_id)s, %(draft_id)s,
+                    %(started_by)s, %(status)s, %(total)s
+                )
+                """,
+                id=run.id,
+                target=run.target.value,
+                process_id=run.process_id,
+                draft_id=run.draft_id,
+                started_by=run.started_by,
+                status=SyncStatus.RUNNING.value,
+                total=run.total,
             )
-            values (
-                %(id)s, %(target)s, %(process_id)s, %(draft_id)s,
-                %(started_by)s, %(status)s, %(total)s
-            )
-            """
+            .build()
         )
-        params = {
-            "id": run.id,
-            "target": run.target.value,
-            "process_id": run.process_id,
-            "draft_id": run.draft_id,
-            "started_by": run.started_by,
-            "status": SyncStatus.RUNNING.value,
-            "total": run.total,
-        }
+
         async with self._transaction(f"start upgrade run {run.id}") as cur:
-            await cur.execute(query, params)
+            await cur.execute(insert.text, insert.params)
             return await self._upgrade_run(cur, run.id)
 
     async def advance_upgrade_run(self, run_id: UUID, upgrade: Upgrade) -> UpgradeRun:
@@ -1213,19 +1256,25 @@ class ProcessStore(CatalogStoreBase):
         else:
             blocked = 1
 
-        async with self._transaction(f"advance upgrade run {run_id}") as cur:
-            await cur.execute(
-                self._sql(
-                    """
-                    update {process_upgrade_runs}
-                    set {ur_done} = {ur_done} + 1,
-                        {ur_moved} = {ur_moved} + %(moved)s,
-                        {ur_blocked} = {ur_blocked} + %(blocked)s
-                    where {ur_id} = %(id)s
-                    """
-                ),
-                {"id": run_id, "moved": moved, "blocked": blocked},
+        update = (
+            self._query()
+            .add(
+                """
+                update {schema}.process_upgrade_runs
+                set done = done + 1,
+                    moved = moved + %(moved)s,
+                    blocked = blocked + %(blocked)s
+                where id = %(id)s
+                """,
+                id=run_id,
+                moved=moved,
+                blocked=blocked,
             )
+            .build()
+        )
+
+        async with self._transaction(f"advance upgrade run {run_id}") as cur:
+            await cur.execute(update.text, update.params)
             return await self._upgrade_run(cur, run_id)
 
     async def close_upgrade_run(
@@ -1236,23 +1285,29 @@ class ProcessStore(CatalogStoreBase):
         Ошибки:
         UpgradeClosedError — запуск уже закрыт.
         """
+        update = (
+            self._query()
+            .add(
+                """
+                update {schema}.process_upgrade_runs
+                set status = %(status)s,
+                    finished_at = now(),
+                    error = %(error)s
+                where id = %(id)s
+                """,
+                id=run_id,
+                status=status.value,
+                error=error,
+            )
+            .build()
+        )
+
         async with self._transaction(f"close upgrade run {run_id}") as cur:
             run = await self._upgrade_run(cur, run_id)
             if run.status is not SyncStatus.RUNNING:
                 raise UpgradeClosedError(run_id, run.status)
 
-            await cur.execute(
-                self._sql(
-                    """
-                    update {process_upgrade_runs}
-                    set {ur_status} = %(status)s,
-                        {ur_finished_at} = now(),
-                        {ur_error} = %(error)s
-                    where {ur_id} = %(id)s
-                    """
-                ),
-                {"id": run_id, "status": status.value, "error": error},
-            )
+            await cur.execute(update.text, update.params)
             return await self._upgrade_run(cur, run_id)
 
     async def get_upgrade_run(self, run_id: UUID) -> UpgradeRun:
@@ -1264,57 +1319,54 @@ class ProcessStore(CatalogStoreBase):
     ) -> Sequence[UpgradeRun]:
         """Последние запуски, касающиеся процесса или черновика: свои и общие
         (по всем процессам); без фильтра — все."""
-        query = sql.Composed(
-            [
-                self._sql(self.UPGRADE_RUN_SELECT),
-                self._sql(
-                    """
-                    where (%(process_id)s::uuid is null and %(draft_id)s::uuid is null)
-                       or {ur_process_id} = %(process_id)s
-                       or {ur_draft_id} = %(draft_id)s
-                       or {ur_target} = %(all)s
-                    order by {ur_started_at} desc
-                    limit %(limit)s
-                    """
-                ),
-            ]
+        query = (
+            self._upgrade_run_query()
+            .add(
+                """
+                where (%(process_id)s::uuid is null and %(draft_id)s::uuid is null)
+                   or process_id = %(process_id)s
+                   or draft_id = %(draft_id)s
+                   or target = %(all)s
+                order by started_at desc
+                limit %(limit)s
+                """,
+                process_id=process_id,
+                draft_id=draft_id,
+                all=UpgradeTarget.ALL.value,
+                limit=limit,
+            )
+            .build()
         )
-        params = {
-            "process_id": process_id,
-            "draft_id": draft_id,
-            "all": UpgradeTarget.ALL.value,
-            "limit": limit,
-        }
-        async with self._transaction("upgrade runs") as cur:
-            await cur.execute(query, params)
-            rows = await cur.fetchall()
+        rows = await self._rows(query, "upgrade runs")
 
         return self._parse_all(UpgradeRun, rows)
 
-    UPGRADE_RUN_SELECT: ClassVar[LiteralString] = """
-        select
-            {ur_id},
-            {ur_target},
-            {ur_process_id},
-            {ur_draft_id},
-            {ur_started_by},
-            {ur_started_at},
-            {ur_finished_at},
-            {ur_status},
-            {ur_total},
-            {ur_done},
-            {ur_moved},
-            {ur_blocked},
-            {ur_error}
-        from
-            {process_upgrade_runs}
-        """
+    def _upgrade_run_query(self) -> PgQueryBuilder:
+        """Строки запусков upgrade; условие вызывающий добавляет следующим куском."""
+        return self._query().add(
+            """
+            select
+                id,
+                target,
+                process_id,
+                draft_id,
+                started_by,
+                started_at,
+                finished_at,
+                status,
+                total,
+                done,
+                moved,
+                blocked,
+                error
+            from
+                {schema}.process_upgrade_runs
+            """
+        )
 
     async def _upgrade_run(self, cur: Cursor, run_id: UUID) -> UpgradeRun:
-        query = sql.Composed(
-            [self._sql(self.UPGRADE_RUN_SELECT), self._sql(" where {ur_id} = %(id)s")]
-        )
-        await cur.execute(query, {"id": run_id})
+        query = self._upgrade_run_query().add("where id = %(id)s", id=run_id).build()
+        await cur.execute(query.text, query.params)
         row = await cur.fetchone()
         if row is None:
             raise UpgradeNotFoundError(run_id)
@@ -1323,19 +1375,24 @@ class ProcessStore(CatalogStoreBase):
 
     async def set_pins(self, draft_id: UUID, pins: Mapping[UUID, int]) -> Draft:
         """Привязки черновика к версиям снимков: после поднятия до новых."""
+        update = (
+            self._query()
+            .add(
+                """
+                update {schema}.drafts
+                set pins = %(pins)s
+                where id = %(draft_id)s
+                """,
+                draft_id=draft_id,
+                pins=Jsonb(self._pins_json(pins)),
+            )
+            .build()
+        )
+
         async with self._transaction(f"set pins of draft {draft_id}") as cur:
             draft = await self._draft(cur, draft_id, lock=True)
             self._require_open(draft)
-            await cur.execute(
-                self._sql(
-                    """
-                    update {drafts}
-                    set {dr_pins} = %(pins)s
-                    where {dr_id} = %(draft_id)s
-                    """
-                ),
-                {"draft_id": draft_id, "pins": Jsonb(self._pins_json(pins))},
-            )
+            await cur.execute(update.text, update.params)
             return await self._draft(cur, draft_id, lock=False)
 
     async def rebase(
@@ -1349,30 +1406,6 @@ class ProcessStore(CatalogStoreBase):
         операции вычёркиваются из порций, и черновик переводится на текущую
         версию.
         """
-        update_ops = self._sql(
-            """
-            update
-                {draft_ops}
-            set
-                {op_operations} = %(operations)s
-            where 1=1
-                and {op_draft_id} = %(draft_id)s
-                and {op_seq} = %(seq)s
-            """
-        )
-        update_base = self._sql(
-            """
-            update
-                {drafts}
-            set
-                {dr_base_version} = %(base_version)s
-            where
-                {dr_id} = %(draft_id)s
-            returning
-                {draft_columns}
-            """
-        )
-
         async with self._transaction(f"rebase draft {draft_id}") as cur:
             draft = await self._draft(cur, draft_id, lock=True)
             self._require_open(draft)
@@ -1413,16 +1446,27 @@ class ProcessStore(CatalogStoreBase):
                 if len(trimmed.root) == len(portion.operations.root):
                     continue
 
-                params = {
-                    "draft_id": draft_id,
-                    "seq": portion.seq,
-                    "operations": Jsonb(trimmed.model_dump(mode="json")),
-                }
-                await cur.execute(update_ops, params)
+                await self._trim_ops(cur, draft_id, portion.seq, trimmed)
 
-            await cur.execute(
-                update_base, {"draft_id": draft_id, "base_version": current}
+            update_base = (
+                self._query()
+                .add(
+                    """
+                    update
+                        {schema}.drafts
+                    set
+                        base_version = %(base_version)s
+                    where
+                        id = %(draft_id)s
+                    returning
+                        {draft_columns}
+                    """,
+                    draft_id=draft_id,
+                    base_version=current,
+                )
+                .build()
             )
+            await cur.execute(update_base.text, update_base.params)
             row = self._returning(
                 await cur.fetchone(),
                 f"update of drafts for draft {draft_id} while rebasing to {current}",
@@ -1430,26 +1474,52 @@ class ProcessStore(CatalogStoreBase):
 
         return RebaseResult(draft=self._parse(Draft, row), issues=tuple(issues))
 
+    async def _trim_ops(
+        self, cur: Cursor, draft_id: UUID, seq: int, trimmed: OperationList
+    ) -> None:
+        """Порция без конфликтных операций на место прежней."""
+        update = (
+            self._query()
+            .add(
+                """
+                update
+                    {schema}.draft_ops
+                set
+                    operations = %(operations)s
+                where 1=1
+                    and draft_id = %(draft_id)s
+                    and seq = %(seq)s
+                """,
+                draft_id=draft_id,
+                seq=seq,
+                operations=Jsonb(trimmed.model_dump(mode="json")),
+            )
+            .build()
+        )
+        await cur.execute(update.text, update.params)
+
     # --- ссылки на просмотр ---
 
     async def create_share(self, process_id: UUID, created_by: UUID) -> Share:
-        query = self._sql(
-            """
-            insert into {shares} ({sh_token}, {sh_process_id}, {sh_created_by})
-            values (%(token)s, %(process_id)s, %(created_by)s)
-            returning
-                {share_columns}
-            """
+        insert = (
+            self._query()
+            .add(
+                """
+                insert into {schema}.shares (token, process_id, created_by)
+                values (%(token)s, %(process_id)s, %(created_by)s)
+                returning
+                    {share_columns}
+                """,
+                token=secrets.token_urlsafe(self.TOKEN_BYTES),
+                process_id=process_id,
+                created_by=created_by,
+            )
+            .build()
         )
-        params = {
-            "token": secrets.token_urlsafe(self.TOKEN_BYTES),
-            "process_id": process_id,
-            "created_by": created_by,
-        }
 
         async with self._transaction(f"share process {process_id}") as cur:
             await self._process(cur, process_id)
-            await cur.execute(query, params)
+            await cur.execute(insert.text, insert.params)
             row = self._returning(
                 await cur.fetchone(), f"insert into shares for process {process_id}"
             )
@@ -1458,23 +1528,28 @@ class ProcessStore(CatalogStoreBase):
 
     async def shares_of(self, process_id: UUID) -> Sequence[Share]:
         """Действующие ссылки процесса."""
-        query = self._sql(
-            """
-            select
-                {share_columns}
-            from
-                {shares}
-            where 1=1
-                and {sh_process_id} = %(process_id)s
-                and {sh_revoked_at} is null
-            order by
-                {sh_created_at}
-            """
+        query = (
+            self._query()
+            .add(
+                """
+                select
+                    {share_columns}
+                from
+                    {schema}.shares
+                where 1=1
+                    and process_id = %(process_id)s
+                    and revoked_at is null
+                order by
+                    created_at
+                """,
+                process_id=process_id,
+            )
+            .build()
         )
 
         async with self._transaction(f"shares of process {process_id}") as cur:
             await self._process(cur, process_id)
-            await cur.execute(query, {"process_id": process_id})
+            await cur.execute(query.text, query.params)
             rows = await cur.fetchall()
 
         return self._parse_all(Share, rows)
@@ -1485,22 +1560,23 @@ class ProcessStore(CatalogStoreBase):
         Ошибки:
         ShareNotFoundError — ссылки нет или она отозвана.
         """
-        query = self._sql(
-            """
-            select
-                {share_columns}
-            from
-                {shares}
-            where 1=1
-                and {sh_token} = %(token)s
-                and {sh_revoked_at} is null
-            """
+        query = (
+            self._query()
+            .add(
+                """
+                select
+                    {share_columns}
+                from
+                    {schema}.shares
+                where 1=1
+                    and token = %(token)s
+                    and revoked_at is null
+                """,
+                token=token,
+            )
+            .build()
         )
-
-        async with self._transaction("get share") as cur:
-            await cur.execute(query, {"token": token})
-            row = await cur.fetchone()
-
+        row = await self._row(query, "get share")
         if row is None:
             raise ShareNotFoundError(token)
 
@@ -1512,24 +1588,25 @@ class ProcessStore(CatalogStoreBase):
         Ошибки:
         ShareNotFoundError — ссылки нет или она уже отозвана.
         """
-        query = self._sql(
-            """
-            update
-                {shares}
-            set
-                {sh_revoked_at} = now()
-            where 1=1
-                and {sh_token} = %(token)s
-                and {sh_revoked_at} is null
-            returning
-                {share_columns}
-            """
+        query = (
+            self._query()
+            .add(
+                """
+                update
+                    {schema}.shares
+                set
+                    revoked_at = now()
+                where 1=1
+                    and token = %(token)s
+                    and revoked_at is null
+                returning
+                    {share_columns}
+                """,
+                token=token,
+            )
+            .build()
         )
-
-        async with self._transaction("revoke share") as cur:
-            await cur.execute(query, {"token": token})
-            row = await cur.fetchone()
-
+        row = await self._row(query, "revoke share")
         if row is None:
             raise ShareNotFoundError(token)
 
@@ -1537,87 +1614,88 @@ class ProcessStore(CatalogStoreBase):
 
     # --- внутреннее: процессы ---
 
-    PROCESS_SELECT: ClassVar[LiteralString] = """
-        with
-            latest as (
-                select
-                    v.{v_process_id} as process_id,
-                    max(v.{v_number}) as latest_version
-                from
-                    {process_versions} v
-                group by
-                    v.{v_process_id}
-            ),
-            node_counts as (
-                select
-                    n.{n_process_id} as process_id,
-                    count(*) as nodes
-                from
-                    {nodes} n
-                group by
-                    n.{n_process_id}
-            ),
-            draft_counts as (
-                select
-                    d.{dr_process_id} as process_id,
-                    count(*) as open_drafts
-                from
-                    {drafts} d
-                where
-                    d.{dr_status} = 'open'
-                group by
-                    d.{dr_process_id}
-            )
-        select
-            p.{p_id},
-            p.{p_name},
-            p.{p_description},
-            p.{p_owner_id},
-            p.{p_created_at},
-            coalesce(l.latest_version, 0) as latest_version,
-            coalesce(nc.nodes, 0) as nodes,
-            coalesce(dc.open_drafts, 0) as open_drafts,
-            coalesce(lv.{v_pins}, '{{}}'::jsonb) as pins,
-            coalesce(cn.connection_ids, '{{}}'::uuid[]) as connections,
-            coalesce(lu.problems, 0) as attention
-        from
-            {processes} p
-            left join latest l on l.process_id = p.{p_id}
-            left join node_counts nc on nc.process_id = p.{p_id}
-            left join draft_counts dc on dc.process_id = p.{p_id}
-            left join lateral (
-                select array_agg(distinct n.{n_connection_id}) as connection_ids
-                from {nodes} n
-                where n.{n_process_id} = p.{p_id}
-            ) cn on true
-            left join {process_versions} lv
-                on lv.{v_process_id} = p.{p_id}
-                and lv.{v_number} = l.latest_version
-            left join lateral (
-                select
-                    case
-                        when u.{up_status} = 'blocked'
-                        then jsonb_array_length(u.{up_problems})
-                        else 0
-                    end as problems
-                from
-                    {process_upgrades} u
-                where
-                    u.{up_process_id} = p.{p_id}
-                    and u.{up_draft_id} is null
-                order by
-                    u.{up_at} desc
-                limit 1
-            ) lu on true
-        """
-
-    def _process_select(self, tail: LiteralString) -> sql.Composed:
-        return sql.Composed([self._sql(self.PROCESS_SELECT), self._sql(tail)])
+    def _process_query(self) -> PgQueryBuilder:
+        """Строки процессов со счётчиками; условие и порядок вызывающий
+        добавляет следующим куском с алиасом p."""
+        return self._query().add(
+            """
+            with
+                latest as (
+                    select
+                        v.process_id as process_id,
+                        max(v.number) as latest_version
+                    from
+                        {schema}.process_versions v
+                    group by
+                        v.process_id
+                ),
+                node_counts as (
+                    select
+                        n.process_id as process_id,
+                        count(*) as nodes
+                    from
+                        {schema}.nodes n
+                    group by
+                        n.process_id
+                ),
+                draft_counts as (
+                    select
+                        d.process_id as process_id,
+                        count(*) as open_drafts
+                    from
+                        {schema}.drafts d
+                    where
+                        d.status = 'open'
+                    group by
+                        d.process_id
+                )
+            select
+                p.id,
+                p.name,
+                p.description,
+                p.owner_id,
+                p.created_at,
+                coalesce(l.latest_version, 0) as latest_version,
+                coalesce(nc.nodes, 0) as nodes,
+                coalesce(dc.open_drafts, 0) as open_drafts,
+                coalesce(lv.pins, '{{}}'::jsonb) as pins,
+                coalesce(cn.connection_ids, '{{}}'::uuid[]) as connections,
+                coalesce(lu.problems, 0) as attention
+            from
+                {schema}.processes p
+                left join latest l on l.process_id = p.id
+                left join node_counts nc on nc.process_id = p.id
+                left join draft_counts dc on dc.process_id = p.id
+                left join lateral (
+                    select array_agg(distinct n.connection_id) as connection_ids
+                    from {schema}.nodes n
+                    where n.process_id = p.id
+                ) cn on true
+                left join {schema}.process_versions lv
+                    on lv.process_id = p.id
+                    and lv.number = l.latest_version
+                left join lateral (
+                    select
+                        case
+                            when u.status = 'blocked'
+                            then jsonb_array_length(u.problems)
+                            else 0
+                        end as problems
+                    from
+                        {schema}.process_upgrades u
+                    where
+                        u.process_id = p.id
+                        and u.draft_id is null
+                    order by
+                        u.at desc
+                    limit 1
+                ) lu on true
+            """
+        )
 
     async def _process(self, cur: Cursor, process_id: UUID) -> Process:
-        await cur.execute(
-            self._process_select(" where p.{p_id} = %(id)s"), {"id": process_id}
-        )
+        query = self._process_query().add("where p.id = %(id)s", id=process_id).build()
+        await cur.execute(query.text, query.params)
         row = await cur.fetchone()
         if row is None:
             raise ProcessNotFoundError(process_id)
@@ -1628,63 +1706,75 @@ class ProcessStore(CatalogStoreBase):
 
     async def _read_snapshot(self, cur: Cursor, process_id: UUID) -> CatalogSnapshot:
         """Снимок из таблиц процесса, проверенный check()."""
-        groups = await self._rows(
+        groups = await self._rows_of(
             cur,
-            """
-            select
-                {g_id},
-                {g_name}
-            from
-                {groups}
-            where
-                {g_process_id} = %(process_id)s
-            order by
-                {g_name},
-                {g_id}
-            """,
-            process_id,
+            self._query()
+            .add(
+                """
+                select
+                    id,
+                    name
+                from
+                    {schema}.groups
+                where
+                    process_id = %(process_id)s
+                order by
+                    name,
+                    id
+                """,
+                process_id=process_id,
+            )
+            .build(),
         )
-        nodes = await self._rows(
+        nodes = await self._rows_of(
             cur,
-            """
-            select
-                {n_id},
-                {n_group_id},
-                {n_x},
-                {n_y},
-                {n_width},
-                {n_connection_id},
-                {n_object_kind},
-                {n_path},
-                {n_alias},
-                {n_note}
-            from
-                {nodes}
-            where
-                {n_process_id} = %(process_id)s
-            order by
-                {n_path},
-                {n_id}
-            """,
-            process_id,
+            self._query()
+            .add(
+                """
+                select
+                    id,
+                    group_id,
+                    x,
+                    y,
+                    width,
+                    connection_id,
+                    object_kind,
+                    path,
+                    alias,
+                    note
+                from
+                    {schema}.nodes
+                where
+                    process_id = %(process_id)s
+                order by
+                    path,
+                    id
+                """,
+                process_id=process_id,
+            )
+            .build(),
         )
-        flows = await self._rows(
+        flows = await self._rows_of(
             cur,
-            """
-            select
-                {f_id},
-                {f_from_node_id},
-                {f_to_node_id},
-                {f_columns},
-                {f_description}
-            from
-                {flows}
-            where
-                {f_process_id} = %(process_id)s
-            order by
-                {f_id}
-            """,
-            process_id,
+            self._query()
+            .add(
+                """
+                select
+                    id,
+                    from_node_id,
+                    to_node_id,
+                    columns,
+                    description
+                from
+                    {schema}.flows
+                where
+                    process_id = %(process_id)s
+                order by
+                    id
+                """,
+                process_id=process_id,
+            )
+            .build(),
         )
 
         try:
@@ -1692,18 +1782,18 @@ class ProcessStore(CatalogStoreBase):
         except ValidationError as exc:
             msg = (
                 f"catalog: a row of the entity tables of process {process_id} in "
-                f"{self._schema} is not a valid entity: {exc}"
+                f"{self.schema} is not a valid entity: {exc}"
             )
             raise CatalogStoreError(msg) from exc
         except CatalogInvariantError as exc:
             msg = (
                 f"catalog: entity tables of process {process_id} in "
-                f"{self._schema} are inconsistent: {exc}"
+                f"{self.schema} are inconsistent: {exc}"
             )
             raise CatalogStoreError(msg) from exc
 
-    @staticmethod
     def _assemble(
+        self,
         groups: Sequence[DictRow],
         nodes: Sequence[DictRow],
         flows: Sequence[DictRow],
@@ -1715,12 +1805,12 @@ class ProcessStore(CatalogStoreBase):
 
         node_table: dict[UUID, Node] = {}
         for row in nodes:
-            node = EntityRows.node_of(row)
+            node = self._entities.node_of(row)
             node_table[node.id] = node
 
         flow_table: dict[UUID, Flow] = {}
         for row in flows:
-            flow = EntityRows.flow_of(row)
+            flow = self._entities.flow_of(row)
             flow_table[flow.id] = flow
 
         snapshot = CatalogSnapshot(
@@ -1745,47 +1835,63 @@ class ProcessStore(CatalogStoreBase):
         ProcessNameTakenError — имя занято.
         """
         process_id = uuid4()
-        try:
-            await cur.execute(
-                self._sql(
-                    """
-                    insert into {processes}
-                        ({p_id}, {p_name}, {p_description}, {p_owner_id})
-                    values
-                        (%(id)s, %(name)s, '', %(owner_id)s)
-                    """
-                ),
-                {"id": process_id, "name": draft.name, "owner_id": draft.created_by},
+        insert = (
+            self._query()
+            .add(
+                """
+                insert into {schema}.processes
+                    (id, name, description, owner_id)
+                values
+                    (%(id)s, %(name)s, '', %(owner_id)s)
+                """,
+                id=process_id,
+                name=draft.name,
+                owner_id=draft.created_by,
             )
+            .build()
+        )
+        try:
+            await cur.execute(insert.text, insert.params)
         except UniqueViolation as exc:
             raise ProcessNameTakenError(draft.name) from exc
 
-        await cur.execute(
-            self._sql(
+        attach = (
+            self._query()
+            .add(
                 """
-                update {drafts}
-                set {dr_process_id} = %(process_id)s
-                where {dr_id} = %(draft_id)s
-                """
-            ),
-            {"process_id": process_id, "draft_id": draft.id},
+                update {schema}.drafts
+                set process_id = %(process_id)s
+                where id = %(draft_id)s
+                """,
+                process_id=process_id,
+                draft_id=draft.id,
+            )
+            .build()
         )
+        await cur.execute(attach.text, attach.params)
 
         return process_id
 
-    async def _rows(
-        self, cur: Cursor, text: LiteralString, process_id: UUID
-    ) -> Sequence[DictRow]:
-        await cur.execute(self._sql(text), {"process_id": process_id})
+    async def _rows_of(self, cur: Cursor, query: PgQuery) -> Sequence[DictRow]:
+        await cur.execute(query.text, query.params)
         return await cur.fetchall()
 
     async def _current_version(self, cur: Cursor, process_id: UUID) -> int:
+        query = (
+            self._query()
+            .add(
+                """
+                select coalesce(max(number), 0) as top
+                from {schema}.process_versions
+                where process_id = %(key)s
+                """,
+                key=process_id,
+            )
+            .build()
+        )
+
         return await self._max_of(
-            cur,
-            CatalogTable.VERSIONS,
-            VersionsColumn.NUMBER,
-            VersionsColumn.PROCESS_ID,
-            process_id,
+            cur, query, f"reading the latest version number of process {process_id}"
         )
 
     async def _snapshot_at(
@@ -1802,20 +1908,26 @@ class ProcessStore(CatalogStoreBase):
             )
             raise CatalogStoreError(msg)
 
-        query = self._sql(
-            """
-            select
-                {version_columns}
-            from
-                {process_versions}
-            where 1=1
-                and {v_process_id} = %(process_id)s
-                and {v_number} <= %(version)s
-            order by
-                {v_number}
-            """
+        query = (
+            self._query()
+            .add(
+                """
+                select
+                    {version_columns}
+                from
+                    {schema}.process_versions
+                where 1=1
+                    and process_id = %(process_id)s
+                    and number <= %(version)s
+                order by
+                    number
+                """,
+                process_id=process_id,
+                version=version,
+            )
+            .build()
         )
-        await cur.execute(query, {"process_id": process_id, "version": version})
+        await cur.execute(query.text, query.params)
         rows = await cur.fetchall()
 
         snapshot = CatalogSnapshot.empty()
@@ -1835,20 +1947,23 @@ class ProcessStore(CatalogStoreBase):
 
     # --- внутреннее: черновики ---
 
-    async def _draft(self, cur: Cursor, draft_id: UUID, *, lock: bool) -> Draft:
-        tail: LiteralString = " where {dr_id} = %(id)s"
-        if lock:
-            tail = " where {dr_id} = %(id)s for update"
+    def _draft_query(self) -> PgQueryBuilder:
+        """Строки черновиков; условие вызывающий добавляет следующим куском."""
+        return self._query().add("select {draft_columns} from {schema}.drafts")
 
-        await cur.execute(self._sql(self.DRAFT_SELECT + tail), {"id": draft_id})
+    async def _draft(self, cur: Cursor, draft_id: UUID, *, lock: bool) -> Draft:
+        query = self._draft_query().add("where id = %(id)s", id=draft_id)
+        query.when(lock, "for update")
+        built = query.build()
+
+        await cur.execute(built.text, built.params)
         row = await cur.fetchone()
         if row is None:
             raise DraftNotFoundError(draft_id)
 
         return self._parse(Draft, row)
 
-    @staticmethod
-    def _require_open(draft: Draft) -> None:
+    def _require_open(self, draft: Draft) -> None:
         if draft.status is DraftStatus.OPEN:
             return
 
@@ -1857,19 +1972,25 @@ class ProcessStore(CatalogStoreBase):
     async def _set_status(
         self, cur: Cursor, draft_id: UUID, status: DraftStatus
     ) -> Draft:
-        query = self._sql(
-            """
-            update
-                {drafts}
-            set
-                {dr_status} = %(status)s
-            where
-                {dr_id} = %(id)s
-            returning
-                {draft_columns}
-            """
+        query = (
+            self._query()
+            .add(
+                """
+                update
+                    {schema}.drafts
+                set
+                    status = %(status)s
+                where
+                    id = %(id)s
+                returning
+                    {draft_columns}
+                """,
+                id=draft_id,
+                status=status.value,
+            )
+            .build()
         )
-        await cur.execute(query, {"id": draft_id, "status": status.value})
+        await cur.execute(query.text, query.params)
         row = await cur.fetchone()
         if row is None:
             raise DraftNotFoundError(draft_id)
@@ -1877,38 +1998,51 @@ class ProcessStore(CatalogStoreBase):
         return self._parse(Draft, row)
 
     async def _last_seq(self, cur: Cursor, draft_id: UUID) -> int:
+        query = (
+            self._query()
+            .add(
+                """
+                select coalesce(max(seq), 0) as top
+                from {schema}.draft_ops
+                where draft_id = %(key)s
+                """,
+                key=draft_id,
+            )
+            .build()
+        )
+
         return await self._max_of(
-            cur,
-            CatalogTable.DRAFT_OPS,
-            DraftOpsColumn.SEQ,
-            DraftOpsColumn.DRAFT_ID,
-            draft_id,
+            cur, query, f"reading the last seq of draft {draft_id}"
         )
 
     async def _ops_of(self, cur: Cursor, draft_id: UUID) -> Sequence[DraftOp]:
-        query = self._sql(
-            """
-            select
-                {op_draft_id},
-                {op_seq},
-                {op_author},
-                {op_operations},
-                {op_created_at}
-            from
-                {draft_ops}
-            where
-                {op_draft_id} = %(draft_id)s
-            order by
-                {op_seq}
-            """
+        query = (
+            self._query()
+            .add(
+                """
+                select
+                    draft_id,
+                    seq,
+                    author,
+                    operations,
+                    created_at
+                from
+                    {schema}.draft_ops
+                where
+                    draft_id = %(draft_id)s
+                order by
+                    seq
+                """,
+                draft_id=draft_id,
+            )
+            .build()
         )
-        await cur.execute(query, {"draft_id": draft_id})
+        await cur.execute(query.text, query.params)
 
         return self._parse_all(DraftOp, await cur.fetchall())
 
-    @staticmethod
     def _fold(
-        draft: Draft, base: CatalogSnapshot, ops: Sequence[DraftOp]
+        self, draft: Draft, base: CatalogSnapshot, ops: Sequence[DraftOp]
     ) -> CatalogSnapshot:
         """Снимок черновика: порции поверх базы; сохранённые порции обязаны сойтись."""
         state = base
@@ -1924,16 +2058,14 @@ class ProcessStore(CatalogStoreBase):
 
         return state
 
-    @staticmethod
-    def _pins_json(pins: Mapping[UUID, int]) -> dict[str, int]:
+    def _pins_json(self, pins: Mapping[UUID, int]) -> dict[str, int]:
         rendered: dict[str, int] = {}
         for connection_id, version in pins.items():
             rendered[str(connection_id)] = version
 
         return rendered
 
-    @staticmethod
-    def _concatenated(ops: Sequence[DraftOp]) -> OperationList:
+    def _concatenated(self, ops: Sequence[DraftOp]) -> OperationList:
         combined: list[CatalogOp] = []
         for portion in ops:
             combined.extend(portion.operations.root)
@@ -1954,12 +2086,13 @@ class ProcessStore(CatalogStoreBase):
         for kind in EntityRows.UPSERT_ORDER:
             rows: list[dict[str, Any]] = []
             for entity in self._changed(diff, target, kind):
-                rows.append(EntityRows.row_of(process_id, entity))
+                rows.append(self._entities.row_of(process_id, entity))
 
             if not rows:
                 continue
 
-            await cur.executemany(self._upsert(kind), rows)
+            upsert = self._upsert(kind)
+            await cur.executemany(upsert.text, rows)
 
         for kind in reversed(EntityRows.UPSERT_ORDER):
             removed: list[UUID] = []
@@ -1975,11 +2108,11 @@ class ProcessStore(CatalogStoreBase):
             if not removed:
                 continue
 
-            await cur.execute(self._delete(kind), {"ids": removed})
+            delete = self._delete(kind, removed)
+            await cur.execute(delete.text, delete.params)
 
-    @staticmethod
     def _changed(
-        diff: CatalogDiff, target: CatalogSnapshot, kind: EntityKind
+        self, diff: CatalogDiff, target: CatalogSnapshot, kind: EntityKind
     ) -> Iterator[CatalogEntity]:
         table = target.table(kind)
         for entry in diff.entries:
@@ -1991,14 +2124,17 @@ class ProcessStore(CatalogStoreBase):
 
             yield table[entry.ref.id]
 
-    def _upsert(self, kind: EntityKind) -> sql.Composed:
-        columns = EntityRows.columns_of(kind)
+    def _entity_table(self, kind: EntityKind) -> sql.Identifier:
+        return sql.Identifier(self.schema, CatalogTable.of_entity(kind).value)
 
+    def _upsert(self, kind: EntityKind) -> PgQuery:
+        """Вставка строк сущности с заменой по id; значения приходят строками
+        executemany."""
         idents: list[sql.Composable] = []
         placeholders: list[sql.Composable] = []
         updates: list[sql.Composable] = []
-        for column in columns:
-            ident = SqlNames.ident(column)
+        for column in self._entities.columns_of(kind):
+            ident = sql.Identifier(column.value)
             idents.append(ident)
             placeholders.append(sql.Placeholder(column.value))
             if column.value == EntityColumn.ID.value:
@@ -2006,26 +2142,26 @@ class ProcessStore(CatalogStoreBase):
 
             updates.append(sql.SQL("{} = excluded.{}").format(ident, ident))
 
-        return sql.SQL(
-            """
-            insert into {table} ({columns})
-            values ({values})
-            on conflict ({key}) do update set {updates}
-            """
-        ).format(
-            table=self._table(CatalogTable.of_entity(kind)),
-            columns=sql.SQL(", ").join(idents),
-            values=sql.SQL(", ").join(placeholders),
-            key=sql.Identifier(EntityColumn.ID.value),
-            updates=sql.SQL(", ").join(updates),
+        return (
+            PgQueryBuilder(
+                table=self._entity_table(kind),
+                columns=sql.SQL(", ").join(idents),
+                values=sql.SQL(", ").join(placeholders),
+                updates=sql.SQL(", ").join(updates),
+            )
+            .add(
+                """
+                insert into {table} ({columns})
+                values ({values})
+                on conflict (id) do update set {updates}
+                """
+            )
+            .build()
         )
 
-    def _delete(self, kind: EntityKind) -> sql.Composed:
-        return sql.SQL(
-            """
-            delete from {table} where {key} = any(%(ids)s)
-            """
-        ).format(
-            table=self._table(CatalogTable.of_entity(kind)),
-            key=sql.Identifier(EntityColumn.ID.value),
+    def _delete(self, kind: EntityKind, ids: Sequence[UUID]) -> PgQuery:
+        return (
+            PgQueryBuilder(table=self._entity_table(kind))
+            .add("delete from {table} where id = any(%(ids)s)", ids=list(ids))
+            .build()
         )
