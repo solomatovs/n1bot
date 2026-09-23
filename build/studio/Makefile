@@ -68,6 +68,13 @@ UV_PLATFORM     ?= x86_64-unknown-linux-musl
 UV_URL          ?= https://github.com/astral-sh/uv/releases/download/$(UV_VERSION)/uv-$(UV_PLATFORM).tar.gz
 UV_BIN          := $(DEPS_DIR)/uv/uv
 
+# python-oracledb с патчем: те же пины, что у build/chainlit; колесо собирает стадия
+# oracledb-wheel из build/chainlit/scripts/oracledb-*.patch, в src/ его кладёт chainlit
+ORACLEDB_VERSION ?= 26.0.0
+ORACLEDB_SHA256  ?= d15728bae7546984203ae17f8296153d52d10ffdaf4929bebe46b70d5819d270
+ORACLEDB_LOCAL   ?= boba.1
+CYTHON_VERSION   ?= 3.3.0
+
 BWRAP_VERSION   ?= 0.11.2
 BWRAP_URL       ?= https://github.com/containers/bubblewrap/releases/download/v$(BWRAP_VERSION)/bubblewrap-$(BWRAP_VERSION).tar.xz
 BWRAP_TARBALL   := $(DEPS_DIR)/bubblewrap-$(BWRAP_VERSION).tar.xz
@@ -161,7 +168,11 @@ DOCKER_ARGS      = --build-arg GLIBC_IMAGE=$(GLIBC_IMAGE)              \
     --build-arg BWRAP_VERSION=$(BWRAP_VERSION)                         \
     --build-arg LIBFUSE_VERSION=$(LIBFUSE_VERSION)                     \
     --build-arg E2FSPROGS_VERSION=$(E2FSPROGS_VERSION)                 \
-    --build-arg NODE_IMAGE=$(NODE_IMAGE)
+    --build-arg NODE_IMAGE=$(NODE_IMAGE)                               \
+    --build-arg ORACLEDB_VERSION=$(ORACLEDB_VERSION)                   \
+    --build-arg ORACLEDB_SHA256=$(ORACLEDB_SHA256)                     \
+    --build-arg ORACLEDB_LOCAL=$(ORACLEDB_LOCAL)                       \
+    --build-arg CYTHON_VERSION=$(CYTHON_VERSION)
 
 # аргументы стадий одного приложения
 APP_ARGS         = --build-arg APP=$(APP)                           \

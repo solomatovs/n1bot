@@ -195,6 +195,7 @@ members = [
 ]
 
 [tool.uv.sources]
+oracledb            = { index = "boba-wheels" }
 boba-config         = { workspace = true }
 boba-cancellation   = { workspace = true }
 boba-workflow       = { workspace = true }
@@ -265,6 +266,12 @@ dev = [
     "fastembed>=0.4,<1",
     "onnxruntime-genai>=0.15,<1",
 ]
+
+[[tool.uv.index]]
+name = "boba-wheels"
+url = "build/chainlit/src/oracledb"
+format = "flat"
+explicit = true
 
 [tool.uv]
 python-downloads = "never"
