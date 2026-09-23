@@ -36,12 +36,12 @@ class OcrUnavailableError(Exception):
 
 
 class DocConfig(BaseModel):
-    """Настройки чтения: порог буфера в памяти для форматов с произвольным
-    доступом и кодировки текстовых файлов по порядку перебора."""
+    """Настройки чтения: кодировки текстовых файлов по порядку перебора.
+    Документ читается в память целиком, его размер ограничивает только лимит
+    памяти процесса."""
 
     model_config = ConfigDict(frozen=True)
 
-    spool_memory_limit: int = Field(gt=0)
     text_encodings: Sequence[str] = Field(min_length=1)
 
 

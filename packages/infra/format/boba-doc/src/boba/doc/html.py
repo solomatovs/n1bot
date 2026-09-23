@@ -20,10 +20,10 @@ from markdownify import MarkdownConverter
 from boba.doc.document import (
     ByteStream,
     DocumentKind,
+    MemoryFile,
     PagedDocument,
     PageWindow,
     ParsedPage,
-    Spool,
 )
 
 __all__ = ["HeadingStyle", "HtmlDocument", "HtmlMarkdown"]
@@ -69,7 +69,7 @@ class HtmlDocument(PagedDocument):
 
     @classmethod
     def open(cls, stream: ByteStream, heading_style: HeadingStyle) -> HtmlDocument:
-        raw = Spool.drain(stream)
+        raw = MemoryFile.data(stream)
         try:
             soup = BeautifulSoup(raw, cls.PARSER)
         except Exception as exc:

@@ -52,7 +52,6 @@ def _config(ix_stand: IxStand) -> IndexerConfig:
         parallel_spaces=1,
         list_limit=50,
         doc=DocSection(
-            spool_memory_limit=32 << 20,
             text_encodings=("utf-8",),
             ocr=DisabledOcrConfig(provider="off"),
         ),

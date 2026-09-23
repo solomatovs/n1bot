@@ -9,13 +9,13 @@
 opencv (`libgl1`, `libglib2.0-0`).
 
 Вход — поток байтов, у которого
-есть только `read`: открытый файл, конец пипы, сокет через `makefile`. Как
-буферизовать байты, решает ридер формата: текст читается с потока, zip-форматы
-и pdf сливаются в спул (до `spool_memory_limit` в памяти, дальше безымянный
-временный файл).
+есть только `read`: открытый файл, конец пипы, сокет через `makefile`. Ридер
+формата читает документ в память целиком (`MemoryFile`): временных файлов на
+диске не остаётся, а размер документа ограничивает только лимит памяти
+процесса.
 
 ```python
-router = DocumentRouter(DocConfig(spool_memory_limit=32 << 20, text_encodings=["utf-8"]), ocr)
+router = DocumentRouter(DocConfig(text_encodings=["utf-8"]), ocr)
 # из потока корутины: AsyncPipe.run(chunks, consume) — чанки в пипу, ридер в потоке
 
 with router.open(stream, DocumentHint(media_type=..., filename=...)) as document:

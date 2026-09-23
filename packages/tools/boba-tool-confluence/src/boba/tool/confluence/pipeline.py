@@ -1,13 +1,13 @@
-"""Транспорт Confluence для конвейера: HTTP, разбор JSON страницы, спул вложений.
+"""Транспорт Confluence для конвейера: HTTP, разбор JSON страницы, тело вложения.
 
 ConfluenceHttpTransport исполняет чистый HTTP-запрос и собирает RawDocument
 с source_id по URL. ConfluenceSourceTransport поверх него различает два вида
 запросов, которые даёт ConfluenceDiscovery:
 
 1. Страница: JSON тела -> ConfluenceJsonDecoder -> HTML-handle с хэшем тела.
-2. Вложение (в metadata есть ConfluenceKeys.ATTACHMENT_INFO): тело льётся во
-   временный файл с подсчётом sha256 по дороге, наружу уходит SpooledBody с
-   хэшем; файл живёт, пока идёт итерация fetch.
+2. Вложение (в metadata есть ConfluenceKeys.ATTACHMENT_INFO): тело читается
+   в память целиком с подсчётом sha256 по дороге, наружу уходит поток над
+   этими байтами с хэшем; файлов на диске не остаётся.
 
 Хэш тела (TransportKeys.BODY_HASH) конвейер сверяет с реестром и не разбирает
 то, что уже разбирал.
@@ -21,13 +21,9 @@ ConfluencePayloadError — тело страницы не разбирается
 
 from __future__ import annotations
 
-import asyncio
 import logging
-import os
-import tempfile
 from collections.abc import AsyncIterator
 from dataclasses import replace
-from pathlib import Path
 from typing import ClassVar
 
 from boba.confluence.models import (
@@ -39,12 +35,12 @@ from boba.confluence.parsing import BodyHasher, ConfluenceJsonDecoder
 from boba.confluence.rest import ConfluenceConnection, ConfluenceRequest
 from boba.indexing import (
     AsyncBinaryStream,
+    ChunkStream,
     Metadata,
     RawDocument,
     SourceFetchError,
     SourceGoneError,
     SourceId,
-    SpooledBody,
     Transport,
     TransportKeys,
 )
@@ -148,7 +144,7 @@ class ConfluenceHttpTransport(Transport[ConfluenceRequest]):
 
 class ConfluenceSourceTransport(Transport[ConfluenceRequest]):
     """Transport[ConfluenceRequest] для конвейера: страница разбирается из JSON,
-    вложение спулится на диск; у обоих в metadata хэш тела."""
+    вложение читается в память; у обоих в metadata хэш тела."""
 
     def __init__(self, conn: ConfluenceConnection) -> None:
         http = CancellableHttpTransport(conn.connection, conn.transport)
@@ -174,8 +170,7 @@ class ConfluenceSourceTransport(Transport[ConfluenceRequest]):
             )
             elapsed = Elapsed()
             async for raw in self._inner.fetch(request):
-                async for spooled in self._spooled(raw, att.title):
-                    yield spooled
+                yield await self._buffered(raw, att.title)
 
             logger.info("fetch attachment done: %s in %dms", att.title, elapsed.ms())
             return
@@ -191,31 +186,23 @@ class ConfluenceSourceTransport(Transport[ConfluenceRequest]):
                 handle=LoggingStream(decoded.handle, logger, f"page {source_id}"),
             )
 
-    async def _spooled(
-        self, raw: RawDocument, title: str
-    ) -> AsyncIterator[RawDocument]:
-        """Тело во временный файл с суффиксом имени вложения и sha256 по дороге."""
-        suffix = Path(title).suffix
-        fd, name = tempfile.mkstemp(suffix=suffix, prefix="confluence-")
-        path = Path(name)
+    async def _buffered(self, raw: RawDocument, title: str) -> RawDocument:
+        """Тело вложения в память целиком, sha256 считается по дороге; ридер
+        получает поток над готовыми байтами."""
         digest = self._hasher.stream()
-        try:
-            with os.fdopen(fd, "wb") as spool:
-                async for chunk in raw.handle:
-                    digest.update(chunk)
-                    await asyncio.to_thread(spool.write, chunk)
+        parts: list[bytes] = []
+        async for chunk in raw.handle:
+            digest.update(chunk)
+            parts.append(chunk)
 
-            body_hash = digest.hexdigest()
-            logger.info(
-                "spooled %s: %d bytes, sha256 %s",
-                title,
-                path.stat().st_size,
-                body_hash[:12],
-            )
-            yield replace(
-                raw,
-                handle=SpooledBody(path),
-                metadata=raw.metadata.set(TransportKeys.BODY_HASH, body_hash),
-            )
-        finally:
-            path.unlink(missing_ok=True)
+        body = b"".join(parts)
+        body_hash = digest.hexdigest()
+        logger.info(
+            "buffered %s: %d bytes, sha256 %s", title, len(body), body_hash[:12]
+        )
+
+        return replace(
+            raw,
+            handle=ChunkStream.of(body),
+            metadata=raw.metadata.set(TransportKeys.BODY_HASH, body_hash),
+        )
