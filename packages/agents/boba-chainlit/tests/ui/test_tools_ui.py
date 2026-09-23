@@ -181,7 +181,7 @@ class OcrArgs:
     @classmethod
     def text_of(cls, content: bytes, filename: str) -> str:
         """Текст документа теми же ридерами boba-doc, что и у инструментов."""
-        config = DocConfig(spool_memory_limit=1 << 24, text_encodings=("utf-8",))
+        config = DocConfig(text_encodings=("utf-8",))
         router = DocumentRouter(config, DisabledOcr())
         hint = DocumentHint(filename=filename)
         with router.open(io.BytesIO(content), hint) as document:
@@ -866,7 +866,11 @@ def probe_table(module_feed: ToolFeed) -> str:
     """Таблица стенда создаётся pg_query: набор команд одной транзакцией."""
     call = ToolCall(
         tool="pg_query",
-        arguments={"connection": "main", "sql": ProbeSql.CREATE.value},
+        arguments={
+            "connection": "main",
+            "sql": ProbeSql.CREATE.value,
+            **RowWindowArgs.of(),
+        },
         code="sql",
         language="sql",
     )
@@ -1054,19 +1058,23 @@ class TestDocTools:
         rows = [
             {
                 "page": 1,
-                "x": 20.0,
-                "y": 81.1,
-                "width": 140.1,
-                "height": 23.4,
+                "offset": 0,
+                "length": 5,
                 "snippet": SamplePdf.PAGES[0],
+                "x": 20.280000686645508,
+                "y": 195.8800048828125,
+                "width": 50.33999443054199,
+                "height": 18.479995727539062,
             },
             {
                 "page": 2,
-                "x": 20.0,
-                "y": 81.1,
-                "width": 239.0,
-                "height": 23.4,
+                "offset": 14,
+                "length": 5,
                 "snippet": SamplePdf.PAGES[1],
+                "x": 153.70001220703125,
+                "y": 195.8800048828125,
+                "width": 50.339996337890625,
+                "height": 18.479995727539062,
             },
         ]
         result = TableResult(
@@ -1184,9 +1192,9 @@ class TestConfluenceTools:
             tool="confluence_search",
             arguments={
                 "query": ProbeText.CONFLUENCE_QUERY.value,
-                "limit": ConfluenceSite.SEARCH_LIMIT,
                 "snippet_chars": 100,
                 "offset": 0,
+                "limit": ConfluenceSite.SEARCH_LIMIT,
             },
         )
         expect = ToolExpect(
@@ -1376,7 +1384,11 @@ class TestPgTools:
     def test_query_update(self, feed: ToolFeed, probe_table: str) -> None:
         call = ToolCall(
             tool="pg_query",
-            arguments={"connection": "main", "sql": ProbeSql.UPDATE.value},
+            arguments={
+                "connection": "main",
+                "sql": ProbeSql.UPDATE.value,
+                **RowWindowArgs.of(),
+            },
             code="sql",
             language="sql",
         )
@@ -1389,13 +1401,22 @@ class TestPgTools:
     def test_query_select(self, feed: ToolFeed, probe_table: str) -> None:
         call = ToolCall(
             tool="pg_query",
-            arguments={"connection": "main", "sql": ProbeSql.SELECT.value},
+            arguments={
+                "connection": "main",
+                "sql": ProbeSql.SELECT.value,
+                **RowWindowArgs.of(),
+            },
             code="sql",
             language="sql",
         )
         rows = [{"id": 1, "name": "alpha"}, {"id": 2, "name": "beta"}]
         result = SqlResult(
-            engine="postgres", statements=[SqlStatement(rows=rows, status="SELECT 2")]
+            engine="postgres",
+            statements=[
+                SqlStatement(
+                    rows=rows, status="SELECT 2", note="rows 1-2; end of result"
+                )
+            ],
         )
         feed.call(call, ToolExpect.of(result, dom=["alpha", "beta"]))
 
@@ -1525,7 +1546,7 @@ class TestChTools:
             arguments={
                 "connection": "main",
                 "table": ProbeSql.CH_ONE.value,
-                "ch_database": ProbeSql.CH_SYSTEM.value,
+                "database": ProbeSql.CH_SYSTEM.value,
                 **RowWindowArgs.of(),
             },
         )
@@ -1547,7 +1568,7 @@ class TestChTools:
             tool="ch_list_tables",
             arguments={
                 "connection": "main",
-                "ch_database": ProbeSql.CH_SYSTEM.value,
+                "database": ProbeSql.CH_SYSTEM.value,
                 **RowWindowArgs.of(limit=2),
             },
         )

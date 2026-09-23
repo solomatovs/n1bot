@@ -49,6 +49,15 @@ class DocumentRouter:
 
     PAGE_GLUE: ClassVar[str] = "\n\n"
     HEADING_STYLE: ClassVar[HeadingStyle] = HeadingStyle.ATX
+    WITH_OCR: ClassVar[frozenset[DocumentKind]] = frozenset(
+        {
+            DocumentKind.PDF,
+            DocumentKind.DOCX,
+            DocumentKind.PPTX,
+            DocumentKind.IMAGE,
+        }
+    )
+    """Виды, внутри которых бывают картинки: их ридер получает движок OCR."""
 
     def __init__(self, config: DocConfig, ocr: OcrEngine) -> None:
         self._config = config
@@ -110,32 +119,36 @@ class DocumentRouter:
             document.close()
 
     def _open(self, kind: DocumentKind, stream: ByteStream) -> Document:
-        """Ридер по виду: бинарные форматы буферизуются спулом, текстовые
-        читают поток до конца."""
-        limit = self._config.spool_memory_limit
-        match kind:
-            case DocumentKind.PDF:
-                return PdfDocument.open(stream, limit, self._ocr)
-            case DocumentKind.DOCX:
-                return DocxDocument.open(stream, limit, self._ocr)
-            case DocumentKind.XLSX:
-                return XlsxDocument.open(stream, limit)
-            case DocumentKind.PPTX:
-                return PptxDocument.open(stream, limit, self._ocr)
-            case DocumentKind.XLS:
-                return XlsDocument.open(stream)
-            case DocumentKind.IMAGE:
-                return ImageDocument.open(stream, limit, self._ocr)
-            case DocumentKind.UNKNOWN:
-                raise DocumentError(
-                    "document: kind is unknown, nothing to open it with"
-                )
-            case _:
-                return self._open_text(kind, stream)
+        """Ридер по виду; документ читается в память целиком."""
+        if kind is DocumentKind.UNKNOWN:
+            raise DocumentError("document: kind is unknown, nothing to open it with")
 
-    def _open_text(self, kind: DocumentKind, stream: ByteStream) -> Document:
+        if kind in self.WITH_OCR:
+            return self._open_with_ocr(kind, stream)
+
+        return self._open_plain(kind, stream)
+
+    def _open_with_ocr(self, kind: DocumentKind, stream: ByteStream) -> Document:
+        """Форматы с картинками внутри: страницы, абзацы и слайды отдают
+        растровые вставки движку OCR."""
+        match kind:
+            case DocumentKind.DOCX:
+                return DocxDocument.open(stream, self._ocr)
+            case DocumentKind.PPTX:
+                return PptxDocument.open(stream, self._ocr)
+            case DocumentKind.IMAGE:
+                return ImageDocument.open(stream, self._ocr)
+            case _:
+                return PdfDocument.open(stream, self._ocr)
+
+    def _open_plain(self, kind: DocumentKind, stream: ByteStream) -> Document:
+        """Форматы без картинок: таблицы и текст."""
         encodings = self._config.text_encodings
         match kind:
+            case DocumentKind.XLSX:
+                return XlsxDocument.open(stream)
+            case DocumentKind.XLS:
+                return XlsDocument.open(stream)
             case DocumentKind.RTF:
                 return RtfDocument.open(stream, encodings)
             case DocumentKind.HTML:

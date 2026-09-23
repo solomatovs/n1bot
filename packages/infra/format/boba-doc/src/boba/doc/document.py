@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import hashlib
 import io
-import tempfile
 from abc import abstractmethod
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
@@ -31,6 +30,7 @@ __all__ = [
     "DocumentKind",
     "Formats",
     "Hit",
+    "MemoryFile",
     "OcrEngine",
     "PageInfo",
     "PageWindow",
@@ -39,7 +39,6 @@ __all__ = [
     "Prefixed",
     "Sha256Stream",
     "SizedPageInfo",
-    "Spool",
     "TextSearch",
 ]
 
@@ -428,32 +427,28 @@ class Document(Protocol):
     def close(self) -> None: ...
 
 
-class Spool:
-    """Буфер ридера для форматов с произвольным доступом (zip, pdf): до
-    memory_limit байт в памяти, дальше безымянный временный файл."""
+class MemoryFile:
+    """Документ целиком в памяти: ридерам форматов нужен произвольный доступ
+    по файлу, а документ обязан помещаться в память процесса — потолок задаёт
+    лимит памяти песочницы, временных файлов на диске не остаётся."""
 
     CHUNK: ClassVar[int] = 1 << 20
 
     @classmethod
-    def fill(
-        cls, stream: ByteStream, memory_limit: int
-    ) -> tempfile.SpooledTemporaryFile[bytes]:
-        spool = tempfile.SpooledTemporaryFile(max_size=memory_limit)  # noqa: SIM115 — закрывает документ
-        while chunk := stream.read(cls.CHUNK):
-            spool.write(chunk)
-
-        spool.seek(0)
-
-        return spool
-
-    @classmethod
-    def drain(cls, stream: ByteStream) -> bytes:
-        """Весь остаток потока в память: для форматов, которым нужны байты."""
+    def file(cls, stream: ByteStream) -> io.BytesIO:
+        """Остаток потока файловым объектом с seek: для zip, pdf и картинок."""
         buffer = io.BytesIO()
         while chunk := stream.read(cls.CHUNK):
             buffer.write(chunk)
 
-        return buffer.getvalue()
+        buffer.seek(0)
+
+        return buffer
+
+    @classmethod
+    def data(cls, stream: ByteStream) -> bytes:
+        """Остаток потока байтами: для форматов, которые разбирают bytes."""
+        return cls.file(stream).getvalue()
 
 
 class Prefixed(ByteStream):
@@ -494,7 +489,7 @@ class Sha256Stream(ByteStream):
 
     def exhaust(self) -> None:
         """Дочитать остаток, если ридер взял не всё: хэш должен покрыть файл."""
-        while self._source.read(Spool.CHUNK):
+        while self._source.read(MemoryFile.CHUNK):
             pass
 
     def hexdigest(self) -> str:
