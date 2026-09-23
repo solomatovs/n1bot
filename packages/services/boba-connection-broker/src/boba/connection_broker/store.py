@@ -725,7 +725,7 @@ class ConnectionStore(PostgresTable, ConnectionRepository):
             # текст самой ошибки, мимо FailureText
             msg = (
                 f"connections: row #{row['id']} {row['name']!r} is not a valid "
-                f"connection connection: {exc}"
+                f"connection: {exc}"
             )
             raise ConnectionStoreError(msg) from None
 
