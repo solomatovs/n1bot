@@ -27,17 +27,14 @@ from boba.db.clickhouse.connection import ClickHouseConfig
 from boba.db.clickhouse.query import ChQuery, ChQueryBuilder
 from boba.toolkit.entry import ToolMain
 from boba.toolkit.facade import UserConnection, tool
-from boba.toolkit.result import MarkdownResult, SqlResult, TableResult
+from boba.toolkit.result import MarkdownResult, SqlResult, SqlStatement, TableResult
 from boba.toolkit.sql import (
     QueryBuildError,
-    RowLimit,
-    RowOffset,
-    RowPage,
-    RowWindow,
     SqlErrorKind,
     SqlLimits,
 )
 from boba.toolkit.types import SecretRevealing
+from boba.toolkit.window import RowLimit, RowOffset, RowPage, RowWindow
 
 ChConnection = Annotated[ClickHouseConfig, UserConnection]
 
@@ -103,14 +100,16 @@ async def run_and_collect(
     window: RowWindow,
 ) -> SqlResult:
     """Запрос страницей окна: границы выдачи назначает вызов."""
-    page = RowPage(window)
+    page = RowPage(window, skipped=0)
 
     async with get_payload().row_blocks(connection, query.text, query.params) as stream:
         async for block in stream.blocks:
             if not page.add(dict(zip(stream.names, block, strict=True))):
                 break
 
-    return SqlResult(engine=ChToolConfig.ENGINE, statements=[page.statement()])
+    statement = SqlStatement(rows=page.rows, note=page.note())
+
+    return SqlResult(engine=ChToolConfig.ENGINE, statements=[statement])
 
 
 @tool

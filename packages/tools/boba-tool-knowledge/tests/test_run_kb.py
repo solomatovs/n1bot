@@ -30,7 +30,8 @@ class RunArgs:
     QUERY: ClassVar[str] = "данные"
     SURFACES: ClassVar[list[str]] = []
     ASPECTS: ClassVar[list[str]] = []
-    TOP_K: ClassVar[int] = 5
+    OFFSET: ClassVar[int] = 0
+    LIMIT: ClassVar[int] = 5
     NODE_ID: ClassVar[int] = 1
 
 
@@ -62,7 +63,8 @@ async def test_run_kb_search(kb_cfg: KbToolConfig, search) -> None:
             query=RunArgs.QUERY,
             surfaces=RunArgs.SURFACES,
             aspects=RunArgs.ASPECTS,
-            top_k=RunArgs.TOP_K,
+            offset=RunArgs.OFFSET,
+            limit=RunArgs.LIMIT,
             cfg=kb_cfg,
         )
     ).llm_view()

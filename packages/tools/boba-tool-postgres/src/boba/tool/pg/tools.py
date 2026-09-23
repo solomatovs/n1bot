@@ -40,14 +40,11 @@ from boba.toolkit.result import (
 )
 from boba.toolkit.sql import (
     QueryBuildError,
-    RowLimit,
-    RowOffset,
-    RowPage,
-    RowWindow,
     SqlErrorKind,
     SqlLimits,
 )
 from boba.toolkit.types import SecretRevealing
+from boba.toolkit.window import RowLimit, RowOffset, RowPage, RowWindow
 
 PgConnection = Annotated[PostgresConfig, UserConnection]
 
@@ -128,7 +125,7 @@ async def run_and_collect(
     Порядок строк задан самим запросом, поэтому окно повторяемо: тот же
     offset вернёт тот же кусок, пока каталог не изменился.
     """
-    page = RowPage(window)
+    page = RowPage(window, skipped=0)
 
     conn = await PayloadPostgres.connect_config(connection)
     async with conn, conn.cursor(row_factory=dict_row) as cur:
@@ -138,7 +135,9 @@ async def run_and_collect(
             if not page.add(row):
                 break
 
-    return SqlResult(engine=PgToolConfig.ENGINE, statements=[page.statement()])
+    statement = SqlStatement(rows=page.rows, note=page.note())
+
+    return SqlResult(engine=PgToolConfig.ENGINE, statements=[statement])
 
 
 async def run_script(
@@ -174,13 +173,13 @@ async def run_script(
 
                 statements.append(SqlStatement(affected_rows=rowcount, status=status))
             else:
-                page = RowPage(window)
+                page = RowPage(window, skipped=0)
                 async for row in cur:
                     if not page.add(row):
                         break
 
                 statements.append(
-                    page.statement().model_copy(update={"status": status})
+                    SqlStatement(rows=page.rows, note=page.note(), status=status)
                 )
 
             if not cur.nextset():

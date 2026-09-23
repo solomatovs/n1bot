@@ -105,7 +105,7 @@ class TestDocumentOutline:
 class TestSearchDocument:
     async def test_returns_coordinates_and_snippet(self, pdf: str) -> None:
         artifact = await _body("search_document")(
-            path=pdf, query=SamplePdf.WORD.lower(), cfg=_cfg()
+            path=pdf, query=SamplePdf.WORD.lower(), offset=0, limit=50, cfg=_cfg()
         )
 
         assert isinstance(artifact, TableResult)
@@ -114,15 +114,24 @@ class TestSearchDocument:
         assert SamplePdf.WORD in rows[0].snippet
         assert rows[0].height > 0
 
-    async def test_reports_limit(self, pdf: str) -> None:
+    async def test_window_cuts_and_points_further(self, pdf: str) -> None:
         artifact = await _body("search_document")(
-            path=pdf, query=SamplePdf.WORD, cfg=_cfg(search_max_matches=1)
+            path=pdf, query=SamplePdf.WORD, offset=0, limit=1, cfg=_cfg()
         )
 
         assert isinstance(artifact, TableResult)
         assert len(artifact.rows) == 1
-        assert artifact.note is not None
-        assert "limit reached" in artifact.note
+        assert artifact.note == "rows 1-1; more rows available, next offset=1"
+        assert dict(artifact.metadata) == {"path": pdf, "query": SamplePdf.WORD}
+
+    async def test_second_page_is_the_last(self, pdf: str) -> None:
+        artifact = await _body("search_document")(
+            path=pdf, query=SamplePdf.WORD, offset=1, limit=1, cfg=_cfg()
+        )
+
+        assert isinstance(artifact, TableResult)
+        assert [BoxedHit(**raw).page for raw in artifact.rows] == [2]
+        assert artifact.note == "rows 2-2; end of result"
 
 
 class TestExpectedFailures:

@@ -20,7 +20,7 @@ psycopg.Error — СУБД отклонила запрос.
 from __future__ import annotations
 
 import sys
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from enum import StrEnum
 from typing import Annotated, Any, ClassVar, Final
 
@@ -46,6 +46,7 @@ from boba.tool.describer.store import (
 from boba.toolkit.entry import ToolMain
 from boba.toolkit.facade import Injected, tool
 from boba.toolkit.result import TableResult
+from boba.toolkit.window import RowLimit, RowOffset, RowPage, RowWindow
 
 __all__ = [
     "TOOLS",
@@ -413,29 +414,31 @@ class EdgeListColumn(StrEnum):
 
 
 class EdgeListing:
-    """Рёбра области таблицей для модели."""
+    """Рёбра области страницей окна для модели."""
 
     EMPTY_NOTE: ClassVar[str] = "no edges are described in this scope yet"
 
-    @classmethod
-    def result(cls, edges: Sequence[EdgeRecord]) -> TableResult:
-        rows: list[dict[str, Any]] = []
+    def __init__(self, window: RowWindow) -> None:
+        self._page = RowPage(window, skipped=0)
+
+    def result(self, edges: Iterable[EdgeRecord]) -> TableResult:
+        self._page.take(self._rows(edges))
+
+        note = self._page.note()
+        if not self._page.rows:
+            note = f"{note}; {self.EMPTY_NOTE}"
+
+        return TableResult(rows=self._page.rows, note=note)
+
+    def _rows(self, edges: Iterable[EdgeRecord]) -> Iterator[dict[str, Any]]:
         for edge in edges:
-            rows.append(
-                {
-                    EdgeListColumn.ID.value: edge.id,
-                    EdgeListColumn.SOURCE.value: edge.source,
-                    EdgeListColumn.TARGET.value: edge.target,
-                    EdgeListColumn.KIND.value: edge.kind.value,
-                    EdgeListColumn.DESCRIPTION.value: edge.description,
-                }
-            )
-
-        note: str | None = None
-        if not rows:
-            note = cls.EMPTY_NOTE
-
-        return TableResult(rows=rows, note=note)
+            yield {
+                EdgeListColumn.ID.value: edge.id,
+                EdgeListColumn.SOURCE.value: edge.source,
+                EdgeListColumn.TARGET.value: edge.target,
+                EdgeListColumn.KIND.value: edge.kind.value,
+                EdgeListColumn.DESCRIPTION.value: edge.description,
+            }
 
 
 class EdgeDeleteColumn(StrEnum):
@@ -498,19 +501,22 @@ async def describe_edge(  # noqa: PLR0913 — оба конца, вид и те�
 
 @tool
 async def describe_list_edges(
+    offset: RowOffset,
+    limit: RowLimit,
     scope: Annotated[Scope, Injected],
     cfg: Annotated[DescriberToolConfig, Injected],
 ) -> TableResult:
     """Рёбра, уже описанные в этом треде: id, source, target, kind, description.
 
     Помогает не описывать связь дважды и брать id для describe_delete_edge.
+    Выдача постраничная: как листать, сказано в note.
     """
     key = ScopeKey.of(scope)
 
     async with DescriberStore(cfg).session() as session:
         edges = await EdgeTable(session).list(key)
 
-    return EdgeListing.result(edges)
+    return EdgeListing(RowWindow(offset=offset, limit=limit)).result(edges)
 
 
 @tool

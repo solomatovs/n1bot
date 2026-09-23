@@ -6,6 +6,7 @@ from __future__ import annotations
 import io
 import threading
 from collections.abc import Iterator
+from functools import partial
 from http.server import HTTPServer, SimpleHTTPRequestHandler
 from pathlib import Path
 
@@ -27,16 +28,19 @@ HTML = (
 TEXT = b"line one\nline two\nline three\n"
 
 
+class _Quiet(SimpleHTTPRequestHandler):
+    """Статика без журнала запросов в stderr."""
+
+    def log_message(self, format: str, *args: object) -> None:  # noqa: A002
+        return
+
+
 class _Site:
     """Каталог статики под http.server в фоновом потоке."""
 
     def __init__(self, root: Path) -> None:
         self._root = root
-        handler = type(
-            "Handler",
-            (SimpleHTTPRequestHandler,),
-            {"directory": str(root), "log_message": lambda *args: None},
-        )
+        handler = partial(_Quiet, directory=str(root))
         self._server = HTTPServer(("127.0.0.1", 0), handler)
         self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
 

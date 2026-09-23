@@ -25,11 +25,6 @@ class DocToolsConfig(DocSection):
         ge=0,
         description="Сколько символов контекста показывать вокруг совпадения.",
     )
-    search_max_matches: int = Field(
-        default=50,
-        ge=1,
-        description="Максимум совпадений в ответе search_document.",
-    )
     max_result_chars: int = Field(
         default=10_000_000,
         ge=1,

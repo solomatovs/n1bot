@@ -20,7 +20,7 @@ with hit as (
     order by
         e.emb <=> %(v)s::halfvec
     limit
-        %(limit)s * 8
+        (%(limit)s + %(offset)s) * 8
 )
 select
     n.id as node_id,
@@ -38,4 +38,6 @@ group by
 order by
     score
 limit
-    %(limit)s;
+    %(limit)s
+offset
+    %(offset)s;
