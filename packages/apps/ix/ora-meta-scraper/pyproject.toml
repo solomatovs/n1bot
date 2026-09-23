@@ -21,7 +21,7 @@ dev = [
 ]
 
 [project.scripts]
-boba-ora-meta-scraper = "boba.ora_meta_scraper.worker:main"
+boba-ora-meta-scraper = "boba.ora_meta_scraper.worker:cli"
 
 [tool.setuptools.package-data]
 "boba.ora_meta_scraper" = ["*/*.sql"]

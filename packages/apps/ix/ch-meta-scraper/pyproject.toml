@@ -21,7 +21,7 @@ dev = [
 ]
 
 [project.scripts]
-boba-ch-meta-scraper = "boba.ch_meta_scraper.worker:main"
+boba-ch-meta-scraper = "boba.ch_meta_scraper.worker:cli"
 
 [tool.setuptools.package-data]
 "boba.ch_meta_scraper" = ["*/*.sql"]

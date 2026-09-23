@@ -188,6 +188,10 @@ class StubPage:
 
         self.version += 1
 
+    def relabel(self, labels: list[str]) -> None:
+        """Метки в Confluence меняются без новой версии страницы."""
+        self.labels = list(labels)
+
     def attachment(self, title: str) -> StubAttachment:
         for att in self.attachments:
             if att.title == title:

@@ -309,16 +309,21 @@ def parse_args(argv: Sequence[str] | None = None) -> LabConfig:
     return bind_section(args.config, "ix.search_lab", LabConfig)
 
 
-def main() -> None:
+async def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(message)s")
 
     try:
         cfg = parse_args()
         here = Path(__file__).resolve().parent
-        asyncio.run(LabServer(cfg, here).serve())
+        await LabServer(cfg, here).serve()
     except (ConfigError, SearchLabError, PostgresError) as exc:
         raise SystemExit(str(exc)) from exc
 
 
+def cli() -> None:
+    """Точка входа консольного скрипта: единственный asyncio.run на процесс."""
+    asyncio.run(main())
+
+
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())

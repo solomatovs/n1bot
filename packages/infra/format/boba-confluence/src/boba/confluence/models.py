@@ -7,7 +7,7 @@
 - AttachmentInfo/Filter/Gate  — вложение, allowlist администратора и решение,
   качать ли его.
 - ParseGrade/ConfluenceMarks  — уровень разбора и отпечатки версий для реестра.
-- ConfluenceSourceId          — identity страницы и вложения по URL.
+- ConfluenceSourceIds         — identity страницы и вложения по URL.
 - ConfluenceKeys              — Confluence-специфичные MetadataKey.
 - PageSections/PageSection    — результат разбора страницы: карточка, текст
   под заголовками и таблицы; контракт между разбором HTML и ридером.
@@ -20,7 +20,7 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import Iterable, Iterator, Sequence
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from enum import IntEnum, StrEnum
 from fnmatch import fnmatchcase
 from typing import Annotated, Any, ClassVar, Literal
@@ -51,7 +51,7 @@ __all__ = [
     "ConfluencePageItem",
     "ConfluencePayloadError",
     "ConfluencePlainText",
-    "ConfluenceSourceId",
+    "ConfluenceSourceIds",
     "ConfluenceSpaceItem",
     "ConfluenceUser",
     "HttpKeys",
@@ -71,6 +71,7 @@ __all__ = [
     "ParseGrade",
     "SpaceMask",
     "TableShape",
+    "TitlesCodec",
 ]
 
 
@@ -369,8 +370,7 @@ class ConfluenceSpaceItem(BaseModel):
         return str(profile.url_of(self.links.webui))
 
 
-@dataclass(frozen=True, slots=True)
-class AttachmentInfo:
+class AttachmentInfo(BaseModel):
     """Один attachment Confluence-страницы —
     то, что нужно download'у и rewriter'у ссылок.
 
@@ -388,79 +388,54 @@ class AttachmentInfo:
     - version        — version.number; 1 если отсутствует.
     - when           — version.when: дата загрузки этой версии.
 
-    JSON-кодек (encode/decode) симметричен и идемпотентен; схема — объект с
-    теми же именами полей, что у dataclass'а. Используется как encode/decode
-    для ConfluenceKeys.ATTACHMENT_INFO.
+    В metadata чанков хранится JSON модели (ConfluenceKeys.ATTACHMENT_INFO);
+    поля с умолчаниями терпят записи старых раскладок без части ключей.
     """
 
-    id: str
-    title: str
-    media_type: str
-    file_size: int
-    download_path: str
-    webui: str
-    version: int
-    when: str
+    model_config = ConfigDict(frozen=True, extra="ignore")
 
-    def encode(self) -> str:
-        return json.dumps(asdict(self), ensure_ascii=False)
-
-    @staticmethod
-    def decode(s: str) -> AttachmentInfo:
-        return AttachmentInfo._from_dict(json.loads(s))
-
-    @staticmethod
-    def _from_dict(d: dict[str, Any]) -> AttachmentInfo:
-        return AttachmentInfo(
-            id=str(d.get("id", "")),
-            title=str(d.get("title", "")),
-            media_type=str(d.get("media_type", "")),
-            file_size=int(d.get("file_size") or 0),
-            download_path=str(d.get("download_path", "")),
-            webui=str(d.get("webui", "")),
-            version=int(d.get("version") or 1),
-            when=str(d.get("when", "")),
-        )
+    id: str = ""
+    title: str = ""
+    media_type: str = ""
+    file_size: int = 0
+    download_path: str = ""
+    webui: str = ""
+    version: int = 1
+    when: str = ""
 
 
-@dataclass(frozen=True, slots=True)
 class AttachmentFilter:
-    """Allowlist-фильтр attachment'ов по media_type и/или title.
+    """Allowlist-фильтр вложений по media_type и/или имени файла.
 
-    Семантика:
-    - Оба списка пустые -> matches всегда True (бэк-совместимость).
-    - Иначе attachment проходит, если совпадает хотя бы с одним паттерном
-      из любого непустого списка (OR между списками и внутри списка).
-    - Паттерны — fnmatch-globs (*, ?, [abc]); case-insensitive,
-      сравнение по lower-case с обеих сторон.
-
-    Примеры:
-    - media_type_patterns=("application/pdf",) — только PDF по MIME.
-    - title_patterns=("*.pdf", "*.docx") — PDF и DOCX по расширению.
-    - media_type_patterns=("image/*",), title_patterns=("*.pdf",)
-      — любые картинки ИЛИ файлы с расширением .pdf.
+    Строится из масок конфига: маска со слэшем — media-type, без него — имя
+    файла; пустые маски отбрасываются. Без масок проходит всё, иначе вложение
+    проходит, если совпало хотя бы с одной маской любого списка. Маски —
+    fnmatch-globs (*, ?, [abc]) без учёта регистра.
     """
-
-    media_type_patterns: tuple[str, ...] = ()
-    title_patterns: tuple[str, ...] = ()
 
     MEDIA_MARK: ClassVar[str] = "/"
     """Слэш в маске — это media-type, иначе имя файла."""
 
-    @classmethod
-    def of_masks(cls, masks: Iterable[str]) -> AttachmentFilter:
-        """Маски конфига -> фильтр; со слэшем идёт в media-type, прочее в имя."""
+    def __init__(self, masks: Iterable[str]) -> None:
         media: list[str] = []
         titles: list[str] = []
-
-        for item in cls._items(masks):
-            if cls.MEDIA_MARK in item:
+        for item in self._items(masks):
+            if self.MEDIA_MARK in item:
                 media.append(item)
                 continue
 
             titles.append(item)
 
-        return cls(media_type_patterns=tuple(media), title_patterns=tuple(titles))
+        self._media_type_patterns = tuple(media)
+        self._title_patterns = tuple(titles)
+
+    @property
+    def media_type_patterns(self) -> tuple[str, ...]:
+        return self._media_type_patterns
+
+    @property
+    def title_patterns(self) -> tuple[str, ...]:
+        return self._title_patterns
 
     @staticmethod
     def _items(masks: Iterable[str]) -> Iterator[str]:
@@ -470,58 +445,75 @@ class AttachmentFilter:
                 yield cleaned
 
     def is_passthrough(self) -> bool:
-        return not self.media_type_patterns and not self.title_patterns
+        return not self._media_type_patterns and not self._title_patterns
 
     def matches(self, att: AttachmentInfo) -> bool:
         if self.is_passthrough():
             return True
-        mt = att.media_type.lower()
-        if any(fnmatchcase(mt, p.lower()) for p in self.media_type_patterns):
-            return True
+
+        media_type = att.media_type.lower()
+        for pattern in self._media_type_patterns:
+            if fnmatchcase(media_type, pattern.lower()):
+                return True
+
         title = att.title.lower()
-        return any(fnmatchcase(title, p.lower()) for p in self.title_patterns)
+        for pattern in self._title_patterns:
+            if fnmatchcase(title, pattern.lower()):
+                return True
+
+        return False
 
 
-@dataclass(frozen=True, slots=True)
 class SpaceMask:
     """Маски выбора спейсов: ключ как есть или glob по ключу и названию.
 
-    Список без glob-символов это перечисление ключей, и список спейсов с
-    сервера для него не нужен; маска со звёздочкой требует обхода списка,
-    поэтому вызывающий спрашивает has_wildcard до запроса.
+    Собирается один раз в конструкторе владельца (читатель спейсов, список
+    спейсов инструмента) из масок конфига или вызова: пустые и пробельные
+    маски отбрасываются. Список без glob-символов это перечисление ключей, и
+    список спейсов с сервера для него не нужен; маска со звёздочкой требует
+    обхода списка, поэтому вызывающий спрашивает has_wildcard до запроса.
     """
 
     GLOB_MARKS: ClassVar[str] = "*?["
 
-    patterns: tuple[str, ...] = ()
-
-    @classmethod
-    def of_masks(cls, masks: Iterable[str]) -> SpaceMask:
+    def __init__(self, masks: Iterable[str]) -> None:
         patterns: list[str] = []
         for item in masks:
             cleaned = item.strip()
             if cleaned:
                 patterns.append(cleaned)
 
-        return cls(patterns=tuple(patterns))
+        self._patterns = tuple(patterns)
+
+    @property
+    def patterns(self) -> tuple[str, ...]:
+        return self._patterns
 
     @property
     def has_wildcard(self) -> bool:
-        for pattern in self.patterns:
+        for pattern in self._patterns:
             if any(mark in pattern for mark in self.GLOB_MARKS):
                 return True
 
         return False
 
-    def keys(self) -> tuple[str, ...]:
+    def is_passthrough(self) -> bool:
+        """Без масок проходит любой спейс."""
+        return not self._patterns
+
+    def as_keys(self) -> tuple[str, ...]:
         """Маски как ключи: годится, только когда has_wildcard ложно."""
-        return self.patterns
+        return self._patterns
 
     def matches(self, space: ConfluenceSpaceItem) -> bool:
-        """Совпадение по ключу или названию целиком, без учёта регистра."""
+        """Совпадение по ключу или названию целиком, без учёта регистра;
+        без масок совпадает всё."""
+        if self.is_passthrough():
+            return True
+
         key = space.key.lower()
         name = space.name.lower()
-        for pattern in self.patterns:
+        for pattern in self._patterns:
             lowered = pattern.lower()
             if fnmatchcase(key, lowered):
                 return True
@@ -577,9 +569,8 @@ class AttachmentGate:
 
         return AttachmentVerdict.TAKE
 
-    @classmethod
-    def _is_image(cls, att: AttachmentInfo) -> bool:
-        return att.media_type.lower().startswith(cls.IMAGE_MEDIA_PREFIX)
+    def _is_image(self, att: AttachmentInfo) -> bool:
+        return att.media_type.lower().startswith(self.IMAGE_MEDIA_PREFIX)
 
 
 class PageSectionKind(StrEnum):
@@ -637,14 +628,13 @@ class PageParseRequest(BaseModel):
     table_shape: TableShape
 
 
-class PageTarget(BaseModel):
+@dataclass(frozen=True)
+class PageTarget:
     """Страница, на которую ведёт ссылка: id и/или заголовок из адреса.
 
     Короткая ссылка /x/<код> не несёт ни того, ни другого — для неё оба
     поля пусты, и подпись берётся из текста ссылки.
     """
-
-    model_config = ConfigDict(frozen=True)
 
     page_id: str = ""
     title: str = ""
@@ -668,23 +658,24 @@ class LinkKind(StrEnum):
     MACRO = "macro"
 
 
-class PageLink(BaseModel):
+@dataclass(frozen=True)
+class PageLink:
     """Ссылка со страницы на другую страницу: цель и способ записи."""
-
-    model_config = ConfigDict(frozen=True)
 
     target: PageTarget
     kind: LinkKind
 
 
 class PageHref:
-    """Разбор href в страницу Confluence — одна точка, где живут формы адресов.
+    """Ссылка href и страница Confluence за ней — одна точка, где живут формы
+    адресов.
 
-    Страницей считаются /spaces/<KEY>/pages/<id>/<Title>, /display/<SPACE>/<Title>,
+    Создаётся разбором HTML на каждую ссылку; target() отдаёт страницу или None,
+    если это не другая страница Confluence. Страницей считаются
+    /spaces/<KEY>/pages/<id>/<Title>, /display/<SPACE>/<Title>,
     /pages/viewpage.action?pageId=<id> и короткие /x/<код>. Профили
     (/display/~user), вложения, черновики, фрагменты своей страницы и внешние
-    адреса страницами не являются. Зовёт его разбор HTML при сборе ссылок
-    карточки.
+    адреса страницами не являются.
     """
 
     SPACES_RE: ClassVar[re.Pattern[str]] = re.compile(
@@ -697,24 +688,24 @@ class PageHref:
     TINY_RE: ClassVar[re.Pattern[str]] = re.compile(r"/x/[^/]+/?$")
     PAGE_ID_PARAM: ClassVar[str] = "pageId"
 
-    @classmethod
-    def parse(cls, href: str) -> PageTarget | None:
+    def __init__(self, href: str) -> None:
+        self._parts = urlsplit(href)
+
+    def target(self) -> PageTarget | None:
         """Цель ссылки или None, если это не другая страница Confluence."""
-        parts = urlsplit(href)
-        if not parts.path:
+        if not self._parts.path:
             return None
 
-        probes = (cls._spaces, cls._viewpage, cls._display, cls._tiny)
+        probes = (self._spaces, self._viewpage, self._display, self._tiny)
         for probe in probes:
-            target = probe(parts)
+            target = probe(self._parts)
             if target is not None:
                 return target
 
         return None
 
-    @classmethod
-    def _spaces(cls, parts: SplitResult) -> PageTarget | None:
-        match = cls.SPACES_RE.search(parts.path)
+    def _spaces(self, parts: SplitResult) -> PageTarget | None:
+        match = self.SPACES_RE.search(parts.path)
         if match is None:
             return None
 
@@ -722,30 +713,27 @@ class PageHref:
         if segment is None:
             segment = ""
 
-        return PageTarget(page_id=match.group(1), title=cls._title(segment))
+        return PageTarget(page_id=match.group(1), title=self._title(segment))
 
-    @classmethod
-    def _viewpage(cls, parts: SplitResult) -> PageTarget | None:
-        if not cls.VIEWPAGE_RE.search(parts.path):
+    def _viewpage(self, parts: SplitResult) -> PageTarget | None:
+        if not self.VIEWPAGE_RE.search(parts.path):
             return None
 
-        ids = parse_qs(parts.query).get(cls.PAGE_ID_PARAM)
+        ids = parse_qs(parts.query).get(self.PAGE_ID_PARAM)
         if not ids:
             return None
 
         return PageTarget(page_id=ids[0])
 
-    @classmethod
-    def _display(cls, parts: SplitResult) -> PageTarget | None:
-        match = cls.DISPLAY_RE.search(parts.path)
+    def _display(self, parts: SplitResult) -> PageTarget | None:
+        match = self.DISPLAY_RE.search(parts.path)
         if match is None:
             return None
 
-        return PageTarget(title=cls._title(match.group(1)))
+        return PageTarget(title=self._title(match.group(1)))
 
-    @classmethod
-    def _tiny(cls, parts: SplitResult) -> PageTarget | None:
-        if not cls.TINY_RE.search(parts.path):
+    def _tiny(self, parts: SplitResult) -> PageTarget | None:
+        if not self.TINY_RE.search(parts.path):
             return None
 
         return PageTarget()
@@ -833,29 +821,32 @@ class ParseGrade(IntEnum):
     TEXT = 0
     OCR = 1
 
-    @classmethod
-    def of(cls, *, ocr: bool) -> ParseGrade:
-        if ocr:
-            return cls.OCR
-
-        return cls.TEXT
-
 
 class ConfluenceMarks:
-    """Отпечатки версий для реестра: что известно из списка без скачивания."""
+    """Отпечатки версий для реестра: что известно из списка без скачивания.
+
+    Создаётся сборщиком запросов на его раскладку страницы; отпечаток страницы
+    несёт версию и раскладку, вложения — версию, дату, размер и тип.
+    """
 
     PAGE_LAYOUT: ClassVar[int] = 2
     """Версия раскладки страницы на секции. Входит в отпечаток: без неё уже
     проиндексированные страницы не переразбираются после смены разбора,
     сколько бы он ни улучшился. Поднимается при каждой такой смене."""
 
-    @classmethod
-    def page(cls, version: int) -> SourceMark:
-        return SourceMark(fingerprint=f"v{version}:l{cls.PAGE_LAYOUT}")
+    def __init__(self, page_layout: int = PAGE_LAYOUT) -> None:
+        self._page_layout = page_layout
 
-    @staticmethod
+    def page(self, version: int) -> SourceMark:
+        return SourceMark(fingerprint=f"v{version}:l{self._page_layout}")
+
     def attachment(
-        att: AttachmentInfo, *, parent: SourceId, grade: ParseGrade, skip: str = ""
+        self,
+        att: AttachmentInfo,
+        *,
+        parent: SourceId,
+        grade: ParseGrade,
+        skip: str = "",
     ) -> SourceMark:
         fingerprint = f"v{att.version}:{att.when}:{att.file_size}:{att.media_type}"
         return SourceMark(
@@ -866,44 +857,40 @@ class ConfluenceMarks:
         )
 
 
-class ConfluenceSourceId:
-    """Identity источника: URL запрошенного объекта без query и фрагмента.
+class ConfluenceSourceIds:
+    """Identity источников: URL запрошенного объекта без query и фрагмента.
 
     Страница — её REST-адрес content/{id}, вложение — путь download; один
     объект во всех версиях имеет один id, версия у Confluence живёт в query.
+    Создаётся транспортом и обходом источников у себя в конструкторе.
     """
 
     PAGE_RE: ClassVar[re.Pattern[str]] = re.compile(r"/rest/api/content/([^/?#]+)$")
     ATTACHMENT_MARK: ClassVar[str] = "/download/attachments/"
 
-    @classmethod
-    def of(cls, profile: HttpConnection, path: str) -> SourceId:
-        return cls.of_url(str(profile.url_of(path)))
+    def of(self, profile: HttpConnection, path: str) -> SourceId:
+        return self.of_url(str(profile.url_of(path)))
 
-    @staticmethod
-    def of_url(url: str) -> SourceId:
+    def of_url(self, url: str) -> SourceId:
         """URL без query, фрагмента и учётных данных адреса."""
         bare = httpx.URL(url).copy_with(userinfo=b"", query=None, fragment=None)
         return SourceId(str(bare))
 
-    @classmethod
-    def page_id_of(cls, source_id: SourceId) -> str | None:
+    def page_id_of(self, source_id: SourceId) -> str | None:
         """id страницы из её source_id; None, если это не страница."""
-        match = cls.PAGE_RE.search(str(source_id))
+        match = self.PAGE_RE.search(str(source_id))
         if match is None:
             return None
 
         return match.group(1)
 
-    @classmethod
-    def is_attachment(cls, source_id: SourceId) -> bool:
-        return cls.ATTACHMENT_MARK in str(source_id)
+    def is_attachment(self, source_id: SourceId) -> bool:
+        return self.ATTACHMENT_MARK in str(source_id)
 
-    @classmethod
-    def page_ids_of(cls, source_ids: Iterable[SourceId]) -> Sequence[str]:
+    def page_ids_of(self, source_ids: Iterable[SourceId]) -> Sequence[str]:
         ids: list[str] = []
         for source_id in source_ids:
-            page_id = cls.page_id_of(source_id)
+            page_id = self.page_id_of(source_id)
             if page_id is not None:
                 ids.append(page_id)
 
@@ -925,16 +912,26 @@ class HttpKeys:
     )
 
 
+class TitlesCodec:
+    """Кортеж строк в JSON-список и обратно: значение ключей metadata со
+    списками заголовков и меток."""
+
+    def decode(self, raw: str) -> tuple[str, ...]:
+        titles: list[str] = []
+        for item in json.loads(raw):
+            titles.append(str(item))
+
+        return tuple(titles)
+
+    def encode(self, value: tuple[str, ...]) -> str:
+        return json.dumps(list(value), ensure_ascii=False)
+
+
 class ConfluenceKeys:
-    """Confluence-специфичные ключи metadata."""
+    """Confluence-специфичные ключи metadata: реестр констант, значения
+    списков кодирует TitlesCodec, вложение — JSON своей модели."""
 
-    @staticmethod
-    def _decode_titles(s: str) -> tuple[str, ...]:
-        return tuple(str(x) for x in json.loads(s))
-
-    @staticmethod
-    def _encode_titles(v: tuple[str, ...]) -> str:
-        return json.dumps(list(v), ensure_ascii=False)
+    TITLES: ClassVar[TitlesCodec] = TitlesCodec()
 
     SOURCE_URL: ClassVar[MetadataKey[str]] = MetadataKey(
         name="source_url",
@@ -972,24 +969,24 @@ class ConfluenceKeys:
     )
     ANCESTORS_TITLES: ClassVar[MetadataKey[tuple[str, ...]]] = MetadataKey(
         name="confluence.ancestors_titles",
-        decode=_decode_titles,
-        encode=_encode_titles,
+        decode=TITLES.decode,
+        encode=TITLES.encode,
     )
     LABELS: ClassVar[MetadataKey[tuple[str, ...]]] = MetadataKey(
         name="confluence.labels",
-        decode=_decode_titles,
-        encode=_encode_titles,
+        decode=TITLES.decode,
+        encode=TITLES.encode,
     )
     """Метки страницы из metadata.labels — настоящие теги Confluence."""
 
     LINKS: ClassVar[MetadataKey[tuple[str, ...]]] = MetadataKey(
         name="confluence.links",
-        decode=_decode_titles,
-        encode=_encode_titles,
+        decode=TITLES.decode,
+        encode=TITLES.encode,
     )
     """Заголовки страниц, на которые ссылается эта: явный граф переходов."""
     ATTACHMENT_INFO: ClassVar[MetadataKey[AttachmentInfo]] = MetadataKey(
         name="confluence.attachment_info",
-        decode=AttachmentInfo.decode,
-        encode=AttachmentInfo.encode,
+        decode=AttachmentInfo.model_validate_json,
+        encode=AttachmentInfo.model_dump_json,
     )

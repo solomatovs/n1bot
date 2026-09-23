@@ -29,8 +29,8 @@ from chat_ui import ChatOpener
 
 from boba.canvas.diagram import DiagramPrompt
 from boba.config import bind
-from boba.confluence.html import PageOps
-from boba.confluence.parsing import ConfluenceJson
+from boba.confluence.html import MarkdownRender, SectionsRender
+from boba.confluence.parsing import JsonNode
 from boba.confluence.rest import CflRestBuilder
 from boba.doc.config import DocConfig
 from boba.doc.document import DisabledOcr, DocumentHint, PageWindow
@@ -52,7 +52,7 @@ from boba.stand.ui.stand import (
 )
 from boba.text.grep import GrepLimits, TextGrep
 from boba.tool.canvas.tools import CanvasPrompt
-from boba.tool.confluence.tools import ConfluenceToolsConfig, CqlSearch
+from boba.tool.confluence.tools import ConfluenceToolsConfig, CqlQuery
 from boba.toolkit.result import (
     CanvasResult,
     ErrorResult,
@@ -476,13 +476,13 @@ class ConfluencePage:
 
     @property
     def markdown(self) -> str:
-        answer = PageOps.to_markdown({"html": self.html, "heading_style": "ATX"})
+        answer = MarkdownRender({"html": self.html, "heading_style": "ATX"}).run()
         return str(answer["markdown"])
 
     @property
     def indexed_text(self) -> str:
         """Текст секций страницы: ровно то, что ingest кладёт в базу знаний."""
-        answer = PageOps.confluence_sections({"html": self.html, "title": self.title})
+        answer = SectionsRender({"html": self.html, "title": self.title}).run()
         parts: list[str] = []
         for section in answer["sections"]:
             parts.append(str(section["content"]))
@@ -549,6 +549,7 @@ class ConfluenceSite:
 
     def __init__(self, config: ConfluenceToolsConfig) -> None:
         self._config = config
+        self._rest = CflRestBuilder()
         profile = config.confluence
         self._profile = profile
         self._client = httpx.Client(
@@ -604,8 +605,8 @@ class ConfluenceSite:
 
     def find_page(self, query: str) -> ConfluencePage:
         """Самая короткая непустая страница из выдачи того же CQL, что у тула."""
-        cql = CqlSearch.build_cql(query=query, spaces=None)
-        path = CflRestBuilder.cql_search_path(
+        cql = CqlQuery(query, None).render()
+        path = self._rest.cql_search_path(
             cql, limit=self.SEARCH_LIMIT, start=0, expand=self.EXPAND
         )
         data = self.get_json(path)
@@ -631,7 +632,7 @@ class ConfluenceSite:
             if str(space.get("type") or "") != "global":
                 continue
 
-            html = ConfluenceJson.body_html(hit, "view")
+            html = JsonNode(hit).body_html("view")
             if len(html) < self.MIN_HTML_CHARS:
                 continue
 
@@ -646,8 +647,8 @@ class ConfluenceSite:
 
     def find_attachment(self, query: str) -> ConfluenceAttachment:
         """Вложение .docx из поиска; текст считается теми же ридерами boba-doc."""
-        cql = CqlSearch.build_cql(query=query, spaces=None)
-        path = CflRestBuilder.cql_search_path(cql, limit=self.ATTACHMENT_LIMIT, start=0)
+        cql = CqlQuery(query, None).render()
+        path = self._rest.cql_search_path(cql, limit=self.ATTACHMENT_LIMIT, start=0)
         data = self.get_json(path)
 
         for hit in data.get("results") or []:
@@ -672,7 +673,7 @@ class ConfluenceSite:
         pytest.skip("Confluence search returned no .docx attachment")
 
     def _attachment_link(self, page_id: str, filename: str) -> str:
-        path = CflRestBuilder.page_fetch_path(
+        path = self._rest.page_fetch_path(
             page_id, body_format=self._config.body_format
         )
         data = self.get_json(path)
@@ -1262,7 +1263,7 @@ class TestIngestTools:
                 "space_key": ProbeText.NO_SPACE.value,
             },
         )
-        path = CflRestBuilder.space_path(ProbeText.NO_SPACE.value)
+        path = CflRestBuilder().space_path(ProbeText.NO_SPACE.value)
         url = confluence_site.url_of(str(path))
         message = (
             f"tool failed 'confluence_index_space': PayloadFailureError: "

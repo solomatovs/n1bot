@@ -7,7 +7,7 @@ DocumentError — вид не определён или не поддержан,
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import contextmanager
 
 from boba.doc.config import DocConfig
@@ -44,7 +44,9 @@ class DocumentRouter:
         self._ocr = ocr
 
     @contextmanager
-    def open(self, stream: ByteStream, hint: DocumentHint) -> Iterator[Document]:
+    def open(
+        self, stream: ByteStream, hint: DocumentHint
+    ) -> Generator[Document, None, None]:
         head = stream.read(Formats.HEAD_SIZE)
         kind = Formats.detect(hint, head)
         if kind is DocumentKind.UNKNOWN:
@@ -57,7 +59,9 @@ class DocumentRouter:
             yield document
 
     @contextmanager
-    def open_as(self, kind: DocumentKind, stream: ByteStream) -> Iterator[Document]:
+    def open_as(
+        self, kind: DocumentKind, stream: ByteStream
+    ) -> Generator[Document, None, None]:
         document = self._open(kind, stream)
         try:
             yield document

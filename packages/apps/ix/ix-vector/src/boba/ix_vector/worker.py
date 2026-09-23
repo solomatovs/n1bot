@@ -232,7 +232,7 @@ def parse_args(argv: Sequence[str] | None = None) -> tuple[Command, Path]:
     return args.command, args.config
 
 
-def main() -> None:
+async def main() -> None:
     section = "ix.vector"
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(message)s")
 
@@ -244,13 +244,13 @@ def main() -> None:
         if command is Command.UPGRADE:
             database = bind_section(config_path, section, IxDatabase)
             upgrade = SchemaUpgrade(package_dir / "schema")
-            report = asyncio.run(upgrade.run(database))
+            report = await upgrade.run(database)
             logger.info("schema applied: %s", ", ".join(report.files))
             return
 
         cfg = bind_section(config_path, section, WorkerConfig)
         worker = VectorWorker(cfg, package_dir / "run")
-        report = asyncio.run(worker.run())
+        report = await worker.run()
         logger.info(
             "done: rounds=%d written=%d pruned=%d",
             report.rounds,
@@ -266,5 +266,10 @@ def main() -> None:
         raise SystemExit(str(exc)) from exc
 
 
+def cli() -> None:
+    """Точка входа консольного скрипта: единственный asyncio.run на процесс."""
+    asyncio.run(main())
+
+
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())

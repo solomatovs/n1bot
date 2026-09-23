@@ -365,7 +365,7 @@ def parse_args(argv: Sequence[str] | None = None) -> tuple[Command, Path]:
     return args.command, args.config
 
 
-def main() -> None:
+async def main() -> None:
     section = "ix.llm_describer"
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(message)s")
 
@@ -377,7 +377,7 @@ def main() -> None:
         if command is Command.UPGRADE:
             database = bind_section(config_path, section, IxDatabase)
             upgrade = SchemaUpgrade(package_dir / "schema")
-            report = asyncio.run(upgrade.run(database))
+            report = await upgrade.run(database)
             logger.info("schema applied: %s", ", ".join(report.files))
             return
 
@@ -385,7 +385,7 @@ def main() -> None:
         pack = PackPrompts(package_dir / "prompt")
         describer = Description(Generators(cfg), pack, cfg.max_input_chars)
         worker = DescriberWorker(cfg, package_dir / "run", pack, describer)
-        report = asyncio.run(worker.run())
+        report = await worker.run()
         logger.info(
             "done: rounds=%d written=%d folded=%d pruned=%d",
             report.rounds,
@@ -400,3 +400,12 @@ def main() -> None:
         DescriberWorkerError,
     ) as exc:
         raise SystemExit(str(exc)) from exc
+
+
+def cli() -> None:
+    """Точка входа консольного скрипта: единственный asyncio.run на процесс."""
+    asyncio.run(main())
+
+
+if __name__ == "__main__":
+    asyncio.run(main())

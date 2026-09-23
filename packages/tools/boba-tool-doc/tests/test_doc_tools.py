@@ -109,7 +109,7 @@ class TestSearchDocument:
         )
 
         assert isinstance(artifact, TableResult)
-        rows = [BoxedHit.model_validate(raw) for raw in artifact.rows]
+        rows = [BoxedHit(**raw) for raw in artifact.rows]
         assert [row.page for row in rows] == [1, 2]
         assert SamplePdf.WORD in rows[0].snippet
         assert rows[0].height > 0

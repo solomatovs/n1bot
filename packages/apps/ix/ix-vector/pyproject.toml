@@ -18,7 +18,7 @@ dependencies = [
 ]
 
 [project.scripts]
-boba-ix-vector = "boba.ix_vector.worker:main"
+boba-ix-vector = "boba.ix_vector.worker:cli"
 
 [tool.setuptools.package-data]
 "boba.ix_vector" = ["*/*.sql", "*/*.md", "*/*.json", "*.html"]

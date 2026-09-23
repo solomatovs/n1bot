@@ -161,7 +161,8 @@ class TestIndexAttachments:
         )
         reports = await stub_indexer.run(SPACE)
         assert fake.calls[StubRoute.DOWNLOAD] == 1
-        assert reports[0].indexed == 1
+        assert reports[0].indexed == 0
+        assert reports[0].unchanged == 5
         text = dict(await rows(ix_database, FTS_ROWS, {"attachment": "att1"}))
         assert text["body"] == "Runbook v2."
 

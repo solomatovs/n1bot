@@ -117,7 +117,7 @@ class IngestStand:
         source = ConfluenceDiscovery(
             conn=self.conn,
             listing=SpaceListing(SPACE),
-            gate=AttachmentGate(allowed=AttachmentFilter(), requested=True, ocr=True),
+            gate=AttachmentGate(allowed=AttachmentFilter(()), requested=True, ocr=True),
             grade=ParseGrade.OCR,
             progress=self.progress,
         )
@@ -129,7 +129,7 @@ class IngestStand:
             },
             reader_id=ReaderId("test.dispatch"),
         )
-        transport = ConfluenceSourceTransport.from_connection(self.conn)
+        transport = ConfluenceSourceTransport(self.conn)
         pipeline: Pipeline[ConfluenceRequest, str] = Pipeline(
             source=source,
             transport=transport,
@@ -146,7 +146,7 @@ class IngestStand:
             ),
         )
         chunker = LoggingChunker(
-            StructuralChunkerFactory.build(params), LOGGER, self.progress
+            StructuralChunkerFactory(params).build(), LOGGER, self.progress
         )
         events = pipeline.index(
             chunker=chunker,
@@ -154,7 +154,7 @@ class IngestStand:
             config=IndexerConfig(workers=1, stamp="test"),
         )
         try:
-            await LoggedIndexRun.drain(events, LOGGER, self.progress)
+            await LoggedIndexRun(LOGGER, self.progress).drain(events)
         finally:
             await transport.close()
 

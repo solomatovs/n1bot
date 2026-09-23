@@ -8,19 +8,20 @@
 Содержимое:
 
 - models.py  — DTO ответов content/search, content/{id} и space; вложение
-  (AttachmentInfo) с фильтром и гейтом администратора; ConfluenceSourceId —
+  (AttachmentInfo) с фильтром и гейтом администратора; ConfluenceSourceIds —
   identity страницы и вложения по URL; ConfluenceKeys/HttpKeys — типизированные
   MetadataKey; ConfluenceMarks — отпечатки версий для реестра источников;
   PageSections — результат разбора страницы (карточка, текст, таблицы) с
   порогами раскладки TableShape.
-- parsing.py — ConfluenceJson и ConfluenceJsonDecoder: REST-JSON -> RawDocument
-  с расширенной metadata; BodyDigest — хэш тела страницы.
+- parsing.py — JsonNode и ConfluenceJsonDecoder: REST-JSON -> RawDocument
+  с расширенной metadata; BodyHasher — хэш тела страницы.
 - rest.py    — ConfluenceConnection (endpoint: профиль, формат тела, дамп),
   ConfluenceUrl и ConfluenceRest (адреса REST), ConfluencePaginator
   (пагинированные запросы поверх HttpTransport проекта).
-- html.py    — ConfluenceHtml и PageOps: разбор HTML Confluence, секции,
-  ссылки и конверсия в markdown; закрыт extra `html` (bs4, markdownify)
-  и импортируется только там, где он нужен.
+- html.py    — ConfluencePage, PageLayout, PageMarkdown и рендеры для тел разбор
+  инструментов:
+  HTML Confluence, секции, ссылки и конверсия в markdown; закрыт extra `html`
+  (bs4, markdownify) и импортируется только там, где он нужен.
 
 Ошибки:
 ConfluencePayloadError — REST-ответ не разобран: не тот тип, нет полей схемы.
@@ -41,7 +42,7 @@ from boba.confluence.models import (
     ConfluencePageItem,
     ConfluencePayloadError,
     ConfluencePlainText,
-    ConfluenceSourceId,
+    ConfluenceSourceIds,
     ConfluenceSpaceItem,
     HttpKeys,
     PageCardSection,
@@ -55,7 +56,7 @@ from boba.confluence.models import (
     ParseGrade,
     TableShape,
 )
-from boba.confluence.parsing import BodyDigest, ConfluenceJson, ConfluenceJsonDecoder
+from boba.confluence.parsing import BodyHasher, ConfluenceJsonDecoder, JsonNode
 
 __all__ = [
     "AttachmentBlock",
@@ -63,19 +64,19 @@ __all__ = [
     "AttachmentGate",
     "AttachmentInfo",
     "AttachmentVerdict",
-    "BodyDigest",
+    "BodyHasher",
     "ConfluenceContent",
     "ConfluenceDescription",
-    "ConfluenceJson",
     "ConfluenceJsonDecoder",
     "ConfluenceKeys",
     "ConfluenceMarks",
     "ConfluencePageItem",
     "ConfluencePayloadError",
     "ConfluencePlainText",
-    "ConfluenceSourceId",
+    "ConfluenceSourceIds",
     "ConfluenceSpaceItem",
     "HttpKeys",
+    "JsonNode",
     "PageCardSection",
     "PageOutlineItem",
     "PageParseRequest",

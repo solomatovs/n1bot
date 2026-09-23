@@ -24,7 +24,7 @@ from boba.confluence.models import (
     AttachmentFilter,
     AttachmentGate,
     ConfluenceMarks,
-    ConfluenceSourceId,
+    ConfluenceSourceIds,
     ParseGrade,
     TableShape,
 )
@@ -65,6 +65,9 @@ from boba.tool.confluence.ingest_base import (
     ConfluenceIngestConfig,
     IngestReport,
     IngestScope,
+    PageScope,
+    QueryScope,
+    SpaceScope,
 )
 from boba.transport.http.profile import HttpConnection, UrlScheme
 
@@ -183,11 +186,11 @@ class IngestStand:
         return ConfluenceConnection(profile=profile, body_format="view")
 
     def page_source(self, page_id: str) -> SourceId:
-        path = CflRestBuilder.page_body_path(page_id, body_format="view")
-        return ConfluenceSourceId.of(self.connection().profile, str(path))
+        path = CflRestBuilder().page_body_path(page_id, body_format="view")
+        return ConfluenceSourceIds().of(self.connection().profile, str(path))
 
     def attachment_source(self, page_id: str, title: str) -> SourceId:
-        return ConfluenceSourceId.of(
+        return ConfluenceSourceIds().of(
             self.connection().profile, f"/download/attachments/{page_id}/{title}"
         )
 
@@ -203,8 +206,12 @@ class IngestStand:
         self.reader.reads.clear()
         # счёт ведётся на прогон, как в теле инструмента
         self.progress = IngestProgress(LOGGER)
+        grade = ParseGrade.TEXT
+        if ocr:
+            grade = ParseGrade.OCR
+
         gate = AttachmentGate(
-            allowed=AttachmentFilter.of_masks(self.ATTACHMENT_MASKS),
+            allowed=AttachmentFilter(self.ATTACHMENT_MASKS),
             requested=attachments,
             ocr=ocr,
         )
@@ -222,7 +229,7 @@ class IngestStand:
                 row_layout_min_rows=3,
             ),
         )
-        return await ConfluenceIngest.run(
+        return await ConfluenceIngest(
             scope=scope,
             conn=self.connection(),
             chunk_store=LoggingChunkStore(self.chunks, LOGGER),
@@ -230,16 +237,16 @@ class IngestStand:
             ledger=LoggingSourceLedger(self.ledger, LOGGER),
             embedder=ZeroEmbedder(),
             chunker=LoggingChunker(
-                StructuralChunkerFactory.build(params), LOGGER, self.progress
+                StructuralChunkerFactory(params).build(), LOGGER, self.progress
             ),
             collection=COLLECTION,
             workers=workers,
             stamp="test-stamp",
             progress=self.progress,
             gate=gate,
-            grade=ParseGrade.of(ocr=ocr),
+            grade=grade,
             routes=routes,
-        )
+        ).run()
 
     async def record(self, source_id: SourceId) -> SourceRecord | None:
         return await self.ledger.lookup(source_id)
@@ -277,7 +284,7 @@ class IngestStand:
 
 
 def _scope_of(space: str) -> str:
-    return IngestScope.space(space).owned()
+    return SpaceScope(space).owned()
 
 
 def _space(stub: ConfluenceStub) -> None:
@@ -335,7 +342,7 @@ class TestFirstRun:
         _space(stub)
         async with LiveServer(stub.app()) as server:
             stand = await _stand(stub, server, store_cfg)
-            stats = await stand.run(IngestScope.space(SPACE))
+            stats = await stand.run(SpaceScope(SPACE))
 
         if stats.pages.failed + stats.attachments.failed != 0:
             raise AssertionError(f"failed: {stats}")
@@ -345,7 +352,7 @@ class TestFirstRun:
         page = await stand.record(stand.page_source("101"))
         if page is None:
             raise AssertionError("page 101 must be in the ledger")
-        if page.fingerprint != ConfluenceMarks.page(1).fingerprint:
+        if page.fingerprint != ConfluenceMarks().page(1).fingerprint:
             raise AssertionError(f"page fingerprint: {page.fingerprint}")
         if not page.content_hash:
             raise AssertionError("page body hash must be recorded")
@@ -368,7 +375,7 @@ class TestFirstRun:
         _space(stub)
         async with LiveServer(stub.app()) as server:
             stand = await _stand(stub, server, store_cfg)
-            await stand.run(IngestScope.space(SPACE), ocr=False)
+            await stand.run(SpaceScope(SPACE), ocr=False)
 
         if stand.reader.parsed("scheme.png") != 0:
             raise AssertionError("image must not be parsed without ocr")
@@ -386,8 +393,8 @@ class TestReport:
         _space(stub)
         async with LiveServer(stub.app()) as server:
             stand = await _stand(stub, server, store_cfg)
-            await stand.run(IngestScope.space(SPACE))
-            report = await stand.run(IngestScope.space(SPACE))
+            await stand.run(SpaceScope(SPACE))
+            report = await stand.run(SpaceScope(SPACE))
 
         if report.pages.found != 3:
             raise AssertionError(f"pages are still found: {report.pages}")
@@ -404,7 +411,7 @@ class TestReport:
         stub.spaces.add("EMPTY")
         async with LiveServer(stub.app()) as server:
             stand = await _stand(stub, server, store_cfg)
-            report = await stand.run(IngestScope.space("EMPTY"))
+            report = await stand.run(SpaceScope("EMPTY"))
 
         if report.pages.found != 0:
             raise AssertionError(f"an empty space finds nothing: {report.pages}")
@@ -418,7 +425,7 @@ class TestReport:
         _space(stub)
         async with LiveServer(stub.app()) as server:
             stand = await _stand(stub, server, store_cfg)
-            report = await stand.run(IngestScope.space(SPACE), attachments=False)
+            report = await stand.run(SpaceScope(SPACE), attachments=False)
 
         if report.attachments.found != 3:
             raise AssertionError(f"attachments are counted: {report.attachments}")
@@ -435,7 +442,7 @@ class TestReport:
         stub.pages["101"].broken = True
         async with LiveServer(stub.app()) as server:
             stand = await _stand(stub, server, store_cfg)
-            report = await stand.run(IngestScope.space(SPACE))
+            report = await stand.run(SpaceScope(SPACE))
 
         if report.pages.failed != 1:
             raise AssertionError(f"one page failed: {report.pages}")
@@ -451,8 +458,8 @@ class TestSecondRun:
         _space(stub)
         async with LiveServer(stub.app()) as server:
             stand = await _stand(stub, server, store_cfg)
-            await stand.run(IngestScope.space(SPACE))
-            stats = await stand.run(IngestScope.space(SPACE))
+            await stand.run(SpaceScope(SPACE))
+            stats = await stand.run(SpaceScope(SPACE))
 
         if stats.pages.chunks + stats.attachments.chunks != 0:
             raise AssertionError(f"second run must index nothing: {stats}")
@@ -472,9 +479,9 @@ class TestSecondRun:
         _space(stub)
         async with LiveServer(stub.app()) as server:
             stand = await _stand(stub, server, store_cfg)
-            await stand.run(IngestScope.space(SPACE))
+            await stand.run(SpaceScope(SPACE))
             stub.pages["101"].edit(html="<h1>Overview</h1><p>alpha text changed</p>")
-            stats = await stand.run(IngestScope.space(SPACE))
+            stats = await stand.run(SpaceScope(SPACE))
 
         if stub.calls[StubRoute.BODY] != 1:
             raise AssertionError(f"only the edited page body: {stub.calls}")
@@ -484,7 +491,7 @@ class TestSecondRun:
             raise AssertionError(f"edited page must be indexed: {stats}")
 
         page = await stand.record(stand.page_source("101"))
-        if page is None or page.fingerprint != ConfluenceMarks.page(2).fingerprint:
+        if page is None or page.fingerprint != ConfluenceMarks().page(2).fingerprint:
             raise AssertionError(f"page fingerprint after edit: {page}")
 
     async def test_renamed_page_is_reindexed(
@@ -494,9 +501,9 @@ class TestSecondRun:
         _space(stub)
         async with LiveServer(stub.app()) as server:
             stand = await _stand(stub, server, store_cfg)
-            await stand.run(IngestScope.space(SPACE))
+            await stand.run(SpaceScope(SPACE))
             stub.pages["103"].edit(title="Empty renamed")
-            await stand.run(IngestScope.space(SPACE))
+            await stand.run(SpaceScope(SPACE))
 
         if stand.reader.parsed("/rest/api/content/103") != 1:
             raise AssertionError("renamed page must be parsed again")
@@ -508,10 +515,10 @@ class TestSecondRun:
         _space(stub)
         async with LiveServer(stub.app()) as server:
             stand = await _stand(stub, server, store_cfg)
-            await stand.run(IngestScope.space(SPACE))
+            await stand.run(SpaceScope(SPACE))
             report = stub.pages["101"].attachment("report.pdf")
             report.upload(report.content, when="2026-02-01T00:00:00.000Z")
-            stats = await stand.run(IngestScope.space(SPACE))
+            stats = await stand.run(SpaceScope(SPACE))
 
         if stub.calls[StubRoute.DOWNLOAD] != 1:
             raise AssertionError(f"one download expected: {stub.calls}")
@@ -531,10 +538,10 @@ class TestSecondRun:
         _space(stub)
         async with LiveServer(stub.app()) as server:
             stand = await _stand(stub, server, store_cfg)
-            await stand.run(IngestScope.space(SPACE))
+            await stand.run(SpaceScope(SPACE))
             notes = stub.pages["101"].attachment("notes.txt")
             notes.upload(b"notes v2 rewritten", when="2026-02-01T00:00:00.000Z")
-            stats = await stand.run(IngestScope.space(SPACE))
+            stats = await stand.run(SpaceScope(SPACE))
 
         if stand.reader.parsed("notes.txt") != 1:
             raise AssertionError("replaced attachment must be parsed")
@@ -549,10 +556,10 @@ class TestSecondRun:
         stub.add(StubPage(id="201", space=SPACE, title="Long", html=long_html))
         async with LiveServer(stub.app()) as server:
             stand = await _stand(stub, server, store_cfg)
-            await stand.run(IngestScope.space(SPACE))
+            await stand.run(SpaceScope(SPACE))
             before = await stand.chunk_count(stand.page_source("201"))
             stub.pages["201"].edit(html="<p>short</p>")
-            stats = await stand.run(IngestScope.space(SPACE))
+            stats = await stand.run(SpaceScope(SPACE))
             after = await stand.chunk_count(stand.page_source("201"))
 
         if before <= 1:
@@ -571,9 +578,9 @@ class TestAdditions:
         _space(stub)
         async with LiveServer(stub.app()) as server:
             stand = await _stand(stub, server, store_cfg)
-            await stand.run(IngestScope.space(SPACE))
+            await stand.run(SpaceScope(SPACE))
             stub.add(StubPage(id="104", space=SPACE, title="Fresh", html="<p>new</p>"))
-            stats = await stand.run(IngestScope.space(SPACE))
+            stats = await stand.run(SpaceScope(SPACE))
 
         if stub.calls[StubRoute.BODY] != 1:
             raise AssertionError(f"only the new page body: {stub.calls}")
@@ -591,11 +598,11 @@ class TestAdditions:
         _space(stub)
         async with LiveServer(stub.app()) as server:
             stand = await _stand(stub, server, store_cfg)
-            await stand.run(IngestScope.space(SPACE))
+            await stand.run(SpaceScope(SPACE))
             stub.pages["103"].attachments.append(
                 StubAttachment("a7", "extra.txt", TEXT, b"extra text")
             )
-            stats = await stand.run(IngestScope.space(SPACE))
+            stats = await stand.run(SpaceScope(SPACE))
 
         if stub.calls[StubRoute.DOWNLOAD] != 1:
             raise AssertionError(f"only the new attachment: {stub.calls}")
@@ -619,8 +626,8 @@ class TestAttachmentsFlag:
         _space(stub)
         async with LiveServer(stub.app()) as server:
             stand = await _stand(stub, server, store_cfg)
-            await stand.run(IngestScope.space(SPACE), attachments=True)
-            stats = await stand.run(IngestScope.space(SPACE), attachments=False)
+            await stand.run(SpaceScope(SPACE), attachments=True)
+            stats = await stand.run(SpaceScope(SPACE), attachments=False)
 
         if stub.calls[StubRoute.DOWNLOAD] != 0:
             raise AssertionError(f"no downloads without attachments: {stub.calls}")
@@ -636,10 +643,10 @@ class TestAttachmentsFlag:
         _space(stub)
         async with LiveServer(stub.app()) as server:
             stand = await _stand(stub, server, store_cfg)
-            await stand.run(IngestScope.space(SPACE), attachments=True)
+            await stand.run(SpaceScope(SPACE), attachments=True)
             page = stub.pages["101"]
             page.attachments = [page.attachment("report.pdf")]
-            stats = await stand.run(IngestScope.space(SPACE), attachments=False)
+            stats = await stand.run(SpaceScope(SPACE), attachments=False)
 
         if stats.pages.deleted + stats.attachments.deleted != 1:
             raise AssertionError(f"removed attachment must go: {stats}")
@@ -657,14 +664,14 @@ class TestOcrGrade:
         _space(stub)
         async with LiveServer(stub.app()) as server:
             stand = await _stand(stub, server, store_cfg)
-            await stand.run(IngestScope.space(SPACE), ocr=False)
-            await stand.run(IngestScope.space(SPACE), ocr=True)
+            await stand.run(SpaceScope(SPACE), ocr=False)
+            await stand.run(SpaceScope(SPACE), ocr=True)
             with_ocr = stand.reader.parsed("report.pdf") + stand.reader.parsed(
                 "scheme.png"
             )
-            await stand.run(IngestScope.space(SPACE), ocr=True)
+            await stand.run(SpaceScope(SPACE), ocr=True)
             again = len(stand.reader.reads)
-            await stand.run(IngestScope.space(SPACE), ocr=False)
+            await stand.run(SpaceScope(SPACE), ocr=False)
             downgraded = len(stand.reader.reads)
 
         if with_ocr != 2:
@@ -687,9 +694,9 @@ class TestDeletedPages:
         _space(stub)
         async with LiveServer(stub.app()) as server:
             stand = await _stand(stub, server, store_cfg)
-            await stand.run(IngestScope.space(SPACE))
+            await stand.run(SpaceScope(SPACE))
             stub.delete("101")
-            stats = await stand.run(IngestScope.space(SPACE))
+            stats = await stand.run(SpaceScope(SPACE))
 
         if stats.pages.deleted + stats.attachments.deleted != 3:
             raise AssertionError(f"page and two attachments must go: {stats}")
@@ -707,8 +714,8 @@ class TestDeletedPages:
         _space(stub)
         async with LiveServer(stub.app()) as server:
             stand = await _stand(stub, server, store_cfg)
-            await stand.run(IngestScope.space(SPACE))
-            stats = await stand.run(IngestScope.query('id = "103"'))
+            await stand.run(SpaceScope(SPACE))
+            stats = await stand.run(QueryScope('id = "103"'))
 
         if stats.pages.deleted + stats.attachments.deleted != 0:
             raise AssertionError(f"existing pages must survive a narrow query: {stats}")
@@ -724,9 +731,9 @@ class TestDeletedPages:
         _space(stub)
         async with LiveServer(stub.app()) as server:
             stand = await _stand(stub, server, store_cfg)
-            await stand.run(IngestScope.space(SPACE))
+            await stand.run(SpaceScope(SPACE))
             stub.delete("102")
-            stats = await stand.run(IngestScope.page("103"))
+            stats = await stand.run(PageScope("103"))
 
         if stats.pages.deleted + stats.attachments.deleted != 0:
             raise AssertionError(f"single page must not touch others: {stats}")
@@ -757,12 +764,12 @@ class TestParallelRuns:
         )
         async with LiveServer(stub.app()) as server:
             stand = await _stand(stub, server, store_cfg)
-            await stand.run(IngestScope.space(SPACE))
-            await stand.run(IngestScope.space("OTHER"))
+            await stand.run(SpaceScope(SPACE))
+            await stand.run(SpaceScope("OTHER"))
 
             first, second = await asyncio.gather(
-                stand.run(IngestScope.space(SPACE)),
-                stand.run(IngestScope.space("OTHER")),
+                stand.run(SpaceScope(SPACE)),
+                stand.run(SpaceScope("OTHER")),
             )
 
         deleted = (
@@ -791,10 +798,10 @@ class TestGoneAnswer:
         _space(stub)
         async with LiveServer(stub.app()) as server:
             stand = await _stand(stub, server, store_cfg)
-            await stand.run(IngestScope.space(SPACE))
+            await stand.run(SpaceScope(SPACE))
             stub.pages["101"].version += 1
             stub.pages["101"].missing = True
-            report = await stand.run(IngestScope.page("101"))
+            report = await stand.run(PageScope("101"))
 
         if report.pages.deleted != 1:
             raise AssertionError(f"the page is gone: {report.pages}")
@@ -812,10 +819,10 @@ class TestGoneAnswer:
         _space(stub)
         async with LiveServer(stub.app()) as server:
             stand = await _stand(stub, server, store_cfg)
-            await stand.run(IngestScope.space(SPACE))
+            await stand.run(SpaceScope(SPACE))
             stub.pages["101"].version += 1
             stub.pages["101"].broken = True
-            report = await stand.run(IngestScope.space(SPACE))
+            report = await stand.run(SpaceScope(SPACE))
 
         if report.pages.failed != 1:
             raise AssertionError(f"the page failed: {report.pages}")
@@ -833,11 +840,11 @@ class TestFailures:
         _space(stub)
         async with LiveServer(stub.app()) as server:
             stand = await _stand(stub, server, store_cfg)
-            await stand.run(IngestScope.space(SPACE))
+            await stand.run(SpaceScope(SPACE))
             page = stub.pages["101"]
             page.edit(html="<p>new</p>")
             page.broken = True
-            stats = await stand.run(IngestScope.space(SPACE))
+            stats = await stand.run(SpaceScope(SPACE))
 
         if stats.pages.failed + stats.attachments.failed != 1:
             raise AssertionError(f"one failed page: {stats}")
@@ -856,7 +863,7 @@ class TestFailures:
         )
         async with LiveServer(stub.app()) as server:
             stand = await _stand(stub, server, store_cfg)
-            stats = await stand.run(IngestScope.space(SPACE))
+            stats = await stand.run(SpaceScope(SPACE))
 
         if stats.pages.failed + stats.attachments.failed != 1:
             raise AssertionError(f"one failed attachment: {stats}")
@@ -888,7 +895,7 @@ class TestManyAttachments:
         )
         async with LiveServer(stub.app()) as server:
             stand = await _stand(stub, server, store_cfg)
-            stats = await stand.run(IngestScope.space(SPACE))
+            stats = await stand.run(SpaceScope(SPACE))
 
         if stub.calls[StubRoute.ATTACHMENTS] != 3:
             raise AssertionError(f"30 attachments by 10 per listing page: {stub.calls}")
@@ -915,7 +922,7 @@ class TestArchivedSpace:
         stub.archive(SPACE)
         async with LiveServer(stub.app()) as server:
             stand = await _stand(stub, server, store_cfg)
-            stats = await stand.run(IngestScope.space(SPACE), attachments=False)
+            stats = await stand.run(SpaceScope(SPACE), attachments=False)
 
         if stats.pages.found != 3:
             raise AssertionError(f"an archived space still lists its pages: {stats}")
@@ -932,9 +939,9 @@ class TestArchivedSpace:
         _space(stub)
         async with LiveServer(stub.app()) as server:
             stand = await _stand(stub, server, store_cfg)
-            await stand.run(IngestScope.space(SPACE))
+            await stand.run(SpaceScope(SPACE))
             stub.archive(SPACE)
-            stats = await stand.run(IngestScope.space(SPACE))
+            stats = await stand.run(SpaceScope(SPACE))
 
         if stats.pages.deleted + stats.attachments.deleted != 0:
             raise AssertionError(f"archiving deletes nothing from the index: {stats}")
@@ -949,7 +956,7 @@ class TestArchivedSpace:
         stub.archive(SPACE)
         async with LiveServer(stub.app()) as server:
             stand = await _stand(stub, server, store_cfg)
-            stats = await stand.run(IngestScope.page("103"), attachments=False)
+            stats = await stand.run(PageScope("103"), attachments=False)
 
         if stats.pages.indexed != 1:
             raise AssertionError(f"a page of an archived space is readable: {stats}")

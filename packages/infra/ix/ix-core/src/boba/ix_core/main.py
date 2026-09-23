@@ -54,17 +54,22 @@ def parse_args(argv: Sequence[str] | None = None) -> IxDatabase:
     return bind_section(args.config, section, IxDatabase)
 
 
-def main() -> None:
+async def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(message)s")
 
     try:
         cfg = parse_args()
         upgrade = SchemaUpgrade(SCHEMA_DIR, requires_core=False)
-        report = asyncio.run(upgrade.run(cfg))
+        report = await upgrade.run(cfg)
         logger.info("core schema applied: %s", ", ".join(report.files))
     except (ConfigError, SchemaUpgradeError) as exc:
         raise SystemExit(str(exc)) from exc
 
 
+def cli() -> None:
+    """Точка входа консольного скрипта: единственный asyncio.run на процесс."""
+    asyncio.run(main())
+
+
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())

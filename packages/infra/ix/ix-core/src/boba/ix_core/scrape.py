@@ -737,7 +737,7 @@ def scrape_in_process(
     return asyncio.run(scrape_source(config, source, package_dir, config.attempts))
 
 
-def run_sources(
+async def run_sources(
     config: ScraperConfigBase[Any],
     package_dir: Path,
     krb: KerberosWorkspaceConfig | None,
@@ -746,6 +746,17 @@ def run_sources(
     """Прогон по источникам: процесс на источник, parallel_sources процессов разом.
     Отчёты в порядке источников."""
     selected = config.select_sources(source_name)
+
+    return await asyncio.to_thread(_run_processes, config, selected, package_dir, krb)
+
+
+def _run_processes(
+    config: ScraperConfigBase[Any],
+    selected: Sequence[Any],
+    package_dir: Path,
+    krb: KerberosWorkspaceConfig | None,
+) -> list[ScrapeReport]:
+    """Ожидание итогов пула блокирует, поэтому идёт в потоке рядом с циклом."""
     reports: list[ScrapeReport] = []
     with ProcessPoolExecutor(
         max_workers=config.parallel_sources,
@@ -801,7 +812,7 @@ def parse_args(
     return parser.parse_args(argv)
 
 
-def run_cli(
+async def run_cli(
     prog: str,
     description: str,
     section: str,
@@ -817,12 +828,12 @@ def run_cli(
         if args.command is Command.UPGRADE:
             database = bind_section(args.config, section, IxDatabase)
             upgrade = SchemaUpgrade(package_dir / PackageDir.SCHEMA)
-            report = asyncio.run(upgrade.run(database))
+            report = await upgrade.run(database)
             logger.info("schema applied: %s", ", ".join(report.files))
             return
 
         config = bind_section(args.config, section, config_type)
-        for report in run_sources(config, package_dir, krb, args.source):
+        for report in await run_sources(config, package_dir, krb, args.source):
             logger.info("done: %s", report.line())
     except (ConfigError, SchemaUpgradeError, ScrapeWorkerError) as exc:
         raise SystemExit(str(exc)) from exc

@@ -22,7 +22,7 @@ dev = [
 ]
 
 [project.scripts]
-boba-pg-meta-scraper = "boba.pg_meta_scraper.worker:main"
+boba-pg-meta-scraper = "boba.pg_meta_scraper.worker:cli"
 
 [tool.setuptools.package-data]
 "boba.pg_meta_scraper" = ["*/*.sql", "*/*.md", "*/*.json", "*.html"]

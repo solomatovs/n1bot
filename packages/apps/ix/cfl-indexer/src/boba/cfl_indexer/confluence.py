@@ -1,7 +1,9 @@
 """Чтение Confluence для обхода спейса: ключи спейсов по маскам, списки страниц без
 тел, тело страницы в markdown, вложения и их файлы, комментарии. Ответ сервера живёт
-как dict от json.loads до разбора в запись; файл вложения идёт на диск чанками.
-content_hash считается от оригинала, в индекс идёт преобразование.
+как dict от json.loads до разбора в запись; файл вложения идёт через пипу в ридер.
+version — номер версии из списка Confluence: по нему обход решает, запрашивать ли тело.
+content_hash — sha256 сырого контента сущности, как его отдал сервер: у страницы и
+спейса байты ответа с телом, у вложения байты файла, у комментария html его тела.
 
 Ошибки:
 ConfluenceReadError — транспорт, статус, форма ответа или его поля.
@@ -10,7 +12,6 @@ AttachmentGoneError — вложение снято между списком и
 
 from __future__ import annotations
 
-import hashlib
 import json
 import logging
 from collections.abc import AsyncIterable, AsyncIterator, Callable, Sequence
@@ -19,11 +20,11 @@ from datetime import datetime
 from typing import Any, BinaryIO, ClassVar, Self, TypeVar
 
 import httpx
-from markdownify import MarkdownConverter
 from pydantic import BaseModel, ConfigDict, Field
 
-from boba.confluence.html import ConfluenceHtml
+from boba.confluence.html import ConfluencePage, PageMarkdown
 from boba.confluence.models import ConfluenceSpaceItem, PageLink, SpaceMask
+from boba.confluence.parsing import BodyHasher, JsonNode, RunningDigest
 from boba.confluence.rest import (
     CflRestBuilder,
     ConfluenceConnection,
@@ -38,13 +39,12 @@ __all__ = [
     "Attachment",
     "AttachmentGoneError",
     "Comment",
+    "ConfluenceParser",
     "ConfluenceReadError",
     "ConfluenceReader",
     "Content",
     "Space",
     "SpaceSelector",
-    "hash_text",
-    "render_markdown",
 ]
 
 logger = logging.getLogger("cfl-indexer")
@@ -132,234 +132,209 @@ class Comment:
     markdown: str
 
 
-def read_dict(data: Any, *path: str) -> dict[str, Any]:
-    for key in path:
-        if not isinstance(data, dict):
-            return {}
+@dataclass(frozen=True)
+class Payload:
+    """Один ответ REST: разобранный JSON и сырые байты, от которых считается
+    отпечаток сущности."""
 
-        data = data.get(key)
-
-    if not isinstance(data, dict):
-        return {}
-
-    return data
+    data: dict[str, Any]
+    raw: bytes
 
 
-def read_str(data: Any, *path: str) -> str:
-    value = read_dict(data, *path[:-1]).get(path[-1])
-    if value is None:
-        return ""
+class ConfluenceParser:
+    """Сырой JSON Confluence в записи обхода: спейс, страница, вложение,
+    комментарий; тела страниц — в markdown, хэш от оригинального html.
 
-    return str(value)
+    Создаётся ридером под формат тела соединения; конвертер markdown один на
+    обход, ссылки на другие страницы снимаются с того же дерева html.
+    """
 
+    HEADING_STYLE: ClassVar[str] = "ATX"
 
-def read_int(data: Any, *path: str) -> int:
-    value = read_dict(data, *path[:-1]).get(path[-1])
-    if value is None:
-        return 0
+    def __init__(self, body_format: str) -> None:
+        self._body_format = body_format
+        self._markdown = PageMarkdown(self.HEADING_STYLE, escape=False)
+        self._hasher = BodyHasher()
 
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return 0
+    @property
+    def body_format(self) -> str:
+        return self._body_format
 
+    def space(self, payload: Payload) -> Space:
+        """Запись спейса; content_hash — от сырых байт ответа сервера."""
+        node = JsonNode(payload.data)
+        key = node.str("key")
+        name = node.str("name")
+        if not name:
+            name = key
 
-def read_list(data: Any, *path: str) -> list[Any]:
-    value = read_dict(data, *path[:-1]).get(path[-1])
-    if not isinstance(value, list):
-        return []
-
-    return value
-
-
-def read_results(data: dict[str, Any]) -> list[dict[str, Any]]:
-    items = data.get("results")
-    if not isinstance(items, list):
-        items = read_list(data, "page", "results")
-
-    found: list[dict[str, Any]] = []
-    for item in items:
-        if isinstance(item, dict):
-            found.append(item)
-
-    return found
-
-
-def parse_stamp(raw: str, where: str) -> datetime:
-    if not raw:
-        raise ConfluenceReadError(
-            f"confluence {where}: expected a timestamp, got empty"
+        return Space(
+            key=key,
+            name=name,
+            space_type=node.str("type"),
+            status=node.str("status"),
+            description=node.str("description", "plain", "value"),
+            content_hash=self._hasher.hexdigest(payload.raw),
         )
 
-    try:
-        return datetime.fromisoformat(raw)
-    except ValueError as exc:
-        raise ConfluenceReadError(
-            f"confluence {where}: expected an ISO timestamp, got {raw!r}: {exc}"
-        ) from exc
+    def content(self, raw: dict[str, Any], kind: ContentType) -> Content:
+        node = JsonNode(raw)
+        content_id = node.str("id")
+        space_key = node.str("space", "key")
+        where = f"{kind} {content_id}"
+        ancestors = node.list("ancestors")
+        parent_id = ""
+        if ancestors:
+            parent_id = JsonNode(ancestors[-1]).str("id")
 
+        block = JsonNode(node.dict("children", "attachment"))
+        limit = block.int("limit")
+        attachments: list[Attachment] = []
+        for item in block.list("results"):
+            attachments.append(
+                self.attachment(
+                    item, page_id=content_id, space_key=space_key, where=where
+                )
+            )
 
-def parse_user(data: Any) -> str:
-    username = read_str(data, "username")
-    if username:
-        return username
-
-    return read_str(data, "displayName")
-
-
-def parse_titles(ancestors: list[Any]) -> tuple[str, ...]:
-    titles: list[str] = []
-    for ancestor in ancestors:
-        title = read_str(ancestor, "title").strip()
-        if title:
-            titles.append(title)
-
-    return tuple(titles)
-
-
-def parse_labels(labels: list[Any]) -> tuple[str, ...]:
-    names: list[str] = []
-    for label in labels:
-        name = read_str(label, "name").strip()
-        if name and name not in names:
-            names.append(name)
-
-    return tuple(names)
-
-
-def hash_text(original: str) -> str:
-    return hashlib.sha256(original.encode("utf-8")).hexdigest()
-
-
-def hash_sum(original: bytes) -> str:
-    return hashlib.sha256(original).hexdigest()
-
-
-def render_markdown(
-    html: str, *, page_id: str, title: str
-) -> tuple[str, tuple[PageLink, ...]]:
-    """Markdown и ссылки на другие страницы из одного дерева html."""
-    soup = ConfluenceHtml.parse_html(html)
-    links = ConfluenceHtml.collect_targets(soup, page_id=page_id, title=title)
-    converter = MarkdownConverter(
-        heading_style="ATX", escape_underscores=False, escape_asterisks=False
-    )
-    markdown = str(converter.convert_soup(soup)).strip()
-    soup.decompose()
-
-    return markdown, links
-
-
-def parse_space(raw: dict[str, Any], content_hash: str) -> Space:
-    key = read_str(raw, "key")
-    name = read_str(raw, "name")
-    space_type = read_str(raw, "type")
-    status = read_str(raw, "status")
-    description = read_str(raw, "description", "plain", "value")
-
-    # есть вопросики к тому, почему выбран такой хэщ от space страницы
-    # content_hash = hash_text(f"{name}\n{description}")
-
-    if not name:
-        name = key
-
-    return Space(
-        key=key,
-        name=name,
-        space_type=space_type,
-        status=status,
-        description=description,
-        content_hash=content_hash,
-    )
-
-
-def parse_attachment(
-    raw: dict[str, Any], *, page_id: str, space_key: str, where: str
-) -> Attachment:
-    attachment_id = read_str(raw, "id")
-    where = f"attachment {attachment_id} of {where}"
-
-    return Attachment(
-        id=attachment_id,
-        page_id=page_id,
-        space_key=space_key,
-        title=read_str(raw, "title"),
-        media_type=read_str(raw, "extensions", "mediaType"),
-        file_size=read_int(raw, "extensions", "fileSize"),
-        version=read_int(raw, "version", "number"),
-        download_path=read_str(raw, "_links", "download"),
-        updated_at=parse_stamp(read_str(raw, "version", "when"), f"{where}: when"),
-        author=parse_user(read_dict(raw, "version", "by")),
-    )
-
-
-def parse_content(raw: dict[str, Any], kind: ContentType) -> Content:
-    content_id = read_str(raw, "id")
-    space_key = read_str(raw, "space", "key")
-    where = f"{kind} {content_id}"
-    ancestors = read_list(raw, "ancestors")
-    parent_id = ""
-    if ancestors:
-        parent_id = read_str(ancestors[-1], "id")
-
-    block = read_dict(raw, "children", "attachment")
-    limit = read_int(block, "limit")
-    attachments: list[Attachment] = []
-    for item in read_list(block, "results"):
-        attachments.append(
-            parse_attachment(item, page_id=content_id, space_key=space_key, where=where)
+        return Content(
+            id=content_id,
+            kind=kind,
+            space_key=space_key,
+            title=node.str("title"),
+            status=node.str("status"),
+            version=node.int("version", "number"),
+            parent_id=parent_id,
+            ancestor_titles=node.ancestor_titles(),
+            labels=self.labels(node.list("metadata", "labels", "results")),
+            created_at=self.stamp(
+                node.str("history", "createdDate"), f"{where}: createdDate"
+            ),
+            updated_at=self.stamp(node.str("version", "when"), f"{where}: when"),
+            author=self.user(node.dict("history", "createdBy")),
+            last_editor=self.user(node.dict("version", "by")),
+            attachments=tuple(attachments),
+            attachments_truncated=limit > 0 and block.int("size") >= limit,
         )
 
-    return Content(
-        id=content_id,
-        kind=kind,
-        space_key=space_key,
-        title=read_str(raw, "title"),
-        status=read_str(raw, "status"),
-        version=read_int(raw, "version", "number"),
-        parent_id=parent_id,
-        ancestor_titles=parse_titles(ancestors),
-        labels=parse_labels(read_list(raw, "metadata", "labels", "results")),
-        created_at=parse_stamp(
-            read_str(raw, "history", "createdDate"), f"{where}: createdDate"
-        ),
-        updated_at=parse_stamp(read_str(raw, "version", "when"), f"{where}: when"),
-        author=parse_user(read_dict(raw, "history", "createdBy")),
-        last_editor=parse_user(read_dict(raw, "version", "by")),
-        attachments=tuple(attachments),
-        attachments_truncated=limit > 0 and read_int(block, "size") >= limit,
-    )
+    def attachment(
+        self, raw: dict[str, Any], *, page_id: str, space_key: str, where: str
+    ) -> Attachment:
+        node = JsonNode(raw)
+        attachment_id = node.str("id")
+        where = f"attachment {attachment_id} of {where}"
 
+        return Attachment(
+            id=attachment_id,
+            page_id=page_id,
+            space_key=space_key,
+            title=node.str("title"),
+            media_type=node.str("extensions", "mediaType"),
+            file_size=node.int("extensions", "fileSize"),
+            version=node.int("version", "number"),
+            download_path=node.str("_links", "download"),
+            updated_at=self.stamp(node.str("version", "when"), f"{where}: when"),
+            author=self.user(node.dict("version", "by")),
+        )
 
-def parse_comment(raw: dict[str, Any], page: Content, body_format: str) -> Comment:
-    comment_id = read_str(raw, "id")
-    where = f"comment {comment_id} of {page.kind} {page.id}"
-    html = read_str(raw, "body", body_format, "value")
-    markdown, _ = render_markdown(html, page_id=page.id, title=page.title)
+    def comment(self, raw: dict[str, Any], page: Content) -> Comment:
+        node = JsonNode(raw)
+        comment_id = node.str("id")
+        where = f"comment {comment_id} of {page.kind} {page.id}"
+        html = node.body_html(self._body_format)
+        markdown, _ = self.markdown(html, page_id=page.id, title=page.title)
 
-    return Comment(
-        id=comment_id,
-        page_id=page.id,
-        space_key=page.space_key,
-        location=read_str(raw, "extensions", "location"),
-        version=read_int(raw, "version", "number"),
-        created_at=parse_stamp(
-            read_str(raw, "history", "createdDate"), f"{where}: createdDate"
-        ),
-        updated_at=parse_stamp(read_str(raw, "version", "when"), f"{where}: when"),
-        author=parse_user(read_dict(raw, "history", "createdBy")),
-        content_hash=hash_text(html),
-        markdown=markdown,
-    )
+        return Comment(
+            id=comment_id,
+            page_id=page.id,
+            space_key=page.space_key,
+            location=node.str("extensions", "location"),
+            version=node.int("version", "number"),
+            created_at=self.stamp(
+                node.str("history", "createdDate"), f"{where}: createdDate"
+            ),
+            updated_at=self.stamp(node.str("version", "when"), f"{where}: when"),
+            author=self.user(node.dict("history", "createdBy")),
+            content_hash=self.text_hash(html),
+            markdown=markdown,
+        )
+
+    def body(self, payload: Payload, content: Content) -> Content:
+        """Та же запись с markdown и ссылками; content_hash — от сырых байт
+        ответа с телом, html не хранится."""
+        html = JsonNode(payload.data).body_html(self._body_format)
+        fresh = self.content(payload.data, content.kind)
+        markdown, links = self.markdown(html, page_id=content.id, title=content.title)
+
+        return replace(
+            fresh,
+            content_hash=self._hasher.hexdigest(payload.raw),
+            markdown=markdown,
+            links=links,
+        )
+
+    def markdown(
+        self, html: str, *, page_id: str, title: str
+    ) -> tuple[str, tuple[PageLink, ...]]:
+        """Markdown и ссылки на другие страницы из одного дерева html."""
+        page = ConfluencePage(html, page_id=page_id, title=title)
+        try:
+            links = page.targets()
+            markdown = self._markdown.render(page)
+        finally:
+            page.close()
+
+        return markdown, links
+
+    def stamp(self, raw: str, where: str) -> datetime:
+        if not raw:
+            raise ConfluenceReadError(
+                f"confluence {where}: expected a timestamp, got empty"
+            )
+
+        try:
+            return datetime.fromisoformat(raw)
+        except ValueError as exc:
+            raise ConfluenceReadError(
+                f"confluence {where}: expected an ISO timestamp, got {raw!r}: {exc}"
+            ) from exc
+
+    def user(self, data: dict[str, Any]) -> str:
+        node = JsonNode(data)
+        username = node.str("username")
+        if username:
+            return username
+
+        return node.str("displayName")
+
+    def labels(self, labels: list[Any]) -> tuple[str, ...]:
+        names: list[str] = []
+        for label in labels:
+            name = JsonNode(label).str("name").strip()
+            if name and name not in names:
+                names.append(name)
+
+        return tuple(names)
+
+    def text_hash(self, original: str) -> str:
+        return self._hasher.text(original)
 
 
 class ConfluenceReader:
-    """Запросы одного обхода: auth, ретраи и дамп из ConfluenceConnection."""
+    """Запросы одного обхода: auth, ретраи и дамп из ConfluenceConnection,
+    выбор спейсов по маскам источника."""
 
     GONE_NUMBER: ClassVar[int] = 404
 
-    def __init__(self, conn: ConfluenceConnection) -> None:
+    def __init__(
+        self, conn: ConfluenceConnection, spaces: SpaceSelector, list_limit: int
+    ) -> None:
         self._conn = conn
+        self._spaces = spaces
+        self._list_limit = list_limit
+        self._mask = SpaceMask(spaces.masks)
+        self._parser = ConfluenceParser(conn.body_format)
+        self._hasher = BodyHasher()
         self._http = CancellableHttpTransport(conn.profile, dump=conn.dump)
         self._crb = CflRestBuilder()
 
@@ -378,15 +353,12 @@ class ConfluenceReader:
                 f"GET {url}: {type(exc).__name__}: {exc}"
             ) from exc
 
-    async def fetch_json(self, url: httpx.URL) -> tuple[dict[str, Any], str]:
+    async def fetch_payload(self, url: httpx.URL) -> Payload:
+        """Один ответ целиком в память: JSON иначе не разобрать, а объём
+        ограничен одним ответом сервера, не спейсом."""
         try:
             async with self._http.fetch(HttpRequest(url=str(url))) as resp:
-                # здесь вычитывается вся страница в память
-                # что не очень хорошо для потоковой обработки
-                # однако одна страница в памяти удобней чем
-                # геморой потоковой обработки страниц конфлюенса
                 payload = await resp.stream.read()
-                payload_hash = hash_sum(payload)
         except httpx.HTTPError as exc:
             raise ConfluenceReadError(
                 f"GET {url}: {type(exc).__name__}: {exc}"
@@ -404,7 +376,7 @@ class ConfluenceReader:
                 f"GET {url}: expected an object, got {type(data).__name__}"
             )
 
-        return data, payload_hash
+        return Payload(data=data, raw=payload)
 
     async def iter_page_urls(self, url: httpx.URL) -> AsyncIterator[dict[str, Any]]:
         """
@@ -413,9 +385,10 @@ class ConfluenceReader:
         """
         next_url: httpx.URL | None = url
         while next_url is not None:
-            data, _ = await self.fetch_json(next_url)
+            payload = await self.fetch_payload(next_url)
 
-            link = read_str(data, "_links", "next")
+            node = JsonNode(payload.data)
+            link = node.next_link()
             next_url = None
             if link:
                 # confluence сам возвращает следующую страницу для запроса
@@ -426,39 +399,37 @@ class ConfluenceReader:
                 # запоминаем этот url
                 next_url = httpx.URL(link)
 
-            for item in read_results(data):
+            for item in node.results():
                 # елдим результат для постраничной обработки
                 # каждая страница запрашивается, парситься, сохраняется последовательно
                 # друг за другом, без необходимости все страницы читать в память
                 yield item
 
-    async def list_space_keys(self, selector: SpaceSelector) -> AsyncIterator[str]:
-        """Ключи как есть или обход списка сервера по маскам."""
-        mask = SpaceMask.of_masks(selector.masks)
-        if not mask.has_wildcard:
-            for x in list(mask.keys()):
-                yield x
+    async def list_space_keys(self) -> AsyncIterator[str]:
+        """Ключи как есть или обход списка сервера по маскам источника."""
+        if not self._mask.has_wildcard:
+            for key in self._mask.as_keys():
+                yield key
 
             return
 
-        it = self.iter_page_urls(url=self._crb.space_list_path(selector.type))
+        it = self.iter_page_urls(url=self._crb.space_list_path(self._spaces.type))
         async for space in it:
-            key = read_str(space, "key")
+            node = JsonNode(space)
+            key = node.str("key")
             if not key:
                 continue
 
-            archived = read_str(space, "status") == SpaceStatus.ARCHIVED
-            if archived and not selector.archived:
+            archived = node.str("status") == SpaceStatus.ARCHIVED
+            if archived and not self._spaces.archived:
                 continue
 
-            if mask.matches(ConfluenceSpaceItem.model_validate(space)):
+            if self._mask.matches(ConfluenceSpaceItem.model_validate(space)):
                 yield key
 
     async def read_space(self, key: str) -> Space:
         url = self._crb.space_path(key, expand="description.plain")
-        space_dict, space_hash = await self.fetch_json(url)
-
-        return parse_space(space_dict, space_hash)
+        return self._parser.space(await self.fetch_payload(url))
 
     async def iter_contents(
         self, key: str, kind: ContentType
@@ -466,26 +437,19 @@ class ConfluenceReader:
         url = self._crb.space_content_path(
             key,
             content_type=kind,
+            limit=self._list_limit,
             expand=(
                 "version,space,ancestors,metadata.labels,history,"
                 "children.attachment.version,children.attachment.extensions"
             ),
         )
         async for raw in self.iter_page_urls(url):
-            yield parse_content(raw, kind)
+            yield self._parser.content(raw, kind)
 
     async def read_body(self, content: Content) -> Content:
         """Та же запись с markdown, хэшем оригинала и ссылками; html не хранится."""
-        body_format = self._conn.body_format
-        url = self._crb.page_body_path(content.id, body_format=body_format)
-        raw, _ = await self.fetch_json(url)
-        html = read_str(raw, "body", body_format, "value")
-        fresh = parse_content(raw, content.kind)
-        markdown, links = render_markdown(html, page_id=content.id, title=content.title)
-
-        return replace(
-            fresh, content_hash=hash_text(html), markdown=markdown, links=links
-        )
+        url = self._crb.page_body_path(content.id, body_format=self._parser.body_format)
+        return self._parser.body(await self.fetch_payload(url), content)
 
     async def iter_attachments(self, content: Content) -> AsyncIterator[Attachment]:
         """Из раскрытия списка, при усечении — полным списком."""
@@ -495,10 +459,10 @@ class ConfluenceReader:
 
             return
 
-        url = self._crb.attachments_path(content.id)
+        url = self._crb.attachments_path(content.id, limit=self._list_limit)
 
         async for raw in self.iter_page_urls(url):
-            yield parse_attachment(
+            yield self._parser.attachment(
                 raw,
                 page_id=content.id,
                 space_key=content.space_key,
@@ -507,12 +471,12 @@ class ConfluenceReader:
 
     async def iter_comments(self, content: Content) -> AsyncIterator[Comment]:
         """С телами; признака смены комментариев у страницы нет, читаются всегда."""
-        body_format = self._conn.body_format
+        body_format = self._parser.body_format
         expand = f"body.{body_format},version,history,extensions.location,container"
-        url = self._crb.comments_path(content.id, expand=expand)
+        url = self._crb.comments_path(content.id, expand=expand, limit=self._list_limit)
 
         async for raw in self.iter_page_urls(url):
-            yield parse_comment(raw, content, body_format)
+            yield self._parser.comment(raw, content)
 
     async def read_attachment(
         self, attachment: Attachment, consume: Callable[[BinaryIO], T]
@@ -521,7 +485,7 @@ class ConfluenceReader:
         диске; sha256 байтов считается по дороге и возвращается с итогом."""
         where = f"attachment {attachment.id} {attachment.title!r}"
         request = HttpRequest(url=attachment.download_path)
-        digest = hashlib.sha256()
+        digest = self._hasher.stream()
 
         try:
             async with self._http.fetch(request) as resp:
@@ -544,9 +508,8 @@ class ConfluenceReader:
 
         return digest.hexdigest(), result
 
-    @staticmethod
     async def _hashed(
-        chunks: AsyncIterable[bytes], digest: hashlib._Hash
+        self, chunks: AsyncIterable[bytes], digest: RunningDigest
     ) -> AsyncIterator[bytes]:
         async for chunk in chunks:
             digest.update(chunk)

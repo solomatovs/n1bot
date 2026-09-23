@@ -9,17 +9,16 @@
 
 from __future__ import annotations
 
-import asyncio
 from pathlib import Path
 
 from boba.cfl_indexer import worker as indexer
 from boba.cfl_indexer.confluence import SpaceSelector
 from boba.cfl_indexer.worker import (
     ConfluenceSource,
+    Indexer,
     IndexerConfig,
     Report,
     SpaceSelection,
-    run_spaces,
 )
 from boba.confluence.rest import ConfluenceConnection, SpaceType
 from boba.doc.config import DisabledOcrConfig, DocSection
@@ -68,6 +67,7 @@ class StubIndexer:
                 )
             ],
             parallel_spaces=1,
+            list_limit=50,
             doc=DocSection(
                 spool_memory_limit=32 << 20,
                 text_encodings=("utf-8",),
@@ -80,8 +80,8 @@ class StubIndexer:
         event loop теста, и блокировать его ожиданием нельзя."""
         cfg = self.config(*spaces)
 
-        return await asyncio.to_thread(
-            run_spaces, cfg, PACKAGE_DIR / "run", self._stand.krb, SpaceSelection()
+        return await Indexer(cfg, PACKAGE_DIR / "run", self._stand.krb).run(
+            SpaceSelection()
         )
 
 

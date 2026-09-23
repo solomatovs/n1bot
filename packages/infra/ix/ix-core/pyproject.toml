@@ -17,7 +17,7 @@ dependencies = [
 ]
 
 [project.scripts]
-boba-ix-core = "boba.ix_core.main:main"
+boba-ix-core = "boba.ix_core.main:cli"
 
 [tool.setuptools.package-data]
 "boba.ix_core" = ["*/*.sql"]

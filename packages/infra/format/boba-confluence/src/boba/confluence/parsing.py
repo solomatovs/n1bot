@@ -1,12 +1,15 @@
-"""Разбор REST-JSON Confluence -> RawDocument.
+"""Разбор REST-JSON Confluence.
 
-- ConfluenceJson        — извлечение полей схемы для инструментов чтения.
+- JsonNode              — узел ответа: поля схемы по пути ключей, терпимо к
+  расхождениям версий Confluence (нет ключа, не тот тип — пустое значение).
 - ConfluenceJsonDecoder — REST-JSON страницы -> HTML-handle + хэш тела +
   расширенная metadata (title/version/space/ancestors).
-- BodyDigest            — хэш тела для реестра источников.
+- BodyHasher            — sha256 тел для реестра источников и хэшей индекса.
 
-Саму HTML-разметку здесь никто не разбирает: heading-aware extraction поверх
-BeautifulSoup живёт в payload'е песочницы (payloads/parse/pages.py).
+Саму HTML-разметку здесь никто не разбирает: она живёт в boba.confluence.html.
+
+Ошибки:
+ConfluencePayloadError — REST-ответ не разобран в модель страницы.
 """
 
 from __future__ import annotations
@@ -34,86 +37,115 @@ from boba.indexing import (
 )
 from boba.transport.http.profile import HttpConnection
 
-__all__ = ["BodyDigest", "BodyEncoding", "ConfluenceJson", "ConfluenceJsonDecoder"]
+__all__ = [
+    "BodyEncoding",
+    "BodyHasher",
+    "ConfluenceJsonDecoder",
+    "JsonNode",
+    "RunningDigest",
+]
 
 
-class ConfluenceJson:
-    """Извлечение полей из REST-JSON Confluence — единое место разбора схемы.
+class JsonNode:
+    """Узел REST-JSON Confluence: чтение полей по пути ключей.
 
-    Все обращения к ключам ответа (title/version/space/ancestors/_links/body/
-    results/next) идут через эти @staticmethod'ы: page-decoder, search-reader и
-    paginator парсят одну схему одинаково и терпимо к расхождениям версий
-    Confluence (отсутствующие/нечисловые/не-dict блоки дают пустой результат).
+    Создаётся над любым значением ответа; отсутствующий ключ, не-dict по пути
+    или нечисловое значение дают пустой результат, а не исключение — так
+    один разбор переживает расхождения версий Confluence.
     """
 
-    @staticmethod
-    def as_dict(v: Any) -> dict[str, Any]:
-        return v if isinstance(v, dict) else {}
+    def __init__(self, data: Any) -> None:
+        self._data = data
 
-    @staticmethod
-    def as_int(v: Any, *, default: int) -> int:
-        if v is None:
+    @property
+    def raw(self) -> Any:
+        return self._data
+
+    def dict(self, *path: str) -> dict[str, Any]:
+        data = self._data
+        for key in path:
+            if not isinstance(data, dict):
+                return {}
+
+            data = data.get(key)
+
+        if not isinstance(data, dict):
+            return {}
+
+        return data
+
+    def str(self, *path: str) -> str:
+        value = self._value(*path)
+        if value is None:
+            return ""
+
+        return str(value)
+
+    def int(self, *path: str, default: int = 0) -> int:
+        value = self._value(*path)
+        if value is None:
             return default
+
         try:
-            return int(v)
+            return int(value)
         except (TypeError, ValueError):
             return default
 
-    @staticmethod
-    def title(data: dict[str, Any]) -> str:
-        return str(data.get("title") or "")
+    def list(self, *path: str) -> list[Any]:
+        value = self._value(*path)
+        if not isinstance(value, list):
+            return []
 
-    @staticmethod
-    def version_number(data: dict[str, Any]) -> int | None:
-        n = ConfluenceJson.as_dict(data.get("version")).get("number")
-        if n is None:
-            return None
-        try:
-            return int(n)
-        except (TypeError, ValueError):
-            return None
+        return value
 
-    @staticmethod
-    def last_modified(data: dict[str, Any]) -> str:
-        return str(ConfluenceJson.as_dict(data.get("version")).get("when") or "")
+    def results(self) -> list[dict[str, Any]]:
+        """Элементы списка ответа: results либо page.results у поиска."""
+        items = self.list("results")
+        if not items:
+            items = self.list("page", "results")
 
-    @staticmethod
-    def space_key(data: dict[str, Any]) -> str:
-        return str(ConfluenceJson.as_dict(data.get("space")).get("key") or "")
+        found: list[dict[str, Any]] = []
+        for item in items:
+            if isinstance(item, dict):
+                found.append(item)
 
-    @staticmethod
-    def ancestor_titles(data: dict[str, Any]) -> tuple[str, ...]:
-        ancestors = data.get("ancestors")
-        if not isinstance(ancestors, list):
-            return ()
-        return tuple(
-            str(a.get("title", "")).strip()
-            for a in ancestors
-            if isinstance(a, dict) and str(a.get("title", "")).strip()
-        )
+        return found
 
-    @staticmethod
-    def webui(data: dict[str, Any]) -> str:
-        return str(ConfluenceJson.as_dict(data.get("_links")).get("webui") or "")
+    def next_link(self) -> str:
+        return self.str("_links", "next")
 
-    @staticmethod
-    def body_html(data: dict[str, Any], body_format: str) -> str:
-        body = ConfluenceJson.as_dict(data.get("body"))
-        block = ConfluenceJson.as_dict(body.get(body_format))
-        return str(block.get("value") or "")
+    def title(self) -> str:
+        return self.str("title")
 
-    @staticmethod
-    def results(data: dict[str, Any]) -> list[dict[str, Any]]:
-        res = data.get("results")
-        if isinstance(res, list):
-            return res
-        res = ConfluenceJson.as_dict(data.get("page")).get("results")
-        return res if isinstance(res, list) else []
+    def version_number(self) -> int:
+        return self.int("version", "number")
 
-    @staticmethod
-    def next_link(data: dict[str, Any]) -> str | None:
-        nxt = ConfluenceJson.as_dict(data.get("_links")).get("next")
-        return str(nxt) if nxt else None
+    def last_modified(self) -> str:
+        return self.str("version", "when")
+
+    def space_key(self) -> str:
+        return self.str("space", "key")
+
+    def webui(self) -> str:
+        return self.str("_links", "webui")
+
+    def body_html(self, body_format: str) -> str:
+        return self.str("body", body_format, "value")
+
+    def ancestor_titles(self) -> tuple[str, ...]:
+        titles: list[str] = []
+        for ancestor in self.list("ancestors"):
+            title = JsonNode(ancestor).str("title").strip()
+            if title:
+                titles.append(title)
+
+        return tuple(titles)
+
+    def _value(self, *path: str) -> Any:
+        if not path:
+            return self._data
+
+        return self.dict(*path[:-1]).get(path[-1])
 
 
 class ConfluenceJsonDecoder(Decoder):
@@ -135,6 +167,7 @@ class ConfluenceJsonDecoder(Decoder):
     def __init__(self, *, profile: HttpConnection, body_format: str) -> None:
         self._profile = profile
         self._body_format = body_format
+        self._hasher = BodyHasher()
 
     def decoder_id(self) -> DecoderId:
         return self.DECODER_ID
@@ -156,7 +189,7 @@ class ConfluenceJsonDecoder(Decoder):
         # заголовок сидит в heading_path чанков: переименование меняет хэш
         titled = content.title.encode(BodyEncoding.UTF8) + b"\n" + html
         meta = value.metadata.set(TransportKeys.CONTENT_TYPE, self._HTML_CONTENT_TYPE)
-        meta = meta.set(TransportKeys.BODY_HASH, BodyDigest.of(titled))
+        meta = meta.set(TransportKeys.BODY_HASH, self._hasher.hexdigest(titled))
         if content.title:
             meta = meta.set(ReaderKeys.PAGE_TITLE, content.title)
 
@@ -186,13 +219,33 @@ class BodyEncoding(StrEnum):
     UTF8 = "utf-8"
 
 
-class BodyDigest:
-    """Хэш тела для реестра: одна функция на страницы и вложения."""
+class RunningDigest:
+    """Отпечаток тела, которое приходит чанками: update() по мере чтения,
+    hexdigest() в конце. Создаётся BodyHasher.stream()."""
 
-    @staticmethod
-    def of(payload: bytes) -> str:
+    def __init__(self) -> None:
+        self._hash = hashlib.sha256()
+
+    def update(self, chunk: bytes) -> None:
+        self._hash.update(chunk)
+
+    def hexdigest(self) -> str:
+        return self._hash.hexdigest()
+
+
+class BodyHasher:
+    """sha256 тел: один алгоритм на страницы, вложения и хэши индекса.
+
+    Объявляется в конструкторе владельца (ридер, парсер, декодер, транспорт):
+    так по конструктору видно, что компонент считает отпечатки. Готовые байты
+    и текст хэшируются сразу, поток — через stream().
+    """
+
+    def hexdigest(self, payload: bytes) -> str:
         return hashlib.sha256(payload).hexdigest()
 
-    @staticmethod
-    def new() -> hashlib._Hash:
-        return hashlib.sha256()
+    def text(self, value: str) -> str:
+        return self.hexdigest(value.encode(BodyEncoding.UTF8))
+
+    def stream(self) -> RunningDigest:
+        return RunningDigest()

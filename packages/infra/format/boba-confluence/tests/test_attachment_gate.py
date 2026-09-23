@@ -9,7 +9,7 @@ from boba.confluence.models import (
     AttachmentVerdict,
 )
 
-CONFIG_ALLOWED = AttachmentFilter.of_masks(
+CONFIG_ALLOWED = AttachmentFilter(
     ("application/pdf", "image/png", "text/plain", "report-*.docx"),
 )
 
@@ -31,24 +31,24 @@ class TestMasks:
     """Маска с косой чертой — тип содержимого, без неё — имя файла."""
 
     def test_slash_goes_to_media_type(self) -> None:
-        flt = AttachmentFilter.of_masks(("application/pdf",))
+        flt = AttachmentFilter(("application/pdf",))
         if flt.media_type_patterns != ("application/pdf",):
             raise AssertionError("маска с косой чертой должна быть типом")
         if flt.title_patterns:
             raise AssertionError("в имена файлов ничего попасть не должно")
 
     def test_plain_goes_to_title(self) -> None:
-        flt = AttachmentFilter.of_masks(("*.pdf",))
+        flt = AttachmentFilter(("*.pdf",))
         if flt.title_patterns != ("*.pdf",):
             raise AssertionError("маска без косой черты — имя файла")
 
     def test_blank_masks_are_dropped(self) -> None:
-        flt = AttachmentFilter.of_masks(("  ", "*.pdf", ""))
+        flt = AttachmentFilter(("  ", "*.pdf", ""))
         if flt.title_patterns != ("*.pdf",):
             raise AssertionError("пустые маски не считаются")
 
     def test_no_masks_is_passthrough(self) -> None:
-        if not AttachmentFilter.of_masks(()).is_passthrough():
+        if not AttachmentFilter(()).is_passthrough():
             raise AssertionError("без масок разрешено всё")
 
 

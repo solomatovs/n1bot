@@ -946,7 +946,7 @@ requires-dist = [
     { name = "boba-connections", editable = "packages/core/boba-connections" },
     { name = "boba-stand", marker = "extra == 'dev'", editable = "packages/testing/boba-stand" },
     { name = "boba-toolkit", editable = "packages/core/boba-toolkit" },
-    { name = "oracledb", marker = "extra == 'payload'", specifier = "==26.0.0+boba.1", index = "file:///app/docker/compose/boba/.claude/worktrees/boba-doc/build/chainlit/src/oracledb" },
+    { name = "oracledb", marker = "extra == 'payload'", specifier = "==26.0.0+boba.1", index = "file:///app/docker/compose/boba/build/chainlit/src/oracledb" },
     { name = "pyarrow", marker = "extra == 'payload'", specifier = ">=25,<26" },
     { name = "pydantic", specifier = ">=2.10,<2.11" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8" },
@@ -2149,10 +2149,8 @@ name = "boba-tool-mail"
 version = "0.0.23.dev1"
 source = { editable = "packages/tools/boba-tool-mail" }
 dependencies = [
-    { name = "boba-text", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "boba-toolkit", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "pydantic", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
-    { name = "secure-smtplib", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
 ]
 
 [package.optional-dependencies]
@@ -2169,11 +2167,9 @@ payload = [
 requires-dist = [
     { name = "boba-config", marker = "extra == 'dev'", editable = "packages/infra/config/boba-config" },
     { name = "boba-stand-core", marker = "extra == 'dev'", editable = "packages/core/boba-stand-core" },
-    { name = "boba-text", editable = "packages/infra/format/boba-text" },
     { name = "boba-toolkit", editable = "packages/core/boba-toolkit" },
     { name = "pydantic", specifier = ">=2.10,<2.11" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8" },
-    { name = "secure-smtplib" },
     { name = "secure-smtplib", marker = "extra == 'payload'" },
 ]
 provides-extras = ["payload", "dev"]

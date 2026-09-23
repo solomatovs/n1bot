@@ -16,7 +16,7 @@ dependencies = [
 ]
 
 [project.scripts]
-boba-ix-fts = "boba.ix_fts.worker:main"
+boba-ix-fts = "boba.ix_fts.worker:cli"
 
 [tool.setuptools.package-data]
 "boba.ix_fts" = ["*/*.sql", "*/*.md", "*/*.json", "*.html"]

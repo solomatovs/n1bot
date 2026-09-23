@@ -12,9 +12,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import AsyncGenerator, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import asynccontextmanager
 from typing import Annotated, Any, ClassVar, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -82,10 +81,16 @@ from boba.transport.http.profile import HttpConnection
 __all__ = [
     "ConfluenceIngest",
     "ConfluenceIngestConfig",
+    "IngestAssembly",
     "IngestLine",
     "IngestReport",
+    "IngestReporting",
     "IngestScope",
     "IngestStamp",
+    "PageScope",
+    "QueryScope",
+    "SpaceScope",
+    "WideThreadPool",
 ]
 
 logger = logging.getLogger("boba.tool.confluence.ingest")
@@ -175,31 +180,42 @@ class IngestReport(BaseModel):
     сколько сорвалось, а у сорвавшихся показана первая причина.
     """
 
-    ERROR_CHARS: ClassVar[int] = 300
-
     collection: str
     pages: IngestLine
     attachments: IngestLine
 
-    @classmethod
-    def of(
-        cls, outcome: RunOutcome, progress: IngestProgress, *, collection: str
-    ) -> IngestReport:
-        return cls(
-            collection=collection,
-            pages=cls._line(
-                "pages", outcome, SourceKind.ROOT, found=progress.found_pages()
+    def rows(self) -> Sequence[Mapping[str, Any]]:
+        return [self.pages.model_dump(), self.attachments.model_dump()]
+
+    def note(self) -> str:
+        return f"collection: {self.collection}"
+
+
+class IngestReporting:
+    """Сборка отчёта прогона из итога конвейера и счётчиков прогресса:
+    страницы и вложения отдельными строками, у сорвавшихся первая причина."""
+
+    ERROR_CHARS: ClassVar[int] = 300
+
+    def __init__(self, progress: IngestProgress, collection: str) -> None:
+        self._progress = progress
+        self._collection = collection
+
+    def report(self, outcome: RunOutcome) -> IngestReport:
+        return IngestReport(
+            collection=self._collection,
+            pages=self._line(
+                "pages", outcome, SourceKind.ROOT, found=self._progress.found_pages()
             ),
-            attachments=cls._line(
+            attachments=self._line(
                 "attachments",
                 outcome,
                 SourceKind.CHILD,
-                found=progress.found_attachments(),
+                found=self._progress.found_attachments(),
             ),
         )
 
-    @staticmethod
-    def _reasons(by_reason: Mapping[str, int]) -> str:
+    def _reasons(self, by_reason: Mapping[str, int]) -> str:
         """Почему источники не пошли в индекс: причина и сколько раз."""
         parts: list[str] = []
         for reason, count in sorted(by_reason.items()):
@@ -207,14 +223,8 @@ class IngestReport(BaseModel):
 
         return ", ".join(parts)
 
-    @classmethod
     def _line(
-        cls,
-        kind: str,
-        outcome: RunOutcome,
-        source_kind: SourceKind,
-        *,
-        found: int,
+        self, kind: str, outcome: RunOutcome, source_kind: SourceKind, *, found: int
     ) -> IngestLine:
         tally = outcome.stats.tally_of(source_kind)
         return IngestLine(
@@ -227,15 +237,9 @@ class IngestReport(BaseModel):
             deleted=tally.deleted,
             chunks=tally.chunks_upserted,
             chunks_deleted=tally.chunks_deleted,
-            skipped_reasons=cls._reasons(outcome.skips_of(source_kind)),
-            error=outcome.reason_of(source_kind)[: cls.ERROR_CHARS],
+            skipped_reasons=self._reasons(outcome.skips_of(source_kind)),
+            error=outcome.reason_of(source_kind)[: self.ERROR_CHARS],
         )
-
-    def rows(self) -> Sequence[Mapping[str, Any]]:
-        return [self.pages.model_dump(), self.attachments.model_dump()]
-
-    def note(self) -> str:
-        return f"collection: {self.collection}"
 
 
 class IngestStamp:
@@ -243,20 +247,26 @@ class IngestStamp:
 
     SEPARATOR: ClassVar[str] = "|"
 
-    @classmethod
-    def of(cls, cfg: ConfluenceIngestConfig, routes: Mapping[str, Reader[str]]) -> str:
+    def __init__(
+        self, cfg: ConfluenceIngestConfig, routes: Mapping[str, Reader[str]]
+    ) -> None:
+        self._cfg = cfg
+        self._routes = routes
+
+    def render(self) -> str:
         reader_ids: set[str] = set()
-        for reader in routes.values():
+        for reader in self._routes.values():
             reader_ids.add(str(reader.reader_id()))
 
         parts = [
-            cfg.embedding.model,
-            str(cfg.embedding.dim),
-            str(cfg.chunk_size),
-            str(cfg.chunk_overlap),
+            self._cfg.embedding.model,
+            str(self._cfg.embedding.dim),
+            str(self._cfg.chunk_size),
+            str(self._cfg.chunk_overlap),
             ",".join(sorted(reader_ids)),
         ]
-        return cls.SEPARATOR.join(parts)
+
+        return self.SEPARATOR.join(parts)
 
 
 class IngestScope:
@@ -278,18 +288,7 @@ class IngestScope:
     def __init__(self, *, listing: ContentListing, space_key: str = "") -> None:
         self.listing = listing
         self.space_key = space_key
-
-    @classmethod
-    def space(cls, space_key: str) -> IngestScope:
-        return cls(listing=SpaceListing(space_key), space_key=space_key)
-
-    @classmethod
-    def query(cls, cql: str) -> IngestScope:
-        return cls(listing=CqlListing(cql))
-
-    @classmethod
-    def page(cls, page_id: str) -> IngestScope:
-        return cls(listing=PageListing(page_id))
+        self._rest = CflRestBuilder()
 
     def label(self) -> str:
         return self.listing.label()
@@ -312,23 +311,82 @@ class IngestScope:
 
         return UnseenGone()
 
-    async def verify(self, conn: ConfluenceConnection) -> None:
+    async def verify(self, paginator: CflPaginator) -> None:
         """Спейс должен существовать; остальные режимы проверять нечем."""
         if not self.space_key:
             return
 
-        async with CflPaginator(conn) as paginator:
-            await paginator.get_json(CflRestBuilder.space_path(self.space_key))
+        await paginator.get_json(self._rest.space_path(self.space_key))
+
+
+class SpaceScope(IngestScope):
+    """Область одного спейса: список контента полон, чужое снимается."""
+
+    def __init__(self, space_key: str) -> None:
+        super().__init__(listing=SpaceListing(space_key), space_key=space_key)
+
+
+class QueryScope(IngestScope):
+    """Область CQL-запроса: без права снимать невиденное."""
+
+    def __init__(self, cql: str) -> None:
+        super().__init__(listing=CqlListing(cql))
+
+
+class PageScope(IngestScope):
+    """Область одной страницы: без права снимать невиденное."""
+
+    def __init__(self, page_id: str) -> None:
+        super().__init__(listing=PageListing(page_id))
+
+
+class WideThreadPool:
+    """Свой пул под asyncio.to_thread на время прогона: дефолтный ограничен
+    min(32, cpu+4).
+
+    Слотов на один больше числа источников — разбор не должен ждать, пока
+    освободится поток, занятый эмбеддингом батча. На выходе широкий пул
+    закрывается (брошенный, он остался бы дефолтным на весь процесс, и
+    завершение цикла ждало бы его потоки), но дефолтным сначала становится
+    свежий: закрытый executor валит любой следующий to_thread с «cannot
+    schedule new futures after shutdown» — например kerberos-логин соединения
+    postgres.
+    """
+
+    THREAD_PREFIX: ClassVar[str] = "boba-ingest"
+
+    def __init__(self, workers: int) -> None:
+        self._pool = ThreadPoolExecutor(
+            max_workers=workers + 1, thread_name_prefix=self.THREAD_PREFIX
+        )
+
+    async def __aenter__(self) -> Self:
+        asyncio.get_running_loop().set_default_executor(self._pool)
+
+        return self
+
+    async def __aexit__(self, *exc: object) -> None:
+        asyncio.get_running_loop().set_default_executor(ThreadPoolExecutor())
+        self._pool.shutdown(wait=False, cancel_futures=True)
 
 
 class ConfluenceIngest:
-    """Сборка Confluence-ingest конвейера — общий хвост для confluence_index_*."""
+    """Конвейер Confluence -> kb_chunks над собранными стадиями: общий хвост
+    для confluence_index_*.
+
+    Стадии (хранилища, реестр, эмбеддер, чанкер, гейт вложений, ридеры)
+    приходят в конструктор; здесь из них собираются транспорт, обход
+    источников, диспетчер ридеров и отчёт. Стенд собирает стадии сам,
+    инструменты — через IngestAssembly.
+    """
 
     HTML_CONTENT_TYPES: ClassVar[tuple[str, ...]] = ("text/html",)
     """CONTENT_TYPE-значения от ConfluenceJsonDecoder, уходящие в HTML-Reader."""
 
-    @staticmethod
-    async def run(  # noqa: PLR0913 — стадии конвейера независимы
+    DISPATCH_READER_ID: ClassVar[ReaderId] = ReaderId("ext.confluence_dispatch")
+
+    def __init__(  # noqa: PLR0913 — стадии конвейера независимы
+        self,
         *,
         scope: IngestScope,
         conn: ConfluenceConnection,
@@ -344,133 +402,130 @@ class ConfluenceIngest:
         gate: AttachmentGate,
         grade: ParseGrade,
         routes: Mapping[str, Reader[str]],
-    ) -> IngestReport:
-        """Полный Confluence -> kb_chunks конвейер для собранного scope."""
-        await scope.verify(conn)
-
-        reader: DispatchReader[str] = DispatchReader(
+    ) -> None:
+        self._scope = scope
+        self._collections_store = collections_store
+        self._ledger = ledger
+        self._chunker = chunker
+        self._workers = workers
+        self._collection_id = CollectionId(collection)
+        self._paginator = CflPaginator(conn)
+        self._reader: DispatchReader[str] = DispatchReader(
             by=TransportKeys.CONTENT_TYPE,
             routes=dict(routes),
-            reader_id=ReaderId("ext.confluence_dispatch"),
+            reader_id=self.DISPATCH_READER_ID,
             on_unknown="skip",
         )
-
-        collection_id = CollectionId(collection)
-        logger.info("db ensure_collection start: %s", collection_id)
-        elapsed = Elapsed()
-        await collections_store.ensure_collection(collection_id, description=None)
-        logger.info(
-            "db ensure_collection done: %s in %dms", collection_id, elapsed.ms()
+        self._view: CollectionScopedView[str] = CollectionScopedView(
+            store=chunk_store, embedder=embedder, collection=self._collection_id
         )
-
-        view: CollectionScopedView[str] = CollectionScopedView(
-            store=chunk_store,
-            embedder=embedder,
-            collection=collection_id,
-        )
-        transport = ConfluenceSourceTransport.from_connection(conn)
-        source = ConfluenceDiscovery(
+        self._transport = ConfluenceSourceTransport(conn)
+        self._source = ConfluenceDiscovery(
             conn=conn,
             listing=scope.listing,
             gate=gate,
             grade=grade,
             progress=progress,
         )
-        config: IndexerConfig[str] = IndexerConfig(
+        self._config: IndexerConfig[str] = IndexerConfig(
             workers=workers, stamp=stamp, scope=scope.owned()
         )
-        async with ConfluenceIngest._wide_thread_pool(workers):
+        self._run_log = LoggedIndexRun(logger, progress)
+        self._reporting = IngestReporting(progress, str(self._collection_id))
+
+    async def run(self) -> IngestReport:
+        """Полный Confluence -> kb_chunks конвейер для собранной области."""
+        async with self._paginator as paginator:
+            await self._scope.verify(paginator)
+
+        logger.info("db ensure_collection start: %s", self._collection_id)
+        elapsed = Elapsed()
+        await self._collections_store.ensure_collection(
+            self._collection_id, description=None
+        )
+        logger.info(
+            "db ensure_collection done: %s in %dms", self._collection_id, elapsed.ms()
+        )
+
+        async with WideThreadPool(self._workers):
             try:
                 pipeline: Pipeline[Any, str] = Pipeline(
-                    source=source,
-                    transport=transport,
-                    reader=reader,
-                    ledger=ledger,
-                    probe=scope.probe(),
+                    source=self._source,
+                    transport=self._transport,
+                    reader=self._reader,
+                    ledger=self._ledger,
+                    probe=self._scope.probe(),
                 )
-                outcome = await LoggedIndexRun.drain(
-                    pipeline.index(chunker=chunker, sink=view, config=config),
-                    logger,
-                    progress,
+                events = pipeline.index(
+                    chunker=self._chunker, sink=self._view, config=self._config
                 )
+                outcome = await self._run_log.drain(events)
             finally:
-                await transport.close()
+                await self._transport.close()
 
-        return IngestReport.of(outcome, progress, collection=str(collection_id))
+        return self._reporting.report(outcome)
 
-    @staticmethod
-    @asynccontextmanager
-    async def _wide_thread_pool(workers: int) -> AsyncGenerator[None, None]:
-        """Свой пул под asyncio.to_thread: дефолтный ограничен min(32, cpu+4).
 
-        Слотов на один больше числа источников — разбор не должен ждать, пока
-        освободится поток, занятый эмбеддингом батча. На выходе широкий пул
-        закрывается (брошенный, он остался бы дефолтным на весь процесс, и
-        завершение asyncio.run ждало бы его потоки), но дефолтным сначала
-        становится свежий: закрытый executor валит любой следующий to_thread
-        с «cannot schedule new futures after shutdown» — например kerberos-
-        логин соединения postgres.
-        """
-        loop = asyncio.get_running_loop()
-        pool = ThreadPoolExecutor(
-            max_workers=workers + 1,
-            thread_name_prefix="boba-ingest",
-        )
-        loop.set_default_executor(pool)
+class IngestAssembly:
+    """Сборка стадий конвейера из секции инструмента: хранилища, реестр,
+    эмбеддер, чанкер и гейт вложений живут здесь, конвейер собирается на
+    область вызова."""
 
-        try:
-            yield
-        finally:
-            loop.set_default_executor(ThreadPoolExecutor())
-            pool.shutdown(wait=False, cancel_futures=True)
-
-    @staticmethod
-    async def ingest(
+    def __init__(
+        self,
         cfg: ConfluenceIngestConfig,
-        scope: IngestScope,
-        *,
-        attachments: bool,
         progress: IngestProgress,
         routes: Mapping[str, Reader[str]],
-    ) -> IngestReport:
-        """Собрать stores/ledger/embedder/chunker/gate из cfg и вызвать run."""
-        chunk_store = LoggingChunkStore(PostgresChunkStore(cfg=cfg), logger)
-        collections_store = PostgresCollectionsStore(cfg=cfg)
-        ledger = LoggingSourceLedger(
+    ) -> None:
+        self._cfg = cfg
+        self._progress = progress
+        self._routes = routes
+        self._chunk_store = LoggingChunkStore(PostgresChunkStore(cfg=cfg), logger)
+        self._collections_store = PostgresCollectionsStore(cfg=cfg)
+        self._ledger = LoggingSourceLedger(
             PostgresSourceLedger(cfg=cfg, collection=CollectionId(cfg.collection)),
             logger,
         )
-        embedder = LoggingEmbedder(WarmEmbedder.of(cfg.embedding), logger)
-        chunker = LoggingChunker(StructuralChunkerFactory.build(cfg), logger, progress)
+        self._embedder = LoggingEmbedder(WarmEmbedder.of(cfg.embedding), logger)
+        self._chunker = LoggingChunker(
+            StructuralChunkerFactory(cfg).build(), logger, progress
+        )
+        self._stamp = IngestStamp(cfg, routes)
+        self._conn = ConfluenceConnection(
+            profile=cfg.confluence, body_format=cfg.body_format
+        )
+
+    def build(self, scope: IngestScope, *, attachments: bool) -> ConfluenceIngest:
+        cfg = self._cfg
         gate = AttachmentGate(
-            allowed=AttachmentFilter.of_masks(cfg.attachments),
+            allowed=AttachmentFilter(cfg.attachments),
             requested=attachments,
             ocr=cfg.ocr.enabled,
         )
-        grade = ParseGrade.of(ocr=cfg.ocr.enabled)
+        grade = ParseGrade.TEXT
+        if cfg.ocr.enabled:
+            grade = ParseGrade.OCR
+
         logger.info(
             "ingest %s: attachments=%s ocr=%s",
             scope.label(),
             attachments,
             cfg.ocr.enabled,
         )
-        conn = ConfluenceConnection(
-            profile=cfg.confluence,
-            body_format=cfg.body_format,
-        )
-        return await ConfluenceIngest.run(
+
+        return ConfluenceIngest(
             scope=scope,
-            conn=conn,
-            chunk_store=chunk_store,
-            collections_store=collections_store,
-            ledger=ledger,
-            embedder=embedder,
-            chunker=chunker,
+            conn=self._conn,
+            chunk_store=self._chunk_store,
+            collections_store=self._collections_store,
+            ledger=self._ledger,
+            embedder=self._embedder,
+            chunker=self._chunker,
             collection=cfg.collection,
             workers=cfg.page_workers,
-            stamp=IngestStamp.of(cfg, routes),
-            progress=progress,
+            stamp=self._stamp.render(),
+            progress=self._progress,
             gate=gate,
             grade=grade,
-            routes=routes,
+            routes=self._routes,
         )

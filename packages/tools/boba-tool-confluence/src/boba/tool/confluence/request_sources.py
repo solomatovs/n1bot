@@ -25,7 +25,7 @@ from boba.confluence.models import (
     AttachmentVerdict,
     ConfluenceAttachmentItem,
     ConfluenceContent,
-    ConfluenceSourceId,
+    ConfluenceSourceIds,
     ParseGrade,
 )
 from boba.confluence.rest import (
@@ -80,13 +80,14 @@ class SpaceListing(ContentListing):
 
     def __init__(self, space_key: str) -> None:
         self._space_key = space_key
+        self._rest = CflRestBuilder()
 
     def label(self) -> str:
         return f"space {self._space_key}"
 
     def contents(self, paginator: CflPaginator) -> AsyncIterator[ConfluenceContent]:
         return paginator(
-            CflRestBuilder.space_content_path(self._space_key),
+            self._rest.space_content_path(self._space_key),
             ConfluenceContent,
         )
 
@@ -100,6 +101,7 @@ class CqlListing(ContentListing):
 
     def __init__(self, cql: str) -> None:
         self._cql = cql
+        self._rest = CflRestBuilder()
 
     @property
     def cql(self) -> str:
@@ -110,7 +112,7 @@ class CqlListing(ContentListing):
 
     def contents(self, paginator: CflPaginator) -> AsyncIterator[ConfluenceContent]:
         return paginator(
-            CflRestBuilder.cql_search_path(
+            self._rest.cql_search_path(
                 self._cql,
                 expand=CflRestBuilder.DISCOVERY_EXPAND,
             ),
@@ -128,6 +130,7 @@ class PageListing(ContentListing):
 
     def __init__(self, page_id: str) -> None:
         self._page_id = page_id
+        self._rest = CflRestBuilder()
         self._missing: list[str] = []
 
     def label(self) -> str:
@@ -139,7 +142,7 @@ class PageListing(ContentListing):
         self._missing = []
         try:
             content = await paginator.one(
-                CflRestBuilder.page_summary_path(self._page_id),
+                self._rest.page_summary_path(self._page_id),
                 ConfluenceContent,
             )
         except TransportError as exc:
@@ -172,6 +175,8 @@ class ConfluenceDiscovery(RequestSource[ConfluenceRequest]):
         progress: IngestProgress,
     ) -> None:
         self._conn = conn
+        self._rest = CflRestBuilder()
+        self._source_ids = ConfluenceSourceIds()
         self._listing = listing
         self._gate = gate
         self._grade = grade
@@ -186,7 +191,7 @@ class ConfluenceDiscovery(RequestSource[ConfluenceRequest]):
         async with CflPaginator(self._conn) as paginator:
             async for content in self._listing.contents(paginator):
                 self._progress.pages_found(1)
-                yield CflRestBuilder.make_page_request(
+                yield self._rest.make_page_request(
                     profile=self._conn.profile,
                     content=content,
                     body_format=self._conn.body_format,
@@ -196,7 +201,7 @@ class ConfluenceDiscovery(RequestSource[ConfluenceRequest]):
                     yield request
 
             for page_id in self._listing.missing():
-                yield CflRestBuilder.make_gone_request(
+                yield self._rest.make_gone_request(
                     profile=self._conn.profile,
                     page_id=page_id,
                     body_format=self._conn.body_format,
@@ -210,10 +215,10 @@ class ConfluenceDiscovery(RequestSource[ConfluenceRequest]):
         content: ConfluenceContent,
     ) -> AsyncIterator[ConfluenceRequest]:
         profile = self._conn.profile
-        body_url = CflRestBuilder.page_body_path(
+        body_url = self._rest.page_body_path(
             content.id, body_format=self._conn.body_format
         )
-        page_source = ConfluenceSourceId.of(profile, str(body_url))
+        page_source = self._source_ids.of(profile, str(body_url))
         async for att in self._attachments(paginator, content):
             self._progress.attachments_found(1)
             verdict = self._gate.verdict(att)
@@ -226,7 +231,7 @@ class ConfluenceDiscovery(RequestSource[ConfluenceRequest]):
                     att.media_type,
                 )
 
-            yield CflRestBuilder.make_attachment_request(
+            yield self._rest.make_attachment_request(
                 profile=profile,
                 page=content,
                 page_source=page_source,
@@ -235,8 +240,8 @@ class ConfluenceDiscovery(RequestSource[ConfluenceRequest]):
                 skip=verdict.skipped(),
             )
 
-    @staticmethod
     async def _attachments(
+        self,
         paginator: CflPaginator,
         content: ConfluenceContent,
     ) -> AsyncIterator[AttachmentInfo]:
@@ -253,6 +258,6 @@ class ConfluenceDiscovery(RequestSource[ConfluenceRequest]):
             content.id,
             block.size,
         )
-        path = CflRestBuilder.attachments_path(content.id)
+        path = self._rest.attachments_path(content.id)
         async for item in paginator(path, ConfluenceAttachmentItem):
             yield item.info()
