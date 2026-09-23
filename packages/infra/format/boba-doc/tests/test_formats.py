@@ -22,6 +22,9 @@ from boba.doc.document import DocumentHint, DocumentKind, Formats
         ("", "notes.md", DocumentKind.TEXT),
         ("", "old.xls", DocumentKind.XLS),
         ("application/rtf", "", DocumentKind.RTF),
+        ("text/html; charset=utf-8", "", DocumentKind.HTML),
+        ("application/xhtml+xml", "", DocumentKind.HTML),
+        ("application/octet-stream", "page.HTM", DocumentKind.HTML),
         ("application/octet-stream", "archive.zip", DocumentKind.UNKNOWN),
         ("", "", DocumentKind.UNKNOWN),
     ],
@@ -44,6 +47,12 @@ def test_sniff_office_zip_pdf_rtf_ole(tmp_path: Path) -> None:
     }
     for expected, data in cases.items():
         assert Formats.sniff(data[:head_size]) is expected, expected
+
+
+def test_sniff_html_by_doctype_or_root_tag() -> None:
+    assert Formats.sniff(b"\xef\xbb\xbf\n  <!DOCTYPE html><html>") is DocumentKind.HTML
+    assert Formats.sniff(b"<HTML lang=en><body>x") is DocumentKind.HTML
+    assert Formats.sniff(b"<div>fragment</div>") is DocumentKind.UNKNOWN
 
 
 def test_sniff_image_and_garbage(doc_stand) -> None:

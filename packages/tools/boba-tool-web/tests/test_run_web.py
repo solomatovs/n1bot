@@ -9,7 +9,7 @@ from __future__ import annotations
 import pytest
 
 from boba.config import bind
-from boba.tool.web.tools import WebGrepConfig, web_fetch_page, web_grep_page
+from boba.tool.web.tools import WebToolsConfig, web_fetch_page, web_grep_page
 from boba.toolkit.entry import ToolMain
 from boba.transport.http.connection import HttpConnection
 
@@ -17,9 +17,9 @@ pytestmark = [pytest.mark.run, pytest.mark.anyio]
 
 
 @pytest.fixture(scope="module")
-def web_cfg(raw_config) -> WebGrepConfig:
+def web_cfg(raw_config) -> WebToolsConfig:
     """Лимиты выдачи из [tool.web]."""
-    return bind(raw_config, path="tool.web", model=WebGrepConfig)
+    return bind(raw_config, path="tool.web", model=WebToolsConfig)
 
 
 @pytest.fixture(scope="module")
@@ -34,7 +34,7 @@ def covered_url(connection: HttpConnection) -> str:
 
 
 async def test_run_web_fetch(
-    web_cfg: WebGrepConfig, connection: HttpConnection, covered_url: str
+    web_cfg: WebToolsConfig, connection: HttpConnection, covered_url: str
 ) -> None:
     body = ToolMain.toolset(web_fetch_page)[0].coroutine
     if body is None:
@@ -55,7 +55,7 @@ async def test_run_web_fetch(
 
 
 async def test_run_web_grep(
-    web_cfg: WebGrepConfig, connection: HttpConnection, covered_url: str
+    web_cfg: WebToolsConfig, connection: HttpConnection, covered_url: str
 ) -> None:
     body = ToolMain.toolset(web_grep_page)[0].coroutine
     if body is None:

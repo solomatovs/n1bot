@@ -7,8 +7,10 @@
 варианта, который занимал бы поток на время сетевого ожидания, здесь нет.
 
 Ошибки:
-httpx.HTTPError — соединение, статус после ретраев, обрыв или пауза тела
-    сверх stream_stall_sec (httpx.ReadTimeout); уходят вызывающему как есть.
+TransportError — соединение не установлено, тело оборвалось или замолчало
+    дольше stream_stall_sec; ошибки httpx наружу не выходят.
+HttpStatusError — сервер ответил не-2xx и ретраи исчерпаны; несёт статус,
+    фразу ответа и дочитанное тело.
 """
 
 from __future__ import annotations
@@ -37,6 +39,7 @@ __all__ = [
     "CancellableHttpTransport",
     "HttpRequest",
     "HttpResponse",
+    "HttpStatusError",
     "HttpTransport",
     "HttpTransportConfig",
     "ResponseStream",
@@ -44,6 +47,22 @@ __all__ = [
 ]
 
 logger = logging.getLogger(__name__)
+
+
+class TransportError(Exception):
+    """Запрос не выполнен: соединение, TLS, обрыв или пауза тела. Текст
+    называет метод, адрес и причину httpx."""
+
+
+class HttpStatusError(TransportError):
+    """Сервер ответил не-2xx, и ретраи по политике соединения исчерпаны.
+    Тело дочитано и лежит в body: вызывающий кладёт его начало в свой текст."""
+
+    def __init__(self, message: str, *, status: int, reason: str, body: str) -> None:
+        super().__init__(message)
+        self.status = status
+        self.reason = reason
+        self.body = body
 
 
 class HttpTransportConfig(BaseModel):
@@ -81,7 +100,7 @@ class HttpTransportConfig(BaseModel):
         ge=0,
         description=(
             "Пауза между кусками тела потокового ответа, секунды; "
-            "дольше — httpx.ReadTimeout. 0 — без потолка."
+            "дольше — TransportError. 0 — без потолка."
         ),
     )
 
@@ -249,6 +268,9 @@ class HttpTransport:
     Файл дампа именуется хостом запроса и меткой DumpLabel из контекста.
     """
 
+    BODY_PREVIEW: ClassVar[int] = 200
+    """Сколько символов тела ошибочного ответа входит в текст ошибки."""
+
     def __init__(self, connection: HttpConnection, config: HttpTransportConfig) -> None:
         self._connection = connection
         self._config = config
@@ -386,19 +408,34 @@ class HttpTransport:
 
                 limit = self._retry.attempts_for(e)
                 if attempt >= limit:
-                    raise
+                    raise self._failed(request, e) from e
 
                 self._retry.log(attempt, limit, request, e)
                 await asyncio.sleep(self._retry.delay(attempt, e))
 
     @staticmethod
     async def _drain(resp: httpx.Response) -> None:
-        """Тело ответа с ошибкой дочитывается до закрытия: вызывающий кладёт
-        его в текст своей ошибки (exc.response.text)."""
+        """Тело ответа с ошибкой дочитывается до закрытия: оно уходит в
+        HttpStatusError.body."""
         try:
             await resp.aread()
         finally:
             await resp.aclose()
+
+    def _failed(self, request: HttpRequest, exc: httpx.HTTPError) -> TransportError:
+        """Ошибка httpx в ошибке слоя: метод, адрес, статус или причина."""
+        where = f"{request.method} {self.resolve_url(request)}"
+        if isinstance(exc, httpx.HTTPStatusError):
+            status = exc.response.status_code
+            reason = exc.response.reason_phrase
+            body = exc.response.text
+            msg = (
+                f"{where}: expected 2xx, got {status} {reason}: "
+                f"{body[: self.BODY_PREVIEW]!r}"
+            )
+            return HttpStatusError(msg, status=status, reason=reason, body=body)
+
+        return TransportError(f"{where}: {type(exc).__name__}: {exc}")
 
     def _build(self, request: HttpRequest) -> httpx.Request:
         return self._client.build_request(
@@ -445,10 +482,11 @@ class ByteStream(Protocol):
 class ResponseStream(ByteStream):
     """ByteStream поверх httpx-ответа; тело не буферизуется до запроса на чтение.
 
-    Пауза между кусками тела сверх stall_sec — httpx.ReadTimeout: сервер,
+    Пауза между кусками тела сверх stall_sec — TransportError: сервер,
     который принял запрос и замолчал посреди потока, не держит вызывающего
-    вечно. Индексатор принимает поток как AsyncBinaryStream: этот протокол
-    наследовать нельзя — транспорт не зависит от boba-indexing.
+    вечно; обрыв тела httpx уходит той же ошибкой. Индексатор принимает
+    поток как AsyncBinaryStream: этот протокол наследовать нельзя —
+    транспорт не зависит от boba-indexing.
     """
 
     def __init__(self, resp: httpx.Response, stall_sec: float) -> None:
@@ -462,7 +500,10 @@ class ResponseStream(ByteStream):
         return self._guarded(self._resp.aiter_lines())
 
     async def read(self) -> bytes:
-        return await self._resp.aread()
+        try:
+            return await self._resp.aread()
+        except httpx.HTTPError as exc:
+            raise self._broken(exc) from exc
 
     async def _guarded(self, pieces: AsyncIterator[T]) -> AsyncIterator[T]:
         """Куски потока под вотчдогом паузы; без потолка — как есть."""
@@ -471,16 +512,26 @@ class ResponseStream(ByteStream):
                 piece = await self._next(pieces)
             except TimeoutError as exc:
                 msg = (
-                    f"{self._resp.request.method} {self._resp.request.url}: "
-                    f"response body stalled, no data within "
+                    f"{self._where()}: response body stalled, no data within "
                     f"stream_stall_sec={self._stall_sec}s"
                 )
-                raise httpx.ReadTimeout(msg, request=self._resp.request) from exc
+                raise TransportError(msg) from exc
+            except httpx.HTTPError as exc:
+                raise self._broken(exc) from exc
 
             if piece is None:
                 return
 
             yield piece
+
+    def _where(self) -> str:
+        return f"{self._resp.request.method} {self._resp.request.url}"
+
+    def _broken(self, exc: httpx.HTTPError) -> TransportError:
+        return TransportError(
+            f"{self._where()}: reading the response body failed: "
+            f"{type(exc).__name__}: {exc}"
+        )
 
     async def _next(self, pieces: AsyncIterator[T]) -> T | None:
         if not self._stall_sec:

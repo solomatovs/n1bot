@@ -11,13 +11,13 @@ dependencies = [
     "boba-llm==0.0.23.dev1",
     "boba-toolkit==0.0.23.dev1",
     "boba-transport-http==0.0.23.dev1",
-    "httpx>=0.28,<1",
     "httpx-sse>=0.4,<1",
     "pydantic>=2.10,<2.11",
 ]
 
 [project.optional-dependencies]
 dev = [
+    "httpx>=0.28,<1",
     "pytest>=8",
 ]
 

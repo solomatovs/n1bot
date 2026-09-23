@@ -14,8 +14,8 @@ ConfluenceHttpTransport исполняет чистый HTTP-запрос и с�
 
 Ошибки:
 SourceGoneError — Confluence ответил 404: страницы или вложения больше нет.
-TransportError — Confluence недоступен, ответил другим статусом или оборвал
-    тело; ошибки httpx наружу не выходят.
+SourceFetchError — Confluence недоступен, ответил другим статусом или оборвал
+    тело; ошибки транспорта наружу не выходят.
 ConfluencePayloadError — тело страницы не разбирается как JSON Confluence.
 """
 
@@ -30,8 +30,6 @@ from dataclasses import replace
 from pathlib import Path
 from typing import ClassVar
 
-import httpx
-
 from boba.confluence.models import (
     ConfluenceKeys,
     ConfluenceSourceIds,
@@ -43,11 +41,11 @@ from boba.indexing import (
     AsyncBinaryStream,
     Metadata,
     RawDocument,
+    SourceFetchError,
     SourceGoneError,
     SourceId,
     SpooledBody,
     Transport,
-    TransportError,
     TransportKeys,
 )
 from boba.tool.confluence.indexing_log import LoggingStream
@@ -55,7 +53,9 @@ from boba.toolkit.timing import Elapsed
 from boba.transport.http import (
     CancellableHttpTransport,
     HttpResponse,
+    HttpStatusError,
     HttpTransport,
+    TransportError,
 )
 
 logger = logging.getLogger(__name__)
@@ -64,7 +64,7 @@ __all__ = ["ConfluenceHttpTransport", "ConfluenceSourceTransport"]
 
 
 class GuardedStream(AsyncBinaryStream):
-    """Тело ответа под контрактом слоя: httpx-обрыв уходит наверх TransportError."""
+    """Тело ответа под контрактом слоя: обрыв транспорта уходит SourceFetchError."""
 
     def __init__(self, inner: AsyncBinaryStream, source_id: SourceId) -> None:
         self._inner = inner
@@ -77,21 +77,17 @@ class GuardedStream(AsyncBinaryStream):
         try:
             async for chunk in self._inner:
                 yield chunk
-        except httpx.HTTPError as exc:
+        except TransportError as exc:
             raise self._failed(exc) from exc
 
     async def read(self) -> bytes:
         try:
             return await self._inner.read()
-        except httpx.HTTPError as exc:
+        except TransportError as exc:
             raise self._failed(exc) from exc
 
-    def _failed(self, exc: httpx.HTTPError) -> TransportError:
-        msg = (
-            f"reading the response body of confluence {self._source_id}: "
-            f"{type(exc).__name__}: {exc}"
-        )
-        return TransportError(msg)
+    def _failed(self, exc: TransportError) -> SourceFetchError:
+        return SourceFetchError(f"confluence {self._source_id}: {exc}")
 
 
 class ConfluenceHttpTransport(Transport[ConfluenceRequest]):
@@ -125,18 +121,14 @@ class ConfluenceHttpTransport(Transport[ConfluenceRequest]):
                     source_id=source_id,
                     metadata=self._enrich(request.metadata, resp),
                 )
-        except httpx.HTTPStatusError as exc:
-            msg = (
-                f"GET confluence {source_id}: expected 2xx, got "
-                f"{exc.response.status_code} {exc.response.reason_phrase}"
-            )
-            if exc.response.status_code == self.GONE_STATUS:
+        except HttpStatusError as exc:
+            msg = f"confluence {source_id}: {exc}"
+            if exc.status == self.GONE_STATUS:
                 raise SourceGoneError(msg) from exc
 
-            raise TransportError(msg) from exc
-        except httpx.HTTPError as exc:
-            msg = f"GET confluence {source_id}: {type(exc).__name__}: {exc}"
-            raise TransportError(msg) from exc
+            raise SourceFetchError(msg) from exc
+        except TransportError as exc:
+            raise SourceFetchError(f"confluence {source_id}: {exc}") from exc
 
     @staticmethod
     def _enrich(base: Metadata, resp: HttpResponse) -> Metadata:

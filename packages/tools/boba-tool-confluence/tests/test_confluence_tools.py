@@ -8,13 +8,13 @@ import pytest
 
 from boba.confluence.models import ConfluencePayloadError
 from boba.confluence.rest import CflRestBuilder, SpaceType
-from boba.indexing import TransportError
 from boba.tool.confluence.tools import TOOLS as CONFLUENCE_TOOLS
 from boba.tool.confluence.tools import (
     ConfluenceToolsConfig,
     SpaceList,
 )
 from boba.toolkit.entry import ToolMain
+from boba.transport.http import TransportError
 from boba.transport.http.connection import HttpConnection, UrlScheme
 
 # порт 1 закрыт всегда: тест проверяет ошибку соединения, а не адрес

@@ -6,8 +6,8 @@
 Ошибки:
 PostgresError — до хранилища не достучаться.
 LedgerError — реестр источников недоступен.
-httpx.HTTPError — Confluence недоступен или ответил статусом (чтение вложения).
-TransportError — список страниц забрать не удалось.
+TransportError — Confluence недоступен или ответил статусом: список
+    страниц или вложение забрать не удалось.
 ConfluencePayloadError — Confluence ответил не тем JSON, который ждали.
 AttachmentNotFoundError — вложения с таким именем на странице нет.
 DocumentError — вложение скачалось, но не разбирается (boba.doc.document).
@@ -20,14 +20,12 @@ LlmError — эмбеддер недоступен, не загрузился и
 from __future__ import annotations
 
 import asyncio
-import io
 import logging
 import sys
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import AsyncIterator, Callable, Mapping
 from enum import StrEnum
-from typing import Annotated, Any, ClassVar, Final
+from typing import Annotated, Any, BinaryIO, ClassVar, Final
 
-import httpx
 from pydantic import BaseModel, ConfigDict, Field
 
 from boba.confluence.models import (
@@ -44,8 +42,9 @@ from boba.confluence.models import (
 from boba.confluence.parsing import JsonNode
 from boba.confluence.rest import CflUrlBuilder
 from boba.db.postgres import PostgresError
+from boba.doc.bridge import AsyncPipe
 from boba.doc.config import OcrUnavailableError
-from boba.doc.document import DocumentError, DocumentHint, PageWindow
+from boba.doc.document import DocumentError, DocumentHint
 from boba.indexing import (
     DocumentCardSection,
     IncompatibleContentError,
@@ -59,7 +58,6 @@ from boba.indexing import (
     Section,
     SectionKeys,
     TableSection,
-    TransportError,
 )
 from boba.llm.chat import LlmError
 from boba.llm.providers import EmbeddingModelConfig
@@ -81,6 +79,7 @@ from boba.toolkit.facade import Injected, tool, warmup
 from boba.toolkit.result import MarkdownResult, TableResult
 from boba.toolkit.timing import Elapsed
 from boba.toolkit.types import SecretRevealing
+from boba.transport.http import TransportError
 
 logger = logging.getLogger("boba.tool.confluence.ingest")
 
@@ -444,20 +443,17 @@ async def confluence_attachment(
             )
             raise AttachmentNotFoundError(msg)
 
-        content = await http.get(CflUrlBuilder().raw_to_url(link))
-
-    # ридеры синхронные и тяжёлые: разбор уходит в поток
-    reader = AttachmentText(run_cfg)
-    text = await asyncio.to_thread(reader.read, content, filename)
+        # ридеры синхронные и тяжёлые: тело льётся пипой в поток ридера
+        reader = AttachmentText(run_cfg)
+        async with http.fetch(CflUrlBuilder().raw_to_url(link)) as stream:
+            text = await AsyncPipe.run(stream, reader.consumer(filename))
 
     return MarkdownResult(text=text)
 
 
 class AttachmentText:
     """Текст одного вложения роутером boba-doc: роутер и OCR собираются в
-    конструкторе из секции вызова, страницы склеиваются в один текст."""
-
-    PAGE_GLUE: ClassVar[str] = "\n\n"
+    конструкторе из секции вызова, потребитель читает поток скачивания."""
 
     def __init__(self, cfg: IngestToolConfig) -> None:
         from boba.doc.ocr import OcrEngines  # noqa: PLC0415
@@ -465,14 +461,13 @@ class AttachmentText:
 
         self._router = DocumentRouter(cfg, OcrEngines(LLM).of(cfg.ocr))
 
-    def read(self, content: bytes, filename: str) -> str:
+    def consumer(self, filename: str) -> Callable[[BinaryIO], str]:
         hint = DocumentHint(filename=filename)
-        with self._router.open(io.BytesIO(content), hint) as document:
-            texts: list[str] = []
-            for page in document.pages(PageWindow.whole()):
-                texts.append(page.text)
 
-        return self.PAGE_GLUE.join(texts)
+        def read(source: BinaryIO) -> str:
+            return self._router.read_text(source, hint)
+
+        return read
 
 
 class PageAttachments:
@@ -502,7 +497,6 @@ class PageAttachments:
 EXPECTED: Mapping[type[Exception], IngestErrorKind] = {
     PostgresError: IngestErrorKind.DATABASE_UNAVAILABLE,
     LedgerError: IngestErrorKind.DATABASE_UNAVAILABLE,
-    httpx.HTTPError: IngestErrorKind.REQUEST_FAILED,
     TransportError: IngestErrorKind.REQUEST_FAILED,
     ConfluencePayloadError: IngestErrorKind.REQUEST_FAILED,
     AttachmentNotFoundError: IngestErrorKind.ATTACHMENT_NOT_FOUND,

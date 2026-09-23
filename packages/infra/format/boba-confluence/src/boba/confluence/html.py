@@ -1,9 +1,9 @@
 """Разбор HTML Confluence и конверсия в markdown: недоверенную разметку
 разбирают только здесь.
 
-Модуль закрыт extra `html` пакета (bs4, markdownify): тела инструментов
-импортируют его в песочнице, индексатор — у себя в процессе; приложение
-чата его не импортирует.
+Модуль закрыт extra `html` пакета (bs4 и конвертер boba-doc): тела
+инструментов импортируют его в песочнице, индексатор — у себя в процессе;
+приложение чата его не импортирует.
 
 Ошибки: ожидаемых нет. bs4 и markdownify не отказывают на битой разметке —
 они её восстанавливают, поэтому любая ошибка здесь означает дефект кода.
@@ -18,7 +18,6 @@ from typing import Any, ClassVar
 
 from bs4 import BeautifulSoup
 from bs4.element import NavigableString, Tag
-from markdownify import MarkdownConverter
 from pydantic import BaseModel, ConfigDict
 
 from boba.confluence.models import (
@@ -35,6 +34,7 @@ from boba.confluence.models import (
     PageTextSection,
     TableShape,
 )
+from boba.doc.html import HeadingStyle, HtmlMarkdown
 
 __all__ = [
     "ConfluencePage",
@@ -42,7 +42,6 @@ __all__ = [
     "MarkdownRequest",
     "PageHeading",
     "PageLayout",
-    "PageMarkdown",
     "PlainTextRender",
     "PlainTextRequest",
     "SectionsRender",
@@ -488,24 +487,6 @@ class ConfluencePage:
         return False
 
 
-class PageMarkdown:
-    """Конверсия страницы в markdown с заданным стилем заголовков.
-
-    Экранирование `_` и `*` нужно для чтения человеком; текст индекса идёт без
-    него, иначе идентификаторы вида dm.order_lines теряют вид.
-    """
-
-    def __init__(self, heading_style: str, *, escape: bool) -> None:
-        self._converter = MarkdownConverter(
-            heading_style=heading_style,
-            escape_underscores=escape,
-            escape_asterisks=escape,
-        )
-
-    def render(self, page: ConfluencePage) -> str:
-        return str(self._converter.convert_soup(page.soup)).strip()
-
-
 class PageLayout:
     """Раскладка страницы на секции: карточка, текст по заголовкам, таблицы
     отдельными записями под текущим заголовком.
@@ -708,7 +689,7 @@ class MarkdownRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     html: str
-    heading_style: str
+    heading_style: HeadingStyle
     escape: bool = True
 
 
@@ -726,14 +707,14 @@ class MarkdownRender:
 
     def __init__(self, request: Mapping[str, Any]) -> None:
         self._request = MarkdownRequest.model_validate(request)
-        self._markdown = PageMarkdown(
+        self._markdown = HtmlMarkdown(
             self._request.heading_style, escape=self._request.escape
         )
 
     def run(self) -> dict[str, Any]:
         page = ConfluencePage(self._request.html)
         try:
-            text = self._markdown.render(page)
+            text = self._markdown.render(page.soup)
         finally:
             page.close()
 

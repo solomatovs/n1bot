@@ -47,7 +47,7 @@ from boba.sandbox.zygote import ZygoteRegistry
 from boba.stand.site import Stand
 from boba.tool.connections.tools import ConnectionsToolConfig
 from boba.tool.pg.tools import PgToolConfig
-from boba.tool.web.tools import WebGrepConfig
+from boba.tool.web.tools import WebToolsConfig
 from boba.toolkit.entry import ToolMain
 from boba.toolkit.launcher import PayloadFailureError
 from boba.toolkit.sql import SqlErrorKind
@@ -470,7 +470,7 @@ def web_tools(
     ToolProcessWrap.guard_all(ToolMain.toolset(*functions), launcher)
 
     def resolve(name: str, annotation: Any) -> object:
-        return bind(raw_config, path="tool.web", model=WebGrepConfig)
+        return bind(raw_config, path="tool.web", model=WebToolsConfig)
 
     UserConnections.bind_all(
         functions,

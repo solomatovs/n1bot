@@ -10,7 +10,8 @@
 - CflPaginator         — модели из discovery-запросов поверх CflRest.
 
 Ошибки:
-TransportError — Confluence недоступен, ответил статусом или оборвал тело.
+TransportError — Confluence недоступен, ответил статусом после ретраев или
+    оборвал тело (boba.transport.http, как есть от HttpTransport).
 ConfluencePayloadError — ответ не разбирается как контент Confluence.
 """
 
@@ -18,7 +19,8 @@ from __future__ import annotations
 
 import json
 import logging
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import AsyncGenerator, AsyncIterator, Mapping
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any, ClassVar, Literal, TypeVar
@@ -42,11 +44,11 @@ from boba.indexing import (
     Request,
     SourceId,
     SourceMark,
-    TransportError,
     TransportKeys,
 )
 from boba.toolkit.timing import Elapsed
 from boba.transport.http import (
+    ByteStream,
     CancellableHttpTransport,
     HttpRequest,
     HttpTransport,
@@ -406,22 +408,19 @@ class CflRest:
         self._http = http
         self._url_builder = CflUrlBuilder()
 
-    async def get(self, url: httpx.URL) -> bytes:
-        """Один GET, тело целиком: статус и обрыв уходят TransportError."""
+    @asynccontextmanager
+    async def fetch(self, url: httpx.URL) -> AsyncGenerator[ByteStream, None]:
+        """Один GET, тело потоком до выхода из блока; статус и обрыв —
+        TransportError транспорта."""
         logger.info("confluence request: GET %s", url)
+        async with self._http.fetch(HttpRequest(url=str(url))) as resp:
+            yield resp.stream
+
+    async def get(self, url: httpx.URL) -> bytes:
+        """Один GET, тело целиком."""
         elapsed = Elapsed()
-        try:
-            async with self._http.fetch(HttpRequest(url=str(url))) as resp:
-                payload = await resp.stream.read()
-        except httpx.HTTPStatusError as exc:
-            msg = (
-                f"GET {url} on confluence: expected 2xx, got "
-                f"{exc.response.status_code} {exc.response.reason_phrase}"
-            )
-            raise TransportError(msg) from exc
-        except httpx.HTTPError as exc:
-            msg = f"GET {url} on confluence: {type(exc).__name__}: {exc}"
-            raise TransportError(msg) from exc
+        async with self.fetch(url) as stream:
+            payload = await stream.read()
 
         logger.info("confluence response: %d bytes in %dms", len(payload), elapsed.ms())
 

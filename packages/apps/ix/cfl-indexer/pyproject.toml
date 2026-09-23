@@ -12,7 +12,6 @@ dependencies = [
     "boba-confluence[html]==0.0.23.dev1",
     "boba-db-postgres==0.0.23.dev1",
     "boba-doc[readers,ocr]==0.0.23.dev1",
-    "boba-indexing==0.0.23.dev1",
     "boba-ix-core==0.0.23.dev1",
     "boba-krb==0.0.23.dev1",
     "boba-llm==0.0.23.dev1",
