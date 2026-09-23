@@ -16,6 +16,7 @@ RAW = {
     "service": "orclpdb1",
     "connect_timeout": 10,
     "call_timeout": 30000,
+    "arraysize": 2000,
     "auth": {"method": "password", "user": "scraper", "password": "secret"},
 }
 
@@ -35,6 +36,7 @@ class TestOracleConfig:
             "tcp_connect_timeout": 10,
             "user": "scraper",
             "password": "secret",
+            "protocol": "tcp",
         }
 
     def test_labeled_puts_client_into_program(self) -> None:
