@@ -98,6 +98,8 @@ class SearchRequest(BaseModel):
     mode: SearchMode
     query: str = Field(min_length=1)
     limit: int = Field(gt=0)
+    offset: int = Field(ge=0)
+    """Окно выдачи: сколько строк ранжированного итога пропустить и сколько отдать."""
     surfaces: tuple[str, ...] = ()
     aspects: tuple[str, ...] = ()
     vector: tuple[float, ...] = ()
@@ -150,6 +152,7 @@ class IxSearch:
         params: dict[str, object] = {
             "q": request.query,
             "limit": request.limit,
+            "offset": request.offset,
             "surfaces": self.surfaces_of(request.surfaces),
             "aspects": self.aspects_of(request.aspects),
         }

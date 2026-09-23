@@ -448,13 +448,19 @@ def _script(expected: Expected) -> list[AIMessage]:
                     pg_schema=DM,
                     **WINDOW,
                 ),
-                _call(CallId.PG_FK, "pg_query", connection=PG_CONNECTION, sql=fk_sql),
+                _call(
+                    CallId.PG_FK,
+                    "pg_query",
+                    connection=PG_CONNECTION,
+                    sql=fk_sql,
+                    **WINDOW,
+                ),
                 _call(
                     CallId.CH_DESCRIBE,
                     "ch_describe_table",
                     connection=CH_CONNECTION,
                     table="events",
-                    ch_database=CH_DATABASE,
+                    database=CH_DATABASE,
                     **WINDOW,
                 ),
             ],
@@ -571,8 +577,8 @@ def _script(expected: Expected) -> list[AIMessage]:
         AIMessage(
             content="",
             tool_calls=[
-                _call(CallId.LIST_NODES, "describe_list_nodes"),
-                _call(CallId.LIST_EDGES, "describe_list_edges"),
+                _call(CallId.LIST_NODES, "describe_list_nodes", **WINDOW),
+                _call(CallId.LIST_EDGES, "describe_list_edges", **WINDOW),
             ],
         ),
         AIMessage(
@@ -586,8 +592,8 @@ def _script(expected: Expected) -> list[AIMessage]:
         AIMessage(
             content="",
             tool_calls=[
-                _call(CallId.LIST_NODES_AFTER, "describe_list_nodes"),
-                _call(CallId.LIST_EDGES_AFTER, "describe_list_edges"),
+                _call(CallId.LIST_NODES_AFTER, "describe_list_nodes", **WINDOW),
+                _call(CallId.LIST_EDGES_AFTER, "describe_list_edges", **WINDOW),
             ],
         ),
         AIMessage(content=FINAL_ANSWER),

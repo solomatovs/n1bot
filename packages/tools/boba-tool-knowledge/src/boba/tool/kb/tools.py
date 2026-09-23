@@ -53,6 +53,7 @@ from boba.toolkit.facade import Injected, tool, warmup
 from boba.toolkit.result import MarkdownResult, TableResult
 from boba.toolkit.timing import Elapsed
 from boba.toolkit.types import LLMStringList
+from boba.toolkit.window import RowLimit, RowOffset, RowPage, RowWindow
 
 logger = logging.getLogger(__name__)
 
@@ -128,7 +129,6 @@ class Prompt:
         "Аспекты (какой текст объекта) из kb_catalog2, по которым искать: "
         '["title", "body"] или ["meta_description"]. Пусто — все аспекты.'
     )
-    TOP_K: ClassVar[str] = "Сколько объектов вернуть."
     NODE_ID: ClassVar[str] = "Идентификатор объекта node_id из выдачи поиска."
     NODE_ASPECTS: ClassVar[str] = (
         "Какие тексты объекта вернуть, по именам аспектов из kb_catalog2: "
@@ -400,17 +400,21 @@ async def query_to_vector(cfg: KbToolConfig, query: str) -> tuple[float, ...]:
 async def run_and_collect(
     cfg: KbToolConfig,
     request: SearchRequest,
+    window: RowWindow,
 ) -> TableResult:
+    """Страница выдачи: окно применяет сервер (limit/offset запроса), страница
+    только замечает разведочную строку и считает навигацию."""
     async with KbSession.from_cfg(cfg) as session:
         hits = await session.search(request)
 
-    rows = HitRows.of(hits)
+    page = RowPage(window, skipped=window.offset)
+    page.take(HitRows.of(hits))
 
-    note = None
-    if not rows:
-        note = Prompt.NOTHING_FOUND
+    note = page.note()
+    if not page.rows:
+        note = f"{note}; {Prompt.NOTHING_FOUND}"
 
-    return TableResult(rows=rows, note=note)
+    return TableResult(rows=page.rows, note=note)
 
 
 @tool
@@ -440,11 +444,12 @@ async def kb_catalog2(
 
 
 @tool
-async def kb_fts_search2(
+async def kb_fts_search2(  # noqa: PLR0913 — окно выдачи задаёт вызов
     query: Annotated[str, Field(min_length=1, description=Prompt.QUERY_FTS)],
     surfaces: Annotated[LLMStringList, Field(default=[], description=Prompt.SURFACES)],
     aspects: Annotated[LLMStringList, Field(default=[], description=Prompt.ASPECTS)],
-    top_k: Annotated[int, Field(ge=1, description=Prompt.TOP_K)] = 10,
+    offset: RowOffset,
+    limit: RowLimit,
     *,
     cfg: Annotated[KbToolConfig, Injected],
 ) -> TableResult:
@@ -453,22 +458,26 @@ async def kb_fts_search2(
     Возвращает таблицу объектов по релевантности: node_id, surface, url, score,
     лучший aspect и сниппет. Полный текст объекта читает kb_node2 по node_id.
     """
+    window = RowWindow(offset=offset, limit=limit)
+
     request = SearchRequest(
         mode=SearchMode.FTS,
         query=query,
-        limit=top_k,
+        limit=window.served_probe(),
+        offset=window.offset,
         surfaces=tuple(surfaces),
         aspects=tuple(aspects),
     )
-    return await run_and_collect(cfg, request)
+    return await run_and_collect(cfg, request, window)
 
 
 @tool
-async def kb_trgm_search2(
+async def kb_trgm_search2(  # noqa: PLR0913 — окно выдачи задаёт вызов
     query: Annotated[str, Field(min_length=1, description=Prompt.QUERY_TRGM)],
     surfaces: Annotated[LLMStringList, Field(default=[], description=Prompt.SURFACES)],
     aspects: Annotated[LLMStringList, Field(default=[], description=Prompt.ASPECTS)],
-    top_k: Annotated[int, Field(ge=1, description=Prompt.TOP_K)] = 10,
+    offset: RowOffset,
+    limit: RowLimit,
     *,
     cfg: Annotated[KbToolConfig, Injected],
 ) -> TableResult:
@@ -478,22 +487,26 @@ async def kb_trgm_search2(
     Возвращает таблицу объектов по похожести: node_id, surface, url, score,
     aspect и совпавший идентификатор.
     """
+    window = RowWindow(offset=offset, limit=limit)
+
     request = SearchRequest(
         mode=SearchMode.TRGM,
         query=query,
-        limit=top_k,
+        limit=window.served_probe(),
+        offset=window.offset,
         surfaces=tuple(surfaces),
         aspects=tuple(aspects),
     )
-    return await run_and_collect(cfg, request)
+    return await run_and_collect(cfg, request, window)
 
 
 @tool
-async def kb_vector_search2(
+async def kb_vector_search2(  # noqa: PLR0913 — окно выдачи задаёт вызов
     query: Annotated[str, Field(min_length=1, description=Prompt.QUERY_VECTOR)],
     surfaces: Annotated[LLMStringList, Field(default=[], description=Prompt.SURFACES)],
     aspects: Annotated[LLMStringList, Field(default=[], description=Prompt.ASPECTS)],
-    top_k: Annotated[int, Field(ge=1, description=Prompt.TOP_K)] = 10,
+    offset: RowOffset,
+    limit: RowLimit,
     *,
     cfg: Annotated[KbToolConfig, Injected],
 ) -> TableResult:
@@ -503,15 +516,18 @@ async def kb_vector_search2(
     Возвращает таблицу объектов по близости (score — косинусное расстояние,
     меньше ближе): node_id, surface, url, aspect и ближайший фрагмент.
     """
+    window = RowWindow(offset=offset, limit=limit)
+
     request = SearchRequest(
         mode=SearchMode.VECTOR,
         query=query,
-        limit=top_k,
+        limit=window.served_probe(),
+        offset=window.offset,
         surfaces=tuple(surfaces),
         aspects=tuple(aspects),
         vector=await query_to_vector(cfg, query),
     )
-    return await run_and_collect(cfg, request)
+    return await run_and_collect(cfg, request, window)
 
 
 @tool

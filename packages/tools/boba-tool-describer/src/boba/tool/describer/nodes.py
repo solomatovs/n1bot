@@ -17,7 +17,7 @@ psycopg.Error — СУБД отклонила запрос.
 from __future__ import annotations
 
 import sys
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from enum import StrEnum
 from typing import Annotated, Any, ClassVar, Final
 
@@ -43,6 +43,7 @@ from boba.tool.describer.store import (
 from boba.toolkit.entry import ToolMain
 from boba.toolkit.facade import Injected, tool
 from boba.toolkit.result import TableResult
+from boba.toolkit.window import RowLimit, RowOffset, RowPage, RowWindow
 
 __all__ = [
     "TOOLS",
@@ -284,28 +285,30 @@ class NodeListColumn(StrEnum):
 
 
 class NodeListing:
-    """Узлы области таблицей для модели."""
+    """Узлы области страницей окна для модели."""
 
     EMPTY_NOTE: ClassVar[str] = "no nodes are described in this scope yet"
 
-    @classmethod
-    def result(cls, nodes: Sequence[NodeRecord]) -> TableResult:
-        rows: list[dict[str, Any]] = []
+    def __init__(self, window: RowWindow) -> None:
+        self._page = RowPage(window, skipped=0)
+
+    def result(self, nodes: Iterable[NodeRecord]) -> TableResult:
+        self._page.take(self._rows(nodes))
+
+        note = self._page.note()
+        if not self._page.rows:
+            note = f"{note}; {self.EMPTY_NOTE}"
+
+        return TableResult(rows=self._page.rows, note=note)
+
+    def _rows(self, nodes: Iterable[NodeRecord]) -> Iterator[dict[str, Any]]:
         for node in nodes:
-            rows.append(
-                {
-                    NodeListColumn.ID.value: node.id,
-                    NodeListColumn.KIND.value: node.kind,
-                    NodeListColumn.URL.value: node.url,
-                    NodeListColumn.DESCRIPTION.value: node.description,
-                }
-            )
-
-        note: str | None = None
-        if not rows:
-            note = cls.EMPTY_NOTE
-
-        return TableResult(rows=rows, note=note)
+            yield {
+                NodeListColumn.ID.value: node.id,
+                NodeListColumn.KIND.value: node.kind,
+                NodeListColumn.URL.value: node.url,
+                NodeListColumn.DESCRIPTION.value: node.description,
+            }
 
 
 class NodeDeleteColumn(StrEnum):
@@ -365,20 +368,22 @@ async def describe_node(
 
 @tool
 async def describe_list_nodes(
+    offset: RowOffset,
+    limit: RowLimit,
     scope: Annotated[Scope, Injected],
     cfg: Annotated[DescriberToolConfig, Injected],
 ) -> TableResult:
     """Узлы, уже описанные в этом треде: id, kind, url, description.
 
     Помогает не описывать объект дважды, брать url для describe_edge и id
-    для describe_delete_node.
+    для describe_delete_node. Выдача постраничная: как листать, сказано в note.
     """
     key = ScopeKey.of(scope)
 
     async with DescriberStore(cfg).session() as session:
         nodes = await NodeTable(session).list(key)
 
-    return NodeListing.result(nodes)
+    return NodeListing(RowWindow(offset=offset, limit=limit)).result(nodes)
 
 
 @tool

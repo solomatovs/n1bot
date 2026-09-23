@@ -114,7 +114,7 @@ class TestKbTools:
             raise AssertionError(f"names == {self._NAMES}, got {names}")
 
     def test_search_arguments_hide_injected(self) -> None:
-        expected = {"query", "surfaces", "aspects", "top_k"}
+        expected = {"query", "surfaces", "aspects", "offset", "limit"}
         for tool in KB_TOOLS:
             if not tool.name.endswith("_search2"):
                 continue

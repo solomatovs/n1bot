@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import sys
-from collections.abc import Generator, Mapping, Sequence
+from collections.abc import Generator, Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from enum import StrEnum
@@ -36,6 +36,7 @@ from boba.tool.doc.config import DocToolsConfig
 from boba.toolkit.entry import ToolMain
 from boba.toolkit.facade import Injected, tool
 from boba.toolkit.result import MarkdownResult, TableResult
+from boba.toolkit.window import RowLimit, RowOffset, RowPage, RowWindow
 
 _PATH_DESCRIPTION = (
     "Путь к файлу в /workspace, например "
@@ -134,9 +135,9 @@ class DocRun:
         with self.open(path) as document:
             return document.page_count(), list(document.outline())
 
-    def search(self, path: str, query: str) -> tuple[list[Hit], bool]:
-        """Совпадения до лимита; второй элемент — лимит достигнут."""
-        hits: list[Hit] = []
+    def search(self, path: str, query: str, window: RowWindow) -> RowPage:
+        """Совпадения окном: страница набирается, пока документ отдаёт их."""
+        page = RowPage(window, skipped=0)
         with self.open(path) as document:
             found = document.search(
                 query,
@@ -144,13 +145,13 @@ class DocRun:
                 case_sensitive=False,
                 context=self._cfg.search_context_chars,
             )
-            for hit in found:
-                if len(hits) >= self._cfg.search_max_matches:
-                    return hits, True
+            page.take(self._hit_rows(found))
 
-                hits.append(hit)
+        return page
 
-        return hits, False
+    def _hit_rows(self, hits: Iterable[Hit]) -> Iterator[dict[str, Any]]:
+        for hit in hits:
+            yield asdict(hit)
 
 
 @tool
@@ -215,30 +216,28 @@ async def document_outline(
 
 
 @tool
-async def search_document(
+async def search_document(  # noqa: PLR0913 — окно выдачи задаёт вызов
     path: Annotated[str, Field(min_length=1, description=_PATH_DESCRIPTION)],
     query: Annotated[
         str, Field(min_length=1, description="Искомая фраза (регистронезависимо).")
     ],
     ocr_enabled: Annotated[bool, Field(description=_OCR_DESCRIPTION)] = False,
     *,
+    offset: RowOffset,
+    limit: RowLimit,
     cfg: Annotated[DocToolSection, Injected],
 ) -> TableResult:
-    """Найти фразу в документе: страница, смещение, сниппет; у pdf — координаты."""
+    """Найти фразу в документе: страница, смещение, сниппет; у pdf — координаты.
+
+    Выдача постраничная: как листать, сказано в note.
+    """
     run = DocRun(cfg, ocr_enabled=ocr_enabled)
-    hits, limit_reached = await asyncio.to_thread(run.search, path, query)
-
-    rows: list[dict[str, Any]] = []
-    for hit in hits:
-        rows.append(asdict(hit))
-
-    note = f"{path}: matches {len(rows)}"
-    if limit_reached:
-        note += " (search_max_matches limit reached)"
+    window = RowWindow(offset=offset, limit=limit)
+    page = await asyncio.to_thread(run.search, path, query, window)
 
     return TableResult(
-        rows=rows,
-        note=note,
+        rows=page.rows,
+        note=page.note(),
         metadata={"path": path, "query": query},
     )
 
