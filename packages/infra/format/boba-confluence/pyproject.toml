@@ -22,7 +22,7 @@ confluence = "boba.confluence.address:ConfluenceAddresses"
 [project.optional-dependencies]
 html = [
     "beautifulsoup4>=4.12",
-    "markdownify>=0.11,<1.0",
+    "boba-doc[readers]==0.0.23.dev1",
 ]
 dev = [
     "pytest>=8",

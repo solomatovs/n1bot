@@ -509,7 +509,6 @@ dependencies = [
     { name = "boba-confluence", extra = ["html"], marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "boba-db-postgres", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "boba-doc", extra = ["ocr", "readers"], marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
-    { name = "boba-indexing", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "boba-ix-core", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "boba-krb", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "boba-llm", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
@@ -536,7 +535,6 @@ requires-dist = [
     { name = "boba-confluence", extras = ["html"], editable = "packages/infra/format/boba-confluence" },
     { name = "boba-db-postgres", editable = "packages/infra/db/boba-db-postgres" },
     { name = "boba-doc", extras = ["readers", "ocr"], editable = "packages/infra/format/boba-doc" },
-    { name = "boba-indexing", editable = "packages/core/boba-indexing" },
     { name = "boba-ix-core", editable = "packages/infra/ix/ix-core" },
     { name = "boba-ix-fts", marker = "extra == 'dev'", editable = "packages/apps/ix/ix-fts" },
     { name = "boba-ix-trgm", marker = "extra == 'dev'", editable = "packages/apps/ix/ix-trgm" },
@@ -791,18 +789,18 @@ dev = [
 ]
 html = [
     { name = "beautifulsoup4", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
-    { name = "markdownify", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "boba-doc", extra = ["readers"], marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "beautifulsoup4", marker = "extra == 'html'", specifier = ">=4.12" },
     { name = "boba-connections", editable = "packages/core/boba-connections" },
+    { name = "boba-doc", extras = ["readers"], marker = "extra == 'html'", editable = "packages/infra/format/boba-doc" },
     { name = "boba-indexing", editable = "packages/core/boba-indexing" },
     { name = "boba-toolkit", editable = "packages/core/boba-toolkit" },
     { name = "boba-transport-http", editable = "packages/infra/transport/boba-transport-http" },
     { name = "httpx", extras = ["http2"], specifier = ">=0.28,<1" },
-    { name = "markdownify", marker = "extra == 'html'", specifier = ">=0.11,<1.0" },
     { name = "pydantic", specifier = ">=2.10,<2.11" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8" },
 ]
@@ -1048,6 +1046,8 @@ ocr = [
     { name = "rapidocr", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
 ]
 readers = [
+    { name = "beautifulsoup4", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "markdownify", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "openpyxl", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "pypdfium2", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "python-docx", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
@@ -1058,8 +1058,10 @@ readers = [
 
 [package.metadata]
 requires-dist = [
+    { name = "beautifulsoup4", marker = "extra == 'readers'", specifier = ">=4.12" },
     { name = "boba-llm", editable = "packages/core/boba-llm" },
     { name = "boba-stand", marker = "extra == 'dev'", editable = "packages/testing/boba-stand" },
+    { name = "markdownify", marker = "extra == 'readers'", specifier = ">=0.11,<1.0" },
     { name = "numpy", marker = "extra == 'ocr'", specifier = ">=1.26" },
     { name = "onnxruntime", marker = "extra == 'ocr'", specifier = ">=1.20" },
     { name = "openpyxl", marker = "extra == 'dev'", specifier = ">=3.1,<4" },
@@ -1423,13 +1425,13 @@ dependencies = [
     { name = "boba-llm", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "boba-toolkit", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "boba-transport-http", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
-    { name = "httpx", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "httpx-sse", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "pydantic", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
 ]
 
 [package.optional-dependencies]
 dev = [
+    { name = "httpx", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "pytest", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
 ]
 
@@ -1438,7 +1440,7 @@ requires-dist = [
     { name = "boba-llm", editable = "packages/core/boba-llm" },
     { name = "boba-toolkit", editable = "packages/core/boba-toolkit" },
     { name = "boba-transport-http", editable = "packages/infra/transport/boba-transport-http" },
-    { name = "httpx", specifier = ">=0.28,<1" },
+    { name = "httpx", marker = "extra == 'dev'", specifier = ">=0.28,<1" },
     { name = "httpx-sse", specifier = ">=0.4,<1" },
     { name = "pydantic", specifier = ">=2.10,<2.11" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8" },
@@ -2150,6 +2152,7 @@ dev = [
 ]
 payload = [
     { name = "boba-doc", extra = ["ocr", "readers"], marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "lxml", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
 ]
 
 [package.metadata]
@@ -2160,6 +2163,7 @@ requires-dist = [
     { name = "boba-llm", editable = "packages/core/boba-llm" },
     { name = "boba-stand-core", marker = "extra == 'dev'", editable = "packages/core/boba-stand-core" },
     { name = "boba-toolkit", editable = "packages/core/boba-toolkit" },
+    { name = "lxml", marker = "extra == 'payload'", specifier = ">=5.0" },
     { name = "pydantic", specifier = ">=2.10,<2.11" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8" },
 ]
@@ -2312,10 +2316,12 @@ name = "boba-tool-web"
 version = "0.0.23.dev1"
 source = { editable = "packages/tools/boba-tool-web" }
 dependencies = [
+    { name = "boba-doc", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "boba-llm", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "boba-text", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "boba-toolkit", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "boba-transport-http", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
-    { name = "httpx", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "httpx", extra = ["http2"], marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "pydantic", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
 ]
 
@@ -2325,17 +2331,21 @@ dev = [
     { name = "pytest", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
 ]
 payload = [
-    { name = "markdownify", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "boba-doc", extra = ["ocr", "readers"], marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "lxml", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "boba-config", marker = "extra == 'dev'", editable = "packages/infra/config/boba-config" },
+    { name = "boba-doc", editable = "packages/infra/format/boba-doc" },
+    { name = "boba-doc", extras = ["readers", "ocr"], marker = "extra == 'payload'", editable = "packages/infra/format/boba-doc" },
+    { name = "boba-llm", editable = "packages/core/boba-llm" },
     { name = "boba-text", editable = "packages/infra/format/boba-text" },
     { name = "boba-toolkit", editable = "packages/core/boba-toolkit" },
     { name = "boba-transport-http", editable = "packages/infra/transport/boba-transport-http" },
-    { name = "httpx" },
-    { name = "markdownify", marker = "extra == 'payload'", specifier = ">=0.11,<1.0" },
+    { name = "httpx", extras = ["http2"], specifier = ">=0.28,<1" },
+    { name = "lxml", marker = "extra == 'payload'", specifier = ">=5.0" },
     { name = "pydantic", specifier = ">=2.10,<2.11" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8" },
 ]

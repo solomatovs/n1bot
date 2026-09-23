@@ -21,7 +21,7 @@ from typing import Any, BinaryIO, ClassVar, Self, TypeVar
 import httpx
 from pydantic import BaseModel, ConfigDict, Field
 
-from boba.confluence.html import ConfluencePage, PageMarkdown
+from boba.confluence.html import ConfluencePage
 from boba.confluence.models import (
     ConfluencePayloadError,
     ConfluenceSpaceItem,
@@ -38,8 +38,13 @@ from boba.confluence.rest import (
     SpaceType,
 )
 from boba.doc.bridge import AsyncPipe
-from boba.indexing import TransportError
-from boba.transport.http import CancellableHttpTransport, HttpRequest
+from boba.doc.html import HeadingStyle, HtmlMarkdown
+from boba.transport.http import (
+    CancellableHttpTransport,
+    HttpRequest,
+    HttpStatusError,
+    TransportError,
+)
 
 __all__ = [
     "Attachment",
@@ -155,11 +160,11 @@ class ConfluenceParser:
     обход, ссылки на другие страницы снимаются с того же дерева html.
     """
 
-    HEADING_STYLE: ClassVar[str] = "ATX"
+    HEADING_STYLE: ClassVar[HeadingStyle] = HeadingStyle.ATX
 
     def __init__(self, body_format: str) -> None:
         self._body_format = body_format
-        self._markdown = PageMarkdown(self.HEADING_STYLE, escape=False)
+        self._markdown = HtmlMarkdown(self.HEADING_STYLE, escape=False)
         self._hasher = BodyHasher()
 
     @property
@@ -286,7 +291,7 @@ class ConfluenceParser:
         page = ConfluencePage(html, page_id=page_id, title=title)
         try:
             links = page.targets()
-            markdown = self._markdown.render(page)
+            markdown = self._markdown.render(page.soup)
         finally:
             page.close()
 
@@ -355,10 +360,8 @@ class ConfluenceReader:
         try:
             async with self._http.fetch(HttpRequest(url=str(url))) as resp:
                 yield resp
-        except httpx.HTTPError as exc:
-            raise ConfluenceReadError(
-                f"GET {url}: {type(exc).__name__}: {exc}"
-            ) from exc
+        except TransportError as exc:
+            raise ConfluenceReadError(str(exc)) from exc
 
     async def fetch_payload(self, url: httpx.URL) -> Payload:
         """Один ответ целиком в память: JSON иначе не разобрать, а объём
@@ -464,21 +467,14 @@ class ConfluenceReader:
         try:
             async with self._http.fetch(request) as resp:
                 result = await AsyncPipe.run(self._hashed(resp.stream, digest), consume)
-        except httpx.HTTPStatusError as exc:
-            status = exc.response.status_code
-            msg = (
-                f"confluence {where}: GET {attachment.download_path} "
-                f"expected 2xx, got {status}"
-            )
-            if status == self.GONE_NUMBER:
+        except HttpStatusError as exc:
+            msg = f"confluence {where}: {exc}"
+            if exc.status == self.GONE_NUMBER:
                 raise AttachmentGoneError(msg) from exc
 
             raise ConfluenceReadError(msg) from exc
-        except httpx.HTTPError as exc:
-            raise ConfluenceReadError(
-                f"confluence {where}: GET {attachment.download_path}: "
-                f"{type(exc).__name__}: {exc}"
-            ) from exc
+        except TransportError as exc:
+            raise ConfluenceReadError(f"confluence {where}: {exc}") from exc
 
         return digest.hexdigest(), result
 

@@ -20,7 +20,6 @@ from collections.abc import AsyncIterator, Mapping, Sequence
 from enum import StrEnum
 from typing import Any, ClassVar, Generic, Protocol, TypeVar
 
-import httpx
 from pydantic import Field
 
 from boba.llm.chat import (
@@ -34,7 +33,12 @@ from boba.llm.chat import (
 )
 from boba.llm.providers import LlmProvider
 from boba.toolkit.timing import Elapsed
-from boba.transport.http import HttpRequest, HttpTransport, HttpTransportConfig
+from boba.transport.http import (
+    HttpRequest,
+    HttpTransport,
+    HttpTransportConfig,
+    TransportError,
+)
 from boba.transport.http.connection import HttpConnection
 
 __all__ = [
@@ -88,7 +92,6 @@ class LlmEndpoint:
     """
 
     METHOD: ClassVar[str] = "POST"
-    BODY_PREVIEW: ClassVar[int] = 500
 
     def __init__(
         self,
@@ -99,6 +102,7 @@ class LlmEndpoint:
     ) -> None:
         self._transport = transport
         self._route = route
+        self._label = label
         self._where = f"{label}: {self.METHOD} {connection.url_of(route.value)}"
 
     @property
@@ -111,11 +115,8 @@ class LlmEndpoint:
         try:
             async with self._transport.fetch(self._request(payload)) as response:
                 return await response.stream.read()
-        except httpx.HTTPStatusError as exc:
-            raise self._status_error(exc) from exc
-        except httpx.HTTPError as exc:
-            msg = f"{self._where} failed: {type(exc).__name__}: {exc}"
-            raise LlmError(msg) from exc
+        except TransportError as exc:
+            raise LlmError(f"{self._label}: {exc}") from exc
 
     async def stream(self, payload: Mapping[str, Any]) -> AsyncIterator[str]:
         """Строки потокового ответа; обрыв посреди потока — ошибка, не повтор."""
@@ -123,20 +124,11 @@ class LlmEndpoint:
             async with self._transport.fetch(self._request(payload)) as response:
                 async for line in response.stream.lines():
                     yield line
-        except httpx.HTTPStatusError as exc:
-            raise self._status_error(exc) from exc
-        except httpx.HTTPError as exc:
-            msg = f"{self._where}: stream failed: {type(exc).__name__}: {exc}"
-            raise LlmError(msg) from exc
+        except TransportError as exc:
+            raise LlmError(f"{self._label}: stream failed: {exc}") from exc
 
     def _request(self, payload: Mapping[str, Any]) -> HttpRequest:
         return HttpRequest(url=self._route.value, method=self.METHOD, json=payload)
-
-    def _status_error(self, exc: httpx.HTTPStatusError) -> LlmError:
-        body = exc.response.text[: self.BODY_PREVIEW]
-        msg = f"{self._where} expected 2xx, got {exc.response.status_code}: {body!r}"
-
-        return LlmError(msg)
 
 
 class FunctionField(StrEnum):

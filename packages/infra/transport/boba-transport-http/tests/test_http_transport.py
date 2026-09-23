@@ -6,7 +6,12 @@ import httpx
 import pytest
 from pydantic import SecretStr, ValidationError
 
-from boba.transport.http import HttpRequest, HttpTransport, HttpTransportConfig
+from boba.transport.http import (
+    HttpRequest,
+    HttpStatusError,
+    HttpTransport,
+    HttpTransportConfig,
+)
 from boba.transport.http.connection import BasicAuth, HttpConnection, RetryStatuses
 
 pytestmark = pytest.mark.anyio
@@ -109,7 +114,7 @@ async def test_retry_recovers_after_5xx(monkeypatch):
 
 
 async def test_retry_exhausted_raises_last_5xx(monkeypatch):
-    """Все попытки 5xx исчерпаны -> пробрасывается HTTPStatusError."""
+    """Все попытки 5xx исчерпаны -> HttpStatusError слоя со статусом и телом."""
     calls = {"n": 0}
 
     def handler(_req):
@@ -122,11 +127,15 @@ async def test_retry_exhausted_raises_last_5xx(monkeypatch):
         HttpConnection(host="x.test", port=443, retry_attempts=2, retry_backoff_sec=0),
         HttpTransportConfig(),
     )
-    with pytest.raises(httpx.HTTPStatusError) as exc:
+    with pytest.raises(HttpStatusError) as exc:
         async with transport.fetch(HttpRequest(url="https://x.test/y")):
             pass
-    if exc.value.response.status_code != 500:
-        raise AssertionError("exc.value.response.status_code == 500")
+    if exc.value.status != 500:
+        raise AssertionError("exc.value.status == 500")
+    if exc.value.body != "boom":
+        raise AssertionError(f"the drained body is kept: {exc.value.body!r}")
+    if "GET https://x.test/y: expected 2xx, got 500" not in str(exc.value):
+        raise AssertionError(f"message names method, url and status: {exc.value}")
     if calls["n"] != 2:
         raise AssertionError('calls["n"] == 2')
     await transport.close()
@@ -146,11 +155,11 @@ async def test_4xx_not_retried(monkeypatch):
         HttpConnection(host="x.test", port=443, retry_attempts=3, retry_backoff_sec=0),
         HttpTransportConfig(),
     )
-    with pytest.raises(httpx.HTTPStatusError) as exc:
+    with pytest.raises(HttpStatusError) as exc:
         async with transport.fetch(HttpRequest(url="https://x.test/y")):
             pass
-    if exc.value.response.status_code != 404:
-        raise AssertionError("exc.value.response.status_code == 404")
+    if exc.value.status != 404:
+        raise AssertionError("exc.value.status == 404")
     if calls["n"] != 1:
         raise AssertionError('calls["n"] == 1')
     await transport.close()
@@ -252,12 +261,12 @@ async def test_status_outside_the_profile_is_not_retried(monkeypatch):
         HttpConnection(host="x.test", port=443, retry_attempts=3, retry_backoff_sec=0),
         HttpTransportConfig(),
     )
-    with pytest.raises(httpx.HTTPStatusError) as exc:
+    with pytest.raises(HttpStatusError) as exc:
         async with transport.fetch(HttpRequest(url="https://x.test/y")):
             pass
 
-    if exc.value.response.status_code != 429:
-        raise AssertionError("exc.value.response.status_code == 429")
+    if exc.value.status != 429:
+        raise AssertionError("exc.value.status == 429")
     if calls["n"] != 1:
         raise AssertionError(f"a status without a rule is not retried: {calls['n']}")
 
