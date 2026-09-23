@@ -65,17 +65,6 @@ def test_pdf_from_real_pipe_descriptor(router: DocumentRouter) -> None:
     assert pages[0].text.strip() == "piped"
 
 
-def test_spool_rolls_to_disk_when_memory_limit_is_tiny() -> None:
-    config = DocConfig(spool_memory_limit=1, text_encodings=("utf-8",))
-    router = DocumentRouter(config, DisabledOcr())
-    data = Samples.pdf(["on disk"])
-
-    with router.open(NoSeek(data), PDF_HINT) as document:
-        text = next(iter(document.pages(PageWindow.whole()))).text
-
-    assert text.strip() == "on disk"
-
-
 def test_sha256_stream_covers_whole_file(router: DocumentRouter) -> None:
     data = Samples.pdf(["hashed"])
     stream = Sha256Stream(NoSeek(data))
@@ -178,9 +167,7 @@ def test_text_encodings_in_order(router: DocumentRouter) -> None:
     with router.open(NoSeek("привет".encode("cp1251")), hint) as document:
         assert next(iter(document.pages(PageWindow.whole()))).text == "привет"
 
-    strict = DocumentRouter(
-        DocConfig(spool_memory_limit=1 << 20, text_encodings=("utf-8",)), DisabledOcr()
-    )
+    strict = DocumentRouter(DocConfig(text_encodings=("utf-8",)), DisabledOcr())
     broken = NoSeek("привет".encode("cp1251"))
     with pytest.raises(DocumentError, match="cannot decode"), strict.open(broken, hint):
         pass

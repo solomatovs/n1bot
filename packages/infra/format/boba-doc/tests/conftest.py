@@ -13,7 +13,7 @@ from boba.stand.doc import DocStand
 
 @pytest.fixture
 def router() -> DocumentRouter:
-    config = DocConfig(spool_memory_limit=1 << 20, text_encodings=("utf-8", "cp1251"))
+    config = DocConfig(text_encodings=("utf-8", "cp1251"))
 
     return DocumentRouter(config, DisabledOcr())
 
@@ -38,6 +38,6 @@ def ocr_engine(doc_stand: DocStand) -> RapidOcrEngine:
 
 @pytest.fixture
 def ocr_router(ocr_engine: RapidOcrEngine) -> DocumentRouter:
-    config = DocConfig(spool_memory_limit=1 << 20, text_encodings=("utf-8",))
+    config = DocConfig(text_encodings=("utf-8",))
 
     return DocumentRouter(config, ocr_engine)

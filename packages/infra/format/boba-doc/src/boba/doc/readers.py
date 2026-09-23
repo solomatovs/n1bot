@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import io
 import math
-import tempfile
 from collections.abc import Iterable, Iterator, Sequence
 from enum import StrEnum
 from typing import Any, ClassVar
@@ -36,13 +35,13 @@ from boba.doc.document import (
     DocumentError,
     DocumentKind,
     Hit,
+    MemoryFile,
     OcrEngine,
     PagedDocument,
     PageInfo,
     PageWindow,
     ParsedPage,
     SizedPageInfo,
-    Spool,
     TextSearch,
 )
 
@@ -178,25 +177,25 @@ class PdfDocument(PagedDocument):
 
     def __init__(
         self,
-        spool: tempfile.SpooledTemporaryFile[bytes],
+        buffer: io.BytesIO,
         pdf: pdfium.PdfDocument,
         ocr: OcrEngine,
     ) -> None:
-        self._spool = spool
+        self._buffer = buffer
         self._pdf = pdf
         self._ocr = ocr
         self._pictures = PictureText(ocr)
 
     @classmethod
-    def open(cls, stream: ByteStream, memory_limit: int, ocr: OcrEngine) -> PdfDocument:
-        spool = Spool.fill(stream, memory_limit)
+    def open(cls, stream: ByteStream, ocr: OcrEngine) -> PdfDocument:
+        buffer = MemoryFile.file(stream)
         try:
-            pdf = pdfium.PdfDocument(spool)
+            pdf = pdfium.PdfDocument(buffer)
         except Exception as exc:
-            spool.close()
+            buffer.close()
             raise cls.open_failure(exc) from exc
 
-        return cls(spool, pdf, ocr)
+        return cls(buffer, pdf, ocr)
 
     def page_count(self) -> int:
         return len(self._pdf)
@@ -246,7 +245,7 @@ class PdfDocument(PagedDocument):
 
     def close(self) -> None:
         self._pdf.close()
-        self._spool.close()
+        self._buffer.close()
 
     def _text_of(self, page: pdfium.PdfPage, number: int) -> str:
         try:
@@ -386,14 +385,12 @@ class DocxDocument(PagedDocument):
         self._pictures = PictureText(ocr)
 
     @classmethod
-    def open(
-        cls, stream: ByteStream, memory_limit: int, ocr: OcrEngine
-    ) -> DocxDocument:
+    def open(cls, stream: ByteStream, ocr: OcrEngine) -> DocxDocument:
         """python-docx читает пакет в память целиком, поэтому буфер потока
         закрывается сразу; текст и OCR картинок считаются при чтении окна."""
-        with Spool.fill(stream, memory_limit) as spool:
+        with MemoryFile.file(stream) as buffer:
             try:
-                document = docx.Document(spool)
+                document = docx.Document(buffer)
                 blocks = tuple(cls._blocks_of(document))
             except Exception as exc:
                 raise cls.open_failure(exc) from exc
@@ -479,22 +476,20 @@ class XlsxDocument(PagedDocument):
 
     KIND: ClassVar[DocumentKind] = DocumentKind.XLSX
 
-    def __init__(
-        self, spool: tempfile.SpooledTemporaryFile[bytes], workbook: Any
-    ) -> None:
-        self._spool = spool
+    def __init__(self, buffer: io.BytesIO, workbook: Any) -> None:
+        self._buffer = buffer
         self._workbook = workbook
 
     @classmethod
-    def open(cls, stream: ByteStream, memory_limit: int) -> XlsxDocument:
-        spool = Spool.fill(stream, memory_limit)
+    def open(cls, stream: ByteStream) -> XlsxDocument:
+        buffer = MemoryFile.file(stream)
         try:
-            workbook = openpyxl.load_workbook(spool, read_only=True, data_only=True)
+            workbook = openpyxl.load_workbook(buffer, read_only=True, data_only=True)
         except Exception as exc:
-            spool.close()
+            buffer.close()
             raise cls.open_failure(exc) from exc
 
-        return cls(spool, workbook)
+        return cls(buffer, workbook)
 
     def page_count(self) -> int:
         return len(self._workbook.worksheets)
@@ -511,7 +506,7 @@ class XlsxDocument(PagedDocument):
 
     def close(self) -> None:
         self._workbook.close()
-        self._spool.close()
+        self._buffer.close()
 
 
 class XlsDocument(PagedDocument):
@@ -525,7 +520,7 @@ class XlsDocument(PagedDocument):
 
     @classmethod
     def open(cls, stream: ByteStream) -> XlsDocument:
-        raw = Spool.drain(stream)
+        raw = MemoryFile.data(stream)
         try:
             book = xlrd.open_workbook(file_contents=raw)
         except Exception as exc:
@@ -566,14 +561,12 @@ class PptxDocument(PagedDocument):
         self._pictures = PictureText(ocr)
 
     @classmethod
-    def open(
-        cls, stream: ByteStream, memory_limit: int, ocr: OcrEngine
-    ) -> PptxDocument:
+    def open(cls, stream: ByteStream, ocr: OcrEngine) -> PptxDocument:
         """python-pptx читает пакет в память целиком, поэтому буфер потока
         закрывается сразу; текст и OCR картинок считаются при чтении окна."""
-        with Spool.fill(stream, memory_limit) as spool:
+        with MemoryFile.file(stream) as buffer:
             try:
-                presentation = Presentation(spool)
+                presentation = Presentation(buffer)
                 slides = tuple(presentation.slides)
             except Exception as exc:
                 raise cls.open_failure(exc) from exc
@@ -691,7 +684,7 @@ class RtfDocument(PagedDocument):
 
     @classmethod
     def open(cls, stream: ByteStream, encodings: Sequence[str]) -> RtfDocument:
-        raw = Spool.drain(stream)
+        raw = MemoryFile.data(stream)
         markup = TextDecoder.decode(raw, encodings, cls.KIND)
         try:
             text = rtf_to_text(markup, errors="replace")
@@ -721,7 +714,7 @@ class TextDocument(PagedDocument):
 
     @classmethod
     def open(cls, stream: ByteStream, encodings: Sequence[str]) -> TextDocument:
-        raw = Spool.drain(stream)
+        raw = MemoryFile.data(stream)
         text = TextDecoder.decode(raw, encodings, cls.KIND)
 
         return cls(text)
@@ -745,27 +738,25 @@ class ImageDocument(PagedDocument):
 
     def __init__(
         self,
-        spool: tempfile.SpooledTemporaryFile[bytes],
+        buffer: io.BytesIO,
         image: Image.Image,
         ocr: OcrEngine,
     ) -> None:
-        self._spool = spool
+        self._buffer = buffer
         self._image = image
         self._ocr = ocr
 
     @classmethod
-    def open(
-        cls, stream: ByteStream, memory_limit: int, ocr: OcrEngine
-    ) -> ImageDocument:
-        spool = Spool.fill(stream, memory_limit)
+    def open(cls, stream: ByteStream, ocr: OcrEngine) -> ImageDocument:
+        buffer = MemoryFile.file(stream)
         try:
-            image = Image.open(spool)
+            image = Image.open(buffer)
             image.load()
         except Exception as exc:
-            spool.close()
+            buffer.close()
             raise cls.open_failure(exc) from exc
 
-        return cls(spool, image, ocr)
+        return cls(buffer, image, ocr)
 
     def page_count(self) -> int:
         return getattr(self._image, "n_frames", 1)
@@ -796,4 +787,4 @@ class ImageDocument(PagedDocument):
 
     def close(self) -> None:
         self._image.close()
-        self._spool.close()
+        self._buffer.close()
