@@ -80,7 +80,6 @@ def connection(site: _Site) -> HttpConnection:
 @pytest.fixture
 def cfg() -> WebToolsConfig:
     return WebToolsConfig(
-        spool_memory_limit=1 << 20,
         text_encodings=("utf-8",),
         ocr=DisabledOcrConfig(provider="off"),
     )

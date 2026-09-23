@@ -75,7 +75,6 @@ def _caller(docs_dir: Path | None = None, **kw: Any) -> ZygoteToolCaller:
 
 def _cfg(**kw: Any) -> dict[str, Any]:
     fields: dict[str, Any] = {
-        "spool_memory_limit": 1 << 20,
         "text_encodings": ["utf-8"],
         "ocr": {"provider": "off"},
     }
@@ -86,7 +85,7 @@ def _cfg(**kw: Any) -> dict[str, Any]:
 def _run_doc(
     caller: ZygoteToolCaller,
     tool: str,
-    flags: Mapping[str, object],
+    flags: Mapping[str, str | int],
     cfg: dict[str, Any],
 ) -> ToolOutcome:
     argv: list[str] = ["python3", "-m", "boba.tool.doc.tools", tool]

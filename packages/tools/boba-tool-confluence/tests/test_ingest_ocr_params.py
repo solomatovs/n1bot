@@ -30,7 +30,6 @@ def _config() -> IngestToolConfig:
             "transport": {},
             "attachments": ["application/pdf", "*.txt"],
             "text_encodings": ["utf-8"],
-            "spool_memory_limit": 1048576,
             "ocr": {
                 "provider": "rapidocr",
                 "models_dir": "/var/cache/rapidocr",

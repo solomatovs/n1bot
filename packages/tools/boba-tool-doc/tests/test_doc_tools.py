@@ -41,7 +41,6 @@ def _body(name: str) -> Any:
 
 def _cfg(**kw: Any) -> DocToolSection:
     fields: dict[str, Any] = {
-        "spool_memory_limit": 1 << 20,
         "text_encodings": ["utf-8"],
         "ocr": {"provider": "off"},
     }
