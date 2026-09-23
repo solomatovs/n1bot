@@ -4,18 +4,18 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "boba-cfl-indexer"
-version = "0.0.22.dev1"
+version = "0.0.23.dev1"
 description = "Скрапер Confluence в граф ix: спейсы, страницы, блог-записи, вложения и комментарии; текст кладётся в общий полнотекст."
 requires-python = ">=3.11,<4"
 dependencies = [
-    "boba-config==0.0.22.dev1",
-    "boba-confluence[html]==0.0.22.dev1",
-    "boba-db-postgres==0.0.22.dev1",
-    "boba-ix-core==0.0.22.dev1",
-    "boba-krb==0.0.22.dev1",
-    "boba-liteparse==0.0.22.dev1",
-    "boba-text==0.0.22.dev1",
-    "boba-transport-http==0.0.22.dev1",
+    "boba-config==0.0.23.dev1",
+    "boba-confluence[html]==0.0.23.dev1",
+    "boba-db-postgres==0.0.23.dev1",
+    "boba-ix-core==0.0.23.dev1",
+    "boba-krb==0.0.23.dev1",
+    "boba-liteparse==0.0.23.dev1",
+    "boba-text==0.0.23.dev1",
+    "boba-transport-http==0.0.23.dev1",
     "httpx>=0.28,<1",
     "psycopg[binary]>=3.2",
     "pydantic>=2.10,<2.11",
@@ -26,10 +26,10 @@ boba-cfl-indexer = "boba.cfl_indexer.worker:main"
 
 [project.optional-dependencies]
 dev = [
-    "boba-ix-fts==0.0.22.dev1",
-    "boba-ix-trgm==0.0.22.dev1",
-    "boba-ix-vector==0.0.22.dev1",
-    "boba-stand==0.0.22.dev1",
+    "boba-ix-fts==0.0.23.dev1",
+    "boba-ix-trgm==0.0.23.dev1",
+    "boba-ix-vector==0.0.23.dev1",
+    "boba-stand==0.0.23.dev1",
     "pillow>=10",
     "pytest>=8",
 ]

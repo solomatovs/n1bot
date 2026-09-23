@@ -4,13 +4,13 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "boba-db-oracle"
-version = "0.0.22.dev1"
+version = "0.0.23.dev1"
 description = "Boba Oracle: OracleConfig + подключение payload'а thin-драйвером python-oracledb по паролю."
 requires-python = ">=3.11,<4"
 dependencies = [
     "pydantic>=2.10,<2.11",
-    "boba-toolkit==0.0.22.dev1",
-    "boba-connections==0.0.22.dev1",
+    "boba-toolkit==0.0.23.dev1",
+    "boba-connections==0.0.23.dev1",
 ]
 
 [project.optional-dependencies]
@@ -19,7 +19,7 @@ payload = [
     "pyarrow>=25,<26",
 ]
 dev = [
-    "boba-stand==0.0.22.dev1",
+    "boba-stand==0.0.23.dev1",
     "pytest>=8",
 ]
 
