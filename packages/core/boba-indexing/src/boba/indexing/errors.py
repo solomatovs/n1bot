@@ -5,8 +5,8 @@ from __future__ import annotations
 __all__ = [
     "IncompatibleContentError",
     "IndexingError",
+    "SourceFetchError",
     "SourceGoneError",
-    "TransportError",
 ]
 
 
@@ -31,14 +31,15 @@ class IncompatibleContentError(IndexingError):
         self.reason = reason
 
 
-class TransportError(IndexingError):
+class SourceFetchError(IndexingError):
     """Transport не смог забрать источник: сеть, статус ответа, обрыв тела.
 
     Transient по природе: pipeline изолирует источник и идёт к следующему.
+    Реализация Transport переводит сюда ошибки своего клиента.
     """
 
 
-class SourceGoneError(TransportError):
+class SourceGoneError(SourceFetchError):
     """Источника у источника данных больше нет: он ответил «не найдено».
 
     Не догадка очистки, а прямой ответ: конвейер снимает такой источник

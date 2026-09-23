@@ -1,14 +1,17 @@
 """Точка входа чтения документов: вид по подсказке транспорта и первым
-байтам, выбор ридера формата, время жизни открытого документа.
+байтам, выбор ридера формата, время жизни открытого документа и текст
+документа целиком.
 
 Ошибки:
-DocumentError — вид не определён или не поддержан, документ не открыт.
+DocumentError — вид не определён или не поддержан, документ не открыт
+    или страница не прочитана.
 """
 
 from __future__ import annotations
 
-from collections.abc import Generator
+from collections.abc import Generator, Iterable, Iterator
 from contextlib import contextmanager
+from typing import ClassVar
 
 from boba.doc.config import DocConfig
 from boba.doc.document import (
@@ -19,8 +22,11 @@ from boba.doc.document import (
     DocumentKind,
     Formats,
     OcrEngine,
+    PageWindow,
+    ParsedPage,
     Prefixed,
 )
+from boba.doc.html import HeadingStyle, HtmlDocument
 from boba.doc.readers import (
     DocxDocument,
     ImageDocument,
@@ -37,16 +43,22 @@ __all__ = ["DocumentRouter"]
 
 class DocumentRouter:
     """Открывает документ по потоку байтов: читает голову, определяет вид и
-    отдаёт его ридеру формата. Один экземпляр на процесс, OCR-движок общий."""
+    отдаёт его ридеру формата; текст документа целиком склеивает из страниц.
+    Один экземпляр на процесс, OCR-движок общий. Его создают тела инструментов
+    doc/web/confluence и индексатор вложений."""
+
+    PAGE_GLUE: ClassVar[str] = "\n\n"
+    HEADING_STYLE: ClassVar[HeadingStyle] = HeadingStyle.ATX
 
     def __init__(self, config: DocConfig, ocr: OcrEngine) -> None:
         self._config = config
         self._ocr = ocr
 
-    @contextmanager
-    def open(
+    def detect(
         self, stream: ByteStream, hint: DocumentHint
-    ) -> Generator[Document, None, None]:
+    ) -> tuple[DocumentKind, ByteStream]:
+        """Вид документа по подсказке и голове потока; голова возвращается
+        в поток, который дальше читает ридер."""
         head = stream.read(Formats.HEAD_SIZE)
         kind = Formats.detect(hint, head)
         if kind is DocumentKind.UNKNOWN:
@@ -55,8 +67,37 @@ class DocumentRouter:
                 f"recognized by media type, filename or leading bytes"
             )
 
-        with self.open_as(kind, Prefixed(head, stream)) as document:
+        return kind, Prefixed(head, stream)
+
+    @contextmanager
+    def open(
+        self, stream: ByteStream, hint: DocumentHint
+    ) -> Generator[Document, None, None]:
+        kind, prefixed = self.detect(stream, hint)
+
+        with self.open_as(kind, prefixed) as document:
             yield document
+
+    def read_text(self, stream: ByteStream, hint: DocumentHint) -> str:
+        """Текст всех страниц одним куском: пустые страницы опускаются."""
+        kind, prefixed = self.detect(stream, hint)
+
+        return self.read_text_as(kind, prefixed)
+
+    def read_text_as(self, kind: DocumentKind, stream: ByteStream) -> str:
+        with self.open_as(kind, stream) as document:
+            return self._join(document.pages(PageWindow.whole()))
+
+    def _join(self, pages: Iterable[ParsedPage]) -> str:
+        return self.PAGE_GLUE.join(self._texts(pages))
+
+    def _texts(self, pages: Iterable[ParsedPage]) -> Iterator[str]:
+        for page in pages:
+            text = page.text.strip()
+            if not text:
+                continue
+
+            yield text
 
     @contextmanager
     def open_as(
@@ -68,11 +109,10 @@ class DocumentRouter:
         finally:
             document.close()
 
-    def _open(  # noqa: PLR0911 — по ветке match на каждый вид
-        self, kind: DocumentKind, stream: ByteStream
-    ) -> Document:
+    def _open(self, kind: DocumentKind, stream: ByteStream) -> Document:
+        """Ридер по виду: бинарные форматы буферизуются спулом, текстовые
+        читают поток до конца."""
         limit = self._config.spool_memory_limit
-        encodings = self._config.text_encodings
         match kind:
             case DocumentKind.PDF:
                 return PdfDocument.open(stream, limit, self._ocr)
@@ -84,13 +124,21 @@ class DocumentRouter:
                 return PptxDocument.open(stream, limit, self._ocr)
             case DocumentKind.XLS:
                 return XlsDocument.open(stream)
-            case DocumentKind.RTF:
-                return RtfDocument.open(stream, encodings)
-            case DocumentKind.TEXT:
-                return TextDocument.open(stream, encodings)
             case DocumentKind.IMAGE:
                 return ImageDocument.open(stream, limit, self._ocr)
             case DocumentKind.UNKNOWN:
                 raise DocumentError(
                     "document: kind is unknown, nothing to open it with"
                 )
+            case _:
+                return self._open_text(kind, stream)
+
+    def _open_text(self, kind: DocumentKind, stream: ByteStream) -> Document:
+        encodings = self._config.text_encodings
+        match kind:
+            case DocumentKind.RTF:
+                return RtfDocument.open(stream, encodings)
+            case DocumentKind.HTML:
+                return HtmlDocument.open(stream, self.HEADING_STYLE)
+            case _:
+                return TextDocument.open(stream, encodings)

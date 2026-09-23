@@ -128,7 +128,7 @@ class Transport(ABC, Generic[ReqT]):
       закрывает по выходу из fetch. Reader потребляет, но не закрывает
     - Один Transport работает только с одним типом Request: Transport[HttpRequest]
       не примет FsRequest и наоборот — type-checker не даст совместить
-    - На I/O-проблему бросает соответствующую TransportError; pipeline
+    - На I/O-проблему бросает SourceFetchError; pipeline
       может изолировать ошибку и продолжить со следующего Request
 
     **Пример** (usage FsTransport):

@@ -1111,7 +1111,7 @@ class TestWebTools:
         )
         lines = FakePage.LINES.value.splitlines()
         result = MarkdownResult(
-            text=lines[1], language="html", note=f"url={url}; lines 2-2 of 3"
+            text=lines[1], language="text", note=f"url={url}; lines 2-2 of 3"
         )
         feed.call(call, ToolExpect.of(result, dom=[lines[1], "lines 2-2 of 3"]))
 

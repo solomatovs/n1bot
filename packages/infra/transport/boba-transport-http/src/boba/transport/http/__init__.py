@@ -9,10 +9,12 @@ from boba.transport.http.transport import (
     CancellableHttpTransport,
     HttpRequest,
     HttpResponse,
+    HttpStatusError,
     HttpTransport,
     HttpTransportConfig,
     ResponseStream,
     RetryPolicy,
+    TransportError,
 )
 
 __all__ = [
@@ -22,6 +24,7 @@ __all__ = [
     "HttpDumpConfig",
     "HttpRequest",
     "HttpResponse",
+    "HttpStatusError",
     "HttpTransport",
     "HttpTransportConfig",
     "HttpxAuth",
@@ -29,4 +32,5 @@ __all__ = [
     "HttpxNegotiateAuth",
     "ResponseStream",
     "RetryPolicy",
+    "TransportError",
 ]

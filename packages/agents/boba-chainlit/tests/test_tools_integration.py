@@ -35,7 +35,7 @@ from boba.tool.confluence.ingest_base import ConfluenceIngestConfig
 from boba.tool.kb.search import ConfluenceCollection
 from boba.tool.pg.tools import PgToolConfig
 from boba.tool.shell.tools import BashToolConfig
-from boba.tool.web.tools import WebGrepConfig
+from boba.tool.web.tools import WebToolsConfig
 from boba.toolkit.calls import ToolCallModels
 from boba.toolkit.entry import ToolMain
 from boba.toolkit.launcher import LauncherFactory, PayloadFailureError, ToolLauncher
@@ -157,9 +157,9 @@ class ToolSetup:
         return service.model_copy(update={"auth": ticket})
 
     @staticmethod
-    def web_config(raw: Any) -> WebGrepConfig:
+    def web_config(raw: Any) -> WebToolsConfig:
         """Лимиты выдачи [tool.web]: соединение приходит параметром вызова."""
-        return bind(raw, path="tool.web", model=WebGrepConfig)
+        return bind(raw, path="tool.web", model=WebToolsConfig)
 
     @staticmethod
     def web_connection(raw: Any) -> HttpConnection:

@@ -12,7 +12,8 @@ from __future__ import annotations
 
 import json
 import sys
-from collections.abc import Mapping, Sequence
+from collections.abc import AsyncGenerator, Mapping, Sequence
+from contextlib import asynccontextmanager
 from enum import StrEnum
 from typing import Annotated, Any, ClassVar, Final, Literal, Self
 
@@ -27,19 +28,19 @@ from boba.confluence.models import (
 )
 from boba.confluence.parsing import JsonNode
 from boba.confluence.rest import CflRest, CflRestBuilder, SpaceType
-from boba.indexing import TransportError
 from boba.text.grep import GrepLimits, TextGrep
 from boba.toolkit.entry import ToolMain
 from boba.toolkit.facade import Injected, tool
 from boba.toolkit.result import MarkdownResult, TableResult
 from boba.toolkit.sql import RowOffset
 from boba.toolkit.types import LLMStringList, SecretRevealing
-from boba.transport.http import HttpTransport, HttpTransportConfig
+from boba.transport.http import (
+    ByteStream,
+    HttpTransport,
+    HttpTransportConfig,
+    TransportError,
+)
 from boba.transport.http.connection import HttpConnection
-
-
-class ConfluenceRequestError(Exception):
-    """REST недоступен или ответил статусом; текст готов для пользователя."""
 
 
 class ConfluenceErrorKind(StrEnum):
@@ -100,6 +101,11 @@ class ConfluenceHttp:
 
     async def get(self, path: httpx.URL) -> bytes:
         return await self._rest.get(path)
+
+    @asynccontextmanager
+    async def fetch(self, path: httpx.URL) -> AsyncGenerator[ByteStream, None]:
+        async with self._rest.fetch(path) as stream:
+            yield stream
 
     async def page_json(self, page_id: str) -> dict[str, Any]:
         path = self._builder.page_fetch_path(page_id, body_format=self._cfg.body_format)

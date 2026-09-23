@@ -186,6 +186,49 @@ def test_text_encodings_in_order(router: DocumentRouter) -> None:
         pass
 
 
+HTML_PAGE = (
+    b'<html><head><meta charset="windows-1251"><title>Title</title>'
+    b"<style>p{color:red}</style><script>var x = 1;</script></head>"
+    b"<body><h1>\xc7\xe0\xe3\xee\xeb\xee\xe2\xee\xea</h1>"
+    b"<p>\xf2\xe5\xea\xf1\xf2 <b>bold</b> a_b</p>"
+    b"<table><tr><th>k</th><th>v</th></tr><tr><td>1</td><td>2</td></tr></table>"
+    b"</body></html>"
+)
+
+
+def test_html_becomes_markdown_with_declared_charset(router: DocumentRouter) -> None:
+    hint = DocumentHint(media_type="text/html; charset=windows-1251")
+
+    with router.open(NoSeek(HTML_PAGE), hint) as document:
+        assert document.kind is DocumentKind.HTML
+        assert document.page_count() == 1
+        text = next(iter(document.pages(PageWindow.whole()))).text
+
+    assert text.startswith("# Заголовок")
+    assert "текст **bold** a_b" in text
+    assert "| k | v |" in text
+    assert "var x" not in text
+    assert "color:red" not in text
+    assert "Title" not in text
+
+
+def test_html_read_as_text_keeps_the_markup(router: DocumentRouter) -> None:
+    page = b"<html><body><p>plain</p></body></html>"
+
+    kind, stream = router.detect(NoSeek(page), DocumentHint())
+    assert kind is DocumentKind.HTML
+
+    assert router.read_text_as(DocumentKind.TEXT, stream) == page.decode()
+
+
+def test_read_text_joins_non_empty_pages(router: DocumentRouter) -> None:
+    data = Samples.pdf(["first page", "", "third page"])
+
+    text = router.read_text(NoSeek(data), PDF_HINT)
+
+    assert text.split("\n\n") == ["first page", "third page"]
+
+
 def test_image_without_ocr_gives_empty_text(router: DocumentRouter, doc_stand) -> None:
     data = Samples.png(["ignored"], doc_stand.cyrillic_font)
 
