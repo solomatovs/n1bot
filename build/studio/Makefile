@@ -18,7 +18,7 @@ DEPS_DIR        ?= $(BASE_DIR)/src
 RELEASE_DIR     := $(SRC_DIR)/release
 
 APP             := studio
-APP_PACKAGES     = boba-studio $(PLUGIN_PACKAGES)
+APP_PACKAGES     = boba-studio $(PLUGIN_PACKAGES) boba-llm-http boba-llm-onnx boba-llm-fastembed
 APP_IMPORTS     := boba.studio
 APP_HEALTH      := /api/openapi.json
 APP_CGROUP      := boba-sandbox-studio

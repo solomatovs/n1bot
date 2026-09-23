@@ -342,7 +342,7 @@ RUN npm ci --no-audit --no-fund && npm run check && npm run build
 # и make plugin-rootfs не должен ради корня плагина ставить всё приложение
 FROM base AS app-site
 
-ARG APP_PACKAGES="boba-chainlit boba-llm[generation]"
+ARG APP_PACKAGES="boba-chainlit boba-llm-http boba-llm-onnx[generation] boba-llm-fastembed"
 ARG APP_IMPORTS="boba.chainlit onnxruntime_genai"
 
 COPY --from=boba-wheels /tmp/wheels/  /tmp/wheels/
