@@ -46,7 +46,7 @@ from boba.sandbox.zygote import ZygoteRegistry
 from boba.stand.refs import StandRefs
 from boba.stand.site import Stand
 from boba.tool.pg.tools import PgToolConfig
-from boba.tool.web.tools import WebGrepConfig
+from boba.tool.web.tools import WebToolsConfig
 from boba.toolkit.facade import Injected, UserConnection
 from boba.toolkit.result import ErrorResult, ToolArtifact
 from boba.toolrun.errors import ToolErrorGuard
@@ -283,11 +283,11 @@ class Guarded:
             "GuardedWebArgs",
             url=(str, ...),
             connection=(Annotated[HttpConnection, UserConnection], ...),
-            cfg=(Annotated[WebGrepConfig, Injected], ...),
+            cfg=(Annotated[WebToolsConfig, Injected], ...),
         )
 
         def resolve(name: str, annotation: Any) -> object:
-            return bind(raw_config, path="tool.web", model=WebGrepConfig)
+            return bind(raw_config, path="tool.web", model=WebToolsConfig)
 
         async def body(**kwargs: object) -> tuple[str, dict[str, object]]:
             connection = kwargs["connection"]

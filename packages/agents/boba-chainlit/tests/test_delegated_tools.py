@@ -60,7 +60,7 @@ from boba.stand.site import Stand
 from boba.tool.ch.tools import ChToolConfig
 from boba.tool.connections.tools import ConnectionsToolConfig
 from boba.tool.pg.tools import PgToolConfig
-from boba.tool.web.tools import WebGrepConfig
+from boba.tool.web.tools import WebToolsConfig
 from boba.toolkit.entry import ToolMain
 from boba.toolkit.wrap import ToolProcessWrap
 from boba.toolrun.callvalues import CallContextValues
@@ -324,7 +324,7 @@ def web_tools(raw_config: Any, store: ConnectionStore, tickets: SsoTickets):
         tickets,
         section="web",
         module_name="boba.tool.web.tools",
-        config_model=WebGrepConfig,
+        config_model=WebToolsConfig,
         kind="web",
     )
 

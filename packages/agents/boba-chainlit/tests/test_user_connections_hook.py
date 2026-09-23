@@ -48,7 +48,7 @@ from boba.messaging import MemoryMessageBus
 from boba.runtime.refresh import BusRefreshSignal
 from boba.stand.site import Stand
 from boba.tool.pg.tools import PgToolConfig
-from boba.tool.web.tools import WebGrepConfig
+from boba.tool.web.tools import WebToolsConfig
 from boba.toolkit.facade import Injected, UserConnection
 from boba.toolrun.injected import InjectedConfig
 from boba.transport.http.connection import HttpConnection
@@ -204,7 +204,7 @@ class Capture:
             "CaptureWebArgs",
             url=(str, ...),
             connection=(Annotated[HttpConnection, UserConnection], ...),
-            cfg=(Annotated[WebGrepConfig, Injected], ...),
+            cfg=(Annotated[WebToolsConfig, Injected], ...),
         )
 
         async def body(**kwargs: object) -> dict[str, object]:
@@ -218,7 +218,7 @@ class Capture:
         )
 
         def resolve(name: str, annotation: Any) -> object:
-            return bind(raw_config, path="tool.web", model=WebGrepConfig)
+            return bind(raw_config, path="tool.web", model=WebToolsConfig)
 
         UserConnections.bind_all(
             [tool],

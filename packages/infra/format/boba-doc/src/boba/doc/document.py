@@ -67,6 +67,7 @@ class DocumentKind(StrEnum):
     PPTX = "pptx"
     XLS = "xls"
     RTF = "rtf"
+    HTML = "html"
     IMAGE = "image"
     TEXT = "text"
     UNKNOWN = "unknown"
@@ -93,6 +94,7 @@ class Formats:
     MEDIA_TYPE_SEPARATOR: ClassVar[str] = ";"
     SUFFIX_SEPARATOR: ClassVar[str] = "."
     ZIP_MAGIC: ClassVar[bytes] = b"PK\x03\x04"
+    HTML_MAGIC: ClassVar[tuple[bytes, ...]] = (b"<!doctype html", b"<html")
 
     BY_MEDIA_TYPE: ClassVar[Mapping[str, DocumentKind]] = {
         "application/pdf": DocumentKind.PDF,
@@ -105,6 +107,8 @@ class Formats:
         "application/vnd.ms-excel": DocumentKind.XLS,
         "application/rtf": DocumentKind.RTF,
         "text/rtf": DocumentKind.RTF,
+        "text/html": DocumentKind.HTML,
+        "application/xhtml+xml": DocumentKind.HTML,
         "application/json": DocumentKind.TEXT,
         "application/xml": DocumentKind.TEXT,
         "application/x-yaml": DocumentKind.TEXT,
@@ -118,6 +122,9 @@ class Formats:
         "pptx": DocumentKind.PPTX,
         "xls": DocumentKind.XLS,
         "rtf": DocumentKind.RTF,
+        "htm": DocumentKind.HTML,
+        "html": DocumentKind.HTML,
+        "xhtml": DocumentKind.HTML,
         "png": DocumentKind.IMAGE,
         "jpg": DocumentKind.IMAGE,
         "jpeg": DocumentKind.IMAGE,
@@ -178,13 +185,16 @@ class Formats:
         if not normalized:
             return DocumentKind.UNKNOWN
 
+        if normalized in cls.BY_MEDIA_TYPE:
+            return cls.BY_MEDIA_TYPE[normalized]
+
         if normalized.startswith(cls.IMAGE_PREFIX):
             return DocumentKind.IMAGE
 
         if normalized.startswith(cls.TEXT_PREFIX):
             return DocumentKind.TEXT
 
-        return cls.BY_MEDIA_TYPE.get(normalized, DocumentKind.UNKNOWN)
+        return DocumentKind.UNKNOWN
 
     @classmethod
     def of_filename(cls, filename: str) -> DocumentKind:
@@ -222,6 +232,9 @@ class Formats:
         if head.startswith(cls.ZIP_MAGIC):
             return cls._sniff_zip(head)
 
+        if cls._is_html(head):
+            return DocumentKind.HTML
+
         if cls._is_image(head):
             return DocumentKind.IMAGE
 
@@ -235,6 +248,14 @@ class Formats:
                 return kind
 
         return DocumentKind.UNKNOWN
+
+    @classmethod
+    def _is_html(cls, head: bytes) -> bool:
+        """Страница без подсказки транспорта: документ начинается с doctype
+        или корневого тега, пробелы и BOM перед ними не в счёт."""
+        opening = head.lstrip(b"\xef\xbb\xbf \t\r\n").lower()
+
+        return opening.startswith(cls.HTML_MAGIC)
 
     @staticmethod
     def _is_image(head: bytes) -> bool:

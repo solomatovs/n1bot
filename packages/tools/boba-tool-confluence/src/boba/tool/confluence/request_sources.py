@@ -34,8 +34,9 @@ from boba.confluence.rest import (
     ConfluenceConnection,
     ConfluenceRequest,
 )
-from boba.indexing import RequestSource, TransportError
+from boba.indexing import RequestSource
 from boba.tool.confluence.indexing_log import IngestProgress
+from boba.transport.http import TransportError
 
 __all__ = [
     "ConfluenceDiscovery",

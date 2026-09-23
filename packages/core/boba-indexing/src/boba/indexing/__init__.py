@@ -20,8 +20,8 @@ from boba.indexing.chunks import (
 from boba.indexing.errors import (
     IncompatibleContentError,
     IndexingError,
+    SourceFetchError,
     SourceGoneError,
-    TransportError,
 )
 from boba.indexing.events import (
     BaseIndexEvent,
@@ -232,6 +232,7 @@ __all__ = [
     "Sha256TextEncoder",
     "SourceBasedChunkId",
     "SourceFailed",
+    "SourceFetchError",
     "SourceGone",
     "SourceGoneError",
     "SourceId",
@@ -253,7 +254,6 @@ __all__ = [
     "TableToken",
     "TrackingKeys",
     "Transport",
-    "TransportError",
     "TransportKeys",
     "UnseenGone",
     "UnsupportedFilterError",

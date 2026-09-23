@@ -15,14 +15,18 @@ from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
-import httpx
 import pytest
 from pydantic import SecretStr
 
 from boba.kerberos import KeytabAuth
 from boba.krb import KerberosWorkspace, KeytabCredentials, ServiceTicketIssuer
 from boba.stand.site import Stand
-from boba.transport.http import HttpRequest, HttpTransport, HttpTransportConfig
+from boba.transport.http import (
+    HttpRequest,
+    HttpStatusError,
+    HttpTransport,
+    HttpTransportConfig,
+)
 from boba.transport.http.connection import (
     BasicAuth,
     BearerAuth,
@@ -113,12 +117,12 @@ async def test_none_auth_is_refused_where_credentials_are_required() -> None:
     """Тот же профиль без кредов: закрытый адрес отвечает отказом, а не данными."""
     connection = _clickhouse(NoneAuth(method="none"))
 
-    with pytest.raises(httpx.HTTPStatusError) as caught:
+    with pytest.raises(HttpStatusError) as caught:
         await _body(
             connection, HttpRequest(url="/", params={"query": "select currentUser()"})
         )
 
-    if caught.value.response.status_code != 401:
+    if caught.value.status != 401:
         raise AssertionError(f"anonymous request must be refused: {caught.value}")
 
 
@@ -153,12 +157,12 @@ async def test_basic_auth_with_a_wrong_password_is_refused() -> None:
         )
     )
 
-    with pytest.raises(httpx.HTTPStatusError) as caught:
+    with pytest.raises(HttpStatusError) as caught:
         await _body(
             connection, HttpRequest(url="/", params={"query": "select currentUser()"})
         )
 
-    if caught.value.response.status_code != 401:
+    if caught.value.status != 401:
         raise AssertionError(f"a wrong password must be refused: {caught.value}")
 
 

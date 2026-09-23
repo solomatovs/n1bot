@@ -7,8 +7,8 @@ DocumentTextError — файл не распознан роутером или �
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable, Iterator, Sequence
-from typing import BinaryIO, ClassVar
+from collections.abc import Callable, Sequence
+from typing import BinaryIO
 
 from boba.cfl_indexer.confluence import Attachment
 from boba.cfl_indexer.store import Aspect
@@ -24,8 +24,6 @@ from boba.doc.document import (
     DocumentHint,
     DocumentKind,
     Formats,
-    PageWindow,
-    ParsedPage,
 )
 from boba.doc.ocr import OcrEngines
 from boba.doc.router import DocumentRouter
@@ -45,8 +43,6 @@ class AttachmentReader:
     Решает вердикт по вложению, аспект его текста и даёт потребителя потока
     скачивания, который читает файл роутером и склеивает страницы.
     """
-
-    PAGE_SEPARATOR: ClassVar[str] = "\n\n"
 
     def __init__(
         self, doc: DocSection, masks: Sequence[str], engines: OcrEngines
@@ -85,14 +81,13 @@ class AttachmentReader:
         return Aspect.BODY
 
     def consumer(self, attachment: Attachment) -> Callable[[BinaryIO], str]:
-        """Потребитель потока скачивания: роутер открывает файл по подсказке
-        вложения, текст страниц склеивается в один."""
+        """Потребитель потока скачивания: роутер читает файл по подсказке
+        вложения в один текст."""
         hint = self.hint(attachment)
 
         def read(source: BinaryIO) -> str:
             try:
-                with self._router.open(source, hint) as document:
-                    return self._join(document.pages(PageWindow.whole()))
+                return self._router.read_text(source, hint)
             except DocumentError as exc:
                 raise DocumentTextError(
                     f"attachment {attachment.id} {attachment.title!r} "
@@ -106,15 +101,3 @@ class AttachmentReader:
 
     def kind(self, attachment: Attachment) -> DocumentKind:
         return Formats.of_hint(self.hint(attachment))
-
-    def _join(self, pages: Iterable[ParsedPage]) -> str:
-        return self.PAGE_SEPARATOR.join(self._texts(pages))
-
-    @staticmethod
-    def _texts(pages: Iterable[ParsedPage]) -> Iterator[str]:
-        for page in pages:
-            text = page.text.strip()
-            if not text:
-                continue
-
-            yield text
