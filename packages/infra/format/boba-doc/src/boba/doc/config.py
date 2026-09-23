@@ -14,7 +14,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Annotated, Literal, Self
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, SecretStr
 
 __all__ = [
     "DisabledOcrConfig",
@@ -24,6 +24,7 @@ __all__ = [
     "OcrLanguage",
     "OcrModel",
     "OcrUnavailableError",
+    "OpenAiOcrConfig",
     "RapidOcrConfig",
 ]
 
@@ -115,8 +116,30 @@ class RapidOcrConfig(BaseModel):
         }
 
 
+class OpenAiOcrConfig(BaseModel):
+    """Секция OCR с provider = openai: картинка уходит vision-модели
+    openai-совместимого endpoint'а (/chat/completions), ответ — текст с
+    картинки построчно. Ключ в отпечаток индексатора не входит."""
+
+    model_config = ConfigDict(frozen=True)
+
+    provider: Literal["openai"]
+    base_url: str
+    api_key: SecretStr
+    model: str
+    timeout_sec: float = Field(gt=0)
+    max_tokens: int = Field(ge=1)
+
+    @property
+    def enabled(self) -> bool:
+        return True
+
+    def fingerprint(self) -> Mapping[str, object]:
+        return {"provider": self.provider, "model": self.model}
+
+
 OcrConfig = Annotated[
-    DisabledOcrConfig | RapidOcrConfig,
+    DisabledOcrConfig | RapidOcrConfig | OpenAiOcrConfig,
     Field(discriminator="provider"),
 ]
 """Discriminated union по provider — точная диагностика ошибок валидации."""

@@ -19,6 +19,7 @@ from boba.doc.config import (
     OcrLanguage,
     OcrModel,
     OcrUnavailableError,
+    OpenAiOcrConfig,
     RapidOcrConfig,
 )
 
@@ -30,5 +31,6 @@ __all__ = [
     "OcrLanguage",
     "OcrModel",
     "OcrUnavailableError",
+    "OpenAiOcrConfig",
     "RapidOcrConfig",
 ]

@@ -355,8 +355,13 @@ class BoxedHit(Hit):
 
 
 class OcrEngine(Protocol):
-    """Распознавание текста на картинке: страница без текстового слоя или
-    вложение-изображение приходят сюда как PIL-образ."""
+    """Распознавание текста на картинке: страница без текстового слоя, картинка
+    внутри страницы или вложение-изображение приходят сюда как PIL-образ.
+    По enabled ридер решает, стоит ли вообще доставать картинки."""
+
+    @property
+    @abstractmethod
+    def enabled(self) -> bool: ...
 
     @abstractmethod
     def recognize(self, image: Image.Image) -> str: ...
@@ -364,6 +369,10 @@ class OcrEngine(Protocol):
 
 class DisabledOcr(OcrEngine):
     """OCR выключен конфигом: картинки и сканы дают пустой текст."""
+
+    @property
+    def enabled(self) -> bool:
+        return False
 
     def recognize(self, image: Image.Image) -> str:
         return ""

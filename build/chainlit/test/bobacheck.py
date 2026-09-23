@@ -256,6 +256,36 @@ def t_embed_weights_shipped():
 
 check("weights shipped", t_embed_weights_shipped)
 
+# 9) модели OCR: детектор, классификатор и распознаватель по языку лежат в релизе
+# и едут биндом в песочницы чтения документов и confluence
+print("== rapidocr models shipped next to the models ==")
+OCR_DIR = os.path.join(BASE_DIR, "models", "rapidocr")
+OCR_MODELS = (
+    "ch_PP-OCRv5_det_mobile.onnx",
+    "ch_ppocr_mobile_v2.0_cls_mobile.onnx",
+    "eslav_PP-OCRv5_rec_mobile.onnx",
+)
+OCR_PACKAGES = ("boba-tool-doc", "boba-tool-confluence")
+
+
+def t_ocr_models_shipped():
+    if not os.path.isdir(OCR_DIR):
+        raise RuntimeError(f"нет каталога {OCR_DIR}")
+
+    for name in OCR_MODELS:
+        if not os.path.isfile(os.path.join(OCR_DIR, name)):
+            raise RuntimeError(f"нет модели {name} в {OCR_DIR}")
+
+    for package in OCR_PACKAGES:
+        image = os.path.join(PLUGINS_DIR, package, "rootfs.ext4")
+        if not os.path.isfile(image):
+            raise RuntimeError(f"нет образа {image}")
+
+    print(f"  моделей: {len(OCR_MODELS)}")
+
+
+check("ocr models shipped", t_ocr_models_shipped)
+
 print()
 if failures:
     print(f"RESULT: FAIL ({len(failures)}): {', '.join(failures)}")

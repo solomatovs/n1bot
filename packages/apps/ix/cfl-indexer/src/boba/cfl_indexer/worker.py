@@ -615,7 +615,7 @@ class Indexer:
 
     async def run(self, selection: SpaceSelection) -> list[Report]:
         try:
-            OcrEngines.check(self._cfg.doc.ocr)
+            OcrEngines().check(self._cfg.doc.ocr)
             await self.check_fts()
             targets = await self.targets(selection)
         except DocumentError as exc:
