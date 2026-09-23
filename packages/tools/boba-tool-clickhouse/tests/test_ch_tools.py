@@ -36,6 +36,8 @@ class TestChTools:
         "ch_function_describe",
         "ch_sequences_describe",
         "ch_types_describe",
+        "ch_edm_structure",
+        "ch_edm_descriptions",
     ]
 
     def test_module_declares_the_toolset(self) -> None:
