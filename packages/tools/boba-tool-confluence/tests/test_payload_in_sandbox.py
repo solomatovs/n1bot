@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import zipfile
+from collections.abc import Mapping
 from io import BytesIO
 from pathlib import Path
 from typing import Any, ClassVar
@@ -83,12 +84,15 @@ def _cfg(**kw: Any) -> dict[str, Any]:
 
 
 def _run_doc(
-    caller: ZygoteToolCaller, tool: str, flags: dict[str, str], cfg: dict[str, Any]
+    caller: ZygoteToolCaller,
+    tool: str,
+    flags: Mapping[str, object],
+    cfg: dict[str, Any],
 ) -> ToolOutcome:
     argv: list[str] = ["python3", "-m", "boba.tool.doc.tools", tool]
     for flag, value in flags.items():
         argv.append(f"--{flag}")
-        argv.append(value)
+        argv.append(str(value))
 
     config = json.dumps({"cfg": cfg}).encode("utf-8")
     return CollectedCall.of(caller, ToolCommand(argv=tuple(argv), config=config))
