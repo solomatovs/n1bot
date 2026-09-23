@@ -25,9 +25,9 @@ from boba.confluence.models import (
     ParseGrade,
 )
 from boba.confluence.rest import (
+    CflPaginator,
+    CflRestBuilder,
     ConfluenceConnection,
-    ConfluencePaginator,
-    ConfluenceRest,
 )
 from boba.db.pgvector.config import PostgresStoreConfig
 from boba.db.pgvector.store import (
@@ -329,8 +329,8 @@ class IngestScope:
         if not self.space_key:
             return
 
-        async with ConfluencePaginator(conn) as paginator:
-            await paginator.get_json(ConfluenceRest.space_path(self.space_key))
+        async with CflPaginator(conn) as paginator:
+            await paginator.get_json(CflRestBuilder.space_path(self.space_key))
 
 
 class ConfluenceIngest:

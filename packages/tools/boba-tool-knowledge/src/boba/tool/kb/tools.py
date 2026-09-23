@@ -27,7 +27,7 @@ import sys
 from collections.abc import AsyncGenerator, Mapping, Sequence
 from contextlib import asynccontextmanager
 from enum import StrEnum
-from typing import Annotated, Any, ClassVar, Final, LiteralString
+from typing import Annotated, Any, ClassVar, Final
 
 import psycopg
 from pydantic import BaseModel, ConfigDict, Field
@@ -121,7 +121,7 @@ class Prompt:
         "описаний и текстов (синонимы, перефразировки, размытые формулировки)."
     )
     SURFACES: ClassVar[str] = (
-        "Поверхности (виды объектов) из kb_catalog2, по которым искать: "
+        "Виды объектов из kb_catalog2, по которым искать: "
         '["cfl_page", "cfl_attachment"] или ["pg_meta_table"]. Пусто — все.'
     )
     ASPECTS: ClassVar[str] = (
@@ -149,10 +149,6 @@ class Prompt:
 class KbSession:
     """Соединение к базе ix и реестры схемы на один вызов инструмента."""
 
-    ITERATIVE_SCAN: ClassVar[LiteralString] = "set hnsw.iterative_scan = strict_order"
-    """Итеративный скан HNSW: с фильтром по поверхностям и аспектам индекс
-    обходится дальше, пока не наберётся limit строк, в строгом порядке."""
-
     def __init__(
         self,
         cfg: KbToolConfig,
@@ -165,15 +161,15 @@ class KbSession:
 
     @classmethod
     @asynccontextmanager
-    async def opened(cls, cfg: KbToolConfig) -> AsyncGenerator[KbSession, None]:
-        connect = Elapsed()
+    async def from_cfg(cls, cfg: KbToolConfig) -> AsyncGenerator[KbSession, None]:
+        elapsed_conn = Elapsed()
         conn = await PayloadPostgres.connect_config(cfg.connection)
-        logger.info("ix connected in %dms", connect.ms())
+        logger.info("ix connected in %dms", elapsed_conn.ms())
 
         async with conn:
-            load = Elapsed()
+            elapsed_load = Elapsed()
             registry = await IxRegistry(cfg.db_schema).read(conn)
-            logger.info("ix registries loaded in %dms", load.ms())
+            logger.info("ix registries loaded in %dms", elapsed_load.ms())
 
             yield cls(cfg, conn, registry)
 
@@ -187,7 +183,15 @@ class KbSession:
 
     async def search(self, request: SearchRequest) -> Sequence[Hit]:
         if request.mode is SearchMode.VECTOR:
-            await self._conn.execute(self.ITERATIVE_SCAN)
+            # При использовании приближенных индексов запросы с фильтрацией
+            # могут возвращать меньше результатов, так как фильтрация
+            # применяется уже после сканирования индекса.
+            # Начиная с версии 0.8.0, можно включить итеративное сканирование индекса:
+            # система будет автоматически сканировать индекс до тех пор,
+            # пока не наберется достаточное количество результатов
+            # (или пока не будут достигнуты лимиты
+            # `hnsw.max_scan_tuples` либо `ivfflat.max_probes`).
+            await self._conn.execute("set hnsw.iterative_scan = strict_order")
 
         elapsed = Elapsed()
         hits: list[Hit] = []
@@ -221,27 +225,6 @@ class KbSession:
                 kinds.append(table.kind)
 
         return found
-
-
-class QueryVector:
-    """Вектор запроса моделью из конфига: той же, что наполняет таблицу эмбеддингов."""
-
-    @staticmethod
-    async def of(cfg: KbToolConfig, query: str) -> tuple[float, ...]:
-        build = Elapsed()
-        embedder = WarmEmbedder.of(cfg.embedding)
-        logger.info("embedder ready in %dms (%s)", build.ms(), cfg.embedding.kind)
-
-        embed = Elapsed()
-        vector = await embedder.embed_query(query)
-
-        values: list[float] = []
-        for item in vector:
-            values.append(float(item))
-
-        logger.info("query embedded in %dms (dim=%d)", embed.ms(), len(values))
-
-        return tuple(values)
 
 
 class HitRows:
@@ -396,43 +379,38 @@ class NodeMarkdown:
         return "\n".join(lines)
 
 
-class KbSearchRun:
-    """Общий ход трёх поисковых инструментов: сессия, вектор для режима vector,
-    запрос ядру, строки таблицы."""
+async def query_to_vector(cfg: KbToolConfig, query: str) -> tuple[float, ...]:
+    """Возвращает вектор запроса пользователя"""
+    build = Elapsed()
+    embedder = WarmEmbedder.of(cfg.embedding)
+    logger.info("embedder ready in %dms (%s)", build.ms(), cfg.embedding.kind)
 
-    @classmethod
-    async def table(
-        cls,
-        cfg: KbToolConfig,
-        mode: SearchMode,
-        query: str,
-        surfaces: Sequence[str],
-        aspects: Sequence[str],
-        top_k: int,
-    ) -> TableResult:
-        vector: tuple[float, ...] = ()
-        if mode is SearchMode.VECTOR:
-            vector = await QueryVector.of(cfg, query)
+    embed = Elapsed()
+    vector = await embedder.embed_query(query)
 
-        request = SearchRequest(
-            mode=mode,
-            query=query,
-            limit=top_k,
-            surfaces=tuple(surfaces),
-            aspects=tuple(aspects),
-            vector=vector,
-        )
+    values: list[float] = []
+    for item in vector:
+        values.append(float(item))
 
-        async with KbSession.opened(cfg) as session:
-            hits = await session.search(request)
+    logger.info("query embedded in %dms (dim=%d)", embed.ms(), len(values))
 
-        rows = HitRows.of(hits)
+    return tuple(values)
 
-        note = None
-        if not rows:
-            note = Prompt.NOTHING_FOUND
 
-        return TableResult(rows=rows, note=note)
+async def run_and_collect(
+    cfg: KbToolConfig,
+    request: SearchRequest,
+) -> TableResult:
+    async with KbSession.from_cfg(cfg) as session:
+        hits = await session.search(request)
+
+    rows = HitRows.of(hits)
+
+    note = None
+    if not rows:
+        note = Prompt.NOTHING_FOUND
+
+    return TableResult(rows=rows, note=note)
 
 
 @tool
@@ -440,15 +418,19 @@ async def kb_catalog2(
     *,
     cfg: Annotated[KbToolConfig, Injected],
 ) -> TableResult:
-    """Словарь базы знаний: по чему вообще можно искать.
+    """Каталог данных по которым можно производить поиск
 
-    Строка на поверхность (вид объекта: страница Confluence, вложение, таблица
-    PostgreSQL, колонка ClickHouse): описание, число объектов и её аспекты —
-    какие тексты объекта проиндексированы и в каких режимах поиска (fts, trgm,
-    vector) они есть. В подписи — словарь аспектов и назначение режимов.
-    Зови первым, чтобы выбрать surfaces и aspects для поиска.
+    Строка на вид объекта:
+    - страница Confluence, вложение
+    - таблица PostgreSQL, ClickHouse, колонка
+
+    описание, число объектов и её аспекты — какие тексты объекта проиндексированы
+    и в каких режимах поиска (fts, trgm, vector) они есть.
+    В подписи — словарь аспектов и назначение режимов.
+
+    Необходимо вызвать что выбрать surfaces и aspects для поиска.
     """
-    async with KbSession.opened(cfg) as session:
+    async with KbSession.from_cfg(cfg) as session:
         coverage = await session.coverage()
         surfaces = session.registry.indexed_surfaces()
         rows = CatalogRows.of(surfaces, session.registry, coverage)
@@ -460,8 +442,8 @@ async def kb_catalog2(
 @tool
 async def kb_fts_search2(
     query: Annotated[str, Field(min_length=1, description=Prompt.QUERY_FTS)],
-    surfaces: Annotated[LLMStringList, Field(description=Prompt.SURFACES)] = [],
-    aspects: Annotated[LLMStringList, Field(description=Prompt.ASPECTS)] = [],
+    surfaces: Annotated[LLMStringList, Field(default=[], description=Prompt.SURFACES)],
+    aspects: Annotated[LLMStringList, Field(default=[], description=Prompt.ASPECTS)],
     top_k: Annotated[int, Field(ge=1, description=Prompt.TOP_K)] = 10,
     *,
     cfg: Annotated[KbToolConfig, Injected],
@@ -471,14 +453,21 @@ async def kb_fts_search2(
     Возвращает таблицу объектов по релевантности: node_id, surface, url, score,
     лучший aspect и сниппет. Полный текст объекта читает kb_node2 по node_id.
     """
-    return await KbSearchRun.table(cfg, SearchMode.FTS, query, surfaces, aspects, top_k)
+    request = SearchRequest(
+        mode=SearchMode.FTS,
+        query=query,
+        limit=top_k,
+        surfaces=tuple(surfaces),
+        aspects=tuple(aspects),
+    )
+    return await run_and_collect(cfg, request)
 
 
 @tool
 async def kb_trgm_search2(
     query: Annotated[str, Field(min_length=1, description=Prompt.QUERY_TRGM)],
-    surfaces: Annotated[LLMStringList, Field(description=Prompt.SURFACES)] = [],
-    aspects: Annotated[LLMStringList, Field(description=Prompt.ASPECTS)] = [],
+    surfaces: Annotated[LLMStringList, Field(default=[], description=Prompt.SURFACES)],
+    aspects: Annotated[LLMStringList, Field(default=[], description=Prompt.ASPECTS)],
     top_k: Annotated[int, Field(ge=1, description=Prompt.TOP_K)] = 10,
     *,
     cfg: Annotated[KbToolConfig, Injected],
@@ -489,16 +478,21 @@ async def kb_trgm_search2(
     Возвращает таблицу объектов по похожести: node_id, surface, url, score,
     aspect и совпавший идентификатор.
     """
-    return await KbSearchRun.table(
-        cfg, SearchMode.TRGM, query, surfaces, aspects, top_k
+    request = SearchRequest(
+        mode=SearchMode.TRGM,
+        query=query,
+        limit=top_k,
+        surfaces=tuple(surfaces),
+        aspects=tuple(aspects),
     )
+    return await run_and_collect(cfg, request)
 
 
 @tool
 async def kb_vector_search2(
     query: Annotated[str, Field(min_length=1, description=Prompt.QUERY_VECTOR)],
-    surfaces: Annotated[LLMStringList, Field(description=Prompt.SURFACES)] = [],
-    aspects: Annotated[LLMStringList, Field(description=Prompt.ASPECTS)] = [],
+    surfaces: Annotated[LLMStringList, Field(default=[], description=Prompt.SURFACES)],
+    aspects: Annotated[LLMStringList, Field(default=[], description=Prompt.ASPECTS)],
     top_k: Annotated[int, Field(ge=1, description=Prompt.TOP_K)] = 10,
     *,
     cfg: Annotated[KbToolConfig, Injected],
@@ -509,15 +503,23 @@ async def kb_vector_search2(
     Возвращает таблицу объектов по близости (score — косинусное расстояние,
     меньше ближе): node_id, surface, url, aspect и ближайший фрагмент.
     """
-    return await KbSearchRun.table(
-        cfg, SearchMode.VECTOR, query, surfaces, aspects, top_k
+    request = SearchRequest(
+        mode=SearchMode.VECTOR,
+        query=query,
+        limit=top_k,
+        surfaces=tuple(surfaces),
+        aspects=tuple(aspects),
+        vector=await query_to_vector(cfg, query),
     )
+    return await run_and_collect(cfg, request)
 
 
 @tool
 async def kb_node2(
     node_id: Annotated[int, Field(ge=1, description=Prompt.NODE_ID)],
-    aspects: Annotated[LLMStringList, Field(description=Prompt.NODE_ASPECTS)] = [],
+    aspects: Annotated[
+        LLMStringList, Field(default=[], description=Prompt.NODE_ASPECTS)
+    ],
     *,
     cfg: Annotated[KbToolConfig, Injected],
 ) -> MarkdownResult:
@@ -525,7 +527,7 @@ async def kb_node2(
     база/схема/таблица) и полные тексты его аспектов — markdown страницы, текст
     вложения, описание таблицы с колонками.
     """
-    async with KbSession.opened(cfg) as session:
+    async with KbSession.from_cfg(cfg) as session:
         card = await session.node(node_id, aspects)
 
     return NodeMarkdown.render(card, cfg.max_result_chars)

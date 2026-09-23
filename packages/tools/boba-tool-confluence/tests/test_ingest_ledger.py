@@ -28,7 +28,7 @@ from boba.confluence.models import (
     ParseGrade,
     TableShape,
 )
-from boba.confluence.rest import ConfluenceConnection, ConfluenceRest
+from boba.confluence.rest import CflRestBuilder, ConfluenceConnection
 from boba.db.pgvector.config import PostgresStoreConfig, PostgresStoreSchema
 from boba.db.pgvector.migrations import Migrations
 from boba.db.pgvector.store import (
@@ -183,7 +183,7 @@ class IngestStand:
         return ConfluenceConnection(profile=profile, body_format="view")
 
     def page_source(self, page_id: str) -> SourceId:
-        path = ConfluenceRest.page_body_path(page_id, body_format="view")
+        path = CflRestBuilder.page_body_path(page_id, body_format="view")
         return ConfluenceSourceId.of(self.connection().profile, str(path))
 
     def attachment_source(self, page_id: str, title: str) -> SourceId:

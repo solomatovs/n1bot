@@ -53,20 +53,19 @@ from boba.cfl_indexer.documents import (
 from boba.cfl_indexer.store import (
     Aspect,
     IxStore,
-    IxWriteError,
     RunFile,
     State,
     Surface,
     state_file_of,
     surface_of,
 )
-from boba.config import ConfigError, bind_section
+from boba.config import bind_section
 from boba.confluence.models import AttachmentVerdict
 from boba.confluence.rest import ConfluenceConnection, ContentType
 from boba.db.postgres import AsyncPostgresPool, PostgresError
 from boba.db.postgres.names import PostgresSchema
 from boba.ix_core.database import IxDatabase, enter_kerberos
-from boba.ix_core.upgrade import SchemaUpgrade, SchemaUpgradeError
+from boba.ix_core.upgrade import SchemaUpgrade
 from boba.krb import KerberosWorkspaceConfig
 from boba.text.document import LiteParseParams
 
@@ -76,7 +75,7 @@ __all__ = [
     "IndexerConfig",
     "IndexerWorkerError",
     "Report",
-    "SpaceWalk",
+    "SpaceWalker",
     "compute_indexer_hash",
     "index_space",
     "list_targets",
@@ -85,7 +84,6 @@ __all__ = [
 
 logger = logging.getLogger("cfl-indexer")
 
-INDEXER_LAYOUT = 2
 """Поднимается при смене преобразования в коде: всё идёт на переиндексацию."""
 LOG_FORMAT = "%(asctime)s %(name)s %(message)s"
 
@@ -112,6 +110,7 @@ class IndexerConfig(IxDatabase):
     progress_every: int = Field(ge=1, default=100)
     parser: LiteParseParams
     attachments: Sequence[str] = ()
+    indexer_number: int = Field(ge=1, default=1)
     """Имя файла или media-type со слэшем; пусто — все."""
     text_encodings: Sequence[str] = Field(min_length=1, default=("utf-8",))
 
@@ -179,8 +178,9 @@ def find_source(cfg: IndexerConfig, name: str) -> ConfluenceSource:
 
 def compute_indexer_hash(cfg: IndexerConfig, source: ConfluenceSource) -> str:
     """md5 параметров, от которых зависит текст индекса; смена — переиндексация."""
+    # magic number. Для сброса index hash в случае необходимости
     material = {
-        "layout": INDEXER_LAYOUT,
+        "layout": cfg.indexer_number,
         "body_format": source.confluence.body_format,
         "attachments": list(cfg.attachments),
         "text_encodings": list(cfg.text_encodings),
@@ -234,45 +234,44 @@ def default_port(scheme: str) -> int:
     return 80
 
 
-class SpaceWalk:
+class SpaceWalker:
     """Обход одного спейса: чтение, запись, счётчики."""
 
     def __init__(
         self,
+        space_key: str,
         cfg: IndexerConfig,
         source: ConfluenceSource,
         reader: ConfluenceReader,
         store: IxStore,
-        *,
         reindex: bool,
     ) -> None:
+        self._space_key = space_key
         self._cfg = cfg
         self._reader = reader
         self._store = store
         self._reindex = reindex
-        self._report = Report(space_key="")
+        self._report = Report(space_key=self._space_key)
         self._address = CflAddress(source.confluence)
         self._indexer_hash = compute_indexer_hash(cfg, source)
         self._gate = build_gate(cfg.attachments, ocr=cfg.parser.ocr_enabled)
 
-    @property
-    def report(self) -> Report:
+    def get_report(self) -> Report:
         return self._report
 
-    async def walk(self, space_key: str) -> None:
-        self._report.space_key = space_key
+    async def walk(self) -> None:
         await self._store.create_tables()
-        space_node = await self.index_space_row(
-            await self._reader.read_space(space_key)
-        )
+
+        space = await self._reader.read_space(self._space_key)
+        space_node = await self.index_space_row(space)
 
         for kind in (ContentType.PAGE, ContentType.BLOGPOST):
-            async for content in self._reader.iter_contents(space_key, kind):
+            async for content in self._reader.iter_contents(self._space_key, kind):
                 await self.index_content(content, space_node)
 
         base = self._address.base()
-        self._report.linked = await self._store.apply_links(space_key, base)
-        self._report.swept = await self._store.sweep_space(space_key, base)
+        self._report.linked = await self._store.apply_links(self._space_key, base)
+        self._report.swept = await self._store.sweep_space(self._space_key, base)
 
     def has_changed(self, state: State | None, version: int) -> bool:
         """--reindex отключает отсечение на прогон."""
@@ -506,15 +505,12 @@ async def walk_space(
             ConfluenceReader(source.confluence) as reader,
         ):
             store = IxStore(package_dir, cfg.db_schema, conn)
-            walk = SpaceWalk(cfg, source, reader, store, reindex=reindex)
+            walker = SpaceWalker(space_key, cfg, source, reader, store, reindex=reindex)
             try:
-                await walk.walk(space_key)
+                await walker.walk()
             finally:
-                report = walk.report
-    except (ConfluenceReadError, IxWriteError, psycopg.Error) as exc:
-        logger.error("space %s aborted: %s", space_key, exc)
-        report.error = str(exc)
-    except PostgresError as exc:
+                report = walker.get_report()
+    except Exception as exc:
         logger.error("space %s aborted: %s", space_key, exc)
         report.error = str(exc)
 
@@ -554,7 +550,7 @@ def index_space(
 async def list_targets(
     cfg: IndexerConfig, source_name: str, space_key: str
 ) -> list[tuple[ConfluenceSource, str]]:
-    """Маска без glob — ключ как есть, со звёздочкой — список сервера."""
+    """Собираю список space'ов, по которым дальше пойдет индексатор"""
     targets: list[tuple[ConfluenceSource, str]] = []
     for source in select_sources(cfg, source_name, space_key):
         if space_key:
@@ -562,12 +558,11 @@ async def list_targets(
             continue
 
         async with ConfluenceReader(source.confluence) as reader:
-            keys = await reader.list_space_keys(source.spaces)
+            async for key in reader.list_space_keys(source.spaces):
+                logger.info("source: %s, space: %s", source.name, key)
+                targets.append((source, key))
 
-        logger.info("source %s: %d space(s) to walk", source.name, len(keys))
-        for key in keys:
-            targets.append((source, key))
-
+    logger.info("total spaces: %d", len(targets))
     return targets
 
 
@@ -594,7 +589,7 @@ class SpaceSelection:
     reindex: bool = False
 
 
-def run_spaces(
+async def run_spaces(
     cfg: IndexerConfig,
     package_dir: Path,
     krb: KerberosWorkspaceConfig | None,
@@ -603,8 +598,8 @@ def run_spaces(
     """Прогон по спейсам: процесс на спейс, parallel_spaces процессов разом.
     Отчёты в порядке спейсов; спейс с ошибкой — отчёт с error."""
     try:
-        asyncio.run(check_fts(cfg))
-        targets = asyncio.run(list_targets(cfg, selection.source, selection.space))
+        await check_fts(cfg)
+        targets = await list_targets(cfg, selection.source, selection.space)
     except PostgresError as exc:
         raise IndexerWorkerError(f"ix database {cfg.postgres.where()}: {exc}") from exc
     except ConfluenceReadError as exc:
@@ -625,7 +620,9 @@ def run_spaces(
                     index_space,
                     cfg,
                     SpaceJob(
-                        source_name=found.name, space_key=key, reindex=selection.reindex
+                        source_name=found.name,
+                        space_key=key,
+                        reindex=selection.reindex,
                     ),
                     package_dir,
                     krb,
@@ -680,7 +677,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
-def main() -> None:
+async def main() -> None:
     logging.basicConfig(level=logging.INFO, format=LOG_FORMAT)
     section = "ix.cfl_indexer"
     package_dir = Path(__file__).resolve().parent
@@ -691,12 +688,12 @@ def main() -> None:
         if args.command is Command.UPGRADE:
             database = bind_section(args.config, section, IxDatabase)
             upgrade = SchemaUpgrade(package_dir / "schema")
-            report = asyncio.run(upgrade.run(database))
+            report = await upgrade.run(database)
             logger.info("schema applied: %s", ", ".join(report.files))
             return
 
         cfg = bind_section(args.config, section, IndexerConfig)
-        reports = run_spaces(
+        reports = await run_spaces(
             cfg,
             package_dir / "run",
             krb,
@@ -704,9 +701,9 @@ def main() -> None:
         )
         for report in reports:
             logger.info("done: %s", report.line())
-    except (ConfigError, SchemaUpgradeError, IndexerWorkerError) as exc:
+    except Exception as exc:
         raise SystemExit(str(exc)) from exc
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
