@@ -1,5 +1,6 @@
 """Oracle для payload'ов и скраперов: thin-соединение python-oracledb по профилю,
-строки запроса потоком с именованными bind'ами или CSV-байтами пачками Arrow.
+строки запроса потоком с именованными bind'ами или CSV-байтами пачками Arrow,
+запись пачками через executemany.
 
 Ошибки:
 OracleQueryError — сервер отклонил запрос или оборвал чтение (в том числе по
@@ -13,18 +14,65 @@ import io
 from collections.abc import AsyncGenerator, AsyncIterator, Mapping, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
+from enum import StrEnum
 from typing import Any, ClassVar
 
 import oracledb
 import pyarrow
 import pyarrow.csv
-from oracledb import DB_TYPE_NUMBER, AsyncConnection, AsyncCursor
+from oracledb import (
+    DB_TYPE_BINARY_DOUBLE,
+    DB_TYPE_BINARY_FLOAT,
+    DB_TYPE_BINARY_INTEGER,
+    DB_TYPE_BLOB,
+    DB_TYPE_DATE,
+    DB_TYPE_LONG_RAW,
+    DB_TYPE_NUMBER,
+    DB_TYPE_RAW,
+    DB_TYPE_TIMESTAMP,
+    DB_TYPE_TIMESTAMP_LTZ,
+    DB_TYPE_TIMESTAMP_TZ,
+    AsyncConnection,
+    AsyncCursor,
+    DbType,
+)
 
 from boba.db.oracle.connection import OracleConfig
 from boba.db.oracle.errors import OracleError, OracleQueryError
 from boba.db.oracle.query import OraQueryBuilder, OraSql
 
-__all__ = ["ByteStream", "PayloadOracle", "RowStream"]
+__all__ = ["ByteStream", "OraColumnType", "PayloadOracle", "RowStream"]
+
+
+class OraColumnType(StrEnum):
+    """Семейство типа колонки глазами загрузчика текста: как привести строку CSV
+    к значению bind'а. Точный тип драйвера наружу не выходит."""
+
+    NUMBER = "number"
+    FLOAT = "float"
+    DATE = "date"
+    TIMESTAMP = "timestamp"
+    BINARY = "binary"
+    TEXT = "text"
+
+    @classmethod
+    def of(cls, db_type: DbType) -> OraColumnType:
+        if db_type in (DB_TYPE_NUMBER, DB_TYPE_BINARY_INTEGER):
+            return cls.NUMBER
+
+        if db_type in (DB_TYPE_BINARY_DOUBLE, DB_TYPE_BINARY_FLOAT):
+            return cls.FLOAT
+
+        if db_type is DB_TYPE_DATE:
+            return cls.DATE
+
+        if db_type in (DB_TYPE_TIMESTAMP, DB_TYPE_TIMESTAMP_TZ, DB_TYPE_TIMESTAMP_LTZ):
+            return cls.TIMESTAMP
+
+        if db_type in (DB_TYPE_RAW, DB_TYPE_LONG_RAW, DB_TYPE_BLOB):
+            return cls.BINARY
+
+        return cls.TEXT
 
 
 @dataclass(frozen=True, slots=True)
@@ -34,10 +82,13 @@ class RowStream:
     Драйвер отдаёт имена колонок отдельно от значений, поэтому они едут вместе
     с потоком: вызывающий собирает словарь строки по names, не заглядывая во
     внутренности курсора. Имена в нижнем регистре: Oracle хранит их заглавными.
+    У команды без выборки (DML, DDL, PL/SQL) names пуст, а affected — число
+    затронутых строк; итерировать blocks такой команды нельзя.
     """
 
     names: tuple[str, ...]
     blocks: AsyncIterator[Sequence[Any]]
+    affected: int = 0
 
 
 @dataclass(frozen=True)
@@ -105,9 +156,77 @@ class PayloadOracle:
             yield RowStream(
                 names=self._names(cursor),
                 blocks=self._iterate(cursor, text),
+                affected=cursor.rowcount,
             )
         finally:
             cursor.close()
+
+    async def column_types(
+        self, conn: AsyncConnection, text: str
+    ) -> tuple[OraColumnType, ...]:
+        """Семейства типов колонок запроса по описанию курсора без выборки строк:
+        запрос исполняется, но ни одна строка не читается."""
+        cursor = await self._executed(conn, text, {})
+        try:
+            kinds: list[OraColumnType] = []
+            for column in cursor.description or ():
+                kinds.append(OraColumnType.of(column.type))
+        finally:
+            cursor.close()
+
+        return tuple(kinds)
+
+    async def executemany(
+        self,
+        conn: AsyncConnection,
+        text: str,
+        kinds: Sequence[OraColumnType],
+        rows: Sequence[Sequence[object]],
+    ) -> int:
+        """Одна команда для пачки строк: позиционные bind'ы `:1..:n` по семействам
+        kinds, драйвер шлёт пачку серверу одной поездкой. Семейство задаёт тип
+        bind'а: без него datetime уехал бы как DATE и потерял доли секунды.
+        Возвращает число затронутых строк; транзакцию завершает вызывающий."""
+        cursor = conn.cursor()
+        try:
+            cursor.setinputsizes(*self._bind_types(kinds))
+            await cursor.executemany(text, list(rows))
+            affected = cursor.rowcount
+        except oracledb.Error as exc:
+            raise OracleQueryError(
+                f"executemany on oracle failed for {len(rows)} rows: "
+                f"{type(exc).__name__}: {exc}; statement: {text[:200]!r}"
+            ) from exc
+        finally:
+            cursor.close()
+
+        return affected
+
+    @staticmethod
+    def _bind_types(kinds: Sequence[OraColumnType]) -> list[DbType | None]:
+        """Тип bind'а по семейству: у TIMESTAMP и BINARY он явный, остальные
+        драйвер выводит из значения."""
+        types: list[DbType | None] = []
+        for kind in kinds:
+            if kind is OraColumnType.TIMESTAMP:
+                types.append(DB_TYPE_TIMESTAMP)
+                continue
+
+            if kind is OraColumnType.BINARY:
+                types.append(DB_TYPE_RAW)
+                continue
+
+            types.append(None)
+
+        return types
+
+    async def commit(self, conn: AsyncConnection) -> None:
+        try:
+            await conn.commit()
+        except oracledb.Error as exc:
+            raise OracleQueryError(
+                f"commit on oracle failed: {type(exc).__name__}: {exc}"
+            ) from exc
 
     @asynccontextmanager
     async def csv(

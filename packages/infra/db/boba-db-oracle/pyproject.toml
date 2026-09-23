@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "boba-db-oracle"
 version = "0.0.23.dev1"
-description = "Boba Oracle: OracleConfig + подключение payload'а thin-драйвером python-oracledb по паролю."
+description = "Boba Oracle: тип соединения OracleConfig (пароль или wallet), адреса объектов, thin-клиент python-oracledb."
 requires-python = ">=3.11,<4"
 dependencies = [
     "pydantic>=2.10,<2.11",
@@ -19,6 +19,7 @@ payload = [
     "pyarrow>=25,<26",
 ]
 dev = [
+    "boba-db-postgres==0.0.23.dev1",
     "boba-stand==0.0.23.dev1",
     "pytest>=8",
 ]
@@ -27,3 +28,9 @@ dev = [
 where = ["src"]
 include = ["boba*"]
 namespaces = true
+
+[project.entry-points."boba.connections"]
+oracle = "boba.db.oracle.manifest:MANIFEST"
+
+[project.entry-points."boba.addresses"]
+oracle = "boba.db.oracle.address:OraAddresses"
