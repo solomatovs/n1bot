@@ -28,7 +28,6 @@ import json
 import logging
 from collections.abc import Sequence
 from dataclasses import asdict
-from enum import StrEnum
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -58,18 +57,13 @@ class SearchLabError(Exception):
     """Ошибка стенда поиска."""
 
 
-class Route(StrEnum):
-    PAGE = "/"
-    SEARCH = "/search"
-    SURFACES = "/surfaces"
-
-
 class LabConfig(IxDatabase):
     cache_dir: str
     model: str = "intfloat/multilingual-e5-large"
     dim: int = Field(gt=0, default=1024)
     host: str = "127.0.0.1"
     port: int = Field(gt=0, default=8700)
+    prefix_url: str | None = Field(default=None)
 
 
 class Searcher:
@@ -134,26 +128,43 @@ class Searcher:
             ) from exc
 
 
-class Handler(BaseHTTPRequestHandler):
-    """Маршруты: / отдаёт страницу, /surfaces отдаёт словарь поверхностей,
-    /search?q=&mode=&limit=&surface=&surface= отдаёт JSON выдачи."""
+class MyHandler(BaseHTTPRequestHandler):
+    """Маршруты:
+    / - отдаёт страницу,
+    /surfaces - отдаёт словарь поверхностей,
+    /search?q=&mode=&limit=&surface=&surface= - отдаёт JSON выдачи
+    """
 
     searcher: Searcher
     page: Path
+    prefix_url: str
+
+    def get_page(self):
+        return f"{self.prefix_url}/"
+
+    def get_search(self):
+        return f"{self.prefix_url}/search"
+
+    def get_surfaces(self):
+        return f"{self.prefix_url}/surfaces"
 
     def do_GET(self) -> None:
         url = urlparse(self.path)
-        if url.path == Route.PAGE:
+        if self.prefix_url:
+            if not url.path.startswith(self.prefix_url):
+                self._send(HTTPStatus.NOT_FOUND, "text/plain", b"not found")
+
+        if url.path == self.get_page():
             self._send(
                 HTTPStatus.OK, "text/html; charset=utf-8", self.page.read_bytes()
             )
             return
 
-        if url.path == Route.SURFACES:
+        if url.path == self.get_surfaces():
             self._surfaces()
             return
 
-        if url.path == Route.SEARCH:
+        if url.path == self.get_search():
             self._search(parse_qs(url.query))
             return
 
@@ -220,17 +231,25 @@ class LabServer:
         async with pool.connection() as conn:
             registry = await IxRegistry(self._cfg.db_schema).read(conn)
 
-        for table in registry.get_tables():
-            logger.info("index table of kind %s: %s", table.kind, table.name)
+        for x in registry.get_tables():
+            logger.info("index table of kind %s: %s", x.kind, x.name)
 
-        names: list[str] = []
-        for surface in registry.indexed_surfaces():
-            names.append(surface.name)
+        for x in registry.indexed_surfaces():
+            logger.info("surfaces to search over: %s", x.name)
 
-        logger.info("surfaces to search over: %s", ", ".join(names))
-        logger.info("url templates for surfaces: %s", ", ".join(registry.get_urls()))
+        for x in registry.get_urls():
+            logger.info("url templates for surfaces: %s", x)
 
         return registry
+
+    def handler_bootstrap(self, pool, embedder, registry):
+        MyHandler.searcher = Searcher(
+            self._cfg, pool, embedder, registry, asyncio.get_running_loop()
+        )
+        MyHandler.page = self._dir / "index.html"
+        MyHandler.prefix_url = self._cfg.prefix_url or ""
+
+        return MyHandler
 
     async def serve(self) -> None:
         embedding = LocalEmbedding(
@@ -247,12 +266,18 @@ class LabServer:
         await pool.open()
         try:
             registry = await self._registry(pool)
-            Handler.searcher = Searcher(
-                self._cfg, pool, embedder, registry, asyncio.get_running_loop()
+
+            server = ThreadingHTTPServer(
+                server_address=(self._cfg.host, self._cfg.port),
+                RequestHandlerClass=self.handler_bootstrap(pool, embedder, registry),
             )
-            Handler.page = self._dir / "index.html"
-            server = ThreadingHTTPServer((self._cfg.host, self._cfg.port), Handler)
-            logger.info("listening on http://%s:%d/", self._cfg.host, self._cfg.port)
+
+            logger.info(
+                "listening on http://%s:%d/%s",
+                self._cfg.host,
+                self._cfg.port,
+                self._cfg.prefix_url,
+            )
 
             try:
                 await asyncio.to_thread(server.serve_forever)

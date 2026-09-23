@@ -39,7 +39,7 @@ from boba.confluence.models import (
     PageTableSection,
     TableShape,
 )
-from boba.confluence.rest import ConfluenceUrl
+from boba.confluence.rest import CflUrlBuilder
 from boba.db.postgres import PostgresError
 from boba.indexing import (
     DocumentCardSection,
@@ -454,7 +454,7 @@ async def confluence_attachment(
         )
         raise AttachmentNotFoundError(msg)
 
-    content = await ConfluenceHttp.get(rest_cfg, ConfluenceUrl.link(link))
+    content = await ConfluenceHttp.get(rest_cfg, CflUrlBuilder.raw_to_url(link))
 
     from boba.liteparse.engine import LiteParseEngine  # noqa: PLC0415
 
