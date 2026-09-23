@@ -22,7 +22,7 @@ from pydantic import Field
 
 from boba.connections.address import AddressFamily
 from boba.transport.http.address import WebAddress
-from boba.transport.http.profile import UrlScheme
+from boba.transport.http.connection import UrlScheme
 
 __all__ = [
     "ConfluenceAddress",

@@ -15,11 +15,9 @@ PrefetchError — слой инструментов нарушил контра�
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
-import re
 from abc import ABC, abstractmethod
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, ClassVar, Protocol
 from uuid import uuid4
@@ -41,8 +39,9 @@ from langgraph.runtime import Runtime
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from typing_extensions import override
 
-from boba.chat.generation import GenerationError, SchemaSpec, StructuredGenerator
-from boba.llm.chat import ResponseField
+from boba.chainlit.agent.bridge import ResponseField
+from boba.llm.chat import LlmError, ToolSpec
+from boba.llm.schema import SchemaReply
 from boba.toolkit.calls import ToolIntent
 from boba.toolkit.failure import FailureText
 from boba.toolkit.result import ErrorResult, ToolArtifact
@@ -120,89 +119,42 @@ class Rephrasings(BaseModel):
 
 
 class RephrasingsParser:
-    """Разбор ответа переформулировщика: схема, любой json, построчный текст.
+    """Разбор объекта ответа переформулировщика: по схеме, иначе любые строки.
 
-    Схему держит грамматика локальной модели и объявление функции удалённой, но
-    инференсы без поддержки того и другого отвечают текстом — там же, где ответ
-    по существу верен. Каждая ступень разбирает свою форму, и до отката на
-    исходный запрос дело доходит только на бессмысленном ответе.
+    Схему навязывает бэкенд, но модель вправе ответить объектом другой формы
+    там, где ответ по существу верен: строковые значения и списки строк любого
+    объекта тоже становятся запросами.
     """
 
-    NUMBERING: ClassVar[re.Pattern[str]] = re.compile(r"^\s*(?:[-*\d.)\s]+)")
-    OBJECT_START: ClassVar[str] = "{"
     MAX_LENGTH: ClassVar[int] = 300
 
-    @classmethod
-    def parse(cls, raw: str) -> Sequence[str]:
-        text = cls._json_text(raw)
-
-        by_schema = cls._of_schema(text)
+    def parse(self, reply: Mapping[str, Any]) -> Sequence[str]:
+        by_schema = self._of_schema(reply)
         if by_schema:
             return by_schema
 
-        by_mapping = cls._of_mapping(text)
-        if by_mapping:
-            return by_mapping
-
-        # оборванный по лимиту токенов json запросом быть не может
-        if text.startswith(cls.OBJECT_START):
-            return ()
-
-        return cls._of_lines(text)
-
-    @classmethod
-    def _json_text(cls, raw: str) -> str:
-        """Первый законченный json-объект в любой обёртке; без него — текст как есть."""
-        decoder = json.JSONDecoder()
-        for index, char in enumerate(raw):
-            if char != cls.OBJECT_START:
-                continue
-
-            try:
-                value, end = decoder.raw_decode(raw, index)
-            except json.JSONDecodeError:
-                continue
-
-            if not isinstance(value, dict):
-                continue
-
-            if not value:
-                continue
-
-            return raw[index:end]
-
-        return raw.strip()
+        return self._of_mapping(reply)
 
     @staticmethod
-    def _of_schema(text: str) -> Sequence[str]:
+    def _of_schema(reply: Mapping[str, Any]) -> Sequence[str]:
         try:
-            answer = Rephrasings.model_validate_json(text)
+            answer = Rephrasings.model_validate(reply)
         except ValidationError:
             return ()
 
         return answer.queries()
 
-    @classmethod
-    def _of_mapping(cls, text: str) -> Sequence[str]:
-        """Любой json-объект: годятся строковые значения и списки строк."""
-        try:
-            loaded = json.loads(text)
-        except json.JSONDecodeError:
-            return ()
-
-        if not isinstance(loaded, dict):
-            return ()
-
+    def _of_mapping(self, reply: Mapping[str, Any]) -> Sequence[str]:
+        """Любой объект: годятся строковые значения и списки строк."""
         found: list[str] = []
-        for value in loaded.values():
-            cls._collect(value, found)
+        for value in reply.values():
+            self._collect(value, found)
 
         return found
 
-    @classmethod
-    def _collect(cls, value: object, found: list[str]) -> None:
+    def _collect(self, value: object, found: list[str]) -> None:
         if isinstance(value, str):
-            cls._append(value, found)
+            self._append(value, found)
             return
 
         if not isinstance(value, list):
@@ -212,25 +164,14 @@ class RephrasingsParser:
             if not isinstance(item, str):
                 continue
 
-            cls._append(item, found)
+            self._append(item, found)
 
-    @classmethod
-    def _of_lines(cls, text: str) -> Sequence[str]:
-        """Список строк: нумерация, маркеры и кавычки в запрос не идут."""
-        found: list[str] = []
-        for line in text.splitlines():
-            stripped = cls.NUMBERING.sub("", line).strip().strip('"')
-            cls._append(stripped, found)
-
-        return found
-
-    @classmethod
-    def _append(cls, value: str, found: list[str]) -> None:
+    def _append(self, value: str, found: list[str]) -> None:
         text = value.strip()
         if not text:
             return
 
-        if len(text) > cls.MAX_LENGTH:
+        if len(text) > self.MAX_LENGTH:
             return
 
         if text in found:
@@ -309,37 +250,39 @@ class PassthroughRephraser(Rephraser):
 
 
 class LlmRephraser(Rephraser):
-    """Переформулировка отдельной моделью; бэкенд задаёт профиль генерации.
+    """Переформулировка отдельной моделью: ответ по схеме через SchemaReply.
 
     Сорванная переформулировка ход не роняет: в инструменты уходит исходный
     запрос, а причина остаётся в журнале. Поиск по одному запросу хуже поиска
     по трём, но лучше отказа отвечать.
     """
 
-    SCHEMA: ClassVar[SchemaSpec] = SchemaSpec(
+    SCHEMA: ClassVar[ToolSpec] = ToolSpec(
         name=Rephrasings.__name__,
         description="Search variants of the user request.",
-        body=Rephrasings.model_json_schema(),
+        parameters=Rephrasings.model_json_schema(),
     )
 
-    def __init__(self, generator: StructuredGenerator) -> None:
-        self._generator = generator
+    def __init__(self, reply: SchemaReply, system_prompt: str) -> None:
+        self._reply = reply
+        self._system_prompt = system_prompt
+        self._parser = RephrasingsParser()
 
     async def rephrase(self, query: str) -> Sequence[str]:
         try:
-            raw = await self._generator.generate(query, self.SCHEMA)
-        except GenerationError as exc:
+            answer = await self._reply.ask(self._system_prompt, query, self.SCHEMA)
+        except LlmError as exc:
             logger.warning(
                 "rephraser failed for query %r, searching as is: %s", query[:200], exc
             )
             return [query]
 
-        rephrased = RephrasingsParser.parse(raw)
+        rephrased = self._parser.parse(answer)
         if not rephrased:
             logger.warning(
                 "rephraser returned nothing usable for query %r: %r",
                 query[:200],
-                raw[:200],
+                dict(answer),
             )
             return [query]
 

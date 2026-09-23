@@ -9,7 +9,6 @@ description = "Инструменты Confluence: чтение страниц и
 requires-python = ">=3.11,<4"
 dependencies = [
     "boba-toolkit==0.0.23.dev1",
-    "boba-chat==0.0.23.dev1",
     "boba-confluence==0.0.23.dev1",
     "boba-db-postgres==0.0.23.dev1",
     "boba-db-pgvector==0.0.23.dev1",
@@ -31,7 +30,6 @@ ingest = "boba.tool.confluence.plugin:INGEST"
 [project.optional-dependencies]
 payload = [
     "boba-doc[readers,ocr]==0.0.23.dev1",
-    "boba-llm[payload]==0.0.23.dev1",
     "boba-confluence[html]==0.0.23.dev1",
     "lxml>=5.0",
 ]
@@ -53,3 +51,4 @@ namespaces = true
 
 [tool.boba.sandbox]
 imports = ["fastembed", "pypdfium2", "rapidocr"]
+entry_points = ["boba.llm"]

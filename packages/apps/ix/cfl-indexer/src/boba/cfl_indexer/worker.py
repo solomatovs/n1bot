@@ -29,7 +29,6 @@ from enum import StrEnum
 from pathlib import Path
 from typing import ClassVar
 
-import httpx
 import psycopg
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -62,6 +61,7 @@ from boba.doc.ocr import OcrEngines
 from boba.ix_core.database import IxDatabase, enter_kerberos
 from boba.ix_core.upgrade import SchemaUpgrade
 from boba.krb import KerberosWorkspaceConfig
+from boba.llm.providers import LlmProviders, LlmProviderTypes
 
 __all__ = [
     "CflAddress",
@@ -202,7 +202,7 @@ class CflAddress:
     HTTP_PORT: ClassVar[int] = 80
 
     def __init__(self, conn: ConfluenceConnection) -> None:
-        root = httpx.URL(str(conn.profile.root_url()))
+        root = conn.connection.root_url()
         port = root.port
         if port is None:
             port = self._default_port(root.scheme)
@@ -250,13 +250,14 @@ class SpaceJob:
 class SpaceWalker:
     """Обход одного спейса: чтение, запись, счётчики."""
 
-    def __init__(
+    def __init__(  # noqa: PLR0913 — стадии обхода независимы
         self,
         cfg: IndexerConfig,
         source: ConfluenceSource,
         job: SpaceJob,
         reader: ConfluenceReader,
         store: IxStore,
+        engines: OcrEngines,
     ) -> None:
         self._space_key = job.space_key
         self._cfg = cfg
@@ -266,7 +267,7 @@ class SpaceWalker:
         self._report = Report(space_key=self._space_key)
         self._address = CflAddress(source.confluence)
         self._indexer_hash = Sources(cfg).indexer_hash(source)
-        self._attachments = AttachmentReader(cfg.doc, cfg.attachments)
+        self._attachments = AttachmentReader(cfg.doc, cfg.attachments, engines)
 
     def get_report(self) -> Report:
         return self._report
@@ -512,6 +513,7 @@ class SpaceRun:
     async def run(self) -> Report:
         key = self._job.space_key
         report = Report(space_key=key)
+        providers = LlmProviders(LlmProviderTypes.installed())
         try:
             async with (
                 await AsyncPostgresPool.dedicated(self._cfg.postgres) as conn,
@@ -520,11 +522,19 @@ class SpaceRun:
                 ) as reader,
             ):
                 store = IxStore(self._package_dir, self._cfg.db_schema, conn)
-                walker = SpaceWalker(self._cfg, self._source, self._job, reader, store)
+                walker = SpaceWalker(
+                    self._cfg,
+                    self._source,
+                    self._job,
+                    reader,
+                    store,
+                    OcrEngines(providers),
+                )
                 try:
                     await walker.walk()
                 finally:
                     report = walker.get_report()
+                    await providers.aclose()
         except Exception as exc:
             logger.error("space %s aborted: %s", key, exc)
             report.error = str(exc)
@@ -614,8 +624,10 @@ class Indexer:
         return targets
 
     async def run(self, selection: SpaceSelection) -> list[Report]:
+        providers = LlmProviders(LlmProviderTypes.installed())
         try:
-            OcrEngines().check(self._cfg.doc.ocr)
+            OcrEngines(providers).check(self._cfg.doc.ocr)
+            await providers.aclose()
             await self.check_fts()
             targets = await self.targets(selection)
         except DocumentError as exc:

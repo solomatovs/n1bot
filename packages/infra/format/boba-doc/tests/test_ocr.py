@@ -11,6 +11,7 @@ from boba.doc.config import OcrLanguage, RapidOcrConfig
 from boba.doc.document import DocumentError, DocumentHint, PageWindow
 from boba.doc.ocr import OcrEngines, RapidOcrEngine
 from boba.doc.router import DocumentRouter
+from boba.llm.providers import LlmProviders, LlmProviderTypes
 from boba.stand.doc import DocStand
 
 LINES = ["Договор поставки от 12 мая", "Quarterly report 2026 total 1250"]
@@ -158,4 +159,4 @@ def test_missing_models_fail_with_names(tmp_path: Path) -> None:
         RapidOcrEngine(config)
 
     with pytest.raises(DocumentError, match="lacks"):
-        OcrEngines().check(config)
+        OcrEngines(LlmProviders(LlmProviderTypes.installed())).check(config)

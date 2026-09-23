@@ -37,4 +37,4 @@ namespaces = true
 clickhouse = "boba.db.clickhouse.snapshot:ChSnapshot"
 
 [project.entry-points."boba.connections"]
-clickhouse = "boba.db.clickhouse.connection:MANIFEST"
+clickhouse = "boba.db.clickhouse.manifest:MANIFEST"

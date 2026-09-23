@@ -45,13 +45,9 @@ from boba.ix_core.database import IxDatabase, enter_kerberos
 from boba.ix_core.prompts import SurfacePromptError
 from boba.ix_core.registry import IxRegistry
 from boba.ix_core.upgrade import SchemaUpgrade, SchemaUpgradeError
-from boba.ix_llm_describer.describe import (
-    DescribeError,
-    Description,
-    Generators,
-    ModelConfig,
-    PackPrompts,
-)
+from boba.ix_llm_describer.describe import DescribeError, Description, PackPrompts
+from boba.llm.providers import ChatModelConfig, LlmProviders, LlmProviderTypes
+from boba.llm.schema import SchemaReply
 
 logger = logging.getLogger("ix-llm-describer")
 
@@ -74,11 +70,18 @@ class Part(StrEnum):
     SOURCES = "sources"
 
 
-class WorkerConfig(IxDatabase, ModelConfig):
-    """Секция [ix.llm_describer]: база ix, модель с её бюджетом входа и размер пачки."""
+class WorkerConfig(IxDatabase):
+    """Секция [ix.llm_describer]: база ix, чат-модель, бюджет входа и размер пачки."""
 
     classes: Sequence[AspectClass]
-    batch: int = Field(gt=0, default=8)
+    chat: ChatModelConfig
+    max_input_chars: int = Field(gt=0)
+    """Сколько знаков материала модель принимает за один вызов; длиннее — свёртка."""
+    batch: int = Field(gt=0)
+
+    def model_label(self) -> str:
+        """Модель для отпечатка: её смена перегоняет описания заново."""
+        return f"{self.chat.provider.kind}:{self.chat.model}"
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -217,7 +220,7 @@ class DescriberWorker:
         """Отпечаток пары: модель, бюджет, промпт владельца и шаблоны пакета."""
         material = "\n".join(
             [
-                self._cfg.label(),
+                self._cfg.model_label(),
                 str(self._cfg.max_input_chars),
                 system_prompt,
                 user_template,
@@ -383,9 +386,14 @@ async def main() -> None:
 
         cfg = bind_section(config_path, section, WorkerConfig)
         pack = PackPrompts(package_dir / "prompt")
-        describer = Description(Generators(cfg), pack, cfg.max_input_chars)
-        worker = DescriberWorker(cfg, package_dir / "run", pack, describer)
-        report = await worker.run()
+        providers = LlmProviders(LlmProviderTypes.installed())
+        try:
+            reply = SchemaReply(providers.chat(cfg.chat), cfg.chat.sampling)
+            describer = Description(reply, pack, cfg.max_input_chars)
+            worker = DescriberWorker(cfg, package_dir / "run", pack, describer)
+            report = await worker.run()
+        finally:
+            await providers.aclose()
         logger.info(
             "done: rounds=%d written=%d folded=%d pruned=%d",
             report.rounds,

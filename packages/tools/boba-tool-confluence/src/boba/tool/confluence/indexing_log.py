@@ -70,7 +70,6 @@ from boba.indexing import (
     SourceSkippedUnchanged,
     TransportKeys,
 )
-from boba.indexing.ports import Embedder
 from boba.toolkit.timing import Elapsed
 
 __all__ = [
@@ -78,13 +77,12 @@ __all__ = [
     "LoggedIndexRun",
     "LoggingChunkStore",
     "LoggingChunker",
-    "LoggingEmbedder",
     "LoggingReader",
     "LoggingSourceLedger",
     "RunOutcome",
 ]
 
-T = TypeVar("T")
+T = TypeVar("T", bound=str)
 
 
 class DbOp(StrEnum):
@@ -576,38 +574,6 @@ class LoggingReader(Reader[T], Generic[T]):
             sections,
             elapsed.ms(),
         )
-
-
-class LoggingEmbedder(Embedder[T], Generic[T]):
-    """Обёртка Embedder'а: батч эмбеддится минуты, и это самая тихая стадия."""
-
-    def __init__(self, inner: Embedder[T], logger: logging.Logger) -> None:
-        self._inner = inner
-        self._logger = logger
-
-    async def embed_documents(
-        self,
-        contents: Sequence[T],
-    ) -> Sequence[Sequence[float]]:
-        self._logger.info("embedding start: %d chunks", len(contents))
-        elapsed = Elapsed()
-        vectors = await self._inner.embed_documents(contents)
-        self._logger.info(
-            "embedding done: %d chunks in %dms", len(vectors), elapsed.ms()
-        )
-
-        return vectors
-
-    async def embed_query(self, content: T) -> Sequence[float]:
-        self._logger.info("embedding start: query")
-        elapsed = Elapsed()
-        vector = await self._inner.embed_query(content)
-        self._logger.info("embedding done: query in %dms", elapsed.ms())
-
-        return vector
-
-    def dim(self) -> int:
-        return self._inner.dim()
 
 
 class LoggingChunker(Chunker[T], Generic[T]):

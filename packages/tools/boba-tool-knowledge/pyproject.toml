@@ -20,16 +20,12 @@ dependencies = [
     "pydantic>=2.10,<2.11",
 ]
 
-# зависимости payload'а: нужны только внутри песочницы,
-# в окружении приложения их быть не должно
 [project.entry-points."boba.tools"]
 kb = "boba.tool.kb.plugin:KB"
 
 [project.optional-dependencies]
-payload = [
-    "boba-llm[payload]==0.0.23.dev1",
-]
 dev = [
+    "boba-llm-fastembed==0.0.23.dev1",
     "boba-runtime==0.0.23.dev1",
     "boba-sandbox==0.0.23.dev1",
     "boba-config==0.0.23.dev1",
@@ -47,3 +43,4 @@ namespaces = true
 
 [tool.boba.sandbox]
 imports = ["fastembed"]
+entry_points = ["boba.llm"]

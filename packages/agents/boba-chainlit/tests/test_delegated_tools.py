@@ -39,10 +39,10 @@ from boba.connection_broker.tickets import ServiceTickets
 from boba.connection_broker.user_connections import UserConnections
 from boba.connections.manifest import ConnectionTypes
 from boba.connections.marks import ConnectionRefusal
-from boba.connections.profile import ConnectionProfileBase, GrantTarget
-from boba.db.clickhouse.profile import ClickHouseConfig
+from boba.connections.stored import ConnectionBase, GrantTarget
+from boba.db.clickhouse.connection import ClickHouseConfig
 from boba.db.postgres import AsyncPostgresPool
-from boba.db.postgres.profile import PostgresConfig
+from boba.db.postgres.connection import PostgresConfig
 from boba.identity.errors import RefusalError
 from boba.identity.session import UserMetadataField
 from boba.kerberos import (
@@ -65,7 +65,7 @@ from boba.toolkit.entry import ToolMain
 from boba.toolkit.wrap import ToolProcessWrap
 from boba.toolrun.callvalues import CallContextValues
 from boba.toolrun.injected import InjectedConfig
-from boba.transport.http.profile import HttpConnection, NegotiateAuth
+from boba.transport.http.connection import HttpConnection, NegotiateAuth
 
 _REPO = Path(__file__).resolve().parents[4]
 _SANDBOX_STAGING = _REPO / "build" / "chainlit" / "src" / "sandbox"
@@ -338,9 +338,9 @@ async def _granted(
     store: ConnectionStore,
     session: PersistedUser,
     name: str,
-    profile: ConnectionProfileBase,
+    connection: ConnectionBase,
 ) -> None:
-    connection_id = await store.add(name, profile)
+    connection_id = await store.add(name, connection)
     await store.grant(connection_id, GrantTarget.user(UUID(session.id)))
 
 

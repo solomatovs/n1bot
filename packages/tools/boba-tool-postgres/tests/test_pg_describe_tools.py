@@ -11,7 +11,7 @@ import pytest
 from pydantic import BaseModel, ConfigDict
 
 from boba.config import bind
-from boba.db.postgres.profile import PostgresConfig
+from boba.db.postgres.connection import PostgresConfig
 from boba.tool.pg import tools as pg
 from boba.toolkit.entry import ToolMain
 from boba.toolkit.facade import PayloadTool

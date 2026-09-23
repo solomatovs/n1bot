@@ -29,7 +29,7 @@ from boba.access.grants import (
     SubjectRowColumn,
 )
 from boba.db.postgres import PayloadPostgres, SqlNames
-from boba.db.postgres.profile import PostgresConfig
+from boba.db.postgres.connection import PostgresConfig
 from boba.identity.context import Subject
 from boba.toolkit.entry import ToolMain
 from boba.toolkit.facade import Injected, tool

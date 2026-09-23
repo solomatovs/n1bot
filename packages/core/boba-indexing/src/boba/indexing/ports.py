@@ -8,7 +8,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from collections.abc import AsyncIterable, AsyncIterator, Mapping, Sequence
+from collections.abc import AsyncIterable, AsyncIterator, Mapping
 from typing import Generic, Literal, NewType, Protocol, TypeVar, runtime_checkable
 
 from boba.indexing.chunks import Chunk
@@ -21,7 +21,6 @@ __all__ = [
     "Chunker",
     "ChunkerId",
     "DispatchReader",
-    "Embedder",
     "Reader",
     "ReaderId",
     "Request",
@@ -70,35 +69,6 @@ class Chunker(ABC, Generic[T]):
 
     @abstractmethod
     def chunk(self, sections: AsyncIterable[Section[T]]) -> AsyncIterator[Chunk[T]]: ...
-
-
-T = TypeVar("T")
-
-
-class Embedder(ABC, Generic[T]):
-    """Преобразует content в вектор; provider-нейтральная абстракция.
-
-    Батч эмбеддится долго: локальный backend обязан уносить инференс с loop'а,
-    удалённый — просто ходит по сети.
-    """
-
-    @abstractmethod
-    async def embed_documents(
-        self,
-        contents: Sequence[T],
-    ) -> Sequence[Sequence[float]]:
-        """Векторизация для индексации (потенциально с document-prefix)."""
-        ...
-
-    @abstractmethod
-    async def embed_query(self, content: T) -> Sequence[float]:
-        """Векторизация запроса (для асимметричных моделей — с query-prefix)."""
-        ...
-
-    @abstractmethod
-    def dim(self) -> int:
-        """Размерность embedding-вектора"""
-        ...
 
 
 @runtime_checkable

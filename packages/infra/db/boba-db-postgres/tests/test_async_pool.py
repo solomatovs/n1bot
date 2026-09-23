@@ -13,7 +13,7 @@ from boba.db.postgres import (
     PostgresPoolClosedError,
     PostgresPoolLoopError,
 )
-from boba.db.postgres.profile import PostgresConfig
+from boba.db.postgres.connection import PostgresConfig
 
 
 class _FakeAsyncConnectionPool:

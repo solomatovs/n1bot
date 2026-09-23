@@ -20,8 +20,8 @@ import pyarrow
 import pyarrow.csv
 from oracledb import DB_TYPE_NUMBER, AsyncConnection, AsyncCursor
 
+from boba.db.oracle.connection import OracleConfig
 from boba.db.oracle.errors import OracleError, OracleQueryError
-from boba.db.oracle.profile import OracleConfig
 from boba.db.oracle.query import OraQueryBuilder, OraSql
 
 __all__ = ["ByteStream", "PayloadOracle", "RowStream"]

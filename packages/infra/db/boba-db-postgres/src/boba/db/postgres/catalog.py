@@ -39,7 +39,7 @@ from boba.catalog import (
     SourceSnapshot,
     TreeScope,
 )
-from boba.db.postgres.profile import PostgresConfig
+from boba.db.postgres.connection import PostgresConfig
 from boba.toolkit.result import MarkdownResult, ToolResult
 from boba.toolkit.types import SecretRevealing
 

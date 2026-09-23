@@ -16,8 +16,8 @@ from pydantic import BaseModel, create_model
 
 from boba.auth.credentials import KerberosCredentialSource, NoRefresh
 from boba.connection_broker.tickets import ServiceTickets
-from boba.connections.credentials import ProfileSections
-from boba.db.postgres.profile import PostgresConfig
+from boba.connections.credentials import ConnectionSections
+from boba.db.postgres.connection import PostgresConfig
 from boba.kerberos import KeytabAuth, TicketAuth
 from boba.stand.site import Stand
 from boba.toolkit.facade import Injected
@@ -113,11 +113,11 @@ class Fixtures:
 class TestArmingIsNeededWhereKeytabLives:
     def test_nested_keytab_is_found(self, tmp_path: Path) -> None:
         config = ToolConfig(connection=Fixtures.connection(tmp_path / "cc"))
-        if not ProfileSections.needs_arming(config):
+        if not ConnectionSections.needs_arming(config):
             raise AssertionError("keytab во вложенном профиле не найден")
 
     def test_plain_config_needs_nothing(self) -> None:
-        if ProfileSections.needs_arming(ToolConfig(connection=Fixtures.plain())):
+        if ConnectionSections.needs_arming(ToolConfig(connection=Fixtures.plain())):
             raise AssertionError("обвязка просится там, где kerberos нет")
 
     def test_ticket_section_needs_nothing(self) -> None:
@@ -125,7 +125,7 @@ class TestArmingIsNeededWhereKeytabLives:
         armed = Fixtures.plain().model_copy(
             update={"auth": ticket, "connect_timeout": 5}
         )
-        if ProfileSections.needs_arming(ToolConfig(connection=armed)):
+        if ConnectionSections.needs_arming(ToolConfig(connection=armed)):
             raise AssertionError("готовый билет перевыпускать не нужно")
 
 

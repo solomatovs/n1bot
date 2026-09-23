@@ -11,31 +11,38 @@ DocumentError — нет файлов моделей, движок не подн
 
 from __future__ import annotations
 
-import base64
+import asyncio
 import io
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any, ClassVar
 
-import httpx
 import numpy as np
 import onnxruntime
 from numpy.typing import NDArray
 from PIL import Image
-from pydantic import BaseModel, ConfigDict, ValidationError
 from rapidocr import EngineType, LangRec, ModelType, OCRVersion, RapidOCR
 from rapidocr.utils.output import RapidOCROutput
 
 from boba.doc.config import (
+    ChatOcrConfig,
     DisabledOcrConfig,
     OcrModel,
-    OpenAiOcrConfig,
     RapidOcrConfig,
 )
 from boba.doc.document import DisabledOcr, DocumentError, OcrEngine
+from boba.llm.chat import (
+    ChatImage,
+    ChatModel,
+    ChatRequest,
+    ChatRole,
+    ChatTurn,
+    LlmError,
+)
+from boba.llm.providers import LlmProviders
 
-__all__ = ["OcrEngines", "OcrLines", "OpenAiOcrEngine", "RapidOcrEngine"]
+__all__ = ["ChatOcrEngine", "OcrEngines", "OcrLines", "RapidOcrEngine"]
 
 
 @dataclass(frozen=True)
@@ -53,22 +60,16 @@ class OcrLines:
     его центр по вертикали лежит в пределах половины высоты строки; внутри
     строки фрагменты идут слева направо."""
 
-    LINE_OVERLAP: ClassVar[float] = 0.5
-    WORD_GLUE: ClassVar[str] = " "
-    LINE_GLUE: ClassVar[str] = "\n"
-
-    @classmethod
-    def assemble(cls, boxes: NDArray[Any], texts: Sequence[str]) -> str:
-        words = sorted(cls._words(boxes, texts), key=lambda word: word.center_y)
+    def assemble(self, boxes: NDArray[Any], texts: Sequence[str]) -> str:
+        words = sorted(self._words(boxes, texts), key=lambda word: word.center_y)
         lines: list[str] = []
-        for line in cls._lines(words):
+        for line in self._lines(words):
             ordered = sorted(line, key=lambda word: word.left)
-            lines.append(cls.WORD_GLUE.join(word.text for word in ordered))
+            lines.append(" ".join(word.text for word in ordered))
 
-        return cls.LINE_GLUE.join(lines)
+        return "\n".join(lines)
 
-    @staticmethod
-    def _words(boxes: NDArray[Any], texts: Sequence[str]) -> Iterator[OcrWord]:
+    def _words(self, boxes: NDArray[Any], texts: Sequence[str]) -> Iterator[OcrWord]:
         for box, text in zip(boxes, texts, strict=True):
             xs = box[:, 0]
             ys = box[:, 1]
@@ -79,8 +80,7 @@ class OcrLines:
                 text=text,
             )
 
-    @classmethod
-    def _lines(cls, words: Sequence[OcrWord]) -> Iterator[list[OcrWord]]:
+    def _lines(self, words: Sequence[OcrWord]) -> Iterator[list[OcrWord]]:
         line: list[OcrWord] = []
         for word in words:
             if not line:
@@ -88,7 +88,7 @@ class OcrLines:
                 continue
 
             anchor = line[0]
-            if abs(word.center_y - anchor.center_y) <= cls.LINE_OVERLAP * anchor.height:
+            if abs(word.center_y - anchor.center_y) <= 0.5 * anchor.height:
                 line.append(word)
                 continue
 
@@ -103,10 +103,9 @@ class RapidOcrEngine(OcrEngine):
     """Реализация OcrEngine на rapidocr: модели по явным путям, вывод —
     строки текста в порядке чтения."""
 
-    LOG_LEVEL: ClassVar[str] = "warning"
-
     def __init__(self, config: RapidOcrConfig) -> None:
         self._config = config
+        self._lines = OcrLines()
         self.check_models(config)
         try:
             self._ocr = RapidOCR(params=self._params())
@@ -144,7 +143,7 @@ class RapidOcrEngine(OcrEngine):
         if output.txts is None:
             return ""
 
-        return OcrLines.assemble(output.boxes, output.txts)
+        return self._lines.assemble(output.boxes, output.txts)
 
     @staticmethod
     def check_models(config: RapidOcrConfig) -> None:
@@ -170,7 +169,7 @@ class RapidOcrEngine(OcrEngine):
         language = self._config.language
 
         return {
-            "Global.log_level": self.LOG_LEVEL,
+            "Global.log_level": "warning",
             "Global.text_score": self._config.text_score,
             "EngineConfig.onnxruntime.intra_op_num_threads": self._config.threads,
             "Det.engine_type": EngineType.ONNXRUNTIME,
@@ -202,74 +201,41 @@ class OcrPrompt(StrEnum):
         return self.value.format(none=OcrPrompt.NONE.value)
 
 
-class ChatReplyMessage(BaseModel):
-    """DTO ответа /chat/completions: текст сообщения модели."""
+class ChatOcrEngine(OcrEngine):
+    """Реализация OcrEngine vision-чат-моделью проекта: картинка уходит PNG
+    одним сообщением, обратно приходит текст. Ридеры зовут движок из своих
+    потоков, поэтому ответ модели ждётся через loop приложения, на котором
+    живёт транспорт модели."""
 
-    model_config = ConfigDict(extra="ignore")
-
-    content: str = ""
-
-
-class ChatReplyChoice(BaseModel):
-    model_config = ConfigDict(extra="ignore")
-
-    message: ChatReplyMessage
-
-
-class ChatReply(BaseModel):
-    model_config = ConfigDict(extra="ignore")
-
-    choices: Sequence[ChatReplyChoice]
-
-
-class OpenAiOcrEngine(OcrEngine):
-    """Реализация OcrEngine vision-моделью openai-совместимого endpoint'а:
-    картинка уходит PNG в data-url одним сообщением, обратно приходит текст.
-    Клиент синхронный — движок зовут из потоков ридеров, и он один на
-    процесс, поэтому соединение переиспользуется."""
-
-    ENDPOINT: ClassVar[str] = "chat/completions"
     IMAGE_FORMAT: ClassVar[str] = "PNG"
     IMAGE_MEDIA_TYPE: ClassVar[str] = "image/png"
     MAX_SIDE: ClassVar[int] = 2000
 
-    def __init__(self, config: OpenAiOcrConfig) -> None:
+    def __init__(
+        self,
+        chat: ChatModel,
+        config: ChatOcrConfig,
+        loop: asyncio.AbstractEventLoop,
+    ) -> None:
+        self._chat = chat
         self._config = config
-        self._client = httpx.Client(
-            base_url=config.base_url.rstrip("/") + "/",
-            timeout=config.timeout_sec,
-            headers={"Authorization": f"Bearer {config.api_key.get_secret_value()}"},
-        )
+        self._loop = loop
 
     @property
     def enabled(self) -> bool:
         return True
 
     def recognize(self, image: Image.Image) -> str:
-        payload = self._payload(self._fit(image))
-        where = f"openai ocr: POST {self._config.base_url} model {self._config.model}"
+        request = self._request(self._fit(image))
+        where = f"chat ocr with model {self._config.chat.model}"
+
+        future = asyncio.run_coroutine_threadsafe(self._chat.reply(request), self._loop)
         try:
-            response = self._client.post(self.ENDPOINT, json=payload)
-        except httpx.HTTPError as exc:
-            raise DocumentError(f"{where}: {type(exc).__name__}: {exc}") from exc
+            reply = future.result()
+        except LlmError as exc:
+            raise DocumentError(f"{where}: {exc}") from exc
 
-        if response.is_error:
-            raise DocumentError(
-                f"{where}: expected 2xx, got {response.status_code}: "
-                f"{response.text[:300]}"
-            )
-
-        try:
-            reply = ChatReply.model_validate_json(response.content)
-        except ValidationError as exc:
-            raise DocumentError(
-                f"{where}: reply is not a chat completion: {exc}"
-            ) from exc
-
-        if not reply.choices:
-            raise DocumentError(f"{where}: reply has no choices: {response.text[:300]}")
-
-        text = reply.choices[0].message.content.strip()
+        text = reply.content.strip()
         if text == OcrPrompt.NONE.value:
             return ""
 
@@ -286,54 +252,53 @@ class OpenAiOcrEngine(OcrEngine):
 
         return image.resize(size)
 
-    def _payload(self, image: Image.Image) -> dict[str, Any]:
+    def _request(self, image: Image.Image) -> ChatRequest:
         buffer = io.BytesIO()
         image.convert("RGB").save(buffer, format=self.IMAGE_FORMAT)
-        encoded = base64.b64encode(buffer.getvalue()).decode("ascii")
-        data_url = f"data:{self.IMAGE_MEDIA_TYPE};base64,{encoded}"
 
-        return {
-            "model": self._config.model,
-            "max_tokens": self._config.max_tokens,
-            "temperature": 0,
-            "messages": [
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": OcrPrompt.TRANSCRIBE.render()},
-                        {"type": "image_url", "image_url": {"url": data_url}},
-                    ],
-                }
+        turn = ChatTurn(
+            role=ChatRole.USER,
+            content=OcrPrompt.TRANSCRIBE.render(),
+            images=[
+                ChatImage(media_type=self.IMAGE_MEDIA_TYPE, data=buffer.getvalue())
             ],
-        }
+        )
+
+        return ChatRequest(
+            messages=[turn],
+            sampling=self._config.chat.sampling,
+            stream=False,
+        )
 
 
 class OcrEngines:
     """Единственная точка, где provider секции [ocr] превращается в движок:
     роутер документов, индексатор и инструменты получают OcrEngine отсюда и
-    о конкретных провайдерах не знают. Новый провайдер — новая секция в
-    OcrConfig и ветка здесь."""
+    о конкретных провайдерах не знают. Чат-модель для provider = chat берётся
+    из реестра моделей процесса."""
+
+    def __init__(self, llm: LlmProviders) -> None:
+        self._llm = llm
 
     def of(
-        self, config: DisabledOcrConfig | RapidOcrConfig | OpenAiOcrConfig
+        self, config: DisabledOcrConfig | RapidOcrConfig | ChatOcrConfig
     ) -> OcrEngine:
         match config:
             case RapidOcrConfig():
                 return RapidOcrEngine(config)
-            case OpenAiOcrConfig():
-                return OpenAiOcrEngine(config)
+            case ChatOcrConfig():
+                loop = asyncio.get_running_loop()
+                return ChatOcrEngine(self._llm.chat(config.chat), config, loop)
             case DisabledOcrConfig():
                 return DisabledOcr()
 
-    def check(
-        self, config: DisabledOcrConfig | RapidOcrConfig | OpenAiOcrConfig
-    ) -> None:
+    def check(self, config: DisabledOcrConfig | RapidOcrConfig | ChatOcrConfig) -> None:
         """Секция пригодна до старта работы: у rapidocr все файлы моделей на
-        месте; endpoint openai проверяется первым же запросом."""
+        месте, у chat — провайдер установлен и собирается."""
         match config:
             case RapidOcrConfig():
                 RapidOcrEngine.check_models(config)
-            case OpenAiOcrConfig():
-                return
+            case ChatOcrConfig():
+                self._llm.chat(config.chat)
             case DisabledOcrConfig():
                 return

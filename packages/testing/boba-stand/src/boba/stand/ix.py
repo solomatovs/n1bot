@@ -23,7 +23,7 @@ from pydantic import BaseModel, ConfigDict, ValidationError
 
 from boba.config import bind
 from boba.db.postgres import AsyncPostgresPool
-from boba.db.postgres.profile import PostgresConfig
+from boba.db.postgres.connection import PostgresConfig
 from boba.db.postgres.query import PgQueryBuilder
 from boba.ix_core.database import IxDatabase
 from boba.ix_core.main import SCHEMA_DIR as CORE_SCHEMA_DIR

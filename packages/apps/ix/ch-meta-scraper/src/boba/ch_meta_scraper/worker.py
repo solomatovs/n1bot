@@ -20,8 +20,8 @@ from typing import Any
 from clickhouse_connect.driver.asyncclient import AsyncClient
 
 from boba.db.clickhouse import ClickHouseError, ClickHouseQueryError
+from boba.db.clickhouse.connection import ClickHouseConfig
 from boba.db.clickhouse.payload import PayloadClickHouse
-from boba.db.clickhouse.profile import ClickHouseConfig
 from boba.db.clickhouse.query import ChQueryBuilder
 from boba.ix_core.scrape import (
     BlockStream,

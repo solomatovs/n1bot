@@ -17,7 +17,7 @@ from psycopg import sql
 from pydantic import BaseModel, ConfigDict
 
 from boba.db.postgres import AsyncPostgresPool
-from boba.db.postgres.profile import PostgresConfig
+from boba.db.postgres.connection import PostgresConfig
 from boba.db.postgres.query import PgQueryBuilder
 from boba.ix_core.scrape import ScrapeSource
 from boba.pg_meta_scraper import worker as scraper

@@ -346,7 +346,7 @@ def _use_di_container(app: FastAPI, c: AppConfig) -> Container:
     # инструменты собираются на старте: конфиг плагинов проверяется до сессий
     container.eager(runtime.tool_registry)
     # локальные модели грузятся на старте: первая сессия не ждёт веса
-    container.eager(providers.local_chat_runtimes)
+    container.eager(providers.llm_providers)
     Container.set_root(container)
     Container.set_session_hook(_session_container)
     return container

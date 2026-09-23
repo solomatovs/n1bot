@@ -1,5 +1,5 @@
 """HTTP-auth для httpx: Bearer и Negotiate, которых нет в httpx, и фабрика
-аутентификатора по профилю соединения (модели — boba.transport.http.profile).
+аутентификатора по профилю соединения (модели — boba.transport.http.connection).
 
 Ошибки:
 KerberosError — у negotiate-профиля не выпущен SPNEGO-токен; идёт из
@@ -14,7 +14,7 @@ import httpx
 
 from boba.kerberos import KerberosError
 from boba.krb import ClientCredentials, KerberosCredentials, SpnegoNegotiate
-from boba.transport.http.profile import (
+from boba.transport.http.connection import (
     BasicAuth,
     BearerAuth,
     DigestAuth,
@@ -129,19 +129,17 @@ class HttpxNegotiateAuth(httpx.Auth):
 
 
 class HttpxAuth:
-    """Аутентификатор httpx по профилю: negotiate получает SPN и login-URL."""
+    """Аутентификатор httpx по соединению: negotiate получает SPN и login-URL."""
 
-    @classmethod
-    def of(cls, profile: HttpConnection) -> httpx.Auth | None:
-        login_url = profile.login_url()
-        if isinstance(profile.auth, NegotiateAuth):
-            return cls.of_auth(profile.auth, profile.service_name(), login_url)
+    def of(self, connection: HttpConnection) -> httpx.Auth | None:
+        login_url = connection.login_url()
+        if isinstance(connection.auth, NegotiateAuth):
+            return self.of_auth(connection.auth, connection.service_name(), login_url)
 
-        return cls.of_auth(profile.auth, "", login_url)
+        return self.of_auth(connection.auth, "", login_url)
 
-    @staticmethod
     def of_auth(
-        auth: WebAuth, service: str, login_url: str | None
+        self, auth: WebAuth, service: str, login_url: str | None
     ) -> httpx.Auth | None:
         if isinstance(auth, BasicAuth):
             return httpx.BasicAuth(auth.user, auth.password.get_secret_value())

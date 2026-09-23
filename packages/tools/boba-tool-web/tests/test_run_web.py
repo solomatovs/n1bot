@@ -11,7 +11,7 @@ import pytest
 from boba.config import bind
 from boba.tool.web.tools import WebGrepConfig, web_fetch_page, web_grep_page
 from boba.toolkit.entry import ToolMain
-from boba.transport.http.profile import HttpConnection
+from boba.transport.http.connection import HttpConnection
 
 pytestmark = [pytest.mark.run, pytest.mark.anyio]
 

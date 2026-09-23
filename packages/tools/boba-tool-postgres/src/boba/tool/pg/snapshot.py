@@ -38,7 +38,7 @@ from boba.db.postgres.catalog import (
     SnapshotResultKey,
     SnapshotWriter,
 )
-from boba.db.postgres.profile import PostgresConfig
+from boba.db.postgres.connection import PostgresConfig
 from boba.toolkit.entry import ToolMain
 from boba.toolkit.facade import Injected, UserConnection, tool
 from boba.toolkit.result import MarkdownResult
@@ -756,7 +756,7 @@ async def pg_schema_snapshot(
     База — та, к которой подключение."""
     if not connection.source.stored:
         msg = (
-            "pg_schema_snapshot: the connection profile carries no connection "
+            "pg_schema_snapshot: the connection connection carries no connection "
             "row (source id is empty), the snapshot has nowhere to go"
         )
         raise SnapshotConnectionError(msg)

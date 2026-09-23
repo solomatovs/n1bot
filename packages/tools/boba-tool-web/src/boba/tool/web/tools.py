@@ -26,9 +26,8 @@ from boba.toolkit.entry import ToolMain
 from boba.toolkit.facade import Injected, UserConnection, tool
 from boba.toolkit.result import MarkdownResult, ResultTooLargeError, TableResult
 from boba.toolkit.types import SecretRevealing
-from boba.transport.http import HttpxAuth
-from boba.transport.http.profile import HttpConnection
-from boba.transport.http.web import UnknownHostError, WebHost
+from boba.transport.http import HttpRequest, HttpTransport, HttpTransportConfig
+from boba.transport.http.connection import HttpConnection, UnknownHostError
 
 
 class WebRequestError(Exception):
@@ -71,6 +70,13 @@ class WebGrepConfig(SecretRevealing):
         default=1_000_000,
         ge=1,
         description="Потолок суммарного объёма результата (символов).",
+    )
+    transport: HttpTransportConfig = Field(
+        default_factory=HttpTransportConfig,
+        description=(
+            "Поведение HTTP-транспорта процесса: таймауты, пул, дамп обмена; "
+            'ссылкой `transport = "${http}"`.'
+        ),
     )
 
 
@@ -119,30 +125,25 @@ class PageWindow:
 
 
 class WebPage:
-    """Скачивание страницы профилем хоста и конверсия в markdown."""
+    """Скачивание страницы соединением хоста и конверсия в markdown."""
 
     ENCODING: ClassVar[str] = "utf-8"
     HEADING_STYLE: ClassVar[str] = "ATX"
 
-    @classmethod
-    async def load(
-        cls,
-        url: str,
-        profile: HttpConnection,
-        *,
-        as_markdown: bool,
-        max_chars: int,
-    ) -> str:
+    def __init__(
+        self, connection: HttpConnection, transport: HttpTransportConfig
+    ) -> None:
+        self._connection = connection
+        self._transport = transport
+
+    async def load(self, url: str, *, as_markdown: bool, max_chars: int) -> str:
+        request = HttpRequest(url=url, follow_redirects=True)
         try:
-            async with httpx.AsyncClient(
-                timeout=profile.timeout_sec,
-                verify=profile.ssl_verify,
-                follow_redirects=True,
-                auth=HttpxAuth.of(profile),
-            ) as client:
-                response = await client.get(url)
-                response.raise_for_status()
-                body = await response.aread()
+            async with (
+                HttpTransport(self._connection, self._transport) as http,
+                http.fetch(request) as response,
+            ):
+                body = await response.stream.read()
         except httpx.HTTPStatusError as exc:
             status = exc.response.status_code
             head = exc.response.text[:200]
@@ -152,12 +153,12 @@ class WebPage:
             msg = f"GET {url}: {type(exc).__name__}: {exc}"
             raise WebRequestError(msg) from exc
 
-        text = body.decode(cls.ENCODING, errors="replace")
+        text = body.decode(self.ENCODING, errors="replace")
 
         if as_markdown:
             import markdownify  # noqa: PLC0415 — тяжёлый, нужен не каждому вызову
 
-            text = markdownify.markdownify(text, heading_style=cls.HEADING_STYLE)
+            text = markdownify.markdownify(text, heading_style=self.HEADING_STYLE)
 
         if len(text) > max_chars:
             raise ResultTooLargeError.chars_limit(max_chars)
@@ -186,10 +187,10 @@ async def web_fetch_page(  # noqa: PLR0913
     """Скачивает URL соединением connection (см. connection_list) и возвращает
     окно строк; строка под текстом называет срез и общее число строк — по ней
     листай страницу дальше."""
-    profile = WebHost.bound(connection, url)
+    bound = connection.for_url(url)
 
-    page = await WebPage.load(
-        url, profile, as_markdown=as_markdown, max_chars=cfg.max_result_chars
+    page = await WebPage(bound, cfg.transport).load(
+        url, as_markdown=as_markdown, max_chars=cfg.max_result_chars
     )
 
     window = PageWindow.of(url, page, line_offset, line_count)
@@ -238,10 +239,10 @@ async def web_grep_page(  # noqa: PLR0913
 ) -> MarkdownResult:
     """Найти совпадения pattern в содержимом страницы, скачанной соединением
     connection (см. connection_list)."""
-    profile = WebHost.bound(connection, url)
+    bound = connection.for_url(url)
 
-    text = await WebPage.load(
-        url, profile, as_markdown=as_markdown, max_chars=cfg.max_result_chars
+    text = await WebPage(bound, cfg.transport).load(
+        url, as_markdown=as_markdown, max_chars=cfg.max_result_chars
     )
 
     compiled = TextGrep.compile_pattern(

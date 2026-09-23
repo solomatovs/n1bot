@@ -5,8 +5,9 @@
 - CflUrlBuilder        — сборка относительных адресов на httpx.URL.
 - CflRestBuilder       — адреса запросов страниц, вложений, спейсов и поиска;
   конструкторы ConfluenceRequest для конвейера индексации.
-- ConfluencePaginator  — клиент пагинированных discovery-запросов поверх
-  HttpTransport проекта: auth, ретраи и дамп берутся из профиля.
+- CflRest              — GET, JSON и обход страниц выдачи поверх HttpTransport
+  проекта; единственный клиент REST для тулов, конвейера и индексатора.
+- CflPaginator         — модели из discovery-запросов поверх CflRest.
 
 Ошибки:
 TransportError — Confluence недоступен, ответил статусом или оборвал тело.
@@ -26,7 +27,6 @@ from urllib.parse import quote
 import httpx
 from pydantic import BaseModel, Field, ValidationError
 
-from boba.chat.http import HttpDumpConfig
 from boba.confluence.models import (
     AttachmentInfo,
     ConfluenceContent,
@@ -46,11 +46,17 @@ from boba.indexing import (
     TransportKeys,
 )
 from boba.toolkit.timing import Elapsed
-from boba.transport.http import CancellableHttpTransport, HttpRequest
-from boba.transport.http.profile import HttpConnection
+from boba.transport.http import (
+    CancellableHttpTransport,
+    HttpRequest,
+    HttpTransport,
+    HttpTransportConfig,
+)
+from boba.transport.http.connection import HttpConnection
 
 __all__ = [
     "CflPaginator",
+    "CflRest",
     "CflRestBuilder",
     "CflUrlBuilder",
     "ConfluenceConnection",
@@ -66,7 +72,7 @@ T = TypeVar("T", bound=BaseModel)
 
 
 class ConfluenceConnection(BaseModel):
-    """Confluence endpoint: формат тела, транспортный профиль и дамп обмена."""
+    """Confluence endpoint: формат тела, профиль соединения и транспорт."""
 
     body_format: Literal["view", "export_view", "storage"] = Field(
         default="view",
@@ -75,16 +81,19 @@ class ConfluenceConnection(BaseModel):
             "`storage` — raw storage XML."
         ),
     )
-    profile: HttpConnection = Field(
+    connection: HttpConnection = Field(
         description=(
             "Транспортный web-профиль (host/port/path/timeout/ssl/auth) ссылкой "
-            '`profile = "${web.<name>}"`. Адрес Confluence задаётся в профиле; '
+            '`connection = "${web.<name>}"`. Адрес Confluence задаётся там же; '
             "auth (PAT/Basic) — там же `auth = { method = 'bearer', token = '...' }`."
         ),
     )
-    dump: HttpDumpConfig = Field(
-        default_factory=HttpDumpConfig,
-        description="Дамп HTTP-обмена с Confluence в файлы по хосту.",
+    transport: HttpTransportConfig = Field(
+        default_factory=HttpTransportConfig,
+        description=(
+            "Поведение HTTP-транспорта процесса: таймауты, пул, дамп обмена; "
+            'ссылкой `transport = "${http}"`.'
+        ),
     )
 
 
@@ -304,7 +313,7 @@ class CflRestBuilder:
     def make_page_request(
         self,
         *,
-        profile: HttpConnection,
+        connection: HttpConnection,
         content: ConfluenceContent,
         body_format: str,
     ) -> ConfluenceRequest:
@@ -312,7 +321,7 @@ class CflRestBuilder:
         meta = (
             Metadata.empty()
             .set(ConfluenceKeys.PAGE_ID, content.id)
-            .set(ConfluenceKeys.HOST, profile.address_host())
+            .set(ConfluenceKeys.HOST, connection.address_host())
         )
         return ConfluenceRequest(
             http=HttpRequest(url=str(path), method="GET"),
@@ -323,7 +332,7 @@ class CflRestBuilder:
     def make_gone_request(
         self,
         *,
-        profile: HttpConnection,
+        connection: HttpConnection,
         page_id: str,
         body_format: str,
     ) -> ConfluenceRequest:
@@ -337,7 +346,7 @@ class CflRestBuilder:
         meta = (
             Metadata.empty()
             .set(ConfluenceKeys.PAGE_ID, page_id)
-            .set(ConfluenceKeys.HOST, profile.address_host())
+            .set(ConfluenceKeys.HOST, connection.address_host())
         )
         return ConfluenceRequest(
             http=HttpRequest(url=str(path), method="GET"),
@@ -348,7 +357,7 @@ class CflRestBuilder:
     def make_attachment_request(  # noqa: PLR0913
         self,
         *,
-        profile: HttpConnection,
+        connection: HttpConnection,
         page: ConfluenceContent,
         page_source: SourceId,
         attachment: AttachmentInfo,
@@ -361,7 +370,7 @@ class CflRestBuilder:
             .set(TransportKeys.CONTENT_TYPE, attachment.media_type)
             .set(ReaderKeys.PAGE_TITLE, attachment.title)
             .set(ConfluenceKeys.PAGE_ID, page.id)
-            .set(ConfluenceKeys.HOST, profile.address_host())
+            .set(ConfluenceKeys.HOST, connection.address_host())
         )
         if page.space.key:
             meta = meta.set(ConfluenceKeys.SPACE_KEY, page.space.key)
@@ -370,14 +379,14 @@ class CflRestBuilder:
             meta = meta.set(ConfluenceKeys.ANCESTORS_TITLES, ancestors)
 
         if page.links.webui:
-            parent_url = str(profile.url_of(page.links.webui))
+            parent_url = str(connection.url_of(page.links.webui))
             meta = meta.set(ConfluenceKeys.PARENT_URL, parent_url)
 
         att_path = attachment.download_path
         if attachment.webui:
             att_path = attachment.webui
 
-        meta = meta.set(ConfluenceKeys.SOURCE_URL, str(profile.url_of(att_path)))
+        meta = meta.set(ConfluenceKeys.SOURCE_URL, str(connection.url_of(att_path)))
         return ConfluenceRequest(
             http=HttpRequest(url=attachment.download_path, method="GET"),
             mark=self._marks.attachment(
@@ -387,44 +396,101 @@ class CflRestBuilder:
         )
 
 
-class CflPaginator:
-    """httpx-клиент для пагинированных Confluence REST discovery-запросов.
-
-    Исполнение и retry (5xx/transport) — внутри HttpTransport, собранного из
-    conn.profile; пагинатор лишь строит path, ходит по `_links.next` и
-    разбирает результаты в модель item.
+class CflRest:
+    """GET по REST Confluence общим транспортом: байты, JSON-объект и обход
+    пагинированной выдачи по `_links.next`. Транспорт (auth, ретраи, дамп)
+    даёт вызывающий и сам закрывает.
     """
 
-    def __init__(self, conn: ConfluenceConnection):
-        self._http = CancellableHttpTransport(conn.profile, dump=conn.dump)
+    def __init__(self, http: HttpTransport) -> None:
+        self._http = http
         self._url_builder = CflUrlBuilder()
 
-    async def __call__(self, url: httpx.URL, item: type[T]) -> AsyncIterator[T]:
+    async def get(self, url: httpx.URL) -> bytes:
+        """Один GET, тело целиком: статус и обрыв уходят TransportError."""
+        logger.info("confluence request: GET %s", url)
+        elapsed = Elapsed()
+        try:
+            async with self._http.fetch(HttpRequest(url=str(url))) as resp:
+                payload = await resp.stream.read()
+        except httpx.HTTPStatusError as exc:
+            msg = (
+                f"GET {url} on confluence: expected 2xx, got "
+                f"{exc.response.status_code} {exc.response.reason_phrase}"
+            )
+            raise TransportError(msg) from exc
+        except httpx.HTTPError as exc:
+            msg = f"GET {url} on confluence: {type(exc).__name__}: {exc}"
+            raise TransportError(msg) from exc
+
+        logger.info("confluence response: %d bytes in %dms", len(payload), elapsed.ms())
+
+        return payload
+
+    async def get_payload(self, url: httpx.URL) -> tuple[dict[str, Any], bytes]:
+        """JSON-объект ответа вместе с сырыми байтами: от них считают отпечаток."""
+        payload = await self.get(url)
+        try:
+            data = json.loads(payload)
+        except json.JSONDecodeError as exc:
+            msg = (
+                f"GET {url} on confluence: expected JSON, got {payload[:200]!r}: {exc}"
+            )
+            raise ConfluencePayloadError(msg) from exc
+
+        if not isinstance(data, dict):
+            msg = (
+                f"GET {url} on confluence: expected a JSON object, "
+                f"got {type(data).__name__}"
+            )
+            raise ConfluencePayloadError(msg)
+
+        return data, payload
+
+    async def get_json(self, url: httpx.URL) -> dict[str, Any]:
+        data, _ = await self.get_payload(url)
+
+        return data
+
+    async def pages(self, url: httpx.URL) -> AsyncIterator[dict[str, Any]]:
+        """Элементы results всех страниц выдачи: сервер сам даёт следующее окно."""
         next_url: httpx.URL | None = url
         while next_url is not None:
             data = await self.get_json(next_url)
-            results = JsonNode(data).results()
-            next_url = self._next(data)
+            node = JsonNode(data)
+            results = node.results()
+            next_url = self._next(node)
             logger.info(
-                "discovery page: %d items, next=%s",
-                len(results),
-                next_url is not None,
+                "confluence page: %d items, next=%s", len(results), next_url is not None
             )
             for raw in results:
-                yield self.item(item, raw, url)
+                yield raw
 
-    async def one(self, url: httpx.URL, item: type[T]) -> T:
-        """Один объект вместо списка: содержимое ответа и есть результат."""
-        data = await self.get_json(url)
-
-        return self.item(item, data, url)
-
-    def _next(self, data: dict[str, Any]) -> httpx.URL | None:
-        link = JsonNode(data).next_link()
+    def _next(self, node: JsonNode) -> httpx.URL | None:
+        link = node.next_link()
         if not link:
             return None
 
         return self._url_builder.raw_to_url(link)
+
+
+class CflPaginator:
+    """Модели из пагинированных discovery-запросов Confluence поверх CflRest;
+    транспорт — CancellableHttpTransport по соединению, живёт до закрытия."""
+
+    def __init__(self, conn: ConfluenceConnection):
+        self._http = CancellableHttpTransport(conn.connection, conn.transport)
+        self.rest = CflRest(self._http)
+
+    async def __call__(self, url: httpx.URL, item: type[T]) -> AsyncIterator[T]:
+        async for raw in self.rest.pages(url):
+            yield self.item(item, raw, url)
+
+    async def one(self, url: httpx.URL, item: type[T]) -> T:
+        """Один объект вместо списка: содержимое ответа и есть результат."""
+        data = await self.rest.get_json(url)
+
+        return self.item(item, data, url)
 
     def item(self, item: type[T], raw: dict[str, Any], url: httpx.URL) -> T:
         try:
@@ -435,28 +501,6 @@ class CflPaginator:
                 f"got {json.dumps(raw)[:200]}: {exc}"
             )
             raise ConfluencePayloadError(msg) from exc
-
-    async def get_json(self, url: httpx.URL) -> dict[str, Any]:
-        """Один GET с разбором JSON: статус и обрыв уходят TransportError."""
-        logger.info("discovery request: GET %s", url)
-        elapsed = Elapsed()
-        try:
-            async with self._http.fetch(HttpRequest(url=str(url))) as resp:
-                payload = await resp.stream.read()
-        except httpx.HTTPError as exc:
-            msg = f"GET {url} on confluence: {type(exc).__name__}: {exc}"
-            raise TransportError(msg) from exc
-
-        logger.info("discovery response: %d bytes in %dms", len(payload), elapsed.ms())
-        try:
-            data = json.loads(payload)
-        except json.JSONDecodeError as exc:
-            msg = (
-                f"GET {url} on confluence: expected JSON, got {payload[:200]!r}: {exc}"
-            )
-            raise ConfluencePayloadError(msg) from exc
-
-        return JsonNode(data).dict()
 
     async def __aenter__(self):
         return self

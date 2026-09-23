@@ -556,7 +556,7 @@ class ConfluenceSite:
             timeout=profile.timeout_sec,
             verify=profile.ssl_verify,
             follow_redirects=True,
-            auth=HttpxAuth.of(profile),
+            auth=HttpxAuth().of(profile),
         )
 
     @classmethod
@@ -673,9 +673,7 @@ class ConfluenceSite:
         pytest.skip("Confluence search returned no .docx attachment")
 
     def _attachment_link(self, page_id: str, filename: str) -> str:
-        path = self._rest.page_fetch_path(
-            page_id, body_format=self._config.body_format
-        )
+        path = self._rest.page_fetch_path(page_id, body_format=self._config.body_format)
         data = self.get_json(path)
 
         children = data.get("children")

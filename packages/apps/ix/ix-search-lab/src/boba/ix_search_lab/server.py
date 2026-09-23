@@ -48,7 +48,8 @@ from boba.ix_core.search import (
     SearchRequest,
 )
 from boba.ix_core.surfaces import Surface
-from boba.llm.embedding import Embedder, EmbedderFactory, LocalEmbedding
+from boba.llm.embedding import EmbeddingModel
+from boba.llm.providers import EmbeddingModelConfig, LlmProviders, LlmProviderTypes
 
 logger = logging.getLogger("ix-search-lab")
 
@@ -58,9 +59,9 @@ class SearchLabError(Exception):
 
 
 class LabConfig(IxDatabase):
-    cache_dir: str
-    model: str = "intfloat/multilingual-e5-large"
-    dim: int = Field(gt=0, default=1024)
+    """Секция [ix.search_lab]: база ix, эмбеддер запроса и адрес страницы."""
+
+    embedding: EmbeddingModelConfig
     host: str = "127.0.0.1"
     port: int = Field(gt=0, default=8700)
     prefix_url: str | None = Field(default=None)
@@ -75,7 +76,7 @@ class Searcher:
         self,
         cfg: LabConfig,
         pool: AsyncPostgresPool,
-        embedder: Embedder[str],
+        embedder: EmbeddingModel,
         registry: IxRegistry,
         loop: asyncio.AbstractEventLoop,
     ) -> None:
@@ -252,15 +253,8 @@ class LabServer:
         return MyHandler
 
     async def serve(self) -> None:
-        embedding = LocalEmbedding(
-            kind="local",
-            model=self._cfg.model,
-            cache_dir=self._cfg.cache_dir,
-            dim=self._cfg.dim,
-            batch_size=8,
-            progress_every=8,
-        )
-        embedder = EmbedderFactory.build(embedding)
+        providers = LlmProviders(LlmProviderTypes.installed())
+        embedder = providers.embedding(self._cfg.embedding)
 
         pool = AsyncPostgresPool(self._cfg.postgres)
         await pool.open()

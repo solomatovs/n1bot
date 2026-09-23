@@ -27,6 +27,7 @@ from typing import Any
 
 import psycopg
 from psycopg import sql
+from pydantic import Field
 
 from boba.config import ConfigError, bind_section
 from boba.db.postgres import AsyncPostgresPool, PostgresError
@@ -39,8 +40,10 @@ from boba.ix_vector.embedding import (
     AspectEmbedding,
     AspectEmbeddingError,
     AspectText,
-    EmbeddingParams,
+    ChunkingParams,
 )
+from boba.llm.embedding import EmbeddingModel
+from boba.llm.providers import EmbeddingModelConfig, LlmProviders, LlmProviderTypes
 
 logger = logging.getLogger("ix-vector")
 
@@ -65,8 +68,12 @@ class Part(StrEnum):
     ASPECT = "aspect"
 
 
-class WorkerConfig(IxDatabase, EmbeddingParams):
+class WorkerConfig(IxDatabase, ChunkingParams):
+    """Секция [ix.vector]: база ix, классы аспектов, нарезка, пачка и эмбеддер."""
+
     classes: Sequence[AspectClass]
+    batch: int = Field(gt=0)
+    embedding: EmbeddingModelConfig
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -79,11 +86,15 @@ class CycleReport:
 class VectorWorker:
     """Цикл индексатора: одна сессия к ix, один эмбеддер проекта."""
 
-    def __init__(self, cfg: WorkerConfig, package_dir: Path) -> None:
+    def __init__(
+        self, cfg: WorkerConfig, embedder: EmbeddingModel, package_dir: Path
+    ) -> None:
         self._cfg = cfg
         self._dir = package_dir
         self._registry = IxRegistry(cfg.db_schema)
-        self._embedding = AspectEmbedding(cfg, cfg.db_schema, "ix_emb_e5_1024")
+        self._embedding = AspectEmbedding(
+            embedder, cfg.embedding.model, cfg, cfg.db_schema, "ix_emb_e5_1024"
+        )
 
     async def run(self) -> CycleReport:
         try:
@@ -249,8 +260,13 @@ async def main() -> None:
             return
 
         cfg = bind_section(config_path, section, WorkerConfig)
-        worker = VectorWorker(cfg, package_dir / "run")
-        report = await worker.run()
+        providers = LlmProviders(LlmProviderTypes.installed())
+        try:
+            embedder = providers.embedding(cfg.embedding)
+            worker = VectorWorker(cfg, embedder, package_dir / "run")
+            report = await worker.run()
+        finally:
+            await providers.aclose()
         logger.info(
             "done: rounds=%d written=%d pruned=%d",
             report.rounds,

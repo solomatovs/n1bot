@@ -16,8 +16,8 @@ from typing import Any
 import pytest
 from pydantic import SecretStr
 
+from boba.db.clickhouse.connection import ClickHouseConfig, PasswordAuth
 from boba.db.clickhouse.payload import PayloadClickHouse
-from boba.db.clickhouse.profile import ClickHouseConfig, PasswordAuth
 from boba.kerberos import KerberosPasswordAuth, KeytabAuth
 from boba.krb import KerberosWorkspace, KeytabCredentials, ServiceTicketIssuer
 from boba.stand.site import Stand
@@ -61,8 +61,8 @@ def _profile(auth: Any) -> ClickHouseConfig:
     )
 
 
-async def _current_user(profile: ClickHouseConfig) -> str:
-    async with PayloadClickHouse.opened_config(profile) as client:
+async def _current_user(connection: ClickHouseConfig) -> str:
+    async with PayloadClickHouse.opened_config(connection) as client:
         result = await client.query("select currentUser()")
 
     rows = list(result.result_rows)
@@ -86,11 +86,11 @@ async def test_password_auth_logs_in_as_its_own_user() -> None:
     if not STAND.ch_user:
         pytest.skip("в конфиге стенда нет пользователя clickhouse с паролем")
 
-    profile = _profile(
+    connection = _profile(
         PasswordAuth(method="password", user=STAND.ch_user, password=STAND.ch_password)
     )
 
-    if await _current_user(profile) != STAND.ch_user:
+    if await _current_user(connection) != STAND.ch_user:
         raise AssertionError("password auth must log in as its own user")
 
 
@@ -111,7 +111,7 @@ async def test_kerberos_sends_no_basic_credentials() -> None:
 
 async def test_kerberos_password_auth_logs_in_as_that_user() -> None:
     """method = kerberos_password: TGT по паролю, дальше тот же Negotiate."""
-    profile = _profile(
+    connection = _profile(
         KerberosPasswordAuth(
             method="kerberos_password",
             principal=STAND.reader_principal,
@@ -121,7 +121,7 @@ async def test_kerberos_password_auth_logs_in_as_that_user() -> None:
     )
 
     expected = STAND.reader_principal.split("@")[0]
-    if await _current_user(profile) != expected:
+    if await _current_user(connection) != expected:
         raise AssertionError("kerberos password auth must log in as that user")
 
 
@@ -142,7 +142,7 @@ async def test_wrong_password_is_reported() -> None:
     if not STAND.ch_user:
         pytest.skip("в конфиге стенда нет пользователя clickhouse с паролем")
 
-    profile = _profile(
+    connection = _profile(
         PasswordAuth(
             method="password",
             user=STAND.ch_user,
@@ -151,4 +151,4 @@ async def test_wrong_password_is_reported() -> None:
     )
 
     with pytest.raises(Exception, match=r"[Aa]uthentication"):
-        await _current_user(profile)
+        await _current_user(connection)

@@ -12,6 +12,7 @@ DocumentError (boba.doc.document) — документ не распознан, 
 """
 
 from boba.doc.config import (
+    ChatOcrConfig,
     DisabledOcrConfig,
     DocConfig,
     DocSection,
@@ -19,11 +20,11 @@ from boba.doc.config import (
     OcrLanguage,
     OcrModel,
     OcrUnavailableError,
-    OpenAiOcrConfig,
     RapidOcrConfig,
 )
 
 __all__ = [
+    "ChatOcrConfig",
     "DisabledOcrConfig",
     "DocConfig",
     "DocSection",
@@ -31,6 +32,5 @@ __all__ = [
     "OcrLanguage",
     "OcrModel",
     "OcrUnavailableError",
-    "OpenAiOcrConfig",
     "RapidOcrConfig",
 ]

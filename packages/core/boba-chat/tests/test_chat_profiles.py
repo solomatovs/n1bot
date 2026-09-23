@@ -12,17 +12,17 @@ from boba.chat.profiles import (
     ChatProfiles,
     ProfileRefusal,
 )
-from boba.chat.provider import OpenAiChatConfig
 from boba.identity.errors import RefusalError
 from boba.identity.signin import SignInMetadata
 
-HTTP: dict[str, Any] = {}
-
-BACKEND = {
+BACKEND: dict[str, Any] = {
     "kind": "openai",
-    "http": HTTP,
-    "base_url": "https://llm.example/v1",
-    "api_key": "token",
+    "transport": {},
+    "connection": {
+        "host": "llm.example",
+        "path": "/v1",
+        "auth": {"method": "bearer", "token": "token"},
+    },
 }
 
 
@@ -172,8 +172,8 @@ class TestChatSampling:
         settings = AgentSettings.model_validate(
             {"provider": BACKEND, "model": "test-model"}
         )
-        if settings.chat_sampling() != {}:
-            raise AssertionError("settings.chat_sampling() == {}")
+        if settings.sampling != {}:
+            raise AssertionError("settings.sampling == {}")
 
     def test_admin_params_pass_through_verbatim(self) -> None:
         """Таблица sampling уходит как написана: без проверок и переименований."""
@@ -190,7 +190,7 @@ class TestChatSampling:
                 },
             }
         )
-        sampling = settings.chat_sampling()
+        sampling = settings.sampling
         expected = {
             "temperature": 0.2,
             "max_completion_tokens": 1000,
@@ -205,5 +205,5 @@ class TestChatSampling:
         settings = AgentSettings.model_validate(
             {"provider": BACKEND, "model": "test-model"}
         )
-        if not isinstance(settings.provider, OpenAiChatConfig):
-            raise AssertionError("isinstance(settings.provider, OpenAiChatConfig)")
+        if settings.provider.kind != "openai":
+            raise AssertionError(f"provider kind: {settings.provider.kind}")

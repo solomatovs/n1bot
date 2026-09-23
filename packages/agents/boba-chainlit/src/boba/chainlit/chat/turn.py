@@ -24,6 +24,7 @@ from pydantic import BaseModel, ConfigDict, Field
 import chainlit as cl
 from boba.cancellation import StopReason, ToolStopped
 from boba.canvas.keys import ElementProps, ObjectKey
+from boba.chainlit.agent.bridge import ResponseField
 from boba.chainlit.chat.feed import QuestionBody, ShownElement, TurnFeed
 from boba.chainlit.chat.tracing import AgentTracer, TurnArtifacts
 from boba.chainlit.domain.keys import AttachmentLinks
@@ -38,7 +39,6 @@ from boba.identity.locks import (
     RunLocking,
 )
 from boba.identity.run import ElementTarget, RunPort, RunRefusal, RunRegistry
-from boba.llm.chat import ResponseField
 from boba.messaging import NoticeLevel, TurnOutcome
 from boba.toolrun.streams import StreamPumps
 

@@ -25,7 +25,7 @@ from boba.catalog_service import (
 from boba.db.clickhouse.snapshot import ChSnapshot
 from boba.db.postgres import AsyncPostgresPool, PgQueryBuilder
 from boba.db.postgres.catalog import CatalogStoreConfig
-from boba.db.postgres.profile import PostgresConfig
+from boba.db.postgres.connection import PostgresConfig
 from boba.db.postgres.snapshot import PgSnapshot
 from boba.identity.context import Scope, Subject
 from boba.messaging import CatalogChanged, Envelope, MemoryMessageBus

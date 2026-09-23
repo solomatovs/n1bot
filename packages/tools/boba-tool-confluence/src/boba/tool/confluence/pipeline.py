@@ -159,10 +159,10 @@ class ConfluenceSourceTransport(Transport[ConfluenceRequest]):
     вложение спулится на диск; у обоих в metadata хэш тела."""
 
     def __init__(self, conn: ConfluenceConnection) -> None:
-        http = CancellableHttpTransport(conn.profile, dump=conn.dump)
+        http = CancellableHttpTransport(conn.connection, conn.transport)
         self._inner = ConfluenceHttpTransport(http)
         self._decoder = ConfluenceJsonDecoder(
-            profile=conn.profile, body_format=conn.body_format
+            connection=conn.connection, body_format=conn.body_format
         )
         self._hasher = BodyHasher()
 

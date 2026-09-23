@@ -30,8 +30,8 @@ from boba.stand.ui.stand import (
     StandProcess,
     free_port,
 )
-from boba.transport.http import HttpRequest, HttpTransport
-from boba.transport.http.profile import HttpConnection, NegotiateAuth, UrlScheme
+from boba.transport.http import HttpRequest, HttpTransport, HttpTransportConfig
+from boba.transport.http.connection import HttpConnection, NegotiateAuth, UrlScheme
 
 pytestmark = pytest.mark.ui
 
@@ -225,11 +225,14 @@ def _delegation_lines(stand: StandProcess) -> list[str]:
     return found
 
 
-def _visit(profile: HttpConnection, request: HttpRequest) -> None:
+def _visit(connection: HttpConnection, request: HttpRequest) -> None:
     """Ходит по адресу и дочитывает тело; редирект входа — штатный ответ."""
 
     async def run() -> None:
-        async with HttpTransport(profile) as transport, transport.fetch(request) as got:
+        async with (
+            HttpTransport(connection, HttpTransportConfig()) as transport,
+            transport.fetch(request) as got,
+        ):
             await got.stream.read()
 
     try:
@@ -241,7 +244,7 @@ def _visit(profile: HttpConnection, request: HttpRequest) -> None:
 
 def test_studio_accepts_negotiate_on_its_own_url(sso_stand: StandProcess) -> None:
     """Тот же обмен на URL studio: вход принят, делегирование сохранено."""
-    profile = HttpConnection(
+    connection = HttpConnection(
         scheme=UrlScheme.HTTP,
         host=STAND.krb_domain,
         port=sso_stand.config.app_port,
@@ -258,7 +261,7 @@ def test_studio_accepts_negotiate_on_its_own_url(sso_stand: StandProcess) -> Non
     )
     before = len(_delegation_lines(sso_stand))
 
-    _visit(profile, HttpRequest(url="/api/v1/auth/sso"))
+    _visit(connection, HttpRequest(url="/api/v1/auth/sso"))
 
     lines = _delegation_lines(sso_stand)[before:]
     captured = [line for line in lines if CAPTURED in line]

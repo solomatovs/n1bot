@@ -17,8 +17,8 @@ from psycopg import AsyncCursor, sql
 from psycopg.rows import tuple_row
 
 from boba.db.postgres.async_pool import AsyncPostgresPool, PostgresError
+from boba.db.postgres.connection import PostgresConfig
 from boba.db.postgres.names import PostgresSchema, SqlNames
-from boba.db.postgres.profile import PostgresConfig
 
 __all__ = ["PostgresTable"]
 

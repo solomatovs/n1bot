@@ -37,8 +37,8 @@ from boba.stand.ui.stand import (
     StandProcess,
     free_port,
 )
-from boba.transport.http import HttpRequest, HttpTransport
-from boba.transport.http.profile import HttpConnection, NegotiateAuth, UrlScheme
+from boba.transport.http import HttpRequest, HttpTransport, HttpTransportConfig
+from boba.transport.http.connection import HttpConnection, NegotiateAuth, UrlScheme
 
 pytestmark = pytest.mark.ui
 
@@ -239,11 +239,14 @@ def _delegation_lines(stand: StandProcess) -> list[str]:
     return found
 
 
-def _visit(profile: HttpConnection, request: HttpRequest) -> None:
+def _visit(connection: HttpConnection, request: HttpRequest) -> None:
     """Ходит по адресу и дочитывает тело; редирект входа — штатный ответ."""
 
     async def run() -> None:
-        async with HttpTransport(profile) as transport, transport.fetch(request) as got:
+        async with (
+            HttpTransport(connection, HttpTransportConfig()) as transport,
+            transport.fetch(request) as got,
+        ):
             await got.stream.read()
 
     try:
@@ -261,7 +264,7 @@ def test_server_accepts_negotiate_and_keeps_the_delegated_ticket(
     Проверка идёт до браузера: если она зелёная, а браузерная — нет, дело в
     браузере, а не в приложении.
     """
-    profile = HttpConnection(
+    connection = HttpConnection(
         scheme=UrlScheme.HTTP,
         host=STAND.krb_domain,
         port=sso_stand.config.app_port,
@@ -277,7 +280,7 @@ def test_server_accepts_negotiate_and_keeps_the_delegated_ticket(
         ),
     )
 
-    _visit(profile, HttpRequest(url="/auth/sso"))
+    _visit(connection, HttpRequest(url="/auth/sso"))
 
     captured = [line for line in _delegation_lines(sso_stand) if CAPTURED in line]
     if not captured:

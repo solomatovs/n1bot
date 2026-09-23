@@ -10,7 +10,7 @@ from omegaconf import DictConfig
 
 from boba.config import bind
 from boba.db.postgres import AsyncPostgresPool
-from boba.db.postgres.profile import PostgresConfig
+from boba.db.postgres.connection import PostgresConfig
 from boba.runtime.config import ConfigLocator, RawConfig, RuntimeConfig
 from boba.stand.database import TestDatabase
 from boba.stand.site import StandLayers

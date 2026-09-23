@@ -22,18 +22,17 @@ from pydantic import (
 )
 
 from boba.access import ProfileGrant, RoleConfig, ToolGrant
-from boba.chat.generation import GenerationConfig
-from boba.chat.provider import ChatBackendConfig
 from boba.identity.errors import RefusalError
 from boba.identity.signin import SignInMetadata
+from boba.llm.providers import ChatModelConfig
 from boba.toolkit.types import StringList
 
 __all__ = [
     "AgentSettings",
     "ChatProfileConfig",
     "ChatProfiles",
+    "ChatSettings",
     "FlowKind",
-    "LlmSettings",
     "NumberBounds",
     "PlainFlowConfig",
     "PrefetchFlowConfig",
@@ -51,47 +50,17 @@ __all__ = [
 logger = logging.getLogger(__name__)
 
 
-class LlmSettings(BaseModel):
-    """Обращение к LLM: бэкенд провайдера, модель, промпт и сэмплинг."""
-
-    model_config = ConfigDict(extra="ignore")
-
-    provider: Annotated[
-        ChatBackendConfig,
-        Field(
-            description=(
-                "Чат-провайдер профиля: kind = 'openai' | 'ollama' с "
-                "транспортом http = ${http.<name>} либо kind = 'local' "
-                "с каталогом модели."
-            ),
-        ),
-    ]
-
-    model: Annotated[
-        str,
-        Field(description="Имя LLM-модели у выбранного провайдера."),
-    ]
+class ChatSettings(ChatModelConfig):
+    """Обращение к чат-модели с системным промптом: провайдер, модель, сэмплинг
+    и промпт. Так описаны профиль чата и переформулировщик поиска."""
 
     system_prompt: str = Field(
         default="",
         description="Системный промпт по умолчанию",
     )
 
-    sampling: dict[str, Any] = Field(
-        default_factory=dict,
-        description=(
-            "Параметры запроса к провайдеру как есть: имена и значения уходят "
-            "в тело запроса без проверок и переименований. Что провайдер "
-            "принимает — решает администратор профиля."
-        ),
-    )
 
-    def chat_sampling(self) -> dict[str, Any]:
-        """Сэмплинг запроса к провайдеру: копия админской таблицы."""
-        return dict(self.sampling)
-
-
-class AgentSettings(LlmSettings):
+class AgentSettings(ChatSettings):
     """Настройки хода агента: параметры LLM плюс окно истории."""
 
     history_messages: int = Field(
@@ -135,19 +104,14 @@ class PrefetchFlowConfig(BaseModel):
         ),
     ]
 
-    rephraser: GenerationConfig | None = Field(
+    rephraser: ChatSettings | None = Field(
         default=None,
         description=(
-            "Модель, переписывающая запрос пользователя в поисковые: локальный "
-            "ONNX-инференс либо openai-совместимый провайдер; секция не задана "
-            "— в инструменты уходит исходный запрос."
+            "Модель, переписывающая запрос пользователя в поисковые: провайдер, "
+            "модель, промпт и сэмплинг; секция не задана — в инструменты уходит "
+            "исходный запрос."
         ),
     )
-
-    @staticmethod
-    def client_key(profile: str) -> str:
-        """Ключ httpx-клиента переформулировщика в реестре клиентов профилей."""
-        return f"{profile}:flow"
 
 
 class UserSetting(StrEnum):

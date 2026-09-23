@@ -44,9 +44,10 @@ from boba.connections.manifest import (
     ConnectionTypesError,
     UnknownConnectionKindError,
 )
-from boba.connections.profile import (
+from boba.connections.secrets import SecretCipher
+from boba.connections.stored import (
+    ConnectionBase,
     ConnectionNotFoundError,
-    ConnectionProfileBase,
     ConnectionRepository,
     ConnectionsColumn,
     ConnectionStoreError,
@@ -61,9 +62,8 @@ from boba.connections.profile import (
     StoredRole,
     SubjectConnections,
 )
-from boba.connections.secrets import SecretCipher
 from boba.db.postgres import AsyncPostgresPool, PostgresError, PostgresTable, SqlNames
-from boba.db.postgres.profile import PostgresConfig
+from boba.db.postgres.connection import PostgresConfig
 from boba.identity.context import Subject
 
 logger = logging.getLogger(__name__)
@@ -289,9 +289,9 @@ class ConnectionStore(PostgresTable, ConnectionRepository):
         async with self._guarded("sync roles"), pool.cursor() as cur:
             await cur.executemany(query, rows)
 
-    async def add(self, name: str, profile: ConnectionProfileBase) -> UUID:
+    async def add(self, name: str, connection: ConnectionBase) -> UUID:
         """Новая строка connections; уникальность имени — забота вызывающего."""
-        payload = self._cipher.encrypt(profile)
+        payload = self._cipher.encrypt(connection)
         query = self._sql(
             """
             insert into {connections} (
@@ -323,10 +323,10 @@ class ConnectionStore(PostgresTable, ConnectionRepository):
         return UUID(str(row[0]))
 
     async def add_owned(
-        self, name: str, profile: ConnectionProfileBase, user_id: UUID
+        self, name: str, connection: ConnectionBase, user_id: UUID
     ) -> UUID:
         """Строка и личный грант одной транзакцией: личный грант и есть владение."""
-        payload = self._cipher.encrypt(profile)
+        payload = self._cipher.encrypt(connection)
         insert_row = self._sql(
             """
             insert into {connections} (
@@ -378,10 +378,10 @@ class ConnectionStore(PostgresTable, ConnectionRepository):
         return connection_id
 
     async def update(
-        self, connection_id: UUID, name: str, profile: ConnectionProfileBase
+        self, connection_id: UUID, name: str, connection: ConnectionBase
     ) -> bool:
         """Полная замена имени и профиля; False — строки не было."""
-        payload = self._cipher.encrypt(profile)
+        payload = self._cipher.encrypt(connection)
         query = self._sql(
             """
             update
@@ -742,7 +742,7 @@ class ConnectionStore(PostgresTable, ConnectionRepository):
 
     def _stored(self, row: dict[str, Any]) -> StoredConnection:
         try:
-            profile = self._types.parse(self._cipher.decrypt(row["data"]))
+            connection = self._types.parse(self._cipher.decrypt(row["data"]))
         except UnknownConnectionKindError:
             raise
         except ConnectionTypesError as exc:
@@ -750,10 +750,10 @@ class ConnectionStore(PostgresTable, ConnectionRepository):
             # текст самой ошибки, мимо FailureText
             msg = (
                 f"connections: row #{row['id']} {row['name']!r} is not a valid "
-                f"connection profile: {exc}"
+                f"connection connection: {exc}"
             )
             raise ConnectionStoreError(msg) from None
 
         return StoredConnection(
-            id=UUID(str(row["id"])), name=row["name"], profile=profile
+            id=UUID(str(row["id"])), name=row["name"], connection=connection
         )

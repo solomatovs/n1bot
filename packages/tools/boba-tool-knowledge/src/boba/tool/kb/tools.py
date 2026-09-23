@@ -11,7 +11,7 @@
 Ошибки:
 PostgresError — до базы ix не достучаться (сеть, libpq, kerberos).
 psycopg.Error — СУБД отклонила запрос.
-EmbeddingError — удалённый эмбеддер недоступен или ответил мусором.
+LlmError — эмбеддер недоступен, не загрузился или ответил мусором.
 IxSearchError — фильтр называет неизвестную поверхность или аспект, режим не
     обслужен ни одной таблицей реестра.
 NodeReadError — объекта с таким id нет или аспект неизвестен.
@@ -44,10 +44,10 @@ from boba.ix_core.search import (
     SearchRequest,
 )
 from boba.ix_core.surfaces import Surface
-from boba.llm.embedding import EmbeddingConfig, EmbeddingError
-from boba.llm.warm import WarmEmbedder
+from boba.llm.chat import LlmError
+from boba.llm.providers import EmbeddingModelConfig
 from boba.tool.kb.chunks import kb_fts_search, kb_vector_search
-from boba.tool.kb.kb import KbToolConfig
+from boba.tool.kb.kb import LLM, KbToolConfig
 from boba.toolkit.entry import ToolMain
 from boba.toolkit.facade import Injected, tool, warmup
 from boba.toolkit.result import MarkdownResult, TableResult
@@ -62,13 +62,13 @@ class KbWarmupConfig(BaseModel):
 
     model_config = ConfigDict(extra="ignore")
 
-    embedding: EmbeddingConfig
+    embedding: EmbeddingModelConfig
 
 
 @warmup
 async def warm_embedder(cfg: KbWarmupConfig) -> None:
     """Модель ONNX поднимается в зиготе: дети берут её через COW."""
-    embedder = WarmEmbedder.load(cfg.embedding)
+    embedder = LLM.embedding(cfg.embedding)
     await embedder.embed_query("warm-up")
 
 
@@ -382,8 +382,8 @@ class NodeMarkdown:
 async def query_to_vector(cfg: KbToolConfig, query: str) -> tuple[float, ...]:
     """Возвращает вектор запроса пользователя"""
     build = Elapsed()
-    embedder = WarmEmbedder.of(cfg.embedding)
-    logger.info("embedder ready in %dms (%s)", build.ms(), cfg.embedding.kind)
+    embedder = LLM.embedding(cfg.embedding)
+    logger.info("embedder ready in %dms (%s)", build.ms(), cfg.embedding.provider.kind)
 
     embed = Elapsed()
     vector = await embedder.embed_query(query)
@@ -536,7 +536,7 @@ async def kb_node2(
 EXPECTED: Mapping[type[Exception], KbErrorKind] = {
     PostgresError: KbErrorKind.DATABASE_UNAVAILABLE,
     psycopg.Error: KbErrorKind.QUERY_FAILED,
-    EmbeddingError: KbErrorKind.EMBEDDING_FAILED,
+    LlmError: KbErrorKind.EMBEDDING_FAILED,
     IxSearchError: KbErrorKind.SEARCH_REJECTED,
     NodeReadError: KbErrorKind.NODE_NOT_FOUND,
 }

@@ -34,15 +34,14 @@ from boba.db.postgres import AsyncPostgresPool
 
 pytestmark = pytest.mark.anyio
 
-from boba.chat.provider import OpenAiChatConfig
-
-HTTP: dict[str, Any] = {}
-
-BACKEND = {
+BACKEND: dict[str, Any] = {
     "kind": "openai",
-    "http": HTTP,
-    "base_url": "https://llm.example/v1",
-    "api_key": "token",
+    "transport": {},
+    "connection": {
+        "host": "llm.example",
+        "path": "/v1",
+        "auth": {"method": "bearer", "token": "token"},
+    },
 }
 
 NO_OVERRIDES = ""
@@ -141,16 +140,14 @@ class TestApplyTo:
         settings = UserLlmOverrides(history_messages=1).apply_to(_profile())
 
         backend = settings.provider
-        if not isinstance(backend, OpenAiChatConfig):
-            raise AssertionError(f"backend is openai: {backend}")
-        if backend.base_url != BACKEND["base_url"]:
-            raise AssertionError("openai transport changed")
+        if backend != _profile().provider:
+            raise AssertionError(f"provider changed by overrides: {backend}")
 
     def test_admin_sampling_survives_overrides_verbatim(self) -> None:
         """Таблица sampling профиля не трогается пользователем и уходит как есть."""
         overrides = UserLlmOverrides(history_messages=3)
 
-        sampling = overrides.apply_to(_profile()).chat_sampling()
+        sampling = overrides.apply_to(_profile()).sampling
 
         if sampling != {"temperature": 0.1, "top_k": 40}:
             raise AssertionError(f"sampling: {sampling}")

@@ -19,7 +19,7 @@ from typing import Any, ClassVar, Literal, Protocol
 from pydantic import ValidationError
 from pydantic.json_schema import models_json_schema
 
-from boba.connections.base import ConnectionProfileBase
+from boba.connections.base import ConnectionBase
 from boba.toolkit.failure import ValidationText
 
 __all__ = [
@@ -58,7 +58,7 @@ class ProbeHook(Protocol):
     Ошибки реализация выпускает свои — границу к ProbeResult держит вызывающий.
     """
 
-    async def __call__(self, profile: ConnectionProfileBase) -> str: ...
+    async def __call__(self, connection: ConnectionBase) -> str: ...
 
 
 @dataclass(frozen=True)
@@ -66,7 +66,7 @@ class ConnectionTypeManifest:
     """Пакет-владелец описывает тип соединения целиком."""
 
     kind: str
-    profile: type[ConnectionProfileBase]
+    model: type[ConnectionBase]
     probe: ProbeHook
 
 
@@ -107,17 +107,17 @@ class ConnectionTypes:
     def kinds(self) -> tuple[str, ...]:
         return tuple(sorted(self._table))
 
-    def kind_of(self, profile: type[ConnectionProfileBase]) -> str:
-        """Вид соединения по модели профиля: так его объявляет параметр тула.
+    def kind_of(self, model: type[ConnectionBase]) -> str:
+        """Вид соединения по его модели: так его объявляет параметр тула.
 
         Ошибки:
         UnknownConnectionKindError — пакет-владелец этой модели не установлен.
         """
         for kind, manifest in self._table.items():
-            if manifest.profile is profile:
+            if manifest.model is model:
                 return kind
 
-        raise UnknownConnectionKindError(profile.__name__, self.kinds())
+        raise UnknownConnectionKindError(model.__name__, self.kinds())
 
     def manifest_of(self, kind: str) -> ConnectionTypeManifest:
         found = self._table.get(kind)
@@ -126,24 +126,24 @@ class ConnectionTypes:
 
         return found
 
-    def parse(self, raw: Mapping[str, Any]) -> ConnectionProfileBase:
-        """Профиль из jsonb строки: модель выбирается по полю kind."""
+    def parse(self, raw: Mapping[str, Any]) -> ConnectionBase:
+        """Соединение из jsonb строки: модель выбирается по полю kind."""
         kind = raw.get("kind")
         if not isinstance(kind, str):
             msg = (
-                "connection profile: expected a string field kind, "
+                "connection: expected a string field kind, "
                 f"got kind={kind!r} among keys {sorted(raw)}"
             )
             raise ConnectionTypesError(msg)
 
         manifest = self.manifest_of(kind)
         try:
-            return manifest.profile.model_validate(raw)
+            return manifest.model.model_validate(raw)
         except ValidationError as exc:
             # from None: в input_value разобранной строки ездят секреты,
             # наружу идёт только безопасный текст ошибок
             details = ValidationText.of(exc)
-            msg = f"connection profile of kind {kind!r}: {details}"
+            msg = f"connection of kind {kind!r}: {details}"
             raise ConnectionTypesError(msg) from None
 
     def json_schema(self) -> dict[str, Any]:
@@ -155,9 +155,9 @@ class ConnectionTypes:
         модели разных пакетов не перетирают друг друга.
         """
         ordered = self.kinds()
-        inputs: list[tuple[type[ConnectionProfileBase], Literal["validation"]]] = []
+        inputs: list[tuple[type[ConnectionBase], Literal["validation"]]] = []
         for kind in ordered:
-            inputs.append((self._table[kind].profile, "validation"))
+            inputs.append((self._table[kind].model, "validation"))
 
         refs, document = models_json_schema(inputs, ref_template="#/$defs/{model}")
 

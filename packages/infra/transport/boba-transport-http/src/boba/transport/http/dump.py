@@ -2,18 +2,57 @@
 
 Подключается в HttpTransport по HttpDumpConfig; байты пишет socket-уровень,
 поэтому в файл попадает ровно то, что ушло и пришло по сети.
+
+Ошибки: своих не выпускает.
 """
+
+from __future__ import annotations
 
 import contextlib
 import contextvars
 import datetime
 import logging
+import re
 import typing
-from collections.abc import Callable, Generator
+from collections.abc import Generator
 from pathlib import Path
+from typing import ClassVar, Self
 
 import httpcore
 import httpx
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+__all__ = ["DumpLabel", "DumpingTransport", "HttpDump", "HttpDumpConfig"]
+
+
+class HttpDumpConfig(BaseModel):
+    """Дамп HTTP-обмена: флаг и каталог файлов."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    enable: bool = Field(
+        default=False,
+        description="Писать HTTP-обмен в файлы каталога path.",
+    )
+
+    path: str = Field(
+        default="",
+        description="Каталог дампов; обязателен при enable = true.",
+    )
+
+    @model_validator(mode="after")
+    def _validate_path(self) -> Self:
+        if not self.enable:
+            return self
+
+        if not self.path:
+            msg = (
+                "section dump: enable = true requires a dump directory "
+                f"in path, got path={self.path!r}"
+            )
+            raise ValueError(msg)
+
+        return self
 
 
 class HttpDump:
@@ -110,11 +149,42 @@ class HttpDump:
             self._file.close()
         self._file = None
 
-    def __enter__(self) -> "HttpDump":
+    def __enter__(self) -> HttpDump:
         return self
 
     def __exit__(self, exc_type, exc, tb) -> None:
         self.close()
+
+
+class DumpLabel:
+    """Метка файла дампа из контекста вызывающего: сессия, пользователь, ход.
+
+    Транспорт ничего не знает о сессиях приложения; кто знает, тот ставит
+    метку в своём контексте (contextvar), и файл дампа получает имя
+    `<метка>-<хост>.log` вместо `<хост>.log`. Пустая метка — имя по хосту.
+    """
+
+    _current: ClassVar[contextvars.ContextVar[str]] = contextvars.ContextVar(
+        "http_dump_label", default=""
+    )
+
+    SEPARATOR: ClassVar[str] = "-"
+    SUFFIX: ClassVar[str] = ".log"
+
+    @classmethod
+    def set(cls, label: str) -> None:
+        cls._current.set(label)
+
+    @classmethod
+    def file_for(cls, host: str) -> str:
+        """Имя файла дампа для хоста запроса с меткой контекста, если она есть."""
+        label = cls._current.get()
+        if not label:
+            return f"{host}{cls.SUFFIX}"
+
+        safe = re.sub(r"[^\w.@-]", "_", label)
+
+        return f"{safe}{cls.SEPARATOR}{host}{cls.SUFFIX}"
 
 
 class DumpChannel:
@@ -140,17 +210,11 @@ class DumpChannel:
 
 
 class DumpingTransport(httpx.AsyncHTTPTransport):
-    """Открывает файл дампа с бизнес-именем; байты пишет socket-уровень."""
+    """Открывает файл дампа по хосту и метке контекста; байты пишет socket-уровень."""
 
-    def __init__(
-        self,
-        dump_dir: Path,
-        dump_file: Callable[[httpx.Request], str],
-        **kwargs,
-    ) -> None:
+    def __init__(self, dump_dir: Path, **kwargs) -> None:
         super().__init__(**kwargs)
         self._dump_dir = dump_dir
-        self._request_label = dump_file
         self._channel = DumpChannel()
         self._pool._network_backend = LoggingBackend(
             self._pool._network_backend, self._channel
@@ -158,9 +222,9 @@ class DumpingTransport(httpx.AsyncHTTPTransport):
         self.log = logging.getLogger(type(self).__qualname__)
 
     def _path(self, request: httpx.Request) -> Path:
-        """Имя файла приходит из конфига: держим дамп внутри своего каталога."""
+        """Файл по хосту и метке контекста; дамп не выходит из своего каталога."""
         base = self._dump_dir.resolve()
-        path = (base / self._request_label(request)).resolve()
+        path = (base / DumpLabel.file_for(request.url.host)).resolve()
 
         if not path.is_relative_to(base):
             msg = f"dump file escapes {base}: {path}"

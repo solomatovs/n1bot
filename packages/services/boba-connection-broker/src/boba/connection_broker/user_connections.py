@@ -28,8 +28,8 @@ from pydantic.fields import FieldInfo
 
 from boba.connection_broker.store import ConnectionStore
 from boba.connection_broker.tickets import CredentialsRef
-from boba.connections.base import ClientIdentity, ConnectionProfileBase
-from boba.connections.credentials import ProfileSections
+from boba.connections.base import ClientIdentity, ConnectionBase
+from boba.connections.credentials import ConnectionSections
 from boba.connections.manifest import ConnectionTypes, UnknownConnectionKindError
 from boba.connections.marks import ConnectionRefusal
 from boba.connections.whitelist import AmbiguousConnectionError, ConnectionWhitelist
@@ -159,7 +159,7 @@ class UserConnections(AsyncInjected):
             )
             raise ToolConfigError(msg)
 
-        if not issubclass(annotation, ConnectionProfileBase):
+        if not issubclass(annotation, ConnectionBase):
             msg = (
                 f"tool {tool!r}: {param} is annotated with {annotation.__name__}, "
                 "which is not a connection profile"
@@ -183,8 +183,8 @@ class UserConnections(AsyncInjected):
         whitelist = ConnectionWhitelist.of(rows)
 
         picked = self._pick(whitelist, requested)
-        profile = self._labelled(picked.profile, name)
-        armed = await self._armed(profile, picked.name)
+        connection = self._labelled(picked.connection, name)
+        armed = await self._armed(connection, picked.name)
 
         logger.info(
             "tool %s: connection %r (%s) %s",
@@ -232,20 +232,18 @@ class UserConnections(AsyncInjected):
         raise RefusalError(ConnectionRefusal.NOT_VISIBLE, msg)
 
     @staticmethod
-    def _labelled(profile: ConnectionProfileBase, tool: str) -> ConnectionProfileBase:
+    def _labelled(connection: ConnectionBase, tool: str) -> ConnectionBase:
         """Профиль, подписанный клиентом вызова; как подписать, решает профиль."""
         login = CallContext.current().subject.login
         client = ClientIdentity(
             application=CallerApplication.NAME, login=login, tool=tool
         )
 
-        return profile.labeled(client)
+        return connection.labeled(client)
 
-    async def _armed(
-        self, profile: ConnectionProfileBase, name: str
-    ) -> ConnectionProfileBase:
+    async def _armed(self, connection: ConnectionBase, name: str) -> ConnectionBase:
         """Профиль с билетом вызова вместо kerberos-секции строки."""
-        section = ProfileSections.section_of(profile)
+        section = ConnectionSections.section_of(connection)
         if isinstance(section, TicketAuth):
             msg = (
                 f"stored connection {name!r} of kind {self._kind!r} carries a "
@@ -256,4 +254,4 @@ class UserConnections(AsyncInjected):
 
         credential = CallContext.current().credential
 
-        return await self._credentials_ref().for_connection(profile, credential)
+        return await self._credentials_ref().for_connection(connection, credential)

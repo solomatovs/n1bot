@@ -14,7 +14,7 @@ from collections.abc import Iterable, Mapping
 
 from pydantic import BaseModel, ConfigDict
 
-from boba.connections.profile import ConnectionProfileBase, GrantedConnection
+from boba.connections.stored import ConnectionBase, GrantedConnection
 
 __all__ = [
     "AmbiguousConnectionError",
@@ -33,20 +33,20 @@ class Picked(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     name: str
-    profile: ConnectionProfileBase
+    connection: ConnectionBase
 
 
 class ConnectionWhitelist(BaseModel):
-    """Профили субъекта по имени плюс имена-дубли."""
+    """Соединения субъекта по имени плюс имена-дубли."""
 
     model_config = ConfigDict(frozen=True)
 
-    profiles: Mapping[str, ConnectionProfileBase]
+    connections: Mapping[str, ConnectionBase]
     ambiguous: frozenset[str]
 
     @classmethod
     def of(cls, granted: Iterable[GrantedConnection]) -> ConnectionWhitelist:
-        profiles: dict[str, ConnectionProfileBase] = {}
+        connections: dict[str, ConnectionBase] = {}
         ambiguous: set[str] = set()
         for item in granted:
             if item.ambiguous:
@@ -54,12 +54,12 @@ class ConnectionWhitelist(BaseModel):
                 continue
 
             row = item.row
-            profiles[row.name] = row.profile.identified(row.id, row.name)
+            connections[row.name] = row.connection.identified(row.id, row.name)
 
-        return cls(profiles=profiles, ambiguous=frozenset(ambiguous))
+        return cls(connections=connections, ambiguous=frozenset(ambiguous))
 
     def names(self) -> tuple[str, ...]:
-        return tuple(sorted(self.profiles))
+        return tuple(sorted(self.connections))
 
     def pick(self, requested: str) -> Picked | None:
         """Строка под запрос; None — такого имени у субъекта нет.
@@ -74,8 +74,8 @@ class ConnectionWhitelist(BaseModel):
             )
             raise AmbiguousConnectionError(msg)
 
-        profile = self.profiles.get(requested)
-        if profile is None:
+        connection = self.connections.get(requested)
+        if connection is None:
             return None
 
-        return Picked(name=requested, profile=profile)
+        return Picked(name=requested, connection=connection)

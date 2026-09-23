@@ -9,7 +9,7 @@ from boba.kerberos import DelegatedAuth, KerberosError, TicketAuth
 from boba.krb import KerberosCredentials
 from boba.transport.http import HttpxAuth
 from boba.transport.http.auth import HttpxNegotiateAuth
-from boba.transport.http.profile import HttpConnection, NegotiateAuth
+from boba.transport.http.connection import HttpConnection, NegotiateAuth
 
 REVEAL = {TicketAuth.REVEAL_SECRETS: True}
 
@@ -34,17 +34,17 @@ def _keytab() -> dict[str, object]:
 class TestNegotiateProfile:
     def test_service_name_comes_from_host(self) -> None:
         auth = _delegated()
-        profile = HttpConnection(
+        connection = HttpConnection(
             host="Wiki.example.com", port=8443, path="/wiki", auth=auth
         )
-        if profile.service_name() != "HTTP@wiki.example.com":
-            raise AssertionError(profile.service_name())
+        if connection.service_name() != "HTTP@wiki.example.com":
+            raise AssertionError(connection.service_name())
 
     def test_wildcard_host_has_no_service_name(self) -> None:
         auth = _delegated()
-        profile = HttpConnection(host="*.example.com", port=443, auth=auth)
+        connection = HttpConnection(host="*.example.com", port=443, auth=auth)
         with pytest.raises(ValueError, match="concrete host"):
-            profile.service_name()
+            connection.service_name()
 
     def test_delegated_row_validates(self) -> None:
         raw = {
@@ -55,14 +55,14 @@ class TestNegotiateProfile:
                 "kerberos": {"method": "kerberos_delegated"},
             },
         }
-        profile = HttpConnection.model_validate(raw)
-        if not isinstance(profile.auth, NegotiateAuth):
+        connection = HttpConnection.model_validate(raw)
+        if not isinstance(connection.auth, NegotiateAuth):
             raise AssertionError("method=negotiate must build NegotiateAuth")
-        if not isinstance(profile.auth.kerberos, DelegatedAuth):
+        if not isinstance(connection.auth.kerberos, DelegatedAuth):
             raise AssertionError("kind=delegated must build DelegatedAuth")
 
     def test_reveal_refuses_a_keytab(self) -> None:
-        profile = HttpConnection.model_validate(
+        connection = HttpConnection.model_validate(
             {
                 "host": "wiki.example.com",
                 "port": 443,
@@ -70,18 +70,18 @@ class TestNegotiateProfile:
             }
         )
         with pytest.raises(ValueError, match="may not leave the application"):
-            profile.model_dump(mode="json", context=REVEAL)
+            connection.model_dump(mode="json", context=REVEAL)
 
     def test_ticket_travels_and_reads_back(self) -> None:
         ticket = TicketAuth.of_bytes(
             "u@EXAMPLE.COM", "HTTP@wiki.example.com", b"ccache", 60
         )
-        profile = HttpConnection(
+        connection = HttpConnection(
             host="wiki.example.com",
             port=443,
             auth=NegotiateAuth(method="negotiate", kerberos=ticket),
         )
-        dumped = profile.model_dump(mode="json", context=REVEAL)
+        dumped = connection.model_dump(mode="json", context=REVEAL)
         restored = HttpConnection.model_validate(dumped)
 
         if not isinstance(restored.auth, NegotiateAuth):
@@ -90,25 +90,25 @@ class TestNegotiateProfile:
             raise AssertionError("ticket must survive the roundtrip")
         if restored.auth.kerberos.ccache_bytes() != b"ccache":
             raise AssertionError("ticket bytes must survive the roundtrip")
-        if not isinstance(HttpxAuth.of(restored), HttpxNegotiateAuth):
-            raise AssertionError("negotiate profile must build HttpxNegotiateAuth")
+        if not isinstance(HttpxAuth().of(restored), HttpxNegotiateAuth):
+            raise AssertionError("negotiate connection must build HttpxNegotiateAuth")
 
     def test_ticket_is_masked_without_reveal(self) -> None:
         ticket = TicketAuth.of_bytes("u@R", "HTTP@h", b"secret-bytes", 60)
-        profile = HttpConnection(
+        connection = HttpConnection(
             host="h",
             port=443,
             auth=NegotiateAuth(method="negotiate", kerberos=ticket),
         )
-        dumped = profile.model_dump(mode="json")
+        dumped = connection.model_dump(mode="json")
         if dumped["auth"]["kerberos"]["ccache"] != "**********":
             raise AssertionError(f"ticket bytes leaked: {dumped['auth']}")
 
     def test_other_methods_keep_working(self) -> None:
-        profile = HttpConnection.model_validate(
+        connection = HttpConnection.model_validate(
             {"host": "x", "port": 443, "auth": {"method": "bearer", "token": "t"}}
         )
-        if HttpxAuth.of(profile) is None:
+        if HttpxAuth().of(connection) is None:
             raise AssertionError("bearer auth must still be built")
 
 
@@ -222,11 +222,11 @@ class TestLoginServletFlow:
             raise AssertionError(f"negotiate must be on the request itself: {seen}")
 
     def test_profile_builds_login_url(self) -> None:
-        profile = HttpConnection(
+        connection = HttpConnection(
             host="wiki.example.com",
             port=443,
             auth=_delegated(login_path="/plugins/servlet/kerberos/ntlm/login"),
         )
         expected = "https://wiki.example.com/plugins/servlet/kerberos/ntlm/login"
-        if profile.login_url() != expected:
-            raise AssertionError(profile.login_url())
+        if connection.login_url() != expected:
+            raise AssertionError(connection.login_url())

@@ -4,7 +4,8 @@ REST-запросы, пагинация и разбор HTML исполняют�
 в песочнице: наружу не уезжает ни сырой ответ, ни исходная разметка.
 
 Ошибки:
-ConfluenceRequestError — REST недоступен или ответил статусом.
+TransportError — REST недоступен или ответил статусом.
+ConfluencePayloadError — ответ не той формы, которую ждали.
 """
 
 from __future__ import annotations
@@ -13,26 +14,28 @@ import json
 import sys
 from collections.abc import Mapping, Sequence
 from enum import StrEnum
-from typing import Annotated, Any, ClassVar, Final, Literal
+from typing import Annotated, Any, ClassVar, Final, Literal, Self
 
 import httpx
 from pydantic import ConfigDict, Field, ValidationError
 
-from boba.chat.http import HttpDumpConfig
 from boba.confluence.address import ConfluenceAddresses
-from boba.confluence.models import ConfluenceSpaceItem, SpaceMask
+from boba.confluence.models import (
+    ConfluencePayloadError,
+    ConfluenceSpaceItem,
+    SpaceMask,
+)
 from boba.confluence.parsing import JsonNode
-from boba.confluence.rest import CflRestBuilder, SpaceType
+from boba.confluence.rest import CflRest, CflRestBuilder, SpaceType
+from boba.indexing import TransportError
 from boba.text.grep import GrepLimits, TextGrep
 from boba.toolkit.entry import ToolMain
 from boba.toolkit.facade import Injected, tool
 from boba.toolkit.result import MarkdownResult, TableResult
 from boba.toolkit.sql import RowOffset
 from boba.toolkit.types import LLMStringList, SecretRevealing
-from boba.transport.http import HttpRequest, HttpTransport
-from boba.transport.http.profile import HttpConnection
-
-_PAGE_ID_DESCRIPTION = "ID страницы Confluence (из URL `viewpage.action?pageId=<id>`)."
+from boba.transport.http import HttpTransport, HttpTransportConfig
+from boba.transport.http.connection import HttpConnection
 
 
 class ConfluenceRequestError(Exception):
@@ -64,9 +67,12 @@ class ConfluenceToolsConfig(SecretRevealing):
         ge=1,
         description="Потолок длины content/before/after на match в grep.",
     )
-    dump: HttpDumpConfig = Field(
-        default_factory=HttpDumpConfig,
-        description="Дамп HTTP-обмена с Confluence в файлы по хосту.",
+    transport: HttpTransportConfig = Field(
+        default_factory=HttpTransportConfig,
+        description=(
+            "Поведение HTTP-транспорта процесса: таймауты, пул, дамп обмена; "
+            'ссылкой `transport = "${http}"`.'
+        ),
     )
 
 
@@ -77,54 +83,45 @@ class AddressColumn(StrEnum):
 
 
 class ConfluenceHttp:
-    """Запросы REST Confluence общим транспортом web-профиля: корень адреса
-    подставляет профиль, retry и auth — HttpTransport. Создаётся телом
-    инструмента на вызов из его секции."""
+    """REST Confluence на время одного вызова инструмента: транспорт по
+    соединению и секции, адреса — CflRestBuilder, обмен — CflRest."""
 
     def __init__(self, cfg: ConfluenceToolsConfig) -> None:
         self._cfg = cfg
-        self._rest = CflRestBuilder()
+        self._builder = CflRestBuilder()
+        self._http = HttpTransport(cfg.confluence, cfg.transport)
+        self._rest = CflRest(self._http)
+
+    async def __aenter__(self) -> Self:
+        return self
+
+    async def __aexit__(self, *exc: object) -> None:
+        await self._http.close()
 
     async def get(self, path: httpx.URL) -> bytes:
-        profile = self._cfg.confluence
-        url = profile.url_of(str(path))
-        try:
-            async with (
-                HttpTransport(profile, dump=self._cfg.dump) as transport,
-                transport.fetch(HttpRequest(url=str(path))) as got,
-            ):
-                return await got.stream.read()
-        except httpx.HTTPStatusError as exc:
-            status = exc.response.status_code
-            reason = exc.response.reason_phrase
-            msg = f"GET {url} on confluence: expected 2xx, got {status} {reason}"
-            raise ConfluenceRequestError(msg) from exc
-        except httpx.HTTPError as exc:
-            msg = f"GET {url} on confluence: {type(exc).__name__}: {exc}"
-            raise ConfluenceRequestError(msg) from exc
-
-    async def get_json(self, path: httpx.URL) -> dict[str, Any]:
-        return json.loads(await self.get(path))
+        return await self._rest.get(path)
 
     async def page_json(self, page_id: str) -> dict[str, Any]:
-        path = self._rest.page_fetch_path(page_id, body_format=self._cfg.body_format)
+        path = self._builder.page_fetch_path(page_id, body_format=self._cfg.body_format)
 
-        return await self.get_json(path)
+        return await self._rest.get_json(path)
 
     async def search_json(
         self, cql: str, *, limit: int, start: int, expand: str
     ) -> dict[str, Any]:
-        path = self._rest.cql_search_path(cql, limit=limit, start=start, expand=expand)
+        path = self._builder.cql_search_path(
+            cql, limit=limit, start=start, expand=expand
+        )
 
-        return await self.get_json(path)
+        return await self._rest.get_json(path)
 
     async def spaces_json(
         self, space_type: SpaceType, *, limit: int
     ) -> tuple[dict[str, Any], httpx.URL]:
         """Список спейсов и адрес запроса: адрес нужен тексту ошибки разбора."""
-        path = self._rest.space_list_path(space_type, limit=limit)
+        path = self._builder.space_list_path(space_type, limit=limit)
 
-        return await self.get_json(path), path
+        return await self._rest.get_json(path), path
 
 
 class ConfluencePageText:
@@ -169,13 +166,13 @@ class SpaceList:
     """Разбор выдачи /rest/api/space, фильтр спейсов по шаблону вызова и
     строка таблицы для одного спейса с адресом по профилю."""
 
-    def __init__(self, pattern: str | None, profile: HttpConnection) -> None:
+    def __init__(self, pattern: str | None, connection: HttpConnection) -> None:
         masks: list[str] = []
         if pattern is not None:
             masks.append(pattern)
 
         self._mask = SpaceMask(masks)
-        self._profile = profile
+        self._connection = connection
 
     def items(
         self, data: Mapping[str, Any], path: httpx.URL
@@ -189,7 +186,7 @@ class SpaceList:
                     f"GET {path} on confluence: expected space results, "
                     f"got {json.dumps(raw, ensure_ascii=False)[:200]}: {exc}"
                 )
-                raise ConfluenceRequestError(msg) from exc
+                raise ConfluencePayloadError(msg) from exc
 
         return found
 
@@ -203,7 +200,7 @@ class SpaceList:
             "name": space.name,
             "type": space.type,
             "status": space.status,
-            "url": space.url_at(self._profile),
+            "url": space.url_at(self._connection),
         }
 
 
@@ -246,9 +243,9 @@ class CqlSearch:
     )
 
     def __init__(
-        self, profile: HttpConnection, text: ConfluencePageText, snippet_chars: int
+        self, connection: HttpConnection, text: ConfluencePageText, snippet_chars: int
     ) -> None:
-        self._profile = profile
+        self._profile = connection
         self._text = text
         self._snippet_chars = snippet_chars
 
@@ -315,8 +312,9 @@ async def confluence_fetch(
     cfg: Annotated[ConfluenceToolsConfig, Injected],
 ) -> MarkdownResult:
     """Скачивает одну Confluence-страницу и возвращает её контент."""
-    pages = ConfluencePageText(cfg, ConfluenceHttp(cfg))
-    text = await pages.of_page(page_id, as_markdown=as_markdown)
+    async with ConfluenceHttp(cfg) as http:
+        pages = ConfluencePageText(cfg, http)
+        text = await pages.of_page(page_id, as_markdown=as_markdown)
 
     return MarkdownResult(text=text)
 
@@ -325,7 +323,10 @@ async def confluence_fetch(
 async def confluence_grep(  # noqa: PLR0913 — независимые флаги grep'а
     page_id: Annotated[
         str,
-        Field(min_length=1, description=_PAGE_ID_DESCRIPTION),
+        Field(
+            min_length=1,
+            description="ID страницы Confluence (из URL viewpage.action?pageId=<id>).",
+        ),
     ],
     pattern: Annotated[
         str,
@@ -360,8 +361,9 @@ async def confluence_grep(  # noqa: PLR0913 — независимые флаг�
     cfg: Annotated[ConfluenceToolsConfig, Injected],
 ) -> MarkdownResult:
     """Ищет совпадения по тексту одной Confluence-страницы."""
-    pages = ConfluencePageText(cfg, ConfluenceHttp(cfg))
-    text = await pages.of_page(page_id, as_markdown=as_markdown)
+    async with ConfluenceHttp(cfg) as http:
+        pages = ConfluencePageText(cfg, http)
+        text = await pages.of_page(page_id, as_markdown=as_markdown)
 
     compiled = TextGrep.compile_pattern(
         pattern, fixed_string=fixed_string, case_insensitive=case_insensitive
@@ -409,14 +411,14 @@ async def confluence_search(  # noqa: PLR0913 — окно выдачи зада
 
     Выдача постраничная: сколько показано и как листать, сказано в note.
     """
-    http = ConfluenceHttp(cfg)
-    search = CqlSearch(cfg.confluence, ConfluencePageText(cfg, http), snippet_chars)
-    data = await http.search_json(
-        CqlQuery(query, spaces).render(),
-        limit=limit,
-        start=offset,
-        expand="body.view,version,space",
-    )
+    async with ConfluenceHttp(cfg) as http:
+        search = CqlSearch(cfg.confluence, ConfluencePageText(cfg, http), snippet_chars)
+        data = await http.search_json(
+            CqlQuery(query, spaces).render(),
+            limit=limit,
+            start=offset,
+            expand="body.view,version,space",
+        )
 
     rows: list[dict[str, Any]] = []
     for hit in JsonNode(data).results():
@@ -455,9 +457,8 @@ async def confluence_spaces(
     но поиск Confluence его не отдаёт, поэтому по CQL такой спейс выглядит
     пустым.
     """
-    data, path = await ConfluenceHttp(cfg).spaces_json(
-        SpaceType(space_type), limit=limit
-    )
+    async with ConfluenceHttp(cfg) as http:
+        data, path = await http.spaces_json(SpaceType(space_type), limit=limit)
 
     spaces = SpaceList(pattern, cfg.confluence)
     rows: list[dict[str, Any]] = []
@@ -485,7 +486,8 @@ async def confluence_address(
 
 
 EXPECTED: Mapping[type[Exception], ConfluenceErrorKind] = {
-    ConfluenceRequestError: ConfluenceErrorKind.REQUEST_FAILED,
+    TransportError: ConfluenceErrorKind.REQUEST_FAILED,
+    ConfluencePayloadError: ConfluenceErrorKind.REQUEST_FAILED,
 }
 
 TOOLS: Final = ToolMain.toolset(

@@ -12,7 +12,6 @@ AttachmentGoneError — вложение снято между списком и
 
 from __future__ import annotations
 
-import json
 import logging
 from collections.abc import AsyncIterable, AsyncIterator, Callable, Sequence
 from dataclasses import dataclass, replace
@@ -23,9 +22,15 @@ import httpx
 from pydantic import BaseModel, ConfigDict, Field
 
 from boba.confluence.html import ConfluencePage, PageMarkdown
-from boba.confluence.models import ConfluenceSpaceItem, PageLink, SpaceMask
+from boba.confluence.models import (
+    ConfluencePayloadError,
+    ConfluenceSpaceItem,
+    PageLink,
+    SpaceMask,
+)
 from boba.confluence.parsing import BodyHasher, JsonNode, RunningDigest
 from boba.confluence.rest import (
+    CflRest,
     CflRestBuilder,
     ConfluenceConnection,
     ContentType,
@@ -33,6 +38,7 @@ from boba.confluence.rest import (
     SpaceType,
 )
 from boba.doc.bridge import AsyncPipe
+from boba.indexing import TransportError
 from boba.transport.http import CancellableHttpTransport, HttpRequest
 
 __all__ = [
@@ -335,7 +341,8 @@ class ConfluenceReader:
         self._mask = SpaceMask(spaces.masks)
         self._parser = ConfluenceParser(conn.body_format)
         self._hasher = BodyHasher()
-        self._http = CancellableHttpTransport(conn.profile, dump=conn.dump)
+        self._http = CancellableHttpTransport(conn.connection, conn.transport)
+        self._rest = CflRest(self._http)
         self._crb = CflRestBuilder()
 
     async def __aenter__(self) -> Self:
@@ -357,53 +364,20 @@ class ConfluenceReader:
         """Один ответ целиком в память: JSON иначе не разобрать, а объём
         ограничен одним ответом сервера, не спейсом."""
         try:
-            async with self._http.fetch(HttpRequest(url=str(url))) as resp:
-                payload = await resp.stream.read()
-        except httpx.HTTPError as exc:
-            raise ConfluenceReadError(
-                f"GET {url}: {type(exc).__name__}: {exc}"
-            ) from exc
+            data, raw = await self._rest.get_payload(url)
+        except (TransportError, ConfluencePayloadError) as exc:
+            raise ConfluenceReadError(str(exc)) from exc
 
-        try:
-            data = json.loads(payload)
-        except json.JSONDecodeError as exc:
-            raise ConfluenceReadError(
-                f"GET {url}: expected JSON, got {payload[:120]!r}: {exc}"
-            ) from exc
-
-        if not isinstance(data, dict):
-            raise ConfluenceReadError(
-                f"GET {url}: expected an object, got {type(data).__name__}"
-            )
-
-        return Payload(data=data, raw=payload)
+        return Payload(data=data, raw=raw)
 
     async def iter_page_urls(self, url: httpx.URL) -> AsyncIterator[dict[str, Any]]:
-        """
-        Достает из confluence url адреса страниц
-        без контента страниц, только url адреса
-        """
-        next_url: httpx.URL | None = url
-        while next_url is not None:
-            payload = await self.fetch_payload(next_url)
-
-            node = JsonNode(payload.data)
-            link = node.next_link()
-            next_url = None
-            if link:
-                # confluence сам возвращает следующую страницу для запроса
-                # согласно тому, что ты передал
-                # к примеру если запрос страниц был: start=0&limit=50
-                # то следующая страница будет с такими же параметрами
-                # но следующим окном: start=50&limit=50
-                # запоминаем этот url
-                next_url = httpx.URL(link)
-
-            for item in node.results():
-                # елдим результат для постраничной обработки
-                # каждая страница запрашивается, парситься, сохраняется последовательно
-                # друг за другом, без необходимости все страницы читать в память
+        """Элементы выдачи страница за страницей: каждая страница запрашивается,
+        разбирается и отдаётся по очереди, без чтения всей выдачи в память."""
+        try:
+            async for item in self._rest.pages(url):
                 yield item
+        except (TransportError, ConfluencePayloadError) as exc:
+            raise ConfluenceReadError(str(exc)) from exc
 
     async def list_space_keys(self) -> AsyncIterator[str]:
         """Ключи как есть или обход списка сервера по маскам источника."""

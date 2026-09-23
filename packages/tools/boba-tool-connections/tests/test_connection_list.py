@@ -19,9 +19,9 @@ from pydantic import SecretStr
 from boba.access.grants import ConnectionFilter
 from boba.connection_broker.store import ConnectionsConfig, ConnectionStore
 from boba.connections.manifest import ConnectionTypes
-from boba.connections.profile import GrantTarget
+from boba.connections.stored import GrantTarget
 from boba.db.postgres import AsyncPostgresPool
-from boba.db.postgres.profile import (
+from boba.db.postgres.connection import (
     PasswordAuth,
     PostgresConfig,
     PostgresOptionsConfig,
@@ -33,7 +33,7 @@ from boba.tool.connections.tools import (
     ConnectionsToolConfig,
     GrantedConnections,
 )
-from boba.transport.http.profile import HttpConnection
+from boba.transport.http.connection import HttpConnection
 
 pytestmark = [pytest.mark.anyio, pytest.mark.integration]
 
@@ -106,13 +106,13 @@ async def test_personal_and_role_grants_are_listed(
         raise AssertionError(f"granted rows only, sorted by name: {result.rows}")
 
     if result.rows[0][CatalogColumn.KIND] != "postgres":
-        raise AssertionError(f"kind comes from the profile: {result.rows[0]}")
+        raise AssertionError(f"kind comes from the connection: {result.rows[0]}")
 
     if result.rows[1][CatalogColumn.DESCRIPTION] != "by role":
-        raise AssertionError(f"description comes from the profile: {result.rows[1]}")
+        raise AssertionError(f"description comes from the connection: {result.rows[1]}")
 
     if result.rows[0][CatalogColumn.HOST] != "db.example":
-        raise AssertionError(f"host comes from the profile: {result.rows[0]}")
+        raise AssertionError(f"host comes from the connection: {result.rows[0]}")
 
 
 async def test_role_grant_needs_the_role(
@@ -230,7 +230,7 @@ async def test_search_filters_combine_and_skip_foreign_rows(
         raise AssertionError(f"web row carries its host and description: {web.rows}")
 
     if web.rows[0][CatalogColumn.HOST] != "wiki.corp":
-        raise AssertionError(f"web host comes from the profile: {web.rows[0]}")
+        raise AssertionError(f"web host comes from the connection: {web.rows[0]}")
 
 
 async def test_search_without_filters_equals_list(

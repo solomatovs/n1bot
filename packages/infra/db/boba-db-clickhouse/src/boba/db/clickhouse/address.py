@@ -32,7 +32,7 @@ from urllib.parse import (
 from pydantic import Field, ValidationError
 
 from boba.connections.address import Address, AddressError, AddressFamily
-from boba.db.clickhouse.profile import ClickHouseConfig
+from boba.db.clickhouse.connection import ClickHouseConfig
 
 __all__ = [
     "ChAddress",
@@ -328,24 +328,24 @@ class ChAddresses(AddressFamily):
     )
 
     @classmethod
-    def base_of(cls, profile: ClickHouseConfig) -> ChDatabaseAddress:
+    def base_of(cls, connection: ClickHouseConfig) -> ChDatabaseAddress:
         """Адрес базы по умолчанию соединения; без базы в профиле адреса нет:
         объект тогда называет базу сам."""
-        host = profile.host
+        host = connection.host
         if not host:
             msg = "clickhouse connection: host is empty, address needs it"
             raise AddressError(msg)
 
-        port = profile.port
+        port = connection.port
         if not port:
             msg = f"clickhouse connection to {host}: port is empty, address needs it"
             raise AddressError(msg)
 
-        database = profile.database
+        database = connection.database
         if not database:
             msg = (
                 f"clickhouse connection to {host}:{port}: no default database in "
-                "the profile, address the object with an explicit database"
+                "the connection, address the object with an explicit database"
             )
             raise AddressError(msg)
 

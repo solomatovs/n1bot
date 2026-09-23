@@ -3,7 +3,7 @@
 from psycopg import sql
 
 from boba.db.postgres import AsyncPostgresPool, PgQueryBuilder
-from boba.db.postgres.profile.config import PostgresConfig
+from boba.db.postgres.connection.config import PostgresConfig
 
 
 class TestDatabase:

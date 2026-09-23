@@ -35,7 +35,7 @@ def kb_config() -> KbToolConfig:
             "db_schema": "ix",
             "max_result_chars": 1000,
             "embedding": {
-                "kind": "local",
+                "provider": {"kind": "fastembed", "cache_dir": "/var/cache/fastembed"},
                 "model": "intfloat/multilingual-e5-small",
                 "dim": 384,
                 "batch_size": 8,
@@ -76,7 +76,7 @@ class TestPgTools:
 
     def test_every_tool_takes_a_connection_parameter(self) -> None:
         """Профиль подаёт хост: у каждого инструмента параметр с маркером."""
-        from boba.db.postgres.profile import PostgresConfig
+        from boba.db.postgres.connection import PostgresConfig
         from boba.toolkit.entry import ToolArgv
 
         for payload in PG_TOOLS:

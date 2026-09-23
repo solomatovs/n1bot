@@ -3,12 +3,9 @@
 Общие для процессов провайдеры (реестр, сторы, workflow) — boba.runtime.providers.
 """
 
-import re
-from collections.abc import AsyncIterator, Mapping, Sequence
+from collections.abc import AsyncIterator, Sequence
 from typing import Annotated
 
-import httpx
-from httpx import AsyncClient
 from langchain.agents.middleware import ModelRequest, wrap_model_call
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
@@ -18,6 +15,7 @@ from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from langgraph.graph.state import CompiledStateGraph
 
 from boba.auth import JwtTokens
+from boba.chainlit.agent.bridge import ChatModelBridge
 from boba.chainlit.agent.flow import (
     AgentGraphBuilder,
     GraphSpec,
@@ -40,8 +38,6 @@ from boba.chainlit.infra.config import (
 )
 from boba.chainlit.infra.session import ChainlitSessions, current_session
 from boba.chainlit.rendering.chat_view import StepText
-from boba.chat.generation import LocalGeneration, OpenAiGeneration, StructuredGenerator
-from boba.chat.http import HttpConfig
 from boba.chat.profiles import (
     AgentSettings,
     ChatProfiles,
@@ -50,19 +46,11 @@ from boba.chat.profiles import (
     SettingsView,
     UserMeta,
 )
-from boba.chat.provider import (
-    ChatProvider,
-    LocalChatConfig,
-    OllamaChatConfig,
-    OpenAiChatConfig,
-)
 from boba.db.postgres import AsyncPostgresPool, PostgresError, PostgresSchema
 from boba.identity.errors import InternalServiceError
 from boba.identity.session import SessionSource
-from boba.llm.bridge import ChatProviderFactory, ProviderChatModel
-from boba.llm.generation import GeneratorFactory
-from boba.llm.http import LlmHttp
-from boba.llm.local import OnnxChatRuntime
+from boba.llm.providers import LlmProviders, LlmProviderTypes
+from boba.llm.schema import SchemaReply
 from boba.messaging import MessageBus
 from boba.runtime import providers as runtime
 from boba.runtime.di import Depends
@@ -157,91 +145,28 @@ def session_tools(
     return registry.for_session(current_session().roles, selected.name)
 
 
-def _chainlit_dump_file(request: httpx.Request) -> str:
-    """Имя файла дампа: пользователь и thread текущей chainlit-сессии."""
-    thread_id = current_session().thread_id
-    if thread_id is None:
-        return f"no-context-{request.url.host}.log"
-
-    who = current_session().label
-    if not who:
-        who = "anon"
-
-    label = re.sub(r"[^\w.@-]", "_", f"{who}-{thread_id}")
-
-    return f"{label}-{request.url.host}.log"
-
-
-def _llm_client(http: HttpConfig) -> AsyncClient:
-    dump_file = None
-    if http.dump.enable:
-        dump_file = _chainlit_dump_file
-
-    return LlmHttp.client(http, dump_file)
-
-
-async def httpx_clients(
+async def llm_providers(
     c: Annotated[AppConfig, Depends(get_app_config)],
-) -> AsyncIterator[dict[str, AsyncClient]]:
-    """HTTP-клиент на каждый удалённый бэкенд профиля чата; живут до остановки.
-
-    Профиль на локальном бэкенде клиента не имеет. Prefetch-flow профиля
-    получает свой клиент под ключом flow: у его переформулировщика свой
-    транспорт.
-    """
-    clients: dict[str, AsyncClient] = {}
-    for name, profile in c.profiles.items():
-        if isinstance(profile.provider, OpenAiChatConfig):
-            clients[name] = _llm_client(profile.provider.http)
-
-        if isinstance(profile.provider, OllamaChatConfig):
-            clients[name] = _llm_client(profile.provider.http)
+) -> AsyncIterator[LlmProviders]:
+    """Модели процесса: бэкенды всех профилей собираются на старте, чтобы
+    первая сессия не ждала весов локальной модели; закрываются на остановке."""
+    providers = LlmProviders(LlmProviderTypes.installed())
+    for profile in c.profiles.values():
+        providers.chat(profile)
 
         flow = profile.flow
         if not isinstance(flow, PrefetchFlowConfig):
             continue
 
-        if not isinstance(flow.rephraser, OpenAiGeneration):
+        if flow.rephraser is None:
             continue
 
-        clients[flow.client_key(name)] = _llm_client(flow.rephraser.http)
+        providers.chat(flow.rephraser)
 
     try:
-        yield clients
+        yield providers
     finally:
-        for client in clients.values():
-            await client.aclose()
-
-
-def local_chat_runtimes(
-    c: Annotated[AppConfig, Depends(get_app_config)],
-) -> dict[str, OnnxChatRuntime]:
-    """Локальные рантаймы по каталогу модели; один экземпляр на процесс.
-
-    Каталог собирается со всех профилей с локальным бэкендом и локальных
-    переформулировщиков: одна и та же модель грузится один раз и обслуживает
-    обе способности.
-    """
-    runtimes: dict[str, OnnxChatRuntime] = {}
-
-    for profile in c.profiles.values():
-        if isinstance(profile.provider, LocalChatConfig):
-            model_dir = profile.provider.model_dir
-            if model_dir not in runtimes:
-                runtimes[model_dir] = OnnxChatRuntime(model_dir)
-
-        flow = profile.flow
-        if not isinstance(flow, PrefetchFlowConfig):
-            continue
-
-        if not isinstance(flow.rephraser, LocalGeneration):
-            continue
-
-        model_dir = flow.rephraser.model_dir
-        if model_dir not in runtimes:
-            runtimes[model_dir] = OnnxChatRuntime(model_dir)
-
-    return runtimes
+        await providers.aclose()
 
 
 async def langchain_checkpoint_saver(
@@ -393,43 +318,8 @@ def _flow_tools(names: Sequence[str], tools: Sequence[BaseTool]) -> list[BaseToo
     return selected
 
 
-def rephrase_generators(
-    c: Annotated[AppConfig, Depends(get_app_config)],
-    clients: Annotated[dict[str, AsyncClient], Depends(httpx_clients)],
-    runtimes: Annotated[dict[str, OnnxChatRuntime], Depends(local_chat_runtimes)],
-) -> dict[str, StructuredGenerator]:
-    """Генератор переформулировок на профиль; живут до остановки приложения.
-
-    Локальный бэкенд работает на общем рантайме local_chat_runtimes: модель
-    грузится один раз на процесс и делится с чатом.
-    """
-    generators: dict[str, StructuredGenerator] = {}
-    for name, profile in c.profiles.items():
-        flow = profile.flow
-        if not isinstance(flow, PrefetchFlowConfig):
-            continue
-
-        cfg = flow.rephraser
-        if cfg is None:
-            continue
-
-        runtime = None
-        if isinstance(cfg, LocalGeneration):
-            runtime = runtimes[cfg.model_dir]
-
-        generators[name] = GeneratorFactory.build(
-            cfg,
-            client=clients.get(flow.client_key(name)),
-            runtime=runtime,
-        )
-
-    return generators
-
-
 def session_graph_builder(
-    generators: Annotated[
-        Mapping[str, StructuredGenerator], Depends(rephrase_generators)
-    ],
+    providers: Annotated[LlmProviders, Depends(llm_providers)],
     selected: Annotated[SelectedProfile, Depends(session_profile, scope="session")],
     tools: Annotated[Sequence[BaseTool], Depends(session_tools, scope="session")],
 ) -> AgentGraphBuilder:
@@ -438,56 +328,32 @@ def session_graph_builder(
     if not isinstance(flow, PrefetchFlowConfig):
         return PlainGraphBuilder()
 
-    rephraser = _rephraser(generators, selected.name)
+    rephraser = _rephraser(providers, flow)
     stage = TracedStage(StepText.PREFETCH.value)
     return PrefetchGraphBuilder(rephraser, _flow_tools(flow.tools, tools), stage)
 
 
-def _rephraser(
-    generators: Mapping[str, StructuredGenerator],
-    profile: str,
-) -> Rephraser:
+def _rephraser(providers: LlmProviders, flow: PrefetchFlowConfig) -> Rephraser:
     """Модель, готовящая поисковые запросы; без секции — запрос идёт как есть."""
-    generator = generators.get(profile)
-    if generator is None:
+    cfg = flow.rephraser
+    if cfg is None:
         return PassthroughRephraser()
 
-    return LlmRephraser(generator)
+    reply = SchemaReply(providers.chat(cfg), cfg.sampling)
 
-
-def session_chat_provider(
-    clients: Annotated[dict[str, AsyncClient], Depends(httpx_clients)],
-    runtimes: Annotated[dict[str, OnnxChatRuntime], Depends(local_chat_runtimes)],
-    selected: Annotated[SelectedProfile, Depends(session_profile, scope="session")],
-    settings: Annotated[
-        AgentSettings, Depends(session_agent_settings, scope="session")
-    ],
-) -> ChatProvider:
-    """Чат-провайдер сессии: реализацию выбирает бэкенд профиля."""
-    backend = settings.provider
-
-    runtime = None
-    if isinstance(backend, LocalChatConfig):
-        runtime = runtimes[backend.model_dir]
-
-    return ChatProviderFactory.build(
-        backend,
-        model=settings.model,
-        client=clients.get(selected.name),
-        runtime=runtime,
-    )
+    return LlmRephraser(reply, cfg.system_prompt)
 
 
 def session_chat(
-    provider: Annotated[ChatProvider, Depends(session_chat_provider, scope="session")],
+    providers: Annotated[LlmProviders, Depends(llm_providers)],
     settings: Annotated[
         AgentSettings, Depends(session_agent_settings, scope="session")
     ],
 ) -> BaseChatModel:
-    """Чат-модель хода: мост графа поверх провайдера с сэмплингом сессии."""
-    return ProviderChatModel(
-        provider=provider,
-        sampling=settings.chat_sampling(),
+    """Чат-модель хода: мост графа поверх модели профиля с сэмплингом сессии."""
+    return ChatModelBridge(
+        chat_model=providers.chat(settings),
+        sampling=dict(settings.sampling),
         model_name=settings.model,
     )
 

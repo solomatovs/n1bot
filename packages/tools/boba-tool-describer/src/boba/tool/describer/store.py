@@ -27,7 +27,7 @@ from psycopg.errors import InsufficientPrivilege
 from pydantic import BaseModel, ConfigDict, Field
 
 from boba.db.postgres import PayloadPostgres
-from boba.db.postgres.profile import PostgresConfig
+from boba.db.postgres.connection import PostgresConfig
 from boba.identity.context import Scope, ScopeKind
 from boba.toolkit.types import SecretRevealing
 

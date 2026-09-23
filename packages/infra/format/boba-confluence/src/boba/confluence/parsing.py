@@ -35,7 +35,7 @@ from boba.indexing import (
     ReaderKeys,
     TransportKeys,
 )
-from boba.transport.http.profile import HttpConnection
+from boba.transport.http.connection import HttpConnection
 
 __all__ = [
     "BodyEncoding",
@@ -164,8 +164,8 @@ class ConfluenceJsonDecoder(Decoder):
     этому факту, чтобы DispatchReader мог честно роутить страницы через
     HTMLReader (а не через несуществующий JSONReader)."""
 
-    def __init__(self, *, profile: HttpConnection, body_format: str) -> None:
-        self._profile = profile
+    def __init__(self, *, connection: HttpConnection, body_format: str) -> None:
+        self._connection = connection
         self._body_format = body_format
         self._hasher = BodyHasher()
 
@@ -207,7 +207,7 @@ class ConfluenceJsonDecoder(Decoder):
             meta = meta.set(ConfluenceKeys.LABELS, labels)
 
         if content.links.webui:
-            url = str(self._profile.url_of(content.links.webui))
+            url = str(self._connection.url_of(content.links.webui))
             meta = meta.set(ConfluenceKeys.SOURCE_URL, url)
 
         return replace(value, handle=ChunkStream.of(html), metadata=meta)

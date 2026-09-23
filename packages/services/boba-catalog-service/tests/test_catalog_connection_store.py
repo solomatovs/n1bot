@@ -40,7 +40,7 @@ from boba.db.postgres.catalog import (
     SnapshotWriter,
     StagingTable,
 )
-from boba.db.postgres.profile import PostgresConfig
+from boba.db.postgres.connection import PostgresConfig
 from boba.db.postgres.snapshot import PgSnapshot
 from boba.db.postgres.snapshot_sample import PgSample
 from boba.stand.catalog_stand import CatalogStand

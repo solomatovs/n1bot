@@ -36,4 +36,4 @@ namespaces = true
 postgres = "boba.db.postgres.snapshot:PgSnapshot"
 
 [project.entry-points."boba.connections"]
-postgres = "boba.db.postgres.connection:MANIFEST"
+postgres = "boba.db.postgres.manifest:MANIFEST"

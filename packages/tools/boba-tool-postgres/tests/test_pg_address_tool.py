@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 from pydantic import SecretStr
 
-from boba.db.postgres.profile import (
+from boba.db.postgres.connection import (
     PasswordAuth,
     PostgresConfig,
     PostgresOptionsConfig,

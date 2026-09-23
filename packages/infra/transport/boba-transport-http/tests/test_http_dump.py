@@ -9,9 +9,13 @@ from pathlib import Path
 
 import pytest
 
-from boba.chat.http import HttpDumpConfig
-from boba.transport.http import HttpRequest, HttpTransport
-from boba.transport.http.profile import HttpConnection, UrlScheme
+from boba.transport.http import (
+    HttpDumpConfig,
+    HttpRequest,
+    HttpTransport,
+    HttpTransportConfig,
+)
+from boba.transport.http.connection import HttpConnection, UrlScheme
 
 pytestmark = pytest.mark.anyio
 
@@ -51,11 +55,14 @@ class TestHttpDump:
         self, server: ThreadingHTTPServer, tmp_path: Path
     ) -> None:
         host, port = server.server_address[:2]
-        profile = HttpConnection(scheme=UrlScheme.HTTP, host=str(host), port=int(port))
+        connection = HttpConnection(
+            scheme=UrlScheme.HTTP, host=str(host), port=int(port)
+        )
         dump = HttpDumpConfig(enable=True, path=str(tmp_path / "dumps"))
+        config = HttpTransportConfig(dump=dump)
 
         async with (
-            HttpTransport(profile, dump=dump) as transport,
+            HttpTransport(connection, config) as transport,
             transport.fetch(HttpRequest(url="/rest/api/space/DEV")) as resp,
         ):
             body = await resp.stream.read()
@@ -70,10 +77,12 @@ class TestHttpDump:
         self, server: ThreadingHTTPServer, tmp_path: Path
     ) -> None:
         host, port = server.server_address[:2]
-        profile = HttpConnection(scheme=UrlScheme.HTTP, host=str(host), port=int(port))
+        connection = HttpConnection(
+            scheme=UrlScheme.HTTP, host=str(host), port=int(port)
+        )
 
         async with (
-            HttpTransport(profile) as transport,
+            HttpTransport(connection, HttpTransportConfig()) as transport,
             transport.fetch(HttpRequest(url="/")) as resp,
         ):
             await resp.stream.read()

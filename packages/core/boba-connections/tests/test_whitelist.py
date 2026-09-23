@@ -6,12 +6,12 @@ from uuid import UUID
 
 import pytest
 
-from boba.connections.profile import GrantedConnection, StoredConnection
+from boba.connections.stored import GrantedConnection, StoredConnection
 from boba.connections.whitelist import (
     AmbiguousConnectionError,
     ConnectionWhitelist,
 )
-from boba.transport.http.profile import HttpConnection
+from boba.transport.http.connection import HttpConnection
 
 
 @pytest.fixture(autouse=True)
@@ -25,7 +25,7 @@ def _row(
     stored = StoredConnection(
         id=row_id,
         name=name,
-        profile=HttpConnection(host=host, port=443, ssl_verify=False),
+        connection=HttpConnection(host=host, port=443, ssl_verify=False),
     )
     return GrantedConnection(row=stored, ambiguous=ambiguous)
 
@@ -48,7 +48,7 @@ class TestPick:
             _row(UUID(int=1), "confl", "wiki.example.com", ambiguous=True),
             _row(UUID(int=2), "confl", "*.example.com", ambiguous=True),
         )
-        if "confl" not in whitelist.ambiguous or whitelist.profiles:
+        if "confl" not in whitelist.ambiguous or whitelist.connections:
             raise AssertionError("duplicate name must be ambiguous and unlisted")
         with pytest.raises(AmbiguousConnectionError):
             whitelist.pick("confl")

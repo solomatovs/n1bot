@@ -31,9 +31,9 @@ from boba.connection_broker.tickets import ServiceTickets
 from boba.connection_broker.user_connections import UserConnections
 from boba.connections.manifest import ConnectionTypes
 from boba.connections.marks import ConnectionRefusal
-from boba.connections.profile import GrantTarget, StoredRole
+from boba.connections.stored import GrantTarget, StoredRole
 from boba.db.postgres import AsyncPostgresPool
-from boba.db.postgres.profile import PasswordAuth, PostgresConfig
+from boba.db.postgres.connection import PasswordAuth, PostgresConfig
 from boba.identity.context import CallContext, ContextKind
 from boba.identity.errors import RefusalError
 from boba.identity.session import UserMetadataField
@@ -54,7 +54,7 @@ from boba.toolkit.sql import SqlErrorKind
 from boba.toolkit.wrap import ToolProcessWrap
 from boba.toolrun.callvalues import CallContextValues
 from boba.toolrun.injected import InjectedConfig
-from boba.transport.http.profile import HttpConnection, NegotiateAuth, UrlScheme
+from boba.transport.http.connection import HttpConnection, NegotiateAuth, UrlScheme
 
 _REPO = Path(__file__).resolve().parents[4]
 _SANDBOX_STAGING = _REPO / "build" / "chainlit" / "src" / "sandbox"

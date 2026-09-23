@@ -16,9 +16,9 @@ from __future__ import annotations
 import logging
 from typing import ClassVar
 
-from boba.connections.credentials import CredentialSource, ProfileSections
+from boba.connections.credentials import ConnectionSections, CredentialSource
 from boba.connections.marks import ConnectionRefusal
-from boba.connections.profile import ConnectionProfileBase
+from boba.connections.stored import ConnectionBase
 from boba.identity.context import Credential, DelegatedTicket
 from boba.identity.errors import RefusalError
 from boba.identity.sso import RefreshSignal
@@ -71,18 +71,18 @@ class KerberosCredentialSource(CredentialSource):
         self._refresh = refresh
 
     async def for_connection(
-        self, profile: ConnectionProfileBase, credential: Credential
-    ) -> ConnectionProfileBase:
-        section = ProfileSections.section_of(profile)
+        self, connection: ConnectionBase, credential: Credential
+    ) -> ConnectionBase:
+        section = ConnectionSections.section_of(connection)
         if section is None:
-            return profile
+            return connection
 
         if isinstance(section, TicketAuth):
-            return profile
+            return connection
 
         source = await self._source(section, credential)
         issuer = ServiceTicketIssuer(section.min_lifetime)
-        service = profile.service_name()
+        service = connection.service_name()
         ticket = await issuer.issue_async(source, service)
 
         logger.info(
@@ -92,7 +92,7 @@ class KerberosCredentialSource(CredentialSource):
             section.trace(),
         )
 
-        return profile.with_call_ticket(ticket)
+        return connection.with_call_ticket(ticket)
 
     async def _source(
         self, section: KerberosAuthBase, credential: Credential

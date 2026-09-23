@@ -21,5 +21,5 @@ export type Contract = [
   Assert<Extends<Me, Schemas["Me"]>>,
   Assert<Extends<ProfileView, Schemas["ProfileView"]>>,
   Assert<Extends<SignInProviders, Schemas["SignInProviders"]>>,
-  Assert<Extends<Omit<ConnectionView, "profile">, Omit<Schemas["ConnectionView"], "profile">>>,
+  Assert<Extends<Omit<ConnectionView, "connection">, Omit<Schemas["ConnectionView"], "connection">>>,
 ];

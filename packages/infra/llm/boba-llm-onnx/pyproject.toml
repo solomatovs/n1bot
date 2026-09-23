@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "boba-llm-onnx"
+version = "0.0.23.dev1"
+description = "Boba LLM provider onnx: локальный чат in-process на onnxruntime-genai."
+requires-python = ">=3.11,<4"
+dependencies = [
+    "boba-llm==0.0.23.dev1",
+    "boba-toolkit==0.0.23.dev1",
+    "pydantic>=2.10,<2.11",
+]
+
+[project.optional-dependencies]
+generation = [
+    "onnxruntime-genai>=0.15,<1",
+]
+dev = [
+    "pytest>=8",
+]
+
+[project.entry-points."boba.llm"]
+onnx = "boba.llm.onnx:MANIFEST"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["boba*"]
+namespaces = true

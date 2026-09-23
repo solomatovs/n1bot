@@ -1,4 +1,4 @@
-"""boba.db.oracle — клиент Oracle; конфиг — boba.db.oracle.profile.
+"""boba.db.oracle — клиент Oracle; конфиг — boba.db.oracle.connection.
 
 Клиент (boba.db.oracle.payload) отсюда не экспортируется: он тянет python-oracledb,
 которого в окружении приложения нет — драйвер объявлен extra `payload`.

@@ -37,24 +37,24 @@ export type ProfileView = z.infer<typeof ProfileViewSchema>;
 export const ConnectionKindSchema = z.string();
 export type ConnectionKind = z.infer<typeof ConnectionKindSchema>;
 
-/** Профиль соединения — объект с дискриминатором kind; поля читает форма по виду. */
-export const ConnectionProfileSchema = z.object({ kind: ConnectionKindSchema }).passthrough();
-export type ConnectionProfile = z.infer<typeof ConnectionProfileSchema>;
+/** Соединение — объект с дискриминатором kind; поля читает форма по виду. */
+export const ConnectionSchema = z.object({ kind: ConnectionKindSchema }).passthrough();
+export type Connection = z.infer<typeof ConnectionSchema>;
 
 export const ConnectionViewSchema = z.object({
   id: z.string().uuid(),
   name: z.string(),
   kind: ConnectionKindSchema,
   mine: z.boolean(),
-  /** false — тип строки не установлен: профиля нет, вместо формы — пометка. */
+  /** false — тип строки не установлен: соединения нет, вместо формы — пометка. */
   available: z.boolean(),
-  profile: ConnectionProfileSchema.nullable(),
+  connection: ConnectionSchema.nullable(),
 });
 export type ConnectionView = z.infer<typeof ConnectionViewSchema>;
 
 export type ConnectionBody = {
   name: string;
-  profile: Record<string, unknown>;
+  connection: Record<string, unknown>;
 };
 
 export const ProbeResultSchema = z.object({

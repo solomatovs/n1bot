@@ -18,7 +18,7 @@ from boba.connections.address import AddressError
 from boba.db.clickhouse.address import ChNodeKind
 from boba.db.postgres import AsyncPostgresPool
 from boba.db.postgres.address import PgNodeKind
-from boba.db.postgres.profile import PostgresConfig
+from boba.db.postgres.connection import PostgresConfig
 from boba.identity.context import Scope, ScopeKind
 from boba.tool.describer.address import Addresses, EntityKind
 from boba.tool.describer.edges import (

@@ -20,7 +20,7 @@ import httpx
 from pydantic import Field, ValidationError
 
 from boba.connections.address import Address, AddressError
-from boba.transport.http.profile import UrlScheme
+from boba.transport.http.connection import UrlScheme
 
 __all__ = ["WebAddress"]
 

@@ -13,12 +13,8 @@
 поверхности, чтобы владельцу не приходилось знать контракт ответа. Системный промпт на
 обоих проходах берётся из строки поверхности, поэтому модель остаётся в своей роли.
 
-Генератор собирается на каждый системный промпт и переиспользуется: клиент к endpoint'у
-и локальный рантайм общие на процесс, потому что модель одна.
-
 Ошибки:
-DescribeError — модель недоступна или ответила не по схеме, файла шаблона нет,
-    провайдер настроен неполно.
+DescribeError — модель недоступна или ответила не по схеме, файла шаблона нет.
 """
 
 from __future__ import annotations
@@ -30,64 +26,23 @@ from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, Field, ValidationError
 
-from boba.chat.generation import (
-    GenerationError,
-    LocalGeneration,
-    OpenAiGeneration,
-    SchemaSpec,
-    StructuredGenerator,
-)
-from boba.chat.http import HttpConfig
 from boba.ix_core.prompts import SurfacePrompt
-from boba.llm.generation import GeneratorFactory
-from boba.llm.http import LlmHttp
-from boba.llm.local import OnnxChatRuntime
+from boba.llm.chat import LlmError, ToolSpec
+from boba.llm.schema import SchemaReply
 
 __all__ = [
     "DescribeError",
     "Described",
     "Description",
-    "Generators",
     "MarkdownSplit",
-    "ModelConfig",
     "PackPrompts",
-    "Provider",
 ]
 
 
 class DescribeError(Exception):
     """Объект не удалось описать."""
-
-
-class Provider(StrEnum):
-    OPENAI = "openai"
-    LOCAL = "local"
-
-
-class ModelConfig(BaseModel):
-    """Часть секции конфига, которая описывает модель и её бюджет входа."""
-
-    model_config = ConfigDict(extra="ignore")
-
-    provider: Provider
-    model: str = ""
-    base_url: str = ""
-    api_key: str = ""
-    model_dir: str = ""
-    max_tokens: int = Field(gt=0, default=1024)
-    temperature: float = Field(ge=0, default=0.2)
-    tool_choice: str = "auto"
-    max_input_chars: int = Field(gt=0)
-    """Сколько знаков материала модель принимает за один вызов; длиннее — свёртка."""
-
-    def label(self) -> str:
-        """Модель для отпечатка: её смена перегоняет описания заново."""
-        if self.provider is Provider.LOCAL:
-            return f"local:{self.model_dir}"
-
-        return f"openai:{self.model}"
 
 
 class PromptFile(StrEnum):
@@ -113,7 +68,7 @@ class PackPrompts:
         self._part = self._text(PromptFile.PART, "{input}")
         self._reduce = self._text(PromptFile.REDUCE, "{parts}")
         raw = self._read(PromptFile.SCHEMA)
-        self.schema = SchemaSpec.model_validate(json.loads(raw))
+        self.schema = ToolSpec.model_validate(json.loads(raw))
         answer = self._text(PromptFile.ANSWER, "{function}")
         self._answer = answer.replace("{function}", self.schema.name)
 
@@ -138,7 +93,9 @@ class PackPrompts:
                 self._answer,
                 self._part,
                 self._reduce,
-                json.dumps(self.schema.body, sort_keys=True, ensure_ascii=False),
+                json.dumps(
+                    dict(self.schema.parameters), sort_keys=True, ensure_ascii=False
+                ),
             ]
         )
 
@@ -246,79 +203,11 @@ class Described:
     chunks: int
 
 
-class Generators:
-    """Генераторы по системному промпту.
-
-    Модель одна на процесс, а роль у неё своя на каждую поверхность, поэтому клиент к
-    endpoint'у и локальный рантайм создаются один раз, а генератор собирается на каждый
-    системный промпт и дальше переиспользуется.
-    """
-
-    def __init__(self, cfg: ModelConfig) -> None:
-        self._cfg = cfg
-        self._built: dict[str, StructuredGenerator] = {}
-        self._client = None
-        self._runtime = None
-
-        if cfg.provider is Provider.LOCAL:
-            if not cfg.model_dir:
-                raise DescribeError("provider local: expected model_dir in the config")
-
-            self._runtime = OnnxChatRuntime(cfg.model_dir)
-            return
-
-        if not cfg.base_url:
-            raise DescribeError("provider openai: expected base_url in the config")
-
-        if not cfg.model:
-            raise DescribeError("provider openai: expected model in the config")
-
-        self._client = LlmHttp.client(HttpConfig())
-
-    def of(self, system_prompt: str) -> StructuredGenerator:
-        found = self._built.get(system_prompt)
-        if found is not None:
-            return found
-
-        built = self._build(system_prompt)
-        self._built[system_prompt] = built
-
-        return built
-
-    def _build(self, system_prompt: str) -> StructuredGenerator:
-        if self._cfg.provider is Provider.LOCAL:
-            local = LocalGeneration(
-                kind="local",
-                system_prompt=system_prompt,
-                max_tokens=self._cfg.max_tokens,
-                model_dir=self._cfg.model_dir,
-                reply_prefix="",
-            )
-
-            return GeneratorFactory.build(local, client=None, runtime=self._runtime)
-
-        remote = OpenAiGeneration(
-            kind="openai",
-            system_prompt=system_prompt,
-            http=HttpConfig(),
-            base_url=self._cfg.base_url,
-            api_key=self._cfg.api_key,
-            model=self._cfg.model,
-            sampling={
-                "temperature": self._cfg.temperature,
-                "max_tokens": self._cfg.max_tokens,
-                "tool_choice": self._cfg.tool_choice,
-            },
-        )
-
-        return GeneratorFactory.build(remote, client=self._client, runtime=None)
-
-
 class Description:
     """Описание объекта: один вызов или свёртка, если материал в бюджет не влез."""
 
-    def __init__(self, generators: Generators, pack: PackPrompts, budget: int) -> None:
-        self._generators = generators
+    def __init__(self, reply: SchemaReply, pack: PackPrompts, budget: int) -> None:
+        self._reply = reply
         self._pack = pack
         self._budget = budget
         self._split = MarkdownSplit(budget)
@@ -339,19 +228,18 @@ class Description:
 
     async def _ask(self, prompt: SurfacePrompt, user: str) -> str:
         system = self._pack.system(prompt.system_prompt)
-        generator = self._generators.of(system)
         where = f"describe {prompt.surface}/{prompt.aspect}"
 
         try:
-            raw = await generator.generate(user, self._pack.schema)
-        except GenerationError as exc:
+            raw = await self._reply.ask(system, user, self._pack.schema)
+        except LlmError as exc:
             raise DescribeError(f"{where}: model call failed: {exc}") from exc
 
         try:
-            reply = Reply.model_validate_json(raw)
+            reply = Reply.model_validate(raw)
         except ValidationError as exc:
             raise DescribeError(
-                f"{where}: reply is not by schema: {raw[:200]!r}: {exc}"
+                f"{where}: reply is not by schema: {dict(raw)!r:.200}: {exc}"
             ) from exc
 
         return reply.description.strip()

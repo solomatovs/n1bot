@@ -27,7 +27,7 @@ from psycopg.errors import LockNotAvailable, SerializationFailure
 from pydantic import BaseModel, ConfigDict
 
 from boba.db.postgres import AsyncPostgresPool, PostgresError
-from boba.db.postgres.profile import PostgresConfig
+from boba.db.postgres.connection import PostgresConfig
 from boba.db.postgres.query import PgQueryBuilder
 from boba.ix_core.scrape import (
     BlockStream,

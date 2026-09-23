@@ -69,7 +69,7 @@ from boba.tool.confluence.ingest_base import (
     QueryScope,
     SpaceScope,
 )
-from boba.transport.http.profile import HttpConnection, UrlScheme
+from boba.transport.http.connection import HttpConnection, UrlScheme
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
 
@@ -175,7 +175,7 @@ class IngestStand:
         self.chunks = PostgresChunkStore(cfg=cfg)
 
     def connection(self) -> ConfluenceConnection:
-        profile = HttpConnection(
+        connection = HttpConnection(
             scheme=UrlScheme.HTTP,
             host="127.0.0.1",
             port=self._port,
@@ -183,15 +183,15 @@ class IngestStand:
             retry_backoff_sec=0.0,
             timeout_sec=10.0,
         )
-        return ConfluenceConnection(profile=profile, body_format="view")
+        return ConfluenceConnection(connection=connection, body_format="view")
 
     def page_source(self, page_id: str) -> SourceId:
         path = CflRestBuilder().page_body_path(page_id, body_format="view")
-        return ConfluenceSourceIds().of(self.connection().profile, str(path))
+        return ConfluenceSourceIds().of(self.connection().connection, str(path))
 
     def attachment_source(self, page_id: str, title: str) -> SourceId:
         return ConfluenceSourceIds().of(
-            self.connection().profile, f"/download/attachments/{page_id}/{title}"
+            self.connection().connection, f"/download/attachments/{page_id}/{title}"
         )
 
     async def run(

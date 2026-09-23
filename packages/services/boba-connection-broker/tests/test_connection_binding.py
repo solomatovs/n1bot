@@ -18,10 +18,10 @@ from pydantic import SecretStr, create_model
 
 from boba.cancellation import RunCancellation
 from boba.connection_broker.user_connections import UserConnections
-from boba.connections.base import ClientIdentity, ConnectionProfileBase
+from boba.connections.base import ClientIdentity, ConnectionBase
 from boba.connections.manifest import ConnectionTypeManifest, ConnectionTypes
 from boba.connections.marks import ConnectionRefusal
-from boba.connections.profile import GrantedConnection, StoredConnection
+from boba.connections.stored import GrantedConnection, StoredConnection
 from boba.identity.context import (
     CallContext,
     HumanInitiator,
@@ -42,7 +42,7 @@ pytestmark = pytest.mark.anyio
 SECRET = "probe-secret-value"
 
 
-class ProbeConnection(ConnectionProfileBase):
+class ProbeConnection(ConnectionBase):
     """Профиль выдуманного типа: чтобы тест не зависел от установленных пакетов."""
 
     kind: Literal["probe"] = "probe"
@@ -57,7 +57,7 @@ class ProbeConnection(ConnectionProfileBase):
         return self.model_copy(update={"client": client.login})
 
 
-class OtherConnection(ConnectionProfileBase):
+class OtherConnection(ConnectionBase):
     """Второй тип: нужен, чтобы проверить выбор строк по виду соединения."""
 
     kind: Literal["other"] = "other"
@@ -67,17 +67,17 @@ class OtherConnection(ConnectionProfileBase):
         return f"host={self.host}"
 
 
-async def _probe(profile: ConnectionProfileBase) -> str:
+async def _probe(connection: ConnectionBase) -> str:
     return "ok"
 
 
 TYPES = ConnectionTypes(
     {
         "probe": ConnectionTypeManifest(
-            kind="probe", profile=ProbeConnection, probe=_probe
+            kind="probe", model=ProbeConnection, probe=_probe
         ),
         "other": ConnectionTypeManifest(
-            kind="other", profile=OtherConnection, probe=_probe
+            kind="other", model=OtherConnection, probe=_probe
         ),
     }
 )
@@ -112,13 +112,13 @@ class Credentials:
     """Источник кредов вызова: kerberos-секций у пробного типа нет."""
 
     async def for_connection(
-        self, profile: ConnectionProfileBase, credential: object
-    ) -> ConnectionProfileBase:
-        return profile
+        self, connection: ConnectionBase, credential: object
+    ) -> ConnectionBase:
+        return connection
 
 
-def _row(name: str, profile: ConnectionProfileBase, row_id: UUID | None = None):
-    return StoredConnection(id=row_id or uuid4(), name=name, profile=profile)
+def _row(name: str, connection: ConnectionBase, row_id: UUID | None = None):
+    return StoredConnection(id=row_id or uuid4(), name=name, connection=connection)
 
 
 def _probe_row(name: str, host: str) -> StoredConnection:
@@ -228,10 +228,10 @@ class TestProfileReachesTheBody:
 
         got = await _call(tool, {"connection": "main", "sql": "select 1"})
 
-        profile = got["connection"]
-        assert isinstance(profile, ProbeConnection)
-        assert profile.host == "db.local"
-        assert profile.password.get_secret_value() == SECRET
+        connection = got["connection"]
+        assert isinstance(connection, ProbeConnection)
+        assert connection.host == "db.local"
+        assert connection.password.get_secret_value() == SECRET
 
     async def test_profile_is_signed_by_the_caller(self) -> None:
         tool = _bound(_one_connection(), [_probe_row("main", "db.local")])
@@ -286,7 +286,7 @@ class TestDeclarationIsChecked:
             _bound(tool, [])
 
     def test_type_package_must_be_installed(self) -> None:
-        class Unregistered(ConnectionProfileBase):
+        class Unregistered(ConnectionBase):
             kind: Literal["unregistered"] = "unregistered"
 
             def trace(self) -> str:

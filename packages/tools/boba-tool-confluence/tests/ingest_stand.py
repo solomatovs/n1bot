@@ -28,7 +28,7 @@ from boba.indexing import (
     SourceLedger,
     SourceRecord,
 )
-from boba.indexing.ports import Embedder
+from boba.llm.embedding import EmbeddingModel
 
 __all__ = ["MemoryChunkStore", "MemorySourceLedger", "TextReader", "ZeroEmbedder"]
 
@@ -202,7 +202,7 @@ class MemoryChunkStore(ChunkStore[str]):
         return len(doomed)
 
 
-class ZeroEmbedder(Embedder[str]):
+class ZeroEmbedder(EmbeddingModel):
     """Граница модели: вектор нужного размера без загрузки эмбеддера."""
 
     DIM = 4

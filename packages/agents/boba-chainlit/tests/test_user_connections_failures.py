@@ -33,9 +33,9 @@ from boba.connection_broker.store import ConnectionsConfig, ConnectionStore
 from boba.connection_broker.user_connections import UserConnections
 from boba.connections.manifest import ConnectionTypes
 from boba.connections.marks import ConnectionRefusal
-from boba.connections.profile import GrantTarget
+from boba.connections.stored import GrantTarget
 from boba.db.postgres import AsyncPostgresPool
-from boba.db.postgres.profile import PasswordAuth, PostgresConfig
+from boba.db.postgres.connection import PasswordAuth, PostgresConfig
 from boba.identity.session import UserMetadataField
 from boba.kerberos import DelegatedAuth, DelegationMode, KeytabAuth
 from boba.krb import KeytabCredentials
@@ -51,8 +51,7 @@ from boba.toolkit.facade import Injected, UserConnection
 from boba.toolkit.result import ErrorResult, ToolArtifact
 from boba.toolrun.errors import ToolErrorGuard
 from boba.toolrun.injected import InjectedConfig
-from boba.transport.http.profile import HttpConnection
-from boba.transport.http.web import WebHost
+from boba.transport.http.connection import HttpConnection
 
 pytestmark = pytest.mark.anyio
 
@@ -279,7 +278,7 @@ class Guarded:
     @staticmethod
     def web(raw_config: Any, store: ConnectionStore):
         """Как web_fetch_page: соединение параметром, покрытие хоста URL
-        проверяет само тело через WebHost.bound."""
+        проверяет само тело через HttpConnection.for_url."""
         schema = create_model(
             "GuardedWebArgs",
             url=(str, ...),
@@ -299,7 +298,7 @@ class Guarded:
             if not isinstance(url, str):
                 raise AssertionError(f"expected a url string, got {url!r}")
 
-            WebHost.bound(connection, url)
+            connection.for_url(url)
             return "ok", kwargs
 
         return Guarded._build(schema, store, None, resolve, body)

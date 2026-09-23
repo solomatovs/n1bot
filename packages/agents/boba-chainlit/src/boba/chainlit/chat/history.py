@@ -26,6 +26,7 @@ from langgraph.checkpoint.base import BaseCheckpointSaver, PendingWrite
 from langgraph.graph.message import REMOVE_ALL_MESSAGES
 from langgraph.graph.state import CompiledStateGraph
 
+from boba.chainlit.agent.bridge import ResponseField
 from boba.chainlit.agent.flow import PrefetchCall, PrefetchStamp
 from boba.chainlit.chat.tracing import LlmUsage
 from boba.chainlit.chat.turn import (
@@ -41,7 +42,6 @@ from boba.chainlit.rendering.chat_view import (
     StepText,
     TurnDraft,
 )
-from boba.llm.chat import ResponseField
 from chainlit.data.base import BaseDataLayer
 from chainlit.step import StepDict
 

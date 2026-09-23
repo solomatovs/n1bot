@@ -123,8 +123,8 @@ export class WorkflowApi {
   }
 
   /** Пробное соединение по черновику формы: исход всегда 200 с ok/message. */
-  async checkConnection(profile: Record<string, unknown>): Promise<ProbeResult> {
-    const raw = await this.raw("post", "/v1/connections/check", {}, undefined, { profile });
+  async checkConnection(connection: Record<string, unknown>): Promise<ProbeResult> {
+    const raw = await this.raw("post", "/v1/connections/check", {}, undefined, { connection });
     return ProbeResultSchema.parse(raw);
   }
 

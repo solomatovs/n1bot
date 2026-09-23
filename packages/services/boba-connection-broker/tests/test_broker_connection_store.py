@@ -13,20 +13,20 @@ from pydantic import SecretStr
 
 from boba.connection_broker.store import ConnectionsConfig, ConnectionStore
 from boba.connections.manifest import ConnectionTypes, UnknownConnectionKindError
-from boba.connections.profile import (
+from boba.connections.secrets import SecretCryptoError
+from boba.connections.stored import (
     ConnectionNotFoundError,
     GrantKind,
     GrantTarget,
     StoredRole,
 )
-from boba.connections.secrets import SecretCryptoError
-from boba.db.clickhouse.profile import (
+from boba.db.clickhouse.connection import (
     ClickHouseConfig,
     ClickHouseSettingsConfig,
     NoPasswordAuth,
 )
 from boba.db.postgres import AsyncPostgresPool
-from boba.db.postgres.profile import (
+from boba.db.postgres.connection import (
     PasswordAuth,
     PostgresConfig,
     PostgresOptionsConfig,
@@ -34,7 +34,7 @@ from boba.db.postgres.profile import (
 )
 from boba.identity.context import Subject
 from boba.stand_core.fakes import FakeSecret
-from boba.transport.http.profile import BearerAuth, HttpConnection
+from boba.transport.http.connection import BearerAuth, HttpConnection
 
 pytestmark = pytest.mark.anyio
 
@@ -129,11 +129,11 @@ async def test_add_and_get_restores_profile(store: ConnectionStore) -> None:
         raise AssertionError("name must survive the roundtrip")
     if stored.kind != "postgres":
         raise AssertionError("kind must follow the profile")
-    if not isinstance(stored.profile, PostgresConfig):
+    if not isinstance(stored.connection, PostgresConfig):
         raise AssertionError("profile must come back as PostgresConfig")
-    if not isinstance(stored.profile.auth, PasswordAuth):
-        raise AssertionError(f"auth must survive: {stored.profile.auth}")
-    if stored.profile.auth.password.get_secret_value() != FakeSecret.DB:
+    if not isinstance(stored.connection.auth, PasswordAuth):
+        raise AssertionError(f"auth must survive: {stored.connection.auth}")
+    if stored.connection.auth.password.get_secret_value() != FakeSecret.DB:
         raise AssertionError("password must be decrypted")
 
 
@@ -206,7 +206,7 @@ async def test_kind_is_read_from_the_data(
     if row is None:
         raise AssertionError("row must exist")
     if row[0] != "clickhouse":
-        raise AssertionError(f"kind must come from the profile: {row[0]}")
+        raise AssertionError(f"kind must come from the connection: {row[0]}")
 
 
 async def test_foreign_key_cannot_read_rows(

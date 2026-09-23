@@ -25,8 +25,8 @@ from pydantic import BaseModel, ConfigDict
 from boba.connection_broker.store import ConnectionStore
 from boba.connection_broker.user_connections import StoreRef
 from boba.connections.marks import ConnectionRefusal
-from boba.connections.profile import (
-    ConnectionProfileBase,
+from boba.connections.stored import (
+    ConnectionBase,
     MissingTypeConnection,
     StoredConnection,
 )
@@ -156,13 +156,13 @@ class UserConnectionsService:
         raise RefusalError(ConnectionRefusal.NOT_VISIBLE, msg)
 
     async def create(
-        self, subject: Subject, name: str, profile: ConnectionProfileBase
+        self, subject: Subject, name: str, connection: ConnectionBase
     ) -> StoredConnection:
         """Новая строка с личным грантом субъекту."""
         store = self._store_ref()
         await self._require_free_name(store, subject, name, except_id=None)
 
-        connection_id = await store.add_owned(name, profile, subject.user_id)
+        connection_id = await store.add_owned(name, connection, subject.user_id)
 
         return await store.get(connection_id)
 
@@ -171,14 +171,14 @@ class UserConnectionsService:
         subject: Subject,
         connection_id: UUID,
         name: str,
-        profile: ConnectionProfileBase,
+        connection: ConnectionBase,
     ) -> StoredConnection:
         """Имя и профиль своей строки целиком."""
         store = self._store_ref()
         await self._require_owned(store, subject, connection_id)
         await self._require_free_name(store, subject, name, except_id=connection_id)
 
-        await store.update(connection_id, name, profile)
+        await store.update(connection_id, name, connection)
 
         return await store.get(connection_id)
 

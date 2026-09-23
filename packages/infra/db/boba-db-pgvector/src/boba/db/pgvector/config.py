@@ -14,7 +14,7 @@ from typing import Self
 from psycopg import sql
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from boba.db.postgres.profile import PostgresConfig
+from boba.db.postgres.connection import PostgresConfig
 
 __all__ = [
     "EmbeddingDimension",

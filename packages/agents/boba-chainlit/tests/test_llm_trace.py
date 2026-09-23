@@ -8,21 +8,20 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import Iterator
 
-import httpx
 import pytest
-from chainlit_stand import fake_openai_chat
+from chainlit_stand import fake_openai_chat, in_process_llm
 from langchain.agents import create_agent
 from langchain_core.messages import HumanMessage
 from langchain_core.tools import BaseTool, StructuredTool
 from uvicorn.logging import DefaultFormatter
 
+from boba.chainlit.agent.bridge import ChatModelBridge
 from boba.chainlit.chat.tracing import LlmStateLog
 from boba.chainlit.infra.config import LOGGING_CONFIG
 from boba.chainlit.infra.log_context import UserLogContext
 from boba.identity.session import LogUserMark
-from boba.llm.bridge import ProviderChatModel
 from boba.stand.ui.fake_llm import FakeLlmApp, ScenarioName
 
 pytestmark = pytest.mark.anyio
@@ -47,23 +46,15 @@ def log_factory(caplog: pytest.LogCaptureFixture) -> Iterator[None]:
 
 
 @pytest.fixture
-async def provider() -> AsyncIterator[httpx.AsyncClient]:
+def provider(monkeypatch: pytest.MonkeyPatch) -> None:
     """Фейковый OpenAI-совместимый провайдер прямо в процессе теста."""
-    app = FakeLlmApp(token_delay_sec=0.0).asgi()
-    client = httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app),
-        base_url="https://fake-llm",
-    )
-    try:
-        yield client
-    finally:
-        await client.aclose()
+    in_process_llm(monkeypatch, FakeLlmApp(token_delay_sec=0.0).asgi())
 
 
 class TestLlmStateLog:
     @staticmethod
-    def _chat(provider: httpx.AsyncClient) -> ProviderChatModel:
-        return fake_openai_chat(provider)
+    def _chat(provider: None) -> ChatModelBridge:
+        return fake_openai_chat()
 
     @staticmethod
     def _log() -> LlmStateLog:
@@ -90,17 +81,13 @@ class TestLlmStateLog:
             ),
         ]
 
-    async def _stream_chat(
-        self, provider: httpx.AsyncClient, scenario: ScenarioName
-    ) -> None:
+    async def _stream_chat(self, provider: None, scenario: ScenarioName) -> None:
         chat = self._chat(provider)
         stream = chat.astream(scenario.value, config={"callbacks": [self._log()]})
         async for _chunk in stream:
             pass
 
-    async def _stream_agent(
-        self, provider: httpx.AsyncClient, scenario: ScenarioName
-    ) -> None:
+    async def _stream_agent(self, provider: None, scenario: ScenarioName) -> None:
         """Ход как в проде: langgraph поверх модели, стрим сообщениями."""
         agent = create_agent(
             model=self._chat(provider),
@@ -155,7 +142,7 @@ class TestLlmStateLog:
         return complaints
 
     async def test_streamed_turn_logs_every_stage(
-        self, provider: httpx.AsyncClient, caplog: pytest.LogCaptureFixture
+        self, provider: None, caplog: pytest.LogCaptureFixture
     ) -> None:
         await self._stream_chat(provider, ScenarioName.THINKING_ANSWER)
 
@@ -176,7 +163,7 @@ class TestLlmStateLog:
             raise AssertionError('self._heads(caplog) == [ "llm request started", "ll…')
 
     async def test_stage_lines_carry_size_and_duration(
-        self, provider: httpx.AsyncClient, caplog: pytest.LogCaptureFixture
+        self, provider: None, caplog: pytest.LogCaptureFixture
     ) -> None:
         await self._stream_chat(provider, ScenarioName.THINKING_ANSWER)
 
@@ -189,7 +176,7 @@ class TestLlmStateLog:
             raise AssertionError('finished.endswith("ms")')
 
     async def test_lines_are_formatted_with_user_and_thread(
-        self, provider: httpx.AsyncClient, caplog: pytest.LogCaptureFixture
+        self, provider: None, caplog: pytest.LogCaptureFixture
     ) -> None:
         """Тот же форматтер, что и у приложения: метка обязана попасть в строку."""
         await self._stream_chat(provider, ScenarioName.ANSWER)
@@ -209,7 +196,7 @@ class TestLlmStateLog:
                 raise AssertionError('f"[{MARK}]" in line')
 
     async def test_mark_does_not_leak_after_the_line(
-        self, provider: httpx.AsyncClient, caplog: pytest.LogCaptureFixture
+        self, provider: None, caplog: pytest.LogCaptureFixture
     ) -> None:
         """Метка живёт только на время записи: чужие строки её не наследуют."""
         await self._stream_chat(provider, ScenarioName.ANSWER)
@@ -224,7 +211,7 @@ class TestLlmStateLog:
             raise AssertionError("getattr(record, UserLogContext.ATTRIBUTE) == UserLo…")
 
     async def test_answer_without_stream_is_logged_as_complete(
-        self, provider: httpx.AsyncClient, caplog: pytest.LogCaptureFixture
+        self, provider: None, caplog: pytest.LogCaptureFixture
     ) -> None:
         chat = self._chat(provider)
         await chat.ainvoke(
@@ -247,7 +234,7 @@ class TestLlmStateLog:
             raise AssertionError('"tokens in=11 out=7" in self._lines(caplog)[-1]')
 
     async def test_tool_call_turn_logs_both_runs_and_the_call(
-        self, provider: httpx.AsyncClient, caplog: pytest.LogCaptureFixture
+        self, provider: None, caplog: pytest.LogCaptureFixture
     ) -> None:
         await self._stream_agent(provider, ScenarioName.TOOL)
 
@@ -267,7 +254,7 @@ class TestLlmStateLog:
             raise AssertionError('heads.index("tool connection_list started") > hea…')
 
     async def test_tool_line_reports_call_id_and_duration(
-        self, provider: httpx.AsyncClient, caplog: pytest.LogCaptureFixture
+        self, provider: None, caplog: pytest.LogCaptureFixture
     ) -> None:
         await self._stream_agent(provider, ScenarioName.TOOL)
 
@@ -282,7 +269,7 @@ class TestLlmStateLog:
             raise AssertionError('"output=11 chars" in finished')
 
     async def test_failed_tool_is_logged_as_failed(
-        self, provider: httpx.AsyncClient, caplog: pytest.LogCaptureFixture
+        self, provider: None, caplog: pytest.LogCaptureFixture
     ) -> None:
         """Инструмент падает по-настоящему: ошибка уходит наверх, ход её покажет."""
         with pytest.raises(ValueError, match="file not found"):
