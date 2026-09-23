@@ -693,6 +693,274 @@ async def ch_types_describe(
     )
 
 
+class Edm(StrEnum):
+    """Словарь имён выгрузки ЕДМ (data governance) в ClickHouse: таблицы,
+    атрибуты объектов, типы объектов и имена связей; база — аргумент вызова."""
+
+    ASSETS = "dp_edm__com_dg_export_data__assets_current_versions"
+    RELATIONS = "dp_edm__com_dg_export_data__relations_current_version"
+    RELATION_TYPES = "dp_edm__com_dg_export_data__relation_types"
+    ATTRIBUTES = "dp_edm__com_dg_export_data__attribute_list_current_versions"
+    ATTRIBUTES_PHYSICAL = (
+        "dp_edm__com_dg_export_data__attribute_list_physical_current_versions"
+    )
+
+    NAME = "name"
+    SHORT_DESCRIPTION = "short_description_edm"
+    EXTENDED_DESCRIPTION = "extended_description_edm"
+    DESCRIPTION = "description"
+    ED_ENTITY_NAME = "ed_entity_name"
+    ED_ATTRIBUTE_NAME = "ed_attribute_name"
+
+    TABLE = "pdm_table"
+    VIEW = "pdm_view"
+    TABLE_COLUMN = "pdm_table_column"
+    VIEW_COLUMN = "pdm_view_column"
+
+    LOGICAL_TO_PHYSICAL = "lnk_ldm_physical_relationship"
+
+    @classmethod
+    def described_attributes(cls) -> list[str]:
+        """Атрибуты описания физического объекта: имя и три текста."""
+        return [
+            cls.NAME.value,
+            cls.SHORT_DESCRIPTION.value,
+            cls.EXTENDED_DESCRIPTION.value,
+            cls.DESCRIPTION.value,
+        ]
+
+    @classmethod
+    def ed_name_attributes(cls) -> list[str]:
+        """Атрибуты имени логического объекта (сущность и её атрибут)."""
+        return [cls.ED_ENTITY_NAME.value, cls.ED_ATTRIBUTE_NAME.value]
+
+    @classmethod
+    def relation_types(cls) -> list[str]:
+        """Типы объектов, у которых есть колонки: таблица и view."""
+        return [cls.TABLE.value, cls.VIEW.value]
+
+    @classmethod
+    def column_types(cls) -> list[str]:
+        """Типы колонок таблицы и view."""
+        return [cls.TABLE_COLUMN.value, cls.VIEW_COLUMN.value]
+
+
+@tool
+async def ch_edm_structure(  # noqa: PLR0913
+    connection: ChConnection,
+    database: Annotated[
+        str,
+        Field(
+            min_length=1,
+            description="База ClickHouse с выгрузкой ЕДМ (например `cmn_cds`).",
+        ),
+    ],
+    table: Annotated[
+        str,
+        Field(
+            min_length=1,
+            description="Имя таблицы или view. `*` — все отношения выгрузки.",
+        ),
+    ] = "*",
+    path: Annotated[
+        str,
+        Field(
+            min_length=1,
+            description=(
+                "Шаблон пути таблицы в синтаксисе LIKE: `%/dwh/%`, `/dwh/orders%`. "
+                "`*` — без фильтра по пути."
+            ),
+        ),
+    ] = "*",
+    *,
+    offset: RowOffset,
+    limit: RowLimit,
+) -> SqlResult:
+    """Структура таблиц и view из выгрузки ЕДМ: одна строка на колонку.
+
+    Колонки: etalon_id (id колонки в ЕДМ), etalon_id_parent (id таблицы),
+    path (путь таблицы в ЕДМ), table_name, column_name. Фильтр table —
+    точное имя таблицы или view, path — шаблон LIKE пути таблицы. Выдача
+    постраничная: сколько показано и как листать, сказано в note.
+    """
+    builder = (
+        ChQueryBuilder()
+        .add(
+            """
+            with w_name as (
+                select
+                    etalon_id,
+                    value
+                from
+                    {db:Identifier}.{attributes_physical:Identifier}
+                where
+                    attribute_id = {name_attribute:String}
+            )
+            select
+                r.etalon_id_to      as etalon_id,
+                r.etalon_id_from    as etalon_id_parent,
+                a.path || '/' || obn.value as path,
+                obn.value   as table_name,
+                an.value    as column_name
+            from
+                {db:Identifier}.{relations:Identifier} r
+                inner join {db:Identifier}.{assets:Identifier} a
+                    on a.id = r.etalon_id_from
+                inner join {db:Identifier}.{relation_types:Identifier} rtl
+                    on rtl.relation_type_id = r.relation_type_id
+                    and rtl.is_inner = 1
+                inner join w_name obn
+                    on obn.etalon_id = r.etalon_id_from
+                inner join w_name an
+                    on an.etalon_id = r.etalon_id_to
+            where 1=1
+                and rtl.type_to in {column_types:Array(String)}
+                and rtl.type_from in {relation_types_from:Array(String)}
+            """,
+            db=database,
+            attributes_physical=Edm.ATTRIBUTES_PHYSICAL.value,
+            relations=Edm.RELATIONS.value,
+            assets=Edm.ASSETS.value,
+            relation_types=Edm.RELATION_TYPES.value,
+            name_attribute=Edm.NAME.value,
+            column_types=Edm.column_types(),
+            relation_types_from=Edm.relation_types(),
+        )
+        .when(table != "*", "and obn.value = {table:String}", table=table)
+        .when(
+            path != "*",
+            "and a.path || '/' || obn.value like {path:String}",
+            path=path,
+        )
+        .add("order by path, column_name")
+    )
+
+    return await run_and_collect(
+        connection, builder.build(), RowWindow(offset=offset, limit=limit)
+    )
+
+
+@tool
+async def ch_edm_descriptions(  # noqa: PLR0913
+    connection: ChConnection,
+    database: Annotated[
+        str,
+        Field(
+            min_length=1,
+            description="База ClickHouse с выгрузкой ЕДМ (например `cmn_cds`).",
+        ),
+    ],
+    name: Annotated[
+        str,
+        Field(
+            min_length=1,
+            description=(
+                "Точное имя физического объекта ЕДМ (таблицы, view или колонки). "
+                "`*` — все объекты."
+            ),
+        ),
+    ] = "*",
+    path: Annotated[
+        str,
+        Field(
+            min_length=1,
+            description=(
+                "Шаблон пути объекта в синтаксисе LIKE: `%/dwh/%`, "
+                "`/dwh/orders/%`. `*` — без фильтра по пути."
+            ),
+        ),
+    ] = "*",
+    *,
+    offset: RowOffset,
+    limit: RowLimit,
+) -> SqlResult:
+    """Описания физических объектов из выгрузки ЕДМ: таблицы, view и колонки.
+
+    Колонки: name, path (путь объекта в ЕДМ), short_description_edm,
+    extended_description_edm, description_from_source (описание из
+    источника), ed_name (имя связанной логической сущности или атрибута;
+    пусто, если связи нет). Фильтр name — точное имя объекта, path — шаблон
+    LIKE пути. Выдача постраничная: сколько показано и как листать, сказано
+    в note.
+    """
+    builder = (
+        ChQueryBuilder()
+        .add(
+            """
+            with w_pdm as (
+                select
+                    al.etalon_id,
+                    a.path,
+                    maxIf(al.value, al.attribute_id = {name_attribute:String})
+                        as name,
+                    maxIf(al.value, al.attribute_id = {short_attribute:String})
+                        as short_description_edm,
+                    maxIf(al.value, al.attribute_id = {extended_attribute:String})
+                        as extended_description_edm,
+                    maxIf(al.value, al.attribute_id = {source_attribute:String})
+                        as description_from_source
+                from
+                    {db:Identifier}.{attributes_physical:Identifier} al
+                    inner join {db:Identifier}.{assets:Identifier} a
+                        on a.id = al.etalon_id
+                where
+                    al.attribute_id in {described_attributes:Array(String)}
+                group by
+                    al.etalon_id,
+                    a.path
+            ), w_ed as (
+                select
+                    r.etalon_id_from as etalon_id_ed,
+                    r.etalon_id_to as etalon_id_pdm,
+                    a.value as ed_name
+                from
+                    {db:Identifier}.{relations:Identifier} r
+                    inner join {db:Identifier}.{attributes:Identifier} a
+                        on a.etalon_id = r.etalon_id_from
+                        and a.attribute_id in {ed_attributes:Array(String)}
+                where
+                    r.name = {logical_relation:String}
+            )
+            select
+                pdm.name as name,
+                pdm.path || '/' || pdm.name as path,
+                pdm.short_description_edm as short_description_edm,
+                pdm.extended_description_edm as extended_description_edm,
+                pdm.description_from_source as description_from_source,
+                ed.ed_name as ed_name
+            from
+                w_pdm pdm
+                left join w_ed ed
+                    on ed.etalon_id_pdm = pdm.etalon_id
+            where true
+            """,
+            db=database,
+            attributes_physical=Edm.ATTRIBUTES_PHYSICAL.value,
+            attributes=Edm.ATTRIBUTES.value,
+            assets=Edm.ASSETS.value,
+            relations=Edm.RELATIONS.value,
+            name_attribute=Edm.NAME.value,
+            short_attribute=Edm.SHORT_DESCRIPTION.value,
+            extended_attribute=Edm.EXTENDED_DESCRIPTION.value,
+            source_attribute=Edm.DESCRIPTION.value,
+            described_attributes=Edm.described_attributes(),
+            ed_attributes=Edm.ed_name_attributes(),
+            logical_relation=Edm.LOGICAL_TO_PHYSICAL.value,
+        )
+        .when(name != "*", "and pdm.name = {name:String}", name=name)
+        .when(
+            path != "*",
+            "and pdm.path || '/' || pdm.name like {path:String}",
+            path=path,
+        )
+        .add("order by path, name")
+    )
+
+    return await run_and_collect(
+        connection, builder.build(), RowWindow(offset=offset, limit=limit)
+    )
+
+
 @tool
 async def ch_address(connection: ChConnection) -> TableResult:
     """Базовый url соединения ClickHouse: clickhouse://host:port/database.
@@ -731,6 +999,8 @@ TOOLS: Final = ToolMain.toolset(
     ch_function_describe,
     ch_sequences_describe,
     ch_types_describe,
+    ch_edm_structure,
+    ch_edm_descriptions,
 )
 
 if __name__ == "__main__":
