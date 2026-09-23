@@ -16,7 +16,7 @@ dependencies = [
 ]
 
 [project.scripts]
-boba-ix-trgm = "boba.ix_trgm.worker:main"
+boba-ix-trgm = "boba.ix_trgm.worker:cli"
 
 [tool.setuptools.package-data]
 "boba.ix_trgm" = ["*/*.sql", "*/*.md", "*/*.json", "*.html"]

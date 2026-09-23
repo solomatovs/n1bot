@@ -14,12 +14,13 @@ from __future__ import annotations
 
 import asyncio
 import sys
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Generator, Mapping, Sequence
 from contextlib import contextmanager
+from dataclasses import asdict, dataclass
 from enum import StrEnum
 from typing import Annotated, Any, ClassVar, Final
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import Field
 
 from boba.doc.config import OcrUnavailableError
 from boba.doc.document import (
@@ -60,10 +61,9 @@ class DocToolSection(DocToolsConfig):
     SECTION: ClassVar[str] = "tool.doc"
 
 
-class ReadResult(BaseModel):
+@dataclass(frozen=True)
+class ReadResult:
     """Текст прочитанных страниц и их номера."""
-
-    model_config = ConfigDict(frozen=True)
 
     text: str
     numbers: Sequence[int]
@@ -86,27 +86,23 @@ class TextClip:
 
 
 class DocRun:
-    """Открытие файла workspace роутером boba-doc по конфигу вызова.
+    """Чтение файла workspace роутером boba-doc под один вызов инструмента.
 
-    Библиотеки форматов тяжёлые и живут в песочнице, поэтому импортируются
-    здесь, а не при загрузке модуля: манифест плагина импортирует модуль в
-    процессе приложения.
+    Роутер и движок OCR собираются в конструкторе из секции и флага OCR
+    вызова; библиотеки форматов тяжёлые и живут в песочнице, поэтому
+    импортируются здесь, а не при загрузке модуля: манифест плагина
+    импортирует модуль в процессе приложения.
     """
 
-    PAGE_GLUE: ClassVar[str] = "\n\n"
-
-    @staticmethod
-    def router(cfg: DocToolSection, *, ocr_enabled: bool) -> Any:
+    def __init__(self, cfg: DocToolSection, *, ocr_enabled: bool) -> None:
         from boba.doc.ocr import OcrEngines  # noqa: PLC0415
         from boba.doc.router import DocumentRouter  # noqa: PLC0415
 
-        run_cfg = cfg.for_call(ocr=ocr_enabled)
+        self._cfg = cfg.for_call(ocr=ocr_enabled)
+        self._router = DocumentRouter(self._cfg, OcrEngines.of(self._cfg.ocr))
 
-        return DocumentRouter(run_cfg, OcrEngines.of(run_cfg.ocr))
-
-    @staticmethod
     @contextmanager
-    def open(router: Any, path: str) -> Iterator[Document]:
+    def open(self, path: str) -> Generator[Document, None, None]:
         try:
             source = open(path, "rb")  # noqa: SIM115 — закрывается ниже
         except OSError as exc:
@@ -114,47 +110,37 @@ class DocRun:
                 f"document {path}: cannot open the file: {exc}"
             ) from exc
 
-        with source, router.open(source, DocumentHint(filename=path)) as document:
+        with source, self._router.open(source, DocumentHint(filename=path)) as document:
             yield document
 
-    @classmethod
-    def read(cls, cfg: DocToolSection, path: str, pages: str, ocr: bool) -> ReadResult:
+    def read(self, path: str, pages: str) -> ReadResult:
         windows = PageWindow.parse_many(pages)
-        router = cls.router(cfg, ocr_enabled=ocr)
         texts: list[str] = []
         numbers: list[int] = []
-        with cls.open(router, path) as document:
+        with self.open(path) as document:
             for window in windows:
                 for page in document.pages(window):
                     texts.append(page.text)
                     numbers.append(page.number)
 
-        return ReadResult(text=cls.PAGE_GLUE.join(texts), numbers=numbers)
+        return ReadResult(text="\n\n".join(texts), numbers=numbers)
 
-    @classmethod
-    def outline(
-        cls, cfg: DocToolSection, path: str, ocr: bool
-    ) -> tuple[int, Sequence[PageInfo]]:
-        router = cls.router(cfg, ocr_enabled=ocr)
-        with cls.open(router, path) as document:
+    def outline(self, path: str) -> tuple[int, Sequence[PageInfo]]:
+        with self.open(path) as document:
             return document.page_count(), list(document.outline())
 
-    @classmethod
-    def search(
-        cls, cfg: DocToolSection, path: str, query: str, ocr: bool
-    ) -> tuple[list[Hit], bool]:
+    def search(self, path: str, query: str) -> tuple[list[Hit], bool]:
         """Совпадения до лимита; второй элемент — лимит достигнут."""
-        router = cls.router(cfg, ocr_enabled=ocr)
         hits: list[Hit] = []
-        with cls.open(router, path) as document:
+        with self.open(path) as document:
             found = document.search(
                 query,
                 PageWindow.whole(),
                 case_sensitive=False,
-                context=cfg.search_context_chars,
+                context=self._cfg.search_context_chars,
             )
             for hit in found:
-                if len(hits) >= cfg.search_max_matches:
+                if len(hits) >= self._cfg.search_max_matches:
                     return hits, True
 
                 hits.append(hit)
@@ -182,7 +168,8 @@ async def read_document(
 ) -> MarkdownResult:
     """Прочитать текст страниц документа из workspace; основной способ чтения."""
     # ридеры синхронные и тяжёлые: разбор уходит в поток
-    result = await asyncio.to_thread(DocRun.read, cfg, path, pages, ocr_enabled)
+    run = DocRun(cfg, ocr_enabled=ocr_enabled)
+    result = await asyncio.to_thread(run.read, path, pages)
 
     text, truncated = TextClip.clip(result.text, cfg.max_text_chars)
 
@@ -208,11 +195,12 @@ async def document_outline(
     cfg: Annotated[DocToolSection, Injected],
 ) -> TableResult:
     """Карта документа по страницам: дешёвый обзор перед read_document."""
-    count, infos = await asyncio.to_thread(DocRun.outline, cfg, path, ocr_enabled)
+    run = DocRun(cfg, ocr_enabled=ocr_enabled)
+    count, infos = await asyncio.to_thread(run.outline, path)
 
     rows: list[dict[str, Any]] = []
     for info in infos:
-        rows.append(info.model_dump())
+        rows.append(asdict(info))
 
     return TableResult(
         rows=rows,
@@ -232,13 +220,12 @@ async def search_document(
     cfg: Annotated[DocToolSection, Injected],
 ) -> TableResult:
     """Найти фразу в документе: страница, смещение, сниппет; у pdf — координаты."""
-    hits, limit_reached = await asyncio.to_thread(
-        DocRun.search, cfg, path, query, ocr_enabled
-    )
+    run = DocRun(cfg, ocr_enabled=ocr_enabled)
+    hits, limit_reached = await asyncio.to_thread(run.search, path, query)
 
     rows: list[dict[str, Any]] = []
     for hit in hits:
-        rows.append(hit.model_dump())
+        rows.append(asdict(hit))
 
     note = f"{path}: matches {len(rows)}"
     if limit_reached:

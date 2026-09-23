@@ -30,9 +30,6 @@ __all__ = [
     "RunFile",
     "State",
     "Surface",
-    "row_file_of",
-    "state_file_of",
-    "surface_of",
 ]
 
 PUSHED_ASPECTS = ["body", "ocr"]
@@ -88,27 +85,6 @@ class State(NamedTuple):
     indexer_hash: str
 
 
-def surface_of(kind: ContentType) -> Surface:
-    if kind is ContentType.BLOGPOST:
-        return Surface.BLOGPOST
-
-    return Surface.PAGE
-
-
-def state_file_of(kind: ContentType) -> RunFile:
-    if kind is ContentType.BLOGPOST:
-        return RunFile.BLOGPOST_STATE
-
-    return RunFile.PAGE_STATE
-
-
-def row_file_of(kind: ContentType) -> RunFile:
-    if kind is ContentType.BLOGPOST:
-        return RunFile.BLOGPOST
-
-    return RunFile.PAGE
-
-
 class IxStore:
     """Запись одного обхода спейса через одно соединение."""
 
@@ -120,6 +96,24 @@ class IxStore:
         self._texts: dict[RunFile, str] = {}
         for name in RunFile:
             self._texts[name] = (package_dir / name).read_text(encoding="utf-8")
+
+    def surface_of(self, kind: ContentType) -> Surface:
+        if kind is ContentType.BLOGPOST:
+            return Surface.BLOGPOST
+
+        return Surface.PAGE
+
+    def state_file_of(self, kind: ContentType) -> RunFile:
+        if kind is ContentType.BLOGPOST:
+            return RunFile.BLOGPOST_STATE
+
+        return RunFile.PAGE_STATE
+
+    def row_file_of(self, kind: ContentType) -> RunFile:
+        if kind is ContentType.BLOGPOST:
+            return RunFile.BLOGPOST
+
+        return RunFile.PAGE
 
     async def _execute(self, file: RunFile, **params: Any) -> psycopg.AsyncCursor[Any]:
         query = (
@@ -197,7 +191,7 @@ class IxStore:
         if content.kind is ContentType.PAGE:
             params["ancestor_titles"] = list(content.ancestor_titles)
 
-        await self._execute(row_file_of(content.kind), **params)
+        await self._execute(self.row_file_of(content.kind), **params)
 
     async def write_attachment(
         self,

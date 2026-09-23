@@ -15,11 +15,11 @@ import io
 import tempfile
 from abc import abstractmethod
 from collections.abc import Iterator, Mapping, Sequence
+from dataclasses import dataclass
 from enum import StrEnum
 from typing import ClassVar, Protocol
 
 from PIL import Image, UnidentifiedImageError
-from pydantic import BaseModel, ConfigDict, Field
 
 __all__ = [
     "BoxedHit",
@@ -72,13 +72,12 @@ class DocumentKind(StrEnum):
     UNKNOWN = "unknown"
 
 
-class DocumentHint(BaseModel):
+@dataclass(frozen=True)
+class DocumentHint:
     """Что известно о документе до байтов: media_type и имя файла.
 
     Оба поля могут быть пустыми — тогда вид определяется по первым байтам.
     """
-
-    model_config = ConfigDict(frozen=True)
 
     media_type: str = ""
     filename: str = ""
@@ -246,18 +245,21 @@ class Formats:
             return False
 
 
-class PageWindow(BaseModel):
+@dataclass(frozen=True)
+class PageWindow:
     """Окно чтения: страницы с start по start + count - 1, нумерация с единицы."""
-
-    model_config = ConfigDict(frozen=True)
 
     ALL: ClassVar[int] = 1 << 31
 
-    start: int = Field(ge=1)
-    count: int = Field(ge=1)
+    start: int
+    count: int
 
-    RANGE_SEPARATOR: ClassVar[str] = "-"
-    LIST_SEPARATOR: ClassVar[str] = ","
+    def __post_init__(self) -> None:
+        if self.start < 1:
+            raise DocumentError(f"page window: start must be >= 1, got {self.start}")
+
+        if self.count < 1:
+            raise DocumentError(f"page window: count must be >= 1, got {self.count}")
 
     @classmethod
     def whole(cls) -> PageWindow:
@@ -267,7 +269,7 @@ class PageWindow(BaseModel):
     def parse_many(cls, spec: str) -> tuple[PageWindow, ...]:
         """Окна из строки вида '1-5,10,15-20': диапазон или номер через запятую."""
         windows: list[PageWindow] = []
-        for part in spec.split(cls.LIST_SEPARATOR):
+        for part in spec.split(","):
             piece = part.strip()
             if not piece:
                 raise DocumentError(f"pages {spec!r}: empty item in the list")
@@ -278,7 +280,7 @@ class PageWindow(BaseModel):
 
     @classmethod
     def _parse_one(cls, piece: str, spec: str) -> PageWindow:
-        first, separator, last = piece.partition(cls.RANGE_SEPARATOR)
+        first, separator, last = piece.partition("-")
         try:
             start = int(first)
             stop = start
@@ -307,15 +309,15 @@ class PageWindow(BaseModel):
         return range(self.start, last + 1)
 
 
-class PageInfo(BaseModel):
+@dataclass(frozen=True)
+class PageInfo:
     """Строка карты документа: номер страницы и объём текста на ней."""
 
-    model_config = ConfigDict(frozen=True)
-
-    number: int = Field(ge=1)
-    chars: int = Field(ge=0)
+    number: int
+    chars: int
 
 
+@dataclass(frozen=True)
 class SizedPageInfo(PageInfo):
     """Страница с геометрией: pdf в пунктах, картинка в пикселях."""
 
@@ -323,26 +325,25 @@ class SizedPageInfo(PageInfo):
     height: float
 
 
-class ParsedPage(BaseModel):
+@dataclass(frozen=True)
+class ParsedPage:
     """Текст одной страницы документа."""
 
-    model_config = ConfigDict(frozen=True)
-
-    number: int = Field(ge=1)
+    number: int
     text: str
 
 
-class Hit(BaseModel):
+@dataclass(frozen=True)
+class Hit:
     """Совпадение поиска: страница, смещение в её тексте и сниппет вокруг."""
 
-    model_config = ConfigDict(frozen=True)
-
-    page: int = Field(ge=1)
-    offset: int = Field(ge=0)
-    length: int = Field(ge=1)
+    page: int
+    offset: int
+    length: int
     snippet: str
 
 
+@dataclass(frozen=True)
 class BoxedHit(Hit):
     """Совпадение с координатами на странице pdf в пунктах, начало координат
     в левом нижнем углу."""

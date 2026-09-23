@@ -201,6 +201,67 @@ class TestIndexSpace:
         assert reports[0].unchanged == 4
         assert reports[0].indexed == 0
 
+    async def test_space_description_and_status_rewrite_the_space_row(
+        self,
+        stub: tuple[ConfluenceStub, int],
+        stub_indexer: StubIndexer,
+    ) -> None:
+        fake, _ = stub
+        seed(fake)
+        await stub_indexer.run(SPACE)
+
+        fake.describe(
+            StubSpace(key=SPACE, name="Data platform", description="Docs of DWH v2")
+        )
+        reports = await stub_indexer.run(SPACE)
+        assert reports[0].indexed == 1
+        assert reports[0].unchanged == 3
+
+        fake.archived.add(SPACE)
+        reports = await stub_indexer.run(SPACE)
+        assert reports[0].indexed == 1
+        assert reports[0].unchanged == 3
+
+    async def test_same_version_is_not_fetched_even_if_labels_moved(
+        self,
+        stub: tuple[ConfluenceStub, int],
+        stub_indexer: StubIndexer,
+        ix_database: IxStandDatabase,
+    ) -> None:
+        fake, _ = stub
+        seed(fake)
+        await stub_indexer.run(SPACE)
+        fake.reset_calls()
+
+        fake.pages["101"].relabel(["dwh", "finance"])
+        reports = await stub_indexer.run(SPACE)
+
+        assert fake.calls[StubRoute.BODY] == 0
+        assert reports[0].indexed == 0
+        assert reports[0].unchanged == 4
+        _, _, labels, _ = (await rows(ix_database, PAGE_ROW, {"content": "101"}))[0]
+        assert sorted(labels) == ["dwh", "etl"]
+
+    async def test_version_bump_with_same_body_rewrites_the_row(
+        self,
+        stub: tuple[ConfluenceStub, int],
+        stub_indexer: StubIndexer,
+        ix_database: IxStandDatabase,
+    ) -> None:
+        fake, _ = stub
+        seed(fake)
+        await stub_indexer.run(SPACE)
+        fake.reset_calls()
+
+        fake.pages["101"].edit(title="Orders")
+        reports = await stub_indexer.run(SPACE)
+
+        assert fake.calls[StubRoute.BODY] == 1
+        assert reports[0].indexed == 1
+        assert reports[0].unchanged == 3
+        version, _, _, _ = (await rows(ix_database, PAGE_ROW, {"content": "101"}))[0]
+        assert version == 2
+
     async def test_body_edit_rewrites_text_and_vector(
         self,
         stub: tuple[ConfluenceStub, int],

@@ -21,7 +21,7 @@ dependencies = [
 ]
 
 [project.scripts]
-boba-cfl-indexer = "boba.cfl_indexer.worker:main"
+boba-cfl-indexer = "boba.cfl_indexer.worker:cli"
 
 [project.optional-dependencies]
 dev = [

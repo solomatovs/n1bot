@@ -121,7 +121,6 @@ class PdfDocument(PagedDocument):
     страницы в картинку и OCR. Поиск по текстовому слою отдаёт координаты."""
 
     KIND: ClassVar[DocumentKind] = DocumentKind.PDF
-    RENDER_SCALE: ClassVar[int] = 2
 
     def __init__(
         self,
@@ -200,7 +199,7 @@ class PdfDocument(PagedDocument):
             if text.strip():
                 return text
 
-            image = page.render(scale=self.RENDER_SCALE).to_pil()
+            image = page.render(scale=2).to_pil()
         except DocumentError:
             raise
         except Exception as exc:

@@ -5,17 +5,15 @@
 
 from __future__ import annotations
 
-import asyncio
-
 import pytest
 from cfl_stand import PACKAGE_DIR
 
 from boba.cfl_indexer.confluence import SpaceSelector
 from boba.cfl_indexer.worker import (
     ConfluenceSource,
+    Indexer,
     IndexerConfig,
     SpaceSelection,
-    run_spaces,
 )
 from boba.confluence.rest import ConfluenceConnection, SpaceType
 from boba.doc.config import DisabledOcrConfig, DocSection
@@ -52,6 +50,7 @@ def _config(ix_stand: IxStand) -> IndexerConfig:
             )
         ],
         parallel_spaces=1,
+        list_limit=50,
         doc=DocSection(
             spool_memory_limit=32 << 20,
             text_encodings=("utf-8",),
@@ -70,17 +69,13 @@ class TestLiveSpace:
         cfg = _config(ix_stand)
 
         first = (
-            await asyncio.to_thread(
-                run_spaces, cfg, PACKAGE_DIR / "run", ix_stand.krb, SpaceSelection()
-            )
+            await Indexer(cfg, PACKAGE_DIR / "run", ix_stand.krb).run(SpaceSelection())
         )[0]
         assert first.seen >= 2
         assert first.indexed == first.seen
 
         second = (
-            await asyncio.to_thread(
-                run_spaces, cfg, PACKAGE_DIR / "run", ix_stand.krb, SpaceSelection()
-            )
+            await Indexer(cfg, PACKAGE_DIR / "run", ix_stand.krb).run(SpaceSelection())
         )[0]
         assert second.indexed == 0
         assert second.unchanged == second.seen

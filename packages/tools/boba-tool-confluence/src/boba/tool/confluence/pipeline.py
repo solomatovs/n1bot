@@ -34,10 +34,10 @@ import httpx
 
 from boba.confluence.models import (
     ConfluenceKeys,
-    ConfluenceSourceId,
+    ConfluenceSourceIds,
     HttpKeys,
 )
-from boba.confluence.parsing import BodyDigest, ConfluenceJsonDecoder
+from boba.confluence.parsing import BodyHasher, ConfluenceJsonDecoder
 from boba.confluence.rest import ConfluenceConnection, ConfluenceRequest
 from boba.indexing import (
     AsyncBinaryStream,
@@ -107,13 +107,14 @@ class ConfluenceHttpTransport(Transport[ConfluenceRequest]):
 
     def __init__(self, http: HttpTransport) -> None:
         self._http = http
+        self._source_ids = ConfluenceSourceIds()
 
     async def close(self) -> None:
         await self._http.close()
 
     def source_id(self, request: ConfluenceRequest) -> SourceId:
         """URL запроса без query и фрагмента: один объект — один id."""
-        return ConfluenceSourceId.of_url(self._http.resolve_url(request.http))
+        return self._source_ids.of_url(self._http.resolve_url(request.http))
 
     async def fetch(self, request: ConfluenceRequest) -> AsyncIterator[RawDocument]:
         source_id = self.source_id(request)
@@ -157,14 +158,13 @@ class ConfluenceSourceTransport(Transport[ConfluenceRequest]):
     """Transport[ConfluenceRequest] для конвейера: страница разбирается из JSON,
     вложение спулится на диск; у обоих в metadata хэш тела."""
 
-    def __init__(
-        self,
-        *,
-        inner: Transport[ConfluenceRequest],
-        decoder: ConfluenceJsonDecoder,
-    ) -> None:
-        self._inner = inner
-        self._decoder = decoder
+    def __init__(self, conn: ConfluenceConnection) -> None:
+        http = CancellableHttpTransport(conn.profile, dump=conn.dump)
+        self._inner = ConfluenceHttpTransport(http)
+        self._decoder = ConfluenceJsonDecoder(
+            profile=conn.profile, body_format=conn.body_format
+        )
+        self._hasher = BodyHasher()
 
     async def close(self) -> None:
         await self._inner.close()
@@ -199,13 +199,14 @@ class ConfluenceSourceTransport(Transport[ConfluenceRequest]):
                 handle=LoggingStream(decoded.handle, logger, f"page {source_id}"),
             )
 
-    @staticmethod
-    async def _spooled(raw: RawDocument, title: str) -> AsyncIterator[RawDocument]:
+    async def _spooled(
+        self, raw: RawDocument, title: str
+    ) -> AsyncIterator[RawDocument]:
         """Тело во временный файл с суффиксом имени вложения и sha256 по дороге."""
         suffix = Path(title).suffix
         fd, name = tempfile.mkstemp(suffix=suffix, prefix="confluence-")
         path = Path(name)
-        digest = BodyDigest.new()
+        digest = self._hasher.stream()
         try:
             with os.fdopen(fd, "wb") as spool:
                 async for chunk in raw.handle:
@@ -226,14 +227,3 @@ class ConfluenceSourceTransport(Transport[ConfluenceRequest]):
             )
         finally:
             path.unlink(missing_ok=True)
-
-    @classmethod
-    def from_connection(cls, conn: ConfluenceConnection) -> ConfluenceSourceTransport:
-        http = CancellableHttpTransport(conn.profile, dump=conn.dump)
-        return cls(
-            inner=ConfluenceHttpTransport(http),
-            decoder=ConfluenceJsonDecoder(
-                profile=conn.profile,
-                body_format=conn.body_format,
-            ),
-        )

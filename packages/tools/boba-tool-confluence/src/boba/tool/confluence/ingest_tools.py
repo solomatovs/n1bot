@@ -41,6 +41,7 @@ from boba.confluence.models import (
     PageTableSection,
     TableShape,
 )
+from boba.confluence.parsing import JsonNode
 from boba.confluence.rest import CflUrlBuilder
 from boba.db.postgres import PostgresError
 from boba.doc.config import OcrUnavailableError
@@ -66,8 +67,12 @@ from boba.tool.confluence.indexing_log import IngestProgress, LoggingReader
 from boba.tool.confluence.ingest_base import (
     ConfluenceIngest,
     ConfluenceIngestConfig,
+    IngestAssembly,
     IngestReport,
     IngestScope,
+    PageScope,
+    QueryScope,
+    SpaceScope,
 )
 from boba.tool.confluence.tools import ConfluenceHttp, ConfluenceToolsConfig
 from boba.toolkit.entry import ToolMain
@@ -78,7 +83,6 @@ from boba.toolkit.types import SecretRevealing
 
 logger = logging.getLogger("boba.tool.confluence.ingest")
 
-PAGE_GLUE = "\n\n"
 
 _ATTACHMENTS_DESCRIPTION = (
     "Читать ли вложения страниц: true — все вложения, разрешённые "
@@ -168,7 +172,7 @@ class LocalConfluenceReader(Reader[str]):
         title = value.metadata.get(ReaderKeys.PAGE_TITLE) or ""
 
         # bs4 тяжёлый: в процесс приложения модуль инструментов его не тянет
-        from boba.confluence.html import PageOps  # noqa: PLC0415
+        from boba.confluence.html import SectionsRender  # noqa: PLC0415
 
         logger.info("html parse start: %s, %d bytes", title or "?", len(payload))
         elapsed = Elapsed()
@@ -178,10 +182,8 @@ class LocalConfluenceReader(Reader[str]):
             page_id=page_id,
             table_shape=self._table_shape,
         )
-        answer = await asyncio.to_thread(
-            PageOps.confluence_sections,
-            request.model_dump(mode="json"),
-        )
+        render = SectionsRender(request.model_dump(mode="json"))
+        answer = await asyncio.to_thread(render.run)
         parsed = PageSections.model_validate(answer)
         logger.info(
             "html parse done: %s -> %d sections in %dms",
@@ -271,10 +273,15 @@ class LocalConfluenceReader(Reader[str]):
 
 
 class IngestRun:
-    """Сборка и запуск конвейера индексации по области обхода."""
+    """Прогон индексации под один вызов инструмента: секция с режимом OCR
+    вызова, счётчики прогресса, ридеры по media-type и сборка конвейера."""
 
-    @staticmethod
-    def routes(cfg: IngestToolConfig) -> dict[str, Reader[str]]:
+    def __init__(self, cfg: IngestToolConfig, *, ocr: bool) -> None:
+        self._cfg = cfg.with_ocr(ocr=ocr)
+        self._progress = IngestProgress(logger)
+        self._assembly = IngestAssembly(self._cfg, self._progress, self._routes())
+
+    def _routes(self) -> dict[str, Reader[str]]:
         """HTML читает bs4-ридер, документы — boba-doc, txt/md/csv — decode.
 
         Каждый роут обёрнут логом: иначе долгий разбор (OCR) молчит до конца.
@@ -283,15 +290,16 @@ class IngestRun:
         from boba.text import TextMedia  # noqa: PLC0415
         from boba.tool.confluence.documents import DocumentReader  # noqa: PLC0415
 
-        documents = DocumentReader(cfg)
+        documents = DocumentReader(self._cfg)
         plain: dict[str, Reader[str]] = {}
         for content_type in ConfluenceIngest.HTML_CONTENT_TYPES:
-            plain[content_type] = LocalConfluenceReader(cfg.table_shape)
+            plain[content_type] = LocalConfluenceReader(self._cfg.table_shape)
 
         for media_type in documents.media_types:
             plain[media_type] = documents
 
-        for media_type, reader in TextMedia.readers(cfg.text_encodings).items():
+        text_readers = TextMedia.readers(self._cfg.text_encodings)
+        for media_type, reader in text_readers.items():
             plain[media_type] = reader
 
         routes: dict[str, Reader[str]] = {}
@@ -300,25 +308,10 @@ class IngestRun:
 
         return routes
 
-    @classmethod
-    async def run(
-        cls,
-        cfg: IngestToolConfig,
-        scope: IngestScope,
-        *,
-        attachments: bool,
-        ocr: bool,
-    ) -> IngestReport:
-        run_cfg = cfg.with_ocr(ocr=ocr)
-        progress = IngestProgress(logger)
-        report = await ConfluenceIngest.ingest(
-            run_cfg,
-            scope,
-            attachments=attachments,
-            progress=progress,
-            routes=cls.routes(run_cfg),
-        )
-        progress.say()
+    async def run(self, scope: IngestScope, *, attachments: bool) -> IngestReport:
+        report = await self._assembly.build(scope, attachments=attachments).run()
+        self._progress.say()
+
         return report
 
 
@@ -346,11 +339,8 @@ async def confluence_index_page(
     менялось, skipped — отсечено правилами, failed — сорвалось, причина в
     колонке error. found без indexed это норма: содержимое не менялось.
     """
-    report = await IngestRun.run(
-        cfg,
-        IngestScope.page(page_id),
-        attachments=attachments,
-        ocr=ocr,
+    report = await IngestRun(cfg, ocr=ocr).run(
+        PageScope(page_id), attachments=attachments
     )
 
     return TableResult(rows=report.rows(), note=f"{report.note()}; page_id: {page_id}")
@@ -384,12 +374,7 @@ async def confluence_index_cql(
     менялось, skipped — отсечено правилами, failed — сорвалось, причина в
     колонке error. found без indexed это норма: содержимое не менялось.
     """
-    report = await IngestRun.run(
-        cfg,
-        IngestScope.query(cql),
-        attachments=attachments,
-        ocr=ocr,
-    )
+    report = await IngestRun(cfg, ocr=ocr).run(QueryScope(cql), attachments=attachments)
 
     return TableResult(rows=report.rows(), note=report.note())
 
@@ -415,11 +400,8 @@ async def confluence_index_space(
     менялось, skipped — отсечено правилами, failed — сорвалось, причина в
     колонке error. found без indexed это норма: содержимое не менялось.
     """
-    report = await IngestRun.run(
-        cfg,
-        IngestScope.space(space_key),
-        attachments=attachments,
-        ocr=ocr,
+    report = await IngestRun(cfg, ocr=ocr).run(
+        SpaceScope(space_key), attachments=attachments
     )
 
     return TableResult(
@@ -447,73 +429,69 @@ async def confluence_attachment(
     rest_cfg = ConfluenceToolsConfig(
         confluence=run_cfg.confluence, body_format=run_cfg.body_format
     )
-    data = await ConfluenceHttp.page_json(rest_cfg, page_id)
+    http = ConfluenceHttp(rest_cfg)
+    attachments = PageAttachments(await http.page_json(page_id))
 
-    link = _attachment_link(data, filename)
+    link = attachments.link(filename)
     if not link:
-        titles = _attachment_titles(data)
         msg = (
             f"attachment {filename!r} not found on confluence page {page_id!r}; "
-            f"page attachments: {titles}"
+            f"page attachments: {attachments.titles()}"
         )
         raise AttachmentNotFoundError(msg)
 
-    content = await ConfluenceHttp.get(rest_cfg, CflUrlBuilder.raw_to_url(link))
+    content = await http.get(CflUrlBuilder().raw_to_url(link))
 
     # ридеры синхронные и тяжёлые: разбор уходит в поток
-    text = await asyncio.to_thread(_attachment_text, run_cfg, content, filename)
+    text = await asyncio.to_thread(AttachmentText(run_cfg).read, content, filename)
 
     return MarkdownResult(text=text)
 
 
-def _attachment_text(cfg: IngestToolConfig, content: bytes, filename: str) -> str:
-    from boba.doc.ocr import OcrEngines  # noqa: PLC0415
-    from boba.doc.router import DocumentRouter  # noqa: PLC0415
+class AttachmentText:
+    """Текст одного вложения роутером boba-doc: роутер и OCR собираются в
+    конструкторе из секции вызова, страницы склеиваются в один текст."""
 
-    router = DocumentRouter(cfg, OcrEngines.of(cfg.ocr))
-    hint = DocumentHint(filename=filename)
-    with router.open(io.BytesIO(content), hint) as document:
-        texts: list[str] = []
-        for page in document.pages(PageWindow.whole()):
-            texts.append(page.text)
+    PAGE_GLUE: ClassVar[str] = "\n\n"
 
-    return PAGE_GLUE.join(texts)
+    def __init__(self, cfg: IngestToolConfig) -> None:
+        from boba.doc.ocr import OcrEngines  # noqa: PLC0415
+        from boba.doc.router import DocumentRouter  # noqa: PLC0415
+
+        self._router = DocumentRouter(cfg, OcrEngines.of(cfg.ocr))
+
+    def read(self, content: bytes, filename: str) -> str:
+        hint = DocumentHint(filename=filename)
+        with self._router.open(io.BytesIO(content), hint) as document:
+            texts: list[str] = []
+            for page in document.pages(PageWindow.whole()):
+                texts.append(page.text)
+
+        return self.PAGE_GLUE.join(texts)
 
 
-def _attachment_link(data: dict[str, Any], filename: str) -> str:
-    children = data.get("children")
-    if not isinstance(children, dict):
+class PageAttachments:
+    """Вложения из JSON страницы: ссылка скачивания по имени и список имён."""
+
+    def __init__(self, data: dict[str, Any]) -> None:
+        self._items = JsonNode(data).list("children", "attachment", "results")
+
+    def link(self, filename: str) -> str:
+        for item in self._items:
+            node = JsonNode(item)
+            if node.str("title") != filename:
+                continue
+
+            return node.str("_links", "download")
+
         return ""
 
-    attachments = children.get("attachment")
-    if not isinstance(attachments, dict):
-        return ""
+    def titles(self) -> list[str]:
+        titles: list[str] = []
+        for item in self._items:
+            titles.append(JsonNode(item).str("title"))
 
-    for item in attachments.get("results") or []:
-        if str(item.get("title") or "") != filename:
-            continue
-
-        links = item.get("_links")
-        if isinstance(links, dict):
-            return str(links.get("download") or "")
-
-    return ""
-
-
-def _attachment_titles(data: dict[str, Any]) -> list[str]:
-    children = data.get("children")
-    if not isinstance(children, dict):
-        return []
-
-    attachments = children.get("attachment")
-    if not isinstance(attachments, dict):
-        return []
-
-    titles: list[str] = []
-    for item in attachments.get("results") or []:
-        titles.append(str(item.get("title") or ""))
-
-    return titles
+        return titles
 
 
 EXPECTED: Mapping[type[Exception], IngestErrorKind] = {

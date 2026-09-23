@@ -27,6 +27,7 @@ from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
+from typing import ClassVar
 
 import httpx
 import psycopg
@@ -42,21 +43,13 @@ from boba.cfl_indexer.confluence import (
     Space,
     SpaceSelector,
 )
-from boba.cfl_indexer.documents import (
-    DocumentTextError,
-    aspect_of,
-    build_gate,
-    decide_attachment,
-    text_reader,
-)
+from boba.cfl_indexer.documents import AttachmentReader, DocumentTextError
 from boba.cfl_indexer.store import (
     Aspect,
     IxStore,
     RunFile,
     State,
     Surface,
-    state_file_of,
-    surface_of,
 )
 from boba.config import bind_section
 from boba.confluence.models import AttachmentVerdict
@@ -66,7 +59,6 @@ from boba.db.postgres.names import PostgresSchema
 from boba.doc.config import DocSection
 from boba.doc.document import DocumentError
 from boba.doc.ocr import OcrEngines
-from boba.doc.router import DocumentRouter
 from boba.ix_core.database import IxDatabase, enter_kerberos
 from boba.ix_core.upgrade import SchemaUpgrade
 from boba.krb import KerberosWorkspaceConfig
@@ -74,14 +66,19 @@ from boba.krb import KerberosWorkspaceConfig
 __all__ = [
     "CflAddress",
     "ConfluenceSource",
+    "Indexer",
+    "IndexerCli",
     "IndexerConfig",
     "IndexerWorkerError",
     "Report",
+    "Sources",
+    "SpaceJob",
+    "SpaceRun",
+    "SpaceSelection",
     "SpaceWalker",
-    "compute_indexer_hash",
+    "cli",
     "index_space",
-    "list_targets",
-    "run_spaces",
+    "main",
 ]
 
 logger = logging.getLogger("cfl-indexer")
@@ -110,6 +107,8 @@ class IndexerConfig(IxDatabase):
     sources: Sequence[ConfluenceSource] = Field(min_length=1)
     parallel_spaces: int = Field(ge=1, default=1)
     progress_every: int = Field(ge=1, default=100)
+    list_limit: int = Field(ge=1)
+    """Окно списков Confluence: страниц, вложений, комментариев за один запрос."""
     doc: DocSection
     """Таблица [ix.cfl_indexer.doc]: чтение вложений роутером boba-doc и OCR."""
     attachments: Sequence[str] = ()
@@ -150,57 +149,63 @@ class Report:
         return text
 
 
-def select_sources(
-    cfg: IndexerConfig, source_name: str, space_key: str
-) -> list[ConfluenceSource]:
-    """Источники прогона; один спейс задаётся только одному источнику."""
-    sources = list(cfg.sources)
-    if source_name:
-        sources = [find_source(cfg, source_name)]
+class Sources:
+    """Источники конфига: выбор по маскам командной строки, поиск по имени и
+    отпечаток параметров индексатора, от которых зависит текст индекса."""
 
-    if space_key and len(sources) != 1:
+    def __init__(self, cfg: IndexerConfig) -> None:
+        self._cfg = cfg
+
+    def select(self, source_name: str, space_key: str) -> list[ConfluenceSource]:
+        """Источники прогона; один спейс задаётся только одному источнику."""
+        sources = list(self._cfg.sources)
+        if source_name:
+            sources = [self.find(source_name)]
+
+        if space_key and len(sources) != 1:
+            raise IndexerWorkerError(
+                f"--space {space_key} needs --source when the config lists "
+                f"{len(sources)} sources"
+            )
+
+        return sources
+
+    def find(self, name: str) -> ConfluenceSource:
+        for item in self._cfg.sources:
+            if item.name == name:
+                return item
+
+        known = ", ".join(item.name for item in self._cfg.sources)
         raise IndexerWorkerError(
-            f"--space {space_key} needs --source when the config lists "
-            f"{len(sources)} sources"
+            f"source {name!r} is not listed in the config, known sources: {known}"
         )
 
-    return sources
+    def indexer_hash(self, source: ConfluenceSource) -> str:
+        """md5 параметров, от которых зависит текст индекса; смена —
+        переиндексация. indexer_number конфига сбрасывает хэш вручную."""
+        material = {
+            "layout": self._cfg.indexer_number,
+            "body_format": source.confluence.body_format,
+            "attachments": list(self._cfg.attachments),
+            "text_encodings": list(self._cfg.doc.text_encodings),
+            "ocr": dict(self._cfg.doc.ocr.fingerprint()),
+        }
+        encoded = json.dumps(material, sort_keys=True, ensure_ascii=False)
 
-
-def find_source(cfg: IndexerConfig, name: str) -> ConfluenceSource:
-    for item in cfg.sources:
-        if item.name == name:
-            return item
-
-    known = ", ".join(item.name for item in cfg.sources)
-    raise IndexerWorkerError(
-        f"source {name!r} is not listed in the config, known sources: {known}"
-    )
-
-
-def compute_indexer_hash(cfg: IndexerConfig, source: ConfluenceSource) -> str:
-    """md5 параметров, от которых зависит текст индекса; смена — переиндексация."""
-    # magic number. Для сброса index hash в случае необходимости
-    material = {
-        "layout": cfg.indexer_number,
-        "body_format": source.confluence.body_format,
-        "attachments": list(cfg.attachments),
-        "text_encodings": list(cfg.doc.text_encodings),
-        "ocr": dict(cfg.doc.ocr.fingerprint()),
-    }
-    encoded = json.dumps(material, sort_keys=True, ensure_ascii=False)
-
-    return hashlib.md5(encoded.encode("utf-8"), usedforsecurity=False).hexdigest()
+        return hashlib.md5(encoded.encode("utf-8"), usedforsecurity=False).hexdigest()
 
 
 class CflAddress:
     """Адреса node частями: сервер, дальше ключ спейса или id объекта."""
 
+    HTTPS_PORT: ClassVar[int] = 443
+    HTTP_PORT: ClassVar[int] = 80
+
     def __init__(self, conn: ConfluenceConnection) -> None:
         root = httpx.URL(str(conn.profile.root_url()))
         port = root.port
         if port is None:
-            port = default_port(root.scheme)
+            port = self._default_port(root.scheme)
 
         self._base: dict[str, object] = {
             "scheme": root.scheme,
@@ -226,12 +231,20 @@ class CflAddress:
     def of_comment(self, content_id: str, comment_id: str) -> dict[str, object]:
         return {**self._base, "content": content_id, "comment": comment_id}
 
+    def _default_port(self, scheme: str) -> int:
+        if scheme == "https":
+            return self.HTTPS_PORT
 
-def default_port(scheme: str) -> int:
-    if scheme == "https":
-        return 443
+        return self.HTTP_PORT
 
-    return 80
+
+@dataclass(frozen=True, kw_only=True)
+class SpaceJob:
+    """Один спейс для процесса: источник, ключ и нужен ли полный переобход."""
+
+    source_name: str
+    space_key: str
+    reindex: bool
 
 
 class SpaceWalker:
@@ -239,23 +252,21 @@ class SpaceWalker:
 
     def __init__(
         self,
-        space_key: str,
         cfg: IndexerConfig,
         source: ConfluenceSource,
+        job: SpaceJob,
         reader: ConfluenceReader,
         store: IxStore,
-        reindex: bool,
     ) -> None:
-        self._space_key = space_key
+        self._space_key = job.space_key
         self._cfg = cfg
         self._reader = reader
         self._store = store
-        self._reindex = reindex
+        self._reindex = job.reindex
         self._report = Report(space_key=self._space_key)
         self._address = CflAddress(source.confluence)
-        self._indexer_hash = compute_indexer_hash(cfg, source)
-        self._gate = build_gate(cfg.attachments, ocr=cfg.doc.ocr.enabled)
-        self._router = DocumentRouter(cfg.doc, OcrEngines.of(cfg.doc.ocr))
+        self._indexer_hash = Sources(cfg).indexer_hash(source)
+        self._attachments = AttachmentReader(cfg.doc, cfg.attachments)
 
     def get_report(self) -> Report:
         return self._report
@@ -275,17 +286,29 @@ class SpaceWalker:
         self._report.swept = await self._store.sweep_space(self._space_key, base)
 
     def has_changed(self, state: State | None, version: int) -> bool:
-        """--reindex отключает отсечение на прогон."""
+        """Сущность перечитывается, если её нет в базе, сменились параметры
+        индексатора или версия в списке Confluence не та, что в строке;
+        --reindex отключает отсечение."""
         if self._reindex:
             return True
 
         if state is None:
             return True
 
-        if state.version != version:
+        if state.indexer_hash != self._indexer_hash:
             return True
 
-        return state.indexer_hash != self._indexer_hash
+        return state.version != version
+
+    def same_bytes(self, state: State | None, content_hash: str) -> bool:
+        """Версия сменилась, а сырой контент тот же: перезаписывать текст незачем."""
+        if state is None:
+            return False
+
+        if state.indexer_hash != self._indexer_hash:
+            return False
+
+        return state.content_hash == content_hash
 
     async def register_node(
         self, surface: Surface, address: dict[str, object], parent: int | None
@@ -305,7 +328,11 @@ class SpaceWalker:
             Surface.SPACE, self._address.of_space(space.key), None
         )
         state = await self._store.read_state(RunFile.SPACE_STATE, node_id)
-        if self.same_bytes(state, space.content_hash):
+        unchanged = False
+        if not self._reindex:
+            unchanged = self.same_bytes(state, space.content_hash)
+
+        if unchanged:
             self._report.unchanged += 1
             return node_id
 
@@ -325,9 +352,13 @@ class SpaceWalker:
             )
 
         node_id = await self.register_node(
-            surface_of(content.kind), self._address.of_content(content.id), parent
+            self._store.surface_of(content.kind),
+            self._address.of_content(content.id),
+            parent,
         )
-        state = await self._store.read_state(state_file_of(content.kind), node_id)
+        state = await self._store.read_state(
+            self._store.state_file_of(content.kind), node_id
+        )
         if self.has_changed(state, content.version):
             await self.write_body(node_id, await self._reader.read_body(content))
         else:
@@ -340,7 +371,7 @@ class SpaceWalker:
             await self.index_comment(comment, node_id)
 
     async def write_body(self, node_id: int, content: Content) -> None:
-        surface = surface_of(content.kind)
+        surface = self._store.surface_of(content.kind)
         await self._store.queue_links(node_id, content.links)
         async with self._store.transaction():
             await self._store.write_content(node_id, content, self._indexer_hash)
@@ -393,7 +424,7 @@ class SpaceWalker:
             self._report.unchanged += 1
             return
 
-        verdict = decide_attachment(attachment, self._gate)
+        verdict = self._attachments.decide(attachment)
         if verdict is not AttachmentVerdict.TAKE:
             logger.info(
                 "attachment %s %r (%s): %s, metadata only",
@@ -405,12 +436,15 @@ class SpaceWalker:
             await self.write_attachment_text(node_id, attachment, "", Aspect.BODY, "")
             return
 
-        await self.download_and_extract(node_id, attachment)
+        await self.download_and_extract(node_id, attachment, state)
 
-    async def download_and_extract(self, node_id: int, attachment: Attachment) -> None:
+    async def download_and_extract(
+        self, node_id: int, attachment: Attachment, state: State | None
+    ) -> None:
         """Одним проходом: байты из http идут в ридер через пипу, sha256
-        считается по дороге, на диск ничего не ложится."""
-        consume = text_reader(self._router, attachment)
+        считается по дороге, на диск ничего не ложится. Перезалитый без
+        изменений файл обновляет строку, но текст не трогает."""
+        consume = self._attachments.consumer(attachment)
         try:
             content_hash, text = await self._reader.read_attachment(attachment, consume)
         except AttachmentGoneError:
@@ -425,23 +459,17 @@ class SpaceWalker:
             self._report.failed += 1
             return
 
-        aspect = aspect_of(attachment)
+        if self.same_bytes(state, content_hash):
+            await self._store.write_attachment(
+                node_id, attachment, content_hash, self._indexer_hash
+            )
+            self._report.unchanged += 1
+            return
+
+        aspect = self._attachments.aspect(attachment)
         await self.write_attachment_text(
             node_id, attachment, content_hash, aspect, text
         )
-
-    def same_bytes(self, state: State | None, content_hash: str) -> bool:
-        """Оригинал и параметры те же, что в прошлый прогон; --reindex это отключает."""
-        if self._reindex:
-            return False
-
-        if state is None:
-            return False
-
-        if state.content_hash != content_hash:
-            return False
-
-        return state.indexer_hash == self._indexer_hash
 
     async def write_attachment_text(
         self,
@@ -469,42 +497,41 @@ class SpaceWalker:
         )
 
 
-async def walk_space(
-    cfg: IndexerConfig,
-    source: ConfluenceSource,
-    space_key: str,
-    package_dir: Path,
-    *,
-    reindex: bool,
-) -> Report:
-    report = Report(space_key=space_key)
-    try:
-        async with (
-            await AsyncPostgresPool.dedicated(cfg.postgres) as conn,
-            ConfluenceReader(source.confluence) as reader,
-        ):
-            store = IxStore(package_dir, cfg.db_schema, conn)
-            walker = SpaceWalker(space_key, cfg, source, reader, store, reindex=reindex)
-            try:
-                await walker.walk()
-            finally:
-                report = walker.get_report()
-    except Exception as exc:
-        logger.error("space %s aborted: %s", space_key, exc)
-        report.error = str(exc)
+class SpaceRun:
+    """Обход одного спейса в его процессе: соединение к ix, ридер Confluence и
+    обходчик живут ровно столько, сколько идёт спейс. Ошибка Confluence или
+    базы прерывает спейс и уходит в отчёт полем error."""
 
-    logger.info("space %s", report.line())
+    def __init__(self, cfg: IndexerConfig, job: SpaceJob, package_dir: Path) -> None:
+        self._cfg = cfg
+        self._job = job
+        self._package_dir = package_dir
+        self._sources = Sources(cfg)
+        self._source = self._sources.find(job.source_name)
 
-    return report
+    async def run(self) -> Report:
+        key = self._job.space_key
+        report = Report(space_key=key)
+        try:
+            async with (
+                await AsyncPostgresPool.dedicated(self._cfg.postgres) as conn,
+                ConfluenceReader(
+                    self._source.confluence, self._source.spaces, self._cfg.list_limit
+                ) as reader,
+            ):
+                store = IxStore(self._package_dir, self._cfg.db_schema, conn)
+                walker = SpaceWalker(self._cfg, self._source, self._job, reader, store)
+                try:
+                    await walker.walk()
+                finally:
+                    report = walker.get_report()
+        except Exception as exc:
+            logger.error("space %s aborted: %s", key, exc)
+            report.error = str(exc)
 
+        logger.info("space %s", report.line())
 
-@dataclass(frozen=True, kw_only=True)
-class SpaceJob:
-    """Один спейс для процесса: источник, ключ и нужен ли полный переобход."""
-
-    source_name: str
-    space_key: str
-    reindex: bool
+        return report
 
 
 def index_space(
@@ -514,48 +541,12 @@ def index_space(
     krb: KerberosWorkspaceConfig | None,
 ) -> Report:
     """Вход процесса спейса: свой лог, свой каталог kerberos, свой event loop,
-    один спейс."""
+    один спейс. Функция уровня модуля, потому что её сериализует пул процессов."""
     logging.basicConfig(level=logging.INFO, format=LOG_FORMAT)
     if krb is not None:
         krb.apply()
 
-    source = find_source(cfg, job.source_name)
-
-    return asyncio.run(
-        walk_space(cfg, source, job.space_key, package_dir, reindex=job.reindex)
-    )
-
-
-async def list_targets(
-    cfg: IndexerConfig, source_name: str, space_key: str
-) -> list[tuple[ConfluenceSource, str]]:
-    """Собираю список space'ов, по которым дальше пойдет индексатор"""
-    targets: list[tuple[ConfluenceSource, str]] = []
-    for source in select_sources(cfg, source_name, space_key):
-        if space_key:
-            targets.append((source, space_key))
-            continue
-
-        async with ConfluenceReader(source.confluence) as reader:
-            async for key in reader.list_space_keys(source.spaces):
-                logger.info("source: %s, space: %s", source.name, key)
-                targets.append((source, key))
-
-    logger.info("total spaces: %d", len(targets))
-    return targets
-
-
-async def check_fts(cfg: IndexerConfig) -> None:
-    """ix_fts накатывает пакет ix-fts; без него текст класть некуда."""
-    fts_table = "ix_fts"
-    async with await AsyncPostgresPool.dedicated(cfg.postgres) as conn:
-        if await PostgresSchema.exists(conn, cfg.db_schema, fts_table):
-            return
-
-    raise IndexerWorkerError(
-        f"table {cfg.db_schema}.{fts_table} is missing: apply the full-text index "
-        "first: boba-ix-fts upgrade --config <config>"
-    )
+    return asyncio.run(SpaceRun(cfg, job, package_dir).run())
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -568,58 +559,113 @@ class SpaceSelection:
     reindex: bool = False
 
 
-async def run_spaces(
-    cfg: IndexerConfig,
-    package_dir: Path,
-    krb: KerberosWorkspaceConfig | None,
-    selection: SpaceSelection,
-) -> list[Report]:
-    """Прогон по спейсам: процесс на спейс, parallel_spaces процессов разом.
-    Отчёты в порядке спейсов; спейс с ошибкой — отчёт с error."""
-    try:
-        OcrEngines.check(cfg.doc.ocr)
-        await check_fts(cfg)
-        targets = await list_targets(cfg, selection.source, selection.space)
-    except DocumentError as exc:
-        raise IndexerWorkerError(str(exc)) from exc
-    except PostgresError as exc:
-        raise IndexerWorkerError(f"ix database {cfg.postgres.where()}: {exc}") from exc
-    except ConfluenceReadError as exc:
-        raise IndexerWorkerError(str(exc)) from exc
-    except psycopg.Error as exc:
-        raise IndexerWorkerError(f"ix database {cfg.postgres.where()}: {exc}") from exc
+class Indexer:
+    """Прогон индексатора: проверка полнотекста и моделей OCR, цели по
+    источникам и раздача спейсов процессам, по одному спейсу на процесс.
 
-    reports: list[Report] = []
-    with ProcessPoolExecutor(
-        max_workers=cfg.parallel_spaces,
-        mp_context=multiprocessing.get_context("spawn"),
-        max_tasks_per_child=1,
-    ) as pool:
-        futures = []
-        for found, key in targets:
-            futures.append(
-                pool.submit(
-                    index_space,
-                    cfg,
-                    SpaceJob(
-                        source_name=found.name,
-                        space_key=key,
-                        reindex=selection.reindex,
-                    ),
-                    package_dir,
-                    krb,
+    Создаётся точкой входа из конфига; отчёты идут в порядке спейсов, спейс с
+    ошибкой даёт отчёт с error, а процесс, упавший не своей ошибкой, роняет
+    прогон IndexerWorkerError.
+    """
+
+    FTS_TABLE: ClassVar[str] = "ix_fts"
+
+    def __init__(
+        self,
+        cfg: IndexerConfig,
+        package_dir: Path,
+        krb: KerberosWorkspaceConfig | None,
+    ) -> None:
+        self._cfg = cfg
+        self._package_dir = package_dir
+        self._krb = krb
+        self._sources = Sources(cfg)
+
+    async def check_fts(self) -> None:
+        """ix_fts накатывает пакет ix-fts; без него текст класть некуда."""
+        async with await AsyncPostgresPool.dedicated(self._cfg.postgres) as conn:
+            if await PostgresSchema.exists(conn, self._cfg.db_schema, self.FTS_TABLE):
+                return
+
+        raise IndexerWorkerError(
+            f"table {self._cfg.db_schema}.{self.FTS_TABLE} is missing: apply the "
+            "full-text index first: boba-ix-fts upgrade --config <config>"
+        )
+
+    async def targets(
+        self, selection: SpaceSelection
+    ) -> list[tuple[ConfluenceSource, str]]:
+        """Пары источник и ключ спейса, по которым пойдёт прогон."""
+        targets: list[tuple[ConfluenceSource, str]] = []
+        for source in self._sources.select(selection.source, selection.space):
+            if selection.space:
+                targets.append((source, selection.space))
+                continue
+
+            async with ConfluenceReader(
+                source.confluence, source.spaces, self._cfg.list_limit
+            ) as reader:
+                async for key in reader.list_space_keys():
+                    logger.info("source: %s, space: %s", source.name, key)
+                    targets.append((source, key))
+
+        logger.info("total spaces: %d", len(targets))
+
+        return targets
+
+    async def run(self, selection: SpaceSelection) -> list[Report]:
+        try:
+            OcrEngines.check(self._cfg.doc.ocr)
+            await self.check_fts()
+            targets = await self.targets(selection)
+        except DocumentError as exc:
+            raise IndexerWorkerError(str(exc)) from exc
+        except PostgresError as exc:
+            raise IndexerWorkerError(
+                f"ix database {self._cfg.postgres.where()}: {exc}"
+            ) from exc
+        except ConfluenceReadError as exc:
+            raise IndexerWorkerError(str(exc)) from exc
+        except psycopg.Error as exc:
+            raise IndexerWorkerError(
+                f"ix database {self._cfg.postgres.where()}: {exc}"
+            ) from exc
+
+        return await asyncio.to_thread(self._run_processes, targets, selection)
+
+    def _run_processes(
+        self,
+        targets: Sequence[tuple[ConfluenceSource, str]],
+        selection: SpaceSelection,
+    ) -> list[Report]:
+        """Процесс на спейс, parallel_spaces процессов разом; ожидание итогов
+        блокирует, поэтому идёт в потоке рядом с циклом событий."""
+        reports: list[Report] = []
+        with ProcessPoolExecutor(
+            max_workers=self._cfg.parallel_spaces,
+            mp_context=multiprocessing.get_context("spawn"),
+            max_tasks_per_child=1,
+        ) as pool:
+            futures = []
+            for found, key in targets:
+                job = SpaceJob(
+                    source_name=found.name, space_key=key, reindex=selection.reindex
                 )
-            )
+                futures.append(
+                    pool.submit(
+                        index_space, self._cfg, job, self._package_dir, self._krb
+                    )
+                )
 
-        for (found, key), future in zip(targets, futures, strict=True):
-            try:
-                reports.append(future.result())
-            except Exception as exc:
-                raise IndexerWorkerError(
-                    f"space {key} of {found.name}: the space process failed: {exc}"
-                ) from exc
+            for (found, key), future in zip(targets, futures, strict=True):
+                try:
+                    reports.append(future.result())
+                except Exception as exc:
+                    raise IndexerWorkerError(
+                        f"space {key} of {found.name}: the space process failed: {exc}"
+                    ) from exc
 
-    return reports
+        return reports
 
 
 class Command(StrEnum):
@@ -627,64 +673,79 @@ class Command(StrEnum):
     RUN = "run"
 
 
-def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(
-        prog="boba-cfl-indexer",
-        description="Индексатор Confluence в граф ix: схема пакета и обход спейсов.",
-    )
-    parser.add_argument(
-        "command",
-        type=Command,
-        choices=list(Command),
-        help="upgrade — накатить схему пакета в базу ix; run — обход спейсов.",
-    )
-    parser.add_argument(
-        "--config",
-        required=True,
-        type=Path,
-        help="Файл конфига приложения (toml), секция [ix.cfl_indexer].",
-    )
-    parser.add_argument(
-        "--source", default="", help="Только этот источник из sources конфига."
-    )
-    parser.add_argument(
-        "--space", default="", help="Только этот спейс; вместе с --source."
-    )
-    parser.add_argument(
-        "--reindex",
-        action="store_true",
-        help="Перечитать все тела, не отсекая по версии и хэшу.",
-    )
+class IndexerCli:
+    """Командная строка индексатора: разбор аргументов, накат схемы или прогон."""
 
-    return parser.parse_args(argv)
+    SECTION: ClassVar[str] = "ix.cfl_indexer"
 
+    def __init__(self, argv: Sequence[str] | None = None) -> None:
+        self._args = self._parse(argv)
+        self._package_dir = Path(__file__).resolve().parent
 
-async def main() -> None:
-    logging.basicConfig(level=logging.INFO, format=LOG_FORMAT)
-    section = "ix.cfl_indexer"
-    package_dir = Path(__file__).resolve().parent
+    @staticmethod
+    def _parse(argv: Sequence[str] | None) -> argparse.Namespace:
+        parser = argparse.ArgumentParser(
+            prog="boba-cfl-indexer",
+            description=(
+                "Индексатор Confluence в граф ix: схема пакета и обход спейсов."
+            ),
+        )
+        parser.add_argument(
+            "command",
+            type=Command,
+            choices=list(Command),
+            help="upgrade — накатить схему пакета в базу ix; run — обход спейсов.",
+        )
+        parser.add_argument(
+            "--config",
+            required=True,
+            type=Path,
+            help="Файл конфига приложения (toml), секция [ix.cfl_indexer].",
+        )
+        parser.add_argument(
+            "--source", default="", help="Только этот источник из sources конфига."
+        )
+        parser.add_argument(
+            "--space", default="", help="Только этот спейс; вместе с --source."
+        )
+        parser.add_argument(
+            "--reindex",
+            action="store_true",
+            help="Перечитать все тела, не отсекая по версии и хэшу.",
+        )
 
-    try:
-        args = parse_args()
+        return parser.parse_args(argv)
+
+    async def run(self) -> None:
+        args = self._args
         krb = enter_kerberos(args.config)
         if args.command is Command.UPGRADE:
-            database = bind_section(args.config, section, IxDatabase)
-            upgrade = SchemaUpgrade(package_dir / "schema")
+            database = bind_section(args.config, self.SECTION, IxDatabase)
+            upgrade = SchemaUpgrade(self._package_dir / "schema")
             report = await upgrade.run(database)
             logger.info("schema applied: %s", ", ".join(report.files))
             return
 
-        cfg = bind_section(args.config, section, IndexerConfig)
-        reports = await run_spaces(
-            cfg,
-            package_dir / "run",
-            krb,
-            SpaceSelection(source=args.source, space=args.space, reindex=args.reindex),
+        cfg = bind_section(args.config, self.SECTION, IndexerConfig)
+        indexer = Indexer(cfg, self._package_dir / "run", krb)
+        selection = SpaceSelection(
+            source=args.source, space=args.space, reindex=args.reindex
         )
-        for report in reports:
+        for report in await indexer.run(selection):
             logger.info("done: %s", report.line())
+
+
+async def main() -> None:
+    logging.basicConfig(level=logging.INFO, format=LOG_FORMAT)
+    try:
+        await IndexerCli().run()
     except Exception as exc:
         raise SystemExit(str(exc)) from exc
+
+
+def cli() -> None:
+    """Точка входа консольного скрипта: единственный asyncio.run на процесс."""
+    asyncio.run(main())
 
 
 if __name__ == "__main__":

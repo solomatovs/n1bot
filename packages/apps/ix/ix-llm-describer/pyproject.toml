@@ -18,7 +18,7 @@ dependencies = [
 ]
 
 [project.scripts]
-boba-ix-llm-describer = "boba.ix_llm_describer.worker:main"
+boba-ix-llm-describer = "boba.ix_llm_describer.worker:cli"
 
 [tool.setuptools.package-data]
 "boba.ix_llm_describer" = ["*/*.sql", "*/*.md", "*/*.json", "*.html"]

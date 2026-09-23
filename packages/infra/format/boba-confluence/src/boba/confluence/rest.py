@@ -35,7 +35,7 @@ from boba.confluence.models import (
     ConfluencePayloadError,
     ParseGrade,
 )
-from boba.confluence.parsing import ConfluenceJson
+from boba.confluence.parsing import JsonNode
 from boba.indexing import (
     Metadata,
     ReaderKeys,
@@ -94,7 +94,7 @@ class ConfluenceRequest(Request):
 
     source_id НЕ часть запроса: его выводит транспорт из реально запрашиваемого
     URL (корень профиля + http.url, без волатильного query) через
-    ConfluenceSourceId. Поэтому http.url несёт только path. mark — отпечаток
+    ConfluenceSourceIds. Поэтому http.url несёт только path. mark — отпечаток
     версии из списка, по которому конвейер решает, качать ли тело.
     """
 
@@ -175,6 +175,7 @@ class CflRestBuilder:
 
     def __init__(self):
         self._cub = CflUrlBuilder()
+        self._marks = ConfluenceMarks()
 
     def page_fetch_path(self, page_id: str, *, body_format: str) -> httpx.URL:
         """Страница целиком: тело и вложения — для инструментов чтения."""
@@ -315,7 +316,7 @@ class CflRestBuilder:
         )
         return ConfluenceRequest(
             http=HttpRequest(url=str(path), method="GET"),
-            mark=ConfluenceMarks.page(content.version.number),
+            mark=self._marks.page(content.version.number),
             metadata=meta,
         )
 
@@ -340,7 +341,7 @@ class CflRestBuilder:
         )
         return ConfluenceRequest(
             http=HttpRequest(url=str(path), method="GET"),
-            mark=ConfluenceMarks.page(CflRestBuilder.UNKNOWN_VERSION),
+            mark=self._marks.page(CflRestBuilder.UNKNOWN_VERSION),
             metadata=meta,
         )
 
@@ -379,7 +380,7 @@ class CflRestBuilder:
         meta = meta.set(ConfluenceKeys.SOURCE_URL, str(profile.url_of(att_path)))
         return ConfluenceRequest(
             http=HttpRequest(url=attachment.download_path, method="GET"),
-            mark=ConfluenceMarks.attachment(
+            mark=self._marks.attachment(
                 attachment, parent=page_source, grade=grade, skip=skip
             ),
             metadata=meta,
@@ -402,7 +403,7 @@ class CflPaginator:
         next_url: httpx.URL | None = url
         while next_url is not None:
             data = await self.get_json(next_url)
-            results = ConfluenceJson.results(data)
+            results = JsonNode(data).results()
             next_url = self._next(data)
             logger.info(
                 "discovery page: %d items, next=%s",
@@ -419,14 +420,13 @@ class CflPaginator:
         return self.item(item, data, url)
 
     def _next(self, data: dict[str, Any]) -> httpx.URL | None:
-        link = ConfluenceJson.next_link(data)
+        link = JsonNode(data).next_link()
         if not link:
             return None
 
         return self._url_builder.raw_to_url(link)
 
-    @staticmethod
-    def item(item: type[T], raw: dict[str, Any], url: httpx.URL) -> T:
+    def item(self, item: type[T], raw: dict[str, Any], url: httpx.URL) -> T:
         try:
             return item.model_validate(raw)
         except ValidationError as exc:
@@ -456,7 +456,7 @@ class CflPaginator:
             )
             raise ConfluencePayloadError(msg) from exc
 
-        return ConfluenceJson.as_dict(data)
+        return JsonNode(data).dict()
 
     async def __aenter__(self):
         return self

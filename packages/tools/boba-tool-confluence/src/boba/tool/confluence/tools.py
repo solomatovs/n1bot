@@ -21,7 +21,7 @@ from pydantic import ConfigDict, Field, ValidationError
 from boba.chat.http import HttpDumpConfig
 from boba.confluence.address import ConfluenceAddresses
 from boba.confluence.models import ConfluenceSpaceItem, SpaceMask
-from boba.confluence.parsing import ConfluenceJson
+from boba.confluence.parsing import JsonNode
 from boba.confluence.rest import CflRestBuilder, SpaceType
 from boba.text.grep import GrepLimits, TextGrep
 from boba.toolkit.entry import ToolMain
@@ -78,15 +78,19 @@ class AddressColumn(StrEnum):
 
 class ConfluenceHttp:
     """Запросы REST Confluence общим транспортом web-профиля: корень адреса
-    подставляет профиль, retry и auth — HttpTransport."""
+    подставляет профиль, retry и auth — HttpTransport. Создаётся телом
+    инструмента на вызов из его секции."""
 
-    @staticmethod
-    async def get(cfg: ConfluenceToolsConfig, path: httpx.URL) -> bytes:
-        profile = cfg.confluence
+    def __init__(self, cfg: ConfluenceToolsConfig) -> None:
+        self._cfg = cfg
+        self._rest = CflRestBuilder()
+
+    async def get(self, path: httpx.URL) -> bytes:
+        profile = self._cfg.confluence
         url = profile.url_of(str(path))
         try:
             async with (
-                HttpTransport(profile, dump=cfg.dump) as transport,
+                HttpTransport(profile, dump=self._cfg.dump) as transport,
                 transport.fetch(HttpRequest(url=str(path))) as got,
             ):
                 return await got.stream.read()
@@ -99,12 +103,28 @@ class ConfluenceHttp:
             msg = f"GET {url} on confluence: {type(exc).__name__}: {exc}"
             raise ConfluenceRequestError(msg) from exc
 
-    @classmethod
-    async def page_json(
-        cls, cfg: ConfluenceToolsConfig, page_id: str
+    async def get_json(self, path: httpx.URL) -> dict[str, Any]:
+        return json.loads(await self.get(path))
+
+    async def page_json(self, page_id: str) -> dict[str, Any]:
+        path = self._rest.page_fetch_path(page_id, body_format=self._cfg.body_format)
+
+        return await self.get_json(path)
+
+    async def search_json(
+        self, cql: str, *, limit: int, start: int, expand: str
     ) -> dict[str, Any]:
-        path = CflRestBuilder.page_fetch_path(page_id, body_format=cfg.body_format)
-        return json.loads(await cls.get(cfg, path))
+        path = self._rest.cql_search_path(cql, limit=limit, start=start, expand=expand)
+
+        return await self.get_json(path)
+
+    async def spaces_json(
+        self, space_type: SpaceType, *, limit: int
+    ) -> tuple[dict[str, Any], httpx.URL]:
+        """Список спейсов и адрес запроса: адрес нужен тексту ошибки разбора."""
+        path = self._rest.space_list_path(space_type, limit=limit)
+
+        return await self.get_json(path), path
 
 
 class ConfluencePageText:
@@ -112,41 +132,56 @@ class ConfluencePageText:
 
     HEADING_STYLE: ClassVar[str] = "ATX"
 
-    @classmethod
-    async def of_page(
-        cls, cfg: ConfluenceToolsConfig, page_id: str, *, as_markdown: bool
-    ) -> str:
-        data = await ConfluenceHttp.page_json(cfg, page_id)
-        html = ConfluenceJson.body_html(data, cfg.body_format)
+    def __init__(self, cfg: ConfluenceToolsConfig, http: ConfluenceHttp) -> None:
+        self._body_format = cfg.body_format
+        self._http = http
+
+    async def of_page(self, page_id: str, *, as_markdown: bool) -> str:
+        data = await self._http.page_json(page_id)
+        html = JsonNode(data).body_html(self._body_format)
         if not as_markdown:
             return html
 
-        from boba.confluence.html import PageOps  # noqa: PLC0415
+        return self.markdown_of(html)
 
-        answer = PageOps.to_markdown({"html": html, "heading_style": cls.HEADING_STYLE})
-        return str(answer["markdown"])
+    def markdown_of(self, html: str) -> str:
+        # bs4 и markdownify тяжёлые: грузятся только в теле инструмента
+        from boba.confluence.html import MarkdownRender  # noqa: PLC0415
 
-    @staticmethod
-    def excerpt_of(html: str, snippet_chars: int) -> str:
-        from boba.confluence.html import PageOps  # noqa: PLC0415
+        request = {"html": html, "heading_style": self.HEADING_STYLE}
+
+        return str(MarkdownRender(request).run()["markdown"])
+
+    def excerpt_of(self, html: str, snippet_chars: int) -> str:
+        from boba.confluence.html import PlainTextRender  # noqa: PLC0415
 
         excerpt = ""
         if html:
-            excerpt = str(PageOps.plain_text({"html": html})["text"])
+            excerpt = str(PlainTextRender({"html": html}).run()["text"])
+
         if len(excerpt) > snippet_chars:
             excerpt = excerpt[: snippet_chars - 1].rstrip() + "…"
+
         return excerpt
 
 
 class SpaceList:
-    """Разбор выдачи /rest/api/space и строка таблицы для одного спейса."""
+    """Разбор выдачи /rest/api/space, фильтр спейсов по шаблону вызова и
+    строка таблицы для одного спейса с адресом по профилю."""
 
-    @staticmethod
+    def __init__(self, pattern: str | None, profile: HttpConnection) -> None:
+        masks: list[str] = []
+        if pattern is not None:
+            masks.append(pattern)
+
+        self._mask = SpaceMask(masks)
+        self._profile = profile
+
     def items(
-        data: Mapping[str, Any], path: httpx.URL
+        self, data: Mapping[str, Any], path: httpx.URL
     ) -> Sequence[ConfluenceSpaceItem]:
         found: list[ConfluenceSpaceItem] = []
-        for raw in ConfluenceJson.results(dict(data)):
+        for raw in JsonNode(dict(data)).results():
             try:
                 found.append(ConfluenceSpaceItem.model_validate(raw))
             except ValidationError as exc:
@@ -158,52 +193,66 @@ class SpaceList:
 
         return found
 
-    @staticmethod
-    def matches(space: ConfluenceSpaceItem, pattern: str | None) -> bool:
+    def matches(self, space: ConfluenceSpaceItem) -> bool:
         """Glob по ключу или названию целиком; без шаблона проходят все."""
-        if pattern is None:
-            return True
+        return self._mask.matches(space)
 
-        return SpaceMask.of_masks([pattern]).matches(space)
-
-    @staticmethod
-    def row(space: ConfluenceSpaceItem, profile: HttpConnection) -> dict[str, Any]:
+    def row(self, space: ConfluenceSpaceItem) -> dict[str, Any]:
         return {
             "key": space.key,
             "name": space.name,
             "type": space.type,
             "status": space.status,
-            "url": space.url_at(profile),
+            "url": space.url_at(self._profile),
         }
 
 
+class CqlQuery:
+    """CQL-запрос полнотекстового поиска: текст и необязательный список спейсов."""
+
+    def __init__(self, query: str, spaces: Sequence[str] | None) -> None:
+        self._query = query
+        self._spaces = tuple(spaces or ())
+
+    def render(self) -> str:
+        text_block = f"text ~ {self.literal(self._query)}"
+        if not self._spaces:
+            return text_block
+
+        if len(self._spaces) == 1:
+            space_block = f"space = {self.literal(self._spaces[0])}"
+        else:
+            literals: list[str] = []
+            for space in self._spaces:
+                literals.append(self.literal(space))
+
+            space_block = f"space in ({', '.join(literals)})"
+
+        return f"({text_block}) and ({space_block})"
+
+    @staticmethod
+    def literal(value: str) -> str:
+        escaped = value.replace("\\", "\\\\").replace('"', '\\"')
+
+        return f'"{escaped}"'
+
+
 class CqlSearch:
-    """Сборка CQL-запроса и разбор выдачи поиска."""
+    """Разбор выдачи поиска: строка таблицы на hit и подпись навигации."""
 
     SNIPPET_DEFAULT: ClassVar[int] = 1000
     SNIPPET_DESC: ClassVar[str] = (
         "Максимальная длина сниппета на каждый hit (символов). По умолчанию 1000."
     )
 
-    @staticmethod
-    def cql_literal(value: str) -> str:
-        escaped = value.replace("\\", "\\\\").replace('"', '\\"')
-        return f'"{escaped}"'
+    def __init__(
+        self, profile: HttpConnection, text: ConfluencePageText, snippet_chars: int
+    ) -> None:
+        self._profile = profile
+        self._text = text
+        self._snippet_chars = snippet_chars
 
-    @staticmethod
-    def build_cql(query: str, spaces: list[str] | None) -> str:
-        text_block = f"text ~ {CqlSearch.cql_literal(query)}"
-        if not spaces:
-            return text_block
-        if len(spaces) == 1:
-            space_block = f"space = {CqlSearch.cql_literal(spaces[0])}"
-        else:
-            joined = ", ".join(CqlSearch.cql_literal(s) for s in spaces)
-            space_block = f"space in ({joined})"
-        return f"({text_block}) and ({space_block})"
-
-    @staticmethod
-    def page_note(data: Mapping[str, Any], offset: int, shown: int) -> str:
+    def page_note(self, data: Mapping[str, Any], offset: int, shown: int) -> str:
         """Навигация по выдаче: что показано и с какого offset брать дальше.
 
         totalSize отдаёт не всякая версия Confluence: без него о продолжении
@@ -224,26 +273,18 @@ class CqlSearch:
 
         return f"rows {first}-{last} of {total}; next offset={last}"
 
-    @staticmethod
-    def hit_row(
-        hit: dict[str, Any], profile: HttpConnection, snippet_chars: int
-    ) -> dict[str, Any]:
-        html = ConfluenceJson.body_html(hit, "view")
-        excerpt = ConfluencePageText.excerpt_of(html, snippet_chars)
+    def hit_row(self, hit: dict[str, Any]) -> dict[str, Any]:
+        node = JsonNode(hit)
+        excerpt = self._text.excerpt_of(node.body_html("view"), self._snippet_chars)
 
-        space = hit.get("space")
-        space_key = ""
-        if isinstance(space, dict):
-            space_key = str(space.get("key") or "")
-
-        url = profile.root_url()
-        if webui := ConfluenceJson.webui(hit):
-            url = profile.url_of(webui)
+        url = self._profile.root_url()
+        if webui := node.webui():
+            url = self._profile.url_of(webui)
 
         return {
-            "page_id": str(hit.get("id") or ""),
-            "title": str(hit.get("title") or ""),
-            "space_key": space_key,
+            "page_id": node.str("id"),
+            "title": node.str("title"),
+            "space_key": node.str("space", "key"),
             "url": str(url),
             "excerpt": excerpt,
         }
@@ -274,7 +315,8 @@ async def confluence_fetch(
     cfg: Annotated[ConfluenceToolsConfig, Injected],
 ) -> MarkdownResult:
     """Скачивает одну Confluence-страницу и возвращает её контент."""
-    text = await ConfluencePageText.of_page(cfg, page_id, as_markdown=as_markdown)
+    pages = ConfluencePageText(cfg, ConfluenceHttp(cfg))
+    text = await pages.of_page(page_id, as_markdown=as_markdown)
 
     return MarkdownResult(text=text)
 
@@ -318,7 +360,8 @@ async def confluence_grep(  # noqa: PLR0913 — независимые флаг�
     cfg: Annotated[ConfluenceToolsConfig, Injected],
 ) -> MarkdownResult:
     """Ищет совпадения по тексту одной Confluence-страницы."""
-    text = await ConfluencePageText.of_page(cfg, page_id, as_markdown=as_markdown)
+    pages = ConfluencePageText(cfg, ConfluenceHttp(cfg))
+    text = await pages.of_page(page_id, as_markdown=as_markdown)
 
     compiled = TextGrep.compile_pattern(
         pattern, fixed_string=fixed_string, case_insensitive=case_insensitive
@@ -366,18 +409,20 @@ async def confluence_search(  # noqa: PLR0913 — окно выдачи зада
 
     Выдача постраничная: сколько показано и как листать, сказано в note.
     """
-    cql = CqlSearch.build_cql(query=query, spaces=spaces)
-    path = CflRestBuilder.cql_search_path(
-        cql, limit=limit, start=offset, expand="body.view,version,space"
+    http = ConfluenceHttp(cfg)
+    search = CqlSearch(cfg.confluence, ConfluencePageText(cfg, http), snippet_chars)
+    data = await http.search_json(
+        CqlQuery(query, spaces).render(),
+        limit=limit,
+        start=offset,
+        expand="body.view,version,space",
     )
 
-    data = json.loads(await ConfluenceHttp.get(cfg, path))
-
     rows: list[dict[str, Any]] = []
-    for hit in data.get("results") or []:
-        rows.append(CqlSearch.hit_row(hit, cfg.confluence, snippet_chars))
+    for hit in JsonNode(data).results():
+        rows.append(search.hit_row(hit))
 
-    return TableResult(rows=rows, note=CqlSearch.page_note(data, offset, len(rows)))
+    return TableResult(rows=rows, note=search.page_note(data, offset, len(rows)))
 
 
 @tool
@@ -410,15 +455,17 @@ async def confluence_spaces(
     но поиск Confluence его не отдаёт, поэтому по CQL такой спейс выглядит
     пустым.
     """
-    path = CflRestBuilder.space_list_path(SpaceType(space_type), limit=limit)
-    data = json.loads(await ConfluenceHttp.get(cfg, path))
+    data, path = await ConfluenceHttp(cfg).spaces_json(
+        SpaceType(space_type), limit=limit
+    )
 
+    spaces = SpaceList(pattern, cfg.confluence)
     rows: list[dict[str, Any]] = []
-    for space in SpaceList.items(data, path):
-        if not SpaceList.matches(space, pattern):
+    for space in spaces.items(data, path):
+        if not spaces.matches(space):
             continue
 
-        rows.append(SpaceList.row(space, cfg.confluence))
+        rows.append(spaces.row(space))
 
     return TableResult(rows=rows)
 

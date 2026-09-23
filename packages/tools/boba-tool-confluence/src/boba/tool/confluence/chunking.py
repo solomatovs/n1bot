@@ -50,41 +50,34 @@ class ChunkerParams(BaseModel):
 
 
 class StructuralChunkerFactory:
-    """Собирает StructuralChunker из ChunkerParams."""
+    """Собирает StructuralChunker из параметров нарезки: режет по заголовкам,
+    длинные секции добивает overlap-сплиттером."""
 
     _CHUNKER_ID: ClassVar[ChunkerId] = ChunkerId("postgres-kb-structural")
     _CHUNK_ID_PREFIX_LENGTH: ClassVar[int] = 16
 
-    @classmethod
-    def build(cls, params: ChunkerParams) -> StructuralChunker:
-        """Собирает чанкер: режет по заголовкам, длинные секции добивает overlap-
-        сплиттером.
-        """
+    def __init__(self, params: ChunkerParams) -> None:
+        self._params = params
+
+    def build(self) -> StructuralChunker:
         return StructuralChunker(
-            chunker_id=cls._CHUNKER_ID,
-            splitter_factory=cls._make_splitter_factory(
-                chunk_size=params.chunk_size,
-                chunk_overlap=params.chunk_overlap,
-            ),
+            chunker_id=self._CHUNKER_ID,
+            splitter_factory=self._splitter_factory(),
             chunk_id_generator=SourceBasedChunkId(
                 encoder=Sha256TextEncoder(),
-                prefix=FixedDigestPrefix(chars=cls._CHUNK_ID_PREFIX_LENGTH),
+                prefix=FixedDigestPrefix(chars=self._CHUNK_ID_PREFIX_LENGTH),
             ),
             content_hasher=Sha256TextEncoder(),
         )
 
-    @staticmethod
-    def _make_splitter_factory(
-        *,
-        chunk_size: int,
-        chunk_overlap: int,
-    ) -> SplitterFactory:
+    def _splitter_factory(self) -> SplitterFactory:
         """Замыкает chunk_size/chunk_overlap; extra_overhead приходит от чанкера."""
+        params = self._params
 
         def factory(extra_overhead: int) -> OverlapCharSplitter:
             return OverlapCharSplitter(
-                chunk_size=chunk_size,
-                chunk_overlap=chunk_overlap,
+                chunk_size=params.chunk_size,
+                chunk_overlap=params.chunk_overlap,
                 extra_overhead=extra_overhead,
             )
 

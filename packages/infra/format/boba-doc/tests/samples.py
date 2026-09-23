@@ -6,7 +6,7 @@ from __future__ import annotations
 import io
 import os
 import threading
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Generator, Mapping, Sequence
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, BinaryIO
@@ -36,7 +36,7 @@ class PipeSource:
 
     @staticmethod
     @contextmanager
-    def of(data: bytes) -> Iterator[BinaryIO]:
+    def of(data: bytes) -> Generator[BinaryIO, None, None]:
         read_end, write_end = os.pipe()
 
         def feed() -> None:

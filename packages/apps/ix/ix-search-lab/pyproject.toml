@@ -17,7 +17,7 @@ dependencies = [
 ]
 
 [project.scripts]
-boba-ix-search-lab = "boba.ix_search_lab.server:main"
+boba-ix-search-lab = "boba.ix_search_lab.server:cli"
 
 [tool.setuptools.package-data]
 "boba.ix_search_lab" = ["*.html"]

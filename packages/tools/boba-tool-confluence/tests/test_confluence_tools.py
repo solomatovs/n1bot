@@ -76,11 +76,11 @@ class TestSpaceList:
     }
 
     def test_row_carries_the_space_url(self) -> None:
-        [space, _] = SpaceList.items(
-            self.ANSWER, CflRestBuilder.space_list_path(SpaceType.ANY)
+        [space, _] = SpaceList(None, self.PROFILE).items(
+            self.ANSWER, CflRestBuilder().space_list_path(SpaceType.ANY)
         )
 
-        row = SpaceList.row(space, self.PROFILE)
+        row = SpaceList(None, self.PROFILE).row(space)
 
         if row["url"] != "https://confluence.example.local/display/DQ":
             raise AssertionError(f"unexpected url: {row}")
@@ -88,34 +88,34 @@ class TestSpaceList:
             raise AssertionError(f"unexpected row: {row}")
 
     def test_space_without_webui_falls_back_to_the_service_root(self) -> None:
-        [_, bare] = SpaceList.items(
-            self.ANSWER, CflRestBuilder.space_list_path(SpaceType.ANY)
+        [_, bare] = SpaceList(None, self.PROFILE).items(
+            self.ANSWER, CflRestBuilder().space_list_path(SpaceType.ANY)
         )
 
-        row = SpaceList.row(bare, self.PROFILE)
+        row = SpaceList(None, self.PROFILE).row(bare)
 
         if row["url"] != "https://confluence.example.local":
             raise AssertionError(f"unexpected url: {row}")
 
     def test_pattern_matches_key_or_name(self) -> None:
-        [space, _] = SpaceList.items(
-            self.ANSWER, CflRestBuilder.space_list_path(SpaceType.ANY)
+        [space, _] = SpaceList(None, self.PROFILE).items(
+            self.ANSWER, CflRestBuilder().space_list_path(SpaceType.ANY)
         )
 
-        if not SpaceList.matches(space, None):
+        if not SpaceList(None, self.PROFILE).matches(space):
             raise AssertionError("no pattern takes every space")
-        if not SpaceList.matches(space, "d*"):
+        if not SpaceList("d*", self.PROFILE).matches(space):
             raise AssertionError("the key matches the glob")
-        if not SpaceList.matches(space, "*данных*"):
+        if not SpaceList("*данных*", self.PROFILE).matches(space):
             raise AssertionError("the name matches the glob")
-        if SpaceList.matches(space, "PHDD*"):
+        if SpaceList("PHDD*", self.PROFILE).matches(space):
             raise AssertionError("a foreign glob must not match")
 
     def test_broken_results_raise_the_layer_error(self) -> None:
         import boba.tool.confluence.tools as confluence_tools
 
         with pytest.raises(confluence_tools.ConfluenceRequestError, match="space"):
-            confluence_tools.SpaceList.items(
+            confluence_tools.SpaceList(None, self.PROFILE).items(
                 {"results": [{"name": "no key here"}]},
-                CflRestBuilder.space_list_path(SpaceType.ANY),
+                CflRestBuilder().space_list_path(SpaceType.ANY),
             )

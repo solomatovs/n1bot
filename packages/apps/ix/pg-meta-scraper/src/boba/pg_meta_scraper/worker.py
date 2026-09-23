@@ -13,6 +13,7 @@ ScrapeWorkerError — из ядра: ix недоступен, контракт �
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncGenerator, AsyncIterator, Mapping, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
@@ -611,10 +612,15 @@ class PgSource(ScrapeSource):
         await conn.execute("set bytea_output to 'hex'")
 
 
-def main() -> None:
+async def main() -> None:
     package_dir = Path(__file__).resolve().parent
-    run_cli(PROG, DESCRIPTION, SECTION, package_dir, ScraperConfig)
+    await run_cli(PROG, DESCRIPTION, SECTION, package_dir, ScraperConfig)
+
+
+def cli() -> None:
+    """Точка входа консольного скрипта: единственный asyncio.run на процесс."""
+    asyncio.run(main())
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())

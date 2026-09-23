@@ -1,14 +1,15 @@
-"""Разбор Confluence-HTML: PageOps как чистые функции + изоляция парсеров.
+"""Разбор Confluence-HTML объектами MarkdownRender, PlainTextRender и
+SectionsRender плюс изоляция парсеров.
 
-PageOps больше не payload за протоколом — его зовут тела инструментов
-напрямую, поэтому и тесты зовут его напрямую.
+Рендеры зовут тела инструментов напрямую, без payload за протоколом,
+поэтому и тесты зовут их напрямую.
 """
 
 from __future__ import annotations
 
 import pytest
 
-from boba.confluence.html import PageOps
+from boba.confluence.html import MarkdownRender, PlainTextRender, SectionsRender
 from boba.confluence.models import (
     PageCardSection,
     PageHref,
@@ -37,7 +38,7 @@ class TestToMarkdown:
 
     @staticmethod
     def _run(html: str) -> str:
-        answer = PageOps.to_markdown({"html": html, "heading_style": "ATX"})
+        answer = MarkdownRender({"html": html, "heading_style": "ATX"}).run()
         return str(answer["markdown"])
 
     def test_headings_and_emphasis(self) -> None:
@@ -87,7 +88,7 @@ def _parse(html: str, title: str, page_id: str = "42") -> PageSections:
         page_id=page_id,
         table_shape=_SHAPE,
     )
-    answer = PageOps.confluence_sections(request.model_dump(mode="json"))
+    answer = SectionsRender(request.model_dump(mode="json")).run()
     return PageSections.model_validate(answer)
 
 
@@ -256,7 +257,7 @@ class TestCard:
 
 class TestPlainText:
     def test_tags_are_stripped(self) -> None:
-        answer = PageOps.plain_text({"html": _HTML})
+        answer = PlainTextRender({"html": _HTML}).run()
         text = str(answer["text"])
         if "Заголовок" not in text:
             raise AssertionError('"Заголовок" in text')
@@ -276,26 +277,26 @@ class TestPageHref:
             page_id="199527106",
             title="DRAFT FLIP-202 Introduce ClickHouse Connector",
         )
-        if PageHref.parse(href) != expected:
-            raise AssertionError(f"{PageHref.parse(href)!r} != {expected!r}")
+        if PageHref(href).target() != expected:
+            raise AssertionError(f"{PageHref(href).target()!r} != {expected!r}")
 
     def test_spaces_pages_form_without_title(self) -> None:
-        target = PageHref.parse("/confluence/spaces/FLINK/pages/199527106")
+        target = PageHref("/confluence/spaces/FLINK/pages/199527106").target()
         if target != PageTarget(page_id="199527106"):
             raise AssertionError(f"{target!r}")
 
     def test_display_form_carries_decoded_title(self) -> None:
-        target = PageHref.parse("/confluence/display/AIRFLOW/AIP-98%3A+Add+async")
+        target = PageHref("/confluence/display/AIRFLOW/AIP-98%3A+Add+async").target()
         if target != PageTarget(title="AIP-98: Add async"):
             raise AssertionError(f"{target!r}")
 
     def test_viewpage_form_carries_id(self) -> None:
         href = "/confluence/pages/viewpage.action?pageId=451969699"
-        if PageHref.parse(href) != PageTarget(page_id="451969699"):
-            raise AssertionError(f"{PageHref.parse(href)!r}")
+        if PageHref(href).target() != PageTarget(page_id="451969699"):
+            raise AssertionError(f"{PageHref(href).target()!r}")
 
     def test_tiny_link_is_a_page_without_identity(self) -> None:
-        if PageHref.parse("/confluence/x/54EmGQ") != PageTarget():
+        if PageHref("/confluence/x/54EmGQ").target() != PageTarget():
             raise AssertionError("короткая ссылка /x/ — страница без id и заголовка")
 
     @pytest.mark.parametrize(
@@ -311,7 +312,7 @@ class TestPageHref:
         ],
     )
     def test_not_a_page(self, href: str) -> None:
-        if PageHref.parse(href) is not None:
+        if PageHref(href).target() is not None:
             raise AssertionError(f"{href!r} не должен считаться страницей")
 
 

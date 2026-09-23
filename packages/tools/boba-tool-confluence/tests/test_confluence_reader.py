@@ -73,7 +73,7 @@ async def _chunks(chunk_size: int = 4000, html: str = _HTML) -> list[Chunk[str]]
         chunk_overlap=0,
         table_shape=TableShape(row_layout_max_columns=4, row_layout_min_rows=3),
     )
-    chunker = StructuralChunkerFactory.build(params)
+    chunker = StructuralChunkerFactory(params).build()
     rows: list[Chunk[str]] = []
     async for chunk in chunker.chunk(_sections(html)):
         rows.append(chunk)

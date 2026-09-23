@@ -242,7 +242,8 @@ class RunOutcome:
 
 
 class LoggedIndexRun:
-    """Слив IndexEvent-потока с per-event логированием; возвращает RunOutcome."""
+    """Слив IndexEvent-потока с per-event логированием и счётом прогресса;
+    создаётся конвейером на прогон, drain() возвращает RunOutcome."""
 
     _LEVELS: ClassVar[dict[Severity, int]] = {
         Severity.INFO: logging.INFO,
@@ -250,33 +251,32 @@ class LoggedIndexRun:
         Severity.ERROR: logging.ERROR,
     }
 
-    @staticmethod
-    async def drain(
-        events: AsyncIterable[IndexEvent],
-        logger: logging.Logger,
-        progress: IngestProgress,
-    ) -> RunOutcome:
+    def __init__(self, logger: logging.Logger, progress: IngestProgress) -> None:
+        self._logger = logger
+        self._progress = progress
+
+    async def drain(self, events: AsyncIterable[IndexEvent]) -> RunOutcome:
         """Потребить поток Pipeline.index(...), пишет каждое событие в logger."""
         outcome = RunOutcome(stats=IndexStatsBuilder().build())
         async for event in events:
-            LoggedIndexRun._emit(logger, event)
-            LoggedIndexRun._count(progress, event)
-            LoggedIndexRun._remember(outcome, event)
+            self._emit(event)
+            self._count(event)
+            self._remember(outcome, event)
             if isinstance(event, RunFinished):
                 outcome.stats = event.stats
 
         return outcome
 
-    @staticmethod
-    def _emit(logger: logging.Logger, event: IndexEvent) -> None:
+    def _emit(self, event: IndexEvent) -> None:
         """Одна log-строка на событие: headline() для item'ов, label() для фаз."""
-        message = (
-            event.headline() if isinstance(event, CompletedItem) else event.label()
-        )
-        logger.log(LoggedIndexRun._LEVELS[event.severity()], "%s", message)
+        if isinstance(event, CompletedItem):
+            message = event.headline()
+        else:
+            message = event.label()
 
-    @staticmethod
-    def _remember(outcome: RunOutcome, event: IndexEvent) -> None:
+        self._logger.log(self._LEVELS[event.severity()], "%s", message)
+
+    def _remember(self, outcome: RunOutcome, event: IndexEvent) -> None:
         if isinstance(event, SourceSkipped):
             counted = outcome.skips.setdefault(event.kind, Counter())
             counted[event.reason] += 1
@@ -290,9 +290,9 @@ class LoggedIndexRun:
 
         outcome.reasons[event.kind] = event.reason
 
-    @staticmethod
-    def _count(progress: IngestProgress, event: IndexEvent) -> None:
+    def _count(self, event: IndexEvent) -> None:
         """Источник закрыт своим событием; страница и вложение считаются врозь."""
+        progress = self._progress
         if isinstance(event, SourceGone):
             progress.source_gone()
             progress.say()
