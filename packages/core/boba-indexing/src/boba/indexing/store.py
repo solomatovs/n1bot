@@ -15,9 +15,9 @@ from typing import ClassVar, Generic, TypeVar
 
 from boba.indexing.chunks import Chunk, ChunkId, ChunkSummary, EmbeddedChunk
 from boba.indexing.filter import And, Filter
-from boba.indexing.ports import Embedder
 from boba.indexing.sections import SourceId
 from boba.indexing.values import CollectionId, ContentHash
+from boba.llm.embedding import EmbeddingModel
 
 __all__ = [
     "ChunkStore",
@@ -31,7 +31,7 @@ __all__ = [
     "TrackingKeys",
 ]
 
-T = TypeVar("T")
+T = TypeVar("T", bound=str)
 
 
 @dataclass(frozen=True)
@@ -173,9 +173,6 @@ class CollectionsStore(ABC):
         ...
 
 
-T = TypeVar("T")
-
-
 class TrackingKeys:
     """Wire-имена tracking-полей в metadata-store — единый источник правды для всех
     backend'ов.
@@ -236,7 +233,6 @@ class IndexSink(ABC, Generic[T]):
         ...
 
 
-T = TypeVar("T")
 _E = TypeVar("_E")
 
 
@@ -250,7 +246,7 @@ class CollectionScopedView(IndexQuery[T], IndexSink[T]):
     def __init__(
         self,
         store: ChunkStore[T],
-        embedder: Embedder[T],
+        embedder: EmbeddingModel,
         collection: CollectionId,
         *,
         scope_extra: Filter | None = None,

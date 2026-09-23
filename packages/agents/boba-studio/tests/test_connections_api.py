@@ -17,12 +17,12 @@ from studio_stand import ApiStand, StandProfiles
 from boba.chat.profiles import ChatProfiles
 from boba.connection_broker.store import ConnectionsConfig, ConnectionStore
 from boba.connections.manifest import ConnectionTypes
-from boba.connections.profile import GrantTarget, StoredRole
+from boba.connections.stored import GrantTarget, StoredRole
 from boba.db.postgres import AsyncPostgresPool
 from boba.runtime.config import StudioRuntimeConfig
 from boba.stand.refs import StandRefs
 from boba.studio.api.urls import ApiVersion, ConnectionUrl
-from boba.transport.http.profile import HttpConnection
+from boba.transport.http.connection import HttpConnection
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
 
@@ -98,7 +98,7 @@ def _query(studio_config: StudioRuntimeConfig, **extra: str) -> dict[str, str]:
 def _web_body(name: str, host: str) -> dict[str, object]:
     return {
         "name": name,
-        "profile": {"kind": "web", "host": host, "port": 443, "ssl_verify": False},
+        "connection": {"kind": "web", "host": host, "port": 443, "ssl_verify": False},
     }
 
 
@@ -130,7 +130,7 @@ async def test_lists_granted_rows_with_masked_secrets(
     assert rows["main"]["kind"] == "postgres"
     assert rows["site"]["kind"] == "web"
     assert rows["site"]["mine"] is False
-    assert rows["site"]["profile"]["host"] == "example.test"
+    assert rows["site"]["connection"]["host"] == "example.test"
 
     for secret in _secrets_of(studio_config.data_layer.postgres):
         assert secret not in reply.text
@@ -165,7 +165,7 @@ async def test_missing_type_row_is_listed_with_a_mark(
     broken = rows["site"]
     assert broken["available"] is False
     assert broken["kind"] == "vanished"
-    assert broken["profile"] is None
+    assert broken["connection"] is None
 
     assert rows["main"]["available"] is True
 
@@ -208,7 +208,7 @@ async def test_owner_creates_replaces_and_deletes_own_connection(
     )
     assert replaced.status_code == 200, replaced.text
     assert replaced.json()["name"] == "own-2"
-    assert replaced.json()["profile"]["host"] == "own-2.test"
+    assert replaced.json()["connection"]["host"] == "own-2.test"
 
     deleted = await client.delete(
         f"{ApiVersion.V1}/connections/{row['id']}", params=_query(studio_config)
@@ -261,7 +261,7 @@ async def test_masked_secret_is_rejected(
 ) -> None:
     body = {
         "name": "pg-own",
-        "profile": {
+        "connection": {
             "kind": "postgres",
             "host": "db.test",
             "port": 5432,
@@ -296,7 +296,7 @@ async def test_check_of_a_stored_row_and_of_a_draft(
         f"{ApiVersion.V1}{ConnectionUrl.CHECK}",
         params=_query(studio_config),
         json={
-            "profile": {
+            "connection": {
                 "kind": "web",
                 "scheme": "http",
                 "host": "127.0.0.1",

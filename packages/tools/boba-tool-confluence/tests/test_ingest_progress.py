@@ -43,7 +43,7 @@ from boba.tool.confluence.indexing_log import (
 )
 from boba.tool.confluence.pipeline import ConfluenceSourceTransport
 from boba.tool.confluence.request_sources import ConfluenceDiscovery, SpaceListing
-from boba.transport.http.profile import HttpConnection, UrlScheme
+from boba.transport.http.connection import HttpConnection, UrlScheme
 
 pytestmark = pytest.mark.anyio
 
@@ -97,7 +97,7 @@ class IngestStand:
         self.store = MemoryChunkStore()
         self.ledger = MemorySourceLedger()
         self.progress = IngestProgress(LOGGER)
-        profile = HttpConnection(
+        connection = HttpConnection(
             scheme=UrlScheme.HTTP,
             host="127.0.0.1",
             port=port,
@@ -105,7 +105,7 @@ class IngestStand:
             retry_backoff_sec=0.0,
             timeout_sec=10.0,
         )
-        self.conn = ConfluenceConnection(profile=profile, body_format="view")
+        self.conn = ConfluenceConnection(connection=connection, body_format="view")
 
     async def run(self) -> None:
         view: CollectionScopedView[str] = CollectionScopedView(

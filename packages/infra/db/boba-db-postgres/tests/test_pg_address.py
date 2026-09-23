@@ -8,7 +8,7 @@ from pydantic import SecretStr
 
 from boba.connections.address import AddressError
 from boba.db.postgres.address import PgAddresses, PgNodeKind
-from boba.db.postgres.profile import (
+from boba.db.postgres.connection import (
     PasswordAuth,
     PostgresConfig,
     PostgresOptionsConfig,

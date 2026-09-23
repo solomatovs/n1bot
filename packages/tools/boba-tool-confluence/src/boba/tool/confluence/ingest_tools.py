@@ -12,7 +12,7 @@ ConfluencePayloadError — Confluence ответил не тем JSON, кото�
 AttachmentNotFoundError — вложения с таким именем на странице нет.
 DocumentError — вложение скачалось, но не разбирается (boba.doc.document).
 OcrUnavailableError — вызов просил OCR при ocr.provider = off (boba.doc.config).
-EmbeddingError — удалённый эмбеддер недоступен или ответил мусором.
+LlmError — эмбеддер недоступен, не загрузился или ответил мусором.
 Сбой отдельной страницы или вложения ingest переживает сам: источник уходит
 в счётчик failed, прогон идёт дальше.
 """
@@ -61,10 +61,11 @@ from boba.indexing import (
     TableSection,
     TransportError,
 )
-from boba.llm.embedding import EmbeddingConfig, EmbeddingError
-from boba.llm.warm import WarmEmbedder
+from boba.llm.chat import LlmError
+from boba.llm.providers import EmbeddingModelConfig
 from boba.tool.confluence.indexing_log import IngestProgress, LoggingReader
 from boba.tool.confluence.ingest_base import (
+    LLM,
     ConfluenceIngest,
     ConfluenceIngestConfig,
     IngestAssembly,
@@ -123,13 +124,13 @@ class IngestWarmupConfig(BaseModel):
 
     model_config = ConfigDict(extra="ignore")
 
-    embedding: EmbeddingConfig
+    embedding: EmbeddingModelConfig
 
 
 @warmup
 async def warm_embedder(cfg: IngestWarmupConfig) -> None:
     """Модель эмбеддингов поднимается в зиготе: вызовы берут её через COW."""
-    embedder = WarmEmbedder.load(cfg.embedding)
+    embedder = LLM.embedding(cfg.embedding)
     await embedder.embed_query("warm-up")
 
 
@@ -287,10 +288,11 @@ class IngestRun:
         Каждый роут обёрнут логом: иначе долгий разбор (OCR) молчит до конца.
         """
         # ридеры форматов тяжёлые: грузятся только в процессе прогона
+        from boba.doc.ocr import OcrEngines  # noqa: PLC0415
         from boba.text import TextMedia  # noqa: PLC0415
         from boba.tool.confluence.documents import DocumentReader  # noqa: PLC0415
 
-        documents = DocumentReader(self._cfg)
+        documents = DocumentReader(self._cfg, OcrEngines(LLM))
         plain: dict[str, Reader[str]] = {}
         for content_type in ConfluenceIngest.HTML_CONTENT_TYPES:
             plain[content_type] = LocalConfluenceReader(self._cfg.table_shape)
@@ -427,23 +429,26 @@ async def confluence_attachment(
     run_cfg = cfg.with_ocr(ocr=ocr)
 
     rest_cfg = ConfluenceToolsConfig(
-        confluence=run_cfg.confluence, body_format=run_cfg.body_format
+        confluence=run_cfg.confluence,
+        body_format=run_cfg.body_format,
+        transport=run_cfg.transport,
     )
-    http = ConfluenceHttp(rest_cfg)
-    attachments = PageAttachments(await http.page_json(page_id))
+    async with ConfluenceHttp(rest_cfg) as http:
+        attachments = PageAttachments(await http.page_json(page_id))
 
-    link = attachments.link(filename)
-    if not link:
-        msg = (
-            f"attachment {filename!r} not found on confluence page {page_id!r}; "
-            f"page attachments: {attachments.titles()}"
-        )
-        raise AttachmentNotFoundError(msg)
+        link = attachments.link(filename)
+        if not link:
+            msg = (
+                f"attachment {filename!r} not found on confluence page {page_id!r}; "
+                f"page attachments: {attachments.titles()}"
+            )
+            raise AttachmentNotFoundError(msg)
 
-    content = await http.get(CflUrlBuilder().raw_to_url(link))
+        content = await http.get(CflUrlBuilder().raw_to_url(link))
 
     # ридеры синхронные и тяжёлые: разбор уходит в поток
-    text = await asyncio.to_thread(AttachmentText(run_cfg).read, content, filename)
+    reader = AttachmentText(run_cfg)
+    text = await asyncio.to_thread(reader.read, content, filename)
 
     return MarkdownResult(text=text)
 
@@ -458,7 +463,7 @@ class AttachmentText:
         from boba.doc.ocr import OcrEngines  # noqa: PLC0415
         from boba.doc.router import DocumentRouter  # noqa: PLC0415
 
-        self._router = DocumentRouter(cfg, OcrEngines().of(cfg.ocr))
+        self._router = DocumentRouter(cfg, OcrEngines(LLM).of(cfg.ocr))
 
     def read(self, content: bytes, filename: str) -> str:
         hint = DocumentHint(filename=filename)
@@ -503,7 +508,7 @@ EXPECTED: Mapping[type[Exception], IngestErrorKind] = {
     AttachmentNotFoundError: IngestErrorKind.ATTACHMENT_NOT_FOUND,
     DocumentError: IngestErrorKind.DOCUMENT_UNREADABLE,
     OcrUnavailableError: IngestErrorKind.OCR_UNAVAILABLE,
-    EmbeddingError: IngestErrorKind.EMBEDDING_FAILED,
+    LlmError: IngestErrorKind.EMBEDDING_FAILED,
 }
 
 TOOLS: Final = ToolMain.toolset(

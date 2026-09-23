@@ -12,8 +12,8 @@ import pytest
 from pydantic import BaseModel, ConfigDict, SecretStr
 
 from boba.db.oracle import OracleError, OracleQueryError
+from boba.db.oracle.connection import OracleConfig
 from boba.db.oracle.payload import PayloadOracle
-from boba.db.oracle.profile import OracleConfig
 from boba.stand.ix import IxStand
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]

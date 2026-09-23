@@ -31,6 +31,7 @@ from boba.doc.document import (
     PageInfo,
     PageWindow,
 )
+from boba.llm.providers import LlmProviders, LlmProviderTypes
 from boba.tool.doc.config import DocToolsConfig
 from boba.toolkit.entry import ToolMain
 from boba.toolkit.facade import Injected, tool
@@ -46,6 +47,10 @@ _OCR_DESCRIPTION = (
     "false — только текстовый слой. Сканам/фото — true, обычным "
     "pdf/docx — false (OCR дорог: секунды на страницу)."
 )
+
+
+LLM: Final = LlmProviders(LlmProviderTypes.installed())
+"""Модели процесса инструмента: чат-модель OCR живёт здесь."""
 
 
 class DocErrorKind(StrEnum):
@@ -99,7 +104,7 @@ class DocRun:
         from boba.doc.router import DocumentRouter  # noqa: PLC0415
 
         self._cfg = cfg.for_call(ocr=ocr_enabled)
-        self._router = DocumentRouter(self._cfg, OcrEngines().of(self._cfg.ocr))
+        self._router = DocumentRouter(self._cfg, OcrEngines(LLM).of(self._cfg.ocr))
 
     @contextmanager
     def open(self, path: str) -> Generator[Document, None, None]:

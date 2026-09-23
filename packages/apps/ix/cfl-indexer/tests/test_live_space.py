@@ -19,7 +19,7 @@ from boba.confluence.rest import ConfluenceConnection, SpaceType
 from boba.doc.config import DisabledOcrConfig, DocSection
 from boba.stand.ix import IxStand, IxStandDatabase
 from boba.stand.site import Stand
-from boba.transport.http.profile import BearerAuth, HttpConnection
+from boba.transport.http.connection import BearerAuth, HttpConnection
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
 
@@ -29,7 +29,7 @@ SPACE = "IPKD"
 
 
 def _config(ix_stand: IxStand) -> IndexerConfig:
-    profile = HttpConnection(
+    connection = HttpConnection(
         host=STAND.confluence_host,
         port=STAND.confluence_port,
         auth=BearerAuth(method="bearer", token=STAND.confluence_token),
@@ -43,7 +43,7 @@ def _config(ix_stand: IxStand) -> IndexerConfig:
         sources=[
             ConfluenceSource(
                 name="stand",
-                confluence=ConfluenceConnection(profile=profile),
+                confluence=ConfluenceConnection(connection=connection),
                 spaces=SpaceSelector(
                     masks=[SPACE], type=SpaceType.GLOBAL, archived=True
                 ),

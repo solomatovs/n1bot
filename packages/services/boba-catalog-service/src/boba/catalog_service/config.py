@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from boba.db.postgres.profile import PostgresConfig
+from boba.db.postgres.connection import PostgresConfig
 
 __all__ = ["CatalogConfig"]
 

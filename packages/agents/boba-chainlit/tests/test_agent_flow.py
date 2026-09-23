@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Sequence
-from typing import Annotated, Any
+from collections.abc import AsyncIterator, Sequence
+from typing import Annotated, Any, ClassVar
 
 import pytest
 from chainlit.step import StepDict
@@ -37,49 +37,52 @@ from boba.chainlit.infra.config import AppConfig
 from boba.chainlit.infra.providers import (
     _flow_tools,
     build_history_view,
-    httpx_clients,
+    llm_providers,
     session_graph_builder,
 )
 from boba.chainlit.rendering.chat_view import StepText
-from boba.chat.generation import (
-    GenerationError,
-    OpenAiGeneration,
-    SchemaSpec,
-    StructuredGenerator,
-)
 from boba.chat.profiles import (
     ChatProfileConfig,
     PlainFlowConfig,
     PrefetchFlowConfig,
     SelectedProfile,
 )
+from boba.llm.chat import (
+    ChatEvent,
+    ChatModel,
+    ChatReply,
+    ChatRequest,
+    LlmError,
+    ToolCall,
+)
+from boba.llm.providers import LlmProviders, LlmProviderTypes
+from boba.llm.schema import SchemaReply
 from boba.toolkit.calls import ToolIntent
 from boba.toolkit.result import ErrorResult, TableResult, ToolArtifact
 from boba.toolrun.cancellation import CancellableTools
 
 pytestmark = pytest.mark.anyio
 
-HTTP: dict[str, Any] = {}
-
-BACKEND = {
+BACKEND: dict[str, Any] = {
     "kind": "openai",
-    "http": HTTP,
-    "base_url": "https://llm.example/v1",
-    "api_key": "token",
+    "transport": {},
+    "connection": {
+        "host": "llm.example",
+        "path": "/v1",
+        "auth": {"method": "bearer", "token": "token"},
+    },
 }
 
-REPHRASER = {
-    "kind": "openai",
-    "http": HTTP,
-    "base_url": "https://llm.example/v1",
-    "api_key": "token",
+REPHRASER: dict[str, Any] = {
+    "provider": BACKEND,
     "model": "small-model",
     "system_prompt": "rephrase",
-    "max_tokens": 256,
-    "temperature": 0,
+    "sampling": {"max_tokens": 256, "temperature": 0},
 }
 
 THREAD = RunnableConfig(configurable={"thread_id": "flow-thread"})
+
+QUESTION_FALLBACK = "исходный запрос"
 
 
 FEED_THREAD = "33333333-3333-3333-3333-333333333333"
@@ -146,24 +149,39 @@ class BrokenRephraser(Rephraser):
         raise RuntimeError(msg)
 
 
-class FakeGenerator(StructuredGenerator):
-    """Генератор без сети: отдаёт заготовленный ответ модели."""
+class FakeChatModel(ChatModel):
+    """Чат-модель без сети: отвечает по схеме вызовом либо голым текстом."""
 
-    def __init__(self, reply: str) -> None:
-        self.reply = reply
+    def __init__(
+        self, arguments: dict[str, Any] | None = None, content: str = ""
+    ) -> None:
+        self.arguments = arguments
+        self.content = content
         self.asked: list[str] = []
 
-    async def generate(self, user: str, schema: SchemaSpec) -> str:
-        self.asked.append(user)
-        return self.reply
+    async def chat(self, request: ChatRequest) -> AsyncIterator[ChatEvent]:
+        self.asked.append(request.messages[-1].content)
+
+        calls: list[ToolCall] = []
+        if self.arguments is not None:
+            calls.append(
+                ToolCall(id="c1", name="Rephrasings", arguments=self.arguments)
+            )
+
+        yield ChatReply(content=self.content, tool_calls=calls)
 
 
-class BrokenGenerator(StructuredGenerator):
-    """Генератор, у которого недоступен провайдер."""
+class BrokenChatModel(ChatModel):
+    """Чат-модель, у которой недоступен провайдер."""
 
-    async def generate(self, user: str, schema: SchemaSpec) -> str:
+    async def chat(self, request: ChatRequest) -> AsyncIterator[ChatEvent]:
         msg = "provider is down"
-        raise GenerationError(msg)
+        raise LlmError(msg)
+        yield ChatReply()
+
+
+def _rephraser(chat: ChatModel) -> LlmRephraser:
+    return LlmRephraser(SchemaReply(chat, {}), "rephrase")
 
 
 @tool(response_format="content_and_artifact")
@@ -271,96 +289,73 @@ def _tool_messages(messages: Sequence[BaseMessage]) -> list[ToolMessage]:
 
 
 class TestRephrasingsParser:
-    """Разбор ответа переформулировщика: схема, чужой json, голый текст."""
+    """Разбор объекта ответа переформулировщика: схема либо чужой объект."""
 
-    SCHEMA_ANSWER = (
-        '{"keywords": "kerberos cloudbeaver samba", '
-        '"expanded": "настройка kerberos в cloudbeaver через samba AD", '
-        '"english": "kerberos authentication in cloudbeaver with samba AD"}'
-    )
+    SCHEMA_ANSWER: ClassVar[dict[str, Any]] = {
+        "keywords": "kerberos cloudbeaver samba",
+        "expanded": "настройка kerberos в cloudbeaver через samba AD",
+        "english": "kerberos authentication in cloudbeaver with samba AD",
+    }
 
     def test_schema_answer_gives_every_field(self) -> None:
-        parsed = RephrasingsParser.parse(self.SCHEMA_ANSWER)
+        parsed = RephrasingsParser().parse(self.SCHEMA_ANSWER)
         if len(parsed) != 3:
             raise AssertionError(f"три варианта, получено {parsed}")
 
-    def test_fenced_json_is_unwrapped(self) -> None:
-        fenced = f"```json\n{self.SCHEMA_ANSWER}\n```"
-        if RephrasingsParser.parse(fenced) != RephrasingsParser.parse(
-            self.SCHEMA_ANSWER
-        ):
-            raise AssertionError("markdown-блок разобран как голый json")
-
-    def test_foreign_json_gives_its_strings(self) -> None:
-        parsed = RephrasingsParser.parse('{"queries": ["first one", "second one"]}')
+    def test_foreign_object_gives_its_strings(self) -> None:
+        parsed = RephrasingsParser().parse({"queries": ["first one", "second one"]})
         if list(parsed) != ["first one", "second one"]:
             raise AssertionError(f"строки чужой схемы взяты как есть: {parsed}")
 
-    def test_plain_lines_are_taken_as_queries(self) -> None:
-        parsed = RephrasingsParser.parse('1. first one\n2. "second one"\n- third one')
-        if list(parsed) != ["first one", "second one", "third one"]:
-            raise AssertionError(f"нумерация и кавычки убраны: {parsed}")
-
     def test_repeated_variants_are_dropped(self) -> None:
-        answer = (
-            '{"keywords": "same text", "expanded": "same text", "english": "same text"}'
-        )
-        if list(RephrasingsParser.parse(answer)) != ["same text"]:
+        answer = {
+            "keywords": "same text",
+            "expanded": "same text",
+            "english": "same text",
+        }
+        if list(RephrasingsParser().parse(answer)) != ["same text"]:
             raise AssertionError("повторы не размножают запросы")
 
-    def test_empty_answer_gives_nothing(self) -> None:
-        if RephrasingsParser.parse("   "):
-            raise AssertionError("пустой ответ разбирать нечем")
-
-    def test_truncated_json_gives_nothing(self) -> None:
-        """Ответ оборвался на лимите токенов: огрызок запросом быть не может."""
-        cut = '{"keywords": "kerberos cloudbeaver", "expanded": "настройка kerb'
-        if RephrasingsParser.parse(cut):
-            raise AssertionError("недописанный json в поиск не идёт")
-
-    def test_json_in_prose_with_nested_fence_and_tilde_fence(self) -> None:
-        """Объект берётся целиком: вложенные ``` и ~~~-обёртка разбору не мешают."""
-        nested = self.SCHEMA_ANSWER.replace("samba AD", "samba ```AD```")
-        wrapped = f"Варианты:\n~~~json\n{nested}\n~~~\nи ещё текст"
-
-        parsed = RephrasingsParser.parse(wrapped)
-        if len(parsed) != 3:
-            raise AssertionError(f"три варианта, получено {parsed}")
-        if not any("```AD```" in item for item in parsed):
-            raise AssertionError(f"вложенный fence сохранён в значении: {parsed}")
+    def test_empty_object_gives_nothing(self) -> None:
+        if RephrasingsParser().parse({}):
+            raise AssertionError("пустой объект разбирать нечем")
 
 
 class TestLlmRephraser:
-    """Переформулировщик поверх генератора: любой ответ либо разобран, либо откат."""
+    """Переформулировщик поверх чат-модели: ответ разобран либо откат на запрос."""
 
     async def test_schema_answer_becomes_queries(self) -> None:
-        generator = FakeGenerator(TestRephrasingsParser.SCHEMA_ANSWER)
+        chat = FakeChatModel(TestRephrasingsParser.SCHEMA_ANSWER)
 
-        queries = await LlmRephraser(generator).rephrase("исходный запрос")
+        queries = await _rephraser(chat).rephrase("исходный запрос")
 
         if len(queries) != 3:
             raise AssertionError(f"три варианта, получено {queries}")
-        if generator.asked != ["исходный запрос"]:
-            raise AssertionError(f"в модель ушёл запрос: {generator.asked}")
+        if chat.asked != ["исходный запрос"]:
+            raise AssertionError(f"в модель ушёл запрос: {chat.asked}")
 
-    async def test_text_answer_is_used_as_well(self) -> None:
-        generator = FakeGenerator("first variant\nsecond variant")
+    async def test_json_in_text_answer_is_used_as_well(self) -> None:
+        chat = FakeChatModel(
+            content='```json\n{"queries": ["first variant", "second variant"]}\n```'
+        )
 
-        queries = await LlmRephraser(generator).rephrase("исходный запрос")
+        queries = await _rephraser(chat).rephrase("исходный запрос")
 
         if list(queries) != ["first variant", "second variant"]:
             raise AssertionError(f"текстовый ответ разобран: {queries}")
 
     async def test_broken_provider_searches_by_user_query(self) -> None:
-        queries = await LlmRephraser(BrokenGenerator()).rephrase("исходный запрос")
+        queries = await _rephraser(BrokenChatModel()).rephrase("исходный запрос")
 
-        if list(queries) != ["исходный запрос"]:
+        if list(queries) != [QUESTION_FALLBACK]:
             raise AssertionError(f"откат на исходный запрос: {queries}")
 
     async def test_unusable_answer_searches_by_user_query(self) -> None:
-        queries = await LlmRephraser(FakeGenerator("")).rephrase("исходный запрос")
+        queries = await _rephraser(FakeChatModel(content="")).rephrase(
+            "исходный запрос"
+        )
 
-        if list(queries) != ["исходный запрос"]:
+        if list(queries) != [QUESTION_FALLBACK]:
             raise AssertionError(f"откат на исходный запрос: {queries}")
 
 
@@ -789,7 +784,9 @@ class TestFlowConfig:
         flow = profile.flow
         if not isinstance(flow, PrefetchFlowConfig):
             raise AssertionError(f"flow is prefetch, got {flow}")
-        if not isinstance(flow.rephraser, OpenAiGeneration):
+        if flow.rephraser is None:
+            raise AssertionError("rephraser expected")
+        if flow.rephraser.provider.kind != "openai":
             raise AssertionError(f"openai rephraser expected, got {flow.rephraser}")
         if flow.rephraser.model != "small-model":
             raise AssertionError(f"model is parsed, got {flow.rephraser.model}")
@@ -817,10 +814,6 @@ class TestFlowConfig:
         if not isinstance(profile.flow, PrefetchFlowConfig):
             raise AssertionError("prefetch flow is parsed with wildcard tools")
 
-    def test_client_key_is_stable(self) -> None:
-        if PrefetchFlowConfig.client_key("search") != "search:flow":
-            raise AssertionError("client key is '<profile>:flow'")
-
 
 class TestProviderAssembly:
     """Сборка на стороне провайдеров: билдер по профилю и клиент flow."""
@@ -847,15 +840,16 @@ class TestProviderAssembly:
         return flow
 
     def test_plain_profile_gets_plain_builder(self) -> None:
-        builder = session_graph_builder({}, self._selected(), [])
+        providers = LlmProviders(LlmProviderTypes.installed())
+        builder = session_graph_builder(providers, self._selected(), [])
         if not isinstance(builder, PlainGraphBuilder):
             raise AssertionError(f"plain builder expected, got {type(builder)}")
 
     def test_prefetch_profile_gets_prefetch_builder(self) -> None:
         selected = self._selected(flow=self._flow())
-        generators = {"search": FakeGenerator("{}")}
+        providers = LlmProviders(LlmProviderTypes.installed())
 
-        builder = session_graph_builder(generators, selected, [fts_probe])
+        builder = session_graph_builder(providers, selected, [fts_probe])
         if not isinstance(builder, PrefetchGraphBuilder):
             raise AssertionError(f"prefetch builder expected, got {type(builder)}")
 
@@ -863,14 +857,23 @@ class TestProviderAssembly:
         with pytest.raises(RuntimeError, match="not available"):
             _flow_tools(["kb_fts_search"], [fts_probe])
 
-    async def test_httpx_clients_carry_flow_client(self, app_config: AppConfig) -> None:
+    async def test_llm_providers_serve_profile_and_flow(
+        self, app_config: AppConfig
+    ) -> None:
         profile = self._selected(flow=self._flow()).config
         config = app_config.model_copy(update={"profiles": {"search": profile}})
 
-        clients_gen = httpx_clients(config)
-        clients = await anext(clients_gen)
+        providers_gen = llm_providers(config)
+        providers = await anext(providers_gen)
         try:
-            if set(clients) != {"search", "search:flow"}:
-                raise AssertionError(f"flow client is created, got {set(clients)}")
+            if not isinstance(profile.flow, PrefetchFlowConfig):
+                raise AssertionError("prefetch flow expected")
+            if profile.flow.rephraser is None:
+                raise AssertionError("rephraser expected")
+
+            chat = providers.chat(profile)
+            rephraser = providers.chat(profile.flow.rephraser)
+            if not isinstance(chat, ChatModel) or not isinstance(rephraser, ChatModel):
+                raise AssertionError("providers build chat models for both uses")
         finally:
-            await anext(clients_gen, None)
+            await anext(providers_gen, None)

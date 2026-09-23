@@ -4,20 +4,24 @@
 
 from __future__ import annotations
 
-from typing import ClassVar
+from typing import ClassVar, Final
 
 from pydantic import Field
 
 from boba.db.pgvector.config import PostgresStoreConfig
-from boba.db.postgres.profile import PostgresConfig
-from boba.llm.embedding import EmbeddingConfig
+from boba.db.postgres.connection import PostgresConfig
+from boba.llm.providers import EmbeddingModelConfig, LlmProviders, LlmProviderTypes
 from boba.toolkit.types import SecretRevealing
 
 __all__ = [
+    "LLM",
     "KbChunksConfig",
     "KbToolConfig",
     "PostgresKnowledgeBaseConfig",
 ]
+
+LLM: Final = LlmProviders(LlmProviderTypes.installed())
+"""Модели процесса инструмента: прогретый в зиготе эмбеддер живёт здесь."""
 
 
 class PostgresKnowledgeBaseConfig(PostgresStoreConfig):
@@ -25,7 +29,7 @@ class PostgresKnowledgeBaseConfig(PostgresStoreConfig):
     и в DDL tsv-колонки (migrations/002_multilang_tsv.sql) — оба места должны быть
     синхронны."""
 
-    embedding: EmbeddingConfig
+    embedding: EmbeddingModelConfig
     max_result_chars: int = Field(
         default=1_000_000,
         ge=1,
@@ -54,5 +58,5 @@ class KbToolConfig(SecretRevealing):
 
     connection: PostgresConfig
     db_schema: str = Field(min_length=1)
-    embedding: EmbeddingConfig
+    embedding: EmbeddingModelConfig
     max_result_chars: int = Field(ge=1)

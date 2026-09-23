@@ -3,7 +3,7 @@
 Владение = личный грант: строка, выданная пользователю лично, принадлежит ему —
 он её создаёт, заменяет и удаляет. Выданная по роли — общая, только для чтения.
 
-Проверка: POST /connections/check {profile} и POST /connections/{id}/check — пробное
+Проверка: POST /connections/check {connection} и POST /connections/{id}/check — пробное
 соединение; исход всегда 200 с ProbeResult{ok, message, elapsed_ms}.
 
 Правила владения и уникальности имени — у UserConnectionsService; маршруты
@@ -44,8 +44,8 @@ from boba.connection_broker.store import ConnectionStoreError
 from boba.connection_broker.user_connections import CredentialsRef
 from boba.connections.manifest import ConnectionTypes, ConnectionTypesError
 from boba.connections.marks import ConnectionRefusal
-from boba.connections.profile import (
-    ConnectionProfileBase,
+from boba.connections.stored import (
+    ConnectionBase,
     MissingTypeConnection,
     ProbeResult,
     StoredConnection,
@@ -60,11 +60,11 @@ __all__ = [
     "ConnectionBody",
     "ConnectionDeleted",
     "ConnectionHttp",
+    "ConnectionSchema",
     "ConnectionUrl",
     "ConnectionView",
     "ConnectionsApi",
     "ProbeBody",
-    "ProfileSchema",
     "SubjectResolver",
 ]
 
@@ -107,18 +107,18 @@ BusSource = Callable[[], MessageBus]
 
 
 class ConnectionBody(BaseModel):
-    """Имя и сырой профиль соединения: модель выбирает реестр типов на границе."""
+    """Имя и сырое соединение: модель выбирает реестр типов на границе."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     name: str = Field(min_length=1, max_length=128)
-    profile: Mapping[str, Any]
+    connection: Mapping[str, Any]
 
 
 class ConnectionView(BaseModel):
-    """Строка connections для страницы: профиль с замаскированными секретами.
+    """Строка connections для страницы: соединение с замаскированными секретами.
 
-    available=False — тип строки не установлен в этом развёртывании: профиля
+    available=False — тип строки не установлен в этом развёртывании: соединения
     нет, страница показывает пометку вместо формы.
     """
 
@@ -129,12 +129,16 @@ class ConnectionView(BaseModel):
     kind: str
     mine: bool
     available: bool = True
-    profile: SerializeAsAny[ConnectionProfileBase] | None = None
+    connection: SerializeAsAny[ConnectionBase] | None = None
 
     @classmethod
     def of(cls, row: StoredConnection, mine: bool) -> ConnectionView:
         return cls(
-            id=row.id, name=row.name, kind=row.kind, mine=mine, profile=row.profile
+            id=row.id,
+            name=row.name,
+            kind=row.kind,
+            mine=mine,
+            connection=row.connection,
         )
 
     @classmethod
@@ -143,11 +147,11 @@ class ConnectionView(BaseModel):
 
 
 class ProbeBody(BaseModel):
-    """Сырой профиль на проверку: как в форме, ещё не сохранённый."""
+    """Сырое соединение на проверку: как в форме, ещё не сохранённое."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    profile: Mapping[str, Any]
+    connection: Mapping[str, Any]
 
 
 class ConnectionDeleted(BaseModel):
@@ -156,8 +160,8 @@ class ConnectionDeleted(BaseModel):
     deleted: bool
 
 
-class ProfileSchema:
-    """JSON Schema профиля соединения: по ней страница строит форму."""
+class ConnectionSchema:
+    """JSON Schema соединения: по ней страница строит форму."""
 
     @staticmethod
     def render(types: ConnectionTypes) -> Mapping[str, Any]:
@@ -220,15 +224,15 @@ class ConnectionsApi:
         self._bus = bus
         self._types = types
 
-    def _parsed(self, raw: Mapping[str, Any]) -> ConnectionProfileBase:
-        """Профиль из тела запроса: модель по kind, секреты — настоящие.
+    def _parsed(self, raw: Mapping[str, Any]) -> ConnectionBase:
+        """Соединение из тела запроса: модель по kind, секреты — настоящие.
 
         Ошибки валидации уходят в формате FastAPI (loc/msg/type): страница
         подсвечивает ими конкретные поля формы.
         """
         kind = raw.get("kind")
         if not isinstance(kind, str):
-            msg = f"connection profile expects a string 'kind', got {kind!r}"
+            msg = f"connection expects a string 'kind', got {kind!r}"
             raise HTTPException(status_code=422, detail=msg)
 
         try:
@@ -237,7 +241,7 @@ class ConnectionsApi:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
 
         try:
-            profile = manifest.profile.model_validate(raw)
+            connection = manifest.model.model_validate(raw)
         except ValidationError as exc:
             # include_input=False: в input разобранного тела ездят секреты
             # kind-тег в loc повторяет формат discriminated union: страница
@@ -246,7 +250,7 @@ class ConnectionsApi:
             for issue in exc.errors(include_url=False, include_input=False):
                 issues.append(
                     {
-                        "loc": ["body", "profile", kind, *issue["loc"]],
+                        "loc": ["body", "connection", kind, *issue["loc"]],
                         "msg": issue["msg"],
                         "type": issue["type"],
                     }
@@ -254,11 +258,11 @@ class ConnectionsApi:
 
             raise HTTPException(status_code=422, detail=issues) from None
 
-        if MaskedSecrets.find(profile):
-            msg = "profile carries a masked secret: enter the real value"
+        if MaskedSecrets.find(connection):
+            msg = "connection carries a masked secret: enter the real value"
             raise HTTPException(status_code=422, detail=msg)
 
-        return profile
+        return connection
 
     async def _changed(
         self, subject: Subject, connection_id: UUID, name: str, action: ChangeAction
@@ -289,7 +293,7 @@ class ConnectionsApi:
         """Схема профиля с вариантами по kind и method; секреты — format=password."""
         await self._subjects(request)
 
-        return ProfileSchema.render(self._types)
+        return ConnectionSchema.render(self._types)
 
     async def list_connections(
         self,
@@ -321,8 +325,8 @@ class ConnectionsApi:
     async def create(self, body: ConnectionBody, request: Request) -> ConnectionView:
         identity = await self._subjects(request)
         subject = identity.subject
-        profile = self._parsed(body.profile)
-        row = await self._service.create(subject, body.name, profile)
+        connection = self._parsed(body.connection)
+        row = await self._service.create(subject, body.name, connection)
 
         await self._changed(subject, row.id, row.name, ChangeAction.CREATED)
         return ConnectionView.of(row, mine=True)
@@ -333,7 +337,7 @@ class ConnectionsApi:
         identity = await self._subjects(request)
         subject = identity.subject
         row = await self._service.replace(
-            subject, connection_id, body.name, self._parsed(body.profile)
+            subject, connection_id, body.name, self._parsed(body.connection)
         )
 
         await self._changed(subject, row.id, row.name, ChangeAction.UPDATED)
@@ -355,17 +359,17 @@ class ConnectionsApi:
         """Пробное соединение по профилю из формы; делегирование — билетом входа."""
         identity = await self._subjects(request)
 
-        return await self._probed(identity, self._parsed(body.profile))
+        return await self._probed(identity, self._parsed(body.connection))
 
     async def check_stored(self, connection_id: UUID, request: Request) -> ProbeResult:
         """Пробное соединение по сохранённой строке: видимой пользователю."""
         identity = await self._subjects(request)
         row = await self._service.visible_row(identity.subject, connection_id)
 
-        return await self._probed(identity, row.profile)
+        return await self._probed(identity, row.connection)
 
     async def _probed(
-        self, identity: ApiSubject, profile: ConnectionProfileBase
+        self, identity: ApiSubject, profile: ConnectionBase
     ) -> ProbeResult:
         probe = ConnectionProbe(self._credentials(), self._types)
 

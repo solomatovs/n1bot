@@ -21,6 +21,7 @@ from psycopg import sql
 
 from boba.auth import JwtTokens
 from boba.canvas.keys import WorkspaceMount
+from boba.chainlit.agent.bridge import ChatModelBridge
 from boba.chainlit.chat.feed import TurnFeed
 from boba.chainlit.chat.history import ThreadMessages, TranscriptFeed
 from boba.chainlit.data.data_layer import PostgresDataLayer
@@ -40,8 +41,6 @@ from boba.chainlit.rendering.chat_view import (
     StepRole,
 )
 from boba.chainlit.rendering.renderer import ChatRenderer, NoSurface
-from boba.chat.http import HttpConfig
-from boba.chat.provider import OpenAiChatConfig
 from boba.config import bind
 from boba.db.postgres import AsyncPostgresPool
 from boba.identity.context import (
@@ -56,11 +55,11 @@ from boba.identity.signin import SignedIn, SignInMetadata
 from boba.identity.token import SessionClaims, TokenReader
 from boba.kerberos import DelegationMode, SignInTicket
 from boba.krb.seal import SsoTickets, TicketSealer
-from boba.llm.bridge import ProviderChatModel
-from boba.llm.openai_chat import OpenAiChatProvider
+from boba.llm.providers import ChatModelConfig, LlmProviders, LlmProviderTypes
 from boba.messaging import LockToken, MemoryMessageBus, MemoryPayloadStore
 from boba.runtime.config import AppLayers
 from boba.runtime.elements import ChatTables
+from boba.stand.signin import SignInStand
 from boba.stand_core.context import TEST_PROFILE as TEST_PROFILE
 from boba.stand_core.context import TEST_TURN as TEST_TURN
 from boba.stand_core.context import install_context as install_context
@@ -94,30 +93,36 @@ class Seed:
     """id шага итогового ответа — он же цель для feedback и вложений."""
 
 
-def fake_openai_chat(
-    client: object,
-    model: str = "fake-model",
-    base_url: str = "https://fake-llm/v1",
-    sampling: dict[str, Any] | None = None,
-) -> ProviderChatModel:
-    """Чат-модель прод-стека на фейковом httpx-клиенте: SSE идёт через него."""
-    cfg = OpenAiChatConfig(
-        kind="openai",
-        http=HttpConfig(),
-        base_url=base_url,
-        api_key="fake-key",
-    )
+def in_process_llm(monkeypatch: pytest.MonkeyPatch, app: object) -> None:
+    """Все httpx-клиенты транспорта проекта ходят в ASGI-приложение fake llm
+    прямо в процессе теста: сети нет, SSE идёт через ASGITransport."""
+    import httpx
 
+    real_client = httpx.AsyncClient
+
+    def client(**kwargs: Any) -> httpx.AsyncClient:
+        kwargs["transport"] = httpx.ASGITransport(app=app)  # pyright: ignore[reportArgumentType]
+        return real_client(**kwargs)
+
+    monkeypatch.setattr("boba.transport.http.transport.httpx.AsyncClient", client)
+
+
+def fake_openai_chat(
+    model: str = "fake-model",
+    sampling: dict[str, Any] | None = None,
+) -> ChatModelBridge:
+    """Чат-модель прод-стека на провайдере стенда; сеть подменяет in_process_llm."""
     if sampling is None:
         sampling = {}
 
-    import httpx
+    cfg = ChatModelConfig(
+        provider=SignInStand.provider(), model=model, sampling=sampling
+    )
+    providers = LlmProviders(LlmProviderTypes.installed())
 
-    if not isinstance(client, httpx.AsyncClient):
-        raise TypeError(f"fake client must be httpx.AsyncClient, got {type(client)}")
-
-    provider = OpenAiChatProvider(cfg, client, model)
-    return ProviderChatModel(provider=provider, sampling=sampling, model_name=model)
+    return ChatModelBridge(
+        chat_model=providers.chat(cfg), sampling=sampling, model_name=model
+    )
 
 
 @pytest.fixture(autouse=True)

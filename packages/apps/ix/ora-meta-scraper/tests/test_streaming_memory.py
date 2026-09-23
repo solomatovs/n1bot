@@ -14,8 +14,8 @@ from concurrent.futures import ProcessPoolExecutor
 import pytest
 from ora_scraper_stand import LAYOUT, DemoDataset, IxSource, IxStand
 
+from boba.db.oracle.connection import OracleConfig
 from boba.db.oracle.payload import PayloadOracle
-from boba.db.oracle.profile import OracleConfig
 from boba.ix_core.database import IxDatabase
 from boba.ix_core.scrape import scrape_source
 from boba.ora_meta_scraper.worker import OraSource

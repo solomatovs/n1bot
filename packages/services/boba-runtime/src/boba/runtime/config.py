@@ -24,7 +24,7 @@ from boba.auth.config import (
 )
 from boba.chat.profiles import ChatProfileConfig
 from boba.config import ConfigBuilder, bind
-from boba.db.postgres.profile import PostgresConfig
+from boba.db.postgres.connection import PostgresConfig
 from boba.identity.token import SessionRenewal
 from boba.krb import KerberosWorkspaceConfig
 from boba.krb.seal import SsoTickets, TicketSealer

@@ -29,9 +29,9 @@ from boba.connection_broker.service import UserConnectionsService
 from boba.connection_broker.store import ConnectionsConfig
 from boba.connection_broker.store import ConnectionStore as BrokerStore
 from boba.connections.manifest import ConnectionTypes
-from boba.connections.profile import GrantTarget, StoredRole
+from boba.connections.stored import GrantTarget, StoredRole
 from boba.db.postgres import AsyncPostgresPool
-from boba.db.postgres.profile import PostgresConfig
+from boba.db.postgres.connection import PostgresConfig
 from boba.db.postgres.snapshot_sample import PgSample
 from boba.identity.api import AuthenticatedUser
 from boba.identity.errors import ServiceDisabledError
@@ -53,7 +53,7 @@ from boba.studio.catalog.sync_ports import (
     CatalogHoldGuard,
 )
 from boba.studio.config import StudioAppConfig
-from boba.transport.http.profile import HttpConnection
+from boba.transport.http.connection import HttpConnection
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
 
@@ -854,7 +854,7 @@ async def connections_stand(
 def _web_body(name: str, host: str) -> dict[str, object]:
     return {
         "name": name,
-        "profile": {"kind": "web", "host": host, "port": 443, "ssl_verify": False},
+        "connection": {"kind": "web", "host": host, "port": 443, "ssl_verify": False},
     }
 
 
@@ -932,7 +932,7 @@ async def test_held_connection_cannot_be_deleted(
         profile = studio_config.data_layer.postgres.model_dump(mode="json")
         created = await client.post(
             Stand.api_url(ConnectionUrl.CONNECTIONS),
-            json={"name": "mine-pg", "profile": profile},
+            json={"name": "mine-pg", "connection": profile},
         )
         assert created.status_code == 200, created.text
         connection_id = created.json()["id"]

@@ -30,7 +30,7 @@ import httpx
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from boba.indexing import MetadataKey, SourceId, SourceMark, TableLayout
-from boba.transport.http.profile import HttpConnection
+from boba.transport.http.connection import HttpConnection
 
 __all__ = [
     "AttachmentBlock",
@@ -362,12 +362,12 @@ class ConfluenceSpaceItem(BaseModel):
             return self.description.plain.value
         return ""
 
-    def url_at(self, profile: HttpConnection) -> str:
+    def url_at(self, connection: HttpConnection) -> str:
         """Адрес спейса на сервере профиля; без webui — корень сервиса."""
         if not self.links.webui:
-            return str(profile.root_url())
+            return str(connection.root_url())
 
-        return str(profile.url_of(self.links.webui))
+        return str(connection.url_of(self.links.webui))
 
 
 class AttachmentInfo(BaseModel):
@@ -868,8 +868,8 @@ class ConfluenceSourceIds:
     PAGE_RE: ClassVar[re.Pattern[str]] = re.compile(r"/rest/api/content/([^/?#]+)$")
     ATTACHMENT_MARK: ClassVar[str] = "/download/attachments/"
 
-    def of(self, profile: HttpConnection, path: str) -> SourceId:
-        return self.of_url(str(profile.url_of(path)))
+    def of(self, connection: HttpConnection, path: str) -> SourceId:
+        return self.of_url(str(connection.url_of(path)))
 
     def of_url(self, url: str) -> SourceId:
         """URL без query, фрагмента и учётных данных адреса."""

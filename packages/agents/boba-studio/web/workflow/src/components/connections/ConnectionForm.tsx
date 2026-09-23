@@ -20,19 +20,19 @@ type Props = {
   onClose?: (() => void) | undefined;
 };
 
-/** Форма соединения по схеме api: имя и профиль с любой вложенностью,
+/** Форма соединения по схеме api: имя и соединение с любой вложенностью,
  * пробное соединение, сохранение. Секреты сохранённой строки не
  * показываются и вводятся заново. Одна и та же для вкладки учётной записи и
  * диалога каталога: ошибки полей 422 ложатся под поля. */
 export function ConnectionForm({ doc, row, onSaved, onRemoved, onClose }: Props): ReactElement {
   const { api } = useServices();
   const [name, setName] = useState(row?.name ?? "");
-  const [profile, setProfile] = useState<unknown>(() => {
-    if (row?.profile == null) {
+  const [connection, setConnection] = useState<unknown>(() => {
+    if (row?.connection == null) {
       return doc.defaults(doc.root);
     }
 
-    return withoutMaskedSecrets(row.profile);
+    return withoutMaskedSecrets(row.connection);
   });
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState("");
@@ -53,10 +53,10 @@ export function ConnectionForm({ doc, row, onSaved, onRemoved, onClose }: Props)
       const general: string[] = [];
       for (const issue of failure.issues) {
         let path = issue.loc.join(".");
-        if (issue.loc[0] === "profile") {
-          path = doc.formPath("profile", issue.loc.slice(1));
+        if (issue.loc[0] === "connection") {
+          path = doc.formPath("connection", issue.loc.slice(1));
         }
-        if (path === "profile" || path === "") {
+        if (path === "connection" || path === "") {
           general.push(issue.message);
           continue;
         }
@@ -89,7 +89,7 @@ export function ConnectionForm({ doc, row, onSaved, onRemoved, onClose }: Props)
   const submit = (event: FormEvent): void => {
     event.preventDefault();
     begin();
-    const body = { name: name.trim(), profile: profile as Record<string, unknown> };
+    const body = { name: name.trim(), connection: connection as Record<string, unknown> };
     let request = api.createConnection(body);
     if (row !== null) {
       request = api.replaceConnection(row.id, body);
@@ -104,7 +104,7 @@ export function ConnectionForm({ doc, row, onSaved, onRemoved, onClose }: Props)
   const check = (): void => {
     begin();
     setProbe(null);
-    let request = api.checkConnection(profile as Record<string, unknown>);
+    let request = api.checkConnection(connection as Record<string, unknown>);
     if (readonly) {
       request = api.checkStoredConnection(row.id);
     }
@@ -149,13 +149,13 @@ export function ConnectionForm({ doc, row, onSaved, onRemoved, onClose }: Props)
       <SchemaNode
         doc={doc}
         schema={doc.root}
-        value={profile}
-        path="profile"
-        label="profile"
+        value={connection}
+        path="connection"
+        label="connection"
         required
         readonly={readonly}
         issues={issues}
-        onChange={setProfile}
+        onChange={setConnection}
       />
       {row !== null && !readonly && (
         <Alert tone="info">Secrets are not shown: enter them again to keep the connection working.</Alert>

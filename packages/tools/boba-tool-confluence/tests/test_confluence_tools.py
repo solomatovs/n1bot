@@ -6,14 +6,16 @@ from typing import Any, ClassVar
 
 import pytest
 
+from boba.confluence.models import ConfluencePayloadError
 from boba.confluence.rest import CflRestBuilder, SpaceType
+from boba.indexing import TransportError
 from boba.tool.confluence.tools import TOOLS as CONFLUENCE_TOOLS
 from boba.tool.confluence.tools import (
     ConfluenceToolsConfig,
     SpaceList,
 )
 from boba.toolkit.entry import ToolMain
-from boba.transport.http.profile import HttpConnection, UrlScheme
+from boba.transport.http.connection import HttpConnection, UrlScheme
 
 # порт 1 закрыт всегда: тест проверяет ошибку соединения, а не адрес
 
@@ -52,7 +54,7 @@ class TestConfluenceTools:
         body = ToolMain.toolset(confluence_tools.confluence_fetch)[0].coroutine
         if body is None:
             raise AssertionError("body is not None")
-        with pytest.raises(confluence_tools.ConfluenceRequestError):
+        with pytest.raises(TransportError):
             await body(page_id="1", cfg=cfg)
 
 
@@ -114,7 +116,7 @@ class TestSpaceList:
     def test_broken_results_raise_the_layer_error(self) -> None:
         import boba.tool.confluence.tools as confluence_tools
 
-        with pytest.raises(confluence_tools.ConfluenceRequestError, match="space"):
+        with pytest.raises(ConfluencePayloadError, match="space"):
             confluence_tools.SpaceList(None, self.PROFILE).items(
                 {"results": [{"name": "no key here"}]},
                 CflRestBuilder().space_list_path(SpaceType.ANY),

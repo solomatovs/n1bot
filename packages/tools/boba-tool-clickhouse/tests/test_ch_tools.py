@@ -9,8 +9,8 @@ from typing import Any, ClassVar
 import pytest
 from pydantic import ValidationError
 
+from boba.db.clickhouse.connection import ClickHouseConfig
 from boba.db.clickhouse.payload import SpnegoHeaders
-from boba.db.clickhouse.profile import ClickHouseConfig
 from boba.tool.ch.tools import TOOLS as CH_TOOLS
 from boba.tool.ch.tools import ChToolConfig
 from boba.toolkit.entry import ToolArgv, ToolMain
@@ -54,7 +54,9 @@ class TestChTools:
                 raise AssertionError(f"{payload.name}: connection parameter is missing")
 
             if fields["connection"] is not ClickHouseConfig:
-                raise AssertionError(f"{payload.name}: profile type must be declared")
+                raise AssertionError(
+                    f"{payload.name}: connection type must be declared"
+                )
 
     def test_section_config_holds_limits_only(self) -> None:
         """Whitelist ушёл на хост: в секции остались только границы выдачи."""
@@ -250,7 +252,7 @@ class TestChAddress:
 
         from pydantic import SecretStr
 
-        from boba.db.clickhouse.profile import PasswordAuth
+        from boba.db.clickhouse.connection import PasswordAuth
 
         return ClickHouseConfig.model_validate(
             {

@@ -33,8 +33,10 @@ from boba.ix_trgm.worker import WorkerConfig as TrgmConfig
 from boba.ix_vector import worker as vector
 from boba.ix_vector.worker import VectorWorker
 from boba.ix_vector.worker import WorkerConfig as VectorConfig
+from boba.llm.fastembed import FastembedProvider
+from boba.llm.providers import EmbeddingModelConfig, LlmProviders, LlmProviderTypes
 from boba.stand.ix import IxStand
-from boba.transport.http.profile import HttpConnection, UrlScheme
+from boba.transport.http.connection import HttpConnection, UrlScheme
 
 __all__ = ["PACKAGE_DIR", "SharedIndexers", "StubIndexer"]
 
@@ -49,7 +51,7 @@ class StubIndexer:
         self._port = port
 
     def config(self, *spaces: str) -> IndexerConfig:
-        profile = HttpConnection(
+        connection = HttpConnection(
             scheme=UrlScheme.HTTP, host="127.0.0.1", port=self._port
         )
         database = self._stand.ix_database
@@ -60,7 +62,7 @@ class StubIndexer:
             sources=[
                 ConfluenceSource(
                     name="stub",
-                    confluence=ConfluenceConnection(profile=profile),
+                    confluence=ConfluenceConnection(connection=connection),
                     spaces=SpaceSelector(
                         masks=list(spaces), type=SpaceType.GLOBAL, archived=True
                     ),
@@ -123,10 +125,27 @@ class SharedIndexers:
     async def vectors(self) -> None:
         """Векторы: поднимает модель, поэтому зовётся только там, где проверяется."""
         database = self._stand.ix_database
+        cache_dir = self._stand.embedding_cache_dir
         cfg = VectorConfig(
             db_schema=database.db_schema,
             postgres=database.postgres,
             classes=[AspectClass.DESCRIPTION],
-            cache_dir=self._stand.embedding_cache_dir,
+            tokenizer_dir=cache_dir,
+            chunk_tokens=400,
+            chunk_overlap=50,
+            batch=64,
+            embedding=EmbeddingModelConfig(
+                provider=FastembedProvider(kind="fastembed", cache_dir=cache_dir),
+                model="intfloat/multilingual-e5-large",
+                dim=1024,
+                batch_size=8,
+                progress_every=64,
+            ),
         )
-        await VectorWorker(cfg, Path(vector.__file__).resolve().parent / "run").run()
+        providers = LlmProviders(LlmProviderTypes.installed())
+        try:
+            embedder = providers.embedding(cfg.embedding)
+            run_dir = Path(vector.__file__).resolve().parent / "run"
+            await VectorWorker(cfg, embedder, run_dir).run()
+        finally:
+            await providers.aclose()

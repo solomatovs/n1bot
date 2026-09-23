@@ -29,7 +29,7 @@ from boba.catalog_service import (
 )
 from boba.db.postgres import AsyncPostgresPool
 from boba.db.postgres.catalog import StagingTable
-from boba.db.postgres.profile import PostgresConfig
+from boba.db.postgres.connection import PostgresConfig
 from boba.db.postgres.snapshot import PgSnapshot
 from boba.db.postgres.snapshot_sample import PgSample
 from boba.identity.context import HumanInitiator, NoUserCredential, Subject

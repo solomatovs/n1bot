@@ -65,7 +65,7 @@ from boba.indexing.values import TransportKeys
 __all__ = ["IndexerConfig", "Pipeline"]
 
 ReqT = TypeVar("ReqT", bound=Request)
-T = TypeVar("T")
+T = TypeVar("T", bound=str)
 
 
 @dataclass(frozen=True, kw_only=True)

@@ -22,13 +22,13 @@ dependencies = [
     "boba-db-postgres==0.0.23.dev1",
     "boba-sandbox==0.0.23.dev1",
     "boba-krb==0.0.23.dev1",
-    "boba-llm[chat]==0.0.23.dev1",
+    "boba-llm==0.0.23.dev1",
+    "boba-transport-http==0.0.23.dev1",
     "python-multipart>=0.0.9",
     "typing-extensions>=4.12",
     "omegaconf>=2.3,<3",
     "plotly>=5.24,<6",
     "chainlit==2.11.1",
-    "httpx[http2]>=0.28,<1",
     "fastapi[standard]",
     "uvicorn[standard]",
     "pydantic>=2.10,<2.11",
@@ -45,6 +45,8 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
+    "boba-llm-http==0.0.23.dev1",
+    "boba-llm-onnx==0.0.23.dev1",
     "boba-doc[readers]==0.0.23.dev1",
     "boba-krb[seal]==0.0.23.dev1",
     "boba-connections==0.0.23.dev1",

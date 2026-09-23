@@ -26,7 +26,7 @@ from urllib.parse import parse_qsl, urlsplit
 from psycopg import sql
 
 from boba.db.postgres import AsyncPostgresPool
-from boba.db.postgres.profile import PostgresConfig
+from boba.db.postgres.connection import PostgresConfig
 from boba.db.postgres.query import PgQueryBuilder
 from boba.ix_core.scrape import (
     ApplyRow,

@@ -7,7 +7,9 @@ name = "boba-indexing"
 version = "0.0.23.dev1"
 description = "Boba indexing + processing: Source/Reader/Chunker/Store/IndexPipeline + streaming-processing primitives (Request/Transport/Decoder/RawDocument/Section)."
 requires-python = ">=3.11,<4"
-dependencies = []
+dependencies = [
+    "boba-llm==0.0.23.dev1",
+]
 
 [project.optional-dependencies]
 dev = [

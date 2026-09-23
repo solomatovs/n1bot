@@ -9,13 +9,12 @@ import pytest
 from httpx import AsyncClient
 from studio_stand import ApiStand
 
-from boba.chat.http import HttpConfig
 from boba.chat.profiles import ChatProfileConfig, ChatProfiles
-from boba.chat.provider import OpenAiChatConfig
 from boba.identity.api import AuthenticatedUser
 from boba.identity.session import Login
 from boba.identity.signin import SignInMetadata
 from boba.stand.refs import StandRefs
+from boba.stand.signin import SignInStand
 from boba.stand_core.auth import MemoryUsers
 from boba.studio.api.urls import AccountUrl, ApiVersion, ConnectionUrl
 
@@ -30,12 +29,7 @@ def _profile(default: bool, roles: list[str]) -> ChatProfileConfig:
             "default": default,
             "roles": roles,
             "tools": ["echo"],
-            "provider": OpenAiChatConfig(
-                kind="openai",
-                http=HttpConfig(),
-                base_url="https://fake-llm/v1",
-                api_key="k",
-            ),
+            "provider": SignInStand.provider(),
             "model": "fake",
             "system_prompt": "stand",
         }

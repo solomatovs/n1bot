@@ -20,9 +20,7 @@ from boba.auth.config import (
     ProxyRoleProviders,
 )
 from boba.auth.proxy import ProxySignature
-from boba.chat.http import HttpConfig
 from boba.chat.profiles import ChatProfileConfig, ChatProfiles
-from boba.chat.provider import OpenAiChatConfig
 from boba.identity.admission import RoleMappingConfig
 from boba.identity.api import (
     AuthenticatedUser,
@@ -78,12 +76,7 @@ def _profiles() -> ChatProfiles:
             "default": True,
             "roles": ["*"],
             "tools": ["echo"],
-            "provider": OpenAiChatConfig(
-                kind="openai",
-                http=HttpConfig(),
-                base_url="https://fake-llm/v1",
-                api_key="k",
-            ),
+            "provider": SignInStand.provider(),
             "model": "fake",
             "system_prompt": "stand",
         }

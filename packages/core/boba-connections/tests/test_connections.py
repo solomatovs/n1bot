@@ -12,18 +12,18 @@ import pytest
 from pydantic import BaseModel, Field, SecretStr, ValidationError
 
 from boba.connections.manifest import ConnectionTypes
-from boba.connections.profile import (
+from boba.connections.secrets import SecretCipher, SecretCryptoError
+from boba.connections.stored import (
     GrantKind,
     GrantTarget,
     StoredConnection,
 )
-from boba.connections.secrets import SecretCipher, SecretCryptoError
-from boba.db.clickhouse.profile import (
+from boba.db.clickhouse.connection import (
     ClickHouseConfig,
     ClickHouseSettingsConfig,
     NoPasswordAuth,
 )
-from boba.db.postgres.profile import (
+from boba.db.postgres.connection import (
     PasswordAuth,
     PostgresConfig,
     PostgresOptionsConfig,
@@ -31,7 +31,7 @@ from boba.db.postgres.profile import (
 )
 from boba.stand_core.fakes import FakeSecret
 from boba.transport.http import HttpxAuth
-from boba.transport.http.profile import (
+from boba.transport.http.connection import (
     BasicAuth,
     BearerAuth,
     DigestAuth,
@@ -246,38 +246,38 @@ class TestRealProfiles:
 
     def test_httpx_auth_still_built(self) -> None:
         bearer = BearerAuth(method="bearer", token=SecretStr(FakeSecret.HTTP_BEARER))
-        if HttpxAuth.of_auth(bearer, "", None) is None:
+        if HttpxAuth().of_auth(bearer, "", None) is None:
             raise AssertionError("HttpxAuth.of(bearer) is not None")
 
     def test_token_masked_in_dump(self) -> None:
-        profile = HttpConnection(
+        connection = HttpConnection(
             host="x",
             port=443,
             auth=BearerAuth(method="bearer", token=SecretStr(FakeSecret.HTTP_BEARER)),
         )
-        if FakeSecret.HTTP_BEARER in profile.model_dump_json():
+        if FakeSecret.HTTP_BEARER in connection.model_dump_json():
             raise AssertionError("токен виден в model_dump_json")
 
 
 class TestConnectionKind:
     def test_kind_of_postgres(self) -> None:
         if _pg().kind != "postgres":
-            raise AssertionError("postgres profile must carry kind postgres")
+            raise AssertionError("postgres connection must carry kind postgres")
 
     def test_kind_of_clickhouse(self) -> None:
-        profile = ClickHouseConfig(
+        connection = ClickHouseConfig(
             host="ch",
             port=8123,
             interface="http",
             auth=NoPasswordAuth(method="no_password", user="boba"),
             settings=ClickHouseSettingsConfig(),
         )
-        if profile.kind != "clickhouse":
-            raise AssertionError("clickhouse profile must carry kind clickhouse")
+        if connection.kind != "clickhouse":
+            raise AssertionError("clickhouse connection must carry kind clickhouse")
 
     def test_kind_of_web(self) -> None:
         if HttpConnection(host="x", port=443).kind != "web":
-            raise AssertionError("http profile must carry kind web")
+            raise AssertionError("http connection must carry kind web")
 
     def test_kind_is_part_of_the_model(self) -> None:
         if PostgresConfig.model_fields["kind"].default != "postgres":
@@ -286,7 +286,7 @@ class TestConnectionKind:
             raise AssertionError('HttpConnection.model_fields["kind"].default == "web"')
 
     def test_stored_profile_is_picked_by_kind(self) -> None:
-        profile = {
+        connection = {
             "kind": "clickhouse",
             "host": "ch",
             "port": 8123,
@@ -296,17 +296,17 @@ class TestConnectionKind:
         }
         types = ConnectionTypes.discover()
         stored = StoredConnection(
-            id=UUID(int=1), name="x", profile=types.parse(profile)
+            id=UUID(int=1), name="x", connection=types.parse(connection)
         )
-        if not isinstance(stored.profile, ClickHouseConfig):
+        if not isinstance(stored.connection, ClickHouseConfig):
             raise AssertionError("profile must be validated by its kind")
         if stored.kind != "clickhouse":
             raise AssertionError("stored.kind must follow the profile")
 
-    def test_stored_profile_without_kind_is_rejected(self) -> None:
+    def test_stored_connection_without_kind_is_rejected(self) -> None:
         with pytest.raises(ValidationError, match="kind"):
             StoredConnection.model_validate(
-                {"id": str(UUID(int=1)), "name": "x", "profile": {}}
+                {"id": str(UUID(int=1)), "name": "x", "connection": {}}
             )
 
 

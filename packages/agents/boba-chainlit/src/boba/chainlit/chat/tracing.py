@@ -25,13 +25,13 @@ from langchain_core.tracers.base import AsyncBaseTracer
 from pydantic import BaseModel, ConfigDict
 from typing_extensions import ParamSpec, override
 
+from boba.chainlit.agent.bridge import LangchainMessages
 from boba.chainlit.agent.flow import PrefetchStage
 from boba.chainlit.chat.feed import TurnFeed
 from boba.chainlit.rendering.chat_view import StepText
 from boba.chainlit.rendering.errors import show_error
 from boba.identity.errors import FailureReport
 from boba.identity.session import LogUserMark
-from boba.llm.chat import GeneratedMessage, ReasoningText
 from boba.toolkit.failure import FailureText
 from chainlit.context import context_var
 
@@ -96,6 +96,7 @@ class AgentTracer(AsyncBaseTracer):
 
     def __init__(self, feed: TurnFeed, state: TurnArtifacts) -> None:
         super().__init__()
+        self._messages = LangchainMessages()
         self._context = context_var.get()
         self._feed = feed
         self._state = state
@@ -136,11 +137,11 @@ class AgentTracer(AsyncBaseTracer):
             **kwargs,
         )
 
-        message = GeneratedMessage.of_chunk(chunk)
+        message = self._messages.of_chunk(chunk)
         if message is None:
             return traced
 
-        reasoning = ReasoningText.of(message)
+        reasoning = self._messages.reasoning_of(message)
         if not reasoning:
             return traced
 
@@ -170,7 +171,7 @@ class AgentTracer(AsyncBaseTracer):
         streamed = self._state.take_reasoning(str(run_id))
         await self._feed.thinking_closed()
 
-        message = GeneratedMessage.of_result(response)
+        message = self._messages.of_result(response)
         await self._spend_tokens(message, run_id)
 
         # рассуждения без стрима приходят разом в итоговом сообщении
@@ -180,7 +181,7 @@ class AgentTracer(AsyncBaseTracer):
         if message is None:
             return traced
 
-        text = ReasoningText.of(message)
+        text = self._messages.reasoning_of(message)
         if not text:
             return traced
 
@@ -543,6 +544,7 @@ class LlmStateLog(AsyncCallbackHandler):
 
     def __init__(self, mark: LogUserMark) -> None:
         super().__init__()
+        self._messages = LangchainMessages()
         self._mark = mark
         self._runs: dict[str, RunProgress] = {}
         self._tools: dict[str, ToolProgress] = {}
@@ -606,8 +608,8 @@ class LlmStateLog(AsyncCallbackHandler):
             run.first_token = now
             self._say("llm first token: run=%s in %dms", run.label, run.elapsed_ms(now))
 
-        message = GeneratedMessage.of_chunk(chunk)
-        if reasoning := ReasoningText.of(message):
+        message = self._messages.of_chunk(chunk)
+        if reasoning := self._messages.reasoning_of(message):
             self._advance(run, LlmStage.THINKING, reasoning, now)
             return
 
@@ -679,7 +681,7 @@ class LlmStateLog(AsyncCallbackHandler):
         if run.stage is not None:
             self._finish_stage(run, run.stage, now)
 
-        message = GeneratedMessage.of_result(response)
+        message = self._messages.of_result(response)
         if not run.first_token:
             self._complete_stages(run, message)
 
@@ -701,7 +703,7 @@ class LlmStateLog(AsyncCallbackHandler):
         """Журналирует стадии ответа без стрима: текст пришёл разом в итоговом
         сообщении.
         """
-        if reasoning := ReasoningText.of(message):
+        if reasoning := self._messages.reasoning_of(message):
             self._say(
                 "llm %s %s: run=%s %d chars",
                 LlmStage.THINKING.value,

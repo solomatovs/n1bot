@@ -11,7 +11,7 @@ from typing import Any
 import psycopg
 
 from boba.db.postgres.async_pool import PostgresError
-from boba.db.postgres.profile import PostgresConfig
+from boba.db.postgres.connection import PostgresConfig
 from boba.kerberos import KerberosAuthBase, KerberosError
 from boba.krb import ClientCredentials
 from boba.toolkit.timing import Elapsed

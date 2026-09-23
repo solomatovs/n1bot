@@ -16,8 +16,8 @@ from oracledb import AsyncConnection
 from pydantic import BaseModel, ConfigDict, SecretStr
 
 from boba.db.oracle import OracleQueryError
+from boba.db.oracle.connection import OracleConfig, PasswordAuth
 from boba.db.oracle.payload import PayloadOracle
-from boba.db.oracle.profile import OracleConfig, PasswordAuth
 from boba.ix_core.scrape import ScrapeSource, parse_version
 from boba.ora_meta_scraper import worker as scraper
 from boba.ora_meta_scraper.worker import OraSource, source_address

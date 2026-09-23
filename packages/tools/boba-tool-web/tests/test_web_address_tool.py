@@ -9,13 +9,13 @@ from pydantic import SecretStr
 
 from boba.tool.web.tools import web_address
 from boba.toolkit.entry import ToolMain
-from boba.transport.http.profile import HttpConnection
+from boba.transport.http.connection import HttpConnection
 
 pytestmark = [pytest.mark.anyio]
 
 
 async def test_root_url_without_credentials() -> None:
-    profile = HttpConnection.model_validate(
+    connection = HttpConnection.model_validate(
         {
             "scheme": "https",
             "host": "wiki.corp",
@@ -30,7 +30,7 @@ async def test_root_url_without_credentials() -> None:
     if body is None:
         raise AssertionError("tool body is a coroutine")
 
-    result = await body(connection=profile)
+    result = await body(connection=connection)
 
     assert [dict(row) for row in result.rows] == [
         {"connection": "wiki", "url": "https://wiki.corp:8443/confluence"}

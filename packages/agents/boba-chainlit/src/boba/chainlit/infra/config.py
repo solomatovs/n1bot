@@ -19,7 +19,7 @@ from boba.chat.profiles import (
     ChatProfileConfig,
     SettingsBounds,
 )
-from boba.db.postgres.profile import PostgresConfig
+from boba.db.postgres.connection import PostgresConfig
 from boba.krb import KerberosWorkspaceConfig
 from boba.runtime.config import DataLayerConfig, RuntimeConfig
 

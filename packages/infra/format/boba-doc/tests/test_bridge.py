@@ -13,6 +13,7 @@ from boba.doc.config import DisabledOcrConfig, OcrLanguage, RapidOcrConfig
 from boba.doc.document import DocumentError, DocumentHint, PageWindow
 from boba.doc.ocr import OcrEngines
 from boba.doc.router import DocumentRouter
+from boba.llm.providers import LlmProviders, LlmProviderTypes
 
 pytestmark = pytest.mark.anyio
 
@@ -83,7 +84,8 @@ async def test_reader_failure_propagates(router: DocumentRouter) -> None:
 
 
 def test_ocr_engines_factory(doc_stand) -> None:
-    disabled = OcrEngines().of(DisabledOcrConfig(provider="off"))
+    engines = OcrEngines(LlmProviders(LlmProviderTypes.installed()))
+    disabled = engines.of(DisabledOcrConfig(provider="off"))
     assert disabled.recognize(Samples.image(["x"], doc_stand.cyrillic_font)) == ""
 
     config = RapidOcrConfig(

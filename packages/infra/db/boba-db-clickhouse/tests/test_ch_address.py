@@ -8,7 +8,7 @@ from pydantic import SecretStr
 
 from boba.connections.address import AddressError
 from boba.db.clickhouse.address import ChAddresses, ChNodeKind
-from boba.db.clickhouse.profile import ClickHouseConfig, PasswordAuth
+from boba.db.clickhouse.connection import ClickHouseConfig, PasswordAuth
 
 BASE = {"scheme": "clickhouse", "host": "ch1", "port": 9000, "database": "logs"}
 

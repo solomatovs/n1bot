@@ -19,7 +19,7 @@ from boba.catalog_service import (
     SyncSetupError,
 )
 from boba.connection_broker.service import DeleteGuard, UserConnectionsService
-from boba.connections.profile import StoredConnection
+from boba.connections.stored import StoredConnection
 from boba.identity.context import Subject
 from boba.identity.errors import RefusalError, ServiceDisabledError
 

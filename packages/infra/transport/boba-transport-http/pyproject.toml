@@ -13,7 +13,6 @@ dependencies = [
     "boba-kerberos==0.0.23.dev1",
     "boba-cancellation==0.0.23.dev1",
     "boba-krb==0.0.23.dev1",
-    "boba-chat==0.0.23.dev1",
     "httpx>=0.28,<1",
     "httpcore>=1.0",
 ]
@@ -30,4 +29,4 @@ include = ["boba*"]
 namespaces = true
 
 [project.entry-points."boba.connections"]
-web = "boba.transport.http.connection:MANIFEST"
+web = "boba.transport.http.manifest:MANIFEST"

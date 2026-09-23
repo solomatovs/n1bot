@@ -20,7 +20,7 @@ from psycopg import sql
 from psycopg.rows import DictRow
 
 from boba.db.postgres import AsyncPostgresPool, PostgresError, SqlNames
-from boba.db.postgres.profile import PostgresConfig
+from boba.db.postgres.connection import PostgresConfig
 from boba.identity.context import Scope, ScopeKind
 from boba.identity.locks import (
     LiveLock,

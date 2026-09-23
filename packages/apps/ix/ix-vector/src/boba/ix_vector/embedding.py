@@ -27,14 +27,15 @@ from pydantic import BaseModel, ConfigDict, Field
 from tokenizers import Tokenizer
 
 from boba.db.postgres.query import PgQueryBuilder
-from boba.llm.embedding import EmbedderFactory, EmbeddingError, LocalEmbedding
+from boba.llm.chat import LlmError
+from boba.llm.embedding import EmbeddingModel
 
 __all__ = [
     "AspectEmbedding",
     "AspectEmbeddingError",
     "AspectText",
     "Chunker",
-    "EmbeddingParams",
+    "ChunkingParams",
 ]
 
 logger = logging.getLogger("aspect-embedding")
@@ -44,17 +45,17 @@ class AspectEmbeddingError(Exception):
     """Эмбеддинг аспектов не удался: модель, чанкер или провайдер."""
 
 
-class EmbeddingParams(BaseModel):
-    """Параметры модели и нарезки; секция конфига любого индексатора наследует их."""
+class ChunkingParams(BaseModel):
+    """Нарезка текста аспекта под модель: токенайзер и окно; секция конфига
+    любого индексатора наследует их вместе с секцией embedding."""
 
     model_config = ConfigDict(extra="ignore")
 
-    model: str = "intfloat/multilingual-e5-large"
-    cache_dir: str
-    dim: int = Field(gt=0, default=1024)
-    batch: int = Field(gt=0, default=64)
-    chunk_tokens: int = Field(gt=0, default=400)
-    chunk_overlap: int = Field(ge=0, default=50)
+    tokenizer_dir: str = Field(
+        description="Кэш HF с tokenizer.json модели: границы чанков как у модели."
+    )
+    chunk_tokens: int = Field(gt=0)
+    chunk_overlap: int = Field(ge=0)
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -76,10 +77,10 @@ class WriteFile(StrEnum):
 
 class Chunker:
     """Режет текст аспекта на окна по токенам модели с перекрытием. Токенизатор
-    берётся из того же кэша fastembed, что и модель, поэтому границы совпадают
-    с тем, что видит модель. Текст короче окна остаётся одним чанком."""
+    берётся из кэша HF модели, поэтому границы совпадают с тем, что видит
+    модель. Текст короче окна остаётся одним чанком."""
 
-    def __init__(self, cache_dir: str, chunk_tokens: int, overlap: int) -> None:
+    def __init__(self, tokenizer_dir: str, chunk_tokens: int, overlap: int) -> None:
         if overlap >= chunk_tokens:
             raise AspectEmbeddingError(
                 f"chunking: overlap {overlap} must be smaller than chunk size "
@@ -87,10 +88,10 @@ class Chunker:
             )
 
         pattern = "models--*/snapshots/*/tokenizer.json"
-        found = sorted(Path(cache_dir).glob(pattern))
+        found = sorted(Path(tokenizer_dir).glob(pattern))
         if not found:
             raise AspectEmbeddingError(
-                f"chunking: no tokenizer.json under {cache_dir}/{pattern}"
+                f"chunking: no tokenizer.json under {tokenizer_dir}/{pattern}"
             )
 
         self._tokenizer = Tokenizer.from_file(str(found[0]))
@@ -121,27 +122,26 @@ class AspectEmbedding:
     аспект выполняет 20_write.sql; замена набора чанков атомарна в statement'е.
     """
 
-    def __init__(self, params: EmbeddingParams, db_schema: str, table: str) -> None:
-        self._params = params
+    def __init__(
+        self,
+        embedder: EmbeddingModel,
+        model: str,
+        chunking: ChunkingParams,
+        db_schema: str,
+        table: str,
+    ) -> None:
+        self._embedder = embedder
+        self._model = model
         self._db_schema = db_schema
         self._table = table
         self._dir = Path(__file__).resolve().parent / "run"
-        embedding = LocalEmbedding(
-            kind="local",
-            model=params.model,
-            cache_dir=params.cache_dir,
-            dim=params.dim,
-            batch_size=params.batch,
-            progress_every=params.batch,
-        )
-        self._embedder = EmbedderFactory.build(embedding)
         self._chunker = Chunker(
-            params.cache_dir, params.chunk_tokens, params.chunk_overlap
+            chunking.tokenizer_dir, chunking.chunk_tokens, chunking.chunk_overlap
         )
 
     @property
     def model(self) -> str:
-        return self._params.model
+        return self._model
 
     async def write(
         self, conn: psycopg.AsyncConnection[Any], rows: Sequence[AspectText]
@@ -172,14 +172,14 @@ class AspectEmbedding:
 
         try:
             vectors = await self._embedder.embed_documents(contents)
-        except EmbeddingError as exc:
+        except LlmError as exc:
             raise AspectEmbeddingError(
-                f"embedding {len(contents)} chunks with {self._params.model}: {exc}"
+                f"embedding {len(contents)} chunks with {self._model}: {exc}"
             ) from exc
 
         if len(vectors) != len(contents):
             raise AspectEmbeddingError(
-                f"embedding {len(contents)} chunks with {self._params.model}: "
+                f"embedding {len(contents)} chunks with {self._model}: "
                 f"expected {len(contents)} vectors, got {len(vectors)}"
             )
 

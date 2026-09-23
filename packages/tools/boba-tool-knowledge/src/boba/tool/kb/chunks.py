@@ -8,7 +8,7 @@
 Ошибки:
 PostgresError — до базы знаний не достучаться (сеть, libpq, kerberos).
 psycopg.Error — СУБД отклонила поисковый запрос.
-EmbeddingError — удалённый эмбеддер недоступен или ответил мусором.
+LlmError — эмбеддер недоступен, не загрузился или ответил мусором.
 """
 
 from __future__ import annotations
@@ -25,9 +25,8 @@ from psycopg.rows import dict_row
 from pydantic import Field
 
 from boba.db.postgres import PayloadPostgres, PostgresError
-from boba.llm.embedding import EmbeddingError
-from boba.llm.warm import WarmEmbedder
-from boba.tool.kb.kb import KbChunksConfig
+from boba.llm.chat import LlmError
+from boba.tool.kb.kb import LLM, KbChunksConfig
 from boba.tool.kb.models import SearchHit
 from boba.tool.kb.search import (
     CollectionSearch,
@@ -95,8 +94,8 @@ class KbRows:
 async def _embed(cfg: KbChunksConfig, query: str) -> tuple[list[float], int]:
     """Вектор запроса и его размерность — их ждёт SQL-шаблон."""
     build = Elapsed()
-    embedder = WarmEmbedder.of(cfg.embedding)
-    logger.info("embedder ready in %dms (%s)", build.ms(), cfg.embedding.kind)
+    embedder = LLM.embedding(cfg.embedding)
+    logger.info("embedder ready in %dms (%s)", build.ms(), cfg.embedding.provider.kind)
 
     embed = Elapsed()
     vector = await embedder.embed_query(query)
@@ -219,7 +218,7 @@ async def kb_fts_search(
 EXPECTED: Mapping[type[Exception], KbChunksErrorKind] = {
     PostgresError: KbChunksErrorKind.DATABASE_UNAVAILABLE,
     psycopg.Error: KbChunksErrorKind.QUERY_FAILED,
-    EmbeddingError: KbChunksErrorKind.EMBEDDING_FAILED,
+    LlmError: KbChunksErrorKind.EMBEDDING_FAILED,
 }
 
 TOOLS: Final = ToolMain.toolset(kb_vector_search, kb_fts_search)

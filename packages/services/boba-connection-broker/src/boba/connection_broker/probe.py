@@ -14,7 +14,7 @@ from typing import ClassVar
 
 from boba.connections.credentials import CredentialSource
 from boba.connections.manifest import ConnectionTypes
-from boba.connections.profile import ConnectionProfileBase, ProbeResult
+from boba.connections.stored import ConnectionBase, ProbeResult
 from boba.identity.context import Credential
 from boba.toolkit.timing import Elapsed
 
@@ -33,12 +33,12 @@ class ConnectionProbe:
         self._types = types
 
     async def probe(
-        self, profile: ConnectionProfileBase, credential: Credential
+        self, connection: ConnectionBase, credential: Credential
     ) -> ProbeResult:
         elapsed = Elapsed()
         try:
-            hook = self._types.manifest_of(profile.kind).probe
-            armed = await self._source.for_connection(profile, credential)
+            hook = self._types.manifest_of(connection.kind).probe
+            armed = await self._source.for_connection(connection, credential)
             message = await asyncio.wait_for(hook(armed), self.TIMEOUT_SEC)
         except TimeoutError:
             return ProbeResult(

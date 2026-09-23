@@ -22,21 +22,21 @@ from boba.catalog_service import ConnectionTable as SnapshotTable
 from boba.config import bind
 from boba.connection_broker.store import ConnectionsConfig, ConnectionStore
 from boba.connections.manifest import ConnectionTypes
-from boba.connections.profile import (
-    ConnectionProfileBase,
+from boba.connections.stored import (
+    ConnectionBase,
     ConnectionTable,
     GrantTarget,
     StoredRole,
 )
-from boba.db.clickhouse.profile import ClickHouseConfig
+from boba.db.clickhouse.connection import ClickHouseConfig
 from boba.db.clickhouse.snapshot import ChSourceKind
 from boba.db.postgres import AsyncPostgresPool, PgQuery, PgQueryBuilder, SqlNames
-from boba.db.postgres.profile.config import PostgresConfig
+from boba.db.postgres.connection.config import PostgresConfig
 from boba.identity.session import UserMetadataField
 from boba.runtime.config import DataLayerConfig
 from boba.stand.site import StandLayers
 from boba.stand.ui.stand import REPO_ROOT, StandApp, StandConfig, StandError, StandUrl
-from boba.transport.http.profile import HttpConnection, UrlScheme
+from boba.transport.http.connection import HttpConnection, UrlScheme
 from boba.workflow.records import WorkflowTable
 from boba.workflow_engine.store import WorkflowConfig
 
@@ -329,13 +329,13 @@ class StandDatabase:
 
     async def _add_connection(self, name: str, kind: str) -> UUID:
         connections = bind(self._built, path="connections", model=ConnectionsConfig)
-        profile: ConnectionProfileBase = self._postgres
+        connection: ConnectionBase = self._postgres
         if kind == ChSourceKind.CLICKHOUSE:
-            profile = bind(self._built, path="clickhouse", model=ClickHouseConfig)
+            connection = bind(self._built, path="clickhouse", model=ClickHouseConfig)
 
         async with self._pool() as pool:
             store = ConnectionStore(connections, ConnectionTypes.discover(), pool)
-            connection_id = await store.add(name, profile)
+            connection_id = await store.add(name, connection)
             await self._grant_stand_roles(store, (connection_id,))
 
         return connection_id

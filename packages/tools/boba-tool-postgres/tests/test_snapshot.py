@@ -24,7 +24,7 @@ from boba.db.postgres.catalog import (
     SnapshotTables,
     StagingTable,
 )
-from boba.db.postgres.profile import PostgresConfig
+from boba.db.postgres.connection import PostgresConfig
 from boba.db.postgres.snapshot import (
     PgConstraintKind,
     PgRelationKind,

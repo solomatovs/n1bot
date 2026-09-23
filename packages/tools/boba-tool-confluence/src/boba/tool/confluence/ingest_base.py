@@ -3,7 +3,7 @@
 Ошибки:
 LedgerError — реестр источников недоступен, прогон оборван.
 PostgresError — до хранилища чанков не достучаться.
-EmbeddingError — эмбеддер недоступен или ответил мусором.
+LlmError — эмбеддер недоступен, не загрузился или ответил мусором.
 TransportError — список страниц забрать не удалось; отказ отдельной страницы
     или вложения наружу не выходит, он считается в failed.
 """
@@ -14,7 +14,7 @@ import asyncio
 import logging
 from collections.abc import Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
-from typing import Annotated, Any, ClassVar, Literal, Self
+from typing import Annotated, Any, ClassVar, Final, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -49,10 +49,10 @@ from boba.indexing import (
     TransportKeys,
     UnseenGone,
 )
-from boba.indexing.ports import Chunker, Embedder, ReaderId
+from boba.indexing.ports import Chunker, ReaderId
 from boba.indexing.values import CollectionId
-from boba.llm.embedding import EmbeddingConfig
-from boba.llm.warm import WarmEmbedder
+from boba.llm.embedding import EmbeddingModel
+from boba.llm.providers import EmbeddingModelConfig, LlmProviders, LlmProviderTypes
 from boba.tool.confluence.chunking import (
     ChunkerParams,
     StructuralChunkerFactory,
@@ -62,7 +62,6 @@ from boba.tool.confluence.indexing_log import (
     LoggedIndexRun,
     LoggingChunker,
     LoggingChunkStore,
-    LoggingEmbedder,
     LoggingSourceLedger,
     RunOutcome,
 )
@@ -76,7 +75,8 @@ from boba.tool.confluence.request_sources import (
 )
 from boba.toolkit.timing import Elapsed
 from boba.toolkit.types import StringList
-from boba.transport.http.profile import HttpConnection
+from boba.transport.http import HttpTransportConfig
+from boba.transport.http.connection import HttpConnection
 
 __all__ = [
     "ConfluenceIngest",
@@ -95,14 +95,23 @@ __all__ = [
 
 logger = logging.getLogger("boba.tool.confluence.ingest")
 
+LLM: Final = LlmProviders(LlmProviderTypes.installed())
+"""Модели процесса инструмента, прогретый эмбеддер."""
+
 
 class ConfluenceIngestConfig(PostgresStoreConfig, ChunkerParams, DocSection):
     """Self-contained конфиг семейства tool'ов confluence_index_*."""
 
     model_config = ConfigDict(extra="ignore")
 
-    embedding: EmbeddingConfig
+    embedding: EmbeddingModelConfig
     confluence: HttpConnection
+    transport: HttpTransportConfig = Field(
+        description=(
+            "Поведение HTTP-транспорта процесса: таймауты, пул, дамп обмена; "
+            'ссылкой `transport = "${http}"`.'
+        ),
+    )
     body_format: Literal["view", "export_view", "storage"] = Field(
         default="view",
         description="Confluence body-формат: view/export_view/storage.",
@@ -316,7 +325,7 @@ class IngestScope:
         if not self.space_key:
             return
 
-        await paginator.get_json(self._rest.space_path(self.space_key))
+        await paginator.rest.get_json(self._rest.space_path(self.space_key))
 
 
 class SpaceScope(IngestScope):
@@ -393,7 +402,7 @@ class ConfluenceIngest:
         chunk_store: ChunkStore[str],
         collections_store: PostgresCollectionsStore,
         ledger: SourceLedger,
-        embedder: Embedder[str],
+        embedder: EmbeddingModel,
         chunker: Chunker[str],
         collection: str,
         workers: int,
@@ -486,13 +495,15 @@ class IngestAssembly:
             PostgresSourceLedger(cfg=cfg, collection=CollectionId(cfg.collection)),
             logger,
         )
-        self._embedder = LoggingEmbedder(WarmEmbedder.of(cfg.embedding), logger)
+        self._embedder = LLM.embedding(cfg.embedding)
         self._chunker = LoggingChunker(
             StructuralChunkerFactory(cfg).build(), logger, progress
         )
         self._stamp = IngestStamp(cfg, routes)
         self._conn = ConfluenceConnection(
-            profile=cfg.confluence, body_format=cfg.body_format
+            connection=cfg.confluence,
+            body_format=cfg.body_format,
+            transport=cfg.transport,
         )
 
     def build(self, scope: IngestScope, *, attachments: bool) -> ConfluenceIngest:

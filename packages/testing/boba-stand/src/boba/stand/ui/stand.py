@@ -328,8 +328,22 @@ class StandConfig:
         doc["catalog"]["edit_roles"] = ["ADM"]
 
     def _use_fake_llm(self, doc: MutableMapping[str, Any]) -> None:
-        """Транспорт стенда: поведение общее, адрес фейка — в профилях."""
-        doc["http"] = {"ssl_verify": False, "dump": {"enable": False}}
+        """Провайдер стенда: fake llm процесса тестов вместо секций [llm] конфига."""
+        doc["http"] = {"dump": {"enable": False}}
+        doc["llm"] = {
+            "fake": {
+                "kind": "openai",
+                "transport": "${http}",
+                "connection": {
+                    "scheme": "http",
+                    "host": StandUrl.HOST,
+                    "port": self.llm_port,
+                    "path": "/v1",
+                    "ssl_verify": False,
+                    "auth": {"method": "bearer", "token": "none"},
+                },
+            }
+        }
 
     def _use_test_profiles(self, doc: MutableMapping[str, Any]) -> None:
         """Профили и роли стенда: фиксированные, тесты знают их наизусть.
@@ -358,12 +372,7 @@ class StandConfig:
                 "default": True,
                 "roles": ["*"],
                 "tools": ["*"],
-                "provider": {
-                    "kind": "openai",
-                    "http": "${http}",
-                    "base_url": StandUrl.of(self.llm_port, "/v1"),
-                    "api_key": "none",
-                },
+                "provider": "${llm.fake}",
                 "model": "fake-model-general",
                 "settings": ["*"],
                 "system_prompt": "You are the general stand assistant",
@@ -380,12 +389,7 @@ class StandConfig:
                 "default": False,
                 "roles": ["*"],
                 "tools": ["diagram_save", "canvas_open"],
-                "provider": {
-                    "kind": "openai",
-                    "http": "${http}",
-                    "base_url": StandUrl.of(self.llm_port, "/v1"),
-                    "api_key": "none",
-                },
+                "provider": "${llm.fake}",
                 "model": "fake-model-search",
                 "settings": ["user_prompt"],
                 "system_prompt": "You are the search stand assistant",

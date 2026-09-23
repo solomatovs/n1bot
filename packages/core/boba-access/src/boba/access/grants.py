@@ -20,7 +20,7 @@ from typing import Any, ClassVar, LiteralString
 
 from pydantic import BaseModel, ConfigDict
 
-from boba.connections.profile import (
+from boba.connections.stored import (
     ConnectionsColumn,
     ConnectionTable,
     GrantKind,

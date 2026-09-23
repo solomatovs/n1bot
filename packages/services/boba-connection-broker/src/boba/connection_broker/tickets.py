@@ -19,7 +19,11 @@ from typing import ClassVar
 
 from langchain_core.tools import BaseTool
 
-from boba.connections.credentials import ArmedValues, CredentialSource, ProfileSections
+from boba.connections.credentials import (
+    ArmedValues,
+    ConnectionSections,
+    CredentialSource,
+)
 from boba.identity.context import NoUserCredential
 from boba.kerberos import DelegatedAuth
 from boba.toolrun.injected import (
@@ -64,7 +68,7 @@ class ServiceTickets(AsyncInjected):
         def make(param: str, base: object) -> AsyncInjected:
             return cls(credentials_ref, param, base)
 
-        cls.bind_each(tools, resolve, ProfileSections.needs_arming, make)
+        cls.bind_each(tools, resolve, ConnectionSections.needs_arming, make)
 
     async def value(self, name: str, kwargs: dict[str, object]) -> object:
         self._require_static()
@@ -76,8 +80,8 @@ class ServiceTickets(AsyncInjected):
         return await armed.arm(self._base)
 
     def _require_static(self) -> None:
-        for profile in ProfileSections.profiles(self._base):
-            section = ProfileSections.section_of(profile)
+        for profile in ConnectionSections.connections(self._base):
+            section = ConnectionSections.section_of(profile)
             if isinstance(section, DelegatedAuth):
                 msg = (
                     f"injected config {self._param!r}: profile "

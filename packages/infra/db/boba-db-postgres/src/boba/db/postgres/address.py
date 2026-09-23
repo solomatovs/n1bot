@@ -35,7 +35,7 @@ from urllib.parse import (
 from pydantic import Field, ValidationError
 
 from boba.connections.address import Address, AddressError, AddressFamily
-from boba.db.postgres.profile import PostgresConfig
+from boba.db.postgres.connection import PostgresConfig
 
 __all__ = [
     "PgAddress",
@@ -386,16 +386,16 @@ class PgAddresses(AddressFamily):
     """libpq принимает список хостов через запятую; адрес берёт первый."""
 
     @classmethod
-    def base_of(cls, profile: PostgresConfig) -> PgDatabaseAddress:
+    def base_of(cls, connection: PostgresConfig) -> PgDatabaseAddress:
         """Адрес базы соединения: host из профиля (первый из списка libpq,
         либо hostaddr), порт профиля или libpq по умолчанию, dbname."""
-        host = cls._host_of(profile)
+        host = cls._host_of(connection)
 
-        port = profile.port
+        port = connection.port
         if port is None:
             port = PgAddress.LIBPQ_PORT
 
-        database = profile.dbname
+        database = connection.dbname
         if not database:
             msg = f"postgres connection to {host}: dbname is empty, address needs it"
             raise AddressError(msg)
@@ -403,12 +403,12 @@ class PgAddresses(AddressFamily):
         return PgDatabaseAddress(host=host, port=port, database=database)
 
     @classmethod
-    def _host_of(cls, profile: PostgresConfig) -> str:
-        if profile.host:
-            return profile.host.split(cls.HOST_SEPARATOR)[0]
+    def _host_of(cls, connection: PostgresConfig) -> str:
+        if connection.host:
+            return connection.host.split(cls.HOST_SEPARATOR)[0]
 
-        if profile.hostaddr:
-            return profile.hostaddr
+        if connection.hostaddr:
+            return connection.hostaddr
 
         msg = "postgres connection: neither host nor hostaddr is set, address needs one"
         raise AddressError(msg)

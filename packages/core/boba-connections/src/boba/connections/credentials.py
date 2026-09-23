@@ -3,7 +3,7 @@
 Профиль в таблице или конфиге несёт keytab/password/delegated-секцию; в тело
 инструмента уезжает профиль с TicketAuth — билетом к SPN соединения, выпущенным
 перед этим вызовом. Кто и как выпускает — реализация CredentialSource. Где в
-профиле лежит секция, знает сам профиль (ConnectionProfileBase).
+профиле лежит секция, знает сам профиль (ConnectionBase).
 
 Ошибки: своих не выпускает; RefusalError и KerberosError — у реализаций портов.
 """
@@ -16,7 +16,7 @@ from typing import Protocol
 
 from pydantic import BaseModel
 
-from boba.connections.base import ConnectionProfileBase
+from boba.connections.base import ConnectionBase
 from boba.identity.context import Credential
 from boba.kerberos import (
     DelegatedAuth,
@@ -25,56 +25,56 @@ from boba.kerberos import (
     KeytabAuth,
 )
 
-__all__ = ["ArmedValues", "CredentialSource", "ProfileSections"]
+__all__ = ["ArmedValues", "ConnectionSections", "CredentialSource"]
 
 
-class ProfileSections:
-    """Kerberos-секции профилей внутри произвольного значения."""
+class ConnectionSections:
+    """Kerberos-секции соединений внутри произвольного значения."""
 
     @staticmethod
-    def section_of(profile: ConnectionProfileBase) -> KerberosAuthBase | None:
-        """Kerberos-часть профиля: где она лежит, знает сам профиль."""
-        return profile.kerberos_section()
+    def section_of(connection: ConnectionBase) -> KerberosAuthBase | None:
+        """Kerberos-часть соединения: где она лежит, знает само соединение."""
+        return connection.kerberos_section()
 
     @classmethod
     def needs_arming(cls, value: object) -> bool:
         """Есть ли в значении kerberos-секция, которую нельзя отдавать наружу."""
-        for profile in cls.profiles(value):
-            section = profile.kerberos_section()
+        for connection in cls.connections(value):
+            section = connection.kerberos_section()
             if isinstance(section, KeytabAuth | KerberosPasswordAuth | DelegatedAuth):
                 return True
 
         return False
 
     @classmethod
-    def profiles(cls, value: object) -> Iterator[ConnectionProfileBase]:
-        """Профили соединений внутри значения любой вложенности."""
-        if isinstance(value, ConnectionProfileBase):
+    def connections(cls, value: object) -> Iterator[ConnectionBase]:
+        """Соединения внутри значения любой вложенности."""
+        if isinstance(value, ConnectionBase):
             yield value
             return
 
         if isinstance(value, BaseModel):
             for name in type(value).model_fields:
-                yield from cls.profiles(getattr(value, name))
+                yield from cls.connections(getattr(value, name))
             return
 
         if isinstance(value, Mapping):
             for nested in value.values():
-                yield from cls.profiles(nested)
+                yield from cls.connections(nested)
             return
 
         if isinstance(value, list | tuple):
             for nested in value:
-                yield from cls.profiles(nested)
+                yield from cls.connections(nested)
 
 
 class CredentialSource(Protocol):
-    """Профиль с билетом вызова вместо keytab/password/delegated-секции."""
+    """Соединение с билетом вызова вместо keytab/password/delegated-секции."""
 
     @abstractmethod
     async def for_connection(
-        self, profile: ConnectionProfileBase, credential: Credential
-    ) -> ConnectionProfileBase:
+        self, connection: ConnectionBase, credential: Credential
+    ) -> ConnectionBase:
         """RefusalError — делегирования у субъекта нет; KerberosError — билет не
         выпущен.
         """
@@ -88,7 +88,7 @@ class ArmedValues:
         self._credential = credential
 
     async def arm(self, value: object) -> object:
-        if isinstance(value, ConnectionProfileBase):
+        if isinstance(value, ConnectionBase):
             return await self._source.for_connection(value, self._credential)
 
         if isinstance(value, BaseModel):

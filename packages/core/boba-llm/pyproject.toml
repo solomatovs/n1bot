@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "boba-llm"
+version = "0.0.23.dev1"
+description = "Boba LLM: порты ChatModel/EmbeddingModel, конверты запросов и реестр провайдеров по entry points."
+requires-python = ">=3.11,<4"
+dependencies = [
+    "pydantic>=2.10,<2.11",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["boba*"]
+namespaces = true

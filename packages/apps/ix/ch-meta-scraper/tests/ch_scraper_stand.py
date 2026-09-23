@@ -16,8 +16,8 @@ from pydantic import BaseModel, ConfigDict
 
 from boba.ch_meta_scraper import worker as scraper
 from boba.ch_meta_scraper.worker import ChSource, source_address
+from boba.db.clickhouse.connection import ClickHouseConfig, ClickHouseSettingsConfig
 from boba.db.clickhouse.payload import PayloadClickHouse
-from boba.db.clickhouse.profile import ClickHouseConfig, ClickHouseSettingsConfig
 from boba.db.clickhouse.query import ChQueryBuilder
 from boba.ix_core.scrape import ScrapeSource, parse_version
 from boba.stand.scraper import DdlFile, DemoRecreate, ScraperStand, StandLayout

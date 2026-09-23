@@ -66,6 +66,7 @@ from boba.runtime import providers as runtime
 from boba.runtime.config import RuntimeConfig
 from boba.runtime.di import Container, Depends, di_inject
 from boba.runtime.http import SessionCookie
+from boba.transport.http import DumpLabel
 from chainlit.config import config as chainlit_config
 from chainlit.context import ChainlitContext, context_var
 from chainlit.data.base import BaseDataLayer
@@ -129,6 +130,13 @@ async def on_message(  # noqa: PLR0913
         return
 
     with context.applied():
+        # дампы HTTP-обмена хода именуются пользователем и тредом
+        who = session.label
+        if not who:
+            who = "anon"
+
+        DumpLabel.set(f"{who}-{thread_id}")
+
         try:
             rewind = ThreadRewind(graph, data_layer, thread_id)
             carried: Sequence[Mapping[str, str]] = ()

@@ -24,14 +24,14 @@ from langchain_core.tools import tool
 from langgraph.checkpoint.memory import InMemorySaver
 from pydantic import Field
 
+from boba.chainlit.agent.bridge import ChatModelBridge
 from boba.chainlit.chat.tracing import AgentTracer
 from boba.chainlit.chat.turn import TurnState
 from boba.chainlit.domain.fields import StepField
 from boba.chainlit.infra.config import AppConfig
-from boba.chat.provider import LocalChatConfig
 from boba.config import bind
-from boba.llm.bridge import ChatProviderFactory, ProviderChatModel
-from boba.llm.local import OnnxChatRuntime
+from boba.llm.onnx import OnnxProvider
+from boba.llm.providers import ChatModelConfig, LlmProviders, LlmProviderTypes
 from boba.runtime.config import AppLayers
 from boba.toolkit.calls import ToolIntent
 from boba.toolrun.call_id import ToolCallIdField
@@ -70,7 +70,7 @@ def _local_model_dir() -> str:
     app_config = bind(built, path="app", model=AppConfig)
 
     for profile in app_config.profiles.values():
-        if isinstance(profile.provider, LocalChatConfig):
+        if isinstance(profile.provider, OnnxProvider):
             model_dir = profile.provider.model_dir
             if not (Path(model_dir) / "genai_config.json").is_file():
                 pytest.skip(f"нет весов локальной модели: {model_dir}")
@@ -91,19 +91,18 @@ async def kb_probe(
     )
 
 
-def _chat(model_dir: str) -> ProviderChatModel:
-    cfg = LocalChatConfig(kind="local", model_dir=model_dir)
-    provider = ChatProviderFactory.build(
-        cfg,
+def _chat(model_dir: str) -> ChatModelBridge:
+    cfg = ChatModelConfig(
+        provider=OnnxProvider(kind="onnx", model_dir=model_dir),
         model=Path(model_dir).name,
-        client=None,
-        runtime=OnnxChatRuntime(model_dir),
-    )
-
-    return ProviderChatModel(
-        provider=provider,
         sampling={"max_tokens": 1024},
-        model_name=Path(model_dir).name,
+    )
+    providers = LlmProviders(LlmProviderTypes.installed())
+
+    return ChatModelBridge(
+        chat_model=providers.chat(cfg),
+        sampling=cfg.sampling,
+        model_name=cfg.model,
     )
 
 

@@ -12,6 +12,7 @@ dependencies = [
     "boba-transport-http==0.0.23.dev1",
     "boba-auth==0.0.23.dev1",
     "boba-chat==0.0.23.dev1",
+    "boba-llm-http==0.0.23.dev1",
     "boba-connection-broker==0.0.23.dev1",
     "boba-sandbox==0.0.23.dev1",
     "boba-tool-shell==0.0.23.dev1",

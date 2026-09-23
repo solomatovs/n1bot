@@ -23,7 +23,7 @@ from boba.auth.credentials import KerberosCredentialSource, NoRefresh
 from boba.config import bind
 from boba.connection_broker.tickets import ServiceTickets
 from boba.db.postgres import AsyncPostgresPool
-from boba.db.postgres.profile import PostgresConfig
+from boba.db.postgres.connection import PostgresConfig
 from boba.kerberos import KeytabAuth
 from boba.krb import KeytabCredentials, ServiceTicketIssuer
 from boba.runtime.launchers import ZygoteLaunchers
@@ -52,7 +52,7 @@ from boba.toolkit.result import (
 )
 from boba.toolkit.wrap import ToolProcessWrap
 from boba.toolrun.injected import InjectedConfig
-from boba.transport.http.profile import HttpConnection
+from boba.transport.http.connection import HttpConnection
 
 _REPO = Path(__file__).resolve().parents[4]
 _SANDBOX_STAGING = _REPO / "build" / "chainlit" / "src" / "sandbox"
@@ -177,16 +177,16 @@ class ToolSetup:
     def caller(raw: Any, section: str, modules: Sequence[str] = ()) -> ZygoteToolCaller:
         """Зигота секции конфига: тот же путь запуска, что в приложении."""
         raw = ToolSetup.sandbox_raw(raw)
-        profile = section_profile(raw, section)
+        connection = section_profile(raw, section)
 
         supervisor = ZygoteRegistry.obtain(
             section,
-            profile,
+            connection,
             modules,
             ZYGOTE,
             warmup_calls=ZygoteLaunchers.warmup_configs(section, modules, raw),
         )
-        return ZygoteToolCaller(section, supervisor, profile, ToolSetup.path_vars)
+        return ZygoteToolCaller(section, supervisor, connection, ToolSetup.path_vars)
 
     @staticmethod
     def launchers(raw: Any, section: str) -> LauncherFactory:
@@ -489,9 +489,9 @@ def kb_tools(raw_config, kb_collection: str):
 @pytest.fixture(scope="module")
 def workspace_image(raw_config):
     """Образ тестового пользователя: создаётся из шаблона и сносится после."""
-    profile = section_profile(raw_config, "bash").render(ToolSetup.path_vars())
+    connection = section_profile(raw_config, "bash").render(ToolSetup.path_vars())
 
-    workspace = profile.mounts.workspace
+    workspace = connection.mounts.workspace
     if workspace is None:
         pytest.fail("у профиля bash нет workspace-образа пользователя")
 

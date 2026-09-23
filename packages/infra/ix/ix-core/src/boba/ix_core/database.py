@@ -21,7 +21,7 @@ from pathlib import Path
 from pydantic import BaseModel, ConfigDict, Field
 
 from boba.config import bind_optional_section
-from boba.db.postgres.profile import PostgresConfig
+from boba.db.postgres.connection import PostgresConfig
 from boba.krb import KerberosWorkspaceConfig
 
 __all__ = ["IxDatabase", "enter_kerberos"]

@@ -28,8 +28,12 @@ from boba.stand.zygote import SandboxStand
 from boba.tool.shell.tools import BashToolConfig
 from boba.toolkit.result import ErrorResult
 from boba.toolrun.cancellation import CancellableTools
-from boba.transport.http import CancellableHttpTransport, HttpRequest
-from boba.transport.http.profile import HttpConnection, UrlScheme
+from boba.transport.http import (
+    CancellableHttpTransport,
+    HttpRequest,
+    HttpTransportConfig,
+)
+from boba.transport.http.connection import HttpConnection, UrlScheme
 
 
 def _bin_dirs() -> list[str]:
@@ -283,7 +287,7 @@ class TestHttpAbort:
                 scheme=UrlScheme.HTTP, host="127.0.0.1", port=drip_port
             )
             async with (
-                CancellableHttpTransport(profile) as transport,
+                CancellableHttpTransport(profile, HttpTransportConfig()) as transport,
                 transport.fetch(HttpRequest(url="/slow")) as resp,
             ):
                 return len(await resp.stream.read())

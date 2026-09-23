@@ -23,7 +23,7 @@ from pydantic import Field
 from boba.connections.address import AddressError
 from boba.db.clickhouse import ClickHouseError, ClickHouseQueryError
 from boba.db.clickhouse.address import ChAddresses
-from boba.db.clickhouse.profile import ClickHouseConfig
+from boba.db.clickhouse.connection import ClickHouseConfig
 from boba.db.clickhouse.query import ChQuery, ChQueryBuilder
 from boba.toolkit.entry import ToolMain
 from boba.toolkit.facade import UserConnection, tool

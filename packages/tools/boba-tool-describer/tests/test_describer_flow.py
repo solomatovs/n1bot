@@ -40,18 +40,18 @@ from boba.chainlit.infra.providers import build_history_view
 from boba.config import bind
 from boba.connection_broker.store import ConnectionsConfig, ConnectionStore
 from boba.connections.manifest import ConnectionTypes
-from boba.connections.profile import GrantTarget
+from boba.connections.stored import GrantTarget
 from boba.db.clickhouse.address import ChAddresses, ChTableColumnAddress
+from boba.db.clickhouse.connection import ClickHouseConfig
+from boba.db.clickhouse.connection import PasswordAuth as ChPasswordAuth
 from boba.db.clickhouse.payload import PayloadClickHouse
-from boba.db.clickhouse.profile import ClickHouseConfig
-from boba.db.clickhouse.profile import PasswordAuth as ChPasswordAuth
 from boba.db.postgres import AsyncPostgresPool
 from boba.db.postgres.address import (
     PgAddresses,
     PgTableAddress,
     PgTableColumnAddress,
 )
-from boba.db.postgres.profile import PostgresConfig
+from boba.db.postgres.connection import PostgresConfig
 from boba.runtime.config import AppLayers, ConfigLocator
 from boba.sandbox import ZygoteRegistry
 from boba.stand.refs import StandRefs

@@ -19,7 +19,7 @@ from boba.kerberos import KerberosAuthBase, TicketAuth
 
 __all__ = [
     "ClientIdentity",
-    "ConnectionProfileBase",
+    "ConnectionBase",
     "ConnectionSource",
     "ConnectionTypeError",
 ]
@@ -60,7 +60,7 @@ class ConnectionSource(BaseModel):
         return self.id.int != 0
 
 
-class ConnectionProfileBase(BaseModel):
+class ConnectionBase(BaseModel):
     """Профиль соединения; наследник сужает kind до Literal своего значения."""
 
     kind: str = Field(description="Дискриминатор типа: значение задаёт наследник.")
@@ -83,7 +83,7 @@ class ConnectionProfileBase(BaseModel):
     def with_call_ticket(self, ticket: TicketAuth) -> Self:
         """Профиль с билетом вызова вместо своей kerberos-секции."""
         msg = (
-            f"connection type {self.kind!r}: profile {type(self).__name__} carries "
+            f"connection type {self.kind!r}: model {type(self).__name__} carries "
             "a kerberos section but does not implement with_call_ticket"
         )
         raise ConnectionTypeError(msg)
@@ -91,7 +91,7 @@ class ConnectionProfileBase(BaseModel):
     def service_name(self) -> str:
         """SPN сервиса соединения: кому выпускается билет вызова."""
         msg = (
-            f"connection type {self.kind!r}: profile {type(self).__name__} carries "
+            f"connection type {self.kind!r}: model {type(self).__name__} carries "
             "a kerberos section but does not implement service_name"
         )
         raise ConnectionTypeError(msg)
@@ -99,7 +99,7 @@ class ConnectionProfileBase(BaseModel):
     def trace(self) -> str:
         """Строка журнала: способ авторизации и под кем идём."""
         msg = (
-            f"connection type {self.kind!r}: profile {type(self).__name__} "
+            f"connection type {self.kind!r}: model {type(self).__name__} "
             "does not implement trace"
         )
         raise ConnectionTypeError(msg)
@@ -108,7 +108,7 @@ class ConnectionProfileBase(BaseModel):
     def common_fields(cls) -> frozenset[str]:
         """Поля, общие всем профилям (kind, description, source): драйверу
         они не параметры соединения."""
-        return frozenset(ConnectionProfileBase.model_fields)
+        return frozenset(ConnectionBase.model_fields)
 
     def labeled(self, client: ClientIdentity) -> Self:
         """Профиль, подписанный клиентом вызова.

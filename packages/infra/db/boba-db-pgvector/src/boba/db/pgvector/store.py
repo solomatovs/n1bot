@@ -15,7 +15,7 @@ from psycopg import sql
 
 from boba.db.pgvector.config import PostgresStoreConfig, PostgresStoreSchema
 from boba.db.postgres import AsyncPostgresPool, CancellablePool, PostgresError
-from boba.db.postgres.profile import PostgresConfig
+from boba.db.postgres.connection import PostgresConfig
 from boba.indexing.chunks import Chunk, ChunkId, ChunkSummary, EmbeddedChunk
 from boba.indexing.filter import (
     And,

@@ -9,11 +9,14 @@ from __future__ import annotations
 
 from typing import ClassVar
 
-from boba.chat.http import HttpConfig
+from pydantic import SecretStr
+
 from boba.chat.profiles import ChatProfileConfig, ChatProfiles
-from boba.chat.provider import OpenAiChatConfig
 from boba.ldap import Ldap3Directory
+from boba.llm.http.openai import OpenAiProvider
 from boba.runtime.signin import SignInAssembly
+from boba.transport.http import HttpTransportConfig
+from boba.transport.http.connection import BearerAuth, HttpConnection
 
 __all__ = ["SignInStand"]
 
@@ -24,30 +27,45 @@ class SignInStand:
     PROFILE: ClassVar[str] = "general"
     """Единственный профиль стенда: виден всем ролям, выбирается по умолчанию."""
 
+    FAKE_HOST: ClassVar[str] = "fake-llm"
+    """Хост провайдера стенда: запросы к нему не уходят, профилю нужен адрес."""
+
     @classmethod
-    def profiles(cls, roles: list[str] | None = None) -> ChatProfiles:
+    def provider(cls) -> OpenAiProvider:
+        """Провайдер профиля стенда: openai-совместимый endpoint фейкового хоста."""
+        return OpenAiProvider(
+            kind="openai",
+            connection=HttpConnection(
+                host=cls.FAKE_HOST,
+                path="/v1",
+                auth=BearerAuth(method="bearer", token=SecretStr("k")),
+            ),
+            transport=HttpTransportConfig(),
+        )
+
+    @classmethod
+    def profile(
+        cls, *, default: bool = True, roles: list[str] | None = None
+    ) -> ChatProfileConfig:
         if roles is None:
             roles = ["*"]
 
-        profile = ChatProfileConfig.model_validate(
+        return ChatProfileConfig.model_validate(
             {
                 "display_name": "Stand",
                 "description": "stand profile",
-                "default": True,
+                "default": default,
                 "roles": roles,
                 "tools": ["echo"],
-                "provider": OpenAiChatConfig(
-                    kind="openai",
-                    http=HttpConfig(),
-                    base_url="https://fake-llm/v1",
-                    api_key="k",
-                ),
+                "provider": cls.provider(),
                 "model": "fake",
                 "system_prompt": "stand",
             }
         )
 
-        return ChatProfiles({cls.PROFILE: profile})
+    @classmethod
+    def profiles(cls, roles: list[str] | None = None) -> ChatProfiles:
+        return ChatProfiles({cls.PROFILE: cls.profile(roles=roles)})
 
     @classmethod
     def assembly(cls, profiles: ChatProfiles | None = None) -> SignInAssembly:

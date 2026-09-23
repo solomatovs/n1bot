@@ -10,7 +10,7 @@ import pytest
 from pydantic import BaseModel, ConfigDict
 
 from boba.config import bind
-from boba.db.clickhouse.profile import ClickHouseConfig
+from boba.db.clickhouse.connection import ClickHouseConfig
 from boba.tool.ch import tools as ch
 from boba.toolkit.entry import ToolMain
 from boba.toolkit.facade import PayloadTool

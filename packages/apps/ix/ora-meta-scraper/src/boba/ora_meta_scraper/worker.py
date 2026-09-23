@@ -21,8 +21,8 @@ from pathlib import Path
 from oracledb import AsyncConnection
 
 from boba.db.oracle import OracleError, OracleQueryError
+from boba.db.oracle.connection import OracleConfig
 from boba.db.oracle.payload import PayloadOracle
-from boba.db.oracle.profile import OracleConfig
 from boba.db.oracle.query import OraQueryBuilder, OraSql
 from boba.ix_core.scrape import (
     BlockStream,

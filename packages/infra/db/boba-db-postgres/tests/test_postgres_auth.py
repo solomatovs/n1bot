@@ -17,8 +17,8 @@ from typing import Any
 import pytest
 from pydantic import SecretStr
 
+from boba.db.postgres.connection import PasswordAuth, PostgresConfig
 from boba.db.postgres.payload import PayloadPostgres
-from boba.db.postgres.profile import PasswordAuth, PostgresConfig
 from boba.kerberos import KerberosPasswordAuth, KeytabAuth
 from boba.krb import KerberosWorkspace, KeytabCredentials, ServiceTicketIssuer
 from boba.stand.site import Stand
@@ -55,8 +55,8 @@ def _profile(auth: Any) -> PostgresConfig:
     )
 
 
-async def _current_user(profile: PostgresConfig) -> str:
-    conn = await PayloadPostgres.connect_config(profile)
+async def _current_user(connection: PostgresConfig) -> str:
+    conn = await PayloadPostgres.connect_config(connection)
     try:
         async with conn.cursor() as cur:
             await cur.execute("select current_user")
@@ -84,7 +84,7 @@ async def test_password_auth_logs_in_as_its_own_role() -> None:
     if not STAND.pg_probe_user:
         pytest.skip("в конфиге стенда нет роли-пробника с паролем")
 
-    profile = _profile(
+    connection = _profile(
         PasswordAuth(
             method="password",
             user=STAND.pg_probe_user,
@@ -92,15 +92,15 @@ async def test_password_auth_logs_in_as_its_own_role() -> None:
         )
     )
 
-    if await _current_user(profile) != STAND.pg_probe_user:
+    if await _current_user(connection) != STAND.pg_probe_user:
         raise AssertionError("password auth must log in as its own role")
 
 
 async def test_keytab_auth_logs_in_as_the_service_principal() -> None:
     """method = kerberos_keytab: роль выводится из принципала, пароля нет."""
-    profile = _profile(_keytab())
+    connection = _profile(_keytab())
 
-    if await _current_user(profile) != STAND.krb_pg_user:
+    if await _current_user(connection) != STAND.krb_pg_user:
         raise AssertionError("keytab auth must log in as the service principal")
 
 
@@ -116,7 +116,7 @@ async def test_keytab_auth_sends_no_password() -> None:
 
 async def test_kerberos_password_auth_logs_in_as_that_user() -> None:
     """method = kerberos_password: TGT берётся по паролю, дальше всё как с keytab."""
-    profile = _profile(
+    connection = _profile(
         KerberosPasswordAuth(
             method="kerberos_password",
             principal=STAND.reader_principal,
@@ -126,7 +126,7 @@ async def test_kerberos_password_auth_logs_in_as_that_user() -> None:
     )
 
     expected = STAND.reader_principal.split("@")[0]
-    if await _current_user(profile) != expected:
+    if await _current_user(connection) != expected:
         raise AssertionError("kerberos password auth must log in as that user")
 
 
@@ -146,7 +146,7 @@ async def test_wrong_password_is_reported() -> None:
     if not STAND.pg_probe_user:
         pytest.skip("в конфиге стенда нет роли-пробника с паролем")
 
-    profile = _profile(
+    connection = _profile(
         PasswordAuth(
             method="password",
             user=STAND.pg_probe_user,
@@ -155,4 +155,4 @@ async def test_wrong_password_is_reported() -> None:
     )
 
     with pytest.raises(Exception, match="password"):
-        await _current_user(profile)
+        await _current_user(connection)

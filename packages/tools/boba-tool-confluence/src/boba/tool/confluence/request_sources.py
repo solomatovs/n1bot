@@ -192,7 +192,7 @@ class ConfluenceDiscovery(RequestSource[ConfluenceRequest]):
             async for content in self._listing.contents(paginator):
                 self._progress.pages_found(1)
                 yield self._rest.make_page_request(
-                    profile=self._conn.profile,
+                    connection=self._conn.connection,
                     content=content,
                     body_format=self._conn.body_format,
                 )
@@ -202,7 +202,7 @@ class ConfluenceDiscovery(RequestSource[ConfluenceRequest]):
 
             for page_id in self._listing.missing():
                 yield self._rest.make_gone_request(
-                    profile=self._conn.profile,
+                    connection=self._conn.connection,
                     page_id=page_id,
                     body_format=self._conn.body_format,
                 )
@@ -214,11 +214,11 @@ class ConfluenceDiscovery(RequestSource[ConfluenceRequest]):
         paginator: CflPaginator,
         content: ConfluenceContent,
     ) -> AsyncIterator[ConfluenceRequest]:
-        profile = self._conn.profile
+        connection = self._conn.connection
         body_url = self._rest.page_body_path(
             content.id, body_format=self._conn.body_format
         )
-        page_source = self._source_ids.of(profile, str(body_url))
+        page_source = self._source_ids.of(connection, str(body_url))
         async for att in self._attachments(paginator, content):
             self._progress.attachments_found(1)
             verdict = self._gate.verdict(att)
@@ -232,7 +232,7 @@ class ConfluenceDiscovery(RequestSource[ConfluenceRequest]):
                 )
 
             yield self._rest.make_attachment_request(
-                profile=profile,
+                connection=connection,
                 page=content,
                 page_source=page_source,
                 attachment=att,

@@ -64,9 +64,9 @@ describe("SchemaDoc", () => {
   });
 
   it("maps server error locations to form paths without variant tags", () => {
-    expect(doc.formPath("profile", ["postgres", "auth", "password", "password"])).toBe("profile.auth.password");
-    expect(doc.formPath("profile", ["postgres"])).toBe("profile");
-    expect(doc.formPath("profile", ["web", "ssl_verify"])).toBe("profile.ssl_verify");
+    expect(doc.formPath("connection", ["postgres", "auth", "password", "password"])).toBe("connection.auth.password");
+    expect(doc.formPath("connection", ["postgres"])).toBe("connection");
+    expect(doc.formPath("connection", ["web", "ssl_verify"])).toBe("connection.ssl_verify");
   });
 
   it("picks the variant of a value by its discriminator", () => {

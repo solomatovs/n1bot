@@ -8,6 +8,7 @@ version = "0.0.23.dev1"
 description = "Boba doc: чтение документов по форматам (pdf, docx, xlsx, pptx, xls, rtf, текст, картинки) окнами страниц из потока без seek; OCR сканов и картинок моделями PP-OCR. Секции конфига — без тяжёлых зависимостей, ридеры и OCR за extras."
 requires-python = ">=3.11,<4"
 dependencies = [
+    "boba-llm==0.0.23.dev1",
     "pillow>=10",
     "pydantic>=2.10,<2.11",
 ]
@@ -22,7 +23,6 @@ readers = [
     "xlrd>=2,<3",
 ]
 ocr = [
-    "httpx>=0.28,<1",
     "numpy>=1.26",
     "onnxruntime>=1.20",
     "rapidocr>=3.9,<4",

@@ -23,7 +23,7 @@ import psycopg
 from psycopg.rows import DictRow, dict_row
 
 from boba.cancellation import current_cancellation
-from boba.db.postgres.profile import PostgresConfig
+from boba.db.postgres.connection import PostgresConfig
 from boba.kerberos import KerberosAuthBase
 from boba.krb import ClientCredentials, KerberosCredentials
 

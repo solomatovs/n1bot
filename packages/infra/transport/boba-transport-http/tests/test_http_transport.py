@@ -6,8 +6,8 @@ import httpx
 import pytest
 from pydantic import SecretStr, ValidationError
 
-from boba.transport.http import HttpRequest, HttpTransport
-from boba.transport.http.profile import BasicAuth, HttpConnection, RetryStatuses
+from boba.transport.http import HttpRequest, HttpTransport, HttpTransportConfig
+from boba.transport.http.connection import BasicAuth, HttpConnection, RetryStatuses
 
 pytestmark = pytest.mark.anyio
 
@@ -45,7 +45,9 @@ async def test_returns_status_headers_and_body(monkeypatch):
     _patch(monkeypatch, handler)
 
     async with (
-        HttpTransport(HttpConnection(host="x.test", port=443)) as transport,
+        HttpTransport(
+            HttpConnection(host="x.test", port=443), HttpTransportConfig()
+        ) as transport,
         transport.fetch(HttpRequest(url="https://x.test/doc")) as resp,
     ):
         # заголовки отдаются сырыми; обогащение/strip — забота потребителя
@@ -68,7 +70,9 @@ async def test_body_arrives_as_a_stream(monkeypatch):
 
     seen: list[bytes] = []
     async with (
-        HttpTransport(HttpConnection(host="x.test", port=443)) as transport,
+        HttpTransport(
+            HttpConnection(host="x.test", port=443), HttpTransportConfig()
+        ) as transport,
         transport.fetch(HttpRequest(url="https://x.test/big")) as resp,
     ):
         async for chunk in resp.stream:
@@ -90,11 +94,11 @@ async def test_retry_recovers_after_5xx(monkeypatch):
 
     _patch(monkeypatch, handler)
 
-    profile = HttpConnection(
+    connection = HttpConnection(
         host="x.test", port=443, retry_attempts=3, retry_backoff_sec=0
     )
     async with (
-        HttpTransport(profile) as transport,
+        HttpTransport(connection, HttpTransportConfig()) as transport,
         transport.fetch(HttpRequest(url="https://x.test/y")) as resp,
     ):
         body = await resp.stream.read()
@@ -115,7 +119,8 @@ async def test_retry_exhausted_raises_last_5xx(monkeypatch):
     _patch(monkeypatch, handler)
 
     transport = HttpTransport(
-        HttpConnection(host="x.test", port=443, retry_attempts=2, retry_backoff_sec=0)
+        HttpConnection(host="x.test", port=443, retry_attempts=2, retry_backoff_sec=0),
+        HttpTransportConfig(),
     )
     with pytest.raises(httpx.HTTPStatusError) as exc:
         async with transport.fetch(HttpRequest(url="https://x.test/y")):
@@ -138,7 +143,8 @@ async def test_4xx_not_retried(monkeypatch):
     _patch(monkeypatch, handler)
 
     transport = HttpTransport(
-        HttpConnection(host="x.test", port=443, retry_attempts=3, retry_backoff_sec=0)
+        HttpConnection(host="x.test", port=443, retry_attempts=3, retry_backoff_sec=0),
+        HttpTransportConfig(),
     )
     with pytest.raises(httpx.HTTPStatusError) as exc:
         async with transport.fetch(HttpRequest(url="https://x.test/y")):
@@ -162,7 +168,9 @@ async def test_url_query_preserved_with_empty_params(monkeypatch):
 
     req = HttpRequest(url="https://x.test/rest/api/content/1?expand=body.view")
     async with (
-        HttpTransport(HttpConnection(host="x.test", port=443)) as transport,
+        HttpTransport(
+            HttpConnection(host="x.test", port=443), HttpTransportConfig()
+        ) as transport,
         transport.fetch(req) as resp,
     ):
         await resp.stream.read()
@@ -182,13 +190,13 @@ async def test_auth_from_profile_applied_to_client(monkeypatch):
 
     _patch(monkeypatch, handler)
 
-    profile = HttpConnection(
+    connection = HttpConnection(
         host="x.test",
         port=443,
         auth=BasicAuth(method="basic", user="u", password=SecretStr("p")),
     )
     async with (
-        HttpTransport(profile) as transport,
+        HttpTransport(connection, HttpTransportConfig()) as transport,
         transport.fetch(HttpRequest(url="https://x.test/y")) as resp,
     ):
         await resp.stream.read()
@@ -211,7 +219,7 @@ async def test_status_listed_in_the_profile_is_retried(monkeypatch):
 
     _patch(monkeypatch, handler)
 
-    profile = HttpConnection(
+    connection = HttpConnection(
         host="x.test",
         port=443,
         retry_attempts=1,
@@ -219,7 +227,7 @@ async def test_status_listed_in_the_profile_is_retried(monkeypatch):
         retry_statuses=RetryStatuses({429: 3}),
     )
     async with (
-        HttpTransport(profile) as transport,
+        HttpTransport(connection, HttpTransportConfig()) as transport,
         transport.fetch(HttpRequest(url="https://x.test/y")) as resp,
     ):
         body = await resp.stream.read()
@@ -241,7 +249,8 @@ async def test_status_outside_the_profile_is_not_retried(monkeypatch):
     _patch(monkeypatch, handler)
 
     transport = HttpTransport(
-        HttpConnection(host="x.test", port=443, retry_attempts=3, retry_backoff_sec=0)
+        HttpConnection(host="x.test", port=443, retry_attempts=3, retry_backoff_sec=0),
+        HttpTransportConfig(),
     )
     with pytest.raises(httpx.HTTPStatusError) as exc:
         async with transport.fetch(HttpRequest(url="https://x.test/y")):
@@ -274,7 +283,7 @@ async def test_retry_after_header_sets_the_pause(monkeypatch):
 
     _patch(monkeypatch, handler)
 
-    profile = HttpConnection(
+    connection = HttpConnection(
         host="x.test",
         port=443,
         retry_backoff_sec=0,
@@ -282,7 +291,7 @@ async def test_retry_after_header_sets_the_pause(monkeypatch):
         retry_after_max_sec=30,
     )
     async with (
-        HttpTransport(profile) as transport,
+        HttpTransport(connection, HttpTransportConfig()) as transport,
         transport.fetch(HttpRequest(url="https://x.test/y")) as resp,
     ):
         await resp.stream.read()
@@ -310,7 +319,7 @@ async def test_retry_after_is_capped_by_the_profile(monkeypatch):
 
     _patch(monkeypatch, handler)
 
-    profile = HttpConnection(
+    connection = HttpConnection(
         host="x.test",
         port=443,
         retry_attempts=2,
@@ -318,7 +327,7 @@ async def test_retry_after_is_capped_by_the_profile(monkeypatch):
         retry_after_max_sec=5,
     )
     async with (
-        HttpTransport(profile) as transport,
+        HttpTransport(connection, HttpTransportConfig()) as transport,
         transport.fetch(HttpRequest(url="https://x.test/y")) as resp,
     ):
         await resp.stream.read()
@@ -331,13 +340,13 @@ class TestRetryStatusesValidation:
     """Таблица повторов разбирается на границе конфига, а не в транспорте."""
 
     def test_table_from_the_config_is_typed(self) -> None:
-        profile = HttpConnection.model_validate(
+        connection = HttpConnection.model_validate(
             {"host": "x.test", "port": 443, "retry_statuses": {"429": "5"}}
         )
 
-        if profile.retry_statuses.attempts_for(429) != 5:
-            raise AssertionError(f"429 -> 5 attempts: {profile.retry_statuses.root}")
-        if profile.retry_statuses.attempts_for(503) != 0:
+        if connection.retry_statuses.attempts_for(429) != 5:
+            raise AssertionError(f"429 -> 5 attempts: {connection.retry_statuses.root}")
+        if connection.retry_statuses.attempts_for(503) != 0:
             raise AssertionError("a status without a rule has no attempts")
 
     def test_status_outside_the_http_range_is_rejected(self) -> None:

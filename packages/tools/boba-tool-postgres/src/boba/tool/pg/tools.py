@@ -26,7 +26,7 @@ from pydantic import Field
 
 from boba.db.postgres import PayloadPostgres, PostgresError
 from boba.db.postgres.address import PgAddresses
-from boba.db.postgres.profile import PostgresConfig
+from boba.db.postgres.connection import PostgresConfig
 from boba.db.postgres.query import PgQuery, PgQueryBuilder
 from boba.toolkit.entry import ToolMain
 from boba.toolkit.facade import Injected, UserConnection, tool

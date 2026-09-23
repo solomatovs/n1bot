@@ -14,9 +14,12 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Annotated, Literal, Self
 
-from pydantic import BaseModel, ConfigDict, Field, SecretStr
+from pydantic import BaseModel, ConfigDict, Field
+
+from boba.llm.providers import ChatModelConfig
 
 __all__ = [
+    "ChatOcrConfig",
     "DisabledOcrConfig",
     "DocConfig",
     "DocSection",
@@ -24,7 +27,6 @@ __all__ = [
     "OcrLanguage",
     "OcrModel",
     "OcrUnavailableError",
-    "OpenAiOcrConfig",
     "RapidOcrConfig",
 ]
 
@@ -116,30 +118,26 @@ class RapidOcrConfig(BaseModel):
         }
 
 
-class OpenAiOcrConfig(BaseModel):
-    """Секция OCR с provider = openai: картинка уходит vision-модели
-    openai-совместимого endpoint'а (/chat/completions), ответ — текст с
-    картинки построчно. Ключ в отпечаток индексатора не входит."""
+class ChatOcrConfig(BaseModel):
+    """Секция OCR с provider = chat: картинка уходит vision-чат-модели проекта,
+    ответ — текст с картинки построчно. Провайдер в отпечаток индексатора не
+    входит, модель — входит."""
 
     model_config = ConfigDict(frozen=True)
 
-    provider: Literal["openai"]
-    base_url: str
-    api_key: SecretStr
-    model: str
-    timeout_sec: float = Field(gt=0)
-    max_tokens: int = Field(ge=1)
+    provider: Literal["chat"]
+    chat: ChatModelConfig
 
     @property
     def enabled(self) -> bool:
         return True
 
     def fingerprint(self) -> Mapping[str, object]:
-        return {"provider": self.provider, "model": self.model}
+        return {"provider": self.provider, "model": self.chat.model}
 
 
 OcrConfig = Annotated[
-    DisabledOcrConfig | RapidOcrConfig | OpenAiOcrConfig,
+    DisabledOcrConfig | RapidOcrConfig | ChatOcrConfig,
     Field(discriminator="provider"),
 ]
 """Discriminated union по provider — точная диагностика ошибок валидации."""
