@@ -77,11 +77,11 @@ class DocumentRouter:
             case DocumentKind.PDF:
                 return PdfDocument.open(stream, limit, self._ocr)
             case DocumentKind.DOCX:
-                return DocxDocument.open(stream, limit)
+                return DocxDocument.open(stream, limit, self._ocr)
             case DocumentKind.XLSX:
                 return XlsxDocument.open(stream, limit)
             case DocumentKind.PPTX:
-                return PptxDocument.open(stream, limit)
+                return PptxDocument.open(stream, limit, self._ocr)
             case DocumentKind.XLS:
                 return XlsDocument.open(stream)
             case DocumentKind.RTF:

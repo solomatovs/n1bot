@@ -83,7 +83,7 @@ async def test_reader_failure_propagates(router: DocumentRouter) -> None:
 
 
 def test_ocr_engines_factory(doc_stand) -> None:
-    disabled = OcrEngines.of(DisabledOcrConfig(provider="off"))
+    disabled = OcrEngines().of(DisabledOcrConfig(provider="off"))
     assert disabled.recognize(Samples.image(["x"], doc_stand.cyrillic_font)) == ""
 
     config = RapidOcrConfig(

@@ -171,8 +171,10 @@ class TestDocumentsInSandbox:
             raise AssertionError('"Alpha" in reply.content')
 
     def test_small_address_space_is_reported(self, docs: Path) -> None:
-        """Заниженный RLIMIT_AS ломает pdfium: тело умирает своим кодом без
-        конверта, и ошибка несёт его stderr — лаунчер вывод не толкует."""
+        """Заниженный RLIMIT_AS валит тело на первой же библиотеке, которой
+        не хватает адресного пространства (OpenBLAS под onnxruntime, pdfium):
+        оно умирает своим кодом без конверта, и ошибка несёт его stderr —
+        лаунчер вывод не толкует."""
         caller = _caller(docs, process_memory_bytes=512 * 1024 * 1024)
 
         # конкретный класс задаёт исполнитель; контракт слоя — LauncherError
@@ -188,8 +190,11 @@ class TestDocumentsInSandbox:
         if "no envelope" not in message:
             raise AssertionError(f"смерть тела без конверта не названа: {message}")
 
-        if "pdfium" not in message:
+        if "tool_stderr=''" in message:
             raise AssertionError(f"stderr тела не в ошибке: {message}")
+
+        if "Memory allocation" not in message and "pdfium" not in message:
+            raise AssertionError(f"stderr тела не про память: {message}")
 
     def test_ocr_without_provider_is_reported(self, docs: Path) -> None:
         """OCR просят у секции с provider = off: отказ объявленного вида."""

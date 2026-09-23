@@ -14,6 +14,7 @@ from typing import Any, BinaryIO
 import docx
 import openpyxl
 import xlwt
+from docx.shared import Inches as DocxInches
 from PIL import Image, ImageDraw, ImageFont
 from pptx import Presentation
 from pptx.util import Inches
@@ -58,8 +59,8 @@ class Samples:
     FONT_SIZE = 28
     LINE_HEIGHT = 48
 
-    @staticmethod
-    def pdf(pages: Sequence[str]) -> bytes:
+    @classmethod
+    def pdf(cls, pages: Sequence[str]) -> bytes:
         """Многостраничный pdf с текстовым слоем; смещения xref честные."""
         objects: list[bytes] = [b"", b""]
         font_number = 3
@@ -79,13 +80,7 @@ class Samples:
                 + f"{content_number} 0 R".encode()
                 + b" >>"
             )
-            objects.append(
-                b"<< /Length "
-                + str(len(stream)).encode()
-                + b" >>\nstream\n"
-                + stream
-                + b"\nendstream"
-            )
+            objects.append(cls._stream(stream))
 
         objects[0] = b"<< /Type /Catalog /Pages 2 0 R >>"
         objects[1] = (
@@ -94,6 +89,48 @@ class Samples:
             + f"] /Count {len(pages)} >>".encode()
         )
 
+        return cls._assemble(objects)
+
+    @classmethod
+    def mixed_pdf(cls, text: str, lines: Sequence[str], font: Path) -> bytes:
+        """Одна страница: текстовый слой сверху и картинка с надписями ниже,
+        как скриншот в инструкции. Картинка занимает 500x100 pt."""
+        picture = cls.image(lines, font)
+        width, height = picture.size
+        stream = (
+            f"BT /F1 18 Tf 40 700 Td ({text}) Tj ET\nq 500 0 0 100 40 500 cm /Im1 Do Q"
+        ).encode("latin-1")
+        objects: list[bytes] = [
+            b"<< /Type /Catalog /Pages 2 0 R >>",
+            b"<< /Type /Pages /Kids [4 0 R] /Count 1 >>",
+            b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] "
+            b"/Resources << /Font << /F1 3 0 R >> /XObject << /Im1 6 0 R >> >> "
+            b"/Contents 5 0 R >>",
+            cls._stream(stream),
+            b"<< /Type /XObject /Subtype /Image "
+            + f"/Width {width} /Height {height} ".encode()
+            + b"/ColorSpace /DeviceRGB /BitsPerComponent 8 /Length "
+            + str(width * height * 3).encode()
+            + b" >>\nstream\n"
+            + picture.tobytes()
+            + b"\nendstream",
+        ]
+
+        return cls._assemble(objects)
+
+    @staticmethod
+    def _stream(body: bytes) -> bytes:
+        return (
+            b"<< /Length "
+            + str(len(body)).encode()
+            + b" >>\nstream\n"
+            + body
+            + b"\nendstream"
+        )
+
+    @staticmethod
+    def _assemble(objects: Sequence[bytes]) -> bytes:
         out = bytearray(b"%PDF-1.4\n")
         offsets: list[int] = []
         for number, body in enumerate(objects, start=1):
@@ -162,6 +199,37 @@ class Samples:
 
         buffer = io.BytesIO()
         document.save(buffer)
+
+        return buffer.getvalue()
+
+    @classmethod
+    def docx_with_picture(
+        cls, paragraphs: Sequence[str], lines: Sequence[str], font: Path
+    ) -> bytes:
+        """Абзацы, за ними картинка с надписями шириной 5 дюймов, как
+        скриншот в инструкции; следом ещё один абзац."""
+        document = docx.Document()
+        for text in paragraphs:
+            document.add_paragraph(text)
+
+        document.add_picture(io.BytesIO(cls.png(lines, font)), width=DocxInches(5))
+        document.add_paragraph("After the picture")
+        buffer = io.BytesIO()
+        document.save(buffer)
+
+        return buffer.getvalue()
+
+    @classmethod
+    def pptx_with_picture(cls, title: str, lines: Sequence[str], font: Path) -> bytes:
+        """Один слайд: заголовок и картинка с надписями шириной 6 дюймов."""
+        presentation = Presentation()
+        slide = presentation.slides.add_slide(presentation.slide_layouts[5])
+        Samples._set_title(slide, title)
+        slide.shapes.add_picture(
+            io.BytesIO(cls.png(lines, font)), Inches(1), Inches(2), width=Inches(6)
+        )
+        buffer = io.BytesIO()
+        presentation.save(buffer)
 
         return buffer.getvalue()
 

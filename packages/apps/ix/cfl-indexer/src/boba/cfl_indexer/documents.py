@@ -49,7 +49,7 @@ class AttachmentReader:
     PAGE_SEPARATOR: ClassVar[str] = "\n\n"
 
     def __init__(self, doc: DocSection, masks: Sequence[str]) -> None:
-        self._router = DocumentRouter(doc, OcrEngines.of(doc.ocr))
+        self._router = DocumentRouter(doc, OcrEngines().of(doc.ocr))
         self._gate = AttachmentGate(
             allowed=AttachmentFilter(masks), requested=True, ocr=doc.ocr.enabled
         )

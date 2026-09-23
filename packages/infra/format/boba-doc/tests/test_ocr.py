@@ -65,6 +65,86 @@ def test_scanned_pdf_goes_through_ocr(
     assert hits[0].page == 1
 
 
+def test_pictures_on_text_pages_are_recognized(
+    ocr_router: DocumentRouter, doc_stand: DocStand
+) -> None:
+    data = Samples.mixed_pdf("Schema overview", LINES, doc_stand.cyrillic_font)
+
+    with ocr_router.open(
+        NoSeek(data), DocumentHint(media_type="application/pdf")
+    ) as document:
+        pages = list(document.pages(PageWindow.whole()))
+        hits = list(
+            document.search(
+                "overview", PageWindow.whole(), case_sensitive=False, context=80
+            )
+        )
+
+    text = pages[0].text
+    assert text.startswith("Schema overview")
+    assert "Договор" in text
+    assert "Quarterly" in text
+    assert hits[0].page == 1
+
+
+def test_pictures_are_left_alone_without_ocr(
+    router: DocumentRouter, doc_stand: DocStand
+) -> None:
+    data = Samples.mixed_pdf("Schema overview", LINES, doc_stand.cyrillic_font)
+
+    with router.open(
+        NoSeek(data), DocumentHint(media_type="application/pdf")
+    ) as document:
+        pages = list(document.pages(PageWindow.whole()))
+
+    assert pages[0].text.strip() == "Schema overview"
+
+
+def test_docx_pictures_are_recognized_in_place(
+    ocr_router: DocumentRouter, doc_stand: DocStand
+) -> None:
+    data = Samples.docx_with_picture(["Intro"], LINES, doc_stand.cyrillic_font)
+
+    with ocr_router.open(NoSeek(data), DocumentHint(filename="guide.docx")) as document:
+        pages = list(document.pages(PageWindow.whole()))
+
+    text = pages[0].text
+    assert text.startswith("Intro\n")
+    assert text.endswith("\nAfter the picture")
+    assert "Договор" in text
+    assert "Quarterly" in text
+
+
+def test_pptx_pictures_are_recognized(
+    ocr_router: DocumentRouter, doc_stand: DocStand
+) -> None:
+    data = Samples.pptx_with_picture("Deck", LINES, doc_stand.cyrillic_font)
+
+    with ocr_router.open(NoSeek(data), DocumentHint(filename="deck.pptx")) as document:
+        pages = list(document.pages(PageWindow.whole()))
+
+    text = pages[0].text
+    assert text.startswith("Deck")
+    assert "поставки" in text
+    assert "1250" in text
+
+
+def test_office_pictures_are_left_alone_without_ocr(
+    router: DocumentRouter, doc_stand: DocStand
+) -> None:
+    word = Samples.docx_with_picture(["Intro"], LINES, doc_stand.cyrillic_font)
+    deck = Samples.pptx_with_picture("Deck", LINES, doc_stand.cyrillic_font)
+
+    with router.open(NoSeek(word), DocumentHint(filename="guide.docx")) as document:
+        word_pages = list(document.pages(PageWindow.whole()))
+
+    with router.open(NoSeek(deck), DocumentHint(filename="deck.pptx")) as document:
+        deck_pages = list(document.pages(PageWindow.whole()))
+
+    assert word_pages[0].text == "Intro\nAfter the picture"
+    assert deck_pages[0].text == "Deck"
+
+
 def test_missing_models_fail_with_names(tmp_path: Path) -> None:
     config = RapidOcrConfig(
         provider="rapidocr",
@@ -78,4 +158,4 @@ def test_missing_models_fail_with_names(tmp_path: Path) -> None:
         RapidOcrEngine(config)
 
     with pytest.raises(DocumentError, match="lacks"):
-        OcrEngines.check(config)
+        OcrEngines().check(config)

@@ -46,7 +46,7 @@ class DocumentReader(Reader[str]):
     READER_ID: ClassVar[ReaderId] = ReaderId("ext.doc")
 
     def __init__(self, config: DocSection) -> None:
-        self._router = DocumentRouter(config, OcrEngines.of(config.ocr))
+        self._router = DocumentRouter(config, OcrEngines().of(config.ocr))
 
     def reader_id(self) -> ReaderId:
         return self.READER_ID

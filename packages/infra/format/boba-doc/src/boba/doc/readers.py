@@ -9,6 +9,7 @@ DocumentError — библиотека не открыла файл или не 
 
 from __future__ import annotations
 
+import io
 import math
 import tempfile
 from collections.abc import Iterable, Iterator, Sequence
@@ -19,12 +20,14 @@ import docx
 import openpyxl
 import pypdfium2 as pdfium
 import xlrd
+from docx.oxml.ns import qn
 from docx.table import Table as DocxTable
 from docx.text.paragraph import Paragraph
 from PIL import Image
 from pptx import Presentation
 from pptx.shapes.graphfrm import GraphicFrame
 from pptx.shapes.group import GroupShape
+from pptx.shapes.picture import Picture
 from striprtf.striprtf import rtf_to_text
 
 from boba.doc.document import (
@@ -116,11 +119,62 @@ class TextDecoder:
         )
 
 
+class PictureText:
+    """Текст с картинок внутри документа: страница pdf, абзац docx или слайд
+    pptx отдают сюда свои растровые вставки, обратно приходят строки, которых в
+    уже известном тексте нет. Мелкие иконки отсекает вызывающий по размеру
+    вставки: меньше полудюйма по любой стороне — не картинка с текстом; при
+    выключенном OCR картинки не декодируются вовсе."""
+
+    MIN_SIDE_PT: ClassVar[float] = 36.0
+    MIN_SIDE_EMU: ClassVar[int] = 457200
+
+    def __init__(self, ocr: OcrEngine) -> None:
+        self._ocr = ocr
+
+    @property
+    def enabled(self) -> bool:
+        return self._ocr.enabled
+
+    def lines(self, known: str, pictures: Iterable[Image.Image]) -> Sequence[str]:
+        """Уникальные строки с картинок, отсутствующие в known."""
+        return tuple(dict.fromkeys(self._fresh_lines(known, pictures)))
+
+    def block(self, known: str, pictures: Iterable[Image.Image]) -> str:
+        """Те же строки одним блоком; пусто, если картинки ничего не добавили."""
+        return "\n".join(self.lines(known, pictures))
+
+    def decode(self, blob: bytes) -> Image.Image:
+        image = Image.open(io.BytesIO(blob))
+        image.load()
+
+        return image
+
+    def _fresh_lines(
+        self, known: str, pictures: Iterable[Image.Image]
+    ) -> Iterator[str]:
+        for picture in pictures:
+            for line in self._ocr.recognize(picture).splitlines():
+                stripped = line.strip()
+                if not stripped:
+                    continue
+
+                if stripped in known:
+                    continue
+
+                yield stripped
+
+
 class PdfDocument(PagedDocument):
     """PDF через pdfium: текстовый слой страницы, а если его нет — рендер
-    страницы в картинку и OCR. Поиск по текстовому слою отдаёт координаты."""
+    страницы в картинку и OCR. У страницы со слоем распознаются ещё и
+    встроенные картинки не меньше полудюйма по каждой стороне (скриншоты, схемы),
+    их строки дописываются после слоя. Поиск по текстовому слою отдаёт
+    координаты."""
 
     KIND: ClassVar[DocumentKind] = DocumentKind.PDF
+    PICTURE_DEPTH: ClassVar[int] = 3
+    RENDER_SCALE: ClassVar[int] = 2
 
     def __init__(
         self,
@@ -131,6 +185,7 @@ class PdfDocument(PagedDocument):
         self._spool = spool
         self._pdf = pdf
         self._ocr = ocr
+        self._pictures = PictureText(ocr)
 
     @classmethod
     def open(cls, stream: ByteStream, memory_limit: int, ocr: OcrEngine) -> PdfDocument:
@@ -195,17 +250,41 @@ class PdfDocument(PagedDocument):
 
     def _text_of(self, page: pdfium.PdfPage, number: int) -> str:
         try:
-            text = self._layer_text(page)
-            if text.strip():
-                return text
+            layer = self._layer_text(page)
+            if not layer.strip():
+                whole = page.render(scale=self.RENDER_SCALE).to_pil()
+                return self._ocr.recognize(whole)
 
-            image = page.render(scale=2).to_pil()
+            pictures = list(self._page_pictures(page))
         except DocumentError:
             raise
         except Exception as exc:
             raise self.failure(f"reading page {number}", exc) from exc
 
-        return self._ocr.recognize(image)
+        extra = self._pictures.block(layer, pictures)
+        if not extra:
+            return layer
+
+        return layer + Glue.BLOCK + extra
+
+    def _page_pictures(self, page: pdfium.PdfPage) -> Iterator[Image.Image]:
+        """Встроенные картинки страницы в их собственном разрешении; мелкие
+        иконки и логотипы отсекаются размером на странице."""
+        if not self._pictures.enabled:
+            return
+
+        for obj in page.get_objects(max_depth=self.PICTURE_DEPTH):
+            if not isinstance(obj, pdfium.PdfImage):
+                continue
+
+            left, bottom, right, top = obj.get_bounds()
+            if right - left < PictureText.MIN_SIDE_PT:
+                continue
+
+            if top - bottom < PictureText.MIN_SIDE_PT:
+                continue
+
+            yield obj.get_bitmap(render=True).to_pil()
 
     @staticmethod
     def _layer_text(page: pdfium.PdfPage) -> str:
@@ -289,25 +368,37 @@ class PdfDocument(PagedDocument):
 
 
 class DocxDocument(PagedDocument):
-    """Word через python-docx: абзацы и таблицы в порядке тела документа.
+    """Word через python-docx: абзацы и таблицы в порядке тела документа,
+    картинки абзаца не меньше полудюйма идут в OCR отдельным блоком за ним.
     Страниц у docx нет, поэтому страница — пачка блоков фиксированного размера."""
 
     KIND: ClassVar[DocumentKind] = DocumentKind.DOCX
     BLOCKS_PER_PAGE: ClassVar[int] = 40
+    DRAWING: ClassVar[str] = ".//w:drawing"
+    EXTENT: ClassVar[str] = ".//wp:extent"
+    BLIP: ClassVar[str] = ".//a:blip"
 
-    def __init__(self, blocks: Sequence[str]) -> None:
+    def __init__(
+        self, document: Any, blocks: Sequence[Paragraph | DocxTable], ocr: OcrEngine
+    ) -> None:
+        self._document = document
         self._blocks = blocks
+        self._pictures = PictureText(ocr)
 
     @classmethod
-    def open(cls, stream: ByteStream, memory_limit: int) -> DocxDocument:
+    def open(
+        cls, stream: ByteStream, memory_limit: int, ocr: OcrEngine
+    ) -> DocxDocument:
+        """python-docx читает пакет в память целиком, поэтому буфер потока
+        закрывается сразу; текст и OCR картинок считаются при чтении окна."""
         with Spool.fill(stream, memory_limit) as spool:
             try:
                 document = docx.Document(spool)
-                blocks = tuple(cls._block_texts(document))
+                blocks = tuple(cls._blocks_of(document))
             except Exception as exc:
                 raise cls.open_failure(exc) from exc
 
-        return cls(blocks)
+        return cls(document, blocks, ocr)
 
     def page_count(self) -> int:
         return max(1, math.ceil(len(self._blocks) / self.BLOCKS_PER_PAGE))
@@ -316,25 +407,61 @@ class DocxDocument(PagedDocument):
         for number in window.numbers(self.page_count()):
             low = (number - 1) * self.BLOCKS_PER_PAGE
             high = low + self.BLOCKS_PER_PAGE
-            text = Glue.BLOCK.join(self._blocks[low:high])
-            yield ParsedPage(number=number, text=text)
+            try:
+                texts = list(self._block_texts(self._blocks[low:high]))
+            except DocumentError:
+                raise
+            except Exception as exc:
+                raise self.failure(f"reading page {number}", exc) from exc
+
+            yield ParsedPage(number=number, text=Glue.BLOCK.join(texts))
 
     def close(self) -> None:
         return
 
-    @classmethod
-    def _block_texts(cls, document: Any) -> Iterator[str]:
+    @staticmethod
+    def _blocks_of(document: Any) -> Iterator[Paragraph | DocxTable]:
         for item in document.iter_inner_content():
+            if isinstance(item, (Paragraph, DocxTable)):
+                yield item
+
+    def _block_texts(self, blocks: Iterable[Paragraph | DocxTable]) -> Iterator[str]:
+        for item in blocks:
             if isinstance(item, Paragraph):
                 text = item.text.strip()
-                if not text:
-                    continue
+                if text:
+                    yield text
 
-                yield text
+                extra = self._pictures.block(text, self._paragraph_pictures(item))
+                if extra:
+                    yield extra
+
                 continue
 
-            if isinstance(item, DocxTable):
-                yield GridText.render("", cls._table_rows(item))
+            yield GridText.render("", self._table_rows(item))
+
+    def _paragraph_pictures(self, paragraph: Paragraph) -> Iterator[Image.Image]:
+        """Растровые вставки абзаца не меньше полудюйма по каждой стороне."""
+        if not self._pictures.enabled:
+            return
+
+        for drawing in paragraph._element.xpath(self.DRAWING):
+            extents = drawing.xpath(self.EXTENT)
+            blips = drawing.xpath(self.BLIP)
+            if not extents:
+                continue
+
+            if not blips:
+                continue
+
+            if int(extents[0].get("cx")) < PictureText.MIN_SIDE_EMU:
+                continue
+
+            if int(extents[0].get("cy")) < PictureText.MIN_SIDE_EMU:
+                continue
+
+            part = self._document.part.related_parts[blips[0].get(qn("r:embed"))]
+            yield self._pictures.decode(part.blob)
 
     @staticmethod
     def _table_rows(table: DocxTable) -> Iterator[Sequence[object]]:
@@ -430,23 +557,28 @@ class XlsDocument(PagedDocument):
 
 class PptxDocument(PagedDocument):
     """PowerPoint через python-pptx: слайд — страница, текст рамок, таблиц,
-    групп и заметок докладчика."""
+    групп и заметок докладчика; картинки слайда не меньше полудюйма идут в OCR."""
 
     KIND: ClassVar[DocumentKind] = DocumentKind.PPTX
 
-    def __init__(self, slides: Sequence[str]) -> None:
+    def __init__(self, slides: Sequence[Any], ocr: OcrEngine) -> None:
         self._slides = slides
+        self._pictures = PictureText(ocr)
 
     @classmethod
-    def open(cls, stream: ByteStream, memory_limit: int) -> PptxDocument:
+    def open(
+        cls, stream: ByteStream, memory_limit: int, ocr: OcrEngine
+    ) -> PptxDocument:
+        """python-pptx читает пакет в память целиком, поэтому буфер потока
+        закрывается сразу; текст и OCR картинок считаются при чтении окна."""
         with Spool.fill(stream, memory_limit) as spool:
             try:
                 presentation = Presentation(spool)
-                slides = tuple(cls._slide_texts(presentation))
+                slides = tuple(presentation.slides)
             except Exception as exc:
                 raise cls.open_failure(exc) from exc
 
-        return cls(slides)
+        return cls(slides, ocr)
 
     def page_count(self) -> int:
         return max(1, len(self._slides))
@@ -455,19 +587,51 @@ class PptxDocument(PagedDocument):
         for number in window.numbers(self.page_count()):
             text = ""
             if number <= len(self._slides):
-                text = self._slides[number - 1]
+                text = self._slide_text(self._slides[number - 1], number)
 
             yield ParsedPage(number=number, text=text)
 
     def close(self) -> None:
         return
 
-    @classmethod
-    def _slide_texts(cls, presentation: Any) -> Iterator[str]:
-        for slide in presentation.slides:
-            parts = list(cls._shape_texts(slide.shapes))
-            parts.extend(cls._notes(slide))
-            yield Glue.BLOCK.join(parts)
+    def _slide_text(self, slide: Any, number: int) -> str:
+        try:
+            parts = list(self._shape_texts(slide.shapes))
+            parts.extend(self._notes(slide))
+            text = Glue.BLOCK.join(parts)
+
+            images = self._slide_pictures(slide.shapes)
+            extra = self._pictures.block(text, images)
+        except DocumentError:
+            raise
+        except Exception as exc:
+            raise self.failure(f"reading slide {number}", exc) from exc
+
+        if not extra:
+            return text
+
+        return Glue.BLOCK.join([text, extra])
+
+    def _slide_pictures(self, shapes: Iterable[Any]) -> Iterator[Image.Image]:
+        """Картинки слайда, включая вложенные в группы, не меньше полудюйма."""
+        if not self._pictures.enabled:
+            return
+
+        for shape in shapes:
+            if isinstance(shape, GroupShape):
+                yield from self._slide_pictures(shape.shapes)
+                continue
+
+            if not isinstance(shape, Picture):
+                continue
+
+            if int(shape.width) < PictureText.MIN_SIDE_EMU:
+                continue
+
+            if int(shape.height) < PictureText.MIN_SIDE_EMU:
+                continue
+
+            yield self._pictures.decode(shape.image.blob)
 
     @classmethod
     def _shape_texts(cls, shapes: Iterable[Any]) -> Iterator[str]:

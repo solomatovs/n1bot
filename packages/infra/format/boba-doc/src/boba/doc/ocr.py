@@ -1,34 +1,41 @@
-"""OCR на моделях PP-OCR: детектор строк, классификатор ориентации и
-распознаватель языка через rapidocr на onnxruntime. Живёт за extra `ocr`;
-файлы моделей лежат в каталоге из конфига, из сети ничего не берётся.
-Секции конфига — в boba.doc.config, движок по секции собирает OcrEngines.
+"""Движки OCR за extra `ocr`: локальные модели PP-OCR через rapidocr на
+onnxruntime (детектор строк, классификатор ориентации, распознаватель
+языка; файлы моделей из каталога конфига, из сети ничего не берётся) и
+vision-модель openai-совместимого endpoint'а. Секции конфига — в
+boba.doc.config, движок по секции собирает OcrEngines.
 
 Ошибки:
-DocumentError — нет файлов моделей, движок не поднялся или распознавание
-    сорвалось.
+DocumentError — нет файлов моделей, движок не поднялся, запрос к endpoint'у
+    не прошёл или распознавание сорвалось.
 """
 
 from __future__ import annotations
 
+import base64
+import io
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
+from enum import StrEnum
 from typing import Any, ClassVar
 
+import httpx
 import numpy as np
 import onnxruntime
 from numpy.typing import NDArray
 from PIL import Image
+from pydantic import BaseModel, ConfigDict, ValidationError
 from rapidocr import EngineType, LangRec, ModelType, OCRVersion, RapidOCR
 from rapidocr.utils.output import RapidOCROutput
 
 from boba.doc.config import (
     DisabledOcrConfig,
     OcrModel,
+    OpenAiOcrConfig,
     RapidOcrConfig,
 )
 from boba.doc.document import DisabledOcr, DocumentError, OcrEngine
 
-__all__ = ["OcrEngines", "OcrLines", "RapidOcrEngine"]
+__all__ = ["OcrEngines", "OcrLines", "OpenAiOcrEngine", "RapidOcrEngine"]
 
 
 @dataclass(frozen=True)
@@ -111,6 +118,10 @@ class RapidOcrEngine(OcrEngine):
                 f"{onnxruntime.__version__} ({providers}) failed: {exc}"
             ) from exc
 
+    @property
+    def enabled(self) -> bool:
+        return True
+
     def recognize(self, image: Image.Image) -> str:
         rgb = np.asarray(image.convert("RGB"))
         bgr = np.ascontiguousarray(rgb[:, :, ::-1])
@@ -176,18 +187,153 @@ class RapidOcrEngine(OcrEngine):
         }
 
 
+class OcrPrompt(StrEnum):
+    """Инструкция vision-модели и маркер пустого ответа."""
+
+    TRANSCRIBE = (
+        "Transcribe all text visible in this image exactly as written, "
+        "preserving the original language, line breaks and reading order. "
+        "Output only the transcribed text without any commentary or markdown. "
+        "If the image contains no text, output exactly: {none}"
+    )
+    NONE = "<no text>"
+
+    def render(self) -> str:
+        return self.value.format(none=OcrPrompt.NONE.value)
+
+
+class ChatReplyMessage(BaseModel):
+    """DTO ответа /chat/completions: текст сообщения модели."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    content: str = ""
+
+
+class ChatReplyChoice(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    message: ChatReplyMessage
+
+
+class ChatReply(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    choices: Sequence[ChatReplyChoice]
+
+
+class OpenAiOcrEngine(OcrEngine):
+    """Реализация OcrEngine vision-моделью openai-совместимого endpoint'а:
+    картинка уходит PNG в data-url одним сообщением, обратно приходит текст.
+    Клиент синхронный — движок зовут из потоков ридеров, и он один на
+    процесс, поэтому соединение переиспользуется."""
+
+    ENDPOINT: ClassVar[str] = "chat/completions"
+    IMAGE_FORMAT: ClassVar[str] = "PNG"
+    IMAGE_MEDIA_TYPE: ClassVar[str] = "image/png"
+    MAX_SIDE: ClassVar[int] = 2000
+
+    def __init__(self, config: OpenAiOcrConfig) -> None:
+        self._config = config
+        self._client = httpx.Client(
+            base_url=config.base_url.rstrip("/") + "/",
+            timeout=config.timeout_sec,
+            headers={"Authorization": f"Bearer {config.api_key.get_secret_value()}"},
+        )
+
+    @property
+    def enabled(self) -> bool:
+        return True
+
+    def recognize(self, image: Image.Image) -> str:
+        payload = self._payload(self._fit(image))
+        where = f"openai ocr: POST {self._config.base_url} model {self._config.model}"
+        try:
+            response = self._client.post(self.ENDPOINT, json=payload)
+        except httpx.HTTPError as exc:
+            raise DocumentError(f"{where}: {type(exc).__name__}: {exc}") from exc
+
+        if response.is_error:
+            raise DocumentError(
+                f"{where}: expected 2xx, got {response.status_code}: "
+                f"{response.text[:300]}"
+            )
+
+        try:
+            reply = ChatReply.model_validate_json(response.content)
+        except ValidationError as exc:
+            raise DocumentError(
+                f"{where}: reply is not a chat completion: {exc}"
+            ) from exc
+
+        if not reply.choices:
+            raise DocumentError(f"{where}: reply has no choices: {response.text[:300]}")
+
+        text = reply.choices[0].message.content.strip()
+        if text == OcrPrompt.NONE.value:
+            return ""
+
+        return text
+
+    def _fit(self, image: Image.Image) -> Image.Image:
+        """Длинная сторона не больше MAX_SIDE: токены и время под контролем."""
+        longest = max(image.width, image.height)
+        if longest <= self.MAX_SIDE:
+            return image
+
+        scale = self.MAX_SIDE / longest
+        size = (max(1, round(image.width * scale)), max(1, round(image.height * scale)))
+
+        return image.resize(size)
+
+    def _payload(self, image: Image.Image) -> dict[str, Any]:
+        buffer = io.BytesIO()
+        image.convert("RGB").save(buffer, format=self.IMAGE_FORMAT)
+        encoded = base64.b64encode(buffer.getvalue()).decode("ascii")
+        data_url = f"data:{self.IMAGE_MEDIA_TYPE};base64,{encoded}"
+
+        return {
+            "model": self._config.model,
+            "max_tokens": self._config.max_tokens,
+            "temperature": 0,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": OcrPrompt.TRANSCRIBE.render()},
+                        {"type": "image_url", "image_url": {"url": data_url}},
+                    ],
+                }
+            ],
+        }
+
+
 class OcrEngines:
-    """Фабрика движка по секции конфига: off — DisabledOcr, rapidocr — модели."""
+    """Единственная точка, где provider секции [ocr] превращается в движок:
+    роутер документов, индексатор и инструменты получают OcrEngine отсюда и
+    о конкретных провайдерах не знают. Новый провайдер — новая секция в
+    OcrConfig и ветка здесь."""
 
-    @staticmethod
-    def of(config: DisabledOcrConfig | RapidOcrConfig) -> OcrEngine:
-        if isinstance(config, RapidOcrConfig):
-            return RapidOcrEngine(config)
+    def of(
+        self, config: DisabledOcrConfig | RapidOcrConfig | OpenAiOcrConfig
+    ) -> OcrEngine:
+        match config:
+            case RapidOcrConfig():
+                return RapidOcrEngine(config)
+            case OpenAiOcrConfig():
+                return OpenAiOcrEngine(config)
+            case DisabledOcrConfig():
+                return DisabledOcr()
 
-        return DisabledOcr()
-
-    @staticmethod
-    def check(config: DisabledOcrConfig | RapidOcrConfig) -> None:
-        """Секция пригодна: у rapidocr все файлы моделей на месте."""
-        if isinstance(config, RapidOcrConfig):
-            RapidOcrEngine.check_models(config)
+    def check(
+        self, config: DisabledOcrConfig | RapidOcrConfig | OpenAiOcrConfig
+    ) -> None:
+        """Секция пригодна до старта работы: у rapidocr все файлы моделей на
+        месте; endpoint openai проверяется первым же запросом."""
+        match config:
+            case RapidOcrConfig():
+                RapidOcrEngine.check_models(config)
+            case OpenAiOcrConfig():
+                return
+            case DisabledOcrConfig():
+                return

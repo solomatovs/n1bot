@@ -458,7 +458,7 @@ class AttachmentText:
         from boba.doc.ocr import OcrEngines  # noqa: PLC0415
         from boba.doc.router import DocumentRouter  # noqa: PLC0415
 
-        self._router = DocumentRouter(cfg, OcrEngines.of(cfg.ocr))
+        self._router = DocumentRouter(cfg, OcrEngines().of(cfg.ocr))
 
     def read(self, content: bytes, filename: str) -> str:
         hint = DocumentHint(filename=filename)
