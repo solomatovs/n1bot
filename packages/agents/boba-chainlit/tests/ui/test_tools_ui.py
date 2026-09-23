@@ -31,7 +31,7 @@ from boba.canvas.diagram import DiagramPrompt
 from boba.config import bind
 from boba.confluence.html import PageOps
 from boba.confluence.parsing import ConfluenceJson
-from boba.confluence.rest import ConfluenceRest
+from boba.confluence.rest import CflRestBuilder
 from boba.doc.config import DocConfig
 from boba.doc.document import DisabledOcr, DocumentHint, PageWindow
 from boba.doc.router import DocumentRouter
@@ -605,7 +605,7 @@ class ConfluenceSite:
     def find_page(self, query: str) -> ConfluencePage:
         """Самая короткая непустая страница из выдачи того же CQL, что у тула."""
         cql = CqlSearch.build_cql(query=query, spaces=None)
-        path = ConfluenceRest.cql_search_path(
+        path = CflRestBuilder.cql_search_path(
             cql, limit=self.SEARCH_LIMIT, start=0, expand=self.EXPAND
         )
         data = self.get_json(path)
@@ -647,7 +647,7 @@ class ConfluenceSite:
     def find_attachment(self, query: str) -> ConfluenceAttachment:
         """Вложение .docx из поиска; текст считается теми же ридерами boba-doc."""
         cql = CqlSearch.build_cql(query=query, spaces=None)
-        path = ConfluenceRest.cql_search_path(cql, limit=self.ATTACHMENT_LIMIT, start=0)
+        path = CflRestBuilder.cql_search_path(cql, limit=self.ATTACHMENT_LIMIT, start=0)
         data = self.get_json(path)
 
         for hit in data.get("results") or []:
@@ -672,7 +672,7 @@ class ConfluenceSite:
         pytest.skip("Confluence search returned no .docx attachment")
 
     def _attachment_link(self, page_id: str, filename: str) -> str:
-        path = ConfluenceRest.page_fetch_path(
+        path = CflRestBuilder.page_fetch_path(
             page_id, body_format=self._config.body_format
         )
         data = self.get_json(path)
@@ -1262,7 +1262,7 @@ class TestIngestTools:
                 "space_key": ProbeText.NO_SPACE.value,
             },
         )
-        path = ConfluenceRest.space_path(ProbeText.NO_SPACE.value)
+        path = CflRestBuilder.space_path(ProbeText.NO_SPACE.value)
         url = confluence_site.url_of(str(path))
         message = (
             f"tool failed 'confluence_index_space': PayloadFailureError: "

@@ -4,20 +4,20 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "boba-tool-confluence"
-version = "0.0.22.dev1"
+version = "0.0.23.dev1"
 description = "Инструменты Confluence: чтение страниц и вложений, индексация их в базу знаний — всё в песочнице."
 requires-python = ">=3.11,<4"
 dependencies = [
-    "boba-toolkit==0.0.22.dev1",
-    "boba-chat==0.0.22.dev1",
-    "boba-confluence==0.0.22.dev1",
-    "boba-db-postgres==0.0.22.dev1",
-    "boba-db-pgvector==0.0.22.dev1",
-    "boba-doc==0.0.22.dev1",
-    "boba-indexing==0.0.22.dev1",
-    "boba-llm==0.0.22.dev1",
-    "boba-text==0.0.22.dev1",
-    "boba-transport-http==0.0.22.dev1",
+    "boba-toolkit==0.0.23.dev1",
+    "boba-chat==0.0.23.dev1",
+    "boba-confluence==0.0.23.dev1",
+    "boba-db-postgres==0.0.23.dev1",
+    "boba-db-pgvector==0.0.23.dev1",
+    "boba-doc==0.0.23.dev1",
+    "boba-indexing==0.0.23.dev1",
+    "boba-llm==0.0.23.dev1",
+    "boba-text==0.0.23.dev1",
+    "boba-transport-http==0.0.23.dev1",
     "httpx[http2]>=0.28,<1",
     "pydantic>=2.10,<2.11",
 ]
@@ -30,17 +30,17 @@ ingest = "boba.tool.confluence.plugin:INGEST"
 
 [project.optional-dependencies]
 payload = [
-    "boba-doc[readers,ocr]==0.0.22.dev1",
-    "boba-llm[payload]==0.0.22.dev1",
-    "boba-confluence[html]==0.0.22.dev1",
+    "boba-doc[readers,ocr]==0.0.23.dev1",
+    "boba-llm[payload]==0.0.23.dev1",
+    "boba-confluence[html]==0.0.23.dev1",
     "lxml>=5.0",
 ]
 dev = [
-    "boba-runtime==0.0.22.dev1",
-    "boba-sandbox==0.0.22.dev1",
-    "boba-config==0.0.22.dev1",
-    "boba-confluence[html]==0.0.22.dev1",
-    "boba-stand==0.0.22.dev1",
+    "boba-runtime==0.0.23.dev1",
+    "boba-sandbox==0.0.23.dev1",
+    "boba-config==0.0.23.dev1",
+    "boba-confluence[html]==0.0.23.dev1",
+    "boba-stand==0.0.23.dev1",
     "omegaconf>=2.3,<3",
     "psycopg[binary,pool]>=3.2",
     "pytest>=8",

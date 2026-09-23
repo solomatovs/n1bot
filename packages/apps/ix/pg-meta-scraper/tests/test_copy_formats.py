@@ -12,6 +12,7 @@ import uuid
 from pathlib import Path
 
 import pytest
+from psycopg import sql
 from scraper_stand import IxStand
 
 from boba.db.postgres import AsyncPostgresPool
@@ -74,7 +75,8 @@ class TestCopyFormats:
             ).open_session() as session,
         ):
             await ix.execute("set timezone to 'UTC'")
-            await ix.execute(f"create temp table raw_fmt {DDL[DDL.index('(') :]}")
+            q = sql.SQL("create temp table raw_fmt {}").format(DDL[DDL.index("(") :])
+            await ix.execute(q)
             async with session.fetch_blocks("fmt", query, {}) as blocks:
                 await copy_blocks(ix, "raw_fmt", blocks)
 

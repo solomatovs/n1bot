@@ -41,7 +41,7 @@ from boba.confluence.models import (
     PageTableSection,
     TableShape,
 )
-from boba.confluence.rest import ConfluenceUrl
+from boba.confluence.rest import CflUrlBuilder
 from boba.db.postgres import PostgresError
 from boba.doc.config import OcrUnavailableError
 from boba.doc.document import DocumentError, DocumentHint, PageWindow
@@ -458,7 +458,7 @@ async def confluence_attachment(
         )
         raise AttachmentNotFoundError(msg)
 
-    content = await ConfluenceHttp.get(rest_cfg, ConfluenceUrl.link(link))
+    content = await ConfluenceHttp.get(rest_cfg, CflUrlBuilder.raw_to_url(link))
 
     # ридеры синхронные и тяжёлые: разбор уходит в поток
     text = await asyncio.to_thread(_attachment_text, run_cfg, content, filename)

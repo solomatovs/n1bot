@@ -22,7 +22,7 @@ from boba.chat.http import HttpDumpConfig
 from boba.confluence.address import ConfluenceAddresses
 from boba.confluence.models import ConfluenceSpaceItem, SpaceMask
 from boba.confluence.parsing import ConfluenceJson
-from boba.confluence.rest import ConfluenceRest, SpaceType
+from boba.confluence.rest import CflRestBuilder, SpaceType
 from boba.text.grep import GrepLimits, TextGrep
 from boba.toolkit.entry import ToolMain
 from boba.toolkit.facade import Injected, tool
@@ -103,7 +103,7 @@ class ConfluenceHttp:
     async def page_json(
         cls, cfg: ConfluenceToolsConfig, page_id: str
     ) -> dict[str, Any]:
-        path = ConfluenceRest.page_fetch_path(page_id, body_format=cfg.body_format)
+        path = CflRestBuilder.page_fetch_path(page_id, body_format=cfg.body_format)
         return json.loads(await cls.get(cfg, path))
 
 
@@ -367,7 +367,7 @@ async def confluence_search(  # noqa: PLR0913 — окно выдачи зада
     Выдача постраничная: сколько показано и как листать, сказано в note.
     """
     cql = CqlSearch.build_cql(query=query, spaces=spaces)
-    path = ConfluenceRest.cql_search_path(
+    path = CflRestBuilder.cql_search_path(
         cql, limit=limit, start=offset, expand="body.view,version,space"
     )
 
@@ -410,7 +410,7 @@ async def confluence_spaces(
     но поиск Confluence его не отдаёт, поэтому по CQL такой спейс выглядит
     пустым.
     """
-    path = ConfluenceRest.space_list_path(SpaceType(space_type), limit=limit)
+    path = CflRestBuilder.space_list_path(SpaceType(space_type), limit=limit)
     data = json.loads(await ConfluenceHttp.get(cfg, path))
 
     rows: list[dict[str, Any]] = []
