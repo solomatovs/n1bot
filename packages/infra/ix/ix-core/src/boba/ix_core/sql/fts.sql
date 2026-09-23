@@ -40,4 +40,6 @@ group by
 order by
     score desc
 limit
-    %(limit)s;
+    %(limit)s
+offset
+    %(offset)s;

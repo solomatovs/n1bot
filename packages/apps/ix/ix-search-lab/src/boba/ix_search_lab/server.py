@@ -111,6 +111,7 @@ class Searcher:
             mode=mode,
             query=query,
             limit=limit,
+            offset=0,
             surfaces=tuple(surfaces),
             vector=vector,
         )

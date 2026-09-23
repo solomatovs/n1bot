@@ -35,6 +35,8 @@ class RunArgs:
     PAGES: ClassVar[str] = "1-2"
 
     QUERY: ClassVar[str] = SamplePdf.WORD
+    OFFSET: ClassVar[int] = 0
+    LIMIT: ClassVar[int] = 50
 
 
 @pytest.fixture(scope="module")
@@ -76,6 +78,14 @@ async def test_run_search_document(doc_cfg: DocToolSection, document: str) -> No
     if body is None:
         raise AssertionError("body is not None")
 
-    content = (await body(path=document, query=RunArgs.QUERY, cfg=doc_cfg)).llm_view()
+    content = (
+        await body(
+            path=document,
+            query=RunArgs.QUERY,
+            offset=RunArgs.OFFSET,
+            limit=RunArgs.LIMIT,
+            cfg=doc_cfg,
+        )
+    ).llm_view()
 
     print(content)

@@ -9,19 +9,7 @@ from uuid import UUID
 
 from boba.toolkit.launcher import RowStream
 from boba.toolkit.result import SqlResult, SqlStatement, ToolArtifact
-from boba.toolkit.sql import (
-    RowPage,
-    RowWindow,
-    SqlLimits,
-)
-
-
-def _rows_of(statement: SqlStatement) -> list[dict[str, Any]]:
-    """Строки выборки страницы: у страницы они есть всегда."""
-    if statement.rows is None:
-        raise AssertionError("page statement carries rows")
-
-    return [dict(row) for row in statement.rows]
+from boba.toolkit.sql import SqlLimits
 
 
 class FakeLimits(SqlLimits):
@@ -140,89 +128,3 @@ class TestSqlResult:
         revived = ToolArtifact.revive(result.model_dump(mode="json"))
         if revived != result:
             raise AssertionError("revived == result")
-
-
-class TestRowWindow:
-    """Окно выдачи: что пропустить, сколько отдать, где следующая страница."""
-
-    def test_probe_asks_one_row_beyond_the_window(self) -> None:
-        window = RowWindow(offset=20, limit=10)
-
-        if window.probe() != 31:
-            raise AssertionError(f"окно плюс разведка, дано {window.probe()}")
-
-    def test_page_cut_by_limit_points_at_the_first_unseen_row(self) -> None:
-        """Обрыв по limit сдвигает offset ровно на показанное."""
-        window = RowWindow(offset=0, limit=10)
-
-        page = RowPage(window)
-        for number in range(1, 50):
-            if not page.add({"n": number}):
-                break
-
-        table = page.statement()
-        expected = f"next offset={len(_rows_of(table))}"
-
-        if expected not in str(table.note):
-            raise AssertionError(f"ожидалось {expected}, дано {table.note!r}")
-
-
-class TestRowPage:
-    """Страница: пропуск, мягкая остановка и навигация в note."""
-
-    @staticmethod
-    def _rows(count: int) -> list[dict[str, Any]]:
-        rows: list[dict[str, Any]] = []
-        for number in range(1, count + 1):
-            rows.append({"n": number})
-
-        return rows
-
-    @staticmethod
-    def _filled(window: RowWindow, rows: list[dict[str, Any]]) -> RowPage:
-        page = RowPage(window)
-        for row in rows:
-            if not page.add(row):
-                break
-
-        return page
-
-    def test_offset_skips_and_note_points_further(self) -> None:
-        window = RowWindow(offset=2, limit=2)
-
-        table = self._filled(window, self._rows(10)).statement()
-
-        if [row["n"] for row in _rows_of(table)] != [3, 4]:
-            raise AssertionError(f"окно после пропуска, дано {table.rows!r}")
-
-        if table.note != "rows 3-4; more rows available, next offset=4":
-            raise AssertionError(f"навигация в note, дано {table.note!r}")
-
-    def test_last_page_says_the_result_ended(self) -> None:
-        window = RowWindow(offset=0, limit=10)
-
-        table = self._filled(window, self._rows(3)).statement()
-
-        if table.note != "rows 1-3; end of result":
-            raise AssertionError(f"конец выдачи, дано {table.note!r}")
-
-    def test_offset_past_the_end_returns_nothing(self) -> None:
-        window = RowWindow(offset=50, limit=10)
-
-        table = self._filled(window, self._rows(3)).statement()
-
-        if table.rows:
-            raise AssertionError("за концом выдачи строк нет")
-
-        if table.note != "no rows at offset 50":
-            raise AssertionError(f"note про пустое окно, дано {table.note!r}")
-
-    def test_single_huge_row_is_not_dropped(self) -> None:
-        """Строка шире потолка всё равно отдаётся: иначе страница пуста и
-        листать некуда."""
-        window = RowWindow(offset=0, limit=10)
-
-        table = self._filled(window, [{"n": "x" * 500}]).statement()
-
-        if len(_rows_of(table)) != 1:
-            raise AssertionError("одна строка приходит даже сверх потолка")

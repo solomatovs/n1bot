@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import json
 import sys
-from collections.abc import AsyncGenerator, Mapping, Sequence
+from collections.abc import AsyncGenerator, Iterable, Iterator, Mapping, Sequence
 from contextlib import asynccontextmanager
 from enum import StrEnum
 from typing import Annotated, Any, ClassVar, Final, Literal, Self
@@ -32,8 +32,8 @@ from boba.text.grep import GrepLimits, TextGrep
 from boba.toolkit.entry import ToolMain
 from boba.toolkit.facade import Injected, tool
 from boba.toolkit.result import MarkdownResult, TableResult
-from boba.toolkit.sql import RowOffset
 from boba.toolkit.types import LLMStringList, SecretRevealing
+from boba.toolkit.window import RowLimit, RowOffset, RowPage, RowWindow
 from boba.transport.http import (
     ByteStream,
     HttpTransport,
@@ -255,26 +255,20 @@ class CqlSearch:
         self._text = text
         self._snippet_chars = snippet_chars
 
-    def page_note(self, data: Mapping[str, Any], offset: int, shown: int) -> str:
-        """Навигация по выдаче: что показано и с какого offset брать дальше.
+    def result(self, page: RowPage, data: JsonNode) -> TableResult:
+        """Страница hits; totalSize отдаёт не всякая версия Confluence, при
+        нём note получает хвост total=N."""
+        note = page.note()
 
-        totalSize отдаёт не всякая версия Confluence: без него о продолжении
-        судим по тому, отдал ли сервер полную страницу.
-        """
-        if not shown:
-            return f"nothing found at offset {offset}"
+        total = data.int("totalSize", default=-1)
+        if total >= 0:
+            note = f"{note}; total={total}"
 
-        first = offset + 1
-        last = offset + shown
-        total = data.get("totalSize")
+        return TableResult(rows=page.rows, note=note)
 
-        if not isinstance(total, int):
-            return f"rows {first}-{last}; next offset={last}"
-
-        if last >= total:
-            return f"rows {first}-{last} of {total}; end of result"
-
-        return f"rows {first}-{last} of {total}; next offset={last}"
+    def hit_rows(self, hits: Iterable[dict[str, Any]]) -> Iterator[dict[str, Any]]:
+        for hit in hits:
+            yield self.hit_row(hit)
 
     def hit_row(self, hit: dict[str, Any]) -> dict[str, Any]:
         node = JsonNode(hit)
@@ -401,36 +395,36 @@ async def confluence_search(  # noqa: PLR0913 — окно выдачи зада
             ),
         ),
     ] = None,
-    limit: Annotated[
-        int,
-        Field(ge=1, description="Сколько найденных страниц вернуть на странице."),
-    ] = 20,
     snippet_chars: Annotated[
         int,
         Field(ge=1, description=CqlSearch.SNIPPET_DESC),
     ] = CqlSearch.SNIPPET_DEFAULT,
     *,
     offset: RowOffset,
+    limit: RowLimit,
     cfg: Annotated[ConfluenceToolsConfig, Injected],
 ) -> TableResult:
     """Ищет страницы в Confluence через CQL и возвращает таблицу hits.
 
     Выдача постраничная: сколько показано и как листать, сказано в note.
     """
+    window = RowWindow(offset=offset, limit=limit)
+
     async with ConfluenceHttp(cfg) as http:
         search = CqlSearch(cfg.confluence, ConfluencePageText(cfg, http), snippet_chars)
         data = await http.search_json(
             CqlQuery(query, spaces).render(),
-            limit=limit,
-            start=offset,
+            limit=window.served_probe(),
+            start=window.offset,
             expand="body.view,version,space",
         )
 
-    rows: list[dict[str, Any]] = []
-    for hit in JsonNode(data).results():
-        rows.append(search.hit_row(hit))
+    node = JsonNode(data)
 
-    return TableResult(rows=rows, note=search.page_note(data, offset, len(rows)))
+    page = RowPage(window, skipped=window.offset)
+    page.take(search.hit_rows(node.results()))
+
+    return search.result(page, node)
 
 
 @tool

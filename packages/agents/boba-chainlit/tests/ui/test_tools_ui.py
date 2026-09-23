@@ -1048,6 +1048,7 @@ class TestDocTools:
                 "path": ProbeFile.PDF.value,
                 "query": ProbeText.PDF_QUERY.value,
                 **OcrArgs.of(),
+                **RowWindowArgs.of(),
             },
         )
         rows = [
@@ -1068,8 +1069,12 @@ class TestDocTools:
                 "snippet": SamplePdf.PAGES[1],
             },
         ]
-        result = TableResult(rows=rows, note=f"{ProbeFile.PDF.value}: matches 2")
-        feed.call(call, ToolExpect.of(result, dom=[*SamplePdf.PAGES, "matches 2"]))
+        result = TableResult(
+            rows=rows,
+            note="rows 1-2; end of result",
+            metadata={"path": ProbeFile.PDF.value, "query": ProbeText.PDF_QUERY.value},
+        )
+        feed.call(call, ToolExpect.of(result, dom=[*SamplePdf.PAGES, "end of result"]))
 
 
 class TestWebTools:
@@ -1190,7 +1195,8 @@ class TestConfluenceTools:
                 TablePattern.cells(
                     confluence_page.page_id, re.escape(confluence_page.title)
                 ),
-                r"^_rows 1-\d+(?: of \d+)?; (?:end of result|next offset=\d+)_$",
+                r"^_rows 1-\d+; (?:end of result|more rows available, next offset=\d+)"
+                r"(?:; total=\d+)?_$",
             ],
             dom=[confluence_page.page_id, confluence_page.title],
         )

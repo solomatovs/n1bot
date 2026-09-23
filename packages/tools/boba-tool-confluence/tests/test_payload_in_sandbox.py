@@ -160,7 +160,12 @@ class TestDocumentsInSandbox:
         outcome = _run_doc(
             _caller(docs),
             "search_document",
-            {"path": "/workspace/report.pdf", "query": "Alpha"},
+            {
+                "path": "/workspace/report.pdf",
+                "query": "Alpha",
+                "offset": 0,
+                "limit": 50,
+            },
             _cfg(),
         )
 
