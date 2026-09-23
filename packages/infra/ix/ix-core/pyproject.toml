@@ -4,14 +4,14 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "boba-ix-core"
-version = "0.0.23.dev1"
+version = "0.0.24.dev1"
 description = "Ядро графа ix: схема ix.surface, ix.node, ix.tree, ix.edge и команда наката схем."
 requires-python = ">=3.11,<4"
 dependencies = [
-    "boba-config==0.0.23.dev1",
-    "boba-db-postgres==0.0.23.dev1",
-    "boba-krb==0.0.23.dev1",
-    "boba-toolkit==0.0.23.dev1",
+    "boba-config==0.0.24.dev1",
+    "boba-db-postgres==0.0.24.dev1",
+    "boba-krb==0.0.24.dev1",
+    "boba-toolkit==0.0.24.dev1",
     "psycopg[binary]>=3.2",
     "pydantic>=2.10,<2.11",
 ]

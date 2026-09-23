@@ -4,15 +4,15 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "boba-tool-web"
-version = "0.0.23.dev1"
+version = "0.0.24.dev1"
 description = "Инструменты web: скачивание ссылки, текст документа роутером boba-doc с OCR и grep — целиком внутри песочницы."
 requires-python = ">=3.11,<4"
 dependencies = [
-    "boba-doc==0.0.23.dev1",
-    "boba-llm==0.0.23.dev1",
-    "boba-text==0.0.23.dev1",
-    "boba-toolkit==0.0.23.dev1",
-    "boba-transport-http==0.0.23.dev1",
+    "boba-doc==0.0.24.dev1",
+    "boba-llm==0.0.24.dev1",
+    "boba-text==0.0.24.dev1",
+    "boba-toolkit==0.0.24.dev1",
+    "boba-transport-http==0.0.24.dev1",
     "httpx[http2]>=0.28,<1",
     "pydantic>=2.10,<2.11",
 ]
@@ -24,11 +24,11 @@ web = "boba.tool.web.plugin:MANIFEST"
 
 [project.optional-dependencies]
 payload = [
-    "boba-doc[readers,ocr]==0.0.23.dev1",
+    "boba-doc[readers,ocr]==0.0.24.dev1",
     "lxml>=5.0",
 ]
 dev = [
-    "boba-config==0.0.23.dev1",
+    "boba-config==0.0.24.dev1",
     "pillow>=10",
     "pytest>=8",
 ]
