@@ -2,8 +2,8 @@
 
 - ConfluenceConnection — endpoint: web-профиль (адрес, auth, ретраи), формат
   тела и дамп обмена.
-- ConfluenceUrl        — сборка относительных адресов на httpx.URL.
-- ConfluenceRest       — адреса запросов страниц, вложений, спейсов и поиска;
+- CflUrlBuilder        — сборка относительных адресов на httpx.URL.
+- CflRestBuilder       — адреса запросов страниц, вложений, спейсов и поиска;
   конструкторы ConfluenceRequest для конвейера индексации.
 - ConfluencePaginator  — клиент пагинированных discovery-запросов поверх
   HttpTransport проекта: auth, ретраи и дамп берутся из профиля.
@@ -50,11 +50,11 @@ from boba.transport.http import CancellableHttpTransport, HttpRequest
 from boba.transport.http.profile import HttpConnection
 
 __all__ = [
+    "CflPaginator",
+    "CflRestBuilder",
+    "CflUrlBuilder",
     "ConfluenceConnection",
-    "ConfluencePaginator",
     "ConfluenceRequest",
-    "ConfluenceRest",
-    "ConfluenceUrl",
     "ContentType",
     "SpaceStatus",
     "SpaceType",
@@ -103,35 +103,33 @@ class ConfluenceRequest(Request):
     metadata: Metadata = field(default_factory=Metadata.empty)
 
 
-class ConfluenceUrl:
-    """Сборка относительных адресов Confluence REST: сегменты пути и query.
-
-    Единственное место, где адрес собирается: сегменты квотируются здесь
-    (id и ключи приходят от LLM, `/`, `?`, `#` в них — просто байты), query
-    кодирует httpx.URL. Ни один вызывающий строк не клеит.
+class CflUrlBuilder:
+    """
+    Собирает rest url запросы к confluence
+    Других сборщиков не должно быть
+    это центральный компонент по сборке Confluence Rest Url
     """
 
-    ROOT: ClassVar[str] = "/rest/api"
-    SEPARATOR: ClassVar[str] = "/"
+    def __init__(self):
+        self.root = "/rest/api"
+        self.sep = "/"
 
-    @classmethod
-    def of(
-        cls,
-        *segments: str,
+    def url_of(
+        self,
+        *path_segments: str,
         params: Mapping[str, object] | None = None,
     ) -> httpx.URL:
-        parts = [cls.ROOT]
-        for segment in segments:
+        parts = [self.root]
+        for segment in path_segments:
             parts.append(quote(segment, safe=""))
 
-        path = cls.SEPARATOR.join(parts)
+        path = self.sep.join(parts)
         if params is None:
             return httpx.URL(path=path)
 
         return httpx.URL(path=path, params=dict(params))
 
-    @classmethod
-    def link(cls, href: str) -> httpx.URL:
+    def raw_to_url(self, href: str) -> httpx.URL:
         """Ссылка `_links.next` от Confluence: она уже собрана и закодирована."""
         return httpx.URL(href)
 
@@ -159,7 +157,7 @@ class SpaceStatus(StrEnum):
     ARCHIVED = "archived"
 
 
-class ConfluenceRest:
+class CflRestBuilder:
     """Фабрики Confluence REST: адреса запросов и HttpRequest-конструкторы."""
 
     DEFAULT_PAGE_LIMIT: ClassVar[int] = 50
@@ -175,41 +173,41 @@ class ConfluenceRest:
     UNKNOWN_VERSION: ClassVar[int] = 0
     """Версия страницы, которой обход не увидел: с записью реестра не совпадёт."""
 
-    @staticmethod
-    def page_fetch_path(page_id: str, *, body_format: str) -> httpx.URL:
+    def __init__(self):
+        self._cub = CflUrlBuilder()
+
+    def page_fetch_path(self, page_id: str, *, body_format: str) -> httpx.URL:
         """Страница целиком: тело и вложения — для инструментов чтения."""
         expand = (
             f"body.{body_format},version,ancestors,space,metadata.labels,"
             "children.attachment.version,children.attachment.extensions"
         )
-        return ConfluenceUrl.of("content", page_id, params={"expand": expand})
+        return self._cub.url_of("content", page_id, params={"expand": expand})
 
-    @staticmethod
-    def page_body_path(page_id: str, *, body_format: str) -> httpx.URL:
+    def page_body_path(self, page_id: str, *, body_format: str) -> httpx.URL:
         """Тело страницы для индексации; вложения уже известны из списка."""
         expand = f"body.{body_format},version,ancestors,space,metadata.labels,history"
-        return ConfluenceUrl.of("content", page_id, params={"expand": expand})
+        return self._cub.url_of("content", page_id, params={"expand": expand})
 
-    @staticmethod
-    def page_summary_path(page_id: str) -> httpx.URL:
+    def page_summary_path(self, page_id: str) -> httpx.URL:
         """Страница без тела: версия и вложения — обход по одной странице.
 
         Идёт мимо поиска, поэтому видит и страницы архивных спейсов.
         """
-        return ConfluenceUrl.of(
+        return self._cub.url_of(
             "content",
             page_id,
-            params={"expand": ConfluenceRest.DISCOVERY_EXPAND},
+            params={"expand": CflRestBuilder.DISCOVERY_EXPAND},
         )
 
-    @staticmethod
     def attachments_path(
+        self,
         page_id: str,
         *,
         limit: int = DEFAULT_PAGE_LIMIT,
     ) -> httpx.URL:
         """Полный список вложений страницы: раскрытие в списке ограничено."""
-        return ConfluenceUrl.of(
+        return self._cub.url_of(
             "content",
             page_id,
             "child",
@@ -217,12 +215,12 @@ class ConfluenceRest:
             params={
                 "limit": limit,
                 "start": 0,
-                "expand": ConfluenceRest.ATTACHMENTS_EXPAND,
+                "expand": CflRestBuilder.ATTACHMENTS_EXPAND,
             },
         )
 
-    @staticmethod
     def comments_path(
+        self,
         page_id: str,
         *,
         expand: str,
@@ -230,7 +228,7 @@ class ConfluenceRest:
     ) -> httpx.URL:
         """Комментарии страницы с телами: у страницы нет признака, что они
         менялись, поэтому список читается на каждом обходе."""
-        return ConfluenceUrl.of(
+        return self._cub.url_of(
             "content",
             page_id,
             "child",
@@ -238,16 +236,15 @@ class ConfluenceRest:
             params={"limit": limit, "start": 0, "expand": expand},
         )
 
-    @staticmethod
-    def space_path(space_key: str, *, expand: str = "") -> httpx.URL:
+    def space_path(self, space_key: str, *, expand: str = "") -> httpx.URL:
         """Один space: 404 на несуществующий ключ; expand раскрывает описание."""
         if not expand:
-            return ConfluenceUrl.of("space", space_key)
+            return self._cub.url_of("space", space_key)
 
-        return ConfluenceUrl.of("space", space_key, params={"expand": expand})
+        return self._cub.url_of("space", space_key, params={"expand": expand})
 
-    @staticmethod
     def space_content_path(
+        self,
         space_key: str,
         *,
         content_type: ContentType = ContentType.PAGE,
@@ -260,7 +257,7 @@ class ConfluenceRest:
         Поиск не отдаёт контент архивных спейсов и отстаёт от только что
         созданных страниц; этот список знает и то, и другое.
         """
-        return ConfluenceUrl.of(
+        return self._cub.url_of(
             "space",
             space_key,
             "content",
@@ -272,13 +269,14 @@ class ConfluenceRest:
             },
         )
 
-    @staticmethod
     def space_list_path(
+        self,
         space_type: SpaceType,
         *,
         expand: str | None = None,
         limit: int = DEFAULT_PAGE_LIMIT,
     ) -> httpx.URL:
+        """Формирует url запрос страниц которые расположены в space_key"""
         params: dict[str, object] = {"limit": limit, "start": 0}
         if space_type is not SpaceType.ANY:
             params["type"] = str(space_type)
@@ -286,10 +284,10 @@ class ConfluenceRest:
         if expand:
             params["expand"] = expand
 
-        return ConfluenceUrl.of("space", params=params)
+        return self._cub.url_of("space", params=params)
 
-    @staticmethod
     def cql_search_path(
+        self,
         cql: str,
         *,
         limit: int = DEFAULT_PAGE_LIMIT,
@@ -300,16 +298,16 @@ class ConfluenceRest:
         if expand:
             params["expand"] = expand
 
-        return ConfluenceUrl.of("content", "search", params=params)
+        return self._cub.url_of("content", "search", params=params)
 
-    @staticmethod
     def make_page_request(
+        self,
         *,
         profile: HttpConnection,
         content: ConfluenceContent,
         body_format: str,
     ) -> ConfluenceRequest:
-        path = ConfluenceRest.page_body_path(content.id, body_format=body_format)
+        path = self.page_body_path(content.id, body_format=body_format)
         meta = (
             Metadata.empty()
             .set(ConfluenceKeys.PAGE_ID, content.id)
@@ -321,8 +319,8 @@ class ConfluenceRest:
             metadata=meta,
         )
 
-    @staticmethod
     def make_gone_request(
+        self,
         *,
         profile: HttpConnection,
         page_id: str,
@@ -334,7 +332,7 @@ class ConfluenceRest:
         сходит за телом и получит от Confluence прямой ответ, есть страница
         или нет.
         """
-        path = ConfluenceRest.page_body_path(page_id, body_format=body_format)
+        path = self.page_body_path(page_id, body_format=body_format)
         meta = (
             Metadata.empty()
             .set(ConfluenceKeys.PAGE_ID, page_id)
@@ -342,12 +340,12 @@ class ConfluenceRest:
         )
         return ConfluenceRequest(
             http=HttpRequest(url=str(path), method="GET"),
-            mark=ConfluenceMarks.page(ConfluenceRest.UNKNOWN_VERSION),
+            mark=ConfluenceMarks.page(CflRestBuilder.UNKNOWN_VERSION),
             metadata=meta,
         )
 
-    @staticmethod
-    def make_attachment_request(  # noqa: PLR0913 — адрес, родитель и режим врозь
+    def make_attachment_request(  # noqa: PLR0913
+        self,
         *,
         profile: HttpConnection,
         page: ConfluenceContent,
@@ -388,7 +386,7 @@ class ConfluenceRest:
         )
 
 
-class ConfluencePaginator:
+class CflPaginator:
     """httpx-клиент для пагинированных Confluence REST discovery-запросов.
 
     Исполнение и retry (5xx/transport) — внутри HttpTransport, собранного из
@@ -398,6 +396,7 @@ class ConfluencePaginator:
 
     def __init__(self, conn: ConfluenceConnection):
         self._http = CancellableHttpTransport(conn.profile, dump=conn.dump)
+        self._url_builder = CflUrlBuilder()
 
     async def __call__(self, url: httpx.URL, item: type[T]) -> AsyncIterator[T]:
         next_url: httpx.URL | None = url
@@ -419,13 +418,12 @@ class ConfluencePaginator:
 
         return self.item(item, data, url)
 
-    @staticmethod
-    def _next(data: dict[str, Any]) -> httpx.URL | None:
+    def _next(self, data: dict[str, Any]) -> httpx.URL | None:
         link = ConfluenceJson.next_link(data)
         if not link:
             return None
 
-        return ConfluenceUrl.link(link)
+        return self._url_builder.raw_to_url(link)
 
     @staticmethod
     def item(item: type[T], raw: dict[str, Any], url: httpx.URL) -> T:

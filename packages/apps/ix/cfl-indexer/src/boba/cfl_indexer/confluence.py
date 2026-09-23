@@ -16,7 +16,7 @@ import logging
 from collections.abc import AsyncIterable, AsyncIterator, Callable, Sequence
 from dataclasses import dataclass, replace
 from datetime import datetime
-from typing import Any, BinaryIO, Self, TypeVar
+from typing import Any, BinaryIO, ClassVar, Self, TypeVar
 
 import httpx
 from markdownify import MarkdownConverter
@@ -25,8 +25,8 @@ from pydantic import BaseModel, ConfigDict, Field
 from boba.confluence.html import ConfluenceHtml
 from boba.confluence.models import ConfluenceSpaceItem, PageLink, SpaceMask
 from boba.confluence.rest import (
+    CflRestBuilder,
     ConfluenceConnection,
-    ConfluenceRest,
     ContentType,
     SpaceStatus,
     SpaceType,
@@ -49,14 +49,6 @@ __all__ = [
 
 logger = logging.getLogger("cfl-indexer")
 
-HEADING_STYLE = "ATX"
-SPACE_EXPAND = "description.plain"
-LIST_EXPAND = (
-    "version,space,ancestors,metadata.labels,history,"
-    "children.attachment.version,children.attachment.extensions"
-)
-COMMENT_EXPAND = "body.{body_format},version,history,extensions.location,container"
-GONE_STATUS = 404
 T = TypeVar("T")
 
 
@@ -239,6 +231,10 @@ def hash_text(original: str) -> str:
     return hashlib.sha256(original.encode("utf-8")).hexdigest()
 
 
+def hash_sum(original: bytes) -> str:
+    return hashlib.sha256(original).hexdigest()
+
+
 def render_markdown(
     html: str, *, page_id: str, title: str
 ) -> tuple[str, tuple[PageLink, ...]]:
@@ -246,7 +242,7 @@ def render_markdown(
     soup = ConfluenceHtml.parse_html(html)
     links = ConfluenceHtml.collect_targets(soup, page_id=page_id, title=title)
     converter = MarkdownConverter(
-        heading_style=HEADING_STYLE, escape_underscores=False, escape_asterisks=False
+        heading_style="ATX", escape_underscores=False, escape_asterisks=False
     )
     markdown = str(converter.convert_soup(soup)).strip()
     soup.decompose()
@@ -254,21 +250,26 @@ def render_markdown(
     return markdown, links
 
 
-def parse_space(raw: dict[str, Any]) -> Space:
+def parse_space(raw: dict[str, Any], content_hash: str) -> Space:
     key = read_str(raw, "key")
     name = read_str(raw, "name")
+    space_type = read_str(raw, "type")
+    status = read_str(raw, "status")
+    description = read_str(raw, "description", "plain", "value")
+
+    # есть вопросики к тому, почему выбран такой хэщ от space страницы
+    # content_hash = hash_text(f"{name}\n{description}")
+
     if not name:
         name = key
-
-    description = read_str(raw, "description", "plain", "value")
 
     return Space(
         key=key,
         name=name,
-        space_type=read_str(raw, "type"),
-        status=read_str(raw, "status"),
+        space_type=space_type,
+        status=status,
         description=description,
-        content_hash=hash_text(f"{name}\n{description}"),
+        content_hash=content_hash,
     )
 
 
@@ -355,9 +356,12 @@ def parse_comment(raw: dict[str, Any], page: Content, body_format: str) -> Comme
 class ConfluenceReader:
     """Запросы одного обхода: auth, ретраи и дамп из ConfluenceConnection."""
 
+    GONE_NUMBER: ClassVar[int] = 404
+
     def __init__(self, conn: ConfluenceConnection) -> None:
         self._conn = conn
         self._http = CancellableHttpTransport(conn.profile, dump=conn.dump)
+        self._crb = CflRestBuilder()
 
     async def __aenter__(self) -> Self:
         return self
@@ -365,88 +369,116 @@ class ConfluenceReader:
     async def __aexit__(self, *exc: object) -> None:
         await self._http.close()
 
-    async def fetch_json(self, url: httpx.URL, where: str) -> dict[str, Any]:
+    async def fetch(self, url: httpx.URL):
         try:
             async with self._http.fetch(HttpRequest(url=str(url))) as resp:
-                payload = await resp.stream.read()
+                yield resp
         except httpx.HTTPError as exc:
             raise ConfluenceReadError(
-                f"confluence {where}: GET {url}: {type(exc).__name__}: {exc}"
+                f"GET {url}: {type(exc).__name__}: {exc}"
+            ) from exc
+
+    async def fetch_json(self, url: httpx.URL) -> tuple[dict[str, Any], str]:
+        try:
+            async with self._http.fetch(HttpRequest(url=str(url))) as resp:
+                # здесь вычитывается вся страница в память
+                # что не очень хорошо для потоковой обработки
+                # однако одна страница в памяти удобней чем
+                # геморой потоковой обработки страниц конфлюенса
+                payload = await resp.stream.read()
+                payload_hash = hash_sum(payload)
+        except httpx.HTTPError as exc:
+            raise ConfluenceReadError(
+                f"GET {url}: {type(exc).__name__}: {exc}"
             ) from exc
 
         try:
             data = json.loads(payload)
         except json.JSONDecodeError as exc:
             raise ConfluenceReadError(
-                f"confluence {where}: GET {url}: expected JSON, got "
-                f"{payload[:120]!r}: {exc}"
+                f"GET {url}: expected JSON, got {payload[:120]!r}: {exc}"
             ) from exc
 
         if not isinstance(data, dict):
             raise ConfluenceReadError(
-                f"confluence {where}: GET {url}: expected an object, got "
-                f"{type(data).__name__}"
+                f"GET {url}: expected an object, got {type(data).__name__}"
             )
 
-        return data
+        return data, payload_hash
 
-    async def iter_pages(
-        self, url: httpx.URL, where: str
-    ) -> AsyncIterator[dict[str, Any]]:
-        """Объекты списка по одному; страница списка отпускается до следующей."""
+    async def iter_page_urls(self, url: httpx.URL) -> AsyncIterator[dict[str, Any]]:
+        """
+        Достает из confluence url адреса страниц
+        без контента страниц, только url адреса
+        """
         next_url: httpx.URL | None = url
         while next_url is not None:
-            data = await self.fetch_json(next_url, where)
-            items = read_results(data)
+            data, _ = await self.fetch_json(next_url)
+
             link = read_str(data, "_links", "next")
             next_url = None
             if link:
+                # confluence сам возвращает следующую страницу для запроса
+                # согласно тому, что ты передал
+                # к примеру если запрос страниц был: start=0&limit=50
+                # то следующая страница будет с такими же параметрами
+                # но следующим окном: start=50&limit=50
+                # запоминаем этот url
                 next_url = httpx.URL(link)
 
-            while items:
-                yield items.pop(0)
+            for item in read_results(data):
+                # елдим результат для постраничной обработки
+                # каждая страница запрашивается, парситься, сохраняется последовательно
+                # друг за другом, без необходимости все страницы читать в память
+                yield item
 
-    async def list_space_keys(self, selector: SpaceSelector) -> list[str]:
+    async def list_space_keys(self, selector: SpaceSelector) -> AsyncIterator[str]:
         """Ключи как есть или обход списка сервера по маскам."""
         mask = SpaceMask.of_masks(selector.masks)
         if not mask.has_wildcard:
-            return list(mask.keys())
+            for x in list(mask.keys()):
+                yield x
 
-        url = ConfluenceRest.space_list_path(selector.type)
-        keys: list[str] = []
-        async for raw in self.iter_pages(url, "space list"):
-            key = read_str(raw, "key")
+            return
+
+        it = self.iter_page_urls(url=self._crb.space_list_path(selector.type))
+        async for space in it:
+            key = read_str(space, "key")
             if not key:
                 continue
 
-            archived = read_str(raw, "status") == SpaceStatus.ARCHIVED
+            archived = read_str(space, "status") == SpaceStatus.ARCHIVED
             if archived and not selector.archived:
                 continue
 
-            if mask.matches(ConfluenceSpaceItem.model_validate(raw)):
-                keys.append(key)
-
-        return keys
+            if mask.matches(ConfluenceSpaceItem.model_validate(space)):
+                yield key
 
     async def read_space(self, key: str) -> Space:
-        url = ConfluenceRest.space_path(key, expand=SPACE_EXPAND)
+        url = self._crb.space_path(key, expand="description.plain")
+        space_dict, space_hash = await self.fetch_json(url)
 
-        return parse_space(await self.fetch_json(url, f"space {key}"))
+        return parse_space(space_dict, space_hash)
 
     async def iter_contents(
         self, key: str, kind: ContentType
     ) -> AsyncIterator[Content]:
-        url = ConfluenceRest.space_content_path(
-            key, content_type=kind, expand=LIST_EXPAND
+        url = self._crb.space_content_path(
+            key,
+            content_type=kind,
+            expand=(
+                "version,space,ancestors,metadata.labels,history,"
+                "children.attachment.version,children.attachment.extensions"
+            ),
         )
-        async for raw in self.iter_pages(url, f"{kind} list of {key}"):
+        async for raw in self.iter_page_urls(url):
             yield parse_content(raw, kind)
 
     async def read_body(self, content: Content) -> Content:
         """Та же запись с markdown, хэшем оригинала и ссылками; html не хранится."""
         body_format = self._conn.body_format
-        url = ConfluenceRest.page_body_path(content.id, body_format=body_format)
-        raw = await self.fetch_json(url, f"{content.kind} {content.id} body")
+        url = self._crb.page_body_path(content.id, body_format=body_format)
+        raw, _ = await self.fetch_json(url)
         html = read_str(raw, "body", body_format, "value")
         fresh = parse_content(raw, content.kind)
         markdown, links = render_markdown(html, page_id=content.id, title=content.title)
@@ -463,9 +495,9 @@ class ConfluenceReader:
 
             return
 
-        url = ConfluenceRest.attachments_path(content.id)
-        where = f"attachments of {content.kind} {content.id}"
-        async for raw in self.iter_pages(url, where):
+        url = self._crb.attachments_path(content.id)
+
+        async for raw in self.iter_page_urls(url):
             yield parse_attachment(
                 raw,
                 page_id=content.id,
@@ -476,10 +508,10 @@ class ConfluenceReader:
     async def iter_comments(self, content: Content) -> AsyncIterator[Comment]:
         """С телами; признака смены комментариев у страницы нет, читаются всегда."""
         body_format = self._conn.body_format
-        expand = COMMENT_EXPAND.format(body_format=body_format)
-        url = ConfluenceRest.comments_path(content.id, expand=expand)
-        where = f"comments of {content.kind} {content.id}"
-        async for raw in self.iter_pages(url, where):
+        expand = f"body.{body_format},version,history,extensions.location,container"
+        url = self._crb.comments_path(content.id, expand=expand)
+
+        async for raw in self.iter_page_urls(url):
             yield parse_comment(raw, content, body_format)
 
     async def read_attachment(
@@ -500,7 +532,7 @@ class ConfluenceReader:
                 f"confluence {where}: GET {attachment.download_path} "
                 f"expected 2xx, got {status}"
             )
-            if status == GONE_STATUS:
+            if status == self.GONE_NUMBER:
                 raise AttachmentGoneError(msg) from exc
 
             raise ConfluenceReadError(msg) from exc

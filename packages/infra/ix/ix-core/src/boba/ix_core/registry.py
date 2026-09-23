@@ -1,13 +1,6 @@
-"""Реестры схемы ix одним объектом: словарь поверхностей, словарь аспектов с
+"""
+Реестры схемы ix одним объектом: словарь поверхностей, словарь аспектов с
 парами объявлений, таблицы индексов, формулы ссылок и промпты описания.
-
-Оркестратор (поиск, инструмент kb, накат схемы, воркеры индексов и описателя)
-создаёт IxRegistry со схемой и заполняет его с соединения: целиком через read или
-по частям через read_*, когда таблица части ещё может не существовать. Дальше
-объект отвечает на вопросы без базы: какие поверхности индексируются, каких имён
-словарь не знает, какие таблицы у вида, какая ссылка у объекта, какой промпт у пары.
-Объявления аспектов по классам и покрытие таблицы индекса читаются на месте, они
-нужны воркерам по-разному и в реестре не живут.
 
 Ошибки:
 SurfaceUrlError — формула ссылки из реестра не разбирается.
@@ -369,8 +362,8 @@ class IxRegistry:
                     s.content::varchar as content
                 from
                     ({body}) s
-                where
-                    s.content is not null
+                where 1=1
+                    and s.content is not null
                     and s.content <> ''
                 """,
                 surface=sql.Literal(declaration.surface),
@@ -394,11 +387,7 @@ class IxRegistry:
         return tuple(found)
 
     def surface_names(self) -> tuple[str, ...]:
-        found: list[str] = []
-        for surface in self._surfaces:
-            found.append(surface.name)
-
-        return tuple(found)
+        return tuple(x.name for x in self._surfaces)
 
     def unknown_surfaces(self, names: Iterable[str]) -> tuple[str, ...]:
         known = set(self.surface_names())
