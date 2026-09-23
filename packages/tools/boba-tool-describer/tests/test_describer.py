@@ -105,7 +105,7 @@ async def _edge(  # noqa: PLR0913 — аргументы вызова инстр
 
 
 async def _nodes(cfg: DescriberToolConfig, scope: Scope) -> list[dict[str, Any]]:
-    result = await _body(describe_list_nodes)(scope=scope, cfg=cfg)
+    result = await _body(describe_list_nodes)(offset=0, limit=50, scope=scope, cfg=cfg)
 
     rows: list[dict[str, Any]] = []
     for row in result.rows:
@@ -115,7 +115,7 @@ async def _nodes(cfg: DescriberToolConfig, scope: Scope) -> list[dict[str, Any]]
 
 
 async def _edges(cfg: DescriberToolConfig, scope: Scope) -> list[dict[str, Any]]:
-    result = await _body(describe_list_edges)(scope=scope, cfg=cfg)
+    result = await _body(describe_list_edges)(offset=0, limit=50, scope=scope, cfg=cfg)
 
     rows: list[dict[str, Any]] = []
     for row in result.rows:
@@ -248,8 +248,8 @@ async def test_entity_and_confluence_nodes(
 async def test_empty_scope_lists_nothing(
     cfg: DescriberToolConfig, scope: Scope
 ) -> None:
-    nodes = await _body(describe_list_nodes)(scope=scope, cfg=cfg)
-    edges = await _body(describe_list_edges)(scope=scope, cfg=cfg)
+    nodes = await _body(describe_list_nodes)(offset=0, limit=50, scope=scope, cfg=cfg)
+    edges = await _body(describe_list_edges)(offset=0, limit=50, scope=scope, cfg=cfg)
 
     assert nodes.rows == []
     assert nodes.note is not None

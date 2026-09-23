@@ -685,6 +685,8 @@ class TestDocTools:
             doc_tools["search_document"],
             path=workspace_pdf,
             query="Alpha",
+            offset=0,
+            limit=50,
             ocr_enabled=False,
             num_workers=1,
             ocr_language="rus+eng",
@@ -1276,7 +1278,8 @@ class TestKbIxTools:
             query="page",
             surfaces=["cfl_page"],
             aspects=["title", "body"],
-            top_k=3,
+            offset=0,
+            limit=3,
         )
         if not (found.rows):
             raise AssertionError("found.rows")
@@ -1291,7 +1294,7 @@ class TestKbIxTools:
 
     async def test_vector_search_returns_hits(self, kb_tools) -> None:
         result = await Call.ok(
-            kb_tools["kb_vector_search2"], query="how to configure", top_k=3
+            kb_tools["kb_vector_search2"], query="how to configure", offset=0, limit=3
         )
         if not (result.rows):
             raise AssertionError("result.rows")

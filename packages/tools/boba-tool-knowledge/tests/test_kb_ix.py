@@ -118,7 +118,8 @@ class TestSearch:
             query=f'"{page_title}"',
             surfaces=[PAGE],
             aspects=[TITLE],
-            top_k=5,
+            offset=0,
+            limit=5,
             cfg=kb_cfg,
         )
         if not result.rows:
@@ -139,7 +140,7 @@ class TestSearch:
     ) -> None:
         word = max(page_title.split(), key=len)
         result = await Body.of(kb_trgm_search2)(
-            query=word, surfaces=[PAGE], aspects=[], top_k=5, cfg=kb_cfg
+            query=word, surfaces=[PAGE], aspects=[], offset=0, limit=5, cfg=kb_cfg
         )
         if not result.rows:
             raise AssertionError(f"rows for word {word!r}")
@@ -148,7 +149,7 @@ class TestSearch:
         self, kb_cfg: KbToolConfig, page_title: str
     ) -> None:
         result = await Body.of(kb_vector_search2)(
-            query=page_title, surfaces=[], aspects=[], top_k=3, cfg=kb_cfg
+            query=page_title, surfaces=[], aspects=[], offset=0, limit=3, cfg=kb_cfg
         )
         if not result.rows:
             raise AssertionError("rows")
@@ -160,12 +161,22 @@ class TestSearch:
     async def test_unknown_surface_is_rejected(self, kb_cfg: KbToolConfig) -> None:
         with pytest.raises(IxSearchError, match="known are"):
             await Body.of(kb_fts_search2)(
-                query="anything", surfaces=["no_such"], aspects=[], top_k=1, cfg=kb_cfg
+                query="anything",
+                surfaces=["no_such"],
+                aspects=[],
+                offset=0,
+                limit=1,
+                cfg=kb_cfg,
             )
 
     async def test_empty_result_carries_a_hint(self, kb_cfg: KbToolConfig) -> None:
         result = await Body.of(kb_fts_search2)(
-            query="qzxvbnmqwertyuiopz", surfaces=[], aspects=[], top_k=1, cfg=kb_cfg
+            query="qzxvbnmqwertyuiopz",
+            surfaces=[],
+            aspects=[],
+            offset=0,
+            limit=1,
+            cfg=kb_cfg,
         )
         if result.rows:
             raise AssertionError("no rows for gibberish")
@@ -182,7 +193,8 @@ class TestNode:
             query=f'"{page_title}"',
             surfaces=[PAGE],
             aspects=[TITLE],
-            top_k=1,
+            offset=0,
+            limit=1,
             cfg=kb_cfg,
         )
         node_id = int(found.rows[0]["node_id"])
@@ -211,7 +223,8 @@ class TestNode:
             query=f'"{page_title}"',
             surfaces=[PAGE],
             aspects=[TITLE],
-            top_k=1,
+            offset=0,
+            limit=1,
             cfg=kb_cfg,
         )
         node_id = int(found.rows[0]["node_id"])
