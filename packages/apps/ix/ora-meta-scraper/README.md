@@ -95,13 +95,16 @@ grant select on sys.props$ to scraper;
    `{owners}` (подзапрос по `sys.user$` — схемы всех пользователей, не принадлежащих
    Oracle: `bitand(user$.spare1, 256) = 0`, так же считает `dba_users.oracle_maintained`)
    и `{objects}` (обычные объекты `sys.obj$`, без подобъектов и удалённых). Подставляет
-   `OraQueryBuilder` при чтении файла, и запроса, и его сверки. Ответ едет пачками по
-   `arraysize` строк: пачку собирает драйвер, `csv.writer` пишет её одним вызовом, и байты
-   уходят в `COPY ... FROM STDIN (format csv, null '')` без разбора строк в Python. NUMBER
-   идёт как Decimal, DATE и TIMESTAMP в ISO, NULL пустым полем, RAW запрос отдаёт
-   `rawtohex`. Сессия в `time_zone = 'UTC'` и с `nls_numeric_characters = '.,'`, чтобы
-   `to_char` дат и чисел в запросах не зависел от NLS сервера. Каждый результат целиком
-   уходит в `raw_<name>`.
+   `OraQueryBuilder` при чтении файла, и запроса, и его сверки. Ответ едет пачками Arrow
+   по `arraysize` строк (`fetch_df_batches`: драйвер декодирует ответ в Cython, минуя
+   Python-объекты), pyarrow пишет пачку в CSV, и байты уходят в
+   `COPY ... FROM STDIN (format csv, null '')` без разбора строк в Python. Типы колонок
+   берутся у драйвера пустой пробой запроса, NUMBER без объявленной точности (все
+   колонки `sys.*$`) запрашивается `decimal128(38, 0)` — целые точны при любой ширине,
+   дробный NUMBER без точности запрос обязан привести сам (`to_char`, `number(p, s)`).
+   DATE и TIMESTAMP в ISO, NULL пустым полем, RAW запрос отдаёт `rawtohex`. Сессия в
+   `time_zone = 'UTC'` и с `nls_numeric_characters = '.,'`, чтобы `to_char` дат и чисел в
+   запросах не зависел от NLS сервера. Каждый результат целиком уходит в `raw_<name>`.
 3. После последнего файла ещё раз все запросы сверки `<файл>.verify.sql`: ключ строки и
    `row_version`.
    xmin у Oracle нет, поэтому `row_version` это `standard_hash` структурных колонок
@@ -199,6 +202,8 @@ pg_meta_edge: index и constraint перечисляют колонки по п�
 родителя на момент fork и для сравнения детей не годится. Замер 2026-09-22 на 12.2, 18,
 21 и 23: 139 MiB при демо-словаре и 142 MiB при 106 000 применённых строках. Строки идут
 из курсора Oracle пачками по `arraysize` профиля (на стенде 2000) в `COPY` CSV-блоками, в память они не
-собираются. Ответ Arrow (`fetch_df_batches`) не используется: на 12.2 и 18 он роняет
-thin-драйвер python-oracledb 26.0 сегфолтом на обычных запросах словаря
-(`sys.ccol$` с подзапросом по `sys.obj$`, пачка от 200 строк).
+собираются. Драйвер — python-oracledb `26.0.0+boba.1`: колесо с патчем из
+`build/chainlit/scripts/oracledb-26.0.0-arrow-duplicates.patch` (два дефекта Arrow-пути
+в 26.0.0: разбор строки после `OutOfPackets` с колонкой-дубликатом и decimal-ветка
+`append_last_value`), собирает стадия `oracledb-wheel` (`make fetch`), в `.venv` его
+ставит `dev.sh`; разбор — `docs/bulk-copy-formats.md` §4.

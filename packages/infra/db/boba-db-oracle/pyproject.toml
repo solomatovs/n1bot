@@ -15,7 +15,8 @@ dependencies = [
 
 [project.optional-dependencies]
 payload = [
-    "oracledb>=3,<27",
+    "oracledb==26.0.0+boba.1",
+    "pyarrow>=25,<26",
 ]
 dev = [
     "boba-stand==0.0.22.dev1",

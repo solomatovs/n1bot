@@ -69,6 +69,42 @@ ENV SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt        \
     GIT_SSL_CAINFO=/etc/ssl/certs/ca-certificates.crt
 
 
+# python-oracledb с патчем: sdist ровно той версии из индекса pypi с проверкой sha256,
+# патч из scripts/, локальный суффикс версии — чтобы установщик не подменил колесо
+# готовым с индекса. Колесо уходит и в образ (boba-wheels), и в src/ для .venv хоста
+FROM base AS oracledb-wheel
+
+ARG ORACLEDB_VERSION=26.0.0
+ARG ORACLEDB_SHA256=d15728bae7546984203ae17f8296153d52d10ffdaf4929bebe46b70d5819d270
+ARG ORACLEDB_LOCAL=boba.1
+ARG CYTHON_VERSION=3.3.0
+ARG SETUPTOOLS_VERSION=84.0.0
+ARG WHEEL_VERSION=0.48.0
+
+RUN apt-get update && apt-get install -y --no-install-recommends patch \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY build/chainlit/scripts/oracledb-${ORACLEDB_VERSION}-arrow-duplicates.patch  /tmp/oracledb.patch
+
+RUN pip3 install --no-cache-dir "cython==${CYTHON_VERSION}" \
+        "setuptools==${SETUPTOOLS_VERSION}" "wheel==${WHEEL_VERSION}"
+RUN pip3 download --no-cache-dir --no-deps --no-binary :all: --no-build-isolation \
+        "oracledb==${ORACLEDB_VERSION}" -d /tmp/sdist
+RUN echo "${ORACLEDB_SHA256}  /tmp/sdist/oracledb-${ORACLEDB_VERSION}.tar.gz" | sha256sum -c -
+
+WORKDIR /tmp/oracledb-src
+RUN tar -xzf /tmp/sdist/oracledb-${ORACLEDB_VERSION}.tar.gz --strip-components=1
+RUN patch -p1 < /tmp/oracledb.patch
+RUN sed -i "s/^__version__ = \"${ORACLEDB_VERSION}\"$/__version__ = \"${ORACLEDB_VERSION}+${ORACLEDB_LOCAL}\"/" \
+        src/oracledb/version.py \
+    && grep -q "^__version__ = \"${ORACLEDB_VERSION}+${ORACLEDB_LOCAL}\"$" src/oracledb/version.py
+# без отладочных символов: колесо с ними в четыре раза тяжелее
+RUN CFLAGS="-g0" pip3 wheel . --no-cache-dir --no-deps --no-build-isolation -w /out && ls -l /out
+# проверка, что собранное колесо импортируется: зависимости драйвера — из индекса
+RUN pip3 install --no-cache-dir /out/oracledb-*.whl \
+    && python3 -c "import oracledb; print(oracledb.__version__)" | grep -q "+${ORACLEDB_LOCAL}$"
+
+
 # bubblewrap статически с libcap: у meson bwrap нет такой опции, поэтому
 # в сгенерированном build.ninja .so подменяется на .a
 FROM base AS bwrap-build
@@ -138,6 +174,8 @@ FROM base AS boba-wheels
 COPY pyproject.toml  /tmp/boba/pyproject.toml
 COPY uv.lock         /tmp/boba/uv.lock
 COPY packages/       /tmp/boba/packages/
+
+COPY --from=oracledb-wheel /out/  /tmp/wheels/
 
 WORKDIR /tmp/boba
 RUN uv build --all-packages --wheel --no-sources -o /tmp/wheels
