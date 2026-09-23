@@ -34,7 +34,7 @@
   tree, edge, ch_meta_edge и всех поверхностей без host, port, scheme, id и того, что
   зависит от сервера, а не от набора (uuid, modified_at, total_*, create_query).
 - `cons/golden.txt`: эталонные отпечатки по имени цели. Обновлять только после
-  осознанного изменения раскладки или набора: прогнать `test_scrape_stand.py`, взять
+  осознанного изменения раскладки или набора: прогнать `test_ch_scrape_stand.py`, взять
   новые значения из падения и записать.
 
 Общая часть стенда — раскладка каталога `stand/`, эталоны, база ix с инвариантами и
@@ -44,6 +44,6 @@
 Запуск из каталога compose (как остальные интеграционные тесты):
 
 ```
-pytest packages/apps/ix/ch-meta-scraper/tests/test_scrape_stand.py -m integration
-pytest packages/apps/ix/ch-meta-scraper/tests/test_scrape_storm.py -m load
+pytest packages/apps/ix/ch-meta-scraper/tests/test_ch_scrape_stand.py -m integration
+pytest packages/apps/ix/ch-meta-scraper/tests/test_ch_scrape_storm.py -m load
 ```

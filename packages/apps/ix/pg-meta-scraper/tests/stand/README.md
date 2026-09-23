@@ -27,7 +27,7 @@
   tree, edge, pg_meta_edge и всех поверхностей без host, database, port, scheme и id,
   отсортированы, md5. Отпечаток набора одинаков в любой базе и при любом scope.
 - `cons/golden.txt`: эталонные отпечатки по имени цели. Обновлять только после осознанного
-  изменения раскладки или набора: прогнать `test_scrape_stand.py`, взять новые значения
+  изменения раскладки или набора: прогнать `test_pg_scrape_stand.py`, взять новые значения
   из падения и записать.
 - `versions.md`: сколько строк каждая версия отдала на снятии и как они легли в ix.
 
@@ -38,6 +38,6 @@
 Запуск из каталога compose (как остальные интеграционные тесты):
 
 ```
-pytest packages/apps/ix/pg-meta-scraper/tests/test_scrape_stand.py -m integration
-pytest packages/apps/ix/pg-meta-scraper/tests/test_scrape_storm.py -m load
+pytest packages/apps/ix/pg-meta-scraper/tests/test_pg_scrape_stand.py -m integration
+pytest packages/apps/ix/pg-meta-scraper/tests/test_pg_scrape_storm.py -m load
 ```
