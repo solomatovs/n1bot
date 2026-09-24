@@ -4,13 +4,13 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "boba-tool-doc"
-version = "0.0.24.dev1"
+version = "0.0.24.dev2"
 description = "Инструменты doc: чтение, карта и поиск по документам workspace ридерами boba-doc в песочнице."
 requires-python = ">=3.11,<4"
 dependencies = [
-    "boba-toolkit==0.0.24.dev1",
-    "boba-doc==0.0.24.dev1",
-    "boba-llm==0.0.24.dev1",
+    "boba-toolkit==0.0.24.dev2",
+    "boba-doc==0.0.24.dev2",
+    "boba-llm==0.0.24.dev2",
     "pydantic>=2.10,<2.11",
 ]
 
@@ -21,12 +21,12 @@ doc = "boba.tool.doc.plugin:MANIFEST"
 
 [project.optional-dependencies]
 payload = [
-    "boba-doc[readers,ocr]==0.0.24.dev1",
+    "boba-doc[readers,ocr]==0.0.24.dev2",
     "lxml>=5.0",
 ]
 dev = [
-    "boba-config==0.0.24.dev1",
-    "boba-stand-core==0.0.24.dev1",
+    "boba-config==0.0.24.dev2",
+    "boba-stand-core==0.0.24.dev2",
     "pytest>=8",
 ]
 
