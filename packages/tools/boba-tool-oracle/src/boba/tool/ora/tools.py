@@ -832,14 +832,12 @@ class TargetName:
 class ColumnList:
     """Список колонок загрузки в порядке полей CSV."""
 
-    SEPARATOR: ClassVar[str] = ","
-
     names: Sequence[TargetName]
 
     @classmethod
     def parse(cls, text: str) -> ColumnList:
         names: list[TargetName] = []
-        for piece in text.split(cls.SEPARATOR):
+        for piece in text.split(","):
             names.append(TargetName(piece))
 
         return cls(names=names)
