@@ -161,8 +161,13 @@ RUN install -D -m 0755 misc/mke2fs /out/mke2fs && cp misc/mke2fs.conf /out/mke2f
 # артефакты песочницы для make sandbox: docker build --output, без образа
 FROM scratch AS sandbox-out
 
+ARG LIBSTDCXX_VERSION=6.0.25
+
 COPY --from=bwrap-build   /out/bwrap        /third/bin/bwrap
 COPY --from=fuse2fs-build /out/fuse2fs      /third/bin/fuse2fs
+COPY --from=base /usr/lib/x86_64-linux-gnu/libstdc++.so.6                    /third/lib/
+COPY --from=base /usr/lib/x86_64-linux-gnu/libstdc++.so.${LIBSTDCXX_VERSION} /third/lib/
+COPY --from=base /usr/lib/x86_64-linux-gnu/libgcc_s.so.1                     /third/lib/
 COPY --from=fuse2fs-build /out/mke2fs       /tools/mke2fs
 COPY --from=fuse2fs-build /out/mke2fs.conf  /tools/mke2fs.conf
 
@@ -348,6 +353,7 @@ COPY --from=site-conf /certs/                                                 /
 COPY --from=python-slim /python/                                              ${BOBA_DIR}/third/
 COPY --from=base /usr/lib/x86_64-linux-gnu/libstdc++.so.6                     ${BOBA_DIR}/third/lib/
 COPY --from=base /usr/lib/x86_64-linux-gnu/libstdc++.so.${LIBSTDCXX_VERSION}  ${BOBA_DIR}/third/lib/
+COPY --from=base /usr/lib/x86_64-linux-gnu/libgcc_s.so.1                      ${BOBA_DIR}/third/lib/
 COPY --from=bwrap-build /out/bwrap                                            ${BOBA_DIR}/third/bin/bwrap
 COPY --from=fuse2fs-build /out/fuse2fs                                        ${BOBA_DIR}/third/bin/fuse2fs
 COPY --from=app-site /opt/app-site                                            ${BOBA_DIR}/app/

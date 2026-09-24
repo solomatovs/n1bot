@@ -133,11 +133,14 @@ WEB_DEV_WAIT    ?= 180
 
 # --- что кладут sandbox и release ------------------------------------------------
 
-SANDBOX_PARTS   := $(SANDBOX_DIR)/third/bin/bwrap $(SANDBOX_DIR)/third/bin/fuse2fs $(SANDBOX_DIR)/workspace.ext4
+SANDBOX_PARTS   := $(SANDBOX_DIR)/third/bin/bwrap $(SANDBOX_DIR)/third/bin/fuse2fs \
+                   $(SANDBOX_DIR)/third/lib/libstdc++.so.6 $(SANDBOX_DIR)/third/lib/libgcc_s.so.1 \
+                   $(SANDBOX_DIR)/workspace.ext4
 # mke2fs из сборки: им make делает workspace.ext4 и rootfs плагинов вне docker build
 SANDBOX_TOOLS   := $(SANDBOX_DIR)/tools/mke2fs $(SANDBOX_DIR)/tools/mke2fs.conf
 
 RELEASE_PARTS   := sandbox/plugins sandbox/workspace.ext4 third/bin/bwrap third/bin/fuse2fs \
+                   third/lib/libstdc++.so.6 third/lib/libgcc_s.so.1 \
                    app/bin app_root/public app_root/public/workflow app_root/public/vendor \
                    models/fastembed models/rapidocr
 
@@ -550,6 +553,7 @@ dev: web
 	rm -rf "$(OUT)/sandbox"
 	$(call refill,$(OUT)/third)
 	cp -al "$(SANDBOX_DIR)/third/bin" "$(OUT)/third/bin"
+	cp -al "$(SANDBOX_DIR)/third/lib" "$(OUT)/third/lib"
 	chmod -R go-w "$(OUT)/third"
 	$(call refill,$(OUT)/app_root)
 	mkdir -p "$(OUT)/app_root/public"
