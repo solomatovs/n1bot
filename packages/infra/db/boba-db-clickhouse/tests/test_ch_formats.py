@@ -25,6 +25,8 @@ from boba.db.clickhouse.errors import ClickHouseFormatError, ClickHouseQueryErro
 from boba.db.clickhouse.formats import (
     ArrowFile,
     ArrowStream,
+    Avro,
+    AvroConfluent,
     Csv,
     CsvWithNames,
     CsvWithNamesAndTypes,
@@ -923,6 +925,156 @@ class TestArrowParsing:
 
         with pytest.raises(ClickHouseFormatError, match="ended after"):
             await fmt.read(_chunks(body[:40]))
+
+
+AVRO_COLUMNS = (
+    "id UInt64, f64 Float64, u64 UInt64, bin String, fixed FixedString(3), "
+    "dt DateTime64(3, 'UTC'), arr Array(String), m Map(String, UInt32), "
+    "t Tuple(a Int8, b Nullable(String)), ns Nullable(String), "
+    "en Enum8('x' = 1, 'y' = 2), u UUID"
+)
+AVRO_VALUES = (
+    "select rowNumberInAllBlocks(), * from (select "
+    "arrayJoin([toFloat64('nan'), toFloat64('inf'), toFloat64('-inf'), 0.1 + 0.2]), "
+    "arrayJoin([18446744073709551615, 0]), "
+    "arrayJoin([unhex('ff00fe'), 'a\"b,c', '']), "
+    "toFixedString(unhex('00ff41'), 3), "
+    "toDateTime64('2024-01-02 03:04:05.678', 3, 'UTC'), "
+    "['x', 'y\\tz'], map('k', 1), tuple(toInt8(-1), null), "
+    "arrayJoin([toNullable('n'), null]), "
+    "cast('y', 'Enum8(\\'x\\' = 1, \\'y\\' = 2)'), "
+    "toUUID('61f0c404-5cb3-11e7-907b-a6006ad3dba0'))"
+)
+EMPTY_AVRO = bytes.fromhex(
+    "4f626a0104146176726f2e636f646563086e756c6c166176726f2e736368656d61d2017b"
+    "2274797065223a227265636f7264222c226e616d65223a22726f77222c226669656c6473"
+    "223a5b7b226e616d65223a2261222c2274797065223a22696e74227d2c7b226e616d6522"
+    "3a2262222c2274797065223a5b226e756c6c222c22737472696e67225d7d5d7d000c7589"
+    "253980ced9cc332ade00a14afd00000c7589253980ced9cc332ade00a14afd"
+)
+"""Ответ сервера на пустой результат с двумя колонками и кодеком null."""
+
+
+@pytest.mark.integration
+class TestAvro:
+    async def test_header_comes_first_even_for_an_empty_result(
+        self, source: StandSource
+    ) -> None:
+        avro = Avro()
+        async with (
+            PayloadClickHouse.opened_config(source.clickhouse) as client,
+            PayloadClickHouse.byte_stream_out(
+                client,
+                "select 1 as a, toNullable('x') as b where 0",
+                avro.FORMAT,
+                None,
+                avro.output_settings(None),
+            ) as raw,
+        ):
+            stream = await avro.read(raw.blocks)
+            data = bytearray()
+            async for block in stream.blocks:
+                data.extend(block)
+
+        assert stream.names == ("a", "b")
+        assert stream.codec == "snappy"
+        assert [field["type"] for field in stream.schema["fields"]] == [
+            "int",
+            ["null", "string"],
+        ]
+        assert stream.head.startswith(b"Obj\x01")
+        assert data.endswith(stream.head[-16:])
+
+    async def test_hard_values_survive_the_round_trip(self, stand: StandSource) -> None:
+        avro = Avro()
+        origin = Table("avro src", AVRO_COLUMNS)
+        target = Table("avro dst", AVRO_COLUMNS)
+        fill = (
+            ChQueryBuilder()
+            .add(
+                "insert into %(db)s.%(t)s $values",
+                db=ChIdentifier(Table.DATABASE),
+                t=ChIdentifier("avro src"),
+                values=AVRO_VALUES,
+            )
+            .build()
+        )
+        select = origin.select("*")
+        insert = target.insert()
+        async with PayloadClickHouse.opened_config(stand.admin) as client:
+            await origin.recreate(client)
+            await target.recreate(client)
+            await client.command(fill.text, parameters=fill.params)
+            async with PayloadClickHouse.byte_stream_out(
+                client,
+                select.text,
+                avro.FORMAT,
+                select.params,
+                avro.output_settings(None),
+            ) as raw:
+                stream = await avro.read(raw.blocks)
+                summary = await PayloadClickHouse.byte_stream_in(
+                    client,
+                    avro.insert(insert.text),
+                    insert.params,
+                    avro.input_settings(None),
+                    blocks=avro.write(stream),
+                )
+
+            before = await origin.tsv(client)
+            after = await target.tsv(client)
+
+        assert summary.written_rows == 4 * 2 * 3 * 2
+        assert after == before
+
+
+@pytest.mark.integration
+class TestAvroConfluent:
+    async def test_registry_url_reaches_the_server(self, stand: StandSource) -> None:
+        confluent = AvroConfluent("http://127.0.0.1:1/")
+        table = Table("confluent", "n UInt64")
+        insert = table.insert()
+        async with PayloadClickHouse.opened_config(stand.admin) as client:
+            await table.recreate(client)
+            stream = await confluent.read(_chunks(b"\x00\x00\x00\x00\x01\x02"))
+            with pytest.raises(ClickHouseQueryError, match="fetching schema id = 1"):
+                await PayloadClickHouse.byte_stream_in(
+                    client,
+                    confluent.insert(insert.text),
+                    insert.params,
+                    confluent.input_settings(None),
+                    blocks=confluent.write(stream),
+                )
+
+
+class TestAvroParsing:
+    """Заголовок контейнера снимается при любом разрезе на блоки; чужие байты
+    и обрыв — ошибка формата; реестр у AvroConfluent обязателен."""
+
+    @pytest.mark.parametrize("size", [1, 3, 4, 7, 100, 1000])
+    async def test_header_split_across_chunks(self, size: int) -> None:
+        stream = await Avro().read(_chunks(EMPTY_AVRO, size))
+        rest = bytearray()
+        async for block in stream.blocks:
+            rest.extend(block)
+
+        assert stream.names == ("a", "b")
+        assert stream.codec == "null"
+        assert stream.schema["name"] == "row"
+        assert stream.head + bytes(rest) == EMPTY_AVRO
+        assert bytes(rest) == b"\x00\x00" + stream.head[-16:]
+
+    async def test_foreign_bytes_are_refused(self) -> None:
+        with pytest.raises(ClickHouseFormatError, match="expected magic"):
+            await Avro().read(_chunks(b"n\ts\nUInt64\tString\n1\tx\n"))
+
+    async def test_truncated_header_is_refused(self) -> None:
+        with pytest.raises(ClickHouseFormatError, match="ended after 60 bytes"):
+            await Avro().read(_chunks(EMPTY_AVRO[:60]))
+
+    def test_confluent_without_a_registry_is_refused(self) -> None:
+        with pytest.raises(ClickHouseFormatError, match="schema registry url"):
+            AvroConfluent("")
 
 
 @pytest.mark.integration
