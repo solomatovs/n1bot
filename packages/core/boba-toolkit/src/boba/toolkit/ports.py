@@ -28,7 +28,8 @@ FrameProtocolError — заголовок пришедшего кадра не �
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+import asyncio
+from collections.abc import AsyncIterator, Iterator
 from dataclasses import dataclass
 from enum import StrEnum
 from types import UnionType
@@ -157,19 +158,35 @@ class Outbound(Generic[HeadT]):
 
 
 class RawInbound:
-    """Истинно сырой входной порт: итератор порций bytes с провода как есть.
+    """Истинно сырой входной порт: порции bytes с провода как есть.
 
     Никакого кадрирования, моделей и валидации — по каналу идут только сами
-    данные (CSV из COPY, файл, PCM), тело читает их порциями до EOF. Границы
-    порций произвольны: это байтовый поток, а не сообщения. Совместим только
-    с таким же сырым выходом (ChainCheck). Строится в ToolMain поверх ToolIo.
+    данные (CSV из COPY, файл, PCM), тело читает их порциями до EOF. Размер
+    порции задаёт тело: blocks(chunk_bytes) для async-тела (чтение трубы
+    блокирующее, поэтому каждая порция берётся в потоке, а цикл событий
+    остаётся свободен), read(chunk_bytes) синхронно; цикл for по порту идёт
+    с размером ToolIo.READ_BYTES. Границы порций произвольны: это байтовый
+    поток, а не сообщения. Совместим только с таким же сырым выходом
+    (ChainCheck). Строится в ToolMain поверх ToolIo.
     """
 
     def __init__(self, io: ToolIo) -> None:
         self._io = io
 
+    def read(self, chunk_bytes: int) -> Iterator[bytes]:
+        yield from self._io.read_chunks(chunk_bytes)
+
     def __iter__(self) -> Iterator[bytes]:
-        yield from self._io.read_chunks()
+        yield from self.read(ToolIo.READ_BYTES)
+
+    async def blocks(self, chunk_bytes: int) -> AsyncIterator[bytes]:
+        chunks = self.read(chunk_bytes)
+        while True:
+            chunk = await asyncio.to_thread(next, chunks, None)
+            if chunk is None:
+                return
+
+            yield chunk
 
     @classmethod
     def __get_pydantic_core_schema__(
@@ -184,14 +201,16 @@ class RawOutbound:
     Никакого кадрирования и преобразований — pg->pg перекачка везёт ровно
     те байты, что отдал COPY. Плата за это — отсутствие метаданных и
     журнала содержимого: канал предназначен для перекачки (splice), хост в
-    него не заглядывает. Строится в ToolMain поверх ToolIo.
+    него не заглядывает. Запись в трубу блокирующая, пока хост не вычитает
+    её, поэтому write уходит в поток, а цикл событий тела остаётся свободен.
+    Строится в ToolMain поверх ToolIo.
     """
 
     def __init__(self, io: ToolIo) -> None:
         self._io = io
 
-    def write(self, chunk: Chunk) -> None:
-        self._io.write_chunk(chunk)
+    async def write(self, chunk: Chunk) -> None:
+        await asyncio.to_thread(self._io.write_chunk, chunk)
 
     @classmethod
     def __get_pydantic_core_schema__(

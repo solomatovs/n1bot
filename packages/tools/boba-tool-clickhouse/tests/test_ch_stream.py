@@ -56,25 +56,25 @@ class Sink(RawOutbound):
 
     def __init__(self) -> None:
         super().__init__(ToolIo.detached())
-        self.chunks: list[bytes] = []
+        self._buffer = bytearray()
 
-    def write(self, chunk: Chunk) -> None:
-        self.chunks.append(bytes(chunk))
+    async def write(self, chunk: Chunk) -> None:
+        self._buffer.extend(chunk)
 
     def data(self) -> bytes:
-        return b"".join(self.chunks)
+        return bytes(self._buffer)
 
 
 class Feed(RawInbound):
-    """Входной порт из памяти: порции произвольного размера режут строки
-    где попало."""
+    """Входной порт из памяти: порции своего размера режут строки где попало,
+    chunk_bytes насоса не смотрит."""
 
     def __init__(self, data: bytes, size: int) -> None:
         super().__init__(ToolIo.detached())
         self._data = data
         self._size = size
 
-    def __iter__(self) -> Iterator[bytes]:
+    def read(self, chunk_bytes: int) -> Iterator[bytes]:
         for start in range(0, len(self._data), self._size):
             yield self._data[start : start + self._size]
 
@@ -185,15 +185,20 @@ class Pumps:
 
     async def out(self, statement: str) -> Sink:
         sink = Sink()
-        report = await self._out(connection=self._connection, sql=statement, out=sink)
-        if report.text != f"streamed out {len(sink.data())} bytes":
+        report = await self._out(
+            connection=self._connection, sql=statement, chunk_bytes=CHUNK, out=sink
+        )
+        if report.text != "stream completed":
             raise AssertionError(report.text)
 
         return sink
 
     async def into(self, statement: str, data: bytes) -> str:
         report = await self._in(
-            connection=self._connection, sql=statement, feed=Feed(data, CHUNK)
+            connection=self._connection,
+            sql=statement,
+            chunk_bytes=CHUNK,
+            feed=Feed(data, CHUNK),
         )
 
         return report.text
@@ -218,7 +223,7 @@ class TestClickHouseToClickHouse:
         )
 
         assert sink.data().count(b"\n") == ROWS + 2
-        assert report == f"streamed in {len(sink.data())} bytes, {ROWS} rows written"
+        assert report == f"{ROWS} rows written"
         assert await stand.fingerprint("sink") == await stand.fingerprint("customers")
 
     async def test_server_error_reaches_the_caller(

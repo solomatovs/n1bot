@@ -435,7 +435,7 @@ async def pg_copy_out(
         async for block in copy_out:
             data = bytes(block)
             total += len(data)
-            out.write(data)
+            await out.write(data)
 
     return MarkdownResult(text=f"copied out {total} bytes")
 

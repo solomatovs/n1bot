@@ -783,7 +783,7 @@ async def ora_copy_out(
         async for block in stream.blocks:
             data = bytes(block)
             total += len(data)
-            out.write(data)
+            await out.write(data)
 
     return MarkdownResult(text=f"copied out {total} bytes")
 

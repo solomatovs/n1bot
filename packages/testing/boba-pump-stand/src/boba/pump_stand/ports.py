@@ -16,13 +16,13 @@ class Sink(RawOutbound):
 
     def __init__(self) -> None:
         super().__init__(ToolIo.detached())
-        self.chunks: list[bytes] = []
+        self._buffer = bytearray()
 
-    def write(self, chunk: Chunk) -> None:
-        self.chunks.append(bytes(chunk))
+    async def write(self, chunk: Chunk) -> None:
+        self._buffer.extend(chunk)
 
     def data(self) -> bytes:
-        return b"".join(self.chunks)
+        return bytes(self._buffer)
 
 
 class Feed(RawInbound):
@@ -34,6 +34,6 @@ class Feed(RawInbound):
         self._data = data
         self._size = size
 
-    def __iter__(self) -> Iterator[bytes]:
+    def read(self, chunk_bytes: int) -> Iterator[bytes]:
         for start in range(0, len(self._data), self._size):
             yield self._data[start : start + self._size]

@@ -166,7 +166,8 @@ class TestRawPorts:
         assert isinstance(port, RawInbound)
         assert b"".join(port) == b"csv,line,1\ncsv,line,2\n"
 
-    def test_raw_outbound_writes_bytes_verbatim(self) -> None:
+    @pytest.mark.anyio
+    async def test_raw_outbound_writes_bytes_verbatim(self) -> None:
         """Истинно сырой выход: на проводе ровно те байты, что отдал write."""
         read_fd, write_fd = os.pipe()
         io = ToolIo.on_channels(-1, write_fd)
@@ -174,8 +175,8 @@ class TestRawPorts:
         port = StreamPorts.build(RawOutbound, io)
         assert isinstance(port, RawOutbound)
 
-        port.write(b"\x01\x02\x03")
-        port.write(b"tail")
+        await port.write(b"\x01\x02\x03")
+        await port.write(b"tail")
         os.close(write_fd)
 
         collected = bytearray()
