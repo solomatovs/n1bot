@@ -1,5 +1,7 @@
 """ClickHouse для payload'ов; пула нет — каждый вызов свой процесс и клиент.
 Учётные данные приходят через stdin: не видны ни в argv, ни в /proc, ни в логах.
+Насос открывает клиент с сессией (opened_session), чтобы стейтменты
+before/after (script) и его команда делили SET и временные таблицы.
 
 Ошибки:
 ClickHouseQueryError — сервер отклонил запрос или чтению заданы размеры,
@@ -10,6 +12,7 @@ ClickHouseError — до базы не достучаться (сеть, TLS, ke
 from __future__ import annotations
 
 import json
+import uuid
 from collections.abc import (
     AsyncGenerator,
     AsyncIterable,
@@ -34,7 +37,7 @@ from clickhouse_connect.driver.summary import QuerySummary
 
 from boba.db.clickhouse.connection import ClickHouseConfig, SpnegoHeaders
 from boba.db.clickhouse.errors import ClickHouseError, ClickHouseQueryError
-from boba.db.clickhouse.trace import ChHeader, ChQueryTrace
+from boba.db.clickhouse.trace import ChHeader, ChQueryTrace, ChScriptStep
 
 __all__ = [
     "ByteStream",
@@ -165,15 +168,64 @@ class PayloadClickHouse:
     @asynccontextmanager
     async def opened_config(
         connection: ClickHouseConfig,
+        session_id: str | None = None,
     ) -> AsyncGenerator[AsyncClient, None]:
         """Клиент на время операции; окружение авторизации держит
-        ClickHouseAuthSession профиля всё это время."""
+        ClickHouseAuthSession профиля всё это время. session_id — сессия
+        сервера для всех запросов клиента; без него сессии нет."""
         session = connection.auth_session()
         async with (
             session.applied() as headers,
-            PayloadClickHouse._client(connection, headers) as client,
+            PayloadClickHouse._client(connection, headers, session_id) as client,
         ):
             yield client
+
+    @staticmethod
+    @asynccontextmanager
+    async def opened_session(
+        connection: ClickHouseConfig,
+    ) -> AsyncGenerator[AsyncClient, None]:
+        """Клиент с сессией сервера на время вызова: id из профиля, иначе
+        случайный. В сессии живут SET и временные таблицы, запросы в ней
+        идут строго по одному — насос так и работает."""
+        session_id = connection.session_id
+        if session_id is None:
+            session_id = uuid.uuid4().hex
+
+        async with PayloadClickHouse.opened_config(connection, session_id) as client:
+            yield client
+
+    @staticmethod
+    async def script(
+        client: AsyncClient, statements: Sequence[str]
+    ) -> tuple[ChScriptStep, ...]:
+        """Стейтменты before/after насоса по одному, по порядку, тем же
+        клиентом: в сессии клиента они делят SET и временные таблицы с
+        командой насоса. Строки выборок не собираются: у команды шаг даёт
+        счётчики сводки, у выборки — значение, которое вернул драйвер."""
+        steps: list[ChScriptStep] = []
+        for statement in statements:
+            step = await PayloadClickHouse._step(client, statement)
+            steps.append(step)
+
+        return tuple(steps)
+
+    @staticmethod
+    async def _step(client: AsyncClient, statement: str) -> ChScriptStep:
+        try:
+            result = await client.command(statement)
+        except DriverError as exc:
+            raise ClickHouseQueryError(
+                f"script statement on clickhouse failed: {type(exc).__name__}: "
+                f"{exc}; statement: {statement[:200]!r}"
+            ) from exc
+
+        if isinstance(result, QuerySummary):
+            trace = PayloadClickHouse._trace_of_summary(result)
+            outcome = f"read {trace.read_rows} rows, written {trace.written_rows} rows"
+            return ChScriptStep(statement=statement, outcome=outcome)
+
+        return ChScriptStep(statement=statement, outcome=str(result))
 
     @staticmethod
     @asynccontextmanager
@@ -427,8 +479,9 @@ class PayloadClickHouse:
     async def _client(
         connection: ClickHouseConfig,
         headers: SpnegoHeaders | None,
+        session_id: str | None,
     ) -> AsyncGenerator[AsyncClient, None]:
-        client = PayloadClickHouse._build(connection, headers)
+        client = PayloadClickHouse._build(connection, headers, session_id)
         try:
             await PayloadClickHouse._initialize(client, connection)
             yield client
@@ -439,15 +492,20 @@ class PayloadClickHouse:
     def _build(
         connection: ClickHouseConfig,
         headers: SpnegoHeaders | None,
+        session_id: str | None,
     ) -> AsyncClient:
         """Клиент собирается вручную: живые заголовки нужны уже на инициализации.
 
         clickhouse_connect.get_async_client() сам ходит в сервер тремя запросами,
         а заголовки складывает в обычный dict — подменить их после этого поздно.
         """
+        settings = connection.client_settings()
+        if session_id is not None:
+            settings["session_id"] = session_id
+
         client = AsyncClient(
             autogenerate_session_id=False,
-            **connection.client_settings(),
+            **settings,
         )
         if headers is not None:
             headers.update(client.headers)

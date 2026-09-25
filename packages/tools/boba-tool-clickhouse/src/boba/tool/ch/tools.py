@@ -14,7 +14,7 @@ QueryBuildError — сборщик получил один параметр с �
 from __future__ import annotations
 
 import sys
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from enum import StrEnum
 from typing import Annotated, ClassVar, Final
 
@@ -67,6 +67,34 @@ class SystemDatabase(StrEnum):
     @classmethod
     def names(cls) -> list[str]:
         return [member.value for member in cls]
+
+
+BeforeSteps = Annotated[
+    Sequence[str],
+    Field(
+        description=(
+            "Стейтменты, которые выполняются по порядку перед командой насоса "
+            "в той же сессии сервера: SET, create temporary table, проверки. "
+            "Транзакций у ClickHouse нет, сессия даёт общие настройки и "
+            "временные таблицы. Строки выборок не возвращаются, в ответ идёт "
+            "итог каждого шага. Проверка, которая должна остановить насос, "
+            "пишется выборкой с ошибкой: select throwIf(count() > 0, "
+            "'target is not empty') from db.t."
+        ),
+    ),
+]
+AfterSteps = Annotated[
+    Sequence[str],
+    Field(
+        description=(
+            "Стейтменты, которые выполняются по порядку после команды насоса "
+            "в той же сессии: insert ... select из временной таблицы, alter "
+            "table ... replace partition, exchange tables. Отката нет: "
+            "ошибка шага оставляет уже загруженные строки на месте. В ответ "
+            "идёт итог каждого шага."
+        ),
+    ),
+]
 
 
 class AddressColumn(StrEnum):
@@ -1008,7 +1036,7 @@ async def ch_edm_descriptions(  # noqa: PLR0913
 
 
 @tool
-async def ch_stream_out(
+async def ch_stream_out(  # noqa: PLR0913
     connection: ChConnection,
     sql: Annotated[
         str,
@@ -1028,13 +1056,17 @@ async def ch_stream_out(
         MarkdownResult(language="sql"),
     ],
     chunk_bytes: ChunkBytes,
+    before: BeforeSteps = (),
+    after: AfterSteps = (),
+    *,
     out: Annotated[RawOutbound, Injected],
 ) -> MarkdownResult:
     """Насос выгрузки: ответ запроса сырыми байтами в выходной порт.
 
     Данные идут в выходной порт другому насосу, а не в чат. Формат и
     настройки задаёт текст запроса, инструмент его не разбирает и отдаёт
-    блоки ответа как пришли; размер блока — chunk_bytes.
+    блоки ответа как пришли; размер блока — chunk_bytes. Стейтменты before
+    и after идут в той же сессии сервера до и после запроса.
     """
     from boba.db.clickhouse.payload import (  # noqa: PLC0415
         PayloadClickHouse,
@@ -1044,22 +1076,26 @@ async def ch_stream_out(
     payload = PayloadClickHouse
     statement = ChQueryBuilder().raw_query(sql).build()
     tuning = ReadTuning(socket_read_size=chunk_bytes, read_buffer_size=chunk_bytes)
-    async with (
-        payload.opened_config(connection) as client,
-        payload.byte_stream_out(client, statement.text, tuning=tuning) as stream,
-    ):
-        total = 0
-        async for block in stream.blocks:
-            total += len(block)
-            await out.send(block)
+    async with payload.opened_session(connection) as client:
+        before_steps = await payload.script(client, before)
 
-        report = stream.trace.report(f"copied out {total} bytes", statement.text)
+        async with payload.byte_stream_out(
+            client, statement.text, tuning=tuning
+        ) as stream:
+            total = 0
+            async for block in stream.blocks:
+                total += len(block)
+                await out.send(block)
 
-    return MarkdownResult(text=report.render())
+            report = stream.trace.report(f"copied out {total} bytes", statement.text)
+
+        after_steps = await payload.script(client, after)
+
+    return MarkdownResult(text=report.scripted(before_steps, after_steps).render())
 
 
 @tool
-async def ch_stream_in(
+async def ch_stream_in(  # noqa: PLR0913
     connection: ChConnection,
     sql: Annotated[
         str,
@@ -1081,31 +1117,38 @@ async def ch_stream_in(
         MarkdownResult(language="sql"),
     ],
     chunk_bytes: ChunkBytes,
+    before: BeforeSteps = (),
+    after: AfterSteps = (),
+    *,
     feed: Annotated[RawInbound, Injected],
 ) -> MarkdownResult:
     """Насос загрузки: тело из входного порта одним INSERT ... FORMAT.
 
     Данные приходят во входной порт от другого насоса и уезжают
     серверу как есть, блоками по chunk_bytes, без разбора на клиенте;
-    стейтмент тоже уходит как написан. В ответ — число записанных строк по
-    сводке сервера.
+    стейтмент тоже уходит как написан. Стейтменты before и after идут в
+    той же сессии сервера до и после INSERT: временная таблица из before
+    видна INSERT и after. В ответ — число записанных строк по сводке
+    сервера и шаги скриптов.
     """
     from boba.db.clickhouse.payload import PayloadClickHouse  # noqa: PLC0415
 
     payload = PayloadClickHouse
     statement = ChQueryBuilder().raw_query(sql).build()
-    async with payload.opened_config(connection) as client:
+    async with payload.opened_session(connection) as client:
+        before_steps = await payload.script(client, before)
         trace = await payload.byte_stream_in(
             client, statement.text, blocks=feed.blocks(chunk_bytes)
         )
+        after_steps = await payload.script(client, after)
 
     report = trace.report(f"{trace.written_rows} rows written", statement.text)
 
-    return MarkdownResult(text=report.render())
+    return MarkdownResult(text=report.scripted(before_steps, after_steps).render())
 
 
 @tool
-async def ch_arrow_out(
+async def ch_arrow_out(  # noqa: PLR0913
     connection: ChConnection,
     sql: Annotated[
         str,
@@ -1124,11 +1167,15 @@ async def ch_arrow_out(
         MarkdownResult(language="sql"),
     ],
     chunk_bytes: ChunkBytes,
+    before: BeforeSteps = (),
+    after: AfterSteps = (),
+    *,
     out: Annotated[RawOutbound, Injected],
 ) -> MarkdownResult:
     """Насос выгрузки потоком Arrow IPC: ch_stream_out с форматом ArrowStream,
     который дописывает драйвер; сервер пишет поток сам, блоки уходят в порт
-    как пришли.
+    как пришли. Стейтменты before и after идут в той же сессии сервера до и
+    после запроса.
     """
     from boba.db.clickhouse.payload import (  # noqa: PLC0415
         PayloadClickHouse,
@@ -1138,26 +1185,28 @@ async def ch_arrow_out(
     payload = PayloadClickHouse
     statement = ChQueryBuilder().raw_query(sql).build()
     tuning = ReadTuning(socket_read_size=chunk_bytes, read_buffer_size=chunk_bytes)
-    async with (
-        payload.opened_config(connection) as client,
-        payload.byte_stream_out(
+    async with payload.opened_session(connection) as client:
+        before_steps = await payload.script(client, before)
+
+        async with payload.byte_stream_out(
             client, statement.text, "ArrowStream", tuning=tuning
-        ) as stream,
-    ):
-        total = 0
-        async for block in stream.blocks:
-            total += len(block)
-            await out.send(block)
+        ) as stream:
+            total = 0
+            async for block in stream.blocks:
+                total += len(block)
+                await out.send(block)
 
-        report = stream.trace.report(
-            f"streamed out arrow ipc: {total} bytes", statement.text
-        )
+            report = stream.trace.report(
+                f"streamed out arrow ipc: {total} bytes", statement.text
+            )
 
-    return MarkdownResult(text=report.render())
+        after_steps = await payload.script(client, after)
+
+    return MarkdownResult(text=report.scripted(before_steps, after_steps).render())
 
 
 @tool
-async def ch_arrow_in(
+async def ch_arrow_in(  # noqa: PLR0913
     connection: ChConnection,
     sql: Annotated[
         str,
@@ -1178,23 +1227,29 @@ async def ch_arrow_in(
         MarkdownResult(language="sql"),
     ],
     chunk_bytes: ChunkBytes,
+    before: BeforeSteps = (),
+    after: AfterSteps = (),
+    *,
     feed: Annotated[RawInbound, Injected],
 ) -> MarkdownResult:
     """Насос загрузки потоком Arrow IPC: ch_stream_in для тела Arrow, поток
-    уходит серверу как есть, разбирает его сервер.
+    уходит серверу как есть, разбирает его сервер. Стейтменты before и after
+    идут в той же сессии сервера до и после INSERT.
     """
     from boba.db.clickhouse.payload import PayloadClickHouse  # noqa: PLC0415
 
     payload = PayloadClickHouse
     statement = ChQueryBuilder().raw_query(sql).build()
-    async with payload.opened_config(connection) as client:
+    async with payload.opened_session(connection) as client:
+        before_steps = await payload.script(client, before)
         trace = await payload.byte_stream_in(
             client, statement.text, blocks=feed.blocks(chunk_bytes)
         )
+        after_steps = await payload.script(client, after)
 
     report = trace.report(f"{trace.written_rows} rows written", statement.text)
 
-    return MarkdownResult(text=report.render())
+    return MarkdownResult(text=report.scripted(before_steps, after_steps).render())
 
 
 @tool

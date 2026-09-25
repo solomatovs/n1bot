@@ -9,6 +9,7 @@ OracleQueryError — сервер отклонил DDL стенда.
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Mapping, Sequence
 from enum import StrEnum
 from typing import ClassVar
@@ -37,6 +38,9 @@ class OracleStand:
     стейтменты теста через run) или сразу с таблицей customers (recreate)."""
 
     NO_SUCH_USER: ClassVar[str] = "ORA-01918"
+    STILL_CONNECTED: ClassVar[str] = "ORA-01940"
+    DROP_ATTEMPTS: ClassVar[int] = 20
+    DROP_PAUSE: ClassVar[float] = 0.25
 
     ADMIN: ClassVar[tuple[str, ...]] = (
         f"drop user {PumpUser.NAME} cascade",
@@ -116,12 +120,26 @@ class OracleStand:
             await self._drop_user(payload, admin)
 
     async def _drop_user(self, payload: PayloadOracle, admin: AsyncConnection) -> None:
+        """Сессию только что закрытого соединения сервер снимает не сразу, и
+        drop user отвечает ORA-01940: повторяется с паузой, потом ошибка."""
         drop, *_ = self.ADMIN
-        try:
-            await self._run(payload, admin, drop)
-        except OracleQueryError as exc:
-            if self.NO_SUCH_USER not in str(exc):
-                raise
+        for attempt in range(1, self.DROP_ATTEMPTS + 1):
+            try:
+                await self._run(payload, admin, drop)
+            except OracleQueryError as exc:
+                if self.NO_SUCH_USER in str(exc):
+                    return
+
+                if self.STILL_CONNECTED not in str(exc):
+                    raise
+
+                if attempt == self.DROP_ATTEMPTS:
+                    raise
+
+                await asyncio.sleep(self.DROP_PAUSE)
+                continue
+
+            return
 
     @staticmethod
     async def _run(payload: PayloadOracle, conn: AsyncConnection, text: str) -> None:

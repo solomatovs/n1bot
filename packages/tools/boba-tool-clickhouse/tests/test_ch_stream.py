@@ -205,7 +205,7 @@ class Pumps:
         report = await self._out(
             connection=self._connection, sql=statement, chunk_bytes=CHUNK, out=sink
         )
-        if report.text != "stream completed":
+        if not report.text.startswith("copied out "):
             raise AssertionError(report.text)
 
         return sink
@@ -240,7 +240,7 @@ class TestClickHouseToClickHouse:
         )
 
         assert sink.data().count(b"\n") == ROWS + 2
-        assert report == f"{ROWS} rows written"
+        assert report.startswith(f"{ROWS} rows written")
         assert await stand.fingerprint("sink") == await stand.fingerprint("customers")
 
     async def test_server_error_reaches_the_caller(

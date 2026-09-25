@@ -1,7 +1,8 @@
 """Oracle для payload'ов и скраперов: thin-соединение python-oracledb по профилю,
 строки запроса потоком с именованными bind'ами, CSV-байтами пачками Arrow
 (блоками или прямо в файл) или потоком Arrow IPC в Arrow-порт; запись пачками
-через executemany — строками или пачками Arrow.
+через executemany — строками или пачками Arrow; стейтменты before/after
+насоса по одному на том же соединении.
 
 Ошибки:
 OracleQueryError — сервер отклонил запрос или оборвал чтение (в том числе по
@@ -50,7 +51,7 @@ from oracledb import (
 
 from boba.db.oracle.connection import OracleConfig
 from boba.db.oracle.errors import OracleError, OracleQueryError
-from boba.db.oracle.trace import OraSessionTrace
+from boba.db.oracle.trace import OraScriptStep, OraSessionTrace
 from boba.toolkit.arrow import ArrowIpc
 from boba.toolkit.ports import ArrowOutbound
 
@@ -288,6 +289,36 @@ class PayloadOracle:
             cursor.close()
 
         return affected
+
+    async def script(
+        self, conn: AsyncConnection, statements: Sequence[str], trace: OraSessionTrace
+    ) -> tuple[OraScriptStep, ...]:
+        """Стейтменты before/after насоса по одному, по порядку, на том же
+        соединении: DML остаётся в транзакции насоса до commit вызывающего,
+        DDL Oracle фиксирует сам. Строки выборок не собираются, шаг даёт
+        число затронутых строк; предупреждения курсоров уходят в trace."""
+        steps: list[OraScriptStep] = []
+        for statement in statements:
+            cursor = await self._executed(conn, statement, {})
+            try:
+                trace.warned(cursor)
+                affected = self._affected(cursor)
+            finally:
+                cursor.close()
+
+            steps.append(OraScriptStep(statement, affected))
+
+        return tuple(steps)
+
+    @staticmethod
+    def _affected(cursor: AsyncCursor) -> int | None:
+        if cursor.description is not None:
+            return None
+
+        if cursor.rowcount < 0:
+            return None
+
+        return cursor.rowcount
 
     async def commit(self, conn: AsyncConnection) -> None:
         try:
