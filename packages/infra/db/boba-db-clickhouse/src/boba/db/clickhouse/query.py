@@ -22,14 +22,12 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from enum import StrEnum
 from string import Template
 from typing import Any
 
 from boba.toolkit.sql import AbstractQuery, QueryBuilder, QueryBuildError, QueryParams
 
 __all__ = [
-    "ChFormat",
     "ChIdentifier",
     "ChIdentifiers",
     "ChQuery",
@@ -39,14 +37,6 @@ __all__ = [
 
 ChQuery = AbstractQuery[str, QueryParams | None]
 """Собранный запрос: текст с {name:Type} или %(name)s плюс словарь параметров."""
-
-
-class ChFormat(StrEnum):
-    """Форматы ввода-вывода ClickHouse, которыми ходят насосы."""
-
-    CSV = "CSV"
-    TSV = "TabSeparated"
-    JSON_EACH_ROW = "JSONEachRow"
 
 
 @dataclass(frozen=True)

@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "boba-pump-stand"
+version = "0.0.24.dev2"
+description = "Boba pump stand: сводные стендовые тесты перекачки между базами насосами postgres, ClickHouse и Oracle."
+requires-python = ">=3.11,<4"
+dependencies = [
+    "boba-stand==0.0.24.dev2",
+    "boba-toolkit==0.0.24.dev2",
+    "boba-db-clickhouse[payload]==0.0.24.dev2",
+    "boba-db-postgres==0.0.24.dev2",
+    "boba-db-oracle[payload]==0.0.24.dev2",
+    "boba-tool-clickhouse==0.0.24.dev2",
+    "boba-tool-postgres==0.0.24.dev2",
+    "boba-tool-oracle==0.0.24.dev2",
+    "oracledb==26.0.0+boba.1",
+    "pydantic>=2.10,<2.11",
+]
+
+[project.optional-dependencies]
+dev = [
+    "psycopg[binary]>=3.3",
+    "pytest>=8",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["boba*"]
+namespaces = true

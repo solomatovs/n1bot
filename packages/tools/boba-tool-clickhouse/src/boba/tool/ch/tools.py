@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import sys
-from collections.abc import AsyncIterator, Iterator, Mapping, Sequence
+from collections.abc import AsyncIterator, Iterator, Mapping
 from enum import StrEnum
 from typing import Annotated, Any, ClassVar, Final
 
@@ -25,17 +25,10 @@ from boba.connections.address import AddressError
 from boba.db.clickhouse import ClickHouseError, ClickHouseQueryError
 from boba.db.clickhouse.address import ChAddresses
 from boba.db.clickhouse.connection import ClickHouseConfig
-from boba.db.clickhouse.query import (
-    ChFormat,
-    ChIdentifier,
-    ChIdentifiers,
-    ChQuery,
-    ChQueryBuilder,
-    ChValue,
-)
+from boba.db.clickhouse.query import ChQuery, ChQueryBuilder, ChValue
 from boba.toolkit.entry import ToolMain
 from boba.toolkit.facade import Injected, UserConnection, tool
-from boba.toolkit.ports import RawInbound
+from boba.toolkit.ports import RawInbound, RawOutbound
 from boba.toolkit.result import MarkdownResult, SqlResult, SqlStatement, TableResult
 from boba.toolkit.sql import (
     QueryBuildError,
@@ -1047,66 +1040,84 @@ class FeedBlocks:
 
 
 @tool
-async def ch_copy_in(  # noqa: PLR0913
+async def ch_stream_out(
     connection: ChConnection,
-    database: Annotated[
-        str, Field(min_length=1, description="База таблицы-приёмника: dwh.")
-    ],
-    table: Annotated[
-        str, Field(min_length=1, description="Таблица-приёмник в этой базе: events.")
-    ],
-    columns: Annotated[
-        Sequence[str],
+    sql: Annotated[
+        str,
         Field(
             min_length=1,
             description=(
-                "Колонки приёмника списком в порядке полей тела: "
-                '["id", "name", "created_at"].'
+                "Запрос ClickHouse целиком, с FORMAT в конце: "
+                "SELECT ... FROM db.t FORMAT TabSeparated. Ответ сервера уходит "
+                "следующему узлу байтами как есть, поэтому формат обязан "
+                "совпадать с тем, что ждёт приёмник. Без FORMAT сервер отдаёт "
+                "TabSeparated. Настройки формата пишутся в запросе: SELECT ... "
+                "SETTINGS output_format_json_quote_denormals = 1 FORMAT "
+                "JSONEachRow. В TabSeparated NULL это \\N, в CSV тоже \\N; "
+                "с именами и типами колонок в шапке — TabSeparatedWithNamesAndTypes."
             ),
         ),
+        MarkdownResult(language="sql"),
     ],
-    fmt: Annotated[
-        ChFormat,
+    out: Annotated[RawOutbound, Injected],
+) -> MarkdownResult:
+    """Насос выгрузки: ответ запроса сырыми байтами в выходной порт.
+
+    Узел графа workflow: данные идут следующему узлу, а не в чат. Формат и
+    настройки задаёт текст запроса, инструмент его не разбирает и отдаёт
+    блоки ответа как пришли. В ответ возвращается только счётчик байтов.
+    """
+    payload = get_payload()
+    async with (
+        payload.opened_config(connection) as client,
+        payload.byte_stream_out(client, sql) as stream,
+    ):
+        async for block in stream.blocks:
+            out.write(block)
+
+    return MarkdownResult(text="stream complited")
+
+
+@tool
+async def ch_stream_in(
+    connection: ChConnection,
+    sql: Annotated[
+        str,
         Field(
+            min_length=1,
             description=(
-                "Формат тела: CSV (NULL — пустое поле без кавычек, как COPY ... "
-                "(FORMAT CSV) postgres и ora_copy_out), TabSeparated (NULL — \\N, как "
-                "COPY текстом postgres) или JSONEachRow."
-            )
+                "Стейтмент INSERT целиком, с FORMAT в конце: "
+                "INSERT INTO db.t (id, name) FORMAT TabSeparated. Тело приходит "
+                "от предыдущего узла байтами как есть, формат обязан совпадать с "
+                "тем, что отдал источник. Настройки пишутся перед FORMAT: "
+                "INSERT INTO db.t SETTINGS input_format_skip_unknown_fields = 0 "
+                "FORMAT JSONEachRow. Привести типы или переименовать колонки на "
+                "лету можно табличной функцией input: INSERT INTO db.t SELECT "
+                "toUInt64(c1), upper(c2) FROM input('c1 String, c2 String') "
+                "FORMAT CSV. Форматы с именами в шапке сопоставляют колонки по "
+                "именам, лишнюю колонку сервер молча пропускает."
+            ),
         ),
+        MarkdownResult(language="sql"),
     ],
     feed: Annotated[RawInbound, Injected],
 ) -> MarkdownResult:
-    """Насос загрузки: тело из входного порта одним INSERT ... FORMAT в таблицу.
+    """Насос загрузки: тело из входного порта одним INSERT ... FORMAT.
 
     Узел графа workflow: данные приходят от предыдущего узла и уезжают
-    серверу как есть, блоками, без разбора на клиенте. Имена базы, таблицы
-    и колонок квотирует драйвер. В ответ возвращается счётчик принятых
-    байтов и записанных строк по сводке сервера.
+    серверу как есть, блоками, без разбора на клиенте; стейтмент тоже
+    уходит как написан. В ответ возвращается счётчик принятых байтов и
+    записанных строк по сводке сервера.
     """
-    query = (
-        ChQueryBuilder()
-        .add(
-            "insert into %(db)s.%(t)s (%(columns)s) format $fmt",
-            db=ChIdentifier(database),
-            t=ChIdentifier(table),
-            columns=ChIdentifiers(columns),
-            fmt=fmt.value,
-        )
-        .build()
-    )
     source = FeedBlocks(feed)
 
     payload = get_payload()
     async with payload.opened_config(connection) as client:
-        summary = await payload.byte_stream_in(
-            client, query.text, query.params, blocks=source.blocks()
-        )
+        summary = await payload.byte_stream_in(client, sql, blocks=source.blocks())
 
     return MarkdownResult(
         text=(
-            f"copied in {source.consumed} bytes, {summary.written_rows} rows "
-            f"into {database}.{table}"
+            f"streamed in {source.consumed} bytes, {summary.written_rows} rows written"
         )
     )
 
@@ -1151,7 +1162,8 @@ TOOLS: Final = ToolMain.toolset(
     ch_types_describe,
     ch_edm_structure,
     ch_edm_descriptions,
-    ch_copy_in,
+    ch_stream_out,
+    ch_stream_in,
 )
 
 if __name__ == "__main__":
