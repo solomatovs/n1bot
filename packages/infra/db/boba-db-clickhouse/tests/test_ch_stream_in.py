@@ -18,7 +18,6 @@ from boba.db.clickhouse.connection import ClickHouseConfig, ClickHouseSettingsCo
 from boba.db.clickhouse.errors import ClickHouseQueryError
 from boba.db.clickhouse.payload import PayloadClickHouse
 from boba.db.clickhouse.query import (
-    ChFormat,
     ChIdentifier,
     ChIdentifiers,
     ChQueryBuilder,
@@ -139,7 +138,7 @@ class TestStreamIn:
                     db=ChIdentifier(Probe.DATABASE),
                     t=ChIdentifier(Probe.TABLE),
                     columns=ChIdentifiers(Probe.COLUMNS),
-                    fmt=ChFormat.CSV.value,
+                    fmt="CSV",
                 )
                 .build()
             )
@@ -232,7 +231,7 @@ class TestStreamIn:
                 "insert into %(db)s.%(t)s format $fmt",
                 db=ChIdentifier(Probe.DATABASE),
                 t=ChIdentifier("pipe"),
-                fmt=ChFormat.TSV.value,
+                fmt="TabSeparated",
             )
             .build()
         )
@@ -249,7 +248,7 @@ class TestStreamIn:
         async with PayloadClickHouse.opened_config(source.admin) as client:
             await client.command(create.text, parameters=create.params)
             async with PayloadClickHouse.byte_stream_out(
-                client, select.text, ChFormat.TSV.value, select.params
+                client, select.text, "TabSeparated", select.params
             ) as stream:
                 summary = await PayloadClickHouse.byte_stream_in(
                     client, insert.text, insert.params, blocks=stream.blocks
