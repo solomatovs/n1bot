@@ -81,7 +81,9 @@ class TestPgQueryBuilder:
             "select * from {schema}.node where id = %(id)s", encoding="utf-8"
         )
 
-        query = PgQueryBuilder(schema=sql.Identifier("ix")).read(path, id=7).build()
+        query = (
+            PgQueryBuilder(schema=sql.Identifier("ix")).from_file(path, id=7).build()
+        )
 
         assert query.text.as_string() == 'select * from "ix".node where id = %(id)s'
         assert query.params == {"id": 7}

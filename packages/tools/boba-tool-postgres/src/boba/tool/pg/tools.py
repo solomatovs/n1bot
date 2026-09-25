@@ -19,7 +19,7 @@ from __future__ import annotations
 import sys
 from collections.abc import Mapping
 from enum import StrEnum
-from typing import Annotated, Any, ClassVar, Final
+from typing import Annotated, ClassVar, Final
 
 import psycopg
 from psycopg.rows import dict_row
@@ -29,10 +29,16 @@ from boba.db.postgres import PayloadPostgres, PgArrowError, PostgresError
 from boba.db.postgres.address import PgAddresses
 from boba.db.postgres.connection import PostgresConfig
 from boba.db.postgres.query import PgQuery, PgQueryBuilder
-from boba.toolkit.arrow import ArrowInbound, ArrowOutbound, ArrowStreamError
 from boba.toolkit.entry import ToolMain
 from boba.toolkit.facade import Injected, UserConnection, tool
-from boba.toolkit.ports import ChunkBytes, RawInbound, RawOutbound
+from boba.toolkit.ports import (
+    ArrowInbound,
+    ArrowOutbound,
+    ArrowStreamError,
+    ChunkBytes,
+    RawInbound,
+    RawOutbound,
+)
 from boba.toolkit.result import (
     MarkdownResult,
     ResultTooLargeError,
@@ -62,7 +68,6 @@ class AddressColumn(StrEnum):
 
     CONNECTION = "connection"
     URL = "url"
-
 
 
 class PgToolConfig(SecretRevealing, SqlLimits):
@@ -325,23 +330,28 @@ async def pg_stream_out(
 ) -> MarkdownResult:
     """Насос выгрузки: COPY ... TO STDOUT сырым потоком в выходной порт.
 
-    Данные идут в выходной порт другому насосу, а не в чат.
-    В ответ возвращается только счётчик перекачанных байтов.
+    Данные идут в выходной порт другому насосу, а не в чат. В ответ —
+    счётчик байтов, статус сервера, стейтмент и всё, что сервер сообщил
+    за время команды (notices, уведомления notify).
     """
+    from boba.db.postgres import PgSessionTrace  # noqa: PLC0415
+
     total = 0
 
     conn = await PayloadPostgres.connect_config(connection.copy_text())
+    trace = PgSessionTrace(conn)
+    statement = PgQueryBuilder().raw_query(sql).build()
 
-    # bytes: тип Query psycopg требует LiteralString, а запрос пишет LLM
-    statement = sql.encode(conn.info.encoding)
+    async with conn, conn.cursor() as cur:
+        async with cur.copy(statement.text) as copy_out:
+            async for block in copy_out:
+                data = bytes(block)
+                total += len(data)
+                await out.send(data)
 
-    async with conn, conn.cursor() as cur, cur.copy(statement) as copy_out:
-        async for block in copy_out:
-            data = bytes(block)
-            total += len(data)
-            await out.send(data)
+        report = trace.report(f"copied out {total} bytes", sql, cur)
 
-    return MarkdownResult(text=f"copied out {total} bytes")
+    return MarkdownResult(text=report.render())
 
 
 @tool
@@ -366,30 +376,26 @@ async def pg_stream_in(
     """Насос загрузки: сырой поток входного порта в COPY ... FROM STDIN.
 
     Данные приходят во входной порт от другого насоса порциями по
-    chunk_bytes. В ответ возвращается статус сервера (COPY N).
+    chunk_bytes. В ответ — счётчик байтов, статус сервера (COPY N),
+    стейтмент и всё, что сервер сообщил за время команды.
     """
+    from boba.db.postgres import PgSessionTrace  # noqa: PLC0415
+
+    total = 0
+
     conn = await PayloadPostgres.connect_config(connection.copy_text())
-    statement = sql.encode(conn.info.encoding)
+    trace = PgSessionTrace(conn)
+    statement = PgQueryBuilder().raw_query(sql).build()
 
     async with conn, conn.cursor() as cur:
-        async with cur.copy(statement) as copy_in:
+        async with cur.copy(statement.text) as copy_in:
             async for chunk in feed.blocks(chunk_bytes):
+                total += len(chunk)
                 await copy_in.write(chunk)
 
-        status = cur.statusmessage
+        report = trace.report(f"copied in {total} bytes", sql, cur)
 
-    return MarkdownResult(text=f"server: {status}")
-
-
-def get_arrow() -> Any:
-    """Поток Arrow над psycopg: тянет pyarrow, которого в приложении нет.
-
-    Модуль инструмента читает хост ради объявлений, а pyarrow живёт только
-    в песочнице — поэтому импорт отложен до самого вызова.
-    """
-    from boba.db.postgres import arrow  # noqa: PLC0415
-
-    return arrow
+    return MarkdownResult(text=report.render())
 
 
 @tool
@@ -424,49 +430,69 @@ async def pg_arrow_out(
     выполняется один раз как COPY ... TO STDOUT (FORMAT CSV), и читатель
     CSV pyarrow собирает пачки по chunk_bytes байт, но не меньше 1 MiB: строка
     обязана уместиться в блок, для строк шире поднимайте chunk_bytes. В ответ —
-    состав схемы.
+    состав схемы, статус сервера, выполненный стейтмент и сообщения сервера.
     """
+    from boba.db.postgres.arrow import PgArrowOut  # noqa: PLC0415
+
     conn = await PayloadPostgres.connect_config(connection.copy_text())
     async with conn:
-        schema = await get_arrow().PgArrowOut(conn).stream_into(sql, chunk_bytes, out)
+        report = await PgArrowOut(conn).stream_into(sql, chunk_bytes, out)
 
-    return MarkdownResult(text=f"streamed out arrow ipc: {', '.join(schema.names)}")
+    return MarkdownResult(text=report.render())
 
 
 @tool
 async def pg_arrow_in(
     connection: PgConnection,
-    table: Annotated[
+    sql: Annotated[
         str,
         Field(
             min_length=1,
             description=(
-                "Таблица-приёмник, при необходимости со схемой: public.orders. "
-                "Колонки берутся по именам полей схемы Arrow входного потока; "
-                "имя поля обязано быть колонкой таблицы, регистр как в базе "
-                '(из Oracle имена приходят заглавными — алиас col as "col"). '
-                "Массивы и bytea источник отдаёт текстом postgres: {1,2} и "
-                "\\x00ff."
+                "Стейтмент COPY ... FROM STDIN (FORMAT CSV) целиком, например: "
+                "COPY dwh.orders (id, amount, note) FROM STDIN (FORMAT CSV). "
+                "Колонки перечисляются в порядке полей схемы Arrow входного "
+                "потока; шапки в теле нет, HEADER не указывать. Значения "
+                "разбирает сервер по типу колонки: массивы и bytea источник "
+                "отдаёт текстом postgres — {1,2} и \\x00ff."
             ),
         ),
+        MarkdownResult(language="sql"),
     ],
     chunk_bytes: ChunkBytes,
+    exact_floats: Annotated[
+        bool,
+        Field(
+            description=(
+                "true — колонки float и double потока едут шестнадцатеричной "
+                "записью C (0x1.8p+3), которую любой postgres разбирает бит в "
+                "бит; нужна на Greenplum 6, который десятичную запись части "
+                "значений округляет на одну ULP. Только в колонки real и "
+                "double precision. false — обычная десятичная запись."
+            ),
+        ),
+    ] = False,
+    *,
     feed: Annotated[ArrowInbound, Injected],
 ) -> MarkdownResult:
-    """Насос загрузки: поток Arrow IPC из входного порта в таблицу.
+    """Насос загрузки: поток Arrow IPC из входного порта в COPY ... FROM STDIN.
 
     Данные приходят во входной порт от другого насоса. Каждую пачку
-    писатель CSV pyarrow пишет блоком в COPY ... FROM STDIN (FORMAT CSV),
-    значения разбирает сервер по типу колонки; списки и двоичные типы в
-    потоке отвергаются — источник отдаёт их текстом. Вся загрузка — одна
-    транзакция: ошибка откатывает всё. В ответ — число записанных строк.
+    писатель CSV pyarrow пишет блоком в стейтмент COPY, значения
+    разбирает сервер по типу колонки; списки и двоичные типы в потоке
+    отвергаются — источник отдаёт их текстом. Вся загрузка — одна
+    транзакция: ошибка откатывает всё. В ответ — число записанных строк,
+    статус сервера, стейтмент и сообщения сервера.
     """
-    reader = await feed.open(chunk_bytes)
+    from boba.db.postgres.arrow import PgArrowIn  # noqa: PLC0415
+    from boba.toolkit.arrow import ArrowIpc  # noqa: PLC0415
+
+    reader = await ArrowIpc().open_in(feed, chunk_bytes)
     conn = await PayloadPostgres.connect_config(connection.copy_text())
     async with conn:
-        rows = await get_arrow().PgArrowIn(conn).copy_from(table, reader)
+        report = await PgArrowIn(conn, exact_floats).copy_from(sql, reader)
 
-    return MarkdownResult(text=f"{rows} rows written into {table}")
+    return MarkdownResult(text=report.render())
 
 
 @tool

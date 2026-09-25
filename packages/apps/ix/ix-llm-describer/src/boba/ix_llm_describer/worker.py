@@ -176,7 +176,7 @@ class DescriberWorker:
         """Объявить llm_description, собрать источник входа и промпты пар."""
         query = (
             PgQueryBuilder(schema=sql.Identifier(self._cfg.db_schema))
-            .read(self._dir / SqlFile.DECLARE)
+            .from_file(self._dir / SqlFile.DECLARE)
             .build()
         )
         await conn.execute(query.text, query.params)
@@ -276,7 +276,7 @@ class DescriberWorker:
         }
         query = (
             PgQueryBuilder(**binding.names)
-            .read(self._dir / SqlFile.QUEUE, **params)
+            .from_file(self._dir / SqlFile.QUEUE, **params)
             .build()
         )
         cur = await conn.execute(query.text, query.params)
@@ -311,7 +311,7 @@ class DescriberWorker:
         }
         query = (
             PgQueryBuilder(**binding.names)
-            .read(self._dir / SqlFile.WRITE, **params)
+            .from_file(self._dir / SqlFile.WRITE, **params)
             .build()
         )
         await conn.execute(query.text, query.params)
@@ -319,11 +319,17 @@ class DescriberWorker:
     async def _unlock(
         self, conn: psycopg.AsyncConnection[Any], binding: Binding
     ) -> None:
-        query = PgQueryBuilder(**binding.names).read(self._dir / SqlFile.UNLOCK).build()
+        query = (
+            PgQueryBuilder(**binding.names)
+            .from_file(self._dir / SqlFile.UNLOCK)
+            .build()
+        )
         await conn.execute(query.text, query.params)
 
     async def _prune(self, conn: psycopg.AsyncConnection[Any], binding: Binding) -> int:
-        query = PgQueryBuilder(**binding.names).read(self._dir / SqlFile.PRUNE).build()
+        query = (
+            PgQueryBuilder(**binding.names).from_file(self._dir / SqlFile.PRUNE).build()
+        )
         cur = await conn.execute(query.text, query.params)
         record = await cur.fetchone()
         if record is None:

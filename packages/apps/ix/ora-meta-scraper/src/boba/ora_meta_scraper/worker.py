@@ -47,7 +47,6 @@ __all__ = [
 ]
 
 
-
 class SourceConfig(SourceConfigBase):
     """Источник снятия: имя для выбора из командной строки и профиль подключения."""
 
@@ -119,7 +118,7 @@ class OraSession(ScrapeSession):
                 f"params (lists are not bindable), got {listed}"
             )
 
-        query = OraQueryBuilder().read(path).build()
+        query = OraQueryBuilder().from_file(path).build()
 
         label = f"{name} ({path.name}) on {self._where}"
         try:

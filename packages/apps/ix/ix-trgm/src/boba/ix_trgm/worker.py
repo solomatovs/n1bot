@@ -126,7 +126,7 @@ class IndexerWorker:
     ) -> StepResult:
         query = (
             PgQueryBuilder(**names)
-            .read(self._dir / SqlFile.UPSERT, batch=self._cfg.batch)
+            .from_file(self._dir / SqlFile.UPSERT, batch=self._cfg.batch)
             .build()
         )
         cur = await conn.execute(query.text, query.params)
@@ -139,7 +139,7 @@ class IndexerWorker:
     async def _prune(
         self, conn: psycopg.AsyncConnection[Any], names: Mapping[str, sql.Composable]
     ) -> int:
-        query = PgQueryBuilder(**names).read(self._dir / SqlFile.PRUNE).build()
+        query = PgQueryBuilder(**names).from_file(self._dir / SqlFile.PRUNE).build()
         cur = await conn.execute(query.text, query.params)
         record = await cur.fetchone()
         if record is None:

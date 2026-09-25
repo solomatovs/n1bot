@@ -16,8 +16,7 @@ import io
 from collections.abc import AsyncGenerator, AsyncIterator, Mapping, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from enum import StrEnum
-from typing import Any, BinaryIO, ClassVar
+from typing import Any, ClassVar
 
 import oracledb
 import pyarrow
@@ -51,49 +50,18 @@ from oracledb import (
 
 from boba.db.oracle.connection import OracleConfig
 from boba.db.oracle.errors import OracleError, OracleQueryError
-from boba.toolkit.arrow import ArrowOutbound
+from boba.toolkit.arrow import ArrowIpc
+from boba.toolkit.ports import ArrowOutbound
 
 __all__ = [
     "ArrowTypes",
     "ByteStream",
-    "OraColumnType",
     "PayloadOracle",
     "RowStream",
 ]
 
 
-class OraColumnType(StrEnum):
-    """Семейство типа колонки глазами загрузчика текста: как привести строку CSV
-    к значению bind'а. Точный тип драйвера наружу не выходит."""
-
-    NUMBER = "number"
-    FLOAT = "float"
-    DATE = "date"
-    TIMESTAMP = "timestamp"
-    BINARY = "binary"
-    TEXT = "text"
-
-    @classmethod
-    def of(cls, db_type: DbType) -> OraColumnType:
-        if db_type in (DB_TYPE_NUMBER, DB_TYPE_BINARY_INTEGER):
-            return cls.NUMBER
-
-        if db_type in (DB_TYPE_BINARY_DOUBLE, DB_TYPE_BINARY_FLOAT):
-            return cls.FLOAT
-
-        if db_type is DB_TYPE_DATE:
-            return cls.DATE
-
-        if db_type in (DB_TYPE_TIMESTAMP, DB_TYPE_TIMESTAMP_TZ, DB_TYPE_TIMESTAMP_LTZ):
-            return cls.TIMESTAMP
-
-        if db_type in (DB_TYPE_RAW, DB_TYPE_LONG_RAW, DB_TYPE_BLOB):
-            return cls.BINARY
-
-        return cls.TEXT
-
-
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class RowStream:
     """Строки одного запроса: имена колонок и сами строки асинхронным потоком.
 
@@ -246,6 +214,7 @@ class PayloadOracle:
     def __init__(self, connection: OracleConfig) -> None:
         self._connection = connection
         self._types = ArrowTypes()
+        self._ipc = ArrowIpc()
 
     @asynccontextmanager
     async def opened(self) -> AsyncGenerator[AsyncConnection, None]:
@@ -292,31 +261,18 @@ class PayloadOracle:
         finally:
             cursor.close()
 
-    async def column_types(
-        self, conn: AsyncConnection, text: str
-    ) -> tuple[OraColumnType, ...]:
-        """Семейства типов колонок запроса по описанию после parse: сервер
-        разбирает стейтмент и не выполняет его."""
-        kinds: list[OraColumnType] = []
-        for column in await self._described(conn, text):
-            kinds.append(OraColumnType.of(column.type))
-
-        return tuple(kinds)
-
     async def executemany(
         self,
         conn: AsyncConnection,
         text: str,
-        kinds: Sequence[OraColumnType],
         rows: Sequence[Sequence[object]],
     ) -> int:
-        """Одна команда для пачки строк: позиционные bind'ы `:1..:n` по семействам
-        kinds, драйвер шлёт пачку серверу одной поездкой. Семейство задаёт тип
-        bind'а: без него datetime уехал бы как DATE и потерял доли секунды.
+        """Одна команда для пачки строк: позиционные bind'ы `:1..:n` по порядку
+        полей строки, драйвер шлёт пачку серверу одной поездкой. Значения идут
+        как есть (текст CSV — строками, NULL — None), приводит их сам стейтмент.
         Возвращает число затронутых строк; транзакцию завершает вызывающий."""
         cursor = conn.cursor()
         try:
-            cursor.setinputsizes(*self._bind_types(kinds))
             await cursor.executemany(text, list(rows))
             affected = cursor.rowcount
         except oracledb.Error as exc:
@@ -328,24 +284,6 @@ class PayloadOracle:
             cursor.close()
 
         return affected
-
-    @staticmethod
-    def _bind_types(kinds: Sequence[OraColumnType]) -> list[DbType | None]:
-        """Тип bind'а по семейству: у TIMESTAMP и BINARY он явный, остальные
-        драйвер выводит из значения."""
-        types: list[DbType | None] = []
-        for kind in kinds:
-            if kind is OraColumnType.TIMESTAMP:
-                types.append(DB_TYPE_TIMESTAMP)
-                continue
-
-            if kind is OraColumnType.BINARY:
-                types.append(DB_TYPE_RAW)
-                continue
-
-            types.append(None)
-
-        return types
 
     async def commit(self, conn: AsyncConnection) -> None:
         try:
@@ -446,7 +384,7 @@ class PayloadOracle:
         же, что у csv (ArrowTypes); типы, которые драйвер в Arrow не отдаёт,
         отвергаются до выполнения."""
         schema = await self._requested_schema(conn, text)
-        writer = await sink.open(schema)
+        writer = await self._ipc.open_out(sink, schema)
         async for table in self._tables(conn, text, schema):
             try:
                 await writer.write(table)
@@ -462,7 +400,7 @@ class PayloadOracle:
         return schema
 
     async def csv_into(
-        self, conn: AsyncConnection, text: str, sink: BinaryIO
+        self, conn: AsyncConnection, text: str, sink: io.RawIOBase
     ) -> tuple[str, ...]:
         """Ответ запроса CSV-байтами без заголовка прямо в двоичный файл (сырой
         порт): pyarrow пишет каждую пачку в sink сам, без промежуточного

@@ -122,7 +122,7 @@ class ChSession(ScrapeSession):
         отдают через toJSONString, потому что `['a']` PostgreSQL не разбирает.
         prefer_column_name_to_alias: alias с именем колонки не должен подменять её
         в хэше row_version."""
-        query = ChQueryBuilder().read(path, **params).build()
+        query = ChQueryBuilder().from_file(path, **params).build()
         settings: dict[str, Any] = {
             "output_format_tsv_crlf_end_of_line": 0,
             "prefer_column_name_to_alias": 1,

@@ -16,6 +16,7 @@ from boba.db.postgres.payload import PayloadPostgres
 from boba.db.postgres.query import PgQuery, PgQueryBuilder
 from boba.db.postgres.schema import AdvisoryLock, PostgresSchema
 from boba.db.postgres.table import Cursor, ModelT, PostgresTable
+from boba.db.postgres.trace import PgCommandReport, PgNotice, PgNotify, PgSessionTrace
 
 __all__ = [
     "AdvisoryLock",
@@ -27,8 +28,12 @@ __all__ = [
     "ModelT",
     "PayloadPostgres",
     "PgArrowError",
+    "PgCommandReport",
+    "PgNotice",
+    "PgNotify",
     "PgQuery",
     "PgQueryBuilder",
+    "PgSessionTrace",
     "PostgresError",
     "PostgresPool",
     "PostgresPoolClosedError",

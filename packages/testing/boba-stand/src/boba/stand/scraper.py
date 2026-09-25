@@ -203,7 +203,7 @@ class ScraperStandDatabase(IxStandDatabase):
         """Инварианты структуры, у которых счётчик не ноль."""
         query = (
             PgQueryBuilder(schema=sql.Identifier(self.stand.db_schema))
-            .read(self._layout.path(StandFile.CONSISTENCY))
+            .from_file(self._layout.path(StandFile.CONSISTENCY))
             .build()
         )
         broken: dict[str, int] = {}
@@ -220,7 +220,7 @@ class ScraperStandDatabase(IxStandDatabase):
     async def fingerprint(self, host: str) -> Fingerprint:
         query = (
             PgQueryBuilder(schema=sql.Identifier(self.stand.db_schema))
-            .read(self._layout.path(StandFile.CANON), host=host)
+            .from_file(self._layout.path(StandFile.CANON), host=host)
             .build()
         )
         async with self.connection() as conn:

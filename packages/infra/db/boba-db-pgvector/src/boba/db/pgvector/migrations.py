@@ -105,7 +105,7 @@ class Migrations:
         names = self._names()
         statements: list[PgQuery] = []
         for path in self.files():
-            statements.append(PgQueryBuilder(**names).read(path).build())
+            statements.append(PgQueryBuilder(**names).from_file(path).build())
 
         return statements
 
@@ -144,7 +144,7 @@ class Migrations:
         """Все миграции на соединении; каждая логируется по имени файла."""
         names = self._names()
         for path in self.files():
-            statement = PgQueryBuilder(**names).read(path).build()
+            statement = PgQueryBuilder(**names).from_file(path).build()
             logger.info(
                 "applying migration %s (schema=%s, chunks=%s, collections=%s)",
                 path.name,

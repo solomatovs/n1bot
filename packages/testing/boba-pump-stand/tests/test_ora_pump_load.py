@@ -312,7 +312,7 @@ class TestLoad:
             f"{chained.out_report}, peak rss +{growth} MiB"
         )
 
-        assert chained.in_report == f"server: COPY {ROWS}"
+        assert f"status: COPY {ROWS}" in chained.in_report
         assert await postgres.totals() == await oracle.totals()
         assert growth < PEAK_GROWTH_MIB
 

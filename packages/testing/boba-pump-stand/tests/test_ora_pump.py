@@ -845,7 +845,7 @@ class TestOracleToPostgres:
                 },
             ),
         )
-        assert chained.in_report == f"server: COPY {ROWS}"
+        assert f"status: COPY {ROWS}" in chained.in_report
 
         ora_refs: list[str] = []
         pg_refs: list[str] = []

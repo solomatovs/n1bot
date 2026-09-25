@@ -46,7 +46,7 @@ from boba.pump_stand.compare import (
     Report,
     Values,
 )
-from boba.pump_stand.matrix import Target, compared, first
+from boba.pump_stand.matrix import Target, compared, copy_into, first, insert_into
 from boba.pump_stand.oracle import PumpUser
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
@@ -751,9 +751,15 @@ class TestClickHouseToOracle:
                         "chunk_bytes": CHUNK_BYTES,
                     },
                 ),
-                Leg("ora_arrow_in", {"table": "landed", "chunk_bytes": CHUNK_BYTES}),
+                Leg(
+                    "ora_arrow_in",
+                    {
+                        "sql": insert_into("landed", [c.name for c in columns]),
+                        "chunk_bytes": CHUNK_BYTES,
+                    },
+                ),
             )
-            assert chained.in_report == f"{ROWS} rows written into landed"
+            assert chained.in_report.startswith(f"{ROWS} rows written")
 
             expected = await clickhouse.select(
                 "src", [_or(c.ch_ref, c.name) for c in columns]
@@ -802,9 +808,15 @@ class TestOracleToOracle:
                     "ora_arrow_out",
                     {"sql": f"select {names} from {PumpUser.NAME}.arr order by id"},
                 ),
-                Leg("ora_arrow_in", {"table": "circle", "chunk_bytes": CHUNK_BYTES}),
+                Leg(
+                    "ora_arrow_in",
+                    {
+                        "sql": insert_into("circle", [c.name for c in columns]),
+                        "chunk_bytes": CHUNK_BYTES,
+                    },
+                ),
             )
-            assert chained.in_report == f"{ROWS} rows written into circle"
+            assert chained.in_report.startswith(f"{ROWS} rows written")
 
             expected = await oracle.select("arr", [c.name for c in columns])
             landed = await oracle.select("circle", [c.name for c in columns])
@@ -867,10 +879,13 @@ class TestOracleToPostgres:
             ),
             Leg(
                 "pg_arrow_in",
-                {"table": f"{PG_SCHEMA}.{table}", "chunk_bytes": CHUNK_BYTES},
+                {
+                    "sql": copy_into(f"{PG_SCHEMA}.{table}", [c.name for c in columns]),
+                    "chunk_bytes": CHUNK_BYTES,
+                },
             ),
         )
-        assert chained.in_report == f"{ROWS} rows written into {PG_SCHEMA}.{table}"
+        assert chained.in_report.startswith(f"{ROWS} rows written")
 
         expected = await oracle.select(
             "arr",
@@ -965,7 +980,10 @@ class TestTraps:
         await oracle.create("moments", ["id number(10)", "dtm date"])
         pumps = Pumps(clickhouse=clickhouse.source.admin, oracle=oracle.owner)
         select = "select toInt64(1) as id, {dtm} as dtm format ArrowStream"
-        into = Leg("ora_arrow_in", {"table": "moments", "chunk_bytes": CHUNK_BYTES})
+        into = Leg(
+            "ora_arrow_in",
+            {"sql": insert_into("moments", ["id", "dtm"]), "chunk_bytes": CHUNK_BYTES},
+        )
         try:
             with pytest.raises(OracleQueryError, match="ORA-00932"):
                 await pumps.chain(

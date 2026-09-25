@@ -178,7 +178,7 @@ class IxSearch:
                 .build()
                 .text,
             )
-            .read(sql_path, **params)
+            .from_file(sql_path, **params)
             .build()
         )
 
