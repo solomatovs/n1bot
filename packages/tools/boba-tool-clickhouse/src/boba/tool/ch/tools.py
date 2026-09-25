@@ -1049,7 +1049,7 @@ async def ch_stream_out(
 ) -> MarkdownResult:
     """Насос выгрузки: ответ запроса сырыми байтами в выходной порт.
 
-    Узел графа workflow: данные идут следующему узлу, а не в чат. Формат и
+    Данные идут в выходной порт другому насосу, а не в чат. Формат и
     настройки задаёт текст запроса, инструмент его не разбирает и отдаёт
     блоки ответа как пришли; размер блока — chunk_bytes.
     """
@@ -1091,7 +1091,7 @@ async def ch_stream_in(
 ) -> MarkdownResult:
     """Насос загрузки: тело из входного порта одним INSERT ... FORMAT.
 
-    Узел графа workflow: данные приходят от предыдущего узла и уезжают
+    Данные приходят во входной порт от другого насоса и уезжают
     серверу как есть, блоками по chunk_bytes, без разбора на клиенте;
     стейтмент тоже уходит как написан. В ответ — число записанных строк по
     сводке сервера.
@@ -1104,8 +1104,6 @@ async def ch_stream_in(
 
     return MarkdownResult(text=f"{summary.written_rows} rows written")
 
-
-ARROW_STREAM = "ArrowStream"
 
 
 @tool
@@ -1138,7 +1136,7 @@ async def ch_arrow_out(
     async with (
         payload.opened_config(connection) as client,
         payload.byte_stream_out(
-            client, sql, ARROW_STREAM, tuning=read_tuning(chunk_bytes)
+            client, sql, "ArrowStream", tuning=read_tuning(chunk_bytes)
         ) as stream,
     ):
         async for block in stream.blocks:

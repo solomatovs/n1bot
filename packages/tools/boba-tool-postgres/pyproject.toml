@@ -21,6 +21,8 @@ pg = "boba.tool.pg.plugin:MANIFEST"
 
 [project.optional-dependencies]
 payload = [
+    "boba-db-postgres[arrow]==0.0.24.dev2",
+    "boba-toolkit[arrow]==0.0.24.dev2",
 ]
 dev = [
     "boba-config==0.0.24.dev2",
@@ -33,4 +35,4 @@ include = ["boba*"]
 namespaces = true
 
 [tool.boba.sandbox]
-imports = ["psycopg"]
+imports = ["psycopg", "pyarrow"]

@@ -62,6 +62,9 @@ from boba.toolkit.frames import FrameProtocolError, ToolIo
 from boba.toolkit.stream import Chunk
 
 __all__ = [
+    "ArrowInbound",
+    "ArrowOutbound",
+    "ArrowStreamError",
     "Framed",
     "Inbound",
     "Outbound",
@@ -265,6 +268,25 @@ class RawOutbound(io.RawIOBase):
         cls, source: Any, handler: GetCoreSchemaHandler
     ) -> CoreSchema:
         return core_schema.is_instance_schema(cls)
+
+
+class ArrowStreamError(Exception):
+    """Байты порта не читаются как поток Arrow IPC или оборвались посреди
+    пачки."""
+
+
+class ArrowInbound(RawInbound):
+    """Входной порт потока Arrow IPC. На проводе обычный поток IPC (схема,
+    пачки, конец), поэтому порт стыкуется с любым сырым концом, который
+    пишет Arrow IPC: ClickHouse с FORMAT ArrowStream, ora_arrow_out. Сам порт
+    сырой, как RawInbound; пачки из него читает ArrowIpc из
+    boba.toolkit.arrow — тот тянет pyarrow, которого у хоста, читающего
+    объявления инструментов, нет."""
+
+
+class ArrowOutbound(RawOutbound):
+    """Выходной порт потока Arrow IPC: сырой, как RawOutbound; схему и пачки
+    в него пишет ArrowIpc из boba.toolkit.arrow."""
 
 
 class StreamPorts:

@@ -564,7 +564,7 @@ class PgSource(ScrapeSource):
     @asynccontextmanager
     async def open_session(self) -> AsyncGenerator[ScrapeSession, None]:
         try:
-            conn = await AsyncPostgresPool.dedicated(self._cfg.source)
+            conn = await AsyncPostgresPool.dedicated(self._cfg.source.copy_text())
         except (psycopg.Error, PostgresError, KerberosError) as exc:
             raise ScrapeSourceError(
                 f"connecting to {self.describe()} as {self._cfg.source.trace()}: "

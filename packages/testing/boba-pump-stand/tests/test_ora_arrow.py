@@ -1,8 +1,9 @@
 """Перекачка потоком Arrow IPC: ora_arrow_out и ora_arrow_in против
 ch_arrow_out и ch_arrow_in (в ловушках — ch_stream_* с FORMAT ArrowStream в
-тексте), насосы соединены трубой ОС и работают одновременно. Матрица —
-каждый Oracle из ora_sources против каждого ClickHouse из ch_sources в обе
-стороны, плюс круг Oracle -> Oracle.
+тексте) и pg_arrow_in, насосы соединены трубой ОС и работают одновременно.
+Матрица — каждый Oracle из ora_sources против каждого ClickHouse из
+ch_sources в обе стороны, в каждый postgres и Greenplum из sources, плюс
+круг Oracle -> Oracle.
 
 В отличие от CSV значения не переводятся в текст: числа, float с NaN, время
 и двоичные данные едут своими типами Arrow. Приводить в запросе остаётся
@@ -16,7 +17,7 @@ DateTime как uint32, UUID на 22.12, NVARCHAR2 в однобайтовой �
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncIterator, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, ClassVar
 
@@ -25,7 +26,15 @@ import pytest
 from boba.db.clickhouse.payload import PayloadClickHouse
 from boba.db.oracle import OracleQueryError
 from boba.db.oracle.payload import PayloadOracle
-from boba.pump_stand import ChSource, Leg, OracleStand, OraSource, Pumps, PumpStand
+from boba.pump_stand import (
+    ChSource,
+    Leg,
+    OracleStand,
+    OraSource,
+    PostgresSide,
+    Pumps,
+    PumpStand,
+)
 from boba.pump_stand.compare import (
     BYTES,
     DATETIME,
@@ -37,6 +46,7 @@ from boba.pump_stand.compare import (
     Report,
     Values,
 )
+from boba.pump_stand.matrix import Target, compared, first
 from boba.pump_stand.oracle import PumpUser
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
@@ -46,6 +56,7 @@ ROWS = 2000
 ARRAYSIZE = 97
 CHUNK_BYTES = 4096
 CH_DATABASE = "pump_arrow"
+PG_SCHEMA = "pump_ora_arrow"
 NULL_EVERY = 7
 CASE_INSENSITIVE = "input_format_arrow_case_insensitive_column_matching = 1"
 STRING_AS_STRING = "output_format_arrow_string_as_string = 1"
@@ -338,6 +349,53 @@ ORA_COLUMNS = (
 """LOB-колонки (CLOB, BLOB, JSON, XMLTYPE) стоят последними: Oracle не
 принимает длинный bind после LOB-колонки в одном insert (ORA-24816), а
 ora_arrow_in идёт по порядку полей схемы."""
+
+BLOB_HEX = (
+    "to_clob(rawtohex(dbms_lob.substr(bl, 2000, 1))) "
+    "|| to_clob(rawtohex(dbms_lob.substr(bl, 2000, 2001)))"
+)
+PG_TARGETS: Mapping[str, Target] = {
+    "id": Target("bigint"),
+    "n38": Target("numeric(38)"),
+    "n18_4": Target("numeric(18,4)"),
+    "n38_10": Target("numeric(38,10)"),
+    "nfree": Target("numeric"),
+    "nint": Target("bigint"),
+    "nneg": Target("bigint"),
+    "fdbl": Target("double precision"),
+    "bf": Target("real"),
+    "bd": Target("double precision"),
+    "vc": Target("text"),
+    "nvc": Target("text"),
+    "vcu": Target("text"),
+    "chr5": Target("char(5)"),
+    "dt": Target("timestamp(0)"),
+    "ts6": Target("timestamp(6)"),
+    "ts9": Target("text"),
+    "tstz": Target("timestamp(6)"),
+    "iym": Target("integer"),
+    "ids": Target("numeric(18,6)"),
+    "rwb": Target(
+        "bytea",
+        out="case when rwb is not null then '\\x' || rawtohex(rwb) end",
+        ref="encode(rwb, 'hex')",
+    ),
+    "bool": Target("boolean"),
+    "vec": Target("text"),
+    "cl": Target("text"),
+    "bl": Target(
+        "bytea",
+        out=f"case when bl is not null then to_clob('\\x') || {BLOB_HEX} end",
+        ref="encode(bl, 'hex')",
+    ),
+    "jsc": Target("text"),
+    "js": Target("text"),
+    "xml": Target("text"),
+}
+"""Приёмник postgres для каждой колонки Oracle: тип, выражение выгрузки и
+опорное выражение postgres; выражение и опорное Oracle по умолчанию — из
+самой колонки (те же, что для ClickHouse). Двоичные едут hex-текстом с
+префиксом \\x, потому что CSV байтов не несёт."""
 
 BLOB_FILL = (
     "declare\n"
@@ -764,6 +822,81 @@ class TestOracleToOracle:
                 _column(expected, position),
                 _column(landed, position),
             )
+
+        assert not report.mismatches, report.render()
+
+
+@pytest.fixture(scope="module", params=STAND.sources, ids=lambda s: s.name)
+async def postgres(request: Any) -> AsyncIterator[PostgresSide]:
+    side = PostgresSide(request.param, PG_SCHEMA)
+    await side.connect()
+    await side.recreate_schema()
+    yield side
+    await side.drop()
+
+
+class TestOracleToPostgres:
+    async def test_every_oracle_type_lands(
+        self, oracle: Oracle, postgres: PostgresSide
+    ) -> None:
+        """Имена из Oracle заглавные, а колонки postgres строчные: алиас в
+        кавычках даёт имя поля схемы как в приёмнике."""
+        columns: list[OraColumn] = []
+        targets: list[Target] = []
+        for column in oracle.columns():
+            target = PG_TARGETS.get(column.name)
+            if target is None:
+                continue
+
+            columns.append(column)
+            targets.append(target)
+
+        table = "from_" + oracle.source.name.replace("-", "_").replace(".", "_")
+        await postgres.create(
+            table, [f"{c.name} {t.type}" for c, t in zip(columns, targets, strict=True)]
+        )
+        listed = ", ".join(
+            f'{first(t.out, first(c.out, c.name))} as "{c.name}"'
+            for c, t in zip(columns, targets, strict=True)
+        )
+        pumps = Pumps(postgres=postgres.profile, oracle=oracle.owner)
+        chained = await pumps.chain(
+            Leg(
+                "ora_arrow_out",
+                {"sql": f"select {listed} from {PumpUser.NAME}.arr order by id"},
+            ),
+            Leg(
+                "pg_arrow_in",
+                {"table": f"{PG_SCHEMA}.{table}", "chunk_bytes": CHUNK_BYTES},
+            ),
+        )
+        assert chained.in_report == f"{ROWS} rows written into {PG_SCHEMA}.{table}"
+
+        expected = await oracle.select(
+            "arr",
+            [
+                first(t.src_ref, first(c.ora_ref, c.name))
+                for c, t in zip(columns, targets, strict=True)
+            ],
+        )
+        landed = await postgres.select(
+            table, [first(t.ref, c.name) for c, t in zip(columns, targets, strict=True)]
+        )
+        tolerances: list[float] = []
+        for column in columns:
+            tolerance = column.approx
+            if column.compare is FLOAT:
+                tolerance = max(tolerance, postgres.double_tolerance())
+
+            tolerances.append(tolerance)
+
+        report = compared(
+            [c.name for c in columns],
+            [c.compare for c in columns],
+            tolerances,
+            expected,
+            landed,
+        )
 
         assert not report.mismatches, report.render()
 
