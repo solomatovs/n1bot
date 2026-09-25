@@ -12,6 +12,14 @@ from __future__ import annotations
 
 from boba.db.clickhouse.formats.base import Blocks, StreamFormat
 from boba.db.clickhouse.formats.blob import RawBlob, RawBlobStream
+from boba.db.clickhouse.formats.csv import (
+    Csv,
+    CsvNamesStream,
+    CsvStream,
+    CsvTypedStream,
+    CsvWithNames,
+    CsvWithNamesAndTypes,
+)
 from boba.db.clickhouse.formats.json_compact import (
     JsonCompactStream,
     JsonCompactWithNamesAndTypes,
@@ -23,6 +31,12 @@ from boba.db.clickhouse.formats.tsv import TsvStream, TsvWithNamesAndTypes
 
 __all__ = [
     "Blocks",
+    "Csv",
+    "CsvNamesStream",
+    "CsvStream",
+    "CsvTypedStream",
+    "CsvWithNames",
+    "CsvWithNamesAndTypes",
     "JsonCompactStream",
     "JsonCompactWithNamesAndTypes",
     "JsonDocuments",
