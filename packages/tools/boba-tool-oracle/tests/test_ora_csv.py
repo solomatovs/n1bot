@@ -4,7 +4,7 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Iterator, Sequence
+from collections.abc import AsyncIterator, Sequence
 from typing import Any
 
 import pytest
@@ -19,7 +19,6 @@ from boba.tool.ora import tools as ora
 from boba.toolkit.entry import ToolMain
 from boba.toolkit.frames import ToolIo
 from boba.toolkit.ports import RawInbound, RawOutbound
-from boba.toolkit.stream import Chunk
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
 
@@ -38,8 +37,11 @@ class Sink(RawOutbound):
         super().__init__(ToolIo.detached())
         self._buffer = bytearray()
 
-    async def write(self, chunk: Chunk) -> None:
+    def write(self, buffer: Any) -> int:
+        chunk = memoryview(buffer)
         self._buffer.extend(chunk)
+
+        return len(chunk)
 
     def data(self) -> bytes:
         return bytes(self._buffer)
@@ -53,10 +55,17 @@ class Feed(RawInbound):
         super().__init__(ToolIo.detached())
         self._data = data
         self._size = size
+        self._offset = 0
 
-    def read(self, chunk_bytes: int) -> Iterator[bytes]:
-        for start in range(0, len(self._data), self._size):
-            yield self._data[start : start + self._size]
+    def readinto(self, buffer: Any) -> int:
+        """Не больше своего размера за вызов, а не весь buffer: границы порций
+        режут данные где попало."""
+        target = memoryview(buffer).cast("B")
+        size = min(self._size, len(target), len(self._data) - self._offset)
+        target[:size] = self._data[self._offset : self._offset + size]
+        self._offset += size
+
+        return size
 
 
 async def _fingerprint(source: Any, table: str) -> Sequence[Any]:
@@ -114,7 +123,7 @@ class TestCopyRoundTrip:
             .build()
         )
         report = await copy_out(connection=target.oracle, sql=select.text, out=sink)
-        assert f"copied out {len(sink.data())} bytes" == report.text
+        assert report.text.startswith("streamed out csv: ")
         assert sink.data().count(b"\n") == ROWS
 
         async with await AsyncPostgresPool.dedicated(ix_stand.ix_profile) as pg:
@@ -164,6 +173,7 @@ class TestCopyRoundTrip:
             connection=target.demo_owner,
             table=f"{DemoUser.NAME}.SINK",
             columns=COLUMNS,
+            chunk_bytes=4096,
             feed=Feed(bytes(exported), CHUNK),
         )
         assert f"{ROWS} rows into {DemoUser.NAME}.SINK" in report.text

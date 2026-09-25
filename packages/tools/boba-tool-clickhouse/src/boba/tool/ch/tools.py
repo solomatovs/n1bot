@@ -1059,7 +1059,7 @@ async def ch_stream_out(
         payload.byte_stream_out(client, sql, tuning=read_tuning(chunk_bytes)) as stream,
     ):
         async for block in stream.blocks:
-            await out.write(block)
+            await out.send(block)
 
     return MarkdownResult(text="stream completed")
 

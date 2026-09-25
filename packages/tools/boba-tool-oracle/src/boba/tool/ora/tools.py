@@ -13,6 +13,7 @@ AddressError — адрес базы не собрался из профиля �
 QueryBuildError — сборщик получил один параметр с двумя разными значениями
     или имя таблицы/колонки для ora_csv_in пустое или с кавычкой внутри.
 CsvFieldError — поле CSV не приводится к типу колонки Oracle.
+OracleFormatError — вход ora_arrow_in не читается как поток Arrow IPC.
 """
 
 from __future__ import annotations
@@ -32,6 +33,7 @@ from boba.connections.address import AddressError
 from boba.db.oracle import (
     OraBindMarks,
     OracleError,
+    OracleFormatError,
     OracleQueryError,
     OraIdentifier,
     OraIdentifiers,
@@ -43,7 +45,7 @@ from boba.db.oracle.address import OraAddresses
 from boba.db.oracle.connection import OracleConfig
 from boba.toolkit.entry import ToolMain
 from boba.toolkit.facade import Injected, UserConnection, tool
-from boba.toolkit.ports import RawInbound, RawOutbound
+from boba.toolkit.ports import ChunkBytes, RawInbound, RawOutbound
 from boba.toolkit.result import MarkdownResult, SqlResult, SqlStatement, TableResult
 from boba.toolkit.sql import QueryBuildError, SqlErrorKind, SqlLimits
 from boba.toolkit.types import SecretRevealing
@@ -753,22 +755,14 @@ async def ora_csv_out(
     """Насос выгрузки: строки запроса CSV-байтами в выходной порт.
 
     Узел графа workflow: данные идут следующему узлу, а не в чат. Пачки
-    Arrow по arraysize строк, Python делает один шаг на пачку. В ответ
-    возвращается счётчик перекачанных байтов.
+    Arrow по arraysize строк pyarrow пишет в порт сам, Python делает один шаг
+    на пачку. В ответ возвращается состав колонок.
     """
-    total = 0
-
     payload = get_payload()(connection)
-    async with (
-        payload.opened() as conn,
-        payload.csv(conn, sql) as stream,
-    ):
-        async for block in stream.blocks:
-            data = bytes(block)
-            total += len(data)
-            await out.write(data)
+    async with payload.opened() as conn:
+        names = await payload.csv_into(conn, sql, out)
 
-    return MarkdownResult(text=f"copied out {total} bytes")
+    return MarkdownResult(text=f"streamed out csv: {', '.join(names)}")
 
 
 class CsvFieldError(Exception):
@@ -838,8 +832,9 @@ class CsvFeed:
     """Записи CSV из сырого входного порта: порции байт склеиваются в строки, а
     csv.reader собирает записи, в том числе с переводом строки внутри кавычек."""
 
-    def __init__(self, feed: RawInbound) -> None:
+    def __init__(self, feed: RawInbound, chunk_bytes: int) -> None:
         self._feed = feed
+        self._chunk_bytes = chunk_bytes
         self.consumed = 0
 
     def records(self) -> Iterator[Sequence[str]]:
@@ -848,7 +843,7 @@ class CsvFeed:
     def _lines(self) -> Iterator[str]:
         decoder = codecs.getincrementaldecoder(CsvContract.ENCODING)()
         tail = ""
-        for chunk in self._feed:
+        for chunk in self._feed.chunks(self._chunk_bytes):
             self.consumed += len(chunk)
             text = tail + decoder.decode(chunk)
             head, sep, tail = text.rpartition(CsvContract.LINE_END)
@@ -885,6 +880,7 @@ async def ora_csv_in(
             ),
         ),
     ],
+    chunk_bytes: ChunkBytes,
     feed: Annotated[RawInbound, Injected],
 ) -> MarkdownResult:
     """Насос загрузки: CSV из входного порта в таблицу пачками executemany.
@@ -892,18 +888,15 @@ async def ora_csv_in(
     Узел графа workflow: данные приходят от предыдущего узла. Формат: CSV
     без заголовка, NULL как `\\N`, даты ISO, бинарное поле hex с префиксом
     `\\x` — то есть COPY (...) TO STDOUT (FORMAT CSV, NULL '\\N') postgres.
-    Типы полей берутся по описанию колонок приёмника. Вся загрузка — одна
+    Типы полей берутся по описанию колонок приёмника (parse, без
+    выполнения). Вся загрузка — одна
     транзакция: ошибка откатывает всё. В ответ возвращается счётчик байтов
     и строк.
     """
     target = OraIdentifier(table)
     listed = OraIdentifiers(columns)
 
-    probe = (
-        OraQueryBuilder()
-        .add("select ", listed, " from ", target, " where 1 = 0")
-        .build()
-    )
+    described = OraQueryBuilder().add("select ", listed, " from ", target).build()
     insert = (
         OraQueryBuilder()
         .add(
@@ -919,11 +912,11 @@ async def ora_csv_in(
     )
 
     rows = 0
-    source = CsvFeed(feed)
+    source = CsvFeed(feed, chunk_bytes)
 
     payload = get_payload()(connection)
     async with payload.opened() as conn:
-        kinds = await payload.column_types(conn, probe.text)
+        kinds = await payload.column_types(conn, described.text)
         fields = CsvField(kinds)
 
         batch: list[tuple[object, ...]] = []
@@ -945,12 +938,102 @@ async def ora_csv_in(
     )
 
 
+@tool
+async def ora_arrow_out(
+    connection: OraConnection,
+    sql: Annotated[
+        str,
+        Field(
+            min_length=1,
+            description=(
+                "Запрос SELECT целиком. Ответ уходит следующему узлу потоком "
+                "Arrow IPC (stream): схема, затем пачки по arraysize строк. "
+                "Имена колонок — как их отдаёт Oracle, заглавными; нужны "
+                'строчные — алиас в кавычках: col as "col". Типы: NUMBER(p, s) '
+                "— decimal128, NUMBER без точности — decimal128(38, 0) (дробь — "
+                "ошибка, приведите to_char или cast), BINARY_FLOAT/DOUBLE — "
+                "float/double, VARCHAR2/CLOB — large_string, RAW/BLOB — "
+                "large_binary, DATE — timestamp[s], TIMESTAMP — timestamp[us] "
+                "или [ns], BOOLEAN — bool. INTERVAL, XMLTYPE, JSON, ROWID запрос "
+                "приводит сам (to_char, xmlserialize, json_serialize, "
+                "rowidtochar). TIMESTAMP WITH TIME ZONE теряет смещение — "
+                "sys_extract_utc(col)."
+            ),
+        ),
+        MarkdownResult(language="sql"),
+    ],
+    out: Annotated[RawOutbound, Injected],
+) -> MarkdownResult:
+    """Насос выгрузки: строки запроса потоком Arrow IPC в выходной порт.
+
+    Узел графа workflow: данные идут следующему узлу, а не в чат. Пачки
+    Arrow драйвера pyarrow пишет в порт сам, без перевода в текст. В ответ —
+    состав схемы потока.
+    """
+    payload = get_payload()(connection)
+    async with payload.opened() as conn:
+        schema = await payload.arrow_into(conn, sql, out)
+
+    return MarkdownResult(text=f"streamed out arrow ipc: {', '.join(schema.names)}")
+
+
+@tool
+async def ora_arrow_in(
+    connection: OraConnection,
+    table: Annotated[
+        str,
+        Field(
+            min_length=1,
+            description=(
+                "Таблица-приёмник, при необходимости со схемой: HR.EMPLOYEES. "
+                "Колонки берутся по именам полей схемы Arrow входного потока, "
+                "в их порядке; имя поля обязано быть колонкой таблицы."
+            ),
+        ),
+    ],
+    chunk_bytes: ChunkBytes,
+    feed: Annotated[RawInbound, Injected],
+) -> MarkdownResult:
+    """Насос загрузки: поток Arrow IPC из входного порта в таблицу.
+
+    Узел графа workflow: данные приходят от предыдущего узла. Каждая пачка
+    Arrow уходит одной командой executemany, значения драйвер берёт из
+    колонок пачки без разбора в Python. Вся загрузка — одна транзакция:
+    ошибка откатывает всё. В ответ — число записанных строк.
+    """
+    payload = get_payload()(connection)
+    inbound = await payload.arrow_inbound(feed, chunk_bytes)
+    insert = (
+        OraQueryBuilder()
+        .add(
+            "insert into ",
+            OraIdentifier(table),
+            " (",
+            OraIdentifiers(inbound.schema.names),
+            ") values (",
+            OraBindMarks(len(inbound.schema.names)),
+            ")",
+        )
+        .build()
+    )
+
+    rows = 0
+    async with payload.opened() as conn:
+        async for batch in inbound.batches:
+            rows += await payload.executemany_arrow(conn, insert.text, batch)
+
+        await payload.commit(conn)
+
+    return MarkdownResult(text=f"{rows} rows written into {table}")
+
+
 EXPECTED: Mapping[type[Exception], SqlErrorKind] = {
     AddressError: SqlErrorKind.UNKNOWN_TARGET,
     QueryBuildError: SqlErrorKind.SQL_FAILED,
     CsvFieldError: SqlErrorKind.SQL_FAILED,
     OracleError: SqlErrorKind.DATABASE_UNAVAILABLE,
     OracleQueryError: SqlErrorKind.SQL_FAILED,
+    OracleFormatError: SqlErrorKind.SQL_FAILED,
 }
 
 TOOLS: Final = ToolMain.toolset(
@@ -960,6 +1043,8 @@ TOOLS: Final = ToolMain.toolset(
     ora_address,
     ora_csv_out,
     ora_csv_in,
+    ora_arrow_out,
+    ora_arrow_in,
     ora_database_describe,
     ora_schema_describe,
     ora_table_describe,

@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from typing import Any, ClassVar
 
@@ -19,9 +19,17 @@ from boba.tool.ora import tools as ora
 from boba.tool.pg import tools as pg
 from boba.toolkit.entry import ToolMain
 
-__all__ = ["Chained", "Pumps"]
+__all__ = ["Chained", "Leg", "Pumps"]
 
 Body = Callable[..., Awaitable[Any]]
+
+
+@dataclass(frozen=True)
+class Leg:
+    """Конец цепочки: имя насоса и его аргументы, кроме соединения и порта."""
+
+    name: str
+    arguments: Mapping[str, Any]
 
 
 @dataclass(frozen=True)
@@ -56,6 +64,8 @@ class Pumps:
             "ch_stream_in": clickhouse,
             "ora_csv_out": oracle,
             "ora_csv_in": oracle,
+            "ora_arrow_out": oracle,
+            "ora_arrow_in": oracle,
         }
         self._bodies: dict[str, Body] = {}
         listed = ToolMain.toolset(
@@ -65,6 +75,8 @@ class Pumps:
             ch.ch_stream_in,
             ora.ora_csv_out,
             ora.ora_csv_in,
+            ora.ora_arrow_out,
+            ora.ora_arrow_in,
         )
         for payload in listed:
             if payload.coroutine is None:
@@ -96,35 +108,26 @@ class Pumps:
             connection=self._required("ora_csv_in"),
             table=table,
             columns=columns,
+            chunk_bytes=self.CHUNK_BYTES,
             feed=Feed(data, self._chunk),
         )
 
         return report.text
 
-    async def chain(
-        self,
-        out_name: str,
-        out_sql: str,
-        in_name: str,
-        in_sql: str,
-        chunk_bytes: int,
-    ) -> Chained:
-        """Выход out_name и вход in_name через трубу ОС одновременно; chunk_bytes
-        уходит насосам, которые его принимают."""
+    async def chain(self, out: Leg, into: Leg) -> Chained:
+        """Выход out и вход into через трубу ОС одновременно."""
         pipe = Pipe()
         started = time.monotonic()
 
         async def produce() -> str:
             try:
-                return await self._call(
-                    out_name, out_sql, chunk_bytes, out=pipe.outbound
-                )
+                return await self._call(out, out=pipe.outbound)
             finally:
                 pipe.close_write()
 
         async def consume() -> str:
             try:
-                return await self._call(in_name, in_sql, chunk_bytes, feed=pipe.inbound)
+                return await self._call(into, feed=pipe.inbound)
             finally:
                 pipe.close_read()
 
@@ -132,15 +135,9 @@ class Pumps:
 
         return Chained(out_report, in_report, time.monotonic() - started)
 
-    async def _call(
-        self, name: str, statement: str, chunk_bytes: int, **port: Any
-    ) -> str:
-        extra: dict[str, Any] = {}
-        if name != "ora_csv_out":
-            extra["chunk_bytes"] = chunk_bytes
-
-        report = await self._bodies[name](
-            connection=self._required(name), sql=statement, **port, **extra
+    async def _call(self, leg: Leg, **port: Any) -> str:
+        report = await self._bodies[leg.name](
+            connection=self._required(leg.name), **leg.arguments, **port
         )
 
         return report.text

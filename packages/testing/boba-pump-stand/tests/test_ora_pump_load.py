@@ -23,7 +23,15 @@ import pytest
 from boba.db.clickhouse.payload import PayloadClickHouse
 from boba.db.oracle.payload import PayloadOracle
 from boba.db.postgres import AsyncPostgresPool
-from boba.pump_stand import ChSource, OracleStand, OraSource, PgSource, Pumps, PumpStand
+from boba.pump_stand import (
+    ChSource,
+    Leg,
+    OracleStand,
+    OraSource,
+    PgSource,
+    Pumps,
+    PumpStand,
+)
 from boba.pump_stand.oracle import PumpUser
 
 pytestmark = [pytest.mark.integration, pytest.mark.load, pytest.mark.anyio]
@@ -287,11 +295,14 @@ class TestLoad:
         baseline = memory.reset()
 
         chained = await pumps.chain(
-            "ora_csv_out",
-            EXPORT,
-            "pg_stream_in",
-            f"copy {PG_SCHEMA}.load from stdin (format csv)",
-            CHUNK_BYTES,
+            Leg("ora_csv_out", {"sql": EXPORT}),
+            Leg(
+                "pg_stream_in",
+                {
+                    "sql": f"copy {PG_SCHEMA}.load from stdin (format csv)",
+                    "chunk_bytes": CHUNK_BYTES,
+                },
+            ),
         )
 
         growth = memory.peak() - baseline
@@ -314,7 +325,11 @@ class TestLoad:
         baseline = memory.reset()
 
         chained = await pumps.chain(
-            "ora_csv_out", EXPORT, "ch_stream_in", clickhouse.insert(), CHUNK_BYTES
+            Leg("ora_csv_out", {"sql": EXPORT}),
+            Leg(
+                "ch_stream_in",
+                {"sql": clickhouse.insert(), "chunk_bytes": CHUNK_BYTES},
+            ),
         )
 
         growth = memory.peak() - baseline

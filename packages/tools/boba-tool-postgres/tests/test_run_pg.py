@@ -67,4 +67,3 @@ async def test_run_pg_list_tables(
     ).llm_view()
 
     print(content)
-

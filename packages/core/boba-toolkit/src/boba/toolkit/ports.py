@@ -29,6 +29,7 @@ FrameProtocolError — заголовок пришедшего кадра не �
 from __future__ import annotations
 
 import asyncio
+import io
 from collections.abc import AsyncIterator, Iterator
 from dataclasses import dataclass
 from enum import StrEnum
@@ -173,30 +174,48 @@ ChunkBytes = Annotated[
 """LLM-аргумент сырых насосов: размер порции потока."""
 
 
-class RawInbound:
-    """Истинно сырой входной порт: порции bytes с провода как есть.
+class RawInbound(io.RawIOBase):
+    """Истинно сырой входной порт: двоичный файл на чтение поверх провода.
 
     Никакого кадрирования, моделей и валидации — по каналу идут только сами
-    данные (CSV из COPY, файл, PCM), тело читает их порциями до EOF. Размер
-    порции задаёт тело: blocks(chunk_bytes) для async-тела (чтение трубы
-    блокирующее, поэтому каждая порция берётся в потоке, а цикл событий
-    остаётся свободен), read(chunk_bytes) синхронно; цикл for по порту идёт
-    с размером ToolIo.READ_BYTES. Границы порций произвольны: это байтовый
-    поток, а не сообщения. Совместим только с таким же сырым выходом
+    данные (CSV из COPY, файл, Arrow IPC), и тело читает их как файл. Точка
+    чтения одна — readinto: очередные байты провода кладутся в буфер
+    вызывающего, сколько пришло за одно чтение, 0 — EOF. Буфер и его
+    политику выбирает потребитель: chunks и blocks выделяют буфер на порцию
+    (blocks — для async-тела: чтение трубы блокирующее, поэтому порция
+    берётся в потоке, а цикл событий остаётся свободен); читатель, которому
+    нужен read с дочитыванием до размера, ставит поверх порта
+    io.BufferedReader со своим буфером. Границы порций произвольны: это
+    байтовый поток, а не сообщения. Совместим только с таким же сырым выходом
     (ChainCheck). Строится в ToolMain поверх ToolIo.
     """
 
-    def __init__(self, io: ToolIo) -> None:
-        self._io = io
+    def __init__(self, io_: ToolIo) -> None:
+        super().__init__()
+        self._io = io_
 
-    def read(self, chunk_bytes: int) -> Iterator[bytes]:
-        yield from self._io.read_chunks(chunk_bytes)
+    def readable(self) -> bool:
+        return True
 
-    def __iter__(self) -> Iterator[bytes]:
-        yield from self.read(ToolIo.READ_BYTES)
+    # read здесь не переопределяется намеренно: бюджет и переиспользование
+    # буфера — дело потребителя (io.BufferedReader у pyarrow, свой bytearray у
+    # chunks); ядро читает только в чужой буфер
+    def readinto(self, buffer: Any) -> int:
+        return self._io.read_into(memoryview(buffer).cast("B"))
 
-    async def blocks(self, chunk_bytes: int) -> AsyncIterator[bytes]:
-        chunks = self.read(chunk_bytes)
+    def chunks(self, chunk_bytes: int) -> Iterator[memoryview]:
+        """Порции не длиннее chunk_bytes до EOF: каждая — свой буфер, заполненный
+        через readinto, без промежуточной копии."""
+        while True:
+            buffer = bytearray(chunk_bytes)
+            filled = self.readinto(buffer)
+            if filled == 0:
+                return
+
+            yield memoryview(buffer)[:filled]
+
+    async def blocks(self, chunk_bytes: int) -> AsyncIterator[memoryview]:
+        chunks = self.chunks(chunk_bytes)
         while True:
             chunk = await asyncio.to_thread(next, chunks, None)
             if chunk is None:
@@ -211,22 +230,34 @@ class RawInbound:
         return core_schema.is_instance_schema(cls)
 
 
-class RawOutbound:
-    """Истинно сырой выходной порт: write шлёт порцию bytes на провод как есть.
+class RawOutbound(io.RawIOBase):
+    """Истинно сырой выходной порт: двоичный файл на запись поверх провода.
 
     Никакого кадрирования и преобразований — pg->pg перекачка везёт ровно
     те байты, что отдал COPY. Плата за это — отсутствие метаданных и
     журнала содержимого: канал предназначен для перекачки (splice), хост в
-    него не заглядывает. Запись в трубу блокирующая, пока хост не вычитает
-    её, поэтому write уходит в поток, а цикл событий тела остаётся свободен.
+    него не заглядывает. Точка записи одна — write: буфер вызывающего уходит
+    в провод как есть, поэтому писатели вроде pyarrow пишут в порт напрямую.
+    Запись в трубу блокирующая, пока хост не вычитает её, поэтому async-тело
+    зовёт send: та же запись в потоке, цикл событий остаётся свободен.
     Строится в ToolMain поверх ToolIo.
     """
 
-    def __init__(self, io: ToolIo) -> None:
-        self._io = io
+    def __init__(self, io_: ToolIo) -> None:
+        super().__init__()
+        self._io = io_
 
-    async def write(self, chunk: Chunk) -> None:
-        await asyncio.to_thread(self._io.write_chunk, chunk)
+    def writable(self) -> bool:
+        return True
+
+    def write(self, buffer: Any) -> int:
+        chunk = memoryview(buffer)
+        self._io.write_chunk(chunk)
+
+        return len(chunk)
+
+    async def send(self, chunk: Chunk) -> None:
+        await asyncio.to_thread(self.write, chunk)
 
     @classmethod
     def __get_pydantic_core_schema__(
