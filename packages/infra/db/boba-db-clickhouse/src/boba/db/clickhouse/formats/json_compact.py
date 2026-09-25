@@ -21,7 +21,7 @@ from pydantic import TypeAdapter, ValidationError
 
 from boba.db.clickhouse.errors import ClickHouseFormatError
 from boba.db.clickhouse.formats.base import Blocks, StreamFormat
-from boba.db.clickhouse.formats.lines import ColumnTypes, LineHead, Settings
+from boba.db.clickhouse.formats.lines import ColumnTypes, Lines, Settings
 
 __all__ = ["JsonCompactStream", "JsonCompactWithNamesAndTypes", "JsonExactOutput"]
 
@@ -104,7 +104,7 @@ class JsonCompactWithNamesAndTypes(StreamFormat[JsonCompactStream]):
 
     def __init__(self) -> None:
         self._header = JsonCompactHeader(self.FORMAT)
-        self._head = LineHead(self.FORMAT, 2)
+        self._head = Lines(self.FORMAT, 2)
         self._types = ColumnTypes(self.FORMAT)
 
         exact: dict[str, Any] = {}
@@ -124,7 +124,7 @@ class JsonCompactWithNamesAndTypes(StreamFormat[JsonCompactStream]):
         return f"{query}\n FORMAT {self.FORMAT}"
 
     async def read(self, blocks: Blocks) -> JsonCompactStream:
-        chunks = LineHead.views(blocks)
+        chunks = Lines.views(blocks)
         head = await self._head.take(chunks)
         names = self._header.parse(head.lines[0])
         type_names = self._header.parse(head.lines[1])
@@ -133,7 +133,7 @@ class JsonCompactWithNamesAndTypes(StreamFormat[JsonCompactStream]):
             names=names,
             type_names=type_names,
             column_types=self._types.of(type_names),
-            blocks=LineHead.glued(head.rest, chunks),
+            blocks=Lines.all(head.rest, chunks),
         )
 
     def write(self, stream: JsonCompactStream) -> AsyncIterator[memoryview]:
@@ -141,4 +141,4 @@ class JsonCompactWithNamesAndTypes(StreamFormat[JsonCompactStream]):
             stream.type_names
         )
 
-        return LineHead.glued(head, stream.blocks)
+        return Lines.all(head, stream.blocks)

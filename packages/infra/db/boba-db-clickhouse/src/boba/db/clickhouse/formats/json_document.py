@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from typing import Any, ClassVar
 
 from boba.db.clickhouse.formats.base import Blocks, StreamFormat
-from boba.db.clickhouse.formats.lines import LineHead, Settings
+from boba.db.clickhouse.formats.lines import Lines, Settings
 
 __all__ = ["JsonDocuments", "JsonDocumentsStream"]
 
@@ -43,7 +43,7 @@ class JsonDocuments(StreamFormat[JsonDocumentsStream]):
         return f"{query}\n FORMAT {self.FORMAT}"
 
     async def read(self, blocks: Blocks) -> JsonDocumentsStream:
-        return JsonDocumentsStream(blocks=LineHead.views(blocks))
+        return JsonDocumentsStream(blocks=Lines.views(blocks))
 
     def write(self, stream: JsonDocumentsStream) -> AsyncIterator[memoryview]:
         return stream.blocks

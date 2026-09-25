@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from typing import Any, ClassVar
 
 from boba.db.clickhouse.formats.base import Blocks, StreamFormat
-from boba.db.clickhouse.formats.lines import LineHead, Settings
+from boba.db.clickhouse.formats.lines import Lines, Settings
 
 __all__ = ["RawBlob", "RawBlobStream"]
 
@@ -42,7 +42,7 @@ class RawBlob(StreamFormat[RawBlobStream]):
         return f"{query}\n FORMAT {self.FORMAT}"
 
     async def read(self, blocks: Blocks) -> RawBlobStream:
-        return RawBlobStream(blocks=LineHead.views(blocks))
+        return RawBlobStream(blocks=Lines.views(blocks))
 
     def write(self, stream: RawBlobStream) -> AsyncIterator[memoryview]:
         return stream.blocks

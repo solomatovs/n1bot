@@ -22,7 +22,7 @@ from clickhouse_connect.datatypes.base import ClickHouseType
 
 from boba.db.clickhouse.errors import ClickHouseFormatError
 from boba.db.clickhouse.formats.base import Blocks, StreamFormat
-from boba.db.clickhouse.formats.lines import ColumnTypes, HeadLines, LineHead, Settings
+from boba.db.clickhouse.formats.lines import ColumnTypes, HeadLines, Lines, Settings
 
 __all__ = [
     "Csv",
@@ -170,7 +170,7 @@ class Csv(StreamFormat[CsvStream]):
         return f"{query}\n FORMAT {self.FORMAT}"
 
     async def read(self, blocks: Blocks) -> CsvStream:
-        return CsvStream(blocks=LineHead.views(blocks))
+        return CsvStream(blocks=Lines.views(blocks))
 
     def write(self, stream: CsvStream) -> AsyncIterator[memoryview]:
         return stream.blocks
@@ -200,16 +200,16 @@ class CsvWithNames(StreamFormat[CsvNamesStream]):
         return f"{query}\n FORMAT {self.FORMAT}"
 
     async def read(self, blocks: Blocks) -> CsvNamesStream:
-        chunks = LineHead.views(blocks)
+        chunks = Lines.views(blocks)
         head = await self._head.take(chunks)
 
         return CsvNamesStream(
             names=self._header.parse(head.lines[0]),
-            blocks=LineHead.glued(head.rest, chunks),
+            blocks=Lines.all(head.rest, chunks),
         )
 
     def write(self, stream: CsvNamesStream) -> AsyncIterator[memoryview]:
-        return LineHead.glued(self._header.render(stream.names), stream.blocks)
+        return Lines.all(self._header.render(stream.names), stream.blocks)
 
 
 class CsvWithNamesAndTypes(StreamFormat[CsvTypedStream]):
@@ -238,7 +238,7 @@ class CsvWithNamesAndTypes(StreamFormat[CsvTypedStream]):
         return f"{query}\n FORMAT {self.FORMAT}"
 
     async def read(self, blocks: Blocks) -> CsvTypedStream:
-        chunks = LineHead.views(blocks)
+        chunks = Lines.views(blocks)
         head = await self._head.take(chunks)
         names = self._header.parse(head.lines[0])
         type_names = self._header.parse(head.lines[1])
@@ -247,7 +247,7 @@ class CsvWithNamesAndTypes(StreamFormat[CsvTypedStream]):
             names=names,
             type_names=type_names,
             column_types=self._types.of(type_names),
-            blocks=LineHead.glued(head.rest, chunks),
+            blocks=Lines.all(head.rest, chunks),
         )
 
     def write(self, stream: CsvTypedStream) -> AsyncIterator[memoryview]:
@@ -255,4 +255,4 @@ class CsvWithNamesAndTypes(StreamFormat[CsvTypedStream]):
             stream.type_names
         )
 
-        return LineHead.glued(head, stream.blocks)
+        return Lines.all(head, stream.blocks)
