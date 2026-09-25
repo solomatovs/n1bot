@@ -45,6 +45,7 @@ class Chained:
 class Pumps:
     """Насосы postgres, ClickHouse и Oracle над профилями стенда. Выход
     возвращает байты порта, вход принимает байты и отдаёт текст отчёта;
+    extra — остальные аргументы фасада (before, after, session);
     chain соединяет два насоса трубой и гонит их одновременно."""
 
     CHUNK_BYTES: ClassVar[int] = 4096
@@ -97,28 +98,44 @@ class Pumps:
                 ToolArgv.schema_of(payload)
             )
 
-    async def pg_out(self, statement: str) -> bytes:
-        return await self._out("pg_stream_out", statement)
+    async def pg_out(self, statement: str, **extra: Any) -> bytes:
+        return await self._out("pg_stream_out", statement, **extra)
 
-    async def pg_in(self, statement: str, data: bytes, chunk: int | None = None) -> str:
+    async def pg_in(
+        self, statement: str, data: bytes, chunk: int | None = None, **extra: Any
+    ) -> str:
         return await self._in(
-            "pg_stream_in", statement, data, chunk, chunk_bytes=self.CHUNK_BYTES
+            "pg_stream_in",
+            statement,
+            data,
+            chunk,
+            chunk_bytes=self.CHUNK_BYTES,
+            **extra,
         )
 
-    async def ch_out(self, statement: str) -> bytes:
-        return await self._out("ch_stream_out", statement, chunk_bytes=self.CHUNK_BYTES)
-
-    async def ch_in(self, statement: str, data: bytes, chunk: int | None = None) -> str:
-        return await self._in(
-            "ch_stream_in", statement, data, chunk, chunk_bytes=self.CHUNK_BYTES
+    async def ch_out(self, statement: str, **extra: Any) -> bytes:
+        return await self._out(
+            "ch_stream_out", statement, chunk_bytes=self.CHUNK_BYTES, **extra
         )
 
-    async def ora_out(self, statement: str) -> bytes:
-        return await self._out("ora_csv_out", statement)
-
-    async def ora_in(self, statement: str, data: bytes) -> str:
+    async def ch_in(
+        self, statement: str, data: bytes, chunk: int | None = None, **extra: Any
+    ) -> str:
         return await self._in(
-            "ora_csv_in", statement, data, None, chunk_bytes=self.CHUNK_BYTES
+            "ch_stream_in",
+            statement,
+            data,
+            chunk,
+            chunk_bytes=self.CHUNK_BYTES,
+            **extra,
+        )
+
+    async def ora_out(self, statement: str, **extra: Any) -> bytes:
+        return await self._out("ora_csv_out", statement, **extra)
+
+    async def ora_in(self, statement: str, data: bytes, **extra: Any) -> str:
+        return await self._in(
+            "ora_csv_in", statement, data, None, chunk_bytes=self.CHUNK_BYTES, **extra
         )
 
     async def chain(self, out: Leg, into: Leg) -> Chained:

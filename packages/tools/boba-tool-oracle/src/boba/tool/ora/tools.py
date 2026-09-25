@@ -72,6 +72,37 @@ TableFilter = Annotated[
 """LLM-аргумент table: точное имя или `*`."""
 
 
+BeforeSteps = Annotated[
+    Sequence[str],
+    Field(
+        description=(
+            "Стейтменты, которые выполняются по порядку перед командой насоса "
+            "в той же сессии: alter session, delete из staging, проверки. "
+            "Каждый элемент — одна команда без `;` в конце либо один анонимный "
+            "блок PL/SQL. DML остаётся в транзакции насоса до общего commit "
+            "после after; DDL (truncate, exchange partition) Oracle фиксирует "
+            "сам. Строки выборок не возвращаются, в ответ идёт число "
+            "затронутых строк каждого шага. Проверка, которая должна "
+            "остановить насос, пишется блоком: begin if ... then "
+            "raise_application_error(-20001, '...'); end if; end;"
+        ),
+    ),
+]
+AfterSteps = Annotated[
+    Sequence[str],
+    Field(
+        description=(
+            "Стейтменты, которые выполняются по порядку после команды насоса в "
+            "той же сессии, затем один commit: insert ... select из "
+            "временной или staging-таблицы, merge, exchange partition. "
+            "Ошибка шага до commit откатывает DML вызова, включая загруженные "
+            "строки; DDL уже зафиксирован. В ответ идёт число затронутых "
+            "строк каждого шага."
+        ),
+    ),
+]
+
+
 class AddressColumn(StrEnum):
     """Колонки выдачи ora_address."""
 
@@ -736,13 +767,18 @@ async def ora_csv_out(
         ),
         MarkdownResult(language="sql"),
     ],
+    before: BeforeSteps = (),
+    after: AfterSteps = (),
+    *,
     out: Annotated[RawOutbound, Injected],
 ) -> MarkdownResult:
     """Насос выгрузки: строки запроса CSV-байтами в выходной порт.
 
     Данные идут в выходной порт другому насосу, а не в чат. Пачки
     Arrow по arraysize строк pyarrow пишет в порт сам, Python делает один шаг
-    на пачку. В ответ возвращается состав колонок.
+    на пачку. Стейтменты before и after идут в той же сессии до и после
+    выборки, после них commit. В ответ возвращается состав колонок и шаги
+    скриптов.
     """
     from boba.db.oracle.payload import PayloadOracle  # noqa: PLC0415
     from boba.db.oracle.trace import OraSessionTrace  # noqa: PLC0415
@@ -751,10 +787,13 @@ async def ora_csv_out(
     statement = OraQueryBuilder().raw_query(sql).build()
     async with payload.opened() as conn:
         trace = OraSessionTrace(conn)
+        before_steps = await payload.script(conn, before, trace)
         names = await payload.csv_into(conn, statement.text, out, trace)
+        after_steps = await payload.script(conn, after, trace)
+        await payload.commit(conn)
         report = trace.report(f"streamed out csv: {', '.join(names)}", statement.text)
 
-    return MarkdownResult(text=report.render())
+    return MarkdownResult(text=report.scripted(before_steps, after_steps).render())
 
 
 class CsvFields:
@@ -803,7 +842,7 @@ class CsvFeed:
 
 
 @tool
-async def ora_csv_in(
+async def ora_csv_in(  # noqa: PLR0913
     connection: OraConnection,
     sql: Annotated[
         str,
@@ -822,6 +861,9 @@ async def ora_csv_in(
         MarkdownResult(language="sql"),
     ],
     chunk_bytes: ChunkBytes,
+    before: BeforeSteps = (),
+    after: AfterSteps = (),
+    *,
     feed: Annotated[RawInbound, Injected],
 ) -> MarkdownResult:
     """Насос загрузки: CSV из входного порта в стейтмент пачками executemany.
@@ -829,9 +871,10 @@ async def ora_csv_in(
     Данные приходят во входной порт от другого насоса. Формат: CSV
     без заголовка, NULL как `\\N`, переводы строк внутри кавычек допустимы
     — то есть COPY (...) TO STDOUT (FORMAT CSV, NULL '\\N') postgres.
-    Поля уходят строками, типы задаёт сам стейтмент. Вся загрузка — одна
-    транзакция: ошибка откатывает всё. В ответ возвращается счётчик байтов
-    и строк.
+    Поля уходят строками, типы задаёт сам стейтмент. Стейтменты before и
+    after идут в той же сессии до и после загрузки, DML всего вызова — одна
+    транзакция с одним commit после after: ошибка откатывает всё. В ответ
+    возвращается счётчик байтов и строк и шаги скриптов.
     """
     from boba.db.oracle.payload import PayloadOracle  # noqa: PLC0415
     from boba.db.oracle.trace import OraSessionTrace  # noqa: PLC0415
@@ -844,6 +887,7 @@ async def ora_csv_in(
 
     async with payload.opened() as conn:
         trace = OraSessionTrace(conn)
+        before_steps = await payload.script(conn, before, trace)
         batch: list[tuple[str | None, ...]] = []
         for record in source.records():
             batch.append(fields.row(record))
@@ -856,12 +900,13 @@ async def ora_csv_in(
         if batch:
             rows += await payload.executemany(conn, statement.text, batch, trace)
 
+        after_steps = await payload.script(conn, after, trace)
         await payload.commit(conn)
         report = trace.report(
             f"copied in {source.consumed} bytes, {rows} rows", statement.text
         )
 
-    return MarkdownResult(text=report.render())
+    return MarkdownResult(text=report.scripted(before_steps, after_steps).render())
 
 
 @tool
@@ -888,13 +933,17 @@ async def ora_arrow_out(
         ),
         MarkdownResult(language="sql"),
     ],
+    before: BeforeSteps = (),
+    after: AfterSteps = (),
+    *,
     out: Annotated[ArrowOutbound, Injected],
 ) -> MarkdownResult:
     """Насос выгрузки: строки запроса потоком Arrow IPC в выходной порт.
 
     Данные идут в выходной порт другому насосу, а не в чат. Пачки
-    Arrow драйвера pyarrow пишет в порт сам, без перевода в текст. В ответ —
-    состав схемы потока.
+    Arrow драйвера pyarrow пишет в порт сам, без перевода в текст.
+    Стейтменты before и after идут в той же сессии до и после выборки,
+    после них commit. В ответ — состав схемы потока и шаги скриптов.
     """
     from boba.db.oracle.payload import PayloadOracle  # noqa: PLC0415
     from boba.db.oracle.trace import OraSessionTrace  # noqa: PLC0415
@@ -903,16 +952,19 @@ async def ora_arrow_out(
     statement = OraQueryBuilder().raw_query(sql).build()
     async with payload.opened() as conn:
         trace = OraSessionTrace(conn)
+        before_steps = await payload.script(conn, before, trace)
         schema = await payload.arrow_into(conn, statement.text, out, trace)
+        after_steps = await payload.script(conn, after, trace)
+        await payload.commit(conn)
         report = trace.report(
             f"streamed out arrow ipc: {', '.join(schema.names)}", statement.text
         )
 
-    return MarkdownResult(text=report.render())
+    return MarkdownResult(text=report.scripted(before_steps, after_steps).render())
 
 
 @tool
-async def ora_arrow_in(
+async def ora_arrow_in(  # noqa: PLR0913
     connection: OraConnection,
     sql: Annotated[
         str,
@@ -928,14 +980,19 @@ async def ora_arrow_in(
         MarkdownResult(language="sql"),
     ],
     chunk_bytes: ChunkBytes,
+    before: BeforeSteps = (),
+    after: AfterSteps = (),
+    *,
     feed: Annotated[ArrowInbound, Injected],
 ) -> MarkdownResult:
     """Насос загрузки: поток Arrow IPC из входного порта в стейтмент.
 
     Данные приходят во входной порт от другого насоса. Каждая пачка
     Arrow уходит одной командой executemany, значения драйвер берёт из
-    колонок пачки без разбора в Python. Вся загрузка — одна транзакция:
-    ошибка откатывает всё. В ответ — число записанных строк.
+    колонок пачки без разбора в Python. Стейтменты before и after идут в
+    той же сессии до и после загрузки, DML всего вызова — одна транзакция с
+    одним commit после after: ошибка откатывает всё. В ответ — число
+    записанных строк и шаги скриптов.
     """
     from boba.db.oracle.payload import PayloadOracle  # noqa: PLC0415
     from boba.db.oracle.trace import OraSessionTrace  # noqa: PLC0415
@@ -948,13 +1005,15 @@ async def ora_arrow_in(
     rows = 0
     async with payload.opened() as conn:
         trace = OraSessionTrace(conn)
+        before_steps = await payload.script(conn, before, trace)
         async for batch in inbound.batches:
             rows += await payload.executemany_arrow(conn, statement.text, batch, trace)
 
+        after_steps = await payload.script(conn, after, trace)
         await payload.commit(conn)
         report = trace.report(f"{rows} rows written", statement.text)
 
-    return MarkdownResult(text=report.render())
+    return MarkdownResult(text=report.scripted(before_steps, after_steps).render())
 
 
 EXPECTED: Mapping[type[Exception], SqlErrorKind] = {

@@ -12,11 +12,17 @@ from boba.db.postgres.async_pool import (
 )
 from boba.db.postgres.cursor import LoggingCursor
 from boba.db.postgres.errors import PgArrowError, PostgresError
-from boba.db.postgres.payload import PayloadPostgres
+from boba.db.postgres.payload import PayloadPostgres, PgScript
 from boba.db.postgres.query import PgQuery, PgQueryBuilder
 from boba.db.postgres.schema import AdvisoryLock, PostgresSchema
 from boba.db.postgres.table import Cursor, ModelT, PostgresTable
-from boba.db.postgres.trace import PgCommandReport, PgNotice, PgNotify, PgSessionTrace
+from boba.db.postgres.trace import (
+    PgCommandReport,
+    PgNotice,
+    PgNotify,
+    PgScriptStep,
+    PgSessionTrace,
+)
 
 __all__ = [
     "AdvisoryLock",
@@ -33,6 +39,8 @@ __all__ = [
     "PgNotify",
     "PgQuery",
     "PgQueryBuilder",
+    "PgScript",
+    "PgScriptStep",
     "PgSessionTrace",
     "PostgresError",
     "PostgresPool",

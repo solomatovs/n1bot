@@ -17,7 +17,7 @@ ArrowStreamError — вход pg_arrow_in не читается как пото�
 from __future__ import annotations
 
 import sys
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from enum import StrEnum
 from typing import Annotated, ClassVar, Final
 
@@ -25,7 +25,7 @@ import psycopg
 from psycopg.rows import dict_row
 from pydantic import Field
 
-from boba.db.postgres import PayloadPostgres, PgArrowError, PostgresError
+from boba.db.postgres import PayloadPostgres, PgArrowError, PgScript, PostgresError
 from boba.db.postgres.address import PgAddresses
 from boba.db.postgres.connection import CopySession, PostgresConfig
 from boba.db.postgres.query import PgQuery, PgQueryBuilder
@@ -61,6 +61,32 @@ SchemaFilter = Annotated[
     Field(min_length=1, description="Имя схемы. `*` — все схемы."),
 ]
 """LLM-аргумент schema_name: точное имя или `*`."""
+
+
+BeforeSteps = Annotated[
+    Sequence[str],
+    Field(
+        description=(
+            "Стейтменты, которые выполняются по порядку перед командой насоса "
+            "в той же сессии и той же транзакции: create temp table, set local, "
+            "проверки. Строки выборок не возвращаются, в ответ идёт статус "
+            "каждого шага. Проверка, которая должна остановить насос, пишется "
+            "ошибкой сервера: do $$ begin if ... then raise exception '...'; "
+            "end if; end $$. Ошибка любого шага откатывает весь вызов."
+        ),
+    ),
+]
+AfterSteps = Annotated[
+    Sequence[str],
+    Field(
+        description=(
+            "Стейтменты, которые выполняются по порядку после команды насоса в "
+            "той же транзакции: insert ... select из temp-таблицы, delete "
+            "дубликатов, rename. Ошибка любого шага откатывает всё, включая "
+            "уже загруженные строки. В ответ идёт статус каждого шага."
+        ),
+    ),
+]
 
 
 class AddressColumn(StrEnum):
@@ -308,7 +334,7 @@ async def pg_query(
 
 
 @tool
-async def pg_stream_out(
+async def pg_stream_out(  # noqa: PLR0913
     connection: PgConnection,
     sql: Annotated[
         str,
@@ -337,14 +363,17 @@ async def pg_stream_out(
             ),
         ),
     ] = CopySession(),
+    before: BeforeSteps = (),
+    after: AfterSteps = (),
     *,
     out: Annotated[RawOutbound, Injected],
 ) -> MarkdownResult:
     """Насос выгрузки: COPY ... TO STDOUT сырым потоком в выходной порт.
 
-    Данные идут в выходной порт другому насосу, а не в чат. В ответ —
-    счётчик байтов, статус сервера, стейтмент и всё, что сервер сообщил
-    за время команды (notices, уведомления notify).
+    Данные идут в выходной порт другому насосу, а не в чат. Стейтменты
+    before и after идут в той же транзакции до и после COPY. В ответ —
+    счётчик байтов, статус сервера, стейтмент, шаги скриптов и всё, что
+    сервер сообщил за время команды (notices, уведомления notify).
     """
     from boba.db.postgres import PgSessionTrace  # noqa: PLC0415
 
@@ -352,9 +381,12 @@ async def pg_stream_out(
 
     conn = await PayloadPostgres.connect_config(connection.copy_session(session))
     trace = PgSessionTrace(conn)
+    script = PgScript(conn)
     statement = PgQueryBuilder().raw_query(sql).build()
 
-    async with conn, conn.cursor() as cur:
+    async with conn, conn.transaction(), conn.cursor() as cur:
+        before_steps = await script.run(before)
+
         async with cur.copy(statement.text) as copy_out:
             async for block in copy_out:
                 data = bytes(block)
@@ -362,12 +394,13 @@ async def pg_stream_out(
                 await out.send(data)
 
         report = trace.report(f"copied out {total} bytes", sql, cur)
+        after_steps = await script.run(after)
 
-    return MarkdownResult(text=report.render())
+    return MarkdownResult(text=report.scripted(before_steps, after_steps).render())
 
 
 @tool
-async def pg_stream_in(
+async def pg_stream_in(  # noqa: PLR0913
     connection: PgConnection,
     sql: Annotated[
         str,
@@ -394,14 +427,18 @@ async def pg_stream_in(
             ),
         ),
     ] = CopySession(),
+    before: BeforeSteps = (),
+    after: AfterSteps = (),
     *,
     feed: Annotated[RawInbound, Injected],
 ) -> MarkdownResult:
     """Насос загрузки: сырой поток входного порта в COPY ... FROM STDIN.
 
     Данные приходят во входной порт от другого насоса порциями по
-    chunk_bytes. В ответ — счётчик байтов, статус сервера (COPY N),
-    стейтмент и всё, что сервер сообщил за время команды.
+    chunk_bytes. Стейтменты before и after идут в той же транзакции до и
+    после COPY: загрузка в temp-таблицу из before и разбор её в after —
+    одна транзакция. В ответ — счётчик байтов, статус сервера (COPY N),
+    стейтмент, шаги скриптов и всё, что сервер сообщил за время команды.
     """
     from boba.db.postgres import PgSessionTrace  # noqa: PLC0415
 
@@ -409,21 +446,25 @@ async def pg_stream_in(
 
     conn = await PayloadPostgres.connect_config(connection.copy_session(session))
     trace = PgSessionTrace(conn)
+    script = PgScript(conn)
     statement = PgQueryBuilder().raw_query(sql).build()
 
-    async with conn, conn.cursor() as cur:
+    async with conn, conn.transaction(), conn.cursor() as cur:
+        before_steps = await script.run(before)
+
         async with cur.copy(statement.text) as copy_in:
             async for chunk in feed.blocks(chunk_bytes):
                 total += len(chunk)
                 await copy_in.write(chunk)
 
         report = trace.report(f"copied in {total} bytes", sql, cur)
+        after_steps = await script.run(after)
 
-    return MarkdownResult(text=report.render())
+    return MarkdownResult(text=report.scripted(before_steps, after_steps).render())
 
 
 @tool
-async def pg_arrow_out(
+async def pg_arrow_out(  # noqa: PLR0913
     connection: PgConnection,
     sql: Annotated[
         str,
@@ -456,6 +497,8 @@ async def pg_arrow_out(
             ),
         ),
     ] = CopySession(),
+    before: BeforeSteps = (),
+    after: AfterSteps = (),
     *,
     out: Annotated[ArrowOutbound, Injected],
 ) -> MarkdownResult:
@@ -465,16 +508,22 @@ async def pg_arrow_out(
     берутся у libpq описанием стейтмента без выполнения, сам запрос
     выполняется один раз как COPY ... TO STDOUT (FORMAT CSV), и читатель
     CSV pyarrow собирает пачки по chunk_bytes байт, но не меньше 1 MiB: строка
-    обязана уместиться в блок, для строк шире поднимайте chunk_bytes. В ответ —
-    состав схемы, статус сервера, выполненный стейтмент и сообщения сервера.
+    обязана уместиться в блок, для строк шире поднимайте chunk_bytes.
+    Стейтменты before и after идут в той же транзакции до и после выборки.
+    В ответ — состав схемы, статус сервера, выполненный стейтмент, шаги
+    скриптов и сообщения сервера.
     """
     from boba.db.postgres.arrow import PgArrowOut  # noqa: PLC0415
 
     conn = await PayloadPostgres.connect_config(connection.copy_session(session))
-    async with conn:
-        report = await PgArrowOut(conn).stream_into(sql, chunk_bytes, out)
+    script = PgScript(conn)
+    async with conn, conn.transaction():
+        pump = PgArrowOut(conn)
+        before_steps = await script.run(before)
+        report = await pump.stream_into(sql, chunk_bytes, out)
+        after_steps = await script.run(after)
 
-    return MarkdownResult(text=report.render())
+    return MarkdownResult(text=report.scripted(before_steps, after_steps).render())
 
 
 @tool
@@ -519,6 +568,8 @@ async def pg_arrow_in(  # noqa: PLR0913
             ),
         ),
     ] = CopySession(),
+    before: BeforeSteps = (),
+    after: AfterSteps = (),
     *,
     feed: Annotated[ArrowInbound, Injected],
 ) -> MarkdownResult:
@@ -527,19 +578,24 @@ async def pg_arrow_in(  # noqa: PLR0913
     Данные приходят во входной порт от другого насоса. Каждую пачку
     писатель CSV pyarrow пишет блоком в стейтмент COPY, значения
     разбирает сервер по типу колонки; списки и двоичные типы в потоке
-    отвергаются — источник отдаёт их текстом. Вся загрузка — одна
-    транзакция: ошибка откатывает всё. В ответ — число записанных строк,
-    статус сервера, стейтмент и сообщения сервера.
+    отвергаются — источник отдаёт их текстом. Вся загрузка вместе со
+    стейтментами before и after — одна транзакция: ошибка откатывает всё.
+    В ответ — число записанных строк, статус сервера, стейтмент, шаги
+    скриптов и сообщения сервера.
     """
     from boba.db.postgres.arrow import PgArrowIn  # noqa: PLC0415
     from boba.toolkit.arrow import ArrowIpc  # noqa: PLC0415
 
     reader = await ArrowIpc().open_in(feed, chunk_bytes)
     conn = await PayloadPostgres.connect_config(connection.copy_session(session))
-    async with conn:
-        report = await PgArrowIn(conn, exact_floats).copy_from(sql, reader)
+    script = PgScript(conn)
+    async with conn, conn.transaction():
+        pump = PgArrowIn(conn, exact_floats)
+        before_steps = await script.run(before)
+        report = await pump.copy_from(sql, reader)
+        after_steps = await script.run(after)
 
-    return MarkdownResult(text=report.render())
+    return MarkdownResult(text=report.scripted(before_steps, after_steps).render())
 
 
 @tool

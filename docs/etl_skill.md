@@ -34,6 +34,11 @@ Oracle 12.2 Enterprise, 18 XE, 21 XE и 23 Free.
 крупнее — меньше системных вызовов на больших объёмах, мельче — раньше
 первые данные у приёмника.
 
+У каждого насоса есть ещё два аргумента, `before` и `after`: списки
+стейтментов, которые выполняются в той же сессии до и после команды насоса.
+Что они дают и как их писать под каждую базу, описано в разделе «Несколько
+стейтментов в одном вызове».
+
 Поток в примерах показан текстом, как он есть в UTF-8: табуляции и
 переводы строк в блоках потока настоящие. В таблицах по полям невидимые
 символы помечены: `⇥` — настоящая табуляция, `↵` — настоящий перевод строки;
@@ -1161,6 +1166,146 @@ NOTIFY, если сессия их слушала. Насосы Oracle отда�
 pg -> pg целиком — около 300 тысяч на узкой таблице и 160 тысяч на широкой
 с массивами, uuid, json и bytea.
 
+## Несколько стейтментов в одном вызове
+
+Насос выполняет одну команду: COPY, INSERT ... FORMAT, executemany. Вызов
+инструмента открывает соединение и закрывает его на выходе, поэтому всё, что
+живёт в сессии, — временная таблица, `set local`, `alter session`, `SET` —
+вместе с вызовом и умирает. Чтобы загрузка во временную таблицу и её разбор
+были одним вызовом, у каждого насоса есть аргументы `before` и `after`:
+списки стейтментов, которые идут по порядку в той же сессии, `before` — до
+команды насоса, `after` — после. По трубе при этом едут только данные
+команды насоса; строки выборок из `before` и `after` никуда не
+возвращаются, в отчёт попадает итог каждого шага.
+
+Что отчёт показывает по шагу, зависит от базы: PostgreSQL — статус сервера
+(`CREATE TABLE`, `DELETE 1`, `INSERT 0 2`), Oracle — число затронутых строк
+(у DDL и блока PL/SQL это 0), ClickHouse — счётчики сводки у команды или
+значение у выборки.
+
+```
+copied in 14 bytes
+status: COPY 2
+statement: copy stage_tmp from stdin
+before:
+- CREATE TABLE: create temp table stage_tmp (id bigint, v text) on commit drop
+after:
+- DELETE 1: delete from dwh.target t using stage_tmp s where t.id = s.id
+- INSERT 0 2: insert into dwh.target select id, v from stage_tmp
+```
+
+Проверка, которая должна остановить насос, пишется ошибкой на стороне
+сервера, а не выборкой: PostgreSQL — `do $$ begin if ... then raise
+exception '...'; end if; end $$`, Oracle — `begin if ... then
+raise_application_error(-20001, '...'); end if; end;`, ClickHouse —
+`select throwIf(count() > 0, 'target is not empty') from db.t`.
+
+### Что делает каждая база
+
+PostgreSQL: весь вызов — одна транзакция. Ошибка любого шага, включая
+последний в `after`, откатывает всё: и COPY, и предыдущие шаги. COPY не
+умеет upsert, поэтому стандартная схема — COPY во временную таблицу из
+`before` и разбор её в `after`:
+
+```json
+{
+  "sql": "copy stage_tmp from stdin",
+  "before": ["create temp table stage_tmp (id bigint, v text) on commit drop"],
+  "after": [
+    "delete from dwh.target t using stage_tmp s where t.id = s.id",
+    "insert into dwh.target select id, v from stage_tmp"
+  ]
+}
+```
+
+`insert ... on conflict` тоже подходит, но только с PostgreSQL 9.5 и выше,
+а Greenplum 6 его не знает; пара `delete` + `insert` работает везде.
+Выгрузка тоже видит `before`: `create temp table snap as select ...` в
+`before` и `copy snap to stdout` командой насоса отдают снимок.
+
+Oracle: каждый элемент — одна команда без `;` в конце либо один анонимный
+блок PL/SQL. DML из `before`, загрузка и DML из `after` — одна транзакция с
+одним commit после `after`; ошибка до commit откатывает всё. DDL
+(`truncate`, `exchange partition`, `rename`) Oracle фиксирует сам, и
+вместе с ним фиксируется всё, что было в транзакции до него, — это не
+ошибка, а способ работы базы. Временная таблица здесь глобальная и
+создаётся заранее, один раз:
+
+```json
+{
+  "sql": "insert into stage_tmp (id, v) values (:1, :2)",
+  "before": ["delete from stage_tmp"],
+  "after": [
+    "delete from target where id in (select id from stage_tmp)",
+    "insert into target select id, v from stage_tmp"
+  ]
+}
+```
+
+ClickHouse: транзакций нет, но у насоса одна сессия сервера на весь вызов,
+поэтому `SET` и `create temporary table` из `before` доживают до INSERT и
+`after`. Отката нет: ошибка шага `after` оставляет уже загруженные строки
+на месте.
+
+```json
+{
+  "sql": "insert into stage_tmp format TabSeparated",
+  "before": [
+    "set max_insert_block_size = 1000",
+    "create temporary table stage_tmp (id UInt64, v String)"
+  ],
+  "after": ["insert into dwh.target select id, upper(v) from stage_tmp"]
+}
+```
+
+## Staging и атомарная подмена
+
+Транзакция живёт в соединении, соединение живёт ровно один вызов
+инструмента, а между базами распределённых транзакций нет. Поэтому
+загрузка, которая должна подменить таблицу или партицию целиком, строится
+так: тяжёлая работа идёт в промежуточную таблицу отдельными вызовами, а
+целевую таблицу меняет один дешёвый последний шаг, который база выполняет
+атомарно. Падение посередине оставляет мусор в staging, но целевую таблицу
+не трогает.
+
+PostgreSQL: подготовка и подмена — `pg_query`, который выполняет несколько
+команд через `;` одной транзакцией; загрузка — насос.
+
+```sql
+-- pg_query: подготовка
+create table dwh.sales_new (like dwh.sales including all);
+-- pg_stream_in: copy dwh.sales_new from stdin
+-- pg_query: подмена одной транзакцией
+alter table dwh.sales rename to sales_old;
+alter table dwh.sales_new rename to sales;
+drop table dwh.sales_old;
+```
+
+Oracle: подмена партиции — `exchange partition`, он атомарен сам по себе и
+может идти шагом `after` того же насоса, что грузил staging:
+
+```json
+{
+  "sql": "insert into stage_part (id, m, v) values (:1, :2, :3)",
+  "before": ["truncate table stage_part"],
+  "after": ["alter table part_target exchange partition p_202409 with table stage_part"]
+}
+```
+
+ClickHouse: `replace partition` подменяет партицию целиком, `exchange
+tables` — таблицу; оба атомарны и идут шагом `after`:
+
+```json
+{
+  "sql": "insert into dwh.stage format TabSeparated",
+  "before": ["truncate table dwh.stage"],
+  "after": ["alter table dwh.part_target replace partition 202409 from dwh.stage"]
+}
+```
+
+Таблица staging обязана повторять раскладку целевой: у Oracle — колонки и
+типы, у ClickHouse — ещё и ключ партиционирования с ключом сортировки.
+
 ## Скорость
 
 Нагрузочный тест гонит миллион строк широкой таблицы (NUMBER, BINARY_DOUBLE,
@@ -1201,7 +1346,11 @@ pg -> pg целиком — около 300 тысяч на узкой табли
 - `test_arrow_ports.py` — Arrow-порты toolkit над трубой ОС без баз;
 - `test_pg_arrow.py` — PostgreSQL -> PostgreSQL, ClickHouse и Oracle потоком
   Arrow на всей матрице версий, обратные пути и ловушки;
-- `test_ch_pg_stream.py`, `test_ora_ch_stream.py` — короткие цепочки.
+- `test_ch_pg_stream.py`, `test_ora_ch_stream.py` — короткие цепочки;
+- `test_pump_scripts.py` — `before` и `after` на каждой базе стенда:
+  временная таблица и upsert, откат по ошибке шага `after` (PostgreSQL,
+  Oracle) и его отсутствие (ClickHouse), `replace partition` и `exchange
+  partition` из staging.
 
 Запускаются из `compose/chainlit` с окружением из `launch.json` и маркером
 `integration`. Стенды общие: тесты создают свои схемы и базы и сносят их по

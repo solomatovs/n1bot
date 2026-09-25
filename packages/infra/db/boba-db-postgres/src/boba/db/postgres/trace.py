@@ -9,14 +9,14 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 import psycopg
 from psycopg import Notify
 from psycopg.errors import Diagnostic
 
-__all__ = ["PgCommandReport", "PgNotice", "PgNotify", "PgSessionTrace"]
+__all__ = ["PgCommandReport", "PgNotice", "PgNotify", "PgScriptStep", "PgSessionTrace"]
 
 
 @dataclass(frozen=True)
@@ -54,10 +54,23 @@ class PgNotify:
 
 
 @dataclass(frozen=True)
+class PgScriptStep:
+    """Итог одного стейтмента скрипта before/after насоса: текст и статус
+    сервера; у стейтмента из нескольких команд статусы перечислены через `;`."""
+
+    statement: str
+    status: str
+
+    def render(self) -> str:
+        return f"- {self.status}: {self.statement}"
+
+
+@dataclass(frozen=True)
 class PgCommandReport:
     """Итог команды насоса для чата: первая строка — сводка насоса, дальше
     статус сервера (у COPY ... TO STDOUT psycopg его не сохраняет — тогда
-    строки нет), выполненный стейтмент, сессия и всё, что сервер сообщил."""
+    строки нет), выполненный стейтмент, шаги скриптов before и after той же
+    транзакции, сессия и всё, что сервер сообщил."""
 
     summary: str
     status: str
@@ -66,16 +79,31 @@ class PgCommandReport:
     server_version: int
     notices: Sequence[PgNotice] = field(default_factory=tuple)
     notifies: Sequence[PgNotify] = field(default_factory=tuple)
+    before: Sequence[PgScriptStep] = field(default_factory=tuple)
+    after: Sequence[PgScriptStep] = field(default_factory=tuple)
+
+    def scripted(
+        self, before: Sequence[PgScriptStep], after: Sequence[PgScriptStep]
+    ) -> PgCommandReport:
+        return replace(self, before=tuple(before), after=tuple(after))
 
     def render(self) -> str:
         lines = [self.summary]
         if self.status:
             lines.append(f"status: {self.status}")
 
-        lines += [
-            f"statement: {self.statement}",
-            f"server: backend pid {self.backend_pid}, version {self.server_version}",
-        ]
+        lines.append(f"statement: {self.statement}")
+        if self.before:
+            lines.append("before:")
+            lines.extend(step.render() for step in self.before)
+
+        if self.after:
+            lines.append("after:")
+            lines.extend(step.render() for step in self.after)
+
+        lines.append(
+            f"server: backend pid {self.backend_pid}, version {self.server_version}"
+        )
         if self.notices:
             lines.append("notices:")
             lines.extend(notice.render() for notice in self.notices)
