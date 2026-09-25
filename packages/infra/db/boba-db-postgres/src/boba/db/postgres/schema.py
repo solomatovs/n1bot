@@ -15,7 +15,8 @@ import psycopg
 from psycopg import sql
 from psycopg.errors import InsufficientPrivilege
 
-from boba.db.postgres.async_pool import AsyncPostgresPool, PostgresError
+from boba.db.postgres.async_pool import AsyncPostgresPool
+from boba.db.postgres.errors import PostgresError
 from boba.db.postgres.query import PgQueryBuilder
 
 __all__ = ["AdvisoryLock", "PostgresSchema"]

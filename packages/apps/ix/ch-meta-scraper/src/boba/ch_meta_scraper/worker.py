@@ -21,6 +21,8 @@ from clickhouse_connect.driver.asyncclient import AsyncClient
 
 from boba.db.clickhouse import ClickHouseError, ClickHouseQueryError
 from boba.db.clickhouse.connection import ClickHouseConfig
+from boba.db.clickhouse.errors import ClickHouseFormatError
+from boba.db.clickhouse.formats import TsvWithNamesAndTypes
 from boba.db.clickhouse.payload import PayloadClickHouse
 from boba.db.clickhouse.query import ChQueryBuilder
 from boba.ix_core.scrape import (
@@ -129,18 +131,24 @@ class ChSession(ScrapeSession):
             settings["session_timezone"] = "UTC"
 
         label = f"{name} ({path.name}) on {self._where}"
+        tsv = TsvWithNamesAndTypes()
         try:
-            async with PayloadClickHouse.tsv_stream_out(
-                self._client, query.text, query.params, settings
-            ) as stream:
+            async with PayloadClickHouse.byte_stream_out(
+                self._client,
+                query.text,
+                tsv.FORMAT,
+                query.params,
+                tsv.output_settings(settings),
+            ) as raw:
+                stream = await tsv.read(raw.blocks)
                 yield BlockStream(
                     stream.names,
                     CopyFormat.TEXT,
                     stream.blocks,
                     label,
-                    (ClickHouseQueryError,),
+                    (ClickHouseQueryError, ClickHouseFormatError),
                 )
-        except ClickHouseQueryError as exc:
+        except (ClickHouseQueryError, ClickHouseFormatError) as exc:
             raise ScrapeSourceError(f"query {label}: {exc}") from exc
 
 

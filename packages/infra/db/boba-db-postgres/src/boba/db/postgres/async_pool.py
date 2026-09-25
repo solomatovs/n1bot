@@ -1,7 +1,10 @@
 """AsyncPostgresPool: async-обёртка над psycopg_pool.AsyncConnectionPool.
 
-Ошибки: PostgresPoolClosedError — обращение к закрытому пулу;
-KeytabError/KerberosError — соединению не выдан TGT из keytab.
+Ошибки:
+PostgresPoolClosedError — обращение к закрытому пулу или соединение пула без
+    окружения авторизации.
+PostgresPoolLoopError — обращение к пулу из чужого цикла событий.
+PostgresError — соединению пула не выдан TGT.
 """
 
 from __future__ import annotations
@@ -28,23 +31,17 @@ import psycopg
 from psycopg.rows import DictRow, dict_row
 
 from boba.cancellation import current_cancellation
-from boba.db.postgres.connection import PostgresConfig
-from boba.kerberos import KerberosAuthBase
-from boba.krb import ClientCredentials, KerberosCredentials
+from boba.db.postgres.connection import PostgresAuthSession, PostgresConfig
+from boba.db.postgres.errors import PostgresError
 
 __all__ = [
     "AsyncPostgresPool",
+    "AuthConnection",
     "CancellablePool",
-    "KerberosConnection",
-    "PostgresError",
     "PostgresPool",
     "PostgresPoolClosedError",
     "PostgresPoolLoopError",
 ]
-
-
-class PostgresError(Exception):
-    """Базовая ошибка PG-инфры (pool/connection/timeout)."""
 
 
 class PostgresPoolClosedError(PostgresError):
@@ -58,33 +55,30 @@ class PostgresPoolLoopError(PostgresError):
 logger = logging.getLogger(__name__)
 
 
-class KerberosConnection(psycopg.AsyncConnection[Any]):
-    """Соединение, само получающее TGT из своего keytab перед подключением.
+class AuthConnection(psycopg.AsyncConnection[Any]):
+    """Соединение пула, поднимающее окружение авторизации профиля на время
+    connect: GSSAPI-обмен libpq идёт внутри connect, поэтому окружение
+    должно стоять до него, а не после. Что именно поднимать, решает
+    PostgresAuthSession профиля; у не-kerberos вариантов это ничего."""
 
-    libpq не принимает keytab параметром и читает KRB5*-переменные процесса на
-    каждом connect, поэтому окружение подставляется под процессным локом
-    KerberosEnv на всё время установления соединения — GSSAPI-обмен идёт внутри
-    connect, а не после него.
-    """
-
-    credentials: ClassVar[KerberosCredentials | None] = None
+    session: ClassVar[PostgresAuthSession | None] = None
 
     @classmethod
-    def bound_to(cls, credentials: KerberosCredentials) -> type[KerberosConnection]:
-        """Подтип, привязанный к кредам одного пула."""
-        name = f"{cls.__name__}[{credentials.principal}]"
-        return type(name, (cls,), {"credentials": credentials})
+    def bound_to(cls, session: PostgresAuthSession) -> type[AuthConnection]:
+        """Подтип, привязанный к окружению авторизации одного пула."""
+        name = f"{cls.__name__}[{session.describe()}]"
+        return type(name, (cls,), {"session": session})
 
     @classmethod
-    async def connect(cls, conninfo: str = "", **kwargs: Any) -> KerberosConnection:
-        if cls.credentials is None:
+    async def connect(cls, conninfo: str = "", **kwargs: Any) -> AuthConnection:
+        if cls.session is None:
             msg = (
-                f"{cls.__name__}.connect called without kerberos credentials: "
-                "bind the class with bound_to(credentials) first"
+                f"{cls.__name__}.connect called without an auth session: "
+                "bind the class with bound_to(session) first"
             )
             raise PostgresPoolClosedError(msg)
 
-        async with cls.credentials.applied_async():
+        async with cls.session.applied():
             return await super().connect(conninfo, **kwargs)  # type: ignore[return-value]
 
 
@@ -148,11 +142,8 @@ class AsyncPostgresPool(PostgresPool):
 
     @staticmethod
     def _connection_class(cfg: PostgresConfig) -> type[psycopg.AsyncConnection[Any]]:
-        """Соединение с собственным TGT, если авторизация kerberos."""
-        if not isinstance(cfg.auth, KerberosAuthBase):
-            return psycopg.AsyncConnection
-
-        return KerberosConnection.bound_to(ClientCredentials.of(cfg.auth))
+        """Соединение с окружением авторизации профиля на время connect."""
+        return AuthConnection.bound_to(cfg.auth_session())
 
     @property
     def search_path(self) -> str:

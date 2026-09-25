@@ -6,10 +6,12 @@ from boba.db.clickhouse.connection.auth import (
     ClickHouseAuthBase,
     ClickHouseAuthError,
     ClickHouseAuthMethod,
+    ClickHouseAuthSession,
     ClickHouseKerberos,
     ClickHouseLibch,
     NoPasswordAuth,
     PasswordAuth,
+    SpnegoHeaders,
 )
 from boba.db.clickhouse.connection.config import (
     ClickHouseConfig,
@@ -22,10 +24,12 @@ __all__ = [
     "ClickHouseAuthBase",
     "ClickHouseAuthError",
     "ClickHouseAuthMethod",
+    "ClickHouseAuthSession",
     "ClickHouseConfig",
     "ClickHouseKerberos",
     "ClickHouseLibch",
     "ClickHouseSettingsConfig",
     "NoPasswordAuth",
     "PasswordAuth",
+    "SpnegoHeaders",
 ]

@@ -29,7 +29,7 @@ dev = [
     "boba-chainlit==0.0.24.dev2",
     "boba-config==0.0.24.dev2",
     "boba-connection-broker==0.0.24.dev2",
-    "boba-db-clickhouse==0.0.24.dev2",
+    "boba-db-clickhouse[payload]==0.0.24.dev2",
     "boba-runtime==0.0.24.dev2",
     "boba-sandbox==0.0.24.dev2",
     "boba-stand==0.0.24.dev2",

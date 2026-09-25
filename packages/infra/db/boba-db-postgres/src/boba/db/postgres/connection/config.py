@@ -17,6 +17,7 @@ from pydantic import (
 from boba.connections.base import ClientIdentity, ConnectionBase
 from boba.db.postgres.connection.auth import (
     PostgresAuth,
+    PostgresAuthSession,
     PostgresKerberos,
     PostgresLibpq,
 )
@@ -266,6 +267,10 @@ class PostgresConfig(ConnectionBase):
 
     def trace(self) -> str:
         return self.auth.trace()
+
+    def auth_session(self) -> PostgresAuthSession:
+        """Окружение авторизации этого профиля на время connect."""
+        return PostgresAuthSession(self.auth, self.where())
 
     def where(self) -> str:
         """host:port/dbname соединения для текста ошибок и журнала."""

@@ -9,11 +9,14 @@
 Ошибки:
 PostgresAuthError — вариант не может дать параметры соединения: делегирование
     разрешается приложением, у билета нет имени сервиса.
+PostgresError — kerberos-варианту не выдан TGT на время установления
+    соединения.
 """
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import AsyncGenerator, Mapping, Sequence
+from contextlib import asynccontextmanager
 from enum import StrEnum
 from typing import Annotated, Any, ClassVar, Literal, TypeAlias
 
@@ -26,13 +29,16 @@ from pydantic import (
     field_serializer,
 )
 
+from boba.db.postgres.errors import PostgresError
 from boba.kerberos import (
     DelegatedAuth,
     KerberosAuthBase,
+    KerberosError,
     KerberosPasswordAuth,
     KeytabAuth,
     TicketAuth,
 )
+from boba.krb import ClientCredentials, KerberosCredentials
 from boba.toolkit.types import SecretRevealing
 
 __all__ = [
@@ -41,6 +47,7 @@ __all__ = [
     "PostgresAuth",
     "PostgresAuthError",
     "PostgresAuthMethod",
+    "PostgresAuthSession",
     "TrustAuth",
 ]
 
@@ -225,6 +232,52 @@ class PostgresKerberos:
         """Роль сервера: короткое имя принципала, как её видит include_realm=0."""
         name, _, _ = principal.partition("@")
         return name
+
+
+class PostgresAuthSession:
+    """Окружение авторизации на время установления соединения. У kerberos-
+    варианта держит кредитивы процесса: libpq не принимает keytab параметром
+    и читает KRB5*-переменные на каждом connect, поэтому GSSAPI-обмен идёт
+    внутри applied(). У остальных вариантов не делает ничего. Строит
+    PostgresConfig.auth_session(), зовут PayloadPostgres и AuthConnection пула."""
+
+    def __init__(self, auth: PostgresAuth, where: str) -> None:
+        self._auth = auth
+        self._where = where
+        self._credentials: KerberosCredentials | None = None
+        if not isinstance(auth, KerberosAuthBase):
+            return
+
+        try:
+            self._credentials = ClientCredentials.of(auth)
+        except KerberosError as exc:
+            raise PostgresError(
+                f"postgres {where}: auth {auth.method} gives no client "
+                f"credentials: {exc}"
+            ) from exc
+
+    def describe(self) -> str:
+        """Кем входим: принципал kerberos либо способ авторизации."""
+        if self._credentials is None:
+            return self._auth.method
+
+        return f"{self._auth.method} {self._credentials.principal}"
+
+    @asynccontextmanager
+    async def applied(self) -> AsyncGenerator[None, None]:
+        if self._credentials is None:
+            yield
+            return
+
+        try:
+            async with self._credentials.applied_async():
+                yield
+        except KerberosError as exc:
+            msg = (
+                f"postgres {self._where}: kerberos credentials of "
+                f"{self._credentials.principal} failed: {type(exc).__name__}: {exc}"
+            )
+            raise PostgresError(msg) from exc
 
 
 class PostgresLibpq:

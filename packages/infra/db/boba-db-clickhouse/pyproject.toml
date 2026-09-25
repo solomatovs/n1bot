@@ -36,6 +36,10 @@ where = ["src"]
 include = ["boba*"]
 namespaces = true
 
+[tool.boba.extras]
+"boba.db.clickhouse.payload" = "payload"
+"boba.db.clickhouse.formats" = "payload"
+
 [project.entry-points."boba.catalog"]
 clickhouse = "boba.db.clickhouse.snapshot:ChSnapshot"
 

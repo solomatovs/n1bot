@@ -20,8 +20,9 @@ from psycopg import sql
 from psycopg.rows import DictRow, dict_row
 from pydantic import BaseModel, ValidationError
 
-from boba.db.postgres.async_pool import AsyncPostgresPool, PostgresError, PostgresPool
+from boba.db.postgres.async_pool import AsyncPostgresPool, PostgresPool
 from boba.db.postgres.connection import PostgresConfig
+from boba.db.postgres.errors import PostgresError
 from boba.db.postgres.query import PgQuery, PgQueryBuilder
 from boba.db.postgres.schema import AdvisoryLock, PostgresSchema
 

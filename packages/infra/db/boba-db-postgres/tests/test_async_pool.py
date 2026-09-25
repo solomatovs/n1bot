@@ -66,8 +66,10 @@ def test_pool_passes_cfg_to_connection_pool():
     kwargs = _FakeAsyncConnectionPool.instances[0].kwargs
     if kwargs["open"] is not False:
         raise AssertionError('kwargs["open"] is False')
-    if kwargs["connection_class"].__name__ != "AsyncConnection":
-        raise AssertionError('kwargs["connection_class"].__name__ == "AsyncConnection"')
+    if kwargs["connection_class"].__name__ != "AuthConnection[trust]":
+        raise AssertionError(
+            'kwargs["connection_class"].__name__ == "AuthConnection[trust]"'
+        )
     conn = kwargs["kwargs"]
     if conn["host"] != "h":
         raise AssertionError('conn["host"] == "h"')
