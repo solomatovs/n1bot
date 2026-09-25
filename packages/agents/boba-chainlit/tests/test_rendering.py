@@ -353,7 +353,7 @@ class TestDeclaredDisplays:
 
         expected = {
             ("pg_query", "sql"): "sql",
-            ("pg_copy", "sql"): "sql",
+            ("pg_stream_out", "sql"): "sql",
             ("ch_query", "sql"): "sql",
             ("visualize", "spec"): "json",
         }

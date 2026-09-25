@@ -112,6 +112,8 @@ class PayloadOracle:
 
     # NUMBER без объявленной точности: столько знаков вмещает decimal128
     UNBOUNDED_NUMBER: ClassVar[pyarrow.DataType] = pyarrow.decimal128(38, 0)
+    # масштаб, которым драйвер помечает FLOAT(p): такие колонки уже едут double
+    FLOAT_SCALE: ClassVar[int] = -127
 
     def __init__(self, connection: OracleConfig) -> None:
         self._connection = connection
@@ -239,7 +241,8 @@ class PayloadOracle:
         с пробелом. Типы колонок берутся у драйвера пустой пробой запроса; NUMBER
         без объявленной точности драйвер отдал бы double, поэтому такие колонки
         запрашиваются decimal128(38, 0): целые точны, дробное значение — ошибка
-        DPY-4042, его запрос обязан привести сам (to_char или number(p, s)). RAW
+        DPY-4042, его запрос обязан привести сам (to_char или number(p, s));
+        NUMBER(p, -s) запрашивается decimal128(p + s, 0). RAW
         запрос отдаёт `rawtohex`: bytes в CSV не пишутся."""
         schema = await self._requested_schema(conn, text)
 
@@ -275,8 +278,31 @@ class PayloadOracle:
 
         fields: list[pyarrow.Field] = []
         for column, field in zip(described, pyarrow.table(frame).schema, strict=True):
-            if column.type is DB_TYPE_NUMBER and column.precision == 0:
+            if column.type is not DB_TYPE_NUMBER:
+                fields.append(field)
+                continue
+
+            precision = column.precision
+            if precision is None:
+                fields.append(field)
+                continue
+
+            scale = column.scale
+            if scale is None:
+                fields.append(field)
+                continue
+
+            if precision == 0:
                 fields.append(pyarrow.field(field.name, self.UNBOUNDED_NUMBER))
+                continue
+
+            if scale == self.FLOAT_SCALE:
+                fields.append(field)
+                continue
+
+            if scale < 0:
+                whole = pyarrow.decimal128(precision - scale, 0)
+                fields.append(pyarrow.field(field.name, whole))
                 continue
 
             fields.append(field)
@@ -341,6 +367,17 @@ class PayloadOracle:
         except oracledb.Error as exc:
             raise OracleQueryError(
                 f"reading arrow batches from oracle failed: {type(exc).__name__}: "
+                f"{exc}; query: {text[:200]!r}"
+            ) from exc
+        except pyarrow.ArrowException as exc:
+            raise OracleQueryError(
+                f"writing an arrow batch as csv failed, every column must be text, "
+                f"number or date (binary needs rawtohex): {type(exc).__name__}: "
+                f"{exc}; query: {text[:200]!r}"
+            ) from exc
+        except ValueError as exc:
+            raise OracleQueryError(
+                f"converting oracle values to arrow failed: {type(exc).__name__}: "
                 f"{exc}; query: {text[:200]!r}"
             ) from exc
 

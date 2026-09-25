@@ -1,5 +1,5 @@
-"""Насосы перекачки на живом стенде: ora_copy_out отдаёт CSV, который postgres
-принимает COPY как есть; ora_copy_in принимает CSV из COPY postgres с NULL как \\N;
+"""Насосы перекачки на живом стенде: ora_csv_out отдаёт CSV, который postgres
+принимает COPY как есть; ora_csv_in принимает CSV из COPY postgres с NULL как \\N;
 круг Oracle -> postgres -> Oracle не теряет ни строк, ни NULL, ни байтов RAW."""
 
 from __future__ import annotations
@@ -97,8 +97,8 @@ class TestCopyRoundTrip:
     async def test_oracle_to_postgres_to_oracle(
         self, target: Any, ix_stand: IxStand
     ) -> None:
-        copy_out = ToolMain.toolset(ora.ora_copy_out)[0].coroutine
-        copy_in = ToolMain.toolset(ora.ora_copy_in)[0].coroutine
+        copy_out = ToolMain.toolset(ora.ora_csv_out)[0].coroutine
+        copy_in = ToolMain.toolset(ora.ora_csv_in)[0].coroutine
         if copy_out is None or copy_in is None:
             raise AssertionError("bodies are coroutines")
 

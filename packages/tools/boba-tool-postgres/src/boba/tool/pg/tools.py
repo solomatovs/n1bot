@@ -28,7 +28,7 @@ from boba.db.postgres.connection import PostgresConfig
 from boba.db.postgres.query import PgQuery, PgQueryBuilder
 from boba.toolkit.entry import ToolMain
 from boba.toolkit.facade import Injected, UserConnection, tool
-from boba.toolkit.ports import RawInbound, RawOutbound
+from boba.toolkit.ports import ChunkBytes, RawInbound, RawOutbound
 from boba.toolkit.result import (
     MarkdownResult,
     ResultTooLargeError,
@@ -314,7 +314,7 @@ async def pg_query(
 
 
 @tool
-async def pg_copy_out(
+async def pg_stream_out(
     connection: PgConnection,
     sql: Annotated[
         str,
@@ -356,7 +356,7 @@ async def pg_copy_out(
 
 
 @tool
-async def pg_copy_in(
+async def pg_stream_in(
     connection: PgConnection,
     sql: Annotated[
         str,
@@ -371,27 +371,25 @@ async def pg_copy_in(
         ),
         MarkdownResult(language="sql"),
     ],
+    chunk_bytes: ChunkBytes,
     feed: Annotated[RawInbound, Injected],
 ) -> MarkdownResult:
     """Насос загрузки: сырой поток входного порта в COPY ... FROM STDIN.
 
-    Узел графа workflow: данные приходят от предыдущего узла.
-    В ответ возвращается счётчик байтов и статус сервера (COPY N).
+    Узел графа workflow: данные приходят от предыдущего узла порциями по
+    chunk_bytes. В ответ возвращается статус сервера (COPY N).
     """
-    total = 0
-
     conn = await PayloadPostgres.connect_config(connection)
     statement = sql.encode(conn.info.encoding)
 
     async with conn, conn.cursor() as cur:
         async with cur.copy(statement) as copy_in:
-            for chunk in feed:
-                total += len(chunk)
+            async for chunk in feed.blocks(chunk_bytes):
                 await copy_in.write(chunk)
 
         status = cur.statusmessage
 
-    return MarkdownResult(text=f"copied in {total} bytes; server: {status}")
+    return MarkdownResult(text=f"server: {status}")
 
 
 @tool
@@ -1181,8 +1179,8 @@ TOOLS: Final = ToolMain.toolset(
     pg_list_tables,
     pg_describe_table,
     pg_query,
-    pg_copy_out,
-    pg_copy_in,
+    pg_stream_out,
+    pg_stream_in,
     pg_address,
     pg_database_describe,
     pg_schema_describe,

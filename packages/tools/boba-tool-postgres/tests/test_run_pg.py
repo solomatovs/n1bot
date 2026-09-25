@@ -12,7 +12,7 @@ import pytest
 
 from boba.config import bind
 from boba.db.postgres.connection import PostgresConfig
-from boba.tool.pg.tools import PgToolConfig, pg_copy, pg_list_tables, pg_query
+from boba.tool.pg.tools import PgToolConfig, pg_list_tables, pg_query
 from boba.toolkit.entry import ToolMain
 
 pytestmark = [pytest.mark.run, pytest.mark.anyio]
@@ -22,9 +22,6 @@ class RunArgs:
     """Аргументы прогона: правятся перед запуском."""
 
     SQL: ClassVar[str] = "select 1 as answer"
-
-    COPY_SQL: ClassVar[str] = "copy (select 1 as answer) to stdout with (format csv)"
-    """pg_copy принимает только COPY ... TO STDOUT: обычный SELECT он не берёт."""
 
 
 @pytest.fixture(scope="module")
@@ -71,14 +68,3 @@ async def test_run_pg_list_tables(
 
     print(content)
 
-
-async def test_run_pg_copy(pg_cfg: PgToolConfig, connection: PostgresConfig) -> None:
-    body = ToolMain.toolset(pg_copy)[0].coroutine
-    if body is None:
-        raise AssertionError("body is not None")
-
-    content = (
-        await body(connection=connection, sql=RunArgs.COPY_SQL, cfg=pg_cfg)
-    ).llm_view()
-
-    print(content)

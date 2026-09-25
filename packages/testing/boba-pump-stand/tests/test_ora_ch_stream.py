@@ -1,4 +1,4 @@
-"""Цепочка Oracle -> ClickHouse насосами ora_copy_out и ch_stream_in: CSV
+"""Цепочка Oracle -> ClickHouse насосами ora_csv_out и ch_stream_in: CSV
 уезжает как есть, без разбора между узлами; число строк, NULL и суммы
 совпадают на обеих сторонах. Oracle — первый источник стенда, ClickHouse —
 новейший."""

@@ -22,8 +22,8 @@ UserConnection]`). Тело инструмента живёт в песочни�
 | `ora_database_describe` | сервис, контейнер, баннер версии, кодировка; грантов не требует |
 | `ora_schema_describe`, `ora_table_describe`, `ora_column_describe`, `ora_constraints_describe`, `ora_indexes_describe`, `ora_routines_describe`, `ora_sequences_describe`, `ora_types_describe` | описание словаря по `all_*`; `*` в фильтре схемы скрывает служебные схемы Oracle |
 | `ora_address` | базовый url соединения `oracle://host:port/service`, роли объекта в query |
-| `ora_copy_out` | насос выгрузки: строки запроса CSV-байтами в выходной порт |
-| `ora_copy_in` | насос загрузки: CSV из входного порта в таблицу пачками `executemany` |
+| `ora_csv_out` | насос выгрузки: строки запроса CSV-байтами в выходной порт |
+| `ora_csv_in` | насос загрузки: CSV из входного порта в таблицу пачками `executemany` |
 
 Окно `offset`/`limit` режется на стороне инструмента (`RowPage`), поэтому `offset
 ... fetch` в запрос подставлять не нужно и оно работает на любой версии сервера.
@@ -34,12 +34,12 @@ UserConnection]`). Тело инструмента живёт в песочни�
 Между узлами цепочки идёт CSV без заголовка. Два конца различаются тем, как
 записан NULL, потому что так устроены их драйверы:
 
-- `ora_copy_out` пишет пачками Arrow через pyarrow: NULL это пустое поле, строка с
+- `ora_csv_out` пишет пачками Arrow через pyarrow: NULL это пустое поле, строка с
   запятой, кавычкой или переводом строки в кавычках, даты ISO с пробелом. Это
   формат `COPY t FROM STDIN (FORMAT CSV)` postgres по умолчанию. Запрос обязан сам
   привести три типа: `RAW` и `BLOB` через `rawtohex`, `INTERVAL` через `to_char`,
   `NUMBER` с дробью без объявленной точности через `to_char` или `cast`.
-- `ora_copy_in` ждёт NULL как `\N`, бинарное поле шестнадцатеричной строкой с
+- `ora_csv_in` ждёт NULL как `\N`, бинарное поле шестнадцатеричной строкой с
   префиксом `\x` (так postgres пишет `bytea`), даты ISO. Это `COPY (...) TO STDOUT
   (FORMAT CSV, NULL '\N')` postgres. Типы полей берутся по описанию колонок
   приёмника, `TIMESTAMP` и бинарные колонки биндятся явным типом, чтобы не потерять
@@ -48,8 +48,8 @@ UserConnection]`). Тело инструмента живёт в песочни�
 Скорость на стенде: выгрузка 328 тысяч строк в секунду, загрузка около 50 тысяч,
 узкое место загрузки — разбор CSV и приведение типов в Python.
 
-Цепочки `ora_copy_out -> pg_copy_in` и `pg_copy_out -> ora_copy_in` проверены
-круговым тестом `tests/test_ora_copy.py` на Oracle 12.2, 18, 21 и 23: число строк,
+Цепочки `ora_csv_out -> pg_stream_in` и `pg_stream_out -> ora_csv_in` проверены
+круговым тестом `tests/test_ora_csv.py` на Oracle 12.2, 18, 21 и 23: число строк,
 NULL, суммы и байты `RAW` совпадают с исходником.
 
 ## Стенд
