@@ -13,7 +13,6 @@ QueryBuildError — сборщик получил один параметр с �
 
 from __future__ import annotations
 
-import codecs
 import sys
 from collections.abc import Mapping
 from enum import StrEnum
@@ -312,58 +311,6 @@ async def pg_query(
     """Выполнить SQL на подключении: строки либо счётчик затронутых."""
 
     return await run_script(connection, sql, RowWindow(offset=offset, limit=limit))
-
-
-@tool
-async def pg_copy(
-    connection: PgConnection,
-    sql: Annotated[
-        str,
-        Field(
-            min_length=1,
-            description=(
-                "Стейтмент COPY ... TO STDOUT целиком, например: "
-                "COPY (select ...) TO STDOUT WITH (FORMAT CSV, HEADER). "
-                "Выгружай форматом CSV — в таком виде вывод и показывается. "
-                "Ответ возвращается текстом как есть. Если строк больше "
-                "лимита — добавьте LIMIT в сам запрос."
-            ),
-        ),
-        MarkdownResult(language="sql"),
-    ],
-    cfg: Annotated[PgToolConfig, Injected],
-) -> MarkdownResult:
-    """Выгрузить данные стейтментом COPY ... TO STDOUT как есть."""
-
-    parts: list[str] = []
-    size = 0
-
-    conn = await PayloadPostgres.connect_config(connection)
-
-    # bytes: тип Query psycopg требует LiteralString, а запрос пишет LLM;
-    # кодировка — client_encoding подключения, а не обязательно utf-8
-    statement = sql.encode(conn.info.encoding)
-
-    # блоки COPY режут символ в произвольном месте — декодер инкрементальный
-    decoder = codecs.getincrementaldecoder(conn.info.encoding)(errors="replace")
-
-    async with conn, conn.cursor() as cur, cur.copy(statement) as copy_out:
-        async for block in copy_out:
-            data = bytes(block)
-
-            size += len(data)
-            if size > cfg.max_bytes:
-                raise ResultTooLargeError.bytes_limit(cfg.max_bytes)
-
-            text = decoder.decode(data)
-            if text:
-                parts.append(text)
-
-    tail = decoder.decode(b"", True)
-    if tail:
-        parts.append(tail)
-
-    return MarkdownResult(text="".join(parts), language=CopyDump.LANG)
 
 
 @tool
@@ -1234,7 +1181,6 @@ TOOLS: Final = ToolMain.toolset(
     pg_list_tables,
     pg_describe_table,
     pg_query,
-    pg_copy,
     pg_copy_out,
     pg_copy_in,
     pg_address,
