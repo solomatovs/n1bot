@@ -13,8 +13,9 @@ QueryBuildError — сборщик получил один параметр с �
 
 from __future__ import annotations
 
+import asyncio
 import sys
-from collections.abc import Mapping
+from collections.abc import AsyncIterator, Iterator, Mapping, Sequence
 from enum import StrEnum
 from typing import Annotated, Any, ClassVar, Final
 
@@ -24,9 +25,17 @@ from boba.connections.address import AddressError
 from boba.db.clickhouse import ClickHouseError, ClickHouseQueryError
 from boba.db.clickhouse.address import ChAddresses
 from boba.db.clickhouse.connection import ClickHouseConfig
-from boba.db.clickhouse.query import ChQuery, ChQueryBuilder
+from boba.db.clickhouse.query import (
+    ChFormat,
+    ChIdentifier,
+    ChIdentifiers,
+    ChQuery,
+    ChQueryBuilder,
+    ChValue,
+)
 from boba.toolkit.entry import ToolMain
-from boba.toolkit.facade import UserConnection, tool
+from boba.toolkit.facade import Injected, UserConnection, tool
+from boba.toolkit.ports import RawInbound
 from boba.toolkit.result import MarkdownResult, SqlResult, SqlStatement, TableResult
 from boba.toolkit.sql import (
     QueryBuildError,
@@ -102,7 +111,11 @@ async def run_and_collect(
     """Запрос страницей окна: границы выдачи назначает вызов."""
     page = RowPage(window, skipped=0)
 
-    async with get_payload().row_blocks(connection, query.text, query.params) as stream:
+    payload = get_payload()
+    async with (
+        payload.opened_config(connection) as client,
+        payload.rows_stream_out(client, query.text, query.params) as stream,
+    ):
         async for block in stream.blocks:
             if not page.add(dict(zip(stream.names, block, strict=True))):
                 break
@@ -143,13 +156,17 @@ async def ch_list_tables(
                 name as table,
                 engine,
                 total_rows
-            from system.tables
-            where database not in {system_databases:Array(String)}
+            from
+                system.tables
+            where
+                database not in {system_databases:Array(String)}
             """,
             system_databases=SystemDatabase.names(),
         )
         .when(
-            database is not None, "and database = {database:String}", database=database
+            database is not None,
+            "and database = {database:String}",
+            database=ChValue(database),
         )
         .add("order by database, name")
     )
@@ -206,15 +223,19 @@ async def ch_list_columns(
                 is_in_sampling_key,
                 compression_codec,
                 comment
-            from system.columns
-            where database not in {system_databases:Array(String)}
+            from
+                system.columns
+            where
+                database not in {system_databases:Array(String)}
             """,
             system_databases=SystemDatabase.names(),
         )
         .when(
-            database is not None, "and database = {database:String}", database=database
+            database is not None,
+            "and database = {database:String}",
+            database=ChValue(database),
         )
-        .when(table is not None, "and table = {table:String}", table=table)
+        .when(table is not None, "and table = {table:String}", table=ChValue(table))
         .add("order by database, table, position")
     )
 
@@ -293,15 +314,19 @@ async def ch_describe_table(
                 is_in_sampling_key,
                 compression_codec,
                 comment
-            from system.columns
-            where database not in {system_databases:Array(String)}
-              and table = {table:String}
+            from
+                system.columns
+            where 1=1
+                and database not in {system_databases:Array(String)}
+                and table = {table:String}
             """,
             system_databases=SystemDatabase.names(),
-            table=table,
+            table=ChValue(table),
         )
         .when(
-            database is not None, "and database = {database:String}", database=database
+            database is not None,
+            "and database = {database:String}",
+            database=ChValue(database),
         )
         .add("order by database, table, position")
     )
@@ -346,12 +371,16 @@ async def ch_database_describe(
                 metadata_path,
                 uuid,
                 comment
-            from system.databases
-            where name not in {system_databases:Array(String)}
+            from
+                system.databases
+            where
+                name not in {system_databases:Array(String)}
             """,
             system_databases=SystemDatabase.names(),
         )
-        .when(database != "*", "and name = {database:String}", database=database)
+        .when(
+            database != "*", "and name = {database:String}", database=ChValue(database)
+        )
         .add("order by name")
     )
 
@@ -396,13 +425,19 @@ async def ch_table_describe(
                 storage_policy,
                 metadata_modification_time,
                 comment
-            from system.tables
-            where database not in {system_databases:Array(String)}
+            from
+                system.tables
+            where
+                database not in {system_databases:Array(String)}
             """,
             system_databases=SystemDatabase.names(),
         )
-        .when(database != "*", "and database = {database:String}", database=database)
-        .when(table != "*", "and name = {table:String}", table=table)
+        .when(
+            database != "*",
+            "and database = {database:String}",
+            database=ChValue(database),
+        )
+        .when(table != "*", "and name = {table:String}", table=ChValue(table))
         .add("order by database, name")
     )
 
@@ -450,13 +485,19 @@ async def ch_column_describe(
                 is_in_sampling_key,
                 compression_codec,
                 comment
-            from system.columns
-            where database not in {system_databases:Array(String)}
+            from
+                system.columns
+            where
+                database not in {system_databases:Array(String)}
             """,
             system_databases=SystemDatabase.names(),
         )
-        .when(database != "*", "and database = {database:String}", database=database)
-        .when(table != "*", "and table = {table:String}", table=table)
+        .when(
+            database != "*",
+            "and database = {database:String}",
+            database=ChValue(database),
+        )
+        .when(table != "*", "and table = {table:String}", table=ChValue(table))
         .add("order by database, table, position")
     )
 
@@ -491,13 +532,19 @@ async def ch_constraints_describe(
                 name,
                 type,
                 expression
-            from system.constraints
-            where database not in {system_databases:Array(String)}
+            from
+                system.constraints
+            where
+                database not in {system_databases:Array(String)}
             """,
             system_databases=SystemDatabase.names(),
         )
-        .when(database != "*", "and database = {database:String}", database=database)
-        .when(table != "*", "and table = {table:String}", table=table)
+        .when(
+            database != "*",
+            "and database = {database:String}",
+            database=ChValue(database),
+        )
+        .when(table != "*", "and table = {table:String}", table=ChValue(table))
         .add("order by database, table, name")
     )
 
@@ -536,13 +583,19 @@ async def ch_indexes_describe(
                 granularity,
                 data_compressed_bytes,
                 data_uncompressed_bytes
-            from system.data_skipping_indices
-            where database not in {system_databases:Array(String)}
+            from
+                system.data_skipping_indices
+            where
+                database not in {system_databases:Array(String)}
             """,
             system_databases=SystemDatabase.names(),
         )
-        .when(database != "*", "and database = {database:String}", database=database)
-        .when(table != "*", "and table = {table:String}", table=table)
+        .when(
+            database != "*",
+            "and database = {database:String}",
+            database=ChValue(database),
+        )
+        .when(table != "*", "and table = {table:String}", table=ChValue(table))
         .add("order by database, table, name")
     )
 
@@ -591,11 +644,16 @@ async def ch_function_describe(
                 returned_value,
                 description,
                 categories
-            from system.functions
-            where true
+            from
+                system.functions
+            where 1=1
             """
         )
-        .when(function != "*", "and name like {function:String}", function=function)
+        .when(
+            function != "*",
+            "and name like {function:String}",
+            function=ChValue(function),
+        )
         .add("order by name")
     )
 
@@ -634,12 +692,18 @@ async def ch_sequences_describe(
                 cycle,
                 cache,
                 comment
-            from system.sequences
-            where database not in {system_databases:Array(String)}
+            from
+                system.sequences
+            where
+                database not in {system_databases:Array(String)}
             """,
             system_databases=SystemDatabase.names(),
         )
-        .when(database != "*", "and database = {database:String}", database=database)
+        .when(
+            database != "*",
+            "and database = {database:String}",
+            database=ChValue(database),
+        )
         .add("order by database, name")
     )
 
@@ -680,11 +744,12 @@ async def ch_types_describe(
                 name,
                 case_insensitive,
                 alias_to
-            from system.data_type_families
-            where true
+            from
+                system.data_type_families
+            where 1=1
             """
         )
-        .when(name != "*", "and name like {name:String}", name=name)
+        .when(name != "*", "and name like {name:String}", name=ChValue(name))
         .add("order by name")
     )
 
@@ -817,20 +882,20 @@ async def ch_edm_structure(  # noqa: PLR0913
                 and rtl.type_to in {column_types:Array(String)}
                 and rtl.type_from in {relation_types_from:Array(String)}
             """,
-            db=database,
-            attributes_physical=Edm.ATTRIBUTES_PHYSICAL.value,
-            relations=Edm.RELATIONS.value,
-            assets=Edm.ASSETS.value,
-            relation_types=Edm.RELATION_TYPES.value,
-            name_attribute=Edm.NAME.value,
+            db=ChValue(database),
+            attributes_physical=ChValue(Edm.ATTRIBUTES_PHYSICAL.value),
+            relations=ChValue(Edm.RELATIONS.value),
+            assets=ChValue(Edm.ASSETS.value),
+            relation_types=ChValue(Edm.RELATION_TYPES.value),
+            name_attribute=ChValue(Edm.NAME.value),
             column_types=Edm.column_types(),
             relation_types_from=Edm.relation_types(),
         )
-        .when(table != "*", "and obn.value = {table:String}", table=table)
+        .when(table != "*", "and obn.value = {table:String}", table=ChValue(table))
         .when(
             path != "*",
             "and a.path || '/' || obn.value like {path:String}",
-            path=path,
+            path=ChValue(path),
         )
         .add("order by path, column_name")
     )
@@ -934,30 +999,115 @@ async def ch_edm_descriptions(  # noqa: PLR0913
                     on ed.etalon_id_pdm = pdm.etalon_id
             where true
             """,
-            db=database,
-            attributes_physical=Edm.ATTRIBUTES_PHYSICAL.value,
-            attributes=Edm.ATTRIBUTES.value,
-            assets=Edm.ASSETS.value,
-            relations=Edm.RELATIONS.value,
-            name_attribute=Edm.NAME.value,
-            short_attribute=Edm.SHORT_DESCRIPTION.value,
-            extended_attribute=Edm.EXTENDED_DESCRIPTION.value,
-            source_attribute=Edm.DESCRIPTION.value,
+            db=ChValue(database),
+            attributes_physical=ChValue(Edm.ATTRIBUTES_PHYSICAL.value),
+            attributes=ChValue(Edm.ATTRIBUTES.value),
+            assets=ChValue(Edm.ASSETS.value),
+            relations=ChValue(Edm.RELATIONS.value),
+            name_attribute=ChValue(Edm.NAME.value),
+            short_attribute=ChValue(Edm.SHORT_DESCRIPTION.value),
+            extended_attribute=ChValue(Edm.EXTENDED_DESCRIPTION.value),
+            source_attribute=ChValue(Edm.DESCRIPTION.value),
             described_attributes=Edm.described_attributes(),
             ed_attributes=Edm.ed_name_attributes(),
-            logical_relation=Edm.LOGICAL_TO_PHYSICAL.value,
+            logical_relation=ChValue(Edm.LOGICAL_TO_PHYSICAL.value),
         )
-        .when(name != "*", "and pdm.name = {name:String}", name=name)
+        .when(name != "*", "and pdm.name = {name:String}", name=ChValue(name))
         .when(
             path != "*",
             "and pdm.path || '/' || pdm.name like {path:String}",
-            path=path,
+            path=ChValue(path),
         )
         .add("order by path, name")
     )
 
     return await run_and_collect(
         connection, builder.build(), RowWindow(offset=offset, limit=limit)
+    )
+
+
+class FeedBlocks:
+    """Порции сырого входного порта как асинхронный поток для тела INSERT:
+    порт читает трубу блокирующе, поэтому каждая порция берётся в потоке,
+    а цикл событий остаётся свободен для отправки. Считает принятые байты."""
+
+    def __init__(self, feed: RawInbound) -> None:
+        self._feed = feed
+        self.consumed = 0
+
+    async def blocks(self) -> AsyncIterator[bytes]:
+        chunks: Iterator[bytes] = iter(self._feed)
+        while True:
+            chunk = await asyncio.to_thread(next, chunks, None)
+            if chunk is None:
+                return
+
+            self.consumed += len(chunk)
+            yield chunk
+
+
+@tool
+async def ch_copy_in(  # noqa: PLR0913
+    connection: ChConnection,
+    database: Annotated[
+        str, Field(min_length=1, description="База таблицы-приёмника: dwh.")
+    ],
+    table: Annotated[
+        str, Field(min_length=1, description="Таблица-приёмник в этой базе: events.")
+    ],
+    columns: Annotated[
+        Sequence[str],
+        Field(
+            min_length=1,
+            description=(
+                "Колонки приёмника списком в порядке полей тела: "
+                '["id", "name", "created_at"].'
+            ),
+        ),
+    ],
+    fmt: Annotated[
+        ChFormat,
+        Field(
+            description=(
+                "Формат тела: CSV (NULL — пустое поле без кавычек, как COPY ... "
+                "(FORMAT CSV) postgres и ora_copy_out), TabSeparated (NULL — \\N, как "
+                "COPY текстом postgres) или JSONEachRow."
+            )
+        ),
+    ],
+    feed: Annotated[RawInbound, Injected],
+) -> MarkdownResult:
+    """Насос загрузки: тело из входного порта одним INSERT ... FORMAT в таблицу.
+
+    Узел графа workflow: данные приходят от предыдущего узла и уезжают
+    серверу как есть, блоками, без разбора на клиенте. Имена базы, таблицы
+    и колонок квотирует драйвер. В ответ возвращается счётчик принятых
+    байтов и записанных строк по сводке сервера.
+    """
+    query = (
+        ChQueryBuilder()
+        .add(
+            "insert into %(db)s.%(t)s (%(columns)s) format $fmt",
+            db=ChIdentifier(database),
+            t=ChIdentifier(table),
+            columns=ChIdentifiers(columns),
+            fmt=fmt.value,
+        )
+        .build()
+    )
+    source = FeedBlocks(feed)
+
+    payload = get_payload()
+    async with payload.opened_config(connection) as client:
+        summary = await payload.byte_stream_in(
+            client, query.text, query.params, blocks=source.blocks()
+        )
+
+    return MarkdownResult(
+        text=(
+            f"copied in {source.consumed} bytes, {summary.written_rows} rows "
+            f"into {database}.{table}"
+        )
     )
 
 
@@ -1001,6 +1151,7 @@ TOOLS: Final = ToolMain.toolset(
     ch_types_describe,
     ch_edm_structure,
     ch_edm_descriptions,
+    ch_copy_in,
 )
 
 if __name__ == "__main__":

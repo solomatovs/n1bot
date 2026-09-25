@@ -11,7 +11,7 @@ import pytest
 from ora_tool_stand import DemoUser, IxStand, ToolDemo
 from psycopg import sql
 
-from boba.db.oracle import OraQueryBuilder, OraSql
+from boba.db.oracle import OraIdentifier, OraQueryBuilder
 from boba.db.oracle.payload import PayloadOracle
 from boba.db.postgres import AsyncPostgresPool
 from boba.db.postgres.query import PgQueryBuilder
@@ -27,7 +27,7 @@ STAND = IxStand.required()
 ROWS = 5000
 CHUNK = 777
 
-COLUMNS = "ID, EMAIL, BALANCE, CREATED_AT, NOTE, PHOTO"
+COLUMNS = ["ID", "EMAIL", "BALANCE", "CREATED_AT", "NOTE", "PHOTO"]
 PG_TABLE = sql.Identifier("ora_copy_probe")
 
 
@@ -63,7 +63,7 @@ async def _fingerprint(source: Any, table: str) -> Sequence[Any]:
     """Число строк, NULL и контрольные суммы таблицы Oracle."""
     payload = PayloadOracle(source.oracle)
     query = (
-        OraQueryBuilder(table=OraSql(f"{DemoUser.NAME}.{table}"))
+        OraQueryBuilder(table=OraIdentifier(f"{DemoUser.NAME}.{table}"))
         .add(
             "select count(*), count(note), count(photo), sum(balance), "
             "min(created_at), max(created_at), sum(length(email)), "
@@ -103,7 +103,7 @@ class TestCopyRoundTrip:
 
         sink = Sink()
         select = (
-            OraQueryBuilder(table=OraSql(f"{DemoUser.NAME}.customers"))
+            OraQueryBuilder(table=OraIdentifier(f"{DemoUser.NAME}.customers"))
             .add(
                 "select id, email, balance, created_at, note, "
                 "rawtohex(photo) as photo from {table} order by id"

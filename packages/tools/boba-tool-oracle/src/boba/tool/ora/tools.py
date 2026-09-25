@@ -10,8 +10,8 @@ OracleError — до базы не достучаться (сеть, listener, �
 OracleQueryError — сервер отклонил запрос (синтаксис, права) или оборвал чтение.
 UnknownConnectionError — имя подключения вне whitelist'а конфига.
 AddressError — адрес базы не собрался из профиля соединения.
-QueryBuildError — сборщик получил один параметр с двумя разными значениями.
-TargetNameError — имя таблицы или колонки для ora_copy_in содержит лишние символы.
+QueryBuildError — сборщик получил один параметр с двумя разными значениями
+    или имя таблицы/колонки для ora_copy_in пустое или с кавычкой внутри.
 CsvFieldError — поле CSV не приводится к типу колонки Oracle.
 """
 
@@ -23,7 +23,6 @@ import datetime
 import decimal
 import sys
 from collections.abc import Callable, Iterator, Mapping, Sequence
-from dataclasses import dataclass
 from enum import StrEnum
 from typing import Annotated, Any, ClassVar, Final
 
@@ -31,11 +30,14 @@ from pydantic import Field
 
 from boba.connections.address import AddressError
 from boba.db.oracle import (
+    OraBindMarks,
     OracleError,
     OracleQueryError,
+    OraIdentifier,
+    OraIdentifiers,
+    OraLiterals,
     OraQuery,
     OraQueryBuilder,
-    OraSql,
 )
 from boba.db.oracle.address import OraAddresses
 from boba.db.oracle.connection import OracleConfig
@@ -87,21 +89,12 @@ class ObjectKind(StrEnum):
     TYPE = "TYPE"
 
     @classmethod
-    def relations(cls) -> str:
-        return cls._listed((cls.TABLE, cls.VIEW, cls.MATERIALIZED_VIEW))
+    def relations(cls) -> OraLiterals:
+        return OraLiterals((cls.TABLE, cls.VIEW, cls.MATERIALIZED_VIEW))
 
     @classmethod
-    def routines(cls) -> str:
-        return cls._listed((cls.PROCEDURE, cls.FUNCTION, cls.PACKAGE, cls.TYPE))
-
-    @staticmethod
-    def _listed(kinds: Sequence[ObjectKind]) -> str:
-        """Список литералов для `in (...)`: значения из enum, не от пользователя."""
-        quoted: list[str] = []
-        for kind in kinds:
-            quoted.append(f"'{kind.value}'")
-
-        return ", ".join(quoted)
+    def routines(cls) -> OraLiterals:
+        return OraLiterals((cls.PROCEDURE, cls.FUNCTION, cls.PACKAGE, cls.TYPE))
 
 
 class PlsqlBlock(StrEnum):
@@ -235,7 +228,7 @@ async def ora_list_tables(
     Выдача постраничная: сколько показано и как листать, сказано в note.
     """
     builder = (
-        OraQueryBuilder(kinds=OraSql(ObjectKind.relations()))
+        OraQueryBuilder(kinds=ObjectKind.relations())
         .add(
             """
             select
@@ -626,7 +619,7 @@ async def ora_routines_describe(
     аргументы смотрите в all_source и all_arguments через ora_query.
     Выдача постраничная — как листать, сказано в note."""
     builder = (
-        OraQueryBuilder(kinds=OraSql(ObjectKind.routines()))
+        OraQueryBuilder(kinds=ObjectKind.routines())
         .add(
             """
             select
@@ -793,71 +786,6 @@ async def ora_copy_out(
     return MarkdownResult(text=f"copied out {total} bytes")
 
 
-class TargetNameError(Exception):
-    """Имя таблицы или колонки для загрузки содержит недопустимые символы."""
-
-
-@dataclass(frozen=True)
-class TargetName:
-    """Имя объекта Oracle для текста insert: буквы, цифры, `_`, `$`, `#` и точка
-    между схемой и таблицей. Кавычек нет намеренно: имя подставляется как
-    написано, регистр решает сервер."""
-
-    ALLOWED: ClassVar[str] = "_$#."
-
-    text: str
-
-    def __post_init__(self) -> None:
-        stripped = self.text.strip()
-        if not stripped:
-            raise TargetNameError("target name: expected a non-empty identifier")
-
-        for char in stripped:
-            if char.isalnum():
-                continue
-            if char in self.ALLOWED:
-                continue
-
-            msg = (
-                f"target name {self.text!r}: character {char!r} is not allowed, "
-                f"expected letters, digits or {self.ALLOWED!r}"
-            )
-            raise TargetNameError(msg)
-
-    def render(self) -> str:
-        return self.text.strip()
-
-
-@dataclass(frozen=True)
-class ColumnList:
-    """Список колонок загрузки в порядке полей CSV."""
-
-    names: Sequence[TargetName]
-
-    @classmethod
-    def parse(cls, text: str) -> ColumnList:
-        names: list[TargetName] = []
-        for piece in text.split(","):
-            names.append(TargetName(piece))
-
-        return cls(names=names)
-
-    def render(self) -> str:
-        rendered: list[str] = []
-        for name in self.names:
-            rendered.append(name.render())
-
-        return ", ".join(rendered)
-
-    def binds(self) -> str:
-        """Позиционные bind'ы `:1, :2, ...` по числу колонок."""
-        marks: list[str] = []
-        for position in range(1, len(self.names) + 1):
-            marks.append(f":{position}")
-
-        return ", ".join(marks)
-
-
 class CsvFieldError(Exception):
     """Поле CSV не приводится к типу колонки Oracle."""
 
@@ -956,16 +884,19 @@ async def ora_copy_in(
         str,
         Field(
             min_length=1,
-            description="Таблица-приёмник, при необходимости со схемой: HR.EMPLOYEES.",
+            description=(
+                "Таблица-приёмник, при необходимости со схемой, как в SQL: "
+                "HR.EMPLOYEES. Имя с иными символами уезжает в кавычках как написано."
+            ),
         ),
     ],
     columns: Annotated[
-        str,
+        Sequence[str],
         Field(
             min_length=1,
             description=(
-                "Колонки приёмника через запятую в порядке полей CSV: "
-                "ID, NAME, CREATED_AT."
+                'Колонки приёмника списком в порядке полей CSV: ["ID", "NAME", '
+                '"CREATED_AT"].'
             ),
         ),
     ],
@@ -980,20 +911,16 @@ async def ora_copy_in(
     транзакция: ошибка откатывает всё. В ответ возвращается счётчик байтов
     и строк.
     """
-    target = TargetName(table)
-    listed = ColumnList.parse(columns)
+    target = OraIdentifier(table)
+    listed = OraIdentifiers(columns)
 
     probe = (
-        OraQueryBuilder(table=OraSql(target.render()), columns=OraSql(listed.render()))
+        OraQueryBuilder(table=target, columns=listed)
         .add("select {columns} from {table} where 1 = 0")
         .build()
     )
     insert = (
-        OraQueryBuilder(
-            table=OraSql(target.render()),
-            columns=OraSql(listed.render()),
-            binds=OraSql(listed.binds()),
-        )
+        OraQueryBuilder(table=target, columns=listed, binds=OraBindMarks(len(columns)))
         .add("insert into {table} ({columns}) values ({binds})")
         .build()
     )
@@ -1021,14 +948,13 @@ async def ora_copy_in(
         await payload.commit(conn)
 
     return MarkdownResult(
-        text=f"copied in {source.consumed} bytes, {rows} rows into {target.render()}"
+        text=f"copied in {source.consumed} bytes, {rows} rows into {table}"
     )
 
 
 EXPECTED: Mapping[type[Exception], SqlErrorKind] = {
     AddressError: SqlErrorKind.UNKNOWN_TARGET,
     QueryBuildError: SqlErrorKind.SQL_FAILED,
-    TargetNameError: SqlErrorKind.SQL_FAILED,
     CsvFieldError: SqlErrorKind.SQL_FAILED,
     OracleError: SqlErrorKind.DATABASE_UNAVAILABLE,
     OracleQueryError: SqlErrorKind.SQL_FAILED,

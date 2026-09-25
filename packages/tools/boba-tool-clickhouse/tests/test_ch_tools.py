@@ -38,6 +38,7 @@ class TestChTools:
         "ch_types_describe",
         "ch_edm_structure",
         "ch_edm_descriptions",
+        "ch_copy_in",
     ]
 
     def test_module_declares_the_toolset(self) -> None:

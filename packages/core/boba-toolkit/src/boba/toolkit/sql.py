@@ -115,6 +115,11 @@ class QueryBuilder(ABC, Generic[TQuery]):
     def takes_name(self, value: object) -> bool:
         """Значение — имя для подстановки в текст, а не параметр драйвера."""
 
+    def param_value(self, value: object) -> object:
+        """Значение параметра в том виде, в каком его ждёт драйвер; диалект с
+        обёрткой параметра разворачивает её здесь."""
+        return value
+
     @abstractmethod
     def render_piece(self, text: str, names: Mapping[str, Any]) -> TQuery:
         """Кусок с подставленными именами."""
@@ -137,14 +142,15 @@ class QueryBuilder(ABC, Generic[TQuery]):
                 names[name] = value
                 continue
 
-            if name in self._params and self._params[name] != value:
+            bound = self.param_value(value)
+            if name in self._params and self._params[name] != bound:
                 msg = (
                     f"query builder: parameter {name!r} bound twice with different "
-                    f"values: {self._params[name]!r} and {value!r}"
+                    f"values: {self._params[name]!r} and {bound!r}"
                 )
                 raise QueryBuildError(msg)
 
-            self._params[name] = value
+            self._params[name] = bound
 
         self._pieces.append(self.render_piece(text, names))
 
