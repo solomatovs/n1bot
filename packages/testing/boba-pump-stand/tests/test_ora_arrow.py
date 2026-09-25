@@ -1,7 +1,8 @@
 """Перекачка потоком Arrow IPC: ora_arrow_out и ora_arrow_in против
-ch_stream_out и ch_stream_in с FORMAT ArrowStream, насосы соединены трубой ОС
-и работают одновременно. Матрица — каждый Oracle из ora_sources против
-каждого ClickHouse из ch_sources в обе стороны, плюс круг Oracle -> Oracle.
+ch_arrow_out и ch_arrow_in (в ловушках — ch_stream_* с FORMAT ArrowStream в
+тексте), насосы соединены трубой ОС и работают одновременно. Матрица —
+каждый Oracle из ora_sources против каждого ClickHouse из ch_sources в обе
+стороны, плюс круг Oracle -> Oracle.
 
 В отличие от CSV значения не переводятся в текст: числа, float с NaN, время
 и двоичные данные едут своими типами Arrow. Приводить в запросе остаётся
@@ -634,7 +635,7 @@ class TestOracleToClickHouse:
                 {"sql": f"select {exported} from {PumpUser.NAME}.arr order by id"},
             ),
             Leg(
-                "ch_stream_in",
+                "ch_arrow_in",
                 {
                     "sql": f"insert into {CH_DATABASE}.dst "
                     f"settings {CASE_INSENSITIVE} format ArrowStream",
@@ -685,10 +686,10 @@ class TestClickHouseToOracle:
         try:
             chained = await pumps.chain(
                 Leg(
-                    "ch_stream_out",
+                    "ch_arrow_out",
                     {
                         "sql": f"select {exported} from {CH_DATABASE}.src order by id "
-                        f"format ArrowStream settings {STRING_AS_STRING}",
+                        f"settings {STRING_AS_STRING}",
                         "chunk_bytes": CHUNK_BYTES,
                     },
                 ),

@@ -15,10 +15,16 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+arrow = [
+    "pyarrow>=25,<26",
+]
 dev = [
     "boba-stand-core==0.0.24.dev2",
     "pytest>=8",
 ]
+
+[tool.boba.extras]
+"boba.toolkit.arrow" = "arrow"
 
 [tool.setuptools.packages.find]
 where = ["src"]

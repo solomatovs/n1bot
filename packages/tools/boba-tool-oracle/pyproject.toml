@@ -20,6 +20,7 @@ ora = "boba.tool.ora.plugin:MANIFEST"
 [project.optional-dependencies]
 payload = [
     "boba-db-oracle[payload]==0.0.24.dev2",
+    "boba-toolkit[arrow]==0.0.24.dev2",
 ]
 dev = [
     "boba-db-postgres==0.0.24.dev2",
