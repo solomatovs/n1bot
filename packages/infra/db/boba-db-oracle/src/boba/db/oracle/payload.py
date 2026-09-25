@@ -39,7 +39,7 @@ from oracledb import (
 
 from boba.db.oracle.connection import OracleConfig
 from boba.db.oracle.errors import OracleError, OracleQueryError
-from boba.db.oracle.query import OraQueryBuilder, OraSql
+from boba.db.oracle.query import OraQueryBuilder
 
 __all__ = ["ByteStream", "OraColumnType", "PayloadOracle", "RowStream"]
 
@@ -254,8 +254,8 @@ class PayloadOracle:
         """Схема ответа: типы драйвера по пустой выборке, NUMBER без точности —
         decimal128(38, 0)."""
         probe = (
-            OraQueryBuilder(query=OraSql(text))
-            .add("select * from ({query}) where rownum < 1")
+            OraQueryBuilder()
+            .add("select * from (", text, ") where rownum < 1")
             .build()
             .text
         )

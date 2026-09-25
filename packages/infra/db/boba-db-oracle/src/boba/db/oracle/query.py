@@ -1,25 +1,25 @@
-"""Сборщик запросов Oracle: текст кусками, `{name}` — имя, `:name` — bind-параметр
-python-oracledb в словаре.
+"""Сборщик запросов Oracle: куски текста и имён склеиваются подряд, `:name` в
+тексте — bind-параметр python-oracledb в словаре.
 
 Имена квотирует драйвер по своим правилам для идентификаторов и литералов:
 OraIdentifier — простое или составное имя (HR.EMPLOYEES, obj$, x@link) идёт как
 есть и регистр решает сервер, любое другое (пробел, точка в имени, цифра в
 начале) уезжает в двойных кавычках как написано; OraIdentifiers — список имён
 через запятую; OraLiterals — список строковых литералов для `in (...)`;
-OraBindMarks — позиционные метки `:1, :2, ...` по числу колонок; OraSql —
-готовый фрагмент из кода пакета как есть. Драйвер импортируется в момент
-рендера: модуль читает и приложение, где драйвера нет.
+OraBindMarks — позиционные метки `:1, :2, ...` по числу колонок. Драйвер
+импортируется в момент рендера: модуль читает и приложение, где драйвера нет.
 
 Ошибки:
-QueryBuildError — кусок ждёт плейсхолдер, которому ничего не передано,
-    имя пустое или с кавычкой внутри, или один параметр привязан с двумя значениями.
+QueryBuildError — имя пустое или с кавычкой внутри, список пуст, один параметр
+    привязан с двумя значениями, или в bind пришло имя вместо значения.
 """
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Any, ClassVar
+from pathlib import Path
+from typing import Any, Protocol, Self
 
 from boba.toolkit.sql import AbstractQuery, QueryBuilder, QueryBuildError, QueryParams
 
@@ -28,9 +28,9 @@ __all__ = [
     "OraIdentifier",
     "OraIdentifiers",
     "OraLiterals",
+    "OraPiece",
     "OraQuery",
     "OraQueryBuilder",
-    "OraSql",
 ]
 
 OraQuery = AbstractQuery[str, QueryParams | None]
@@ -66,8 +66,6 @@ class OraIdentifier:
 class OraIdentifiers:
     """Список имён через запятую: колонки insert или select."""
 
-    SEPARATOR: ClassVar[str] = ", "
-
     names: Sequence[str]
 
     def __post_init__(self) -> None:
@@ -79,15 +77,13 @@ class OraIdentifiers:
         for name in self.names:
             rendered.append(OraIdentifier(name).render())
 
-        return self.SEPARATOR.join(rendered)
+        return ", ".join(rendered)
 
 
 @dataclass(frozen=True)
 class OraLiterals:
     """Список строковых литералов через запятую для `in (...)`; кавычки ставит
     драйвер."""
-
-    SEPARATOR: ClassVar[str] = ", "
 
     values: Sequence[str]
 
@@ -102,14 +98,12 @@ class OraLiterals:
         for value in self.values:
             rendered.append(oracledb.enquote_literal(value))
 
-        return self.SEPARATOR.join(rendered)
+        return ", ".join(rendered)
 
 
 @dataclass(frozen=True)
 class OraBindMarks:
     """Позиционные bind-метки `:1, :2, ...` для `values (...)` по числу колонок."""
-
-    SEPARATOR: ClassVar[str] = ", "
 
     count: int
 
@@ -124,50 +118,88 @@ class OraBindMarks:
         for position in range(1, self.count + 1):
             marks.append(f":{position}")
 
-        return self.SEPARATOR.join(marks)
+        return ", ".join(marks)
 
 
-@dataclass(frozen=True)
-class OraSql:
-    """Готовый фрагмент SQL из кода пакета, подставляется как есть."""
+class OraPiece(Protocol):
+    """Кусок запроса, который рендерит драйвер: имя, список имён, литералы,
+    bind-метки."""
 
-    text: str
+    def render(self) -> str: ...
 
-    def render(self) -> str:
-        return self.text
+
+OraRendered = OraIdentifier | OraIdentifiers | OraLiterals | OraBindMarks
+"""Куски пакета, которые в bind приходить не должны."""
 
 
 class OraQueryBuilder(QueryBuilder[str]):
-    """Реализация QueryBuilder для python-oracledb.
-
-    В куске `{name}` это имя — OraIdentifier, OraIdentifiers, OraLiterals,
-    OraBindMarks или OraSql, `:name` это значение и уезжает bind-параметром,
-    литеральные фигурные скобки пишутся удвоенными. Списки Oracle не биндит:
-    их подставляют OraLiterals или фрагментом OraSql.
+    """Реализация QueryBuilder для python-oracledb: куски склеиваются подряд,
+    `str` идёт в текст как есть, OraIdentifier, OraIdentifiers, OraLiterals и
+    OraBindMarks рендерит драйвер; `:name` в тексте это значение и уезжает
+    bind-параметром. Куски одного add стоят вплотную, между вызовами add —
+    перенос строки. Текст запроса сборщик не разбирает. Списки Oracle не
+    биндит: их подставляют OraLiterals.
     """
 
-    def takes_name(self, value: object) -> bool:
-        return isinstance(
-            value,
-            OraIdentifier | OraIdentifiers | OraLiterals | OraBindMarks | OraSql,
-        )
+    def __init__(self) -> None:
+        self._pieces: list[str] = []
+        self._params: QueryParams = {}
 
-    def render_piece(self, text: str, names: Mapping[str, Any]) -> str:
-        rendered: dict[str, str] = {}
-        for name, value in names.items():
-            rendered[name] = value.render()
+    def add(self, *pieces: str | OraPiece, **bind: Any) -> Self:
+        rendered: list[str] = []
+        for piece in pieces:
+            if isinstance(piece, str):
+                rendered.append(piece)
+                continue
 
-        try:
-            return text.format(**rendered)
-        except (KeyError, ValueError, IndexError) as exc:
-            known = ", ".join(sorted(rendered))
-            if not known:
-                known = "none"
+            rendered.append(piece.render())
 
+        for name, value in bind.items():
+            self._bind(name, value)
+
+        self._pieces.append("".join(rendered))
+
+        return self
+
+    def when(self, condition: bool, *pieces: str | OraPiece, **bind: Any) -> Self:
+        if not condition:
+            return self
+
+        return self.add(*pieces, **bind)
+
+    def read(self, path: Path, /, **bind: Any) -> Self:
+        """Кусок из файла пакета: текст читается целиком и добавляется как add."""
+        text = path.read_text(encoding="utf-8")
+
+        return self.add(text, **bind)
+
+    def build(self) -> OraQuery:
+        params: QueryParams | None = None
+        if self._params:
+            params = dict(self._params)
+
+        return AbstractQuery(text="\n".join(self._pieces), params=params)
+
+    def _bind(self, name: str, value: object) -> None:
+        if isinstance(value, AbstractQuery):
             msg = (
-                f"query piece expects only names {known}, got {exc!r} in {text[:120]!r}"
+                f"oracle query builder: {name!r} got a built query; pass its .text "
+                "as a piece or bind its values"
             )
-            raise QueryBuildError(msg) from exc
+            raise QueryBuildError(msg)
 
-    def join_pieces(self, pieces: Sequence[str]) -> str:
-        return "\n".join(pieces)
+        if isinstance(value, OraRendered):
+            msg = (
+                f"oracle query builder: {name!r} got {type(value).__name__}; pieces "
+                "go positionally, bind takes values only"
+            )
+            raise QueryBuildError(msg)
+
+        if name in self._params and self._params[name] != value:
+            msg = (
+                f"oracle query builder: parameter {name!r} bound twice with "
+                f"different values: {self._params[name]!r} and {value!r}"
+            )
+            raise QueryBuildError(msg)
+
+        self._params[name] = value

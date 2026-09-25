@@ -228,7 +228,7 @@ async def ora_list_tables(
     Выдача постраничная: сколько показано и как листать, сказано в note.
     """
     builder = (
-        OraQueryBuilder(kinds=ObjectKind.relations())
+        OraQueryBuilder()
         .add(
             """
             select
@@ -241,8 +241,9 @@ async def ora_list_tables(
                 all_objects o
                 join all_users u on u.username = o.owner
             where
-                o.object_type in ({kinds})
-            """
+                o.object_type in (""",
+                ObjectKind.relations(),
+            ")",
         )
         .when(schema_name is None, "and u.oracle_maintained = 'N'")
         .when(schema_name is not None, "and o.owner = :owner", owner=schema_name)
@@ -619,7 +620,7 @@ async def ora_routines_describe(
     аргументы смотрите в all_source и all_arguments через ora_query.
     Выдача постраничная — как листать, сказано в note."""
     builder = (
-        OraQueryBuilder(kinds=ObjectKind.routines())
+        OraQueryBuilder()
         .add(
             """
             select
@@ -634,8 +635,9 @@ async def ora_routines_describe(
                 all_objects o
                 join all_users u on u.username = o.owner
             where
-                o.object_type in ({kinds})
-            """
+                o.object_type in (""",
+            ObjectKind.routines(),
+            ")",
         )
         .when(schema_name == "*", "and u.oracle_maintained = 'N'")
         .when(schema_name != "*", "and o.owner = :owner", owner=schema_name)
@@ -915,13 +917,21 @@ async def ora_copy_in(
     listed = OraIdentifiers(columns)
 
     probe = (
-        OraQueryBuilder(table=target, columns=listed)
-        .add("select {columns} from {table} where 1 = 0")
+        OraQueryBuilder()
+        .add("select ", listed, " from ", target, " where 1 = 0")
         .build()
     )
     insert = (
-        OraQueryBuilder(table=target, columns=listed, binds=OraBindMarks(len(columns)))
-        .add("insert into {table} ({columns}) values ({binds})")
+        OraQueryBuilder()
+        .add(
+            "insert into ",
+            target,
+            " (",
+            listed,
+            ") values (",
+            OraBindMarks(len(columns)),
+            ")",
+        )
         .build()
     )
 

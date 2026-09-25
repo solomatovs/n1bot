@@ -1,7 +1,7 @@
 """Источник Oracle для общего цикла скрапера boba.ix_core.scrape: одно thin-соединение
 python-oracledb на попытку, ворота файлов по версии словаря из sys.registry$, строки
-запроса потоком. Область снятия — фрагменты Scope, которые файлы scrape/ берут
-плейсхолдерами `{owners}` и `{objects}`. Всё по README пакета.
+запроса потоком. Область снятия (пользовательские схемы, обычные объекты
+словаря) записана в самих файлах scrape/. Всё по README пакета.
 
 Ошибки:
 ScrapeSourceError — сервер недоступен (сеть, listener, вход) или отклонил запрос.
@@ -15,7 +15,6 @@ import asyncio
 from collections.abc import AsyncGenerator, Mapping, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from enum import StrEnum
 from pathlib import Path
 
 from oracledb import AsyncConnection
@@ -23,7 +22,7 @@ from oracledb import AsyncConnection
 from boba.db.oracle import OracleError, OracleQueryError
 from boba.db.oracle.connection import OracleConfig
 from boba.db.oracle.payload import PayloadOracle
-from boba.db.oracle.query import OraQueryBuilder, OraSql
+from boba.db.oracle.query import OraQueryBuilder
 from boba.ix_core.scrape import (
     BlockStream,
     CopyFormat,
@@ -47,23 +46,6 @@ __all__ = [
     "read_server_version",
 ]
 
-SCHEME = "oracle"
-SECTION = "ix.ora_meta_scraper"
-PROG = "boba-ora-meta-scraper"
-DESCRIPTION = "Снятие словаря Oracle в граф ix: схема пакета, scrape, раскладка, merge."
-
-
-class Scope(StrEnum):
-    """Область снятия: пользовательские схемы и обычные объекты словаря."""
-
-    OWNERS = (
-        "(select u.user# from sys.user$ u where u.type# = 1 "
-        "and bitand(nvl(u.spare1, 0), 256) = 0)"
-    )
-    OBJECTS = (
-        "o.subname is null and o.linkname is null and o.remoteowner is null "
-        "and bitand(o.flags, 128) = 0"
-    )
 
 
 class SourceConfig(SourceConfigBase):
@@ -84,7 +66,7 @@ class ScraperConfig(ScraperConfigBase[SourceConfig]):
 class SourceAddress(SourceAddressBase):
     """Scope источника: сервис, к которому идёт соединение, лежит в database."""
 
-    scheme: str = SCHEME
+    scheme: str = "oracle"
     database: str
 
 
@@ -137,11 +119,7 @@ class OraSession(ScrapeSession):
                 f"params (lists are not bindable), got {listed}"
             )
 
-        query = (
-            OraQueryBuilder(owners=OraSql(Scope.OWNERS), objects=OraSql(Scope.OBJECTS))
-            .read(path)
-            .build()
-        )
+        query = OraQueryBuilder().read(path).build()
 
         label = f"{name} ({path.name}) on {self._where}"
         try:
@@ -223,7 +201,13 @@ class OraSource(ScrapeSource):
 
 async def main() -> None:
     package_dir = Path(__file__).resolve().parent
-    await run_cli(PROG, DESCRIPTION, SECTION, package_dir, ScraperConfig)
+    await run_cli(
+        "boba-ora-meta-scraper",
+        "Снятие словаря Oracle в граф ix: схема пакета, scrape, раскладка, merge.",
+        "ix.ora_meta_scraper",
+        package_dir,
+        ScraperConfig,
+    )
 
 
 def cli() -> None:

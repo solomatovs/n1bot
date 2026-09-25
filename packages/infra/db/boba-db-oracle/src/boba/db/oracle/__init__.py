@@ -12,9 +12,9 @@ from boba.db.oracle.query import (
     OraIdentifier,
     OraIdentifiers,
     OraLiterals,
+    OraPiece,
     OraQuery,
     OraQueryBuilder,
-    OraSql,
 )
 
 __all__ = [
@@ -22,9 +22,9 @@ __all__ = [
     "OraIdentifier",
     "OraIdentifiers",
     "OraLiterals",
+    "OraPiece",
     "OraQuery",
     "OraQueryBuilder",
-    "OraSql",
     "OracleError",
     "OracleQueryError",
 ]

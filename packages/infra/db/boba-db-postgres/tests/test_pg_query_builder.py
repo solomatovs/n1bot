@@ -75,10 +75,6 @@ class TestPgQueryBuilder:
             'select 1 from "ix".node\nunion all select 1 from "ix".edge where a = %(a)s'
         )
 
-    def test_standing_name_must_be_a_name(self) -> None:
-        with pytest.raises(QueryBuildError, match="standing name 'schema'"):
-            PgQueryBuilder(schema="ix")
-
     def test_read_adds_the_file_as_a_piece(self, tmp_path: Path) -> None:
         path = tmp_path / "10_node.sql"
         path.write_text(

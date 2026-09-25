@@ -63,11 +63,12 @@ async def _fingerprint(source: Any, table: str) -> Sequence[Any]:
     """Число строк, NULL и контрольные суммы таблицы Oracle."""
     payload = PayloadOracle(source.oracle)
     query = (
-        OraQueryBuilder(table=OraIdentifier(f"{DemoUser.NAME}.{table}"))
+        OraQueryBuilder()
         .add(
             "select count(*), count(note), count(photo), sum(balance), "
             "min(created_at), max(created_at), sum(length(email)), "
-            "sum(utl_raw.length(photo)) from {table}"
+            "sum(utl_raw.length(photo)) from ",
+            OraIdentifier(f"{DemoUser.NAME}.{table}"),
         )
         .build()
     )
@@ -103,10 +104,12 @@ class TestCopyRoundTrip:
 
         sink = Sink()
         select = (
-            OraQueryBuilder(table=OraIdentifier(f"{DemoUser.NAME}.customers"))
+            OraQueryBuilder()
             .add(
                 "select id, email, balance, created_at, note, "
-                "rawtohex(photo) as photo from {table} order by id"
+                "rawtohex(photo) as photo from ",
+                OraIdentifier(f"{DemoUser.NAME}.customers"),
+                " order by id",
             )
             .build()
         )
