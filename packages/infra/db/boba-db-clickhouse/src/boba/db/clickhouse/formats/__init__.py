@@ -10,6 +10,7 @@ ClickHouseFormatError — поток оборвался до шапки, шап�
 
 from __future__ import annotations
 
+from boba.db.clickhouse.formats.arrow import ArrowColumns, ArrowFile, ArrowStream
 from boba.db.clickhouse.formats.base import Blocks, StreamFormat
 from boba.db.clickhouse.formats.blob import RawBlob, RawBlobStream
 from boba.db.clickhouse.formats.csv import (
@@ -40,6 +41,9 @@ from boba.db.clickhouse.formats.lines import JsonExactOutput
 from boba.db.clickhouse.formats.tsv import TsvStream, TsvWithNamesAndTypes
 
 __all__ = [
+    "ArrowColumns",
+    "ArrowFile",
+    "ArrowStream",
     "Blocks",
     "Csv",
     "CsvNamesStream",
