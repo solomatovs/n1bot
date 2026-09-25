@@ -11,7 +11,7 @@ from boba.db.postgres.async_pool import (
     PostgresPoolLoopError,
 )
 from boba.db.postgres.cursor import LoggingCursor
-from boba.db.postgres.errors import PostgresError
+from boba.db.postgres.errors import PgArrowError, PostgresError
 from boba.db.postgres.payload import PayloadPostgres
 from boba.db.postgres.query import PgQuery, PgQueryBuilder
 from boba.db.postgres.schema import AdvisoryLock, PostgresSchema
@@ -26,6 +26,7 @@ __all__ = [
     "LoggingCursor",
     "ModelT",
     "PayloadPostgres",
+    "PgArrowError",
     "PgQuery",
     "PgQueryBuilder",
     "PostgresError",

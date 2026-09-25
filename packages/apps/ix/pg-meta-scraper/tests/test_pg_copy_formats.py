@@ -75,7 +75,8 @@ class TestCopyFormats:
             ).open_session() as session,
         ):
             await ix.execute("set timezone to 'UTC'")
-            q = sql.SQL("create temp table raw_fmt {}").format(DDL[DDL.index("(") :])
+            columns = sql.SQL(DDL[DDL.index("(") :])
+            q = sql.SQL("create temp table raw_fmt {}").format(columns)
             await ix.execute(q)
             async with session.fetch_blocks("fmt", query, {}) as blocks:
                 await copy_blocks(ix, "raw_fmt", blocks)

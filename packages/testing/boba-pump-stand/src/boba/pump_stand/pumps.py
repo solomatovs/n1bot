@@ -61,6 +61,8 @@ class Pumps:
         self._connections: dict[str, object | None] = {
             "pg_stream_out": postgres,
             "pg_stream_in": postgres,
+            "pg_arrow_out": postgres,
+            "pg_arrow_in": postgres,
             "ch_stream_out": clickhouse,
             "ch_stream_in": clickhouse,
             "ch_arrow_out": clickhouse,
@@ -75,6 +77,8 @@ class Pumps:
         listed = ToolMain.toolset(
             pg.pg_stream_out,
             pg.pg_stream_in,
+            pg.pg_arrow_out,
+            pg.pg_arrow_in,
             ch.ch_stream_out,
             ch.ch_stream_in,
             ch.ch_arrow_out,

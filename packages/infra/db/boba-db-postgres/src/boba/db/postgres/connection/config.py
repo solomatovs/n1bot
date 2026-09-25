@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from enum import StrEnum
 from typing import Annotated, Any, ClassVar, Literal, Self
 
 from pydantic import (
@@ -62,6 +63,25 @@ class PostgresPoolConfig(BaseModel):
     )
 
 
+class CopyText(StrEnum):
+    """Настройки сессии, от которых зависит текст COPY: с ними один и тот же
+    запрос печатает одно и то же на любом сервере и в любой базе. DateStyle —
+    ISO-даты и порядок год-месяц-день на вводе; IntervalStyle — интервалы в
+    записи postgres; TimeZone UTC — смещение +00 у timestamptz; bytea hex;
+    деньги без локали; float кратчайшим точным текстом; UTF-8; bytea внутри
+    xml base64; строковые литералы запроса по стандарту."""
+
+    DATESTYLE = "ISO,YMD"
+    INTERVALSTYLE = "postgres"
+    TIMEZONE = "UTC"
+    BYTEA_OUTPUT = "hex"
+    LC_MONETARY = "C"
+    EXTRA_FLOAT_DIGITS = "3"
+    CLIENT_ENCODING = "UTF8"
+    XMLBINARY = "base64"
+    STANDARD_CONFORMING_STRINGS = "on"
+
+
 class PostgresOptionsConfig(BaseModel):
     "libpq 'options': серверные GUC сессии (-c key=value); сериализуется в строку"
 
@@ -81,14 +101,50 @@ class PostgresOptionsConfig(BaseModel):
         default=None, description="default_transaction_read_only: on|off."
     )
     search_path: str | None = Field(default=None, description="search_path сессии.")
+    datestyle: str | None = Field(default=None, description="DateStyle сессии.")
+    intervalstyle: str | None = Field(default=None, description="IntervalStyle.")
+    bytea_output: str | None = Field(
+        default=None, description="bytea_output: hex|escape."
+    )
+    lc_monetary: str | None = Field(default=None, description="Локаль money.")
+    extra_float_digits: str | None = Field(
+        default=None,
+        description="extra_float_digits: 3 — float печатается точно и до 12-й версии.",
+    )
+    client_encoding: str | None = Field(default=None, description="Кодировка сессии.")
+    xmlbinary: str | None = Field(default=None, description="xmlbinary: base64|hex.")
+    standard_conforming_strings: str | None = Field(
+        default=None, description="standard_conforming_strings: on|off."
+    )
+
+    def copy_text(self) -> PostgresOptionsConfig:
+        """Те же опции с зафиксированным текстом COPY (CopyText): для насосов,
+        которые отдают или принимают вывод сервера как есть."""
+        return self.model_copy(
+            update={
+                "datestyle": CopyText.DATESTYLE.value,
+                "intervalstyle": CopyText.INTERVALSTYLE.value,
+                "timezone": CopyText.TIMEZONE.value,
+                "bytea_output": CopyText.BYTEA_OUTPUT.value,
+                "lc_monetary": CopyText.LC_MONETARY.value,
+                "extra_float_digits": CopyText.EXTRA_FLOAT_DIGITS.value,
+                "client_encoding": CopyText.CLIENT_ENCODING.value,
+                "xmlbinary": CopyText.XMLBINARY.value,
+                "standard_conforming_strings": (
+                    CopyText.STANDARD_CONFORMING_STRINGS.value
+                ),
+            }
+        )
 
     def to_options(self) -> str | None:
-        """libpq options '-c k=v ...' по заполненным GUC-полям; None если пусто."""
+        """libpq options '-c k=v ...' по заполненным GUC-полям; None если пусто.
+        Пробел и обратный слэш в значении экранируются, как требует libpq."""
         parts = []
 
         for name in type(self).model_fields:
             if (value := getattr(self, name)) is not None:
-                parts.append(f"-c {name}={value}")
+                escaped = str(value).replace("\\", "\\\\").replace(" ", "\\ ")
+                parts.append(f"-c {name}={escaped}")
 
         return " ".join(parts)
 
@@ -331,6 +387,12 @@ class PostgresConfig(ConnectionBase):
             raise ValueError(msg)
 
         return self
+
+    def copy_text(self) -> PostgresConfig:
+        """Тот же профиль с зафиксированным текстом COPY (CopyText): для сессий,
+        которые отдают или принимают вывод сервера как есть — насосов, дампов
+        скраперов и загрузки в ix."""
+        return self.model_copy(update={"options": self.options.copy_text()})
 
     def conn_settings(self) -> dict[str, Any]:
         "kwargs для connect(): libpq-ключи + autocommit/prepare_threshold + opts"

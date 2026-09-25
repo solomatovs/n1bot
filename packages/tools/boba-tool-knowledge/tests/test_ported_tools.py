@@ -55,6 +55,8 @@ class TestPgTools:
         "pg_query",
         "pg_stream_out",
         "pg_stream_in",
+        "pg_arrow_out",
+        "pg_arrow_in",
         "pg_address",
         "pg_database_describe",
         "pg_schema_describe",

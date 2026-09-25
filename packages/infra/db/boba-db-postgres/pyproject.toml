@@ -22,10 +22,17 @@ dependencies = [
 postgresql = "boba.db.postgres.address:PgAddresses"
 
 [project.optional-dependencies]
+arrow = [
+    "boba-toolkit[arrow]==0.0.24.dev2",
+    "pyarrow>=25,<26",
+]
 dev = [
     "boba-stand==0.0.24.dev2",
     "pytest>=8",
 ]
+
+[tool.boba.extras]
+"boba.db.postgres.arrow" = "arrow"
 
 [tool.setuptools.packages.find]
 where = ["src"]

@@ -9,6 +9,9 @@ UnknownConnectionError — имя подключения вне whitelist'а к�
 psycopg.Error — сервер отклонил запрос (синтаксис, права).
 ResultTooLargeError — дамп COPY превысил max_bytes конфига.
 QueryBuildError — сборщик получил один параметр с двумя разными значениями.
+PgArrowError — выборка pg_arrow_out не описывается или её колонка не
+    укладывается в Arrow (numeric без точности).
+ArrowStreamError — вход pg_arrow_in не читается как поток Arrow IPC.
 """
 
 from __future__ import annotations
@@ -16,16 +19,17 @@ from __future__ import annotations
 import sys
 from collections.abc import Mapping
 from enum import StrEnum
-from typing import Annotated, ClassVar, Final
+from typing import Annotated, Any, ClassVar, Final
 
 import psycopg
 from psycopg.rows import dict_row
 from pydantic import Field
 
-from boba.db.postgres import PayloadPostgres, PostgresError
+from boba.db.postgres import PayloadPostgres, PgArrowError, PostgresError
 from boba.db.postgres.address import PgAddresses
 from boba.db.postgres.connection import PostgresConfig
 from boba.db.postgres.query import PgQuery, PgQueryBuilder
+from boba.toolkit.arrow import ArrowInbound, ArrowOutbound, ArrowStreamError
 from boba.toolkit.entry import ToolMain
 from boba.toolkit.facade import Injected, UserConnection, tool
 from boba.toolkit.ports import ChunkBytes, RawInbound, RawOutbound
@@ -52,11 +56,6 @@ SchemaFilter = Annotated[
 ]
 """LLM-аргумент schema_name: точное имя или `*`."""
 
-PageOffset = Annotated[
-    RowOffset, Field(description="Смещение страницы выдачи (0 — с начала).")
-]
-PageLimit = Annotated[RowLimit, Field(description="Потолок строк на страницу.")]
-
 
 class AddressColumn(StrEnum):
     """Колонки выдачи pg_address."""
@@ -64,16 +63,6 @@ class AddressColumn(StrEnum):
     CONNECTION = "connection"
     URL = "url"
 
-
-class CopyDump:
-    """Показ выгрузки COPY: чем разделены поля, знает только автор запроса.
-
-    Дамп не разбирается — постгрес отдаёт его в формате, заданном самим
-    стейтментом. Блок помечается csv: описание инструмента просит этот
-    формат, а шапка блока — единственное, на что метка влияет.
-    """
-
-    LANG: ClassVar[str] = "csv"
 
 
 class PgToolConfig(SecretRevealing, SqlLimits):
@@ -336,12 +325,12 @@ async def pg_stream_out(
 ) -> MarkdownResult:
     """Насос выгрузки: COPY ... TO STDOUT сырым потоком в выходной порт.
 
-    Узел графа workflow: данные идут следующему узлу, а не в чат.
+    Данные идут в выходной порт другому насосу, а не в чат.
     В ответ возвращается только счётчик перекачанных байтов.
     """
     total = 0
 
-    conn = await PayloadPostgres.connect_config(connection)
+    conn = await PayloadPostgres.connect_config(connection.copy_text())
 
     # bytes: тип Query psycopg требует LiteralString, а запрос пишет LLM
     statement = sql.encode(conn.info.encoding)
@@ -376,10 +365,10 @@ async def pg_stream_in(
 ) -> MarkdownResult:
     """Насос загрузки: сырой поток входного порта в COPY ... FROM STDIN.
 
-    Узел графа workflow: данные приходят от предыдущего узла порциями по
+    Данные приходят во входной порт от другого насоса порциями по
     chunk_bytes. В ответ возвращается статус сервера (COPY N).
     """
-    conn = await PayloadPostgres.connect_config(connection)
+    conn = await PayloadPostgres.connect_config(connection.copy_text())
     statement = sql.encode(conn.info.encoding)
 
     async with conn, conn.cursor() as cur:
@@ -390,6 +379,94 @@ async def pg_stream_in(
         status = cur.statusmessage
 
     return MarkdownResult(text=f"server: {status}")
+
+
+def get_arrow() -> Any:
+    """Поток Arrow над psycopg: тянет pyarrow, которого в приложении нет.
+
+    Модуль инструмента читает хост ради объявлений, а pyarrow живёт только
+    в песочнице — поэтому импорт отложен до самого вызова.
+    """
+    from boba.db.postgres import arrow  # noqa: PLC0415
+
+    return arrow
+
+
+@tool
+async def pg_arrow_out(
+    connection: PgConnection,
+    sql: Annotated[
+        str,
+        Field(
+            min_length=1,
+            description=(
+                "Запрос SELECT целиком, без COPY и без `;` в конце: инструмент "
+                "сам оборачивает его в COPY (...) TO STDOUT (FORMAT CSV). Ответ "
+                "уходит следующему узлу потоком Arrow IPC: схема, затем пачки. "
+                "Типы: smallint/integer/bigint — int16/32/64, real/double — "
+                "float/double, boolean — bool, numeric(p, s) — decimal(p, s), "
+                "date — date32, timestamp — timestamp[us], timestamptz — "
+                "timestamp[us, UTC]. Всё остальное — строкой, как печатает "
+                "сервер: bytea как \\x-hex, массив как {1,2}, uuid, json, "
+                "inet, interval, time, enum, составные. numeric без точности "
+                "запрос обязан привести: col::numeric(18, 6) или col::text."
+            ),
+        ),
+        MarkdownResult(language="sql"),
+    ],
+    chunk_bytes: ChunkBytes,
+    out: Annotated[ArrowOutbound, Injected],
+) -> MarkdownResult:
+    """Насос выгрузки: строки запроса потоком Arrow IPC в выходной порт.
+
+    Данные идут в выходной порт другому насосу, а не в чат. Типы колонок
+    берутся у libpq описанием стейтмента без выполнения, сам запрос
+    выполняется один раз как COPY ... TO STDOUT (FORMAT CSV), и читатель
+    CSV pyarrow собирает пачки по chunk_bytes байт, но не меньше 1 MiB: строка
+    обязана уместиться в блок, для строк шире поднимайте chunk_bytes. В ответ —
+    состав схемы.
+    """
+    conn = await PayloadPostgres.connect_config(connection.copy_text())
+    async with conn:
+        schema = await get_arrow().PgArrowOut(conn).stream_into(sql, chunk_bytes, out)
+
+    return MarkdownResult(text=f"streamed out arrow ipc: {', '.join(schema.names)}")
+
+
+@tool
+async def pg_arrow_in(
+    connection: PgConnection,
+    table: Annotated[
+        str,
+        Field(
+            min_length=1,
+            description=(
+                "Таблица-приёмник, при необходимости со схемой: public.orders. "
+                "Колонки берутся по именам полей схемы Arrow входного потока; "
+                "имя поля обязано быть колонкой таблицы, регистр как в базе "
+                '(из Oracle имена приходят заглавными — алиас col as "col"). '
+                "Массивы и bytea источник отдаёт текстом postgres: {1,2} и "
+                "\\x00ff."
+            ),
+        ),
+    ],
+    chunk_bytes: ChunkBytes,
+    feed: Annotated[ArrowInbound, Injected],
+) -> MarkdownResult:
+    """Насос загрузки: поток Arrow IPC из входного порта в таблицу.
+
+    Данные приходят во входной порт от другого насоса. Каждую пачку
+    писатель CSV pyarrow пишет блоком в COPY ... FROM STDIN (FORMAT CSV),
+    значения разбирает сервер по типу колонки; списки и двоичные типы в
+    потоке отвергаются — источник отдаёт их текстом. Вся загрузка — одна
+    транзакция: ошибка откатывает всё. В ответ — число записанных строк.
+    """
+    reader = await feed.open(chunk_bytes)
+    conn = await PayloadPostgres.connect_config(connection.copy_text())
+    async with conn:
+        rows = await get_arrow().PgArrowIn(conn).copy_from(table, reader)
+
+    return MarkdownResult(text=f"{rows} rows written into {table}")
 
 
 @tool
@@ -406,8 +483,8 @@ async def pg_database_describe(
         ),
     ],
     *,
-    offset: PageOffset,
-    limit: PageLimit,
+    offset: RowOffset,
+    limit: RowLimit,
 ) -> SqlResult:
     """Описание баз данных кластера из pg_catalog.pg_database.
 
@@ -455,8 +532,8 @@ async def pg_schema_describe(
         ),
     ],
     *,
-    offset: PageOffset,
-    limit: PageLimit,
+    offset: RowOffset,
+    limit: RowLimit,
 ) -> SqlResult:
     """Описание схем текущей базы из pg_catalog.pg_namespace.
 
@@ -506,8 +583,8 @@ async def pg_table_describe(
         ),
     ],
     *,
-    offset: PageOffset,
-    limit: PageLimit,
+    offset: RowOffset,
+    limit: RowLimit,
 ) -> SqlResult:
     """Описание отношений из pg_class: таблицы, view, матвью, партиции,
     сторонние таблицы.
@@ -609,8 +686,8 @@ async def pg_column_describe(
         ),
     ],
     *,
-    offset: PageOffset,
-    limit: PageLimit,
+    offset: RowOffset,
+    limit: RowLimit,
 ) -> SqlResult:
     """Колонки отношения из pg_attribute.
 
@@ -681,8 +758,8 @@ async def pg_constraints_describe(
         Field(min_length=1, description="Имя отношения. `*` — все отношения схемы."),
     ],
     *,
-    offset: PageOffset,
-    limit: PageLimit,
+    offset: RowOffset,
+    limit: RowLimit,
 ) -> SqlResult:
     """Ограничения отношений из pg_constraint: primary, unique, foreign,
     check, exclusion.
@@ -780,8 +857,8 @@ async def pg_indexes_describe(
         Field(min_length=1, description="Имя отношения. `*` — все отношения схемы."),
     ],
     *,
-    offset: PageOffset,
-    limit: PageLimit,
+    offset: RowOffset,
+    limit: RowLimit,
 ) -> SqlResult:
     """Индексы отношений из pg_index.
 
@@ -854,8 +931,8 @@ async def pg_routines_describe(
         Field(min_length=1, description="Имя рутины. `*` — все рутины схемы."),
     ],
     *,
-    offset: PageOffset,
-    limit: PageLimit,
+    offset: RowOffset,
+    limit: RowLimit,
 ) -> SqlResult:
     """Рутины из pg_proc: функции, процедуры, агрегаты, оконные функции.
 
@@ -939,8 +1016,8 @@ async def pg_routine_arg_describe(
         Field(min_length=1, description="Имя рутины. `*` — все рутины схемы."),
     ],
     *,
-    offset: PageOffset,
-    limit: PageLimit,
+    offset: RowOffset,
+    limit: RowLimit,
 ) -> SqlResult:
     """Аргументы рутин из pg_proc (развёртка proallargtypes).
 
@@ -1005,8 +1082,8 @@ async def pg_sequences_describe(
         Field(min_length=1, description="Имя последовательности. `*` — все в схеме."),
     ],
     *,
-    offset: PageOffset,
-    limit: PageLimit,
+    offset: RowOffset,
+    limit: RowLimit,
 ) -> SqlResult:
     """Последовательности из pg_class/pg_sequence.
 
@@ -1079,8 +1156,8 @@ async def pg_types_describe(
         ),
     ],
     *,
-    offset: PageOffset,
-    limit: PageLimit,
+    offset: RowOffset,
+    limit: RowLimit,
 ) -> SqlResult:
     """Пользовательские типы из pg_type: enum, domain, composite, range.
 
@@ -1171,6 +1248,8 @@ async def pg_address(connection: PgConnection) -> TableResult:
 EXPECTED: Mapping[type[Exception], SqlErrorKind] = {
     QueryBuildError: SqlErrorKind.SQL_FAILED,
     PostgresError: SqlErrorKind.DATABASE_UNAVAILABLE,
+    PgArrowError: SqlErrorKind.SQL_FAILED,
+    ArrowStreamError: SqlErrorKind.SQL_FAILED,
     psycopg.Error: SqlErrorKind.SQL_FAILED,
     ResultTooLargeError: SqlErrorKind.RESULT_TOO_LARGE,
 }
@@ -1181,6 +1260,8 @@ TOOLS: Final = ToolMain.toolset(
     pg_query,
     pg_stream_out,
     pg_stream_in,
+    pg_arrow_out,
+    pg_arrow_in,
     pg_address,
     pg_database_describe,
     pg_schema_describe,

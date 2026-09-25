@@ -576,11 +576,9 @@ async def scrape_once(
     scrape_dir = package_dir / PackageDir.SCRAPE
     layout_dir = package_dir / PackageDir.LAYOUT
     async with (
-        await AsyncPostgresPool.dedicated(database.postgres) as ix,
+        await AsyncPostgresPool.dedicated(database.postgres.copy_text()) as ix,
         source.open_session() as session,
     ):
-        await ix.execute("set timezone to 'UTC'")
-        await ix.execute("set datestyle to 'ISO, YMD'")
         chosen = choose_files(source.files, session, source.describe())
 
         query = (

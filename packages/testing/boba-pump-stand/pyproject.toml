@@ -11,7 +11,7 @@ dependencies = [
     "boba-stand==0.0.24.dev2",
     "boba-toolkit[arrow]==0.0.24.dev2",
     "boba-db-clickhouse[payload]==0.0.24.dev2",
-    "boba-db-postgres==0.0.24.dev2",
+    "boba-db-postgres[arrow]==0.0.24.dev2",
     "boba-db-oracle[payload]==0.0.24.dev2",
     "boba-tool-clickhouse==0.0.24.dev2",
     "boba-tool-postgres==0.0.24.dev2",
