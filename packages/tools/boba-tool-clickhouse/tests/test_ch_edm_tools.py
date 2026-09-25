@@ -14,7 +14,7 @@ from pydantic import BaseModel, ConfigDict
 from boba.config import bind
 from boba.db.clickhouse.connection import ClickHouseConfig, ClickHouseSettingsConfig
 from boba.db.clickhouse.payload import PayloadClickHouse
-from boba.db.clickhouse.query import ChQueryBuilder, ChValue
+from boba.db.clickhouse.query import ChQueryBuilder
 from boba.tool.ch import tools as ch
 from boba.tool.ch.tools import Edm
 from boba.toolkit.entry import ToolMain
@@ -106,7 +106,7 @@ class EdmDataset:
                     + table.columns_ddl()
                     + ") engine = MergeTree order by tuple()"
                 )
-                await self._command(client, ddl, table=ChValue(table.table.value))
+                await self._command(client, ddl, table=table.table.value)
                 await client.insert(
                     table.table.value,
                     [list(row) for row in table.rows],
@@ -119,7 +119,7 @@ class EdmDataset:
             await self._command(client, "drop database if exists {db:Identifier}")
 
     async def _command(self, client: Any, text: str, **bind: Any) -> None:
-        query = ChQueryBuilder().add(text, db=ChValue(self.DATABASE), **bind).build()
+        query = ChQueryBuilder().add(text, db=self.DATABASE, **bind).build()
         await client.command(query.text, parameters=query.params)
 
     def _tables(self) -> list[TableRows]:

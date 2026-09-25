@@ -12,12 +12,11 @@ from boba.db.clickhouse.errors import (
     ClickHouseFormatError,
     ClickHouseQueryError,
 )
-from boba.db.clickhouse.query import ChQuery, ChQueryBuilder, ChValue
+from boba.db.clickhouse.query import ChQuery, ChQueryBuilder
 
 __all__ = [
     "ChQuery",
     "ChQueryBuilder",
-    "ChValue",
     "ClickHouseError",
     "ClickHouseFormatError",
     "ClickHouseQueryError",

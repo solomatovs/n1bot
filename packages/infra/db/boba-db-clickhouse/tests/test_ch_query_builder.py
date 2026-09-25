@@ -1,56 +1,41 @@
-"""Сборщик запросов ch: строка встаёт в текст голой на место $name, любое другое
-значение уезжает параметром драйвера, а подставляет его драйвер — серверу
-{name:Type} или сам на месте %(name)s, квотируя ChIdentifier своим
-quote_identifier. Куски без строк билдер не трогает."""
+"""Сборщик запросов ch: куски склеиваются подряд без разбора текста, значения
+уезжают параметрами драйвера, а подставляет их драйвер — серверу {name:Type}
+или сам на месте %(name)s, квотируя ChIdentifier своим quote_identifier."""
 
 from __future__ import annotations
 
 import pytest
 from clickhouse_connect.driver.binding import bind_query
 
-from boba.db.clickhouse.query import (
-    ChIdentifier,
-    ChIdentifiers,
-    ChQueryBuilder,
-    ChValue,
-)
+from boba.db.clickhouse.query import ChIdentifier, ChIdentifiers, ChQueryBuilder
 from boba.toolkit.sql import QueryBuildError
 
 
-class TestBareText:
-    def test_string_goes_into_the_text_as_is(self) -> None:
+class TestPieces:
+    def test_pieces_join_and_adds_break_lines(self) -> None:
         query = (
-            ChQueryBuilder(fmt="TabSeparated")
-            .add("select $columns from $table", columns="a, b", table="db.t")
-            .add("format $fmt")
+            ChQueryBuilder()
+            .add("select ", "a, b", " from ", "db.t")
+            .add("format ", "TabSeparated")
             .build()
         )
 
         assert query.text == "select a, b from db.t\nformat TabSeparated"
         assert query.params is None
 
-    def test_piece_without_strings_is_left_untouched(self) -> None:
-        query = ChQueryBuilder().add("select '$x' where a = {a:UInt8}", a=1).build()
+    def test_text_is_not_parsed(self) -> None:
+        query = ChQueryBuilder().add("select '$x', '{y}', '%(z)s' from t").build()
 
-        assert query.text == "select '$x' where a = {a:UInt8}"
-        assert query.params == {"a": 1}
-
-    def test_literal_dollar_is_doubled_in_a_piece_with_strings(self) -> None:
-        query = ChQueryBuilder().add("select '$$', $col", col="c").build()
-
-        assert query.text == "select '$', c"
-
-    def test_missing_name_is_refused(self) -> None:
-        with pytest.raises(QueryBuildError, match=r"expects only names col"):
-            ChQueryBuilder().add("select $other", col="c")
+        assert query.text == "select '$x', '{y}', '%(z)s' from t"
+        assert query.params is None
 
 
 class TestServerMode:
     def test_values_stay_parameters(self) -> None:
         query = (
             ChQueryBuilder()
-            .add("select * from {table:Identifier}", table=ChValue("events"))
-            .add("where name = {name:String}", name=ChValue("o'neil"))
+            .add("select * from {table:Identifier}", table="events")
+            .add("where name = {name:String}", name="o'neil")
             .build()
         )
 
@@ -59,38 +44,39 @@ class TestServerMode:
         )
         assert query.params == {"table": "events", "name": "o'neil"}
 
-        text, params = bind_query(query.text, query.params, None)
-
-        assert text == query.text
-        assert params == {"param_table": "events", "param_name": "o\\'neil"}
-
     def test_false_condition_leaves_the_piece_out(self) -> None:
         query = (
             ChQueryBuilder()
-            .add("select 1 where true")
-            .when(False, "and a = {a:UInt8}", a=1)
-            .when(True, "and b = {b:UInt8}", b=2)
+            .add("select 1")
+            .when(False, "where a = {a:UInt8}", a=1)
+            .when(True, "where b = {b:UInt8}", b=2)
             .build()
         )
 
-        assert query.text == "select 1 where true\nand b = {b:UInt8}"
+        assert query.text == "select 1\nwhere b = {b:UInt8}"
         assert query.params == {"b": 2}
 
     def test_same_parameter_with_the_same_value_is_fine(self) -> None:
         query = (
             ChQueryBuilder()
-            .add("where a = {a:String}", a=ChValue("x"))
-            .add("or b = {a:String}", a=ChValue("x"))
+            .add("select {a:UInt8}", a=1)
+            .add("union all select {a:UInt8}", a=1)
             .build()
         )
 
-        assert query.params == {"a": "x"}
+        assert query.params == {"a": 1}
 
     def test_same_parameter_with_another_value_is_refused(self) -> None:
-        builder = ChQueryBuilder().add("where a = {a:UInt8}", a=1)
+        builder = ChQueryBuilder().add("select {a:UInt8}", a=1)
 
         with pytest.raises(QueryBuildError, match="bound twice"):
-            builder.add("or b = {a:UInt8}", a=2)
+            builder.add("union all select {a:UInt8}", a=2)
+
+    def test_built_query_in_bind_is_refused(self) -> None:
+        inner = ChQueryBuilder().add("select 1").build()
+
+        with pytest.raises(QueryBuildError, match="built query"):
+            ChQueryBuilder().add("select * from ({q:String})", q=inner)
 
 
 class TestClientMode:
@@ -98,21 +84,17 @@ class TestClientMode:
         query = (
             ChQueryBuilder()
             .add(
-                "select %(columns)s from %(db)s.%(table)s",
-                columns=ChIdentifiers(["id", "na me"]),
+                "select %(columns)s from %(db)s.%(t)s where s = %(s)s and n = %(n)s",
+                columns=ChIdentifiers(("id", "na me")),
                 db=ChIdentifier("we`ird"),
-                table=ChIdentifier("t"),
+                t=ChIdentifier("t"),
+                s="o'neil",
+                n=7,
             )
-            .add("where name = %(name)s and share > 5 %% 2", name=ChValue("o'neil"))
-            .add("format $fmt", fmt="CSV")
             .build()
         )
+        final, _ = bind_query(query.text, query.params, None)
 
-        text, params = bind_query(query.text, query.params, None)
-
-        assert text == (
-            "select `id`, `na me` from `we\\`ird`.`t`\n"
-            "where name = 'o\\'neil' and share > 5 % 2\n"
-            "format CSV"
+        assert final == (
+            "select `id`, `na me` from `we\\`ird`.`t` where s = 'o\\'neil' and n = 7"
         )
-        assert params == {}

@@ -159,10 +159,13 @@ class TestOracleToClickHouse:
         insert = (
             ChQueryBuilder()
             .add(
-                "insert into $db.$t ($columns) format CSV",
-                db=ChTarget.DATABASE,
-                t=ChTarget.TABLE,
-                columns=", ".join(ChTarget.COLUMNS),
+                "insert into ",
+                ChTarget.DATABASE,
+                ".",
+                ChTarget.TABLE,
+                " (",
+                ", ".join(ChTarget.COLUMNS),
+                ") format CSV",
             )
             .build()
         )

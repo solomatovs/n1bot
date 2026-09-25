@@ -90,39 +90,47 @@ class Stand:
 
     async def recreate(self) -> None:
         async with PayloadClickHouse.opened_config(self._source.admin) as client:
-            await self._command(client, "drop database if exists $db")
-            await self._command(client, "create database $db")
+            await self._command(client, "drop database if exists ", self.DATABASE)
+            await self._command(client, "create database ", self.DATABASE)
             await self._command(
                 client,
-                "create table $db.customers (id UInt64, email String, "
-                "note Nullable(String)) engine = MergeTree order by id",
+                "create table ",
+                self.DATABASE,
+                ".customers (id UInt64, email String, note Nullable(String)) "
+                "engine = MergeTree order by id",
             )
             await self._command(
                 client,
-                "create table $db.sink (note Nullable(String), email String, "
-                "id UInt64) engine = MergeTree order by id",
+                "create table ",
+                self.DATABASE,
+                ".sink (note Nullable(String), email String, id UInt64) "
+                "engine = MergeTree order by id",
             )
             await self._command(
                 client,
-                "insert into $db.customers select number, "
+                "insert into ",
+                self.DATABASE,
+                ".customers select number, "
                 "concat('user', toString(number), '@example.com'), "
                 "if(number % 3 = 0, null, concat('o''neil\\t', toString(number))) "
-                "from numbers($rows)",
-                rows=str(ROWS),
+                "from numbers(",
+                str(ROWS),
+                ")",
             )
 
     async def drop(self) -> None:
         async with PayloadClickHouse.opened_config(self._source.admin) as client:
-            await self._command(client, "drop database if exists $db")
+            await self._command(client, "drop database if exists ", self.DATABASE)
 
     async def fingerprint(self, table: str) -> tuple[Any, ...]:
         query = (
             ChQueryBuilder()
             .add(
                 "select count(), count(note), sum(id), sum(length(email)), "
-                "sum(length(note)), max(note) from $db.$t",
-                db=self.DATABASE,
-                t=table,
+                "sum(length(note)), max(note) from ",
+                self.DATABASE,
+                ".",
+                table,
             )
             .build()
         )
@@ -136,16 +144,16 @@ class Stand:
 
     async def truncate(self, table: str) -> None:
         async with PayloadClickHouse.opened_config(self._source.admin) as client:
-            await self._command(client, "truncate table $db.$t", t=table)
+            await self._command(client, "truncate table ", self.DATABASE, ".", table)
 
-    async def _command(self, client: Any, text: str, **bind: str) -> None:
-        query = ChQueryBuilder().add(text, db=self.DATABASE, **bind).build()
+    async def _command(self, client: Any, *pieces: str) -> None:
+        query = ChQueryBuilder().add(*pieces).build()
         await client.command(query.text)
 
 
-def _ch(text: str, **bind: str) -> str:
-    """Стейтмент для насоса: имена стенда подставляются голым текстом."""
-    return ChQueryBuilder().add(text, db=Stand.DATABASE, **bind).build().text
+def _ch(head: str, tail: str) -> str:
+    """Стейтмент для насоса: база стенда между головой и хвостом."""
+    return ChQueryBuilder().add(head, Stand.DATABASE, tail).build().text
 
 
 @pytest.fixture(scope="module", params=["first", "last"])
@@ -213,12 +221,12 @@ class TestClickHouseToClickHouse:
 
         sink = await pumps.out(
             _ch(
-                "select * from $db.customers order by id "
-                "format TabSeparatedWithNamesAndTypes"
+                "select * from ",
+                ".customers order by id format TabSeparatedWithNamesAndTypes",
             )
         )
         report = await pumps.into(
-            _ch("insert into $db.sink format TabSeparatedWithNamesAndTypes"),
+            _ch("insert into ", ".sink format TabSeparatedWithNamesAndTypes"),
             sink.data(),
         )
 
@@ -233,6 +241,6 @@ class TestClickHouseToClickHouse:
 
         with pytest.raises(ch.ClickHouseQueryError, match=r"UNKNOWN_TABLE"):
             await pumps.into(
-                _ch("insert into $db.no_such_table format TabSeparated"),
+                _ch("insert into ", ".no_such_table format TabSeparated"),
                 b"1\tx\n",
             )

@@ -1,30 +1,23 @@
-"""Сборщик запросов ClickHouse
-
-Строка (`str`), привязанная к куску, — голый фрагмент текста: встаёт на место
-`$name` без преобразований, литеральный доллар в таком куске пишется `$$`.
-Куски без строковых имён билдер не трогает. Любое другое значение — параметр
-драйвера, и подставляет его драйвер в одном из своих режимов. Серверный: в
-тексте `{name:Type}`, значение уезжает серверу (`{db:Identifier}`,
-`{names:Array(String)}`). Клиентский: в тексте `%(name)s`, драйвер сам
-вписывает значение перед отправкой — ChIdentifier и ChIdentifiers именами в
-обратных кавычках через своё квотирование, строку литералом в кавычках, число
-как есть; литеральный процент пишется `%%`. Режим выбирает драйвер: есть хоть
-один `{name:Type}` — серверный, иначе клиентский; в одном запросе они не
-смешиваются. Строковое значение параметра оборачивается в ChValue, иначе оно
-станет голым текстом.
+"""Сборщик запросов ClickHouse: куски текста склеиваются подряд, значения уезжают
+параметрами драйвера, и подставляет их только драйвер в одном из своих режимов.
+Серверный: в тексте `{name:Type}`, значение уезжает серверу (`{db:Identifier}`,
+`{names:Array(String)}`). Клиентский: в тексте `%(name)s`, драйвер сам вписывает
+значение перед отправкой — ChIdentifier и ChIdentifiers именами в обратных
+кавычках через своё квотирование, строку литералом в кавычках, число как есть;
+литеральный процент пишется `%%`. Режим выбирает драйвер: есть хоть один
+`{name:Type}` — серверный, иначе клиентский; в одном запросе они не
+смешиваются. Текст запроса сборщик не разбирает.
 
 Ошибки:
-QueryBuildError — кусок ждёт `$name`, которому ничего не передано, один
-    параметр привязан с двумя значениями, или вместо значения пришёл
-    собранный запрос.
+QueryBuildError — один параметр привязан с двумя значениями, или вместо
+    значения пришёл собранный запрос.
 """
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from string import Template
 from typing import Any, Self
 
 from boba.toolkit.sql import AbstractQuery, QueryBuilder, QueryBuildError, QueryParams
@@ -34,20 +27,10 @@ __all__ = [
     "ChIdentifiers",
     "ChQuery",
     "ChQueryBuilder",
-    "ChValue",
 ]
 
 ChQuery = AbstractQuery[str, QueryParams | None]
 """Собранный запрос: текст с {name:Type} или %(name)s плюс словарь параметров."""
-
-
-@dataclass(frozen=True)
-class ChValue:
-    """Значение параметра драйвера, в том числе строка: билдер кладёт в параметры
-    само значение, а подставляет его драйвер — серверу `{name:Type}` или
-    литералом на месте `%(name)s`."""
-
-    value: object
 
 
 @dataclass(frozen=True)
@@ -81,42 +64,27 @@ class ChIdentifiers:
 
 
 class ChQueryBuilder(QueryBuilder[str]):
-    """Реализация QueryBuilder для HTTP-интерфейса ClickHouse: строки встают в
-    текст куска на место `$name`, всё остальное уезжает параметрами, которые
-    подставляет драйвер. Строки из конструктора подставляются в каждый кусок."""
+    """Реализация QueryBuilder для HTTP-интерфейса ClickHouse: куски текста
+    склеиваются подряд, `**bind` целиком уезжает параметрами драйвера. Куски
+    одного add стоят вплотную, между вызовами add — перенос строки."""
 
-    def __init__(self, **names: str) -> None:
-        for name, value in names.items():
-            if isinstance(value, str):
-                continue
-
-            msg = (
-                f"ch query builder: standing name {name!r} expects a str, got {value!r}"
-            )
-            raise QueryBuildError(msg)
-
-        self._names: dict[str, str] = dict(names)
+    def __init__(self) -> None:
         self._pieces: list[str] = []
         self._params: QueryParams = {}
 
-    def add(self, text: str, /, **bind: Any) -> Self:
-        names: dict[str, str] = dict(self._names)
+    def add(self, *pieces: str, **bind: Any) -> Self:
         for name, value in bind.items():
-            if isinstance(value, str):
-                names[name] = value
-                continue
-
             self._bind(name, value)
 
-        self._pieces.append(self._render(text, names))
+        self._pieces.append("".join(pieces))
 
         return self
 
-    def when(self, condition: bool, text: str, /, **bind: Any) -> Self:
+    def when(self, condition: bool, *pieces: str, **bind: Any) -> Self:
         if not condition:
             return self
 
-        return self.add(text, **bind)
+        return self.add(*pieces, **bind)
 
     def read(self, path: Path, /, **bind: Any) -> Self:
         """Кусок из файла пакета: текст читается целиком и добавляется как add."""
@@ -135,33 +103,15 @@ class ChQueryBuilder(QueryBuilder[str]):
         if isinstance(value, AbstractQuery):
             msg = (
                 f"ch query builder: {name!r} got a built query; pass its .text as a "
-                "name or bind its values"
+                "piece or bind its values"
             )
             raise QueryBuildError(msg)
 
-        bound = value
-        if isinstance(value, ChValue):
-            bound = value.value
-
-        if name in self._params and self._params[name] != bound:
+        if name in self._params and self._params[name] != value:
             msg = (
                 f"ch query builder: parameter {name!r} bound twice with different "
-                f"values: {self._params[name]!r} and {bound!r}"
+                f"values: {self._params[name]!r} and {value!r}"
             )
             raise QueryBuildError(msg)
 
-        self._params[name] = bound
-
-    def _render(self, text: str, names: Mapping[str, str]) -> str:
-        if not names:
-            return text
-
-        try:
-            return Template(text).substitute(names)
-        except (KeyError, ValueError) as exc:
-            known = ", ".join(sorted(names))
-            msg = (
-                f"query piece expects only names {known} as $name, got {exc!r} "
-                f"in {text[:120]!r}"
-            )
-            raise QueryBuildError(msg) from exc
+        self._params[name] = value
