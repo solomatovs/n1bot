@@ -1,5 +1,6 @@
 """Форматеры потоков поверх сырых байтовых потоков payload. С шапкой
-(TabSeparatedWithNamesAndTypes, JSONCompactEachRowWithNamesAndTypes): имена и
+(TabSeparatedWithNamesAndTypes, JSONCompactEachRowWithNamesAndTypes,
+CSVWithNamesAndTypes; CSVWithNames — только имена): имена и
 типы снимаются с первых двух строк, в том числе у пустого результата и с
 любыми символами в именах, данные после шапки доходят байт в байт, обратный
 путь через write сопоставляет колонки по именам, а трудные значения проходят
@@ -20,6 +21,9 @@ from boba.config import bind
 from boba.db.clickhouse.connection import ClickHouseConfig, ClickHouseSettingsConfig
 from boba.db.clickhouse.errors import ClickHouseFormatError, ClickHouseQueryError
 from boba.db.clickhouse.formats import (
+    Csv,
+    CsvWithNames,
+    CsvWithNamesAndTypes,
     JsonCompactWithNamesAndTypes,
     JsonDocuments,
     JsonLines,
@@ -351,7 +355,11 @@ class Headed:
         return summary.written_rows
 
 
-HEADED = [TsvWithNamesAndTypes(), JsonCompactWithNamesAndTypes()]
+HEADED = [
+    TsvWithNamesAndTypes(),
+    JsonCompactWithNamesAndTypes(),
+    CsvWithNamesAndTypes(),
+]
 
 
 @pytest.mark.integration
@@ -603,6 +611,85 @@ class TestJsonDocumentsIn:
         assert rows == [("v1", 2), ("v2", 1)]
 
 
+@pytest.mark.integration
+class TestCsvWithNames:
+    """Шапка из одних имён: пустой результат её шлёт, имена с запятой,
+    кавычкой и переводом строки возвращаются как есть, обратный путь
+    сопоставляет колонки по именам."""
+
+    async def test_names_of_an_empty_result(self, source: StandSource) -> None:
+        names = CsvWithNames()
+        async with (
+            PayloadClickHouse.opened_config(source.clickhouse) as client,
+            PayloadClickHouse.byte_stream_out(
+                client, "select 1 as a, 'x' as b where 0", names.FORMAT
+            ) as raw,
+        ):
+            stream = await names.read(raw.blocks)
+            data = bytearray()
+            async for block in stream.blocks:
+                data.extend(block)
+
+        assert stream.names == ("a", "b")
+        assert data == b""
+
+    async def test_columns_land_by_name(self, stand: StandSource) -> None:
+        names = CsvWithNames()
+        table = Table("csv names", "")
+        create = _uint8_table("csv names", list(reversed(PIPE_NAMES)))
+        select = _weird_select(PIPE_NAMES)
+        insert = table.insert()
+        async with (
+            PayloadClickHouse.opened_config(stand.admin) as client,
+            PayloadClickHouse.byte_stream_out(
+                client, select.text, names.FORMAT, select.params
+            ) as raw,
+        ):
+            await client.command(create.text, parameters=create.params)
+            stream = await names.read(raw.blocks)
+            summary = await PayloadClickHouse.byte_stream_in(
+                client,
+                names.insert(insert.text),
+                insert.params,
+                blocks=names.write(stream),
+            )
+            rows = await table.rows(client, ChIdentifiers(PIPE_NAMES))
+
+        expected = tuple(range(len(PIPE_NAMES)))
+
+        assert stream.names == PIPE_NAMES
+        assert summary.written_rows == 3
+        assert rows == [expected, expected, expected]
+
+
+@pytest.mark.integration
+class TestCsv:
+    async def test_rows_pipe_by_position(self, stand: StandSource) -> None:
+        plain = Csv()
+        table = Table("csv plain", "n UInt64, s String")
+        insert = table.insert()
+        async with (
+            PayloadClickHouse.opened_config(stand.admin) as client,
+            PayloadClickHouse.byte_stream_out(
+                client,
+                "select number, 'a\"b,c' from numbers(3)",
+                plain.FORMAT,
+            ) as raw,
+        ):
+            await table.recreate(client)
+            stream = await plain.read(raw.blocks)
+            summary = await PayloadClickHouse.byte_stream_in(
+                client,
+                plain.insert(insert.text),
+                insert.params,
+                blocks=plain.write(stream),
+            )
+            rows = await table.rows(client, "n, s")
+
+        assert summary.written_rows == 3
+        assert rows == [(0, 'a"b,c'), (1, 'a"b,c'), (2, 'a"b,c')]
+
+
 class TestHeaderParsing:
     """Разбор шапки на потоках из памяти: границы блоков режут шапку где
     попало, обрыв и мусор в шапке — ошибка формата."""
@@ -633,6 +720,29 @@ class TestHeaderParsing:
         assert stream.names == ("id", "na\tme")
         assert stream.type_names == ("UInt64", "String")
         assert data == b'[1, "x"]\n'
+
+    @pytest.mark.parametrize("size", [1, 2, 3, 7, 1000])
+    async def test_csv_header_split_across_chunks(self, size: int) -> None:
+        body = b'"id","na\nme","qu""ote"\n"UInt64","String","UInt8"\n1,"x",2\n'
+
+        stream = await CsvWithNamesAndTypes().read(_chunks(body, size))
+        data = bytearray()
+        async for block in stream.blocks:
+            data.extend(block)
+
+        assert stream.names == ("id", "na\nme", 'qu"ote')
+        assert stream.type_names == ("UInt64", "String", "UInt8")
+        assert data == b'1,"x",2\n'
+
+    async def test_csv_header_waits_for_the_line_end(self) -> None:
+        body = b'"a","b"\n"UInt8","String"'
+
+        with pytest.raises(ClickHouseFormatError, match="ended after 24 bytes"):
+            await CsvWithNamesAndTypes().read(_chunks(body))
+
+    async def test_csv_unclosed_quote_is_refused(self) -> None:
+        with pytest.raises(ClickHouseFormatError, match="ended after"):
+            await CsvWithNames().read(_chunks(b'"a,b\n'))
 
     async def test_truncated_stream_is_refused(self) -> None:
         with pytest.raises(ClickHouseFormatError, match="ended after 14 bytes with 1"):
