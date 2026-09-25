@@ -628,7 +628,7 @@ class TestClickHouseToClickHouse:
                 },
             ),
         )
-        assert chained.in_report == f"{ROWS} rows written"
+        assert chained.in_report.startswith(f"{ROWS} rows written")
 
         refs = [f"toString({c.name})" for c in columns]
         expected = await clickhouse.side.select("src", refs)

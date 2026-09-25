@@ -903,7 +903,7 @@ class TestOracleToClickHouse:
                 {"sql": clickhouse.insert(columns), "chunk_bytes": CHUNK_BYTES},
             ),
         )
-        assert chained.in_report == f"{ROWS} rows written"
+        assert chained.in_report.startswith(f"{ROWS} rows written")
 
         ora_refs: list[str] = []
         ch_refs: list[str] = []

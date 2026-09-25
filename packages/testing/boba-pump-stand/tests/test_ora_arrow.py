@@ -701,7 +701,7 @@ class TestOracleToClickHouse:
                 },
             ),
         )
-        assert chained.in_report == f"{ROWS} rows written"
+        assert chained.in_report.startswith(f"{ROWS} rows written")
 
         expected = await oracle.select("arr", [_or(c.ora_ref, c.name) for c in columns])
         landed = await clickhouse.select(

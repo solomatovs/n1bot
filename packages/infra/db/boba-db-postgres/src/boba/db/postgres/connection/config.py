@@ -82,6 +82,65 @@ class CopyText(StrEnum):
     STANDARD_CONFORMING_STRINGS = "on"
 
 
+class CopySession(BaseModel):
+    """Настройки сессии COPY, которые задаёт вызов насоса: по умолчанию —
+    зафиксированный текст CopyText, вызывающий (LLM) меняет их, когда поток
+    нужен в другой кодировке, локали денег, точности float или записи дат.
+    Значения уходят в libpq options и перекрывают профиль соединения."""
+
+    model_config = ConfigDict(frozen=True)
+
+    datestyle: str = Field(
+        default=CopyText.DATESTYLE.value,
+        min_length=1,
+        description="DateStyle: ISO,YMD — ISO-даты, год-месяц-день на вводе.",
+    )
+    intervalstyle: str = Field(
+        default=CopyText.INTERVALSTYLE.value,
+        min_length=1,
+        description="IntervalStyle: postgres, postgres_verbose, sql_standard, iso_8601",
+    )
+    timezone: str = Field(
+        default=CopyText.TIMEZONE.value,
+        min_length=1,
+        description="TimeZone сессии: смещение timestamptz в тексте, UTC даёт +00.",
+    )
+    bytea_output: str = Field(
+        default=CopyText.BYTEA_OUTPUT.value,
+        min_length=1,
+        description="bytea_output: hex | escape.",
+    )
+    lc_monetary: str = Field(
+        default=CopyText.LC_MONETARY.value,
+        min_length=1,
+        description="Локаль money: C — без символа валюты и разделителей.",
+    )
+    extra_float_digits: int = Field(
+        default=int(CopyText.EXTRA_FLOAT_DIGITS.value),
+        ge=-15,
+        le=3,
+        description=(
+            "extra_float_digits: 3 — float печатается кратчайшим точным текстом "
+            "на любой версии; меньше — короче и с потерей."
+        ),
+    )
+    client_encoding: str = Field(
+        default=CopyText.CLIENT_ENCODING.value,
+        min_length=1,
+        description="Кодировка текста потока: UTF8, WIN1251, LATIN1.",
+    )
+    xmlbinary: str = Field(
+        default=CopyText.XMLBINARY.value,
+        min_length=1,
+        description="xmlbinary: base64 | hex — bytea внутри xml.",
+    )
+    standard_conforming_strings: str = Field(
+        default=CopyText.STANDARD_CONFORMING_STRINGS.value,
+        min_length=1,
+        description="standard_conforming_strings: on | off.",
+    )
+
+
 class PostgresOptionsConfig(BaseModel):
     "libpq 'options': серверные GUC сессии (-c key=value); сериализуется в строку"
 
@@ -118,21 +177,23 @@ class PostgresOptionsConfig(BaseModel):
     )
 
     def copy_text(self) -> PostgresOptionsConfig:
-        """Те же опции с зафиксированным текстом COPY (CopyText): для насосов,
-        которые отдают или принимают вывод сервера как есть."""
+        """Те же опции с зафиксированным текстом COPY (CopyText): для дампов и
+        загрузок, у которых текст потока не настраивается."""
+        return self.copy_session(CopySession())
+
+    def copy_session(self, session: CopySession) -> PostgresOptionsConfig:
+        """Те же опции с настройками сессии COPY из вызова насоса."""
         return self.model_copy(
             update={
-                "datestyle": CopyText.DATESTYLE.value,
-                "intervalstyle": CopyText.INTERVALSTYLE.value,
-                "timezone": CopyText.TIMEZONE.value,
-                "bytea_output": CopyText.BYTEA_OUTPUT.value,
-                "lc_monetary": CopyText.LC_MONETARY.value,
-                "extra_float_digits": CopyText.EXTRA_FLOAT_DIGITS.value,
-                "client_encoding": CopyText.CLIENT_ENCODING.value,
-                "xmlbinary": CopyText.XMLBINARY.value,
-                "standard_conforming_strings": (
-                    CopyText.STANDARD_CONFORMING_STRINGS.value
-                ),
+                "datestyle": session.datestyle,
+                "intervalstyle": session.intervalstyle,
+                "timezone": session.timezone,
+                "bytea_output": session.bytea_output,
+                "lc_monetary": session.lc_monetary,
+                "extra_float_digits": str(session.extra_float_digits),
+                "client_encoding": session.client_encoding,
+                "xmlbinary": session.xmlbinary,
+                "standard_conforming_strings": session.standard_conforming_strings,
             }
         )
 
@@ -390,9 +451,13 @@ class PostgresConfig(ConnectionBase):
 
     def copy_text(self) -> PostgresConfig:
         """Тот же профиль с зафиксированным текстом COPY (CopyText): для сессий,
-        которые отдают или принимают вывод сервера как есть — насосов, дампов
-        скраперов и загрузки в ix."""
-        return self.model_copy(update={"options": self.options.copy_text()})
+        которые отдают или принимают вывод сервера как есть — дампов скраперов
+        и загрузки в ix."""
+        return self.copy_session(CopySession())
+
+    def copy_session(self, session: CopySession) -> PostgresConfig:
+        """Тот же профиль с настройками сессии COPY из вызова насоса."""
+        return self.model_copy(update={"options": self.options.copy_session(session)})
 
     def conn_settings(self) -> dict[str, Any]:
         "kwargs для connect(): libpq-ключи + autocommit/prepare_threshold + opts"

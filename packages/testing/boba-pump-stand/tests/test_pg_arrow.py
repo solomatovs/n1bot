@@ -590,7 +590,7 @@ class TestPostgresToClickHouse:
                 },
             ),
         )
-        assert chained.in_report == f"{ROWS} rows written"
+        assert chained.in_report.startswith(f"{ROWS} rows written")
 
         landed = await clickhouse.select(
             table, [first(t.ref, c.name) for c, t in zip(columns, targets, strict=True)]

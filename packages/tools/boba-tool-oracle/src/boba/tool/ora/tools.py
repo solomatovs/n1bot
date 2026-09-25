@@ -745,13 +745,16 @@ async def ora_csv_out(
     на пачку. В ответ возвращается состав колонок.
     """
     from boba.db.oracle.payload import PayloadOracle  # noqa: PLC0415
+    from boba.db.oracle.trace import OraSessionTrace  # noqa: PLC0415
 
     payload = PayloadOracle(connection)
     statement = OraQueryBuilder().raw_query(sql).build()
     async with payload.opened() as conn:
-        names = await payload.csv_into(conn, statement.text, out)
+        trace = OraSessionTrace(conn)
+        names = await payload.csv_into(conn, statement.text, out, trace)
+        report = trace.report(f"streamed out csv: {', '.join(names)}", statement.text)
 
-    return MarkdownResult(text=f"streamed out csv: {', '.join(names)}")
+    return MarkdownResult(text=report.render())
 
 
 class CsvFields:
@@ -831,6 +834,7 @@ async def ora_csv_in(
     и строк.
     """
     from boba.db.oracle.payload import PayloadOracle  # noqa: PLC0415
+    from boba.db.oracle.trace import OraSessionTrace  # noqa: PLC0415
 
     payload = PayloadOracle(connection)
     statement = OraQueryBuilder().raw_query(sql).build()
@@ -839,21 +843,25 @@ async def ora_csv_in(
     fields = CsvFields()
 
     async with payload.opened() as conn:
+        trace = OraSessionTrace(conn)
         batch: list[tuple[str | None, ...]] = []
         for record in source.records():
             batch.append(fields.row(record))
             if len(batch) < connection.arraysize:
                 continue
 
-            rows += await payload.executemany(conn, statement.text, batch)
+            rows += await payload.executemany(conn, statement.text, batch, trace)
             batch = []
 
         if batch:
-            rows += await payload.executemany(conn, statement.text, batch)
+            rows += await payload.executemany(conn, statement.text, batch, trace)
 
         await payload.commit(conn)
+        report = trace.report(
+            f"copied in {source.consumed} bytes, {rows} rows", statement.text
+        )
 
-    return MarkdownResult(text=f"copied in {source.consumed} bytes, {rows} rows")
+    return MarkdownResult(text=report.render())
 
 
 @tool
@@ -889,13 +897,18 @@ async def ora_arrow_out(
     состав схемы потока.
     """
     from boba.db.oracle.payload import PayloadOracle  # noqa: PLC0415
+    from boba.db.oracle.trace import OraSessionTrace  # noqa: PLC0415
 
     payload = PayloadOracle(connection)
     statement = OraQueryBuilder().raw_query(sql).build()
     async with payload.opened() as conn:
-        schema = await payload.arrow_into(conn, statement.text, out)
+        trace = OraSessionTrace(conn)
+        schema = await payload.arrow_into(conn, statement.text, out, trace)
+        report = trace.report(
+            f"streamed out arrow ipc: {', '.join(schema.names)}", statement.text
+        )
 
-    return MarkdownResult(text=f"streamed out arrow ipc: {', '.join(schema.names)}")
+    return MarkdownResult(text=report.render())
 
 
 @tool
@@ -925,6 +938,7 @@ async def ora_arrow_in(
     ошибка откатывает всё. В ответ — число записанных строк.
     """
     from boba.db.oracle.payload import PayloadOracle  # noqa: PLC0415
+    from boba.db.oracle.trace import OraSessionTrace  # noqa: PLC0415
     from boba.toolkit.arrow import ArrowIpc  # noqa: PLC0415
 
     payload = PayloadOracle(connection)
@@ -933,12 +947,14 @@ async def ora_arrow_in(
 
     rows = 0
     async with payload.opened() as conn:
+        trace = OraSessionTrace(conn)
         async for batch in inbound.batches:
-            rows += await payload.executemany_arrow(conn, statement.text, batch)
+            rows += await payload.executemany_arrow(conn, statement.text, batch, trace)
 
         await payload.commit(conn)
+        report = trace.report(f"{rows} rows written", statement.text)
 
-    return MarkdownResult(text=f"{rows} rows written")
+    return MarkdownResult(text=report.render())
 
 
 EXPECTED: Mapping[type[Exception], SqlErrorKind] = {

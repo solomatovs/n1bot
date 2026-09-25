@@ -56,7 +56,8 @@ class PgNotify:
 @dataclass(frozen=True)
 class PgCommandReport:
     """Итог команды насоса для чата: первая строка — сводка насоса, дальше
-    статус сервера, выполненный стейтмент, сессия и всё, что сервер сообщил."""
+    статус сервера (у COPY ... TO STDOUT psycopg его не сохраняет — тогда
+    строки нет), выполненный стейтмент, сессия и всё, что сервер сообщил."""
 
     summary: str
     status: str
@@ -67,9 +68,11 @@ class PgCommandReport:
     notifies: Sequence[PgNotify] = field(default_factory=tuple)
 
     def render(self) -> str:
-        lines = [
-            self.summary,
-            f"status: {self.status}",
+        lines = [self.summary]
+        if self.status:
+            lines.append(f"status: {self.status}")
+
+        lines += [
             f"statement: {self.statement}",
             f"server: backend pid {self.backend_pid}, version {self.server_version}",
         ]
@@ -88,8 +91,6 @@ class PgSessionTrace:
     """Сбор notices и notify соединения обработчиками psycopg с момента
     создания; report собирает итог команды по её курсору."""
 
-    NO_STATUS: str = "no status"
-
     def __init__(self, conn: psycopg.AsyncConnection[Any]) -> None:
         self._conn = conn
         self._notices: list[PgNotice] = []
@@ -102,7 +103,7 @@ class PgSessionTrace:
     ) -> PgCommandReport:
         status = cursor.statusmessage
         if status is None:
-            status = self.NO_STATUS
+            status = ""
 
         return PgCommandReport(
             summary=summary,

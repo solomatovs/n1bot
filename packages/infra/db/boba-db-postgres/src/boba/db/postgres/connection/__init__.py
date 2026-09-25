@@ -13,6 +13,7 @@ from boba.db.postgres.connection.auth import (
     TrustAuth,
 )
 from boba.db.postgres.connection.config import (
+    CopySession,
     PostgresConfig,
     PostgresOptionsConfig,
     PostgresPoolConfig,
@@ -20,6 +21,7 @@ from boba.db.postgres.connection.config import (
 
 __all__ = [
     "CertificateAuth",
+    "CopySession",
     "PasswordAuth",
     "PostgresAuth",
     "PostgresAuthBase",

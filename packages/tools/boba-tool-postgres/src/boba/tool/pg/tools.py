@@ -27,7 +27,7 @@ from pydantic import Field
 
 from boba.db.postgres import PayloadPostgres, PgArrowError, PostgresError
 from boba.db.postgres.address import PgAddresses
-from boba.db.postgres.connection import PostgresConfig
+from boba.db.postgres.connection import CopySession, PostgresConfig
 from boba.db.postgres.query import PgQuery, PgQueryBuilder
 from boba.toolkit.entry import ToolMain
 from boba.toolkit.facade import Injected, UserConnection, tool
@@ -326,6 +326,18 @@ async def pg_stream_out(
         ),
         MarkdownResult(language="sql"),
     ],
+    session: Annotated[
+        CopySession,
+        Field(
+            description=(
+                "Настройки сессии COPY: кодировка, DateStyle, TimeZone, "
+                "extra_float_digits, bytea_output, локаль money. По умолчанию "
+                "зафиксированный текст (UTF8, ISO,YMD, UTC, 3, hex, C); менять "
+                "при проблемах с потоком — иная кодировка приёмника, локаль."
+            ),
+        ),
+    ] = CopySession(),
+    *,
     out: Annotated[RawOutbound, Injected],
 ) -> MarkdownResult:
     """Насос выгрузки: COPY ... TO STDOUT сырым потоком в выходной порт.
@@ -338,7 +350,7 @@ async def pg_stream_out(
 
     total = 0
 
-    conn = await PayloadPostgres.connect_config(connection.copy_text())
+    conn = await PayloadPostgres.connect_config(connection.copy_session(session))
     trace = PgSessionTrace(conn)
     statement = PgQueryBuilder().raw_query(sql).build()
 
@@ -371,6 +383,18 @@ async def pg_stream_in(
         MarkdownResult(language="sql"),
     ],
     chunk_bytes: ChunkBytes,
+    session: Annotated[
+        CopySession,
+        Field(
+            description=(
+                "Настройки сессии COPY: кодировка, DateStyle, TimeZone, "
+                "extra_float_digits, bytea_output, локаль money. По умолчанию "
+                "зафиксированный текст (UTF8, ISO,YMD, UTC, 3, hex, C); менять "
+                "при проблемах с потоком — иная кодировка приёмника, локаль."
+            ),
+        ),
+    ] = CopySession(),
+    *,
     feed: Annotated[RawInbound, Injected],
 ) -> MarkdownResult:
     """Насос загрузки: сырой поток входного порта в COPY ... FROM STDIN.
@@ -383,7 +407,7 @@ async def pg_stream_in(
 
     total = 0
 
-    conn = await PayloadPostgres.connect_config(connection.copy_text())
+    conn = await PayloadPostgres.connect_config(connection.copy_session(session))
     trace = PgSessionTrace(conn)
     statement = PgQueryBuilder().raw_query(sql).build()
 
@@ -421,6 +445,18 @@ async def pg_arrow_out(
         MarkdownResult(language="sql"),
     ],
     chunk_bytes: ChunkBytes,
+    session: Annotated[
+        CopySession,
+        Field(
+            description=(
+                "Настройки сессии COPY: кодировка, DateStyle, TimeZone, "
+                "extra_float_digits, bytea_output, локаль money. По умолчанию "
+                "зафиксированный текст (UTF8, ISO,YMD, UTC, 3, hex, C); менять "
+                "при проблемах с потоком — иная кодировка приёмника, локаль."
+            ),
+        ),
+    ] = CopySession(),
+    *,
     out: Annotated[ArrowOutbound, Injected],
 ) -> MarkdownResult:
     """Насос выгрузки: строки запроса потоком Arrow IPC в выходной порт.
@@ -434,7 +470,7 @@ async def pg_arrow_out(
     """
     from boba.db.postgres.arrow import PgArrowOut  # noqa: PLC0415
 
-    conn = await PayloadPostgres.connect_config(connection.copy_text())
+    conn = await PayloadPostgres.connect_config(connection.copy_session(session))
     async with conn:
         report = await PgArrowOut(conn).stream_into(sql, chunk_bytes, out)
 
@@ -442,7 +478,7 @@ async def pg_arrow_out(
 
 
 @tool
-async def pg_arrow_in(
+async def pg_arrow_in(  # noqa: PLR0913
     connection: PgConnection,
     sql: Annotated[
         str,
@@ -472,6 +508,17 @@ async def pg_arrow_in(
             ),
         ),
     ] = False,
+    session: Annotated[
+        CopySession,
+        Field(
+            description=(
+                "Настройки сессии COPY: кодировка, DateStyle, TimeZone, "
+                "extra_float_digits, bytea_output, локаль money. По умолчанию "
+                "зафиксированный текст (UTF8, ISO,YMD, UTC, 3, hex, C); менять "
+                "при проблемах с потоком — иная кодировка приёмника, локаль."
+            ),
+        ),
+    ] = CopySession(),
     *,
     feed: Annotated[ArrowInbound, Injected],
 ) -> MarkdownResult:
@@ -488,7 +535,7 @@ async def pg_arrow_in(
     from boba.toolkit.arrow import ArrowIpc  # noqa: PLC0415
 
     reader = await ArrowIpc().open_in(feed, chunk_bytes)
-    conn = await PayloadPostgres.connect_config(connection.copy_text())
+    conn = await PayloadPostgres.connect_config(connection.copy_session(session))
     async with conn:
         report = await PgArrowIn(conn, exact_floats).copy_from(sql, reader)
 
