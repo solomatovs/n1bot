@@ -4,8 +4,9 @@
 ch_stream_in, как в графе workflow.
 
 Сторона Oracle проверяется на всех версиях стенда выборками из dual: типы,
-которые выгрузка отвергает (NUMBER без точности с дробью, RAW, INTERVAL,
-XMLTYPE, JSON, VECTOR, именованный пояс, дата до нашей эры), и типы, которые
+которые выгрузка отвергает (INTERVAL, XMLTYPE, JSON, VECTOR — ещё до
+выполнения, по описанию стейтмента; NUMBER без точности с дробью, RAW,
+именованный пояс, дата до нашей эры — при чтении), и типы, которые
 едут молча с потерей (TIMESTAMP WITH TIME ZONE без смещения, TIMESTAMP(9)
 до микросекунд, FLOAT(126) через double). Сторона postgres — на старейшем
 и новейшем сервере, сторона ClickHouse — на всех версиях стенда."""
@@ -65,21 +66,21 @@ REFUSED = (
     Refused(
         "interval_day_to_second",
         "interval '3 04:05:06' day to second",
-        "DPY-3038",
+        "cannot be fetched as arrow",
         "to_char(interval '3 04:05:06' day to second)",
         b'"+03 04:05:06.000000"\n',
     ),
     Refused(
         "interval_year_to_month",
         "interval '-1-2' year to month",
-        "DPY-3038",
+        "cannot be fetched as arrow",
         "to_char(interval '-1-2' year to month)",
         b'"-01-02"\n',
     ),
     Refused(
         "xmltype",
         "xmltype('<a b=\"1\"/>')",
-        "DPY-3030",
+        "cannot be fetched as arrow",
         "xmlserialize(document xmltype('<a b=\"1\"/>') as clob)",
         b'"<a b=""1""/>"\n',
     ),
@@ -102,7 +103,7 @@ REFUSED = (
     Refused(
         "json",
         "json('{\"a\": 1}')",
-        "DPY-3030",
+        "cannot be fetched as arrow",
         "json_serialize(json('{\"a\": 1}') returning clob)",
         b'"{""a"":1}"\n',
         min_version=21,
@@ -110,7 +111,7 @@ REFUSED = (
     Refused(
         "vector",
         "to_vector('[105, 1.5]')",
-        "DPY-3031",
+        "cannot be fetched as arrow",
         "from_vector(to_vector('[105, 1.5]', 2, float32))",
         b'"[1.05E+002,1.5E+000]"\n',
         min_version=23,
@@ -403,9 +404,12 @@ class TestClickHouseSide:
         self, newest_oracle: Oracle, clickhouse: ClickHouse
     ) -> None:
         """Decimal ClickHouse отбрасывает лишние знаки без округления и без
-        ошибки. Правильно — округлить в Oracle до масштаба приёмника."""
+        ошибки. Правильно — округлить в Oracle до масштаба приёмника; round()
+        возвращает NUMBER без точности, поэтому результат ещё и cast."""
         wrong = await newest_oracle.out("cast(-0.14286 as number(10, 5))")
-        right = await newest_oracle.out("round(cast(-0.14286 as number(10, 5)), 4)")
+        right = await newest_oracle.out(
+            "cast(round(cast(-0.14286 as number(10, 5)), 4) as number(18, 4))"
+        )
 
         assert await clickhouse.land("Decimal(18, 4)", wrong) == "-0.1428"
         assert await clickhouse.land("Decimal(18, 4)", right) == "-0.1429"

@@ -314,9 +314,9 @@ class ToolIo:
 
     Кадровый режим: inbound() читает кадры входа со stdin до EOF, emit()
     пишет кадр наружу в канал tool_frames. Сырой режим — для RawInbound и
-    RawOutbound: read_chunks() отдаёт порции байтов как есть, write_chunk()
-    пишет порцию без какого-либо кадрирования — на проводе только сами
-    данные. Режим канала выбирает декларация порта в подписи тела, транспорт
+    RawOutbound: read_into() кладёт очередные байты в буфер как есть,
+    write_chunk() пишет порцию без какого-либо кадрирования — на проводе
+    только сами данные. Режим канала выбирает декларация порта в подписи тела, транспорт
     одинаково умеет оба.
 
     Телам инструментов наружу не отдаётся: они объявляют типизированные
@@ -327,7 +327,6 @@ class ToolIo:
     отвязана: вход пуст, записи наружу уходят в лог.
     """
 
-    READ_BYTES: ClassVar[int] = 65536
     LEN_PREFIX: ClassVar[int] = FrameCodec.LEN_BYTES
 
     def __init__(self, inbound_fd: int, outbound_fd: int) -> None:
@@ -419,18 +418,13 @@ class ToolIo:
         with self._write_lock:
             self._writev_all(self._outbound_fd, prefix, body)
 
-    def read_chunks(self, chunk_bytes: int) -> Iterator[bytes]:
-        """Сырой вход: порции байтов как есть, не длиннее chunk_bytes, EOF пайпа
-        завершает итерацию."""
+    def read_into(self, buffer: memoryview) -> int:
+        """Сырой вход: очередные байты в buffer как есть, не больше его длины;
+        0 — EOF пайпа. Чтение блокирующее."""
         if self._inbound_fd < 0:
-            return
+            return 0
 
-        while True:
-            chunk = os.read(self._inbound_fd, chunk_bytes)
-            if not chunk:
-                return
-
-            yield chunk
+        return os.readv(self._inbound_fd, [buffer])
 
     def write_chunk(self, chunk: Chunk) -> None:
         """Сырой выход: порция пишется без кадрирования, атомарно к другим
