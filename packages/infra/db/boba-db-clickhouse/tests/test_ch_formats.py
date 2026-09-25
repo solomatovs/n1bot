@@ -14,13 +14,17 @@ import json
 from collections.abc import AsyncIterator, Sequence
 from typing import Any, ClassVar
 
+import pyarrow as pa
 import pytest
+from pyarrow import ipc
 from pydantic import BaseModel, ConfigDict
 
 from boba.config import bind
 from boba.db.clickhouse.connection import ClickHouseConfig, ClickHouseSettingsConfig
 from boba.db.clickhouse.errors import ClickHouseFormatError, ClickHouseQueryError
 from boba.db.clickhouse.formats import (
+    ArrowFile,
+    ArrowStream,
     Csv,
     CsvWithNames,
     CsvWithNamesAndTypes,
@@ -777,6 +781,148 @@ class TestCustomSeparated:
         assert bytes(data) == b"[\n<0|'a|b<c>'>\n<1|'a|b<c>'>\n<2|'a|b<c>'>\n]\n"
         assert summary.written_rows == 3
         assert rows == [(0, "a|b<c>"), (1, "a|b<c>"), (2, "a|b<c>")]
+
+
+ARROW_COLUMNS = (
+    "id UInt64, f64 Float64, u64 UInt64, dec Decimal(38, 10), bin String, "
+    "fixed FixedString(3), dt DateTime64(3, 'UTC'), arr Array(String), "
+    "m Map(String, UInt32), t Tuple(a Int8, b Nullable(String)), ns Nullable(String)"
+)
+ARROW_VALUES = (
+    "select rowNumberInAllBlocks(), * from (select "
+    "arrayJoin([toFloat64('nan'), toFloat64('inf'), toFloat64('-inf'), 0.1 + 0.2]), "
+    "arrayJoin([18446744073709551615, 0]), "
+    "toDecimal128('-1234567890123456789012345678.0123456789', 10), "
+    "arrayJoin([unhex('ff00fe'), 'a\"b,c', '']), "
+    "toFixedString(unhex('00ff41'), 3), "
+    "toDateTime64('2024-01-02 03:04:05.678', 3, 'UTC'), "
+    "['x', 'y\\tz'], map('k', 1), tuple(toInt8(-1), null), "
+    "arrayJoin([toNullable('n'), null]))"
+)
+ARROW = [ArrowStream(), ArrowFile()]
+
+
+def _arrow_bytes(fmt: StreamFormat[Any], table: pa.Table) -> bytes:
+    """Поток или файл Arrow из таблицы pyarrow под данный форматер."""
+    sink = pa.BufferOutputStream()
+    if fmt.FORMAT == ArrowFile.FORMAT:
+        writer = ipc.new_file(sink, table.schema)
+    else:
+        writer = ipc.new_stream(sink, table.schema)
+
+    writer.write_table(table)
+    writer.close()
+
+    return sink.getvalue().to_pybytes()
+
+
+@pytest.mark.integration
+class TestArrow:
+    @pytest.fixture(params=ARROW, ids=lambda fmt: fmt.FORMAT)
+    def fmt(self, request: Any) -> ArrowFile | ArrowStream:
+        return request.param
+
+    async def test_schema_comes_first_even_for_an_empty_result(
+        self, fmt: ArrowFile | ArrowStream, source: StandSource
+    ) -> None:
+        async with (
+            PayloadClickHouse.opened_config(source.clickhouse) as client,
+            PayloadClickHouse.byte_stream_out(
+                client,
+                "select 1 as a, toNullable('x') as b where 0",
+                fmt.FORMAT,
+                None,
+                fmt.output_settings(None),
+            ) as raw,
+        ):
+            stream = await fmt.read(raw.blocks)
+            data = bytearray()
+            async for block in stream.blocks:
+                data.extend(block)
+
+        assert stream.names == ("a", "b")
+        assert stream.schema.field("a").type == pa.uint8()
+        assert stream.schema.field("b").type == pa.string()
+        assert stream.schema.field("b").nullable is True
+        assert stream.head.startswith(fmt.MAGIC + b"\xff\xff\xff\xff")
+
+    async def test_hard_values_survive_the_round_trip(
+        self, fmt: StreamFormat[Any], stand: StandSource
+    ) -> None:
+        origin = Table("arrow src", ARROW_COLUMNS)
+        target = Table("arrow dst", ARROW_COLUMNS)
+        fill = (
+            ChQueryBuilder()
+            .add(
+                "insert into %(db)s.%(t)s $values",
+                db=ChIdentifier(Table.DATABASE),
+                t=ChIdentifier("arrow src"),
+                values=ARROW_VALUES,
+            )
+            .build()
+        )
+        select = origin.select("*")
+        insert = target.insert()
+        async with PayloadClickHouse.opened_config(stand.admin) as client:
+            await origin.recreate(client)
+            await target.recreate(client)
+            await client.command(fill.text, parameters=fill.params)
+            async with PayloadClickHouse.byte_stream_out(
+                client,
+                select.text,
+                fmt.FORMAT,
+                select.params,
+                fmt.output_settings(None),
+            ) as raw:
+                stream = await fmt.read(raw.blocks)
+                summary = await PayloadClickHouse.byte_stream_in(
+                    client,
+                    fmt.insert(insert.text),
+                    insert.params,
+                    fmt.input_settings(None),
+                    blocks=fmt.write(stream),
+                )
+
+            before = await origin.tsv(client)
+            after = await target.tsv(client)
+
+        assert summary.written_rows == 4 * 2 * 3 * 2
+        assert after == before
+
+
+class TestArrowParsing:
+    """Схема снимается с потока, собранного pyarrow, при любом разрезе на
+    блоки; чужие байты и обрыв — ошибка формата."""
+
+    @pytest.fixture(params=ARROW, ids=lambda fmt: fmt.FORMAT)
+    def fmt(self, request: Any) -> StreamFormat[Any]:
+        return request.param
+
+    @pytest.mark.parametrize("size", [1, 5, 8, 9, 100, 100000])
+    async def test_schema_split_across_chunks(
+        self, fmt: StreamFormat[Any], size: int
+    ) -> None:
+        table = pa.table({"n": [1, 2], "s": ["x", None]})
+        body = _arrow_bytes(fmt, table)
+
+        stream = await fmt.read(_chunks(body, size))
+        rest = bytearray()
+        async for block in stream.blocks:
+            rest.extend(block)
+
+        assert stream.names == ("n", "s")
+        assert stream.schema == table.schema
+        assert stream.head + bytes(rest) == body
+
+    async def test_foreign_bytes_are_refused(self, fmt: StreamFormat[Any]) -> None:
+        with pytest.raises(ClickHouseFormatError, match="expected"):
+            await fmt.read(_chunks(b"n\ts\nUInt64\tString\n1\tx\n"))
+
+    async def test_truncated_schema_is_refused(self, fmt: StreamFormat[Any]) -> None:
+        body = _arrow_bytes(fmt, pa.table({"n": [1]}))
+
+        with pytest.raises(ClickHouseFormatError, match="ended after"):
+            await fmt.read(_chunks(body[:40]))
 
 
 @pytest.mark.integration
