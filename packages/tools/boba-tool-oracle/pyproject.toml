@@ -22,7 +22,10 @@ payload = [
     "boba-db-oracle[payload]==0.0.24.dev2",
 ]
 dev = [
+    "boba-config==0.0.24.dev2",
     "boba-db-postgres==0.0.24.dev2",
+    "boba-db-clickhouse[payload]==0.0.24.dev2",
+    "boba-tool-clickhouse==0.0.24.dev2",
     "oracledb==26.0.0+boba.1",
     "boba-stand==0.0.24.dev2",
     "psycopg[binary]>=3.3",

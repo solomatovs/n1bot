@@ -1,5 +1,5 @@
 """ora_address: базовый url соединения из профиля, без похода в базу; нормализация
-текста команды для ora_query; имена и список колонок для ora_copy_in."""
+текста команды для ora_query."""
 
 from __future__ import annotations
 
@@ -9,13 +9,7 @@ import pytest
 from pydantic import SecretStr
 
 from boba.db.oracle.connection import OracleConfig, PasswordAuth
-from boba.tool.ora.tools import (
-    ColumnList,
-    OraStatement,
-    TargetName,
-    TargetNameError,
-    ora_address,
-)
+from boba.tool.ora.tools import OraStatement, ora_address
 from boba.toolkit.entry import ToolMain
 
 pytestmark = [pytest.mark.anyio]
@@ -61,19 +55,3 @@ class TestOraStatement:
         assert OraStatement.normalized("DECLARE x number; begin null; end;").startswith(
             "DECLARE"
         )
-
-
-class TestTargetName:
-    def test_qualified_name_renders_as_is(self) -> None:
-        assert TargetName(" HR.EMPLOYEES ").render() == "HR.EMPLOYEES"
-
-    @pytest.mark.parametrize("bad", ["", "  ", "t; drop", 'a"b', "x y"])
-    def test_rejects_anything_but_identifier_chars(self, bad: str) -> None:
-        with pytest.raises(TargetNameError):
-            TargetName(bad)
-
-    def test_column_list_binds_by_position(self) -> None:
-        listed = ColumnList.parse("ID, NAME ,CREATED_AT")
-
-        assert listed.render() == "ID, NAME, CREATED_AT"
-        assert listed.binds() == ":1, :2, :3"

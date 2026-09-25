@@ -130,7 +130,7 @@ class ChSession(ScrapeSession):
 
         label = f"{name} ({path.name}) on {self._where}"
         try:
-            async with PayloadClickHouse.tsv(
+            async with PayloadClickHouse.tsv_stream_out(
                 self._client, query.text, query.params, settings
             ) as stream:
                 yield BlockStream(

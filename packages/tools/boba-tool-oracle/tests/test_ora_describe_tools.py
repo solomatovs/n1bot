@@ -11,7 +11,7 @@ import pytest
 from ora_tool_stand import DemoUser, IxStand, ToolDemo
 from pydantic import BaseModel, ConfigDict
 
-from boba.db.oracle import OraQueryBuilder, OraSql
+from boba.db.oracle import OraIdentifier, OraQueryBuilder
 from boba.tool.ora import tools as ora
 from boba.toolkit.entry import ToolMain
 from boba.toolkit.facade import PayloadTool
@@ -21,7 +21,7 @@ pytestmark = [pytest.mark.integration, pytest.mark.anyio]
 
 STAND = IxStand.required()
 ROWS = 25
-CUSTOMERS = OraSql(f"{DemoUser.NAME}.customers")
+CUSTOMERS = OraIdentifier(f"{DemoUser.NAME}.customers")
 
 
 def _sql(text: str) -> str:

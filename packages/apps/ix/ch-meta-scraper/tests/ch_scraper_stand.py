@@ -18,7 +18,7 @@ from boba.ch_meta_scraper import worker as scraper
 from boba.ch_meta_scraper.worker import ChSource, source_address
 from boba.db.clickhouse.connection import ClickHouseConfig, ClickHouseSettingsConfig
 from boba.db.clickhouse.payload import PayloadClickHouse
-from boba.db.clickhouse.query import ChQueryBuilder
+from boba.db.clickhouse.query import ChQueryBuilder, ChValue
 from boba.ix_core.scrape import ScrapeSource, parse_version
 from boba.stand.scraper import DdlFile, DemoRecreate, ScraperStand, StandLayout
 
@@ -85,14 +85,17 @@ class DemoDataset:
 
             drop = (
                 ChQueryBuilder()
-                .add("drop database if exists {db:Identifier}", db=IxSource.DEMO_DB)
+                .add(
+                    "drop database if exists {db:Identifier}",
+                    db=ChValue(IxSource.DEMO_DB),
+                )
                 .build()
             )
             await client.command(drop.text, parameters=drop.params)
 
             create = (
                 ChQueryBuilder()
-                .add("create database {db:Identifier}", db=IxSource.DEMO_DB)
+                .add("create database {db:Identifier}", db=ChValue(IxSource.DEMO_DB))
                 .build()
             )
             await client.command(create.text, parameters=create.params)
