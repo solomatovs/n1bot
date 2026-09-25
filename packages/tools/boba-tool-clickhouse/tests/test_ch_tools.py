@@ -9,8 +9,7 @@ from typing import Any, ClassVar
 import pytest
 from pydantic import ValidationError
 
-from boba.db.clickhouse.connection import ClickHouseConfig
-from boba.db.clickhouse.payload import SpnegoHeaders
+from boba.db.clickhouse.connection import ClickHouseConfig, SpnegoHeaders
 from boba.tool.ch.tools import TOOLS as CH_TOOLS
 from boba.tool.ch.tools import ChToolConfig
 from boba.toolkit.entry import ToolArgv, ToolMain

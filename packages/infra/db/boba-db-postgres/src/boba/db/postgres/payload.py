@@ -1,7 +1,8 @@
 """Postgres для payload'ов; пула нет — каждый вызов свой процесс и соединение.
 Учётные данные приходят через stdin: не видны ни в argv, ни в /proc, ни в логах.
 
-Ошибки: PostgresError — до базы не достучаться (сеть, отказ libpq, kerberos)."""
+Ошибки:
+PostgresError — до базы не достучаться (сеть, отказ libpq, kerberos)."""
 
 from __future__ import annotations
 
@@ -10,10 +11,8 @@ from typing import Any
 
 import psycopg
 
-from boba.db.postgres.async_pool import PostgresError
 from boba.db.postgres.connection import PostgresConfig
-from boba.kerberos import KerberosAuthBase, KerberosError
-from boba.krb import ClientCredentials
+from boba.db.postgres.errors import PostgresError
 from boba.toolkit.timing import Elapsed
 
 __all__ = ["PayloadPostgres"]
@@ -33,28 +32,15 @@ class PayloadPostgres:
     async def connect_config(
         connection: PostgresConfig,
     ) -> psycopg.AsyncConnection[Any]:
-        """Соединение по модели профиля; kerberos-профиль получает свой TGT."""
+        """Соединение по модели профиля; окружение авторизации на время
+        connect поднимает PostgresAuthSession профиля."""
         elapsed = Elapsed()
+        session = connection.auth_session()
 
-        if not isinstance(connection.auth, KerberosAuthBase):
+        async with session.applied():
             conn = await PayloadPostgres._connect(connection)
-            logger.info("postgres connected in %dms", elapsed.ms())
-            return conn
 
-        credentials = ClientCredentials.of(connection.auth)
-
-        try:
-            async with credentials.applied_async():
-                conn = await PayloadPostgres._connect(connection)
-        except KerberosError as e:
-            msg = (
-                f"postgres {connection.where()}: kerberos "
-                f"credentials of {credentials.principal} failed: "
-                f"{type(e).__name__}: {e}"
-            )
-            raise PostgresError(msg) from e
-
-        logger.info("postgres connected in %dms (kerberos)", elapsed.ms())
+        logger.info("postgres connected in %dms (%s)", elapsed.ms(), session.describe())
         return conn
 
     @staticmethod

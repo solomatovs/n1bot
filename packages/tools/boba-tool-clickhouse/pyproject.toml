@@ -25,6 +25,7 @@ payload = [
 ]
 dev = [
     "boba-config==0.0.24.dev2",
+    "boba-db-clickhouse[payload]==0.0.24.dev2",
     "pytest>=8",
 ]
 

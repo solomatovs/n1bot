@@ -16,6 +16,7 @@ from pydantic import (
 from boba.connections.base import ClientIdentity, ConnectionBase
 from boba.db.clickhouse.connection.auth import (
     ClickHouseAuth,
+    ClickHouseAuthSession,
     ClickHouseKerberos,
     ClickHouseLibch,
 )
@@ -238,6 +239,16 @@ class ClickHouseConfig(ConnectionBase):
             return self.auth
 
         return None
+
+    def auth_session(self) -> ClickHouseAuthSession:
+        """Окружение авторизации этого профиля на время работы клиента."""
+        service_name = None
+        if self.kerberos_section() is not None:
+            service_name = self.service_name()
+
+        return ClickHouseAuthSession(
+            self.auth, service_name, f"{self.host}:{self.port}"
+        )
 
     def with_call_ticket(self, ticket: TicketAuth) -> ClickHouseConfig:
         return self.model_copy(update={"auth": ticket})
