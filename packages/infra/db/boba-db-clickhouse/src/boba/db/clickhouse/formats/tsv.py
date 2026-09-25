@@ -10,13 +10,17 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator, Mapping, Sequence
 from dataclasses import dataclass
-from enum import StrEnum
 from typing import Any, ClassVar
 
 from clickhouse_connect.datatypes.base import ClickHouseType
 
 from boba.db.clickhouse.formats.base import Blocks, StreamFormat
-from boba.db.clickhouse.formats.lines import ColumnTypes, Lines, Settings
+from boba.db.clickhouse.formats.lines import (
+    BackslashEscapes,
+    ColumnTypes,
+    Lines,
+    Settings,
+)
 
 __all__ = ["TsvStream", "TsvWithNamesAndTypes"]
 
@@ -33,60 +37,23 @@ class TsvStream:
     blocks: AsyncIterator[memoryview]
 
 
-class TsvEscape(StrEnum):
-    """Буквы escape-последовательностей TabSeparated, означающие управляющий
-    символ. Кроме них ClickHouse экранирует только `\\\\` и `\\'`, где символ после
-    слэша означает сам себя; всё остальное, включая прочие управляющие символы
-    и не-ASCII, пишется как есть."""
-
-    TAB = "t"
-    NEWLINE = "n"
-    RETURN = "r"
-    BACKSPACE = "b"
-    FORM_FEED = "f"
-    NUL = "0"
-
-    def char(self) -> str:
-        match self:
-            case TsvEscape.TAB:
-                return "\t"
-            case TsvEscape.NEWLINE:
-                return "\n"
-            case TsvEscape.RETURN:
-                return "\r"
-            case TsvEscape.BACKSPACE:
-                return "\b"
-            case TsvEscape.FORM_FEED:
-                return "\f"
-            case TsvEscape.NUL:
-                return "\0"
-
-
 class TsvHeader:
     """Разбор и запись строки шапки (имён или типов). Сырая табуляция в шапке
     бывает только разделителем, потому что табуляцию внутри имени сервер
     пишет как `\\t`; поэтому строка сначала делится по табуляции, а потом в
-    каждом имени раскрываются escape-последовательности. Запись экранирует
-    ровно те символы, которые экранирует сам сервер."""
+    каждом имени раскрываются escape-последовательности BackslashEscapes."""
 
     SEPARATOR: ClassVar[str] = "\t"
-    ESCAPE: ClassVar[str] = "\\"
     ENCODING: ClassVar[str] = "utf-8"
     LINE_END: ClassVar[bytes] = b"\n"
-    QUOTE: ClassVar[str] = "'"
 
     def __init__(self) -> None:
-        self._escapes: dict[str, str] = {}
-        for escape in TsvEscape:
-            self._escapes[escape.char()] = self.ESCAPE + escape.value
-
-        self._escapes[self.ESCAPE] = self.ESCAPE + self.ESCAPE
-        self._escapes[self.QUOTE] = self.ESCAPE + self.QUOTE
+        self._escapes = BackslashEscapes()
 
     def render(self, values: Sequence[str]) -> bytes:
         fields: list[str] = []
         for value in values:
-            fields.append(self._escaped(value))
+            fields.append(self._escapes.escaped(value))
 
         line = self.SEPARATOR.join(fields)
 
@@ -97,44 +64,9 @@ class TsvHeader:
 
         names: list[str] = []
         for field in text.split(self.SEPARATOR):
-            names.append(self._unescaped(field))
+            names.append(self._escapes.unescaped(field))
 
         return tuple(names)
-
-    def _unescaped(self, field: str) -> str:
-        if self.ESCAPE not in field:
-            return field
-
-        chars: list[str] = []
-        escaped = False
-        for char in field:
-            if escaped:
-                chars.append(self._escape_of(char))
-                escaped = False
-                continue
-
-            if char == self.ESCAPE:
-                escaped = True
-                continue
-
-            chars.append(char)
-
-        return "".join(chars)
-
-    def _escape_of(self, char: str) -> str:
-        try:
-            escape = TsvEscape(char)
-        except ValueError:
-            return char
-
-        return escape.char()
-
-    def _escaped(self, value: str) -> str:
-        chars: list[str] = []
-        for char in value:
-            chars.append(self._escapes.get(char, char))
-
-        return "".join(chars)
 
 
 class TsvWithNamesAndTypes(StreamFormat[TsvStream]):

@@ -13,7 +13,6 @@ from __future__ import annotations
 import json
 from collections.abc import AsyncIterator, Mapping, Sequence
 from dataclasses import dataclass
-from enum import StrEnum
 from typing import Any, ClassVar
 
 from clickhouse_connect.datatypes.base import ClickHouseType
@@ -21,9 +20,14 @@ from pydantic import TypeAdapter, ValidationError
 
 from boba.db.clickhouse.errors import ClickHouseFormatError
 from boba.db.clickhouse.formats.base import Blocks, StreamFormat
-from boba.db.clickhouse.formats.lines import ColumnTypes, Lines, Settings
+from boba.db.clickhouse.formats.lines import (
+    ColumnTypes,
+    JsonExactOutput,
+    Lines,
+    Settings,
+)
 
-__all__ = ["JsonCompactStream", "JsonCompactWithNamesAndTypes", "JsonExactOutput"]
+__all__ = ["JsonCompactStream", "JsonCompactWithNamesAndTypes"]
 
 
 @dataclass(frozen=True)
@@ -36,29 +40,6 @@ class JsonCompactStream:
     type_names: tuple[str, ...]
     column_types: tuple[ClickHouseType, ...]
     blocks: AsyncIterator[memoryview]
-
-
-class JsonExactOutput(StrEnum):
-    """Настройки вывода JSON, при которых путь через JSON и обратно в
-    ClickHouse совпадает с TSV байт в байт, а 22.x и новые версии пишут
-    одинаковые байты. Без них NaN и Inf уходят null и возвращаются нулём,
-    а 64-битные целые одни версии пишут строкой, другие числом."""
-
-    QUOTE_DENORMALS = "output_format_json_quote_denormals"
-    QUOTE_64BIT_INTEGERS = "output_format_json_quote_64bit_integers"
-    QUOTE_64BIT_FLOATS = "output_format_json_quote_64bit_floats"
-    QUOTE_DECIMALS = "output_format_json_quote_decimals"
-    VALIDATE_UTF8 = "output_format_json_validate_utf8"
-    ESCAPE_FORWARD_SLASHES = "output_format_json_escape_forward_slashes"
-
-    def value_of(self) -> int:
-        """Значение настройки: всё включено, кроме замены невалидного UTF-8,
-        которая портит бинарные строки и FixedString."""
-        match self:
-            case JsonExactOutput.VALIDATE_UTF8:
-                return 0
-            case _:
-                return 1
 
 
 class JsonCompactHeader:

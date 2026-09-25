@@ -24,6 +24,11 @@ from boba.db.clickhouse.formats import (
     Csv,
     CsvWithNames,
     CsvWithNamesAndTypes,
+    CustomSeparated,
+    CustomSeparatedSpec,
+    CustomSeparatedWithNames,
+    CustomSeparatedWithNamesAndTypes,
+    EscapingRule,
     JsonCompactWithNamesAndTypes,
     JsonDocuments,
     JsonLines,
@@ -355,16 +360,48 @@ class Headed:
         return summary.written_rows
 
 
+FANCY = CustomSeparatedSpec(
+    escaping_rule=EscapingRule.QUOTED,
+    field_delimiter="|",
+    row_before="<",
+    row_after=">",
+    row_between="\n",
+    result_before="[\n",
+    result_after="\n]\n",
+)
 HEADED = [
     TsvWithNamesAndTypes(),
     JsonCompactWithNamesAndTypes(),
     CsvWithNamesAndTypes(),
+    CustomSeparatedWithNamesAndTypes(CustomSeparatedSpec()),
+    CustomSeparatedWithNamesAndTypes(
+        CustomSeparatedSpec(escaping_rule=EscapingRule.CSV, field_delimiter=";")
+    ),
+    CustomSeparatedWithNamesAndTypes(
+        CustomSeparatedSpec(escaping_rule=EscapingRule.JSON, field_delimiter=", ")
+    ),
 ]
+QUOTELESS = [
+    CustomSeparatedWithNamesAndTypes(
+        CustomSeparatedSpec(escaping_rule=EscapingRule.RAW, field_delimiter="|")
+    ),
+    CustomSeparatedWithNamesAndTypes(
+        CustomSeparatedSpec(escaping_rule=EscapingRule.XML, field_delimiter="|")
+    ),
+]
+
+
+def _format_id(fmt: StreamFormat[Any]) -> str:
+    settings = fmt.output_settings(None)
+    rule = settings.get("format_custom_escaping_rule", "")
+    delimiter = settings.get("format_custom_field_delimiter", "")
+
+    return f"{fmt.FORMAT}{rule}{delimiter!r}"
 
 
 @pytest.mark.integration
 class TestHeadedOut:
-    @pytest.fixture(params=HEADED, ids=lambda fmt: fmt.FORMAT)
+    @pytest.fixture(params=HEADED, ids=_format_id)
     def headed(self, request: Any) -> Headed:
         return Headed(request.param)
 
@@ -455,7 +492,7 @@ class TestHeadedIn:
     """Выход read подаётся на вход write как есть: сервер сопоставляет колонки
     по именам из шапки."""
 
-    @pytest.fixture(params=HEADED, ids=lambda fmt: fmt.FORMAT)
+    @pytest.fixture(params=HEADED, ids=_format_id)
     def headed(self, request: Any) -> Headed:
         return Headed(request.param)
 
@@ -612,6 +649,137 @@ class TestJsonDocumentsIn:
 
 
 @pytest.mark.integration
+class TestCustomQuoteless:
+    """Raw и XML разделители не экранируют: с именами без разделителей шапка
+    читается, типы совпадают с Native. Обратный путь не проверяется: XML
+    сервер не читает, Raw теряет составные значения."""
+
+    @pytest.fixture(params=QUOTELESS, ids=_format_id)
+    def headed(self, request: Any) -> Headed:
+        return Headed(request.param)
+
+    async def test_plain_names_and_types(
+        self, headed: Headed, source: StandSource
+    ) -> None:
+        names, type_names, _, data = await headed.read(source.clickhouse, TYPED)
+
+        assert names == ("e", "ns", "at", "dt", "m", "lc")
+        assert list(type_names) == TYPED_NAMES
+        assert data.count(b"\n") == 1
+
+
+@pytest.mark.integration
+class TestCustomSeparated:
+    """Раскладка с result_before/result_after, row_before/row_after и
+    row_between: шапка снимается, result_after остаётся в данных, а обратный
+    путь через write восстанавливает целый документ."""
+
+    async def test_empty_result_keeps_only_result_after(
+        self, source: StandSource
+    ) -> None:
+        names, type_names, _, data = await Headed(
+            CustomSeparatedWithNamesAndTypes(FANCY)
+        ).read(source.clickhouse, "select 1 as a, 'x' as b where 0")
+
+        assert names == ("a", "b")
+        assert type_names == ("UInt8", "String")
+        assert data == b"\n]\n"
+
+    async def test_hard_values_survive_the_round_trip(self, stand: StandSource) -> None:
+        headed = Headed(CustomSeparatedWithNamesAndTypes(FANCY))
+        origin = Table("fancy src", HARD_COLUMNS)
+        target = Table("fancy dst", HARD_COLUMNS)
+        fill = (
+            ChQueryBuilder()
+            .add(
+                "insert into %(db)s.%(t)s $values",
+                db=ChIdentifier(Table.DATABASE),
+                t=ChIdentifier("fancy src"),
+                values=HARD_VALUES,
+            )
+            .build()
+        )
+        async with PayloadClickHouse.opened_config(stand.admin) as client:
+            await origin.recreate(client)
+            await target.recreate(client)
+            await client.command(fill.text, parameters=fill.params)
+
+        await headed.pipe(stand.admin, origin.select("*"), target.insert())
+
+        async with PayloadClickHouse.opened_config(stand.admin) as client:
+            before = await origin.tsv(client)
+            after = await target.tsv(client)
+
+        assert after == before
+
+    async def test_names_only_land_by_name(self, stand: StandSource) -> None:
+        names = CustomSeparatedWithNames(FANCY)
+        table = Table("custom names", "")
+        create = _uint8_table("custom names", list(reversed(PIPE_NAMES)))
+        select = _weird_select(PIPE_NAMES)
+        insert = table.insert()
+        async with (
+            PayloadClickHouse.opened_config(stand.admin) as client,
+            PayloadClickHouse.byte_stream_out(
+                client,
+                select.text,
+                names.FORMAT,
+                select.params,
+                names.output_settings(None),
+            ) as raw,
+        ):
+            await client.command(create.text, parameters=create.params)
+            stream = await names.read(raw.blocks)
+            summary = await PayloadClickHouse.byte_stream_in(
+                client,
+                names.insert(insert.text),
+                insert.params,
+                names.input_settings(None),
+                blocks=names.write(stream),
+            )
+            rows = await table.rows(client, ChIdentifiers(PIPE_NAMES))
+
+        expected = tuple(range(len(PIPE_NAMES)))
+
+        assert stream.names == PIPE_NAMES
+        assert summary.written_rows == 3
+        assert rows == [expected, expected, expected]
+
+    async def test_headless_rows_pipe_by_position(self, stand: StandSource) -> None:
+        plain = CustomSeparated(FANCY)
+        table = Table("custom plain", "n UInt64, s String")
+        insert = table.insert()
+        async with (
+            PayloadClickHouse.opened_config(stand.admin) as client,
+            PayloadClickHouse.byte_stream_out(
+                client,
+                "select number, 'a|b<c>' from numbers(3)",
+                plain.FORMAT,
+                None,
+                plain.output_settings(None),
+            ) as raw,
+        ):
+            await table.recreate(client)
+            stream = await plain.read(raw.blocks)
+            data = bytearray()
+            async for block in stream.blocks:
+                data.extend(block)
+
+            summary = await PayloadClickHouse.byte_stream_in(
+                client,
+                plain.insert(insert.text),
+                insert.params,
+                plain.input_settings(None),
+                blocks=_chunks(bytes(data)),
+            )
+            rows = await table.rows(client, "n, s")
+
+        assert bytes(data) == b"[\n<0|'a|b<c>'>\n<1|'a|b<c>'>\n<2|'a|b<c>'>\n]\n"
+        assert summary.written_rows == 3
+        assert rows == [(0, "a|b<c>"), (1, "a|b<c>"), (2, "a|b<c>")]
+
+
+@pytest.mark.integration
 class TestCsvWithNames:
     """Шапка из одних имён: пустой результат её шлёт, имена с запятой,
     кавычкой и переводом строки возвращаются как есть, обратный путь
@@ -743,6 +911,29 @@ class TestHeaderParsing:
     async def test_csv_unclosed_quote_is_refused(self) -> None:
         with pytest.raises(ClickHouseFormatError, match="ended after"):
             await CsvWithNames().read(_chunks(b'"a,b\n'))
+
+    @pytest.mark.parametrize("size", [1, 2, 3, 7, 1000])
+    async def test_custom_header_split_across_chunks(self, size: int) -> None:
+        body = (
+            b"[\n<'id'|'pi|pe'|'qu\\'ote'>\n<'UInt64'|'String'|'UInt8'>\n<1|'x'|2>\n]\n"
+        )
+
+        stream = await CustomSeparatedWithNamesAndTypes(FANCY).read(_chunks(body, size))
+        data = bytearray()
+        async for block in stream.blocks:
+            data.extend(block)
+
+        assert stream.names == ("id", "pi|pe", "qu'ote")
+        assert stream.type_names == ("UInt64", "String", "UInt8")
+        assert data == b"<1|'x'|2>\n]\n"
+
+    async def test_custom_layout_mismatch_is_refused(self) -> None:
+        with pytest.raises(ClickHouseFormatError, match="expected result_before"):
+            await CustomSeparatedWithNames(FANCY).read(_chunks(b"<'a'>\n"))
+
+    async def test_custom_spec_without_row_end_is_refused(self) -> None:
+        with pytest.raises(ClickHouseFormatError, match="rows cannot be told apart"):
+            CustomSeparatedSpec(row_after="", row_between="")
 
     async def test_truncated_stream_is_refused(self) -> None:
         with pytest.raises(ClickHouseFormatError, match="ended after 14 bytes with 1"):

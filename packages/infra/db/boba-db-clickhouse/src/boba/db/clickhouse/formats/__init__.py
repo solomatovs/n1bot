@@ -20,13 +20,23 @@ from boba.db.clickhouse.formats.csv import (
     CsvWithNames,
     CsvWithNamesAndTypes,
 )
+from boba.db.clickhouse.formats.custom import (
+    CustomNamesStream,
+    CustomSeparated,
+    CustomSeparatedSpec,
+    CustomSeparatedWithNames,
+    CustomSeparatedWithNamesAndTypes,
+    CustomStream,
+    CustomTypedStream,
+    EscapingRule,
+)
 from boba.db.clickhouse.formats.json_compact import (
     JsonCompactStream,
     JsonCompactWithNamesAndTypes,
-    JsonExactOutput,
 )
 from boba.db.clickhouse.formats.json_document import JsonDocuments, JsonDocumentsStream
 from boba.db.clickhouse.formats.jsonl import JsonLines, JsonLinesStream
+from boba.db.clickhouse.formats.lines import JsonExactOutput
 from boba.db.clickhouse.formats.tsv import TsvStream, TsvWithNamesAndTypes
 
 __all__ = [
@@ -37,6 +47,14 @@ __all__ = [
     "CsvTypedStream",
     "CsvWithNames",
     "CsvWithNamesAndTypes",
+    "CustomNamesStream",
+    "CustomSeparated",
+    "CustomSeparatedSpec",
+    "CustomSeparatedWithNames",
+    "CustomSeparatedWithNamesAndTypes",
+    "CustomStream",
+    "CustomTypedStream",
+    "EscapingRule",
     "JsonCompactStream",
     "JsonCompactWithNamesAndTypes",
     "JsonDocuments",
