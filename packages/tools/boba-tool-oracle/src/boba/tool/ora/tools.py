@@ -97,30 +97,6 @@ class ObjectKind(StrEnum):
         return OraLiterals((cls.PROCEDURE, cls.FUNCTION, cls.PACKAGE, cls.TYPE))
 
 
-class PlsqlBlock(StrEnum):
-    """Начала анонимного блока PL/SQL: точка с запятой в конце у него своя."""
-
-    BEGIN = "begin"
-    DECLARE = "declare"
-
-
-class OraStatement:
-    """Текст команды для драйвера: Oracle не принимает `;` в конце SQL, а
-    модель его ставит; у блока PL/SQL `;` часть синтаксиса и остаётся."""
-
-    TERMINATOR: ClassVar[str] = ";"
-
-    @classmethod
-    def normalized(cls, text: str) -> str:
-        stripped = text.strip()
-        head = stripped[: len(PlsqlBlock.DECLARE)].lower()
-        for opener in PlsqlBlock:
-            if head.startswith(opener.value):
-                return stripped
-
-        return stripped.rstrip(cls.TERMINATOR).rstrip()
-
-
 class CsvContract(StrEnum):
     """Формат потока между насосами: CSV без заголовка, NULL как `\\N`, бинарное
     поле шестнадцатеричной строкой с префиксом `\\x` (как bytea у postgres)."""
@@ -189,7 +165,7 @@ async def run_statement(
     DML фиксируется сразу: соединение живёт только этот вызов."""
     payload = get_payload()(connection)
     async with payload.opened() as conn:
-        async with payload.rows(conn, OraStatement.normalized(text)) as stream:
+        async with payload.rows(conn, text) as stream:
             if stream.names:
                 page = RowPage(window, skipped=0)
                 async for block in stream.blocks:
@@ -242,7 +218,7 @@ async def ora_list_tables(
                 join all_users u on u.username = o.owner
             where
                 o.object_type in (""",
-                ObjectKind.relations(),
+            ObjectKind.relations(),
             ")",
         )
         .when(schema_name is None, "and u.oracle_maintained = 'N'")
@@ -318,8 +294,9 @@ async def ora_query(
         Field(
             min_length=1,
             description=(
-                "Одна команда SQL или один анонимный блок PL/SQL. Выборка "
-                "возвращает строки окном offset/limit; INSERT/UPDATE/DELETE/DDL "
+                "Одна команда SQL без `;` в конце или один анонимный блок "
+                "PL/SQL (у него `;` часть синтаксиса). Выборка возвращает "
+                "строки окном offset/limit; INSERT/UPDATE/DELETE/DDL "
                 "возвращают число затронутых строк и фиксируются сразу. "
                 "Несколько команд через `;` Oracle одним вызовом не принимает: "
                 "зовите инструмент на каждую."
@@ -778,7 +755,7 @@ async def ora_copy_out(
     payload = get_payload()(connection)
     async with (
         payload.opened() as conn,
-        payload.csv(conn, OraStatement.normalized(sql)) as stream,
+        payload.csv(conn, sql) as stream,
     ):
         async for block in stream.blocks:
             data = bytes(block)

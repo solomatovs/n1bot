@@ -160,8 +160,9 @@ class Table:
             return (
                 ChQueryBuilder()
                 .add(
-                    "select $columns from %(db)s.%(t)s order by 1",
-                    columns=columns,
+                    "select ",
+                    columns,
+                    " from %(db)s.%(t)s order by 1",
                     db=ChIdentifier(self.DATABASE),
                     t=ChIdentifier(self._name),
                 )
@@ -192,10 +193,11 @@ class Table:
         create = (
             ChQueryBuilder()
             .add(
-                "create table %(db)s.%(t)s ($columns) engine = Memory",
+                "create table %(db)s.%(t)s (",
+                self._columns,
+                ") engine = Memory",
                 db=ChIdentifier(self.DATABASE),
                 t=ChIdentifier(self._name),
-                columns=self._columns,
             )
             .build()
         )
@@ -554,10 +556,10 @@ class TestHeadedIn:
         fill = (
             ChQueryBuilder()
             .add(
-                "insert into %(db)s.%(t)s $values",
+                "insert into %(db)s.%(t)s ",
+                HARD_VALUES,
                 db=ChIdentifier(Table.DATABASE),
                 t=ChIdentifier("exact src"),
-                values=HARD_VALUES,
             )
             .build()
         )
@@ -698,10 +700,10 @@ class TestCustomSeparated:
         fill = (
             ChQueryBuilder()
             .add(
-                "insert into %(db)s.%(t)s $values",
+                "insert into %(db)s.%(t)s ",
+                HARD_VALUES,
                 db=ChIdentifier(Table.DATABASE),
                 t=ChIdentifier("fancy src"),
-                values=HARD_VALUES,
             )
             .build()
         )
@@ -856,10 +858,10 @@ class TestArrow:
         fill = (
             ChQueryBuilder()
             .add(
-                "insert into %(db)s.%(t)s $values",
+                "insert into %(db)s.%(t)s ",
+                ARROW_VALUES,
                 db=ChIdentifier(Table.DATABASE),
                 t=ChIdentifier("arrow src"),
-                values=ARROW_VALUES,
             )
             .build()
         )
@@ -992,10 +994,10 @@ class TestAvro:
         fill = (
             ChQueryBuilder()
             .add(
-                "insert into %(db)s.%(t)s $values",
+                "insert into %(db)s.%(t)s ",
+                AVRO_VALUES,
                 db=ChIdentifier(Table.DATABASE),
                 t=ChIdentifier("avro src"),
-                values=AVRO_VALUES,
             )
             .build()
         )

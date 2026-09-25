@@ -173,7 +173,7 @@ class TestQuery:
         if body is None:
             raise AssertionError("body is a coroutine")
 
-        sql = _sql("select id, email from ", " order by id;")
+        sql = _sql("select id, email from ", " order by id")
         first = await body(connection=target.oracle, sql=sql, offset=0, limit=10)
         second = await body(connection=target.oracle, sql=sql, offset=10, limit=10)
 

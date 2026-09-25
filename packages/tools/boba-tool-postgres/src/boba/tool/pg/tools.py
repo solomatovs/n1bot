@@ -8,7 +8,6 @@ PostgresError — до базы не достучаться (сеть, отка�
 UnknownConnectionError — имя подключения вне whitelist'а конфига.
 psycopg.Error — сервер отклонил запрос (синтаксис, права).
 ResultTooLargeError — дамп COPY превысил max_bytes конфига.
-CopyDirectionError — COPY-стейтмент не подходит направлению насоса.
 QueryBuildError — сборщик получил один параметр с двумя разными значениями.
 """
 
@@ -76,35 +75,6 @@ class CopyDump:
     """
 
     LANG: ClassVar[str] = "csv"
-
-
-class CopyDirectionError(Exception):
-    """COPY-стейтмент не подходит направлению инструмента-насоса."""
-
-
-class CopyStatement:
-    """Направление COPY-стейтмента: насос конвейера качает в одну сторону.
-
-    pg_copy_out принимает только `COPY ... TO STDOUT`, pg_copy_in — только
-    `COPY ... FROM STDIN`; проверка по тексту до похода в базу, чтобы модель
-    получила внятную подсказку вместо ошибки протокола psycopg.
-    """
-
-    TO_STDOUT: ClassVar[str] = "to stdout"
-    FROM_STDIN: ClassVar[str] = "from stdin"
-
-    @classmethod
-    def require(cls, sql: str, marker: str, tool_name: str) -> None:
-        folded = " ".join(sql.lower().split())
-        if marker in folded:
-            return
-
-        head = sql[:200]
-        msg = (
-            f"{tool_name} expects a full COPY statement with {marker.upper()}, "
-            f"got {head!r}"
-        )
-        raise CopyDirectionError(msg)
 
 
 class PgToolConfig(SecretRevealing, SqlLimits):
@@ -422,8 +392,6 @@ async def pg_copy_out(
     Узел графа workflow: данные идут следующему узлу, а не в чат.
     В ответ возвращается только счётчик перекачанных байтов.
     """
-    CopyStatement.require(sql, CopyStatement.TO_STDOUT, "pg_copy_out")
-
     total = 0
 
     conn = await PayloadPostgres.connect_config(connection)
@@ -463,8 +431,6 @@ async def pg_copy_in(
     Узел графа workflow: данные приходят от предыдущего узла.
     В ответ возвращается счётчик байтов и статус сервера (COPY N).
     """
-    CopyStatement.require(sql, CopyStatement.FROM_STDIN, "pg_copy_in")
-
     total = 0
 
     conn = await PayloadPostgres.connect_config(connection)
@@ -1258,7 +1224,6 @@ async def pg_address(connection: PgConnection) -> TableResult:
 
 
 EXPECTED: Mapping[type[Exception], SqlErrorKind] = {
-    CopyDirectionError: SqlErrorKind.SQL_FAILED,
     QueryBuildError: SqlErrorKind.SQL_FAILED,
     PostgresError: SqlErrorKind.DATABASE_UNAVAILABLE,
     psycopg.Error: SqlErrorKind.SQL_FAILED,

@@ -18,11 +18,12 @@ ClickHouse без precise_float_parsing (22.x) при текстовом раз�
 один ulp; в этих случаях float сравниваются с относительной точностью, а
 на новых серверах с обеих сторон — байт в байт."""
 
+# ruff: noqa: S608 — стейтменты стенда собираются текстом, как их пишет LLM
+
 from __future__ import annotations
 
 from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass
-from string import Template
 from typing import Any, ClassVar
 
 import pytest
@@ -555,24 +556,6 @@ CH_COLUMNS = (
 CH_FLOATS = ("f32", "f64")
 
 
-class Statements:
-    """Стейтменты насосов и стенда: шаблон с $name и подстановка текста как
-    есть — так их писала бы LLM, инструменты ничего в них не разбирают."""
-
-    def __init__(self) -> None:
-        self._names = {"schema": PG_SCHEMA, "db": CH_DATABASE}
-
-    def of(self, template: str, **values: str) -> str:
-        return Template(template).substitute(self._names, **values)
-
-    def q(self, template: str, **values: str) -> bytes:
-        """То же байтами: psycopg ждёт литеральную строку, а текст собран."""
-        return self.of(template, **values).encode()
-
-
-SQL = Statements()
-
-
 class Postgres:
     """Сторона postgres: версия, таблицы под матрицу типов, дампы и сверка."""
 
@@ -614,25 +597,25 @@ class Postgres:
             selected.append(f"({column.expression}) as {column.name}")
 
         async with await AsyncPostgresPool.dedicated(self.source.postgres) as conn:
-            await conn.execute(self._q("drop schema if exists $schema cascade"))
-            await conn.execute(self._q("create schema $schema"))
+            await conn.execute(self._q(f"drop schema if exists {PG_SCHEMA} cascade"))
+            await conn.execute(self._q(f"create schema {PG_SCHEMA}"))
             await conn.execute(
-                self._q("create type $schema.mood as enum ('sad', 'ok', 'happy')")
+                self._q(f"create type {PG_SCHEMA}.mood as enum ('sad', 'ok', 'happy')")
             )
-            await conn.execute(self._q("create type $schema.pair as (a int, b text)"))
-            await conn.execute(self._q("set search_path to $schema"))
             await conn.execute(
-                SQL.q(
-                    "create table $schema.src ($ddl); create table $schema.dst ($ddl)",
-                    ddl=ddl,
+                self._q(f"create type {PG_SCHEMA}.pair as (a int, b text)")
+            )
+            await conn.execute(self._q(f"set search_path to {PG_SCHEMA}"))
+            await conn.execute(
+                self._q(
+                    f"create table {PG_SCHEMA}.src ({ddl}); "
+                    f"create table {PG_SCHEMA}.dst ({ddl})"
                 )
             )
             await conn.execute(
-                SQL.q(
-                    "insert into $schema.src select $selected "
-                    "from generate_series(1, $rows) g",
-                    selected=", ".join(selected),
-                    rows=str(rows),
+                self._q(
+                    f"insert into {PG_SCHEMA}.src select {', '.join(selected)} "
+                    f"from generate_series(1, {rows}) g"
                 )
             )
 
@@ -650,15 +633,15 @@ class Postgres:
             parts.append(f"{column.name} {pg_type}")
 
         async with await AsyncPostgresPool.dedicated(self.source.postgres) as conn:
-            await conn.execute(self._q("drop schema if exists $schema cascade"))
-            await conn.execute(self._q("create schema $schema"))
+            await conn.execute(self._q(f"drop schema if exists {PG_SCHEMA} cascade"))
+            await conn.execute(self._q(f"create schema {PG_SCHEMA}"))
             await conn.execute(
-                self._q(f"create table $schema.mid ({', '.join(parts)})")
+                self._q(f"create table {PG_SCHEMA}.mid ({', '.join(parts)})")
             )
 
     async def drop(self) -> None:
         async with await AsyncPostgresPool.dedicated(self.source.postgres) as conn:
-            await conn.execute(self._q("drop schema if exists $schema cascade"))
+            await conn.execute(self._q(f"drop schema if exists {PG_SCHEMA} cascade"))
 
     async def float_mismatches(self, loose: dict[str, str]) -> int:
         """Строки, где float источника и приёмника разошлись больше допуска."""
@@ -671,10 +654,9 @@ class Postgres:
 
         async with await AsyncPostgresPool.dedicated(self.source.postgres) as conn:
             cursor = await conn.execute(
-                SQL.q(
-                    "select count(*) from $schema.src s join $schema.dst d using (id) "
-                    "where $checks",
-                    checks=" or ".join(checks),
+                self._q(
+                    f"select count(*) from {PG_SCHEMA}.src s "
+                    f"join {PG_SCHEMA}.dst d using (id) where {' or '.join(checks)}"
                 )
             )
             row = await cursor.fetchone()
@@ -685,7 +667,8 @@ class Postgres:
         return int(row[0])
 
     def _q(self, text: str) -> bytes:
-        return SQL.q(text)
+        """psycopg принимает литеральную строку или bytes; текст собран."""
+        return text.encode()
 
 
 class ClickHouse:
@@ -742,12 +725,8 @@ class ClickHouse:
                 )
 
             await client.command(
-                SQL.of(
-                    "insert into $db.src select $selected "
-                    "from (select number as n from numbers(1, $rows))",
-                    selected=selected,
-                    rows=str(rows),
-                ),
+                f"insert into {CH_DATABASE}.src select {selected} "
+                f"from (select number as n from numbers(1, {rows}))",
                 settings=self._settings,
             )
 
@@ -765,11 +744,8 @@ class ClickHouse:
 
         async with PayloadClickHouse.opened_config(self.source.admin) as client:
             result = await client.query(
-                SQL.of(
-                    "select count() from $db.src s join $db.dst d using id "
-                    "where $checks",
-                    checks=" or ".join(checks),
-                )
+                f"select count() from {CH_DATABASE}.src s "
+                f"join {CH_DATABASE}.dst d using id where {' or '.join(checks)}"
             )
 
         return int(result.result_rows[0][0])
@@ -820,10 +796,7 @@ class TestPostgresToClickHouseAndBack:
         listed = ", ".join(names)
 
         exported = await pumps.pg_out(
-            SQL.of(
-                "copy (select $listed from $schema.src order by id) to stdout",
-                listed=listed,
-            )
+            f"copy (select {listed} from {PG_SCHEMA}.src order by id) to stdout"
         )
         if clickhouse.precise_floats:
             structure: list[str] = []
@@ -845,30 +818,22 @@ class TestPostgresToClickHouseAndBack:
                 structure.append(f"{column.name} {ch_type}")
                 selected.append(column.name)
 
-            insert = SQL.of(
-                "insert into $db.mid ($listed) select $selected "
-                "from input('$structure') settings precise_float_parsing = 1 "
-                "format TabSeparated",
-                listed=listed,
-                selected=", ".join(selected),
-                structure=", ".join(structure),
+            insert = (
+                f"insert into {CH_DATABASE}.mid ({listed}) "
+                f"select {', '.join(selected)} from input('{', '.join(structure)}') "
+                "settings precise_float_parsing = 1 format TabSeparated"
             )
         else:
-            insert = SQL.of(
-                "insert into $db.mid ($listed) format TabSeparated", listed=listed
-            )
+            insert = f"insert into {CH_DATABASE}.mid ({listed}) format TabSeparated"
 
         report = await pumps.ch_in(insert, exported)
         assert f"{ROWS} rows written" in report
 
         landed = await pumps.ch_out(
-            SQL.of(
-                "select $listed from $db.mid order by id format TabSeparated",
-                listed=listed,
-            )
+            f"select {listed} from {CH_DATABASE}.mid order by id format TabSeparated"
         )
         report = await pumps.pg_in(
-            SQL.of("copy $schema.dst ($listed) from stdin", listed=listed), landed
+            f"copy {PG_SCHEMA}.dst ({listed}) from stdin", landed
         )
         assert f"COPY {ROWS}" in report
 
@@ -877,10 +842,13 @@ class TestPostgresToClickHouseAndBack:
         if loose:
             assert await postgres.float_mismatches(loose) == 0
 
-        exact = _names(columns, loose)
-        dump = "copy (select $exact from $schema.$table order by id) to stdout"
-        before = await pumps.pg_out(SQL.of(dump, exact=", ".join(exact), table="src"))
-        after = await pumps.pg_out(SQL.of(dump, exact=", ".join(exact), table="dst"))
+        exact = ", ".join(_names(columns, loose))
+        before = await pumps.pg_out(
+            f"copy (select {exact} from {PG_SCHEMA}.src order by id) to stdout"
+        )
+        after = await pumps.pg_out(
+            f"copy (select {exact} from {PG_SCHEMA}.dst order by id) to stdout"
+        )
         assert before.count(b"\n") == ROWS
         assert after == before
 
@@ -897,21 +865,15 @@ class TestClickHouseToPostgresAndBack:
         outbound = ", ".join(f"{c.outbound} as {c.name}" for c in CH_COLUMNS)
 
         exported = await pumps.ch_out(
-            SQL.of(
-                "select $outbound from $db.src order by id format TabSeparated",
-                outbound=outbound,
-            )
+            f"select {outbound} from {CH_DATABASE}.src order by id format TabSeparated"
         )
         report = await pumps.pg_in(
-            SQL.of("copy $schema.mid ($listed) from stdin", listed=listed), exported
+            f"copy {PG_SCHEMA}.mid ({listed}) from stdin", exported
         )
         assert f"COPY {ROWS}" in report
 
         landed = await pumps.pg_out(
-            SQL.of(
-                "copy (select $listed from $schema.mid order by id) to stdout",
-                listed=listed,
-            )
+            f"copy (select {listed} from {PG_SCHEMA}.mid order by id) to stdout"
         )
         structure = ", ".join(f"{c.name} {c.input_type}" for c in CH_COLUMNS)
         inbound = ", ".join(f"{c.inbound} as {c.name}" for c in CH_COLUMNS)
@@ -919,14 +881,10 @@ class TestClickHouseToPostgresAndBack:
         if clickhouse.precise_floats:
             precise = " settings precise_float_parsing = 1"
 
+        quoted = structure.replace("'", "''")
         report = await pumps.ch_in(
-            SQL.of(
-                "insert into $db.dst select $inbound from input('$structure')$precise "
-                "format TabSeparated",
-                inbound=inbound,
-                structure=structure.replace("'", "''"),
-                precise=precise,
-            ),
+            f"insert into {CH_DATABASE}.dst select {inbound} from input('{quoted}')"
+            f"{precise} format TabSeparated",
             landed,
         )
         assert f"{ROWS} rows written" in report
@@ -936,10 +894,13 @@ class TestClickHouseToPostgresAndBack:
         if loose:
             assert await clickhouse.float_mismatches(loose) == 0
 
-        exact = _names(CH_COLUMNS, loose)
-        dump = "select $exact from $db.$table order by id format TabSeparated"
-        before = await pumps.ch_out(SQL.of(dump, exact=", ".join(exact), table="src"))
-        after = await pumps.ch_out(SQL.of(dump, exact=", ".join(exact), table="dst"))
+        exact = ", ".join(_names(CH_COLUMNS, loose))
+        before = await pumps.ch_out(
+            f"select {exact} from {CH_DATABASE}.src order by id format TabSeparated"
+        )
+        after = await pumps.ch_out(
+            f"select {exact} from {CH_DATABASE}.dst order by id format TabSeparated"
+        )
         assert before.count(b"\n") == ROWS
         assert after == before
 
@@ -977,34 +938,31 @@ class TestVolume:
         listed = ", ".join(names)
 
         exported = await pumps.pg_out(
-            SQL.of(
-                "copy (select $listed from $schema.src order by id) to stdout",
-                listed=listed,
-            )
+            f"copy (select {listed} from {PG_SCHEMA}.src order by id) to stdout"
         )
         report = await pumps.ch_in(
-            SQL.of("insert into $db.mid ($listed) format TabSeparated", listed=listed),
+            f"insert into {CH_DATABASE}.mid ({listed}) format TabSeparated",
             exported,
             BIG_CHUNK,
         )
         assert f"{BIG_ROWS} rows written" in report
 
         landed = await pumps.ch_out(
-            SQL.of(
-                "select $listed from $db.mid order by id format TabSeparated",
-                listed=listed,
-            )
+            f"select {listed} from {CH_DATABASE}.mid order by id format TabSeparated"
         )
         report = await pumps.pg_in(
-            SQL.of("copy $schema.dst ($listed) from stdin", listed=listed),
+            f"copy {PG_SCHEMA}.dst ({listed}) from stdin",
             landed,
             BIG_CHUNK,
         )
         assert f"COPY {BIG_ROWS}" in report
 
-        exact = _names(columns, PG_FLOATS)
-        dump = "copy (select $exact from $schema.$table order by id) to stdout"
-        before = await pumps.pg_out(SQL.of(dump, exact=", ".join(exact), table="src"))
-        after = await pumps.pg_out(SQL.of(dump, exact=", ".join(exact), table="dst"))
+        exact = ", ".join(_names(columns, PG_FLOATS))
+        before = await pumps.pg_out(
+            f"copy (select {exact} from {PG_SCHEMA}.src order by id) to stdout"
+        )
+        after = await pumps.pg_out(
+            f"copy (select {exact} from {PG_SCHEMA}.dst order by id) to stdout"
+        )
         assert before.count(b"\n") == BIG_ROWS
         assert after == before

@@ -24,7 +24,7 @@ from boba.connections.address import AddressError
 from boba.db.clickhouse import ClickHouseError, ClickHouseQueryError
 from boba.db.clickhouse.address import ChAddresses
 from boba.db.clickhouse.connection import ClickHouseConfig
-from boba.db.clickhouse.query import ChQuery, ChQueryBuilder, ChValue
+from boba.db.clickhouse.query import ChQuery, ChQueryBuilder
 from boba.toolkit.entry import ToolMain
 from boba.toolkit.facade import Injected, UserConnection, tool
 from boba.toolkit.ports import RawInbound, RawOutbound
@@ -166,7 +166,7 @@ async def ch_list_tables(
         .when(
             database is not None,
             "and database = {database:String}",
-            database=ChValue(database),
+            database=database,
         )
         .add("order by database, name")
     )
@@ -233,9 +233,9 @@ async def ch_list_columns(
         .when(
             database is not None,
             "and database = {database:String}",
-            database=ChValue(database),
+            database=database,
         )
-        .when(table is not None, "and table = {table:String}", table=ChValue(table))
+        .when(table is not None, "and table = {table:String}", table=table)
         .add("order by database, table, position")
     )
 
@@ -321,12 +321,12 @@ async def ch_describe_table(
                 and table = {table:String}
             """,
             system_databases=SystemDatabase.names(),
-            table=ChValue(table),
+            table=table,
         )
         .when(
             database is not None,
             "and database = {database:String}",
-            database=ChValue(database),
+            database=database,
         )
         .add("order by database, table, position")
     )
@@ -378,9 +378,7 @@ async def ch_database_describe(
             """,
             system_databases=SystemDatabase.names(),
         )
-        .when(
-            database != "*", "and name = {database:String}", database=ChValue(database)
-        )
+        .when(database != "*", "and name = {database:String}", database=database)
         .add("order by name")
     )
 
@@ -435,9 +433,9 @@ async def ch_table_describe(
         .when(
             database != "*",
             "and database = {database:String}",
-            database=ChValue(database),
+            database=database,
         )
-        .when(table != "*", "and name = {table:String}", table=ChValue(table))
+        .when(table != "*", "and name = {table:String}", table=table)
         .add("order by database, name")
     )
 
@@ -495,9 +493,9 @@ async def ch_column_describe(
         .when(
             database != "*",
             "and database = {database:String}",
-            database=ChValue(database),
+            database=database,
         )
-        .when(table != "*", "and table = {table:String}", table=ChValue(table))
+        .when(table != "*", "and table = {table:String}", table=table)
         .add("order by database, table, position")
     )
 
@@ -542,9 +540,9 @@ async def ch_constraints_describe(
         .when(
             database != "*",
             "and database = {database:String}",
-            database=ChValue(database),
+            database=database,
         )
-        .when(table != "*", "and table = {table:String}", table=ChValue(table))
+        .when(table != "*", "and table = {table:String}", table=table)
         .add("order by database, table, name")
     )
 
@@ -593,9 +591,9 @@ async def ch_indexes_describe(
         .when(
             database != "*",
             "and database = {database:String}",
-            database=ChValue(database),
+            database=database,
         )
-        .when(table != "*", "and table = {table:String}", table=ChValue(table))
+        .when(table != "*", "and table = {table:String}", table=table)
         .add("order by database, table, name")
     )
 
@@ -652,7 +650,7 @@ async def ch_function_describe(
         .when(
             function != "*",
             "and name like {function:String}",
-            function=ChValue(function),
+            function=function,
         )
         .add("order by name")
     )
@@ -702,7 +700,7 @@ async def ch_sequences_describe(
         .when(
             database != "*",
             "and database = {database:String}",
-            database=ChValue(database),
+            database=database,
         )
         .add("order by database, name")
     )
@@ -749,7 +747,7 @@ async def ch_types_describe(
             where 1=1
             """
         )
-        .when(name != "*", "and name like {name:String}", name=ChValue(name))
+        .when(name != "*", "and name like {name:String}", name=name)
         .add("order by name")
     )
 
@@ -882,20 +880,20 @@ async def ch_edm_structure(  # noqa: PLR0913
                 and rtl.type_to in {column_types:Array(String)}
                 and rtl.type_from in {relation_types_from:Array(String)}
             """,
-            db=ChValue(database),
-            attributes_physical=ChValue(Edm.ATTRIBUTES_PHYSICAL.value),
-            relations=ChValue(Edm.RELATIONS.value),
-            assets=ChValue(Edm.ASSETS.value),
-            relation_types=ChValue(Edm.RELATION_TYPES.value),
-            name_attribute=ChValue(Edm.NAME.value),
+            db=database,
+            attributes_physical=Edm.ATTRIBUTES_PHYSICAL.value,
+            relations=Edm.RELATIONS.value,
+            assets=Edm.ASSETS.value,
+            relation_types=Edm.RELATION_TYPES.value,
+            name_attribute=Edm.NAME.value,
             column_types=Edm.column_types(),
             relation_types_from=Edm.relation_types(),
         )
-        .when(table != "*", "and obn.value = {table:String}", table=ChValue(table))
+        .when(table != "*", "and obn.value = {table:String}", table=table)
         .when(
             path != "*",
             "and a.path || '/' || obn.value like {path:String}",
-            path=ChValue(path),
+            path=path,
         )
         .add("order by path, column_name")
     )
@@ -999,24 +997,24 @@ async def ch_edm_descriptions(  # noqa: PLR0913
                     on ed.etalon_id_pdm = pdm.etalon_id
             where true
             """,
-            db=ChValue(database),
-            attributes_physical=ChValue(Edm.ATTRIBUTES_PHYSICAL.value),
-            attributes=ChValue(Edm.ATTRIBUTES.value),
-            assets=ChValue(Edm.ASSETS.value),
-            relations=ChValue(Edm.RELATIONS.value),
-            name_attribute=ChValue(Edm.NAME.value),
-            short_attribute=ChValue(Edm.SHORT_DESCRIPTION.value),
-            extended_attribute=ChValue(Edm.EXTENDED_DESCRIPTION.value),
-            source_attribute=ChValue(Edm.DESCRIPTION.value),
+            db=database,
+            attributes_physical=Edm.ATTRIBUTES_PHYSICAL.value,
+            attributes=Edm.ATTRIBUTES.value,
+            assets=Edm.ASSETS.value,
+            relations=Edm.RELATIONS.value,
+            name_attribute=Edm.NAME.value,
+            short_attribute=Edm.SHORT_DESCRIPTION.value,
+            extended_attribute=Edm.EXTENDED_DESCRIPTION.value,
+            source_attribute=Edm.DESCRIPTION.value,
             described_attributes=Edm.described_attributes(),
             ed_attributes=Edm.ed_name_attributes(),
-            logical_relation=ChValue(Edm.LOGICAL_TO_PHYSICAL.value),
+            logical_relation=Edm.LOGICAL_TO_PHYSICAL.value,
         )
-        .when(name != "*", "and pdm.name = {name:String}", name=ChValue(name))
+        .when(name != "*", "and pdm.name = {name:String}", name=name)
         .when(
             path != "*",
             "and pdm.path || '/' || pdm.name like {path:String}",
-            path=ChValue(path),
+            path=path,
         )
         .add("order by path, name")
     )

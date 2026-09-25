@@ -21,7 +21,6 @@ from boba.db.clickhouse.query import (
     ChIdentifier,
     ChIdentifiers,
     ChQueryBuilder,
-    ChValue,
 )
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
@@ -134,11 +133,10 @@ class TestStreamIn:
             insert = (
                 ChQueryBuilder()
                 .add(
-                    "insert into %(db)s.%(t)s (%(columns)s) format $fmt",
+                    "insert into %(db)s.%(t)s (%(columns)s) format CSV",
                     db=ChIdentifier(Probe.DATABASE),
                     t=ChIdentifier(Probe.TABLE),
                     columns=ChIdentifiers(Probe.COLUMNS),
-                    fmt="CSV",
                 )
                 .build()
             )
@@ -156,7 +154,7 @@ class TestStreamIn:
                 )
                 .add(
                     "where %(text)s is null or %(text)s like %(mask)s",
-                    mask=ChValue("o'neil %"),
+                    mask="o'neil %",
                 )
                 .build()
             )
@@ -191,8 +189,8 @@ class TestStreamIn:
             ChQueryBuilder()
             .add(
                 "insert into {db:Identifier}.{t:Identifier} format CSV",
-                db=ChValue("x"),
-                t=ChValue("y"),
+                db="x",
+                t="y",
             )
             .build()
         )
@@ -221,17 +219,16 @@ class TestStreamIn:
             ChQueryBuilder()
             .add(
                 "select number, toString(number) from numbers(%(rows)s)",
-                rows=ChValue(rows),
+                rows=rows,
             )
             .build()
         )
         insert = (
             ChQueryBuilder()
             .add(
-                "insert into %(db)s.%(t)s format $fmt",
+                "insert into %(db)s.%(t)s format TabSeparated",
                 db=ChIdentifier(Probe.DATABASE),
                 t=ChIdentifier("pipe"),
-                fmt="TabSeparated",
             )
             .build()
         )
