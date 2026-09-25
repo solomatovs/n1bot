@@ -142,11 +142,6 @@ class ProbeSql(StrEnum):
     )
     UPDATE = "update public.ui_probe set note = 'seen' where id = 1"
     SELECT = "select id, name from public.ui_probe order by id"
-    COPY = (
-        "COPY (select id, name from public.ui_probe order by id) "
-        "TO STDOUT WITH (FORMAT CSV, HEADER)"
-    )
-    COPY_TEXT = "id,name\n1,alpha\n2,beta\n"
     COPY_TABLE = "ui_probe_copy"
     COPY_TARGET = (
         "drop table if exists public.ui_probe_copy; "
@@ -1495,16 +1490,6 @@ class TestPgTools:
             "primary_key": primary_key,
             "comment": None,
         }
-
-    def test_copy(self, feed: ToolFeed, probe_table: str) -> None:
-        call = ToolCall(
-            tool="pg_copy",
-            arguments={"connection": "main", "sql": ProbeSql.COPY.value},
-            code="sql",
-            language="sql",
-        )
-        result = MarkdownResult(text=ProbeSql.COPY_TEXT.value, language="csv")
-        feed.call(call, ToolExpect.of(result, dom=["id,name", "1,alpha", "2,beta"]))
 
 
 class TestChTools:

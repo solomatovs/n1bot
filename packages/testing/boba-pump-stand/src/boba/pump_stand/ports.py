@@ -1,14 +1,16 @@
-"""Порты насосов в памяти: выход копит байты, вход отдаёт их порциями."""
+"""Порты насосов: в памяти (выход копит байты, вход отдаёт их порциями) и
+труба ОС, через которую два насоса работают одновременно."""
 
 from __future__ import annotations
 
+import os
 from collections.abc import Iterator
 
 from boba.toolkit.frames import ToolIo
 from boba.toolkit.ports import RawInbound, RawOutbound
 from boba.toolkit.stream import Chunk
 
-__all__ = ["Feed", "Sink"]
+__all__ = ["Feed", "Pipe", "Sink"]
 
 
 class Sink(RawOutbound):
@@ -37,3 +39,21 @@ class Feed(RawInbound):
     def read(self, chunk_bytes: int) -> Iterator[bytes]:
         for start in range(0, len(self._data), self._size):
             yield self._data[start : start + self._size]
+
+
+class Pipe:
+    """Труба ОС между выходом одного насоса и входом другого, как у лончера:
+    выход пишет в конец записи, вход читает конец чтения до EOF. Каждый конец
+    закрывает сторона, которая им владеет, когда её насос завершился, — так
+    вход видит EOF, а выход при упавшем входе получает EPIPE, а не зависает."""
+
+    def __init__(self) -> None:
+        self._read_fd, self._write_fd = os.pipe()
+        self.outbound = RawOutbound(ToolIo.on_channels(-1, self._write_fd))
+        self.inbound = RawInbound(ToolIo.on_channels(self._read_fd, -1))
+
+    def close_write(self) -> None:
+        os.close(self._write_fd)
+
+    def close_read(self) -> None:
+        os.close(self._read_fd)

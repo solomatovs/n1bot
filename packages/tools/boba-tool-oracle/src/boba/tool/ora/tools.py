@@ -11,7 +11,7 @@ OracleQueryError — сервер отклонил запрос (синтакс�
 UnknownConnectionError — имя подключения вне whitelist'а конфига.
 AddressError — адрес базы не собрался из профиля соединения.
 QueryBuildError — сборщик получил один параметр с двумя разными значениями
-    или имя таблицы/колонки для ora_copy_in пустое или с кавычкой внутри.
+    или имя таблицы/колонки для ora_csv_in пустое или с кавычкой внутри.
 CsvFieldError — поле CSV не приводится к типу колонки Oracle.
 """
 
@@ -724,7 +724,7 @@ async def ora_address(connection: OraConnection) -> TableResult:
 
 
 @tool
-async def ora_copy_out(
+async def ora_csv_out(
     connection: OraConnection,
     sql: Annotated[
         str,
@@ -732,12 +732,18 @@ async def ora_copy_out(
             min_length=1,
             description=(
                 "Запрос SELECT целиком. Ответ уходит следующему узлу CSV без "
-                "заголовка: NULL — пустое поле, строки с запятой, кавычкой или "
-                "переводом строки в кавычках, DATE и TIMESTAMP — ISO с пробелом. "
-                "Это формат COPY ... FROM STDIN (FORMAT CSV) postgres по умолчанию. "
-                "Запрос обязан сам привести три типа: RAW и BLOB — rawtohex(col), "
-                "INTERVAL — to_char(col), NUMBER с дробью без объявленной точности — "
-                "to_char(col) или cast(col as number(p, s))."
+                "заголовка: строки всегда в двойных кавычках, числа и даты без, "
+                "NULL — пустое поле, DATE и TIMESTAMP — ISO с пробелом, float — "
+                "nan/inf строчными. Это формат COPY ... FROM STDIN (FORMAT CSV) "
+                "postgres по умолчанию. Запрос обязан сам привести: NUMBER без "
+                "точности с дробью и FLOAT — to_char(col, 'TM9'); RAW — "
+                "rawtohex(col); BLOB — rawtohex(dbms_lob.substr(col, 2000, n)) "
+                "кусками; INTERVAL — to_char или число; XMLTYPE — "
+                "xmlserialize(document col as clob); JSON — json_serialize(col "
+                "returning clob); VECTOR — from_vector(col). Молча теряются: "
+                "смещение TIMESTAMP WITH TIME ZONE (to_char(col, "
+                "'yyyy-mm-dd hh24:mi:ss.ff6tzh:tzm')) и наносекунды "
+                "TIMESTAMP(9) (to_char с ff9)."
             ),
         ),
         MarkdownResult(language="sql"),
@@ -748,7 +754,7 @@ async def ora_copy_out(
 
     Узел графа workflow: данные идут следующему узлу, а не в чат. Пачки
     Arrow по arraysize строк, Python делает один шаг на пачку. В ответ
-    возвращается только счётчик перекачанных байтов.
+    возвращается счётчик перекачанных байтов.
     """
     total = 0
 
@@ -857,7 +863,7 @@ class CsvFeed:
 
 
 @tool
-async def ora_copy_in(
+async def ora_csv_in(
     connection: OraConnection,
     table: Annotated[
         str,
@@ -952,8 +958,8 @@ TOOLS: Final = ToolMain.toolset(
     ora_describe_table,
     ora_query,
     ora_address,
-    ora_copy_out,
-    ora_copy_in,
+    ora_csv_out,
+    ora_csv_in,
     ora_database_describe,
     ora_schema_describe,
     ora_table_describe,

@@ -1,4 +1,4 @@
-"""Перекачка между postgres и ClickHouse насосами pg_copy_out/pg_copy_in и
+"""Перекачка между postgres и ClickHouse насосами pg_stream_out/pg_stream_in и
 ch_stream_out/ch_stream_in на всей матрице стенда: каждый postgres и Greenplum
 из pg_sources против каждого ClickHouse из ch_sources. Стейтменты пишутся
 целиком, как их писала бы LLM, байты идут между узлами без разбора.

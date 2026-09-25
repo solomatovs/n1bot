@@ -1027,56 +1027,6 @@ class TestPgTools:
         if result.statements[0].status != "CREATE TABLE":
             raise AssertionError('result.statements[0].status == "CREATE TABLE"')
 
-    async def test_copy_unloads_the_statement_as_is(
-        self, pg_tools, pg_connection
-    ) -> None:
-        """Формат выбирает запрос: csv-дамп доезжает как есть и помечен языком."""
-        result = await Call.ok(
-            pg_tools["pg_copy"],
-            connection=pg_connection,
-            sql=(
-                "COPY (select 1 as one, 'два' as two) "
-                "TO STDOUT WITH (FORMAT CSV, HEADER)"
-            ),
-        )
-        if not isinstance(result, MarkdownResult):
-            raise AssertionError("isinstance(result, MarkdownResult)")
-        if result.text != "one,two\n1,два\n":
-            raise AssertionError('result.text == "one,two\\n1,два\\n"')
-        if result.language != "csv":
-            raise AssertionError('result.language == "csv"')
-
-    async def test_copy_decodes_in_the_connection_encoding(
-        self, pg_tools, pg_connection
-    ) -> None:
-        """Кириллица доезжает целой: дамп читается кодировкой подключения.
-
-        Символ склеивается из блоков COPY, поэтому проверяется и длинная
-        выгрузка — на ней граница блока рвёт многобайтовый символ.
-        """
-        result = await Call.ok(
-            pg_tools["pg_copy"],
-            connection=pg_connection,
-            sql=("COPY (select repeat('ё', 4000) as long) TO STDOUT WITH (FORMAT CSV)"),
-        )
-
-        if "�" in result.text:
-            raise AssertionError("в выгрузке остались замены битых байтов")
-        if result.text.strip() != "ё" * 4000:
-            raise AssertionError('result.text.strip() == "ё" * 4000')
-
-    async def test_copy_statement_is_judged_by_postgres(
-        self, pg_tools, pg_connection
-    ) -> None:
-        """Стейтмент уходит как есть: приговор выносит сервер, не инструмент."""
-        with pytest.raises(PayloadFailureError) as caught:
-            await Call.result(
-                pg_tools["pg_copy"], connection=pg_connection, sql="select 1"
-            )
-
-        if caught.value.kind != "sql_failed":
-            raise AssertionError('caught.value.kind == "sql_failed"')
-
     async def test_many_statements_run_in_one_call(
         self, pg_tools, pg_connection
     ) -> None:
@@ -1301,7 +1251,7 @@ class TestKbIxTools:
 
 
 class TestPgCopyPipeline:
-    """Насосы pg_copy_out/pg_copy_in: проверки направления COPY до базы;
+    """Насосы pg_stream_out/pg_stream_in: проверки направления COPY до базы;
     перекачка между узлами покрыта тестами графа workflow."""
 
     async def _prepare(self, pg_tools, pg_connection) -> None:
@@ -1325,7 +1275,7 @@ class TestPgCopyPipeline:
         """Стейтмент не того направления валится подсказкой, а не ошибкой psycopg."""
         with pytest.raises(PayloadFailureError) as caught:
             await Call.result(
-                pg_tools["pg_copy_out"],
+                pg_tools["pg_stream_out"],
                 connection=pg_connection,
                 sql="COPY it_pipe_src FROM STDIN",
             )

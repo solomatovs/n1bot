@@ -119,7 +119,7 @@ def test_module_tool_ports() -> None:
         {
             "name": "w",
             "tasks": {
-                "copy": {"tool": "pg_copy_out", "args": {"query": "select 1"}},
+                "copy": {"tool": "pg_stream_out", "args": {"query": "select 1"}},
                 "insert": {"tool": "ch_insert", "args": {"table": "t"}},
             },
             "edges": ["copy.out -> insert.src"],
@@ -178,7 +178,7 @@ def test_module_tool_ports() -> None:
             {
                 "name": "w",
                 "tasks": {
-                    "copy": {"tool": "pg_copy_out", "args": {"query": "x"}},
+                    "copy": {"tool": "pg_stream_out", "args": {"query": "x"}},
                     "insert": {"tool": "ch_insert", "args": {"table": "t"}},
                 },
                 "edges": ["insert.src -> copy.out"],

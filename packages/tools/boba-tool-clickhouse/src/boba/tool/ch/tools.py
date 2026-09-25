@@ -27,7 +27,7 @@ from boba.db.clickhouse.connection import ClickHouseConfig
 from boba.db.clickhouse.query import ChQuery, ChQueryBuilder
 from boba.toolkit.entry import ToolMain
 from boba.toolkit.facade import Injected, UserConnection, tool
-from boba.toolkit.ports import RawInbound, RawOutbound
+from boba.toolkit.ports import ChunkBytes, RawInbound, RawOutbound
 from boba.toolkit.result import MarkdownResult, SqlResult, SqlStatement, TableResult
 from boba.toolkit.sql import (
     QueryBuildError,
@@ -1022,22 +1022,6 @@ async def ch_edm_descriptions(  # noqa: PLR0913
     return await run_and_collect(
         connection, builder.build(), RowWindow(offset=offset, limit=limit)
     )
-
-
-ChunkBytes = Annotated[
-    int,
-    Field(
-        default=262144,
-        ge=4096,
-        le=67108864,
-        description=(
-            "Размер порции байтов между узлом и трубой: крупнее — меньше "
-            "системных вызовов на больших выгрузках, мельче — раньше первые "
-            "данные у приёмника. По умолчанию 256 КиБ."
-        ),
-    ),
-]
-"""LLM-аргумент насосов: размер блока потока."""
 
 
 @tool

@@ -33,8 +33,8 @@ def catalog() -> ToolCatalog:
             availability=ToolAvailability.AVAILABLE,
             args=(StudioField(name="query", required=True),),
         ),
-        "pg_copy_out": ToolFacts(
-            name="pg_copy_out",
+        "pg_stream_out": ToolFacts(
+            name="pg_stream_out",
             availability=ToolAvailability.AVAILABLE,
             args=(StudioField(name="query", required=True),),
             ports=(ToolPort(name="out", direction=PortDirection.WRITE),),

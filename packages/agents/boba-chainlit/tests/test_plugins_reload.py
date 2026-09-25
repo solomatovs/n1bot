@@ -88,11 +88,6 @@ def test_module_singletons_stay_pristine(reload_config: DictConfig) -> None:
 
         raise AssertionError(f"{tool.name}: обвязка пришила call_id синглтону")
 
-    # инъекция конфига объявлена телом: у pg_copy поле cfg обязано уцелеть
-    copy_tool = {tool.name: tool for tool in PG_TOOLS}["pg_copy"]
-    if "cfg" not in _schema_fields(copy_tool):
-        raise AssertionError("pg_copy: обвязка срезала injected-поле cfg")
-
     origin = ToolMainBody.of(pg_query)
     if origin.__module__ != "boba.tool.pg.tools":
         raise AssertionError('origin.__module__ == "boba.tool.pg.tools"')

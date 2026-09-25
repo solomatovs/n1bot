@@ -1,6 +1,7 @@
-"""Схема Oracle стенда перекачки: пользователь PUMP_STAND с таблицей
-customers, которую пересоздаёт администратор источника и сносит после
-тестов — стенд общий со скрапером словаря, лишняя схема ломает его эталон.
+"""Схема Oracle стенда перекачки: пользователь PUMP_STAND, которого
+пересоздаёт администратор источника и сносит после тестов — стенд общий со
+скрапером словаря, лишняя схема ломает его эталон. Таблицы в схеме создаёт
+сам владелец: готовую customers или любые стейтменты теста.
 
 Ошибки:
 OracleQueryError — сервер отклонил DDL стенда.
@@ -8,6 +9,7 @@ OracleQueryError — сервер отклонил DDL стенда.
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 from enum import StrEnum
 from typing import ClassVar
 
@@ -31,7 +33,8 @@ class PumpUser(StrEnum):
 
 
 class OracleStand:
-    """Пересоздаёт схему PUMP_STAND с таблицей customers на источнике."""
+    """Пересоздаёт схему PUMP_STAND на источнике: пустую (recreate_user, затем
+    стейтменты теста через run) или сразу с таблицей customers (recreate)."""
 
     NO_SUCH_USER: ClassVar[str] = "ORA-01918"
 
@@ -69,7 +72,20 @@ class OracleStand:
     def owner(self) -> OracleConfig:
         return self._source.owner(PumpUser.NAME.value, PumpUser.NAME.secret())
 
-    async def recreate(self, rows: int) -> None:
+    async def version(self) -> int:
+        """Мажорная версия сервера: 12, 18, 21, 23."""
+        payload = PayloadOracle(self._source.admin)
+        async with (
+            payload.opened() as admin,
+            payload.rows(admin, "select version from v$instance") as stream,
+        ):
+            rows = [row async for row in stream.blocks]
+
+        release, *_ = str(rows[0][0]).split(".")
+
+        return int(release)
+
+    async def recreate_user(self) -> None:
         payload = PayloadOracle(self._source.admin)
         async with payload.opened() as admin:
             await self._drop_user(payload, admin)
@@ -77,15 +93,22 @@ class OracleStand:
             for statement in rest:
                 await self._run(payload, admin, statement)
 
+    async def run(
+        self, statements: Sequence[str], parameters: Mapping[str, object] | None = None
+    ) -> None:
+        """Стейтменты владельцем схемы по порядку одной транзакцией."""
         owner = PayloadOracle(self.owner)
         async with owner.opened() as conn:
-            for statement in self.OWNER:
-                await self._run(owner, conn, statement)
-
-            async with owner.rows(conn, self.FILL, {"n": rows}):
-                pass
+            for statement in statements:
+                async with owner.rows(conn, statement, parameters):
+                    pass
 
             await owner.commit(conn)
+
+    async def recreate(self, rows: int) -> None:
+        await self.recreate_user()
+        await self.run(self.OWNER)
+        await self.run((self.FILL,), {"n": rows})
 
     async def drop(self) -> None:
         payload = PayloadOracle(self._source.admin)
