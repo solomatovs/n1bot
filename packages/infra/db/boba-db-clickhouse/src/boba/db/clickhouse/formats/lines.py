@@ -15,7 +15,7 @@ from clickhouse_connect.driver.exceptions import ClickHouseError as DriverError
 from boba.db.clickhouse.errors import ClickHouseFormatError
 from boba.db.clickhouse.formats.base import Blocks
 
-__all__ = ["ColumnTypes", "HeadLines", "LineHead", "Settings"]
+__all__ = ["ColumnTypes", "HeadLines", "Lines", "Settings"]
 
 
 @dataclass(frozen=True)
@@ -26,7 +26,7 @@ class HeadLines:
     rest: bytes
 
 
-class LineHead:
+class Lines:
     """Снимает заданное число строк с начала байтового потока; остальное
     отдаёт дальше как есть, без просмотра байтов."""
 
@@ -66,7 +66,7 @@ class LineHead:
             yield memoryview(block)
 
     @staticmethod
-    async def glued(
+    async def all(
         head: bytes, source: AsyncIterator[memoryview]
     ) -> AsyncIterator[memoryview]:
         """Шапка (или остаток после неё) перед потоком."""

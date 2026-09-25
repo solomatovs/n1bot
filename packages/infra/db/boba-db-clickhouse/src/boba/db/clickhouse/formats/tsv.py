@@ -16,7 +16,7 @@ from typing import Any, ClassVar
 from clickhouse_connect.datatypes.base import ClickHouseType
 
 from boba.db.clickhouse.formats.base import Blocks, StreamFormat
-from boba.db.clickhouse.formats.lines import ColumnTypes, LineHead, Settings
+from boba.db.clickhouse.formats.lines import ColumnTypes, Lines, Settings
 
 __all__ = ["TsvStream", "TsvWithNamesAndTypes"]
 
@@ -150,7 +150,7 @@ class TsvWithNamesAndTypes(StreamFormat[TsvStream]):
 
     def __init__(self) -> None:
         self._header = TsvHeader()
-        self._head = LineHead(self.FORMAT, 2)
+        self._head = Lines(self.FORMAT, 2)
         self._types = ColumnTypes(self.FORMAT)
         self._output = Settings({})
         self._input = Settings({})
@@ -165,7 +165,7 @@ class TsvWithNamesAndTypes(StreamFormat[TsvStream]):
         return f"{query}\n FORMAT {self.FORMAT}"
 
     async def read(self, blocks: Blocks) -> TsvStream:
-        chunks = LineHead.views(blocks)
+        chunks = Lines.views(blocks)
         head = await self._head.take(chunks)
         names = self._header.parse(head.lines[0])
         type_names = self._header.parse(head.lines[1])
@@ -174,7 +174,7 @@ class TsvWithNamesAndTypes(StreamFormat[TsvStream]):
             names=names,
             type_names=type_names,
             column_types=self._types.of(type_names),
-            blocks=LineHead.glued(head.rest, chunks),
+            blocks=Lines.all(head.rest, chunks),
         )
 
     def write(self, stream: TsvStream) -> AsyncIterator[memoryview]:
@@ -182,4 +182,4 @@ class TsvWithNamesAndTypes(StreamFormat[TsvStream]):
             stream.type_names
         )
 
-        return LineHead.glued(head, stream.blocks)
+        return Lines.all(head, stream.blocks)
