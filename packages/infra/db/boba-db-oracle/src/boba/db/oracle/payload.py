@@ -50,6 +50,7 @@ from oracledb import (
 
 from boba.db.oracle.connection import OracleConfig
 from boba.db.oracle.errors import OracleError, OracleQueryError
+from boba.db.oracle.trace import OraSessionTrace
 from boba.toolkit.arrow import ArrowIpc
 from boba.toolkit.ports import ArrowOutbound
 
@@ -266,14 +267,17 @@ class PayloadOracle:
         conn: AsyncConnection,
         text: str,
         rows: Sequence[Sequence[object]],
+        trace: OraSessionTrace,
     ) -> int:
         """Одна команда для пачки строк: позиционные bind'ы `:1..:n` по порядку
         полей строки, драйвер шлёт пачку серверу одной поездкой. Значения идут
         как есть (текст CSV — строками, NULL — None), приводит их сам стейтмент.
-        Возвращает число затронутых строк; транзакцию завершает вызывающий."""
+        Итог курсора уходит в trace; возвращает число затронутых строк,
+        транзакцию завершает вызывающий."""
         cursor = conn.cursor()
         try:
             await cursor.executemany(text, list(rows))
+            trace.took(cursor)
             affected = cursor.rowcount
         except oracledb.Error as exc:
             raise OracleQueryError(
@@ -377,15 +381,20 @@ class PayloadOracle:
         return tuple(names)
 
     async def arrow_into(
-        self, conn: AsyncConnection, text: str, sink: ArrowOutbound
+        self,
+        conn: AsyncConnection,
+        text: str,
+        sink: ArrowOutbound,
+        trace: OraSessionTrace,
     ) -> pyarrow.Schema:
         """Ответ запроса потоком Arrow IPC в выходной порт: схема, затем пачки
         драйвера по arraysize строк как есть, без перевода в текст. Схема та
         же, что у csv (ArrowTypes); типы, которые драйвер в Arrow не отдаёт,
-        отвергаются до выполнения."""
+        отвергаются до выполнения. Прочитанные строки считает trace."""
         schema = await self._requested_schema(conn, text)
         writer = await self._ipc.open_out(sink, schema)
         async for table in self._tables(conn, text, schema):
+            trace.took_rows(table.num_rows)
             try:
                 await writer.write(table)
             except pyarrow.ArrowException as exc:
@@ -400,15 +409,20 @@ class PayloadOracle:
         return schema
 
     async def csv_into(
-        self, conn: AsyncConnection, text: str, sink: io.RawIOBase
+        self,
+        conn: AsyncConnection,
+        text: str,
+        sink: io.RawIOBase,
+        trace: OraSessionTrace,
     ) -> tuple[str, ...]:
         """Ответ запроса CSV-байтами без заголовка прямо в двоичный файл (сырой
         порт): pyarrow пишет каждую пачку в sink сам, без промежуточного
         буфера. Правила формата — как у csv. Запись блокирующая и идёт в
-        потоке."""
+        потоке. Прочитанные строки считает trace."""
         schema = await self._requested_schema(conn, text)
         options = pyarrow.csv.WriteOptions(include_header=False)
         async for table in self._tables(conn, text, schema):
+            trace.took_rows(table.num_rows)
             try:
                 await asyncio.to_thread(
                     pyarrow.csv.write_csv, table, sink, write_options=options
@@ -423,15 +437,20 @@ class PayloadOracle:
         return self._schema_names(schema)
 
     async def executemany_arrow(
-        self, conn: AsyncConnection, text: str, batch: pyarrow.RecordBatch
+        self,
+        conn: AsyncConnection,
+        text: str,
+        batch: pyarrow.RecordBatch,
+        trace: OraSessionTrace,
     ) -> int:
         """Одна команда для пачки Arrow: драйвер берёт колонки пачки bind'ами
-        `:1..:n` по порядку, значения в Python не разбираются. Возвращает число
-        затронутых строк — больше у DML в Oracle взять нечего; транзакцию
+        `:1..:n` по порядку, значения в Python не разбираются. Итог курсора
+        уходит в trace; возвращает число затронутых строк, транзакцию
         завершает вызывающий."""
         cursor = conn.cursor()
         try:
             await cursor.executemany(text, batch)
+            trace.took(cursor)
             affected = cursor.rowcount
         except oracledb.Error as exc:
             fields = ", ".join(f"{field.name} {field.type}" for field in batch.schema)

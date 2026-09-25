@@ -9,6 +9,7 @@ ClickHouseError — до базы не достучаться (сеть, TLS, ke
 
 from __future__ import annotations
 
+import json
 from collections.abc import (
     AsyncGenerator,
     AsyncIterable,
@@ -33,6 +34,7 @@ from clickhouse_connect.driver.summary import QuerySummary
 
 from boba.db.clickhouse.connection import ClickHouseConfig, SpnegoHeaders
 from boba.db.clickhouse.errors import ClickHouseError, ClickHouseQueryError
+from boba.db.clickhouse.trace import ChHeader, ChQueryTrace
 
 __all__ = [
     "ByteStream",
@@ -60,9 +62,11 @@ class RowStream:
 class ByteStream:
     """Ответ запроса сырыми байтами HTTP-протокола ClickHouse в формате, который
     выбрал вызывающий: блоки идут как пришли, без разбора. Форматеры из
-    boba.db.clickhouse.formats оборачивают его в поток своего формата."""
+    boba.db.clickhouse.formats оборачивают его в поток своего формата. trace —
+    сводка из заголовков ответа."""
 
     blocks: AsyncIterator[memoryview]
+    trace: ChQueryTrace
 
 
 @runtime_checkable
@@ -283,7 +287,10 @@ class PayloadClickHouse:
             if tuning is not None:
                 restore = tuning.applied(response)
 
-            yield ByteStream(blocks=blocks(response.content))
+            yield ByteStream(
+                blocks=blocks(response.content),
+                trace=PayloadClickHouse._trace_of_headers(response.headers),
+            )
         except (DriverError, aiohttp.ClientError) as exc:
             raise ClickHouseQueryError(
                 f"reading clickhouse response in format {fmt} failed: "
@@ -307,7 +314,7 @@ class PayloadClickHouse:
         transport_settings: Mapping[str, str] | None = None,
         *,
         blocks: AsyncIterable[bytes | bytearray | memoryview],
-    ) -> QuerySummary:
+    ) -> ChQueryTrace:
         """
         Позволяет выполнить запрос на INSERT ... FORMAT
         В качестве потока на вход может быть передан любой итератор
@@ -355,7 +362,44 @@ class PayloadClickHouse:
                 f"{exc}; statement: {text[:200]!r}"
             ) from exc
 
-        return summary
+        return PayloadClickHouse._trace_of_summary(summary)
+
+    @staticmethod
+    def _trace_of_headers(headers: Mapping[str, str]) -> ChQueryTrace:
+        """Сводка из заголовков ответа: у потокового ответа она отправлена до
+        конца тела и счётчики чтения в ней — на момент начала ответа."""
+        raw = headers.get(ChHeader.SUMMARY.value)
+        summary: dict[str, str] = {}
+        if raw:
+            summary = json.loads(raw)
+
+        return ChQueryTrace(
+            summary,
+            query_id=PayloadClickHouse._header(headers, ChHeader.QUERY_ID),
+            server=PayloadClickHouse._header(headers, ChHeader.SERVER),
+            timezone=PayloadClickHouse._header(headers, ChHeader.TIMEZONE),
+            fmt=PayloadClickHouse._header(headers, ChHeader.FORMAT),
+        )
+
+    @staticmethod
+    def _trace_of_summary(summary: QuerySummary) -> ChQueryTrace:
+        """Сводка из QuerySummary драйвера после raw_insert: та же JSON-сводка
+        сервера, снятая драйвером с заголовков конечного ответа."""
+        return ChQueryTrace(
+            summary.summary,
+            query_id=summary.query_id(),
+            server="",
+            timezone="",
+            fmt="",
+        )
+
+    @staticmethod
+    def _header(headers: Mapping[str, str], name: ChHeader) -> str:
+        value = headers.get(name.value)
+        if value is None:
+            return ""
+
+        return value
 
     @staticmethod
     def _params(

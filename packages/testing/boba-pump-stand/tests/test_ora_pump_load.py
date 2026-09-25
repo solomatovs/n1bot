@@ -339,6 +339,6 @@ class TestLoad:
             f"{chained.out_report}, peak rss +{growth} MiB"
         )
 
-        assert chained.in_report == f"{ROWS} rows written"
+        assert chained.in_report.startswith(f"{ROWS} rows written")
         assert await clickhouse.totals() == await oracle.totals()
         assert growth < PEAK_GROWTH_MIB

@@ -190,6 +190,9 @@ known-first-party = ["boba"]
 [tool.ruff.lint.flake8-tidy-imports.banned-api]
 "shutil.which".msg = "PATH is attacker-controlled: use boba.toolkit.binaries.TrustedBinaries"
 
+[tool.ruff.lint.flake8-bugbear]
+extend-immutable-calls = ["boba.db.postgres.connection.CopySession"]
+
 [tool.ruff.lint.per-file-ignores]
 "**/tests/**" = [
     "S101", "PLR2004", "SLF001", "S105", "S106", "PLC0415", "TID251", "T201",

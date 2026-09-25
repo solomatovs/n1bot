@@ -1048,10 +1048,14 @@ async def ch_stream_out(
         payload.opened_config(connection) as client,
         payload.byte_stream_out(client, statement.text, tuning=tuning) as stream,
     ):
+        total = 0
         async for block in stream.blocks:
+            total += len(block)
             await out.send(block)
 
-    return MarkdownResult(text="stream completed")
+        report = stream.trace.report(f"copied out {total} bytes", statement.text)
+
+    return MarkdownResult(text=report.render())
 
 
 @tool
@@ -1091,11 +1095,13 @@ async def ch_stream_in(
     payload = PayloadClickHouse
     statement = ChQueryBuilder().raw_query(sql).build()
     async with payload.opened_config(connection) as client:
-        summary = await payload.byte_stream_in(
+        trace = await payload.byte_stream_in(
             client, statement.text, blocks=feed.blocks(chunk_bytes)
         )
 
-    return MarkdownResult(text=f"{summary.written_rows} rows written")
+    report = trace.report(f"{trace.written_rows} rows written", statement.text)
+
+    return MarkdownResult(text=report.render())
 
 
 @tool
@@ -1138,10 +1144,16 @@ async def ch_arrow_out(
             client, statement.text, "ArrowStream", tuning=tuning
         ) as stream,
     ):
+        total = 0
         async for block in stream.blocks:
+            total += len(block)
             await out.send(block)
 
-    return MarkdownResult(text="arrow stream completed")
+        report = stream.trace.report(
+            f"streamed out arrow ipc: {total} bytes", statement.text
+        )
+
+    return MarkdownResult(text=report.render())
 
 
 @tool
@@ -1176,11 +1188,13 @@ async def ch_arrow_in(
     payload = PayloadClickHouse
     statement = ChQueryBuilder().raw_query(sql).build()
     async with payload.opened_config(connection) as client:
-        summary = await payload.byte_stream_in(
+        trace = await payload.byte_stream_in(
             client, statement.text, blocks=feed.blocks(chunk_bytes)
         )
 
-    return MarkdownResult(text=f"{summary.written_rows} rows written")
+    report = trace.report(f"{trace.written_rows} rows written", statement.text)
+
+    return MarkdownResult(text=report.render())
 
 
 @tool
