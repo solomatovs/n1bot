@@ -1,13 +1,12 @@
 """Oracle для payload'ов и скраперов: thin-соединение python-oracledb по профилю,
 строки запроса потоком с именованными bind'ами, CSV-байтами пачками Arrow
-(блоками или прямо в файл) или потоком Arrow IPC прямо в файл; запись пачками
-через executemany — строками или пачками Arrow из входного потока IPC.
+(блоками или прямо в файл) или потоком Arrow IPC в Arrow-порт; запись пачками
+через executemany — строками или пачками Arrow.
 
 Ошибки:
 OracleQueryError — сервер отклонил запрос или оборвал чтение (в том числе по
     call_timeout).
 OracleError — до базы не достучаться: сеть, listener, отказ при входе.
-OracleFormatError — входной поток не читается как Arrow IPC.
 """
 
 from __future__ import annotations
@@ -23,7 +22,6 @@ from typing import Any, BinaryIO, ClassVar
 import oracledb
 import pyarrow
 import pyarrow.csv
-import pyarrow.ipc
 from oracledb import (
     DB_TYPE_BINARY_DOUBLE,
     DB_TYPE_BINARY_FLOAT,
@@ -52,10 +50,10 @@ from oracledb import (
 )
 
 from boba.db.oracle.connection import OracleConfig
-from boba.db.oracle.errors import OracleError, OracleFormatError, OracleQueryError
+from boba.db.oracle.errors import OracleError, OracleQueryError
+from boba.toolkit.arrow import ArrowOutbound
 
 __all__ = [
-    "ArrowInbound",
     "ArrowTypes",
     "ByteStream",
     "OraColumnType",
@@ -118,14 +116,6 @@ class ByteStream:
 
     names: tuple[str, ...]
     blocks: AsyncIterator[memoryview]
-
-
-@dataclass(frozen=True)
-class ArrowInbound:
-    """Входной поток Arrow IPC: схема из его начала и пачки по мере чтения."""
-
-    schema: pyarrow.Schema
-    batches: AsyncIterator[pyarrow.RecordBatch]
 
 
 class ArrowTypes:
@@ -449,19 +439,17 @@ class PayloadOracle:
         return tuple(names)
 
     async def arrow_into(
-        self, conn: AsyncConnection, text: str, sink: BinaryIO
+        self, conn: AsyncConnection, text: str, sink: ArrowOutbound
     ) -> pyarrow.Schema:
-        """Ответ запроса потоком Arrow IPC прямо в двоичный файл (сырой порт):
-        схема, затем пачки драйвера по arraysize строк как есть, без перевода
-        в текст. Схема та же, что у csv: NUMBER без точности — decimal128(38, 0),
-        NUMBER(p, -s) — decimal128(p + s, 0); типы, которые драйвер в Arrow не
-        отдаёт (INTERVAL, XMLTYPE, JSON, VECTOR, ROWID), запрос приводит сам.
-        Запись в sink блокирующая и идёт в потоке."""
+        """Ответ запроса потоком Arrow IPC в выходной порт: схема, затем пачки
+        драйвера по arraysize строк как есть, без перевода в текст. Схема та
+        же, что у csv (ArrowTypes); типы, которые драйвер в Arrow не отдаёт,
+        отвергаются до выполнения."""
         schema = await self._requested_schema(conn, text)
-        writer = await asyncio.to_thread(pyarrow.ipc.new_stream, sink, schema)
+        writer = await sink.open(schema)
         async for table in self._tables(conn, text, schema):
             try:
-                await asyncio.to_thread(writer.write_table, table)
+                await writer.write(table)
             except pyarrow.ArrowException as exc:
                 raise OracleQueryError(
                     f"writing an arrow batch as ipc failed, the batch schema "
@@ -469,7 +457,7 @@ class PayloadOracle:
                     f"{exc}; query: {text[:200]!r}"
                 ) from exc
 
-        await asyncio.to_thread(writer.close)
+        await writer.close()
 
         return schema
 
@@ -496,29 +484,12 @@ class PayloadOracle:
 
         return self._schema_names(schema)
 
-    async def arrow_inbound(
-        self, source: io.RawIOBase, buffer_bytes: int
-    ) -> ArrowInbound:
-        """Входной поток Arrow IPC из сырого файла (порта): поверх него ставится
-        io.BufferedReader с одним переиспользуемым буфером buffer_bytes — он
-        дочитывает до размера, которого ждёт читатель IPC. Схема читается
-        сразу, пачки — по мере итерации; чтение блокирующее и идёт в потоке."""
-        buffered = io.BufferedReader(source, buffer_bytes)
-        try:
-            reader = await asyncio.to_thread(pyarrow.ipc.open_stream, buffered)
-        except pyarrow.ArrowException as exc:
-            raise OracleFormatError(
-                f"reading an arrow ipc stream schema failed: {type(exc).__name__}: "
-                f"{exc}"
-            ) from exc
-
-        return ArrowInbound(schema=reader.schema, batches=self._read_batches(reader))
-
     async def executemany_arrow(
         self, conn: AsyncConnection, text: str, batch: pyarrow.RecordBatch
     ) -> int:
         """Одна команда для пачки Arrow: драйвер берёт колонки пачки bind'ами
-        `:1..:n` по порядку, значения в Python не разбираются. Транзакцию
+        `:1..:n` по порядку, значения в Python не разбираются. Возвращает число
+        затронутых строк — больше у DML в Oracle взять нечего; транзакцию
         завершает вызывающий."""
         cursor = conn.cursor()
         try:
@@ -535,31 +506,6 @@ class PayloadOracle:
             cursor.close()
 
         return affected
-
-    async def _read_batches(
-        self, reader: pyarrow.ipc.RecordBatchStreamReader
-    ) -> AsyncIterator[pyarrow.RecordBatch]:
-        while True:
-            try:
-                batch = await asyncio.to_thread(self._next_batch, reader)
-            except pyarrow.ArrowException as exc:
-                raise OracleFormatError(
-                    f"reading an arrow ipc batch failed: {type(exc).__name__}: {exc}"
-                ) from exc
-
-            if batch is None:
-                return
-
-            yield batch
-
-    @staticmethod
-    def _next_batch(
-        reader: pyarrow.ipc.RecordBatchStreamReader,
-    ) -> pyarrow.RecordBatch | None:
-        try:
-            return reader.read_next_batch()
-        except StopIteration:
-            return None
 
     async def _csv_batches(
         self, conn: AsyncConnection, text: str, schema: pyarrow.Schema

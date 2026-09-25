@@ -8,7 +8,8 @@
 один раз на границе — тело работает с типизированными Framed, а не с
 сырыми байтами заголовков.
 
-Кроме модельных портов есть истинно сырые — RawInbound и RawOutbound:
+Кроме модельных портов есть истинно сырые — RawInbound и RawOutbound, и их
+наследники в boba.toolkit.arrow с разбором потока Arrow IPC:
 никаких структур и кадрирования, по каналу идут только сами байты
 (passthrough pg->pg, файлы, PCM). Сырой канал совместим только с сырым:
 модельный поток кадрирован, и его рамки попали бы в данные.
@@ -276,25 +277,29 @@ class StreamPorts:
 
     KIND_FIELD: ClassVar[str] = "kind"
 
-    @staticmethod
-    def is_port(annotation: Any) -> bool:
+    @classmethod
+    def is_port(cls, annotation: Any) -> bool:
         """Параметр — порт: значение строит гость, хост его не сериализует."""
-        if annotation in (RawInbound, RawOutbound):
+        if cls.is_raw(annotation):
             return True
 
         return get_origin(annotation) in (Inbound, Outbound)
 
     @classmethod
     def is_raw(cls, annotation: Any) -> bool:
-        """Порт сырого потока: структур и валидации заголовков нет."""
-        return annotation in (RawInbound, RawOutbound)
+        """Порт сырого потока (в том числе наследники вроде Arrow-портов):
+        структур и валидации заголовков нет."""
+        if not isinstance(annotation, type):
+            return False
+
+        return issubclass(annotation, RawInbound | RawOutbound)
 
     @classmethod
     def direction_of(cls, annotation: Any) -> PortDirection:
-        if annotation is RawInbound:
+        if cls.is_raw(annotation) and issubclass(annotation, RawInbound):
             return PortDirection.INBOUND
 
-        if annotation is RawOutbound:
+        if cls.is_raw(annotation):
             return PortDirection.OUTBOUND
 
         origin = get_origin(annotation)
@@ -314,12 +319,10 @@ class StreamPorts:
     def build(
         cls, annotation: Any, io: ToolIo
     ) -> Inbound[Any] | Outbound[Any] | RawInbound | RawOutbound:
-        """Порт для вызова над транспортом ToolIo."""
-        if annotation is RawInbound:
-            return RawInbound(io)
-
-        if annotation is RawOutbound:
-            return RawOutbound(io)
+        """Порт для вызова над транспортом ToolIo; сырой порт строится своим
+        классом, в том числе наследник."""
+        if cls.is_raw(annotation):
+            return annotation(io)
 
         direction = cls.direction_of(annotation)
 

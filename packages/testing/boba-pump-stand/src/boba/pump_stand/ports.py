@@ -7,7 +7,7 @@ import os
 from typing import Any
 
 from boba.toolkit.frames import ToolIo
-from boba.toolkit.ports import RawInbound, RawOutbound
+from boba.toolkit.ports import RawInbound, RawOutbound, StreamPorts
 
 __all__ = ["Feed", "Pipe", "Sink"]
 
@@ -52,14 +52,18 @@ class Feed(RawInbound):
 
 class Pipe:
     """Труба ОС между выходом одного насоса и входом другого, как у лончера:
-    выход пишет в конец записи, вход читает конец чтения до EOF. Каждый конец
-    закрывает сторона, которая им владеет, когда её насос завершился, — так
-    вход видит EOF, а выход при упавшем входе получает EPIPE, а не зависает."""
+    выход пишет в конец записи, вход читает конец чтения до EOF. Порты
+    строятся по объявлениям тел — сырые или Arrow, — как их строит ToolMain.
+    Каждый конец закрывает сторона, которая им владеет, когда её насос
+    завершился: так вход видит EOF, а выход при упавшем входе получает EPIPE,
+    а не зависает."""
 
-    def __init__(self) -> None:
+    def __init__(self, outbound: type[RawOutbound], inbound: type[RawInbound]) -> None:
         self._read_fd, self._write_fd = os.pipe()
-        self.outbound = RawOutbound(ToolIo.on_channels(-1, self._write_fd))
-        self.inbound = RawInbound(ToolIo.on_channels(self._read_fd, -1))
+        self.outbound = StreamPorts.build(
+            outbound, ToolIo.on_channels(-1, self._write_fd)
+        )
+        self.inbound = StreamPorts.build(inbound, ToolIo.on_channels(self._read_fd, -1))
 
     def close_write(self) -> None:
         os.close(self._write_fd)

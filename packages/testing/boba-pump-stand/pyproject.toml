@@ -9,7 +9,7 @@ description = "Boba pump stand: сводные стендовые тесты п�
 requires-python = ">=3.11,<4"
 dependencies = [
     "boba-stand==0.0.24.dev2",
-    "boba-toolkit==0.0.24.dev2",
+    "boba-toolkit[arrow]==0.0.24.dev2",
     "boba-db-clickhouse[payload]==0.0.24.dev2",
     "boba-db-postgres==0.0.24.dev2",
     "boba-db-oracle[payload]==0.0.24.dev2",
@@ -23,6 +23,7 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "psycopg[binary]>=3.3",
+    "pyarrow>=25,<26",
     "pytest>=8",
 ]
 

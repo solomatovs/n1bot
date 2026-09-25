@@ -17,7 +17,8 @@ from boba.pump_stand.ports import Feed, Pipe, Sink
 from boba.tool.ch import tools as ch
 from boba.tool.ora import tools as ora
 from boba.tool.pg import tools as pg
-from boba.toolkit.entry import ToolMain
+from boba.toolkit.entry import ToolArgv, ToolMain
+from boba.toolkit.ports import PortDirection, StreamPorts
 
 __all__ = ["Chained", "Leg", "Pumps"]
 
@@ -62,17 +63,22 @@ class Pumps:
             "pg_stream_in": postgres,
             "ch_stream_out": clickhouse,
             "ch_stream_in": clickhouse,
+            "ch_arrow_out": clickhouse,
+            "ch_arrow_in": clickhouse,
             "ora_csv_out": oracle,
             "ora_csv_in": oracle,
             "ora_arrow_out": oracle,
             "ora_arrow_in": oracle,
         }
         self._bodies: dict[str, Body] = {}
+        self._ports: dict[str, dict[str, Any]] = {}
         listed = ToolMain.toolset(
             pg.pg_stream_out,
             pg.pg_stream_in,
             ch.ch_stream_out,
             ch.ch_stream_in,
+            ch.ch_arrow_out,
+            ch.ch_arrow_in,
             ora.ora_csv_out,
             ora.ora_csv_in,
             ora.ora_arrow_out,
@@ -83,6 +89,9 @@ class Pumps:
                 raise AssertionError(f"{payload.name}: body is None")
 
             self._bodies[payload.name] = payload.coroutine
+            self._ports[payload.name] = ToolArgv.port_fields(
+                ToolArgv.schema_of(payload)
+            )
 
     async def pg_out(self, statement: str) -> bytes:
         return await self._out("pg_stream_out", statement)
@@ -116,7 +125,10 @@ class Pumps:
 
     async def chain(self, out: Leg, into: Leg) -> Chained:
         """Выход out и вход into через трубу ОС одновременно."""
-        pipe = Pipe()
+        pipe = Pipe(
+            self._port(out.name, PortDirection.OUTBOUND),
+            self._port(into.name, PortDirection.INBOUND),
+        )
         started = time.monotonic()
 
         async def produce() -> str:
@@ -134,6 +146,14 @@ class Pumps:
         out_report, in_report = await asyncio.gather(produce(), consume())
 
         return Chained(out_report, in_report, time.monotonic() - started)
+
+    def _port(self, name: str, direction: PortDirection) -> Any:
+        """Класс порта тела в направлении direction: как объявлен в подписи."""
+        for annotation in self._ports[name].values():
+            if StreamPorts.direction_of(annotation) is direction:
+                return annotation
+
+        raise AssertionError(f"{name}: no {direction} port declared")
 
     async def _call(self, leg: Leg, **port: Any) -> str:
         report = await self._bodies[leg.name](

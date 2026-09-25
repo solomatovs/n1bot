@@ -1105,6 +1105,84 @@ async def ch_stream_in(
     return MarkdownResult(text=f"{summary.written_rows} rows written")
 
 
+ARROW_STREAM = "ArrowStream"
+
+
+@tool
+async def ch_arrow_out(
+    connection: ChConnection,
+    sql: Annotated[
+        str,
+        Field(
+            min_length=1,
+            description=(
+                "Запрос SELECT целиком, без FORMAT: формат ArrowStream добавляет "
+                "инструмент. Ответ уходит следующему узлу потоком Arrow IPC: "
+                "схема, затем пачки записей. Настройки пишутся в запросе: "
+                "SELECT ... SETTINGS output_format_arrow_string_as_string = 1. "
+                "Что приводить для приёмника Oracle: DateTime — "
+                "toDateTime64(col, 0, 'UTC') (иначе uint32), Bool — toUInt8(col), "
+                "UUID и String с байтами — hex(col)."
+            ),
+        ),
+        MarkdownResult(language="sql"),
+    ],
+    chunk_bytes: ChunkBytes,
+    out: Annotated[RawOutbound, Injected],
+) -> MarkdownResult:
+    """Насос выгрузки потоком Arrow IPC: ch_stream_out с форматом ArrowStream,
+    который дописывает драйвер; сервер пишет поток сам, блоки уходят в порт
+    как пришли.
+    """
+    payload = get_payload()
+    async with (
+        payload.opened_config(connection) as client,
+        payload.byte_stream_out(
+            client, sql, ARROW_STREAM, tuning=read_tuning(chunk_bytes)
+        ) as stream,
+    ):
+        async for block in stream.blocks:
+            await out.send(block)
+
+    return MarkdownResult(text="arrow stream completed")
+
+
+@tool
+async def ch_arrow_in(
+    connection: ChConnection,
+    sql: Annotated[
+        str,
+        Field(
+            min_length=1,
+            description=(
+                "Стейтмент INSERT целиком с FORMAT ArrowStream в конце: "
+                "INSERT INTO db.t FORMAT ArrowStream. Тело — поток Arrow IPC от "
+                "предыдущего узла, колонки сопоставляются по именам полей схемы. "
+                "Если источник — Oracle, имена в схеме заглавные: INSERT INTO "
+                "db.t SETTINGS input_format_arrow_case_insensitive_column_matching "
+                "= 1 FORMAT ArrowStream, иначе новые версии сервера молча пишут "
+                "значения по умолчанию, а 22.12 отвечает THERE_IS_NO_COLUMN. "
+                "Nullable-колонки таблицы принимают null-биты Arrow, обычные "
+                "получают значение по умолчанию."
+            ),
+        ),
+        MarkdownResult(language="sql"),
+    ],
+    chunk_bytes: ChunkBytes,
+    feed: Annotated[RawInbound, Injected],
+) -> MarkdownResult:
+    """Насос загрузки потоком Arrow IPC: ch_stream_in для тела Arrow, поток
+    уходит серверу как есть, разбирает его сервер.
+    """
+    payload = get_payload()
+    async with payload.opened_config(connection) as client:
+        summary = await payload.byte_stream_in(
+            client, sql, blocks=feed.blocks(chunk_bytes)
+        )
+
+    return MarkdownResult(text=f"{summary.written_rows} rows written")
+
+
 @tool
 async def ch_address(connection: ChConnection) -> TableResult:
     """Базовый url соединения ClickHouse: clickhouse://host:port/database.
@@ -1147,6 +1225,8 @@ TOOLS: Final = ToolMain.toolset(
     ch_edm_descriptions,
     ch_stream_out,
     ch_stream_in,
+    ch_arrow_out,
+    ch_arrow_in,
 )
 
 if __name__ == "__main__":

@@ -13,7 +13,7 @@ AddressError — адрес базы не собрался из профиля �
 QueryBuildError — сборщик получил один параметр с двумя разными значениями
     или имя таблицы/колонки для ora_csv_in пустое или с кавычкой внутри.
 CsvFieldError — поле CSV не приводится к типу колонки Oracle.
-OracleFormatError — вход ora_arrow_in не читается как поток Arrow IPC.
+ArrowStreamError — вход ora_arrow_in не читается как поток Arrow IPC.
 """
 
 from __future__ import annotations
@@ -33,7 +33,6 @@ from boba.connections.address import AddressError
 from boba.db.oracle import (
     OraBindMarks,
     OracleError,
-    OracleFormatError,
     OracleQueryError,
     OraIdentifier,
     OraIdentifiers,
@@ -43,6 +42,7 @@ from boba.db.oracle import (
 )
 from boba.db.oracle.address import OraAddresses
 from boba.db.oracle.connection import OracleConfig
+from boba.toolkit.arrow import ArrowInbound, ArrowOutbound, ArrowStreamError
 from boba.toolkit.entry import ToolMain
 from boba.toolkit.facade import Injected, UserConnection, tool
 from boba.toolkit.ports import ChunkBytes, RawInbound, RawOutbound
@@ -962,7 +962,7 @@ async def ora_arrow_out(
         ),
         MarkdownResult(language="sql"),
     ],
-    out: Annotated[RawOutbound, Injected],
+    out: Annotated[ArrowOutbound, Injected],
 ) -> MarkdownResult:
     """Насос выгрузки: строки запроса потоком Arrow IPC в выходной порт.
 
@@ -992,7 +992,7 @@ async def ora_arrow_in(
         ),
     ],
     chunk_bytes: ChunkBytes,
-    feed: Annotated[RawInbound, Injected],
+    feed: Annotated[ArrowInbound, Injected],
 ) -> MarkdownResult:
     """Насос загрузки: поток Arrow IPC из входного порта в таблицу.
 
@@ -1002,7 +1002,7 @@ async def ora_arrow_in(
     ошибка откатывает всё. В ответ — число записанных строк.
     """
     payload = get_payload()(connection)
-    inbound = await payload.arrow_inbound(feed, chunk_bytes)
+    inbound = await feed.open(chunk_bytes)
     insert = (
         OraQueryBuilder()
         .add(
@@ -1033,7 +1033,7 @@ EXPECTED: Mapping[type[Exception], SqlErrorKind] = {
     CsvFieldError: SqlErrorKind.SQL_FAILED,
     OracleError: SqlErrorKind.DATABASE_UNAVAILABLE,
     OracleQueryError: SqlErrorKind.SQL_FAILED,
-    OracleFormatError: SqlErrorKind.SQL_FAILED,
+    ArrowStreamError: SqlErrorKind.SQL_FAILED,
 }
 
 TOOLS: Final = ToolMain.toolset(
