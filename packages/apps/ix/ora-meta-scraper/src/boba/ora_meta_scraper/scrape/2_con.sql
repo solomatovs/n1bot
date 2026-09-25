@@ -6,4 +6,4 @@ select
 from
     sys.con$ c
 where
-    c.owner# in {owners}
+    c.owner# in (select u.user# from sys.user$ u where u.type# = 1 and bitand(nvl(u.spare1, 0), 256) = 0)

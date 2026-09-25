@@ -90,12 +90,11 @@ grant select on sys.props$ to scraper;
 1. Соединение по профилю, версия словаря из `sys.registry$` (`cid = 'CATALOG'`);
    версия сравнивается с воротами объявлений `min_version`/`max_version` по длине ворот.
 2. Файлы `scrape/`, объявленные в `OraSource.files`, по волнам. Параметров у файлов нет:
-   границы задаются
-   внутри запроса фрагментами `Scope` воркера, которые файл берёт плейсхолдерами
-   `{owners}` (подзапрос по `sys.user$` — схемы всех пользователей, не принадлежащих
-   Oracle: `bitand(user$.spare1, 256) = 0`, так же считает `dba_users.oracle_maintained`)
-   и `{objects}` (обычные объекты `sys.obj$`, без подобъектов и удалённых). Подставляет
-   `OraQueryBuilder` при чтении файла, и запроса, и его сверки. Ответ едет пачками Arrow
+   границы записаны в самом запросе. Схемы — подзапрос по `sys.user$`: все пользователи,
+   не принадлежащие Oracle (`bitand(user$.spare1, 256) = 0`, так же считает
+   `dba_users.oracle_maintained`); объекты — обычные объекты `sys.obj$`, без подобъектов
+   и удалённых (`subname`, `linkname`, `remoteowner` пусты, `bitand(flags, 128) = 0`).
+   Файл читается как есть, и запрос, и его сверка. Ответ едет пачками Arrow
    по `arraysize` строк (`fetch_df_batches`: драйвер декодирует ответ в Cython, минуя
    Python-объекты), pyarrow пишет пачку в CSV, и байты уходят в
    `COPY ... FROM STDIN (format csv, null '')` без разбора строк в Python. Типы колонок

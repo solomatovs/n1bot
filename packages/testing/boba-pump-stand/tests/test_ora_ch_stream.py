@@ -25,18 +25,20 @@ ROWS = 5000
 
 CUSTOMERS = OraIdentifier(f"{PumpUser.NAME}.customers")
 SELECT = (
-    OraQueryBuilder(table=CUSTOMERS)
+    OraQueryBuilder()
     .add(
-        "select id, email, balance, created_at, note, rawtohex(photo) as photo "
-        "from {table} order by id"
+        "select id, email, balance, created_at, note, rawtohex(photo) as photo from ",
+        CUSTOMERS,
+        " order by id",
     )
     .build()
 )
 FINGERPRINT = (
-    OraQueryBuilder(table=CUSTOMERS)
+    OraQueryBuilder()
     .add(
         "select count(*), count(note), count(photo), sum(balance), "
-        "sum(length(email)), sum(length(rawtohex(photo))) from {table}"
+        "sum(length(email)), sum(length(rawtohex(photo))) from ",
+        CUSTOMERS,
     )
     .build()
 )

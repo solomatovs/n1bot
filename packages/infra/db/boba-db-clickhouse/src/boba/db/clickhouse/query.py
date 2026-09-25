@@ -14,16 +14,18 @@
 станет голым текстом.
 
 Ошибки:
-QueryBuildError — кусок ждёт `$name`, которому ничего не передано, или один
-    параметр привязан с двумя значениями.
+QueryBuildError — кусок ждёт `$name`, которому ничего не передано, один
+    параметр привязан с двумя значениями, или вместо значения пришёл
+    собранный запрос.
 """
 
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from pathlib import Path
 from string import Template
-from typing import Any
+from typing import Any, Self
 
 from boba.toolkit.sql import AbstractQuery, QueryBuilder, QueryBuildError, QueryParams
 
@@ -81,18 +83,76 @@ class ChIdentifiers:
 class ChQueryBuilder(QueryBuilder[str]):
     """Реализация QueryBuilder для HTTP-интерфейса ClickHouse: строки встают в
     текст куска на место `$name`, всё остальное уезжает параметрами, которые
-    подставляет драйвер."""
+    подставляет драйвер. Строки из конструктора подставляются в каждый кусок."""
 
-    def takes_name(self, value: object) -> bool:
-        return isinstance(value, str)
+    def __init__(self, **names: str) -> None:
+        for name, value in names.items():
+            if isinstance(value, str):
+                continue
 
-    def param_value(self, value: object) -> object:
+            msg = (
+                f"ch query builder: standing name {name!r} expects a str, got {value!r}"
+            )
+            raise QueryBuildError(msg)
+
+        self._names: dict[str, str] = dict(names)
+        self._pieces: list[str] = []
+        self._params: QueryParams = {}
+
+    def add(self, text: str, /, **bind: Any) -> Self:
+        names: dict[str, str] = dict(self._names)
+        for name, value in bind.items():
+            if isinstance(value, str):
+                names[name] = value
+                continue
+
+            self._bind(name, value)
+
+        self._pieces.append(self._render(text, names))
+
+        return self
+
+    def when(self, condition: bool, text: str, /, **bind: Any) -> Self:
+        if not condition:
+            return self
+
+        return self.add(text, **bind)
+
+    def read(self, path: Path, /, **bind: Any) -> Self:
+        """Кусок из файла пакета: текст читается целиком и добавляется как add."""
+        text = path.read_text(encoding="utf-8")
+
+        return self.add(text, **bind)
+
+    def build(self) -> ChQuery:
+        params: QueryParams | None = None
+        if self._params:
+            params = dict(self._params)
+
+        return AbstractQuery(text="\n".join(self._pieces), params=params)
+
+    def _bind(self, name: str, value: object) -> None:
+        if isinstance(value, AbstractQuery):
+            msg = (
+                f"ch query builder: {name!r} got a built query; pass its .text as a "
+                "name or bind its values"
+            )
+            raise QueryBuildError(msg)
+
+        bound = value
         if isinstance(value, ChValue):
-            return value.value
+            bound = value.value
 
-        return value
+        if name in self._params and self._params[name] != bound:
+            msg = (
+                f"ch query builder: parameter {name!r} bound twice with different "
+                f"values: {self._params[name]!r} and {bound!r}"
+            )
+            raise QueryBuildError(msg)
 
-    def render_piece(self, text: str, names: Mapping[str, Any]) -> str:
+        self._params[name] = bound
+
+    def _render(self, text: str, names: Mapping[str, str]) -> str:
         if not names:
             return text
 
@@ -105,6 +165,3 @@ class ChQueryBuilder(QueryBuilder[str]):
                 f"in {text[:120]!r}"
             )
             raise QueryBuildError(msg) from exc
-
-    def join_pieces(self, pieces: Sequence[str]) -> str:
-        return "\n".join(pieces)

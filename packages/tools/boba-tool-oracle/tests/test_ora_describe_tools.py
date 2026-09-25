@@ -24,9 +24,9 @@ ROWS = 25
 CUSTOMERS = OraIdentifier(f"{DemoUser.NAME}.customers")
 
 
-def _sql(text: str) -> str:
-    """Текст команды для ora_query с именем таблицы набора."""
-    return OraQueryBuilder(table=CUSTOMERS).add(text).build().text
+def _sql(head: str, tail: str = "") -> str:
+    """Текст команды для ora_query: имя таблицы набора между головой и хвостом."""
+    return OraQueryBuilder().add(head, CUSTOMERS, tail).build().text
 
 
 class DescribeCase(BaseModel):
@@ -173,7 +173,7 @@ class TestQuery:
         if body is None:
             raise AssertionError("body is a coroutine")
 
-        sql = _sql("select id, email from {table} order by id;")
+        sql = _sql("select id, email from ", " order by id;")
         first = await body(connection=target.oracle, sql=sql, offset=0, limit=10)
         second = await body(connection=target.oracle, sql=sql, offset=10, limit=10)
 
@@ -187,13 +187,13 @@ class TestQuery:
         if body is None:
             raise AssertionError("body is a coroutine")
 
-        update = _sql("update {table} set note = 'x' where id <= 3")
+        update = _sql("update ", " set note = 'x' where id <= 3")
         result = await body(connection=target.demo_owner, sql=update, offset=0, limit=1)
 
         assert result.statements[0].rows is None
         assert result.statements[0].affected_rows == 3
 
-        check = _sql("select count(*) as n from {table} where note = 'x'")
+        check = _sql("select count(*) as n from ", " where note = 'x'")
         seen = await body(connection=target.oracle, sql=check, offset=0, limit=1)
         assert int(seen.statements[0].rows[0]["n"]) == 3
 
