@@ -10,7 +10,15 @@ from typing import Any
 
 from boba.pump_stand.compare import Report, Values
 
-__all__ = ["Target", "column", "compared", "exported", "first"]
+__all__ = [
+    "Target",
+    "column",
+    "compared",
+    "copy_into",
+    "exported",
+    "first",
+    "insert_into",
+]
 
 
 @dataclass(frozen=True)
@@ -49,6 +57,18 @@ def exported(names: Sequence[str], targets: Sequence[Target], quoted: bool) -> s
         parts.append(f"{first(target.out, name)} as {alias}")
 
     return ", ".join(parts)
+
+
+def copy_into(table: str, names: Sequence[str]) -> str:
+    """Стейтмент pg_arrow_in: COPY таблицы по колонкам в порядке полей потока."""
+    return f"copy {table} ({', '.join(names)}) from stdin (format csv)"
+
+
+def insert_into(table: str, names: Sequence[str]) -> str:
+    """Стейтмент ora_arrow_in и ora_csv_in: INSERT с bind'ами :1..:n по колонкам."""
+    marks = ", ".join(f":{position}" for position in range(1, len(names) + 1))
+
+    return f"insert into {table} ({', '.join(names)}) values ({marks})"  # noqa: S608
 
 
 def compared(

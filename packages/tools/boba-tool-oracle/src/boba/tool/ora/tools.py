@@ -12,7 +12,6 @@ UnknownConnectionError — имя подключения вне whitelist'а к�
 AddressError — адрес базы не собрался из профиля соединения.
 QueryBuildError — сборщик получил один параметр с двумя разными значениями
     или имя таблицы/колонки для ora_csv_in пустое или с кавычкой внутри.
-CsvFieldError — поле CSV не приводится к типу колонки Oracle.
 ArrowStreamError — вход ora_arrow_in не читается как поток Arrow IPC.
 """
 
@@ -20,32 +19,33 @@ from __future__ import annotations
 
 import codecs
 import csv
-import datetime
-import decimal
 import sys
-from collections.abc import Callable, Iterator, Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from enum import StrEnum
-from typing import Annotated, Any, ClassVar, Final
+from typing import Annotated, ClassVar, Final
 
 from pydantic import Field
 
 from boba.connections.address import AddressError
 from boba.db.oracle import (
-    OraBindMarks,
     OracleError,
     OracleQueryError,
-    OraIdentifier,
-    OraIdentifiers,
     OraLiterals,
     OraQuery,
     OraQueryBuilder,
 )
 from boba.db.oracle.address import OraAddresses
 from boba.db.oracle.connection import OracleConfig
-from boba.toolkit.arrow import ArrowInbound, ArrowOutbound, ArrowStreamError
 from boba.toolkit.entry import ToolMain
 from boba.toolkit.facade import Injected, UserConnection, tool
-from boba.toolkit.ports import ChunkBytes, RawInbound, RawOutbound
+from boba.toolkit.ports import (
+    ArrowInbound,
+    ArrowOutbound,
+    ArrowStreamError,
+    ChunkBytes,
+    RawInbound,
+    RawOutbound,
+)
 from boba.toolkit.result import MarkdownResult, SqlResult, SqlStatement, TableResult
 from boba.toolkit.sql import QueryBuildError, SqlErrorKind, SqlLimits
 from boba.toolkit.types import SecretRevealing
@@ -117,24 +117,6 @@ class OraToolConfig(SecretRevealing, SqlLimits):
     """Подпись движка в SqlResult."""
 
 
-def get_payload() -> Any:
-    """Клиент базы: тянет python-oracledb и pyarrow, которых в приложении нет.
-
-    Модуль инструмента читает хост ради объявлений, а драйвер живёт только
-    в песочнице — поэтому импорт отложен до самого вызова.
-    """
-    from boba.db.oracle import payload  # noqa: PLC0415
-
-    return payload.PayloadOracle
-
-
-def get_column_types() -> Any:
-    """Семейства типов колонок из payload'а; импорт отложен по той же причине."""
-    from boba.db.oracle import payload  # noqa: PLC0415
-
-    return payload.OraColumnType
-
-
 async def run_and_collect(
     connection: OracleConfig,
     query: OraQuery,
@@ -143,7 +125,9 @@ async def run_and_collect(
     """Выборка страницей окна: границы выдачи назначает вызов."""
     page = RowPage(window, skipped=0)
 
-    payload = get_payload()(connection)
+    from boba.db.oracle.payload import PayloadOracle  # noqa: PLC0415
+
+    payload = PayloadOracle(connection)
     async with (
         payload.opened() as conn,
         payload.rows(conn, query.text, query.params) as stream,
@@ -165,7 +149,9 @@ async def run_statement(
     """Произвольная команда пользователя: выборка окном либо счётчик затронутых
     строк. Команда одна: Oracle не принимает несколько через `;` одним вызовом.
     DML фиксируется сразу: соединение живёт только этот вызов."""
-    payload = get_payload()(connection)
+    from boba.db.oracle.payload import PayloadOracle  # noqa: PLC0415
+
+    payload = PayloadOracle(connection)
     async with payload.opened() as conn:
         async with payload.rows(conn, text) as stream:
             if stream.names:
@@ -758,74 +744,30 @@ async def ora_csv_out(
     Arrow по arraysize строк pyarrow пишет в порт сам, Python делает один шаг
     на пачку. В ответ возвращается состав колонок.
     """
-    payload = get_payload()(connection)
+    from boba.db.oracle.payload import PayloadOracle  # noqa: PLC0415
+
+    payload = PayloadOracle(connection)
+    statement = OraQueryBuilder().raw_query(sql).build()
     async with payload.opened() as conn:
-        names = await payload.csv_into(conn, sql, out)
+        names = await payload.csv_into(conn, statement.text, out)
 
     return MarkdownResult(text=f"streamed out csv: {', '.join(names)}")
 
 
-class CsvFieldError(Exception):
-    """Поле CSV не приводится к типу колонки Oracle."""
+class CsvFields:
+    """Запись CSV в строку bind'ов: `\\N` это NULL, остальное текст как есть —
+    типы значениям даёт стейтмент."""
 
-
-class CsvField:
-    """Приведение текстового поля CSV к значению bind'а по семейству типа
-    колонки; `\\N` это NULL для любого типа."""
-
-    def __init__(self, kinds: Sequence[Any]) -> None:
-        self._converters: list[Callable[[str], object]] = []
-        for kind in kinds:
-            self._converters.append(self._converter_of(kind))
-
-    def row(self, record: Sequence[str], line: int) -> tuple[object, ...]:
-        if len(record) != len(self._converters):
-            msg = (
-                f"csv line {line}: expected {len(self._converters)} fields, "
-                f"got {len(record)}"
-            )
-            raise CsvFieldError(msg)
-
-        values: list[object] = []
-        for position, (text, convert) in enumerate(
-            zip(record, self._converters, strict=True), start=1
-        ):
+    def row(self, record: Sequence[str]) -> tuple[str | None, ...]:
+        values: list[str | None] = []
+        for text in record:
             if text == CsvContract.NULL:
                 values.append(None)
                 continue
 
-            try:
-                values.append(convert(text))
-            except (ValueError, decimal.InvalidOperation) as exc:
-                msg = f"csv line {line}, field {position}: {text[:80]!r}: {exc}"
-                raise CsvFieldError(msg) from exc
+            values.append(text)
 
         return tuple(values)
-
-    @staticmethod
-    def _converter_of(kind: Any) -> Callable[[str], object]:
-        types = get_column_types()
-        if kind is types.NUMBER:
-            return decimal.Decimal
-
-        if kind is types.FLOAT:
-            return float
-
-        if kind in (types.DATE, types.TIMESTAMP):
-            return datetime.datetime.fromisoformat
-
-        if kind is types.BINARY:
-            return CsvField._binary
-
-        return str
-
-    @staticmethod
-    def _binary(text: str) -> bytes:
-        hexed = text
-        if hexed.startswith(CsvContract.HEX_PREFIX):
-            hexed = hexed[len(CsvContract.HEX_PREFIX) :]
-
-        return bytes.fromhex(hexed)
 
 
 class CsvFeed:
@@ -860,82 +802,58 @@ class CsvFeed:
 @tool
 async def ora_csv_in(
     connection: OraConnection,
-    table: Annotated[
+    sql: Annotated[
         str,
         Field(
             min_length=1,
             description=(
-                "Таблица-приёмник, при необходимости со схемой, как в SQL: "
-                "HR.EMPLOYEES. Имя с иными символами уезжает в кавычках как написано."
+                "Стейтмент INSERT с позиционными bind'ами :1..:n в порядке полей "
+                "CSV, например: insert into hr.employees (id, name, hired) values "
+                "(:1, :2, to_timestamp(:3, 'yyyy-mm-dd hh24:mi:ss.ff6')). Каждое "
+                "поле приходит строкой как в потоке, NULL (\\N) — как NULL; "
+                "числа, даты и RAW приводит сам стейтмент: to_number, "
+                "to_timestamp с форматом, hextoraw(substr(:k, 3)) для "
+                "\\x-hex postgres."
             ),
         ),
-    ],
-    columns: Annotated[
-        Sequence[str],
-        Field(
-            min_length=1,
-            description=(
-                'Колонки приёмника списком в порядке полей CSV: ["ID", "NAME", '
-                '"CREATED_AT"].'
-            ),
-        ),
+        MarkdownResult(language="sql"),
     ],
     chunk_bytes: ChunkBytes,
     feed: Annotated[RawInbound, Injected],
 ) -> MarkdownResult:
-    """Насос загрузки: CSV из входного порта в таблицу пачками executemany.
+    """Насос загрузки: CSV из входного порта в стейтмент пачками executemany.
 
     Данные приходят во входной порт от другого насоса. Формат: CSV
-    без заголовка, NULL как `\\N`, даты ISO, бинарное поле hex с префиксом
-    `\\x` — то есть COPY (...) TO STDOUT (FORMAT CSV, NULL '\\N') postgres.
-    Типы полей берутся по описанию колонок приёмника (parse, без
-    выполнения). Вся загрузка — одна
+    без заголовка, NULL как `\\N`, переводы строк внутри кавычек допустимы
+    — то есть COPY (...) TO STDOUT (FORMAT CSV, NULL '\\N') postgres.
+    Поля уходят строками, типы задаёт сам стейтмент. Вся загрузка — одна
     транзакция: ошибка откатывает всё. В ответ возвращается счётчик байтов
     и строк.
     """
-    target = OraIdentifier(table)
-    listed = OraIdentifiers(columns)
+    from boba.db.oracle.payload import PayloadOracle  # noqa: PLC0415
 
-    described = OraQueryBuilder().add("select ", listed, " from ", target).build()
-    insert = (
-        OraQueryBuilder()
-        .add(
-            "insert into ",
-            target,
-            " (",
-            listed,
-            ") values (",
-            OraBindMarks(len(columns)),
-            ")",
-        )
-        .build()
-    )
-
+    payload = PayloadOracle(connection)
+    statement = OraQueryBuilder().raw_query(sql).build()
     rows = 0
     source = CsvFeed(feed, chunk_bytes)
+    fields = CsvFields()
 
-    payload = get_payload()(connection)
     async with payload.opened() as conn:
-        kinds = await payload.column_types(conn, described.text)
-        fields = CsvField(kinds)
-
-        batch: list[tuple[object, ...]] = []
-        for line, record in enumerate(source.records(), start=1):
-            batch.append(fields.row(record, line))
+        batch: list[tuple[str | None, ...]] = []
+        for record in source.records():
+            batch.append(fields.row(record))
             if len(batch) < connection.arraysize:
                 continue
 
-            rows += await payload.executemany(conn, insert.text, kinds, batch)
+            rows += await payload.executemany(conn, statement.text, batch)
             batch = []
 
         if batch:
-            rows += await payload.executemany(conn, insert.text, kinds, batch)
+            rows += await payload.executemany(conn, statement.text, batch)
 
         await payload.commit(conn)
 
-    return MarkdownResult(
-        text=f"copied in {source.consumed} bytes, {rows} rows into {table}"
-    )
+    return MarkdownResult(text=f"copied in {source.consumed} bytes, {rows} rows")
 
 
 @tool
@@ -970,9 +888,12 @@ async def ora_arrow_out(
     Arrow драйвера pyarrow пишет в порт сам, без перевода в текст. В ответ —
     состав схемы потока.
     """
-    payload = get_payload()(connection)
+    from boba.db.oracle.payload import PayloadOracle  # noqa: PLC0415
+
+    payload = PayloadOracle(connection)
+    statement = OraQueryBuilder().raw_query(sql).build()
     async with payload.opened() as conn:
-        schema = await payload.arrow_into(conn, sql, out)
+        schema = await payload.arrow_into(conn, statement.text, out)
 
     return MarkdownResult(text=f"streamed out arrow ipc: {', '.join(schema.names)}")
 
@@ -980,57 +901,49 @@ async def ora_arrow_out(
 @tool
 async def ora_arrow_in(
     connection: OraConnection,
-    table: Annotated[
+    sql: Annotated[
         str,
         Field(
             min_length=1,
             description=(
-                "Таблица-приёмник, при необходимости со схемой: HR.EMPLOYEES. "
-                "Колонки берутся по именам полей схемы Arrow входного потока, "
-                "в их порядке; имя поля обязано быть колонкой таблицы."
+                "Стейтмент INSERT с позиционными bind'ами :1..:n в порядке полей "
+                "схемы Arrow входного потока, например: insert into hr.employees "
+                "(id, name, hired) values (:1, :2, :3). Значения драйвер берёт "
+                "из колонок пачки как есть; приведения пишутся в стейтменте."
             ),
         ),
+        MarkdownResult(language="sql"),
     ],
     chunk_bytes: ChunkBytes,
     feed: Annotated[ArrowInbound, Injected],
 ) -> MarkdownResult:
-    """Насос загрузки: поток Arrow IPC из входного порта в таблицу.
+    """Насос загрузки: поток Arrow IPC из входного порта в стейтмент.
 
     Данные приходят во входной порт от другого насоса. Каждая пачка
     Arrow уходит одной командой executemany, значения драйвер берёт из
     колонок пачки без разбора в Python. Вся загрузка — одна транзакция:
     ошибка откатывает всё. В ответ — число записанных строк.
     """
-    payload = get_payload()(connection)
-    inbound = await feed.open(chunk_bytes)
-    insert = (
-        OraQueryBuilder()
-        .add(
-            "insert into ",
-            OraIdentifier(table),
-            " (",
-            OraIdentifiers(inbound.schema.names),
-            ") values (",
-            OraBindMarks(len(inbound.schema.names)),
-            ")",
-        )
-        .build()
-    )
+    from boba.db.oracle.payload import PayloadOracle  # noqa: PLC0415
+    from boba.toolkit.arrow import ArrowIpc  # noqa: PLC0415
+
+    payload = PayloadOracle(connection)
+    statement = OraQueryBuilder().raw_query(sql).build()
+    inbound = await ArrowIpc().open_in(feed, chunk_bytes)
 
     rows = 0
     async with payload.opened() as conn:
         async for batch in inbound.batches:
-            rows += await payload.executemany_arrow(conn, insert.text, batch)
+            rows += await payload.executemany_arrow(conn, statement.text, batch)
 
         await payload.commit(conn)
 
-    return MarkdownResult(text=f"{rows} rows written into {table}")
+    return MarkdownResult(text=f"{rows} rows written")
 
 
 EXPECTED: Mapping[type[Exception], SqlErrorKind] = {
     AddressError: SqlErrorKind.UNKNOWN_TARGET,
     QueryBuildError: SqlErrorKind.SQL_FAILED,
-    CsvFieldError: SqlErrorKind.SQL_FAILED,
     OracleError: SqlErrorKind.DATABASE_UNAVAILABLE,
     OracleQueryError: SqlErrorKind.SQL_FAILED,
     ArrowStreamError: SqlErrorKind.SQL_FAILED,

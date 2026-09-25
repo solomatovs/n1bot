@@ -26,7 +26,6 @@ STAND = IxStand.required()
 ROWS = 5000
 CHUNK = 777
 
-COLUMNS = ["ID", "EMAIL", "BALANCE", "CREATED_AT", "NOTE", "PHOTO"]
 PG_TABLE = sql.Identifier("ora_copy_probe")
 
 
@@ -171,12 +170,17 @@ class TestCopyRoundTrip:
 
         report = await copy_in(
             connection=target.demo_owner,
-            table=f"{DemoUser.NAME}.SINK",
-            columns=COLUMNS,
+            sql=(
+                f"insert into {DemoUser.NAME}.sink "  # noqa: S608
+                "(id, email, balance, created_at, note, photo) values "
+                "(to_number(:1), :2, to_number(:3), "
+                "to_timestamp(:4, 'yyyy-mm-dd hh24:mi:ss.ff6'), :5, "
+                "hextoraw(substr(:6, 3)))"
+            ),
             chunk_bytes=4096,
             feed=Feed(bytes(exported), CHUNK),
         )
-        assert f"{ROWS} rows into {DemoUser.NAME}.SINK" in report.text
+        assert f"{ROWS} rows" in report.text
 
         assert await _fingerprint(target, "sink") == await _fingerprint(
             target, "customers"

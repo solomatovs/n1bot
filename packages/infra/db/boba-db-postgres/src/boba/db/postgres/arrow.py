@@ -2,8 +2,9 @@
 стейтмента у libpq без выполнения (prepare + describe_prepared), сама
 выборка уходит сервером как COPY ... TO STDOUT (FORMAT CSV), и читатель CSV
 pyarrow собирает пачки Arrow в C по этой схеме; загрузка — пачки Arrow
-писателем CSV pyarrow в COPY ... FROM STDIN (FORMAT CSV). Python значений не
-касается. Раскладка типов — как у ADBC-драйвера postgres, кроме того, чего
+писателем CSV pyarrow в стейтмент COPY ... FROM STDIN (FORMAT CSV), который
+пишет вызывающий. Python значений не касается. Раскладка типов — как у
+ADBC-драйвера postgres, кроме того, чего
 CSV не несёт: bytea и массивы едут текстом сервера, numeric без точности
 отвергается до выполнения.
 
@@ -26,15 +27,26 @@ from typing import Any, ClassVar
 
 import psycopg
 import pyarrow
+import pyarrow.compute
 import pyarrow.csv
 from psycopg import pq, sql
 from psycopg._typeinfo import TypeInfo, TypesRegistry
 from psycopg.pq.abc import PGresult
 
 from boba.db.postgres.errors import PgArrowError
-from boba.toolkit.arrow import ArrowOutbound, ArrowReader
+from boba.db.postgres.query import PgQueryBuilder
+from boba.db.postgres.trace import PgCommandReport, PgSessionTrace
+from boba.toolkit.arrow import ArrowIpc, ArrowReader
+from boba.toolkit.ports import ArrowOutbound
 
-__all__ = ["PgArrowIn", "PgArrowOut", "PgArrowTypes", "PgColumn"]
+__all__ = [
+    "Compute",
+    "HexFloats",
+    "PgArrowIn",
+    "PgArrowOut",
+    "PgArrowTypes",
+    "PgColumn",
+]
 
 
 @dataclass(frozen=True)
@@ -152,7 +164,7 @@ class CopyPipe:
         self._read_fd, self._write_fd = os.pipe()
         self.source = os.fdopen(self._read_fd, "rb", buffering=0)
 
-    async def write(self, block: Any) -> None:
+    async def write(self, block: bytes | bytearray | memoryview) -> None:
         await asyncio.to_thread(self._write_all, memoryview(block))
 
     def close_write(self) -> None:
@@ -172,21 +184,23 @@ class PgArrowOut:
     libpq без выполнения даёт схему, затем сервер отдаёт COPY (стейтмент) TO
     STDOUT (FORMAT CSV), а читатель CSV pyarrow собирает пачки Arrow по этой
     схеме блоками chunk_bytes. float печатается точно при extra_float_digits =
-    3 в опциях соединения."""
-
-    COPY_HEAD: ClassVar[bytes] = b"copy ("
-    COPY_TAIL: ClassVar[bytes] = b") to stdout (format csv)"
+    3 в опциях соединения. Notices и notify сессии попадают в итог."""
 
     def __init__(self, conn: psycopg.AsyncConnection[Any]) -> None:
         self._conn = conn
         self._types = PgArrowTypes(conn.adapters.types)
+        self._trace = PgSessionTrace(conn)
+        self._ipc = ArrowIpc()
 
-    async def describe(self, text: str) -> tuple[PgColumn, ...]:
-        """Колонки выборки: prepare + describe безымянного стейтмента у libpq,
-        стейтмент не выполняется."""
+    async def describe(self, text: str) -> Sequence[PgColumn]:
+        """Колонки выборки по описанию безымянного стейтмента у libpq: сервер
+        разбирает и планирует запрос, но не выполняет его."""
         pgconn = self._conn.pgconn
+        encoding = self._conn.info.encoding
         try:
-            prepared = await asyncio.to_thread(pgconn.prepare, b"", text.encode())
+            prepared = await asyncio.to_thread(
+                pgconn.prepare, b"", text.encode(encoding)
+            )
             self._ensure_ok(prepared, "preparing", text)
             described = await asyncio.to_thread(pgconn.describe_prepared, b"")
             self._ensure_ok(described, "describing", text)
@@ -200,11 +214,14 @@ class PgArrowOut:
         for position in range(described.nfields):
             name = described.fname(position)
             if name is None:
-                raise PgArrowError(f"column {position} of the statement has no name")
+                raise PgArrowError(
+                    f"describing the statement on postgres: column {position} has "
+                    f"no name; query: {text[:200]!r}"
+                )
 
             columns.append(
                 PgColumn(
-                    name=name.decode(),
+                    name=name.decode(encoding),
                     oid=described.ftype(position),
                     typmod=described.fmod(position),
                 )
@@ -214,36 +231,54 @@ class PgArrowOut:
 
     async def stream_into(
         self, text: str, chunk_bytes: int, sink: ArrowOutbound
-    ) -> pyarrow.Schema:
+    ) -> PgCommandReport:
         schema = self._types.schema(await self.describe(text))
-        writer = await sink.open(schema)
+        writer = await self._ipc.open_out(sink, schema)
         pipe = CopyPipe()
         reader = CsvBatches(schema, chunk_bytes)
+        query = (
+            PgQueryBuilder()
+            .add("copy (")
+            .raw_query(text)
+            .add(") to stdout (format csv)")
+            .build()
+        )
 
-        async def produce() -> None:
-            try:
-                await self._copy_out(text, pipe, chunk_bytes)
-            finally:
-                pipe.close_write()
+        async with self._conn.cursor() as cursor:
 
-        async def consume() -> None:
-            try:
-                async for batch in reader.batches(pipe.source):
-                    await writer.write(batch)
-            finally:
-                pipe.close_read()
+            async def produce() -> None:
+                try:
+                    await self._copy_out(cursor, query.text, pipe, chunk_bytes)
+                finally:
+                    pipe.close_write()
 
-        await asyncio.gather(produce(), consume())
-        await writer.close()
+            async def consume() -> None:
+                try:
+                    async for batch in reader.batches(pipe.source):
+                        await writer.write(batch)
+                finally:
+                    pipe.close_read()
 
-        return schema
+            await asyncio.gather(produce(), consume())
+            await writer.close()
 
-    async def _copy_out(self, text: str, pipe: CopyPipe, chunk_bytes: int) -> None:
+            return self._trace.report(
+                f"streamed out arrow ipc: {', '.join(schema.names)}",
+                query.text.as_string(self._conn),
+                cursor,
+            )
+
+    async def _copy_out(
+        self,
+        cursor: psycopg.AsyncCursor[Any],
+        statement: sql.Composed,
+        pipe: CopyPipe,
+        chunk_bytes: int,
+    ) -> None:
         """COPY отдаёт по блоку на строку: блоки копятся до chunk_bytes и уходят
         в трубу одной записью, иначе каждая строка стоила бы прыжка в поток."""
-        statement = self.COPY_HEAD + text.encode() + self.COPY_TAIL
         pending = bytearray()
-        async with self._conn.cursor() as cursor, cursor.copy(statement) as copy:
+        async with cursor.copy(statement) as copy:
             async for block in copy:
                 pending.extend(block)
                 if len(pending) < chunk_bytes:
@@ -274,11 +309,11 @@ class CsvBatches:
     `t`/`f` — boolean, пустое поле без кавычек — NULL, в кавычках — пустая
     строка, переводы строк внутри кавычек допустимы."""
 
-    BLOCK_FLOOR: ClassVar[int] = 1 << 20
+    BLOCK_SIZE: ClassVar[int] = 1 << 20
 
     def __init__(self, schema: pyarrow.Schema, chunk_bytes: int) -> None:
         self._schema = schema
-        self._block = max(chunk_bytes, self.BLOCK_FLOOR)
+        self._block = max(chunk_bytes, self.BLOCK_SIZE)
         self._read = pyarrow.csv.ReadOptions(
             column_names=schema.names, block_size=self._block
         )
@@ -292,7 +327,7 @@ class CsvBatches:
             quoted_strings_can_be_null=False,
         )
 
-    async def batches(self, source: io.RawIOBase) -> AsyncIterator[Any]:
+    async def batches(self, source: io.RawIOBase) -> AsyncIterator[pyarrow.RecordBatch]:
         try:
             reader = await asyncio.to_thread(self._open, source)
         except pyarrow.ArrowException as exc:
@@ -316,7 +351,7 @@ class CsvBatches:
 
             yield batch
 
-    def _open(self, source: io.RawIOBase) -> Any:
+    def _open(self, source: io.RawIOBase) -> pyarrow.csv.CSVStreamingReader:
         # pyarrow берёт блоком то, что вернул один read: труба отдаёт короткие
         # чтения, а BufferedReader добирает до полного блока или конца потока
         filled = io.BufferedReader(source, self._block)
@@ -329,45 +364,150 @@ class CsvBatches:
         )
 
     @staticmethod
-    def _next(reader: Any) -> Any:
+    def _next(reader: pyarrow.csv.CSVStreamingReader) -> pyarrow.RecordBatch | None:
         try:
             return reader.read_next_batch()
         except StopIteration:
             return None
 
 
-class PgArrowIn:
-    """Пачки Arrow из входного порта в таблицу postgres: писатель CSV pyarrow
-    пишет пачку в C, блок уходит в COPY table (cols) FROM STDIN (FORMAT CSV),
-    сервер разбирает текст по типу колонки. Одна транзакция. Типы, которых
-    CSV не несёт (список, двоичный, вложенные), отвергаются по схеме до
-    загрузки: источник отдаёт их текстом."""
+class Compute(StrEnum):
+    """Функции pyarrow.compute, из которых собирается hex-запись: они
+    регистрируются в реестре pyarrow при загрузке и зовутся по имени."""
 
-    def __init__(self, conn: psycopg.AsyncConnection[Any]) -> None:
-        self._conn = conn
-        self._options = pyarrow.csv.WriteOptions(include_header=False)
+    LESS = "less"
+    EQUAL = "equal"
+    GREATER_EQUAL = "greater_equal"
+    AND = "and"
+    BIT_AND = "bit_wise_and"
+    SHIFT_RIGHT = "shift_right"
+    SUBTRACT = "subtract"
+    IF_ELSE = "if_else"
+    IS_FINITE = "is_finite"
+    JOIN = "binary_join_element_wise"
 
-    async def copy_from(self, table: str, reader: ArrowReader) -> int:
-        self._ensure_writable(reader.schema)
-        names: list[str] = list(reader.schema.names)
-        columns = sql.SQL(", ").join(sql.Identifier(name) for name in names)
-        statement = sql.SQL("copy {} ({}) from stdin (format csv)").format(
-            self._table(table), columns
+
+class HexFloats:
+    """Колонки float и double пачки шестнадцатеричным текстом C99 (`0x1.8p+3`):
+    strtod libc разбирает такую запись бит в бит на любой версии postgres,
+    тогда как десятичную запись Greenplum 6 для части значений округляет на
+    одну ULP. Всё считается pyarrow.compute по битам значения, Python до
+    значений не доходит. NaN и бесконечности остаются текстом pyarrow."""
+
+    MANTISSA_BITS: ClassVar[int] = 52
+    EXPONENT_MASK: ClassVar[int] = 0x7FF
+    EXPONENT_BIAS: ClassVar[int] = 1023
+    NIBBLES: ClassVar[int] = 13
+
+    def __init__(self) -> None:
+        self._digits = pyarrow.array(list("0123456789abcdef"), pyarrow.string())
+
+    def render(self, batch: pyarrow.RecordBatch) -> pyarrow.RecordBatch:
+        for position, column in enumerate(batch.schema):
+            if not pyarrow.types.is_floating(column.type):
+                continue
+
+            hexed = self.column(batch.column(position))
+            batch = batch.set_column(
+                position, pyarrow.field(column.name, hexed.type), hexed
+            )
+
+        return batch
+
+    def column(self, values: pyarrow.Array) -> pyarrow.Array:
+        doubles = values.cast(pyarrow.float64())
+        bits = doubles.view(pyarrow.uint64())
+        negative = self._call(Compute.LESS, doubles.view(pyarrow.int64()), 0)
+        shifted = self._call(Compute.SHIFT_RIGHT, bits, self._u64(self.MANTISSA_BITS))
+        exponent = pyarrow.compute.cast(
+            self._call(Compute.BIT_AND, shifted, self._u64(self.EXPONENT_MASK)),
+            pyarrow.int64(),
+        )
+        mantissa = self._call(
+            Compute.BIT_AND, bits, self._u64((1 << self.MANTISSA_BITS) - 1)
         )
 
+        nibbles: list[pyarrow.Array] = []
+        for position in range(self.NIBBLES):
+            shift = self._u64(4 * (self.NIBBLES - 1 - position))
+            nibble = self._call(
+                Compute.BIT_AND,
+                self._call(Compute.SHIFT_RIGHT, mantissa, shift),
+                self._u64(0xF),
+            )
+            nibbles.append(pyarrow.compute.take(self._digits, nibble))
+
+        subnormal = self._call(Compute.EQUAL, exponent, 0)
+        zero = self._call(
+            Compute.AND, subnormal, self._call(Compute.EQUAL, mantissa, self._u64(0))
+        )
+        lead = self._call(Compute.IF_ELSE, subnormal, "0x0.", "0x1.")
+        power = self._call(
+            Compute.IF_ELSE,
+            subnormal,
+            self._call(Compute.SUBTRACT, exponent, self.EXPONENT_BIAS - 1),
+            self._call(Compute.SUBTRACT, exponent, self.EXPONENT_BIAS),
+        )
+        power = self._call(Compute.IF_ELSE, zero, 0, power)
+        positive = self._call(Compute.GREATER_EQUAL, power, 0)
+        marker = self._call(Compute.IF_ELSE, positive, "p+", "p")
+        sign = self._call(Compute.IF_ELSE, negative, "-", "")
+        text = self._call(
+            Compute.JOIN,
+            sign,
+            lead,
+            *nibbles,
+            marker,
+            pyarrow.compute.cast(power, pyarrow.string()),
+            "",
+        )
+        finite = self._call(Compute.IS_FINITE, doubles)
+        fallback = pyarrow.compute.cast(doubles, pyarrow.string())
+
+        return self._call(Compute.IF_ELSE, finite, text, fallback)
+
+    @staticmethod
+    def _call(function: Compute, *args: object) -> pyarrow.Array:
+        return pyarrow.compute.call_function(function.value, list(args))
+
+    @staticmethod
+    def _u64(value: int) -> pyarrow.Scalar:
+        return pyarrow.scalar(value, pyarrow.uint64())
+
+
+class PgArrowIn:
+    """Пачки Arrow из входного порта в стейтмент COPY ... FROM STDIN (FORMAT
+    CSV), который написал вызывающий: писатель CSV pyarrow пишет пачку в C,
+    блок уходит в COPY, сервер разбирает текст по типу колонки; колонки
+    стейтмента идут в порядке полей потока. Одна транзакция. Типы, которых
+    CSV не несёт (список, двоичный, вложенные), отвергаются по схеме до
+    загрузки: источник отдаёт их текстом. С exact_floats float и double
+    едут hex-записью (HexFloats) и ложатся бит в бит на любом сервере."""
+
+    def __init__(self, conn: psycopg.AsyncConnection[Any], exact_floats: bool) -> None:
+        self._conn = conn
+        self._exact_floats = exact_floats
+        self._hex = HexFloats()
+        self._trace = PgSessionTrace(conn)
+        self._options = pyarrow.csv.WriteOptions(include_header=False)
+
+    async def copy_from(self, statement: str, reader: ArrowReader) -> PgCommandReport:
+        self._ensure_writable(reader.schema)
+        query = PgQueryBuilder().raw_query(statement).build()
+
         rows = 0
-        async with (
-            self._conn.transaction(),
-            self._conn.cursor() as cursor,
-            cursor.copy(statement) as copy,
-        ):
-            async for batch in reader.batches:
-                await copy.write(self._csv(batch))
-                rows += batch.num_rows
+        async with self._conn.transaction(), self._conn.cursor() as cursor:
+            async with cursor.copy(query.text) as copy:
+                async for batch in reader.batches:
+                    await copy.write(self._csv(batch))
+                    rows += batch.num_rows
 
-        return rows
+            return self._trace.report(f"{rows} rows written", statement, cursor)
 
-    def _csv(self, batch: Any) -> bytes:
+    def _csv(self, batch: pyarrow.RecordBatch) -> bytes:
+        if self._exact_floats:
+            batch = self._hex.render(batch)
+
         buffer = io.BytesIO()
         try:
             pyarrow.csv.write_csv(batch, buffer, write_options=self._options)
@@ -379,25 +519,18 @@ class PgArrowIn:
         return buffer.getvalue()
 
     @staticmethod
-    def _ensure_writable(schema: Any) -> None:
-        for field in schema:
-            kind = field.type
+    def _ensure_writable(schema: pyarrow.Schema) -> None:
+        for column in schema:
+            kind = column.type
             if pyarrow.types.is_nested(kind) or pyarrow.types.is_binary(kind):
                 raise PgArrowError(
-                    f"column {field.name} of type {kind} cannot be written as csv; "
+                    f"column {column.name} of type {kind} cannot be written as csv; "
                     f"send it as text from the source (arrays as their text form, "
                     f"binary as hex with the \\x prefix)"
                 )
 
             if pyarrow.types.is_large_binary(kind) or pyarrow.types.is_dictionary(kind):
                 raise PgArrowError(
-                    f"column {field.name} of type {kind} cannot be written as csv; "
+                    f"column {column.name} of type {kind} cannot be written as csv; "
                     f"send it as text from the source"
                 )
-
-    @staticmethod
-    def _table(table: str) -> sql.Composable:
-        """Имя приёмника как в SQL: schema.table или table, каждая часть —
-        идентификатор psycopg."""
-        parts = table.split(".")
-        return sql.SQL(".").join(sql.Identifier(part) for part in parts)

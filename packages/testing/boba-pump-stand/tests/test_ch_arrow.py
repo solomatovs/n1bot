@@ -41,7 +41,14 @@ from boba.pump_stand.compare import (
     Report,
     Values,
 )
-from boba.pump_stand.matrix import Target, compared, exported, first
+from boba.pump_stand.matrix import (
+    Target,
+    compared,
+    copy_into,
+    exported,
+    first,
+    insert_into,
+)
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
 
@@ -497,10 +504,13 @@ class TestClickHouseToPostgres:
             ),
             Leg(
                 "pg_arrow_in",
-                {"table": f"{PG_SCHEMA}.{table}", "chunk_bytes": CHUNK_BYTES},
+                {
+                    "sql": copy_into(f"{PG_SCHEMA}.{table}", [c.name for c in columns]),
+                    "chunk_bytes": CHUNK_BYTES,
+                },
             ),
         )
-        assert chained.in_report == f"{ROWS} rows written into {PG_SCHEMA}.{table}"
+        assert chained.in_report.startswith(f"{ROWS} rows written")
 
         expected = await clickhouse.side.select(
             "src",
@@ -552,9 +562,15 @@ class TestClickHouseToOracle:
                         "chunk_bytes": CHUNK_BYTES,
                     },
                 ),
-                Leg("ora_arrow_in", {"table": table, "chunk_bytes": CHUNK_BYTES}),
+                Leg(
+                    "ora_arrow_in",
+                    {
+                        "sql": insert_into(table, [c.name for c in columns]),
+                        "chunk_bytes": CHUNK_BYTES,
+                    },
+                ),
             )
-            assert chained.in_report == f"{ROWS} rows written into {table}"
+            assert chained.in_report.startswith(f"{ROWS} rows written")
 
             expected = await clickhouse.side.select(
                 "src",

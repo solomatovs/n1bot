@@ -92,7 +92,7 @@ class SchemaUpgrade:
                     logger.info("applying %s", path.name)
                     query = (
                         PgQueryBuilder(schema=sql.Identifier(database.db_schema))
-                        .read(path)
+                        .from_file(path)
                         .build()
                     )
                     await conn.execute(query.text, query.params)

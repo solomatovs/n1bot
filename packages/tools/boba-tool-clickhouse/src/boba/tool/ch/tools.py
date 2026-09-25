@@ -16,7 +16,7 @@ from __future__ import annotations
 import sys
 from collections.abc import Mapping
 from enum import StrEnum
-from typing import Annotated, Any, ClassVar, Final
+from typing import Annotated, ClassVar, Final
 
 from pydantic import Field
 
@@ -84,25 +84,6 @@ class ChToolConfig(SecretRevealing, SqlLimits):
     """Подпись движка в SqlResult."""
 
 
-def get_payload() -> Any:
-    """Клиент базы: тянет clickhouse-connect, которого в приложении нет.
-
-    Модуль инструмента читает хост ради объявлений, а драйвер живёт только
-    в песочнице — поэтому импорт отложен до самого вызова.
-    """
-    from boba.db.clickhouse import payload  # noqa: PLC0415
-
-    return payload.PayloadClickHouse
-
-
-def read_tuning(chunk_bytes: int) -> Any:
-    """Рычаги размера блоков ответа под chunk_bytes насоса; импорт отложен
-    по той же причине, что и у get_payload."""
-    from boba.db.clickhouse.payload import ReadTuning  # noqa: PLC0415
-
-    return ReadTuning(socket_read_size=chunk_bytes, read_buffer_size=chunk_bytes)
-
-
 async def run_and_collect(
     connection: ClickHouseConfig,
     query: ChQuery,
@@ -111,7 +92,9 @@ async def run_and_collect(
     """Запрос страницей окна: границы выдачи назначает вызов."""
     page = RowPage(window, skipped=0)
 
-    payload = get_payload()
+    from boba.db.clickhouse.payload import PayloadClickHouse  # noqa: PLC0415
+
+    payload = PayloadClickHouse
     async with (
         payload.opened_config(connection) as client,
         payload.rows_stream_out(client, query.text, query.params) as stream,
@@ -1053,10 +1036,17 @@ async def ch_stream_out(
     настройки задаёт текст запроса, инструмент его не разбирает и отдаёт
     блоки ответа как пришли; размер блока — chunk_bytes.
     """
-    payload = get_payload()
+    from boba.db.clickhouse.payload import (  # noqa: PLC0415
+        PayloadClickHouse,
+        ReadTuning,
+    )
+
+    payload = PayloadClickHouse
+    statement = ChQueryBuilder().raw_query(sql).build()
+    tuning = ReadTuning(socket_read_size=chunk_bytes, read_buffer_size=chunk_bytes)
     async with (
         payload.opened_config(connection) as client,
-        payload.byte_stream_out(client, sql, tuning=read_tuning(chunk_bytes)) as stream,
+        payload.byte_stream_out(client, statement.text, tuning=tuning) as stream,
     ):
         async for block in stream.blocks:
             await out.send(block)
@@ -1096,14 +1086,16 @@ async def ch_stream_in(
     стейтмент тоже уходит как написан. В ответ — число записанных строк по
     сводке сервера.
     """
-    payload = get_payload()
+    from boba.db.clickhouse.payload import PayloadClickHouse  # noqa: PLC0415
+
+    payload = PayloadClickHouse
+    statement = ChQueryBuilder().raw_query(sql).build()
     async with payload.opened_config(connection) as client:
         summary = await payload.byte_stream_in(
-            client, sql, blocks=feed.blocks(chunk_bytes)
+            client, statement.text, blocks=feed.blocks(chunk_bytes)
         )
 
     return MarkdownResult(text=f"{summary.written_rows} rows written")
-
 
 
 @tool
@@ -1132,11 +1124,18 @@ async def ch_arrow_out(
     который дописывает драйвер; сервер пишет поток сам, блоки уходят в порт
     как пришли.
     """
-    payload = get_payload()
+    from boba.db.clickhouse.payload import (  # noqa: PLC0415
+        PayloadClickHouse,
+        ReadTuning,
+    )
+
+    payload = PayloadClickHouse
+    statement = ChQueryBuilder().raw_query(sql).build()
+    tuning = ReadTuning(socket_read_size=chunk_bytes, read_buffer_size=chunk_bytes)
     async with (
         payload.opened_config(connection) as client,
         payload.byte_stream_out(
-            client, sql, "ArrowStream", tuning=read_tuning(chunk_bytes)
+            client, statement.text, "ArrowStream", tuning=tuning
         ) as stream,
     ):
         async for block in stream.blocks:
@@ -1172,10 +1171,13 @@ async def ch_arrow_in(
     """Насос загрузки потоком Arrow IPC: ch_stream_in для тела Arrow, поток
     уходит серверу как есть, разбирает его сервер.
     """
-    payload = get_payload()
+    from boba.db.clickhouse.payload import PayloadClickHouse  # noqa: PLC0415
+
+    payload = PayloadClickHouse
+    statement = ChQueryBuilder().raw_query(sql).build()
     async with payload.opened_config(connection) as client:
         summary = await payload.byte_stream_in(
-            client, sql, blocks=feed.blocks(chunk_bytes)
+            client, statement.text, blocks=feed.blocks(chunk_bytes)
         )
 
     return MarkdownResult(text=f"{summary.written_rows} rows written")

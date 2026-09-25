@@ -20,12 +20,16 @@ float печатается точно на любой версии сервер�
 
 from __future__ import annotations
 
+import io
+import struct
 import time
 from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime
 from typing import Any, ClassVar
 
+import pyarrow
+import pyarrow.ipc
 import pytest
 
 from boba.db.postgres import PgArrowError
@@ -48,7 +52,14 @@ from boba.pump_stand.compare import (
     NUMBER,
     Values,
 )
-from boba.pump_stand.matrix import Target, compared, exported, first
+from boba.pump_stand.matrix import (
+    Target,
+    compared,
+    copy_into,
+    exported,
+    first,
+    insert_into,
+)
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
 
@@ -524,10 +535,14 @@ class TestPostgresToPostgres:
                 {"sql": _select(columns, targets), "chunk_bytes": CHUNK_BYTES},
             ),
             Leg(
-                "pg_arrow_in", {"table": f"{PG_SCHEMA}.dst", "chunk_bytes": CHUNK_BYTES}
+                "pg_arrow_in",
+                {
+                    "sql": copy_into(f"{PG_SCHEMA}.dst", _names(columns)),
+                    "chunk_bytes": CHUNK_BYTES,
+                },
             ),
         )
-        assert chained.in_report == f"{ROWS} rows written into {PG_SCHEMA}.dst"
+        assert chained.in_report.startswith(f"{ROWS} rows written")
 
         # обе стороны postgres: опорное выражение источника годится и приёмнику
         refs = [first(t.src_ref, c.name) for c, t in zip(columns, targets, strict=True)]
@@ -628,9 +643,15 @@ class TestPostgresToOracle:
                     "pg_arrow_out",
                     {"sql": _select(columns, targets), "chunk_bytes": CHUNK_BYTES},
                 ),
-                Leg("ora_arrow_in", {"table": table, "chunk_bytes": CHUNK_BYTES}),
+                Leg(
+                    "ora_arrow_in",
+                    {
+                        "sql": insert_into(table, _names(columns)),
+                        "chunk_bytes": CHUNK_BYTES,
+                    },
+                ),
             )
-            assert chained.in_report == f"{ROWS} rows written into {table}"
+            assert chained.in_report.startswith(f"{ROWS} rows written")
 
             landed = await oracle.select(
                 table,
@@ -664,7 +685,10 @@ class TestTraps:
                 Leg("pg_arrow_out", {"sql": self.SLOW, "chunk_bytes": CHUNK_BYTES}),
                 Leg(
                     "pg_arrow_in",
-                    {"table": f"{PG_SCHEMA}.dst", "chunk_bytes": CHUNK_BYTES},
+                    {
+                        "sql": f"copy {PG_SCHEMA}.dst from stdin (format csv)",
+                        "chunk_bytes": CHUNK_BYTES,
+                    },
                 ),
             )
 
@@ -688,7 +712,10 @@ class TestTraps:
                 ),
                 Leg(
                     "pg_arrow_in",
-                    {"table": f"{PG_SCHEMA}.dst", "chunk_bytes": CHUNK_BYTES},
+                    {
+                        "sql": f"copy {PG_SCHEMA}.dst from stdin (format csv)",
+                        "chunk_bytes": CHUNK_BYTES,
+                    },
                 ),
             )
 
@@ -707,7 +734,10 @@ class TestTraps:
                 ),
                 Leg(
                     "pg_arrow_in",
-                    {"table": f"{PG_SCHEMA}.dst", "chunk_bytes": CHUNK_BYTES},
+                    {
+                        "sql": f"copy {PG_SCHEMA}.dst from stdin (format csv)",
+                        "chunk_bytes": CHUNK_BYTES,
+                    },
                 ),
             )
 
@@ -730,7 +760,10 @@ class TestTraps:
             ),
             Leg(
                 "pg_arrow_in",
-                {"table": f"{PG_SCHEMA}.dims", "chunk_bytes": CHUNK_BYTES},
+                {
+                    "sql": copy_into(f"{PG_SCHEMA}.dims", ["id", "a2"]),
+                    "chunk_bytes": CHUNK_BYTES,
+                },
             ),
         )
         landed = await postgres.select("dims", ["id", "a2"])
@@ -754,7 +787,10 @@ class TestTraps:
                 Leg("pg_arrow_out", {"sql": wide, "chunk_bytes": CHUNK_BYTES}),
                 Leg(
                     "pg_arrow_in",
-                    {"table": f"{PG_SCHEMA}.wide", "chunk_bytes": CHUNK_BYTES},
+                    {
+                        "sql": copy_into(f"{PG_SCHEMA}.wide", ["id", "t"]),
+                        "chunk_bytes": CHUNK_BYTES,
+                    },
                 ),
             )
 
@@ -762,12 +798,73 @@ class TestTraps:
             Leg("pg_arrow_out", {"sql": wide, "chunk_bytes": 4 * 1024 * 1024}),
             Leg(
                 "pg_arrow_in",
-                {"table": f"{PG_SCHEMA}.wide", "chunk_bytes": 4 * 1024 * 1024},
+                {
+                    "sql": copy_into(f"{PG_SCHEMA}.wide", ["id", "t"]),
+                    "chunk_bytes": 4 * 1024 * 1024,
+                },
             ),
         )
         landed = await postgres.select("wide", ["id", "length(t)"])
 
         assert landed == [(1, 3 * 1024 * 1024)]
+
+    async def test_exact_floats_land_bit_for_bit(self, postgres: PostgresSide) -> None:
+        """С exact_floats double едет hex-записью и ложится бит в бит на любом
+        сервере; десятичную запись 1.942e-297 Greenplum 6 округляет на одну
+        ULP — это и есть случай, ради которого флаг существует. Максимум
+        double в списке нет: его сегменты Greenplum 6 отвергают как overflow
+        в любой записи."""
+        values = [
+            1.942e-297,
+            5e-324,
+            2.2250738585072014e-308,
+            1e308,
+            -0.0,
+            0.1,
+            1.0 / 3,
+        ]
+        batch = pyarrow.record_batch(
+            {
+                "id": pyarrow.array(range(len(values)), pyarrow.int64()),
+                "d": pyarrow.array(values, pyarrow.float64()),
+            }
+        )
+        buffer = io.BytesIO()
+        with pyarrow.ipc.new_stream(buffer, batch.schema) as writer:
+            writer.write(batch)
+
+        await postgres.create("exact", ["id bigint", "d double precision"])
+        pumps = Pumps(postgres=postgres.profile)
+        statement = copy_into(f"{PG_SCHEMA}.exact", ["id", "d"])
+        packed = [struct.pack(">d", value) for value in values]
+
+        await pumps._in(
+            "pg_arrow_in",
+            statement,
+            buffer.getvalue(),
+            None,
+            chunk_bytes=CHUNK_BYTES,
+            exact_floats=True,
+        )
+        landed = await postgres.select("exact", ["id", "float8send(d)"])
+
+        assert [bytes(sent) for _, sent in landed] == packed
+
+        if not postgres.greenplum_6:
+            return
+
+        await postgres.execute([f"truncate {PG_SCHEMA}.exact"])
+        await pumps._in(
+            "pg_arrow_in",
+            statement,
+            buffer.getvalue(),
+            None,
+            chunk_bytes=CHUNK_BYTES,
+            exact_floats=False,
+        )
+        landed = await postgres.select("exact", ["id", "float8send(d)"])
+
+        assert bytes(landed[0][1]) != packed[0]
 
     async def test_list_in_the_stream_is_refused_before_loading(
         self, postgres: PostgresSide, clickhouse: ClickHouseSide
@@ -790,7 +887,10 @@ class TestTraps:
                 ),
                 Leg(
                     "pg_arrow_in",
-                    {"table": f"{PG_SCHEMA}.lists", "chunk_bytes": CHUNK_BYTES},
+                    {
+                        "sql": copy_into(f"{PG_SCHEMA}.lists", ["id", "arr"]),
+                        "chunk_bytes": CHUNK_BYTES,
+                    },
                 ),
             )
 
@@ -839,7 +939,12 @@ class TestTraps:
             Leg("pg_arrow_out", {"sql": select, "chunk_bytes": CHUNK_BYTES}),
             Leg(
                 "pg_arrow_in",
-                {"table": f"{PG_SCHEMA}.session", "chunk_bytes": CHUNK_BYTES},
+                {
+                    "sql": copy_into(
+                        f"{PG_SCHEMA}.session", ["id", "f", "tz", "d", "iv", "b", "m"]
+                    ),
+                    "chunk_bytes": CHUNK_BYTES,
+                },
             ),
         )
         landed = await postgres.select(
@@ -876,7 +981,10 @@ class TestTraps:
             ),
             Leg(
                 "pg_arrow_in",
-                {"table": f"{PG_SCHEMA}.floats", "chunk_bytes": CHUNK_BYTES},
+                {
+                    "sql": copy_into(f"{PG_SCHEMA}.floats", ["id", "r8"]),
+                    "chunk_bytes": CHUNK_BYTES,
+                },
             ),
         )
         landed = await postgres.select("floats", ["id", "r8"])

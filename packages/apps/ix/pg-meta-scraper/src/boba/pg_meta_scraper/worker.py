@@ -192,14 +192,14 @@ class PgSession(ScrapeSession):
         probe = (
             PgQueryBuilder()
             .add("select * from (")
-            .read(path, **params)
+            .from_file(path, **params)
             .add(") q limit 0")
             .build()
         )
         query = (
             PgQueryBuilder()
             .add("copy (")
-            .read(path, **params)
+            .from_file(path, **params)
             .add(") to stdout (format text)")
             .build()
         )

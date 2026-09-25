@@ -116,16 +116,10 @@ class Pumps:
     async def ora_out(self, statement: str) -> bytes:
         return await self._out("ora_csv_out", statement)
 
-    async def ora_in(self, table: str, columns: list[str], data: bytes) -> str:
-        report = await self._bodies["ora_csv_in"](
-            connection=self._required("ora_csv_in"),
-            table=table,
-            columns=columns,
-            chunk_bytes=self.CHUNK_BYTES,
-            feed=Feed(data, self._chunk),
+    async def ora_in(self, statement: str, data: bytes) -> str:
+        return await self._in(
+            "ora_csv_in", statement, data, None, chunk_bytes=self.CHUNK_BYTES
         )
-
-        return report.text
 
     async def chain(self, out: Leg, into: Leg) -> Chained:
         """Выход out и вход into через трубу ОС одновременно."""

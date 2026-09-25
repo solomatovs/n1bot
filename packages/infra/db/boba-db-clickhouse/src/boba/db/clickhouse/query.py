@@ -80,13 +80,20 @@ class ChQueryBuilder(QueryBuilder[str]):
 
         return self
 
+    def raw_query(self, text: str, /) -> Self:
+        """Стейтмент как есть, без плейсхолдеров драйвера: написан не в коде
+        (LLM, пользователь). Единственный вход свободного текста в сборку."""
+        self._pieces.append(text)
+
+        return self
+
     def when(self, condition: bool, *pieces: str, **bind: Any) -> Self:
         if not condition:
             return self
 
         return self.add(*pieces, **bind)
 
-    def read(self, path: Path, /, **bind: Any) -> Self:
+    def from_file(self, path: Path, /, **bind: Any) -> Self:
         """Кусок из файла пакета: текст читается целиком и добавляется как add."""
         text = path.read_text(encoding="utf-8")
 

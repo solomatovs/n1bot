@@ -14,9 +14,15 @@ import pyarrow.ipc
 import pytest
 
 from boba.pump_stand import Pipe
-from boba.toolkit.arrow import ArrowInbound, ArrowOutbound, ArrowStreamError
+from boba.toolkit.arrow import ArrowIpc
 from boba.toolkit.frames import ToolIo
-from boba.toolkit.ports import RawInbound, RawOutbound
+from boba.toolkit.ports import (
+    ArrowInbound,
+    ArrowOutbound,
+    ArrowStreamError,
+    RawInbound,
+    RawOutbound,
+)
 
 pytestmark = pytest.mark.anyio
 
@@ -57,7 +63,7 @@ class TestArrowPorts:
                 raise AssertionError("outbound port is ArrowOutbound")
 
             try:
-                writer = await out.open(SCHEMA)
+                writer = await ArrowIpc().open_out(out, SCHEMA)
                 for batch in sent:
                     await writer.write(batch)
 
@@ -71,7 +77,7 @@ class TestArrowPorts:
                 raise AssertionError("inbound port is ArrowInbound")
 
             try:
-                reader = await feed.open(BUFFER)
+                reader = await ArrowIpc().open_in(feed, BUFFER)
                 assert reader.schema.equals(SCHEMA)
 
                 return [batch async for batch in reader.batches]
@@ -91,7 +97,7 @@ class TestArrowPorts:
 
         async def produce() -> None:
             try:
-                writer = await out.open(SCHEMA)
+                writer = await ArrowIpc().open_out(out, SCHEMA)
                 await writer.write(_batch(0, 5))
                 await writer.close()
             finally:
@@ -124,7 +130,7 @@ class TestArrowPorts:
         async def consume() -> None:
             try:
                 with pytest.raises(ArrowStreamError, match="schema failed"):
-                    await feed.open(BUFFER)
+                    await ArrowIpc().open_in(feed, BUFFER)
             finally:
                 os.close(read_fd)
 

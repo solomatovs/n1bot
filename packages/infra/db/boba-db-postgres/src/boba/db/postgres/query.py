@@ -26,7 +26,7 @@ PgQuery = AbstractQuery[sql.Composed, QueryParams | None]
 class PgQueryBuilder(QueryBuilder[sql.Composed]):
     """Реализация QueryBuilder для psycopg.
 
-    В куске `{name}` это имя и подставляется переданным `sql.Composable`
+    В куске add `{name}` это имя и подставляется переданным `sql.Composable`
     (`sql.Identifier` для схемы, таблицы, колонки) средствами psycopg,
     `%(name)s` это значение и уезжает параметром драйвера, а литеральные
     фигурные скобки и проценты пишутся удвоенными. Имена из конструктора
@@ -52,13 +52,21 @@ class PgQueryBuilder(QueryBuilder[sql.Composed]):
 
         return self
 
+    def raw_query(self, text: str, /) -> Self:
+        """Кусок как есть, без имён и плейсхолдеров: стейтмент или его фрагмент,
+        написанный не в коде (LLM, пользователь), где фигурные скобки и проценты
+        — часть текста. Единственный вход свободного текста в сборку."""
+        self._pieces.append(sql.Composed([sql.SQL(cast(LiteralString, text))]))
+
+        return self
+
     def when(self, condition: bool, text: str, /, **bind: Any) -> Self:
         if not condition:
             return self
 
         return self.add(text, **bind)
 
-    def read(self, path: Path, /, **bind: Any) -> Self:
+    def from_file(self, path: Path, /, **bind: Any) -> Self:
         """Кусок из файла пакета: текст читается целиком и добавляется как add."""
         text = path.read_text(encoding="utf-8")
 

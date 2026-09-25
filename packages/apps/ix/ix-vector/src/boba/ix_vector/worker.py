@@ -137,7 +137,7 @@ class VectorWorker:
             name = f"ix_emb_e5_1024__{declaration.surface}_{declaration.aspect}__hnsw"
             query = (
                 PgQueryBuilder(**names)
-                .read(
+                .from_file(
                     self._dir / SqlFile.INDEX,
                     index_name=sql.Identifier(name),
                     surface=sql.Literal(declaration.surface),
@@ -171,7 +171,7 @@ class VectorWorker:
     ) -> list[AspectText]:
         query = (
             PgQueryBuilder(**names)
-            .read(self._dir / SqlFile.QUEUE, batch=self._cfg.batch)
+            .from_file(self._dir / SqlFile.QUEUE, batch=self._cfg.batch)
             .build()
         )
         cur = await conn.execute(query.text, query.params)
@@ -191,13 +191,13 @@ class VectorWorker:
     async def _unlock(
         self, conn: psycopg.AsyncConnection[Any], names: Mapping[str, sql.Composable]
     ) -> None:
-        query = PgQueryBuilder(**names).read(self._dir / SqlFile.UNLOCK).build()
+        query = PgQueryBuilder(**names).from_file(self._dir / SqlFile.UNLOCK).build()
         await conn.execute(query.text, query.params)
 
     async def _prune(
         self, conn: psycopg.AsyncConnection[Any], names: Mapping[str, sql.Composable]
     ) -> int:
-        query = PgQueryBuilder(**names).read(self._dir / SqlFile.PRUNE).build()
+        query = PgQueryBuilder(**names).from_file(self._dir / SqlFile.PRUNE).build()
         cur = await conn.execute(query.text, query.params)
         record = await cur.fetchone()
         if record is None:

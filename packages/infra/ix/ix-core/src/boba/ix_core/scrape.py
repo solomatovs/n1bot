@@ -534,7 +534,7 @@ async def apply_layout(
     try:
         query = (
             PgQueryBuilder(schema=sql.Identifier(db_schema))
-            .read(layout_dir / LayoutFile.LOCK)
+            .from_file(layout_dir / LayoutFile.LOCK)
             .build()
         )
         await ix.execute(query.text, query.params)
@@ -542,7 +542,7 @@ async def apply_layout(
         try:
             query = (
                 PgQueryBuilder(schema=sql.Identifier(db_schema))
-                .read(layout_dir / LayoutFile.APPLY)
+                .from_file(layout_dir / LayoutFile.APPLY)
                 .build()
             )
             cur = await ix.execute(query.text, query.params)
@@ -554,7 +554,7 @@ async def apply_layout(
     finally:
         query = (
             PgQueryBuilder(schema=sql.Identifier(db_schema))
-            .read(layout_dir / LayoutFile.UNLOCK)
+            .from_file(layout_dir / LayoutFile.UNLOCK)
             .build()
         )
         await ix.execute(query.text, query.params)
@@ -583,7 +583,7 @@ async def scrape_once(
 
         query = (
             PgQueryBuilder(schema=sql.Identifier(schema))
-            .read(layout_dir / LayoutFile.RAW_SCHEMA)
+            .from_file(layout_dir / LayoutFile.RAW_SCHEMA)
             .build()
         )
         await ix.execute(query.text, query.params)
@@ -606,7 +606,7 @@ async def scrape_once(
         for name in stages:
             query = (
                 PgQueryBuilder(schema=sql.Identifier(schema))
-                .read(layout_dir / name)
+                .from_file(layout_dir / name)
                 .build()
             )
             await ix.execute(query.text, query.params)
