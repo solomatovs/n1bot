@@ -157,7 +157,7 @@ async def fake_relay(
     total = 0
     for chunk in feed:
         total += len(chunk)
-        out.write(chunk)
+        await out.write(chunk)
 
     return MarkdownResult(text=f"relayed {total}|{cfg.token.get_secret_value()}")
 

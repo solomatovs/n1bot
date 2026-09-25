@@ -13,9 +13,8 @@ QueryBuildError — сборщик получил один параметр с �
 
 from __future__ import annotations
 
-import asyncio
 import sys
-from collections.abc import AsyncIterator, Iterator, Mapping
+from collections.abc import Mapping
 from enum import StrEnum
 from typing import Annotated, Any, ClassVar, Final
 
@@ -94,6 +93,14 @@ def get_payload() -> Any:
     from boba.db.clickhouse import payload  # noqa: PLC0415
 
     return payload.PayloadClickHouse
+
+
+def read_tuning(chunk_bytes: int) -> Any:
+    """Рычаги размера блоков ответа под chunk_bytes насоса; импорт отложен
+    по той же причине, что и у get_payload."""
+    from boba.db.clickhouse.payload import ReadTuning  # noqa: PLC0415
+
+    return ReadTuning(socket_read_size=chunk_bytes, read_buffer_size=chunk_bytes)
 
 
 async def run_and_collect(
@@ -1019,24 +1026,20 @@ async def ch_edm_descriptions(  # noqa: PLR0913
     )
 
 
-class FeedBlocks:
-    """Порции сырого входного порта как асинхронный поток для тела INSERT:
-    порт читает трубу блокирующе, поэтому каждая порция берётся в потоке,
-    а цикл событий остаётся свободен для отправки. Считает принятые байты."""
-
-    def __init__(self, feed: RawInbound) -> None:
-        self._feed = feed
-        self.consumed = 0
-
-    async def blocks(self) -> AsyncIterator[bytes]:
-        chunks: Iterator[bytes] = iter(self._feed)
-        while True:
-            chunk = await asyncio.to_thread(next, chunks, None)
-            if chunk is None:
-                return
-
-            self.consumed += len(chunk)
-            yield chunk
+ChunkBytes = Annotated[
+    int,
+    Field(
+        default=262144,
+        ge=4096,
+        le=67108864,
+        description=(
+            "Размер порции байтов между узлом и трубой: крупнее — меньше "
+            "системных вызовов на больших выгрузках, мельче — раньше первые "
+            "данные у приёмника. По умолчанию 256 КиБ."
+        ),
+    ),
+]
+"""LLM-аргумент насосов: размер блока потока."""
 
 
 @tool
@@ -1059,23 +1062,24 @@ async def ch_stream_out(
         ),
         MarkdownResult(language="sql"),
     ],
+    chunk_bytes: ChunkBytes,
     out: Annotated[RawOutbound, Injected],
 ) -> MarkdownResult:
     """Насос выгрузки: ответ запроса сырыми байтами в выходной порт.
 
     Узел графа workflow: данные идут следующему узлу, а не в чат. Формат и
     настройки задаёт текст запроса, инструмент его не разбирает и отдаёт
-    блоки ответа как пришли. В ответ возвращается только счётчик байтов.
+    блоки ответа как пришли; размер блока — chunk_bytes.
     """
     payload = get_payload()
     async with (
         payload.opened_config(connection) as client,
-        payload.byte_stream_out(client, sql) as stream,
+        payload.byte_stream_out(client, sql, tuning=read_tuning(chunk_bytes)) as stream,
     ):
         async for block in stream.blocks:
-            out.write(block)
+            await out.write(block)
 
-    return MarkdownResult(text="stream complited")
+    return MarkdownResult(text="stream completed")
 
 
 @tool
@@ -1100,26 +1104,23 @@ async def ch_stream_in(
         ),
         MarkdownResult(language="sql"),
     ],
+    chunk_bytes: ChunkBytes,
     feed: Annotated[RawInbound, Injected],
 ) -> MarkdownResult:
     """Насос загрузки: тело из входного порта одним INSERT ... FORMAT.
 
     Узел графа workflow: данные приходят от предыдущего узла и уезжают
-    серверу как есть, блоками, без разбора на клиенте; стейтмент тоже
-    уходит как написан. В ответ возвращается счётчик принятых байтов и
-    записанных строк по сводке сервера.
+    серверу как есть, блоками по chunk_bytes, без разбора на клиенте;
+    стейтмент тоже уходит как написан. В ответ — число записанных строк по
+    сводке сервера.
     """
-    source = FeedBlocks(feed)
-
     payload = get_payload()
     async with payload.opened_config(connection) as client:
-        summary = await payload.byte_stream_in(client, sql, blocks=source.blocks())
-
-    return MarkdownResult(
-        text=(
-            f"streamed in {source.consumed} bytes, {summary.written_rows} rows written"
+        summary = await payload.byte_stream_in(
+            client, sql, blocks=feed.blocks(chunk_bytes)
         )
-    )
+
+    return MarkdownResult(text=f"{summary.written_rows} rows written")
 
 
 @tool

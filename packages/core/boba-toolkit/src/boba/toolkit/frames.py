@@ -419,13 +419,14 @@ class ToolIo:
         with self._write_lock:
             self._writev_all(self._outbound_fd, prefix, body)
 
-    def read_chunks(self) -> Iterator[bytes]:
-        """Сырой вход: порции байтов как есть, EOF пайпа завершает итерацию."""
+    def read_chunks(self, chunk_bytes: int) -> Iterator[bytes]:
+        """Сырой вход: порции байтов как есть, не длиннее chunk_bytes, EOF пайпа
+        завершает итерацию."""
         if self._inbound_fd < 0:
             return
 
         while True:
-            chunk = os.read(self._inbound_fd, self.READ_BYTES)
+            chunk = os.read(self._inbound_fd, chunk_bytes)
             if not chunk:
                 return
 

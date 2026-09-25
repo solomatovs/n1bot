@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
-from typing import Any
+from typing import Any, ClassVar
 
 from boba.db.clickhouse.connection import ClickHouseConfig
 from boba.db.oracle.connection import OracleConfig
@@ -23,6 +23,9 @@ Body = Callable[..., Awaitable[Any]]
 class Pumps:
     """Насосы postgres, ClickHouse и Oracle над профилями стенда. Выход
     возвращает байты порта, вход принимает байты и отдаёт текст отчёта."""
+
+    CH_CHUNK_BYTES: ClassVar[int] = 4096
+    """Размер блока насосов ClickHouse: нижняя граница фасада."""
 
     def __init__(
         self,
@@ -57,10 +60,19 @@ class Pumps:
         return await self._in("pg_copy_in", self._pg, statement, data, chunk)
 
     async def ch_out(self, statement: str) -> bytes:
-        return await self._out("ch_stream_out", self._ch, statement)
+        return await self._out(
+            "ch_stream_out", self._ch, statement, chunk_bytes=self.CH_CHUNK_BYTES
+        )
 
     async def ch_in(self, statement: str, data: bytes, chunk: int | None = None) -> str:
-        return await self._in("ch_stream_in", self._ch, statement, data, chunk)
+        return await self._in(
+            "ch_stream_in",
+            self._ch,
+            statement,
+            data,
+            chunk,
+            chunk_bytes=self.CH_CHUNK_BYTES,
+        )
 
     async def ora_out(self, statement: str) -> bytes:
         return await self._out("ora_copy_out", self._ora, statement)
@@ -75,10 +87,15 @@ class Pumps:
 
         return report.text
 
-    async def _out(self, name: str, connection: object, statement: str) -> bytes:
+    async def _out(
+        self, name: str, connection: object, statement: str, **extra: Any
+    ) -> bytes:
         sink = Sink()
         await self._bodies[name](
-            connection=self._required(name, connection), sql=statement, out=sink
+            connection=self._required(name, connection),
+            sql=statement,
+            out=sink,
+            **extra,
         )
 
         return sink.data()
@@ -90,6 +107,7 @@ class Pumps:
         statement: str,
         data: bytes,
         chunk: int | None,
+        **extra: Any,
     ) -> str:
         if chunk is None:
             chunk = self._chunk
@@ -98,6 +116,7 @@ class Pumps:
             connection=self._required(name, connection),
             sql=statement,
             feed=Feed(data, chunk),
+            **extra,
         )
 
         return report.text
