@@ -52,8 +52,8 @@ from oracledb import (
 from boba.db.oracle.connection import OracleConfig
 from boba.db.oracle.errors import OracleError, OracleQueryError
 from boba.db.oracle.trace import OraScriptStep, OraSessionTrace
-from boba.toolkit.arrow import ArrowIpc
-from boba.toolkit.ports import ArrowOutbound
+from boba.toolkit.arrow import ArrowColumns, ArrowIpc, SourceFields
+from boba.toolkit.sync import ColumnSpec
 
 __all__ = [
     "ArrowTypes",
@@ -86,6 +86,97 @@ class ByteStream:
 
     names: tuple[str, ...]
     blocks: AsyncIterator[memoryview]
+
+
+class OraTypeText:
+    """Текст типа Oracle по описанию колонки драйвера, как в DDL:
+    NUMBER(18,4), VARCHAR2(200), TIMESTAMP(6) WITH TIME ZONE. Размер строк
+    и RAW — internal_size в байтах."""
+
+    NAMES: ClassVar[Mapping[str, str]] = {
+        "DB_TYPE_VARCHAR": "VARCHAR2",
+        "DB_TYPE_NVARCHAR": "NVARCHAR2",
+        "DB_TYPE_CHAR": "CHAR",
+        "DB_TYPE_NCHAR": "NCHAR",
+        "DB_TYPE_LONG": "LONG",
+        "DB_TYPE_LONG_NVARCHAR": "LONG",
+        "DB_TYPE_CLOB": "CLOB",
+        "DB_TYPE_NCLOB": "NCLOB",
+        "DB_TYPE_RAW": "RAW",
+        "DB_TYPE_LONG_RAW": "LONG RAW",
+        "DB_TYPE_BLOB": "BLOB",
+        "DB_TYPE_NUMBER": "NUMBER",
+        "DB_TYPE_BINARY_INTEGER": "BINARY_INTEGER",
+        "DB_TYPE_BINARY_FLOAT": "BINARY_FLOAT",
+        "DB_TYPE_BINARY_DOUBLE": "BINARY_DOUBLE",
+        "DB_TYPE_DATE": "DATE",
+        "DB_TYPE_TIMESTAMP": "TIMESTAMP",
+        "DB_TYPE_TIMESTAMP_TZ": "TIMESTAMP WITH TIME ZONE",
+        "DB_TYPE_TIMESTAMP_LTZ": "TIMESTAMP WITH LOCAL TIME ZONE",
+        "DB_TYPE_BOOLEAN": "BOOLEAN",
+        "DB_TYPE_JSON": "JSON",
+        "DB_TYPE_XMLTYPE": "XMLTYPE",
+        "DB_TYPE_ROWID": "ROWID",
+        "DB_TYPE_UROWID": "UROWID",
+        "DB_TYPE_VECTOR": "VECTOR",
+        "DB_TYPE_INTERVAL_YM": "INTERVAL YEAR TO MONTH",
+        "DB_TYPE_INTERVAL_DS": "INTERVAL DAY TO SECOND",
+    }
+    SIZED: ClassVar[frozenset[str]] = frozenset(
+        {
+            "DB_TYPE_VARCHAR",
+            "DB_TYPE_NVARCHAR",
+            "DB_TYPE_CHAR",
+            "DB_TYPE_NCHAR",
+            "DB_TYPE_RAW",
+        }
+    )
+    FLOAT_SCALE: ClassVar[int] = -127
+
+    def render(self, column: FetchInfo) -> str:
+        code = column.type.name
+        name = self.NAMES.get(code, code)
+        if code == "DB_TYPE_NUMBER":
+            return self._number(name, column)
+
+        if code in self.SIZED:
+            return f"{name}({column.internal_size})"
+
+        if code in (
+            "DB_TYPE_TIMESTAMP",
+            "DB_TYPE_TIMESTAMP_TZ",
+            "DB_TYPE_TIMESTAMP_LTZ",
+        ):
+            head, _, tail = name.partition(" ")
+            if column.scale is None:
+                return name
+
+            return f"{head}({column.scale}) {tail}".rstrip()
+
+        return name
+
+    def char_length(self, column: FetchInfo) -> int:
+        if column.type.name not in self.SIZED:
+            return 0
+
+        if column.internal_size is None:
+            return 0
+
+        return int(column.internal_size)
+
+    def _number(self, name: str, column: FetchInfo) -> str:
+        precision = column.precision
+        scale = column.scale
+        if precision is None or scale is None:
+            return name
+
+        if precision == 0:
+            return name
+
+        if scale == self.FLOAT_SCALE:
+            return f"FLOAT({precision})"
+
+        return f"{name}({precision},{scale})"
 
 
 class ArrowTypes:
@@ -141,10 +232,26 @@ class ArrowTypes:
         "DB_TYPE_VECTOR": "from_vector(col)",
     }
 
+    ENGINE: ClassVar[str] = "oracle"
+
+    def __init__(self) -> None:
+        self._text = OraTypeText()
+        self._fields = SourceFields(self.ENGINE)
+
     def schema(self, described: Sequence[FetchInfo]) -> pyarrow.Schema:
+        """Схема потока с metadata контракта приёмника: текст типа Oracle,
+        nullable из null_ok драйвера, длина строк и RAW из internal_size."""
         fields: list[pyarrow.Field] = []
         for column in described:
-            fields.append(pyarrow.field(column.name, self.of(column)))
+            fields.append(
+                self._fields.field(
+                    column.name,
+                    self.of(column),
+                    bool(column.null_ok),
+                    self._text.render(column),
+                    self._text.char_length(column),
+                )
+            )
 
         return pyarrow.schema(fields)
 
@@ -217,6 +324,7 @@ class PayloadOracle:
         self._connection = connection
         self._types = ArrowTypes()
         self._ipc = ArrowIpc()
+        self._columns = ArrowColumns()
 
     @asynccontextmanager
     async def opened(self) -> AsyncGenerator[AsyncConnection, None]:
@@ -354,6 +462,13 @@ class PayloadOracle:
         """Схема ответа по описанию колонок после parse — запрос не выполняется."""
         return self._types.schema(await self._described(conn, text))
 
+    async def describe_specs(
+        self, conn: AsyncConnection, text: str
+    ) -> tuple[ColumnSpec, ...]:
+        """Контракт колонок ответа по описанию после parse: типы, null_ok и
+        тексты типов Oracle из metadata схемы Arrow."""
+        return self._columns.specs(await self._requested_schema(conn, text))
+
     async def _described(
         self, conn: AsyncConnection, text: str
     ) -> tuple[FetchInfo, ...]:
@@ -415,7 +530,7 @@ class PayloadOracle:
         self,
         conn: AsyncConnection,
         text: str,
-        sink: ArrowOutbound,
+        sink: io.RawIOBase,
         trace: OraSessionTrace,
     ) -> pyarrow.Schema:
         """Ответ запроса потоком Arrow IPC в выходной порт: схема, затем пачки

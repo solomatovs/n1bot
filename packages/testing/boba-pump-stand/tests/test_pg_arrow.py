@@ -33,6 +33,7 @@ import pyarrow.ipc
 import pytest
 
 from boba.db.postgres import PgArrowError
+from boba.db.postgres.connection import CopyOptions
 from boba.pump_stand import (
     ClickHouseSide,
     Leg,
@@ -532,13 +533,16 @@ class TestPostgresToPostgres:
         chained = await pumps.chain(
             Leg(
                 "pg_arrow_out",
-                {"sql": _select(columns, targets), "chunk_bytes": CHUNK_BYTES},
+                {
+                    "sql": _select(columns, targets),
+                    "copy_options": CopyOptions(chunk_bytes=CHUNK_BYTES),
+                },
             ),
             Leg(
                 "pg_arrow_in",
                 {
                     "sql": copy_into(f"{PG_SCHEMA}.dst", _names(columns)),
-                    "chunk_bytes": CHUNK_BYTES,
+                    "copy_options": CopyOptions(chunk_bytes=CHUNK_BYTES),
                 },
             ),
         )
@@ -580,7 +584,10 @@ class TestPostgresToClickHouse:
         chained = await pumps.chain(
             Leg(
                 "pg_arrow_out",
-                {"sql": _select(columns, targets), "chunk_bytes": CHUNK_BYTES},
+                {
+                    "sql": _select(columns, targets),
+                    "copy_options": CopyOptions(chunk_bytes=CHUNK_BYTES),
+                },
             ),
             Leg(
                 "ch_arrow_in",
@@ -641,7 +648,10 @@ class TestPostgresToOracle:
             chained = await pumps.chain(
                 Leg(
                     "pg_arrow_out",
-                    {"sql": _select(columns, targets), "chunk_bytes": CHUNK_BYTES},
+                    {
+                        "sql": _select(columns, targets),
+                        "copy_options": CopyOptions(chunk_bytes=CHUNK_BYTES),
+                    },
                 ),
                 Leg(
                     "ora_arrow_in",
@@ -682,12 +692,18 @@ class TestTraps:
         started = time.monotonic()
         with pytest.raises(PgArrowError, match="numeric without precision"):
             await pumps.chain(
-                Leg("pg_arrow_out", {"sql": self.SLOW, "chunk_bytes": CHUNK_BYTES}),
+                Leg(
+                    "pg_arrow_out",
+                    {
+                        "sql": self.SLOW,
+                        "copy_options": CopyOptions(chunk_bytes=CHUNK_BYTES),
+                    },
+                ),
                 Leg(
                     "pg_arrow_in",
                     {
                         "sql": f"copy {PG_SCHEMA}.dst from stdin (format csv)",
-                        "chunk_bytes": CHUNK_BYTES,
+                        "copy_options": CopyOptions(chunk_bytes=CHUNK_BYTES),
                     },
                 ),
             )
@@ -707,14 +723,14 @@ class TestTraps:
                     "pg_arrow_out",
                     {
                         "sql": "select pg_sleep(30), 1::numeric(50, 20) as n",
-                        "chunk_bytes": CHUNK_BYTES,
+                        "copy_options": CopyOptions(chunk_bytes=CHUNK_BYTES),
                     },
                 ),
                 Leg(
                     "pg_arrow_in",
                     {
                         "sql": f"copy {PG_SCHEMA}.dst from stdin (format csv)",
-                        "chunk_bytes": CHUNK_BYTES,
+                        "copy_options": CopyOptions(chunk_bytes=CHUNK_BYTES),
                     },
                 ),
             )
@@ -730,13 +746,16 @@ class TestTraps:
             await pumps.chain(
                 Leg(
                     "pg_arrow_out",
-                    {"sql": "select nothing from nowhere", "chunk_bytes": CHUNK_BYTES},
+                    {
+                        "sql": "select nothing from nowhere",
+                        "copy_options": CopyOptions(chunk_bytes=CHUNK_BYTES),
+                    },
                 ),
                 Leg(
                     "pg_arrow_in",
                     {
                         "sql": f"copy {PG_SCHEMA}.dst from stdin (format csv)",
-                        "chunk_bytes": CHUNK_BYTES,
+                        "copy_options": CopyOptions(chunk_bytes=CHUNK_BYTES),
                     },
                 ),
             )
@@ -755,14 +774,14 @@ class TestTraps:
                 {
                     "sql": "select 1::bigint as id, "
                     "array[array[1, 2], array[3, 4]] as a2",
-                    "chunk_bytes": CHUNK_BYTES,
+                    "copy_options": CopyOptions(chunk_bytes=CHUNK_BYTES),
                 },
             ),
             Leg(
                 "pg_arrow_in",
                 {
                     "sql": copy_into(f"{PG_SCHEMA}.dims", ["id", "a2"]),
-                    "chunk_bytes": CHUNK_BYTES,
+                    "copy_options": CopyOptions(chunk_bytes=CHUNK_BYTES),
                 },
             ),
         )
@@ -784,23 +803,35 @@ class TestTraps:
         wide = "select 1::bigint as id, repeat('x', 3 * 1024 * 1024) as t"
         with pytest.raises(PgArrowError, match="raise chunk_bytes"):
             await pumps.chain(
-                Leg("pg_arrow_out", {"sql": wide, "chunk_bytes": CHUNK_BYTES}),
+                Leg(
+                    "pg_arrow_out",
+                    {
+                        "sql": wide,
+                        "copy_options": CopyOptions(chunk_bytes=CHUNK_BYTES),
+                    },
+                ),
                 Leg(
                     "pg_arrow_in",
                     {
                         "sql": copy_into(f"{PG_SCHEMA}.wide", ["id", "t"]),
-                        "chunk_bytes": CHUNK_BYTES,
+                        "copy_options": CopyOptions(chunk_bytes=CHUNK_BYTES),
                     },
                 ),
             )
 
         await pumps.chain(
-            Leg("pg_arrow_out", {"sql": wide, "chunk_bytes": 4 * 1024 * 1024}),
+            Leg(
+                "pg_arrow_out",
+                {
+                    "sql": wide,
+                    "copy_options": CopyOptions(chunk_bytes=4 * 1024 * 1024),
+                },
+            ),
             Leg(
                 "pg_arrow_in",
                 {
                     "sql": copy_into(f"{PG_SCHEMA}.wide", ["id", "t"]),
-                    "chunk_bytes": 4 * 1024 * 1024,
+                    "copy_options": CopyOptions(chunk_bytes=4 * 1024 * 1024),
                 },
             ),
         )
@@ -843,8 +874,7 @@ class TestTraps:
             statement,
             buffer.getvalue(),
             None,
-            chunk_bytes=CHUNK_BYTES,
-            exact_floats=True,
+            copy_options=CopyOptions(chunk_bytes=CHUNK_BYTES, exact_floats=True),
         )
         landed = await postgres.select("exact", ["id", "float8send(d)"])
 
@@ -859,8 +889,7 @@ class TestTraps:
             statement,
             buffer.getvalue(),
             None,
-            chunk_bytes=CHUNK_BYTES,
-            exact_floats=False,
+            copy_options=CopyOptions(chunk_bytes=CHUNK_BYTES, exact_floats=False),
         )
         landed = await postgres.select("exact", ["id", "float8send(d)"])
 
@@ -889,7 +918,7 @@ class TestTraps:
                     "pg_arrow_in",
                     {
                         "sql": copy_into(f"{PG_SCHEMA}.lists", ["id", "arr"]),
-                        "chunk_bytes": CHUNK_BYTES,
+                        "copy_options": CopyOptions(chunk_bytes=CHUNK_BYTES),
                     },
                 ),
             )
@@ -936,14 +965,20 @@ class TestTraps:
             ],
         )
         await pumps.chain(
-            Leg("pg_arrow_out", {"sql": select, "chunk_bytes": CHUNK_BYTES}),
+            Leg(
+                "pg_arrow_out",
+                {
+                    "sql": select,
+                    "copy_options": CopyOptions(chunk_bytes=CHUNK_BYTES),
+                },
+            ),
             Leg(
                 "pg_arrow_in",
                 {
                     "sql": copy_into(
                         f"{PG_SCHEMA}.session", ["id", "f", "tz", "d", "iv", "b", "m"]
                     ),
-                    "chunk_bytes": CHUNK_BYTES,
+                    "copy_options": CopyOptions(chunk_bytes=CHUNK_BYTES),
                 },
             ),
         )
@@ -976,14 +1011,14 @@ class TestTraps:
                 {
                     "sql": "select g::bigint as id, g::float8 / 7 as r8 "
                     "from generate_series(1, 1000) g",
-                    "chunk_bytes": CHUNK_BYTES,
+                    "copy_options": CopyOptions(chunk_bytes=CHUNK_BYTES),
                 },
             ),
             Leg(
                 "pg_arrow_in",
                 {
                     "sql": copy_into(f"{PG_SCHEMA}.floats", ["id", "r8"]),
-                    "chunk_bytes": CHUNK_BYTES,
+                    "copy_options": CopyOptions(chunk_bytes=CHUNK_BYTES),
                 },
             ),
         )

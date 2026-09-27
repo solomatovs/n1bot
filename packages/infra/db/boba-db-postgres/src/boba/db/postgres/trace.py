@@ -77,6 +77,7 @@ class PgCommandReport:
     statement: str
     backend_pid: int
     server_version: int
+    rows: int = 0
     notices: Sequence[PgNotice] = field(default_factory=tuple)
     notifies: Sequence[PgNotify] = field(default_factory=tuple)
     before: Sequence[PgScriptStep] = field(default_factory=tuple)
@@ -127,7 +128,11 @@ class PgSessionTrace:
         conn.add_notify_handler(self._on_notify)
 
     def report(
-        self, summary: str, statement: str, cursor: psycopg.AsyncCursor[Any]
+        self,
+        summary: str,
+        statement: str,
+        cursor: psycopg.AsyncCursor[Any],
+        rows: int = 0,
     ) -> PgCommandReport:
         status = cursor.statusmessage
         if status is None:
@@ -139,6 +144,7 @@ class PgSessionTrace:
             statement=statement,
             backend_pid=self._conn.info.backend_pid,
             server_version=self._conn.info.server_version,
+            rows=rows,
             notices=tuple(self._notices),
             notifies=tuple(self._notifies),
         )

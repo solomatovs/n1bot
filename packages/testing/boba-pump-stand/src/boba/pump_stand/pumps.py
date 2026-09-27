@@ -12,7 +12,7 @@ from typing import Any, ClassVar
 
 from boba.db.clickhouse.connection import ClickHouseConfig
 from boba.db.oracle.connection import OracleConfig
-from boba.db.postgres.connection import PostgresConfig
+from boba.db.postgres.connection import CopyOptions, PostgresConfig
 from boba.pump_stand.ports import Feed, Pipe, Sink
 from boba.tool.ch import tools as ch
 from boba.tool.ora import tools as ora
@@ -57,20 +57,31 @@ class Pumps:
         clickhouse: ClickHouseConfig | None = None,
         oracle: OracleConfig | None = None,
         chunk: int = 777,
+        postgres_target: PostgresConfig | None = None,
     ) -> None:
+        """postgres_target — второй сервер postgres для входных насосов;
+        без него вход и выход идут в один сервер."""
         self._chunk = chunk
+        target = postgres_target
+        if target is None:
+            target = postgres
+
         self._connections: dict[str, object | None] = {
             "pg_stream_out": postgres,
-            "pg_stream_in": postgres,
+            "pg_stream_in": target,
             "pg_arrow_out": postgres,
-            "pg_arrow_in": postgres,
+            "pg_sync_out": postgres,
+            "pg_arrow_in": target,
+            "pg_sync_in": target,
             "ch_stream_out": clickhouse,
             "ch_stream_in": clickhouse,
             "ch_arrow_out": clickhouse,
+            "ch_sync_out": clickhouse,
             "ch_arrow_in": clickhouse,
             "ora_csv_out": oracle,
             "ora_csv_in": oracle,
             "ora_arrow_out": oracle,
+            "ora_sync_out": oracle,
             "ora_arrow_in": oracle,
         }
         self._bodies: dict[str, Body] = {}
@@ -79,14 +90,18 @@ class Pumps:
             pg.pg_stream_out,
             pg.pg_stream_in,
             pg.pg_arrow_out,
+            pg.pg_sync_out,
             pg.pg_arrow_in,
+            pg.pg_sync_in,
             ch.ch_stream_out,
             ch.ch_stream_in,
             ch.ch_arrow_out,
+            ch.ch_sync_out,
             ch.ch_arrow_in,
             ora.ora_csv_out,
             ora.ora_csv_in,
             ora.ora_arrow_out,
+            ora.ora_sync_out,
             ora.ora_arrow_in,
         )
         for payload in listed:
@@ -109,7 +124,7 @@ class Pumps:
             statement,
             data,
             chunk,
-            chunk_bytes=self.CHUNK_BYTES,
+            copy_options=CopyOptions(chunk_bytes=self.CHUNK_BYTES),
             **extra,
         )
 

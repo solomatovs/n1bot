@@ -22,6 +22,7 @@ from typing import Any
 
 import pytest
 
+from boba.db.postgres.connection import CopyOptions
 from boba.pump_stand import (
     ClickHouseSide,
     Leg,
@@ -506,7 +507,7 @@ class TestClickHouseToPostgres:
                 "pg_arrow_in",
                 {
                     "sql": copy_into(f"{PG_SCHEMA}.{table}", [c.name for c in columns]),
-                    "chunk_bytes": CHUNK_BYTES,
+                    "copy_options": CopyOptions(chunk_bytes=CHUNK_BYTES),
                 },
             ),
         )

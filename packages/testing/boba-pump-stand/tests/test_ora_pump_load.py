@@ -23,6 +23,7 @@ import pytest
 from boba.db.clickhouse.payload import PayloadClickHouse
 from boba.db.oracle.payload import PayloadOracle
 from boba.db.postgres import AsyncPostgresPool
+from boba.db.postgres.connection import CopyOptions
 from boba.pump_stand import (
     ChSource,
     Leg,
@@ -300,7 +301,7 @@ class TestLoad:
                 "pg_stream_in",
                 {
                     "sql": f"copy {PG_SCHEMA}.load from stdin (format csv)",
-                    "chunk_bytes": CHUNK_BYTES,
+                    "copy_options": CopyOptions(chunk_bytes=CHUNK_BYTES),
                 },
             ),
         )

@@ -23,6 +23,7 @@ from boba.db.postgres.connection.auth import (
     PostgresLibpq,
 )
 from boba.kerberos import KerberosAuthBase, KerberosDump, TicketAuth
+from boba.toolkit.ports import ChunkBytes
 
 __all__ = ["PostgresConfig", "PostgresOptionsConfig", "PostgresPoolConfig"]
 
@@ -138,6 +139,24 @@ class CopySession(BaseModel):
         default=CopyText.STANDARD_CONFORMING_STRINGS.value,
         min_length=1,
         description="standard_conforming_strings: on | off.",
+    )
+
+
+class CopyOptions(CopySession):
+    """Как насос ведёт COPY: сессия (CopySession) плюс порция потока и запись
+    float при загрузке. Один аргумент `copy` у всех pg-насосов; у выгрузки
+    без потока на входе exact_floats не используется."""
+
+    model_config = ConfigDict(frozen=True)
+
+    chunk_bytes: ChunkBytes = 262144
+    exact_floats: bool = Field(
+        default=False,
+        description=(
+            "Загрузка: float и double потока едут hex-записью и ложатся бит в "
+            "бит на любом сервере (нужно на Greenplum 6); только в колонки real "
+            "и double precision."
+        ),
     )
 
 
