@@ -545,7 +545,6 @@ class TestPostgresToPostgres:
             Leg(
                 "pg_sync_out",
                 {
-                    "target": postgres.profile,
                     "wire": StreamWire.ARROW,
                     "sql": _select(columns, targets),
                     "copy_options": CopyOptions(chunk_bytes=CHUNK_BYTES),
@@ -602,7 +601,6 @@ class TestPostgresToClickHouse:
             Leg(
                 "pg_sync_out",
                 {
-                    "target": clickhouse.profile,
                     "wire": StreamWire.ARROW,
                     "sql": _select(columns, targets),
                     "copy_options": CopyOptions(chunk_bytes=CHUNK_BYTES),
@@ -668,7 +666,6 @@ class TestPostgresToOracle:
                 Leg(
                     "pg_sync_out",
                     {
-                        "target": oracle.profile,
                         "wire": StreamWire.ARROW,
                         "sql": _select(columns, targets),
                         "copy_options": CopyOptions(chunk_bytes=CHUNK_BYTES),
@@ -716,7 +713,6 @@ class TestTraps:
                 Leg(
                     "pg_sync_out",
                     {
-                        "target": postgres.profile,
                         "wire": StreamWire.ARROW,
                         "sql": self.SLOW,
                         "copy_options": CopyOptions(chunk_bytes=CHUNK_BYTES),
@@ -751,7 +747,6 @@ class TestTraps:
                 Leg(
                     "pg_sync_out",
                     {
-                        "target": postgres.profile,
                         "wire": StreamWire.ARROW,
                         "sql": "select pg_sleep(30), 1::numeric(50, 20) as n",
                         "copy_options": CopyOptions(chunk_bytes=CHUNK_BYTES),
@@ -784,7 +779,6 @@ class TestTraps:
                 Leg(
                     "pg_sync_out",
                     {
-                        "target": postgres.profile,
                         "wire": StreamWire.ARROW,
                         "sql": "select nothing from nowhere",
                         "copy_options": CopyOptions(chunk_bytes=CHUNK_BYTES),
@@ -817,7 +811,6 @@ class TestTraps:
             Leg(
                 "pg_sync_out",
                 {
-                    "target": postgres.profile,
                     "wire": StreamWire.ARROW,
                     "sql": "select 1::bigint as id, "
                     "array[array[1, 2], array[3, 4]] as a2",
@@ -857,7 +850,6 @@ class TestTraps:
                 Leg(
                     "pg_sync_out",
                     {
-                        "target": postgres.profile,
                         "wire": StreamWire.ARROW,
                         "sql": wide,
                         "copy_options": CopyOptions(chunk_bytes=CHUNK_BYTES),
@@ -882,7 +874,6 @@ class TestTraps:
             Leg(
                 "pg_sync_out",
                 {
-                    "target": postgres.profile,
                     "wire": StreamWire.ARROW,
                     "sql": wide,
                     "copy_options": CopyOptions(chunk_bytes=4 * 1024 * 1024),
@@ -1045,7 +1036,6 @@ class TestTraps:
             Leg(
                 "pg_sync_out",
                 {
-                    "target": postgres.profile,
                     "wire": StreamWire.ARROW,
                     "sql": select,
                     "copy_options": CopyOptions(chunk_bytes=CHUNK_BYTES),
@@ -1090,7 +1080,6 @@ class TestTraps:
             Leg(
                 "pg_sync_out",
                 {
-                    "target": postgres.profile,
                     "wire": StreamWire.ARROW,
                     "sql": "select g::bigint as id, g::float8 / 7 as r8 "
                     "from generate_series(1, 1000) g",
