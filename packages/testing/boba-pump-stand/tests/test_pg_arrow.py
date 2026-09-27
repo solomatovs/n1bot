@@ -1,6 +1,6 @@
-"""Перекачка из PostgreSQL потоком Arrow IPC: pg_arrow_out против pg_arrow_in
-(круг на каждом postgres и Greenplum из sources), ch_arrow_in (в каждый
-ClickHouse из ch_sources) и ora_arrow_in (в каждый Oracle из ora_sources).
+"""Перекачка из PostgreSQL потоком Arrow IPC: pg_sync_out против pg_sync_in
+(круг на каждом postgres и Greenplum из sources), ch_sync_in (в каждый
+ClickHouse из ch_sources) и ora_sync_in (в каждый Oracle из ora_sources).
 Насосы соединены трубой ОС и работают одновременно.
 
 Таблица postgres несёт все семейства типов: целые, numeric с точностью и без,
@@ -60,8 +60,8 @@ from boba.pump_stand.matrix import (
     compared,
     exported,
     first,
-    insert_into,
 )
+from boba.pump_stand.oracle import PumpUser
 from boba.pump_stand.ports import Feed
 from boba.toolkit.arrow import ArrowColumns
 from boba.toolkit.sync import ArrowContract, StreamContract
@@ -69,6 +69,7 @@ from boba.toolkit.transfer import (
     CreateIfNotExists,
     DeleteNothing,
     Engine,
+    ErrorIfNotExists,
     InsertFull,
     SchemaHead,
     StreamWire,
@@ -253,7 +254,7 @@ PG_COLUMNS = (
         "large_string",
         Target("bytea"),
         Target("String", src_ref="bin::text"),
-        Target("raw(100)", out="encode(bin, 'hex')", src_ref="encode(bin, 'hex')"),
+        Target("varchar2(200)", out="encode(bin, 'hex')", src_ref="encode(bin, 'hex')"),
         nullable=True,
     ),
     PgColumn(
@@ -608,10 +609,13 @@ class TestPostgresToClickHouse:
                 },
             ),
             Leg(
-                "ch_arrow_in",
+                "ch_sync_in",
                 {
-                    "sql": f"insert into {CH_DATABASE}.{table} format ArrowStream",
-                    "chunk_bytes": CHUNK_BYTES,
+                    "database": CH_DATABASE,
+                    "table_name": table,
+                    "schema_strategy": ErrorIfNotExists(kind="error_if_not_exists"),
+                    "delete_strategy": DeleteNothing(kind="nothing"),
+                    "insert_strategy": InsertFull(kind="full"),
                 },
             ),
         )
@@ -673,9 +677,13 @@ class TestPostgresToOracle:
                     },
                 ),
                 Leg(
-                    "ora_arrow_in",
+                    "ora_sync_in",
                     {
-                        "sql": insert_into(table, _names(columns)),
+                        "schema_name": PumpUser.NAME.value,
+                        "table_name": table,
+                        "schema_strategy": ErrorIfNotExists(kind="error_if_not_exists"),
+                        "delete_strategy": DeleteNothing(kind="nothing"),
+                        "insert_strategy": InsertFull(kind="full"),
                         "chunk_bytes": CHUNK_BYTES,
                     },
                 ),

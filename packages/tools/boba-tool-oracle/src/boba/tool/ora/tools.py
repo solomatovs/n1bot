@@ -11,17 +11,17 @@ OracleQueryError — сервер отклонил запрос (синтакс�
 UnknownConnectionError — имя подключения вне whitelist'а конфига.
 AddressError — адрес базы не собрался из профиля соединения.
 QueryBuildError — сборщик получил один параметр с двумя разными значениями
-    или имя таблицы/колонки для ora_csv_in пустое или с кавычкой внутри.
-ArrowStreamError — вход ora_arrow_in не читается как поток Arrow IPC.
+    или имя схемы/таблицы/колонки пустое или с кавычкой внутри.
+ArrowStreamError — вход ora_sync_in не читается как поток Arrow IPC.
+SyncError — декларация на колонку, которой нет в ответе; правило приёмника
+    не сходится со схемами; ora_sync_in получил не arrow.
+TransferError — стратегия схемы отказала; тип без пары у Oracle.
 """
 
 from __future__ import annotations
 
-import codecs
-import csv
-import io
 import sys
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from enum import StrEnum
 from typing import Annotated, ClassVar, Final
 
@@ -37,6 +37,7 @@ from boba.db.oracle import (
 )
 from boba.db.oracle.address import OraAddresses
 from boba.db.oracle.connection import OracleConfig
+from boba.db.oracle.target import OraTableRef
 from boba.toolkit.entry import ToolMain
 from boba.toolkit.facade import Injected, UserConnection, tool
 from boba.toolkit.ports import ArrowStreamError, ChunkBytes, Inbound, Outbound
@@ -51,13 +52,19 @@ from boba.toolkit.sync import (
     SyncError,
 )
 from boba.toolkit.transfer import (
+    ColumnRules,
+    CreateTemplate,
+    DeleteStrategy,
     Engine,
-    RawHead,
+    FailOnUnknown,
+    InsertStrategy,
     SchemaHead,
+    SchemaStrategy,
     StreamWire,
     TransferFrame,
     TransferInbound,
     TransferOutbound,
+    UnknownTypeStrategy,
 )
 from boba.toolkit.types import SecretRevealing
 from boba.toolkit.window import RowLimit, RowOffset, RowPage, RowWindow
@@ -139,16 +146,6 @@ class ObjectKind(StrEnum):
     @classmethod
     def routines(cls) -> OraLiterals:
         return OraLiterals((cls.PROCEDURE, cls.FUNCTION, cls.PACKAGE, cls.TYPE))
-
-
-class CsvContract(StrEnum):
-    """Формат потока между насосами: CSV без заголовка, NULL как `\\N`, бинарное
-    поле шестнадцатеричной строкой с префиксом `\\x` (как bytea у postgres)."""
-
-    NULL = "\\N"
-    HEX_PREFIX = "\\x"
-    ENCODING = "utf-8"
-    LINE_END = "\n"
 
 
 class OraToolConfig(SecretRevealing, SqlLimits):
@@ -754,245 +751,7 @@ async def ora_address(connection: OraConnection) -> TableResult:
 
 
 @tool
-async def ora_csv_out(
-    connection: OraConnection,
-    sql: Annotated[
-        str,
-        Field(
-            min_length=1,
-            description=(
-                "Запрос SELECT целиком. Ответ уходит следующему узлу CSV без "
-                "заголовка: строки всегда в двойных кавычках, числа и даты без, "
-                "NULL — пустое поле, DATE и TIMESTAMP — ISO с пробелом, float — "
-                "nan/inf строчными. Это формат COPY ... FROM STDIN (FORMAT CSV) "
-                "postgres по умолчанию. Запрос обязан сам привести: NUMBER без "
-                "точности с дробью и FLOAT — to_char(col, 'TM9'); RAW — "
-                "rawtohex(col); BLOB — rawtohex(dbms_lob.substr(col, 2000, n)) "
-                "кусками; INTERVAL — to_char или число; XMLTYPE — "
-                "xmlserialize(document col as clob); JSON — json_serialize(col "
-                "returning clob); VECTOR — from_vector(col). Молча теряются: "
-                "смещение TIMESTAMP WITH TIME ZONE (to_char(col, "
-                "'yyyy-mm-dd hh24:mi:ss.ff6tzh:tzm')) и наносекунды "
-                "TIMESTAMP(9) (to_char с ff9)."
-            ),
-        ),
-        MarkdownResult(language="sql"),
-    ],
-    before: BeforeSteps = (),
-    after: AfterSteps = (),
-    *,
-    out: Annotated[Outbound[TransferFrame], Injected],
-) -> MarkdownResult:
-    """Насос выгрузки: строки запроса CSV-байтами в выходной порт.
-
-    Данные идут в выходной порт другому насосу, а не в чат. Пачки
-    Arrow по arraysize строк pyarrow пишет в порт сам, Python делает один шаг
-    на пачку. Стейтменты before и after идут в той же сессии до и после
-    выборки, после них commit. В ответ возвращается состав колонок и шаги
-    скриптов.
-    """
-    from boba.db.oracle.payload import PayloadOracle  # noqa: PLC0415
-    from boba.db.oracle.trace import OraSessionTrace  # noqa: PLC0415
-
-    payload = PayloadOracle(connection)
-    statement = OraQueryBuilder().raw_query(sql).build()
-    outbound = TransferOutbound(out)
-    await outbound.schema(RawHead(kind="raw", source_engine=Engine.ORACLE))
-    async with payload.opened() as conn:
-        trace = OraSessionTrace(conn)
-        before_steps = await payload.script(conn, before, trace)
-        names = await payload.csv_into(conn, statement.text, outbound.writer(), trace)
-        after_steps = await payload.script(conn, after, trace)
-        await payload.commit(conn)
-        report = trace.report(f"streamed out csv: {', '.join(names)}", statement.text)
-
-    return MarkdownResult(text=report.scripted(before_steps, after_steps).render())
-
-
-class CsvFields:
-    """Запись CSV в строку bind'ов: `\\N` это NULL, остальное текст как есть —
-    типы значениям даёт стейтмент."""
-
-    def row(self, record: Sequence[str]) -> tuple[str | None, ...]:
-        values: list[str | None] = []
-        for text in record:
-            if text == CsvContract.NULL:
-                values.append(None)
-                continue
-
-            values.append(text)
-
-        return tuple(values)
-
-
-class CsvFeed:
-    """Записи CSV из тел входных кадров: порции байт склеиваются в строки, а
-    csv.reader собирает записи, в том числе с переводом строки внутри кавычек."""
-
-    def __init__(self, feed: io.RawIOBase, chunk_bytes: int) -> None:
-        self._feed = feed
-        self._chunk_bytes = chunk_bytes
-        self.consumed = 0
-
-    def records(self) -> Iterator[Sequence[str]]:
-        yield from csv.reader(self._lines())
-
-    def _chunks(self) -> Iterator[memoryview]:
-        while True:
-            buffer = bytearray(self._chunk_bytes)
-            filled = self._feed.readinto(buffer)
-            if not filled:
-                return
-
-            yield memoryview(buffer)[:filled]
-
-    def _lines(self) -> Iterator[str]:
-        decoder = codecs.getincrementaldecoder(CsvContract.ENCODING)()
-        tail = ""
-        for chunk in self._chunks():
-            self.consumed += len(chunk)
-            text = tail + decoder.decode(chunk)
-            head, sep, tail = text.rpartition(CsvContract.LINE_END)
-            if not sep:
-                continue
-
-            yield from (head + sep).splitlines(keepends=True)
-
-        tail += decoder.decode(b"", True)
-        if tail:
-            yield tail
-
-
-@tool
-async def ora_csv_in(  # noqa: PLR0913
-    connection: OraConnection,
-    sql: Annotated[
-        str,
-        Field(
-            min_length=1,
-            description=(
-                "Стейтмент INSERT с позиционными bind'ами :1..:n в порядке полей "
-                "CSV, например: insert into hr.employees (id, name, hired) values "
-                "(:1, :2, to_timestamp(:3, 'yyyy-mm-dd hh24:mi:ss.ff6')). Каждое "
-                "поле приходит строкой как в потоке, NULL (\\N) — как NULL; "
-                "числа, даты и RAW приводит сам стейтмент: to_number, "
-                "to_timestamp с форматом, hextoraw(substr(:k, 3)) для "
-                "\\x-hex postgres."
-            ),
-        ),
-        MarkdownResult(language="sql"),
-    ],
-    chunk_bytes: ChunkBytes,
-    before: BeforeSteps = (),
-    after: AfterSteps = (),
-    *,
-    feed: Annotated[Inbound[TransferFrame], Injected],
-) -> MarkdownResult:
-    """Насос загрузки: CSV из входного порта в стейтмент пачками executemany.
-
-    Данные приходят во входной порт от другого насоса. Формат: CSV
-    без заголовка, NULL как `\\N`, переводы строк внутри кавычек допустимы
-    — то есть COPY (...) TO STDOUT (FORMAT CSV, NULL '\\N') postgres.
-    Поля уходят строками, типы задаёт сам стейтмент. Стейтменты before и
-    after идут в той же сессии до и после загрузки, DML всего вызова — одна
-    транзакция с одним commit после after: ошибка откатывает всё. В ответ
-    возвращается счётчик байтов и строк и шаги скриптов.
-    """
-    from boba.db.oracle.payload import PayloadOracle  # noqa: PLC0415
-    from boba.db.oracle.trace import OraSessionTrace  # noqa: PLC0415
-
-    payload = PayloadOracle(connection)
-    statement = OraQueryBuilder().raw_query(sql).build()
-    rows = 0
-    inbound = TransferInbound(feed)
-    await inbound.get_head()
-    source = CsvFeed(inbound.raw(), chunk_bytes)
-    fields = CsvFields()
-
-    async with payload.opened() as conn:
-        trace = OraSessionTrace(conn)
-        before_steps = await payload.script(conn, before, trace)
-        batch: list[tuple[str | None, ...]] = []
-        for record in source.records():
-            batch.append(fields.row(record))
-            if len(batch) < connection.arraysize:
-                continue
-
-            rows += await payload.executemany(conn, statement.text, batch, trace)
-            batch = []
-
-        if batch:
-            rows += await payload.executemany(conn, statement.text, batch, trace)
-
-        after_steps = await payload.script(conn, after, trace)
-        await payload.commit(conn)
-        report = trace.report(
-            f"copied in {source.consumed} bytes, {rows} rows", statement.text
-        )
-
-    return MarkdownResult(text=report.scripted(before_steps, after_steps).render())
-
-
-@tool
-async def ora_arrow_out(
-    connection: OraConnection,
-    sql: Annotated[
-        str,
-        Field(
-            min_length=1,
-            description=(
-                "Запрос SELECT целиком. Ответ уходит следующему узлу потоком "
-                "Arrow IPC (stream): схема, затем пачки по arraysize строк. "
-                "Имена колонок — как их отдаёт Oracle, заглавными; нужны "
-                'строчные — алиас в кавычках: col as "col". Типы: NUMBER(p, s) '
-                "— decimal128, NUMBER без точности — decimal128(38, 0) (дробь — "
-                "ошибка, приведите to_char или cast), BINARY_FLOAT/DOUBLE — "
-                "float/double, VARCHAR2/CLOB — large_string, RAW/BLOB — "
-                "large_binary, DATE — timestamp[s], TIMESTAMP — timestamp[us] "
-                "или [ns], BOOLEAN — bool. INTERVAL, XMLTYPE, JSON, ROWID запрос "
-                "приводит сам (to_char, xmlserialize, json_serialize, "
-                "rowidtochar). TIMESTAMP WITH TIME ZONE теряет смещение — "
-                "sys_extract_utc(col)."
-            ),
-        ),
-        MarkdownResult(language="sql"),
-    ],
-    before: BeforeSteps = (),
-    after: AfterSteps = (),
-    *,
-    out: Annotated[Outbound[TransferFrame], Injected],
-) -> MarkdownResult:
-    """Насос выгрузки: строки запроса потоком Arrow IPC в выходной порт.
-
-    Данные идут в выходной порт другому насосу, а не в чат. Пачки
-    Arrow драйвера pyarrow пишет в порт сам, без перевода в текст.
-    Стейтменты before и after идут в той же сессии до и после выборки,
-    после них commit. В ответ — состав схемы потока и шаги скриптов.
-    """
-    from boba.db.oracle.payload import PayloadOracle  # noqa: PLC0415
-    from boba.db.oracle.trace import OraSessionTrace  # noqa: PLC0415
-
-    payload = PayloadOracle(connection)
-    statement = OraQueryBuilder().raw_query(sql).build()
-    outbound = TransferOutbound(out)
-    await outbound.schema(RawHead(kind="raw", source_engine=Engine.ORACLE))
-    async with payload.opened() as conn:
-        trace = OraSessionTrace(conn)
-        before_steps = await payload.script(conn, before, trace)
-        schema = await payload.arrow_into(
-            conn, statement.text, outbound.writer(), trace
-        )
-        after_steps = await payload.script(conn, after, trace)
-        await payload.commit(conn)
-        report = trace.report(
-            f"streamed out arrow ipc: {', '.join(schema.names)}", statement.text
-        )
-
-    return MarkdownResult(text=report.scripted(before_steps, after_steps).render())
-
-
-@tool
-async def ora_sync_out(
+async def ora_sync_out(  # noqa: PLR0913
     connection: OraConnection,
     sql: Annotated[
         str,
@@ -1015,6 +774,8 @@ async def ora_sync_out(
             ),
         ),
     ] = (),
+    before: BeforeSteps = (),
+    after: AfterSteps = (),
     *,
     out: Annotated[Outbound[TransferFrame], Injected],
 ) -> MarkdownResult:
@@ -1022,8 +783,10 @@ async def ora_sync_out(
 
     Первый кадр — контракт из описания стейтмента после parse (типы,
     точность, null_ok, тексты типов Oracle) с декларациями columns поверх;
-    дальше кадры данных потоком Arrow IPC пачками драйвера. В ответ — состав
-    контракта, строки и координаты сессии.
+    дальше кадры данных потоком Arrow IPC пачками драйвера. Стейтменты
+    before и after идут в той же сессии до и после запроса, затем один
+    commit. В ответ — состав контракта, строки, шаги скриптов и координаты
+    сессии.
     """
     from boba.db.oracle.payload import PayloadOracle  # noqa: PLC0415
     from boba.db.oracle.trace import OraSessionTrace  # noqa: PLC0415
@@ -1033,6 +796,7 @@ async def ora_sync_out(
     outbound = TransferOutbound(out)
     async with payload.opened() as conn:
         trace = OraSessionTrace(conn)
+        before_steps = await payload.script(conn, before, trace)
         specs = Declarations().merge(
             await payload.describe_specs(conn, statement.text), columns
         )
@@ -1046,66 +810,171 @@ async def ora_sync_out(
             )
         )
         await payload.arrow_into(conn, statement.text, outbound.writer(), trace)
+        after_steps = await payload.script(conn, after, trace)
+        await payload.commit(conn)
         report = trace.report(
             ContractText().render(StreamWire.ARROW.value, specs), statement.text
         )
 
-    return MarkdownResult(text=report.render())
+    return MarkdownResult(text=report.scripted(before_steps, after_steps).render())
 
 
 @tool
-async def ora_arrow_in(  # noqa: PLR0913
+async def ora_sync_in(  # noqa: PLR0913
     connection: OraConnection,
-    sql: Annotated[
+    schema_name: Annotated[
+        str, Field(min_length=1, description="Схема таблицы-приёмника: HR")
+    ],
+    table_name: Annotated[
+        str, Field(min_length=1, description="Таблица-приёмник в схеме: ORDERS")
+    ],
+    schema_strategy: Annotated[
+        SchemaStrategy,
+        Field(
+            description=(
+                "Что делать с таблицей до загрузки, объект с kind:\n"
+                "   - create_if_not_exists — создать, если нет\n"
+                "       есть — сверить и оставить\n"
+                "   - error_if_not_exists — таблица обязана существовать\n"
+                "   - error_if_schema_changed — таблица обязана совпадать с потоком\n"
+                "   - drop_and_create_if_schema_changed — пересоздать при расхождении\n"
+                "   - backup_and_create_if_schema_changed — при расхождении\n"
+                "       переименовать в _bak_<время> и создать заново\n"
+                "   - drop_and_create — всегда пересоздать\n"
+                "   - backup_and_create — всегда переименовать в _bak_<время>\n"
+                "       и создать заново\n"
+                "   - do_nothing — таблицу не трогать и не сверять\n"
+            ),
+        ),
+    ],
+    delete_strategy: Annotated[
+        DeleteStrategy,
+        Field(
+            description=(
+                "Что удалить перед вставкой, объект с kind:\n"
+                "   - nothing — ничего\n"
+                "   - truncate — truncate table\n"
+                "   - delete_all — delete без условия\n"
+                "   - delete_where — delete по условию, текст условия в поле where\n"
+            ),
+        ),
+    ],
+    insert_strategy: Annotated[
+        InsertStrategy,
+        Field(
+            description=(
+                "Как вставить поток, объект с kind:\n"
+                "   - full — вставить все строки\n"
+                "   - nothing — только схема и удаление\n"
+                "       поток прочитать и не вставлять\n"
+            ),
+        ),
+    ],
+    chunk_bytes: ChunkBytes,
+    rules: Annotated[
+        ColumnRules,
+        Field(
+            description=(
+                "Правила колонок приёмника, имена колонок строчными:\n"
+                "   - rename_columns — {колонка приёмника: поле потока}\n"
+                "       только имя, данные не меняются\n"
+                "   - column_types — {колонка приёмника: тип Oracle текстом}\n"
+                "       перекрывает тип из потока и стратегию unknown_types\n"
+            ),
+        ),
+    ] = ColumnRules(),
+    unknown_types: Annotated[
+        UnknownTypeStrategy,
+        Field(
+            description=(
+                "Что делать с колонкой, для которой у приёмника нет типа "
+                "(массивы, составные типы), объект с kind:\n"
+                "   - fail_on_unknown — ошибка с типом источника\n"
+                "   - fallback_as_varchar — колонка получает CLOB\n"
+                "       явный rules.column_types перекрывает оба варианта\n"
+            ),
+        ),
+    ] = FailOnUnknown(kind="fail_on_unknown"),
+    create_table: Annotated[
         str,
         Field(
             min_length=1,
             description=(
-                "Стейтмент INSERT с позиционными bind'ами :1..:n в порядке полей "
-                "схемы Arrow входного потока, например: insert into hr.employees "
-                "(id, name, hired) values (:1, :2, :3). Значения драйвер берёт "
-                "из колонок пачки как есть; приведения пишутся в стейтменте."
+                "Шаблон create table, когда стратегия схемы создаёт таблицу. "
+                "Цельный стейтмент, переменные обязательны:\n"
+                "   - {schema_name} — схема приёмника, экранированная\n"
+                "   - {table_name} — имя таблицы, экранированное\n"
+                "   - {columns} — колонки с типами из плана\n"
+                "Сюда пишутся особенности таблицы: tablespace, partition by, "
+                "compress. Литеральные фигурные скобки удваиваются.\n"
             ),
         ),
-        MarkdownResult(language="sql"),
-    ],
-    chunk_bytes: ChunkBytes,
+    ] = OraTableRef.CREATE_TABLE,
     before: BeforeSteps = (),
     after: AfterSteps = (),
     *,
     feed: Annotated[Inbound[TransferFrame], Injected],
 ) -> MarkdownResult:
-    """Насос загрузки: поток Arrow IPC из входного порта в стейтмент.
+    """Приёмник Oracle со стратегиями: поток arrow любого источника в таблицу.
 
-    Данные приходят во входной порт от другого насоса. Каждая пачка
-    Arrow уходит одной командой executemany, значения драйвер берёт из
-    колонок пачки без разбора в Python. Стейтменты before и after идут в
-    той же сессии до и после загрузки, DML всего вызова — одна транзакция с
-    одним commit после after: ошибка откатывает всё. В ответ — число
-    записанных строк и шаги скриптов.
+    Контракт потока сверяется с таблицей по семействам типов: целые ложатся
+    NUMBER(p), decimal — NUMBER(p, s), строки — VARCHAR2(n CHAR) или CLOB,
+    моменты — TIMESTAMP(p), uuid и time — строками, boolean — BOOLEAN на 23
+    и NUMBER(1) раньше. Стратегия схемы создаёт, оставляет, бэкапит или
+    пересоздаёт таблицу либо отказывает с текстом расхождений; затем
+    удаление, затем вставка пачек через executemany без разбора значений в
+    Python. DDL Oracle фиксирует сам, удаление и вставка вместе с before и
+    after — одна транзакция. В ответ — что сделано со схемой и почему, сверка
+    по колонкам, что удалено, сколько вставлено.
     """
     from boba.db.oracle.payload import PayloadOracle  # noqa: PLC0415
-    from boba.db.oracle.trace import OraSessionTrace  # noqa: PLC0415
-    from boba.toolkit.arrow import ArrowIpc  # noqa: PLC0415
+    from boba.db.oracle.sync import OraSyncLoader  # noqa: PLC0415
+    from boba.db.oracle.trace import (  # noqa: PLC0415
+        OraSessionTrace,
+        OraTransferReportText,
+    )
+    from boba.toolkit.sync import ArrowContract, StreamContract  # noqa: PLC0415
+    from boba.toolkit.sync import Engine as NeutralEngine  # noqa: PLC0415
 
+    template = CreateTemplate(create_table, OraTableRef.TEMPLATE_VARS)
+    inbound = TransferInbound(feed)
+    head = await inbound.get_schema()
+    if head.wire is not StreamWire.ARROW:
+        raise SyncError(
+            f"ora_sync_in takes the arrow wire only, got {head.wire.value} from "
+            f"{head.source_engine.value}"
+        )
+
+    contract = ArrowContract.model_validate(head.contract)
+    table = OraTableRef(schema=schema_name, name=table_name)
     payload = PayloadOracle(connection)
-    statement = OraQueryBuilder().raw_query(sql).build()
-    frames = TransferInbound(feed)
-    await frames.get_head()
-    inbound = await ArrowIpc().open_in(frames.raw(), chunk_bytes)
-
-    rows = 0
     async with payload.opened() as conn:
         trace = OraSessionTrace(conn)
         before_steps = await payload.script(conn, before, trace)
-        async for batch in inbound.batches:
-            rows += await payload.executemany_arrow(conn, statement.text, batch, trace)
-
+        loader = OraSyncLoader(
+            conn,
+            table,
+            StreamContract().specs(contract.columns),
+            NeutralEngine(head.source_engine.value),
+            inbound,
+            chunk_bytes,
+            payload,
+            trace,
+        )
+        report = await loader.run(
+            schema_strategy,
+            delete_strategy,
+            insert_strategy,
+            unknown_types,
+            rules,
+            template,
+        )
         after_steps = await payload.script(conn, after, trace)
         await payload.commit(conn)
-        report = trace.report(f"{rows} rows written", statement.text)
 
-    return MarkdownResult(text=report.scripted(before_steps, after_steps).render())
+    return MarkdownResult(
+        text=OraTransferReportText().render(report, before_steps, after_steps)
+    )
 
 
 EXPECTED: Mapping[type[Exception], SqlErrorKind] = {
@@ -1122,11 +991,8 @@ TOOLS: Final = ToolMain.toolset(
     ora_describe_table,
     ora_query,
     ora_address,
-    ora_csv_out,
-    ora_csv_in,
-    ora_arrow_out,
     ora_sync_out,
-    ora_arrow_in,
+    ora_sync_in,
     ora_database_describe,
     ora_schema_describe,
     ora_table_describe,

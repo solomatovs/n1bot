@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-__all__ = ["OracleError", "OracleQueryError"]
+__all__ = ["OracleError", "OracleMissingObjectError", "OracleQueryError"]
 
 
 class OracleError(RuntimeError):
@@ -16,3 +16,8 @@ class OracleQueryError(RuntimeError):
     драйвера сюда упаковывается на границе пакета, наружу тип python-oracledb не
     выходит — в окружении приложения его нет.
     """
+
+
+class OracleMissingObjectError(OracleQueryError):
+    """Объекта, который назвал стейтмент, нет или он не виден учётке
+    (ORA-00942): приёмник по нему узнаёт, что таблицы ещё нет."""

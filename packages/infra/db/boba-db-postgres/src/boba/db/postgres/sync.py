@@ -527,11 +527,10 @@ class PgArrowSink(TransferSink):
         return report.rows
 
     async def discard(self) -> int:
-        rows = 0
-        async for batch in self._reader.batches:
-            rows += batch.num_rows
+        async for _ in self._reader.batches:
+            pass
 
-        return rows
+        return 0
 
 
 class PgSyncLoader:
@@ -587,10 +586,10 @@ class PgSyncLoader:
             sink = PgArrowSink(
                 self._conn, self._table, spec.names(), reader, self._exact_floats
             )
-            run = TransferRun(
+            transfer = TransferRun(
                 schema_strategy, delete_strategy, insert_strategy, unknown_types
             )
 
-            return await run.run(
+            return await transfer.run(
                 self._table.text(), exists, diff.check(), table, sink, True
             )

@@ -49,10 +49,10 @@ class Chained:
 
 
 class Pumps:
-    """Насосы postgres, ClickHouse и Oracle над профилями стенда. Выход
-    возвращает тела кадров порта, вход принимает байты и отдаёт текст отчёта;
-    extra — остальные аргументы фасада (before, after, session);
-    chain соединяет два насоса трубой и гонит их одновременно."""
+    """Насосы postgres, ClickHouse и Oracle над профилями стенда. pg_out
+    возвращает тела кадров порта, sync_in принимает кадры из памяти и отдаёт
+    текст отчёта; extra — остальные аргументы фасада (before, after,
+    copy_options); chain соединяет два насоса трубой и гонит их одновременно."""
 
     CHUNK_BYTES: ClassVar[int] = 4096
     """Размер порции насосов с chunk_bytes: нижняя граница фасада."""
@@ -62,12 +62,10 @@ class Pumps:
         postgres: PostgresConfig | None = None,
         clickhouse: ClickHouseConfig | None = None,
         oracle: OracleConfig | None = None,
-        chunk: int = 777,
         postgres_target: PostgresConfig | None = None,
     ) -> None:
         """postgres_target — второй сервер postgres для входных насосов;
         без него вход и выход идут в один сервер."""
-        self._chunk = chunk
         target = postgres_target
         if target is None:
             target = postgres
@@ -75,34 +73,20 @@ class Pumps:
         self._connections: dict[str, object | None] = {
             "pg_sync_out": postgres,
             "pg_sync_in": target,
-            "ch_stream_out": clickhouse,
-            "ch_stream_in": clickhouse,
-            "ch_arrow_out": clickhouse,
             "ch_sync_out": clickhouse,
             "ch_sync_in": clickhouse,
-            "ch_arrow_in": clickhouse,
-            "ora_csv_out": oracle,
-            "ora_csv_in": oracle,
-            "ora_arrow_out": oracle,
             "ora_sync_out": oracle,
-            "ora_arrow_in": oracle,
+            "ora_sync_in": oracle,
         }
         self._bodies: dict[str, Body] = {}
         self._ports: dict[str, dict[str, Any]] = {}
         listed = ToolMain.toolset(
             pg.pg_sync_out,
             pg.pg_sync_in,
-            ch.ch_stream_out,
-            ch.ch_stream_in,
-            ch.ch_arrow_out,
             ch.ch_sync_out,
             ch.ch_sync_in,
-            ch.ch_arrow_in,
-            ora.ora_csv_out,
-            ora.ora_csv_in,
-            ora.ora_arrow_out,
             ora.ora_sync_out,
-            ora.ora_arrow_in,
+            ora.ora_sync_in,
         )
         for payload in listed:
             if payload.coroutine is None:
@@ -137,31 +121,6 @@ class Pumps:
         )
 
         return report.text
-
-    async def ch_out(self, statement: str, **extra: Any) -> bytes:
-        return await self._out(
-            "ch_stream_out", statement, chunk_bytes=self.CHUNK_BYTES, **extra
-        )
-
-    async def ch_in(
-        self, statement: str, data: bytes, chunk: int | None = None, **extra: Any
-    ) -> str:
-        return await self._in(
-            "ch_stream_in",
-            statement,
-            data,
-            chunk,
-            chunk_bytes=self.CHUNK_BYTES,
-            **extra,
-        )
-
-    async def ora_out(self, statement: str, **extra: Any) -> bytes:
-        return await self._out("ora_csv_out", statement, **extra)
-
-    async def ora_in(self, statement: str, data: bytes, **extra: Any) -> str:
-        return await self._in(
-            "ora_csv_in", statement, data, None, chunk_bytes=self.CHUNK_BYTES, **extra
-        )
 
     async def chain(self, out: Leg, into: Leg) -> Chained:
         """Выход out и вход into через трубу ОС одновременно."""
@@ -229,26 +188,6 @@ class Pumps:
         )
 
         return sink.data()
-
-    async def _in(
-        self,
-        name: str,
-        statement: str,
-        data: bytes,
-        chunk: int | None,
-        **extra: Any,
-    ) -> str:
-        if chunk is None:
-            chunk = self._chunk
-
-        report = await self._bodies[name](
-            connection=self._required(name),
-            sql=statement,
-            feed=Feed(data, chunk, Feed.RAW),
-            **extra,
-        )
-
-        return report.text
 
     def _required(self, name: str) -> object:
         connection = self._connections[name]

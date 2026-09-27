@@ -13,7 +13,14 @@ from dataclasses import dataclass, field, replace
 
 from oracledb import AsyncConnection, AsyncCursor
 
-__all__ = ["OraCommandReport", "OraScriptStep", "OraSessionTrace"]
+from boba.toolkit.transfer import TransferReport
+
+__all__ = [
+    "OraCommandReport",
+    "OraScriptStep",
+    "OraSessionTrace",
+    "OraTransferReportText",
+]
 
 
 @dataclass(frozen=True)
@@ -123,3 +130,26 @@ class OraSessionTrace:
             version=self._conn.version,
             warnings=tuple(self._warnings),
         )
+
+
+class OraTransferReportText:
+    """Текст отчёта приёмника Oracle с шагами скриптов before и after."""
+
+    def render(
+        self,
+        report: TransferReport,
+        before: Sequence[OraScriptStep],
+        after: Sequence[OraScriptStep],
+    ) -> str:
+        lines = [report.render()]
+        if before:
+            lines.append("before:")
+            for step in before:
+                lines.append(step.render())
+
+        if after:
+            lines.append("after:")
+            for step in after:
+                lines.append(step.render())
+
+        return "\n".join(lines)

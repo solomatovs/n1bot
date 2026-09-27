@@ -12,10 +12,8 @@ Oracle 12.2 Enterprise, 18 XE, 21 XE и 23 Free.
 Перекачка собирается из двух инструментов, соединённых трубой. Насос выгрузки
 пишет кадры в свой выходной порт, насос загрузки читает их из входного
 порта, хост соединяет порты, и оба насоса работают одновременно. Первый
-кадр — `schema` у источников с контрактом (движок источника, формат данных
-`csv`, `tsv`, `binary` или `arrow` и контракт колонок) либо `raw` у сырых
-насосов (только движок источника, формат задан текстом запроса); дальше
-кадры `rows` с байтами. Тела никто не разбирает: какие байты выдал
+кадр — `schema`: движок источника, формат данных `csv`, `tsv`, `binary` или
+`arrow` и контракт колонок; дальше кадры `rows` с байтами. Тела никто не разбирает: какие байты выдал
 источник, такие получит приёмник.
 
 У PostgreSQL два инструмента на всё: `pg_sync_out(sql, wire, columns,
@@ -29,22 +27,18 @@ unknown_types, copy_options)`. Инструменты друг о друге н�
 | База | Выгрузка | Загрузка | Формат потока |
 |---|---|---|---|
 | PostgreSQL | `pg_sync_out(sql, wire)` | `pg_sync_in(schema_name, table_name, ...)` | csv, tsv, binary или arrow — как назвал `wire` |
-| ClickHouse | `ch_stream_out(sql, chunk_bytes)` | `ch_stream_in(sql, chunk_bytes)` | тот, что задан словом `FORMAT` в запросе; контракта нет |
-| ClickHouse, sync | `ch_sync_out(sql, wire)` | `ch_sync_in(database, table_name, ...)` | tsv с типами ClickHouse как есть или arrow — как назвал `wire`; контракт для `pg_sync_in` и `ch_sync_in` |
-| ClickHouse, Arrow | `ch_arrow_out(sql, chunk_bytes)` | `ch_arrow_in(sql, chunk_bytes)` | Arrow IPC; контракта нет |
-| Oracle | `ora_csv_out(sql)` | `ora_csv_in(sql, chunk_bytes)` | только CSV, правила ниже; контракта нет |
-| Oracle, Arrow | `ora_arrow_out(sql)`, `ora_sync_out(sql, columns)` | `ora_arrow_in(sql, chunk_bytes)` | Arrow IPC; `ora_sync_out` несёт контракт для `pg_sync_in` |
+| ClickHouse | `ch_sync_out(sql, wire)` | `ch_sync_in(database, table_name, ...)` | tsv с типами ClickHouse как есть или arrow — как назвал `wire` |
+| Oracle | `ora_sync_out(sql, columns)` | `ora_sync_in(schema_name, table_name, ...)` | только arrow с контрактом: пачки драйвера как есть |
 
-Приёмник `pg_sync_in` принимает только потоки с контрактом: от
-`pg_sync_out` любой раскладки и от `ora_sync_out`/`ch_sync_out` (arrow).
-Сырые потоки `ch_stream_out`, `ch_arrow_out`, `ora_csv_out`,
-`ora_arrow_out` идут только в приёмники ClickHouse и Oracle, где стейтмент
-пишет LLM.
+Приёмники `pg_sync_in`, `ch_sync_in`, `ora_sync_in` принимают поток любого
+источника с контрактом; подходит ли им раскладка, каждый проверяет сам по
+кадру `schema`.
 
-У PostgreSQL и ClickHouse формат потока выбирает сам стейтмент, и сервер
-пишет и читает его сам; инструменты в текст не заглядывают. У Oracle
-серверного потока нет, поэтому насос делает CSV сам, и формат у него один —
-отсюда и имя `ora_csv_*`.
+У PostgreSQL и ClickHouse поток пишет и читает сам сервер (COPY,
+`FORMAT`), инструмент только называет ему формат из `wire`. У Oracle
+серверного потока нет: всё, что идёт по сети, разбирает драйвер, и
+единственный путь без разбора значений в Python — пачки Arrow драйвера как
+есть. Поэтому у Oracle один формат, arrow.
 
 `chunk_bytes` — размер порции между насосом и трубой, по умолчанию 256 КиБ:
 крупнее — меньше системных вызовов на больших объёмах, мельче — раньше
@@ -139,8 +133,6 @@ line \ back ""q"", semi;",,t,0.3333333333333333,NaN,2024-02-29,2024-02-29 13:14:
 | # | Колонка | Текст поля |
 |---|---|---|
 | 4 | empty | `\N` |
-
-Именно такой поток ждёт `ora_csv_in`.
 
 ### Сессия COPY зафиксирована
 
@@ -245,257 +237,189 @@ UInt64	Decimal(18, 2)	String	Nullable(String)	Bool	Float64	Float64	Date	DateTime
 Кавычки внутри имени типа в шапке экранированы: `DateTime64(6, \'UTC\')`.
 Строка данных — та же, что у TabSeparated.
 
-При вставке такой поток сопоставляет колонки по именам, лишние колонки
-шапки молча пропускает, а тип в шапке обязан совпасть с типом колонки
-полностью: `UInt32` против `UInt64` — отказ, а не приведение. PostgreSQL
-такую шапку не пишет, поэтому формат годится для ClickHouse -> ClickHouse.
-
-### CSV
-
-Тот же `select` с `format CSV`:
-
-```text
-1,12.5,"tab	new
-line \ back ""q"", semi;",\N,true,0.3333333333333333,nan,"2024-02-29","2024-02-29 13:14:15.123456","[1,2]","{'k':1}",1,"x","a1b2c3d4-0000-0000-0000-000000000001"
-```
-
-| # | Колонка | Текст поля | Что это |
-|---|---|---|---|
-| 1 | id | `1` | числа без кавычек |
-| 2 | amount | `12.5` | |
-| 3 | note | `"tab⇥new↵line \ back ""q"", semi;"` | как CSV PostgreSQL |
-| 4 | empty | `\N` | **NULL — `\N`, а не пустое поле**, как у PostgreSQL |
-| 5 | flag | `true` | без кавычек |
-| 6 | ratio | `0.3333333333333333` | |
-| 7 | nan | `nan` | |
-| 8 | d | `"2024-02-29"` | **даты в кавычках** |
-| 9 | ts | `"2024-02-29 13:14:15.123456"` | |
-| 10 | arr | `"[1,2]"` | |
-| 11 | m | `"{'k':1}"` | |
-| 12, 13 | t | `1`, `"x"` | **кортеж развернулся в два поля**: полей в записи на одно больше, чем колонок |
-| 14 | u | `"a1b2c3d4-0000-0000-0000-000000000001"` | |
-
-### Что принимает ch_stream_in
-
-`insert into t [(колонки)] format <формат>` читает поток любого формата
-ClickHouse; разбирает его сервер. Если значение надо привести до записи,
-используется `input()` — табличная функция над телом запроса:
-
-```sql
-insert into dwh.events
-select
-    toUInt64(c1)                as id,
-    upper(c2)                   as name,
-    parseDateTimeBestEffort(c3) as created_at
-from input('c1 String, c2 String, c3 String')
-settings precise_float_parsing = 1
-format TabSeparated
-```
-
-Настройки пишутся перед `format`. Это единственный способ загрузить в
-ClickHouse данные с преобразованием одним стейтментом, и он нужен почти
-всегда, когда источник — не ClickHouse.
-
-При чтении CSV и TabSeparated ClickHouse ведёт себя так:
-
-| Поле в потоке | Колонка `Nullable(...)` | Обычная колонка |
-|---|---|---|
-| `\N` | NULL | ошибка |
-| *(пусто)*, без кавычек | NULL | **значение по умолчанию** (`0`, `''`), без ошибки |
-| `""` | `''` | `''` |
-
-У новых серверов (23+) включено угадывание шапки CSV: если первая запись
-похожа на имена колонок, она будет молча пропущена. Отключается
-`settings input_format_csv_detect_header = 0`; на 22.12 этой настройки нет, и
-её передача — ошибка.
+Этот формат запрашивает `ch_sync_out` с `wire = tsv`: две строки шапки
+уходят кадром `schema` как контракт с текстами типов ClickHouse, остальное —
+кадрами `rows` как TabSeparated.
 
 ## Поток Oracle
 
-### Что отдаёт ora_csv_out
+У Oracle нет серверного текстового потока, и насосы Oracle работают только
+на Arrow. `ora_sync_out` отдаёт пачки Arrow драйвера python-oracledb в кадры
+потока как есть, `ora_sync_in` принимает поток arrow любого источника и
+кладёт пачки в таблицу через `executemany`: bind'ы драйвер берёт прямо из
+массивов Arrow, значений в Python никто не разбирает. Замер на стенде
+(300 тысяч строк, 8 колонок): чтение 360–400 тысяч строк в секунду — на
+треть быстрее построчного, дальше упирается в сервер; запись 150 тысяч в
+секунду на Oracle 23 и 30 тысяч на 12.2.
 
-У Oracle нет серверного текстового потока. `ora_csv_out` принимает `select`
-целиком, драйвер python-oracledb отдаёт ответ пачками Arrow (по `arraysize`
-строк профиля соединения), а pyarrow пишет каждую пачку в CSV. Типы колонок
-насос узнаёт у сервера разбором стейтмента (`parse`, без выполнения), чтобы
-запросить у драйвера точные типы NUMBER; сам запрос выполняется один раз.
+### Что отдаёт ora_sync_out
+
+`ora_sync_out(sql, columns)` разбирает стейтмент на сервере (`parse`, без
+выполнения) и шлёт первым кадром контракт колонок: семейство и параметры
+типа, `null_ok`, текст типа Oracle как в DDL; декларации `columns` ложатся
+поверх (например, `not null` у ключа, который сервер считает nullable).
+Затем сам запрос выполняется один раз, и пачки драйвера по `arraysize`
+строк уходят в порт потоком Arrow IPC.
 
 ```sql
 select
-    1                                                               as id,
-    cast(12.5 as number(10,2))                                      as amount,
-    'tab' || chr(9) || 'new' || chr(10) || 'line \ back "q", semi;' as note,
-    cast(null as varchar2(10))                                      as empty,
-    to_binary_double(1) / 3                                         as ratio,
-    binary_double_nan                                               as nan,
-    to_date('2024-02-29 13:14:15', 'yyyy-mm-dd hh24:mi:ss')         as d,
-    cast(timestamp '2024-02-29 13:14:15.123456' as timestamp(6))    as ts,
-    from_tz(timestamp '2024-02-29 13:14:15', '+03:00')              as tstz_raw,
-    to_char(from_tz(timestamp '2024-02-29 13:14:15', '+03:00'),
-            'yyyy-mm-dd hh24:mi:ss.ff6tzh:tzm')                     as tstz,
-    rawtohex(hextoraw('00FF'))                                      as bin,
-    cast(123 as number)                                             as n_int,
-    to_char(cast(1/7 as number), 'TM9')                             as n_free,
-    cast('ab' as char(5))                                           as c5,
-    true                                                            as flag
+    1                                                            as id,
+    cast(12.5 as number(10,2))                                   as amount,
+    cast(123 as number)                                          as n_int,
+    cast(7 as number(10))                                        as n_10,
+    'tab' || chr(9) || 'x'                                       as note,
+    cast(null as varchar2(5))                                    as empty,
+    to_binary_double(1) / 3                                      as ratio,
+    to_date('2024-02-29 13:14:15', 'yyyy-mm-dd hh24:mi:ss')      as d,
+    cast(timestamp '2024-02-29 13:14:15.123456' as timestamp(6)) as ts,
+    hextoraw('00FF10')                                           as bin,
+    true                                                         as flag
 from dual
 ```
 
-Поток:
+Поток двоичный, поэтому показана его схема и значения первой записи, как
+их читает pyarrow:
 
-```text
-1,12.50,"tab	new
-line \ back ""q"", semi;",,0.3333333333333333,nan,2024-02-29 13:14:15,2024-02-29 13:14:15.123456,2024-02-29 13:14:15.000000000,"2024-02-29 13:14:15.000000+03:00","00FF",123,".1428571428571428571428571428571428571429","ab   ",true
-```
+| Колонка | Тип Oracle | Тип в схеме Arrow | Значение |
+|---|---|---|---|
+| ID | NUMBER | `decimal128(38, 0)` | `Decimal('1')` |
+| AMOUNT | NUMBER(10,2) | `decimal128(10, 2)` | `Decimal('12.50')` |
+| N_INT | NUMBER без точности | `decimal128(38, 0)` | `Decimal('123')` |
+| N_10 | NUMBER(10) | `int64` | `7` — целый NUMBER до 18 знаков едет целым |
+| NOTE | VARCHAR2 | `large_string` | `'tab\tx'` — настоящая табуляция, ничего не экранируется |
+| EMPTY | VARCHAR2 | `large_string` | `None` — NULL это null-бит Arrow |
+| RATIO | BINARY_DOUBLE | `double` | `0.3333333333333333` |
+| D | DATE | `timestamp[s]` | `2024-02-29 13:14:15` |
+| TS | TIMESTAMP(6) | `timestamp[us]` | `2024-02-29 13:14:15.123456` |
+| BIN | RAW | `large_binary` | `b'\x00\xff\x10'` — байты как есть, без hex |
+| FLAG | BOOLEAN (23ai) | `bool` | `True` |
 
-Шапки нет, разделитель — запятая, запись заканчивается переводом строки. **Любая
-строка всегда в двойных кавычках**, числа, даты и булевы значения — без.
+Что здесь важно:
 
-| # | Колонка | Тип Oracle | Текст поля | Что это |
-|---|---|---|---|---|
-| 1 | id | NUMBER | `1` | целое |
-| 2 | amount | NUMBER(10,2) | `12.50` | со своим масштабом, без экспоненты |
-| 3 | note | VARCHAR2 | `"tab⇥new↵line \ back ""q"", semi;"` | в кавычках; табуляция, перевод строки, `\r` и `\` — настоящие байты, кавычка удвоена |
-| 4 | empty | VARCHAR2 | *(пусто)* | NULL — пустое поле; пустая строка Oracle и есть NULL, `""` не бывает |
-| 5 | ratio | BINARY_DOUBLE | `0.3333333333333333` | кратчайший точный текст |
-| 6 | nan | BINARY_DOUBLE | `nan` | строчными: `nan`, `inf`, `-inf` |
-| 7 | d | DATE | `2024-02-29 13:14:15` | у DATE всегда есть время |
-| 8 | ts | TIMESTAMP(6) | `2024-02-29 13:14:15.123456` | знаков столько, сколько у типа |
-| 9 | tstz_raw | TIMESTAMP WITH TIME ZONE | `2024-02-29 13:14:15.000000000` | **смещение потеряно**: настенное время, девять знаков |
-| 10 | tstz | то же через `to_char` | `"2024-02-29 13:14:15.000000+03:00"` | правильная запись: строка со смещением |
-| 11 | bin | RAW через `rawtohex` | `"00FF"` | hex заглавными, в кавычках — это строка |
-| 12 | n_int | NUMBER без точности | `123` | целые едут как есть |
-| 13 | n_free | NUMBER без точности через `to_char(..., 'TM9')` | `".1428571428571428571428571428571428571429"` | строка, **без ведущего нуля** |
-| 14 | c5 | CHAR(5) | `"ab   "` | с пробелами дополнения |
-| 15 | flag | BOOLEAN (23ai) | `true` | без кавычек |
-
-Этот поток — ровно то, что читает `copy ... from stdin (format csv)`
-PostgreSQL без опций и `format CSV` ClickHouse.
+- **имена колонок заглавные**, как их хранит Oracle; строчные — алиас в
+  кавычках: `col as "col"`; приёмники сверяют колонки по именам;
+- NUMBER без точности — `decimal128(38, 0)`, поэтому дробное значение в такой
+  колонке — ошибка DPY-4042 при чтении: `cast(col as number(18, 6))` или
+  `to_char`;
+- целый NUMBER(p, 0) до 18 знаков — `int64`, NUMBER(19..38, 0) —
+  `decimal128(p, 0)`, NUMBER(p, -s) — `decimal128(p + s, 0)`;
+- TIMESTAMP(7..9) — `timestamp[ns]`, но драйвер обрезает до микросекунд;
+- FLOAT(p) — `double`, 38 знаков NUMBER в нём не сохраняются;
+- CLOB, NCLOB и BLOB едут строками и байтами (`large_string`,
+  `large_binary`), в контракте они CLOB, NCLOB, BLOB.
 
 ### Что выгрузка не пропустит
 
-Часть типов драйвер не отдаёт в Arrow, и `ora_csv_out` падает. Такие типы
-приводятся в самом `SELECT`; справа — что при этом окажется в потоке:
+Часть типов драйвер в Arrow не отдаёт или отдаёт с потерей; такие колонки
+`ora_sync_out` отвергает по описанию стейтмента до выполнения запроса и
+называет, чем их привести в самом `select`:
 
-| Тип Oracle | Ошибка без приведения | Что писать в SELECT | В потоке |
+| Тип Oracle | Почему | Что писать в SELECT | В потоке |
 |---|---|---|---|
-| NUMBER без точности с дробью | DPY-4042 при чтении | `to_char(col, 'TM9')` | `".1428571428571428571428571428571428571429"` |
-| NUMBER больше 38 знаков | DPY-4042 при чтении | `to_char(col, 'TM9')` | `"9.99E+125"` |
-| RAW | binary needs rawtohex, при чтении | `rawtohex(col)` | `"00FF"` |
-| BLOB | binary needs rawtohex, при чтении | куски `rawtohex(dbms_lob.substr(...))`, см. ниже | `"00FF..."` |
-| INTERVAL YEAR TO MONTH | cannot be fetched as arrow, до выполнения | `to_char(col)` | `"-01-02"` |
-| INTERVAL DAY TO SECOND | cannot be fetched as arrow, до выполнения | `to_char(col)` или число секунд | `"+03 04:05:06.000000"` |
-| XMLTYPE | cannot be fetched as arrow, до выполнения | `xmlserialize(document col as clob)` | `"<a b=""1""/>"` |
-| JSON (21c+) | cannot be fetched as arrow, до выполнения | `json_serialize(col returning clob)` | `"{""a"":1}"` |
-| VECTOR (23ai) | cannot be fetched as arrow, до выполнения | `from_vector(col)` | `"[1.05E+002,1.5E+000]"` |
-| ROWID, UROWID | cannot be fetched as arrow, до выполнения | `rowidtochar(col)` | `"AAAR..."` |
-| TIMESTAMP WITH TIME ZONE с именем пояса | DPY-3022 | `to_char(col, '... tzh:tzm')` | `"2024-02-29 13:14:15+03:00"` |
-| DATE до нашей эры | year out of range | `to_char(col, 'syyyy-mm-dd hh24:mi:ss')` | `"-4000-01-01"` |
+| TIMESTAMP WITH TIME ZONE, WITH LOCAL TIME ZONE | смещение выбрасывается | `sys_extract_utc(col)` — настенное время в UTC, у приёмника объявить зонный тип через `column_types`; или `to_char(col, 'yyyy-mm-dd hh24:mi:ss.ff6tzh:tzm')` | `timestamp[us]`, `large_string` |
+| INTERVAL YEAR TO MONTH | Arrow-интервал не читает ни один приёмник | месяцы числом: `extract(year from col) * 12 + extract(month from col)`, или `to_char(col)` | `decimal128(38, 0)` |
+| INTERVAL DAY TO SECOND | то же | секунды числом: `cast(extract(day from col) * 86400 + ... + extract(second from col) as number(18, 6))`, или `to_char(col)` | `decimal128(18, 6)` |
+| XMLTYPE | нет в Arrow | `xmlserialize(document col as clob)` | `large_string` |
+| JSON (21c+) | нет в Arrow | `json_serialize(col returning clob)` | `large_string` |
+| VECTOR (23ai) | нет в Arrow | `from_vector(col)` | `large_string` |
+| ROWID, UROWID | нет в Arrow | `rowidtochar(col)` | `large_string` |
+| NUMBER без точности с дробью, NUMBER шире 38 знаков | DPY-4042 при чтении | `cast(col as number(p, s))` или `to_char(col, 'TM9')` | `decimal128(p, s)`, `large_string` |
+| DATE до нашей эры | year out of range при чтении | `to_char(col, 'syyyy-mm-dd hh24:mi:ss')` | `large_string` |
 
-Любое значение, прошедшее через `to_char`, становится строкой и едет в
-кавычках. NUMBER без точности с целыми значениями и `NUMBER(p, -s)` едут без
-приведения. Результат функций над NUMBER (`round`, `trunc`, арифметика) —
-тоже NUMBER без точности: дробный результат надо обернуть в
-`cast(... as number(p, s))`. Ошибка «cannot be fetched as arrow» приходит
-сразу, по описанию стейтмента, запрос при этом не выполняется.
-
-`to_char(col, 'TM9')` зависит от `NLS_NUMERIC_CHARACTERS` сессии. На стенде
-разделитель — точка; если у сервера другая территория, надёжнее
-`to_char(col, 'TM9', 'NLS_NUMERIC_CHARACTERS=''.,''')`. `TM9` пишет число
-без ведущего нуля (`.1428`) и переходит на экспоненту у очень больших и
-малых значений (`1E-130`).
+Ошибка приходит сразу, запрос при этом не выполняется. `to_char(col, 'TM9')`
+зависит от `NLS_NUMERIC_CHARACTERS` сессии; надёжнее задать разделитель
+третьим аргументом: `'NLS_NUMERIC_CHARACTERS=''.,'''` (две одинарные кавычки
+подряд — это одна кавычка внутри литерала).
 
 ### Что выгрузка пропустит, но потеряет
 
-- **TIMESTAMP WITH TIME ZONE** и **WITH LOCAL TIME ZONE** — смещение
-  выбрасывается: `from_tz(timestamp '2024-02-29 13:14:15', '+03:00')` едет как
-  `2024-02-29 13:14:15.000000000`. Правильно:
-  `to_char(col, 'yyyy-mm-dd hh24:mi:ss.ff6tzh:tzm')`, для локального пояса —
-  то же поверх `cast(col as timestamp with time zone)`.
-- **TIMESTAMP(9)** — в тексте девять знаков, но драйвер уже обрезал до
+- **TIMESTAMP(9)** — в схеме `timestamp[ns]`, но драйвер уже обрезал до
   микросекунд: `.123456789` едет как `.123456000`. Нужны наносекунды —
   `to_char(col, 'yyyy-mm-dd hh24:mi:ss.ff9')`.
 - **FLOAT(p)** — это NUMBER, но драйвер отдаёт его как double:
   `cast(1/3 as float(126))` едет как `0.3333333333333333` вместо 38 знаков.
-  Точно — `to_char(col, 'TM9')`: `".33333333333333333333333333333333333333"`.
+  Точно — `to_char(col, 'TM9')`.
 - **Однобайтовая кодировка базы.** Oracle 12.2 стенда живёт в `WE8DEC`:
-  кириллица и иероглифы в VARCHAR2 и CLOB уже в базе хранятся как `¿`, и
-  поток повторит это. Юникод в такой базе живёт только в NVARCHAR2 и NCLOB, и
-  они выгружаются правильно.
+  кириллица в VARCHAR2 и CLOB уже в базе хранится как `¿`, и поток повторит
+  это. Юникод в такой базе живёт только в NVARCHAR2 и NCLOB.
 - **`json()` до 21c** — типа JSON нет, а вызов `json('...')` молча даёт NULL.
 
-### BLOB больше 2000 байт
+### Что принимает ora_sync_in
 
-`rawtohex` принимает только RAW, а RAW в SQL ограничен 2000 байтами. BLOB
-выгружается кусками, склеенными в CLOB:
+`ora_sync_in(schema_name, table_name, schema_strategy, delete_strategy,
+insert_strategy, rules, unknown_types, create_table, chunk_bytes, before,
+after)` принимает поток arrow с контрактом от любого `*_sync_out`:
+`pg_sync_out` с `wire = arrow`, `ch_sync_out` с `wire = arrow`,
+`ora_sync_out`. Стратегии те же, что у `pg_sync_in`; имена колонок в
+`rules` — строчными, как их сверяет приёмник (Oracle хранит имена
+заглавными, приёмник сравнивает без учёта регистра). Шаблон
+`create_table` — цельный стейтмент с `{schema_name}`, `{table_name}` и
+`{columns}`; сюда пишутся `tablespace`, `partition by`, `compress`.
 
-```sql
-to_clob(rawtohex(dbms_lob.substr(b, 2000, 1)))
-  || to_clob(rawtohex(dbms_lob.substr(b, 2000, 2001)))
-  || to_clob(rawtohex(dbms_lob.substr(b, 2000, 4001)))
-```
+Типы колонок, которые приёмник создаёт по контракту:
 
-Кусков должно хватать на самый длинный BLOB: хвост за последним куском
-пропадёт без ошибки.
+| Семейство потока | Колонка Oracle |
+|---|---|
+| integer 8, 16, 32, 64 бит | NUMBER(3), NUMBER(5), NUMBER(10), NUMBER(19); беззнаковое 64 — NUMBER(20) |
+| decimal(p, s) | NUMBER(p, s); без точности или шире 38 — NUMBER |
+| float 32, 64 | BINARY_FLOAT, BINARY_DOUBLE |
+| string с длиной до 4000 | VARCHAR2(n CHAR) |
+| string без длины или длиннее | CLOB |
+| binary с длиной до 2000 | RAW(n) |
+| binary без длины или длиннее | BLOB |
+| timestamp с долями секунды | TIMESTAMP(3), (6), (9); с поясом — WITH TIME ZONE |
+| timestamp в секундах, date | DATE |
+| boolean | BOOLEAN на 23ai, раньше — NUMBER(1) |
+| uuid | VARCHAR2(36 CHAR), текст с дефисами |
+| time | VARCHAR2(18 CHAR) |
+| json, inet, interval, money, xml, bit | CLOB |
+| массивы, составные, прочее без пары | CLOB по `fallback_as_varchar`, иначе отказ с типом источника |
+| источник Oracle | текст типа источника как есть: NUMBER(18,4), VARCHAR2(20 CHAR), TIMESTAMP(9), CLOB |
 
-### Что принимает ora_csv_in
+Сверка с существующей таблицей — по семействам: шире (NUMBER(30,6) под
+decimal(18,4), VARCHAR2(200) под строку из 40, TIMESTAMP(6) под
+миллисекунды) — предупреждение, уже — отказ до загрузки; целое из потока
+ложится в NUMBER(p, 0), если разрядов хватает; момент с поясом в колонку
+без пояса — отказ.
 
-`ora_csv_in(sql, chunk_bytes)` читает CSV без шапки и пишет его пачками
-`executemany` одной транзакцией в стейтмент INSERT, который написан в
-вызове: bind'ы `:1..:n` идут в порядке полей CSV. Каждое поле уходит
-строкой как есть, `\N` — NULL для любого типа; приводит значения сам
-стейтмент, поэтому числа, даты и RAW пишутся с явным форматом:
+Как идёт загрузка:
 
-```sql
-insert into hr.sink (id, email, balance, created_at, note, photo) values (
-    to_number(:1),
-    :2,
-    to_number(:3),
-    to_timestamp(:4, 'yyyy-mm-dd hh24:mi:ss.ff6'),
-    :5,
-    hextoraw(substr(:6, 3))
-)
-```
-
-Формат потока отличается от выхода `ora_csv_out` в двух местах: NULL —
-`\N`, а бинарное поле — шестнадцатеричная строка с префиксом `\x`. Это
-поток `copy ... to stdout (format csv, null '\N')` PostgreSQL:
-
-```text
-1,12.50,"tab	new
-line \ back ""q"", semi;",\N,2024-02-29 13:14:15.123456,\x00ff
-```
-
-| Текст поля | Что писать в стейтменте | Значение |
-|---|---|---|
-| `\N` | любой bind | NULL |
-| `12.50` | `to_number(:k)` или bind в NUMBER-колонку | Oracle приводит текст сам |
-| `0.3333333333333333`, `nan` | `to_binary_double(:k)` | BINARY_DOUBLE; `nan` и `inf` Oracle читает |
-| `2024-02-29 13:14:15.123456` | `to_timestamp(:k, 'yyyy-mm-dd hh24:mi:ss.ff6')` | доли секунд сохраняются |
-| `\x00ff` | `hextoraw(substr(:k, 3))` | RAW, BLOB; префикс `\x` срезается |
-| `"tab⇥new..."` | `:k` | строка как есть |
-| *(пусто)* | `:k` | NULL: Oracle хранит пустую строку и пустой RAW как NULL |
-
-Выход `ora_csv_out` подаётся в `ora_csv_in` только если в числовых и
-временных колонках нет NULL: `ora_csv_out` пишет NULL пустым полем, а
-`to_number('')` и `to_timestamp('')` дают NULL, но пустое поле числового
-CSV-потока postgres — это ошибка разбора на стороне postgres, не Oracle.
+- каждая пачка потока — одна команда `executemany`, значения драйвер берёт
+  из массивов Arrow; колонки LOB приёмник сам ставит в конец insert'а —
+  Oracle не принимает обычный bind после LOB (ORA-24816);
+- uuid едет 16 байтами и форматируется сервером
+  (`regexp_replace(rawtohex(...))`); hex-текст bytea из postgres
+  (`\x00ff`) сервер переводит `hextoraw`; bool на серверах без BOOLEAN и
+  time приводит pyarrow (`int8`, строка);
+- сессия переводится в UTC: момент без пояса из потока (например,
+  `sys_extract_utc` источника Oracle) ложится в колонку WITH TIME ZONE как
+  UTC, а не как время сессии сервера;
+- DDL Oracle фиксирует сам, поэтому создание, бэкап (rename в
+  `_bak_<время>`) и drop идут вне транзакции; удаление и вставка вместе с
+  `before` и `after` — одна транзакция, ошибка шага откатывает строки;
+- строки из postgres и ClickHouse создаются nullable, даже если поток
+  объявил их `not null`: пустую строку Oracle хранит как NULL, и `not null`
+  для неё невыполним (ORA-01400 на `''`); у источника Oracle пустых строк не
+  бывает, и его `not null` доходит;
+- зарезервированные слова в именах колонок (`by`, `date`, `number`) Oracle
+  не принимает без кавычек: переименуйте поле через `rename_columns` или
+  алиасом в `select` источника.
 
 ## PostgreSQL <-> ClickHouse
 
 ### Стейтменты
 
-PostgreSQL -> ClickHouse, `pg_sync_out` с `wire = tsv` и `ch_stream_in`:
+PostgreSQL -> ClickHouse, `pg_sync_out` с `wire = tsv` и `ch_sync_in`:
 
 ```sql
 -- pg_sync_out (wire = tsv)
 select id, name, created_at
 from public.users
 order by id
-
--- ch_stream_in
-insert into dwh.users (id, name, created_at)
-format TabSeparated
 ```
+
+Стейтменты приёмника — `create table`, двойник `__ex`, `INSERT ... FORMAT
+TabSeparated`, `exchange tables` — строит сам `ch_sync_in` по стратегиям.
 
 ClickHouse -> PostgreSQL, `ch_sync_out` с `wire = tsv` и `pg_sync_in`:
 
@@ -514,16 +438,9 @@ text как есть.
 
 Основная пара — текстовый COPY и `TabSeparated`: как видно по образцам выше,
 разделители, экранирование и `\N` у них одинаковые, и поток одного читается
-другим без единого преобразования. Порядок полей — порядок колонок в списке
-стейтмента; можно и `TabSeparatedWithNames`, тогда ClickHouse сопоставит поля
-по именам (со стороны PostgreSQL шапку понимает только CSV с `HEADER`).
-
-CSV тоже стыкуется, но NULL у ClickHouse — `\N`, а PostgreSQL в CSV ждёт
-пустое поле. При загрузке из ClickHouse нужно
-`COPY t FROM STDIN WITH (FORMAT CSV, NULL '\N')`, иначе в колонку ляжет строка
-из двух символов. В обратную сторону пустое поле ClickHouse читает как NULL
-только в `Nullable` колонке. И помните про кортежи: в CSV ClickHouse
-раскладывает их на несколько полей.
+другим без единого преобразования. Поэтому между PostgreSQL и ClickHouse
+`wire = tsv` в обе стороны; порядок полей — порядок колонок в запросе
+источника, приёмник сопоставляет их с таблицей по контракту.
 
 ### Типы PostgreSQL в ClickHouse
 
@@ -623,250 +540,144 @@ ClickHouse читает, `nan`/`inf` ClickHouse PostgreSQL понимает.
 
 ### Стейтменты
 
-`ora_sync_out` и `pg_sync_in`: тела едут потоком Arrow с контрактом
-(раздел «Oracle -> PostgreSQL через Arrow»), стейтменты приёмник строит сам
-по стратегиям. CSV-поток `ora_csv_out` приёмник postgres не принимает: у
-него нет контракта колонок.
+`ora_sync_out` и `pg_sync_in`: тела едут потоком arrow с контрактом,
+стейтменты приёмник строит сам по стратегиям.
+
+```sql
+-- ora_sync_out
+select
+    id                                          as "id",
+    amount                                      as "amount",
+    sys_extract_utc(created_at)                 as "created_at",
+    '\x' || rawtohex(payload)                   as "payload",
+    note                                        as "note"
+from sales.orders
+
+-- pg_sync_in: schema_name = "dwh", table_name = "orders",
+-- rules.column_types = {"created_at": "timestamptz(6)", "payload": "bytea"}
+```
+
+Колонки таблицы приёмник сверяет с контрактом по именам, поэтому алиасы в
+`select` должны совпадать с колонками таблицы. Тела ложатся через CSV
+сервера postgres, и двоичные значения Arrow он не берёт: RAW и BLOB едут
+hex-текстом с префиксом `\x`, а колонка получает `bytea` через
+`column_types` (без него — `text`). NULL в RAW при этом остаётся NULL:
+`'\x' || null` в Oracle даёт NULL.
 
 ### Типы
 
-| Тип Oracle | SELECT для ora_csv_out | В потоке | Тип PostgreSQL |
-|---|---|---|---|
-| NUMBER(p), NUMBER(p, s) | как есть | `12.50` | numeric(p, s), bigint |
-| NUMBER без точности | `to_char(col, 'TM9')`, целые как есть | `".1428..."` | numeric |
-| NUMBER(p, -s) | как есть | `12300` | bigint, numeric |
-| FLOAT(p) | `to_char(col, 'TM9')` | `".3333...3"` | numeric |
-| BINARY_FLOAT | как есть | `0.6666667`, `inf` | real |
-| BINARY_DOUBLE | как есть | `0.2857142857142857`, `nan` | double precision |
-| VARCHAR2, NVARCHAR2, CLOB, NCLOB | как есть | `"текст"` | text |
-| CHAR(n) | как есть | `"ab   "` | char(n) |
-| DATE | как есть | `2024-02-29 13:14:15` | timestamp(0) |
-| TIMESTAMP(0..6) | как есть | `2024-02-29 13:14:15.123456` | timestamp(6) |
-| TIMESTAMP(9) | `to_char(cast(col as timestamp(6)), 'yyyy-mm-dd hh24:mi:ss.ff6')` | `"...15.123457"` | timestamp(6) |
-| TIMESTAMP WITH TIME ZONE | `to_char(col, 'yyyy-mm-dd hh24:mi:ss.ff6tzh:tzm')` | `"...15.123456+03:00"` | timestamptz |
-| TIMESTAMP WITH LOCAL TIME ZONE | то же поверх `cast(col as timestamp with time zone)` | `"...+03:00"` | timestamptz |
-| INTERVAL YEAR TO MONTH | `to_char(col)` | `"-01-02"` | interval |
-| INTERVAL DAY TO SECOND | число секунд, см. ниже | `"-1000000.5"` | interval |
-| RAW(16) | `rawtohex(col)` | `"00FF...10"` (32 цифры) | uuid |
-| RAW(n) | `case when col is not null then '\x' \|\| rawtohex(col) end` | `"\x00FF"` | bytea |
-| BLOB | то же с кусками `dbms_lob.substr` | `"\x00FF..."` | bytea |
-| CLOB IS JSON | как есть | `"{""a"": 1}"` | jsonb (json до 9.4, text до 9.2) |
-| JSON (21c+) | `json_serialize(col returning clob)` | `"{""a"":1}"` | jsonb |
-| XMLTYPE | `xmlserialize(document col as clob)` | `"<r id=""1""/>"` | xml |
-| BOOLEAN (23ai) | как есть | `true` | boolean |
-| VECTOR (23ai) | `translate(from_vector(col), '[]', '{}')` | `"{1.05E+002,1.5E+000}"` | real[] |
+| Тип Oracle | Что писать в select | Тип PostgreSQL |
+|---|---|---|
+| NUMBER(p, 0) до 18 знаков | как есть | bigint |
+| NUMBER(19..38, 0), NUMBER(p, -s) | как есть | numeric(p, 0), numeric(p + s, 0) |
+| NUMBER(p, s) | как есть | numeric(p, s) |
+| NUMBER без точности | целые как есть; дробь — `cast(col as number(p, s))` | numeric(38, 0), numeric(p, s) |
+| FLOAT(p) | как есть (double) или `to_char(col, 'TM9')` в numeric | double precision, text |
+| BINARY_FLOAT, BINARY_DOUBLE | как есть | real, double precision |
+| VARCHAR2(n), NVARCHAR2(n), CHAR(n) | как есть | character varying(n) |
+| CLOB, NCLOB | как есть | text |
+| DATE | как есть | timestamp(0) |
+| TIMESTAMP(0..6) | как есть | timestamp(p) |
+| TIMESTAMP(9) | как есть — микросекунды; `to_char(col, '... ff9')` в text | timestamp(6), text |
+| TIMESTAMP WITH TIME ZONE | `sys_extract_utc(col)` + `column_types: timestamptz(6)` | timestamptz(6) |
+| INTERVAL YEAR TO MONTH | месяцы числом | bigint |
+| INTERVAL DAY TO SECOND | секунды `cast(... as number(18, 6))` | numeric(18, 6) |
+| RAW, BLOB | `'\x' \|\| rawtohex(col)` + `column_types: bytea` | bytea |
+| BOOLEAN (23ai) | как есть | boolean |
+| JSON, XMLTYPE, VECTOR | `json_serialize`, `xmlserialize`, `from_vector` | text; jsonb, xml через `column_types` |
 
 ### Особенности
 
-**INTERVAL DAY TO SECOND со знаком.** `to_char` пишет знак один раз на всё
-значение: `"-000000011 13:46:40.500000000"`. Oracle имеет в виду минус
-(11 суток и 13 часов), а PostgreSQL относит минус только к суткам и
-получает `-11 days +13:46:40.5` — другое значение. Поэтому интервал едет
-числом секунд, а голое число PostgreSQL принимает в `interval` как секунды:
-
-```sql
-to_char(
-    extract(day    from iv) * 86400
-  + extract(hour   from iv) * 3600
-  + extract(minute from iv) * 60
-  + extract(second from iv),
-  'TM9'
-) as iv
-```
-
-В потоке `"-1000000.5"`, в PostgreSQL — `-277:46:40.5`, как и в Oracle.
-
-**Префикс `\x` и NULL.** В Oracle `'\x' || NULL` — это `'\x'`, и в потоке
-будет `"\x"` вместо пустого поля: PostgreSQL положит пустой bytea вместо
-NULL. Префикс ставится только непустому значению через `case`.
-
-**Округление наносекунд.** PostgreSQL округляет лишние знаки времени к
-чётному, Oracle при `cast(... as timestamp(6))` — вверх: `.123468500` у
-PostgreSQL станет `.123468`, у Oracle — `.123469`. Поэтому микросекунды
-считает Oracle.
-
 **DATE в колонку date.** DATE Oracle всегда со временем, и колонка `date`
-PostgreSQL молча его отбрасывает: `2024-02-29 13:14:15` станет `2024-02-29`.
-Если время есть, приёмник — `timestamp(0)`.
+PostgreSQL молча его отбрасывает. Приёмник создаёт `timestamp(0)`; `date`
+через `column_types` — только если время не нужно.
+
+**INTERVAL DAY TO SECOND со знаком.** `to_char` пишет знак один раз на всё
+значение (`"-000000011 13:46:40.5"`), а PostgreSQL относит минус только к
+суткам и получает другое значение. Поэтому интервал едет числом секунд, а
+`column_types: interval` кладёт число как секунды.
 
 **Лишние знаки numeric** PostgreSQL округляет: `-0.14286` в `numeric(18, 4)`
 станет `-0.1429`.
 
 **Greenplum 6 и очень малые double.** Число `1.942e-297` Greenplum 6
-разбирает с ошибкой в младшем бите (`1.9419999999999998e-297`), хотя
-PostgreSQL 9.4 того же поколения и Greenplum 7 читают его точно. Если такие
-значения важны до бита, на Greenplum 6 их везёт `pg_sync_in` с проводом
-`arrow` и `exact_floats = true` (hex-запись float, см. раздел Arrow):
-`numeric` не
-поможет, преобразование `numeric -> float8` идёт через тот же разбор
-текста.
+разбирает с ошибкой в младшем бите, тогда как PostgreSQL 9.4 и Greenplum 7
+читают его точно. Если такие значения важны до бита, `exact_floats = true`
+у `pg_sync_in` везёт float hex-записью (см. «Что принимает pg_sync_in с
+провода arrow»).
 
 ## Oracle -> ClickHouse
 
 ### Стейтменты
 
-`ora_csv_out` и `ch_stream_in`. `input()` нужен почти всегда: float, двоичные
-данные и векторы приводятся только в нём.
+`ora_sync_out` и `ch_sync_in`: контракт из описания стейтмента, стейтменты
+приёмника строятся по стратегиям.
 
 ```sql
--- ora_csv_out
+-- ora_sync_out
 select
-    id,
-    amount,
-    created_at,
-    ratio,
-    rawtohex(payload) as payload
+    id                          as "id",
+    amount                      as "amount",
+    sys_extract_utc(created_at) as "created_at",
+    payload                     as "payload",
+    note                        as "note"
 from sales.orders
 
--- ch_stream_in
-insert into dwh.orders (id, amount, created_at, ratio, payload)
-select
-    id,
-    amount,
-    created_at,
-    toFloat64(ratio) as ratio,
-    unhex(payload)   as payload
-from input('
-    id         Int64,
-    amount     Decimal(18, 2),
-    created_at DateTime64(6, ''UTC''),
-    ratio      String,
-    payload    Nullable(String)
-')
-settings precise_float_parsing = 1
-format CSV
+-- ch_sync_in: database = "dwh", table_name = "orders", order_by = "id",
+-- rules.column_types = {"created_at": "DateTime64(6, 'UTC')"}
 ```
 
-Каждая колонка, где в Oracle бывает NULL, объявляется `Nullable` и в
-таблице, и в `input()`, кроме массивов: `Nullable(Array)` не бывает.
+Преобразовывать почти нечего: `decimal128` ложится в `Decimal(p, s)`,
+`int64` — в `Int64`, `double` — в `Float64` без потери бита, `timestamp[us]`
+— в `DateTime64(6)`, `large_binary` — в `String`, `bool` — в `Bool`. NULL
+едут null-битом Arrow, и колонки создаются `Nullable` по контракту.
 
 ### Типы
 
-| Тип Oracle | SELECT для ora_csv_out | В потоке | Тип ClickHouse | В input() |
-|---|---|---|---|---|
-| NUMBER(p, s) | как есть | `12.50` | Decimal(p, s) | как есть |
-| NUMBER без точности | `to_char(col, 'TM9')` | `".1428..."` | Decimal(76, 40) | как есть |
-| NUMBER(p, -s), целый NUMBER | как есть | `12300` | Int64 | как есть |
-| FLOAT(p) | `to_char(col, 'TM9')` | `".3333...3"` | Decimal(76, 40) | как есть |
-| BINARY_FLOAT | как есть | `4.4999997e+30` | Float32 | `toFloat32(toFloat64(col))` из `String` |
-| BINARY_DOUBLE | как есть | `0.2857142857142857` | Float64 | `toFloat64(col)` из `String` |
-| VARCHAR2, NVARCHAR2, CHAR, CLOB, NCLOB | как есть | `"текст"` | String | как есть |
-| DATE | как есть | `2024-02-29 13:14:15` | DateTime('UTC') | как есть |
-| DATE как дата | `to_char(col, 'yyyy-mm-dd')` | `"2024-02-29"` | Date32 | как есть |
-| TIMESTAMP(0..6) | как есть | `2024-02-29 13:14:15.123456` | DateTime64(6, 'UTC') | как есть |
-| TIMESTAMP(9) | `to_char(col, 'yyyy-mm-dd hh24:mi:ss.ff9')` | `"...15.123456789"` | DateTime64(9, 'UTC') | как есть |
-| TIMESTAMP WITH [LOCAL] TIME ZONE | `to_char(col, '...ff6tzh:tzm')` | `"...+03:00"` | DateTime64(6, 'UTC') | как есть, смещение учитывается |
-| INTERVAL YEAR TO MONTH | `extract(year ...) * 12 + extract(month ...)` | `-986` | Int32 (месяцы) | как есть |
-| INTERVAL DAY TO SECOND | число секунд, как для PostgreSQL | `"-1000000.5"` | Decimal(18, 6) | как есть |
-| RAW(16) | `rawtohex(col)` | `"00FF...10"` | UUID | как есть |
-| RAW(n), BLOB | `rawtohex(col)` / куски | `"00FF..."` | String | `unhex(col)` |
-| CLOB IS JSON, JSON | как есть / `json_serialize(...)` | `"{""a"":1}"` | String | как есть |
-| XMLTYPE | `xmlserialize(document col as clob)` | `"<r/>"` | String | как есть |
-| BOOLEAN (23ai) | как есть | `true` | Bool | как есть |
-| VECTOR (23ai) | `from_vector(col)` | `"[1.05E+002,1.5E+000]"` | Array(Float32) | `CAST(JSONExtract(col, 'Array(Float64)'), 'Array(Float32)')` |
+| Тип Oracle | Что писать в select | Тип ClickHouse |
+|---|---|---|
+| NUMBER(p, 0) до 18 знаков | как есть | Int64 |
+| NUMBER(19..38, 0), NUMBER(p, -s) | как есть | Decimal(p, 0) |
+| NUMBER(p, s) | как есть | Decimal(p, s) |
+| NUMBER без точности | целые как есть; дробь — `cast(col as number(p, s))` | Decimal(38, 0), Decimal(p, s) |
+| BINARY_FLOAT, BINARY_DOUBLE | как есть | Float32, Float64 |
+| VARCHAR2, CHAR, CLOB, NVARCHAR2, NCLOB | как есть | String |
+| DATE | как есть | DateTime64(0) |
+| TIMESTAMP(0..6) | как есть | DateTime64(p) |
+| TIMESTAMP(9) | как есть — микросекунды; `to_char(col, '... ff9')` в String | DateTime64(9), String |
+| TIMESTAMP WITH TIME ZONE | `sys_extract_utc(col)` + `column_types: DateTime64(6, 'UTC')` | DateTime64(6, 'UTC') |
+| INTERVAL YEAR TO MONTH | месяцы числом | Int64 |
+| INTERVAL DAY TO SECOND | `cast(секунды as number(18, 6))` | Decimal(18, 6) |
+| RAW, BLOB | как есть | String с байтами |
+| JSON, XMLTYPE, VECTOR | `json_serialize`, `xmlserialize`, `from_vector` | String |
+| BOOLEAN | как есть | Bool |
 
 ### Особенности
 
-У ClickHouse все эти ловушки тихие: ошибки нет, значение другое.
-
-**NULL в обычной колонке.** Пустое поле потока в колонке без `Nullable`
-становится `0` у чисел и `''` у строк.
-
-**Лишние знаки Decimal отбрасываются**, а не округляются: `-0.14286` в
-`Decimal(18, 4)` — это `-0.1428` (PostgreSQL даст `-0.1429`). Если масштаб
-приёмника меньше, округлите в Oracle: `cast(round(col, 4) as number(18, 4))`
-— сам `round` возвращает NUMBER без точности.
-
-**Экспонента в Decimal** обращает малое число в ноль: `"1E-130"` из
-`to_char(..., 'TM9')` в `Decimal(38, 10)` становится `0`.
-
-**Float32 из текста с экспонентой** разбирается неточно на всех версиях:
-`1.05E+002` превращается в `104.99999` и при записи прямо в колонку, и (на
-22.12) через `toFloat32`. Точно — через `Float64`:
-`toFloat32(toFloat64(col))`. По той же причине VECTOR, который `from_vector`
-пишет с экспонентой, разбирается `JSONExtract` в `Float64`.
-
 **Даты вне диапазона.** `DateTime64` держит 1900–2299: `0001-01-01` и
-`9999-12-31 23:59:59` молча становятся `1900-01-01 00:00:00` и
-`2299-12-31 23:59:59`. Настройка `date_time_overflow_behavior` (её нет на
-22.12) на вставку из CSV не действует. `DateTime` (32 бита) держит 1970–2106,
-и 2200 год на 22–25 заворачивается в произвольную дату
-`2063-11-24 17:31:44`, а на 26.7 зажимается в `2106-02-07 06:28:15`. Такие
-даты храните строкой (`to_char` в Oracle, `String` в ClickHouse).
+`9999-12-31` молча становятся `1900-01-01` и `2299-12-31`. Такие даты
+храните строкой (`to_char` в Oracle, `String` через `column_types`).
 
-**Date32 не читает время.** `2024-02-29 00:00:00` в `Date32` — ошибка
-(Code: 117); нужна `to_char(col, 'yyyy-mm-dd')`.
+**Лишние знаки Decimal** в существующей таблице с меньшим масштабом
+отбрасываются, а не округляются; приёмник такую таблицу отвергает до
+загрузки, а если нужен меньший масштаб — округлите в Oracle:
+`cast(round(col, 4) as number(18, 4))`.
 
-**Булево значение в кавычках** `Bool` не читает. BOOLEAN 23ai едет без
-кавычек и проходит; строковое `"true"` из `to_char` — отказ.
+**Имена колонок.** Oracle отдаёт их заглавными; в ClickHouse они так и
+создадутся. Строчные — алиас в кавычках.
 
 ## Поток Arrow
 
 Arrow IPC — общий двоичный формат между концами, у которых текстовые форматы
 не стыкуются или стыкуются с потерями: значения едут своими типами, без
-перевода в текст и обратно. ClickHouse читает и пишет его сам: `ch_arrow_out`
-дописывает к запросу `FORMAT ArrowStream` средствами драйвера, `ch_arrow_in`
-ждёт `INSERT ... FORMAT ArrowStream` (это те же `ch_stream_*`, только с
-выбранным форматом, чтобы LLM было проще ориентироваться). У Oracle поток
-дают `ora_arrow_out` и `ora_arrow_in`: драйвер python-oracledb отдаёт и
-принимает пачки Arrow напрямую, Python значений не видит. Поток — это схема,
-затем пачки записей (у Oracle — по `arraysize` строк), затем конец потока;
-байты между узлами идут как есть.
+перевода в текст и обратно. ClickHouse читает и пишет его сам: `ch_sync_out`
+с `wire = arrow` дописывает к запросу `FORMAT ArrowStream` средствами
+драйвера, `ch_sync_in` вставляет поток `INSERT ... FORMAT ArrowStream`. У Oracle
+других форматов нет: `ora_sync_out` и `ora_sync_in` описаны в разделе
+«Поток Oracle». Поток — это схема, затем пачки записей (у Oracle — по
+`arraysize` строк), затем конец потока; байты между узлами идут как есть.
 
-Насосы Oracle объявляют порты `ArrowOutbound` и `ArrowInbound` из
-`boba.toolkit.arrow`: это сырые порты, которые сами понимают поток IPC, и
-тело получает пачки записей, а не байты. На проводе они неотличимы от
-`RawOutbound`/`RawInbound`, поэтому стыкуются с ClickHouse, который пишет и
-читает байты сам.
-
-### Что отдаёт ora_arrow_out
-
-```sql
-select
-    1                                                            as id,
-    cast(12.5 as number(10,2))                                   as amount,
-    cast(123 as number)                                          as n_int,
-    'tab' || chr(9) || 'x'                                       as note,
-    cast(null as varchar2(5))                                    as empty,
-    to_binary_double(1) / 3                                      as ratio,
-    to_date('2024-02-29 13:14:15', 'yyyy-mm-dd hh24:mi:ss')      as d,
-    cast(timestamp '2024-02-29 13:14:15.123456' as timestamp(6)) as ts,
-    hextoraw('00FF10')                                           as bin,
-    true                                                         as flag
-from dual
-```
-
-Поток двоичный (1328 байт на одну строку), поэтому показана его схема и
-значения первой записи, как их читает pyarrow:
-
-| Колонка | Тип Oracle | Тип в схеме Arrow | Значение |
-|---|---|---|---|
-| ID | NUMBER | `decimal128(38, 0)` | `Decimal('1')` |
-| AMOUNT | NUMBER(10,2) | `decimal128(10, 2)` | `Decimal('12.50')` |
-| N_INT | NUMBER без точности | `decimal128(38, 0)` | `Decimal('123')` |
-| NOTE | VARCHAR2 | `large_string` | `'tab\tx'` — настоящая табуляция, ничего не экранируется |
-| EMPTY | VARCHAR2 | `large_string` | `None` — NULL это null-бит Arrow |
-| RATIO | BINARY_DOUBLE | `double` | `0.3333333333333333` |
-| D | DATE | `timestamp[s]` | `2024-02-29 13:14:15` |
-| TS | TIMESTAMP(6) | `timestamp[us]` | `2024-02-29 13:14:15.123456` |
-| BIN | RAW | `large_binary` | `b'\x00\xff\x10'` — байты как есть, без hex |
-| FLAG | BOOLEAN (23ai) | `bool` | `True` |
-
-Что здесь важно:
-
-- **имена колонок заглавные**, как их хранит Oracle; строчные — алиас в
-  кавычках: `col as "col"`;
-- NUMBER без точности — `decimal128(38, 0)`, поэтому дробное значение в такой
-  колонке — ошибка DPY-4042, как и в CSV: `cast(col as number(18, 6))` или
-  `to_char`;
-- TIMESTAMP(7..9) — `timestamp[ns]`, но драйвер обрезает до микросекунд;
-  TIMESTAMP WITH TIME ZONE — `timestamp[ns]` без смещения: `sys_extract_utc(col)`;
-- INTERVAL, XMLTYPE, JSON, VECTOR, ROWID в Arrow не отдаются — те же
-  приведения, что для CSV (`to_char`, `xmlserialize`, `json_serialize`,
-  `from_vector`, `rowidtochar`);
-- FLOAT(p) едет как `double`, NUMBER(p, -s) — как `decimal128(p + s, 0)`.
-
-### Что отдаёт ch_arrow_out
+### Что отдаёт ch_sync_out с wire = arrow
 
 ```sql
 select
@@ -883,8 +694,7 @@ select
     toUUID('a1b2c3d4-0000-0000-0000-000000000001')       as u
 ```
 
-`FORMAT ArrowStream` дописывает инструмент; тот же поток даёт `ch_stream_out`
-с `format ArrowStream` в тексте.
+`FORMAT ArrowStream` дописывает инструмент.
 
 `Date` (до 26) и `DateTime` уходят в Arrow целыми числами, и приёмник по
 контракту не отличит их от `UInt16` и `UInt32`: даты молча станут числами.
@@ -905,139 +715,84 @@ select
 | flag | Bool | `bool` (`uint8` на 22.12) | |
 | u | UUID | `extension<arrow.uuid>` (на 22.12 — ошибка UNKNOWN_TYPE) | |
 
-### Oracle -> ClickHouse через Arrow
+### ClickHouse -> Oracle
 
 ```sql
--- ora_arrow_out
-select id, amount, created_at, note
-from sales.orders
-
--- ch_arrow_in
-insert into dwh.orders
-settings input_format_arrow_case_insensitive_column_matching = 1
-format ArrowStream
-```
-
-Преобразовывать нечего: `decimal128` ложится в `Decimal(p, s)`, `double` — в
-`Float64` без потери бита, `timestamp[us]` — в `DateTime64(6)`,
-`large_binary` — в `String`, `bool` — в `Bool`. Колонки сопоставляются по
-именам, а Oracle отдаёт их заглавными: без
-`input_format_arrow_case_insensitive_column_matching = 1` ClickHouse 22.12
-отвечает `THERE_IS_NO_COLUMN`, а новые версии **молча пишут значения по
-умолчанию** во все колонки. NULL в не-`Nullable` колонке — как и в CSV, `0`
-или `''`.
-
-| Тип Oracle | В схеме Arrow | Тип ClickHouse |
-|---|---|---|
-| NUMBER(p, s) | `decimal128(p, s)` | Decimal(p, s) |
-| NUMBER целый, NUMBER(p, -s) | `decimal128(38, 0)`, `decimal128(p + s, 0)` | Int64, Decimal(38, 0) |
-| BINARY_FLOAT, BINARY_DOUBLE | `float`, `double` | Float32, Float64 |
-| VARCHAR2, CHAR, CLOB, NVARCHAR2, NCLOB | `large_string` | String |
-| DATE | `timestamp[s]` | DateTime('UTC') |
-| TIMESTAMP(0..6) | `timestamp[us]` | DateTime64(6, 'UTC') |
-| TIMESTAMP(9) | `to_char(col, '... ff9')` -> `large_string` | DateTime64(9, 'UTC') |
-| TIMESTAMP WITH TIME ZONE | `sys_extract_utc(col)` -> `timestamp[us]` | DateTime64(6, 'UTC') |
-| INTERVAL YEAR TO MONTH | месяцы числом -> `decimal128(38, 0)` | Int32 |
-| INTERVAL DAY TO SECOND | `cast(секунды as number(18, 6))` -> `decimal128(18, 6)` | Decimal(18, 6) |
-| RAW, BLOB | `large_binary` | String |
-| JSON, XMLTYPE, VECTOR | `json_serialize`, `xmlserialize`, `from_vector` -> `large_string` | String |
-| BOOLEAN | `bool` | Bool |
-
-### ClickHouse -> Oracle через Arrow
-
-```sql
--- ch_arrow_out
+-- ch_sync_out, wire = arrow
 select
     id,
     amount,
     toDateTime64(created_at, 0, 'UTC') as created_at,
     hex(payload)                       as payload,
-    toUInt8(active)                    as active
+    active
 from dwh.orders
 settings output_format_arrow_string_as_string = 1
 
--- ora_arrow_in
-insert into sales.orders (id, amount, created_at, payload, active)
-values (:1, :2, :3, :4, :5)
+-- ora_sync_in: schema_name = "SALES", table_name = "ORDERS"
 ```
 
-`ora_arrow_in` вставляет каждую пачку одной командой `executemany` в
-стейтмент из вызова: bind'ы `:1..:n` идут в порядке полей схемы потока,
-значения драйвер берёт прямо из массивов Arrow. Что надо
-привести на стороне ClickHouse:
+Приёмник создаёт таблицу по контракту и вставляет пачки `executemany`;
+что надо привести на стороне ClickHouse:
 
 | Тип ClickHouse | Как есть | Что писать в select | Тип Oracle |
 |---|---|---|---|
-| Int*, UInt* до UInt64 | `int64`, `uint64` | как есть | NUMBER(19), NUMBER(20) |
+| Int8..Int64, UInt8..UInt32 | `int*` | как есть | NUMBER(3), NUMBER(5), NUMBER(10), NUMBER(19) |
+| UInt64 | `uint64` | как есть | NUMBER(20) |
+| Int128 и шире | нет в Arrow | `toString(col)` | VARCHAR2(45 CHAR) |
 | Decimal(p, s) | `decimal128(p, s)` | как есть | NUMBER(p, s) |
 | Float32, Float64 | `float`, `double` | как есть | BINARY_FLOAT, BINARY_DOUBLE |
-| String, Nullable(String) | `string` | как есть | VARCHAR2, NVARCHAR2 |
-| Date, Date32 | `date32` | как есть | DATE |
+| String | `string` с `output_format_arrow_string_as_string = 1` | как есть | CLOB (длины контракт не знает; `column_types: VARCHAR2(200 CHAR)`) |
+| FixedString(n) | `fixed_size_binary` | `toString(col)` | CLOB |
+| Date, Date32 | `uint16` до 26, `date32` | `toDate32(col)` | DATE |
 | DateTime | `uint32` | `toDateTime64(col, 0, 'UTC')` | DATE |
-| DateTime64(6) | `timestamp[us]` | как есть | TIMESTAMP(6) |
-| DateTime64(9) | `timestamp[ns]` | как есть, драйвер режет до микросекунд | TIMESTAMP(9) |
-| Bool | `bool` | `toUInt8(col)` | NUMBER(1) |
-| UUID | `arrow.uuid` | `hex(col)` | RAW(16) |
-| String с байтами | невалидная строка | `hex(col)` | RAW(n) |
+| DateTime64(p, 'UTC') | `timestamp[p, tz=UTC]` | как есть | TIMESTAMP(p) WITH TIME ZONE |
+| DateTime64(p) без пояса | `timestamp[p]` | как есть | TIMESTAMP(p) |
+| Bool | `bool` (`uint8` на 22.12) | как есть | BOOLEAN на 23ai, NUMBER(1) раньше |
+| UUID | `arrow.uuid` (на 22.12 — ошибка UNKNOWN_TYPE) | как есть; на 22.12 `toString(col)` | VARCHAR2(36 CHAR) |
+| String с байтами | невалидный UTF-8 | `hex(col)` | CLOB текстом hex; `column_types: RAW(n)` кладёт `hextoraw` |
+| Array, Map, Tuple | нет в Arrow | `toString(col)`, `toJSONString(col)` | CLOB |
 
 Ловушки этого пути:
 
-- **DateTime как число.** `uint32` секунд Oracle в DATE не принимает
-  (ORA-00932); `toDateTime64(col, 0, 'UTC')` даёт настоящий timestamp.
-- **UUID и двоичные строки.** `arrow.uuid` Oracle не знает, а String с
-  произвольными байтами уходит как строка Arrow с невалидным UTF-8, и
-  читатель падает. Оба — через `hex()` в RAW.
-- **LOB-колонки последними.** Oracle не принимает длинный bind (строка
-  длиннее 4000 байт) после LOB-колонки в одном insert (ORA-24816), а порядок
-  bind'ов — порядок полей схемы. CLOB, BLOB, JSON и XMLTYPE ставьте в конец
-  списка `select`.
+- **Date и DateTime как числа.** До 26 `Date` уходит в Arrow как `uint16`,
+  `DateTime` — всегда как `uint32`; приёмник по контракту создаст NUMBER, а
+  не дату. `toDate32` и `toDateTime64` дают настоящие моменты.
 - **Юникод в однобайтовой базе.** Bind строки идёт в кодировке базы: в базе
-  `WE8DEC` юникод не доедет даже до NVARCHAR2 (станет `¿`), тогда как CSV-путь
-  через `ora_csv_in` его сохраняет.
-- **UUID на 22.12** в Arrow не выгружается вовсе (UNKNOWN_TYPE): только `hex`.
+  `WE8DEC` юникод не доедет даже до NVARCHAR2 (станет `¿`).
+- **Момент с поясом в колонку без пояса** приёмник отвергает до загрузки:
+  под `DateTime64(6, 'UTC')` нужна `TIMESTAMP(6) WITH TIME ZONE` или
+  `toDateTime64(col, 6)` без пояса в запросе.
 
-### Oracle -> PostgreSQL через Arrow
+### PostgreSQL -> Oracle
 
 ```sql
--- ora_sync_out
-select
-    id                                          as "id",
-    amount                                      as "amount",
-    sys_extract_utc(created_at)                 as "created_at",
-    case when payload is not null
-         then '\\x' || rawtohex(payload) end     as "payload",
-    note                                        as "note"
+-- pg_sync_out, wire = arrow
+select id, amount, created_at, payload, tags::text as tags
 from sales.orders
 
--- pg_sync_in: table = "dwh.orders", контракт колонок приходит в кадре schema
+-- ora_sync_in: schema_name = "SALES", table_name = "ORDERS"
 ```
 
-Колонки таблицы приёмник сверяет с контрактом потока по именам, поэтому
-алиасы в `select` должны совпадать с колонками таблицы. Дальше всё
-ложится через CSV сервера, поэтому двоичные типы едут hex-текстом с
-префиксом `\\x`, а NULL в RAW/BLOB надо оставить NULL явно через `case`,
-иначе `'\\x' || null` даст пустой bytea. CLOB, BLOB, JSON и XMLTYPE — в
-конец списка `select`.
+Поток `pg_sync_out` с `wire = arrow` собирается из COPY csv сервера, поэтому
+часть типов едет текстом, и приёмник знает, что с ним делать:
 
-| Тип Oracle | Что писать в select | Тип PostgreSQL |
+| Тип PostgreSQL | В потоке | Тип Oracle |
 |---|---|---|
-| NUMBER(p, s) | как есть | numeric(p, s) |
-| NUMBER целый, NUMBER(p, -s) | как есть | bigint, numeric(38) |
-| BINARY_FLOAT, BINARY_DOUBLE | как есть | real, double precision |
-| VARCHAR2, NVARCHAR2, CHAR, CLOB | как есть | text, char(n) |
-| DATE, TIMESTAMP(0..6) | как есть | timestamp(0), timestamp(6) |
-| TIMESTAMP(9) | `to_char(col, 'yyyy-mm-dd hh24:mi:ss.ff9')` | text; в timestamp(6) сервер округлит |
-| TIMESTAMP WITH TIME ZONE | `sys_extract_utc(col)` | timestamp(6) в UTC |
-| INTERVAL YEAR TO MONTH | месяцы числом | integer |
-| INTERVAL DAY TO SECOND | `cast(секунды as number(18, 6))` | numeric(18, 6) |
-| RAW, BLOB | `'\\x' \|\| rawtohex(col)` | bytea |
-| BOOLEAN (23ai) | как есть | boolean |
-| JSON, XMLTYPE, VECTOR | `json_serialize`, `xmlserialize`, `from_vector` | text, jsonb, xml |
-
-На Greenplum 6 `double` из потока ложится с ошибкой в младшем бите у части
-значений; `exact_floats = true` у `pg_sync_in` везёт float и double
-hex-записью и кладёт их бит в бит на любом сервере (см. «Что принимает
-pg_sync_in с провода arrow»).
+| smallint, integer, bigint | `int16`, `int32`, `int64` | NUMBER(5), NUMBER(10), NUMBER(19) |
+| numeric(p, s) | `decimal128(p, s)` | NUMBER(p, s) |
+| numeric без точности | `large_string` | NUMBER (через `column_types`), иначе CLOB |
+| real, double precision | `float`, `double` | BINARY_FLOAT, BINARY_DOUBLE |
+| boolean | `bool` | BOOLEAN на 23ai, NUMBER(1) раньше |
+| text | `large_string` | CLOB |
+| varchar(n), char(n) | `large_string` с длиной | VARCHAR2(n CHAR) |
+| bytea | `large_string` hex с `\x` | BLOB, сервер кладёт `hextoraw` |
+| date | `date32` | DATE |
+| timestamp(p) | `timestamp[p]` | TIMESTAMP(p); timestamp(0) — DATE |
+| timestamptz(p) | `timestamp[p, tz=UTC]` | TIMESTAMP(p) WITH TIME ZONE в UTC |
+| time | `large_string` | VARCHAR2(18 CHAR) |
+| uuid | `large_string` | VARCHAR2(36 CHAR) |
+| json, jsonb, inet, interval, xml, money, bit | `large_string` | CLOB |
+| массивы, enum, составные, диапазоны | `large_string` без пары | отказ; CLOB по `fallback_as_varchar` или тип через `column_types` |
 
 ### Что отдаёт pg_sync_out с проводом arrow
 
@@ -1273,11 +1028,13 @@ pg -> pg целиком — около 300 тысяч на узкой табли
 
 ## Несколько стейтментов в одном вызове
 
-Насос выполняет одну команду: COPY, INSERT ... FORMAT, executemany. Вызов
+Насос выполняет одну команду: COPY, `INSERT ... FORMAT`, executemany,
+выборку источника. Вызов
 инструмента открывает соединение и закрывает его на выходе, поэтому всё, что
 живёт в сессии, — временная таблица, `set local`, `alter session`, `SET` —
 вместе с вызовом и умирает. Чтобы загрузка во временную таблицу и её разбор
-были одним вызовом, у каждого насоса есть аргументы `before` и `after`:
+были одним вызовом, у каждого источника и приёмника sync есть аргументы
+`before` и `after`:
 списки стейтментов, которые идут по порядку в той же сессии, `before` — до
 команды насоса, `after` — после. По трубе при этом едут только данные
 команды насоса; строки выборок из `before` и `after` никуда не
@@ -1289,14 +1046,12 @@ pg -> pg целиком — около 300 тысяч на узкой табли
 значение у выборки.
 
 ```
-copied in 14 bytes
-status: COPY 2
-statement: copy stage_tmp from stdin
-before:
-- CREATE TABLE: create temp table stage_tmp (id bigint, v text) on commit drop
+2 rows written into dwh.stage_tmp
+schema: create (table is missing)
 after:
-- DELETE 1: delete from dwh.target t using stage_tmp s where t.id = s.id
-- INSERT 0 2: insert into dwh.target select id, v from stage_tmp
+- DELETE 1: delete from dwh.target t using dwh.stage_tmp s where t.id = s.id
+- INSERT 0 2: insert into dwh.target select id, v from dwh.stage_tmp
+- DROP TABLE: drop table dwh.stage_tmp
 ```
 
 Проверка, которая должна остановить насос, пишется ошибкой на стороне
@@ -1309,24 +1064,26 @@ raise_application_error(-20001, '...'); end if; end;`, ClickHouse —
 
 PostgreSQL: весь вызов — одна транзакция. Ошибка любого шага, включая
 последний в `after`, откатывает всё: и COPY, и предыдущие шаги. COPY не
-умеет upsert, поэтому стандартная схема — COPY во временную таблицу из
-`before` и разбор её в `after`:
+умеет upsert, поэтому стандартная схема — `pg_sync_in` в staging-таблицу и
+разбор её в `after`:
 
 ```json
 {
-  "sql": "copy stage_tmp from stdin",
-  "before": ["create temp table stage_tmp (id bigint, v text) on commit drop"],
+  "schema_name": "dwh",
+  "table_name": "stage_tmp",
+  "schema_strategy": {"kind": "create_if_not_exists"},
   "after": [
-    "delete from dwh.target t using stage_tmp s where t.id = s.id",
-    "insert into dwh.target select id, v from stage_tmp"
+    "delete from dwh.target t using dwh.stage_tmp s where t.id = s.id",
+    "insert into dwh.target select id, v from dwh.stage_tmp",
+    "drop table dwh.stage_tmp"
   ]
 }
 ```
 
 `insert ... on conflict` тоже подходит, но только с PostgreSQL 9.5 и выше,
 а Greenplum 6 его не знает; пара `delete` + `insert` работает везде.
-Выгрузка тоже видит `before`: `create temp table snap as select ...` в
-`before` и `copy snap to stdout` командой насоса отдают снимок.
+Источник тоже видит `before`: `pg_sync_out` с `before = ["create temp table
+snap as select ..."]` и `sql = "select id, v from snap"` отдаёт снимок.
 
 Oracle: каждый элемент — одна команда без `;` в конце либо один анонимный
 блок PL/SQL. DML из `before`, загрузка и DML из `after` — одна транзакция с
@@ -1334,11 +1091,13 @@ Oracle: каждый элемент — одна команда без `;` в к
 (`truncate`, `exchange partition`, `rename`) Oracle фиксирует сам, и
 вместе с ним фиксируется всё, что было в транзакции до него, — это не
 ошибка, а способ работы базы. Временная таблица здесь глобальная и
-создаётся заранее, один раз:
+создаётся заранее, один раз; `ora_sync_in` грузит в неё, как в обычную:
 
 ```json
 {
-  "sql": "insert into stage_tmp (id, v) values (:1, :2)",
+  "schema_name": "HR",
+  "table_name": "stage_tmp",
+  "schema_strategy": {"kind": "error_if_not_exists"},
   "before": ["delete from stage_tmp"],
   "after": [
     "delete from target where id in (select id from stage_tmp)",
@@ -1347,21 +1106,35 @@ Oracle: каждый элемент — одна команда без `;` в к
 }
 ```
 
+У `ora_sync_out` так же: строки, вставленные в глобальную временную
+таблицу шагом `before`, видит только запрос этой сессии, commit один после
+`after`.
+
 ClickHouse: транзакций нет, но у насоса одна сессия сервера на весь вызов,
-поэтому `SET` и `create temporary table` из `before` доживают до INSERT и
-`after`. Отката нет: ошибка шага `after` оставляет уже загруженные строки
-на месте.
+поэтому `SET` и `create temporary table` из `before` доживают до команды
+насоса и `after`. Отката нет: ошибка шага `after` оставляет уже загруженные
+строки на месте. Приёмник грузит только в таблицу базы `Atomic`, временная
+таблица годится для служебных шагов:
 
 ```json
 {
-  "sql": "insert into stage_tmp format TabSeparated",
+  "database": "dwh",
+  "table_name": "staged",
+  "schema_strategy": {"kind": "error_if_not_exists"},
   "before": [
     "set max_insert_block_size = 1000",
-    "create temporary table stage_tmp (id UInt64, v String)"
+    "create temporary table seen (n UInt64)"
   ],
-  "after": ["insert into dwh.target select id, upper(v) from stage_tmp"]
+  "after": [
+    "insert into seen select count() from dwh.staged",
+    "insert into dwh.target select id, upper(v) from dwh.staged"
+  ]
 }
 ```
+
+У `ch_sync_out` запрос видит временную таблицу из своего `before`:
+`before = ["create temporary table snap (id UInt64, v String)", "insert into
+snap select ..."]` и `sql = "select id, v from snap"`.
 
 ## Staging и атомарная подмена
 
@@ -1391,7 +1164,8 @@ Oracle: подмена партиции — `exchange partition`, он атом�
 
 ```json
 {
-  "sql": "insert into stage_part (id, m, v) values (:1, :2, :3)",
+  "table_name": "stage_part",
+  "schema_strategy": {"kind": "error_if_not_exists"},
   "before": ["truncate table stage_part"],
   "after": ["alter table part_target exchange partition p_202409 with table stage_part"]
 }
@@ -1402,7 +1176,9 @@ tables` — таблицу; оба атомарны и идут шагом `afte
 
 ```json
 {
-  "sql": "insert into dwh.stage format TabSeparated",
+  "database": "dwh",
+  "table_name": "stage",
+  "schema_strategy": {"kind": "error_if_not_exists"},
   "before": ["truncate table dwh.stage"],
   "after": ["alter table dwh.part_target replace partition 202409 from dwh.stage"]
 }
@@ -1663,11 +1439,10 @@ other, для которых типа нет ни в контракте, ни в
 
 | Раскладка | Кто отдаёт | Кто принимает | Что сохраняется |
 |---|---|---|---|
-| `csv` | `pg_sync_out` | `pg_sync_in`, `ora_csv_in` | всё, что печатает COPY: `infinity`, `NaN` у numeric, `numeric(999,5)`, enum, составные, диапазоны |
-| `tsv` | `pg_sync_out`, `ch_sync_out` | `pg_sync_in`, `ch_sync_in`, `ch_stream_in` | COPY text и TabSeparated — одна раскладка; с контрактом типов источника |
+| `csv` | `pg_sync_out` | `pg_sync_in` | всё, что печатает COPY: `infinity`, `NaN` у numeric, `numeric(999,5)`, enum, составные, диапазоны |
+| `tsv` | `pg_sync_out`, `ch_sync_out` | `pg_sync_in`, `ch_sync_in` | COPY text и TabSeparated — одна раскладка; с контрактом типов источника |
 | `binary` | `pg_sync_out` | `pg_sync_in` | COPY binary, только postgres одной мажорной версии |
-| `arrow` | `pg_sync_out`, `ora_sync_out`, `ch_sync_out`, `ora_arrow_out`, `ch_arrow_out` | `pg_sync_in` (с контрактом), `ora_arrow_in`, `ch_arrow_in` | типы Arrow; чего Arrow не несёт — `::text` в запросе |
-| кадр `raw` без формата | `ch_stream_out`, `ora_csv_out`, `ch_arrow_out`, `ora_arrow_out` | `ch_stream_in`, `ora_csv_in`, `ch_arrow_in`, `ora_arrow_in` | байты как их отдал источник, формат задал текст запроса или инструмент; контракта нет |
+| `arrow` | `pg_sync_out`, `ora_sync_out`, `ch_sync_out` | `pg_sync_in`, `ch_sync_in`, `ora_sync_in` | типы Arrow; чего Arrow не несёт — `::text` в запросе |
 
 ### Стратегии
 
@@ -1711,47 +1486,60 @@ deleted: 0 rows by truncate table "dwh"."orders"
 
 ## Скорость
 
-Нагрузочный тест гонит миллион строк широкой таблицы (NUMBER, BINARY_DOUBLE,
-строки с переводом строки и NULL, DATE, TIMESTAMP, TIMESTAMP WITH TIME ZONE
-через `to_char`, RAW(16)) — это 219 МБ CSV. Насосы работают одновременно
-через трубу ОС, `chunk_bytes` 256 КиБ, `arraysize` 2000.
+Замер на стенде: 300 тысяч строк из 8 колонок (NUMBER, NUMBER(14,2),
+BINARY_DOUBLE, две VARCHAR2, DATE, TIMESTAMP(6), NUMBER(1)), Oracle 12.2 и
+23 в одном контуре с хостом.
 
-| Цепочка | Время | Строк в секунду | Прирост пика памяти |
-|---|---|---|---|
-| Oracle 23 -> PostgreSQL 19 | 5.6 с | 180 тыс. | 18 МиБ |
-| Oracle 23 -> ClickHouse 26.7 | 5.5 с | 183 тыс. | 0 МиБ |
-| Oracle 12.2 -> PostgreSQL 19 | 4.6 с | 217 тыс. | 1 МиБ |
-| Oracle 12.2 -> ClickHouse 26.7 | 4.8 с | 207 тыс. | 0 МиБ |
+| Путь | Oracle 12.2 | Oracle 23 |
+|---|---|---|
+| чтение `fetchmany`, объекты Python | 292 тыс. строк/с | 255 тыс. |
+| чтение пачками Arrow (`ora_sync_out`) | 402 тыс. | 364 тыс. |
+| чтение пачками Arrow с записью CSV pyarrow | 350 тыс. | 331 тыс. |
+| запись `executemany` пачкой Arrow (`ora_sync_in`) | 30 тыс. | 154 тыс. |
+| запись `executemany` строками Python | 20 тыс. | 80 тыс. |
+| запись `direct_path_load` | 123 тыс. | 134 тыс. |
+
+Чтение упирается в сервер: Arrow быстрее объектов Python на треть. Запись
+пачкой Arrow принимает bind'ы прямо из массивов и на 23 быстрее прямого
+пути. `direct_path_load` приёмник не использует: у него нет транзакции
+(`rollback` ничего не откатывает), он невозможен при триггере на таблице
+(ORA-26086) и рядом с другими стейтментами в одной транзакции (ORA-26085),
+а дубликат по уникальному индексу проходит «успешно» и оставляет индекс
+UNUSABLE.
 
 Память не растёт с объёмом: в процессе живёт одна пачка Arrow и одна
-порция трубы, остальное уже у приёмника. Строки и агрегаты (суммы Decimal,
-число NULL, длины строк, максимум времени) совпадают с источником.
+порция трубы, остальное уже у приёмника.
 
 ## Где это проверяется
 
 Пакет `packages/testing/boba-pump-stand` держит помощников стенда (в том
 числе трубу ОС, через которую два насоса работают одновременно) и тесты:
 
-- `test_ora_pump.py` — Oracle -> ClickHouse на всей матрице: таблица Oracle
-  со всеми семействами типов, сверка поколоночно;
-- `test_ora_pump_traps.py` — каждая ловушка этого документа: неправильный
-  стейтмент, его поток и результат, и правильный вариант;
-- `test_ora_pump_load.py` — миллион строк из Oracle в PostgreSQL и
-  ClickHouse (маркер `load`);
-- `test_ora_arrow.py` — Arrow IPC: Oracle -> ClickHouse, ClickHouse -> Oracle,
-  Oracle -> PostgreSQL и круг Oracle -> Oracle на всей матрице, плюс ловушки
-  Arrow-пути;
-- `test_ch_arrow.py` — ClickHouse -> ClickHouse, PostgreSQL и Oracle потоком
-  Arrow на всей матрице версий: каждый тип ClickHouse, включая Int128,
-  UInt256, Enum, IPv6, Map и Nested, едет как есть или текстом;
+- `test_ora_sync.py` — насосы Oracle на всех Oracle стенда: круг Oracle ->
+  Oracle с типами источника как есть, Oracle -> postgres и ClickHouse с
+  созданием таблиц приёмником, postgres и ClickHouse -> Oracle с типами
+  Oracle по контракту, стратегии приёмника, отказы источника с
+  подсказками;
+- `test_ora_pg_realistic.py`, `test_ora_ch_realistic.py`,
+  `test_pg_ora_realistic.py`, `test_ch_ora_realistic.py` — отчёт магазина
+  между Oracle и postgres/Greenplum/ClickHouse в обе стороны на всех
+  стендах запросами, какими их пишет LLM: первая попытка с типами, которых
+  приёмник не берёт, и её исправление, загрузка и повторная сверка,
+  инкремент месяца, витрина с rename и column_types, дрейф схемы с бэкапом,
+  шаблон таблицы, подмена шагами after, сухой прогон, обратный путь
+  агрегата;
+- `test_ch_arrow.py` — ClickHouse -> PostgreSQL и Oracle
+  (`ora_sync_in` в заранее созданную таблицу) потоком Arrow на всей матрице
+  версий: каждый тип ClickHouse, включая Int128, UInt256, Enum, IPv6, Map и
+  Nested, едет как есть или текстом;
 - `test_pg_sync.py`, `test_pg_sync_edges.py` — семейство sync: стратегии
   схемы на каждом postgres и Greenplum в обоих режимах провода (Arrow и
   COPY), декларации, пограничные типы, NULL, decimal, varchar, timestamp,
   потоки из ClickHouse и Oracle;
 - `test_arrow_ports.py` — Arrow-порты toolkit над трубой ОС без баз;
-- `test_pg_arrow.py` — PostgreSQL -> PostgreSQL, ClickHouse и Oracle потоком
-  Arrow на всей матрице версий, обратные пути и ловушки;
-- `test_ora_ch_stream.py` — короткая цепочка Oracle -> ClickHouse;
+- `test_pg_arrow.py` — PostgreSQL -> PostgreSQL, ClickHouse и Oracle
+  (`ch_sync_in` и `ora_sync_in` в заранее созданную таблицу) потоком Arrow на всей матрице
+  версий, обратные пути и ловушки;
 - `test_arrow_ch_sync.py` — `ch_sync_in` на потоке arrow из postgres,
   Greenplum, Oracle и ClickHouse: широкая таблица типов, типы без пары, сверка
   шире/уже, двойник, ловушки Date/DateTime/Bool в Arrow ClickHouse;
@@ -1769,10 +1557,11 @@ deleted: 0 rows by truncate table "dwh"."orders"
 - `test_pg_transfer.py`, `test_pg_realistic.py` — пара postgres -> postgres:
   раскладки `wire`, стратегии, типы, отказ приёмника на несовместимый
   binary, стоимость описания;
-- `test_pump_scripts.py` — `before` и `after` на каждой базе стенда:
-  временная таблица и upsert, откат по ошибке шага `after` (PostgreSQL,
-  Oracle) и его отсутствие (ClickHouse), `replace partition` и `exchange
-  partition` из staging.
+- `test_pump_scripts.py` — `before` и `after` у источников и приёмников на
+  каждой базе стенда: временная таблица в сессии источника и приёмника,
+  upsert через staging, откат по ошибке шага `after` (PostgreSQL, Oracle) и
+  его отсутствие (ClickHouse), `replace partition` и `exchange partition`
+  из staging.
 
 Запускаются из `compose/chainlit` с окружением из `launch.json` и маркером
 `integration`. Стенды общие: тесты создают свои схемы и базы и сносят их по

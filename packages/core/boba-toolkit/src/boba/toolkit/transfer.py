@@ -55,7 +55,6 @@ __all__ = [
     "InsertNothing",
     "InsertStrategy",
     "InsertStrategyApply",
-    "RawHead",
     "RowsHead",
     "SchemaAction",
     "SchemaCheck",
@@ -133,20 +132,9 @@ class RowsHead(BaseModel):
     kind: Literal["rows"]
 
 
-class RawHead(BaseModel):
-    """Первый кадр потока без контракта колонок. Данные идут ровно в том
-    виде, как их выдал запрос источника: ch_stream_out с FORMAT в тексте
-    запроса, ora_csv_out, ch_arrow_out и ora_arrow_out. Формат знает
-    вызывающий и сырой приёмник (ch_stream_in, ora_csv_in, *_arrow_in);
-    приёмник со стратегиями такой поток не принимает."""
-
-    kind: Literal["raw"]
-    source_engine: Engine
-
-
-TransferFrame = SchemaHead | RowsHead | RawHead
-"""Кадры потока передачи: сначала один schema или raw, дальше rows; порт
-различает их по полю kind."""
+TransferFrame = SchemaHead | RowsHead
+"""Кадры потока передачи: сначала один schema, дальше rows; порт различает
+их по полю kind."""
 
 
 class TransferOutbound:
@@ -157,7 +145,7 @@ class TransferOutbound:
     def __init__(self, out: Outbound[TransferFrame]) -> None:
         self._out = out
 
-    async def schema(self, head: SchemaHead | RawHead) -> None:
+    async def schema(self, head: SchemaHead) -> None:
         await asyncio.to_thread(self._out.emit, head)
 
     async def rows(self, body: Chunk) -> None:
@@ -175,33 +163,19 @@ class TransferInbound:
     def __init__(self, feed: Inbound[TransferFrame]) -> None:
         self._frames = iter(feed)
 
-    async def get_head(self) -> SchemaHead | RawHead:
-        """Первый кадр как он есть: schema с контрактом или raw без него."""
+    async def get_schema(self) -> SchemaHead:
         first = await asyncio.to_thread(next, self._frames, None)
         if first is None:
             raise TransferError(
-                "transfer stream is empty: expected a schema or raw frame first"
+                "transfer stream is empty: expected a schema frame first"
             )
 
         if isinstance(first.head, RowsHead):
             raise TransferError(
-                "transfer stream starts with a rows frame, expected schema or raw"
+                "transfer stream starts with a rows frame, expected schema"
             )
 
         return first.head
-
-    async def get_schema(self) -> SchemaHead:
-        """Первый кадр schema; сырой поток — отказ с подсказкой взять
-        источник с контрактом."""
-        head = await self.get_head()
-        if isinstance(head, RawHead):
-            raise TransferError(
-                f"transfer stream from {head.source_engine.value} carries raw "
-                f"bytes without a contract of columns; take a sync source "
-                f"(pg_sync_out, ch_sync_out, ora_sync_out)"
-            )
-
-        return head
 
     async def bodies(self) -> AsyncIterator[Chunk]:
         while True:

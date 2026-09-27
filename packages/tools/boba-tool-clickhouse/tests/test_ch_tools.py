@@ -37,12 +37,8 @@ class TestChTools:
         "ch_types_describe",
         "ch_edm_structure",
         "ch_edm_descriptions",
-        "ch_stream_out",
-        "ch_stream_in",
-        "ch_arrow_out",
         "ch_sync_out",
         "ch_sync_in",
-        "ch_arrow_in",
     ]
 
     def test_module_declares_the_toolset(self) -> None:

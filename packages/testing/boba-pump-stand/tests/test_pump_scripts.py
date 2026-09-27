@@ -1,9 +1,10 @@
-"""Стейтменты before и after у насосов: на каждой базе стенда они идут в той
-же сессии, что и команда насоса, поэтому temp-таблица из before видна
-загрузке и after, а разбор staging и подмена партиции делаются одним
-вызовом. Проверяется и обратная сторона: что ошибка шага after откатывает
-загрузку там, где база это умеет (PostgreSQL, Oracle), и оставляет строки
-там, где транзакций нет (ClickHouse)."""
+"""Стейтменты before и after у источников и приёмников sync: на каждой базе
+стенда они идут в той же сессии, что и команда насоса, поэтому временная
+таблица из before видна запросу источника, загрузке и after, а разбор
+staging и подмена партиции делаются одним вызовом. Проверяется и обратная
+сторона: что ошибка шага after откатывает загрузку там, где база это умеет
+(PostgreSQL, Oracle), и оставляет строки там, где транзакций нет
+(ClickHouse)."""
 
 # ruff: noqa: S608 — стейтменты стенда собираются текстом, как их пишет LLM
 
@@ -16,6 +17,7 @@ import psycopg
 import pytest
 
 from boba.db.clickhouse import ClickHouseQueryError
+from boba.db.clickhouse.target import ChStreamWire
 from boba.db.oracle import OracleQueryError
 from boba.db.postgres.connection import CopyOptions
 from boba.pump_stand import (
@@ -29,6 +31,7 @@ from boba.pump_stand import (
     Pumps,
     PumpStand,
 )
+from boba.pump_stand.oracle import PumpUser
 from boba.toolkit.transfer import (
     CreateIfNotExists,
     DeleteNothing,
@@ -42,8 +45,6 @@ pytestmark = [pytest.mark.integration, pytest.mark.anyio]
 STAND = PumpStand.required()
 CHUNK_BYTES = 4096
 
-TSV = b"1\tnew1\n3\tnew3\n"
-CSV = b"1,new1\n3,new3\n"
 OLD_ROWS = ((1, "old1"), (2, "old2"))
 UPSERTED = [(1, "new1"), (2, "old2"), (3, "new3")]
 
@@ -213,10 +214,16 @@ class TestPostgres:
 
 
 class ChScripts:
-    """База ClickHouse: target и партиционированная part_target со старыми
-    строками, stage той же раскладки, что part_target."""
+    """База ClickHouse: target со старыми строками, fresh с новыми, staged под
+    загрузку и mirror под снимок; партиционированные part_target со старыми
+    строками, stage той же раскладки и fresh_part с новым месяцем."""
 
     DATABASE: ClassVar[str] = "pump_scripts"
+    MERGE_TREE: ClassVar[str] = (
+        "create table {database}.{table_name}[ on cluster {cluster}] ({columns}) "
+        "engine = MergeTree order by {order_by}"
+    )
+    """Шаблон для серверов без Keeper: дефолт ch_sync_in — ReplicatedMergeTree."""
 
     def __init__(self, source: ChSource) -> None:
         self.side = ClickHouseSide(source, self.DATABASE)
@@ -224,11 +231,16 @@ class ChScripts:
     async def recreate(self) -> None:
         await self.side.connect()
         await self.side.recreate_database()
-        await self.side.create("target", ("id UInt64", "v String"))
+        for table in ("target", "fresh", "staged"):
+            await self.side.create(table, ("id UInt64", "v String"))
+
         await self.side.command(
             f"insert into {self.named('target')} values (1, 'old1'), (2, 'old2')"
         )
-        for table in ("part_target", "stage"):
+        await self.side.command(
+            f"insert into {self.named('fresh')} values (1, 'new1'), (3, 'new3')"
+        )
+        for table in ("part_target", "stage", "fresh_part"):
             await self.side.command(
                 f"create table {self.named(table)} (d Date, id UInt64, v String) "
                 "engine = MergeTree partition by toYYYYMM(d) order by id"
@@ -237,6 +249,10 @@ class ChScripts:
         await self.side.command(
             f"insert into {self.named('part_target')} values "
             "('2024-08-01', 1, 'aug'), ('2024-09-01', 2, 'old2')"
+        )
+        await self.side.command(
+            f"insert into {self.named('fresh_part')} values "
+            "('2024-09-02', 5, 'sep5'), ('2024-09-03', 6, 'sep6')"
         )
 
     async def rows(self, table: str, *expressions: str) -> list[Any]:
@@ -248,6 +264,29 @@ class ChScripts:
 
     def named(self, table: str) -> str:
         return f"{self.DATABASE}.{table}"
+
+    def out(self, sql: str, **extra: Any) -> Leg:
+        arguments: dict[str, Any] = {
+            "sql": sql,
+            "wire": ChStreamWire.TSV,
+            "chunk_bytes": CHUNK_BYTES,
+        }
+        arguments.update(extra)
+
+        return Leg("ch_sync_out", arguments)
+
+    def into(self, table: str, **extra: Any) -> Leg:
+        arguments: dict[str, Any] = {
+            "database": self.DATABASE,
+            "table_name": table,
+            "schema_strategy": ErrorIfNotExists(kind="error_if_not_exists"),
+            "delete_strategy": DeleteNothing(kind="nothing"),
+            "insert_strategy": InsertFull(kind="full"),
+            "create_table": self.MERGE_TREE,
+        }
+        arguments.update(extra)
+
+        return Leg("ch_sync_in", arguments)
 
 
 @pytest.fixture(scope="module", params=STAND.demo_clickhouse(), ids=lambda s: s.name)
@@ -264,22 +303,28 @@ async def ch(ch_source: ChSource) -> AsyncIterator[ChScripts]:
 
 
 class TestClickHouse:
-    async def test_temp_table_lives_in_the_pump_session(self, ch: ChScripts) -> None:
-        """SET и временная таблица из before доживают до INSERT и after: у
-        насоса одна сессия сервера на весь вызов."""
+    async def test_temp_table_lives_in_the_receiver_session(
+        self, ch: ChScripts
+    ) -> None:
+        """SET и временная таблица из before доживают до загрузки и after: у
+        приёмника одна сессия сервера на весь вызов."""
         pumps = Pumps(clickhouse=ch.side.profile)
 
-        report = await pumps.ch_in(
-            "insert into stage_tmp format TabSeparated",
-            TSV,
-            before=[
-                "set max_insert_block_size = 1000",
-                "create temporary table stage_tmp (id UInt64, v String)",
-            ],
-            after=[
-                "select count() from stage_tmp",
-                f"insert into {ch.named('target')} select id, upper(v) from stage_tmp",
-            ],
+        chained = await pumps.chain(
+            ch.out(f"select id, v from {ch.named('fresh')} order by id"),
+            ch.into(
+                "staged",
+                before=[
+                    "set max_insert_block_size = 1000",
+                    "create temporary table seen (n UInt64)",
+                ],
+                after=[
+                    f"insert into seen select count() from {ch.named('staged')}",
+                    "select n from seen",
+                    f"insert into {ch.named('target')} select id, upper(v) from "
+                    f"{ch.named('staged')}",
+                ],
+            ),
         )
 
         assert await ch.rows("target", "id", "v") == [
@@ -288,22 +333,48 @@ class TestClickHouse:
             (2, "old2"),
             (3, "NEW3"),
         ]
-        assert "- 2: select count() from stage_tmp" in report
-        assert "- read 2 rows, written 2 rows: insert into" in report
+        assert "- 2: select n from seen" in chained.in_report
+        assert "- read 2 rows, written 2 rows: insert into" in chained.in_report
+
+    async def test_source_reads_temp_table_from_before(self, ch: ChScripts) -> None:
+        """Запрос источника видит временную таблицу из своего before, after
+        идёт в той же сессии после выгрузки."""
+        pumps = Pumps(clickhouse=ch.side.profile)
+
+        chained = await pumps.chain(
+            ch.out(
+                "select id, v from snap",
+                before=[
+                    "create temporary table snap (id UInt64, v String)",
+                    f"insert into snap select id, v from {ch.named('target')} "
+                    "where id = 2",
+                ],
+                after=["select count() from snap"],
+            ),
+            ch.into(
+                "mirror", schema_strategy=CreateIfNotExists(kind="create_if_not_exists")
+            ),
+        )
+
+        assert await ch.rows("mirror", "id", "v") == [(2, "old2")]
+        assert "before:\n- " in chained.out_report
+        assert "after:\n- 1: select count() from snap" in chained.out_report
 
     async def test_replace_partition_from_stage(self, ch: ChScripts) -> None:
         """Загрузка в stage и replace partition в after: месяц подменён целиком,
         соседняя партиция не тронута."""
         pumps = Pumps(clickhouse=ch.side.profile)
 
-        await pumps.ch_in(
-            f"insert into {ch.named('stage')} format TabSeparated",
-            b"2024-09-02\t5\tsep5\n2024-09-03\t6\tsep6\n",
-            before=[f"truncate table {ch.named('stage')}"],
-            after=[
-                f"alter table {ch.named('part_target')} replace partition 202409 "
-                f"from {ch.named('stage')}"
-            ],
+        await pumps.chain(
+            ch.out(f"select d, id, v from {ch.named('fresh_part')} order by id"),
+            ch.into(
+                "stage",
+                before=[f"truncate table {ch.named('stage')}"],
+                after=[
+                    f"alter table {ch.named('part_target')} replace partition "
+                    f"202409 from {ch.named('stage')}"
+                ],
+            ),
         )
 
         assert await ch.rows("part_target", "id", "v") == [
@@ -313,24 +384,23 @@ class TestClickHouse:
         ]
 
     async def test_failing_after_keeps_loaded_rows(self, ch: ChScripts) -> None:
-        """Транзакций нет: ошибка шага after не откатывает INSERT."""
+        """Транзакций нет: ошибка шага after не откатывает загрузку."""
         pumps = Pumps(clickhouse=ch.side.profile)
 
         with pytest.raises(ClickHouseQueryError, match="stop"):
-            await pumps.ch_in(
-                f"insert into {ch.named('target')} format TabSeparated",
-                TSV,
-                after=["select throwIf(1, 'stop')"],
+            await pumps.chain(
+                ch.out(f"select id, v from {ch.named('fresh')}"),
+                ch.into("target", after=["select throwIf(1, 'stop')"]),
             )
 
         assert len(await ch.rows("target", "id")) == 4
 
 
 class OraScripts:
-    """Схема PUMP_STAND на модуль: target с двумя строками, mirror пустая,
-    глобальная временная stage_tmp; партиционированная part_target и
-    stage_part под exchange partition создаёт сам тест. Тесты не делят
-    таблицы между собой."""
+    """Схема PUMP_STAND на модуль: target с двумя строками, fresh с новыми,
+    пустые mirror и snapshot, глобальные временные stage_tmp и snap_tmp;
+    партиционированную part_target, stage_part и fresh_part под exchange
+    partition создаёт сам тест. Тесты не делят таблицы между собой."""
 
     def __init__(self, source: OraSource) -> None:
         self.side = OracleSide(source, arraysize=100)
@@ -341,13 +411,19 @@ class OraScripts:
         await self.side.create(
             "target", ("id number(10) primary key", "v varchar2(50)")
         )
-        await self.side.create("mirror", ("id number(10)", "v varchar2(50)"))
+        for table in ("fresh", "mirror", "snapshot"):
+            await self.side.create(table, ("id number(10)", "v varchar2(50)"))
+
         await self.side.run(
             (
                 "create global temporary table stage_tmp (id number(10), "
                 "v varchar2(50)) on commit delete rows",
+                "create global temporary table snap_tmp (id number(10), "
+                "v varchar2(50)) on commit delete rows",
                 "insert into target values (1, 'old1')",
                 "insert into target values (2, 'old2')",
+                "insert into fresh values (1, 'new1')",
+                "insert into fresh values (3, 'new3')",
             )
         )
 
@@ -359,8 +435,11 @@ class OraScripts:
                 "(partition p_202408 values (202408), "
                 "partition p_202409 values (202409))",
                 "create table stage_part (id number(10), m number(6), v varchar2(50))",
+                "create table fresh_part (id number(10), m number(6), v varchar2(50))",
                 "insert into part_target values (1, 202408, 'aug')",
                 "insert into part_target values (2, 202409, 'old2')",
+                "insert into fresh_part values (5, 202409, 'sep5')",
+                "insert into fresh_part values (6, 202409, 'sep6')",
             )
         )
 
@@ -370,6 +449,25 @@ class OraScripts:
             listed.append(tuple(row))
 
         return listed
+
+    def out(self, sql: str, **extra: Any) -> Leg:
+        arguments: dict[str, Any] = {"sql": sql}
+        arguments.update(extra)
+
+        return Leg("ora_sync_out", arguments)
+
+    def into(self, table: str, **extra: Any) -> Leg:
+        arguments: dict[str, Any] = {
+            "schema_name": PumpUser.NAME.value,
+            "table_name": table,
+            "schema_strategy": ErrorIfNotExists(kind="error_if_not_exists"),
+            "delete_strategy": DeleteNothing(kind="nothing"),
+            "insert_strategy": InsertFull(kind="full"),
+            "chunk_bytes": CHUNK_BYTES,
+        }
+        arguments.update(extra)
+
+        return Leg("ora_sync_in", arguments)
 
 
 @pytest.fixture(scope="module", params=STAND.ora_sources, ids=lambda s: s.name)
@@ -391,20 +489,42 @@ class TestOracle:
         один commit: target получил upsert, в отчёте строки каждого шага."""
         pumps = Pumps(oracle=ora.side.profile)
 
-        report = await pumps.ora_in(
-            "insert into stage_tmp (id, v) values (:1, :2)",
-            CSV,
-            before=["delete from stage_tmp"],
-            after=[
-                "delete from target where id in (select id from stage_tmp)",
-                "insert into target select id, v from stage_tmp",
-            ],
+        chained = await pumps.chain(
+            ora.out("select id, v from fresh order by id"),
+            ora.into(
+                "stage_tmp",
+                before=["delete from stage_tmp"],
+                after=[
+                    "delete from target where id in (select id from stage_tmp)",
+                    "insert into target select id, v from stage_tmp",
+                ],
+            ),
         )
 
         assert await ora.rows("target", "id", "v") == UPSERTED
-        assert "before:\n- 0 rows: delete from stage_tmp" in report
-        assert "- 1 rows: delete from target" in report
-        assert "- 2 rows: insert into target" in report
+        assert "before:\n- 0 rows: delete from stage_tmp" in chained.in_report
+        assert "- 1 rows: delete from target" in chained.in_report
+        assert "- 2 rows: insert into target" in chained.in_report
+
+    async def test_source_reads_temporary_table_from_before(
+        self, ora: OraScripts
+    ) -> None:
+        """Строки, вставленные в глобальную временную таблицу в before, видны
+        запросу источника только в его сессии; after идёт там же до commit."""
+        pumps = Pumps(oracle=ora.side.profile)
+
+        chained = await pumps.chain(
+            ora.out(
+                "select id, v from snap_tmp",
+                before=["insert into snap_tmp select id, v from target where id = 2"],
+                after=["delete from snap_tmp"],
+            ),
+            ora.into("snapshot"),
+        )
+
+        assert await ora.rows("snapshot", "id", "v") == [(2, "old2")]
+        assert "before:\n- 1 rows: insert into snap_tmp" in chained.out_report
+        assert "after:\n- 1 rows: delete from snap_tmp" in chained.out_report
 
     async def test_failing_after_rolls_back_the_load(self, ora: OraScripts) -> None:
         """Блок PL/SQL с raise_application_error в after срывает вызов до
@@ -412,13 +532,15 @@ class TestOracle:
         pumps = Pumps(oracle=ora.side.profile)
 
         with pytest.raises(OracleQueryError, match="stop"):
-            await pumps.ora_in(
-                "insert into mirror (id, v) values (:1, :2)",
-                CSV,
-                after=[
-                    "insert into mirror values (9, 'nine')",
-                    "begin raise_application_error(-20001, 'stop'); end;",
-                ],
+            await pumps.chain(
+                ora.out("select id, v from fresh"),
+                ora.into(
+                    "mirror",
+                    after=[
+                        "insert into mirror values (9, 'nine')",
+                        "begin raise_application_error(-20001, 'stop'); end;",
+                    ],
+                ),
             )
 
         assert await ora.rows("mirror", "id", "v") == []
@@ -437,14 +559,16 @@ class TestOracle:
 
         pumps = Pumps(oracle=ora.side.profile)
 
-        report = await pumps.ora_in(
-            "insert into stage_part (id, m, v) values (:1, :2, :3)",
-            b"5,202409,sep5\n6,202409,sep6\n",
-            before=["truncate table stage_part"],
-            after=[
-                "alter table part_target exchange partition p_202409 "
-                "with table stage_part"
-            ],
+        chained = await pumps.chain(
+            ora.out("select id, m, v from fresh_part order by id"),
+            ora.into(
+                "stage_part",
+                before=["truncate table stage_part"],
+                after=[
+                    "alter table part_target exchange partition p_202409 "
+                    "with table stage_part"
+                ],
+            ),
         )
 
         assert await ora.rows("part_target", "id", "v") == [
@@ -452,4 +576,7 @@ class TestOracle:
             (5, "sep5"),
             (6, "sep6"),
         ]
-        assert "after:\n- 0 rows: alter table part_target exchange partition" in report
+        assert (
+            "after:\n- 0 rows: alter table part_target exchange partition"
+            in chained.in_report
+        )

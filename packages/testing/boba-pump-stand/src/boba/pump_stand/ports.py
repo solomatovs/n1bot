@@ -10,8 +10,6 @@ from typing import Any
 from boba.toolkit.frames import ToolIo
 from boba.toolkit.ports import Chunk, Framed, Outbound, StreamPorts
 from boba.toolkit.transfer import (
-    Engine,
-    RawHead,
     RowsHead,
     SchemaHead,
     TransferFrame,
@@ -52,9 +50,7 @@ class Feed:
     произвольного размера — они режут строки и многобайтовые символы где
     попало."""
 
-    RAW: RawHead = RawHead(kind="raw", source_engine=Engine.POSTGRES)
-
-    def __init__(self, data: bytes, size: int, head: SchemaHead | RawHead) -> None:
+    def __init__(self, data: bytes, size: int, head: SchemaHead) -> None:
         self._data = data
         self._size = size
         self._head = head
