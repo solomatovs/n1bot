@@ -873,6 +873,11 @@ select
 `FORMAT ArrowStream` дописывает инструмент; тот же поток даёт `ch_stream_out`
 с `format ArrowStream` в тексте.
 
+`Date` (до 26) и `DateTime` уходят в Arrow целыми числами, и приёмник по
+контракту не отличит их от `UInt16` и `UInt32`: даты молча станут числами.
+В запросе для arrow пишите `toDate32(d)` и `toDateTime64(dt, 0, 'UTC')`;
+типы ClickHouse как есть везёт `ch_sync_out` с `wire = tsv`.
+
 | Колонка | Тип ClickHouse | Тип в схеме Arrow | Что это |
 |---|---|---|---|
 | id | Int64 | `int64 not null` | |
@@ -880,7 +885,7 @@ select
 | note | String | `string` (`binary` на 22.12 без `output_format_arrow_string_as_string`) | |
 | empty | Nullable(String) | `string` | null-бит Arrow |
 | ratio | Float64 | `double` | |
-| d | Date | `date32[day]` | |
+| d | Date | **`uint16`** до 25.x, `date32[day]` с 26 | до 26 — дни с эпохи числом, не датой |
 | dtm | DateTime | **`uint32`** | секунды с эпохи числом, не временем |
 | ts | DateTime64(6, 'UTC') | `timestamp[us, tz=UTC]` | |
 | bin | String с байтами | `string` | **невалидный UTF-8** в строке: читатель падает |
@@ -1734,6 +1739,9 @@ deleted: 0 rows by truncate table "dwh"."orders"
 - `test_pg_arrow.py` — PostgreSQL -> PostgreSQL, ClickHouse и Oracle потоком
   Arrow на всей матрице версий, обратные пути и ловушки;
 - `test_ora_ch_stream.py` — короткая цепочка Oracle -> ClickHouse;
+- `test_arrow_ch_sync.py` — `ch_sync_in` на потоке arrow из postgres,
+  Greenplum, Oracle и ClickHouse: широкая таблица типов, типы без пары, сверка
+  шире/уже, двойник, ловушки Date/DateTime/Bool в Arrow ClickHouse;
 - `test_pg_ch_sync.py` — пара postgres -> ClickHouse по tsv: типы и значения,
   JSON по версиям, отказы и `String` для типов без пары, ловушки сервера
   (маска inet, массив json, прижатые даты), витрина;
