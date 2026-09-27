@@ -5,7 +5,7 @@
 
 from __future__ import annotations
 
-from boba.pump_stand.loaded import Loaded
+from boba.pump_stand.loaded import ChLoaded, Loaded
 from boba.pump_stand.oracle import OracleStand
 from boba.pump_stand.ports import Feed, Pipe, Sink
 from boba.pump_stand.pumps import Chained, Leg, Pumps
@@ -13,6 +13,7 @@ from boba.pump_stand.sides import ClickHouseSide, OracleSide, PostgresSide
 from boba.pump_stand.stand import ChSource, OraSource, PgSource, PumpStand
 
 __all__ = [
+    "ChLoaded",
     "ChSource",
     "Chained",
     "ClickHouseSide",
