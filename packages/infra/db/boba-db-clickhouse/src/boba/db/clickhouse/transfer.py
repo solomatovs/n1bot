@@ -46,7 +46,7 @@ from boba.db.clickhouse.query import (
 )
 from boba.db.clickhouse.target import ChCluster, ChPlacement, ChTableRef, ChTableRole
 from boba.db.clickhouse.trace import ChCommandReport
-from boba.toolkit.sync import TypeFamily
+from boba.toolkit.contract import ColumnVerdict, TypeFamily, Verdict
 from boba.toolkit.transfer import (
     ColumnRules,
     CreateTemplate,
@@ -88,17 +88,15 @@ __all__ = [
     "ChStreamColumn",
     "ChTableFacts",
     "ChTablePlan",
+    "ChTransfer",
+    "ChTransferFactory",
     "ChTransferTable",
+    "ChTransfers",
     "ChTsvOut",
     "ChTwin",
     "ChTypeResolver",
     "ChTypeRules",
     "ChTypes",
-    "ClickHouseTransfer",
-    "ClickHouseTransferFactory",
-    "ClickHouseTransfers",
-    "ColumnVerdict",
-    "Verdict",
 ]
 
 
@@ -832,20 +830,6 @@ class ChInputSink(TransferSink):
 TypeRule = Callable[["ChParsedType", "ChParsedType"], "ColumnVerdict"]
 
 
-class Verdict(StrEnum):
-    """Итог сверки одной колонки."""
-
-    OK = "ok"
-    WARNING = "warning"
-    ERROR = "error"
-
-
-@dataclass(frozen=True)
-class ColumnVerdict:
-    level: Verdict
-    message: str
-
-
 @dataclass(frozen=True)
 class ChStreamColumn:
     """Поле потока глазами приёмника ClickHouse: имя колонки таблицы (после
@@ -1207,7 +1191,7 @@ class ChMatcher:
         )
 
 
-class ClickHouseTransfer(Protocol):
+class ChTransfer(Protocol):
     """Пара «движок источника → ClickHouse»: разбирает контракт своего
     источника, сверяет его с таблицей, планирует DDL и ведёт стратегии.
     Реализация в пакете пары, создаётся фабрикой из реестра."""
@@ -1224,7 +1208,7 @@ class ClickHouseTransfer(Protocol):
 
 
 @runtime_checkable
-class ClickHouseTransferFactory(Protocol):
+class ChTransferFactory(Protocol):
     """Конструктор пары: клиент приёмника, таблица, её кластер и ключ
     сортировки, кадр схемы, поток тел."""
 
@@ -1235,22 +1219,22 @@ class ClickHouseTransferFactory(Protocol):
         placement: ChPlacement,
         head: SchemaHead,
         feed: TransferInbound,
-    ) -> ClickHouseTransfer: ...
+    ) -> ChTransfer: ...
 
 
-class ClickHouseTransfers:
+class ChTransfers:
     """Реестр пар в ClickHouse по entry points группы
     boba.transfer.clickhouse: имя записи — движок источника, значение —
     класс пары."""
 
     GROUP: ClassVar[str] = "boba.transfer.clickhouse"
 
-    def __init__(self, factories: Mapping[Engine, ClickHouseTransferFactory]) -> None:
+    def __init__(self, factories: Mapping[Engine, ChTransferFactory]) -> None:
         self._factories = dict(factories)
 
     @classmethod
-    def discover(cls) -> ClickHouseTransfers:
-        factories: dict[Engine, ClickHouseTransferFactory] = {}
+    def discover(cls) -> ChTransfers:
+        factories: dict[Engine, ChTransferFactory] = {}
         for entry in entry_points(group=cls.GROUP):
             try:
                 engine = Engine(entry.name)
@@ -1262,7 +1246,7 @@ class ClickHouseTransfers:
                 ) from exc
 
             loaded = entry.load()
-            if not isinstance(loaded, ClickHouseTransferFactory):
+            if not isinstance(loaded, ChTransferFactory):
                 raise TransferError(
                     f"entry point {entry.name!r} of group {cls.GROUP!r} "
                     f"({entry.value}): expected a transfer class, got {loaded!r}"
@@ -1272,7 +1256,7 @@ class ClickHouseTransfers:
 
         return cls(factories)
 
-    def pair(self, engine: Engine) -> ClickHouseTransferFactory:
+    def pair(self, engine: Engine) -> ChTransferFactory:
         factory = self._factories.get(engine)
         if factory is None:
             installed = ", ".join(sorted(member.value for member in self._factories))

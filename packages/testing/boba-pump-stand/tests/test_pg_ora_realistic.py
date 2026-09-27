@@ -55,7 +55,7 @@ from boba.pump_stand import (
     PumpStand,
 )
 from boba.pump_stand.oracle import PumpUser
-from boba.toolkit.sync import ColumnDeclaration
+from boba.toolkit.contract import ColumnDeclaration
 from boba.toolkit.transfer import (
     BackupAndCreateIfSchemaChanged,
     ColumnRules,

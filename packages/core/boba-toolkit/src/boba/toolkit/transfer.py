@@ -62,6 +62,7 @@ __all__ = [
     "SchemaPlan",
     "SchemaStrategy",
     "SchemaStrategyPlan",
+    "ScriptStep",
     "StreamWire",
     "TemplateBrackets",
     "TemplatePart",
@@ -73,6 +74,7 @@ __all__ = [
     "TransferInbound",
     "TransferOutbound",
     "TransferReport",
+    "TransferReportText",
     "TransferRun",
     "TransferSink",
     "TransferTable",
@@ -849,6 +851,38 @@ class TransferReport:
 
         if not self.transactional:
             lines.append("note: the steps are not one transaction on this engine")
+
+        return "\n".join(lines)
+
+
+class ScriptStep(Protocol):
+    """Итог одного стейтмента скрипта before/after насоса: драйвер движка
+    сам печатает его строкой отчёта."""
+
+    def render(self) -> str: ...
+
+
+class TransferReportText:
+    """Текст отчёта приёмника для чата: итог TransferReport и под ним шаги
+    скриптов before и after, как их напечатал драйвер движка. Один на все
+    приёмники: pg_stream_in, ch_stream_in, ora_stream_in."""
+
+    def render(
+        self,
+        report: TransferReport,
+        before: Sequence[ScriptStep],
+        after: Sequence[ScriptStep],
+    ) -> str:
+        lines = [report.render()]
+        if before:
+            lines.append("before:")
+            for step in before:
+                lines.append(step.render())
+
+        if after:
+            lines.append("after:")
+            for step in after:
+                lines.append(step.render())
 
         return "\n".join(lines)
 

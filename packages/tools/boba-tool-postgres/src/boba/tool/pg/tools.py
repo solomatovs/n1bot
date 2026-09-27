@@ -32,15 +32,15 @@ from boba.db.postgres import PayloadPostgres, PgArrowError, PgScript, PostgresEr
 from boba.db.postgres.address import PgAddresses
 from boba.db.postgres.connection import CopyOptions, PostgresConfig
 from boba.db.postgres.query import PgQuery, PgQueryBuilder
-from boba.db.postgres.trace import PgScriptStep
 from boba.db.postgres.transfer import (
     PgColumnDeclaration,
     PgCopyLayout,
     PgCopyOut,
     PgTableRef,
+    PgTransfers,
     PgTransferTable,
-    PostgresTransfers,
 )
+from boba.toolkit.contract import ContractError
 from boba.toolkit.entry import ToolMain
 from boba.toolkit.facade import Injected, UserConnection, tool
 from boba.toolkit.ports import ArrowStreamError, Inbound, Outbound
@@ -56,7 +56,6 @@ from boba.toolkit.sql import (
     SqlErrorKind,
     SqlLimits,
 )
-from boba.toolkit.sync import SyncError
 from boba.toolkit.transfer import (
     ColumnRules,
     CreateTemplate,
@@ -69,7 +68,7 @@ from boba.toolkit.transfer import (
     TransferFrame,
     TransferInbound,
     TransferOutbound,
-    TransferReport,
+    TransferReportText,
     UnknownTypeStrategy,
 )
 from boba.toolkit.types import SecretRevealing
@@ -354,29 +353,6 @@ async def pg_query(
     return await run_script(connection, sql, RowWindow(offset=offset, limit=limit))
 
 
-class TransferReportText:
-    """Текст отчёта приёмника с шагами скриптов before и after."""
-
-    def render(
-        self,
-        report: TransferReport,
-        before: Sequence[PgScriptStep],
-        after: Sequence[PgScriptStep],
-    ) -> str:
-        lines = [report.render()]
-        if before:
-            lines.append("before:")
-            for step in before:
-                lines.append(step.render())
-
-        if after:
-            lines.append("after:")
-            for step in after:
-                lines.append(step.render())
-
-        return "\n".join(lines)
-
-
 @tool
 async def pg_stream_out(  # noqa: PLR0913
     connection: PgConnection,
@@ -444,7 +420,7 @@ async def pg_stream_out(  # noqa: PLR0913
     и after идут в той же транзакции. В ответ — формат данных, состав
     контракта, статус сервера и его сообщения.
     """
-    from boba.db.postgres.sync import PgArrowSource  # noqa: PLC0415
+    from boba.db.postgres.arrow_stream import PgArrowSource  # noqa: PLC0415
 
     conn = await PayloadPostgres.connect_config(connection.copy_session(copy_options))
     script = PgScript(conn)
@@ -593,9 +569,9 @@ async def pg_stream_in(  # noqa: PLR0913
     что сделано со схемой и почему, сверка по колонкам, что удалено,
     сколько вставлено.
     """
-    from boba.db.postgres.sync import PgSyncLoader  # noqa: PLC0415
-    from boba.toolkit.sync import ArrowContract, StreamContract  # noqa: PLC0415
-    from boba.toolkit.sync import Engine as NeutralEngine  # noqa: PLC0415
+    from boba.db.postgres.arrow_stream import PgArrowLoader  # noqa: PLC0415
+    from boba.toolkit.contract import ArrowContract, StreamContract  # noqa: PLC0415
+    from boba.toolkit.contract import Engine as NeutralEngine  # noqa: PLC0415
 
     template = CreateTemplate(create_table, PgTransferTable.TEMPLATE_VARS)
     inbound = TransferInbound(feed)
@@ -607,7 +583,7 @@ async def pg_stream_in(  # noqa: PLR0913
         before_steps = await script.run(before)
         if head.wire is StreamWire.ARROW:
             contract = ArrowContract.model_validate(head.contract)
-            loader = PgSyncLoader(
+            loader = PgArrowLoader(
                 conn,
                 table,
                 StreamContract().specs(contract.columns),
@@ -625,7 +601,7 @@ async def pg_stream_in(  # noqa: PLR0913
                 template,
             )
         else:
-            pair = PostgresTransfers.discover().pair(head.source_engine)
+            pair = PgTransfers.discover().pair(head.source_engine)
             report = await pair(conn, table, head, inbound).run(
                 schema_strategy,
                 delete_strategy,
@@ -1423,7 +1399,7 @@ EXPECTED: Mapping[type[Exception], SqlErrorKind] = {
     PostgresError: SqlErrorKind.DATABASE_UNAVAILABLE,
     PgArrowError: SqlErrorKind.SQL_FAILED,
     ArrowStreamError: SqlErrorKind.SQL_FAILED,
-    SyncError: SqlErrorKind.SQL_FAILED,
+    ContractError: SqlErrorKind.SQL_FAILED,
     TransferError: SqlErrorKind.SQL_FAILED,
     psycopg.Error: SqlErrorKind.SQL_FAILED,
     ResultTooLargeError: SqlErrorKind.RESULT_TOO_LARGE,

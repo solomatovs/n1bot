@@ -33,7 +33,7 @@ dev = [
 
 [tool.boba.extras]
 "boba.db.postgres.arrow" = "arrow"
-"boba.db.postgres.sync" = "arrow"
+"boba.db.postgres.arrow_stream" = "arrow"
 
 [tool.setuptools.packages.find]
 where = ["src"]

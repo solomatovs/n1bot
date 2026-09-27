@@ -43,7 +43,7 @@ namespaces = true
 [tool.boba.extras]
 "boba.db.clickhouse.payload" = "payload"
 "boba.db.clickhouse.formats" = "payload"
-"boba.db.clickhouse.sync" = "payload"
+"boba.db.clickhouse.arrow_stream" = "payload"
 "boba.db.clickhouse.transfer" = "payload"
 
 [project.entry-points."boba.catalog"]

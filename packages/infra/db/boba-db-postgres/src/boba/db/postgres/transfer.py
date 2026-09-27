@@ -42,6 +42,7 @@ from boba.db.postgres.describe import (
 from boba.db.postgres.errors import PgDescribeError
 from boba.db.postgres.query import PgQuery, PgQueryBuilder
 from boba.db.postgres.trace import PgCommandReport, PgSessionTrace
+from boba.toolkit.contract import ColumnVerdict, Verdict
 from boba.toolkit.stream import Chunk
 from boba.toolkit.transfer import (
     ColumnRules,
@@ -66,7 +67,6 @@ from boba.toolkit.transfer import (
 )
 
 __all__ = [
-    "ColumnVerdict",
     "PgCatalogColumn",
     "PgColumnDeclaration",
     "PgContract",
@@ -86,15 +86,14 @@ __all__ = [
     "PgTableFacts",
     "PgTablePlan",
     "PgTableRef",
+    "PgTransfer",
+    "PgTransferFactory",
     "PgTransferTable",
+    "PgTransfers",
     "PgTypeResolver",
     "PgTypeRules",
     "PgTypedName",
-    "PostgresTransfer",
-    "PostgresTransferFactory",
-    "PostgresTransfers",
     "Relkind",
-    "Verdict",
 ]
 
 
@@ -850,20 +849,6 @@ class PgTypedName:
     known: str
 
 
-class Verdict(StrEnum):
-    """Итог сверки колонки: ошибка не даёт загрузить без пересоздания."""
-
-    OK = "ok"
-    WARNING = "warning"
-    ERROR = "error"
-
-
-@dataclass(frozen=True)
-class ColumnVerdict:
-    level: Verdict
-    message: str
-
-
 @dataclass(frozen=True)
 class PgField:
     """Поле потока, как его выразила пара в терминах postgres: имя поля,
@@ -1317,7 +1302,7 @@ class PgMatcher:
         )
 
 
-class PostgresTransfer(Protocol):
+class PgTransfer(Protocol):
     """Пара «движок источника → postgres»: разбирает контракт своего
     источника, сверяет его с таблицей, планирует DDL и ведёт стратегии.
     Реализация в пакете пары, создаётся фабрикой из реестра."""
@@ -1334,7 +1319,7 @@ class PostgresTransfer(Protocol):
 
 
 @runtime_checkable
-class PostgresTransferFactory(Protocol):
+class PgTransferFactory(Protocol):
     """Конструктор пары: класс с таким __init__ — соединение приёмника,
     таблица, кадр схемы, поток тел."""
 
@@ -1344,21 +1329,21 @@ class PostgresTransferFactory(Protocol):
         table: PgTableRef,
         head: SchemaHead,
         feed: TransferInbound,
-    ) -> PostgresTransfer: ...
+    ) -> PgTransfer: ...
 
 
-class PostgresTransfers:
+class PgTransfers:
     """Реестр пар в postgres по entry points группы boba.transfer.postgres:
     имя записи — движок источника, значение — класс пары."""
 
     GROUP: ClassVar[str] = "boba.transfer.postgres"
 
-    def __init__(self, factories: Mapping[Engine, PostgresTransferFactory]) -> None:
+    def __init__(self, factories: Mapping[Engine, PgTransferFactory]) -> None:
         self._factories = dict(factories)
 
     @classmethod
-    def discover(cls) -> PostgresTransfers:
-        factories: dict[Engine, PostgresTransferFactory] = {}
+    def discover(cls) -> PgTransfers:
+        factories: dict[Engine, PgTransferFactory] = {}
         for entry in entry_points(group=cls.GROUP):
             try:
                 engine = Engine(entry.name)
@@ -1370,7 +1355,7 @@ class PostgresTransfers:
                 ) from exc
 
             loaded = entry.load()
-            if not isinstance(loaded, PostgresTransferFactory):
+            if not isinstance(loaded, PgTransferFactory):
                 raise TransferError(
                     f"entry point {entry.name!r} of group {cls.GROUP!r} "
                     f"({entry.value}): expected a transfer class, got {loaded!r}"
@@ -1380,7 +1365,7 @@ class PostgresTransfers:
 
         return cls(factories)
 
-    def pair(self, engine: Engine) -> PostgresTransferFactory:
+    def pair(self, engine: Engine) -> PgTransferFactory:
         factory = self._factories.get(engine)
         if factory is None:
             installed = ", ".join(sorted(member.value for member in self._factories))

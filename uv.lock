@@ -53,11 +53,11 @@ members = [
     "boba-sandbox",
     "boba-stand",
     "boba-stand-core",
+    "boba-stream-ch-to-ch",
+    "boba-stream-ch-to-pg",
+    "boba-stream-pg-to-ch",
+    "boba-stream-pg-to-pg",
     "boba-studio",
-    "boba-sync-ch-to-ch",
-    "boba-sync-ch-to-pg",
-    "boba-sync-pg-to-ch",
-    "boba-sync-pg-to-pg",
     "boba-text",
     "boba-tool-canvas",
     "boba-tool-chart",
@@ -1606,10 +1606,10 @@ dependencies = [
 
 [package.optional-dependencies]
 dev = [
-    { name = "boba-sync-ch-to-ch", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
-    { name = "boba-sync-ch-to-pg", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
-    { name = "boba-sync-pg-to-ch", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
-    { name = "boba-sync-pg-to-pg", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "boba-stream-ch-to-ch", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "boba-stream-ch-to-pg", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "boba-stream-pg-to-ch", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "boba-stream-pg-to-pg", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "psycopg", extra = ["binary"], marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "pyarrow", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "pytest", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
@@ -1621,10 +1621,10 @@ requires-dist = [
     { name = "boba-db-oracle", extras = ["payload"], editable = "packages/infra/db/boba-db-oracle" },
     { name = "boba-db-postgres", extras = ["arrow"], editable = "packages/infra/db/boba-db-postgres" },
     { name = "boba-stand", editable = "packages/testing/boba-stand" },
-    { name = "boba-sync-ch-to-ch", marker = "extra == 'dev'", editable = "packages/infra/sync/boba-sync-ch-to-ch" },
-    { name = "boba-sync-ch-to-pg", marker = "extra == 'dev'", editable = "packages/infra/sync/boba-sync-ch-to-pg" },
-    { name = "boba-sync-pg-to-ch", marker = "extra == 'dev'", editable = "packages/infra/sync/boba-sync-pg-to-ch" },
-    { name = "boba-sync-pg-to-pg", marker = "extra == 'dev'", editable = "packages/infra/sync/boba-sync-pg-to-pg" },
+    { name = "boba-stream-ch-to-ch", marker = "extra == 'dev'", editable = "packages/infra/stream/boba-stream-ch-to-ch" },
+    { name = "boba-stream-ch-to-pg", marker = "extra == 'dev'", editable = "packages/infra/stream/boba-stream-ch-to-pg" },
+    { name = "boba-stream-pg-to-ch", marker = "extra == 'dev'", editable = "packages/infra/stream/boba-stream-pg-to-ch" },
+    { name = "boba-stream-pg-to-pg", marker = "extra == 'dev'", editable = "packages/infra/stream/boba-stream-pg-to-pg" },
     { name = "boba-tool-clickhouse", editable = "packages/tools/boba-tool-clickhouse" },
     { name = "boba-tool-oracle", editable = "packages/tools/boba-tool-oracle" },
     { name = "boba-tool-postgres", editable = "packages/tools/boba-tool-postgres" },
@@ -1865,6 +1865,104 @@ requires-dist = [
 provides-extras = ["dev"]
 
 [[package]]
+name = "boba-stream-ch-to-ch"
+version = "0.0.24.dev2"
+source = { editable = "packages/infra/stream/boba-stream-ch-to-ch" }
+dependencies = [
+    { name = "boba-db-clickhouse", extra = ["payload"], marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "boba-toolkit", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+]
+
+[package.optional-dependencies]
+dev = [
+    { name = "pytest", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "boba-db-clickhouse", extras = ["payload"], editable = "packages/infra/db/boba-db-clickhouse" },
+    { name = "boba-toolkit", editable = "packages/core/boba-toolkit" },
+    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8" },
+]
+provides-extras = ["dev"]
+
+[[package]]
+name = "boba-stream-ch-to-pg"
+version = "0.0.24.dev2"
+source = { editable = "packages/infra/stream/boba-stream-ch-to-pg" }
+dependencies = [
+    { name = "boba-db-clickhouse", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "boba-db-postgres", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "boba-toolkit", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "psycopg", extra = ["binary", "pool"], marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+]
+
+[package.optional-dependencies]
+dev = [
+    { name = "pytest", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "boba-db-clickhouse", editable = "packages/infra/db/boba-db-clickhouse" },
+    { name = "boba-db-postgres", editable = "packages/infra/db/boba-db-postgres" },
+    { name = "boba-toolkit", editable = "packages/core/boba-toolkit" },
+    { name = "psycopg", extras = ["binary", "pool"], specifier = ">=3.3" },
+    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8" },
+]
+provides-extras = ["dev"]
+
+[[package]]
+name = "boba-stream-pg-to-ch"
+version = "0.0.24.dev2"
+source = { editable = "packages/infra/stream/boba-stream-pg-to-ch" }
+dependencies = [
+    { name = "boba-db-clickhouse", extra = ["payload"], marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "boba-db-postgres", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "boba-toolkit", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "psycopg", extra = ["binary", "pool"], marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+]
+
+[package.optional-dependencies]
+dev = [
+    { name = "pytest", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "boba-db-clickhouse", extras = ["payload"], editable = "packages/infra/db/boba-db-clickhouse" },
+    { name = "boba-db-postgres", editable = "packages/infra/db/boba-db-postgres" },
+    { name = "boba-toolkit", editable = "packages/core/boba-toolkit" },
+    { name = "psycopg", extras = ["binary", "pool"], specifier = ">=3.3" },
+    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8" },
+]
+provides-extras = ["dev"]
+
+[[package]]
+name = "boba-stream-pg-to-pg"
+version = "0.0.24.dev2"
+source = { editable = "packages/infra/stream/boba-stream-pg-to-pg" }
+dependencies = [
+    { name = "boba-db-postgres", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "boba-toolkit", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "psycopg", extra = ["binary", "pool"], marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+]
+
+[package.optional-dependencies]
+dev = [
+    { name = "pytest", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "boba-db-postgres", editable = "packages/infra/db/boba-db-postgres" },
+    { name = "boba-toolkit", editable = "packages/core/boba-toolkit" },
+    { name = "psycopg", extras = ["binary", "pool"], specifier = ">=3.3" },
+    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8" },
+]
+provides-extras = ["dev"]
+
+[[package]]
 name = "boba-studio"
 version = "0.0.24.dev2"
 source = { editable = "packages/agents/boba-studio" }
@@ -1951,104 +2049,6 @@ requires-dist = [
     { name = "starlette", marker = "extra == 'dev'", specifier = ">=0.40" },
     { name = "uvicorn", specifier = ">=0.30" },
     { name = "websockets", marker = "extra == 'dev'", specifier = ">=13" },
-]
-provides-extras = ["dev"]
-
-[[package]]
-name = "boba-sync-ch-to-ch"
-version = "0.0.24.dev2"
-source = { editable = "packages/infra/sync/boba-sync-ch-to-ch" }
-dependencies = [
-    { name = "boba-db-clickhouse", extra = ["payload"], marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
-    { name = "boba-toolkit", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
-]
-
-[package.optional-dependencies]
-dev = [
-    { name = "pytest", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "boba-db-clickhouse", extras = ["payload"], editable = "packages/infra/db/boba-db-clickhouse" },
-    { name = "boba-toolkit", editable = "packages/core/boba-toolkit" },
-    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8" },
-]
-provides-extras = ["dev"]
-
-[[package]]
-name = "boba-sync-ch-to-pg"
-version = "0.0.24.dev2"
-source = { editable = "packages/infra/sync/boba-sync-ch-to-pg" }
-dependencies = [
-    { name = "boba-db-clickhouse", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
-    { name = "boba-db-postgres", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
-    { name = "boba-toolkit", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
-    { name = "psycopg", extra = ["binary", "pool"], marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
-]
-
-[package.optional-dependencies]
-dev = [
-    { name = "pytest", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "boba-db-clickhouse", editable = "packages/infra/db/boba-db-clickhouse" },
-    { name = "boba-db-postgres", editable = "packages/infra/db/boba-db-postgres" },
-    { name = "boba-toolkit", editable = "packages/core/boba-toolkit" },
-    { name = "psycopg", extras = ["binary", "pool"], specifier = ">=3.3" },
-    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8" },
-]
-provides-extras = ["dev"]
-
-[[package]]
-name = "boba-sync-pg-to-ch"
-version = "0.0.24.dev2"
-source = { editable = "packages/infra/sync/boba-sync-pg-to-ch" }
-dependencies = [
-    { name = "boba-db-clickhouse", extra = ["payload"], marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
-    { name = "boba-db-postgres", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
-    { name = "boba-toolkit", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
-    { name = "psycopg", extra = ["binary", "pool"], marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
-]
-
-[package.optional-dependencies]
-dev = [
-    { name = "pytest", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "boba-db-clickhouse", extras = ["payload"], editable = "packages/infra/db/boba-db-clickhouse" },
-    { name = "boba-db-postgres", editable = "packages/infra/db/boba-db-postgres" },
-    { name = "boba-toolkit", editable = "packages/core/boba-toolkit" },
-    { name = "psycopg", extras = ["binary", "pool"], specifier = ">=3.3" },
-    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8" },
-]
-provides-extras = ["dev"]
-
-[[package]]
-name = "boba-sync-pg-to-pg"
-version = "0.0.24.dev2"
-source = { editable = "packages/infra/sync/boba-sync-pg-to-pg" }
-dependencies = [
-    { name = "boba-db-postgres", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
-    { name = "boba-toolkit", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
-    { name = "psycopg", extra = ["binary", "pool"], marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
-]
-
-[package.optional-dependencies]
-dev = [
-    { name = "pytest", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "boba-db-postgres", editable = "packages/infra/db/boba-db-postgres" },
-    { name = "boba-toolkit", editable = "packages/core/boba-toolkit" },
-    { name = "psycopg", extras = ["binary", "pool"], specifier = ">=3.3" },
-    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8" },
 ]
 provides-extras = ["dev"]
 
@@ -2449,10 +2449,8 @@ dependencies = [
 
 [package.optional-dependencies]
 dev = [
-    { name = "boba-db-postgres", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "boba-stand", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "oracledb", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
-    { name = "psycopg", extra = ["binary"], marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "pytest", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
 ]
 payload = [
@@ -2465,12 +2463,10 @@ requires-dist = [
     { name = "boba-connections", editable = "packages/core/boba-connections" },
     { name = "boba-db-oracle", editable = "packages/infra/db/boba-db-oracle" },
     { name = "boba-db-oracle", extras = ["payload"], marker = "extra == 'payload'", editable = "packages/infra/db/boba-db-oracle" },
-    { name = "boba-db-postgres", marker = "extra == 'dev'", editable = "packages/infra/db/boba-db-postgres" },
     { name = "boba-stand", marker = "extra == 'dev'", editable = "packages/testing/boba-stand" },
     { name = "boba-toolkit", editable = "packages/core/boba-toolkit" },
     { name = "boba-toolkit", extras = ["arrow"], marker = "extra == 'payload'", editable = "packages/core/boba-toolkit" },
     { name = "oracledb", marker = "extra == 'dev'", specifier = "==26.0.0+boba.1", index = "file:///app/docker/compose/boba/build/chainlit/src/oracledb" },
-    { name = "psycopg", extras = ["binary"], marker = "extra == 'dev'", specifier = ">=3.3" },
     { name = "pydantic", specifier = ">=2.10,<2.11" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8" },
 ]
