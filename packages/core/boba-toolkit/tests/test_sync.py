@@ -7,7 +7,17 @@ import pyarrow
 import pytest
 
 from boba.toolkit.arrow import ArrowColumns, SourceFields
-from boba.toolkit.landing import (
+from boba.toolkit.sync import (
+    ColumnSpec,
+    ColumnType,
+    SchemaMatcher,
+    SyncError,
+    TimeUnit,
+    TypeComparer,
+    TypeFamily,
+    Verdict,
+)
+from boba.toolkit.transfer import (
     BackupAndCreateIfSchemaChanged,
     ColumnRules,
     CreateIfNotExists,
@@ -18,16 +28,6 @@ from boba.toolkit.landing import (
     ErrorIfSchemaChanged,
     SchemaAction,
     SchemaCheck,
-)
-from boba.toolkit.sync import (
-    ColumnSpec,
-    ColumnType,
-    SchemaMatcher,
-    SyncError,
-    TimeUnit,
-    TypeComparer,
-    TypeFamily,
-    Verdict,
 )
 
 INT32 = ColumnType(TypeFamily.INTEGER, "int32", bits=32)

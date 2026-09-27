@@ -8,8 +8,14 @@ from collections.abc import Iterator
 from typing import Any
 
 from boba.toolkit.frames import ToolIo
-from boba.toolkit.landing import Engine, LandingFrame, RowsHead, SchemaHead, SyncWire
 from boba.toolkit.ports import Chunk, Framed, Outbound, StreamPorts
+from boba.toolkit.transfer import (
+    Engine,
+    RawHead,
+    RowsHead,
+    SchemaHead,
+    TransferFrame,
+)
 
 __all__ = ["Feed", "Pipe", "Sink"]
 
@@ -30,14 +36,14 @@ class Sink:
         return bytes(self._buffer)
 
 
-class SinkOutbound(Outbound[LandingFrame]):
+class SinkOutbound(Outbound[TransferFrame]):
     """Порт Outbound поверх Sink: для прямых вызовов источников в тестах,
     минуя ToolMain."""
 
     def __init__(self, sink: Sink) -> None:
         self._sink = sink
 
-    def emit(self, head: LandingFrame, body: Chunk = b"") -> None:
+    def emit(self, head: TransferFrame, body: Chunk = b"") -> None:
         self._sink.emit(head, body)
 
 
@@ -46,11 +52,9 @@ class Feed:
     произвольного размера — они режут строки и многобайтовые символы где
     попало."""
 
-    RAW: SchemaHead = SchemaHead(
-        kind="schema", source_engine=Engine.POSTGRES, wire=SyncWire.RAW, contract=None
-    )
+    RAW: RawHead = RawHead(kind="raw", source_engine=Engine.POSTGRES)
 
-    def __init__(self, data: bytes, size: int, head: SchemaHead) -> None:
+    def __init__(self, data: bytes, size: int, head: SchemaHead | RawHead) -> None:
         self._data = data
         self._size = size
         self._head = head

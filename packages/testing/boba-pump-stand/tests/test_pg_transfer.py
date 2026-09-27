@@ -19,18 +19,18 @@ import pytest
 
 from boba.db.postgres import AsyncPostgresPool
 from boba.db.postgres.connection import CopyOptions
-from boba.db.postgres.landing import (
+from boba.db.postgres.query import PgQueryBuilder
+from boba.db.postgres.transfer import (
     PgCatalogColumn,
     PgColumnDeclaration,
     PgCopyLayout,
     PgCopyOut,
-    PgLandingTable,
+    PgTransferTable,
 )
-from boba.db.postgres.query import PgQueryBuilder
-from boba.pump_stand import Landing, Leg, PostgresSide, Pumps, PumpStand
+from boba.pump_stand import Leg, Loaded, PostgresSide, Pumps, PumpStand
 from boba.pump_stand.ports import Sink, SinkOutbound
-from boba.sync.pg_to_pg.landing import PgStreamColumn, PgTypeRules
-from boba.toolkit.landing import (
+from boba.sync.pg_to_pg.transfer import PgStreamColumn, PgTypeRules
+from boba.toolkit.transfer import (
     BackupAndCreateIfSchemaChanged,
     ColumnRules,
     CreateIfNotExists,
@@ -45,15 +45,15 @@ from boba.toolkit.landing import (
     FallbackAsVarchar,
     InsertFull,
     InsertNothing,
-    LandingError,
-    LandingOutbound,
-    WireChoice,
+    StreamWire,
+    TransferError,
+    TransferOutbound,
 )
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
 
 STAND = PumpStand.required()
-S = "pump_landing"
+S = "pump_transfer"
 CHUNK = 4096
 ROWS = 3000
 SELECT = f"select * from {S}.src"
@@ -132,8 +132,8 @@ async def land(
     unknown_types: Any = FailOnUnknown(kind="fail_on_unknown"),
     select: str = SELECT,
     columns: Sequence[PgColumnDeclaration] = (),
-    wire: WireChoice = WireChoice.CSV,
-    create_table: str = PgLandingTable.CREATE_TABLE,
+    wire: StreamWire = StreamWire.CSV,
+    create_table: str = PgTransferTable.CREATE_TABLE,
 ) -> str:
     """Источник -> приёмник на одном сервере, id объявлен not null."""
     pumps = Pumps(postgres=postgres.profile)
@@ -190,10 +190,10 @@ async def existing(postgres: PostgresSide, table: str, kind: str) -> None:
 class TestSchemaStrategies:
     async def test_create_keeps_the_source_types(self, postgres: PostgresSide) -> None:
         report = await land(postgres, "t_create")
-        landed = Landing(postgres, S, "t_create")
+        landed = Loaded(postgres, S, "t_create")
 
         source_types = [
-            column[:2] for column in await Landing(postgres, S, "src").columns()
+            column[:2] for column in await Loaded(postgres, S, "src").columns()
         ]
         landed_columns = await landed.columns()
 
@@ -203,7 +203,7 @@ class TestSchemaStrategies:
         assert landed_columns[0] == ("id", "bigint", True)
         assert landed_columns[1] == ("name", "character varying(50)", False)
         assert await landed.count() == ROWS
-        assert await landed.texts("amount") == await Landing(postgres, S, "src").texts(
+        assert await landed.texts("amount") == await Loaded(postgres, S, "src").texts(
             "amount"
         )
 
@@ -221,12 +221,12 @@ class TestSchemaStrategies:
         assert "schema: keep (schema matches)" in report
         assert "- ok amount: ok" in report
         assert "deleted: 0 rows by" in report
-        assert await Landing(postgres, S, "t_twice").count() == ROWS
+        assert await Loaded(postgres, S, "t_twice").count() == ROWS
 
     async def test_error_if_not_exists_refuses_a_missing_table(
         self, postgres: PostgresSide
     ) -> None:
-        with pytest.raises(LandingError, match="table is missing"):
+        with pytest.raises(TransferError, match="table is missing"):
             await land(
                 postgres, "t_absent", ErrorIfNotExists(kind="error_if_not_exists")
             )
@@ -241,7 +241,7 @@ class TestSchemaStrategies:
                 "amount numeric(18,4), dt timestamp(3), flag boolean, note text)",
             ]
         )
-        with pytest.raises(LandingError, match="is shorter than stream"):
+        with pytest.raises(TransferError, match="is shorter than stream"):
             await land(
                 postgres,
                 "t_narrow",
@@ -255,7 +255,7 @@ class TestSchemaStrategies:
         )
 
         assert "schema: drop_then_create" in report
-        assert ("name", "character varying(50)", False) in await Landing(
+        assert ("name", "character varying(50)", False) in await Loaded(
             postgres, S, "t_narrow"
         ).columns()
 
@@ -271,7 +271,7 @@ class TestSchemaStrategies:
             "t_bak",
             BackupAndCreateIfSchemaChanged(kind="backup_and_create_if_schema_changed"),
         )
-        tables = await Landing(postgres, S, "t_bak").tables()
+        tables = await Loaded(postgres, S, "t_bak").tables()
 
         assert "schema: backup_then_create" in report
         assert "backup: t_bak_bak_" in report
@@ -293,7 +293,7 @@ class TestDeleteAndInsert:
 
         assert "deleted: 1000 rows by" in report
         assert "0 rows written" in report
-        assert await Landing(postgres, S, "t_del").count() == ROWS - 1000
+        assert await Loaded(postgres, S, "t_del").count() == ROWS - 1000
 
         report = await land(
             postgres,
@@ -303,7 +303,7 @@ class TestDeleteAndInsert:
         )
 
         assert f"deleted: {ROWS - 1000} rows by" in report
-        assert await Landing(postgres, S, "t_del").count() == ROWS
+        assert await Loaded(postgres, S, "t_del").count() == ROWS
 
 
 class TestRulesAndDeclarations:
@@ -314,11 +314,11 @@ class TestRulesAndDeclarations:
             rename_columns={"title": "name"}, column_types={"amount": "numeric(20,6)"}
         )
         await land(postgres, "t_rules", rules=rules)
-        columns = await Landing(postgres, S, "t_rules").columns()
+        columns = await Loaded(postgres, S, "t_rules").columns()
 
         assert ("title", "character varying(50)", False) in columns
         assert ("amount", "numeric(20,6)", False) in columns
-        assert (await Landing(postgres, S, "t_rules").scalars("amount"))[0] == Decimal(
+        assert (await Loaded(postgres, S, "t_rules").scalars("amount"))[0] == Decimal(
             "0.142900"
         )
 
@@ -327,7 +327,7 @@ class TestRulesAndDeclarations:
     ) -> None:
         await existing(postgres, "t_dec", "numeric(18,4)")
         await postgres.execute([f"alter table {S}.t_dec add column extra int"])
-        with pytest.raises(LandingError, match="truncates the scale of stream"):
+        with pytest.raises(TransferError, match="truncates the scale of stream"):
             await land(
                 postgres,
                 "t_dec",
@@ -339,7 +339,7 @@ class TestRulesAndDeclarations:
     async def test_unknown_declared_type_is_refused_before_ddl(
         self, postgres: PostgresSide
     ) -> None:
-        with pytest.raises(LandingError, match="does not accept the declared types"):
+        with pytest.raises(TransferError, match="does not accept the declared types"):
             await land(
                 postgres, "t_bad", rules=ColumnRules(column_types={"note": "no_such"})
             )
@@ -347,12 +347,12 @@ class TestRulesAndDeclarations:
     async def test_rule_on_a_missing_column_is_refused(
         self, postgres: PostgresSide
     ) -> None:
-        with pytest.raises(LandingError, match="has no field 'nope'"):
+        with pytest.raises(TransferError, match="has no field 'nope'"):
             await land(
                 postgres, "t_miss", rules=ColumnRules(rename_columns={"x": "nope"})
             )
 
-        with pytest.raises(LandingError, match="column_types: neither the stream"):
+        with pytest.raises(TransferError, match="column_types: neither the stream"):
             await land(
                 postgres, "t_miss2", rules=ColumnRules(column_types={"x": "int"})
             )
@@ -360,7 +360,7 @@ class TestRulesAndDeclarations:
     async def test_declaration_on_a_missing_column_is_refused(
         self, postgres: PostgresSide
     ) -> None:
-        with pytest.raises(LandingError, match="has no column 'nope'"):
+        with pytest.raises(TransferError, match="has no column 'nope'"):
             await land(
                 postgres,
                 "t_miss3",
@@ -376,7 +376,7 @@ class TestUnknownTypes:
         self, postgres: PostgresSide
     ) -> None:
         await fill(postgres, "s_en", "mood", "'sad'::mood")
-        with pytest.raises(LandingError, match=r"source type oid \d+; declare"):
+        with pytest.raises(TransferError, match=r"source type oid \d+; declare"):
             await land(postgres, "t_en", select=f"select * from {S}.s_en")
 
     async def test_enum_lands_as_varchar_or_as_declared(
@@ -401,18 +401,18 @@ class TestUnknownTypes:
             select=f"select * from {S}.s_en2",
             columns=[PgColumnDeclaration(name="v", type_text=f"{S}.mood")],
         )
-        source = Landing(postgres, S, "s_en2")
+        source = Loaded(postgres, S, "s_en2")
 
-        assert (await Landing(postgres, S, "t_en_var").columns())[1] == (
+        assert (await Loaded(postgres, S, "t_en_var").columns())[1] == (
             "v",
             "character varying",
             False,
         )
-        assert (await Landing(postgres, S, "t_en_typed").columns())[1][1] == f"{S}.mood"
-        assert (await Landing(postgres, S, "t_en_named").columns())[1][1] == f"{S}.mood"
-        assert await Landing(postgres, S, "t_en_named").texts(
+        assert (await Loaded(postgres, S, "t_en_typed").columns())[1][1] == f"{S}.mood"
+        assert (await Loaded(postgres, S, "t_en_named").columns())[1][1] == f"{S}.mood"
+        assert await Loaded(postgres, S, "t_en_named").texts("v") == await source.texts(
             "v"
-        ) == await source.texts("v")
+        )
 
     async def test_unnamed_enum_cannot_be_verified_but_loads(
         self, postgres: PostgresSide
@@ -431,7 +431,7 @@ class TestUnknownTypes:
         assert (
             "- warning v: type cannot be verified, the source named no type" in report
         )
-        assert await Landing(postgres, S, "t_en3").texts("v") == [
+        assert await Loaded(postgres, S, "t_en3").texts("v") == [
             "sad",
             "sad",
             "sad",
@@ -458,7 +458,9 @@ class TestUnknownTypes:
 
         assert "- ok v: ok" in report
 
-        with pytest.raises(LandingError, match=f"type differs: stream {S}.mood, table"):
+        with pytest.raises(
+            TransferError, match=f"type differs: stream {S}.mood, table"
+        ):
             await land(
                 postgres,
                 "t_en4_other",
@@ -511,7 +513,7 @@ class TestExactTypes:
         name = source_kind.split("(", maxsplit=1)[0]
         await fill(postgres, f"s_x_{name}", source_kind, expr)
         await existing(postgres, f"t_x_{name}", target_kind)
-        with pytest.raises(LandingError, match=expected):
+        with pytest.raises(TransferError, match=expected):
             await land(
                 postgres,
                 f"t_x_{name}",
@@ -567,8 +569,8 @@ class TestExactTypes:
             ]
         )
         await land(postgres, "t_all", select=f"select * from {S}.s_all")
-        source = Landing(postgres, S, "s_all")
-        target = Landing(postgres, S, "t_all")
+        source = Loaded(postgres, S, "s_all")
+        target = Loaded(postgres, S, "t_all")
 
         assert await target.columns() == await source.columns()
         names = [column[0] for column in await source.columns()][1:]
@@ -599,14 +601,15 @@ class TestOlderTarget:
         pumps = Pumps(postgres=postgres.profile, postgres_target=target.profile)
         try:
             with pytest.raises(
-                LandingError, match='no such type: type "int4multirange" does not exist'
+                TransferError,
+                match='no such type: type "int4multirange" does not exist',
             ):
                 await pumps.chain(
                     Leg(
                         "pg_sync_out",
                         {
                             "sql": f"select * from {S}.s_old",
-                            "wire": WireChoice.CSV,
+                            "wire": StreamWire.CSV,
                             "columns": [],
                             "copy_options": CopyOptions(chunk_bytes=CHUNK),
                         },
@@ -628,7 +631,7 @@ class TestOlderTarget:
                     ),
                 )
 
-            assert await Landing(target, S, "t_old").tables() == []
+            assert await Loaded(target, S, "t_old").tables() == []
         finally:
             await target.drop()
 
@@ -650,7 +653,7 @@ class TestCreateTemplate:
 
     async def test_with_options_reach_reloptions(self, postgres: PostgresSide) -> None:
         report = await land(postgres, "t_tpl_with", create_table=self.WITH_OPTIONS)
-        landed = Landing(postgres, S, "t_tpl_with")
+        landed = Loaded(postgres, S, "t_tpl_with")
 
         assert f"{ROWS} rows written" in report
         assert await landed.count() == ROWS
@@ -665,7 +668,7 @@ class TestCreateTemplate:
             pytest.skip("distributed by is Greenplum only")
 
         report = await land(postgres, "t_tpl_dist", create_table=self.DISTRIBUTED)
-        landed = Landing(postgres, S, "t_tpl_dist")
+        landed = Loaded(postgres, S, "t_tpl_dist")
 
         assert f"{ROWS} rows written" in report
         policy = await landed.aggregate(
@@ -678,12 +681,12 @@ class TestCreateTemplate:
         report = await land(postgres, "t_tpl_esc", create_table=self.ESCAPED)
 
         assert f"{ROWS} rows written" in report
-        assert await Landing(postgres, S, "t_tpl_esc").count() == ROWS
+        assert await Loaded(postgres, S, "t_tpl_esc").count() == ROWS
 
     async def test_template_without_columns_is_refused(
         self, postgres: PostgresSide
     ) -> None:
-        with pytest.raises(LandingError, match="lacks \\['columns'\\]"):
+        with pytest.raises(TransferError, match="lacks \\['columns'\\]"):
             await land(
                 postgres,
                 "t_tpl_no_cols",
@@ -691,11 +694,11 @@ class TestCreateTemplate:
             )
 
         assert (
-            "t_tpl_no_cols" not in await Landing(postgres, S, "t_tpl_no_cols").tables()
+            "t_tpl_no_cols" not in await Loaded(postgres, S, "t_tpl_no_cols").tables()
         )
 
     async def test_unknown_variable_is_refused(self, postgres: PostgresSide) -> None:
-        with pytest.raises(LandingError, match="unknown variable \\{owner\\}"):
+        with pytest.raises(TransferError, match="unknown variable \\{owner\\}"):
             await land(
                 postgres,
                 "t_tpl_unknown",
@@ -733,11 +736,11 @@ class TestTsvWire:
             postgres,
             "t_tsv",
             select=f"select * from {S}.s_tsv",
-            wire=WireChoice.TSV,
+            wire=StreamWire.TSV,
         )
 
         assert "4 rows written" in report
-        assert await Landing(postgres, S, "t_tsv").texts("v") == await Landing(
+        assert await Loaded(postgres, S, "t_tsv").texts("v") == await Loaded(
             postgres, S, "s_tsv"
         ).texts("v")
 
@@ -750,9 +753,9 @@ class TestBinaryWire:
     async def test_binary_lands_the_same_rows_on_the_same_server(
         self, postgres: PostgresSide
     ) -> None:
-        report = await land(postgres, "t_bin", wire=WireChoice.BINARY)
-        source = Landing(postgres, S, "src")
-        target = Landing(postgres, S, "t_bin")
+        report = await land(postgres, "t_bin", wire=StreamWire.BINARY)
+        source = Loaded(postgres, S, "src")
+        target = Loaded(postgres, S, "t_bin")
 
         assert f"{ROWS} rows written" in report
         for column in ("name", "amount", "dt", "flag", "note"):
@@ -760,12 +763,12 @@ class TestBinaryWire:
 
     async def test_user_type_is_refused_in_binary(self, postgres: PostgresSide) -> None:
         await fill(postgres, "s_bin_en", "mood", "'sad'::mood")
-        with pytest.raises(LandingError, match="outside the built-in registry"):
+        with pytest.raises(TransferError, match="outside the built-in registry"):
             await land(
                 postgres,
                 "t_bin_en",
                 select=f"select * from {S}.s_bin_en",
-                wire=WireChoice.BINARY,
+                wire=StreamWire.BINARY,
             )
 
     async def test_other_major_version_is_refused(self, postgres: PostgresSide) -> None:
@@ -779,13 +782,13 @@ class TestBinaryWire:
         await target.recreate_schema()
         pumps = Pumps(postgres=postgres.profile, postgres_target=target.profile)
         try:
-            with pytest.raises(LandingError, match="major versions differ"):
+            with pytest.raises(TransferError, match="major versions differ"):
                 await pumps.chain(
                     Leg(
                         "pg_sync_out",
                         {
                             "sql": SELECT,
-                            "wire": WireChoice.BINARY,
+                            "wire": StreamWire.BINARY,
                             "columns": [],
                             "copy_options": CopyOptions(chunk_bytes=CHUNK),
                         },
@@ -917,7 +920,7 @@ class TestCopyOutLoop:
                 PgCopyLayout.CSV,
                 contract,
                 self.CHUNK,
-                LandingOutbound(SinkOutbound(sink)),
+                TransferOutbound(SinkOutbound(sink)),
             )
             elapsed = time.perf_counter() - started
 
@@ -947,7 +950,7 @@ class TestCopyOutLoop:
                     PgCopyLayout.CSV,
                     contract,
                     4096,
-                    LandingOutbound(SinkOutbound(Sink())),
+                    TransferOutbound(SinkOutbound(Sink())),
                 )
 
             await conn.rollback()
@@ -970,7 +973,7 @@ class TestCopyOutLoop:
                     PgCopyLayout.CSV,
                     contract,
                     4096,
-                    LandingOutbound(SinkOutbound(BrokenSink())),
+                    TransferOutbound(SinkOutbound(BrokenSink())),
                 )
             elapsed = time.perf_counter() - started
 
@@ -1081,8 +1084,10 @@ class TestTypeRules:
 
 class TestRegistryHint:
     def test_missing_pair_is_a_clear_error(self) -> None:
-        from boba.db.postgres.landing import PostgresLandings
-        from boba.toolkit.landing import Engine
+        from boba.db.postgres.transfer import PostgresTransfers
+        from boba.toolkit.transfer import Engine
 
-        with pytest.raises(LandingError, match="no landing from oracle into postgres"):
-            PostgresLandings({}).pair(Engine.ORACLE)
+        with pytest.raises(
+            TransferError, match="no transfer from oracle into postgres"
+        ):
+            PostgresTransfers({}).pair(Engine.ORACLE)

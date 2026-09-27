@@ -13,8 +13,8 @@ dependencies = [
     "psycopg[binary,pool]>=3.3",
 ]
 
-[project.entry-points."boba.landing.postgres"]
-postgres = "boba.sync.pg_to_pg.landing:PgToPg"
+[project.entry-points."boba.transfer.postgres"]
+postgres = "boba.sync.pg_to_pg.transfer:PgToPg"
 
 [project.optional-dependencies]
 dev = [

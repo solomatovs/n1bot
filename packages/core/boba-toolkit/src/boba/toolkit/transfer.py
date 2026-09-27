@@ -1,11 +1,16 @@
-"""Приёмник данных со стратегиями: общая часть загрузок между конкретными
-движками. Знает только о кадрах провода, о таблице-приёмнике через порт и о
-стратегиях схемы, удаления, вставки и неизвестных типов. Типы колонок, их
-сверку и DDL описывает пара источник → приёмник в своём пакете, контракт
-колонок едет в кадре schema непрозрачным JSON этого источника.
+"""Передача данных между инструментами потоком кадров и приём этого потока
+в таблицу по стратегиям. Здесь общая часть, одинаковая для всех движков:
+    - кадры потока: первым schema (движок источника, формат данных, контракт
+      колонок), дальше rows с байтами данных;
+    - порты, которыми источник пишет кадры, а приёмник читает;
+    - стратегии приёмника: что делать с таблицей, что удалить, как вставить,
+      что делать с колонкой неизвестного типа;
+    - прогон стратегий и отчёт о нём.
+Типы колонок, их сверку с таблицей и DDL знает пара «источник → приёмник» в
+своём пакете; контракт колонок едет в кадре schema как JSON этого источника.
 
 Ошибки:
-LandingError — поток не начинается с кадра schema, стратегия схемы отказала,
+TransferError — поток не начинается с кадра schema, стратегия схемы отказала,
     колонка неизвестного типа без запасного варианта.
 """
 
@@ -50,14 +55,7 @@ __all__ = [
     "InsertNothing",
     "InsertStrategy",
     "InsertStrategyApply",
-    "LandingError",
-    "LandingFrame",
-    "LandingInbound",
-    "LandingOutbound",
-    "LandingReport",
-    "LandingRun",
-    "LandingSink",
-    "LandingTable",
+    "RawHead",
     "RowsHead",
     "SchemaAction",
     "SchemaCheck",
@@ -65,86 +63,97 @@ __all__ = [
     "SchemaPlan",
     "SchemaStrategy",
     "SchemaStrategyPlan",
-    "SyncWire",
+    "StreamWire",
     "TemplateVar",
+    "TransferError",
+    "TransferFrame",
+    "TransferInbound",
+    "TransferOutbound",
+    "TransferReport",
+    "TransferRun",
+    "TransferSink",
+    "TransferTable",
     "UnknownTypeApply",
     "UnknownTypeStrategy",
-    "WireChoice",
 ]
 
 
-class LandingError(Exception):
-    """Нарушение провода или отказ стратегии приёмника."""
+class TransferError(Exception):
+    """Поток кадров нарушен или стратегия приёмника отказала."""
 
 
 class Engine(StrEnum):
-    """Движок источника в кадре schema: по нему приёмник берёт пару из
-    реестра."""
+    """Движок источника, записанный в кадре schema. По нему приёмник находит
+    пару «источник → приёмник» в реестре."""
 
     POSTGRES = "postgres"
     CLICKHOUSE = "clickhouse"
     ORACLE = "oracle"
 
 
-class SyncWire(StrEnum):
-    """Раскладка тел кадров: csv — COPY csv postgres; tsv — COPY text
-    postgres, байт в байт TabSeparated ClickHouse; binary — COPY binary
-    postgres, только между postgres одной мажорной версии; arrow — тела
-    подряд как поток колоночных пачек, единственная раскладка, которую
-    понимает любой приёмник и узел-преобразователь; raw — байты как их
-    отдал источник, раскладку задал текст запроса, контракта нет."""
+class StreamWire(StrEnum):
+    """Формат данных в кадрах rows. Источник записывает его в кадр schema,
+    приёмник по нему решает, как читать байты:
+        - csv — текст, как его печатает COPY postgres в формате csv;
+        - tsv — текст, как его печатает COPY postgres в формате text; те же
+          байты ClickHouse читает как TabSeparated;
+        - binary — двоичный формат COPY postgres. Использовать можно только
+            с той же мажерной версией postgres;
+        - arrow — поток Arrow IPC, колоночные пачки; единственный формат,
+          который читает любой приёмник и узел преобразования потока.
+    Тот же enum — параметр wire у источника: LLM называет формат, источник
+    выдаёт данные в нём и о приёмнике ничего не знает; подходит ли формат
+    приёмнику, проверяет сам приёмник по кадру schema."""
 
     CSV = "csv"
     TSV = "tsv"
     BINARY = "binary"
     ARROW = "arrow"
-    RAW = "raw"
-
-
-class WireChoice(StrEnum):
-    """Рычаг LLM у источника: раскладка тел, которую источник кладёт в
-    поток как названо. Источник о приёмнике не знает; совместимость
-    раскладки со своим сервером проверяет приёмник по кадру schema."""
-
-    CSV = "csv"
-    TSV = "tsv"
-    BINARY = "binary"
-    ARROW = "arrow"
-
-    def wire(self) -> SyncWire:
-        return SyncWire(self.value)
 
 
 class SchemaHead(BaseModel):
-    """Первый кадр: движок источника, раскладка тел и контракт колонок. У
-    провода пары контракт — как его описал источник, разбирает пара по
-    source_engine; у провода arrow — нейтральный контракт колонок для
-    приёмника без пары."""
+    """Первый кадр потока. Несёт движок источника, формат данных в кадрах
+    rows и контракт колонок. Для форматов csv, tsv и binary контракт записан
+    так, как его описал источник, и разбирает его пара по source_engine; для
+    arrow это нейтральный контракт, понятный любому приёмнику."""
 
     kind: Literal["schema"]
     source_engine: Engine
-    wire: SyncWire
+    wire: StreamWire
     contract: JsonValue
 
 
 class RowsHead(BaseModel):
-    """Кадр данных: тело — блок строк в раскладке первого кадра."""
+    """Кадр данных: тело — очередной блок строк в формате из первого кадра."""
 
     kind: Literal["rows"]
 
 
-LandingFrame = SchemaHead | RowsHead
-"""Кадры провода: схема, затем данные; порт различает их по kind."""
+class RawHead(BaseModel):
+    """Первый кадр потока без контракта колонок. Данные идут ровно в том
+    виде, как их выдал запрос источника: ch_stream_out с FORMAT в тексте
+    запроса, ora_csv_out, ch_arrow_out и ora_arrow_out. Формат знает
+    вызывающий и сырой приёмник (ch_stream_in, ora_csv_in, *_arrow_in);
+    приёмник со стратегиями такой поток не принимает."""
+
+    kind: Literal["raw"]
+    source_engine: Engine
 
 
-class LandingOutbound:
-    """Выходной порт провода для async-тел: кадр схемы и кадры данных из
-    корутин, эмиссия в потоке."""
+TransferFrame = SchemaHead | RowsHead | RawHead
+"""Кадры потока передачи: сначала один schema или raw, дальше rows; порт
+различает их по полю kind."""
 
-    def __init__(self, out: Outbound[LandingFrame]) -> None:
+
+class TransferOutbound:
+    """Запись кадров потока из async-тела источника: schema — методом
+    schema, блоки данных — методом rows или через файл writer. Сама запись
+    в порт идёт в рабочем потоке, чтобы не блокировать цикл событий."""
+
+    def __init__(self, out: Outbound[TransferFrame]) -> None:
         self._out = out
 
-    async def schema(self, head: SchemaHead) -> None:
+    async def schema(self, head: SchemaHead | RawHead) -> None:
         await asyncio.to_thread(self._out.emit, head)
 
     async def rows(self, body: Chunk) -> None:
@@ -154,25 +163,41 @@ class LandingOutbound:
         return FrameWriter(self._out)
 
 
-class LandingInbound:
-    """Входной порт провода для async-тел: первый кадр обязан быть схемой,
-    дальше тела данных корутиной."""
+class TransferInbound:
+    """Чтение кадров потока в async-теле приёмника: get_schema отдаёт
+    первый кадр и отказывает, если это не schema; bodies отдаёт блоки
+    данных из кадров rows по одному."""
 
-    def __init__(self, feed: Inbound[LandingFrame]) -> None:
+    def __init__(self, feed: Inbound[TransferFrame]) -> None:
         self._frames = iter(feed)
 
-    async def get_schema(self) -> SchemaHead:
+    async def get_head(self) -> SchemaHead | RawHead:
+        """Первый кадр как он есть: schema с контрактом или raw без него."""
         first = await asyncio.to_thread(next, self._frames, None)
         if first is None:
-            raise LandingError("landing stream is empty: expected a schema frame first")
+            raise TransferError(
+                "transfer stream is empty: expected a schema or raw frame first"
+            )
 
-        if not isinstance(first.head, SchemaHead):
-            raise LandingError(
-                f"landing stream starts with a {first.head.kind!r} frame, "
-                f"expected schema"
+        if isinstance(first.head, RowsHead):
+            raise TransferError(
+                "transfer stream starts with a rows frame, expected schema or raw"
             )
 
         return first.head
+
+    async def get_schema(self) -> SchemaHead:
+        """Первый кадр schema; сырой поток — отказ с подсказкой взять
+        источник с контрактом."""
+        head = await self.get_head()
+        if isinstance(head, RawHead):
+            raise TransferError(
+                f"transfer stream from {head.source_engine.value} carries raw "
+                f"bytes without a contract of columns; take a sync source "
+                f"(pg_sync_out, ch_sync_out, ora_sync_out)"
+            )
+
+        return head
 
     async def bodies(self) -> AsyncIterator[Chunk]:
         while True:
@@ -218,10 +243,11 @@ class FrameBodies(io.RawIOBase):
 
 
 class FrameWriter(io.RawIOBase):
-    """Файл на запись поверх выходного порта кадров: каждый write — кадр
-    rows с этими байтами. Для писателей, работающих в потоке."""
+    """Файл на запись поверх порта кадров: каждый write превращается в
+    кадр rows с этими байтами. Для писателей, работающих в рабочем потоке,
+    например BufferedWriter или Arrow IPC."""
 
-    def __init__(self, out: Outbound[LandingFrame]) -> None:
+    def __init__(self, out: Outbound[TransferFrame]) -> None:
         super().__init__()
         self._out = out
 
@@ -285,7 +311,7 @@ class CreateTemplate:
         try:
             fields = list(string.Formatter().parse(self.text))
         except ValueError as exc:
-            raise LandingError(
+            raise TransferError(
                 f"create_table template is not parseable: {exc}; double literal "
                 f"braces; template: {self.text!r}"
             ) from exc
@@ -296,13 +322,13 @@ class CreateTemplate:
                 continue
 
             if name not in allowed:
-                raise LandingError(
+                raise TransferError(
                     f"create_table template has an unknown variable {{{name}}}; "
                     f"allowed: {allowed}; template: {self.text!r}"
                 )
 
             if spec or conversion:
-                raise LandingError(
+                raise TransferError(
                     f"create_table template: variable {{{name}}} takes no format "
                     f"spec or conversion; template: {self.text!r}"
                 )
@@ -311,7 +337,7 @@ class CreateTemplate:
 
         missing = [name for name in allowed if name not in seen]
         if missing:
-            raise LandingError(
+            raise TransferError(
                 f"create_table template lacks {missing}; every variable of "
                 f"{allowed} must appear; template: {self.text!r}"
             )
@@ -352,7 +378,7 @@ class SchemaCheck:
         return "\n".join(self.lines)
 
 
-class LandingTable(Protocol):
+class TransferTable(Protocol):
     """Порт таблицы-приёмника: реализация в паре строит стейтменты билдером
     своего движка. create знает колонки из плана пары; unknown_as_varchar —
     колонки без типа получают строковый тип движка, иначе отказ."""
@@ -372,7 +398,7 @@ class LandingTable(Protocol):
     async def delete_where(self, where: str) -> DeleteOutcome: ...
 
 
-class LandingSink(Protocol):
+class TransferSink(Protocol):
     """Порт вставки: load кладёт все тела потока в таблицу и возвращает число
     строк, discard читает поток до конца, ничего не записывая."""
 
@@ -410,21 +436,21 @@ class DeleteStrategyApply(Protocol):
     """Стратегия удаления: применяет себя через порт таблицы. Реализации —
     модели с kind."""
 
-    async def apply(self, table: LandingTable) -> DeleteOutcome: ...
+    async def apply(self, table: TransferTable) -> DeleteOutcome: ...
 
 
 class InsertStrategyApply(Protocol):
     """Стратегия вставки: применяет себя через порт вставки. Реализации —
     модели с kind."""
 
-    async def apply(self, sink: LandingSink) -> int: ...
+    async def apply(self, sink: TransferSink) -> int: ...
 
 
 class UnknownTypeApply(Protocol):
     """Стратегия для колонок, тип которых пара сопоставить не может; явный
     rules.column_types перекрывает её. Реализации — модели с kind."""
 
-    async def apply(self, table: LandingTable) -> str: ...
+    async def apply(self, table: TransferTable) -> str: ...
 
 
 class CreateIfNotExists(BaseModel):
@@ -561,7 +587,7 @@ class DeleteNothing(BaseModel):
 
     kind: Literal["nothing"]
 
-    async def apply(self, table: LandingTable) -> DeleteOutcome:
+    async def apply(self, table: TransferTable) -> DeleteOutcome:
         return DeleteOutcome(rows=0, statement="")
 
 
@@ -571,7 +597,7 @@ class DeleteTruncate(BaseModel):
 
     kind: Literal["truncate"]
 
-    async def apply(self, table: LandingTable) -> DeleteOutcome:
+    async def apply(self, table: TransferTable) -> DeleteOutcome:
         return await table.truncate()
 
 
@@ -581,7 +607,7 @@ class DeleteAll(BaseModel):
 
     kind: Literal["delete_all"]
 
-    async def apply(self, table: LandingTable) -> DeleteOutcome:
+    async def apply(self, table: TransferTable) -> DeleteOutcome:
         return await table.delete_all()
 
 
@@ -595,7 +621,7 @@ class DeleteWhere(BaseModel):
         description="Условие после where, как в SQL приёмника: dt >= date '2024-01-01'",
     )
 
-    async def apply(self, table: LandingTable) -> DeleteOutcome:
+    async def apply(self, table: TransferTable) -> DeleteOutcome:
         return await table.delete_where(self.where)
 
 
@@ -611,7 +637,7 @@ class InsertNothing(BaseModel):
 
     kind: Literal["nothing"]
 
-    async def apply(self, sink: LandingSink) -> int:
+    async def apply(self, sink: TransferSink) -> int:
         return await sink.discard()
 
 
@@ -620,7 +646,7 @@ class InsertFull(BaseModel):
 
     kind: Literal["full"]
 
-    async def apply(self, sink: LandingSink) -> int:
+    async def apply(self, sink: TransferSink) -> int:
         return await sink.load()
 
 
@@ -638,7 +664,7 @@ class FailOnUnknown(BaseModel):
 
     kind: Literal["fail_on_unknown"]
 
-    async def apply(self, table: LandingTable) -> str:
+    async def apply(self, table: TransferTable) -> str:
         return await table.create(False)
 
 
@@ -648,7 +674,7 @@ class FallbackAsVarchar(BaseModel):
 
     kind: Literal["fallback_as_varchar"]
 
-    async def apply(self, table: LandingTable) -> str:
+    async def apply(self, table: TransferTable) -> str:
         return await table.create(True)
 
 
@@ -660,7 +686,7 @@ UnknownTypeStrategy = Annotated[
 
 
 @dataclass(frozen=True)
-class LandingReport:
+class TransferReport:
     """Итог приёмника для чата: что сделано со схемой и почему, сверка по
     колонкам, что удалено, сколько вставлено."""
 
@@ -696,7 +722,7 @@ class LandingReport:
         return "\n".join(lines)
 
 
-class LandingRun:
+class TransferRun:
     """Общий ход приёмника после сверки: план стратегии схемы и его действия
     через порт таблицы, удаление, вставка, отчёт. Транзакцию и сверку делает
     пара до вызова."""
@@ -718,10 +744,10 @@ class LandingRun:
         table_name: str,
         exists: bool,
         check: SchemaCheck,
-        table: LandingTable,
-        sink: LandingSink,
+        table: TransferTable,
+        sink: TransferSink,
         transactional: bool,
-    ) -> LandingReport:
+    ) -> TransferReport:
         plan = self._schema_strategy.plan(exists, check)
         backup = ""
         match plan.action:
@@ -736,7 +762,7 @@ class LandingRun:
             case SchemaAction.KEEP:
                 pass
             case SchemaAction.FAIL:
-                raise LandingError(
+                raise TransferError(
                     f"schema strategy refused {table_name}: {plan.reason}\n"
                     f"{check.render()}"
                 )
@@ -748,7 +774,7 @@ class LandingRun:
         if exists:
             check_text = check.render()
 
-        return LandingReport(
+        return TransferReport(
             table=table_name,
             action=plan.action,
             reason=plan.reason,

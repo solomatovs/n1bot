@@ -19,11 +19,11 @@ import pytest
 
 from boba.db.postgres import PgArrowError
 from boba.db.postgres.connection import CopyOptions
-from boba.db.postgres.landing import PgColumnDeclaration
+from boba.db.postgres.transfer import PgColumnDeclaration
 from boba.pump_stand import (
     ClickHouseSide,
-    Landing,
     Leg,
+    Loaded,
     OracleSide,
     PostgresSide,
     Pumps,
@@ -32,7 +32,7 @@ from boba.pump_stand import (
 from boba.pump_stand.oracle import PumpUser
 from boba.pump_stand.stand import PgSource
 from boba.stand.ix import IxStand
-from boba.toolkit.landing import (
+from boba.toolkit.transfer import (
     ColumnRules,
     CreateIfNotExists,
     DeleteNothing,
@@ -42,8 +42,8 @@ from boba.toolkit.landing import (
     FailOnUnknown,
     FallbackAsVarchar,
     InsertFull,
-    LandingError,
-    WireChoice,
+    StreamWire,
+    TransferError,
 )
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
@@ -124,7 +124,7 @@ async def load(
     rules: ColumnRules = ColumnRules(),
     where: str = "",
     chunk: int = CHUNK,
-    mode: WireChoice = WireChoice.ARROW,
+    mode: StreamWire = StreamWire.ARROW,
     columns: Sequence[PgColumnDeclaration] = (),
     unknown_types: Any = FailOnUnknown(kind="fail_on_unknown"),
 ) -> str:
@@ -148,7 +148,7 @@ async def load_select(
     schema: Any,
     rules: ColumnRules = ColumnRules(),
     chunk: int = CHUNK,
-    mode: WireChoice = WireChoice.ARROW,
+    mode: StreamWire = StreamWire.ARROW,
     columns: Sequence[PgColumnDeclaration] = (),
     unknown_types: Any = FailOnUnknown(kind="fail_on_unknown"),
 ) -> str:
@@ -310,8 +310,8 @@ class TestRoundTrip:
             f"t_{case.name}",
             unknown_types=FallbackAsVarchar(kind="fallback_as_varchar"),
         )
-        source = Landing(postgres, S, f"s_{case.name}")
-        target = Landing(postgres, S, f"t_{case.name}")
+        source = Loaded(postgres, S, f"s_{case.name}")
+        target = Loaded(postgres, S, f"t_{case.name}")
         source_type = (await source.columns())[1][1]
         expected = case.lands_as
         if not expected:
@@ -344,7 +344,7 @@ class TestRefusedValues:
         )
 
         assert report.startswith(f"{ROWS} rows written")
-        assert (await Landing(postgres, S, "t_nan_f8").texts("v"))[0] == "NaN"
+        assert (await Loaded(postgres, S, "t_nan_f8").texts("v"))[0] == "NaN"
 
     async def test_timestamp_infinity_needs_a_cast(
         self, postgres: PostgresSide
@@ -368,7 +368,7 @@ class TestRefusedValues:
         )
 
         assert report.startswith(f"{ROWS} rows written")
-        assert (await Landing(postgres, S, "t_inf_text").texts("v"))[:2] == [
+        assert (await Loaded(postgres, S, "t_inf_text").texts("v"))[:2] == [
             "infinity",
             "-infinity",
         ]
@@ -401,7 +401,7 @@ class TestNulls:
             "case g when 1 then '' when 2 then E'\\\\N' else 'x' end",
         )
         await load(postgres, "s_nul", "t_nul")
-        values = await Landing(postgres, S, "t_nul").texts("v")
+        values = await Loaded(postgres, S, "t_nul").texts("v")
 
         assert values[0] == ""
         assert values[1] == "\\N"
@@ -426,14 +426,14 @@ class TestNulls:
             columns=[PgColumnDeclaration(name="v", nullable=False)],
         )
 
-        assert (await Landing(postgres, S, "t_strict").columns())[1] == (
+        assert (await Loaded(postgres, S, "t_strict").columns())[1] == (
             "v",
             "integer",
             True,
         )
 
         with pytest.raises(
-            LandingError, match="stream is nullable, table column is not null"
+            TransferError, match="stream is nullable, table column is not null"
         ):
             await load_select(
                 postgres,
@@ -462,7 +462,7 @@ class TestNulls:
                 DoNothing(kind="do_nothing"),
             )
 
-        assert await Landing(postgres, S, "t_rollback").count() == 1
+        assert await Loaded(postgres, S, "t_rollback").count() == 1
 
 
 class TestDecimal:
@@ -475,7 +475,7 @@ class TestDecimal:
             "when 4 then -99999999999999.9999 else g / 7.0 end",
         )
         await load(postgres, "s_dec", "t_dec")
-        landed = await Landing(postgres, S, "t_dec").scalars("v")
+        landed = await Loaded(postgres, S, "t_dec").scalars("v")
 
         assert landed[:4] == [
             Decimal("0.0000"),
@@ -495,10 +495,10 @@ class TestDecimal:
             "t_dec_w",
             rules=ColumnRules(column_types={"v": "numeric(20,6)"}),
         )
-        landing = Landing(postgres, S, "t_dec_w")
+        loaded = Loaded(postgres, S, "t_dec_w")
 
-        assert (await landing.columns())[1] == ("v", "numeric(20,6)", False)
-        assert (await landing.scalars("v"))[0] == Decimal("0.142900")
+        assert (await loaded.columns())[1] == ("v", "numeric(20,6)", False)
+        assert (await loaded.scalars("v"))[0] == Decimal("0.142900")
 
     @pytest.mark.parametrize(
         ("target_type", "reason"),
@@ -520,7 +520,7 @@ class TestDecimal:
                 f"create table {S}.t_dec_n (id bigint not null, v {target_type})",
             ]
         )
-        with pytest.raises(LandingError, match=reason):
+        with pytest.raises(TransferError, match=reason):
             await load(
                 postgres,
                 "s_dec_n",
@@ -545,7 +545,7 @@ class TestDecimal:
 
         assert "- warning v: table numeric128" not in report
         assert "- warning v:" in report
-        assert await Landing(postgres, S, "t_dec_ok").count() == ROWS
+        assert await Loaded(postgres, S, "t_dec_ok").count() == ROWS
 
 
 class TestVarchar:
@@ -554,10 +554,10 @@ class TestVarchar:
     ) -> None:
         await fill(postgres, "s_uni", "varchar(7)", "repeat('😀', g)")
         await load(postgres, "s_uni", "t_uni")
-        landing = Landing(postgres, S, "t_uni")
+        loaded = Loaded(postgres, S, "t_uni")
 
-        assert (await landing.columns())[1] == ("v", "character varying(7)", False)
-        assert (await landing.texts("v"))[6] == "😀" * 7
+        assert (await loaded.columns())[1] == ("v", "character varying(7)", False)
+        assert (await loaded.texts("v"))[6] == "😀" * 7
 
     async def test_longer_stream_into_shorter_column_is_refused(
         self, postgres: PostgresSide
@@ -570,7 +570,7 @@ class TestVarchar:
             ]
         )
         with pytest.raises(
-            LandingError, match="table length 50 is shorter than stream length 100"
+            TransferError, match="table length 50 is shorter than stream length 100"
         ):
             await load(
                 postgres,
@@ -587,7 +587,7 @@ class TestVarchar:
         )
 
         assert "schema: drop_then_create" in report
-        assert (await Landing(postgres, S, "t_v50").columns())[1] == (
+        assert (await Loaded(postgres, S, "t_v50").columns())[1] == (
             "v",
             "character varying(100)",
             False,
@@ -616,14 +616,14 @@ class TestVarchar:
         with pytest.raises(psycopg.errors.StringDataRightTruncation):
             await load(postgres, "s_text_long", "t_lim", DoNothing(kind="do_nothing"))
 
-        assert await Landing(postgres, S, "t_lim").count() == ROWS
+        assert await Loaded(postgres, S, "t_lim").count() == ROWS
 
     async def test_char_padding_survives(self, postgres: PostgresSide) -> None:
         await fill(postgres, "s_ch", "char(5)", "'a' || g")
         await load(postgres, "s_ch", "t_ch")
 
-        assert (await Landing(postgres, S, "t_ch").scalars("length(v)"))[0] == 2
-        assert (await Landing(postgres, S, "t_ch").scalars("octet_length(v)"))[0] == 5
+        assert (await Loaded(postgres, S, "t_ch").scalars("length(v)"))[0] == 2
+        assert (await Loaded(postgres, S, "t_ch").scalars("octet_length(v)"))[0] == 5
 
 
 class TestTimestamps:
@@ -637,14 +637,14 @@ class TestTimestamps:
             "timestamp '2024-02-29 13:14:15.123' + g * interval '1 ms'",
         )
         await load(postgres, "s_ms", "t_ms")
-        landing = Landing(postgres, S, "t_ms")
+        loaded = Loaded(postgres, S, "t_ms")
 
-        assert (await landing.columns())[1] == (
+        assert (await loaded.columns())[1] == (
             "v",
             "timestamp(3) without time zone",
             False,
         )
-        assert (await landing.texts("v"))[0] == "2024-02-29 13:14:15.124"
+        assert (await loaded.texts("v"))[0] == "2024-02-29 13:14:15.124"
 
     async def test_finer_stream_into_coarser_column_is_refused(
         self, postgres: PostgresSide
@@ -658,7 +658,7 @@ class TestTimestamps:
                 f"create table {S}.t_s0 (id bigint not null, v timestamp(0))",
             ]
         )
-        with pytest.raises(LandingError, match="coarser"):
+        with pytest.raises(TransferError, match="coarser"):
             await load(
                 postgres,
                 "s_us",
@@ -696,7 +696,7 @@ class TestTimestamps:
                 f"create table {S}.t_naive (id bigint not null, v timestamp)",
             ]
         )
-        with pytest.raises(LandingError, match="time zone differs"):
+        with pytest.raises(TransferError, match="time zone differs"):
             await load(
                 postgres,
                 "s_tz",
@@ -714,8 +714,8 @@ class TestTimestamps:
             "timestamptz '2024-03-31 02:30:00 Europe/Moscow' + g * interval '1 hour'",
         )
         await load(postgres, "s_dst", "t_dst")
-        source = Landing(postgres, S, "s_dst")
-        target = Landing(postgres, S, "t_dst")
+        source = Loaded(postgres, S, "s_dst")
+        target = Loaded(postgres, S, "t_dst")
 
         assert await target.scalars("extract(epoch from v)") == await source.scalars(
             "extract(epoch from v)"
@@ -731,7 +731,7 @@ class TestTimestamps:
                 f"create table {S}.t_ts_for_date (id bigint not null, v timestamp)",
             ]
         )
-        with pytest.raises(LandingError, match="type family differs"):
+        with pytest.raises(TransferError, match="type family differs"):
             await load(
                 postgres,
                 "s_date",
@@ -753,8 +753,8 @@ class TestFloats:
             "when 3 then 1e308 when 4 then -0.0 else g / 3.0 end",
         )
         await load(postgres, "s_bits", "t_bits")
-        source = Landing(postgres, S, "s_bits")
-        target = Landing(postgres, S, "t_bits")
+        source = Loaded(postgres, S, "s_bits")
+        target = Loaded(postgres, S, "t_bits")
 
         assert await target.scalars("float8send(v)::text") == await source.scalars(
             "float8send(v)::text"
@@ -808,8 +808,8 @@ class TestClickHouseSources:
                 },
             ),
         )
-        landing = Landing(postgres, S, "from_ch")
-        columns = await landing.columns()
+        loaded = Loaded(postgres, S, "from_ch")
+        columns = await loaded.columns()
 
         assert chained.in_report.startswith("5 rows written")
         assert ("u64", "numeric(20,0)", True) in columns
@@ -817,9 +817,9 @@ class TestClickHouseSources:
         assert ("d", "timestamp(6) with time zone", True) in columns
         assert ("s", "text", False) in columns
         assert ("dec", "numeric(18,4)", True) in columns
-        assert (await landing.scalars("u64"))[0] == Decimal("18446744073709551615")
-        assert (await landing.texts("d"))[0] == "2024-02-29 13:14:15.123457+00"
-        assert (await landing.texts("s"))[2] is None
+        assert (await loaded.scalars("u64"))[0] == Decimal("18446744073709551615")
+        assert (await loaded.texts("d"))[0] == "2024-02-29 13:14:15.123457+00"
+        assert (await loaded.texts("s"))[2] is None
 
     async def test_unsigned_into_signed_column_is_refused(
         self, postgres: PostgresSide, clickhouse: ClickHouseSide
@@ -833,7 +833,7 @@ class TestClickHouseSources:
             ]
         )
         pumps = Pumps(postgres=postgres.profile, clickhouse=clickhouse.profile)
-        with pytest.raises(LandingError, match="narrower than stream uint64"):
+        with pytest.raises(TransferError, match="narrower than stream uint64"):
             await pumps.chain(
                 Leg(
                     "ch_sync_out",
@@ -907,20 +907,20 @@ class TestOracleSources:
                 },
             ),
         )
-        landing = Landing(postgres, S, "from_ora")
-        columns = await landing.columns()
+        loaded = Loaded(postgres, S, "from_ora")
+        columns = await loaded.columns()
 
         assert chained.in_report.startswith("3 rows written")
         assert ("ID", "numeric(10,0)", True) in columns
         assert ("N", "numeric(38,0)", False) in columns
         assert ("BD", "double precision", False) in columns
         assert ("TXT", "text", False) in columns
-        assert (await landing.scalars('"N"', "ID"))[0] == Decimal(
+        assert (await loaded.scalars('"N"', "ID"))[0] == Decimal(
             "12345678901234567890123456789012345678"
         )
-        assert await landing.texts("BD", "ID") == ["NaN", "Infinity", "1.5"]
-        assert (await landing.scalars('length("TXT")', "ID")) == [8000, None, None]
-        assert (await landing.texts("VC", "ID"))[0] == "кириллица 中文"
+        assert await loaded.texts("BD", "ID") == ["NaN", "Infinity", "1.5"]
+        assert (await loaded.scalars('length("TXT")', "ID")) == [8000, None, None]
+        assert (await loaded.texts("VC", "ID"))[0] == "кириллица 中文"
 
 
 COPY_CASES = [
@@ -974,10 +974,10 @@ class TestCopyMode:
 
         await fill(postgres, f"s_{case.name}", case.kind, case.expr)
         report = await load(
-            postgres, f"s_{case.name}", f"t_{case.name}", mode=WireChoice.CSV
+            postgres, f"s_{case.name}", f"t_{case.name}", mode=StreamWire.CSV
         )
-        target = Landing(postgres, S, f"t_{case.name}")
-        source = Landing(postgres, S, f"s_{case.name}")
+        target = Loaded(postgres, S, f"t_{case.name}")
+        source = Loaded(postgres, S, f"s_{case.name}")
 
         assert report.startswith(f"{ROWS} rows written")
         assert (await target.texts("v"))[:3] == COPY_EXPECTED[case.name]
@@ -994,28 +994,28 @@ class TestCopyMode:
             postgres,
             "s_copy_en",
             "t_copy_en",
-            mode=WireChoice.CSV,
+            mode=StreamWire.CSV,
             unknown_types=FallbackAsVarchar(kind="fallback_as_varchar"),
         )
         await load(
             postgres,
             "s_copy_en",
             "t_copy_en_typed",
-            mode=WireChoice.CSV,
+            mode=StreamWire.CSV,
             rules=ColumnRules(column_types={"v": f"{S}.mood"}),
         )
 
-        assert (await Landing(postgres, S, "t_copy_en").columns())[1] == (
+        assert (await Loaded(postgres, S, "t_copy_en").columns())[1] == (
             "v",
             "character varying",
             False,
         )
-        assert (await Landing(postgres, S, "t_copy_en_typed").columns())[1] == (
+        assert (await Loaded(postgres, S, "t_copy_en_typed").columns())[1] == (
             "v",
             f"{S}.mood",
             False,
         )
-        assert (await Landing(postgres, S, "t_copy_en_typed").texts("v"))[0] == "sad"
+        assert (await Loaded(postgres, S, "t_copy_en_typed").texts("v"))[0] == "sad"
 
     async def test_copy_mode_applies_the_schema_strategies_too(
         self, postgres: PostgresSide
@@ -1027,13 +1027,13 @@ class TestCopyMode:
                 f"create table {S}.t_copy_bk (id bigint not null, v numeric(10,2))",
             ]
         )
-        with pytest.raises(LandingError, match="truncates the scale"):
+        with pytest.raises(TransferError, match="truncates the scale"):
             await load(
                 postgres,
                 "s_copy_bk",
                 "t_copy_bk",
                 ErrorIfSchemaChanged(kind="error_if_schema_changed"),
-                mode=WireChoice.CSV,
+                mode=StreamWire.CSV,
             )
 
         report = await load(
@@ -1041,11 +1041,11 @@ class TestCopyMode:
             "s_copy_bk",
             "t_copy_bk",
             DropAndCreateIfSchemaChanged(kind="drop_and_create_if_schema_changed"),
-            mode=WireChoice.CSV,
+            mode=StreamWire.CSV,
         )
 
         assert "schema: drop_then_create" in report
-        assert (await Landing(postgres, S, "t_copy_bk").columns())[1] == (
+        assert (await Loaded(postgres, S, "t_copy_bk").columns())[1] == (
             "v",
             "numeric(18,4)",
             False,
@@ -1082,10 +1082,10 @@ class TestUnknownTypes:
 
     @pytest.mark.parametrize("case", EXTENSION_CASES, ids=lambda c: c.name)
     @pytest.mark.parametrize(
-        "mode", [WireChoice.ARROW, WireChoice.CSV], ids=["arrow", "copy"]
+        "mode", [StreamWire.ARROW, StreamWire.CSV], ids=["arrow", "copy"]
     )
     async def test_extension_type_lands_as_varchar_or_as_declared(
-        self, postgres: PostgresSide, case: Case, mode: WireChoice
+        self, postgres: PostgresSide, case: Case, mode: StreamWire
     ) -> None:
         name = f"{case.name}_{mode.value}"
         await fill(postgres, f"s_{name}", case.kind, case.expr)
@@ -1103,9 +1103,9 @@ class TestUnknownTypes:
             mode=mode,
             rules=ColumnRules(column_types={"v": f"{S}.{case.kind}"}),
         )
-        source = Landing(postgres, S, f"s_{name}")
-        plain = Landing(postgres, S, f"t_{name}")
-        typed = Landing(postgres, S, f"t_{name}_typed")
+        source = Loaded(postgres, S, f"s_{name}")
+        plain = Loaded(postgres, S, f"t_{name}")
+        typed = Loaded(postgres, S, f"t_{name}_typed")
 
         assert (await plain.columns())[1] == ("v", "character varying", False)
         assert (await typed.columns())[1][1] == (await source.columns())[1][1]
@@ -1120,18 +1120,18 @@ class TestUnknownTypes:
         становится типом колонки."""
         await fill(postgres, "s_hs_asis", "hstore", "hstore('k', 'v')")
         by_oid = r"column v: the target cannot map the source type oid \d+"
-        with pytest.raises(LandingError, match=by_oid):
-            await load(postgres, "s_hs_asis", "t_hs_asis", mode=WireChoice.CSV)
+        with pytest.raises(TransferError, match=by_oid):
+            await load(postgres, "s_hs_asis", "t_hs_asis", mode=StreamWire.CSV)
 
         await load(
             postgres,
             "s_hs_asis",
             "t_hs_asis",
-            mode=WireChoice.CSV,
+            mode=StreamWire.CSV,
             columns=[PgColumnDeclaration(name="v", type_text=f"{S}.hstore")],
         )
-        source = Landing(postgres, S, "s_hs_asis")
-        target = Landing(postgres, S, "t_hs_asis")
+        source = Loaded(postgres, S, "s_hs_asis")
+        target = Loaded(postgres, S, "t_hs_asis")
 
         assert (await target.columns())[1][1] == (await source.columns())[1][1]
         assert await target.texts("v") == await source.texts("v")
@@ -1140,7 +1140,7 @@ class TestUnknownTypes:
         self, postgres: PostgresSide
     ) -> None:
         await fill(postgres, "s_ct_miss", "int", "g")
-        with pytest.raises(LandingError, match="column_types: neither the stream"):
+        with pytest.raises(TransferError, match="column_types: neither the stream"):
             await load(
                 postgres,
                 "s_ct_miss",
@@ -1166,10 +1166,10 @@ class TestVectorTypes:
     приёмника или source_type у источника, fallback_as_varchar — varchar."""
 
     @pytest.mark.parametrize(
-        "mode", [WireChoice.ARROW, WireChoice.CSV], ids=["arrow", "copy"]
+        "mode", [StreamWire.ARROW, StreamWire.CSV], ids=["arrow", "copy"]
     )
     async def test_vector_lands_as_vector(
-        self, vector_db: PostgresSide, mode: WireChoice
+        self, vector_db: PostgresSide, mode: StreamWire
     ) -> None:
         name = f"vec_{mode.value}"
         await vector_db.execute(
@@ -1189,8 +1189,8 @@ class TestVectorTypes:
             mode=mode,
             rules=ColumnRules(column_types={"v": "vector(3)", "h": "halfvec(2)"}),
         )
-        source = Landing(vector_db, S, f"s_{name}")
-        target = Landing(vector_db, S, f"t_{name}")
+        source = Loaded(vector_db, S, f"s_{name}")
+        target = Loaded(vector_db, S, f"t_{name}")
 
         assert report.startswith("4 rows written")
         assert (await target.columns())[1:] == [
@@ -1216,10 +1216,10 @@ class TestVectorTypes:
             "t_vec_ddl",
             unknown_types=FallbackAsVarchar(kind="fallback_as_varchar"),
         )
-        landing = Landing(vector_db, S, "t_vec_ddl")
+        loaded = Loaded(vector_db, S, "t_vec_ddl")
 
-        assert (await landing.columns())[1] == ("v", "character varying", False)
-        assert (await landing.texts("v"))[0] == "[1,2,3]"
+        assert (await loaded.columns())[1] == ("v", "character varying", False)
+        assert (await loaded.texts("v"))[0] == "[1,2,3]"
 
 
 class TestBackupNames:
@@ -1234,7 +1234,7 @@ class TestBackupNames:
                 f"create table {S}.t_bk (id bigint not null, old text)",
             ]
         )
-        from boba.toolkit.landing import BackupAndCreate
+        from boba.toolkit.transfer import BackupAndCreate
 
         first = await load(
             postgres, "s_bk", "t_bk", BackupAndCreate(kind="backup_and_create")
@@ -1244,7 +1244,7 @@ class TestBackupNames:
         )
         backups = [
             t
-            for t in await Landing(postgres, S, "t_bk").tables()
+            for t in await Loaded(postgres, S, "t_bk").tables()
             if t.startswith("t_bk_bak_")
         ]
 

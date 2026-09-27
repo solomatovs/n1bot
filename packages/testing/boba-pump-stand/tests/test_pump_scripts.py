@@ -29,12 +29,12 @@ from boba.pump_stand import (
     Pumps,
     PumpStand,
 )
-from boba.toolkit.landing import (
+from boba.toolkit.transfer import (
     CreateIfNotExists,
     DeleteNothing,
     ErrorIfNotExists,
     InsertFull,
-    WireChoice,
+    StreamWire,
 )
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
@@ -102,7 +102,7 @@ class TestPostgres:
                 "pg_sync_out",
                 {
                     "sql": f"select id, v from {pg.named('stage_src')} order by id",
-                    "wire": WireChoice.CSV,
+                    "wire": StreamWire.CSV,
                     "copy_options": CopyOptions(chunk_bytes=CHUNK_BYTES),
                 },
             ),
@@ -140,7 +140,7 @@ class TestPostgres:
                     "pg_sync_out",
                     {
                         "sql": f"select id, v from {pg.named('target')}",
-                        "wire": WireChoice.CSV,
+                        "wire": StreamWire.CSV,
                         "copy_options": CopyOptions(chunk_bytes=CHUNK_BYTES),
                     },
                 ),
@@ -187,7 +187,7 @@ class TestPostgres:
                 "pg_sync_out",
                 {
                     "sql": f"select id, v from {pg.named('target')} order by id",
-                    "wire": WireChoice.ARROW,
+                    "wire": StreamWire.ARROW,
                     "copy_options": CopyOptions(chunk_bytes=CHUNK_BYTES),
                 },
             ),

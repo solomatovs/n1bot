@@ -2,7 +2,7 @@
 параметры, декларации LLM поверх описания драйвера, сверка контракта со
 схемой таблицы-приёмника по семействам. Ничего не знает ни о pyarrow, ни о
 драйверах: поле потока сюда переводит boba.toolkit.arrow, колонку каталога
-— модуль движка; стратегии, кадры и ход приёмника — в boba.toolkit.landing.
+— модуль движка; стратегии, кадры и ход приёмника — в boba.toolkit.transfer.
 
 Ошибки:
 SyncError — правило вызова не сходится со схемами (rename на поле,
@@ -18,7 +18,7 @@ from typing import Any, ClassVar
 
 from pydantic import BaseModel, Field
 
-from boba.toolkit.landing import ColumnRules, LandingError, SchemaCheck
+from boba.toolkit.transfer import ColumnRules, SchemaCheck, TransferError
 
 __all__ = [
     "ArrowContract",
@@ -48,7 +48,7 @@ __all__ = [
 ]
 
 
-class SyncError(LandingError):
+class SyncError(TransferError):
     """Правило вызова не сходится со схемами или стратегия отказала."""
 
 

@@ -11,10 +11,10 @@ from psycopg import sql
 from boba.db.postgres import AsyncPostgresPool, PgQuery, PgQueryBuilder
 from boba.pump_stand.sides import PostgresSide
 
-__all__ = ["Landing"]
+__all__ = ["Loaded"]
 
 
-class Landing:
+class Loaded:
     """Таблица schema.table на postgres стенда."""
 
     def __init__(self, side: PostgresSide, schema: str, table: str) -> None:
