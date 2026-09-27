@@ -35,5 +35,5 @@ include = ["boba*"]
 namespaces = true
 
 [tool.boba.sandbox]
-imports = ["clickhouse_connect", "pyarrow", "boba.sync.ch_to_ch.transfer"]
+imports = ["clickhouse_connect", "pyarrow", "boba.sync.ch_to_ch.transfer", "boba.sync.pg_to_ch.transfer"]
 entry_points = ["boba.transfer.clickhouse"]

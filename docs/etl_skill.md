@@ -1501,6 +1501,42 @@ arrow часть из них стала бы строками или потер�
 `Tuple` с именованными полями новые серверы печатают в несколько строк,
 старые в одну: пробелы и переводы строк перед сверкой схлопываются.
 
+### postgres → clickhouse
+
+`pg_sync_out` с `wire = tsv` и `ch_sync_in`: байты `copy ... (format text)`
+совпадают с `TabSeparated` по экранированию `\t`, `\n`, `\\` и по `\N`
+для NULL, поэтому тела идут в `input()` двойника как есть. Приёмник берёт
+пару из реестра `boba.transfer.clickhouse` по `source_engine = postgres` и
+переводит контракт postgres (OID и typmod) в типы ClickHouse:
+
+| postgres | ClickHouse | Как читается |
+|---|---|---|
+| `int2`, `int4`, `int8`, `oid` | `Int16`, `Int32`, `Int64`, `UInt32` | |
+| `float4`, `float8` | `Float32`, `Float64` | `NaN`, `Infinity` читаются |
+| `numeric(p, s)`, p ≤ 76 | `Decimal(p, s)` | `NaN` numeric — ошибка сервера |
+| `numeric` без точности, `numeric(p, s)` при p > 76 | типа нет | `::numeric(p, s)` в запросе или `String` по `fallback_as_varchar` |
+| `bool` | `Bool` | `t` и `f` через настройки чтения |
+| `text`, `varchar`, `bpchar`, `name`, `char` | `String` | `bpchar` едет с пробелами до длины |
+| `bytea` | `String` | hex-текст `\x...` как есть |
+| `date` | `Date32` | вне 1900–2299 сервер молча прижимает к границе; даты до нашей эры — ошибка |
+| `timestamp(p)` | `DateTime64(p)` | те же границы |
+| `timestamptz(p)` | `DateTime64(p, 'UTC')` | сессия COPY в UTC, суффикс `+00` читается |
+| `uuid` | `UUID` | |
+| `json`, `jsonb` | `JSON`, где сервер его умеет: до 24 — `Object('json')` с настройкой, 24 — `JSON` с настройкой, с 25 — `JSON`; nullable колонка — `Nullable(JSON)` только с 25, иначе `String` | в `JSON` читаются только объекты, массив или скаляр на верхнем уровне — ошибка сервера |
+| `inet` | `IPv6` | IPv4 хранится как `::ffff:a.b.c.d`; значение с маской — ошибка сервера, берите `host(ip)` |
+| `cidr`, `macaddr`, `money`, `bit`, `xml`, `time`, `timetz`, `interval`, `tsvector`, геометрия, диапазоны | `String` | текст postgres как есть |
+| массивы любой размерности, enum, composite, расширения | типа нет | `column_types` с типом ClickHouse и литерал в запросе, например `'[' \|\| array_to_string(a, ',') \|\| ']'`, или `String` по `fallback_as_varchar` |
+
+Nullable — по контракту: колонка без декларации `nullable: false` у
+`pg_sync_out` становится `Nullable(...)`. Сверка с существующей таблицей —
+теми же правилами расширения, что у пары clickhouse → clickhouse.
+`column_types` перекрывает перевод, тип пишется текстом ClickHouse.
+
+Ошибка при самой загрузке терминальна: поток читается один раз, повторить
+его строкой нельзя. Приёмник не делает `exchange tables`, таблица не
+меняется, в ответе имя колонки и текст сервера; перезапуск — с
+`column_types[col] = "String"` или с `cast` в запросе.
+
 ## Семейство sync: приёмник со стратегиями
 
 Насосы выше гонят байты в стейтмент, который написал вызывающий. Семейство
@@ -1698,6 +1734,9 @@ deleted: 0 rows by truncate table "dwh"."orders"
 - `test_pg_arrow.py` — PostgreSQL -> PostgreSQL, ClickHouse и Oracle потоком
   Arrow на всей матрице версий, обратные пути и ловушки;
 - `test_ora_ch_stream.py` — короткая цепочка Oracle -> ClickHouse;
+- `test_pg_ch_sync.py` — пара postgres -> ClickHouse по tsv: типы и значения,
+  JSON по версиям, отказы и `String` для типов без пары, ловушки сервера
+  (маска inet, массив json, прижатые даты), витрина;
 - `test_ch_sync.py` — приёмник `ch_sync_in`: поток arrow из postgres и
   ClickHouse, пара ClickHouse -> ClickHouse по tsv с типами как есть, типы,
   двойник и `exchange tables`, стратегии, rename, шаблон, `ReplicatedMergeTree`

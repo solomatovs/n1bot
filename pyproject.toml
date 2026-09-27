@@ -18,6 +18,7 @@ pythonpath = [
     "packages/infra/db/boba-db-oracle/src",
     "packages/infra/sync/boba-sync-pg-to-pg/src",
     "packages/infra/sync/boba-sync-ch-to-ch/src",
+    "packages/infra/sync/boba-sync-pg-to-ch/src",
     "packages/infra/sandbox/boba-sandbox/src",
     "packages/infra/auth/boba-krb/src",
     "packages/infra/auth/boba-ldap/src",
@@ -103,6 +104,7 @@ extraPaths = [
     "packages/infra/db/boba-db-oracle/src",
     "packages/infra/sync/boba-sync-pg-to-pg/src",
     "packages/infra/sync/boba-sync-ch-to-ch/src",
+    "packages/infra/sync/boba-sync-pg-to-ch/src",
     "packages/infra/sandbox/boba-sandbox/src",
     "packages/infra/auth/boba-krb/src",
     "packages/infra/auth/boba-ldap/src",
@@ -270,6 +272,7 @@ boba-db-clickhouse  = { workspace = true }
 boba-db-oracle      = { workspace = true }
 boba-sync-pg-to-pg  = { workspace = true }
 boba-sync-ch-to-ch  = { workspace = true }
+boba-sync-pg-to-ch  = { workspace = true }
 boba-ix-core     = { workspace = true }
 boba-pg-meta-scraper= { workspace = true }
 boba-ora-meta-scraper= { workspace = true }

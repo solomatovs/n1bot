@@ -1,3 +1,4 @@
+# ruff: noqa: S608 — стейтменты стенда собираются из имён его схем и таблиц
 """Таблица-приёмник на стороне postgres стенда: колонки из каталога, список
 таблиц схемы, строки и текст значений для проверок приёмника."""
 
@@ -8,10 +9,11 @@ from typing import Any
 
 from psycopg import sql
 
+from boba.db.clickhouse.payload import PayloadClickHouse
 from boba.db.postgres import AsyncPostgresPool, PgQuery, PgQueryBuilder
-from boba.pump_stand.sides import PostgresSide
+from boba.pump_stand.sides import ClickHouseSide, PostgresSide
 
-__all__ = ["Loaded"]
+__all__ = ["ChLoaded", "Loaded"]
 
 
 class Loaded:
@@ -119,3 +121,74 @@ class Loaded:
             cursor = await conn.execute(query.text, query.params)
 
             return await cursor.fetchall()
+
+
+class ChLoaded:
+    """Таблица database.table на ClickHouse стенда: типы колонок из каталога,
+    движок и ключ сортировки, число строк, значения выражений."""
+
+    def __init__(self, side: ClickHouseSide, table: str) -> None:
+        self._side = side
+        self._table = table
+
+    async def types(self) -> list[tuple[str, str]]:
+        rows = await self._rows(
+            "select name, type from system.columns "
+            f"where database = '{self._side.database}' and table = '{self._table}' "
+            "order by position"
+        )
+
+        return [(str(row[0]), str(row[1])) for row in rows]
+
+    async def sorting_key(self) -> str:
+        rows = await self._rows(
+            "select sorting_key from system.tables "
+            f"where database = '{self._side.database}' and name = '{self._table}'"
+        )
+
+        return str(rows[0][0])
+
+    async def engine(self) -> str:
+        rows = await self._rows(
+            "select engine from system.tables "
+            f"where database = '{self._side.database}' and name = '{self._table}'"
+        )
+
+        return str(rows[0][0])
+
+    async def count(self) -> int:
+        return int(await self.scalar("count()"))
+
+    async def scalar(self, expression: str) -> Any:
+        rows = await self._rows(
+            f"select {expression} from {self._side.database}.{self._table}"
+        )
+
+        return rows[0][0]
+
+    async def column(self, expression: str, order_by: str = "id") -> list[Any]:
+        rows = await self._rows(
+            f"select {expression} from {self._side.database}.{self._table} "
+            f"order by {order_by}"
+        )
+
+        return [row[0] for row in rows]
+
+    async def clusters(self) -> list[str]:
+        rows = await self._rows("select distinct cluster from system.clusters")
+
+        return [str(row[0]) for row in rows]
+
+    async def tables(self) -> list[str]:
+        rows = await self._rows(
+            f"select name from system.tables where database = '{self._side.database}' "
+            "order by name"
+        )
+
+        return [str(row[0]) for row in rows]
+
+    async def _rows(self, text: str) -> list[Sequence[Any]]:
+        async with PayloadClickHouse.opened_config(self._side.profile) as client:
+            result = await client.query(text)
+
+        return list(result.result_rows)

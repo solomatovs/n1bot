@@ -27,11 +27,18 @@ from typing import Any, ClassVar
 import pytest
 
 from boba.db.clickhouse.errors import ClickHouseQueryError
-from boba.db.clickhouse.payload import PayloadClickHouse
 from boba.db.clickhouse.target import ChStreamWire, ChTableRef
 from boba.db.postgres.connection import CopyOptions
 from boba.db.postgres.transfer import PgColumnDeclaration
-from boba.pump_stand import ClickHouseSide, Leg, Loaded, PostgresSide, Pumps, PumpStand
+from boba.pump_stand import (
+    ChLoaded,
+    ClickHouseSide,
+    Leg,
+    Loaded,
+    PostgresSide,
+    Pumps,
+    PumpStand,
+)
 from boba.toolkit.sync import ColumnDeclaration
 from boba.toolkit.transfer import (
     BackupAndCreateIfSchemaChanged,
@@ -166,75 +173,6 @@ async def clickhouse(request: Any) -> AsyncIterator[ClickHouseSide]:
     await side.drop()
 
 
-class ChTable:
-    """Таблица ClickHouse стенда: типы колонок, число строк, выражения."""
-
-    def __init__(self, side: ClickHouseSide, table: str) -> None:
-        self._side = side
-        self._table = table
-
-    async def types(self) -> list[tuple[str, str]]:
-        rows = await self._rows(
-            "select name, type from system.columns "
-            f"where database = '{self._side.database}' and table = '{self._table}' "
-            "order by position"
-        )
-
-        return [(str(row[0]), str(row[1])) for row in rows]
-
-    async def sorting_key(self) -> str:
-        rows = await self._rows(
-            "select sorting_key from system.tables "
-            f"where database = '{self._side.database}' and name = '{self._table}'"
-        )
-
-        return str(rows[0][0])
-
-    async def engine(self) -> str:
-        rows = await self._rows(
-            "select engine from system.tables "
-            f"where database = '{self._side.database}' and name = '{self._table}'"
-        )
-
-        return str(rows[0][0])
-
-    async def count(self) -> int:
-        return int(await self.scalar("count()"))
-
-    async def scalar(self, expression: str) -> Any:
-        rows = await self._rows(
-            f"select {expression} from {self._side.database}.{self._table}"
-        )
-
-        return rows[0][0]
-
-    async def column(self, expression: str) -> list[Any]:
-        rows = await self._rows(
-            f"select {expression} from {self._side.database}.{self._table} order by id"
-        )
-
-        return [row[0] for row in rows]
-
-    async def clusters(self) -> list[str]:
-        rows = await self._rows("select distinct cluster from system.clusters")
-
-        return [str(row[0]) for row in rows]
-
-    async def tables(self) -> list[str]:
-        rows = await self._rows(
-            f"select name from system.tables where database = '{self._side.database}' "
-            "order by name"
-        )
-
-        return [str(row[0]) for row in rows]
-
-    async def _rows(self, text: str) -> list[Sequence[Any]]:
-        async with PayloadClickHouse.opened_config(self._side.profile) as client:
-            result = await client.query(text)
-
-        return list(result.result_rows)
-
-
 async def land(  # noqa: PLR0913
     postgres: PostgresSide,
     clickhouse: ClickHouseSide,
@@ -295,7 +233,7 @@ class TestCreate:
             DropAndCreate(kind="drop_and_create"),
             select=f"{SELECT} where id <> 0",
         )
-        landed = ChTable(clickhouse, "orders")
+        landed = ChLoaded(clickhouse, "orders")
         source = Loaded(postgres, PG_SCHEMA, "src")
 
         assert f"{ROWS} rows written" in report
@@ -333,8 +271,8 @@ class TestTwin:
         )
 
         assert f"{ROWS} rows written" in report
-        assert await ChTable(clickhouse, "twin").count() == ROWS
-        assert await ChTable(clickhouse, "twin__ex").count() == ROWS
+        assert await ChLoaded(clickhouse, "twin").count() == ROWS
+        assert await ChLoaded(clickhouse, "twin__ex").count() == ROWS
 
     async def test_delete_where_replaces_only_the_matching_rows(
         self, postgres: PostgresSide, clickhouse: ClickHouseSide
@@ -352,7 +290,7 @@ class TestTwin:
             DeleteWhere(kind="delete_where", where="id <= 1000"),
             select=f"{SELECT} where id <= 1000",
         )
-        landed = ChTable(clickhouse, "twin")
+        landed = ChLoaded(clickhouse, "twin")
 
         assert "deleted: 1000 rows" in report
         assert "1000 rows written" in report
@@ -375,7 +313,7 @@ class TestTwin:
         )
 
         assert "10 rows written" in report
-        assert await ChTable(clickhouse, "twin").count() == ROWS + 10
+        assert await ChLoaded(clickhouse, "twin").count() == ROWS + 10
 
 
 class TestRenamedMart:
@@ -429,7 +367,7 @@ class TestRenamedMart:
             rules=self.RULES,
             select=self.SELECT,
         )
-        mart = ChTable(clickhouse, "mart")
+        mart = ChLoaded(clickhouse, "mart")
 
         assert f"{ROWS} rows written" in report
         assert await mart.count() == ROWS
@@ -465,7 +403,7 @@ class TestNulls:
             ),
             select=f"select id, n, t, vc from {PG_SCHEMA}.src",
         )
-        types = dict(await ChTable(clickhouse, "declared").types())
+        types = dict(await ChLoaded(clickhouse, "declared").types())
 
         assert types["n"] == "Nullable(Decimal(20, 4))"
         assert types["t"] == "LowCardinality(Nullable(String))"
@@ -492,7 +430,7 @@ class TestNulls:
                 columns=DECLARED[:1],
             )
 
-        assert await ChTable(clickhouse, "plain").count() == 1
+        assert await ChLoaded(clickhouse, "plain").count() == 1
 
 
 class TestSchemaDrift:
@@ -520,7 +458,7 @@ class TestSchemaDrift:
             "drift",
             BackupAndCreateIfSchemaChanged(kind="backup_and_create_if_schema_changed"),
         )
-        drift = ChTable(clickhouse, "drift")
+        drift = ChLoaded(clickhouse, "drift")
         backups: list[str] = []
         for name in await drift.tables():
             if name.startswith("drift_bak_"):
@@ -528,7 +466,7 @@ class TestSchemaDrift:
 
         assert "backup: drift_bak_" in report
         assert len(backups) == 1
-        assert await ChTable(clickhouse, backups[0]).count() == ROWS
+        assert await ChLoaded(clickhouse, backups[0]).count() == ROWS
         assert ("i4", "Nullable(Int32)") in await drift.types()
         assert await drift.count() == ROWS
 
@@ -551,7 +489,7 @@ class TestCreateTemplate:
             create_table=self.TEMPLATE,
             order_by="id",
         )
-        table = ChTable(clickhouse, "templated")
+        table = ChLoaded(clickhouse, "templated")
         engine = await table.engine()
 
         assert f"{ROWS} rows written" in report
@@ -607,7 +545,7 @@ class TestUnknownTypes:
             unknown_types=FallbackAsVarchar(kind="fallback_as_varchar"),
             select=self.SELECT,
         )
-        table = ChTable(clickhouse, "arrays")
+        table = ChLoaded(clickhouse, "arrays")
 
         assert ("arr", "Nullable(String)") in await table.types()
         assert (await table.column("arr"))[:2] == ["{1,2}", "{2,3}"]
@@ -617,7 +555,7 @@ class TestDryRun:
     async def test_nothing_changes(
         self, postgres: PostgresSide, clickhouse: ClickHouseSide
     ) -> None:
-        table = ChTable(clickhouse, "orders")
+        table = ChLoaded(clickhouse, "orders")
         types = await table.types()
 
         report = await land(
@@ -664,8 +602,8 @@ class TestClickHouseCircle:
                 },
             ),
         )
-        circle = ChTable(clickhouse, "circle")
-        orders = ChTable(clickhouse, "orders")
+        circle = ChLoaded(clickhouse, "circle")
+        orders = ChLoaded(clickhouse, "orders")
 
         assert f"{ROWS} rows written" in chained.in_report
         assert await circle.count() == ROWS
@@ -761,12 +699,12 @@ class TestTsvCircle:
         await clickhouse.command(f"drop table if exists {CH_DATABASE}.typed")
         await clickhouse.command(self.TYPED)
         await clickhouse.command(self.FILL)
-        typed = ChTable(clickhouse, "typed")
+        typed = ChLoaded(clickhouse, "typed")
 
         report = await self.transfer(
             clickhouse, "typed_copy", DropAndCreate(kind="drop_and_create")
         )
-        copy = ChTable(clickhouse, "typed_copy")
+        copy = ChLoaded(clickhouse, "typed_copy")
 
         assert f"{ROWS} rows written" in report
         assert await copy.types() == await typed.types()
@@ -787,7 +725,7 @@ class TestTsvCircle:
         )
 
         assert f"{ROWS} rows written" in report
-        assert await ChTable(clickhouse, "typed_copy").count() == ROWS
+        assert await ChLoaded(clickhouse, "typed_copy").count() == ROWS
 
     async def test_type_drift_is_refused(self, clickhouse: ClickHouseSide) -> None:
         await clickhouse.command(
@@ -827,8 +765,8 @@ class TestTsvCircle:
             "typed_wider",
             ErrorIfSchemaChanged(kind="error_if_schema_changed"),
         )
-        wider = ChTable(clickhouse, "typed_wider")
-        typed = ChTable(clickhouse, "typed")
+        wider = ChLoaded(clickhouse, "typed_wider")
+        typed = ChLoaded(clickhouse, "typed")
 
         assert f"{ROWS} rows written" in report
         assert "warning column id: table Int128 is wider than stream Int64" in report
@@ -900,7 +838,7 @@ class TestTsvCircle:
                 column_types={"label": "String", "big": "Decimal(76, 10)"},
             ),
         )
-        types = dict(await ChTable(clickhouse, "typed_mart").types())
+        types = dict(await ChLoaded(clickhouse, "typed_mart").types())
 
         assert f"{ROWS} rows written" in report
         assert types["key"] == "Int64"
@@ -970,7 +908,7 @@ class TestReplicated:
 
     @pytest.fixture(autouse=True)
     async def keeper(self, clickhouse: ClickHouseSide) -> None:
-        clusters = await ChTable(clickhouse, "").clusters()
+        clusters = await ChLoaded(clickhouse, "").clusters()
         if STAND_CLUSTER not in clusters:
             pytest.skip(f"{clickhouse.source.name} has no cluster {STAND_CLUSTER}")
 
@@ -1004,7 +942,7 @@ class TestReplicated:
     async def test_replicated_table_loads_through_the_twin(
         self, postgres: PostgresSide, clickhouse: ClickHouseSide
     ) -> None:
-        table = ChTable(clickhouse, "replicated")
+        table = ChLoaded(clickhouse, "replicated")
         report = await land(
             postgres,
             clickhouse,
@@ -1031,7 +969,7 @@ class TestReplicated:
             cluster=STAND_CLUSTER,
             order_by="id",
         )
-        twin = ChTable(clickhouse, "replicated__ex")
+        twin = ChLoaded(clickhouse, "replicated__ex")
 
         assert "deleted: 100 rows" in report
         assert await table.count() == ROWS

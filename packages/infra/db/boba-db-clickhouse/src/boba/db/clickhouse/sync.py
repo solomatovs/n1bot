@@ -448,10 +448,10 @@ class ChSyncLoader:
             ChNullableTwinTypes(self._nullable(spec)),
             self._inbound,
         )
-        run = TransferRun(
+        transfer = TransferRun(
             schema_strategy, delete_strategy, insert_strategy, unknown_types
         )
 
-        return await run.run(
+        return await transfer.run(
             self._table.text(), exists, diff.check(), table, sink, False
         )
