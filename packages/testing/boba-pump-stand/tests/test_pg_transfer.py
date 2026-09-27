@@ -26,10 +26,11 @@ from boba.db.postgres.transfer import (
     PgCopyLayout,
     PgCopyOut,
     PgTransferTable,
+    PgTypeRules,
 )
 from boba.pump_stand import Leg, Loaded, PostgresSide, Pumps, PumpStand
 from boba.pump_stand.ports import Sink, SinkOutbound
-from boba.sync.pg_to_pg.transfer import PgStreamColumn, PgTypeRules
+from boba.sync.pg_to_pg.transfer import PgStreamColumn
 from boba.toolkit.transfer import (
     BackupAndCreateIfSchemaChanged,
     ColumnRules,

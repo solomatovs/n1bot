@@ -1258,7 +1258,7 @@ async def ch_sync_out(  # noqa: PLR0913
             description=(
                 "Формат данных в потоке:\n"
                 "   - tsv — текст TabSeparated, типы ClickHouse как есть\n"
-                "       для приёмника ClickHouse: точная передача типов\n"
+                "       для приёмников ClickHouse и postgres: точная передача типов\n"
                 "   - arrow — универсальный поток в формате Arrow IPC\n"
                 "       для приёмников других движков и узлов преобразования\n"
             ),
