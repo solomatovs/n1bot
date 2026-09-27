@@ -1,10 +1,11 @@
 # ruff: noqa: S608, E501
-"""Перелив отчёта по заказам между двумя серверами postgres запросом, каким
-его написал бы LLM: CTE, join и left join с NULL, lateral, оконные функции,
-агрегаты в массив и jsonb, enum, uuid, inet, interval, date_trunc. Источник
-— новейший postgres стенда, приёмник — другой сервер (предыдущий postgres и
-Greenplum 7). Запускать из launch.json «pytest: текущий файл»; отчёты насосов
-печатаются, видны с -s.
+"""Перелив отчёта по заказам между двумя серверами postgres парой
+postgres -> postgres (pg_csv_sync_out, pg_tsv_sync_out, pg_csv_sync_in)
+запросом, каким его написал бы LLM: CTE, join и left join с NULL, lateral,
+оконные функции, агрегаты в массив и jsonb, enum, uuid, inet, interval,
+date_trunc. Источник — новейший postgres стенда, приёмник — другой сервер
+(предыдущий postgres и Greenplum 7). Запускать из launch.json «pytest:
+текущий файл»; отчёты насосов печатаются, видны с -s.
 """
 
 from __future__ import annotations
@@ -16,16 +17,16 @@ from typing import Any
 import pytest
 
 from boba.db.postgres.connection import CopyOptions
+from boba.db.postgres.landing import PgColumnDeclaration
 from boba.pump_stand import Landing, Leg, PostgresSide, Pumps, PumpStand
-from boba.toolkit.sync import (
-    ColumnDeclaration,
+from boba.toolkit.landing import (
     ColumnRules,
     CreateIfNotExists,
     DeleteNothing,
     DeleteTruncate,
-    Engine,
     ErrorIfSchemaChanged,
     InsertFull,
+    TextWire,
 )
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
@@ -273,7 +274,7 @@ EXPECTED_COLUMNS = [
 """Колонки таблицы приёмника (имя, тип, not null): enum источника ложатся
 text по column_types, остальное — как описал стейтмент сервер источника."""
 
-DECLARED = [ColumnDeclaration(name="order_id", nullable=False)]
+DECLARED = [PgColumnDeclaration(name="order_id", nullable=False)]
 """Серверу nullable выборки неизвестен: not null у ключа объявляет LLM."""
 
 RULES = ColumnRules(column_types={"status": "text", "tier": "text"})
@@ -310,23 +311,27 @@ async def transfer(  # noqa: PLR0913
     table: str,
     schema: Any,
     delete: Any,
-    mode: Engine,
-    columns: Sequence[ColumnDeclaration] = DECLARED,
+    wire: TextWire,
+    columns: Sequence[PgColumnDeclaration] = DECLARED,
 ) -> str:
-    """pg_sync_out на источнике -> pg_sync_in на приёмнике, два сервера."""
+    """pg_csv_sync_out или pg_tsv_sync_out на источнике -> pg_csv_sync_in на
+    приёмнике, два сервера."""
     pumps = Pumps(postgres=source.profile, postgres_target=target.profile)
+    source_tool = "pg_csv_sync_out"
+    if wire is TextWire.TSV:
+        source_tool = "pg_tsv_sync_out"
+
     chained = await pumps.chain(
         Leg(
-            "pg_sync_out",
+            source_tool,
             {
                 "sql": REPORT_SQL,
-                "target_engine": mode,
                 "columns": columns,
                 "copy_options": CopyOptions(chunk_bytes=CHUNK),
             },
         ),
         Leg(
-            "pg_sync_in",
+            "pg_csv_sync_in",
             {
                 "schema_name": DW,
                 "table_name": table,
@@ -334,14 +339,12 @@ async def transfer(  # noqa: PLR0913
                 "delete_strategy": delete,
                 "insert_strategy": InsertFull(kind="full"),
                 "rules": RULES,
-                "copy_options": CopyOptions(
-                    chunk_bytes=CHUNK, exact_floats=target.greenplum_6
-                ),
+                "copy_options": CopyOptions(chunk_bytes=CHUNK),
             },
         ),
     )
-    print(f"\n--- pg_sync_out ({mode.value}) ---\n{chained.out_report}")
-    print(f"--- pg_sync_in ({mode.value}) ---\n{chained.in_report}")
+    print(f"\n--- {source_tool} ---\n{chained.out_report}")
+    print(f"--- pg_csv_sync_in ({wire.value}) ---\n{chained.in_report}")
 
     return chained.in_report
 
@@ -367,7 +370,7 @@ class TestOrdersReport:
             "orders_report",
             CreateIfNotExists(kind="create_if_not_exists"),
             DeleteNothing(kind="nothing"),
-            Engine.POSTGRES,
+            TextWire.CSV,
         )
         landed = Landing(target, DW, "orders_report")
 
@@ -389,24 +392,24 @@ class TestOrdersReport:
             "orders_report",
             ErrorIfSchemaChanged(kind="error_if_schema_changed"),
             DeleteTruncate(kind="truncate"),
-            Engine.POSTGRES,
+            TextWire.CSV,
         )
 
         assert "error" not in report.split("rows written")[0].lower()
         assert await Landing(target, DW, "orders_report").count() == ORDERS
 
-    async def test_arrow_mode_lands_the_same_content(
+    async def test_tsv_wire_lands_the_same_content(
         self, source: PostgresSide, target: PostgresSide
     ) -> None:
         report = await transfer(
             source,
             target,
-            "orders_report_arrow",
+            "orders_report_tsv",
             CreateIfNotExists(kind="create_if_not_exists"),
             DeleteNothing(kind="nothing"),
-            Engine.UNKNOWN,
+            TextWire.TSV,
         )
-        landed = Landing(target, DW, "orders_report_arrow")
+        landed = Landing(target, DW, "orders_report_tsv")
 
         assert f"{ORDERS} rows written" in report
         assert await landed.columns() == EXPECTED_COLUMNS
@@ -415,4 +418,4 @@ class TestOrdersReport:
             source, SRC, "orders_report"
         ).aggregate("sum(gross)")
         assert isinstance(await landed.aggregate("max(month_avg)"), Decimal)
-        await same_content(source, target, "orders_report_arrow")
+        await same_content(source, target, "orders_report_tsv")

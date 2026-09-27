@@ -25,19 +25,25 @@ from collections.abc import (
     Mapping,
     Sequence,
 )
-from dataclasses import dataclass
-from enum import IntEnum, StrEnum
-from typing import Any, ClassVar, Protocol
+from enum import StrEnum
+from typing import Any, ClassVar
 
 import psycopg
 import pyarrow
 import pyarrow.compute
 import pyarrow.csv
-from psycopg import pq, sql
+from psycopg import sql
 from psycopg._typeinfo import TypeInfo, TypesRegistry
-from psycopg.pq.abc import PGresult
 
-from boba.db.postgres.errors import PgArrowError
+from boba.db.postgres.describe import (
+    PgDescribe,
+    PgDescribedColumn,
+    PgType,
+    PgTypedColumn,
+    PgTypeText,
+    PgTypmod,
+)
+from boba.db.postgres.errors import PgArrowError, PgDescribeError
 from boba.db.postgres.query import PgQuery, PgQueryBuilder
 from boba.db.postgres.trace import PgCommandReport, PgSessionTrace
 from boba.toolkit.arrow import (
@@ -55,66 +61,7 @@ __all__ = [
     "PgArrowIn",
     "PgArrowOut",
     "PgArrowTypes",
-    "PgDescribedColumn",
-    "PgFormat",
-    "PgTypeText",
-    "PgTypedColumn",
 ]
-
-
-class PgFormat(IntEnum):
-    """Код формата значений колонки в протоколе (fformat в RowDescription)."""
-
-    TEXT = 0
-    BINARY = 1
-
-
-class PgTypedColumn(Protocol):
-    """Колонка postgres с тем, что нужно PgArrowTypes для вывода типа: имя,
-    OID типа и typmod. Реализации: PgDescribedColumn (RowDescription libpq)
-    и PgCatalogColumn (pg_attribute приёмника)."""
-
-    name: str
-    oid: int
-    typmod: int
-
-
-@dataclass(frozen=True)
-class PgDescribedColumn(PgTypedColumn):
-    """Колонка выборки из RowDescription libpq, все поля сообщения: позиция
-    (с нуля), имя, OID типа (ftype), typmod (fmod), OID таблицы (ftable, 0 у
-    вычисляемой), номер атрибута в ней (ftablecol, с единицы, 0 у
-    вычисляемой), размер типа в байтах (fsize, -1 у переменной длины), код
-    формата значений (fformat). Nullable протокол не несёт."""
-
-    position: int
-    name: str
-    oid: int
-    typmod: int
-    table_oid: int
-    table_column: int
-    size: int
-    format: PgFormat
-
-
-class PgType(StrEnum):
-    """Имена типов postgres из реестра psycopg, у которых есть родной тип Arrow
-    и которые читатель CSV разбирает сам, плюс time и timetz — они едут
-    текстом, но в контракте несут единицу и пояс."""
-
-    INT2 = "int2"
-    INT4 = "int4"
-    INT8 = "int8"
-    OID = "oid"
-    FLOAT4 = "float4"
-    FLOAT8 = "float8"
-    BOOL = "bool"
-    NUMERIC = "numeric"
-    DATE = "date"
-    TIMESTAMP = "timestamp"
-    TIMESTAMPTZ = "timestamptz"
-    TIME = "time"
-    TIMETZ = "timetz"
 
 
 class CsvText(StrEnum):
@@ -125,95 +72,6 @@ class CsvText(StrEnum):
     NULL = ""
 
 
-class PgTypeText:
-    """Текст типа postgres по имени из реестра psycopg и typmod, как его
-    печатает format_type: numeric(18,4), character varying(200),
-    timestamp(3) without time zone; массив — тип элемента и []. Длина
-    строки у character varying и character — typmod без заголовка."""
-
-    VARHDRSZ: ClassVar[int] = 4
-    UNBOUNDED: ClassVar[int] = -1
-    SQL_NAMES: ClassVar[Mapping[str, str]] = {
-        "int2": "smallint",
-        "int4": "integer",
-        "int8": "bigint",
-        "float4": "real",
-        "float8": "double precision",
-        "bool": "boolean",
-        "varchar": "character varying",
-        "bpchar": "character",
-        "timestamp": "timestamp without time zone",
-        "timestamptz": "timestamp with time zone",
-        "time": "time without time zone",
-        "timetz": "time with time zone",
-        "varbit": "bit varying",
-    }
-    SIZED: ClassVar[frozenset[str]] = frozenset({"varchar", "bpchar", "bit", "varbit"})
-    PRECISE: ClassVar[frozenset[str]] = frozenset(
-        {"timestamp", "timestamptz", "time", "timetz"}
-    )
-
-    def render(self, info: TypeInfo, oid: int, typmod: int) -> str:
-        if info.array_oid == oid:
-            return f"{self.render(info, info.oid, typmod)}[]"
-
-        name = self.SQL_NAMES.get(info.name, info.name)
-        if info.name == PgType.NUMERIC:
-            return self._numeric(name, typmod)
-
-        if info.name in self.SIZED:
-            return self._sized(name, typmod)
-
-        if info.name in self.PRECISE:
-            return self._precise(name, typmod)
-
-        return name
-
-    def char_length(self, info: TypeInfo, oid: int, typmod: int) -> int:
-        """Длина varchar/bpchar в символах, bit/varbit — в битах; 0 — без
-        предела."""
-        if info.array_oid == oid:
-            return 0
-
-        if typmod == self.UNBOUNDED:
-            return 0
-
-        if info.name in ("bit", "varbit"):
-            return typmod
-
-        if info.name not in ("varchar", "bpchar"):
-            return 0
-
-        return typmod - self.VARHDRSZ
-
-    def _numeric(self, name: str, typmod: int) -> str:
-        if typmod == self.UNBOUNDED:
-            return name
-
-        packed = typmod - self.VARHDRSZ
-        precision = packed >> 16
-        scale = packed & 0xFFFF
-
-        return f"{name}({precision},{scale})"
-
-    def _sized(self, name: str, typmod: int) -> str:
-        if typmod == self.UNBOUNDED:
-            return name
-
-        if name.startswith("bit"):
-            return f"{name}({typmod})"
-
-        return f"{name}({typmod - self.VARHDRSZ})"
-
-    def _precise(self, name: str, typmod: int) -> str:
-        if typmod == self.UNBOUNDED:
-            return name
-
-        head, _, tail = name.partition(" ")
-
-        return f"{head}({typmod}) {tail}"
-
-
 class PgArrowTypes:
     """Тип Arrow для колонки postgres по OID и typmod из реестра типов psycopg:
     числа, boolean, даты и время — родными типами, numeric(p, s) до 38 знаков
@@ -222,9 +80,7 @@ class PgArrowTypes:
     без точности — отказ: масштаб значений неизвестен; шире 38 знаков —
     отказ: читатель CSV decimal256 не собирает."""
 
-    VARHDRSZ: ClassVar[int] = 4
     DECIMAL128_DIGITS: ClassVar[int] = 38
-    UNBOUNDED: ClassVar[int] = -1
     MILLISECONDS: ClassVar[int] = 3
     FLOAT32_BITS: ClassVar[int] = 32
     ARROW: ClassVar[Mapping[str, pyarrow.DataType]] = {
@@ -331,6 +187,7 @@ class PgArrowTypes:
     def __init__(self, registry: TypesRegistry) -> None:
         self._registry = registry
         self._text = PgTypeText()
+        self._typmod = PgTypmod()
         self._fields = SourceFields(self.ENGINE)
         self._columns = ArrowColumns()
 
@@ -484,27 +341,26 @@ class PgArrowTypes:
         )
 
     def _decimal_kind(self, typmod: int) -> ColumnType:
-        if typmod == self.UNBOUNDED:
+        if self._typmod.unbounded(typmod):
             return ColumnType(TypeFamily.DECIMAL, "decimal")
 
-        packed = typmod - self.VARHDRSZ
-        precision = packed >> 16
-        scale = packed & 0xFFFF
+        digits = self._typmod.digits(typmod)
 
         return ColumnType(
             TypeFamily.DECIMAL,
-            f"decimal({precision}, {scale})",
-            precision=precision,
-            scale=scale,
+            f"decimal({digits.precision}, {digits.scale})",
+            precision=digits.precision,
+            scale=digits.scale,
         )
 
     def _unit(self, typmod: int) -> TimeUnit:
         """Единица по точности типа: (0) — секунды, (1..3) — миллисекунды,
         (4..6) и без точности — микросекунды."""
-        if typmod == 0:
+        precision = self._typmod.precision(typmod)
+        if precision == 0:
             return TimeUnit.SECOND
 
-        if 0 < typmod <= self.MILLISECONDS:
+        if precision <= self.MILLISECONDS:
             return TimeUnit.MILLISECOND
 
         return TimeUnit.MICROSECOND
@@ -556,24 +412,16 @@ class PgArrowTypes:
         return pyarrow.timestamp(unit)
 
     def _numeric(self, name: str, typmod: int) -> pyarrow.DataType:
-        if typmod == self.UNBOUNDED:
+        if self._typmod.unbounded(typmod):
             raise PgArrowError(
                 f"column {name} is numeric without precision: the scale of its "
                 f"values is unknown, cast it in the select: {name}::numeric(p, s) "
                 f"or {name}::text"
             )
 
-        packed = typmod - self.VARHDRSZ
-        precision = packed >> 16
-        scale = packed & 0xFFFF
-        if precision <= self.DECIMAL128_DIGITS:
-            return pyarrow.decimal128(precision, scale)
+        digits = self._typmod.digits(typmod)
 
-        raise PgArrowError(
-            f"column {name} is numeric({precision}, {scale}): the csv reader of "
-            f"arrow holds decimals up to {self.DECIMAL128_DIGITS} digits, cast it "
-            f"in the select: {name}::text"
-        )
+        return self._decimal_arrow(name, digits.precision, digits.scale)
 
 
 class PgArrowOut:
@@ -586,6 +434,7 @@ class PgArrowOut:
     def __init__(self, conn: psycopg.AsyncConnection[Any]) -> None:
         self._conn = conn
         self._types = PgArrowTypes(conn.adapters.types)
+        self._describe = PgDescribe(conn)
         self._trace = PgSessionTrace(conn)
         self._ipc = ArrowIpc()
 
@@ -593,101 +442,17 @@ class PgArrowOut:
         self,
         query: str,
     ) -> AsyncIterator[PgDescribedColumn]:
-        """Скрапим колонки указанного запроса, без выполнения запроса на сервере
-        Делается это через вызовы libpq:
-            - PQprepare - выполняет prepare запроса
-            - PQdescribePrepared - возвращает описание колонок в prepare запросе
-        """
-        pgconn = self._conn.pgconn
-        encoding = self._conn.info.encoding
+        """Колонки выборки от PgDescribe (PQprepare + PQdescribePrepared);
+        отказ сервера — PgArrowError, как у остального пути Arrow."""
         try:
-            # pgconn.prepare(b"", text) это libpq-функция PQprepare
-            # https://postgrespro.ru/docs/postgresql/current/libpq-exec#LIBPQ-PQPREPARE
-            # Она отправляет одно сообщение протокола Parse
-            # с пустым именем стейтмента b"" и текстом select
-            # и ждёт ответ ParseComplete.
-            # prepare синхронная поэтому помещена в asyncio.to_thread
-            # Сервер на Parse делает две вещи:
-            # - разбирает текст в дерево и анализирует его,
-            #   то есть ищет таблицы, колонки, функции и операторы
-            #   в каталоге и вычисляет тип каждого выражения результата.
-            # Полученное дерево он сохраняет у себя в сессии
-            # как безымянный подготовленный стейтмент.
-            # Планировщик здесь не запускается, таблицы не читаются.
-            # По смыслу это то же, что SQL-команда PREPARE, но без плана.
-            prepared = await asyncio.to_thread(
-                pgconn.prepare, b"", query.encode(encoding)
-            )
-            # self._ensure_ok(prepared, "preparing", text) проверяет статус ответа.
-            # Если сервер вернул ошибку, например «relation does not exist»,
-            # она превращается в PgArrowError с текстом запроса.
-            self._ensure_ok(prepared, "preparing", query)
-            # pgconn.describe_prepared(b"") это PQdescribePrepared.
-            # https://postgrespro.ru/docs/postgresql/current/libpq-exec#LIBPQ-PQDESCRIBEPREPARED
-            # Она отправляет сообщение Describe с типом S и пустым именем,
-            # то есть "опиши сохранённый безымянный стейтмент".
-            # Сервер отвечает ParameterDescription и RowDescription,
-            # которую берёт из результата анализа на предыдущем шаге.
-            # Ничего нового он не вычисляет, просто отдаёт список колонок:
-            # имя, OID типа, typmod.
-            described = await asyncio.to_thread(pgconn.describe_prepared, b"")
-            # self._ensure_ok(described, "describing", text) снова проверяет статус
-            # выдает ошибку PgArrowError если не ок
-            self._ensure_ok(described, "describing", query)
-        except psycopg.Error as exc:
-            raise PgArrowError(
-                f"describing the statement on postgres failed: {type(exc).__name__}: "
-                f"{exc}; query: {query[:200]!r}"
-            ) from exc
-
-        for position in range(described.nfields):
-            name = described.fname(position)
-            if name is None:
-                raise PgArrowError(
-                    f"describing the statement on postgres: column {position} has "
-                    f"no name; query: {query[:200]!r}"
-                )
-
-            # https://postgrespro.ru/docs/postgresql/current/libpq-exec#LIBPQ-PQFNAME
-            # имя колонки
-            column_name = name.decode(encoding)
-            # OID типа данных колонки, число из pg_type.oid
-            oid = described.ftype(position)
-            # модификатор типа как одно число, -1 если не задан
-            # из типа выражения:
-            #   - numeric(18,4) упакованы precision и scale плюс 4,
-            #   - varchar(200) длина плюс 4
-            #   - timestamp(3) точность 3
-            typmod = described.fmod(position)
-            # OID таблицы в pg_class, если колонка взята из таблицы напрямую, иначе 0
-            ftable = described.ftable(position)
-            # номер атрибута в таблице {ftable} - pg_attribute.attnum, с единицы
-            # 0, если колонка вычисляемая
-            ftablecol = described.ftablecol(position)
-            # код формата значений:
-            #   0 текст
-            #   1 бинарный
-            fformat = PgFormat(described.fformat(position))
-            # размер типа в байтах - pg_type.typlen
-            #   -1 для типов переменной длины
-            #   -2 для cstring
-            # 4 для oid, 64 для name, 1 для "char"
-            fsize = described.fsize(position)
-
-            yield PgDescribedColumn(
-                position=position,
-                name=column_name,
-                oid=oid,
-                typmod=typmod,
-                table_oid=ftable,
-                table_column=ftablecol,
-                size=fsize,
-                format=fformat,
-            )
+            async for column in self._describe.columns(query):
+                yield column
+        except PgDescribeError as exc:
+            raise PgArrowError(str(exc)) from exc
 
     async def schema(self, query: str) -> pyarrow.Schema:
         """arrow схема из postgres запроса"""
-        return self._types.schema(self.get_column_description_from_libpq(query))
+        return await self._types.schema(self.get_column_description_from_libpq(query))
 
     async def stream_into(
         self,
@@ -754,17 +519,6 @@ class PgArrowOut:
 
         if pending:
             await pipe.write(pending)
-
-    @staticmethod
-    def _ensure_ok(result: PGresult, action: str, text: str) -> None:
-        if result.status == pq.ExecStatus.COMMAND_OK:
-            return
-
-        message = result.error_message.decode(errors="replace").strip()
-        raise PgArrowError(
-            f"{action} the statement on postgres failed: {message}; "
-            f"query: {text[:200]!r}"
-        )
 
 
 class CsvBatches:
