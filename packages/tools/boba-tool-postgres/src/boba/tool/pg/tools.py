@@ -28,9 +28,39 @@ from pydantic import Field
 from boba.db.postgres import PayloadPostgres, PgArrowError, PgScript, PostgresError
 from boba.db.postgres.address import PgAddresses
 from boba.db.postgres.connection import CopyOptions, PostgresConfig
+from boba.db.postgres.landing import (
+    PgColumnDeclaration,
+    PgCopyOut,
+    PgTableRef,
+    PostgresLandings,
+)
 from boba.db.postgres.query import PgQuery, PgQueryBuilder
 from boba.toolkit.entry import ToolMain
 from boba.toolkit.facade import Injected, UserConnection, tool
+from boba.toolkit.landing import (
+    ColumnRules as LandingColumnRules,
+)
+from boba.toolkit.landing import (
+    DeleteStrategy as LandingDeleteStrategy,
+)
+from boba.toolkit.landing import (
+    FailOnUnknown as LandingFailOnUnknown,
+)
+from boba.toolkit.landing import (
+    InsertStrategy as LandingInsertStrategy,
+)
+from boba.toolkit.landing import (
+    LandingFrame,
+    LandingInbound,
+    LandingOutbound,
+    TextWire,
+)
+from boba.toolkit.landing import (
+    SchemaStrategy as LandingSchemaStrategy,
+)
+from boba.toolkit.landing import (
+    UnknownTypeStrategy as LandingUnknownTypeStrategy,
+)
 from boba.toolkit.ports import (
     ArrowInbound,
     ArrowOutbound,
@@ -765,6 +795,206 @@ async def pg_sync_in(  # noqa: PLR0913
         ).sink(head.format)
         loader = PgSyncLoader(conn, table, contract, head.source_engine, sink)
         report = await loader.run(
+            schema_strategy, delete_strategy, insert_strategy, unknown_types, rules
+        )
+
+    return MarkdownResult(text=report.render())
+
+
+@tool
+async def pg_csv_sync_out(
+    connection: PgConnection,
+    sql: Annotated[
+        str,
+        Field(
+            min_length=1,
+            description=(
+                "Запрос SELECT целиком, без COPY и без `;` в конце; выполняется "
+                "как написан, инструмент только оборачивает его в COPY."
+            ),
+        ),
+        MarkdownResult(language="sql"),
+    ],
+    columns: Annotated[
+        Sequence[PgColumnDeclaration],
+        Field(
+            description=(
+                "Декларации колонок поверх описания сервера: not null у колонки, "
+                "которую сервер считает nullable; type_text — текст типа, когда "
+                "сервер отдал только OID (enum, расширения)."
+            ),
+        ),
+    ] = (),
+    copy_options: Annotated[
+        CopyOptions,
+        Field(
+            description=(
+                "Настройки COPY одним объектом: сессия (client_encoding, "
+                "datestyle, timezone, extra_float_digits, bytea_output, "
+                "lc_monetary), chunk_bytes — порция потока."
+            ),
+        ),
+    ] = CopyOptions(),
+    *,
+    out: Annotated[Outbound[LandingFrame], Injected],
+) -> MarkdownResult:
+    """Источник postgres для приёмника postgres: COPY csv с контрактом колонок.
+
+    Колонки выборки берутся у libpq описанием стейтмента (PQprepare и
+    PQdescribePrepared, без планирования и выполнения): имя, OID, typmod и
+    текст типа postgres как есть. Первый кадр — этот контракт с декларациями
+    columns поверх, дальше байты COPY (<select>) TO STDOUT (FORMAT CSV) без
+    разбора. Запрос выполняется один раз. В ответ — состав контракта, статус
+    сервера и его сообщения.
+    """
+    conn = await PayloadPostgres.connect_config(connection.copy_session(copy_options))
+    async with conn:
+        report = await PgCopyOut(conn).stream(
+            sql,
+            TextWire.CSV,
+            columns,
+            copy_options.chunk_bytes,
+            LandingOutbound(out),
+        )
+
+    return MarkdownResult(text=report.render())
+
+
+@tool
+async def pg_tsv_sync_out(
+    connection: PgConnection,
+    sql: Annotated[
+        str,
+        Field(
+            min_length=1,
+            description=(
+                "Запрос SELECT целиком, без COPY и без `;` в конце; выполняется "
+                "как написан, инструмент только оборачивает его в COPY."
+            ),
+        ),
+        MarkdownResult(language="sql"),
+    ],
+    columns: Annotated[
+        Sequence[PgColumnDeclaration],
+        Field(
+            description=(
+                "Декларации колонок поверх описания сервера: not null у колонки, "
+                "которую сервер считает nullable; type_text — текст типа, когда "
+                "сервер отдал только OID (enum, расширения)."
+            ),
+        ),
+    ] = (),
+    copy_options: Annotated[
+        CopyOptions,
+        Field(
+            description=(
+                "Настройки COPY одним объектом: сессия (client_encoding, "
+                "datestyle, timezone, extra_float_digits, bytea_output, "
+                "lc_monetary), chunk_bytes — порция потока."
+            ),
+        ),
+    ] = CopyOptions(),
+    *,
+    out: Annotated[Outbound[LandingFrame], Injected],
+) -> MarkdownResult:
+    """Источник postgres в раскладке text: COPY text с контрактом колонок.
+
+    То же, что pg_csv_sync_out, но тела — COPY (<select>) TO STDOUT
+    (FORMAT TEXT): поля через табуляцию, NULL как \\N, байт в байт
+    TabSeparated ClickHouse. Приёмник postgres принимает обе раскладки.
+    """
+    conn = await PayloadPostgres.connect_config(connection.copy_session(copy_options))
+    async with conn:
+        report = await PgCopyOut(conn).stream(
+            sql,
+            TextWire.TSV,
+            columns,
+            copy_options.chunk_bytes,
+            LandingOutbound(out),
+        )
+
+    return MarkdownResult(text=report.render())
+
+
+@tool
+async def pg_csv_sync_in(  # noqa: PLR0913
+    connection: PgConnection,
+    schema_name: Annotated[
+        str, Field(min_length=1, description="Схема таблицы-приёмника: dwh")
+    ],
+    table_name: Annotated[
+        str, Field(min_length=1, description="Таблица-приёмник в схеме: orders")
+    ],
+    schema_strategy: Annotated[
+        LandingSchemaStrategy,
+        Field(
+            description=(
+                "Что делать с таблицей до загрузки по сверке её схемы с контрактом "
+                "потока: create_if_not_exists, error_if_not_exists, "
+                "error_if_schema_changed, drop_and_create_if_schema_changed, "
+                "backup_and_create_if_schema_changed, drop_and_create, "
+                "backup_and_create, do_nothing. Объект с kind."
+            ),
+        ),
+    ],
+    delete_strategy: Annotated[
+        LandingDeleteStrategy,
+        Field(
+            description=(
+                "Что удалить перед вставкой: nothing, truncate, delete_all, "
+                "delete_where (where). Объект с kind."
+            ),
+        ),
+    ],
+    insert_strategy: Annotated[
+        LandingInsertStrategy,
+        Field(description="Как вставить поток: full или nothing. Объект с kind."),
+    ],
+    rules: Annotated[
+        LandingColumnRules,
+        Field(
+            description=(
+                "Правила колонок приёмника: rename_columns {колонка: поле "
+                "потока}, column_types {колонка: тип postgres текстом как есть}."
+            ),
+        ),
+    ] = LandingColumnRules(),
+    unknown_types: Annotated[
+        LandingUnknownTypeStrategy,
+        Field(
+            description=(
+                "Колонки, для которых у приёмника нет типа (у источника только "
+                "OID); явный rules.column_types перекрывает. fail_on_unknown — "
+                "ошибка с OID типа источника; fallback_as_varchar — varchar. "
+                "Объект с kind."
+            ),
+        ),
+    ] = LandingFailOnUnknown(kind="fail_on_unknown"),
+    copy_options: Annotated[
+        CopyOptions,
+        Field(description="Настройки COPY одним объектом: сессия и chunk_bytes."),
+    ] = CopyOptions(),
+    *,
+    feed: Annotated[Inbound[LandingFrame], Injected],
+) -> MarkdownResult:
+    """Приёмник postgres со стратегиями: поток COPY csv или text в таблицу.
+
+    Пара для движка источника берётся из реестра по первому кадру: контракт
+    postgres сверяется с таблицей по OID и typmod (numeric — scale и целые
+    разряды, varchar и bit — длина, timestamp и time — точность, nullable),
+    DDL строится текстом типа источника, column_types разбирает сам сервер
+    приёмника. Стратегия схемы создаёт, оставляет, бэкапит или пересоздаёт
+    таблицу либо отказывает с текстом расхождений; затем удаление, затем
+    COPY тел как есть. Всё одной транзакцией. В ответ — что сделано со
+    схемой и почему, сверка по колонкам, что удалено, сколько вставлено.
+    """
+    inbound = LandingInbound(feed)
+    head = await inbound.get_schema()
+    pair = PostgresLandings.discover().pair(head.source_engine)
+    table = PgTableRef(schema=schema_name, name=table_name)
+    conn = await PayloadPostgres.connect_config(connection.copy_session(copy_options))
+    async with conn:
+        report = await pair(conn, table, head, inbound).run(
             schema_strategy, delete_strategy, insert_strategy, unknown_types, rules
         )
 
@@ -1567,6 +1797,9 @@ TOOLS: Final = ToolMain.toolset(
     pg_sync_out,
     pg_arrow_in,
     pg_sync_in,
+    pg_csv_sync_out,
+    pg_tsv_sync_out,
+    pg_csv_sync_in,
     pg_address,
     pg_database_describe,
     pg_schema_describe,

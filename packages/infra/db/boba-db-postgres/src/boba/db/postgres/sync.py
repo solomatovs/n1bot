@@ -19,24 +19,18 @@ psycopg.Error — сервер отклонил стейтмент или зна
 from __future__ import annotations
 
 from collections.abc import AsyncIterator, Callable, Mapping, Sequence
-from dataclasses import dataclass
 from datetime import UTC, datetime
-from enum import StrEnum
 from typing import Any, ClassVar
 
 import psycopg
 from psycopg import sql
 
-from boba.db.postgres.arrow import (
-    PgArrowIn,
-    PgArrowOut,
-    PgArrowTypes,
-    PgTypedColumn,
-)
-from boba.db.postgres.errors import PgArrowError
+from boba.db.postgres.arrow import PgArrowIn, PgArrowOut, PgArrowTypes
+from boba.db.postgres.landing import PgTableFacts, PgTableRef, PgTypeResolver
 from boba.db.postgres.query import PgQuery, PgQueryBuilder
 from boba.db.postgres.trace import PgCommandReport, PgSessionTrace
 from boba.toolkit.arrow import ArrowIpc, ArrowReader
+from boba.toolkit.landing import LandingError
 from boba.toolkit.stream import Chunk
 from boba.toolkit.sync import (
     ColumnDeclaration,
@@ -78,23 +72,7 @@ __all__ = [
     "PgSyncLoader",
     "PgSyncSource",
     "PgTableDdl",
-    "PgTableFacts",
-    "PgTableRef",
 ]
-
-
-@dataclass(frozen=True)
-class PgTableRef:
-    """Таблица-приёмник: схема и имя как идентификаторы."""
-
-    schema: str
-    name: str
-
-    def ident(self) -> sql.Identifier:
-        return sql.Identifier(self.schema, self.name)
-
-    def text(self) -> str:
-        return f"{self.schema}.{self.name}"
 
 
 class PgDdlTypes:
@@ -228,173 +206,29 @@ class PgDdlTypes:
         return f"time({precision})"
 
 
-class Relkind(StrEnum):
-    """Виды отношений pg_class, которые приёмник считает таблицей."""
-
-    TABLE = "r"
-    PARTITIONED = "p"
-
-
 class PgDeclaredTypes:
-    """Типы из rules.column_types, разобранные самим приёмником: сервер
-    описывает стейтмент select null::<тип> as <колонка> без выполнения,
-    и текст типа LLM превращается в oid и typmod — тот же путь, что у
-    описания выборки на источнике. Неизвестный серверу тип — ошибка до
-    любого DDL."""
+    """Типы из rules.column_types в нейтральном виде: разбор текста типа
+    сервером через PgTypeResolver, семейство и параметры через PgArrowTypes."""
 
     def __init__(self, conn: psycopg.AsyncConnection[Any]) -> None:
-        self._conn = conn
-        self._out = PgArrowOut(conn)
+        self._resolver = PgTypeResolver(conn)
         self._types = PgArrowTypes(conn.adapters.types)
 
     async def resolve(self, column_types: Mapping[str, str]) -> dict[str, DeclaredType]:
-        if not column_types:
-            return {}
-
-        query = self._query(column_types)
-        columns: list[PgTypedColumn] = []
         try:
-            async for column in self._out.get_column_description_from_libpq(
-                query.text.as_string(self._conn)
-            ):
-                columns.append(column)
-        except PgArrowError as exc:
-            raise SyncError(
-                f"rules.column_types: postgres does not accept the declared types "
-                f"{dict(column_types)}: {exc}"
-            ) from exc
+            resolved = await self._resolver.resolve(column_types)
+        except LandingError as exc:
+            raise SyncError(str(exc)) from exc
 
         declared: dict[str, DeclaredType] = {}
-        for column in columns:
-            declared[column.name] = DeclaredType(
+        for name, column in resolved.items():
+            declared[name] = DeclaredType(
                 kind=self._types.kind_of(column),
                 source_type=self._types.source_type(column),
                 char_length=self._types.char_length(column),
             )
 
         return declared
-
-    def _query(self, column_types: Mapping[str, str]) -> PgQuery:
-        builder = PgQueryBuilder().add("select")
-        for position, (name, text) in enumerate(column_types.items()):
-            builder.when(position > 0, ",")
-            builder.add("null::")
-            builder.raw_query(text)
-            builder.add("as {name}", name=sql.Identifier(name))
-
-        return builder.build()
-
-
-@dataclass(frozen=True)
-class PgCatalogColumn(PgTypedColumn):
-    """Колонка таблицы приёмника из pg_attribute: позиция (с нуля, в порядке
-    attnum без удалённых), имя, OID типа (atttypid), typmod (atttypmod), OID
-    таблицы (attrelid), attnum (с единицы), размер типа (attlen), not null
-    (attnotnull) — то, чего у RowDescription нет."""
-
-    position: int
-    name: str
-    oid: int
-    typmod: int
-    table_oid: int
-    attnum: int
-    size: int
-    not_null: bool
-
-
-class PgTableFacts:
-    """Таблица по каталогу postgres: есть ли она (pg_class), её колонки
-    (pg_attribute: тип, typmod, not null) в PgCatalogColumn и в ColumnSpec
-    ядра."""
-
-    def __init__(self, conn: psycopg.AsyncConnection[Any], table: PgTableRef) -> None:
-        self._conn = conn
-        self._table = table
-        self._types = PgArrowTypes(conn.adapters.types)
-
-    async def exists(self) -> bool:
-        query = (
-            PgQueryBuilder()
-            .add(
-                "select 1 from pg_catalog.pg_class c "
-                "join pg_catalog.pg_namespace n on n.oid = c.relnamespace "
-                "where n.nspname = %(schema)s and c.relname = %(table)s "
-                "and c.relkind in (%(table_kind)s, %(partitioned_kind)s)",
-                schema=self._table.schema,
-                table=self._table.name,
-                table_kind=Relkind.TABLE.value,
-                partitioned_kind=Relkind.PARTITIONED.value,
-            )
-            .build()
-        )
-        row = await self._one(query)
-
-        return row is not None
-
-    async def columns(self) -> Sequence[PgCatalogColumn]:
-        query = (
-            PgQueryBuilder()
-            .add(
-                "select a.attname, a.atttypid, a.atttypmod, a.attnotnull, a.attnum, "
-                "a.attrelid, a.attlen "
-                "from pg_catalog.pg_attribute a "
-                "join pg_catalog.pg_class c on c.oid = a.attrelid "
-                "join pg_catalog.pg_namespace n on n.oid = c.relnamespace "
-                "where n.nspname = %(schema)s and c.relname = %(table)s "
-                "and a.attnum > 0 and not a.attisdropped order by a.attnum",
-                schema=self._table.schema,
-                table=self._table.name,
-            )
-            .build()
-        )
-        columns: list[PgCatalogColumn] = []
-        async with self._conn.cursor() as cursor:
-            await cursor.execute(query.text, query.params)
-            for position, row in enumerate(await cursor.fetchall()):
-                columns.append(
-                    PgCatalogColumn(
-                        position=position,
-                        name=str(row[0]),
-                        oid=int(row[1]),
-                        typmod=int(row[2]),
-                        table_oid=int(row[5]),
-                        attnum=int(row[4]),
-                        size=int(row[6]),
-                        not_null=bool(row[3]),
-                    )
-                )
-
-        return tuple(columns)
-
-    async def not_null(self) -> frozenset[str]:
-        names: set[str] = set()
-        for column in await self.columns():
-            if column.not_null:
-                names.add(column.name)
-
-        return frozenset(names)
-
-    async def facts(self) -> Sequence[ColumnSpec]:
-        specs: list[ColumnSpec] = []
-        for column in await self.columns():
-            specs.append(
-                ColumnSpec(
-                    name=column.name,
-                    kind=self._types.kind_of(column),
-                    nullable=not column.not_null,
-                    position=column.position,
-                    source_type=self._types.source_type(column),
-                    char_length=self._types.char_length(column),
-                )
-            )
-
-        return tuple(specs)
-
-    async def _one(self, query: PgQuery) -> Sequence[Any] | None:
-        async with self._conn.cursor() as cursor:
-            await cursor.execute(query.text, query.params)
-
-            return await cursor.fetchone()
 
 
 class PgTableDdl(TableDdl):
@@ -414,13 +248,27 @@ class PgTableDdl(TableDdl):
         self._table = table
         self._source_engine = source_engine
         self._facts = PgTableFacts(conn, table)
+        self._types = PgArrowTypes(conn.adapters.types)
         self._ddl_types = PgDdlTypes()
 
     async def exists(self) -> bool:
         return await self._facts.exists()
 
     async def facts(self) -> Sequence[ColumnSpec]:
-        return await self._facts.facts()
+        specs: list[ColumnSpec] = []
+        for column in await self._facts.columns():
+            specs.append(
+                ColumnSpec(
+                    name=column.name,
+                    kind=self._types.kind_of(column),
+                    nullable=not column.not_null,
+                    position=column.position,
+                    source_type=self._types.source_type(column),
+                    char_length=self._types.char_length(column),
+                )
+            )
+
+        return tuple(specs)
 
     async def create(self, spec: TableSpec, unknown_as_varchar: bool) -> str:
         query = self._create_query(spec, unknown_as_varchar)
