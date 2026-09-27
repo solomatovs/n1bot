@@ -19,7 +19,7 @@ from __future__ import annotations
 import asyncio
 import io
 import string
-from collections.abc import AsyncIterator, Iterator, Mapping
+from collections.abc import AsyncIterator, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Annotated, Any, Literal, Protocol
@@ -64,7 +64,11 @@ __all__ = [
     "SchemaStrategy",
     "SchemaStrategyPlan",
     "StreamWire",
+    "TemplateBrackets",
+    "TemplatePart",
+    "TemplateParts",
     "TemplateVar",
+    "TemplateVars",
     "TransferError",
     "TransferFrame",
     "TransferInbound",
@@ -285,47 +289,185 @@ class ColumnRules(BaseModel):
 
 
 class TemplateVar(StrEnum):
-    """Переменные шаблона create table: схема и имя таблицы (каждая
-    отдельным идентификатором, экранирует пара своим драйвером) и
-    колонки из плана пары."""
+    """Переменные шаблона create table. Каждую подставляет приёмник уже
+    экранированной своим драйвером:
+        - schema_name — схема таблицы у postgres;
+        - database — база таблицы у ClickHouse;
+        - table_name — имя таблицы;
+        - columns — колонки с типами из плана приёмника;
+        - cluster — кластер ClickHouse, пусто без кластера;
+        - order_by — ключ сортировки ClickHouse как в SQL."""
 
     SCHEMA_NAME = "schema_name"
+    DATABASE = "database"
     TABLE_NAME = "table_name"
     COLUMNS = "columns"
+    CLUSTER = "cluster"
+    ORDER_BY = "order_by"
 
-    def placeholder(self) -> str:
-        return "{" + self.value + "}"
+
+@dataclass(frozen=True)
+class TemplateVars:
+    """Переменные шаблона своего движка: обязательные стоят вне квадратных
+    скобок, необязательные — только внутри них. Каждая обязана встретиться
+    в шаблоне хотя бы раз."""
+
+    required: tuple[TemplateVar, ...]
+    optional: tuple[TemplateVar, ...] = ()
+
+
+@dataclass(frozen=True)
+class TemplatePart:
+    """Кусок шаблона: текст для str.format и признак необязательности —
+    необязательный кусок выпадает целиком, если пуста любая его переменная."""
+
+    text: str
+    optional: bool
+
+    def names(self) -> list[str]:
+        names: list[str] = []
+        for _, name, _, _ in string.Formatter().parse(self.text):
+            if name is not None:
+                names.append(name)
+
+        return names
+
+
+class TemplateBrackets(StrEnum):
+    """Скобки необязательной части шаблона и их литеральная запись."""
+
+    OPEN = "["
+    CLOSE = "]"
+    LITERAL_OPEN = "[["
+    LITERAL_CLOSE = "]]"
+
+
+class TemplateParts:
+    """Разбор шаблона на куски по квадратным скобкам: [ ... ] — необязательный
+    кусок, [[ и ]] — литеральные скобки; вложенные и незакрытые скобки —
+    ошибка."""
+
+    def parse(self, text: str) -> tuple[TemplatePart, ...]:
+        parts: list[TemplatePart] = []
+        current: list[str] = []
+        optional = False
+        position = 0
+        while position < len(text):
+            pair = text[position : position + 2]
+            char = text[position]
+            if pair in (TemplateBrackets.LITERAL_OPEN, TemplateBrackets.LITERAL_CLOSE):
+                current.append(char)
+                position += 2
+                continue
+
+            if char == TemplateBrackets.OPEN:
+                if optional:
+                    raise TransferError(
+                        f"create_table template: optional part opened inside another "
+                        f"at position {position}; write [[ for a literal bracket; "
+                        f"template: {text!r}"
+                    )
+
+                parts.append(TemplatePart("".join(current), optional=False))
+                current = []
+                optional = True
+                position += 1
+                continue
+
+            if char == TemplateBrackets.CLOSE:
+                if not optional:
+                    raise TransferError(
+                        f"create_table template: ] at position {position} closes "
+                        f"nothing; write ]] for a literal bracket; template: {text!r}"
+                    )
+
+                parts.append(TemplatePart("".join(current), optional=True))
+                current = []
+                optional = False
+                position += 1
+                continue
+
+            current.append(char)
+            position += 1
+
+        if optional:
+            raise TransferError(
+                f"create_table template: optional part is not closed with ]; "
+                f"template: {text!r}"
+            )
+
+        parts.append(TemplatePart("".join(current), optional=False))
+
+        return tuple(parts)
 
 
 @dataclass(frozen=True)
 class CreateTemplate:
     """Шаблон create table от вызывающего: цельный стейтмент с переменными
-    TemplateVar, каждая встречается хотя бы раз, других подстановок нет;
-    литеральные фигурные скобки удваиваются. Проверяется при создании,
-    подставляет уже экранированные фрагменты пары."""
+    своего движка. Обязательные переменные стоят в тексте, необязательные —
+    в квадратных скобках вместе с окружающим текстом: [ on cluster {cluster}]
+    выпадает целиком, если кластер не передан. Других подстановок нет;
+    литеральные фигурные и квадратные скобки удваиваются. Проверяется при
+    создании, подставляет уже экранированные фрагменты приёмника."""
 
     text: str
+    variables: TemplateVars
 
     def __post_init__(self) -> None:
-        allowed = [member.value for member in TemplateVar]
+        required = [member.value for member in self.variables.required]
+        optional = [member.value for member in self.variables.optional]
+        allowed = required + optional
+        seen: set[str] = set()
+        for part in TemplateParts().parse(self.text):
+            names = self._names(part)
+            if part.optional and not names:
+                raise TransferError(
+                    f"create_table template: optional part [{part.text}] has no "
+                    f"variable; template: {self.text!r}"
+                )
+
+            for name in names:
+                self._check(name, part, allowed, required, optional)
+                seen.add(name)
+
+        missing = [name for name in allowed if name not in seen]
+        if missing:
+            raise TransferError(
+                f"create_table template lacks {missing}; required outside brackets: "
+                f"{required}, optional inside [ ]: {optional}; template: {self.text!r}"
+            )
+
+    def render(self, values: Mapping[TemplateVar, str]) -> str:
+        """Стейтмент с подставленными фрагментами; необязательный кусок с
+        пустой переменной выпадает. Фрагменты уже экранированы драйвером
+        приёмника."""
+        rendered: list[str] = []
+        for part in TemplateParts().parse(self.text):
+            names = part.names()
+            filled: dict[str, str] = {}
+            for name in names:
+                filled[name] = values[TemplateVar(name)]
+
+            if part.optional and not all(filled.values()):
+                continue
+
+            rendered.append(part.text.format(**filled))
+
+        return "".join(rendered)
+
+    def _names(self, part: TemplatePart) -> list[str]:
         try:
-            fields = list(string.Formatter().parse(self.text))
+            fields = list(string.Formatter().parse(part.text))
         except ValueError as exc:
             raise TransferError(
                 f"create_table template is not parseable: {exc}; double literal "
                 f"braces; template: {self.text!r}"
             ) from exc
 
-        seen: set[str] = set()
+        names: list[str] = []
         for _, name, spec, conversion in fields:
             if name is None:
                 continue
-
-            if name not in allowed:
-                raise TransferError(
-                    f"create_table template has an unknown variable {{{name}}}; "
-                    f"allowed: {allowed}; template: {self.text!r}"
-                )
 
             if spec or conversion:
                 raise TransferError(
@@ -333,21 +475,36 @@ class CreateTemplate:
                     f"spec or conversion; template: {self.text!r}"
                 )
 
-            seen.add(name)
+            names.append(name)
 
-        missing = [name for name in allowed if name not in seen]
-        if missing:
+        return names
+
+    def _check(
+        self,
+        name: str,
+        part: TemplatePart,
+        allowed: Sequence[str],
+        required: Sequence[str],
+        optional: Sequence[str],
+    ) -> None:
+        if name not in allowed:
             raise TransferError(
-                f"create_table template lacks {missing}; every variable of "
-                f"{allowed} must appear; template: {self.text!r}"
+                f"create_table template has an unknown variable {{{name}}}; "
+                f"allowed: {list(allowed)}; template: {self.text!r}"
             )
 
-    def render(self, schema_name: str, table_name: str, columns: str) -> str:
-        """Стейтмент с подставленными фрагментами; фрагменты уже экранированы
-        драйвером пары."""
-        return self.text.format(
-            schema_name=schema_name, table_name=table_name, columns=columns
-        )
+        if name in required and part.optional:
+            raise TransferError(
+                f"create_table template: required variable {{{name}}} stands "
+                f"inside [ ]; take it out of the brackets; template: {self.text!r}"
+            )
+
+        if name in optional and not part.optional:
+            raise TransferError(
+                f"create_table template: optional variable {{{name}}} must stand "
+                f"inside [ ] with its text, for example [ on cluster {{{name}}}]; "
+                f"template: {self.text!r}"
+            )
 
 
 @dataclass(frozen=True)

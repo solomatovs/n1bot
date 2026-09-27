@@ -32,6 +32,7 @@ import pyarrow
 import pyarrow.ipc
 import pytest
 
+from boba.db.clickhouse.target import ChStreamWire
 from boba.db.postgres import PgArrowError
 from boba.db.postgres.connection import CopyOptions
 from boba.db.postgres.errors import PgDescribeError
@@ -973,6 +974,7 @@ class TestTraps:
                     "ch_sync_out",
                     {
                         "sql": "select toInt64(1) as id, [toInt64(1), 2] as arr",
+                        "wire": ChStreamWire.ARROW,
                         "chunk_bytes": CHUNK_BYTES,
                     },
                 ),

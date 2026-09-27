@@ -30,7 +30,8 @@ unknown_types, copy_options)`. Инструменты друг о друге н�
 |---|---|---|---|
 | PostgreSQL | `pg_sync_out(sql, wire)` | `pg_sync_in(schema_name, table_name, ...)` | csv, tsv, binary или arrow — как назвал `wire` |
 | ClickHouse | `ch_stream_out(sql, chunk_bytes)` | `ch_stream_in(sql, chunk_bytes)` | тот, что задан словом `FORMAT` в запросе; контракта нет |
-| ClickHouse, Arrow | `ch_arrow_out(sql, chunk_bytes)`, `ch_sync_out(sql, columns)` | `ch_arrow_in(sql, chunk_bytes)` | Arrow IPC; `ch_sync_out` несёт контракт для `pg_sync_in` |
+| ClickHouse, sync | `ch_sync_out(sql, wire)` | `ch_sync_in(database, table_name, ...)` | tsv с типами ClickHouse как есть или arrow — как назвал `wire`; контракт для `pg_sync_in` и `ch_sync_in` |
+| ClickHouse, Arrow | `ch_arrow_out(sql, chunk_bytes)` | `ch_arrow_in(sql, chunk_bytes)` | Arrow IPC; контракта нет |
 | Oracle | `ora_csv_out(sql)` | `ora_csv_in(sql, chunk_bytes)` | только CSV, правила ниже; контракта нет |
 | Oracle, Arrow | `ora_arrow_out(sql)`, `ora_sync_out(sql, columns)` | `ora_arrow_in(sql, chunk_bytes)` | Arrow IPC; `ora_sync_out` несёт контракт для `pg_sync_in` |
 
@@ -1159,6 +1160,90 @@ NOTIFY, если сессия их слушала. Насосы Oracle отда�
   как `value out of range: overflow` в любой записи; это предел сервера,
   `exact_floats` не помогает.
 
+### Что принимает ch_sync_in с потока arrow
+
+`ch_sync_in(database, table_name, schema_strategy, delete_strategy,
+insert_strategy, rules, unknown_types, create_table, before, after)`
+принимает поток arrow с контрактом от любого `*_sync_out`: `pg_sync_out` с
+`wire = arrow`, `ch_sync_out`, `ora_sync_out`. Стратегии те же, что у
+`pg_sync_in`.
+
+Типы колонок, которые приёмник создаёт по контракту:
+
+| Семейство потока | Колонка ClickHouse |
+|---|---|
+| целые | `Int8`…`Int256`, `UInt8`…`UInt256` по ширине и знаку |
+| float | `Float32`, `Float64` |
+| decimal | `Decimal(p, s)`; без точности — тип без пары |
+| boolean | `Bool` |
+| строки | `String` |
+| date | `Date32` |
+| timestamp | `DateTime64(p)`, с поясом — `DateTime64(p, 'UTC')` |
+| uuid | `UUID` |
+| json, inet, interval, money, xml, bit, bytea | `String` |
+| time, массивы, диапазоны, геометрия | пары нет: ошибка или `String` по `fallback_as_varchar` |
+
+Nullable колонка потока становится `Nullable(...)`, объявленная not null —
+обычной колонкой. `rules.column_types` пишутся типом ClickHouse и
+проверяются сервером приёмника до любого DDL.
+
+Транзакций у ClickHouse нет, поэтому приёмник грузит в двойник
+`<table>__ex` и меняет таблицы местами `exchange tables`. Читатели не видят
+частичной загрузки, прежняя версия остаётся в `__ex` до следующей загрузки.
+Стратегия удаления решает, какие прежние строки перенести в двойник до
+потока:
+
+- `nothing` — все, поток дописывается к ним;
+- `truncate`, `delete_all` — ни одной;
+- `delete_where` — все, кроме подпавших под условие.
+
+`exchange tables` работает только в базе с движком `Atomic`; для базы
+`Ordinary` приёмник отказывает до любого DDL.
+
+Поток вставляется через `input()`: `insert into db.t__ex (колонки таблицы)
+select поля потока from input('структура') format ArrowStream`. Сервер
+сопоставляет поля потока по именам, `select` переименовывает их в колонки
+таблицы по `rename_columns`, без перекодирования пачек.
+
+Таблицу по умолчанию приёмник создаёт реплицируемой:
+
+```sql
+create table {database}.{table_name}[ on cluster {cluster}] ({columns})
+engine = ReplicatedMergeTree order by {order_by}
+```
+
+Переменные шаблона ClickHouse:
+
+- `{database}`, `{table_name}` — база и имя, экранированные драйвером;
+- `{columns}` — колонки с типами из плана приёмника;
+- `{order_by}` — ключ сортировки из параметра `order_by`: `id`, `(dt, id)`,
+  по умолчанию `tuple()`;
+- `[ on cluster {cluster}]` — необязательная часть: текст в квадратных
+  скобках выпадает целиком, если параметр `cluster` пуст.
+
+Обязательные переменные стоят вне квадратных скобок, `{cluster}` — только
+внутри; каждая обязана встретиться. Литеральные фигурные и квадратные
+скобки удваиваются: `{{`, `}}`, `[[`, `]]`.
+
+`ReplicatedMergeTree` без аргументов берёт путь в Keeper из настроек
+сервера (`/clickhouse/tables/{uuid}/{shard}`), а макрос `{uuid}` сервер
+подставляет только в запросе `on cluster`. Поэтому шаблон по умолчанию
+требует `cluster`; для сервера без Keeper передайте шаблон с `MergeTree`:
+
+```sql
+create table {database}.{table_name}[ on cluster {cluster}] ({columns})
+engine = MergeTree order by {order_by} partition by toYYYYMM(dt)
+```
+
+С `cluster` приёмник выполняет `on cluster` всё DDL: создание, `drop`,
+`rename`, двойник и `exchange tables`. Вставка и выборки идут на узел
+соединения, остальные реплики шарда получают данные репликацией. Кластер
+проверяется по `system.clusters` до любого DDL. Для кластера из нескольких
+шардов приёмник кладёт строки только в шард узла соединения.
+
+Колонки `order_by` не могут быть `Nullable`: объявите их not null у
+источника (`columns` у `pg_sync_out`).
+
 ### Скорость Arrow из PostgreSQL
 
 Сам `copy ... to stdout (format csv)` отдаёт около 500 тысяч строк в секунду
@@ -1384,6 +1469,38 @@ Greenplum, `test_pg_realistic.py` между двумя серверами.
 `packages/infra/sync/boba-sync-<src>-to-<dst>` с entry point на движок
 источника; приёмник без установленной пары отвечает понятной ошибкой.
 
+### clickhouse → clickhouse
+
+| Инструмент | Что делает |
+|---|---|
+| `ch_sync_out(sql, wire, columns, chunk_bytes)` | `wire = tsv`: запрос выполняется один раз в `TabSeparatedWithNamesAndTypes`, две строки шапки уходят кадром `schema` как контракт с текстами типов ClickHouse как их печатает сервер, остальные байты — кадрами `rows` как `TabSeparated`; `wire = arrow`: поток Arrow IPC с нейтральным контрактом и декларациями `columns` для приёмников других движков |
+| `ch_sync_in(database, table_name, ...)` | по `source_engine = clickhouse` и `wire = tsv` берёт пару из реестра `boba.transfer.clickhouse`: тексты типов сравниваются с `system.columns` приёмника без обёрток `Nullable` и `LowCardinality`, DDL строится текстом типа источника, `column_types` нормализует сервер приёмника, тела идут в `input()` двойника как `TabSeparated` без перекодирования |
+
+Так `LowCardinality`, `DateTime64` с поясом, `Enum8`, `FixedString`, `Array`,
+`Map`, `Decimal` любой точности, `IPv6` и `UUID` доезжают тем же типом; по
+arrow часть из них стала бы строками или потеряла пояс. `columns` у `tsv`
+не принимаются: типы ClickHouse едут как есть.
+
+Сверка с существующей таблицей по разобранным текстам типов, обёртки
+`Nullable` и `LowCardinality` сняты:
+
+| Случай | Вердикт |
+|---|---|
+| тексты совпадают | ok |
+| разные семейства: `Int64` в `String`, `Array` в `Map` | ошибка |
+| целые и float: приёмник уже (`Int64` в `Int32`) или теряет знак (`Int64` в `UInt64`) | ошибка; шире — предупреждение |
+| `Decimal`: scale или целые разряды приёмника меньше | ошибка; больше — предупреждение |
+| `DateTime`, `DateTime64`: другой пояс | ошибка: текст TabSeparated читается в поясе колонки приёмника |
+| `DateTime64`: точность приёмника грубее | ошибка; тоньше — предупреждение |
+| `FixedString(n)` короче | ошибка; длиннее или `String` — предупреждение |
+| `Enum8`, `Enum16` в `String` | предупреждение; обратно или другие значения — ошибка |
+| `Date` в `Date32` | предупреждение; обратно — ошибка |
+| `Array`, `Map`, `Tuple`, `UUID`, `IPv4`, `IPv6` | только точное совпадение текста |
+| nullable поле в колонку без `Nullable` | ошибка; обратное — предупреждение |
+
+`Tuple` с именованными полями новые серверы печатают в несколько строк,
+старые в одну: пробелы и переводы строк перед сверкой схлопываются.
+
 ## Семейство sync: приёмник со стратегиями
 
 Насосы выше гонят байты в стейтмент, который написал вызывающий. Семейство
@@ -1581,6 +1698,10 @@ deleted: 0 rows by truncate table "dwh"."orders"
 - `test_pg_arrow.py` — PostgreSQL -> PostgreSQL, ClickHouse и Oracle потоком
   Arrow на всей матрице версий, обратные пути и ловушки;
 - `test_ora_ch_stream.py` — короткая цепочка Oracle -> ClickHouse;
+- `test_ch_sync.py` — приёмник `ch_sync_in`: поток arrow из postgres и
+  ClickHouse, пара ClickHouse -> ClickHouse по tsv с типами как есть, типы,
+  двойник и `exchange tables`, стратегии, rename, шаблон, `ReplicatedMergeTree`
+  on cluster, отказ базы не `Atomic`;
 - `test_pg_transfer.py`, `test_pg_realistic.py` — пара postgres -> postgres:
   раскладки `wire`, стратегии, типы, отказ приёмника на несовместимый
   binary, стоимость описания;

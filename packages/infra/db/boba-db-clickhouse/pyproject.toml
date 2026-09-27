@@ -44,6 +44,7 @@ namespaces = true
 "boba.db.clickhouse.payload" = "payload"
 "boba.db.clickhouse.formats" = "payload"
 "boba.db.clickhouse.sync" = "payload"
+"boba.db.clickhouse.transfer" = "payload"
 
 [project.entry-points."boba.catalog"]
 clickhouse = "boba.db.clickhouse.snapshot:ChSnapshot"

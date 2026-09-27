@@ -23,7 +23,7 @@ from collections.abc import (
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import tzinfo
-from typing import Any, Protocol, cast, runtime_checkable
+from typing import Any, ClassVar, Protocol, cast, runtime_checkable
 
 import aiohttp
 from clickhouse_connect.datatypes.base import ClickHouseType
@@ -163,6 +163,9 @@ class PayloadClickHouse:
     настройки драйвера как есть и ничего не знает ни о том, как их собрали,
     ни о форматах потоков — их разбирают форматеры boba.db.clickhouse.formats
     поверх byte_stream_out и byte_stream_in."""
+
+    STREAM_HEADERS: ClassVar[Mapping[str, str]] = {"Connection": "close"}
+    """Заголовки потоковой вставки: соединение после неё не переиспользуется."""
 
     @staticmethod
     @asynccontextmanager
@@ -398,6 +401,12 @@ class PayloadClickHouse:
             async for block in blocks:
                 yield block
 
+        # 24.12 после вставки многими блоками портит keep-alive соединение:
+        # следующий запрос на нём получает HTTP 400, поэтому соединение закрываем
+        headers = dict(PayloadClickHouse.STREAM_HEADERS)
+        if transport_settings is not None:
+            headers.update(transport_settings)
+
         # аннотация у clickhouse_connect драйвера некорректна
         # он принимает AsyncIterator но не указывает это в аннотациях
         # поэтому приводим к Any типу
@@ -406,7 +415,7 @@ class PayloadClickHouse:
             summary = await client.raw_insert(
                 insert_block=body,
                 settings=PayloadClickHouse._dict(settings),
-                transport_settings=PayloadClickHouse._dict(transport_settings),
+                transport_settings=headers,
             )
         except DriverError as exc:
             raise ClickHouseQueryError(

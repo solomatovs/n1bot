@@ -129,6 +129,11 @@ class ChQueryTrace:
         self._fmt = fmt
 
     @property
+    def server(self) -> str:
+        """Заголовок X-ClickHouse-Server-Display-Name ответа."""
+        return self._server
+
+    @property
     def written_rows(self) -> int:
         return self._count(ChSummaryKey.WRITTEN_ROWS)
 
