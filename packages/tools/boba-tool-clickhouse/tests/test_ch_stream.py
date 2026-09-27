@@ -5,7 +5,7 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncIterator, Iterator, Sequence
 from typing import Any, ClassVar
 
 import pytest
@@ -17,8 +17,8 @@ from boba.db.clickhouse.payload import PayloadClickHouse
 from boba.db.clickhouse.query import ChQueryBuilder
 from boba.tool.ch import tools as ch
 from boba.toolkit.entry import ToolMain
-from boba.toolkit.frames import ToolIo
-from boba.toolkit.ports import RawInbound, RawOutbound
+from boba.toolkit.landing import Engine, RowsHead, SchemaHead, SyncWire
+from boba.toolkit.ports import Framed
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
 
@@ -50,42 +50,42 @@ class StandSources(BaseModel):
     ch_sources: Sequence[StandSource]
 
 
-class Sink(RawOutbound):
-    """Выходной порт в память: копит всё, что записал насос."""
+class Sink:
+    """Выходной порт кадров в память: копит тела кадров rows."""
 
     def __init__(self) -> None:
-        super().__init__(ToolIo.detached())
         self._buffer = bytearray()
 
-    def write(self, buffer: Any) -> int:
-        chunk = memoryview(buffer)
-        self._buffer.extend(chunk)
-
-        return len(chunk)
+    def emit(self, head: Any, body: Any = b"") -> None:
+        self._buffer.extend(memoryview(body))
 
     def data(self) -> bytes:
         return bytes(self._buffer)
 
 
-class Feed(RawInbound):
-    """Входной порт из памяти: порции своего размера режут строки где попало,
-    chunk_bytes насоса не смотрит."""
+class Feed:
+    """Входной порт кадров из памяти: кадр schema без контракта, дальше порции
+    своего размера — они режут строки и поля где попало."""
 
     def __init__(self, data: bytes, size: int) -> None:
-        super().__init__(ToolIo.detached())
         self._data = data
         self._size = size
-        self._offset = 0
 
-    def readinto(self, buffer: Any) -> int:
-        """Не больше своего размера за вызов, а не весь buffer: границы порций
-        режут данные где попало."""
-        target = memoryview(buffer).cast("B")
-        size = min(self._size, len(target), len(self._data) - self._offset)
-        target[:size] = self._data[self._offset : self._offset + size]
-        self._offset += size
-
-        return size
+    def __iter__(self) -> Iterator[Framed[Any]]:
+        yield Framed(
+            head=SchemaHead(
+                kind="schema",
+                source_engine=Engine.POSTGRES,
+                wire=SyncWire.RAW,
+                contract=None,
+            ),
+            body=b"",
+        )
+        offset = 0
+        while offset < len(self._data):
+            chunk = self._data[offset : offset + self._size]
+            offset += self._size
+            yield Framed(head=RowsHead(kind="rows"), body=chunk)
 
 
 class Stand:

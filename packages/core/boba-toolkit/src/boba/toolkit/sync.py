@@ -1,10 +1,8 @@
-"""Ядро приёмника с управлением схемой: нейтральное описание колонок,
-сверка схемы потока со схемой таблицы-приёмника и стратегии — что делать
-с таблицей, что удалить, как вставить. Ничего не знает ни о pyarrow, ни о
+"""Нейтральный контракт колонок для провода arrow: семейства типов и их
+параметры, декларации LLM поверх описания драйвера, сверка контракта со
+схемой таблицы-приёмника по семействам. Ничего не знает ни о pyarrow, ни о
 драйверах: поле потока сюда переводит boba.toolkit.arrow, колонку каталога
-— модуль движка, SQL по стратегиям строит реализация порта TableDdl в
-инфра-пакете движка. Стратегии — модели с kind: LLM передаёт их объектом,
-поведение живёт в модели.
+— модуль движка; стратегии, кадры и ход приёмника — в boba.toolkit.landing.
 
 Ошибки:
 SyncError — правило вызова не сходится со схемами (rename на поле,
@@ -13,86 +11,44 @@ SyncError — правило вызова не сходится со схема�
 
 from __future__ import annotations
 
-import asyncio
-import io
-from collections.abc import AsyncIterator, Callable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, replace
 from enum import StrEnum
-from typing import Annotated, Any, ClassVar, Literal, Protocol
+from typing import Any, ClassVar
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, Field
 
-from boba.toolkit.ports import Inbound, Outbound
-from boba.toolkit.stream import Chunk
+from boba.toolkit.landing import ColumnRules, LandingError, SchemaCheck
 
 __all__ = [
+    "ArrowContract",
     "ArrowFieldMeta",
-    "BackupAndCreate",
-    "BackupAndCreateIfSchemaChanged",
     "ColumnDeclaration",
     "ColumnMatch",
     "ColumnRule",
-    "ColumnRules",
     "ColumnSpec",
     "ColumnType",
     "ColumnTypeModel",
     "ColumnVerdict",
     "ContractText",
-    "CreateIfNotExists",
     "Declarations",
     "DeclaredType",
-    "DeleteAll",
-    "DeleteNothing",
-    "DeleteOutcome",
-    "DeleteStrategy",
-    "DeleteStrategyApply",
-    "DeleteWhere",
-    "DiffSummary",
-    "DoNothing",
-    "DropAndCreate",
-    "DropAndCreateIfSchemaChanged",
     "Engine",
-    "ErrorIfNotExists",
-    "ErrorIfSchemaChanged",
-    "FailOnUnknown",
-    "FallbackAsVarchar",
-    "FrameBodies",
-    "FrameWriter",
-    "InsertFull",
-    "InsertNothing",
-    "InsertSink",
-    "InsertStrategy",
-    "InsertStrategyApply",
-    "RowsFrame",
-    "SchemaAction",
     "SchemaDiff",
-    "SchemaFrame",
     "SchemaMatcher",
-    "SchemaPlan",
-    "SchemaStrategy",
-    "SchemaStrategyPlan",
-    "SourceModes",
     "StreamColumn",
     "StreamContract",
     "SyncError",
-    "SyncFrame",
-    "SyncInbound",
-    "SyncOutbound",
-    "SyncReport",
     "TableColumn",
-    "TableDdl",
     "TableSpec",
     "TimeUnit",
     "TypeComparer",
     "TypeFamily",
-    "UnknownTypeApply",
-    "UnknownTypeStrategy",
     "Verdict",
-    "WireFormat",
 ]
 
 
-class SyncError(Exception):
+class SyncError(LandingError):
     """Правило вызова не сходится со схемами или стратегия отказала."""
 
 
@@ -217,30 +173,6 @@ class ColumnRule:
     name: str
     rename_from: str = ""
     ddl_type: str = ""
-
-
-class ColumnRules(BaseModel):
-    """Правила приёмника по колонкам: rename_columns — откуда берётся
-    колонка, column_types — какой тип ей дать в DDL. Контракт потока
-    приёмник не правит."""
-
-    model_config = ConfigDict(frozen=True)
-
-    rename_columns: Mapping[str, str] = Field(
-        default={},
-        description=(
-            "Колонка приёмника -> поле потока, которое в неё ложится: "
-            '{"created_at": "created"}. Только имя, данные не меняются.'
-        ),
-    )
-    column_types: Mapping[str, str] = Field(
-        default={},
-        description=(
-            "Колонка приёмника -> тип для create table текстом как есть: "
-            '{"v": "vector(3)", "amount": "numeric(20,6)", "m": "sales.mood"}. '
-            "Перекрывает и стратегию unknown_types, и вывод типа из потока."
-        ),
-    )
 
 
 class Verdict(StrEnum):
@@ -585,14 +517,6 @@ class TableSpec:
         return [column.source_name for column in self.columns]
 
 
-@dataclass(frozen=True)
-class DiffSummary:
-    """Итог сверки для стратегии: есть ли ошибки и текст причин."""
-
-    changed: bool
-    reason: str
-
-
 class SchemaDiff:
     """Результат сверки: вердикт по каждой колонке, ошибки и предупреждения
     списком, текст для чата и колонки для DDL."""
@@ -613,19 +537,20 @@ class SchemaDiff:
     def warnings(self) -> list[str]:
         return list(self._messages(Verdict.WARNING))
 
-    def summary(self) -> DiffSummary:
-        errors = self.errors()
-        if not errors:
-            return DiffSummary(changed=False, reason="")
-
-        return DiffSummary(changed=True, reason="\n".join(errors))
+    def check(self) -> SchemaCheck:
+        """Итог сверки для стратегии приёмника."""
+        return SchemaCheck(
+            errors=tuple(self.errors()),
+            warnings=tuple(self.warnings()),
+            lines=tuple(self._lines()),
+        )
 
     def render(self) -> str:
-        lines: list[str] = []
-        for match, verdict in self._verdicts:
-            lines.append(f"- {verdict.level.value} {match.name}: {verdict.message}")
+        return "\n".join(self._lines())
 
-        return "\n".join(lines)
+    def _lines(self) -> Iterator[str]:
+        for match, verdict in self._verdicts:
+            yield f"- {verdict.level.value} {match.name}: {verdict.message}"
 
     def table_spec(self) -> TableSpec:
         columns: list[TableColumn] = []
@@ -764,381 +689,14 @@ class SchemaMatcher:
         return by_name
 
 
-@dataclass(frozen=True)
-class DeleteOutcome:
-    """Что сделала стратегия удаления: строк и стейтмент."""
-
-    rows: int
-    statement: str
-
-
-class TableDdl(Protocol):
-    """Порт таблицы-приёмника: реализация в инфра-пакете движка строит
-    стейтменты своим билдером. Имена — идентификаторы движка, условие
-    where — текст вызова через raw_query."""
-
-    async def exists(self) -> bool: ...
-
-    async def facts(self) -> Sequence[ColumnSpec]: ...
-
-    async def create(self, spec: TableSpec, unknown_as_varchar: bool) -> str: ...
-
-    async def backup(self) -> str: ...
-
-    async def drop(self, cascade: bool) -> str: ...
-
-    async def truncate(self) -> DeleteOutcome: ...
-
-    async def delete_all(self) -> DeleteOutcome: ...
-
-    async def delete_where(self, where: str) -> DeleteOutcome: ...
-
-
-class InsertSink(Protocol):
-    """Порт вставки потока: load кладёт все пачки потока в колонки таблицы
-    по порядку полей потока и возвращает число строк, discard читает поток
-    до конца, ничего не записывая."""
-
-    async def load(self, spec: TableSpec) -> int: ...
-
-    async def discard(self) -> int: ...
-
-
-class SchemaStrategyPlan(Protocol):
-    """Стратегия схемы: по наличию таблицы и итогу сверки решает, что с ней
-    делать. Реализации — модели с kind (pydantic BaseModel не наследует
-    Protocol из-за метакласса, совместимость структурная)."""
-
-    def plan(self, exists: bool, diff: DiffSummary) -> SchemaPlan: ...
-
-
-class DeleteStrategyApply(Protocol):
-    """Стратегия удаления: применяет себя через порт таблицы. Реализации —
-    модели с kind."""
-
-    async def apply(self, table: TableDdl) -> DeleteOutcome: ...
-
-
-class InsertStrategyApply(Protocol):
-    """Стратегия вставки: применяет себя через порт вставки. Реализации —
-    модели с kind."""
-
-    async def apply(self, sink: InsertSink, spec: TableSpec) -> int: ...
-
-
-class UnknownTypeApply(Protocol):
-    """Стратегия приёмника для колонок семейства other — тех, чей тип он
-    сопоставить родному не может (расширения, enum, составные). Известные
-    типы всегда ложатся родными типами движка, стратегия решает только
-    судьбу неизвестных; явный rules.column_types перекрывает её.
-    Реализации — модели с kind."""
-
-    async def apply(self, table: TableDdl, spec: TableSpec) -> str: ...
-
-
-class FailOnUnknown(BaseModel):
-    """UnknownTypeApply: неизвестный тип — ошибка с тем, что о колонке
-    известно (имя типа источника или его OID), и подсказкой объявить тип в
-    rules.column_types или взять fallback_as_varchar; LLM решает сам."""
-
-    kind: Literal["fail_on_unknown"]
-
-    async def apply(self, table: TableDdl, spec: TableSpec) -> str:
-        return await table.create(spec, False)
-
-
-class FallbackAsVarchar(BaseModel):
-    """UnknownTypeApply: неизвестный тип — строковый тип движка без предела
-    длины (varchar у postgres, String у ClickHouse), значения едут текстом."""
-
-    kind: Literal["fallback_as_varchar"]
-
-    async def apply(self, table: TableDdl, spec: TableSpec) -> str:
-        return await table.create(spec, True)
-
-
-UnknownTypeStrategy = Annotated[
-    FailOnUnknown | FallbackAsVarchar,
-    Field(discriminator="kind"),
-]
-"""Стратегия неизвестных типов: что делать с колонками семейства other."""
-
-
-class SchemaAction(StrEnum):
-    """Что делать с таблицей по стратегии схемы."""
-
-    CREATE = "create"
-    BACKUP_THEN_CREATE = "backup_then_create"
-    DROP_THEN_CREATE = "drop_then_create"
-    KEEP = "keep"
-    FAIL = "fail"
-
-
-@dataclass(frozen=True)
-class SchemaPlan:
-    action: SchemaAction
-    reason: str
-    cascade: bool = False
-
-
-class CreateIfNotExists(BaseModel):
-    """SchemaStrategyPlan: нет таблицы — создать по потоку; есть — оставить
-    как есть, даже если схема разошлась (расхождение всплывёт при загрузке)."""
-
-    kind: Literal["create_if_not_exists"]
-
-    def plan(self, exists: bool, diff: DiffSummary) -> SchemaPlan:
-        if not exists:
-            return SchemaPlan(SchemaAction.CREATE, "table is missing")
-
-        return SchemaPlan(SchemaAction.KEEP, "table exists")
-
-
-class ErrorIfNotExists(BaseModel):
-    """SchemaStrategyPlan: таблица обязана быть; схема не сверяется."""
-
-    kind: Literal["error_if_not_exists"]
-
-    def plan(self, exists: bool, diff: DiffSummary) -> SchemaPlan:
-        if not exists:
-            return SchemaPlan(SchemaAction.FAIL, "table is missing")
-
-        return SchemaPlan(SchemaAction.KEEP, "table exists")
-
-
-class ErrorIfSchemaChanged(BaseModel):
-    """SchemaStrategyPlan: таблица обязана быть и сходиться с потоком без
-    ошибок сверки."""
-
-    kind: Literal["error_if_schema_changed"]
-
-    def plan(self, exists: bool, diff: DiffSummary) -> SchemaPlan:
-        if not exists:
-            return SchemaPlan(SchemaAction.FAIL, "table is missing")
-
-        if diff.changed:
-            return SchemaPlan(SchemaAction.FAIL, diff.reason)
-
-        return SchemaPlan(SchemaAction.KEEP, "schema matches")
-
-
-class DropAndCreateIfSchemaChanged(BaseModel):
-    """SchemaStrategyPlan: нет таблицы — создать; схема разошлась — удалить
-    и создать заново."""
-
-    kind: Literal["drop_and_create_if_schema_changed"]
-    cascade: bool = Field(
-        default=False, description="drop ... cascade — снести и зависимые view"
-    )
-
-    def plan(self, exists: bool, diff: DiffSummary) -> SchemaPlan:
-        if not exists:
-            return SchemaPlan(SchemaAction.CREATE, "table is missing")
-
-        if diff.changed:
-            return SchemaPlan(SchemaAction.DROP_THEN_CREATE, diff.reason, self.cascade)
-
-        return SchemaPlan(SchemaAction.KEEP, "schema matches")
-
-
-class BackupAndCreateIfSchemaChanged(BaseModel):
-    """SchemaStrategyPlan: нет таблицы — создать; схема разошлась —
-    переименовать старую с суффиксом даты и создать новую."""
-
-    kind: Literal["backup_and_create_if_schema_changed"]
-
-    def plan(self, exists: bool, diff: DiffSummary) -> SchemaPlan:
-        if not exists:
-            return SchemaPlan(SchemaAction.CREATE, "table is missing")
-
-        if diff.changed:
-            return SchemaPlan(SchemaAction.BACKUP_THEN_CREATE, diff.reason)
-
-        return SchemaPlan(SchemaAction.KEEP, "schema matches")
-
-
-class DropAndCreate(BaseModel):
-    """SchemaStrategyPlan: всегда пересоздать таблицу по потоку."""
-
-    kind: Literal["drop_and_create"]
-    cascade: bool = Field(
-        default=False, description="drop ... cascade — снести и зависимые view"
-    )
-
-    def plan(self, exists: bool, diff: DiffSummary) -> SchemaPlan:
-        if not exists:
-            return SchemaPlan(SchemaAction.CREATE, "table is missing")
-
-        return SchemaPlan(SchemaAction.DROP_THEN_CREATE, "table exists", self.cascade)
-
-
-class BackupAndCreate(BaseModel):
-    """SchemaStrategyPlan: всегда старую таблицу — в бэкап с суффиксом даты,
-    новую — по потоку."""
-
-    kind: Literal["backup_and_create"]
-
-    def plan(self, exists: bool, diff: DiffSummary) -> SchemaPlan:
-        if not exists:
-            return SchemaPlan(SchemaAction.CREATE, "table is missing")
-
-        return SchemaPlan(SchemaAction.BACKUP_THEN_CREATE, "table exists")
-
-
-class DoNothing(BaseModel):
-    """SchemaStrategyPlan: таблицу не трогать и не сверять."""
-
-    kind: Literal["do_nothing"]
-
-    def plan(self, exists: bool, diff: DiffSummary) -> SchemaPlan:
-        return SchemaPlan(SchemaAction.KEEP, "schema strategy is do_nothing")
-
-
-SchemaStrategy = Annotated[
-    CreateIfNotExists
-    | ErrorIfNotExists
-    | ErrorIfSchemaChanged
-    | DropAndCreateIfSchemaChanged
-    | BackupAndCreateIfSchemaChanged
-    | DropAndCreate
-    | BackupAndCreate
-    | DoNothing,
-    Field(discriminator="kind"),
-]
-"""Стратегия схемы: что делать с таблицей-приёмником перед загрузкой."""
-
-
-class DeleteNothing(BaseModel):
-    """DeleteStrategyApply: данные приёмника не трогать."""
-
-    kind: Literal["nothing"]
-
-    async def apply(self, table: TableDdl) -> DeleteOutcome:
-        return DeleteOutcome(rows=0, statement="")
-
-
-class DeleteTruncate(BaseModel):
-    """DeleteStrategyApply: truncate table — быстро, без счётчика строк, вне
-    транзакции у движков, где truncate не откатывается."""
-
-    kind: Literal["truncate"]
-
-    async def apply(self, table: TableDdl) -> DeleteOutcome:
-        return await table.truncate()
-
-
-class DeleteAll(BaseModel):
-    """DeleteStrategyApply: delete from table — все строки, со счётчиком и в
-    транзакции."""
-
-    kind: Literal["delete_all"]
-
-    async def apply(self, table: TableDdl) -> DeleteOutcome:
-        return await table.delete_all()
-
-
-class DeleteWhere(BaseModel):
-    """DeleteStrategyApply: delete from table where <условие> — условие как в
-    SQL приёмника."""
-
-    kind: Literal["delete_where"]
-    where: str = Field(
-        min_length=1,
-        description="Условие после where, как в SQL приёмника: dt >= date '2024-01-01'",
-    )
-
-    async def apply(self, table: TableDdl) -> DeleteOutcome:
-        return await table.delete_where(self.where)
-
-
-DeleteStrategy = Annotated[
-    DeleteNothing | DeleteTruncate | DeleteAll | DeleteWhere,
-    Field(discriminator="kind"),
-]
-"""Стратегия удаления: что убрать из приёмника перед вставкой."""
-
-
-class InsertNothing(BaseModel):
-    """InsertStrategyApply: поток прочитать до конца и ничего не вставлять."""
-
-    kind: Literal["nothing"]
-
-    async def apply(self, sink: InsertSink, spec: TableSpec) -> int:
-        return await sink.discard()
-
-
-class InsertFull(BaseModel):
-    """InsertStrategyApply: все пачки потока — в таблицу как есть."""
-
-    kind: Literal["full"]
-
-    async def apply(self, sink: InsertSink, spec: TableSpec) -> int:
-        return await sink.load(spec)
-
-
-InsertStrategy = Annotated[
-    InsertNothing | InsertFull,
-    Field(discriminator="kind"),
-]
-"""Стратегия вставки: как положить поток в приёмник."""
-
-
-@dataclass(frozen=True)
-class SyncReport:
-    """Итог приёмника для чата: что сделано со схемой и почему, сверка по
-    колонкам, что удалено, сколько вставлено."""
-
-    table: str
-    action: SchemaAction
-    reason: str
-    backup: str
-    diff: str
-    deleted: DeleteOutcome
-    inserted: int
-    transactional: bool
-
-    def render(self) -> str:
-        lines = [
-            f"{self.inserted} rows written into {self.table}",
-            f"schema: {self.action.value} ({self.reason})",
-        ]
-        if self.backup:
-            lines.append(f"backup: {self.backup}")
-
-        if self.diff:
-            lines.append("columns:")
-            lines.append(self.diff)
-
-        if self.deleted.statement:
-            lines.append(
-                f"deleted: {self.deleted.rows} rows by {self.deleted.statement}"
-            )
-
-        if not self.transactional:
-            lines.append("note: the steps are not one transaction on this engine")
-
-        return "\n".join(lines)
-
-
-class WireFormat(StrEnum):
-    """Формат тел кадров sync-потока: Arrow IPC (тела подряд — поток IPC)
-    или текст COPY postgres в раскладке csv либо text (совместим с
-    TabSeparated ClickHouse)."""
-
-    ARROW_IPC = "arrow_ipc"
-    PG_COPY_CSV = "pg_copy_csv"
-    PG_COPY_TSV = "pg_copy_tsv"
-
-
 class Engine(StrEnum):
-    """Движок на конце sync-потока; UNKNOWN — приёмник не назван, источник
-    берёт формат по умолчанию."""
+    """Движок источника нейтрального контракта: у postgres приёмник берёт
+    текст типа как есть, у остальных выводит тип из семейства."""
 
     POSTGRES = "postgres"
     GREENPLUM = "greenplum"
     CLICKHOUSE = "clickhouse"
     ORACLE = "oracle"
-    UNKNOWN = "unknown"
 
 
 class ColumnTypeModel(BaseModel):
@@ -1191,8 +749,8 @@ class ContractText:
     """Текст контракта для отчёта источника: заголовок с форматом провода и
     по строке на колонку — имя, тип, текст типа источника, not null."""
 
-    def render(self, fmt: WireFormat, specs: Sequence[ColumnSpec]) -> str:
-        lines = [f"streamed out {fmt.value}, {len(specs)} columns:"]
+    def render(self, wire: str, specs: Sequence[ColumnSpec]) -> str:
+        lines = [f"streamed out {wire}, {len(specs)} columns:"]
         for spec in specs:
             lines.append(f"  {spec.name}: {spec.describe()}")
 
@@ -1233,6 +791,13 @@ class StreamContract:
             specs.append(column.spec(position))
 
         return tuple(specs)
+
+
+class ArrowContract(BaseModel):
+    """Нейтральный контракт в кадре schema провода arrow: колонки потока
+    для приёмника без пары."""
+
+    columns: Sequence[StreamColumn]
 
 
 class ColumnDeclaration(BaseModel):
@@ -1336,131 +901,3 @@ class Declarations:
             source_type=changed.get("source_type", spec.source_type),
             char_length=changed.get("char_length", spec.char_length),
         )
-
-
-class SchemaFrame(BaseModel):
-    """Первый кадр sync-потока: формат тел, движок источника и контракт."""
-
-    kind: Literal["schema"]
-    format: WireFormat
-    source_engine: Engine
-    columns: Sequence[StreamColumn]
-
-
-class RowsFrame(BaseModel):
-    """Кадр данных: тело — блок потока в формате первого кадра."""
-
-    kind: Literal["rows"]
-
-
-SyncFrame = SchemaFrame | RowsFrame
-"""Кадры sync-потока: схема, затем данные; порт различает их по kind."""
-
-
-class SourceModes(BaseModel):
-    """Реестр источника: формат тела по движку приёмника; неназванный или
-    неизвестный приёмник получает Arrow."""
-
-    model_config = ConfigDict(frozen=True)
-
-    preferred: Mapping[Engine, WireFormat]
-
-    def format_for(self, target: Engine) -> WireFormat:
-        return self.preferred.get(target, WireFormat.ARROW_IPC)
-
-
-class FrameBodies(io.RawIOBase):
-    """Тела кадров подряд как файл на чтение: для читателя Arrow IPC, который
-    ждёт файл. Чтение блокирующее, из потока, где стоит читатель."""
-
-    def __init__(self, bodies: Iterator[Chunk]) -> None:
-        super().__init__()
-        self._bodies = bodies
-        self._current = memoryview(b"")
-
-    def readable(self) -> bool:
-        return True
-
-    def readinto(self, buffer: Any) -> int:
-        target = memoryview(buffer).cast("B")
-        while len(self._current) == 0:
-            try:
-                self._current = memoryview(next(self._bodies))
-            except StopIteration:
-                return 0
-
-        size = min(len(target), len(self._current))
-        target[:size] = self._current[:size]
-        self._current = self._current[size:]
-
-        return size
-
-
-class FrameWriter(io.RawIOBase):
-    """Файл на запись поверх выходного порта кадров: каждый write — кадр
-    rows с этими байтами. Для писателя Arrow IPC и COPY-блоков из потока."""
-
-    def __init__(self, out: Outbound[SyncFrame]) -> None:
-        super().__init__()
-        self._out = out
-
-    def writable(self) -> bool:
-        return True
-
-    def write(self, data: Any) -> int:
-        view = memoryview(data)
-        self._out.emit(RowsFrame(kind="rows"), view)
-
-        return len(view)
-
-
-class SyncOutbound:
-    """Выходной порт sync-потока для async-тел: кадр схемы, кадры данных
-    из корутин, файл для писателей, работающих в потоке."""
-
-    def __init__(self, out: Outbound[SyncFrame]) -> None:
-        self._out = out
-
-    async def schema(self, frame: SchemaFrame) -> None:
-        await asyncio.to_thread(self._out.emit, frame)
-
-    async def rows(self, body: Chunk) -> None:
-        await asyncio.to_thread(self._out.emit, RowsFrame(kind="rows"), body)
-
-    def writer(self) -> FrameWriter:
-        return FrameWriter(self._out)
-
-
-class SyncInbound:
-    """Входной порт sync-потока для async-тел: первый кадр обязан быть схемой,
-    дальше тела данных корутиной или файлом для читателей в потоке."""
-
-    def __init__(self, feed: Inbound[SyncFrame]) -> None:
-        self._frames = iter(feed)
-
-    async def schema(self) -> SchemaFrame:
-        first = await asyncio.to_thread(next, self._frames, None)
-        if first is None:
-            raise SyncError("sync stream is empty: expected a schema frame first")
-
-        if not isinstance(first.head, SchemaFrame):
-            raise SyncError(
-                f"sync stream starts with a {first.head.kind!r} frame, expected schema"
-            )
-
-        return first.head
-
-    async def bodies(self) -> AsyncIterator[Chunk]:
-        while True:
-            frame = await asyncio.to_thread(next, self._frames, None)
-            if frame is None:
-                return
-
-            yield frame.body
-
-    def raw(self) -> FrameBodies:
-        return FrameBodies(self._sync_bodies())
-
-    def _sync_bodies(self) -> Iterator[Chunk]:
-        for frame in self._frames:
-            yield frame.body

@@ -60,7 +60,7 @@ def exported(names: Sequence[str], targets: Sequence[Target], quoted: bool) -> s
 
 
 def copy_into(table: str, names: Sequence[str]) -> str:
-    """Стейтмент pg_arrow_in: COPY таблицы по колонкам в порядке полей потока."""
+    """Стейтмент COPY таблицы по колонкам в порядке полей потока."""
     return f"copy {table} ({', '.join(names)}) from stdin (format csv)"
 
 

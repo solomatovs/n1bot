@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import codecs
 import csv
+import io
 import sys
 from collections.abc import Iterator, Mapping, Sequence
 from enum import StrEnum
@@ -38,28 +39,24 @@ from boba.db.oracle.address import OraAddresses
 from boba.db.oracle.connection import OracleConfig
 from boba.toolkit.entry import ToolMain
 from boba.toolkit.facade import Injected, UserConnection, tool
-from boba.toolkit.ports import (
-    ArrowInbound,
-    ArrowOutbound,
-    ArrowStreamError,
-    ChunkBytes,
-    Outbound,
-    RawInbound,
-    RawOutbound,
+from boba.toolkit.landing import (
+    Engine,
+    LandingFrame,
+    LandingInbound,
+    LandingOutbound,
+    SchemaHead,
+    SyncWire,
 )
+from boba.toolkit.ports import ArrowStreamError, ChunkBytes, Inbound, Outbound
 from boba.toolkit.result import MarkdownResult, SqlResult, SqlStatement, TableResult
 from boba.toolkit.sql import QueryBuildError, SqlErrorKind, SqlLimits
 from boba.toolkit.sync import (
+    ArrowContract,
     ColumnDeclaration,
     ContractText,
     Declarations,
-    Engine,
-    SchemaFrame,
     StreamContract,
     SyncError,
-    SyncFrame,
-    SyncOutbound,
-    WireFormat,
 )
 from boba.toolkit.types import SecretRevealing
 from boba.toolkit.window import RowLimit, RowOffset, RowPage, RowWindow
@@ -783,7 +780,7 @@ async def ora_csv_out(
     before: BeforeSteps = (),
     after: AfterSteps = (),
     *,
-    out: Annotated[RawOutbound, Injected],
+    out: Annotated[Outbound[LandingFrame], Injected],
 ) -> MarkdownResult:
     """Насос выгрузки: строки запроса CSV-байтами в выходной порт.
 
@@ -798,10 +795,19 @@ async def ora_csv_out(
 
     payload = PayloadOracle(connection)
     statement = OraQueryBuilder().raw_query(sql).build()
+    outbound = LandingOutbound(out)
+    await outbound.schema(
+        SchemaHead(
+            kind="schema",
+            source_engine=Engine.ORACLE,
+            wire=SyncWire.CSV,
+            contract=None,
+        )
+    )
     async with payload.opened() as conn:
         trace = OraSessionTrace(conn)
         before_steps = await payload.script(conn, before, trace)
-        names = await payload.csv_into(conn, statement.text, out, trace)
+        names = await payload.csv_into(conn, statement.text, outbound.writer(), trace)
         after_steps = await payload.script(conn, after, trace)
         await payload.commit(conn)
         report = trace.report(f"streamed out csv: {', '.join(names)}", statement.text)
@@ -826,10 +832,10 @@ class CsvFields:
 
 
 class CsvFeed:
-    """Записи CSV из сырого входного порта: порции байт склеиваются в строки, а
+    """Записи CSV из тел входных кадров: порции байт склеиваются в строки, а
     csv.reader собирает записи, в том числе с переводом строки внутри кавычек."""
 
-    def __init__(self, feed: RawInbound, chunk_bytes: int) -> None:
+    def __init__(self, feed: io.RawIOBase, chunk_bytes: int) -> None:
         self._feed = feed
         self._chunk_bytes = chunk_bytes
         self.consumed = 0
@@ -837,10 +843,19 @@ class CsvFeed:
     def records(self) -> Iterator[Sequence[str]]:
         yield from csv.reader(self._lines())
 
+    def _chunks(self) -> Iterator[memoryview]:
+        while True:
+            buffer = bytearray(self._chunk_bytes)
+            filled = self._feed.readinto(buffer)
+            if not filled:
+                return
+
+            yield memoryview(buffer)[:filled]
+
     def _lines(self) -> Iterator[str]:
         decoder = codecs.getincrementaldecoder(CsvContract.ENCODING)()
         tail = ""
-        for chunk in self._feed.chunks(self._chunk_bytes):
+        for chunk in self._chunks():
             self.consumed += len(chunk)
             text = tail + decoder.decode(chunk)
             head, sep, tail = text.rpartition(CsvContract.LINE_END)
@@ -877,7 +892,7 @@ async def ora_csv_in(  # noqa: PLR0913
     before: BeforeSteps = (),
     after: AfterSteps = (),
     *,
-    feed: Annotated[RawInbound, Injected],
+    feed: Annotated[Inbound[LandingFrame], Injected],
 ) -> MarkdownResult:
     """Насос загрузки: CSV из входного порта в стейтмент пачками executemany.
 
@@ -895,7 +910,9 @@ async def ora_csv_in(  # noqa: PLR0913
     payload = PayloadOracle(connection)
     statement = OraQueryBuilder().raw_query(sql).build()
     rows = 0
-    source = CsvFeed(feed, chunk_bytes)
+    inbound = LandingInbound(feed)
+    await inbound.get_schema()
+    source = CsvFeed(inbound.raw(), chunk_bytes)
     fields = CsvFields()
 
     async with payload.opened() as conn:
@@ -949,7 +966,7 @@ async def ora_arrow_out(
     before: BeforeSteps = (),
     after: AfterSteps = (),
     *,
-    out: Annotated[ArrowOutbound, Injected],
+    out: Annotated[Outbound[LandingFrame], Injected],
 ) -> MarkdownResult:
     """Насос выгрузки: строки запроса потоком Arrow IPC в выходной порт.
 
@@ -963,10 +980,21 @@ async def ora_arrow_out(
 
     payload = PayloadOracle(connection)
     statement = OraQueryBuilder().raw_query(sql).build()
+    outbound = LandingOutbound(out)
+    await outbound.schema(
+        SchemaHead(
+            kind="schema",
+            source_engine=Engine.ORACLE,
+            wire=SyncWire.ARROW,
+            contract=None,
+        )
+    )
     async with payload.opened() as conn:
         trace = OraSessionTrace(conn)
         before_steps = await payload.script(conn, before, trace)
-        schema = await payload.arrow_into(conn, statement.text, out, trace)
+        schema = await payload.arrow_into(
+            conn, statement.text, outbound.writer(), trace
+        )
         after_steps = await payload.script(conn, after, trace)
         await payload.commit(conn)
         report = trace.report(
@@ -991,10 +1019,6 @@ async def ora_sync_out(
         ),
         MarkdownResult(language="sql"),
     ],
-    target_engine: Annotated[
-        Engine,
-        Field(description="Движок приёмника; у Oracle все приёмники получают Arrow."),
-    ] = Engine.UNKNOWN,
     columns: Annotated[
         Sequence[ColumnDeclaration],
         Field(
@@ -1005,7 +1029,7 @@ async def ora_sync_out(
         ),
     ] = (),
     *,
-    out: Annotated[Outbound[SyncFrame], Injected],
+    out: Annotated[Outbound[LandingFrame], Injected],
 ) -> MarkdownResult:
     """Источник sync-потока: строки запроса с контрактом колонок для приёмника.
 
@@ -1019,23 +1043,24 @@ async def ora_sync_out(
 
     payload = PayloadOracle(connection)
     statement = OraQueryBuilder().raw_query(sql).build()
-    outbound = SyncOutbound(out)
+    outbound = LandingOutbound(out)
     async with payload.opened() as conn:
         trace = OraSessionTrace(conn)
         specs = Declarations().merge(
             await payload.describe_specs(conn, statement.text), columns
         )
+        contract = ArrowContract(columns=StreamContract().columns(specs))
         await outbound.schema(
-            SchemaFrame(
+            SchemaHead(
                 kind="schema",
-                format=WireFormat.ARROW_IPC,
                 source_engine=Engine.ORACLE,
-                columns=StreamContract().columns(specs),
+                wire=SyncWire.ARROW,
+                contract=contract.model_dump(mode="json"),
             )
         )
         await payload.arrow_into(conn, statement.text, outbound.writer(), trace)
         report = trace.report(
-            ContractText().render(WireFormat.ARROW_IPC, specs), statement.text
+            ContractText().render(SyncWire.ARROW.value, specs), statement.text
         )
 
     return MarkdownResult(text=report.render())
@@ -1061,7 +1086,7 @@ async def ora_arrow_in(  # noqa: PLR0913
     before: BeforeSteps = (),
     after: AfterSteps = (),
     *,
-    feed: Annotated[ArrowInbound, Injected],
+    feed: Annotated[Inbound[LandingFrame], Injected],
 ) -> MarkdownResult:
     """Насос загрузки: поток Arrow IPC из входного порта в стейтмент.
 
@@ -1078,7 +1103,9 @@ async def ora_arrow_in(  # noqa: PLR0913
 
     payload = PayloadOracle(connection)
     statement = OraQueryBuilder().raw_query(sql).build()
-    inbound = await ArrowIpc().open_in(feed, chunk_bytes)
+    frames = LandingInbound(feed)
+    await frames.get_schema()
+    inbound = await ArrowIpc().open_in(frames.raw(), chunk_bytes)
 
     rows = 0
     async with payload.opened() as conn:

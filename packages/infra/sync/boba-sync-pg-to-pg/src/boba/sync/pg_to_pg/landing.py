@@ -14,7 +14,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Any
+from typing import Any, ClassVar
 
 import psycopg
 from psycopg._typeinfo import TypeInfo, TypesRegistry
@@ -24,18 +24,23 @@ from boba.db.postgres.landing import (
     PgCatalogColumn,
     PgContract,
     PgCopyIn,
+    PgCopyLayout,
     PgLandingTable,
     PgPlannedColumn,
+    PgServerVersion,
     PgSourceColumn,
     PgTableFacts,
     PgTablePlan,
     PgTableRef,
+    PgTypedName,
     PgTypeResolver,
     PostgresLanding,
 )
 from boba.toolkit.landing import (
     ColumnRules,
+    CreateTemplate,
     DeleteStrategyApply,
+    Engine,
     InsertStrategyApply,
     LandingError,
     LandingInbound,
@@ -44,11 +49,11 @@ from boba.toolkit.landing import (
     SchemaCheck,
     SchemaHead,
     SchemaStrategyPlan,
-    SourceEngine,
+    SyncWire,
     UnknownTypeApply,
 )
 
-__all__ = ["PgMatcher", "PgToPg", "PgTypeRules"]
+__all__ = ["PgBinaryCompatibility", "PgMatcher", "PgToPg", "PgTypeRules"]
 
 
 class Verdict(StrEnum):
@@ -276,6 +281,53 @@ class PgTypeRules:
         return self._text.render(info, table.oid, table.typmod)
 
 
+class PgBinaryCompatibility:
+    """Проверка приёмником потока COPY binary по фактам источника из кадра
+    schema: мажорная версия приёмника равна версии источника,
+    integer_datetimes включён на обоих, и у каждой колонки потока тип из
+    встроенного реестра (свой или объявленный в rules.column_types).
+    Массивы и составные типы в binary несут OID элемента, у пользовательских
+    типов он на другом инстансе иной, поэтому такие колонки едут только csv."""
+
+    INTEGER_DATETIMES: ClassVar[str] = "integer_datetimes"
+    ON: ClassVar[str] = "on"
+
+    def __init__(self, registry: TypesRegistry) -> None:
+        self._registry = registry
+
+    def check(
+        self,
+        contract: PgContract,
+        target_version: PgServerVersion,
+        target_integer_datetimes: bool,
+        columns: Sequence[PgTypedName],
+    ) -> None:
+        source_version = contract.version()
+        if source_version.major() != target_version.major():
+            raise LandingError(
+                f"binary copy from postgres {source_version.text()} into postgres "
+                f"{target_version.text()}: major versions differ, restart "
+                f"pg_sync_out with wire csv"
+            )
+
+        if not contract.integer_datetimes or not target_integer_datetimes:
+            raise LandingError(
+                "binary copy needs integer_datetimes = on on both servers, restart "
+                "pg_sync_out with wire csv"
+            )
+
+        for column in columns:
+            if self._registry.get(column.oid) is not None:
+                continue
+
+            raise LandingError(
+                f"binary copy: column {column.name} has a type outside the "
+                f"built-in registry ({column.known}); user types carry "
+                f"instance-specific OIDs in binary, restart pg_sync_out with wire "
+                f'csv or declare a built-in type in rules.column_types["{column.name}"]'
+            )
+
+
 @dataclass(frozen=True)
 class PgMatch:
     """Колонка приёмника с тем, что о ней известно с двух сторон: поток
@@ -302,9 +354,11 @@ class PgMatch:
 
 @dataclass(frozen=True)
 class PgMatched:
-    """Итог сверки: план таблицы по потоку и вердикты для стратегии."""
+    """Итог сверки: план таблицы по потоку, колонки потока глазами приёмника
+    и вердикты для стратегии."""
 
     plan: PgTablePlan
+    stream: Sequence[PgStreamColumn]
     check: SchemaCheck
 
 
@@ -417,8 +471,17 @@ class PgMatcher:
                 f"{name!r}; columns: {', '.join(sorted(seen))}"
             )
 
+        streamed: list[PgStreamColumn] = []
+        for match in matches:
+            if match.stream is None:
+                continue
+
+            streamed.append(match.stream)
+
         return PgMatched(
-            plan=PgTablePlan(columns=tuple(planned)), check=self._check(matches)
+            plan=PgTablePlan(columns=tuple(planned)),
+            stream=tuple(streamed),
+            check=self._check(matches),
         )
 
     def _stream_column(
@@ -502,7 +565,7 @@ class PgToPg(PostgresLanding):
         head: SchemaHead,
         feed: LandingInbound,
     ) -> None:
-        if head.source_engine is not SourceEngine.POSTGRES:
+        if head.source_engine is not Engine.POSTGRES:
             raise LandingError(
                 f"landing postgres -> postgres got a schema frame from "
                 f"{head.source_engine.value}"
@@ -510,19 +573,42 @@ class PgToPg(PostgresLanding):
 
         self._conn = conn
         self._table = table
-        self._wire = head.wire
+        self._layout = self._layout_of(head.wire)
         self._contract = PgContract.model_validate(head.contract)
         self._feed = feed
         self._facts = PgTableFacts(conn, table)
         self._resolver = PgTypeResolver(conn)
+        self._binary = PgBinaryCompatibility(conn.adapters.types)
 
-    async def run(
+    @staticmethod
+    def _layout_of(wire: SyncWire) -> PgCopyLayout:
+        """Раскладка COPY по раскладке кадра; arrow и raw пара не принимает."""
+        try:
+            return PgCopyLayout(wire.value)
+        except ValueError as exc:
+            raise LandingError(
+                f"pair postgres -> postgres takes copy layouts "
+                f"{[member.value for member in PgCopyLayout]}, got {wire.value}"
+            ) from exc
+
+    @staticmethod
+    def _typed_names(stream: Sequence[PgStreamColumn]) -> list[PgTypedName]:
+        names: list[PgTypedName] = []
+        for column in stream:
+            names.append(
+                PgTypedName(name=column.name, oid=column.oid, known=column.known)
+            )
+
+        return names
+
+    async def run(  # noqa: PLR0913
         self,
         schema_strategy: SchemaStrategyPlan,
         delete_strategy: DeleteStrategyApply,
         insert_strategy: InsertStrategyApply,
         unknown_types: UnknownTypeApply,
         rules: ColumnRules,
+        create_table: CreateTemplate,
     ) -> LandingReport:
         matcher = PgMatcher(self._conn.adapters.types, rules)
         async with self._conn.transaction():
@@ -535,12 +621,22 @@ class PgToPg(PostgresLanding):
                 catalog = await self._facts.columns()
 
             matched = matcher.match(self._contract, catalog, resolved)
-            table = PgLandingTable(self._conn, self._table, matched.plan)
+            if self._layout is PgCopyLayout.BINARY:
+                info = self._conn.info
+                self._binary.check(
+                    self._contract,
+                    PgServerVersion(info.server_version),
+                    info.parameter_status(self._binary.INTEGER_DATETIMES)
+                    == self._binary.ON,
+                    self._typed_names(matched.stream),
+                )
+
+            table = PgLandingTable(self._conn, self._table, matched.plan, create_table)
             sink = PgCopyIn(
                 self._conn,
                 self._table,
                 matched.plan.names(),
-                self._wire,
+                self._layout,
                 self._feed.bodies(),
             )
             run = LandingRun(

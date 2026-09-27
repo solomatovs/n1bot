@@ -1,7 +1,8 @@
 """Стороны postgres для загрузок по COPY между конкретными движками: контракт
-колонок как их описал libpq, COPY csv или text наружу, таблица-приёмник по
-каталогу и билдеру, COPY внутрь, разбор типов rules.column_types описанием
-select null::<тип> и реестр пар по движку источника. Сверку типов и DDL-тип
+колонок как их описал libpq, COPY csv, text или binary наружу,
+таблица-приёмник по каталогу и билдеру, COPY внутрь, разбор типов
+rules.column_types описанием select null::<тип> и реестр пар по движку
+источника. Сверку типов и DDL-тип
 каждой колонки решает пара в своём пакете.
 
 Ошибки:
@@ -15,6 +16,8 @@ psycopg.Error — сервер отклонил стейтмент или зна
 
 from __future__ import annotations
 
+import asyncio
+import io
 from collections.abc import AsyncIterator, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -23,8 +26,10 @@ from importlib.metadata import entry_points
 from typing import Any, ClassVar, Protocol, runtime_checkable
 
 import psycopg
-from psycopg import sql
+import psycopg.errors
+from psycopg import pq, sql
 from psycopg._typeinfo import TypeInfo, TypesRegistry
+from psycopg.pq.abc import PGconn, PGresult
 from pydantic import BaseModel, ConfigDict, Field
 
 from boba.db.postgres.describe import (
@@ -38,8 +43,10 @@ from boba.db.postgres.query import PgQuery, PgQueryBuilder
 from boba.db.postgres.trace import PgCommandReport, PgSessionTrace
 from boba.toolkit.landing import (
     ColumnRules,
+    CreateTemplate,
     DeleteOutcome,
     DeleteStrategyApply,
+    Engine,
     InsertStrategyApply,
     LandingError,
     LandingInbound,
@@ -49,8 +56,7 @@ from boba.toolkit.landing import (
     LandingTable,
     SchemaHead,
     SchemaStrategyPlan,
-    SourceEngine,
-    TextWire,
+    SyncWire,
     UnknownTypeApply,
 )
 from boba.toolkit.stream import Chunk
@@ -61,14 +67,18 @@ __all__ = [
     "PgContract",
     "PgContracts",
     "PgCopyIn",
+    "PgCopyLayout",
     "PgCopyOut",
+    "PgCopyProtocol",
     "PgLandingTable",
     "PgPlannedColumn",
+    "PgServerVersion",
     "PgSourceColumn",
     "PgTableFacts",
     "PgTablePlan",
     "PgTableRef",
     "PgTypeResolver",
+    "PgTypedName",
     "PostgresLanding",
     "PostgresLandingFactory",
     "PostgresLandings",
@@ -139,13 +149,42 @@ class PgColumnDeclaration(BaseModel):
     )
 
 
+@dataclass(frozen=True)
+class PgServerVersion:
+    """Версия сервера числом server_version из стартового пакета соединения:
+    160004 — 16.4, 90604 — 9.6.4. Мажорная часть — до 10 две цифры (9.6),
+    дальше одна (16)."""
+
+    number: int
+
+    OLD_STYLE_BELOW: ClassVar[int] = 100000
+
+    def major(self) -> str:
+        if self.number < self.OLD_STYLE_BELOW:
+            return f"{self.number // 10000}.{self.number // 100 % 100}"
+
+        return str(self.number // 10000)
+
+    def text(self) -> str:
+        if self.number < self.OLD_STYLE_BELOW:
+            return f"{self.major()}.{self.number % 100}"
+
+        return f"{self.major()}.{self.number % 10000}"
+
+
 class PgContract(BaseModel):
-    """Контракт источника postgres: колонки выборки в порядке RowDescription.
-    Едет в кадре schema как есть и разбирается парой на приёмнике."""
+    """Контракт источника postgres: колонки выборки в порядке RowDescription,
+    версия сервера и integer_datetimes — их сверяет пара, когда тела идут
+    binary. Едет в кадре schema как есть и разбирается парой на приёмнике."""
 
     model_config = ConfigDict(frozen=True)
 
     columns: Sequence[PgSourceColumn]
+    server_version: int
+    integer_datetimes: bool
+
+    def version(self) -> PgServerVersion:
+        return PgServerVersion(self.server_version)
 
     def declared(self, declarations: Sequence[PgColumnDeclaration]) -> PgContract:
         by_name = {column.name: column for column in self.columns}
@@ -164,10 +203,13 @@ class PgContract(BaseModel):
         for column in self.columns:
             merged.append(by_name[column.name])
 
-        return PgContract(columns=merged)
+        return self.model_copy(update={"columns": merged})
 
-    def render(self, wire: TextWire) -> str:
-        lines = [f"streamed out copy {wire.value}, {len(self.columns)} columns:"]
+    def render(self, wire: SyncWire) -> str:
+        lines = [
+            f"streamed out copy {wire.value} from postgres {self.version().text()}, "
+            f"{len(self.columns)} columns:"
+        ]
         for column in self.columns:
             lines.append(f"  {column.name}: {column.describe()}")
 
@@ -196,7 +238,12 @@ class PgContracts:
         self._registry = registry
         self._text = PgTypeText()
 
-    def of(self, columns: Iterable[PgDescribedColumn]) -> PgContract:
+    def of(
+        self,
+        columns: Iterable[PgDescribedColumn],
+        server_version: int,
+        integer_datetimes: bool,
+    ) -> PgContract:
         specs: list[PgSourceColumn] = []
         for column in columns:
             specs.append(
@@ -210,7 +257,11 @@ class PgContracts:
                 )
             )
 
-        return PgContract(columns=specs)
+        return PgContract(
+            columns=specs,
+            server_version=server_version,
+            integer_datetimes=integer_datetimes,
+        )
 
     def type_text(self, column: PgTypedColumn) -> str:
         info: TypeInfo | None = self._registry.get(column.oid)
@@ -220,45 +271,181 @@ class PgContracts:
         return self._text.render(info, column.oid, column.typmod)
 
 
+class PgCopyLayout(StrEnum):
+    """Раскладки COPY postgres: csv, text (tsv потока) и binary. Значения
+    совпадают с SyncWire, фрагменты стейтментов COPY живут здесь же."""
+
+    CSV = "csv"
+    TSV = "tsv"
+    BINARY = "binary"
+
+    def wire(self) -> SyncWire:
+        return SyncWire(self.value)
+
+    def to_stdout(self) -> str:
+        return f") to stdout (format {self._format()})"
+
+    def from_stdin(self) -> str:
+        return f"from stdin (format {self._format()})"
+
+    def _format(self) -> str:
+        if self is PgCopyLayout.TSV:
+            return "text"
+
+        return self.value
+
+
+class PgCopyProtocol:
+    """COPY TO STDOUT напрямую через libpq в рабочем потоке на соединении
+    psycopg: PQsendQuery, PQgetResult со статусом COPY_OUT, цикл PQgetCopyData
+    в блокирующем режиме с записью каждого сообщения в буферизованный файл,
+    затем PQgetResult до конца. Сервер шлёт одно сообщение CopyData на
+    строку, мельче libpq не отдаёт, поэтому цикл держится на уровне C без
+    машины ожидания psycopg на каждую строку; цикл событий ждёт поток и
+    соединение не трогает. Ошибка сервера посреди COPY — исключение psycopg
+    из его результата; ошибка записи (обрыв трубы) — отмена запроса и
+    дочитывание, чтобы соединение вернулось в чистое состояние."""
+
+    def __init__(self, conn: psycopg.AsyncConnection[Any]) -> None:
+        self._conn = conn
+
+    async def run(self, statement: bytes, sink: io.BufferedIOBase) -> str:
+        """Статус команды сервера (COPY n) после полной передачи."""
+        return await asyncio.to_thread(self._run, statement, sink)
+
+    def _run(self, statement: bytes, sink: io.BufferedIOBase) -> str:
+        pgconn = self._conn.pgconn
+        pgconn.send_query(statement)
+        started = pgconn.get_result()
+        if started is None:
+            raise LandingError("copy to stdout: the server returned no result")
+
+        if started.status != pq.ExecStatus.COPY_OUT:
+            self._results(pgconn)
+            raise self._failure_of([started], pq.ExecStatus(started.status).name)
+
+        try:
+            self._pump(pgconn, sink)
+        except psycopg.OperationalError as exc:
+            raise self._failure_of(self._results(pgconn), str(exc)) from exc
+        except BaseException:
+            self._cancel_and_drain(pgconn)
+            raise
+
+        return self._status_of(self._results(pgconn))
+
+    @staticmethod
+    def _pump(pgconn: PGconn, sink: io.BufferedIOBase) -> None:
+        while True:
+            nbytes, data = pgconn.get_copy_data(0)
+            if nbytes < 0:
+                break
+
+            sink.write(data)
+
+        sink.flush()
+
+    @staticmethod
+    def _results(pgconn: PGconn) -> list[PGresult]:
+        results: list[PGresult] = []
+        while (result := pgconn.get_result()) is not None:
+            results.append(result)
+
+        return results
+
+    def _failure_of(self, results: Sequence[PGresult], fallback: str) -> Exception:
+        for result in results:
+            if result.status == pq.ExecStatus.FATAL_ERROR:
+                return psycopg.errors.error_from_result(
+                    result, encoding=self._conn.info.encoding
+                )
+
+        return LandingError(f"copy to stdout failed without a server error: {fallback}")
+
+    def _status_of(self, results: Sequence[PGresult]) -> str:
+        if len(results) != 1:
+            raise LandingError(
+                f"copy to stdout: expected one result after the data, got "
+                f"{len(results)}"
+            )
+
+        result = results[0]
+        if result.status != pq.ExecStatus.COMMAND_OK:
+            raise self._failure_of(results, pq.ExecStatus(result.status).name)
+
+        status = result.command_status
+        if status is None:
+            return ""
+
+        return status.decode(self._conn.info.encoding)
+
+    def _cancel_and_drain(self, pgconn: PGconn) -> None:
+        pgconn.get_cancel().cancel()
+        try:
+            self._pump(pgconn, io.BytesIO())
+        except psycopg.OperationalError:
+            # ответ сервера на нашу же отмену: COPY снят, остались результаты
+            self._results(pgconn)
+
+            return
+
+        self._results(pgconn)
+
+
 class PgCopyOut:
     """Источник: колонки выборки от PgDescribe (без выполнения), кадр schema
-    с контрактом, затем COPY (<select>) TO STDOUT в раскладке csv или text
-    блоками chunk_bytes как есть."""
+    с контрактом, затем COPY (<select>) TO STDOUT в раскладке PgCopyLayout
+    через PgCopyProtocol: строки копятся в буфере chunk_bytes и уходят в
+    порт кадрами как есть."""
 
-    LAYOUT: ClassVar[Mapping[TextWire, str]] = {
-        TextWire.CSV: ") to stdout (format csv)",
-        TextWire.TSV: ") to stdout (format text)",
-    }
+    INTEGER_DATETIMES: ClassVar[str] = "integer_datetimes"
+    ON: ClassVar[str] = "on"
 
     def __init__(self, conn: psycopg.AsyncConnection[Any]) -> None:
         self._conn = conn
         self._describe = PgDescribe(conn)
         self._contracts = PgContracts(conn.adapters.types)
         self._trace = PgSessionTrace(conn)
+        self._protocol = PgCopyProtocol(conn)
 
     async def contract(
         self, query: str, declarations: Sequence[PgColumnDeclaration]
     ) -> PgContract:
+        return self.contract_of(await self.describe(query), declarations)
+
+    async def describe(self, query: str) -> tuple[PgDescribedColumn, ...]:
+        """Колонки выборки от PgDescribe одним описанием стейтмента."""
         columns: list[PgDescribedColumn] = []
         async for column in self._describe.columns(query):
             columns.append(column)
 
-        return self._contracts.of(columns).declared(declarations)
+        return tuple(columns)
+
+    def contract_of(
+        self,
+        columns: Sequence[PgDescribedColumn],
+        declarations: Sequence[PgColumnDeclaration],
+    ) -> PgContract:
+        info = self._conn.info
+        integer_datetimes = info.parameter_status(self.INTEGER_DATETIMES) == self.ON
+
+        return self._contracts.of(
+            columns, info.server_version, integer_datetimes
+        ).declared(declarations)
 
     async def stream(
         self,
         query: str,
-        wire: TextWire,
-        declarations: Sequence[PgColumnDeclaration],
+        layout: PgCopyLayout,
+        contract: PgContract,
         chunk_bytes: int,
         out: LandingOutbound,
     ) -> PgCommandReport:
-        contract = await self.contract(query, declarations)
         await out.schema(
             SchemaHead(
                 kind="schema",
-                source_engine=SourceEngine.POSTGRES,
-                wire=wire,
+                source_engine=Engine.POSTGRES,
+                wire=layout.wire(),
                 contract=contract.model_dump(mode="json"),
             )
         )
@@ -266,26 +453,24 @@ class PgCopyOut:
             PgQueryBuilder()
             .add("copy (")
             .raw_query(query)
-            .add(self.LAYOUT[wire])
+            .add(layout.to_stdout())
             .build()
         )
-        pending = bytearray()
-        async with self._conn.cursor() as cursor:
-            async with cursor.copy(statement.text) as copy:
-                async for block in copy:
-                    pending.extend(block)
-                    if len(pending) < chunk_bytes:
-                        continue
-
-                    await out.rows(bytes(pending))
-                    pending = bytearray()
-
-            if pending:
-                await out.rows(bytes(pending))
-
-            return self._trace.report(
-                contract.render(wire), statement.text.as_string(self._conn), cursor
+        raw = out.writer()
+        writer = io.BufferedWriter(raw, buffer_size=chunk_bytes)
+        try:
+            status = await self._protocol.run(
+                statement.text.as_bytes(self._conn), writer
             )
+        except BaseException:
+            # закрытый raw гасит сброс остатка буфера при сборке мусора: в порт
+            # после ошибки не должно уйти ни байта
+            raw.close()
+            raise
+
+        return self._trace.report_status(
+            contract.render(layout.wire()), statement.text.as_string(self._conn), status
+        )
 
 
 class Relkind(StrEnum):
@@ -444,17 +629,25 @@ class PgTablePlan:
 class PgLandingTable(LandingTable):
     """Реализация LandingTable для postgres: каталог через PgTableFacts, DDL и
     delete через PgQueryBuilder на одном соединении, условие where от
-    вызова — raw_query."""
+    вызова — raw_query. create table — по шаблону вызывающего: схема, имя и
+    колонки подставляются экранированными psycopg фрагментами."""
 
     BACKUP_STAMP: ClassVar[str] = "%Y%m%d_%H%M%S_%f"
     VARCHAR: ClassVar[str] = "varchar"
+    CREATE_TABLE: ClassVar[str] = "create table {schema_name}.{table_name} ({columns})"
+    """Шаблон без особенностей таблицы: дефолт фасада pg_sync_in."""
 
     def __init__(
-        self, conn: psycopg.AsyncConnection[Any], table: PgTableRef, plan: PgTablePlan
+        self,
+        conn: psycopg.AsyncConnection[Any],
+        table: PgTableRef,
+        plan: PgTablePlan,
+        template: CreateTemplate,
     ) -> None:
         self._conn = conn
         self._table = table
         self._plan = plan
+        self._template = template
         self._facts = PgTableFacts(conn, table)
 
     async def exists(self) -> bool:
@@ -475,15 +668,23 @@ class PgLandingTable(LandingTable):
         return query.text.as_string(self._conn)
 
     def _create_query(self, unknown_as_varchar: bool) -> PgQuery:
-        builder = PgQueryBuilder(table=self._table.ident())
-        builder.add("create table {table} (")
+        rendered = self._template.render(
+            schema_name=sql.Identifier(self._table.schema).as_string(self._conn),
+            table_name=sql.Identifier(self._table.name).as_string(self._conn),
+            columns=self._columns_fragment(unknown_as_varchar),
+        )
+
+        return PgQueryBuilder().raw_query(rendered).build()
+
+    def _columns_fragment(self, unknown_as_varchar: bool) -> str:
+        builder = PgQueryBuilder()
         for position, column in enumerate(self._plan.columns):
             builder.when(position > 0, ",")
             builder.add("{name}", name=sql.Identifier(column.name))
             builder.raw_query(self._type_text(column, unknown_as_varchar))
             builder.when(not column.nullable, "not null")
 
-        return builder.add(")").build()
+        return builder.build().text.as_string(self._conn)
 
     def _type_text(self, column: PgPlannedColumn, unknown_as_varchar: bool) -> str:
         if column.type_text:
@@ -493,7 +694,7 @@ class PgLandingTable(LandingTable):
             return self.VARCHAR
 
         raise LandingError(
-            f"column {column.name}: the target has no type for the source type "
+            f"column {column.name}: the target cannot map the source type "
             f"{column.known}; declare the target type in "
             f'rules.column_types["{column.name}"] or take unknown_types '
             f"fallback_as_varchar"
@@ -570,23 +771,18 @@ class PgCopyIn(LandingSink):
     """Реализация LandingSink для postgres: тела кадров уходят в COPY таблицы
     как есть, csv или text по раскладке потока, ничего не перекодируется."""
 
-    LAYOUT: ClassVar[Mapping[TextWire, str]] = {
-        TextWire.CSV: "from stdin (format csv)",
-        TextWire.TSV: "from stdin (format text)",
-    }
-
     def __init__(
         self,
         conn: psycopg.AsyncConnection[Any],
         table: PgTableRef,
         names: Sequence[str],
-        wire: TextWire,
+        layout: PgCopyLayout,
         bodies: AsyncIterator[Chunk],
     ) -> None:
         self._conn = conn
         self._table = table
         self._names = tuple(names)
-        self._wire = wire
+        self._layout = layout
         self._bodies = bodies
 
     async def load(self) -> int:
@@ -616,9 +812,18 @@ class PgCopyIn(LandingSink):
         return (
             PgQueryBuilder(table=self._table.ident())
             .add("copy {table} ({columns})", columns=sql.SQL(", ").join(names))
-            .add(self.LAYOUT[self._wire])
+            .add(self._layout.from_stdin())
             .build()
         )
+
+
+@dataclass(frozen=True)
+class PgTypedName:
+    """Колонка для проверки binary: имя, OID и что известно о типе."""
+
+    name: str
+    oid: int
+    known: str
 
 
 class PostgresLanding(Protocol):
@@ -626,13 +831,14 @@ class PostgresLanding(Protocol):
     источника, сверяет его с таблицей, планирует DDL и ведёт стратегии.
     Реализация в пакете пары, создаётся фабрикой из реестра."""
 
-    async def run(
+    async def run(  # noqa: PLR0913
         self,
         schema_strategy: SchemaStrategyPlan,
         delete_strategy: DeleteStrategyApply,
         insert_strategy: InsertStrategyApply,
         unknown_types: UnknownTypeApply,
         rules: ColumnRules,
+        create_table: CreateTemplate,
     ) -> LandingReport: ...
 
 
@@ -656,22 +862,20 @@ class PostgresLandings:
 
     GROUP: ClassVar[str] = "boba.landing.postgres"
 
-    def __init__(
-        self, factories: Mapping[SourceEngine, PostgresLandingFactory]
-    ) -> None:
+    def __init__(self, factories: Mapping[Engine, PostgresLandingFactory]) -> None:
         self._factories = dict(factories)
 
     @classmethod
     def discover(cls) -> PostgresLandings:
-        factories: dict[SourceEngine, PostgresLandingFactory] = {}
+        factories: dict[Engine, PostgresLandingFactory] = {}
         for entry in entry_points(group=cls.GROUP):
             try:
-                engine = SourceEngine(entry.name)
+                engine = Engine(entry.name)
             except ValueError as exc:
                 raise LandingError(
                     f"entry point {entry.name!r} of group {cls.GROUP!r} "
                     f"({entry.value}): the name must be a source engine, one of "
-                    f"{[member.value for member in SourceEngine]}"
+                    f"{[member.value for member in Engine]}"
                 ) from exc
 
             loaded = entry.load()
@@ -685,7 +889,7 @@ class PostgresLandings:
 
         return cls(factories)
 
-    def pair(self, engine: SourceEngine) -> PostgresLandingFactory:
+    def pair(self, engine: Engine) -> PostgresLandingFactory:
         factory = self._factories.get(engine)
         if factory is None:
             installed = ", ".join(sorted(member.value for member in self._factories))

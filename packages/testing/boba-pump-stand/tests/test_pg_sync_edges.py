@@ -9,19 +9,17 @@
 
 from __future__ import annotations
 
-import time
 from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass
 from decimal import Decimal
-from typing import Any, ClassVar
+from typing import Any
 
 import psycopg
 import pytest
 
-from boba.db.postgres import AsyncPostgresPool, PgArrowError
-from boba.db.postgres.arrow import PgArrowOut, PgDescribedColumn
+from boba.db.postgres import PgArrowError
 from boba.db.postgres.connection import CopyOptions
-from boba.db.postgres.query import PgQueryBuilder
+from boba.db.postgres.landing import PgColumnDeclaration
 from boba.pump_stand import (
     ClickHouseSide,
     Landing,
@@ -34,19 +32,18 @@ from boba.pump_stand import (
 from boba.pump_stand.oracle import PumpUser
 from boba.pump_stand.stand import PgSource
 from boba.stand.ix import IxStand
-from boba.toolkit.sync import (
-    ColumnDeclaration,
+from boba.toolkit.landing import (
     ColumnRules,
     CreateIfNotExists,
     DeleteNothing,
     DoNothing,
     DropAndCreateIfSchemaChanged,
-    Engine,
     ErrorIfSchemaChanged,
     FailOnUnknown,
     FallbackAsVarchar,
     InsertFull,
-    SyncError,
+    LandingError,
+    WireChoice,
 )
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
@@ -127,8 +124,8 @@ async def load(
     rules: ColumnRules = ColumnRules(),
     where: str = "",
     chunk: int = CHUNK,
-    mode: Engine = Engine.UNKNOWN,
-    columns: Sequence[ColumnDeclaration] = (),
+    mode: WireChoice = WireChoice.ARROW,
+    columns: Sequence[PgColumnDeclaration] = (),
     unknown_types: Any = FailOnUnknown(kind="fail_on_unknown"),
 ) -> str:
     """pg_sync_out таблицы источника -> pg_sync_in приёмника в той же схеме;
@@ -137,7 +134,7 @@ async def load(
     if where:
         select = f"{select} where {where}"
 
-    declared = [ColumnDeclaration(name="id", nullable=False), *columns]
+    declared = [PgColumnDeclaration(name="id", nullable=False), *columns]
 
     return await load_select(
         postgres, select, target, schema, rules, chunk, mode, declared, unknown_types
@@ -151,8 +148,8 @@ async def load_select(
     schema: Any,
     rules: ColumnRules = ColumnRules(),
     chunk: int = CHUNK,
-    mode: Engine = Engine.UNKNOWN,
-    columns: Sequence[ColumnDeclaration] = (),
+    mode: WireChoice = WireChoice.ARROW,
+    columns: Sequence[PgColumnDeclaration] = (),
     unknown_types: Any = FailOnUnknown(kind="fail_on_unknown"),
 ) -> str:
     """pg_sync_out произвольного select -> pg_sync_in."""
@@ -162,7 +159,7 @@ async def load_select(
             "pg_sync_out",
             {
                 "sql": select,
-                "target_engine": mode,
+                "wire": mode,
                 "columns": columns,
                 "copy_options": CopyOptions(chunk_bytes=chunk),
             },
@@ -426,7 +423,7 @@ class TestNulls:
             postgres,
             "s_strict",
             "t_strict",
-            columns=[ColumnDeclaration(name="v", nullable=False)],
+            columns=[PgColumnDeclaration(name="v", nullable=False)],
         )
 
         assert (await Landing(postgres, S, "t_strict").columns())[1] == (
@@ -436,7 +433,7 @@ class TestNulls:
         )
 
         with pytest.raises(
-            SyncError, match="stream is nullable, table column is not null"
+            LandingError, match="stream is nullable, table column is not null"
         ):
             await load_select(
                 postgres,
@@ -523,7 +520,7 @@ class TestDecimal:
                 f"create table {S}.t_dec_n (id bigint not null, v {target_type})",
             ]
         )
-        with pytest.raises(SyncError, match=reason):
+        with pytest.raises(LandingError, match=reason):
             await load(
                 postgres,
                 "s_dec_n",
@@ -573,7 +570,7 @@ class TestVarchar:
             ]
         )
         with pytest.raises(
-            SyncError, match="table length 50 is shorter than stream length 100"
+            LandingError, match="table length 50 is shorter than stream length 100"
         ):
             await load(
                 postgres,
@@ -661,7 +658,7 @@ class TestTimestamps:
                 f"create table {S}.t_s0 (id bigint not null, v timestamp(0))",
             ]
         )
-        with pytest.raises(SyncError, match="coarser"):
+        with pytest.raises(LandingError, match="coarser"):
             await load(
                 postgres,
                 "s_us",
@@ -699,7 +696,7 @@ class TestTimestamps:
                 f"create table {S}.t_naive (id bigint not null, v timestamp)",
             ]
         )
-        with pytest.raises(SyncError, match="time zone differs"):
+        with pytest.raises(LandingError, match="time zone differs"):
             await load(
                 postgres,
                 "s_tz",
@@ -734,7 +731,7 @@ class TestTimestamps:
                 f"create table {S}.t_ts_for_date (id bigint not null, v timestamp)",
             ]
         )
-        with pytest.raises(SyncError, match="type family differs"):
+        with pytest.raises(LandingError, match="type family differs"):
             await load(
                 postgres,
                 "s_date",
@@ -795,7 +792,6 @@ class TestClickHouseSources:
                 {
                     "sql": f"select * from {S}.edges order by id "
                     f"settings {STRING_AS_STRING}",
-                    "target_engine": Engine.POSTGRES,
                     "columns": [],
                     "chunk_bytes": CHUNK,
                 },
@@ -837,13 +833,12 @@ class TestClickHouseSources:
             ]
         )
         pumps = Pumps(postgres=postgres.profile, clickhouse=clickhouse.profile)
-        with pytest.raises(SyncError, match="narrower than stream uint64"):
+        with pytest.raises(LandingError, match="narrower than stream uint64"):
             await pumps.chain(
                 Leg(
                     "ch_sync_out",
                     {
                         "sql": f"select * from {S}.u64only",
-                        "target_engine": Engine.POSTGRES,
                         "columns": [],
                         "chunk_bytes": CHUNK,
                     },
@@ -897,8 +892,7 @@ class TestOracleSources:
                 "ora_sync_out",
                 {
                     "sql": f"select * from {PumpUser.NAME}.edges",
-                    "target_engine": Engine.POSTGRES,
-                    "columns": [ColumnDeclaration(name="ID", nullable=False)],
+                    "columns": [PgColumnDeclaration(name="ID", nullable=False)],
                 },
             ),
             Leg(
@@ -980,7 +974,7 @@ class TestCopyMode:
 
         await fill(postgres, f"s_{case.name}", case.kind, case.expr)
         report = await load(
-            postgres, f"s_{case.name}", f"t_{case.name}", mode=Engine.POSTGRES
+            postgres, f"s_{case.name}", f"t_{case.name}", mode=WireChoice.CSV
         )
         target = Landing(postgres, S, f"t_{case.name}")
         source = Landing(postgres, S, f"s_{case.name}")
@@ -1000,14 +994,14 @@ class TestCopyMode:
             postgres,
             "s_copy_en",
             "t_copy_en",
-            mode=Engine.POSTGRES,
+            mode=WireChoice.CSV,
             unknown_types=FallbackAsVarchar(kind="fallback_as_varchar"),
         )
         await load(
             postgres,
             "s_copy_en",
             "t_copy_en_typed",
-            mode=Engine.POSTGRES,
+            mode=WireChoice.CSV,
             rules=ColumnRules(column_types={"v": f"{S}.mood"}),
         )
 
@@ -1033,13 +1027,13 @@ class TestCopyMode:
                 f"create table {S}.t_copy_bk (id bigint not null, v numeric(10,2))",
             ]
         )
-        with pytest.raises(SyncError, match="truncates the scale"):
+        with pytest.raises(LandingError, match="truncates the scale"):
             await load(
                 postgres,
                 "s_copy_bk",
                 "t_copy_bk",
                 ErrorIfSchemaChanged(kind="error_if_schema_changed"),
-                mode=Engine.POSTGRES,
+                mode=WireChoice.CSV,
             )
 
         report = await load(
@@ -1047,7 +1041,7 @@ class TestCopyMode:
             "s_copy_bk",
             "t_copy_bk",
             DropAndCreateIfSchemaChanged(kind="drop_and_create_if_schema_changed"),
-            mode=Engine.POSTGRES,
+            mode=WireChoice.CSV,
         )
 
         assert "schema: drop_then_create" in report
@@ -1088,10 +1082,10 @@ class TestUnknownTypes:
 
     @pytest.mark.parametrize("case", EXTENSION_CASES, ids=lambda c: c.name)
     @pytest.mark.parametrize(
-        "mode", [Engine.UNKNOWN, Engine.POSTGRES], ids=["arrow", "copy"]
+        "mode", [WireChoice.ARROW, WireChoice.CSV], ids=["arrow", "copy"]
     )
     async def test_extension_type_lands_as_varchar_or_as_declared(
-        self, postgres: PostgresSide, case: Case, mode: Engine
+        self, postgres: PostgresSide, case: Case, mode: WireChoice
     ) -> None:
         name = f"{case.name}_{mode.value}"
         await fill(postgres, f"s_{name}", case.kind, case.expr)
@@ -1125,20 +1119,16 @@ class TestUnknownTypes:
         объявленный LLM у источника, входит в контракт и для pg -> pg
         становится типом колонки."""
         await fill(postgres, "s_hs_asis", "hstore", "hstore('k', 'v')")
-        by_oid = (
-            r"column v: the target cannot map the source type oid \d+ "
-            r"\(family other\); declare the target type in "
-            r'rules\.column_types\["v"\] or take unknown_types fallback_as_varchar'
-        )
-        with pytest.raises(SyncError, match=by_oid):
-            await load(postgres, "s_hs_asis", "t_hs_asis", mode=Engine.POSTGRES)
+        by_oid = r"column v: the target cannot map the source type oid \d+"
+        with pytest.raises(LandingError, match=by_oid):
+            await load(postgres, "s_hs_asis", "t_hs_asis", mode=WireChoice.CSV)
 
         await load(
             postgres,
             "s_hs_asis",
             "t_hs_asis",
-            mode=Engine.POSTGRES,
-            columns=[ColumnDeclaration(name="v", source_type=f"{S}.hstore")],
+            mode=WireChoice.CSV,
+            columns=[PgColumnDeclaration(name="v", type_text=f"{S}.hstore")],
         )
         source = Landing(postgres, S, "s_hs_asis")
         target = Landing(postgres, S, "t_hs_asis")
@@ -1150,7 +1140,7 @@ class TestUnknownTypes:
         self, postgres: PostgresSide
     ) -> None:
         await fill(postgres, "s_ct_miss", "int", "g")
-        with pytest.raises(SyncError, match="column_types: neither the stream"):
+        with pytest.raises(LandingError, match="column_types: neither the stream"):
             await load(
                 postgres,
                 "s_ct_miss",
@@ -1176,10 +1166,10 @@ class TestVectorTypes:
     приёмника или source_type у источника, fallback_as_varchar — varchar."""
 
     @pytest.mark.parametrize(
-        "mode", [Engine.UNKNOWN, Engine.POSTGRES], ids=["arrow", "copy"]
+        "mode", [WireChoice.ARROW, WireChoice.CSV], ids=["arrow", "copy"]
     )
     async def test_vector_lands_as_vector(
-        self, vector_db: PostgresSide, mode: Engine
+        self, vector_db: PostgresSide, mode: WireChoice
     ) -> None:
         name = f"vec_{mode.value}"
         await vector_db.execute(
@@ -1232,328 +1222,6 @@ class TestVectorTypes:
         assert (await landing.texts("v"))[0] == "[1,2,3]"
 
 
-class TestExactTypes:
-    """pg -> pg: таблица сверяется по тексту типа postgres, а не только по
-    семейству — uuid в text отказ, json в jsonb и inet в cidr предупреждение,
-    time(6) в time(0) отказ, int4range в int8range отказ, enum без имени —
-    предупреждение."""
-
-    @pytest.fixture(autouse=True)
-    def newest(self, postgres: PostgresSide) -> None:
-        only_newest(postgres)
-
-    async def test_uuid_into_text_column_is_refused(
-        self, postgres: PostgresSide
-    ) -> None:
-        await fill(postgres, "s_x_uuid", "uuid", "gen_random_uuid()")
-        await postgres.execute(
-            [
-                f"drop table if exists {S}.t_x_text",
-                f"create table {S}.t_x_text (id bigint not null, v text)",
-            ]
-        )
-        with pytest.raises(SyncError, match="type family differs: stream uuid"):
-            await load(
-                postgres,
-                "s_x_uuid",
-                "t_x_text",
-                ErrorIfSchemaChanged(kind="error_if_schema_changed"),
-            )
-
-    async def test_json_into_jsonb_column_only_warns(
-        self, postgres: PostgresSide
-    ) -> None:
-        await fill(postgres, "s_x_json", "json", "'{\"k\": 1}'::json")
-        await postgres.execute(
-            [
-                f"drop table if exists {S}.t_x_jsonb",
-                f"create table {S}.t_x_jsonb (id bigint not null, v jsonb)",
-            ]
-        )
-        report = await load(
-            postgres,
-            "s_x_json",
-            "t_x_jsonb",
-            ErrorIfSchemaChanged(kind="error_if_schema_changed"),
-        )
-
-        assert "warning v: type differs: stream json, table jsonb" in report
-        assert (await Landing(postgres, S, "t_x_jsonb").texts("v"))[0] == '{"k": 1}'
-
-    async def test_finer_time_into_coarser_column_is_refused(
-        self, postgres: PostgresSide
-    ) -> None:
-        await fill(postgres, "s_x_t6", "time(6)", "time '12:34:56.123456'")
-        await postgres.execute(
-            [
-                f"drop table if exists {S}.t_x_t0",
-                f"create table {S}.t_x_t0 (id bigint not null, v time(0))",
-            ]
-        )
-        with pytest.raises(SyncError, match="coarser"):
-            await load(
-                postgres,
-                "s_x_t6",
-                "t_x_t0",
-                ErrorIfSchemaChanged(kind="error_if_schema_changed"),
-            )
-
-    async def test_timetz_into_time_column_is_refused(
-        self, postgres: PostgresSide
-    ) -> None:
-        await fill(postgres, "s_x_ttz", "timetz", "timetz '12:00:00+03'")
-        await postgres.execute(
-            [
-                f"drop table if exists {S}.t_x_tnaive",
-                f"create table {S}.t_x_tnaive (id bigint not null, v time)",
-            ]
-        )
-        with pytest.raises(SyncError, match="time zone differs"):
-            await load(
-                postgres,
-                "s_x_ttz",
-                "t_x_tnaive",
-                ErrorIfSchemaChanged(kind="error_if_schema_changed"),
-            )
-
-    async def test_inet_into_cidr_column_only_warns(
-        self, postgres: PostgresSide
-    ) -> None:
-        """Одно семейство network, разный тип postgres — предупреждение."""
-        await fill(postgres, "s_x_inet", "inet", "'10.0.0.1'::inet")
-        await postgres.execute(
-            [
-                f"drop table if exists {S}.t_x_cidr",
-                f"create table {S}.t_x_cidr (id bigint not null, v cidr)",
-            ]
-        )
-        report = await load(
-            postgres,
-            "s_x_inet",
-            "t_x_cidr",
-            ErrorIfSchemaChanged(kind="error_if_schema_changed"),
-        )
-
-        assert "warning v: type differs: stream inet, table cidr" in report
-
-    async def test_range_into_another_range_is_refused(
-        self, postgres: PostgresSide
-    ) -> None:
-        """Семейство range сравнимо только по имени: int4range в int8range —
-        отказ."""
-        await fill(postgres, "s_x_rng", "int4range", "int4range(1, g + 1)")
-        await postgres.execute(
-            [
-                f"drop table if exists {S}.t_x_rng8",
-                f"create table {S}.t_x_rng8 (id bigint not null, v int8range)",
-            ]
-        )
-        with pytest.raises(
-            SyncError, match="type differs: stream int4range, table int8range"
-        ):
-            await load(
-                postgres,
-                "s_x_rng",
-                "t_x_rng8",
-                ErrorIfSchemaChanged(kind="error_if_schema_changed"),
-            )
-
-    async def test_same_builtin_type_is_ok(self, postgres: PostgresSide) -> None:
-        await fill(postgres, "s_x_same", "inet", "'10.0.0.1'::inet")
-        await postgres.execute(
-            [
-                f"drop table if exists {S}.t_x_same",
-                f"create table {S}.t_x_same (id bigint not null, v inet)",
-            ]
-        )
-        report = await load(
-            postgres,
-            "s_x_same",
-            "t_x_same",
-            ErrorIfSchemaChanged(kind="error_if_schema_changed"),
-        )
-
-        source = Landing(postgres, S, "s_x_same")
-        target = Landing(postgres, S, "t_x_same")
-
-        assert "warning" not in report
-        assert await target.texts("v") == await source.texts("v")
-
-    async def test_unnamed_enum_cannot_be_verified_but_loads(
-        self, postgres: PostgresSide
-    ) -> None:
-        await fill(postgres, "s_x_en", "mood", "'sad'::mood")
-        await postgres.execute(
-            [
-                f"drop table if exists {S}.t_x_en",
-                f"create table {S}.t_x_en (id bigint not null, v mood)",
-            ]
-        )
-        report = await load(
-            postgres,
-            "s_x_en",
-            "t_x_en",
-            ErrorIfSchemaChanged(kind="error_if_schema_changed"),
-        )
-
-        assert "warning v: type cannot be verified, the source named no type" in report
-        assert (await Landing(postgres, S, "t_x_en").texts("v"))[0] == "sad"
-
-    async def test_declared_target_type_takes_part_in_the_check(
-        self, postgres: PostgresSide
-    ) -> None:
-        """column_types разбирает сам приёмник и сверяет с таблицей как тип
-        потока: numeric(20,6) в таблицу numeric(18,4) — отказ, хотя поток
-        numeric(18,4) сам по себе подошёл бы."""
-        await fill(postgres, "s_x_dec", "numeric(18,4)", "g / 7.0")
-        await postgres.execute(
-            [
-                f"drop table if exists {S}.t_x_dec",
-                f"create table {S}.t_x_dec (id bigint not null, v numeric(18,4))",
-            ]
-        )
-        with pytest.raises(SyncError, match="truncates the scale of stream"):
-            await load(
-                postgres,
-                "s_x_dec",
-                "t_x_dec",
-                ErrorIfSchemaChanged(kind="error_if_schema_changed"),
-                rules=ColumnRules(column_types={"v": "numeric(20,6)"}),
-            )
-
-    async def test_unknown_declared_target_type_is_refused_before_ddl(
-        self, postgres: PostgresSide
-    ) -> None:
-        await fill(postgres, "s_x_bad", "int", "g")
-        with pytest.raises(SyncError, match="does not accept the declared types"):
-            await load(
-                postgres,
-                "s_x_bad",
-                "t_x_bad",
-                rules=ColumnRules(column_types={"v": "no_such_type"}),
-            )
-
-    async def test_declared_precision_shapes_the_arrow_stream(
-        self, postgres: PostgresSide
-    ) -> None:
-        """numeric без точности в Arrow-режиме отказ, но декларация precision
-        и scale входит в контракт и в схему Arrow — поток собирается; значение
-        шире объявленного scale читатель Arrow отвергает."""
-        await fill(postgres, "s_x_free", "numeric", "round(g / 7.0, 6)")
-        await load(
-            postgres,
-            "s_x_free",
-            "t_x_free",
-            columns=[ColumnDeclaration(name="v", precision=20, scale=6)],
-        )
-        landing = Landing(postgres, S, "t_x_free")
-
-        assert (await landing.columns())[1] == ("v", "numeric", False)
-        assert (await landing.scalars("v"))[0] == Decimal("0.142857")
-
-    async def test_created_table_keeps_every_builtin_type(
-        self, postgres: PostgresSide
-    ) -> None:
-        await postgres.execute(
-            [
-                f"drop table if exists {S}.s_x_all",
-                f"create table {S}.s_x_all (id bigint not null, u uuid, j json, "
-                "jb jsonb, b bytea, t time(3), tz timetz, iv interval, ip inet, "
-                "mac macaddr, m money, r int4range, a text[], bt bit(3), "
-                "vb varbit(8), x xml, tsv tsvector, pt point, pg polygon, "
-                "lsn pg_lsn, rc regclass)",
-                f"insert into {S}.s_x_all values (1, gen_random_uuid(), '{{}}', "
-                "'{}', '\\x00', '01:02:03.123', '01:02:03+03', '1 day', "
-                "'10.0.0.1', '08:00:2b:01:02:03', 1.5, '[1,3)', array['a'], "
-                "B'101', B'1', '<a/>', 'a b', '(1,2)', '((0,0),(1,1),(1,0))', "
-                "'0/16B3748', 'pg_class')",
-            ]
-        )
-        await load(postgres, "s_x_all", "t_x_all")
-        source = Landing(postgres, S, "s_x_all")
-        target = Landing(postgres, S, "t_x_all")
-
-        assert await target.columns() == await source.columns()
-        names = [column[0] for column in await source.columns()][1:]
-        for column in names:
-            assert await target.texts(column) == await source.texts(column)
-
-    async def test_bit_length_is_checked_like_a_string(
-        self, postgres: PostgresSide
-    ) -> None:
-        await fill(postgres, "s_x_bit", "bit(8)", "B'10101010'")
-        await postgres.execute(
-            [
-                f"drop table if exists {S}.t_x_bit",
-                f"create table {S}.t_x_bit (id bigint not null, v bit(4))",
-            ]
-        )
-        with pytest.raises(SyncError, match="table length 4 is shorter than stream"):
-            await load(
-                postgres,
-                "s_x_bit",
-                "t_x_bit",
-                ErrorIfSchemaChanged(kind="error_if_schema_changed"),
-            )
-
-
-class TestRegistryCoverage:
-    """Каждое имя встроенного реестра psycopg имеет семейство контракта:
-    таблица PgArrowTypes не может отстать от реестра молча."""
-
-    def test_every_registry_type_has_a_family(self) -> None:
-        from psycopg.postgres import types as registry
-
-        from boba.db.postgres.arrow import PgArrowTypes
-
-        arrow_types = PgArrowTypes(registry)
-        uncovered = sorted(t.name for t in registry if not arrow_types.covers(t.name))
-
-        assert uncovered == []
-
-
-class TestDescribeCost:
-    """Контракт берётся PQprepare + PQdescribePrepared без выполнения: запрос
-    на часы выполнения описывается за миллисекунды, а счётчики чтения базы
-    не растут. Сторож на случай, если описание когда-нибудь подменят
-    выполнением."""
-
-    HEAVY: ClassVar[str] = (
-        "with recursive r(n) as (select 1 union all select n + 1 from r "
-        "where n < 200000000) "
-        "select r.n, pg_sleep(0.01) as slept, md5(r.n::text) as h, "
-        "sum(r.n) over () as total from r "
-        "join generate_series(1, 1000000) g on g = r.n"
-    )
-    COUNTERS: ClassVar[str] = (
-        "select tup_returned, tup_fetched, blks_read from pg_stat_database "
-        "where datname = current_database()"
-    )
-    BUDGET_SECONDS: ClassVar[float] = 0.5
-
-    async def test_describe_neither_plans_nor_reads(
-        self, postgres: PostgresSide
-    ) -> None:
-        only_newest(postgres)
-        async with await AsyncPostgresPool.dedicated(postgres.profile) as conn:
-            out = PgArrowOut(conn)
-            counters = PgQueryBuilder().add(self.COUNTERS).build()
-            cursor = await conn.execute(counters.text)
-            before = await cursor.fetchone()
-            started = time.perf_counter()
-            columns: list[PgDescribedColumn] = []
-            async for column in out.get_column_description_from_libpq(self.HEAVY):
-                columns.append(column)
-
-            elapsed = time.perf_counter() - started
-            cursor = await conn.execute(counters.text)
-            after = await cursor.fetchone()
-
-        assert [column.name for column in columns] == ["n", "slept", "h", "total"]
-        assert elapsed < self.BUDGET_SECONDS
-        assert after == before
-
-
 class TestBackupNames:
     async def test_two_backups_in_a_row_get_distinct_names(
         self, postgres: PostgresSide
@@ -1566,7 +1234,7 @@ class TestBackupNames:
                 f"create table {S}.t_bk (id bigint not null, old text)",
             ]
         )
-        from boba.toolkit.sync import BackupAndCreate
+        from boba.toolkit.landing import BackupAndCreate
 
         first = await load(
             postgres, "s_bk", "t_bk", BackupAndCreate(kind="backup_and_create")

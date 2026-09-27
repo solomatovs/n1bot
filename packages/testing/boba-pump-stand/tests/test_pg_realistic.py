@@ -1,6 +1,6 @@
 # ruff: noqa: S608, E501
 """Перелив отчёта по заказам между двумя серверами postgres парой
-postgres -> postgres (pg_csv_sync_out, pg_tsv_sync_out, pg_csv_sync_in)
+postgres -> postgres (pg_sync_out и pg_sync_in)
 запросом, каким его написал бы LLM: CTE, join и left join с NULL, lateral,
 оконные функции, агрегаты в массив и jsonb, enum, uuid, inet, interval,
 date_trunc. Источник — новейший postgres стенда, приёмник — другой сервер
@@ -26,7 +26,7 @@ from boba.toolkit.landing import (
     DeleteTruncate,
     ErrorIfSchemaChanged,
     InsertFull,
-    TextWire,
+    WireChoice,
 )
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
@@ -311,27 +311,23 @@ async def transfer(  # noqa: PLR0913
     table: str,
     schema: Any,
     delete: Any,
-    wire: TextWire,
+    wire: WireChoice,
     columns: Sequence[PgColumnDeclaration] = DECLARED,
 ) -> str:
-    """pg_csv_sync_out или pg_tsv_sync_out на источнике -> pg_csv_sync_in на
-    приёмнике, два сервера."""
+    """pg_sync_out на источнике -> pg_sync_in на приёмнике, два сервера."""
     pumps = Pumps(postgres=source.profile, postgres_target=target.profile)
-    source_tool = "pg_csv_sync_out"
-    if wire is TextWire.TSV:
-        source_tool = "pg_tsv_sync_out"
-
     chained = await pumps.chain(
         Leg(
-            source_tool,
+            "pg_sync_out",
             {
                 "sql": REPORT_SQL,
+                "wire": wire,
                 "columns": columns,
                 "copy_options": CopyOptions(chunk_bytes=CHUNK),
             },
         ),
         Leg(
-            "pg_csv_sync_in",
+            "pg_sync_in",
             {
                 "schema_name": DW,
                 "table_name": table,
@@ -343,8 +339,8 @@ async def transfer(  # noqa: PLR0913
             },
         ),
     )
-    print(f"\n--- {source_tool} ---\n{chained.out_report}")
-    print(f"--- pg_csv_sync_in ({wire.value}) ---\n{chained.in_report}")
+    print(f"\n--- pg_sync_out ({wire.value}) ---\n{chained.out_report}")
+    print(f"--- pg_sync_in ---\n{chained.in_report}")
 
     return chained.in_report
 
@@ -361,7 +357,7 @@ async def same_content(source: PostgresSide, target: PostgresSide, table: str) -
 
 
 class TestOrdersReport:
-    async def test_copy_mode_creates_and_fills_the_report(
+    async def test_csv_wire_creates_and_fills_the_report(
         self, source: PostgresSide, target: PostgresSide
     ) -> None:
         report = await transfer(
@@ -370,7 +366,7 @@ class TestOrdersReport:
             "orders_report",
             CreateIfNotExists(kind="create_if_not_exists"),
             DeleteNothing(kind="nothing"),
-            TextWire.CSV,
+            WireChoice.CSV,
         )
         landed = Landing(target, DW, "orders_report")
 
@@ -392,7 +388,7 @@ class TestOrdersReport:
             "orders_report",
             ErrorIfSchemaChanged(kind="error_if_schema_changed"),
             DeleteTruncate(kind="truncate"),
-            TextWire.CSV,
+            WireChoice.CSV,
         )
 
         assert "error" not in report.split("rows written")[0].lower()
@@ -407,7 +403,7 @@ class TestOrdersReport:
             "orders_report_tsv",
             CreateIfNotExists(kind="create_if_not_exists"),
             DeleteNothing(kind="nothing"),
-            TextWire.TSV,
+            WireChoice.TSV,
         )
         landed = Landing(target, DW, "orders_report_tsv")
 

@@ -34,6 +34,7 @@ import pytest
 
 from boba.db.postgres import PgArrowError
 from boba.db.postgres.connection import CopyOptions
+from boba.db.postgres.errors import PgDescribeError
 from boba.pump_stand import (
     ClickHouseSide,
     Leg,
@@ -56,11 +57,22 @@ from boba.pump_stand.compare import (
 from boba.pump_stand.matrix import (
     Target,
     compared,
-    copy_into,
     exported,
     first,
     insert_into,
 )
+from boba.pump_stand.ports import Feed
+from boba.toolkit.arrow import ArrowColumns
+from boba.toolkit.landing import (
+    CreateIfNotExists,
+    DeleteNothing,
+    Engine,
+    InsertFull,
+    SchemaHead,
+    SyncWire,
+    WireChoice,
+)
+from boba.toolkit.sync import ArrowContract, StreamContract
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
 
@@ -532,16 +544,22 @@ class TestPostgresToPostgres:
 
         chained = await pumps.chain(
             Leg(
-                "pg_arrow_out",
+                "pg_sync_out",
                 {
+                    "target": postgres.profile,
+                    "wire": WireChoice.ARROW,
                     "sql": _select(columns, targets),
                     "copy_options": CopyOptions(chunk_bytes=CHUNK_BYTES),
                 },
             ),
             Leg(
-                "pg_arrow_in",
+                "pg_sync_in",
                 {
-                    "sql": copy_into(f"{PG_SCHEMA}.dst", _names(columns)),
+                    "schema_name": PG_SCHEMA,
+                    "table_name": "dst",
+                    "schema_strategy": CreateIfNotExists(kind="create_if_not_exists"),
+                    "delete_strategy": DeleteNothing(kind="nothing"),
+                    "insert_strategy": InsertFull(kind="full"),
                     "copy_options": CopyOptions(chunk_bytes=CHUNK_BYTES),
                 },
             ),
@@ -583,8 +601,10 @@ class TestPostgresToClickHouse:
         pumps = Pumps(postgres=postgres.profile, clickhouse=clickhouse.profile)
         chained = await pumps.chain(
             Leg(
-                "pg_arrow_out",
+                "pg_sync_out",
                 {
+                    "target": clickhouse.profile,
+                    "wire": WireChoice.ARROW,
                     "sql": _select(columns, targets),
                     "copy_options": CopyOptions(chunk_bytes=CHUNK_BYTES),
                 },
@@ -647,8 +667,10 @@ class TestPostgresToOracle:
         try:
             chained = await pumps.chain(
                 Leg(
-                    "pg_arrow_out",
+                    "pg_sync_out",
                     {
+                        "target": oracle.profile,
+                        "wire": WireChoice.ARROW,
                         "sql": _select(columns, targets),
                         "copy_options": CopyOptions(chunk_bytes=CHUNK_BYTES),
                     },
@@ -693,16 +715,24 @@ class TestTraps:
         with pytest.raises(PgArrowError, match="numeric without precision"):
             await pumps.chain(
                 Leg(
-                    "pg_arrow_out",
+                    "pg_sync_out",
                     {
+                        "target": postgres.profile,
+                        "wire": WireChoice.ARROW,
                         "sql": self.SLOW,
                         "copy_options": CopyOptions(chunk_bytes=CHUNK_BYTES),
                     },
                 ),
                 Leg(
-                    "pg_arrow_in",
+                    "pg_sync_in",
                     {
-                        "sql": f"copy {PG_SCHEMA}.dst from stdin (format csv)",
+                        "schema_name": PG_SCHEMA,
+                        "table_name": "dst",
+                        "schema_strategy": CreateIfNotExists(
+                            kind="create_if_not_exists"
+                        ),
+                        "delete_strategy": DeleteNothing(kind="nothing"),
+                        "insert_strategy": InsertFull(kind="full"),
                         "copy_options": CopyOptions(chunk_bytes=CHUNK_BYTES),
                     },
                 ),
@@ -720,16 +750,24 @@ class TestTraps:
         with pytest.raises(PgArrowError, match="up to 38 digits"):
             await pumps.chain(
                 Leg(
-                    "pg_arrow_out",
+                    "pg_sync_out",
                     {
+                        "target": postgres.profile,
+                        "wire": WireChoice.ARROW,
                         "sql": "select pg_sleep(30), 1::numeric(50, 20) as n",
                         "copy_options": CopyOptions(chunk_bytes=CHUNK_BYTES),
                     },
                 ),
                 Leg(
-                    "pg_arrow_in",
+                    "pg_sync_in",
                     {
-                        "sql": f"copy {PG_SCHEMA}.dst from stdin (format csv)",
+                        "schema_name": PG_SCHEMA,
+                        "table_name": "dst",
+                        "schema_strategy": CreateIfNotExists(
+                            kind="create_if_not_exists"
+                        ),
+                        "delete_strategy": DeleteNothing(kind="nothing"),
+                        "insert_strategy": InsertFull(kind="full"),
                         "copy_options": CopyOptions(chunk_bytes=CHUNK_BYTES),
                     },
                 ),
@@ -742,19 +780,27 @@ class TestTraps:
             pytest.skip("one postgres is enough for this trap")
 
         pumps = Pumps(postgres=postgres.profile)
-        with pytest.raises(PgArrowError, match="the statement on postgres failed"):
+        with pytest.raises(PgDescribeError, match="the statement on postgres failed"):
             await pumps.chain(
                 Leg(
-                    "pg_arrow_out",
+                    "pg_sync_out",
                     {
+                        "target": postgres.profile,
+                        "wire": WireChoice.ARROW,
                         "sql": "select nothing from nowhere",
                         "copy_options": CopyOptions(chunk_bytes=CHUNK_BYTES),
                     },
                 ),
                 Leg(
-                    "pg_arrow_in",
+                    "pg_sync_in",
                     {
-                        "sql": f"copy {PG_SCHEMA}.dst from stdin (format csv)",
+                        "schema_name": PG_SCHEMA,
+                        "table_name": "dst",
+                        "schema_strategy": CreateIfNotExists(
+                            kind="create_if_not_exists"
+                        ),
+                        "delete_strategy": DeleteNothing(kind="nothing"),
+                        "insert_strategy": InsertFull(kind="full"),
                         "copy_options": CopyOptions(chunk_bytes=CHUNK_BYTES),
                     },
                 ),
@@ -770,17 +816,23 @@ class TestTraps:
         pumps = Pumps(postgres=postgres.profile)
         await pumps.chain(
             Leg(
-                "pg_arrow_out",
+                "pg_sync_out",
                 {
+                    "target": postgres.profile,
+                    "wire": WireChoice.ARROW,
                     "sql": "select 1::bigint as id, "
                     "array[array[1, 2], array[3, 4]] as a2",
                     "copy_options": CopyOptions(chunk_bytes=CHUNK_BYTES),
                 },
             ),
             Leg(
-                "pg_arrow_in",
+                "pg_sync_in",
                 {
-                    "sql": copy_into(f"{PG_SCHEMA}.dims", ["id", "a2"]),
+                    "schema_name": PG_SCHEMA,
+                    "table_name": "dims",
+                    "schema_strategy": CreateIfNotExists(kind="create_if_not_exists"),
+                    "delete_strategy": DeleteNothing(kind="nothing"),
+                    "insert_strategy": InsertFull(kind="full"),
                     "copy_options": CopyOptions(chunk_bytes=CHUNK_BYTES),
                 },
             ),
@@ -804,16 +856,24 @@ class TestTraps:
         with pytest.raises(PgArrowError, match="raise chunk_bytes"):
             await pumps.chain(
                 Leg(
-                    "pg_arrow_out",
+                    "pg_sync_out",
                     {
+                        "target": postgres.profile,
+                        "wire": WireChoice.ARROW,
                         "sql": wide,
                         "copy_options": CopyOptions(chunk_bytes=CHUNK_BYTES),
                     },
                 ),
                 Leg(
-                    "pg_arrow_in",
+                    "pg_sync_in",
                     {
-                        "sql": copy_into(f"{PG_SCHEMA}.wide", ["id", "t"]),
+                        "schema_name": PG_SCHEMA,
+                        "table_name": "wide",
+                        "schema_strategy": CreateIfNotExists(
+                            kind="create_if_not_exists"
+                        ),
+                        "delete_strategy": DeleteNothing(kind="nothing"),
+                        "insert_strategy": InsertFull(kind="full"),
                         "copy_options": CopyOptions(chunk_bytes=CHUNK_BYTES),
                     },
                 ),
@@ -821,17 +881,23 @@ class TestTraps:
 
         await pumps.chain(
             Leg(
-                "pg_arrow_out",
+                "pg_sync_out",
                 {
+                    "target": postgres.profile,
+                    "wire": WireChoice.ARROW,
                     "sql": wide,
                     "copy_options": CopyOptions(chunk_bytes=4 * 1024 * 1024),
                 },
             ),
             Leg(
-                "pg_arrow_in",
+                "pg_sync_in",
                 {
-                    "sql": copy_into(f"{PG_SCHEMA}.wide", ["id", "t"]),
-                    "copy_options": CopyOptions(chunk_bytes=4 * 1024 * 1024),
+                    "schema_name": PG_SCHEMA,
+                    "table_name": "wide",
+                    "schema_strategy": CreateIfNotExists(kind="create_if_not_exists"),
+                    "delete_strategy": DeleteNothing(kind="nothing"),
+                    "insert_strategy": InsertFull(kind="full"),
+                    "copy_options": CopyOptions(chunk_bytes=CHUNK_BYTES),
                 },
             ),
         )
@@ -866,16 +932,28 @@ class TestTraps:
 
         await postgres.create("exact", ["id bigint", "d double precision"])
         pumps = Pumps(postgres=postgres.profile)
-        statement = copy_into(f"{PG_SCHEMA}.exact", ["id", "d"])
         packed = [struct.pack(">d", value) for value in values]
-
-        await pumps._in(
-            "pg_arrow_in",
-            statement,
-            buffer.getvalue(),
-            None,
-            copy_options=CopyOptions(chunk_bytes=CHUNK_BYTES, exact_floats=True),
+        contract = ArrowContract(
+            columns=StreamContract().columns(ArrowColumns().specs(batch.schema))
         )
+        head = SchemaHead(
+            kind="schema",
+            source_engine=Engine.POSTGRES,
+            wire=SyncWire.ARROW,
+            contract=contract.model_dump(mode="json"),
+        )
+
+        async def land(exact_floats: bool) -> None:
+            await pumps.sync_in(
+                Feed(buffer.getvalue(), CHUNK_BYTES, head),
+                schema_name=PG_SCHEMA,
+                table_name="exact",
+                copy_options=CopyOptions(
+                    chunk_bytes=CHUNK_BYTES, exact_floats=exact_floats
+                ),
+            )
+
+        await land(True)
         landed = await postgres.select("exact", ["id", "float8send(d)"])
 
         assert [bytes(sent) for _, sent in landed] == packed
@@ -884,13 +962,7 @@ class TestTraps:
             return
 
         await postgres.execute([f"truncate {PG_SCHEMA}.exact"])
-        await pumps._in(
-            "pg_arrow_in",
-            statement,
-            buffer.getvalue(),
-            None,
-            copy_options=CopyOptions(chunk_bytes=CHUNK_BYTES, exact_floats=False),
-        )
+        await land(False)
         landed = await postgres.select("exact", ["id", "float8send(d)"])
 
         assert bytes(landed[0][1]) != packed[0]
@@ -908,16 +980,22 @@ class TestTraps:
         with pytest.raises(PgArrowError, match="cannot be written as csv"):
             await pumps.chain(
                 Leg(
-                    "ch_arrow_out",
+                    "ch_sync_out",
                     {
                         "sql": "select toInt64(1) as id, [toInt64(1), 2] as arr",
                         "chunk_bytes": CHUNK_BYTES,
                     },
                 ),
                 Leg(
-                    "pg_arrow_in",
+                    "pg_sync_in",
                     {
-                        "sql": copy_into(f"{PG_SCHEMA}.lists", ["id", "arr"]),
+                        "schema_name": PG_SCHEMA,
+                        "table_name": "lists",
+                        "schema_strategy": CreateIfNotExists(
+                            kind="create_if_not_exists"
+                        ),
+                        "delete_strategy": DeleteNothing(kind="nothing"),
+                        "insert_strategy": InsertFull(kind="full"),
                         "copy_options": CopyOptions(chunk_bytes=CHUNK_BYTES),
                     },
                 ),
@@ -951,7 +1029,7 @@ class TestTraps:
         )
         pumps = Pumps(postgres=profile)
 
-        text = await pumps.pg_out(f"copy ({select}) to stdout (format csv)")
+        text = await pumps.pg_out(select)
         await postgres.create(
             "session",
             [
@@ -966,18 +1044,22 @@ class TestTraps:
         )
         await pumps.chain(
             Leg(
-                "pg_arrow_out",
+                "pg_sync_out",
                 {
+                    "target": postgres.profile,
+                    "wire": WireChoice.ARROW,
                     "sql": select,
                     "copy_options": CopyOptions(chunk_bytes=CHUNK_BYTES),
                 },
             ),
             Leg(
-                "pg_arrow_in",
+                "pg_sync_in",
                 {
-                    "sql": copy_into(
-                        f"{PG_SCHEMA}.session", ["id", "f", "tz", "d", "iv", "b", "m"]
-                    ),
+                    "schema_name": PG_SCHEMA,
+                    "table_name": "session",
+                    "schema_strategy": CreateIfNotExists(kind="create_if_not_exists"),
+                    "delete_strategy": DeleteNothing(kind="nothing"),
+                    "insert_strategy": InsertFull(kind="full"),
                     "copy_options": CopyOptions(chunk_bytes=CHUNK_BYTES),
                 },
             ),
@@ -988,8 +1070,8 @@ class TestTraps:
         )
 
         assert text == (
-            b"1,0.3333333333333333,2024-02-29 10:14:15.123456+00,2024-02-29,"
-            b"1 day 02:00:03.5,\\x00ff,$12.50\n"
+            b"1\t0.3333333333333333\t2024-02-29 10:14:15.123456+00\t2024-02-29\t"
+            b"1 day 02:00:03.5\t\\\\x00ff\t$12.50\n"
         )
         assert landed[0][1:] == (
             datetime(2024, 2, 29, 10, 14, 15, 123456),
@@ -1007,17 +1089,23 @@ class TestTraps:
         pumps = Pumps(postgres=postgres.profile)
         await pumps.chain(
             Leg(
-                "pg_arrow_out",
+                "pg_sync_out",
                 {
+                    "target": postgres.profile,
+                    "wire": WireChoice.ARROW,
                     "sql": "select g::bigint as id, g::float8 / 7 as r8 "
                     "from generate_series(1, 1000) g",
                     "copy_options": CopyOptions(chunk_bytes=CHUNK_BYTES),
                 },
             ),
             Leg(
-                "pg_arrow_in",
+                "pg_sync_in",
                 {
-                    "sql": copy_into(f"{PG_SCHEMA}.floats", ["id", "r8"]),
+                    "schema_name": PG_SCHEMA,
+                    "table_name": "floats",
+                    "schema_strategy": CreateIfNotExists(kind="create_if_not_exists"),
+                    "delete_strategy": DeleteNothing(kind="nothing"),
+                    "insert_strategy": InsertFull(kind="full"),
                     "copy_options": CopyOptions(chunk_bytes=CHUNK_BYTES),
                 },
             ),

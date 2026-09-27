@@ -138,6 +138,12 @@ class PgSessionTrace:
         if status is None:
             status = ""
 
+        return self.report_status(summary, statement, status, rows)
+
+    def report_status(
+        self, summary: str, statement: str, status: str, rows: int = 0
+    ) -> PgCommandReport:
+        """Итог команды по строке статуса сервера, когда курсора нет."""
         return PgCommandReport(
             summary=summary,
             status=status,

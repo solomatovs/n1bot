@@ -47,8 +47,13 @@ from boba.pump_stand.compare import (
     Report,
     Values,
 )
-from boba.pump_stand.matrix import Target, compared, copy_into, first, insert_into
+from boba.pump_stand.matrix import Target, compared, first, insert_into
 from boba.pump_stand.oracle import PumpUser
+from boba.toolkit.landing import (
+    CreateIfNotExists,
+    DeleteNothing,
+    InsertFull,
+)
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
 
@@ -875,13 +880,17 @@ class TestOracleToPostgres:
         pumps = Pumps(postgres=postgres.profile, oracle=oracle.owner)
         chained = await pumps.chain(
             Leg(
-                "ora_arrow_out",
+                "ora_sync_out",
                 {"sql": f"select {listed} from {PumpUser.NAME}.arr order by id"},
             ),
             Leg(
-                "pg_arrow_in",
+                "pg_sync_in",
                 {
-                    "sql": copy_into(f"{PG_SCHEMA}.{table}", [c.name for c in columns]),
+                    "schema_name": PG_SCHEMA,
+                    "table_name": table,
+                    "schema_strategy": CreateIfNotExists(kind="create_if_not_exists"),
+                    "delete_strategy": DeleteNothing(kind="nothing"),
+                    "insert_strategy": InsertFull(kind="full"),
                     "copy_options": CopyOptions(chunk_bytes=CHUNK_BYTES),
                 },
             ),

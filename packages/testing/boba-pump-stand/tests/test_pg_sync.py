@@ -12,11 +12,11 @@ from typing import Any
 import pytest
 
 from boba.db.postgres.connection import CopyOptions
+from boba.db.postgres.landing import PgColumnDeclaration
 from boba.pump_stand import Landing, Leg, OracleSide, PostgresSide, Pumps, PumpStand
 from boba.pump_stand.oracle import PumpUser
-from boba.toolkit.sync import (
+from boba.toolkit.landing import (
     BackupAndCreateIfSchemaChanged,
-    ColumnDeclaration,
     ColumnRules,
     CreateIfNotExists,
     DeleteAll,
@@ -24,12 +24,12 @@ from boba.toolkit.sync import (
     DeleteTruncate,
     DeleteWhere,
     DropAndCreateIfSchemaChanged,
-    Engine,
     ErrorIfNotExists,
     ErrorIfSchemaChanged,
     InsertFull,
     InsertNothing,
-    SyncError,
+    LandingError,
+    WireChoice,
 )
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
@@ -65,16 +65,16 @@ NEWEST = _newest(STAND.sources)
 
 @pytest.fixture(
     scope="module",
-    params=[Engine.UNKNOWN, Engine.POSTGRES],
+    params=[WireChoice.ARROW, WireChoice.CSV],
     ids=["arrow", "copy"],
 )
-def mode(request: Any) -> Engine:
-    """Режим провода pg -> pg: Arrow (приёмник не назван) или COPY csv."""
+def mode(request: Any) -> WireChoice:
+    """Раскладка провода pg -> pg: arrow (нейтральный путь) или csv (пара)."""
     return request.param
 
 
 @pytest.fixture(scope="module", params=STAND.sources, ids=lambda s: s.name)
-async def postgres(request: Any, mode: Engine) -> AsyncIterator[PostgresSide]:
+async def postgres(request: Any, mode: WireChoice) -> AsyncIterator[PostgresSide]:
     """Схема пересоздаётся на каждую пару (режим провода, сервер)."""
     side = PostgresSide(request.param, PG_SCHEMA)
     await side.connect()
@@ -84,7 +84,7 @@ async def postgres(request: Any, mode: Engine) -> AsyncIterator[PostgresSide]:
 
 
 @pytest.fixture(scope="module")
-async def oracle(mode: Engine) -> AsyncIterator[OracleSide]:
+async def oracle(mode: WireChoice) -> AsyncIterator[OracleSide]:
     """Пользователь стенда пересоздаётся на каждый режим провода."""
     side = OracleSide(max(STAND.ora_sources, key=lambda s: s.name), ARRAYSIZE)
     await side.connect()
@@ -95,14 +95,14 @@ async def oracle(mode: Engine) -> AsyncIterator[OracleSide]:
 
 async def sync(
     postgres: PostgresSide,
-    mode: Engine,
+    mode: WireChoice,
     table: str,
     schema: Any,
     delete: Any = DeleteNothing(kind="nothing"),
     insert: Any = InsertFull(kind="full"),
     rules: ColumnRules = ColumnRules(),
     select: str = SELECT,
-    columns: Sequence[ColumnDeclaration] = (),
+    columns: Sequence[PgColumnDeclaration] = (),
 ) -> str:
     pumps = Pumps(postgres=postgres.profile)
     chained = await pumps.chain(
@@ -110,7 +110,7 @@ async def sync(
             "pg_sync_out",
             {
                 "sql": select,
-                "target_engine": mode,
+                "wire": mode,
                 "columns": columns,
                 "copy_options": CopyOptions(chunk_bytes=CHUNK_BYTES),
             },
@@ -136,7 +136,7 @@ async def sync(
 
 class TestSchemaStrategies:
     async def test_create_if_not_exists_builds_the_table_from_the_stream(
-        self, postgres: PostgresSide, mode: Engine
+        self, postgres: PostgresSide, mode: WireChoice
     ) -> None:
         report = await sync(
             postgres, mode, "fresh", CreateIfNotExists(kind="create_if_not_exists")
@@ -156,7 +156,7 @@ class TestSchemaStrategies:
         assert await landing.count() == ROWS
 
     async def test_second_run_keeps_the_table_and_appends(
-        self, postgres: PostgresSide, mode: Engine
+        self, postgres: PostgresSide, mode: WireChoice
     ) -> None:
         await sync(
             postgres, mode, "twice", CreateIfNotExists(kind="create_if_not_exists")
@@ -172,15 +172,15 @@ class TestSchemaStrategies:
         assert await Landing(postgres, PG_SCHEMA, "twice").count() == 2 * ROWS
 
     async def test_error_if_not_exists_refuses_a_missing_table(
-        self, postgres: PostgresSide, mode: Engine
+        self, postgres: PostgresSide, mode: WireChoice
     ) -> None:
-        with pytest.raises(SyncError, match="table is missing"):
+        with pytest.raises(LandingError, match="table is missing"):
             await sync(
                 postgres, mode, "absent", ErrorIfNotExists(kind="error_if_not_exists")
             )
 
     async def test_narrowed_column_is_a_schema_change(
-        self, postgres: PostgresSide, mode: Engine
+        self, postgres: PostgresSide, mode: WireChoice
     ) -> None:
         await postgres.create(
             "narrow",
@@ -193,7 +193,7 @@ class TestSchemaStrategies:
                 "d double precision",
             ],
         )
-        with pytest.raises(SyncError, match="amount"):
+        with pytest.raises(LandingError, match="amount"):
             await sync(
                 postgres,
                 mode,
@@ -202,7 +202,7 @@ class TestSchemaStrategies:
             )
 
     async def test_backup_and_create_renames_the_old_table(
-        self, postgres: PostgresSide, mode: Engine
+        self, postgres: PostgresSide, mode: WireChoice
     ) -> None:
         await postgres.create("keep_old", ["id bigint", "extra text"])
         report = await sync(
@@ -220,7 +220,7 @@ class TestSchemaStrategies:
         assert await landing.count() == ROWS
 
     async def test_drop_and_create_replaces_the_old_table(
-        self, postgres: PostgresSide, mode: Engine
+        self, postgres: PostgresSide, mode: WireChoice
     ) -> None:
         await postgres.create("replaced", ["id bigint", "extra text"])
         report = await sync(
@@ -250,7 +250,7 @@ class TestDeleteAndInsert:
             pytest.skip("delete and insert strategies on the newest postgres")
 
     async def test_truncate_then_full(
-        self, postgres: PostgresSide, mode: Engine
+        self, postgres: PostgresSide, mode: WireChoice
     ) -> None:
         await sync(
             postgres, mode, "trunc", CreateIfNotExists(kind="create_if_not_exists")
@@ -267,7 +267,7 @@ class TestDeleteAndInsert:
         assert await Landing(postgres, PG_SCHEMA, "trunc").count() == ROWS
 
     async def test_delete_all_counts_rows(
-        self, postgres: PostgresSide, mode: Engine
+        self, postgres: PostgresSide, mode: WireChoice
     ) -> None:
         await sync(
             postgres, mode, "wipe", CreateIfNotExists(kind="create_if_not_exists")
@@ -284,7 +284,7 @@ class TestDeleteAndInsert:
         assert await Landing(postgres, PG_SCHEMA, "wipe").count() == ROWS
 
     async def test_delete_where_then_nothing_inserted(
-        self, postgres: PostgresSide, mode: Engine
+        self, postgres: PostgresSide, mode: WireChoice
     ) -> None:
         await sync(
             postgres, mode, "part", CreateIfNotExists(kind="create_if_not_exists")
@@ -313,7 +313,7 @@ class TestDeleteAndInsert:
         assert await Landing(postgres, PG_SCHEMA, "part").count() == 0
 
     async def test_rename_and_declaration_shape_the_ddl(
-        self, postgres: PostgresSide, mode: Engine
+        self, postgres: PostgresSide, mode: WireChoice
     ) -> None:
         rules = ColumnRules(
             rename_columns={"title": "name"}, column_types={"amount": "numeric(20,6)"}
@@ -342,7 +342,7 @@ class TestDeclarations:
             pytest.skip("declarations on the newest postgres")
 
     async def test_pg_declarations_carry_not_null(
-        self, postgres: PostgresSide, mode: Engine
+        self, postgres: PostgresSide, mode: WireChoice
     ) -> None:
         await postgres.create(
             "strict_src",
@@ -361,8 +361,8 @@ class TestDeclarations:
             CreateIfNotExists(kind="create_if_not_exists"),
             select=f"select * from {PG_SCHEMA}.strict_src where id <= 50",
             columns=[
-                ColumnDeclaration(name="id", nullable=False),
-                ColumnDeclaration(name="amount", nullable=False),
+                PgColumnDeclaration(name="id", nullable=False),
+                PgColumnDeclaration(name="amount", nullable=False),
             ],
         )
 
@@ -374,15 +374,15 @@ class TestDeclarations:
         ]
 
     async def test_unknown_column_in_declarations_is_refused(
-        self, postgres: PostgresSide, mode: Engine
+        self, postgres: PostgresSide, mode: WireChoice
     ) -> None:
-        with pytest.raises(SyncError, match="has no column 'nope'"):
+        with pytest.raises(LandingError, match="has no column 'nope'"):
             await sync(
                 postgres,
                 mode,
                 "never",
                 CreateIfNotExists(kind="create_if_not_exists"),
-                columns=[ColumnDeclaration(name="nope", nullable=False)],
+                columns=[PgColumnDeclaration(name="nope", nullable=False)],
             )
 
     async def test_ora_declarations_carry_not_null(
@@ -408,10 +408,9 @@ class TestDeclarations:
                 "ora_sync_out",
                 {
                     "sql": f"select * from {PumpUser.NAME}.strict where id <= 50",
-                    "target_engine": Engine.POSTGRES,
                     "columns": [
-                        ColumnDeclaration(name="ID", nullable=False),
-                        ColumnDeclaration(name="AMOUNT", nullable=False),
+                        PgColumnDeclaration(name="ID", nullable=False),
+                        PgColumnDeclaration(name="AMOUNT", nullable=False),
                     ],
                 },
             ),
@@ -443,7 +442,7 @@ class TestOtherSources:
             pytest.skip("other sources on the newest postgres")
 
     async def test_oracle_stream_creates_exact_types(
-        self, postgres: PostgresSide, mode: Engine, oracle: OracleSide
+        self, postgres: PostgresSide, mode: WireChoice, oracle: OracleSide
     ) -> None:
         await oracle.create(
             "src",
@@ -470,7 +469,6 @@ class TestOtherSources:
                     "sql": 'select id as "id", amount as "amount", name as "name", '
                     'ts as "ts", \'\\\\x\' || rawtohex(rw) as "rw" '
                     f"from {PumpUser.NAME}.src",
-                    "target_engine": Engine.POSTGRES,
                     "columns": [],
                 },
             ),

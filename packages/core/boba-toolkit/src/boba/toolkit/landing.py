@@ -12,10 +12,12 @@ LandingError — поток не начинается с кадра schema, ст
 from __future__ import annotations
 
 import asyncio
+import io
+import string
 from collections.abc import AsyncIterator, Iterator, Mapping
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Annotated, Literal, Protocol
+from typing import Annotated, Any, Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue
 
@@ -26,6 +28,7 @@ __all__ = [
     "BackupAndCreateIfSchemaChanged",
     "ColumnRules",
     "CreateIfNotExists",
+    "CreateTemplate",
     "DeleteAll",
     "DeleteNothing",
     "DeleteOutcome",
@@ -36,10 +39,13 @@ __all__ = [
     "DoNothing",
     "DropAndCreate",
     "DropAndCreateIfSchemaChanged",
+    "Engine",
     "ErrorIfNotExists",
     "ErrorIfSchemaChanged",
     "FailOnUnknown",
     "FallbackAsVarchar",
+    "FrameBodies",
+    "FrameWriter",
     "InsertFull",
     "InsertNothing",
     "InsertStrategy",
@@ -59,10 +65,11 @@ __all__ = [
     "SchemaPlan",
     "SchemaStrategy",
     "SchemaStrategyPlan",
-    "SourceEngine",
-    "TextWire",
+    "SyncWire",
+    "TemplateVar",
     "UnknownTypeApply",
     "UnknownTypeStrategy",
+    "WireChoice",
 ]
 
 
@@ -70,29 +77,53 @@ class LandingError(Exception):
     """Нарушение провода или отказ стратегии приёмника."""
 
 
-class SourceEngine(StrEnum):
-    """Движок источника: по нему приёмник берёт пару из реестра."""
+class Engine(StrEnum):
+    """Движок источника в кадре schema: по нему приёмник берёт пару из
+    реестра."""
 
     POSTGRES = "postgres"
     CLICKHOUSE = "clickhouse"
     ORACLE = "oracle"
 
 
-class TextWire(StrEnum):
-    """Раскладка текстовых тел кадров: csv — COPY csv postgres; tsv — COPY
-    text postgres, байт в байт TabSeparated ClickHouse."""
+class SyncWire(StrEnum):
+    """Раскладка тел кадров: csv — COPY csv postgres; tsv — COPY text
+    postgres, байт в байт TabSeparated ClickHouse; binary — COPY binary
+    postgres, только между postgres одной мажорной версии; arrow — тела
+    подряд как поток колоночных пачек, единственная раскладка, которую
+    понимает любой приёмник и узел-преобразователь; raw — байты как их
+    отдал источник, раскладку задал текст запроса, контракта нет."""
 
     CSV = "csv"
     TSV = "tsv"
+    BINARY = "binary"
+    ARROW = "arrow"
+    RAW = "raw"
+
+
+class WireChoice(StrEnum):
+    """Рычаг LLM у источника: раскладка тел, которую источник кладёт в
+    поток как названо. Источник о приёмнике не знает; совместимость
+    раскладки со своим сервером проверяет приёмник по кадру schema."""
+
+    CSV = "csv"
+    TSV = "tsv"
+    BINARY = "binary"
+    ARROW = "arrow"
+
+    def wire(self) -> SyncWire:
+        return SyncWire(self.value)
 
 
 class SchemaHead(BaseModel):
-    """Первый кадр: движок источника, раскладка тел и контракт колонок как
-    его описал источник; разбирает контракт пара по source_engine."""
+    """Первый кадр: движок источника, раскладка тел и контракт колонок. У
+    провода пары контракт — как его описал источник, разбирает пара по
+    source_engine; у провода arrow — нейтральный контракт колонок для
+    приёмника без пары."""
 
     kind: Literal["schema"]
-    source_engine: SourceEngine
-    wire: TextWire
+    source_engine: Engine
+    wire: SyncWire
     contract: JsonValue
 
 
@@ -118,6 +149,9 @@ class LandingOutbound:
 
     async def rows(self, body: Chunk) -> None:
         await asyncio.to_thread(self._out.emit, RowsHead(kind="rows"), body)
+
+    def writer(self) -> FrameWriter:
+        return FrameWriter(self._out)
 
 
 class LandingInbound:
@@ -148,9 +182,57 @@ class LandingInbound:
 
             yield frame.body
 
+    def raw(self) -> FrameBodies:
+        return FrameBodies(self.sync_bodies())
+
     def sync_bodies(self) -> Iterator[Chunk]:
         for frame in self._frames:
             yield frame.body
+
+
+class FrameBodies(io.RawIOBase):
+    """Тела кадров подряд как файл на чтение: для читателей, которые ждут
+    файл. Чтение блокирующее, из потока, где стоит читатель."""
+
+    def __init__(self, bodies: Iterator[Chunk]) -> None:
+        super().__init__()
+        self._bodies = bodies
+        self._current = memoryview(b"")
+
+    def readable(self) -> bool:
+        return True
+
+    def readinto(self, buffer: Any) -> int:
+        target = memoryview(buffer).cast("B")
+        while len(self._current) == 0:
+            try:
+                self._current = memoryview(next(self._bodies))
+            except StopIteration:
+                return 0
+
+        size = min(len(target), len(self._current))
+        target[:size] = self._current[:size]
+        self._current = self._current[size:]
+
+        return size
+
+
+class FrameWriter(io.RawIOBase):
+    """Файл на запись поверх выходного порта кадров: каждый write — кадр
+    rows с этими байтами. Для писателей, работающих в потоке."""
+
+    def __init__(self, out: Outbound[LandingFrame]) -> None:
+        super().__init__()
+        self._out = out
+
+    def writable(self) -> bool:
+        return True
+
+    def write(self, data: Any) -> int:
+        view = memoryview(data)
+        self._out.emit(RowsHead(kind="rows"), view)
+
+        return len(view)
 
 
 class ColumnRules(BaseModel):
@@ -174,6 +256,72 @@ class ColumnRules(BaseModel):
             "тип из контракта и стратегию unknown_types."
         ),
     )
+
+
+class TemplateVar(StrEnum):
+    """Переменные шаблона create table: схема и имя таблицы (каждая
+    отдельным идентификатором, экранирует пара своим драйвером) и
+    колонки из плана пары."""
+
+    SCHEMA_NAME = "schema_name"
+    TABLE_NAME = "table_name"
+    COLUMNS = "columns"
+
+    def placeholder(self) -> str:
+        return "{" + self.value + "}"
+
+
+@dataclass(frozen=True)
+class CreateTemplate:
+    """Шаблон create table от вызывающего: цельный стейтмент с переменными
+    TemplateVar, каждая встречается хотя бы раз, других подстановок нет;
+    литеральные фигурные скобки удваиваются. Проверяется при создании,
+    подставляет уже экранированные фрагменты пары."""
+
+    text: str
+
+    def __post_init__(self) -> None:
+        allowed = [member.value for member in TemplateVar]
+        try:
+            fields = list(string.Formatter().parse(self.text))
+        except ValueError as exc:
+            raise LandingError(
+                f"create_table template is not parseable: {exc}; double literal "
+                f"braces; template: {self.text!r}"
+            ) from exc
+
+        seen: set[str] = set()
+        for _, name, spec, conversion in fields:
+            if name is None:
+                continue
+
+            if name not in allowed:
+                raise LandingError(
+                    f"create_table template has an unknown variable {{{name}}}; "
+                    f"allowed: {allowed}; template: {self.text!r}"
+                )
+
+            if spec or conversion:
+                raise LandingError(
+                    f"create_table template: variable {{{name}}} takes no format "
+                    f"spec or conversion; template: {self.text!r}"
+                )
+
+            seen.add(name)
+
+        missing = [name for name in allowed if name not in seen]
+        if missing:
+            raise LandingError(
+                f"create_table template lacks {missing}; every variable of "
+                f"{allowed} must appear; template: {self.text!r}"
+            )
+
+    def render(self, schema_name: str, table_name: str, columns: str) -> str:
+        """Стейтмент с подставленными фрагментами; фрагменты уже экранированы
+        драйвером пары."""
+        return self.text.format(
+            schema_name=schema_name, table_name=table_name, columns=columns
+        )
 
 
 @dataclass(frozen=True)

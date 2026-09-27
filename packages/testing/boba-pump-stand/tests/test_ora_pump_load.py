@@ -34,6 +34,7 @@ from boba.pump_stand import (
     PumpStand,
 )
 from boba.pump_stand.oracle import PumpUser
+from boba.toolkit.landing import CreateIfNotExists, DeleteNothing, InsertFull
 
 pytestmark = [pytest.mark.integration, pytest.mark.load, pytest.mark.anyio]
 
@@ -165,7 +166,6 @@ class Postgres:
         async with await AsyncPostgresPool.dedicated(self.source.postgres) as conn:
             await conn.execute(self._q(f"drop schema if exists {PG_SCHEMA} cascade"))
             await conn.execute(self._q(f"create schema {PG_SCHEMA}"))
-            await conn.execute(self._q(self.DDL))
 
     async def totals(self) -> Totals:
         async with await AsyncPostgresPool.dedicated(self.source.postgres) as conn:
@@ -244,9 +244,10 @@ def _totals(row: Sequence[Any]) -> Totals:
 
 
 EXPORT = (
-    "select id, n18_4, n38_10, bd, vc, vn, dt, ts6, "
-    "to_char(tstz, 'yyyy-mm-dd hh24:mi:ss.ff6tzh:tzm') as tstz, "
-    f"rawtohex(rw16) as rw16 from {ORA_TABLE}"
+    'select id as "id", n18_4 as "n18_4", n38_10 as "n38_10", bd as "bd", '
+    'vc as "vc", vn as "vn", dt as "dt", ts6 as "ts6", '
+    "to_char(tstz, 'yyyy-mm-dd hh24:mi:ss.ff6tzh:tzm') as \"tstz\", "
+    f'rawtohex(rw16) as "rw16" from {ORA_TABLE}'
 )
 
 
@@ -296,11 +297,15 @@ class TestLoad:
         baseline = memory.reset()
 
         chained = await pumps.chain(
-            Leg("ora_csv_out", {"sql": EXPORT}),
+            Leg("ora_sync_out", {"sql": EXPORT}),
             Leg(
-                "pg_stream_in",
+                "pg_sync_in",
                 {
-                    "sql": f"copy {PG_SCHEMA}.load from stdin (format csv)",
+                    "schema_name": PG_SCHEMA,
+                    "table_name": "load",
+                    "schema_strategy": CreateIfNotExists(kind="create_if_not_exists"),
+                    "delete_strategy": DeleteNothing(kind="nothing"),
+                    "insert_strategy": InsertFull(kind="full"),
                     "copy_options": CopyOptions(chunk_bytes=CHUNK_BYTES),
                 },
             ),
@@ -313,7 +318,7 @@ class TestLoad:
             f"{chained.out_report}, peak rss +{growth} MiB"
         )
 
-        assert f"status: COPY {ROWS}" in chained.in_report
+        assert chained.in_report.startswith(f"{ROWS} rows written")
         assert await postgres.totals() == await oracle.totals()
         assert growth < PEAK_GROWTH_MIB
 
