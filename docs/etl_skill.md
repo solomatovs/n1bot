@@ -497,8 +497,18 @@ insert into dwh.users (id, name, created_at)
 format TabSeparated
 ```
 
-ClickHouse -> PostgreSQL: `ch_sync_out` и `pg_sync_in`, тела едут потоком
-Arrow с контрактом, стейтменты приёмник строит сам по стратегиям.
+ClickHouse -> PostgreSQL, `ch_sync_out` с `wire = tsv` и `pg_sync_in`:
+
+```sql
+-- ch_sync_out (wire = tsv)
+select id, name, created_at
+from dwh.users
+order by id
+```
+
+Стейтменты приёмника — `create table`, `truncate`, `COPY ... FROM STDIN` —
+строит сам `pg_sync_in` по стратегиям; тела `TabSeparated` ложатся в COPY
+text как есть.
 
 ### Формат
 
@@ -549,37 +559,40 @@ CSV тоже стыкуется, но NULL у ClickHouse — `\N`, а PostgreSQL
 
 ### Типы ClickHouse в PostgreSQL
 
-У ClickHouse больше типов, и часть значений переписывается при выгрузке.
-Колонка «При выгрузке» — что писать в `SELECT` для `ch_stream_out`,
-«При возврате» — как собрать значение через `input()`, если оно поедет назад.
+Пара `ch_sync_out` (`wire = tsv`) -> `pg_sync_in`. Контракт — шапка
+`TabSeparatedWithNamesAndTypes` того же запроса, тип postgres выбирается по
+тексту типа ClickHouse, затем приёмник разбирает его у себя (`select
+null::<тип>`) и сверяет с таблицей теми же правилами, что и pg -> pg. Всё
+решается до DDL: у типа либо есть пара, либо «типа нет» — тогда
+`unknown_types` (`fallback_as_varchar` даёт `varchar`) или явный
+`rules.column_types`. Ошибка сервера при самой загрузке откатывает транзакцию
+целиком.
 
-| Тип ClickHouse | В потоке как есть | Тип PostgreSQL | При выгрузке | При возврате |
-|---|---|---|---|---|
-| Int8..Int64, UInt8..UInt32 | `42` | smallint, integer, bigint | как есть | как есть |
-| UInt64, Int128..UInt256 | `18446744073709551615` | numeric | как есть | как есть |
-| Decimal32..Decimal256 | `12.5` | numeric(p, s) | как есть | как есть |
-| Float32, Float64 | `0.3333333333333333`, `nan` | real, double precision | как есть | `toFloat64(f)` из `String`, см. точность |
-| String | `tab\tnew` | text | как есть | как есть |
-| String с нулевым байтом, FixedString | `a\0b` | bytea | `concat('\\x', hex(col))` | `unhex(substring(col, 3))` |
-| LowCardinality(String) | `x` | text | как есть | как есть |
-| Date, Date32 | `2024-02-29` | date | как есть | как есть |
-| DateTime | `2024-02-29 13:14:15` | timestamp(0) | как есть | как есть |
-| DateTime64(≤6) | `2024-02-29 13:14:15.123456` | timestamp(6) | как есть | как есть |
-| DateTime64(9) | `...15.123456789` | text | `toString(col)` | `toDateTime64(col, 9, 'UTC')` |
-| Enum8, Enum16 | `x` | text | как есть | как есть |
-| UUID | `a1b2c3d4-...` | uuid | как есть | как есть |
-| IPv4, IPv6 | `10.0.0.1` | inet | как есть | как есть |
-| Bool | `true` | boolean | как есть | как есть |
-| Array | `[1,2]` | jsonb | `toJSONString(col)` | `JSONExtract(col, 'Array(Int64)')` |
-| Tuple с именами | `(1,'x')` | jsonb | `toJSONString(col)` | `tuple(JSONExtractInt(col, 'a'), JSONExtractString(col, 'b'))` |
-| Map | `{'k':1}` | jsonb | `toJSONString(col)` | `CAST(JSONExtractKeysAndValues(col, 'Int64'), 'Map(String, Int64)')` |
-| Point, Ring, Polygon | `(1,0.5)` | jsonb | `toJSONString(col)` | `JSONExtract` в `Tuple(Float64, Float64)` и массивы |
-| Nullable(...) | `\N` | тот же тип | как есть | как есть |
+| Тип ClickHouse | В потоке | Тип PostgreSQL | Пояснение |
+|---|---|---|---|
+| Int8, Int16 / Int32 / Int64 | `42` | smallint / integer / bigint | |
+| UInt8 / UInt16 / UInt32 | `42` | smallint / integer / bigint | на разряд шире, чтобы вместить без знака |
+| UInt64 | `18446744073709551615` | numeric(20) | |
+| Int128, UInt128 / Int256, UInt256 | `1e21` цифрами | numeric(39) / numeric(78) | |
+| Float32, Float64 | `0.3333333333333333`, `nan`, `inf` | real, double precision | postgres читает `nan` и `inf` |
+| Decimal(p, s) любой ширины | `12.5000` | numeric(p, s) | |
+| String, LowCardinality(String), Enum8, Enum16 | `tab\tnew` | text | Enum едет именем значения |
+| FixedString(n) | `ab\0\0` | text | хвостовые NUL postgres не примет: в запросе `replaceAll(toString(col), '\\0', '')` |
+| Date, Date32 | `2024-02-29` | date | |
+| DateTime, DateTime('UTC') | `2024-02-29 13:14:15` | timestamp(0), timestamptz(0) | |
+| DateTime64(n), DateTime64(n, 'UTC') | `...15.123456` | timestamp(n), timestamptz(n) | n > 6 postgres округляет до микросекунд |
+| DateTime64(n, 'Europe/Moscow') | `...15.123` | типа нет | текст без смещения прочитался бы как UTC: `toDateTime64(col, n, 'UTC')` или `column_types` |
+| Bool | `true` | boolean | |
+| UUID | `a1b2c3d4-...` | uuid | |
+| IPv4, IPv6 | `10.0.0.1` | inet | |
+| JSON (24.x+) | `{"a":1}` | jsonb | `Object('json')` старых серверов печатается кортежем — типа нет |
+| Array, Map, Tuple, Nested | `[1,2]`, `{'k':1}` | типа нет | `toJSONString(col)` и `column_types` jsonb, или `varchar` по `fallback_as_varchar` |
+| Nullable(...) | `\N` | тот же тип, nullable | не-Nullable колонка создаётся `not null` |
 
-На PostgreSQL старше 9.4 вместо `jsonb` подойдёт `text`. Кортеж и Map
-собираются по частям потому, что на ClickHouse 22.12 `JSONExtract` не
-возвращает ни Map, ни именованный кортеж. Нулевой байт PostgreSQL не хранит
-ни в `text`, ни в `varchar`, поэтому такие строки едут через `bytea`.
+Сверка с существующей таблицей та же, что у pg -> pg: шире (`numeric(30,6)`
+под `Decimal(18,4)`, `integer` под `Int8`, `varchar(200)` под `String`) —
+предупреждение, уже (масштаб, точность времени, другой тип) — отказ до
+загрузки.
 
 ### Точность чисел с плавающей точкой
 
@@ -1651,7 +1664,7 @@ other, для которых типа нет ни в контракте, ни в
 | Раскладка | Кто отдаёт | Кто принимает | Что сохраняется |
 |---|---|---|---|
 | `csv` | `pg_sync_out` | `pg_sync_in`, `ora_csv_in` | всё, что печатает COPY: `infinity`, `NaN` у numeric, `numeric(999,5)`, enum, составные, диапазоны |
-| `tsv` | `pg_sync_out` | `pg_sync_in`, `ch_stream_in` | COPY text в раскладке TabSeparated |
+| `tsv` | `pg_sync_out`, `ch_sync_out` | `pg_sync_in`, `ch_sync_in`, `ch_stream_in` | COPY text и TabSeparated — одна раскладка; с контрактом типов источника |
 | `binary` | `pg_sync_out` | `pg_sync_in` | COPY binary, только postgres одной мажорной версии |
 | `arrow` | `pg_sync_out`, `ora_sync_out`, `ch_sync_out`, `ora_arrow_out`, `ch_arrow_out` | `pg_sync_in` (с контрактом), `ora_arrow_in`, `ch_arrow_in` | типы Arrow; чего Arrow не несёт — `::text` в запросе |
 | кадр `raw` без формата | `ch_stream_out`, `ora_csv_out`, `ch_arrow_out`, `ora_arrow_out` | `ch_stream_in`, `ora_csv_in`, `ch_arrow_in`, `ora_arrow_in` | байты как их отдал источник, формат задал текст запроса или инструмент; контракта нет |
@@ -1745,6 +1758,10 @@ deleted: 0 rows by truncate table "dwh"."orders"
 - `test_pg_ch_sync.py` — пара postgres -> ClickHouse по tsv: типы и значения,
   JSON по версиям, отказы и `String` для типов без пары, ловушки сервера
   (маска inet, массив json, прижатые даты), витрина;
+- `test_ch_pg_sync.py` — пара ClickHouse -> postgres по tsv на pg-16 и
+  Greenplum 7: типы и значения, JSON с 24.x, отказы и `varchar` для типов без
+  пары, `column_types`, сверка шире/уже, NUL в FixedString откатывает
+  транзакцию, витрина;
 - `test_ch_sync.py` — приёмник `ch_sync_in`: поток arrow из postgres и
   ClickHouse, пара ClickHouse -> ClickHouse по tsv с типами как есть, типы,
   двойник и `exchange tables`, стратегии, rename, шаблон, `ReplicatedMergeTree`
