@@ -45,7 +45,7 @@ from boba.pump_stand import (
     PumpStand,
 )
 from boba.pump_stand.oracle import PumpUser
-from boba.toolkit.sync import ColumnDeclaration, SyncError
+from boba.toolkit.contract import ColumnDeclaration, ContractError
 from boba.toolkit.transfer import (
     BackupAndCreateIfSchemaChanged,
     ColumnRules,
@@ -537,7 +537,9 @@ class TestPostgresIntoOracle:
             pytest.skip("the server has BOOLEAN")
 
         pumps = Pumps(oracle=oracle.profile, postgres=pg_source.profile)
-        with pytest.raises(TransferError, match=r"column b: bool .*b::int|col::int"):
+        with pytest.raises(
+            TransferError, match=r"column b: bool .*send an integer 0 or 1"
+        ):
             await pumps.chain(
                 pg_out(f"select id, b from {PG_SCHEMA}.src"),
                 ora_in("from_pg", DropAndCreate(kind="drop_and_create")),
@@ -917,7 +919,9 @@ class TestClickHouseIntoOracle:
         self, oracle: OracleSide, ch_source: ClickHouseSide
     ) -> None:
         pumps = Pumps(oracle=oracle.profile, clickhouse=ch_source.profile)
-        with pytest.raises(TransferError, match=r"column u: .*uuid as text"):
+        with pytest.raises(
+            TransferError, match=r"column u: .*uuid extension: send utf8 text"
+        ):
             await pumps.chain(
                 ch_out(f"select id, u from {CH_DATABASE}.src order by id"),
                 ora_in("from_ch", DropAndCreate(kind="drop_and_create")),
@@ -1016,7 +1020,7 @@ class TestSourceRefusals:
 
     async def test_declaration_on_a_missing_column(self, oracle: OracleSide) -> None:
         pumps = Pumps(oracle=oracle.profile)
-        with pytest.raises(SyncError, match="no column 'nope'"):
+        with pytest.raises(ContractError, match="no column 'nope'"):
             await pumps.chain(
                 ora_out(SELECT, (ColumnDeclaration(name="nope", nullable=False),)),
                 ora_in("refused", DropAndCreate(kind="drop_and_create")),

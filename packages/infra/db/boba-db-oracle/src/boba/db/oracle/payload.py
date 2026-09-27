@@ -1,8 +1,8 @@
 """Oracle для payload'ов и скраперов: thin-соединение python-oracledb по профилю,
-строки запроса потоком с именованными bind'ами или потоком Arrow IPC в
-Arrow-порт (пачки драйвера как есть, без объектов Python); запись пачками
-Arrow через executemany; стейтменты before/after насоса по одному на том же
-соединении.
+строки запроса потоком с именованными bind'ами, потоком Arrow IPC в
+Arrow-порт (пачки драйвера как есть, без объектов Python) или CSV-байтами
+для COPY скраперов; запись пачками Arrow через executemany; стейтменты
+before/after насоса по одному на том же соединении.
 
 Ошибки:
 OracleQueryError — сервер отклонил запрос или оборвал чтение (в том числе по
@@ -20,6 +20,7 @@ from typing import Any, ClassVar
 
 import oracledb
 import pyarrow
+import pyarrow.csv
 from oracledb import (
     DB_TYPE_BINARY_DOUBLE,
     DB_TYPE_BINARY_FLOAT,
@@ -55,10 +56,11 @@ from boba.db.oracle.errors import (
 )
 from boba.db.oracle.trace import OraScriptStep, OraSessionTrace
 from boba.toolkit.arrow import ArrowColumns, ArrowIpc, SourceFields
-from boba.toolkit.sync import ColumnSpec, ColumnType, TimeUnit, TypeFamily
+from boba.toolkit.contract import ColumnSpec, ColumnType, TimeUnit, TypeFamily
 
 __all__ = [
-    "ArrowTypes",
+    "ByteStream",
+    "OraArrowTypes",
     "OraColumnKinds",
     "OraTypeText",
     "PayloadOracle",
@@ -80,6 +82,16 @@ class RowStream:
     names: tuple[str, ...]
     blocks: AsyncIterator[Sequence[Any]]
     affected: int = 0
+
+
+@dataclass(frozen=True)
+class ByteStream:
+    """Ответ запроса байтами CSV без заголовка: имена колонок и блоки по пачкам
+    Arrow в arraysize строк. Путь скраперов словаря: блоки идут в COPY
+    postgres как есть."""
+
+    names: tuple[str, ...]
+    blocks: AsyncIterator[memoryview]
 
 
 class OraTypeText:
@@ -218,7 +230,7 @@ class OraTypeText:
         return f"{name}({precision},{scale})"
 
 
-class ArrowTypes:
+class OraArrowTypes:
     """Тип Arrow для колонки по описанию курсора после parse — та же раскладка,
     что драйвер выбирает сам при fetch_df, кроме NUMBER: без точности он отдал
     бы double, поэтому NUMBER(p, s) запрашивается decimal128(p, s), целый
@@ -365,7 +377,7 @@ class OraColumnKinds:
     сверки — для любого типа, в том числе того, что Arrow не везёт: так
     описываются колонки таблицы-приёмника и типы из rules.column_types.
     Семейство и параметры совпадают с тем, что даёт контракт источника
-    через ArrowTypes: целый NUMBER до 18 знаков — integer 64, NUMBER(p, s)
+    через OraArrowTypes: целый NUMBER до 18 знаков — integer 64, NUMBER(p, s)
     — decimal, FLOAT(p) — float 64, DATE — момент в секундах, TIMESTAMP —
     секунды, микросекунды или наносекунды по долям; NUMBER без точности —
     decimal без точности (в него ложится любое число). Длина строк — в
@@ -374,8 +386,8 @@ class OraColumnKinds:
     FLOAT_SCALE: ClassVar[int] = -127
     INT64_DIGITS: ClassVar[int] = 18
     MICROSECONDS: ClassVar[int] = 6
-    TEXT: ClassVar[frozenset[DbType]] = ArrowTypes.TEXT
-    BINARY: ClassVar[frozenset[DbType]] = ArrowTypes.BINARY
+    TEXT: ClassVar[frozenset[DbType]] = OraArrowTypes.TEXT
+    BINARY: ClassVar[frozenset[DbType]] = OraArrowTypes.BINARY
     TIMESTAMPS: ClassVar[frozenset[DbType]] = frozenset(
         {DB_TYPE_TIMESTAMP, DB_TYPE_TIMESTAMP_TZ, DB_TYPE_TIMESTAMP_LTZ}
     )
@@ -489,7 +501,7 @@ class PayloadOracle:
 
     def __init__(self, connection: OracleConfig) -> None:
         self._connection = connection
-        self._types = ArrowTypes()
+        self._types = OraArrowTypes()
         self._ipc = ArrowIpc()
         self._columns = ArrowColumns()
 
@@ -576,6 +588,50 @@ class PayloadOracle:
                 f"commit on oracle failed: {type(exc).__name__}: {exc}"
             ) from exc
 
+    @asynccontextmanager
+    async def csv(
+        self, conn: AsyncConnection, text: str
+    ) -> AsyncGenerator[ByteStream, None]:
+        """Ответ запроса CSV-байтами без заголовка пачками Arrow по arraysize строк:
+        драйвер декодирует ответ Oracle в массивы Arrow в Cython, pyarrow пишет CSV
+        в C, Python делает один шаг на пачку. NULL это пустое поле, строка с
+        кавычкой, запятой или переводом строки — в кавычках, DATE и TIMESTAMP — ISO
+        с пробелом. Типы колонок — по описанию стейтмента после parse, без
+        выполнения (OraArrowTypes), с теми же отказами: NUMBER без точности с
+        дробью, TIMESTAMP WITH TIME ZONE, INTERVAL запрос обязан привести сам.
+        RAW запрос отдаёт `rawtohex`: bytes в CSV не пишутся."""
+        schema = await self._requested_schema(conn, text)
+
+        yield ByteStream(
+            names=self._schema_names(schema),
+            blocks=self._csv_batches(conn, text, schema),
+        )
+
+    @staticmethod
+    def _schema_names(schema: pyarrow.Schema) -> tuple[str, ...]:
+        names: list[str] = []
+        for name in schema.names:
+            names.append(str(name).lower())
+
+        return tuple(names)
+
+    async def _csv_batches(
+        self, conn: AsyncConnection, text: str, schema: pyarrow.Schema
+    ) -> AsyncIterator[memoryview]:
+        options = pyarrow.csv.WriteOptions(include_header=False)
+        async for table in self._tables(conn, text, schema):
+            buffer = io.BytesIO()
+            try:
+                pyarrow.csv.write_csv(table, buffer, write_options=options)
+            except pyarrow.ArrowException as exc:
+                raise OracleQueryError(
+                    f"writing an arrow batch as csv failed, every column must be "
+                    f"text, number or date (binary needs rawtohex): "
+                    f"{type(exc).__name__}: {exc}; query: {text[:200]!r}"
+                ) from exc
+
+            yield memoryview(buffer.getvalue())
+
     async def _requested_schema(
         self, conn: AsyncConnection, text: str
     ) -> pyarrow.Schema:
@@ -659,7 +715,7 @@ class PayloadOracle:
     ) -> pyarrow.Schema:
         """Ответ запроса потоком Arrow IPC в выходной порт: схема, затем пачки
         драйвера по arraysize строк как есть, без перевода в текст. Схема та
-        же, что у csv (ArrowTypes); типы, которые драйвер в Arrow не отдаёт,
+        же, что у csv (OraArrowTypes); типы, которые драйвер в Arrow не отдаёт,
         отвергаются до выполнения. Прочитанные строки считает trace."""
         schema = await self._requested_schema(conn, text)
         writer = await self._ipc.open_out(sink, schema)

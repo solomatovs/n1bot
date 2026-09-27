@@ -13,7 +13,7 @@ AddressError — адрес базы не собрался из профиля �
 QueryBuildError — сборщик получил один параметр с двумя разными значениями
     или имя схемы/таблицы/колонки пустое или с кавычкой внутри.
 ArrowStreamError — вход ora_stream_in не читается как поток Arrow IPC.
-SyncError — декларация на колонку, которой нет в ответе; правило приёмника
+ContractError — декларация на колонку, которой нет в ответе; правило приёмника
     не сходится со схемами; ora_stream_in получил не arrow.
 TransferError — стратегия схемы отказала; тип без пары у Oracle.
 """
@@ -38,32 +38,30 @@ from boba.db.oracle import (
 from boba.db.oracle.address import OraAddresses
 from boba.db.oracle.connection import OracleConfig
 from boba.db.oracle.target import OraTableRef
+from boba.toolkit.contract import (
+    ArrowContract,
+    ColumnDeclaration,
+    ContractError,
+    ContractText,
+    StreamContract,
+)
 from boba.toolkit.entry import ToolMain
 from boba.toolkit.facade import Injected, UserConnection, tool
 from boba.toolkit.ports import ArrowStreamError, ChunkBytes, Inbound, Outbound
 from boba.toolkit.result import MarkdownResult, SqlResult, SqlStatement, TableResult
 from boba.toolkit.sql import QueryBuildError, SqlErrorKind, SqlLimits
-from boba.toolkit.sync import (
-    ArrowContract,
-    ColumnDeclaration,
-    ContractText,
-    Declarations,
-    StreamContract,
-    SyncError,
-)
 from boba.toolkit.transfer import (
     ColumnRules,
     CreateTemplate,
     DeleteStrategy,
-    Engine,
     FailOnUnknown,
     InsertStrategy,
-    SchemaHead,
     SchemaStrategy,
     StreamWire,
     TransferFrame,
     TransferInbound,
     TransferOutbound,
+    TransferReportText,
     UnknownTypeStrategy,
 )
 from boba.toolkit.types import SecretRevealing
@@ -788,6 +786,7 @@ async def ora_stream_out(  # noqa: PLR0913
     commit. В ответ — состав контракта, строки, шаги скриптов и координаты
     сессии.
     """
+    from boba.db.oracle.arrow_stream import OraArrowSource  # noqa: PLC0415
     from boba.db.oracle.payload import PayloadOracle  # noqa: PLC0415
     from boba.db.oracle.trace import OraSessionTrace  # noqa: PLC0415
 
@@ -797,19 +796,9 @@ async def ora_stream_out(  # noqa: PLR0913
     async with payload.opened() as conn:
         trace = OraSessionTrace(conn)
         before_steps = await payload.script(conn, before, trace)
-        specs = Declarations().merge(
-            await payload.describe_specs(conn, statement.text), columns
+        specs = await OraArrowSource(conn, payload, trace).stream(
+            statement.text, columns, outbound
         )
-        contract = ArrowContract(columns=StreamContract().columns(specs))
-        await outbound.schema(
-            SchemaHead(
-                kind="schema",
-                source_engine=Engine.ORACLE,
-                wire=StreamWire.ARROW,
-                contract=contract.model_dump(mode="json"),
-            )
-        )
-        await payload.arrow_into(conn, statement.text, outbound.writer(), trace)
         after_steps = await payload.script(conn, after, trace)
         await payload.commit(conn)
         report = trace.report(
@@ -927,20 +916,16 @@ async def ora_stream_in(  # noqa: PLR0913
     after — одна транзакция. В ответ — что сделано со схемой и почему, сверка
     по колонкам, что удалено, сколько вставлено.
     """
+    from boba.db.oracle.arrow_stream import OraArrowLoader  # noqa: PLC0415
     from boba.db.oracle.payload import PayloadOracle  # noqa: PLC0415
-    from boba.db.oracle.sync import OraSyncLoader  # noqa: PLC0415
-    from boba.db.oracle.trace import (  # noqa: PLC0415
-        OraSessionTrace,
-        OraTransferReportText,
-    )
-    from boba.toolkit.sync import ArrowContract, StreamContract  # noqa: PLC0415
-    from boba.toolkit.sync import Engine as NeutralEngine  # noqa: PLC0415
+    from boba.db.oracle.trace import OraSessionTrace  # noqa: PLC0415
+    from boba.toolkit.contract import Engine as NeutralEngine  # noqa: PLC0415
 
     template = CreateTemplate(create_table, OraTableRef.TEMPLATE_VARS)
     inbound = TransferInbound(feed)
     head = await inbound.get_schema()
     if head.wire is not StreamWire.ARROW:
-        raise SyncError(
+        raise ContractError(
             f"ora_stream_in takes the arrow wire only, got {head.wire.value} from "
             f"{head.source_engine.value}"
         )
@@ -951,7 +936,7 @@ async def ora_stream_in(  # noqa: PLR0913
     async with payload.opened() as conn:
         trace = OraSessionTrace(conn)
         before_steps = await payload.script(conn, before, trace)
-        loader = OraSyncLoader(
+        loader = OraArrowLoader(
             conn,
             table,
             StreamContract().specs(contract.columns),
@@ -973,7 +958,7 @@ async def ora_stream_in(  # noqa: PLR0913
         await payload.commit(conn)
 
     return MarkdownResult(
-        text=OraTransferReportText().render(report, before_steps, after_steps)
+        text=TransferReportText().render(report, before_steps, after_steps)
     )
 
 
@@ -983,7 +968,7 @@ EXPECTED: Mapping[type[Exception], SqlErrorKind] = {
     OracleError: SqlErrorKind.DATABASE_UNAVAILABLE,
     OracleQueryError: SqlErrorKind.SQL_FAILED,
     ArrowStreamError: SqlErrorKind.SQL_FAILED,
-    SyncError: SqlErrorKind.SQL_FAILED,
+    ContractError: SqlErrorKind.SQL_FAILED,
 }
 
 TOOLS: Final = ToolMain.toolset(

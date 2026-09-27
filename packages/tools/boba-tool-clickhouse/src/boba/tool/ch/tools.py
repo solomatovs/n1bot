@@ -31,7 +31,7 @@ from boba.db.clickhouse.target import (
     ChStreamWire,
     ChTableRef,
 )
-from boba.db.clickhouse.trace import ChScriptStep
+from boba.toolkit.contract import ColumnDeclaration, ContractError
 from boba.toolkit.entry import ToolMain
 from boba.toolkit.facade import Injected, UserConnection, tool
 from boba.toolkit.ports import ChunkBytes, Inbound, Outbound
@@ -41,7 +41,6 @@ from boba.toolkit.sql import (
     SqlErrorKind,
     SqlLimits,
 )
-from boba.toolkit.sync import ColumnDeclaration, SyncError
 from boba.toolkit.transfer import (
     ColumnRules,
     CreateTemplate,
@@ -54,7 +53,7 @@ from boba.toolkit.transfer import (
     TransferFrame,
     TransferInbound,
     TransferOutbound,
-    TransferReport,
+    TransferReportText,
     UnknownTypeStrategy,
 )
 from boba.toolkit.types import SecretRevealing
@@ -1112,8 +1111,8 @@ async def ch_stream_out(  # noqa: PLR0913
     Стейтменты before и after идут в той же сессии сервера до и после
     запроса. В ответ — состав контракта, сводка сервера и шаги скриптов.
     """
+    from boba.db.clickhouse.arrow_stream import ChArrowSource  # noqa: PLC0415
     from boba.db.clickhouse.payload import PayloadClickHouse  # noqa: PLC0415
-    from boba.db.clickhouse.sync import ChSyncSource  # noqa: PLC0415
     from boba.db.clickhouse.transfer import ChTsvOut  # noqa: PLC0415
 
     if wire is ChStreamWire.TSV and columns:
@@ -1132,36 +1131,13 @@ async def ch_stream_out(  # noqa: PLR0913
                     statement.text, chunk_bytes, outbound
                 )
             case ChStreamWire.ARROW:
-                report = await ChSyncSource(client).stream(
+                report = await ChArrowSource(client).stream(
                     statement.text, columns, chunk_bytes, outbound
                 )
 
         after_steps = await PayloadClickHouse.script(client, after)
 
     return MarkdownResult(text=report.scripted(before_steps, after_steps).render())
-
-
-class ChTransferReportText:
-    """Текст отчёта приёмника ClickHouse с шагами скриптов before и after."""
-
-    def render(
-        self,
-        report: TransferReport,
-        before: Sequence[ChScriptStep],
-        after: Sequence[ChScriptStep],
-    ) -> str:
-        lines = [report.render()]
-        if before:
-            lines.append("before:")
-            for step in before:
-                lines.append(step.render())
-
-        if after:
-            lines.append("after:")
-            for step in after:
-                lines.append(step.render())
-
-        return "\n".join(lines)
 
 
 @tool
@@ -1304,11 +1280,11 @@ async def ch_stream_in(  # noqa: PLR0913
     сделано со схемой и почему, сверка по колонкам, что удалено, сколько
     вставлено.
     """
+    from boba.db.clickhouse.arrow_stream import ChArrowLoader  # noqa: PLC0415
     from boba.db.clickhouse.payload import PayloadClickHouse  # noqa: PLC0415
-    from boba.db.clickhouse.sync import ChSyncLoader  # noqa: PLC0415
-    from boba.db.clickhouse.transfer import ClickHouseTransfers  # noqa: PLC0415
-    from boba.toolkit.sync import ArrowContract, StreamContract  # noqa: PLC0415
-    from boba.toolkit.sync import Engine as NeutralEngine  # noqa: PLC0415
+    from boba.db.clickhouse.transfer import ChTransfers  # noqa: PLC0415
+    from boba.toolkit.contract import ArrowContract, StreamContract  # noqa: PLC0415
+    from boba.toolkit.contract import Engine as NeutralEngine  # noqa: PLC0415
 
     payload = PayloadClickHouse
     template = CreateTemplate(create_table, ChTableRef.TEMPLATE_VARS)
@@ -1320,7 +1296,7 @@ async def ch_stream_in(  # noqa: PLR0913
         before_steps = await payload.script(client, before)
         if head.wire is StreamWire.ARROW:
             contract = ArrowContract.model_validate(head.contract)
-            loader = ChSyncLoader(
+            loader = ChArrowLoader(
                 client,
                 table,
                 placement,
@@ -1337,7 +1313,7 @@ async def ch_stream_in(  # noqa: PLR0913
                 template,
             )
         else:
-            pair = ClickHouseTransfers.discover().pair(head.source_engine)
+            pair = ChTransfers.discover().pair(head.source_engine)
             report = await pair(client, table, placement, head, inbound).run(
                 schema_strategy,
                 delete_strategy,
@@ -1350,7 +1326,7 @@ async def ch_stream_in(  # noqa: PLR0913
         after_steps = await payload.script(client, after)
 
     return MarkdownResult(
-        text=ChTransferReportText().render(report, before_steps, after_steps)
+        text=TransferReportText().render(report, before_steps, after_steps)
     )
 
 
@@ -1372,7 +1348,7 @@ async def ch_address(connection: ChConnection) -> TableResult:
 
 
 EXPECTED: Mapping[type[Exception], SqlErrorKind] = {
-    SyncError: SqlErrorKind.SQL_FAILED,
+    ContractError: SqlErrorKind.SQL_FAILED,
     TransferError: SqlErrorKind.SQL_FAILED,
     AddressError: SqlErrorKind.UNKNOWN_TARGET,
     QueryBuildError: SqlErrorKind.SQL_FAILED,

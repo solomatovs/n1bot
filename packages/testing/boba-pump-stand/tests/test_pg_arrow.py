@@ -64,7 +64,7 @@ from boba.pump_stand.matrix import (
 from boba.pump_stand.oracle import PumpUser
 from boba.pump_stand.ports import Feed
 from boba.toolkit.arrow import ArrowColumns
-from boba.toolkit.sync import ArrowContract, StreamContract
+from boba.toolkit.contract import ArrowContract, StreamContract
 from boba.toolkit.transfer import (
     CreateIfNotExists,
     DeleteNothing,

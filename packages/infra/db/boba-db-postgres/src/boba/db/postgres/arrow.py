@@ -53,7 +53,7 @@ from boba.toolkit.arrow import (
     BytePipe,
     SourceFields,
 )
-from boba.toolkit.sync import ColumnSpec, ColumnType, TimeUnit, TypeFamily
+from boba.toolkit.contract import ColumnSpec, ColumnType, TimeUnit, TypeFamily
 
 __all__ = [
     "Compute",

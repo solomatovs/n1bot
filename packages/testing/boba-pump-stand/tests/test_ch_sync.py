@@ -39,7 +39,7 @@ from boba.pump_stand import (
     Pumps,
     PumpStand,
 )
-from boba.toolkit.sync import ColumnDeclaration
+from boba.toolkit.contract import ColumnDeclaration
 from boba.toolkit.transfer import (
     BackupAndCreateIfSchemaChanged,
     ColumnRules,

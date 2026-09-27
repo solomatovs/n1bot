@@ -1,5 +1,5 @@
 # ruff: noqa: S608, PLR0913
-"""Загрузка postgres -> postgres парой boba-sync-pg-to-pg через pg_stream_out и
+"""Загрузка postgres -> postgres парой boba-stream-pg-to-pg через pg_stream_out и
 pg_stream_in с раскладками csv, tsv и binary: контракт RowDescription как есть, сверка
 по OID и typmod с каталогом приёмника, DDL текстом типа источника, тела COPY
 без перекодирования. Прогон по всем postgres стенда и Greenplum.
@@ -30,7 +30,7 @@ from boba.db.postgres.transfer import (
 )
 from boba.pump_stand import Leg, Loaded, PostgresSide, Pumps, PumpStand
 from boba.pump_stand.ports import Sink, SinkOutbound
-from boba.sync.pg_to_pg.transfer import PgStreamColumn
+from boba.stream.pg_to_pg.transfer import PgStreamColumn
 from boba.toolkit.transfer import (
     BackupAndCreateIfSchemaChanged,
     ColumnRules,
@@ -1085,10 +1085,10 @@ class TestTypeRules:
 
 class TestRegistryHint:
     def test_missing_pair_is_a_clear_error(self) -> None:
-        from boba.db.postgres.transfer import PostgresTransfers
+        from boba.db.postgres.transfer import PgTransfers
         from boba.toolkit.transfer import Engine
 
         with pytest.raises(
             TransferError, match="no transfer from oracle into postgres"
         ):
-            PostgresTransfers({}).pair(Engine.ORACLE)
+            PgTransfers({}).pair(Engine.ORACLE)

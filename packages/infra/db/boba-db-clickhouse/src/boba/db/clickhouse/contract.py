@@ -13,7 +13,7 @@ from typing import ClassVar
 
 from pydantic import BaseModel, ConfigDict
 
-from boba.toolkit.sync import ColumnType, TimeUnit, TypeFamily
+from boba.toolkit.contract import ColumnType, TimeUnit, TypeFamily
 from boba.toolkit.transfer import StreamWire
 
 __all__ = ["ChContract", "ChParsedType", "ChSourceColumn", "ChTypes", "ChWrapper"]

@@ -19,14 +19,14 @@ from dataclasses import dataclass
 import pyarrow
 import pyarrow.ipc
 
-from boba.toolkit.ports import ArrowStreamError
-from boba.toolkit.sync import (
+from boba.toolkit.contract import (
     ArrowFieldMeta,
     ColumnSpec,
     ColumnType,
     TimeUnit,
     TypeFamily,
 )
+from boba.toolkit.ports import ArrowStreamError
 
 __all__ = [
     "ArrowColumns",
