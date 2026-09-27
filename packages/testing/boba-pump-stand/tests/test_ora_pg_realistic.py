@@ -1,6 +1,6 @@
 # ruff: noqa: S608, E501
 """Перелив отчёта по заказам из Oracle в postgres и Greenplum парой
-Oracle -> postgres (ora_sync_out и pg_sync_in) запросом, каким его написал бы
+Oracle -> postgres (ora_stream_out и pg_stream_in) запросом, каким его написал бы
 LLM: CTE, join и left join с NULL, оконные функции, listagg, json_object,
 sys_guid, интервалы и TIMESTAMP WITH TIME ZONE, которые приходится
 приводить.
@@ -385,12 +385,12 @@ async def transfer(  # noqa: PLR0913
     create_table: str = PgTransferTable.CREATE_TABLE,
     after: Sequence[str] = (),
 ) -> str:
-    """ora_sync_out на source -> pg_sync_in на target."""
+    """ora_stream_out на source -> pg_stream_in на target."""
     pumps = Pumps(oracle=source.profile, postgres=target.profile)
     chained = await pumps.chain(
-        Leg("ora_sync_out", {"sql": select, "columns": columns}),
+        Leg("ora_stream_out", {"sql": select, "columns": columns}),
         Leg(
-            "pg_sync_in",
+            "pg_stream_in",
             {
                 "schema_name": DW,
                 "table_name": table,
@@ -405,10 +405,10 @@ async def transfer(  # noqa: PLR0913
         ),
     )
     print(
-        f"\n--- {source.source.name} -> {target.source.name}: ora_sync_out ---\n"
+        f"\n--- {source.source.name} -> {target.source.name}: ora_stream_out ---\n"
         f"{chained.out_report}"
     )
-    print(f"--- pg_sync_in ---\n{chained.in_report}")
+    print(f"--- pg_stream_in ---\n{chained.in_report}")
 
     return chained.in_report
 
@@ -896,7 +896,7 @@ class TestBackToOracle:
         pumps = Pumps(oracle=source.profile, postgres=target.profile)
         chained = await pumps.chain(
             Leg(
-                "pg_sync_out",
+                "pg_stream_out",
                 {
                     "sql": self.AGGREGATE,
                     "wire": StreamWire.ARROW,
@@ -908,7 +908,7 @@ class TestBackToOracle:
                 },
             ),
             Leg(
-                "ora_sync_in",
+                "ora_stream_in",
                 {
                     "schema_name": OWNER,
                     "table_name": "city_month",

@@ -757,7 +757,7 @@ class OraSyncLoader:
         if refused:
             listed = "\n".join(refused)
             raise TransferError(
-                f"ora_sync_in into {self._table.text()}: the driver does not bind "
+                f"ora_stream_in into {self._table.text()}: the driver does not bind "
                 f"these arrow fields as they are, convert them in the source "
                 f"query:\n{listed}"
             )

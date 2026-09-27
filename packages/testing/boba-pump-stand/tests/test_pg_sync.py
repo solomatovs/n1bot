@@ -1,4 +1,4 @@
-"""Приёмник pg_sync_in: стратегии схемы, удаления и вставки на потоке
+"""Приёмник pg_stream_in: стратегии схемы, удаления и вставки на потоке
 Arrow из postgres (круг), из Oracle и из ClickHouse на новейшем postgres;
 стратегии схемы — на каждой версии postgres и Greenplum стенда."""
 
@@ -107,7 +107,7 @@ async def sync(
     pumps = Pumps(postgres=postgres.profile)
     chained = await pumps.chain(
         Leg(
-            "pg_sync_out",
+            "pg_stream_out",
             {
                 "sql": select,
                 "wire": mode,
@@ -116,7 +116,7 @@ async def sync(
             },
         ),
         Leg(
-            "pg_sync_in",
+            "pg_stream_in",
             {
                 "schema_name": PG_SCHEMA,
                 "table_name": table,
@@ -405,7 +405,7 @@ class TestDeclarations:
         pumps = Pumps(postgres=postgres.profile, oracle=oracle.profile)
         chained = await pumps.chain(
             Leg(
-                "ora_sync_out",
+                "ora_stream_out",
                 {
                     "sql": f"select * from {PumpUser.NAME}.strict where id <= 50",
                     "columns": [
@@ -415,7 +415,7 @@ class TestDeclarations:
                 },
             ),
             Leg(
-                "pg_sync_in",
+                "pg_stream_in",
                 {
                     "schema_name": PG_SCHEMA,
                     "table_name": "strict_from_ora",
@@ -464,7 +464,7 @@ class TestOtherSources:
         pumps = Pumps(postgres=postgres.profile, oracle=oracle.profile)
         chained = await pumps.chain(
             Leg(
-                "ora_sync_out",
+                "ora_stream_out",
                 {
                     "sql": 'select id as "id", amount as "amount", name as "name", '
                     'ts as "ts", \'\\\\x\' || rawtohex(rw) as "rw" '
@@ -473,7 +473,7 @@ class TestOtherSources:
                 },
             ),
             Leg(
-                "pg_sync_in",
+                "pg_stream_in",
                 {
                     "schema_name": PG_SCHEMA,
                     "table_name": "from_oracle",

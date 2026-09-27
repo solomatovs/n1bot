@@ -653,7 +653,7 @@ class PgTransferTable(TransferTable):
         required=(TemplateVar.SCHEMA_NAME, TemplateVar.TABLE_NAME, TemplateVar.COLUMNS)
     )
     """Переменные шаблона postgres: все обязательные."""
-    """Шаблон без особенностей таблицы: дефолт фасада pg_sync_in."""
+    """Шаблон без особенностей таблицы: дефолт фасада pg_stream_in."""
 
     def __init__(
         self,

@@ -1,10 +1,10 @@
 # ruff: noqa: S608
-"""Насосы Oracle на потоке arrow: ora_sync_out как источник и ora_sync_in
+"""Насосы Oracle на потоке arrow: ora_stream_out как источник и ora_stream_in
 как приёмник со стратегиями, на каждом Oracle стенда.
 
 Что проверяется:
     - круг Oracle -> Oracle: таблица всех ходовых типов уезжает
-      ora_sync_out и приходит ora_sync_in в новую таблицу теми же типами
+      ora_stream_out и приходит ora_stream_in в новую таблицу теми же типами
       (текст типа источника в DDL), значения совпадают; повторная загрузка
       проходит сверку;
     - Oracle -> postgres и Oracle -> ClickHouse: приёмник создаёт таблицу по
@@ -267,7 +267,7 @@ async def clickhouse() -> AsyncIterator[ClickHouseSide]:
 
 
 def ora_out(select: str, columns: Sequence[ColumnDeclaration] = DECLARED) -> Leg:
-    return Leg("ora_sync_out", {"sql": select, "columns": columns})
+    return Leg("ora_stream_out", {"sql": select, "columns": columns})
 
 
 def ora_in(  # noqa: PLR0913
@@ -281,7 +281,7 @@ def ora_in(  # noqa: PLR0913
     after: Sequence[str] = (),
 ) -> Leg:
     return Leg(
-        "ora_sync_in",
+        "ora_stream_in",
         {
             "schema_name": OWNER,
             "table_name": table,
@@ -300,8 +300,8 @@ def ora_in(  # noqa: PLR0913
 async def circle(oracle: OracleSide, out: Leg, into: Leg) -> str:
     pumps = Pumps(oracle=oracle.profile)
     chained = await pumps.chain(out, into)
-    print(f"\n--- {oracle.source.name}: ora_sync_out ---\n{chained.out_report}")
-    print(f"--- ora_sync_in ---\n{chained.in_report}")
+    print(f"\n--- {oracle.source.name}: ora_stream_out ---\n{chained.out_report}")
+    print(f"--- ora_stream_in ---\n{chained.in_report}")
 
     return chained.in_report
 
@@ -371,7 +371,7 @@ class TestOracleToOthers:
         chained = await pumps.chain(
             ora_out(SELECT_TEXT_ONLY),
             Leg(
-                "pg_sync_in",
+                "pg_stream_in",
                 {
                     "schema_name": PG_SCHEMA,
                     "table_name": table,
@@ -409,7 +409,7 @@ class TestOracleToOthers:
         chained = await pumps.chain(
             ora_out(select),
             Leg(
-                "ch_sync_in",
+                "ch_stream_in",
                 {
                     "database": CH_DATABASE,
                     "table_name": table,
@@ -500,7 +500,7 @@ def expected_from_postgres(oracle: OracleSide) -> list[tuple[str, str, bool]]:
 
 def pg_out(select: str) -> Leg:
     return Leg(
-        "pg_sync_out",
+        "pg_stream_out",
         {
             "sql": select,
             "wire": StreamWire.ARROW,
@@ -892,7 +892,7 @@ async def ch_source(clickhouse: ClickHouseSide) -> ClickHouseSide:
 
 def ch_out(select: str) -> Leg:
     return Leg(
-        "ch_sync_out",
+        "ch_stream_out",
         {
             "sql": f"{select} settings output_format_arrow_string_as_string = 1",
             "wire": ChStreamWire.ARROW,

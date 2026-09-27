@@ -1,6 +1,6 @@
 # ruff: noqa: S608
 """Перелив отчёта по заказам из postgres и Greenplum в Oracle парой
-postgres -> Oracle (pg_sync_out с wire = arrow и ora_sync_in) запросом,
+postgres -> Oracle (pg_stream_out с wire = arrow и ora_stream_in) запросом,
 каким его написал бы LLM: CTE, join и left join с NULL, оконные функции,
 агрегаты в строку, enum, массив, uuid, inet, interval, date_trunc.
 
@@ -181,7 +181,7 @@ async def target(request: Any, source: PostgresSide) -> AsyncIterator[OracleSide
 def expected_columns(target: OracleSide) -> list[tuple[str, str, bool]]:
     boolean = "BOOLEAN"
     if target.version < BOOLEAN_SINCE:
-        boolean = "NUMBER(1,0)"
+        boolean = "NUMBER(10,0)"
 
     columns: list[tuple[str, str, bool]] = []
     for name, kind, not_null in EXPECTED_COLUMNS:
@@ -190,13 +190,35 @@ def expected_columns(target: OracleSide) -> list[tuple[str, str, bool]]:
     return columns
 
 
+def report_for(target: OracleSide, where: str = "") -> str:
+    """Отчёт под Oracle: bool до 23 драйвер не кладёт, LLM шлёт его числом."""
+    names: list[str] = []
+    for name, _, _ in EXPECTED_COLUMNS:
+        if name == "is_active" and target.version < BOOLEAN_SINCE:
+            names.append("is_active::int as is_active")
+            continue
+
+        names.append(name)
+
+    return f"select {', '.join(names)} from ({REPORT_SQL}) r {where}"
+
+
+def compared(target: OracleSide) -> dict[str, tuple[str, str]]:
+    """Опорные выражения под версию приёмника: до 23 is_active — число."""
+    templates = dict(COMPARED)
+    if target.version < BOOLEAN_SINCE:
+        templates["is_active"] = ("{c}::int", "{c}")
+
+    return templates
+
+
 async def transfer(  # noqa: PLR0913
     source: PostgresSide,
     target: OracleSide,
     table: str,
     schema: Any,
     delete: Any,
-    select: str = REPORT_SQL,
+    select: str = "",
     columns: Sequence[PgColumnDeclaration] = DECLARED,
     rules: ColumnRules = ColumnRules(),
     unknown_types: Any = None,
@@ -204,7 +226,11 @@ async def transfer(  # noqa: PLR0913
     create_table: str = OraTableRef.CREATE_TABLE,
     after: Sequence[str] = (),
 ) -> str:
-    """pg_sync_out (arrow) на source -> ora_sync_in на target."""
+    """pg_stream_out (arrow) на source -> ora_stream_in на target; без select —
+    отчёт под версию приёмника."""
+    if not select:
+        select = report_for(target)
+
     arguments: dict[str, Any] = {
         "schema_name": OWNER,
         "table_name": table,
@@ -222,7 +248,7 @@ async def transfer(  # noqa: PLR0913
     pumps = Pumps(postgres=source.profile, oracle=target.profile)
     chained = await pumps.chain(
         Leg(
-            "pg_sync_out",
+            "pg_stream_out",
             {
                 "sql": select,
                 "wire": StreamWire.ARROW,
@@ -230,19 +256,20 @@ async def transfer(  # noqa: PLR0913
                 "copy_options": CopyOptions(chunk_bytes=CHUNK),
             },
         ),
-        Leg("ora_sync_in", arguments),
+        Leg("ora_stream_in", arguments),
     )
     print(
-        f"\n--- {source.source.name} -> {target.source.name}: pg_sync_out (arrow) ---\n"
+        f"\n--- {source.source.name} -> {target.source.name}: "
+        f"pg_stream_out (arrow) ---\n"
         f"{chained.out_report}"
     )
-    print(f"--- ora_sync_in ---\n{chained.in_report}")
+    print(f"--- ora_stream_in ---\n{chained.in_report}")
 
     return chained.in_report
 
 
-def month_of(month: str) -> str:
-    return f"select * from ({REPORT_SQL}) r where r.month = date '{month}'"
+def month_of(target: OracleSide, month: str) -> str:
+    return report_for(target, f"where r.month = date '{month}'")
 
 
 def blanks(values: Sequence[Any]) -> list[Any]:
@@ -274,8 +301,9 @@ async def same_content(source: PostgresSide, target: OracleSide, table: str) -> 
     """Каждая колонка таблицы Oracle совпадает с представлением источника."""
     report = Loaded(source, SRC, "orders_report")
     landed = OraLoaded(target, table)
+    templates = compared(target)
     for name, _, _ in EXPECTED_COLUMNS:
-        entry = COMPARED.get(name)
+        entry = templates.get(name)
         if entry is None:
             expected = await report.texts(name, order_by="order_id")
             expression = name
@@ -291,7 +319,7 @@ async def same_content(source: PostgresSide, target: OracleSide, table: str) -> 
         pg_template, ora_template = entry
         expected = await report.scalars(pg_template.format(c=name), order_by="order_id")
         actual = await landed.column(ora_template.format(c=name), order_by="order_id")
-        if pg_template == "{c}":
+        if ora_template == "{c}":
             assert numbers(actual) == numbers(expected), f"column {name} differs"
 
             continue
@@ -413,7 +441,7 @@ class TestIncrementalMonth:
                 kind="delete_where",
                 where=f"month = to_date('{self.MONTH}', 'yyyy-mm-dd')",
             ),
-            select=month_of(self.MONTH),
+            select=month_of(target, self.MONTH),
         )
 
         assert in_month > 0
@@ -723,7 +751,7 @@ class TestBackToPostgres:
         pumps = Pumps(postgres=source.profile, oracle=target.profile)
         chained = await pumps.chain(
             Leg(
-                "ora_sync_out",
+                "ora_stream_out",
                 {
                     "sql": self.AGGREGATE,
                     "columns": (
@@ -733,7 +761,7 @@ class TestBackToPostgres:
                 },
             ),
             Leg(
-                "pg_sync_in",
+                "pg_stream_in",
                 {
                     "schema_name": SRC,
                     "table_name": "city_month",

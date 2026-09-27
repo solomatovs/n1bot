@@ -22,8 +22,8 @@ UserConnection]`). Тело инструмента живёт в песочни�
 | `ora_database_describe` | сервис, контейнер, баннер версии, кодировка; грантов не требует |
 | `ora_schema_describe`, `ora_table_describe`, `ora_column_describe`, `ora_constraints_describe`, `ora_indexes_describe`, `ora_routines_describe`, `ora_sequences_describe`, `ora_types_describe` | описание словаря по `all_*`; `*` в фильтре схемы скрывает служебные схемы Oracle |
 | `ora_address` | базовый url соединения `oracle://host:port/service`, роли объекта в query |
-| `ora_sync_out` | насос выгрузки: строки запроса потоком Arrow IPC в выходной порт с контрактом колонок для приёмника |
-| `ora_sync_in` | насос загрузки: поток Arrow любого источника в таблицу со стратегиями схемы, удаления и вставки |
+| `ora_stream_out` | насос выгрузки: строки запроса потоком Arrow IPC в выходной порт с контрактом колонок для приёмника |
+| `ora_stream_in` | насос загрузки: поток Arrow любого источника в таблицу со стратегиями схемы, удаления и вставки |
 
 Окно `offset`/`limit` режется на стороне инструмента (`RowPage`), поэтому `offset
 ... fetch` в запрос подставлять не нужно и оно работает на любой версии сервера.
@@ -36,7 +36,7 @@ UserConnection]`). Тело инструмента живёт в песочни�
 драйвер python-oracledb отдаёт и принимает пачки Arrow напрямую, значения в
 Python не разбираются.
 
-- `ora_sync_out(sql, columns)` разбирает стейтмент на сервере (`parse`, без
+- `ora_stream_out(sql, columns)` разбирает стейтмент на сервере (`parse`, без
   выполнения) и шлёт первым кадром контракт колонок: типы, точность, `null_ok`,
   тексты типов Oracle; декларации `columns` ложатся поверх. Дальше пачки
   драйвера по `arraysize` строк уходят в порт как есть. Типы, которые драйвер в
@@ -44,7 +44,7 @@ Python не разбираются.
   TIMESTAMP WITH TIME ZONE), отвергаются до выполнения с подсказкой, чем их
   привести в `select`. Имена колонок — заглавные, как у Oracle; строчные — алиас
   в кавычках.
-- `ora_sync_in(schema_name, table_name, schema_strategy, delete_strategy,
+- `ora_stream_in(schema_name, table_name, schema_strategy, delete_strategy,
   insert_strategy, rules, unknown_types, create_table, chunk_bytes, before, after)`
   сверяет контракт потока с таблицей по `all_tab_columns`, создаёт или
   пересоздаёт её по шаблону `create_table` и кладёт пачки одной командой

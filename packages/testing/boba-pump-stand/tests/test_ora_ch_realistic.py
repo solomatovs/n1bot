@@ -1,6 +1,6 @@
 # ruff: noqa: S608, E501
 """Перелив отчёта по заказам из Oracle в ClickHouse парой Oracle -> ClickHouse
-(ora_sync_out и ch_sync_in) запросом, каким его написал бы LLM: CTE, join и
+(ora_stream_out и ch_stream_in) запросом, каким его написал бы LLM: CTE, join и
 left join с NULL, оконные функции, listagg, json_object, sys_guid.
 
 Источник — каждый Oracle стенда, приёмник — каждый ClickHouse стенда.
@@ -189,12 +189,12 @@ async def transfer(  # noqa: PLR0913
     cluster: str = "",
     after: Sequence[str] = (),
 ) -> str:
-    """ora_sync_out на source -> ch_sync_in на target."""
+    """ora_stream_out на source -> ch_stream_in на target."""
     pumps = Pumps(oracle=source.profile, clickhouse=target.profile)
     chained = await pumps.chain(
-        Leg("ora_sync_out", {"sql": select, "columns": columns}),
+        Leg("ora_stream_out", {"sql": select, "columns": columns}),
         Leg(
-            "ch_sync_in",
+            "ch_stream_in",
             {
                 "database": DW,
                 "table_name": table,
@@ -210,10 +210,10 @@ async def transfer(  # noqa: PLR0913
         ),
     )
     print(
-        f"\n--- {source.source.name} -> {target.source.name}: ora_sync_out ---\n"
+        f"\n--- {source.source.name} -> {target.source.name}: ora_stream_out ---\n"
         f"{chained.out_report}"
     )
-    print(f"--- ch_sync_in ---\n{chained.in_report}")
+    print(f"--- ch_stream_in ---\n{chained.in_report}")
 
     return chained.in_report
 
@@ -592,7 +592,7 @@ class TestBackToOracle:
         pumps = Pumps(oracle=source.profile, clickhouse=target.profile)
         chained = await pumps.chain(
             Leg(
-                "ch_sync_out",
+                "ch_stream_out",
                 {
                     "sql": self.AGGREGATE,
                     "wire": ChStreamWire.ARROW,
@@ -600,7 +600,7 @@ class TestBackToOracle:
                 },
             ),
             Leg(
-                "ora_sync_in",
+                "ora_stream_in",
                 {
                     "schema_name": OWNER,
                     "table_name": "city_month",

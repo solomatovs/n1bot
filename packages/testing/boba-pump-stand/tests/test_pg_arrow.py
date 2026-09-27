@@ -1,6 +1,6 @@
-"""Перекачка из PostgreSQL потоком Arrow IPC: pg_sync_out против pg_sync_in
-(круг на каждом postgres и Greenplum из sources), ch_sync_in (в каждый
-ClickHouse из ch_sources) и ora_sync_in (в каждый Oracle из ora_sources).
+"""Перекачка из PostgreSQL потоком Arrow IPC: pg_stream_out против pg_stream_in
+(круг на каждом postgres и Greenplum из sources), ch_stream_in (в каждый
+ClickHouse из ch_sources) и ora_stream_in (в каждый Oracle из ora_sources).
 Насосы соединены трубой ОС и работают одновременно.
 
 Таблица postgres несёт все семейства типов: целые, numeric с точностью и без,
@@ -545,7 +545,7 @@ class TestPostgresToPostgres:
 
         chained = await pumps.chain(
             Leg(
-                "pg_sync_out",
+                "pg_stream_out",
                 {
                     "wire": StreamWire.ARROW,
                     "sql": _select(columns, targets),
@@ -553,7 +553,7 @@ class TestPostgresToPostgres:
                 },
             ),
             Leg(
-                "pg_sync_in",
+                "pg_stream_in",
                 {
                     "schema_name": PG_SCHEMA,
                     "table_name": "dst",
@@ -601,7 +601,7 @@ class TestPostgresToClickHouse:
         pumps = Pumps(postgres=postgres.profile, clickhouse=clickhouse.profile)
         chained = await pumps.chain(
             Leg(
-                "pg_sync_out",
+                "pg_stream_out",
                 {
                     "wire": StreamWire.ARROW,
                     "sql": _select(columns, targets),
@@ -609,7 +609,7 @@ class TestPostgresToClickHouse:
                 },
             ),
             Leg(
-                "ch_sync_in",
+                "ch_stream_in",
                 {
                     "database": CH_DATABASE,
                     "table_name": table,
@@ -669,7 +669,7 @@ class TestPostgresToOracle:
         try:
             chained = await pumps.chain(
                 Leg(
-                    "pg_sync_out",
+                    "pg_stream_out",
                     {
                         "wire": StreamWire.ARROW,
                         "sql": _select(columns, targets),
@@ -677,7 +677,7 @@ class TestPostgresToOracle:
                     },
                 ),
                 Leg(
-                    "ora_sync_in",
+                    "ora_stream_in",
                     {
                         "schema_name": PumpUser.NAME.value,
                         "table_name": table,
@@ -720,7 +720,7 @@ class TestTraps:
         with pytest.raises(PgArrowError, match="numeric without precision"):
             await pumps.chain(
                 Leg(
-                    "pg_sync_out",
+                    "pg_stream_out",
                     {
                         "wire": StreamWire.ARROW,
                         "sql": self.SLOW,
@@ -728,7 +728,7 @@ class TestTraps:
                     },
                 ),
                 Leg(
-                    "pg_sync_in",
+                    "pg_stream_in",
                     {
                         "schema_name": PG_SCHEMA,
                         "table_name": "dst",
@@ -754,7 +754,7 @@ class TestTraps:
         with pytest.raises(PgArrowError, match="up to 38 digits"):
             await pumps.chain(
                 Leg(
-                    "pg_sync_out",
+                    "pg_stream_out",
                     {
                         "wire": StreamWire.ARROW,
                         "sql": "select pg_sleep(30), 1::numeric(50, 20) as n",
@@ -762,7 +762,7 @@ class TestTraps:
                     },
                 ),
                 Leg(
-                    "pg_sync_in",
+                    "pg_stream_in",
                     {
                         "schema_name": PG_SCHEMA,
                         "table_name": "dst",
@@ -786,7 +786,7 @@ class TestTraps:
         with pytest.raises(PgDescribeError, match="the statement on postgres failed"):
             await pumps.chain(
                 Leg(
-                    "pg_sync_out",
+                    "pg_stream_out",
                     {
                         "wire": StreamWire.ARROW,
                         "sql": "select nothing from nowhere",
@@ -794,7 +794,7 @@ class TestTraps:
                     },
                 ),
                 Leg(
-                    "pg_sync_in",
+                    "pg_stream_in",
                     {
                         "schema_name": PG_SCHEMA,
                         "table_name": "dst",
@@ -818,7 +818,7 @@ class TestTraps:
         pumps = Pumps(postgres=postgres.profile)
         await pumps.chain(
             Leg(
-                "pg_sync_out",
+                "pg_stream_out",
                 {
                     "wire": StreamWire.ARROW,
                     "sql": "select 1::bigint as id, "
@@ -827,7 +827,7 @@ class TestTraps:
                 },
             ),
             Leg(
-                "pg_sync_in",
+                "pg_stream_in",
                 {
                     "schema_name": PG_SCHEMA,
                     "table_name": "dims",
@@ -857,7 +857,7 @@ class TestTraps:
         with pytest.raises(PgArrowError, match="raise chunk_bytes"):
             await pumps.chain(
                 Leg(
-                    "pg_sync_out",
+                    "pg_stream_out",
                     {
                         "wire": StreamWire.ARROW,
                         "sql": wide,
@@ -865,7 +865,7 @@ class TestTraps:
                     },
                 ),
                 Leg(
-                    "pg_sync_in",
+                    "pg_stream_in",
                     {
                         "schema_name": PG_SCHEMA,
                         "table_name": "wide",
@@ -881,7 +881,7 @@ class TestTraps:
 
         await pumps.chain(
             Leg(
-                "pg_sync_out",
+                "pg_stream_out",
                 {
                     "wire": StreamWire.ARROW,
                     "sql": wide,
@@ -889,7 +889,7 @@ class TestTraps:
                 },
             ),
             Leg(
-                "pg_sync_in",
+                "pg_stream_in",
                 {
                     "schema_name": PG_SCHEMA,
                     "table_name": "wide",
@@ -979,7 +979,7 @@ class TestTraps:
         with pytest.raises(PgArrowError, match="cannot be written as csv"):
             await pumps.chain(
                 Leg(
-                    "ch_sync_out",
+                    "ch_stream_out",
                     {
                         "sql": "select toInt64(1) as id, [toInt64(1), 2] as arr",
                         "wire": ChStreamWire.ARROW,
@@ -987,7 +987,7 @@ class TestTraps:
                     },
                 ),
                 Leg(
-                    "pg_sync_in",
+                    "pg_stream_in",
                     {
                         "schema_name": PG_SCHEMA,
                         "table_name": "lists",
@@ -1044,7 +1044,7 @@ class TestTraps:
         )
         await pumps.chain(
             Leg(
-                "pg_sync_out",
+                "pg_stream_out",
                 {
                     "wire": StreamWire.ARROW,
                     "sql": select,
@@ -1052,7 +1052,7 @@ class TestTraps:
                 },
             ),
             Leg(
-                "pg_sync_in",
+                "pg_stream_in",
                 {
                     "schema_name": PG_SCHEMA,
                     "table_name": "session",
@@ -1088,7 +1088,7 @@ class TestTraps:
         pumps = Pumps(postgres=postgres.profile)
         await pumps.chain(
             Leg(
-                "pg_sync_out",
+                "pg_stream_out",
                 {
                     "wire": StreamWire.ARROW,
                     "sql": "select g::bigint as id, g::float8 / 7 as r8 "
@@ -1097,7 +1097,7 @@ class TestTraps:
                 },
             ),
             Leg(
-                "pg_sync_in",
+                "pg_stream_in",
                 {
                     "schema_name": PG_SCHEMA,
                     "table_name": "floats",

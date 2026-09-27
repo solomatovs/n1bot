@@ -1,4 +1,4 @@
-"""Пограничные случаи приёмника pg_sync_in: NULL и not null, decimal с
+"""Пограничные случаи приёмника pg_stream_in: NULL и not null, decimal с
 точностью и NaN, varchar с юникодом и длиной, timestamp с точностью, поясом
 и бесконечностью, геометрия, диапазоны, json, массивы, пользовательские
 типы; кросс-движковые потоки из ClickHouse (беззнаковые целые, наносекунды)
@@ -129,7 +129,7 @@ async def load(
     columns: Sequence[PgColumnDeclaration] = (),
     unknown_types: Any = FailOnUnknown(kind="fail_on_unknown"),
 ) -> str:
-    """pg_sync_out таблицы источника -> pg_sync_in приёмника в той же схеме;
+    """pg_stream_out таблицы источника -> pg_stream_in приёмника в той же схеме;
     mode — движок приёмника для выбора формата (unknown — Arrow)."""
     select = f"select * from {S}.{source}"
     if where:
@@ -153,11 +153,11 @@ async def load_select(
     columns: Sequence[PgColumnDeclaration] = (),
     unknown_types: Any = FailOnUnknown(kind="fail_on_unknown"),
 ) -> str:
-    """pg_sync_out произвольного select -> pg_sync_in."""
+    """pg_stream_out произвольного select -> pg_stream_in."""
     pumps = Pumps(postgres=postgres.profile)
     chained = await pumps.chain(
         Leg(
-            "pg_sync_out",
+            "pg_stream_out",
             {
                 "sql": select,
                 "wire": mode,
@@ -166,7 +166,7 @@ async def load_select(
             },
         ),
         Leg(
-            "pg_sync_in",
+            "pg_stream_in",
             {
                 "schema_name": S,
                 "table_name": target,
@@ -289,8 +289,8 @@ CASES = [
 
 
 class TestRoundTrip:
-    """Каждый тип: таблица-источник с NULL в одной строке, pg_sync_out ->
-    pg_sync_in создаёт приёмник, значения текстом равны, тип приёмника
+    """Каждый тип: таблица-источник с NULL в одной строке, pg_stream_out ->
+    pg_stream_in создаёт приёмник, значения текстом равны, тип приёмника
     ожидаемый."""
 
     @pytest.mark.parametrize("case", CASES, ids=lambda c: c.name)
@@ -789,7 +789,7 @@ class TestClickHouseSources:
         pumps = Pumps(postgres=postgres.profile, clickhouse=clickhouse.profile)
         chained = await pumps.chain(
             Leg(
-                "ch_sync_out",
+                "ch_stream_out",
                 {
                     "sql": f"select * from {S}.edges order by id "
                     f"settings {STRING_AS_STRING}",
@@ -799,7 +799,7 @@ class TestClickHouseSources:
                 },
             ),
             Leg(
-                "pg_sync_in",
+                "pg_stream_in",
                 {
                     "schema_name": S,
                     "table_name": "from_ch",
@@ -838,7 +838,7 @@ class TestClickHouseSources:
         with pytest.raises(TransferError, match="narrower than stream uint64"):
             await pumps.chain(
                 Leg(
-                    "ch_sync_out",
+                    "ch_stream_out",
                     {
                         "sql": f"select * from {S}.u64only",
                         "wire": ChStreamWire.ARROW,
@@ -847,7 +847,7 @@ class TestClickHouseSources:
                     },
                 ),
                 Leg(
-                    "pg_sync_in",
+                    "pg_stream_in",
                     {
                         "schema_name": S,
                         "table_name": "t_u64",
@@ -892,14 +892,14 @@ class TestOracleSources:
         pumps = Pumps(postgres=postgres.profile, oracle=oracle.profile)
         chained = await pumps.chain(
             Leg(
-                "ora_sync_out",
+                "ora_stream_out",
                 {
                     "sql": f"select * from {PumpUser.NAME}.edges",
                     "columns": [PgColumnDeclaration(name="ID", nullable=False)],
                 },
             ),
             Leg(
-                "pg_sync_in",
+                "pg_stream_in",
                 {
                     "schema_name": S,
                     "table_name": "from_ora",

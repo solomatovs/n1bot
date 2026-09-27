@@ -378,7 +378,7 @@ class TransferReportText:
 
 
 @tool
-async def pg_sync_out(  # noqa: PLR0913
+async def pg_stream_out(  # noqa: PLR0913
     connection: PgConnection,
     sql: Annotated[
         str,
@@ -474,7 +474,7 @@ async def pg_sync_out(  # noqa: PLR0913
 
 
 @tool
-async def pg_sync_in(  # noqa: PLR0913
+async def pg_stream_in(  # noqa: PLR0913
     connection: PgConnection,
     schema_name: Annotated[
         str, Field(min_length=1, description="Схема таблицы-приёмника: dwh")
@@ -1433,8 +1433,8 @@ TOOLS: Final = ToolMain.toolset(
     pg_list_tables,
     pg_describe_table,
     pg_query,
-    pg_sync_out,
-    pg_sync_in,
+    pg_stream_out,
+    pg_stream_in,
     pg_address,
     pg_database_describe,
     pg_schema_describe,

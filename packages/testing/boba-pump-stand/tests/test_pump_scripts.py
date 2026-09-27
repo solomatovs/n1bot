@@ -100,7 +100,7 @@ class TestPostgres:
 
         chained = await pumps.chain(
             Leg(
-                "pg_sync_out",
+                "pg_stream_out",
                 {
                     "sql": f"select id, v from {pg.named('stage_src')} order by id",
                     "wire": StreamWire.CSV,
@@ -108,7 +108,7 @@ class TestPostgres:
                 },
             ),
             Leg(
-                "pg_sync_in",
+                "pg_stream_in",
                 {
                     "schema_name": pg.SCHEMA,
                     "table_name": "stage_tmp",
@@ -138,7 +138,7 @@ class TestPostgres:
         with pytest.raises(psycopg.Error, match="stop"):
             await pumps.chain(
                 Leg(
-                    "pg_sync_out",
+                    "pg_stream_out",
                     {
                         "sql": f"select id, v from {pg.named('target')}",
                         "wire": StreamWire.CSV,
@@ -146,7 +146,7 @@ class TestPostgres:
                     },
                 ),
                 Leg(
-                    "pg_sync_in",
+                    "pg_stream_in",
                     {
                         "schema_name": pg.SCHEMA,
                         "table_name": "mirror",
@@ -185,7 +185,7 @@ class TestPostgres:
 
         chained = await pumps.chain(
             Leg(
-                "pg_sync_out",
+                "pg_stream_out",
                 {
                     "sql": f"select id, v from {pg.named('target')} order by id",
                     "wire": StreamWire.ARROW,
@@ -193,7 +193,7 @@ class TestPostgres:
                 },
             ),
             Leg(
-                "pg_sync_in",
+                "pg_stream_in",
                 {
                     "schema_name": pg.SCHEMA,
                     "table_name": "stage_arrow",
@@ -223,7 +223,7 @@ class ChScripts:
         "create table {database}.{table_name}[ on cluster {cluster}] ({columns}) "
         "engine = MergeTree order by {order_by}"
     )
-    """Шаблон для серверов без Keeper: дефолт ch_sync_in — ReplicatedMergeTree."""
+    """Шаблон для серверов без Keeper: дефолт ch_stream_in — ReplicatedMergeTree."""
 
     def __init__(self, source: ChSource) -> None:
         self.side = ClickHouseSide(source, self.DATABASE)
@@ -273,7 +273,7 @@ class ChScripts:
         }
         arguments.update(extra)
 
-        return Leg("ch_sync_out", arguments)
+        return Leg("ch_stream_out", arguments)
 
     def into(self, table: str, **extra: Any) -> Leg:
         arguments: dict[str, Any] = {
@@ -286,7 +286,7 @@ class ChScripts:
         }
         arguments.update(extra)
 
-        return Leg("ch_sync_in", arguments)
+        return Leg("ch_stream_in", arguments)
 
 
 @pytest.fixture(scope="module", params=STAND.demo_clickhouse(), ids=lambda s: s.name)
@@ -454,7 +454,7 @@ class OraScripts:
         arguments: dict[str, Any] = {"sql": sql}
         arguments.update(extra)
 
-        return Leg("ora_sync_out", arguments)
+        return Leg("ora_stream_out", arguments)
 
     def into(self, table: str, **extra: Any) -> Leg:
         arguments: dict[str, Any] = {
@@ -467,7 +467,7 @@ class OraScripts:
         }
         arguments.update(extra)
 
-        return Leg("ora_sync_in", arguments)
+        return Leg("ora_stream_in", arguments)
 
 
 @pytest.fixture(scope="module", params=STAND.ora_sources, ids=lambda s: s.name)
