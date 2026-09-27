@@ -27,12 +27,19 @@ from boba.db.clickhouse.connection import ClickHouseConfig
 from boba.db.clickhouse.query import ChQuery, ChQueryBuilder
 from boba.toolkit.entry import ToolMain
 from boba.toolkit.facade import Injected, UserConnection, tool
-from boba.toolkit.ports import ChunkBytes, RawInbound, RawOutbound
+from boba.toolkit.ports import ChunkBytes, Outbound, RawInbound, RawOutbound
 from boba.toolkit.result import MarkdownResult, SqlResult, SqlStatement, TableResult
 from boba.toolkit.sql import (
     QueryBuildError,
     SqlErrorKind,
     SqlLimits,
+)
+from boba.toolkit.sync import (
+    ColumnDeclaration,
+    Engine,
+    SyncError,
+    SyncFrame,
+    SyncOutbound,
 )
 from boba.toolkit.types import SecretRevealing
 from boba.toolkit.window import RowLimit, RowOffset, RowPage, RowWindow
@@ -1206,6 +1213,59 @@ async def ch_arrow_out(  # noqa: PLR0913
 
 
 @tool
+async def ch_sync_out(  # noqa: PLR0913
+    connection: ChConnection,
+    sql: Annotated[
+        str,
+        Field(
+            min_length=1,
+            description=(
+                "Запрос SELECT целиком, без FORMAT и без `;`; выполняется как "
+                "написан. Строки — с settings output_format_arrow_string_as_string "
+                "= 1, иначе они уедут двоичными."
+            ),
+        ),
+        MarkdownResult(language="sql"),
+    ],
+    target_engine: Annotated[
+        Engine,
+        Field(
+            description="Движок приёмника; у ClickHouse все приёмники получают Arrow."
+        ),
+    ] = Engine.UNKNOWN,
+    columns: Annotated[
+        Sequence[ColumnDeclaration],
+        Field(
+            description=(
+                "Декларации колонок поверх типов ответа: заданное перекрывает "
+                "найденное, незаданное остаётся от сервера."
+            ),
+        ),
+    ] = (),
+    chunk_bytes: ChunkBytes = 262144,
+    *,
+    out: Annotated[Outbound[SyncFrame], Injected],
+) -> MarkdownResult:
+    """Источник sync-потока: строки запроса с контрактом колонок для приёмника.
+
+    Сервер отдаёт ответ потоком ArrowStream; первый кадр — контракт из его
+    схемы (типы Arrow, Nullable) с декларациями columns поверх, дальше кадры
+    данных — те же пачки Arrow IPC. В ответ — состав контракта и сводка
+    сервера.
+    """
+    from boba.db.clickhouse.payload import PayloadClickHouse  # noqa: PLC0415
+    from boba.db.clickhouse.sync import ChSyncSource  # noqa: PLC0415
+
+    statement = ChQueryBuilder().raw_query(sql).build()
+    async with PayloadClickHouse.opened_config(connection) as client:
+        report = await ChSyncSource(client).stream(
+            statement.text, columns, chunk_bytes, SyncOutbound(out)
+        )
+
+    return MarkdownResult(text=report.render())
+
+
+@tool
 async def ch_arrow_in(  # noqa: PLR0913
     connection: ChConnection,
     sql: Annotated[
@@ -1270,6 +1330,7 @@ async def ch_address(connection: ChConnection) -> TableResult:
 
 
 EXPECTED: Mapping[type[Exception], SqlErrorKind] = {
+    SyncError: SqlErrorKind.SQL_FAILED,
     AddressError: SqlErrorKind.UNKNOWN_TARGET,
     QueryBuildError: SqlErrorKind.SQL_FAILED,
     ClickHouseError: SqlErrorKind.DATABASE_UNAVAILABLE,
@@ -1295,6 +1356,7 @@ TOOLS: Final = ToolMain.toolset(
     ch_stream_out,
     ch_stream_in,
     ch_arrow_out,
+    ch_sync_out,
     ch_arrow_in,
 )
 

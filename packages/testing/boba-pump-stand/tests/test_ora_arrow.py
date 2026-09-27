@@ -26,6 +26,7 @@ import pytest
 from boba.db.clickhouse.payload import PayloadClickHouse
 from boba.db.oracle import OracleQueryError
 from boba.db.oracle.payload import PayloadOracle
+from boba.db.postgres.connection import CopyOptions
 from boba.pump_stand import (
     ChSource,
     Leg,
@@ -881,7 +882,7 @@ class TestOracleToPostgres:
                 "pg_arrow_in",
                 {
                     "sql": copy_into(f"{PG_SCHEMA}.{table}", [c.name for c in columns]),
-                    "chunk_bytes": CHUNK_BYTES,
+                    "copy_options": CopyOptions(chunk_bytes=CHUNK_BYTES),
                 },
             ),
         )

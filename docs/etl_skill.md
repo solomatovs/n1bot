@@ -21,7 +21,7 @@ Oracle 12.2 Enterprise, 18 XE, 21 XE и 23 Free.
 | PostgreSQL | `pg_stream_out(sql)` | `pg_stream_in(sql, chunk_bytes)` | тот, что задан в `COPY ... WITH (...)` |
 | ClickHouse | `ch_stream_out(sql, chunk_bytes)` | `ch_stream_in(sql, chunk_bytes)` | тот, что задан словом `FORMAT` в запросе |
 | ClickHouse, Arrow | `ch_arrow_out(sql, chunk_bytes)` | `ch_arrow_in(sql, chunk_bytes)` | Arrow IPC: `ch_stream_*`, где формат ArrowStream уже выбран |
-| PostgreSQL, Arrow | `pg_arrow_out(sql, chunk_bytes)` | `pg_arrow_in(sql, chunk_bytes, exact_floats)` | поток Arrow IPC, раздел ниже |
+| PostgreSQL, Arrow | `pg_arrow_out(sql, copy_options)` | `pg_arrow_in(sql, copy_options)` | поток Arrow IPC, раздел ниже |
 | Oracle | `ora_csv_out(sql)` | `ora_csv_in(sql, chunk_bytes)` | только CSV, правила ниже |
 | Oracle, Arrow | `ora_arrow_out(sql)` | `ora_arrow_in(sql, chunk_bytes)` | поток Arrow IPC, раздел ниже |
 
@@ -150,14 +150,16 @@ line \ back ""q"", semi;",,t,0.3333333333333333,NaN,2024-02-29,2024-02-29 13:14:
 сессий с COPY в системе: у дампов источника в `pg-meta-scraper` и у
 загрузки в ix.
 
-Эти значения — умолчания аргумента `session` у `pg_stream_out`,
-`pg_stream_in`, `pg_arrow_out` и `pg_arrow_in`: вызов меняет любое из них,
-когда поток нужен другим — приёмник ждёт `WIN1251`, деньги нужны в локали,
-float короче или интервалы в `iso_8601`. Значения из вызова перекрывают
-профиль соединения.
+Эти значения — умолчания аргумента `copy_options` у всех pg-насосов
+(`pg_stream_out`, `pg_stream_in`, `pg_arrow_out`, `pg_arrow_in`,
+`pg_table_out`, `pg_sync_in`). Тот же объект несёт `chunk_bytes` (порция
+потока) и `exact_floats` (hex-запись float при загрузке). Вызов меняет
+любое из них, когда поток нужен другим — приёмник ждёт `WIN1251`, деньги
+нужны в локали, float короче или интервалы в `iso_8601`. Значения из
+вызова перекрывают профиль соединения.
 
 ```json
-{"session": {"client_encoding": "WIN1251", "extra_float_digits": 0}}
+{"copy_options": {"client_encoding": "WIN1251", "extra_float_digits": 0, "chunk_bytes": 65536}}
 ```
 
 ### Что принимает pg_stream_in
@@ -1090,6 +1092,13 @@ select
 | `numeric` шире 38 знаков | читатель CSV Arrow не собирает `decimal256` | `col::text` |
 | `inet` с маской | текст `10.0.0.1/24` | для IPv4 ClickHouse — `host(col)` |
 
+Точность `timestamp(p)` едет в единицу Arrow: `timestamp(0)` —
+`timestamp[s]`, `timestamp(1..3)` — `timestamp[ms]`, остальное —
+`timestamp[us]`; приёмник по ней сверяет и создаёт колонку той же точности.
+`numeric` со значением `NaN` и `timestamp` со значением `infinity` читатель
+CSV Arrow не собирает — отказ с текстом причины; в select их приводят
+`::float8` (NaN сохраняется) или `::text`.
+
 Строка CSV обязана уместиться в один блок читателя: блок равен `chunk_bytes`,
 но не меньше 1 MiB. Строка шире (большой `text`, `bytea`, `jsonb`)
 отвергается с ошибкой `a row must fit into one block, raise chunk_bytes`;
@@ -1097,13 +1106,13 @@ select
 
 ### Что принимает pg_arrow_in
 
-`pg_arrow_in(sql, chunk_bytes, exact_floats)` пишет каждую пачку писателем
+`pg_arrow_in(sql, copy_options)` пишет каждую пачку писателем
 CSV pyarrow в C, и блок уходит в стейтмент из вызова —
 `copy dwh.orders (id, amount, note) from stdin (format csv)`; колонки в нём
 перечисляются в порядке полей потока, шапки в теле нет (`HEADER` не
 указывать), значения разбирает сервер по типу колонки. Одна транзакция.
 
-`exact_floats = true` везёт колонки `float` и `double` шестнадцатеричной
+`copy_options.exact_floats = true` везёт колонки `float` и `double` шестнадцатеричной
 записью C (`0x1.4522c9e2190c1p-986`), которую `strtod` любого postgres
 разбирает бит в бит; десятичную запись Greenplum 6 для редких значений
 (`1.942e-297`, одно на несколько тысяч случайных) округляет на одну ULP.
@@ -1306,6 +1315,166 @@ tables` — таблицу; оба атомарны и идут шагом `afte
 Таблица staging обязана повторять раскладку целевой: у Oracle — колонки и
 типы, у ClickHouse — ещё и ключ партиционирования с ключом сортировки.
 
+## Семейство sync: приёмник со стратегиями
+
+Насосы выше гонят байты в стейтмент, который написал вызывающий. Семейство
+`*_sync_out` -> `*_sync_in` — другое: приёмнику говорят, куда положить
+данные и по каким стратегиям, а контракт колонок он получает из самого
+потока и дальше сам создаёт, сверяет, пересоздаёт таблицу и грузит.
+
+### Провод и контракт
+
+Поток — кадры: первый `schema` (формат тел, движок источника, контракт
+колонок), дальше `rows`. Источник запрос не переписывает: `select` пишет
+LLM, инструмент выполняет его как есть. Контракт — описание колонок от
+драйвера (postgres: тип и typmod, nullable серверу неизвестен; Oracle: тип,
+точность, null_ok; ClickHouse: типы с Nullable) с декларациями `columns`
+поверх:
+
+```json
+{"sql": "select id, amount, note from sales.orders o left join sales.notes n using (id)",
+ "target_engine": "postgres",
+ "columns": [
+   {"name": "id",     "nullable": false},
+   {"name": "amount", "family": "decimal", "precision": 20, "scale": 6},
+   {"name": "note",   "family": "string", "char_length": 200}
+ ]}
+```
+
+Заданное перекрывает найденное, незаданное остаётся от драйвера; имя,
+которого нет в ответе, — ошибка. Так задаётся `not null` у колонки из
+`left join`, точный decimal, длина строки или `source_type` — имя типа,
+когда драйвер отдал только OID (`sales.mood`, `hstore`, `vector(3)`).
+
+### Алгоритм типов: один на оба провода
+
+1. Источник получает колонки от драйвера и сливает их с `columns` от LLM.
+   Это контракт, он едет в кадре `schema` в обоих режимах. У postgres это
+   два вызова libpq до COPY: `PQprepare` (сообщение Parse с текстом select,
+   сервер разбирает его и резолвит имена по каталогу) и
+   `PQdescribePrepared` (сообщение Describe, ответ RowDescription с именем,
+   OID типа и typmod каждой колонки). Bind и Execute не отправляются:
+   планирования и чтения данных нет, около миллисекунды даже для запроса на
+   часы выполнения, счётчики `pg_stat_database` не растут. Данные читает
+   только COPY. У Oracle это `FetchInfo` курсора после `parse`, у ClickHouse
+   схема ArrowStream.
+2. В Arrow-режиме схема потока строится из этого же контракта: декларация
+   precision/scale у `numeric` без точности даёт `decimal128(p, s)`, смена
+   семейства на string — `large_string`. Значение шире объявленного типа
+   читатель Arrow отвергает.
+3. Приёмник берёт контракт из кадра `schema`, применяет `rules`:
+   `rename_columns` (колонка приёмника: поле потока) и `column_types`
+   (колонка приёмника: тип текстом, `{"v": "vector(3)", "amount":
+   "numeric(20,6)"}`). Тексты `column_types` приёмник разбирает сам, через
+   описание `select null::<тип>` у своего сервера, и подменяет ими тип
+   колонки потока. Неизвестный серверу тип — ошибка до любого DDL.
+4. Полный набор сверяется с колонками таблицы, если она есть, и из него же
+   строится `create table`.
+
+Сверка идёт по семейству и параметрам (ширина, precision/scale, длина
+строки и bit, единица и пояс времени, nullable), а при одном движке
+дополнительно по тексту типа: `json` в `jsonb` и `inet` в `cidr` —
+предупреждение, `uuid` в `text` — ошибка семейства. Семейства «только по
+имени» (array, range, geometry, textsearch, system, other) при одном движке
+требуют совпадения имени: `int4range` в `int8range` — ошибка; между
+движками сверить нельзя — предупреждение. Все 76 имён встроенного реестра
+psycopg разложены по семействам, сторож `TestRegistryCoverage` не даёт
+таблице отстать.
+
+### Типы postgres в контракте
+
+| Тип источника | Семейство и параметры | DDL pg -> pg | DDL из другого движка |
+|---|---|---|---|
+| int2 / int4 / int8, oid | integer 16 / 32 / 64, oid — unsigned 32 | как у источника | smallint / integer / bigint, unsigned на ступень шире |
+| float4 / float8 | float 32 / 64 | как у источника | real / double precision |
+| numeric(p,s) / numeric | decimal(p,s) / без точности | как у источника | numeric(p, s) / numeric |
+| bool, date | boolean, date | как у источника | boolean, date |
+| timestamp(p) / timestamptz(p) | timestamp, единица s / ms / us по p, пояс | как у источника | timestamp(p) [with time zone] |
+| time(p) / timetz(p) | time, единица и пояс | как у источника | time(p) [with time zone] |
+| text, varchar(n), bpchar(n), name | string, длина n | как у источника | character varying(n) / text |
+| bytea | binary | как у источника | bytea |
+| uuid | uuid | как у источника | uuid |
+| json / jsonb / jsonpath | json | как у источника | jsonb |
+| interval | interval | как у источника | interval |
+| inet / cidr / macaddr / macaddr8 | network | как у источника | inet |
+| bit(n) / varbit(n) | bit, длина в битах | как у источника | bit varying(n) |
+| money | money | как у источника | money |
+| xml | xml | как у источника | xml |
+| point / line / lseg / box / path / polygon / circle | geometry, только по имени | как у источника | `column_types`, иначе стратегия |
+| int4range … datemultirange | range, только по имени | как у источника | то же |
+| tsvector / tsquery / gtsvector | textsearch, только по имени | как у источника | то же |
+| массивы любого типа | array, только по имени (`integer[]`) | как у источника | то же |
+| oid-подобные: regclass, xid, tid, pg_lsn, aclitem, refcursor … | system, только по имени | как у источника | то же |
+| record | other под именем | как у источника | то же |
+| OID вне реестра psycopg: enum, composite, hstore, vector | other без имени (`oid N`) | `columns[].source_type` или `column_types`, иначе стратегия | то же |
+
+Стратегия `unknown_types` у `pg_sync_in` решает судьбу колонок семейства
+other, для которых типа нет ни в контракте, ни в `column_types`:
+
+| kind | Неизвестный тип |
+|---|---|
+| `fail_on_unknown` (по умолчанию) | ошибка с тем, что о типе известно (имя от драйвера или голый OID) и подсказкой объявить тип в `rules.column_types` или взять `fallback_as_varchar`; LLM решает сам |
+| `fallback_as_varchar` | строковый тип движка без предела длины: `varchar` у postgres, `String` у ClickHouse |
+
+Схему в имени типа указывать (`sales.mood`): search_path приёмника не тот,
+что у сессии LLM. Расширение должно быть у приёмника, иначе `create table`
+упадёт с откатом всей загрузки.
+
+### Реестр форматов
+
+`target_engine` у источника выбирает формат тел по паре движков; приёмник
+берёт sink по формату из первого кадра:
+
+| Источник | target_engine | Формат тел | Что сохраняется |
+|---|---|---|---|
+| postgres | postgres, greenplum | `pg_copy_csv` | всё, что печатает COPY: `infinity`, `NaN` у numeric, `numeric(999,5)`, enum, составные, диапазоны |
+| postgres | clickhouse | `pg_copy_tsv` | COPY text в раскладке TabSeparated |
+| postgres, oracle, clickhouse | иначе | `arrow_ipc` | типы Arrow; чего Arrow не несёт — `::text` в запросе |
+
+`pg_sync_in` принимает `arrow_ipc` и `pg_copy_csv`; незнакомый формат —
+отказ с перечнем принимаемых. Между двумя postgres всегда называйте
+`target_engine`: COPY-канал не теряет ничего и не требует приведений.
+
+### Стратегии
+
+Стратегия — объект с `kind`: `schema_strategy` — `create_if_not_exists`,
+`error_if_not_exists`, `error_if_schema_changed`,
+`drop_and_create_if_schema_changed` (`cascade`),
+`backup_and_create_if_schema_changed`, `drop_and_create`, `backup_and_create`,
+`do_nothing`; `delete_strategy` — `nothing`, `truncate`, `delete_all`,
+`delete_where` (`where` как в SQL приёмника); `insert_strategy` — `full`,
+`nothing`.
+
+```json
+{"schema_name": "dwh", "table_name": "orders",
+ "schema_strategy": {"kind": "backup_and_create_if_schema_changed"},
+ "delete_strategy": {"kind": "delete_where", "where": "dt >= date '2024-01-01'"},
+ "insert_strategy": {"kind": "full"}}
+```
+
+Сверка поколоночная: сужение (decimal с меньшей scale, varchar короче,
+timestamp грубее, nullable в not null, uint64 в bigint) — ошибка, расширение
+— предупреждение; колонка потока без колонки в таблице или наоборот —
+ошибка. Бэкап — переименование с суффиксом `_bak_YYYYMMDD_HHMMSS_ffffff`.
+DDL приёмника: тексты типов postgres как есть, если источник — postgres
+(включая enum и составные — они должны существовать в базе приёмника),
+иначе по нейтральному типу: `numeric(p, s)`, `character varying(n)`,
+`timestamp(p)`, `bigint`, uint64 — `numeric(20)`. Вся загрузка — одна
+транзакция: NULL в `not null` или строка длиннее заявленной откатывает всё.
+
+Ответ приёмника: сколько строк, что сделано со схемой и почему, сверка по
+колонкам, что удалено:
+
+```text
+1000 rows written into dwh.orders
+schema: backup_then_create (column amount: table numeric(10,2) truncates the scale of stream decimal(18, 4))
+backup: orders_bak_20260926_101502_118273
+columns:
+- ok id: ok
+- error amount: column amount: table numeric(10,2) truncates the scale ...
+deleted: 0 rows by truncate table "dwh"."orders"
+```
+
 ## Скорость
 
 Нагрузочный тест гонит миллион строк широкой таблицы (NUMBER, BINARY_DOUBLE,
@@ -1343,6 +1512,10 @@ tables` — таблицу; оба атомарны и идут шагом `afte
 - `test_ch_arrow.py` — ClickHouse -> ClickHouse, PostgreSQL и Oracle потоком
   Arrow на всей матрице версий: каждый тип ClickHouse, включая Int128,
   UInt256, Enum, IPv6, Map и Nested, едет как есть или текстом;
+- `test_pg_sync.py`, `test_pg_sync_edges.py` — семейство sync: стратегии
+  схемы на каждом postgres и Greenplum в обоих режимах провода (Arrow и
+  COPY), декларации, пограничные типы, NULL, decimal, varchar, timestamp,
+  потоки из ClickHouse и Oracle;
 - `test_arrow_ports.py` — Arrow-порты toolkit над трубой ОС без баз;
 - `test_pg_arrow.py` — PostgreSQL -> PostgreSQL, ClickHouse и Oracle потоком
   Arrow на всей матрице версий, обратные пути и ловушки;

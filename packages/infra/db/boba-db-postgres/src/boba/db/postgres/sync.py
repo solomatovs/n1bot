@@ -1,0 +1,850 @@
+"""Sync-семейство postgres: источник PgSyncSource (описание колонок
+драйвером плюс декларации вызова, тело потока в формате по реестру пар —
+COPY csv для postgres и Greenplum, COPY text для ClickHouse, Arrow для
+остальных) и приёмник: таблица как порт TableDdl ядра (каталог, create,
+backup, drop, truncate, delete), sink'и вставки по формату потока (COPY из
+тел кадров как есть; Arrow через PgArrowIn) и загрузчик PgSyncLoader,
+который ведёт шаги стратегий одной транзакцией: у postgres DDL
+откатывается вместе с данными.
+
+Ошибки:
+SyncError — декларация на колонку, которой нет в ответе; правило вызова
+    не сходится со схемами; формат потока приёмнику незнаком; стратегия
+    схемы отказала (таблицы нет, схема разошлась).
+PgArrowError — стейтмент не описывается сервером или тип пачки потока не
+    пишется в CSV.
+psycopg.Error — сервер отклонил стейтмент или значение.
+"""
+
+from __future__ import annotations
+
+from collections.abc import AsyncIterator, Callable, Mapping, Sequence
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from enum import StrEnum
+from typing import Any, ClassVar
+
+import psycopg
+from psycopg import sql
+
+from boba.db.postgres.arrow import (
+    PgArrowIn,
+    PgArrowOut,
+    PgArrowTypes,
+    PgTypedColumn,
+)
+from boba.db.postgres.errors import PgArrowError
+from boba.db.postgres.query import PgQuery, PgQueryBuilder
+from boba.db.postgres.trace import PgCommandReport, PgSessionTrace
+from boba.toolkit.arrow import ArrowIpc, ArrowReader
+from boba.toolkit.stream import Chunk
+from boba.toolkit.sync import (
+    ColumnDeclaration,
+    ColumnRules,
+    ColumnSpec,
+    ColumnType,
+    ContractText,
+    Declarations,
+    DeclaredType,
+    DeleteOutcome,
+    DeleteStrategyApply,
+    Engine,
+    InsertSink,
+    InsertStrategyApply,
+    SchemaAction,
+    SchemaFrame,
+    SchemaMatcher,
+    SchemaStrategyPlan,
+    SourceModes,
+    StreamContract,
+    SyncError,
+    SyncInbound,
+    SyncOutbound,
+    SyncReport,
+    TableColumn,
+    TableDdl,
+    TableSpec,
+    TimeUnit,
+    TypeFamily,
+    UnknownTypeApply,
+    WireFormat,
+)
+
+__all__ = [
+    "PgArrowSink",
+    "PgCopySink",
+    "PgDdlTypes",
+    "PgSinks",
+    "PgSyncLoader",
+    "PgSyncSource",
+    "PgTableDdl",
+    "PgTableFacts",
+    "PgTableRef",
+]
+
+
+@dataclass(frozen=True)
+class PgTableRef:
+    """Таблица-приёмник: схема и имя как идентификаторы."""
+
+    schema: str
+    name: str
+
+    def ident(self) -> sql.Identifier:
+        return sql.Identifier(self.schema, self.name)
+
+    def text(self) -> str:
+        return f"{self.schema}.{self.name}"
+
+
+class PgDdlTypes:
+    """Текст типа postgres для колонки потока: ddl_type из правил приёмника
+    как есть; текст типа источника, если источник — postgres и тип назван;
+    семейство other — varchar по стратегии неизвестных типов или ошибка;
+    иначе по нейтральному типу (bigint, numeric(p, s), character varying(n),
+    timestamp(p), uuid, jsonb, interval, time(p) ...)."""
+
+    INTEGERS: ClassVar[Mapping[int, str]] = {
+        8: "smallint",
+        16: "smallint",
+        32: "integer",
+        64: "bigint",
+    }
+    UNSIGNED: ClassVar[Mapping[int, str]] = {
+        8: "smallint",
+        16: "integer",
+        32: "bigint",
+        64: "numeric(20)",
+    }
+    FLOATS: ClassVar[Mapping[int, str]] = {32: "real", 64: "double precision"}
+    PRECISION: ClassVar[Mapping[TimeUnit, int]] = {
+        TimeUnit.SECOND: 0,
+        TimeUnit.MILLISECOND: 3,
+        TimeUnit.MICROSECOND: 6,
+        TimeUnit.NANOSECOND: 6,
+    }
+    PLAIN: ClassVar[Mapping[TypeFamily, str]] = {
+        TypeFamily.BOOLEAN: "boolean",
+        TypeFamily.BINARY: "bytea",
+        TypeFamily.DATE: "date",
+        TypeFamily.UUID: "uuid",
+        TypeFamily.JSON: "jsonb",
+        TypeFamily.INTERVAL: "interval",
+        TypeFamily.NETWORK: "inet",
+        TypeFamily.MONEY: "money",
+        TypeFamily.XML: "xml",
+    }
+
+    VARCHAR: ClassVar[str] = "varchar"
+
+    def render(
+        self, column: TableColumn, source_engine: Engine, unknown_as_varchar: bool
+    ) -> str:
+        if column.ddl_type:
+            return column.ddl_type
+
+        if source_engine is Engine.POSTGRES and column.source_type:
+            return column.source_type
+
+        if column.kind.family.named_only():
+            return self._unknown(column, unknown_as_varchar)
+
+        return self.of_kind(column.kind, column.char_length)
+
+    def _unknown(self, column: TableColumn, unknown_as_varchar: bool) -> str:
+        if unknown_as_varchar:
+            return self.VARCHAR
+
+        known = column.source_type
+        if not known:
+            known = column.kind.text
+
+        raise SyncError(
+            f"column {column.name}: the target cannot map the source type "
+            f"{known} (family {column.kind.family.value}); declare the target "
+            f'type in rules.column_types["{column.name}"] or take unknown_types '
+            f"fallback_as_varchar"
+        )
+
+    def of_kind(self, kind: ColumnType, char_length: int) -> str:
+        plain = self.PLAIN.get(kind.family)
+        if plain is not None:
+            return plain
+
+        renderers: Mapping[TypeFamily, Callable[[ColumnType, int], str]] = {
+            TypeFamily.INTEGER: self._integer,
+            TypeFamily.FLOAT: self._float,
+            TypeFamily.DECIMAL: self._decimal,
+            TypeFamily.STRING: self._string,
+            TypeFamily.BIT: self._bit,
+            TypeFamily.TIMESTAMP: self._timestamp,
+            TypeFamily.TIME: self._time,
+        }
+
+        return renderers[kind.family](kind, char_length)
+
+    @staticmethod
+    def _bit(kind: ColumnType, char_length: int) -> str:
+        if char_length > 0:
+            return f"bit varying({char_length})"
+
+        return "bit varying"
+
+    def _integer(self, kind: ColumnType, char_length: int) -> str:
+        if kind.unsigned:
+            return self.UNSIGNED.get(kind.bits, "numeric(20)")
+
+        return self.INTEGERS.get(kind.bits, "numeric(20)")
+
+    def _float(self, kind: ColumnType, char_length: int) -> str:
+        return self.FLOATS.get(kind.bits, "double precision")
+
+    @staticmethod
+    def _decimal(kind: ColumnType, char_length: int) -> str:
+        if kind.precision == 0:
+            return "numeric"
+
+        return f"numeric({kind.precision}, {kind.scale})"
+
+    @staticmethod
+    def _string(kind: ColumnType, char_length: int) -> str:
+        if char_length > 0:
+            return f"character varying({char_length})"
+
+        return "text"
+
+    def _timestamp(self, kind: ColumnType, char_length: int) -> str:
+        precision = self.PRECISION[kind.unit]
+        if kind.zoned:
+            return f"timestamp({precision}) with time zone"
+
+        return f"timestamp({precision})"
+
+    def _time(self, kind: ColumnType, char_length: int) -> str:
+        precision = self.PRECISION[kind.unit]
+        if kind.zoned:
+            return f"time({precision}) with time zone"
+
+        return f"time({precision})"
+
+
+class Relkind(StrEnum):
+    """Виды отношений pg_class, которые приёмник считает таблицей."""
+
+    TABLE = "r"
+    PARTITIONED = "p"
+
+
+class PgDeclaredTypes:
+    """Типы из rules.column_types, разобранные самим приёмником: сервер
+    описывает стейтмент select null::<тип> as <колонка> без выполнения,
+    и текст типа LLM превращается в oid и typmod — тот же путь, что у
+    описания выборки на источнике. Неизвестный серверу тип — ошибка до
+    любого DDL."""
+
+    def __init__(self, conn: psycopg.AsyncConnection[Any]) -> None:
+        self._conn = conn
+        self._out = PgArrowOut(conn)
+        self._types = PgArrowTypes(conn.adapters.types)
+
+    async def resolve(self, column_types: Mapping[str, str]) -> dict[str, DeclaredType]:
+        if not column_types:
+            return {}
+
+        query = self._query(column_types)
+        columns: list[PgTypedColumn] = []
+        try:
+            async for column in self._out.get_column_description_from_libpq(
+                query.text.as_string(self._conn)
+            ):
+                columns.append(column)
+        except PgArrowError as exc:
+            raise SyncError(
+                f"rules.column_types: postgres does not accept the declared types "
+                f"{dict(column_types)}: {exc}"
+            ) from exc
+
+        declared: dict[str, DeclaredType] = {}
+        for column in columns:
+            declared[column.name] = DeclaredType(
+                kind=self._types.kind_of(column),
+                source_type=self._types.source_type(column),
+                char_length=self._types.char_length(column),
+            )
+
+        return declared
+
+    def _query(self, column_types: Mapping[str, str]) -> PgQuery:
+        builder = PgQueryBuilder().add("select")
+        for position, (name, text) in enumerate(column_types.items()):
+            builder.when(position > 0, ",")
+            builder.add("null::")
+            builder.raw_query(text)
+            builder.add("as {name}", name=sql.Identifier(name))
+
+        return builder.build()
+
+
+@dataclass(frozen=True)
+class PgCatalogColumn(PgTypedColumn):
+    """Колонка таблицы приёмника из pg_attribute: позиция (с нуля, в порядке
+    attnum без удалённых), имя, OID типа (atttypid), typmod (atttypmod), OID
+    таблицы (attrelid), attnum (с единицы), размер типа (attlen), not null
+    (attnotnull) — то, чего у RowDescription нет."""
+
+    position: int
+    name: str
+    oid: int
+    typmod: int
+    table_oid: int
+    attnum: int
+    size: int
+    not_null: bool
+
+
+class PgTableFacts:
+    """Таблица по каталогу postgres: есть ли она (pg_class), её колонки
+    (pg_attribute: тип, typmod, not null) в PgCatalogColumn и в ColumnSpec
+    ядра."""
+
+    def __init__(self, conn: psycopg.AsyncConnection[Any], table: PgTableRef) -> None:
+        self._conn = conn
+        self._table = table
+        self._types = PgArrowTypes(conn.adapters.types)
+
+    async def exists(self) -> bool:
+        query = (
+            PgQueryBuilder()
+            .add(
+                "select 1 from pg_catalog.pg_class c "
+                "join pg_catalog.pg_namespace n on n.oid = c.relnamespace "
+                "where n.nspname = %(schema)s and c.relname = %(table)s "
+                "and c.relkind in (%(table_kind)s, %(partitioned_kind)s)",
+                schema=self._table.schema,
+                table=self._table.name,
+                table_kind=Relkind.TABLE.value,
+                partitioned_kind=Relkind.PARTITIONED.value,
+            )
+            .build()
+        )
+        row = await self._one(query)
+
+        return row is not None
+
+    async def columns(self) -> Sequence[PgCatalogColumn]:
+        query = (
+            PgQueryBuilder()
+            .add(
+                "select a.attname, a.atttypid, a.atttypmod, a.attnotnull, a.attnum, "
+                "a.attrelid, a.attlen "
+                "from pg_catalog.pg_attribute a "
+                "join pg_catalog.pg_class c on c.oid = a.attrelid "
+                "join pg_catalog.pg_namespace n on n.oid = c.relnamespace "
+                "where n.nspname = %(schema)s and c.relname = %(table)s "
+                "and a.attnum > 0 and not a.attisdropped order by a.attnum",
+                schema=self._table.schema,
+                table=self._table.name,
+            )
+            .build()
+        )
+        columns: list[PgCatalogColumn] = []
+        async with self._conn.cursor() as cursor:
+            await cursor.execute(query.text, query.params)
+            for position, row in enumerate(await cursor.fetchall()):
+                columns.append(
+                    PgCatalogColumn(
+                        position=position,
+                        name=str(row[0]),
+                        oid=int(row[1]),
+                        typmod=int(row[2]),
+                        table_oid=int(row[5]),
+                        attnum=int(row[4]),
+                        size=int(row[6]),
+                        not_null=bool(row[3]),
+                    )
+                )
+
+        return tuple(columns)
+
+    async def not_null(self) -> frozenset[str]:
+        names: set[str] = set()
+        for column in await self.columns():
+            if column.not_null:
+                names.add(column.name)
+
+        return frozenset(names)
+
+    async def facts(self) -> Sequence[ColumnSpec]:
+        specs: list[ColumnSpec] = []
+        for column in await self.columns():
+            specs.append(
+                ColumnSpec(
+                    name=column.name,
+                    kind=self._types.kind_of(column),
+                    nullable=not column.not_null,
+                    position=column.position,
+                    source_type=self._types.source_type(column),
+                    char_length=self._types.char_length(column),
+                )
+            )
+
+        return tuple(specs)
+
+    async def _one(self, query: PgQuery) -> Sequence[Any] | None:
+        async with self._conn.cursor() as cursor:
+            await cursor.execute(query.text, query.params)
+
+            return await cursor.fetchone()
+
+
+class PgTableDdl(TableDdl):
+    """Реализация TableDdl для postgres: каталог через PgTableFacts, DDL и
+    delete через PgQueryBuilder на одном соединении, условие where от
+    вызова — raw_query."""
+
+    BACKUP_STAMP: ClassVar[str] = "%Y%m%d_%H%M%S_%f"
+
+    def __init__(
+        self,
+        conn: psycopg.AsyncConnection[Any],
+        table: PgTableRef,
+        source_engine: Engine,
+    ) -> None:
+        self._conn = conn
+        self._table = table
+        self._source_engine = source_engine
+        self._facts = PgTableFacts(conn, table)
+        self._ddl_types = PgDdlTypes()
+
+    async def exists(self) -> bool:
+        return await self._facts.exists()
+
+    async def facts(self) -> Sequence[ColumnSpec]:
+        return await self._facts.facts()
+
+    async def create(self, spec: TableSpec, unknown_as_varchar: bool) -> str:
+        query = self._create_query(spec, unknown_as_varchar)
+        await self._execute(query)
+
+        return query.text.as_string(self._conn)
+
+    def _create_query(self, spec: TableSpec, unknown_as_varchar: bool) -> PgQuery:
+        builder = PgQueryBuilder(table=self._table.ident())
+        builder.add("create table {table} (")
+        for position, column in enumerate(spec.columns):
+            builder.when(position > 0, ",")
+            builder.add("{name}", name=sql.Identifier(column.name))
+            builder.raw_query(
+                self._ddl_types.render(column, self._source_engine, unknown_as_varchar)
+            )
+            builder.when(not column.nullable, "not null")
+
+        return builder.add(")").build()
+
+    async def backup(self) -> str:
+        stamp = datetime.now(UTC).strftime(self.BACKUP_STAMP)
+        renamed = f"{self._table.name}_bak_{stamp}"
+        query = (
+            PgQueryBuilder(table=self._table.ident())
+            .add(
+                "alter table {table} rename to {renamed}",
+                renamed=sql.Identifier(renamed),
+            )
+            .build()
+        )
+        await self._execute(query)
+
+        return renamed
+
+    async def drop(self, cascade: bool) -> str:
+        query = (
+            PgQueryBuilder(table=self._table.ident())
+            .add("drop table {table}")
+            .when(cascade, "cascade")
+            .build()
+        )
+        await self._execute(query)
+
+        return query.text.as_string(self._conn)
+
+    async def truncate(self) -> DeleteOutcome:
+        query = (
+            PgQueryBuilder(table=self._table.ident())
+            .add("truncate table {table}")
+            .build()
+        )
+        await self._execute(query)
+
+        return DeleteOutcome(rows=0, statement=query.text.as_string(self._conn))
+
+    async def delete_all(self) -> DeleteOutcome:
+        query = (
+            PgQueryBuilder(table=self._table.ident()).add("delete from {table}").build()
+        )
+
+        return await self._deleted(query)
+
+    async def delete_where(self, where: str) -> DeleteOutcome:
+        query = (
+            PgQueryBuilder(table=self._table.ident())
+            .add("delete from {table} where")
+            .raw_query(where)
+            .build()
+        )
+
+        return await self._deleted(query)
+
+    async def _execute(self, query: PgQuery) -> None:
+        async with self._conn.cursor() as cursor:
+            await cursor.execute(query.text, query.params)
+
+    async def _deleted(self, query: PgQuery) -> DeleteOutcome:
+        async with self._conn.cursor() as cursor:
+            await cursor.execute(query.text, query.params)
+            rows = cursor.rowcount
+
+        rows = max(rows, 0)
+
+        return DeleteOutcome(rows=rows, statement=query.text.as_string(self._conn))
+
+
+class PgSyncSource:
+    """Источник sync-потока: запрос выполняется как написан, контракт —
+    описание колонок libpq (тип и typmod, nullable серверу неизвестен) с
+    декларациями вызова поверх, формат тела — по движку приёмника."""
+
+    ENGINE: ClassVar[Engine] = Engine.POSTGRES
+    MODES: ClassVar[SourceModes] = SourceModes(
+        preferred={
+            Engine.POSTGRES: WireFormat.PG_COPY_CSV,
+            Engine.GREENPLUM: WireFormat.PG_COPY_CSV,
+            Engine.CLICKHOUSE: WireFormat.PG_COPY_TSV,
+        }
+    )
+    LAYOUT: ClassVar[Mapping[WireFormat, str]] = {
+        WireFormat.PG_COPY_CSV: ") to stdout (format csv)",
+        WireFormat.PG_COPY_TSV: ") to stdout",
+    }
+
+    def __init__(self, conn: psycopg.AsyncConnection[Any]) -> None:
+        self._conn = conn
+        self._out = PgArrowOut(conn)
+        self._types = PgArrowTypes(conn.adapters.types)
+        self._declarations = Declarations()
+        self._contract = StreamContract()
+        self._contract_text = ContractText()
+        self._trace = PgSessionTrace(conn)
+
+    async def get_column_specification(
+        self,
+        text: str,
+    ) -> AsyncIterator[ColumnSpec]:
+        """
+        Выполняет получение информации по колонкам в формате источника libpq
+        а далее преобразует в нейтральный вид каждую колонку
+        Нейтральный вид назвается спецификацией
+        """
+        async for column in self._out.get_column_description_from_libpq(text):
+            yield ColumnSpec(
+                name=column.name,
+                # здесь переводим postgres типы в нейтральные типы
+                # независимо существующие от специфики базы данных
+                # float, decimal, integer существуют даже если не станет postgres
+                kind=self._types.kind_of(column),
+                # libpq не отдает null/notnull потому что данные о колонках
+                # беруться прямо из результатов запроса, к примеру:
+                # select
+                #   t1.id t1id,
+                #   t2.id t2id
+                # from
+                #   table_1 t1
+                #   left join table2 t2 using (id)
+                # откуда мы можем знать, является ли колонка t1id null/notnull?
+                # пока весь запрос не будет выполнен, мы можем лишь предполагать
+                # потому что left join может внести nullable
+                # поэтому здесь все колонки проставляются как nullable
+                # так как это более широкий варинт обхвата значений
+                nullable=True,
+                position=column.position,
+                source_type=self._types.source_type(column),
+                char_length=self._types.char_length(column),
+            )
+
+    async def stream(
+        self,
+        text: str,
+        target: Engine,
+        declared: Sequence[ColumnDeclaration],
+        chunk_bytes: int,
+        out: SyncOutbound,
+    ) -> PgCommandReport:
+        fmt = self.MODES.format_for(target)
+        # получаем нейтральное описание колонок из postgres
+        column_description = [
+            column async for column in self.get_column_specification(text)
+        ]
+        # выполняем merge этих данных с тем что отдала llm
+        # llm может корректировать исходные данные, к примеру явно указывать
+        # какая колонка является nullable, потому что libpq явно не говорит об этом
+        specs = self._declarations.merge(column_description, declared)
+
+        await out.schema(
+            SchemaFrame(
+                kind="schema",
+                format=fmt,
+                source_engine=self.ENGINE,
+                columns=self._contract.columns(specs),
+            )
+        )
+        summary = self._contract_text.render(fmt, specs)
+        if fmt is WireFormat.ARROW_IPC:
+            schema = self._types.schema_of(specs)
+            report = await self._out.stream_into(
+                text, schema, chunk_bytes, out.writer()
+            )
+
+            return PgCommandReport(
+                summary=summary,
+                status=report.status,
+                statement=report.statement,
+                backend_pid=report.backend_pid,
+                server_version=report.server_version,
+                rows=report.rows,
+                notices=report.notices,
+                notifies=report.notifies,
+            )
+
+        return await self._copy(text, fmt, chunk_bytes, out, summary)
+
+    async def _copy(
+        self,
+        text: str,
+        fmt: WireFormat,
+        chunk_bytes: int,
+        out: SyncOutbound,
+        summary: str,
+    ) -> PgCommandReport:
+        """COPY отдаёт по блоку на строку: блоки копятся до chunk_bytes и
+        уходят одним кадром."""
+        query = (
+            PgQueryBuilder().add("copy (").raw_query(text).add(self.LAYOUT[fmt]).build()
+        )
+        pending = bytearray()
+        async with self._conn.cursor() as cursor:
+            async with cursor.copy(query.text) as copy:
+                async for block in copy:
+                    pending.extend(block)
+                    if len(pending) < chunk_bytes:
+                        continue
+
+                    await out.rows(bytes(pending))
+                    pending = bytearray()
+
+            if pending:
+                await out.rows(bytes(pending))
+
+            return self._trace.report(summary, query.text.as_string(self._conn), cursor)
+
+
+class PgArrowSink(InsertSink):
+    """Реализация InsertSink для потока Arrow: пачки в COPY таблицы по
+    колонкам из TableSpec (порядок полей потока) через PgArrowIn."""
+
+    def __init__(
+        self,
+        conn: psycopg.AsyncConnection[Any],
+        table: PgTableRef,
+        reader: ArrowReader,
+        exact_floats: bool,
+    ) -> None:
+        self._conn = conn
+        self._table = table
+        self._reader = reader
+        self._arrow_in = PgArrowIn(conn, exact_floats)
+
+    async def load(self, spec: TableSpec) -> int:
+        query = PgCopyStatement(self._conn, self._table).query(spec)
+        report = await self._arrow_in.copy_query(query, self._reader)
+
+        return report.rows
+
+    async def discard(self) -> int:
+        rows = 0
+        async for batch in self._reader.batches:
+            rows += batch.num_rows
+
+        return rows
+
+
+class PgCopySink(InsertSink):
+    """Реализация InsertSink для потока COPY csv: тела кадров уходят в COPY
+    таблицы как есть, ничего не перекодируется."""
+
+    def __init__(
+        self,
+        conn: psycopg.AsyncConnection[Any],
+        table: PgTableRef,
+        bodies: AsyncIterator[Chunk],
+    ) -> None:
+        self._conn = conn
+        self._table = table
+        self._bodies = bodies
+
+    async def load(self, spec: TableSpec) -> int:
+        query = PgCopyStatement(self._conn, self._table).query(spec)
+        async with self._conn.cursor() as cursor:
+            async with cursor.copy(query.text) as copy:
+                async for body in self._bodies:
+                    await copy.write(body)
+
+            rows = cursor.rowcount
+
+        rows = max(rows, 0)
+
+        return rows
+
+    async def discard(self) -> int:
+        async for _ in self._bodies:
+            pass
+
+        return 0
+
+
+class PgCopyStatement:
+    """COPY таблицы по колонкам TableSpec в порядке полей потока."""
+
+    def __init__(self, conn: psycopg.AsyncConnection[Any], table: PgTableRef) -> None:
+        self._conn = conn
+        self._table = table
+
+    def query(self, spec: TableSpec) -> PgQuery:
+        names: list[sql.Identifier] = []
+        for name in spec.names():
+            names.append(sql.Identifier(name))
+
+        return (
+            PgQueryBuilder(table=self._table.ident())
+            .add(
+                "copy {table} ({columns}) from stdin (format csv)",
+                columns=sql.SQL(", ").join(names),
+            )
+            .build()
+        )
+
+
+class PgSinks:
+    """Реестр приёмника: sink по формату тела потока; незнакомый формат —
+    отказ с перечнем принимаемых."""
+
+    ACCEPTED: ClassVar[Sequence[WireFormat]] = (
+        WireFormat.ARROW_IPC,
+        WireFormat.PG_COPY_CSV,
+    )
+
+    def __init__(
+        self,
+        conn: psycopg.AsyncConnection[Any],
+        table: PgTableRef,
+        inbound: SyncInbound,
+        chunk_bytes: int,
+        exact_floats: bool,
+    ) -> None:
+        self._conn = conn
+        self._table = table
+        self._inbound = inbound
+        self._chunk_bytes = chunk_bytes
+        self._exact_floats = exact_floats
+        self._ipc = ArrowIpc()
+
+    async def sink(self, fmt: WireFormat) -> InsertSink:
+        if fmt is WireFormat.ARROW_IPC:
+            reader = await self._ipc.open_in(self._inbound.raw(), self._chunk_bytes)
+
+            return PgArrowSink(self._conn, self._table, reader, self._exact_floats)
+
+        if fmt is WireFormat.PG_COPY_CSV:
+            return PgCopySink(self._conn, self._table, self._inbound.bodies())
+
+        accepted = ", ".join(accepted.value for accepted in self.ACCEPTED)
+        raise SyncError(
+            f"pg_sync_in takes streams in {accepted}, the source sent {fmt.value}; "
+            f"name the target engine at the source (target_engine=postgres) or "
+            f"leave it unknown for arrow"
+        )
+
+
+class PgSyncLoader:
+    """Загрузка потока в таблицу postgres по стратегиям: контракт потока ->
+    факты каталога -> сверка -> план стратегии схемы -> DDL -> удаление ->
+    вставка через sink формата, всё одной транзакцией соединения."""
+
+    def __init__(
+        self,
+        conn: psycopg.AsyncConnection[Any],
+        table: PgTableRef,
+        contract: Sequence[ColumnSpec],
+        source_engine: Engine,
+        sink: InsertSink,
+    ) -> None:
+        self._conn = conn
+        self._table = table
+        self._stream = tuple(contract)
+        self._exact = source_engine is Engine.POSTGRES
+        self._ddl = PgTableDdl(conn, table, source_engine)
+        self._declared = PgDeclaredTypes(conn)
+        self._sink = sink
+
+    async def run(
+        self,
+        schema_strategy: SchemaStrategyPlan,
+        delete_strategy: DeleteStrategyApply,
+        insert_strategy: InsertStrategyApply,
+        unknown_types: UnknownTypeApply,
+        rules: ColumnRules,
+    ) -> SyncReport:
+        matcher = SchemaMatcher(rules, self._exact)
+        async with self._conn.transaction():
+            declared = await self._declared.resolve(rules.column_types)
+            exists = await self._ddl.exists()
+            facts: Sequence[ColumnSpec] = ()
+            if exists:
+                facts = await self._ddl.facts()
+
+            diff = matcher.diff(self._stream, facts, declared)
+            plan = schema_strategy.plan(exists, diff.summary())
+            spec = diff.table_spec()
+            backup = ""
+            match plan.action:
+                case SchemaAction.CREATE:
+                    await unknown_types.apply(self._ddl, spec)
+                case SchemaAction.BACKUP_THEN_CREATE:
+                    backup = await self._ddl.backup()
+                    await unknown_types.apply(self._ddl, spec)
+                case SchemaAction.DROP_THEN_CREATE:
+                    await self._ddl.drop(plan.cascade)
+                    await unknown_types.apply(self._ddl, spec)
+                case SchemaAction.KEEP:
+                    pass
+                case SchemaAction.FAIL:
+                    raise SyncError(
+                        f"schema strategy refused {self._table.text()}: "
+                        f"{plan.reason}\n{diff.render()}"
+                    )
+
+            deleted = await delete_strategy.apply(self._ddl)
+            inserted = await insert_strategy.apply(self._sink, spec)
+
+        diff_text = ""
+        if exists:
+            diff_text = diff.render()
+
+        return SyncReport(
+            table=self._table.text(),
+            action=plan.action,
+            reason=plan.reason,
+            backup=backup,
+            diff=diff_text,
+            deleted=deleted,
+            inserted=inserted,
+            transactional=True,
+        )

@@ -56,9 +56,10 @@ class Pipe:
     строятся по объявлениям тел — сырые или Arrow, — как их строит ToolMain.
     Каждый конец закрывает сторона, которая им владеет, когда её насос
     завершился: так вход видит EOF, а выход при упавшем входе получает EPIPE,
-    а не зависает."""
+    а не зависает. Аннотации портов — как в подписях тел: сырые классы или
+    Inbound[...]/Outbound[...] с моделями заголовков."""
 
-    def __init__(self, outbound: type[RawOutbound], inbound: type[RawInbound]) -> None:
+    def __init__(self, outbound: Any, inbound: Any) -> None:
         self._read_fd, self._write_fd = os.pipe()
         self.outbound = StreamPorts.build(
             outbound, ToolIo.on_channels(-1, self._write_fd)

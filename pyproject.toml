@@ -191,7 +191,12 @@ known-first-party = ["boba"]
 "shutil.which".msg = "PATH is attacker-controlled: use boba.toolkit.binaries.TrustedBinaries"
 
 [tool.ruff.lint.flake8-bugbear]
-extend-immutable-calls = ["boba.db.postgres.connection.CopySession"]
+extend-immutable-calls = [
+    "boba.db.postgres.connection.CopyOptions",
+    "boba.db.postgres.connection.CopySession",
+    "boba.toolkit.sync.ColumnRules",
+    "boba.toolkit.sync.FailOnUnknown",
+]
 
 [tool.ruff.lint.per-file-ignores]
 "**/tests/**" = [

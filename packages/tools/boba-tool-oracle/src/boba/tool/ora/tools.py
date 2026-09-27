@@ -43,11 +43,24 @@ from boba.toolkit.ports import (
     ArrowOutbound,
     ArrowStreamError,
     ChunkBytes,
+    Outbound,
     RawInbound,
     RawOutbound,
 )
 from boba.toolkit.result import MarkdownResult, SqlResult, SqlStatement, TableResult
 from boba.toolkit.sql import QueryBuildError, SqlErrorKind, SqlLimits
+from boba.toolkit.sync import (
+    ColumnDeclaration,
+    ContractText,
+    Declarations,
+    Engine,
+    SchemaFrame,
+    StreamContract,
+    SyncError,
+    SyncFrame,
+    SyncOutbound,
+    WireFormat,
+)
 from boba.toolkit.types import SecretRevealing
 from boba.toolkit.window import RowLimit, RowOffset, RowPage, RowWindow
 
@@ -964,6 +977,71 @@ async def ora_arrow_out(
 
 
 @tool
+async def ora_sync_out(
+    connection: OraConnection,
+    sql: Annotated[
+        str,
+        Field(
+            min_length=1,
+            description=(
+                "Запрос SELECT целиком; выполняется как написан. Имена колонок "
+                "Oracle отдаёт заглавными, для строчных — алиас в кавычках: "
+                'col as "col".'
+            ),
+        ),
+        MarkdownResult(language="sql"),
+    ],
+    target_engine: Annotated[
+        Engine,
+        Field(description="Движок приёмника; у Oracle все приёмники получают Arrow."),
+    ] = Engine.UNKNOWN,
+    columns: Annotated[
+        Sequence[ColumnDeclaration],
+        Field(
+            description=(
+                "Декларации колонок поверх описания драйвера: заданное "
+                "перекрывает найденное, незаданное остаётся от драйвера."
+            ),
+        ),
+    ] = (),
+    *,
+    out: Annotated[Outbound[SyncFrame], Injected],
+) -> MarkdownResult:
+    """Источник sync-потока: строки запроса с контрактом колонок для приёмника.
+
+    Первый кадр — контракт из описания стейтмента после parse (типы,
+    точность, null_ok, тексты типов Oracle) с декларациями columns поверх;
+    дальше кадры данных потоком Arrow IPC пачками драйвера. В ответ — состав
+    контракта, строки и координаты сессии.
+    """
+    from boba.db.oracle.payload import PayloadOracle  # noqa: PLC0415
+    from boba.db.oracle.trace import OraSessionTrace  # noqa: PLC0415
+
+    payload = PayloadOracle(connection)
+    statement = OraQueryBuilder().raw_query(sql).build()
+    outbound = SyncOutbound(out)
+    async with payload.opened() as conn:
+        trace = OraSessionTrace(conn)
+        specs = Declarations().merge(
+            await payload.describe_specs(conn, statement.text), columns
+        )
+        await outbound.schema(
+            SchemaFrame(
+                kind="schema",
+                format=WireFormat.ARROW_IPC,
+                source_engine=Engine.ORACLE,
+                columns=StreamContract().columns(specs),
+            )
+        )
+        await payload.arrow_into(conn, statement.text, outbound.writer(), trace)
+        report = trace.report(
+            ContractText().render(WireFormat.ARROW_IPC, specs), statement.text
+        )
+
+    return MarkdownResult(text=report.render())
+
+
+@tool
 async def ora_arrow_in(  # noqa: PLR0913
     connection: OraConnection,
     sql: Annotated[
@@ -1022,6 +1100,7 @@ EXPECTED: Mapping[type[Exception], SqlErrorKind] = {
     OracleError: SqlErrorKind.DATABASE_UNAVAILABLE,
     OracleQueryError: SqlErrorKind.SQL_FAILED,
     ArrowStreamError: SqlErrorKind.SQL_FAILED,
+    SyncError: SqlErrorKind.SQL_FAILED,
 }
 
 TOOLS: Final = ToolMain.toolset(
@@ -1032,6 +1111,7 @@ TOOLS: Final = ToolMain.toolset(
     ora_csv_out,
     ora_csv_in,
     ora_arrow_out,
+    ora_sync_out,
     ora_arrow_in,
     ora_database_describe,
     ora_schema_describe,
