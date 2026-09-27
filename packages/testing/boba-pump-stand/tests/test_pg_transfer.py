@@ -1,6 +1,6 @@
 # ruff: noqa: S608, PLR0913
-"""Загрузка postgres -> postgres парой boba-sync-pg-to-pg через pg_sync_out и
-pg_sync_in с раскладками csv, tsv и binary: контракт RowDescription как есть, сверка
+"""Загрузка postgres -> postgres парой boba-sync-pg-to-pg через pg_stream_out и
+pg_stream_in с раскладками csv, tsv и binary: контракт RowDescription как есть, сверка
 по OID и typmod с каталогом приёмника, DDL текстом типа источника, тела COPY
 без перекодирования. Прогон по всем postgres стенда и Greenplum.
 """
@@ -141,7 +141,7 @@ async def land(
     declared = [PgColumnDeclaration(name="id", nullable=False), *columns]
     chained = await pumps.chain(
         Leg(
-            "pg_sync_out",
+            "pg_stream_out",
             {
                 "sql": select,
                 "wire": wire,
@@ -150,7 +150,7 @@ async def land(
             },
         ),
         Leg(
-            "pg_sync_in",
+            "pg_stream_in",
             {
                 "schema_name": S,
                 "table_name": table,
@@ -607,7 +607,7 @@ class TestOlderTarget:
             ):
                 await pumps.chain(
                     Leg(
-                        "pg_sync_out",
+                        "pg_stream_out",
                         {
                             "sql": f"select * from {S}.s_old",
                             "wire": StreamWire.CSV,
@@ -616,7 +616,7 @@ class TestOlderTarget:
                         },
                     ),
                     Leg(
-                        "pg_sync_in",
+                        "pg_stream_in",
                         {
                             "schema_name": S,
                             "table_name": "t_old",
@@ -786,7 +786,7 @@ class TestBinaryWire:
             with pytest.raises(TransferError, match="major versions differ"):
                 await pumps.chain(
                     Leg(
-                        "pg_sync_out",
+                        "pg_stream_out",
                         {
                             "sql": SELECT,
                             "wire": StreamWire.BINARY,
@@ -795,7 +795,7 @@ class TestBinaryWire:
                         },
                     ),
                     Leg(
-                        "pg_sync_in",
+                        "pg_stream_in",
                         {
                             "schema_name": S,
                             "table_name": "t_bin_old",

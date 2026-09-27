@@ -1,5 +1,5 @@
 # ruff: noqa: S608
-"""Приёмник ch_sync_in на потоке arrow: pg_sync_out и ch_sync_out в каждый
+"""Приёмник ch_stream_in на потоке arrow: pg_stream_out и ch_stream_out в каждый
 ClickHouse стенда.
 
 Источник — новейший postgres с таблицей всех ходовых типов: целые, numeric,
@@ -14,7 +14,7 @@ ClickHouse и опираются на таблицы предыдущих:
     - шаблон create table с {database}, engine и order by;
     - тип без пары у ClickHouse: отказ и String по fallback_as_varchar;
     - сухой прогон;
-    - круг ClickHouse -> ClickHouse через ch_sync_out;
+    - круг ClickHouse -> ClickHouse через ch_stream_out;
     - база не Atomic — отказ до любого DDL.
 """
 
@@ -71,7 +71,7 @@ MERGE_TREE = (
     "create table {database}.{table_name}[ on cluster {cluster}] ({columns}) "
     "engine = MergeTree order by {order_by}"
 )
-"""Шаблон для серверов без Keeper: дефолт ch_sync_in — ReplicatedMergeTree."""
+"""Шаблон для серверов без Keeper: дефолт ch_stream_in — ReplicatedMergeTree."""
 STAND_CLUSTER = "stand"
 
 SOURCE_DDL = f"""
@@ -189,11 +189,11 @@ async def land(  # noqa: PLR0913
     order_by: str = ChTableRef.ORDER_BY,
     columns: Sequence[PgColumnDeclaration] = DECLARED,
 ) -> str:
-    """pg_sync_out потоком arrow -> ch_sync_in."""
+    """pg_stream_out потоком arrow -> ch_stream_in."""
     pumps = Pumps(postgres=postgres.profile, clickhouse=clickhouse.profile)
     chained = await pumps.chain(
         Leg(
-            "pg_sync_out",
+            "pg_stream_out",
             {
                 "sql": select,
                 "wire": StreamWire.ARROW,
@@ -202,7 +202,7 @@ async def land(  # noqa: PLR0913
             },
         ),
         Leg(
-            "ch_sync_in",
+            "ch_stream_in",
             {
                 "database": database,
                 "table_name": table,
@@ -217,7 +217,7 @@ async def land(  # noqa: PLR0913
             },
         ),
     )
-    print(f"\n--- {clickhouse.source.name}: ch_sync_in ---\n{chained.in_report}")
+    print(f"\n--- {clickhouse.source.name}: ch_stream_in ---\n{chained.in_report}")
 
     return chained.in_report
 
@@ -572,15 +572,15 @@ class TestDryRun:
 
 
 class TestClickHouseCircle:
-    """ClickHouse -> ClickHouse: ch_sync_out читает загруженную таблицу потоком
-    arrow, ch_sync_in кладёт её в новую. UUID ClickHouse до 26 в Arrow не
+    """ClickHouse -> ClickHouse: ch_stream_out читает загруженную таблицу потоком
+    arrow, ch_stream_in кладёт её в новую. UUID ClickHouse до 26 в Arrow не
     выгружает, поэтому запрос отдаёт его toString, как советует etl_skill."""
 
     async def test_orders_come_around(self, clickhouse: ClickHouseSide) -> None:
         pumps = Pumps(clickhouse=clickhouse.profile)
         chained = await pumps.chain(
             Leg(
-                "ch_sync_out",
+                "ch_stream_out",
                 {
                     "sql": (
                         f"select id, i4, n, f8, t, vc, d, ts, tz, toString(u) as u "
@@ -591,7 +591,7 @@ class TestClickHouseCircle:
                 },
             ),
             Leg(
-                "ch_sync_in",
+                "ch_stream_in",
                 {
                     "database": CH_DATABASE,
                     "table_name": "circle",
@@ -682,14 +682,14 @@ class TestTsvCircle:
         arguments.update(extra)
         chained = await pumps.chain(
             Leg(
-                "ch_sync_out",
+                "ch_stream_out",
                 {
                     "sql": f"select * from {CH_DATABASE}.typed order by id",
                     "wire": ChStreamWire.TSV,
                     "chunk_bytes": CHUNK,
                 },
             ),
-            Leg("ch_sync_in", arguments),
+            Leg("ch_stream_in", arguments),
         )
         print(f"\n--- {clickhouse.source.name}: tsv circle ---\n{chained.in_report}")
 
@@ -852,7 +852,7 @@ class TestTsvCircle:
         with pytest.raises(TransferError, match="columns apply to wire arrow"):
             await pumps.chain(
                 Leg(
-                    "ch_sync_out",
+                    "ch_stream_out",
                     {
                         "sql": f"select id from {CH_DATABASE}.typed",
                         "wire": ChStreamWire.TSV,
@@ -861,7 +861,7 @@ class TestTsvCircle:
                     },
                 ),
                 Leg(
-                    "ch_sync_in",
+                    "ch_stream_in",
                     {
                         "database": CH_DATABASE,
                         "table_name": "typed_refused",

@@ -1,5 +1,5 @@
 # ruff: noqa: S608
-"""Пара ClickHouse -> postgres по tsv: ch_sync_out с wire = tsv в pg_sync_in на
+"""Пара ClickHouse -> postgres по tsv: ch_stream_out с wire = tsv в pg_stream_in на
 приёмниках pg-16 и Greenplum 7, источник — каждый ClickHouse стенда с
 таблицей всех ходовых типов.
 
@@ -189,15 +189,15 @@ async def land(  # noqa: PLR0913
     select: str = f"select * from {CH_DATABASE}.src order by id",
     create_table: str = PgTransferTable.CREATE_TABLE,
 ) -> str:
-    """ch_sync_out с wire = tsv -> pg_sync_in."""
+    """ch_stream_out с wire = tsv -> pg_stream_in."""
     pumps = Pumps(postgres=postgres.profile, clickhouse=clickhouse.profile)
     chained = await pumps.chain(
         Leg(
-            "ch_sync_out",
+            "ch_stream_out",
             {"sql": select, "wire": ChStreamWire.TSV, "chunk_bytes": CHUNK},
         ),
         Leg(
-            "pg_sync_in",
+            "pg_stream_in",
             {
                 "schema_name": PG_SCHEMA,
                 "table_name": table,

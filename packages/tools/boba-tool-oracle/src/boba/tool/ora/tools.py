@@ -12,9 +12,9 @@ UnknownConnectionError — имя подключения вне whitelist'а к�
 AddressError — адрес базы не собрался из профиля соединения.
 QueryBuildError — сборщик получил один параметр с двумя разными значениями
     или имя схемы/таблицы/колонки пустое или с кавычкой внутри.
-ArrowStreamError — вход ora_sync_in не читается как поток Arrow IPC.
+ArrowStreamError — вход ora_stream_in не читается как поток Arrow IPC.
 SyncError — декларация на колонку, которой нет в ответе; правило приёмника
-    не сходится со схемами; ora_sync_in получил не arrow.
+    не сходится со схемами; ora_stream_in получил не arrow.
 TransferError — стратегия схемы отказала; тип без пары у Oracle.
 """
 
@@ -751,7 +751,7 @@ async def ora_address(connection: OraConnection) -> TableResult:
 
 
 @tool
-async def ora_sync_out(  # noqa: PLR0913
+async def ora_stream_out(  # noqa: PLR0913
     connection: OraConnection,
     sql: Annotated[
         str,
@@ -820,7 +820,7 @@ async def ora_sync_out(  # noqa: PLR0913
 
 
 @tool
-async def ora_sync_in(  # noqa: PLR0913
+async def ora_stream_in(  # noqa: PLR0913
     connection: OraConnection,
     schema_name: Annotated[
         str, Field(min_length=1, description="Схема таблицы-приёмника: HR")
@@ -941,7 +941,7 @@ async def ora_sync_in(  # noqa: PLR0913
     head = await inbound.get_schema()
     if head.wire is not StreamWire.ARROW:
         raise SyncError(
-            f"ora_sync_in takes the arrow wire only, got {head.wire.value} from "
+            f"ora_stream_in takes the arrow wire only, got {head.wire.value} from "
             f"{head.source_engine.value}"
         )
 
@@ -991,8 +991,8 @@ TOOLS: Final = ToolMain.toolset(
     ora_describe_table,
     ora_query,
     ora_address,
-    ora_sync_out,
-    ora_sync_in,
+    ora_stream_out,
+    ora_stream_in,
     ora_database_describe,
     ora_schema_describe,
     ora_table_describe,

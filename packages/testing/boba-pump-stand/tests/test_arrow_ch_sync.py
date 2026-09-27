@@ -1,5 +1,5 @@
 # ruff: noqa: S608
-"""Приёмник ch_sync_in на потоке arrow: postgres, Greenplum, Oracle и ClickHouse
+"""Приёмник ch_stream_in на потоке arrow: postgres, Greenplum, Oracle и ClickHouse
 через *_sync_out с wire = arrow в каждый ClickHouse стенда.
 
 Что проверяется:
@@ -222,7 +222,7 @@ async def oracle() -> AsyncIterator[OracleSide]:
 
 
 def receiver(table: str, schema: Any, **extra: Any) -> dict[str, Any]:
-    """Аргументы ch_sync_in: шаблон MergeTree, остальное — по умолчанию теста."""
+    """Аргументы ch_stream_in: шаблон MergeTree, остальное — по умолчанию теста."""
     arguments: dict[str, Any] = {
         "database": CH_DATABASE,
         "table_name": table,
@@ -248,11 +248,11 @@ async def land(  # noqa: PLR0913
     columns: Sequence[PgColumnDeclaration] = DECLARED,
     **extra: Any,
 ) -> str:
-    """pg_sync_out с wire = arrow -> ch_sync_in."""
+    """pg_stream_out с wire = arrow -> ch_stream_in."""
     pumps = Pumps(postgres=postgres.profile, clickhouse=clickhouse.profile)
     chained = await pumps.chain(
         Leg(
-            "pg_sync_out",
+            "pg_stream_out",
             {
                 "sql": select,
                 "wire": StreamWire.ARROW,
@@ -260,7 +260,7 @@ async def land(  # noqa: PLR0913
                 "copy_options": CopyOptions(chunk_bytes=CHUNK),
             },
         ),
-        Leg("ch_sync_in", receiver(table, schema, **extra)),
+        Leg("ch_stream_in", receiver(table, schema, **extra)),
     )
     print(
         f"\n--- {postgres.source.name} -> {clickhouse.source.name}: arrow ---\n"
@@ -497,7 +497,7 @@ class TestExistingTable:
 
 
 class TestOracleSource:
-    """Oracle -> ClickHouse через ora_sync_out и ch_sync_in: целый NUMBER до 18
+    """Oracle -> ClickHouse через ora_stream_out и ch_stream_in: целый NUMBER до 18
     знаков — Int64, NUMBER с дробью — Decimal, VARCHAR2 — String, DATE и
     TIMESTAMP — DateTime64."""
 
@@ -525,7 +525,7 @@ class TestOracleSource:
         pumps = Pumps(oracle=oracle.profile, clickhouse=clickhouse.profile)
         chained = await pumps.chain(
             Leg(
-                "ora_sync_out",
+                "ora_stream_out",
                 {
                     "sql": 'select id as "id", amount as "amount", name as "name", '
                     f'ts as "ts" from {PumpUser.NAME}.{table}',
@@ -533,7 +533,7 @@ class TestOracleSource:
                 },
             ),
             Leg(
-                "ch_sync_in",
+                "ch_stream_in",
                 receiver("from_oracle", DropAndCreate(kind="drop_and_create")),
             ),
         )
@@ -608,7 +608,7 @@ class TestClickHouseCircle:
         pumps = Pumps(clickhouse=clickhouse.profile)
         chained = await pumps.chain(
             Leg(
-                "ch_sync_out",
+                "ch_stream_out",
                 {
                     "sql": self.SELECT,
                     "wire": ChStreamWire.ARROW,
@@ -617,7 +617,7 @@ class TestClickHouseCircle:
                 },
             ),
             Leg(
-                "ch_sync_in",
+                "ch_stream_in",
                 receiver(
                     "circle", DropAndCreate(kind="drop_and_create"), order_by="id"
                 ),
@@ -674,7 +674,7 @@ class TestClickHouseCircle:
         pumps = Pumps(clickhouse=clickhouse.profile)
         await pumps.chain(
             Leg(
-                "ch_sync_out",
+                "ch_stream_out",
                 {
                     "sql": self.RAW_DATES,
                     "wire": ChStreamWire.ARROW,
@@ -683,7 +683,7 @@ class TestClickHouseCircle:
                 },
             ),
             Leg(
-                "ch_sync_in",
+                "ch_stream_in",
                 receiver("raw_dates", DropAndCreate(kind="drop_and_create")),
             ),
         )

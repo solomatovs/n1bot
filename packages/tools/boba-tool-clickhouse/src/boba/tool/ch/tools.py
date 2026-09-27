@@ -1059,7 +1059,7 @@ async def ch_edm_descriptions(  # noqa: PLR0913
 
 
 @tool
-async def ch_sync_out(  # noqa: PLR0913
+async def ch_stream_out(  # noqa: PLR0913
     connection: ChConnection,
     sql: Annotated[
         str,
@@ -1118,7 +1118,7 @@ async def ch_sync_out(  # noqa: PLR0913
 
     if wire is ChStreamWire.TSV and columns:
         raise TransferError(
-            "ch_sync_out: columns apply to wire arrow only; with tsv the types "
+            "ch_stream_out: columns apply to wire arrow only; with tsv the types "
             "of clickhouse travel as they are"
         )
 
@@ -1165,7 +1165,7 @@ class ChTransferReportText:
 
 
 @tool
-async def ch_sync_in(  # noqa: PLR0913
+async def ch_stream_in(  # noqa: PLR0913
     connection: ChConnection,
     database: Annotated[str, Field(min_length=1, description="База таблицы-приёмника")],
     table_name: Annotated[
@@ -1396,8 +1396,8 @@ TOOLS: Final = ToolMain.toolset(
     ch_types_describe,
     ch_edm_structure,
     ch_edm_descriptions,
-    ch_sync_out,
-    ch_sync_in,
+    ch_stream_out,
+    ch_stream_in,
 )
 
 if __name__ == "__main__":

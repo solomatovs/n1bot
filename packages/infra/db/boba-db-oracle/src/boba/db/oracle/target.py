@@ -23,7 +23,7 @@ class OraTableRef:
     name: str
 
     CREATE_TABLE: ClassVar[str] = "create table {schema_name}.{table_name} ({columns})"
-    """Шаблон без особенностей таблицы: дефолт фасада ora_sync_in."""
+    """Шаблон без особенностей таблицы: дефолт фасада ora_stream_in."""
     TEMPLATE_VARS: ClassVar[TemplateVars] = TemplateVars(
         required=(TemplateVar.SCHEMA_NAME, TemplateVar.TABLE_NAME, TemplateVar.COLUMNS)
     )

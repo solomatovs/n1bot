@@ -278,7 +278,7 @@ class ArrowStreamError(Exception):
 class ArrowInbound(RawInbound):
     """Входной порт потока Arrow IPC. На проводе обычный поток IPC (схема,
     пачки, конец), поэтому порт стыкуется с любым сырым концом, который
-    пишет Arrow IPC: ClickHouse с FORMAT ArrowStream, ora_sync_out. Сам порт
+    пишет Arrow IPC: ClickHouse с FORMAT ArrowStream, ora_stream_out. Сам порт
     сырой, как RawInbound; пачки из него читает ArrowIpc из
     boba.toolkit.arrow — тот тянет pyarrow, которого у хоста, читающего
     объявления инструментов, нет."""

@@ -16,8 +16,8 @@ Oracle 12.2 Enterprise, 18 XE, 21 XE и 23 Free.
 `arrow` и контракт колонок; дальше кадры `rows` с байтами. Тела никто не разбирает: какие байты выдал
 источник, такие получит приёмник.
 
-У PostgreSQL два инструмента на всё: `pg_sync_out(sql, wire, columns,
-copy_options)` и `pg_sync_in(schema_name, table_name, стратегии, rules,
+У PostgreSQL два инструмента на всё: `pg_stream_out(sql, wire, columns,
+copy_options)` и `pg_stream_in(schema_name, table_name, стратегии, rules,
 unknown_types, copy_options)`. Инструменты друг о друге не знают и ничем,
 кроме потока кадров, не связаны: источник кладёт тела в раскладке, которую
 назвал рычаг `wire`, и факты своего сервера в кадр `schema`; приёмник по
@@ -26,11 +26,11 @@ unknown_types, copy_options)`. Инструменты друг о друге н�
 
 | База | Выгрузка | Загрузка | Формат потока |
 |---|---|---|---|
-| PostgreSQL | `pg_sync_out(sql, wire)` | `pg_sync_in(schema_name, table_name, ...)` | csv, tsv, binary или arrow — как назвал `wire` |
-| ClickHouse | `ch_sync_out(sql, wire)` | `ch_sync_in(database, table_name, ...)` | tsv с типами ClickHouse как есть или arrow — как назвал `wire` |
-| Oracle | `ora_sync_out(sql, columns)` | `ora_sync_in(schema_name, table_name, ...)` | только arrow с контрактом: пачки драйвера как есть |
+| PostgreSQL | `pg_stream_out(sql, wire)` | `pg_stream_in(schema_name, table_name, ...)` | csv, tsv, binary или arrow — как назвал `wire` |
+| ClickHouse | `ch_stream_out(sql, wire)` | `ch_stream_in(database, table_name, ...)` | tsv с типами ClickHouse как есть или arrow — как назвал `wire` |
+| Oracle | `ora_stream_out(sql, columns)` | `ora_stream_in(schema_name, table_name, ...)` | только arrow с контрактом: пачки драйвера как есть |
 
-Приёмники `pg_sync_in`, `ch_sync_in`, `ora_sync_in` принимают поток любого
+Приёмники `pg_stream_in`, `ch_stream_in`, `ora_stream_in` принимают поток любого
 источника с контрактом; подходит ли им раскладка, каждый проверяет сам по
 кадру `schema`.
 
@@ -138,7 +138,7 @@ line \ back ""q"", semi;",,t,0.3333333333333333,NaN,2024-02-29,2024-02-29 13:14:
 
 Текст COPY зависит от настроек сессии, и без их фиксации один и тот же
 запрос на двух серверах печатает разное. Оба насоса PostgreSQL
-(`pg_sync_out` и `pg_sync_in`) поднимают соединение с зафиксированными GUC
+(`pg_stream_out` и `pg_stream_in`) поднимают соединение с зафиксированными GUC
 через libpq-опции профиля (`CopyText` в `boba.db.postgres`):
 
 | Настройка | Значение | Что было бы иначе |
@@ -158,8 +158,8 @@ line \ back ""q"", semi;",,t,0.3333333333333333,NaN,2024-02-29,2024-02-29 13:14:
 сессий с COPY в системе: у дампов источника в `pg-meta-scraper` и у
 загрузки в ix.
 
-Эти значения — умолчания аргумента `copy_options` у `pg_sync_out` и
-`pg_sync_in`. Тот же объект несёт `chunk_bytes` (порция потока) и
+Эти значения — умолчания аргумента `copy_options` у `pg_stream_out` и
+`pg_stream_in`. Тот же объект несёт `chunk_bytes` (порция потока) и
 `exact_floats` (hex-запись float при загрузке провода arrow). Вызов меняет
 любое из них, когда поток нужен другим — приёмник ждёт `WIN1251`, деньги
 нужны в локали, float короче или интервалы в `iso_8601`. Значения из
@@ -169,7 +169,7 @@ line \ back ""q"", semi;",,t,0.3333333333333333,NaN,2024-02-29,2024-02-29 13:14:
 {"copy_options": {"client_encoding": "WIN1251", "extra_float_digits": 0, "chunk_bytes": 65536}}
 ```
 
-### Что принимает pg_sync_in
+### Что принимает pg_stream_in
 
 Тела csv, tsv и binary уходят в `COPY t FROM STDIN` той же раскладки, что у
 выгрузки, стейтмент строит приёмник по контракту. Значение каждого поля разбирает сервер по типу колонки, поэтому
@@ -237,24 +237,24 @@ UInt64	Decimal(18, 2)	String	Nullable(String)	Bool	Float64	Float64	Date	DateTime
 Кавычки внутри имени типа в шапке экранированы: `DateTime64(6, \'UTC\')`.
 Строка данных — та же, что у TabSeparated.
 
-Этот формат запрашивает `ch_sync_out` с `wire = tsv`: две строки шапки
+Этот формат запрашивает `ch_stream_out` с `wire = tsv`: две строки шапки
 уходят кадром `schema` как контракт с текстами типов ClickHouse, остальное —
 кадрами `rows` как TabSeparated.
 
 ## Поток Oracle
 
 У Oracle нет серверного текстового потока, и насосы Oracle работают только
-на Arrow. `ora_sync_out` отдаёт пачки Arrow драйвера python-oracledb в кадры
-потока как есть, `ora_sync_in` принимает поток arrow любого источника и
+на Arrow. `ora_stream_out` отдаёт пачки Arrow драйвера python-oracledb в кадры
+потока как есть, `ora_stream_in` принимает поток arrow любого источника и
 кладёт пачки в таблицу через `executemany`: bind'ы драйвер берёт прямо из
 массивов Arrow, значений в Python никто не разбирает. Замер на стенде
 (300 тысяч строк, 8 колонок): чтение 360–400 тысяч строк в секунду — на
 треть быстрее построчного, дальше упирается в сервер; запись 150 тысяч в
 секунду на Oracle 23 и 30 тысяч на 12.2.
 
-### Что отдаёт ora_sync_out
+### Что отдаёт ora_stream_out
 
-`ora_sync_out(sql, columns)` разбирает стейтмент на сервере (`parse`, без
+`ora_stream_out(sql, columns)` разбирает стейтмент на сервере (`parse`, без
 выполнения) и шлёт первым кадром контракт колонок: семейство и параметры
 типа, `null_ok`, текст типа Oracle как в DDL; декларации `columns` ложатся
 поверх (например, `not null` у ключа, который сервер считает nullable).
@@ -311,7 +311,7 @@ from dual
 ### Что выгрузка не пропустит
 
 Часть типов драйвер в Arrow не отдаёт или отдаёт с потерей; такие колонки
-`ora_sync_out` отвергает по описанию стейтмента до выполнения запроса и
+`ora_stream_out` отвергает по описанию стейтмента до выполнения запроса и
 называет, чем их привести в самом `select`:
 
 | Тип Oracle | Почему | Что писать в SELECT | В потоке |
@@ -344,13 +344,13 @@ from dual
   это. Юникод в такой базе живёт только в NVARCHAR2 и NCLOB.
 - **`json()` до 21c** — типа JSON нет, а вызов `json('...')` молча даёт NULL.
 
-### Что принимает ora_sync_in
+### Что принимает ora_stream_in
 
-`ora_sync_in(schema_name, table_name, schema_strategy, delete_strategy,
+`ora_stream_in(schema_name, table_name, schema_strategy, delete_strategy,
 insert_strategy, rules, unknown_types, create_table, chunk_bytes, before,
 after)` принимает поток arrow с контрактом от любого `*_sync_out`:
-`pg_sync_out` с `wire = arrow`, `ch_sync_out` с `wire = arrow`,
-`ora_sync_out`. Стратегии те же, что у `pg_sync_in`; имена колонок в
+`pg_stream_out` с `wire = arrow`, `ch_stream_out` с `wire = arrow`,
+`ora_stream_out`. Стратегии те же, что у `pg_stream_in`; имена колонок в
 `rules` — строчными, как их сверяет приёмник (Oracle хранит имена
 заглавными, приёмник сравнивает без учёта регистра). Шаблон
 `create_table` — цельный стейтмент с `{schema_name}`, `{table_name}` и
@@ -369,9 +369,10 @@ after)` принимает поток arrow с контрактом от люб�
 | binary без длины или длиннее | BLOB |
 | timestamp с долями секунды | TIMESTAMP(3), (6), (9); с поясом — WITH TIME ZONE |
 | timestamp в секундах, date | DATE |
-| boolean | BOOLEAN на 23ai, раньше — NUMBER(1) |
-| uuid | VARCHAR2(36 CHAR), текст с дефисами |
-| time | VARCHAR2(18 CHAR) |
+| boolean | BOOLEAN на 23ai; раньше — отказ, источник шлёт 0 и 1 |
+| uuid текстом (из postgres) | VARCHAR2(36 CHAR) |
+| time текстом (из postgres) | VARCHAR2(18 CHAR) |
+| binary, присланное текстом (bytea из postgres) | строка как есть: CLOB или тип из `column_types` |
 | json, inet, interval, money, xml, bit | CLOB |
 | массивы, составные, прочее без пары | CLOB по `fallback_as_varchar`, иначе отказ с типом источника |
 | источник Oracle | текст типа источника как есть: NUMBER(18,4), VARCHAR2(20 CHAR), TIMESTAMP(9), CLOB |
@@ -387,10 +388,13 @@ decimal(18,4), VARCHAR2(200) под строку из 40, TIMESTAMP(6) под
 - каждая пачка потока — одна команда `executemany`, значения драйвер берёт
   из массивов Arrow; колонки LOB приёмник сам ставит в конец insert'а —
   Oracle не принимает обычный bind после LOB (ORA-24816);
-- uuid едет 16 байтами и форматируется сервером
-  (`regexp_replace(rawtohex(...))`); hex-текст bytea из postgres
-  (`\x00ff`) сервер переводит `hextoraw`; bool на серверах без BOOLEAN и
-  time приводит pyarrow (`int8`, строка);
+- приёмник значения не переписывает: пачка уходит в `executemany` как
+  пришла, и так быстрее всего. Поле, которое драйвер как есть не
+  положит, отвергается до DDL с подсказкой для запроса источника:
+  uuid-расширение Arrow (ClickHouse UUID) — `toString(col)`; time —
+  `col::text`; duration и интервал — числом секунд; FixedString —
+  `toString(col)` или `hex(col)`; bool на серверах до 23 — `col::int`,
+  `toUInt8(col)`;
 - сессия переводится в UTC: момент без пояса из потока (например,
   `sys_extract_utc` источника Oracle) ложится в колонку WITH TIME ZONE как
   UTC, а не как время сессии сервера;
@@ -409,29 +413,29 @@ decimal(18,4), VARCHAR2(200) под строку из 40, TIMESTAMP(6) под
 
 ### Стейтменты
 
-PostgreSQL -> ClickHouse, `pg_sync_out` с `wire = tsv` и `ch_sync_in`:
+PostgreSQL -> ClickHouse, `pg_stream_out` с `wire = tsv` и `ch_stream_in`:
 
 ```sql
--- pg_sync_out (wire = tsv)
+-- pg_stream_out (wire = tsv)
 select id, name, created_at
 from public.users
 order by id
 ```
 
 Стейтменты приёмника — `create table`, двойник `__ex`, `INSERT ... FORMAT
-TabSeparated`, `exchange tables` — строит сам `ch_sync_in` по стратегиям.
+TabSeparated`, `exchange tables` — строит сам `ch_stream_in` по стратегиям.
 
-ClickHouse -> PostgreSQL, `ch_sync_out` с `wire = tsv` и `pg_sync_in`:
+ClickHouse -> PostgreSQL, `ch_stream_out` с `wire = tsv` и `pg_stream_in`:
 
 ```sql
--- ch_sync_out (wire = tsv)
+-- ch_stream_out (wire = tsv)
 select id, name, created_at
 from dwh.users
 order by id
 ```
 
 Стейтменты приёмника — `create table`, `truncate`, `COPY ... FROM STDIN` —
-строит сам `pg_sync_in` по стратегиям; тела `TabSeparated` ложатся в COPY
+строит сам `pg_stream_in` по стратегиям; тела `TabSeparated` ложатся в COPY
 text как есть.
 
 ### Формат
@@ -476,7 +480,7 @@ text как есть.
 
 ### Типы ClickHouse в PostgreSQL
 
-Пара `ch_sync_out` (`wire = tsv`) -> `pg_sync_in`. Контракт — шапка
+Пара `ch_stream_out` (`wire = tsv`) -> `pg_stream_in`. Контракт — шапка
 `TabSeparatedWithNamesAndTypes` того же запроса, тип postgres выбирается по
 тексту типа ClickHouse, затем приёмник разбирает его у себя (`select
 null::<тип>`) и сверяет с таблицей теми же правилами, что и pg -> pg. Всё
@@ -540,11 +544,11 @@ ClickHouse читает, `nan`/`inf` ClickHouse PostgreSQL понимает.
 
 ### Стейтменты
 
-`ora_sync_out` и `pg_sync_in`: тела едут потоком arrow с контрактом,
+`ora_stream_out` и `pg_stream_in`: тела едут потоком arrow с контрактом,
 стейтменты приёмник строит сам по стратегиям.
 
 ```sql
--- ora_sync_out
+-- ora_stream_out
 select
     id                                          as "id",
     amount                                      as "amount",
@@ -553,7 +557,7 @@ select
     note                                        as "note"
 from sales.orders
 
--- pg_sync_in: schema_name = "dwh", table_name = "orders",
+-- pg_stream_in: schema_name = "dwh", table_name = "orders",
 -- rules.column_types = {"created_at": "timestamptz(6)", "payload": "bytea"}
 ```
 
@@ -603,18 +607,18 @@ PostgreSQL молча его отбрасывает. Приёмник созда
 **Greenplum 6 и очень малые double.** Число `1.942e-297` Greenplum 6
 разбирает с ошибкой в младшем бите, тогда как PostgreSQL 9.4 и Greenplum 7
 читают его точно. Если такие значения важны до бита, `exact_floats = true`
-у `pg_sync_in` везёт float hex-записью (см. «Что принимает pg_sync_in с
+у `pg_stream_in` везёт float hex-записью (см. «Что принимает pg_stream_in с
 провода arrow»).
 
 ## Oracle -> ClickHouse
 
 ### Стейтменты
 
-`ora_sync_out` и `ch_sync_in`: контракт из описания стейтмента, стейтменты
+`ora_stream_out` и `ch_stream_in`: контракт из описания стейтмента, стейтменты
 приёмника строятся по стратегиям.
 
 ```sql
--- ora_sync_out
+-- ora_stream_out
 select
     id                          as "id",
     amount                      as "amount",
@@ -623,7 +627,7 @@ select
     note                        as "note"
 from sales.orders
 
--- ch_sync_in: database = "dwh", table_name = "orders", order_by = "id",
+-- ch_stream_in: database = "dwh", table_name = "orders", order_by = "id",
 -- rules.column_types = {"created_at": "DateTime64(6, 'UTC')"}
 ```
 
@@ -670,14 +674,14 @@ from sales.orders
 
 Arrow IPC — общий двоичный формат между концами, у которых текстовые форматы
 не стыкуются или стыкуются с потерями: значения едут своими типами, без
-перевода в текст и обратно. ClickHouse читает и пишет его сам: `ch_sync_out`
+перевода в текст и обратно. ClickHouse читает и пишет его сам: `ch_stream_out`
 с `wire = arrow` дописывает к запросу `FORMAT ArrowStream` средствами
-драйвера, `ch_sync_in` вставляет поток `INSERT ... FORMAT ArrowStream`. У Oracle
-других форматов нет: `ora_sync_out` и `ora_sync_in` описаны в разделе
+драйвера, `ch_stream_in` вставляет поток `INSERT ... FORMAT ArrowStream`. У Oracle
+других форматов нет: `ora_stream_out` и `ora_stream_in` описаны в разделе
 «Поток Oracle». Поток — это схема, затем пачки записей (у Oracle — по
 `arraysize` строк), затем конец потока; байты между узлами идут как есть.
 
-### Что отдаёт ch_sync_out с wire = arrow
+### Что отдаёт ch_stream_out с wire = arrow
 
 ```sql
 select
@@ -699,7 +703,7 @@ select
 `Date` (до 26) и `DateTime` уходят в Arrow целыми числами, и приёмник по
 контракту не отличит их от `UInt16` и `UInt32`: даты молча станут числами.
 В запросе для arrow пишите `toDate32(d)` и `toDateTime64(dt, 0, 'UTC')`;
-типы ClickHouse как есть везёт `ch_sync_out` с `wire = tsv`.
+типы ClickHouse как есть везёт `ch_stream_out` с `wire = tsv`.
 
 | Колонка | Тип ClickHouse | Тип в схеме Arrow | Что это |
 |---|---|---|---|
@@ -718,7 +722,7 @@ select
 ### ClickHouse -> Oracle
 
 ```sql
--- ch_sync_out, wire = arrow
+-- ch_stream_out, wire = arrow
 select
     id,
     amount,
@@ -728,7 +732,7 @@ select
 from dwh.orders
 settings output_format_arrow_string_as_string = 1
 
--- ora_sync_in: schema_name = "SALES", table_name = "ORDERS"
+-- ora_stream_in: schema_name = "SALES", table_name = "ORDERS"
 ```
 
 Приёмник создаёт таблицу по контракту и вставляет пачки `executemany`;
@@ -747,9 +751,9 @@ settings output_format_arrow_string_as_string = 1
 | DateTime | `uint32` | `toDateTime64(col, 0, 'UTC')` | DATE |
 | DateTime64(p, 'UTC') | `timestamp[p, tz=UTC]` | как есть | TIMESTAMP(p) WITH TIME ZONE |
 | DateTime64(p) без пояса | `timestamp[p]` | как есть | TIMESTAMP(p) |
-| Bool | `bool` (`uint8` на 22.12) | как есть | BOOLEAN на 23ai, NUMBER(1) раньше |
-| UUID | `arrow.uuid` (на 22.12 — ошибка UNKNOWN_TYPE) | как есть; на 22.12 `toString(col)` | VARCHAR2(36 CHAR) |
-| String с байтами | невалидный UTF-8 | `hex(col)` | CLOB текстом hex; `column_types: RAW(n)` кладёт `hextoraw` |
+| Bool | `bool` (`uint8` на 22.12) | как есть на 23ai; раньше `toUInt8(col)` | BOOLEAN; NUMBER(3) |
+| UUID | `arrow.uuid` (на 22.12 — ошибка UNKNOWN_TYPE) | `toString(col)` — uuid-расширение приёмник отвергает | CLOB, `column_types: VARCHAR2(36 CHAR)` |
+| String с байтами | невалидный UTF-8 | `hex(col)` | CLOB текстом hex |
 | Array, Map, Tuple | нет в Arrow | `toString(col)`, `toJSONString(col)` | CLOB |
 
 Ловушки этого пути:
@@ -766,14 +770,14 @@ settings output_format_arrow_string_as_string = 1
 ### PostgreSQL -> Oracle
 
 ```sql
--- pg_sync_out, wire = arrow
+-- pg_stream_out, wire = arrow
 select id, amount, created_at, payload, tags::text as tags
 from sales.orders
 
--- ora_sync_in: schema_name = "SALES", table_name = "ORDERS"
+-- ora_stream_in: schema_name = "SALES", table_name = "ORDERS"
 ```
 
-Поток `pg_sync_out` с `wire = arrow` собирается из COPY csv сервера, поэтому
+Поток `pg_stream_out` с `wire = arrow` собирается из COPY csv сервера, поэтому
 часть типов едет текстом, и приёмник знает, что с ним делать:
 
 | Тип PostgreSQL | В потоке | Тип Oracle |
@@ -782,10 +786,10 @@ from sales.orders
 | numeric(p, s) | `decimal128(p, s)` | NUMBER(p, s) |
 | numeric без точности | `large_string` | NUMBER (через `column_types`), иначе CLOB |
 | real, double precision | `float`, `double` | BINARY_FLOAT, BINARY_DOUBLE |
-| boolean | `bool` | BOOLEAN на 23ai, NUMBER(1) раньше |
+| boolean | `bool` | BOOLEAN на 23ai; раньше отказ — `col::int` в запросе, NUMBER(10) |
 | text | `large_string` | CLOB |
 | varchar(n), char(n) | `large_string` с длиной | VARCHAR2(n CHAR) |
-| bytea | `large_string` hex с `\x` | BLOB, сервер кладёт `hextoraw` |
+| bytea | `large_string` hex с `\x` | CLOB с hex-текстом как есть |
 | date | `date32` | DATE |
 | timestamp(p) | `timestamp[p]` | TIMESTAMP(p); timestamp(0) — DATE |
 | timestamptz(p) | `timestamp[p, tz=UTC]` | TIMESTAMP(p) WITH TIME ZONE в UTC |
@@ -794,9 +798,9 @@ from sales.orders
 | json, jsonb, inet, interval, xml, money, bit | `large_string` | CLOB |
 | массивы, enum, составные, диапазоны | `large_string` без пары | отказ; CLOB по `fallback_as_varchar` или тип через `column_types` |
 
-### Что отдаёт pg_sync_out с проводом arrow
+### Что отдаёт pg_stream_out с проводом arrow
 
-У PostgreSQL серверного потока Arrow нет, и `pg_sync_out` при `wire =
+У PostgreSQL серверного потока Arrow нет, и `pg_stream_out` при `wire =
 arrow` собирает его из
 двух вещей, которые сервер умеет сам. Типы колонок берутся у libpq описанием
 стейтмента (`prepare` + `describe`, без выполнения). Затем сам `select`
@@ -871,9 +875,9 @@ CSV Arrow не собирает — отказ с текстом причины;
 отвергается с ошибкой `a row must fit into one block, raise chunk_bytes`;
 `chunk_bytes` до 64 MiB решает.
 
-### Что принимает pg_sync_in с провода arrow
+### Что принимает pg_stream_in с провода arrow
 
-`pg_sync_in` пишет каждую пачку писателем CSV pyarrow в C, и блок уходит
+`pg_stream_in` пишет каждую пачку писателем CSV pyarrow в C, и блок уходит
 в `copy dwh.orders (id, amount, note) from stdin (format csv)`, который
 приёмник строит сам по контракту; колонки в нём идут в порядке полей
 потока, шапки в теле нет (`HEADER` не
@@ -918,7 +922,7 @@ NOTIFY, если сессия их слушала. Насосы Oracle отда�
   Голый hex без префикса ляжет в bytea как текст.
 - **Массивы** едут текстом postgres: из ClickHouse —
   `concat('{', arrayStringConcat(arr, ','), '}')`; `Array` в схеме потока
-  провод arrow у `pg_sync_in` отвергает.
+  провод arrow у `pg_stream_in` отвергает.
 - **timestamptz в Oracle**: драйвер Oracle отбрасывает смещение и хранит
   настенное время в поясе сессии. Выгружайте `col at time zone 'UTC'` в
   `timestamp(6)` Oracle.
@@ -933,13 +937,13 @@ NOTIFY, если сессия их слушала. Насосы Oracle отда�
   как `value out of range: overflow` в любой записи; это предел сервера,
   `exact_floats` не помогает.
 
-### Что принимает ch_sync_in с потока arrow
+### Что принимает ch_stream_in с потока arrow
 
-`ch_sync_in(database, table_name, schema_strategy, delete_strategy,
+`ch_stream_in(database, table_name, schema_strategy, delete_strategy,
 insert_strategy, rules, unknown_types, create_table, before, after)`
-принимает поток arrow с контрактом от любого `*_sync_out`: `pg_sync_out` с
-`wire = arrow`, `ch_sync_out`, `ora_sync_out`. Стратегии те же, что у
-`pg_sync_in`.
+принимает поток arrow с контрактом от любого `*_sync_out`: `pg_stream_out` с
+`wire = arrow`, `ch_stream_out`, `ora_stream_out`. Стратегии те же, что у
+`pg_stream_in`.
 
 Типы колонок, которые приёмник создаёт по контракту:
 
@@ -1015,7 +1019,7 @@ engine = MergeTree order by {order_by} partition by toYYYYMM(dt)
 шардов приёмник кладёт строки только в шард узла соединения.
 
 Колонки `order_by` не могут быть `Nullable`: объявите их not null у
-источника (`columns` у `pg_sync_out`).
+источника (`columns` у `pg_stream_out`).
 
 ### Скорость Arrow из PostgreSQL
 
@@ -1064,7 +1068,7 @@ raise_application_error(-20001, '...'); end if; end;`, ClickHouse —
 
 PostgreSQL: весь вызов — одна транзакция. Ошибка любого шага, включая
 последний в `after`, откатывает всё: и COPY, и предыдущие шаги. COPY не
-умеет upsert, поэтому стандартная схема — `pg_sync_in` в staging-таблицу и
+умеет upsert, поэтому стандартная схема — `pg_stream_in` в staging-таблицу и
 разбор её в `after`:
 
 ```json
@@ -1082,7 +1086,7 @@ PostgreSQL: весь вызов — одна транзакция. Ошибка 
 
 `insert ... on conflict` тоже подходит, но только с PostgreSQL 9.5 и выше,
 а Greenplum 6 его не знает; пара `delete` + `insert` работает везде.
-Источник тоже видит `before`: `pg_sync_out` с `before = ["create temp table
+Источник тоже видит `before`: `pg_stream_out` с `before = ["create temp table
 snap as select ..."]` и `sql = "select id, v from snap"` отдаёт снимок.
 
 Oracle: каждый элемент — одна команда без `;` в конце либо один анонимный
@@ -1091,7 +1095,7 @@ Oracle: каждый элемент — одна команда без `;` в к
 (`truncate`, `exchange partition`, `rename`) Oracle фиксирует сам, и
 вместе с ним фиксируется всё, что было в транзакции до него, — это не
 ошибка, а способ работы базы. Временная таблица здесь глобальная и
-создаётся заранее, один раз; `ora_sync_in` грузит в неё, как в обычную:
+создаётся заранее, один раз; `ora_stream_in` грузит в неё, как в обычную:
 
 ```json
 {
@@ -1106,7 +1110,7 @@ Oracle: каждый элемент — одна команда без `;` в к
 }
 ```
 
-У `ora_sync_out` так же: строки, вставленные в глобальную временную
+У `ora_stream_out` так же: строки, вставленные в глобальную временную
 таблицу шагом `before`, видит только запрос этой сессии, commit один после
 `after`.
 
@@ -1132,7 +1136,7 @@ ClickHouse: транзакций нет, но у насоса одна сесс�
 }
 ```
 
-У `ch_sync_out` запрос видит временную таблицу из своего `before`:
+У `ch_stream_out` запрос видит временную таблицу из своего `before`:
 `before = ["create temporary table snap (id UInt64, v String)", "insert into
 snap select ..."]` и `sql = "select id, v from snap"`.
 
@@ -1152,7 +1156,7 @@ PostgreSQL: подготовка и подмена — `pg_query`, которы�
 ```sql
 -- pg_query: подготовка
 create table dwh.sales_new (like dwh.sales including all);
--- pg_sync_in: table = "dwh.sales_new", schema error_if_not_exists
+-- pg_stream_in: table = "dwh.sales_new", schema error_if_not_exists
 -- pg_query: подмена одной транзакцией
 alter table dwh.sales rename to sales_old;
 alter table dwh.sales_new rename to sales;
@@ -1198,8 +1202,8 @@ tables` — таблицу; оба атомарны и идут шагом `afte
 
 | Инструмент | Что делает |
 |---|---|
-| `pg_sync_out(sql, wire, columns, copy_options)` | колонки выборки от libpq (`PQprepare` + `PQdescribePrepared`, без планирования и выполнения): имя, OID, typmod, текст типа как печатает `format_type`, версия сервера и `integer_datetimes` из стартового пакета; первый кадр — контракт с декларациями `columns` поверх, дальше байты `copy (<select>) to stdout` в раскладке `wire` либо поток arrow; COPY читается циклом libpq (`PQgetCopyData`) в рабочем потоке с накоплением порций в C, на уровне `psql`; о приёмнике источник не знает ничего |
-| `pg_sync_in(schema_name, table_name, schema_strategy, delete_strategy, insert_strategy, rules, unknown_types, create_table, copy_options)` | приёмник: по `source_engine` первого кадра берёт пару из реестра `boba.transfer.postgres`; провод arrow любого источника идёт нейтральным путём по семействам типов |
+| `pg_stream_out(sql, wire, columns, copy_options)` | колонки выборки от libpq (`PQprepare` + `PQdescribePrepared`, без планирования и выполнения): имя, OID, typmod, текст типа как печатает `format_type`, версия сервера и `integer_datetimes` из стартового пакета; первый кадр — контракт с декларациями `columns` поверх, дальше байты `copy (<select>) to stdout` в раскладке `wire` либо поток arrow; COPY читается циклом libpq (`PQgetCopyData`) в рабочем потоке с накоплением порций в C, на уровне `psql`; о приёмнике источник не знает ничего |
+| `pg_stream_in(schema_name, table_name, schema_strategy, delete_strategy, insert_strategy, rules, unknown_types, create_table, copy_options)` | приёмник: по `source_engine` первого кадра берёт пару из реестра `boba.transfer.postgres`; провод arrow любого источника идёт нейтральным путём по семействам типов |
 
 Рычаг `wire` у источника обязателен, значения `csv`, `tsv`, `binary`,
 `arrow`: `arrow` понимает любой приёмник и узлы преобразования потока;
@@ -1208,7 +1212,7 @@ tables` — таблицу; оба атомарны и идут шагом `afte
 только встроенные типы колонок. Совместимость проверяет приёмник по кадру
 `schema`, где источник оставил версию и `integer_datetimes` своего сервера:
 несовместимый `binary` — отказ до любого DDL с подсказкой перезапустить
-`pg_sync_out` с `wire = csv`. Приёмник без пары для движка источника тоже
+`pg_stream_out` с `wire = csv`. Приёмник без пары для движка источника тоже
 отказывает: ему подходит только `arrow`.
 
 Декларации у источника (`columns`): `nullable`, потому что серверу у выборки
@@ -1267,8 +1271,8 @@ Greenplum, `test_pg_realistic.py` между двумя серверами.
 
 | Инструмент | Что делает |
 |---|---|
-| `ch_sync_out(sql, wire, columns, chunk_bytes)` | `wire = tsv`: запрос выполняется один раз в `TabSeparatedWithNamesAndTypes`, две строки шапки уходят кадром `schema` как контракт с текстами типов ClickHouse как их печатает сервер, остальные байты — кадрами `rows` как `TabSeparated`; `wire = arrow`: поток Arrow IPC с нейтральным контрактом и декларациями `columns` для приёмников других движков |
-| `ch_sync_in(database, table_name, ...)` | по `source_engine = clickhouse` и `wire = tsv` берёт пару из реестра `boba.transfer.clickhouse`: тексты типов сравниваются с `system.columns` приёмника без обёрток `Nullable` и `LowCardinality`, DDL строится текстом типа источника, `column_types` нормализует сервер приёмника, тела идут в `input()` двойника как `TabSeparated` без перекодирования |
+| `ch_stream_out(sql, wire, columns, chunk_bytes)` | `wire = tsv`: запрос выполняется один раз в `TabSeparatedWithNamesAndTypes`, две строки шапки уходят кадром `schema` как контракт с текстами типов ClickHouse как их печатает сервер, остальные байты — кадрами `rows` как `TabSeparated`; `wire = arrow`: поток Arrow IPC с нейтральным контрактом и декларациями `columns` для приёмников других движков |
+| `ch_stream_in(database, table_name, ...)` | по `source_engine = clickhouse` и `wire = tsv` берёт пару из реестра `boba.transfer.clickhouse`: тексты типов сравниваются с `system.columns` приёмника без обёрток `Nullable` и `LowCardinality`, DDL строится текстом типа источника, `column_types` нормализует сервер приёмника, тела идут в `input()` двойника как `TabSeparated` без перекодирования |
 
 Так `LowCardinality`, `DateTime64` с поясом, `Enum8`, `FixedString`, `Array`,
 `Map`, `Decimal` любой точности, `IPv6` и `UUID` доезжают тем же типом; по
@@ -1297,7 +1301,7 @@ arrow часть из них стала бы строками или потер�
 
 ### postgres → clickhouse
 
-`pg_sync_out` с `wire = tsv` и `ch_sync_in`: байты `copy ... (format text)`
+`pg_stream_out` с `wire = tsv` и `ch_stream_in`: байты `copy ... (format text)`
 совпадают с `TabSeparated` по экранированию `\t`, `\n`, `\\` и по `\N`
 для NULL, поэтому тела идут в `input()` двойника как есть. Приёмник берёт
 пару из реестра `boba.transfer.clickhouse` по `source_engine = postgres` и
@@ -1322,7 +1326,7 @@ arrow часть из них стала бы строками или потер�
 | массивы любой размерности, enum, composite, расширения | типа нет | `column_types` с типом ClickHouse и литерал в запросе, например `'[' \|\| array_to_string(a, ',') \|\| ']'`, или `String` по `fallback_as_varchar` |
 
 Nullable — по контракту: колонка без декларации `nullable: false` у
-`pg_sync_out` становится `Nullable(...)`. Сверка с существующей таблицей —
+`pg_stream_out` становится `Nullable(...)`. Сверка с существующей таблицей —
 теми же правилами расширения, что у пары clickhouse → clickhouse.
 `column_types` перекрывает перевод, тип пишется текстом ClickHouse.
 
@@ -1423,7 +1427,7 @@ psycopg разложены по семействам, сторож `TestRegistry
 | record | other под именем | как у источника | то же |
 | OID вне реестра psycopg: enum, composite, hstore, vector | other без имени (`oid N`) | `columns[].source_type` или `column_types`, иначе стратегия | то же |
 
-Стратегия `unknown_types` у `pg_sync_in` решает судьбу колонок семейства
+Стратегия `unknown_types` у `pg_stream_in` решает судьбу колонок семейства
 other, для которых типа нет ни в контракте, ни в `column_types`:
 
 | kind | Неизвестный тип |
@@ -1439,10 +1443,10 @@ other, для которых типа нет ни в контракте, ни в
 
 | Раскладка | Кто отдаёт | Кто принимает | Что сохраняется |
 |---|---|---|---|
-| `csv` | `pg_sync_out` | `pg_sync_in` | всё, что печатает COPY: `infinity`, `NaN` у numeric, `numeric(999,5)`, enum, составные, диапазоны |
-| `tsv` | `pg_sync_out`, `ch_sync_out` | `pg_sync_in`, `ch_sync_in` | COPY text и TabSeparated — одна раскладка; с контрактом типов источника |
-| `binary` | `pg_sync_out` | `pg_sync_in` | COPY binary, только postgres одной мажорной версии |
-| `arrow` | `pg_sync_out`, `ora_sync_out`, `ch_sync_out` | `pg_sync_in`, `ch_sync_in`, `ora_sync_in` | типы Arrow; чего Arrow не несёт — `::text` в запросе |
+| `csv` | `pg_stream_out` | `pg_stream_in` | всё, что печатает COPY: `infinity`, `NaN` у numeric, `numeric(999,5)`, enum, составные, диапазоны |
+| `tsv` | `pg_stream_out`, `ch_stream_out` | `pg_stream_in`, `ch_stream_in` | COPY text и TabSeparated — одна раскладка; с контрактом типов источника |
+| `binary` | `pg_stream_out` | `pg_stream_in` | COPY binary, только postgres одной мажорной версии |
+| `arrow` | `pg_stream_out`, `ora_stream_out`, `ch_stream_out` | `pg_stream_in`, `ch_stream_in`, `ora_stream_in` | типы Arrow; чего Arrow не несёт — `::text` в запросе |
 
 ### Стратегии
 
@@ -1493,9 +1497,9 @@ BINARY_DOUBLE, две VARCHAR2, DATE, TIMESTAMP(6), NUMBER(1)), Oracle 12.2 и
 | Путь | Oracle 12.2 | Oracle 23 |
 |---|---|---|
 | чтение `fetchmany`, объекты Python | 292 тыс. строк/с | 255 тыс. |
-| чтение пачками Arrow (`ora_sync_out`) | 402 тыс. | 364 тыс. |
+| чтение пачками Arrow (`ora_stream_out`) | 402 тыс. | 364 тыс. |
 | чтение пачками Arrow с записью CSV pyarrow | 350 тыс. | 331 тыс. |
-| запись `executemany` пачкой Arrow (`ora_sync_in`) | 30 тыс. | 154 тыс. |
+| запись `executemany` пачкой Arrow (`ora_stream_in`) | 30 тыс. | 154 тыс. |
 | запись `executemany` строками Python | 20 тыс. | 80 тыс. |
 | запись `direct_path_load` | 123 тыс. | 134 тыс. |
 
@@ -1529,7 +1533,7 @@ UNUSABLE.
   шаблон таблицы, подмена шагами after, сухой прогон, обратный путь
   агрегата;
 - `test_ch_arrow.py` — ClickHouse -> PostgreSQL и Oracle
-  (`ora_sync_in` в заранее созданную таблицу) потоком Arrow на всей матрице
+  (`ora_stream_in` в заранее созданную таблицу) потоком Arrow на всей матрице
   версий: каждый тип ClickHouse, включая Int128, UInt256, Enum, IPv6, Map и
   Nested, едет как есть или текстом;
 - `test_pg_sync.py`, `test_pg_sync_edges.py` — семейство sync: стратегии
@@ -1538,9 +1542,9 @@ UNUSABLE.
   потоки из ClickHouse и Oracle;
 - `test_arrow_ports.py` — Arrow-порты toolkit над трубой ОС без баз;
 - `test_pg_arrow.py` — PostgreSQL -> PostgreSQL, ClickHouse и Oracle
-  (`ch_sync_in` и `ora_sync_in` в заранее созданную таблицу) потоком Arrow на всей матрице
+  (`ch_stream_in` и `ora_stream_in` в заранее созданную таблицу) потоком Arrow на всей матрице
   версий, обратные пути и ловушки;
-- `test_arrow_ch_sync.py` — `ch_sync_in` на потоке arrow из postgres,
+- `test_arrow_ch_sync.py` — `ch_stream_in` на потоке arrow из postgres,
   Greenplum, Oracle и ClickHouse: широкая таблица типов, типы без пары, сверка
   шире/уже, двойник, ловушки Date/DateTime/Bool в Arrow ClickHouse;
 - `test_pg_ch_sync.py` — пара postgres -> ClickHouse по tsv: типы и значения,
@@ -1550,7 +1554,7 @@ UNUSABLE.
   Greenplum 7: типы и значения, JSON с 24.x, отказы и `varchar` для типов без
   пары, `column_types`, сверка шире/уже, NUL в FixedString откатывает
   транзакцию, витрина;
-- `test_ch_sync.py` — приёмник `ch_sync_in`: поток arrow из postgres и
+- `test_ch_sync.py` — приёмник `ch_stream_in`: поток arrow из postgres и
   ClickHouse, пара ClickHouse -> ClickHouse по tsv с типами как есть, типы,
   двойник и `exchange tables`, стратегии, rename, шаблон, `ReplicatedMergeTree`
   on cluster, отказ базы не `Atomic`;

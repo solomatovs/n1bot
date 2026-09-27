@@ -71,22 +71,22 @@ class Pumps:
             target = postgres
 
         self._connections: dict[str, object | None] = {
-            "pg_sync_out": postgres,
-            "pg_sync_in": target,
-            "ch_sync_out": clickhouse,
-            "ch_sync_in": clickhouse,
-            "ora_sync_out": oracle,
-            "ora_sync_in": oracle,
+            "pg_stream_out": postgres,
+            "pg_stream_in": target,
+            "ch_stream_out": clickhouse,
+            "ch_stream_in": clickhouse,
+            "ora_stream_out": oracle,
+            "ora_stream_in": oracle,
         }
         self._bodies: dict[str, Body] = {}
         self._ports: dict[str, dict[str, Any]] = {}
         listed = ToolMain.toolset(
-            pg.pg_sync_out,
-            pg.pg_sync_in,
-            ch.ch_sync_out,
-            ch.ch_sync_in,
-            ora.ora_sync_out,
-            ora.ora_sync_in,
+            pg.pg_stream_out,
+            pg.pg_stream_in,
+            ch.ch_stream_out,
+            ch.ch_stream_in,
+            ora.ora_stream_out,
+            ora.ora_stream_in,
         )
         for payload in listed:
             if payload.coroutine is None:
@@ -98,9 +98,9 @@ class Pumps:
             )
 
     async def pg_out(self, statement: str, **extra: Any) -> bytes:
-        """Тела pg_sync_out в раскладке text (COPY text)."""
+        """Тела pg_stream_out в раскладке text (COPY text)."""
         return await self._out(
-            "pg_sync_out",
+            "pg_stream_out",
             statement,
             wire=StreamWire.TSV,
             copy_options=CopyOptions(chunk_bytes=self.CHUNK_BYTES),
@@ -108,7 +108,7 @@ class Pumps:
         )
 
     async def sync_in(self, feed: Feed, **extra: Any) -> str:
-        """pg_sync_in из памяти: кадры feed, стратегии по умолчанию — создать
+        """pg_stream_in из памяти: кадры feed, стратегии по умолчанию — создать
         таблицу, ничего не удалять, вставить всё."""
         arguments: dict[str, Any] = {
             "schema_strategy": CreateIfNotExists(kind="create_if_not_exists"),
@@ -116,8 +116,8 @@ class Pumps:
             "insert_strategy": InsertFull(kind="full"),
         }
         arguments.update(extra)
-        report = await self._bodies["pg_sync_in"](
-            connection=self._required("pg_sync_in"), feed=feed, **arguments
+        report = await self._bodies["pg_stream_in"](
+            connection=self._required("pg_stream_in"), feed=feed, **arguments
         )
 
         return report.text

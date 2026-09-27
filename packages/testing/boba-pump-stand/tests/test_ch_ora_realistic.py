@@ -1,6 +1,6 @@
 # ruff: noqa: S608
 """Перелив отчётов магазина из ClickHouse в Oracle парой ClickHouse -> Oracle
-(ch_sync_out с wire = arrow и ora_sync_in) запросами, какими их написал бы
+(ch_stream_out с wire = arrow и ora_stream_in) запросами, какими их написал бы
 LLM: CTE, join и left join с join_use_nulls, оконные функции, агрегаты в
 JSON, Enum, LowCardinality, UUID, IPv4, Decimal, DateTime64 в UTC.
 
@@ -75,7 +75,6 @@ OWNER = PumpUser.NAME.value
 ARRAYSIZE = 2000
 CHUNK = 65536
 BOOLEAN_SINCE = 23
-UUID_ARROW_SINCE = 23
 STRING_AS_STRING = "output_format_arrow_string_as_string = 1"
 MERGE_TREE = (
     "create table {database}.{table_name}[ on cluster {cluster}] ({columns}) "
@@ -85,14 +84,14 @@ MERGE_TREE = (
 REPORT_COLUMNS = """
 select order_id,
        toString(status)                     as status,
-       {uid}                                as customer_uid,
+       toString(customer_uid)               as customer_uid,
        customer_name,
        email,
        toString(tier)                       as tier,
        toString(city)                       as city,
        tags,
        toString(last_ip)                    as last_ip,
-       is_active,
+       {is_active},
        toDateTime64(signed_up, 0, 'UTC')    as signed_up,
        placed_at,
        toDate32(month)                      as month,
@@ -114,25 +113,29 @@ select order_id,
        month_avg
 from ({body}) r
 {settings}"""
-"""Отчёт под Oracle: Enum и LowCardinality — строкой, IPv4 — текстом, Date и
-DateTime — настоящими моментами (в Arrow они уходят числами)."""
+"""Отчёт под Oracle: Enum и LowCardinality — строкой, IPv4 и UUID — текстом,
+Date и DateTime — настоящими моментами (в Arrow они уходят числами), Bool
+до 23 — числом: приёмник значения не переписывает."""
 
 
-def report_sql(clickhouse: ClickHouseSide) -> str:
-    uid = "customer_uid"
-    if clickhouse.major < UUID_ARROW_SINCE:
-        uid = "toString(customer_uid)"
+def report_sql(clickhouse: ClickHouseSide, target: OracleSide) -> str:
+    is_active = "is_active"
+    if target.version < BOOLEAN_SINCE:
+        is_active = "toUInt8(is_active) as is_active"
 
     return REPORT_COLUMNS.format(
-        uid=uid, body=REPORT_BODY, settings=f"{JOIN_NULLS}, {STRING_AS_STRING}"
+        is_active=is_active,
+        body=REPORT_BODY,
+        settings=f"{JOIN_NULLS}, {STRING_AS_STRING}",
     )
 
 
-def uid_type(clickhouse: ClickHouseSide) -> str:
-    if clickhouse.major < UUID_ARROW_SINCE:
-        return "CLOB"
+def compared(target: OracleSide) -> dict[str, tuple[str, str]]:
+    templates = dict(COMPARED)
+    if target.version < BOOLEAN_SINCE:
+        templates["is_active"] = ("toUInt8({c})", "{c}")
 
-    return "VARCHAR2(36 CHAR)"
+    return templates
 
 
 DECLARED = (
@@ -144,7 +147,7 @@ DECLARED = (
 EXPECTED_COLUMNS = [
     ("order_id", "NUMBER(20,0)", True),
     ("status", "CLOB", False),
-    ("customer_uid", "{uid}", False),
+    ("customer_uid", "CLOB", False),
     ("customer_name", "CLOB", False),
     ("email", "CLOB", False),
     ("tier", "CLOB", False),
@@ -205,12 +208,15 @@ COMPARED: Mapping[str, tuple[str, str]] = {
     "balance": ("{c}", "{c}"),
     "customer_order_no": ("{c}", "{c}"),
     "customer_total": ("{c}", "{c}"),
-    "month_avg": ("{c}", "{c}"),
     "customer_uid": ("toString({c})", "to_char({c})"),
     "last_ip": ("toString({c})", "to_char({c})"),
 }
 """Как сравнить колонку: выражение ClickHouse и выражение Oracle с одинаковым
 значением; CLOB — через to_char, числа — значением."""
+
+FLOAT_COLUMNS = {"month_avg": ("{c}", "{c}")}
+"""Среднее окна ClickHouse считает заново при выгрузке, порядок сложения
+float меняется: сравнение с допуском в последних битах."""
 
 
 @pytest.fixture(scope="module", params=STAND.demo_clickhouse(), ids=lambda s: s.name)
@@ -250,13 +256,11 @@ def expected_columns(
 ) -> list[tuple[str, str, bool]]:
     boolean = "BOOLEAN"
     if target.version < BOOLEAN_SINCE:
-        boolean = "NUMBER(1,0)"
+        boolean = "NUMBER(3,0)"
 
     columns: list[tuple[str, str, bool]] = []
     for name, kind, not_null in EXPECTED_COLUMNS:
-        columns.append(
-            (name, kind.format(boolean=boolean, uid=uid_type(source)), not_null)
-        )
+        columns.append((name, kind.format(boolean=boolean), not_null))
 
     return columns
 
@@ -274,11 +278,11 @@ async def transfer(  # noqa: PLR0913
     create_table: str = OraTableRef.CREATE_TABLE,
     after: Sequence[str] = (),
 ) -> str:
-    """ch_sync_out (arrow) на source -> ora_sync_in на target."""
+    """ch_stream_out (arrow) на source -> ora_stream_in на target."""
     pumps = Pumps(clickhouse=source.profile, oracle=target.profile)
     chained = await pumps.chain(
         Leg(
-            "ch_sync_out",
+            "ch_stream_out",
             {
                 "sql": select,
                 "wire": ChStreamWire.ARROW,
@@ -287,7 +291,7 @@ async def transfer(  # noqa: PLR0913
             },
         ),
         Leg(
-            "ora_sync_in",
+            "ora_stream_in",
             {
                 "schema_name": OWNER,
                 "table_name": table,
@@ -302,16 +306,19 @@ async def transfer(  # noqa: PLR0913
         ),
     )
     print(
-        f"\n--- {source.source.name} -> {target.source.name}: ch_sync_out (arrow) ---\n"
+        f"\n--- {source.source.name} -> {target.source.name}: "
+        f"ch_stream_out (arrow) ---\n"
         f"{chained.out_report}"
     )
-    print(f"--- ora_sync_in ---\n{chained.in_report}")
+    print(f"--- ora_stream_in ---\n{chained.in_report}")
 
     return chained.in_report
 
 
-def month_of(source: ClickHouseSide, month: str) -> str:
-    return f"select * from ({report_sql(source)}) m where m.month = toDate32('{month}')"
+def month_of(source: ClickHouseSide, target: OracleSide, month: str) -> str:
+    report = report_sql(source, target)
+
+    return f"select * from ({report}) m where m.month = toDate32('{month}')"
 
 
 def numbers(values: Sequence[Any]) -> list[Decimal | None]:
@@ -330,12 +337,19 @@ async def same_content(source: ClickHouseSide, target: OracleSide, table: str) -
     """Каждая колонка таблицы Oracle совпадает с отчётом ClickHouse."""
     report = ChLoaded(source, "orders_report")
     landed = OraLoaded(target, table)
+    templates = compared(target)
     for name, _, _ in EXPECTED_COLUMNS:
-        ch_template, ora_template = COMPARED.get(
-            name, ("toString({c})", "to_char({c})")
+        ch_template, ora_template = templates.get(
+            name, FLOAT_COLUMNS.get(name, ("toString({c})", "to_char({c})"))
         )
         expected = await report.column(ch_template.format(c=name), order_by="order_id")
         actual = await landed.column(ora_template.format(c=name), order_by="order_id")
+        if name in FLOAT_COLUMNS:
+            for got, want in zip(actual, expected, strict=True):
+                assert abs(got - want) <= abs(want) * 1e-12, f"column {name} differs"
+
+            continue
+
         if ch_template == "{c}":
             assert numbers(actual) == numbers(expected), f"column {name} differs"
 
@@ -398,7 +412,7 @@ class TestOrdersReport:
             "orders_report",
             DropAndCreate(kind="drop_and_create"),
             DeleteNothing(kind="nothing"),
-            select=report_sql(source),
+            select=report_sql(source, target),
         )
         landed = OraLoaded(target, "orders_report")
 
@@ -421,7 +435,7 @@ class TestOrdersReport:
             "orders_report",
             ErrorIfSchemaChanged(kind="error_if_schema_changed"),
             DeleteTruncate(kind="truncate"),
-            select=report_sql(source),
+            select=report_sql(source, target),
         )
 
         assert "error" not in report.split("rows written")[0].lower()
@@ -454,7 +468,7 @@ class TestIncrementalMonth:
                 kind="delete_where",
                 where=f"month = to_date('{self.MONTH}', 'yyyy-mm-dd')",
             ),
-            select=month_of(source, self.MONTH),
+            select=month_of(source, target, self.MONTH),
         )
 
         assert in_month > 0
@@ -492,10 +506,10 @@ class TestRenamedMart:
         ColumnDeclaration(name="placed_at", nullable=False),
     )
 
-    def select(self, source: ClickHouseSide) -> str:
+    def select(self, source: ClickHouseSide, target: OracleSide) -> str:
         return (
             f"select order_id, customer_name, tier, paid, gross, placed_at "
-            f"from ({report_sql(source)}) m"
+            f"from ({report_sql(source, target)}) m"
         )
 
     async def test_missing_mart_is_refused(
@@ -508,7 +522,7 @@ class TestRenamedMart:
                 "orders_mart",
                 ErrorIfNotExists(kind="error_if_not_exists"),
                 DeleteNothing(kind="nothing"),
-                select=self.select(source),
+                select=self.select(source, target),
                 columns=self.COLUMNS,
                 rules=self.RULES,
             )
@@ -526,7 +540,7 @@ class TestRenamedMart:
             "orders_mart",
             ErrorIfNotExists(kind="error_if_not_exists"),
             DeleteNothing(kind="nothing"),
-            select=self.select(source),
+            select=self.select(source, target),
             columns=self.COLUMNS,
             rules=self.RULES,
         )
@@ -555,7 +569,7 @@ class TestSchemaDrift:
             "orders_drift",
             DropAndCreate(kind="drop_and_create"),
             DeleteNothing(kind="nothing"),
-            select=report_sql(source),
+            select=report_sql(source, target),
         )
         await target.run((f"alter table {OWNER}.orders_drift drop column gross",))
 
@@ -568,7 +582,7 @@ class TestSchemaDrift:
                 "orders_drift",
                 ErrorIfSchemaChanged(kind="error_if_schema_changed"),
                 DeleteTruncate(kind="truncate"),
-                select=report_sql(source),
+                select=report_sql(source, target),
             )
 
         report = await transfer(
@@ -577,7 +591,7 @@ class TestSchemaDrift:
             "orders_drift",
             BackupAndCreateIfSchemaChanged(kind="backup_and_create_if_schema_changed"),
             DeleteNothing(kind="nothing"),
-            select=report_sql(source),
+            select=report_sql(source, target),
         )
         backups: list[str] = []
         for name in await drift.tables():
@@ -606,7 +620,7 @@ class TestCreateTemplate:
                 "orders_tpl",
                 DropAndCreate(kind="drop_and_create"),
                 DeleteNothing(kind="nothing"),
-                select=report_sql(source),
+                select=report_sql(source, target),
                 create_table=self.TEMPLATE,
             )
 
@@ -643,7 +657,7 @@ class TestStagingSwap:
                 "orders_report_stage",
                 DropAndCreate(kind="drop_and_create"),
                 DeleteNothing(kind="nothing"),
-                select=report_sql(source),
+                select=report_sql(source, target),
                 after=("insert into no_such_table values (1)",),
             )
 
@@ -662,7 +676,7 @@ class TestStagingSwap:
             "orders_report_stage",
             DropAndCreate(kind="drop_and_create"),
             DeleteNothing(kind="nothing"),
-            select=report_sql(source),
+            select=report_sql(source, target),
             after=self.SWAP,
         )
         tables = await landed.tables()
@@ -690,7 +704,7 @@ class TestDryRun:
             "orders_report",
             DoNothing(kind="do_nothing"),
             DeleteNothing(kind="nothing"),
-            select=report_sql(source),
+            select=report_sql(source, target),
             insert=InsertNothing(kind="nothing"),
         )
 
@@ -716,7 +730,7 @@ class TestBackToClickHouse:
         pumps = Pumps(clickhouse=source.profile, oracle=target.profile)
         chained = await pumps.chain(
             Leg(
-                "ora_sync_out",
+                "ora_stream_out",
                 {
                     "sql": self.AGGREGATE,
                     "columns": (
@@ -726,7 +740,7 @@ class TestBackToClickHouse:
                 },
             ),
             Leg(
-                "ch_sync_in",
+                "ch_stream_in",
                 {
                     "database": CH_SRC,
                     "table_name": "city_month",

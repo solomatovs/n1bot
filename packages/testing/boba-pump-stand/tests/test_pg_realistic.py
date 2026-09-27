@@ -1,6 +1,6 @@
 # ruff: noqa: S608, E501
 """Перелив отчёта по заказам между серверами postgres и Greenplum парой
-postgres -> postgres (pg_sync_out и pg_sync_in) запросом, каким его написал
+postgres -> postgres (pg_stream_out и pg_stream_in) запросом, каким его написал
 бы LLM: CTE, join и left join с NULL, lateral, оконные функции, агрегаты в
 массив и jsonb, enum, uuid, inet, interval, date_trunc.
 
@@ -354,11 +354,11 @@ async def transfer(  # noqa: PLR0913
     after: Sequence[str] = (),
     schema_name: str = DW,
 ) -> str:
-    """pg_sync_out на source -> pg_sync_in на target, два сервера."""
+    """pg_stream_out на source -> pg_stream_in на target, два сервера."""
     pumps = Pumps(postgres=source.profile, postgres_target=target.profile)
     chained = await pumps.chain(
         Leg(
-            "pg_sync_out",
+            "pg_stream_out",
             {
                 "sql": select,
                 "wire": wire,
@@ -367,7 +367,7 @@ async def transfer(  # noqa: PLR0913
             },
         ),
         Leg(
-            "pg_sync_in",
+            "pg_stream_in",
             {
                 "schema_name": schema_name,
                 "table_name": table,
@@ -382,10 +382,10 @@ async def transfer(  # noqa: PLR0913
         ),
     )
     print(
-        f"\n--- {source.source.name} -> {target.source.name}: pg_sync_out "
+        f"\n--- {source.source.name} -> {target.source.name}: pg_stream_out "
         f"({wire.value}) ---\n{chained.out_report}"
     )
-    print(f"--- pg_sync_in ---\n{chained.in_report}")
+    print(f"--- pg_stream_in ---\n{chained.in_report}")
 
     return chained.in_report
 

@@ -1,6 +1,6 @@
 # ruff: noqa: S608, E501
 """Перелив отчётов магазина из ClickHouse в postgres и Greenplum парой
-ClickHouse -> postgres (ch_sync_out и pg_sync_in) запросами, какими их
+ClickHouse -> postgres (ch_stream_out и pg_stream_in) запросами, какими их
 написал бы LLM: CTE, join и left join с join_use_nulls, оконные функции,
 агрегаты в массив и JSON, Enum, LowCardinality, UUID, IPv4, Decimal,
 DateTime64 в UTC и в поясе, UInt64 из count().
@@ -467,16 +467,16 @@ async def transfer(  # noqa: PLR0913
     after: Sequence[str] = (),
     wire: ChStreamWire = ChStreamWire.TSV,
 ) -> str:
-    """ch_sync_out на source -> pg_sync_in на target; без rules — правила
+    """ch_stream_out на source -> pg_stream_in на target; без rules — правила
     отчёта для версии приёмника."""
     if rules is None:
         rules = report_rules(target)
 
     pumps = Pumps(postgres=target.profile, clickhouse=source.profile)
     chained = await pumps.chain(
-        Leg("ch_sync_out", {"sql": select, "wire": wire, "chunk_bytes": CHUNK}),
+        Leg("ch_stream_out", {"sql": select, "wire": wire, "chunk_bytes": CHUNK}),
         Leg(
-            "pg_sync_in",
+            "pg_stream_in",
             {
                 "schema_name": DW,
                 "table_name": table,
@@ -492,10 +492,10 @@ async def transfer(  # noqa: PLR0913
         ),
     )
     print(
-        f"\n--- {source.source.name} -> {target.source.name}: ch_sync_out "
+        f"\n--- {source.source.name} -> {target.source.name}: ch_stream_out "
         f"({wire.value}) ---\n{chained.out_report}"
     )
-    print(f"--- pg_sync_in ---\n{chained.in_report}")
+    print(f"--- pg_stream_in ---\n{chained.in_report}")
 
     return chained.in_report
 
@@ -1063,7 +1063,7 @@ class TestBackToClickHouse:
         pumps = Pumps(postgres=target.profile, clickhouse=source.profile)
         chained = await pumps.chain(
             Leg(
-                "pg_sync_out",
+                "pg_stream_out",
                 {
                     "sql": self.AGGREGATE,
                     "wire": StreamWire.TSV,
@@ -1075,7 +1075,7 @@ class TestBackToClickHouse:
                 },
             ),
             Leg(
-                "ch_sync_in",
+                "ch_stream_in",
                 {
                     "database": SRC,
                     "table_name": "city_month",

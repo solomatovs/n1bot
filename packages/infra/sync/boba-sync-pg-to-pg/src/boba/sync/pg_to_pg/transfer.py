@@ -78,13 +78,13 @@ class PgBinaryCompatibility:
             raise TransferError(
                 f"binary copy from postgres {source_version.text()} into postgres "
                 f"{target_version.text()}: major versions differ, restart "
-                f"pg_sync_out with wire csv"
+                f"pg_stream_out with wire csv"
             )
 
         if not contract.integer_datetimes or not target_integer_datetimes:
             raise TransferError(
                 "binary copy needs integer_datetimes = on on both servers, restart "
-                "pg_sync_out with wire csv"
+                "pg_stream_out with wire csv"
             )
 
         for column in columns:
@@ -94,7 +94,7 @@ class PgBinaryCompatibility:
             raise TransferError(
                 f"binary copy: column {column.name} has a type outside the "
                 f"built-in registry ({column.known}); user types carry "
-                f"instance-specific OIDs in binary, restart pg_sync_out with wire "
+                f"instance-specific OIDs in binary, restart pg_stream_out with wire "
                 f'csv or declare a built-in type in rules.column_types["{column.name}"]'
             )
 

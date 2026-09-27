@@ -22,7 +22,7 @@
 
 `edge-ch-26.7` дополнительно получает `server/keeper.xml` в `config.d`:
 встроенный Keeper, макросы `shard`/`replica`, порт репликации и кластер
-`stand` из одного узла. На нём тесты приёмника `ch_sync_in` проверяют
+`stand` из одного узла. На нём тесты приёмника `ch_stream_in` проверяют
 `ReplicatedMergeTree` и DDL `on cluster`.
 
 `database` пересоздаётся на каждую сессию тестов: схема `db_schema` с ядром пакета

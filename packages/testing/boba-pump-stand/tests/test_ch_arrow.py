@@ -1,6 +1,6 @@
-"""Перекачка из ClickHouse потоком Arrow IPC: ch_sync_out против pg_sync_in
+"""Перекачка из ClickHouse потоком Arrow IPC: ch_stream_out против pg_stream_in
 (каждый ClickHouse из ch_sources в каждый postgres и Greenplum из sources) и
-ora_sync_in (в каждый Oracle из ora_sources). Насосы соединены трубой ОС и
+ora_stream_in (в каждый Oracle из ora_sources). Насосы соединены трубой ОС и
 работают одновременно; круг ClickHouse -> ClickHouse проверяет test_ch_sync.
 
 Таблица ClickHouse несёт все семейства типов: целые до 256 бит, Decimal до
@@ -501,7 +501,7 @@ class TestClickHouseToPostgres:
         pumps = Pumps(postgres=postgres.profile, clickhouse=clickhouse.side.profile)
         chained = await pumps.chain(
             Leg(
-                "ch_sync_out",
+                "ch_stream_out",
                 {
                     "sql": f"select {exported(_names(columns), targets, False)} "
                     f"from {CH_DATABASE}.src order by id settings {STRING_AS_STRING}",
@@ -510,7 +510,7 @@ class TestClickHouseToPostgres:
                 },
             ),
             Leg(
-                "pg_sync_in",
+                "pg_stream_in",
                 {
                     "schema_name": PG_SCHEMA,
                     "table_name": table,
@@ -565,7 +565,7 @@ class TestClickHouseToOracle:
         try:
             chained = await pumps.chain(
                 Leg(
-                    "ch_sync_out",
+                    "ch_stream_out",
                     {
                         "sql": f"select {exported(_names(columns), targets, False)} "
                         f"from {CH_DATABASE}.src order by id "
@@ -575,7 +575,7 @@ class TestClickHouseToOracle:
                     },
                 ),
                 Leg(
-                    "ora_sync_in",
+                    "ora_stream_in",
                     {
                         "schema_name": PumpUser.NAME.value,
                         "table_name": table,
