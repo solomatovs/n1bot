@@ -45,10 +45,14 @@ from boba.pump_stand.compare import (
 from boba.pump_stand.matrix import (
     Target,
     compared,
-    copy_into,
     exported,
     first,
     insert_into,
+)
+from boba.toolkit.landing import (
+    CreateIfNotExists,
+    DeleteNothing,
+    InsertFull,
 )
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
@@ -496,7 +500,7 @@ class TestClickHouseToPostgres:
         pumps = Pumps(postgres=postgres.profile, clickhouse=clickhouse.side.profile)
         chained = await pumps.chain(
             Leg(
-                "ch_arrow_out",
+                "ch_sync_out",
                 {
                     "sql": f"select {exported(_names(columns), targets, False)} "
                     f"from {CH_DATABASE}.src order by id settings {STRING_AS_STRING}",
@@ -504,9 +508,13 @@ class TestClickHouseToPostgres:
                 },
             ),
             Leg(
-                "pg_arrow_in",
+                "pg_sync_in",
                 {
-                    "sql": copy_into(f"{PG_SCHEMA}.{table}", [c.name for c in columns]),
+                    "schema_name": PG_SCHEMA,
+                    "table_name": table,
+                    "schema_strategy": CreateIfNotExists(kind="create_if_not_exists"),
+                    "delete_strategy": DeleteNothing(kind="nothing"),
+                    "insert_strategy": InsertFull(kind="full"),
                     "copy_options": CopyOptions(chunk_bytes=CHUNK_BYTES),
                 },
             ),

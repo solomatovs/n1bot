@@ -7,19 +7,21 @@ import pyarrow
 import pytest
 
 from boba.toolkit.arrow import ArrowColumns, SourceFields
-from boba.toolkit.sync import (
+from boba.toolkit.landing import (
     BackupAndCreateIfSchemaChanged,
     ColumnRules,
-    ColumnSpec,
-    ColumnType,
     CreateIfNotExists,
-    DiffSummary,
     DoNothing,
     DropAndCreate,
     DropAndCreateIfSchemaChanged,
     ErrorIfNotExists,
     ErrorIfSchemaChanged,
     SchemaAction,
+    SchemaCheck,
+)
+from boba.toolkit.sync import (
+    ColumnSpec,
+    ColumnType,
     SchemaMatcher,
     SyncError,
     TimeUnit,
@@ -200,12 +202,12 @@ class TestMatcher:
         )
 
         assert diff.render().startswith("- error a:")
-        assert diff.summary().changed
+        assert diff.check().changed()
 
 
 class TestSchemaPlans:
-    SAME = DiffSummary(changed=False, reason="")
-    DRIFT = DiffSummary(changed=True, reason="column a: narrower")
+    SAME = SchemaCheck(errors=(), warnings=(), lines=())
+    DRIFT = SchemaCheck(errors=("column a: narrower",), warnings=(), lines=())
 
     @pytest.mark.parametrize(
         ("strategy", "exists", "diff", "action"),
@@ -290,7 +292,7 @@ class TestSchemaPlans:
         ],
     )
     def test_plan(
-        self, strategy, exists: bool, diff: DiffSummary, action: SchemaAction
+        self, strategy, exists: bool, diff: SchemaCheck, action: SchemaAction
     ) -> None:
         assert strategy.plan(exists, diff).action is action
 

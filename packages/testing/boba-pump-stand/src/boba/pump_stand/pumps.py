@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import time
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable, Coroutine, Mapping
 from dataclasses import dataclass
 from typing import Any, ClassVar
 
@@ -18,6 +18,12 @@ from boba.tool.ch import tools as ch
 from boba.tool.ora import tools as ora
 from boba.tool.pg import tools as pg
 from boba.toolkit.entry import ToolArgv, ToolMain
+from boba.toolkit.landing import (
+    CreateIfNotExists,
+    DeleteNothing,
+    InsertFull,
+    WireChoice,
+)
 from boba.toolkit.ports import PortDirection, StreamPorts
 
 __all__ = ["Chained", "Leg", "Pumps"]
@@ -44,7 +50,7 @@ class Chained:
 
 class Pumps:
     """Насосы postgres, ClickHouse и Oracle над профилями стенда. Выход
-    возвращает байты порта, вход принимает байты и отдаёт текст отчёта;
+    возвращает тела кадров порта, вход принимает байты и отдаёт текст отчёта;
     extra — остальные аргументы фасада (before, after, session);
     chain соединяет два насоса трубой и гонит их одновременно."""
 
@@ -67,15 +73,8 @@ class Pumps:
             target = postgres
 
         self._connections: dict[str, object | None] = {
-            "pg_stream_out": postgres,
-            "pg_stream_in": target,
-            "pg_arrow_out": postgres,
             "pg_sync_out": postgres,
-            "pg_arrow_in": target,
             "pg_sync_in": target,
-            "pg_csv_sync_out": postgres,
-            "pg_tsv_sync_out": postgres,
-            "pg_csv_sync_in": target,
             "ch_stream_out": clickhouse,
             "ch_stream_in": clickhouse,
             "ch_arrow_out": clickhouse,
@@ -90,15 +89,8 @@ class Pumps:
         self._bodies: dict[str, Body] = {}
         self._ports: dict[str, dict[str, Any]] = {}
         listed = ToolMain.toolset(
-            pg.pg_stream_out,
-            pg.pg_stream_in,
-            pg.pg_arrow_out,
             pg.pg_sync_out,
-            pg.pg_arrow_in,
             pg.pg_sync_in,
-            pg.pg_csv_sync_out,
-            pg.pg_tsv_sync_out,
-            pg.pg_csv_sync_in,
             ch.ch_stream_out,
             ch.ch_stream_in,
             ch.ch_arrow_out,
@@ -120,19 +112,29 @@ class Pumps:
             )
 
     async def pg_out(self, statement: str, **extra: Any) -> bytes:
-        return await self._out("pg_stream_out", statement, **extra)
-
-    async def pg_in(
-        self, statement: str, data: bytes, chunk: int | None = None, **extra: Any
-    ) -> str:
-        return await self._in(
-            "pg_stream_in",
+        """Тела pg_sync_out в раскладке text (COPY text)."""
+        return await self._out(
+            "pg_sync_out",
             statement,
-            data,
-            chunk,
+            wire=WireChoice.TSV,
             copy_options=CopyOptions(chunk_bytes=self.CHUNK_BYTES),
             **extra,
         )
+
+    async def sync_in(self, feed: Feed, **extra: Any) -> str:
+        """pg_sync_in из памяти: кадры feed, стратегии по умолчанию — создать
+        таблицу, ничего не удалять, вставить всё."""
+        arguments: dict[str, Any] = {
+            "schema_strategy": CreateIfNotExists(kind="create_if_not_exists"),
+            "delete_strategy": DeleteNothing(kind="nothing"),
+            "insert_strategy": InsertFull(kind="full"),
+        }
+        arguments.update(extra)
+        report = await self._bodies["pg_sync_in"](
+            connection=self._required("pg_sync_in"), feed=feed, **arguments
+        )
+
+        return report.text
 
     async def ch_out(self, statement: str, **extra: Any) -> bytes:
         return await self._out(
@@ -167,6 +169,20 @@ class Pumps:
         )
         started = time.monotonic()
 
+        failures: list[tuple[float, BaseException]] = []
+
+        async def guarded(leg: Coroutine[Any, Any, str]) -> str:
+            # оба конца дожидаются друг друга: сорвавшийся конец рвёт трубу, и
+            # второй должен успеть закрыть свой дескриптор до следующей трубы
+            # теста; наружу идёт та ошибка, что случилась раньше, вторая —
+            # её следствие (обрыв трубы, пустой поток)
+            try:
+                return await leg
+            except BaseException as exc:
+                failures.append((time.monotonic(), exc))
+
+                return ""
+
         async def produce() -> str:
             try:
                 return await self._call(out, out=pipe.outbound)
@@ -179,7 +195,13 @@ class Pumps:
             finally:
                 pipe.close_read()
 
-        out_report, in_report = await asyncio.gather(produce(), consume())
+        out_report, in_report = await asyncio.gather(
+            guarded(produce()), guarded(consume())
+        )
+        if failures:
+            failures.sort(key=lambda item: item[0])
+
+            raise failures[0][1]
 
         return Chained(out_report, in_report, time.monotonic() - started)
 
@@ -220,7 +242,7 @@ class Pumps:
         report = await self._bodies[name](
             connection=self._required(name),
             sql=statement,
-            feed=Feed(data, chunk),
+            feed=Feed(data, chunk, Feed.RAW),
             **extra,
         )
 

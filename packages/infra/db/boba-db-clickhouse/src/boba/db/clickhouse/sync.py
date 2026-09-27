@@ -20,16 +20,14 @@ from clickhouse_connect.driver.asyncclient import AsyncClient
 from boba.db.clickhouse.payload import PayloadClickHouse, ReadTuning
 from boba.db.clickhouse.trace import ChCommandReport
 from boba.toolkit.arrow import ArrowColumns, ArrowIpc, BytePipe
+from boba.toolkit.landing import Engine, LandingOutbound, SchemaHead, SyncWire
 from boba.toolkit.sync import (
+    ArrowContract,
     ColumnDeclaration,
     ColumnSpec,
     ContractText,
     Declarations,
-    Engine,
-    SchemaFrame,
     StreamContract,
-    SyncOutbound,
-    WireFormat,
 )
 
 __all__ = ["ChSyncSource"]
@@ -56,7 +54,7 @@ class ChSyncSource:
         text: str,
         declared: Sequence[ColumnDeclaration],
         chunk_bytes: int,
-        out: SyncOutbound,
+        out: LandingOutbound,
     ) -> ChCommandReport:
         pipe = BytePipe()
         tuning = ReadTuning(socket_read_size=chunk_bytes, read_buffer_size=chunk_bytes)
@@ -77,12 +75,13 @@ class ChSyncSource:
                     specs = self._declarations.merge(
                         self._columns.specs(reader.schema), declared
                     )
+                    contract = ArrowContract(columns=self._contract.columns(specs))
                     await out.schema(
-                        SchemaFrame(
+                        SchemaHead(
                             kind="schema",
-                            format=WireFormat.ARROW_IPC,
                             source_engine=self.ENGINE,
-                            columns=self._contract.columns(specs),
+                            wire=SyncWire.ARROW,
+                            contract=contract.model_dump(mode="json"),
                         )
                     )
                     writer = await self._ipc.open_out(out.writer(), reader.schema)
@@ -98,5 +97,5 @@ class ChSyncSource:
             _, specs = await asyncio.gather(produce(), consume())
 
             return stream.trace.report(
-                self._contract_text.render(WireFormat.ARROW_IPC, specs), text
+                self._contract_text.render(SyncWire.ARROW.value, specs), text
             )

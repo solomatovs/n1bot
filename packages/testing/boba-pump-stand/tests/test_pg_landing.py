@@ -1,24 +1,34 @@
 # ruff: noqa: S608, PLR0913
-"""Загрузка postgres -> postgres парой boba-sync-pg-to-pg через pg_csv_sync_out,
-pg_tsv_sync_out и pg_csv_sync_in: контракт RowDescription как есть, сверка
+"""Загрузка postgres -> postgres парой boba-sync-pg-to-pg через pg_sync_out и
+pg_sync_in с раскладками csv, tsv и binary: контракт RowDescription как есть, сверка
 по OID и typmod с каталогом приёмника, DDL текстом типа источника, тела COPY
 без перекодирования. Прогон по всем postgres стенда и Greenplum.
 """
 
 from __future__ import annotations
 
+import shutil
+import subprocess
 import time
 from collections.abc import AsyncIterator, Sequence
 from decimal import Decimal
 from typing import Any, ClassVar
 
+import psycopg
 import pytest
 
 from boba.db.postgres import AsyncPostgresPool
 from boba.db.postgres.connection import CopyOptions
-from boba.db.postgres.landing import PgCatalogColumn, PgColumnDeclaration, PgCopyOut
+from boba.db.postgres.landing import (
+    PgCatalogColumn,
+    PgColumnDeclaration,
+    PgCopyLayout,
+    PgCopyOut,
+    PgLandingTable,
+)
 from boba.db.postgres.query import PgQueryBuilder
 from boba.pump_stand import Landing, Leg, PostgresSide, Pumps, PumpStand
+from boba.pump_stand.ports import Sink, SinkOutbound
 from boba.sync.pg_to_pg.landing import PgStreamColumn, PgTypeRules
 from boba.toolkit.landing import (
     BackupAndCreateIfSchemaChanged,
@@ -36,6 +46,8 @@ from boba.toolkit.landing import (
     InsertFull,
     InsertNothing,
     LandingError,
+    LandingOutbound,
+    WireChoice,
 )
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
@@ -120,22 +132,24 @@ async def land(
     unknown_types: Any = FailOnUnknown(kind="fail_on_unknown"),
     select: str = SELECT,
     columns: Sequence[PgColumnDeclaration] = (),
-    source_tool: str = "pg_csv_sync_out",
+    wire: WireChoice = WireChoice.CSV,
+    create_table: str = PgLandingTable.CREATE_TABLE,
 ) -> str:
     """Источник -> приёмник на одном сервере, id объявлен not null."""
     pumps = Pumps(postgres=postgres.profile)
     declared = [PgColumnDeclaration(name="id", nullable=False), *columns]
     chained = await pumps.chain(
         Leg(
-            source_tool,
+            "pg_sync_out",
             {
                 "sql": select,
+                "wire": wire,
                 "columns": declared,
                 "copy_options": CopyOptions(chunk_bytes=CHUNK),
             },
         ),
         Leg(
-            "pg_csv_sync_in",
+            "pg_sync_in",
             {
                 "schema_name": S,
                 "table_name": table,
@@ -144,6 +158,7 @@ async def land(
                 "insert_strategy": insert,
                 "rules": rules,
                 "unknown_types": unknown_types,
+                "create_table": create_table,
                 "copy_options": CopyOptions(chunk_bytes=CHUNK),
             },
         ),
@@ -588,15 +603,16 @@ class TestOlderTarget:
             ):
                 await pumps.chain(
                     Leg(
-                        "pg_csv_sync_out",
+                        "pg_sync_out",
                         {
                             "sql": f"select * from {S}.s_old",
+                            "wire": WireChoice.CSV,
                             "columns": [],
                             "copy_options": CopyOptions(chunk_bytes=CHUNK),
                         },
                     ),
                     Leg(
-                        "pg_csv_sync_in",
+                        "pg_sync_in",
                         {
                             "schema_name": S,
                             "table_name": "t_old",
@@ -617,6 +633,92 @@ class TestOlderTarget:
             await target.drop()
 
 
+class TestCreateTemplate:
+    """Шаблон create table: особенности таблицы пишет вызывающий, приёмник
+    подставляет экранированные схему, имя и колонки; шаблон без
+    обязательной переменной или с чужой — отказ до любого DDL."""
+
+    WITH_OPTIONS: ClassVar[str] = (
+        "create table {schema_name}.{table_name} ({columns}) with (fillfactor = 70)"
+    )
+    DISTRIBUTED: ClassVar[str] = (
+        "create table {schema_name}.{table_name} ({columns}) distributed by (id)"
+    )
+    ESCAPED: ClassVar[str] = (
+        "create table {schema_name}.{table_name} ({columns}) -- {{not a variable}}"
+    )
+
+    async def test_with_options_reach_reloptions(self, postgres: PostgresSide) -> None:
+        report = await land(postgres, "t_tpl_with", create_table=self.WITH_OPTIONS)
+        landed = Landing(postgres, S, "t_tpl_with")
+
+        assert f"{ROWS} rows written" in report
+        assert await landed.count() == ROWS
+        options = await landed.aggregate(
+            "(select reloptions::text from pg_class "
+            f"where oid = '{S}.t_tpl_with'::regclass)"
+        )
+        assert options == "{fillfactor=70}"
+
+    async def test_distributed_by_on_greenplum(self, postgres: PostgresSide) -> None:
+        if not postgres.greenplum:
+            pytest.skip("distributed by is Greenplum only")
+
+        report = await land(postgres, "t_tpl_dist", create_table=self.DISTRIBUTED)
+        landed = Landing(postgres, S, "t_tpl_dist")
+
+        assert f"{ROWS} rows written" in report
+        policy = await landed.aggregate(
+            "(select distkey::text from gp_distribution_policy "
+            f"where localoid = '{S}.t_tpl_dist'::regclass)"
+        )
+        assert policy == "1"
+
+    async def test_escaped_braces_stay_literal(self, postgres: PostgresSide) -> None:
+        report = await land(postgres, "t_tpl_esc", create_table=self.ESCAPED)
+
+        assert f"{ROWS} rows written" in report
+        assert await Landing(postgres, S, "t_tpl_esc").count() == ROWS
+
+    async def test_template_without_columns_is_refused(
+        self, postgres: PostgresSide
+    ) -> None:
+        with pytest.raises(LandingError, match="lacks \\['columns'\\]"):
+            await land(
+                postgres,
+                "t_tpl_no_cols",
+                create_table="create table {schema_name}.{table_name} ()",
+            )
+
+        assert (
+            "t_tpl_no_cols" not in await Landing(postgres, S, "t_tpl_no_cols").tables()
+        )
+
+    async def test_unknown_variable_is_refused(self, postgres: PostgresSide) -> None:
+        with pytest.raises(LandingError, match="unknown variable \\{owner\\}"):
+            await land(
+                postgres,
+                "t_tpl_unknown",
+                create_table=(
+                    "create table {schema_name}.{table_name} ({columns}) "
+                    "tablespace {owner}"
+                ),
+            )
+
+    async def test_server_error_in_options_is_reported(
+        self, postgres: PostgresSide
+    ) -> None:
+        with pytest.raises(psycopg.Error, match="no_such_option"):
+            await land(
+                postgres,
+                "t_tpl_bad",
+                create_table=(
+                    "create table {schema_name}.{table_name} ({columns}) "
+                    "with (no_such_option = 1)"
+                ),
+            )
+
+
 class TestTsvWire:
     async def test_text_layout_lands_the_same_rows(
         self, postgres: PostgresSide
@@ -631,13 +733,81 @@ class TestTsvWire:
             postgres,
             "t_tsv",
             select=f"select * from {S}.s_tsv",
-            source_tool="pg_tsv_sync_out",
+            wire=WireChoice.TSV,
         )
 
         assert "4 rows written" in report
         assert await Landing(postgres, S, "t_tsv").texts("v") == await Landing(
             postgres, S, "s_tsv"
         ).texts("v")
+
+
+class TestBinaryWire:
+    """COPY binary: тот же сервер — грузится байт в байт; enum — отказ, у
+    пользовательских типов в binary OID инстанса; другая мажорная версия —
+    отказ с подсказкой взять csv."""
+
+    async def test_binary_lands_the_same_rows_on_the_same_server(
+        self, postgres: PostgresSide
+    ) -> None:
+        report = await land(postgres, "t_bin", wire=WireChoice.BINARY)
+        source = Landing(postgres, S, "src")
+        target = Landing(postgres, S, "t_bin")
+
+        assert f"{ROWS} rows written" in report
+        for column in ("name", "amount", "dt", "flag", "note"):
+            assert await target.texts(column) == await source.texts(column)
+
+    async def test_user_type_is_refused_in_binary(self, postgres: PostgresSide) -> None:
+        await fill(postgres, "s_bin_en", "mood", "'sad'::mood")
+        with pytest.raises(LandingError, match="outside the built-in registry"):
+            await land(
+                postgres,
+                "t_bin_en",
+                select=f"select * from {S}.s_bin_en",
+                wire=WireChoice.BINARY,
+            )
+
+    async def test_other_major_version_is_refused(self, postgres: PostgresSide) -> None:
+        only_newest(postgres)
+        older = _older_than(postgres.version // 10000 * 10000)
+        if older is None:
+            pytest.skip("no older postgres on the stand")
+
+        target = PostgresSide(older, S)
+        await target.connect()
+        await target.recreate_schema()
+        pumps = Pumps(postgres=postgres.profile, postgres_target=target.profile)
+        try:
+            with pytest.raises(LandingError, match="major versions differ"):
+                await pumps.chain(
+                    Leg(
+                        "pg_sync_out",
+                        {
+                            "sql": SELECT,
+                            "wire": WireChoice.BINARY,
+                            "columns": [],
+                            "copy_options": CopyOptions(chunk_bytes=CHUNK),
+                        },
+                    ),
+                    Leg(
+                        "pg_sync_in",
+                        {
+                            "schema_name": S,
+                            "table_name": "t_bin_old",
+                            "schema_strategy": CreateIfNotExists(
+                                kind="create_if_not_exists"
+                            ),
+                            "delete_strategy": DeleteNothing(kind="nothing"),
+                            "insert_strategy": InsertFull(kind="full"),
+                            "rules": ColumnRules(),
+                            "unknown_types": FailOnUnknown(kind="fail_on_unknown"),
+                            "copy_options": CopyOptions(chunk_bytes=CHUNK),
+                        },
+                    ),
+                )
+        finally:
+            await target.drop()
 
 
 class TestDescribeCost:
@@ -677,6 +847,139 @@ class TestDescribeCost:
         assert names == ["n", "slept", "h", "total"]
         assert elapsed < self.BUDGET_SECONDS
         assert after == before
+
+
+class BrokenSink(Sink):
+    """Порт, который рвёт трубу на втором кадре rows."""
+
+    LIMIT: ClassVar[int] = 2
+
+    def emit(self, head: Any, body: Any = b"") -> None:
+        super().emit(head, body)
+        if len(self.heads) >= self.LIMIT:
+            raise BrokenPipeError("receiver went away")
+
+
+class TestCopyOutLoop:
+    """COPY TO STDOUT идёт циклом libpq в потоке: миллион строк не медленнее
+    полутора psql, ошибка сервера посреди COPY доходит своим классом,
+    обрыв трубы отменяет запрос, и соединение остаётся рабочим."""
+
+    ROWS: ClassVar[int] = 1_000_000
+    SELECT: ClassVar[str] = (
+        "select g as id, g * 7 as v, 'name_' || g as name, now() as ts, "
+        "g::numeric / 3 as amount from generate_series(1, {rows}) g"
+    )
+    CHUNK: ClassVar[int] = 262144
+    PSQL_RATIO: ClassVar[float] = 1.5
+
+    def _psql_seconds(self, postgres: PostgresSide, select: str) -> float:
+        psql = shutil.which("psql")
+        if psql is None:
+            pytest.skip("psql is not installed on the host")
+
+        settings = postgres.profile.conn_settings()
+        env = {"PGPASSWORD": str(settings.get("password", "")), "PATH": "/usr/bin:/bin"}
+        argv = [
+            psql,
+            "-h",
+            str(settings["host"]),
+            "-p",
+            str(settings["port"]),
+            "-U",
+            str(settings["user"]),
+            "-d",
+            str(settings["dbname"]),
+            "-c",
+            f"\\copy ({select}) to '/dev/null' with (format csv)",
+        ]
+        started = time.perf_counter()
+        completed = subprocess.run(
+            argv, env=env, capture_output=True, text=True, check=False
+        )
+        elapsed = time.perf_counter() - started
+
+        assert completed.returncode == 0, completed.stderr
+        assert f"COPY {self.ROWS}" in completed.stdout
+
+        return elapsed
+
+    async def test_million_rows_keep_up_with_psql(self, postgres: PostgresSide) -> None:
+        only_newest(postgres)
+        select = self.SELECT.format(rows=self.ROWS)
+        sink = Sink()
+        async with await AsyncPostgresPool.dedicated(postgres.profile) as conn:
+            copy_out = PgCopyOut(conn)
+            contract = await copy_out.contract(select, ())
+            started = time.perf_counter()
+            report = await copy_out.stream(
+                select,
+                PgCopyLayout.CSV,
+                contract,
+                self.CHUNK,
+                LandingOutbound(SinkOutbound(sink)),
+            )
+            elapsed = time.perf_counter() - started
+
+        psql_elapsed = self._psql_seconds(postgres, select)
+        print(
+            f"\ncopy out {self.ROWS} rows: ours {elapsed:.2f}s "
+            f"({self.ROWS / elapsed:,.0f} rows/s), psql {psql_elapsed:.2f}s, "
+            f"frames {len(sink.heads) - 1}"
+        )
+
+        assert report.status == f"COPY {self.ROWS}"
+        assert sink.data().count(b"\n") == self.ROWS
+        assert len(sink.heads) - 1 <= len(sink.data()) // self.CHUNK + 1
+        assert elapsed <= psql_elapsed * self.PSQL_RATIO
+
+    async def test_server_error_mid_copy_keeps_its_class(
+        self, postgres: PostgresSide
+    ) -> None:
+        only_newest(postgres)
+        select = "select g, 1 / (g - 5000) as bad from generate_series(1, 10000) g"
+        async with await AsyncPostgresPool.dedicated(postgres.profile) as conn:
+            copy_out = PgCopyOut(conn)
+            contract = await copy_out.contract(select, ())
+            with pytest.raises(psycopg.errors.DivisionByZero):
+                await copy_out.stream(
+                    select,
+                    PgCopyLayout.CSV,
+                    contract,
+                    4096,
+                    LandingOutbound(SinkOutbound(Sink())),
+                )
+
+            await conn.rollback()
+            cursor = await conn.execute("select 1")
+
+            assert await cursor.fetchone() == (1,)
+
+    async def test_broken_pipe_cancels_and_frees_the_connection(
+        self, postgres: PostgresSide
+    ) -> None:
+        only_newest(postgres)
+        select = self.SELECT.format(rows=self.ROWS)
+        async with await AsyncPostgresPool.dedicated(postgres.profile) as conn:
+            copy_out = PgCopyOut(conn)
+            contract = await copy_out.contract(select, ())
+            started = time.perf_counter()
+            with pytest.raises(BrokenPipeError):
+                await copy_out.stream(
+                    select,
+                    PgCopyLayout.CSV,
+                    contract,
+                    4096,
+                    LandingOutbound(SinkOutbound(BrokenSink())),
+                )
+            elapsed = time.perf_counter() - started
+
+            await conn.rollback()
+            cursor = await conn.execute("select 2")
+
+            assert await cursor.fetchone() == (2,)
+
+        assert elapsed < 1.0
 
 
 class TestTypeRules:
@@ -779,7 +1082,7 @@ class TestTypeRules:
 class TestRegistryHint:
     def test_missing_pair_is_a_clear_error(self) -> None:
         from boba.db.postgres.landing import PostgresLandings
-        from boba.toolkit.landing import SourceEngine
+        from boba.toolkit.landing import Engine
 
         with pytest.raises(LandingError, match="no landing from oracle into postgres"):
-            PostgresLandings({}).pair(SourceEngine.ORACLE)
+            PostgresLandings({}).pair(Engine.ORACLE)

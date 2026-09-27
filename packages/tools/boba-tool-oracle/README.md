@@ -59,7 +59,7 @@ UserConnection]`). Тело инструмента живёт в песочни�
 Скорость на стенде: выгрузка CSV 328 тысяч строк в секунду, загрузка CSV около
 50 тысяч, узкое место загрузки — разбор CSV и приведение типов в Python.
 
-Цепочки `ora_csv_out -> pg_stream_in` и `pg_stream_out -> ora_csv_in` проверены
+Цепочки `ora_sync_out -> pg_sync_in` и `pg_sync_out -> ora_csv_in` проверены
 круговым тестом `tests/test_ora_csv.py` на Oracle 12.2, 18, 21 и 23; матрицы
 всех типов против PostgreSQL и ClickHouse, ловушки, нагрузка и Arrow — в
 `packages/testing/boba-pump-stand`, сводка в `docs/etl_skill.md`.

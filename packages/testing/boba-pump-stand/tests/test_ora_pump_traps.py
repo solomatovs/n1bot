@@ -24,7 +24,6 @@ import pytest
 from boba.db.clickhouse.errors import ClickHouseQueryError
 from boba.db.clickhouse.payload import PayloadClickHouse
 from boba.db.oracle import OracleQueryError
-from boba.db.postgres import AsyncPostgresPool
 from boba.pump_stand import ChSource, OraSource, PgSource, Pumps, PumpStand
 from boba.pump_stand.oracle import OracleStand
 
@@ -180,36 +179,6 @@ class Oracle:
         return await self.pumps.ora_out(f"select {expression} from dual")
 
 
-class Postgres:
-    """Сторона postgres: одноколоночная таблица под каждую ловушку."""
-
-    def __init__(self, source: PgSource) -> None:
-        self.source = source
-
-    async def land(self, pg_type: str, data: bytes) -> str | None:
-        """Байты выгрузки в колонку pg_type через pg_stream_in; значение текстом."""
-        async with await AsyncPostgresPool.dedicated(self.source.postgres) as conn:
-            await conn.execute(self._q(f"drop schema if exists {PG_SCHEMA} cascade"))
-            await conn.execute(self._q(f"create schema {PG_SCHEMA}"))
-            await conn.execute(self._q(f"create table {PG_SCHEMA}.t (v {pg_type})"))
-
-        pumps = Pumps(postgres=self.source.postgres)
-        await pumps.pg_in(f"copy {PG_SCHEMA}.t from stdin (format csv)", data)
-
-        async with await AsyncPostgresPool.dedicated(self.source.postgres) as conn:
-            cursor = await conn.execute(self._q(f"select v::text from {PG_SCHEMA}.t"))
-            row = await cursor.fetchone()
-            await conn.execute(self._q(f"drop schema {PG_SCHEMA} cascade"))
-
-        if row is None:
-            raise AssertionError("the trap table is empty")
-
-        return row[0]
-
-    def _q(self, text: str) -> bytes:
-        return text.encode()
-
-
 class ClickHouse:
     """Сторона ClickHouse: одноколоночная таблица под каждую ловушку."""
 
@@ -282,11 +251,6 @@ def _edges(sources: Sequence[PgSource]) -> list[PgSource]:
     return [plain[0], plain[-1]]
 
 
-@pytest.fixture(scope="module", params=_edges(STAND.sources), ids=lambda s: s.name)
-async def postgres(request: Any) -> Postgres:
-    return Postgres(request.param)
-
-
 @pytest.fixture(scope="module", params=STAND.demo_clickhouse(), ids=lambda s: s.name)
 async def clickhouse(request: Any) -> ClickHouse:
     side = ClickHouse(request.param)
@@ -321,82 +285,6 @@ class TestOracleSide:
             pytest.skip("oracle 21+ has the JSON type")
 
         assert await oracle.out("json('{\"a\": 1}')") == b"\n"
-
-
-class TestPostgresSide:
-    async def test_negative_interval_text_flips_the_sign_of_the_time(
-        self, newest_oracle: Oracle, postgres: Postgres
-    ) -> None:
-        """to_char(INTERVAL DAY TO SECOND) пишет знак один раз на всё значение,
-        а postgres относит его только к дням: -(11 дней 13:46:40) становится
-        -11 дней +13:46:40. Правильно — секунды числом."""
-        interval = "numtodsinterval(-1000000.5, 'second')"
-        seconds = (
-            f"to_char(extract(day from {interval}) * 86400 "
-            f"+ extract(hour from {interval}) * 3600 "
-            f"+ extract(minute from {interval}) * 60 "
-            f"+ extract(second from {interval}), 'TM9')"
-        )
-
-        wrong = await newest_oracle.out(f"to_char({interval})")
-        right = await newest_oracle.out(seconds)
-
-        assert await postgres.land("interval", wrong) == "-11 days +13:46:40.5"
-        assert await postgres.land("interval", right) == "-277:46:40.5"
-
-    async def test_nanoseconds_round_to_even_in_postgres(
-        self, newest_oracle: Oracle, postgres: Postgres
-    ) -> None:
-        """Половина микросекунды: postgres округляет текст к чётному, Oracle при
-        cast в timestamp(6) — вверх. Правильно — округлять на стороне Oracle."""
-        value = "timestamp '2000-01-01 00:27:53.123468500'"
-        wrong = await newest_oracle.out(
-            f"to_char({value}, 'yyyy-mm-dd hh24:mi:ss.ff9')"
-        )
-        right = await newest_oracle.out(
-            f"to_char(cast({value} as timestamp(6)), 'yyyy-mm-dd hh24:mi:ss.ff6')"
-        )
-
-        assert (
-            await postgres.land("timestamp(6)", wrong) == "2000-01-01 00:27:53.123468"
-        )
-        assert (
-            await postgres.land("timestamp(6)", right) == "2000-01-01 00:27:53.123469"
-        )
-
-    async def test_bytea_prefix_turns_null_into_an_empty_value(
-        self, newest_oracle: Oracle, postgres: Postgres
-    ) -> None:
-        """В Oracle '\\x' || NULL это '\\x', а не NULL: postgres получит пустой
-        bytea. Префикс ставится только непустому значению."""
-        raw = "cast(null as raw(16))"
-        wrong = await newest_oracle.out(f"'\\x' || rawtohex({raw})")
-        right = await newest_oracle.out(
-            f"case when {raw} is not null then '\\x' || rawtohex({raw}) end"
-        )
-
-        assert await postgres.land("bytea", wrong) == "\\x"
-        assert await postgres.land("bytea", right) is None
-
-    async def test_date_column_drops_the_time_of_an_oracle_date(
-        self, newest_oracle: Oracle, postgres: Postgres
-    ) -> None:
-        """DATE Oracle всегда со временем; колонка date postgres его молча
-        отбрасывает, timestamp(0) сохраняет."""
-        data = await newest_oracle.out(
-            "to_date('2024-02-29 13:14:15', 'yyyy-mm-dd hh24:mi:ss')"
-        )
-
-        assert await postgres.land("date", data) == "2024-02-29"
-        assert await postgres.land("timestamp(0)", data) == "2024-02-29 13:14:15"
-
-    async def test_extra_decimal_digits_are_rounded(
-        self, newest_oracle: Oracle, postgres: Postgres
-    ) -> None:
-        """numeric(p, s) postgres округляет лишние знаки, ClickHouse — отбрасывает."""
-        data = await newest_oracle.out("cast(-0.14286 as number(10, 5))")
-
-        assert await postgres.land("numeric(18, 4)", data) == "-0.1429"
 
 
 class TestClickHouseSide:

@@ -17,6 +17,7 @@ import pytest
 
 from boba.db.clickhouse import ClickHouseQueryError
 from boba.db.oracle import OracleQueryError
+from boba.db.postgres.connection import CopyOptions
 from boba.pump_stand import (
     ChSource,
     ClickHouseSide,
@@ -27,6 +28,13 @@ from boba.pump_stand import (
     PostgresSide,
     Pumps,
     PumpStand,
+)
+from boba.toolkit.landing import (
+    CreateIfNotExists,
+    DeleteNothing,
+    ErrorIfNotExists,
+    InsertFull,
+    WireChoice,
 )
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
@@ -81,38 +89,76 @@ async def pg(pg_source: PgSource) -> AsyncIterator[PgScripts]:
 
 class TestPostgres:
     async def test_upsert_through_temp_table(self, pg: PgScripts) -> None:
-        """COPY во временную таблицу из before, delete и insert в after — одна
+        """Поток во временную таблицу из before, delete и insert в after — одна
         транзакция, target получил upsert; в отчёте статус каждого шага."""
         pumps = Pumps(postgres=pg.side.profile)
+        await pg.side.create("stage_src", ("id bigint", "v text"))
+        await pg.side.execute(
+            ("insert into stage_src values (1, 'new1'), (3, 'new3')",)
+        )
 
-        report = await pumps.pg_in(
-            "copy stage_tmp from stdin",
-            TSV,
-            before=["create temp table stage_tmp (id bigint, v text) on commit drop"],
-            after=[
-                f"delete from {pg.named('target')} t using stage_tmp s "
-                "where t.id = s.id",
-                f"insert into {pg.named('target')} select id, v from stage_tmp",
-            ],
+        chained = await pumps.chain(
+            Leg(
+                "pg_sync_out",
+                {
+                    "sql": f"select id, v from {pg.named('stage_src')} order by id",
+                    "wire": WireChoice.CSV,
+                    "copy_options": CopyOptions(chunk_bytes=CHUNK_BYTES),
+                },
+            ),
+            Leg(
+                "pg_sync_in",
+                {
+                    "schema_name": pg.SCHEMA,
+                    "table_name": "stage_tmp",
+                    "schema_strategy": CreateIfNotExists(kind="create_if_not_exists"),
+                    "delete_strategy": DeleteNothing(kind="nothing"),
+                    "insert_strategy": InsertFull(kind="full"),
+                    "copy_options": CopyOptions(chunk_bytes=CHUNK_BYTES),
+                    "after": [
+                        f"delete from {pg.named('target')} t using "
+                        f"{pg.named('stage_tmp')} s where t.id = s.id",
+                        f"insert into {pg.named('target')} select id, v from "
+                        f"{pg.named('stage_tmp')}",
+                        f"drop table {pg.named('stage_tmp')}",
+                    ],
+                },
+            ),
         )
 
         assert await pg.rows("target") == UPSERTED
-        assert "before:\n- CREATE TABLE: create temp table" in report
-        assert "- DELETE 1: delete from" in report
-        assert "- INSERT 0 2: insert into" in report
+        assert "after:\n- DELETE 1: delete from" in chained.in_report
+        assert "- INSERT 0 2: insert into" in chained.in_report
 
     async def test_failing_after_rolls_back_the_load(self, pg: PgScripts) -> None:
-        """Ошибка последнего шага after откатывает и COPY, и предыдущие шаги."""
+        """Ошибка последнего шага after откатывает и загрузку, и предыдущие шаги."""
         pumps = Pumps(postgres=pg.side.profile)
 
         with pytest.raises(psycopg.Error, match="stop"):
-            await pumps.pg_in(
-                f"copy {pg.named('mirror')} from stdin",
-                TSV,
-                after=[
-                    f"insert into {pg.named('mirror')} values (9, 'nine')",
-                    "do $$ begin raise exception 'stop'; end $$",
-                ],
+            await pumps.chain(
+                Leg(
+                    "pg_sync_out",
+                    {
+                        "sql": f"select id, v from {pg.named('target')}",
+                        "wire": WireChoice.CSV,
+                        "copy_options": CopyOptions(chunk_bytes=CHUNK_BYTES),
+                    },
+                ),
+                Leg(
+                    "pg_sync_in",
+                    {
+                        "schema_name": pg.SCHEMA,
+                        "table_name": "mirror",
+                        "schema_strategy": ErrorIfNotExists(kind="error_if_not_exists"),
+                        "delete_strategy": DeleteNothing(kind="nothing"),
+                        "insert_strategy": InsertFull(kind="full"),
+                        "copy_options": CopyOptions(chunk_bytes=CHUNK_BYTES),
+                        "after": [
+                            f"insert into {pg.named('mirror')} values (9, 'nine')",
+                            "do $$ begin raise exception 'stop'; end $$",
+                        ],
+                    },
+                ),
             )
 
         assert await pg.rows("mirror") == []
@@ -122,7 +168,7 @@ class TestPostgres:
         pumps = Pumps(postgres=pg.side.profile)
 
         exported = await pumps.pg_out(
-            "copy snap to stdout",
+            "select id, v from snap",
             before=[
                 "create temp table snap as "
                 f"select id, v from {pg.named('target')} where id = 2"
@@ -132,28 +178,31 @@ class TestPostgres:
         assert exported == b"2\told2\n"
 
     async def test_arrow_chain_with_scripts(self, pg: PgScripts) -> None:
-        """Arrow-насосы принимают те же скрипты: приёмник грузит поток во
+        """Провод arrow принимает те же скрипты: приёмник грузит поток во
         временную таблицу и переносит его в mirror шагом after."""
         pumps = Pumps(postgres=pg.side.profile)
 
         chained = await pumps.chain(
             Leg(
-                "pg_arrow_out",
+                "pg_sync_out",
                 {
                     "sql": f"select id, v from {pg.named('target')} order by id",
-                    "chunk_bytes": CHUNK_BYTES,
+                    "wire": WireChoice.ARROW,
+                    "copy_options": CopyOptions(chunk_bytes=CHUNK_BYTES),
                 },
             ),
             Leg(
-                "pg_arrow_in",
+                "pg_sync_in",
                 {
-                    "sql": "copy stage_tmp (id, v) from stdin (format csv)",
-                    "chunk_bytes": CHUNK_BYTES,
-                    "before": [
-                        "create temp table stage_tmp (id bigint, v text) on commit drop"
-                    ],
+                    "schema_name": pg.SCHEMA,
+                    "table_name": "stage_arrow",
+                    "schema_strategy": CreateIfNotExists(kind="create_if_not_exists"),
+                    "delete_strategy": DeleteNothing(kind="nothing"),
+                    "insert_strategy": InsertFull(kind="full"),
+                    "copy_options": CopyOptions(chunk_bytes=CHUNK_BYTES),
                     "after": [
-                        f"insert into {pg.named('mirror')} select id, v from stage_tmp"
+                        f"insert into {pg.named('mirror')} select id, v from "
+                        f"{pg.named('stage_arrow')}"
                     ],
                 },
             ),

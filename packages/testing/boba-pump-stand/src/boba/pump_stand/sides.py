@@ -24,12 +24,14 @@ class PostgresSide:
     """PostgreSQL или Greenplum стенда: версия, схема под тесты, опорная
     выборка в той же зафиксированной сессии COPY, что у насосов."""
 
+    GREENPLUM: ClassVar[str] = "Greenplum Database"
     GREENPLUM_6: ClassVar[str] = "Greenplum Database 6"
 
     def __init__(self, source: PgSource, schema: str) -> None:
         self.source = source
         self.schema = schema
         self.version = 0
+        self.greenplum = False
         self.greenplum_6 = False
 
     @property
@@ -46,6 +48,7 @@ class PostgresSide:
                 raise AssertionError("version() returned no row")
 
         self.version = int(row[0])
+        self.greenplum = self.GREENPLUM in row[1]
         self.greenplum_6 = self.GREENPLUM_6 in row[1]
 
     def double_tolerance(self) -> float:

@@ -32,7 +32,6 @@ import pytest
 from boba.db.clickhouse.payload import PayloadClickHouse
 from boba.db.oracle.payload import PayloadOracle
 from boba.db.postgres import AsyncPostgresPool
-from boba.db.postgres.connection import CopyOptions
 from boba.pump_stand import (
     ChSource,
     Leg,
@@ -811,68 +810,6 @@ async def clickhouse(request: Any) -> AsyncIterator[ClickHouse]:
     await side.connect()
     yield side
     await side.drop()
-
-
-class TestOracleToPostgres:
-    async def test_every_oracle_type_lands(
-        self, oracle: Oracle, postgres: Postgres
-    ) -> None:
-        columns: list[OraColumn] = []
-        for column in oracle.columns():
-            if column.pg is not None:
-                columns.append(column)
-
-        await postgres.recreate(columns)
-        outbound: list[str] = []
-        for column in columns:
-            side = column.pg
-            if side is None:
-                continue
-
-            outbound.append(f"{_or(side.out, column.name)} as {column.name}")
-
-        names = ", ".join(c.name for c in columns)
-        pumps = Pumps(postgres=postgres.source.postgres, oracle=oracle.owner)
-        chained = await pumps.chain(
-            Leg(
-                "ora_csv_out",
-                {"sql": f"select {', '.join(outbound)} from {ORA_TABLE} order by id"},
-            ),
-            Leg(
-                "pg_stream_in",
-                {
-                    "sql": f"copy {PG_SCHEMA}.dst ({names}) from stdin (format csv)",
-                    "copy_options": CopyOptions(chunk_bytes=CHUNK_BYTES),
-                },
-            ),
-        )
-        assert f"status: COPY {ROWS}" in chained.in_report
-
-        ora_refs: list[str] = []
-        pg_refs: list[str] = []
-        for column in columns:
-            side = column.pg
-            if side is None:
-                continue
-
-            ora_refs.append(_or(side.ora_ref, _or(column.ref, column.name)))
-            pg_refs.append(_or(side.ref, column.name))
-
-        expected = await oracle.select(ora_refs)
-        landed = await postgres.select(pg_refs)
-        ids = _column(expected, 0)
-        report = Report()
-        for position, column in enumerate(columns):
-            report.compare(
-                column.name,
-                column.compare,
-                postgres.float_tolerance,
-                ids,
-                _column(expected, position),
-                _column(landed, position),
-            )
-
-        assert not report.mismatches, report.render()
 
 
 class TestOracleToClickHouse:
