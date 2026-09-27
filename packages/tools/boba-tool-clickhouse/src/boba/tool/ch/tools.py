@@ -27,14 +27,6 @@ from boba.db.clickhouse.connection import ClickHouseConfig
 from boba.db.clickhouse.query import ChQuery, ChQueryBuilder
 from boba.toolkit.entry import ToolMain
 from boba.toolkit.facade import Injected, UserConnection, tool
-from boba.toolkit.landing import (
-    Engine,
-    LandingFrame,
-    LandingInbound,
-    LandingOutbound,
-    SchemaHead,
-    SyncWire,
-)
 from boba.toolkit.ports import ChunkBytes, Inbound, Outbound
 from boba.toolkit.result import MarkdownResult, SqlResult, SqlStatement, TableResult
 from boba.toolkit.sql import (
@@ -43,6 +35,13 @@ from boba.toolkit.sql import (
     SqlLimits,
 )
 from boba.toolkit.sync import ColumnDeclaration, SyncError
+from boba.toolkit.transfer import (
+    Engine,
+    RawHead,
+    TransferFrame,
+    TransferInbound,
+    TransferOutbound,
+)
 from boba.toolkit.types import SecretRevealing
 from boba.toolkit.window import RowLimit, RowOffset, RowPage, RowWindow
 
@@ -1068,7 +1067,7 @@ async def ch_stream_out(  # noqa: PLR0913
     before: BeforeSteps = (),
     after: AfterSteps = (),
     *,
-    out: Annotated[Outbound[LandingFrame], Injected],
+    out: Annotated[Outbound[TransferFrame], Injected],
 ) -> MarkdownResult:
     """Насос выгрузки: ответ запроса сырыми байтами в выходной порт.
 
@@ -1085,15 +1084,8 @@ async def ch_stream_out(  # noqa: PLR0913
     payload = PayloadClickHouse
     statement = ChQueryBuilder().raw_query(sql).build()
     tuning = ReadTuning(socket_read_size=chunk_bytes, read_buffer_size=chunk_bytes)
-    outbound = LandingOutbound(out)
-    await outbound.schema(
-        SchemaHead(
-            kind="schema",
-            source_engine=Engine.CLICKHOUSE,
-            wire=SyncWire.RAW,
-            contract=None,
-        )
-    )
+    outbound = TransferOutbound(out)
+    await outbound.schema(RawHead(kind="raw", source_engine=Engine.CLICKHOUSE))
     async with payload.opened_session(connection) as client:
         before_steps = await payload.script(client, before)
 
@@ -1138,7 +1130,7 @@ async def ch_stream_in(  # noqa: PLR0913
     before: BeforeSteps = (),
     after: AfterSteps = (),
     *,
-    feed: Annotated[Inbound[LandingFrame], Injected],
+    feed: Annotated[Inbound[TransferFrame], Injected],
 ) -> MarkdownResult:
     """Насос загрузки: тело из входного порта одним INSERT ... FORMAT.
 
@@ -1153,8 +1145,8 @@ async def ch_stream_in(  # noqa: PLR0913
 
     payload = PayloadClickHouse
     statement = ChQueryBuilder().raw_query(sql).build()
-    inbound = LandingInbound(feed)
-    await inbound.get_schema()
+    inbound = TransferInbound(feed)
+    await inbound.get_head()
     async with payload.opened_session(connection) as client:
         before_steps = await payload.script(client, before)
         trace = await payload.byte_stream_in(
@@ -1190,7 +1182,7 @@ async def ch_arrow_out(  # noqa: PLR0913
     before: BeforeSteps = (),
     after: AfterSteps = (),
     *,
-    out: Annotated[Outbound[LandingFrame], Injected],
+    out: Annotated[Outbound[TransferFrame], Injected],
 ) -> MarkdownResult:
     """Насос выгрузки потоком Arrow IPC: ch_stream_out с форматом ArrowStream,
     который дописывает драйвер; сервер пишет поток сам, блоки уходят в порт
@@ -1205,15 +1197,8 @@ async def ch_arrow_out(  # noqa: PLR0913
     payload = PayloadClickHouse
     statement = ChQueryBuilder().raw_query(sql).build()
     tuning = ReadTuning(socket_read_size=chunk_bytes, read_buffer_size=chunk_bytes)
-    outbound = LandingOutbound(out)
-    await outbound.schema(
-        SchemaHead(
-            kind="schema",
-            source_engine=Engine.CLICKHOUSE,
-            wire=SyncWire.ARROW,
-            contract=None,
-        )
-    )
+    outbound = TransferOutbound(out)
+    await outbound.schema(RawHead(kind="raw", source_engine=Engine.CLICKHOUSE))
     async with payload.opened_session(connection) as client:
         before_steps = await payload.script(client, before)
 
@@ -1260,7 +1245,7 @@ async def ch_sync_out(
     ] = (),
     chunk_bytes: ChunkBytes = 262144,
     *,
-    out: Annotated[Outbound[LandingFrame], Injected],
+    out: Annotated[Outbound[TransferFrame], Injected],
 ) -> MarkdownResult:
     """Источник sync-потока: строки запроса с контрактом колонок для приёмника.
 
@@ -1275,7 +1260,7 @@ async def ch_sync_out(
     statement = ChQueryBuilder().raw_query(sql).build()
     async with PayloadClickHouse.opened_config(connection) as client:
         report = await ChSyncSource(client).stream(
-            statement.text, columns, chunk_bytes, LandingOutbound(out)
+            statement.text, columns, chunk_bytes, TransferOutbound(out)
         )
 
     return MarkdownResult(text=report.render())
@@ -1306,7 +1291,7 @@ async def ch_arrow_in(  # noqa: PLR0913
     before: BeforeSteps = (),
     after: AfterSteps = (),
     *,
-    feed: Annotated[Inbound[LandingFrame], Injected],
+    feed: Annotated[Inbound[TransferFrame], Injected],
 ) -> MarkdownResult:
     """Насос загрузки потоком Arrow IPC: ch_stream_in для тела Arrow, поток
     уходит серверу как есть, разбирает его сервер. Стейтменты before и after
@@ -1316,8 +1301,8 @@ async def ch_arrow_in(  # noqa: PLR0913
 
     payload = PayloadClickHouse
     statement = ChQueryBuilder().raw_query(sql).build()
-    inbound = LandingInbound(feed)
-    await inbound.get_schema()
+    inbound = TransferInbound(feed)
+    await inbound.get_head()
     async with payload.opened_session(connection) as client:
         before_steps = await payload.script(client, before)
         trace = await payload.byte_stream_in(

@@ -1,14 +1,14 @@
 """Провод arrow для postgres: источник PgArrowSource (нейтральный контракт из
 описания колонок libpq с декларациями вызова, тела — поток Arrow IPC) и
 приёмник для контракта любого движка: колонки каталога в нейтральном виде,
-сверка по семействам, таблица как порт LandingTable, вставка пачек через
-PgArrowIn и ход стратегий LandingRun одной транзакцией. Работает, когда
-пары движков нет или LLM назвал провод arrow.
+сверка по семействам, таблица как порт TransferTable, вставка пачек через
+PgArrowIn и ход стратегий TransferRun одной транзакцией. Работает, когда
+пары движков нет или LLM назвал формат arrow.
 
 Ошибки:
 SyncError — декларация на колонку, которой нет в ответе; правило вызова
     не сходится со схемами; тип из rules.column_types сервер не знает.
-LandingError — стратегия схемы отказала; колонка без типа при
+TransferError — стратегия схемы отказала; колонка без типа при
     fail_on_unknown.
 PgArrowError — стейтмент не описывается сервером или тип пачки потока не
     пишется в CSV.
@@ -26,34 +26,15 @@ from psycopg import sql
 
 from boba.db.postgres.arrow import PgArrowIn, PgArrowOut, PgArrowTypes
 from boba.db.postgres.describe import PgDescribedColumn
-from boba.db.postgres.landing import (
+from boba.db.postgres.query import PgQuery, PgQueryBuilder
+from boba.db.postgres.trace import PgCommandReport
+from boba.db.postgres.transfer import (
     PgColumnDeclaration,
     PgTableFacts,
     PgTableRef,
     PgTypeResolver,
 )
-from boba.db.postgres.query import PgQuery, PgQueryBuilder
-from boba.db.postgres.trace import PgCommandReport
 from boba.toolkit.arrow import ArrowIpc, ArrowReader
-from boba.toolkit.landing import (
-    ColumnRules,
-    CreateTemplate,
-    DeleteOutcome,
-    DeleteStrategyApply,
-    InsertStrategyApply,
-    LandingError,
-    LandingInbound,
-    LandingOutbound,
-    LandingReport,
-    LandingRun,
-    LandingSink,
-    LandingTable,
-    SchemaHead,
-    SchemaStrategyPlan,
-    SyncWire,
-    UnknownTypeApply,
-)
-from boba.toolkit.landing import Engine as WireEngine
 from boba.toolkit.sync import (
     ArrowContract,
     ColumnDeclaration,
@@ -71,6 +52,25 @@ from boba.toolkit.sync import (
     TimeUnit,
     TypeFamily,
 )
+from boba.toolkit.transfer import (
+    ColumnRules,
+    CreateTemplate,
+    DeleteOutcome,
+    DeleteStrategyApply,
+    InsertStrategyApply,
+    SchemaHead,
+    SchemaStrategyPlan,
+    StreamWire,
+    TransferError,
+    TransferInbound,
+    TransferOutbound,
+    TransferReport,
+    TransferRun,
+    TransferSink,
+    TransferTable,
+    UnknownTypeApply,
+)
+from boba.toolkit.transfer import Engine as WireEngine
 
 __all__ = [
     "PgArrowSink",
@@ -144,7 +144,7 @@ class PgDdlTypes:
         if not known:
             known = column.kind.text
 
-        raise LandingError(
+        raise TransferError(
             f"column {column.name}: the target cannot map the source type "
             f"{known} (family {column.kind.family.value}); declare the target "
             f'type in rules.column_types["{column.name}"] or take unknown_types '
@@ -224,7 +224,7 @@ class PgDeclaredTypes:
     async def resolve(self, column_types: Mapping[str, str]) -> dict[str, DeclaredType]:
         try:
             resolved = await self._resolver.resolve(column_types)
-        except LandingError as exc:
+        except TransferError as exc:
             raise SyncError(str(exc)) from exc
 
         declared: dict[str, DeclaredType] = {}
@@ -266,8 +266,8 @@ class PgNeutralFacts:
         return tuple(specs)
 
 
-class PgTableDdl(LandingTable):
-    """Реализация LandingTable для postgres по нейтральному плану таблицы:
+class PgTableDdl(TransferTable):
+    """Реализация TransferTable для postgres по нейтральному плану таблицы:
     DDL и delete через PgQueryBuilder на одном соединении, условие where от
     вызова — raw_query. create table — по шаблону вызывающего: схема, имя и
     колонки подставляются экранированными psycopg фрагментами."""
@@ -298,7 +298,7 @@ class PgTableDdl(LandingTable):
         try:
             await self._execute(query)
         except psycopg.errors.UndefinedObject as exc:
-            raise LandingError(
+            raise TransferError(
                 f"create table {self._table.text()}: the target server has no such "
                 f"type: {exc.diag.message_primary}; declare another type for the "
                 f"column in rules.column_types, for example text; statement: "
@@ -396,7 +396,7 @@ class PgTableDdl(LandingTable):
 
 
 class PgArrowSource:
-    """Источник провода arrow: нейтральный контракт из колонок RowDescription
+    """Источник потока arrow: нейтральный контракт из колонок RowDescription
     с декларациями вызова поверх, схема потока из контракта, тела — поток
     Arrow IPC через PgArrowOut."""
 
@@ -447,14 +447,14 @@ class PgArrowSource:
         text: str,
         specs: Sequence[ColumnSpec],
         chunk_bytes: int,
-        out: LandingOutbound,
+        out: TransferOutbound,
     ) -> PgCommandReport:
         contract = ArrowContract(columns=self._contract.columns(specs))
         await out.schema(
             SchemaHead(
                 kind="schema",
                 source_engine=self.ENGINE,
-                wire=SyncWire.ARROW,
+                wire=StreamWire.ARROW,
                 contract=contract.model_dump(mode="json"),
             )
         )
@@ -462,7 +462,7 @@ class PgArrowSource:
         report = await self._out.stream_into(text, schema, chunk_bytes, out.writer())
 
         return PgCommandReport(
-            summary=self._contract_text.render(SyncWire.ARROW.value, specs),
+            summary=self._contract_text.render(StreamWire.ARROW.value, specs),
             status=report.status,
             statement=report.statement,
             backend_pid=report.backend_pid,
@@ -495,8 +495,8 @@ class PgCopyStatement:
         )
 
 
-class PgArrowSink(LandingSink):
-    """Реализация LandingSink для потока Arrow: пачки в COPY таблицы по
+class PgArrowSink(TransferSink):
+    """Реализация TransferSink для потока Arrow: пачки в COPY таблицы по
     именам колонок в порядке полей потока через PgArrowIn."""
 
     def __init__(
@@ -528,8 +528,8 @@ class PgArrowSink(LandingSink):
 
 
 class PgSyncLoader:
-    """Приёмник провода arrow: нейтральный контракт потока -> факты каталога
-    -> сверка по семействам -> план таблицы -> ход стратегий LandingRun с
+    """Приёмник потока arrow: нейтральный контракт потока -> факты каталога
+    -> сверка по семействам -> план таблицы -> ход стратегий TransferRun с
     вставкой пачек через PgArrowSink, всё одной транзакцией соединения."""
 
     def __init__(  # noqa: PLR0913
@@ -538,7 +538,7 @@ class PgSyncLoader:
         table: PgTableRef,
         contract: Sequence[ColumnSpec],
         source_engine: Engine,
-        inbound: LandingInbound,
+        inbound: TransferInbound,
         chunk_bytes: int,
         exact_floats: bool,
     ) -> None:
@@ -562,7 +562,7 @@ class PgSyncLoader:
         unknown_types: UnknownTypeApply,
         rules: ColumnRules,
         create_table: CreateTemplate,
-    ) -> LandingReport:
+    ) -> TransferReport:
         matcher = SchemaMatcher(rules, self._exact)
         async with self._conn.transaction():
             declared = await self._declared.resolve(rules.column_types)
@@ -580,7 +580,7 @@ class PgSyncLoader:
             sink = PgArrowSink(
                 self._conn, self._table, spec.names(), reader, self._exact_floats
             )
-            run = LandingRun(
+            run = TransferRun(
                 schema_strategy, delete_strategy, insert_strategy, unknown_types
             )
 

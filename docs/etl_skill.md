@@ -12,10 +12,11 @@ Oracle 12.2 Enterprise, 18 XE, 21 XE и 23 Free.
 Перекачка собирается из двух инструментов, соединённых трубой. Насос выгрузки
 пишет кадры в свой выходной порт, насос загрузки читает их из входного
 порта, хост соединяет порты, и оба насоса работают одновременно. Первый
-кадр — `schema`: движок источника, раскладка тел (`csv`, `tsv`, `binary`,
-`arrow`, `raw`) и контракт колонок, если источник его описал; дальше кадры
-`rows` с байтами. Тела никто не разбирает: какие байты выдал источник,
-такие получит приёмник.
+кадр — `schema` у источников с контрактом (движок источника, формат данных
+`csv`, `tsv`, `binary` или `arrow` и контракт колонок) либо `raw` у сырых
+насосов (только движок источника, формат задан текстом запроса); дальше
+кадры `rows` с байтами. Тела никто не разбирает: какие байты выдал
+источник, такие получит приёмник.
 
 У PostgreSQL два инструмента на всё: `pg_sync_out(sql, wire, columns,
 copy_options)` и `pg_sync_in(schema_name, table_name, стратегии, rules,
@@ -1319,7 +1320,7 @@ tables` — таблицу; оба атомарны и идут шагом `afte
 | Инструмент | Что делает |
 |---|---|
 | `pg_sync_out(sql, wire, columns, copy_options)` | колонки выборки от libpq (`PQprepare` + `PQdescribePrepared`, без планирования и выполнения): имя, OID, typmod, текст типа как печатает `format_type`, версия сервера и `integer_datetimes` из стартового пакета; первый кадр — контракт с декларациями `columns` поверх, дальше байты `copy (<select>) to stdout` в раскладке `wire` либо поток arrow; COPY читается циклом libpq (`PQgetCopyData`) в рабочем потоке с накоплением порций в C, на уровне `psql`; о приёмнике источник не знает ничего |
-| `pg_sync_in(schema_name, table_name, schema_strategy, delete_strategy, insert_strategy, rules, unknown_types, create_table, copy_options)` | приёмник: по `source_engine` первого кадра берёт пару из реестра `boba.landing.postgres`; провод arrow любого источника идёт нейтральным путём по семействам типов |
+| `pg_sync_in(schema_name, table_name, schema_strategy, delete_strategy, insert_strategy, rules, unknown_types, create_table, copy_options)` | приёмник: по `source_engine` первого кадра берёт пару из реестра `boba.transfer.postgres`; провод arrow любого источника идёт нейтральным путём по семействам типов |
 
 Рычаг `wire` у источника обязателен, значения `csv`, `tsv`, `binary`,
 `arrow`: `arrow` понимает любой приёмник и узлы преобразования потока;
@@ -1376,7 +1377,7 @@ DDL: текст типа источника как есть, `column_types` пе
 без текста типа решает `unknown_types`: `fail_on_unknown` (по умолчанию) —
 ошибка с OID и подсказкой, `fallback_as_varchar` — `varchar`. Стратегии
 схемы, удаления и вставки те же, что у семейства sync ниже. Всё одной
-транзакцией приёмника. Стенд: `test_pg_landing.py` по всем postgres и
+транзакцией приёмника. Стенд: `test_pg_transfer.py` по всем postgres и
 Greenplum, `test_pg_realistic.py` между двумя серверами.
 
 Другие пары (`ch → pg`, `ora → pg`, `pg → ch`) добавляются пакетами
@@ -1495,7 +1496,7 @@ other, для которых типа нет ни в контракте, ни в
 | `tsv` | `pg_sync_out` | `pg_sync_in`, `ch_stream_in` | COPY text в раскладке TabSeparated |
 | `binary` | `pg_sync_out` | `pg_sync_in` | COPY binary, только postgres одной мажорной версии |
 | `arrow` | `pg_sync_out`, `ora_sync_out`, `ch_sync_out`, `ora_arrow_out`, `ch_arrow_out` | `pg_sync_in` (с контрактом), `ora_arrow_in`, `ch_arrow_in` | типы Arrow; чего Arrow не несёт — `::text` в запросе |
-| `raw` | `ch_stream_out`, `ora_csv_out` | `ch_stream_in`, `ora_csv_in` | байты как их отдал источник, раскладку задал текст запроса |
+| кадр `raw` без формата | `ch_stream_out`, `ora_csv_out`, `ch_arrow_out`, `ora_arrow_out` | `ch_stream_in`, `ora_csv_in`, `ch_arrow_in`, `ora_arrow_in` | байты как их отдал источник, формат задал текст запроса или инструмент; контракта нет |
 
 ### Стратегии
 
@@ -1580,7 +1581,7 @@ deleted: 0 rows by truncate table "dwh"."orders"
 - `test_pg_arrow.py` — PostgreSQL -> PostgreSQL, ClickHouse и Oracle потоком
   Arrow на всей матрице версий, обратные пути и ловушки;
 - `test_ora_ch_stream.py` — короткая цепочка Oracle -> ClickHouse;
-- `test_pg_landing.py`, `test_pg_realistic.py` — пара postgres -> postgres:
+- `test_pg_transfer.py`, `test_pg_realistic.py` — пара postgres -> postgres:
   раскладки `wire`, стратегии, типы, отказ приёмника на несовместимый
   binary, стоимость описания;
 - `test_pump_scripts.py` — `before` и `after` на каждой базе стенда:

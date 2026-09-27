@@ -9,10 +9,10 @@ UnknownConnectionError — имя подключения вне whitelist'а к�
 psycopg.Error — сервер отклонил запрос (синтаксис, права).
 ResultTooLargeError — дамп COPY превысил max_bytes конфига.
 QueryBuildError — сборщик получил один параметр с двумя разными значениями.
-PgArrowError — выборка провода arrow не описывается или её колонка не
+PgArrowError — выборка для потока arrow не описывается или её колонка не
     укладывается в Arrow (numeric без точности).
-ArrowStreamError — вход провода arrow не читается как поток Arrow IPC.
-LandingError — поток без кадра schema, пара для движка источника не
+ArrowStreamError — вход в формате arrow не читается как поток Arrow IPC.
+TransferError — поток без кадра schema, пара для движка источника не
     установлена, стратегия схемы отказала, тип колонки без запасного
     варианта, binary между несовместимыми серверами.
 """
@@ -31,34 +31,18 @@ from pydantic import Field
 from boba.db.postgres import PayloadPostgres, PgArrowError, PgScript, PostgresError
 from boba.db.postgres.address import PgAddresses
 from boba.db.postgres.connection import CopyOptions, PostgresConfig
-from boba.db.postgres.landing import (
+from boba.db.postgres.query import PgQuery, PgQueryBuilder
+from boba.db.postgres.trace import PgScriptStep
+from boba.db.postgres.transfer import (
     PgColumnDeclaration,
     PgCopyLayout,
     PgCopyOut,
-    PgLandingTable,
     PgTableRef,
-    PostgresLandings,
+    PgTransferTable,
+    PostgresTransfers,
 )
-from boba.db.postgres.query import PgQuery, PgQueryBuilder
-from boba.db.postgres.trace import PgScriptStep
 from boba.toolkit.entry import ToolMain
 from boba.toolkit.facade import Injected, UserConnection, tool
-from boba.toolkit.landing import (
-    ColumnRules,
-    CreateTemplate,
-    DeleteStrategy,
-    FailOnUnknown,
-    InsertStrategy,
-    LandingError,
-    LandingFrame,
-    LandingInbound,
-    LandingOutbound,
-    LandingReport,
-    SchemaStrategy,
-    SyncWire,
-    UnknownTypeStrategy,
-    WireChoice,
-)
 from boba.toolkit.ports import ArrowStreamError, Inbound, Outbound
 from boba.toolkit.result import (
     MarkdownResult,
@@ -73,6 +57,21 @@ from boba.toolkit.sql import (
     SqlLimits,
 )
 from boba.toolkit.sync import SyncError
+from boba.toolkit.transfer import (
+    ColumnRules,
+    CreateTemplate,
+    DeleteStrategy,
+    FailOnUnknown,
+    InsertStrategy,
+    SchemaStrategy,
+    StreamWire,
+    TransferError,
+    TransferFrame,
+    TransferInbound,
+    TransferOutbound,
+    TransferReport,
+    UnknownTypeStrategy,
+)
 from boba.toolkit.types import SecretRevealing
 from boba.toolkit.window import RowLimit, RowOffset, RowPage, RowWindow
 
@@ -355,12 +354,12 @@ async def pg_query(
     return await run_script(connection, sql, RowWindow(offset=offset, limit=limit))
 
 
-class LandingReportText:
+class TransferReportText:
     """Текст отчёта приёмника с шагами скриптов before и after."""
 
     def render(
         self,
-        report: LandingReport,
+        report: TransferReport,
         before: Sequence[PgScriptStep],
         after: Sequence[PgScriptStep],
     ) -> str:
@@ -394,7 +393,7 @@ async def pg_sync_out(  # noqa: PLR0913
         MarkdownResult(language="sql"),
     ],
     wire: Annotated[
-        WireChoice,
+        StreamWire,
         Field(
             description=(
                 "Формат данных в потоке:\n"
@@ -432,7 +431,7 @@ async def pg_sync_out(  # noqa: PLR0913
     before: BeforeSteps = (),
     after: AfterSteps = (),
     *,
-    out: Annotated[Outbound[LandingFrame], Injected],
+    out: Annotated[Outbound[TransferFrame], Injected],
 ) -> MarkdownResult:
     """Источник postgres: строки запроса с контрактом колонок для приёмника.
 
@@ -442,27 +441,27 @@ async def pg_sync_out(  # noqa: PLR0913
     в кадр schema кладёт контракт с версией и integer_datetimes своего
     сервера, по ним приёмник проверяет совместимость. Первый кадр —
     контракт, дальше тела; запрос выполняется один раз. Стейтменты before
-    и after идут в той же транзакции. В ответ — раскладка, состав
+    и after идут в той же транзакции. В ответ — формат данных, состав
     контракта, статус сервера и его сообщения.
     """
     from boba.db.postgres.sync import PgArrowSource  # noqa: PLC0415
 
     conn = await PayloadPostgres.connect_config(connection.copy_session(copy_options))
     script = PgScript(conn)
-    outbound = LandingOutbound(out)
+    outbound = TransferOutbound(out)
     async with conn, conn.transaction():
         before_steps = await script.run(before)
         copy_out = PgCopyOut(conn)
         described = await copy_out.describe(sql)
 
         match wire:
-            case WireChoice.ARROW:
+            case StreamWire.ARROW:
                 source = PgArrowSource(conn)
                 specs = source.contract(described, columns)
                 report = await source.stream(
                     sql, specs, copy_options.chunk_bytes, outbound
                 )
-            case WireChoice.CSV | WireChoice.TSV | WireChoice.BINARY as named:
+            case StreamWire.CSV | StreamWire.TSV | StreamWire.BINARY as named:
                 layout = PgCopyLayout(named.value)
                 contract = copy_out.contract_of(described, columns)
                 report = await copy_out.stream(
@@ -564,7 +563,7 @@ async def pg_sync_in(  # noqa: PLR0913
                 "Литеральные фигурные скобки удваиваются.\n"
             ),
         ),
-    ] = PgLandingTable.CREATE_TABLE,
+    ] = PgTransferTable.CREATE_TABLE,
     copy_options: Annotated[
         CopyOptions,
         Field(
@@ -580,7 +579,7 @@ async def pg_sync_in(  # noqa: PLR0913
     before: BeforeSteps = (),
     after: AfterSteps = (),
     *,
-    feed: Annotated[Inbound[LandingFrame], Injected],
+    feed: Annotated[Inbound[TransferFrame], Injected],
 ) -> MarkdownResult:
     """Приёмник postgres со стратегиями: поток любого источника в таблицу.
 
@@ -599,21 +598,14 @@ async def pg_sync_in(  # noqa: PLR0913
     from boba.toolkit.sync import Engine as NeutralEngine  # noqa: PLC0415
 
     template = CreateTemplate(create_table)
-    inbound = LandingInbound(feed)
+    inbound = TransferInbound(feed)
     head = await inbound.get_schema()
     table = PgTableRef(schema=schema_name, name=table_name)
     conn = await PayloadPostgres.connect_config(connection.copy_session(copy_options))
     script = PgScript(conn)
     async with conn, conn.transaction():
         before_steps = await script.run(before)
-        if head.wire is SyncWire.ARROW:
-            if head.contract is None:
-                raise LandingError(
-                    f"pg_sync_in needs a contract of columns; the source "
-                    f"{head.source_engine.value} sent an arrow stream without one, "
-                    f"take its sync source (ora_sync_out, ch_sync_out)"
-                )
-
+        if head.wire is StreamWire.ARROW:
             contract = ArrowContract.model_validate(head.contract)
             loader = PgSyncLoader(
                 conn,
@@ -632,13 +624,8 @@ async def pg_sync_in(  # noqa: PLR0913
                 rules,
                 template,
             )
-        elif head.wire is SyncWire.RAW:
-            raise LandingError(
-                f"pg_sync_in needs a contract of columns; the source "
-                f"{head.source_engine.value} sent raw bytes without one"
-            )
         else:
-            pair = PostgresLandings.discover().pair(head.source_engine)
+            pair = PostgresTransfers.discover().pair(head.source_engine)
             report = await pair(conn, table, head, inbound).run(
                 schema_strategy,
                 delete_strategy,
@@ -651,7 +638,7 @@ async def pg_sync_in(  # noqa: PLR0913
         after_steps = await script.run(after)
 
     return MarkdownResult(
-        text=LandingReportText().render(report, before_steps, after_steps)
+        text=TransferReportText().render(report, before_steps, after_steps)
     )
 
 
@@ -1437,7 +1424,7 @@ EXPECTED: Mapping[type[Exception], SqlErrorKind] = {
     PgArrowError: SqlErrorKind.SQL_FAILED,
     ArrowStreamError: SqlErrorKind.SQL_FAILED,
     SyncError: SqlErrorKind.SQL_FAILED,
-    LandingError: SqlErrorKind.SQL_FAILED,
+    TransferError: SqlErrorKind.SQL_FAILED,
     psycopg.Error: SqlErrorKind.SQL_FAILED,
     ResultTooLargeError: SqlErrorKind.RESULT_TOO_LARGE,
 }

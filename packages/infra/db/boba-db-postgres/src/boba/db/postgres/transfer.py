@@ -6,7 +6,7 @@ rules.column_types описанием select null::<тип> и реестр па
 каждой колонки решает пара в своём пакете.
 
 Ошибки:
-LandingError — декларация на колонку, которой нет в ответе; тип из
+TransferError — декларация на колонку, которой нет в ответе; тип из
     rules.column_types или из контракта сервер приёмника не знает (нет на его
     версии, нет расширения); колонка без типа при fail_on_unknown; пара для
     движка источника не установлена.
@@ -41,25 +41,25 @@ from boba.db.postgres.describe import (
 from boba.db.postgres.errors import PgDescribeError
 from boba.db.postgres.query import PgQuery, PgQueryBuilder
 from boba.db.postgres.trace import PgCommandReport, PgSessionTrace
-from boba.toolkit.landing import (
+from boba.toolkit.stream import Chunk
+from boba.toolkit.transfer import (
     ColumnRules,
     CreateTemplate,
     DeleteOutcome,
     DeleteStrategyApply,
     Engine,
     InsertStrategyApply,
-    LandingError,
-    LandingInbound,
-    LandingOutbound,
-    LandingReport,
-    LandingSink,
-    LandingTable,
     SchemaHead,
     SchemaStrategyPlan,
-    SyncWire,
+    StreamWire,
+    TransferError,
+    TransferInbound,
+    TransferOutbound,
+    TransferReport,
+    TransferSink,
+    TransferTable,
     UnknownTypeApply,
 )
-from boba.toolkit.stream import Chunk
 
 __all__ = [
     "PgCatalogColumn",
@@ -70,18 +70,18 @@ __all__ = [
     "PgCopyLayout",
     "PgCopyOut",
     "PgCopyProtocol",
-    "PgLandingTable",
     "PgPlannedColumn",
     "PgServerVersion",
     "PgSourceColumn",
     "PgTableFacts",
     "PgTablePlan",
     "PgTableRef",
+    "PgTransferTable",
     "PgTypeResolver",
     "PgTypedName",
-    "PostgresLanding",
-    "PostgresLandingFactory",
-    "PostgresLandings",
+    "PostgresTransfer",
+    "PostgresTransferFactory",
+    "PostgresTransfers",
     "Relkind",
 ]
 
@@ -190,7 +190,7 @@ class PgContract(BaseModel):
         by_name = {column.name: column for column in self.columns}
         for declaration in declarations:
             if declaration.name not in by_name:
-                raise LandingError(
+                raise TransferError(
                     f"columns: the query has no column {declaration.name!r}; "
                     f"columns of the result: {', '.join(by_name)}"
                 )
@@ -205,7 +205,7 @@ class PgContract(BaseModel):
 
         return self.model_copy(update={"columns": merged})
 
-    def render(self, wire: SyncWire) -> str:
+    def render(self, wire: StreamWire) -> str:
         lines = [
             f"streamed out copy {wire.value} from postgres {self.version().text()}, "
             f"{len(self.columns)} columns:"
@@ -273,14 +273,14 @@ class PgContracts:
 
 class PgCopyLayout(StrEnum):
     """Раскладки COPY postgres: csv, text (tsv потока) и binary. Значения
-    совпадают с SyncWire, фрагменты стейтментов COPY живут здесь же."""
+    совпадают со StreamWire, фрагменты стейтментов COPY живут здесь же."""
 
     CSV = "csv"
     TSV = "tsv"
     BINARY = "binary"
 
-    def wire(self) -> SyncWire:
-        return SyncWire(self.value)
+    def wire(self) -> StreamWire:
+        return StreamWire(self.value)
 
     def to_stdout(self) -> str:
         return f") to stdout (format {self._format()})"
@@ -318,7 +318,7 @@ class PgCopyProtocol:
         pgconn.send_query(statement)
         started = pgconn.get_result()
         if started is None:
-            raise LandingError("copy to stdout: the server returned no result")
+            raise TransferError("copy to stdout: the server returned no result")
 
         if started.status != pq.ExecStatus.COPY_OUT:
             self._results(pgconn)
@@ -360,11 +360,13 @@ class PgCopyProtocol:
                     result, encoding=self._conn.info.encoding
                 )
 
-        return LandingError(f"copy to stdout failed without a server error: {fallback}")
+        return TransferError(
+            f"copy to stdout failed without a server error: {fallback}"
+        )
 
     def _status_of(self, results: Sequence[PGresult]) -> str:
         if len(results) != 1:
-            raise LandingError(
+            raise TransferError(
                 f"copy to stdout: expected one result after the data, got "
                 f"{len(results)}"
             )
@@ -394,7 +396,7 @@ class PgCopyProtocol:
 
 class PgCopyOut:
     """Источник: колонки выборки от PgDescribe (без выполнения), кадр schema
-    с контрактом, затем COPY (<select>) TO STDOUT в раскладке PgCopyLayout
+    с контрактом, затем COPY (<select>) TO STDOUT в формате PgCopyLayout
     через PgCopyProtocol: строки копятся в буфере chunk_bytes и уходят в
     порт кадрами как есть."""
 
@@ -439,7 +441,7 @@ class PgCopyOut:
         layout: PgCopyLayout,
         contract: PgContract,
         chunk_bytes: int,
-        out: LandingOutbound,
+        out: TransferOutbound,
     ) -> PgCommandReport:
         await out.schema(
             SchemaHead(
@@ -586,7 +588,7 @@ class PgTypeResolver:
             ):
                 resolved[column.name] = column
         except PgDescribeError as exc:
-            raise LandingError(
+            raise TransferError(
                 f"postgres does not accept the declared types {dict(column_types)}: "
                 f"{exc}"
             ) from exc
@@ -626,8 +628,8 @@ class PgTablePlan:
         return [column.name for column in self.columns]
 
 
-class PgLandingTable(LandingTable):
-    """Реализация LandingTable для postgres: каталог через PgTableFacts, DDL и
+class PgTransferTable(TransferTable):
+    """Реализация TransferTable для postgres: каталог через PgTableFacts, DDL и
     delete через PgQueryBuilder на одном соединении, условие where от
     вызова — raw_query. create table — по шаблону вызывающего: схема, имя и
     колонки подставляются экранированными psycopg фрагментами."""
@@ -658,7 +660,7 @@ class PgLandingTable(LandingTable):
         try:
             await self._execute(query)
         except psycopg.errors.UndefinedObject as exc:
-            raise LandingError(
+            raise TransferError(
                 f"create table {self._table.text()}: the target server has no such "
                 f"type: {exc.diag.message_primary}; declare another type for the "
                 f"column in rules.column_types, for example text; statement: "
@@ -693,7 +695,7 @@ class PgLandingTable(LandingTable):
         if unknown_as_varchar:
             return self.VARCHAR
 
-        raise LandingError(
+        raise TransferError(
             f"column {column.name}: the target cannot map the source type "
             f"{column.known}; declare the target type in "
             f'rules.column_types["{column.name}"] or take unknown_types '
@@ -767,9 +769,9 @@ class PgLandingTable(LandingTable):
         return DeleteOutcome(rows=rows, statement=query.text.as_string(self._conn))
 
 
-class PgCopyIn(LandingSink):
-    """Реализация LandingSink для postgres: тела кадров уходят в COPY таблицы
-    как есть, csv или text по раскладке потока, ничего не перекодируется."""
+class PgCopyIn(TransferSink):
+    """Реализация TransferSink для postgres: тела кадров уходят в COPY таблицы
+    как есть, в формате потока (csv, text или binary), ничего не перекодируется."""
 
     def __init__(
         self,
@@ -826,7 +828,7 @@ class PgTypedName:
     known: str
 
 
-class PostgresLanding(Protocol):
+class PostgresTransfer(Protocol):
     """Пара «движок источника → postgres»: разбирает контракт своего
     источника, сверяет его с таблицей, планирует DDL и ведёт стратегии.
     Реализация в пакете пары, создаётся фабрикой из реестра."""
@@ -839,11 +841,11 @@ class PostgresLanding(Protocol):
         unknown_types: UnknownTypeApply,
         rules: ColumnRules,
         create_table: CreateTemplate,
-    ) -> LandingReport: ...
+    ) -> TransferReport: ...
 
 
 @runtime_checkable
-class PostgresLandingFactory(Protocol):
+class PostgresTransferFactory(Protocol):
     """Конструктор пары: класс с таким __init__ — соединение приёмника,
     таблица, кадр схемы, поток тел."""
 
@@ -852,49 +854,49 @@ class PostgresLandingFactory(Protocol):
         conn: psycopg.AsyncConnection[Any],
         table: PgTableRef,
         head: SchemaHead,
-        feed: LandingInbound,
-    ) -> PostgresLanding: ...
+        feed: TransferInbound,
+    ) -> PostgresTransfer: ...
 
 
-class PostgresLandings:
-    """Реестр пар в postgres по entry points группы boba.landing.postgres:
+class PostgresTransfers:
+    """Реестр пар в postgres по entry points группы boba.transfer.postgres:
     имя записи — движок источника, значение — класс пары."""
 
-    GROUP: ClassVar[str] = "boba.landing.postgres"
+    GROUP: ClassVar[str] = "boba.transfer.postgres"
 
-    def __init__(self, factories: Mapping[Engine, PostgresLandingFactory]) -> None:
+    def __init__(self, factories: Mapping[Engine, PostgresTransferFactory]) -> None:
         self._factories = dict(factories)
 
     @classmethod
-    def discover(cls) -> PostgresLandings:
-        factories: dict[Engine, PostgresLandingFactory] = {}
+    def discover(cls) -> PostgresTransfers:
+        factories: dict[Engine, PostgresTransferFactory] = {}
         for entry in entry_points(group=cls.GROUP):
             try:
                 engine = Engine(entry.name)
             except ValueError as exc:
-                raise LandingError(
+                raise TransferError(
                     f"entry point {entry.name!r} of group {cls.GROUP!r} "
                     f"({entry.value}): the name must be a source engine, one of "
                     f"{[member.value for member in Engine]}"
                 ) from exc
 
             loaded = entry.load()
-            if not isinstance(loaded, PostgresLandingFactory):
-                raise LandingError(
+            if not isinstance(loaded, PostgresTransferFactory):
+                raise TransferError(
                     f"entry point {entry.name!r} of group {cls.GROUP!r} "
-                    f"({entry.value}): expected a landing class, got {loaded!r}"
+                    f"({entry.value}): expected a transfer class, got {loaded!r}"
                 )
 
             factories[engine] = loaded
 
         return cls(factories)
 
-    def pair(self, engine: Engine) -> PostgresLandingFactory:
+    def pair(self, engine: Engine) -> PostgresTransferFactory:
         factory = self._factories.get(engine)
         if factory is None:
             installed = ", ".join(sorted(member.value for member in self._factories))
-            raise LandingError(
-                f"no landing from {engine.value} into postgres is installed "
+            raise TransferError(
+                f"no transfer from {engine.value} into postgres is installed "
                 f"(entry point group {self.GROUP}); installed: {installed or 'none'}"
             )
 

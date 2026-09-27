@@ -20,7 +20,6 @@ from clickhouse_connect.driver.asyncclient import AsyncClient
 from boba.db.clickhouse.payload import PayloadClickHouse, ReadTuning
 from boba.db.clickhouse.trace import ChCommandReport
 from boba.toolkit.arrow import ArrowColumns, ArrowIpc, BytePipe
-from boba.toolkit.landing import Engine, LandingOutbound, SchemaHead, SyncWire
 from boba.toolkit.sync import (
     ArrowContract,
     ColumnDeclaration,
@@ -29,6 +28,7 @@ from boba.toolkit.sync import (
     Declarations,
     StreamContract,
 )
+from boba.toolkit.transfer import Engine, SchemaHead, StreamWire, TransferOutbound
 
 __all__ = ["ChSyncSource"]
 
@@ -54,7 +54,7 @@ class ChSyncSource:
         text: str,
         declared: Sequence[ColumnDeclaration],
         chunk_bytes: int,
-        out: LandingOutbound,
+        out: TransferOutbound,
     ) -> ChCommandReport:
         pipe = BytePipe()
         tuning = ReadTuning(socket_read_size=chunk_bytes, read_buffer_size=chunk_bytes)
@@ -80,7 +80,7 @@ class ChSyncSource:
                         SchemaHead(
                             kind="schema",
                             source_engine=self.ENGINE,
-                            wire=SyncWire.ARROW,
+                            wire=StreamWire.ARROW,
                             contract=contract.model_dump(mode="json"),
                         )
                     )
@@ -97,5 +97,5 @@ class ChSyncSource:
             _, specs = await asyncio.gather(produce(), consume())
 
             return stream.trace.report(
-                self._contract_text.render(SyncWire.ARROW.value, specs), text
+                self._contract_text.render(StreamWire.ARROW.value, specs), text
             )

@@ -18,13 +18,13 @@ from boba.tool.ch import tools as ch
 from boba.tool.ora import tools as ora
 from boba.tool.pg import tools as pg
 from boba.toolkit.entry import ToolArgv, ToolMain
-from boba.toolkit.landing import (
+from boba.toolkit.ports import PortDirection, StreamPorts
+from boba.toolkit.transfer import (
     CreateIfNotExists,
     DeleteNothing,
     InsertFull,
-    WireChoice,
+    StreamWire,
 )
-from boba.toolkit.ports import PortDirection, StreamPorts
 
 __all__ = ["Chained", "Leg", "Pumps"]
 
@@ -116,7 +116,7 @@ class Pumps:
         return await self._out(
             "pg_sync_out",
             statement,
-            wire=WireChoice.TSV,
+            wire=StreamWire.TSV,
             copy_options=CopyOptions(chunk_bytes=self.CHUNK_BYTES),
             **extra,
         )

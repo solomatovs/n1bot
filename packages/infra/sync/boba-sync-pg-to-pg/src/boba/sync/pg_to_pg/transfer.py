@@ -3,7 +3,7 @@
 тела COPY csv или text в COPY приёмника без перекодирования.
 
 Ошибки:
-LandingError — кадр схемы не от postgres; правило rename_columns или
+TransferError — кадр схемы не от postgres; правило rename_columns или
     column_types на несуществующую колонку; стратегия схемы отказала;
     колонка без типа при fail_on_unknown.
 psycopg.Error — сервер приёмника отклонил стейтмент или значение.
@@ -20,36 +20,36 @@ import psycopg
 from psycopg._typeinfo import TypeInfo, TypesRegistry
 
 from boba.db.postgres.describe import PgDescribedColumn, PgTypeText, PgTypmod
-from boba.db.postgres.landing import (
+from boba.db.postgres.transfer import (
     PgCatalogColumn,
     PgContract,
     PgCopyIn,
     PgCopyLayout,
-    PgLandingTable,
     PgPlannedColumn,
     PgServerVersion,
     PgSourceColumn,
     PgTableFacts,
     PgTablePlan,
     PgTableRef,
+    PgTransferTable,
     PgTypedName,
     PgTypeResolver,
-    PostgresLanding,
+    PostgresTransfer,
 )
-from boba.toolkit.landing import (
+from boba.toolkit.transfer import (
     ColumnRules,
     CreateTemplate,
     DeleteStrategyApply,
     Engine,
     InsertStrategyApply,
-    LandingError,
-    LandingInbound,
-    LandingReport,
-    LandingRun,
     SchemaCheck,
     SchemaHead,
     SchemaStrategyPlan,
-    SyncWire,
+    StreamWire,
+    TransferError,
+    TransferInbound,
+    TransferReport,
+    TransferRun,
     UnknownTypeApply,
 )
 
@@ -304,14 +304,14 @@ class PgBinaryCompatibility:
     ) -> None:
         source_version = contract.version()
         if source_version.major() != target_version.major():
-            raise LandingError(
+            raise TransferError(
                 f"binary copy from postgres {source_version.text()} into postgres "
                 f"{target_version.text()}: major versions differ, restart "
                 f"pg_sync_out with wire csv"
             )
 
         if not contract.integer_datetimes or not target_integer_datetimes:
-            raise LandingError(
+            raise TransferError(
                 "binary copy needs integer_datetimes = on on both servers, restart "
                 "pg_sync_out with wire csv"
             )
@@ -320,7 +320,7 @@ class PgBinaryCompatibility:
             if self._registry.get(column.oid) is not None:
                 continue
 
-            raise LandingError(
+            raise TransferError(
                 f"binary copy: column {column.name} has a type outside the "
                 f"built-in registry ({column.known}); user types carry "
                 f"instance-specific OIDs in binary, restart pg_sync_out with wire "
@@ -382,7 +382,7 @@ class PgMatcher:
         ```python
         {
            "amount": "numeric(20,6)",
-            "v": "pump_landing.mood",
+            "v": "pump_transfer.mood",
         }
         ```
 
@@ -427,7 +427,7 @@ class PgMatcher:
         # словарь {"колонка приёмника": "текст типа"}
         # Например: {
         #   "amount": "numeric(20,6)",
-        #   "v": "pump_landing.mood",
+        #   "v": "pump_transfer.mood",
         # }.
         return texts
 
@@ -466,7 +466,7 @@ class PgMatcher:
             if name in seen:
                 continue
 
-            raise LandingError(
+            raise TransferError(
                 f"column_types: neither the stream nor the table has a column "
                 f"{name!r}; columns: {', '.join(sorted(seen))}"
             )
@@ -523,7 +523,7 @@ class PgMatcher:
         names = {column.name for column in contract.columns}
         for source_name in by_source:
             if source_name not in names:
-                raise LandingError(
+                raise TransferError(
                     f"rename_columns: the stream has no field {source_name!r}; "
                     f"stream fields: {', '.join(sorted(names))}"
                 )
@@ -552,10 +552,10 @@ class PgMatcher:
         )
 
 
-class PgToPg(PostgresLanding):
-    """Реализация PostgresLanding для источника postgres: одной транзакцией
+class PgToPg(PostgresTransfer):
+    """Реализация PostgresTransfer для источника postgres: одной транзакцией
     приёмника разбирает rules.column_types своим сервером, читает каталог
-    таблицы, сверяет, ведёт стратегии через LandingRun и кладёт тела COPY в
+    таблицы, сверяет, ведёт стратегии через TransferRun и кладёт тела COPY в
     таблицу как есть."""
 
     def __init__(
@@ -563,11 +563,11 @@ class PgToPg(PostgresLanding):
         conn: psycopg.AsyncConnection[Any],
         table: PgTableRef,
         head: SchemaHead,
-        feed: LandingInbound,
+        feed: TransferInbound,
     ) -> None:
         if head.source_engine is not Engine.POSTGRES:
-            raise LandingError(
-                f"landing postgres -> postgres got a schema frame from "
+            raise TransferError(
+                f"transfer postgres -> postgres got a schema frame from "
                 f"{head.source_engine.value}"
             )
 
@@ -581,12 +581,12 @@ class PgToPg(PostgresLanding):
         self._binary = PgBinaryCompatibility(conn.adapters.types)
 
     @staticmethod
-    def _layout_of(wire: SyncWire) -> PgCopyLayout:
-        """Раскладка COPY по раскладке кадра; arrow и raw пара не принимает."""
+    def _layout_of(wire: StreamWire) -> PgCopyLayout:
+        """Формат COPY по формату из кадра schema; arrow и raw пара не принимает."""
         try:
             return PgCopyLayout(wire.value)
         except ValueError as exc:
-            raise LandingError(
+            raise TransferError(
                 f"pair postgres -> postgres takes copy layouts "
                 f"{[member.value for member in PgCopyLayout]}, got {wire.value}"
             ) from exc
@@ -609,7 +609,7 @@ class PgToPg(PostgresLanding):
         unknown_types: UnknownTypeApply,
         rules: ColumnRules,
         create_table: CreateTemplate,
-    ) -> LandingReport:
+    ) -> TransferReport:
         matcher = PgMatcher(self._conn.adapters.types, rules)
         async with self._conn.transaction():
             resolved = await self._resolver.resolve(
@@ -631,7 +631,7 @@ class PgToPg(PostgresLanding):
                     self._typed_names(matched.stream),
                 )
 
-            table = PgLandingTable(self._conn, self._table, matched.plan, create_table)
+            table = PgTransferTable(self._conn, self._table, matched.plan, create_table)
             sink = PgCopyIn(
                 self._conn,
                 self._table,
@@ -639,7 +639,7 @@ class PgToPg(PostgresLanding):
                 self._layout,
                 self._feed.bodies(),
             )
-            run = LandingRun(
+            run = TransferRun(
                 schema_strategy, delete_strategy, insert_strategy, unknown_types
             )
 

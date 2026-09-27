@@ -35,5 +35,5 @@ include = ["boba*"]
 namespaces = true
 
 [tool.boba.sandbox]
-imports = ["psycopg", "pyarrow", "boba.sync.pg_to_pg.landing"]
-entry_points = ["boba.landing.postgres"]
+imports = ["psycopg", "pyarrow", "boba.sync.pg_to_pg.transfer"]
+entry_points = ["boba.transfer.postgres"]

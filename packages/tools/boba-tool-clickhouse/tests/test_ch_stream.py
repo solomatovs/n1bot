@@ -17,8 +17,8 @@ from boba.db.clickhouse.payload import PayloadClickHouse
 from boba.db.clickhouse.query import ChQueryBuilder
 from boba.tool.ch import tools as ch
 from boba.toolkit.entry import ToolMain
-from boba.toolkit.landing import Engine, RowsHead, SchemaHead, SyncWire
 from boba.toolkit.ports import Framed
+from boba.toolkit.transfer import Engine, RawHead, RowsHead
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
 
@@ -73,12 +73,7 @@ class Feed:
 
     def __iter__(self) -> Iterator[Framed[Any]]:
         yield Framed(
-            head=SchemaHead(
-                kind="schema",
-                source_engine=Engine.POSTGRES,
-                wire=SyncWire.RAW,
-                contract=None,
-            ),
+            head=RawHead(kind="raw", source_engine=Engine.POSTGRES),
             body=b"",
         )
         offset = 0

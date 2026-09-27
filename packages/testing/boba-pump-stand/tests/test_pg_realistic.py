@@ -17,16 +17,16 @@ from typing import Any
 import pytest
 
 from boba.db.postgres.connection import CopyOptions
-from boba.db.postgres.landing import PgColumnDeclaration
-from boba.pump_stand import Landing, Leg, PostgresSide, Pumps, PumpStand
-from boba.toolkit.landing import (
+from boba.db.postgres.transfer import PgColumnDeclaration
+from boba.pump_stand import Leg, Loaded, PostgresSide, Pumps, PumpStand
+from boba.toolkit.transfer import (
     ColumnRules,
     CreateIfNotExists,
     DeleteNothing,
     DeleteTruncate,
     ErrorIfSchemaChanged,
     InsertFull,
-    WireChoice,
+    StreamWire,
 )
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
@@ -274,12 +274,6 @@ EXPECTED_COLUMNS = [
 """Колонки таблицы приёмника (имя, тип, not null): enum источника ложатся
 text по column_types, остальное — как описал стейтмент сервер источника."""
 
-DECLARED = [PgColumnDeclaration(name="order_id", nullable=False)]
-"""Серверу nullable выборки неизвестен: not null у ключа объявляет LLM."""
-
-RULES = ColumnRules(column_types={"status": "text", "tier": "text"})
-"""enum источника на другом сервере нет — LLM объявляет text у приёмника."""
-
 
 @pytest.fixture(scope="module")
 async def source() -> AsyncIterator[PostgresSide]:
@@ -311,8 +305,10 @@ async def transfer(  # noqa: PLR0913
     table: str,
     schema: Any,
     delete: Any,
-    wire: WireChoice,
-    columns: Sequence[PgColumnDeclaration] = DECLARED,
+    wire: StreamWire,
+    columns: Sequence[PgColumnDeclaration] = [
+        PgColumnDeclaration(name="order_id", nullable=False)
+    ],
 ) -> str:
     """pg_sync_out на источнике -> pg_sync_in на приёмнике, два сервера."""
     pumps = Pumps(postgres=source.profile, postgres_target=target.profile)
@@ -334,7 +330,7 @@ async def transfer(  # noqa: PLR0913
                 "schema_strategy": schema,
                 "delete_strategy": delete,
                 "insert_strategy": InsertFull(kind="full"),
-                "rules": RULES,
+                "rules": ColumnRules(column_types={"status": "text", "tier": "text"}),
                 "copy_options": CopyOptions(chunk_bytes=CHUNK),
             },
         ),
@@ -347,8 +343,8 @@ async def transfer(  # noqa: PLR0913
 
 async def same_content(source: PostgresSide, target: PostgresSide, table: str) -> None:
     """Каждая колонка отчёта текстом совпадает с представлением источника."""
-    report = Landing(source, SRC, "orders_report")
-    landed = Landing(target, DW, table)
+    report = Loaded(source, SRC, "orders_report")
+    landed = Loaded(target, DW, table)
     for name, _, _ in EXPECTED_COLUMNS:
         expected = await report.texts(name, order_by="order_id")
         actual = await landed.texts(name, order_by="order_id")
@@ -366,15 +362,15 @@ class TestOrdersReport:
             "orders_report",
             CreateIfNotExists(kind="create_if_not_exists"),
             DeleteNothing(kind="nothing"),
-            WireChoice.CSV,
+            StreamWire.CSV,
         )
-        landed = Landing(target, DW, "orders_report")
+        landed = Loaded(target, DW, "orders_report")
 
         assert f"{ORDERS} rows written" in report
         assert await landed.columns() == EXPECTED_COLUMNS
         assert await landed.count() == ORDERS
         assert await landed.aggregate("count(*) filter (where paid is null)") > 0
-        assert await landed.aggregate("sum(balance)") == await Landing(
+        assert await landed.aggregate("sum(balance)") == await Loaded(
             source, SRC, "orders_report"
         ).aggregate("sum(balance)")
         await same_content(source, target, "orders_report")
@@ -388,11 +384,11 @@ class TestOrdersReport:
             "orders_report",
             ErrorIfSchemaChanged(kind="error_if_schema_changed"),
             DeleteTruncate(kind="truncate"),
-            WireChoice.CSV,
+            StreamWire.CSV,
         )
 
         assert "error" not in report.split("rows written")[0].lower()
-        assert await Landing(target, DW, "orders_report").count() == ORDERS
+        assert await Loaded(target, DW, "orders_report").count() == ORDERS
 
     async def test_tsv_wire_lands_the_same_content(
         self, source: PostgresSide, target: PostgresSide
@@ -403,14 +399,14 @@ class TestOrdersReport:
             "orders_report_tsv",
             CreateIfNotExists(kind="create_if_not_exists"),
             DeleteNothing(kind="nothing"),
-            WireChoice.TSV,
+            StreamWire.TSV,
         )
-        landed = Landing(target, DW, "orders_report_tsv")
+        landed = Loaded(target, DW, "orders_report_tsv")
 
         assert f"{ORDERS} rows written" in report
         assert await landed.columns() == EXPECTED_COLUMNS
         assert await landed.count() == ORDERS
-        assert await landed.aggregate("sum(gross)") == await Landing(
+        assert await landed.aggregate("sum(gross)") == await Loaded(
             source, SRC, "orders_report"
         ).aggregate("sum(gross)")
         assert isinstance(await landed.aggregate("max(month_avg)"), Decimal)

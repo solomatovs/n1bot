@@ -12,10 +12,10 @@ from typing import Any
 import pytest
 
 from boba.db.postgres.connection import CopyOptions
-from boba.db.postgres.landing import PgColumnDeclaration
-from boba.pump_stand import Landing, Leg, OracleSide, PostgresSide, Pumps, PumpStand
+from boba.db.postgres.transfer import PgColumnDeclaration
+from boba.pump_stand import Leg, Loaded, OracleSide, PostgresSide, Pumps, PumpStand
 from boba.pump_stand.oracle import PumpUser
-from boba.toolkit.landing import (
+from boba.toolkit.transfer import (
     BackupAndCreateIfSchemaChanged,
     ColumnRules,
     CreateIfNotExists,
@@ -28,8 +28,8 @@ from boba.toolkit.landing import (
     ErrorIfSchemaChanged,
     InsertFull,
     InsertNothing,
-    LandingError,
-    WireChoice,
+    StreamWire,
+    TransferError,
 )
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
@@ -65,16 +65,16 @@ NEWEST = _newest(STAND.sources)
 
 @pytest.fixture(
     scope="module",
-    params=[WireChoice.ARROW, WireChoice.CSV],
+    params=[StreamWire.ARROW, StreamWire.CSV],
     ids=["arrow", "copy"],
 )
-def mode(request: Any) -> WireChoice:
+def mode(request: Any) -> StreamWire:
     """Раскладка провода pg -> pg: arrow (нейтральный путь) или csv (пара)."""
     return request.param
 
 
 @pytest.fixture(scope="module", params=STAND.sources, ids=lambda s: s.name)
-async def postgres(request: Any, mode: WireChoice) -> AsyncIterator[PostgresSide]:
+async def postgres(request: Any, mode: StreamWire) -> AsyncIterator[PostgresSide]:
     """Схема пересоздаётся на каждую пару (режим провода, сервер)."""
     side = PostgresSide(request.param, PG_SCHEMA)
     await side.connect()
@@ -84,7 +84,7 @@ async def postgres(request: Any, mode: WireChoice) -> AsyncIterator[PostgresSide
 
 
 @pytest.fixture(scope="module")
-async def oracle(mode: WireChoice) -> AsyncIterator[OracleSide]:
+async def oracle(mode: StreamWire) -> AsyncIterator[OracleSide]:
     """Пользователь стенда пересоздаётся на каждый режим провода."""
     side = OracleSide(max(STAND.ora_sources, key=lambda s: s.name), ARRAYSIZE)
     await side.connect()
@@ -95,7 +95,7 @@ async def oracle(mode: WireChoice) -> AsyncIterator[OracleSide]:
 
 async def sync(
     postgres: PostgresSide,
-    mode: WireChoice,
+    mode: StreamWire,
     table: str,
     schema: Any,
     delete: Any = DeleteNothing(kind="nothing"),
@@ -136,16 +136,16 @@ async def sync(
 
 class TestSchemaStrategies:
     async def test_create_if_not_exists_builds_the_table_from_the_stream(
-        self, postgres: PostgresSide, mode: WireChoice
+        self, postgres: PostgresSide, mode: StreamWire
     ) -> None:
         report = await sync(
             postgres, mode, "fresh", CreateIfNotExists(kind="create_if_not_exists")
         )
-        landing = Landing(postgres, PG_SCHEMA, "fresh")
+        loaded = Loaded(postgres, PG_SCHEMA, "fresh")
 
         assert report.startswith(f"{ROWS} rows written into {PG_SCHEMA}.fresh")
         assert "schema: create (table is missing)" in report
-        assert await landing.columns() == [
+        assert await loaded.columns() == [
             ("id", "bigint", False),
             ("amount", "numeric(18,4)", False),
             ("name", "character varying(50)", False),
@@ -153,10 +153,10 @@ class TestSchemaStrategies:
             ("flag", "boolean", False),
             ("d", "double precision", False),
         ]
-        assert await landing.count() == ROWS
+        assert await loaded.count() == ROWS
 
     async def test_second_run_keeps_the_table_and_appends(
-        self, postgres: PostgresSide, mode: WireChoice
+        self, postgres: PostgresSide, mode: StreamWire
     ) -> None:
         await sync(
             postgres, mode, "twice", CreateIfNotExists(kind="create_if_not_exists")
@@ -169,18 +169,18 @@ class TestSchemaStrategies:
         )
 
         assert "schema: keep (schema matches)" in report
-        assert await Landing(postgres, PG_SCHEMA, "twice").count() == 2 * ROWS
+        assert await Loaded(postgres, PG_SCHEMA, "twice").count() == 2 * ROWS
 
     async def test_error_if_not_exists_refuses_a_missing_table(
-        self, postgres: PostgresSide, mode: WireChoice
+        self, postgres: PostgresSide, mode: StreamWire
     ) -> None:
-        with pytest.raises(LandingError, match="table is missing"):
+        with pytest.raises(TransferError, match="table is missing"):
             await sync(
                 postgres, mode, "absent", ErrorIfNotExists(kind="error_if_not_exists")
             )
 
     async def test_narrowed_column_is_a_schema_change(
-        self, postgres: PostgresSide, mode: WireChoice
+        self, postgres: PostgresSide, mode: StreamWire
     ) -> None:
         await postgres.create(
             "narrow",
@@ -193,7 +193,7 @@ class TestSchemaStrategies:
                 "d double precision",
             ],
         )
-        with pytest.raises(LandingError, match="amount"):
+        with pytest.raises(TransferError, match="amount"):
             await sync(
                 postgres,
                 mode,
@@ -202,7 +202,7 @@ class TestSchemaStrategies:
             )
 
     async def test_backup_and_create_renames_the_old_table(
-        self, postgres: PostgresSide, mode: WireChoice
+        self, postgres: PostgresSide, mode: StreamWire
     ) -> None:
         await postgres.create("keep_old", ["id bigint", "extra text"])
         report = await sync(
@@ -211,16 +211,16 @@ class TestSchemaStrategies:
             "keep_old",
             BackupAndCreateIfSchemaChanged(kind="backup_and_create_if_schema_changed"),
         )
-        landing = Landing(postgres, PG_SCHEMA, "keep_old")
-        tables = await landing.tables()
+        loaded = Loaded(postgres, PG_SCHEMA, "keep_old")
+        tables = await loaded.tables()
 
         assert "schema: backup_then_create" in report
         assert "backup: keep_old_bak_" in report
         assert [t for t in tables if t.startswith("keep_old_bak_")]
-        assert await landing.count() == ROWS
+        assert await loaded.count() == ROWS
 
     async def test_drop_and_create_replaces_the_old_table(
-        self, postgres: PostgresSide, mode: WireChoice
+        self, postgres: PostgresSide, mode: StreamWire
     ) -> None:
         await postgres.create("replaced", ["id bigint", "extra text"])
         report = await sync(
@@ -229,10 +229,10 @@ class TestSchemaStrategies:
             "replaced",
             DropAndCreateIfSchemaChanged(kind="drop_and_create_if_schema_changed"),
         )
-        landing = Landing(postgres, PG_SCHEMA, "replaced")
+        loaded = Loaded(postgres, PG_SCHEMA, "replaced")
 
         assert "schema: drop_then_create" in report
-        assert [c[0] for c in await landing.columns()] == [
+        assert [c[0] for c in await loaded.columns()] == [
             "id",
             "amount",
             "name",
@@ -240,7 +240,7 @@ class TestSchemaStrategies:
             "flag",
             "d",
         ]
-        assert not [t for t in await landing.tables() if t.startswith("replaced_bak_")]
+        assert not [t for t in await loaded.tables() if t.startswith("replaced_bak_")]
 
 
 class TestDeleteAndInsert:
@@ -250,7 +250,7 @@ class TestDeleteAndInsert:
             pytest.skip("delete and insert strategies on the newest postgres")
 
     async def test_truncate_then_full(
-        self, postgres: PostgresSide, mode: WireChoice
+        self, postgres: PostgresSide, mode: StreamWire
     ) -> None:
         await sync(
             postgres, mode, "trunc", CreateIfNotExists(kind="create_if_not_exists")
@@ -264,10 +264,10 @@ class TestDeleteAndInsert:
         )
 
         assert "deleted: 0 rows by truncate table" in report
-        assert await Landing(postgres, PG_SCHEMA, "trunc").count() == ROWS
+        assert await Loaded(postgres, PG_SCHEMA, "trunc").count() == ROWS
 
     async def test_delete_all_counts_rows(
-        self, postgres: PostgresSide, mode: WireChoice
+        self, postgres: PostgresSide, mode: StreamWire
     ) -> None:
         await sync(
             postgres, mode, "wipe", CreateIfNotExists(kind="create_if_not_exists")
@@ -281,10 +281,10 @@ class TestDeleteAndInsert:
         )
 
         assert f"deleted: {ROWS} rows by delete from" in report
-        assert await Landing(postgres, PG_SCHEMA, "wipe").count() == ROWS
+        assert await Loaded(postgres, PG_SCHEMA, "wipe").count() == ROWS
 
     async def test_delete_where_then_nothing_inserted(
-        self, postgres: PostgresSide, mode: WireChoice
+        self, postgres: PostgresSide, mode: StreamWire
     ) -> None:
         await sync(
             postgres, mode, "part", CreateIfNotExists(kind="create_if_not_exists")
@@ -297,7 +297,7 @@ class TestDeleteAndInsert:
             delete=DeleteWhere(kind="delete_where", where="id <= 500"),
         )
 
-        assert await Landing(postgres, PG_SCHEMA, "part").count() == 2 * ROWS - 500
+        assert await Loaded(postgres, PG_SCHEMA, "part").count() == 2 * ROWS - 500
 
         report = await sync(
             postgres,
@@ -310,10 +310,10 @@ class TestDeleteAndInsert:
 
         assert "deleted: 1500 rows" in report
         assert "0 rows written" in report
-        assert await Landing(postgres, PG_SCHEMA, "part").count() == 0
+        assert await Loaded(postgres, PG_SCHEMA, "part").count() == 0
 
     async def test_rename_and_declaration_shape_the_ddl(
-        self, postgres: PostgresSide, mode: WireChoice
+        self, postgres: PostgresSide, mode: StreamWire
     ) -> None:
         rules = ColumnRules(
             rename_columns={"title": "name"}, column_types={"amount": "numeric(20,6)"}
@@ -325,11 +325,11 @@ class TestDeleteAndInsert:
             CreateIfNotExists(kind="create_if_not_exists"),
             rules=rules,
         )
-        columns = await Landing(postgres, PG_SCHEMA, "shaped").columns()
+        columns = await Loaded(postgres, PG_SCHEMA, "shaped").columns()
 
         assert ("title", "character varying(50)", False) in columns
         assert ("amount", "numeric(20,6)", False) in columns
-        assert await Landing(postgres, PG_SCHEMA, "shaped").count() == ROWS
+        assert await Loaded(postgres, PG_SCHEMA, "shaped").count() == ROWS
 
 
 class TestDeclarations:
@@ -342,7 +342,7 @@ class TestDeclarations:
             pytest.skip("declarations on the newest postgres")
 
     async def test_pg_declarations_carry_not_null(
-        self, postgres: PostgresSide, mode: WireChoice
+        self, postgres: PostgresSide, mode: StreamWire
     ) -> None:
         await postgres.create(
             "strict_src",
@@ -367,16 +367,16 @@ class TestDeclarations:
         )
 
         assert report.startswith("50 rows written")
-        assert await Landing(postgres, PG_SCHEMA, "strict_dst").columns() == [
+        assert await Loaded(postgres, PG_SCHEMA, "strict_dst").columns() == [
             ("id", "bigint", True),
             ("note", "text", False),
             ("amount", "numeric(12,2)", True),
         ]
 
     async def test_unknown_column_in_declarations_is_refused(
-        self, postgres: PostgresSide, mode: WireChoice
+        self, postgres: PostgresSide, mode: StreamWire
     ) -> None:
-        with pytest.raises(LandingError, match="has no column 'nope'"):
+        with pytest.raises(TransferError, match="has no column 'nope'"):
             await sync(
                 postgres,
                 mode,
@@ -428,7 +428,7 @@ class TestDeclarations:
         )
 
         assert chained.in_report.startswith("50 rows written")
-        assert await Landing(postgres, PG_SCHEMA, "strict_from_ora").columns() == [
+        assert await Loaded(postgres, PG_SCHEMA, "strict_from_ora").columns() == [
             ("ID", "numeric(10,0)", True),
             ("NOTE", "character varying(20)", False),
             ("AMOUNT", "numeric(12,2)", True),
@@ -442,7 +442,7 @@ class TestOtherSources:
             pytest.skip("other sources on the newest postgres")
 
     async def test_oracle_stream_creates_exact_types(
-        self, postgres: PostgresSide, mode: WireChoice, oracle: OracleSide
+        self, postgres: PostgresSide, mode: StreamWire, oracle: OracleSide
     ) -> None:
         await oracle.create(
             "src",
@@ -484,7 +484,7 @@ class TestOtherSources:
                 },
             ),
         )
-        columns = await Landing(postgres, PG_SCHEMA, "from_oracle").columns()
+        columns = await Loaded(postgres, PG_SCHEMA, "from_oracle").columns()
 
         assert chained.in_report.startswith("100 rows written")
         assert ("id", "numeric(10,0)", False) in columns
