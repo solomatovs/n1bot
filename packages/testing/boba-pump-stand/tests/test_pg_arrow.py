@@ -969,7 +969,7 @@ class TestTraps:
     async def test_list_in_the_stream_is_refused_before_loading(
         self, postgres: PostgresSide, clickhouse: ClickHouseSide
     ) -> None:
-        """Список Arrow (Array ClickHouse) CSV не несёт: pg_arrow_in отвергает
+        """Список Arrow (Array ClickHouse) CSV не несёт: pg_stream_in отвергает
         его по схеме, источник обязан отдать текст postgres."""
         if postgres.source.name != NEWEST:
             pytest.skip("one postgres is enough for this trap")
@@ -1005,8 +1005,8 @@ class TestTraps:
         self, postgres: PostgresSide
     ) -> None:
         """Текст COPY не зависит от настроек сессии профиля: даты ISO, UTC, bytea
-        hex, интервал в записи postgres, money без локали, float точно — и у
-        pg_stream_out, и у pg_arrow_out."""
+        hex, интервал в записи postgres, money без локали, float точно — у
+        pg_stream_out с любым wire, в том числе arrow."""
         if postgres.source.name != NEWEST:
             pytest.skip("one postgres is enough for this trap")
 

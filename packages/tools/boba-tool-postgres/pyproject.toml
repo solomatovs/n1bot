@@ -4,12 +4,12 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "boba-tool-postgres"
-version = "0.0.24.dev2"
+version = "0.0.25.dev1"
 description = "SQL-инструменты только на чтение: соединение и запрос идут из песочницы."
 requires-python = ">=3.11,<4"
 dependencies = [
-    "boba-toolkit==0.0.24.dev2",
-    "boba-db-postgres==0.0.24.dev2",
+    "boba-toolkit==0.0.25.dev1",
+    "boba-db-postgres==0.0.25.dev1",
     "psycopg[binary,pool]>=3.2",
     "pydantic>=2.10,<2.11",
 ]
@@ -21,11 +21,11 @@ pg = "boba.tool.pg.plugin:MANIFEST"
 
 [project.optional-dependencies]
 payload = [
-    "boba-db-postgres[arrow]==0.0.24.dev2",
-    "boba-toolkit[arrow]==0.0.24.dev2",
+    "boba-db-postgres[arrow]==0.0.25.dev1",
+    "boba-toolkit[arrow]==0.0.25.dev1",
 ]
 dev = [
-    "boba-config==0.0.24.dev2",
+    "boba-config==0.0.25.dev1",
     "pytest>=8",
 ]
 
@@ -35,5 +35,11 @@ include = ["boba*"]
 namespaces = true
 
 [tool.boba.sandbox]
-imports = ["psycopg", "pyarrow", "boba.stream.pg_to_pg.transfer", "boba.stream.ch_to_pg.transfer"]
+imports = [
+    "psycopg",
+    "pyarrow",
+    "boba.db.postgres.arrow_stream",
+    "boba.stream.pg_to_pg.transfer",
+    "boba.stream.ch_to_pg.transfer",
+]
 entry_points = ["boba.transfer.postgres"]
