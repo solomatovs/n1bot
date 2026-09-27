@@ -41,6 +41,7 @@ class TestChTools:
         "ch_stream_in",
         "ch_arrow_out",
         "ch_sync_out",
+        "ch_sync_in",
         "ch_arrow_in",
     ]
 

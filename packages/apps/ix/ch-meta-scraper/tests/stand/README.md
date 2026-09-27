@@ -20,6 +20,11 @@
 оба с правом управлять доступом. Образы без конфига не стартуют, поэтому каталог
 монтируется в `/etc/clickhouse-server`.
 
+`edge-ch-26.7` дополнительно получает `server/keeper.xml` в `config.d`:
+встроенный Keeper, макросы `shard`/`replica`, порт репликации и кластер
+`stand` из одного узла. На нём тесты приёмника `ch_sync_in` проверяют
+`ReplicatedMergeTree` и DDL `on cluster`.
+
 `database` пересоздаётся на каждую сессию тестов: схема `db_schema` с ядром пакета
 `ix-core`, затем `schema/` скрапера; оба накатывает `SchemaUpgrade`. На каждом источнике
 с `demo = true` пересоздаётся база `edge_demo` из `ddl/`; источник с `demo = false`

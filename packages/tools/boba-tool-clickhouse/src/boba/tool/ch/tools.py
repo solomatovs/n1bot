@@ -25,6 +25,13 @@ from boba.db.clickhouse import ClickHouseError, ClickHouseQueryError
 from boba.db.clickhouse.address import ChAddresses
 from boba.db.clickhouse.connection import ClickHouseConfig
 from boba.db.clickhouse.query import ChQuery, ChQueryBuilder
+from boba.db.clickhouse.target import (
+    ChCluster,
+    ChPlacement,
+    ChStreamWire,
+    ChTableRef,
+)
+from boba.db.clickhouse.trace import ChScriptStep
 from boba.toolkit.entry import ToolMain
 from boba.toolkit.facade import Injected, UserConnection, tool
 from boba.toolkit.ports import ChunkBytes, Inbound, Outbound
@@ -36,11 +43,21 @@ from boba.toolkit.sql import (
 )
 from boba.toolkit.sync import ColumnDeclaration, SyncError
 from boba.toolkit.transfer import (
+    ColumnRules,
+    CreateTemplate,
+    DeleteStrategy,
     Engine,
+    FailOnUnknown,
+    InsertStrategy,
     RawHead,
+    SchemaStrategy,
+    StreamWire,
+    TransferError,
     TransferFrame,
     TransferInbound,
     TransferOutbound,
+    TransferReport,
+    UnknownTypeStrategy,
 )
 from boba.toolkit.types import SecretRevealing
 from boba.toolkit.window import RowLimit, RowOffset, RowPage, RowWindow
@@ -1220,7 +1237,7 @@ async def ch_arrow_out(  # noqa: PLR0913
 
 
 @tool
-async def ch_sync_out(
+async def ch_sync_out(  # noqa: PLR0913
     connection: ChConnection,
     sql: Annotated[
         str,
@@ -1228,18 +1245,32 @@ async def ch_sync_out(
             min_length=1,
             description=(
                 "Запрос SELECT целиком, без FORMAT и без `;`; выполняется как "
-                "написан. Строки — с settings output_format_arrow_string_as_string "
-                "= 1, иначе они уедут двоичными."
+                "написан. Для arrow строки — с settings "
+                "output_format_arrow_string_as_string = 1, иначе они уедут "
+                "двоичными."
             ),
         ),
         MarkdownResult(language="sql"),
+    ],
+    wire: Annotated[
+        ChStreamWire,
+        Field(
+            description=(
+                "Формат данных в потоке:\n"
+                "   - tsv — текст TabSeparated, типы ClickHouse как есть\n"
+                "       для приёмника ClickHouse: точная передача типов\n"
+                "   - arrow — универсальный поток в формате Arrow IPC\n"
+                "       для приёмников других движков и узлов преобразования\n"
+            ),
+        ),
     ],
     columns: Annotated[
         Sequence[ColumnDeclaration],
         Field(
             description=(
-                "Декларации колонок поверх типов ответа: заданное перекрывает "
-                "найденное, незаданное остаётся от сервера."
+                "Декларации колонок поверх типов ответа, только для arrow: "
+                "заданное перекрывает найденное, незаданное остаётся от "
+                "сервера. У tsv типы ClickHouse едут как есть, деклараций нет."
             ),
         ),
     ] = (),
@@ -1249,21 +1280,250 @@ async def ch_sync_out(
 ) -> MarkdownResult:
     """Источник sync-потока: строки запроса с контрактом колонок для приёмника.
 
-    Сервер отдаёт ответ потоком ArrowStream; первый кадр — контракт из его
-    схемы (типы Arrow, Nullable) с декларациями columns поверх, дальше кадры
-    данных — те же пачки Arrow IPC. В ответ — состав контракта и сводка
-    сервера.
+    Запрос выполняется один раз. tsv: ответ идёт в
+    TabSeparatedWithNamesAndTypes, две строки шапки уходят кадром schema как
+    контракт с текстами типов ClickHouse, остальные байты — кадрами rows как
+    TabSeparated. arrow: ответ идёт в ArrowStream, первый кадр — контракт из
+    его схемы с декларациями columns поверх, дальше те же пачки Arrow IPC. В
+    ответ — состав контракта и сводка сервера.
     """
     from boba.db.clickhouse.payload import PayloadClickHouse  # noqa: PLC0415
     from boba.db.clickhouse.sync import ChSyncSource  # noqa: PLC0415
+    from boba.db.clickhouse.transfer import ChTsvOut  # noqa: PLC0415
 
-    statement = ChQueryBuilder().raw_query(sql).build()
-    async with PayloadClickHouse.opened_config(connection) as client:
-        report = await ChSyncSource(client).stream(
-            statement.text, columns, chunk_bytes, TransferOutbound(out)
+    if wire is ChStreamWire.TSV and columns:
+        raise TransferError(
+            "ch_sync_out: columns apply to wire arrow only; with tsv the types "
+            "of clickhouse travel as they are"
         )
 
+    statement = ChQueryBuilder().raw_query(sql).build()
+    outbound = TransferOutbound(out)
+    async with PayloadClickHouse.opened_config(connection) as client:
+        match wire:
+            case ChStreamWire.TSV:
+                report = await ChTsvOut(client).stream(
+                    statement.text, chunk_bytes, outbound
+                )
+            case ChStreamWire.ARROW:
+                report = await ChSyncSource(client).stream(
+                    statement.text, columns, chunk_bytes, outbound
+                )
+
     return MarkdownResult(text=report.render())
+
+
+class ChTransferReportText:
+    """Текст отчёта приёмника ClickHouse с шагами скриптов before и after."""
+
+    def render(
+        self,
+        report: TransferReport,
+        before: Sequence[ChScriptStep],
+        after: Sequence[ChScriptStep],
+    ) -> str:
+        lines = [report.render()]
+        if before:
+            lines.append("before:")
+            for step in before:
+                lines.append(step.render())
+
+        if after:
+            lines.append("after:")
+            for step in after:
+                lines.append(step.render())
+
+        return "\n".join(lines)
+
+
+@tool
+async def ch_sync_in(  # noqa: PLR0913
+    connection: ChConnection,
+    database: Annotated[str, Field(min_length=1, description="База таблицы-приёмника")],
+    table_name: Annotated[
+        str, Field(min_length=1, description="Таблица-приёмник в базе")
+    ],
+    schema_strategy: Annotated[
+        SchemaStrategy,
+        Field(
+            description=(
+                "Что делать с таблицей до загрузки, объект с kind:\n"
+                "   - create_if_not_exists — создать, если нет\n"
+                "       есть — сверить и оставить\n"
+                "   - error_if_not_exists — таблица обязана существовать\n"
+                "   - error_if_schema_changed — таблица обязана совпадать с потоком\n"
+                "   - drop_and_create_if_schema_changed — пересоздать при расхождении\n"
+                "   - backup_and_create_if_schema_changed — при расхождении\n"
+                "       переименовать в _bak_<время> и создать заново\n"
+                "   - drop_and_create — всегда пересоздать\n"
+                "   - backup_and_create — всегда переименовать в _bak_<время>\n"
+                "       и создать заново\n"
+                "   - do_nothing — таблицу не трогать и не сверять\n"
+            ),
+        ),
+    ],
+    delete_strategy: Annotated[
+        DeleteStrategy,
+        Field(
+            description=(
+                "Какие прежние строки убрать, объект с kind:\n"
+                "   - nothing — оставить все\n"
+                "   - truncate — не оставить ни одной\n"
+                "   - delete_all — не оставить ни одной, со счётчиком строк\n"
+                "   - delete_where — убрать строки по условию в поле where\n"
+                "Приёмник грузит в двойник <table>__ex, переносит туда\n"
+                "оставшиеся строки и меняет таблицы местами exchange tables:\n"
+                "читатели не видят частичной загрузки, прежняя версия\n"
+                "остаётся в __ex.\n"
+            ),
+        ),
+    ],
+    insert_strategy: Annotated[
+        InsertStrategy,
+        Field(
+            description=(
+                "Как вставить поток, объект с kind:\n"
+                "   - full — вставить все строки\n"
+                "   - nothing — только схема и удаление\n"
+                "       поток прочитать и не вставлять\n"
+            ),
+        ),
+    ],
+    rules: Annotated[
+        ColumnRules,
+        Field(
+            description=(
+                "Правила колонок приёмника:\n"
+                "   - rename_columns — {колонка приёмника: поле потока}\n"
+                "       только имя, данные не меняются\n"
+                "   - column_types — {колонка приёмника: тип ClickHouse текстом}\n"
+                "       перекрывает тип из потока и стратегию unknown_types\n"
+            ),
+        ),
+    ] = ColumnRules(),
+    unknown_types: Annotated[
+        UnknownTypeStrategy,
+        Field(
+            description=(
+                "Что делать с колонкой, для которой у ClickHouse нет типа, "
+                "объект с kind:\n"
+                "   - fail_on_unknown — ошибка с типом потока\n"
+                "   - fallback_as_varchar — колонка получает String\n"
+                "       явный rules.column_types перекрывает оба варианта\n"
+            ),
+        ),
+    ] = FailOnUnknown(kind="fail_on_unknown"),
+    cluster: Annotated[
+        str,
+        Field(
+            description=(
+                "Кластер из system.clusters, на котором идут DDL приёмника:\n"
+                "   - имя — create, drop, rename, двойник и exchange tables\n"
+                "       выполняются on cluster; вставка — на узел соединения\n"
+                "   - пусто — без кластера\n"
+                "ReplicatedMergeTree шаблона по умолчанию без кластера сервер не "
+                "создаст: укажите кластер или шаблон с MergeTree.\n"
+            ),
+        ),
+    ] = "",
+    order_by: Annotated[
+        str,
+        Field(
+            min_length=1,
+            description=(
+                "Ключ сортировки создаваемой таблицы, выражение как в SQL:\n"
+                "   - id\n"
+                "   - (dt, id)\n"
+                "   - tuple() — без сортировки\n"
+                "Колонки ключа не могут быть Nullable: объявите их not null у "
+                "источника.\n"
+            ),
+        ),
+    ] = ChTableRef.ORDER_BY,
+    create_table: Annotated[
+        str,
+        Field(
+            min_length=1,
+            description=(
+                "Шаблон create table, когда стратегия схемы создаёт таблицу. "
+                "Цельный стейтмент с переменными:\n"
+                "   - {database} — база приёмника, экранированная\n"
+                "   - {table_name} — имя таблицы, экранированное\n"
+                "   - {columns} — колонки с типами из плана\n"
+                "   - {order_by} — ключ сортировки из параметра order_by\n"
+                "   - [ on cluster {cluster}] — необязательная часть в квадратных\n"
+                "       скобках: выпадает целиком, если cluster не передан\n"
+                "Сюда пишутся engine, partition by, settings. Литеральные "
+                "фигурные и квадратные скобки удваиваются.\n"
+            ),
+        ),
+    ] = ChTableRef.CREATE_TABLE,
+    before: BeforeSteps = (),
+    after: AfterSteps = (),
+    *,
+    feed: Annotated[Inbound[TransferFrame], Injected],
+) -> MarkdownResult:
+    """Приёмник ClickHouse со стратегиями: поток любого источника в таблицу.
+
+    Таблица по умолчанию — ReplicatedMergeTree с ключом order_by, DDL идут
+    on cluster, если передан cluster. Поток arrow любого источника
+    разбирается нейтральным контрактом:
+    семейства без своего типа у ClickHouse (json, inet, interval, bytea)
+    ложатся String, остальное — родными типами. Другие форматы берёт пара
+    «движок источника -> ClickHouse» из реестра. База обязана быть Atomic:
+    загрузка идёт в двойник <table>__ex и заканчивается exchange tables.
+    Стейтменты before и after идут в той же сессии сервера. В ответ — что
+    сделано со схемой и почему, сверка по колонкам, что удалено, сколько
+    вставлено.
+    """
+    from boba.db.clickhouse.payload import PayloadClickHouse  # noqa: PLC0415
+    from boba.db.clickhouse.sync import ChSyncLoader  # noqa: PLC0415
+    from boba.db.clickhouse.transfer import ClickHouseTransfers  # noqa: PLC0415
+    from boba.toolkit.sync import ArrowContract, StreamContract  # noqa: PLC0415
+    from boba.toolkit.sync import Engine as NeutralEngine  # noqa: PLC0415
+
+    payload = PayloadClickHouse
+    template = CreateTemplate(create_table, ChTableRef.TEMPLATE_VARS)
+    placement = ChPlacement(cluster=ChCluster(cluster), order_by=order_by)
+    inbound = TransferInbound(feed)
+    head = await inbound.get_schema()
+    table = ChTableRef(database=database, name=table_name)
+    async with payload.opened_session(connection) as client:
+        before_steps = await payload.script(client, before)
+        if head.wire is StreamWire.ARROW:
+            contract = ArrowContract.model_validate(head.contract)
+            loader = ChSyncLoader(
+                client,
+                table,
+                placement,
+                StreamContract().specs(contract.columns),
+                NeutralEngine(head.source_engine.value),
+                inbound,
+            )
+            report = await loader.run(
+                schema_strategy,
+                delete_strategy,
+                insert_strategy,
+                unknown_types,
+                rules,
+                template,
+            )
+        else:
+            pair = ClickHouseTransfers.discover().pair(head.source_engine)
+            report = await pair(client, table, placement, head, inbound).run(
+                schema_strategy,
+                delete_strategy,
+                insert_strategy,
+                unknown_types,
+                rules,
+                template,
+            )
+
+        after_steps = await payload.script(client, after)
+
+    return MarkdownResult(
+        text=ChTransferReportText().render(report, before_steps, after_steps)
+    )
 
 
 @tool
@@ -1334,6 +1594,7 @@ async def ch_address(connection: ChConnection) -> TableResult:
 
 EXPECTED: Mapping[type[Exception], SqlErrorKind] = {
     SyncError: SqlErrorKind.SQL_FAILED,
+    TransferError: SqlErrorKind.SQL_FAILED,
     AddressError: SqlErrorKind.UNKNOWN_TARGET,
     QueryBuildError: SqlErrorKind.SQL_FAILED,
     ClickHouseError: SqlErrorKind.DATABASE_UNAVAILABLE,
@@ -1360,6 +1621,7 @@ TOOLS: Final = ToolMain.toolset(
     ch_stream_in,
     ch_arrow_out,
     ch_sync_out,
+    ch_sync_in,
     ch_arrow_in,
 )
 

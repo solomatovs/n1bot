@@ -24,6 +24,7 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "boba-sync-pg-to-pg==0.0.24.dev2",
+    "boba-sync-ch-to-ch==0.0.24.dev2",
     "psycopg[binary]>=3.3",
     "pyarrow>=25,<26",
     "pytest>=8",

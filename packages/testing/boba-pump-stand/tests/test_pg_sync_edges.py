@@ -17,6 +17,7 @@ from typing import Any
 import psycopg
 import pytest
 
+from boba.db.clickhouse.target import ChStreamWire
 from boba.db.postgres import PgArrowError
 from boba.db.postgres.connection import CopyOptions
 from boba.db.postgres.transfer import PgColumnDeclaration
@@ -792,6 +793,7 @@ class TestClickHouseSources:
                 {
                     "sql": f"select * from {S}.edges order by id "
                     f"settings {STRING_AS_STRING}",
+                    "wire": ChStreamWire.ARROW,
                     "columns": [],
                     "chunk_bytes": CHUNK,
                 },
@@ -839,6 +841,7 @@ class TestClickHouseSources:
                     "ch_sync_out",
                     {
                         "sql": f"select * from {S}.u64only",
+                        "wire": ChStreamWire.ARROW,
                         "columns": [],
                         "chunk_bytes": CHUNK,
                     },

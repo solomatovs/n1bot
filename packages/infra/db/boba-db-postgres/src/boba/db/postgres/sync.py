@@ -61,6 +61,7 @@ from boba.toolkit.transfer import (
     SchemaHead,
     SchemaStrategyPlan,
     StreamWire,
+    TemplateVar,
     TransferError,
     TransferInbound,
     TransferOutbound,
@@ -309,9 +310,15 @@ class PgTableDdl(TransferTable):
 
     def _create_query(self, unknown_as_varchar: bool) -> PgQuery:
         rendered = self._template.render(
-            schema_name=sql.Identifier(self._table.schema).as_string(self._conn),
-            table_name=sql.Identifier(self._table.name).as_string(self._conn),
-            columns=self._columns_fragment(unknown_as_varchar),
+            {
+                TemplateVar.SCHEMA_NAME: sql.Identifier(self._table.schema).as_string(
+                    self._conn
+                ),
+                TemplateVar.TABLE_NAME: sql.Identifier(self._table.name).as_string(
+                    self._conn
+                ),
+                TemplateVar.COLUMNS: self._columns_fragment(unknown_as_varchar),
+            }
         )
 
         return PgQueryBuilder().raw_query(rendered).build()

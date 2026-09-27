@@ -597,7 +597,7 @@ async def pg_sync_in(  # noqa: PLR0913
     from boba.toolkit.sync import ArrowContract, StreamContract  # noqa: PLC0415
     from boba.toolkit.sync import Engine as NeutralEngine  # noqa: PLC0415
 
-    template = CreateTemplate(create_table)
+    template = CreateTemplate(create_table, PgTransferTable.TEMPLATE_VARS)
     inbound = TransferInbound(feed)
     head = await inbound.get_schema()
     table = PgTableRef(schema=schema_name, name=table_name)

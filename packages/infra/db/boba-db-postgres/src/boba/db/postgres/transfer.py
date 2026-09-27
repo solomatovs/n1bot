@@ -52,6 +52,8 @@ from boba.toolkit.transfer import (
     SchemaHead,
     SchemaStrategyPlan,
     StreamWire,
+    TemplateVar,
+    TemplateVars,
     TransferError,
     TransferInbound,
     TransferOutbound,
@@ -637,6 +639,10 @@ class PgTransferTable(TransferTable):
     BACKUP_STAMP: ClassVar[str] = "%Y%m%d_%H%M%S_%f"
     VARCHAR: ClassVar[str] = "varchar"
     CREATE_TABLE: ClassVar[str] = "create table {schema_name}.{table_name} ({columns})"
+    TEMPLATE_VARS: ClassVar[TemplateVars] = TemplateVars(
+        required=(TemplateVar.SCHEMA_NAME, TemplateVar.TABLE_NAME, TemplateVar.COLUMNS)
+    )
+    """Переменные шаблона postgres: все обязательные."""
     """Шаблон без особенностей таблицы: дефолт фасада pg_sync_in."""
 
     def __init__(
@@ -671,9 +677,15 @@ class PgTransferTable(TransferTable):
 
     def _create_query(self, unknown_as_varchar: bool) -> PgQuery:
         rendered = self._template.render(
-            schema_name=sql.Identifier(self._table.schema).as_string(self._conn),
-            table_name=sql.Identifier(self._table.name).as_string(self._conn),
-            columns=self._columns_fragment(unknown_as_varchar),
+            {
+                TemplateVar.SCHEMA_NAME: sql.Identifier(self._table.schema).as_string(
+                    self._conn
+                ),
+                TemplateVar.TABLE_NAME: sql.Identifier(self._table.name).as_string(
+                    self._conn
+                ),
+                TemplateVar.COLUMNS: self._columns_fragment(unknown_as_varchar),
+            }
         )
 
         return PgQueryBuilder().raw_query(rendered).build()

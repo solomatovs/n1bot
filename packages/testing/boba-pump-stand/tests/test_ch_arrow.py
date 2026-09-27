@@ -22,6 +22,7 @@ from typing import Any
 
 import pytest
 
+from boba.db.clickhouse.target import ChStreamWire
 from boba.db.postgres.connection import CopyOptions
 from boba.pump_stand import (
     ClickHouseSide,
@@ -504,6 +505,7 @@ class TestClickHouseToPostgres:
                 {
                     "sql": f"select {exported(_names(columns), targets, False)} "
                     f"from {CH_DATABASE}.src order by id settings {STRING_AS_STRING}",
+                    "wire": ChStreamWire.ARROW,
                     "chunk_bytes": CHUNK_BYTES,
                 },
             ),

@@ -217,7 +217,13 @@ class ArrowColumns:
             (TypeFamily.DATE, pyarrow.types.is_date, self._plain),
             (TypeFamily.TIMESTAMP, pyarrow.types.is_timestamp, self._timestamp),
             (TypeFamily.TIME, pyarrow.types.is_time, self._time),
+            (TypeFamily.UUID, self._is_uuid, self._plain),
         ]
+
+    @staticmethod
+    def _is_uuid(arrow: pyarrow.DataType) -> bool:
+        """Каноническое расширение arrow.uuid: так UUID отдаёт ClickHouse."""
+        return isinstance(arrow, pyarrow.UuidType)
 
     @staticmethod
     def _plain(family: TypeFamily, arrow: pyarrow.DataType, text: str) -> ColumnType:
