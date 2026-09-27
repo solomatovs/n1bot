@@ -51,12 +51,16 @@ export PATH="$DIR/build/chainlit/src/uv:$PATH"
 # python-oracledb в .venv идёт патченным колесом из build/chainlit/src/oracledb
 # (плоский индекс boba-wheels в pyproject); без него uv sync не соберёт окружение
 ORACLEDB_WHEELS="$DIR/build/chainlit/src/oracledb"
+ORACLEDB_PYTHON="$DIR/.venv/bin/python"
+if [ ! -d "$DIR/.venv" ]; then
+  ORACLEDB_PYTHON=python3
+fi
+
 if ! ls "$ORACLEDB_WHEELS"/oracledb-*.whl > /dev/null 2>&1; then
   echo "dev: собираю колесо python-oracledb: make -C build/chainlit oracledb-wheel"
-  if [ -d "$DIR/.venv" ]; then
-    make -C "$DIR/build/chainlit" oracledb-wheel
-  else
-    make -C "$DIR/build/chainlit" oracledb-wheel PYTHON=python3
+  if ! make -C "$DIR/build/chainlit" oracledb-wheel PYTHON="$ORACLEDB_PYTHON"; then
+    echo "dev: колесо python-oracledb не собралось, .venv не готовится" >&2
+    return 1 2> /dev/null || exit 1
   fi
 fi
 

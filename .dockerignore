@@ -3,15 +3,17 @@
 !pyproject.toml
 !uv.lock
 !packages
+!build
 
-!build/*/conf
-!build/*/scripts
+build/*/src/*
 !build/*/src/uv
 !build/*/src/webassets
 !build/*/src/*.tar.xz
 !build/*/src/chainlit-[0-9]*.tar.gz
+build/*/test
+build/*/packages
 
-packages/**/__pycache__
+**/__pycache__
 packages/**/*.egg-info
 packages/**/node_modules
 

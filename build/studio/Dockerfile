@@ -158,7 +158,7 @@ RUN ! ldd /out/fuse2fs | grep fuse && /out/fuse2fs -V
 RUN install -D -m 0755 misc/mke2fs /out/mke2fs && cp misc/mke2fs.conf /out/mke2fs.conf
 
 
-# артефакты песочницы для make sandbox: docker build --output, без образа
+# артефакты песочницы для make sandbox: make забирает /third и /tools через docker cp
 FROM scratch AS sandbox-out
 
 ARG LIBSTDCXX_VERSION=6.0.25
@@ -188,24 +188,6 @@ RUN uv export --frozen --all-packages --all-extras --no-emit-workspace --no-hash
         -o /tmp/wheels/constraints.txt
 
 
-# site-packages приложения: ставится по своему графу зависимостей, парсеры и
-# эмбеддер сюда не попадают — они объявлены как extra payload у tool-пакетов
-FROM base AS app-site
-
-ARG APP_PACKAGES="boba-studio boba-llm-http boba-llm-onnx boba-llm-fastembed"
-ARG APP_IMPORTS="boba.studio"
-
-COPY --from=boba-wheels /tmp/wheels/  /tmp/wheels/
-
-RUN uv pip install --python "$(command -v python3)" --target /opt/app-site \
-        --constraint /tmp/wheels/constraints.txt --find-links=/tmp/wheels \
-        ${APP_PACKAGES}
-
-ENV PYTHONPATH=/opt/app-site
-RUN for name in ${APP_IMPORTS}; do python3 -c "import $name; print('$name ok')"; done
-RUN pip3 list --path /opt/app-site --format=freeze | grep '^boba-' | cut -d= -f1 > /opt/app-packages.txt
-
-
 # --- образ корня одного плагина: make plugin-rootfs PLUGIN=<пакет> ---------------
 
 # site-packages плагина: закрытие payload одного пакета и его сборочные декларации
@@ -217,37 +199,54 @@ COPY --from=boba-wheels /tmp/wheels/          /tmp/wheels/
 COPY --from=boba-wheels /tmp/boba/packages/   /tmp/packages/
 COPY build/studio/scripts/plugin_rootfs.py  /tmp/plugin_rootfs.py
 
-RUN test -n "${PLUGIN}"
-RUN python3 /tmp/plugin_rootfs.py names /tmp/packages ${PLUGIN} > /tmp/names.txt && cat /tmp/names.txt
-RUN uv pip install --python "$(command -v python3)" --target /opt/site \
+# классический builder проходит все стадии до --target, и make build приходит сюда
+# с пустым PLUGIN. Тогда стадия отдаёт пустые заготовки, которые ждут plugin-root и
+# plugin-site-out, а шаги плагина пропускаются. make plugin-rootfs без PLUGIN не стартует
+RUN mkdir -p /opt/site /opt/code-sandbox /opt/plugin-root /opt/plugin-setup.d \
+    && : > /opt/plugin-apt.txt && : > /opt/plugin-data.txt
+
+RUN [ -z "${PLUGIN}" ] || { \
+        python3 /tmp/plugin_rootfs.py names /tmp/packages ${PLUGIN} > /tmp/names.txt && cat /tmp/names.txt; }
+RUN [ -z "${PLUGIN}" ] || uv pip install --python "$(command -v python3)" --target /opt/site \
         --constraint /tmp/wheels/constraints.txt --find-links=/tmp/wheels \
         $(cat /tmp/names.txt)
 
-RUN python3 /tmp/plugin_rootfs.py apt /tmp/packages ${PLUGIN} > /opt/plugin-apt.txt
-RUN python3 /tmp/plugin_rootfs.py data /tmp/packages ${PLUGIN} > /opt/plugin-data.txt
+RUN [ -z "${PLUGIN}" ] || python3 /tmp/plugin_rootfs.py apt /tmp/packages ${PLUGIN} > /opt/plugin-apt.txt
+RUN [ -z "${PLUGIN}" ] || python3 /tmp/plugin_rootfs.py data /tmp/packages ${PLUGIN} > /opt/plugin-data.txt
 
-RUN mkdir -p /opt/plugin-root \
-    && for root in $(python3 /tmp/plugin_rootfs.py root /tmp/packages ${PLUGIN}); do \
-           cp -a "$root/." /opt/plugin-root/; \
-       done
+RUN [ -z "${PLUGIN}" ] || for root in $(python3 /tmp/plugin_rootfs.py root /tmp/packages ${PLUGIN}); do \
+        cp -a "$root/." /opt/plugin-root/; \
+    done
 
-RUN mkdir -p /opt/plugin-setup.d && index=0 \
+RUN [ -z "${PLUGIN}" ] || { index=0 \
     && for setup in $(python3 /tmp/plugin_rootfs.py setup /tmp/packages ${PLUGIN}); do \
            cp "$setup" "/opt/plugin-setup.d/$index.sh"; index=$((index + 1)); \
-       done
+       done; }
 
 ENV PYTHONPATH=/opt/site
-RUN for name in $(python3 /tmp/plugin_rootfs.py imports /tmp/packages ${PLUGIN}); do \
+RUN [ -z "${PLUGIN}" ] || for name in $(python3 /tmp/plugin_rootfs.py imports /tmp/packages ${PLUGIN}); do \
         python3 -c "import $name; print('$name ok')"; \
     done
 
-RUN mkdir -p /opt/code-sandbox \
-    && mv /opt/site/boba /opt/code-sandbox/boba \
-    && mv /opt/site/boba_*.dist-info /opt/code-sandbox/ \
-    && echo /usr/src > /opt/site/boba-src.pth
+RUN [ -z "${PLUGIN}" ] || { \
+        mv /opt/site/boba /opt/code-sandbox/boba \
+        && mv /opt/site/boba_*.dist-info /opt/code-sandbox/ \
+        && echo /usr/src > /opt/site/boba-src.pth; }
 
 # гость зиготы стартует в образе без биндов кода: контракт проверяется здесь
-RUN PYTHONPATH=/opt/code-sandbox:/opt/site python3 -c "import boba.sandbox.guest; print('guest ok')"
+RUN [ -z "${PLUGIN}" ] || PYTHONPATH=/opt/code-sandbox:/opt/site python3 -c "import boba.sandbox.guest; print('guest ok')"
+
+
+# site-packages и код плагина по путям корня: make plugin-rootfs забирает /usr этой
+# стадии docker cp и стримит в mke2fs вторым tar'ом после plugin-root.
+# Стадия стоит сразу за plugin-site: классический builder собирает все стадии до
+# --target, и sandbox-base с plugin-root ради неё не пересобираются
+FROM scratch AS plugin-site-out
+
+ARG PYTHON_VERSION=3.11
+
+COPY --from=plugin-site /opt/site          /usr/local/lib/python${PYTHON_VERSION}/site-packages
+COPY --from=plugin-site /opt/code-sandbox  /usr/src
 
 
 # общая база корней плагинов: glibc, нативные зависимости, одинаковые у всех
@@ -268,7 +267,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends        \
 
 COPY --from=base /usr/lib/x86_64-linux-gnu/libstdc++.so.${LIBSTDCXX_VERSION}  /usr/lib/x86_64-linux-gnu/
 COPY --from=base /usr/lib/x86_64-linux-gnu/libgcc_s.so.1                      /lib/x86_64-linux-gnu/
-COPY --from=python-slim /python/                                               /usr/local/
+COPY --from=python-slim /python/                                              /usr/local/
 RUN rm -f /usr/lib/x86_64-linux-gnu/libstdc++.so.${LIBSTDCXX_OLD} \
     && ln -sf libstdc++.so.${LIBSTDCXX_VERSION} /usr/lib/x86_64-linux-gnu/libstdc++.so.6 \
     && ldconfig
@@ -281,8 +280,7 @@ RUN mkdir -p /usr/src /workspace /mnt/pgsock
 
 # корень одного плагина поверх базы: apt и оверлей из декларации, точки монтирования.
 # site-packages сюда не копируются: make plugin-rootfs стримит эту стадию и
-# plugin-site двумя tar'ами в mke2fs (docker build --output type=tar), ext4 и
-# копии site в build cache не оседают
+# plugin-site-out двумя tar'ами (docker cp в stdout) в mke2fs, ext4 нигде не оседает
 FROM sandbox-base AS plugin-root
 
 ARG BOBA_DIR=/app/boba
@@ -317,6 +315,26 @@ RUN mkdir -p "${BOBA_DIR}/conf/krb" "${SANDBOX_DEV_KRB}"
 
 
 # --- фронт: стадии node, на хосте node не нужен -----------------------------------
+
+# site-packages приложения: ставится по своему графу зависимостей, парсеры и
+# эмбеддер сюда не попадают — они объявлены как extra payload у tool-пакетов
+# стоит после стадий плагинов: классический builder проходит все стадии до --target,
+# и make plugin-rootfs не должен ради корня плагина ставить всё приложение
+FROM base AS app-site
+
+ARG APP_PACKAGES="boba-studio boba-llm-http boba-llm-onnx boba-llm-fastembed"
+ARG APP_IMPORTS="boba.studio"
+
+COPY --from=boba-wheels /tmp/wheels/  /tmp/wheels/
+
+RUN uv pip install --python "$(command -v python3)" --target /opt/app-site \
+        --constraint /tmp/wheels/constraints.txt --find-links=/tmp/wheels \
+        ${APP_PACKAGES}
+
+ENV PYTHONPATH=/opt/app-site
+RUN for name in ${APP_IMPORTS}; do python3 -c "import $name; print('$name ok')"; done
+RUN pip3 list --path /opt/app-site --format=freeze | grep '^boba-' | cut -d= -f1 > /opt/app-packages.txt
+
 
 # контракт api: OpenAPI-документ из установленного приложения, без хоста и конфига
 FROM app-site AS openapi
