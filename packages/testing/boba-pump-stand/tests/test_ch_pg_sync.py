@@ -510,6 +510,8 @@ class TestServerTraps:
     ) -> None:
         """FixedString дополняется NUL-байтами, text postgres их не принимает:
         транзакция откатывается, таблицы нет."""
+        await postgres.execute([f"drop table if exists {PG_SCHEMA}.fixed"])
+
         with pytest.raises(psycopg.Error, match="0x00"):
             await land(
                 clickhouse,

@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "boba-tool-oracle"
 version = "0.0.24.dev2"
-description = "Oracle-инструменты: запрос, описание словаря через all_* и насосы перекачки CSV; соединение и запрос идут из песочницы."
+description = "Oracle-инструменты: запрос, описание словаря через all_* и насосы перекачки потоком Arrow; соединение и запрос идут из песочницы."
 requires-python = ">=3.11,<4"
 dependencies = [
     "boba-toolkit==0.0.24.dev2",

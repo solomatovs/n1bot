@@ -192,7 +192,8 @@ class ColumnVerdict:
 class TypeComparer:
     """Правила совместимости типа потока (source) с типом колонки приёмника
     (target):
-        - семейство типов совпадает
+        - семейство типов совпадает; целое ложится и в decimal без дробной
+            части, когда разрядов хватает на его величину
         - целые и float — ширина приёмника не меньше
         - decimal — precision и scale приёмника не меньше
             шире — предупреждение
@@ -208,6 +209,20 @@ class TypeComparer:
     exact — источник и приёмник один движок: сверх семейства сравнивается
     текст типа, расхождение при совместимых семействах — предупреждение.
     """
+
+    INTEGER_DIGITS: ClassVar[Mapping[tuple[int, bool], int]] = {
+        (1, False): 1,
+        (1, True): 1,
+        (8, False): 3,
+        (8, True): 3,
+        (16, False): 5,
+        (16, True): 5,
+        (32, False): 10,
+        (32, True): 10,
+        (64, False): 19,
+        (64, True): 20,
+    }
+    """Десятичных разрядов хватает на любое целое такой ширины и знака."""
 
     def __init__(self, exact: bool) -> None:
         self._exact = exact
@@ -232,6 +247,9 @@ class TypeComparer:
     def _kinds(self, source: ColumnSpec, target: ColumnSpec) -> ColumnVerdict:
         src = source.kind
         tgt = target.kind
+        if src.family is TypeFamily.INTEGER and tgt.family is TypeFamily.DECIMAL:
+            return self._integer_into_decimal(src, tgt)
+
         if src.family is not tgt.family:
             return ColumnVerdict(
                 Verdict.ERROR,
@@ -256,6 +274,40 @@ class TypeComparer:
             return ColumnVerdict(Verdict.OK, "ok")
 
         return rule(source, target)
+
+    def _integer_into_decimal(self, src: ColumnType, tgt: ColumnType) -> ColumnVerdict:
+        """Целое в decimal без дробной части: у движка без целых типов
+        (Oracle NUMBER(19)) это единственная колонка под int64. Разрядов
+        приёмника должно хватить на величину целого; без точности — хватит."""
+        if tgt.scale != 0:
+            return ColumnVerdict(
+                Verdict.ERROR,
+                f"type family differs: stream {src.text}, table {tgt.text}",
+            )
+
+        if tgt.precision == 0:
+            return ColumnVerdict(Verdict.OK, "ok")
+
+        digits = self.INTEGER_DIGITS.get((src.bits, src.unsigned), 0)
+        if digits == 0:
+            return ColumnVerdict(
+                Verdict.ERROR,
+                f"type family differs: stream {src.text}, table {tgt.text}",
+            )
+
+        if digits > tgt.precision:
+            return ColumnVerdict(
+                Verdict.ERROR,
+                f"table {tgt.text} holds fewer integer digits than stream {src.text}",
+            )
+
+        if digits < tgt.precision:
+            return ColumnVerdict(
+                Verdict.WARNING,
+                f"table {tgt.text} is wider than stream {src.text}",
+            )
+
+        return ColumnVerdict(Verdict.OK, "ok")
 
     def _width(self, source: ColumnSpec, target: ColumnSpec) -> ColumnVerdict:
         """Сравнивается величина, а не ширина: у знакового на бит меньше —

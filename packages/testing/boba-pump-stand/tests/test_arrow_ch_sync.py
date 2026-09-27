@@ -497,8 +497,9 @@ class TestExistingTable:
 
 
 class TestOracleSource:
-    """Oracle -> ClickHouse через ora_sync_out и ch_sync_in: NUMBER с точностью
-    — Decimal, VARCHAR2 — String, DATE и TIMESTAMP — DateTime64."""
+    """Oracle -> ClickHouse через ora_sync_out и ch_sync_in: целый NUMBER до 18
+    знаков — Int64, NUMBER с дробью — Decimal, VARCHAR2 — String, DATE и
+    TIMESTAMP — DateTime64."""
 
     async def test_oracle_lands(
         self, oracle: OracleSide, clickhouse: ClickHouseSide
@@ -540,7 +541,7 @@ class TestOracleSource:
         types = dict(await landed.types())
 
         assert f"{ROWS} rows written" in chained.in_report
-        assert types["id"] == "Decimal(10, 0)"
+        assert types["id"] == "Int64"
         assert types["amount"] == "Nullable(Decimal(18, 4))"
         assert types["name"] == "Nullable(String)"
         assert types["ts"].startswith("Nullable(DateTime64(")

@@ -22,10 +22,8 @@ UserConnection]`). Тело инструмента живёт в песочни�
 | `ora_database_describe` | сервис, контейнер, баннер версии, кодировка; грантов не требует |
 | `ora_schema_describe`, `ora_table_describe`, `ora_column_describe`, `ora_constraints_describe`, `ora_indexes_describe`, `ora_routines_describe`, `ora_sequences_describe`, `ora_types_describe` | описание словаря по `all_*`; `*` в фильтре схемы скрывает служебные схемы Oracle |
 | `ora_address` | базовый url соединения `oracle://host:port/service`, роли объекта в query |
-| `ora_csv_out` | насос выгрузки: строки запроса CSV-байтами в выходной порт |
-| `ora_csv_in` | насос загрузки: CSV из входного порта в таблицу пачками `executemany` |
-| `ora_arrow_out` | насос выгрузки: строки запроса потоком Arrow IPC в выходной порт |
-| `ora_arrow_in` | насос загрузки: поток Arrow IPC из входного порта в таблицу, пачка — одна команда `executemany` |
+| `ora_sync_out` | насос выгрузки: строки запроса потоком Arrow IPC в выходной порт с контрактом колонок для приёмника |
+| `ora_sync_in` | насос загрузки: поток Arrow любого источника в таблицу со стратегиями схемы, удаления и вставки |
 
 Окно `offset`/`limit` режется на стороне инструмента (`RowPage`), поэтому `offset
 ... fetch` в запрос подставлять не нужно и оно работает на любой версии сервера.
@@ -34,35 +32,36 @@ UserConnection]`). Тело инструмента живёт в песочни�
 
 ## Насосы перекачки
 
-Между узлами цепочки идёт CSV без заголовка. Два конца различаются тем, как
-записан NULL, потому что так устроены их драйверы:
+У Oracle нет серверного текстового потока, поэтому оба насоса работают на Arrow:
+драйвер python-oracledb отдаёт и принимает пачки Arrow напрямую, значения в
+Python не разбираются.
 
-- `ora_csv_out` пишет пачками Arrow через pyarrow: NULL это пустое поле, строка с
-  запятой, кавычкой или переводом строки в кавычках, даты ISO с пробелом. Это
-  формат `COPY t FROM STDIN (FORMAT CSV)` postgres по умолчанию. Запрос обязан сам
-  привести три типа: `RAW` и `BLOB` через `rawtohex`, `INTERVAL` через `to_char`,
-  `NUMBER` с дробью без объявленной точности через `to_char` или `cast`.
-- `ora_csv_in` ждёт NULL как `\N`, бинарное поле шестнадцатеричной строкой с
-  префиксом `\x` (так postgres пишет `bytea`), даты ISO. Это `COPY (...) TO STDOUT
-  (FORMAT CSV, NULL '\N')` postgres. Типы полей берутся по описанию колонок
-  приёмника, `TIMESTAMP` и бинарные колонки биндятся явным типом, чтобы не потерять
-  доли секунды и байты. Вся загрузка одна транзакция: ошибка откатывает всё.
+- `ora_sync_out(sql, columns)` разбирает стейтмент на сервере (`parse`, без
+  выполнения) и шлёт первым кадром контракт колонок: типы, точность, `null_ok`,
+  тексты типов Oracle; декларации `columns` ложатся поверх. Дальше пачки
+  драйвера по `arraysize` строк уходят в порт как есть. Типы, которые драйвер в
+  Arrow не отдаёт или отдаёт с потерей (INTERVAL, XMLTYPE, JSON, VECTOR, ROWID,
+  TIMESTAMP WITH TIME ZONE), отвергаются до выполнения с подсказкой, чем их
+  привести в `select`. Имена колонок — заглавные, как у Oracle; строчные — алиас
+  в кавычках.
+- `ora_sync_in(schema_name, table_name, schema_strategy, delete_strategy,
+  insert_strategy, rules, unknown_types, create_table, chunk_bytes, before, after)`
+  сверяет контракт потока с таблицей по `all_tab_columns`, создаёт или
+  пересоздаёт её по шаблону `create_table` и кладёт пачки одной командой
+  `executemany` на пачку. Целые ложатся `NUMBER(p)`, decimal — `NUMBER(p, s)`,
+  строки — `VARCHAR2(n CHAR)` или `CLOB`, моменты — `TIMESTAMP(p)`, uuid и time
+  — строками, boolean — `BOOLEAN` на 23 и `NUMBER(1)` раньше. Колонки LOB в
+  insert ставятся последними сами (ORA-24816), сессия переводится в UTC. DDL
+  Oracle фиксирует сам; удаление и вставка вместе с `before` и `after` — одна
+  транзакция.
 
-Поток Arrow IPC (`ora_arrow_out`, `ora_arrow_in`) везёт значения своими типами:
-насосы объявляют порты `ArrowOutbound`/`ArrowInbound` из `boba.toolkit.arrow`,
-пачки драйвера уходят в порт как есть, а на загрузке драйвер берёт bind'ы прямо
-из массивов Arrow. Типы колонок выборки насосы узнают у сервера разбором
-стейтмента (`parse`), сам запрос выполняется один раз. Имена колонок в схеме — заглавные, как у Oracle; колонки
-приёмника берутся по именам полей схемы. LOB-колонки в `select` ставятся
-последними (ORA-24816).
+Скорость на стенде: выгрузка 360–400 тысяч строк в секунду, загрузка 150 тысяч
+на Oracle 23 и 30 тысяч на 12.2.
 
-Скорость на стенде: выгрузка CSV 328 тысяч строк в секунду, загрузка CSV около
-50 тысяч, узкое место загрузки — разбор CSV и приведение типов в Python.
-
-Цепочки `ora_sync_out -> pg_sync_in` и `pg_sync_out -> ora_csv_in` проверены
-круговым тестом `tests/test_ora_csv.py` на Oracle 12.2, 18, 21 и 23; матрицы
-всех типов против PostgreSQL и ClickHouse, ловушки, нагрузка и Arrow — в
-`packages/testing/boba-pump-stand`, сводка в `docs/etl_skill.md`.
+Матрицы всех типов против PostgreSQL и ClickHouse, стратегии приёмника и отказы
+источника — в `packages/testing/boba-pump-stand` (`test_ora_sync.py`,
+`test_pg_arrow.py`, `test_ch_arrow.py`, `test_arrow_ch_sync.py`), сводка в
+`docs/etl_skill.md`.
 
 ## Стенд
 

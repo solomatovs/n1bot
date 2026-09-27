@@ -103,7 +103,8 @@ class ReadTuning:
     раз; пока потребитель успевает, блок потока равен одному такому чтению.
     По умолчанию 256 КиБ. Меняется у транспорта этого соединения и
     возвращается при закрытии потока; есть только у селекторного цикла
-    asyncio, под uvloop вызов отклоняется.
+    asyncio, под uvloop вызов отклоняется. Короткий ответ успевает прийти
+    целиком до настройки — тогда менять нечего.
 
     read_buffer_size — нижняя граница буфера ответа aiohttp, верхняя вдвое
     больше. Когда потребитель отстаёт, накопленное отдаётся одним блоком, а
@@ -129,12 +130,11 @@ class ReadTuning:
         if size is None:
             return None
 
+        # aiohttp отпускает соединение, когда тело целиком в буфере
+        # читать сокету нечего
         connection = response.connection
         if connection is None:
-            raise ClickHouseQueryError(
-                "read tuning: socket_read_size expects an open connection of the "
-                "response, the response already released it"
-            )
+            return None
 
         transport = connection.transport
         if not isinstance(transport, SocketReadSize):

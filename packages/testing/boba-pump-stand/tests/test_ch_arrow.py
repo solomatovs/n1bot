@@ -1,7 +1,7 @@
-"""Перекачка из ClickHouse потоком Arrow IPC: ch_arrow_out против pg_arrow_in
-(каждый ClickHouse из ch_sources в каждый postgres и Greenplum из sources),
-ora_arrow_in (в каждый Oracle из ora_sources) и ch_arrow_in (круг ClickHouse
--> ClickHouse). Насосы соединены трубой ОС и работают одновременно.
+"""Перекачка из ClickHouse потоком Arrow IPC: ch_sync_out против pg_sync_in
+(каждый ClickHouse из ch_sources в каждый postgres и Greenplum из sources) и
+ora_sync_in (в каждый Oracle из ora_sources). Насосы соединены трубой ОС и
+работают одновременно; круг ClickHouse -> ClickHouse проверяет test_ch_sync.
 
 Таблица ClickHouse несёт все семейства типов: целые до 256 бит, Decimal до
 256 бит, Float с NaN и бесконечностями, String и FixedString с NUL,
@@ -40,7 +40,6 @@ from boba.pump_stand.compare import (
     FLOAT32,
     NUMBER,
     UUID,
-    Report,
     Values,
 )
 from boba.pump_stand.matrix import (
@@ -48,11 +47,12 @@ from boba.pump_stand.matrix import (
     compared,
     exported,
     first,
-    insert_into,
 )
+from boba.pump_stand.oracle import PumpUser
 from boba.toolkit.transfer import (
     CreateIfNotExists,
     DeleteNothing,
+    ErrorIfNotExists,
     InsertFull,
 )
 
@@ -233,7 +233,7 @@ CH_COLUMNS = (
             ref="encode(fs, 'hex')",
             src_ref="hex(fs)",
         ),
-        Target("raw(4)", out="hex(fs)", src_ref="hex(fs)"),
+        Target("varchar2(8)", out="hex(fs)", src_ref="hex(fs)"),
     ),
     ChColumn(
         "lc",
@@ -302,7 +302,7 @@ CH_COLUMNS = (
         "generateUUIDv4()",
         UUID,
         Target("uuid", out="toString(u)", src_ref="toString(u)"),
-        Target("raw(16)", out="hex(u)", src_ref="hex(u)"),
+        Target("varchar2(32)", out="hex(u)", src_ref="hex(u)"),
         circle_major=26,
     ),
     ChColumn(
@@ -565,18 +565,23 @@ class TestClickHouseToOracle:
         try:
             chained = await pumps.chain(
                 Leg(
-                    "ch_arrow_out",
+                    "ch_sync_out",
                     {
                         "sql": f"select {exported(_names(columns), targets, False)} "
                         f"from {CH_DATABASE}.src order by id "
                         f"settings {STRING_AS_STRING}",
+                        "wire": ChStreamWire.ARROW,
                         "chunk_bytes": CHUNK_BYTES,
                     },
                 ),
                 Leg(
-                    "ora_arrow_in",
+                    "ora_sync_in",
                     {
-                        "sql": insert_into(table, [c.name for c in columns]),
+                        "schema_name": PumpUser.NAME.value,
+                        "table_name": table,
+                        "schema_strategy": ErrorIfNotExists(kind="error_if_not_exists"),
+                        "delete_strategy": DeleteNothing(kind="nothing"),
+                        "insert_strategy": InsertFull(kind="full"),
                         "chunk_bytes": CHUNK_BYTES,
                     },
                 ),
@@ -604,56 +609,5 @@ class TestClickHouseToOracle:
             expected,
             landed,
         )
-
-        assert not report.mismatches, report.render()
-
-
-class TestClickHouseToClickHouse:
-    async def test_native_types_survive_the_circle(self, clickhouse: Source) -> None:
-        columns: list[ChColumn] = []
-        for column in clickhouse.columns():
-            if clickhouse.side.major < column.circle_major:
-                continue
-
-            columns.append(column)
-
-        names = ", ".join(_names(columns))
-        await clickhouse.side.create(
-            "circle", [f"{c.name} {c.ch_type}" for c in columns]
-        )
-        pumps = Pumps(clickhouse=clickhouse.side.profile)
-        chained = await pumps.chain(
-            Leg(
-                "ch_arrow_out",
-                {
-                    "sql": f"select {names} from {CH_DATABASE}.src order by id "
-                    f"settings {STRING_AS_STRING}",
-                    "chunk_bytes": CHUNK_BYTES,
-                },
-            ),
-            Leg(
-                "ch_arrow_in",
-                {
-                    "sql": f"insert into {CH_DATABASE}.circle format ArrowStream",
-                    "chunk_bytes": CHUNK_BYTES,
-                },
-            ),
-        )
-        assert chained.in_report.startswith(f"{ROWS} rows written")
-
-        refs = [f"toString({c.name})" for c in columns]
-        expected = await clickhouse.side.select("src", refs)
-        landed = await clickhouse.side.select("circle", refs)
-        report = Report()
-        ids = [row[0] for row in expected]
-        for position, column in enumerate(columns):
-            report.compare(
-                column.name,
-                EXACT,
-                0.0,
-                ids,
-                [row[position] for row in expected],
-                [row[position] for row in landed],
-            )
 
         assert not report.mismatches, report.render()

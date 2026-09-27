@@ -46,10 +46,8 @@ from boba.toolkit.transfer import (
     ColumnRules,
     CreateTemplate,
     DeleteStrategy,
-    Engine,
     FailOnUnknown,
     InsertStrategy,
-    RawHead,
     SchemaStrategy,
     StreamWire,
     TransferError,
@@ -1061,182 +1059,6 @@ async def ch_edm_descriptions(  # noqa: PLR0913
 
 
 @tool
-async def ch_stream_out(  # noqa: PLR0913
-    connection: ChConnection,
-    sql: Annotated[
-        str,
-        Field(
-            min_length=1,
-            description=(
-                "Запрос ClickHouse целиком, с FORMAT в конце: "
-                "SELECT ... FROM db.t FORMAT TabSeparated. Ответ сервера уходит "
-                "следующему узлу байтами как есть, поэтому формат обязан "
-                "совпадать с тем, что ждёт приёмник. Без FORMAT сервер отдаёт "
-                "TabSeparated. Настройки формата пишутся в запросе: SELECT ... "
-                "SETTINGS output_format_json_quote_denormals = 1 FORMAT "
-                "JSONEachRow. В TabSeparated NULL это \\N, в CSV тоже \\N; "
-                "с именами и типами колонок в шапке — TabSeparatedWithNamesAndTypes."
-            ),
-        ),
-        MarkdownResult(language="sql"),
-    ],
-    chunk_bytes: ChunkBytes,
-    before: BeforeSteps = (),
-    after: AfterSteps = (),
-    *,
-    out: Annotated[Outbound[TransferFrame], Injected],
-) -> MarkdownResult:
-    """Насос выгрузки: ответ запроса сырыми байтами в выходной порт.
-
-    Данные идут в выходной порт другому насосу, а не в чат. Формат и
-    настройки задаёт текст запроса, инструмент его не разбирает и отдаёт
-    блоки ответа как пришли; размер блока — chunk_bytes. Стейтменты before
-    и after идут в той же сессии сервера до и после запроса.
-    """
-    from boba.db.clickhouse.payload import (  # noqa: PLC0415
-        PayloadClickHouse,
-        ReadTuning,
-    )
-
-    payload = PayloadClickHouse
-    statement = ChQueryBuilder().raw_query(sql).build()
-    tuning = ReadTuning(socket_read_size=chunk_bytes, read_buffer_size=chunk_bytes)
-    outbound = TransferOutbound(out)
-    await outbound.schema(RawHead(kind="raw", source_engine=Engine.CLICKHOUSE))
-    async with payload.opened_session(connection) as client:
-        before_steps = await payload.script(client, before)
-
-        async with payload.byte_stream_out(
-            client, statement.text, tuning=tuning
-        ) as stream:
-            total = 0
-            async for block in stream.blocks:
-                total += len(block)
-                await outbound.rows(block)
-
-            report = stream.trace.report(f"copied out {total} bytes", statement.text)
-
-        after_steps = await payload.script(client, after)
-
-    return MarkdownResult(text=report.scripted(before_steps, after_steps).render())
-
-
-@tool
-async def ch_stream_in(  # noqa: PLR0913
-    connection: ChConnection,
-    sql: Annotated[
-        str,
-        Field(
-            min_length=1,
-            description=(
-                "Стейтмент INSERT целиком, с FORMAT в конце: "
-                "INSERT INTO db.t (id, name) FORMAT TabSeparated. Тело приходит "
-                "от предыдущего узла байтами как есть, формат обязан совпадать с "
-                "тем, что отдал источник. Настройки пишутся перед FORMAT: "
-                "INSERT INTO db.t SETTINGS input_format_skip_unknown_fields = 0 "
-                "FORMAT JSONEachRow. Привести типы или переименовать колонки на "
-                "лету можно табличной функцией input: INSERT INTO db.t SELECT "
-                "toUInt64(c1), upper(c2) FROM input('c1 String, c2 String') "
-                "FORMAT CSV. Форматы с именами в шапке сопоставляют колонки по "
-                "именам, лишнюю колонку сервер молча пропускает."
-            ),
-        ),
-        MarkdownResult(language="sql"),
-    ],
-    chunk_bytes: ChunkBytes,
-    before: BeforeSteps = (),
-    after: AfterSteps = (),
-    *,
-    feed: Annotated[Inbound[TransferFrame], Injected],
-) -> MarkdownResult:
-    """Насос загрузки: тело из входного порта одним INSERT ... FORMAT.
-
-    Данные приходят во входной порт от другого насоса и уезжают
-    серверу как есть, блоками по chunk_bytes, без разбора на клиенте;
-    стейтмент тоже уходит как написан. Стейтменты before и after идут в
-    той же сессии сервера до и после INSERT: временная таблица из before
-    видна INSERT и after. В ответ — число записанных строк по сводке
-    сервера и шаги скриптов.
-    """
-    from boba.db.clickhouse.payload import PayloadClickHouse  # noqa: PLC0415
-
-    payload = PayloadClickHouse
-    statement = ChQueryBuilder().raw_query(sql).build()
-    inbound = TransferInbound(feed)
-    await inbound.get_head()
-    async with payload.opened_session(connection) as client:
-        before_steps = await payload.script(client, before)
-        trace = await payload.byte_stream_in(
-            client, statement.text, blocks=inbound.bodies()
-        )
-        after_steps = await payload.script(client, after)
-
-    report = trace.report(f"{trace.written_rows} rows written", statement.text)
-
-    return MarkdownResult(text=report.scripted(before_steps, after_steps).render())
-
-
-@tool
-async def ch_arrow_out(  # noqa: PLR0913
-    connection: ChConnection,
-    sql: Annotated[
-        str,
-        Field(
-            min_length=1,
-            description=(
-                "Запрос SELECT целиком, без FORMAT: формат ArrowStream добавляет "
-                "инструмент. Ответ уходит следующему узлу потоком Arrow IPC: "
-                "схема, затем пачки записей. Настройки пишутся в запросе: "
-                "SELECT ... SETTINGS output_format_arrow_string_as_string = 1. "
-                "Что приводить для приёмника Oracle: DateTime — "
-                "toDateTime64(col, 0, 'UTC') (иначе uint32), Bool — toUInt8(col), "
-                "UUID и String с байтами — hex(col)."
-            ),
-        ),
-        MarkdownResult(language="sql"),
-    ],
-    chunk_bytes: ChunkBytes,
-    before: BeforeSteps = (),
-    after: AfterSteps = (),
-    *,
-    out: Annotated[Outbound[TransferFrame], Injected],
-) -> MarkdownResult:
-    """Насос выгрузки потоком Arrow IPC: ch_stream_out с форматом ArrowStream,
-    который дописывает драйвер; сервер пишет поток сам, блоки уходят в порт
-    как пришли. Стейтменты before и after идут в той же сессии сервера до и
-    после запроса.
-    """
-    from boba.db.clickhouse.payload import (  # noqa: PLC0415
-        PayloadClickHouse,
-        ReadTuning,
-    )
-
-    payload = PayloadClickHouse
-    statement = ChQueryBuilder().raw_query(sql).build()
-    tuning = ReadTuning(socket_read_size=chunk_bytes, read_buffer_size=chunk_bytes)
-    outbound = TransferOutbound(out)
-    await outbound.schema(RawHead(kind="raw", source_engine=Engine.CLICKHOUSE))
-    async with payload.opened_session(connection) as client:
-        before_steps = await payload.script(client, before)
-
-        async with payload.byte_stream_out(
-            client, statement.text, "ArrowStream", tuning=tuning
-        ) as stream:
-            total = 0
-            async for block in stream.blocks:
-                total += len(block)
-                await outbound.rows(block)
-
-            report = stream.trace.report(
-                f"streamed out arrow ipc: {total} bytes", statement.text
-            )
-
-        after_steps = await payload.script(client, after)
-
-    return MarkdownResult(text=report.scripted(before_steps, after_steps).render())
-
-
-@tool
 async def ch_sync_out(  # noqa: PLR0913
     connection: ChConnection,
     sql: Annotated[
@@ -1275,6 +1097,8 @@ async def ch_sync_out(  # noqa: PLR0913
         ),
     ] = (),
     chunk_bytes: ChunkBytes = 262144,
+    before: BeforeSteps = (),
+    after: AfterSteps = (),
     *,
     out: Annotated[Outbound[TransferFrame], Injected],
 ) -> MarkdownResult:
@@ -1284,8 +1108,9 @@ async def ch_sync_out(  # noqa: PLR0913
     TabSeparatedWithNamesAndTypes, две строки шапки уходят кадром schema как
     контракт с текстами типов ClickHouse, остальные байты — кадрами rows как
     TabSeparated. arrow: ответ идёт в ArrowStream, первый кадр — контракт из
-    его схемы с декларациями columns поверх, дальше те же пачки Arrow IPC. В
-    ответ — состав контракта и сводка сервера.
+    его схемы с декларациями columns поверх, дальше те же пачки Arrow IPC.
+    Стейтменты before и after идут в той же сессии сервера до и после
+    запроса. В ответ — состав контракта, сводка сервера и шаги скриптов.
     """
     from boba.db.clickhouse.payload import PayloadClickHouse  # noqa: PLC0415
     from boba.db.clickhouse.sync import ChSyncSource  # noqa: PLC0415
@@ -1299,7 +1124,8 @@ async def ch_sync_out(  # noqa: PLR0913
 
     statement = ChQueryBuilder().raw_query(sql).build()
     outbound = TransferOutbound(out)
-    async with PayloadClickHouse.opened_config(connection) as client:
+    async with PayloadClickHouse.opened_session(connection) as client:
+        before_steps = await PayloadClickHouse.script(client, before)
         match wire:
             case ChStreamWire.TSV:
                 report = await ChTsvOut(client).stream(
@@ -1310,7 +1136,9 @@ async def ch_sync_out(  # noqa: PLR0913
                     statement.text, columns, chunk_bytes, outbound
                 )
 
-    return MarkdownResult(text=report.render())
+        after_steps = await PayloadClickHouse.script(client, after)
+
+    return MarkdownResult(text=report.scripted(before_steps, after_steps).render())
 
 
 class ChTransferReportText:
@@ -1527,55 +1355,6 @@ async def ch_sync_in(  # noqa: PLR0913
 
 
 @tool
-async def ch_arrow_in(  # noqa: PLR0913
-    connection: ChConnection,
-    sql: Annotated[
-        str,
-        Field(
-            min_length=1,
-            description=(
-                "Стейтмент INSERT целиком с FORMAT ArrowStream в конце: "
-                "INSERT INTO db.t FORMAT ArrowStream. Тело — поток Arrow IPC от "
-                "предыдущего узла, колонки сопоставляются по именам полей схемы. "
-                "Если источник — Oracle, имена в схеме заглавные: INSERT INTO "
-                "db.t SETTINGS input_format_arrow_case_insensitive_column_matching "
-                "= 1 FORMAT ArrowStream, иначе новые версии сервера молча пишут "
-                "значения по умолчанию, а 22.12 отвечает THERE_IS_NO_COLUMN. "
-                "Nullable-колонки таблицы принимают null-биты Arrow, обычные "
-                "получают значение по умолчанию."
-            ),
-        ),
-        MarkdownResult(language="sql"),
-    ],
-    chunk_bytes: ChunkBytes,
-    before: BeforeSteps = (),
-    after: AfterSteps = (),
-    *,
-    feed: Annotated[Inbound[TransferFrame], Injected],
-) -> MarkdownResult:
-    """Насос загрузки потоком Arrow IPC: ch_stream_in для тела Arrow, поток
-    уходит серверу как есть, разбирает его сервер. Стейтменты before и after
-    идут в той же сессии сервера до и после INSERT.
-    """
-    from boba.db.clickhouse.payload import PayloadClickHouse  # noqa: PLC0415
-
-    payload = PayloadClickHouse
-    statement = ChQueryBuilder().raw_query(sql).build()
-    inbound = TransferInbound(feed)
-    await inbound.get_head()
-    async with payload.opened_session(connection) as client:
-        before_steps = await payload.script(client, before)
-        trace = await payload.byte_stream_in(
-            client, statement.text, blocks=inbound.bodies()
-        )
-        after_steps = await payload.script(client, after)
-
-    report = trace.report(f"{trace.written_rows} rows written", statement.text)
-
-    return MarkdownResult(text=report.scripted(before_steps, after_steps).render())
-
-
-@tool
 async def ch_address(connection: ChConnection) -> TableResult:
     """Базовый url соединения ClickHouse: clickhouse://host:port/database.
 
@@ -1617,12 +1396,8 @@ TOOLS: Final = ToolMain.toolset(
     ch_types_describe,
     ch_edm_structure,
     ch_edm_descriptions,
-    ch_stream_out,
-    ch_stream_in,
-    ch_arrow_out,
     ch_sync_out,
     ch_sync_in,
-    ch_arrow_in,
 )
 
 if __name__ == "__main__":

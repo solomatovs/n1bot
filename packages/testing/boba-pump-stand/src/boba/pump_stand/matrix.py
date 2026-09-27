@@ -65,7 +65,7 @@ def copy_into(table: str, names: Sequence[str]) -> str:
 
 
 def insert_into(table: str, names: Sequence[str]) -> str:
-    """Стейтмент ora_arrow_in и ora_csv_in: INSERT с bind'ами :1..:n по колонкам."""
+    """INSERT с bind'ами :1..:n по колонкам."""
     marks = ", ".join(f":{position}" for position in range(1, len(names) + 1))
 
     return f"insert into {table} ({', '.join(names)}) values ({marks})"  # noqa: S608
