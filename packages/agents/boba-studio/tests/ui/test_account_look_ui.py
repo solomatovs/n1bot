@@ -45,11 +45,11 @@ class Sel:
     ROW: ClassVar[str] = '[data-testid="connections-list"] .rows__row'
     ADD: ClassVar[str] = '[data-testid="add-connection"]'
     FORM: ClassVar[str] = '[data-testid="connection-form"]'
-    KIND: ClassVar[str] = 'select[aria-label="profile.kind"]'
-    AUTH_BLOCK: ClassVar[str] = 'fieldset[data-path="profile.auth"]'
-    AUTH_METHOD: ClassVar[str] = 'select[aria-label="profile.auth.method"]'
+    KIND: ClassVar[str] = 'select[aria-label="connection.kind"]'
+    AUTH_BLOCK: ClassVar[str] = 'fieldset[data-path="connection.auth"]'
+    AUTH_METHOD: ClassVar[str] = 'select[aria-label="connection.auth.method"]'
     POOL_TOGGLE: ClassVar[str] = (
-        'fieldset[data-path="profile.pool"] .schema-block__toggle'
+        'fieldset[data-path="connection.pool"] .schema-block__toggle'
     )
     FIELD_INVALID: ClassVar[str] = ".field--invalid"
     FIELD_ISSUE: ClassVar[str] = ".field__issue"
@@ -227,7 +227,7 @@ class TestAccount:
         expect(page.locator(Sel.ALERT_INFO)).to_contain_text("read-only")
         expect(page.locator(Sel.KIND)).to_have_value("web")
         expect(page.locator(Sel.KIND)).to_be_disabled()
-        expect(page.get_by_label("profile.host", exact=True)).to_be_disabled()
+        expect(page.get_by_label("connection.host", exact=True)).to_be_disabled()
         expect(page.get_by_role("button", name="save", exact=True)).to_have_count(0)
         expect(page.get_by_role("button", name="delete", exact=True)).to_have_count(0)
         expect(page.get_by_role("button", name="check", exact=True)).to_be_visible()
@@ -253,13 +253,13 @@ class TestSchemaForm:
         # секрет — password-поле, число — number, подсказка — из описания модели
         method.select_option("password")
         expect(
-            page.get_by_label("profile.auth.password", exact=True)
+            page.get_by_label("connection.auth.password", exact=True)
         ).to_have_attribute("type", "password")
-        expect(page.get_by_label("profile.port", exact=True)).to_have_attribute(
+        expect(page.get_by_label("connection.port", exact=True)).to_have_attribute(
             "type", "number"
         )
         hint = (
-            page.get_by_label("profile.host", exact=True)
+            page.get_by_label("connection.host", exact=True)
             .locator("xpath=..")
             .locator(Sel.FIELD_HINT)
         )
@@ -269,17 +269,17 @@ class TestSchemaForm:
         # вложенный объект по умолчанию свёрнут, раскрывается кнопкой
         toggle = page.locator(Sel.POOL_TOGGLE)
         expect(toggle).to_have_attribute("aria-expanded", "false")
-        expect(page.get_by_label("profile.pool.min_size", exact=True)).to_have_count(0)
+        expect(page.get_by_label("connection.pool.min_size", exact=True)).to_have_count(0)
         toggle.click()
         expect(toggle).to_have_attribute("aria-expanded", "true")
-        expect(page.get_by_label("profile.pool.min_size", exact=True)).to_have_value(
+        expect(page.get_by_label("connection.pool.min_size", exact=True)).to_have_value(
             "1"
         )
 
         # смена kind перестраивает поддерево: у web чекбокс TLS в строку
         page.locator(Sel.KIND).select_option("web")
         expect(page.locator(Sel.AUTH_METHOD)).to_have_value("none")
-        ssl = page.get_by_label("profile.ssl_verify", exact=True)
+        ssl = page.get_by_label("connection.ssl_verify", exact=True)
         expect(ssl).to_have_attribute("type", "checkbox")
         expect(ssl).to_be_checked()
         assert Css.of(ssl.locator("xpath=.."), "flex-direction") == "row"
@@ -289,15 +289,15 @@ class TestSchemaForm:
     ) -> None:
         _open_new_connection(page, stand)
         page.get_by_label("connection name").fill("look-invalid")
-        page.get_by_label("profile.host", exact=True).fill("db.test")
-        page.get_by_label("profile.dbname", exact=True).fill("boba")
+        page.get_by_label("connection.host", exact=True).fill("db.test")
+        page.get_by_label("connection.dbname", exact=True).fill("boba")
         page.locator(Sel.AUTH_METHOD).select_option("trust")
         page.get_by_role("button", name="save", exact=True).click()
 
         # user пуст: 422 от сервера подсвечивает именно это поле
         invalid = page.locator(Sel.FIELD_INVALID)
         expect(invalid).to_have_count(1)
-        expect(invalid).to_have_attribute("data-path", "profile.auth.user")
+        expect(invalid).to_have_attribute("data-path", "connection.auth.user")
         assert Css.of(invalid.locator(".input"), "border-top-color") == tokens.rgb(
             "error"
         )
@@ -311,10 +311,10 @@ class TestSchemaForm:
     ) -> None:
         _open_new_connection(page, stand)
         page.locator(Sel.KIND).select_option("web")
-        page.get_by_label("profile.scheme", exact=True).select_option("http")
-        page.get_by_label("profile.host", exact=True).fill("127.0.0.1")
-        page.get_by_label("profile.port", exact=True).fill(str(stand.config.llm_port))
-        page.get_by_label("profile.path", exact=True).fill("/health")
+        page.get_by_label("connection.scheme", exact=True).select_option("http")
+        page.get_by_label("connection.host", exact=True).fill("127.0.0.1")
+        page.get_by_label("connection.port", exact=True).fill(str(stand.config.llm_port))
+        page.get_by_label("connection.path", exact=True).fill("/health")
         page.get_by_role("button", name="check", exact=True).click()
 
         ok = page.locator(Sel.ALERT_OK)

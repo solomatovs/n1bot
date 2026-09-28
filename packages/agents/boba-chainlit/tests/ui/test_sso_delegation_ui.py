@@ -37,7 +37,12 @@ from boba.stand.ui.stand import (
     StandProcess,
     free_port,
 )
-from boba.transport.http import HttpRequest, HttpTransport, HttpTransportConfig
+from boba.transport.http import (
+    HttpRequest,
+    HttpStatusError,
+    HttpTransport,
+    HttpTransportConfig,
+)
 from boba.transport.http.connection import HttpConnection, NegotiateAuth, UrlScheme
 
 pytestmark = pytest.mark.ui
@@ -251,8 +256,8 @@ def _visit(connection: HttpConnection, request: HttpRequest) -> None:
 
     try:
         run_blocking(run())
-    except httpx.HTTPStatusError as exc:
-        if exc.response.status_code != 303:
+    except HttpStatusError as exc:
+        if exc.status != httpx.codes.SEE_OTHER:
             raise
 
 
