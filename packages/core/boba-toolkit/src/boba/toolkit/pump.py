@@ -14,6 +14,8 @@
   остаётся у вызывающего; PumpedCall наследует его и добавляет контракт
   ToolCall для потоковых инструментов.
 - CallSinks / Tee — сборка приёмников каналов вместе с журналом вызова.
+- CallInputs / HostGate — входы вызова по слотам и барьер группы: ответ
+  телу на StreamGroup.ready().
 
 Ошибки:
 LauncherError — вход вызова уже закрыт, у кадров уже есть читатель либо
@@ -30,7 +32,7 @@ import threading
 import time
 from abc import abstractmethod
 from collections.abc import Callable, Iterator, Mapping, Sequence
-from contextlib import ExitStack
+from contextlib import ExitStack, suppress
 from dataclasses import dataclass
 from typing import ClassVar, Generic, TypeVar
 
@@ -42,8 +44,15 @@ from boba.toolkit.frames import (
     FrameLimit,
     ToolFrame,
 )
-from boba.toolkit.launcher import CallInputPort, LauncherError, ToolCall, ToolOutcome
-from boba.toolkit.protocol import CallInputSpec
+from boba.toolkit.launcher import (
+    CallGate,
+    CallInputPort,
+    LauncherError,
+    ToolCall,
+    ToolOutcome,
+)
+from boba.toolkit.ports import GateSignal
+from boba.toolkit.protocol import CallGateMode, CallInputSpec
 from boba.toolkit.stream import Chunk, ChunkSink, ToolChannelsTap
 
 __all__ = [
@@ -52,6 +61,7 @@ __all__ = [
     "CallSinks",
     "ChannelPump",
     "FrameInput",
+    "HostGate",
     "JournaledFrameInput",
     "OpenRun",
     "PipePlumbing",
@@ -342,6 +352,104 @@ class RawInput(FrameInput):
             "use send_bytes"
         )
         raise LauncherError(msg)
+
+
+class HostGate(CallGate):
+    """Реализация CallGate на паре пайпов: gate от тела, verdict к телу.
+
+    Пайп gate читает насос вызова (watch регистрирует его событием
+    селектора), закрывают его каналы лончера вместе с прочими host-концами.
+    Сигнал готовности тела в режиме AUTO сразу разрешается, в HELD уходит
+    владельцу через claim. Ответ пишется один раз и закрывает verdict —
+    повторный ответ ничего не делает; close закрывает verdict без ответа, и
+    тело, ждущее барьера, увидит EOF как запрет. Создаётся лончером на
+    каждый вызов.
+    """
+
+    READ_BYTES: ClassVar[int] = 64
+
+    def __init__(self, verdict_fd: int, mode: CallGateMode) -> None:
+        self._verdict_fd = verdict_fd
+        self._mode = mode
+        self._lock = threading.Lock()
+        self._on_ready: Callable[[], None] = self.release
+        self._claimed = False
+        self._arrived = False
+        self._answered = False
+
+    def watch(self, pump: ChannelPump, gate_fd: int) -> None:
+        """Отдать пайп gate насосу: сигналы тела читаются его потоком."""
+        os.set_blocking(gate_fd, False)
+
+        def readable() -> None:
+            self._read(pump, gate_fd)
+
+        pump.add_event(gate_fd, readable)
+
+    def claim(self, on_ready: Callable[[], None]) -> None:
+        with self._lock:
+            self._on_ready = on_ready
+            self._claimed = True
+            fire = self._arrived
+
+        if fire:
+            on_ready()
+
+    def release(self) -> None:
+        self._answer(GateSignal.GO)
+
+    def refuse(self) -> None:
+        self._answer(GateSignal.ABORT)
+
+    def close(self) -> None:
+        """Конец вызова: verdict закрывается, если ответа не было."""
+        with self._lock:
+            if self._answered:
+                return
+
+            self._answered = True
+
+        with suppress(OSError):
+            os.close(self._verdict_fd)
+
+    def _answer(self, signal: GateSignal) -> None:
+        with self._lock:
+            if self._answered:
+                return
+
+            self._answered = True
+
+        # мёртвому телу ответ не нужен: причину объяснит итог вызова
+        with suppress(BrokenPipeError):
+            os.write(self._verdict_fd, signal.bytes())
+
+        with suppress(OSError):
+            os.close(self._verdict_fd)
+
+    def _read(self, pump: ChannelPump, gate_fd: int) -> None:
+        try:
+            data = os.read(gate_fd, self.READ_BYTES)
+        except BlockingIOError:
+            return
+
+        if not data:
+            pump.drop_event(gate_fd)
+            return
+
+        self._arrive()
+
+    def _arrive(self) -> None:
+        with self._lock:
+            self._arrived = True
+            on_ready = self._on_ready
+            waits_owner = self._mode is CallGateMode.HELD
+            if self._claimed:
+                waits_owner = False
+
+        if waits_owner:
+            return
+
+        on_ready()
 
 
 class CallInputs:
@@ -641,15 +749,17 @@ class PumpedCall(OpenRun[RunEnd], ToolCall):
     ToolOutcome переданной функцией finish.
     """
 
-    def __init__(
+    def __init__(  # noqa: PLR0913
         self,
         tool: str,
         inputs: CallInputs,
+        gate: HostGate,
         inbox: CallInbox,
         run: Callable[[RunCancellation], RunEnd],
         finish: Callable[[RunEnd], ToolOutcome],
     ) -> None:
         self._inputs = inputs
+        self._gate = gate
         self._inbox = inbox
         self._finish = finish
         self._outcome: ToolOutcome | None = None
@@ -663,6 +773,9 @@ class PumpedCall(OpenRun[RunEnd], ToolCall):
 
     def done_sending(self) -> None:
         self._inputs.finish_all()
+
+    def gate(self) -> CallGate:
+        return self._gate
 
     def frames(self) -> Iterator[ToolFrame]:
         if self._frames_taken:
@@ -692,3 +805,4 @@ class PumpedCall(OpenRun[RunEnd], ToolCall):
 
     def _finalize(self) -> None:
         self._inbox.close()
+        self._gate.close()

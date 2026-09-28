@@ -11,6 +11,7 @@
 
 from __future__ import annotations
 
+from enum import StrEnum
 from typing import Annotated, ClassVar, Final, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
@@ -19,12 +20,25 @@ from boba.toolkit.result import ToolResult
 
 __all__ = [
     "REPLY",
+    "CallGateMode",
     "CallInputSpec",
     "ReplyError",
     "ReplyOk",
     "ToolCommand",
     "ToolReply",
 ]
+
+
+class CallGateMode(StrEnum):
+    """Как хост отвечает на барьер тела (StreamGroup.ready).
+
+    AUTO — сразу разрешает: вызов вне группы, ждать некого. HELD — держит
+    ответ, пока группа связанных вызовов не решит, всем ли можно
+    фиксировать результат.
+    """
+
+    AUTO = "auto"
+    HELD = "held"
 
 
 class CallInputSpec(BaseModel):
@@ -50,7 +64,8 @@ class ToolCommand(BaseModel):
     отдельным каналом --injected-fd. inputs — входы вызова по порядку, у
     каждого свой пайп и флаг --fd-in; первый едет по stdin процесса.
     raw_frames выводится из декларации выходного порта: сырой канал несёт
-    голые байты, лончер его не разбирает и не журналирует.
+    голые байты, лончер его не разбирает и не журналирует. gate — режим
+    барьера тела: вне группы хост отвечает на него сразу.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -63,6 +78,7 @@ class ToolCommand(BaseModel):
     config: bytes
     inputs: tuple[CallInputSpec, ...] = Field(default=(), max_length=MAX_INPUTS)
     raw_frames: bool = False
+    gate: CallGateMode = CallGateMode.AUTO
 
 
 class ReplyOk(BaseModel):

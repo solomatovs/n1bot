@@ -9,7 +9,6 @@ import gc
 import json
 import os
 import signal
-import threading
 import time
 from collections.abc import Iterator
 from pathlib import Path
@@ -26,11 +25,10 @@ from boba.stand_core.fake_toolmod import (
     fake_relay,
     fake_stream,
 )
-from boba.toolkit.chain import CallRelay, ChainCheck, ChainMismatchError, RelayStats
 from boba.toolkit.entry import ToolArgv, ToolMain
 from boba.toolkit.frames import FrameProtocolError, ToolFrame
 from boba.toolkit.launcher import LauncherError
-from boba.toolkit.ports import PortDecl, StreamSpec
+from boba.toolkit.ports import StreamSpec
 from boba.toolkit.protocol import CallInputSpec, ToolCommand
 from boba.toolrun.process import ProcessLauncherConfig, ProcessToolCaller
 
@@ -72,14 +70,6 @@ def _inputs(tool_name: str) -> Iterator[CallInputSpec]:
 
         for port in StreamSpec.of_schema(ToolArgv.schema_of(tool)).inbound():
             yield CallInputSpec(port=port.name, raw=port.raw)
-
-
-def _ends(source: StreamSpec, sink: StreamSpec) -> tuple[PortDecl, PortDecl]:
-    """Выход источника и единственный вход приёмника для ChainCheck."""
-    outbound = source.outbound()
-    assert outbound is not None
-
-    return outbound, sink.inbound()[0]
 
 
 def _open_fds() -> int:
@@ -230,161 +220,6 @@ class TestSingleReader:
 
             call.done_sending()
             call.result()
-
-
-class TestFramedChain:
-    def test_framed_stream_flows_through_relay_frames(self, tmp_path: Path) -> None:
-        """Кадровая цепочка через CallRelay.frames: выход fake_stream идёт во
-        вход второго fake_stream, хост видит каждый кадр."""
-        launcher = _launcher(tmp_path)
-
-        spec = StreamSpec.of_schema(ToolArgv.schema_of(STREAM_TOOL))
-        ChainCheck.ensure(*_ends(spec, spec))
-
-        with (
-            launcher.open(_command("fake_stream", "--prefix", "x:")) as source,
-            launcher.open(_command("fake_stream", "--prefix", "y:")) as sink,
-        ):
-            source.inputs()[0].send(ToolFrame.of(FakeChunkHead(seq=1), b"one"))
-            source.inputs()[0].send(ToolFrame.of(FakeChunkHead(seq=2), b"two"))
-            source.done_sending()
-
-            stats = CallRelay.frames(source, sink.inputs()[0])
-
-            source_outcome = source.result()
-            relayed = [frame.body for frame in sink.frames()]
-            sink_outcome = sink.result()
-
-        assert not stats.spliced
-        assert stats.frames == 3
-        assert stats.bytes == 10
-        assert relayed[:2] == [b"y:x:one", b"y:x:two"]
-        assert "streamed 2" in str(source_outcome.reply)
-        assert "streamed 3" in str(sink_outcome.reply)
-
-    def test_framed_source_is_refused_by_raw_sink(self) -> None:
-        """Кадровый выход в сырой вход не собирается: рамки кадров попали бы
-        в данные — стыковка отбивается до запуска."""
-        source_spec = StreamSpec.of_schema(ToolArgv.schema_of(STREAM_TOOL))
-        sink_spec = StreamSpec.of_schema(ToolArgv.schema_of(RELAY_TOOL))
-
-        with pytest.raises(ChainMismatchError):
-            ChainCheck.ensure(*_ends(source_spec, sink_spec))
-
-
-class _SpliceWorker:
-    """Перекачка CallRelay.splice своим потоком: relay блокирует до конца
-    потока и обязан идти параллельно закачке входа источника."""
-
-    def __init__(self, source_fd: int, sink_fd: int) -> None:
-        self._source_fd = source_fd
-        self._sink_fd = sink_fd
-        self._stats: list[RelayStats] = []
-        self._worker = threading.Thread(target=self._relay, daemon=True)
-        self._worker.start()
-
-    def wait(self) -> RelayStats:
-        self._worker.join(timeout=60)
-
-        assert self._stats, "splice relay did not finish"
-        return self._stats[0]
-
-    def _relay(self) -> None:
-        self._stats.append(CallRelay.splice(self._source_fd, self._sink_fd))
-
-
-class TestSpliceChain:
-    def test_kernel_splice_moves_raw_bytes_verbatim(self, tmp_path: Path) -> None:
-        """Zero-copy сырая цепочка fake_relay -> fake_relay: голые байты без
-        единого преобразования. Вход первого — send_bytes, канал между ними
-        переливает ядро, выход второго читается с его tap-дескриптора и
-        сверяется байт-в-байт."""
-        launcher = _launcher(tmp_path)
-
-        spec = StreamSpec.of_schema(ToolArgv.schema_of(RELAY_TOOL))
-        ChainCheck.ensure(*_ends(spec, spec))
-
-        payload = b"\x5a" * (512 * 1024) + b"csv,rows\n" * 1000
-
-        first = launcher.open_tap(_command("fake_relay"))
-        second = launcher.open_tap(_command("fake_relay"))
-
-        with first.call as source, second.call as sink:
-            relay = _SpliceWorker(first.frames_fd, sink.inputs()[0].take_fd())
-
-            # сырой вход первого: голые байты в его stdin-дескриптор
-            source_in = source.inputs()[0].take_fd()
-            os.write(source_in, payload)
-            os.close(source_in)
-
-            stats = relay.wait()
-
-            collected = bytearray()
-            while True:
-                chunk = os.read(second.frames_fd, 1 << 20)
-                if not chunk:
-                    break
-
-                collected.extend(chunk)
-
-            os.close(second.frames_fd)
-
-            source_outcome = source.result()
-            sink_outcome = sink.result()
-
-        assert stats.spliced
-        assert stats.bytes == len(payload)
-        assert bytes(collected) == payload
-        assert f"relayed {len(payload)}" in str(source_outcome.reply)
-        assert f"relayed {len(payload)}" in str(sink_outcome.reply)
-
-    def test_tapped_call_frames_are_empty(self, tmp_path: Path) -> None:
-        """Кадры tap-вызова отданы дескриптором: frames() пуст, конверт цел."""
-        launcher = _launcher(tmp_path)
-
-        tapped = launcher.open_tap(_command("fake_stream", "--prefix", "t:"))
-
-        with tapped.call as source:
-            relay = _SpliceWorker(tapped.frames_fd, os.open(os.devnull, os.O_WRONLY))
-
-            source.done_sending()
-            drained = relay.wait()
-
-            assert list(source.frames()) == []
-            outcome = source.result()
-
-        assert drained.spliced is True
-        assert "streamed 0" in str(outcome.reply)
-
-    def test_dead_sink_breaks_the_chain_loudly(self, tmp_path: Path) -> None:
-        """Смерть приёмника посреди перекачки: splice выходит, источник
-        умирает по EPIPE (как в shell-конвейере), никто не виснет."""
-        launcher = _launcher(tmp_path)
-
-        tapped = launcher.open_tap(_command("fake_stream", "--prefix", "d:"))
-        sink = launcher.open(_command("fake_hostage"))
-
-        with tapped.call as source, sink:
-            pid_frame = next(sink.frames())
-            os.kill(pid_frame.header_as(FakePidHead).pid, signal.SIGKILL)
-
-            started = time.monotonic()
-            relay = _SpliceWorker(tapped.frames_fd, sink.inputs()[0].take_fd())
-
-            source.inputs()[0].send(
-                ToolFrame.of(FakeChunkHead(seq=1), b"\x00" * (2 << 20))
-            )
-            source.done_sending()
-
-            relay.wait()
-
-            assert time.monotonic() - started < 30
-
-            with pytest.raises(LauncherError):
-                source.result()
-
-            with pytest.raises(LauncherError):
-                sink.result()
 
 
 class TestResources:

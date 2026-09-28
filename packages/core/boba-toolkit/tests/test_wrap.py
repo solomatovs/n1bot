@@ -12,6 +12,7 @@ from boba.stand_core.fake_toolmod import FakeConfig
 from boba.toolkit.entry import ToolMain
 from boba.toolkit.frames import FrameHead, ToolFrame
 from boba.toolkit.launcher import (
+    CallGate,
     CallInputPort,
     FrameSink,
     FrameTap,
@@ -57,6 +58,9 @@ class RecordedCall(ToolCall):
 
     def inputs(self) -> Sequence[CallInputPort]:
         return ()
+
+    def gate(self) -> CallGate:
+        raise NotImplementedError
 
     def done_sending(self) -> None:
         return

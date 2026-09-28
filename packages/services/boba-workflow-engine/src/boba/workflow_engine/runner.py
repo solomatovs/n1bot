@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from datetime import UTC, datetime
 from itertools import pairwise
 from typing import Any, ClassVar
@@ -30,11 +30,15 @@ from boba.identity.context import CallContext
 from boba.identity.run import RunRegistry
 from boba.toolkit.calls import CallIdPrefix, ToolIntent
 from boba.toolkit.chain import (
-    CallRelay,
     ChainCheck,
     ChainMismatchError,
-    NodeSlot,
     PipelineSlot,
+    StreamGroupRun,
+    StreamInput,
+    StreamNode,
+    StreamPlan,
+    StreamPlanError,
+    StreamTimings,
 )
 from boba.toolkit.failure import FailureText, InvokeErrorKind
 from boba.toolkit.ports import PortDecl, StreamSpec, ToolStreamSpecs
@@ -143,8 +147,7 @@ class _RunSession:
         self._plan = WorkflowPlan(graph)
         self._running: dict[str, asyncio.Task[InvokeReply]] = {}
         self._results: dict[str, ToolResult] = {}
-        self._slots: dict[str, NodeSlot] = {}
-        self._wires: list[asyncio.Task[None]] = []
+        self._groups: list[StreamGroupRun] = []
         self._loop = asyncio.get_running_loop()
 
     def abort(self) -> None:
@@ -186,14 +189,15 @@ class _RunSession:
             )
             raise WorkflowRunError(msg)
 
-        await asyncio.gather(*self._wires, return_exceptions=True)
 
         state = self._plan.snapshot()
         await self._sink.snapshot(state)
         return state, dict(self._results)
 
-    FD_WAIT_SEC: ClassVar[float] = 60.0
-    """Сколько ждать дескриптор канала от узла потоковой стадии."""
+    STREAM_TIMINGS: ClassVar[StreamTimings] = StreamTimings(
+        open_sec=60.0, stall_sec=300.0, poll_sec=0.5
+    )
+    """Сроки группы потоковой стадии: открытие узлов и застой данных."""
 
     def _launch(self, stage: Stage) -> None:
         if stage.streams:
@@ -215,22 +219,20 @@ class _RunSession:
             self._refuse_stage(stage, str(exc))
             return
 
-        slots: dict[str, NodeSlot] = {}
-        last = len(order) - 1
+        try:
+            plan = StreamPlan(tuple(self._stream_nodes(order)))
+        except StreamPlanError as exc:
+            self._refuse_stage(stage, str(exc))
+            return
 
-        for index, name in enumerate(order):
-            inputs: tuple[str, ...] = ()
-            if index > 0:
-                inputs = (self._inbound_of(name).name,)
+        group = StreamGroupRun(plan, self.STREAM_TIMINGS)
+        self._groups.append(group)
 
-            slot = NodeSlot(inputs=inputs, has_downstream=index < last)
-            slots[name] = slot
-            self._slots[name] = slot
-
+        for name in order:
             call = self._runner.call_of(self._graph, name, self._args_of(name))
             self._plan.started(name, str(call["id"]), self._runner.clock())
 
-            token = PipelineSlot.set(slot)
+            token = PipelineSlot.set(group.slot(name))
             try:
                 self._running[name] = asyncio.create_task(
                     self._runner.invoker.invoke(call), name=f"workflow:{name}"
@@ -238,11 +240,27 @@ class _RunSession:
             finally:
                 PipelineSlot.reset(token)
 
-        self._wires.append(
-            asyncio.create_task(
-                self._wire(order, slots), name=f"workflow-stage:{order[0]}"
+    def _stream_nodes(self, order: Sequence[str]) -> Iterator[StreamNode]:
+        """Цепочка стадии узлами плана: канал узла назван его задачей."""
+        last = len(order) - 1
+
+        for index, name in enumerate(order):
+            output: str | None = None
+            if index < last:
+                output = name
+
+            inputs: tuple[StreamInput, ...] = ()
+            if index > 0:
+                port = self._inbound_of(name).name
+                inputs = (StreamInput(port=port, channel=order[index - 1]),)
+
+            yield StreamNode(
+                key=name,
+                tool=self._graph.spec.tasks[name].tool,
+                spec=self._spec_of(name),
+                output=output,
+                inputs=inputs,
             )
-        )
 
     def _stream_order(self, stage: Stage) -> list[str]:
         """Порядок цепочки стадии; ветвления и циклы пока не поддержаны.
@@ -344,52 +362,11 @@ class _RunSession:
                 name, TaskStatus.FAILED, self._runner.clock(), message, result
             )
 
-    async def _wire(self, order: Sequence[str], slots: Mapping[str, NodeSlot]) -> None:
-        """Соединяет рёбра цепочки splice-задачами и ждёт перекачку."""
-        relays: list[asyncio.Task[Any]] = []
-        try:
-            for left, right in pairwise(order):
-                source_fd = await asyncio.to_thread(
-                    slots[left].take_source_fd, self.FD_WAIT_SEC
-                )
-                sink_fds = await asyncio.to_thread(
-                    slots[right].take_input_fds, self.FD_WAIT_SEC
-                )
-                sink_fd = sink_fds[0]
-                relays.append(
-                    asyncio.create_task(
-                        asyncio.to_thread(CallRelay.splice, source_fd, sink_fd),
-                        name=f"workflow-edge:{left}->{right}",
-                    )
-                )
-        except ChainMismatchError as exc:
-            logger.warning(
-                "workflow %s: wiring of the stream chain %s failed: %s",
-                self._graph.spec.name,
-                order,
-                exc,
-            )
-            for slot in slots.values():
-                slot.abort()
-
-        moved = await asyncio.gather(*relays, return_exceptions=True)
-        for pair, stats in zip(pairwise(order), moved, strict=True):
-            if isinstance(stats, BaseException):
-                logger.warning(
-                    "workflow %s: relay on the stream edge %s failed: %s",
-                    self._graph.spec.name,
-                    pair,
-                    stats,
-                )
-                continue
-
-            logger.info("workflow edge %s: %d bytes moved", pair, stats.bytes)
-
     async def _stop_now(self) -> None:
         """Отмена самой корутины запуска: работающие задачи снимаем и ждём."""
         self._plan.stop()
-        for slot in self._slots.values():
-            slot.abort()
+        for group in self._groups:
+            group.abort("workflow run stopped")
 
         self._cancel_running()
         done, _ = await asyncio.wait(self._running.values())

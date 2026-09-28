@@ -22,7 +22,15 @@ ToolCommand), а StreamSpec.of_schema отдаёт интроспекцию дл
 проверки стыковки цепочек. Транспортом портам служит ToolIo
 (boba.toolkit.frames) — наружу он больше не показывается.
 
+Тело, которое фиксирует результат (коммит, запись таблицы), объявляет барьер
+группы — `group: Annotated[StreamGroup, Injected]` — и зовёт
+`await group.ready()` перед фиксацией: вызов возвращается, только когда
+все связанные каналами вызовы дошли до своего барьера или успешно
+закончились.
+
 Ошибки:
+StreamGroupAbortedError — группа сорвалась, пока тело ждало барьера:
+    фиксировать результат нельзя.
 PortDeclarationError — объявление порта нарушено: тип не модель заголовка,
     kind не Literal-строка, два выходных порта, выходной порт списком.
 FrameProtocolError — заголовок пришедшего кадра не подходит объявленной
@@ -33,6 +41,7 @@ from __future__ import annotations
 
 import asyncio
 import io
+import os
 from collections.abc import AsyncIterator, Iterator, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
@@ -68,6 +77,7 @@ __all__ = [
     "ArrowOutbound",
     "ArrowStreamError",
     "Framed",
+    "GateSignal",
     "Inbound",
     "Outbound",
     "PortDecl",
@@ -75,6 +85,8 @@ __all__ = [
     "PortDirection",
     "RawInbound",
     "RawOutbound",
+    "StreamGroup",
+    "StreamGroupAbortedError",
     "StreamPorts",
     "StreamSpec",
     "ToolStreamSpecs",
@@ -85,6 +97,73 @@ HeadT = TypeVar("HeadT", bound=BaseModel)
 
 class PortDeclarationError(Exception):
     """Подпись инструмента объявляет порт с нарушением контракта."""
+
+
+class StreamGroupAbortedError(Exception):
+    """Группа связанных вызовов сорвалась: результат фиксировать нельзя."""
+
+
+class GateSignal(StrEnum):
+    """Байты барьера группы: тело сообщает готовность, хост отвечает."""
+
+    READY = "r"
+    GO = "g"
+    ABORT = "a"
+
+    def bytes(self) -> bytes:
+        return self.value.encode("ascii")
+
+    @classmethod
+    def of_byte(cls, raw: bytes) -> GateSignal:
+        """Ответ хоста из прочитанного байта; пусто (EOF) — ABORT."""
+        if not raw:
+            return cls.ABORT
+
+        return cls(raw.decode("ascii"))
+
+
+class StreamGroup:
+    """Барьер группы связанных вызовов на стороне тела.
+
+    Вызовы, которые модель связала каналами в одном ответе, живут группой:
+    либо фиксируют результат все, либо никто. Тело объявляет барьер в
+    подписи и зовёт ready() перед фиксацией — сообщение хосту идёт пайпом
+    gate, ответ приходит пайпом verdict. Хост отвечает GO, когда каждый
+    вызов группы дошёл до барьера или успешно закончился, и ABORT, если
+    кто-то сорвался. Вне группы (запуск человеком, одиночный вызов) ready()
+    возвращается сразу. Строится в ToolMain из номеров --fd-gate и
+    --fd-verdict.
+    """
+
+    def __init__(self, gate_fd: int, verdict_fd: int) -> None:
+        self._gate_fd = gate_fd
+        self._verdict_fd = verdict_fd
+
+    async def ready(self) -> None:
+        """Дождаться решения группы; срыв — StreamGroupAbortedError."""
+        await asyncio.to_thread(self._wait)
+
+    def _wait(self) -> None:
+        if self._gate_fd < 0:
+            return
+
+        os.write(self._gate_fd, GateSignal.READY.bytes())
+        answer = GateSignal.of_byte(os.read(self._verdict_fd, 1))
+
+        if answer is GateSignal.GO:
+            return
+
+        msg = (
+            "stream group aborted at the commit barrier: another call of the "
+            "group failed, this call must not commit its result"
+        )
+        raise StreamGroupAbortedError(msg)
+
+    @classmethod
+    def __get_pydantic_core_schema__(
+        cls, source: Any, handler: GetCoreSchemaHandler
+    ) -> CoreSchema:
+        return core_schema.is_instance_schema(cls)
 
 
 class PortDirection(StrEnum):
@@ -300,6 +379,11 @@ class StreamPorts:
     """
 
     KIND_FIELD: ClassVar[str] = "kind"
+
+    @staticmethod
+    def is_group(annotation: Any) -> bool:
+        """Параметр — барьер группы StreamGroup: строит гость, как порт."""
+        return annotation is StreamGroup
 
     @classmethod
     def is_port(cls, annotation: Any) -> bool:
@@ -533,6 +617,8 @@ class StreamSpec(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     ports: tuple[PortDecl, ...] = ()
+    gated: bool = False
+    """Тело объявило барьер группы StreamGroup."""
 
     @model_validator(mode="after")
     def _single_outbound(self) -> StreamSpec:
@@ -555,13 +641,18 @@ class StreamSpec(BaseModel):
         """Декларация из args_schema инструмента; без портов — пустая."""
         declared: list[PortDecl] = []
 
+        gated = False
         for name, field in schema.model_fields.items():
+            if StreamPorts.is_group(field.annotation):
+                gated = True
+                continue
+
             if not StreamPorts.is_port(field.annotation):
                 continue
 
             declared.append(cls._decl_of(name, field.annotation))
 
-        return cls(ports=tuple(declared))
+        return cls(ports=tuple(declared), gated=gated)
 
     @staticmethod
     def _decl_of(name: str, annotation: Any) -> PortDecl:

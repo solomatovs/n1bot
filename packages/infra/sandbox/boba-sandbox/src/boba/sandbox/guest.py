@@ -173,7 +173,11 @@ class CallFd(IntEnum):
     INJECTED = 5
     """Канал injected-конфига: хост пишет, тело читает до EOF."""
     CONTROL = 6
-    CGROUP = 7
+    GATE = 7
+    """Готовность барьера группы: тело пишет, хост читает."""
+    VERDICT = 8
+    """Ответ барьера группы: хост пишет, тело читает."""
+    CGROUP = 9
     """Каталог cgroup-leaf'а; едет только когда у вызова есть групповые лимиты."""
 
     @classmethod
@@ -320,7 +324,7 @@ class CallRequest(BaseModel):
     """
     cwd: str = ""
     into_cgroup: bool = False
-    """Восьмым дескриптором приехал каталог cgroup-leaf'а вызова."""
+    """За фиксированными каналами приехал каталог cgroup-leaf'а вызова."""
     inputs: tuple[str, ...] = ()
     """Входные порты тела по одному на вход: первый вход — STDIN, каждый
     следующий приезжает своим дескриптором в хвосте SCM_RIGHTS."""
@@ -860,6 +864,8 @@ class ZygoteMain:
             CallFd.RESULT,
             CallFd.FRAMES,
             CallFd.INJECTED,
+            CallFd.GATE,
+            CallFd.VERDICT,
         ):
             os.close(fds[index])
 
@@ -1038,6 +1044,10 @@ class ZygoteMain:
         argv.append(str(fds[CallFd.FRAMES]))
         argv.append(EntryFlag.INJECTED_FD.value)
         argv.append(str(fds[CallFd.INJECTED]))
+        argv.append(EntryFlag.FD_GATE.value)
+        argv.append(str(fds[CallFd.GATE]))
+        argv.append(EntryFlag.FD_VERDICT.value)
+        argv.append(str(fds[CallFd.VERDICT]))
 
         if not request.inputs:
             return argv

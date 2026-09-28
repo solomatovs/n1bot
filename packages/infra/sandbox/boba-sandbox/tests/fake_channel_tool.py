@@ -4,6 +4,7 @@
 конверт tool_result. fx_probe_tmp отдаёт наблюдаемое изнутри состояние
 изоляции — им пользуются тесты зиготы. fx_merge получает несколько входов
 разом: по нему видно, что дополнительные дескрипторы доезжают до тела.
+fx_gated ждёт барьер группы: по нему видно, что пайпы барьера доезжают.
 """
 
 from __future__ import annotations
@@ -22,7 +23,7 @@ from pydantic import BaseModel, Field, SecretStr
 
 from boba.toolkit.entry import ToolMain
 from boba.toolkit.facade import Injected, tool, warmup
-from boba.toolkit.ports import Inbound, Outbound
+from boba.toolkit.ports import Inbound, Outbound, StreamGroup, StreamGroupAbortedError
 from boba.toolkit.result import MarkdownResult
 
 
@@ -60,6 +61,7 @@ class FxDownError(Exception):
 
 class FxErrorKind(StrEnum):
     DOWN = "fx_down"
+    ABORTED = "fx_aborted"
 
 
 @tool
@@ -212,12 +214,25 @@ async def fx_merge(
     )
 
 
+@tool
+async def fx_gated(
+    *,
+    cfg: Annotated[ChannelConfig, Injected],
+    group: Annotated[StreamGroup, Injected],
+) -> MarkdownResult:
+    """Ждёт барьер группы и отвечает, разрешил ли его хост."""
+    await group.ready()
+
+    return MarkdownResult(text=f"committed|{cfg.token.get_secret_value()}")
+
+
 EXPECTED: Mapping[type[Exception], FxErrorKind] = {
     FxDownError: FxErrorKind.DOWN,
+    StreamGroupAbortedError: FxErrorKind.ABORTED,
 }
 
 TOOLS: Final = ToolMain.toolset(
-    fx_echo, fx_chatter, fx_probe_tmp, fx_warm_state, fx_stream, fx_merge
+    fx_echo, fx_chatter, fx_probe_tmp, fx_warm_state, fx_stream, fx_merge, fx_gated
 )
 
 if __name__ == "__main__":
