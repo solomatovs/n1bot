@@ -76,6 +76,9 @@ ARRAYSIZE = 2000
 CHUNK = 65536
 BOOLEAN_SINCE = 23
 STRING_AS_STRING = "output_format_arrow_string_as_string = 1"
+REPORT_SETTINGS = f"{JOIN_NULLS}, {STRING_AS_STRING}"
+"""Настройки отчёта ставятся у самого внешнего запроса: ClickHouse до 24 не
+доносит settings подзапроса до формата ответа, и строки уходят binary."""
 MERGE_TREE = (
     "create table {database}.{table_name}[ on cluster {cluster}] ({columns}) "
     "engine = MergeTree order by {order_by}"
@@ -111,23 +114,23 @@ select order_id,
        customer_order_no,
        customer_total,
        month_avg
-from ({body}) r
-{settings}"""
+from ({body}) r"""
 """Отчёт под Oracle: Enum и LowCardinality — строкой, IPv4 и UUID — текстом,
 Date и DateTime — настоящими моментами (в Arrow они уходят числами), Bool
 до 23 — числом: приёмник значения не переписывает."""
 
 
-def report_sql(clickhouse: ClickHouseSide, target: OracleSide) -> str:
+def report_query(target: OracleSide) -> str:
+    """Отчёт без settings: для вложения в другой запрос."""
     is_active = "is_active"
     if target.version < BOOLEAN_SINCE:
         is_active = "toUInt8(is_active) as is_active"
 
-    return REPORT_COLUMNS.format(
-        is_active=is_active,
-        body=REPORT_BODY,
-        settings=f"{JOIN_NULLS}, {STRING_AS_STRING}",
-    )
+    return REPORT_COLUMNS.format(is_active=is_active, body=REPORT_BODY)
+
+
+def report_sql(clickhouse: ClickHouseSide, target: OracleSide) -> str:
+    return f"{report_query(target)}\n{REPORT_SETTINGS}"
 
 
 def compared(target: OracleSide) -> dict[str, tuple[str, str]]:
@@ -316,9 +319,12 @@ async def transfer(  # noqa: PLR0913
 
 
 def month_of(source: ClickHouseSide, target: OracleSide, month: str) -> str:
-    report = report_sql(source, target)
+    report = report_query(target)
 
-    return f"select * from ({report}) m where m.month = toDate32('{month}')"
+    return (
+        f"select * from ({report}) m where m.month = toDate32('{month}') "
+        f"{REPORT_SETTINGS}"
+    )
 
 
 def numbers(values: Sequence[Any]) -> list[Decimal | None]:
@@ -509,7 +515,7 @@ class TestRenamedMart:
     def select(self, source: ClickHouseSide, target: OracleSide) -> str:
         return (
             f"select order_id, customer_name, tier, paid, gross, placed_at "
-            f"from ({report_sql(source, target)}) m"
+            f"from ({report_query(target)}) m {REPORT_SETTINGS}"
         )
 
     async def test_missing_mart_is_refused(

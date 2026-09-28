@@ -5,14 +5,14 @@ constrained, как в конфиге), обвязка соединений вы
 строки, тело инструмента работает этим билетом внутри песочницы. Каждый тест
 спрашивает у самого сервиса, кем он видит клиента.
 
-Стенд: живой KDC, postgres, clickhouse и confluence домена; учётка приложения
-заведена во всех трёх сервисах и значится в msDS-AllowedToDelegateTo.
+Стенд: живой KDC, postgres и clickhouse домена; web-инструмент ходит в
+HTTP-интерфейс того же clickhouse по Negotiate. Учётка приложения заведена в
+обоих сервисах и значится в msDS-AllowedToDelegateTo.
 """
 
 from __future__ import annotations
 
 import base64
-import json
 import os
 import secrets as std_secrets
 import shutil
@@ -65,7 +65,7 @@ from boba.toolkit.entry import ToolMain
 from boba.toolkit.wrap import ToolProcessWrap
 from boba.toolrun.callvalues import CallContextValues
 from boba.toolrun.injected import InjectedConfig
-from boba.transport.http.connection import HttpConnection, NegotiateAuth
+from boba.transport.http.connection import HttpConnection, NegotiateAuth, UrlScheme
 
 _REPO = Path(__file__).resolve().parents[4]
 _SANDBOX_STAGING = _REPO / "build" / "chainlit" / "src" / "sandbox"
@@ -78,7 +78,7 @@ SERVICE_KEYTAB = Path(STAND.krb_http_keytab)
 SERVICE_SPN = f"HTTP/{STAND.krb_domain}@{STAND.krb_realm}"
 PRINCIPAL = STAND.reader_principal
 ROLE_NAME = PRINCIPAL.split("@")[0]
-"""Как принципал выглядит для сервисов: роль postgres, пользователь ch и confluence.
+"""Как принципал выглядит для сервисов: роль postgres и пользователь ch.
 
 Клиентом входа выступает обычный пользователь домена: у сервисной учётки
 accept и initiate совпадают, и evidence-креды KDC для неё не выдаёт.
@@ -88,7 +88,6 @@ SCHEMA = "delegated_tools"
 ROLE = "analyst"
 THREAD = "44444444-4444-4444-4444-444444444444"
 PROFILE = "test"
-CONFLUENCE_LOGIN = "/plugins/servlet/kerberos/ntlm/login"
 
 
 def _cgroup_delegated() -> bool:
@@ -173,15 +172,19 @@ def user_password(raw_config: Any) -> str:
 
 
 @pytest.fixture
-def sso_login(tmp_path: Path, user_password: str) -> tuple[SsoTickets, str]:
-    """Вход по SPNEGO: открыватель билетов и запечатанный билет этого входа."""
+async def sso_login(tmp_path: Path, user_password: str) -> tuple[SsoTickets, str]:
+    """Вход по SPNEGO: открыватель билетов и запечатанный билет этого входа.
+
+    accept идёт асинхронно, как в приложении: синхронный захват лока
+    KerberosEnv в потоке цикла встал бы за воркером пула, держащим лок
+    через await connect."""
     delegation = ConstrainedDelegation(
         service_ccache=f"FILE:{tmp_path / 'service'}",
         krb5_config=str(KRB5_CONF),
     )
     accept = AcceptConfig(service_name=SERVICE_SPN, keytab=str(SERVICE_KEYTAB))
     token = Browser.token(tmp_path, user_password)
-    identity = SpnegoAcceptor(accept, delegation).accept(token)
+    identity = await SpnegoAcceptor(accept, delegation).accept_async(token)
     ticket = TicketCapture(delegation).capture(identity)
     if ticket is None:
         raise AssertionError("constrained sign-in captured no evidence credentials")
@@ -357,12 +360,23 @@ def delegated_ch(raw_config: Any) -> ClickHouseConfig:
 
 
 @pytest.fixture
-def delegated_confluence(raw_config: Any) -> HttpConnection:
-    from omegaconf import OmegaConf
+def delegated_web(delegated_ch: ClickHouseConfig) -> HttpConnection:
+    """HTTP-интерфейс того же clickhouse, что у ch_query, по Negotiate: на
+    currentUser() он называет принципала запроса."""
+    host = delegated_ch.host
+    if host is None:
+        raise AssertionError("section [clickhouse] of the stand has no host")
 
-    host = str(OmegaConf.select(raw_config, "site.confluence_host"))
-    port = int(OmegaConf.select(raw_config, "site.confluence_port"))
+    port = delegated_ch.port
+    if port is None:
+        raise AssertionError("section [clickhouse] of the stand has no port")
+
+    interface = delegated_ch.interface
+    if interface is None:
+        raise AssertionError("section [clickhouse] of the stand has no interface")
+
     return HttpConnection(
+        scheme=UrlScheme(interface),
         host=host,
         port=port,
         ssl_verify=False,
@@ -370,7 +384,6 @@ def delegated_confluence(raw_config: Any) -> HttpConnection:
         auth=NegotiateAuth(
             method="negotiate",
             kerberos=DelegatedAuth(method="kerberos_delegated"),
-            login_path=CONFLUENCE_LOGIN,
         ),
     )
 
@@ -417,26 +430,26 @@ async def test_clickhouse_query_runs_as_the_signed_in_principal(
         raise AssertionError(f"clickhouse must see the principal: {rows}")
 
 
-async def test_confluence_page_is_fetched_as_the_signed_in_principal(
+async def test_web_page_is_fetched_as_the_signed_in_principal(
     web_tools: dict[str, Any],
     store: ConnectionStore,
     session: PersistedUser,
-    delegated_confluence: HttpConnection,
+    delegated_web: HttpConnection,
 ) -> None:
-    await _granted(store, session, "confl", delegated_confluence)
+    await _granted(store, session, "ch-http", delegated_web)
 
+    url = delegated_web.url_of("/").copy_merge_params({"query": "select currentUser()"})
     result = await Call.ok(
         web_tools["web_fetch_page"],
-        url=str(delegated_confluence.url_of("/rest/api/user/current")),
-        connection="confl",
+        url=str(url),
+        connection="ch-http",
         as_markdown=False,
         line_offset=0,
         line_count=5,
     )
 
-    current = json.loads(result.text)
-    if current.get("username") != ROLE_NAME:
-        raise AssertionError(f"confluence must see the principal: {current}")
+    if ROLE_NAME not in result.text.splitlines():
+        raise AssertionError(f"clickhouse must see the principal: {result.text!r}")
 
 
 async def test_targets_list_only_granted_connections(  # noqa: PLR0913 — три вида сразу
@@ -448,12 +461,12 @@ async def test_targets_list_only_granted_connections(  # noqa: PLR0913 — тр�
     session: PersistedUser,
     delegated_pg: PostgresConfig,
     delegated_ch: ClickHouseConfig,
-    delegated_confluence: HttpConnection,
+    delegated_web: HttpConnection,
 ) -> None:
     """Каждый инструмент видит соединения своего вида и только их."""
     await _granted(store, session, "pg-me", delegated_pg)
     await _granted(store, session, "ch-me", delegated_ch)
-    await _granted(store, session, "confl", delegated_confluence)
+    await _granted(store, session, "ch-http", delegated_web)
 
     listed = await Call.ok(catalog)
     by_kind: dict[str, list[str]] = {}
@@ -464,7 +477,7 @@ async def test_targets_list_only_granted_connections(  # noqa: PLR0913 — тр�
         raise AssertionError(f"pg targets: {listed.rows}")
     if by_kind.get("clickhouse") != ["ch-me"]:
         raise AssertionError(f"ch targets: {listed.rows}")
-    if by_kind.get("web") != ["confl"]:
+    if by_kind.get("web") != ["ch-http"]:
         raise AssertionError(f"web targets: {listed.rows}")
 
 

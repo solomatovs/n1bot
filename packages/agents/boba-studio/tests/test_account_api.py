@@ -138,7 +138,12 @@ async def test_connection_schema_describes_kinds_and_secrets(
     assert reply.status_code == 200, reply.text
     schema = reply.json()
     assert schema["discriminator"]["propertyName"] == "kind"
-    assert set(schema["discriminator"]["mapping"]) == {"postgres", "clickhouse", "web"}
+    assert set(schema["discriminator"]["mapping"]) == {
+        "postgres",
+        "clickhouse",
+        "oracle",
+        "web",
+    }
     auth = schema["$defs"]["HttpConnection"]["properties"]["auth"]
     assert auth["discriminator"]["propertyName"] == "method"
     bearer = schema["$defs"]["BearerAuth"]["properties"]["token"]
