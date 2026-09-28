@@ -662,7 +662,7 @@ class TestDocTools:
             raise AssertionError("isinstance(result, TableResult)")
         pages = []
         for row in result.rows:
-            pages.append(row["page"])
+            pages.append(row["number"])
         if pages != [1, 2]:
             raise AssertionError("pages == [1, 2]")
 

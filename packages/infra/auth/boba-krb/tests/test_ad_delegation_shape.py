@@ -44,13 +44,13 @@ USER_ACCOUNT_CONTROL = "userAccountControl"
 def _account(name: str) -> dict[str, Any]:
     """Атрибуты делегирования учётки из AD стенда."""
     server = Server(STAND.ldap_url, get_info=ALL)
-    connection = Connection(
+    with Connection(
         server,
         user=STAND.ldap_bind_user,
         password=STAND.ldap_bind_password.get_secret_value(),
         auto_bind="DEFAULT",
-    )
-    try:
+        raise_exceptions=True,
+    ) as connection:
         connection.search(
             STAND.ldap_base_dn,
             f"(sAMAccountName={name})",
@@ -58,16 +58,15 @@ def _account(name: str) -> dict[str, Any]:
             attributes=[USER_ACCOUNT_CONTROL, ALLOWED_TO_DELEGATE],
         )
         entries = connection.entries
-        if not entries:
-            raise AssertionError(f"в AD нет учётки {name!r}")
 
-        entry = entries[0]
-        return {
-            USER_ACCOUNT_CONTROL: int(entry[USER_ACCOUNT_CONTROL].value),
-            ALLOWED_TO_DELEGATE: list(entry[ALLOWED_TO_DELEGATE].values),
-        }
-    finally:
-        connection.unbind()
+    if not entries:
+        raise AssertionError(f"в AD нет учётки {name!r}")
+
+    entry = entries[0]
+    return {
+        USER_ACCOUNT_CONTROL: int(entry[USER_ACCOUNT_CONTROL].value),
+        ALLOWED_TO_DELEGATE: list(entry[ALLOWED_TO_DELEGATE].values),
+    }
 
 
 @pytest.fixture(scope="module")
