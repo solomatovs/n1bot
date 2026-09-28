@@ -1,7 +1,7 @@
 """Варианты авторизации web-профиля на живых сервисах: кем нас видит сервер.
 
-Anonymous и basic проверяются на HTTP-интерфейсе clickhouse (он отвечает, кем
-считает клиента), bearer и negotiate — на confluence. Каждый вариант идёт своим
+Anonymous, basic и negotiate проверяются на HTTP-интерфейсе clickhouse (он
+отвечает, кем считает клиента), bearer — на confluence. Каждый вариант идёт своим
 профилем и своим настоящим запросом, поэтому тест ловит и неверный заголовок,
 и неверные креды.
 
@@ -41,8 +41,8 @@ STAND = Stand.required()
 CONFLUENCE_ME = "/rest/api/user/current"
 """Confluence отвечает, под кем принят запрос: годится для любого способа."""
 
-LOGIN_SERVLET = "/plugins/servlet/kerberos/ntlm/login"
-"""Servlet, который меняет билет на сессионную cookie confluence."""
+CH_ME = "select currentUser()"
+"""ClickHouse отвечает, под кем принят запрос."""
 
 pytestmark = [
     pytest.mark.integration,
@@ -202,40 +202,44 @@ async def test_bearer_auth_with_a_wrong_token_stays_anonymous() -> None:
         raise AssertionError(f"a wrong token must name nobody: {body}")
 
 
+@needs_clickhouse
 async def test_negotiate_keytab_logs_in_as_the_service_principal() -> None:
-    """method = negotiate + keytab: SPNEGO к HTTP/host, сессия — принципала."""
-    connection = _confluence(
-        NegotiateAuth(method="negotiate", kerberos=_keytab(), login_path=LOGIN_SERVLET)
+    """method = negotiate + keytab: SPNEGO к HTTP/host, сервер видит принципала."""
+    connection = _clickhouse(
+        NegotiateAuth(
+            method="negotiate", kerberos=_keytab(), service_host=STAND.ch_host
+        )
     )
 
-    status, body = await _body(connection, HttpRequest(url=CONFLUENCE_ME))
+    status, body = await _body(
+        connection, HttpRequest(url="/", params={"query": CH_ME})
+    )
 
     if status != 200:
         raise AssertionError(f"negotiate must pass: {status} {body}")
-
-    user = json.loads(body)
-    if user.get("username") != STAND.krb_http_user:
-        raise AssertionError(f"confluence must see the principal: {body}")
+    if body.strip() != STAND.krb_http_user:
+        raise AssertionError(f"clickhouse must see the principal: {body!r}")
 
 
+@needs_clickhouse
 async def test_negotiate_ticket_logs_in_as_the_ticket_owner() -> None:
     """method = negotiate + kerberos_ticket: в песочницу уезжает один билет."""
     source = KeytabCredentials.of(_keytab())
     ticket = await ServiceTicketIssuer(min_lifetime=60).issue_async(
-        source, STAND.confluence_spn
+        source, STAND.ch_spn
     )
-    connection = _confluence(
-        NegotiateAuth(method="negotiate", kerberos=ticket, login_path=LOGIN_SERVLET)
+    connection = _clickhouse(
+        NegotiateAuth(method="negotiate", kerberos=ticket, service_host=STAND.ch_host)
     )
 
-    status, body = await _body(connection, HttpRequest(url=CONFLUENCE_ME))
+    status, body = await _body(
+        connection, HttpRequest(url="/", params={"query": CH_ME})
+    )
 
     if status != 200:
         raise AssertionError(f"ticket negotiate must pass: {status} {body}")
-
-    user = json.loads(body)
-    if user.get("username") != STAND.krb_http_user:
-        raise AssertionError(f"confluence must see the ticket owner: {body}")
+    if body.strip() != STAND.krb_http_user:
+        raise AssertionError(f"clickhouse must see the ticket owner: {body!r}")
 
 
 async def test_service_name_follows_the_requested_host() -> None:

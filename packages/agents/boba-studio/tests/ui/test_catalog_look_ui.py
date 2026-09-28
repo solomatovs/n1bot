@@ -601,7 +601,7 @@ class TestViewportFit:
             CatalogPage.CONNECTIONS.open(page, stand)
             page.get_by_test_id("add-connection").click()
             form = page.get_by_test_id("connection-form")
-            form.get_by_label("profile.kind").select_option("postgres")
+            form.get_by_label("connection.kind").select_option("postgres")
             dialog = page.get_by_role("dialog")
             expect(dialog).to_be_visible()
 
