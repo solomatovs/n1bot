@@ -42,11 +42,13 @@ from boba.toolkit.frames import (
     FrameLimit,
     ToolFrame,
 )
-from boba.toolkit.launcher import LauncherError, ToolCall, ToolOutcome
+from boba.toolkit.launcher import CallInputPort, LauncherError, ToolCall, ToolOutcome
+from boba.toolkit.protocol import CallInputSpec
 from boba.toolkit.stream import Chunk, ChunkSink, ToolChannelsTap
 
 __all__ = [
     "CallInput",
+    "CallInputs",
     "CallSinks",
     "ChannelPump",
     "FrameInput",
@@ -55,7 +57,7 @@ __all__ = [
     "PipePlumbing",
     "PumpEnd",
     "PumpedCall",
-    "RawStdinInput",
+    "RawInput",
     "Tee",
 ]
 
@@ -104,12 +106,42 @@ class CallSinks:
     в поток насоса contextvar не переезжает, и журнал там уже не найти.
     """
 
+    @classmethod
+    def call_inputs(
+        cls,
+        stdin_fd: int,
+        extra_fds: Sequence[int],
+        specs: Sequence[CallInputSpec],
+    ) -> CallInputs:
+        """Входы вызова по ToolCommand.inputs: первый — stdin процесса,
+        остальные — extra_fds по порядку. Журнал заголовков ведёт только
+        первый кадровый вход: канал tool_stdin в журнале один."""
+        if not specs:
+            return CallInputs(FrameInput(stdin_fd), ())
+
+        needed = len(specs) - 1
+        if len(extra_fds) != needed:
+            msg = (
+                f"call inputs: {len(specs)} inputs need {needed} pipes besides "
+                f"stdin, got {len(extra_fds)}"
+            )
+            raise LauncherError(msg)
+
+        slots: list[FrameInput] = [cls._input_of(stdin_fd, specs[0], journaled=True)]
+        for fd, spec in zip(extra_fds, specs[1:], strict=True):
+            slots.append(cls._input_of(fd, spec, journaled=False))
+
+        return CallInputs(slots[0], tuple(slots))
+
     @staticmethod
-    def stdin_input(fd: int, *, framed: bool) -> FrameInput:
-        """Вход вызова: кадровый — с журналом заголовков, когда тап поставлен;
-        сырой (framed=False) — голые байты без кадров и журнала."""
-        if not framed:
-            return RawStdinInput(fd)
+    def _input_of(fd: int, spec: CallInputSpec, *, journaled: bool) -> FrameInput:
+        """Вход кадровый — с журналом заголовков, когда тап поставлен; сырой —
+        голые байты без кадров и журнала."""
+        if spec.raw:
+            return RawInput(fd)
+
+        if not journaled:
+            return FrameInput(fd)
 
         journal = ToolChannelsTap.get()
         if journal is None:
@@ -257,10 +289,10 @@ class CallInput:
             return
 
 
-class FrameInput(CallInput):
-    """Вход вызова кадрами: send кодирует ToolFrame в байты и пишет их тем же
-    блокирующим способом, что и базовый CallInput; finish даёт телу EOF
-    закрытием пайпа."""
+class FrameInput(CallInput, CallInputPort):
+    """Реализация CallInputPort кадрами: send кодирует ToolFrame в байты и
+    пишет их тем же блокирующим способом, что и базовый CallInput; finish
+    даёт телу EOF закрытием пайпа."""
 
     def __init__(self, fd: int) -> None:
         super().__init__(fd)
@@ -276,7 +308,7 @@ class JournaledFrameInput(FrameInput):
 
     Журнальный приёмник канала tool_stdin пишет заголовки кадров (тела
     пропускает — FrameHeadsSink), поэтому по журналу видно, что хост слал
-    телу. Создаётся через CallSinks.stdin_input, когда журнальный тап
+    телу. Создаётся через CallSinks.call_inputs, когда журнальный тап
     поставлен.
     """
 
@@ -295,21 +327,57 @@ class JournaledFrameInput(FrameInput):
         super().send_parts(first, second)
 
 
-class RawStdinInput(FrameInput):
+class RawInput(FrameInput):
     """Вход истинно сырого канала: по нему идут голые байты (send_bytes).
 
     Кадровый send запрещён — рамки кадра попали бы прямо в данные тела.
     Журнала у сырого входа нет: разбирать в нём нечего. Создаётся через
-    CallSinks.stdin_input для инструмента с RawInbound-декларацией.
+    CallSinks.call_inputs для входа RawInbound-порта.
     """
 
     def send(self, frame: ToolFrame) -> None:
         msg = (
-            f"call stdin fd {self._fd} is a raw byte channel (RawInbound): "
+            f"call input fd {self._fd} is a raw byte channel (RawInbound): "
             f"a frame with {len(frame.body)} body bytes is not accepted, "
             "use send_bytes"
         )
         raise LauncherError(msg)
+
+
+class CallInputs:
+    """Входы открытого вызова: слоты по ToolCommand.inputs плюс stdin.
+
+    Первый слот едет по stdin процесса, остальные — своими пайпами. У
+    вызова без входов stdin всё равно есть: тело его не читает, но закрыть
+    его обязан хост — поэтому stdin хранится отдельно от слотов и
+    закрывается вместе с ними. Собирает CallSinks.call_inputs.
+    """
+
+    def __init__(self, stdin: FrameInput, slots: Sequence[FrameInput]) -> None:
+        self._stdin = stdin
+        self._slots = tuple(slots)
+
+    def slots(self) -> tuple[FrameInput, ...]:
+        return self._slots
+
+    def entries(self) -> tuple[CallInput, ...]:
+        """Все пайпы входа для уборки: stdin и слоты без повторов."""
+        entries: list[CallInput] = [self._stdin]
+        for slot in self._slots:
+            if slot is self._stdin:
+                continue
+
+            entries.append(slot)
+
+        return tuple(entries)
+
+    def finish_all(self) -> None:
+        for entry in self.entries():
+            entry.finish()
+
+    def abandon_all(self) -> None:
+        for entry in self.entries():
+            entry.abandon()
 
 
 @dataclass(frozen=True)
@@ -478,8 +546,8 @@ RunEnd = TypeVar("RunEnd")
 
 
 class OpenRun(Generic[RunEnd]):
-    """Открытый прогон вызова: насос читает каналы своим потоком, а вход
-    пишет вызывающий через entry (CallInput).
+    """Открытый прогон вызова: насос читает каналы своим потоком, а входы
+    пишет вызывающий через entries (CallInput).
 
     Базовый класс исполнения любого вызова; два потока — и есть решение:
     вызывающий может стоять на записи входа, пока насос читает вывод, и
@@ -498,11 +566,11 @@ class OpenRun(Generic[RunEnd]):
     def __init__(
         self,
         tool: str,
-        entry: CallInput,
+        entries: Sequence[CallInput],
         run: Callable[[RunCancellation], RunEnd],
     ) -> None:
         self._tool = tool
-        self._entry = entry
+        self._entries = tuple(entries)
         self._run = run
         self._own = RunCancellation()
         self._relay = ExitStack()
@@ -518,10 +586,6 @@ class OpenRun(Generic[RunEnd]):
             daemon=True,
         )
         self._worker.start()
-
-    @property
-    def entry(self) -> CallInput:
-        return self._entry
 
     def wait(self) -> RunEnd:
         """Дождаться конца насоса и отдать итог; сбой прогона поднимается тут."""
@@ -548,9 +612,10 @@ class OpenRun(Generic[RunEnd]):
         self._settle()
 
     def _settle(self) -> None:
-        """Снять прерыватель внешней отмены и прибрать вход; повтор безвреден."""
+        """Снять прерыватель внешней отмены и прибрать входы; повтор безвреден."""
         self._relay.close()
-        self._entry.abandon()
+        for entry in self._entries:
+            entry.abandon()
 
     def _pump_call(self) -> None:
         with self._own.published():
@@ -571,33 +636,33 @@ class PumpedCall(OpenRun[RunEnd], ToolCall):
     вызов инструмента.
 
     Создаётся методом open() реализаций ToolLauncher. К прогону добавляет
-    кадры: send и done_sending пишут вход через FrameInput, frames() отдаёт
-    кадры тела из CallInbox (читатель ровно один), result() ждёт конца
-    насоса и собирает ToolOutcome переданной функцией finish.
+    кадры: inputs отдаёт входы вызова (CallInputs), frames() — кадры тела из
+    CallInbox (читатель ровно один), result() ждёт конца насоса и собирает
+    ToolOutcome переданной функцией finish.
     """
 
     def __init__(
         self,
         tool: str,
-        entry: FrameInput,
+        inputs: CallInputs,
         inbox: CallInbox,
         run: Callable[[RunCancellation], RunEnd],
         finish: Callable[[RunEnd], ToolOutcome],
     ) -> None:
-        self._frames = entry
+        self._inputs = inputs
         self._inbox = inbox
         self._finish = finish
         self._outcome: ToolOutcome | None = None
         self._frames_taken = False
 
         # поля читателей выставлены до конструктора низа: он стартует поток
-        super().__init__(tool, entry, run)
+        super().__init__(tool, inputs.entries(), run)
 
-    def send(self, frame: ToolFrame) -> None:
-        self._frames.send(frame)
+    def inputs(self) -> Sequence[CallInputPort]:
+        return self._inputs.slots()
 
     def done_sending(self) -> None:
-        self._frames.finish()
+        self._inputs.finish_all()
 
     def frames(self) -> Iterator[ToolFrame]:
         if self._frames_taken:

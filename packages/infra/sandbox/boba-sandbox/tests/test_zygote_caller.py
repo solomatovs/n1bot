@@ -20,6 +20,7 @@ from fake_channel_tool import (
     ChannelConfig,
     FxChunkHead,
     fx_echo,
+    fx_merge,
     fx_probe_tmp,
     fx_stream,
     fx_warm_state,
@@ -44,7 +45,7 @@ from boba.toolkit.channels import JournalChannel, ToolChannel
 from boba.toolkit.entry import ToolAddress, ToolArgv, ToolMain
 from boba.toolkit.frames import ToolFrame
 from boba.toolkit.launcher import CollectedCall, LauncherError
-from boba.toolkit.protocol import ReplyError, ReplyOk
+from boba.toolkit.protocol import ReplyError, ReplyOk, ToolCommand
 from boba.toolkit.stream import (
     ChannelSinks,
     Chunk,
@@ -71,6 +72,7 @@ CFG = ChannelConfig(token=SecretStr("zc-s3cret"))
 FX_ECHO = ToolMain.toolset(fx_echo)[0]
 FX_PROBE = ToolMain.toolset(fx_probe_tmp)[0]
 FX_STREAM = ToolMain.toolset(fx_stream)[0]
+FX_MERGE = ToolMain.toolset(fx_merge)[0]
 
 FAST = ZygotePolicy(
     start_timeout_sec=20.0,
@@ -197,14 +199,16 @@ def _command(text: str) -> Any:
     """ToolCommand для fx_echo — ровно как его строит обёртка запуска."""
     address = ToolAddress(module="fake_channel_tool", name="fx_echo")
     schema = ToolArgv.schema_of(FX_ECHO)
-    return ToolArgv.render(address, schema, {"text": text, "cfg": CFG})
+    return ToolArgv.render(address, schema, {"text": text, "cfg": CFG}, input_counts={})
 
 
 def _stream_command(prefix: str) -> Any:
     """ToolCommand потокового инструмента: io-параметр в конфиг не попадает."""
     address = ToolAddress(module="fake_channel_tool", name="fx_stream")
     schema = ToolArgv.schema_of(FX_STREAM)
-    return ToolArgv.render(address, schema, {"prefix": prefix, "cfg": CFG})
+    return ToolArgv.render(
+        address, schema, {"prefix": prefix, "cfg": CFG}, input_counts={}
+    )
 
 
 @pytest.fixture
@@ -311,7 +315,7 @@ class TestRunTool:
 
         address = ToolAddress(module="fake_channel_tool", name="fx_probe_tmp")
         schema = ToolArgv.schema_of(FX_PROBE)
-        command = ToolArgv.render(address, schema, {"marker": "solo"})
+        command = ToolArgv.render(address, schema, {"marker": "solo"}, input_counts={})
 
         outcome = CollectedCall.of(caller, command)
 
@@ -458,7 +462,9 @@ class TestWarmup:
         schema = ToolArgv.schema_of(
             next(t for t in ToolMain.toolset(fx_warm_state) if t)
         )
-        outcome = CollectedCall.of(caller, ToolArgv.render(address, schema, {}))
+        outcome = CollectedCall.of(
+            caller, ToolArgv.render(address, schema, {}, input_counts={})
+        )
 
         if not isinstance(outcome.reply, ReplyOk):
             raise AssertionError(f"reply={outcome.reply}")
@@ -658,7 +664,9 @@ class TestImageRootfs:
 
         address = ToolAddress(module="fake_channel_tool", name="fx_probe_tmp")
         schema = ToolArgv.schema_of(FX_PROBE)
-        command = ToolArgv.render(address, schema, {"marker": "img.txt"})
+        command = ToolArgv.render(
+            address, schema, {"marker": "img.txt"}, input_counts={}
+        )
 
         outcome = CollectedCall.of(caller, command)
         if not isinstance(outcome.reply, ReplyOk):
@@ -772,6 +780,50 @@ class TestShell:
             raise AssertionError(f"capabilities не сброшены: {stdout!r}")
 
 
+class TestManyInputs:
+    """Порт-список в песочнице: входы после первого едут хвостом SCM_RIGHTS
+    и доходят до тела своими дескрипторами."""
+
+    def _merge(self, inputs: int) -> Any:
+        address = ToolAddress(module="fake_channel_tool", name="fx_merge")
+        schema = ToolArgv.schema_of(FX_MERGE)
+        return ToolArgv.render(
+            address, schema, {"cfg": CFG}, input_counts={"feeds": inputs}
+        )
+
+    def test_each_input_reaches_its_port(self, zygote: Any) -> None:
+        caller = zygote(_profile())
+
+        with caller.open(self._merge(4)) as call:
+            entries = call.inputs()
+            for index, entry in enumerate(entries):
+                entry.send(ToolFrame.of(FxChunkHead(seq=1), f"in{index}".encode()))
+
+            call.done_sending()
+            outcome = call.result()
+
+        if not isinstance(outcome.reply, ReplyOk):
+            raise AssertionError(f"reply={outcome.reply}")
+
+        if outcome.reply.content != "merged 4:in0;in1;in2;in3|zc-s3cret":
+            raise AssertionError(f"content={outcome.reply.content!r}")
+
+    def test_input_ceiling_fits_one_message(self, zygote: Any) -> None:
+        """Потолок входов вызова проходит одним сообщением зиготе."""
+        caller = zygote(_profile())
+
+        with caller.open(self._merge(ToolCommand.MAX_INPUTS)) as call:
+            call.done_sending()
+            outcome = call.result()
+
+        if not isinstance(outcome.reply, ReplyOk):
+            raise AssertionError(f"reply={outcome.reply}")
+
+        expected = f"merged {ToolCommand.MAX_INPUTS}:"
+        if not outcome.reply.content.startswith(expected):
+            raise AssertionError(f"content={outcome.reply.content!r}")
+
+
 class TestStreamingCall:
     """Потоковый вызов в песочнице: кадры внутрь и наружу, конверт в конце."""
 
@@ -779,8 +831,8 @@ class TestStreamingCall:
         caller = zygote(_profile())
 
         with caller.open(_stream_command("re:")) as call:
-            call.send(ToolFrame.of(FxChunkHead(seq=1), b"one"))
-            call.send(ToolFrame.of(FxChunkHead(seq=2), b"two"))
+            call.inputs()[0].send(ToolFrame.of(FxChunkHead(seq=1), b"one"))
+            call.inputs()[0].send(ToolFrame.of(FxChunkHead(seq=2), b"two"))
             call.done_sending()
 
             kinds: list[str] = []
@@ -807,7 +859,7 @@ class TestStreamingCall:
         caller = zygote(_profile())
 
         with caller.open(_stream_command("x:")) as call:
-            call.send(ToolFrame.of(FxChunkHead(seq=1), b"early"))
+            call.inputs()[0].send(ToolFrame.of(FxChunkHead(seq=1), b"early"))
 
             stream = call.frames()
             first = next(stream)
@@ -832,7 +884,7 @@ class TestStreamingCall:
         ToolChannelsTap.set(sinks)
         try:
             with caller.open(_stream_command("j:")) as call:
-                call.send(ToolFrame.of(FxChunkHead(seq=1), b"body-bytes"))
+                call.inputs()[0].send(ToolFrame.of(FxChunkHead(seq=1), b"body-bytes"))
                 call.done_sending()
                 list(call.frames())
                 call.result()
@@ -861,7 +913,7 @@ class TestSpliceChain:
         sink = caller.open(_stream_command("z:"))
 
         stats_box: list[Any] = []
-        sink_fd = CallRelay.input_fd(sink)
+        sink_fd = sink.inputs()[0].take_fd()
 
         def relay() -> None:
             stats_box.append(CallRelay.splice(tapped.frames_fd, sink_fd))
@@ -871,7 +923,7 @@ class TestSpliceChain:
         with tapped.call as source, sink:
             worker.start()
 
-            source.send(ToolFrame.of(FxChunkHead(seq=1), b"data"))
+            source.inputs()[0].send(ToolFrame.of(FxChunkHead(seq=1), b"data"))
             source.done_sending()
 
             worker.join(timeout=60)
@@ -942,7 +994,7 @@ class TestCallResilience:
 
         def one_ok() -> None:
             with caller.open(_stream_command("f:")) as call:
-                call.send(ToolFrame.of(FxChunkHead(seq=1), b"data"))
+                call.inputs()[0].send(ToolFrame.of(FxChunkHead(seq=1), b"data"))
                 call.done_sending()
                 list(call.frames())
                 call.result()

@@ -37,7 +37,7 @@ from boba.toolkit.chain import (
     PipelineSlot,
 )
 from boba.toolkit.failure import FailureText, InvokeErrorKind
-from boba.toolkit.ports import StreamSpec, ToolStreamSpecs
+from boba.toolkit.ports import PortDecl, StreamSpec, ToolStreamSpecs
 from boba.toolkit.result import ErrorResult, ToolResult
 from boba.toolrun.invoke import InvokeReply, ToolInvoker
 from boba.toolrun.streams import StreamPumps
@@ -219,7 +219,11 @@ class _RunSession:
         last = len(order) - 1
 
         for index, name in enumerate(order):
-            slot = NodeSlot(has_upstream=index > 0, has_downstream=index < last)
+            inputs: tuple[str, ...] = ()
+            if index > 0:
+                inputs = (self._inbound_of(name).name,)
+
+            slot = NodeSlot(inputs=inputs, has_downstream=index < last)
             slots[name] = slot
             self._slots[name] = slot
 
@@ -275,14 +279,32 @@ class _RunSession:
             )
             raise ChainMismatchError(msg)
 
-        specs: list[StreamSpec] = []
-        for name in order:
-            specs.append(ToolStreamSpecs.of(self._graph.spec.tasks[name].tool))
-
-        for left, right in pairwise(specs):
-            ChainCheck.ensure(left, right)
+        for left, right in pairwise(order):
+            ChainCheck.ensure(self._outbound_of(left), self._inbound_of(right))
 
         return order
+
+    def _spec_of(self, name: str) -> StreamSpec:
+        return ToolStreamSpecs.of(self._graph.spec.tasks[name].tool)
+
+    def _outbound_of(self, name: str) -> PortDecl:
+        port = self._spec_of(name).outbound()
+        if port is None:
+            msg = f"task {name!r} feeds a stream edge but declares no outbound port"
+            raise ChainMismatchError(msg)
+
+        return port
+
+    def _inbound_of(self, name: str) -> PortDecl:
+        ports = self._spec_of(name).inbound()
+        if len(ports) != 1:
+            msg = (
+                f"task {name!r} is fed by a stream edge and must declare exactly "
+                f"one inbound port, got {len(ports)}"
+            )
+            raise ChainMismatchError(msg)
+
+        return ports[0]
 
     @staticmethod
     def _followers_of(stage: Stage) -> dict[str, str]:
@@ -330,9 +352,10 @@ class _RunSession:
                 source_fd = await asyncio.to_thread(
                     slots[left].take_source_fd, self.FD_WAIT_SEC
                 )
-                sink_fd = await asyncio.to_thread(
-                    slots[right].take_input_fd, self.FD_WAIT_SEC
+                sink_fds = await asyncio.to_thread(
+                    slots[right].take_input_fds, self.FD_WAIT_SEC
                 )
+                sink_fd = sink_fds[0]
                 relays.append(
                     asyncio.create_task(
                         asyncio.to_thread(CallRelay.splice, source_fd, sink_fd),

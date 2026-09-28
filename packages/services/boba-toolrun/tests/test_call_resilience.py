@@ -11,6 +11,7 @@ import os
 import signal
 import threading
 import time
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -18,6 +19,7 @@ from pydantic import SecretStr
 
 from boba.cancellation import ToolStopped, run_cancellation
 from boba.stand_core.fake_toolmod import (
+    TOOLS,
     FakeChunkHead,
     FakeConfig,
     FakePidHead,
@@ -28,8 +30,8 @@ from boba.toolkit.chain import CallRelay, ChainCheck, ChainMismatchError, RelayS
 from boba.toolkit.entry import ToolArgv, ToolMain
 from boba.toolkit.frames import FrameProtocolError, ToolFrame
 from boba.toolkit.launcher import LauncherError
-from boba.toolkit.ports import StreamSpec
-from boba.toolkit.protocol import ToolCommand
+from boba.toolkit.ports import PortDecl, StreamSpec
+from boba.toolkit.protocol import CallInputSpec, ToolCommand
 from boba.toolrun.process import ProcessLauncherConfig, ProcessToolCaller
 
 CFG = FakeConfig(token=SecretStr("t0ken"), limit=5)
@@ -57,8 +59,27 @@ def _launcher(workdir: Path, **overrides: object) -> ProcessToolCaller:
 def _command(tool_name: str, *flags: str) -> ToolCommand:
     config = json.dumps({"cfg": CFG.revealed()}).encode("utf-8")
     argv = ("python3", "-m", MODULE, tool_name, *flags)
+    inputs = tuple(_inputs(tool_name))
 
-    return ToolCommand(argv=argv, config=config)
+    return ToolCommand(argv=argv, config=config, inputs=inputs)
+
+
+def _inputs(tool_name: str) -> Iterator[CallInputSpec]:
+    """По входу на каждый одиночный входной порт инструмента стенда."""
+    for tool in TOOLS:
+        if tool.name != tool_name:
+            continue
+
+        for port in StreamSpec.of_schema(ToolArgv.schema_of(tool)).inbound():
+            yield CallInputSpec(port=port.name, raw=port.raw)
+
+
+def _ends(source: StreamSpec, sink: StreamSpec) -> tuple[PortDecl, PortDecl]:
+    """Выход источника и единственный вход приёмника для ChainCheck."""
+    outbound = source.outbound()
+    assert outbound is not None
+
+    return outbound, sink.inbound()[0]
 
 
 def _open_fds() -> int:
@@ -106,7 +127,7 @@ class TestDeafBody:
             payload = ToolFrame.of(FakePidHead(pid=0), b"\x00" * (4 * 1024 * 1024))
 
             started = time.monotonic()
-            call.send(payload)
+            call.inputs()[0].send(payload)
             blocked_for = time.monotonic() - started
 
             # запись обязана была встать до срабатывания таймаута вызова
@@ -152,8 +173,8 @@ class TestDeadBody:
             # пайп рвётся не позже второй записи; обе обязаны вернуться сразу
             started = time.monotonic()
             try:
-                call.send(ToolFrame.of(FakePidHead(pid=0), b"one"))
-                call.send(ToolFrame.of(FakePidHead(pid=0), b"two"))
+                call.inputs()[0].send(ToolFrame.of(FakePidHead(pid=0), b"one"))
+                call.inputs()[0].send(ToolFrame.of(FakePidHead(pid=0), b"two"))
             except LauncherError:
                 pass
 
@@ -170,7 +191,7 @@ class TestForeignKind:
         launcher = _launcher(tmp_path)
 
         with launcher.open(_command("fake_stream", "--prefix", "k:")) as call:
-            call.send(ToolFrame.of(FakePidHead(pid=1), b"alien"))
+            call.inputs()[0].send(ToolFrame.of(FakePidHead(pid=1), b"alien"))
             call.done_sending()
 
             list(call.frames())
@@ -218,17 +239,17 @@ class TestFramedChain:
         launcher = _launcher(tmp_path)
 
         spec = StreamSpec.of_schema(ToolArgv.schema_of(STREAM_TOOL))
-        ChainCheck.ensure(spec, spec)
+        ChainCheck.ensure(*_ends(spec, spec))
 
         with (
             launcher.open(_command("fake_stream", "--prefix", "x:")) as source,
             launcher.open(_command("fake_stream", "--prefix", "y:")) as sink,
         ):
-            source.send(ToolFrame.of(FakeChunkHead(seq=1), b"one"))
-            source.send(ToolFrame.of(FakeChunkHead(seq=2), b"two"))
+            source.inputs()[0].send(ToolFrame.of(FakeChunkHead(seq=1), b"one"))
+            source.inputs()[0].send(ToolFrame.of(FakeChunkHead(seq=2), b"two"))
             source.done_sending()
 
-            stats = CallRelay.frames(source, sink)
+            stats = CallRelay.frames(source, sink.inputs()[0])
 
             source_outcome = source.result()
             relayed = [frame.body for frame in sink.frames()]
@@ -248,7 +269,7 @@ class TestFramedChain:
         sink_spec = StreamSpec.of_schema(ToolArgv.schema_of(RELAY_TOOL))
 
         with pytest.raises(ChainMismatchError):
-            ChainCheck.ensure(source_spec, sink_spec)
+            ChainCheck.ensure(*_ends(source_spec, sink_spec))
 
 
 class _SpliceWorker:
@@ -281,7 +302,7 @@ class TestSpliceChain:
         launcher = _launcher(tmp_path)
 
         spec = StreamSpec.of_schema(ToolArgv.schema_of(RELAY_TOOL))
-        ChainCheck.ensure(spec, spec)
+        ChainCheck.ensure(*_ends(spec, spec))
 
         payload = b"\x5a" * (512 * 1024) + b"csv,rows\n" * 1000
 
@@ -289,10 +310,10 @@ class TestSpliceChain:
         second = launcher.open_tap(_command("fake_relay"))
 
         with first.call as source, second.call as sink:
-            relay = _SpliceWorker(first.frames_fd, CallRelay.input_fd(sink))
+            relay = _SpliceWorker(first.frames_fd, sink.inputs()[0].take_fd())
 
             # сырой вход первого: голые байты в его stdin-дескриптор
-            source_in = CallRelay.input_fd(source)
+            source_in = source.inputs()[0].take_fd()
             os.write(source_in, payload)
             os.close(source_in)
 
@@ -348,9 +369,11 @@ class TestSpliceChain:
             os.kill(pid_frame.header_as(FakePidHead).pid, signal.SIGKILL)
 
             started = time.monotonic()
-            relay = _SpliceWorker(tapped.frames_fd, CallRelay.input_fd(sink))
+            relay = _SpliceWorker(tapped.frames_fd, sink.inputs()[0].take_fd())
 
-            source.send(ToolFrame.of(FakeChunkHead(seq=1), b"\x00" * (2 << 20)))
+            source.inputs()[0].send(
+                ToolFrame.of(FakeChunkHead(seq=1), b"\x00" * (2 << 20))
+            )
             source.done_sending()
 
             relay.wait()
@@ -371,7 +394,7 @@ class TestResources:
 
         def one_ok() -> None:
             with launcher.open(_command("fake_stream", "--prefix", "p:")) as call:
-                call.send(ToolFrame.of(FakeChunkHead(seq=1), b"data"))
+                call.inputs()[0].send(ToolFrame.of(FakeChunkHead(seq=1), b"data"))
                 call.done_sending()
                 list(call.frames())
                 call.result()

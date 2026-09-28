@@ -119,6 +119,7 @@ class TestArgv:
             ToolAddress.of(FAKE),
             ToolArgv.schema_of(FAKE),
             {"text": "hi there", "repeat": 3, "cfg": CFG},
+            input_counts={},
         )
 
         argv = list(command.argv)
@@ -134,6 +135,7 @@ class TestArgv:
             ToolAddress.of(FAKE),
             ToolArgv.schema_of(FAKE),
             {"text": "x", "repeat": 1, "cfg": CFG},
+            input_counts={},
         )
 
         if "s3cret-token" in " ".join(command.argv):
@@ -144,6 +146,7 @@ class TestArgv:
             ToolAddress.of(FAKE),
             ToolArgv.schema_of(FAKE),
             {"text": "план б", "repeat": 2, "cfg": CFG},
+            input_counts={},
         )
 
         kwargs = ToolArgv.parse(FAKE, command.argv[4:], command.config)
@@ -164,6 +167,7 @@ class TestArgv:
                 ToolAddress.of(FAKE),
                 ToolArgv.schema_of(FAKE),
                 {"text": "x" * 140_000, "repeat": 1, "cfg": CFG},
+                input_counts={},
             )
 
 

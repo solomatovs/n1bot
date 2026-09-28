@@ -12,6 +12,7 @@ from boba.stand_core.fake_toolmod import FakeConfig
 from boba.toolkit.entry import ToolMain
 from boba.toolkit.frames import FrameHead, ToolFrame
 from boba.toolkit.launcher import (
+    CallInputPort,
     FrameSink,
     FrameTap,
     PayloadFailureError,
@@ -54,8 +55,8 @@ class RecordedCall(ToolCall):
         self._reply = reply_json
         self._frames = tuple(frames)
 
-    def send(self, frame: ToolFrame) -> None:
-        raise NotImplementedError
+    def inputs(self) -> Sequence[CallInputPort]:
+        return ()
 
     def done_sending(self) -> None:
         return

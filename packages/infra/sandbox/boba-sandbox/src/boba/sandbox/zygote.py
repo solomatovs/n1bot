@@ -34,7 +34,7 @@ import sys
 import threading
 import time
 import uuid
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import suppress
 from dataclasses import dataclass
@@ -245,13 +245,14 @@ class _CallChannels:
     SCM_RIGHTS: пайпы stdin/stdout/stderr/result/frames/injected, control-
     сокет и каталог cgroup-leaf'а.
 
-    Порядок в child_fds() жёсткий — гость раскладывает их по CallFd. После
-    отправки child-концы закрываются здесь, host-концы разбирают владельцы:
-    stdin забирает CallInput (take_stdin), канал конфига — писатель конфига
+    Порядок в child_fds() жёсткий — гость раскладывает их по CallFd, за ними
+    cgroup и входы после первого. После отправки child-концы закрываются
+    здесь, host-концы разбирают владельцы: stdin и входы забирает
+    CallInputs (take_stdin, take_inputs), канал конфига — писатель конфига
     (take_injected), остальное читает насос и закрывает close_host_ends.
     """
 
-    def __init__(self, cgroup_fd: int = -1) -> None:
+    def __init__(self, cgroup_fd: int, extra_inputs: int) -> None:
         self.cgroup_fd = cgroup_fd
         self.stdin_r, self.stdin_w = os.pipe()
         self.stdout_r, self.stdout_w = os.pipe()
@@ -268,9 +269,17 @@ class _CallChannels:
         self._stdin_open = True
         self._injected_open = True
         self._frames_open = True
+        self._inputs_open = True
+
+        self._extra: list[tuple[int, int]] = []
+        for _ in range(extra_inputs):
+            read_fd, write_fd = os.pipe()
+            PipePlumbing.widen(write_fd)
+            self._extra.append((read_fd, write_fd))
 
     def child_fds(self) -> list[int]:
-        """В порядке CallFd: так их ждёт зигота; cgroup — последним и не всегда."""
+        """В порядке CallFd: так их ждёт зигота; cgroup — не всегда, входы
+        после первого — в хвосте."""
         listed = [
             self.stdin_r,
             self.stdout_w,
@@ -283,6 +292,9 @@ class _CallChannels:
         if self.cgroup_fd >= 0:
             listed.append(self.cgroup_fd)
 
+        for read_fd, _ in self._extra:
+            listed.append(read_fd)
+
         return listed
 
     def close_child_ends(self) -> None:
@@ -293,6 +305,8 @@ class _CallChannels:
         os.close(self.frames_w)
         os.close(self.injected_r)
         self.control_child.close()
+        for read_fd, _ in self._extra:
+            os.close(read_fd)
 
     def stdin_alive(self) -> bool:
         return self._stdin_open
@@ -305,6 +319,21 @@ class _CallChannels:
 
         self._stdin_open = False
         return self.stdin_w
+
+    def take_inputs(self) -> tuple[int, ...]:
+        """Отдать записывающие концы входов после первого их владельцу —
+        CallInputs вызова; каналы их больше не закрывают."""
+        if not self._inputs_open:
+            msg = "call inputs are already taken or closed"
+            raise LauncherError(msg)
+
+        self._inputs_open = False
+
+        fds: list[int] = []
+        for _, write_fd in self._extra:
+            fds.append(write_fd)
+
+        return tuple(fds)
 
     def take_injected(self) -> int:
         """Отдать канал конфига писателю: каналы его больше не закрывают."""
@@ -347,12 +376,21 @@ class _CallChannels:
 
     def close_host_ends(self) -> None:
         self.close_stdin()
+        self._close_inputs()
         self._close_injected()
         self._close_frames()
         os.close(self.stdout_r)
         os.close(self.stderr_r)
         os.close(self.result_r)
         self.control_host.close()
+
+    def _close_inputs(self) -> None:
+        if not self._inputs_open:
+            return
+
+        self._inputs_open = False
+        for _, write_fd in self._extra:
+            os.close(write_fd)
 
     def _close_injected(self) -> None:
         if not self._injected_open:
@@ -603,6 +641,7 @@ class ZygoteSupervisor:
         staging: Sequence[str] = (),
         cwd: str = "",
         module: str = "",
+        inputs: Sequence[str] = (),
     ) -> _WiredCall:
         """Открыть проводку вызова: каналы и запрос зиготе, без насоса.
 
@@ -626,7 +665,6 @@ class ZygoteSupervisor:
         if cgroup_leaf:
             cgroup_fd = os.open(cgroup_leaf, os.O_RDONLY | os.O_DIRECTORY)
 
-        channels = _CallChannels(cgroup_fd)
         request = CallRequest(
             call_id=call_id,
             argv=tuple(argv),
@@ -639,7 +677,9 @@ class ZygoteSupervisor:
             staging=tuple(staging),
             cwd=cwd,
             into_cgroup=cgroup_fd >= 0,
+            inputs=tuple(inputs),
         )
+        channels = _CallChannels(cgroup_fd, request.extra_inputs())
 
         try:
             with self._send_lock:
@@ -746,7 +786,7 @@ class ZygoteSupervisor:
             )
 
         try:
-            opened = OpenRun(self._name, entry, pump_run)
+            opened = OpenRun(self._name, (entry,), pump_run)
         except BaseException:
             # ход уже отменён: насос не родился, проводку прибираем сами
             entry.abandon()
@@ -1353,6 +1393,7 @@ class ZygoteToolCaller(ToolLauncher):
                 staging=plan.staging,
                 cwd=plan.cwd,
                 module=module,
+                inputs=tuple(self._input_ports(command)),
             )
         except BaseException:
             self._release_leaf(manager, leaf)
@@ -1362,8 +1403,8 @@ class ZygoteToolCaller(ToolLauncher):
         if tap:
             frames_fd = wired.channels.take_frames()
 
-        entry = CallSinks.stdin_input(
-            wired.channels.take_stdin(), framed=not command.raw_stdin
+        inputs = CallSinks.call_inputs(
+            wired.channels.take_stdin(), wired.channels.take_inputs(), command.inputs
         )
 
         def run(cancellation: RunCancellation) -> ZygoteOutcome:
@@ -1383,11 +1424,11 @@ class ZygoteToolCaller(ToolLauncher):
             return self.outcome_of(outcome, envelope, stderr_tail)
 
         try:
-            call = PumpedCall(self._tool, entry, inbox, run, finish)
+            call = PumpedCall(self._tool, inputs, inbox, run, finish)
         except BaseException:
             # ход уже отменён: насос не родился, проводку прибираем сами;
             # EOF каналов выведет тело, зигота пожнёт его сама
-            entry.abandon()
+            inputs.abandon_all()
             if frames_fd >= 0:
                 with suppress(OSError):
                     os.close(frames_fd)
@@ -1401,6 +1442,11 @@ class ZygoteToolCaller(ToolLauncher):
         config_input.finish()
 
         return call, frames_fd
+
+    @staticmethod
+    def _input_ports(command: ToolCommand) -> Iterator[str]:
+        for spec in command.inputs:
+            yield spec.port
 
     def outcome_of(
         self,

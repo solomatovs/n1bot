@@ -10,7 +10,7 @@ from pydantic import SecretStr
 
 from boba.stand_core.fake_toolmod import FakeChunkHead, FakeConfig
 from boba.toolkit.frames import ToolFrame
-from boba.toolkit.protocol import ReplyOk, ToolCommand
+from boba.toolkit.protocol import CallInputSpec, ReplyOk, ToolCommand
 from boba.toolrun.process import ProcessLauncherConfig, ProcessToolCaller
 from boba.toolrun.streaming import AsyncToolCall
 
@@ -34,7 +34,11 @@ def _launcher(workdir: Path) -> ProcessToolCaller:
 
 def _command(prefix: str) -> ToolCommand:
     config = json.dumps({"cfg": CFG.revealed()}).encode("utf-8")
-    return ToolCommand(argv=(*STREAM_ARGV, "--prefix", prefix), config=config)
+    return ToolCommand(
+        argv=(*STREAM_ARGV, "--prefix", prefix),
+        config=config,
+        inputs=(CallInputSpec(port="feed", raw=False),),
+    )
 
 
 class TestAsyncToolCall:
@@ -42,8 +46,8 @@ class TestAsyncToolCall:
         async def go() -> tuple[list[bytes], object]:
             call = AsyncToolCall.opened(_launcher(tmp_path), _command("a:"))
 
-            await call.send(ToolFrame.of(FakeChunkHead(seq=1), b"one"))
-            await call.send(ToolFrame.of(FakeChunkHead(seq=2), b"two"))
+            await call.send(0, ToolFrame.of(FakeChunkHead(seq=1), b"one"))
+            await call.send(0, ToolFrame.of(FakeChunkHead(seq=2), b"two"))
             await call.done_sending()
 
             bodies: list[bytes] = []
@@ -74,7 +78,7 @@ class TestAsyncToolCall:
 
             ticker = asyncio.create_task(tick())
 
-            await call.send(ToolFrame.of(FakeChunkHead(seq=1), b"x"))
+            await call.send(0, ToolFrame.of(FakeChunkHead(seq=1), b"x"))
             await call.done_sending()
 
             async for _ in call.frames():

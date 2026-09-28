@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import threading
 from pathlib import Path
 
 import pytest
@@ -11,8 +12,13 @@ from pydantic import SecretStr
 
 from boba.cancellation import ToolStopped
 from boba.stand.shell import ShellRun
-from boba.stand_core.fake_toolmod import FakeChunkHead, FakeConfig
-from boba.toolkit.entry import ToolMain
+from boba.stand_core.fake_toolmod import (
+    FakeChunkHead,
+    FakeConfig,
+    fake_merge,
+    fake_stream,
+)
+from boba.toolkit.entry import ToolAddress, ToolArgv, ToolMain
 from boba.toolkit.frames import ToolFrame
 from boba.toolkit.launcher import (
     ChannelOverflowError,
@@ -20,7 +26,8 @@ from boba.toolkit.launcher import (
     LauncherError,
     PayloadFailureError,
 )
-from boba.toolkit.protocol import ReplyError, ReplyOk, ToolCommand
+from boba.toolkit.ports import PortDeclarationError
+from boba.toolkit.protocol import CallInputSpec, ReplyError, ReplyOk, ToolCommand
 from boba.toolkit.wrap import ToolProcessWrap
 from boba.toolrun.process import (
     ProcessCallError,
@@ -162,7 +169,11 @@ class TestStreamingCall:
 
     def _command(self, prefix: str) -> ToolCommand:
         config = json.dumps({"cfg": CFG.revealed()}).encode("utf-8")
-        return ToolCommand(argv=(*self.STREAM_ARGV, "--prefix", prefix), config=config)
+        return ToolCommand(
+            argv=(*self.STREAM_ARGV, "--prefix", prefix),
+            config=config,
+            inputs=(CallInputSpec(port="feed", raw=False),),
+        )
 
     def test_frames_answer_frames_and_envelope_closes_call(
         self, tmp_path: Path
@@ -170,8 +181,8 @@ class TestStreamingCall:
         launcher = _launcher(tmp_path)
 
         with launcher.open(self._command("re:")) as call:
-            call.send(ToolFrame.of(FakeChunkHead(seq=1), b"one"))
-            call.send(ToolFrame.of(FakeChunkHead(seq=2), b"two"))
+            call.inputs()[0].send(ToolFrame.of(FakeChunkHead(seq=1), b"one"))
+            call.inputs()[0].send(ToolFrame.of(FakeChunkHead(seq=2), b"two"))
             call.done_sending()
 
             bodies: list[bytes] = []
@@ -191,7 +202,7 @@ class TestStreamingCall:
         launcher = _launcher(tmp_path)
 
         with launcher.open(self._command("x:")) as call:
-            call.send(ToolFrame.of(FakeChunkHead(seq=1), b"early"))
+            call.inputs()[0].send(ToolFrame.of(FakeChunkHead(seq=1), b"early"))
 
             stream = call.frames()
             first = next(stream)
@@ -210,7 +221,7 @@ class TestStreamingCall:
         payload = bytes(1_000_000)
 
         with launcher.open(self._command("")) as call:
-            call.send(ToolFrame.of(FakeChunkHead(seq=1), payload))
+            call.inputs()[0].send(ToolFrame.of(FakeChunkHead(seq=1), payload))
             call.done_sending()
 
             frames = list(call.frames())
@@ -223,8 +234,116 @@ class TestStreamingCall:
         launcher = _launcher(tmp_path)
 
         call = launcher.open(self._command("y:"))
-        call.send(ToolFrame.of(FakeChunkHead(seq=1), b"hang"))
+        call.inputs()[0].send(ToolFrame.of(FakeChunkHead(seq=1), b"hang"))
         call.close()
 
         with pytest.raises(ToolStopped):
             call.result()
+
+
+class TestManyInputs:
+    """Порт-список: каждый вход — свой пайп, тело получает все входы разом."""
+
+    MERGE = ToolMain.toolset(fake_merge)[0]
+    STREAM = ToolMain.toolset(fake_stream)[0]
+
+    def _merge(self, inputs: int) -> ToolCommand:
+        return ToolArgv.render(
+            ToolAddress.of(self.MERGE),
+            ToolArgv.schema_of(self.MERGE),
+            {"cfg": CFG},
+            input_counts={"feeds": inputs},
+        )
+
+    def test_each_input_reaches_its_port_in_order(self, tmp_path: Path) -> None:
+        launcher = _launcher(tmp_path)
+
+        with launcher.open(self._merge(3)) as call:
+            first, second, third = call.inputs()
+            first.send(ToolFrame.of(FakeChunkHead(seq=1), b"a1"))
+            first.send(ToolFrame.of(FakeChunkHead(seq=2), b"a2"))
+            second.send(ToolFrame.of(FakeChunkHead(seq=1), b"b1"))
+            third.finish()
+            call.done_sending()
+
+            outcome = call.result()
+
+        assert isinstance(outcome.reply, ReplyOk)
+        assert outcome.reply.content == "merged 3:a1a2;b1;|t0ken"
+
+    def test_inputs_are_read_concurrently(self, tmp_path: Path) -> None:
+        """Второй вход закачивается больше буфера пайпа, пока первый ещё
+        открыт: последовательный читатель встал бы на первом, а запись во
+        второй — на полном пайпе."""
+        launcher = _launcher(tmp_path, channel_limit_bytes=16_000_000)
+        payload = b"x" * (4 << 20)
+
+        with launcher.open(self._merge(2)) as call:
+            first, second = call.inputs()
+
+            done = threading.Event()
+
+            def pump_second() -> None:
+                second.send(ToolFrame.of(FakeChunkHead(seq=1), payload))
+                second.finish()
+                done.set()
+
+            writer = threading.Thread(target=pump_second, daemon=True)
+            writer.start()
+
+            assert done.wait(timeout=30), (
+                "second input blocked: inputs are read serially"
+            )
+
+            first.send(ToolFrame.of(FakeChunkHead(seq=1), b"late"))
+            first.finish()
+
+            outcome = call.result()
+
+        assert isinstance(outcome.reply, ReplyOk)
+        assert outcome.reply.content.startswith("merged 2:late;xxx")
+        assert len(outcome.reply.content) == len("merged 2:late;|t0ken") + len(payload)
+
+    def test_port_list_without_inputs_is_empty(self, tmp_path: Path) -> None:
+        launcher = _launcher(tmp_path)
+
+        outcome = CollectedCall.of(launcher, self._merge(0))
+
+        assert isinstance(outcome.reply, ReplyOk)
+        assert outcome.reply.content == "merged 0:|t0ken"
+
+    def test_input_of_an_unknown_port_is_refused(self, tmp_path: Path) -> None:
+        launcher = _launcher(tmp_path)
+        command = self._merge(1).model_copy(
+            update={"inputs": (CallInputSpec(port="nope", raw=False),)}
+        )
+
+        outcome = CollectedCall.of(launcher, command)
+
+        assert isinstance(outcome.reply, ReplyError)
+        assert "names port 'nope'" in outcome.reply.message
+
+    def test_single_port_refuses_two_inputs(self, tmp_path: Path) -> None:
+        launcher = _launcher(tmp_path)
+        command = ToolCommand(
+            argv=("python3", "-m", "boba.stand_core.fake_toolmod", "fake_stream"),
+            config=json.dumps({"cfg": CFG.revealed()}).encode("utf-8"),
+            inputs=(
+                CallInputSpec(port="feed", raw=False),
+                CallInputSpec(port="feed", raw=False),
+            ),
+        )
+
+        outcome = CollectedCall.of(launcher, command)
+
+        assert isinstance(outcome.reply, ReplyError)
+        assert "expects exactly one --fd-in input, got 2" in outcome.reply.message
+
+    def test_render_refuses_many_inputs_for_a_single_port(self) -> None:
+        with pytest.raises(PortDeclarationError, match="takes exactly one input"):
+            ToolArgv.render(
+                ToolAddress.of(self.STREAM),
+                ToolArgv.schema_of(self.STREAM),
+                {"prefix": "p", "cfg": CFG},
+                input_counts={"feed": 2},
+            )

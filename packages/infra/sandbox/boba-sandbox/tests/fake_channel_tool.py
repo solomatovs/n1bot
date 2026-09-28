@@ -2,7 +2,8 @@
 
 Пишет в stdout и stderr тела, чтобы тест доказал: болтовня не попадает в
 конверт tool_result. fx_probe_tmp отдаёт наблюдаемое изнутри состояние
-изоляции — им пользуются тесты зиготы.
+изоляции — им пользуются тесты зиготы. fx_merge получает несколько входов
+разом: по нему видно, что дополнительные дескрипторы доезжают до тела.
 """
 
 from __future__ import annotations
@@ -12,7 +13,7 @@ import json
 import logging
 import os
 import sys
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from enum import StrEnum
 from pathlib import Path
 from typing import Annotated, ClassVar, Final, Literal
@@ -178,12 +179,45 @@ async def fx_stream(
     return MarkdownResult(text=f"streamed {total}|{cfg.token.get_secret_value()}")
 
 
+class FxFeedTally:
+    """Сводка входов fx_merge: тела каждого входа, входы читаются разом."""
+
+    def of(self, feed: Inbound[FxChunkHead | FxDoneHead]) -> str:
+        bodies = bytearray()
+        for item in feed:
+            bodies.extend(item.body)
+
+        return bodies.decode("utf-8")
+
+    async def all_of(self, feeds: Sequence[Inbound[FxChunkHead | FxDoneHead]]) -> str:
+        reads: list[asyncio.Future[str]] = []
+        for feed in feeds:
+            reads.append(asyncio.ensure_future(asyncio.to_thread(self.of, feed)))
+
+        tallies = await asyncio.gather(*reads)
+        return ";".join(tallies)
+
+
+@tool
+async def fx_merge(
+    *,
+    cfg: Annotated[ChannelConfig, Injected],
+    feeds: Annotated[Sequence[Inbound[FxChunkHead | FxDoneHead]], Injected],
+) -> MarkdownResult:
+    """Потребитель нескольких потоков в песочнице: тела входов через `;`."""
+    merged = await FxFeedTally().all_of(feeds)
+
+    return MarkdownResult(
+        text=f"merged {len(feeds)}:{merged}|{cfg.token.get_secret_value()}"
+    )
+
+
 EXPECTED: Mapping[type[Exception], FxErrorKind] = {
     FxDownError: FxErrorKind.DOWN,
 }
 
 TOOLS: Final = ToolMain.toolset(
-    fx_echo, fx_chatter, fx_probe_tmp, fx_warm_state, fx_stream
+    fx_echo, fx_chatter, fx_probe_tmp, fx_warm_state, fx_stream, fx_merge
 )
 
 if __name__ == "__main__":

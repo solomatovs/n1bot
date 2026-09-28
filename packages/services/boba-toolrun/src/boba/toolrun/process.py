@@ -23,7 +23,7 @@ import signal
 import subprocess
 import sys
 import time
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
@@ -35,7 +35,7 @@ from boba.cancellation import RunCancellation
 from boba.identity.context import CallContext
 from boba.toolkit.chain import TappedCall
 from boba.toolkit.channels import ToolChannel
-from boba.toolkit.entry import EntryFlag
+from boba.toolkit.entry import EntryFlag, InputWire
 from boba.toolkit.frames import CallInbox
 from boba.toolkit.launcher import (
     CappedChannel,
@@ -47,7 +47,7 @@ from boba.toolkit.launcher import (
     ToolLauncher,
     ToolOutcome,
 )
-from boba.toolkit.protocol import ToolCommand
+from boba.toolkit.protocol import CallInputSpec, ToolCommand
 from boba.toolkit.pump import (
     CallInput,
     CallSinks,
@@ -102,39 +102,86 @@ class ProcessLauncherConfig(BaseModel):
 
 
 class _CallPipes:
-    """Три пайпа вызова модуля: конверт (result) и кадры (frames) из тела,
-    injected-конфиг в тело.
+    """Пайпы вызова модуля сверх stdio: конверт (result) и кадры (frames) из
+    тела, injected-конфиг и входы после первого — в тело.
 
     Субпроцесс даёт из коробки только stdin/stdout/stderr — остальные
-    каналы открываются здесь. Дескрипторы тела наследуются с теми же
-    номерами (pass_fds), и эти номера дописываются в команду флагами
-    --fd-result/--fd-frames/--injected-fd (argv_flags).
+    каналы открываются здесь. Первый вход едет по stdin, каждый следующий —
+    своим пайпом. Дескрипторы тела наследуются с теми же номерами
+    (pass_fds), и эти номера дописываются в команду флагами
+    --fd-result/--fd-frames/--injected-fd/--fd-in (argv_flags). Записывающие
+    концы входов забирает CallInputs вызова (take_inputs).
     """
 
-    def __init__(self) -> None:
+    STDIN_FD: ClassVar[int] = 0
+
+    def __init__(self, inputs: Sequence[CallInputSpec]) -> None:
         self._host_open = True
         self._child_open = True
         self._injected_taken = False
         self._frames_taken = False
+        self._inputs_taken = False
+        self._specs = tuple(inputs)
 
         self.result_r, self.result_w = os.pipe()
         self.frames_r, self.frames_w = os.pipe()
         self.injected_r, self.injected_w = os.pipe()
         PipePlumbing.widen(self.frames_w)
 
+        self._extra: list[tuple[int, int]] = []
+        for _ in self._specs[1:]:
+            read_fd, write_fd = os.pipe()
+            PipePlumbing.widen(write_fd)
+            self._extra.append((read_fd, write_fd))
+
     def argv_flags(self) -> tuple[str, ...]:
         """Флаги каналов для команды тела: номера унаследованных дескрипторов."""
-        return (
+        flags = [
             EntryFlag.FD_RESULT.value,
             str(self.result_w),
             EntryFlag.FD_FRAMES.value,
             str(self.frames_w),
             EntryFlag.INJECTED_FD.value,
             str(self.injected_r),
-        )
+        ]
+        for wire in self._input_wires():
+            flags.extend(wire.argv())
+
+        return tuple(flags)
+
+    def _input_wires(self) -> Iterator[InputWire]:
+        if not self._specs:
+            return
+
+        yield InputWire(port=self._specs[0].port, fd=self.STDIN_FD)
+
+        for spec, (read_fd, _) in zip(self._specs[1:], self._extra, strict=True):
+            yield InputWire(port=spec.port, fd=read_fd)
 
     def child_fds(self) -> tuple[int, ...]:
-        return (self.result_w, self.frames_w, self.injected_r)
+        fds = [self.result_w, self.frames_w, self.injected_r]
+        for read_fd, _ in self._extra:
+            fds.append(read_fd)
+
+        return tuple(fds)
+
+    def take_inputs(self) -> tuple[int, ...]:
+        """Отдать записывающие концы входов после первого их владельцу —
+        CallInputs вызова; закрытия каналов их больше не трогают."""
+        if self._inputs_taken:
+            msg = (
+                "process call pipes: the input channels were already taken "
+                "by the call inputs, a second take is refused"
+            )
+            raise LauncherError(msg)
+
+        self._inputs_taken = True
+
+        fds: list[int] = []
+        for _, write_fd in self._extra:
+            fds.append(write_fd)
+
+        return tuple(fds)
 
     def take_injected(self) -> int:
         """Отдать канал конфига писателю: закрытия каналов его не трогают."""
@@ -174,7 +221,7 @@ class _CallPipes:
             return
 
         self._child_open = False
-        for fd in (self.result_w, self.frames_w, self.injected_r):
+        for fd in self.child_fds():
             with suppress(OSError):
                 os.close(fd)
 
@@ -189,6 +236,11 @@ class _CallPipes:
         if not self._frames_taken:
             with suppress(OSError):
                 os.close(self.frames_r)
+
+        if not self._inputs_taken:
+            for _, write_fd in self._extra:
+                with suppress(OSError):
+                    os.close(write_fd)
 
         if self._injected_taken:
             return
@@ -312,13 +364,15 @@ class ProcessToolCaller(ToolLauncher):
 
         sinks = CallSinks.merged(own, tuple(journal))
 
-        live = self._spawn(argv)
+        live = self._spawn(argv, command.inputs)
 
         frames_fd = -1
         if tap:
             frames_fd = live.channels.take_frames()
 
-        entry = CallSinks.stdin_input(live.stdin_w, framed=not command.raw_stdin)
+        inputs = CallSinks.call_inputs(
+            live.stdin_w, live.channels.take_inputs(), command.inputs
+        )
 
         def run(cancellation: RunCancellation) -> _ProcRun:
             return self._pump_live(live, sinks, cancellation)
@@ -327,10 +381,10 @@ class ProcessToolCaller(ToolLauncher):
             return self._collect(run_end, envelope, stderr_tail)
 
         try:
-            call = PumpedCall(self._tool, entry, inbox, run, finish)
+            call = PumpedCall(self._tool, inputs, inbox, run, finish)
         except BaseException:
             # ход уже отменён: насос не родился, прибираем процесс сами
-            entry.abandon()
+            inputs.abandon_all()
             if frames_fd >= 0:
                 with suppress(OSError):
                     os.close(frames_fd)
@@ -389,7 +443,7 @@ class ProcessToolCaller(ToolLauncher):
         scoped.mkdir(parents=True, exist_ok=True)
         return str(scoped)
 
-    def _spawn(self, argv: Sequence[str]) -> _LiveCall:
+    def _spawn(self, argv: Sequence[str], inputs: Sequence[CallInputSpec]) -> _LiveCall:
         """Запустить тело с каналами; спавн идёт в потоке вызывающего.
 
         Здесь же снимаются контексты вызова (workdir области, журнальный тап):
@@ -397,7 +451,7 @@ class ProcessToolCaller(ToolLauncher):
         """
         workdir = self._call_workdir()
 
-        channels = _CallPipes()
+        channels = _CallPipes(inputs)
         stdin_r, stdin_w = os.pipe()
         PipePlumbing.widen(stdin_w)
 

@@ -60,7 +60,10 @@ class ShellRun:
     ) -> ShellResult:
         tool = TOOLS[0]
         rendered = ToolArgv.render(
-            ToolAddress.of(tool), tool.args_schema, {"command": command, "cfg": cfg}
+            ToolAddress.of(tool),
+            tool.args_schema,
+            {"command": command, "cfg": cfg},
+            input_counts={},
         )
 
         outcome = CollectedCall.of(launcher, rendered)
