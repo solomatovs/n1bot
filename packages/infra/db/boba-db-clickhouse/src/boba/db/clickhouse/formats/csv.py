@@ -89,19 +89,23 @@ class CsvHead:
     граница в байтах — по числу потреблённых им строк. Остальное идёт
     дальше как есть."""
 
+    TAIL_ERRORS: ClassVar[str] = "surrogateescape"
+
     def __init__(self, fmt: str, count: int) -> None:
         self._fmt = fmt
         self._count = count
 
     async def take(self, chunks: AsyncIterator[memoryview]) -> HeadLines:
         head = bytearray()
-        decoder = codecs.getincrementaldecoder(CsvHeader.ENCODING)()
+        # кусок с концом шапки несёт и данные строк: бинарные строки не UTF-8
+        decoder = codecs.getincrementaldecoder(CsvHeader.ENCODING)(self.TAIL_ERRORS)
         text = ""
         while True:
             consumed = self._consumed(text)
             if consumed is not None:
                 records = self._records(consumed)
-                rest = bytes(head[len(consumed.encode(CsvHeader.ENCODING)) :])
+                size = len(consumed.encode(CsvHeader.ENCODING, self.TAIL_ERRORS))
+                rest = bytes(head[size:])
                 return HeadLines(lines=tuple(records), rest=rest)
 
             chunk = await anext(chunks, None)

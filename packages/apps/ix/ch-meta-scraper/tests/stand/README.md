@@ -9,13 +9,15 @@
 [ix_stand]
     db_schema = "ix"
     database  = "ix_stand"
-    ch_sources = [
+    ch_scrape_sources = [
         { name = "ch-25.12", clickhouse = { host = "...", port = 8123, interface = "http", connect_timeout = 10, auth = { method = "password", user = "scraper", password = "scraper" }, settings = { readonly = 2, max_execution_time = 30 } } },
         { name = "ch-dev-krb", demo = false, clickhouse = { host = "...", port = 443, interface = "https", server_host_name = "ch01...", connect_timeout = 10, auth = { method = "kerberos_keytab", principal = "...", keytab = "..." } } },
     ]
 ```
 
-`server/run.sh` поднимает контейнеры `edge-ch-<ver>` с `config.xml` и `users.xml` из
+`server/run.sh edge-chs` поднимает контейнеры `edge-chs-<ver>` только для скрапера: он обходит
+сервер целиком, и DDL насосов и инструментов на `edge-ch-<ver>` (`run.sh edge-ch`) сбил бы
+обход. Контейнеры поднимаются с `config.xml` и `users.xml` из
 того же каталога: пользователь `scraper` с паролем `scraper` и `default` без пароля,
 оба с правом управлять доступом. Образы без конфига не стартуют, поэтому каталог
 монтируется в `/etc/clickhouse-server`.

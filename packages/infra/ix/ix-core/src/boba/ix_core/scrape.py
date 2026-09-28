@@ -130,10 +130,7 @@ class Collect:
 
 @dataclass(frozen=True, kw_only=True)
 class VersionGate:
-    """Ворота файла по серверу. Версия сравнивается по длине ворот: max (19,)
-    отсекает 21.0, но пропускает 19.3; only и unless сравнивают вкус сервера
-    (у PostgreSQL это gp для Greenplum). Базовый класс ScrapeFile и файлов DDL
-    стендов."""
+    """Сравнение версий"""
 
     min_version: tuple[int, ...] = ()
     max_version: tuple[int, ...] = ()

@@ -1,4 +1,4 @@
-"""Стенд скрапера ClickHouse: секция [ix_stand] со списком ch_sources и набор
+"""Стенд скрапера ClickHouse: секция [ix_stand] со списком ch_scrape_sources и набор
 edge_demo на источнике. Раскладка стенда, эталоны, база ix, проверка ссылок и
 шторм — общие, в boba.stand.scraper.
 
@@ -62,12 +62,13 @@ class IxSource(BaseModel):
 
 
 class IxStand(ScraperStand[IxSource]):
-    """Секция [ix_stand] скрапера ClickHouse: общий стенд ix плюс список ch_sources."""
+    """Секция [ix_stand] скрапера ClickHouse: общий стенд ix плюс ch_scrape_sources —
+    серверы, на которых DDL делает только скрапер: обход идёт по серверу целиком."""
 
-    ch_sources: Sequence[IxSource]
+    ch_scrape_sources: Sequence[IxSource]
 
     def listed(self) -> Sequence[IxSource]:
-        return self.ch_sources
+        return self.ch_scrape_sources
 
 
 class DemoDataset:

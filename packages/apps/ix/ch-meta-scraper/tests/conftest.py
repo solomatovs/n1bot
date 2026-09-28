@@ -6,7 +6,13 @@ from __future__ import annotations
 import pytest
 from ch_scraper_stand import LAYOUT, IxStand
 
+from boba.stand.names import StandSuite
 from boba.stand.scraper import Golden, ScraperStandDatabase, StandFile
+
+
+def pytest_configure(config: pytest.Config) -> None:
+    """Метка набора и процесса в именах стенда ставится до импорта модулей тестов."""
+    StandSuite(config).configure("chscr")
 
 
 @pytest.fixture(scope="session")
