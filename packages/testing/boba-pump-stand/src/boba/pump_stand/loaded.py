@@ -211,7 +211,7 @@ class OraLoaded:
             "data_precision, data_scale, nullable "
             "from all_tab_columns where owner = :owner and table_name = :name "
             "order by column_id",
-            {"owner": PumpUser.NAME.value, "name": self._table.upper()},
+            {"owner": PumpUser().name, "name": self._table.upper()},
         )
         columns: list[tuple[str, str, bool]] = []
         for row in rows:
@@ -223,28 +223,28 @@ class OraLoaded:
         rows = await self._rows(
             "select table_name from all_tables where owner = :owner "
             "order by table_name",
-            {"owner": PumpUser.NAME.value},
+            {"owner": PumpUser().name},
         )
 
         return [str(row[0]).lower() for row in rows]
 
     async def count(self) -> int:
         rows = await self._rows(
-            f"select count(*) from {PumpUser.NAME}.{self._table}", {}
+            f"select count(*) from {PumpUser().name}.{self._table}", {}
         )
 
         return int(rows[0][0])
 
     async def scalar(self, expression: str) -> Any:
         rows = await self._rows(
-            f"select {expression} from {PumpUser.NAME}.{self._table}", {}
+            f"select {expression} from {PumpUser().name}.{self._table}", {}
         )
 
         return rows[0][0]
 
     async def column(self, expression: str, order_by: str = "id") -> list[Any]:
         rows = await self._rows(
-            f"select {expression} from {PumpUser.NAME}.{self._table} "
+            f"select {expression} from {PumpUser().name}.{self._table} "
             f"order by {order_by}",
             {},
         )

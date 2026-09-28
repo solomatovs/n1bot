@@ -33,7 +33,7 @@ from boba.krb import KerberosWorkspaceConfig
 from boba.runtime.config import ConfigLocator
 from boba.stand.site import StandLayers
 
-__all__ = ["IxStand", "IxStandDatabase", "IxStandError"]
+__all__ = ["IxSchemas", "IxStand", "IxStandDatabase", "IxStandError"]
 
 
 class IxStandError(Exception):
@@ -89,6 +89,19 @@ class IxStand(BaseModel):
         return IxDatabase(db_schema=self.db_schema, postgres=self.ix_profile)
 
 
+class IxSchemas:
+    """Схема ix в готовой базе: ядро ix-core и схемы пакетов по порядку. Базу
+    создаёт вызывающий: стенд прогонов пересоздаёт свою, UI-стенд берёт свою."""
+
+    def __init__(self, database: IxDatabase) -> None:
+        self._database = database
+
+    async def apply(self, schema_dirs: Sequence[Path]) -> None:
+        await SchemaUpgrade(CORE_SCHEMA_DIR, requires_core=False).run(self._database)
+        for schema_dir in schema_dirs:
+            await SchemaUpgrade(schema_dir).run(self._database)
+
+
 class IxStandDatabase:
     """База ix стенда: пересоздаётся с ядром ix-core и схемами переданных
     пакетов; соединение к ней — для проверок теста."""
@@ -115,10 +128,7 @@ class IxStandDatabase:
             )
             await conn.execute(query.text, query.params)
 
-        database = self._stand.ix_database
-        await SchemaUpgrade(CORE_SCHEMA_DIR, requires_core=False).run(database)
-        for schema_dir in schema_dirs:
-            await SchemaUpgrade(schema_dir).run(database)
+        await IxSchemas(self._stand.ix_database).apply(schema_dirs)
 
     @asynccontextmanager
     async def connection(self) -> AsyncGenerator[psycopg.AsyncConnection[Any], None]:

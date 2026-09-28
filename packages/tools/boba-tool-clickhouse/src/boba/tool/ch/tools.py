@@ -191,9 +191,12 @@ async def ch_list_tables(
                 total_rows
             from
                 system.tables
-            where
-                database not in {system_databases:Array(String)}
+            where 1=1
             """,
+        )
+        .when(
+            database is None,
+            "and database not in {system_databases:Array(String)}",
             system_databases=SystemDatabase.names(),
         )
         .when(
@@ -258,9 +261,12 @@ async def ch_list_columns(
                 comment
             from
                 system.columns
-            where
-                database not in {system_databases:Array(String)}
+            where 1=1
             """,
+        )
+        .when(
+            database is None,
+            "and database not in {system_databases:Array(String)}",
             system_databases=SystemDatabase.names(),
         )
         .when(
@@ -350,11 +356,14 @@ async def ch_describe_table(
             from
                 system.columns
             where 1=1
-                and database not in {system_databases:Array(String)}
                 and table = {table:String}
             """,
-            system_databases=SystemDatabase.names(),
             table=table,
+        )
+        .when(
+            database is None,
+            "and database not in {system_databases:Array(String)}",
+            system_databases=SystemDatabase.names(),
         )
         .when(
             database is not None,
@@ -406,9 +415,12 @@ async def ch_database_describe(
                 comment
             from
                 system.databases
-            where
-                name not in {system_databases:Array(String)}
+            where 1=1
             """,
+        )
+        .when(
+            database == "*",
+            "and name not in {system_databases:Array(String)}",
             system_databases=SystemDatabase.names(),
         )
         .when(database != "*", "and name = {database:String}", database=database)
@@ -458,9 +470,12 @@ async def ch_table_describe(
                 comment
             from
                 system.tables
-            where
-                database not in {system_databases:Array(String)}
+            where 1=1
             """,
+        )
+        .when(
+            database == "*",
+            "and database not in {system_databases:Array(String)}",
             system_databases=SystemDatabase.names(),
         )
         .when(
@@ -518,9 +533,12 @@ async def ch_column_describe(
                 comment
             from
                 system.columns
-            where
-                database not in {system_databases:Array(String)}
+            where 1=1
             """,
+        )
+        .when(
+            database == "*",
+            "and database not in {system_databases:Array(String)}",
             system_databases=SystemDatabase.names(),
         )
         .when(
@@ -565,9 +583,12 @@ async def ch_constraints_describe(
                 expression
             from
                 system.constraints
-            where
-                database not in {system_databases:Array(String)}
+            where 1=1
             """,
+        )
+        .when(
+            database == "*",
+            "and database not in {system_databases:Array(String)}",
             system_databases=SystemDatabase.names(),
         )
         .when(
@@ -616,9 +637,12 @@ async def ch_indexes_describe(
                 data_uncompressed_bytes
             from
                 system.data_skipping_indices
-            where
-                database not in {system_databases:Array(String)}
+            where 1=1
             """,
+        )
+        .when(
+            database == "*",
+            "and database not in {system_databases:Array(String)}",
             system_databases=SystemDatabase.names(),
         )
         .when(
@@ -725,9 +749,12 @@ async def ch_sequences_describe(
                 comment
             from
                 system.sequences
-            where
-                database not in {system_databases:Array(String)}
+            where 1=1
             """,
+        )
+        .when(
+            database == "*",
+            "and database not in {system_databases:Array(String)}",
             system_databases=SystemDatabase.names(),
         )
         .when(

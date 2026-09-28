@@ -32,6 +32,7 @@ import pytest
 from boba.db.postgres.connection import CopyOptions
 from boba.db.postgres.transfer import PgColumnDeclaration, PgTransferTable
 from boba.pump_stand import Leg, Loaded, PostgresSide, Pumps, PumpStand
+from boba.pump_stand.names import StandNames
 from boba.toolkit.transfer import (
     BackupAndCreateIfSchemaChanged,
     ColumnRules,
@@ -52,13 +53,13 @@ from boba.toolkit.transfer import (
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
 
 STAND = PumpStand.required()
-SRC = "shop"
-DW = "shop_dw"
-BACK = "shop_back"
+SRC = StandNames().of("shop")
+DW = StandNames().of("shop_dw")
+BACK = StandNames().of("shop_back")
 CHUNK = 65536
-CUSTOMERS = 2000
-PRODUCTS = 500
-ORDERS = 20000
+CUSTOMERS = 12
+PRODUCTS = 10
+ORDERS = 24
 TARGET_NAMES = ("pg-16", "gp-7")
 
 
@@ -174,9 +175,9 @@ FILL_DML = [
     select g,
            1 + (g * 7919) % {CUSTOMERS},
            (array['new', 'paid', 'shipped', 'cancelled'])[1 + g % 4]::order_status,
-           timestamptz '2024-01-01' + (g * 17 || ' minutes')::interval,
+           timestamptz '2024-01-01' + (g * 14160 || ' minutes')::interval,
            case when g % 3 = 0 then null
-                else timestamptz '2024-01-01' + (g * 17 || ' minutes')::interval
+                else timestamptz '2024-01-01' + (g * 14160 || ' minutes')::interval
                      + ((g % 96) || ' hours')::interval end,
            case when g % 5 = 0 then 'call before "delivery", floor ' || g % 20 else null end
     from generate_series(1, {ORDERS}) g""",

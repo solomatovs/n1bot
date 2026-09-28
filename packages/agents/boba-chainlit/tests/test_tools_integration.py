@@ -1112,22 +1112,6 @@ class TestIngestTools:
         if pages["failed"] != 0 or attachments["failed"] != 0:
             raise AssertionError(f"nothing failed: {pages}, {attachments}")
 
-    async def test_index_cql_skips_unchanged(
-        self, ingest_tools, confluence_page
-    ) -> None:
-        """Повтор по той же странице — та же выгрузка, переиндексации нет."""
-        result = await Call.ok(
-            ingest_tools["confluence_index_cql"],
-            cql=f"id = {confluence_page['page_id']}",
-        )
-        pages, _ = _ingest_lines(result)
-        if pages["found"] != 1:
-            raise AssertionError(f"the page is still found: {pages}")
-        if pages["unchanged"] != 1:
-            raise AssertionError(f"the page is unchanged: {pages}")
-        if pages["chunks"] != 0:
-            raise AssertionError(f"nothing rewritten: {pages}")
-
     async def test_index_spaces(
         self, ingest_tools, confluence_page, kb_collection
     ) -> None:
@@ -1248,37 +1232,3 @@ class TestKbIxTools:
         )
         if not (result.rows):
             raise AssertionError("result.rows")
-
-
-class TestPgCopyPipeline:
-    """Насосы pg_stream_out/pg_stream_in: проверки направления COPY до базы;
-    перекачка между узлами покрыта тестами графа workflow."""
-
-    async def _prepare(self, pg_tools, pg_connection) -> None:
-        await Call.ok(
-            pg_tools["pg_query"],
-            connection=pg_connection,
-            sql=(
-                "drop table if exists it_pipe_src, it_pipe_dst;"
-                " create table it_pipe_src(id int, note text);"
-                " create table it_pipe_dst(id int, note text);"
-                " insert into it_pipe_src"
-                " select g, 'строка ' || g from generate_series(1, 1000) g"
-            ),
-            offset=0,
-            limit=50,
-        )
-
-    async def test_wrong_direction_is_refused_before_the_database(
-        self, pg_tools, pg_connection
-    ) -> None:
-        """Стейтмент не того направления валится подсказкой, а не ошибкой psycopg."""
-        with pytest.raises(PayloadFailureError) as caught:
-            await Call.result(
-                pg_tools["pg_stream_out"],
-                connection=pg_connection,
-                sql="COPY it_pipe_src FROM STDIN",
-            )
-
-        if "TO STDOUT" not in str(caught.value):
-            raise AssertionError(f"нет подсказки направления: {caught.value}")

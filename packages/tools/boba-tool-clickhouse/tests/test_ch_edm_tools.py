@@ -4,19 +4,15 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Sequence
-from enum import StrEnum
-from typing import Any, ClassVar
+from collections.abc import AsyncIterator
+from typing import Any
 
 import pytest
-from pydantic import BaseModel, ConfigDict
 
 from boba.config import bind
-from boba.db.clickhouse.connection import ClickHouseConfig, ClickHouseSettingsConfig
-from boba.db.clickhouse.payload import PayloadClickHouse
-from boba.db.clickhouse.query import ChQueryBuilder
+from boba.db.clickhouse.connection import ClickHouseConfig
+from boba.stand.edm import Asset, EdmDataset, EdmSource, EdmSources
 from boba.tool.ch import tools as ch
-from boba.tool.ch.tools import Edm
 from boba.toolkit.entry import ToolMain
 from boba.toolkit.facade import PayloadTool
 from boba.toolkit.result import SqlResult
@@ -24,205 +20,8 @@ from boba.toolkit.result import SqlResult
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
 
 
-class StandSource(BaseModel):
-    """Источник ix_stand: имя и профиль; demo — можно ли на нём создавать базы."""
-
-    model_config = ConfigDict(frozen=True, extra="ignore")
-
-    name: str
-    clickhouse: ClickHouseConfig
-    demo: bool = True
-
-    @property
-    def admin(self) -> ClickHouseConfig:
-        return self.clickhouse.model_copy(
-            update={"settings": ClickHouseSettingsConfig.model_validate({})}
-        )
-
-
-class StandSources(BaseModel):
-    """Секция [ix_stand]: здесь нужен только список ch_sources."""
-
-    model_config = ConfigDict(extra="ignore")
-
-    ch_sources: Sequence[StandSource]
-
-
-class Asset(StrEnum):
-    """Идентификаторы объектов набора; значение — id в assets."""
-
-    ORDERS = "tbl-orders"
-    V_PAID = "view-v_paid"
-    ORDERS_ID = "col-orders-id"
-    ORDERS_AMOUNT = "col-orders-amount"
-    V_PAID_ID = "col-v_paid-id"
-    ED_ORDER = "ed-order"
-
-
-class RelationType(StrEnum):
-    TABLE_COLUMN = "rt-table-column"
-    VIEW_COLUMN = "rt-view-column"
-    OUTER = "rt-outer"
-    LOGICAL = "rt-logical"
-
-
-class TableRows(BaseModel):
-    """Таблица набора: имя из Edm, колонки с типами и строки для вставки."""
-
-    model_config = ConfigDict(frozen=True)
-
-    table: Edm
-    columns: Sequence[tuple[str, str]]
-    rows: Sequence[Sequence[Any]]
-
-    def columns_ddl(self) -> str:
-        parts: list[str] = []
-        for name, kind in self.columns:
-            parts.append(f"{name} {kind}")
-
-        return ", ".join(parts)
-
-    def column_names(self) -> list[str]:
-        return [name for name, _ in self.columns]
-
-
-class EdmDataset:
-    """Пересоздаёт базу выгрузки ЕДМ на источнике: две таблицы с колонками,
-    одна логическая сущность, одна внешняя (is_inner = 0) связь-помеха."""
-
-    DATABASE: ClassVar[str] = "edm_stand"
-
-    def __init__(self, source: StandSource) -> None:
-        self._source = source
-
-    async def recreate(self) -> None:
-        async with PayloadClickHouse.opened_config(self._source.admin) as client:
-            await self._command(client, "drop database if exists {db:Identifier}")
-            await self._command(client, "create database {db:Identifier}")
-
-            for table in self._tables():
-                ddl = (
-                    "create table {db:Identifier}.{table:Identifier} ("
-                    + table.columns_ddl()
-                    + ") engine = MergeTree order by tuple()"
-                )
-                await self._command(client, ddl, table=table.table.value)
-                await client.insert(
-                    table.table.value,
-                    [list(row) for row in table.rows],
-                    column_names=table.column_names(),
-                    database=self.DATABASE,
-                )
-
-    async def drop(self) -> None:
-        async with PayloadClickHouse.opened_config(self._source.admin) as client:
-            await self._command(client, "drop database if exists {db:Identifier}")
-
-    async def _command(self, client: Any, text: str, **bind: Any) -> None:
-        query = ChQueryBuilder().add(text, db=self.DATABASE, **bind).build()
-        await client.command(query.text, parameters=query.params)
-
-    def _tables(self) -> list[TableRows]:
-        return [
-            TableRows(
-                table=Edm.ASSETS,
-                columns=[("id", "String"), ("path", "String")],
-                rows=[
-                    (Asset.ORDERS, "/dwh/public"),
-                    (Asset.V_PAID, "/dwh/public"),
-                    (Asset.ORDERS_ID, "/dwh/public/orders"),
-                    (Asset.ORDERS_AMOUNT, "/dwh/public/orders"),
-                    (Asset.V_PAID_ID, "/dwh/public/v_paid"),
-                    (Asset.ED_ORDER, "/ldm/sales"),
-                ],
-            ),
-            TableRows(
-                table=Edm.ATTRIBUTES_PHYSICAL,
-                columns=[
-                    ("etalon_id", "String"),
-                    ("attribute_id", "String"),
-                    ("value", "String"),
-                ],
-                rows=[
-                    (Asset.ORDERS, Edm.NAME, "orders"),
-                    (Asset.ORDERS, Edm.SHORT_DESCRIPTION, "Orders"),
-                    (Asset.ORDERS, Edm.EXTENDED_DESCRIPTION, "All orders"),
-                    (Asset.ORDERS, Edm.DESCRIPTION, "orders table"),
-                    (Asset.V_PAID, Edm.NAME, "v_paid"),
-                    (Asset.V_PAID, Edm.SHORT_DESCRIPTION, "Paid orders"),
-                    (Asset.ORDERS_ID, Edm.NAME, "id"),
-                    (Asset.ORDERS_ID, Edm.SHORT_DESCRIPTION, "Order id"),
-                    (Asset.ORDERS_AMOUNT, Edm.NAME, "amount"),
-                    (Asset.ORDERS_AMOUNT, Edm.DESCRIPTION, "amount in rub"),
-                    (Asset.V_PAID_ID, Edm.NAME, "id"),
-                ],
-            ),
-            TableRows(
-                table=Edm.ATTRIBUTES,
-                columns=[
-                    ("etalon_id", "String"),
-                    ("attribute_id", "String"),
-                    ("value", "String"),
-                ],
-                rows=[(Asset.ED_ORDER, Edm.ED_ENTITY_NAME, "Order")],
-            ),
-            TableRows(
-                table=Edm.RELATION_TYPES,
-                columns=[
-                    ("relation_type_id", "String"),
-                    ("is_inner", "UInt8"),
-                    ("type_from", "String"),
-                    ("type_to", "String"),
-                ],
-                rows=[
-                    (
-                        RelationType.TABLE_COLUMN,
-                        1,
-                        Edm.TABLE,
-                        Edm.TABLE_COLUMN,
-                    ),
-                    (
-                        RelationType.VIEW_COLUMN,
-                        1,
-                        Edm.VIEW,
-                        Edm.VIEW_COLUMN,
-                    ),
-                    (
-                        RelationType.OUTER,
-                        0,
-                        Edm.TABLE,
-                        Edm.TABLE_COLUMN,
-                    ),
-                    (RelationType.LOGICAL, 0, "ldm_entity", Edm.TABLE),
-                ],
-            ),
-            TableRows(
-                table=Edm.RELATIONS,
-                columns=[
-                    ("etalon_id_from", "String"),
-                    ("etalon_id_to", "String"),
-                    ("relation_type_id", "String"),
-                    ("name", "String"),
-                ],
-                rows=[
-                    (Asset.ORDERS, Asset.ORDERS_ID, RelationType.TABLE_COLUMN, "has"),
-                    (
-                        Asset.ORDERS,
-                        Asset.ORDERS_AMOUNT,
-                        RelationType.TABLE_COLUMN,
-                        "has",
-                    ),
-                    (Asset.V_PAID, Asset.V_PAID_ID, RelationType.VIEW_COLUMN, "has"),
-                    (Asset.ORDERS, Asset.V_PAID_ID, RelationType.OUTER, "derived"),
-                    (
-                        Asset.ED_ORDER,
-                        Asset.ORDERS,
-                        RelationType.LOGICAL,
-                        Edm.LOGICAL_TO_PHYSICAL,
-                    ),
-                ],
-            ),
-        ]
+EDM_DATABASE = "edm_stand"
+"""База выгрузки тестов инструментов; у UI-стенда своя."""
 
 
 class Runner:
@@ -244,7 +43,7 @@ class Runner:
 
         result = await body(
             connection=self._connection,
-            database=EdmDataset.DATABASE,
+            database=EDM_DATABASE,
             offset=offset,
             limit=limit,
             **args,
@@ -259,15 +58,9 @@ class Runner:
         return [dict(row) for row in statement.rows]
 
 
-def _demo_sources(raw_config: Any) -> list[StandSource]:
-    sources = bind(raw_config, path="ix_stand", model=StandSources)
-
-    return [source for source in sources.ch_sources if source.demo]
-
-
 @pytest.fixture(scope="module")
-def sources(raw_config: Any) -> list[StandSource]:
-    listed = _demo_sources(raw_config)
+def sources(raw_config: Any) -> list[EdmSource]:
+    listed = bind(raw_config, path="ix_stand", model=EdmSources).demo()
     if not listed:
         pytest.skip("ix_stand.ch_sources has no source with demo = true")
 
@@ -275,13 +68,13 @@ def sources(raw_config: Any) -> list[StandSource]:
 
 
 @pytest.fixture(scope="module", params=["first", "last"])
-async def runner(request: Any, sources: list[StandSource]) -> AsyncIterator[Runner]:
+async def runner(request: Any, sources: list[EdmSource]) -> AsyncIterator[Runner]:
     """Самый старый и самый новый сервер стенда: старый и новый анализатор."""
     source = sources[0]
     if request.param == "last":
         source = sources[-1]
 
-    dataset = EdmDataset(source)
+    dataset = EdmDataset(source, EDM_DATABASE)
     await dataset.recreate()
 
     yield Runner(source.clickhouse)

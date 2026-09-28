@@ -340,13 +340,15 @@ def _use_di_container(app: FastAPI, c: AppConfig) -> Container:
     container.eager(runtime.connection_store)
     container.eager(runtime.workflow_store)
     container.eager(runtime.workflow_recovery)
-    container.eager(runtime.live_locks)
-    container.eager(runtime.lock_reaper)
-    container.eager(runtime.command_runner)
     # инструменты собираются на старте: конфиг плагинов проверяется до сессий
     container.eager(runtime.tool_registry)
     # локальные модели грузятся на старте: первая сессия не ждёт веса
     container.eager(providers.llm_providers)
+    # инстанс регистрируется после блокирующего старта зигот и моделей: иначе
+    # его пульс молчит дольше lock_ttl, и соседи снимают его как мёртвый
+    container.eager(runtime.live_locks)
+    container.eager(runtime.lock_reaper)
+    container.eager(runtime.command_runner)
     Container.set_root(container)
     Container.set_session_hook(_session_container)
     return container

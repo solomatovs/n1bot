@@ -71,7 +71,7 @@ from boba.toolkit.transfer import (
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
 
 STAND = PumpStand.required()
-OWNER = PumpUser.NAME.value
+OWNER = PumpUser().name
 ARRAYSIZE = 2000
 CHUNK = 65536
 BOOLEAN_SINCE = 23
@@ -133,9 +133,18 @@ def report_sql(clickhouse: ClickHouseSide, target: OracleSide) -> str:
     return f"{report_query(target)}\n{REPORT_SETTINGS}"
 
 
-def compared(target: OracleSide) -> dict[str, tuple[str, str]]:
-    templates = dict(COMPARED)
+def native_boolean(source: ClickHouseSide, target: OracleSide) -> bool:
+    """Bool ложится в BOOLEAN: нужен Oracle 23+ и ClickHouse 23+ — 22.12
+    отдаёт Bool в Arrow числом uint8."""
     if target.version < BOOLEAN_SINCE:
+        return False
+
+    return source.major >= BOOLEAN_SINCE
+
+
+def compared(source: ClickHouseSide, target: OracleSide) -> dict[str, tuple[str, str]]:
+    templates = dict(COMPARED)
+    if not native_boolean(source, target):
         templates["is_active"] = ("toUInt8({c})", "{c}")
 
     return templates
@@ -258,7 +267,7 @@ def expected_columns(
     source: ClickHouseSide, target: OracleSide
 ) -> list[tuple[str, str, bool]]:
     boolean = "BOOLEAN"
-    if target.version < BOOLEAN_SINCE:
+    if not native_boolean(source, target):
         boolean = "NUMBER(3,0)"
 
     columns: list[tuple[str, str, bool]] = []
@@ -343,7 +352,7 @@ async def same_content(source: ClickHouseSide, target: OracleSide, table: str) -
     """Каждая колонка таблицы Oracle совпадает с отчётом ClickHouse."""
     report = ChLoaded(source, "orders_report")
     landed = OraLoaded(target, table)
-    templates = compared(target)
+    templates = compared(source, target)
     for name, _, _ in EXPECTED_COLUMNS:
         ch_template, ora_template = templates.get(
             name, FLOAT_COLUMNS.get(name, ("toString({c})", "to_char({c})"))

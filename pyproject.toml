@@ -281,6 +281,7 @@ boba-ix-llm-describer= { workspace = true }
 boba-ix-fts     = { workspace = true }
 boba-ix-trgm    = { workspace = true }
 boba-ix-vector  = { workspace = true }
+boba-cfl-indexer = { workspace = true }
 boba-ix-search-lab  = { workspace = true }
 boba-sandbox        = { workspace = true }
 boba-krb            = { workspace = true }
@@ -294,6 +295,7 @@ boba-chainlit       = { workspace = true }
 [dependency-groups]
 dev = [
     "pytest>=9.1.0",
+    "pytest-xdist>=3.6",
     "ruff>=0.15.17",
     "pyright>=1.1.400",
     "playwright>=1.40",

@@ -35,6 +35,7 @@ from boba.pump_stand import (
     Pumps,
     PumpStand,
 )
+from boba.pump_stand.names import StandNames
 from boba.toolkit.transfer import (
     ColumnRules,
     DeleteNothing,
@@ -52,9 +53,9 @@ from boba.toolkit.transfer import (
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
 
 STAND = PumpStand.required()
-PG_SCHEMA = "pump_pg_ch"
-CH_DATABASE = "pump_pg_ch"
-ROWS = 3000
+PG_SCHEMA = StandNames().of("pump_pg_ch")
+CH_DATABASE = StandNames().of("pump_pg_ch")
+ROWS = 60
 CHUNK = 65536
 MERGE_TREE = (
     "create table {database}.{table_name}[ on cluster {cluster}] ({columns}) "

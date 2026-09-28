@@ -70,7 +70,6 @@ from boba.tool.confluence.ingest_base import (
     IngestReport,
     IngestScope,
     PageScope,
-    QueryScope,
     SpaceScope,
 )
 from boba.tool.confluence.tools import ConfluenceHttp, ConfluenceToolsConfig
@@ -348,39 +347,6 @@ async def confluence_index_page(
 
 
 @tool
-async def confluence_index_cql(
-    cql: Annotated[
-        str,
-        Field(
-            min_length=1,
-            description=(
-                "CQL-запрос Confluence, например `space = DQ AND type = page`."
-            ),
-        ),
-    ],
-    attachments: Annotated[bool, Field(description=_ATTACHMENTS_DESCRIPTION)] = False,
-    ocr: Annotated[bool, Field(description=_OCR_DESCRIPTION)] = False,
-    *,
-    cfg: Annotated[IngestToolConfig, Injected],
-) -> TableResult:
-    """Индексирует страницы Confluence, найденные CQL-запросом.
-
-    Запрос исполняет поиск Confluence, а он знает не весь сайт: контента
-    архивных спейсов в нём нет, и только что созданные страницы появляются
-    с задержкой. Такой спейс индексируется через confluence_index_space —
-    тот идёт списком страниц спейса, а не поиском.
-
-    Отчёт идёт двумя строками, pages и attachments: found — сколько нашлось
-    в Confluence, indexed — записано заново, unchanged — уже в индексе и не
-    менялось, skipped — отсечено правилами, failed — сорвалось, причина в
-    колонке error. found без indexed это норма: содержимое не менялось.
-    """
-    report = await IngestRun(cfg, ocr=ocr).run(QueryScope(cql), attachments=attachments)
-
-    return TableResult(rows=report.rows(), note=report.note())
-
-
-@tool
 async def confluence_index_space(
     space_key: Annotated[
         str,
@@ -507,7 +473,6 @@ EXPECTED: Mapping[type[Exception], IngestErrorKind] = {
 
 TOOLS: Final = ToolMain.toolset(
     confluence_index_page,
-    confluence_index_cql,
     confluence_index_space,
     confluence_attachment,
 )

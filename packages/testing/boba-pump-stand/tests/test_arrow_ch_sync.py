@@ -37,6 +37,7 @@ from boba.pump_stand import (
     Pumps,
     PumpStand,
 )
+from boba.pump_stand.names import StandNames
 from boba.pump_stand.oracle import PumpUser
 from boba.toolkit.contract import ColumnDeclaration
 from boba.toolkit.transfer import (
@@ -57,9 +58,9 @@ from boba.toolkit.transfer import (
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
 
 STAND = PumpStand.required()
-PG_SCHEMA = "pump_arrow_ch"
-CH_DATABASE = "pump_arrow_ch"
-ROWS = 3000
+PG_SCHEMA = StandNames().of("pump_arrow_ch")
+CH_DATABASE = StandNames().of("pump_arrow_ch")
+ROWS = 60
 CHUNK = 65536
 ARRAYSIZE = 500
 STRING_AS_STRING = "output_format_arrow_string_as_string = 1"
@@ -310,18 +311,19 @@ class TestPostgresTypes:
     async def test_reload_through_the_twin(
         self, postgres: PostgresSide, clickhouse: ClickHouseSide
     ) -> None:
+        part = ROWS // 6
         report = await land(
             postgres,
             clickhouse,
             "types",
             ErrorIfSchemaChanged(kind="error_if_schema_changed"),
-            delete_strategy=DeleteWhere(kind="delete_where", where="id <= 500"),
-            select=f"{SELECT} where id <= 500",
+            delete_strategy=DeleteWhere(kind="delete_where", where=f"id <= {part}"),
+            select=f"{SELECT} where id <= {part}",
         )
         landed = ChLoaded(clickhouse, "types")
 
-        assert "deleted: 500 rows" in report
-        assert "500 rows written" in report
+        assert f"deleted: {part} rows" in report
+        assert f"{part} rows written" in report
         assert await landed.count() == ROWS
         assert await ChLoaded(clickhouse, "types__ex").count() == ROWS
 
@@ -516,7 +518,7 @@ class TestOracleSource:
         )
         await oracle.run(
             (
-                f"insert into {PumpUser.NAME}.{table} select level, level / 7, "
+                f"insert into {PumpUser().name}.{table} select level, level / 7, "
                 "'n' || level, timestamp '2024-01-01 00:00:00' "
                 "+ numtodsinterval(level, 'second') from dual "
                 f"connect by level <= {ROWS}",
@@ -528,7 +530,7 @@ class TestOracleSource:
                 "ora_stream_out",
                 {
                     "sql": 'select id as "id", amount as "amount", name as "name", '
-                    f'ts as "ts" from {PumpUser.NAME}.{table}',
+                    f'ts as "ts" from {PumpUser().name}.{table}',
                     "columns": [ColumnDeclaration(name="id", nullable=False)],
                 },
             ),

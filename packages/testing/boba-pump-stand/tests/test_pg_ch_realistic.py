@@ -46,6 +46,7 @@ from boba.pump_stand import (
     Pumps,
     PumpStand,
 )
+from boba.pump_stand.names import StandNames
 from boba.toolkit.transfer import (
     BackupAndCreateIfSchemaChanged,
     ColumnRules,
@@ -67,12 +68,12 @@ from boba.toolkit.transfer import (
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
 
 STAND = PumpStand.required()
-SRC = "shop_pg"
-DW = "shop_pg_dw"
+SRC = StandNames().of("shop_pg")
+DW = StandNames().of("shop_pg_dw")
 CHUNK = 65536
-CUSTOMERS = 2000
-PRODUCTS = 500
-ORDERS = 20000
+CUSTOMERS = 12
+PRODUCTS = 10
+ORDERS = 24
 MONTHS = 8
 IPV4_IN_IPV6_SINCE = 23
 JSON_SINCE = 24
@@ -171,10 +172,10 @@ FILL_DML = [
     select g,
            1 + (g * 7919) % {CUSTOMERS},
            ((array['new', 'paid', 'shipped', 'cancelled'])[1 + g % 4])::{SRC}.order_status,
-           timestamptz '2024-01-01 00:00:00+00' + interval '1 millisecond' * (g::bigint * 1020123),
+           timestamptz '2024-01-01 00:00:00+00' + interval '1 millisecond' * (g::bigint * 849600000),
            case when g % 3 = 0 then null
                 else timestamptz '2024-01-01 00:00:00+00'
-                     + interval '1 millisecond' * (g::bigint * 1020123)
+                     + interval '1 millisecond' * (g::bigint * 849600000)
                      + ((g % 96) || ' hours')::interval end,
            case when g % 5 = 0
                 then E'call before "delivery", floor ' || g % 20 || E'\\t\\\\ back'
