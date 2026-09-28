@@ -1,8 +1,10 @@
 -- канонический отпечаток одного источника (host = %(host)s), без host, port, scheme, id и
 -- того, что зависит от сервера, а не от набора: uuid, origin словаря (это его uuid), modified_at, total_rows, total_bytes.
+-- В отпечаток входят только узлы сервера и набора edge_demo: базы других наборов тестов
+-- на том же сервере появляются и исчезают параллельно.
 -- Внутренняя таблица материализованного представления называется .inner_id.<uuid>, uuid
 -- новый на каждое пересоздание набора, поэтому в отпечатке он заменён меткой.
-with n as (select id, surface, (address - 'host' - 'port' - 'scheme')::text as a from {schema}.node where address->>'host' = %(host)s),
+with n as (select id, surface, (address - 'host' - 'port' - 'scheme')::text as a from {schema}.node where address->>'host' = %(host)s and coalesce(address->>'database', 'edge_demo') = 'edge_demo'),
 lines as (
     select 'N|' || surface || '|' || a as l from n
     union all select 'T|' || n.a || '|' || coalesce(p.a, '') from {schema}.tree t join n on n.id = t.node_id left join n p on p.id = t.parent_id

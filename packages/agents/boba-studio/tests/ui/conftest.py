@@ -16,6 +16,7 @@ from catalog_ui import Api, ConnectionSeed, Seed, api_client
 from playwright._impl._api_structures import SetCookieParam
 from studio_ui import BOOT_TIMEOUT_SEC, login_cookies
 
+from boba.stand.names import StandNames
 from boba.stand.ui.database import StandDatabase
 from boba.stand.ui.fake_llm import serve
 from boba.stand.ui.stand import StandApp, StandConfig, StandProcess, StandUrl, free_port
@@ -26,7 +27,7 @@ TOKEN_DELAY_SEC = 0.03
 
 @pytest.fixture(scope="session")
 def stand_database() -> str:
-    return StandDatabase(StandApp.STUDIO, DB_NAME).prepare()
+    return StandDatabase(StandApp.STUDIO, StandNames().of(DB_NAME)).prepare()
 
 
 @pytest.fixture(scope="session")

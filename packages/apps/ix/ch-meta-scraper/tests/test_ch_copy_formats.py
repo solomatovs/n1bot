@@ -61,7 +61,7 @@ create temp table raw_fmt (
 
 class TestCopyFormats:
     @pytest.mark.parametrize(
-        "name", [source.name for source in STAND.ch_sources if source.demo]
+        "name", [source.name for source in STAND.ch_scrape_sources if source.demo]
     )
     async def test_complex_types_survive_the_block_copy(
         self,

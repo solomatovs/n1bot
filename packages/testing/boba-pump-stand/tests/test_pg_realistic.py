@@ -32,7 +32,7 @@ import pytest
 from boba.db.postgres.connection import CopyOptions
 from boba.db.postgres.transfer import PgColumnDeclaration, PgTransferTable
 from boba.pump_stand import Leg, Loaded, PostgresSide, Pumps, PumpStand
-from boba.pump_stand.names import StandNames
+from boba.stand.names import StandNames
 from boba.toolkit.transfer import (
     BackupAndCreateIfSchemaChanged,
     ColumnRules,

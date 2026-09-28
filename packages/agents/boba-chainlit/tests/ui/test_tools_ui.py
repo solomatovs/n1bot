@@ -826,6 +826,7 @@ def sandbox_stand(
     try:
         # роли стенда в таблице появляются на старте: гранты кладутся после него
         database.seed_connections(llm_port)
+        database.seed_oracle()
         database.seed_edm()
         yield process
     finally:

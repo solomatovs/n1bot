@@ -8,28 +8,17 @@
 
 from __future__ import annotations
 
-from enum import StrEnum
-from typing import Any, ClassVar
+from typing import ClassVar
 
 import pytest
 
-from boba.pump_stand.names import StandNames
 from boba.pump_stand.stand import ChSource, OraSource, PgSource
-
-
-class XdistKey(StrEnum):
-    """Ключи xdist в config.workerinput."""
-
-    WORKER = "workerid"
+from boba.stand.names import StandSuite
 
 
 def pytest_configure(config: pytest.Config) -> None:
-    """Метка процесса в именах ставится до импорта модулей тестов."""
-    workerinput: dict[str, Any] | None = getattr(config, "workerinput", None)
-    if workerinput is None:
-        return
-
-    StandNames().use_worker(str(workerinput[XdistKey.WORKER]))
+    """Метка набора и процесса в именах ставится до импорта модулей тестов."""
+    StandSuite(config).configure("pump")
 
 
 @pytest.hookimpl(tryfirst=True)

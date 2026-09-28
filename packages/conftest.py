@@ -4,9 +4,15 @@ from __future__ import annotations
 
 import pytest
 
+from boba.stand.names import StandSuite
 from boba.stand.site import Stand
 
 pytest_plugins = ["boba.stand.fixtures", "boba.stand.ui.fixtures"]
+
+
+def pytest_configure(config: pytest.Config) -> None:
+    """Метка пакета в именах стенда; conftest набора может задать свою позже."""
+    StandSuite(config).configure_package(config.args)
 
 
 @pytest.fixture(scope="session")

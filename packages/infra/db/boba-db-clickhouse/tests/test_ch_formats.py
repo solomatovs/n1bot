@@ -1202,6 +1202,20 @@ class TestHeaderParsing:
         assert stream.type_names == ("UInt64", "String", "UInt8")
         assert data == b'1,"x",2\n'
 
+    @pytest.mark.parametrize("size", [1, 5, 1000])
+    async def test_csv_binary_rows_after_the_header_pass_as_is(self, size: int) -> None:
+        """Кусок с концом шапки несёт и строки данных: бинарная строка не UTF-8
+        и доходит байт в байт."""
+        body = b'"id","raw"\n"UInt64","String"\n1,"\xff\xfe\x00z"\n'
+
+        stream = await CsvWithNamesAndTypes().read(_chunks(body, size))
+        data = bytearray()
+        async for block in stream.blocks:
+            data.extend(block)
+
+        assert stream.names == ("id", "raw")
+        assert data == b'1,"\xff\xfe\x00z"\n'
+
     async def test_csv_header_waits_for_the_line_end(self) -> None:
         body = b'"a","b"\n"UInt8","String"'
 

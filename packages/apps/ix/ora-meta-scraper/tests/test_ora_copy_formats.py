@@ -58,7 +58,7 @@ create temp table raw_fmt (
 
 class TestCopyFormats:
     @pytest.mark.parametrize(
-        "name", [source.name for source in STAND.ora_sources if source.demo]
+        "name", [source.name for source in STAND.ora_scrape_sources if source.demo]
     )
     async def test_complex_types_survive_the_block_copy(
         self,
@@ -68,14 +68,11 @@ class TestCopyFormats:
         tmp_path: Path,
     ) -> None:
         source = ix_stand.source(name)
+        # набор пересоздаётся тестом: в свежей PDB схемы EDGE_DEMO ещё нет
+        await source.demo_dataset().recreate()
+
         payload = PayloadOracle(source.demo_owner)
         async with payload.opened() as owner:
-            drop = (
-                "begin execute immediate 'drop table edge_demo.fmt_probe'; "
-                "exception when others then null; end;"
-            )
-            async with payload.rows(owner, drop):
-                pass
             grant = f"grant select on edge_demo.fmt_probe to {source.oracle.auth.user}"
             for statement in (DDL, INSERT, "commit", grant):
                 async with payload.rows(owner, statement):

@@ -23,6 +23,7 @@ from chat_ui import (
 from playwright._impl._api_structures import SetCookieParam
 from playwright.sync_api import Browser, Page
 
+from boba.stand.names import StandNames
 from boba.stand.ui.chat_page import ChatPage
 from boba.stand.ui.database import StandDatabase
 from boba.stand.ui.fake_llm import FakeRoute, serve
@@ -35,7 +36,7 @@ TOKEN_DELAY_SEC = 0.03
 
 @pytest.fixture(scope="session")
 def stand_database() -> str:
-    return StandDatabase(StandApp.CHAINLIT, DB_NAME).prepare()
+    return StandDatabase(StandApp.CHAINLIT, StandNames().of(DB_NAME)).prepare()
 
 
 @pytest.fixture(scope="session")
