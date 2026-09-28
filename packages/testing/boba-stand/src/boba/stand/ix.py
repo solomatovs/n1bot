@@ -1,6 +1,9 @@
 """Стенд базы ix для тестов приложений ix: секция [ix_stand] stand.toml и база
 прогонов, которую тест пересоздаёт с ядром ix-core и схемами нужных пакетов.
 
+Имя базы прогонов несёт метку набора и процесса (StandNames): наборы идут
+параллельно и пересоздают каждый свою базу.
+
 Модель секции — общая часть: профиль сервера, kerberos-каталог, имя базы прогонов,
 схема графа и кэш моделей эмбеддинга; стенд конкретного пакета наследует её и
 добавляет своё (источники скрапера, спейсы Confluence).
@@ -31,6 +34,7 @@ from boba.ix_core.registry import IxRegistry
 from boba.ix_core.upgrade import SchemaUpgrade
 from boba.krb import KerberosWorkspaceConfig
 from boba.runtime.config import ConfigLocator
+from boba.stand.names import StandNames
 from boba.stand.site import StandLayers
 
 __all__ = ["IxSchemas", "IxStand", "IxStandDatabase", "IxStandError"]
@@ -69,7 +73,9 @@ class IxStand(BaseModel):
 
         stand.krb.apply()
 
-        return stand
+        database = StandNames().of(stand.database)
+
+        return stand.model_copy(update={"database": database})
 
     @classmethod
     def required(cls) -> Self:

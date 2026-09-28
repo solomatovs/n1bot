@@ -61,7 +61,7 @@ from boba.pump_stand.matrix import (
     exported,
     first,
 )
-from boba.pump_stand.names import StandNames
+from boba.stand.names import StandNames
 from boba.pump_stand.oracle import PumpUser
 from boba.pump_stand.ports import Feed
 from boba.toolkit.arrow import ArrowColumns

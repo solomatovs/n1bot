@@ -36,6 +36,7 @@ from boba.db.postgres.connection.config import PostgresConfig
 from boba.identity.session import UserMetadataField
 from boba.ix_core.database import IxDatabase
 from boba.runtime.config import DataLayerConfig
+from boba.stand.database import TestDatabase
 from boba.stand.edm import EdmDataset, EdmSource, EdmSources
 from boba.stand.ix_index import IxPage, IxPages, SharedIndexers, StandIxStack
 from boba.stand.site import StandLayers
@@ -64,7 +65,8 @@ class StandExtension(StrEnum):
         return (
             f"stand database {database} has no {self.value} extension "
             f"and the application role may not create it; "
-            f"run as a superuser: "
+            f"stand databases are created from template {TestDatabase.TEMPLATE}: "
+            f"run boba-stand server/template.sql as a superuser, or "
             f"psql -d {database} -c 'create extension {self.value}'"
         )
 
@@ -244,7 +246,11 @@ class StandDatabase:
                 if not exists:
                     query = (
                         PgQueryBuilder()
-                        .add("create database {db}", db=sql.Identifier(self._name))
+                        .add(
+                            "create database {db} template {template}",
+                            db=sql.Identifier(self._name),
+                            template=sql.Identifier(TestDatabase.TEMPLATE),
+                        )
                         .build()
                     )
                     await cur.execute(query.text, query.params)
@@ -426,8 +432,8 @@ class StandDatabase:
                     await store.remove(row.id)
 
     def seed_connections(self, llm_port: int) -> None:
-        """Соединения инструментов стенда: сервисные pg/ch/oracle под именем main
-        и web-профиль фейкового сервера, выданные всем ролям стенда. Таблица
+        """Соединения инструментов стенда: сервисные pg/ch под именем main и
+        web-профиль фейкового сервера, выданные всем ролям стенда. Таблица
         чистится перед посевом; роли появляются на старте приложения — сеять
         после него.
         """
@@ -461,10 +467,24 @@ class StandDatabase:
             rows = [
                 await store.add("main", self._postgres),
                 await store.add("main", clickhouse),
-                await store.add("main", StandOracle(self._built).connection()),
                 await store.add("stand", web),
             ]
             await self._grant_stand_roles(store, rows)
+
+    def seed_oracle(self) -> None:
+        """Oracle стенда под именем main, выданный ролям стенда: первый источник
+        [ix_stand].ora_sources. Сеять после seed_connections: тот чистит таблицу
+        соединений."""
+        run_blocking(self._seed_oracle())
+
+    async def _seed_oracle(self) -> None:
+        oracle = StandOracle(self._built).connection()
+
+        connections = bind(self._built, path="connections", model=ConnectionsConfig)
+        async with self._pool() as pool:
+            store = ConnectionStore(connections, ConnectionTypes.discover(), pool)
+            row = await store.add("main", oracle)
+            await self._grant_stand_roles(store, [row])
 
     def seed_ix(self, pages: Sequence[IxPage]) -> list[int]:
         """Схема ix стека Confluence в базе стенда, страницы pages и индексы

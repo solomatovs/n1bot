@@ -35,7 +35,7 @@ from boba.pump_stand import (
     Pumps,
     PumpStand,
 )
-from boba.pump_stand.names import StandNames
+from boba.stand.names import StandNames
 from boba.toolkit.transfer import (
     ColumnRules,
     DeleteNothing,

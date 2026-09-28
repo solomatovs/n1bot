@@ -29,7 +29,7 @@ from boba.db.postgres.transfer import (
     PgTypeRules,
 )
 from boba.pump_stand import Leg, Loaded, PostgresSide, Pumps, PumpStand
-from boba.pump_stand.names import StandNames
+from boba.stand.names import StandNames
 from boba.pump_stand.ports import Sink, SinkOutbound
 from boba.stream.pg_to_pg.transfer import PgStreamColumn
 from boba.toolkit.transfer import (

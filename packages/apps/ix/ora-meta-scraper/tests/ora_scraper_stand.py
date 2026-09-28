@@ -1,6 +1,7 @@
-"""Стенд скрапера Oracle: секция [ix_stand] со списком ora_sources и набор EDGE_DEMO
-на источнике. Раскладка стенда, эталоны, база ix, проверка ссылок и шторм — общие,
-в boba.stand.scraper.
+"""Стенд скрапера Oracle: секция [ix_stand] со списками ora_scrape_sources и
+ora_bulk_sources, набор EDGE_DEMO и схема EDGE_BULK для нагрузочного словаря.
+Раскладка стенда, эталоны, база ix, проверка ссылок и шторм — общие, в
+boba.stand.scraper.
 
 Лежит отдельным модулем, а не в conftest: имя conftest у каждого пакета своё, и при
 общем прогоне нескольких пакетов импорт из него достаётся чужому файлу.
@@ -11,6 +12,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from enum import StrEnum
 from pathlib import Path
+from typing import ClassVar
 
 from oracledb import AsyncConnection
 from pydantic import BaseModel, ConfigDict, SecretStr
@@ -24,7 +26,7 @@ from boba.ora_meta_scraper.worker import OraSource, source_address
 from boba.stand.ix import IxStandError
 from boba.stand.scraper import DdlFile, DemoRecreate, ScraperStand, StandLayout
 
-__all__ = ["LAYOUT", "DemoDataset", "IxSource", "IxStand"]
+__all__ = ["LAYOUT", "DemoDataset", "IxSource", "IxStand", "SchemaUser", "StandSchema"]
 
 LAYOUT = StandLayout(
     stand_dir=Path(__file__).resolve().parent / "stand",
@@ -32,11 +34,19 @@ LAYOUT = StandLayout(
 )
 
 
-class DemoUser(StrEnum):
-    """Схема демонстрационного набора и её пароль на стенде."""
+class SchemaUser(StrEnum):
+    """Схемы стенда на источнике; пароль учётки совпадает с именем в нижнем регистре.
 
-    NAME = "EDGE_DEMO"
-    PASSWORD = "edge_demo"
+    EDGE_DEMO входит в эталон скрапера. EDGE_BULK держит нагрузочный словарь теста
+    памяти и в эталон не входит, поэтому шторм и эталонный прогон на том же сервере
+    идут параллельно с ним."""
+
+    DEMO = "EDGE_DEMO"
+    BULK = "EDGE_BULK"
+
+    @property
+    def password(self) -> str:
+        return self.value.lower()
 
 
 class IxSource(BaseModel):
@@ -59,10 +69,14 @@ class IxSource(BaseModel):
     @property
     def demo_owner(self) -> OracleConfig:
         """Профиль владельца набора: тот же сервер, учётка EDGE_DEMO."""
+        return self.owner(SchemaUser.DEMO)
+
+    def owner(self, user: SchemaUser) -> OracleConfig:
+        """Профиль владельца схемы стенда: тот же сервер, учётка схемы."""
         auth = PasswordAuth(
             method="password",
-            user=DemoUser.NAME.value,
-            password=SecretStr(DemoUser.PASSWORD.value),
+            user=user.value,
+            password=SecretStr(user.password),
         )
         return self.admin.model_copy(update={"auth": auth})
 
@@ -74,12 +88,29 @@ class IxSource(BaseModel):
 
 
 class IxStand(ScraperStand[IxSource]):
-    """Секция [ix_stand] скрапера Oracle: общий стенд ix плюс список ora_sources."""
+    """Секция [ix_stand] скрапера Oracle: общий стенд ix плюс две PDB на сервер, где DDL
+    делает только скрапер: обход идёт по PDB целиком. ora_scrape_sources — эталон,
+    шторм и форматы; ora_bulk_sources — нагрузочный словарь теста памяти, чтобы он шёл
+    параллельно им."""
 
-    ora_sources: Sequence[IxSource]
+    ora_scrape_sources: Sequence[IxSource]
+    ora_bulk_sources: Sequence[IxSource]
 
     def listed(self) -> Sequence[IxSource]:
-        return self.ora_sources
+        return self.ora_scrape_sources
+
+    def bulk_source(self, name: str) -> IxSource:
+        for item in self.ora_bulk_sources:
+            if item.name == name:
+                return item
+
+        raise IxStandError(
+            f"ix stand: source {name!r} is not listed in [ix_stand].ora_bulk_sources"
+        )
+
+    def bulk_shares_scrape(self, name: str) -> bool:
+        """Нагрузочная PDB совпадает с PDB эталона: тесты сервера идут подряд."""
+        return self.bulk_source(name).oracle == self.source(name).oracle
 
 
 class DemoDataset:
@@ -88,13 +119,11 @@ class DemoDataset:
 
     def __init__(self, source: IxSource) -> None:
         self._source = source
-        self._admin = PayloadOracle(source.admin)
+        self._schema = StandSchema(source, SchemaUser.DEMO)
         self._owner = PayloadOracle(source.demo_owner)
 
     async def recreate(self) -> tuple[int, ...]:
-        async with self._admin.opened() as admin:
-            server = await self._version(admin)
-            await self._recreate_user(admin)
+        server = await self._schema.recreate()
 
         files = (
             DdlFile(name="01_01_table_customers.sql"),
@@ -140,24 +169,47 @@ class DemoDataset:
 
         return server
 
-    async def _recreate_user(self, admin: AsyncConnection) -> None:
-        try:
-            await self._run(admin, f"drop user {DemoUser.NAME} cascade")
-        except OracleQueryError as exc:
-            if "ORA-01918" not in str(exc):
-                raise
 
-        await self._run(
-            admin,
-            f"create user {DemoUser.NAME} identified by {DemoUser.PASSWORD} "
-            "default tablespace users quota unlimited on users",
-        )
-        await self._run(
-            admin,
-            "grant create session, create table, create view, create materialized "
-            "view, create sequence, create synonym, create trigger, create procedure, "
-            f"create type to {DemoUser.NAME}",
-        )
+class StandSchema:
+    """Пользователь-схема стенда на источнике: администратор пересоздаёт его пустым
+    с правами на объекты словаря или сносит вместе с объектами. Им пользуются
+    DemoDataset для EDGE_DEMO и тест памяти для EDGE_BULK."""
+
+    MISSING_USER: ClassVar[str] = "ORA-01918"
+
+    def __init__(self, source: IxSource, user: SchemaUser) -> None:
+        self._user = user
+        self._admin = PayloadOracle(source.admin)
+
+    async def recreate(self) -> tuple[int, ...]:
+        """Пустая схема с правами; возвращает версию сервера для выбора DDL."""
+        async with self._admin.opened() as admin:
+            server = await self._version(admin)
+            await self._drop(admin)
+            await self._run(
+                admin,
+                f"create user {self._user.value} identified by {self._user.password} "
+                "default tablespace users quota unlimited on users",
+            )
+            await self._run(
+                admin,
+                "grant create session, create table, create view, create "
+                "materialized view, create sequence, create synonym, create trigger, "
+                f"create procedure, create type to {self._user.value}",
+            )
+
+        return server
+
+    async def drop(self) -> None:
+        async with self._admin.opened() as admin:
+            await self._drop(admin)
+
+    async def _drop(self, admin: AsyncConnection) -> None:
+        try:
+            await self._run(admin, f"drop user {self._user.value} cascade")
+        except OracleQueryError as exc:
+            if self.MISSING_USER not in str(exc):
+                raise
 
     async def _run(self, conn: AsyncConnection, statement: str) -> None:
         async with self._admin.rows(conn, statement):

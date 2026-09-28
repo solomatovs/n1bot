@@ -68,8 +68,8 @@ def tokens() -> Tokens:
 
 @pytest.fixture(scope="module")
 def shared_connections(stand: StandProcess, llm_port: int) -> None:
-    """Общие соединения стенда (main pg/ch/oracle, stand web) выданы ролям
-    после старта."""
+    """Общие соединения стенда (main pg/ch, stand web) выданы ролям после
+    старта."""
     StandDatabase(StandApp.STUDIO, stand.config.db_name).seed_connections(llm_port)
 
 
@@ -209,14 +209,14 @@ class TestAccount:
         expect(heads.nth(0)).to_contain_text("mine")
         expect(heads.nth(1)).to_contain_text("shared")
         assert Css.of(heads.nth(0).locator(".eyebrow"), "color") == tokens.rgb("muted")
-        # общие соединения стенда посеяны для ролей: main (pg, ch, oracle) и stand (web)
-        expect(page.locator(Sel.SHARED).locator(".rows__row")).to_have_count(4)
+        # общие соединения стенда посеяны для ролей: main (pg, ch) и stand (web)
+        expect(page.locator(Sel.SHARED).locator(".rows__row")).to_have_count(3)
         expect(page.locator(Sel.MINE).locator(Sel.ADD)).to_be_visible()
         assert no_horizontal_scroll(page)
 
         _open(narrow_page, stand, "/connections")
         expect(narrow_page.locator(Sel.CONNECTIONS_LIST)).to_be_visible()
-        expect(narrow_page.locator(Sel.SHARED).locator(".rows__row")).to_have_count(4)
+        expect(narrow_page.locator(Sel.SHARED).locator(".rows__row")).to_have_count(3)
         assert no_horizontal_scroll(narrow_page)
 
     def test_shared_connection_is_read_only(

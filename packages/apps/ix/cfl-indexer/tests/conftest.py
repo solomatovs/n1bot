@@ -18,6 +18,12 @@ from boba.stand.confluence import ConfluenceStub, LiveServer
 from boba.stand.doc import DocStand
 from boba.stand.ix import IxStand, IxStandDatabase
 from boba.stand.ix_index import SharedIndexers, StandIxStack
+from boba.stand.names import StandSuite
+
+
+def pytest_configure(config: pytest.Config) -> None:
+    """Метка набора и процесса в именах стенда ставится до импорта модулей тестов."""
+    StandSuite(config).configure("cfl")
 
 
 @pytest.fixture(scope="session")
