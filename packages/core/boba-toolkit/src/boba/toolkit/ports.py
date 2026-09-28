@@ -6,7 +6,9 @@
 заголовка несёт свой kind литералом (`kind: Literal["audio.pcm"]`), союз
 моделей разбирается дискриминатором pydantic, и каждый кадр валидируется
 один раз на границе — тело работает с типизированными Framed, а не с
-сырыми байтами заголовков.
+сырыми байтами заголовков. Входной порт может быть списком —
+`feeds: Annotated[Sequence[Inbound[Chunk]], Injected]`: тело получает
+все входы разом, у каждого свой канал, и читает их в каком хочет порядке.
 
 Кроме модельных портов есть истинно сырые — RawInbound и RawOutbound, и их
 наследники в boba.toolkit.arrow с разбором потока Arrow IPC:
@@ -22,7 +24,7 @@ ToolCommand), а StreamSpec.of_schema отдаёт интроспекцию дл
 
 Ошибки:
 PortDeclarationError — объявление порта нарушено: тип не модель заголовка,
-    kind не Literal-строка, два порта одного направления.
+    kind не Literal-строка, два выходных порта, выходной порт списком.
 FrameProtocolError — заголовок пришедшего кадра не подходит объявленной
     модели порта; поднимается у читателя Inbound.
 """
@@ -31,7 +33,7 @@ from __future__ import annotations
 
 import asyncio
 import io
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import AsyncIterator, Iterator, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from types import UnionType
@@ -301,7 +303,36 @@ class StreamPorts:
 
     @classmethod
     def is_port(cls, annotation: Any) -> bool:
-        """Параметр — порт: значение строит гость, хост его не сериализует."""
+        """Параметр — порт либо список портов: значение строит гость, хост его
+        не сериализует."""
+        if cls.is_many(annotation):
+            return True
+
+        return cls._is_single(annotation)
+
+    @classmethod
+    def is_many(cls, annotation: Any) -> bool:
+        """Список портов Sequence[Inbound[...]]: сколько в нём входов, решает
+        вызывающий, у каждого входа свой канал."""
+        if get_origin(annotation) is not Sequence:
+            return False
+
+        arguments = get_args(annotation)
+        if len(arguments) != 1:
+            return False
+
+        return cls._is_single(arguments[0])
+
+    @classmethod
+    def element_of(cls, annotation: Any) -> Any:
+        """Аннотация одного порта: элемент списка либо сам порт."""
+        if cls.is_many(annotation):
+            return get_args(annotation)[0]
+
+        return annotation
+
+    @classmethod
+    def _is_single(cls, annotation: Any) -> bool:
         if cls.is_raw(annotation):
             return True
 
@@ -476,8 +507,10 @@ class ToolStreamSpecs:
 
 
 class PortDecl(BaseModel):
-    """Декларация одного порта для интроспекции: имя параметра, направление
-    и kind'ы кадров; raw-порт структур не объявляет — kinds пуст."""
+    """Декларация одного порта для интроспекции: имя параметра, направление,
+    kind'ы кадров и список ли это; raw-порт структур не объявляет — kinds пуст.
+    many — входной список Sequence[Inbound[...]]: входов у него столько,
+    сколько назвал вызывающий."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
@@ -485,15 +518,16 @@ class PortDecl(BaseModel):
     direction: PortDirection
     kinds: tuple[str, ...]
     raw: bool
+    many: bool
 
 
 class StreamSpec(BaseModel):
     """Потоковая декларация инструмента, выведенная из его подписи.
 
     По ней хост узнаёт, какие kind'ы тул принимает и отдаёт, — источник для
-    манифеста инструментов и проверки стыковки цепочек A -> B. Текущий
-    провод несёт по одному каналу на направление, поэтому и портов не
-    больше одного на сторону.
+    манифеста инструментов и проверки стыковки каналов. Входных портов
+    сколько угодно, каждый одиночный или список; выходной один: у вызова
+    один канал кадров наружу, а раздачу нескольким читателям делает хост.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -501,17 +535,18 @@ class StreamSpec(BaseModel):
     ports: tuple[PortDecl, ...] = ()
 
     @model_validator(mode="after")
-    def _single_per_direction(self) -> StreamSpec:
-        seen: set[PortDirection] = set()
+    def _single_outbound(self) -> StreamSpec:
+        outbound: list[str] = []
         for port in self.ports:
-            if port.direction in seen:
-                msg = (
-                    f"duplicate {port.direction} port {port.name!r}: a tool "
-                    "declares at most one port per direction"
-                )
-                raise ValueError(msg)
+            if port.direction is PortDirection.OUTBOUND:
+                outbound.append(port.name)
 
-            seen.add(port.direction)
+        if len(outbound) > 1:
+            msg = (
+                f"a tool declares at most one outbound port, got {outbound}: "
+                "a call has one frames channel out"
+            )
+            raise ValueError(msg)
 
         return self
 
@@ -524,39 +559,62 @@ class StreamSpec(BaseModel):
             if not StreamPorts.is_port(field.annotation):
                 continue
 
-            raw = StreamPorts.is_raw(field.annotation)
-
-            kinds: tuple[str, ...] = ()
-            if not raw:
-                kinds = StreamPorts.kinds_of(field.annotation)
-
-            declared.append(
-                PortDecl(
-                    name=name,
-                    direction=StreamPorts.direction_of(field.annotation),
-                    kinds=kinds,
-                    raw=raw,
-                )
-            )
+            declared.append(cls._decl_of(name, field.annotation))
 
         return cls(ports=tuple(declared))
+
+    @staticmethod
+    def _decl_of(name: str, annotation: Any) -> PortDecl:
+        element = StreamPorts.element_of(annotation)
+        many = StreamPorts.is_many(annotation)
+        direction = StreamPorts.direction_of(element)
+
+        if many and direction is PortDirection.OUTBOUND:
+            msg = (
+                f"port {name!r}: an outbound port cannot be a list, got "
+                f"{annotation!r}; one call has one channel out, the host fans "
+                "it out to readers"
+            )
+            raise PortDeclarationError(msg)
+
+        raw = StreamPorts.is_raw(element)
+
+        kinds: tuple[str, ...] = ()
+        if not raw:
+            kinds = StreamPorts.kinds_of(element)
+
+        return PortDecl(name=name, direction=direction, kinds=kinds, raw=raw, many=many)
 
     def streaming(self) -> bool:
         """Инструмент объявил хотя бы один канал данных."""
         return bool(self.ports)
 
-    def kinds(self, direction: PortDirection) -> tuple[str, ...]:
-        """Kind'ы кадров направления; пусто — канала нет."""
+    def outbound(self) -> PortDecl | None:
+        """Выходной порт; None — инструмент данных наружу не отдаёт."""
         for port in self.ports:
-            if port.direction is direction:
-                return port.kinds
+            if port.direction is PortDirection.OUTBOUND:
+                return port
 
-        return ()
+        return None
 
-    def raw(self, direction: PortDirection) -> bool:
-        """Канал направления сырой: голые байты без кадрирования."""
+    def inbound(self) -> tuple[PortDecl, ...]:
+        """Входные порты в порядке подписи."""
+        ports: list[PortDecl] = []
         for port in self.ports:
-            if port.direction is direction:
-                return port.raw
+            if port.direction is PortDirection.INBOUND:
+                ports.append(port)
 
-        return False
+        return tuple(ports)
+
+    def port(self, name: str) -> PortDecl:
+        """Порт по имени параметра; незнакомое имя — PortDeclarationError."""
+        for port in self.ports:
+            if port.name == name:
+                return port
+
+        declared: list[str] = []
+        for port in self.ports:
+            declared.append(port.name)
+
+        msg = f"no port {name!r} among the declared ports {declared}"
+        raise PortDeclarationError(msg)

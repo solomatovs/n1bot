@@ -84,7 +84,7 @@ def _section() -> SectionConfig:
 def _command(payload: PayloadTool, kwargs: dict[str, object]) -> ToolCommand:
     address = ToolAddress.of(payload)
 
-    return ToolArgv.render(address, payload.args_schema, kwargs)
+    return ToolArgv.render(address, payload.args_schema, kwargs, input_counts={})
 
 
 def _tail(command: ToolCommand) -> list[str]:

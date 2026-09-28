@@ -35,7 +35,7 @@ from typing import Any, ClassVar
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from boba.toolkit.entry import EntryFlag, ToolLike, ToolMain
+from boba.toolkit.entry import EntryFlag, InputWire, ToolLike, ToolMain
 from boba.toolkit.facade import WarmupHooks
 from boba.toolkit.payload import PayloadLogging
 from boba.toolkit.timing import Elapsed
@@ -161,7 +161,9 @@ class MountFlag(IntEnum):
 
 
 class CallFd(IntEnum):
-    """Порядок дескрипторов в SCM_RIGHTS запроса вызова."""
+    """Порядок дескрипторов в SCM_RIGHTS запроса вызова. За ними — cgroup, если
+    он едет, и входы вызова после первого (CallRequest.inputs): первый вход
+    едет по STDIN."""
 
     STDIN = 0
     STDOUT = 1
@@ -318,7 +320,24 @@ class CallRequest(BaseModel):
     """
     cwd: str = ""
     into_cgroup: bool = False
-    """Шестым дескриптором приехал каталог cgroup-leaf'а вызова."""
+    """Восьмым дескриптором приехал каталог cgroup-leaf'а вызова."""
+    inputs: tuple[str, ...] = ()
+    """Входные порты тела по одному на вход: первый вход — STDIN, каждый
+    следующий приезжает своим дескриптором в хвосте SCM_RIGHTS."""
+
+    def extra_inputs(self) -> int:
+        """Сколько входов едет дескрипторами сверх STDIN."""
+        if not self.inputs:
+            return 0
+
+        return len(self.inputs) - 1
+
+    def inputs_at(self) -> int:
+        """Индекс первого дополнительного входа в списке дескрипторов."""
+        if self.into_cgroup:
+            return CallFd.CGROUP + 1
+
+        return CallFd.CGROUP
 
 
 class WaitStatus:
@@ -407,7 +426,9 @@ class ZygoteWire:
     """Кодек сообщений по SEQPACKET-сокету: JSON-датаграмма плюс SCM_RIGHTS."""
 
     MAX_MESSAGE: ClassVar[int] = 262_144
-    MAX_FDS: ClassVar[int] = 16
+    MAX_FDS: ClassVar[int] = 64
+    """Потолок дескрипторов сообщения: фиксированные каналы вызова, cgroup и
+    входы до ToolCommand.MAX_INPUTS."""
 
     @staticmethod
     def send(sock: socket.socket, payload: BaseModel, fds: Sequence[int] = ()) -> None:
@@ -424,7 +445,7 @@ class ZygoteWire:
     def recv(cls, sock: socket.socket) -> tuple[dict[str, object], list[int]]:
         """Сообщение и приехавшие дескрипторы; пустое сообщение — конец связи."""
         space = socket.CMSG_SPACE(cls.MAX_FDS * array.array("i").itemsize)
-        data, ancdata, _flags, _addr = sock.recvmsg(cls.MAX_MESSAGE, space)
+        data, ancdata, flags, _addr = sock.recvmsg(cls.MAX_MESSAGE, space)
 
         fds: list[int] = []
         for level, kind, blob in ancdata:
@@ -432,6 +453,15 @@ class ZygoteWire:
                 received = array.array("i")
                 received.frombytes(blob[: len(blob) - len(blob) % received.itemsize])
                 fds.extend(received)
+
+        if flags & socket.MSG_CTRUNC:
+            for fd in fds:
+                os.close(fd)
+            msg = (
+                f"zygote wire: descriptors of the message were truncated, "
+                f"expected at most {cls.MAX_FDS}, got {len(fds)} before the cut"
+            )
+            raise ZygoteProtocolError(msg)
 
         if not data:
             return {}, fds
@@ -804,17 +834,14 @@ class ZygoteMain:
                 os.close(fd)
             raise
 
-        expected = CallFd.count()
-        if request.into_cgroup:
-            expected += 1
-
+        expected = request.inputs_at() + request.extra_inputs()
         if len(fds) != expected:
             for fd in fds:
                 os.close(fd)
             msg = (
                 f"zygote call {request.call_id}: expected {expected} fds "
-                f"with the request (into_cgroup={request.into_cgroup}), "
-                f"got {len(fds)}"
+                f"with the request (into_cgroup={request.into_cgroup}, "
+                f"inputs={len(request.inputs)}), got {len(fds)}"
             )
             raise ZygoteProtocolError(msg)
 
@@ -838,6 +865,9 @@ class ZygoteMain:
 
         if request.into_cgroup:
             os.close(fds[CallFd.CGROUP])
+
+        for fd in fds[request.inputs_at() :]:
+            os.close(fd)
 
         self._children[pid] = (request.call_id, control)
         logger.info("zygote: call %s forked as pid %d", request.call_id, pid)
@@ -1008,6 +1038,16 @@ class ZygoteMain:
         argv.append(str(fds[CallFd.FRAMES]))
         argv.append(EntryFlag.INJECTED_FD.value)
         argv.append(str(fds[CallFd.INJECTED]))
+
+        if not request.inputs:
+            return argv
+
+        # STDIN к этому моменту уже переложен на 0
+        argv.extend(InputWire(port=request.inputs[0], fd=0).argv())
+
+        extra = fds[request.inputs_at() :]
+        for port, fd in zip(request.inputs[1:], extra, strict=True):
+            argv.extend(InputWire(port=port, fd=fd).argv())
 
         return argv
 

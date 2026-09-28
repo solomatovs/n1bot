@@ -3,16 +3,18 @@
 Запускается настоящим subprocess'ом: `python -m fake_toolmod <имя> --флаги`
 с PYTHONPATH на каталог тестов. Кроме образцовых тел здесь живут вредные:
 глухое (не читает вход), заложник (виснет, назвав свой pid) и генератор
-битого потока кадров — ими тесты надёжности валят вызов.
+битого потока кадров — ими тесты надёжности валят вызов. fake_merge —
+потребитель нескольких потоков: все входы приходят ему разом.
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import sys
 import time
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from enum import StrEnum
 from typing import Annotated, ClassVar, Final, Literal
 
@@ -107,6 +109,7 @@ class FakePidHead(BaseModel):
 async def fake_deaf(
     sleep_sec: Annotated[float, Field(ge=0, description="Сколько спать")],
     cfg: Annotated[FakeConfig, Injected],
+    feed: Annotated[Inbound[FakePidHead], Injected],
 ) -> MarkdownResult:
     """Глухое тело: спит, не читая вход, — хост упирается в полный пайп."""
     time.sleep(sleep_sec)
@@ -165,12 +168,56 @@ async def fake_relay(
     return MarkdownResult(text=f"relayed {total}|{cfg.token.get_secret_value()}")
 
 
+class FakeFeedTally:
+    """Сводка одного входа fake_merge: склеенные тела его кадров."""
+
+    SEPARATOR: ClassVar[str] = ";"
+
+    def of(self, feed: Inbound[FakeChunkHead | FakeDoneHead]) -> str:
+        bodies = bytearray()
+        for item in feed:
+            bodies.extend(item.body)
+
+        return bodies.decode("utf-8")
+
+    async def all_of(
+        self, feeds: Sequence[Inbound[FakeChunkHead | FakeDoneHead]]
+    ) -> str:
+        """Все входы читаются одновременно, каждый своим потоком."""
+        reads: list[asyncio.Future[str]] = []
+        for feed in feeds:
+            reads.append(asyncio.ensure_future(asyncio.to_thread(self.of, feed)))
+
+        tallies = await asyncio.gather(*reads)
+        return self.SEPARATOR.join(tallies)
+
+
+@tool
+async def fake_merge(
+    cfg: Annotated[FakeConfig, Injected],
+    feeds: Annotated[Sequence[Inbound[FakeChunkHead | FakeDoneHead]], Injected],
+) -> MarkdownResult:
+    """Потребитель нескольких потоков: читает все входы разом, каждый своим
+    потоком, и возвращает тела каждого входа через `;` в порядке входов."""
+    merged = await FakeFeedTally().all_of(feeds)
+
+    return MarkdownResult(
+        text=f"merged {len(feeds)}:{merged}|{cfg.token.get_secret_value()}"
+    )
+
+
 EXPECTED: Mapping[type[Exception], FakeErrorKind] = {
     FakeUnavailableError: FakeErrorKind.UNAVAILABLE,
 }
 
 TOOLS: Final = ToolMain.toolset(
-    fake_echo, fake_stream, fake_deaf, fake_hostage, fake_garbage, fake_relay
+    fake_echo,
+    fake_stream,
+    fake_deaf,
+    fake_hostage,
+    fake_garbage,
+    fake_relay,
+    fake_merge,
 )
 
 if __name__ == "__main__":

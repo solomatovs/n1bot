@@ -5,9 +5,9 @@
 терминале; здесь живёт всё, что превращает команду в вызов тела: разбор
 argv в kwargs (ToolArgv), каналы вызова из аргументов (CallWiring), сам
 вход run (ToolMain). Хост передаёт каналы номерами дескрипторов в флагах
-(--injected-fd, --fd-result, --fd-frames); человек передаёт конфиг файлом
---injected и читает результат из stdout. stdin несёт только прикладные
-кадры входа и при ручном запуске свободен.
+(--injected-fd, --fd-result, --fd-frames, --fd-in на каждый вход); человек
+передаёт конфиг файлом --injected и читает результат из stdout. Входы
+несут только прикладные кадры и при ручном запуске пусты.
 
 Ошибки:
 ArgumentTooLargeError — значение аргумента не помещается в argv (MAX_ARG_STRLEN).
@@ -25,7 +25,7 @@ import json
 import logging
 import os
 import sys
-from collections.abc import Awaitable, Callable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Iterator, Mapping, Sequence
 from contextlib import suppress
 from enum import IntEnum, StrEnum
 from pathlib import Path
@@ -47,12 +47,13 @@ from boba.toolkit.failure import ValidationText
 from boba.toolkit.frames import ToolIo
 from boba.toolkit.launcher import PayloadFailureError
 from boba.toolkit.ports import (
+    PortDecl,
     PortDeclarationError,
     PortDirection,
     StreamPorts,
     StreamSpec,
 )
-from boba.toolkit.protocol import ReplyError, ReplyOk, ToolCommand
+from boba.toolkit.protocol import CallInputSpec, ReplyError, ReplyOk, ToolCommand
 from boba.toolkit.result import ToolResultBase
 from boba.toolkit.timing import Elapsed
 from boba.toolkit.types import SecretReveal
@@ -63,6 +64,7 @@ __all__ = [
     "EntryErrorKind",
     "EntryFlag",
     "ExpectedErrors",
+    "InputWire",
     "ToolAddress",
     "ToolArgv",
     "ToolEntryError",
@@ -112,13 +114,52 @@ class EntryFlag(StrEnum):
     INJECTED_FD = "--injected-fd"
     FD_RESULT = "--fd-result"
     FD_FRAMES = "--fd-frames"
+    FD_IN = "--fd-in"
     ARTIFACT = "--artifact"
     HELP = "--help"
 
 
+class InputWire(BaseModel):
+    """Один вход вызова в argv: входной порт тела и номер дескриптора пайпа.
+
+    Лончер дописывает `--fd-in <порт>=<fd>` на каждый вход по порядку
+    ToolCommand.inputs; у порта-списка флагов столько, сколько у него
+    входов. Запись и разбор значения флага живут здесь, у обеих сторон
+    границы процесса.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    port: str = Field(min_length=1)
+    fd: int = Field(ge=0)
+
+    SEPARATOR: ClassVar[str] = "="
+
+    def argv(self) -> tuple[str, str]:
+        """Флаг входа и его значение для команды тела."""
+        return (EntryFlag.FD_IN.value, f"{self.port}{self.SEPARATOR}{self.fd}")
+
+    @classmethod
+    def of_value(cls, raw: str) -> InputWire:
+        """Значение флага --fd-in обратно в модель; битое — ToolEntryError."""
+        port, separator, fd = raw.rpartition(cls.SEPARATOR)
+        if not separator:
+            msg = f"{EntryFlag.FD_IN} expects <port>{cls.SEPARATOR}<fd>, got {raw!r}"
+            raise ToolEntryError(EntryErrorKind.INVALID_REQUEST, msg)
+
+        try:
+            return cls(port=port, fd=int(fd))
+        except ValueError as exc:
+            msg = (
+                f"{EntryFlag.FD_IN} expects <port>{cls.SEPARATOR}<fd> with a "
+                f"descriptor number, got {raw!r}: {exc}"
+            )
+            raise ToolEntryError(EntryErrorKind.INVALID_REQUEST, msg) from exc
+
+
 class CallWiring(BaseModel):
     """Каналы вызова, разобранные из argv: номера дескрипторов конфига,
-    конверта и кадров, которые лончер выдал телу.
+    конверта, кадров и входов, которые лончер выдал телу.
 
     Сами дескрипторы достаются процессу наследованием, а номера едут
     флагами — команда самодостаточна, по argv видно все каналы вызова.
@@ -131,6 +172,12 @@ class CallWiring(BaseModel):
     injected_fd: int = -1
     result_fd: int = -1
     frames_fd: int = -1
+    inputs: tuple[InputWire, ...] = ()
+
+    def attached(self) -> bool:
+        """Вызов пришёл от лончера: канал кадров в argv. Без него читать и
+        писать кадры некуда — так выглядит запуск человеком."""
+        return self.frames_fd >= 0
 
     FLAGS: ClassVar[Mapping[str, str]] = {
         EntryFlag.INJECTED_FD.value: "injected_fd",
@@ -154,7 +201,11 @@ class CallWiring(BaseModel):
                 msg = f"{flag} expects a descriptor number, got {raw!r}: {exc}"
                 raise ToolEntryError(EntryErrorKind.INVALID_REQUEST, msg) from exc
 
-        return cls.model_validate(values)
+        inputs: list[InputWire] = []
+        while raw_input := cls._pop_value(arguments, EntryFlag.FD_IN.value):
+            inputs.append(InputWire.of_value(raw_input))
+
+        return cls(**values, inputs=tuple(inputs))
 
     @staticmethod
     def _pop_value(arguments: list[str], flag: str) -> str | None:
@@ -281,8 +332,14 @@ class ToolArgv:
         address: ToolAddress,
         schema: type[BaseModel],
         kwargs: Mapping[str, object],
+        input_counts: Mapping[str, int],
     ) -> ToolCommand:
-        """LLM-аргументы во флаги, injected-параметры в конфиг вызова."""
+        """LLM-аргументы во флаги, injected-параметры в конфиг вызова.
+
+        input_counts — сколько входов у входных портов вызова по имени порта.
+        Одиночный порт без записи получает ровно один вход, порт-список без
+        записи — ни одного.
+        """
         argv = address.argv_head()
 
         config_payload: dict[str, Any] = {}
@@ -311,13 +368,50 @@ class ToolArgv:
 
         config = json.dumps(config_payload, ensure_ascii=False).encode("utf-8")
         spec = StreamSpec.of_schema(schema)
+        inputs = tuple(cls._inputs(spec, input_counts))
+
+        raw_frames = False
+        if outbound := spec.outbound():
+            raw_frames = outbound.raw
 
         return ToolCommand(
-            argv=tuple(argv),
-            config=config,
-            raw_stdin=spec.raw(PortDirection.INBOUND),
-            raw_frames=spec.raw(PortDirection.OUTBOUND),
+            argv=tuple(argv), config=config, inputs=inputs, raw_frames=raw_frames
         )
+
+    @classmethod
+    def _inputs(
+        cls, spec: StreamSpec, input_counts: Mapping[str, int]
+    ) -> Iterator[CallInputSpec]:
+        """Входы вызова по порядку входных портов подписи."""
+        for name, count in input_counts.items():
+            cls._check_count(spec.port(name), count)
+
+        for port in spec.inbound():
+            count = 1
+            if port.many:
+                count = 0
+
+            if port.name in input_counts:
+                count = input_counts[port.name]
+
+            for _ in range(count):
+                yield CallInputSpec(port=port.name, raw=port.raw)
+
+    @staticmethod
+    def _check_count(port: PortDecl, count: int) -> None:
+        if port.direction is not PortDirection.INBOUND:
+            msg = f"port {port.name!r} is {port.direction}, inputs go to inbound ports"
+            raise PortDeclarationError(msg)
+
+        if port.many:
+            return
+
+        if count != 1:
+            msg = (
+                f"inbound port {port.name!r} is a single port and takes exactly "
+                f"one input, got {count}"
+            )
+            raise PortDeclarationError(msg)
 
     @classmethod
     def parse(
@@ -695,19 +789,20 @@ class ToolMain:
     def _build_ports(cls, tool: ToolLike, wiring: CallWiring) -> dict[str, Any]:
         """Порты вызова для объявивших их параметров подписи.
 
-        Валидирует декларацию (StreamSpec: не больше порта на направление) и
-        строит Inbound/Outbound поверх транспорта ToolIo: у запуска лончером
-        он привязан к каналам из wiring, у человека отвязан — вход пуст,
-        кадры наружу уходят в лог.
+        Валидирует декларацию (StreamSpec) и строит порты поверх транспорта
+        ToolIo: у запуска лончером каждый вход сидит на своём пайпе из
+        --fd-in, выход — на канале кадров; у человека среда отвязана — входы
+        пусты, кадры наружу уходят в лог.
         """
         schema = ToolArgv.schema_of(tool)
 
         fields = ToolArgv.port_fields(schema)
         if not fields:
+            cls._refuse_inputs(tool, wiring)
             return {}
 
         try:
-            StreamSpec.of_schema(schema)
+            spec = StreamSpec.of_schema(schema)
         except (PortDeclarationError, ValidationError) as exc:
             listed = ", ".join(sorted(fields))
             msg = (
@@ -716,25 +811,91 @@ class ToolMain:
             )
             raise ToolEntryError(EntryErrorKind.INTERNAL_ERROR, msg) from exc
 
-        io = cls._call_io(wiring)
+        wires = cls._wires_by_port(tool, spec, wiring)
 
         ports: dict[str, Any] = {}
-        for name, annotation in fields.items():
-            ports[name] = StreamPorts.build(annotation, io)
+        for decl in spec.ports:
+            element = StreamPorts.element_of(fields[decl.name])
+            ports[decl.name] = cls._port_value(tool, decl, element, wires, wiring)
 
         return ports
 
     @staticmethod
-    def _call_io(wiring: CallWiring) -> ToolIo:
-        """Транспорт портов: каналы лончера либо отвязанная среда человека.
+    def _refuse_inputs(tool: ToolLike, wiring: CallWiring) -> None:
+        """Инструмент без портов: вход из argv некому отдать."""
+        if not wiring.inputs:
+            return
 
-        Признак запуска лончером — канал кадров в argv: без него читать
-        кадры неоткуда, и вход остаётся пустым.
-        """
-        if wiring.frames_fd < 0:
+        msg = (
+            f"tool {tool.name!r} declares no inbound ports, got "
+            f"{len(wiring.inputs)} {EntryFlag.FD_IN} inputs"
+        )
+        raise ToolEntryError(EntryErrorKind.INVALID_REQUEST, msg)
+
+    @classmethod
+    def _port_value(
+        cls,
+        tool: ToolLike,
+        decl: PortDecl,
+        element: Any,
+        wires: Mapping[str, Sequence[InputWire]],
+        wiring: CallWiring,
+    ) -> object:
+        """Значение параметра-порта: порт, список портов или порт выхода."""
+        if decl.direction is PortDirection.OUTBOUND:
+            return StreamPorts.build(element, cls._outbound_io(wiring))
+
+        own = wires[decl.name]
+        if decl.many:
+            return tuple(cls._inbound_ports(element, own))
+
+        if not wiring.attached():
+            return StreamPorts.build(element, ToolIo.detached())
+
+        if len(own) != 1:
+            msg = (
+                f"tool {tool.name!r}: inbound port {decl.name!r} expects exactly "
+                f"one {EntryFlag.FD_IN} input, got {len(own)}"
+            )
+            raise ToolEntryError(EntryErrorKind.INVALID_REQUEST, msg)
+
+        return StreamPorts.build(element, ToolIo.on_channels(own[0].fd, -1))
+
+    @staticmethod
+    def _inbound_ports(element: Any, wires: Sequence[InputWire]) -> Iterator[Any]:
+        for wire in wires:
+            yield StreamPorts.build(element, ToolIo.on_channels(wire.fd, -1))
+
+    @staticmethod
+    def _wires_by_port(
+        tool: ToolLike, spec: StreamSpec, wiring: CallWiring
+    ) -> dict[str, list[InputWire]]:
+        """Входы из argv по входным портам; вход чужого порта — отказ."""
+        wires: dict[str, list[InputWire]] = {}
+        for port in spec.inbound():
+            wires[port.name] = []
+
+        for wire in wiring.inputs:
+            own = wires.get(wire.port)
+            if own is None:
+                known = sorted(wires)
+                msg = (
+                    f"tool {tool.name!r}: {EntryFlag.FD_IN} names port "
+                    f"{wire.port!r}, the inbound ports are {known}"
+                )
+                raise ToolEntryError(EntryErrorKind.INVALID_REQUEST, msg)
+
+            own.append(wire)
+
+        return wires
+
+    @staticmethod
+    def _outbound_io(wiring: CallWiring) -> ToolIo:
+        """Транспорт выходного порта: канал кадров лончера либо лог человека."""
+        if not wiring.attached():
             return ToolIo.detached()
 
-        return ToolIo.on_channels(sys.stdin.fileno(), wiring.frames_fd)
+        return ToolIo.on_channels(-1, wiring.frames_fd)
 
     @classmethod
     def _config_source(

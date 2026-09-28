@@ -14,14 +14,14 @@ LauncherError — исполнитель не отдал конверт; под�
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable, Iterator, Sequence
 from enum import StrEnum
 from functools import wraps
 from typing import Any
 
 from pydantic import BaseModel
 
-from boba.toolkit.chain import CallRelay, NodeSlot, PipelineSlot
+from boba.toolkit.chain import NodeSlot, PipelineSlot
 from boba.toolkit.entry import (
     ArgumentTooLargeError,
     ReplyError,
@@ -34,6 +34,7 @@ from boba.toolkit.launcher import (
     FrameTap,
     ObservedCall,
     PayloadFailureError,
+    ToolCall,
     ToolLauncher,
     ToolOutcome,
 )
@@ -106,15 +107,20 @@ class ToolProcessWrap:
         launcher: ToolLauncher,
     ) -> Callable[..., object]:
         def call(**kwargs: object) -> object:
+            slot = PipelineSlot.get()
+
+            input_counts: dict[str, int] = {}
+            if slot is not None:
+                input_counts = slot.input_counts()
+
             try:
-                command = ToolArgv.render(address, schema, kwargs)
+                command = ToolArgv.render(address, schema, kwargs, input_counts)
             except ArgumentTooLargeError as exc:
                 msg = f"tool {address.name!r}: {exc}"
                 raise PayloadFailureError(
                     str(WrapErrorKind.ARGUMENT_TOO_LARGE), msg
                 ) from exc
 
-            slot = PipelineSlot.get()
             sink = FrameTap.get()
             if slot is not None:
                 outcome = cls._piped_call(launcher, command, slot)
@@ -138,9 +144,9 @@ class ToolProcessWrap:
         """Вызов узла конвейера: каналы рёбер отдаются слоту дескрипторами.
 
         Выход узла с ребром вниз открывается open_tap (канал кадров хост не
-        разбирает), вход узла с ребром вверх забирается у вызова — оба
-        конца соединяет оркестратор splice'ом. Свободные каналы живут как в
-        накопительном вызове: вход закрывается сразу, кадры дочитываются.
+        разбирает), входы узла забираются у вызова все разом — концы
+        соединяет оркестратор перекачкой. Свободные каналы живут как в
+        накопительном вызове: входы закрываются сразу, кадры дочитываются.
         """
         if slot.has_downstream:
             tapped = launcher.open_tap(command)
@@ -153,7 +159,7 @@ class ToolProcessWrap:
             slot.attach_abort(call.close)
 
             if slot.has_upstream:
-                slot.give_input_fd(CallRelay.input_fd(call))
+                slot.give_input_fds(tuple(ToolProcessWrap._input_fds(call)))
             else:
                 call.done_sending()
 
@@ -161,6 +167,11 @@ class ToolProcessWrap:
                 continue
 
             return call.result()
+
+    @staticmethod
+    def _input_fds(call: ToolCall) -> Iterator[int]:
+        for entry in call.inputs():
+            yield entry.take_fd()
 
     @staticmethod
     def _set_func(tool: ToolLike, body: Callable[..., Any]) -> None:

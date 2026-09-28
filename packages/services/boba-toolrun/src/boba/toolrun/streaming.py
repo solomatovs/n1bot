@@ -27,7 +27,7 @@ class AsyncToolCall:
     """Асинхронная обёртка над ToolCall для кода из event loop'а.
 
     ToolCall блокирует поток (frames ждёт кадра, send может стоять на
-    полном пайпе), поэтому напрямую из asyncio им пользоваться нельзя.
+    полном пайпе входа), поэтому напрямую из asyncio им пользоваться нельзя.
     Здесь чтение кадров живёт в отдельном потоке и складывает их в очередь
     loop'а через call_soon_threadsafe, а send/done_sending/result уезжают в
     to_thread. Ошибка чтения приезжает тем же путём и поднимается у
@@ -51,8 +51,10 @@ class AsyncToolCall:
     def opened(cls, launcher: ToolLauncher, command: ToolCommand) -> AsyncToolCall:
         return cls(launcher.open(command))
 
-    async def send(self, frame: ToolFrame) -> None:
-        await asyncio.to_thread(self._call.send, frame)
+    async def send(self, index: int, frame: ToolFrame) -> None:
+        """Кадр во вход index вызова (порядок ToolCommand.inputs)."""
+        entry = self._call.inputs()[index]
+        await asyncio.to_thread(entry.send, frame)
 
     async def done_sending(self) -> None:
         await asyncio.to_thread(self._call.done_sending)

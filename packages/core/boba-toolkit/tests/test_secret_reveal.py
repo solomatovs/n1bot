@@ -123,7 +123,10 @@ async def deep_echo(
 def test_render_parse_roundtrip_carries_secret_off_argv() -> None:
     address = ToolAddress.of(deep_echo)
     command = ToolArgv.render(
-        address, deep_echo.args_schema, {"text": "hi", "cfg": _config()}
+        address,
+        deep_echo.args_schema,
+        {"text": "hi", "cfg": _config()},
+        input_counts={},
     )
 
     joined = " ".join(command.argv)

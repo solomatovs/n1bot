@@ -211,7 +211,7 @@ def _command(name: str, arguments: dict[str, Any]) -> ToolCommand:
     """Команда модуля ровно как её строит обёртка запуска инструмента."""
     address = ToolAddress(module=MODULE, name=name)
     schema = ToolArgv.schema_of(ToolMain.toolset(fx_chatter)[0])
-    return ToolArgv.render(address, schema, arguments)
+    return ToolArgv.render(address, schema, arguments, input_counts={})
 
 
 @pytest.fixture

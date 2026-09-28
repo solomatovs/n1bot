@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import json
 from abc import abstractmethod
-from collections.abc import Generator, Iterator, Mapping
+from collections.abc import Generator, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar, Token
 from dataclasses import dataclass
@@ -34,6 +34,7 @@ from boba.toolkit.protocol import REPLY, ReplyError, ReplyOk, ToolCommand
 from boba.toolkit.stream import Chunk
 
 __all__ = [
+    "CallInputPort",
     "CappedChannel",
     "ChannelOverflowError",
     "ChannelTail",
@@ -306,29 +307,59 @@ class EnvelopeReply:
             raise LauncherError(msg) from exc
 
 
-class ToolCall(Protocol):
-    """Протокол одного открытого вызова инструмента: вход кадрами, кадры
-    наружу, конверт результата в конце. Реализация — PumpedCall
-    (boba.toolkit.pump), создаётся ToolLauncher.open().
+class CallInputPort(Protocol):
+    """Протокол одного входа открытого вызова: пайп во входной порт тела.
 
-    Конфиг команды лончер отправляет телу сам, первым кадром; send добавляет
-    прикладные кадры, done_sending закрывает вход кадром eos и EOF. send
-    пишет в пайп тела напрямую и блокируется на полном буфере, пока тело не
-    прочитает своё, — так скорость входа прижимается к скорости тела; писать
-    можно из любого потока, записи атомарны. frames — итератор кадров канала
-    tool_frames, один читатель на вызов: он блокирует до следующего кадра и
-    кончается вместе с вызовом; result дожидается завершения и разбирает
-    конверт. close добивает вызов; выход из контекста зовёт close.
+    send и send_bytes пишут в пайп напрямую и блокируются на полном буфере,
+    пока тело не прочитает своё, — так скорость входа прижимается к
+    скорости тела; писать можно из любого потока, записи атомарны. finish
+    даёт телу EOF. take_fd отдаёт дескриптор перекачке (CallRelay): дальше
+    входом владеет она, send и finish больше не работают. Реализация —
+    FrameInput (boba.toolkit.pump).
     """
 
     @abstractmethod
     def send(self, frame: ToolFrame) -> None:
-        """Прикладной кадр телу; после done_sending — LauncherError."""
+        """Кадр телу; после finish, take_fd или разрыва — LauncherError."""
+        ...
+
+    @abstractmethod
+    def send_bytes(self, data: Chunk) -> None:
+        """Голые байты телу — вход сырого порта."""
+        ...
+
+    @abstractmethod
+    def finish(self) -> None:
+        """Конец входа: EOF телу; повтор безвреден."""
+        ...
+
+    @abstractmethod
+    def take_fd(self) -> int:
+        """Отдать дескриптор входа перекачке вместе с владением."""
+        ...
+
+
+class ToolCall(Protocol):
+    """Протокол одного открытого вызова инструмента: входы кадрами, кадры
+    наружу, конверт результата в конце. Реализация — PumpedCall
+    (boba.toolkit.pump), создаётся ToolLauncher.open().
+
+    Конфиг команды лончер отправляет телу сам, своим каналом. inputs —
+    входы вызова в порядке ToolCommand.inputs, у каждого свой пайп;
+    done_sending закрывает все, что ещё открыты. frames — итератор кадров
+    канала tool_frames, один читатель на вызов: он блокирует до следующего
+    кадра и кончается вместе с вызовом; result дожидается завершения и
+    разбирает конверт. close добивает вызов; выход из контекста зовёт close.
+    """
+
+    @abstractmethod
+    def inputs(self) -> Sequence[CallInputPort]:
+        """Входы вызова по порядку ToolCommand.inputs."""
         ...
 
     @abstractmethod
     def done_sending(self) -> None:
-        """Конец входа: телу уходит eos, дальше stdin закрывается."""
+        """Конец всех входов: EOF каждому ещё открытому."""
         ...
 
     @abstractmethod

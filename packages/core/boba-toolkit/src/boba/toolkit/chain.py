@@ -1,8 +1,8 @@
 """Перекачка потока между вызовами инструментов: проверка стыковки и релей.
 
 Цепочка A -> B — это выходной канал кадров вызова A, направленный во вход
-вызова B. Здесь живёт весь механизм: ChainCheck сверяет декларации портов
-(StreamSpec) до запуска, CallRelay переливает данные. Путей перекачки два:
+вызова B. Здесь живёт весь механизм: ChainCheck сверяет стыкуемые порты
+(PortDecl) до запуска, CallRelay переливает данные. Путей перекачки два:
 
 - frames() — универсальный, через хост: кадры читаются из source и шлются
   в sink; работает с любыми ToolCall (в том числе между разными
@@ -26,16 +26,15 @@ from __future__ import annotations
 import os
 import queue
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from contextlib import suppress
 from contextvars import ContextVar, Token
-from typing import ClassVar
+from typing import ClassVar, TypeVar
 
 from pydantic import BaseModel, ConfigDict
 
-from boba.toolkit.launcher import LauncherError, TappedCall, ToolCall
-from boba.toolkit.ports import PortDecl, PortDirection, StreamSpec
-from boba.toolkit.pump import OpenRun
+from boba.toolkit.launcher import CallInputPort, LauncherError, TappedCall, ToolCall
+from boba.toolkit.ports import PortDecl, PortDirection
 
 __all__ = [
     "CallRelay",
@@ -48,6 +47,9 @@ __all__ = [
 ]
 
 
+ValueT = TypeVar("ValueT")
+
+
 class ChainMismatchError(LauncherError):
     """Выход source не подходит входу sink: цепочку собирать нельзя."""
 
@@ -58,32 +60,46 @@ class NodeSlot:
     Оркестратор создаёт слот на узел и публикует его через PipelineSlot
     перед вызовом инструмента; обёртка запуска (ToolProcessWrap), увидев
     слот, открывает потоковый вызов вместо накопительного и отдаёт сюда
-    дескрипторы каналов. Оркестратор забирает их из своего потока и
-    соединяет splice'ом; abort() добивает вызов узла при сбое конвейера.
+    дескрипторы каналов. inputs — входные порты вызова по одному на вход,
+    в порядке входов: порт-список повторяется столько раз, сколько у него
+    входов. Оркестратор забирает дескрипторы из своего потока и соединяет
+    их перекачкой; abort() добивает вызов узла при сбое конвейера.
     """
 
-    def __init__(self, *, has_upstream: bool, has_downstream: bool) -> None:
-        self.has_upstream = has_upstream
+    def __init__(self, *, inputs: Sequence[str], has_downstream: bool) -> None:
+        self.inputs = tuple(inputs)
         self.has_downstream = has_downstream
         self._source_fd: queue.Queue[int] = queue.Queue(maxsize=1)
-        self._input_fd: queue.Queue[int] = queue.Queue(maxsize=1)
+        self._input_fds: queue.Queue[tuple[int, ...]] = queue.Queue(maxsize=1)
         self._abort_lock = threading.Lock()
         self._abort: Callable[[], None] | None = None
         self._aborted = False
+
+    @property
+    def has_upstream(self) -> bool:
+        return bool(self.inputs)
+
+    def input_counts(self) -> dict[str, int]:
+        """Сколько входов у каждого входного порта вызова."""
+        counts: dict[str, int] = {}
+        for port in self.inputs:
+            counts[port] = counts.get(port, 0) + 1
+
+        return counts
 
     def give_source_fd(self, fd: int) -> None:
         """Обёртка отдаёт дескриптор выходного канала узла (open_tap)."""
         self._source_fd.put_nowait(fd)
 
-    def give_input_fd(self, fd: int) -> None:
-        """Обёртка отдаёт дескриптор входа узла (CallRelay.input_fd)."""
-        self._input_fd.put_nowait(fd)
+    def give_input_fds(self, fds: Sequence[int]) -> None:
+        """Обёртка отдаёт дескрипторы входов узла в порядке inputs."""
+        self._input_fds.put_nowait(tuple(fds))
 
     def take_source_fd(self, timeout_sec: float) -> int:
         return self._take(self._source_fd, timeout_sec, "source")
 
-    def take_input_fd(self, timeout_sec: float) -> int:
-        return self._take(self._input_fd, timeout_sec, "input")
+    def take_input_fds(self, timeout_sec: float) -> tuple[int, ...]:
+        return self._take(self._input_fds, timeout_sec, "input")
 
     def attach_abort(self, abort: Callable[[], None]) -> None:
         """Обёртка регистрирует добивание своего вызова; при уже сорванном
@@ -106,7 +122,7 @@ class NodeSlot:
 
         self._drain()
 
-    def _take(self, box: queue.Queue[int], timeout_sec: float, side: str) -> int:
+    def _take(self, box: queue.Queue[ValueT], timeout_sec: float, side: str) -> ValueT:
         try:
             return box.get(timeout=timeout_sec)
         except queue.Empty:
@@ -117,13 +133,22 @@ class NodeSlot:
             raise ChainMismatchError(msg) from None
 
     def _drain(self) -> None:
-        for box in (self._source_fd, self._input_fd):
-            while True:
-                try:
-                    fd = box.get_nowait()
-                except queue.Empty:
-                    break
+        while True:
+            try:
+                fd = self._source_fd.get_nowait()
+            except queue.Empty:
+                break
 
+            with suppress(OSError):
+                os.close(fd)
+
+        while True:
+            try:
+                fds = self._input_fds.get_nowait()
+            except queue.Empty:
+                break
+
+            for fd in fds:
                 with suppress(OSError):
                     os.close(fd)
 
@@ -162,19 +187,30 @@ class RelayStats(BaseModel):
 
 
 class ChainCheck:
-    """Сверка деклараций портов цепочки до запуска.
+    """Сверка стыковки выходного порта источника со входным портом приёмника
+    до запуска.
 
-    Правила: у source обязан быть выходной порт, у sink — входной; сырой
-    канал совместим только с сырым (модельный поток кадрирован — его рамки
-    попали бы в данные сырого входа, а сырому потоку нечем пройти модельную
-    валидацию); модельные порты совместимы, когда каждый kind выхода
-    объявлен на входе.
+    Правила: сырой канал совместим только с сырым (модельный поток
+    кадрирован — его рамки попали бы в данные сырого входа, а сырому потоку
+    нечем пройти модельную валидацию); модельные порты совместимы, когда
+    каждый kind выхода объявлен на входе.
     """
 
     @classmethod
-    def ensure(cls, source: StreamSpec, sink: StreamSpec) -> None:
-        outbound = cls._port(source, PortDirection.OUTBOUND, "source")
-        inbound = cls._port(sink, PortDirection.INBOUND, "sink")
+    def ensure(cls, outbound: PortDecl, inbound: PortDecl) -> None:
+        if outbound.direction is not PortDirection.OUTBOUND:
+            msg = (
+                f"source port {outbound.name!r} is {outbound.direction}, "
+                "a channel is written by an outbound port"
+            )
+            raise ChainMismatchError(msg)
+
+        if inbound.direction is not PortDirection.INBOUND:
+            msg = (
+                f"sink port {inbound.name!r} is {inbound.direction}, "
+                "a channel is read by an inbound port"
+            )
+            raise ChainMismatchError(msg)
 
         if outbound.raw and inbound.raw:
             return
@@ -203,23 +239,6 @@ class ChainCheck:
 
         return "framed"
 
-    @staticmethod
-    def _port(spec: StreamSpec, direction: PortDirection, side: str) -> PortDecl:
-        for port in spec.ports:
-            if port.direction is direction:
-                return port
-
-        declared: list[str] = []
-        for port in spec.ports:
-            declared.append(f"{port.name}:{port.direction}")
-
-        listed = ", ".join(declared)
-        msg = (
-            f"{side} declares no {direction} port, a chain needs one; "
-            f"declared ports: [{listed}]"
-        )
-        raise ChainMismatchError(msg)
-
 
 class CallRelay:
     """Перекачка данных из открытого вызова-источника в вызов-приёмник."""
@@ -227,12 +246,12 @@ class CallRelay:
     SPLICE_BYTES: ClassVar[int] = 1 << 20
 
     @staticmethod
-    def frames(source: ToolCall, sink: ToolCall) -> RelayStats:
+    def frames(source: ToolCall, sink: CallInputPort) -> RelayStats:
         """Универсальная перекачка кадрами через хост.
 
-        Читает кадры source до конца его вызова, шлёт их в sink и закрывает
-        его вход. Итоги вызовов остаются вызывающему: result() обеих сторон
-        он читает сам.
+        Читает кадры source до конца его вызова, шлёт их во вход приёмника и
+        закрывает его. Итоги вызовов остаются вызывающему: result() обеих
+        сторон он читает сам.
         """
         count = 0
         size = 0
@@ -242,33 +261,16 @@ class CallRelay:
             count += 1
             size += len(frame.body)
 
-        sink.done_sending()
+        sink.finish()
 
         return RelayStats(frames=count, bytes=size, spliced=False)
-
-    @staticmethod
-    def input_fd(sink: ToolCall) -> int:
-        """Дескриптор входа приёмника для splice-перекачки.
-
-        Забирает вход у открытого вызова (CallInput.take_fd): send и
-        done_sending на нём после этого не работают — входом владеет
-        перекачка. Вызов обязан быть прогоном OpenRun (PumpedCall).
-        """
-        if not isinstance(sink, OpenRun):
-            msg = (
-                f"sink call {type(sink).__name__} does not expose its input "
-                "descriptor: splice needs an OpenRun (PumpedCall)"
-            )
-            raise LauncherError(msg)
-
-        return sink.entry.take_fd()
 
     @classmethod
     def splice(cls, source_fd: int, sink_fd: int) -> RelayStats:
         """Zero-copy перекачка пайп -> пайп силами ядра.
 
-        Дескрипторы приходят из TappedCall (open_tap источника) и
-        input_fd() приёмника; оба закрываются здесь на любом исходе —
+        Дескрипторы приходят из TappedCall (open_tap источника) и take_fd()
+        входа приёмника; оба закрываются здесь на любом исходе —
         закрытие входа и есть EOF для тела приёмника. Вызов блокирует до
         конца потока, поэтому запускается до закачки входа источника либо
         своим потоком — иначе вызывающий заблокирует сам себя на полных

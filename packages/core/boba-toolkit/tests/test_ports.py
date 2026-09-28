@@ -4,6 +4,7 @@ StreamSpec, отказ битых деклараций."""
 from __future__ import annotations
 
 import os
+from collections.abc import Sequence
 from typing import Annotated, Literal
 
 import pytest
@@ -20,8 +21,8 @@ from boba.toolkit.frames import (
 )
 from boba.toolkit.ports import (
     Inbound,
+    Outbound,
     PortDeclarationError,
-    PortDirection,
     RawInbound,
     RawOutbound,
     StreamPorts,
@@ -119,25 +120,59 @@ class TestStreamSpec:
     def test_spec_lists_ports_and_kinds(self) -> None:
         spec = StreamSpec.of_schema(ToolArgv.schema_of(STREAM))
 
+        outbound = spec.outbound()
+        assert outbound is not None
+
         assert spec.streaming()
-        assert spec.kinds(PortDirection.INBOUND) == ("chunk", "done")
-        assert spec.kinds(PortDirection.OUTBOUND) == ("chunk", "done")
+        assert spec.port("feed").kinds == ("chunk", "done")
+        assert outbound.kinds == ("chunk", "done")
 
     def test_tool_without_ports_has_empty_spec(self) -> None:
         spec = StreamSpec.of_schema(ToolArgv.schema_of(ECHO))
 
         assert not spec.streaming()
-        assert spec.kinds(PortDirection.INBOUND) == ()
+        assert spec.inbound() == ()
+        assert spec.outbound() is None
 
-    def test_two_ports_of_one_direction_are_refused(self) -> None:
-        class TwoInbound(BaseModel):
+    def test_many_inbound_ports_and_port_lists_are_declared(self) -> None:
+        class Merge(BaseModel):
             model_config = {"arbitrary_types_allowed": True}
 
             first: Annotated[Inbound[ChunkHead], None]
-            second: Annotated[Inbound[DoneHead], None]
+            rest: Annotated[Sequence[Inbound[ChunkHead | DoneHead]], None]
+            raws: Annotated[Sequence[RawInbound], None]
 
-        with pytest.raises(ValidationError, match="duplicate"):
-            StreamSpec.of_schema(TwoInbound)
+        spec = StreamSpec.of_schema(Merge)
+
+        names: list[str] = []
+        for port in spec.inbound():
+            names.append(port.name)
+
+        assert names == ["first", "rest", "raws"]
+        assert not spec.port("first").many
+        assert spec.port("rest").many
+        assert spec.port("rest").kinds == ("chunk", "done")
+        assert spec.port("raws").many
+        assert spec.port("raws").raw
+
+    def test_two_outbound_ports_are_refused(self) -> None:
+        class TwoOutbound(BaseModel):
+            model_config = {"arbitrary_types_allowed": True}
+
+            first: Annotated[Outbound[ChunkHead], None]
+            second: Annotated[RawOutbound, None]
+
+        with pytest.raises(ValidationError, match="at most one outbound"):
+            StreamSpec.of_schema(TwoOutbound)
+
+    def test_outbound_port_list_is_refused(self) -> None:
+        class ListOut(BaseModel):
+            model_config = {"arbitrary_types_allowed": True}
+
+            outs: Annotated[Sequence[Outbound[ChunkHead]], None]
+
+        with pytest.raises(PortDeclarationError, match="cannot be a list"):
+            StreamSpec.of_schema(ListOut)
 
     def test_head_without_literal_kind_is_refused(self) -> None:
         with pytest.raises(PortDeclarationError, match="Literal"):

@@ -11,7 +11,7 @@
 
 from __future__ import annotations
 
-from typing import Annotated, Final, Literal
+from typing import Annotated, ClassVar, Final, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
 
@@ -19,6 +19,7 @@ from boba.toolkit.result import ToolResult
 
 __all__ = [
     "REPLY",
+    "CallInputSpec",
     "ReplyError",
     "ReplyOk",
     "ToolCommand",
@@ -26,21 +27,41 @@ __all__ = [
 ]
 
 
+class CallInputSpec(BaseModel):
+    """Один вход вызова: какому входному порту тела он принадлежит и сырой ли.
+
+    Входной порт тела — одиночный Inbound (ровно один вход) либо список
+    Sequence[Inbound] (сколько входов назвал вызывающий); у каждого входа
+    свой пайп. raw — порт голых байтов: лончер такой вход не кадрирует и не
+    журналирует.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    port: str = Field(min_length=1)
+    raw: bool
+
+
 class ToolCommand(BaseModel):
     """Что запускать: argv команды модуля инструментов и injected-конфиг тела.
 
     Собирается хостом (ToolArgv.render) из аргументов LLM и injected-моделей;
     конфиг с секретами в argv не попадает — лончер отправляет его телу
-    отдельным каналом --injected-fd. raw_stdin и raw_frames выводятся из
-    деклараций портов инструмента: сырой канал несёт голые байты, лончер его
-    не разбирает, не журналирует и не кадрирует вход.
+    отдельным каналом --injected-fd. inputs — входы вызова по порядку, у
+    каждого свой пайп и флаг --fd-in; первый едет по stdin процесса.
+    raw_frames выводится из декларации выходного порта: сырой канал несёт
+    голые байты, лончер его не разбирает и не журналирует.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
+    MAX_INPUTS: ClassVar[int] = 32
+    """Потолок входов вызова: каждый — пайп, а в песочницу дескрипторы едут
+    одним сообщением SCM_RIGHTS."""
+
     argv: tuple[str, ...]
     config: bytes
-    raw_stdin: bool = False
+    inputs: tuple[CallInputSpec, ...] = Field(default=(), max_length=MAX_INPUTS)
     raw_frames: bool = False
 
 
