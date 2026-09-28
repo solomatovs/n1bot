@@ -27,6 +27,7 @@ from typing import Any
 import httpx
 import pytest
 from chainlit_stand import FakeUrl
+from playwright.async_api import TimeoutError as PlaywrightTimeout
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
 
@@ -1158,6 +1159,22 @@ async def test_image_reloads_when_the_file_changes(panel: Any) -> None:
 
 # ——— Поведение: окна текста в панели (файл workspace, не журнал) ———
 
+WINDOW_TIMEOUT_MS = 30000
+"""Окно текста приходит по сокету; под нагрузкой хоста — секунды."""
+
+
+async def _await_text(page: Any, text: str) -> None:
+    """Ждёт, пока окно панели покажет строку text."""
+    await page.wait_for_function(
+        """(text) => {
+            const view = document.querySelector('#side-view-content');
+            return !!view && view.innerText.includes(text);
+        }""",
+        arg=text,
+        polling=250,
+        timeout=WINDOW_TIMEOUT_MS,
+    )
+
 
 async def test_workspace_log_walks_by_windows(panel: Any) -> None:
     """Текстовый файл workspace листается окнами: «в конец» и «в начало»."""
@@ -1173,11 +1190,11 @@ async def test_workspace_log_walks_by_windows(panel: Any) -> None:
     head = await side.inner_text()
 
     await side.locator('button[aria-label*="Go to the file end"]').first.click()
-    await page.wait_for_timeout(1500)
+    await _await_text(page, "N119999,row")
     tail = await side.inner_text()
 
     await side.locator('button[aria-label="Go to the file start"]').first.click()
-    await page.wait_for_timeout(1500)
+    await _await_text(page, "N000000,row")
     back = await side.inner_text()
 
     if "N000000,row" not in head:
@@ -1197,7 +1214,7 @@ async def test_scrolling_up_loads_previous_window(panel: Any) -> None:
     page = side.page
 
     await side.locator('button[aria-label*="Go to the file end"]').first.click()
-    await page.wait_for_timeout(1500)
+    await _await_text(page, "N119999,row")
 
     before = await page.evaluate(
         """() => {
@@ -1207,29 +1224,21 @@ async def test_scrolling_up_loads_previous_window(panel: Any) -> None:
         }"""
     )
 
-    grew = False
-    for _ in range(8):
-        await page.evaluate(
-            """() => {
+    # прокрутка вверх повторяется при каждом опросе, пока окно не подтянется
+    try:
+        await page.wait_for_function(
+            """(before) => {
                 const box = document.querySelector(
                   '#side-view-content [data-canvas-scroll]');
                 box.scrollTop = 0;
-            }"""
+                return box.querySelector('pre').textContent.length > before;
+            }""",
+            arg=before,
+            polling=500,
+            timeout=WINDOW_TIMEOUT_MS,
         )
-        await page.wait_for_timeout(1200)
-        after = await page.evaluate(
-            """() => {
-                const box = document.querySelector(
-                  '#side-view-content [data-canvas-scroll]');
-                return box.querySelector('pre').textContent.length;
-            }"""
-        )
-        if after > before:
-            grew = True
-            break
-
-    if not grew:
-        raise AssertionError("прокрутка вверх не подтянула предыдущее окно")
+    except PlaywrightTimeout as exc:
+        raise AssertionError("прокрутка вверх не подтянула предыдущее окно") from exc
 
 
 async def test_font_size_survives_expanding(panel: Any) -> None:
