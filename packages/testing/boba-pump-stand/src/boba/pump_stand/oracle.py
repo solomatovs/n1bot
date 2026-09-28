@@ -18,7 +18,7 @@ from oracledb import AsyncConnection
 from boba.db.oracle import OracleQueryError
 from boba.db.oracle.connection import OracleConfig
 from boba.db.oracle.payload import PayloadOracle
-from boba.pump_stand.names import StandNames
+from boba.stand.names import StandNames
 from boba.pump_stand.stand import OraSource
 
 __all__ = ["OracleStand", "PumpUser"]

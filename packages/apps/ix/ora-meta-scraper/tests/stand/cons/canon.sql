@@ -1,9 +1,11 @@
 -- канонический отпечаток одного источника (host = %(host)s), без host, port, scheme, database
 -- (имя сервиса у каждой цели своё), id и того, что зависит от сервера, а не от набора:
 -- версия, кодировка, имена контейнера и базы, даты создания и DDL, статистика строк.
+-- В отпечаток входят узлы сервера, схема EDGE_DEMO и демо-схемы образа (HR, OE, PM, SH, IX, SCOTT):
+-- схемы других наборов тестов и учётки на том же сервере появляются и исчезают параллельно.
 -- Системные имена constraint'ов (SYS_C<n>) и последовательностей identity (ISEQ$$_<n>)
 -- новые на каждое пересоздание набора, поэтому в отпечатке номер заменён меткой.
-with n as (select id, surface, (address - 'host' - 'port' - 'scheme' - 'database')::text as a from {schema}.node where address->>'host' = %(host)s),
+with n as (select id, surface, (address - 'host' - 'port' - 'scheme' - 'database')::text as a from {schema}.node where address->>'host' = %(host)s and coalesce(address->>'schema', 'EDGE_DEMO') in ('EDGE_DEMO', 'HR', 'OE', 'PM', 'SH', 'IX', 'SCOTT')),
 lines as (
     select 'N|' || surface || '|' || a as l from n
     union all select 'T|' || n.a || '|' || coalesce(p.a, '') from {schema}.tree t join n on n.id = t.node_id left join n p on p.id = t.parent_id

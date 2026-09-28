@@ -20,7 +20,7 @@ from boba.stand.ui.fake_llm import ScenarioName
 from boba.stand.ui.perf import PageMeter, TurnSample, TurnSeries
 from boba.stand.ui.socket_log import ChatEvent
 
-pytestmark = pytest.mark.ui
+pytestmark = [pytest.mark.ui, pytest.mark.perf]
 
 
 @unique

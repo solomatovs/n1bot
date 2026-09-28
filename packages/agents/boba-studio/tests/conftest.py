@@ -1,4 +1,5 @@
-"""Фикстуры тестов studio: конфиг studio из дерева compose и пользователь стенда."""
+"""Фикстуры тестов studio: конфиг studio из дерева compose, пользователь стенда и
+метка набора в именах стенда."""
 
 from pathlib import Path
 
@@ -8,10 +9,16 @@ from studio_stand import StandProfiles
 from boba.config import bind
 from boba.identity.api import AuthenticatedUser
 from boba.runtime.config import RawConfig
+from boba.stand.names import StandSuite
 from boba.studio.config import StudioAppConfig
 
 REPO = Path(__file__).resolve().parents[4]
 STUDIO_CONFIG = REPO / "compose" / "studio" / "conf" / "config.toml"
+
+
+def pytest_configure(config: pytest.Config) -> None:
+    """Метка набора и процесса в именах стенда ставится до импорта модулей тестов."""
+    StandSuite(config).configure("studio")
 
 
 @pytest.fixture(scope="session")

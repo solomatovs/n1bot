@@ -12,7 +12,7 @@ import multiprocessing
 from concurrent.futures import ProcessPoolExecutor
 
 import pytest
-from ora_scraper_stand import LAYOUT, DemoDataset, IxSource, IxStand
+from ora_scraper_stand import LAYOUT, IxSource, IxStand, SchemaUser, StandSchema
 
 from boba.db.oracle.connection import OracleConfig
 from boba.db.oracle.payload import PayloadOracle
@@ -35,12 +35,12 @@ BULK_OVER_SMALL = 10
 BULK_DDL = """
 begin
     for i in 1..{tables} loop
-        execute immediate 'create table edge_demo.bulk_' || i
+        execute immediate 'create table edge_bulk.bulk_' || i
             || ' (id number(10) primary key, {columns})';
-        execute immediate 'comment on table edge_demo.bulk_' || i
+        execute immediate 'comment on table edge_bulk.bulk_' || i
             || ' is ''Bulk table ' || i || ' of the streaming stand''';
-        execute immediate 'create index edge_demo.bulk_' || i
-            || '_ix on edge_demo.bulk_' || i || ' (c1, c2)';
+        execute immediate 'create index edge_bulk.bulk_' || i
+            || '_ix on edge_bulk.bulk_' || i || ' (c1, c2)';
     end loop;
 end;
 """
@@ -56,9 +56,10 @@ def bulk_columns(count: int) -> str:
 
 
 async def create_bulk(source: IxSource, tables: int) -> None:
-    """Тысячи таблиц с колонками, ключом, комментарием и индексом одним PL/SQL."""
+    """Тысячи таблиц с колонками, ключом, комментарием и индексом одним PL/SQL в
+    схеме EDGE_BULK: эталон её не видит, соседние тесты сервера идут параллельно."""
     statement = BULK_DDL.format(tables=tables, columns=bulk_columns(BULK_COLUMNS))
-    payload = PayloadOracle(source.demo_owner)
+    payload = PayloadOracle(source.owner(SchemaUser.BULK))
     async with payload.opened() as owner, payload.rows(owner, statement):
         pass
 
@@ -84,25 +85,27 @@ def scrape_apart(database: IxDatabase, oracle: OracleConfig) -> tuple[int, int]:
 
 class TestStreamingMemory:
     @pytest.mark.parametrize(
-        "name", [source.name for source in STAND.ora_sources if source.demo]
+        "name", [source.name for source in STAND.ora_bulk_sources if source.demo]
     )
     async def test_peak_rss_does_not_grow_with_dictionary_size(
         self, name: str, ix_stand: IxStand, ix_database: object
     ) -> None:
-        source = ix_stand.source(name)
+        source = ix_stand.bulk_source(name)
         database = ix_stand.ix_database
+        bulk = StandSchema(source, SchemaUser.BULK)
 
-        await DemoDataset(source).recreate()
+        await bulk.drop()
         applied_small, peak_small = await asyncio.to_thread(
             scrape_apart, database, source.oracle
         )
 
+        await bulk.recreate()
         await create_bulk(source, BULK_TABLES)
         applied_bulk, peak_bulk = await asyncio.to_thread(
             scrape_apart, database, source.oracle
         )
 
-        await DemoDataset(source).recreate()
+        await bulk.drop()
 
         print(
             f"\n{name}: demo {applied_small} rows at {peak_small} MiB, "

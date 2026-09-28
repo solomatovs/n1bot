@@ -30,7 +30,7 @@ from boba.pump_stand import (
     Pumps,
     PumpStand,
 )
-from boba.pump_stand.names import StandNames
+from boba.stand.names import StandNames
 from boba.pump_stand.oracle import PumpUser
 from boba.pump_stand.stand import PgSource
 from boba.stand.ix import IxStand
@@ -1150,9 +1150,10 @@ class TestUnknownTypes:
 
 @pytest.fixture(scope="module")
 async def vector_db() -> AsyncIterator[PostgresSide]:
-    """База приложения (ix_stand) с pgvector: стендовые контейнеры насосов
-    расширения vector не имеют."""
-    side = PostgresSide(PgSource(name="ix", postgres=IxStand.required().ix_profile), S)
+    """Сервер ix стенда с pgvector: стендовые контейнеры насосов расширения
+    vector не имеют. Берётся служебная база сервера, а не базы прогонов ix —
+    их пересоздают наборы ix; своя схема процесса изолирует данные."""
+    side = PostgresSide(PgSource(name="ix", postgres=IxStand.required().postgres), S)
     await side.connect()
     await side.ensure_extensions(["vector"])
     await side.recreate_schema()

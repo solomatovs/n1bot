@@ -109,22 +109,13 @@ class ChatPage:
 
     def profile_label(self) -> str:
         """Текст селектора профилей: какой профиль выбран сейчас."""
-        selector = self.page.locator(Selector.PROFILES.value)
-        if not selector.count():
-            raise ChatPageError(
-                self._missing("profile selector", Selector.PROFILES.value)
-            )
+        selector = self._profile_selector()
 
         return selector.first.inner_text().strip()
 
     def open_profile_menu(self) -> list[str]:
         """Открывает меню профилей и отдаёт имена пунктов в порядке DOM."""
-        selector = self.page.locator(Selector.PROFILES.value)
-        if not selector.count():
-            raise ChatPageError(
-                self._missing("profile selector", Selector.PROFILES.value)
-            )
-
+        selector = self._profile_selector()
         selector.first.click()
         self._await(Selector.PROFILE_ITEM.value)
 
@@ -149,11 +140,7 @@ class ChatPage:
 
     def profile_menu_open(self) -> bool:
         """Открыто ли меню: состояние держит сам триггер (aria-expanded)."""
-        selector = self.page.locator(Selector.PROFILES.value)
-        if not selector.count():
-            raise ChatPageError(
-                self._missing("profile selector", Selector.PROFILES.value)
-            )
+        selector = self._profile_selector()
 
         return selector.first.get_attribute("aria-expanded") == "true"
 
@@ -316,6 +303,16 @@ class ChatPage:
         except PlaywrightTimeout as exc:
             msg = f"selector {selector!r} is not attached within {wait}ms: {exc}"
             raise ChatPageError(msg) from exc
+
+    def _profile_selector(self) -> Locator:
+        # список профилей приходит отдельным запросом после отрисовки страницы
+        try:
+            self._await(Selector.PROFILES.value)
+        except ChatPageError as exc:
+            msg = self._missing("profile selector", Selector.PROFILES.value)
+            raise ChatPageError(f"{msg}\n{exc}") from exc
+
+        return self.page.locator(Selector.PROFILES.value)
 
     def _missing(self, what: str, selector: str) -> str:
         return f"{what} is not drawn by {selector!r}\n{self.dom()[:2000]}"

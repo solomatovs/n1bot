@@ -73,18 +73,21 @@ def krb5_env() -> Iterator[None]:
     os.environ[KerberosEnv.CONFIG] = saved
 
 
-def _users(runtime_config: RuntimeConfig, pool: AsyncPostgresPool) -> UsersTable:
+@pytest.fixture
+async def users(runtime_config: RuntimeConfig, pool: AsyncPostgresPool) -> UsersTable:
+    """Таблица users в базе набора: тест создаёт её сам, не полагаясь на соседей."""
     data_layer = runtime_config.data_layer
+    table = UsersTable(data_layer.postgres, data_layer.db_schema, pool)
+    await table.setup()
 
-    return UsersTable(data_layer.postgres, data_layer.db_schema, pool)
+    return table
 
 
 def _kerberos_auth(
-    config: KerberosAuthConfig, runtime_config: RuntimeConfig, pool: AsyncPostgresPool
+    config: KerberosAuthConfig, runtime_config: RuntimeConfig, users: UsersTable
 ) -> KerberosAuth:
     """SSO chainlit над сервисом входа: секрет и cookie из [session], users — база."""
     session = runtime_config.session
-    users = _users(runtime_config, pool)
     auth = AuthService(
         tokens=JwtTokens(
             session.auth_secret, session.session_ttl_sec, StandTokens.GENERATION
@@ -110,19 +113,19 @@ def _kerberos_auth(
 def kerberos_auth(
     raw_config: Any,
     runtime_config: RuntimeConfig,
-    pool: AsyncPostgresPool,
+    users: UsersTable,
     auth_token: str,
 ) -> KerberosAuth:
     """Провайдер SSO по боевой секции [auth.kerberos]; auth_token ставит JWT-секрет."""
     config = bind(raw_config, path="auth.kerberos", model=KerberosAuthConfig)
-    return _kerberos_auth(config, runtime_config, pool)
+    return _kerberos_auth(config, runtime_config, users)
 
 
 @pytest.fixture
 def excluding_auth(
     raw_config: Any,
     runtime_config: RuntimeConfig,
-    pool: AsyncPostgresPool,
+    users: UsersTable,
     auth_token: str,
 ) -> KerberosAuth:
     """Тот же SSO, но принципал стенда попал в список исключённых AD."""
@@ -139,7 +142,7 @@ def excluding_auth(
     )
     modified = config.model_copy(update={"roles": providers})
 
-    return _kerberos_auth(modified, runtime_config, pool)
+    return _kerberos_auth(modified, runtime_config, users)
 
 
 class Browser:
@@ -299,14 +302,13 @@ async def test_sign_in_puts_principal_and_ticket_into_the_jwt(
 
 async def test_users_row_keeps_no_ticket(
     kerberos_auth: KerberosAuth,
-    runtime_config: RuntimeConfig,
-    pool: AsyncPostgresPool,
+    users: UsersTable,
     tmp_path: Path,
     krb5_env: None,
 ) -> None:
     """Билет живёт только в JWT: строка users, заведённая входом, идёт без него."""
     user = await _signed_in(kerberos_auth, tmp_path)
-    stored = await _users(runtime_config, pool).get_user(Login(user.identifier))
+    stored = await users.get_user(Login(user.identifier))
     assert stored is not None, "sign-in must persist the users row"
     if stored.sign_in.sealed_ticket:
         raise AssertionError(
