@@ -2,8 +2,9 @@
 
 Телу инструмента нужен запуск в отдельном процессе, но знать, как тот
 устроен (subprocess, bwrap, cgroup), оно не должно. Здесь объявлены
-протоколы ToolLauncher (открыть вызов) и ToolCall (один открытый вызов),
-модели итога и общие буферы каналов; реализации — ProcessToolCaller
+протоколы ToolLauncher (открыть вызов), ToolCall (один открытый вызов),
+CallInputPort (один его вход) и CallGate (барьер группы), модели итога и
+общие буферы каналов; реализации — ProcessToolCaller
 (boba.toolrun.process) и ZygoteToolCaller (boba.sandbox.zygote) —
 подставляются снаружи. Вызов всегда потоковый: вход и выход — кадры
 (boba.toolkit.frames); накопительный «вызвал и получил итог» строится
@@ -19,7 +20,7 @@ from __future__ import annotations
 
 import json
 from abc import abstractmethod
-from collections.abc import Generator, Iterator, Mapping, Sequence
+from collections.abc import Callable, Generator, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar, Token
 from dataclasses import dataclass
@@ -34,6 +35,7 @@ from boba.toolkit.protocol import REPLY, ReplyError, ReplyOk, ToolCommand
 from boba.toolkit.stream import Chunk
 
 __all__ = [
+    "CallGate",
     "CallInputPort",
     "CappedChannel",
     "ChannelOverflowError",
@@ -339,6 +341,32 @@ class CallInputPort(Protocol):
         ...
 
 
+class CallGate(Protocol):
+    """Протокол барьера открытого вызова на стороне хоста.
+
+    Тело, объявившее StreamGroup, сообщает готовность зафиксировать
+    результат и ждёт ответа. В режиме CallGateMode.AUTO хост разрешает
+    сразу; в HELD ответ держит владелец — группа вызовов: claim отдаёт ей
+    сигнал готовности, release разрешает фиксацию, refuse запрещает.
+    Реализация — HostGate (boba.toolkit.pump).
+    """
+
+    @abstractmethod
+    def claim(self, on_ready: Callable[[], None]) -> None:
+        """Отдать сигнал готовности владельцу; пришедший раньше — сразу."""
+        ...
+
+    @abstractmethod
+    def release(self) -> None:
+        """Разрешить телу фиксацию; повтор и ответ после refuse безвредны."""
+        ...
+
+    @abstractmethod
+    def refuse(self) -> None:
+        """Запретить телу фиксацию: его ready() поднимет ошибку."""
+        ...
+
+
 class ToolCall(Protocol):
     """Протокол одного открытого вызова инструмента: входы кадрами, кадры
     наружу, конверт результата в конце. Реализация — PumpedCall
@@ -360,6 +388,11 @@ class ToolCall(Protocol):
     @abstractmethod
     def done_sending(self) -> None:
         """Конец всех входов: EOF каждому ещё открытому."""
+        ...
+
+    @abstractmethod
+    def gate(self) -> CallGate:
+        """Барьер вызова: ответ телу на StreamGroup.ready()."""
         ...
 
     @abstractmethod

@@ -337,10 +337,10 @@ class TestManyInputs:
         outcome = CollectedCall.of(launcher, command)
 
         assert isinstance(outcome.reply, ReplyError)
-        assert "expects exactly one --fd-in input, got 2" in outcome.reply.message
+        assert "expects at most one --fd-in input, got 2" in outcome.reply.message
 
     def test_render_refuses_many_inputs_for_a_single_port(self) -> None:
-        with pytest.raises(PortDeclarationError, match="takes exactly one input"):
+        with pytest.raises(PortDeclarationError, match="takes at most one input"):
             ToolArgv.render(
                 ToolAddress.of(self.STREAM),
                 ToolArgv.schema_of(self.STREAM),

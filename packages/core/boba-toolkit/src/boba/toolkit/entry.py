@@ -50,6 +50,7 @@ from boba.toolkit.ports import (
     PortDecl,
     PortDeclarationError,
     PortDirection,
+    StreamGroup,
     StreamPorts,
     StreamSpec,
 )
@@ -115,6 +116,8 @@ class EntryFlag(StrEnum):
     FD_RESULT = "--fd-result"
     FD_FRAMES = "--fd-frames"
     FD_IN = "--fd-in"
+    FD_GATE = "--fd-gate"
+    FD_VERDICT = "--fd-verdict"
     ARTIFACT = "--artifact"
     HELP = "--help"
 
@@ -172,6 +175,8 @@ class CallWiring(BaseModel):
     injected_fd: int = -1
     result_fd: int = -1
     frames_fd: int = -1
+    gate_fd: int = -1
+    verdict_fd: int = -1
     inputs: tuple[InputWire, ...] = ()
 
     def attached(self) -> bool:
@@ -183,6 +188,8 @@ class CallWiring(BaseModel):
         EntryFlag.INJECTED_FD.value: "injected_fd",
         EntryFlag.FD_RESULT.value: "result_fd",
         EntryFlag.FD_FRAMES.value: "frames_fd",
+        EntryFlag.FD_GATE.value: "gate_fd",
+        EntryFlag.FD_VERDICT.value: "verdict_fd",
     }
 
     @classmethod
@@ -406,9 +413,9 @@ class ToolArgv:
         if port.many:
             return
 
-        if count != 1:
+        if count > 1:
             msg = (
-                f"inbound port {port.name!r} is a single port and takes exactly "
+                f"inbound port {port.name!r} is a single port and takes at most "
                 f"one input, got {count}"
             )
             raise PortDeclarationError(msg)
@@ -496,15 +503,28 @@ class ToolArgv:
         """Порты схемы: имя параметра -> аннотация Inbound/Outbound."""
         fields: dict[str, Any] = {}
         for name, field in schema.model_fields.items():
-            if cls.is_io(field.annotation):
+            if StreamPorts.is_port(field.annotation):
                 fields[name] = field.annotation
 
         return fields
 
     @staticmethod
     def is_io(annotation: Any) -> bool:
-        """Параметр — порт вызова: значение строит гость, а не хост."""
+        """Параметр — порт или барьер группы: значение строит гость, а не хост."""
+        if StreamPorts.is_group(annotation):
+            return True
+
         return StreamPorts.is_port(annotation)
+
+    @classmethod
+    def group_fields(cls, schema: type[BaseModel]) -> tuple[str, ...]:
+        """Параметры барьера группы StreamGroup."""
+        names: list[str] = []
+        for name, field in schema.model_fields.items():
+            if StreamPorts.is_group(field.annotation):
+                names.append(name)
+
+        return tuple(names)
 
     @staticmethod
     def flag_of(param: str) -> str:
@@ -751,6 +771,7 @@ class ToolMain:
         config = cls._config_source(tool, wiring, injected_path)
         kwargs = ToolArgv.parse(tool, arguments, config)
         kwargs.update(cls._build_ports(tool, wiring))
+        kwargs.update(cls._build_groups(tool, wiring))
 
         logger.info(
             "tool[%s]: args ready in %dms (config %d bytes)",
@@ -821,6 +842,22 @@ class ToolMain:
         return ports
 
     @staticmethod
+    def _build_groups(tool: ToolLike, wiring: CallWiring) -> dict[str, StreamGroup]:
+        """Барьер группы на пайпах --fd-gate/--fd-verdict; у человека —
+        отвязанный, ready() возвращается сразу."""
+        names = ToolArgv.group_fields(ToolArgv.schema_of(tool))
+
+        group = StreamGroup(-1, -1)
+        if wiring.attached():
+            group = StreamGroup(wiring.gate_fd, wiring.verdict_fd)
+
+        groups: dict[str, StreamGroup] = {}
+        for name in names:
+            groups[name] = group
+
+        return groups
+
+    @staticmethod
     def _refuse_inputs(tool: ToolLike, wiring: CallWiring) -> None:
         """Инструмент без портов: вход из argv некому отдать."""
         if not wiring.inputs:
@@ -849,17 +886,18 @@ class ToolMain:
         if decl.many:
             return tuple(cls._inbound_ports(element, own))
 
-        if not wiring.attached():
-            return StreamPorts.build(element, ToolIo.detached())
-
-        if len(own) != 1:
+        if len(own) > 1:
             msg = (
-                f"tool {tool.name!r}: inbound port {decl.name!r} expects exactly "
+                f"tool {tool.name!r}: inbound port {decl.name!r} expects at most "
                 f"one {EntryFlag.FD_IN} input, got {len(own)}"
             )
             raise ToolEntryError(EntryErrorKind.INVALID_REQUEST, msg)
 
-        return StreamPorts.build(element, ToolIo.on_channels(own[0].fd, -1))
+        # без входа порт пуст: так выглядит и запуск человеком
+        for wire in own:
+            return StreamPorts.build(element, ToolIo.on_channels(wire.fd, -1))
+
+        return StreamPorts.build(element, ToolIo.detached())
 
     @staticmethod
     def _inbound_ports(element: Any, wires: Sequence[InputWire]) -> Iterator[Any]:

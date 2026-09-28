@@ -88,11 +88,12 @@ from boba.toolkit.launcher import (
     ToolLauncher,
     ToolOutcome,
 )
-from boba.toolkit.protocol import ToolCommand
+from boba.toolkit.protocol import CallGateMode, ToolCommand
 from boba.toolkit.pump import (
     CallInput,
     CallSinks,
     ChannelPump,
+    HostGate,
     OpenRun,
     PipePlumbing,
     PumpedCall,
@@ -260,6 +261,8 @@ class _CallChannels:
         self.result_r, self.result_w = os.pipe()
         self.frames_r, self.frames_w = os.pipe()
         self.injected_r, self.injected_w = os.pipe()
+        self.gate_r, self.gate_w = os.pipe()
+        self.verdict_r, self.verdict_w = os.pipe()
         PipePlumbing.widen(self.stdin_w)
         PipePlumbing.widen(self.frames_w)
         self.control_host, self.control_child = socket.socketpair(
@@ -270,6 +273,7 @@ class _CallChannels:
         self._injected_open = True
         self._frames_open = True
         self._inputs_open = True
+        self._gate_open = True
 
         self._extra: list[tuple[int, int]] = []
         for _ in range(extra_inputs):
@@ -288,6 +292,8 @@ class _CallChannels:
             self.frames_w,
             self.injected_r,
             self.control_child.fileno(),
+            self.gate_w,
+            self.verdict_r,
         ]
         if self.cgroup_fd >= 0:
             listed.append(self.cgroup_fd)
@@ -305,6 +311,8 @@ class _CallChannels:
         os.close(self.frames_w)
         os.close(self.injected_r)
         self.control_child.close()
+        os.close(self.gate_w)
+        os.close(self.verdict_r)
         for read_fd, _ in self._extra:
             os.close(read_fd)
 
@@ -319,6 +327,16 @@ class _CallChannels:
 
         self._stdin_open = False
         return self.stdin_w
+
+    def take_verdict(self) -> int:
+        """Отдать запись ответа барьера HostGate; пайп готовности gate_r
+        остаётся здесь — его читает насос, закрывает close_host_ends."""
+        if not self._gate_open:
+            msg = "call verdict channel is already taken or closed"
+            raise LauncherError(msg)
+
+        self._gate_open = False
+        return self.verdict_w
 
     def take_inputs(self) -> tuple[int, ...]:
         """Отдать записывающие концы входов после первого их владельцу —
@@ -377,12 +395,22 @@ class _CallChannels:
     def close_host_ends(self) -> None:
         self.close_stdin()
         self._close_inputs()
+        self._close_gate()
         self._close_injected()
         self._close_frames()
         os.close(self.stdout_r)
         os.close(self.stderr_r)
         os.close(self.result_r)
         self.control_host.close()
+
+    def _close_gate(self) -> None:
+        os.close(self.gate_r)
+
+        if not self._gate_open:
+            return
+
+        self._gate_open = False
+        os.close(self.verdict_w)
 
     def _close_inputs(self) -> None:
         if not self._inputs_open:
@@ -701,10 +729,11 @@ class ZygoteSupervisor:
 
         return _WiredCall(request=request, channels=channels)
 
-    def run_wired(
+    def run_wired(  # noqa: PLR0913
         self,
         wired: _WiredCall,
         sinks: Mapping[ToolChannel, ChunkSink],
+        gate: HostGate,
         *,
         timeout_sec: float,
         kill_grace_sec: float,
@@ -719,6 +748,7 @@ class ZygoteSupervisor:
             timeout_sec=timeout_sec,
             poll_sec=self._policy.call_poll_sec,
         )
+        gate.watch(pump, wired.channels.gate_r)
 
         try:
             return pump.run_call(cancellation)
@@ -775,11 +805,13 @@ class ZygoteSupervisor:
 
         entry = CallInput(wired.channels.take_stdin())
         config_input = CallInput(wired.channels.take_injected())
+        gate = HostGate(wired.channels.take_verdict(), CallGateMode.AUTO)
 
         def pump_run(cancellation: RunCancellation) -> ZygoteOutcome:
             return self.run_wired(
                 wired,
                 sinks,
+                gate,
                 timeout_sec=timeout_sec,
                 kill_grace_sec=kill_grace_sec,
                 cancellation=cancellation,
@@ -791,6 +823,7 @@ class ZygoteSupervisor:
             # ход уже отменён: насос не родился, проводку прибираем сами
             entry.abandon()
             config_input.abandon()
+            gate.close()
             self.abandon_wired(wired)
             raise
 
@@ -800,7 +833,10 @@ class ZygoteSupervisor:
         entry.send_bytes(stdin)
         entry.finish()
 
-        return opened.wait()
+        try:
+            return opened.wait()
+        finally:
+            gate.close()
 
     def _try_start(self) -> bool:
         """Запуск идёт на своём треде супервизора.
@@ -1406,12 +1442,14 @@ class ZygoteToolCaller(ToolLauncher):
         inputs = CallSinks.call_inputs(
             wired.channels.take_stdin(), wired.channels.take_inputs(), command.inputs
         )
+        gate = HostGate(wired.channels.take_verdict(), command.gate)
 
         def run(cancellation: RunCancellation) -> ZygoteOutcome:
             try:
                 return self._supervisor.run_wired(
                     wired,
                     sinks,
+                    gate,
                     timeout_sec=plan.timeout_sec,
                     kill_grace_sec=plan.kill_grace_sec,
                     cancellation=cancellation,
@@ -1424,11 +1462,12 @@ class ZygoteToolCaller(ToolLauncher):
             return self.outcome_of(outcome, envelope, stderr_tail)
 
         try:
-            call = PumpedCall(self._tool, inputs, inbox, run, finish)
+            call = PumpedCall(self._tool, inputs, gate, inbox, run, finish)
         except BaseException:
             # ход уже отменён: насос не родился, проводку прибираем сами;
             # EOF каналов выведет тело, зигота пожнёт его сама
             inputs.abandon_all()
+            gate.close()
             if frames_fd >= 0:
                 with suppress(OSError):
                     os.close(frames_fd)

@@ -14,14 +14,14 @@ LauncherError — исполнитель не отдал конверт; под�
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Awaitable, Callable, Iterator, Sequence
+from collections.abc import Awaitable, Callable, Iterator, Mapping, Sequence
 from enum import StrEnum
 from functools import wraps
 from typing import Any
 
 from pydantic import BaseModel
 
-from boba.toolkit.chain import NodeSlot, PipelineSlot
+from boba.toolkit.chain import NodeSlot, PipelineSlot, StreamFailureKind
 from boba.toolkit.entry import (
     ArgumentTooLargeError,
     ReplyError,
@@ -39,7 +39,7 @@ from boba.toolkit.launcher import (
     ToolOutcome,
 )
 from boba.toolkit.ports import StreamSpec, ToolStreamSpecs
-from boba.toolkit.protocol import ToolCommand
+from boba.toolkit.protocol import CallGateMode, ToolCommand
 
 __all__ = ["ToolProcessWrap", "WrapErrorKind"]
 
@@ -108,26 +108,10 @@ class ToolProcessWrap:
     ) -> Callable[..., object]:
         def call(**kwargs: object) -> object:
             slot = PipelineSlot.get()
-
-            input_counts: dict[str, int] = {}
             if slot is not None:
-                input_counts = slot.input_counts()
-
-            try:
-                command = ToolArgv.render(address, schema, kwargs, input_counts)
-            except ArgumentTooLargeError as exc:
-                msg = f"tool {address.name!r}: {exc}"
-                raise PayloadFailureError(
-                    str(WrapErrorKind.ARGUMENT_TOO_LARGE), msg
-                ) from exc
-
-            sink = FrameTap.get()
-            if slot is not None:
-                outcome = cls._piped_call(launcher, command, slot)
-            elif sink is not None:
-                outcome = ObservedCall.of(launcher, command, sink)
+                outcome = cls._group_call(address, schema, launcher, slot, kwargs)
             else:
-                outcome = CollectedCall.of(launcher, command)
+                outcome = cls._single_call(address, schema, launcher, kwargs)
 
             reply = outcome.reply
             if isinstance(reply, ReplyError):
@@ -137,36 +121,91 @@ class ToolProcessWrap:
 
         return call
 
+    @classmethod
+    def _single_call(
+        cls,
+        address: ToolAddress,
+        schema: type[BaseModel],
+        launcher: ToolLauncher,
+        kwargs: Mapping[str, object],
+    ) -> ToolOutcome:
+        """Вызов вне группы: накопительно либо с приёмником кадров."""
+        command = cls._render(address, schema, kwargs, {})
+
+        if sink := FrameTap.get():
+            return ObservedCall.of(launcher, command, sink)
+
+        return CollectedCall.of(launcher, command)
+
+    @classmethod
+    def _group_call(
+        cls,
+        address: ToolAddress,
+        schema: type[BaseModel],
+        launcher: ToolLauncher,
+        slot: NodeSlot,
+        kwargs: Mapping[str, object],
+    ) -> ToolOutcome:
+        """Вызов в группе: любой сбой до итога срывает группу, и вызов
+        отвечает текстом её срыва."""
+        try:
+            command = cls._render(address, schema, kwargs, slot.input_counts())
+            held = command.model_copy(update={"gate": CallGateMode.HELD})
+            return cls._piped_call(launcher, held, slot)
+        except BaseException as exc:
+            verdict = slot.settle_error(exc)
+            if verdict.stopped:
+                raise
+
+            raise PayloadFailureError(
+                StreamFailureKind.GROUP_FAILED, verdict.message
+            ) from exc
+
+    @staticmethod
+    def _render(
+        address: ToolAddress,
+        schema: type[BaseModel],
+        kwargs: Mapping[str, object],
+        input_counts: Mapping[str, int],
+    ) -> ToolCommand:
+        try:
+            return ToolArgv.render(address, schema, kwargs, input_counts)
+        except ArgumentTooLargeError as exc:
+            msg = f"tool {address.name!r}: {exc}"
+            raise PayloadFailureError(
+                str(WrapErrorKind.ARGUMENT_TOO_LARGE), msg
+            ) from exc
+
     @staticmethod
     def _piped_call(
         launcher: ToolLauncher, command: ToolCommand, slot: NodeSlot
     ) -> ToolOutcome:
-        """Вызов узла конвейера: каналы рёбер отдаются слоту дескрипторами.
+        """Вызов группы: каналы отдаются ей дескрипторами, итог — по её решению.
 
-        Выход узла с ребром вниз открывается open_tap (канал кадров хост не
-        разбирает), входы узла забираются у вызова все разом — концы
-        соединяет оркестратор перекачкой. Свободные каналы живут как в
-        накопительном вызове: входы закрываются сразу, кадры дочитываются.
+        Вызов с выходом открывается open_tap (канал кадров хост не
+        разбирает), входы забираются у вызова все разом; соединяет их
+        раздача группы. Итог вызова уходит в группу, и ответ ждёт, пока
+        решит вся группа.
         """
+        outputs: tuple[int, ...] = ()
         if slot.has_downstream:
             tapped = launcher.open_tap(command)
             call = tapped.call
-            slot.give_source_fd(tapped.frames_fd)
+            outputs = (tapped.frames_fd,)
         else:
             call = launcher.open(command)
 
         with call:
-            slot.attach_abort(call.close)
-
-            if slot.has_upstream:
-                slot.give_input_fds(tuple(ToolProcessWrap._input_fds(call)))
-            else:
-                call.done_sending()
+            inputs = tuple(ToolProcessWrap._input_fds(call))
+            call.done_sending()
+            slot.attach(call, outputs, inputs)
 
             for _ in call.frames():
                 continue
 
-            return call.result()
+            outcome = call.result()
+
+        return slot.settle(outcome)
 
     @staticmethod
     def _input_fds(call: ToolCall) -> Iterator[int]:

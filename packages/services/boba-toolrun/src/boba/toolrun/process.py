@@ -52,6 +52,7 @@ from boba.toolkit.pump import (
     CallInput,
     CallSinks,
     ChannelPump,
+    HostGate,
     PipePlumbing,
     PumpedCall,
 )
@@ -102,15 +103,17 @@ class ProcessLauncherConfig(BaseModel):
 
 
 class _CallPipes:
-    """Пайпы вызова модуля сверх stdio: конверт (result) и кадры (frames) из
-    тела, injected-конфиг и входы после первого — в тело.
+    """Пайпы вызова модуля сверх stdio: конверт (result), кадры (frames) и
+    готовность барьера (gate) из тела, injected-конфиг, ответ барьера
+    (verdict) и входы после первого — в тело.
 
     Субпроцесс даёт из коробки только stdin/stdout/stderr — остальные
     каналы открываются здесь. Первый вход едет по stdin, каждый следующий —
     своим пайпом. Дескрипторы тела наследуются с теми же номерами
     (pass_fds), и эти номера дописываются в команду флагами
-    --fd-result/--fd-frames/--injected-fd/--fd-in (argv_flags). Записывающие
-    концы входов забирает CallInputs вызова (take_inputs).
+    --fd-result/--fd-frames/--injected-fd/--fd-gate/--fd-verdict/--fd-in
+    (argv_flags). Записывающие концы входов забирает CallInputs вызова
+    (take_inputs), концы барьера — HostGate (take_gate).
     """
 
     STDIN_FD: ClassVar[int] = 0
@@ -121,11 +124,14 @@ class _CallPipes:
         self._injected_taken = False
         self._frames_taken = False
         self._inputs_taken = False
+        self._gate_taken = False
         self._specs = tuple(inputs)
 
         self.result_r, self.result_w = os.pipe()
         self.frames_r, self.frames_w = os.pipe()
         self.injected_r, self.injected_w = os.pipe()
+        self.gate_r, self.gate_w = os.pipe()
+        self.verdict_r, self.verdict_w = os.pipe()
         PipePlumbing.widen(self.frames_w)
 
         self._extra: list[tuple[int, int]] = []
@@ -143,6 +149,10 @@ class _CallPipes:
             str(self.frames_w),
             EntryFlag.INJECTED_FD.value,
             str(self.injected_r),
+            EntryFlag.FD_GATE.value,
+            str(self.gate_w),
+            EntryFlag.FD_VERDICT.value,
+            str(self.verdict_r),
         ]
         for wire in self._input_wires():
             flags.extend(wire.argv())
@@ -159,11 +169,30 @@ class _CallPipes:
             yield InputWire(port=spec.port, fd=read_fd)
 
     def child_fds(self) -> tuple[int, ...]:
-        fds = [self.result_w, self.frames_w, self.injected_r]
+        fds = [
+            self.result_w,
+            self.frames_w,
+            self.injected_r,
+            self.gate_w,
+            self.verdict_r,
+        ]
         for read_fd, _ in self._extra:
             fds.append(read_fd)
 
         return tuple(fds)
+
+    def take_verdict(self) -> int:
+        """Отдать запись ответа барьера HostGate; пайп готовности gate_r
+        остаётся здесь — его читает насос, закрывает close_host_ends."""
+        if self._gate_taken:
+            msg = (
+                "process call pipes: the verdict channel was already taken "
+                "by the call gate, a second take is refused"
+            )
+            raise LauncherError(msg)
+
+        self._gate_taken = True
+        return self.verdict_w
 
     def take_inputs(self) -> tuple[int, ...]:
         """Отдать записывающие концы входов после первого их владельцу —
@@ -241,6 +270,13 @@ class _CallPipes:
             for _, write_fd in self._extra:
                 with suppress(OSError):
                     os.close(write_fd)
+
+        with suppress(OSError):
+            os.close(self.gate_r)
+
+        if not self._gate_taken:
+            with suppress(OSError):
+                os.close(self.verdict_w)
 
         if self._injected_taken:
             return
@@ -373,18 +409,20 @@ class ProcessToolCaller(ToolLauncher):
         inputs = CallSinks.call_inputs(
             live.stdin_w, live.channels.take_inputs(), command.inputs
         )
+        gate = HostGate(live.channels.take_verdict(), command.gate)
 
         def run(cancellation: RunCancellation) -> _ProcRun:
-            return self._pump_live(live, sinks, cancellation)
+            return self._pump_live(live, sinks, gate, cancellation)
 
         def finish(run_end: _ProcRun) -> ToolOutcome:
             return self._collect(run_end, envelope, stderr_tail)
 
         try:
-            call = PumpedCall(self._tool, inputs, inbox, run, finish)
+            call = PumpedCall(self._tool, inputs, gate, inbox, run, finish)
         except BaseException:
             # ход уже отменён: насос не родился, прибираем процесс сами
             inputs.abandon_all()
+            gate.close()
             if frames_fd >= 0:
                 with suppress(OSError):
                     os.close(frames_fd)
@@ -494,11 +532,13 @@ class ProcessToolCaller(ToolLauncher):
         self,
         live: _LiveCall,
         sinks: Mapping[ToolChannel, ChunkSink],
+        gate: HostGate,
         cancellation: RunCancellation,
     ) -> _ProcRun:
-        """Прогнать каналы тела до его выхода; зовут call_text и поток насоса."""
+        """Прогнать каналы тела до его выхода; зовёт поток насоса вызова."""
         pump = _ProcessPump(self.POLL_SEC, self._cfg.timeout_sec, live.proc, self._kill)
         self._register_reads(pump, live, sinks)
+        gate.watch(pump, live.channels.gate_r)
 
         try:
             end = pump.run(cancellation)

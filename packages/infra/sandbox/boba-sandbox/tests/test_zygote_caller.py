@@ -20,6 +20,7 @@ from fake_channel_tool import (
     ChannelConfig,
     FxChunkHead,
     fx_echo,
+    fx_gated,
     fx_merge,
     fx_probe_tmp,
     fx_stream,
@@ -40,12 +41,12 @@ from boba.sandbox.zygote import (
 )
 from boba.stand.shell import ShellRun
 from boba.stand.zygote import ProfileFields, SandboxStand
-from boba.toolkit.chain import CallRelay
+from boba.toolkit.chain import ChannelFanOut, PipeTee
 from boba.toolkit.channels import JournalChannel, ToolChannel
 from boba.toolkit.entry import ToolAddress, ToolArgv, ToolMain
 from boba.toolkit.frames import ToolFrame
 from boba.toolkit.launcher import CollectedCall, LauncherError
-from boba.toolkit.protocol import ReplyError, ReplyOk, ToolCommand
+from boba.toolkit.protocol import CallGateMode, ReplyError, ReplyOk, ToolCommand
 from boba.toolkit.stream import (
     ChannelSinks,
     Chunk,
@@ -73,6 +74,7 @@ FX_ECHO = ToolMain.toolset(fx_echo)[0]
 FX_PROBE = ToolMain.toolset(fx_probe_tmp)[0]
 FX_STREAM = ToolMain.toolset(fx_stream)[0]
 FX_MERGE = ToolMain.toolset(fx_merge)[0]
+FX_GATED = ToolMain.toolset(fx_gated)[0]
 
 FAST = ZygotePolicy(
     start_timeout_sec=20.0,
@@ -902,48 +904,114 @@ class TestStreamingCall:
             raise AssertionError(f"tool_stdin={stdin_journal!r}")
 
 
-class TestSpliceChain:
-    """Zero-copy цепочка в песочнице: кадры одного вызова уходят во вход
-    другого через ядро, хост данные не разбирает."""
+class TestFanOutInSandbox:
+    """Раздача выхода одного вызова песочницы двум другим через tee: хост
+    данные не разбирает, кадры раскодируют только приёмники."""
 
-    def test_kernel_splice_between_sandboxed_calls(self, zygote: Any) -> None:
+    def test_one_source_feeds_two_sandboxed_readers(self, zygote: Any) -> None:
         caller = zygote(_profile())
 
         tapped = caller.open_tap(_stream_command("s:"))
-        sink = caller.open(_stream_command("z:"))
+        readers = [
+            caller.open(_stream_command("a:")),
+            caller.open(_stream_command("b:")),
+        ]
 
-        stats_box: list[Any] = []
-        sink_fd = sink.inputs()[0].take_fd()
+        reader_fds: list[int] = []
+        for reader in readers:
+            reader_fds.append(reader.inputs()[0].take_fd())
+            reader.done_sending()
 
-        def relay() -> None:
-            stats_box.append(CallRelay.splice(tapped.frames_fd, sink_fd))
+        drained = threading.Event()
+        errors: list[str] = []
+        fanout = ChannelFanOut(
+            "s", tapped.frames_fd, reader_fds, PipeTee(), errors.append, drained.set
+        )
+        fanout.start()
 
-        worker = threading.Thread(target=relay, daemon=True)
-
-        with tapped.call as source, sink:
-            worker.start()
-
+        with tapped.call as source:
             source.inputs()[0].send(ToolFrame.of(FxChunkHead(seq=1), b"data"))
             source.done_sending()
-
-            worker.join(timeout=60)
-
             source_outcome = source.result()
-            bodies = [frame.body for frame in sink.frames()]
-            sink_outcome = sink.result()
 
-        if not stats_box or not stats_box[0].spliced:
-            raise AssertionError(f"splice не отработал: {stats_box}")
+        if not drained.wait(timeout=60):
+            raise AssertionError("fan-out did not drain")
 
-        # источник ответил кадром s:data и done; приёмник обернул их своим z:
-        if b"z:s:data" not in bodies:
-            raise AssertionError(f"тела не доехали сквозь ядро: {bodies}")
+        for fd in reader_fds:
+            os.close(fd)
+
+        for reader, prefix in zip(readers, (b"a:", b"b:"), strict=True):
+            with reader:
+                bodies = [frame.body for frame in reader.frames()]
+                outcome = reader.result()
+
+            if prefix + b"s:data" not in bodies:
+                raise AssertionError(f"reader {prefix!r} got {bodies}")
+
+            if not isinstance(outcome.reply, ReplyOk):
+                raise AssertionError(f"reader {prefix!r}: {outcome.reply}")
+
+        if errors:
+            raise AssertionError(f"fan-out errors: {errors}")
 
         if not isinstance(source_outcome.reply, ReplyOk):
             raise AssertionError(f"source={source_outcome.reply}")
 
-        if not isinstance(sink_outcome.reply, ReplyOk):
-            raise AssertionError(f"sink={sink_outcome.reply}")
+
+class TestGateInSandbox:
+    """Барьер группы через зиготу: пайпы gate/verdict доезжают до тела."""
+
+    def _gated(self, gate: CallGateMode) -> Any:
+        address = ToolAddress(module="fake_channel_tool", name="fx_gated")
+        command = ToolArgv.render(
+            address, ToolArgv.schema_of(FX_GATED), {"cfg": CFG}, input_counts={}
+        )
+        return command.model_copy(update={"gate": gate})
+
+    def test_auto_gate_lets_a_lone_call_commit(self, zygote: Any) -> None:
+        caller = zygote(_profile())
+
+        outcome = CollectedCall.of(caller, self._gated(CallGateMode.AUTO))
+
+        if not isinstance(outcome.reply, ReplyOk):
+            raise AssertionError(f"reply={outcome.reply}")
+
+    def test_held_gate_waits_for_the_owner(self, zygote: Any) -> None:
+        caller = zygote(_profile())
+        arrived = threading.Event()
+
+        with caller.open(self._gated(CallGateMode.HELD)) as call:
+            call.gate().claim(arrived.set)
+            call.done_sending()
+
+            if not arrived.wait(timeout=30):
+                raise AssertionError("body never reached the gate")
+
+            call.gate().release()
+            outcome = call.result()
+
+        if not isinstance(outcome.reply, ReplyOk):
+            raise AssertionError(f"reply={outcome.reply}")
+
+    def test_refused_gate_fails_the_body(self, zygote: Any) -> None:
+        caller = zygote(_profile())
+        arrived = threading.Event()
+
+        with caller.open(self._gated(CallGateMode.HELD)) as call:
+            call.gate().claim(arrived.set)
+            call.done_sending()
+
+            if not arrived.wait(timeout=30):
+                raise AssertionError("body never reached the gate")
+
+            call.gate().refuse()
+            outcome = call.result()
+
+        if not isinstance(outcome.reply, ReplyError):
+            raise AssertionError(f"reply={outcome.reply}")
+
+        if "must not commit" not in outcome.reply.message:
+            raise AssertionError(f"message={outcome.reply.message!r}")
 
 
 class TestCallResilience:
