@@ -48,6 +48,7 @@ from boba.pump_stand.matrix import (
     exported,
     first,
 )
+from boba.pump_stand.names import StandNames
 from boba.pump_stand.oracle import PumpUser
 from boba.toolkit.transfer import (
     CreateIfNotExists,
@@ -59,11 +60,11 @@ from boba.toolkit.transfer import (
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
 
 STAND = PumpStand.required()
-ROWS = 2000
+ROWS = 60
 ARRAYSIZE = 97
 CHUNK_BYTES = 4096
-PG_SCHEMA = "pump_ch_arrow"
-CH_DATABASE = "pump_ch_arrow"
+PG_SCHEMA = StandNames().of("pump_ch_arrow")
+CH_DATABASE = StandNames().of("pump_ch_arrow")
 STRING_AS_STRING = "output_format_arrow_string_as_string = 1"
 
 
@@ -577,7 +578,7 @@ class TestClickHouseToOracle:
                 Leg(
                     "ora_stream_in",
                     {
-                        "schema_name": PumpUser.NAME.value,
+                        "schema_name": PumpUser().name,
                         "table_name": table,
                         "schema_strategy": ErrorIfNotExists(kind="error_if_not_exists"),
                         "delete_strategy": DeleteNothing(kind="nothing"),

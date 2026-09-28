@@ -60,12 +60,14 @@ class StudioHost:
         container.eager(providers.connection_store)
         container.eager(providers.workflow_store)
         container.eager(providers.workflow_recovery)
-        container.eager(providers.live_locks)
-        container.eager(providers.lock_reaper)
-        container.eager(providers.command_runner)
         # реестр инструментов грузится на старте: ленивая загрузка в обработчике запроса
         # держит event loop дольше ping-таймаута socket.io, и вкладки теряют сокет
         container.eager(providers.tool_registry)
+        # инстанс регистрируется после блокирующего старта зигот: иначе его пульс
+        # молчит дольше lock_ttl, и соседи снимают его как мёртвый
+        container.eager(providers.live_locks)
+        container.eager(providers.lock_reaper)
+        container.eager(providers.command_runner)
         container.eager(providers.users_table)
         container.eager(providers.auth_service)
         container.eager(providers.credential_source)

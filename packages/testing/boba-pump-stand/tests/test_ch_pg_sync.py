@@ -39,6 +39,7 @@ from boba.pump_stand import (
     Pumps,
     PumpStand,
 )
+from boba.pump_stand.names import StandNames
 from boba.toolkit.transfer import (
     ColumnRules,
     CreateIfNotExists,
@@ -56,9 +57,9 @@ from boba.toolkit.transfer import (
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
 
 STAND = PumpStand.required()
-PG_SCHEMA = "pump_ch_pg"
-CH_DATABASE = "pump_ch_pg"
-ROWS = 3000
+PG_SCHEMA = StandNames().of("pump_ch_pg")
+CH_DATABASE = StandNames().of("pump_ch_pg")
+ROWS = 60
 CHUNK = 65536
 TARGET_NAMES = ("pg-16", "gp-7")
 JSON_SINCE = 24

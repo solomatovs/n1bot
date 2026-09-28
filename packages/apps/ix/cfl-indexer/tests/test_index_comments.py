@@ -9,7 +9,7 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
-from cfl_stand import SharedIndexers, StubIndexer
+from cfl_stand import StubIndexer
 from psycopg import sql
 
 from boba.db.postgres.query import PgQueryBuilder
@@ -21,6 +21,7 @@ from boba.stand.confluence import (
     StubSpace,
 )
 from boba.stand.ix import IxStandDatabase
+from boba.stand.ix_index import SharedIndexers
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
 

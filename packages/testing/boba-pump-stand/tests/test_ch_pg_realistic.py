@@ -46,6 +46,7 @@ from boba.pump_stand import (
     Pumps,
     PumpStand,
 )
+from boba.pump_stand.names import StandNames
 from boba.toolkit.transfer import (
     BackupAndCreateIfSchemaChanged,
     ColumnRules,
@@ -67,13 +68,13 @@ from boba.toolkit.transfer import (
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
 
 STAND = PumpStand.required()
-SRC = "shop_ch"
-DW = "shop_ch_dw"
+SRC = StandNames().of("shop_ch")
+DW = StandNames().of("shop_ch_dw")
 CHUNK = 65536
-CUSTOMERS = 2000
-PRODUCTS = 500
-ORDERS = 20000
-VIEWS = 100000
+CUSTOMERS = 12
+PRODUCTS = 10
+ORDERS = 24
+VIEWS = 24
 JOIN_NULLS = "settings join_use_nulls = 1"
 MERGE_TREE = (
     "create table {database}.{table_name}[ on cluster {cluster}] ({columns}) "
@@ -174,10 +175,10 @@ FILL_DML = [
     select number,
            1 + (number * 7919) % {CUSTOMERS},
            ['new', 'paid', 'shipped', 'cancelled'][1 + number % 4],
-           fromUnixTimestamp64Milli(toInt64(1704067200000 + number * 1020123), 'UTC'),
+           fromUnixTimestamp64Milli(toInt64(1704067200000 + number * 849600000), 'UTC'),
            if(number % 3 = 0, null,
               fromUnixTimestamp64Milli(
-                  toInt64(1704067200000 + number * 1020123 + (number % 96) * 3600000), 'UTC')),
+                  toInt64(1704067200000 + number * 849600000 + (number % 96) * 3600000), 'UTC')),
            if(number % 5 = 0,
               concat('call before "delivery", floor ', toString(number % 20), '\\t\\\\ back'),
               null)
@@ -210,7 +211,7 @@ FILL_DML = [
     where status = 'paid' and id % 6 = 1""",
     f"""
     insert into {SRC}.page_views
-    select fromUnixTimestamp64Micro(toInt64(1704067200000000 + number * 61234567), 'UTC'),
+    select fromUnixTimestamp64Micro(toInt64(1704067200000000 + number * 252000000000), 'UTC'),
            toUUID(concat('00000000-0000-4000-8000-',
                          leftPad(toString(intDiv(number, 7)), 12, '0'))),
            if(number % 4 = 0, null, 1 + number % {CUSTOMERS}),

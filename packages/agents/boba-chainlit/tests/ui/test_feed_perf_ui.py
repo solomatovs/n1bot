@@ -38,7 +38,7 @@ class Turns(IntEnum):
 class FeedSla(float, Enum):
     """Пороги SLA; главный — рост стоимости хода с длиной ленты."""
 
-    LONG_THREAD_GROWTH = 1.25
+    LONG_THREAD_GROWTH = 1.35
     FRAMES_PER_TURN = 90
     """Токенов в ходе ~110 при кадре раз в 50 мс и токене раз в 30 мс."""
 

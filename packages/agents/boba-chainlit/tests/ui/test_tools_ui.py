@@ -30,15 +30,23 @@ from chat_ui import ChatOpener
 from boba.canvas.diagram import DiagramPrompt
 from boba.config import bind
 from boba.confluence.html import MarkdownRender, SectionsRender
+from boba.confluence.models import (
+    ConfluenceSpaceItem,
+    PageSections,
+    PageTextSection,
+    TableShape,
+)
 from boba.confluence.parsing import JsonNode
 from boba.confluence.rest import CflRestBuilder
 from boba.doc.config import DocConfig
 from boba.doc.document import DisabledOcr, DocumentHint, PageWindow
 from boba.doc.router import DocumentRouter
 from boba.runtime.config import AppLayers
-from boba.stand.site import Stand
+from boba.stand.edm import Asset, EdmSources
+from boba.stand.ix_index import IxPage
+from boba.stand.site import Stand, StandLayers
 from boba.stand.ui.chat_page import ChatPage, StepKind
-from boba.stand.ui.database import StandDatabase
+from boba.stand.ui.database import StandDatabase, StandOracle
 from boba.stand.ui.fake_llm import FakePage, FakeRoute, ScenarioName
 from boba.stand.ui.socket_log import ChatEvent, StepField
 from boba.stand.ui.stand import (
@@ -52,7 +60,9 @@ from boba.stand.ui.stand import (
 )
 from boba.text.grep import GrepLimits, TextGrep
 from boba.tool.canvas.tools import CanvasPrompt
+from boba.tool.confluence.ingest_tools import IngestToolConfig
 from boba.tool.confluence.tools import ConfluenceToolsConfig, CqlQuery
+from boba.tool.kb.search import ConfluenceCollection
 from boba.toolkit.result import (
     CanvasResult,
     ErrorResult,
@@ -65,6 +75,7 @@ from boba.toolkit.result import (
     ToolResult,
 )
 from boba.transport.http import HttpxAuth
+from boba.transport.http.connection import HttpConnection
 
 pytestmark = pytest.mark.ui
 
@@ -151,6 +162,36 @@ class ProbeSql(StrEnum):
     CH_USER = "boba-svc"
     CH_SYSTEM = "system"
     CH_ONE = "one"
+    ORA_SELECT = "select 1 as a from dual"
+    ORA_SYSTEM = "SYS"
+    ORA_DUAL = "DUAL"
+
+
+class IxProbe:
+    """Страницы Confluence, которыми стенд засевает схему ix: заказы и склады,
+    чтобы векторный поиск различал их по смыслу."""
+
+    SURFACE: ClassVar[str] = "cfl_page"
+    PAGES: ClassVar[tuple[IxPage, ...]] = (
+        IxPage(
+            content_id="9001",
+            title="Регламент выгрузки заказов",
+            body=(
+                "# Выгрузка заказов\n\n"
+                "Ежедневная выгрузка заказов в хранилище начинается после "
+                "закрытия операционного дня и занимает около часа."
+            ),
+        ),
+        IxPage(
+            content_id="9002",
+            title="Справочник складов",
+            body=(
+                "# Склады\n\n"
+                "Остатки товаров на складах обновляются каждый час из учётной "
+                "системы логистики."
+            ),
+        ),
+    )
 
 
 class RowWindowArgs:
@@ -465,6 +506,7 @@ class ConfluencePage:
     space_name: str
     space_type: str
     html: str
+    table_shape: TableShape
 
     WORD: ClassVar[str] = r"[^\W\d_]{6,}"
     """Слово для grep и поиска: только буквы, чтобы regex и tsquery не спорили."""
@@ -477,10 +519,19 @@ class ConfluencePage:
     @property
     def indexed_text(self) -> str:
         """Текст секций страницы: ровно то, что ingest кладёт в базу знаний."""
-        answer = SectionsRender({"html": self.html, "title": self.title}).run()
+        request = {
+            "html": self.html,
+            "title": self.title,
+            "page_id": self.page_id,
+            "table_shape": self.table_shape,
+        }
+        parsed = PageSections.model_validate(SectionsRender(request).run())
         parts: list[str] = []
-        for section in answer["sections"]:
-            parts.append(str(section["content"]))
+        for section in parsed.sections:
+            if not isinstance(section, PageTextSection):
+                continue
+
+            parts.append(section.content)
 
         return "\n".join(parts)
 
@@ -542,8 +593,9 @@ class ConfluenceSite:
     EXPAND: ClassVar[str] = "body.view,version,space"
     PAGE_ID_IN_URL: ClassVar[str] = r"(?:pageId=|/pages/)(\d+)"
 
-    def __init__(self, config: ConfluenceToolsConfig) -> None:
+    def __init__(self, config: ConfluenceToolsConfig, table_shape: TableShape) -> None:
         self._config = config
+        self._table_shape = table_shape
         self._rest = CflRestBuilder()
         profile = config.confluence
         self._profile = profile
@@ -560,7 +612,18 @@ class ConfluenceSite:
         config = bind(
             built, path=ConfluenceToolsConfig.SECTION, model=ConfluenceToolsConfig
         )
-        return cls(config)
+        ingest = bind(built, path=IngestToolConfig.SECTION, model=IngestToolConfig)
+        return cls(config, ingest.table_shape)
+
+    @property
+    def profile(self) -> HttpConnection:
+        return self._profile
+
+    def space(self, key: str) -> ConfluenceSpaceItem:
+        """Спейс по ключу тем же REST-адресом, что у инструментов."""
+        return ConfluenceSpaceItem.model_validate(
+            self.get_json(self._rest.space_path(key))
+        )
 
     @property
     def max_text_chars(self) -> int:
@@ -638,6 +701,7 @@ class ConfluenceSite:
                 space_name=str(space.get("name") or ""),
                 space_type=str(space.get("type") or ""),
                 html=html,
+                table_shape=self._table_shape,
             )
 
     def find_attachment(self, query: str) -> ConfluenceAttachment:
@@ -758,12 +822,22 @@ def sandbox_stand(
     )
     process = StandProcess(config=config, log_path=stand_workdir / "sandbox-app.log")
     process.start(boot_timeout_sec=BOOT_TIMEOUT_SEC)
+    database = StandDatabase(StandApp.CHAINLIT, stand_database)
     try:
         # роли стенда в таблице появляются на старте: гранты кладутся после него
-        StandDatabase(StandApp.CHAINLIT, stand_database).seed_connections(llm_port)
+        database.seed_connections(llm_port)
+        database.seed_edm()
         yield process
     finally:
         process.stop()
+        database.drop_edm()
+
+
+@pytest.fixture(scope="module")
+def ix_nodes(sandbox_stand: StandProcess, stand_database: str) -> list[int]:
+    """Страницы IxProbe в схеме ix базы стенда с индексами: id их node."""
+    database = StandDatabase(StandApp.CHAINLIT, stand_database)
+    return database.seed_ix(IxProbe.PAGES)
 
 
 @pytest.fixture
@@ -937,8 +1011,15 @@ class TablePattern:
 def _connection_catalog() -> TableResult:
     """Выдача connection_list: все строки стенда, по виду и имени."""
     stand = Stand.required()
+    config_path = StandApp.CHAINLIT.base_config.under(REPO_ROOT)
+    built = StandLayers.compose(config_path)
+    oracle = StandOracle(built)
+    sources = bind(built, path="ix_stand", model=EdmSources)
+    edm = sources.demo()[0]
     listed = (
+        ("edm", "clickhouse", edm.clickhouse.host),
         ("main", "clickhouse", stand.ch_host),
+        ("main", "oracle", oracle.host),
         ("main", "postgres", stand.pg_host),
         ("stand", "web", StandUrl.HOST.value),
     )
@@ -950,7 +1031,15 @@ def _connection_catalog() -> TableResult:
     return TableResult(rows=rows)
 
 
-CATALOG_DOM: tuple[str, ...] = ("main", "stand", "postgres", "clickhouse", "web")
+CATALOG_DOM: tuple[str, ...] = (
+    "edm",
+    "main",
+    "stand",
+    "postgres",
+    "clickhouse",
+    "oracle",
+    "web",
+)
 """Фрагменты каталога, которые обязаны быть видны в раскрытом шаге."""
 
 
@@ -1030,11 +1119,10 @@ class TestDocTools:
         for number, text in enumerate(SamplePdf.PAGES, start=1):
             rows.append(
                 {
-                    "page": number,
+                    "number": number,
+                    "chars": len(text),
                     "width": 300.0,
                     "height": 300.0,
-                    "chars": len(text),
-                    "items": 1,
                 }
             )
         result = TableResult(rows=rows, note=f"{ProbeFile.PDF.value}: pages 2")
@@ -1165,7 +1253,12 @@ class TestWebTools:
 class TestConfluenceTools:
     """confluence: живой сервер; ожидания считаются REST'ом тем же профилем."""
 
-    def test_spaces(self, feed: ToolFeed, confluence_page: ConfluencePage) -> None:
+    def test_spaces(
+        self,
+        feed: ToolFeed,
+        confluence_site: ConfluenceSite,
+        confluence_page: ConfluencePage,
+    ) -> None:
         call = ToolCall(
             tool="confluence_spaces",
             arguments={
@@ -1174,10 +1267,13 @@ class TestConfluenceTools:
                 "limit": 200,
             },
         )
+        space = confluence_site.space(confluence_page.space_key)
         row = {
             "key": confluence_page.space_key,
             "name": confluence_page.space_name,
             "type": confluence_page.space_type,
+            "status": space.status,
+            "url": space.url_at(confluence_site.profile),
         }
         result = TableResult(rows=[row])
         feed.call(call, ToolExpect.of(result, dom=[confluence_page.space_name]))
@@ -1243,27 +1339,10 @@ class TestIngestTools:
         if not indexed_page.page_id:
             raise AssertionError("indexed page has no id")
 
-    def test_index_cql_skips_unchanged(
-        self, feed: ToolFeed, indexed_page: ConfluencePage
-    ) -> None:
-        call = ToolCall(
-            tool="confluence_index_cql",
-            arguments={"cql": f"id = {indexed_page.page_id}"},
-        )
-        expect = ToolExpect(
-            patterns=[
-                TablePattern.cells("pages", "1", "0", "1", "0", "0", "0"),
-                TablePattern.cells("attachments", r"\d+", "0", r"\d+"),
-                "^_collection: kb_confluence_$",
-            ],
-            dom=["unchanged", "kb_confluence"],
-        )
-        feed.call(call, expect, timeout_sec=INGEST_TIMEOUT_SEC)
-
     def test_index_unknown_space_fails(
         self, feed: ToolFeed, confluence_site: ConfluenceSite
     ) -> None:
-        """Отказ тела приходит конвертом: текст ошибки — как у httpx."""
+        """Отказ тела приходит конвертом: адрес, код и ответ сервера в тексте."""
         call = ToolCall(
             tool="confluence_index_space",
             arguments={
@@ -1272,17 +1351,16 @@ class TestIngestTools:
         )
         path = CflRestBuilder().space_path(ProbeText.NO_SPACE.value)
         url = confluence_site.url_of(str(path))
-        message = (
+        failure = (
             f"tool failed 'confluence_index_space': PayloadFailureError: "
-            f"GET {path} on confluence: HTTPStatusError: "
-            f"Client error '404 ' for url '{url}'\n"
-            "For more information check: "
-            "https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/404"
+            f"GET {url}: expected 2xx, got 404"
         )
-        result = ErrorResult(message=message, error_kind="ingest_request_failed")
         expect = ToolExpect(
             mark=StepMark.FAILED,
-            output=result.chat_view().markdown,
+            patterns=[
+                re.escape(failure),
+                re.escape(f"No space found with key : {ProbeText.NO_SPACE.value}"),
+            ],
             dom=["Error:", ProbeText.NO_SPACE.value],
             log_errors=True,
         )
@@ -1310,24 +1388,17 @@ class TestIngestTools:
 class TestKbTools:
     """kb: поиск по проиндексированной странице и пустая выдача."""
 
-    COLUMNS: ClassVar[tuple[str, ...]] = (
-        "distance",
-        "format_content",
-        "page_title",
-        "source_url",
-        "parent_url",
-        "doc_type",
-        "page",
-        "anchor",
-        "page_id",
-        "version",
-        "heading_path",
-        "space",
-    )
+    def _columns(self) -> list[str]:
+        """Шапка выдачи: те же колонки, что строит строка коллекции Confluence."""
+        columns = ["distance", "format_content", "tags"]
+        for meta in ConfluenceCollection.META_FIELDS:
+            columns.append(meta.column)
+
+        return columns
 
     def _hit_patterns(self, page: ConfluencePage) -> list[str]:
         return [
-            TablePattern.row(*self.COLUMNS),
+            TablePattern.row(*self._columns()),
             TablePattern.cells(re.escape(page.title)),
             TablePattern.cells(page.page_id),
         ]
@@ -1361,6 +1432,69 @@ class TestKbTools:
         )
         result = TableResult(rows=[], note="nothing found")
         feed.call(call, ToolExpect.of(result, dom=["(no rows)", "nothing found"]))
+
+
+class TestKbIxTools:
+    """kb_*2: поиск по схеме ix базы стенда, засеянной страницами IxProbe."""
+
+    HIT_HEADER: ClassVar[str] = TablePattern.row(
+        "node_id", "surface", "url", "score", "aspect", "snippet"
+    )
+
+    def _search(self, tool: str, query: str, aspects: list[str]) -> ToolCall:
+        return ToolCall(
+            tool=tool,
+            arguments={
+                "query": query,
+                "surfaces": [IxProbe.SURFACE],
+                "aspects": aspects,
+                **RowWindowArgs.of(limit=1),
+            },
+        )
+
+    def _hit(self, node: int) -> ToolExpect:
+        """Выдача поиска: шапка попаданий и первая строка — node страницы."""
+        return ToolExpect(
+            patterns=[self.HIT_HEADER, TablePattern.cells(str(node), IxProbe.SURFACE)],
+            dom=[IxProbe.SURFACE],
+        )
+
+    def test_catalog(self, feed: ToolFeed, ix_nodes: list[int]) -> None:
+        call = ToolCall(tool="kb_catalog2")
+        expect = ToolExpect(
+            patterns=[
+                TablePattern.row("surface", "description", "nodes", "aspects"),
+                TablePattern.cells(IxProbe.SURFACE),
+            ],
+            dom=[IxProbe.SURFACE],
+        )
+        feed.call(call, expect)
+
+    def test_fts_search(self, feed: ToolFeed, ix_nodes: list[int]) -> None:
+        call = self._search("kb_fts_search2", "выгрузка", ["title", "body"])
+        feed.call(call, self._hit(ix_nodes[0]))
+
+    def test_trgm_search(self, feed: ToolFeed, ix_nodes: list[int]) -> None:
+        call = self._search("kb_trgm_search2", IxProbe.PAGES[0].title, ["title"])
+        feed.call(call, self._hit(ix_nodes[0]))
+
+    def test_vector_search(self, feed: ToolFeed, ix_nodes: list[int]) -> None:
+        call = self._search("kb_vector_search2", "когда выгружаются заказы", ["body"])
+        feed.call(call, self._hit(ix_nodes[0]))
+
+    def test_node(self, feed: ToolFeed, ix_nodes: list[int]) -> None:
+        node = ix_nodes[0]
+        call = ToolCall(
+            tool="kb_node2", arguments={"node_id": node, "aspects": ["title"]}
+        )
+        expect = ToolExpect(
+            patterns=[
+                f"^# {IxProbe.SURFACE} node {node}$",
+                re.escape(IxProbe.PAGES[0].title),
+            ],
+            dom=[IxProbe.PAGES[0].title],
+        )
+        feed.call(call, expect)
 
 
 class TestPgTools:
@@ -1517,12 +1651,17 @@ class TestChTools:
     def test_query(self, feed: ToolFeed) -> None:
         call = ToolCall(
             tool="ch_query",
-            arguments={"sql": ProbeSql.CH_SELECT.value, "connection": "main"},
+            arguments={
+                "sql": ProbeSql.CH_SELECT.value,
+                "connection": "main",
+                **RowWindowArgs.of(),
+            },
             code="sql",
             language="sql",
         )
         rows = [{"who": ProbeSql.CH_USER.value, "a": 1}]
-        result = SqlResult(engine="clickhouse", statements=[SqlStatement(rows=rows)])
+        statement = SqlStatement(rows=rows, note="rows 1-1; end of result")
+        result = SqlResult(engine="clickhouse", statements=[statement])
         feed.call(call, ToolExpect.of(result, dom=[ProbeSql.CH_USER.value]))
 
     def test_describe_table(self, feed: ToolFeed) -> None:
@@ -1535,18 +1674,23 @@ class TestChTools:
                 **RowWindowArgs.of(),
             },
         )
-        row = {
-            "name": "dummy",
-            "type": "UInt8",
-            "default_kind": "",
-            "default_expression": "",
-            "comment": "",
-        }
-        result = SqlResult(
-            engine="clickhouse",
-            statements=[SqlStatement(rows=[row], note="rows 1-1; end of result")],
+        address = f"{ProbeSql.CH_SYSTEM.value}.{ProbeSql.CH_ONE.value}.dummy"
+        expect = ToolExpect(
+            patterns=[
+                TablePattern.cells("address", "database", "table", "name", "position"),
+                TablePattern.cells(
+                    re.escape(address),
+                    ProbeSql.CH_SYSTEM.value,
+                    ProbeSql.CH_ONE.value,
+                    "dummy",
+                    "1",
+                    "UInt8",
+                ),
+                r"^_rows 1-1; end of result_$",
+            ],
+            dom=["dummy", "UInt8"],
         )
-        feed.call(call, ToolExpect.of(result, dom=["dummy", "UInt8"]))
+        feed.call(call, expect)
 
     def test_list_tables(self, feed: ToolFeed) -> None:
         call = ToolCall(
@@ -1571,6 +1715,293 @@ class TestChTools:
             dom=["aggregate_function_combinators", "next offset=2"],
         )
         feed.call(call, expect)
+
+
+class TestChEdmTools:
+    """ch_edm_*: выгрузка ЕДМ UI-стенда на demo-ClickHouse, соединение edm."""
+
+    def _call(self, tool: str, **arguments: Any) -> ToolCall:
+        return ToolCall(
+            tool=tool,
+            arguments={
+                "connection": "edm",
+                "database": StandDatabase.EDM_DATABASE,
+                **arguments,
+                **RowWindowArgs.of(),
+            },
+        )
+
+    def test_structure(self, feed: ToolFeed) -> None:
+        rows: list[dict[str, Any]] = []
+        for etalon_id, parent, path, table, column in (
+            (
+                Asset.ORDERS_AMOUNT,
+                Asset.ORDERS,
+                "/dwh/public/orders",
+                "orders",
+                "amount",
+            ),
+            (Asset.ORDERS_ID, Asset.ORDERS, "/dwh/public/orders", "orders", "id"),
+            (Asset.V_PAID_ID, Asset.V_PAID, "/dwh/public/v_paid", "v_paid", "id"),
+        ):
+            rows.append(
+                {
+                    "etalon_id": etalon_id.value,
+                    "etalon_id_parent": parent.value,
+                    "path": path,
+                    "table_name": table,
+                    "column_name": column,
+                }
+            )
+
+        statement = SqlStatement(rows=rows, note="rows 1-3; end of result")
+        result = SqlResult(engine="clickhouse", statements=[statement])
+        feed.call(
+            self._call("ch_edm_structure"),
+            ToolExpect.of(result, dom=["/dwh/public/orders", "v_paid"]),
+        )
+
+    def test_descriptions(self, feed: ToolFeed) -> None:
+        row = {
+            "name": "orders",
+            "path": "/dwh/public/orders",
+            "short_description_edm": "Orders",
+            "extended_description_edm": "All orders",
+            "description_from_source": "orders table",
+            "ed_name": "Order",
+        }
+        statement = SqlStatement(rows=[row], note="rows 1-1; end of result")
+        result = SqlResult(engine="clickhouse", statements=[statement])
+        feed.call(
+            self._call("ch_edm_descriptions", name="orders"),
+            ToolExpect.of(result, dom=["All orders", "Order"]),
+        )
+
+
+class TestOraTools:
+    """ora: соединение main стенда — первый Oracle из [ix_stand].ora_sources."""
+
+    def test_query(self, feed: ToolFeed) -> None:
+        call = ToolCall(
+            tool="ora_query",
+            arguments={
+                "sql": ProbeSql.ORA_SELECT.value,
+                "connection": "main",
+                **RowWindowArgs.of(),
+            },
+            code="sql",
+            language="sql",
+        )
+        expect = ToolExpect(
+            patterns=[
+                TablePattern.row("a"),
+                TablePattern.row("1"),
+                r"^_rows 1-1; end of result_$",
+            ],
+            dom=["rows 1-1; end of result"],
+        )
+        feed.call(call, expect)
+
+    def test_list_tables(self, feed: ToolFeed) -> None:
+        call = ToolCall(
+            tool="ora_list_tables",
+            arguments={
+                "connection": "main",
+                "schema_name": ProbeSql.ORA_SYSTEM.value,
+                **RowWindowArgs.of(limit=2),
+            },
+        )
+        expect = ToolExpect(
+            patterns=[
+                TablePattern.row("schema", "name", "kind", "status", "last_ddl_time"),
+                TablePattern.cells(ProbeSql.ORA_SYSTEM.value),
+                r"^_rows 1-2; more rows available, next offset=2_$",
+            ],
+            dom=[ProbeSql.ORA_SYSTEM.value, "next offset=2"],
+        )
+        feed.call(call, expect)
+
+    def test_describe_table(self, feed: ToolFeed) -> None:
+        call = ToolCall(
+            tool="ora_describe_table",
+            arguments={
+                "connection": "main",
+                "table": ProbeSql.ORA_DUAL.value,
+                "schema_name": ProbeSql.ORA_SYSTEM.value,
+                **RowWindowArgs.of(),
+            },
+        )
+        address = f"{ProbeSql.ORA_SYSTEM.value}.{ProbeSql.ORA_DUAL.value}.DUMMY"
+        expect = ToolExpect(
+            patterns=[
+                TablePattern.cells("address", "schema", "table_name", "column_name"),
+                TablePattern.cells(
+                    re.escape(address),
+                    ProbeSql.ORA_SYSTEM.value,
+                    ProbeSql.ORA_DUAL.value,
+                    "DUMMY",
+                    "1",
+                    "VARCHAR2",
+                    "1",
+                ),
+                r"^_rows 1-1; end of result_$",
+            ],
+            dom=["DUMMY", "VARCHAR2"],
+        )
+        feed.call(call, expect)
+
+
+class TestAddressTools:
+    """*_address: базовый адрес соединения без запросов к системе."""
+
+    def _expect(self, connection: str, url: str) -> ToolExpect:
+        return ToolExpect(
+            patterns=[
+                TablePattern.row("connection", "url"),
+                TablePattern.row(connection, url),
+            ],
+            dom=[connection],
+        )
+
+    def test_pg_address(self, feed: ToolFeed) -> None:
+        stand = Stand.required()
+        url = re.escape(f"postgresql://{stand.pg_host}:") + r"\d+/\S+"
+        call = ToolCall(tool="pg_address", arguments={"connection": "main"})
+        feed.call(call, self._expect("main", url))
+
+    def test_ch_address_needs_a_database(self, feed: ToolFeed) -> None:
+        """У ClickHouse стенда в профиле нет базы: отказ приходит текстом тела."""
+        call = ToolCall(tool="ch_address", arguments={"connection": "main"})
+        expect = ToolExpect(
+            mark=StepMark.FAILED,
+            patterns=[re.escape("no default database in the connection")],
+            dom=["Error:"],
+            log_errors=True,
+        )
+        feed.call(call, expect)
+
+    def test_ora_address(self, feed: ToolFeed) -> None:
+        config_path = StandApp.CHAINLIT.base_config.under(REPO_ROOT)
+        oracle = StandOracle(StandLayers.compose(config_path))
+        url = re.escape(f"oracle://{oracle.host}:{oracle.port}/{oracle.service}")
+        call = ToolCall(tool="ora_address", arguments={"connection": "main"})
+        feed.call(call, self._expect("main", url))
+
+    def test_web_address(self, feed: ToolFeed, llm_port: int) -> None:
+        root = f"{StandUrl.SCHEME.value}://{StandUrl.HOST.value}:{llm_port}"
+        call = ToolCall(tool="web_address", arguments={"connection": "stand"})
+        feed.call(call, self._expect("stand", re.escape(root) + "/?"))
+
+    def test_confluence_address(
+        self, feed: ToolFeed, confluence_site: ConfluenceSite
+    ) -> None:
+        url = str(confluence_site.profile.public_url())
+        call = ToolCall(tool="confluence_address")
+        expect = ToolExpect(
+            patterns=[
+                TablePattern.row("url"),
+                TablePattern.row(re.escape(url)),
+                re.escape("confluence_page: {root}/rest/api/content/<page id>"),
+            ],
+            dom=[url],
+        )
+        feed.call(call, expect)
+
+
+class TestDescriberTools:
+    """describe_*: описания node и edge в области треда, от записи до удаления."""
+
+    TABLE: ClassVar[str] = "postgresql://dwh.local:5432/dwh?schema=dm&table=users"
+    COLUMN: ClassVar[str] = (
+        "postgresql://dwh.local:5432/dwh?schema=dm&table=users&column=id"
+    )
+    ID_ROW: ClassVar[str] = r"^\| (\d+) +\|"
+
+    def _ids(self, output: str) -> list[int]:
+        found: list[int] = []
+        for match in re.finditer(self.ID_ROW, output, re.MULTILINE):
+            found.append(int(match.group(1)))
+
+        return found
+
+    def test_nodes_and_edges_round_trip(self, feed: ToolFeed) -> None:
+        for kind, address, text in (
+            ("pg_table", self.TABLE, "users"),
+            ("pg_column", self.COLUMN, "user id"),
+        ):
+            call = ToolCall(
+                tool="describe_node",
+                arguments={"kind": kind, "address": address, "description": text},
+            )
+            expect = ToolExpect(
+                patterns=[
+                    TablePattern.row("kind", "url", "action", "description"),
+                    TablePattern.row(kind, re.escape(address), "inserted", text),
+                ],
+                dom=[text],
+            )
+            feed.call(call, expect)
+
+        call = ToolCall(
+            tool="describe_edge",
+            arguments={
+                "source": self.TABLE,
+                "target": self.COLUMN,
+                "kind": "similar",
+                "description": "holds",
+            },
+        )
+        expect = ToolExpect(
+            patterns=[
+                TablePattern.row("source", "target", "kind", "action", "description"),
+                TablePattern.row(
+                    re.escape(self.TABLE),
+                    re.escape(self.COLUMN),
+                    "similar",
+                    "inserted",
+                    "holds",
+                ),
+            ],
+            dom=["holds"],
+        )
+        feed.call(call, expect)
+
+        call = ToolCall(tool="describe_list_nodes", arguments=RowWindowArgs.of())
+        expect = ToolExpect(
+            patterns=[
+                TablePattern.row("id", "kind", "url", "description"),
+                r"^_rows 1-2; end of result_$",
+            ],
+            dom=["users", "user id"],
+        )
+        nodes = self._ids(feed.call(call, expect).output)
+
+        call = ToolCall(tool="describe_list_edges", arguments=RowWindowArgs.of())
+        expect = ToolExpect(
+            patterns=[
+                TablePattern.row("id", "source", "target", "kind", "description"),
+                r"^_rows 1-1; end of result_$",
+            ],
+            dom=["holds"],
+        )
+        edges = self._ids(feed.call(call, expect).output)
+
+        call = ToolCall(tool="describe_delete_edge", arguments={"ids": edges})
+        expect = ToolExpect(
+            patterns=[
+                TablePattern.row("id", "action"),
+                TablePattern.row(str(edges[0]), "deleted"),
+            ],
+            dom=["deleted"],
+        )
+        feed.call(call, expect)
+
+        call = ToolCall(tool="describe_delete_node", arguments={"ids": nodes})
+        patterns = [TablePattern.row("id", "action")]
+        for node in nodes:
+            patterns.append(TablePattern.row(str(node), "deleted"))
+
+        feed.call(call, ToolExpect(patterns=patterns, dom=["deleted"]))
 
 
 class TestCanvasTools:

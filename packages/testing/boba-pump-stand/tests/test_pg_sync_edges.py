@@ -30,6 +30,7 @@ from boba.pump_stand import (
     Pumps,
     PumpStand,
 )
+from boba.pump_stand.names import StandNames
 from boba.pump_stand.oracle import PumpUser
 from boba.pump_stand.stand import PgSource
 from boba.stand.ix import IxStand
@@ -51,7 +52,8 @@ pytestmark = [pytest.mark.integration, pytest.mark.anyio]
 
 STAND = PumpStand.required()
 CHUNK = 4096
-S = "pump_edges"
+S = StandNames().of("pump_edges")
+EXT = PostgresSide.EXTENSION_SCHEMA
 ROWS = 7
 NULL_ROW = 5
 TARGETS = ("pg-9.0", "pg-12", "pg-19", "gp-6", "gp-7")
@@ -879,13 +881,13 @@ class TestOracleSources:
         )
         await oracle.run(
             (
-                f"insert into {PumpUser.NAME}.edges values "
+                f"insert into {PumpUser().name}.edges values "
                 "(1, 12345678901234567890123456789012345678, binary_double_nan, "
                 "to_clob(rpad('c', 4000, 'c')) || to_clob(rpad('d', 4000, 'd')), "
                 "'кириллица 中文')",
-                f"insert into {PumpUser.NAME}.edges values "
+                f"insert into {PumpUser().name}.edges values "
                 "(2, -1, binary_double_infinity, null, null)",
-                f"insert into {PumpUser.NAME}.edges values "
+                f"insert into {PumpUser().name}.edges values "
                 "(3, null, 1.5, empty_clob(), '')",
             )
         )
@@ -894,7 +896,7 @@ class TestOracleSources:
             Leg(
                 "ora_stream_out",
                 {
-                    "sql": f"select * from {PumpUser.NAME}.edges",
+                    "sql": f"select * from {PumpUser().name}.edges",
                     "columns": [PgColumnDeclaration(name="ID", nullable=False)],
                 },
             ),
@@ -914,7 +916,7 @@ class TestOracleSources:
         columns = await loaded.columns()
 
         assert chained.in_report.startswith("3 rows written")
-        assert ("ID", "numeric(10,0)", True) in columns
+        assert ("ID", "bigint", True) in columns
         assert ("N", "numeric(38,0)", False) in columns
         assert ("BD", "double precision", False) in columns
         assert ("TXT", "text", False) in columns
@@ -1075,13 +1077,7 @@ class TestUnknownTypes:
         if postgres.version < 90100:
             pytest.skip("extensions need 9.1")
 
-        await postgres.execute(
-            [
-                "create extension if not exists hstore",
-                "create extension if not exists ltree",
-                "create extension if not exists citext",
-            ]
-        )
+        await postgres.ensure_extensions(["hstore", "ltree", "citext"])
 
     @pytest.mark.parametrize("case", EXTENSION_CASES, ids=lambda c: c.name)
     @pytest.mark.parametrize(
@@ -1104,7 +1100,7 @@ class TestUnknownTypes:
             f"s_{name}",
             f"t_{name}_typed",
             mode=mode,
-            rules=ColumnRules(column_types={"v": f"{S}.{case.kind}"}),
+            rules=ColumnRules(column_types={"v": f"{EXT}.{case.kind}"}),
         )
         source = Loaded(postgres, S, f"s_{name}")
         plain = Loaded(postgres, S, f"t_{name}")
@@ -1131,7 +1127,7 @@ class TestUnknownTypes:
             "s_hs_asis",
             "t_hs_asis",
             mode=StreamWire.CSV,
-            columns=[PgColumnDeclaration(name="v", type_text=f"{S}.hstore")],
+            columns=[PgColumnDeclaration(name="v", type_text=f"{EXT}.hstore")],
         )
         source = Loaded(postgres, S, "s_hs_asis")
         target = Loaded(postgres, S, "t_hs_asis")
@@ -1158,7 +1154,8 @@ async def vector_db() -> AsyncIterator[PostgresSide]:
     расширения vector не имеют."""
     side = PostgresSide(PgSource(name="ix", postgres=IxStand.required().ix_profile), S)
     await side.connect()
-    await side.recreate_schema(["create extension if not exists vector"])
+    await side.ensure_extensions(["vector"])
+    await side.recreate_schema()
     yield side
     await side.drop()
 

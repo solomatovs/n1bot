@@ -17,7 +17,7 @@ from uuid import UUID
 import pytest
 from chainlit.user import PersistedUser
 from chainlit.user import User as ChainlitUser
-from chainlit_stand import SsoStand, enter_context
+from chainlit_stand import SsoStand, StandTokens, enter_context
 from psycopg import sql
 from pydantic import SecretStr
 from test_tools_integration import Call, ToolSetup
@@ -225,9 +225,8 @@ class Session:
         from chainlit.auth.jwt import create_jwt
         from chainlit.context import init_http_context
 
-        context = init_http_context(
-            user=user, thread_id=THREAD, auth_token=create_jwt(user)
-        )
+        token = create_jwt(StandTokens.user(user.identifier, user.metadata))
+        context = init_http_context(user=user, thread_id=THREAD, auth_token=token)
         context.session.chat_profile = PROFILE
         enter_context()
 
@@ -243,7 +242,7 @@ class Session:
             UserMetadataField.PRINCIPAL: principal,
             UserMetadataField.TICKET: sealed,
         }
-        token = create_jwt(ChainlitUser(identifier=user.identifier, metadata=metadata))
+        token = create_jwt(StandTokens.user(user.identifier, metadata))
         context = init_http_context(user=user, auth_token=token, thread_id=THREAD)
         context.session.chat_profile = PROFILE
         enter_context()

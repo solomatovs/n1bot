@@ -68,7 +68,8 @@ def tokens() -> Tokens:
 
 @pytest.fixture(scope="module")
 def shared_connections(stand: StandProcess, llm_port: int) -> None:
-    """Общие соединения стенда (main pg/ch, stand web) выданы ролям после старта."""
+    """Общие соединения стенда (main pg/ch/oracle, stand web) выданы ролям
+    после старта."""
     StandDatabase(StandApp.STUDIO, stand.config.db_name).seed_connections(llm_port)
 
 
@@ -208,14 +209,14 @@ class TestAccount:
         expect(heads.nth(0)).to_contain_text("mine")
         expect(heads.nth(1)).to_contain_text("shared")
         assert Css.of(heads.nth(0).locator(".eyebrow"), "color") == tokens.rgb("muted")
-        # общие соединения стенда посеяны для ролей: main (pg, ch) и stand (web)
-        expect(page.locator(Sel.SHARED).locator(".rows__row")).to_have_count(3)
+        # общие соединения стенда посеяны для ролей: main (pg, ch, oracle) и stand (web)
+        expect(page.locator(Sel.SHARED).locator(".rows__row")).to_have_count(4)
         expect(page.locator(Sel.MINE).locator(Sel.ADD)).to_be_visible()
         assert no_horizontal_scroll(page)
 
         _open(narrow_page, stand, "/connections")
         expect(narrow_page.locator(Sel.CONNECTIONS_LIST)).to_be_visible()
-        expect(narrow_page.locator(Sel.SHARED).locator(".rows__row")).to_have_count(3)
+        expect(narrow_page.locator(Sel.SHARED).locator(".rows__row")).to_have_count(4)
         assert no_horizontal_scroll(narrow_page)
 
     def test_shared_connection_is_read_only(
@@ -269,7 +270,8 @@ class TestSchemaForm:
         # вложенный объект по умолчанию свёрнут, раскрывается кнопкой
         toggle = page.locator(Sel.POOL_TOGGLE)
         expect(toggle).to_have_attribute("aria-expanded", "false")
-        expect(page.get_by_label("connection.pool.min_size", exact=True)).to_have_count(0)
+        min_size = page.get_by_label("connection.pool.min_size", exact=True)
+        expect(min_size).to_have_count(0)
         toggle.click()
         expect(toggle).to_have_attribute("aria-expanded", "true")
         expect(page.get_by_label("connection.pool.min_size", exact=True)).to_have_value(
@@ -313,7 +315,8 @@ class TestSchemaForm:
         page.locator(Sel.KIND).select_option("web")
         page.get_by_label("connection.scheme", exact=True).select_option("http")
         page.get_by_label("connection.host", exact=True).fill("127.0.0.1")
-        page.get_by_label("connection.port", exact=True).fill(str(stand.config.llm_port))
+        port = str(stand.config.llm_port)
+        page.get_by_label("connection.port", exact=True).fill(port)
         page.get_by_label("connection.path", exact=True).fill("/health")
         page.get_by_role("button", name="check", exact=True).click()
 
