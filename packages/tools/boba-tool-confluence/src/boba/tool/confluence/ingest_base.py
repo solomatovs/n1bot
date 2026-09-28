@@ -69,7 +69,6 @@ from boba.tool.confluence.pipeline import ConfluenceSourceTransport
 from boba.tool.confluence.request_sources import (
     ConfluenceDiscovery,
     ContentListing,
-    CqlListing,
     PageListing,
     SpaceListing,
 )
@@ -88,7 +87,6 @@ __all__ = [
     "IngestScope",
     "IngestStamp",
     "PageScope",
-    "QueryScope",
     "SpaceScope",
     "WideThreadPool",
 ]
@@ -333,13 +331,6 @@ class SpaceScope(IngestScope):
 
     def __init__(self, space_key: str) -> None:
         super().__init__(listing=SpaceListing(space_key), space_key=space_key)
-
-
-class QueryScope(IngestScope):
-    """Область CQL-запроса: без права снимать невиденное."""
-
-    def __init__(self, cql: str) -> None:
-        super().__init__(listing=CqlListing(cql))
 
 
 class PageScope(IngestScope):

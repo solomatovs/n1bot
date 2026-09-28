@@ -33,6 +33,7 @@ from psycopg.rows import DictRow, dict_row
 from boba.cancellation import current_cancellation
 from boba.db.postgres.connection import PostgresAuthSession, PostgresConfig
 from boba.db.postgres.errors import PostgresError
+from boba.toolkit.closing import ProcessClosers
 
 __all__ = [
     "AsyncPostgresPool",
@@ -170,6 +171,7 @@ class AsyncPostgresPool(PostgresPool):
         )
         await self._pool.open()
         self._LIVE.append(self)
+        ProcessClosers().register(AsyncPostgresPool.close_all)
 
     def _check_loop(self, op: str) -> None:
         """Свериться с loop'ом, в котором пул открыт.

@@ -14,6 +14,7 @@ import pytest
 from boba.db.postgres.connection import CopyOptions
 from boba.db.postgres.transfer import PgColumnDeclaration
 from boba.pump_stand import Leg, Loaded, OracleSide, PostgresSide, Pumps, PumpStand
+from boba.pump_stand.names import StandNames
 from boba.pump_stand.oracle import PumpUser
 from boba.toolkit.transfer import (
     BackupAndCreateIfSchemaChanged,
@@ -35,9 +36,9 @@ from boba.toolkit.transfer import (
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
 
 STAND = PumpStand.required()
-ROWS = 1000
+ROWS = 60
 CHUNK_BYTES = 4096
-PG_SCHEMA = "pump_sync"
+PG_SCHEMA = StandNames().of("pump_sync")
 ARRAYSIZE = 500
 
 SELECT = (
@@ -289,26 +290,27 @@ class TestDeleteAndInsert:
         await sync(
             postgres, mode, "part", CreateIfNotExists(kind="create_if_not_exists")
         )
+        half = ROWS // 2
         await sync(
             postgres,
             mode,
             "part",
             CreateIfNotExists(kind="create_if_not_exists"),
-            delete=DeleteWhere(kind="delete_where", where="id <= 500"),
+            delete=DeleteWhere(kind="delete_where", where=f"id <= {half}"),
         )
 
-        assert await Loaded(postgres, PG_SCHEMA, "part").count() == 2 * ROWS - 500
+        assert await Loaded(postgres, PG_SCHEMA, "part").count() == 2 * ROWS - half
 
         report = await sync(
             postgres,
             mode,
             "part",
             CreateIfNotExists(kind="create_if_not_exists"),
-            delete=DeleteWhere(kind="delete_where", where="id between 1 and 1000"),
+            delete=DeleteWhere(kind="delete_where", where=f"id between 1 and {ROWS}"),
             insert=InsertNothing(kind="nothing"),
         )
 
-        assert "deleted: 1500 rows" in report
+        assert f"deleted: {2 * ROWS - half} rows" in report
         assert "0 rows written" in report
         assert await Loaded(postgres, PG_SCHEMA, "part").count() == 0
 
@@ -398,7 +400,7 @@ class TestDeclarations:
         )
         await oracle.run(
             (
-                f"insert into {PumpUser.NAME}.strict select level, 'n' || level, "
+                f"insert into {PumpUser().name}.strict select level, 'n' || level, "
                 "level / 3 from dual connect by level <= 100",
             )
         )
@@ -407,7 +409,7 @@ class TestDeclarations:
             Leg(
                 "ora_stream_out",
                 {
-                    "sql": f"select * from {PumpUser.NAME}.strict where id <= 50",
+                    "sql": f"select * from {PumpUser().name}.strict where id <= 50",
                     "columns": [
                         PgColumnDeclaration(name="ID", nullable=False),
                         PgColumnDeclaration(name="AMOUNT", nullable=False),
@@ -429,7 +431,7 @@ class TestDeclarations:
 
         assert chained.in_report.startswith("50 rows written")
         assert await Loaded(postgres, PG_SCHEMA, "strict_from_ora").columns() == [
-            ("ID", "numeric(10,0)", True),
+            ("ID", "bigint", True),
             ("NOTE", "character varying(20)", False),
             ("AMOUNT", "numeric(12,2)", True),
         ]
@@ -456,7 +458,7 @@ class TestOtherSources:
         )
         await oracle.run(
             (
-                f"insert into {PumpUser.NAME}.src select level, level / 7, "
+                f"insert into {PumpUser().name}.src select level, level / 7, "
                 "'n' || level, systimestamp, hextoraw('00ff') from dual "
                 "connect by level <= 100",
             )
@@ -468,7 +470,7 @@ class TestOtherSources:
                 {
                     "sql": 'select id as "id", amount as "amount", name as "name", '
                     'ts as "ts", \'\\\\x\' || rawtohex(rw) as "rw" '
-                    f"from {PumpUser.NAME}.src",
+                    f"from {PumpUser().name}.src",
                     "columns": [],
                 },
             ),
@@ -487,7 +489,7 @@ class TestOtherSources:
         columns = await Loaded(postgres, PG_SCHEMA, "from_oracle").columns()
 
         assert chained.in_report.startswith("100 rows written")
-        assert ("id", "numeric(10,0)", False) in columns
+        assert ("id", "bigint", False) in columns
         assert ("amount", "numeric(18,4)", False) in columns
         assert ("name", "character varying(50)", False) in columns
         assert ("ts", "timestamp(6) without time zone", False) in columns

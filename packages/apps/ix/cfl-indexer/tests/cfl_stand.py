@@ -22,23 +22,10 @@ from boba.cfl_indexer.worker import (
 )
 from boba.confluence.rest import ConfluenceConnection, SpaceType
 from boba.doc.config import DisabledOcrConfig, DocSection
-from boba.ix_core.aspects import AspectClass
-from boba.ix_fts import worker as fts
-from boba.ix_fts.worker import FtsWeight
-from boba.ix_fts.worker import IndexerWorker as FtsWorker
-from boba.ix_fts.worker import WorkerConfig as FtsConfig
-from boba.ix_trgm import worker as trgm
-from boba.ix_trgm.worker import IndexerWorker as TrgmWorker
-from boba.ix_trgm.worker import WorkerConfig as TrgmConfig
-from boba.ix_vector import worker as vector
-from boba.ix_vector.worker import VectorWorker
-from boba.ix_vector.worker import WorkerConfig as VectorConfig
-from boba.llm.fastembed import FastembedProvider
-from boba.llm.providers import EmbeddingModelConfig, LlmProviders, LlmProviderTypes
 from boba.stand.ix import IxStand
 from boba.transport.http.connection import HttpConnection, UrlScheme
 
-__all__ = ["PACKAGE_DIR", "SharedIndexers", "StubIndexer"]
+__all__ = ["PACKAGE_DIR", "StubIndexer"]
 
 PACKAGE_DIR = Path(indexer.__file__).resolve().parent
 
@@ -84,67 +71,3 @@ class StubIndexer:
         return await Indexer(cfg, PACKAGE_DIR / "run", self._stand.krb).run(
             SpaceSelection()
         )
-
-
-class SharedIndexers:
-    """Общие индексаторы поверх той же базы: выводят аспекты из объявлений и
-    раскладывают их по ix_trgm, ix_fts и ix_emb_e5_1024."""
-
-    WEIGHTS = {
-        "title": FtsWeight.A,
-        "words": FtsWeight.A,
-        "path": FtsWeight.B,
-        "labels": FtsWeight.B,
-        "card": FtsWeight.B,
-        "body": FtsWeight.C,
-        "ocr": FtsWeight.C,
-    }
-
-    def __init__(self, stand: IxStand) -> None:
-        self._stand = stand
-
-    async def text(self) -> None:
-        """Триграммы и полнотекст: без модели, поэтому быстро."""
-        database = self._stand.ix_database
-        common = {
-            "db_schema": database.db_schema,
-            "postgres": database.postgres,
-        }
-
-        trgm_cfg = TrgmConfig(**common, classes=[AspectClass.IDENT, AspectClass.WORDS])
-        await TrgmWorker(trgm_cfg, Path(trgm.__file__).resolve().parent / "run").run()
-
-        fts_cfg = FtsConfig(
-            **common,
-            classes=[AspectClass.IDENT, AspectClass.WORDS, AspectClass.DESCRIPTION],
-            weights=self.WEIGHTS,
-        )
-        await FtsWorker(fts_cfg, Path(fts.__file__).resolve().parent / "run").run()
-
-    async def vectors(self) -> None:
-        """Векторы: поднимает модель, поэтому зовётся только там, где проверяется."""
-        database = self._stand.ix_database
-        cache_dir = self._stand.embedding_cache_dir
-        cfg = VectorConfig(
-            db_schema=database.db_schema,
-            postgres=database.postgres,
-            classes=[AspectClass.DESCRIPTION],
-            tokenizer_dir=cache_dir,
-            chunk_tokens=400,
-            chunk_overlap=50,
-            batch=64,
-            embedding=EmbeddingModelConfig(
-                provider=FastembedProvider(kind="fastembed", cache_dir=cache_dir),
-                model="intfloat/multilingual-e5-large",
-                dim=1024,
-                batch_size=8,
-                progress_every=64,
-            ),
-        )
-        providers = LlmProviders(LlmProviderTypes.installed())
-        try:
-            embedder = providers.embedding(cfg.embedding)
-            run_dir = Path(vector.__file__).resolve().parent / "run"
-            await VectorWorker(cfg, embedder, run_dir).run()
-        finally:
-            await providers.aclose()

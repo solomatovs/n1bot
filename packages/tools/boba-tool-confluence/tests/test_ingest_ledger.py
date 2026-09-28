@@ -66,7 +66,6 @@ from boba.tool.confluence.ingest_base import (
     IngestReport,
     IngestScope,
     PageScope,
-    QueryScope,
     SpaceScope,
 )
 from boba.transport.http.connection import HttpConnection, UrlScheme
@@ -143,6 +142,8 @@ async def store_cfg(raw_config: DictConfig) -> AsyncIterator[PostgresStoreConfig
                 conn, sql.SQL("drop schema if exists {} cascade").format(_schema())
             )
         await pool.close()
+        # хранилища модуля берут пул из процессного кэша: он привязан к циклу модуля
+        await AsyncPostgresPool.close_all()
 
 
 def _schema() -> sql.Identifier:
@@ -715,23 +716,6 @@ class TestDeletedPages:
             raise AssertionError("deleted page attachment chunks must go")
         if await stand.record(stand.page_source("101")) is not None:
             raise AssertionError("deleted page record must go")
-
-    async def test_page_outside_the_query_survives(
-        self, store_cfg: PostgresStoreConfig
-    ) -> None:
-        stub = ConfluenceStub()
-        _space(stub)
-        async with LiveServer(stub.app()) as server:
-            stand = await _stand(stub, server, store_cfg)
-            await stand.run(SpaceScope(SPACE))
-            stats = await stand.run(QueryScope('id = "103"'))
-
-        if stats.pages.deleted + stats.attachments.deleted != 0:
-            raise AssertionError(f"existing pages must survive a narrow query: {stats}")
-        if stub.calls[StubRoute.SEARCH] != 1:
-            raise AssertionError(
-                f"a query owns nothing, so it never probes: {stub.calls}"
-            )
 
     async def test_single_page_scope_reads_only_its_page(
         self, store_cfg: PostgresStoreConfig

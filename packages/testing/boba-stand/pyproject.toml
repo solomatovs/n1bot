@@ -8,7 +8,7 @@ version = "0.0.25.dev1"
 description = "Boba stand: общие фикстуры тестов — конфиг, тестовая база, пул, kerberos, контекст вызова."
 requires-python = ">=3.11,<4"
 dependencies = [
-    "boba-db-clickhouse==0.0.25.dev1",
+    "boba-db-clickhouse[payload]==0.0.25.dev1",
     "boba-transport-http==0.0.25.dev1",
     "boba-auth==0.0.25.dev1",
     "boba-chat==0.0.25.dev1",
@@ -16,6 +16,7 @@ dependencies = [
     "boba-connection-broker==0.0.25.dev1",
     "boba-sandbox==0.0.25.dev1",
     "boba-tool-shell==0.0.25.dev1",
+    "boba-tool-clickhouse==0.0.25.dev1",
     "boba-workflow==0.0.25.dev1",
     "boba-workflow-engine==0.0.25.dev1",
     "boba-catalog-service==0.0.25.dev1",
@@ -33,6 +34,13 @@ dependencies = [
     "boba-toolrun==0.0.25.dev1",
     "boba-stand-core==0.0.25.dev1",
     "boba-ix-core==0.0.25.dev1",
+    "boba-ix-fts==0.0.25.dev1",
+    "boba-ix-trgm==0.0.25.dev1",
+    "boba-ix-vector==0.0.25.dev1",
+    "boba-cfl-indexer==0.0.25.dev1",
+    "boba-confluence==0.0.25.dev1",
+    "boba-llm==0.0.25.dev1",
+    "boba-llm-fastembed==0.0.25.dev1",
     "fastapi>=0.115,<1",
     "httpx>=0.28,<1",
     "playwright>=1.47",

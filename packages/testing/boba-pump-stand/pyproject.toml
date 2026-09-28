@@ -30,6 +30,7 @@ dev = [
     "psycopg[binary]>=3.3",
     "pyarrow>=25,<26",
     "pytest>=8",
+    "pytest-xdist>=3.6",
 ]
 
 [tool.setuptools.packages.find]

@@ -24,6 +24,12 @@ class PostgresSide:
     """PostgreSQL или Greenplum стенда: версия, схема под тесты, опорная
     выборка в той же зафиксированной сессии COPY, что у насосов."""
 
+    EXTENSION_SCHEMA: ClassVar[str] = "public"
+    """Схема расширений стенда: одна на базу, общая для всех процессов стенда,
+    схемы тестов она переживает."""
+    EXTENSIONS_LOCK: ClassVar[int] = 740_001
+    """Ключ advisory-лока создания расширений стенда на сервере."""
+
     GREENPLUM: ClassVar[str] = "Greenplum Database"
     GREENPLUM_6: ClassVar[str] = "Greenplum Database 6"
 
@@ -68,6 +74,23 @@ class PostgresSide:
             await conn.execute(self._q(f"set search_path to {self.schema}, public"))
             for statement in statements:
                 await conn.execute(self._q(statement))
+
+    async def ensure_extensions(self, names: Sequence[str]) -> None:
+        """Расширения базы источника в общей схеме под advisory-локом сервера:
+        расширение одно на базу, и параллельные процессы стенда иначе ловят
+        гонку create extension или теряют его со сносом чужой схемы."""
+        lock = self._q(f"select pg_advisory_xact_lock({self.EXTENSIONS_LOCK})")
+        connection = await AsyncPostgresPool.dedicated(self.source.postgres)
+        async with connection as conn, conn.transaction():
+            await conn.execute(lock)
+            for name in names:
+                schema = self.EXTENSION_SCHEMA
+                await conn.execute(
+                    self._q(f"create extension if not exists {name} schema {schema}")
+                )
+                await conn.execute(
+                    self._q(f"alter extension {name} set schema {schema}")
+                )
 
     async def execute(self, statements: Sequence[str]) -> None:
         async with await AsyncPostgresPool.dedicated(self.source.postgres) as conn:
@@ -211,7 +234,7 @@ class OracleSide:
             payload.opened() as conn,
             payload.rows(
                 conn,
-                f"select {', '.join(expressions)} from {PumpUser.NAME}.{table} "
+                f"select {', '.join(expressions)} from {PumpUser().name}.{table} "
                 "order by id",
             ) as stream,
         ):

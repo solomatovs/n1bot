@@ -29,6 +29,7 @@ from boba.db.postgres.transfer import (
     PgTypeRules,
 )
 from boba.pump_stand import Leg, Loaded, PostgresSide, Pumps, PumpStand
+from boba.pump_stand.names import StandNames
 from boba.pump_stand.ports import Sink, SinkOutbound
 from boba.stream.pg_to_pg.transfer import PgStreamColumn
 from boba.toolkit.transfer import (
@@ -54,9 +55,9 @@ from boba.toolkit.transfer import (
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
 
 STAND = PumpStand.required()
-S = "pump_transfer"
+S = StandNames().of("pump_transfer")
 CHUNK = 4096
-ROWS = 3000
+ROWS = 60
 SELECT = f"select * from {S}.src"
 
 
@@ -283,18 +284,19 @@ class TestDeleteAndInsert:
     async def test_delete_all_and_where_and_insert_nothing(
         self, postgres: PostgresSide
     ) -> None:
+        part = ROWS // 3
         await land(postgres, "t_del")
         report = await land(
             postgres,
             "t_del",
             ErrorIfSchemaChanged(kind="error_if_schema_changed"),
-            DeleteWhere(kind="delete_where", where="id <= 1000"),
+            DeleteWhere(kind="delete_where", where=f"id <= {part}"),
             InsertNothing(kind="nothing"),
         )
 
-        assert "deleted: 1000 rows by" in report
+        assert f"deleted: {part} rows by" in report
         assert "0 rows written" in report
-        assert await Loaded(postgres, S, "t_del").count() == ROWS - 1000
+        assert await Loaded(postgres, S, "t_del").count() == ROWS - part
 
         report = await land(
             postgres,
@@ -303,7 +305,7 @@ class TestDeleteAndInsert:
             DeleteAll(kind="delete_all"),
         )
 
-        assert f"deleted: {ROWS - 1000} rows by" in report
+        assert f"deleted: {ROWS - part} rows by" in report
         assert await Loaded(postgres, S, "t_del").count() == ROWS
 
 

@@ -54,14 +54,12 @@ def chainlit_context() -> None:
 class TestIngestOcrParams:
     _NAMES: ClassVar[list[str]] = [
         "confluence_index_page",
-        "confluence_index_cql",
         "confluence_index_space",
         "confluence_attachment",
     ]
 
     _INDEX_NAMES: ClassVar[list[str]] = [
         "confluence_index_page",
-        "confluence_index_cql",
         "confluence_index_space",
     ]
 

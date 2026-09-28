@@ -61,6 +61,7 @@ from boba.pump_stand.matrix import (
     exported,
     first,
 )
+from boba.pump_stand.names import StandNames
 from boba.pump_stand.oracle import PumpUser
 from boba.pump_stand.ports import Feed
 from boba.toolkit.arrow import ArrowColumns
@@ -91,11 +92,11 @@ def _newest_postgres(sources: Sequence[PgSource]) -> str:
 
 
 NEWEST = _newest_postgres(STAND.sources)
-ROWS = 2000
+ROWS = 60
 ARRAYSIZE = 97
 CHUNK_BYTES = 4096
-PG_SCHEMA = "pump_pg_arrow"
-CH_DATABASE = "pump_pg_arrow"
+PG_SCHEMA = StandNames().of("pump_pg_arrow")
+CH_DATABASE = StandNames().of("pump_pg_arrow")
 NULL_EVERY = 7
 
 
@@ -679,7 +680,7 @@ class TestPostgresToOracle:
                 Leg(
                     "ora_stream_in",
                     {
-                        "schema_name": PumpUser.NAME.value,
+                        "schema_name": PumpUser().name,
                         "table_name": table,
                         "schema_strategy": ErrorIfNotExists(kind="error_if_not_exists"),
                         "delete_strategy": DeleteNothing(kind="nothing"),

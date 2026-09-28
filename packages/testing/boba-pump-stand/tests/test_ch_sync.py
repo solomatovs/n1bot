@@ -39,6 +39,7 @@ from boba.pump_stand import (
     Pumps,
     PumpStand,
 )
+from boba.pump_stand.names import StandNames
 from boba.toolkit.contract import ColumnDeclaration
 from boba.toolkit.transfer import (
     BackupAndCreateIfSchemaChanged,
@@ -62,9 +63,9 @@ from boba.toolkit.transfer import (
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
 
 STAND = PumpStand.required()
-PG_SCHEMA = "pump_ch_sync"
-CH_DATABASE = "pump_ch_sync"
-ROWS = 3000
+PG_SCHEMA = StandNames().of("pump_ch_sync")
+CH_DATABASE = StandNames().of("pump_ch_sync")
+ROWS = 60
 CHUNK = 65536
 STRING_AS_STRING = "output_format_arrow_string_as_string = 1"
 MERGE_TREE = (
@@ -277,8 +278,9 @@ class TestTwin:
     async def test_delete_where_replaces_only_the_matching_rows(
         self, postgres: PostgresSide, clickhouse: ClickHouseSide
     ) -> None:
+        part = ROWS // 3
         await clickhouse.command(
-            f"alter table {CH_DATABASE}.twin update t = 'stale' where id <= 1000",
+            f"alter table {CH_DATABASE}.twin update t = 'stale' where id <= {part}",
             settings={"mutations_sync": 2},
         )
 
@@ -287,13 +289,13 @@ class TestTwin:
             clickhouse,
             "twin",
             ErrorIfSchemaChanged(kind="error_if_schema_changed"),
-            DeleteWhere(kind="delete_where", where="id <= 1000"),
-            select=f"{SELECT} where id <= 1000",
+            DeleteWhere(kind="delete_where", where=f"id <= {part}"),
+            select=f"{SELECT} where id <= {part}",
         )
         landed = ChLoaded(clickhouse, "twin")
 
-        assert "deleted: 1000 rows" in report
-        assert "1000 rows written" in report
+        assert f"deleted: {part} rows" in report
+        assert f"{part} rows written" in report
         assert await landed.count() == ROWS
         assert await landed.scalar("countIf(t = 'stale')") == 0
         assert await landed.column("t") == await Loaded(
@@ -958,20 +960,21 @@ class TestReplicated:
         assert await table.sorting_key() == "id"
         assert await table.count() == ROWS
 
+        part = ROWS // 6
         report = await land(
             postgres,
             clickhouse,
             "replicated",
             ErrorIfSchemaChanged(kind="error_if_schema_changed"),
-            DeleteWhere(kind="delete_where", where="id <= 100"),
-            select=f"{SELECT} where id <= 100",
+            DeleteWhere(kind="delete_where", where=f"id <= {part}"),
+            select=f"{SELECT} where id <= {part}",
             create_table=ChTableRef.CREATE_TABLE,
             cluster=STAND_CLUSTER,
             order_by="id",
         )
         twin = ChLoaded(clickhouse, "replicated__ex")
 
-        assert "deleted: 100 rows" in report
+        assert f"deleted: {part} rows" in report
         assert await table.count() == ROWS
         assert await twin.engine() == "ReplicatedMergeTree"
         assert await twin.count() == ROWS

@@ -76,7 +76,7 @@ from boba.toolkit.transfer import (
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
 
 STAND = PumpStand.required()
-OWNER = PumpUser.NAME.value
+OWNER = PumpUser().name
 ARRAYSIZE = 2000
 CHUNK = 65536
 BOOLEAN_SINCE = 23
