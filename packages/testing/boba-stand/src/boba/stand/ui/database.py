@@ -14,6 +14,7 @@ from enum import StrEnum
 from typing import Any, ClassVar, LiteralString
 from uuid import UUID
 
+from omegaconf import OmegaConf
 from psycopg import sql
 from psycopg.errors import InsufficientPrivilege
 
@@ -33,7 +34,10 @@ from boba.db.clickhouse.snapshot import ChSourceKind
 from boba.db.postgres import AsyncPostgresPool, PgQuery, PgQueryBuilder
 from boba.db.postgres.connection.config import PostgresConfig
 from boba.identity.session import UserMetadataField
+from boba.ix_core.database import IxDatabase
 from boba.runtime.config import DataLayerConfig
+from boba.stand.edm import EdmDataset, EdmSource, EdmSources
+from boba.stand.ix_index import IxPage, IxPages, SharedIndexers, StandIxStack
 from boba.stand.site import StandLayers
 from boba.stand.ui.stand import REPO_ROOT, StandApp, StandConfig, StandError, StandUrl
 from boba.transport.http.connection import HttpConnection, UrlScheme
@@ -71,8 +75,62 @@ def run_blocking(work: Coroutine[Any, Any, Any]) -> Any:
         return runner.submit(asyncio.run, work).result()
 
 
+class StandOracle:
+    """Oracle стенда под именем main: первый источник [ix_stand].ora_sources,
+    учёткой, под которой ходят скраперы. Модель соединения выбирает реестр
+    типов по kind, поэтому пакет стенда не зависит от драйвера Oracle."""
+
+    SOURCES: ClassVar[str] = "ix_stand.ora_sources"
+    KIND: ClassVar[str] = "oracle"
+
+    def __init__(self, built: Any) -> None:
+        sources = OmegaConf.select(built, self.SOURCES)
+        if not sources:
+            msg = (
+                f"stand config: expected at least one oracle source in "
+                f"[{self.SOURCES}], got {sources!r}"
+            )
+            raise StandError(msg)
+
+        raw = OmegaConf.to_container(sources[0].oracle, resolve=True)
+        if not isinstance(raw, dict):
+            msg = (
+                f"stand config: [{self.SOURCES}][0].oracle expects a table, "
+                f"got {type(raw).__name__}"
+            )
+            raise StandError(msg)
+
+        fields: dict[str, Any] = {}
+        for key, value in raw.items():
+            fields[str(key)] = value
+
+        fields["kind"] = self.KIND
+        self._raw = fields
+
+    def connection(self) -> ConnectionBase:
+        return ConnectionTypes.discover().parse(self._raw)
+
+    @property
+    def host(self) -> str:
+        return str(self._raw["host"])
+
+    @property
+    def port(self) -> int:
+        return int(self._raw["port"])
+
+    @property
+    def service(self) -> str:
+        return str(self._raw["service"])
+
+
 class StandDatabase:
     """База стенда приложения: готовится до старта процесса, сеется после него."""
+
+    KB_SCHEMA: ClassVar[str] = "tool.kb.db_schema"
+    EMBEDDING_CACHE: ClassVar[str] = "ix_stand.embedding_cache_dir"
+    EDM_DATABASE: ClassVar[str] = "edm_ui_stand"
+    """База выгрузки ЕДМ UI-стенда: у тестов инструментов своя, прогоны не
+    сносят друг другу данные."""
 
     POOL_OVERRIDE: ClassVar[dict[str, Any]] = {
         "min_size": 1,
@@ -368,9 +426,10 @@ class StandDatabase:
                     await store.remove(row.id)
 
     def seed_connections(self, llm_port: int) -> None:
-        """Соединения инструментов стенда: сервисные pg/ch под именем main и web-профиль
-        фейкового сервера, выданные всем ролям стенда. Таблица чистится перед посевом;
-        роли появляются на старте приложения — сеять после него.
+        """Соединения инструментов стенда: сервисные pg/ch/oracle под именем main
+        и web-профиль фейкового сервера, выданные всем ролям стенда. Таблица
+        чистится перед посевом; роли появляются на старте приложения — сеять
+        после него.
         """
         run_blocking(self._seed_connections(llm_port))
 
@@ -402,9 +461,78 @@ class StandDatabase:
             rows = [
                 await store.add("main", self._postgres),
                 await store.add("main", clickhouse),
+                await store.add("main", StandOracle(self._built).connection()),
                 await store.add("stand", web),
             ]
             await self._grant_stand_roles(store, rows)
+
+    def seed_ix(self, pages: Sequence[IxPage]) -> list[int]:
+        """Схема ix стека Confluence в базе стенда, страницы pages и индексы
+        trgm/fts/vector по ним: поиск kb_*2 идёт по тем же таблицам, что в
+        бою. Схема пересоздаётся; результат — id node страниц по порядку."""
+        return run_blocking(self._seed_ix(pages))
+
+    async def _seed_ix(self, pages: Sequence[IxPage]) -> list[int]:
+        schema = self._setting(self.KB_SCHEMA)
+        cache_dir = self._setting(self.EMBEDDING_CACHE)
+        database = IxDatabase(db_schema=schema, postgres=self._postgres)
+
+        identifier = sql.Identifier(schema)
+        query = (
+            PgQueryBuilder()
+            .add("drop schema if exists {schema} cascade", schema=identifier)
+            .build()
+        )
+        await self._execute(query)
+
+        await StandIxStack().apply(database)
+        nodes = await IxPages(database).write(pages)
+
+        indexers = SharedIndexers(database, cache_dir)
+        await indexers.text()
+        await indexers.vectors()
+
+        return nodes
+
+    def _setting(self, path: str) -> str:
+        value = OmegaConf.select(self._built, path)
+        if not value:
+            msg = f"stand config: expected a non-empty {path}, got {value!r}"
+            raise StandError(msg)
+
+        return str(value)
+
+    def seed_edm(self) -> EdmSource:
+        """Выгрузка ЕДМ на первом demo-ClickHouse [ix_stand] и соединение edm к
+        ней, выданное ролям стенда; сносит её drop_edm. Сеять после
+        seed_connections: тот чистит таблицу соединений."""
+        return run_blocking(self._seed_edm())
+
+    async def _seed_edm(self) -> EdmSource:
+        source = self._edm_source()
+        await EdmDataset(source, self.EDM_DATABASE).recreate()
+
+        connections = bind(self._built, path="connections", model=ConnectionsConfig)
+        async with self._pool() as pool:
+            store = ConnectionStore(connections, ConnectionTypes.discover(), pool)
+            row = await store.add("edm", source.clickhouse)
+            await self._grant_stand_roles(store, [row])
+
+        return source
+
+    def drop_edm(self) -> None:
+        run_blocking(EdmDataset(self._edm_source(), self.EDM_DATABASE).drop())
+
+    def _edm_source(self) -> EdmSource:
+        sources = bind(self._built, path="ix_stand", model=EdmSources).demo()
+        if not sources:
+            msg = (
+                "stand config: expected a demo = true source in "
+                "[ix_stand].ch_sources for the edm dataset, got none"
+            )
+            raise StandError(msg)
+
+        return sources[0]
 
     async def _execute(self, query: PgQuery) -> Any:
         async with self._pool() as pool, pool.cursor() as cur:

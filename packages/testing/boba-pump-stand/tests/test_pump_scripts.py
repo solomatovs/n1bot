@@ -31,6 +31,7 @@ from boba.pump_stand import (
     Pumps,
     PumpStand,
 )
+from boba.pump_stand.names import StandNames
 from boba.pump_stand.oracle import PumpUser
 from boba.toolkit.transfer import (
     CreateIfNotExists,
@@ -52,7 +53,7 @@ UPSERTED = [(1, "new1"), (2, "old2"), (3, "new3")]
 class PgScripts:
     """Схема PostgreSQL: target с двумя строками, mirror пустая."""
 
-    SCHEMA: ClassVar[str] = "pump_scripts"
+    SCHEMA: ClassVar[str] = StandNames().of("pump_scripts")
 
     def __init__(self, source: PgSource) -> None:
         self.side = PostgresSide(source, self.SCHEMA)
@@ -218,7 +219,7 @@ class ChScripts:
     загрузку и mirror под снимок; партиционированные part_target со старыми
     строками, stage той же раскладки и fresh_part с новым месяцем."""
 
-    DATABASE: ClassVar[str] = "pump_scripts"
+    DATABASE: ClassVar[str] = StandNames().of("pump_scripts")
     MERGE_TREE: ClassVar[str] = (
         "create table {database}.{table_name}[ on cluster {cluster}] ({columns}) "
         "engine = MergeTree order by {order_by}"
@@ -458,7 +459,7 @@ class OraScripts:
 
     def into(self, table: str, **extra: Any) -> Leg:
         arguments: dict[str, Any] = {
-            "schema_name": PumpUser.NAME.value,
+            "schema_name": PumpUser().name,
             "table_name": table,
             "schema_strategy": ErrorIfNotExists(kind="error_if_not_exists"),
             "delete_strategy": DeleteNothing(kind="nothing"),

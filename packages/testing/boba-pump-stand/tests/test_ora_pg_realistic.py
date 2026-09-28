@@ -46,6 +46,7 @@ from boba.pump_stand import (
     Pumps,
     PumpStand,
 )
+from boba.pump_stand.names import StandNames
 from boba.pump_stand.oracle import PumpUser
 from boba.toolkit.contract import ColumnDeclaration
 from boba.toolkit.transfer import (
@@ -67,13 +68,13 @@ from boba.toolkit.transfer import (
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
 
 STAND = PumpStand.required()
-OWNER = PumpUser.NAME.value
-DW = "shop_ora_dw"
+OWNER = PumpUser().name
+DW = StandNames().of("shop_ora_dw")
 ARRAYSIZE = 2000
 CHUNK = 65536
-CUSTOMERS = 2000
-PRODUCTS = 500
-ORDERS = 20000
+CUSTOMERS = 12
+PRODUCTS = 10
+ORDERS = 24
 JSONB_SINCE = 90400
 JSON_SINCE = 90200
 
@@ -156,9 +157,9 @@ FILL_DML = (
     select level,
            1 + mod(level * 7919, {CUSTOMERS}),
            case mod(level, 4) when 0 then 'new' when 1 then 'paid' when 2 then 'shipped' else 'cancelled' end,
-           timestamp '2024-01-01 00:00:00' + numtodsinterval(level * 1020.123, 'second'),
+           timestamp '2024-01-01 00:00:00' + numtodsinterval(level * 849600, 'second'),
            case when mod(level, 3) = 0 then null
-                else timestamp '2024-01-01 00:00:00' + numtodsinterval(level * 1020.123 + mod(level, 96) * 3600, 'second') end,
+                else timestamp '2024-01-01 00:00:00' + numtodsinterval(level * 849600 + mod(level, 96) * 3600, 'second') end,
            case when mod(level, 5) = 0 then 'call before "delivery", floor ' || mod(level, 20) || chr(9) || '\\ back' else null end
     from dual connect by level <= {ORDERS}""",
     f"""

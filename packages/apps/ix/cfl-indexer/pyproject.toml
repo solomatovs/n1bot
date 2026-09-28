@@ -26,10 +26,6 @@ boba-cfl-indexer = "boba.cfl_indexer.worker:cli"
 
 [project.optional-dependencies]
 dev = [
-    "boba-llm-fastembed==0.0.25.dev1",
-    "boba-ix-fts==0.0.25.dev1",
-    "boba-ix-trgm==0.0.25.dev1",
-    "boba-ix-vector==0.0.25.dev1",
     "boba-stand==0.0.25.dev1",
     "pillow>=10",
     "pytest>=8",

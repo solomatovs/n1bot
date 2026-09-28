@@ -1,7 +1,7 @@
 """Обход Confluence для конвейера индексации: режимы списка и discovery.
 
 - ContentListing       — откуда берётся список страниц: SpaceListing (список
-  контента спейса), CqlListing (поиск по CQL), PageListing (одна страница).
+  контента спейса), PageListing (одна страница).
 - ConfluenceDiscovery  — RequestSource: страницы с версиями и вложениями без
   тел; запрос на каждую страницу и на каждое вложение, прошедшее гейт.
 
@@ -41,7 +41,6 @@ from boba.transport.http import TransportError
 __all__ = [
     "ConfluenceDiscovery",
     "ContentListing",
-    "CqlListing",
     "PageListing",
     "SpaceListing",
 ]
@@ -89,34 +88,6 @@ class SpaceListing(ContentListing):
     def contents(self, paginator: CflPaginator) -> AsyncIterator[ConfluenceContent]:
         return paginator(
             self._rest.space_content_path(self._space_key),
-            ConfluenceContent,
-        )
-
-
-class CqlListing(ContentListing):
-    """Страницы выборки CQL: запрос задаёт вызывающий, поиск исполняет.
-
-    Всё, что вне поискового индекса (архивные спейсы, только что созданные
-    страницы), в такую выборку не попадает — это свойство самого поиска.
-    """
-
-    def __init__(self, cql: str) -> None:
-        self._cql = cql
-        self._rest = CflRestBuilder()
-
-    @property
-    def cql(self) -> str:
-        return self._cql
-
-    def label(self) -> str:
-        return f"cql {self._cql}"
-
-    def contents(self, paginator: CflPaginator) -> AsyncIterator[ConfluenceContent]:
-        return paginator(
-            self._rest.cql_search_path(
-                self._cql,
-                expand=CflRestBuilder.DISCOVERY_EXPAND,
-            ),
             ConfluenceContent,
         )
 

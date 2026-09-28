@@ -444,8 +444,8 @@ class LockReaper:
         return stale
 
     async def _run(self) -> None:
+        # первый проход сразу: пульс инстанса не ждёт целый период после старта
         while True:
-            await asyncio.sleep(self._period_sec)
             try:
                 await self.sweep()
             except (LockStoreError, MessageBusError, PayloadStoreError) as exc:
@@ -455,3 +455,5 @@ class LockReaper:
                     exc,
                     exc_info=True,
                 )
+
+            await asyncio.sleep(self._period_sec)

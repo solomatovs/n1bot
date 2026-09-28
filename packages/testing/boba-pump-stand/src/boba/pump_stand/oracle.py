@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Mapping, Sequence
-from enum import StrEnum
 from typing import ClassVar
 
 from oracledb import AsyncConnection
@@ -19,18 +18,27 @@ from oracledb import AsyncConnection
 from boba.db.oracle import OracleQueryError
 from boba.db.oracle.connection import OracleConfig
 from boba.db.oracle.payload import PayloadOracle
+from boba.pump_stand.names import StandNames
 from boba.pump_stand.stand import OraSource
 
 __all__ = ["OracleStand", "PumpUser"]
 
 
-class PumpUser(StrEnum):
-    """Схема стенда перекачки; пароль учётки равен имени в нижнем регистре."""
+class PumpUser:
+    """Схема стенда перекачки: PUMP_STAND с меткой рабочего процесса, пароль
+    учётки равен имени в нижнем регистре."""
 
-    NAME = "PUMP_STAND"
+    BASE: ClassVar[str] = "PUMP_STAND"
+
+    def __init__(self) -> None:
+        self._names = StandNames()
+
+    @property
+    def name(self) -> str:
+        return self._names.of(self.BASE).upper()
 
     def secret(self) -> str:
-        return self.value.lower()
+        return self.name.lower()
 
 
 class OracleStand:
@@ -41,13 +49,6 @@ class OracleStand:
     STILL_CONNECTED: ClassVar[str] = "ORA-01940"
     DROP_ATTEMPTS: ClassVar[int] = 20
     DROP_PAUSE: ClassVar[float] = 0.25
-
-    ADMIN: ClassVar[tuple[str, ...]] = (
-        f"drop user {PumpUser.NAME} cascade",
-        f"create user {PumpUser.NAME} identified by {PumpUser.NAME.secret()} "
-        "default tablespace users quota unlimited on users",
-        f"grant create session, create table to {PumpUser.NAME}",
-    )
 
     OWNER: ClassVar[tuple[str, ...]] = (
         "create table customers ("
@@ -71,10 +72,21 @@ class OracleStand:
 
     def __init__(self, source: OraSource) -> None:
         self._source = source
+        self._user = PumpUser()
 
     @property
     def owner(self) -> OracleConfig:
-        return self._source.owner(PumpUser.NAME.value, PumpUser.NAME.secret())
+        return self._source.owner(self._user.name, self._user.secret())
+
+    def _admin(self) -> tuple[str, ...]:
+        """Пересоздание пользователя стенда: снос, создание, права."""
+        name = self._user.name
+        return (
+            f"drop user {name} cascade",
+            f"create user {name} identified by {self._user.secret()} "
+            "default tablespace users quota unlimited on users",
+            f"grant create session, create table to {name}",
+        )
 
     async def version(self) -> int:
         """Мажорная версия сервера: 12, 18, 21, 23."""
@@ -93,7 +105,7 @@ class OracleStand:
         payload = PayloadOracle(self._source.admin)
         async with payload.opened() as admin:
             await self._drop_user(payload, admin)
-            _, *rest = self.ADMIN
+            _, *rest = self._admin()
             for statement in rest:
                 await self._run(payload, admin, statement)
 
@@ -122,7 +134,7 @@ class OracleStand:
     async def _drop_user(self, payload: PayloadOracle, admin: AsyncConnection) -> None:
         """Сессию только что закрытого соединения сервер снимает не сразу, и
         drop user отвечает ORA-01940: повторяется с паузой, потом ошибка."""
-        drop, *_ = self.ADMIN
+        drop, *_ = self._admin()
         for attempt in range(1, self.DROP_ATTEMPTS + 1):
             try:
                 await self._run(payload, admin, drop)

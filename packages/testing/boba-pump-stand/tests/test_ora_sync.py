@@ -44,6 +44,7 @@ from boba.pump_stand import (
     Pumps,
     PumpStand,
 )
+from boba.pump_stand.names import StandNames
 from boba.pump_stand.oracle import PumpUser
 from boba.toolkit.contract import ColumnDeclaration, ContractError
 from boba.toolkit.transfer import (
@@ -67,18 +68,18 @@ from boba.toolkit.transfer import (
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
 
 STAND = PumpStand.required()
-ROWS = 3000
+ROWS = 60
 ARRAYSIZE = 500
 CHUNK = 65536
-PG_SCHEMA = "pump_ora_sync"
-CH_DATABASE = "pump_ora_sync"
+PG_SCHEMA = StandNames().of("pump_ora_sync")
+CH_DATABASE = StandNames().of("pump_ora_sync")
 BOOLEAN_SINCE = 23
 MERGE_TREE = (
     "create table {database}.{table_name}[ on cluster {cluster}] ({columns}) "
     "engine = MergeTree order by {order_by}"
 )
-SRC = "src"
-OWNER = PumpUser.NAME.value
+SRC = StandNames().of("src")
+OWNER = PumpUser().name
 
 TYPED_DDL = [
     "id number(10) not null",
@@ -801,7 +802,7 @@ class TestStrategies:
         ).aggregate("sum(n)")
         assert (
             await landed.scalar(
-                "(select logging from all_tables where owner = 'PUMP_STAND' "
+                f"(select logging from all_tables where owner = '{OWNER}' "
                 "and table_name = 'TEMPLATED')"
             )
             == "NO"

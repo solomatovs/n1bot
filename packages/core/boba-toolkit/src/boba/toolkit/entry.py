@@ -42,6 +42,7 @@ from typing import (
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
 
 from boba.toolkit.calls import FieldMarks
+from boba.toolkit.closing import ProcessClosers
 from boba.toolkit.facade import PayloadTool
 from boba.toolkit.failure import ValidationText
 from boba.toolkit.frames import ToolIo
@@ -833,7 +834,10 @@ class ToolMain:
     async def _acall(
         coroutine: Callable[..., Awaitable[Any]], kwargs: dict[str, Any]
     ) -> Any:
-        return await coroutine(**kwargs)
+        try:
+            return await coroutine(**kwargs)
+        finally:
+            await ProcessClosers().close_all()
 
     @classmethod
     def _pack(cls, tool: ToolLike, result: object) -> ReplyOk:

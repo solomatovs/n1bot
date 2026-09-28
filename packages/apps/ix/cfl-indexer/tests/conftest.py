@@ -8,19 +8,16 @@ IxStandError — секция [ix_stand] отсутствует или непо�
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
-from pathlib import Path
 
 import pytest
-from cfl_stand import PACKAGE_DIR, SharedIndexers, StubIndexer
+from cfl_stand import StubIndexer
 from psycopg import sql
 
 from boba.db.postgres.query import PgQueryBuilder
-from boba.ix_fts import worker as fts
-from boba.ix_trgm import worker as trgm
-from boba.ix_vector import worker as vector
 from boba.stand.confluence import ConfluenceStub, LiveServer
 from boba.stand.doc import DocStand
 from boba.stand.ix import IxStand, IxStandDatabase
+from boba.stand.ix_index import SharedIndexers, StandIxStack
 
 
 @pytest.fixture(scope="session")
@@ -36,14 +33,7 @@ def doc_stand() -> DocStand:
 @pytest.fixture(scope="session")
 async def ix_database(ix_stand: IxStand) -> IxStandDatabase:
     database = IxStandDatabase(ix_stand)
-    await database.recreate(
-        [
-            Path(fts.__file__).resolve().parent / "schema",
-            Path(trgm.__file__).resolve().parent / "schema",
-            Path(vector.__file__).resolve().parent / "schema",
-            PACKAGE_DIR / "schema",
-        ]
-    )
+    await database.recreate(StandIxStack().schema_dirs())
 
     return database
 
@@ -57,7 +47,7 @@ async def stub() -> AsyncIterator[tuple[ConfluenceStub, int]]:
 
 @pytest.fixture
 def shared(ix_stand: IxStand, ix_database: IxStandDatabase) -> SharedIndexers:
-    return SharedIndexers(ix_stand)
+    return SharedIndexers(ix_stand.ix_database, ix_stand.embedding_cache_dir)
 
 
 @pytest.fixture

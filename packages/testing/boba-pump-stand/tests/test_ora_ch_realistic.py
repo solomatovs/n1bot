@@ -48,6 +48,7 @@ from boba.pump_stand import (
     Pumps,
     PumpStand,
 )
+from boba.pump_stand.names import StandNames
 from boba.pump_stand.oracle import PumpUser
 from boba.toolkit.contract import ColumnDeclaration
 from boba.toolkit.transfer import (
@@ -68,8 +69,8 @@ from boba.toolkit.transfer import (
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
 
 STAND = PumpStand.required()
-OWNER = PumpUser.NAME.value
-DW = "shop_ora_dw"
+OWNER = PumpUser().name
+DW = StandNames().of("shop_ora_dw")
 ARRAYSIZE = 2000
 CHUNK = 65536
 MONTHS = 8
