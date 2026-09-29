@@ -237,7 +237,7 @@ class TestCreate:
         landed = ChLoaded(clickhouse, "orders")
         source = Loaded(postgres, PG_SCHEMA, "src")
 
-        assert f"{ROWS} rows written" in report
+        assert f"{ROWS} rows loaded" in report
         assert await landed.types() == EXPECTED_TYPES
         assert await landed.count() == ROWS
         assert Decimal(str(await landed.scalar("sum(n)"))) == await source.aggregate(
@@ -271,7 +271,7 @@ class TestTwin:
             DeleteTruncate(kind="truncate"),
         )
 
-        assert f"{ROWS} rows written" in report
+        assert f"{ROWS} rows loaded" in report
         assert await ChLoaded(clickhouse, "twin").count() == ROWS
         assert await ChLoaded(clickhouse, "twin__ex").count() == ROWS
 
@@ -294,8 +294,8 @@ class TestTwin:
         )
         landed = ChLoaded(clickhouse, "twin")
 
-        assert f"deleted: {part} rows" in report
-        assert f"{part} rows written" in report
+        assert f"{part} rows matching" in report
+        assert f"{part} rows loaded" in report
         assert await landed.count() == ROWS
         assert await landed.scalar("countIf(t = 'stale')") == 0
         assert await landed.column("t") == await Loaded(
@@ -314,7 +314,7 @@ class TestTwin:
             select=f"{SELECT} where id <= 10",
         )
 
-        assert "10 rows written" in report
+        assert "10 rows loaded" in report
         assert await ChLoaded(clickhouse, "twin").count() == ROWS + 10
 
 
@@ -371,7 +371,7 @@ class TestRenamedMart:
         )
         mart = ChLoaded(clickhouse, "mart")
 
-        assert f"{ROWS} rows written" in report
+        assert f"{ROWS} rows loaded" in report
         assert await mart.count() == ROWS
         assert await mart.scalar("sum(order_id)") == await source.aggregate("sum(id)")
         assert Decimal(str(await mart.scalar("sum(amount)"))) == (
@@ -466,7 +466,8 @@ class TestSchemaDrift:
             if name.startswith("drift_bak_"):
                 backups.append(name)
 
-        assert "backup: drift_bak_" in report
+        assert "saved as" in report
+        assert "drift_bak_" in report
         assert len(backups) == 1
         assert await ChLoaded(clickhouse, backups[0]).count() == ROWS
         assert ("i4", "Nullable(Int32)") in await drift.types()
@@ -494,7 +495,7 @@ class TestCreateTemplate:
         table = ChLoaded(clickhouse, "templated")
         engine = await table.engine()
 
-        assert f"{ROWS} rows written" in report
+        assert f"{ROWS} rows loaded" in report
         assert engine == "ReplacingMergeTree"
         assert await table.sorting_key() == "id"
         assert await table.count() == ROWS
@@ -568,7 +569,7 @@ class TestDryRun:
             insert=InsertNothing(kind="nothing"),
         )
 
-        assert report.startswith("0 rows written")
+        assert report.startswith("0 rows loaded")
         assert await table.types() == types
         assert await table.count() == ROWS
 
@@ -607,7 +608,7 @@ class TestClickHouseCircle:
         circle = ChLoaded(clickhouse, "circle")
         orders = ChLoaded(clickhouse, "orders")
 
-        assert f"{ROWS} rows written" in chained.in_report
+        assert f"{ROWS} rows loaded" in chained.in_report
         assert await circle.count() == ROWS
         assert await circle.scalar("sum(n)") == await orders.scalar("sum(n)")
         assert await circle.column("t") == await orders.column("t")
@@ -708,7 +709,7 @@ class TestTsvCircle:
         )
         copy = ChLoaded(clickhouse, "typed_copy")
 
-        assert f"{ROWS} rows written" in report
+        assert f"{ROWS} rows loaded" in report
         assert await copy.types() == await typed.types()
         assert await copy.count() == ROWS
         for expression in self.EXPRESSIONS:
@@ -726,7 +727,7 @@ class TestTsvCircle:
             delete_strategy=DeleteTruncate(kind="truncate"),
         )
 
-        assert f"{ROWS} rows written" in report
+        assert f"{ROWS} rows loaded" in report
         assert await ChLoaded(clickhouse, "typed_copy").count() == ROWS
 
     async def test_type_drift_is_refused(self, clickhouse: ClickHouseSide) -> None:
@@ -735,7 +736,7 @@ class TestTsvCircle:
             settings={"mutations_sync": 2},
         )
 
-        with pytest.raises(TransferError, match="column big: type differs"):
+        with pytest.raises(TransferError, match="big: type differs"):
             await self.transfer(
                 clickhouse,
                 "typed_copy",
@@ -770,12 +771,11 @@ class TestTsvCircle:
         wider = ChLoaded(clickhouse, "typed_wider")
         typed = ChLoaded(clickhouse, "typed")
 
-        assert f"{ROWS} rows written" in report
-        assert "warning column id: table Int128 is wider than stream Int64" in report
-        assert "warning column big: table Decimal(76, 12) is wider" in report
-        assert "warning column dt: table DateTime64(6, 'Europe/Moscow') is wider" in (
-            report
-        )
+        assert f"{ROWS} rows loaded" in report
+        assert '"columns": "id"' in report
+        assert "table Int128 is wider than stream Int64" in report
+        assert "table Decimal(76, 12) is wider" in report
+        assert "table DateTime64(6, 'Europe/Moscow') is wider" in (report)
         assert await wider.count() == ROWS
         assert await wider.column("toString(big)") == await typed.column(
             "toString(toDecimal256(big, 12))"
@@ -820,7 +820,7 @@ class TestTsvCircle:
             )
         )
 
-        with pytest.raises(TransferError, match=f"column {column}: {message}"):
+        with pytest.raises(TransferError, match=f"{column}: {message}"):
             await self.transfer(
                 clickhouse,
                 "typed_narrow",
@@ -842,7 +842,7 @@ class TestTsvCircle:
         )
         types = dict(await ChLoaded(clickhouse, "typed_mart").types())
 
-        assert f"{ROWS} rows written" in report
+        assert f"{ROWS} rows loaded" in report
         assert types["key"] == "Int64"
         assert types["label"] == "String"
         assert types["big"] == "Nullable(Decimal(76, 10))"
@@ -955,7 +955,7 @@ class TestReplicated:
             order_by="id",
         )
 
-        assert f"{ROWS} rows written" in report
+        assert f"{ROWS} rows loaded" in report
         assert await table.engine() == "ReplicatedMergeTree"
         assert await table.sorting_key() == "id"
         assert await table.count() == ROWS
@@ -974,7 +974,7 @@ class TestReplicated:
         )
         twin = ChLoaded(clickhouse, "replicated__ex")
 
-        assert f"deleted: {part} rows" in report
+        assert f"{part} rows matching" in report
         assert await table.count() == ROWS
         assert await twin.engine() == "ReplicatedMergeTree"
         assert await twin.count() == ROWS

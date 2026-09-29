@@ -565,7 +565,7 @@ class TestPostgresToPostgres:
                 },
             ),
         )
-        assert chained.in_report.startswith(f"{ROWS} rows written")
+        assert chained.in_report.startswith(f"{ROWS} rows loaded")
 
         # обе стороны postgres: опорное выражение источника годится и приёмнику
         refs = [first(t.src_ref, c.name) for c, t in zip(columns, targets, strict=True)]
@@ -620,7 +620,7 @@ class TestPostgresToClickHouse:
                 },
             ),
         )
-        assert chained.in_report.startswith(f"{ROWS} rows written")
+        assert chained.in_report.startswith(f"{ROWS} rows loaded")
 
         landed = await clickhouse.select(
             table, [first(t.ref, c.name) for c, t in zip(columns, targets, strict=True)]
@@ -689,7 +689,7 @@ class TestPostgresToOracle:
                     },
                 ),
             )
-            assert chained.in_report.startswith(f"{ROWS} rows written")
+            assert chained.in_report.startswith(f"{ROWS} rows loaded")
 
             landed = await oracle.select(
                 table,

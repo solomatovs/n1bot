@@ -10,7 +10,7 @@ from langchain_core.messages import ToolMessage
 from langchain_core.tools import BaseTool, tool
 
 from boba.sandbox.zygote import ZygoteCallError
-from boba.toolkit.result import ErrorResult, MarkdownResult
+from boba.toolkit.result import ErrorResult, ExceptionResult, MarkdownResult
 from boba.toolrun.errors import ToolErrorGuard
 
 __all__: list[str] = []
@@ -38,7 +38,7 @@ def boom() -> tuple[str, ErrorResult]:
 
 
 def _guarded() -> list:
-    return ToolErrorGuard.guard_all([good, boom])
+    return ToolErrorGuard().guard_all([good, boom])
 
 
 class TestToolErrorGuard:
@@ -62,8 +62,8 @@ class TestToolErrorGuard:
         _, b = _guarded()
         message = TestToolErrorGuard._invoke(b, {})
         artifact = message.artifact
-        if not (isinstance(artifact, ErrorResult)):
-            raise AssertionError("isinstance(artifact, ErrorResult)")
+        if not (isinstance(artifact, ExceptionResult)):
+            raise AssertionError(f"artifact: {artifact!r}")
         if artifact.ok is not False:
             raise AssertionError("artifact.ok is False")
         if artifact.error_kind != "ZygoteCallError":
@@ -82,8 +82,8 @@ class TestToolErrorGuard:
 
         message = asyncio.run(_call())
         artifact = message.artifact
-        if not (isinstance(artifact, ErrorResult)):
-            raise AssertionError("isinstance(artifact, ErrorResult)")
+        if not (isinstance(artifact, ExceptionResult)):
+            raise AssertionError(f"artifact: {artifact!r}")
         if artifact.ok is not False:
             raise AssertionError("artifact.ok is False")
         if "OOM" not in message.content:
@@ -98,6 +98,6 @@ class TestToolErrorGuard:
             """прерываемый инструмент"""
             raise KeyboardInterrupt
 
-        (g,) = ToolErrorGuard.guard_all([stopped])
+        (g,) = ToolErrorGuard().guard_all([stopped])
         with pytest.raises(KeyboardInterrupt):
             TestToolErrorGuard._invoke(g, {})

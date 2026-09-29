@@ -5,9 +5,9 @@
 ToolLauncher накопительно (CollectedCall) — модели нужен итог, а не кадры.
 
 Ошибки:
-PayloadFailureError — ожидаемый отказ тела (EXPECTED), отказ контракта
-    запуска из конверта либо аргумент длиннее лимита argv
-    (WrapErrorKind.ARGUMENT_TOO_LARGE).
+PayloadFailureError — ошибка тела или контракта запуска из конверта, срыв
+    группы каналов либо аргумент длиннее лимита argv
+    (WrapErrorKind.ARGUMENT_TOO_LARGE); ошибка уже упакована в результат.
 LauncherError — исполнитель не отдал конверт; поднимает реализация порта.
 """
 
@@ -21,7 +21,7 @@ from typing import Any
 
 from pydantic import BaseModel
 
-from boba.toolkit.chain import NodeSlot, PipelineSlot, StreamFailureKind
+from boba.toolkit.chain import NodeSlot, PipelineSlot
 from boba.toolkit.entry import (
     ArgumentTooLargeError,
     ReplyError,
@@ -40,6 +40,7 @@ from boba.toolkit.launcher import (
 )
 from boba.toolkit.ports import StreamSpec, ToolStreamSpecs
 from boba.toolkit.protocol import CallGateMode, ToolCommand
+from boba.toolkit.result import ErrorResult
 
 __all__ = ["ToolProcessWrap", "WrapErrorKind"]
 
@@ -115,7 +116,7 @@ class ToolProcessWrap:
 
             reply = outcome.reply
             if isinstance(reply, ReplyError):
-                raise PayloadFailureError(reply.kind, reply.message)
+                raise PayloadFailureError(reply.failure)
 
             return reply.content, reply.artifact
 
@@ -157,9 +158,7 @@ class ToolProcessWrap:
             if verdict.stopped:
                 raise
 
-            raise PayloadFailureError(
-                StreamFailureKind.GROUP_FAILED, verdict.message
-            ) from exc
+            raise PayloadFailureError(verdict.failure_of(slot.key)) from exc
 
     @staticmethod
     def _render(
@@ -171,10 +170,11 @@ class ToolProcessWrap:
         try:
             return ToolArgv.render(address, schema, kwargs, input_counts)
         except ArgumentTooLargeError as exc:
-            msg = f"tool {address.name!r}: {exc}"
-            raise PayloadFailureError(
-                str(WrapErrorKind.ARGUMENT_TOO_LARGE), msg
-            ) from exc
+            failure = ErrorResult(
+                message=f"tool {address.name!r}: {exc}",
+                error_kind=WrapErrorKind.ARGUMENT_TOO_LARGE,
+            )
+            raise PayloadFailureError(failure) from exc
 
     @staticmethod
     def _piped_call(

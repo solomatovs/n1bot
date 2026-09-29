@@ -12,7 +12,7 @@ CallInputPort (один его вход) и CallGate (барьер группы)
 
 Ошибки:
 LauncherError — исполнитель нарушил контракт, результату доверять нельзя.
-PayloadFailureError — инструмент сообщил об ожидаемом отказе конвертом.
+PayloadFailureError — инструмент сообщил об ошибке конвертом.
 ChannelOverflowError — канал вызова превысил байтовый потолок.
 """
 
@@ -29,9 +29,10 @@ from typing import Any, ClassVar, Protocol, Self
 
 from pydantic import BaseModel, ConfigDict, TypeAdapter
 
-from boba.toolkit.failure import ToolRefusalError
+from boba.toolkit.failure import ReportedError
 from boba.toolkit.frames import ToolFrame
 from boba.toolkit.protocol import REPLY, ReplyError, ReplyOk, ToolCommand
+from boba.toolkit.result import FailureResult
 from boba.toolkit.stream import Chunk
 
 __all__ = [
@@ -43,7 +44,6 @@ __all__ = [
     "ClippedText",
     "CollectedCall",
     "EnvelopeReply",
-    "ErrorKind",
     "FrameSink",
     "FrameTap",
     "LaunchPayload",
@@ -122,32 +122,19 @@ class ChannelTail:
         return self._tail.decode("utf-8", errors="replace")
 
 
-class PayloadFailureError(LauncherError):
-    """Ожидаемая ошибка операции: payload объявил её и назвал причину.
+class PayloadFailureError(LauncherError, ReportedError):
+    """Вызов инструмента закончился ошибкой, уже упакованной в результат.
 
-    Не нарушение контракта: поток отработал штатно, операция сообщила отказ.
-    Текст пригоден для показа пользователю и LLM — трейсбека в нём нет.
+    Не нарушение контракта: поток отработал штатно, а ошибку тела, группы
+    или обвязки описывает failure — его и показывают чат, история и журнал.
     """
 
-    def __init__(self, kind: str, message: str) -> None:
-        super().__init__(message)
-        self.kind = kind
+    def __init__(self, failure: FailureResult) -> None:
+        super().__init__(failure.llm_view())
+        self._failure = failure
 
-
-class ErrorKind:
-    """Выводит строковый kind ошибки для показа и истории: у ожидаемых
-    отказов (PayloadFailureError, ToolRefusalError) — их собственный kind,
-    у остальных — имя класса исключения."""
-
-    @staticmethod
-    def of(error: Exception) -> str:
-        if isinstance(error, PayloadFailureError):
-            return error.kind
-
-        if isinstance(error, ToolRefusalError):
-            return error.kind
-
-        return type(error).__name__
+    def failure(self) -> FailureResult:
+        return self._failure
 
 
 class LaunchPayload:
@@ -288,15 +275,17 @@ class EnvelopeReply:
         tool: str, raw: bytes | bytearray, run: RunResult, diagnostic: str
     ) -> ReplyOk | ReplyError:
         if not raw:
-            msg = (
-                f"{tool}: no envelope on tool_result "
-                f"(rc={run.exit_code}, timed_out={run.timed_out}); "
-                f"tool_stderr={run.stderr!r}"
-            )
+            lines = [
+                f"{tool}: the tool process ended without a result "
+                f"(rc={run.exit_code}, timed_out={run.timed_out})"
+            ]
             if diagnostic:
-                msg = f"{msg}; {diagnostic}"
+                lines.append(diagnostic)
 
-            raise LauncherError(msg)
+            if run.stderr.strip():
+                lines.append(f"stderr tail:\n{run.stderr.rstrip()}")
+
+            raise LauncherError("\n".join(lines))
 
         try:
             return REPLY.validate_json(bytes(raw))

@@ -17,8 +17,7 @@ import logging
 import os
 import sys
 import time
-from collections.abc import Mapping, Sequence
-from enum import StrEnum
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Annotated, ClassVar, Final, Literal
 
@@ -48,11 +47,6 @@ class FakeConfig(SecretRevealing):
 
 class FakeUnavailableError(Exception):
     """Ожидаемый отказ фейкового инструмента."""
-
-
-class FakeErrorKind(StrEnum):
-    UNAVAILABLE = "fake_unavailable"
-    MIDWAY = "fake_midway"
 
 
 @tool
@@ -303,11 +297,6 @@ async def fake_head(
 
     return MarkdownResult(text=f"head {body!r}|{cfg.token.get_secret_value()}")
 
-
-EXPECTED: Mapping[type[Exception], FakeErrorKind] = {
-    FakeUnavailableError: FakeErrorKind.UNAVAILABLE,
-    FakeMidwayError: FakeErrorKind.MIDWAY,
-}
 
 TOOLS: Final = ToolMain.toolset(
     fake_echo,

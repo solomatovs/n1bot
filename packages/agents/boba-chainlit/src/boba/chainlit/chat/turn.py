@@ -380,7 +380,7 @@ class TurnReporter:
             await self._feed.tool_stopped(call_id, StepText.TURN_FAILED.value)
 
         if report.view:
-            await self._feed.notice(NoticeLevel.ERROR, f"**failed:** {report.view}")
+            await self._feed.notice(NoticeLevel.ERROR, report.view)
 
     async def _remember(self, content: str, mark: TurnMark) -> None:
         """Пишет запись исхода в историю; её читает и лента, и сам агент."""

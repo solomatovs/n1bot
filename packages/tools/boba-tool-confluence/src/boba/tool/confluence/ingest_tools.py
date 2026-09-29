@@ -22,15 +22,13 @@ from __future__ import annotations
 import asyncio
 import logging
 import sys
-from collections.abc import AsyncIterator, Callable, Mapping
-from enum import StrEnum
+from collections.abc import AsyncIterator, Callable
 from typing import Annotated, Any, BinaryIO, ClassVar, Final
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from boba.confluence.models import (
     ConfluenceKeys,
-    ConfluencePayloadError,
     PageCardSection,
     PageParseRequest,
     PageSection,
@@ -41,14 +39,11 @@ from boba.confluence.models import (
 )
 from boba.confluence.parsing import JsonNode
 from boba.confluence.rest import CflUrlBuilder
-from boba.db.postgres import PostgresError
 from boba.doc.bridge import AsyncPipe
-from boba.doc.config import OcrUnavailableError
-from boba.doc.document import DocumentError, DocumentHint
+from boba.doc.document import DocumentHint
 from boba.indexing import (
     DocumentCardSection,
     IncompatibleContentError,
-    LedgerError,
     Metadata,
     OutlineEntry,
     RawDocument,
@@ -59,7 +54,6 @@ from boba.indexing import (
     SectionKeys,
     TableSection,
 )
-from boba.llm.chat import LlmError
 from boba.llm.providers import EmbeddingModelConfig
 from boba.tool.confluence.indexing_log import IngestProgress, LoggingReader
 from boba.tool.confluence.ingest_base import (
@@ -78,7 +72,6 @@ from boba.toolkit.facade import Injected, tool, warmup
 from boba.toolkit.result import MarkdownResult, TableResult
 from boba.toolkit.timing import Elapsed
 from boba.toolkit.types import SecretRevealing
-from boba.transport.http import TransportError
 
 logger = logging.getLogger("boba.tool.confluence.ingest")
 
@@ -98,17 +91,6 @@ _OCR_DESCRIPTION = (
 
 class AttachmentNotFoundError(Exception):
     """Вложения с таким именем на странице нет; текст готов для пользователя."""
-
-
-class IngestErrorKind(StrEnum):
-    """Ожидаемые отказы ingest-инструментов."""
-
-    DATABASE_UNAVAILABLE = "database_unavailable"
-    REQUEST_FAILED = "ingest_request_failed"
-    ATTACHMENT_NOT_FOUND = "attachment_not_found"
-    DOCUMENT_UNREADABLE = "document_unreadable"
-    OCR_UNAVAILABLE = "ocr_unavailable"
-    EMBEDDING_FAILED = "embedding_failed"
 
 
 class IngestToolConfig(SecretRevealing, ConfluenceIngestConfig):
@@ -459,17 +441,6 @@ class PageAttachments:
 
         return titles
 
-
-EXPECTED: Mapping[type[Exception], IngestErrorKind] = {
-    PostgresError: IngestErrorKind.DATABASE_UNAVAILABLE,
-    LedgerError: IngestErrorKind.DATABASE_UNAVAILABLE,
-    TransportError: IngestErrorKind.REQUEST_FAILED,
-    ConfluencePayloadError: IngestErrorKind.REQUEST_FAILED,
-    AttachmentNotFoundError: IngestErrorKind.ATTACHMENT_NOT_FOUND,
-    DocumentError: IngestErrorKind.DOCUMENT_UNREADABLE,
-    OcrUnavailableError: IngestErrorKind.OCR_UNAVAILABLE,
-    LlmError: IngestErrorKind.EMBEDDING_FAILED,
-}
 
 TOOLS: Final = ToolMain.toolset(
     confluence_index_page,

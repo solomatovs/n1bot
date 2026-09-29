@@ -28,8 +28,8 @@ import httpx
 from pydantic import ConfigDict, Field
 
 from boba.doc.bridge import AsyncPipe
-from boba.doc.config import DocSection, OcrUnavailableError
-from boba.doc.document import DocumentError, DocumentHint, DocumentKind
+from boba.doc.config import DocSection
+from boba.doc.document import DocumentHint, DocumentKind
 from boba.llm.providers import LlmProviders, LlmProviderTypes
 from boba.text.grep import GrepLimits, TextGrep
 from boba.toolkit.entry import ToolMain
@@ -40,9 +40,8 @@ from boba.transport.http import (
     HttpRequest,
     HttpTransport,
     HttpTransportConfig,
-    TransportError,
 )
-from boba.transport.http.connection import HttpConnection, UnknownHostError
+from boba.transport.http.connection import HttpConnection
 
 _OCR_DESCRIPTION = (
     "OCR для картинок и сканов: true распознаёт текст по изображениям, "
@@ -56,17 +55,6 @@ _AS_MARKDOWN_DESCRIPTION = (
 
 LLM: Final = LlmProviders(LlmProviderTypes.installed())
 """Модели процесса инструмента: чат-модель OCR живёт здесь."""
-
-
-class WebErrorKind(StrEnum):
-    """Ожидаемые отказы web-инструментов."""
-
-    REQUEST_FAILED = "web_request_failed"
-    UNKNOWN_TARGET = "unknown_target"
-    UNKNOWN_HOST = "unknown_host"
-    DOCUMENT_UNREADABLE = "document_unreadable"
-    OCR_UNAVAILABLE = "ocr_unavailable"
-    RESULT_TOO_LARGE = "result_too_large"
 
 
 WebTarget = Annotated[HttpConnection, UserConnection]
@@ -329,14 +317,6 @@ async def web_address(connection: WebTarget) -> TableResult:
 
     return TableResult(rows=[row])
 
-
-EXPECTED: Mapping[type[Exception], WebErrorKind] = {
-    TransportError: WebErrorKind.REQUEST_FAILED,
-    UnknownHostError: WebErrorKind.UNKNOWN_HOST,
-    DocumentError: WebErrorKind.DOCUMENT_UNREADABLE,
-    OcrUnavailableError: WebErrorKind.OCR_UNAVAILABLE,
-    ResultTooLargeError: WebErrorKind.RESULT_TOO_LARGE,
-}
 
 TOOLS: Final = ToolMain.toolset(web_fetch_page, web_grep_page, web_address)
 

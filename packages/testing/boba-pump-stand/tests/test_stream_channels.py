@@ -29,7 +29,12 @@ from boba.tool.ch import tools as ch
 from boba.tool.pg import tools as pg
 from boba.toolkit.chain import StreamTimings
 from boba.toolkit.entry import ToolMain
-from boba.toolkit.result import ErrorResult, ToolArtifact
+from boba.toolkit.result import (
+    FailureResult,
+    GroupCall,
+    GroupFailureResult,
+    ToolArtifact,
+)
 from boba.toolkit.wrap import ToolProcessWrap
 from boba.toolrun.call_id import ToolCallIdField
 from boba.toolrun.errors import ToolErrorGuard
@@ -115,7 +120,7 @@ class ChannelTools:
         ToolCallIdField.attach_all(tools)
         self._streams = StreamGroups(TIMINGS, tools)
         StreamCallHooks(self._streams).guard_all(tools)
-        ToolErrorGuard.guard_all(tools)
+        ToolErrorGuard().guard_all(tools)
 
         self._tools: dict[str, Any] = {}
         for tool in tools:
@@ -202,7 +207,7 @@ class TestFanOutAcrossEngines:
         )
 
         for result in results:
-            assert not isinstance(result, ErrorResult), result
+            assert not isinstance(result, FailureResult), result
 
         source = await postgres.select("src", ["id", "note", "amount::text"])
         pg_copy = await postgres.select("copy", ["id", "note", "amount::text"])
@@ -254,9 +259,9 @@ class TestAllOrNothingAcrossEngines:
         )
 
         for result in results:
-            assert isinstance(result, ErrorResult), result
-            assert "stream group failed, no call commits" in result.message
-            assert "pg_stream_in (call_2)" in result.message
+            assert isinstance(result, GroupFailureResult), result
+            assert result.origin == GroupCall(tool="pg_stream_in", call_id="call_2")
+            assert "nothing was committed" in result.llm_view()
 
         kept = await clickhouse.select("kept", ["id", "note"])
         assert [tuple(row) for row in kept] == [(1, "before")]

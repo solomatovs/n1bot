@@ -10,7 +10,6 @@ requires-python = ">=3.11,<4"
 dependencies = [
     "boba-toolkit==0.0.25.dev1",
     "boba-confluence==0.0.25.dev1",
-    "boba-db-postgres==0.0.25.dev1",
     "boba-db-pgvector==0.0.25.dev1",
     "boba-doc==0.0.25.dev1",
     "boba-indexing==0.0.25.dev1",
@@ -34,6 +33,7 @@ payload = [
     "lxml>=5.0",
 ]
 dev = [
+    "boba-db-postgres==0.0.25.dev1",
     "boba-runtime==0.0.25.dev1",
     "boba-sandbox==0.0.25.dev1",
     "boba-config==0.0.25.dev1",

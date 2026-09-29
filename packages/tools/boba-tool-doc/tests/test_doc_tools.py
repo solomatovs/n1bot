@@ -10,12 +10,7 @@ import pytest
 from boba.doc.config import OcrUnavailableError
 from boba.doc.document import BoxedHit, DocumentError
 from boba.stand_core.samples import SamplePdf
-from boba.tool.doc.tools import (
-    EXPECTED,
-    TOOLS,
-    DocErrorKind,
-    DocToolSection,
-)
+from boba.tool.doc.tools import TOOLS, DocToolSection
 from boba.toolkit.entry import ToolArgv
 from boba.toolkit.result import MarkdownResult, TableResult
 
@@ -146,10 +141,6 @@ class TestExpectedFailures:
             await _body("read_document")(
                 path=str(tmp_path / "absent.pdf"), pages="1", cfg=_cfg()
             )
-
-    def test_error_kinds(self) -> None:
-        assert EXPECTED[DocumentError] is DocErrorKind.DOCUMENT_UNREADABLE
-        assert EXPECTED[OcrUnavailableError] is DocErrorKind.OCR_UNAVAILABLE
 
 
 class TestSchemas:

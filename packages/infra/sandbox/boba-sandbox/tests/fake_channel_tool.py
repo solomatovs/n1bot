@@ -14,8 +14,7 @@ import json
 import logging
 import os
 import sys
-from collections.abc import Mapping, Sequence
-from enum import StrEnum
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Annotated, ClassVar, Final, Literal
 
@@ -23,7 +22,7 @@ from pydantic import BaseModel, Field, SecretStr
 
 from boba.toolkit.entry import ToolMain
 from boba.toolkit.facade import Injected, tool, warmup
-from boba.toolkit.ports import Inbound, Outbound, StreamGroup, StreamGroupAbortedError
+from boba.toolkit.ports import Inbound, Outbound, StreamGroup
 from boba.toolkit.result import MarkdownResult
 
 
@@ -56,12 +55,7 @@ async def warm_cache(cfg: FxWarmupConfig) -> None:
 
 
 class FxDownError(Exception):
-    """Ожидаемый отказ."""
-
-
-class FxErrorKind(StrEnum):
-    DOWN = "fx_down"
-    ABORTED = "fx_aborted"
+    """Отказ фейкового бэкенда."""
 
 
 @tool
@@ -225,11 +219,6 @@ async def fx_gated(
 
     return MarkdownResult(text=f"committed|{cfg.token.get_secret_value()}")
 
-
-EXPECTED: Mapping[type[Exception], FxErrorKind] = {
-    FxDownError: FxErrorKind.DOWN,
-    StreamGroupAbortedError: FxErrorKind.ABORTED,
-}
 
 TOOLS: Final = ToolMain.toolset(
     fx_echo, fx_chatter, fx_probe_tmp, fx_warm_state, fx_stream, fx_merge, fx_gated

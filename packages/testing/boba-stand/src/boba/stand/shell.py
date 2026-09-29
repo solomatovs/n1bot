@@ -18,7 +18,7 @@ from boba.toolkit.entry import ToolAddress, ToolArgv, ToolMain
 from boba.toolkit.facade import PayloadTool
 from boba.toolkit.launcher import CollectedCall, PayloadFailureError, ToolLauncher
 from boba.toolkit.protocol import ReplyError
-from boba.toolkit.result import ShellResult
+from boba.toolkit.result import ErrorResult, ShellResult
 from boba.toolkit.wrap import ToolProcessWrap
 from boba.toolrun.injected import InjectedConfig
 
@@ -31,6 +31,9 @@ class ShellRun:
     MODULE: ClassVar[str] = "boba.tool.shell.tools"
     """Модуль тела: зигота стенда грузит его, чтобы команды было кому исполнять."""
 
+    CONTRACT: ClassVar[str] = "contract"
+    """error_kind отказа стенда: bash-тул нарушил ожидаемый контракт."""
+
     CONFIG: ClassVar[BashToolConfig] = BashToolConfig(
         max_output_bytes=1 << 20, timeout_sec=300.0
     )
@@ -42,7 +45,7 @@ class ShellRun:
         payload = TOOLS[0]
         if not isinstance(payload, PayloadTool):
             msg = f"bash TOOLS[0] is {type(payload).__name__}, PayloadTool expected"
-            raise PayloadFailureError("contract", msg)
+            raise PayloadFailureError(ErrorResult(message=msg, error_kind=cls.CONTRACT))
 
         copy = payload.model_copy()
         bridged = ToolBridge.as_structured_tool(copy)
@@ -69,11 +72,11 @@ class ShellRun:
         outcome = CollectedCall.of(launcher, rendered)
         reply = outcome.reply
         if isinstance(reply, ReplyError):
-            raise PayloadFailureError(reply.kind, reply.message)
+            raise PayloadFailureError(reply.failure)
 
         artifact = reply.artifact
         if not isinstance(artifact, ShellResult):
             msg = f"bash returned {type(artifact).__name__}, ShellResult expected"
-            raise PayloadFailureError("contract", msg)
+            raise PayloadFailureError(ErrorResult(message=msg, error_kind=cls.CONTRACT))
 
         return artifact

@@ -26,7 +26,7 @@ from langgraph.checkpoint.base import BaseCheckpointSaver, PendingWrite
 from langgraph.graph.message import REMOVE_ALL_MESSAGES
 from langgraph.graph.state import CompiledStateGraph
 
-from boba.chainlit.agent.bridge import ResponseField
+from boba.chainlit.agent.bridge import LangchainMessages, ResponseField
 from boba.chainlit.agent.flow import PrefetchCall, PrefetchStamp
 from boba.chainlit.chat.tracing import LlmUsage
 from boba.chainlit.chat.turn import (
@@ -229,6 +229,7 @@ class ConversationTranscript:
     def __init__(self, messages: Sequence[BaseMessage], view: ChatView) -> None:
         self._messages = messages
         self._view = view
+        self._langchain = LangchainMessages()
         self._pending: dict[str, PendingCall] = {}
         self._turn = TurnDraft()
         self._stage_queries: list[str] = []
@@ -348,7 +349,8 @@ class ConversationTranscript:
         step = await self._view.tool_started(name, args, call_key)
 
         if message.status == "error":
-            await self._view.tool_failed(step, self._text(message))
+            failure = self._langchain.failure_of(message, self._text(message))
+            await self._view.tool_failed(step, failure.chat_view().markdown)
             return
 
         artifact = message.artifact

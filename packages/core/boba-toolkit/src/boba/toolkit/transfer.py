@@ -22,16 +22,20 @@ import string
 from collections.abc import AsyncIterator, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Annotated, Any, Literal, Protocol
+from typing import Annotated, Any, ClassVar, Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue
 
 from boba.toolkit.ports import Chunk, Inbound, Outbound, StreamGroup
+from boba.toolkit.result import Fact, SqlStatement
 
 __all__ = [
     "BackupAndCreate",
     "BackupAndCreateIfSchemaChanged",
+    "ColumnCheck",
+    "ColumnIssue",
     "ColumnRules",
+    "ColumnVerdict",
     "CreateIfNotExists",
     "CreateTemplate",
     "DeleteAll",
@@ -62,7 +66,6 @@ __all__ = [
     "SchemaPlan",
     "SchemaStrategy",
     "SchemaStrategyPlan",
-    "ScriptStep",
     "StreamWire",
     "TemplateBrackets",
     "TemplatePart",
@@ -74,12 +77,12 @@ __all__ = [
     "TransferInbound",
     "TransferOutbound",
     "TransferReport",
-    "TransferReportText",
     "TransferRun",
     "TransferSink",
     "TransferTable",
     "UnknownTypeApply",
     "UnknownTypeStrategy",
+    "Verdict",
 ]
 
 
@@ -492,30 +495,135 @@ class CreateTemplate:
 
 @dataclass(frozen=True)
 class DeleteOutcome:
-    """Что сделала стратегия удаления: строк и стейтмент."""
+    """Что стратегия удаления сделала с прежними строками таблицы: итог
+    словами и выполненный SQL; пусто — движок обошёлся без отдельной команды
+    (двойник ClickHouse) либо удалять было нечего."""
 
-    rows: int
-    statement: str
+    effect: str
+    statement: str = ""
+
+
+class Verdict(StrEnum):
+    """Строгость расхождения колонки: ошибка отказывает строгим стратегиям
+    схемы (error_if_schema_changed) и пересоздаёт таблицу у
+    drop_and_create_if_schema_changed, предупреждение — нет."""
+
+    OK = "ok"
+    WARNING = "warning"
+    ERROR = "error"
+
+
+class ColumnIssue(StrEnum):
+    """Вид расхождения колонки потока и таблицы; у каждого своё последствие
+    для загрузки. TYPE — несовпадение типа, его смысл в тексте вердикта."""
+
+    TYPE = "type"
+    NOT_IN_STREAM = "not_in_stream"
+    NOT_IN_TABLE = "not_in_table"
+    ONLY_IN_RULES = "only_in_rules"
+    NULLABLE_INTO_NOT_NULL = "nullable_into_not_null"
+    NOT_NULL_INTO_NULLABLE = "not_null_into_nullable"
+
+    def effect(self, message: str) -> str:
+        """Что расхождение значит для загрузки; у TYPE — текст вердикта."""
+        effects = {
+            ColumnIssue.NOT_IN_STREAM: "not in the stream: rows get the column default",
+            ColumnIssue.NOT_IN_TABLE: "the table has no such column",
+            ColumnIssue.ONLY_IN_RULES: "named only in the call rules",
+            ColumnIssue.NULLABLE_INTO_NOT_NULL: "a NULL in the stream fails the load",
+            ColumnIssue.NOT_NULL_INTO_NULLABLE: "the table also accepts NULL",
+        }
+
+        return effects.get(self, message)
+
+
+@dataclass(frozen=True)
+class ColumnVerdict:
+    """Итог сверки колонки: строгость, вид расхождения и объяснение."""
+
+    level: Verdict
+    message: str
+    issue: ColumnIssue = ColumnIssue.TYPE
+
+
+@dataclass(frozen=True)
+class ColumnCheck:
+    """Сверка одной колонки таблицы-приёмника: тип потока и тип таблицы
+    текстом (пусто — этой стороны нет) и вердикт."""
+
+    name: str
+    stream: str
+    table: str
+    verdict: ColumnVerdict
+
+    MISSING: ClassVar[str] = "—"
+    NULLABLE: ClassVar[str] = "nullable"
+    NOT_NULL: ClassVar[str] = "not null"
+
+    def line(self) -> str:
+        """Строка для сообщения об отказе: колонка, объяснение, типы сторон."""
+        return (
+            f"{self.name}: {self.verdict.message} "
+            f"(stream {self._side(self.stream)}, table {self._side(self.table)})"
+        )
+
+    def cells(self) -> tuple[str, str, str]:
+        """Поток, таблица и последствие для строки отчёта: у расхождений
+        nullable важна не пара типов, а сама nullability."""
+        issue = self.verdict.issue
+        effect = issue.effect(self.verdict.message)
+
+        if issue is ColumnIssue.NULLABLE_INTO_NOT_NULL:
+            return self.NULLABLE, self.NOT_NULL, effect
+
+        if issue is ColumnIssue.NOT_NULL_INTO_NULLABLE:
+            return self.NOT_NULL, self.NULLABLE, effect
+
+        return self._side(self.stream), self._side(self.table), effect
+
+    def _side(self, text: str) -> str:
+        if not text:
+            return self.MISSING
+
+        return text
 
 
 @dataclass(frozen=True)
 class SchemaCheck:
-    """Итог сверки контракта с существующей таблицей от пары: ошибки не дают
-    загрузить без пересоздания, предупреждения — нет; lines — по строке на
-    колонку для отчёта."""
+    """Итог сверки контракта с существующей таблицей от пары: колонка за
+    колонкой, со строгостью и видом расхождения."""
 
-    errors: tuple[str, ...]
-    warnings: tuple[str, ...]
-    lines: tuple[str, ...]
+    columns: tuple[ColumnCheck, ...]
 
     def changed(self) -> bool:
-        return bool(self.errors)
+        return any(self._at(Verdict.ERROR))
 
     def reason(self) -> str:
-        return "; ".join(self.errors)
+        lines: list[str] = []
+        for column in self._at(Verdict.ERROR):
+            lines.append(column.line())
+
+        return "; ".join(lines)
 
     def render(self) -> str:
-        return "\n".join(self.lines)
+        """Расхождения для сообщения об отказе стратегии: по строке на колонку."""
+        lines: list[str] = []
+        for column in self.differences():
+            lines.append(f"- {column.verdict.level.value} {column.line()}")
+
+        return "\n".join(lines)
+
+    def differences(self) -> list[ColumnCheck]:
+        """Колонки с расхождением: сначала ошибки, затем предупреждения."""
+        errors = list(self._at(Verdict.ERROR))
+        warnings = list(self._at(Verdict.WARNING))
+
+        return [*errors, *warnings]
+
+    def _at(self, level: Verdict) -> Iterator[ColumnCheck]:
+        for column in self.columns:
+            if column.verdict.level is level:
+                yield column
 
 
 class TransferTable(Protocol):
@@ -540,11 +648,15 @@ class TransferTable(Protocol):
 
 class TransferSink(Protocol):
     """Порт вставки: load кладёт все тела потока в таблицу и возвращает число
-    строк, discard читает поток до конца, ничего не записывая."""
+    строк, discard читает поток до конца, ничего не записывая; method —
+    как движок кладёт строки, если это не очевидно (двойник и exchange у
+    ClickHouse), пусто — обычная вставка в таблицу."""
 
     async def load(self) -> int: ...
 
     async def discard(self) -> int: ...
+
+    def method(self) -> str: ...
 
 
 class SchemaAction(StrEnum):
@@ -555,6 +667,20 @@ class SchemaAction(StrEnum):
     DROP_THEN_CREATE = "drop_then_create"
     KEEP = "keep"
     FAIL = "fail"
+
+    def outcome(self, reason: str, backup: str) -> str:
+        """Что стало с таблицей, словами для отчёта."""
+        match self:
+            case SchemaAction.CREATE:
+                return f"created ({reason})"
+            case SchemaAction.BACKUP_THEN_CREATE:
+                return f"recreated ({reason}), the previous one saved as {backup}"
+            case SchemaAction.DROP_THEN_CREATE:
+                return f"dropped and recreated ({reason})"
+            case SchemaAction.KEEP:
+                return f"kept as is ({reason})"
+            case SchemaAction.FAIL:
+                return f"refused ({reason})"
 
 
 @dataclass(frozen=True)
@@ -728,7 +854,7 @@ class DeleteNothing(BaseModel):
     kind: Literal["nothing"]
 
     async def apply(self, table: TransferTable) -> DeleteOutcome:
-        return DeleteOutcome(rows=0, statement="")
+        return DeleteOutcome(effect="kept, the stream is appended")
 
 
 class DeleteTruncate(BaseModel):
@@ -827,71 +953,85 @@ UnknownTypeStrategy = Annotated[
 
 @dataclass(frozen=True)
 class TransferReport:
-    """Итог приёмника для чата: что сделано со схемой и почему, сверка по
-    колонкам, что удалено, сколько вставлено."""
+    """Итог приёмника для чата: сколько строк загружено и куда, что стало с
+    таблицей и с её прежними строками, как движок клал строки и чем поток
+    расходится с существующей таблицей — расхождения таблицей, одинаковые
+    свёрнуты в строку."""
 
     table: str
     action: SchemaAction
     reason: str
     backup: str
-    check: str
+    differences: tuple[ColumnCheck, ...]
     deleted: DeleteOutcome
     inserted: int
+    method: str
     transactional: bool
 
-    def render(self) -> str:
-        lines = [
-            f"{self.inserted} rows written into {self.table}",
-            f"schema: {self.action.value} ({self.reason})",
-        ]
-        if self.backup:
-            lines.append(f"backup: {self.backup}")
+    NOT_TRANSACTIONAL: ClassVar[str] = (
+        "the steps are not one transaction on this engine"
+    )
+    NOT_ACTED_ON: ClassVar[str] = (
+        "the table was kept, so these differences were only reported"
+    )
 
-        if self.check:
-            lines.append("columns:")
-            lines.append(self.check)
+    def statements(self) -> list[SqlStatement]:
+        """Итог загрузки и выполненное стратегией удаления отдельными командами."""
+        loaded = SqlStatement(
+            status=f"{self.inserted} rows loaded into {self.table}",
+            rows=self._rows(),
+            facts=list(self._facts()),
+            note=self._note(),
+        )
+        if not self.deleted.statement:
+            return [loaded]
 
-        if self.deleted.statement:
-            lines.append(
-                f"deleted: {self.deleted.rows} rows by {self.deleted.statement}"
-            )
+        deleted = SqlStatement(text=self.deleted.statement, status=self.deleted.effect)
+
+        return [loaded, deleted]
+
+    def _facts(self) -> Iterator[Fact]:
+        yield Fact(key="table", value=self.action.outcome(self.reason, self.backup))
+        yield Fact(key="previous rows", value=self.deleted.effect)
+
+        if self.method:
+            yield Fact(key="load", value=self.method)
+
+    def _rows(self) -> list[dict[str, str]] | None:
+        """Расхождения с таблицей: колонки с одинаковыми сторонами и
+        последствием — одной строкой; None — расхождений нет."""
+        grouped: dict[tuple[str, str, str], list[str]] = {}
+        for column in self.differences:
+            key = column.cells()
+            if key not in grouped:
+                grouped[key] = []
+
+            grouped[key].append(column.name)
+
+        if not grouped:
+            return None
+
+        rows: list[dict[str, str]] = []
+        for (stream, table, effect), names in grouped.items():
+            row = {
+                "columns": ", ".join(names),
+                "stream": stream,
+                "table": table,
+                "effect": effect,
+            }
+            rows.append(row)
+
+        return rows
+
+    def _note(self) -> str:
+        notes: list[str] = []
+        if self.differences and self.action is SchemaAction.KEEP:
+            notes.append(self.NOT_ACTED_ON)
 
         if not self.transactional:
-            lines.append("note: the steps are not one transaction on this engine")
+            notes.append(self.NOT_TRANSACTIONAL)
 
-        return "\n".join(lines)
-
-
-class ScriptStep(Protocol):
-    """Итог одного стейтмента скрипта before/after насоса: драйвер движка
-    сам печатает его строкой отчёта."""
-
-    def render(self) -> str: ...
-
-
-class TransferReportText:
-    """Текст отчёта приёмника для чата: итог TransferReport и под ним шаги
-    скриптов before и after, как их напечатал драйвер движка. Один на все
-    приёмники: pg_stream_in, ch_stream_in, ora_stream_in."""
-
-    def render(
-        self,
-        report: TransferReport,
-        before: Sequence[ScriptStep],
-        after: Sequence[ScriptStep],
-    ) -> str:
-        lines = [report.render()]
-        if before:
-            lines.append("before:")
-            for step in before:
-                lines.append(step.render())
-
-        if after:
-            lines.append("after:")
-            for step in after:
-                lines.append(step.render())
-
-        return "\n".join(lines)
+        return "; ".join(notes)
 
 
 class TransferRun:
@@ -942,17 +1082,18 @@ class TransferRun:
         deleted = await self._delete_strategy.apply(table)
         inserted = await self._insert_strategy.apply(sink)
 
-        check_text = ""
+        differences: list[ColumnCheck] = []
         if exists:
-            check_text = check.render()
+            differences = check.differences()
 
         return TransferReport(
             table=table_name,
             action=plan.action,
             reason=plan.reason,
             backup=backup,
-            check=check_text,
+            differences=tuple(differences),
             deleted=deleted,
             inserted=inserted,
+            method=sink.method(),
             transactional=transactional,
         )

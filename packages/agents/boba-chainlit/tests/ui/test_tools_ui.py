@@ -1436,17 +1436,14 @@ class TestIngestTools:
         )
         path = CflRestBuilder().space_path(ProbeText.NO_SPACE.value)
         url = confluence_site.url_of(str(path))
-        failure = (
-            f"tool failed 'confluence_index_space': PayloadFailureError: "
-            f"GET {url}: expected 2xx, got 404"
-        )
+        failure = f"GET {url}: expected 2xx, got 404"
         expect = ToolExpect(
             mark=StepMark.FAILED,
             patterns=[
                 re.escape(failure),
                 re.escape(f"No space found with key : {ProbeText.NO_SPACE.value}"),
             ],
-            dom=["Error:", ProbeText.NO_SPACE.value],
+            dom=["HttpStatusError", ProbeText.NO_SPACE.value],
             log_errors=True,
         )
         feed.call(call, expect, timeout_sec=INGEST_TIMEOUT_SEC)
@@ -1960,7 +1957,7 @@ class TestAddressTools:
         expect = ToolExpect(
             mark=StepMark.FAILED,
             patterns=[re.escape("no default database in the connection")],
-            dom=["Error:"],
+            dom=["AddressError"],
             log_errors=True,
         )
         feed.call(call, expect)
@@ -2136,7 +2133,7 @@ class TestCanvasTools:
         result = ErrorResult(message=message, error_kind="bad_path")
         canvas_feed.call(
             call,
-            ToolExpect.of(result, dom=["Error:", "outside the thread attachments dir"]),
+            ToolExpect.of(result, dom=["outside the thread attachments dir"]),
         )
 
     def test_send_file(

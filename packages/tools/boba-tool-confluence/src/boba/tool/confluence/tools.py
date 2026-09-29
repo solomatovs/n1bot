@@ -38,15 +38,8 @@ from boba.transport.http import (
     ByteStream,
     HttpTransport,
     HttpTransportConfig,
-    TransportError,
 )
 from boba.transport.http.connection import HttpConnection
-
-
-class ConfluenceErrorKind(StrEnum):
-    """Ожидаемые отказы confluence-инструментов."""
-
-    REQUEST_FAILED = "confluence_request_failed"
 
 
 class ConfluenceToolsConfig(SecretRevealing):
@@ -484,11 +477,6 @@ async def confluence_address(
 
     return TableResult(rows=[row], note=ConfluenceAddresses.prompt())
 
-
-EXPECTED: Mapping[type[Exception], ConfluenceErrorKind] = {
-    TransportError: ConfluenceErrorKind.REQUEST_FAILED,
-    ConfluencePayloadError: ConfluenceErrorKind.REQUEST_FAILED,
-}
 
 TOOLS: Final = ToolMain.toolset(
     confluence_fetch,

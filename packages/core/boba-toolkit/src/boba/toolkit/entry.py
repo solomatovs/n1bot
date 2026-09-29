@@ -13,8 +13,8 @@ argv в kwargs (ToolArgv), каналы вызова из аргументов (
 ArgumentTooLargeError — значение аргумента не помещается в argv (MAX_ARG_STRLEN).
 ToolEntryError — нарушен контракт запуска: имени нет в TOOLS, флаги или конфиг
     не прошли валидацию, файл --injected не читается; kind из EntryErrorKind.
-PayloadFailureError — исполненное тело подняло ожидаемое исключение (EXPECTED
-    модуля); прочие исключения тела уходят наверх как есть.
+PayloadFailureError — исполненное тело подняло исключение; оно уже упаковано
+    в результат-ошибку (FailurePacker).
 """
 
 from __future__ import annotations
@@ -44,7 +44,7 @@ from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
 from boba.toolkit.calls import FieldMarks
 from boba.toolkit.closing import ProcessClosers
 from boba.toolkit.facade import PayloadTool
-from boba.toolkit.failure import ValidationText
+from boba.toolkit.failure import FailurePacker, ValidationText
 from boba.toolkit.frames import ToolIo
 from boba.toolkit.launcher import PayloadFailureError
 from boba.toolkit.ports import (
@@ -56,7 +56,7 @@ from boba.toolkit.ports import (
     StreamSpec,
 )
 from boba.toolkit.protocol import CallInputSpec, ReplyError, ReplyOk, ToolCommand
-from boba.toolkit.result import ToolResultBase
+from boba.toolkit.result import FailureResult, ToolResultBase
 from boba.toolkit.timing import Elapsed
 from boba.toolkit.types import SecretReveal
 
@@ -65,7 +65,6 @@ __all__ = [
     "CallWiring",
     "EntryErrorKind",
     "EntryFlag",
-    "ExpectedErrors",
     "InputWire",
     "ToolAddress",
     "ToolArgv",
@@ -281,41 +280,6 @@ class ToolAddress(BaseModel):
 
     def argv_head(self) -> list[str]:
         return [self.PYTHON, "-m", self.module, self.name]
-
-
-class ExpectedErrors:
-    """Читает карту EXPECTED модуля инструментов — какие исключения тела
-    считаются ожидаемым отказом и под каким kind'ом ехать в конверт
-    ReplyError. Неожиданные исключения уходят наверх и означают дефект."""
-
-    ATTRIBUTE: ClassVar[str] = "EXPECTED"
-
-    @classmethod
-    def of_body(cls, body: Callable[..., object]) -> Mapping[type[Exception], str]:
-        """Карта EXPECTED модуля тела; модуль без атрибута ошибок не ожидает."""
-        module = sys.modules.get(body.__module__)
-        if module is None:
-            return {}
-
-        mapping = getattr(module, cls.ATTRIBUTE, None)
-        if not isinstance(mapping, Mapping):
-            return {}
-
-        return {
-            declared: str(kind)
-            for declared, kind in mapping.items()
-            if isinstance(declared, type) and issubclass(declared, Exception)
-        }
-
-    @staticmethod
-    def kind_of(error: Exception, mapping: Mapping[type[Exception], str]) -> str | None:
-        """Kind первого совпадения по MRO; None — исключение неожиданное."""
-        for klass in type(error).__mro__:
-            for declared, kind in mapping.items():
-                if klass is declared:
-                    return kind
-
-        return None
 
 
 class ToolArgv:
@@ -676,8 +640,10 @@ class ToolMain:
 
     class Exit(IntEnum):
         OK = 0
-        EXPECTED_FAILURE = 1
+        FAILURE = 1
         ENTRY_ERROR = 2
+
+    _FAILURES: ClassVar[FailurePacker] = FailurePacker()
 
     REQUIRED_ATTRIBUTES: ClassVar[tuple[str, ...]] = (
         "name",
@@ -726,11 +692,16 @@ class ToolMain:
         try:
             return cls._run(tools, arguments, wiring)
         except ToolEntryError as exc:
-            cls._emit_error(wiring, str(exc.kind), str(exc))
+            cls._emit_error(wiring, cls._FAILURES.pack(exc))
             return cls.Exit.ENTRY_ERROR
         except PayloadFailureError as exc:
-            cls._emit_error(wiring, exc.kind, str(exc))
-            return cls.Exit.EXPECTED_FAILURE
+            cls._emit_error(wiring, exc.failure())
+            return cls.Exit.FAILURE
+        except Exception as exc:
+            failure = cls._FAILURES.pack(exc)
+            logger.error("tool call failed: %s", failure.log_view())
+            cls._emit_error(wiring, failure)
+            return cls.Exit.FAILURE
 
     @classmethod
     def _setup_logging(cls) -> None:
@@ -1005,8 +976,6 @@ class ToolMain:
             )
             raise ToolEntryError(EntryErrorKind.INTERNAL_ERROR, msg)
 
-        expected = ExpectedErrors.of_body(body)
-
         if isinstance(tool, PayloadTool):
             kwargs = tool.packed_kwargs(kwargs)
 
@@ -1017,13 +986,14 @@ class ToolMain:
             else:
                 result = body(**kwargs)
         except Exception as exc:
-            logger.info("tool[%s]: body failed in %dms", tool.name, elapsed.ms())
-
-            kind = ExpectedErrors.kind_of(exc, expected)
-            if kind is None:
-                raise
-
-            raise PayloadFailureError(kind, str(exc)) from exc
+            failure = cls._FAILURES.pack(exc)
+            logger.error(
+                "tool[%s]: body failed in %dms: %s",
+                tool.name,
+                elapsed.ms(),
+                failure.log_view(),
+            )
+            raise PayloadFailureError(failure) from exc
 
         logger.info("tool[%s]: body finished in %dms", tool.name, elapsed.ms())
 
@@ -1062,14 +1032,12 @@ class ToolMain:
         return cls.Exit.OK
 
     @classmethod
-    def _emit_error(cls, wiring: CallWiring, kind: str, message: str) -> None:
-        reply = ReplyError(kind=kind, message=message)
-
+    def _emit_error(cls, wiring: CallWiring, failure: FailureResult) -> None:
         if wiring.result_fd >= 0:
-            cls._write_envelope(wiring.result_fd, reply)
+            cls._write_envelope(wiring.result_fd, ReplyError(failure=failure))
             return
 
-        print(f"{kind}: {message}", file=sys.stderr)  # noqa: T201
+        print(failure.log_view(), file=sys.stderr)  # noqa: T201
 
     @staticmethod
     def _write_envelope(fd: int, reply: ReplyOk | ReplyError) -> None:

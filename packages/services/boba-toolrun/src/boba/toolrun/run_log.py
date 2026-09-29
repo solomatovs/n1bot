@@ -22,8 +22,8 @@ from langchain_core.tools import BaseTool
 from boba.canvas.journal import CallStream
 from boba.toolkit.calls import ToolIntent
 from boba.toolkit.channels import CallOutcome
-from boba.toolkit.failure import FailureText
-from boba.toolkit.result import ToolResultBase
+from boba.toolkit.failure import FailurePacker
+from boba.toolkit.result import FailureResult, ToolResultBase
 from boba.toolkit.stream import ToolChannelsTap
 from boba.toolkit.timing import Elapsed
 from boba.toolrun.call_id import ToolCallIdField
@@ -77,6 +77,8 @@ class ToolRunLogger:
     ARGS_LIMIT: ClassVar[int] = 500
 
     PACKED_RESULT: ClassVar[int] = 2
+
+    _FAILURES: ClassVar[FailurePacker] = FailurePacker()
     """Длина кортежа (content, artifact) у tool'ов с content_and_artifact."""
 
     class _Hooks(CallHooks["_CallScope"]):
@@ -177,6 +179,9 @@ class ToolRunLogger:
         if isinstance(payload, tuple) and len(payload) == ToolRunLogger.PACKED_RESULT:
             payload = payload[1]
 
+        if isinstance(payload, FailureResult):
+            return payload.log_view()
+
         if not isinstance(payload, ToolResultBase):
             return None
 
@@ -187,12 +192,12 @@ class ToolRunLogger:
 
     @staticmethod
     def _log_failure(name: str, started: float, error: BaseException) -> None:
-        """Тот же текст уходит LLM в ErrorResult: лог и история совпадают."""
+        """Тот же результат-ошибка уходит LLM: лог и история совпадают."""
         logger.warning(
             "tool[%s]: failed in %dms: %s",
             name,
             ToolRunLogger._elapsed_ms(started),
-            FailureText.of(error),
+            ToolRunLogger._FAILURES.pack(error).log_view(),
         )
 
     @staticmethod

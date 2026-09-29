@@ -29,7 +29,7 @@ from boba.toolkit.entry import ToolArgv, ToolMain
 from boba.toolkit.frames import FrameProtocolError, ToolFrame
 from boba.toolkit.launcher import LauncherError
 from boba.toolkit.ports import StreamSpec
-from boba.toolkit.protocol import CallInputSpec, ToolCommand
+from boba.toolkit.protocol import CallInputSpec, ReplyError, ToolCommand
 from boba.toolrun.process import ProcessLauncherConfig, ProcessToolCaller
 
 CFG = FakeConfig(token=SecretStr("t0ken"), limit=5)
@@ -123,7 +123,7 @@ class TestDeafBody:
             # запись обязана была встать до срабатывания таймаута вызова
             assert blocked_for > 0.5
 
-            with pytest.raises(LauncherError, match="no envelope"):
+            with pytest.raises(LauncherError, match="ended without a result"):
                 call.result()
 
         assert blocked_for < 30
@@ -143,7 +143,7 @@ class TestDeadBody:
 
             rest = list(stream)
 
-            with pytest.raises(LauncherError, match="no envelope"):
+            with pytest.raises(LauncherError, match="ended without a result"):
                 call.result()
 
         assert rest == []
@@ -177,7 +177,7 @@ class TestDeadBody:
 class TestForeignKind:
     def test_undeclared_kind_fails_the_call_loudly(self, tmp_path: Path) -> None:
         """Кадр с kind вне декларации порта: тело падает на границе, вызов
-        кончается внятной ошибкой, а не молчаливым пропуском данных."""
+        кончается конвертом ошибки, а не молчаливым пропуском данных."""
         launcher = _launcher(tmp_path)
 
         with launcher.open(_command("fake_stream", "--prefix", "k:")) as call:
@@ -186,8 +186,10 @@ class TestForeignKind:
 
             list(call.frames())
 
-            with pytest.raises(LauncherError, match="no envelope"):
-                call.result()
+            outcome = call.result()
+
+        assert isinstance(outcome.reply, ReplyError), outcome.reply
+        assert "'pid'" in outcome.reply.failure.llm_view(), outcome.reply.failure
 
 
 class TestBrokenFrames:

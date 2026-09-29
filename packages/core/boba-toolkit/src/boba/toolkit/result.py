@@ -48,7 +48,7 @@ from pydantic import (
     model_validator,
 )
 from pydantic.json_schema import JsonSchemaValue
-from pydantic_core import CoreSchema
+from pydantic_core import CoreSchema, to_jsonable_python
 
 __all__ = [
     "CanvasResult",
@@ -57,13 +57,20 @@ __all__ = [
     "ChatView",
     "CodeBlock",
     "ErrorResult",
+    "ExceptionResult",
     "Fact",
     "FactsBlock",
+    "FailureCause",
+    "FailureLayout",
+    "FailureResult",
+    "FailureResultField",
     "Fence",
     "FieldLines",
     "FileElement",
     "FileResult",
     "GridBlock",
+    "GroupCall",
+    "GroupFailureResult",
     "JsonBlock",
     "MarkdownResult",
     "MarkdownTable",
@@ -132,24 +139,69 @@ class JsonBlock:
 
 
 class FieldLines:
-    """Строки именованных значений: **имя:** `значение`, многострочное — блоком."""
+    """Строки именованных значений аргумента вызова по форме значения.
+
+    Короткое значение — **имя:** `значение` в строку; многострочный или
+    длинный текст — блоком; список объектов — таблицей; длинная структура —
+    блоком json с отступами. Модели pydantic сначала
+    приводятся к json-совместимому виду.
+    """
+
+    INLINE_CHARS: ClassVar[int] = 120
+    """Самое длинное значение, которое ещё показывается в строку."""
 
     @classmethod
     def render(cls, fields: Mapping[str, Any]) -> Iterator[str]:
         for name, value in fields.items():
             yield cls.line(name, value)
 
+    @classmethod
+    def line(cls, name: str, value: Any) -> str:
+        plain = to_jsonable_python(value, fallback=str)
+
+        if isinstance(plain, str):
+            return cls._text(name, plain)
+
+        if rows := cls._rows(plain):
+            return f"**{name}:**\n\n{TableText.render(rows)}"
+
+        rendered = json.dumps(plain, ensure_ascii=False, default=str)
+        if cls._inline(rendered):
+            return f"**{name}:** `{rendered}`"
+
+        return f"**{name}:**\n{Fence.around(JsonBlock.pretty(plain), 'json')}"
+
+    @classmethod
+    def _text(cls, name: str, text: str) -> str:
+        if cls._inline(text):
+            return f"**{name}:** `{text}`"
+
+        return f"**{name}:**\n{Fence.around(text)}"
+
+    @classmethod
+    def _inline(cls, text: str) -> bool:
+        if "\n" in text:
+            return False
+
+        if "`" in text:
+            return False
+
+        return len(text) <= cls.INLINE_CHARS
+
     @staticmethod
-    def line(name: str, value: Any) -> str:
-        if isinstance(value, str) and "\n" in value:
-            return f"**{name}:**\n{Fence.around(value)}"
+    def _rows(value: Any) -> list[Mapping[str, Any]]:
+        """Строки таблицы из списка объектов; пусто — значение не таблица."""
+        if not isinstance(value, list):
+            return []
 
-        if isinstance(value, str):
-            return f"**{name}:** `{value}`"
+        rows: list[Mapping[str, Any]] = []
+        for item in value:
+            if not isinstance(item, dict):
+                return []
 
-        rendered = json.dumps(value, ensure_ascii=False, default=str)
+            rows.append(item)
 
-        return f"**{name}:** `{rendered}`"
+        return rows
 
 
 class NoteLine:
@@ -287,12 +339,38 @@ class ChatView(BaseModel):
 
 
 class Fact(BaseModel):
-    """Пара «ключ: значение» списка фактов."""
+    """Пара «ключ: значение» списка фактов.
+
+    Длинное и многострочное значение в markdown едет блоком: инлайн-код его
+    не удержит, а у текста вроде стрелки `^` под строкой SQL сломалось бы
+    выравнивание.
+    """
 
     model_config = ConfigDict(frozen=True)
 
     key: str
     value: str
+
+    INLINE_CHARS: ClassVar[int] = 120
+    """Самое длинное значение, которое ещё показывается в строку."""
+
+    def markdown(self) -> str:
+        if self._blocky():
+            return f"**{self.key}:**\n{Fence.around(self.value)}"
+
+        return f"**{self.key}:** `{self.value}`"
+
+    def plain(self) -> str:
+        return f"{self.key}: {self.value}"
+
+    def _blocky(self) -> bool:
+        if "\n" in self.value:
+            return True
+
+        if "`" in self.value:
+            return True
+
+        return len(self.value) > self.INLINE_CHARS
 
 
 class CodeBlock(BaseModel):
@@ -304,6 +382,12 @@ class CodeBlock(BaseModel):
     text: str
     language: str = ""
 
+    def markdown(self) -> str:
+        return Fence.around(self.text, self.language)
+
+    def plain(self) -> str:
+        return self.text
+
 
 class GridBlock(BaseModel):
     """Сетка строк с общими ключами."""
@@ -312,6 +396,20 @@ class GridBlock(BaseModel):
 
     block: Literal["grid"] = "grid"
     rows: Sequence[Mapping[str, Any]]
+
+    def markdown(self) -> str:
+        return MarkdownTable.render(list(self._cells()))
+
+    def plain(self) -> str:
+        return self.markdown()
+
+    def _cells(self) -> Iterator[dict[str, str]]:
+        for row in self.rows:
+            cells: dict[str, str] = {}
+            for key, value in row.items():
+                cells[key] = str(value)
+
+            yield cells
 
 
 class FactsBlock(BaseModel):
@@ -322,6 +420,20 @@ class FactsBlock(BaseModel):
     block: Literal["facts"] = "facts"
     facts: Sequence[Fact]
 
+    def markdown(self) -> str:
+        lines: list[str] = []
+        for fact in self.facts:
+            lines.append(fact.markdown())
+
+        return "\n\n".join(lines)
+
+    def plain(self) -> str:
+        lines: list[str] = []
+        for fact in self.facts:
+            lines.append(fact.plain())
+
+        return "\n".join(lines)
+
 
 class NoteBlock(BaseModel):
     """Подпись: усечение, статус команды, диагностика."""
@@ -330,6 +442,12 @@ class NoteBlock(BaseModel):
 
     block: Literal["note"] = "note"
     text: str
+
+    def markdown(self) -> str:
+        return NoteLine.render(self.text)
+
+    def plain(self) -> str:
+        return self.text
 
 
 class WidgetBlock(BaseModel):
@@ -341,6 +459,13 @@ class WidgetBlock(BaseModel):
     element: str
     props: Mapping[str, Any]
     title: str = ""
+
+    def markdown(self) -> str:
+        """Лента виджет блоком не рисует: остаётся подпись."""
+        return NoteLine.render(self.title)
+
+    def plain(self) -> str:
+        return self.title
 
 
 StudioBlock: TypeAlias = Annotated[
@@ -544,11 +669,12 @@ class ToolResultBase(BaseModel, ABC):
     @model_validator(mode="wrap")
     @classmethod
     def _by_kind(cls, value: Any, handler: ValidatorFunctionWrapHandler) -> Any:
-        """Значение, валидируемое как база, уходит классу своего kind."""
-        if cls is not ToolResultBase:
+        """Значение, валидируемое как база или промежуточный класс без kind
+        (FailureResult), уходит классу своего kind."""
+        if cls.declared_kind() is not None:
             return handler(value)
 
-        if isinstance(value, ToolResultBase):
+        if isinstance(value, cls):
             return value
 
         if not isinstance(value, Mapping):
@@ -558,6 +684,10 @@ class ToolResultBase(BaseModel, ABC):
         model = ResultKinds.of(str(kind))
         if model is None:
             msg = f"unknown tool result kind {kind!r}"
+            raise ValueError(msg)
+
+        if not issubclass(model, cls):
+            msg = f"tool result kind {kind!r} is not a {cls.__name__}"
             raise ValueError(msg)
 
         return model.model_validate(value)
@@ -734,16 +864,26 @@ class TableResult(ToolResultBase):
 
 
 class SqlStatement(BaseModel):
-    """Итог одной команды запроса; драйвер заполняет то, что умеет отдать."""
+    """Итог одной команды запроса; драйвер заполняет то, что умеет отдать.
+
+    Команда с текстом или фактами — отчёт и показывается целиком: блок SQL,
+    подпись, строки и факты — так насосы показывают, что именно выполнили.
+    Остальное — итог выборки пользователя: подпись у неё только там, где
+    строк нет или команд несколько.
+    """
 
     model_config = ConfigDict(frozen=True)
 
+    text: str = ""
+    """Выполненный текст команды; пусто — его показывать незачем."""
     rows: Sequence[Mapping[str, Any]] | None = None
     """Выборка; None — команда без результирующего набора (DML, DDL)."""
     affected_rows: int | None = None
     """Счётчик затронутых строк, если драйвер его даёт."""
     status: str = ""
     """Статус сервера как есть ('UPDATE 5' у postgres); пусто — сервер не отдаёт."""
+    facts: Sequence[Fact] = Field(default_factory=list)
+    """Что сервер сообщил помимо строк: сессия, счётчики, notices."""
     note: str = ""
     """Усечение или окно листания: 'truncated to max_rows (500)',
     'rows 51-100; more rows available, next offset=100'."""
@@ -761,44 +901,91 @@ class SqlStatement(BaseModel):
 
         return "statement executed"
 
-    def llm_text(self) -> str:
-        """Строки JSON'ом с note под ними; без строк — подпись."""
-        if self.rows is None:
+    def llm_text(self, captioned: bool) -> str:
+        """Подпись строкой над телом: текст команды, факты, строки JSON'ом и note."""
+        body = self._llm_body()
+        if not self._captioned(captioned):
+            return body
+
+        if not body:
             return self.caption()
 
-        body = json.dumps(self.rows, ensure_ascii=False, default=str)
-        if not self.note:
-            return body
+        return f"{self.caption()}\n{body}"
 
-        return f"{body}\n\n{self.note}"
+    def _llm_body(self) -> str:
+        parts: list[str] = []
+        if self.text:
+            parts.append(f"statement: {self.text}")
 
-    def markdown(self) -> str:
-        """Таблица с note под ней; без строк — подпись курсивом."""
-        if self.rows is None:
-            return NoteLine.render(self.caption())
+        if self.facts:
+            parts.append(FactsBlock(facts=self.facts).plain())
 
-        body = TableText.render(self.rows)
-        if not self.note:
-            return body
+        if self.rows is not None:
+            parts.append(json.dumps(self.rows, ensure_ascii=False, default=str))
 
-        return f"{body}\n\n{NoteLine.render(self.note)}"
+        if self.note:
+            parts.append(self.note)
+
+        return "\n\n".join(parts)
+
+    def markdown(self, captioned: bool) -> str:
+        """Блок SQL, подпись курсивом, факты, таблица и note под ними."""
+        parts: list[str] = []
+        if self.text:
+            parts.append(Fence.around(self.text, "sql"))
+
+        if self._captioned(captioned):
+            parts.append(NoteLine.render(self.caption()))
+
+        if self.facts:
+            parts.append(FactsBlock(facts=self.facts).markdown())
+
+        if self.rows is not None:
+            parts.append(TableText.render(self.rows))
+
+        if self.note:
+            parts.append(NoteLine.render(self.note))
+
+        return "\n\n".join(parts)
 
     def studio_blocks(self) -> Iterator[StudioBlock]:
-        """Сетка строк с note либо строка статуса."""
+        """Текст команды, сетка строк либо статус, факты и note."""
+        if self.text:
+            yield CodeBlock(text=self.text, language="sql")
+
         if self.rows is None:
             yield FactsBlock(facts=[Fact(key="status", value=self.caption())])
-            return
+        else:
+            yield GridBlock(rows=self.rows)
 
-        yield GridBlock(rows=self.rows)
+        if self.facts:
+            yield FactsBlock(facts=self.facts)
+
         if self.note:
             yield NoteBlock(text=self.note)
+
+    def _captioned(self, captioned: bool) -> bool:
+        """Подпись нужна среди нескольких команд, у команды без строк и у
+        отчёта — команды с текстом или фактами."""
+        if captioned:
+            return True
+
+        if self.rows is None:
+            return True
+
+        if self.text:
+            return True
+
+        return bool(self.facts)
 
 
 class SqlResult(ToolResultBase):
     """Итог SQL-запроса к любой базе: команды одного запроса по порядку.
 
     Одна команда показывается как есть; у нескольких перед каждой стоит её
-    подпись — статус сервера либо число строк, ничего сверх этого.
+    подпись — статус сервера либо число строк. Насосы кладут сюда же шаги
+    before/after и свою команду с текстом, контрактом колонок и фактами
+    сервера.
     """
 
     kind: Literal["sql"] = "sql"
@@ -807,23 +994,21 @@ class SqlResult(ToolResultBase):
     statements: Sequence[SqlStatement]
 
     def llm_view(self) -> str:
-        if len(self.statements) == 1:
-            return self.statements[0].llm_text()
+        captioned = len(self.statements) > 1
 
         parts: list[str] = []
         for statement in self.statements:
-            parts.append(f"{statement.caption()}\n{statement.llm_text()}")
+            parts.append(statement.llm_text(captioned))
 
         return "\n\n".join(parts)
 
     def chat_view(self) -> ChatView:
         if len(self.statements) == 1:
-            return ChatView(markdown=f"\n{self.statements[0].markdown()}")
+            return ChatView(markdown=f"\n{self.statements[0].markdown(False)}")
 
         blocks: list[str] = []
         for statement in self.statements:
-            blocks.append(NoteLine.render(statement.caption()))
-            blocks.append(statement.markdown())
+            blocks.append(statement.markdown(True))
 
         return ChatView(markdown="\n\n".join(blocks))
 
@@ -1097,32 +1282,319 @@ class ShellResult(ToolResultBase):
         return NoteLine.render("; ".join(notes))
 
 
-class ErrorResult(ToolResultBase):
-    """Tool не выполнен; UI рендерит такой результат как ошибку."""
+class FailureLayout:
+    """Раскладка ошибки по каналам: markdown ленты и плоский текст LLM и журнала.
 
-    kind: Literal["error"] = "error"
+    Ошибка описывает себя заголовком и блоками словаря studio; блок сам
+    знает свой markdown и плоский текст, а раскладка ставит над ними
+    заголовок — поэтому любая ошибка семейства выглядит одинаково во всех
+    каналах.
+    """
+
+    MARKDOWN_SPECIALS: ClassVar[str] = "\\`*_[]<>|~"
+
+    def markdown(self, headline: str, blocks: Sequence[StudioBlock]) -> str:
+        parts: list[str] = [f"**{self._escaped(headline)}**"]
+        for block in blocks:
+            parts.append(block.markdown())
+
+        return "\n\n".join(parts)
+
+    def plain(self, headline: str, blocks: Sequence[StudioBlock]) -> str:
+        parts: list[str] = [headline]
+        for block in blocks:
+            parts.append(block.plain())
+
+        return "\n".join(parts)
+
+    def _escaped(self, text: str) -> str:
+        escaped: list[str] = []
+        for char in text:
+            if char in self.MARKDOWN_SPECIALS:
+                escaped.append("\\")
+
+            escaped.append(char)
+
+        return "".join(escaped)
+
+
+class FailureResult(ToolResultBase):
+    """База ошибок открытого семейства результатов: единая спецификация показа.
+
+    Ошибка — такой же результат, как таблица или SQL: едет в конверте
+    инструмента, ложится в историю LLM артефактом и поднимается из неё по
+    kind. Наследник описывает ошибку данными — заголовком в одну строку
+    (что сломалось), деталями из словаря блоков studio, которые видят все
+    каналы, и трассой для журнала и studio, — а текст для ленты, LLM,
+    журнала и studio собирает раскладка FailureLayout. Любое исключение
+    превращает в наследника упаковщик FailurePacker (boba.toolkit.failure).
+    """
+
     ok: bool = False
-    message: str
     error_kind: str
+    """Машинный класс ошибки: имя типа исключения либо код отказа."""
+
+    _LAYOUT: ClassVar[FailureLayout] = FailureLayout()
+
+    @abstractmethod
+    def headline(self) -> str:
+        """Одна строка: что сломалось."""
+
+    @abstractmethod
+    def details(self) -> Sequence[StudioBlock]:
+        """Подробности для всех каналов: текст ошибки, причины, место."""
+
+    def trace(self) -> str:
+        """Трасса стека для журнала и studio; пусто — трассы нет."""
+        return ""
 
     def llm_view(self) -> str:
-        return self.message
+        return self._LAYOUT.plain(self.headline(), self.details())
 
     def chat_view(self) -> ChatView:
-        if "\n" in self.message:
-            return ChatView(markdown=f"**Error:**\n\n{self.message}")
+        return ChatView(markdown=self._LAYOUT.markdown(self.headline(), self.details()))
 
-        return ChatView(markdown=f"**Error:** {self.message}")
+    def log_view(self) -> str:
+        """Текст для журнала: то же, что видит LLM, плюс трасса."""
+        text = self.llm_view()
+
+        trace = self.trace()
+        if not trace:
+            return text
+
+        return f"{text}\n{trace}"
 
     def studio_view(self) -> StudioView:
-        blocks: list[StudioBlock] = [
-            CodeBlock(text=self.message),
-            FactsBlock(facts=[Fact(key="kind", value=self.error_kind)]),
-        ]
+        blocks: list[StudioBlock] = [NoteBlock(text=self.headline())]
+        blocks.extend(self.details())
+        blocks.append(FactsBlock(facts=[Fact(key="kind", value=self.error_kind)]))
+
+        trace = self.trace()
+        if trace:
+            blocks.append(CodeBlock(text=trace))
 
         return StudioView(
             summary=StudioSummary(figure="✕", detail=self.error_kind), blocks=blocks
         )
+
+
+FailureResultField: TypeAlias = SerializeAsAny[FailureResult]
+"""Любая ошибка семейства: восстанавливается по kind, как ToolResult."""
+
+
+class ErrorResult(FailureResult):
+    """Ошибка, чей текст уже написан для человека и LLM: отказ, сбой обвязки.
+
+    Первая строка текста — заголовок, остальные идут блоком как есть.
+    """
+
+    kind: Literal["error"] = "error"
+    message: str
+
+    def headline(self) -> str:
+        first, _, _ = self.message.partition("\n")
+
+        return first
+
+    def details(self) -> Sequence[StudioBlock]:
+        _, _, rest = self.message.partition("\n")
+        if not rest.strip():
+            return ()
+
+        return (CodeBlock(text=rest),)
+
+
+class FailureCause(BaseModel):
+    """Звено цепочки `raise ... from` упакованного исключения."""
+
+    model_config = ConfigDict(frozen=True)
+
+    error_type: str
+    message: str
+
+
+class ExceptionResult(FailureResult):
+    """Исключение, упакованное без собственного вида ошибки.
+
+    Заголовок — тип и первая строка текста; остальной текст, место
+    возникновения и цепочка причин идут подробностями, полная трасса —
+    только в журнал и studio. Причина, чей текст уже показан выше по
+    цепочке, называется одним типом: драйверы и обёртки часто повторяют
+    одно и то же сообщение.
+    """
+
+    kind: Literal["exception"] = "exception"
+    message: str
+    causes: Sequence[FailureCause] = ()
+    raised_at: str = ""
+    traceback: str = ""
+
+    HEADLINE_CHARS: ClassVar[int] = 160
+
+    def headline(self) -> str:
+        first, _, _ = self.message.strip().partition("\n")
+        if not first:
+            return self.error_kind
+
+        return f"{self.error_kind}: {self._clipped(first)}"
+
+    def details(self) -> Sequence[StudioBlock]:
+        blocks: list[StudioBlock] = []
+
+        if body := self._body():
+            blocks.append(CodeBlock(text=body))
+
+        blocks.extend(self._facts())
+
+        return blocks
+
+    def llm_view(self) -> str:
+        """Текст целиком одной записью: заголовок ленты режется, а модели и
+        журналу нужна вся строка без повтора блоком."""
+        text = self.message.strip()
+        if not text:
+            return self._LAYOUT.plain(self.error_kind, self._facts())
+
+        return self._LAYOUT.plain(f"{self.error_kind}: {text}", self._facts())
+
+    def trace(self) -> str:
+        return self.traceback
+
+    def _clipped(self, line: str) -> str:
+        """Строка заголовка не длиннее потолка, обрезанная по слову."""
+        if len(line) <= self.HEADLINE_CHARS:
+            return line
+
+        head = line[: self.HEADLINE_CHARS]
+        cut = head.rfind(" ")
+        if cut > 0:
+            head = head[:cut]
+
+        return head + " …"
+
+    def _body(self) -> str:
+        """Текст сверх заголовка: весь текст, если первая строка не влезла."""
+        first, _, rest = self.message.strip().partition("\n")
+        if len(first) > self.HEADLINE_CHARS:
+            return self.message.strip()
+
+        return rest
+
+    def _facts(self) -> list[StudioBlock]:
+        facts: list[Fact] = []
+        if self.raised_at:
+            facts.append(Fact(key="raised at", value=self.raised_at))
+
+        facts.extend(self._cause_facts())
+
+        if not facts:
+            return []
+
+        return [FactsBlock(facts=facts)]
+
+    def _cause_facts(self) -> Iterator[Fact]:
+        shown = [self.message]
+        for cause in self.causes:
+            if self._repeats(cause.message, shown):
+                yield Fact(key="caused by", value=f"{cause.error_type} (same message)")
+                continue
+
+            shown.append(cause.message)
+
+            if not cause.message:
+                yield Fact(key="caused by", value=cause.error_type)
+                continue
+
+            yield Fact(key="caused by", value=f"{cause.error_type}: {cause.message}")
+
+    def _repeats(self, message: str, shown: Sequence[str]) -> bool:
+        if not message:
+            return False
+
+        containing = self._containing(message, shown)
+
+        return any(containing)
+
+    @staticmethod
+    def _containing(message: str, shown: Sequence[str]) -> Iterator[bool]:
+        for text in shown:
+            yield message in text
+
+
+class GroupCall(BaseModel):
+    """Вызов группы каналов: инструмент и id вызова модели."""
+
+    model_config = ConfigDict(frozen=True)
+
+    tool: str
+    call_id: str
+
+
+class GroupFailureResult(FailureResult):
+    """Срыв группы вызовов, связанных каналами: «все или никто».
+
+    Вызов, который сорвал группу (own), показывает свою ошибку целиком и
+    пометку, что остальные вызовы ничего не зафиксировали. Остальные вызовы
+    получают короткий итог со ссылкой на сорвавшийся вызов — копия чужой
+    ошибки в каждом шаге ничего не объясняет. Без origin группу сорвала она
+    сама (застой, срок открытия каналов), и причину видят все.
+    """
+
+    kind: Literal["stream_group_failure"] = "stream_group_failure"
+    cause: FailureResultField
+    origin: GroupCall | None = None
+    calls: Sequence[GroupCall] = ()
+    own: bool = False
+
+    def headline(self) -> str:
+        if self.origin is None:
+            return self.cause.headline()
+
+        if self.own:
+            return self.cause.headline()
+
+        return f"stopped: {self.origin.tool} failed in the stream group"
+
+    def details(self) -> Sequence[StudioBlock]:
+        if self.origin is None:
+            return (*self.cause.details(), NoteBlock(text=self._stopped_note()))
+
+        if self.own:
+            return (*self.cause.details(), NoteBlock(text=self._stopped_note()))
+
+        facts = [
+            Fact(
+                key="failed call", value=f"{self.origin.tool} ({self.origin.call_id})"
+            ),
+            Fact(key="cause", value=self.cause.headline()),
+        ]
+
+        return (FactsBlock(facts=facts), NoteBlock(text="nothing was committed"))
+
+    def trace(self) -> str:
+        if self.origin is None:
+            return self.cause.trace()
+
+        if self.own:
+            return self.cause.trace()
+
+        return ""
+
+    def _stopped_note(self) -> str:
+        others = list(self._others())
+        if not others:
+            return "the stream group was stopped, nothing was committed"
+
+        joined = ", ".join(others)
+
+        return f"the stream group was stopped, nothing was committed by: {joined}"
+
+    def _others(self) -> Iterator[str]:
+        for call in self.calls:
+            if call == self.origin:
+                continue
+
+            yield call.tool
 
 
 class ToolArtifact:

@@ -422,7 +422,7 @@ class TestOrdersReport:
         )
         landed = Loaded(target, DW, "orders_report")
 
-        assert f"{ORDERS} rows written" in report
+        assert f"{ORDERS} rows loaded" in report
         assert await landed.columns() == EXPECTED_COLUMNS
         assert await landed.count() == ORDERS
         assert await landed.aggregate("count(*) filter (where paid is null)") > 0
@@ -443,7 +443,7 @@ class TestOrdersReport:
             StreamWire.CSV,
         )
 
-        assert "error" not in report.split("rows written")[0].lower()
+        assert "error" not in report.split("rows loaded")[0].lower()
         assert await Loaded(target, DW, "orders_report").count() == ORDERS
 
     async def test_tsv_wire_lands_the_same_content(
@@ -459,7 +459,7 @@ class TestOrdersReport:
         )
         landed = Loaded(target, DW, "orders_report_tsv")
 
-        assert f"{ORDERS} rows written" in report
+        assert f"{ORDERS} rows loaded" in report
         assert await landed.columns() == EXPECTED_COLUMNS
         assert await landed.count() == ORDERS
         assert await landed.aggregate("sum(gross)") == await Loaded(
@@ -500,8 +500,8 @@ class TestIncrementalMonth:
         )
 
         assert in_month > 0
-        assert f"deleted: {in_month} rows" in report
-        assert f"{in_month} rows written" in report
+        assert f"{in_month} rows deleted" in report
+        assert f"{in_month} rows loaded" in report
         assert await landed.aggregate("count(*) filter (where note = 'stale')") == 0
         assert await landed.count() == ORDERS
         await same_content(source, target, "orders_report")
@@ -569,7 +569,7 @@ class TestRenamedMart:
             rules=self.RULES,
         )
 
-        assert f"{ORDERS} rows written" in report
+        assert f"{ORDERS} rows loaded" in report
         assert await mart.count() == ORDERS
         assert await mart.texts("client", order_by="order_uid") == (
             await report_view.texts("customer_name", order_by="order_id")
@@ -627,7 +627,8 @@ class TestSchemaDrift:
             if name.startswith("orders_drift_bak_"):
                 backups.append(name)
 
-        assert "backup: orders_drift_bak_" in report
+        assert "saved as" in report
+        assert "orders_drift_bak_" in report
         assert len(backups) == 1
         assert await Loaded(target, DW, backups[0]).count() == ORDERS
         assert await drift.count() == ORDERS
@@ -664,7 +665,7 @@ class TestCreateTemplate:
                 create_table=template,
             )
 
-            assert f"{ORDERS} rows written" in report
+            assert f"{ORDERS} rows loaded" in report
 
         landed = Loaded(target, DW, "orders_tpl")
         if target.greenplum:
@@ -739,7 +740,7 @@ class TestStagingSwap:
         )
         tables = await landed.tables()
 
-        assert f"{ORDERS} rows written" in report
+        assert f"{ORDERS} rows loaded" in report
         assert "orders_report_stage" not in tables
         assert "orders_report_old" not in tables
         assert await landed.aggregate("count(*) filter (where note = 'old')") == 0
@@ -764,7 +765,7 @@ class TestArrowBetweenServers:
         landed = Loaded(target, DW, "orders_report_arrow")
         view = Loaded(source, SRC, "orders_report")
 
-        assert f"{ORDERS} rows written" in report
+        assert f"{ORDERS} rows loaded" in report
         assert await landed.count() == ORDERS
         assert await landed.aggregate("sum(gross)") == await view.aggregate(
             "sum(gross)"
@@ -798,7 +799,7 @@ class TestDryRun:
             insert=InsertNothing(kind="nothing"),
         )
 
-        assert report.startswith("0 rows written")
+        assert report.startswith("0 rows loaded")
         assert await landed.columns() == columns
         assert await landed.count() == ORDERS
 
@@ -835,7 +836,7 @@ class TestBackToSource:
         view = Loaded(source, SRC, "orders_report")
         expected = await view.aggregate("count(distinct (city, month))")
 
-        assert f"{expected} rows written" in report
+        assert f"{expected} rows loaded" in report
         assert await city_month.aggregate("sum(orders)") == ORDERS
         assert await city_month.aggregate("sum(gross)") == await view.aggregate(
             "sum(gross)"

@@ -80,12 +80,13 @@ def test_module_loads_and_validates_config(raw_config: DictConfig) -> None:
     reply = outcome.reply
     if not (isinstance(reply, ReplyError)):
         raise AssertionError("isinstance(reply, ReplyError)")
-    if reply.kind != "invalid_request":
-        raise AssertionError('reply.kind == "invalid_request"')
-    if "ModuleNotFoundError" in reply.message:
-        raise AssertionError('"ModuleNotFoundError" not in reply.message')
-    if "ImportError" in reply.message:
-        raise AssertionError('"ImportError" not in reply.message')
+    text = reply.failure.llm_view()
+    if reply.failure.error_kind != "ToolEntryError":
+        raise AssertionError(f"failure: {reply.failure!r}")
+    if "ModuleNotFoundError" in text:
+        raise AssertionError(f"import failure instead of config: {text!r}")
+    if "ImportError" in text:
+        raise AssertionError(f"import failure instead of config: {text!r}")
     # параллелизм страниц задаётся явно — без него конфиг невалиден
-    if "page_workers" not in reply.message:
-        raise AssertionError('"page_workers" in reply.message')
+    if "page_workers" not in text:
+        raise AssertionError(f"page_workers must be named: {text!r}")

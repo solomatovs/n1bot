@@ -339,7 +339,7 @@ class TestOracleCircle:
         )
         landed = OraLoaded(oracle, "circle")
 
-        assert f"{ROWS} rows written" in report
+        assert f"{ROWS} rows loaded" in report
         assert await landed.columns() == expected_oracle(oracle)
         assert await landed.count() == ROWS
         assert await landed.scalar("count(vcc)") == await OraLoaded(oracle, SRC).scalar(
@@ -358,8 +358,8 @@ class TestOracleCircle:
             ),
         )
 
-        assert f"{ROWS} rows written" in report
-        assert "error" not in report.split("rows written")[0].lower()
+        assert f"{ROWS} rows loaded" in report
+        assert "error" not in report.split("rows loaded")[0].lower()
         assert await OraLoaded(oracle, "circle").count() == ROWS
 
 
@@ -386,7 +386,7 @@ class TestOracleToOthers:
         landed = Loaded(postgres, PG_SCHEMA, table)
         source = OraLoaded(oracle, SRC)
 
-        assert f"{ROWS} rows written" in chained.in_report
+        assert f"{ROWS} rows loaded" in chained.in_report
         assert await landed.columns() == EXPECTED_POSTGRES
         assert await landed.count() == ROWS
         assert await landed.aggregate("sum(n19)") == Decimal(
@@ -425,7 +425,7 @@ class TestOracleToOthers:
         landed = ChLoaded(clickhouse, table)
         source = OraLoaded(oracle, SRC)
 
-        assert f"{ROWS} rows written" in chained.in_report
+        assert f"{ROWS} rows loaded" in chained.in_report
         assert dict(await landed.types()) == EXPECTED_CLICKHOUSE
         assert await landed.count() == ROWS
         assert await landed.scalar("sum(n18_4)") == await source.scalar("sum(n18_4)")
@@ -570,7 +570,7 @@ class TestPostgresIntoOracle:
         )
         landed = OraLoaded(oracle, "from_pg")
 
-        assert f"{ROWS} rows written" in chained.in_report
+        assert f"{ROWS} rows loaded" in chained.in_report
         assert await landed.columns() == [
             ("id", "NUMBER(19,0)", True),
             ("arr", "CLOB", False),
@@ -588,7 +588,7 @@ class TestPostgresIntoOracle:
         landed = OraLoaded(oracle, "from_pg")
         source = Loaded(pg_source, PG_SCHEMA, "src")
 
-        assert f"{ROWS} rows written" in chained.in_report
+        assert f"{ROWS} rows loaded" in chained.in_report
         assert await landed.columns() == expected_from_postgres(oracle)
         assert await landed.count() == ROWS
         assert await landed.scalar("sum(n)") == await source.aggregate("sum(n)")
@@ -625,8 +625,8 @@ class TestPostgresIntoOracle:
             ),
         )
 
-        assert f"{ROWS} rows written" in chained.in_report
-        assert "error" not in chained.in_report.split("rows written")[0].lower()
+        assert f"{ROWS} rows loaded" in chained.in_report
+        assert "error" not in chained.in_report.split("rows loaded")[0].lower()
 
     async def test_zoned_stream_into_unzoned_table_is_refused(
         self, oracle: OracleSide, pg_source: PostgresSide
@@ -683,8 +683,8 @@ class TestStrategies:
         )
 
         assert in_month > 0
-        assert f"deleted: {in_month} rows" in chained.in_report
-        assert f"{in_month} rows written" in chained.in_report
+        assert f"{in_month} rows deleted" in chained.in_report
+        assert f"{in_month} rows loaded" in chained.in_report
         assert await landed.scalar("count(case when vc = 'stale' then 1 end)") == 0
         assert await landed.count() == ROWS
 
@@ -705,7 +705,7 @@ class TestStrategies:
         )
         landed = OraLoaded(oracle, "mart")
 
-        assert f"{ROWS} rows written" in chained.in_report
+        assert f"{ROWS} rows loaded" in chained.in_report
         assert await landed.columns() == [
             ("key", "NUMBER(19,0)", True),
             ("amount", "NUMBER(14,3)", False),
@@ -771,7 +771,8 @@ class TestStrategies:
             if name.startswith("drift_bak_"):
                 backups.append(name)
 
-        assert "backup: drift_bak_" in chained.in_report
+        assert "saved as" in chained.in_report
+        assert "drift_bak_" in chained.in_report
         assert len(backups) == 1
         assert await OraLoaded(oracle, backups[0]).count() == ROWS
         assert await drift.count() == ROWS
@@ -795,7 +796,7 @@ class TestStrategies:
         )
         landed = OraLoaded(oracle, "templated")
 
-        assert f"{ROWS} rows written" in chained.in_report
+        assert f"{ROWS} rows loaded" in chained.in_report
         assert "after:" in chained.in_report
         assert await landed.scalar("sum(n)") == 2 * await Loaded(
             pg_source, PG_SCHEMA, "src"
@@ -823,7 +824,7 @@ class TestStrategies:
             ),
         )
 
-        assert chained.in_report.startswith("0 rows written")
+        assert chained.in_report.startswith("0 rows loaded")
         assert await landed.columns() == columns
         assert await landed.count() == ROWS
 
@@ -946,7 +947,7 @@ class TestClickHouseIntoOracle:
         for name, kind, not_null in EXPECTED_FROM_CLICKHOUSE:
             expected.append((name, kind.format(boolean=boolean), not_null))
 
-        assert f"{ROWS} rows written" in chained.in_report
+        assert f"{ROWS} rows loaded" in chained.in_report
         assert await landed.columns() == expected
         assert await landed.count() == ROWS
         assert await landed.scalar("sum(dec)") == await source.scalar("sum(dec)")
@@ -994,7 +995,7 @@ class TestSourceRefusals:
         )
         landed = OraLoaded(oracle, "utc")
 
-        assert f"{ROWS} rows written" in chained.in_report
+        assert f"{ROWS} rows loaded" in chained.in_report
         assert ("utc", "TIMESTAMP(6) WITH TIME ZONE", False) in await landed.columns()
         assert (
             await landed.column("to_char(utc, 'yyyy-mm-dd hh24:mi:ss.ff6 tzh:tzm')")

@@ -14,14 +14,12 @@ QueryBuildError — сборщик получил один параметр с �
 from __future__ import annotations
 
 import sys
-from collections.abc import Mapping, Sequence
+from collections.abc import Sequence
 from enum import StrEnum
-from typing import Annotated, ClassVar, Final
+from typing import Annotated, Any, ClassVar, Final
 
 from pydantic import Field
 
-from boba.connections.address import AddressError
-from boba.db.clickhouse import ClickHouseError, ClickHouseQueryError
 from boba.db.clickhouse.address import ChAddresses
 from boba.db.clickhouse.connection import ClickHouseConfig
 from boba.db.clickhouse.query import ChQuery, ChQueryBuilder
@@ -31,7 +29,7 @@ from boba.db.clickhouse.target import (
     ChStreamWire,
     ChTableRef,
 )
-from boba.toolkit.contract import ColumnDeclaration, ContractError
+from boba.toolkit.contract import ColumnDeclaration
 from boba.toolkit.entry import ToolMain
 from boba.toolkit.facade import Injected, UserConnection, tool
 from boba.toolkit.ports import (
@@ -39,12 +37,9 @@ from boba.toolkit.ports import (
     Inbound,
     Outbound,
     StreamGroup,
-    StreamGroupAbortedError,
 )
 from boba.toolkit.result import MarkdownResult, SqlResult, SqlStatement, TableResult
 from boba.toolkit.sql import (
-    QueryBuildError,
-    SqlErrorKind,
     SqlLimits,
 )
 from boba.toolkit.transfer import (
@@ -59,7 +54,6 @@ from boba.toolkit.transfer import (
     TransferFrame,
     TransferInbound,
     TransferOutbound,
-    TransferReportText,
     UnknownTypeStrategy,
 )
 from boba.toolkit.types import SecretRevealing
@@ -162,6 +156,22 @@ async def run_and_collect(
     statement = SqlStatement(rows=page.rows, note=page.note())
 
     return SqlResult(engine=ChToolConfig.ENGINE, statements=[statement])
+
+
+async def run_steps(client: Any, steps: Sequence[str]) -> list[SqlStatement]:
+    """Стейтменты before/after насоса по одному, по порядку, тем же клиентом:
+    в сессии клиента они делят SET и временные таблицы с командой насоса.
+    Строки выборок не собираются, шаг даёт ответ сервера. client —
+    AsyncClient драйвера: его пакет есть только внутри песочницы."""
+    from boba.db.clickhouse.payload import PayloadClickHouse  # noqa: PLC0415
+
+    statements: list[SqlStatement] = []
+    for step in steps:
+        query = ChQueryBuilder().raw_query(step).build()
+        outcome = await PayloadClickHouse.command(client, query.text, query.params)
+        statements.append(SqlStatement(text=step, status=outcome))
+
+    return statements
 
 
 @tool
@@ -1133,7 +1143,7 @@ async def ch_stream_out(  # noqa: PLR0913
     after: AfterSteps = (),
     *,
     out: Annotated[Outbound[TransferFrame], Injected],
-) -> MarkdownResult:
+) -> SqlResult:
     """Источник sync-потока: строки запроса с контрактом колонок для приёмника.
 
     Запрос выполняется один раз. tsv: ответ идёт в
@@ -1159,7 +1169,7 @@ async def ch_stream_out(  # noqa: PLR0913
     async with PayloadClickHouse.opened_for_scripts(
         connection, before, after
     ) as client:
-        before_steps = await PayloadClickHouse.script(client, before)
+        before_steps = await run_steps(client, before)
         match wire:
             case ChStreamWire.TSV:
                 report = await ChTsvOut(client).stream(
@@ -1170,9 +1180,11 @@ async def ch_stream_out(  # noqa: PLR0913
                     statement.text, columns, chunk_bytes, outbound
                 )
 
-        after_steps = await PayloadClickHouse.script(client, after)
+        after_steps = await run_steps(client, after)
 
-    return MarkdownResult(text=report.scripted(before_steps, after_steps).render())
+    statements = [*before_steps, report.sql_statement(), *after_steps]
+
+    return SqlResult(engine=ChToolConfig.ENGINE, statements=statements)
 
 
 @tool
@@ -1302,7 +1314,7 @@ async def ch_stream_in(  # noqa: PLR0913
     *,
     feed: Annotated[Inbound[TransferFrame], Injected],
     group: Annotated[StreamGroup, Injected],
-) -> MarkdownResult:
+) -> SqlResult:
     """Приёмник ClickHouse со стратегиями: поток любого источника в таблицу.
 
     Таблица по умолчанию — ReplicatedMergeTree с ключом order_by, DDL идут
@@ -1330,7 +1342,7 @@ async def ch_stream_in(  # noqa: PLR0913
     head = await inbound.get_schema()
     table = ChTableRef(database=database, name=table_name)
     async with payload.opened_for_scripts(connection, before, after) as client:
-        before_steps = await payload.script(client, before)
+        before_steps = await run_steps(client, before)
         if head.wire is StreamWire.ARROW:
             contract = ArrowContract.model_validate(head.contract)
             loader = ChArrowLoader(
@@ -1360,11 +1372,11 @@ async def ch_stream_in(  # noqa: PLR0913
                 template,
             )
 
-        after_steps = await payload.script(client, after)
+        after_steps = await run_steps(client, after)
 
-    return MarkdownResult(
-        text=TransferReportText().render(report, before_steps, after_steps)
-    )
+    statements = [*report.statements(), *before_steps, *after_steps]
+
+    return SqlResult(engine=ChToolConfig.ENGINE, statements=statements)
 
 
 @tool
@@ -1383,16 +1395,6 @@ async def ch_address(connection: ChConnection) -> TableResult:
 
     return TableResult(rows=[row])
 
-
-EXPECTED: Mapping[type[Exception], SqlErrorKind] = {
-    StreamGroupAbortedError: SqlErrorKind.STREAM_ABORTED,
-    ContractError: SqlErrorKind.SQL_FAILED,
-    TransferError: SqlErrorKind.SQL_FAILED,
-    AddressError: SqlErrorKind.UNKNOWN_TARGET,
-    QueryBuildError: SqlErrorKind.SQL_FAILED,
-    ClickHouseError: SqlErrorKind.DATABASE_UNAVAILABLE,
-    ClickHouseQueryError: SqlErrorKind.SQL_FAILED,
-}
 
 TOOLS: Final = ToolMain.toolset(
     ch_list_tables,

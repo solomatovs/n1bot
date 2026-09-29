@@ -521,7 +521,7 @@ class TestOrdersReport:
         )
         landed = Loaded(target, DW, "orders_report")
 
-        assert f"{ORDERS} rows written" in report
+        assert f"{ORDERS} rows loaded" in report
         assert typed(await landed.columns()) == typed(EXPECTED_COLUMNS)
         assert not_null(await landed.columns()) >= NOT_NULL
         assert await landed.count() == ORDERS
@@ -542,7 +542,7 @@ class TestOrdersReport:
             DeleteTruncate(kind="truncate"),
         )
 
-        assert "error" not in report.split("rows written")[0].lower()
+        assert "error" not in report.split("rows loaded")[0].lower()
         assert await Loaded(target, DW, "orders_report").count() == ORDERS
 
 
@@ -576,8 +576,8 @@ class TestIncrementalMonth:
         )
 
         assert in_month > 0
-        assert f"deleted: {in_month} rows" in report
-        assert f"{in_month} rows written" in report
+        assert f"{in_month} rows deleted" in report
+        assert f"{in_month} rows loaded" in report
         assert await landed.aggregate("count(case when note = 'stale' then 1 end)") == 0
         assert await landed.count() == ORDERS
         await same_content(source, target, "orders_report")
@@ -644,7 +644,7 @@ class TestRenamedMart:
             rules=self.RULES,
         )
 
-        assert f"{ORDERS} rows written" in report
+        assert f"{ORDERS} rows loaded" in report
         assert await mart.count() == ORDERS
         assert await mart.texts("client", order_by="order_uid") == (
             await view.column('"customer_name"', order_by='"order_id"')
@@ -700,7 +700,8 @@ class TestSchemaDrift:
             if name.startswith("orders_drift_bak_"):
                 backups.append(name)
 
-        assert "backup: orders_drift_bak_" in report
+        assert "saved as" in report
+        assert "orders_drift_bak_" in report
         assert len(backups) == 1
         assert await Loaded(target, DW, backups[0]).count() == ORDERS
         assert await drift.count() == ORDERS
@@ -735,7 +736,7 @@ class TestCreateTemplate:
                 create_table=template,
             )
 
-            assert f"{ORDERS} rows written" in report
+            assert f"{ORDERS} rows loaded" in report
 
         landed = Loaded(target, DW, "orders_tpl")
         if target.greenplum:
@@ -806,7 +807,7 @@ class TestStagingSwap:
         )
         tables = await landed.tables()
 
-        assert f"{ORDERS} rows written" in report
+        assert f"{ORDERS} rows loaded" in report
         assert "orders_report_stage" not in tables
         assert await landed.aggregate("count(case when note = 'old' then 1 end)") == 0
         await same_content(source, target, "orders_report")
@@ -831,7 +832,7 @@ class TestDryRun:
             insert=InsertNothing(kind="nothing"),
         )
 
-        assert report.startswith("0 rows written")
+        assert report.startswith("0 rows loaded")
         assert await landed.columns() == columns
         assert await landed.count() == ORDERS
 
@@ -861,7 +862,7 @@ class TestBinary:
         )
         landed = Loaded(target, DW, "customer_uids")
 
-        assert f"{CUSTOMERS} rows written" in report
+        assert f"{CUSTOMERS} rows loaded" in report
         assert await landed.columns() == [
             ("id", "bigint", True),
             ("uid", "character varying(34)", False),

@@ -11,7 +11,7 @@ from typing import Any, ClassVar
 
 from starlette.requests import HTTPConnection, Request
 from starlette.responses import JSONResponse, Response
-from starlette.types import ASGIApp, Receive, Scope, Send
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from boba.identity.errors import BaseError, FailureReport, to_domain
 from boba.identity.session import LogLine
@@ -199,13 +199,19 @@ class StaleSessionMiddleware:
 
     Chainlit проверяет cookie своим декодером и поколения не знает, поэтому
     после рестарта процесса его маршруты приняли бы старую сессию. Здесь
-    токен читается нашим читателем: чужое поколение — 401 и снятие cookie,
-    страница уходит на вход. Прочие отказы (срок, подпись) оставляются
-    маршрутам, они умеют их сами.
+    токен читается нашим читателем: при чужом поколении запрос идёт дальше
+    без cookie входа, а ответ приложения снимает её в браузере. Приложение
+    видит обычного гостя: страница входа рисуется, api отвечает своим 401.
+    Прочие отказы (срок, подпись) оставляются маршрутам, они умеют их сами.
     """
 
     STALE_GRACE_SEC: ClassVar[int] = 10 * 365 * 24 * 3600
     """Срок здесь не проверяется: просроченный токен — забота маршрутов."""
+
+    COOKIE_HEADER: ClassVar[bytes] = b"cookie"
+    SET_COOKIE_HEADER: ClassVar[bytes] = b"set-cookie"
+    HEADER_ENCODING: ClassVar[str] = "latin-1"
+    PAIR_SEPARATOR: ClassVar[str] = ";"
 
     def __init__(self, app: ASGIApp, tokens: TokenReader, cookie: CookieSpec) -> None:
         self.app = app
@@ -230,25 +236,67 @@ class StaleSessionMiddleware:
                 return await self.app(scope, receive, send)
 
             self._logger.info(
-                "%s %s: stale session cookie refused: %s",
+                "%s %s: stale session cookie dropped, the request goes on as a "
+                "guest: %s",
                 scope.get("method", "?"),
                 scope.get("path", "?"),
                 exc,
             )
-            response = JSONResponse(
-                content={
-                    "detail": (
-                        "your sign-in belongs to a previous session generation, "
-                        "sign in again"
-                    )
-                },
-                status_code=401,
-            )
-            self._cookie.clear(response, request.cookies)
+            guest = self._without_ours(scope, request.cookies)
+            clearing = self._clearing(request.cookies)
 
-            return await response(scope, receive, send)
+            async def send_clearing(message: Message) -> None:
+                if message["type"] == "http.response.start":
+                    headers = list(message.get("headers", []))
+                    headers.extend(clearing)
+                    message = {**message, "headers": headers}
+
+                await send(message)
+
+            return await self.app(guest, receive, send_clearing)
 
         return await self.app(scope, receive, send)
+
+    def _without_ours(self, scope: Scope, present: Mapping[str, str]) -> Scope:
+        """Scope запроса без cookie входа; прочие cookie остаются как пришли."""
+        ours = self._cookie.jar.ours(present)
+
+        headers: list[tuple[bytes, bytes]] = []
+        for name, value in scope["headers"]:
+            if name != self.COOKIE_HEADER:
+                headers.append((name, value))
+                continue
+
+            kept = self._kept_pairs(value.decode(self.HEADER_ENCODING), ours)
+            if kept:
+                headers.append((name, kept.encode(self.HEADER_ENCODING)))
+
+        return {**scope, "headers": headers}
+
+    def _kept_pairs(self, raw: str, ours: set[str]) -> str:
+        kept: list[str] = []
+        for pair in raw.split(self.PAIR_SEPARATOR):
+            name, _, _ = pair.partition("=")
+            if name.strip() in ours:
+                continue
+
+            kept.append(pair.strip())
+
+        return f"{self.PAIR_SEPARATOR} ".join(kept)
+
+    def _clearing(self, present: Mapping[str, str]) -> list[tuple[bytes, bytes]]:
+        """Заголовки Set-Cookie, снимающие cookie входа и её чанки."""
+        cleared = Response()
+        self._cookie.clear(cleared, present)
+
+        headers: list[tuple[bytes, bytes]] = []
+        for name, value in cleared.raw_headers:
+            if name != self.SET_COOKIE_HEADER:
+                continue
+
+            headers.append((name, value))
+
+        return headers
 
 
 class DomainErrorMiddleware:

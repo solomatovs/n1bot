@@ -41,7 +41,7 @@ from boba.toolkit.contract import (
     ColumnSpec,
     ColumnType,
     ContractError,
-    ContractText,
+    ContractTable,
     Declarations,
     DeclaredType,
     Engine,
@@ -369,7 +369,9 @@ class PgArrowTable(TransferTable):
         )
         await self._execute(query)
 
-        return DeleteOutcome(rows=0, statement=query.text.as_string(self._conn))
+        return DeleteOutcome(
+            effect="removed by truncate", statement=query.text.as_string(self._conn)
+        )
 
     async def delete_all(self) -> DeleteOutcome:
         query = (
@@ -399,7 +401,9 @@ class PgArrowTable(TransferTable):
 
         rows = max(rows, 0)
 
-        return DeleteOutcome(rows=rows, statement=query.text.as_string(self._conn))
+        return DeleteOutcome(
+            effect=f"{rows} rows deleted", statement=query.text.as_string(self._conn)
+        )
 
 
 class PgArrowSource:
@@ -415,7 +419,7 @@ class PgArrowSource:
         self._types = PgArrowTypes(conn.adapters.types)
         self._declarations = Declarations()
         self._contract = StreamContract()
-        self._contract_text = ContractText()
+        self._contract_table = ContractTable()
 
     def contract(
         self,
@@ -469,7 +473,8 @@ class PgArrowSource:
         report = await self._out.stream_into(text, schema, chunk_bytes, out.writer())
 
         return PgCommandReport(
-            summary=self._contract_text.render(StreamWire.ARROW.value, specs),
+            summary=self._contract_table.caption(StreamWire.ARROW.value, specs),
+            columns=self._contract_table.rows(specs),
             status=report.status,
             statement=report.statement,
             backend_pid=report.backend_pid,
@@ -525,6 +530,10 @@ class PgArrowSink(TransferSink):
         report = await self._arrow_in.copy_query(query, self._reader)
 
         return report.rows
+
+    def method(self) -> str:
+        """Строки идут прямо в таблицу в транзакции вызова: пояснять нечего."""
+        return ""
 
     async def discard(self) -> int:
         async for _ in self._reader.batches:

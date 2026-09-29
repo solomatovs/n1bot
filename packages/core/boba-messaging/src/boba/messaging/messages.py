@@ -332,7 +332,7 @@ class ToolFinished(Message):
 
 
 class ToolFailed(Message):
-    """Вызов call_id провалился; error — текст сбоя, тот же, что получила модель."""
+    """Вызов call_id провалился; error — markdown результата-ошибки для ленты."""
 
     kind: Literal[MessageKind.TOOL_FAILED] = MessageKind.TOOL_FAILED
     turn_id: str = Field(min_length=1)

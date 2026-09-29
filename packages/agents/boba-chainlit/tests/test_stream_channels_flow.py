@@ -31,7 +31,7 @@ from boba.stand_core import fake_toolmod
 from boba.stand_core.fake_toolmod import FakeConfig
 from boba.toolkit.chain import StreamTimings
 from boba.toolkit.entry import ToolMain
-from boba.toolkit.result import ErrorResult, ToolArtifact
+from boba.toolkit.result import FailureResult, GroupFailureResult, ToolArtifact
 from boba.toolkit.wrap import ToolProcessWrap
 from boba.toolrun.call_id import ToolCallIdField
 from boba.toolrun.errors import ToolErrorGuard
@@ -98,7 +98,7 @@ class ChannelStand:
         ToolCallIdField.attach_all(tools)
         self.streams = StreamGroups(TIMINGS, tools)
         StreamCallHooks(self.streams).guard_all(tools)
-        ToolErrorGuard.guard_all(tools)
+        ToolErrorGuard().guard_all(tools)
         self.tools = tools
 
     def tool(self, name: str) -> BaseTool:
@@ -145,15 +145,15 @@ class ChannelStand:
         return replies
 
 
-def _error(message: ToolMessage) -> ErrorResult:
+def _error(message: ToolMessage) -> FailureResult:
     artifact = ToolArtifact.revive(message.artifact)
-    assert isinstance(artifact, ErrorResult), message.content
+    assert isinstance(artifact, FailureResult), message.content
     return artifact
 
 
 def _ok(message: ToolMessage) -> str:
     artifact = ToolArtifact.revive(message.artifact)
-    assert not isinstance(artifact, ErrorResult), message.content
+    assert not isinstance(artifact, FailureResult), message.content
     return str(message.content)
 
 
@@ -266,7 +266,7 @@ class TestModelWiresStreams:
 
         for key in ("call_0", "call_1", "call_2"):
             error = _error(replies[key])
-            assert "channel 'rows' has two writers" in error.message
+            assert "channel 'rows' has two writers" in error.llm_view()
             assert error.error_kind == StreamCallKind.PLAN_REFUSED
 
         assert not (tmp_path / "never").exists()
@@ -280,6 +280,10 @@ class TestModelWiresStreams:
 
         for key in ("call_0", "call_1"):
             error = _error(replies[key])
-            assert "stream group failed, no call commits" in error.message
+            assert isinstance(error, GroupFailureResult), error
+            assert error.origin is not None, error
+            assert error.origin.call_id == "call_0", error.origin
+            assert error.own == (key == "call_0"), error
+            assert "nothing was committed" in error.llm_view()
 
         assert not (tmp_path / "cut").exists()

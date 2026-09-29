@@ -275,7 +275,7 @@ class ToolLoader:
         ToolAccessGuard.guard_all(tools, access, CallContext.current_subject)
         streams = StreamGroups(self._stream_timings(), tools)
         StreamCallHooks(streams).guard_all(tools)
-        ToolErrorGuard.guard_all(tools)
+        ToolErrorGuard().guard_all(tools)
         ToolAsyncBody.ensure_all(tools)
         return ToolRegistry(tools=tools, access=access, streams=streams)
 

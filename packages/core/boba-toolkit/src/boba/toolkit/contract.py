@@ -11,14 +11,22 @@ ContractError — правило вызова не сходится со схе�
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from enum import StrEnum
 from typing import Any, ClassVar
 
 from pydantic import BaseModel, Field
 
-from boba.toolkit.transfer import ColumnRules, SchemaCheck, TransferError
+from boba.toolkit.transfer import (
+    ColumnCheck,
+    ColumnIssue,
+    ColumnRules,
+    ColumnVerdict,
+    SchemaCheck,
+    TransferError,
+    Verdict,
+)
 
 __all__ = [
     "ArrowContract",
@@ -30,8 +38,9 @@ __all__ = [
     "ColumnType",
     "ColumnTypeModel",
     "ColumnVerdict",
+    "ContractColumn",
     "ContractError",
-    "ContractText",
+    "ContractTable",
     "Declarations",
     "DeclaredType",
     "Engine",
@@ -142,6 +151,13 @@ class ColumnSpec:
     source_type: str = ""
     char_length: int = 0
 
+    def type_name(self) -> str:
+        """Тип колонки для отчёта: текст типа источника, иначе тип потока."""
+        if self.source_type:
+            return self.source_type
+
+        return self.kind.text
+
     def describe(self) -> str:
         parts = [self.kind.text]
         if self.source_type:
@@ -173,20 +189,6 @@ class ColumnRule:
     name: str
     rename_from: str = ""
     ddl_type: str = ""
-
-
-class Verdict(StrEnum):
-    """Итог сверки колонки: ошибка не даёт загрузить без пересоздания."""
-
-    OK = "ok"
-    WARNING = "warning"
-    ERROR = "error"
-
-
-@dataclass(frozen=True)
-class ColumnVerdict:
-    level: Verdict
-    message: str
 
 
 class TypeComparer:
@@ -488,12 +490,16 @@ class TypeComparer:
     def _nullable(self, source: ColumnSpec, target: ColumnSpec) -> ColumnVerdict:
         if source.nullable and not target.nullable:
             return ColumnVerdict(
-                Verdict.ERROR, "stream is nullable, table column is not null"
+                Verdict.ERROR,
+                "stream is nullable, table column is not null",
+                ColumnIssue.NULLABLE_INTO_NOT_NULL,
             )
 
         if not source.nullable and target.nullable:
             return ColumnVerdict(
-                Verdict.WARNING, "stream is not null, table column is nullable"
+                Verdict.WARNING,
+                "stream is not null, table column is nullable",
+                ColumnIssue.NOT_NULL_INTO_NULLABLE,
             )
 
         return ColumnVerdict(Verdict.OK, "ok")
@@ -510,35 +516,43 @@ class ColumnMatch:
     target: ColumnSpec | None
     rule: ColumnRule | None
 
+    def check(self, comparer: TypeComparer) -> ColumnCheck:
+        """Сверка колонки с типами обеих сторон для отчёта."""
+        stream = ""
+        if self.source is not None:
+            stream = self.source.type_name()
+
+        table = ""
+        if self.target is not None:
+            table = self.target.type_name()
+
+        return ColumnCheck(
+            name=self.name, stream=stream, table=table, verdict=self.verdict(comparer)
+        )
+
     def verdict(self, comparer: TypeComparer) -> ColumnVerdict:
         if self.source is None and self.target is None:
             return ColumnVerdict(
                 Verdict.ERROR,
-                f"column {self.name}: neither in the stream nor in the table, "
-                f"only in the call rules",
+                "neither in the stream nor in the table, only in the call rules",
+                ColumnIssue.ONLY_IN_RULES,
             )
 
         if self.source is None:
             return ColumnVerdict(
                 Verdict.ERROR,
-                f"column {self.name}: in the table but not in the stream",
+                "in the table but not in the stream",
+                ColumnIssue.NOT_IN_STREAM,
             )
 
         if self.target is None:
             return ColumnVerdict(
                 Verdict.ERROR,
-                f"column {self.name}: in the stream but not in the table",
+                "in the stream but not in the table",
+                ColumnIssue.NOT_IN_TABLE,
             )
 
-        compared = comparer.compare(self.source, self.target)
-        if compared.level is not Verdict.ERROR:
-            return compared
-
-        return ColumnVerdict(
-            Verdict.ERROR,
-            f"column {self.name}: {compared.message} "
-            f"(stream {self.source.describe()}, table {self.target.describe()})",
-        )
+        return comparer.compare(self.source, self.target)
 
 
 @dataclass(frozen=True)
@@ -570,39 +584,22 @@ class TableSpec:
 
 
 class SchemaDiff:
-    """Результат сверки: вердикт по каждой колонке, ошибки и предупреждения
-    списком, текст для чата и колонки для DDL."""
+    """Результат сверки: сверка каждой колонки для стратегии и отчёта и
+    колонки для DDL."""
 
     def __init__(self, matches: Sequence[ColumnMatch], comparer: TypeComparer) -> None:
         self._matches = tuple(matches)
-        self._verdicts: list[tuple[ColumnMatch, ColumnVerdict]] = []
+        self._checks: list[ColumnCheck] = []
         for match in self._matches:
-            self._verdicts.append((match, match.verdict(comparer)))
+            self._checks.append(match.check(comparer))
 
     @property
     def matches(self) -> Sequence[ColumnMatch]:
         return self._matches
 
-    def errors(self) -> list[str]:
-        return list(self._messages(Verdict.ERROR))
-
-    def warnings(self) -> list[str]:
-        return list(self._messages(Verdict.WARNING))
-
     def check(self) -> SchemaCheck:
         """Итог сверки для стратегии приёмника."""
-        return SchemaCheck(
-            errors=tuple(self.errors()),
-            warnings=tuple(self.warnings()),
-            lines=tuple(self._lines()),
-        )
-
-    def render(self) -> str:
-        return "\n".join(self._lines())
-
-    def _lines(self) -> Iterator[str]:
-        for match, verdict in self._verdicts:
-            yield f"- {verdict.level.value} {match.name}: {verdict.message}"
+        return SchemaCheck(columns=tuple(self._checks))
 
     def table_spec(self) -> TableSpec:
         columns: list[TableColumn] = []
@@ -629,11 +626,6 @@ class SchemaDiff:
             return ""
 
         return match.rule.ddl_type
-
-    def _messages(self, level: Verdict) -> Iterator[str]:
-        for _, verdict in self._verdicts:
-            if verdict.level is level:
-                yield verdict.message
 
 
 class SchemaMatcher:
@@ -797,16 +789,42 @@ class StreamColumn(BaseModel):
         )
 
 
-class ContractText:
-    """Текст контракта для отчёта источника: заголовок с форматом провода и
-    по строке на колонку — имя, тип, текст типа источника, not null."""
+class ContractColumn(StrEnum):
+    """Заголовки колонок таблицы контракта в отчёте источника."""
 
-    def render(self, wire: str, specs: Sequence[ColumnSpec]) -> str:
-        lines = [f"streamed out {wire}, {len(specs)} columns:"]
+    COLUMN = "column"
+    TYPE = "type"
+    SOURCE_TYPE = "source type"
+    NOT_NULL = "not null"
+
+
+class ContractTable:
+    """Контракт в отчёте источника: подпись с форматом провода и таблица по
+    колонке на строку — имя, тип потока, текст типа источника, not null."""
+
+    NOT_NULL_MARK: ClassVar[str] = "✓"
+
+    def caption(self, wire: str, specs: Sequence[ColumnSpec]) -> str:
+        return f"streamed out {wire}, {len(specs)} columns"
+
+    def rows(self, specs: Sequence[ColumnSpec]) -> list[dict[str, str]]:
+        rows: list[dict[str, str]] = []
         for spec in specs:
-            lines.append(f"  {spec.name}: {spec.describe()}")
+            rows.append(self._row(spec))
 
-        return "\n".join(lines)
+        return rows
+
+    def _row(self, spec: ColumnSpec) -> dict[str, str]:
+        not_null = ""
+        if not spec.nullable:
+            not_null = self.NOT_NULL_MARK
+
+        return {
+            ContractColumn.COLUMN: spec.name,
+            ContractColumn.TYPE: spec.kind.text,
+            ContractColumn.SOURCE_TYPE: spec.source_type,
+            ContractColumn.NOT_NULL: not_null,
+        }
 
 
 class StreamContract:

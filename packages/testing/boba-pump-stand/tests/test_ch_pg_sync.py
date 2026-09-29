@@ -230,7 +230,7 @@ class TestNativeTypes:
         landed = Loaded(postgres, PG_SCHEMA, "types")
         source = ChLoaded(clickhouse, "src")
 
-        assert f"{ROWS} rows written" in report
+        assert f"{ROWS} rows loaded" in report
         assert await landed.columns() == EXPECTED_COLUMNS
         assert await landed.count() == ROWS
         assert await landed.aggregate("sum(u64)") == Decimal(
@@ -284,7 +284,7 @@ class TestNativeTypes:
             DeleteTruncate(kind="truncate"),
         )
 
-        assert f"{ROWS} rows written" in report
+        assert f"{ROWS} rows loaded" in report
         assert await Loaded(postgres, PG_SCHEMA, "types").count() == ROWS
 
     async def test_json_lands_as_jsonb(
@@ -315,7 +315,7 @@ class TestNativeTypes:
         )
         landed = Loaded(postgres, PG_SCHEMA, "js")
 
-        assert f"{ROWS} rows written" in report
+        assert f"{ROWS} rows loaded" in report
         assert await landed.columns() == [("id", "bigint", True), ("j", "jsonb", True)]
         assert await landed.aggregate("sum((j ->> 'g')::bigint)") == (
             ROWS * (ROWS - 1) // 2
@@ -374,7 +374,7 @@ class TestUnknownTypes:
         )
         landed = Loaded(postgres, PG_SCHEMA, "unknown")
 
-        assert f"{ROWS} rows written" in report
+        assert f"{ROWS} rows loaded" in report
         assert await landed.columns() == [
             ("id", "bigint", True),
             ("arr", "character varying", True),
@@ -403,7 +403,7 @@ class TestUnknownTypes:
         )
         landed = Loaded(postgres, PG_SCHEMA, "declared")
 
-        assert f"{ROWS} rows written" in report
+        assert f"{ROWS} rows loaded" in report
         assert await landed.columns() == [
             ("id", "bigint", True),
             ("u64", "numeric(30,2)", True),
@@ -446,7 +446,7 @@ class TestExistingTable:
             select=self.SELECT,
         )
 
-        assert f"{ROWS} rows written" in report
+        assert f"{ROWS} rows loaded" in report
         assert "warning dec: table numeric(30,6) is wider" in report
         assert await Loaded(postgres, PG_SCHEMA, "existing").count() == ROWS
 
@@ -491,7 +491,7 @@ class TestExistingTable:
                 select=self.SELECT,
             )
 
-            assert f"{ROWS} rows written" in report
+            assert f"{ROWS} rows loaded" in report
 
             return
 
@@ -540,7 +540,7 @@ class TestServerTraps:
             ),
         )
 
-        assert f"{ROWS} rows written" in report
+        assert f"{ROWS} rows loaded" in report
         assert (await Loaded(postgres, PG_SCHEMA, "fixed").texts("fs"))[:1] == ["ab"]
 
 
@@ -561,7 +561,7 @@ class TestMart:
         )
         landed = Loaded(postgres, PG_SCHEMA, "mart")
 
-        assert f"{ROWS} rows written" in report
+        assert f"{ROWS} rows loaded" in report
         assert await landed.columns() == [
             ("key", "bigint", True),
             ("amount", "numeric(20,2)", True),

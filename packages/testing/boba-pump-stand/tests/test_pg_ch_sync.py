@@ -286,7 +286,7 @@ class TestNativeTypes:
         landed = ChLoaded(clickhouse, "types")
         source = Loaded(postgres, PG_SCHEMA, "src")
 
-        assert f"{ROWS} rows written" in report
+        assert f"{ROWS} rows loaded" in report
         assert dict(await landed.types()) == {
             **EXPECTED_TYPES,
             **json_types(clickhouse),
@@ -333,7 +333,7 @@ class TestNativeTypes:
             DeleteTruncate(kind="truncate"),
         )
 
-        assert f"{ROWS} rows written" in report
+        assert f"{ROWS} rows loaded" in report
         assert await ChLoaded(clickhouse, "types").count() == ROWS
 
     async def test_wider_table_takes_the_stream(
@@ -355,8 +355,9 @@ class TestNativeTypes:
             columns=DECLARED[:2],
         )
 
-        assert f"{ROWS} rows written" in report
-        assert "warning column id: table Int128 is wider than stream Int64" in report
+        assert f"{ROWS} rows loaded" in report
+        assert '"columns": "id"' in report
+        assert "table Int128 is wider than stream Int64" in report
         assert await ChLoaded(clickhouse, "wider").count() == ROWS
 
 
@@ -394,7 +395,7 @@ class TestUnknownTypes:
         landed = ChLoaded(clickhouse, "unknown")
         source = Loaded(postgres, PG_SCHEMA, "src")
 
-        assert f"{ROWS} rows written" in report
+        assert f"{ROWS} rows loaded" in report
         assert dict(await landed.types()) == {
             "id": "Int64",
             "nfree": "Nullable(String)",
@@ -425,7 +426,7 @@ class TestUnknownTypes:
         )
         landed = ChLoaded(clickhouse, "declared")
 
-        assert f"{ROWS} rows written" in report
+        assert f"{ROWS} rows loaded" in report
         assert dict(await landed.types()) == {
             "id": "Int64",
             "nfree": "Nullable(Decimal(38, 4))",
@@ -514,7 +515,7 @@ class TestMart:
         landed = ChLoaded(clickhouse, "mart")
         source = Loaded(postgres, PG_SCHEMA, "src")
 
-        assert f"{ROWS} rows written" in report
+        assert f"{ROWS} rows loaded" in report
         assert dict(await landed.types()) == {
             "key": "Int64",
             "amount": "Nullable(Decimal(20, 4))",

@@ -68,7 +68,7 @@ class Probe:
         ToolRunLogger.guard_all(
             tools, CallSurface.stream_source, CallSurface.tool_call_scope
         )
-        ToolErrorGuard.guard_all(tools)
+        ToolErrorGuard().guard_all(tools)
         return tools
 
 

@@ -16,7 +16,7 @@ from typing import Annotated, ClassVar, Final, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
 
-from boba.toolkit.result import ToolResult
+from boba.toolkit.result import FailureResultField, ToolResult
 
 __all__ = [
     "REPLY",
@@ -93,14 +93,13 @@ class ReplyOk(BaseModel):
 
 
 class ReplyError(BaseModel):
-    """Конверт отказа: kind и сообщение ожидаемой ошибки тела либо нарушения
-    контракта запуска; текст пригоден для показа пользователю."""
+    """Конверт ошибки: любое исключение тела или нарушение контракта запуска,
+    упакованное в результат-ошибку (FailurePacker) по ту сторону процесса."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     status: Literal["error"] = "error"
-    kind: str
-    message: str
+    failure: FailureResultField
 
 
 ToolReply = Annotated[ReplyOk | ReplyError, Field(discriminator="status")]

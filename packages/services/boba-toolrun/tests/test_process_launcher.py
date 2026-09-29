@@ -94,7 +94,7 @@ class TestRunTool:
         with pytest.raises(PayloadFailureError) as err:
             _call(tool, text="boom", repeat=1, cfg=CFG)
 
-        assert err.value.kind == "fake_unavailable"
+        assert err.value.failure().error_kind == "FakeUnavailableError"
 
     def test_entry_error_arrives_as_error_reply(self, tmp_path: Path) -> None:
         launcher = _launcher(tmp_path)
@@ -110,7 +110,7 @@ class TestRunTool:
         argv = ("python3", "-m", "boba.no_such_toolmod", "fake_echo")
         command = ToolCommand(argv=argv, config=b"")
 
-        with pytest.raises(LauncherError, match="no envelope"):
+        with pytest.raises(LauncherError, match="ended without a result"):
             CollectedCall.of(launcher, command)
 
     def test_non_module_command_is_refused(self, tmp_path: Path) -> None:
@@ -321,7 +321,7 @@ class TestManyInputs:
         outcome = CollectedCall.of(launcher, command)
 
         assert isinstance(outcome.reply, ReplyError)
-        assert "names port 'nope'" in outcome.reply.message
+        assert "names port 'nope'" in outcome.reply.failure.llm_view()
 
     def test_single_port_refuses_two_inputs(self, tmp_path: Path) -> None:
         launcher = _launcher(tmp_path)
@@ -337,7 +337,9 @@ class TestManyInputs:
         outcome = CollectedCall.of(launcher, command)
 
         assert isinstance(outcome.reply, ReplyError)
-        assert "expects at most one --fd-in input, got 2" in outcome.reply.message
+        assert "expects at most one --fd-in input, got 2" in (
+            outcome.reply.failure.llm_view()
+        )
 
     def test_render_refuses_many_inputs_for_a_single_port(self) -> None:
         with pytest.raises(PortDeclarationError, match="takes at most one input"):

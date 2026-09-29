@@ -41,8 +41,10 @@ from boba.toolkit.chain import (
     StreamTimings,
 )
 from boba.toolkit.entry import ToolArgv
+from boba.toolkit.failure import FailurePacker
 from boba.toolkit.launcher import PayloadFailureError
 from boba.toolkit.ports import PortDecl, PortDirection, StreamSpec, ToolStreamSpecs
+from boba.toolkit.result import ErrorResult, FailureResult
 from boba.toolrun.call_id import ToolCallIdField
 from boba.toolrun.wrapping import CallHooks, ToolBody, ToolSchema
 
@@ -173,7 +175,7 @@ class StreamEntry(Protocol):
         """Войти в вызов; отдаёт уборку. Отказ — PayloadFailureError."""
         ...
 
-    def fail(self, cause: str) -> None:
+    def fail(self, cause: FailureResult) -> None:
         """Вызов сорвался раньше тела: сообщить группе."""
         ...
 
@@ -197,7 +199,7 @@ class GroupEntry(StreamEntry):
 
         return leave
 
-    def fail(self, cause: str) -> None:
+    def fail(self, cause: FailureResult) -> None:
         self._group.refuse(self._key, cause)
 
     def finished(self) -> bool:
@@ -211,9 +213,12 @@ class RefusedEntry(StreamEntry):
         self._message = message
 
     def enter(self) -> Callable[[], None]:
-        raise PayloadFailureError(StreamCallKind.PLAN_REFUSED, self._message)
+        failure = ErrorResult(
+            message=self._message, error_kind=StreamCallKind.PLAN_REFUSED
+        )
+        raise PayloadFailureError(failure)
 
-    def fail(self, cause: str) -> None:
+    def fail(self, cause: FailureResult) -> None:
         return
 
     def finished(self) -> bool:
@@ -234,9 +239,10 @@ class UnplannedEntry(StreamEntry):
             "in a group of calls of one model response; no channel plan was "
             f"made for call {self._call_id!r}"
         )
-        raise PayloadFailureError(StreamCallKind.UNPLANNED, msg)
+        failure = ErrorResult(message=msg, error_kind=StreamCallKind.UNPLANNED)
+        raise PayloadFailureError(failure)
 
-    def fail(self, cause: str) -> None:
+    def fail(self, cause: FailureResult) -> None:
         return
 
     def finished(self) -> bool:
@@ -249,7 +255,7 @@ class PassEntry(StreamEntry):
     def enter(self) -> Callable[[], None]:
         return self._leave
 
-    def fail(self, cause: str) -> None:
+    def fail(self, cause: FailureResult) -> None:
         return
 
     def finished(self) -> bool:
@@ -424,6 +430,7 @@ class StreamCallHooks(CallHooks[_EntryScope]):
 
     def __init__(self, groups: StreamGroups) -> None:
         self._groups = groups
+        self._failures = FailurePacker()
 
     def guard_all(self, tools: Sequence[BaseTool]) -> None:
         ToolBody.hook_all(tools, self)
@@ -438,11 +445,7 @@ class StreamCallHooks(CallHooks[_EntryScope]):
         return _EntryScope(entry=entry, leave=entry.enter())
 
     def on_error(self, ctx: _EntryScope, error: Exception) -> object:
-        cause = str(error)
-        if not cause:
-            cause = type(error).__name__
-
-        ctx.entry.fail(cause)
+        ctx.entry.fail(self._failures.pack(error))
         raise error
 
     def cleanup(self, ctx: _EntryScope) -> None:

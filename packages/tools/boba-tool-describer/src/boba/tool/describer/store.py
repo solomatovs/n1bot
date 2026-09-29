@@ -33,7 +33,6 @@ logger = logging.getLogger(__name__)
 
 __all__ = [
     "DescriberError",
-    "DescriberErrorKind",
     "DescriberSession",
     "DescriberStore",
     "DescriberToolConfig",
@@ -56,18 +55,6 @@ class DescriberToolConfig(SecretRevealing):
 
 class DescriberError(Exception):
     """Область вызова не годится ключом хранилища."""
-
-
-class DescriberErrorKind(StrEnum):
-    """Ожидаемые отказы инструментов describer: карты EXPECTED модулей."""
-
-    INVALID_ADDRESS = "invalid_address"
-    NODE_MISSING = "node_missing"
-    NODE_ID_MISSING = "node_id_missing"
-    EDGE_ID_MISSING = "edge_id_missing"
-    INVALID_SCOPE = "invalid_scope"
-    DATABASE_UNAVAILABLE = "database_unavailable"
-    SQL_FAILED = "sql_failed"
 
 
 class WriteAction(StrEnum):

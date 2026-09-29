@@ -272,8 +272,8 @@ class TestRunTool:
         if not isinstance(outcome.reply, ReplyError):
             raise AssertionError(f"reply={outcome.reply}")
 
-        if outcome.reply.kind != "fx_down":
-            raise AssertionError(f"kind={outcome.reply.kind}")
+        if outcome.reply.failure.error_kind != "FxDownError":
+            raise AssertionError(f"failure={outcome.reply.failure!r}")
 
     def test_unavailable_zygote_is_launcher_error(self, zygote: Any) -> None:
         """Мёртвая зигота — LauncherError: фронт ловит её по контракту слоя."""
@@ -287,7 +287,7 @@ class TestRunTool:
     def test_timeout_without_envelope_is_launcher_error(self, zygote: Any) -> None:
         caller = zygote(_profile(timeout_sec=2))
 
-        with pytest.raises(LauncherError, match="no envelope"):
+        with pytest.raises(LauncherError, match="ended without a result"):
             CollectedCall.of(caller, _command("sleepy"))
 
     def test_journal_sinks_receive_channels(self, zygote: Any) -> None:
@@ -1020,8 +1020,8 @@ class TestGateInSandbox:
         if not isinstance(outcome.reply, ReplyError):
             raise AssertionError(f"reply={outcome.reply}")
 
-        if "must not commit" not in outcome.reply.message:
-            raise AssertionError(f"message={outcome.reply.message!r}")
+        if "must not commit" not in outcome.reply.failure.llm_view():
+            raise AssertionError(f"failure={outcome.reply.failure!r}")
 
 
 class TestCallResilience:

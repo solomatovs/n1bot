@@ -199,8 +199,8 @@ class TestSchemaStrategies:
         ]
         landed_columns = await landed.columns()
 
-        assert f"{ROWS} rows written into {S}.t_create" in report
-        assert "schema: create (table is missing)" in report
+        assert f"{ROWS} rows loaded into {S}.t_create" in report
+        assert "table: created (table is missing)" in report
         assert [column[:2] for column in landed_columns] == source_types
         assert landed_columns[0] == ("id", "bigint", True)
         assert landed_columns[1] == ("name", "character varying(50)", False)
@@ -220,9 +220,9 @@ class TestSchemaStrategies:
             DeleteTruncate(kind="truncate"),
         )
 
-        assert "schema: keep (schema matches)" in report
-        assert "- ok amount: ok" in report
-        assert "deleted: 0 rows by" in report
+        assert "table: kept as is (schema matches)" in report
+        assert '"columns": "amount"' not in report
+        assert "removed by truncate\nstatement: truncate table" in report
         assert await Loaded(postgres, S, "t_twice").count() == ROWS
 
     async def test_error_if_not_exists_refuses_a_missing_table(
@@ -256,7 +256,7 @@ class TestSchemaStrategies:
             DropAndCreateIfSchemaChanged(kind="drop_and_create_if_schema_changed"),
         )
 
-        assert "schema: drop_then_create" in report
+        assert "table: dropped and recreated" in report
         assert ("name", "character varying(50)", False) in await Loaded(
             postgres, S, "t_narrow"
         ).columns()
@@ -275,8 +275,9 @@ class TestSchemaStrategies:
         )
         tables = await Loaded(postgres, S, "t_bak").tables()
 
-        assert "schema: backup_then_create" in report
-        assert "backup: t_bak_bak_" in report
+        assert "table: recreated (" in report
+        assert "saved as" in report
+        assert "t_bak_bak_" in report
         assert any(name.startswith("t_bak_bak_") for name in tables)
 
 
@@ -294,8 +295,8 @@ class TestDeleteAndInsert:
             InsertNothing(kind="nothing"),
         )
 
-        assert f"deleted: {part} rows by" in report
-        assert "0 rows written" in report
+        assert f"{part} rows deleted\nstatement: delete from" in report
+        assert "0 rows loaded" in report
         assert await Loaded(postgres, S, "t_del").count() == ROWS - part
 
         report = await land(
@@ -305,7 +306,7 @@ class TestDeleteAndInsert:
             DeleteAll(kind="delete_all"),
         )
 
-        assert f"deleted: {ROWS - part} rows by" in report
+        assert f"{ROWS - part} rows deleted\nstatement: delete from" in report
         assert await Loaded(postgres, S, "t_del").count() == ROWS
 
 
@@ -431,9 +432,7 @@ class TestUnknownTypes:
             select=f"select * from {S}.s_en3",
         )
 
-        assert (
-            "- warning v: type cannot be verified, the source named no type" in report
-        )
+        assert "type cannot be verified, the source named no type" in report
         assert await Loaded(postgres, S, "t_en3").texts("v") == [
             "sad",
             "sad",
@@ -459,7 +458,7 @@ class TestUnknownTypes:
             columns=named,
         )
 
-        assert "- ok v: ok" in report
+        assert '"columns": "v"' not in report
 
         with pytest.raises(
             TransferError, match=f"type differs: stream {S}.mood, table"
@@ -550,7 +549,7 @@ class TestExactTypes:
             select=f"select * from {S}.s_w_{name}",
         )
 
-        assert "- warning v:" in report
+        assert '"columns": "v"' in report
         assert expected in report
 
     async def test_created_table_keeps_every_builtin_type(
@@ -658,7 +657,7 @@ class TestCreateTemplate:
         report = await land(postgres, "t_tpl_with", create_table=self.WITH_OPTIONS)
         landed = Loaded(postgres, S, "t_tpl_with")
 
-        assert f"{ROWS} rows written" in report
+        assert f"{ROWS} rows loaded" in report
         assert await landed.count() == ROWS
         options = await landed.aggregate(
             "(select reloptions::text from pg_class "
@@ -673,7 +672,7 @@ class TestCreateTemplate:
         report = await land(postgres, "t_tpl_dist", create_table=self.DISTRIBUTED)
         landed = Loaded(postgres, S, "t_tpl_dist")
 
-        assert f"{ROWS} rows written" in report
+        assert f"{ROWS} rows loaded" in report
         policy = await landed.aggregate(
             "(select distkey::text from gp_distribution_policy "
             f"where localoid = '{S}.t_tpl_dist'::regclass)"
@@ -683,7 +682,7 @@ class TestCreateTemplate:
     async def test_escaped_braces_stay_literal(self, postgres: PostgresSide) -> None:
         report = await land(postgres, "t_tpl_esc", create_table=self.ESCAPED)
 
-        assert f"{ROWS} rows written" in report
+        assert f"{ROWS} rows loaded" in report
         assert await Loaded(postgres, S, "t_tpl_esc").count() == ROWS
 
     async def test_template_without_columns_is_refused(
@@ -742,7 +741,7 @@ class TestTsvWire:
             wire=StreamWire.TSV,
         )
 
-        assert "4 rows written" in report
+        assert "4 rows loaded" in report
         assert await Loaded(postgres, S, "t_tsv").texts("v") == await Loaded(
             postgres, S, "s_tsv"
         ).texts("v")
@@ -760,7 +759,7 @@ class TestBinaryWire:
         source = Loaded(postgres, S, "src")
         target = Loaded(postgres, S, "t_bin")
 
-        assert f"{ROWS} rows written" in report
+        assert f"{ROWS} rows loaded" in report
         for column in ("name", "amount", "dt", "flag", "note"):
             assert await target.texts(column) == await source.texts(column)
 

@@ -320,7 +320,7 @@ class TestRoundTrip:
         if not expected:
             expected = source_type
 
-        assert report.startswith(f"{ROWS} rows written")
+        assert report.startswith(f"{ROWS} rows loaded")
         assert (await target.columns())[1] == ("v", expected, False)
         assert await target.texts("v") == await source.texts("v")
 
@@ -346,7 +346,7 @@ class TestRefusedValues:
             CreateIfNotExists(kind="create_if_not_exists"),
         )
 
-        assert report.startswith(f"{ROWS} rows written")
+        assert report.startswith(f"{ROWS} rows loaded")
         assert (await Loaded(postgres, S, "t_nan_f8").texts("v"))[0] == "NaN"
 
     async def test_timestamp_infinity_needs_a_cast(
@@ -370,7 +370,7 @@ class TestRefusedValues:
             CreateIfNotExists(kind="create_if_not_exists"),
         )
 
-        assert report.startswith(f"{ROWS} rows written")
+        assert report.startswith(f"{ROWS} rows loaded")
         assert (await Loaded(postgres, S, "t_inf_text").texts("v"))[:2] == [
             "infinity",
             "-infinity",
@@ -546,8 +546,8 @@ class TestDecimal:
             ErrorIfSchemaChanged(kind="error_if_schema_changed"),
         )
 
-        assert "- warning v: table numeric128" not in report
-        assert "- warning v:" in report
+        assert "table numeric128" not in report
+        assert '"columns": "v"' in report
         assert await Loaded(postgres, S, "t_dec_ok").count() == ROWS
 
 
@@ -589,7 +589,7 @@ class TestVarchar:
             DropAndCreateIfSchemaChanged(kind="drop_and_create_if_schema_changed"),
         )
 
-        assert "schema: drop_then_create" in report
+        assert "table: dropped and recreated" in report
         assert (await Loaded(postgres, S, "t_v50").columns())[1] == (
             "v",
             "character varying(100)",
@@ -815,7 +815,7 @@ class TestClickHouseSources:
         loaded = Loaded(postgres, S, "from_ch")
         columns = await loaded.columns()
 
-        assert chained.in_report.startswith("5 rows written")
+        assert chained.in_report.startswith("5 rows loaded")
         assert ("u64", "numeric(20,0)", True) in columns
         assert ("u8", "smallint", True) in columns
         assert ("d", "timestamp(6) with time zone", True) in columns
@@ -915,7 +915,7 @@ class TestOracleSources:
         loaded = Loaded(postgres, S, "from_ora")
         columns = await loaded.columns()
 
-        assert chained.in_report.startswith("3 rows written")
+        assert chained.in_report.startswith("3 rows loaded")
         assert ("ID", "bigint", True) in columns
         assert ("N", "numeric(38,0)", False) in columns
         assert ("BD", "double precision", False) in columns
@@ -984,7 +984,7 @@ class TestCopyMode:
         target = Loaded(postgres, S, f"t_{case.name}")
         source = Loaded(postgres, S, f"s_{case.name}")
 
-        assert report.startswith(f"{ROWS} rows written")
+        assert report.startswith(f"{ROWS} rows loaded")
         assert (await target.texts("v"))[:3] == COPY_EXPECTED[case.name]
         assert await target.texts("v") == await source.texts("v")
         assert (await target.columns())[1][1] == (await source.columns())[1][1]
@@ -1049,7 +1049,7 @@ class TestCopyMode:
             mode=StreamWire.CSV,
         )
 
-        assert "schema: drop_then_create" in report
+        assert "table: dropped and recreated" in report
         assert (await Loaded(postgres, S, "t_copy_bk").columns())[1] == (
             "v",
             "numeric(18,4)",
@@ -1193,7 +1193,7 @@ class TestVectorTypes:
         source = Loaded(vector_db, S, f"s_{name}")
         target = Loaded(vector_db, S, f"t_{name}")
 
-        assert report.startswith("4 rows written")
+        assert report.startswith("4 rows loaded")
         assert (await target.columns())[1:] == [
             ("v", "vector(3)", False),
             ("h", "halfvec(2)", False),
@@ -1249,6 +1249,7 @@ class TestBackupNames:
             if t.startswith("t_bk_bak_")
         ]
 
-        assert "backup: t_bk_bak_" in first
-        assert "backup: t_bk_bak_" in second
+        assert "saved as" in first
+        assert "t_bk_bak_" in first
+        assert "t_bk_bak_" in second
         assert len(backups) == 2

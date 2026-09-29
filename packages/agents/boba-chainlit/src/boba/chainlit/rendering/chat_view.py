@@ -18,7 +18,6 @@ from boba.cancellation import StopReason
 from boba.canvas.canvas import CanvasAction
 from boba.chainlit.rendering.tool import ChatElements
 from boba.toolkit.calls import ToolCallModels, ToolIntent
-from boba.toolkit.failure import FailureText
 from boba.toolkit.result import ToolArtifact, VisualElement
 from boba.toolrun.streams import ToolStreams
 from chainlit.config import config as chainlit_config
@@ -1044,15 +1043,11 @@ class ChatView:
         step.end = ended
         await self._sink.put(step)
 
-    async def tool_failed(self, step: Step, error: object) -> None:
-        """Провал инструмента; текст сбоя совпадает с тем, что получает модель."""
-        text = str(error)
-        if isinstance(error, BaseException):
-            text = FailureText.of(error)
-
+    async def tool_failed(self, step: Step, markdown: str) -> None:
+        """Провал инструмента мимо результата: markdown результата-ошибки."""
         step.is_error = True
         step.name = StepStatus.FAILED.title(self._tool_names.get(step.id, step.name))
-        step.output = f"**tool failed:** {text}"
+        step.output = markdown
         ended = utc_now()
         step.start = ended
         step.end = ended

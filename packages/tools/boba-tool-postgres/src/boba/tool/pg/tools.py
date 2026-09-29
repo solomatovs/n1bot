@@ -20,15 +20,15 @@ TransferError — поток без кадра schema, пара для движ�
 from __future__ import annotations
 
 import sys
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Sequence
 from enum import StrEnum
-from typing import Annotated, ClassVar, Final
+from typing import Annotated, Any, ClassVar, Final
 
 import psycopg
 from psycopg.rows import dict_row
 from pydantic import Field
 
-from boba.db.postgres import PayloadPostgres, PgArrowError, PgScript, PostgresError
+from boba.db.postgres import PayloadPostgres
 from boba.db.postgres.address import PgAddresses
 from boba.db.postgres.connection import CopyOptions, PostgresConfig
 from boba.db.postgres.query import PgQuery, PgQueryBuilder
@@ -40,26 +40,20 @@ from boba.db.postgres.transfer import (
     PgTransfers,
     PgTransferTable,
 )
-from boba.toolkit.contract import ContractError
 from boba.toolkit.entry import ToolMain
 from boba.toolkit.facade import Injected, UserConnection, tool
 from boba.toolkit.ports import (
-    ArrowStreamError,
     Inbound,
     Outbound,
     StreamGroup,
-    StreamGroupAbortedError,
 )
 from boba.toolkit.result import (
     MarkdownResult,
-    ResultTooLargeError,
     SqlResult,
     SqlStatement,
     TableResult,
 )
 from boba.toolkit.sql import (
-    QueryBuildError,
-    SqlErrorKind,
     SqlLimits,
 )
 from boba.toolkit.transfer import (
@@ -70,11 +64,9 @@ from boba.toolkit.transfer import (
     InsertStrategy,
     SchemaStrategy,
     StreamWire,
-    TransferError,
     TransferFrame,
     TransferInbound,
     TransferOutbound,
-    TransferReportText,
     UnknownTypeStrategy,
 )
 from boba.toolkit.types import SecretRevealing
@@ -170,11 +162,11 @@ async def run_script(
     """
     statements: list[SqlStatement] = []
 
+    query = PgQueryBuilder().raw_query(script).build()
+
     conn = await PayloadPostgres.connect_config(connection)
     async with conn, conn.cursor(row_factory=dict_row) as cur:
-        # bytes: тип Query psycopg требует LiteralString, а текст пишет LLM;
-        # кодировка — client_encoding подключения, а не обязательно utf-8
-        await cur.execute(script.encode(conn.info.encoding))
+        await cur.execute(query.text, query.params)
 
         while True:
             status = cur.statusmessage
@@ -201,6 +193,39 @@ async def run_script(
                 break
 
     return SqlResult(engine=PgToolConfig.ENGINE, statements=statements)
+
+
+async def run_steps(
+    conn: psycopg.AsyncConnection[Any], steps: Sequence[str]
+) -> list[SqlStatement]:
+    """Стейтменты before/after насоса на его соединении: по одному, по порядку,
+    в той же транзакции, что и команда насоса, поэтому temp-таблицы и `set
+    local` из before видны команде и after, а ошибка любого шага откатывает
+    всё. Строки выборок не собираются, шаг даёт статус сервера; у стейтмента
+    из нескольких команд статусы идут через `;`."""
+    statements: list[SqlStatement] = []
+    async with conn.cursor() as cur:
+        for step in steps:
+            query = PgQueryBuilder().raw_query(step).build()
+            await cur.execute(query.text, query.params)
+
+            statuses = list(step_statuses(cur))
+            statements.append(SqlStatement(text=step, status="; ".join(statuses)))
+
+    return statements
+
+
+def step_statuses(cur: psycopg.AsyncCursor[Any]) -> Iterator[str]:
+    """Статус сервера каждой команды стейтмента; без статуса — done."""
+    while True:
+        status = cur.statusmessage
+        if status is None:
+            status = "done"
+
+        yield status
+
+        if not cur.nextset():
+            return
 
 
 @tool
@@ -414,7 +439,7 @@ async def pg_stream_out(  # noqa: PLR0913
     after: AfterSteps = (),
     *,
     out: Annotated[Outbound[TransferFrame], Injected],
-) -> MarkdownResult:
+) -> SqlResult:
     """Источник postgres: строки запроса с контрактом колонок для приёмника.
 
     Колонки выборки берутся у libpq описанием стейтмента (PQprepare и
@@ -429,10 +454,9 @@ async def pg_stream_out(  # noqa: PLR0913
     from boba.db.postgres.arrow_stream import PgArrowSource  # noqa: PLC0415
 
     conn = await PayloadPostgres.connect_config(connection.copy_session(copy_options))
-    script = PgScript(conn)
     outbound = TransferOutbound(out)
     async with conn, conn.transaction():
-        before_steps = await script.run(before)
+        before_steps = await run_steps(conn, before)
         copy_out = PgCopyOut(conn)
         described = await copy_out.describe(sql)
 
@@ -450,9 +474,11 @@ async def pg_stream_out(  # noqa: PLR0913
                     sql, layout, contract, copy_options.chunk_bytes, outbound
                 )
 
-        after_steps = await script.run(after)
+        after_steps = await run_steps(conn, after)
 
-    return MarkdownResult(text=report.scripted(before_steps, after_steps).render())
+    statements = [*before_steps, report.sql_statement(), *after_steps]
+
+    return SqlResult(engine=PgToolConfig.ENGINE, statements=statements)
 
 
 @tool
@@ -563,7 +589,7 @@ async def pg_stream_in(  # noqa: PLR0913
     *,
     feed: Annotated[Inbound[TransferFrame], Injected],
     group: Annotated[StreamGroup, Injected],
-) -> MarkdownResult:
+) -> SqlResult:
     """Приёмник postgres со стратегиями: поток любого источника в таблицу.
 
     По первому кадру приёмник берёт пару для движка источника: контракт
@@ -586,9 +612,8 @@ async def pg_stream_in(  # noqa: PLR0913
     head = await inbound.get_schema()
     table = PgTableRef(schema=schema_name, name=table_name)
     conn = await PayloadPostgres.connect_config(connection.copy_session(copy_options))
-    script = PgScript(conn)
     async with conn, conn.transaction():
-        before_steps = await script.run(before)
+        before_steps = await run_steps(conn, before)
         if head.wire is StreamWire.ARROW:
             contract = ArrowContract.model_validate(head.contract)
             loader = PgArrowLoader(
@@ -619,12 +644,12 @@ async def pg_stream_in(  # noqa: PLR0913
                 template,
             )
 
-        after_steps = await script.run(after)
+        after_steps = await run_steps(conn, after)
         await inbound.committing()
 
-    return MarkdownResult(
-        text=TransferReportText().render(report, before_steps, after_steps)
-    )
+    statements = [*report.statements(), *before_steps, *after_steps]
+
+    return SqlResult(engine=PgToolConfig.ENGINE, statements=statements)
 
 
 @tool
@@ -1402,18 +1427,6 @@ async def pg_address(connection: PgConnection) -> TableResult:
 
     return TableResult(rows=[row])
 
-
-EXPECTED: Mapping[type[Exception], SqlErrorKind] = {
-    StreamGroupAbortedError: SqlErrorKind.STREAM_ABORTED,
-    QueryBuildError: SqlErrorKind.SQL_FAILED,
-    PostgresError: SqlErrorKind.DATABASE_UNAVAILABLE,
-    PgArrowError: SqlErrorKind.SQL_FAILED,
-    ArrowStreamError: SqlErrorKind.SQL_FAILED,
-    ContractError: SqlErrorKind.SQL_FAILED,
-    TransferError: SqlErrorKind.SQL_FAILED,
-    psycopg.Error: SqlErrorKind.SQL_FAILED,
-    ResultTooLargeError: SqlErrorKind.RESULT_TOO_LARGE,
-}
 
 TOOLS: Final = ToolMain.toolset(
     pg_list_tables,

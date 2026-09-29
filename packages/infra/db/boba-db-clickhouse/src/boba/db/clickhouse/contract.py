@@ -13,7 +13,7 @@ from typing import ClassVar
 
 from pydantic import BaseModel, ConfigDict
 
-from boba.toolkit.contract import ColumnType, TimeUnit, TypeFamily
+from boba.toolkit.contract import ColumnType, ContractColumn, TimeUnit, TypeFamily
 from boba.toolkit.transfer import StreamWire
 
 __all__ = ["ChContract", "ChParsedType", "ChSourceColumn", "ChTypes", "ChWrapper"]
@@ -43,15 +43,23 @@ class ChContract(BaseModel):
     def names(self) -> list[str]:
         return [column.name for column in self.columns]
 
-    def render(self, wire: StreamWire) -> str:
-        lines = [
+    def caption(self, wire: StreamWire) -> str:
+        return (
             f"streamed out {wire.value} from clickhouse {self.server}, "
-            f"{len(self.columns)} columns:"
-        ]
-        for column in self.columns:
-            lines.append(f"  {column.name}: {column.type_text}")
+            f"{len(self.columns)} columns"
+        )
 
-        return "\n".join(lines)
+    def rows(self) -> list[dict[str, str]]:
+        """Таблица контракта для отчёта: имя и тип по колонке."""
+        rows: list[dict[str, str]] = []
+        for column in self.columns:
+            row: dict[str, str] = {
+                ContractColumn.COLUMN: column.name,
+                ContractColumn.TYPE: column.type_text,
+            }
+            rows.append(row)
+
+        return rows
 
 
 @dataclass(frozen=True)

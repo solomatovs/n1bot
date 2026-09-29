@@ -125,8 +125,8 @@ class TestChartInSandbox:
         with pytest.raises(PayloadFailureError, match="rejected by plotly") as failure:
             _invoke('{"data": 42}')
 
-        if failure.value.kind != "invalid_figure_spec":
-            raise AssertionError('failure.value.kind == "invalid_figure_spec"')
+        if failure.value.failure().error_kind != "InvalidFigureSpecError":
+            raise AssertionError(f"failure: {failure.value.failure()!r}")
         if "Traceback" in str(failure.value):
             raise AssertionError('"Traceback" not in str(failure.value)')
 
@@ -134,5 +134,5 @@ class TestChartInSandbox:
         with pytest.raises(PayloadFailureError) as failure:
             _invoke("{not json")
 
-        if failure.value.kind != "invalid_figure_spec":
-            raise AssertionError('failure.value.kind == "invalid_figure_spec"')
+        if failure.value.failure().error_kind != "InvalidFigureSpecError":
+            raise AssertionError(f"failure: {failure.value.failure()!r}")

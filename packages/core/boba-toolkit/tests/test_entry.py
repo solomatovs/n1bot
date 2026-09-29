@@ -12,22 +12,16 @@ from pathlib import Path
 import pytest
 from pydantic import SecretStr
 
-from boba.stand_core.fake_toolmod import (
-    EXPECTED,
-    FakeConfig,
-    FakeUnavailableError,
-    fake_echo,
-)
+from boba.stand_core.fake_toolmod import FakeConfig, fake_echo
 from boba.toolkit.entry import (
     ArgumentTooLargeError,
-    EntryErrorKind,
     EntryFlag,
-    ExpectedErrors,
     ToolAddress,
     ToolArgv,
     ToolMain,
 )
 from boba.toolkit.protocol import REPLY, ReplyError, ReplyOk
+from boba.toolkit.result import ExceptionResult
 
 TESTS_DIR = str(Path(__file__).resolve().parent)
 
@@ -171,20 +165,6 @@ class TestArgv:
             )
 
 
-class TestExpectedErrors:
-    def test_subclass_matches_by_mro(self) -> None:
-        class DerivedUnavailableError(FakeUnavailableError):
-            pass
-
-        kind = ExpectedErrors.kind_of(DerivedUnavailableError("x"), dict(EXPECTED))
-        if kind != "fake_unavailable":
-            raise AssertionError('kind == "fake_unavailable"')
-
-    def test_unknown_error_gives_none(self) -> None:
-        if ExpectedErrors.kind_of(ValueError("x"), dict(EXPECTED)) is not None:
-            raise AssertionError('ExpectedErrors.kind_of(ValueError("x"), dict(EXPECT…')
-
-
 class TestToolMainAsProgram:
     """Модуль инструментов — обычная программа: контракт argv/stdin/конверт."""
 
@@ -248,38 +228,51 @@ class TestToolMainAsProgram:
         if b"echo progress" in envelope:
             raise AssertionError('b"echo progress" not in envelope')
 
-    def test_expected_error_becomes_error_envelope(self) -> None:
+    def test_body_error_becomes_error_envelope(self) -> None:
         proc, envelope = run_module(
             ["fake_echo", "--text", "boom", "--repeat", "1"],
             config=self.CONFIG,
             result_fd=True,
         )
 
-        if proc.returncode != ToolMain.Exit.EXPECTED_FAILURE:
-            raise AssertionError("proc.returncode == ToolMain.Exit.EXPECTED_FAILURE")
+        if proc.returncode != ToolMain.Exit.FAILURE:
+            raise AssertionError("proc.returncode == ToolMain.Exit.FAILURE")
 
         reply = REPLY.validate_json(envelope)
         if not (isinstance(reply, ReplyError)):
             raise AssertionError("isinstance(reply, ReplyError)")
-        if reply.kind != "fake_unavailable":
-            raise AssertionError('reply.kind == "fake_unavailable"')
-        if "fake backend is down" not in reply.message:
-            raise AssertionError('"fake backend is down" in reply.message')
 
-    def test_unexpected_error_leaves_no_envelope(self) -> None:
+        failure = reply.failure
+        if not isinstance(failure, ExceptionResult):
+            raise AssertionError(f"failure is ExceptionResult: {failure!r}")
+        if failure.error_kind != "FakeUnavailableError":
+            raise AssertionError(f"error_kind: {failure.error_kind!r}")
+        if "fake backend is down" not in failure.llm_view():
+            raise AssertionError(f"llm_view: {failure.llm_view()!r}")
+        if "fake_toolmod.py" not in failure.raised_at:
+            raise AssertionError(f"raised_at: {failure.raised_at!r}")
+
+    def test_any_error_becomes_envelope_with_trace_in_log(self) -> None:
+        """Ошибок «вне контракта» нет: любое исключение тела едет конвертом,
+        трасса — в журнал процесса (stdout) и в сам результат."""
         proc, envelope = run_module(
             ["fake_echo", "--text", "crash", "--repeat", "1"],
             config=self.CONFIG,
             result_fd=True,
         )
 
-        # правило разбора: ненулевой rc без конверта — неожиданное падение
-        if proc.returncode == 0:
-            raise AssertionError("proc.returncode != 0")
-        if envelope != b"":
-            raise AssertionError('envelope == b""')
-        if b"RuntimeError" not in proc.stderr:
-            raise AssertionError('b"RuntimeError" in proc.stderr')
+        if proc.returncode != ToolMain.Exit.FAILURE:
+            raise AssertionError(f"rc={proc.returncode} stderr={proc.stderr!r}")
+
+        reply = REPLY.validate_json(envelope)
+        if not isinstance(reply, ReplyError):
+            raise AssertionError("isinstance(reply, ReplyError)")
+        if reply.failure.error_kind != "RuntimeError":
+            raise AssertionError(f"error_kind: {reply.failure.error_kind!r}")
+        if "Traceback (most recent call last)" not in reply.failure.trace():
+            raise AssertionError(f"trace: {reply.failure.trace()!r}")
+        if b"Traceback (most recent call last)" not in proc.stdout:
+            raise AssertionError(f"stdout={proc.stdout!r}")
 
     def test_unknown_tool_is_entry_error(self) -> None:
         proc, envelope = run_module(["no_such_tool"], result_fd=True)
@@ -290,8 +283,10 @@ class TestToolMainAsProgram:
         reply = REPLY.validate_json(envelope)
         if not (isinstance(reply, ReplyError)):
             raise AssertionError("isinstance(reply, ReplyError)")
-        if reply.kind != str(EntryErrorKind.UNKNOWN_TOOL):
-            raise AssertionError("reply.kind == str(EntryErrorKind.UNKNOWN_TOOL)")
+        if reply.failure.error_kind != "ToolEntryError":
+            raise AssertionError(f"error_kind: {reply.failure.error_kind!r}")
+        if "unknown tool 'no_such_tool'" not in reply.failure.llm_view():
+            raise AssertionError(f"llm_view: {reply.failure.llm_view()!r}")
 
     def test_invalid_flag_is_entry_error(self) -> None:
         proc, envelope = run_module(
@@ -306,16 +301,16 @@ class TestToolMainAsProgram:
         reply = REPLY.validate_json(envelope)
         if not (isinstance(reply, ReplyError)):
             raise AssertionError("isinstance(reply, ReplyError)")
-        if reply.kind != str(EntryErrorKind.INVALID_REQUEST):
-            raise AssertionError("reply.kind == str(EntryErrorKind.INVALID_REQUEST)")
+        if reply.failure.error_kind != "ToolEntryError":
+            raise AssertionError(f"error_kind: {reply.failure.error_kind!r}")
 
     def test_missing_config_is_entry_error(self) -> None:
         proc, _ = run_module(["fake_echo", "--text", "x", "--repeat", "1"])
 
         if proc.returncode != ToolMain.Exit.ENTRY_ERROR:
             raise AssertionError("proc.returncode == ToolMain.Exit.ENTRY_ERROR")
-        if b"invalid_request" not in proc.stderr:
-            raise AssertionError('b"invalid_request" in proc.stderr')
+        if b"ToolEntryError: " not in proc.stderr:
+            raise AssertionError(f"stderr={proc.stderr!r}")
 
     def test_broken_channel_number_is_entry_error(self) -> None:
         """Не-числовой номер канала: конверт писать некуда, причина в stderr."""
@@ -359,5 +354,5 @@ class TestToolMainAsProgram:
 
         if proc.returncode != ToolMain.Exit.ENTRY_ERROR:
             raise AssertionError("proc.returncode == ToolMain.Exit.ENTRY_ERROR")
-        if b"invalid_request" not in proc.stderr:
-            raise AssertionError('b"invalid_request" in proc.stderr')
+        if b"ToolEntryError: " not in proc.stderr:
+            raise AssertionError(f"stderr={proc.stderr!r}")

@@ -32,7 +32,7 @@ from boba.chainlit.rendering.chat_view import StepText
 from boba.chainlit.rendering.errors import show_error
 from boba.identity.errors import FailureReport
 from boba.identity.session import LogUserMark
-from boba.toolkit.failure import FailureText
+from boba.toolkit.failure import FailurePacker
 from chainlit.context import context_var
 
 __all__ = [
@@ -100,6 +100,7 @@ class AgentTracer(AsyncBaseTracer):
         self._context = context_var.get()
         self._feed = feed
         self._state = state
+        self._failures = FailurePacker()
 
     @property
     def feed(self) -> TurnFeed:
@@ -300,7 +301,8 @@ class AgentTracer(AsyncBaseTracer):
             return traced
 
         if output.status == "error":
-            await self._feed.tool_failed(call_id, str(output.content))
+            failure = self._messages.failure_of(output, str(output.content))
+            await self._feed.tool_failed(call_id, failure.chat_view().markdown)
             return traced
 
         artifact = output.artifact
@@ -332,7 +334,8 @@ class AgentTracer(AsyncBaseTracer):
         )
 
         if call_id := self._state.close_tool(str(run_id)):
-            await self._feed.tool_failed(call_id, FailureText.of(error))
+            failure = self._failures.pack(error)
+            await self._feed.tool_failed(call_id, failure.chat_view().markdown)
 
         return traced
 
