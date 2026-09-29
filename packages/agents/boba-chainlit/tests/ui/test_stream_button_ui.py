@@ -69,10 +69,10 @@ def _button_appears(chat: ChatPage, within_sec: float) -> bool:
 
 
 def test_button_is_visible_while_running(sandbox_chat: ChatPage) -> None:
-    sandbox_chat.ask(_bash_call("sleep 6; echo stream-probe"))
-    sandbox_chat.await_step(StepKind.RUN, timeout_ms=60_000)
+    sandbox_chat.ask(_bash_call("sleep 20; echo stream-probe"))
+    sandbox_chat.await_step(StepKind.RUN, timeout_ms=TURN_TIMEOUT_SEC * 1000)
     sandbox_chat.expand_process()
-    sandbox_chat.await_step(StepKind.TOOL, timeout_ms=30_000)
+    sandbox_chat.await_step(StepKind.TOOL, timeout_ms=TURN_TIMEOUT_SEC * 1000)
     sandbox_chat.expand_step(StepKind.TOOL)
 
     seen_running = _button_appears(sandbox_chat, POLL_SEC)

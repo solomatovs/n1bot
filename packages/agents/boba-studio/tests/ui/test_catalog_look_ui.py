@@ -641,7 +641,11 @@ class TestViewportFit:
             CatalogPage.CONNECTIONS.open(page, stand)
             expect(page.get_by_test_id("connections-page")).to_be_visible()
             index = page.get_by_test_id("connections-page")
-            # строки списка приходят отдельным запросом после отрисовки страницы
+            # строки списка приходят отдельным запросом после отрисовки страницы:
+            # под нагрузкой хоста он идёт дольше, чем держит проверка прокрутки
+            expect(page.get_by_test_id("connections-list")).to_be_visible(
+                timeout=60_000
+            )
             try:
                 page.wait_for_function(
                     "el => el.scrollHeight > el.clientHeight && "

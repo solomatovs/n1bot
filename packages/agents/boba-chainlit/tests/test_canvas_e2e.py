@@ -20,9 +20,10 @@ import re
 import socket
 import subprocess
 import tempfile
+import time
 from collections.abc import AsyncIterator, Iterator
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 
 import httpx
 import pytest
@@ -71,9 +72,87 @@ def anyio_backend() -> str:
     return "asyncio"
 
 
+class E2eApp:
+    """Процесс приложения e2e: старт своим лончером на конфиге стенда,
+    ожидание ответа страницы входа и остановка с добиванием.
+
+    Под нагрузкой параллельного прогона прогрев зигот растягивает старт, поэтому
+    ожидание ограничено сроком, а не числом попыток, и обрывается сразу, если
+    процесс умер; остановка, не уложившаяся в срок, добивает процесс."""
+
+    BOOT_SEC: ClassVar[float] = 300.0
+    STOP_SEC: ClassVar[float] = 20.0
+    POLL_SEC: ClassVar[float] = 0.5
+    TAIL_LINES: ClassVar[int] = 40
+
+    def __init__(self, config: str) -> None:
+        self._config = config
+        self._log = Path(tempfile.gettempdir()) / f"boba-e2e-{PORT}.log"
+        self._process: subprocess.Popen[bytes] | None = None
+
+    def start(self) -> None:
+        self._process = subprocess.Popen(
+            # тест запускает собственный лончер конфигом стенда
+            # nosemgrep: dangerous-subprocess-use-tainted-env-args
+            [str(LAUNCHER), str(ENTRY), "--config", self._config],
+            stdout=self._log.open("wb"),
+            stderr=subprocess.STDOUT,
+        )
+        self._await_ready(self._process)
+
+    def stop(self) -> None:
+        if self._process is None:
+            return
+
+        self._process.terminate()
+        try:
+            self._process.wait(timeout=self.STOP_SEC)
+        except subprocess.TimeoutExpired:
+            self._process.kill()
+            self._process.wait()
+
+    def _await_ready(self, process: subprocess.Popen[bytes]) -> None:
+        url = BASE + "/login"
+        deadline = time.monotonic() + self.BOOT_SEC
+        last_error = "no reply yet"
+
+        while time.monotonic() < deadline:
+            if process.poll() is not None:
+                pytest.fail(
+                    f"app exited with code {process.returncode} before answering "
+                    f"GET {url}:\n{self._tail()}"
+                )
+
+            try:
+                answer = httpx.get(url, follow_redirects=True, timeout=5.0)
+            except httpx.HTTPError as exc:
+                last_error = str(exc)
+                time.sleep(self.POLL_SEC)
+                continue
+
+            if answer.status_code < httpx.codes.INTERNAL_SERVER_ERROR:
+                return
+
+            last_error = f"HTTP {answer.status_code}"
+            time.sleep(self.POLL_SEC)
+
+        pytest.fail(
+            f"GET {url}: no reply below 500 within {self.BOOT_SEC:.0f}s, last: "
+            f"{last_error}\n{self._tail()}"
+        )
+
+    def _tail(self) -> str:
+        if not self._log.is_file():
+            return ""
+
+        lines = self._log.read_text(encoding="utf-8", errors="replace").splitlines()
+        return "\n".join(lines[-self.TAIL_LINES :])
+
+
 @pytest.fixture(scope="module")
 def app_server() -> Iterator[None]:
-    if not os.environ.get("BOBA_CONFIG_PATH"):
+    config = os.environ.get("BOBA_CONFIG_PATH")
+    if not config:
         pytest.skip("BOBA_CONFIG_PATH не задан")
 
     # чужой процесс на порту молча увёл бы тесты на другой код
@@ -86,40 +165,12 @@ def app_server() -> Iterator[None]:
     if taken:
         pytest.fail(f"порт {PORT} уже занят: остановите запущенное приложение")
 
-    log = Path(tempfile.gettempdir()) / "boba-canvas-e2e.log"
-    process = subprocess.Popen(
-        # тест запускает собственный лончер конфигом стенда
-        # nosemgrep: dangerous-subprocess-use-tainted-env-args
-        [str(LAUNCHER), str(ENTRY), "--config", os.environ["BOBA_CONFIG_PATH"]],
-        stdout=log.open("wb"),
-        stderr=subprocess.STDOUT,
-    )
+    app = E2eApp(config)
     try:
+        app.start()
         yield
     finally:
-        process.terminate()
-        process.wait(timeout=15)
-
-
-async def _wait_for_server() -> None:
-    last_error = "нет ответа"
-
-    async with httpx.AsyncClient() as probe:
-        for _ in range(90):
-            try:
-                answer = await probe.get(BASE + "/login", follow_redirects=True)
-            except httpx.HTTPError as exc:
-                last_error = str(exc)
-                await asyncio.sleep(1)
-                continue
-
-            if answer.status_code < 500:
-                return
-
-            last_error = f"HTTP {answer.status_code}"
-            await asyncio.sleep(1)
-
-    pytest.fail(f"приложение не поднялось: {last_error}")
+        app.stop()
 
 
 async def _cookie_header(context: Any) -> str:
@@ -248,8 +299,6 @@ class _SessionProbe:
 async def panel(app_server: None) -> AsyncIterator[Any]:
     """Логин, живой тред и файлы в нём; отдаёт функцию показа файла в панели."""
     playwright = pytest.importorskip("playwright.async_api")
-
-    await _wait_for_server()
 
     async with playwright.async_playwright() as pw:
         browser = await pw.chromium.launch()

@@ -9,10 +9,10 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
-from pydantic import BaseModel, ConfigDict, SecretStr
+from pydantic import BaseModel, ConfigDict
 
 from boba.db.clickhouse.connection import ClickHouseConfig, ClickHouseSettingsConfig
-from boba.db.oracle.connection import OracleConfig, PasswordAuth
+from boba.db.oracle.connection import OracleConfig
 from boba.db.postgres.connection import PostgresConfig
 from boba.stand.ix import IxStand
 
@@ -55,12 +55,6 @@ class OraSource(BaseModel):
     name: str
     oracle: OracleConfig
     admin: OracleConfig
-
-    def owner(self, user: str, password: str) -> OracleConfig:
-        """Профиль владельца схемы стенда: адрес администратора, учётка схемы."""
-        auth = PasswordAuth(method="password", user=user, password=SecretStr(password))
-
-        return self.admin.model_copy(update={"auth": auth})
 
 
 class PumpStand(IxStand):

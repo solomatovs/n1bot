@@ -103,8 +103,10 @@ class ReadTuning:
     раз; пока потребитель успевает, блок потока равен одному такому чтению.
     По умолчанию 256 КиБ. Меняется у транспорта этого соединения и
     возвращается при закрытии потока; есть только у селекторного цикла
-    asyncio, под uvloop вызов отклоняется. Короткий ответ успевает прийти
-    целиком до настройки — тогда менять нечего.
+    asyncio, под uvloop вызов отклоняется. Под https рычаг не ставится:
+    сокет читает SSL-протокол asyncio в свой буфер на 256 КиБ, который не
+    уменьшается, — блок там задаёт только read_buffer_size. Короткий ответ
+    успевает прийти целиком до настройки — тогда менять нечего.
 
     read_buffer_size — нижняя граница буфера ответа aiohttp, верхняя вдвое
     больше. Когда потребитель отстаёт, накопленное отдаётся одним блоком, а
@@ -137,6 +139,12 @@ class ReadTuning:
             return None
 
         transport = connection.transport
+        if transport is None:
+            return None
+
+        if transport.get_extra_info("ssl_object") is not None:
+            return None
+
         if not isinstance(transport, SocketReadSize):
             raise ClickHouseQueryError(
                 f"read tuning: socket_read_size expects an asyncio selector "

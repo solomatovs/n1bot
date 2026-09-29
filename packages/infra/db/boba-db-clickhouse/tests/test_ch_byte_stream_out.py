@@ -148,6 +148,21 @@ class TestReadTuning:
         assert max(bounded[4:]) <= 2 * 64 * 1024 + 16 * 1024
         assert statistics.median(joined[4:]) > 2 * 64 * 1024 + 16 * 1024
 
+    async def test_https_stream_takes_the_tuning(self, raw_config: Any) -> None:
+        """Под https рычаг сокета не ставится (буфер SSL-протокола asyncio не
+        уменьшается), а поток с рычагами приходит целиком, и блок держит
+        граница read_buffer_size."""
+        connection = bind(raw_config, path="clickhouse", model=ClickHouseConfig)
+        if connection.interface != "https":
+            pytest.skip("[clickhouse] of the stand is not https")
+
+        tuning = ReadTuning(socket_read_size=4096, read_buffer_size=64 * 1024)
+        sizes = await _sizes(connection, tuning, 0.005)
+        untuned = await _sizes(connection, ReadTuning(), 0)
+
+        assert sum(sizes) == sum(untuned)
+        assert max(sizes[4:]) <= 2 * 64 * 1024 + 256 * 1024
+
     def test_non_positive_size_is_refused(self) -> None:
         with pytest.raises(ClickHouseQueryError, match="socket_read_size expects"):
             ReadTuning(socket_read_size=0)
