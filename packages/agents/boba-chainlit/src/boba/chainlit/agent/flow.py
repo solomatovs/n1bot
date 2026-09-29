@@ -43,8 +43,8 @@ from boba.chainlit.agent.bridge import ResponseField
 from boba.llm.chat import LlmError, ToolSpec
 from boba.llm.schema import SchemaReply
 from boba.toolkit.calls import ToolIntent
-from boba.toolkit.failure import FailureText
-from boba.toolkit.result import ErrorResult, ToolArtifact
+from boba.toolkit.failure import FailurePacker
+from boba.toolkit.result import FailureResult, ToolArtifact
 from boba.toolkit.timing import Elapsed
 from boba.toolrun.stream_calls import StreamGroups
 
@@ -308,6 +308,7 @@ class PrefetchMiddleware(AgentMiddleware[AgentState[Any], Any, Any]):
         self._rephraser = rephraser
         self._tools = list(tools)
         self._stage = stage
+        self._failures = FailurePacker()
 
     @override
     async def abefore_model(
@@ -401,8 +402,7 @@ class PrefetchMiddleware(AgentMiddleware[AgentState[Any], Any, Any]):
 
         return results
 
-    @classmethod
-    def _checked(cls, call: ToolCall, output: object) -> ToolMessage:
+    def _checked(self, call: ToolCall, output: object) -> ToolMessage:
         """Результат поиска: отказ инструмента едет в контекст, а не роняет ход.
 
         Модель получает ошибку тем же конвертом tool_result, что и удачный
@@ -413,7 +413,7 @@ class PrefetchMiddleware(AgentMiddleware[AgentState[Any], Any, Any]):
         нарушение контракта самого слоя инструментов.
         """
         if isinstance(output, BaseException):
-            return cls._failed(call, output)
+            return self._failed(call, output)
 
         if not isinstance(output, ToolMessage):
             got = type(output).__name__
@@ -426,27 +426,31 @@ class PrefetchMiddleware(AgentMiddleware[AgentState[Any], Any, Any]):
             return output
 
         artifact = ToolArtifact.revive(output.artifact)
-        if isinstance(artifact, ErrorResult):
-            logger.warning("prefetch %s failed: %s", output.name, artifact.message)
+        if isinstance(artifact, FailureResult):
+            logger.warning("prefetch %s failed: %s", output.name, artifact.log_view())
 
         return output
 
-    @staticmethod
-    def _failed(call: ToolCall, error: BaseException) -> ToolMessage:
-        """Сорванный вызов конвертом tool_result; отмена хода идёт наверх."""
+    def _failed(self, call: ToolCall, error: BaseException) -> ToolMessage:
+        """Сорванный вызов конвертом tool_result с результатом-ошибкой; отмена
+        хода идёт наверх."""
         if not isinstance(error, Exception):
             raise error
 
         name = call["name"]
-        logger.warning("prefetch %s failed: %s", name, FailureText.of(error))
+        failure = self._failures.pack(error)
+        logger.warning("prefetch %s failed: %s", name, failure.log_view())
 
         call_id = call["id"]
         if not call_id:
             msg = f"prefetch call {name!r} has no id"
             raise PrefetchError(msg)
 
+        content, artifact = failure.packed()
+
         return ToolMessage(
-            content=f"tool failed {name!r}: {FailureText.of(error)}",
+            content=content,
+            artifact=artifact,
             tool_call_id=call_id,
             name=name,
             status="error",

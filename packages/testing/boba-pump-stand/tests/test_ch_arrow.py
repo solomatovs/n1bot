@@ -522,7 +522,7 @@ class TestClickHouseToPostgres:
                 },
             ),
         )
-        assert chained.in_report.startswith(f"{ROWS} rows written")
+        assert chained.in_report.startswith(f"{ROWS} rows loaded")
 
         expected = await clickhouse.side.select(
             "src",
@@ -587,7 +587,7 @@ class TestClickHouseToOracle:
                     },
                 ),
             )
-            assert chained.in_report.startswith(f"{ROWS} rows written")
+            assert chained.in_report.startswith(f"{ROWS} rows loaded")
 
             expected = await clickhouse.side.select(
                 "src",

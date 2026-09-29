@@ -144,8 +144,8 @@ class TestSchemaStrategies:
         )
         loaded = Loaded(postgres, PG_SCHEMA, "fresh")
 
-        assert report.startswith(f"{ROWS} rows written into {PG_SCHEMA}.fresh")
-        assert "schema: create (table is missing)" in report
+        assert report.startswith(f"{ROWS} rows loaded into {PG_SCHEMA}.fresh")
+        assert "table: created (table is missing)" in report
         assert await loaded.columns() == [
             ("id", "bigint", False),
             ("amount", "numeric(18,4)", False),
@@ -169,7 +169,7 @@ class TestSchemaStrategies:
             ErrorIfSchemaChanged(kind="error_if_schema_changed"),
         )
 
-        assert "schema: keep (schema matches)" in report
+        assert "table: kept as is (schema matches)" in report
         assert await Loaded(postgres, PG_SCHEMA, "twice").count() == 2 * ROWS
 
     async def test_error_if_not_exists_refuses_a_missing_table(
@@ -215,8 +215,9 @@ class TestSchemaStrategies:
         loaded = Loaded(postgres, PG_SCHEMA, "keep_old")
         tables = await loaded.tables()
 
-        assert "schema: backup_then_create" in report
-        assert "backup: keep_old_bak_" in report
+        assert "table: recreated (" in report
+        assert "saved as" in report
+        assert "keep_old_bak_" in report
         assert [t for t in tables if t.startswith("keep_old_bak_")]
         assert await loaded.count() == ROWS
 
@@ -232,7 +233,7 @@ class TestSchemaStrategies:
         )
         loaded = Loaded(postgres, PG_SCHEMA, "replaced")
 
-        assert "schema: drop_then_create" in report
+        assert "table: dropped and recreated" in report
         assert [c[0] for c in await loaded.columns()] == [
             "id",
             "amount",
@@ -264,7 +265,7 @@ class TestDeleteAndInsert:
             delete=DeleteTruncate(kind="truncate"),
         )
 
-        assert "deleted: 0 rows by truncate table" in report
+        assert "removed by truncate\nstatement: truncate table" in report
         assert await Loaded(postgres, PG_SCHEMA, "trunc").count() == ROWS
 
     async def test_delete_all_counts_rows(
@@ -281,7 +282,7 @@ class TestDeleteAndInsert:
             delete=DeleteAll(kind="delete_all"),
         )
 
-        assert f"deleted: {ROWS} rows by delete from" in report
+        assert f"{ROWS} rows deleted\nstatement: delete from" in report
         assert await Loaded(postgres, PG_SCHEMA, "wipe").count() == ROWS
 
     async def test_delete_where_then_nothing_inserted(
@@ -310,8 +311,8 @@ class TestDeleteAndInsert:
             insert=InsertNothing(kind="nothing"),
         )
 
-        assert f"deleted: {2 * ROWS - half} rows" in report
-        assert "0 rows written" in report
+        assert f"{2 * ROWS - half} rows deleted" in report
+        assert "0 rows loaded" in report
         assert await Loaded(postgres, PG_SCHEMA, "part").count() == 0
 
     async def test_rename_and_declaration_shape_the_ddl(
@@ -368,7 +369,7 @@ class TestDeclarations:
             ],
         )
 
-        assert report.startswith("50 rows written")
+        assert report.startswith("50 rows loaded")
         assert await Loaded(postgres, PG_SCHEMA, "strict_dst").columns() == [
             ("id", "bigint", True),
             ("note", "text", False),
@@ -429,7 +430,7 @@ class TestDeclarations:
             ),
         )
 
-        assert chained.in_report.startswith("50 rows written")
+        assert chained.in_report.startswith("50 rows loaded")
         assert await Loaded(postgres, PG_SCHEMA, "strict_from_ora").columns() == [
             ("ID", "bigint", True),
             ("NOTE", "character varying(20)", False),
@@ -488,7 +489,7 @@ class TestOtherSources:
         )
         columns = await Loaded(postgres, PG_SCHEMA, "from_oracle").columns()
 
-        assert chained.in_report.startswith("100 rows written")
+        assert chained.in_report.startswith("100 rows loaded")
         assert ("id", "bigint", False) in columns
         assert ("amount", "numeric(18,4)", False) in columns
         assert ("name", "character varying(50)", False) in columns

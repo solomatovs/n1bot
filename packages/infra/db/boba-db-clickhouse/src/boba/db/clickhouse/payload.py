@@ -39,7 +39,7 @@ from clickhouse_connect.driver.summary import QuerySummary
 
 from boba.db.clickhouse.connection import ClickHouseConfig, SpnegoHeaders
 from boba.db.clickhouse.errors import ClickHouseError, ClickHouseQueryError
-from boba.db.clickhouse.trace import ChHeader, ChQueryTrace, ChScriptStep
+from boba.db.clickhouse.trace import ChHeader, ChQueryTrace
 
 __all__ = [
     "ByteStream",
@@ -231,36 +231,28 @@ class PayloadClickHouse:
             yield client
 
     @staticmethod
-    async def script(
-        client: AsyncClient, statements: Sequence[str]
-    ) -> tuple[ChScriptStep, ...]:
-        """Стейтменты before/after насоса по одному, по порядку, тем же
-        клиентом: в сессии клиента они делят SET и временные таблицы с
-        командой насоса. Строки выборок не собираются: у команды шаг даёт
-        счётчики сводки, у выборки — значение, которое вернул драйвер."""
-        steps: list[ChScriptStep] = []
-        for statement in statements:
-            step = await PayloadClickHouse._step(client, statement)
-            steps.append(step)
-
-        return tuple(steps)
-
-    @staticmethod
-    async def _step(client: AsyncClient, statement: str) -> ChScriptStep:
+    async def command(
+        client: AsyncClient,
+        text: str,
+        parameters: Mapping[str, Any] | Sequence[Any] | None = None,
+    ) -> str:
+        """Одна команда без выборки строк: что ответил сервер — счётчики сводки
+        у команды или значение, которое вернул драйвер, у выборки."""
         try:
-            result = await client.command(statement)
+            result = await client.command(
+                text, parameters=PayloadClickHouse._params(parameters)
+            )
         except DriverError as exc:
             raise ClickHouseQueryError(
-                f"script statement on clickhouse failed: {type(exc).__name__}: "
-                f"{exc}; statement: {statement[:200]!r}"
+                f"command on clickhouse failed: {type(exc).__name__}: "
+                f"{exc}; statement: {text[:200]!r}"
             ) from exc
 
         if isinstance(result, QuerySummary):
             trace = PayloadClickHouse._trace_of_summary(result)
-            outcome = f"read {trace.read_rows} rows, written {trace.written_rows} rows"
-            return ChScriptStep(statement=statement, outcome=outcome)
+            return f"read {trace.read_rows} rows, written {trace.written_rows} rows"
 
-        return ChScriptStep(statement=statement, outcome=str(result))
+        return str(result)
 
     @staticmethod
     @asynccontextmanager

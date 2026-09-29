@@ -127,7 +127,7 @@ class Pumps:
             **arguments,
         )
 
-        return report.text
+        return report.llm_view()
 
     async def chain(self, out: Leg, into: Leg) -> Chained:
         """Выход out и вход into через трубу ОС одновременно."""
@@ -189,7 +189,7 @@ class Pumps:
             **self._detached_groups(leg.name),
         )
 
-        return report.text
+        return report.llm_view()
 
     def _detached_groups(self, name: str) -> dict[str, StreamGroup]:
         """Барьер группы вне группы: ready() возвращается сразу, как у

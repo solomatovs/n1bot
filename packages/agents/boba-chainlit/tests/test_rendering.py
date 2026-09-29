@@ -123,8 +123,14 @@ class TestHumanText:
 
     def test_error(self) -> None:
         rendered = ErrorResult(message="boom", error_kind="e").chat_view().markdown
-        if rendered != "**Error:** boom":
-            raise AssertionError('rendered == "**Error:** boom"')
+        if rendered != "**boom**":
+            raise AssertionError(f"rendered: {rendered!r}")
+
+    def test_multiline_error_keeps_the_rest_in_a_block(self) -> None:
+        message = "permission denied\nLINE 1: select 1\n       ^"
+        rendered = ErrorResult(message=message, error_kind="e").chat_view().markdown
+        if rendered != "**permission denied**\n\n```\nLINE 1: select 1\n       ^\n```":
+            raise AssertionError(f"rendered: {rendered!r}")
 
     def test_flatten_cell_newlines(self) -> None:
         result = TableResult(rows=[{"a": "x\ny"}])
@@ -457,8 +463,10 @@ class TestSqlResult:
             raise AssertionError('report.startswith("SELECT 1\\n")')
         if '[{"blobs": 3}]' not in report:
             raise AssertionError("выдача первой команды в отчёте")
-        if not report.endswith("DELETE 5\nDELETE 5"):
-            raise AssertionError('report.endswith("DELETE 5\\nDELETE 5")')
+        if not report.endswith("\n\nDELETE 5"):
+            raise AssertionError(f"status statement last, captioned once: {report!r}")
+        if report.count("DELETE 5") != 1:
+            raise AssertionError(f"caption repeated: {report!r}")
 
     def test_markdown_keeps_each_kind_of_statement(self) -> None:
         md = self._both().chat_view().markdown

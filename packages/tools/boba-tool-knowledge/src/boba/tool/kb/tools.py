@@ -15,8 +15,6 @@ LlmError — эмбеддер недоступен, не загрузился и
 IxSearchError — фильтр называет неизвестную поверхность или аспект, режим не
     обслужен ни одной таблицей реестра.
 NodeReadError — объекта с таким id нет или аспект неизвестен.
-Отсутствие весов локального эмбеддера ожидаемым не считается: это дефект
-сборки rootfs, и трейсбек там по делу.
 """
 
 from __future__ import annotations
@@ -32,19 +30,17 @@ from typing import Annotated, Any, ClassVar, Final
 import psycopg
 from pydantic import BaseModel, ConfigDict, Field
 
-from boba.db.postgres import PayloadPostgres, PostgresError
+from boba.db.postgres import PayloadPostgres
 from boba.ix_core.indexes import IndexKind
-from boba.ix_core.nodes import NodeCard, NodeReader, NodeReadError
+from boba.ix_core.nodes import NodeCard, NodeReader
 from boba.ix_core.registry import IxRegistry
 from boba.ix_core.search import (
     Hit,
     IxSearch,
-    IxSearchError,
     SearchMode,
     SearchRequest,
 )
 from boba.ix_core.surfaces import Surface
-from boba.llm.chat import LlmError
 from boba.llm.providers import EmbeddingModelConfig
 from boba.tool.kb.chunks import kb_fts_search, kb_vector_search
 from boba.tool.kb.kb import LLM, KbToolConfig
@@ -71,16 +67,6 @@ async def warm_embedder(cfg: KbWarmupConfig) -> None:
     """Модель ONNX поднимается в зиготе: дети берут её через COW."""
     embedder = LLM.embedding(cfg.embedding)
     await embedder.embed_query("warm-up")
-
-
-class KbErrorKind(StrEnum):
-    """Ожидаемые отказы инструментов kb."""
-
-    DATABASE_UNAVAILABLE = "database_unavailable"
-    QUERY_FAILED = "kb_query_failed"
-    EMBEDDING_FAILED = "embedding_failed"
-    SEARCH_REJECTED = "kb_search_rejected"
-    NODE_NOT_FOUND = "kb_node_not_found"
 
 
 class HitColumn(StrEnum):
@@ -548,14 +534,6 @@ async def kb_node2(
 
     return NodeMarkdown.render(card, cfg.max_result_chars)
 
-
-EXPECTED: Mapping[type[Exception], KbErrorKind] = {
-    PostgresError: KbErrorKind.DATABASE_UNAVAILABLE,
-    psycopg.Error: KbErrorKind.QUERY_FAILED,
-    LlmError: KbErrorKind.EMBEDDING_FAILED,
-    IxSearchError: KbErrorKind.SEARCH_REJECTED,
-    NodeReadError: KbErrorKind.NODE_NOT_FOUND,
-}
 
 TOOLS: Final = ToolMain.toolset(
     kb_vector_search,

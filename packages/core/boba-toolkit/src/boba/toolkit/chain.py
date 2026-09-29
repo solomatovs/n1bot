@@ -42,6 +42,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import ClassVar
 
+from boba.toolkit.failure import FailurePacker
 from boba.toolkit.launcher import (
     LauncherError,
     TappedCall,
@@ -49,8 +50,14 @@ from boba.toolkit.launcher import (
     ToolOutcome,
 )
 from boba.toolkit.ports import PortDecl, PortDirection, StreamSpec
-from boba.toolkit.protocol import ReplyError, ReplyOk, ToolCommand
+from boba.toolkit.protocol import ReplyError, ToolCommand
 from boba.toolkit.pump import PipePlumbing
+from boba.toolkit.result import (
+    ErrorResult,
+    FailureResult,
+    GroupCall,
+    GroupFailureResult,
+)
 
 __all__ = [
     "ChainCheck",
@@ -84,9 +91,12 @@ class StreamPlanError(LauncherError):
 
 
 class StreamFailureKind(StrEnum):
-    """Kind отказа вызова, чья группа сорвалась."""
+    """Коды error_kind срывов группы каналов."""
 
     GROUP_FAILED = "stream_group_failed"
+    CHANNEL_FAILED = "stream_channel_failed"
+    STALLED = "stream_stalled"
+    NOT_OPENED = "stream_not_opened"
 
 
 class ChainCheck:
@@ -627,12 +637,31 @@ class StreamTimings:
 
 @dataclass(frozen=True)
 class GroupVerdict:
-    """Итог группы для каждого её вызова: успех либо текст срыва. stopped —
-    группу сорвала остановка хода, а не сбой: вызовы поднимают ToolStopped."""
+    """Итог группы для каждого её вызова: успех либо срыв. stopped — группу
+    сорвала остановка хода, а не сбой: вызовы поднимают ToolStopped."""
 
-    ok: bool
-    message: str
+    failure: GroupFailureResult | None
     stopped: bool
+
+    @property
+    def ok(self) -> bool:
+        return self.failure is None
+
+    def failure_of(self, key: str) -> GroupFailureResult:
+        """Срыв глазами вызова key: сорвал ли группу он сам.
+
+        Ошибки:
+        LauncherError — группа прошла, срыва нет.
+        """
+        if self.failure is None:
+            msg = f"stream group verdict for call {key!r}: the group succeeded"
+            raise LauncherError(msg)
+
+        own = False
+        if origin := self.failure.origin:
+            own = origin.call_id == key
+
+        return self.failure.model_copy(update={"own": own})
 
 
 class NodeState(StrEnum):
@@ -674,7 +703,8 @@ class StreamGroupRun:
     - Сбой любого вызова, раздачи, неоткрытие вызова в срок и застой данных
       срывают группу: барьеры отказывают, живые вызовы добиваются, и лишь
       после этого читателям закрываются входы. Каждый вызов группы получает
-      один и тот же текст срыва с его причиной.
+      срыв с его причиной: сорвавший — свою ошибку, остальные — ссылку на
+      него.
 
     Координатор живёт своим потоком: следит за сроком открытия и застоем.
     """
@@ -693,7 +723,8 @@ class StreamGroupRun:
         self._closed: set[str] = set()
         self._wired = False
         self._released = False
-        self._failure = ""
+        self._failure: FailureResult | None = None
+        self._origin = ""
         self._stopped = False
         self._victims: set[str] = set()
         self._aborted = False
@@ -717,13 +748,13 @@ class StreamGroupRun:
 
         return NodeSlot(self, key, counts, has_downstream=node.output is not None)
 
-    def refuse(self, key: str, cause: str) -> None:
+    def refuse(self, key: str, cause: FailureResult) -> None:
         """Вызов key не дошёл до запуска (права, аргументы): группа срывается."""
-        self.done(key, ok=False, cause=cause, stopped=False)
+        self.done(key, cause=cause, stopped=False)
 
-    def abort(self, cause: str) -> None:
+    def abort(self, cause: FailureResult) -> None:
         """Сорвать группу снаружи (остановка хода)."""
-        self._fail(cause, stopped=False)
+        self._fail(cause, origin="", stopped=False)
 
     def finished(self) -> bool:
         """Группа кончилась: все вызовы закончились, каналы закрыты."""
@@ -744,7 +775,7 @@ class StreamGroupRun:
         run = self._runs[key]
 
         with self._cond:
-            failed = bool(self._failure)
+            failed = self._failure is not None
             if not failed:
                 run.call = call
                 run.state = NodeState.OPEN
@@ -773,8 +804,8 @@ class StreamGroupRun:
                 "stream group %s: wired %d channels", self.labels(), len(fanouts)
             )
 
-    def done(self, key: str, *, ok: bool, cause: str, stopped: bool) -> None:
-        """Вызов закончился: успешно либо с причиной сбоя; stopped — его
+    def done(self, key: str, *, cause: FailureResult | None, stopped: bool) -> None:
+        """Вызов закончился: успешно (cause=None) либо со сбоем; stopped — его
         остановил ход, а не группа."""
         run = self._runs[key]
 
@@ -783,13 +814,13 @@ class StreamGroupRun:
                 return
 
             run.state = NodeState.DONE
-            if not ok:
+            if cause is not None:
                 run.state = NodeState.FAILED
 
             self._cond.notify_all()
 
-        if not ok:
-            self._fail(f"{run.node.label()}: {cause}", stopped=stopped)
+        if cause is not None:
+            self._fail(cause, origin=key, stopped=stopped)
             return
 
         self._close_finished_channels()
@@ -807,20 +838,32 @@ class StreamGroupRun:
                 self._cond.wait()
 
             failure = self._failure
+            origin = self._origin
             stopped = self._stopped
 
-        if not failure:
-            return GroupVerdict(ok=True, message="", stopped=False)
+        if failure is None:
+            return GroupVerdict(failure=None, stopped=False)
 
-        calls = ", ".join(self.labels())
-        return GroupVerdict(
-            ok=False,
-            message=(
-                f"stream group failed, no call commits: {failure}; "
-                f"calls of the group: {calls}"
-            ),
-            stopped=stopped,
+        grouped = GroupFailureResult(
+            error_kind=StreamFailureKind.GROUP_FAILED,
+            cause=failure,
+            origin=self._call_of(origin),
+            calls=list(self._calls()),
         )
+
+        return GroupVerdict(failure=grouped, stopped=stopped)
+
+    def _call_of(self, key: str) -> GroupCall | None:
+        """Вызов, сорвавший группу; None — группу сорвала она сама."""
+        run = self._runs.get(key)
+        if run is None:
+            return None
+
+        return GroupCall(tool=run.node.tool, call_id=run.node.key)
+
+    def _calls(self) -> Iterator[GroupCall]:
+        for run in self._runs.values():
+            yield GroupCall(tool=run.node.tool, call_id=run.node.key)
 
     def _all_open(self) -> bool:
         for run in self._runs.values():
@@ -858,7 +901,10 @@ class StreamGroupRun:
         )
 
     def _fanout_failed(self, cause: str) -> None:
-        self._fail(cause, stopped=False)
+        failure = ErrorResult(
+            message=cause, error_kind=StreamFailureKind.CHANNEL_FAILED
+        )
+        self._fail(failure, origin="", stopped=False)
 
     def _drain(self, channel: str) -> None:
         with self._cond:
@@ -895,7 +941,7 @@ class StreamGroupRun:
                 self._cond.notify_all()
 
     def _may_close(self, channel: str) -> bool:
-        if self._failure:
+        if self._failure is not None:
             return self._aborted
 
         writer = self._runs[self._plan.route(channel).writer]
@@ -907,7 +953,7 @@ class StreamGroupRun:
             if not run.state.terminal():
                 run.state = NodeState.AT_GATE
 
-            refused = bool(self._failure)
+            refused = self._failure is not None
             call = run.call
 
         if refused:
@@ -921,7 +967,7 @@ class StreamGroupRun:
         gated: list[ToolCall] = []
 
         with self._cond:
-            if self._failure:
+            if self._failure is not None:
                 return
 
             if self._released:
@@ -942,14 +988,16 @@ class StreamGroupRun:
         for call in gated:
             call.gate().release()
 
-    def _fail(self, cause: str, *, stopped: bool) -> None:
+    def _fail(self, cause: FailureResult, *, origin: str, stopped: bool) -> None:
         """Первый сбой срывает группу: отказ барьерам, добивание живых вызовов,
-        затем закрытие каналов."""
+        затем закрытие каналов. origin — ключ сорвавшего вызова, пусто —
+        группу сорвала она сама."""
         with self._cond:
-            if self._failure:
+            if self._failure is not None:
                 return
 
             self._failure = cause
+            self._origin = origin
             self._stopped = stopped
             victims: list[ToolCall] = []
             for run in self._runs.values():
@@ -966,7 +1014,7 @@ class StreamGroupRun:
 
             self._cond.notify_all()
 
-        logger.warning("stream group %s failed: %s", self.labels(), cause)
+        logger.warning("stream group %s failed: %s", self.labels(), cause.log_view())
 
         for call in victims:
             call.gate().refuse()
@@ -1031,7 +1079,7 @@ class StreamGroupRun:
 
                 self._cond.wait(timeout=self._timings.poll_sec)
                 wired = self._wired
-                failed = bool(self._failure)
+                failed = self._failure is not None
 
             if failed:
                 continue
@@ -1052,7 +1100,10 @@ class StreamGroupRun:
                 continue
 
             if now - last_move_at >= self._timings.stall_sec:
-                self._fail(self._stall_text(), stopped=False)
+                stalled = ErrorResult(
+                    message=self._stall_text(), error_kind=StreamFailureKind.STALLED
+                )
+                self._fail(stalled, origin="", stopped=False)
 
     def _check_open(self, now: float) -> None:
         if now - self._opened_at < self._timings.open_sec:
@@ -1067,11 +1118,12 @@ class StreamGroupRun:
         if not pending:
             return
 
-        self._fail(
+        message = (
             f"calls {pending} did not open their channels within "
-            f"{self._timings.open_sec:.0f}s",
-            stopped=False,
+            f"{self._timings.open_sec:.0f}s"
         )
+        failure = ErrorResult(message=message, error_kind=StreamFailureKind.NOT_OPENED)
+        self._fail(failure, origin="", stopped=False)
 
     def _moved_total(self) -> int:
         total = 0
@@ -1133,8 +1185,8 @@ class NodeSlot:
     дескрипторы входов по порядку ToolCommand.inputs. counts — сколько
     каналов у каждого входного порта вызова, 0 — вход пуст. По концу
     вызова settle сообщает группе итог и ждёт её решения: вызов отдаёт свой
-    итог, только если группа прошла целиком, иначе — отказ с текстом срыва
-    группы.
+    итог, только если группа прошла целиком, иначе — срыв группы глазами
+    этого вызова (GroupFailureResult).
     """
 
     def __init__(
@@ -1149,6 +1201,12 @@ class NodeSlot:
         self._key = key
         self._counts = dict(counts)
         self.has_downstream = has_downstream
+        self._failures = FailurePacker()
+
+    @property
+    def key(self) -> str:
+        """Ключ вызова в группе: id вызова модели."""
+        return self._key
 
     def input_counts(self) -> dict[str, int]:
         """Сколько входов у каждого входного порта вызова."""
@@ -1163,21 +1221,17 @@ class NodeSlot:
         """Итог вызова в группу; ответ — свой итог либо срыв группы."""
         reply = outcome.reply
 
-        cause = ""
+        cause: FailureResult | None = None
         if isinstance(reply, ReplyError):
-            cause = f"{reply.kind}: {reply.message}"
+            cause = reply.failure
 
-        self._group.done(
-            self._key, ok=isinstance(reply, ReplyOk), cause=cause, stopped=False
-        )
+        self._group.done(self._key, cause=cause, stopped=False)
         verdict = self._group.verdict()
 
         if verdict.ok:
             return outcome
 
-        failed = ReplyError(
-            kind=StreamFailureKind.GROUP_FAILED, message=verdict.message
-        )
+        failed = ReplyError(failure=verdict.failure_of(self._key))
         return ToolOutcome(reply=failed, run=outcome.run, diagnostic=outcome.diagnostic)
 
     def settle_error(self, error: BaseException) -> GroupVerdict:
@@ -1188,11 +1242,9 @@ class NodeSlot:
         if self._group.stopped_by_group(self._key):
             stopped = False
 
-        cause = str(error)
-        if not cause:
-            cause = type(error).__name__
+        cause = self._failures.pack(error)
+        self._group.done(self._key, cause=cause, stopped=stopped)
 
-        self._group.done(self._key, ok=False, cause=cause, stopped=stopped)
         return self._group.verdict()
 
 

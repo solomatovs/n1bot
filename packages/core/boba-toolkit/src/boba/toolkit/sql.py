@@ -14,7 +14,6 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from enum import StrEnum
 from typing import Any, ClassVar, Generic, TypeVar
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -24,20 +23,8 @@ __all__ = [
     "QueryBuildError",
     "QueryBuilder",
     "QueryParams",
-    "SqlErrorKind",
     "SqlLimits",
 ]
-
-
-class SqlErrorKind(StrEnum):
-    """Ожидаемые отказы SQL-инструментов; общие для всех коннекторов."""
-
-    DATABASE_UNAVAILABLE = "database_unavailable"
-    UNKNOWN_TARGET = "unknown_target"
-    SQL_FAILED = "sql_failed"
-    RESULT_TOO_LARGE = "result_too_large"
-    STREAM_ABORTED = "stream_aborted"
-    """Группа связанных вызовов сорвалась: приёмник не зафиксировал результат."""
 
 
 class SqlLimits(BaseModel):

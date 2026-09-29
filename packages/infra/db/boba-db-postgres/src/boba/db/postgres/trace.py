@@ -8,15 +8,17 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
-from dataclasses import dataclass, field, replace
+from collections.abc import Iterator, Mapping, Sequence
+from dataclasses import dataclass, field
 from typing import Any
 
 import psycopg
 from psycopg import Notify
 from psycopg.errors import Diagnostic
 
-__all__ = ["PgCommandReport", "PgNotice", "PgNotify", "PgScriptStep", "PgSessionTrace"]
+from boba.toolkit.result import Fact, SqlStatement
+
+__all__ = ["PgCommandReport", "PgNotice", "PgNotify", "PgSessionTrace"]
 
 
 @dataclass(frozen=True)
@@ -30,15 +32,15 @@ class PgNotice:
     detail: str
     hint: str
 
-    def render(self) -> str:
-        lines = [f"- {self.severity} {self.sqlstate}: {self.message}"]
+    def fact(self) -> Fact:
+        lines = [self.message]
         if self.detail:
-            lines.append(f"  detail: {self.detail}")
+            lines.append(f"detail: {self.detail}")
 
         if self.hint:
-            lines.append(f"  hint: {self.hint}")
+            lines.append(f"hint: {self.hint}")
 
-        return "\n".join(lines)
+        return Fact(key=f"{self.severity} {self.sqlstate}", value="\n".join(lines))
 
 
 @dataclass(frozen=True)
@@ -49,28 +51,17 @@ class PgNotify:
     payload: str
     pid: int
 
-    def render(self) -> str:
-        return f"- {self.channel} from pid {self.pid}: {self.payload}"
-
-
-@dataclass(frozen=True)
-class PgScriptStep:
-    """Итог одного стейтмента скрипта before/after насоса: текст и статус
-    сервера; у стейтмента из нескольких команд статусы перечислены через `;`."""
-
-    statement: str
-    status: str
-
-    def render(self) -> str:
-        return f"- {self.status}: {self.statement}"
+    def fact(self) -> Fact:
+        return Fact(
+            key=f"notify {self.channel}", value=f"{self.payload} (pid {self.pid})"
+        )
 
 
 @dataclass(frozen=True)
 class PgCommandReport:
-    """Итог команды насоса для чата: первая строка — сводка насоса, дальше
-    статус сервера (у COPY ... TO STDOUT psycopg его не сохраняет — тогда
-    строки нет), выполненный стейтмент, шаги скриптов before и after той же
-    транзакции, сессия и всё, что сервер сообщил."""
+    """Итог команды насоса для чата командой SqlResult: выполненный стейтмент
+    со сводкой насоса, контрактом колонок (columns, у источника), статусом и
+    сессией сервера и всем, что сервер сообщил."""
 
     summary: str
     status: str
@@ -78,42 +69,36 @@ class PgCommandReport:
     backend_pid: int
     server_version: int
     rows: int = 0
+    columns: Sequence[Mapping[str, str]] = field(default_factory=tuple)
     notices: Sequence[PgNotice] = field(default_factory=tuple)
     notifies: Sequence[PgNotify] = field(default_factory=tuple)
-    before: Sequence[PgScriptStep] = field(default_factory=tuple)
-    after: Sequence[PgScriptStep] = field(default_factory=tuple)
 
-    def scripted(
-        self, before: Sequence[PgScriptStep], after: Sequence[PgScriptStep]
-    ) -> PgCommandReport:
-        return replace(self, before=tuple(before), after=tuple(after))
+    def sql_statement(self) -> SqlStatement:
+        rows: list[Mapping[str, str]] | None = None
+        if self.columns:
+            rows = list(self.columns)
 
-    def render(self) -> str:
-        lines = [self.summary]
-        if self.status:
-            lines.append(f"status: {self.status}")
-
-        lines.append(f"statement: {self.statement}")
-        if self.before:
-            lines.append("before:")
-            lines.extend(step.render() for step in self.before)
-
-        if self.after:
-            lines.append("after:")
-            lines.extend(step.render() for step in self.after)
-
-        lines.append(
-            f"server: backend pid {self.backend_pid}, version {self.server_version}"
+        return SqlStatement(
+            text=self.statement,
+            status=self.summary,
+            rows=rows,
+            facts=list(self._facts()),
         )
-        if self.notices:
-            lines.append("notices:")
-            lines.extend(notice.render() for notice in self.notices)
 
-        if self.notifies:
-            lines.append("notifications:")
-            lines.extend(notify.render() for notify in self.notifies)
+    def _facts(self) -> Iterator[Fact]:
+        if self.status:
+            yield Fact(key="status", value=self.status)
 
-        return "\n".join(lines)
+        yield Fact(
+            key="server",
+            value=f"backend pid {self.backend_pid}, version {self.server_version}",
+        )
+
+        for notice in self.notices:
+            yield notice.fact()
+
+        for notify in self.notifies:
+            yield notify.fact()
 
 
 class PgSessionTrace:
@@ -141,7 +126,12 @@ class PgSessionTrace:
         return self.report_status(summary, statement, status, rows)
 
     def report_status(
-        self, summary: str, statement: str, status: str, rows: int = 0
+        self,
+        summary: str,
+        statement: str,
+        status: str,
+        rows: int = 0,
+        columns: Sequence[Mapping[str, str]] = (),
     ) -> PgCommandReport:
         """Итог команды по строке статуса сервера, когда курсора нет."""
         return PgCommandReport(
@@ -151,6 +141,7 @@ class PgSessionTrace:
             backend_pid=self._conn.info.backend_pid,
             server_version=self._conn.info.server_version,
             rows=rows,
+            columns=tuple(columns),
             notices=tuple(self._notices),
             notifies=tuple(self._notifies),
         )

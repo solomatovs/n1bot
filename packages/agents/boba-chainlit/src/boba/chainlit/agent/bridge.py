@@ -3,7 +3,8 @@
 Граф хода работает с BaseChatModel; мост конвертирует langchain-сообщения в
 конверт ChatRequest, события модели — в чанки и итоговое сообщение. Какой
 бэкенд за портом — мосту безразлично. LangchainMessages читает обратно то,
-что мост кладёт в additional_kwargs: рассуждения модели.
+что мост кладёт в additional_kwargs: рассуждения модели, — и ошибку из
+ToolMessage со статусом error.
 
 Ошибки: своих не выпускает; LlmError бэкенда уходит наверх как есть.
 """
@@ -56,6 +57,8 @@ from boba.llm.chat import (
     ToolCall,
     ToolSpec,
 )
+from boba.toolkit.failure import InvokeErrorKind
+from boba.toolkit.result import ErrorResult, FailureResult, ToolArtifact
 
 __all__ = ["ChatModelBridge", "LangchainMessages", "ResponseField"]
 
@@ -102,6 +105,16 @@ class LangchainMessages:
             return ""
 
         return str(value)
+
+    def failure_of(self, message: ToolMessage, text: str) -> FailureResult:
+        """Ошибка ToolMessage со статусом error: результат-ошибка из артефакта,
+        а без него — текст отказа, собранный langchain (text — содержимое
+        сообщения текстом)."""
+        revived = ToolArtifact.revive(message.artifact)
+        if isinstance(revived, FailureResult):
+            return revived
+
+        return ErrorResult(message=text, error_kind=InvokeErrorKind.TOOL_ERROR)
 
 
 class ChatModelBridge(BaseChatModel):

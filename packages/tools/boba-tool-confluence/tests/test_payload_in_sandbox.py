@@ -195,10 +195,10 @@ class TestDocumentsInSandbox:
             )
 
         message = str(failure.value)
-        if "no envelope" not in message:
+        if "ended without a result" not in message:
             raise AssertionError(f"смерть тела без конверта не названа: {message}")
 
-        if "tool_stderr=''" in message:
+        if "stderr tail:" not in message:
             raise AssertionError(f"stderr тела не в ошибке: {message}")
 
         if "Memory allocation" not in message and "pdfium" not in message:
@@ -216,10 +216,10 @@ class TestDocumentsInSandbox:
         reply = outcome.reply
         if not (isinstance(reply, ReplyError)):
             raise AssertionError("isinstance(reply, ReplyError)")
-        if reply.kind != "ocr_unavailable":
-            raise AssertionError('reply.kind == "ocr_unavailable"')
-        if "Traceback" in reply.message:
-            raise AssertionError('"Traceback" not in reply.message')
+        if reply.failure.error_kind != "OcrUnavailableError":
+            raise AssertionError(f"failure: {reply.failure!r}")
+        if "Traceback" in reply.failure.llm_view():
+            raise AssertionError("llm view must not carry the trace")
 
     def test_missing_file_is_a_declared_failure(self, docs: Path) -> None:
         outcome = _run_doc(
@@ -232,10 +232,10 @@ class TestDocumentsInSandbox:
         reply = outcome.reply
         if not (isinstance(reply, ReplyError)):
             raise AssertionError("isinstance(reply, ReplyError)")
-        if reply.kind != "document_unreadable":
-            raise AssertionError('reply.kind == "document_unreadable"')
-        if "Traceback" in reply.message:
-            raise AssertionError('"Traceback" not in reply.message')
+        if reply.failure.error_kind != "DocumentError":
+            raise AssertionError(f"failure: {reply.failure!r}")
+        if "Traceback" in reply.failure.llm_view():
+            raise AssertionError("llm view must not carry the trace")
 
 
 @needs_sandbox

@@ -46,9 +46,12 @@ from boba.db.clickhouse.query import (
 )
 from boba.db.clickhouse.target import ChCluster, ChPlacement, ChTableRef, ChTableRole
 from boba.db.clickhouse.trace import ChCommandReport
-from boba.toolkit.contract import ColumnVerdict, TypeFamily, Verdict
+from boba.toolkit.contract import TypeFamily
 from boba.toolkit.transfer import (
+    ColumnCheck,
+    ColumnIssue,
     ColumnRules,
+    ColumnVerdict,
     CreateTemplate,
     DeleteOutcome,
     DeleteStrategyApply,
@@ -66,6 +69,7 @@ from boba.toolkit.transfer import (
     TransferSink,
     TransferTable,
     UnknownTypeApply,
+    Verdict,
 )
 
 __all__ = [
@@ -136,7 +140,9 @@ class ChTsvOut:
             async for block in Lines.all(head.rest, chunks):
                 await out.rows(block)
 
-            return stream.trace.report(contract.render(StreamWire.TSV), text)
+            return stream.trace.report(
+                contract.caption(StreamWire.TSV), text, columns=contract.rows()
+            )
 
     def _contract(self, lines: Sequence[bytes], server: str) -> ChContract:
         names = self._header.parse(lines[0])
@@ -460,6 +466,13 @@ class ChTwin:
     def target(self) -> ChTableRef:
         return self._twin
 
+    def method(self) -> str:
+        """Как строки попали в таблицу: через двойник и exchange tables."""
+        return (
+            f"into {self._twin.text()}, then exchange tables with "
+            f"{self._table.text()}; the previous version stays in {self._twin.text()}"
+        )
+
     def keeps_all(self) -> bool:
         """Стратегия удаления ничего не отметила: таблицу менять незачем."""
         return self._fill is ChTwinFill.ALL
@@ -675,18 +688,14 @@ class ChTransferTable(TransferTable):
     async def truncate(self) -> DeleteOutcome:
         self._twin.empty()
 
-        return DeleteOutcome(
-            rows=0,
-            statement=f"truncate: {self._twin.target().text()} starts empty",
-        )
+        return DeleteOutcome(effect="replaced: the new version starts empty")
 
     async def delete_all(self) -> DeleteOutcome:
         rows = await self._twin.count_where("1")
         self._twin.empty()
 
         return DeleteOutcome(
-            rows=rows,
-            statement=f"delete all: {self._twin.target().text()} starts empty",
+            effect=f"{rows} rows replaced: the new version starts empty"
         )
 
     async def delete_where(self, where: str) -> DeleteOutcome:
@@ -694,11 +703,10 @@ class ChTransferTable(TransferTable):
         self._twin.keep_where_not(where)
 
         return DeleteOutcome(
-            rows=rows,
-            statement=(
-                f"delete where {where}: {self._twin.target().text()} keeps the "
-                f"other rows"
-            ),
+            effect=(
+                f"{rows} rows matching `{where}` left out, the others carried "
+                f"into the new version"
+            )
         )
 
 
@@ -786,6 +794,9 @@ class ChInputSink(TransferSink):
         await self._twin.exchange()
 
         return trace.written_rows
+
+    def method(self) -> str:
+        return self._twin.method()
 
     async def discard(self) -> int:
         async for _ in self._inbound.bodies():
@@ -1028,12 +1039,16 @@ class ChTypeRules:
     def _nullable(source: ChParsedType, target: ChParsedType) -> ColumnVerdict:
         if source.nullable and not target.nullable:
             return ColumnVerdict(
-                Verdict.ERROR, "stream is nullable, table column is not"
+                Verdict.ERROR,
+                "stream is nullable, table column is not",
+                ColumnIssue.NULLABLE_INTO_NOT_NULL,
             )
 
         if not source.nullable and target.nullable:
             return ColumnVerdict(
-                Verdict.WARNING, "stream is not null, table column is nullable"
+                Verdict.WARNING,
+                "stream is not null, table column is nullable",
+                ColumnIssue.NOT_NULL_INTO_NULLABLE,
             )
 
         return ColumnVerdict(Verdict.OK, "ok")
@@ -1049,20 +1064,36 @@ class ChMatch:
     stream: ChStreamColumn | None
     table: ChCatalogColumn | None
 
+    def check(self, rules: ChTypeRules) -> ColumnCheck:
+        """Сверка колонки с типами обеих сторон для отчёта."""
+        stream = ""
+        if self.stream is not None:
+            stream = self.stream.known
+
+        table = ""
+        if self.table is not None:
+            table = self.table.type_text
+
+        return ColumnCheck(
+            name=self.name, stream=stream, table=table, verdict=self.verdict(rules)
+        )
+
     def verdict(self, rules: ChTypeRules) -> ColumnVerdict:
         if self.stream is None:
             return ColumnVerdict(
-                Verdict.ERROR, f"column {self.name}: in the table but not in the stream"
+                Verdict.ERROR,
+                "in the table but not in the stream",
+                ColumnIssue.NOT_IN_STREAM,
             )
 
         if self.table is None:
             return ColumnVerdict(
-                Verdict.ERROR, f"column {self.name}: in the stream but not in the table"
+                Verdict.ERROR,
+                "in the stream but not in the table",
+                ColumnIssue.NOT_IN_TABLE,
             )
 
-        verdict = rules.compare(self.stream, self.table)
-
-        return ColumnVerdict(verdict.level, f"column {self.name}: {verdict.message}")
+        return rules.compare(self.stream, self.table)
 
 
 @dataclass(frozen=True)
@@ -1176,21 +1207,11 @@ class ChMatcher:
         return ChTablePlan(columns=tuple(columns))
 
     def _check(self, matches: Sequence[ChMatch]) -> SchemaCheck:
-        errors: list[str] = []
-        warnings: list[str] = []
-        lines: list[str] = []
+        columns: list[ColumnCheck] = []
         for match in matches:
-            verdict = match.verdict(self._type_rules)
-            lines.append(f"- {verdict.level.value} {verdict.message}")
-            if verdict.level is Verdict.ERROR:
-                errors.append(verdict.message)
+            columns.append(match.check(self._type_rules))
 
-            if verdict.level is Verdict.WARNING:
-                warnings.append(verdict.message)
-
-        return SchemaCheck(
-            errors=tuple(errors), warnings=tuple(warnings), lines=tuple(lines)
-        )
+        return SchemaCheck(columns=tuple(columns))
 
 
 class ChTransfer(Protocol):

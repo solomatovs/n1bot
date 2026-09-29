@@ -1,7 +1,7 @@
 """Отказы соединений пользователя: что видит LLM и чат в каждом случае.
 
 Инструмент обёрнут как в приложении — `ToolErrorGuard` превращает исключение
-обвязки в `ErrorResult`; тест проверяет kind и текст, которые уйдут в
+обвязки в результат-ошибку; тест проверяет kind и текст, которые уйдут в
 историю и на экран. Стенд: реальный postgres, живой KDC стенда.
 """
 
@@ -48,7 +48,7 @@ from boba.stand.site import Stand
 from boba.tool.pg.tools import PgToolConfig
 from boba.tool.web.tools import WebToolsConfig
 from boba.toolkit.facade import Injected, UserConnection
-from boba.toolkit.result import ErrorResult, ToolArtifact
+from boba.toolkit.result import FailureResult, ToolArtifact
 from boba.toolrun.errors import ToolErrorGuard
 from boba.toolrun.injected import InjectedConfig
 from boba.transport.http.connection import HttpConnection
@@ -328,7 +328,7 @@ class Guarded:
             ConnectionTypes.discover,
         )
         InjectedConfig.bind_all([tool], resolve)
-        ToolErrorGuard.guard_all([tool])
+        ToolErrorGuard().guard_all([tool])
         return tool
 
     @staticmethod
@@ -339,22 +339,22 @@ class Guarded:
         return message.artifact
 
     @staticmethod
-    async def failure(tool: StructuredTool, **args: Any) -> ErrorResult:
+    async def failure(tool: StructuredTool, **args: Any) -> FailureResult:
         artifact = await Guarded.call(tool, **args)
         result = ToolArtifact.revive(artifact)
-        if not isinstance(result, ErrorResult):
-            raise AssertionError(f"expected an ErrorResult, got {result!r}")
+        if not isinstance(result, FailureResult):
+            raise AssertionError(f"expected a FailureResult, got {result!r}")
         return result
 
 
-def _expect(result: ErrorResult, kind: str, *phrases: str) -> None:
+def _expect(result: FailureResult, kind: str, *phrases: str) -> None:
     if result.error_kind != kind:
-        msg = f"kind {result.error_kind!r} != {kind!r}: {result.message}"
+        msg = f"kind {result.error_kind!r} != {kind!r}: {result.llm_view()}"
         raise AssertionError(msg)
 
     for phrase in phrases:
-        if phrase not in result.message:
-            raise AssertionError(f"{phrase!r} not in {result.message!r}")
+        if phrase not in result.llm_view():
+            raise AssertionError(f"{phrase!r} not in {result.llm_view()!r}")
 
 
 async def _grant_delegated(
@@ -531,10 +531,10 @@ class TestRefusalText:
     """Отказ — одна фраза для человека и LLM: свой kind, без цепочки причин."""
 
     @staticmethod
-    def _refusal(result: ErrorResult) -> None:
+    def _refusal(result: FailureResult) -> None:
         for noise in ("<-", "ValidationError", "Traceback", "pydantic"):
-            if noise in result.message:
-                raise AssertionError(f"{noise!r} leaked into {result.message!r}")
+            if noise in result.llm_view():
+                raise AssertionError(f"{noise!r} leaked into {result.llm_view()!r}")
 
     async def test_kind_is_the_refusal_kind(
         self, raw_config, store, layer, delegated_pg, tmp_path: Path
@@ -571,8 +571,8 @@ class TestRefusalText:
             KerberosCredentialSource.RETRY_HINT,
         )
         for phrase in expected:
-            if phrase not in result.message:
-                raise AssertionError(f"{phrase!r} not in {result.message!r}")
+            if phrase not in result.llm_view():
+                raise AssertionError(f"{phrase!r} not in {result.llm_view()!r}")
 
 
 class TestNoConnections:

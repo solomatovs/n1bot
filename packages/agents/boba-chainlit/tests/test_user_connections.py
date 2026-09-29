@@ -50,7 +50,6 @@ from boba.tool.pg.tools import PgToolConfig
 from boba.tool.web.tools import WebToolsConfig
 from boba.toolkit.entry import ToolMain
 from boba.toolkit.launcher import PayloadFailureError
-from boba.toolkit.sql import SqlErrorKind
 from boba.toolkit.wrap import ToolProcessWrap
 from boba.toolrun.callvalues import CallContextValues
 from boba.toolrun.injected import InjectedConfig
@@ -449,8 +448,9 @@ async def test_unreachable_database_is_reported_by_the_body(
             pg_tools["pg_query"], connection="dead", sql="select 1", offset=0, limit=50
         )
 
-    if caught.value.kind != SqlErrorKind.DATABASE_UNAVAILABLE:
-        raise AssertionError(f"unexpected failure kind: {caught.value.kind}")
+    error_kind = caught.value.failure().error_kind
+    if error_kind != "PostgresError":
+        raise AssertionError(f"unexpected failure kind: {error_kind}")
 
 
 @pytest.fixture

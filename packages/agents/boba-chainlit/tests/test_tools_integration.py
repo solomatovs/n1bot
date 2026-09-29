@@ -710,8 +710,8 @@ class TestDocTools:
                 ocr_language="rus+eng",
             )
 
-        if failure.value.kind != "document_unreadable":
-            raise AssertionError('failure.value.kind == "document_unreadable"')
+        if failure.value.failure().error_kind != "DocumentError":
+            raise AssertionError(f"failure: {failure.value.failure()!r}")
         if "no.pdf" not in str(failure.value):
             raise AssertionError('"no.pdf" in str(failure.value)')
 
@@ -741,8 +741,8 @@ class TestChartTool:
         with pytest.raises(PayloadFailureError) as caught:
             await Call.result(chart_tool, spec="не json")
 
-        if caught.value.kind != "invalid_figure_spec":
-            raise AssertionError('caught.value.kind == "invalid_figure_spec"')
+        if caught.value.failure().error_kind != "InvalidFigureSpecError":
+            raise AssertionError(f"failure: {caught.value.failure()!r}")
 
 
 class TestWebTools:
@@ -801,8 +801,8 @@ class TestWebTools:
                 line_count=5,
             )
 
-        if caught.value.kind != "unknown_host":
-            raise AssertionError('caught.value.kind == "unknown_host"')
+        if caught.value.failure().error_kind != "UnknownHostError":
+            raise AssertionError(f"failure: {caught.value.failure()!r}")
         if "outside the chosen connection" not in str(caught.value):
             msg = f"host refusal must explain the coverage: {caught.value}"
             raise AssertionError(msg)
@@ -867,8 +867,9 @@ class TestConfluenceTools:
                 confluence_tools["confluence_fetch"], page_id="0", as_markdown=True
             )
 
-        if failure.value.kind != "confluence_request_failed":
-            raise AssertionError('failure.value.kind == "confluence_request_failed"')
+        request_errors = {"TransportError", "ConfluencePayloadError"}
+        if failure.value.failure().error_kind not in request_errors:
+            raise AssertionError(f"failure: {failure.value.failure()!r}")
 
 
 def _rows(result: ToolResultBase) -> Sequence[Mapping[str, Any]]:
@@ -1136,8 +1137,9 @@ class TestIngestTools:
                 space_key="NOSUCHSPACE",
             )
 
-        if failure.value.kind != "ingest_request_failed":
-            raise AssertionError('failure.value.kind == "ingest_request_failed"')
+        request_errors = {"TransportError", "ConfluencePayloadError"}
+        if failure.value.failure().error_kind not in request_errors:
+            raise AssertionError(f"failure: {failure.value.failure()!r}")
 
     async def test_fetch_attachment(
         self, ingest_tools, confluence_attachment_ref

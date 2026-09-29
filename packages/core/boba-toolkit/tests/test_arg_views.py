@@ -24,6 +24,7 @@ from boba.toolkit.calls import (
 from boba.toolkit.facade import Injected, tool
 from boba.toolkit.result import (
     ChatView,
+    FieldLines,
     MarkdownResult,
     ResultKindError,
     ResultKinds,
@@ -111,6 +112,27 @@ def test_chat_view_uses_declared_results_and_field_lines() -> None:
     assert "x" not in markdown.split("`main`")[1]
     assert "**stdin" not in markdown
     assert "intent" not in markdown
+
+
+def test_structured_arguments_keep_their_shape() -> None:
+    """Модель — компактный json в строку, список объектов — таблица,
+    длинная структура — блок json с отступами."""
+    call = Args(
+        sql="select 1",
+        connection_name="main",
+        limits=Limits(rows=10),
+        tags=["x" * 70, "y" * 70],
+    )
+    markdown = call.chat_view().markdown
+    assert '**limits:** `{"rows": 10}`' in markdown
+    assert '**tags:**\n```json\n[\n  "' in markdown
+
+    rows = FieldLines.line(
+        "columns",
+        [{"name": "id", "nullable": False}, {"name": "note", "type_text": "text"}],
+    )
+    assert rows.startswith("**columns:**\n\n| name")
+    assert "| note | " in rows
 
 
 def test_call_of_renders_unknown_tool_as_json() -> None:

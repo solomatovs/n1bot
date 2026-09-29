@@ -558,7 +558,7 @@ class TestOrdersReport:
         )
         landed = Loaded(target, DW, "orders_report")
 
-        assert f"{ORDERS} rows written" in report
+        assert f"{ORDERS} rows loaded" in report
         assert await landed.columns() == expected_columns(target)
         assert await landed.count() == ORDERS
         assert await landed.aggregate("count(case when paid is null then 1 end)") > 0
@@ -578,7 +578,7 @@ class TestOrdersReport:
             DeleteTruncate(kind="truncate"),
         )
 
-        assert "error" not in report.split("rows written")[0].lower()
+        assert "error" not in report.split("rows loaded")[0].lower()
         assert await Loaded(target, DW, "orders_report").count() == ORDERS
 
 
@@ -612,8 +612,8 @@ class TestIncrementalMonth:
         )
 
         assert in_month > 0
-        assert f"deleted: {in_month} rows" in report
-        assert f"{in_month} rows written" in report
+        assert f"{in_month} rows deleted" in report
+        assert f"{in_month} rows loaded" in report
         assert await landed.aggregate("count(case when note = 'stale' then 1 end)") == 0
         assert await landed.count() == ORDERS
         await same_content(source, target, "orders_report")
@@ -678,7 +678,7 @@ class TestRenamedMart:
             rules=self.RULES,
         )
 
-        assert f"{ORDERS} rows written" in report
+        assert f"{ORDERS} rows loaded" in report
         assert "warning placed_at" in report
         assert await mart.count() == ORDERS
         assert await mart.texts("client", order_by="order_uid") == (
@@ -733,7 +733,8 @@ class TestSchemaDrift:
             if name.startswith("orders_drift_bak_"):
                 backups.append(name)
 
-        assert "backup: orders_drift_bak_" in report
+        assert "saved as" in report
+        assert "orders_drift_bak_" in report
         assert len(backups) == 1
         assert await Loaded(target, DW, backups[0]).count() == ORDERS
         assert await drift.count() == ORDERS
@@ -768,7 +769,7 @@ class TestCreateTemplate:
                 create_table=template,
             )
 
-            assert f"{ORDERS} rows written" in report
+            assert f"{ORDERS} rows loaded" in report
 
         landed = Loaded(target, DW, "orders_tpl")
         if target.greenplum:
@@ -840,7 +841,7 @@ class TestStagingSwap:
         )
         tables = await landed.tables()
 
-        assert f"{ORDERS} rows written" in report
+        assert f"{ORDERS} rows loaded" in report
         assert "orders_report_stage" not in tables
         assert await landed.aggregate("count(case when note = 'old' then 1 end)") == 0
         await same_content(source, target, "orders_report")
@@ -865,7 +866,7 @@ class TestDryRun:
             insert=InsertNothing(kind="nothing"),
         )
 
-        assert report.startswith("0 rows written")
+        assert report.startswith("0 rows loaded")
         assert await landed.columns() == columns
         assert await landed.count() == ORDERS
 
@@ -944,7 +945,7 @@ class TestDailyTraffic:
         for name, kind, _ in await landed.columns():
             types[name] = kind
 
-        assert "rows written" in report
+        assert "rows loaded" in report
         assert types["top_urls"] == "character varying"
         assert types["last_seen_msk"] == "character varying"
         assert types["views"] == "numeric(20,0)"
@@ -982,7 +983,7 @@ class TestDailyTraffic:
         for name, kind, _ in await landed.columns():
             types[name] = kind
 
-        assert "rows written" in report
+        assert "rows loaded" in report
         assert types["top_urls"] == json_type(target)
         assert types["last_seen_msk"] == "timestamp(3) without time zone"
         await self.rows_match(source, target, *self.ROW)
@@ -1034,7 +1035,7 @@ class TestArrow:
         landed = Loaded(target, DW, "orders_report_arrow")
         view = ChLoaded(source, "orders_report")
 
-        assert f"{ORDERS} rows written" in report
+        assert f"{ORDERS} rows loaded" in report
         assert await landed.count() == ORDERS
         assert await landed.aggregate("sum(gross)") == await view.scalar("sum(gross)")
         assert await landed.aggregate("sum(paid)") == await view.scalar("sum(paid)")
@@ -1095,7 +1096,7 @@ class TestBackToClickHouse:
         city_month = ChLoaded(source, "city_month")
         view = ChLoaded(source, "orders_report")
 
-        assert f"{await view.scalar('uniqExact(city, month)')} rows written" in (
+        assert f"{await view.scalar('uniqExact(city, month)')} rows loaded" in (
             chained.in_report
         )
         assert await city_month.types() == [

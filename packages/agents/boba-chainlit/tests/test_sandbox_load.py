@@ -1314,7 +1314,7 @@ class ChokedBody(StrEnum):
     """Исходы вызова, задушенного форк-бомбой: таймаут либо смерть без конверта."""
 
     TIMEOUT = "timeout_sec=30"
-    NO_ENVELOPE = "no envelope on tool_result"
+    NO_ENVELOPE = "the tool process ended without a result"
 
 
 @needs_fuse

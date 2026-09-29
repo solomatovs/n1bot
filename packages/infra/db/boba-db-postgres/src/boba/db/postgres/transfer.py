@@ -42,10 +42,13 @@ from boba.db.postgres.describe import (
 from boba.db.postgres.errors import PgDescribeError
 from boba.db.postgres.query import PgQuery, PgQueryBuilder
 from boba.db.postgres.trace import PgCommandReport, PgSessionTrace
-from boba.toolkit.contract import ColumnVerdict, Verdict
+from boba.toolkit.contract import ContractColumn, ContractTable
 from boba.toolkit.stream import Chunk
 from boba.toolkit.transfer import (
+    ColumnCheck,
+    ColumnIssue,
     ColumnRules,
+    ColumnVerdict,
     CreateTemplate,
     DeleteOutcome,
     DeleteStrategyApply,
@@ -64,6 +67,7 @@ from boba.toolkit.transfer import (
     TransferSink,
     TransferTable,
     UnknownTypeApply,
+    Verdict,
 )
 
 __all__ = [
@@ -133,12 +137,16 @@ class PgSourceColumn(BaseModel):
 
         return f"oid {self.oid}"
 
-    def describe(self) -> str:
-        parts = [self.known()]
+    def row(self) -> dict[str, str]:
+        not_null = ""
         if not self.nullable:
-            parts.append("not null")
+            not_null = ContractTable.NOT_NULL_MARK
 
-        return " ".join(parts)
+        return {
+            ContractColumn.COLUMN: self.name,
+            ContractColumn.TYPE: self.known(),
+            ContractColumn.NOT_NULL: not_null,
+        }
 
 
 class PgColumnDeclaration(BaseModel):
@@ -216,15 +224,19 @@ class PgContract(BaseModel):
 
         return self.model_copy(update={"columns": merged})
 
-    def render(self, wire: StreamWire) -> str:
-        lines = [
+    def caption(self, wire: StreamWire) -> str:
+        return (
             f"streamed out copy {wire.value} from postgres {self.version().text()}, "
-            f"{len(self.columns)} columns:"
-        ]
-        for column in self.columns:
-            lines.append(f"  {column.name}: {column.describe()}")
+            f"{len(self.columns)} columns"
+        )
 
-        return "\n".join(lines)
+    def rows(self) -> list[dict[str, str]]:
+        """Таблица контракта для отчёта: имя, тип и not null по колонке."""
+        rows: list[dict[str, str]] = []
+        for column in self.columns:
+            rows.append(column.row())
+
+        return rows
 
     @staticmethod
     def _applied(
@@ -482,7 +494,10 @@ class PgCopyOut:
             raise
 
         return self._trace.report_status(
-            contract.render(layout.wire()), statement.text.as_string(self._conn), status
+            contract.caption(layout.wire()),
+            statement.text.as_string(self._conn),
+            status,
+            columns=contract.rows(),
         )
 
 
@@ -757,7 +772,9 @@ class PgTransferTable(TransferTable):
         )
         await self._execute(query)
 
-        return DeleteOutcome(rows=0, statement=query.text.as_string(self._conn))
+        return DeleteOutcome(
+            effect="removed by truncate", statement=query.text.as_string(self._conn)
+        )
 
     async def delete_all(self) -> DeleteOutcome:
         query = (
@@ -787,7 +804,9 @@ class PgTransferTable(TransferTable):
 
         rows = max(rows, 0)
 
-        return DeleteOutcome(rows=rows, statement=query.text.as_string(self._conn))
+        return DeleteOutcome(
+            effect=f"{rows} rows deleted", statement=query.text.as_string(self._conn)
+        )
 
 
 class PgCopyIn(TransferSink):
@@ -820,6 +839,10 @@ class PgCopyIn(TransferSink):
         rows = max(rows, 0)
 
         return rows
+
+    def method(self) -> str:
+        """Строки идут прямо в таблицу в транзакции вызова: пояснять нечего."""
+        return ""
 
     async def discard(self) -> int:
         async for _ in self._bodies:
@@ -919,7 +942,7 @@ class PgTypeRules:
 
     def _kinds(self, stream: PgStreamColumn, table: PgCatalogColumn) -> ColumnVerdict:
         info: TypeInfo | None = self._registry.get(stream.oid)
-        table_text = self._table_text(table)
+        table_text = self.table_text(table)
         if info is None and not stream.resolved:
             return self._unnamed(stream, table_text)
 
@@ -1057,17 +1080,22 @@ class PgTypeRules:
     ) -> ColumnVerdict:
         if stream.nullable and table.not_null:
             return ColumnVerdict(
-                Verdict.ERROR, "stream is nullable, table column is not null"
+                Verdict.ERROR,
+                "stream is nullable, table column is not null",
+                ColumnIssue.NULLABLE_INTO_NOT_NULL,
             )
 
         if not stream.nullable and not table.not_null:
             return ColumnVerdict(
-                Verdict.WARNING, "stream is not null, table column is nullable"
+                Verdict.WARNING,
+                "stream is not null, table column is nullable",
+                ColumnIssue.NOT_NULL_INTO_NULLABLE,
             )
 
         return ColumnVerdict(Verdict.OK, "ok")
 
-    def _table_text(self, table: PgCatalogColumn) -> str:
+    def table_text(self, table: PgCatalogColumn) -> str:
+        """Тип колонки таблицы текстом format_type, без имени — голый OID."""
         info: TypeInfo | None = self._registry.get(table.oid)
         if info is None:
             return f"oid {table.oid}"
@@ -1085,15 +1113,33 @@ class PgMatch:
     stream: PgStreamColumn | None
     table: PgCatalogColumn | None
 
+    def check(self, rules: PgTypeRules) -> ColumnCheck:
+        """Сверка колонки с типами обеих сторон для отчёта."""
+        stream = ""
+        if self.stream is not None:
+            stream = self.stream.known
+
+        table = ""
+        if self.table is not None:
+            table = rules.table_text(self.table)
+
+        return ColumnCheck(
+            name=self.name, stream=stream, table=table, verdict=self.verdict(rules)
+        )
+
     def verdict(self, rules: PgTypeRules) -> ColumnVerdict:
         if self.stream is None:
             return ColumnVerdict(
-                Verdict.ERROR, f"column {self.name}: in the table but not in the stream"
+                Verdict.ERROR,
+                "in the table but not in the stream",
+                ColumnIssue.NOT_IN_STREAM,
             )
 
         if self.table is None:
             return ColumnVerdict(
-                Verdict.ERROR, f"column {self.name}: in the stream but not in the table"
+                Verdict.ERROR,
+                "in the stream but not in the table",
+                ColumnIssue.NOT_IN_TABLE,
             )
 
         return rules.compare(self.stream, self.table)
@@ -1285,21 +1331,11 @@ class PgMatcher:
         return renamed
 
     def _check(self, matches: Sequence[PgMatch]) -> SchemaCheck:
-        errors: list[str] = []
-        warnings: list[str] = []
-        lines: list[str] = []
+        columns: list[ColumnCheck] = []
         for match in matches:
-            verdict = match.verdict(self._type_rules)
-            lines.append(f"- {verdict.level.value} {match.name}: {verdict.message}")
-            if verdict.level is Verdict.ERROR:
-                errors.append(f"{match.name}: {verdict.message}")
+            columns.append(match.check(self._type_rules))
 
-            if verdict.level is Verdict.WARNING:
-                warnings.append(f"{match.name}: {verdict.message}")
-
-        return SchemaCheck(
-            errors=tuple(errors), warnings=tuple(warnings), lines=tuple(lines)
-        )
+        return SchemaCheck(columns=tuple(columns))
 
 
 class PgTransfer(Protocol):

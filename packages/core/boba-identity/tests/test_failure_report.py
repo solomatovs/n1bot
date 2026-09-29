@@ -39,8 +39,14 @@ class TestPlainException:
     def test_all_three_channels_match(self) -> None:
         report = FailureReport.of(self._connection_failure())
 
-        if not (report.log == report.view == report.history):
-            raise AssertionError("report.log == report.view == report.history")
+        if report.log != report.history:
+            raise AssertionError(f"log {report.log!r} != history {report.history!r}")
+        if report.view is None:
+            raise AssertionError("plain exception must reach the chat")
+        if "**RuntimeError: Connection error.**" not in report.view:
+            raise AssertionError(f"view: {report.view!r}")
+        if "OSError: All connection attempts failed" not in report.view:
+            raise AssertionError(f"view: {report.view!r}")
         if "RuntimeError: Connection error." not in report.log:
             raise AssertionError('"RuntimeError: Connection error." in report.log')
         if "OSError: All connection attempts failed" not in report.log:

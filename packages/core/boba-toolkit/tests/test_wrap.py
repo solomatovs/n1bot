@@ -1,4 +1,4 @@
-"""Обёртка запуска: вызов через порт, kind'ы отказов."""
+"""Обёртка запуска: вызов через порт, ошибки конвертом результата-ошибки."""
 
 from __future__ import annotations
 
@@ -24,7 +24,7 @@ from boba.toolkit.launcher import (
     ToolOutcome,
 )
 from boba.toolkit.protocol import REPLY, ReplyError, ToolCommand
-from boba.toolkit.result import MarkdownResult
+from boba.toolkit.result import ErrorResult, MarkdownResult
 from boba.toolkit.wrap import ToolProcessWrap, WrapErrorKind
 
 CFG = FakeConfig(token=SecretStr("t0ken"), limit=5)
@@ -133,7 +133,8 @@ class TestSandboxMode:
 
     def test_error_reply_raises_payload_failure(self) -> None:
         tool = fresh_tool()
-        reply = '{"status": "error", "kind": "fake_unavailable", "message": "down"}'
+        failure = ErrorResult(message="down", error_kind="fake_unavailable")
+        reply = ReplyError(failure=failure).model_dump_json()
         ToolProcessWrap.guard_all([tool], RecordingLauncher(reply))
 
         if tool.coroutine is None:
@@ -141,8 +142,8 @@ class TestSandboxMode:
         with pytest.raises(PayloadFailureError) as caught:
             run_body(tool.coroutine, text="x", repeat=1, cfg=CFG)
 
-        if caught.value.kind != "fake_unavailable":
-            raise AssertionError('caught.value.kind == "fake_unavailable"')
+        if caught.value.failure() != failure:
+            raise AssertionError(f"failure: {caught.value.failure()!r}")
         if "down" not in str(caught.value):
             raise AssertionError('"down" in str(caught.value)')
 
@@ -155,13 +156,16 @@ class TestSandboxMode:
         with pytest.raises(PayloadFailureError) as caught:
             run_body(tool.coroutine, text="x" * 140_000, repeat=1, cfg=CFG)
 
-        if caught.value.kind != str(WrapErrorKind.ARGUMENT_TOO_LARGE):
-            raise AssertionError("caught.value.kind == str(WrapErrorKind.ARGUMENT_TOO…")
+        error_kind = caught.value.failure().error_kind
+        if error_kind != WrapErrorKind.ARGUMENT_TOO_LARGE:
+            raise AssertionError(f"error_kind: {error_kind!r}")
 
     def test_error_reply_never_reaches_return(self) -> None:
         """Отказ — исключение, а не «успешный» результат с ok=False."""
         tool = fresh_tool()
-        reply = '{"status": "error", "kind": "k", "message": "m"}'
+        reply = ReplyError(
+            failure=ErrorResult(message="m", error_kind="k")
+        ).model_dump_json()
         launcher = RecordingLauncher(reply)
         ToolProcessWrap.guard_all([tool], launcher)
 

@@ -21,16 +21,13 @@ TransferError — стратегия схемы отказала; тип без 
 from __future__ import annotations
 
 import sys
-from collections.abc import Mapping, Sequence
+from collections.abc import Sequence
 from enum import StrEnum
-from typing import Annotated, ClassVar, Final
+from typing import Annotated, Any, ClassVar, Final
 
 from pydantic import Field
 
-from boba.connections.address import AddressError
 from boba.db.oracle import (
-    OracleError,
-    OracleQueryError,
     OraLiterals,
     OraQuery,
     OraQueryBuilder,
@@ -42,21 +39,25 @@ from boba.toolkit.contract import (
     ArrowContract,
     ColumnDeclaration,
     ContractError,
-    ContractText,
+    ContractTable,
     StreamContract,
 )
 from boba.toolkit.entry import ToolMain
 from boba.toolkit.facade import Injected, UserConnection, tool
 from boba.toolkit.ports import (
-    ArrowStreamError,
     ChunkBytes,
     Inbound,
     Outbound,
     StreamGroup,
-    StreamGroupAbortedError,
 )
-from boba.toolkit.result import MarkdownResult, SqlResult, SqlStatement, TableResult
-from boba.toolkit.sql import QueryBuildError, SqlErrorKind, SqlLimits
+from boba.toolkit.result import (
+    Fact,
+    MarkdownResult,
+    SqlResult,
+    SqlStatement,
+    TableResult,
+)
+from boba.toolkit.sql import SqlLimits
 from boba.toolkit.transfer import (
     ColumnRules,
     CreateTemplate,
@@ -68,7 +69,6 @@ from boba.toolkit.transfer import (
     TransferFrame,
     TransferInbound,
     TransferOutbound,
-    TransferReportText,
     UnknownTypeStrategy,
 )
 from boba.toolkit.types import SecretRevealing
@@ -212,6 +212,44 @@ async def run_statement(
             await payload.commit(conn)
 
     return SqlResult(engine=OraToolConfig.ENGINE, statements=[statement])
+
+
+async def run_steps(
+    payload: Any, conn: Any, steps: Sequence[str]
+) -> list[SqlStatement]:
+    """Стейтменты before/after насоса по одному, по порядку, на том же
+    соединении: DML остаётся в транзакции насоса до commit вызывающего, DDL
+    Oracle фиксирует сам. Строки выборок не собираются: шаг даёт число
+    затронутых строк и предупреждение драйвера. payload и conn —
+    PayloadOracle и соединение драйвера: его пакет есть только внутри
+    песочницы."""
+    statements: list[SqlStatement] = []
+    for step in steps:
+        query = OraQueryBuilder().raw_query(step).build()
+        async with payload.rows(conn, query.text, query.params) as stream:
+            statements.append(step_statement(step, stream))
+
+    return statements
+
+
+def step_statement(step: str, stream: Any) -> SqlStatement:
+    """Итог шага по RowStream: у выборки и команды без счётчика — done."""
+    facts: list[Fact] = []
+    if stream.warning:
+        facts.append(Fact(key="warning", value=stream.warning))
+
+    if stream.names:
+        return SqlStatement(text=step, status="done", facts=facts)
+
+    if stream.affected < 0:
+        return SqlStatement(text=step, status="done", facts=facts)
+
+    return SqlStatement(
+        text=step,
+        status=f"{stream.affected} rows",
+        affected_rows=stream.affected,
+        facts=facts,
+    )
 
 
 @tool
@@ -783,7 +821,7 @@ async def ora_stream_out(  # noqa: PLR0913
     after: AfterSteps = (),
     *,
     out: Annotated[Outbound[TransferFrame], Injected],
-) -> MarkdownResult:
+) -> SqlResult:
     """Источник sync-потока: строки запроса с контрактом колонок для приёмника.
 
     Первый кадр — контракт из описания стейтмента после parse (типы,
@@ -802,17 +840,22 @@ async def ora_stream_out(  # noqa: PLR0913
     outbound = TransferOutbound(out)
     async with payload.opened() as conn:
         trace = OraSessionTrace(conn)
-        before_steps = await payload.script(conn, before, trace)
+        before_steps = await run_steps(payload, conn, before)
         specs = await OraArrowSource(conn, payload, trace).stream(
             statement.text, columns, outbound
         )
-        after_steps = await payload.script(conn, after, trace)
+        after_steps = await run_steps(payload, conn, after)
         await payload.commit(conn)
+        contract = ContractTable()
         report = trace.report(
-            ContractText().render(StreamWire.ARROW.value, specs), statement.text
+            contract.caption(StreamWire.ARROW.value, specs),
+            statement.text,
+            columns=contract.rows(specs),
         )
 
-    return MarkdownResult(text=report.scripted(before_steps, after_steps).render())
+    statements = [*before_steps, report.sql_statement(), *after_steps]
+
+    return SqlResult(engine=OraToolConfig.ENGINE, statements=statements)
 
 
 @tool
@@ -911,7 +954,7 @@ async def ora_stream_in(  # noqa: PLR0913
     *,
     feed: Annotated[Inbound[TransferFrame], Injected],
     group: Annotated[StreamGroup, Injected],
-) -> MarkdownResult:
+) -> SqlResult:
     """Приёмник Oracle со стратегиями: поток arrow любого источника в таблицу.
 
     Контракт потока сверяется с таблицей по семействам типов: целые ложатся
@@ -944,7 +987,7 @@ async def ora_stream_in(  # noqa: PLR0913
     payload = PayloadOracle(connection)
     async with payload.opened() as conn:
         trace = OraSessionTrace(conn)
-        before_steps = await payload.script(conn, before, trace)
+        before_steps = await run_steps(payload, conn, before)
         loader = OraArrowLoader(
             conn,
             table,
@@ -963,24 +1006,14 @@ async def ora_stream_in(  # noqa: PLR0913
             rules,
             template,
         )
-        after_steps = await payload.script(conn, after, trace)
+        after_steps = await run_steps(payload, conn, after)
         await inbound.committing()
         await payload.commit(conn)
 
-    return MarkdownResult(
-        text=TransferReportText().render(report, before_steps, after_steps)
-    )
+    statements = [*report.statements(), *before_steps, *after_steps]
 
+    return SqlResult(engine=OraToolConfig.ENGINE, statements=statements)
 
-EXPECTED: Mapping[type[Exception], SqlErrorKind] = {
-    StreamGroupAbortedError: SqlErrorKind.STREAM_ABORTED,
-    AddressError: SqlErrorKind.UNKNOWN_TARGET,
-    QueryBuildError: SqlErrorKind.SQL_FAILED,
-    OracleError: SqlErrorKind.DATABASE_UNAVAILABLE,
-    OracleQueryError: SqlErrorKind.SQL_FAILED,
-    ArrowStreamError: SqlErrorKind.SQL_FAILED,
-    ContractError: SqlErrorKind.SQL_FAILED,
-}
 
 TOOLS: Final = ToolMain.toolset(
     ora_list_tables,

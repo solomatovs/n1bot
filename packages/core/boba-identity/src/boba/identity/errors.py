@@ -1,14 +1,14 @@
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from typing import ClassVar
 
-from boba.toolkit.failure import FailureText, ToolRefusalError
+from boba.toolkit.failure import FailurePacker, ToolRefusalError
 
 __all__ = [
     "AuthenticationError",
     "BaseError",
     "ExternalServiceError",
     "FailureReport",
-    "FailureText",
     "HttpErrorMessage",
     "InternalServiceError",
     "RefusalError",
@@ -123,7 +123,7 @@ def to_domain(e: Exception) -> BaseError:
         return e
 
     wrapped = InternalServiceError(
-        internal_detail=FailureText.of(e),
+        internal_detail=FailureReport.of(e).log,
         user_detail=None,
     )
     # __cause__ хранит оригинал: у wrapped нет __traceback__, у e — есть
@@ -211,27 +211,36 @@ class RefusalError(ToolRefusalError):
 class FailureReport:
     """Разбор сбоя на три канала: журнал, чат и история LLM.
 
-    Единственное место, где решается, что каждый из них увидит. Обычному
-    исключению достаточно быть выброшенным: все три получат одну формулировку
-    с цепочкой причин. Доменная ошибка меняет это своими представлениями —
-    например, скрывает детали от пользователя или не идёт в историю.
+    Единственное место, где решается, что каждый из них увидит. Обычное
+    исключение упаковывает FailurePacker, и все три канала получают один
+    результат-ошибку: журнал и история — его текст, чат — его markdown.
+    Доменная ошибка меняет это своими представлениями — например, скрывает
+    детали от пользователя или не идёт в историю.
     """
 
     log: str
-    """Текст для журнала приложения; есть всегда."""
+    """Текст для журнала приложения; есть всегда. Трассу пишет сам журнал
+    (logger.exception), поэтому её здесь нет."""
 
     view: str | None
-    """Текст для чата; None — пользователю показывать нечего."""
+    """Markdown для чата; None — пользователю показывать нечего."""
 
     history: str | None
     """Текст для истории LLM; None — модели об этом знать незачем."""
 
+    _FAILURES: ClassVar[FailurePacker] = FailurePacker()
+
     @classmethod
     def of(cls, error: BaseException) -> "FailureReport":
-        described = FailureText.of(error)
+        failure = cls._FAILURES.pack(error)
+        described = failure.llm_view()
 
         if not isinstance(error, BaseError):
-            return cls(log=described, view=described, history=described)
+            return cls(
+                log=described,
+                view=failure.chat_view().markdown,
+                history=described,
+            )
 
         view = None
         if message := error.view_message():

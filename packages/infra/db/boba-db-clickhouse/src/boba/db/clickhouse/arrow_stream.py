@@ -51,7 +51,7 @@ from boba.toolkit.contract import (
     ColumnDeclaration,
     ColumnSpec,
     ColumnType,
-    ContractText,
+    ContractTable,
     Declarations,
     DeclaredType,
     SchemaMatcher,
@@ -101,7 +101,7 @@ class ChArrowSource:
         self._columns = ArrowColumns()
         self._declarations = Declarations()
         self._contract = StreamContract()
-        self._contract_text = ContractText()
+        self._contract_table = ContractTable()
 
     async def stream(
         self,
@@ -151,7 +151,9 @@ class ChArrowSource:
             _, specs = await asyncio.gather(produce(), consume())
 
             return stream.trace.report(
-                self._contract_text.render(StreamWire.ARROW.value, specs), text
+                self._contract_table.caption(StreamWire.ARROW.value, specs),
+                text,
+                columns=self._contract_table.rows(specs),
             )
 
 

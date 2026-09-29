@@ -40,7 +40,7 @@ from boba.toolkit.chain import (
     StreamPlanError,
     StreamTimings,
 )
-from boba.toolkit.failure import FailureText, InvokeErrorKind
+from boba.toolkit.failure import FailurePacker, InvokeErrorKind
 from boba.toolkit.ports import PortDecl, StreamSpec, ToolStreamSpecs
 from boba.toolkit.result import ErrorResult, ToolResult
 from boba.toolrun.invoke import InvokeReply, ToolInvoker
@@ -63,6 +63,8 @@ logger = logging.getLogger(__name__)
 class ReplyOutcome:
     """Сборка TaskOutcome из ответа исполнителя инструментов."""
 
+    _FAILURES: ClassVar[FailurePacker] = FailurePacker()
+
     @classmethod
     def of_reply(cls, reply: InvokeReply) -> TaskOutcome:
         if reply.ok:
@@ -72,9 +74,8 @@ class ReplyOutcome:
 
     @classmethod
     def of_failure(cls, error: Exception) -> TaskOutcome:
-        text = FailureText.of(error)
-        result = ErrorResult(message=text, error_kind=InvokeErrorKind.CRASHED)
-        return TaskOutcome(TaskStatus.FAILED, result, text)
+        result = cls._FAILURES.pack(error)
+        return TaskOutcome(TaskStatus.FAILED, result, result.llm_view())
 
     @classmethod
     def stopped(cls) -> TaskOutcome:
@@ -365,7 +366,10 @@ class _RunSession:
         """Отмена самой корутины запуска: работающие задачи снимаем и ждём."""
         self._plan.stop()
         for group in self._groups:
-            group.abort("workflow run stopped")
+            stopped = ErrorResult(
+                message="workflow run stopped", error_kind=InvokeErrorKind.STOPPED
+            )
+            group.abort(stopped)
 
         self._cancel_running()
         done, _ = await asyncio.wait(self._running.values())

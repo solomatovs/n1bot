@@ -16,16 +16,13 @@ from __future__ import annotations
 import logging
 import sys
 from collections.abc import Mapping
-from enum import StrEnum
 from typing import Annotated, Any, Final
 
-import psycopg
 from psycopg import sql
 from psycopg.rows import dict_row
 from pydantic import Field
 
-from boba.db.postgres import PayloadPostgres, PgQuery, PgQueryBuilder, PostgresError
-from boba.llm.chat import LlmError
+from boba.db.postgres import PayloadPostgres, PgQuery, PgQueryBuilder
 from boba.tool.kb.kb import LLM, KbChunksConfig
 from boba.tool.kb.models import SearchHit
 from boba.tool.kb.search import (
@@ -39,14 +36,6 @@ from boba.toolkit.result import TableResult
 from boba.toolkit.timing import Elapsed
 
 logger = logging.getLogger(__name__)
-
-
-class KbChunksErrorKind(StrEnum):
-    """Ожидаемые отказы поиска по чанкам."""
-
-    DATABASE_UNAVAILABLE = "database_unavailable"
-    QUERY_FAILED = "kb_query_failed"
-    EMBEDDING_FAILED = "embedding_failed"
 
 
 class KbRows:
@@ -234,12 +223,6 @@ async def kb_fts_search(
     """
     return await KbChunkSearch(cfg).fts(ConfluenceCollection, query, top_k)
 
-
-EXPECTED: Mapping[type[Exception], KbChunksErrorKind] = {
-    PostgresError: KbChunksErrorKind.DATABASE_UNAVAILABLE,
-    psycopg.Error: KbChunksErrorKind.QUERY_FAILED,
-    LlmError: KbChunksErrorKind.EMBEDDING_FAILED,
-}
 
 TOOLS: Final = ToolMain.toolset(kb_vector_search, kb_fts_search)
 

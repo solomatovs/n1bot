@@ -17,22 +17,19 @@ psycopg.Error — СУБД отклонила запрос.
 from __future__ import annotations
 
 import sys
-from collections.abc import Iterable, Iterator, Mapping, Sequence
+from collections.abc import Iterable, Iterator, Sequence
 from enum import StrEnum
 from typing import Annotated, Any, ClassVar, Final
 
-import psycopg
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 from pydantic import BaseModel, Field
 
-from boba.connections.address import Address, AddressError
-from boba.db.postgres import PostgresError
+from boba.connections.address import Address
 from boba.identity.context import Scope
 from boba.tool.describer.address import Addresses
 from boba.tool.describer.store import (
     DescriberError,
-    DescriberErrorKind,
     DescriberSession,
     DescriberStore,
     DescriberToolConfig,
@@ -417,14 +414,6 @@ async def describe_delete_node(
 
     return NodeDeleteListing.result(deleted)
 
-
-EXPECTED: Mapping[type[Exception], DescriberErrorKind] = {
-    AddressError: DescriberErrorKind.INVALID_ADDRESS,
-    NodeIdsMissingError: DescriberErrorKind.NODE_ID_MISSING,
-    DescriberError: DescriberErrorKind.INVALID_SCOPE,
-    PostgresError: DescriberErrorKind.DATABASE_UNAVAILABLE,
-    psycopg.Error: DescriberErrorKind.SQL_FAILED,
-}
 
 TOOLS: Final = ToolMain.toolset(
     describe_node, describe_list_nodes, describe_delete_node

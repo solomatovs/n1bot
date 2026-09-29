@@ -130,7 +130,7 @@ class TestPostgres:
 
         assert await pg.rows("target") == UPSERTED
         assert "after:\n- DELETE 1: delete from" in chained.in_report
-        assert "- INSERT 0 2: insert into" in chained.in_report
+        assert "INSERT 0 2\nstatement: insert into" in chained.in_report
 
     async def test_failing_after_rolls_back_the_load(self, pg: PgScripts) -> None:
         """Ошибка последнего шага after откатывает и загрузку, и предыдущие шаги."""
@@ -211,7 +211,7 @@ class TestPostgres:
         )
 
         assert await pg.rows("mirror") == list(OLD_ROWS)
-        assert "- INSERT 0 2: insert into" in chained.in_report
+        assert "INSERT 0 2\nstatement: insert into" in chained.in_report
 
 
 class ChScripts:
@@ -334,8 +334,10 @@ class TestClickHouse:
             (2, "old2"),
             (3, "NEW3"),
         ]
-        assert "- 2: select n from seen" in chained.in_report
-        assert "- read 2 rows, written 2 rows: insert into" in chained.in_report
+        assert "2\nstatement: select n from seen" in chained.in_report
+        assert (
+            "read 2 rows, written 2 rows\nstatement: insert into" in chained.in_report
+        )
 
     async def test_source_reads_temp_table_from_before(self, ch: ChScripts) -> None:
         """Запрос источника видит временную таблицу из своего before, after
@@ -504,8 +506,8 @@ class TestOracle:
 
         assert await ora.rows("target", "id", "v") == UPSERTED
         assert "before:\n- 0 rows: delete from stage_tmp" in chained.in_report
-        assert "- 1 rows: delete from target" in chained.in_report
-        assert "- 2 rows: insert into target" in chained.in_report
+        assert "1 rows\nstatement: delete from target" in chained.in_report
+        assert "2 rows\nstatement: insert into target" in chained.in_report
 
     async def test_source_reads_temporary_table_from_before(
         self, ora: OraScripts

@@ -14,15 +14,13 @@ from __future__ import annotations
 
 import asyncio
 import sys
-from collections.abc import Generator, Iterable, Iterator, Mapping, Sequence
+from collections.abc import Generator, Iterable, Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass
-from enum import StrEnum
 from typing import Annotated, Any, ClassVar, Final
 
 from pydantic import Field
 
-from boba.doc.config import OcrUnavailableError
 from boba.doc.document import (
     Document,
     DocumentError,
@@ -52,13 +50,6 @@ _OCR_DESCRIPTION = (
 
 LLM: Final = LlmProviders(LlmProviderTypes.installed())
 """Модели процесса инструмента: чат-модель OCR живёт здесь."""
-
-
-class DocErrorKind(StrEnum):
-    """Ожидаемые отказы doc-инструментов."""
-
-    DOCUMENT_UNREADABLE = "document_unreadable"
-    OCR_UNAVAILABLE = "ocr_unavailable"
 
 
 class DocToolSection(DocToolsConfig):
@@ -241,11 +232,6 @@ async def search_document(  # noqa: PLR0913 — окно выдачи задаё
         metadata={"path": path, "query": query},
     )
 
-
-EXPECTED: Mapping[type[Exception], DocErrorKind] = {
-    DocumentError: DocErrorKind.DOCUMENT_UNREADABLE,
-    OcrUnavailableError: DocErrorKind.OCR_UNAVAILABLE,
-}
 
 TOOLS: Final = ToolMain.toolset(read_document, document_outline, search_document)
 

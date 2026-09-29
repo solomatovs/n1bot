@@ -15,11 +15,13 @@ from boba.toolkit.contract import (
     TimeUnit,
     TypeComparer,
     TypeFamily,
-    Verdict,
 )
 from boba.toolkit.transfer import (
     BackupAndCreateIfSchemaChanged,
+    ColumnCheck,
+    ColumnIssue,
     ColumnRules,
+    ColumnVerdict,
     CreateIfNotExists,
     DoNothing,
     DropAndCreate,
@@ -28,6 +30,7 @@ from boba.toolkit.transfer import (
     ErrorIfSchemaChanged,
     SchemaAction,
     SchemaCheck,
+    Verdict,
 )
 
 INT32 = ColumnType(TypeFamily.INTEGER, "int32", bits=32)
@@ -186,7 +189,7 @@ class TestMatcher:
             ColumnRules(rename_columns={"created_at": "created"}), False
         ).diff([spec("created", TS_US)], [spec("created_at", TS_US)], {})
 
-        assert diff.errors() == []
+        assert not diff.check().changed()
         assert diff.table_spec().names() == ["created_at"]
         assert diff.table_spec().source_names() == ["created"]
 
@@ -196,18 +199,45 @@ class TestMatcher:
                 [spec("a", INT64)], [], {}
             )
 
-    def test_render_lists_every_column(self) -> None:
+    def test_render_lists_every_difference_with_its_types(self) -> None:
         diff = SchemaMatcher(ColumnRules(), False).diff(
             [spec("a", INT64)], [spec("a", INT32)], {}
         )
 
-        assert diff.render().startswith("- error a:")
-        assert diff.check().changed()
+        check = diff.check()
+        assert check.render().startswith("- error a: ")
+        assert "(stream int64, table int32)" in check.render()
+        assert check.changed()
+
+    def test_missing_sides_carry_their_issue(self) -> None:
+        check = (
+            SchemaMatcher(ColumnRules(), False)
+            .diff([spec("b", TEXT)], [spec("z", TEXT)], {})
+            .check()
+        )
+
+        issues: dict[str, ColumnIssue] = {}
+        for column in check.columns:
+            issues[column.name] = column.verdict.issue
+
+        assert issues == {
+            "b": ColumnIssue.NOT_IN_TABLE,
+            "z": ColumnIssue.NOT_IN_STREAM,
+        }
 
 
 class TestSchemaPlans:
-    SAME = SchemaCheck(errors=(), warnings=(), lines=())
-    DRIFT = SchemaCheck(errors=("column a: narrower",), warnings=(), lines=())
+    SAME = SchemaCheck(columns=())
+    DRIFT = SchemaCheck(
+        columns=(
+            ColumnCheck(
+                name="a",
+                stream="int64",
+                table="int32",
+                verdict=ColumnVerdict(Verdict.ERROR, "narrower"),
+            ),
+        )
+    )
 
     @pytest.mark.parametrize(
         ("strategy", "exists", "diff", "action"),

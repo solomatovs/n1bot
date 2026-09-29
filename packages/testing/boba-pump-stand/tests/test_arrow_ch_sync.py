@@ -281,7 +281,7 @@ class TestPostgresTypes:
         landed = ChLoaded(clickhouse, "types")
         source = Loaded(postgres, PG_SCHEMA, "src")
 
-        assert f"{ROWS} rows written" in report
+        assert f"{ROWS} rows loaded" in report
         assert dict(await landed.types()) == EXPECTED_TYPES
         assert await landed.count() == ROWS
         assert Decimal(str(await landed.scalar("sum(n)"))) == await source.aggregate(
@@ -322,8 +322,8 @@ class TestPostgresTypes:
         )
         landed = ChLoaded(clickhouse, "types")
 
-        assert f"deleted: {part} rows" in report
-        assert f"{part} rows written" in report
+        assert f"{part} rows matching" in report
+        assert f"{part} rows loaded" in report
         assert await landed.count() == ROWS
         assert await ChLoaded(clickhouse, "types__ex").count() == ROWS
 
@@ -338,7 +338,7 @@ class TestPostgresTypes:
             delete_strategy=DeleteTruncate(kind="truncate"),
         )
 
-        assert f"{ROWS} rows written" in report
+        assert f"{ROWS} rows loaded" in report
         assert await ChLoaded(clickhouse, "types").count() == ROWS
 
 
@@ -376,7 +376,7 @@ class TestUnknownTypes:
         landed = ChLoaded(clickhouse, "unknown")
         source = Loaded(postgres, PG_SCHEMA, "src")
 
-        assert f"{ROWS} rows written" in report
+        assert f"{ROWS} rows loaded" in report
         assert dict(await landed.types()) == {
             "id": "Int64",
             "tm": "Nullable(String)",
@@ -402,7 +402,7 @@ class TestUnknownTypes:
         )
         landed = ChLoaded(clickhouse, "declared")
 
-        assert f"{ROWS} rows written" in report
+        assert f"{ROWS} rows loaded" in report
         assert dict(await landed.types()) == {
             "id": "Int64",
             "tm": "LowCardinality(Nullable(String))",
@@ -459,7 +459,7 @@ class TestExistingTable:
             select=self.SELECT,
         )
 
-        assert f"{ROWS} rows written" in report
+        assert f"{ROWS} rows loaded" in report
         assert "warning i4" in report
         assert "warning n" in report
         assert "warning ts" in report
@@ -542,7 +542,7 @@ class TestOracleSource:
         landed = ChLoaded(clickhouse, "from_oracle")
         types = dict(await landed.types())
 
-        assert f"{ROWS} rows written" in chained.in_report
+        assert f"{ROWS} rows loaded" in chained.in_report
         assert types["id"] == "Int64"
         assert types["amount"] == "Nullable(Decimal(18, 4))"
         assert types["name"] == "Nullable(String)"
@@ -629,7 +629,7 @@ class TestClickHouseCircle:
         typed = ChLoaded(clickhouse, "typed")
         types = dict(await circle.types())
 
-        assert f"{ROWS} rows written" in chained.in_report
+        assert f"{ROWS} rows loaded" in chained.in_report
         assert types["id"] == "Int64"
         assert types["u64"] == "UInt64"
         assert types["dec"] == "Decimal(18, 4)"

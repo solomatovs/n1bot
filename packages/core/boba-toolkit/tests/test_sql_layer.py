@@ -8,7 +8,7 @@ from typing import Any, ClassVar
 from uuid import UUID
 
 from boba.toolkit.launcher import RowStream
-from boba.toolkit.result import SqlResult, SqlStatement, ToolArtifact
+from boba.toolkit.result import Fact, SqlResult, SqlStatement, ToolArtifact
 from boba.toolkit.sql import SqlLimits
 
 
@@ -112,12 +112,12 @@ class TestSqlResult:
                 SqlStatement(affected_rows=5, status="UPDATE 5"),
             ],
         )
-        if result.llm_view() != 'SELECT 1\n[{"id": 1}]\n\nUPDATE 5\nUPDATE 5':
+        if result.llm_view() != 'SELECT 1\n[{"id": 1}]\n\nUPDATE 5':
             raise AssertionError(f"llm_view: {result.llm_view()!r}")
         markdown = result.chat_view().markdown
         if not markdown.startswith("_SELECT 1_\n\n"):
             raise AssertionError(f"caption first: {markdown!r}")
-        if not markdown.endswith("_UPDATE 5_\n\n_UPDATE 5_"):
+        if not markdown.endswith("\n\n_UPDATE 5_"):
             raise AssertionError(f"status statement last: {markdown!r}")
 
     def test_artifact_survives_serialization(self) -> None:
@@ -128,3 +128,57 @@ class TestSqlResult:
         revived = ToolArtifact.revive(result.model_dump(mode="json"))
         if revived != result:
             raise AssertionError("revived == result")
+
+
+class TestPumpStatement:
+    """Команда насоса отчитывается целиком: текст, подпись, контракт, сервер."""
+
+    STATEMENT = SqlStatement(
+        text="copy (\nselect id, note from t\n) to stdout (format csv)",
+        status="streamed out copy csv from postgres 17.10, 2 columns",
+        rows=[
+            {"column": "id", "type": "integer", "not null": "✓"},
+            {"column": "note", "type": "text", "not null": ""},
+        ],
+        facts=[Fact(key="server", value="backend pid 776600, version 170010")],
+    )
+
+    def result(self) -> SqlResult:
+        before = SqlStatement(text="set work_mem = '64MB'", status="SET")
+        return SqlResult(engine="postgres", statements=[before, self.STATEMENT])
+
+    def test_markdown_shows_sql_caption_contract_and_server(self) -> None:
+        markdown = self.result().chat_view().markdown
+
+        expected = [
+            "```sql\nset work_mem = '64MB'\n```\n\n_SET_",
+            "```sql\ncopy (\nselect id, note from t\n) to stdout (format csv)\n```",
+            "_streamed out copy csv from postgres 17.10, 2 columns_",
+            "| column | type    | not null |",
+            "**server:** `backend pid 776600, version 170010`",
+        ]
+        for part in expected:
+            if part not in markdown:
+                raise AssertionError(f"{part!r} not in {markdown!r}")
+
+    def test_llm_gets_caption_statement_contract_and_server(self) -> None:
+        text = self.STATEMENT.llm_text(captioned=False)
+
+        caption = "streamed out copy csv from postgres 17.10, 2 columns"
+        if not text.startswith(f"{caption}\n"):
+            raise AssertionError(text)
+        if "statement: copy (" not in text:
+            raise AssertionError(text)
+        if '"column": "id"' not in text:
+            raise AssertionError(text)
+        server = text.index("server: backend pid 776600, version 170010")
+        if server > text.index('"column": "id"'):
+            raise AssertionError(f"facts go before the rows: {text}")
+
+    def test_revives_from_history(self) -> None:
+        result = self.result()
+
+        revived = ToolArtifact.revive(result.model_dump(mode="json"))
+
+        if revived != result:
+            raise AssertionError(f"revived: {revived!r}")

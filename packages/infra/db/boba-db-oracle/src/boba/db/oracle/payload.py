@@ -54,7 +54,7 @@ from boba.db.oracle.errors import (
     OracleMissingObjectError,
     OracleQueryError,
 )
-from boba.db.oracle.trace import OraScriptStep, OraSessionTrace
+from boba.db.oracle.trace import OraSessionTrace
 from boba.toolkit.arrow import ArrowColumns, ArrowIpc, SourceFields
 from boba.toolkit.contract import ColumnSpec, ColumnType, TimeUnit, TypeFamily
 
@@ -76,12 +76,15 @@ class RowStream:
     с потоком: вызывающий собирает словарь строки по names, не заглядывая во
     внутренности курсора. Имена в нижнем регистре: Oracle хранит их заглавными.
     У команды без выборки (DML, DDL, PL/SQL) names пуст, а affected — число
-    затронутых строк; итерировать blocks такой команды нельзя.
+    затронутых строк; итерировать blocks такой команды нельзя. warning —
+    предупреждение драйвера к команде (PL/SQL с ошибками компиляции), пусто —
+    его нет.
     """
 
     names: tuple[str, ...]
     blocks: AsyncIterator[Sequence[Any]]
     affected: int = 0
+    warning: str = ""
 
 
 @dataclass(frozen=True)
@@ -541,44 +544,20 @@ class PayloadOracle:
             binds = dict(parameters)
 
         cursor = await self._executed(conn, text, binds)
+
+        warning = ""
+        if cursor.warning is not None:
+            warning = str(cursor.warning)
+
         try:
             yield RowStream(
                 names=self._names(cursor),
                 blocks=self._iterate(cursor),
                 affected=cursor.rowcount,
+                warning=warning,
             )
         finally:
             cursor.close()
-
-    async def script(
-        self, conn: AsyncConnection, statements: Sequence[str], trace: OraSessionTrace
-    ) -> tuple[OraScriptStep, ...]:
-        """Стейтменты before/after насоса по одному, по порядку, на том же
-        соединении: DML остаётся в транзакции насоса до commit вызывающего,
-        DDL Oracle фиксирует сам. Строки выборок не собираются, шаг даёт
-        число затронутых строк; предупреждения курсоров уходят в trace."""
-        steps: list[OraScriptStep] = []
-        for statement in statements:
-            cursor = await self._executed(conn, statement, {})
-            try:
-                trace.warned(cursor)
-                affected = self._affected(cursor)
-            finally:
-                cursor.close()
-
-            steps.append(OraScriptStep(statement, affected))
-
-        return tuple(steps)
-
-    @staticmethod
-    def _affected(cursor: AsyncCursor) -> int | None:
-        if cursor.description is not None:
-            return None
-
-        if cursor.rowcount < 0:
-            return None
-
-        return cursor.rowcount
 
     async def commit(self, conn: AsyncConnection) -> None:
         try:

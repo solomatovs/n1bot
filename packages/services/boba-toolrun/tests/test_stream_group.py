@@ -43,6 +43,7 @@ from boba.toolkit.entry import ToolArgv
 from boba.toolkit.launcher import CollectedCall, PayloadFailureError
 from boba.toolkit.ports import StreamSpec
 from boba.toolkit.protocol import CallInputSpec, ReplyOk, ToolCommand
+from boba.toolkit.result import ErrorResult, GroupCall, GroupFailureResult
 from boba.toolkit.wrap import ToolProcessWrap
 from boba.toolrun.process import ProcessLauncherConfig, ProcessToolCaller
 
@@ -175,7 +176,7 @@ def _content(result: Any) -> str:
 
 def _failure(result: Any) -> PayloadFailureError:
     assert isinstance(result, PayloadFailureError), result
-    assert result.kind == StreamFailureKind.GROUP_FAILED
+    assert result.failure().error_kind == StreamFailureKind.GROUP_FAILED
     return result
 
 
@@ -286,9 +287,10 @@ class TestAllOrNothing:
         _group, results = await stand.run(calls)
 
         for key in ("src", "one", "two"):
-            message = str(_failure(results[key]))
-            assert "fake_emit (src)" in message
-            assert "scripted failure after 20 frames" in message
+            failure = _failure(results[key]).failure()
+            assert isinstance(failure, GroupFailureResult), failure
+            assert failure.origin == GroupCall(tool="fake_emit", call_id="src")
+            assert "scripted failure after 20 frames" in failure.llm_view()
 
         assert not stand.marker("one").exists()
         assert not stand.marker("two").exists()
@@ -308,7 +310,9 @@ class TestAllOrNothing:
 
         _group, results = await stand.run(calls)
 
-        assert "fake_emit (src)" in str(_failure(results["loose"]))
+        failure = _failure(results["loose"]).failure()
+        assert isinstance(failure, GroupFailureResult), failure
+        assert failure.origin == GroupCall(tool="fake_emit", call_id="src")
         assert not stand.marker("loose").exists()
 
     @pytest.mark.anyio
@@ -337,7 +341,9 @@ class TestAllOrNothing:
         _group, results = await stand.run(calls)
 
         for key in ("src", "bad", "good"):
-            assert "fake_collect (bad)" in str(_failure(results[key]))
+            failure = _failure(results[key]).failure()
+            assert isinstance(failure, GroupFailureResult), failure
+            assert failure.origin == GroupCall(tool="fake_collect", call_id="bad")
 
         assert not stand.marker("good").exists()
 
@@ -357,7 +363,10 @@ class TestAllOrNothing:
         }
 
         group = StreamGroupRun(stand.plan(calls), FAST)
-        group.refuse("ghost", "access denied: role DEV lacks fake_collect")
+        denied = ErrorResult(
+            message="access denied: role DEV lacks fake_collect", error_kind="denied"
+        )
+        group.refuse("ghost", denied)
 
         token = PipelineSlot.set(group.slot("src"))
         try:

@@ -641,7 +641,7 @@ class OraArrowTable(TransferTable):
         query = OraQueryBuilder().add("truncate table ", self._table).build()
         await self._execute(query)
 
-        return DeleteOutcome(rows=0, statement=query.text)
+        return DeleteOutcome(effect="removed by truncate", statement=query.text)
 
     async def delete_all(self) -> DeleteOutcome:
         query = OraQueryBuilder().add("delete from ", self._table).build()
@@ -676,7 +676,7 @@ class OraArrowTable(TransferTable):
 
         rows = max(rows, 0)
 
-        return DeleteOutcome(rows=rows, statement=query.text)
+        return DeleteOutcome(effect=f"{rows} rows deleted", statement=query.text)
 
 
 @dataclass(frozen=True)
@@ -723,6 +723,10 @@ class OraArrowSink(TransferSink):
             )
 
         return rows
+
+    def method(self) -> str:
+        """Строки идут прямо в таблицу в транзакции вызова: пояснять нечего."""
+        return ""
 
     async def discard(self) -> int:
         async for _ in self._reader.batches:
@@ -812,7 +816,10 @@ class OraArrowLoader:
             )
 
         stream = self._projection.project(self._contract, reader.schema)
-        await self._payload.script(self._conn, (self.SESSION_UTC,), self._trace)
+        async with self._payload.rows(self._conn, self.SESSION_UTC) as session:
+            if session.warning:
+                self._trace.warn(session.warning)
+
         declared = await self._declared.resolve(rules.column_types)
         exists = await self._facts.exists()
         facts: Sequence[ColumnSpec] = ()

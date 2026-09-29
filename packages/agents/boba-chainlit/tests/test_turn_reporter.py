@@ -30,7 +30,7 @@ from boba.chainlit.chat.turn import (
 from boba.chainlit.domain.fields import StepField
 from boba.chainlit.rendering.chat_view import ChatView, StepRole, StepStatus, StepText
 from boba.identity.context import Scope
-from boba.identity.errors import UserInputError
+from boba.identity.errors import FailureReport, UserInputError
 from boba.identity.locks import LockMode, LockPurpose, MemoryLiveLocks, RunLocking
 from boba.messaging import (
     AnyMessage,
@@ -107,13 +107,21 @@ class TestFailed:
         with caplog.at_level(logging.ERROR):
             await _reporter(turn.feed, state, history).failed(error)
 
-        described = "RuntimeError: inference is unreachable <- OSError: connect refused"
+        report = FailureReport.of(error)
+        described = report.log
+        if "RuntimeError: inference is unreachable" not in described:
+            raise AssertionError(described)
+        if "caused by: OSError: connect refused" not in described:
+            raise AssertionError(described)
 
         error_steps = [s for s in turn.steps if s.get(StepField.IS_ERROR)]
         if len(error_steps) != 1:
             raise AssertionError("len(error_steps) == 1")
-        if error_steps[0].get(StepField.OUTPUT) != f"**failed:** {described}":
-            raise AssertionError('error_steps[0].get(StepField.OUTPUT) == f"**failed:…')
+        output = error_steps[0].get(StepField.OUTPUT)
+        if output != report.view:
+            raise AssertionError(f"error step shows {output!r}, not {report.view!r}")
+        if "**RuntimeError: inference is unreachable**" not in str(output):
+            raise AssertionError(f"output: {output!r}")
 
         if len(history.records) != 1:
             raise AssertionError("len(history.records) == 1")

@@ -30,7 +30,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from boba.cancellation import RunCancellation, StopReason
 from boba.identity.context import CallContext
-from boba.identity.errors import FailureText, RefusalError
+from boba.identity.errors import FailureReport, RefusalError
 from boba.toolkit.channels import CallOutcome
 
 __all__ = [
@@ -358,6 +358,6 @@ class BackgroundRuns:
             logger.error(
                 "background run %s crashed: %s",
                 task.get_name(),
-                FailureText.of(error),
+                FailureReport.of(error).log,
                 exc_info=error,
             )

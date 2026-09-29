@@ -8,39 +8,24 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
-from dataclasses import dataclass, field, replace
+from collections.abc import Iterator, Mapping, Sequence
+from dataclasses import dataclass, field
 
 from oracledb import AsyncConnection, AsyncCursor
 
+from boba.toolkit.result import Fact, SqlStatement
+
 __all__ = [
     "OraCommandReport",
-    "OraScriptStep",
     "OraSessionTrace",
 ]
 
 
 @dataclass(frozen=True)
-class OraScriptStep:
-    """Итог одного стейтмента скрипта before/after насоса: текст и число
-    затронутых строк по драйверу (у DDL и блока PL/SQL это 0); у выборки
-    строки не собираются, счётчика нет."""
-
-    statement: str
-    rows: int | None
-
-    def render(self) -> str:
-        if self.rows is None:
-            return f"- done: {self.statement}"
-
-        return f"- {self.rows} rows: {self.statement}"
-
-
-@dataclass(frozen=True)
 class OraCommandReport:
-    """Итог команды насоса для чата: первая строка — сводка насоса, дальше
-    строки, стейтмент, шаги скриптов before и after той же сессии, сессия и
-    предупреждения драйвера."""
+    """Итог команды насоса для чата командой SqlResult: выполненный стейтмент
+    со сводкой насоса, контрактом колонок (columns, у источника), числом
+    строк, сессией и предупреждениями драйвера."""
 
     summary: str
     statement: str
@@ -51,39 +36,34 @@ class OraCommandReport:
     db_name: str
     service_name: str
     version: str
+    columns: Sequence[Mapping[str, str]] = field(default_factory=tuple)
     warnings: Sequence[str] = field(default_factory=tuple)
-    before: Sequence[OraScriptStep] = field(default_factory=tuple)
-    after: Sequence[OraScriptStep] = field(default_factory=tuple)
 
-    def scripted(
-        self, before: Sequence[OraScriptStep], after: Sequence[OraScriptStep]
-    ) -> OraCommandReport:
-        return replace(self, before=tuple(before), after=tuple(after))
+    def sql_statement(self) -> SqlStatement:
+        rows: list[Mapping[str, str]] | None = None
+        if self.columns:
+            rows = list(self.columns)
 
-    def render(self) -> str:
-        lines = [
-            self.summary,
-            f"rows: {self.rows}",
-            f"statement: {self.statement}",
-        ]
-        if self.before:
-            lines.append("before:")
-            lines.extend(step.render() for step in self.before)
-
-        if self.after:
-            lines.append("after:")
-            lines.extend(step.render() for step in self.after)
-
-        lines.append(
-            f"session: sid {self.session_id} serial {self.serial_num}, "
-            f"instance {self.instance_name}, db {self.db_name}, "
-            f"service {self.service_name}, version {self.version}"
+        return SqlStatement(
+            text=self.statement,
+            status=self.summary,
+            rows=rows,
+            facts=list(self._facts()),
         )
-        if self.warnings:
-            lines.append("warnings:")
-            lines.extend(f"- {warning}" for warning in self.warnings)
 
-        return "\n".join(lines)
+    def _facts(self) -> Iterator[Fact]:
+        yield Fact(key="rows", value=str(self.rows))
+        yield Fact(
+            key="session",
+            value=(
+                f"sid {self.session_id} serial {self.serial_num}, "
+                f"instance {self.instance_name}, db {self.db_name}, "
+                f"service {self.service_name}, version {self.version}"
+            ),
+        )
+
+        for warning in self.warnings:
+            yield Fact(key="warning", value=warning)
 
 
 class OraSessionTrace:
@@ -109,15 +89,25 @@ class OraSessionTrace:
     def warned(self, cursor: AsyncCursor) -> None:
         warning = cursor.warning
         if warning is not None:
-            self._warnings.append(str(warning))
+            self.warn(str(warning))
+
+    def warn(self, warning: str) -> None:
+        """Предупреждение, снятое с курсора вызывающим (RowStream.warning)."""
+        self._warnings.append(warning)
 
     def took_rows(self, rows: int) -> None:
         self._rows += rows
 
-    def report(self, summary: str, statement: str) -> OraCommandReport:
+    def report(
+        self,
+        summary: str,
+        statement: str,
+        columns: Sequence[Mapping[str, str]] = (),
+    ) -> OraCommandReport:
         return OraCommandReport(
             summary=summary,
             statement=statement,
+            columns=tuple(columns),
             rows=self._rows,
             session_id=self._conn.session_id,
             serial_num=self._conn.serial_num,

@@ -4,16 +4,13 @@
 LLM, схему проверяет plotly — потому тело исполняется в песочнице.
 
 Ошибки:
-InvalidFigureSpecError — спека не разбирается или не проходит схему plotly;
-    это ответ LLM на её же спеку, текст едет без трейсбека.
+InvalidFigureSpecError — спека не разбирается или не проходит схему plotly.
 """
 
 from __future__ import annotations
 
 import json
 import sys
-from collections.abc import Mapping
-from enum import StrEnum
 from typing import Annotated, Any, Final
 
 from pydantic import Field
@@ -25,12 +22,6 @@ from boba.toolkit.result import MarkdownResult, VisualResult
 
 class InvalidFigureSpecError(Exception):
     """Спека не прошла разбор или схему plotly; текст готов для пользователя."""
-
-
-class ChartErrorKind(StrEnum):
-    """Ожидаемые отказы chart-инструмента."""
-
-    INVALID_FIGURE_SPEC = "invalid_figure_spec"
 
 
 class FigureSpec:
@@ -105,10 +96,6 @@ async def visualize(
 
     return VisualResult.plotly(parsed, title_or_none)
 
-
-EXPECTED: Mapping[type[Exception], ChartErrorKind] = {
-    InvalidFigureSpecError: ChartErrorKind.INVALID_FIGURE_SPEC,
-}
 
 TOOLS: Final = ToolMain.toolset(
     visualize,

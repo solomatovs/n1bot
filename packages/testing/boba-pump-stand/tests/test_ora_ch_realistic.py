@@ -300,7 +300,7 @@ class TestOrdersReport:
         )
         landed = ChLoaded(target, "orders_report")
 
-        assert f"{ORDERS} rows written" in report
+        assert f"{ORDERS} rows loaded" in report
         assert await landed.types() == EXPECTED_TYPES
         assert await landed.count() == ORDERS
         assert await landed.scalar("countIf(paid is null)") > 0
@@ -318,7 +318,7 @@ class TestOrdersReport:
             DeleteTruncate(kind="truncate"),
         )
 
-        assert "error" not in report.split("rows written")[0].lower()
+        assert "error" not in report.split("rows loaded")[0].lower()
         assert await ChLoaded(target, "orders_report").count() == ORDERS
 
 
@@ -351,7 +351,7 @@ class TestIncrementalMonth:
         )
 
         assert in_month > 0
-        assert f"{in_month} rows written" in report
+        assert f"{in_month} rows loaded" in report
         assert await landed.scalar("countIf(note = 'stale')") == 0
         assert await landed.count() == ORDERS
         await same_content(source, target, "orders_report")
@@ -421,7 +421,7 @@ class TestRenamedMart:
             order_by="order_uid",
         )
 
-        assert f"{ORDERS} rows written" in report
+        assert f"{ORDERS} rows loaded" in report
         assert "is wider" in report
         assert await mart.count() == ORDERS
         assert await mart.column("client", order_by="order_uid") == (
@@ -473,7 +473,8 @@ class TestSchemaDrift:
             if name.startswith("orders_drift_bak_"):
                 backups.append(name)
 
-        assert "backup: orders_drift_bak_" in report
+        assert "saved as" in report
+        assert "orders_drift_bak_" in report
         assert len(backups) == 1
         assert await ChLoaded(target, backups[0]).count() == ORDERS
         assert await drift.count() == ORDERS
@@ -495,7 +496,7 @@ class TestCreateTemplate:
                 order_by="(month, order_id)",
             )
 
-            assert f"{ORDERS} rows written" in report
+            assert f"{ORDERS} rows loaded" in report
 
         landed = ChLoaded(target, "orders_tpl")
 
@@ -520,7 +521,7 @@ class TestCreateTemplate:
             cluster=KEEPER_CLUSTER,
         )
 
-        assert f"{ORDERS} rows written" in report
+        assert f"{ORDERS} rows loaded" in report
         assert await landed.engine() == "ReplicatedMergeTree"
         assert await landed.count() == ORDERS
 
@@ -549,7 +550,7 @@ class TestAfterSwap:
             after=self.SWAP,
         )
 
-        assert f"{ORDERS} rows written" in report
+        assert f"{ORDERS} rows loaded" in report
         assert "orders_report_stage" not in await landed.tables()
         assert await landed.scalar("countIf(note = 'old')") == 0
         await same_content(source, target, "orders_report")
@@ -571,7 +572,7 @@ class TestDryRun:
             insert=InsertNothing(kind="nothing"),
         )
 
-        assert report.startswith("0 rows written")
+        assert report.startswith("0 rows loaded")
         assert await landed.types() == types
         assert await landed.count() == ORDERS
 
