@@ -67,7 +67,7 @@ def process_url(stand: StandProcess, catalog_seed: Seed) -> str:
 
 def _open(page: Page, url: str) -> None:
     page.goto(url)
-    page.wait_for_selector(Selector.READY, timeout=30_000)
+    page.wait_for_selector(Selector.READY, timeout=Canvas.READY_TIMEOUT_MS)
     page.wait_for_selector(Selector.NODE, timeout=30_000)
 
 
@@ -581,7 +581,7 @@ class TestShare:
 
         guest = tabs.page("")
         CatalogPage.SHARED.open(guest, stand, token=token)
-        guest.wait_for_selector(Selector.READY, timeout=30_000)
+        guest.wait_for_selector(Selector.READY, timeout=Canvas.READY_TIMEOUT_MS)
         expect(guest.get_by_test_id("catalog-page")).to_have_attribute(
             "data-source", "shared"
         )
@@ -660,7 +660,7 @@ class TestEntryNavigation:
             raise AssertionError(f"the drag did not start a draft: {page.url}")
 
         page.wait_for_url(re.compile(r"/catalog/drafts/[0-9a-f-]{36}$"), timeout=30_000)
-        page.wait_for_selector(Selector.READY, timeout=30_000)
+        page.wait_for_selector(Selector.READY, timeout=Canvas.READY_TIMEOUT_MS)
         draft_id = page.url.rsplit("/", 1)[1]
         try:
             expect(page.get_by_test_id("catalog-page")).to_have_attribute(
@@ -715,7 +715,7 @@ class TestEntryNavigation:
         expect(draft_row).to_contain_text("draft")
         assert Css.box(row).y < Css.box(draft_row).y
         row.get_by_role("link", name=catalog_seed.process_name).click()
-        page.wait_for_selector(Selector.READY, timeout=30_000)
+        page.wait_for_selector(Selector.READY, timeout=Canvas.READY_TIMEOUT_MS)
         expect(page.get_by_test_id("catalog-page")).to_have_attribute(
             "data-source", "published"
         )
@@ -723,7 +723,7 @@ class TestEntryNavigation:
         page.get_by_test_id("processes-list").get_by_role(
             "link", name=draft_name
         ).click()
-        page.wait_for_selector(Selector.READY, timeout=30_000)
+        page.wait_for_selector(Selector.READY, timeout=Canvas.READY_TIMEOUT_MS)
         expect(page.get_by_test_id("catalog-page")).to_have_attribute(
             "data-source", "draft"
         )
@@ -873,7 +873,7 @@ class TestHomeButtons:
         draft_id = page.url.rsplit("/", 1)[1]
         try:
             # новый процесс открывается сразу пустым холстом
-            page.wait_for_selector(Selector.READY, timeout=30_000)
+            page.wait_for_selector(Selector.READY, timeout=Canvas.READY_TIMEOUT_MS)
             expect(page.locator(Selector.NODE)).to_have_count(0)
             expect(page.get_by_test_id("page-title")).to_have_text("ed_from_pane")
             expect(page.get_by_test_id("version-chip")).to_have_text("v0")

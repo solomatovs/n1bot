@@ -66,9 +66,9 @@ def _open_draft(
     page: Page, stand: StandProcess, draft_id: str, query: str = ""
 ) -> None:
     CatalogPage.DRAFT.open(page, stand, query, draft_id=draft_id)
-    page.wait_for_selector(Selector.READY, timeout=30_000)
-    page.wait_for_selector(EDITABLE, timeout=30_000)
-    page.wait_for_selector(Selector.NODE, timeout=30_000)
+    page.wait_for_selector(Selector.READY, timeout=Canvas.READY_TIMEOUT_MS)
+    page.wait_for_selector(EDITABLE, timeout=Canvas.READY_TIMEOUT_MS)
+    page.wait_for_selector(Selector.NODE, timeout=Canvas.READY_TIMEOUT_MS)
 
 
 def _prompt_name(page: Page, mark: str, name: str) -> None:
@@ -673,10 +673,18 @@ class TestNodePanel:
         handle = returns.locator('[data-column="id"] .react-flow__handle.source')
         assert abs(Css.box(handle).x - wider["x"] - wider["width"]) <= 8
 
+        # ширина — в единицах холста: масштаб fitView после перезагрузки
+        # вправе отличаться, экранные размеры сравнивать нельзя
+        width_before_reload = returns.evaluate("el => el.offsetWidth")
+
         page.reload()
-        page.wait_for_selector(Selector.READY, timeout=30_000)
+        page.wait_for_selector(Selector.READY, timeout=Canvas.READY_TIMEOUT_MS)
         kept = settled_box(page, returns)
-        assert abs(kept["width"] - wider["width"]) <= 2, (wider, kept)
+        width_after_reload = returns.evaluate("el => el.offsetWidth")
+        assert abs(width_after_reload - width_before_reload) <= 2, (
+            width_before_reload,
+            width_after_reload,
+        )
 
         left = returns.get_by_test_id("resize-left").bounding_box()
         assert left is not None
@@ -741,7 +749,7 @@ class TestNodePanel:
             "?pane=connections&mode=ALL_FIELDS",
             process_id=catalog_seed.process_id,
         )
-        page.wait_for_selector(Selector.READY, timeout=30_000)
+        page.wait_for_selector(Selector.READY, timeout=Canvas.READY_TIMEOUT_MS)
         page.wait_for_selector(EDITABLE, timeout=30_000)
         pane = _open_source_tree(page, catalog_seed)
         source = pane.locator(catalog_seed.tree_object(Ed.EVENTS)).locator(
@@ -1365,6 +1373,6 @@ class TestStaleness:
         assert process["attention"] == 1
 
         CatalogPage.PROCESS.open(page, stand, process_id=catalog_seed.process_id)
-        page.wait_for_selector(Selector.READY, timeout=30_000)
+        page.wait_for_selector(Selector.READY, timeout=Canvas.READY_TIMEOUT_MS)
         expect(page.locator('[data-notice="upgrade-blocked"]')).to_be_visible()
         expect(page.get_by_test_id("upgrade-button")).to_be_visible()

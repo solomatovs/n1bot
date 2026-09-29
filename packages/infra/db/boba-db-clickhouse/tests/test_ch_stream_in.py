@@ -262,3 +262,51 @@ class TestStreamIn:
 
         assert summary.written_rows == rows
         assert totals == [(rows, rows * (rows - 1) // 2, lengths)]
+
+
+class TestSessionConnection:
+    """Сервер до 25.3 отпускает сессию уже после отправки ответа, и запрос с
+    другого соединения вплотную за вставкой ловит SESSION_IS_LOCKED; запросы
+    одного соединения сервер читает только после выхода из обработчика."""
+
+    PORT_QUERY: ClassVar[str] = (
+        "select port from system.processes where query_id = queryID()"
+    )
+
+    async def test_insert_keeps_the_session_connection(
+        self, probe: Probe, source: StandSource
+    ) -> None:
+        create = (
+            ChQueryBuilder()
+            .add(
+                "create table %(db)s.%(t)s (n UInt64) engine = Memory",
+                db=ChIdentifier(Probe.DATABASE),
+                t=ChIdentifier("session_port"),
+            )
+            .build()
+        )
+        insert = (
+            ChQueryBuilder()
+            .add(
+                "insert into %(db)s.%(t)s format TabSeparated",
+                db=ChIdentifier(Probe.DATABASE),
+                t=ChIdentifier("session_port"),
+            )
+            .build()
+        )
+        lines: list[bytes] = []
+        for number in range(Probe.ROWS):
+            lines.append(f"{number}\n".encode())
+
+        data = b"".join(lines)
+
+        async with PayloadClickHouse.opened_session(source.admin) as client:
+            await client.command(create.text, parameters=create.params)
+            before = await client.command(self.PORT_QUERY)
+            summary = await PayloadClickHouse.byte_stream_in(
+                client, insert.text, insert.params, blocks=probe.blocks(data)
+            )
+            after = await client.command(self.PORT_QUERY)
+
+        assert summary.written_rows == Probe.ROWS
+        assert after == before

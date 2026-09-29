@@ -1310,6 +1310,13 @@ print(json.dumps({"rc": outcome.exit_code}), flush=True)
         return os.pathsep.join(entries)
 
 
+class ChokedBody(StrEnum):
+    """Исходы вызова, задушенного форк-бомбой: таймаут либо смерть без конверта."""
+
+    TIMEOUT = "timeout_sec=30"
+    NO_ENVELOPE = "no envelope on tool_result"
+
+
 @needs_fuse
 @needs_delegation
 class TestGroupLimitsUnderLoad:
@@ -1404,14 +1411,20 @@ class TestGroupLimitsUnderLoad:
             timeout_sec=30,
         )
 
-        # бомба душит и само тело: тогда вызов снимает таймаут профиля,
-        # а проверка одна — leaf после него исчезает
+        # бомба душит и само тело: вызов снимает таймаут профиля либо тело,
+        # не сумев форкнуть, умирает без конверта; проверка одна — leaf после
+        # вызова исчезает
         try:
             outcome = ShellRun.call_text(
                 caller, "bomb() { bomb | bomb & }; bomb; sleep 5; echo survived"
             )
         except LauncherError as exc:
-            if "timeout_sec=30" not in str(exc):
+            choked = False
+            for mark in ChokedBody:
+                if mark.value in str(exc):
+                    choked = True
+
+            if not choked:
                 raise
         else:
             if outcome.exit_code == 0 and "survived" not in outcome.stdout:

@@ -17,7 +17,7 @@ from __future__ import annotations
 from collections.abc import AsyncGenerator, Sequence
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any, Self
+from typing import Any, ClassVar, Self
 
 import psycopg
 import pytest
@@ -119,8 +119,22 @@ class IxStandDatabase:
     def stand(self) -> IxStand:
         return self._stand
 
+    DDL_TIMEOUT: ClassVar[str] = "5min"
+    """Срок пересоздания базы: drop database ждёт контрольной точки, а под
+    параллельным прогоном она дольше statement_timeout профиля стенда."""
+
     async def recreate(self, schema_dirs: Sequence[Path]) -> None:
         async with await AsyncPostgresPool.dedicated(self._stand.postgres) as conn:
+            timeout = (
+                PgQueryBuilder()
+                .add(
+                    "select set_config('statement_timeout', %(t)s, false)",
+                    t=self.DDL_TIMEOUT,
+                )
+                .build()
+            )
+            await conn.execute(timeout.text, timeout.params)
+
             query = (
                 PgQueryBuilder(db=sql.Identifier(self._stand.database))
                 .add("drop database if exists {db} with (force)")

@@ -28,6 +28,8 @@ from typing import Any, ClassVar, Protocol, cast, runtime_checkable
 import aiohttp
 from clickhouse_connect.datatypes.base import ClickHouseType
 from clickhouse_connect.driver._backend.http_async import release_lease
+from clickhouse_connect.driver._backend.httpcommon import plan_raw_insert_request
+from clickhouse_connect.driver._backend.models import QueryRuntime
 from clickhouse_connect.driver.asyncclient import AsyncClient
 from clickhouse_connect.driver.binding import bind_query
 from clickhouse_connect.driver.exceptions import ClickHouseError as DriverError
@@ -172,8 +174,11 @@ class PayloadClickHouse:
     ни о форматах потоков — их разбирают форматеры boba.db.clickhouse.formats
     поверх byte_stream_out и byte_stream_in."""
 
-    STREAM_HEADERS: ClassVar[Mapping[str, str]] = {"Connection": "close"}
-    """Заголовки потоковой вставки: соединение после неё не переиспользуется."""
+    SESSION_CONNECTIONS: ClassVar[int] = 1
+    """Соединений у клиента с сессией сервера. До 25.3 сервер отпускает сессию
+    уже после отправки ответа, и запрос с другого соединения вплотную за ним
+    получает SESSION_IS_LOCKED; запросы одного соединения сервер читает только
+    после выхода из обработчика предыдущего — сессия к тому времени свободна."""
 
     @staticmethod
     @asynccontextmanager
@@ -198,7 +203,7 @@ class PayloadClickHouse:
     ) -> AsyncGenerator[AsyncClient, None]:
         """Клиент с сессией сервера на время вызова: id из профиля, иначе
         случайный. В сессии живут SET и временные таблицы, запросы в ней
-        идут строго по одному — насос так и работает."""
+        идут строго по одному одним соединением (SESSION_CONNECTIONS)."""
         session_id = connection.session_id
         if session_id is None:
             session_id = uuid.uuid4().hex
@@ -212,9 +217,8 @@ class PayloadClickHouse:
         connection: ClickHouseConfig, before: Sequence[str], after: Sequence[str]
     ) -> AsyncGenerator[AsyncClient, None]:
         """Клиент насоса: сессия сервера — только когда есть стейтменты before или
-        after, ей нечего делить без них. Старые серверы отпускают сессию позже,
-        чем отдают ответ, и запрос вплотную за вставкой получает
-        SESSION_IS_LOCKED; без сессии замка нет. session_id профиля в силе."""
+        after, ей нечего делить без них. Клиент с сессией держит одно
+        соединение (SESSION_CONNECTIONS). session_id профиля в силе."""
         if not before and not after:
             async with PayloadClickHouse.opened_config(
                 connection, connection.session_id
@@ -429,9 +433,7 @@ class PayloadClickHouse:
             async for block in blocks:
                 yield block
 
-        # 24.12 после вставки многими блоками портит keep-alive соединение:
-        # следующий запрос на нём получает HTTP 400, поэтому соединение закрываем
-        headers = dict(PayloadClickHouse.STREAM_HEADERS)
+        headers: dict[str, str] = {}
         if transport_settings is not None:
             headers.update(transport_settings)
 
@@ -439,11 +441,16 @@ class PayloadClickHouse:
         # он принимает AsyncIterator но не указывает это в аннотациях
         # поэтому приводим к Any типу
         body: Any = insert_body(text, blocks)
+        runtime = QueryRuntime(
+            database=client.database,
+            settings=client._validate_settings(PayloadClickHouse._dict(settings)),
+        )
+        plan = plan_raw_insert_request(
+            None, None, body, client._write_format, None, runtime, headers
+        )
         try:
-            summary = await client.raw_insert(
-                insert_block=body,
-                settings=PayloadClickHouse._dict(settings),
-                transport_settings=headers,
+            response = await client._backend.request(
+                plan.body, plan.params, plan.headers, server_wait=False
             )
         except DriverError as exc:
             raise ClickHouseQueryError(
@@ -451,7 +458,20 @@ class PayloadClickHouse:
                 f"{exc}; statement: {text[:200]!r}"
             ) from exc
 
-        return PayloadClickHouse._trace_of_summary(summary)
+        # raw_insert драйвера закрывает ответ не дочитав,
+        # и aiohttp рвёт соединение
+        # дочитанный ответ возвращает его в пул клиента
+        try:
+            await response.read()
+        except aiohttp.ClientError as exc:
+            raise ClickHouseQueryError(
+                f"statement with a streamed body: reading the response failed: "
+                f"{type(exc).__name__}: {exc}; statement: {text[:200]!r}"
+            ) from exc
+        finally:
+            release_lease(response)
+
+        return PayloadClickHouse._trace_of_headers(response.headers)
 
     @staticmethod
     def _trace_of_headers(headers: Mapping[str, str]) -> ChQueryTrace:
@@ -472,7 +492,7 @@ class PayloadClickHouse:
 
     @staticmethod
     def _trace_of_summary(summary: QuerySummary) -> ChQueryTrace:
-        """Сводка из QuerySummary драйвера после raw_insert: та же JSON-сводка
+        """Сводка из QuerySummary драйвера после команды: та же JSON-сводка
         сервера, снятая драйвером с заголовков конечного ответа."""
         return ChQueryTrace(
             summary.summary,
@@ -539,6 +559,8 @@ class PayloadClickHouse:
         settings = connection.client_settings()
         if session_id is not None:
             settings["session_id"] = session_id
+            settings["connector_limit"] = PayloadClickHouse.SESSION_CONNECTIONS
+            settings["connector_limit_per_host"] = PayloadClickHouse.SESSION_CONNECTIONS
 
         client = AsyncClient(
             autogenerate_session_id=False,

@@ -174,7 +174,7 @@ def _open_view(
     page: Page, stand: StandProcess, seeded: Seeded, query: str = ""
 ) -> None:
     CatalogPage.PROCESS.open(page, stand, query, process_id=seeded.process_id)
-    page.wait_for_selector(READY, timeout=30_000)
+    page.wait_for_selector(READY, timeout=Canvas.READY_TIMEOUT_MS)
     page.wait_for_selector(NODE, timeout=30_000)
 
 
@@ -182,7 +182,7 @@ def _open_draft(
     page: Page, stand: StandProcess, seeded: Seeded, query: str = ""
 ) -> None:
     CatalogPage.DRAFT.open(page, stand, query, draft_id=seeded.draft_id)
-    page.wait_for_selector(READY, timeout=30_000)
+    page.wait_for_selector(READY, timeout=Canvas.READY_TIMEOUT_MS)
     page.wait_for_selector(NODE, timeout=30_000)
 
 
@@ -448,7 +448,7 @@ class TestProcessPage:
         no_horizontal_scroll(page)
 
         page.reload()
-        page.wait_for_selector(READY, timeout=30_000)
+        page.wait_for_selector(READY, timeout=Canvas.READY_TIMEOUT_MS)
         expect(page.get_by_test_id("detail-panel")).to_be_visible()
         kept = Css.box(detail)
         assert abs(kept.width - after.width) <= 2, (after, kept)
@@ -699,7 +699,7 @@ class TestEntryPage:
         expect(listed.locator('li[data-draft="look edits"]')).to_contain_text("draft")
 
         row.get_by_role("link", name=Look.PROCESS).click()
-        page.wait_for_selector(READY, timeout=30_000)
+        page.wait_for_selector(READY, timeout=Canvas.READY_TIMEOUT_MS)
         catalog = page.get_by_test_id("catalog-page")
         expect(catalog).to_have_attribute("data-source", "published")
         expect(page.locator(seeded.node("orders_raw"))).to_be_visible()

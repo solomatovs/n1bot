@@ -506,7 +506,9 @@ class TestLists:
     ) -> None:
         """Уведомление — фиксированная всплывашка: не двигает сцену и уходит сама."""
         _new(page, stand)
-        stage_before = Css.box(page.locator(".page__scene"))
+        scene = page.locator(".page__scene")
+        expect(scene).to_be_visible()
+        stage_before = Css.box(scene)
 
         page.get_by_role("button", name="Validate", exact=True).click()
         toast = page.locator(Sel.TOAST)

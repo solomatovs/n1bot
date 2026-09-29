@@ -22,7 +22,7 @@ from boba.chainlit.chat.tracing import LlmStateLog
 from boba.chainlit.infra.config import LOGGING_CONFIG
 from boba.chainlit.infra.log_context import UserLogContext
 from boba.identity.session import LogUserMark
-from boba.stand.ui.fake_llm import FakeLlmApp, ScenarioName
+from boba.stand.ui.fake_llm import FakeLlmApp, ScenarioBook, ScenarioName
 
 pytestmark = pytest.mark.anyio
 
@@ -170,8 +170,10 @@ class TestLlmStateLog:
         finished = next(
             line for line in self._lines(caplog) if line.startswith("llm thinking fin")
         )
-        if "33 chars in" not in finished:
-            raise AssertionError('"33 chars in" in finished')
+        reasoning = ScenarioBook.of(ScenarioName.THINKING_ANSWER).turn(0).reasoning
+        expected = f"{len(reasoning)} chars in"
+        if expected not in finished:
+            raise AssertionError(f"{expected!r} not in {finished!r}")
         if not (finished.endswith("ms")):
             raise AssertionError('finished.endswith("ms")')
 
