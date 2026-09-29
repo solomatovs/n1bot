@@ -638,16 +638,26 @@ class TestImageRootfs:
         )
         return ZygoteToolCaller(name, supervisor, profile, lambda: {"user_id": "7"})
 
-    def _mounts_of_host(self) -> set[str]:
+    FSTYPE_SEPARATOR: ClassVar[str] = " - "
+    FUSE_PREFIX: ClassVar[str] = "fuse"
+
+    def _fuse_mounts_of_host(self) -> set[str]:
+        """fuse-монтирования хоста: образ, смонтированный мимо userns зиготы,
+        виден здесь. Остальные монтирования хоста меняют соседние наборы и
+        контейнеры параллельного прогона."""
         targets: set[str] = set()
         with open("/proc/self/mountinfo") as mountinfo:
             for line in mountinfo:
-                targets.add(line.split()[4])
+                fields, _, tail = line.partition(self.FSTYPE_SEPARATOR)
+                if not tail.startswith(self.FUSE_PREFIX):
+                    continue
+
+                targets.add(fields.split()[4])
 
         return targets
 
     def test_zygote_serves_calls_from_the_image_root(self, tmp_path: Path) -> None:
-        before = self._mounts_of_host()
+        before = self._fuse_mounts_of_host()
         caller = self._caller("fx-img", tmp_path)
 
         outcome = CollectedCall.of(caller, _command("ping"))
@@ -658,7 +668,7 @@ class TestImageRootfs:
         if "ping|zc-s3cret" not in outcome.reply.artifact.model_dump_json():
             raise AssertionError("тело не отработало на корне из образа")
 
-        if self._mounts_of_host() != before:
+        if self._fuse_mounts_of_host() != before:
             raise AssertionError("зигота смонтировала корень на хосте")
 
     def test_children_stay_isolated_on_the_image_root(self, tmp_path: Path) -> None:

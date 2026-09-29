@@ -32,6 +32,7 @@ from catalog_ui import (
     api_client,
 )
 from playwright.sync_api import Browser, Page, ViewportSize, expect
+from playwright.sync_api import TimeoutError as PlaywrightTimeout
 
 from boba.stand.ui.database import StandDatabase
 from boba.stand.ui.look import Css, Tokens, close, no_horizontal_scroll
@@ -640,11 +641,17 @@ class TestViewportFit:
             CatalogPage.CONNECTIONS.open(page, stand)
             expect(page.get_by_test_id("connections-page")).to_be_visible()
             index = page.get_by_test_id("connections-page")
-            assert page.evaluate(
-                "el => el.scrollHeight > el.clientHeight && "
-                "getComputedStyle(el).overflowY === 'auto'",
-                index.element_handle(),
-            ), "the list page must own its vertical scroll"
+            # строки списка приходят отдельным запросом после отрисовки страницы
+            try:
+                page.wait_for_function(
+                    "el => el.scrollHeight > el.clientHeight && "
+                    "getComputedStyle(el).overflowY === 'auto'",
+                    arg=index.element_handle(),
+                    timeout=15000,
+                )
+            except PlaywrightTimeout as exc:
+                msg = "the list page must own its vertical scroll"
+                raise AssertionError(msg) from exc
             assert page.evaluate(
                 "() => document.documentElement.scrollHeight <= window.innerHeight"
             ), "the document itself must not scroll"

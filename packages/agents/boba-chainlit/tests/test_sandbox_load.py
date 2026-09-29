@@ -142,6 +142,8 @@ class Waiting:
     SETTLE_SEC: ClassVar[float] = 60.0
     POLL_SEC: ClassVar[float] = 0.1
     APPEAR_SEC: ClassVar[float] = 30.0
+    REPLY_SEC: ClassVar[float] = 90.0
+    """Ответ вызова после аварии: под нагрузкой разбор образа — десятки секунд."""
 
 
 class ProcName(StrEnum):
@@ -982,7 +984,7 @@ class TestAbnormalTermination:
             pid = stand.wait_for_bwrap()
             daemons = ProcTable.matching(ProcName.FUSE2FS, _IMAGES_MOUNT)
             os.kill(pid, signal.SIGKILL)
-            report = future.result(timeout=Waiting.APPEAR_SEC)
+            report = future.result(timeout=Waiting.REPLY_SEC)
 
         if report.exit_code == 0:
             raise AssertionError("report.exit_code != 0")
@@ -1015,7 +1017,7 @@ class TestAbnormalTermination:
             stand.wait_for_signal(marker)
             pid = stand.wait_for_daemon()
             os.kill(pid, signal.SIGKILL)
-            report = future.result(timeout=Waiting.APPEAR_SEC)
+            report = future.result(timeout=Waiting.REPLY_SEC)
 
         if "lost-mount" not in report.stdout:
             raise AssertionError('"lost-mount" in report.stdout')
@@ -1103,7 +1105,7 @@ class TestAbnormalTermination:
             futures = [pool.submit(call, index) for index in range(LoadScale.THREADS)]
             stand.wait_for_daemon()
             self._kill_some_daemons(stand)
-            reports = [future.result(timeout=Waiting.APPEAR_SEC) for future in futures]
+            reports = [future.result(timeout=Waiting.REPLY_SEC) for future in futures]
 
         for index, report in enumerate(reports):
             if report.mount_lost:
@@ -1148,7 +1150,7 @@ class _Stopper:
 
     def join(self) -> None:
         if self._future is not None:
-            self._future.result(timeout=Waiting.APPEAR_SEC)
+            self._future.result(timeout=Waiting.REPLY_SEC)
 
         self._pool.shutdown(wait=True)
 
