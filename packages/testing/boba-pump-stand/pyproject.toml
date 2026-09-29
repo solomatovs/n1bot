@@ -17,7 +17,6 @@ dependencies = [
     "boba-tool-clickhouse==0.0.25.dev1",
     "boba-tool-postgres==0.0.25.dev1",
     "boba-tool-oracle==0.0.25.dev1",
-    "oracledb==26.0.0+boba.1",
     "pydantic>=2.10,<2.11",
 ]
 

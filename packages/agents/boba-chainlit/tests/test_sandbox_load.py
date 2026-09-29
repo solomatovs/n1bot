@@ -157,6 +157,7 @@ class ProcTable:
     """Процессы хоста: поиск по cmdline и прямые потомки процесса."""
 
     PROC: ClassVar[str] = "/proc"
+    MAX_DEPTH: ClassVar[int] = 64
 
     @classmethod
     def matching(cls, name: ProcName, needle: str) -> frozenset[int]:
@@ -183,6 +184,54 @@ class ProcTable:
             found.add(pid)
 
         return frozenset(found)
+
+    @classmethod
+    def stand_daemons(cls, root: Path) -> frozenset[int]:
+        """fuse2fs стенда root: потомки его bwrap.
+
+        Путь образов в cmdline демона — путь внутри песочницы, одинаковый у
+        всех стендов хоста, поэтому свой демон узнаётся по родству. Демон
+        живёт в pid namespace песочницы, где init — bwrap: осиротев, он
+        остаётся его потомком, а со смертью bwrap гаснет весь namespace.
+        """
+        sandboxes = cls.matching(ProcName.BWRAP, str(root))
+
+        found: set[int] = set()
+        for pid in cls.matching(ProcName.FUSE2FS, _IMAGES_MOUNT):
+            if cls._descends(pid, sandboxes):
+                found.add(pid)
+
+        return frozenset(found)
+
+    @classmethod
+    def _descends(cls, pid: int, ancestors: frozenset[int]) -> bool:
+        current = pid
+        for _ in range(cls.MAX_DEPTH):
+            parent = cls.parent_of(current)
+            if parent in ancestors:
+                return True
+
+            if parent <= 1:
+                return False
+
+            current = parent
+
+        return False
+
+    @classmethod
+    def parent_of(cls, pid: int) -> int:
+        """Родитель из /proc/<pid>/stat; 0 — процесса уже нет."""
+        path = os.path.join(cls.PROC, str(pid), "stat")
+        try:
+            with open(path) as f:
+                raw = f.read()
+        except OSError:
+            return 0
+
+        # имя процесса в скобках может содержать пробелы: поля — после ")"
+        _, _, tail = raw.rpartition(")")
+        fields = tail.split()
+        return int(fields[1])
 
     @classmethod
     def cmdline(cls, pid: int) -> str:
@@ -345,7 +394,7 @@ class ResourceCensus(BaseModel):
     def capture(cls, root: Path, cgroup_base: str = "") -> ResourceCensus:
         return cls(
             host_mounts=cls._host_mounts(root),
-            fuse_daemons=ProcTable.matching(ProcName.FUSE2FS, _IMAGES_MOUNT),
+            fuse_daemons=ProcTable.stand_daemons(root),
             children=cls._call_children(),
             stale_mounts=cls._stale_mounts(root),
             partial_copies=cls._partial_copies(root),
@@ -649,12 +698,16 @@ class LoadStand:
     def settle(self, before: ResourceCensus, cgroup_base: str = "") -> ResourceLeak:
         return ResourceCensus.settle(before, self._root, cgroup_base)
 
+    def daemons(self) -> frozenset[int]:
+        """fuse2fs этого стенда: чужие стенды хоста не в счёт."""
+        return ProcTable.stand_daemons(self._root)
+
     def wait_for_daemon(self, timeout_sec: float = Waiting.APPEAR_SEC) -> int:
         """Ждёт fuse2fs стенда: до него убивать нечего."""
         deadline = time.monotonic() + timeout_sec
 
         while time.monotonic() < deadline:
-            daemons = ProcTable.matching(ProcName.FUSE2FS, _IMAGES_MOUNT)
+            daemons = self.daemons()
             if daemons:
                 return next(iter(daemons))
 
@@ -982,7 +1035,7 @@ class TestAbnormalTermination:
             future = pool.submit(self._report, stand.caller("bwrap"), command)
             stand.wait_for_signal(marker)
             pid = stand.wait_for_bwrap()
-            daemons = ProcTable.matching(ProcName.FUSE2FS, _IMAGES_MOUNT)
+            daemons = stand.daemons()
             os.kill(pid, signal.SIGKILL)
             report = future.result(timeout=Waiting.REPLY_SEC)
 
@@ -1043,7 +1096,7 @@ class TestAbnormalTermination:
         proc = child.start(stand.started_command(marker, self.LONG_COMMAND))
         try:
             stand.wait_for_signal(marker)
-            daemons = ProcTable.matching(ProcName.FUSE2FS, _IMAGES_MOUNT)
+            daemons = stand.daemons()
             if not (daemons):
                 raise AssertionError("fuse2fs of the child call was not found")
             proc.kill()
@@ -1126,7 +1179,7 @@ class TestAbnormalTermination:
     @staticmethod
     def _kill_some_daemons(stand: LoadStand) -> None:
         """Половина живых демонов уходит по SIGKILL, остальные работают."""
-        daemons = sorted(ProcTable.matching(ProcName.FUSE2FS, _IMAGES_MOUNT))
+        daemons = sorted(stand.daemons())
 
         for pid in daemons[::2]:
             with contextlib.suppress(ProcessLookupError):

@@ -196,6 +196,25 @@ class ChatPage:
         self._expand_last(StepKind.TOOL.value)
         return self.page.locator(Selector.of_type(StepKind.TOOL.value)).last
 
+    def expand_last_run(self) -> None:
+        """Раскрывает последний ход: его шаги инструментов свёрнуты внутри."""
+        self._expand_last(StepKind.RUN.value)
+
+    def expand_tool_titled(self, title: str) -> Locator:
+        """Раскрывает последний шаг инструмента, в чьём заголовке есть title:
+        в ходе с несколькими вызовами шаг ищется по подписи вызова."""
+        node = self.page.locator(Selector.of_type(StepKind.TOOL.value)).filter(
+            has_text=title
+        )
+        if not node.count():
+            selector = Selector.of_type(StepKind.TOOL.value)
+            msg = self._missing(f"tool step titled {title!r}", selector)
+            raise ChatPageError(msg)
+
+        node.last.click()
+        self.page.wait_for_timeout(300)
+        return node.last
+
     def _expand(self, step_type: str) -> None:
         node = self.page.locator(Selector.of_type(step_type))
         if not node.count():

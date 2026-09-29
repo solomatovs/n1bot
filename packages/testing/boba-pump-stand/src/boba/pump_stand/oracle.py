@@ -1,7 +1,7 @@
 """Схема Oracle стенда перекачки: пользователь PUMP_STAND, которого
-пересоздаёт администратор источника и сносит после тестов — стенд общий со
-скрапером словаря, лишняя схема ломает его эталон. Таблицы в схеме создаёт
-сам владелец: готовую customers или любые стейтменты теста.
+пересоздаёт администратор источника и сносит после тестов (StandOracleUser).
+Таблицы в схеме создаёт сам владелец: готовую customers или любые стейтменты
+теста.
 
 Ошибки:
 OracleQueryError — сервер отклонил DDL стенда.
@@ -9,24 +9,21 @@ OracleQueryError — сервер отклонил DDL стенда.
 
 from __future__ import annotations
 
-import asyncio
 from collections.abc import Mapping, Sequence
 from typing import ClassVar
 
-from oracledb import AsyncConnection
-
-from boba.db.oracle import OracleQueryError
 from boba.db.oracle.connection import OracleConfig
 from boba.db.oracle.payload import PayloadOracle
-from boba.stand.names import StandNames
 from boba.pump_stand.stand import OraSource
+from boba.stand.names import StandNames
+from boba.stand.oracle_user import StandOracleUser
 
 __all__ = ["OracleStand", "PumpUser"]
 
 
 class PumpUser:
-    """Схема стенда перекачки: PUMP_STAND с меткой рабочего процесса, пароль
-    учётки равен имени в нижнем регистре."""
+    """Имя схемы стенда перекачки: PUMP_STAND с меткой рабочего процесса —
+    по нему тесты обращаются к таблицам владельца."""
 
     BASE: ClassVar[str] = "PUMP_STAND"
 
@@ -37,18 +34,10 @@ class PumpUser:
     def name(self) -> str:
         return self._names.of(self.BASE).upper()
 
-    def secret(self) -> str:
-        return self.name.lower()
-
 
 class OracleStand:
     """Пересоздаёт схему PUMP_STAND на источнике: пустую (recreate_user, затем
     стейтменты теста через run) или сразу с таблицей customers (recreate)."""
-
-    NO_SUCH_USER: ClassVar[str] = "ORA-01918"
-    STILL_CONNECTED: ClassVar[str] = "ORA-01940"
-    DROP_ATTEMPTS: ClassVar[int] = 20
-    DROP_PAUSE: ClassVar[float] = 0.25
 
     OWNER: ClassVar[tuple[str, ...]] = (
         "create table customers ("
@@ -72,21 +61,11 @@ class OracleStand:
 
     def __init__(self, source: OraSource) -> None:
         self._source = source
-        self._user = PumpUser()
+        self._user = StandOracleUser(source.admin, PumpUser.BASE)
 
     @property
     def owner(self) -> OracleConfig:
-        return self._source.owner(self._user.name, self._user.secret())
-
-    def _admin(self) -> tuple[str, ...]:
-        """Пересоздание пользователя стенда: снос, создание, права."""
-        name = self._user.name
-        return (
-            f"drop user {name} cascade",
-            f"create user {name} identified by {self._user.secret()} "
-            "default tablespace users quota unlimited on users",
-            f"grant create session, create table to {name}",
-        )
+        return self._user.owner
 
     async def version(self) -> int:
         """Мажорная версия сервера: 12, 18, 21, 23."""
@@ -102,12 +81,7 @@ class OracleStand:
         return int(release)
 
     async def recreate_user(self) -> None:
-        payload = PayloadOracle(self._source.admin)
-        async with payload.opened() as admin:
-            await self._drop_user(payload, admin)
-            _, *rest = self._admin()
-            for statement in rest:
-                await self._run(payload, admin, statement)
+        await self._user.recreate()
 
     async def run(
         self, statements: Sequence[str], parameters: Mapping[str, object] | None = None
@@ -127,33 +101,4 @@ class OracleStand:
         await self.run((self.FILL,), {"n": rows})
 
     async def drop(self) -> None:
-        payload = PayloadOracle(self._source.admin)
-        async with payload.opened() as admin:
-            await self._drop_user(payload, admin)
-
-    async def _drop_user(self, payload: PayloadOracle, admin: AsyncConnection) -> None:
-        """Сессию только что закрытого соединения сервер снимает не сразу, и
-        drop user отвечает ORA-01940: повторяется с паузой, потом ошибка."""
-        drop, *_ = self._admin()
-        for attempt in range(1, self.DROP_ATTEMPTS + 1):
-            try:
-                await self._run(payload, admin, drop)
-            except OracleQueryError as exc:
-                if self.NO_SUCH_USER in str(exc):
-                    return
-
-                if self.STILL_CONNECTED not in str(exc):
-                    raise
-
-                if attempt == self.DROP_ATTEMPTS:
-                    raise
-
-                await asyncio.sleep(self.DROP_PAUSE)
-                continue
-
-            return
-
-    @staticmethod
-    async def _run(payload: PayloadOracle, conn: AsyncConnection, text: str) -> None:
-        async with payload.rows(conn, text):
-            pass
+        await self._user.drop()

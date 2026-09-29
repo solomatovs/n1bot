@@ -93,7 +93,10 @@ async def _execute(conn: AsyncConnection, statement: Any, params: Any = None) ->
 
 
 async def _fill(conn: AsyncConnection, schema_cfg: PostgresStoreSchema) -> None:
-    """Строки трёх коллекций: большая, мелкая и редкое слово в части документов."""
+    """Строки трёх коллекций: большая, мелкая и редкое слово в части документов.
+
+    Подзапрос вектора ссылается на g: иначе postgres считает его один раз, и
+    у всех строк один эмбеддинг — граф HNSW вырождается."""
     chunks = _chunks(schema_cfg)
 
     await _execute(
@@ -119,6 +122,7 @@ async def _fill(conn: AsyncConnection, schema_cfg: PostgresStoreSchema) -> None:
                 (
                     select array_agg(random()::real)::vector
                     from generate_series(1, {dim})
+                    where g = g
                 ),
                 jsonb_build_object('reader.page_title', 'страница ' || g)
             from

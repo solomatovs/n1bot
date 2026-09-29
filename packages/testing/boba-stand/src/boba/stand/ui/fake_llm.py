@@ -232,38 +232,67 @@ class ScenarioBook:
 
     @classmethod
     def _call(cls, text: str) -> Scenario:
-        """Инструмент и аргументы диктует сам тест: `scenario:call {json}`.
+        """Инструменты и аргументы диктует сам тест: `scenario:call {json}` —
+        один вызов, `scenario:call [{json}, ...]` — несколько вызовов одним
+        ответом, как их делает модель, связывая насосы каналами.
 
-        Id вызова несёт хеш сообщения: два вызова одного инструмента в одном
-        треде получают разные шаги ленты, а не перезаписывают один.
+        Id вызова несёт хеш сообщения и номер в ответе: два вызова одного
+        инструмента получают разные шаги ленты, а не перезаписывают один.
         """
         _, _, tail = text.partition(ScenarioName.CALL.value)
         try:
             request = json.loads(tail.strip())
         except json.JSONDecodeError as exc:
             msg = (
-                f"scenario:call expects a JSON object after the marker, "
+                f"scenario:call expects a JSON object or list after the marker, "
                 f"got {tail[:120]!r}: {exc}"
             )
             raise ScenarioError(msg) from exc
 
-        name = request.get("name")
-        if not name:
-            msg = f"scenario:call expects a 'name' key in its JSON, got {tail[:120]!r}"
-            raise ScenarioError(msg)
+        requests: list[Any] = [request]
+        if isinstance(request, list):
+            requests = list(request)
 
         digest = hashlib.sha256(tail.encode("utf-8")).hexdigest()[:8]
-        call = ToolCallSpec(
-            call_id=f"call_{name}_{digest}",
-            name=str(name),
-            arguments=json.dumps(request.get("arguments", {})),
-        )
+        calls: list[ToolCallSpec] = []
+        for index, item in enumerate(requests):
+            calls.append(cls._scripted_call(item, digest, index, tail))
+
+        names: list[str] = []
+        for call in calls:
+            names.append(call.name)
 
         return Scenario(
             turns=[
-                TurnScript(reasoning=f"I will call {name}", tool_calls=[call]),
+                TurnScript(
+                    reasoning=f"I will call {', '.join(names)}", tool_calls=calls
+                ),
                 TurnScript(content=cls.CALL_ANSWER),
             ]
+        )
+
+    @staticmethod
+    def _scripted_call(item: Any, digest: str, index: int, tail: str) -> ToolCallSpec:
+        if not isinstance(item, dict):
+            msg = (
+                f"scenario:call expects each call as a JSON object, got "
+                f"{type(item).__name__} in {tail[:120]!r}"
+            )
+            raise ScenarioError(msg)
+
+        name = item.get("name")
+        if not name:
+            msg = f"scenario:call expects a 'name' key in each call, got {tail[:120]!r}"
+            raise ScenarioError(msg)
+
+        call_id = f"call_{name}_{digest}"
+        if index:
+            call_id = f"{call_id}_{index}"
+
+        return ToolCallSpec(
+            call_id=call_id,
+            name=str(name),
+            arguments=json.dumps(item.get("arguments", {})),
         )
 
     @classmethod
@@ -308,13 +337,15 @@ class ScenarioBook:
     def _answer() -> Scenario:
         return Scenario(turns=[TurnScript(content="Here is a plain streamed answer")])
 
-    @staticmethod
-    def _thinking_answer() -> Scenario:
+    @classmethod
+    def _thinking_answer(cls) -> Scenario:
+        """Рассуждение и ответ по три десятка токенов: поток длится около
+        секунды и дольше окна склейки ленты даже под нагрузкой хоста."""
         return Scenario(
             turns=[
                 TurnScript(
-                    reasoning="First I reason about the question",
-                    content="Then I answer the question",
+                    reasoning=f"First I reason about the question: {cls._words(30, 1)}",
+                    content=f"Then I answer the question: {cls._words(30, 2)}",
                 )
             ]
         )

@@ -40,6 +40,7 @@ from boba.stand.database import TestDatabase
 from boba.stand.edm import EdmDataset, EdmSource, EdmSources
 from boba.stand.ix_index import IxPage, IxPages, SharedIndexers, StandIxStack
 from boba.stand.site import StandLayers
+from boba.stand.stream_sinks import SinkSources, StreamSinks
 from boba.stand.ui.stand import REPO_ROOT, StandApp, StandConfig, StandError, StandUrl
 from boba.transport.http.connection import HttpConnection, UrlScheme
 from boba.workflow.records import WorkflowTable
@@ -131,6 +132,8 @@ class StandDatabase:
     KB_SCHEMA: ClassVar[str] = "tool.kb.db_schema"
     EMBEDDING_CACHE: ClassVar[str] = "ix_stand.embedding_cache_dir"
     EDM_DATABASE: ClassVar[str] = "edm_ui_stand"
+    SINK_CH: ClassVar[str] = "sink_ch"
+    SINK_ORA: ClassVar[str] = "sink_ora"
     """База выгрузки ЕДМ UI-стенда: у тестов инструментов своя, прогоны не
     сносят друг другу данные."""
 
@@ -542,6 +545,71 @@ class StandDatabase:
 
     def drop_edm(self) -> None:
         run_blocking(EdmDataset(self._edm_source(), self.EDM_DATABASE).drop())
+
+    def seed_stream_sinks(self) -> StreamSinks:
+        """База ClickHouse и схема Oracle для приёмников насосов и соединения
+        sink_ch и sink_ora к ним, выданные ролям стенда; сносит их
+        drop_stream_sinks. Сеять после seed_connections: тот чистит таблицу
+        соединений."""
+        return run_blocking(self._seed_stream_sinks())
+
+    async def _seed_stream_sinks(self) -> StreamSinks:
+        sinks = self.stream_sinks()
+        await sinks.recreate()
+
+        connections = bind(self._built, path="connections", model=ConnectionsConfig)
+        async with self._pool() as pool:
+            store = ConnectionStore(connections, ConnectionTypes.discover(), pool)
+            rows = [
+                await store.add(self.SINK_CH, sinks.ch_connection),
+                await store.add(self.SINK_ORA, sinks.ora_connection),
+            ]
+            await self._grant_stand_roles(store, rows)
+
+        return sinks
+
+    def drop_stream_sinks(self) -> None:
+        run_blocking(self.stream_sinks().drop())
+
+    def rows(self, table: str, columns: Sequence[str]) -> list[tuple[Any, ...]]:
+        """Строки таблицы public базы стенда по порядку первой из columns."""
+        return run_blocking(self._rows(table, columns))
+
+    async def _rows(self, table: str, columns: Sequence[str]) -> list[tuple[Any, ...]]:
+        names: list[sql.Identifier] = []
+        for column in columns:
+            names.append(sql.Identifier(column))
+
+        query = (
+            PgQueryBuilder()
+            .add(
+                "select {columns} from public.{table} order by {order}",
+                columns=sql.SQL(", ").join(names),
+                table=sql.Identifier(table),
+                order=names[0],
+            )
+            .build()
+        )
+
+        rows: list[tuple[Any, ...]] = []
+        async with self._pool() as pool, pool.cursor() as cur:
+            await cur.execute(query.text, query.params)
+            for row in await cur.fetchall():
+                rows.append(tuple(row))
+
+        return rows
+
+    def sink_ch_rows(self, table: str, columns: Sequence[str]) -> list[tuple[Any, ...]]:
+        return run_blocking(self.stream_sinks().ch_rows(table, columns))
+
+    def sink_ora_rows(
+        self, table: str, columns: Sequence[str]
+    ) -> list[tuple[Any, ...]]:
+        return run_blocking(self.stream_sinks().ora_rows(table, columns))
+
+    def stream_sinks(self) -> StreamSinks:
+        """Приёмники насосов стенда: имена базы и схемы, профили и чтение строк."""
+        return StreamSinks(bind(self._built, path="ix_stand", model=SinkSources))
 
     def _edm_source(self) -> EdmSource:
         sources = bind(self._built, path="ix_stand", model=EdmSources).demo()

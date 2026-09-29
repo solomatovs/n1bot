@@ -45,6 +45,7 @@ from boba.runtime.config import AppLayers
 from boba.stand.edm import Asset, EdmSources
 from boba.stand.ix_index import IxPage
 from boba.stand.site import Stand, StandLayers
+from boba.stand.stream_sinks import SinkSources, StreamSinks
 from boba.stand.ui.chat_page import ChatPage, StepKind
 from boba.stand.ui.database import StandDatabase, StandOracle
 from boba.stand.ui.fake_llm import FakePage, FakeRoute, ScenarioName
@@ -63,6 +64,7 @@ from boba.tool.canvas.tools import CanvasPrompt
 from boba.tool.confluence.ingest_tools import IngestToolConfig
 from boba.tool.confluence.tools import ConfluenceToolsConfig, CqlQuery
 from boba.tool.kb.search import ConfluenceCollection
+from boba.toolkit.calls import ToolIntent
 from boba.toolkit.result import (
     CanvasResult,
     ErrorResult,
@@ -299,15 +301,30 @@ class ToolCall:
     code: str = ""
     """Аргумент, объявленный тулом как код: рисуется блоком с языком."""
     language: str = ""
+    label: str = ""
+    """Своя подпись вызова: различает вызовы одного инструмента в одном ходе."""
+    hidden: Sequence[str] = ()
+    """Аргументы, которых лента во входе шага не рисует: каналы насосов."""
 
     @property
     def intent(self) -> str:
-        """Подпись вызова, которую фейк дописывает за отсутствием своей."""
+        """Подпись вызова: своя либо та, что фейк дописывает за отсутствием."""
+        if self.label:
+            return self.label
+
         return f"stand call of {self.tool}"
 
+    def request(self) -> dict[str, Any]:
+        """Вызов для сценария фейка; своя подпись едет полем intent."""
+        arguments = dict(self.arguments)
+        if self.label:
+            arguments[ToolIntent.NAME] = self.label
+
+        return {"name": self.tool, "arguments": arguments}
+
     def message(self) -> str:
-        request = {"name": self.tool, "arguments": dict(self.arguments)}
-        return f"{ScenarioName.CALL.value} {json.dumps(request, ensure_ascii=False)}"
+        request = json.dumps(self.request(), ensure_ascii=False)
+        return f"{ScenarioName.CALL.value} {request}"
 
     def expected_input(self) -> str | None:
         """Вход шага, каким его рисует лента из аргументов без подписи."""
@@ -316,6 +333,9 @@ class ToolCall:
 
         blocks: list[str] = []
         for name, value in self.arguments.items():
+            if name in self.hidden:
+                continue
+
             if name == self.code:
                 shown = MarkdownResult(
                     text=str(value).strip("\n"), language=self.language
@@ -491,6 +511,57 @@ class ToolFeed:
             )
 
         return step
+
+    def call_group(
+        self,
+        calls: Sequence[tuple[ToolCall, ToolExpect]],
+        timeout_sec: float = TURN_TIMEOUT_SEC,
+    ) -> list[ToolStep]:
+        """Один ход модели со всеми вызовами разом — так модель связывает
+        насосы каналами; шаг каждого вызова сверяется со своим ожиданием."""
+        requests: list[dict[str, Any]] = []
+        for call, _ in calls:
+            Coverage.called.add(call.tool)
+            requests.append(call.request())
+
+        log_mark = self.stand.log_lines()
+        message = json.dumps(requests, ensure_ascii=False)
+        self.chat.ask(f"{ScenarioName.CALL.value} {message}")
+        self.chat.await_idle(timeout_sec=timeout_sec)
+        self.chat.expand_last_run()
+
+        steps: list[ToolStep] = []
+        for call, expect in calls:
+            step = self._group_step(call)
+            StepCheck(step, call, expect).run()
+            steps.append(step)
+
+        complaints = self.stand.complaints(since_line=log_mark)
+        if complaints:
+            raise AssertionError(
+                "stream group left errors in the stand log:\n"
+                + "\n".join(complaints[:10])
+            )
+
+        return steps
+
+    def _group_step(self, call: ToolCall) -> ToolStep:
+        title = f" {call.tool} · {call.intent}"
+
+        payload: Mapping[str, Any] | None = None
+        for candidate in self.chat.log.steps_of_type(StepKind.TOOL.value):
+            name = str(candidate.get(StepField.NAME.value) or "")
+            if title in name:
+                payload = candidate
+
+        if payload is None:
+            raise AssertionError(
+                f"tool {call.tool}: no step {title!r} in the socket log\n"
+                f"{self.chat.log.describe()}\n{self.stand.tail(60)}"
+            )
+
+        node = self.chat.expand_tool_titled(title)
+        return ToolStep(payload=payload, dom_text=node.inner_text())
 
     def thread_id(self) -> str:
         return self.chat.log.thread_id()
@@ -828,10 +899,18 @@ def sandbox_stand(
         database.seed_connections(llm_port)
         database.seed_oracle()
         database.seed_edm()
+        database.seed_stream_sinks()
         yield process
     finally:
         process.stop()
         database.drop_edm()
+        database.drop_stream_sinks()
+
+
+@pytest.fixture(scope="module")
+def stream_sinks(sandbox_stand: StandProcess, stand_database: str) -> StreamSinks:
+    """База ClickHouse и схема Oracle приёмников насосов, заведённые стендом."""
+    return StandDatabase(StandApp.CHAINLIT, stand_database).stream_sinks()
 
 
 @pytest.fixture(scope="module")
@@ -1017,10 +1096,13 @@ def _connection_catalog() -> TableResult:
     oracle = StandOracle(built)
     sources = bind(built, path="ix_stand", model=EdmSources)
     edm = sources.demo()[0]
+    sinks = StreamSinks(bind(built, path="ix_stand", model=SinkSources))
     listed = (
         ("edm", "clickhouse", edm.clickhouse.host),
         ("main", "clickhouse", stand.ch_host),
+        (StandDatabase.SINK_CH, "clickhouse", sinks.ch_connection.host),
         ("main", "oracle", oracle.host),
+        (StandDatabase.SINK_ORA, "oracle", sinks.ora_connection.host),
         ("main", "postgres", stand.pg_host),
         ("stand", "web", StandUrl.HOST.value),
     )
@@ -1035,6 +1117,8 @@ def _connection_catalog() -> TableResult:
 CATALOG_DOM: tuple[str, ...] = (
     "edm",
     "main",
+    StandDatabase.SINK_CH,
+    StandDatabase.SINK_ORA,
     "stand",
     "postgres",
     "clickhouse",
@@ -2069,6 +2153,158 @@ class TestCanvasTools:
             ToolExpect.of(
                 result, dom=[f"file attached to the chat: {ProbeDiagram.NAME.value}"]
             ),
+        )
+
+
+class StreamProbe(StrEnum):
+    """Ход с насосами: источники трёх баз и их каналы, таблицы приёмников."""
+
+    PG_CHANNEL = "probe"
+    CH_CHANNEL = "numbers"
+    ORA_CHANNEL = "levels"
+    PG_SQL = "select id, name from public.ui_probe order by id"
+    CH_SQL = (
+        "select toInt64(number + 1) as id, toString(number + 1) as name from numbers(3)"
+    )
+    ORA_SQL = (
+        "select cast(level as number(10)) as id, 'n' || level as name "
+        "from dual connect by level <= 3"
+    )
+    PG_FROM_CH = "ui_stream_from_ch"
+    PG_FROM_ORA = "ui_stream_from_ora"
+    CH_TABLE = "from_pg"
+    ORA_TABLE = "FROM_PG"
+    MERGE_TREE = (
+        "create table {database}.{table_name}[ on cluster {cluster}] ({columns}) "
+        "engine = MergeTree order by {order_by}"
+    )
+
+
+class TestStreamTools:
+    """Модель одним ответом связывает насосы трёх баз каналами: каждый
+    источник раздаётся своим приёмникам, данные ложатся во все таблицы."""
+
+    STRATEGIES: ClassVar[Mapping[str, Any]] = {
+        "schema_strategy": {"kind": "drop_and_create"},
+        "delete_strategy": {"kind": "nothing"},
+        "insert_strategy": {"kind": "full"},
+    }
+    NOT_NULL_ID: ClassVar[list[dict[str, Any]]] = [{"name": "id", "nullable": False}]
+
+    def test_one_response_wires_every_pump(
+        self,
+        feed: ToolFeed,
+        probe_table: str,
+        stream_sinks: StreamSinks,
+        stand_database: str,
+    ) -> None:
+        calls = [
+            self._source(
+                "pg_stream_out",
+                StreamProbe.PG_CHANNEL,
+                sql=StreamProbe.PG_SQL.value,
+                wire="arrow",
+                columns=self.NOT_NULL_ID,
+            ),
+            self._source(
+                "ch_stream_out",
+                StreamProbe.CH_CHANNEL,
+                sql=StreamProbe.CH_SQL.value,
+                wire="arrow",
+            ),
+            self._source(
+                "ora_stream_out",
+                StreamProbe.ORA_CHANNEL,
+                sql=StreamProbe.ORA_SQL.value,
+            ),
+            self._sink(
+                "pg_stream_in",
+                StreamProbe.CH_CHANNEL,
+                "pg from ch",
+                connection="main",
+                schema_name=ProbeSql.SCHEMA.value,
+                table_name=StreamProbe.PG_FROM_CH.value,
+            ),
+            self._sink(
+                "pg_stream_in",
+                StreamProbe.ORA_CHANNEL,
+                "pg from ora",
+                connection="main",
+                schema_name=ProbeSql.SCHEMA.value,
+                table_name=StreamProbe.PG_FROM_ORA.value,
+            ),
+            self._sink(
+                "ch_stream_in",
+                StreamProbe.PG_CHANNEL,
+                "ch from pg",
+                connection=StandDatabase.SINK_CH,
+                database=stream_sinks.ch_database,
+                table_name=StreamProbe.CH_TABLE.value,
+                tail={"order_by": "id", "create_table": StreamProbe.MERGE_TREE.value},
+            ),
+            self._sink(
+                "ora_stream_in",
+                StreamProbe.PG_CHANNEL,
+                "ora from pg",
+                connection=StandDatabase.SINK_ORA,
+                schema_name=stream_sinks.ora_schema,
+                table_name=StreamProbe.ORA_TABLE.value,
+                tail={"chunk_bytes": 65536},
+            ),
+        ]
+
+        grouped: list[tuple[ToolCall, ToolExpect]] = []
+        for call in calls:
+            grouped.append((call, ToolExpect()))
+
+        feed.call_group(grouped)
+
+        database = StandDatabase(StandApp.CHAINLIT, stand_database)
+        numbers = [(1, "1"), (2, "2"), (3, "3")]
+        levels = [(1, "n1"), (2, "n2"), (3, "n3")]
+        probe = [(1, "alpha"), (2, "beta")]
+
+        assert database.rows(StreamProbe.PG_FROM_CH.value, ("id", "name")) == numbers
+        # Oracle отдаёт имена колонок заглавными, поток их не переписывает
+        assert database.rows(StreamProbe.PG_FROM_ORA.value, ("ID", "NAME")) == levels
+        assert (
+            database.sink_ch_rows(StreamProbe.CH_TABLE.value, ("id", "name")) == probe
+        )
+        assert (
+            database.sink_ora_rows(StreamProbe.ORA_TABLE.value, ("ID", "NAME")) == probe
+        )
+
+    @staticmethod
+    def _source(tool: str, channel: StreamProbe, **arguments: Any) -> ToolCall:
+        return ToolCall(
+            tool=tool,
+            arguments={"connection": "main", **arguments, "out": channel.value},
+            code="sql",
+            language="sql",
+            label=f"{tool} into {channel.value}",
+            hidden=("out",),
+        )
+
+    def _sink(
+        self,
+        tool: str,
+        channel: StreamProbe,
+        label: str,
+        tail: Mapping[str, Any] = {},
+        **arguments: Any,
+    ) -> ToolCall:
+        """Аргументы в порядке подписи приёмника: так их рисует лента;
+        tail — параметры, объявленные после стратегий."""
+        return ToolCall(
+            tool=tool,
+            arguments={
+                **arguments,
+                **self.STRATEGIES,
+                **tail,
+                "feed": channel.value,
+            },
+            label=label,
+            hidden=("feed",),
         )
 
 
