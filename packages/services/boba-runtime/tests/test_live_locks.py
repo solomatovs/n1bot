@@ -64,6 +64,7 @@ async def _stand(
         cfg, runtime_config.pg_messaging().db_schema, name, AppName.STUDIO, cluster
     )
     locks._pool_ref = pool
+    await locks.setup()
     await locks.register_instance()
     return Stand(bus, locks)
 

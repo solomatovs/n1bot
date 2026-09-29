@@ -44,5 +44,11 @@ class TestScrapeStand:
             )
 
         second = await ix_database.scrape(source)
+
+        # живой сервер между проходами меняют чужие клиенты: у него только инварианты
+        if not source.demo:
+            assert await ix_database.invariants() == {}, f"{name}: invariants broken"
+            return
+
         changed = [row.op for row in second if row.applied != 0]
         assert changed == [], f"{name}: second run changed {changed}"

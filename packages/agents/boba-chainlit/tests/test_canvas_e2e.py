@@ -1224,14 +1224,18 @@ async def test_scrolling_up_loads_previous_window(panel: Any) -> None:
         }"""
     )
 
-    # прокрутка вверх повторяется при каждом опросе, пока окно не подтянется
+    # прокрутка вверх повторяется, пока окно не подтянется; 0 → 0 браузер не
+    # считает прокруткой, поэтому окно чередуется между «чуть ниже» и верхом
     try:
         await page.wait_for_function(
             """(before) => {
                 const box = document.querySelector(
                   '#side-view-content [data-canvas-scroll]');
-                box.scrollTop = 0;
-                return box.querySelector('pre').textContent.length > before;
+                if (box.querySelector('pre').textContent.length > before) {
+                    return true;
+                }
+                box.scrollTop = box.scrollTop === 0 ? 40 : 0;
+                return false;
             }""",
             arg=before,
             polling=500,

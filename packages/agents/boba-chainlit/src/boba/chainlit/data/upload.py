@@ -454,6 +454,11 @@ class StreamedFile:
 
             complete = True
         finally:
+            # клиент, дочитавший тело, закрывает соединение, пока генератор стоит
+            # на последнем yield: отданное целиком окно — это завершённая отдача
+            if progress.done >= total:
+                complete = True
+
             self._finished(object_key, progress, total, complete=complete)
 
     def _finished(
