@@ -9,8 +9,10 @@ from langchain_core.tools import tool
 from boba.access import ProfileGrant, RoleConfig, ToolAccess
 from boba.chainlit.infra.providers import build_llm_view
 from boba.runtime.plugins import PluginMeta
+from boba.toolkit.chain import StreamTimings
 from boba.toolrun.access import ToolAccessDeniedError, ToolAccessGuard
 from boba.toolrun.registry import ToolRegistry
+from boba.toolrun.stream_calls import StreamGroups
 
 
 @pytest.fixture(autouse=True)
@@ -56,7 +58,14 @@ class TestRegistryFiltering:
             },
             profiles={"general": ProfileGrant(tools=["*"], roles=["*"])},
         )
-        return ToolRegistry(tools=self._tools(), access=access)
+        tools = self._tools()
+        return ToolRegistry(
+            tools=tools,
+            access=access,
+            streams=StreamGroups(
+                StreamTimings(open_sec=30.0, stall_sec=60.0, poll_sec=0.2), tools
+            ),
+        )
 
     def test_admin_sees_everything(self) -> None:
         names = {t.name for t in self._registry().for_session({"ADM"}, "general")}

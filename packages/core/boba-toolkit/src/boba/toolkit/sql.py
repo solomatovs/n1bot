@@ -36,6 +36,8 @@ class SqlErrorKind(StrEnum):
     UNKNOWN_TARGET = "unknown_target"
     SQL_FAILED = "sql_failed"
     RESULT_TOO_LARGE = "result_too_large"
+    STREAM_ABORTED = "stream_aborted"
+    """Группа связанных вызовов сорвалась: приёмник не зафиксировал результат."""
 
 
 class SqlLimits(BaseModel):

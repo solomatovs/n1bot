@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from langchain_core.tools import BaseTool
 
 from boba.access import ToolAccess
-from boba.toolkit.ports import ToolStreamSpecs
+from boba.toolrun.stream_calls import StreamGroups
 
 __all__ = ["ToolRegistry"]
 
@@ -21,18 +21,15 @@ logger = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class ToolRegistry:
-    """Собранные инструменты и права доступа к ним"""
+    """Собранные инструменты, права доступа к ним и реестр групп потоковых
+    вызовов: через него модель связывает насосы каналами в одном ответе."""
 
     tools: list[BaseTool]
     access: ToolAccess
+    streams: StreamGroups
 
     def for_session(self, user_roles: Iterable[str], profile: str) -> list[BaseTool]:
-        """Инструменты хода чата: всё, что решение допускает в чате.
-
-        Потоковые насосы (инструменты с портами данных) сюда не попадают:
-        их выход предназначен другому инструменту, а не модели — в цепочки
-        их собирает граф workflow.
-        """
+        """Инструменты хода чата: всё, что решение допускает в чате."""
         roles = frozenset(user_roles)
         allowed = list(self._select(roles, profile, headless=False))
 
@@ -61,9 +58,6 @@ class ToolRegistry:
         self, roles: frozenset[str], profile: str, *, headless: bool
     ) -> Iterator[BaseTool]:
         for tool in self.tools:
-            if not headless and ToolStreamSpecs.of(tool.name).streaming():
-                continue
-
             decision = self.access.decide(tool.name, roles, profile)
             if headless:
                 admitted = decision.headless

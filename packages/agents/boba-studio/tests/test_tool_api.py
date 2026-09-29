@@ -33,6 +33,7 @@ from boba.runtime.users import UsersTable
 from boba.stand_core.auth import StubAuthenticator
 from boba.studio.api.auth import ApiAuth
 from boba.studio.api.tools import ToolCallBody, ToolCalling
+from boba.toolkit.chain import StreamTimings
 from boba.toolkit.facade import tool
 from boba.toolkit.result import MarkdownResult
 from boba.toolrun.call_id import ToolCallIdField
@@ -40,6 +41,7 @@ from boba.toolrun.errors import ToolErrorGuard
 from boba.toolrun.intent import ToolIntentField
 from boba.toolrun.registry import ToolRegistry
 from boba.toolrun.run_log import ToolRunLogger
+from boba.toolrun.stream_calls import StreamGroups
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
 
@@ -87,7 +89,13 @@ def _registry(probe: Probe, studio_config: StudioRuntimeConfig) -> ToolRegistry:
             StandProfiles.profile(studio_config): ProfileGrant(tools=["*"], roles=["*"])
         },
     )
-    return ToolRegistry(tools=tools, access=access)
+    return ToolRegistry(
+        tools=tools,
+        access=access,
+        streams=StreamGroups(
+            StreamTimings(open_sec=30.0, stall_sec=60.0, poll_sec=0.2), tools
+        ),
+    )
 
 
 def _calling(probe: Probe, studio_config: StudioRuntimeConfig) -> ToolCalling:

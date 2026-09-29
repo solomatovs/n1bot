@@ -26,7 +26,7 @@ from typing import Annotated, Any, Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue
 
-from boba.toolkit.ports import Chunk, Inbound, Outbound
+from boba.toolkit.ports import Chunk, Inbound, Outbound, StreamGroup
 
 __all__ = [
     "BackupAndCreate",
@@ -160,10 +160,17 @@ class TransferOutbound:
 class TransferInbound:
     """Чтение кадров потока в async-теле приёмника: get_schema отдаёт
     первый кадр и отказывает, если это не schema; bodies отдаёт блоки
-    данных из кадров rows по одному."""
+    данных из кадров rows по одному. committing — барьер группы связанных
+    вызовов перед фиксацией результата (коммит, exchange tables): приёмник
+    зовёт его, дочитав поток, и фиксирует, только если он вернулся."""
 
-    def __init__(self, feed: Inbound[TransferFrame]) -> None:
+    def __init__(self, feed: Inbound[TransferFrame], group: StreamGroup) -> None:
         self._frames = iter(feed)
+        self._group = group
+
+    async def committing(self) -> None:
+        """Дождаться решения группы; срыв — StreamGroupAbortedError."""
+        await self._group.ready()
 
     async def get_schema(self) -> SchemaHead:
         first = await asyncio.to_thread(next, self._frames, None)

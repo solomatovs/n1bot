@@ -24,6 +24,7 @@ from boba.chainlit.agent.flow import (
     PlainGraphBuilder,
     PrefetchGraphBuilder,
     Rephraser,
+    StreamGroupMiddleware,
 )
 from boba.chainlit.chat.history import CheckpointMessages, TranscriptFeed
 from boba.chainlit.chat.tracing import TracedStage
@@ -358,7 +359,7 @@ def session_chat(
     )
 
 
-def langchain_agent(
+def langchain_agent(  # noqa: PLR0913
     chat: Annotated[BaseChatModel, Depends(session_chat, scope="session")],
     builder: Annotated[
         AgentGraphBuilder, Depends(session_graph_builder, scope="session")
@@ -368,6 +369,7 @@ def langchain_agent(
     settings: Annotated[
         AgentSettings, Depends(session_agent_settings, scope="session")
     ],
+    registry: Annotated[ToolRegistry, Depends(runtime.tool_registry)],
 ) -> CompiledStateGraph:
     names: list[str] = []
     for tool in tools:
@@ -379,6 +381,7 @@ def langchain_agent(
         system_prompt=settings.system_prompt,
         checkpointer=saver,
         history=build_history_view(frozenset(names), settings.history_messages),
+        streams=StreamGroupMiddleware(registry.streams),
     )
 
     return builder.build(spec)

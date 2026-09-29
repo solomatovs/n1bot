@@ -725,6 +725,11 @@ class StreamGroupRun:
         """Сорвать группу снаружи (остановка хода)."""
         self._fail(cause, stopped=False)
 
+    def finished(self) -> bool:
+        """Группа кончилась: все вызовы закончились, каналы закрыты."""
+        with self._cond:
+            return self._settled()
+
     def labels(self) -> list[str]:
         labels: list[str] = []
         for run in self._runs.values():

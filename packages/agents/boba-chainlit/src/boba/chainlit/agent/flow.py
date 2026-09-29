@@ -46,6 +46,7 @@ from boba.toolkit.calls import ToolIntent
 from boba.toolkit.failure import FailureText
 from boba.toolkit.result import ErrorResult, ToolArtifact
 from boba.toolkit.timing import Elapsed
+from boba.toolrun.stream_calls import StreamGroups
 
 logger = logging.getLogger(__name__)
 
@@ -452,6 +453,49 @@ class PrefetchMiddleware(AgentMiddleware[AgentState[Any], Any, Any]):
         )
 
 
+class StreamGroupMiddleware(AgentMiddleware[AgentState[Any], Any, Any]):
+    """Связывание потоковых вызовов ответа модели до их исполнения.
+
+    Модель связывает насосы и трансформы именами каналов в одном ответе; их
+    вызовы исполняются ToolNode одновременно и каналы должны найти друг
+    друга. После ответа модели, пока ни один вызов не начался, middleware
+    отдаёт все вызовы ответа реестру StreamGroups: тот строит план каналов и
+    группу, а обвязка StreamCallHooks потом ставит каждый вызов на его место.
+    """
+
+    def __init__(self, streams: StreamGroups) -> None:
+        super().__init__()
+        self._streams = streams
+
+    @override
+    def after_model(
+        self, state: AgentState[Any], runtime: Runtime[Any]
+    ) -> dict[str, Any] | None:
+        self._open(state)
+        return None
+
+    @override
+    async def aafter_model(
+        self, state: AgentState[Any], runtime: Runtime[Any]
+    ) -> dict[str, Any] | None:
+        self._open(state)
+        return None
+
+    def _open(self, state: AgentState[Any]) -> None:
+        messages = state["messages"]
+        if not messages:
+            return
+
+        last = messages[-1]
+        if not isinstance(last, AIMessage):
+            return
+
+        if not last.tool_calls:
+            return
+
+        self._streams.open(last.tool_calls)
+
+
 @dataclass(frozen=True)
 class GraphSpec:
     """Общие части графа хода: их собирает инфраструктура, билдер — компонует."""
@@ -462,6 +506,8 @@ class GraphSpec:
     checkpointer: BaseCheckpointSaver
     history: AgentMiddleware[Any, Any, Any]
     """Представление истории для модели: обрезка и чистка чужих tool-вызовов."""
+    streams: StreamGroupMiddleware
+    """Связывание потоковых вызовов ответа модели каналами."""
 
 
 class AgentGraphBuilder(ABC):
@@ -481,7 +527,7 @@ class PlainGraphBuilder(AgentGraphBuilder):
             tools=list(spec.tools),
             system_prompt=spec.system_prompt,
             checkpointer=spec.checkpointer,
-            middleware=[spec.history],
+            middleware=[spec.history, spec.streams],
         )
 
 
@@ -503,5 +549,5 @@ class PrefetchGraphBuilder(AgentGraphBuilder):
             tools=list(spec.tools),
             system_prompt=spec.system_prompt,
             checkpointer=spec.checkpointer,
-            middleware=[self._prefetch, spec.history],
+            middleware=[self._prefetch, spec.history, spec.streams],
         )

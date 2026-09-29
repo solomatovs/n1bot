@@ -18,7 +18,7 @@ from boba.tool.ch import tools as ch
 from boba.tool.ora import tools as ora
 from boba.tool.pg import tools as pg
 from boba.toolkit.entry import ToolArgv, ToolMain
-from boba.toolkit.ports import PortDirection, StreamPorts
+from boba.toolkit.ports import PortDirection, StreamGroup, StreamPorts
 from boba.toolkit.transfer import (
     CreateIfNotExists,
     DeleteNothing,
@@ -80,6 +80,7 @@ class Pumps:
         }
         self._bodies: dict[str, Body] = {}
         self._ports: dict[str, dict[str, Any]] = {}
+        self._groups: dict[str, tuple[str, ...]] = {}
         listed = ToolMain.toolset(
             pg.pg_stream_out,
             pg.pg_stream_in,
@@ -94,6 +95,9 @@ class Pumps:
 
             self._bodies[payload.name] = payload.coroutine
             self._ports[payload.name] = ToolArgv.port_fields(
+                ToolArgv.schema_of(payload)
+            )
+            self._groups[payload.name] = ToolArgv.group_fields(
                 ToolArgv.schema_of(payload)
             )
 
@@ -117,7 +121,10 @@ class Pumps:
         }
         arguments.update(extra)
         report = await self._bodies["pg_stream_in"](
-            connection=self._required("pg_stream_in"), feed=feed, **arguments
+            connection=self._required("pg_stream_in"),
+            feed=feed,
+            **self._detached_groups("pg_stream_in"),
+            **arguments,
         )
 
         return report.text
@@ -176,10 +183,22 @@ class Pumps:
 
     async def _call(self, leg: Leg, **port: Any) -> str:
         report = await self._bodies[leg.name](
-            connection=self._required(leg.name), **leg.arguments, **port
+            connection=self._required(leg.name),
+            **leg.arguments,
+            **port,
+            **self._detached_groups(leg.name),
         )
 
         return report.text
+
+    def _detached_groups(self, name: str) -> dict[str, StreamGroup]:
+        """Барьер группы вне группы: ready() возвращается сразу, как у
+        вызова человеком."""
+        groups: dict[str, StreamGroup] = {}
+        for field in self._groups[name]:
+            groups[field] = StreamGroup(-1, -1)
+
+        return groups
 
     async def _out(self, name: str, statement: str, **extra: Any) -> bytes:
         sink = Sink()
