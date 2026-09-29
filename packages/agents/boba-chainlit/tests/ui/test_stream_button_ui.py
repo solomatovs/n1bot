@@ -20,7 +20,7 @@ from boba.stand.ui.stand import StandApp, StandConfig, StandProcess, free_port
 
 pytestmark = pytest.mark.ui
 
-BOOT_TIMEOUT_SEC = 180.0
+BOOT_TIMEOUT_SEC = 300.0
 TURN_TIMEOUT_SEC = 120.0
 BUTTON = '[aria-label="Show tool output"]'
 POLL_SEC = 4.0

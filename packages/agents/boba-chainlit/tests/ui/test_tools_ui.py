@@ -79,7 +79,7 @@ from boba.transport.http.connection import HttpConnection
 
 pytestmark = pytest.mark.ui
 
-BOOT_TIMEOUT_SEC = 180.0
+BOOT_TIMEOUT_SEC = 300.0
 """Подъём стенда с песочницей: восемь зигот, у kb — прогрев эмбеддера."""
 
 TURN_TIMEOUT_SEC = 180.0

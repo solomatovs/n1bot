@@ -9,8 +9,11 @@
 [ix_stand]
     db_schema = "ix"
     database  = "ix_stand"
-    ora_sources = [
-        { name = "ora-23", oracle = { host = "...", port = 1521, service = "FREEPDB1", connect_timeout = 10, call_timeout = 30000, auth = { method = "password", user = "scraper", password = "scraper" } }, admin = { host = "...", port = 1521, service = "FREEPDB1", connect_timeout = 10, call_timeout = 120000, auth = { method = "password", user = "system", password = "oracle" } } },
+    ora_scrape_sources = [
+        { name = "ora-23", oracle = { host = "...", port = 1521, service = "SCRAPEPDB", connect_timeout = 10, call_timeout = 30000, auth = { method = "password", user = "scraper", password = "scraper" } }, admin = { host = "...", port = 1521, service = "SCRAPEPDB", connect_timeout = 10, call_timeout = 120000, auth = { method = "password", user = "system", password = "oracle" } } },
+    ]
+    ora_bulk_sources = [
+        { name = "ora-23", oracle = { host = "...", port = 1521, service = "BULKPDB", ... }, admin = { host = "...", port = 1521, service = "BULKPDB", ... } },
     ]
 ```
 
@@ -19,9 +22,18 @@
 профиль администратора, которым тест пересоздаёт схему `EDGE_DEMO` (`system`);
 источник с `demo = false` снимается как есть и сверяется только по инвариантам.
 
-`server/run.sh` поднимает контейнеры `edge-ora-<ver>` с пользователем `scraper` и
-выдаёт ему гранты; контейнеру `oracle` 12.2 гранты выдаются тем же `grants.sql`
-через `sqlplus / as sysdba` в PDB `ORCLPDB1`.
+Скрапер обходит PDB целиком, и любой чужой DDL посреди обхода даёт «catalog changed
+during read». Поэтому у каждого сервера две PDB только для скрапера: `SCRAPEPDB`
+(`ora_scrape_sources`: эталон, шторм, форматы) и `BULKPDB` (`ora_bulk_sources`:
+нагрузочный словарь теста памяти), а основная PDB остаётся насосам и инструментам.
+Тест памяти расходится по процессам xdist по серверу, остальные тесты идут одной
+группой (`conftest.py`).
+
+`server/run.sh` поднимает контейнеры `edge-ora-<ver>`, выдаёт `scraper` гранты и
+создаёт обе PDB (`server/stand_pdb.sql`). Контейнеру `oracle` 12.2 гранты выдаёт тот же
+`grants.sql` через `sqlplus / as sysdba`, `SCRAPEPDB` — `server/clone_pdb.sql` (клон
+`ORCLPDB1` с демо-схемами образа, на время клона она только на чтение), `BULKPDB` —
+`server/stand_pdb.sql /u02/app/oracle/oradata/ORCL BULKPDB` и `grants.sql` в ней.
 
 `database` пересоздаётся на каждую сессию тестов: схема `db_schema` с ядром пакета
 `ix-core`, затем `schema/` скрапера; оба накатывает `SchemaUpgrade`.

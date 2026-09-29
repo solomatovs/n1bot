@@ -1150,7 +1150,9 @@ async def ch_stream_out(  # noqa: PLR0913
 
     statement = ChQueryBuilder().raw_query(sql).build()
     outbound = TransferOutbound(out)
-    async with PayloadClickHouse.opened_session(connection) as client:
+    async with PayloadClickHouse.opened_for_scripts(
+        connection, before, after
+    ) as client:
         before_steps = await PayloadClickHouse.script(client, before)
         match wire:
             case ChStreamWire.TSV:
@@ -1319,7 +1321,7 @@ async def ch_stream_in(  # noqa: PLR0913
     inbound = TransferInbound(feed)
     head = await inbound.get_schema()
     table = ChTableRef(database=database, name=table_name)
-    async with payload.opened_session(connection) as client:
+    async with payload.opened_for_scripts(connection, before, after) as client:
         before_steps = await payload.script(client, before)
         if head.wire is StreamWire.ARROW:
             contract = ArrowContract.model_validate(head.contract)

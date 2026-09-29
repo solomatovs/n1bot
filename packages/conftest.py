@@ -10,8 +10,10 @@ from boba.stand.site import Stand
 pytest_plugins = ["boba.stand.fixtures", "boba.stand.ui.fixtures"]
 
 
+@pytest.hookimpl(tryfirst=True)
 def pytest_configure(config: pytest.Config) -> None:
-    """Метка пакета в именах стенда; conftest набора может задать свою позже."""
+    """Метка пакета в именах стенда; conftest набора задаёт свою после неё:
+    без tryfirst pluggy зовёт корневой хук последним, и он затирал бы её."""
     StandSuite(config).configure_package(config.args)
 
 
