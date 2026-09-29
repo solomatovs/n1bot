@@ -34,7 +34,13 @@ from boba.db.clickhouse.target import (
 from boba.toolkit.contract import ColumnDeclaration, ContractError
 from boba.toolkit.entry import ToolMain
 from boba.toolkit.facade import Injected, UserConnection, tool
-from boba.toolkit.ports import ChunkBytes, Inbound, Outbound
+from boba.toolkit.ports import (
+    ChunkBytes,
+    Inbound,
+    Outbound,
+    StreamGroup,
+    StreamGroupAbortedError,
+)
 from boba.toolkit.result import MarkdownResult, SqlResult, SqlStatement, TableResult
 from boba.toolkit.sql import (
     QueryBuildError,
@@ -1295,6 +1301,7 @@ async def ch_stream_in(  # noqa: PLR0913
     after: AfterSteps = (),
     *,
     feed: Annotated[Inbound[TransferFrame], Injected],
+    group: Annotated[StreamGroup, Injected],
 ) -> MarkdownResult:
     """Приёмник ClickHouse со стратегиями: поток любого источника в таблицу.
 
@@ -1304,7 +1311,8 @@ async def ch_stream_in(  # noqa: PLR0913
     семейства без своего типа у ClickHouse (json, inet, interval, bytea)
     ложатся String, остальное — родными типами. Другие форматы берёт пара
     «движок источника -> ClickHouse» из реестра. База обязана быть Atomic:
-    загрузка идёт в двойник <table>__ex и заканчивается exchange tables.
+    загрузка идёт в двойник <table>__ex и заканчивается exchange tables
+    после барьера группы связанных вызовов.
     Стейтменты before и after идут в той же сессии сервера. В ответ — что
     сделано со схемой и почему, сверка по колонкам, что удалено, сколько
     вставлено.
@@ -1318,7 +1326,7 @@ async def ch_stream_in(  # noqa: PLR0913
     payload = PayloadClickHouse
     template = CreateTemplate(create_table, ChTableRef.TEMPLATE_VARS)
     placement = ChPlacement(cluster=ChCluster(cluster), order_by=order_by)
-    inbound = TransferInbound(feed)
+    inbound = TransferInbound(feed, group)
     head = await inbound.get_schema()
     table = ChTableRef(database=database, name=table_name)
     async with payload.opened_for_scripts(connection, before, after) as client:
@@ -1377,6 +1385,7 @@ async def ch_address(connection: ChConnection) -> TableResult:
 
 
 EXPECTED: Mapping[type[Exception], SqlErrorKind] = {
+    StreamGroupAbortedError: SqlErrorKind.STREAM_ABORTED,
     ContractError: SqlErrorKind.SQL_FAILED,
     TransferError: SqlErrorKind.SQL_FAILED,
     AddressError: SqlErrorKind.UNKNOWN_TARGET,

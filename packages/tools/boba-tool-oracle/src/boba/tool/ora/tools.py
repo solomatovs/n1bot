@@ -47,7 +47,14 @@ from boba.toolkit.contract import (
 )
 from boba.toolkit.entry import ToolMain
 from boba.toolkit.facade import Injected, UserConnection, tool
-from boba.toolkit.ports import ArrowStreamError, ChunkBytes, Inbound, Outbound
+from boba.toolkit.ports import (
+    ArrowStreamError,
+    ChunkBytes,
+    Inbound,
+    Outbound,
+    StreamGroup,
+    StreamGroupAbortedError,
+)
 from boba.toolkit.result import MarkdownResult, SqlResult, SqlStatement, TableResult
 from boba.toolkit.sql import QueryBuildError, SqlErrorKind, SqlLimits
 from boba.toolkit.transfer import (
@@ -903,6 +910,7 @@ async def ora_stream_in(  # noqa: PLR0913
     after: AfterSteps = (),
     *,
     feed: Annotated[Inbound[TransferFrame], Injected],
+    group: Annotated[StreamGroup, Injected],
 ) -> MarkdownResult:
     """Приёмник Oracle со стратегиями: поток arrow любого источника в таблицу.
 
@@ -913,7 +921,8 @@ async def ora_stream_in(  # noqa: PLR0913
     пересоздаёт таблицу либо отказывает с текстом расхождений; затем
     удаление, затем вставка пачек через executemany без разбора значений в
     Python. DDL Oracle фиксирует сам, удаление и вставка вместе с before и
-    after — одна транзакция. В ответ — что сделано со схемой и почему, сверка
+    after — одна транзакция, коммит — после барьера группы связанных
+    вызовов. В ответ — что сделано со схемой и почему, сверка
     по колонкам, что удалено, сколько вставлено.
     """
     from boba.db.oracle.arrow_stream import OraArrowLoader  # noqa: PLC0415
@@ -922,7 +931,7 @@ async def ora_stream_in(  # noqa: PLR0913
     from boba.toolkit.contract import Engine as NeutralEngine  # noqa: PLC0415
 
     template = CreateTemplate(create_table, OraTableRef.TEMPLATE_VARS)
-    inbound = TransferInbound(feed)
+    inbound = TransferInbound(feed, group)
     head = await inbound.get_schema()
     if head.wire is not StreamWire.ARROW:
         raise ContractError(
@@ -955,6 +964,7 @@ async def ora_stream_in(  # noqa: PLR0913
             template,
         )
         after_steps = await payload.script(conn, after, trace)
+        await inbound.committing()
         await payload.commit(conn)
 
     return MarkdownResult(
@@ -963,6 +973,7 @@ async def ora_stream_in(  # noqa: PLR0913
 
 
 EXPECTED: Mapping[type[Exception], SqlErrorKind] = {
+    StreamGroupAbortedError: SqlErrorKind.STREAM_ABORTED,
     AddressError: SqlErrorKind.UNKNOWN_TARGET,
     QueryBuildError: SqlErrorKind.SQL_FAILED,
     OracleError: SqlErrorKind.DATABASE_UNAVAILABLE,

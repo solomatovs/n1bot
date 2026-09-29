@@ -8,6 +8,7 @@ from boba.identity.context import CallContext
 from boba.runtime.launchers import CallSurface
 from boba.runtime.plugins import ToolBridge
 from boba.stand_core.context import TEST_PROFILE
+from boba.toolkit.chain import StreamTimings
 from boba.toolkit.facade import tool
 from boba.toolkit.result import ErrorResult, MarkdownResult
 from boba.toolrun.call_id import ToolCallIdField
@@ -15,6 +16,7 @@ from boba.toolrun.errors import ToolErrorGuard
 from boba.toolrun.intent import ToolIntentField
 from boba.toolrun.registry import ToolRegistry
 from boba.toolrun.run_log import ToolRunLogger
+from boba.toolrun.stream_calls import StreamGroups
 
 PROBE_ROLE = "wf"
 """Роль, которой стенд выдаёт все инструменты зонда."""
@@ -67,4 +69,10 @@ class Probe:
             roles={PROBE_ROLE: RoleConfig(tools=["*"])},
             profiles={profile: ProfileGrant(tools=granted, roles=["*"])},
         )
-        return ToolRegistry(tools=tools, access=access)
+        return ToolRegistry(
+            tools=tools,
+            access=access,
+            streams=StreamGroups(
+                StreamTimings(open_sec=30.0, stall_sec=60.0, poll_sec=0.2), tools
+            ),
+        )

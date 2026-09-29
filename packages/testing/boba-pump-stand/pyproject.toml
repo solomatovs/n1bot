@@ -23,6 +23,8 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
+    "boba-runtime==0.0.25.dev1",
+    "boba-toolrun==0.0.25.dev1",
     "boba-stream-pg-to-pg==0.0.25.dev1",
     "boba-stream-ch-to-ch==0.0.25.dev1",
     "boba-stream-pg-to-ch==0.0.25.dev1",

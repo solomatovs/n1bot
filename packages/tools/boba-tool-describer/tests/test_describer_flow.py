@@ -33,7 +33,7 @@ from omegaconf import DictConfig, OmegaConf
 from psycopg import sql
 from pydantic import SecretStr
 
-from boba.chainlit.agent.flow import GraphSpec, PlainGraphBuilder
+from boba.chainlit.agent.flow import GraphSpec, PlainGraphBuilder, StreamGroupMiddleware
 from boba.chainlit.infra.config import AppConfig
 from boba.chainlit.infra.plugins import ChatPlugins
 from boba.chainlit.infra.providers import build_history_view
@@ -60,7 +60,9 @@ from boba.stand_core.context import use_context
 from boba.tool.describer.address import Addresses, EntityAddress
 from boba.tool.describer.edges import EdgeKind, EdgeListColumn
 from boba.tool.describer.nodes import NodeListColumn
+from boba.toolkit.chain import StreamTimings
 from boba.toolkit.result import ErrorResult, SqlResult, TableResult, ToolArtifact
+from boba.toolrun.stream_calls import StreamGroups
 
 _REPO = Path(__file__).resolve().parents[4]
 _SANDBOX_STAGING = _REPO / "build" / "chainlit" / "src" / "sandbox"
@@ -413,6 +415,11 @@ def _graph(
         system_prompt=settings.system_prompt,
         checkpointer=InMemorySaver(),
         history=build_history_view(frozenset(names), settings.history_messages),
+        streams=StreamGroupMiddleware(
+            StreamGroups(
+                StreamTimings(open_sec=30.0, stall_sec=60.0, poll_sec=0.2), tools
+            )
+        ),
     )
 
     return PlainGraphBuilder().build(spec)

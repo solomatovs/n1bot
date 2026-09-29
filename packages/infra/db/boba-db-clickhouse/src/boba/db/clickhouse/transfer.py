@@ -744,7 +744,7 @@ class ChInputSink(TransferSink):
     """Реализация TransferSink для ClickHouse: двойник готовится стратегией
     удаления, тела кадров вставляются в него как есть через input() в
     формате потока, select переименовывает поля потока в колонки таблицы,
-    затем exchange tables. NULL потока в колонку без Nullable — ошибка
+    затем барьер группы и exchange tables. NULL потока в колонку без Nullable — ошибка
     сервера, а не значение по умолчанию: тихих подмен нет, как у not null
     postgres. discard без удаления таблицу не трогает, с удалением — готовит
     двойник и меняет местами."""
@@ -782,6 +782,7 @@ class ChInputSink(TransferSink):
             settings=self._settings,
             blocks=self._inbound.bodies(),
         )
+        await self._inbound.committing()
         await self._twin.exchange()
 
         return trace.written_rows
@@ -794,6 +795,7 @@ class ChInputSink(TransferSink):
             return 0
 
         await self._twin.prepare()
+        await self._inbound.committing()
         await self._twin.exchange()
 
         return 0

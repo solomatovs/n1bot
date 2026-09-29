@@ -10,6 +10,8 @@ RuntimeError — конфиг противоречит плагину: у уст
     (см. boba.runtime.launchers), секция с соединениями пользователя без
     [connections].
 ToolConfigError — injected-параметр инструмента не привязан к секции конфига.
+StreamGroupsConfigError — нет секции [stream_groups] со сроками групп
+    потоковых вызовов.
 TypeError — TOOLS модуля содержит не PayloadTool и не BaseTool; тело
     инструмента вернуло не модель результата.
 """
@@ -36,6 +38,7 @@ from boba.connection_broker.user_connections import UserConnections
 from boba.identity.context import CallContext
 from boba.runtime.launchers import CallSurface, SectionLaunchers, ToolLaunchers
 from boba.runtime.refs import RuntimeRefs
+from boba.toolkit.chain import StreamTimings
 from boba.toolkit.entry import ToolAddress, ToolArgv, ToolEntryError, ToolLike, ToolMain
 from boba.toolkit.facade import PayloadTool
 from boba.toolkit.launcher import ToolLauncher
@@ -52,6 +55,13 @@ from boba.toolrun.injected import InjectedConfig, ToolConfigError
 from boba.toolrun.intent import ToolIntentField
 from boba.toolrun.registry import ToolRegistry
 from boba.toolrun.run_log import ToolRunLogger
+from boba.toolrun.stream_calls import (
+    StreamCallHooks,
+    StreamChannelFields,
+    StreamGroups,
+    StreamGroupsConfig,
+    StreamGroupsConfigError,
+)
 from boba.toolrun.streams import ToolStreams
 from boba.toolrun.wrapping import CallHooks, ToolAsyncBody, ToolBody, ToolSchema
 
@@ -255,6 +265,7 @@ class ToolLoader:
         for hooks in self._surface_hooks:
             ToolBody.hook_all(tools, hooks)
 
+        StreamChannelFields().attach_all(tools)
         ToolCallIdField.attach_all(tools)
         ToolIntentField.attach_all(tools)
         ToolRunLogger.guard_all(
@@ -262,9 +273,23 @@ class ToolLoader:
         )
         CancellableTools.guard_all(tools)
         ToolAccessGuard.guard_all(tools, access, CallContext.current_subject)
+        streams = StreamGroups(self._stream_timings(), tools)
+        StreamCallHooks(streams).guard_all(tools)
         ToolErrorGuard.guard_all(tools)
         ToolAsyncBody.ensure_all(tools)
-        return ToolRegistry(tools=tools, access=access)
+        return ToolRegistry(tools=tools, access=access, streams=streams)
+
+    def _stream_timings(self) -> StreamTimings:
+        """Сроки групп потоковых вызовов из секции [stream_groups]."""
+        section = StreamGroupsConfig.SECTION
+        if OmegaConf.select(self._raw, section) is None:
+            msg = (
+                f"config section [{section}] is missing: stream groups need "
+                "open_sec, stall_sec and poll_sec"
+            )
+            raise StreamGroupsConfigError(msg)
+
+        return bind(self._raw, section, StreamGroupsConfig).timings()
 
     def _plugin_tools(
         self,

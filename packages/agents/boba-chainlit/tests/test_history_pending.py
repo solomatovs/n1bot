@@ -17,11 +17,13 @@ from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import tool
 from langgraph.checkpoint.memory import InMemorySaver
 
-from boba.chainlit.agent.flow import GraphSpec, PlainGraphBuilder
+from boba.chainlit.agent.flow import GraphSpec, PlainGraphBuilder, StreamGroupMiddleware
 from boba.chainlit.chat.history import CheckpointMessages, TranscriptFeed
 from boba.chainlit.domain.fields import StepField
 from boba.chainlit.infra.providers import build_history_view
 from boba.chainlit.rendering.chat_view import StepKind
+from boba.toolkit.chain import StreamTimings
+from boba.toolrun.stream_calls import StreamGroups
 
 pytestmark = pytest.mark.anyio
 
@@ -79,6 +81,12 @@ def _graph(saver: InMemorySaver):
         system_prompt="index everything",
         checkpointer=saver,
         history=build_history_view(frozenset({"fast_index", "slow_index"}), 30),
+        streams=StreamGroupMiddleware(
+            StreamGroups(
+                StreamTimings(open_sec=30.0, stall_sec=60.0, poll_sec=0.2),
+                [fast_index, slow_index],
+            )
+        ),
     )
     return PlainGraphBuilder().build(spec)
 

@@ -29,6 +29,7 @@ from boba.chainlit.agent.flow import (
     PrefetchStage,
     Rephraser,
     RephrasingsParser,
+    StreamGroupMiddleware,
 )
 from boba.chainlit.chat.tracing import AgentTracer, TracedStage
 from boba.chainlit.chat.turn import TurnState
@@ -58,8 +59,10 @@ from boba.llm.chat import (
 from boba.llm.providers import LlmProviders, LlmProviderTypes
 from boba.llm.schema import SchemaReply
 from boba.toolkit.calls import ToolIntent
+from boba.toolkit.chain import StreamTimings
 from boba.toolkit.result import ErrorResult, TableResult, ToolArtifact
 from boba.toolrun.cancellation import CancellableTools
+from boba.toolrun.stream_calls import StreamGroups
 
 pytestmark = pytest.mark.anyio
 
@@ -252,6 +255,11 @@ def _graph(builder: Any, answers: Sequence[str]) -> CompiledStateGraph:
         system_prompt="you are a search assistant",
         checkpointer=InMemorySaver(),
         history=build_history_view(frozenset({"fts_probe", "vector_probe"}), 30),
+        streams=StreamGroupMiddleware(
+            StreamGroups(
+                StreamTimings(open_sec=30.0, stall_sec=60.0, poll_sec=0.2), tools
+            )
+        ),
     )
     return builder.build(spec)
 

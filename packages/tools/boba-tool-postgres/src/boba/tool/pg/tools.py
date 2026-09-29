@@ -43,7 +43,13 @@ from boba.db.postgres.transfer import (
 from boba.toolkit.contract import ContractError
 from boba.toolkit.entry import ToolMain
 from boba.toolkit.facade import Injected, UserConnection, tool
-from boba.toolkit.ports import ArrowStreamError, Inbound, Outbound
+from boba.toolkit.ports import (
+    ArrowStreamError,
+    Inbound,
+    Outbound,
+    StreamGroup,
+    StreamGroupAbortedError,
+)
 from boba.toolkit.result import (
     MarkdownResult,
     ResultTooLargeError,
@@ -556,6 +562,7 @@ async def pg_stream_in(  # noqa: PLR0913
     after: AfterSteps = (),
     *,
     feed: Annotated[Inbound[TransferFrame], Injected],
+    group: Annotated[StreamGroup, Injected],
 ) -> MarkdownResult:
     """Приёмник postgres со стратегиями: поток любого источника в таблицу.
 
@@ -565,7 +572,8 @@ async def pg_stream_in(  # noqa: PLR0913
     arrow любого источника идёт нейтральным путём по семействам типов.
     Стратегия схемы создаёт, оставляет, бэкапит или пересоздаёт таблицу
     либо отказывает с текстом расхождений; затем удаление, затем вставка
-    тел как есть. Всё одной транзакцией вместе с before и after. В ответ —
+    тел как есть. Всё одной транзакцией вместе с before и after; коммит —
+    после барьера группы связанных вызовов. В ответ —
     что сделано со схемой и почему, сверка по колонкам, что удалено,
     сколько вставлено.
     """
@@ -574,7 +582,7 @@ async def pg_stream_in(  # noqa: PLR0913
     from boba.toolkit.contract import Engine as NeutralEngine  # noqa: PLC0415
 
     template = CreateTemplate(create_table, PgTransferTable.TEMPLATE_VARS)
-    inbound = TransferInbound(feed)
+    inbound = TransferInbound(feed, group)
     head = await inbound.get_schema()
     table = PgTableRef(schema=schema_name, name=table_name)
     conn = await PayloadPostgres.connect_config(connection.copy_session(copy_options))
@@ -612,6 +620,7 @@ async def pg_stream_in(  # noqa: PLR0913
             )
 
         after_steps = await script.run(after)
+        await inbound.committing()
 
     return MarkdownResult(
         text=TransferReportText().render(report, before_steps, after_steps)
@@ -1395,6 +1404,7 @@ async def pg_address(connection: PgConnection) -> TableResult:
 
 
 EXPECTED: Mapping[type[Exception], SqlErrorKind] = {
+    StreamGroupAbortedError: SqlErrorKind.STREAM_ABORTED,
     QueryBuildError: SqlErrorKind.SQL_FAILED,
     PostgresError: SqlErrorKind.DATABASE_UNAVAILABLE,
     PgArrowError: SqlErrorKind.SQL_FAILED,

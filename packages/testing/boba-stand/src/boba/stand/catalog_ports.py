@@ -35,6 +35,7 @@ from boba.connections.credentials import CredentialSource
 from boba.db.postgres.catalog import CatalogStoreConfig
 from boba.identity.context import Subject
 from boba.stand.fake_sync import FakeConnection, fake_pg_snapshot
+from boba.toolkit.chain import StreamTimings
 from boba.toolkit.entry import ToolMain
 from boba.toolkit.facade import PayloadTool
 from boba.toolkit.wrap import ToolProcessWrap
@@ -43,6 +44,7 @@ from boba.toolrun.intent import ToolIntentField
 from boba.toolrun.invoke import ToolInvoker
 from boba.toolrun.process import ProcessLauncherConfig, ProcessToolCaller
 from boba.toolrun.registry import ToolRegistry
+from boba.toolrun.stream_calls import StreamGroups
 
 
 class NoSyncTools(SyncTools):
@@ -154,7 +156,14 @@ class FakeSyncRegistry:
             roles={role: RoleConfig(tools=["*"])},
             profiles={profile: ProfileGrant(tools=["*"], roles=["*"])},
         )
-        return ToolRegistry(tools=list(bridged), access=access)
+        return ToolRegistry(
+            tools=list(bridged),
+            access=access,
+            streams=StreamGroups(
+                StreamTimings(open_sec=30.0, stall_sec=60.0, poll_sec=0.2),
+                list(bridged),
+            ),
+        )
 
 
 class KnownConnectionDirectory(ConnectionDirectory):

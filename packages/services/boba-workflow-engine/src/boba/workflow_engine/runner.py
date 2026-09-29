@@ -189,7 +189,6 @@ class _RunSession:
             )
             raise WorkflowRunError(msg)
 
-
         state = self._plan.snapshot()
         await self._sink.snapshot(state)
         return state, dict(self._results)
