@@ -64,6 +64,8 @@ from boba.toolkit.contract import (
 from boba.toolkit.contract import Engine as NeutralEngine
 from boba.toolkit.transfer import (
     ColumnRules,
+    CommandJournal,
+    CommandKind,
     CreateTemplate,
     DeleteStrategyApply,
     Engine,
@@ -94,8 +96,9 @@ class ChArrowSource:
     ENGINE: ClassVar[Engine] = Engine.CLICKHOUSE
     FORMAT: ClassVar[str] = "ArrowStream"
 
-    def __init__(self, client: AsyncClient) -> None:
+    def __init__(self, client: AsyncClient, journal: CommandJournal) -> None:
         self._client = client
+        self._journal = journal
         self._payload = PayloadClickHouse
         self._ipc = ArrowIpc()
         self._columns = ArrowColumns()
@@ -104,6 +107,21 @@ class ChArrowSource:
         self._contract_table = ContractTable()
 
     async def stream(
+        self,
+        text: str,
+        declared: Sequence[ColumnDeclaration],
+        chunk_bytes: int,
+        out: TransferOutbound,
+    ) -> ChCommandReport:
+        """Выгрузка целиком — одна команда журнала: пачки идут мимо него."""
+        statement = f"{text}\nformat {self.FORMAT}"
+        with self._journal.command(statement, CommandKind.ACTION) as running:
+            report = await self._streamed(text, declared, chunk_bytes, out)
+            running.status = f"read {report.read_rows} rows"
+
+        return report
+
+    async def _streamed(
         self,
         text: str,
         declared: Sequence[ColumnDeclaration],
@@ -129,6 +147,7 @@ class ChArrowSource:
                     specs = self._declarations.merge(
                         self._columns.specs(reader.schema), declared
                     )
+                    self._journal.columns(self._contract_table.rows(specs))
                     contract = ArrowContract(columns=self._contract.columns(specs))
                     await out.schema(
                         SchemaHead(
@@ -311,8 +330,8 @@ class ChDeclaredTypes:
     """Типы из rules.column_types в нейтральном виде: текст нормализует сервер
     приёмника через ChTypeResolver, семейство и параметры — ChTypes."""
 
-    def __init__(self, client: AsyncClient) -> None:
-        self._resolver = ChTypeResolver(client)
+    def __init__(self, client: AsyncClient, journal: CommandJournal) -> None:
+        self._resolver = ChTypeResolver(client, journal)
         self._types = ChTypes()
 
     async def resolve(self, column_types: Mapping[str, str]) -> dict[str, DeclaredType]:
@@ -332,8 +351,10 @@ class ChDeclaredTypes:
 class ChNeutralFacts:
     """Колонки таблицы приёмника из system.columns в нейтральном виде."""
 
-    def __init__(self, client: AsyncClient, table: ChTableRef) -> None:
-        self._facts = ChTableFacts(client, table)
+    def __init__(
+        self, client: AsyncClient, table: ChTableRef, journal: CommandJournal
+    ) -> None:
+        self._facts = ChTableFacts(client, table, journal)
         self._types = ChTypes()
 
     async def require_atomic(self) -> None:
@@ -380,16 +401,18 @@ class ChArrowLoader:
         contract: Sequence[ColumnSpec],
         source_engine: NeutralEngine,
         inbound: TransferInbound,
+        journal: CommandJournal,
     ) -> None:
         self._client = client
         self._table = table
+        self._journal = journal
         self._placement = placement
         self._stream = ChStreamProjection().project(contract)
         self._source_engine = source_engine
         self._exact = source_engine is NeutralEngine.CLICKHOUSE
         self._inbound = inbound
-        self._facts = ChNeutralFacts(client, table)
-        self._declared = ChDeclaredTypes(client)
+        self._facts = ChNeutralFacts(client, table, journal)
+        self._declared = ChDeclaredTypes(client, journal)
         self._ddl_types = ChDdlTypes()
 
     def _plan(self, spec: TableSpec) -> ChTablePlan:
@@ -437,10 +460,16 @@ class ChArrowLoader:
 
         diff = SchemaMatcher(rules, self._exact).diff(self._stream, facts, declared)
         spec = diff.table_spec()
-        twin = ChTwin(self._client, self._table, self._placement.cluster)
+        twin = ChTwin(self._client, self._table, self._placement.cluster, self._journal)
         plan = self._plan(spec)
         table = ChTransferTable(
-            self._client, self._table, plan, create_table, twin, self._placement
+            self._client,
+            self._table,
+            plan,
+            create_table,
+            twin,
+            self._placement,
+            self._journal,
         )
         sink = ChInputSink(
             self._client,
@@ -449,11 +478,22 @@ class ChArrowLoader:
             self.FORMAT,
             ChNullableTwinTypes(self._nullable(spec)),
             self._inbound,
+            self._journal,
         )
         transfer = TransferRun(
-            schema_strategy, delete_strategy, insert_strategy, unknown_types
+            schema_strategy,
+            delete_strategy,
+            insert_strategy,
+            unknown_types,
+            self._journal,
         )
 
         return await transfer.run(
-            self._table.text(), exists, diff.check(), table, sink, False
+            self._table.text(),
+            exists,
+            diff.check(),
+            plan.planned(),
+            table,
+            sink,
+            False,
         )

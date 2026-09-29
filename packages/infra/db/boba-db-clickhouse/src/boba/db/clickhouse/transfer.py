@@ -18,7 +18,14 @@ ClickHouseQueryError — сервер отклонил запрос приёмн
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Callable, Iterable, Mapping, Sequence
+from collections.abc import (
+    AsyncIterator,
+    Callable,
+    Iterable,
+    Iterator,
+    Mapping,
+    Sequence,
+)
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -26,6 +33,7 @@ from importlib.metadata import entry_points
 from typing import Any, ClassVar, Protocol, runtime_checkable
 
 from clickhouse_connect.driver.asyncclient import AsyncClient
+from clickhouse_connect.driver.binding import finalize_query
 from clickhouse_connect.driver.exceptions import ClickHouseError as DriverError
 
 from boba.db.clickhouse.contract import (
@@ -52,11 +60,14 @@ from boba.toolkit.transfer import (
     ColumnIssue,
     ColumnRules,
     ColumnVerdict,
+    CommandJournal,
+    CommandKind,
     CreateTemplate,
     DeleteOutcome,
     DeleteStrategyApply,
     Engine,
     InsertStrategyApply,
+    PlannedColumn,
     SchemaCheck,
     SchemaHead,
     SchemaStrategyPlan,
@@ -113,8 +124,9 @@ class ChTsvOut:
     FORMAT: ClassVar[str] = "TabSeparatedWithNamesAndTypes"
     HEADER_LINES: ClassVar[int] = 2
 
-    def __init__(self, client: AsyncClient) -> None:
+    def __init__(self, client: AsyncClient, journal: CommandJournal) -> None:
         self._client = client
+        self._journal = journal
         self._payload = PayloadClickHouse
         self._header = TsvHeader()
         self._lines = Lines(self.FORMAT, self.HEADER_LINES)
@@ -122,27 +134,35 @@ class ChTsvOut:
     async def stream(
         self, text: str, chunk_bytes: int, out: TransferOutbound
     ) -> ChCommandReport:
+        """Выгрузка целиком — одна команда журнала: тела идут мимо него."""
         tuning = ReadTuning(socket_read_size=chunk_bytes, read_buffer_size=chunk_bytes)
-        async with self._payload.byte_stream_out(
-            self._client, text, self.FORMAT, tuning=tuning
-        ) as stream:
-            chunks = Lines.views(stream.blocks)
-            head = await self._lines.take(chunks)
-            contract = self._contract(head.lines, stream.trace.server)
-            await out.schema(
-                SchemaHead(
-                    kind="schema",
-                    source_engine=Engine.CLICKHOUSE,
-                    wire=StreamWire.TSV,
-                    contract=contract.model_dump(mode="json"),
+        statement = f"{text}\nformat {self.FORMAT}"
+        with self._journal.command(statement, CommandKind.ACTION) as running:
+            async with self._payload.byte_stream_out(
+                self._client, text, self.FORMAT, tuning=tuning
+            ) as stream:
+                chunks = Lines.views(stream.blocks)
+                head = await self._lines.take(chunks)
+                contract = self._contract(head.lines, stream.trace.server)
+                self._journal.columns(contract.rows())
+                await out.schema(
+                    SchemaHead(
+                        kind="schema",
+                        source_engine=Engine.CLICKHOUSE,
+                        wire=StreamWire.TSV,
+                        contract=contract.model_dump(mode="json"),
+                    )
                 )
-            )
-            async for block in Lines.all(head.rest, chunks):
-                await out.rows(block)
+                async for block in Lines.all(head.rest, chunks):
+                    await out.rows(block)
 
-            return stream.trace.report(
-                contract.caption(StreamWire.TSV), text, columns=contract.rows()
-            )
+                report = stream.trace.report(
+                    contract.caption(StreamWire.TSV), text, columns=contract.rows()
+                )
+
+            running.status = f"read {report.read_rows} rows"
+
+        return report
 
     def _contract(self, lines: Sequence[bytes], server: str) -> ChContract:
         names = self._header.parse(lines[0])
@@ -157,38 +177,68 @@ class ChTsvOut:
 
 
 class ChStatements:
-    """Запросы приёмника на клиенте драйвера: команда и выборка строк с
-    настройками сервера на запрос; отказ сервера упаковывается в
-    ClickHouseQueryError с текстом запроса."""
+    """Запросы приёмника на клиенте драйвера: команда (действие) и выборка
+    строк (справка по каталогу) с настройками сервера на запрос. Каждый
+    запрос — команда журнала вызова с итоговым текстом SQL, где параметры
+    клиента уже подставлены; отказ сервера упаковывается в
+    ClickHouseQueryError с этим текстом."""
 
-    def __init__(self, client: AsyncClient) -> None:
+    SETTINGS_COMMENT: ClassVar[str] = "-- settings: "
+
+    def __init__(self, client: AsyncClient, journal: CommandJournal) -> None:
         self._client = client
+        self._journal = journal
 
     async def command(
         self, query: ChQuery, settings: Mapping[str, Any] | None = None
     ) -> None:
-        try:
-            await self._client.command(
-                query.text, parameters=query.params, settings=self._dict(settings)
-            )
-        except DriverError as exc:
-            raise ClickHouseQueryError(
-                f"clickhouse statement failed: {exc}; statement: {query.text[:300]!r}"
-            ) from exc
+        text = self.text(query, settings)
+        with self._journal.command(text, CommandKind.ACTION) as running:
+            try:
+                await self._client.command(
+                    query.text, parameters=query.params, settings=self._dict(settings)
+                )
+            except DriverError as exc:
+                raise ClickHouseQueryError(
+                    f"clickhouse statement failed: {exc}; statement: {text!r}"
+                ) from exc
+
+            running.status = "done"
 
     async def rows(
         self, query: ChQuery, settings: Mapping[str, Any] | None = None
     ) -> list[Sequence[Any]]:
-        try:
-            result = await self._client.query(
-                query.text, parameters=query.params, settings=self._dict(settings)
-            )
-        except DriverError as exc:
-            raise ClickHouseQueryError(
-                f"clickhouse query failed: {exc}; query: {query.text[:300]!r}"
-            ) from exc
+        text = self.text(query, settings)
+        with self._journal.command(text, CommandKind.LOOKUP) as running:
+            try:
+                result = await self._client.query(
+                    query.text, parameters=query.params, settings=self._dict(settings)
+                )
+            except DriverError as exc:
+                raise ClickHouseQueryError(
+                    f"clickhouse query failed: {exc}; query: {text!r}"
+                ) from exc
 
-        return list(result.result_rows)
+            rows = list(result.result_rows)
+            running.status = f"{len(rows)} rows"
+
+        return rows
+
+    def text(self, query: ChQuery, settings: Mapping[str, Any] | None = None) -> str:
+        """Итоговый SQL запроса: параметры клиента подставлены, настройки
+        запроса — строкой комментария под ним."""
+        text = query.text
+        if query.params:
+            text = finalize_query(query.text, query.params)
+
+        if not settings:
+            return text
+
+        pairs: list[str] = []
+        for key, value in settings.items():
+            pairs.append(f"{key} = {value}")
+
+        return f"{text}\n{self.SETTINGS_COMMENT}{', '.join(pairs)}"
 
     @staticmethod
     def _dict(settings: Mapping[str, Any] | None) -> dict[str, Any] | None:
@@ -225,8 +275,8 @@ class ChJsonProbe:
     JSON: ClassVar[str] = "select toTypeName(CAST('{}', 'JSON'))"
     NULLABLE: ClassVar[str] = "select toTypeName(CAST(NULL, 'Nullable(JSON)'))"
 
-    def __init__(self, client: AsyncClient) -> None:
-        self._statements = ChStatements(client)
+    def __init__(self, client: AsyncClient, journal: CommandJournal) -> None:
+        self._statements = ChStatements(client, journal)
 
     async def probe(self) -> ChJsonSupport:
         for settings in self.CANDIDATES:
@@ -266,15 +316,18 @@ class ChInetProbe:
     )
     IPV4_TEXT: ClassVar[bytes] = b"10.1.2.3\n"
 
-    def __init__(self, client: AsyncClient) -> None:
+    def __init__(self, client: AsyncClient, journal: CommandJournal) -> None:
         self._client = client
+        self._journal = journal
         self._payload = PayloadClickHouse
 
     async def accepts_ipv4(self) -> bool:
         try:
-            await self._payload.byte_stream_in(
-                self._client, self.STATEMENT, blocks=self._body()
-            )
+            with self._journal.command(self.STATEMENT, CommandKind.LOOKUP) as running:
+                await self._payload.byte_stream_in(
+                    self._client, self.STATEMENT, blocks=self._body()
+                )
+                running.status = "accepted"
         except ClickHouseQueryError:
             # проба: отказ сервера и есть ответ «IPv4 в IPv6 не читается»
             return False
@@ -305,9 +358,11 @@ class ChTableFacts:
     """Таблица по каталогу ClickHouse: движок базы (обязан быть Atomic), есть
     ли таблица и её колонки из system.columns."""
 
-    def __init__(self, client: AsyncClient, table: ChTableRef) -> None:
+    def __init__(
+        self, client: AsyncClient, table: ChTableRef, journal: CommandJournal
+    ) -> None:
         self._table = table
-        self._statements = ChStatements(client)
+        self._statements = ChStatements(client, journal)
 
     async def require_atomic(self) -> None:
         query = (
@@ -409,8 +464,8 @@ class ChTypeResolver:
     печатает каталог (decimal(20,6) -> Decimal(20, 6)); незнакомый тип —
     ошибка до любого DDL."""
 
-    def __init__(self, client: AsyncClient) -> None:
-        self._statements = ChStatements(client)
+    def __init__(self, client: AsyncClient, journal: CommandJournal) -> None:
+        self._statements = ChStatements(client, journal)
 
     async def resolve(self, column_types: Mapping[str, str]) -> dict[str, str]:
         resolved: dict[str, str] = {}
@@ -453,13 +508,14 @@ class ChTwin:
         client: AsyncClient,
         table: ChTableRef,
         cluster: ChCluster,
+        journal: CommandJournal,
         settings: Mapping[str, Any] = {},
     ) -> None:
         self._table = table
         self._twin = table.twin()
         self._cluster = cluster
         self._settings = dict(settings)
-        self._statements = ChStatements(client)
+        self._statements = ChStatements(client, journal)
         self._fill = ChTwinFill.ALL
         self._where = ""
 
@@ -561,12 +617,36 @@ class ChPlannedColumn:
     nullable: bool
     known: str
 
+    def planned(self) -> PlannedColumn:
+        return PlannedColumn(
+            name=self.name,
+            field=self.source_name,
+            type=self.type_text,
+            nullable=self.nullable,
+            source_type=self.known,
+            notes=tuple(self._notes()),
+        )
+
+    def _notes(self) -> Iterator[str]:
+        if self.source_name != self.name:
+            yield f"renamed from {self.source_name}"
+
+        if not self.type_text:
+            yield "no target type for the stream type: unknown_types decides"
+
 
 @dataclass(frozen=True)
 class ChTablePlan:
     """Колонки таблицы-приёмника в порядке полей потока."""
 
     columns: Sequence[ChPlannedColumn]
+
+    def planned(self) -> list[PlannedColumn]:
+        planned: list[PlannedColumn] = []
+        for column in self.columns:
+            planned.append(column.planned())
+
+        return planned
 
     def names(self) -> list[str]:
         return [column.name for column in self.columns]
@@ -593,6 +673,7 @@ class ChTransferTable(TransferTable):
         template: CreateTemplate,
         twin: ChTwin,
         placement: ChPlacement,
+        journal: CommandJournal,
         settings: Mapping[str, Any] = {},
     ) -> None:
         self._table = table
@@ -601,8 +682,8 @@ class ChTransferTable(TransferTable):
         self._twin = twin
         self._placement = placement
         self._settings = dict(settings)
-        self._facts = ChTableFacts(client, table)
-        self._statements = ChStatements(client)
+        self._facts = ChTableFacts(client, table, journal)
+        self._statements = ChStatements(client, journal)
         self._types = ChTypes()
 
     async def exists(self) -> bool:
@@ -768,6 +849,7 @@ class ChInputSink(TransferSink):
         fmt: str,
         types: ChInputTypes,
         inbound: TransferInbound,
+        journal: CommandJournal,
         settings: Mapping[str, Any] = {},
     ) -> None:
         self._client = client
@@ -776,20 +858,27 @@ class ChInputSink(TransferSink):
         self._fmt = fmt
         self._types = types
         self._inbound = inbound
+        self._journal = journal
         self._settings = {**self.SETTINGS, **settings}
-        self._facts = ChTableFacts(client, twin.target())
+        self._facts = ChTableFacts(client, twin.target(), journal)
+        self._statements = ChStatements(client, journal)
         self._payload = PayloadClickHouse
 
     async def load(self) -> int:
+        """Вставка потока целиком — одна команда журнала: тела идут мимо него."""
         await self._twin.prepare()
         query = await self._insert()
-        trace = await self._payload.byte_stream_in(
-            self._client,
-            query.text,
-            query.params,
-            settings=self._settings,
-            blocks=self._inbound.bodies(),
-        )
+        text = self._statements.text(query, self._settings)
+        with self._journal.command(text, CommandKind.ACTION) as running:
+            trace = await self._payload.byte_stream_in(
+                self._client,
+                query.text,
+                query.params,
+                settings=self._settings,
+                blocks=self._inbound.bodies(),
+            )
+            running.status = f"{trace.written_rows} rows written"
+
         await self._inbound.committing()
         await self._twin.exchange()
 
@@ -1233,7 +1322,7 @@ class ChTransfer(Protocol):
 @runtime_checkable
 class ChTransferFactory(Protocol):
     """Конструктор пары: клиент приёмника, таблица, её кластер и ключ
-    сортировки, кадр схемы, поток тел."""
+    сортировки, кадр схемы, поток тел, журнал команд вызова."""
 
     def __call__(
         self,
@@ -1242,6 +1331,7 @@ class ChTransferFactory(Protocol):
         placement: ChPlacement,
         head: SchemaHead,
         feed: TransferInbound,
+        journal: CommandJournal,
     ) -> ChTransfer: ...
 
 

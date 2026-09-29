@@ -51,7 +51,6 @@ from boba.toolkit.ports import (
     StreamGroup,
 )
 from boba.toolkit.result import (
-    Fact,
     MarkdownResult,
     SqlResult,
     SqlStatement,
@@ -60,6 +59,8 @@ from boba.toolkit.result import (
 from boba.toolkit.sql import SqlLimits
 from boba.toolkit.transfer import (
     ColumnRules,
+    CommandJournal,
+    CommandKind,
     CreateTemplate,
     DeleteStrategy,
     FailOnUnknown,
@@ -124,6 +125,13 @@ AfterSteps = Annotated[
         ),
     ),
 ]
+
+
+class OraPump(StrEnum):
+    """Имена насосов Oracle в журнале команд вызова."""
+
+    STREAM_OUT = "ora_stream_out"
+    STREAM_IN = "ora_stream_in"
 
 
 class AddressColumn(StrEnum):
@@ -215,41 +223,35 @@ async def run_statement(
 
 
 async def run_steps(
-    payload: Any, conn: Any, steps: Sequence[str]
-) -> list[SqlStatement]:
+    payload: Any, conn: Any, steps: Sequence[str], journal: CommandJournal
+) -> None:
     """Стейтменты before/after насоса по одному, по порядку, на том же
     соединении: DML остаётся в транзакции насоса до commit вызывающего, DDL
     Oracle фиксирует сам. Строки выборок не собираются: шаг даёт число
-    затронутых строк и предупреждение драйвера. payload и conn —
-    PayloadOracle и соединение драйвера: его пакет есть только внутри
-    песочницы."""
-    statements: list[SqlStatement] = []
+    затронутых строк и предупреждение драйвера; каждый шаг — команда
+    журнала вызова. payload и conn — PayloadOracle и соединение драйвера:
+    его пакет есть только внутри песочницы."""
     for step in steps:
         query = OraQueryBuilder().raw_query(step).build()
-        async with payload.rows(conn, query.text, query.params) as stream:
-            statements.append(step_statement(step, stream))
+        with journal.command(step, CommandKind.ACTION) as running:
+            async with payload.rows(conn, query.text, query.params) as stream:
+                running.status = step_status(stream)
 
-    return statements
 
-
-def step_statement(step: str, stream: Any) -> SqlStatement:
-    """Итог шага по RowStream: у выборки и команды без счётчика — done."""
-    facts: list[Fact] = []
-    if stream.warning:
-        facts.append(Fact(key="warning", value=stream.warning))
-
+def step_status(stream: Any) -> str:
+    """Итог шага по RowStream: у выборки и команды без счётчика — done;
+    предупреждение драйвера — через `;`."""
+    status = f"{stream.affected} rows"
     if stream.names:
-        return SqlStatement(text=step, status="done", facts=facts)
+        status = "done"
 
     if stream.affected < 0:
-        return SqlStatement(text=step, status="done", facts=facts)
+        status = "done"
 
-    return SqlStatement(
-        text=step,
-        status=f"{stream.affected} rows",
-        affected_rows=stream.affected,
-        facts=facts,
-    )
+    if not stream.warning:
+        return status
+
+    return f"{status}; warning: {stream.warning}"
 
 
 @tool
@@ -835,25 +837,29 @@ async def ora_stream_out(  # noqa: PLR0913
     from boba.db.oracle.payload import PayloadOracle  # noqa: PLC0415
     from boba.db.oracle.trace import OraSessionTrace  # noqa: PLC0415
 
+    journal = CommandJournal(OraPump.STREAM_OUT)
     payload = PayloadOracle(connection)
     statement = OraQueryBuilder().raw_query(sql).build()
     outbound = TransferOutbound(out)
-    async with payload.opened() as conn:
-        trace = OraSessionTrace(conn)
-        before_steps = await run_steps(payload, conn, before)
-        specs = await OraArrowSource(conn, payload, trace).stream(
-            statement.text, columns, outbound
-        )
-        after_steps = await run_steps(payload, conn, after)
-        await payload.commit(conn)
-        contract = ContractTable()
-        report = trace.report(
-            contract.caption(StreamWire.ARROW.value, specs),
-            statement.text,
-            columns=contract.rows(specs),
-        )
+    try:
+        async with payload.opened() as conn:
+            trace = OraSessionTrace(conn)
+            await run_steps(payload, conn, before, journal)
+            specs = await OraArrowSource(conn, payload, trace, journal).stream(
+                statement.text, columns, outbound
+            )
+            await run_steps(payload, conn, after, journal)
+            await payload.commit(conn)
+            contract = ContractTable()
+            report = trace.report(
+                contract.caption(StreamWire.ARROW.value, specs),
+                statement.text,
+                columns=contract.rows(specs),
+            )
+    except Exception as exc:
+        raise journal.failed(exc) from exc
 
-    statements = [*before_steps, report.sql_statement(), *after_steps]
+    statements = [report.sql_statement(), *journal.statements()]
 
     return SqlResult(engine=OraToolConfig.ENGINE, statements=statements)
 
@@ -973,44 +979,49 @@ async def ora_stream_in(  # noqa: PLR0913
     from boba.db.oracle.trace import OraSessionTrace  # noqa: PLC0415
     from boba.toolkit.contract import Engine as NeutralEngine  # noqa: PLC0415
 
+    journal = CommandJournal(OraPump.STREAM_IN)
     template = CreateTemplate(create_table, OraTableRef.TEMPLATE_VARS)
     inbound = TransferInbound(feed, group)
-    head = await inbound.get_schema()
-    if head.wire is not StreamWire.ARROW:
-        raise ContractError(
-            f"ora_stream_in takes the arrow wire only, got {head.wire.value} from "
-            f"{head.source_engine.value}"
-        )
-
-    contract = ArrowContract.model_validate(head.contract)
     table = OraTableRef(schema=schema_name, name=table_name)
     payload = PayloadOracle(connection)
-    async with payload.opened() as conn:
-        trace = OraSessionTrace(conn)
-        before_steps = await run_steps(payload, conn, before)
-        loader = OraArrowLoader(
-            conn,
-            table,
-            StreamContract().specs(contract.columns),
-            NeutralEngine(head.source_engine.value),
-            inbound,
-            chunk_bytes,
-            payload,
-            trace,
-        )
-        report = await loader.run(
-            schema_strategy,
-            delete_strategy,
-            insert_strategy,
-            unknown_types,
-            rules,
-            template,
-        )
-        after_steps = await run_steps(payload, conn, after)
-        await inbound.committing()
-        await payload.commit(conn)
+    try:
+        head = await inbound.get_schema()
+        if head.wire is not StreamWire.ARROW:
+            raise ContractError(
+                f"ora_stream_in takes the arrow wire only, got {head.wire.value} "
+                f"from {head.source_engine.value}"
+            )
 
-    statements = [*report.statements(), *before_steps, *after_steps]
+        contract = ArrowContract.model_validate(head.contract)
+        async with payload.opened() as conn:
+            trace = OraSessionTrace(conn)
+            await run_steps(payload, conn, before, journal)
+            loader = OraArrowLoader(
+                conn,
+                table,
+                StreamContract().specs(contract.columns),
+                NeutralEngine(head.source_engine.value),
+                inbound,
+                chunk_bytes,
+                payload,
+                trace,
+                journal,
+            )
+            report = await loader.run(
+                schema_strategy,
+                delete_strategy,
+                insert_strategy,
+                unknown_types,
+                rules,
+                template,
+            )
+            await run_steps(payload, conn, after, journal)
+            await inbound.committing()
+            await payload.commit(conn)
+    except Exception as exc:
+        raise journal.failed(exc) from exc
+
+    statements = [report.summary(), *journal.statements()]
 
     return SqlResult(engine=OraToolConfig.ENGINE, statements=statements)
 

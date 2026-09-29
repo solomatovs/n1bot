@@ -1,6 +1,7 @@
-"""Шаблон create table: обязательные переменные в тексте, необязательные —
-в квадратных скобках вместе со своим текстом; литеральные скобки удваиваются.
-Чистый разбор строки, сервер не нужен."""
+"""Шаблон create table: главный — шаблон вызывающего, приёмник подставляет
+только названные в нём переменные; кусок в квадратных скобках выпадает без
+значения, литеральные скобки удваиваются. Чистый разбор строки, сервер не
+нужен."""
 
 from __future__ import annotations
 
@@ -16,13 +17,13 @@ from boba.toolkit.transfer import (
 )
 
 CLICKHOUSE = TemplateVars(
-    required=(
+    offered=(
         TemplateVar.DATABASE,
         TemplateVar.TABLE_NAME,
         TemplateVar.COLUMNS,
+        TemplateVar.CLUSTER,
         TemplateVar.ORDER_BY,
-    ),
-    optional=(TemplateVar.CLUSTER,),
+    )
 )
 
 
@@ -62,24 +63,31 @@ class TestCreateTemplate:
 
         assert rendered.endswith("settings x = [1, 2] -- {note}")
 
+    def test_template_takes_only_the_variables_it_names(self) -> None:
+        """Шаблон без кластера и ключа сортировки — такой, как прислала модель."""
+        text = "create table {database}.{table_name} ({columns}) engine = Log"
+        rendered = CreateTemplate(text, CLICKHOUSE).render(self.VALUES)
+
+        assert rendered == "create table `db`.`t` (`id` Int64) engine = Log"
+
+    def test_variable_outside_brackets_renders_with_a_value(self) -> None:
+        text = "create table {database}.{table_name} on cluster {cluster} ({columns})"
+        values = dict(self.VALUES)
+        values[TemplateVar.CLUSTER] = "`stand`"
+        rendered = CreateTemplate(text, CLICKHOUSE).render(values)
+
+        assert rendered == "create table `db`.`t` on cluster `stand` (`id` Int64)"
+
+    def test_variable_outside_brackets_without_a_value_is_refused(self) -> None:
+        text = "create table {database}.{table_name} on cluster {cluster} ({columns})"
+        template = CreateTemplate(text, CLICKHOUSE)
+
+        with pytest.raises(TransferError, match="no cluster is passed"):
+            template.render(self.VALUES)
+
     @pytest.mark.parametrize(
         ("text", "match"),
         [
-            (
-                "create table {database}.{table_name} on cluster {cluster} "
-                "({columns}) order by {order_by}",
-                "must stand inside",
-            ),
-            (
-                "create table {database}.{table_name}[ on cluster {cluster}] "
-                "({columns})",
-                "lacks \\['order_by'\\]",
-            ),
-            (
-                "create table {database}.[{table_name}][ on cluster {cluster}] "
-                "({columns}) order by {order_by}",
-                "required variable \\{table_name\\} stands inside",
-            ),
             (
                 "create table {database}.{table_name}[ on cluster {cluster} "
                 "({columns}) order by {order_by}",
@@ -93,12 +101,12 @@ class TestCreateTemplate:
             (
                 "create table {database}.{table_name}[ on cluster {cluster}] "
                 "({columns}) order by {order_by} [settings x = 1]",
-                "has no variable",
+                "names no variable",
             ),
             (
                 "create table {schema_name}.{table_name}[ on cluster {cluster}] "
                 "({columns}) order by {order_by}",
-                "unknown variable \\{schema_name\\}",
+                "uses \\{schema_name\\}, but the receiver has no such value",
             ),
         ],
     )

@@ -48,8 +48,8 @@ from boba.pump_stand import (
     Pumps,
     PumpStand,
 )
-from boba.stand.names import StandNames
 from boba.pump_stand.oracle import PumpUser
+from boba.stand.names import StandNames
 from boba.toolkit.contract import ColumnDeclaration
 from boba.toolkit.transfer import (
     BackupAndCreateIfSchemaChanged,

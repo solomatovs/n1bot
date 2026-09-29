@@ -36,6 +36,7 @@ from boba.db.postgres.transfer import (
 from boba.toolkit.contract import TypeFamily
 from boba.toolkit.transfer import (
     ColumnRules,
+    CommandJournal,
     CreateTemplate,
     DeleteStrategyApply,
     Engine,
@@ -193,6 +194,7 @@ class ChToPg(PgTransfer):
         table: PgTableRef,
         head: SchemaHead,
         feed: TransferInbound,
+        journal: CommandJournal,
     ) -> None:
         if head.source_engine is not Engine.CLICKHOUSE:
             raise TransferError(
@@ -209,8 +211,9 @@ class ChToPg(PgTransfer):
         self._table = table
         self._contract = ChContract.model_validate(head.contract)
         self._feed = feed
-        self._facts = PgTableFacts(conn, table)
-        self._resolver = PgTypeResolver(conn)
+        self._journal = journal
+        self._facts = PgTableFacts(conn, table, journal)
+        self._resolver = PgTypeResolver(conn, journal)
         self._types = ChPgTypes()
         self._ch_types = ChTypes()
 
@@ -233,20 +236,33 @@ class ChToPg(PgTransfer):
                 catalog = await self._facts.columns()
 
             matched = matcher.match(fields, catalog, resolved)
-            table = PgTransferTable(self._conn, self._table, matched.plan, create_table)
+            table = PgTransferTable(
+                self._conn, self._table, matched.plan, create_table, self._journal
+            )
             sink = PgCopyIn(
                 self._conn,
                 self._table,
                 matched.plan.names(),
                 PgCopyLayout.TSV,
                 self._feed.bodies(),
+                self._journal,
             )
             run = TransferRun(
-                schema_strategy, delete_strategy, insert_strategy, unknown_types
+                schema_strategy,
+                delete_strategy,
+                insert_strategy,
+                unknown_types,
+                self._journal,
             )
 
             return await run.run(
-                self._table.text(), exists, matched.check, table, sink, True
+                self._table.text(),
+                exists,
+                matched.check,
+                matched.plan.planned(),
+                table,
+                sink,
+                True,
             )
 
     def _fields(self) -> list[PgField]:

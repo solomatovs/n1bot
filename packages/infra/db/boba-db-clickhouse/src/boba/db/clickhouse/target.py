@@ -52,15 +52,16 @@ class ChTableRef:
     ORDER_BY: ClassVar[str] = "tuple()"
     """Ключ сортировки по умолчанию: без сортировки."""
     TEMPLATE_VARS: ClassVar[TemplateVars] = TemplateVars(
-        required=(
+        offered=(
             TemplateVar.DATABASE,
             TemplateVar.TABLE_NAME,
             TemplateVar.COLUMNS,
+            TemplateVar.CLUSTER,
             TemplateVar.ORDER_BY,
-        ),
-        optional=(TemplateVar.CLUSTER,),
+        )
     )
-    """Переменные шаблона ClickHouse: cluster — необязательная, в [ ]."""
+    """Переменные, которые приёмник ClickHouse подставляет в шаблон; cluster
+    пуст без кластера — в шаблоне его ставят в [ ]."""
 
     database: str
     name: str

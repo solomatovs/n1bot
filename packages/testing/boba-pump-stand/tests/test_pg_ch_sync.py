@@ -36,8 +36,10 @@ from boba.pump_stand import (
     PumpStand,
 )
 from boba.stand.names import StandNames
+from boba.toolkit.result import SqlFailureResult
 from boba.toolkit.transfer import (
     ColumnRules,
+    CreateIfNotExists,
     DeleteNothing,
     DeleteTruncate,
     DropAndCreate,
@@ -356,7 +358,7 @@ class TestNativeTypes:
         )
 
         assert f"{ROWS} rows loaded" in report
-        assert '"columns": "id"' in report
+        assert '"column": "id"' in report
         assert "table Int128 is wider than stream Int64" in report
         assert await ChLoaded(clickhouse, "wider").count() == ROWS
 
@@ -435,6 +437,55 @@ class TestUnknownTypes:
         assert await landed.column("toString(en)") == await Loaded(
             postgres, PG_SCHEMA, "src"
         ).texts("en")
+
+
+class TestFailureView:
+    """Сбой приёмника в чате: ошибка сервера, колонки, с которыми шла
+    загрузка, и все команды вплоть до упавшей."""
+
+    async def test_nullable_sorting_key_shows_columns_and_the_create(
+        self, postgres: PostgresSide, clickhouse: ClickHouseSide
+    ) -> None:
+        pumps = Pumps(postgres=postgres.profile, clickhouse=clickhouse.profile)
+        with pytest.raises(ClickHouseQueryError, match="Sorting key contains nullable"):
+            await pumps.chain(
+                Leg("pg_stream_out", {"sql": SELECT, "wire": StreamWire.TSV}),
+                Leg(
+                    "ch_stream_in",
+                    {
+                        "database": CH_DATABASE,
+                        "table_name": "nullable_key",
+                        "schema_strategy": CreateIfNotExists(
+                            kind="create_if_not_exists"
+                        ),
+                        "delete_strategy": DeleteNothing(kind="nothing"),
+                        "insert_strategy": InsertFull(kind="full"),
+                        "unknown_types": FallbackAsVarchar(kind="fallback_as_varchar"),
+                        "create_table": (
+                            "create table {database}.{table_name} ({columns}) "
+                            "engine = MergeTree order by {order_by}"
+                        ),
+                        "order_by": "id",
+                    },
+                ),
+            )
+
+        failure = pumps.failure_of("ch_stream_in")
+        assert isinstance(failure, SqlFailureResult), failure
+
+        rows = {row["column"]: row for row in failure.columns}
+        assert rows["id"]["type"] == "Nullable(Int64)", rows["id"]
+        assert rows["id"]["nullable"] == "nullable"
+
+        create = failure.statements[-1]
+        assert create.text.startswith(f"create table `{CH_DATABASE}`.`nullable_key`")
+        assert "`id` Nullable(Int64)" in create.text
+        assert create.status == "failed: ClickHouseQueryError"
+
+        markdown = failure.chat_view().markdown
+        assert "Sorting key contains nullable columns" in markdown
+        assert "| id " in markdown
+        assert "```sql\ncreate table" in markdown
 
 
 class TestServerTraps:

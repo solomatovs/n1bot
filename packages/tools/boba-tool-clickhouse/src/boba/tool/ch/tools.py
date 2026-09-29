@@ -44,6 +44,8 @@ from boba.toolkit.sql import (
 )
 from boba.toolkit.transfer import (
     ColumnRules,
+    CommandJournal,
+    CommandKind,
     CreateTemplate,
     DeleteStrategy,
     FailOnUnknown,
@@ -119,6 +121,13 @@ AfterSteps = Annotated[
 ]
 
 
+class ChPump(StrEnum):
+    """Имена насосов ClickHouse в журнале команд вызова."""
+
+    STREAM_OUT = "ch_stream_out"
+    STREAM_IN = "ch_stream_in"
+
+
 class AddressColumn(StrEnum):
     """Колонки выдачи ch_address."""
 
@@ -158,20 +167,20 @@ async def run_and_collect(
     return SqlResult(engine=ChToolConfig.ENGINE, statements=[statement])
 
 
-async def run_steps(client: Any, steps: Sequence[str]) -> list[SqlStatement]:
+async def run_steps(client: Any, steps: Sequence[str], journal: CommandJournal) -> None:
     """Стейтменты before/after насоса по одному, по порядку, тем же клиентом:
     в сессии клиента они делят SET и временные таблицы с командой насоса.
-    Строки выборок не собираются, шаг даёт ответ сервера. client —
-    AsyncClient драйвера: его пакет есть только внутри песочницы."""
+    Строки выборок не собираются, шаг даёт ответ сервера; каждый шаг —
+    команда журнала вызова. client — AsyncClient драйвера: его пакет есть
+    только внутри песочницы."""
     from boba.db.clickhouse.payload import PayloadClickHouse  # noqa: PLC0415
 
-    statements: list[SqlStatement] = []
     for step in steps:
         query = ChQueryBuilder().raw_query(step).build()
-        outcome = await PayloadClickHouse.command(client, query.text, query.params)
-        statements.append(SqlStatement(text=step, status=outcome))
-
-    return statements
+        with journal.command(step, CommandKind.ACTION) as running:
+            running.status = await PayloadClickHouse.command(
+                client, query.text, query.params
+            )
 
 
 @tool
@@ -1164,25 +1173,29 @@ async def ch_stream_out(  # noqa: PLR0913
             "of clickhouse travel as they are"
         )
 
+    journal = CommandJournal(ChPump.STREAM_OUT)
     statement = ChQueryBuilder().raw_query(sql).build()
     outbound = TransferOutbound(out)
-    async with PayloadClickHouse.opened_for_scripts(
-        connection, before, after
-    ) as client:
-        before_steps = await run_steps(client, before)
-        match wire:
-            case ChStreamWire.TSV:
-                report = await ChTsvOut(client).stream(
-                    statement.text, chunk_bytes, outbound
-                )
-            case ChStreamWire.ARROW:
-                report = await ChArrowSource(client).stream(
-                    statement.text, columns, chunk_bytes, outbound
-                )
+    try:
+        async with PayloadClickHouse.opened_for_scripts(
+            connection, before, after
+        ) as client:
+            await run_steps(client, before, journal)
+            match wire:
+                case ChStreamWire.TSV:
+                    report = await ChTsvOut(client, journal).stream(
+                        statement.text, chunk_bytes, outbound
+                    )
+                case ChStreamWire.ARROW:
+                    report = await ChArrowSource(client, journal).stream(
+                        statement.text, columns, chunk_bytes, outbound
+                    )
 
-        after_steps = await run_steps(client, after)
+            await run_steps(client, after, journal)
+    except Exception as exc:
+        raise journal.failed(exc) from exc
 
-    statements = [*before_steps, report.sql_statement(), *after_steps]
+    statements = [report.sql_statement(), *journal.statements()]
 
     return SqlResult(engine=ChToolConfig.ENGINE, statements=statements)
 
@@ -1296,16 +1309,18 @@ async def ch_stream_in(  # noqa: PLR0913
         Field(
             min_length=1,
             description=(
-                "Шаблон create table, когда стратегия схемы создаёт таблицу. "
-                "Цельный стейтмент с переменными:\n"
+                "Шаблон create table, когда стратегия схемы создаёт таблицу: "
+                "цельный стейтмент, в который подставляются только названные в "
+                "нём переменные:\n"
                 "   - {database} — база приёмника, экранированная\n"
                 "   - {table_name} — имя таблицы, экранированное\n"
                 "   - {columns} — колонки с типами из плана\n"
                 "   - {order_by} — ключ сортировки из параметра order_by\n"
-                "   - [ on cluster {cluster}] — необязательная часть в квадратных\n"
-                "       скобках: выпадает целиком, если cluster не передан\n"
-                "Сюда пишутся engine, partition by, settings. Литеральные "
-                "фигурные и квадратные скобки удваиваются.\n"
+                "   - {cluster} — кластер из параметра cluster\n"
+                "Часть в квадратных скобках [ on cluster {cluster}] выпадает "
+                "целиком, если значения её переменной нет. Сюда пишутся engine, "
+                "partition by, settings. Литеральные фигурные и квадратные "
+                "скобки удваиваются.\n"
             ),
         ),
     ] = ChTableRef.CREATE_TABLE,
@@ -1335,46 +1350,53 @@ async def ch_stream_in(  # noqa: PLR0913
     from boba.toolkit.contract import ArrowContract, StreamContract  # noqa: PLC0415
     from boba.toolkit.contract import Engine as NeutralEngine  # noqa: PLC0415
 
+    journal = CommandJournal(ChPump.STREAM_IN)
     payload = PayloadClickHouse
     template = CreateTemplate(create_table, ChTableRef.TEMPLATE_VARS)
     placement = ChPlacement(cluster=ChCluster(cluster), order_by=order_by)
     inbound = TransferInbound(feed, group)
-    head = await inbound.get_schema()
     table = ChTableRef(database=database, name=table_name)
-    async with payload.opened_for_scripts(connection, before, after) as client:
-        before_steps = await run_steps(client, before)
-        if head.wire is StreamWire.ARROW:
-            contract = ArrowContract.model_validate(head.contract)
-            loader = ChArrowLoader(
-                client,
-                table,
-                placement,
-                StreamContract().specs(contract.columns),
-                NeutralEngine(head.source_engine.value),
-                inbound,
-            )
-            report = await loader.run(
-                schema_strategy,
-                delete_strategy,
-                insert_strategy,
-                unknown_types,
-                rules,
-                template,
-            )
-        else:
-            pair = ChTransfers.discover().pair(head.source_engine)
-            report = await pair(client, table, placement, head, inbound).run(
-                schema_strategy,
-                delete_strategy,
-                insert_strategy,
-                unknown_types,
-                rules,
-                template,
-            )
+    try:
+        head = await inbound.get_schema()
+        async with payload.opened_for_scripts(connection, before, after) as client:
+            await run_steps(client, before, journal)
+            if head.wire is StreamWire.ARROW:
+                contract = ArrowContract.model_validate(head.contract)
+                loader = ChArrowLoader(
+                    client,
+                    table,
+                    placement,
+                    StreamContract().specs(contract.columns),
+                    NeutralEngine(head.source_engine.value),
+                    inbound,
+                    journal,
+                )
+                report = await loader.run(
+                    schema_strategy,
+                    delete_strategy,
+                    insert_strategy,
+                    unknown_types,
+                    rules,
+                    template,
+                )
+            else:
+                pair = ChTransfers.discover().pair(head.source_engine)
+                report = await pair(
+                    client, table, placement, head, inbound, journal
+                ).run(
+                    schema_strategy,
+                    delete_strategy,
+                    insert_strategy,
+                    unknown_types,
+                    rules,
+                    template,
+                )
 
-        after_steps = await run_steps(client, after)
+            await run_steps(client, after, journal)
+    except Exception as exc:
+        raise journal.failed(exc) from exc
 
-    statements = [*report.statements(), *before_steps, *after_steps]
+    statements = [report.summary(), *journal.statements()]
 
     return SqlResult(engine=ChToolConfig.ENGINE, statements=statements)
 

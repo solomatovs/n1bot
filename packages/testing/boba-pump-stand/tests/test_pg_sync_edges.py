@@ -30,10 +30,10 @@ from boba.pump_stand import (
     Pumps,
     PumpStand,
 )
-from boba.stand.names import StandNames
 from boba.pump_stand.oracle import PumpUser
 from boba.pump_stand.stand import PgSource
 from boba.stand.ix import IxStand
+from boba.stand.names import StandNames
 from boba.toolkit.transfer import (
     ColumnRules,
     CreateIfNotExists,
@@ -547,7 +547,7 @@ class TestDecimal:
         )
 
         assert "table numeric128" not in report
-        assert '"columns": "v"' in report
+        assert '"column": "v"' in report
         assert await Loaded(postgres, S, "t_dec_ok").count() == ROWS
 
 

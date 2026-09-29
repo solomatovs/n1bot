@@ -18,16 +18,20 @@ from __future__ import annotations
 
 import asyncio
 import io
+import logging
 import string
-from collections.abc import AsyncIterator, Iterator, Mapping, Sequence
+from collections.abc import AsyncIterator, Generator, Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Annotated, Any, ClassVar, Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue
 
+from boba.toolkit.failure import FailurePacker, ReportedError
 from boba.toolkit.ports import Chunk, Inbound, Outbound, StreamGroup
-from boba.toolkit.result import Fact, SqlStatement
+from boba.toolkit.result import Fact, FailureResult, SqlFailureResult, SqlStatement
+from boba.toolkit.timing import Elapsed
 
 __all__ = [
     "BackupAndCreate",
@@ -36,6 +40,9 @@ __all__ = [
     "ColumnIssue",
     "ColumnRules",
     "ColumnVerdict",
+    "CommandJournal",
+    "CommandKind",
+    "CommandsFailedError",
     "CreateIfNotExists",
     "CreateTemplate",
     "DeleteAll",
@@ -59,6 +66,10 @@ __all__ = [
     "InsertNothing",
     "InsertStrategy",
     "InsertStrategyApply",
+    "JournalCommand",
+    "LoadColumn",
+    "LoadColumns",
+    "PlannedColumn",
     "RowsHead",
     "SchemaAction",
     "SchemaCheck",
@@ -294,12 +305,25 @@ class TemplateVar(StrEnum):
 
 @dataclass(frozen=True)
 class TemplateVars:
-    """Переменные шаблона своего движка: обязательные стоят вне квадратных
-    скобок, необязательные — только внутри них. Каждая обязана встретиться
-    в шаблоне хотя бы раз."""
+    """Переменные, которые приёмник своего движка умеет подставить в шаблон.
+    Шаблон вызывающего главный: берёт из них те, что ему нужны, в любом
+    месте; переменная, которой здесь нет, — ошибка."""
 
-    required: tuple[TemplateVar, ...]
-    optional: tuple[TemplateVar, ...] = ()
+    offered: tuple[TemplateVar, ...]
+
+    def names(self) -> list[str]:
+        names: list[str] = []
+        for variable in self.offered:
+            names.append(variable.value)
+
+        return names
+
+    def listed(self) -> str:
+        braced: list[str] = []
+        for name in self.names():
+            braced.append(f"{{{name}}}")
+
+        return ", ".join(braced)
 
 
 @dataclass(frozen=True)
@@ -389,65 +413,83 @@ class TemplateParts:
 
 @dataclass(frozen=True)
 class CreateTemplate:
-    """Шаблон create table от вызывающего: цельный стейтмент с переменными
-    своего движка. Обязательные переменные стоят в тексте, необязательные —
-    в квадратных скобках вместе с окружающим текстом: [ on cluster {cluster}]
-    выпадает целиком, если кластер не передан. Других подстановок нет;
-    литеральные фигурные и квадратные скобки удваиваются. Проверяется при
-    создании, подставляет уже экранированные фрагменты приёмника."""
+    """Шаблон create table от вызывающего: цельный стейтмент, в который
+    приёмник подставляет названные в нём переменные — уже экранированные
+    фрагменты своего движка. Какие переменные взять, решает шаблон; кусок в
+    квадратных скобках [ on cluster {cluster}] выпадает целиком, если
+    значения его переменной нет. Литеральные фигурные и квадратные скобки
+    удваиваются. При создании проверяется, что шаблон называет только то,
+    что приёмник умеет подставить."""
 
     text: str
     variables: TemplateVars
 
     def __post_init__(self) -> None:
-        required = [member.value for member in self.variables.required]
-        optional = [member.value for member in self.variables.optional]
-        allowed = required + optional
-        seen: set[str] = set()
+        offered = self.variables.names()
         for part in TemplateParts().parse(self.text):
             names = self._names(part)
             if part.optional and not names:
                 raise TransferError(
-                    f"create_table template: optional part [{part.text}] has no "
-                    f"variable; template: {self.text!r}"
+                    f"create_table: the part [{part.text}] names no variable, so "
+                    f"nothing decides when to drop it; put a variable inside, like "
+                    f"[ on cluster {{cluster}}], or write [[ and ]] for literal "
+                    f"brackets; template: {self.text!r}"
                 )
 
             for name in names:
-                self._check(name, part, allowed, required, optional)
-                seen.add(name)
+                if name in offered:
+                    continue
 
-        missing = [name for name in allowed if name not in seen]
-        if missing:
-            raise TransferError(
-                f"create_table template lacks {missing}; required outside brackets: "
-                f"{required}, optional inside [ ]: {optional}; template: {self.text!r}"
-            )
+                raise TransferError(
+                    f"create_table uses {{{name}}}, but the receiver has no such "
+                    f"value; it can fill {self.variables.listed()}; template: "
+                    f"{self.text!r}"
+                )
 
     def render(self, values: Mapping[TemplateVar, str]) -> str:
-        """Стейтмент с подставленными фрагментами; необязательный кусок с
-        пустой переменной выпадает. Фрагменты уже экранированы драйвером
-        приёмника."""
+        """Стейтмент с подставленными фрагментами; кусок в скобках с пустой
+        переменной выпадает, вне скобок пустая переменная — ошибка.
+
+        Ошибки:
+        TransferError — переменная вне [ ] осталась без значения.
+        """
         rendered: list[str] = []
         for part in TemplateParts().parse(self.text):
-            names = part.names()
             filled: dict[str, str] = {}
-            for name in names:
+            for name in part.names():
                 filled[name] = values[TemplateVar(name)]
 
-            if part.optional and not all(filled.values()):
+            empty = self._empty(filled)
+            if empty and part.optional:
                 continue
+
+            if empty:
+                raise TransferError(
+                    f"create_table uses {{{empty[0]}}} outside [ ], but no "
+                    f"{empty[0]} is passed; pass it, or put the part into [ ] so it "
+                    f"drops without a value; template: {self.text!r}"
+                )
 
             rendered.append(part.text.format(**filled))
 
         return "".join(rendered)
+
+    @staticmethod
+    def _empty(filled: Mapping[str, str]) -> list[str]:
+        empty: list[str] = []
+        for name, value in filled.items():
+            if not value:
+                empty.append(name)
+
+        return empty
 
     def _names(self, part: TemplatePart) -> list[str]:
         try:
             fields = list(string.Formatter().parse(part.text))
         except ValueError as exc:
             raise TransferError(
-                f"create_table template is not parseable: {exc}; double literal "
-                f"braces; template: {self.text!r}"
+                f"create_table is not parseable: {exc}; double literal braces; "
+                f"template: {self.text!r}"
             ) from exc
 
         names: list[str] = []
@@ -457,50 +499,21 @@ class CreateTemplate:
 
             if spec or conversion:
                 raise TransferError(
-                    f"create_table template: variable {{{name}}} takes no format "
-                    f"spec or conversion; template: {self.text!r}"
+                    f"create_table: variable {{{name}}} takes no format spec or "
+                    f"conversion; template: {self.text!r}"
                 )
 
             names.append(name)
 
         return names
 
-    def _check(
-        self,
-        name: str,
-        part: TemplatePart,
-        allowed: Sequence[str],
-        required: Sequence[str],
-        optional: Sequence[str],
-    ) -> None:
-        if name not in allowed:
-            raise TransferError(
-                f"create_table template has an unknown variable {{{name}}}; "
-                f"allowed: {list(allowed)}; template: {self.text!r}"
-            )
-
-        if name in required and part.optional:
-            raise TransferError(
-                f"create_table template: required variable {{{name}}} stands "
-                f"inside [ ]; take it out of the brackets; template: {self.text!r}"
-            )
-
-        if name in optional and not part.optional:
-            raise TransferError(
-                f"create_table template: optional variable {{{name}}} must stand "
-                f"inside [ ] with its text, for example [ on cluster {{{name}}}]; "
-                f"template: {self.text!r}"
-            )
-
 
 @dataclass(frozen=True)
 class DeleteOutcome:
-    """Что стратегия удаления сделала с прежними строками таблицы: итог
-    словами и выполненный SQL; пусто — движок обошёлся без отдельной команды
-    (двойник ClickHouse) либо удалять было нечего."""
+    """Что стратегия удаления сделала с прежними строками таблицы, словами;
+    выполненный SQL записывает журнал команд вызова."""
 
     effect: str
-    statement: str = ""
 
 
 class Verdict(StrEnum):
@@ -530,7 +543,10 @@ class ColumnIssue(StrEnum):
             ColumnIssue.NOT_IN_STREAM: "not in the stream: rows get the column default",
             ColumnIssue.NOT_IN_TABLE: "the table has no such column",
             ColumnIssue.ONLY_IN_RULES: "named only in the call rules",
-            ColumnIssue.NULLABLE_INTO_NOT_NULL: "a NULL in the stream fails the load",
+            ColumnIssue.NULLABLE_INTO_NOT_NULL: (
+                "the stream may carry NULL, the table rejects it: a NULL would "
+                "fail the load; declare nullable: false at the source"
+            ),
             ColumnIssue.NOT_NULL_INTO_NULLABLE: "the table also accepts NULL",
         }
 
@@ -557,8 +573,6 @@ class ColumnCheck:
     verdict: ColumnVerdict
 
     MISSING: ClassVar[str] = "—"
-    NULLABLE: ClassVar[str] = "nullable"
-    NOT_NULL: ClassVar[str] = "not null"
 
     def line(self) -> str:
         """Строка для сообщения об отказе: колонка, объяснение, типы сторон."""
@@ -566,20 +580,6 @@ class ColumnCheck:
             f"{self.name}: {self.verdict.message} "
             f"(stream {self._side(self.stream)}, table {self._side(self.table)})"
         )
-
-    def cells(self) -> tuple[str, str, str]:
-        """Поток, таблица и последствие для строки отчёта: у расхождений
-        nullable важна не пара типов, а сама nullability."""
-        issue = self.verdict.issue
-        effect = issue.effect(self.verdict.message)
-
-        if issue is ColumnIssue.NULLABLE_INTO_NOT_NULL:
-            return self.NULLABLE, self.NOT_NULL, effect
-
-        if issue is ColumnIssue.NOT_NULL_INTO_NULLABLE:
-            return self.NOT_NULL, self.NULLABLE, effect
-
-        return self._side(self.stream), self._side(self.table), effect
 
     def _side(self, text: str) -> str:
         if not text:
@@ -624,6 +624,229 @@ class SchemaCheck:
         for column in self.columns:
             if column.verdict.level is level:
                 yield column
+
+
+class LoadColumn(StrEnum):
+    """Заголовки итоговой таблицы колонок загрузки."""
+
+    COLUMN = "column"
+    FIELD = "stream field"
+    TYPE = "type"
+    NULLABLE = "nullable"
+    SOURCE_TYPE = "source type"
+    NOTE = "note"
+
+
+@dataclass(frozen=True)
+class PlannedColumn:
+    """Колонка, с которой пара собирается грузить: имя в таблице, поле
+    потока, тип в таблице, nullable, тип у источника и пометки пары
+    (переименование, ddl_type из правил, запасной varchar)."""
+
+    name: str
+    field: str
+    type: str
+    nullable: bool
+    source_type: str
+    notes: tuple[str, ...] = ()
+
+
+class LoadColumns:
+    """Итоговая таблица колонок загрузки: план пары и расхождения сверки в
+    note, колонки, которые есть только в таблице, — отдельными строками. У
+    существующей таблицы тип берётся из неё: грузится в то, что есть."""
+
+    MISSING: ClassVar[str] = "—"
+    NULLABLE: ClassVar[str] = "nullable"
+    NOT_NULL: ClassVar[str] = "not null"
+    NOTE_SEPARATOR: ClassVar[str] = "; "
+
+    def rows(
+        self, planned: Sequence[PlannedColumn], check: SchemaCheck
+    ) -> list[dict[str, str]]:
+        checks: dict[str, ColumnCheck] = {}
+        for column in check.columns:
+            checks[column.name] = column
+
+        rows: list[dict[str, str]] = []
+        for column in planned:
+            rows.append(self._planned(column, checks.get(column.name)))
+
+        for column in check.columns:
+            if column.verdict.issue is ColumnIssue.NOT_IN_STREAM:
+                rows.append(self._table_only(column))
+
+        return rows
+
+    def _planned(
+        self, column: PlannedColumn, check: ColumnCheck | None
+    ) -> dict[str, str]:
+        notes = list(column.notes)
+        type_text = column.type
+        if check is not None:
+            notes.extend(self._differs(check))
+            if check.table:
+                type_text = check.table
+
+        return {
+            LoadColumn.COLUMN: column.name,
+            LoadColumn.FIELD: column.field,
+            LoadColumn.TYPE: type_text,
+            LoadColumn.NULLABLE: self._nullability(column.nullable),
+            LoadColumn.SOURCE_TYPE: column.source_type,
+            LoadColumn.NOTE: self.NOTE_SEPARATOR.join(notes),
+        }
+
+    def _table_only(self, check: ColumnCheck) -> dict[str, str]:
+        return {
+            LoadColumn.COLUMN: check.name,
+            LoadColumn.FIELD: self.MISSING,
+            LoadColumn.TYPE: check.table,
+            LoadColumn.NULLABLE: "",
+            LoadColumn.SOURCE_TYPE: "",
+            LoadColumn.NOTE: check.verdict.issue.effect(check.verdict.message),
+        }
+
+    @staticmethod
+    def _differs(check: ColumnCheck) -> Iterator[str]:
+        if check.verdict.level is Verdict.OK:
+            return
+
+        yield check.verdict.issue.effect(check.verdict.message)
+
+    def _nullability(self, nullable: bool) -> str:
+        if nullable:
+            return self.NULLABLE
+
+        return self.NOT_NULL
+
+
+class CommandKind(StrEnum):
+    """Что команда делает: действие видно в чате и журнале, справка по
+    каталогу — только в журнале."""
+
+    ACTION = "action"
+    LOOKUP = "lookup"
+
+
+@dataclass
+class JournalCommand:
+    """Команда в работе: текст и статус, который выставляет исполнитель."""
+
+    text: str
+    kind: CommandKind
+    status: str = ""
+
+
+class CommandsFailedError(Exception, ReportedError):
+    """Сбой вызова, который выполнял SQL: исходная ошибка плюс колонки и
+    команды из журнала вызова; показывается видом SqlFailureResult."""
+
+    def __init__(
+        self,
+        cause: Exception,
+        columns: Sequence[Mapping[str, str]],
+        statements: Sequence[SqlStatement],
+    ) -> None:
+        super().__init__(str(cause))
+        self._cause = cause
+        self._columns = list(columns)
+        self._statements = list(statements)
+        self._failures = FailurePacker()
+
+    @property
+    def cause(self) -> Exception:
+        """Исходная ошибка насоса: её тип и текст решают, что случилось."""
+        return self._cause
+
+    def failure(self) -> FailureResult:
+        cause = self._failures.pack(self._cause)
+
+        return SqlFailureResult(
+            error_kind=cause.error_kind,
+            cause=cause,
+            columns=self._columns,
+            statements=self._statements,
+        )
+
+
+class CommandJournal:
+    """Журнал команд одного вызова насоса: всё, что источник или приёмник
+    выполнил на сервере, по порядку, и итоговая таблица колонок.
+
+    Исполнители команд (таблица, вставка, источник, шаги before/after)
+    получают его конструктором и оборачивают каждую команду в command():
+    в журнал инструмента строка уходит до выполнения и после, со статусом и
+    временем, а сама команда копится для чата. Сама загрузка — одна команда:
+    строк и пачек журнал не видит. По исключению тела failed() собирает
+    CommandsFailedError — в чате видны колонки и команды вплоть до упавшей.
+    """
+
+    FAILED: ClassVar[str] = "failed"
+
+    def __init__(self, tool: str) -> None:
+        self._tool = tool
+        self._statements: list[SqlStatement] = []
+        self._columns: list[dict[str, str]] = []
+        self._logger = logging.getLogger(__name__)
+
+    @contextmanager
+    def command(
+        self, text: str, kind: CommandKind
+    ) -> Generator[JournalCommand, None, None]:
+        running = JournalCommand(text=text, kind=kind)
+        self._logger.info("%s: %s started:\n%s", self._tool, kind.value, text)
+        elapsed = Elapsed()
+        try:
+            yield running
+        except BaseException as exc:
+            level = logging.ERROR
+            if kind is CommandKind.LOOKUP:
+                # справка может отказать штатно: проба типа, есть ли таблица
+                level = logging.INFO
+
+            self._logger.log(
+                level,
+                "%s: %s failed in %dms: %s: %s",
+                self._tool,
+                kind.value,
+                elapsed.ms(),
+                type(exc).__name__,
+                exc,
+            )
+            self._keep(running, f"{self.FAILED}: {type(exc).__name__}")
+            raise
+
+        self._logger.info(
+            "%s: %s done in %dms: %s",
+            self._tool,
+            kind.value,
+            elapsed.ms(),
+            running.status,
+        )
+        self._keep(running, running.status)
+
+    def columns(self, rows: Sequence[Mapping[str, str]]) -> None:
+        """Итоговая таблица колонок: в журнал сразу, в чат — с отчётом."""
+        self._columns = [dict(row) for row in rows]
+        for row in self._columns:
+            self._logger.info("%s: column %s", self._tool, row)
+
+    def column_rows(self) -> list[dict[str, str]]:
+        return list(self._columns)
+
+    def statements(self) -> list[SqlStatement]:
+        """Выполненные действия по порядку; справки по каталогу — только в журнале."""
+        return list(self._statements)
+
+    def failed(self, cause: Exception) -> CommandsFailedError:
+        return CommandsFailedError(cause, self._columns, self._statements)
+
+    def _keep(self, running: JournalCommand, status: str) -> None:
+        if running.kind is not CommandKind.ACTION:
+            return
+
+        self._statements.append(SqlStatement(text=running.text, status=status))
 
 
 class TransferTable(Protocol):
@@ -954,15 +1177,16 @@ UnknownTypeStrategy = Annotated[
 @dataclass(frozen=True)
 class TransferReport:
     """Итог приёмника для чата: сколько строк загружено и куда, что стало с
-    таблицей и с её прежними строками, как движок клал строки и чем поток
-    расходится с существующей таблицей — расхождения таблицей, одинаковые
-    свёрнуты в строку."""
+    таблицей и с её прежними строками, как движок клал строки и итоговая
+    таблица колонок с пометками. Выполненные команды показывает журнал
+    вызова рядом с этим итогом."""
 
     table: str
     action: SchemaAction
     reason: str
     backup: str
     differences: tuple[ColumnCheck, ...]
+    columns: tuple[Mapping[str, str], ...]
     deleted: DeleteOutcome
     inserted: int
     method: str
@@ -972,23 +1196,21 @@ class TransferReport:
         "the steps are not one transaction on this engine"
     )
     NOT_ACTED_ON: ClassVar[str] = (
-        "the table was kept, so these differences were only reported"
+        "the table was kept, so the differences in the notes were only reported"
     )
 
-    def statements(self) -> list[SqlStatement]:
-        """Итог загрузки и выполненное стратегией удаления отдельными командами."""
-        loaded = SqlStatement(
+    def summary(self) -> SqlStatement:
+        """Итог загрузки: подпись, факты и таблица колонок."""
+        rows: list[Mapping[str, str]] | None = None
+        if self.columns:
+            rows = list(self.columns)
+
+        return SqlStatement(
             status=f"{self.inserted} rows loaded into {self.table}",
-            rows=self._rows(),
+            rows=rows,
             facts=list(self._facts()),
             note=self._note(),
         )
-        if not self.deleted.statement:
-            return [loaded]
-
-        deleted = SqlStatement(text=self.deleted.statement, status=self.deleted.effect)
-
-        return [loaded, deleted]
 
     def _facts(self) -> Iterator[Fact]:
         yield Fact(key="table", value=self.action.outcome(self.reason, self.backup))
@@ -996,32 +1218,6 @@ class TransferReport:
 
         if self.method:
             yield Fact(key="load", value=self.method)
-
-    def _rows(self) -> list[dict[str, str]] | None:
-        """Расхождения с таблицей: колонки с одинаковыми сторонами и
-        последствием — одной строкой; None — расхождений нет."""
-        grouped: dict[tuple[str, str, str], list[str]] = {}
-        for column in self.differences:
-            key = column.cells()
-            if key not in grouped:
-                grouped[key] = []
-
-            grouped[key].append(column.name)
-
-        if not grouped:
-            return None
-
-        rows: list[dict[str, str]] = []
-        for (stream, table, effect), names in grouped.items():
-            row = {
-                "columns": ", ".join(names),
-                "stream": stream,
-                "table": table,
-                "effect": effect,
-            }
-            rows.append(row)
-
-        return rows
 
     def _note(self) -> str:
         notes: list[str] = []
@@ -1035,9 +1231,10 @@ class TransferReport:
 
 
 class TransferRun:
-    """Общий ход приёмника после сверки: план стратегии схемы и его действия
-    через порт таблицы, удаление, вставка, отчёт. Транзакцию и сверку делает
-    пара до вызова."""
+    """Общий ход приёмника после сверки: итоговая таблица колонок в журнал,
+    план стратегии схемы и его действия через порт таблицы, удаление,
+    вставка, отчёт. Транзакцию и сверку делает пара до вызова; команды
+    записывают в журнал сами порты таблицы и вставки."""
 
     def __init__(
         self,
@@ -1045,21 +1242,27 @@ class TransferRun:
         delete_strategy: DeleteStrategyApply,
         insert_strategy: InsertStrategyApply,
         unknown_types: UnknownTypeApply,
+        journal: CommandJournal,
     ) -> None:
         self._schema_strategy = schema_strategy
         self._delete_strategy = delete_strategy
         self._insert_strategy = insert_strategy
         self._unknown_types = unknown_types
+        self._journal = journal
+        self._columns = LoadColumns()
 
     async def run(  # noqa: PLR0913
         self,
         table_name: str,
         exists: bool,
         check: SchemaCheck,
+        planned: Sequence[PlannedColumn],
         table: TransferTable,
         sink: TransferSink,
         transactional: bool,
     ) -> TransferReport:
+        self._journal.columns(self._columns.rows(planned, check))
+
         plan = self._schema_strategy.plan(exists, check)
         backup = ""
         match plan.action:
@@ -1092,6 +1295,7 @@ class TransferRun:
             reason=plan.reason,
             backup=backup,
             differences=tuple(differences),
+            columns=tuple(self._journal.column_rows()),
             deleted=deleted,
             inserted=inserted,
             method=sink.method(),

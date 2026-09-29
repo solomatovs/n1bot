@@ -29,12 +29,13 @@ from boba.db.postgres.transfer import (
     PgTypeRules,
 )
 from boba.pump_stand import Leg, Loaded, PostgresSide, Pumps, PumpStand
-from boba.stand.names import StandNames
 from boba.pump_stand.ports import Sink, SinkOutbound
+from boba.stand.names import StandNames
 from boba.stream.pg_to_pg.transfer import PgStreamColumn
 from boba.toolkit.transfer import (
     BackupAndCreateIfSchemaChanged,
     ColumnRules,
+    CommandJournal,
     CreateIfNotExists,
     DeleteAll,
     DeleteNothing,
@@ -221,8 +222,9 @@ class TestSchemaStrategies:
         )
 
         assert "table: kept as is (schema matches)" in report
-        assert '"columns": "amount"' not in report
-        assert "removed by truncate\nstatement: truncate table" in report
+        assert '"column": "amount"' in report
+        assert "removed by truncate" in report
+        assert "statement: truncate table" in report
         assert await Loaded(postgres, S, "t_twice").count() == ROWS
 
     async def test_error_if_not_exists_refuses_a_missing_table(
@@ -295,7 +297,8 @@ class TestDeleteAndInsert:
             InsertNothing(kind="nothing"),
         )
 
-        assert f"{part} rows deleted\nstatement: delete from" in report
+        assert f"{part} rows deleted" in report
+        assert "statement: delete from" in report
         assert "0 rows loaded" in report
         assert await Loaded(postgres, S, "t_del").count() == ROWS - part
 
@@ -306,7 +309,8 @@ class TestDeleteAndInsert:
             DeleteAll(kind="delete_all"),
         )
 
-        assert f"{ROWS - part} rows deleted\nstatement: delete from" in report
+        assert f"{ROWS - part} rows deleted" in report
+        assert "statement: delete from" in report
         assert await Loaded(postgres, S, "t_del").count() == ROWS
 
 
@@ -458,7 +462,7 @@ class TestUnknownTypes:
             columns=named,
         )
 
-        assert '"columns": "v"' not in report
+        assert '"column": "v"' in report
 
         with pytest.raises(
             TransferError, match=f"type differs: stream {S}.mood, table"
@@ -549,7 +553,7 @@ class TestExactTypes:
             select=f"select * from {S}.s_w_{name}",
         )
 
-        assert '"columns": "v"' in report
+        assert '"column": "v"' in report
         assert expected in report
 
     async def test_created_table_keeps_every_builtin_type(
@@ -685,14 +689,17 @@ class TestCreateTemplate:
         assert f"{ROWS} rows loaded" in report
         assert await Loaded(postgres, S, "t_tpl_esc").count() == ROWS
 
-    async def test_template_without_columns_is_refused(
+    async def test_template_with_an_unknown_variable_is_refused(
         self, postgres: PostgresSide
     ) -> None:
-        with pytest.raises(TransferError, match="lacks \\['columns'\\]"):
+        with pytest.raises(TransferError, match="uses \\{tablespace\\}"):
             await land(
                 postgres,
-                "t_tpl_no_cols",
-                create_table="create table {schema_name}.{table_name} ()",
+                "t_tpl_unknown",
+                create_table=(
+                    "create table {schema_name}.{table_name} ({columns}) "
+                    "tablespace {tablespace}"
+                ),
             )
 
         assert (
@@ -842,7 +849,9 @@ class TestDescribeCost:
             cursor = await conn.execute(counters.text)
             before = await cursor.fetchone()
             started = time.perf_counter()
-            contract = await PgCopyOut(conn).contract(self.HEAVY, ())
+            contract = await PgCopyOut(conn, CommandJournal("test")).contract(
+                self.HEAVY, ()
+            )
             elapsed = time.perf_counter() - started
             cursor = await conn.execute(counters.text)
             after = await cursor.fetchone()
@@ -914,7 +923,7 @@ class TestCopyOutLoop:
         select = self.SELECT.format(rows=self.ROWS)
         sink = Sink()
         async with await AsyncPostgresPool.dedicated(postgres.profile) as conn:
-            copy_out = PgCopyOut(conn)
+            copy_out = PgCopyOut(conn, CommandJournal("test"))
             contract = await copy_out.contract(select, ())
             started = time.perf_counter()
             report = await copy_out.stream(
@@ -944,7 +953,7 @@ class TestCopyOutLoop:
         only_newest(postgres)
         select = "select g, 1 / (g - 5000) as bad from generate_series(1, 10000) g"
         async with await AsyncPostgresPool.dedicated(postgres.profile) as conn:
-            copy_out = PgCopyOut(conn)
+            copy_out = PgCopyOut(conn, CommandJournal("test"))
             contract = await copy_out.contract(select, ())
             with pytest.raises(psycopg.errors.DivisionByZero):
                 await copy_out.stream(
@@ -966,7 +975,7 @@ class TestCopyOutLoop:
         only_newest(postgres)
         select = self.SELECT.format(rows=self.ROWS)
         async with await AsyncPostgresPool.dedicated(postgres.profile) as conn:
-            copy_out = PgCopyOut(conn)
+            copy_out = PgCopyOut(conn, CommandJournal("test"))
             contract = await copy_out.contract(select, ())
             started = time.perf_counter()
             with pytest.raises(BrokenPipeError):

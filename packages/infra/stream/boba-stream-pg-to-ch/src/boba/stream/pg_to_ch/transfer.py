@@ -43,6 +43,7 @@ from boba.db.postgres.describe import PgTypmod
 from boba.db.postgres.transfer import PgContract, PgSourceColumn
 from boba.toolkit.transfer import (
     ColumnRules,
+    CommandJournal,
     CreateTemplate,
     DeleteStrategyApply,
     Engine,
@@ -230,6 +231,7 @@ class PgToCh(ChTransfer):
         placement: ChPlacement,
         head: SchemaHead,
         feed: TransferInbound,
+        journal: CommandJournal,
     ) -> None:
         if head.source_engine is not Engine.POSTGRES:
             raise TransferError(
@@ -242,10 +244,11 @@ class PgToCh(ChTransfer):
         self._placement = placement
         self._contract = PgContract.model_validate(head.contract)
         self._feed = feed
-        self._facts = ChTableFacts(client, table)
-        self._resolver = ChTypeResolver(client)
-        self._json_probe = ChJsonProbe(client)
-        self._inet_probe = ChInetProbe(client)
+        self._journal = journal
+        self._facts = ChTableFacts(client, table, journal)
+        self._resolver = ChTypeResolver(client, journal)
+        self._json_probe = ChJsonProbe(client, journal)
+        self._inet_probe = ChInetProbe(client, journal)
         self._registry = psycopg.postgres.types
 
     async def run(  # noqa: PLR0913
@@ -271,7 +274,13 @@ class PgToCh(ChTransfer):
             catalog = await self._facts.columns()
 
         matched = matcher.match(stream, catalog)
-        twin = ChTwin(self._client, self._table, self._placement.cluster, json.settings)
+        twin = ChTwin(
+            self._client,
+            self._table,
+            self._placement.cluster,
+            self._journal,
+            json.settings,
+        )
         table = ChTransferTable(
             self._client,
             self._table,
@@ -279,6 +288,7 @@ class PgToCh(ChTransfer):
             create_table,
             twin,
             self._placement,
+            self._journal,
             json.settings,
         )
         sink = ChInputSink(
@@ -288,14 +298,25 @@ class PgToCh(ChTransfer):
             self.FORMAT,
             ChContractTypes(self._stream_types(matched.stream)),
             self._feed,
+            self._journal,
             {**json.settings, **PgChTypes.READ_SETTINGS},
         )
         transfer = TransferRun(
-            schema_strategy, delete_strategy, insert_strategy, unknown_types
+            schema_strategy,
+            delete_strategy,
+            insert_strategy,
+            unknown_types,
+            self._journal,
         )
 
         return await transfer.run(
-            self._table.text(), exists, matched.check, table, sink, False
+            self._table.text(),
+            exists,
+            matched.check,
+            matched.plan.planned(),
+            table,
+            sink,
+            False,
         )
 
     def _fields(self, types: PgChTypes) -> list[ChStreamColumn]:

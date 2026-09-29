@@ -14,8 +14,8 @@ import pytest
 from boba.db.postgres.connection import CopyOptions
 from boba.db.postgres.transfer import PgColumnDeclaration
 from boba.pump_stand import Leg, Loaded, OracleSide, PostgresSide, Pumps, PumpStand
-from boba.stand.names import StandNames
 from boba.pump_stand.oracle import PumpUser
+from boba.stand.names import StandNames
 from boba.toolkit.transfer import (
     BackupAndCreateIfSchemaChanged,
     ColumnRules,
@@ -265,7 +265,8 @@ class TestDeleteAndInsert:
             delete=DeleteTruncate(kind="truncate"),
         )
 
-        assert "removed by truncate\nstatement: truncate table" in report
+        assert "removed by truncate" in report
+        assert "statement: truncate table" in report
         assert await Loaded(postgres, PG_SCHEMA, "trunc").count() == ROWS
 
     async def test_delete_all_counts_rows(
@@ -282,7 +283,8 @@ class TestDeleteAndInsert:
             delete=DeleteAll(kind="delete_all"),
         )
 
-        assert f"{ROWS} rows deleted\nstatement: delete from" in report
+        assert f"{ROWS} rows deleted" in report
+        assert "statement: delete from" in report
         assert await Loaded(postgres, PG_SCHEMA, "wipe").count() == ROWS
 
     async def test_delete_where_then_nothing_inserted(
