@@ -12,7 +12,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
-from collections.abc import AsyncIterator, Iterator, Sequence
+from collections.abc import AsyncIterator, Iterator, Mapping, Sequence, Set
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any, ClassVar
@@ -160,6 +160,25 @@ class Scenario:
             return self.turns[index]
 
         return self.turns[-1]
+
+    def answered(self, called: Set[str]) -> int:
+        """Сколько начальных ходов уже сыграно: их вызовы есть в разговоре.
+
+        Номер ответа выводится из самого запроса, а не из счётчика: повтор
+        запроса приложением (тайм-аут под нагрузкой) получает тот же ответ.
+        """
+        done = 0
+        for script in self.turns:
+            if not script.tool_calls:
+                return done
+
+            for call in script.tool_calls:
+                if call.call_id not in called:
+                    return done
+
+            done += 1
+
+        return done
 
 
 class ScenarioBook:
@@ -404,7 +423,6 @@ class FakeLlmApp:
 
     token_delay_sec: float = 0.02
     model: str = "fake-model"
-    turns_done: dict[str, int] = field(default_factory=dict)
     requests: list[dict[str, Any]] = field(default_factory=list)
 
     def asgi(self) -> FastAPI:
@@ -426,8 +444,7 @@ class FakeLlmApp:
 
         @app.post(FakeRoute.RESET.value)
         async def reset() -> dict[str, str]:
-            """Сброс счётчика ходов и журнала: тест начинает с чистого листа."""
-            self.turns_done.clear()
+            """Сброс журнала запросов: тест начинает с чистого листа."""
             self.requests.clear()
             return {"status": "ok"}
 
@@ -441,11 +458,8 @@ class FakeLlmApp:
             payload = await request.json()
             self.requests.append(payload)
             text = self._last_user_text(payload)
-            name = ScenarioName.of(text)
-            key = self._turn_key(name, text)
-            index = self.turns_done.get(key, 0)
-            self.turns_done[key] = index + 1
-            script = ScenarioBook.of(name, text).turn(index)
+            scenario = ScenarioBook.of(ScenarioName.of(text), text)
+            script = scenario.turn(scenario.answered(self._called_ids(payload)))
 
             if not payload.get("stream"):
                 return JSONResponse(self._completion(script))
@@ -458,18 +472,26 @@ class FakeLlmApp:
         return app
 
     @staticmethod
-    def _turn_key(name: ScenarioName, text: str) -> str:
-        """Ключ счётчика ходов: у продиктованного вызова — само сообщение.
+    def _called_ids(payload: Mapping[str, Any]) -> set[str]:
+        """Id вызовов, которые ассистент уже сделал после последнего сообщения
+        пользователя: по ним сценарий узнаёт, какой ход отвечать."""
+        called: set[str] = set()
+        messages = payload.get("messages")
+        if not messages:
+            return called
 
-        Иначе второй вызов в том же чате получил бы не tool_call, а ответ.
-        """
-        if name is ScenarioName.CALL:
-            return text
+        for message in reversed(messages):
+            if message.get("role") == "user":
+                return called
 
-        if name is ScenarioName.LONG:
-            return text
+            if message.get("role") != "assistant":
+                continue
 
-        return name.value
+            if calls := message.get("tool_calls"):
+                for call in calls:
+                    called.add(str(call.get("id")))
+
+        return called
 
     @staticmethod
     def _last_user_text(payload: dict[str, Any]) -> str:

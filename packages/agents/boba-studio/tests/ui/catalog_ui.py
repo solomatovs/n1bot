@@ -121,6 +121,9 @@ class Canvas:
 
     LIVE_TIMEOUT_MS: ClassVar[int] = 15_000
     LAYOUT_TIMEOUT_MS: ClassVar[int] = 30_000
+    READY_TIMEOUT_MS: ClassVar[int] = 90_000
+    """Открытие страницы с холстом: под параллельным прогоном загрузка и первая
+    раскладка идут десятки секунд."""
 
     @staticmethod
     def dialog(page: Page, mark: str) -> Locator:
