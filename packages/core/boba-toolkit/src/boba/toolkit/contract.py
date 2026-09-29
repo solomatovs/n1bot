@@ -11,7 +11,7 @@ ContractError — правило вызова не сходится со схе�
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, replace
 from enum import StrEnum
 from typing import Any, ClassVar
@@ -23,6 +23,7 @@ from boba.toolkit.transfer import (
     ColumnIssue,
     ColumnRules,
     ColumnVerdict,
+    PlannedColumn,
     SchemaCheck,
     TransferError,
     Verdict,
@@ -568,6 +569,32 @@ class TableColumn:
     source_type: str = ""
     char_length: int = 0
     ddl_type: str = ""
+
+    def planned(self, type_text: str) -> PlannedColumn:
+        """Колонка в плане загрузки с типом приёмника type_text; пусто — у
+        приёмника пары типу нет, решит стратегия неизвестных типов."""
+        source_type = self.source_type
+        if not source_type:
+            source_type = self.kind.text
+
+        return PlannedColumn(
+            name=self.name,
+            field=self.source_name,
+            type=type_text,
+            nullable=self.nullable,
+            source_type=source_type,
+            notes=tuple(self._notes(type_text)),
+        )
+
+    def _notes(self, type_text: str) -> Iterator[str]:
+        if self.source_name != self.name:
+            yield f"renamed from {self.source_name}"
+
+        if self.ddl_type:
+            yield "type from rules.column_types"
+
+        if not type_text:
+            yield "no target type for the source type: unknown_types decides"
 
 
 @dataclass(frozen=True)

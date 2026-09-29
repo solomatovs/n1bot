@@ -772,7 +772,7 @@ class TestTsvCircle:
         typed = ChLoaded(clickhouse, "typed")
 
         assert f"{ROWS} rows loaded" in report
-        assert '"columns": "id"' in report
+        assert '"column": "id"' in report
         assert "table Int128 is wider than stream Int64" in report
         assert "table Decimal(76, 12) is wider" in report
         assert "table DateTime64(6, 'Europe/Moscow') is wider" in (report)

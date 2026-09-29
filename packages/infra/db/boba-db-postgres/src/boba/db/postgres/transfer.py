@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import io
-from collections.abc import AsyncIterator, Iterable, Mapping, Sequence
+from collections.abc import AsyncIterator, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -49,11 +49,14 @@ from boba.toolkit.transfer import (
     ColumnIssue,
     ColumnRules,
     ColumnVerdict,
+    CommandJournal,
+    CommandKind,
     CreateTemplate,
     DeleteOutcome,
     DeleteStrategyApply,
     Engine,
     InsertStrategyApply,
+    PlannedColumn,
     SchemaCheck,
     SchemaHead,
     SchemaStrategyPlan,
@@ -426,8 +429,11 @@ class PgCopyOut:
     INTEGER_DATETIMES: ClassVar[str] = "integer_datetimes"
     ON: ClassVar[str] = "on"
 
-    def __init__(self, conn: psycopg.AsyncConnection[Any]) -> None:
+    def __init__(
+        self, conn: psycopg.AsyncConnection[Any], journal: CommandJournal
+    ) -> None:
         self._conn = conn
+        self._journal = journal
         self._describe = PgDescribe(conn)
         self._contracts = PgContracts(conn.adapters.types)
         self._trace = PgSessionTrace(conn)
@@ -441,8 +447,11 @@ class PgCopyOut:
     async def describe(self, query: str) -> tuple[PgDescribedColumn, ...]:
         """Колонки выборки от PgDescribe одним описанием стейтмента."""
         columns: list[PgDescribedColumn] = []
-        async for column in self._describe.columns(query):
-            columns.append(column)
+        with self._journal.command(query, CommandKind.LOOKUP) as running:
+            async for column in self._describe.columns(query):
+                columns.append(column)
+
+            running.status = f"{len(columns)} columns described"
 
         return tuple(columns)
 
@@ -466,6 +475,7 @@ class PgCopyOut:
         chunk_bytes: int,
         out: TransferOutbound,
     ) -> PgCommandReport:
+        self._journal.columns(contract.rows())
         await out.schema(
             SchemaHead(
                 kind="schema",
@@ -483,10 +493,13 @@ class PgCopyOut:
         )
         raw = out.writer()
         writer = io.BufferedWriter(raw, buffer_size=chunk_bytes)
+        text = statement.text.as_string(self._conn)
         try:
-            status = await self._protocol.run(
-                statement.text.as_bytes(self._conn), writer
-            )
+            with self._journal.command(text, CommandKind.ACTION) as running:
+                status = await self._protocol.run(
+                    statement.text.as_bytes(self._conn), writer
+                )
+                running.status = status
         except BaseException:
             # закрытый raw гасит сброс остатка буфера при сборке мусора: в порт
             # после ошибки не должно уйти ни байта
@@ -527,11 +540,17 @@ class PgCatalogColumn(PgTypedColumn):
 
 class PgTableFacts:
     """Таблица по каталогу postgres: есть ли она (pg_class) и её колонки из
-    pg_attribute."""
+    pg_attribute; запросы к каталогу пишутся в журнал вызова справкой."""
 
-    def __init__(self, conn: psycopg.AsyncConnection[Any], table: PgTableRef) -> None:
+    def __init__(
+        self,
+        conn: psycopg.AsyncConnection[Any],
+        table: PgTableRef,
+        journal: CommandJournal,
+    ) -> None:
         self._conn = conn
         self._table = table
+        self._journal = journal
 
     async def exists(self) -> bool:
         query = (
@@ -548,9 +567,13 @@ class PgTableFacts:
             )
             .build()
         )
-        async with self._conn.cursor() as cursor:
-            await cursor.execute(query.text, query.params)
-            row = await cursor.fetchone()
+        text = query.text.as_string(self._conn)
+        with self._journal.command(text, CommandKind.LOOKUP) as running:
+            async with self._conn.cursor() as cursor:
+                await cursor.execute(query.text, query.params)
+                row = await cursor.fetchone()
+
+            running.status = f"exists: {row is not None}"
 
         return row is not None
 
@@ -571,21 +594,27 @@ class PgTableFacts:
             .build()
         )
         columns: list[PgCatalogColumn] = []
-        async with self._conn.cursor() as cursor:
-            await cursor.execute(query.text, query.params)
-            for position, row in enumerate(await cursor.fetchall()):
-                columns.append(
-                    PgCatalogColumn(
-                        position=position,
-                        name=str(row[0]),
-                        oid=int(row[1]),
-                        typmod=int(row[2]),
-                        table_oid=int(row[5]),
-                        attnum=int(row[4]),
-                        size=int(row[6]),
-                        not_null=bool(row[3]),
-                    )
+        text = query.text.as_string(self._conn)
+        with self._journal.command(text, CommandKind.LOOKUP) as running:
+            async with self._conn.cursor() as cursor:
+                await cursor.execute(query.text, query.params)
+                rows = await cursor.fetchall()
+
+            running.status = f"{len(rows)} columns"
+
+        for position, row in enumerate(rows):
+            columns.append(
+                PgCatalogColumn(
+                    position=position,
+                    name=str(row[0]),
+                    oid=int(row[1]),
+                    typmod=int(row[2]),
+                    table_oid=int(row[5]),
+                    attnum=int(row[4]),
+                    size=int(row[6]),
+                    not_null=bool(row[3]),
                 )
+            )
 
         return tuple(columns)
 
@@ -596,9 +625,12 @@ class PgTypeResolver:
     текст типа LLM превращается в OID и typmod. Неизвестный серверу тип —
     ошибка до любого DDL."""
 
-    def __init__(self, conn: psycopg.AsyncConnection[Any]) -> None:
+    def __init__(
+        self, conn: psycopg.AsyncConnection[Any], journal: CommandJournal
+    ) -> None:
         self._conn = conn
         self._describe = PgDescribe(conn)
+        self._journal = journal
 
     async def resolve(
         self, column_types: Mapping[str, str]
@@ -607,12 +639,14 @@ class PgTypeResolver:
             return {}
 
         query = self._query(column_types)
+        text = query.text.as_string(self._conn)
         resolved: dict[str, PgDescribedColumn] = {}
         try:
-            async for column in self._describe.columns(
-                query.text.as_string(self._conn)
-            ):
-                resolved[column.name] = column
+            with self._journal.command(text, CommandKind.LOOKUP) as running:
+                async for column in self._describe.columns(text):
+                    resolved[column.name] = column
+
+                running.status = f"{len(resolved)} types described"
         except PgDescribeError as exc:
             raise TransferError(
                 f"postgres does not accept the declared types {dict(column_types)}: "
@@ -634,14 +668,36 @@ class PgTypeResolver:
 
 @dataclass(frozen=True)
 class PgPlannedColumn:
-    """Колонка для create table и COPY: имя в таблице, текст типа (пусто —
-    типа нет, решает стратегия неизвестных типов), nullable и что известно
-    о типе источника для сообщения об отказе."""
+    """Колонка для create table и COPY: имя в таблице, поле потока, текст
+    типа (пусто — типа нет, решает стратегия неизвестных типов), nullable,
+    что известно о типе источника и объявлен ли тип правилами вызова."""
 
     name: str
+    field: str
     type_text: str
     nullable: bool
     known: str
+    declared: bool
+
+    def planned(self) -> PlannedColumn:
+        return PlannedColumn(
+            name=self.name,
+            field=self.field,
+            type=self.type_text,
+            nullable=self.nullable,
+            source_type=self.known,
+            notes=tuple(self._notes()),
+        )
+
+    def _notes(self) -> Iterator[str]:
+        if self.field != self.name:
+            yield f"renamed from {self.field}"
+
+        if self.declared:
+            yield "type from rules.column_types"
+
+        if not self.type_text:
+            yield "no target type for the source type: unknown_types decides"
 
 
 @dataclass(frozen=True)
@@ -652,6 +708,13 @@ class PgTablePlan:
 
     def names(self) -> list[str]:
         return [column.name for column in self.columns]
+
+    def planned(self) -> list[PlannedColumn]:
+        planned: list[PlannedColumn] = []
+        for column in self.columns:
+            planned.append(column.planned())
+
+        return planned
 
 
 class PgTransferTable(TransferTable):
@@ -664,9 +727,9 @@ class PgTransferTable(TransferTable):
     VARCHAR: ClassVar[str] = "varchar"
     CREATE_TABLE: ClassVar[str] = "create table {schema_name}.{table_name} ({columns})"
     TEMPLATE_VARS: ClassVar[TemplateVars] = TemplateVars(
-        required=(TemplateVar.SCHEMA_NAME, TemplateVar.TABLE_NAME, TemplateVar.COLUMNS)
+        offered=(TemplateVar.SCHEMA_NAME, TemplateVar.TABLE_NAME, TemplateVar.COLUMNS)
     )
-    """Переменные шаблона postgres: все обязательные."""
+    """Переменные, которые приёмник postgres подставляет в шаблон."""
     """Шаблон без особенностей таблицы: дефолт фасада pg_stream_in."""
 
     def __init__(
@@ -675,12 +738,14 @@ class PgTransferTable(TransferTable):
         table: PgTableRef,
         plan: PgTablePlan,
         template: CreateTemplate,
+        journal: CommandJournal,
     ) -> None:
         self._conn = conn
         self._table = table
         self._plan = plan
         self._template = template
-        self._facts = PgTableFacts(conn, table)
+        self._journal = journal
+        self._facts = PgTableFacts(conn, table, journal)
 
     async def exists(self) -> bool:
         return await self._facts.exists()
@@ -772,9 +837,7 @@ class PgTransferTable(TransferTable):
         )
         await self._execute(query)
 
-        return DeleteOutcome(
-            effect="removed by truncate", statement=query.text.as_string(self._conn)
-        )
+        return DeleteOutcome(effect="removed by truncate")
 
     async def delete_all(self) -> DeleteOutcome:
         query = (
@@ -793,20 +856,26 @@ class PgTransferTable(TransferTable):
 
         return await self._deleted(query)
 
-    async def _execute(self, query: PgQuery) -> None:
-        async with self._conn.cursor() as cursor:
-            await cursor.execute(query.text, query.params)
+    async def _execute(self, query: PgQuery) -> int:
+        """Команда в журнале вызова: статус сервера; ответ — rowcount."""
+        text = query.text.as_string(self._conn)
+        with self._journal.command(text, CommandKind.ACTION) as running:
+            async with self._conn.cursor() as cursor:
+                await cursor.execute(query.text, query.params)
+                rows = cursor.rowcount
+                status = cursor.statusmessage
+
+            if status is None:
+                status = "done"
+
+            running.status = status
+
+        return max(rows, 0)
 
     async def _deleted(self, query: PgQuery) -> DeleteOutcome:
-        async with self._conn.cursor() as cursor:
-            await cursor.execute(query.text, query.params)
-            rows = cursor.rowcount
+        rows = await self._execute(query)
 
-        rows = max(rows, 0)
-
-        return DeleteOutcome(
-            effect=f"{rows} rows deleted", statement=query.text.as_string(self._conn)
-        )
+        return DeleteOutcome(effect=f"{rows} rows deleted")
 
 
 class PgCopyIn(TransferSink):
@@ -820,23 +889,28 @@ class PgCopyIn(TransferSink):
         names: Sequence[str],
         layout: PgCopyLayout,
         bodies: AsyncIterator[Chunk],
+        journal: CommandJournal,
     ) -> None:
         self._conn = conn
         self._table = table
         self._names = tuple(names)
         self._layout = layout
         self._bodies = bodies
+        self._journal = journal
 
     async def load(self) -> int:
+        """COPY целиком — одна команда журнала: тела идут мимо него."""
         query = self._query()
-        async with self._conn.cursor() as cursor:
-            async with cursor.copy(query.text) as copy:
-                async for body in self._bodies:
-                    await copy.write(body)
+        text = query.text.as_string(self._conn)
+        with self._journal.command(text, CommandKind.ACTION) as running:
+            async with self._conn.cursor() as cursor:
+                async with cursor.copy(query.text) as copy:
+                    async for body in self._bodies:
+                        await copy.write(body)
 
-            rows = cursor.rowcount
+                rows = max(cursor.rowcount, 0)
 
-        rows = max(rows, 0)
+            running.status = f"COPY {rows}"
 
         return rows
 
@@ -1245,9 +1319,11 @@ class PgMatcher:
             planned.append(
                 PgPlannedColumn(
                     name=name,
+                    field=column.name,
                     type_text=stream.type_text,
                     nullable=stream.nullable,
                     known=stream.known,
+                    declared=name in self._rules.column_types,
                 )
             )
 
@@ -1357,7 +1433,7 @@ class PgTransfer(Protocol):
 @runtime_checkable
 class PgTransferFactory(Protocol):
     """Конструктор пары: класс с таким __init__ — соединение приёмника,
-    таблица, кадр схемы, поток тел."""
+    таблица, кадр схемы, поток тел, журнал команд вызова."""
 
     def __call__(
         self,
@@ -1365,6 +1441,7 @@ class PgTransferFactory(Protocol):
         table: PgTableRef,
         head: SchemaHead,
         feed: TransferInbound,
+        journal: CommandJournal,
     ) -> PgTransfer: ...
 
 

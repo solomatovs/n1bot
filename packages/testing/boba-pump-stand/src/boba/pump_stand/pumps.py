@@ -19,7 +19,9 @@ from boba.tool.ora import tools as ora
 from boba.tool.pg import tools as pg
 from boba.toolkit.entry import ToolArgv, ToolMain
 from boba.toolkit.ports import PortDirection, StreamGroup, StreamPorts
+from boba.toolkit.result import FailureResult
 from boba.toolkit.transfer import (
+    CommandsFailedError,
     CreateIfNotExists,
     DeleteNothing,
     InsertFull,
@@ -79,6 +81,7 @@ class Pumps:
             "ora_stream_in": oracle,
         }
         self._bodies: dict[str, Body] = {}
+        self._failed: dict[str, CommandsFailedError] = {}
         self._ports: dict[str, dict[str, Any]] = {}
         self._groups: dict[str, tuple[str, ...]] = {}
         listed = ToolMain.toolset(
@@ -120,11 +123,14 @@ class Pumps:
             "insert_strategy": InsertFull(kind="full"),
         }
         arguments.update(extra)
-        report = await self._bodies["pg_stream_in"](
-            connection=self._required("pg_stream_in"),
-            feed=feed,
-            **self._detached_groups("pg_stream_in"),
-            **arguments,
+        report = await self._invoked(
+            "pg_stream_in",
+            self._bodies["pg_stream_in"](
+                connection=self._required("pg_stream_in"),
+                feed=feed,
+                **self._detached_groups("pg_stream_in"),
+                **arguments,
+            ),
         )
 
         return report.llm_view()
@@ -182,11 +188,14 @@ class Pumps:
         raise AssertionError(f"{name}: no {direction} port declared")
 
     async def _call(self, leg: Leg, **port: Any) -> str:
-        report = await self._bodies[leg.name](
-            connection=self._required(leg.name),
-            **leg.arguments,
-            **port,
-            **self._detached_groups(leg.name),
+        report = await self._invoked(
+            leg.name,
+            self._bodies[leg.name](
+                connection=self._required(leg.name),
+                **leg.arguments,
+                **port,
+                **self._detached_groups(leg.name),
+            ),
         )
 
         return report.llm_view()
@@ -202,11 +211,35 @@ class Pumps:
 
     async def _out(self, name: str, statement: str, **extra: Any) -> bytes:
         sink = Sink()
-        await self._bodies[name](
-            connection=self._required(name), sql=statement, out=sink, **extra
+        await self._invoked(
+            name,
+            self._bodies[name](
+                connection=self._required(name), sql=statement, out=sink, **extra
+            ),
         )
 
         return sink.data()
+
+    def failure_of(self, name: str) -> FailureResult:
+        """Вид последнего сбоя насоса name, каким его увидит чат: ошибка,
+        колонки и выполненные команды."""
+        failed = self._failed.get(name)
+        if failed is None:
+            raise AssertionError(f"{name}: the pump has not failed")
+
+        return failed.failure()
+
+    async def _invoked(self, name: str, body: Awaitable[Any]) -> Any:
+        """Тело насоса; его сбой — исходная доменная ошибка: насос оборачивает
+        её в CommandsFailedError ради вида в чате, стенд проверяет сам отказ,
+        а вид отдаёт failure_of."""
+        try:
+            return await body
+        except CommandsFailedError as exc:
+            self._failed[name] = exc
+            failed = exc
+
+        raise failed.cause
 
     def _required(self, name: str) -> object:
         connection = self._connections[name]

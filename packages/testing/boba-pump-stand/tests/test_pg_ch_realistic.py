@@ -660,7 +660,7 @@ class TestRenamedMart:
         )
 
         assert f"{ORDERS} rows loaded" in report
-        assert '"columns": "gross"' in report
+        assert '"column": "gross"' in report
         assert re.search(r"Decimal\(18, 2\).* is wider", report)
         assert await mart.count() == ORDERS
         assert await mart.column("client", order_by="order_uid") == (

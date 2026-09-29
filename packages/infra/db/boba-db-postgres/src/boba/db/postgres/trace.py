@@ -59,9 +59,9 @@ class PgNotify:
 
 @dataclass(frozen=True)
 class PgCommandReport:
-    """Итог команды насоса для чата командой SqlResult: выполненный стейтмент
-    со сводкой насоса, контрактом колонок (columns, у источника), статусом и
-    сессией сервера и всем, что сервер сообщил."""
+    """Итог команды насоса для чата: сводка насоса, контракт колонок (columns,
+    у источника), статус и сессия сервера и всё, что сервер сообщил. Сам
+    выполненный стейтмент показывает журнал команд вызова."""
 
     summary: str
     status: str
@@ -79,7 +79,6 @@ class PgCommandReport:
             rows = list(self.columns)
 
         return SqlStatement(
-            text=self.statement,
             status=self.summary,
             rows=rows,
             facts=list(self._facts()),

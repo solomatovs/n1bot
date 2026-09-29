@@ -60,6 +60,7 @@ from boba.toolkit.contract import (
     ColumnDeclaration,
     ColumnSpec,
     ColumnType,
+    ContractTable,
     Declarations,
     DeclaredType,
     Engine,
@@ -72,10 +73,13 @@ from boba.toolkit.contract import (
 )
 from boba.toolkit.transfer import (
     ColumnRules,
+    CommandJournal,
+    CommandKind,
     CreateTemplate,
     DeleteOutcome,
     DeleteStrategyApply,
     InsertStrategyApply,
+    PlannedColumn,
     SchemaHead,
     SchemaStrategyPlan,
     StreamWire,
@@ -112,13 +116,19 @@ class OraArrowSource:
     ENGINE: ClassVar[WireEngine] = WireEngine.ORACLE
 
     def __init__(
-        self, conn: AsyncConnection, payload: PayloadOracle, trace: OraSessionTrace
+        self,
+        conn: AsyncConnection,
+        payload: PayloadOracle,
+        trace: OraSessionTrace,
+        journal: CommandJournal,
     ) -> None:
         self._conn = conn
         self._payload = payload
         self._trace = trace
+        self._journal = journal
         self._declarations = Declarations()
         self._contract = StreamContract()
+        self._contract_table = ContractTable()
 
     async def stream(
         self,
@@ -128,9 +138,12 @@ class OraArrowSource:
     ) -> tuple[ColumnSpec, ...]:
         """Контракт и тела потока в выходной порт; возвращает контракт для
         отчёта."""
-        specs = self._declarations.merge(
-            await self._payload.describe_specs(self._conn, text), declared
-        )
+        with self._journal.command(text, CommandKind.LOOKUP) as running:
+            described = await self._payload.describe_specs(self._conn, text)
+            running.status = f"{len(described)} columns described"
+
+        specs = self._declarations.merge(described, declared)
+        self._journal.columns(self._contract_table.rows(specs))
         contract = ArrowContract(columns=self._contract.columns(specs))
         await out.schema(
             SchemaHead(
@@ -140,7 +153,9 @@ class OraArrowSource:
                 contract=contract.model_dump(mode="json"),
             )
         )
-        await self._payload.arrow_into(self._conn, text, out.writer(), self._trace)
+        with self._journal.command(text, CommandKind.ACTION) as running:
+            await self._payload.arrow_into(self._conn, text, out.writer(), self._trace)
+            running.status = "streamed out"
 
         return specs
 
@@ -210,11 +225,16 @@ class OraNeutralFacts:
     LOBS: ClassVar[frozenset[str]] = frozenset({"CLOB", "NCLOB", "BLOB"})
 
     def __init__(
-        self, conn: AsyncConnection, table: OraTableRef, payload: PayloadOracle
+        self,
+        conn: AsyncConnection,
+        table: OraTableRef,
+        payload: PayloadOracle,
+        journal: CommandJournal,
     ) -> None:
         self._conn = conn
         self._table = table
         self._payload = payload
+        self._journal = journal
         self._kinds = OraColumnKinds()
 
     def major(self) -> int:
@@ -226,15 +246,21 @@ class OraNeutralFacts:
         return self.major() >= self.BOOLEAN_SINCE
 
     async def exists(self) -> bool:
+        text = self._select_all().text
         try:
-            await self._payload.describe(self._conn, self._select_all().text)
+            with self._journal.command(text, CommandKind.LOOKUP) as running:
+                await self._payload.describe(self._conn, text)
+                running.status = "exists: True"
         except OracleMissingObjectError:
             return False
 
         return True
 
     async def columns(self) -> tuple[ColumnSpec, ...]:
-        described = await self._payload.describe(self._conn, self._select_all().text)
+        text = self._select_all().text
+        with self._journal.command(text, CommandKind.LOOKUP) as running:
+            described = await self._payload.describe(self._conn, text)
+            running.status = f"{len(described)} columns described"
 
         return self._kinds.specs(described)
 
@@ -267,18 +293,22 @@ class OraDeclaredTypes:
     пустым значением; дальше OraColumnKinds по метаданным драйвера, как у
     колонок таблицы."""
 
-    def __init__(self, conn: AsyncConnection, payload: PayloadOracle) -> None:
+    def __init__(
+        self, conn: AsyncConnection, payload: PayloadOracle, journal: CommandJournal
+    ) -> None:
         self._conn = conn
         self._payload = payload
+        self._journal = journal
         self._kinds = OraColumnKinds()
 
     async def resolve(self, column_types: Mapping[str, str]) -> dict[str, DeclaredType]:
         declared: dict[str, DeclaredType] = {}
         for name, text in column_types.items():
+            probe = self._probe(text).text
             try:
-                described = await self._payload.describe(
-                    self._conn, self._probe(text).text
-                )
+                with self._journal.command(probe, CommandKind.LOOKUP) as running:
+                    described = await self._payload.describe(self._conn, probe)
+                    running.status = "type described"
             except OracleQueryError as exc:
                 raise TransferError(
                     f'rules.column_types["{name}"]: the target server does not '
@@ -460,6 +490,20 @@ class OraDdlTypes:
 
         return self.of_kind(column.kind, column.char_length)
 
+    def planned(self, column: TableColumn, source_engine: Engine) -> str:
+        """Тип колонки в плане загрузки; пусто — типа нет, решит стратегия
+        неизвестных типов."""
+        if column.ddl_type:
+            return column.ddl_type
+
+        if source_engine is Engine.ORACLE and column.source_type:
+            return column.source_type
+
+        if column.kind.family.named_only():
+            return ""
+
+        return self.of_kind(column.kind, column.char_length)
+
     def _unknown(self, column: TableColumn, unknown_as_varchar: bool) -> str:
         if unknown_as_varchar:
             return self.CLOB
@@ -565,6 +609,7 @@ class OraArrowTable(TransferTable):
         spec: TableSpec,
         template: CreateTemplate,
         facts: OraNeutralFacts,
+        journal: CommandJournal,
     ) -> None:
         self._conn = conn
         self._table = table
@@ -572,7 +617,17 @@ class OraArrowTable(TransferTable):
         self._spec = spec
         self._template = template
         self._facts = facts
+        self._journal = journal
         self._ddl_types = OraDdlTypes(facts.has_boolean())
+
+    def planned(self) -> list[PlannedColumn]:
+        """Колонки загрузки с типами Oracle для отчёта."""
+        planned: list[PlannedColumn] = []
+        for column in self._spec.columns:
+            type_text = self._ddl_types.planned(column, self._source_engine)
+            planned.append(column.planned(type_text))
+
+        return planned
 
     async def exists(self) -> bool:
         return await self._facts.exists()
@@ -641,7 +696,7 @@ class OraArrowTable(TransferTable):
         query = OraQueryBuilder().add("truncate table ", self._table).build()
         await self._execute(query)
 
-        return DeleteOutcome(effect="removed by truncate", statement=query.text)
+        return DeleteOutcome(effect="removed by truncate")
 
     async def delete_all(self) -> DeleteOutcome:
         query = OraQueryBuilder().add("delete from ", self._table).build()
@@ -658,25 +713,30 @@ class OraArrowTable(TransferTable):
 
         return await self._deleted(query)
 
-    async def _execute(self, query: OraQuery) -> None:
-        await self._deleted(query)
+    async def _execute(self, query: OraQuery) -> int:
+        """Команда в журнале вызова: число затронутых строк."""
+        with self._journal.command(query.text, CommandKind.ACTION) as running:
+            cursor = self._conn.cursor()
+            try:
+                await cursor.execute(query.text, query.params)
+                rows = cursor.rowcount
+            except oracledb.Error as exc:
+                raise OracleQueryError(
+                    f"statement on oracle failed: {type(exc).__name__}: {exc}; "
+                    f"statement: {query.text!r}"
+                ) from exc
+            finally:
+                cursor.close()
+
+            rows = max(rows, 0)
+            running.status = f"{rows} rows"
+
+        return rows
 
     async def _deleted(self, query: OraQuery) -> DeleteOutcome:
-        cursor = self._conn.cursor()
-        try:
-            await cursor.execute(query.text, query.params)
-            rows = cursor.rowcount
-        except oracledb.Error as exc:
-            raise OracleQueryError(
-                f"statement on oracle failed: {type(exc).__name__}: {exc}; "
-                f"statement: {query.text[:200]!r}"
-            ) from exc
-        finally:
-            cursor.close()
+        rows = await self._execute(query)
 
-        rows = max(rows, 0)
-
-        return DeleteOutcome(effect=f"{rows} rows deleted", statement=query.text)
+        return DeleteOutcome(effect=f"{rows} rows deleted")
 
 
 @dataclass(frozen=True)
@@ -705,6 +765,7 @@ class OraArrowSink(TransferSink):
         payload: PayloadOracle,
         trace: OraSessionTrace,
         facts: OraNeutralFacts,
+        journal: CommandJournal,
     ) -> None:
         self._conn = conn
         self._table = table
@@ -713,14 +774,22 @@ class OraArrowSink(TransferSink):
         self._payload = payload
         self._trace = trace
         self._facts = facts
+        self._journal = journal
 
     async def load(self) -> int:
+        """Вставка потока целиком — одна команда журнала: пачки идут мимо него."""
         plan = self._plan(await self._facts.lobs())
         rows = 0
-        async for batch in self._reader.batches:
-            rows += await self._payload.executemany_arrow(
-                self._conn, plan.query.text, batch.select(list(plan.order)), self._trace
-            )
+        with self._journal.command(plan.query.text, CommandKind.ACTION) as running:
+            async for batch in self._reader.batches:
+                rows += await self._payload.executemany_arrow(
+                    self._conn,
+                    plan.query.text,
+                    batch.select(list(plan.order)),
+                    self._trace,
+                )
+
+            running.status = f"{rows} rows inserted"
 
         return rows
 
@@ -780,10 +849,12 @@ class OraArrowLoader:
         chunk_bytes: int,
         payload: PayloadOracle,
         trace: OraSessionTrace,
+        journal: CommandJournal,
     ) -> None:
         self._conn = conn
         self._table = table
-        self._facts = OraNeutralFacts(conn, table, payload)
+        self._journal = journal
+        self._facts = OraNeutralFacts(conn, table, payload, journal)
         self._contract = tuple(contract)
         self._projection = OraStreamProjection(source_engine)
         self._binds = OraArrowBinds(self._facts.has_boolean())
@@ -793,7 +864,7 @@ class OraArrowLoader:
         self._chunk_bytes = chunk_bytes
         self._payload = payload
         self._trace = trace
-        self._declared = OraDeclaredTypes(conn, payload)
+        self._declared = OraDeclaredTypes(conn, payload, journal)
         self._ipc = ArrowIpc()
 
     async def run(  # noqa: PLR0913
@@ -816,9 +887,12 @@ class OraArrowLoader:
             )
 
         stream = self._projection.project(self._contract, reader.schema)
-        async with self._payload.rows(self._conn, self.SESSION_UTC) as session:
-            if session.warning:
-                self._trace.warn(session.warning)
+        with self._journal.command(self.SESSION_UTC, CommandKind.ACTION) as running:
+            async with self._payload.rows(self._conn, self.SESSION_UTC) as session:
+                if session.warning:
+                    self._trace.warn(session.warning)
+
+            running.status = "session altered"
 
         declared = await self._declared.resolve(rules.column_types)
         exists = await self._facts.exists()
@@ -835,6 +909,7 @@ class OraArrowLoader:
             spec,
             create_table,
             self._facts,
+            self._journal,
         )
         sink = OraArrowSink(
             self._conn,
@@ -844,11 +919,22 @@ class OraArrowLoader:
             self._payload,
             self._trace,
             self._facts,
+            self._journal,
         )
         transfer = TransferRun(
-            schema_strategy, delete_strategy, insert_strategy, unknown_types
+            schema_strategy,
+            delete_strategy,
+            insert_strategy,
+            unknown_types,
+            self._journal,
         )
 
         return await transfer.run(
-            self._table.text(), exists, diff.check(), table, sink, False
+            self._table.text(),
+            exists,
+            diff.check(),
+            table.planned(),
+            table,
+            sink,
+            False,
         )

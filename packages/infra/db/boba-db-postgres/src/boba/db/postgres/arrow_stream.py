@@ -54,10 +54,13 @@ from boba.toolkit.contract import (
 )
 from boba.toolkit.transfer import (
     ColumnRules,
+    CommandJournal,
+    CommandKind,
     CreateTemplate,
     DeleteOutcome,
     DeleteStrategyApply,
     InsertStrategyApply,
+    PlannedColumn,
     SchemaHead,
     SchemaStrategyPlan,
     StreamWire,
@@ -134,6 +137,20 @@ class PgDdlTypes:
 
         if column.kind.family.named_only():
             return self._unknown(column, unknown_as_varchar)
+
+        return self.of_kind(column.kind, column.char_length)
+
+    def planned(self, column: TableColumn, source_engine: Engine) -> str:
+        """Тип колонки в плане загрузки; пусто — типа нет, решит стратегия
+        неизвестных типов."""
+        if column.ddl_type:
+            return column.ddl_type
+
+        if source_engine is Engine.POSTGRES and column.source_type:
+            return column.source_type
+
+        if column.kind.family.named_only():
+            return ""
 
         return self.of_kind(column.kind, column.char_length)
 
@@ -218,8 +235,10 @@ class PgDeclaredTypes:
     """Типы из rules.column_types в нейтральном виде: разбор текста типа
     сервером через PgTypeResolver, семейство и параметры через PgArrowTypes."""
 
-    def __init__(self, conn: psycopg.AsyncConnection[Any]) -> None:
-        self._resolver = PgTypeResolver(conn)
+    def __init__(
+        self, conn: psycopg.AsyncConnection[Any], journal: CommandJournal
+    ) -> None:
+        self._resolver = PgTypeResolver(conn, journal)
         self._types = PgArrowTypes(conn.adapters.types)
 
     async def resolve(self, column_types: Mapping[str, str]) -> dict[str, DeclaredType]:
@@ -243,8 +262,13 @@ class PgNeutralFacts:
     """Колонки таблицы приёмника из каталога в нейтральном виде: те же
     семейства, что у контракта потока, через PgArrowTypes."""
 
-    def __init__(self, conn: psycopg.AsyncConnection[Any], table: PgTableRef) -> None:
-        self._facts = PgTableFacts(conn, table)
+    def __init__(
+        self,
+        conn: psycopg.AsyncConnection[Any],
+        table: PgTableRef,
+        journal: CommandJournal,
+    ) -> None:
+        self._facts = PgTableFacts(conn, table, journal)
         self._types = PgArrowTypes(conn.adapters.types)
 
     async def exists(self) -> bool:
@@ -282,14 +306,25 @@ class PgArrowTable(TransferTable):
         source_engine: Engine,
         spec: TableSpec,
         template: CreateTemplate,
+        journal: CommandJournal,
     ) -> None:
         self._conn = conn
         self._table = table
         self._source_engine = source_engine
         self._spec = spec
         self._template = template
-        self._facts = PgTableFacts(conn, table)
+        self._journal = journal
+        self._facts = PgTableFacts(conn, table, journal)
         self._ddl_types = PgDdlTypes()
+
+    def planned(self) -> list[PlannedColumn]:
+        """Колонки загрузки с типами postgres для отчёта."""
+        planned: list[PlannedColumn] = []
+        for column in self._spec.columns:
+            type_text = self._ddl_types.planned(column, self._source_engine)
+            planned.append(column.planned(type_text))
+
+        return planned
 
     async def exists(self) -> bool:
         return await self._facts.exists()
@@ -369,9 +404,7 @@ class PgArrowTable(TransferTable):
         )
         await self._execute(query)
 
-        return DeleteOutcome(
-            effect="removed by truncate", statement=query.text.as_string(self._conn)
-        )
+        return DeleteOutcome(effect="removed by truncate")
 
     async def delete_all(self) -> DeleteOutcome:
         query = (
@@ -390,20 +423,26 @@ class PgArrowTable(TransferTable):
 
         return await self._deleted(query)
 
-    async def _execute(self, query: PgQuery) -> None:
-        async with self._conn.cursor() as cursor:
-            await cursor.execute(query.text, query.params)
+    async def _execute(self, query: PgQuery) -> int:
+        """Команда в журнале вызова: статус сервера; ответ — rowcount."""
+        text = query.text.as_string(self._conn)
+        with self._journal.command(text, CommandKind.ACTION) as running:
+            async with self._conn.cursor() as cursor:
+                await cursor.execute(query.text, query.params)
+                rows = cursor.rowcount
+                status = cursor.statusmessage
+
+            if status is None:
+                status = "done"
+
+            running.status = status
+
+        return max(rows, 0)
 
     async def _deleted(self, query: PgQuery) -> DeleteOutcome:
-        async with self._conn.cursor() as cursor:
-            await cursor.execute(query.text, query.params)
-            rows = cursor.rowcount
+        rows = await self._execute(query)
 
-        rows = max(rows, 0)
-
-        return DeleteOutcome(
-            effect=f"{rows} rows deleted", statement=query.text.as_string(self._conn)
-        )
+        return DeleteOutcome(effect=f"{rows} rows deleted")
 
 
 class PgArrowSource:
@@ -413,9 +452,12 @@ class PgArrowSource:
 
     ENGINE: ClassVar[WireEngine] = WireEngine.POSTGRES
 
-    def __init__(self, conn: psycopg.AsyncConnection[Any]) -> None:
+    def __init__(
+        self, conn: psycopg.AsyncConnection[Any], journal: CommandJournal
+    ) -> None:
         self._conn = conn
-        self._out = PgArrowOut(conn)
+        self._journal = journal
+        self._out = PgArrowOut(conn, journal)
         self._types = PgArrowTypes(conn.adapters.types)
         self._declarations = Declarations()
         self._contract = StreamContract()
@@ -460,6 +502,7 @@ class PgArrowSource:
         chunk_bytes: int,
         out: TransferOutbound,
     ) -> PgCommandReport:
+        self._journal.columns(self._contract_table.rows(specs))
         contract = ArrowContract(columns=self._contract.columns(specs))
         await out.schema(
             SchemaHead(
@@ -518,16 +561,22 @@ class PgArrowSink(TransferSink):
         names: Sequence[str],
         reader: ArrowReader,
         exact_floats: bool,
+        journal: CommandJournal,
     ) -> None:
         self._conn = conn
         self._table = table
         self._names = tuple(names)
         self._reader = reader
+        self._journal = journal
         self._arrow_in = PgArrowIn(conn, exact_floats)
 
     async def load(self) -> int:
+        """COPY целиком — одна команда журнала: пачки идут мимо него."""
         query = PgCopyStatement(self._conn, self._table).query(self._names)
-        report = await self._arrow_in.copy_query(query, self._reader)
+        text = query.text.as_string(self._conn)
+        with self._journal.command(text, CommandKind.ACTION) as running:
+            report = await self._arrow_in.copy_query(query, self._reader)
+            running.status = f"COPY {report.rows}"
 
         return report.rows
 
@@ -556,17 +605,19 @@ class PgArrowLoader:
         inbound: TransferInbound,
         chunk_bytes: int,
         exact_floats: bool,
+        journal: CommandJournal,
     ) -> None:
         self._conn = conn
         self._table = table
+        self._journal = journal
         self._stream = tuple(contract)
         self._source_engine = source_engine
         self._exact = source_engine is Engine.POSTGRES
         self._inbound = inbound
         self._chunk_bytes = chunk_bytes
         self._exact_floats = exact_floats
-        self._facts = PgNeutralFacts(conn, table)
-        self._declared = PgDeclaredTypes(conn)
+        self._facts = PgNeutralFacts(conn, table, journal)
+        self._declared = PgDeclaredTypes(conn, journal)
         self._ipc = ArrowIpc()
 
     async def run(  # noqa: PLR0913
@@ -589,16 +640,36 @@ class PgArrowLoader:
             diff = matcher.diff(self._stream, facts, declared)
             spec = diff.table_spec()
             table = PgArrowTable(
-                self._conn, self._table, self._source_engine, spec, create_table
+                self._conn,
+                self._table,
+                self._source_engine,
+                spec,
+                create_table,
+                self._journal,
             )
             reader = await self._ipc.open_in(self._inbound.raw(), self._chunk_bytes)
             sink = PgArrowSink(
-                self._conn, self._table, spec.names(), reader, self._exact_floats
+                self._conn,
+                self._table,
+                spec.names(),
+                reader,
+                self._exact_floats,
+                self._journal,
             )
             transfer = TransferRun(
-                schema_strategy, delete_strategy, insert_strategy, unknown_types
+                schema_strategy,
+                delete_strategy,
+                insert_strategy,
+                unknown_types,
+                self._journal,
             )
 
             return await transfer.run(
-                self._table.text(), exists, diff.check(), table, sink, True
+                self._table.text(),
+                exists,
+                diff.check(),
+                table.planned(),
+                table,
+                sink,
+                True,
             )

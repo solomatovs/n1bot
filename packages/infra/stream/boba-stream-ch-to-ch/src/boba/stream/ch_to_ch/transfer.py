@@ -34,6 +34,7 @@ from boba.db.clickhouse.transfer import (
 )
 from boba.toolkit.transfer import (
     ColumnRules,
+    CommandJournal,
     CreateTemplate,
     DeleteStrategyApply,
     Engine,
@@ -65,6 +66,7 @@ class ChToCh(ChTransfer):
         placement: ChPlacement,
         head: SchemaHead,
         feed: TransferInbound,
+        journal: CommandJournal,
     ) -> None:
         if head.source_engine is not Engine.CLICKHOUSE:
             raise TransferError(
@@ -77,8 +79,9 @@ class ChToCh(ChTransfer):
         self._placement = placement
         self._contract = ChContract.model_validate(head.contract)
         self._feed = feed
-        self._facts = ChTableFacts(client, table)
-        self._resolver = ChTypeResolver(client)
+        self._journal = journal
+        self._facts = ChTableFacts(client, table, journal)
+        self._resolver = ChTypeResolver(client, journal)
         self._types = ChTypes()
 
     async def run(  # noqa: PLR0913
@@ -101,9 +104,15 @@ class ChToCh(ChTransfer):
             catalog = await self._facts.columns()
 
         matched = matcher.match(stream, catalog)
-        twin = ChTwin(self._client, self._table, self._placement.cluster)
+        twin = ChTwin(self._client, self._table, self._placement.cluster, self._journal)
         table = ChTransferTable(
-            self._client, self._table, matched.plan, create_table, twin, self._placement
+            self._client,
+            self._table,
+            matched.plan,
+            create_table,
+            twin,
+            self._placement,
+            self._journal,
         )
         sink = ChInputSink(
             self._client,
@@ -112,13 +121,24 @@ class ChToCh(ChTransfer):
             self.FORMAT,
             ChContractTypes(self._stream_types(matched.stream)),
             self._feed,
+            self._journal,
         )
         run = TransferRun(
-            schema_strategy, delete_strategy, insert_strategy, unknown_types
+            schema_strategy,
+            delete_strategy,
+            insert_strategy,
+            unknown_types,
+            self._journal,
         )
 
         return await run.run(
-            self._table.text(), exists, matched.check, table, sink, False
+            self._table.text(),
+            exists,
+            matched.check,
+            matched.plan.planned(),
+            table,
+            sink,
+            False,
         )
 
     def _fields(self) -> list[ChStreamColumn]:

@@ -381,6 +381,8 @@ class ToolStep:
 
     payload: Mapping[str, Any]
     dom_text: str
+    dividers: Sequence[str] = ()
+    """Толщина верхней границы каждого разделителя вызова и результата."""
 
     @property
     def name(self) -> str:
@@ -415,6 +417,7 @@ class StepCheck:
         self._check_input()
         self._check_output()
         self._check_dom()
+        self._check_divider()
 
     def _check_name(self) -> None:
         label = f"{self._expect.mark.value} {self._call.tool} · {self._call.intent}"
@@ -458,6 +461,20 @@ class StepCheck:
 
             self._fail(f"{fragment!r} is not in the DOM step:\n{self._step.dom_text}")
 
+    def _check_divider(self) -> None:
+        """Вызов и результат разделены одной видимой линией."""
+        if not self._step.input:
+            return
+
+        if not self._step.output:
+            return
+
+        if len(self._step.dividers) != 1:
+            self._fail(f"expected one input/output divider, got {self._step.dividers}")
+
+        if self._step.dividers[0] in ("", "0px"):
+            self._fail(f"the divider has no border: {self._step.dividers}")
+
     def _fail(self, message: str) -> None:
         raise AssertionError(f"tool {self._call.tool}: {message}")
 
@@ -474,6 +491,8 @@ class ToolFeed:
 
     chat: ChatPage
     stand: StandProcess
+
+    DIVIDER: ClassVar[str] = "[data-step-io-divider]"
 
     def call(
         self,
@@ -496,7 +515,10 @@ class ToolFeed:
             )
 
         node = self.chat.expand_last_tool()
-        step = ToolStep(payload=payload, dom_text=node.inner_text())
+        dividers = node.locator(self.DIVIDER).evaluate_all(
+            "nodes => nodes.map(n => getComputedStyle(n).borderTopWidth)"
+        )
+        step = ToolStep(payload=payload, dom_text=node.inner_text(), dividers=dividers)
 
         StepCheck(step, call, expect).run()
 

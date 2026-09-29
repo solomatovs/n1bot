@@ -54,6 +54,7 @@ from boba.toolkit.arrow import (
     SourceFields,
 )
 from boba.toolkit.contract import ColumnSpec, ColumnType, TimeUnit, TypeFamily
+from boba.toolkit.transfer import CommandJournal, CommandKind
 
 __all__ = [
     "Compute",
@@ -431,8 +432,11 @@ class PgArrowOut:
     схеме блоками chunk_bytes. float печатается точно при extra_float_digits =
     3 в опциях соединения. Notices и notify сессии попадают в итог."""
 
-    def __init__(self, conn: psycopg.AsyncConnection[Any]) -> None:
+    def __init__(
+        self, conn: psycopg.AsyncConnection[Any], journal: CommandJournal
+    ) -> None:
         self._conn = conn
+        self._journal = journal
         self._types = PgArrowTypes(conn.adapters.types)
         self._describe = PgDescribe(conn)
         self._trace = PgSessionTrace(conn)
@@ -474,29 +478,32 @@ class PgArrowOut:
             .build()
         )
 
-        async with self._conn.cursor() as cursor:
+        text = pgquery.text.as_string(self._conn)
+        with self._journal.command(text, CommandKind.ACTION) as running:
+            async with self._conn.cursor() as cursor:
 
-            async def produce() -> None:
-                try:
-                    await self._copy_out(cursor, pgquery.text, pipe, chunk_bytes)
-                finally:
-                    pipe.close_write()
+                async def produce() -> None:
+                    try:
+                        await self._copy_out(cursor, pgquery.text, pipe, chunk_bytes)
+                    finally:
+                        pipe.close_write()
 
-            async def consume() -> None:
-                try:
-                    async for batch in reader.batches(pipe.source):
-                        await writer.write(batch)
-                finally:
-                    pipe.close_read()
+                async def consume() -> None:
+                    try:
+                        async for batch in reader.batches(pipe.source):
+                            await writer.write(batch)
+                    finally:
+                        pipe.close_read()
 
-            await asyncio.gather(produce(), consume())
-            await writer.close()
+                await asyncio.gather(produce(), consume())
+                await writer.close()
+                report = self._trace.report(
+                    f"streamed out arrow ipc: {', '.join(schema.names)}", text, cursor
+                )
 
-            return self._trace.report(
-                f"streamed out arrow ipc: {', '.join(schema.names)}",
-                pgquery.text.as_string(self._conn),
-                cursor,
-            )
+            running.status = report.status
+
+        return report
 
     async def _copy_out(
         self,

@@ -25,9 +25,9 @@ class OraTableRef:
     CREATE_TABLE: ClassVar[str] = "create table {schema_name}.{table_name} ({columns})"
     """Шаблон без особенностей таблицы: дефолт фасада ora_stream_in."""
     TEMPLATE_VARS: ClassVar[TemplateVars] = TemplateVars(
-        required=(TemplateVar.SCHEMA_NAME, TemplateVar.TABLE_NAME, TemplateVar.COLUMNS)
+        offered=(TemplateVar.SCHEMA_NAME, TemplateVar.TABLE_NAME, TemplateVar.COLUMNS)
     )
-    """Переменные шаблона Oracle: все обязательные."""
+    """Переменные, которые приёмник Oracle подставляет в шаблон."""
 
     def __post_init__(self) -> None:
         if not self.schema.strip():

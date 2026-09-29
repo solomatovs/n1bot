@@ -81,6 +81,7 @@ __all__ = [
     "ResultKinds",
     "ResultTooLargeError",
     "ShellResult",
+    "SqlFailureResult",
     "SqlResult",
     "SqlStatement",
     "StudioBlock",
@@ -1519,6 +1520,65 @@ class ExceptionResult(FailureResult):
     def _containing(message: str, shown: Sequence[str]) -> Iterator[bool]:
         for text in shown:
             yield message in text
+
+
+class SqlFailureResult(FailureResult):
+    """Сбой вызова, который выполнял SQL: ошибка, колонки, с которыми шла
+    работа, и все команды по порядку, упавшая — последней.
+
+    При падении эти подробности нужнее всего: по ним видно, какой запрос
+    сгенерирован и на чём сервер отказал. Собирает его журнал команд вызова
+    (boba.toolkit.transfer.CommandJournal) по исключению тела насоса.
+    """
+
+    kind: Literal["sql_failure"] = "sql_failure"
+    cause: FailureResultField
+    columns: Sequence[Mapping[str, str]] = ()
+    statements: Sequence[SqlStatement] = ()
+
+    def headline(self) -> str:
+        return self.cause.headline()
+
+    def details(self) -> Sequence[StudioBlock]:
+        blocks: list[StudioBlock] = list(self.cause.details())
+        if self.columns:
+            blocks.append(GridBlock(rows=self.columns))
+
+        return blocks
+
+    def trace(self) -> str:
+        return self.cause.trace()
+
+    def llm_view(self) -> str:
+        parts: list[str] = [self.cause.llm_view()]
+        if self.columns:
+            parts.append(
+                f"columns: {json.dumps(list(self.columns), ensure_ascii=False)}"
+            )
+
+        for statement in self.statements:
+            parts.append(statement.llm_text(True))
+
+        return "\n\n".join(parts)
+
+    def chat_view(self) -> ChatView:
+        parts: list[str] = [self.cause.chat_view().markdown]
+        if self.columns:
+            parts.append(TableText.render(self.columns))
+
+        for statement in self.statements:
+            parts.append(statement.markdown(True))
+
+        return ChatView(markdown="\n\n".join(parts))
+
+    def studio_view(self) -> StudioView:
+        view = super().studio_view()
+
+        blocks: list[StudioBlock] = list(view.blocks)
+        for statement in self.statements:
+            blocks.extend(statement.studio_blocks())
+
+        return StudioView(summary=view.summary, blocks=blocks)
 
 
 class GroupCall(BaseModel):

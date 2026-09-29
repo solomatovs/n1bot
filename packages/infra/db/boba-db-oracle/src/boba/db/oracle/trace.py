@@ -45,7 +45,6 @@ class OraCommandReport:
             rows = list(self.columns)
 
         return SqlStatement(
-            text=self.statement,
             status=self.summary,
             rows=rows,
             facts=list(self._facts()),

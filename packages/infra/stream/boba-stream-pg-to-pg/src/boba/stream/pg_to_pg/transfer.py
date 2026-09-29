@@ -35,6 +35,7 @@ from boba.db.postgres.transfer import (
 )
 from boba.toolkit.transfer import (
     ColumnRules,
+    CommandJournal,
     CreateTemplate,
     DeleteStrategyApply,
     Engine,
@@ -111,6 +112,7 @@ class PgToPg(PgTransfer):
         table: PgTableRef,
         head: SchemaHead,
         feed: TransferInbound,
+        journal: CommandJournal,
     ) -> None:
         if head.source_engine is not Engine.POSTGRES:
             raise TransferError(
@@ -123,8 +125,9 @@ class PgToPg(PgTransfer):
         self._layout = self._layout_of(head.wire)
         self._contract = PgContract.model_validate(head.contract)
         self._feed = feed
-        self._facts = PgTableFacts(conn, table)
-        self._resolver = PgTypeResolver(conn)
+        self._journal = journal
+        self._facts = PgTableFacts(conn, table, journal)
+        self._resolver = PgTypeResolver(conn, journal)
         self._binary = PgBinaryCompatibility(conn.adapters.types)
 
     @staticmethod
@@ -195,18 +198,31 @@ class PgToPg(PgTransfer):
                     self._typed_names(matched.stream),
                 )
 
-            table = PgTransferTable(self._conn, self._table, matched.plan, create_table)
+            table = PgTransferTable(
+                self._conn, self._table, matched.plan, create_table, self._journal
+            )
             sink = PgCopyIn(
                 self._conn,
                 self._table,
                 matched.plan.names(),
                 self._layout,
                 self._feed.bodies(),
+                self._journal,
             )
             run = TransferRun(
-                schema_strategy, delete_strategy, insert_strategy, unknown_types
+                schema_strategy,
+                delete_strategy,
+                insert_strategy,
+                unknown_types,
+                self._journal,
             )
 
             return await run.run(
-                self._table.text(), exists, matched.check, table, sink, True
+                self._table.text(),
+                exists,
+                matched.check,
+                matched.plan.planned(),
+                table,
+                sink,
+                True,
             )

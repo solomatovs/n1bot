@@ -47,9 +47,9 @@ class ChSummaryKey(StrEnum):
 
 @dataclass(frozen=True)
 class ChCommandReport:
-    """Итог команды насоса для чата командой SqlResult: выполненный стейтмент
-    со сводкой насоса, контрактом колонок (columns, у источника), счётчиками
-    сервера и координатами ответа."""
+    """Итог команды насоса для чата: сводка насоса, контракт колонок (columns,
+    у источника), счётчики сервера и координаты ответа. Сам выполненный
+    стейтмент показывает журнал команд вызова."""
 
     summary: str
     statement: str
@@ -72,7 +72,6 @@ class ChCommandReport:
             rows = list(self.columns)
 
         return SqlStatement(
-            text=self.statement,
             status=self.summary,
             rows=rows,
             facts=list(self._facts()),

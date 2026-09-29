@@ -58,6 +58,8 @@ from boba.toolkit.sql import (
 )
 from boba.toolkit.transfer import (
     ColumnRules,
+    CommandJournal,
+    CommandKind,
     CreateTemplate,
     DeleteStrategy,
     FailOnUnknown,
@@ -105,6 +107,13 @@ AfterSteps = Annotated[
         ),
     ),
 ]
+
+
+class PgPump(StrEnum):
+    """Имена насосов postgres в журнале команд вызова."""
+
+    STREAM_OUT = "pg_stream_out"
+    STREAM_IN = "pg_stream_in"
 
 
 class AddressColumn(StrEnum):
@@ -196,23 +205,22 @@ async def run_script(
 
 
 async def run_steps(
-    conn: psycopg.AsyncConnection[Any], steps: Sequence[str]
-) -> list[SqlStatement]:
+    conn: psycopg.AsyncConnection[Any], steps: Sequence[str], journal: CommandJournal
+) -> None:
     """Стейтменты before/after насоса на его соединении: по одному, по порядку,
     в той же транзакции, что и команда насоса, поэтому temp-таблицы и `set
     local` из before видны команде и after, а ошибка любого шага откатывает
     всё. Строки выборок не собираются, шаг даёт статус сервера; у стейтмента
-    из нескольких команд статусы идут через `;`."""
-    statements: list[SqlStatement] = []
+    из нескольких команд статусы идут через `;`. Каждый шаг — команда журнала
+    вызова."""
     async with conn.cursor() as cur:
         for step in steps:
             query = PgQueryBuilder().raw_query(step).build()
-            await cur.execute(query.text, query.params)
+            with journal.command(step, CommandKind.ACTION) as running:
+                await cur.execute(query.text, query.params)
 
-            statuses = list(step_statuses(cur))
-            statements.append(SqlStatement(text=step, status="; ".join(statuses)))
-
-    return statements
+                statuses = list(step_statuses(cur))
+                running.status = "; ".join(statuses)
 
 
 def step_statuses(cur: psycopg.AsyncCursor[Any]) -> Iterator[str]:
@@ -453,30 +461,36 @@ async def pg_stream_out(  # noqa: PLR0913
     """
     from boba.db.postgres.arrow_stream import PgArrowSource  # noqa: PLC0415
 
-    conn = await PayloadPostgres.connect_config(connection.copy_session(copy_options))
+    journal = CommandJournal(PgPump.STREAM_OUT)
     outbound = TransferOutbound(out)
-    async with conn, conn.transaction():
-        before_steps = await run_steps(conn, before)
-        copy_out = PgCopyOut(conn)
-        described = await copy_out.describe(sql)
+    try:
+        conn = await PayloadPostgres.connect_config(
+            connection.copy_session(copy_options)
+        )
+        async with conn, conn.transaction():
+            await run_steps(conn, before, journal)
+            copy_out = PgCopyOut(conn, journal)
+            described = await copy_out.describe(sql)
 
-        match wire:
-            case StreamWire.ARROW:
-                source = PgArrowSource(conn)
-                specs = source.contract(described, columns)
-                report = await source.stream(
-                    sql, specs, copy_options.chunk_bytes, outbound
-                )
-            case StreamWire.CSV | StreamWire.TSV | StreamWire.BINARY as named:
-                layout = PgCopyLayout(named.value)
-                contract = copy_out.contract_of(described, columns)
-                report = await copy_out.stream(
-                    sql, layout, contract, copy_options.chunk_bytes, outbound
-                )
+            match wire:
+                case StreamWire.ARROW:
+                    source = PgArrowSource(conn, journal)
+                    specs = source.contract(described, columns)
+                    report = await source.stream(
+                        sql, specs, copy_options.chunk_bytes, outbound
+                    )
+                case StreamWire.CSV | StreamWire.TSV | StreamWire.BINARY as named:
+                    layout = PgCopyLayout(named.value)
+                    contract = copy_out.contract_of(described, columns)
+                    report = await copy_out.stream(
+                        sql, layout, contract, copy_options.chunk_bytes, outbound
+                    )
 
-        after_steps = await run_steps(conn, after)
+            await run_steps(conn, after, journal)
+    except Exception as exc:
+        raise journal.failed(exc) from exc
 
-    statements = [*before_steps, report.sql_statement(), *after_steps]
+    statements = [report.sql_statement(), *journal.statements()]
 
     return SqlResult(engine=PgToolConfig.ENGINE, statements=statements)
 
@@ -607,47 +621,54 @@ async def pg_stream_in(  # noqa: PLR0913
     from boba.toolkit.contract import ArrowContract, StreamContract  # noqa: PLC0415
     from boba.toolkit.contract import Engine as NeutralEngine  # noqa: PLC0415
 
+    journal = CommandJournal(PgPump.STREAM_IN)
     template = CreateTemplate(create_table, PgTransferTable.TEMPLATE_VARS)
     inbound = TransferInbound(feed, group)
-    head = await inbound.get_schema()
     table = PgTableRef(schema=schema_name, name=table_name)
-    conn = await PayloadPostgres.connect_config(connection.copy_session(copy_options))
-    async with conn, conn.transaction():
-        before_steps = await run_steps(conn, before)
-        if head.wire is StreamWire.ARROW:
-            contract = ArrowContract.model_validate(head.contract)
-            loader = PgArrowLoader(
-                conn,
-                table,
-                StreamContract().specs(contract.columns),
-                NeutralEngine(head.source_engine.value),
-                inbound,
-                copy_options.chunk_bytes,
-                copy_options.exact_floats,
-            )
-            report = await loader.run(
-                schema_strategy,
-                delete_strategy,
-                insert_strategy,
-                unknown_types,
-                rules,
-                template,
-            )
-        else:
-            pair = PgTransfers.discover().pair(head.source_engine)
-            report = await pair(conn, table, head, inbound).run(
-                schema_strategy,
-                delete_strategy,
-                insert_strategy,
-                unknown_types,
-                rules,
-                template,
-            )
+    try:
+        head = await inbound.get_schema()
+        conn = await PayloadPostgres.connect_config(
+            connection.copy_session(copy_options)
+        )
+        async with conn, conn.transaction():
+            await run_steps(conn, before, journal)
+            if head.wire is StreamWire.ARROW:
+                contract = ArrowContract.model_validate(head.contract)
+                loader = PgArrowLoader(
+                    conn,
+                    table,
+                    StreamContract().specs(contract.columns),
+                    NeutralEngine(head.source_engine.value),
+                    inbound,
+                    copy_options.chunk_bytes,
+                    copy_options.exact_floats,
+                    journal,
+                )
+                report = await loader.run(
+                    schema_strategy,
+                    delete_strategy,
+                    insert_strategy,
+                    unknown_types,
+                    rules,
+                    template,
+                )
+            else:
+                pair = PgTransfers.discover().pair(head.source_engine)
+                report = await pair(conn, table, head, inbound, journal).run(
+                    schema_strategy,
+                    delete_strategy,
+                    insert_strategy,
+                    unknown_types,
+                    rules,
+                    template,
+                )
 
-        after_steps = await run_steps(conn, after)
-        await inbound.committing()
+            await run_steps(conn, after, journal)
+            await inbound.committing()
+    except Exception as exc:
+        raise journal.failed(exc) from exc
 
-    statements = [*report.statements(), *before_steps, *after_steps]
+    statements = [report.summary(), *journal.statements()]
 
     return SqlResult(engine=PgToolConfig.ENGINE, statements=statements)
 
