@@ -15,7 +15,7 @@ from boba.stand.ui.fake_llm import FakeRoute
 from boba.stand.ui.socket_log import SocketLog
 from boba.stand.ui.stand import StandProcess, StandUrl
 
-BOOT_TIMEOUT_SEC = 120.0
+BOOT_TIMEOUT_SEC = 300.0
 LlmMetaReader = Callable[[str], dict]
 OpenChat = Callable[[StandProcess, str], ChatPage]
 

@@ -7,6 +7,7 @@ from uuid import UUID
 import httpx
 from playwright._impl._api_structures import SetCookieParam
 
+from boba.db.postgres import AsyncPostgresPool
 from boba.identity.context import Scope
 from boba.identity.sso import OwnRequest
 from boba.messaging import LockToken, SignInRefreshRequested
@@ -15,7 +16,7 @@ from boba.runtime.config import AppName, StudioRuntimeConfig
 from boba.stand.ui.database import run_blocking
 from boba.stand.ui.stand import StandProcess
 
-BOOT_TIMEOUT_SEC = 120.0
+BOOT_TIMEOUT_SEC = 300.0
 
 
 def login_cookies(stand: StandProcess, login: str = "") -> list[SetCookieParam]:
@@ -61,8 +62,12 @@ def publish_refresh(
     )
 
     async def run() -> None:
-        await bus.setup()
-        message = SignInRefreshRequested(principal=principal)
-        await bus.publish(Scope.user(UUID(user_id)), message, LockToken.local())
+        # пул процесса открыт в этом цикле: открытым он не даст циклу закрыться
+        try:
+            await bus.setup()
+            message = SignInRefreshRequested(principal=principal)
+            await bus.publish(Scope.user(UUID(user_id)), message, LockToken.local())
+        finally:
+            await AsyncPostgresPool.close_all()
 
     run_blocking(run())

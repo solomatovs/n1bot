@@ -1,7 +1,7 @@
 """ClickHouse для payload'ов; пула нет — каждый вызов свой процесс и клиент.
 Учётные данные приходят через stdin: не видны ни в argv, ни в /proc, ни в логах.
-Насос открывает клиент с сессией (opened_session), чтобы стейтменты
-before/after (script) и его команда делили SET и временные таблицы.
+Насос со стейтментами before/after открывает клиент с сессией
+(opened_for_scripts), чтобы они и его команда делили SET и временные таблицы.
 
 Ошибки:
 ClickHouseQueryError — сервер отклонил запрос или чтению заданы размеры,
@@ -196,6 +196,26 @@ class PayloadClickHouse:
             session_id = uuid.uuid4().hex
 
         async with PayloadClickHouse.opened_config(connection, session_id) as client:
+            yield client
+
+    @staticmethod
+    @asynccontextmanager
+    async def opened_for_scripts(
+        connection: ClickHouseConfig, before: Sequence[str], after: Sequence[str]
+    ) -> AsyncGenerator[AsyncClient, None]:
+        """Клиент насоса: сессия сервера — только когда есть стейтменты before или
+        after, ей нечего делить без них. Старые серверы отпускают сессию позже,
+        чем отдают ответ, и запрос вплотную за вставкой получает
+        SESSION_IS_LOCKED; без сессии замка нет. session_id профиля в силе."""
+        if not before and not after:
+            async with PayloadClickHouse.opened_config(
+                connection, connection.session_id
+            ) as client:
+                yield client
+
+            return
+
+        async with PayloadClickHouse.opened_session(connection) as client:
             yield client
 
     @staticmethod
