@@ -4,30 +4,30 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "boba-pump-stand"
-version = "0.0.26.dev1"
+version = "0.0.26.dev3"
 description = "Boba pump stand: сводные стендовые тесты перекачки между базами насосами postgres, ClickHouse и Oracle."
 requires-python = ">=3.11,<4"
 dependencies = [
-    "boba-stand==0.0.26.dev1",
-    "boba-toolkit[arrow]==0.0.26.dev1",
+    "boba-stand==0.0.26.dev3",
+    "boba-toolkit[arrow]==0.0.26.dev3",
     "psycopg[binary]>=3.3",
-    "boba-db-clickhouse[payload]==0.0.26.dev1",
-    "boba-db-postgres[arrow]==0.0.26.dev1",
-    "boba-db-oracle[payload]==0.0.26.dev1",
-    "boba-tool-clickhouse==0.0.26.dev1",
-    "boba-tool-postgres==0.0.26.dev1",
-    "boba-tool-oracle==0.0.26.dev1",
+    "boba-db-clickhouse[payload]==0.0.26.dev3",
+    "boba-db-postgres[arrow]==0.0.26.dev3",
+    "boba-db-oracle[payload]==0.0.26.dev3",
+    "boba-tool-clickhouse==0.0.26.dev3",
+    "boba-tool-postgres==0.0.26.dev3",
+    "boba-tool-oracle==0.0.26.dev3",
     "pydantic>=2.10,<2.11",
 ]
 
 [project.optional-dependencies]
 dev = [
-    "boba-runtime==0.0.26.dev1",
-    "boba-toolrun==0.0.26.dev1",
-    "boba-stream-pg-to-pg==0.0.26.dev1",
-    "boba-stream-ch-to-ch==0.0.26.dev1",
-    "boba-stream-pg-to-ch==0.0.26.dev1",
-    "boba-stream-ch-to-pg==0.0.26.dev1",
+    "boba-runtime==0.0.26.dev3",
+    "boba-toolrun==0.0.26.dev3",
+    "boba-stream-pg-to-pg==0.0.26.dev3",
+    "boba-stream-ch-to-ch==0.0.26.dev3",
+    "boba-stream-pg-to-ch==0.0.26.dev3",
+    "boba-stream-ch-to-pg==0.0.26.dev3",
     "psycopg[binary]>=3.3",
     "pyarrow>=25,<26",
     "pytest>=8",
