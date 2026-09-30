@@ -8,15 +8,22 @@ from __future__ import annotations
 
 from typing import Final
 
-__all__ = ["ElementField", "FileField", "StepField", "ThreadField"]
+__all__ = ["ElementField", "FileField", "StepField", "ThreadField", "ThreadMetaField"]
 
 
 class ThreadField:
     """Ключи ThreadDict."""
 
     ID: Final = "id"
+    METADATA: Final = "metadata"
     STEPS: Final = "steps"
     ELEMENTS: Final = "elements"
+
+
+class ThreadMetaField:
+    """Ключи metadata треда: их пишет persist сессии chainlit."""
+
+    CHAT_PROFILE: Final = "chat_profile"
 
 
 class StepField:

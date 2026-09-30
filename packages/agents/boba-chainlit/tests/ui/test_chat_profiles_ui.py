@@ -1,21 +1,25 @@
 """Профили чата в браузере: селектор, применение настроек, набор инструментов.
 
 Проверяется DOM до и после клика по селектору, доставка system prompt / model /
-параметров сэмплинга в запрос провайдеру и пересечение инструментов профиля
-с ролью пользователя. Ожидаемые значения зафиксированы в конфиге стенда
-(StandConfig._use_test_profiles).
+параметров сэмплинга в запрос провайдеру, пересечение инструментов профиля
+с ролью пользователя и тред, чей профиль исчез из конфига. Ожидаемые значения
+зафиксированы в конфиге стенда (StandConfig._use_test_profiles).
 """
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, ClassVar
+from uuid import uuid4
 
 import httpx
 import pytest
 from chat_ui import OpenChat
+from playwright.sync_api import expect
 
-from boba.stand.ui.chat_page import ChatPage, StepKind
+from boba.stand.ui.chat_page import ChatPage, Selector, StepKind
+from boba.stand.ui.database import StandDatabase
 from boba.stand.ui.fake_llm import ScenarioName
 from boba.stand.ui.stand import StandProcess, StandUrl
 
@@ -306,3 +310,127 @@ class TestSingleProfile:
 
         if _tool_names(payload) != STAND_TOOLS:
             raise AssertionError(f"tools: {sorted(_tool_names(payload))}")
+
+
+
+@dataclass(frozen=True)
+class RetiredThread:
+    """Тред, чей профиль в meta исчез из конфига стенда."""
+
+    thread_id: str
+    probe: str
+    """Текст вопроса треда: по нему тред находится в ленте и в списке тредов."""
+
+
+class RetiredThreads:
+    """Треды с исчезнувшим профилем: ход, сохранение сессии, подмена профиля.
+
+    Профиль в meta треда chainlit пишет на disconnect вкладки, поэтому
+    вкладка уходит со страницы, а проверка ждёт этой записи.
+    """
+
+    PROFILE: ClassVar[str] = "retired"
+    SAVE_WAIT_SEC: ClassVar[float] = 15.0
+
+    def __init__(self, stand_db: StandDatabase) -> None:
+        self._db = stand_db
+
+    def made_in(self, chat: ChatPage) -> RetiredThread:
+        probe = f"retired profile probe {uuid4().hex[:8]}"
+        chat.ask(f"{ScenarioName.ANSWER.value} {probe}")
+        chat.await_idle()
+
+        thread_id = chat.log.thread_id()
+        self.saved_on_leave(chat, thread_id, "general")
+
+        self._db.set_thread_profile(thread_id, self.PROFILE)
+        return RetiredThread(thread_id=thread_id, probe=probe)
+
+    def saved_on_leave(self, chat: ChatPage, thread_id: str, profile: str) -> None:
+        """Вкладка уходит со страницы; в meta треда должен лечь profile."""
+        chat.page.goto("about:blank")
+
+        deadline = time.monotonic() + self.SAVE_WAIT_SEC
+        while self._db.thread_profile(thread_id) != profile:
+            if time.monotonic() > deadline:
+                saved = self._db.thread_profile(thread_id)
+                msg = (
+                    f"thread {thread_id}: meta.chat_profile is {saved!r} "
+                    f"{self.SAVE_WAIT_SEC}s after disconnect, expected {profile!r}"
+                )
+                raise AssertionError(msg)
+
+            time.sleep(0.2)
+
+
+@pytest.fixture
+def retired_threads(stand_db: StandDatabase) -> RetiredThreads:
+    return RetiredThreads(stand_db)
+
+
+class TestRetiredThreadProfile:
+    """Тред, чей профиль исчез из конфига, открывается на профиле по умолчанию.
+
+    Без замены фронт переключал профиль треда и свой по кругу и зависал с
+    пустой страницей — проверка ждёт дольше, чем длился тот круг.
+    """
+
+    TOAST: ClassVar[str] = "[data-sonner-toast]"
+    THREAD_HISTORY: ClassVar[str] = "#thread-history"
+    NOTICE: ClassVar[str] = (
+        f'Chat profile "{RetiredThreads.PROFILE}" is no longer available: '
+        'this chat continues with "General"'
+    )
+    SETTLE_MS: ClassVar[int] = 3000
+    WAIT_MS: ClassVar[int] = 15000
+
+    def test_link_opens_on_default_profile_with_notice(
+        self,
+        open_chat: OpenChat,
+        stand: StandProcess,
+        retired_threads: RetiredThreads,
+    ) -> None:
+        chat = open_chat(stand, ADMIN_LOGIN)
+        thread = retired_threads.made_in(chat)
+
+        chat.page.goto(
+            f"{stand.config.base_url}/thread/{thread.thread_id}",
+            wait_until="domcontentloaded",
+        )
+
+        toast = chat.page.locator(self.TOAST).filter(has_text=self.NOTICE)
+        expect(toast).to_be_visible(timeout=self.WAIT_MS)
+
+        self._check_opened(chat, thread)
+        retired_threads.saved_on_leave(chat, thread.thread_id, "general")
+
+    def test_sidebar_opens_it_from_another_profile(
+        self,
+        open_chat: OpenChat,
+        stand: StandProcess,
+        retired_threads: RetiredThreads,
+    ) -> None:
+        author = open_chat(stand, ADMIN_LOGIN)
+        thread = retired_threads.made_in(author)
+
+        chat = open_chat(stand, ADMIN_LOGIN)
+        _switch_to(chat, "search")
+
+        entry = chat.page.locator(self.THREAD_HISTORY).get_by_text(thread.probe)
+        entry.click()
+
+        self._check_opened(chat, thread)
+        retired_threads.saved_on_leave(chat, thread.thread_id, "general")
+
+    def _check_opened(self, chat: ChatPage, thread: RetiredThread) -> None:
+        question = chat.page.locator(Selector.of_type(StepKind.USER.value))
+        asked = question.filter(has_text=thread.probe)
+        expect(asked).to_be_visible(timeout=self.WAIT_MS)
+
+        chat.page.wait_for_timeout(self.SETTLE_MS)
+
+        expect(chat.page.locator(Selector.INPUT.value)).to_be_visible()
+        expect(asked).to_be_visible()
+
+        if chat.profile_label() != "General":
+            raise AssertionError(f"selector shows {chat.profile_label()!r}")

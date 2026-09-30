@@ -326,7 +326,14 @@ class StandDatabase:
         query = (
             PgQueryBuilder()
             .add(
-                "select count(*) from {table} where draft_id = %(draft_id)s",
+                """
+                select
+                    count(*)
+                from
+                    {table}
+                where
+                    draft_id = %(draft_id)s
+                """,
                 table=sql.Identifier(catalog.app_schema, CatalogTable.DRAFT_OPS.value),
                 draft_id=draft_id,
             )
@@ -338,13 +345,63 @@ class StandDatabase:
 
         return int(row[0])
 
+    def thread_profile(self, thread_id: str) -> str:
+        """Профиль из meta треда; пусто — chainlit ещё не сохранил сессию треда."""
+        query = (
+            PgQueryBuilder(schema=sql.Identifier(self._schema))
+            .add(
+                """
+                select
+                   coalesce(meta ->> 'chat_profile', '')
+                from
+                    {schema}.threads
+                where
+                    id = %(id)s
+                """,
+                id=UUID(thread_id),
+            )
+            .build()
+        )
+        row = run_blocking(self._execute(query))
+        if row is None:
+            msg = f"thread {thread_id!r} has no row in {self._schema}.threads"
+            raise RuntimeError(msg)
+
+        return str(row[0])
+
+    def set_thread_profile(self, thread_id: str, name: str) -> None:
+        """Профиль в meta треда заменяется на name: так тред выглядит после
+        того, как профиль переименовали или убрали из конфига."""
+        query = (
+            PgQueryBuilder(schema=sql.Identifier(self._schema))
+            .add(
+                """
+                update {schema}.threads
+                    set meta = coalesce(meta, jsonb_build_object())
+                        || jsonb_build_object('chat_profile', %(name)s::text)
+                where
+                    id = %(id)s
+                """,
+                name=name,
+                id=UUID(thread_id),
+            )
+            .build()
+        )
+        run_blocking(self._execute(query))
+
     def llm_settings_of(self, identifier: str) -> dict[str, Any]:
         """Ключ llm из users.meta: тест сверяет, что именно сохранилось."""
         query = (
             PgQueryBuilder(schema=sql.Identifier(self._schema))
             .add(
-                "select coalesce(meta -> 'llm', '{{}}'::jsonb) "
-                "from {schema}.users where identifier = %(identifier)s",
+                """
+                select
+                    coalesce(meta -> 'llm', '{{}}'::jsonb) 
+                from
+                    {schema}.users
+                where
+                    identifier = %(identifier)s
+                """,
                 identifier=identifier,
             )
             .build()
