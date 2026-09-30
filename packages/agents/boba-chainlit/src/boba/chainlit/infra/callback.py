@@ -21,7 +21,7 @@ from boba.chainlit.chat.settings import SettingsPanel
 from boba.chainlit.chat.tracing import LlmStateLog
 from boba.chainlit.chat.turn import ChatTurn, Question
 from boba.chainlit.data.data_layer import AttachmentDataLayer, PostgresDataLayer
-from boba.chainlit.domain.fields import ThreadField
+from boba.chainlit.domain.fields import ThreadField, ThreadMetaField
 from boba.chainlit.infra.config import AppConfig
 from boba.chainlit.infra.providers import (
     chainlit_data_layer,
@@ -68,7 +68,7 @@ from boba.runtime.di import Container, Depends, di_inject
 from boba.runtime.http import SessionCookie
 from boba.transport.http import DumpLabel
 from chainlit.config import config as chainlit_config
-from chainlit.context import ChainlitContext, context_var
+from chainlit.context import ChainlitContext, context, context_var
 from chainlit.data.base import BaseDataLayer
 from chainlit.emitter import ChainlitEmitter
 from chainlit.input_widget import Tab
@@ -564,11 +564,54 @@ async def on_canvas_render_status(action: cl.Action) -> None:
 @di_inject
 async def on_chat_resume(
     thread_dict: ThreadDict,
+    registry: Annotated[ChatProfiles, Depends(chat_profiles_registry)],
+):
+    """Вкладка вернулась к треду.
+
+    Профиль из meta треда, которого нет в конфиге или который не выдан входу,
+    заменяется профилем по умолчанию до сборки агента сессии: иначе агент не
+    собирается, а фронт без конца переключает профиль. Этот же thread_dict
+    chainlit следом отправит фронту, а профиль сессии запишет в meta на
+    disconnect.
+    """
+    session = current_session()
+    sign_in = session.sign_in
+
+    retired = False
+    if stored := session.chat_profile:
+        retired = stored not in registry.visible_for(sign_in.profiles)
+
+    if retired:
+        fallback = registry.resolve_or_default(None, sign_in)
+        context.session.chat_profile = fallback.name
+
+        if metadata := thread_dict[ThreadField.METADATA]:
+            metadata[ThreadMetaField.CHAT_PROFILE] = fallback.name
+
+        logger.warning(
+            "resume thread %s: chat profile %r is not granted, switched to %r",
+            thread_dict[ThreadField.ID],
+            stored,
+            fallback.name,
+        )
+        notice = (
+            f'Chat profile "{stored}" is no longer available: '
+            f'this chat continues with "{fallback.config.display_name}"'
+        )
+        await context.emitter.send_toast(notice, "warning")
+
+    await _resume_feed(thread_dict)
+
+
+@di_inject
+async def _resume_feed(
+    thread_dict: ThreadDict,
     graph: Annotated[CompiledStateGraph, Depends(langchain_agent, scope="session")],
     app_config: Annotated[AppConfig, Depends(get_app_config)],
     registry: Annotated[ChatProfiles, Depends(chat_profiles_registry)],
 ):
-    """Вкладка вернулась к треду: если ход жив — сохранить loading и живые шаги.
+    """Лента треда при возврате вкладки: если ход жив — сохранить loading и
+    живые шаги.
 
     task_start уже отправлен обёрткой chainlit вокруг хендлера; её же task_end
     глушится, пока ход не закончится. Незавершённых шагов ещё нет в истории,
