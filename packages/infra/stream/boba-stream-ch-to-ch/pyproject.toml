@@ -4,12 +4,12 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "boba-stream-ch-to-ch"
-version = "0.0.26.dev1"
+version = "0.0.26.dev3"
 description = "Пара ClickHouse -> ClickHouse: контракт колонок из шапки TabSeparatedWithNamesAndTypes как есть, сверка текстов типов с каталогом приёмника, DDL текстом типа источника, поток TabSeparated в input() без перекодирования."
 requires-python = ">=3.11,<4"
 dependencies = [
-    "boba-toolkit==0.0.26.dev1",
-    "boba-db-clickhouse[payload]==0.0.26.dev1",
+    "boba-toolkit==0.0.26.dev3",
+    "boba-db-clickhouse[payload]==0.0.26.dev3",
 ]
 
 [project.entry-points."boba.transfer.clickhouse"]
