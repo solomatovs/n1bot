@@ -43,6 +43,7 @@ __all__ = [
     "FrameHead",
     "FrameLimit",
     "FrameProtocolError",
+    "PartsWriter",
     "ToolFrame",
     "ToolIo",
 ]
@@ -136,9 +137,12 @@ class FrameCodec:
         self._body_limit = body_limit
         self._buffer = bytearray()
 
-    def encode_parts(self, header: bytes, body: Chunk) -> tuple[bytes, Chunk]:
-        """Префикс кадра и тело для раздельной записи (writev): тело не
-        копируется — оно уходит в запись тем же объектом."""
+    def encode_parts(
+        self, header: bytes, body: Chunk
+    ) -> tuple[bytes, bytes, bytes, Chunk]:
+        """Части кадра в порядке провода для раздельной записи (writev): длина
+        заголовка, заголовок, длина тела, тело. Ничего не склеивается —
+        заголовок и тело уходят в запись теми же объектами."""
         if len(header) > self._header_limit:
             msg = (
                 f"outbound frame header of {len(header)} bytes exceeds "
@@ -153,20 +157,12 @@ class FrameCodec:
             )
             raise FrameProtocolError(msg)
 
-        prefix = b"".join(
-            (
-                len(header).to_bytes(self.LEN_BYTES, "big"),
-                header,
-                len(body).to_bytes(self.LEN_BYTES, "big"),
-            )
+        return (
+            len(header).to_bytes(self.LEN_BYTES, "big"),
+            header,
+            len(body).to_bytes(self.LEN_BYTES, "big"),
+            body,
         )
-
-        return prefix, body
-
-    def encode(self, frame: ToolFrame) -> bytes:
-        prefix, body = self.encode_parts(frame.header, frame.body)
-
-        return prefix + bytes(body)
 
     def feed(self, chunk: Chunk) -> Sequence[ToolFrame]:
         """Принять порцию потока и отдать кадры, собравшиеся целиком.
@@ -261,6 +257,54 @@ class FrameCodec:
         return ToolFrame(header=header, body=body), total
 
 
+class PartsWriter:
+    """Запись нескольких буферов в дескриптор одним writev без склейки.
+
+    Общая точка записи обеих сторон пайпа: тело пишет ею кадры и сырые
+    порции наружу (ToolIo), хост — входы тела (CallInput). Обычно ядро
+    принимает всё за один вызов, и части уходят теми же объектами, что
+    пришли. Если запись прервана сигналом и ядро приняло только начало,
+    остаток дописывается через memoryview — срез view не копирует данные.
+
+    Ошибки:
+    OSError — дескриптор закрыт либо читатель закрыл свой конец пайпа.
+    """
+
+    def write(self, fd: int, parts: Sequence[Chunk]) -> None:
+        total = 0
+        for part in parts:
+            total += len(part)
+
+        if total == 0:
+            return
+
+        written = os.writev(fd, parts)
+        if written == total:
+            return
+
+        self._write_rest(fd, parts, written)
+
+    def _write_rest(self, fd: int, parts: Sequence[Chunk], written: int) -> None:
+        pending = list(self._rest(parts, written))
+
+        while pending:
+            written = os.writev(fd, pending)
+            pending = list(self._rest(pending, written))
+
+    @staticmethod
+    def _rest(parts: Sequence[Chunk], skip: int) -> Iterator[memoryview]:
+        """Части после первых skip байт: ушедшие целиком пропускаются, начатая
+        отдаётся с места обрыва."""
+        for part in parts:
+            view = memoryview(part)
+            if skip >= view.nbytes:
+                skip -= view.nbytes
+                continue
+
+            yield view[skip:]
+            skip = 0
+
+
 class CallInbox:
     """Мост кадров между потоком насоса и читателем вызова на хосте.
 
@@ -336,6 +380,7 @@ class ToolIo:
         self._outbound_fd = outbound_fd
         self._codec_out = FrameCodec(FrameLimit.HEADER_BYTES, FrameLimit.BODY_BYTES)
         self._write_lock = threading.Lock()
+        self._writer = PartsWriter()
 
     @classmethod
     def on_channels(cls, inbound_fd: int, outbound_fd: int) -> ToolIo:
@@ -407,7 +452,7 @@ class ToolIo:
         """Кадр наружу; тело пишется writev без копии, запись атомарна
         относительно других потоков тела."""
         header = head.model_dump_json().encode("utf-8")
-        prefix, body = self._codec_out.encode_parts(header, body)
+        parts = self._codec_out.encode_parts(header, body)
 
         if self._outbound_fd < 0:
             logger.info(
@@ -418,7 +463,7 @@ class ToolIo:
             return
 
         with self._write_lock:
-            self._writev_all(self._outbound_fd, prefix, body)
+            self._writer.write(self._outbound_fd, parts)
 
     def read_into(self, buffer: memoryview) -> int:
         """Сырой вход: очередные байты в buffer как есть, не больше его длины;
@@ -428,7 +473,7 @@ class ToolIo:
 
         return os.readv(self._inbound_fd, [buffer])
 
-    def write_chunk(self, chunk: Chunk) -> None:
+    def write_chunk(self, chunk: memoryview) -> None:
         """Сырой выход: порция пишется без кадрирования, атомарно к другим
         потокам тела."""
         if self._outbound_fd < 0:
@@ -436,7 +481,7 @@ class ToolIo:
             return
 
         with self._write_lock:
-            self._writev_all(self._outbound_fd, b"", chunk)
+            self._writer.write(self._outbound_fd, (chunk,))
 
     def _read_exact(self, count: int, *, at_boundary: bool) -> bytes | None:
         """Ровно count байт входа; None — чистый EOF на границе кадров.
@@ -487,29 +532,3 @@ class ToolIo:
                 raise FrameProtocolError(msg)
 
             filled += got
-
-    @staticmethod
-    def _writev_all(fd: int, first: bytes, second: Chunk) -> None:
-        """Записать обе части целиком; тело не склеивается с префиксом."""
-        parts: list[memoryview] = []
-
-        head = memoryview(first)
-        if head.nbytes:
-            parts.append(head)
-
-        tail = memoryview(second)
-        if tail.nbytes:
-            parts.append(tail)
-
-        while parts:
-            written = os.writev(fd, parts)
-
-            while written and parts:
-                head = parts[0]
-                if written >= head.nbytes:
-                    written -= head.nbytes
-                    parts.pop(0)
-                    continue
-
-                parts[0] = head[written:]
-                written = 0

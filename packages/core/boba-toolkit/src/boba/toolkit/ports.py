@@ -85,6 +85,7 @@ __all__ = [
     "PortDirection",
     "RawInbound",
     "RawOutbound",
+    "RawWriter",
     "StreamGroup",
     "StreamGroupAbortedError",
     "StreamPorts",
@@ -315,40 +316,57 @@ class RawInbound(io.RawIOBase):
         return core_schema.is_instance_schema(cls)
 
 
-class RawOutbound(io.RawIOBase):
-    """Истинно сырой выходной порт: двоичный файл на запись поверх провода.
+class RawOutbound:
+    """Истинно сырой выходной порт: байты уходят в провод как есть.
 
     Никакого кадрирования и преобразований — pg->pg перекачка везёт ровно
     те байты, что отдал COPY. Плата за это — отсутствие метаданных и
     журнала содержимого: канал предназначен для перекачки (splice), хост в
-    него не заглядывает. Точка записи одна — write: буфер вызывающего уходит
-    в провод как есть, поэтому писатели вроде pyarrow пишут в порт напрямую.
-    Запись в трубу блокирующая, пока хост не вычитает её, поэтому async-тело
-    зовёт send: та же запись в потоке, цикл событий остаётся свободен.
-    Строится в ToolMain поверх ToolIo.
+    него не заглядывает. Точка записи одна — write: view вызывающего уходит
+    в провод без копии. Запись в трубу блокирующая, пока хост не вычитает
+    её, поэтому async-тело зовёт send: та же запись в потоке, цикл событий
+    остаётся свободен. Писателю, которому нужен файл (pyarrow,
+    io.BufferedWriter), порт отдаёт его методом writer. Строится в ToolMain
+    поверх ToolIo.
     """
 
     def __init__(self, io_: ToolIo) -> None:
-        super().__init__()
         self._io = io_
 
-    def writable(self) -> bool:
-        return True
-
-    def write(self, buffer: Any) -> int:
-        chunk = memoryview(buffer)
+    def write(self, chunk: memoryview) -> None:
         self._io.write_chunk(chunk)
 
-        return len(chunk)
-
-    async def send(self, chunk: Chunk) -> None:
+    async def send(self, chunk: memoryview) -> None:
         await asyncio.to_thread(self.write, chunk)
+
+    def writer(self) -> RawWriter:
+        return RawWriter(self)
 
     @classmethod
     def __get_pydantic_core_schema__(
         cls, source: Any, handler: GetCoreSchemaHandler
     ) -> CoreSchema:
         return core_schema.is_instance_schema(cls)
+
+
+class RawWriter(io.RawIOBase):
+    """Файл на запись поверх сырого выходного порта: для писателей, которые
+    ждут файл и передают в write любой объект с протоколом буфера (bytes,
+    pyarrow.Buffer). Здесь он один раз приводится к memoryview без копии —
+    порт принимает только его. Создаётся методом RawOutbound.writer."""
+
+    def __init__(self, port: RawOutbound) -> None:
+        super().__init__()
+        self._port = port
+
+    def writable(self) -> bool:
+        return True
+
+    def write(self, data: Any) -> int:
+        view = memoryview(data)
+        self._port.write(view)
+
+        return view.nbytes
 
 
 class ArrowStreamError(Exception):
@@ -367,7 +385,7 @@ class ArrowInbound(RawInbound):
 
 class ArrowOutbound(RawOutbound):
     """Выходной порт потока Arrow IPC: сырой, как RawOutbound; схему и пачки
-    в него пишет ArrowIpc из boba.toolkit.arrow."""
+    пишет ArrowIpc из boba.toolkit.arrow в файл порта (writer)."""
 
 
 class StreamPorts:

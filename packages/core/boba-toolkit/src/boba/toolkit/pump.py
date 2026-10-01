@@ -42,6 +42,7 @@ from boba.toolkit.frames import (
     CallInbox,
     FrameCodec,
     FrameLimit,
+    PartsWriter,
     ToolFrame,
 )
 from boba.toolkit.launcher import (
@@ -199,6 +200,7 @@ class CallInput:
     def __init__(self, fd: int) -> None:
         self._fd = fd
         self._lock = threading.Lock()
+        self._writer = PartsWriter()
         self._open = True
         self._broken = False
 
@@ -206,13 +208,13 @@ class CallInput:
         """Байты входа телу; после finish, abandon или разрыва — LauncherError."""
         with self._lock:
             self._require_open()
-            self._write_parts(b"", data)
+            self._write_parts((data,))
 
-    def send_parts(self, first: bytes, second: Chunk) -> None:
-        """Две части одной записью (writev): префикс кадра и тело без склейки."""
+    def send_parts(self, parts: Sequence[Chunk]) -> None:
+        """Несколько частей одной записью (writev): части кадра без склейки."""
         with self._lock:
             self._require_open()
-            self._write_parts(first, second)
+            self._write_parts(parts)
 
     def finish(self) -> None:
         """Конец входа: EOF телу закрытием пайпа; повтор безвреден."""
@@ -259,36 +261,14 @@ class CallInput:
         )
         raise LauncherError(msg)
 
-    def _write_parts(self, first: bytes, second: Chunk) -> None:
-        """Записать обе части writev'ом; разрыв пайпа закрывает вход молча
-        (см. докстринг класса)."""
-        parts: list[memoryview] = []
-
-        head = memoryview(first)
-        if head.nbytes:
-            parts.append(head)
-
-        tail = memoryview(second)
-        if tail.nbytes:
-            parts.append(tail)
-
-        while parts:
-            try:
-                written = os.writev(self._fd, parts)
-            except OSError:
-                self._broken = True
-                self._close()
-                return
-
-            while written and parts:
-                lead = parts[0]
-                if written >= lead.nbytes:
-                    written -= lead.nbytes
-                    parts.pop(0)
-                    continue
-
-                parts[0] = lead[written:]
-                written = 0
+    def _write_parts(self, parts: Sequence[Chunk]) -> None:
+        """Записать все части writev'ом по порядку; разрыв пайпа закрывает
+        вход молча (см. докстринг класса)."""
+        try:
+            self._writer.write(self._fd, parts)
+        except OSError:
+            self._broken = True
+            self._close()
 
     def _close(self) -> None:
         self._open = False
@@ -309,8 +289,7 @@ class FrameInput(CallInput, CallInputPort):
         self._codec = FrameCodec(FrameLimit.HEADER_BYTES, FrameLimit.BODY_BYTES)
 
     def send(self, frame: ToolFrame) -> None:
-        prefix, body = self._codec.encode_parts(frame.header, frame.body)
-        self.send_parts(prefix, body)
+        self.send_parts(self._codec.encode_parts(frame.header, frame.body))
 
 
 class JournaledFrameInput(FrameInput):
@@ -330,11 +309,12 @@ class JournaledFrameInput(FrameInput):
         self._tap(data)
         super().send_bytes(data)
 
-    def send_parts(self, first: bytes, second: Chunk) -> None:
+    def send_parts(self, parts: Sequence[Chunk]) -> None:
         # журнальный кодек инкрементален: части скармливаются по очереди
-        self._tap(first)
-        self._tap(second)
-        super().send_parts(first, second)
+        for part in parts:
+            self._tap(part)
+
+        super().send_parts(parts)
 
 
 class RawInput(FrameInput):

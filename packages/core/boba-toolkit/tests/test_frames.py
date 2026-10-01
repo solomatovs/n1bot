@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import signal
 import threading
 import time
 
@@ -14,6 +15,7 @@ from boba.toolkit.frames import (
     FrameCodec,
     FrameLimit,
     FrameProtocolError,
+    PartsWriter,
     ToolFrame,
 )
 from boba.toolkit.launcher import LauncherError
@@ -31,18 +33,23 @@ def _codec() -> FrameCodec:
     return FrameCodec(FrameLimit.HEADER_BYTES, FrameLimit.BODY_BYTES)
 
 
+def encode(codec: FrameCodec, frame: ToolFrame) -> bytes:
+    """Кадр одним куском байтов, как он лежит на проводе."""
+    return b"".join(codec.encode_parts(frame.header, frame.body))
+
+
 class TestCodec:
     def test_roundtrip_keeps_header_and_body(self) -> None:
         frame = ToolFrame.of(Head(seq=7), b"\x00\x01\x02")
 
-        decoded = _codec().feed(_codec().encode(frame))
+        decoded = _codec().feed(encode(_codec(), frame))
 
         assert len(decoded) == 1
         assert decoded[0].body == b"\x00\x01\x02"
         assert decoded[0].header_as(Head).seq == 7
 
     def test_frame_split_across_chunks_is_assembled(self) -> None:
-        data = _codec().encode(ToolFrame.of(Head(seq=1), b"payload"))
+        data = encode(_codec(), ToolFrame.of(Head(seq=1), b"payload"))
         codec = _codec()
 
         collected: list[ToolFrame] = []
@@ -56,8 +63,8 @@ class TestCodec:
         codec = _codec()
         data = b"".join(
             (
-                codec.encode(ToolFrame.of(Head(seq=1), b"a")),
-                codec.encode(ToolFrame.of(Head(seq=2), b"b")),
+                encode(codec, ToolFrame.of(Head(seq=1), b"a")),
+                encode(codec, ToolFrame.of(Head(seq=2), b"b")),
             )
         )
 
@@ -69,10 +76,10 @@ class TestCodec:
         codec = FrameCodec(FrameLimit.HEADER_BYTES, 4)
 
         with pytest.raises(FrameProtocolError, match="body"):
-            codec.encode(ToolFrame.of(Head(seq=1), b"too long"))
+            encode(codec, ToolFrame.of(Head(seq=1), b"too long"))
 
     def test_truncated_frame_is_reported_on_finish(self) -> None:
-        data = _codec().encode(ToolFrame.of(Head(seq=1), b"payload"))
+        data = encode(_codec(), ToolFrame.of(Head(seq=1), b"payload"))
         codec = _codec()
         codec.feed(data[:-2])
 
@@ -212,8 +219,8 @@ class TestInbox:
         codec = _codec()
 
         def feeder() -> None:
-            inbox.feed(codec.encode(ToolFrame.of(Head(seq=1), b"a")))
-            inbox.feed(codec.encode(ToolFrame.of(Head(seq=2), b"b")))
+            inbox.feed(encode(codec, ToolFrame.of(Head(seq=1), b"a")))
+            inbox.feed(encode(codec, ToolFrame.of(Head(seq=2), b"b")))
             inbox.close()
 
         thread = threading.Thread(target=feeder)
@@ -231,3 +238,53 @@ class TestInbox:
 
         with pytest.raises(FrameProtocolError):
             list(inbox.frames())
+
+
+class TestPartsWriter:
+    def test_parts_land_in_order_without_gluing(self) -> None:
+        read_fd, write_fd = os.pipe()
+
+        PartsWriter().write(write_fd, (b"ab", b"", memoryview(b"cd"), b"e"))
+        os.close(write_fd)
+
+        assert os.read(read_fd, 64) == b"abcde"
+        os.close(read_fd)
+
+    def test_empty_parts_write_nothing(self) -> None:
+        read_fd, write_fd = os.pipe()
+
+        PartsWriter().write(write_fd, (b"", memoryview(b"")))
+        os.close(write_fd)
+
+        assert os.read(read_fd, 64) == b""
+        os.close(read_fd)
+
+    def test_write_cut_by_a_signal_is_finished_from_the_cut(self) -> None:
+        """Пайп меньше записи, читатель медлит: writev встаёт на полном буфере,
+        сигнал обрывает его после принятого начала — остаток обязан дойти
+        целиком и по порядку."""
+        read_fd, write_fd = os.pipe()
+        parts = (b"head", bytes(range(256)) * 2048, b"tail")
+        received = bytearray()
+
+        def reader() -> None:
+            time.sleep(0.3)
+            while chunk := os.read(read_fd, 65536):
+                received.extend(chunk)
+
+        cuts: list[int] = []
+        previous = signal.signal(signal.SIGALRM, lambda *_: cuts.append(1))
+        thread = threading.Thread(target=reader)
+        thread.start()
+        try:
+            signal.setitimer(signal.ITIMER_REAL, 0.05)
+            PartsWriter().write(write_fd, parts)
+        finally:
+            signal.setitimer(signal.ITIMER_REAL, 0)
+            signal.signal(signal.SIGALRM, previous)
+            os.close(write_fd)
+            thread.join()
+            os.close(read_fd)
+
+        assert cuts
+        assert bytes(received) == b"".join(parts)
