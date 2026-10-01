@@ -63,7 +63,7 @@ def _feed_io(*frames: ToolFrame) -> ToolIo:
     codec = _codec()
 
     for frame in frames:
-        os.write(write_fd, codec.encode(frame))
+        os.writev(write_fd, codec.encode_parts(frame.header, frame.body))
 
     os.close(write_fd)
 
@@ -210,8 +210,8 @@ class TestRawPorts:
         port = StreamPorts.build(RawOutbound, io)
         assert isinstance(port, RawOutbound)
 
-        await port.send(b"\x01\x02\x03")
-        await port.send(b"tail")
+        await port.send(memoryview(b"\x01\x02\x03"))
+        await port.send(memoryview(b"tail"))
         os.close(write_fd)
 
         collected = bytearray()

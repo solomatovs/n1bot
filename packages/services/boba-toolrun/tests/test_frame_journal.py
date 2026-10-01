@@ -33,12 +33,17 @@ def _codec() -> FrameCodec:
     return FrameCodec(FrameLimit.HEADER_BYTES, FrameLimit.BODY_BYTES)
 
 
+def _encode(frame: ToolFrame) -> bytes:
+    """Кадр одним куском байтов, как он лежит на проводе."""
+    return b"".join(_codec().encode_parts(frame.header, frame.body))
+
+
 class TestFrameHeadsSink:
     def test_heads_and_sizes_without_bodies(self) -> None:
         recorder = Recorder()
         sink = FrameHeadsSink(recorder)
 
-        sink.feed(_codec().encode(ToolFrame.of(Head(seq=1), b"\x00" * 3200)))
+        sink.feed(_encode(ToolFrame.of(Head(seq=1), b"\x00" * 3200)))
 
         journal = "".join(recorder.lines)
         assert '"seq":1' in journal
@@ -49,7 +54,7 @@ class TestFrameHeadsSink:
         recorder = Recorder()
         sink = FrameHeadsSink(recorder)
 
-        data = _codec().encode(ToolFrame.of(Head(seq=7), b"body"))
+        data = _encode(ToolFrame.of(Head(seq=7), b"body"))
         sink.feed(data[:5])
         sink.feed(data[5:])
 

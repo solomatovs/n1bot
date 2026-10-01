@@ -63,7 +63,7 @@ class TestArrowPorts:
                 raise AssertionError("outbound port is ArrowOutbound")
 
             try:
-                writer = await ArrowIpc().open_out(out, SCHEMA)
+                writer = await ArrowIpc().open_out(out.writer(), SCHEMA)
                 for batch in sent:
                     await writer.write(batch)
 
@@ -97,7 +97,7 @@ class TestArrowPorts:
 
         async def produce() -> None:
             try:
-                writer = await ArrowIpc().open_out(out, SCHEMA)
+                writer = await ArrowIpc().open_out(out.writer(), SCHEMA)
                 await writer.write(_batch(0, 5))
                 await writer.close()
             finally:
@@ -123,7 +123,7 @@ class TestArrowPorts:
 
         async def produce() -> None:
             try:
-                await raw.send(b"id,amount\n1,2.5\n")
+                await raw.send(memoryview(b"id,amount\n1,2.5\n"))
             finally:
                 os.close(write_fd)
 
