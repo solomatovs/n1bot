@@ -1,6 +1,6 @@
 """Каталог инструментов субъекта и REST-запуск одного человеком.
 
-GET /v1/tools — каталог под роли и профиль (то, что видит страница workflow).
+GET /v1/tools — каталог страницы сборки: отключён, отвечает 501.
 POST /v1/tools/{name}: тред, профиль, intent и аргументы в теле, пользователь —
 из cookie входа. Контекст вызова собирается здесь под HumanInitiator(api);
 видимость инструментов — headless-решение ToolAccess, инструменты чата
@@ -39,7 +39,7 @@ from boba.identity.locks import (
     LockPurpose,
 )
 from boba.identity.run import RunRegistry
-from boba.studio.api.auth import ApiAuth, CurrentSubject, CurrentUser
+from boba.studio.api.auth import ApiAuth, CurrentUser
 from boba.studio.api.urls import ToolCallUrl
 from boba.toolkit.calls import ToolIntent
 from boba.toolrun.invoke import (
@@ -49,8 +49,6 @@ from boba.toolrun.invoke import (
     ToolUnavailableError,
 )
 from boba.toolrun.registry import ToolRegistry
-from boba.workflow import ToolFacts
-from boba.workflow_engine.catalog import CatalogBuilder
 
 __all__ = ["JobLock", "ToolCallBody", "ToolCallReply", "ToolCalling"]
 
@@ -129,6 +127,12 @@ class ToolCalling:
 
     TAG: ClassVar[str] = "tools"
 
+    CATALOG_DISABLED: ClassVar[str] = (
+        "the tool catalog of the workflow page is disabled: the workflow engine "
+        "was removed; call a tool with POST /v1/tools/{name} or run a DAG with "
+        "POST /v1/dags/runs"
+    )
+
     def __init__(
         self,
         registry: RegistrySource,
@@ -151,12 +155,9 @@ class ToolCalling:
             ToolCallUrl.CALL.value, self.serve, methods=["POST"], tags=[self.TAG]
         )
 
-    async def catalog(self, identity: CurrentSubject) -> Mapping[str, ToolFacts]:
-        registry = await self._registry()
-
-        return CatalogBuilder.of(
-            registry, identity.subject.roles, identity.subject.profile
-        )
+    async def catalog(self, current_user: CurrentUser) -> None:
+        """Каталог страницы сборки отключён вместе с запуском workflow."""
+        raise HTTPException(status_code=501, detail=self.CATALOG_DISABLED)
 
     async def serve(
         self,

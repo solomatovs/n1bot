@@ -70,7 +70,6 @@ def app_container(
     container.eager(runtime.payload_store)
     container.eager(runtime.live_locks)
     container.eager(runtime.connection_store)
-    container.eager(runtime.workflow_store)
     container.eager(providers.chainlit_data_layer)
 
     return container

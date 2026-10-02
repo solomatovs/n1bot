@@ -25,7 +25,7 @@ from boba.db.pgvector.config import KnowledgeBaseSchemaConfig
 from boba.db.pgvector.schema import KbSchema
 from boba.identity.directory import UserDirectory
 from boba.identity.errors import ServiceDisabledError
-from boba.identity.locks import LiveLocks, MemoryLiveLocks, RunLocking, StaleLock
+from boba.identity.locks import LiveLocks, MemoryLiveLocks, StaleLock
 from boba.identity.sso import RefreshSignal
 from boba.identity.token import CookieSpec
 from boba.ldap import Ldap3Directory
@@ -60,8 +60,6 @@ from boba.runtime.users import UsersTable
 from boba.toolrun.registry import ToolRegistry
 from boba.toolrun.streams import ToolStreams
 from boba.toolrun.wrapping import CallHooks
-from boba.workflow_engine.service import WorkflowService
-from boba.workflow_engine.store import WorkflowConfig, WorkflowStore
 
 logger = logging.getLogger(__name__)
 
@@ -244,7 +242,6 @@ def runtime_refs() -> RuntimeRefs:
     """Входы приложения для api и обвязок: ссылки в корневой контейнер."""
     return RuntimeRefs(
         tool_registry=tool_registry_ref,
-        workflow_service=workflow_service_ref,
         connection_store=connection_store_ref,
         connection_types=connection_types_ref,
         credentials=credential_source_ref,
@@ -272,13 +269,6 @@ async def tool_registry_ref() -> ToolRegistry:
     return await _root().resolve(Depends(tool_registry))
 
 
-async def workflow_service_ref() -> WorkflowService:
-    """Сервис workflow из корневого контейнера; зовётся на каждый вызов."""
-    service = await _root().resolve(Depends(workflow_service))
-
-    return required(service, "workflow", "the workflow service")
-
-
 async def kb_schema(
     raw: Annotated[DictConfig, Depends(get_raw_config)],
 ) -> None:
@@ -289,20 +279,6 @@ async def kb_schema(
 
     cfg = bind(raw, "tool.kb", KnowledgeBaseSchemaConfig)
     await KbSchema(cfg, dim=cfg.embedding.dim).setup()
-
-
-async def workflow_store(
-    raw: Annotated[DictConfig, Depends(get_raw_config)],
-) -> WorkflowStore | None:
-    """Хранилище workflow и их запусков; None — секция [workflow] выключена."""
-    cfg = bind(raw, "workflow", WorkflowConfig)
-    if not cfg.enable:
-        return None
-
-    store = WorkflowStore(cfg)
-    await store.setup()
-
-    return store
 
 
 async def live_locks(
@@ -333,33 +309,6 @@ async def live_locks(
 def live_locks_ref() -> LiveLocks:
     """Блокировки для обвязок инструментов; зовётся на каждый вызов."""
     return _root().resolved(live_locks)
-
-
-def workflow_service(
-    store: Annotated[WorkflowStore | None, Depends(workflow_store)],
-    instance: Annotated[str, Depends(instance_name)],
-    bus: Annotated[MessageBus, Depends(message_bus)],
-    locks: Annotated[LiveLocks, Depends(live_locks)],
-    config: Annotated[RuntimeConfig, Depends(get_runtime_config)],
-) -> WorkflowService | None:
-    """Сервис workflow; события запусков уходят в шину процесса под блокировкой."""
-    if store is None:
-        return None
-
-    locking = RunLocking(locks=locks, heartbeat_sec=config.cluster.heartbeat_sec)
-    return WorkflowService(store, tool_registry_ref, instance, bus, locking)
-
-
-async def workflow_recovery(
-    service: Annotated[WorkflowService | None, Depends(workflow_service)],
-) -> None:
-    """Запуски этого инстанса без процесса закрываются на старте, а не висят running."""
-    if service is None:
-        return
-
-    recovered = await service.recover_orphans()
-    if recovered:
-        logger.warning("workflow: %d abandoned run(s) closed on startup", recovered)
 
 
 def connection_types() -> ConnectionTypes:
@@ -459,19 +408,17 @@ def auth_service(
 
 
 class ReaperHandlers:
-    """Обработчики сторожа блокировок: осиротевшие ходы/запуски и ретенция."""
+    """Обработчики сторожа блокировок: осиротевшие ходы и ретенция."""
 
     def __init__(
         self,
         config: RuntimeConfig,
         locks: PgLiveLocks,
-        service: WorkflowService | None,
         bus: PgMessageBus,
         payloads: PgPayloadStore,
     ) -> None:
         self._config = config
         self._locks = locks
-        self._service = service
         self._bus = bus
         self._payloads = payloads
 
@@ -487,13 +434,6 @@ class ReaperHandlers:
         turns = await StaleTurnCloser(self._bus, self._locks).close(stale)
         if turns:
             logger.warning("chat: %d turn(s) of dead holders closed", turns)
-
-        if self._service is None:
-            return
-
-        closed = await self._service.close_unlocked()
-        if closed:
-            logger.warning("workflow: %d run(s) without a holder closed", closed)
 
     async def on_sweep(self) -> None:
         usage = await self._bus.queue_usage()
@@ -515,12 +455,11 @@ class ReaperHandlers:
 async def lock_reaper(
     config: Annotated[RuntimeConfig, Depends(get_runtime_config)],
     locks: Annotated[LiveLocks, Depends(live_locks)],
-    service: Annotated[WorkflowService | None, Depends(workflow_service)],
     bus: Annotated[MessageBus, Depends(message_bus)],
     payloads: Annotated[PayloadStore, Depends(payload_store)],
 ) -> AsyncGenerator[LockReaper | None, None]:
-    """Запускает сторожа блокировок на всё время работы: он закрывает ходы и запуски
-    без держателя, следит за очередью уведомлений и убирает старые события; при
+    """Запускает сторожа блокировок на всё время работы: он закрывает ходы без
+    держателя, следит за очередью уведомлений и убирает старые события; при
     остановке снимает блокировки инстанса. При local сторож не поднимается:
     протухшие блокировки памяти снимает ленивый reap при захвате, ретенции нет.
     """
@@ -549,7 +488,7 @@ async def lock_reaper(
         )
         raise RuntimeError(msg)
 
-    handlers = ReaperHandlers(config, locks, service, bus, payloads)
+    handlers = ReaperHandlers(config, locks, bus, payloads)
     reaper = LockReaper(
         locks, config.cluster.reaper_period_sec, handlers.on_stale, handlers.on_sweep
     )

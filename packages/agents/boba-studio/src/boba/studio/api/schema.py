@@ -31,7 +31,6 @@ from boba.studio.api.app import ApiAccess, ApiApp, ApiExtras
 from boba.studio.api.signin import PageUrls, SignInWiring
 from boba.studio.catalog.api import CatalogApi
 from boba.toolrun.registry import ToolRegistry
-from boba.workflow_engine.service import WorkflowService
 
 __all__ = ["OpenApiDocument"]
 
@@ -126,7 +125,6 @@ class OpenApiDocument:
     def _refs(cls) -> RuntimeRefs:
         return RuntimeRefs(
             tool_registry=cls._no_registry,
-            workflow_service=cls._no_service,
             connection_store=cls._no_store,
             connection_types=ConnectionTypes.discover,
             credentials=cls._no_credentials,
@@ -139,10 +137,6 @@ class OpenApiDocument:
     @staticmethod
     async def _no_registry() -> ToolRegistry:
         raise RuntimeError(OpenApiDocument._stub_called("tool registry"))
-
-    @staticmethod
-    async def _no_service() -> WorkflowService:
-        raise RuntimeError(OpenApiDocument._stub_called("workflow service"))
 
     @staticmethod
     def _no_store() -> Any:

@@ -1,6 +1,6 @@
 """Провайдеры chainlit-процесса: конфиг чата, клиенты LLM, data layer и агент langgraph.
 
-Общие для процессов провайдеры (реестр, сторы, workflow) — boba.runtime.providers.
+Общие для процессов провайдеры (реестр, сторы) — boba.runtime.providers.
 """
 
 from collections.abc import AsyncIterator, Sequence

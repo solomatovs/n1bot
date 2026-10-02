@@ -43,8 +43,6 @@ from boba.stand.site import StandLayers
 from boba.stand.stream_sinks import SinkSources, StreamSinks
 from boba.stand.ui.stand import REPO_ROOT, StandApp, StandConfig, StandError, StandUrl
 from boba.transport.http.connection import HttpConnection, UrlScheme
-from boba.workflow.records import WorkflowTable
-from boba.workflow_engine.store import WorkflowConfig
 
 
 class StandExtension(StrEnum):
@@ -168,7 +166,6 @@ class StandDatabase:
         await self._ensure_database()
         await self._ensure_extensions()
         connections = bind(self._built, path="connections", model=ConnectionsConfig)
-        workflow = bind(self._built, path="workflow", model=WorkflowConfig)
         async with self._pool() as pool, pool.cursor() as cur:
             for table in (ConnectionTable.GRANTS, ConnectionTable.CONNECTIONS):
                 query = (
@@ -181,23 +178,8 @@ class StandDatabase:
                 )
                 await cur.execute(query.text, query.params)
 
-            workflow_tables = (
-                WorkflowTable.RUNS,
-                WorkflowTable.WORKFLOWS,
-            )
-            for table in workflow_tables:
-                query = (
-                    PgQueryBuilder()
-                    .add(
-                        "drop table if exists {table} cascade",
-                        table=sql.Identifier(workflow.db_schema, table.value),
-                    )
-                    .build()
-                )
-                await cur.execute(query.text, query.params)
-
         # каталог живёт в studio: домен сносится схемой, таблицы приложения —
-        # поимённо, схема приложения общая с users и workflow; у chainlit секция
+        # поимённо, схема приложения общая с users; у chainlit секция
         # [catalog] — лишь подключение инструмента снятия к домену
         if self._app is StandApp.STUDIO:
             catalog = bind(self._built, path="catalog", model=CatalogConfig)

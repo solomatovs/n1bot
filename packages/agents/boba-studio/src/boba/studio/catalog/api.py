@@ -94,7 +94,6 @@ from boba.catalog_service import (
 from boba.identity.context import Subject
 from boba.studio.api.app import ApiMount
 from boba.studio.api.auth import CurrentSubject
-from boba.studio.api.workflows import Deleted
 
 __all__ = [
     "CatalogApi",
@@ -161,6 +160,14 @@ class CatalogUrl(StrEnum):
     CONNECTION_DIFF = "/connections/{connection_id}/diff"
     CONNECTION_SYNCS = "/connections/{connection_id}/syncs"
     SYNC = "/syncs/{sync_id}"
+
+
+class Deleted(BaseModel):
+    """Ответ удаления: была ли запись."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    deleted: bool
 
 
 class DraftBody(BaseModel):
