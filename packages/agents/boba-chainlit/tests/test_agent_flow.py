@@ -30,6 +30,7 @@ from boba.chainlit.agent.flow import (
     PrefetchStage,
     Rephraser,
     RephrasingsParser,
+    ServiceTools,
 )
 from boba.chainlit.chat.tracing import AgentTracer, TracedStage
 from boba.chainlit.chat.turn import TurnState
@@ -61,8 +62,9 @@ from boba.llm.schema import SchemaReply
 from boba.stand.tools import STREAM_CONFIG
 from boba.toolkit.calls import ToolIntent
 from boba.toolkit.result import ErrorResult, TableResult, ToolArtifact
+from boba.toolkit.service import CallReply, CallRequest
 from boba.toolrun.cancellation import CancellableTools
-from boba.toolrun.stream_calls import DagCalls
+from boba.toolrun.stream_calls import LocalDagService
 
 pytestmark = pytest.mark.anyio
 
@@ -240,22 +242,27 @@ async def crashing_probe(
     raise RuntimeError(msg)
 
 
-def _graph(builder: Any, answers: Sequence[str]) -> CompiledStateGraph:
-    """Граф на фейковой модели: реальные create_agent, checkpointer и history."""
+def _graph(
+    builder: Any, answers: Sequence[str], extra: Sequence[BaseTool] = ()
+) -> CompiledStateGraph:
+    """Граф на фейковой модели: реальные create_agent, checkpointer и history.
+
+    extra — инструменты теста, которые сервис исполняет помимо поисковых."""
     scripted: list[AIMessage | str] = []
     for answer in answers:
         scripted.append(AIMessage(content=answer))
 
     chat = ScriptedChat(messages=iter(scripted))
-    tools = [fts_probe, vector_probe]
+    tools: list[BaseTool] = [fts_probe, vector_probe]
+    tools.extend(extra)
 
     spec = GraphSpec(
         chat=chat,
-        tools=tools,
+        service=LocalDagService(tools, STREAM_CONFIG),
+        own_tools=(),
         system_prompt="you are a search assistant",
         checkpointer=InMemorySaver(),
         history=build_history_view(frozenset({"fts_probe", "vector_probe"}), 30),
-        calls=DagCalls(tools, STREAM_CONFIG),
     )
     return builder.build(spec)
 
@@ -370,7 +377,7 @@ class TestPrefetchGraph:
         rephraser = FakeRephraser(["variant one", "variant two"])
         graph = _graph(
             PrefetchGraphBuilder(
-                rephraser, [fts_probe, vector_probe], RecordingStage()
+                rephraser, ["fts_probe", "vector_probe"], RecordingStage()
             ),
             answers=["answered with context"],
         )
@@ -412,7 +419,7 @@ class TestPrefetchGraph:
         rephraser = FakeRephraser(["variant one", "variant two"])
         stage = RecordingStage()
         graph = _graph(
-            PrefetchGraphBuilder(rephraser, [fts_probe], stage),
+            PrefetchGraphBuilder(rephraser, ["fts_probe"], stage),
             answers=["answered"],
         )
 
@@ -434,7 +441,7 @@ class TestPrefetchGraph:
         """Переформулировщик сорвался — фаза поиска не наступила."""
         stage = RecordingStage()
         graph = _graph(
-            PrefetchGraphBuilder(BrokenRephraser(), [fts_probe], stage),
+            PrefetchGraphBuilder(BrokenRephraser(), ["fts_probe"], stage),
             answers=["never reached"],
         )
 
@@ -451,7 +458,7 @@ class TestPrefetchGraph:
         """Подпись вызова подготовки — сам поисковый запрос: его покажет лента."""
         rephraser = FakeRephraser(["variant one"])
         graph = _graph(
-            PrefetchGraphBuilder(rephraser, [fts_probe], RecordingStage()),
+            PrefetchGraphBuilder(rephraser, ["fts_probe"], RecordingStage()),
             answers=["answered"],
         )
 
@@ -472,7 +479,7 @@ class TestPrefetchGraph:
         """Сбой подготовки не оставляет этап открытым висеть в ленте."""
         stage = RecordingStage()
         graph = _graph(
-            PrefetchGraphBuilder(BrokenRephraser(), [fts_probe], stage),
+            PrefetchGraphBuilder(BrokenRephraser(), ["fts_probe"], stage),
             answers=["never reached"],
         )
 
@@ -492,7 +499,7 @@ class TestPrefetchGraph:
         stage = RecordingStage()
         graph = _graph(
             PrefetchGraphBuilder(
-                PassthroughRephraser(), [fts_probe, vector_probe], stage
+                PassthroughRephraser(), ["fts_probe", "vector_probe"], stage
             ),
             answers=["answered"],
         )
@@ -518,7 +525,7 @@ class TestPrefetchGraph:
     async def test_every_turn_is_prefetched(self) -> None:
         rephraser = FakeRephraser(["variant"])
         graph = _graph(
-            PrefetchGraphBuilder(rephraser, [fts_probe], RecordingStage()),
+            PrefetchGraphBuilder(rephraser, ["fts_probe"], RecordingStage()),
             answers=["first answer", "second answer"],
         )
 
@@ -547,8 +554,9 @@ class TestPrefetchGraph:
         """Отказ инструмента едет в контекст: модель отвечает, ход не рвётся."""
         rephraser = FakeRephraser(["variant"])
         graph = _graph(
-            PrefetchGraphBuilder(rephraser, [failing_probe], RecordingStage()),
+            PrefetchGraphBuilder(rephraser, ["failing_probe"], RecordingStage()),
             answers=["answered anyway"],
+            extra=[failing_probe],
         )
 
         result = await graph.ainvoke(
@@ -572,8 +580,9 @@ class TestPrefetchGraph:
         """Упавшее тело инструмента ход не роняет: причина уходит модели."""
         rephraser = FakeRephraser(["variant"])
         graph = _graph(
-            PrefetchGraphBuilder(rephraser, [crashing_probe], RecordingStage()),
+            PrefetchGraphBuilder(rephraser, ["crashing_probe"], RecordingStage()),
             answers=["answered anyway"],
+            extra=[crashing_probe],
         )
 
         result = await graph.ainvoke(
@@ -599,8 +608,9 @@ class TestPrefetchGraph:
         """Вызов с негодными аргументами: ошибка валидации уходит модели."""
         rephraser = FakeRephraser(["x"])
         graph = _graph(
-            PrefetchGraphBuilder(rephraser, [strict_probe], RecordingStage()),
+            PrefetchGraphBuilder(rephraser, ["strict_probe"], RecordingStage()),
             answers=["answered anyway"],
+            extra=[strict_probe],
         )
 
         result = await graph.ainvoke(
@@ -621,7 +631,7 @@ class TestPrefetchGraph:
 
     async def test_rephraser_failure_fails_the_turn(self) -> None:
         graph = _graph(
-            PrefetchGraphBuilder(BrokenRephraser(), [fts_probe], RecordingStage()),
+            PrefetchGraphBuilder(BrokenRephraser(), ["fts_probe"], RecordingStage()),
             answers=["never reached"],
         )
 
@@ -643,8 +653,9 @@ class TestPrefetchCancellation:
         stage = RecordingStage()
         guarded = CancellableTools.guard_all([slow_probe])
         graph = _graph(
-            PrefetchGraphBuilder(FakeRephraser(["variant"]), guarded, stage),
+            PrefetchGraphBuilder(FakeRephraser(["variant"]), ["slow_probe"], stage),
             answers=["never reached"],
+            extra=guarded,
         )
 
         with run_cancellation() as cancellation:
@@ -674,8 +685,9 @@ class TestPrefetchCancellation:
         stage = RecordingStage()
         guarded = CancellableTools.guard_all([slow_probe])
         graph = _graph(
-            PrefetchGraphBuilder(FakeRephraser(["variant"]), guarded, stage),
+            PrefetchGraphBuilder(FakeRephraser(["variant"]), ["slow_probe"], stage),
             answers=["never reached"],
+            extra=guarded,
         )
 
         with run_cancellation() as cancellation:
@@ -707,7 +719,7 @@ class TestPrefetchFeed:
         graph = _graph(
             PrefetchGraphBuilder(
                 FakeRephraser(["variant one"]),
-                [fts_probe],
+                ["fts_probe"],
                 TracedStage(StepText.PREFETCH.value),
             ),
             answers=["answered"],
@@ -757,25 +769,23 @@ class TestPlainGraph:
             raise AssertionError(f"answer survived: {messages[-1].content!r}")
 
 
-class RecordingCalls(DagCalls):
-    """Исполнение через DAG, запоминающее, какие вызовы через него прошли."""
+class RecordingService(LocalDagService):
+    """Сервис исполнения, запоминающий, какие вызовы через него прошли."""
 
     def __init__(self, tools: Sequence[BaseTool]) -> None:
         super().__init__(tools, STREAM_CONFIG)
         self.served: list[str] = []
 
     @override
-    async def message_for(
-        self, call: Any, config: RunnableConfig | None
-    ) -> ToolMessage:
-        self.served.append(str(call["id"]))
+    async def call(self, request: CallRequest) -> CallReply:
+        self.served.append(request.run_id)
 
-        return await super().message_for(call, config)
+        return await super().call(request)
 
 
-class TestToolCallsRunInDag:
-    """Вызовы инструментов ответа модели исполняет DAG: и обычные, без
-    портов, — мимо исполнителя не идёт ни один."""
+class TestToolCallsGoToTheService:
+    """Вызовы инструментов ответа модели исполняет сервис исполнения: и
+    обычные, без портов, — мимо него не идёт ни один."""
 
     CALLS: ClassVar[list[dict[str, Any]]] = [
         {"name": "fts_probe", "args": {"query": "kerberos"}, "id": "call_ok"},
@@ -783,22 +793,21 @@ class TestToolCallsRunInDag:
         {"name": "strict_probe", "args": {"query": "x"}, "id": "call_bad_args"},
     ]
 
-    async def test_plain_calls_of_a_response_are_dag_nodes(self) -> None:
-        tools = [fts_probe, crashing_probe, strict_probe]
-        calls = RecordingCalls(tools)
+    async def test_plain_calls_of_a_response_are_service_calls(self) -> None:
+        service = RecordingService([fts_probe, crashing_probe, strict_probe])
         scripted = [
             AIMessage(content="", tool_calls=self.CALLS),
             AIMessage(content="done"),
         ]
         spec = GraphSpec(
             chat=ScriptedChat(messages=iter(scripted)),
-            tools=tools,
+            service=service,
+            own_tools=(),
             system_prompt="you are a search assistant",
             checkpointer=InMemorySaver(),
             history=build_history_view(
                 frozenset({"fts_probe", "crashing_probe", "strict_probe"}), 30
             ),
-            calls=calls,
         )
         graph = PlainGraphBuilder().build(spec)
 
@@ -807,8 +816,8 @@ class TestToolCallsRunInDag:
         )
         messages = result["messages"]
 
-        if sorted(calls.served) != ["call_bad_args", "call_crash", "call_ok"]:
-            raise AssertionError(f"каждый вызов прошёл через DAG: {calls.served}")
+        if sorted(service.served) != ["call_bad_args", "call_crash", "call_ok"]:
+            raise AssertionError(f"каждый вызов ушёл в сервис: {service.served}")
 
         replies: dict[str, ToolMessage] = {}
         for reply in _tool_messages(messages):
@@ -834,10 +843,25 @@ class TestToolCallsRunInDag:
         if messages[-1].content != "done":
             raise AssertionError(f"ход дошёл до ответа: {messages[-1].content!r}")
 
+    async def test_model_gets_the_tools_the_service_offers(self) -> None:
+        """Инструменты графа строятся из списка сервиса: имя, описание и
+        схема аргументов — как их отдал сервис."""
+        service = RecordingService([fts_probe])
 
-class TestOwnToolsBypassTheDag:
+        offered = ServiceTools(service)
+        built = offered.build()
+
+        if offered.names() != frozenset({"fts_probe"}):
+            raise AssertionError(f"имена из сервиса: {offered.names()}")
+        if built[0].description != service.tools()[0].description:
+            raise AssertionError(f"описание из сервиса: {built[0].description!r}")
+        if built[0].args_schema != dict(service.tools()[0].input_schema):
+            raise AssertionError(f"схема из сервиса: {built[0].args_schema!r}")
+
+
+class TestOwnToolsBypassTheService:
     """Собственный инструмент процесса (каталог соединений чата) исполняет
-    сам граф, мимо DAG; инструменты плагинов рядом идут через DAG."""
+    сам граф, мимо сервиса; инструменты сервиса рядом идут в сервис."""
 
     CALLS: ClassVar[list[dict[str, Any]]] = [
         {"name": "fts_probe", "args": {"query": "kerberos"}, "id": "call_dag"},
@@ -845,9 +869,7 @@ class TestOwnToolsBypassTheDag:
     ]
 
     async def test_own_tool_is_called_by_the_graph_itself(self) -> None:
-        calls = RecordingCalls([fts_probe])
-        offered = calls.model_tools()
-        offered.append(vector_probe)
+        service = RecordingService([fts_probe])
 
         scripted = [
             AIMessage(content="", tool_calls=self.CALLS),
@@ -855,13 +877,11 @@ class TestOwnToolsBypassTheDag:
         ]
         spec = GraphSpec(
             chat=ScriptedChat(messages=iter(scripted)),
-            tools=offered,
+            service=service,
+            own_tools=[vector_probe],
             system_prompt="you are a search assistant",
             checkpointer=InMemorySaver(),
-            history=build_history_view(
-                calls.history_names() | frozenset({"vector_probe"}), 30
-            ),
-            calls=calls,
+            history=build_history_view(frozenset({"fts_probe", "vector_probe"}), 30),
         )
         graph = PlainGraphBuilder().build(spec)
 
@@ -869,8 +889,8 @@ class TestOwnToolsBypassTheDag:
             {"messages": [HumanMessage("question")]}, config=THREAD
         )
 
-        if calls.served != ["call_dag"]:
-            raise AssertionError(f"через DAG прошёл только свой вызов: {calls.served}")
+        if service.served != ["call_dag"]:
+            raise AssertionError(f"в сервис ушёл только его вызов: {service.served}")
 
         replies: dict[str, ToolMessage] = {}
         for reply in _tool_messages(result["messages"]):
@@ -879,7 +899,7 @@ class TestOwnToolsBypassTheDag:
         if "vector:kerberos" not in str(replies["call_own"].content):
             raise AssertionError(f"свой инструмент ответил: {replies['call_own']!r}")
         if "fts:kerberos" not in str(replies["call_dag"].content):
-            raise AssertionError(f"инструмент DAG ответил: {replies['call_dag']!r}")
+            raise AssertionError(f"инструмент сервиса ответил: {replies['call_dag']!r}")
 
 
 class TestFlowConfig:

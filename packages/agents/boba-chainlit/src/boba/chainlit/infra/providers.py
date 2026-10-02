@@ -24,6 +24,7 @@ from boba.chainlit.agent.flow import (
     PlainGraphBuilder,
     PrefetchGraphBuilder,
     Rephraser,
+    ServiceTools,
 )
 from boba.chainlit.chat.history import CheckpointMessages, TranscriptFeed
 from boba.chainlit.chat.tracing import TracedStage
@@ -57,7 +58,7 @@ from boba.runtime.di import Depends
 from boba.runtime.elements import ChatTables
 from boba.runtime.users import UsersTable
 from boba.toolrun.registry import ToolRegistry
-from boba.toolrun.stream_calls import DagCalls
+from boba.toolrun.stream_calls import LocalDagService
 
 
 def get_app_config() -> AppConfig:
@@ -297,24 +298,24 @@ def _index_of_last_user_turn(msgs: list) -> int:
     return 0
 
 
-def _flow_tools(names: Sequence[str], tools: Sequence[BaseTool]) -> list[BaseTool]:
-    """Инструменты flow среди доступных сессии; чужое имя — отказ сборки."""
-    by_name: dict[str, BaseTool] = {}
+def _flow_tools(names: Sequence[str], tools: Sequence[BaseTool]) -> list[str]:
+    """Имена инструментов flow, проверенные по доступным сессии; чужое имя —
+    отказ сборки."""
+    known: set[str] = set()
     for tool in tools:
-        by_name[tool.name] = tool
+        known.add(tool.name)
 
-    selected: list[BaseTool] = []
+    selected: list[str] = []
     for name in names:
-        found = by_name.get(name)
-        if found is None:
-            available = ", ".join(sorted(by_name))
+        if name not in known:
+            available = ", ".join(sorted(known))
             msg = (
                 f"flow tool {name!r} is not available to the session; "
                 f"available tools: {available}"
             )
             raise RuntimeError(msg)
 
-        selected.append(found)
+        selected.append(name)
 
     return selected
 
@@ -371,21 +372,18 @@ def langchain_agent(  # noqa: PLR0913
     ],
     registry: Annotated[ToolRegistry, Depends(runtime.tool_registry)],
 ) -> CompiledStateGraph:
-    calls = DagCalls(registry.dag_tools(tools), registry.stream_config)
+    service = LocalDagService(registry.dag_tools(tools), registry.stream_config)
     own = registry.own_tools(tools)
 
-    offered = calls.model_tools()
-    offered.extend(own)
+    names = ServiceTools(service).names() | registry.own
 
     spec = GraphSpec(
         chat=chat,
-        tools=offered,
+        service=service,
+        own_tools=own,
         system_prompt=settings.system_prompt,
         checkpointer=saver,
-        history=build_history_view(
-            calls.history_names() | registry.own, settings.history_messages
-        ),
-        calls=calls,
+        history=build_history_view(names, settings.history_messages),
     )
 
     return builder.build(spec)
