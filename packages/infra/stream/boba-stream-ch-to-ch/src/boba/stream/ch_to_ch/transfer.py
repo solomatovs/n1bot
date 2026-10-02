@@ -59,7 +59,7 @@ class ChToCh(ChTransfer):
 
     FORMAT: ClassVar[str] = "TabSeparated"
 
-    def __init__(
+    def __init__(  # noqa: PLR0913 — ширина подписи задана контрактом
         self,
         client: AsyncClient,
         table: ChTableRef,

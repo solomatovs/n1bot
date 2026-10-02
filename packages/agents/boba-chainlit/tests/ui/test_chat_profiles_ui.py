@@ -312,7 +312,6 @@ class TestSingleProfile:
             raise AssertionError(f"tools: {sorted(_tool_names(payload))}")
 
 
-
 @dataclass(frozen=True)
 class RetiredThread:
     """Тред, чей профиль в meta исчез из конфига стенда."""

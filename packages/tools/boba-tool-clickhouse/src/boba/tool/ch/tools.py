@@ -68,20 +68,27 @@ DatabaseFilter = Annotated[
     Field(
         min_length=1,
         description=(
-            "Имя базы. * — все пользовательские базы (без system/information_schema). Можно искать по like %name%, name%, %name, name"
+            "Имя базы. * — все пользовательские базы (без system/"
+            "information_schema). Можно искать по like %name%, name%, "
+            "%name, name"
         ),
     ),
 ]
-"""LLM-аргумент database: имя базы. * — все пользовательские базы (без system/information_schema). Можно искать по like %name%, name%, %name, name"""
+"""LLM-аргумент database: имя базы. * — все пользовательские базы (без
+system/information_schema). Можно искать по like %name%, name%, %name, name."""
 
 TableFilter = Annotated[
     str,
     Field(
         min_length=1,
-        description="Имя таблицы или view. искать по like %name%, name%, %name, name или все таблицы  = * ",
+        description=(
+            "Имя таблицы или view. искать по like %name%, name%, %name, "
+            "name или все таблицы = *"
+        ),
     ),
 ]
-"""LLM-аргумент table: Имя таблицы или view. искать по Like %name%, name%, %name, name или все таблицы  = * """
+"""LLM-аргумент table: имя таблицы или view. Искать по like %name%, name%,
+%name, name или все таблицы = *."""
 
 
 class SystemDatabase(StrEnum):
@@ -349,7 +356,8 @@ async def ch_table_describe(
     offset: RowOffset,
     limit: RowLimit,
 ) -> SqlResult:
-    """Для БД ADQM и ClickHouse, SQL запрос, описание таблиц, строки выборки возвращаются:
+    """Для БД ADQM и ClickHouse, SQL запрос, описание таблиц, строки
+    выборки возвращаются:
     system.tables: таблицы, view, матвью, dictionary, distributed и пр.
     Колонки: address, database, name, engine, is_temporary, total_rows,
     total_bytes, partition_key, sorting_key, primary_key, sampling_key,
@@ -463,7 +471,8 @@ async def ch_constraints_describe(
     offset: RowOffset,
     limit: RowLimit,
 ) -> SqlResult:
-    """Для БД ADQM и ClickHouse, SQL запрос, для поиска связей между таблицами, строки выборки возвращаются:
+    """Для БД ADQM и ClickHouse, SQL запрос, для поиска связей между
+    таблицами, строки выборки возвращаются:
     ограничения из system.constraints (CHECK / ASSUME).
     Колонки: address, database, table, name, type (CHECK/ASSUME), expression.
     В ClickHouse нет PRIMARY/UNIQUE/FOREIGN как отдельных объектов — их роль
@@ -510,7 +519,8 @@ async def ch_indexes_describe(
     offset: RowOffset,
     limit: RowLimit,
 ) -> SqlResult:
-    """Для БД ADQM и ClickHouse, SQL запрос, для поиска связей между таблицами, строки выборки возвращаются:
+    """Для БД ADQM и ClickHouse, SQL запрос, для поиска связей между
+    таблицами, строки выборки возвращаются:
     индексы пропуска данных из system.data_skipping_indices.
     Колонки: address, database, table, name, type (minmax/set/bloom_filter/
     ngrambf_v1/tokenbf_v1), expr, granularity, data_compressed_bytes,
@@ -560,7 +570,7 @@ async def ch_function_describe(
             min_length=1,
             description=(
                 """Шаблон имени функции в синтаксисе LIKE: `array%`, `%date%`.
-                `*` — все функции, включая системные (их очень много, 
+                `*` — все функции, включая системные (их очень много,
                 используйте фильтр)."""
             ),
         ),
@@ -569,7 +579,8 @@ async def ch_function_describe(
     offset: RowOffset,
     limit: RowLimit,
 ) -> SqlResult:
-    """Для БД ADQM и ClickHouse, SQL запрос, для поиска связей между таблицами, строки выборки возвращаются:
+    """Для БД ADQM и ClickHouse, SQL запрос, для поиска связей между
+    таблицами, строки выборки возвращаются:
     функции из system.functions.
     Колонки: address, name, is_aggregate, case_insensitive, alias_to, origin
     (System/User/…), syntax, arguments, returned_value, description,
@@ -618,7 +629,8 @@ async def ch_sequences_describe(
     offset: RowOffset,
     limit: RowLimit,
 ) -> SqlResult:
-    """Для БД ADQM и ClickHouse, SQL запрос, для поиска связей между таблицами, строки выборки возвращаются:
+    """Для БД ADQM и ClickHouse, SQL запрос, для поиска связей между
+    таблицами, строки выборки возвращаются:
     последовательности из system.sequences.
     Колонки: address, database, name, uuid, start_value, increment,
     min_value, max_value, cycle, cache, comment. На старых версиях таблицы
@@ -681,7 +693,8 @@ async def ch_types_describe(
     offset: RowOffset,
     limit: RowLimit,
 ) -> SqlResult:
-    """Для БД ADQM и ClickHouse, SQL запрос, для поиска связей между таблицами, строки выборки возвращаются:
+    """Для БД ADQM и ClickHouse, SQL запрос, для поиска связей между
+    таблицами, строки выборки возвращаются:
     типы данных из system.data_type_families.
     Колонки: address, name, case_insensitive, alias_to. В ClickHouse нет
     enum/domain/composite; Enum-типы описываются прямо в колонке — смотрите
@@ -1289,7 +1302,7 @@ async def ch_address(connection: ChConnection) -> TableResult:
 
 
 @tool
-async def ch_edm_general_describe(
+async def ch_edm_general_describe(  # noqa: PLR0913 — ширина подписи задана контрактом
     connection: ChConnection,
     database: DatabaseFilter,
     table: TableFilter,
@@ -1316,16 +1329,19 @@ async def ch_edm_general_describe(
             """
 -- описания из ЕДМ
 with w_pdm_table as (
-select  al.etalon_id table_etalon_id 
+select  al.etalon_id table_etalon_id
       ,a.path table_path
       ,maxIf(al.value, a.type = 'pdm_table' and al.attribute_id = 'name') as table_name
-      ,maxIf(al.value, al.attribute_id = 'short_description_edm') as table_short_description_edm
-      ,maxIf(al.value, al.attribute_id = 'extended_description_edm') as table_extended_description_edm
+      ,maxIf(al.value, al.attribute_id = 'short_description_edm')
+          as table_short_description_edm
+      ,maxIf(al.value, al.attribute_id = 'extended_description_edm')
+          as table_extended_description_edm
       ,maxIf(al.value, al.attribute_id = 'description') as table_description_from_source
   from cmn_cds.dp_edm__com_dg_export_data__attribute_list_physical_current_versions al
-         inner join cmn_cds.dp_edm__com_dg_export_data__assets_current_versions a 
+         inner join cmn_cds.dp_edm__com_dg_export_data__assets_current_versions a
            on a.id = al.etalon_id
-where al.attribute_id in ('short_description_edm', 'extended_description_edm', 'description', 'name')
+where al.attribute_id in ('short_description_edm', 'extended_description_edm',
+                          'description', 'name')
 and a.type  in ('pdm_table')
 --and path like '%ods_cnmd_gpn_journal%'
 group by a.path, al.etalon_id)
@@ -1333,13 +1349,17 @@ group by a.path, al.etalon_id)
 select  al.etalon_id column_etalon_id
       ,a.path column_path
       ,maxIf(al.value, al.attribute_id = 'name') as column_name
-      ,maxIf(al.value, al.attribute_id = 'short_description_edm') as column_short_description_edm
-      ,maxIf(al.value, al.attribute_id = 'extended_description_edm') as column_extended_description_edm
-      ,maxIf(al.value, al.attribute_id = 'description') as column_description_from_source
+      ,maxIf(al.value, al.attribute_id = 'short_description_edm')
+          as column_short_description_edm
+      ,maxIf(al.value, al.attribute_id = 'extended_description_edm')
+          as column_extended_description_edm
+      ,maxIf(al.value, al.attribute_id = 'description')
+          as column_description_from_source
   from cmn_cds.dp_edm__com_dg_export_data__attribute_list_physical_current_versions al
-         inner join cmn_cds.dp_edm__com_dg_export_data__assets_current_versions a 
+         inner join cmn_cds.dp_edm__com_dg_export_data__assets_current_versions a
            on a.id = al.etalon_id
-where al.attribute_id in ('short_description_edm', 'extended_description_edm', 'description', 'name')
+where al.attribute_id in ('short_description_edm', 'extended_description_edm',
+                          'description', 'name')
 and a.type  in ('pdm_table_column')
 --and path like '%ods_cnmd_gpn_journal%'
 group by a.path, al.etalon_id
@@ -1352,10 +1372,11 @@ group by a.path, al.etalon_id
             ,r.etalon_id_to as etalon_id_pdm
             ,a.value as ed_name
         from cmn_cds.dp_edm__com_dg_export_data__relations_current_version r
-         inner join cmn_cds.dp_edm__com_dg_export_data__attribute_list_current_versions a 
+         inner join
+           cmn_cds.dp_edm__com_dg_export_data__attribute_list_current_versions a
            on a.etalon_id = r.etalon_id_from
           and a.attribute_id in ('ed_entity_name', 'ed_attribute_name')
-      where r.name = 'lnk_ldm_physical_relationship'       
+      where r.name = 'lnk_ldm_physical_relationship'
 )
 , w_conn as (
       select a.etalon_id
@@ -1369,7 +1390,8 @@ group by a.path, al.etalon_id
                   WHEN '1c' THEN 443
                   ELSE 443
              END as port
-            ,splitByChar('_', COALESCE(replace(a.value, 'gazprom-neft', ''), '_'))[5] as db
+            ,splitByChar('_',
+                COALESCE(replace(a.value, 'gazprom-neft', ''), '_'))[5] as db
             ,CASE splitByChar('_', COALESCE(a.value, '_'))[3]
                   WHEN 'pg' THEN 'postgres'
                   WHEN 'adb' THEN 'postgres'
@@ -1379,12 +1401,14 @@ group by a.path, al.etalon_id
                   WHEN '1c' THEN 'https'
                   ELSE 'https'
              END as source_type
-        from cmn_cds.dp_edm__com_dg_export_data__attribute_list_physical_current_versions a
+        from
+          cmn_cds.dp_edm__com_dg_export_data__attribute_list_physical_current_versions a
       where a.attribute_id = 'connection'
 ),
  q1 as (
 select pdm.*
-      ,c1.source_type || '://' || c1.host || ':' || c1.port || '/' || c1.db as table_connection
+      ,c1.source_type || '://' || c1.host || ':' || c1.port || '/' || c1.db
+          as table_connection
       ,ed_tab.ed_name table_ed_name
       ,ed_col.ed_name column_ed_name
   from w_pdm pdm
@@ -1393,15 +1417,15 @@ select pdm.*
         left join w_conn c1 on c1.etalon_id = pdm.table_etalon_id
 		left join w_ed ed_col
            on ed_col.etalon_id_pdm = pdm.column_etalon_id
-           ) 
+           )
 select * from q1
-where (table_short_description_edm is not null 
+where (table_short_description_edm is not null
 or table_extended_description_edm is not null
-or table_description_from_source is not null 
-or table_ed_name is not null 
-or column_short_description_edm is not null 
+or table_description_from_source is not null
+or table_ed_name is not null
+or column_short_description_edm is not null
 or column_extended_description_edm is not null
-or column_description_from_source is not null 
+or column_description_from_source is not null
 or column_ed_name is not null )
 """,
         )
@@ -1423,7 +1447,7 @@ or column_ed_name is not null )
 
 
 @tool
-async def ch_edm_table_describe(
+async def ch_edm_table_describe(  # noqa: PLR0913 — ширина подписи задана контрактом
     connection: ChConnection,
     database: DatabaseFilter,
     table: TableFilter,
@@ -1449,7 +1473,8 @@ async def ch_edm_table_describe(
         .add(
             """
 with w_name as (
-select * from cmn_cds.dp_edm__com_dg_export_data__attribute_list_physical_current_versions
+select *
+from cmn_cds.dp_edm__com_dg_export_data__attribute_list_physical_current_versions
 where attribute_id = 'name'
 ) , w_conn as (
       select a.etalon_id
@@ -1463,7 +1488,8 @@ where attribute_id = 'name'
                   WHEN '1c' THEN 443
                   ELSE 443
              END as port
-            ,splitByChar('_', COALESCE(replace(a.value, 'gazprom-neft', ''), '_'))[5] as db
+            ,splitByChar('_',
+                COALESCE(replace(a.value, 'gazprom-neft', ''), '_'))[5] as db
             ,CASE splitByChar('_', COALESCE(a.value, '_'))[3]
                   WHEN 'pg' THEN 'postgres'
                   WHEN 'adb' THEN 'postgres'
@@ -1473,7 +1499,8 @@ where attribute_id = 'name'
                   WHEN '1c' THEN 'https'
                   ELSE 'https'
              END as source_type
-        from cmn_cds.dp_edm__com_dg_export_data__attribute_list_physical_current_versions a
+        from
+          cmn_cds.dp_edm__com_dg_export_data__attribute_list_physical_current_versions a
       where a.attribute_id = 'connection'
 )
 select r.etalon_id_to as etalon_id
@@ -1483,14 +1510,14 @@ select r.etalon_id_to as etalon_id
      , obn.value as table_name
      , an.value as column_name
   from cmn_cds.dp_edm__com_dg_export_data__relations_current_version r
-         inner join cmn_cds.dp_edm__com_dg_export_data__assets_current_versions a 
+         inner join cmn_cds.dp_edm__com_dg_export_data__assets_current_versions a
            on a.id = r.etalon_id_from
-         inner join cmn_cds.dp_edm__com_dg_export_data__relation_types rtl 
+         inner join cmn_cds.dp_edm__com_dg_export_data__relation_types rtl
            on rtl.relation_type_id = r.relation_type_id
             and rtl.is_inner = 1
-         inner join w_name obn 
+         inner join w_name obn
            on obn.etalon_id = r.etalon_id_from
-         inner join w_name an 
+         inner join w_name an
            on an.etalon_id = r.etalon_id_to
          left join w_conn c on c.etalon_id = r.etalon_id_from
 where 1=1

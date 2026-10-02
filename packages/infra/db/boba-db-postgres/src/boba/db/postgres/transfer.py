@@ -882,7 +882,7 @@ class PgCopyIn(TransferSink):
     """Реализация TransferSink для postgres: тела кадров уходят в COPY таблицы
     как есть, в формате потока (csv, text или binary), ничего не перекодируется."""
 
-    def __init__(
+    def __init__(  # noqa: PLR0913 — ширина подписи задана контрактом
         self,
         conn: psycopg.AsyncConnection[Any],
         table: PgTableRef,

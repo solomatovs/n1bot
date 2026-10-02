@@ -1324,7 +1324,7 @@ class ChTransferFactory(Protocol):
     """Конструктор пары: клиент приёмника, таблица, её кластер и ключ
     сортировки, кадр схемы, поток тел, журнал команд вызова."""
 
-    def __call__(
+    def __call__(  # noqa: PLR0913 — ширина подписи задана контрактом
         self,
         client: AsyncClient,
         table: ChTableRef,
