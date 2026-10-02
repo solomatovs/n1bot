@@ -30,7 +30,12 @@ from boba.toolkit.chain import PipelineSlot, StreamGroupRun, StreamTimings
 from boba.toolkit.dag import DagNode, DagPlanner, DagSpec
 from boba.toolkit.failure import FailurePacker
 from boba.toolkit.ports import ToolStreamSpecs
-from boba.toolkit.result import FailureResult, ToolResult, ToolResultBase
+from boba.toolkit.result import (
+    FailureResult,
+    GroupFailureResult,
+    ToolResult,
+    ToolResultBase,
+)
 
 __all__ = ["DagHandle", "DagOutcome", "DagRunError", "DagRunner", "NodeOutcome"]
 
@@ -77,6 +82,25 @@ class DagOutcome(BaseModel):
 
         msg = f"dag {self.dag!r} v{self.version}: no outcome for node {key!r}"
         raise DagRunError(msg)
+
+    def failure(self, key: str) -> FailureResult:
+        """Сбой узла key: его собственная ошибка, если группу сорвал он сам,
+        иначе срыв группы глазами узла; узел прошёл — DagRunError."""
+        node = self.node(key)
+        if not isinstance(node.artifact, FailureResult):
+            msg = (
+                f"dag {self.dag!r} v{self.version}: node {key!r} succeeded: "
+                f"{node.content}"
+            )
+            raise DagRunError(msg)
+
+        if not isinstance(node.artifact, GroupFailureResult):
+            return node.artifact
+
+        if node.artifact.own:
+            return node.artifact.cause
+
+        return node.artifact
 
     def _failed(self) -> Iterator[NodeOutcome]:
         for node in self.nodes:

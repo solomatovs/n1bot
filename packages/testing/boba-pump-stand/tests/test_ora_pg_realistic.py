@@ -5,6 +5,9 @@ LLM: CTE, join и left join с NULL, оконные функции, listagg, jso
 sys_guid, интервалы и TIMESTAMP WITH TIME ZONE, которые приходится
 приводить.
 
+Каждый запуск описан toml-текстом (DagSpec) и исполняется DagRunner без
+модели: узлы — вызовы насосов с аргументами, как их присылает модель.
+
 Источник — каждый Oracle стенда (12.2, 18, 21, 23), приёмник — каждый
 postgres (9.0–19) и Greenplum (6, 7). Сценарии идут по порядку на каждой
 паре и опираются на таблицы предыдущих:
@@ -26,44 +29,25 @@ postgres (9.0–19) и Greenplum (6, 7). Сценарии идут по поря
 
 from __future__ import annotations
 
+import re
 from collections.abc import AsyncIterator, Mapping, Sequence
 from decimal import Decimal
+from pathlib import Path
 from typing import Any, ClassVar
 
-import psycopg
 import pytest
 
-from boba.db.oracle import OracleQueryError
-from boba.db.oracle.target import OraTableRef
-from boba.db.postgres.connection import CopyOptions
-from boba.db.postgres.transfer import PgColumnDeclaration, PgTransferTable
 from boba.pump_stand import (
-    Leg,
     Loaded,
     OracleSide,
     OraLoaded,
     PostgresSide,
-    Pumps,
+    PumpDags,
     PumpStand,
 )
 from boba.pump_stand.oracle import PumpUser
 from boba.stand.names import StandNames
-from boba.toolkit.contract import ColumnDeclaration
-from boba.toolkit.transfer import (
-    BackupAndCreateIfSchemaChanged,
-    ColumnRules,
-    DeleteNothing,
-    DeleteTruncate,
-    DeleteWhere,
-    DoNothing,
-    DropAndCreate,
-    ErrorIfNotExists,
-    ErrorIfSchemaChanged,
-    InsertFull,
-    InsertNothing,
-    StreamWire,
-    TransferError,
-)
+from boba.toolkit.result import FailureResult, SqlFailureResult
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
 
@@ -71,12 +55,12 @@ STAND = PumpStand.required()
 OWNER = PumpUser().name
 DW = StandNames().of("shop_ora_dw")
 ARRAYSIZE = 2000
-CHUNK = 65536
 CUSTOMERS = 12
 PRODUCTS = 10
 ORDERS = 24
 JSONB_SINCE = 90400
 JSON_SINCE = 90200
+MONTH = "2024-03-01"
 
 SCHEMA_DDL = (
     """
@@ -248,15 +232,8 @@ join items i on i.order_id = o.id
 left join pay on pay.order_id = o.id
 """
 
-DECLARED = (
-    ColumnDeclaration(name="order_id", nullable=False),
-    ColumnDeclaration(name="placed_at", nullable=False),
-    ColumnDeclaration(name="month", nullable=False),
-)
-"""Ключевые поля LLM объявляет not null: сервер считает выборку nullable."""
-
-RULES = ColumnRules(column_types={"signed_up": "timestamptz(0)"})
-"""Момент из sys_extract_utc — настенное время UTC: у приёмника он зонный."""
+MONTH_SQL = f"""select * from ({REPORT_SQL}) r where r."month" = to_date('{MONTH}', 'yyyy-mm-dd')"""
+"""Выборка отчёта за один месяц: окна посчитаны по всему отчёту."""
 
 EXPECTED_COLUMNS = [
     ("order_id", "bigint", True),
@@ -296,6 +273,517 @@ Oracle; NUMBER без точности (count, row_number, round) — numeric(38
 
 NOT_NULL = {"order_id", "status", "tier", "city", "placed_at", "month"}
 """Колонки, у которых not null обязан дойти: из таблиц и из деклараций."""
+
+ZONED_REFUSED = """
+name = "ora_to_pg_zoned_refused"
+version = 1
+
+[[nodes]]
+key = "src"
+tool = "ora_stream_out"
+
+[nodes.args]
+connection = "ora"
+sql = '''select o.id as "order_id", c.signed_up as "signed_up" from $owner.orders o join $owner.customers c on c.id = o.customer_id'''
+columns = []
+out = "rows"
+
+[[nodes]]
+key = "dst"
+tool = "pg_stream_in"
+
+[nodes.args]
+connection = "pg"
+schema_name = "$dw"
+table_name = "orders_raw"
+schema_strategy = { kind = "drop_and_create" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+rules = {}
+create_table = "create table {schema_name}.{table_name} ({columns})"
+copy_options = { chunk_bytes = 65536 }
+feed = "rows"
+"""
+
+INTERVAL_REFUSED = """
+name = "ora_to_pg_interval_refused"
+version = 1
+
+[[nodes]]
+key = "src"
+tool = "ora_stream_out"
+
+[nodes.args]
+connection = "ora"
+sql = '''select id as "order_id", shipped_at - placed_at as "lead_time" from $owner.orders'''
+columns = []
+out = "rows"
+
+[[nodes]]
+key = "dst"
+tool = "pg_stream_in"
+
+[nodes.args]
+connection = "pg"
+schema_name = "$dw"
+table_name = "orders_raw"
+schema_strategy = { kind = "drop_and_create" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+rules = {}
+create_table = "create table {schema_name}.{table_name} ({columns})"
+copy_options = { chunk_bytes = 65536 }
+feed = "rows"
+"""
+
+REPORT = """
+name = "ora_to_pg_report"
+version = 1
+
+[[nodes]]
+key = "src"
+tool = "ora_stream_out"
+
+[nodes.args]
+connection = "ora"
+sql = '''$report_sql'''
+columns = [{ name = "order_id", nullable = false }, { name = "placed_at", nullable = false }, { name = "month", nullable = false }]
+out = "rows"
+
+[[nodes]]
+key = "dst"
+tool = "pg_stream_in"
+
+[nodes.args]
+connection = "pg"
+schema_name = "$dw"
+table_name = "orders_report"
+schema_strategy = { kind = "drop_and_create" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+rules = { column_types = { signed_up = "timestamptz(0)" } }
+create_table = "create table {schema_name}.{table_name} ({columns})"
+copy_options = { chunk_bytes = 65536 }
+feed = "rows"
+"""
+"""Ключевые поля LLM объявляет not null: сервер считает выборку nullable.
+Момент из sys_extract_utc — настенное время UTC: у приёмника он зонный."""
+
+REPORT_RELOAD = """
+name = "ora_to_pg_report_reload"
+version = 1
+
+[[nodes]]
+key = "src"
+tool = "ora_stream_out"
+
+[nodes.args]
+connection = "ora"
+sql = '''$report_sql'''
+columns = [{ name = "order_id", nullable = false }, { name = "placed_at", nullable = false }, { name = "month", nullable = false }]
+out = "rows"
+
+[[nodes]]
+key = "dst"
+tool = "pg_stream_in"
+
+[nodes.args]
+connection = "pg"
+schema_name = "$dw"
+table_name = "orders_report"
+schema_strategy = { kind = "error_if_schema_changed" }
+delete_strategy = { kind = "truncate" }
+insert_strategy = { kind = "full" }
+rules = { column_types = { signed_up = "timestamptz(0)" } }
+create_table = "create table {schema_name}.{table_name} ({columns})"
+copy_options = { chunk_bytes = 65536 }
+feed = "rows"
+"""
+
+ONE_MONTH = """
+name = "ora_to_pg_one_month"
+version = 1
+
+[[nodes]]
+key = "src"
+tool = "ora_stream_out"
+
+[nodes.args]
+connection = "ora"
+sql = '''$month_sql'''
+columns = [{ name = "order_id", nullable = false }, { name = "placed_at", nullable = false }, { name = "month", nullable = false }]
+out = "rows"
+
+[[nodes]]
+key = "dst"
+tool = "pg_stream_in"
+
+[nodes.args]
+connection = "pg"
+schema_name = "$dw"
+table_name = "orders_report"
+schema_strategy = { kind = "error_if_schema_changed" }
+delete_strategy = { kind = "delete_where", where = "month = timestamp '$month'" }
+insert_strategy = { kind = "full" }
+rules = { column_types = { signed_up = "timestamptz(0)" } }
+create_table = "create table {schema_name}.{table_name} ({columns})"
+copy_options = { chunk_bytes = 65536 }
+feed = "rows"
+"""
+
+MART = """
+name = "ora_to_pg_mart"
+version = 1
+
+[[nodes]]
+key = "src"
+tool = "ora_stream_out"
+
+[nodes.args]
+connection = "ora"
+sql = '''select "order_id", "customer_name", "tier", "paid", "gross", "placed_at" from ($report_sql) r'''
+columns = [{ name = "order_id", nullable = false }]
+out = "rows"
+
+[[nodes]]
+key = "dst"
+tool = "pg_stream_in"
+
+[nodes.args]
+connection = "pg"
+schema_name = "$dw"
+table_name = "orders_mart"
+schema_strategy = { kind = "error_if_not_exists" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+rules = { rename_columns = { order_uid = "order_id", client = "customer_name", client_tier = "tier", paid_amount = "paid" }, column_types = { client = "text", client_tier = "varchar(10)" } }
+create_table = "create table {schema_name}.{table_name} ({columns})"
+copy_options = { chunk_bytes = 65536 }
+feed = "rows"
+"""
+
+DRIFT = """
+name = "ora_to_pg_drift"
+version = 1
+
+[[nodes]]
+key = "src"
+tool = "ora_stream_out"
+
+[nodes.args]
+connection = "ora"
+sql = '''$report_sql'''
+columns = [{ name = "order_id", nullable = false }, { name = "placed_at", nullable = false }, { name = "month", nullable = false }]
+out = "rows"
+
+[[nodes]]
+key = "dst"
+tool = "pg_stream_in"
+
+[nodes.args]
+connection = "pg"
+schema_name = "$dw"
+table_name = "orders_drift"
+schema_strategy = { kind = "drop_and_create" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+rules = { column_types = { signed_up = "timestamptz(0)" } }
+create_table = "create table {schema_name}.{table_name} ({columns})"
+copy_options = { chunk_bytes = 65536 }
+feed = "rows"
+"""
+
+DRIFT_CHECKED = """
+name = "ora_to_pg_drift_checked"
+version = 1
+
+[[nodes]]
+key = "src"
+tool = "ora_stream_out"
+
+[nodes.args]
+connection = "ora"
+sql = '''$report_sql'''
+columns = [{ name = "order_id", nullable = false }, { name = "placed_at", nullable = false }, { name = "month", nullable = false }]
+out = "rows"
+
+[[nodes]]
+key = "dst"
+tool = "pg_stream_in"
+
+[nodes.args]
+connection = "pg"
+schema_name = "$dw"
+table_name = "orders_drift"
+schema_strategy = { kind = "error_if_schema_changed" }
+delete_strategy = { kind = "truncate" }
+insert_strategy = { kind = "full" }
+rules = { column_types = { signed_up = "timestamptz(0)" } }
+create_table = "create table {schema_name}.{table_name} ({columns})"
+copy_options = { chunk_bytes = 65536 }
+feed = "rows"
+"""
+
+DRIFT_BACKED_UP = """
+name = "ora_to_pg_drift_backed_up"
+version = 1
+
+[[nodes]]
+key = "src"
+tool = "ora_stream_out"
+
+[nodes.args]
+connection = "ora"
+sql = '''$report_sql'''
+columns = [{ name = "order_id", nullable = false }, { name = "placed_at", nullable = false }, { name = "month", nullable = false }]
+out = "rows"
+
+[[nodes]]
+key = "dst"
+tool = "pg_stream_in"
+
+[nodes.args]
+connection = "pg"
+schema_name = "$dw"
+table_name = "orders_drift"
+schema_strategy = { kind = "backup_and_create_if_schema_changed" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+rules = { column_types = { signed_up = "timestamptz(0)" } }
+create_table = "create table {schema_name}.{table_name} ({columns})"
+copy_options = { chunk_bytes = 65536 }
+feed = "rows"
+"""
+
+TEMPLATE_GREENPLUM = """
+name = "ora_to_pg_template_greenplum"
+version = 1
+
+[[nodes]]
+key = "src"
+tool = "ora_stream_out"
+
+[nodes.args]
+connection = "ora"
+sql = '''$report_sql'''
+columns = [{ name = "order_id", nullable = false }, { name = "placed_at", nullable = false }, { name = "month", nullable = false }]
+out = "rows"
+
+[[nodes]]
+key = "dst"
+tool = "pg_stream_in"
+
+[nodes.args]
+connection = "pg"
+schema_name = "$dw"
+table_name = "orders_tpl"
+schema_strategy = { kind = "drop_and_create" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+rules = { column_types = { signed_up = "timestamptz(0)" } }
+create_table = "create table {schema_name}.{table_name} ({columns}) distributed by (order_id)"
+copy_options = { chunk_bytes = 65536 }
+feed = "rows"
+"""
+
+TEMPLATE_POSTGRES = """
+name = "ora_to_pg_template_postgres"
+version = 1
+
+[[nodes]]
+key = "src"
+tool = "ora_stream_out"
+
+[nodes.args]
+connection = "ora"
+sql = '''$report_sql'''
+columns = [{ name = "order_id", nullable = false }, { name = "placed_at", nullable = false }, { name = "month", nullable = false }]
+out = "rows"
+
+[[nodes]]
+key = "dst"
+tool = "pg_stream_in"
+
+[nodes.args]
+connection = "pg"
+schema_name = "$dw"
+table_name = "orders_tpl"
+schema_strategy = { kind = "drop_and_create" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+rules = { column_types = { signed_up = "timestamptz(0)" } }
+create_table = "create table {schema_name}.{table_name} ({columns}) with (fillfactor = 90)"
+copy_options = { chunk_bytes = 65536 }
+feed = "rows"
+"""
+
+SWAP_REFUSED = """
+name = "ora_to_pg_swap_refused"
+version = 1
+
+[[nodes]]
+key = "src"
+tool = "ora_stream_out"
+
+[nodes.args]
+connection = "ora"
+sql = '''$report_sql'''
+columns = [{ name = "order_id", nullable = false }, { name = "placed_at", nullable = false }, { name = "month", nullable = false }]
+out = "rows"
+
+[[nodes]]
+key = "dst"
+tool = "pg_stream_in"
+
+[nodes.args]
+connection = "pg"
+schema_name = "$dw"
+table_name = "orders_report_stage"
+schema_strategy = { kind = "drop_and_create" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+rules = { column_types = { signed_up = "timestamptz(0)" } }
+create_table = "create table {schema_name}.{table_name} ({columns})"
+copy_options = { chunk_bytes = 65536 }
+after = [
+    "alter table $dw.orders_report rename to orders_report_old",
+    "alter table $dw.orders_report_stage rename to orders_report",
+    "do $$$$ begin raise exception 'swap refused'; end $$$$",
+]
+feed = "rows"
+"""
+
+SWAP = """
+name = "ora_to_pg_swap"
+version = 1
+
+[[nodes]]
+key = "src"
+tool = "ora_stream_out"
+
+[nodes.args]
+connection = "ora"
+sql = '''$report_sql'''
+columns = [{ name = "order_id", nullable = false }, { name = "placed_at", nullable = false }, { name = "month", nullable = false }]
+out = "rows"
+
+[[nodes]]
+key = "dst"
+tool = "pg_stream_in"
+
+[nodes.args]
+connection = "pg"
+schema_name = "$dw"
+table_name = "orders_report_stage"
+schema_strategy = { kind = "drop_and_create" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+rules = { column_types = { signed_up = "timestamptz(0)" } }
+create_table = "create table {schema_name}.{table_name} ({columns})"
+copy_options = { chunk_bytes = 65536 }
+after = [
+    "alter table $dw.orders_report rename to orders_report_old",
+    "alter table $dw.orders_report_stage rename to orders_report",
+    "drop table $dw.orders_report_old",
+]
+feed = "rows"
+"""
+
+DRY_RUN = """
+name = "ora_to_pg_dry_run"
+version = 1
+
+[[nodes]]
+key = "src"
+tool = "ora_stream_out"
+
+[nodes.args]
+connection = "ora"
+sql = '''$report_sql'''
+columns = [{ name = "order_id", nullable = false }, { name = "placed_at", nullable = false }, { name = "month", nullable = false }]
+out = "rows"
+
+[[nodes]]
+key = "dst"
+tool = "pg_stream_in"
+
+[nodes.args]
+connection = "pg"
+schema_name = "$dw"
+table_name = "orders_report"
+schema_strategy = { kind = "do_nothing" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "nothing" }
+rules = { column_types = { signed_up = "timestamptz(0)" } }
+create_table = "create table {schema_name}.{table_name} ({columns})"
+copy_options = { chunk_bytes = 65536 }
+feed = "rows"
+"""
+
+BINARY = """
+name = "ora_to_pg_binary"
+version = 1
+
+[[nodes]]
+key = "src"
+tool = "ora_stream_out"
+
+[nodes.args]
+connection = "ora"
+sql = '''select id as "id", '\\x' || rawtohex(external_id) as "uid", case when mod(id, 7) = 0 then null else '\\x' || rawtohex(external_id) end as "maybe" from $owner.customers'''
+columns = [{ name = "id", nullable = false }]
+out = "rows"
+
+[[nodes]]
+key = "dst"
+tool = "pg_stream_in"
+
+[nodes.args]
+connection = "pg"
+schema_name = "$dw"
+table_name = "customer_uids"
+schema_strategy = { kind = "drop_and_create" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+rules = { column_types = { maybe = "bytea" } }
+create_table = "create table {schema_name}.{table_name} ({columns})"
+copy_options = { chunk_bytes = 65536 }
+feed = "rows"
+"""
+
+CITY_MONTH = """
+name = "pg_to_ora_city_month"
+version = 1
+
+[[nodes]]
+key = "src"
+tool = "pg_stream_out"
+
+[nodes.args]
+connection = "pg"
+sql = "select city, month, count(*) as orders, sum(gross)::numeric(16,2) as gross, sum(balance)::numeric(16,2) as balance from $dw.orders_report group by city, month"
+wire = "arrow"
+columns = [{ name = "city", nullable = false }, { name = "month", nullable = false }]
+copy_options = { chunk_bytes = 65536 }
+out = "rows"
+
+[[nodes]]
+key = "dst"
+tool = "ora_stream_in"
+
+[nodes.args]
+connection = "ora"
+schema_name = "$owner"
+table_name = "city_month"
+schema_strategy = { kind = "drop_and_create" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+rules = {}
+unknown_types = { kind = "fail_on_unknown" }
+create_table = "create table {schema_name}.{table_name} ({columns})"
+chunk_bytes = 65536
+feed = "rows"
+"""
 
 
 def typed(columns: Sequence[tuple[str, str, bool]]) -> list[tuple[str, str]]:
@@ -373,53 +861,49 @@ async def target(request: Any, source: OracleSide) -> AsyncIterator[PostgresSide
     await side.drop()
 
 
-async def transfer(  # noqa: PLR0913
-    source: OracleSide,
-    target: PostgresSide,
-    table: str,
-    schema: Any,
-    delete: Any,
-    select: str = REPORT_SQL,
-    columns: Sequence[ColumnDeclaration] = DECLARED,
-    rules: ColumnRules = RULES,
-    insert: Any = InsertFull(kind="full"),
-    create_table: str = PgTransferTable.CREATE_TABLE,
-    after: Sequence[str] = (),
+@pytest.fixture
+def dags(tmp_path: Path, source: OracleSide, target: PostgresSide) -> PumpDags:
+    return PumpDags(
+        tmp_path,
+        {"ora": source.profile, "pg": target.profile},
+        {
+            "owner": OWNER,
+            "dw": DW,
+            "report_sql": REPORT_SQL,
+            "month_sql": MONTH_SQL,
+            "month": MONTH,
+        },
+    )
+
+
+async def _landed(
+    dags: PumpDags, source: OracleSide, target: PostgresSide, spec: str
 ) -> str:
-    """ora_stream_out на source -> pg_stream_in на target."""
-    pumps = Pumps(oracle=source.profile, postgres=target.profile)
-    chained = await pumps.chain(
-        Leg("ora_stream_out", {"sql": select, "columns": columns}),
-        Leg(
-            "pg_stream_in",
-            {
-                "schema_name": DW,
-                "table_name": table,
-                "schema_strategy": schema,
-                "delete_strategy": delete,
-                "insert_strategy": insert,
-                "rules": rules,
-                "create_table": create_table,
-                "after": after,
-                "copy_options": CopyOptions(chunk_bytes=CHUNK),
-            },
-        ),
-    )
+    """Запуск описания; отчёт приёмника — узла dst."""
+    outcome = await dags.run(spec)
+    report = outcome.node("dst").content
     print(
-        f"\n--- {source.source.name} -> {target.source.name}: ora_stream_out ---\n"
-        f"{chained.out_report}"
+        f"\n--- {source.source.name} -> {target.source.name}: {outcome.dag} ---\n"
+        f"{report}"
     )
-    print(f"--- pg_stream_in ---\n{chained.in_report}")
 
-    return chained.in_report
+    assert outcome.ok(), report
+
+    return report
 
 
-def month_of(month: str) -> str:
-    """Выборка отчёта за один месяц: окна посчитаны по всему отчёту."""
-    return (
-        f'select * from ({REPORT_SQL}) r where r."month" = '
-        f"to_date('{month}', 'yyyy-mm-dd')"
+async def _refused(
+    dags: PumpDags, source: OracleSide, target: PostgresSide, spec: str, key: str
+) -> FailureResult:
+    """Запуск описания, которое обязано сорваться на узле key: его отказ."""
+    outcome = await dags.run(spec)
+    failure = outcome.failure(key)
+    print(
+        f"\n--- {source.source.name} -> {target.source.name}: {outcome.dag} "
+        f"refused ---\n{failure.llm_view()}"
     )
+
+    return failure
 
 
 async def same_content(source: OracleSide, target: PostgresSide, table: str) -> None:
@@ -471,54 +955,27 @@ class TestFirstAttempt:
     отказывает до выполнения и подсказывает, чем их привести."""
 
     async def test_zoned_timestamp_is_refused(
-        self, source: OracleSide, target: PostgresSide
+        self, dags: PumpDags, source: OracleSide, target: PostgresSide
     ) -> None:
-        with pytest.raises(OracleQueryError, match=r"signed_up.*sys_extract_utc"):
-            await transfer(
-                source,
-                target,
-                "orders_raw",
-                DropAndCreate(kind="drop_and_create"),
-                DeleteNothing(kind="nothing"),
-                select=(
-                    f'select o.id as "order_id", c.signed_up as "signed_up" '
-                    f"from {OWNER}.orders o join {OWNER}.customers c "
-                    f"on c.id = o.customer_id"
-                ),
-                columns=(),
-                rules=ColumnRules(),
-            )
+        failure = await _refused(dags, source, target, ZONED_REFUSED, "src")
+
+        assert failure.error_kind == "OracleQueryError"
+        assert re.search(r"signed_up.*sys_extract_utc", failure.llm_view())
 
     async def test_interval_is_refused(
-        self, source: OracleSide, target: PostgresSide
+        self, dags: PumpDags, source: OracleSide, target: PostgresSide
     ) -> None:
-        with pytest.raises(OracleQueryError, match=r"lead_time.*INTERVAL_DS"):
-            await transfer(
-                source,
-                target,
-                "orders_raw",
-                DropAndCreate(kind="drop_and_create"),
-                DeleteNothing(kind="nothing"),
-                select=(
-                    f'select id as "order_id", shipped_at - placed_at as "lead_time" '
-                    f"from {OWNER}.orders"
-                ),
-                columns=(),
-                rules=ColumnRules(),
-            )
+        failure = await _refused(dags, source, target, INTERVAL_REFUSED, "src")
+
+        assert failure.error_kind == "OracleQueryError"
+        assert re.search(r"lead_time.*INTERVAL_DS", failure.llm_view())
 
 
 class TestOrdersReport:
     async def test_report_lands_with_its_types(
-        self, source: OracleSide, target: PostgresSide
+        self, dags: PumpDags, source: OracleSide, target: PostgresSide
     ) -> None:
-        report = await transfer(
-            source,
-            target,
-            "orders_report",
-            DropAndCreate(kind="drop_and_create"),
-            DeleteNothing(kind="nothing"),
-        )
+        report = await _landed(dags, source, target, REPORT)
         landed = Loaded(target, DW, "orders_report")
 
         assert f"{ORDERS} rows loaded" in report
@@ -532,15 +989,9 @@ class TestOrdersReport:
         await same_content(source, target, "orders_report")
 
     async def test_reload_into_the_existing_table_passes_the_check(
-        self, source: OracleSide, target: PostgresSide
+        self, dags: PumpDags, source: OracleSide, target: PostgresSide
     ) -> None:
-        report = await transfer(
-            source,
-            target,
-            "orders_report",
-            ErrorIfSchemaChanged(kind="error_if_schema_changed"),
-            DeleteTruncate(kind="truncate"),
-        )
+        report = await _landed(dags, source, target, REPORT_RELOAD)
 
         assert "error" not in report.split("rows loaded")[0].lower()
         assert await Loaded(target, DW, "orders_report").count() == ORDERS
@@ -550,30 +1001,21 @@ class TestIncrementalMonth:
     """Перезаливка одного месяца в готовую витрину: delete_where по month
     удаляет только его, insert full кладёт свежие строки месяца."""
 
-    MONTH: ClassVar[str] = "2024-03-01"
-
     async def test_one_month_is_replaced(
-        self, source: OracleSide, target: PostgresSide
+        self, dags: PumpDags, source: OracleSide, target: PostgresSide
     ) -> None:
         landed = Loaded(target, DW, "orders_report")
         await target.execute(
             [
                 f"update {DW}.orders_report set note = 'stale' "
-                f"where month = timestamp '{self.MONTH}'"
+                f"where month = timestamp '{MONTH}'"
             ]
         )
         in_month = await OraLoaded(source, "orders_report").scalar(
-            f"""count(case when "month" = to_date('{self.MONTH}', 'yyyy-mm-dd') then 1 end)"""
+            f"""count(case when "month" = to_date('{MONTH}', 'yyyy-mm-dd') then 1 end)"""
         )
 
-        report = await transfer(
-            source,
-            target,
-            "orders_report",
-            ErrorIfSchemaChanged(kind="error_if_schema_changed"),
-            DeleteWhere(kind="delete_where", where=f"month = timestamp '{self.MONTH}'"),
-            select=month_of(self.MONTH),
-        )
+        report = await _landed(dags, source, target, ONE_MONTH)
 
         assert in_month > 0
         assert f"{in_month} rows deleted" in report
@@ -597,52 +1039,22 @@ class TestRenamedMart:
             gross numeric(14,2),
             placed_at timestamp
         )"""
-    SELECT: ClassVar[str] = (
-        f'select "order_id", "customer_name", "tier", "paid", "gross", "placed_at" '
-        f"from ({REPORT_SQL}) r"
-    )
-    RULES: ClassVar[ColumnRules] = ColumnRules(
-        rename_columns={
-            "order_uid": "order_id",
-            "client": "customer_name",
-            "client_tier": "tier",
-            "paid_amount": "paid",
-        },
-        column_types={"client": "text", "client_tier": "varchar(10)"},
-    )
 
     async def test_missing_mart_is_refused(
-        self, source: OracleSide, target: PostgresSide
+        self, dags: PumpDags, source: OracleSide, target: PostgresSide
     ) -> None:
-        with pytest.raises(TransferError, match="table is missing"):
-            await transfer(
-                source,
-                target,
-                "orders_mart",
-                ErrorIfNotExists(kind="error_if_not_exists"),
-                DeleteNothing(kind="nothing"),
-                select=self.SELECT,
-                columns=(ColumnDeclaration(name="order_id", nullable=False),),
-                rules=self.RULES,
-            )
+        failure = await _refused(dags, source, target, MART, "dst")
+
+        assert "table is missing" in failure.llm_view()
 
     async def test_mart_is_filled_by_its_own_names(
-        self, source: OracleSide, target: PostgresSide
+        self, dags: PumpDags, source: OracleSide, target: PostgresSide
     ) -> None:
         await target.execute([f"drop table if exists {DW}.orders_mart", self.MART])
         view = OraLoaded(source, "orders_report")
         mart = Loaded(target, DW, "orders_mart")
 
-        report = await transfer(
-            source,
-            target,
-            "orders_mart",
-            ErrorIfNotExists(kind="error_if_not_exists"),
-            DeleteNothing(kind="nothing"),
-            select=self.SELECT,
-            columns=(ColumnDeclaration(name="order_id", nullable=False),),
-            rules=self.RULES,
-        )
+        report = await _landed(dags, source, target, MART)
 
         assert f"{ORDERS} rows loaded" in report
         assert await mart.count() == ORDERS
@@ -663,38 +1075,19 @@ class TestSchemaDrift:
     переименовывает её в _bak_<время> и создаёт заново."""
 
     async def test_drift_is_refused_then_backed_up(
-        self, source: OracleSide, target: PostgresSide
+        self, dags: PumpDags, source: OracleSide, target: PostgresSide
     ) -> None:
         drift = Loaded(target, DW, "orders_drift")
-        await transfer(
-            source,
-            target,
-            "orders_drift",
-            DropAndCreate(kind="drop_and_create"),
-            DeleteNothing(kind="nothing"),
-        )
+        await _landed(dags, source, target, DRIFT)
         await target.execute(
             [f"alter table {DW}.orders_drift alter column gross type numeric(12,1)"]
         )
 
-        with pytest.raises(
-            TransferError, match=r"gross: table decimal\(12, 1\) truncates"
-        ):
-            await transfer(
-                source,
-                target,
-                "orders_drift",
-                ErrorIfSchemaChanged(kind="error_if_schema_changed"),
-                DeleteTruncate(kind="truncate"),
-            )
+        failure = await _refused(dags, source, target, DRIFT_CHECKED, "dst")
 
-        report = await transfer(
-            source,
-            target,
-            "orders_drift",
-            BackupAndCreateIfSchemaChanged(kind="backup_and_create_if_schema_changed"),
-            DeleteNothing(kind="nothing"),
-        )
+        assert re.search(r"gross: table decimal\(12, 1\) truncates", failure.llm_view())
+
+        report = await _landed(dags, source, target, DRIFT_BACKED_UP)
         backups: list[str] = []
         for name in await drift.tables():
             if name.startswith("orders_drift_bak_"):
@@ -712,29 +1105,15 @@ class TestCreateTemplate:
     """Особенности таблицы из шаблона create table: у Greenplum ключ
     распределения, у postgres параметры хранения."""
 
-    GREENPLUM: ClassVar[str] = (
-        "create table {schema_name}.{table_name} ({columns}) distributed by (order_id)"
-    )
-    POSTGRES: ClassVar[str] = (
-        "create table {schema_name}.{table_name} ({columns}) with (fillfactor = 90)"
-    )
-
     async def test_table_gets_its_storage_options(
-        self, source: OracleSide, target: PostgresSide
+        self, dags: PumpDags, source: OracleSide, target: PostgresSide
     ) -> None:
-        template = self.POSTGRES
+        spec = TEMPLATE_POSTGRES
         if target.greenplum:
-            template = self.GREENPLUM
+            spec = TEMPLATE_GREENPLUM
 
         for _ in range(2):
-            report = await transfer(
-                source,
-                target,
-                "orders_tpl",
-                DropAndCreate(kind="drop_and_create"),
-                DeleteNothing(kind="nothing"),
-                create_table=template,
-            )
+            report = await _landed(dags, source, target, spec)
 
             assert f"{ORDERS} rows loaded" in report
 
@@ -761,29 +1140,16 @@ class TestStagingSwap:
     """Загрузка в staging и подмена витрины шагами after одной транзакцией:
     ошибка шага откатывает всё, включая staging."""
 
-    SWAP: ClassVar[tuple[str, ...]] = (
-        f"alter table {DW}.orders_report rename to orders_report_old",
-        f"alter table {DW}.orders_report_stage rename to orders_report",
-        f"drop table {DW}.orders_report_old",
-    )
-
     async def test_failed_swap_leaves_the_mart_intact(
-        self, source: OracleSide, target: PostgresSide
+        self, dags: PumpDags, source: OracleSide, target: PostgresSide
     ) -> None:
         landed = Loaded(target, DW, "orders_report")
 
-        with pytest.raises(psycopg.Error, match="swap refused"):
-            await transfer(
-                source,
-                target,
-                "orders_report_stage",
-                DropAndCreate(kind="drop_and_create"),
-                DeleteNothing(kind="nothing"),
-                after=(
-                    *self.SWAP[:2],
-                    "do $$ begin raise exception 'swap refused'; end $$",
-                ),
-            )
+        failure = await _refused(dags, source, target, SWAP_REFUSED, "dst")
+
+        assert isinstance(failure, SqlFailureResult), failure
+        assert "swap refused" in failure.llm_view()
+        assert failure.statements[-1].status == "failed: RaiseException"
 
         tables = await landed.tables()
 
@@ -792,19 +1158,12 @@ class TestStagingSwap:
         assert await landed.count() == ORDERS
 
     async def test_swap_replaces_the_mart(
-        self, source: OracleSide, target: PostgresSide
+        self, dags: PumpDags, source: OracleSide, target: PostgresSide
     ) -> None:
         landed = Loaded(target, DW, "orders_report")
         await target.execute([f"update {DW}.orders_report set note = 'old'"])
 
-        report = await transfer(
-            source,
-            target,
-            "orders_report_stage",
-            DropAndCreate(kind="drop_and_create"),
-            DeleteNothing(kind="nothing"),
-            after=self.SWAP,
-        )
+        report = await _landed(dags, source, target, SWAP)
         tables = await landed.tables()
 
         assert f"{ORDERS} rows loaded" in report
@@ -818,19 +1177,12 @@ class TestDryRun:
     тронута ни схемой, ни данными."""
 
     async def test_nothing_changes(
-        self, source: OracleSide, target: PostgresSide
+        self, dags: PumpDags, source: OracleSide, target: PostgresSide
     ) -> None:
         landed = Loaded(target, DW, "orders_report")
         columns = await landed.columns()
 
-        report = await transfer(
-            source,
-            target,
-            "orders_report",
-            DoNothing(kind="do_nothing"),
-            DeleteNothing(kind="nothing"),
-            insert=InsertNothing(kind="nothing"),
-        )
+        report = await _landed(dags, source, target, DRY_RUN)
 
         assert report.startswith("0 rows loaded")
         assert await landed.columns() == columns
@@ -841,25 +1193,10 @@ class TestBinary:
     """RAW едет в postgres hex-текстом: как текст в varchar, как bytea через
     column_types; NULL остаётся NULL, потому что '\\x' || null в Oracle — NULL."""
 
-    SELECT: ClassVar[str] = (
-        f'select id as "id", \'\\x\' || rawtohex(external_id) as "uid", '
-        f"case when mod(id, 7) = 0 then null else '\\x' || rawtohex(external_id) end "
-        f'as "maybe" from {OWNER}.customers'
-    )
-
     async def test_hex_text_lands_as_bytea(
-        self, source: OracleSide, target: PostgresSide
+        self, dags: PumpDags, source: OracleSide, target: PostgresSide
     ) -> None:
-        report = await transfer(
-            source,
-            target,
-            "customer_uids",
-            DropAndCreate(kind="drop_and_create"),
-            DeleteNothing(kind="nothing"),
-            select=self.SELECT,
-            columns=(ColumnDeclaration(name="id", nullable=False),),
-            rules=ColumnRules(column_types={"maybe": "bytea"}),
-        )
+        report = await _landed(dags, source, target, BINARY)
         landed = Loaded(target, DW, "customer_uids")
 
         assert f"{CUSTOMERS} rows loaded" in report
@@ -885,45 +1222,10 @@ class TestBackToOracle:
     """Обратный путь: агрегат «город × месяц» с приёмника в Oracle парой
     postgres -> Oracle по arrow; суммы совпадают с отчётом источника."""
 
-    AGGREGATE: ClassVar[str] = (
-        f"select city, month, count(*) as orders, "
-        f"sum(gross)::numeric(16,2) as gross, "
-        f"sum(balance)::numeric(16,2) as balance "
-        f"from {DW}.orders_report group by city, month"
-    )
-
     async def test_city_month_comes_back(
-        self, source: OracleSide, target: PostgresSide
+        self, dags: PumpDags, source: OracleSide, target: PostgresSide
     ) -> None:
-        pumps = Pumps(oracle=source.profile, postgres=target.profile)
-        chained = await pumps.chain(
-            Leg(
-                "pg_stream_out",
-                {
-                    "sql": self.AGGREGATE,
-                    "wire": StreamWire.ARROW,
-                    "columns": (
-                        PgColumnDeclaration(name="city", nullable=False),
-                        PgColumnDeclaration(name="month", nullable=False),
-                    ),
-                    "copy_options": CopyOptions(chunk_bytes=CHUNK),
-                },
-            ),
-            Leg(
-                "ora_stream_in",
-                {
-                    "schema_name": OWNER,
-                    "table_name": "city_month",
-                    "schema_strategy": DropAndCreate(kind="drop_and_create"),
-                    "delete_strategy": DeleteNothing(kind="nothing"),
-                    "insert_strategy": InsertFull(kind="full"),
-                    "create_table": OraTableRef.CREATE_TABLE,
-                    "chunk_bytes": CHUNK,
-                },
-            ),
-        )
-        print(f"\n--- {target.source.name} -> {source.source.name} ---")
-        print(chained.in_report)
+        await _landed(dags, source, target, CITY_MONTH)
         city_month = OraLoaded(source, "city_month")
         view = OraLoaded(source, "orders_report")
 

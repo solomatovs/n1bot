@@ -5,6 +5,11 @@ ClickHouse -> postgres (ch_stream_out и pg_stream_in) запросами, ка�
 агрегаты в массив и JSON, Enum, LowCardinality, UUID, IPv4, Decimal,
 DateTime64 в UTC и в поясе, UInt64 из count().
 
+Каждый запуск описан toml-текстом (DagSpec) и исполняется DagRunner без
+модели: узлы — вызовы насосов с аргументами, как их присылает модель; тело
+отчёта и запросы трафика подставляются в описание именами $report_body,
+$traffic_sql и $traffic_json_sql, JSON-тип приёмника — $json_type.
+
 Источник — каждый ClickHouse стенда, приёмник — каждый postgres (9.0–19) и
 Greenplum (6, 7) стенда. JSON-колонки LLM объявляет тем типом, что есть у
 приёмника: jsonb с 9.4, json с 9.2, раньше text.
@@ -30,57 +35,32 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import AsyncIterator, Mapping, Sequence
-from typing import Any, ClassVar
+from pathlib import Path
+from typing import Any
 
-import psycopg
 import pytest
 
-from boba.db.clickhouse.target import ChStreamWire
-from boba.db.postgres.connection import CopyOptions
-from boba.db.postgres.transfer import PgColumnDeclaration, PgTransferTable
 from boba.pump_stand import (
     ChLoaded,
     ClickHouseSide,
-    Leg,
     Loaded,
     PostgresSide,
-    Pumps,
+    PumpDags,
     PumpStand,
 )
 from boba.stand.names import StandNames
-from boba.toolkit.transfer import (
-    BackupAndCreateIfSchemaChanged,
-    ColumnRules,
-    DeleteNothing,
-    DeleteTruncate,
-    DeleteWhere,
-    DoNothing,
-    DropAndCreate,
-    ErrorIfNotExists,
-    ErrorIfSchemaChanged,
-    FailOnUnknown,
-    FallbackAsVarchar,
-    InsertFull,
-    InsertNothing,
-    StreamWire,
-    TransferError,
-)
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
 
 STAND = PumpStand.required()
 SRC = StandNames().of("shop_ch")
 DW = StandNames().of("shop_ch_dw")
-CHUNK = 65536
 CUSTOMERS = 12
 PRODUCTS = 10
 ORDERS = 24
 VIEWS = 24
+MONTH = "2024-03-01"
 JOIN_NULLS = "settings join_use_nulls = 1"
-MERGE_TREE = (
-    "create table {database}.{table_name}[ on cluster {cluster}] ({columns}) "
-    "engine = MergeTree order by {order_by}"
-)
 
 
 SCHEMA_DDL = [
@@ -290,8 +270,6 @@ left join pay on pay.order_id = o.id
 where o.placed_at >= toDateTime64('2024-01-01 00:00:00', 3, 'UTC')
 """
 
-REPORT_SQL = f"{REPORT_BODY}{JOIN_NULLS}"
-
 EXPECTED_COLUMNS = [
     ("order_id", "numeric(20,0)", True),
     ("status", "text", True),
@@ -380,6 +358,597 @@ TOP_URLS = "arraySlice(arraySort(groupUniqArray(toString(url))), 1, 3)"
 TRAFFIC_SQL = TRAFFIC_BODY.format(top_urls=TOP_URLS)
 TRAFFIC_JSON_SQL = TRAFFIC_BODY.format(top_urls=f"toJSONString({TOP_URLS})")
 
+REPORT_CREATE = """
+name = "ch_to_pg_report_create"
+version = 1
+
+[[nodes]]
+key = "src"
+tool = "ch_stream_out"
+
+[nodes.args]
+connection = "ch"
+sql = '''$report_body settings join_use_nulls = 1'''
+wire = "tsv"
+chunk_bytes = 65536
+out = "rows"
+
+[[nodes]]
+key = "pg"
+tool = "pg_stream_in"
+
+[nodes.args]
+connection = "pg"
+schema_name = "$dw"
+table_name = "orders_report"
+schema_strategy = { kind = "drop_and_create" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+rules = { column_types = { tags = "$json_type", categories = "$json_type", lines_json = "$json_type" } }
+unknown_types = { kind = "fail_on_unknown" }
+copy_options = { chunk_bytes = 65536 }
+feed = "rows"
+"""
+
+REPORT_RELOAD = """
+name = "ch_to_pg_report_reload"
+version = 1
+
+[[nodes]]
+key = "src"
+tool = "ch_stream_out"
+
+[nodes.args]
+connection = "ch"
+sql = '''$report_body settings join_use_nulls = 1'''
+wire = "tsv"
+chunk_bytes = 65536
+out = "rows"
+
+[[nodes]]
+key = "pg"
+tool = "pg_stream_in"
+
+[nodes.args]
+connection = "pg"
+schema_name = "$dw"
+table_name = "orders_report"
+schema_strategy = { kind = "error_if_schema_changed" }
+delete_strategy = { kind = "truncate" }
+insert_strategy = { kind = "full" }
+rules = { column_types = { tags = "$json_type", categories = "$json_type", lines_json = "$json_type" } }
+unknown_types = { kind = "fail_on_unknown" }
+copy_options = { chunk_bytes = 65536 }
+feed = "rows"
+"""
+
+REPORT_MONTH = """
+name = "ch_to_pg_report_month"
+version = 1
+
+[[nodes]]
+key = "src"
+tool = "ch_stream_out"
+
+[nodes.args]
+connection = "ch"
+sql = '''select * from ($report_body) r where r.month = toDate('$month') settings join_use_nulls = 1'''
+wire = "tsv"
+chunk_bytes = 65536
+out = "rows"
+
+[[nodes]]
+key = "pg"
+tool = "pg_stream_in"
+
+[nodes.args]
+connection = "pg"
+schema_name = "$dw"
+table_name = "orders_report"
+schema_strategy = { kind = "error_if_schema_changed" }
+delete_strategy = { kind = "delete_where", where = "month = date '$month'" }
+insert_strategy = { kind = "full" }
+rules = { column_types = { tags = "$json_type", categories = "$json_type", lines_json = "$json_type" } }
+unknown_types = { kind = "fail_on_unknown" }
+copy_options = { chunk_bytes = 65536 }
+feed = "rows"
+"""
+
+MART = """
+name = "ch_to_pg_report_mart"
+version = 1
+
+[[nodes]]
+key = "src"
+tool = "ch_stream_out"
+
+[nodes.args]
+connection = "ch"
+sql = '''select order_id, customer_name, tier, paid, gross, placed_at from ($report_body) r settings join_use_nulls = 1'''
+wire = "tsv"
+chunk_bytes = 65536
+out = "rows"
+
+[[nodes]]
+key = "pg"
+tool = "pg_stream_in"
+
+[nodes.args]
+connection = "pg"
+schema_name = "$dw"
+table_name = "orders_mart"
+schema_strategy = { kind = "error_if_not_exists" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+rules = { rename_columns = { order_uid = "order_id", client = "customer_name", client_tier = "tier", paid_amount = "paid" }, column_types = { order_uid = "bigint", client_tier = "varchar(10)" } }
+unknown_types = { kind = "fail_on_unknown" }
+copy_options = { chunk_bytes = 65536 }
+feed = "rows"
+"""
+
+DRIFT_CREATE = """
+name = "ch_to_pg_report_drift_create"
+version = 1
+
+[[nodes]]
+key = "src"
+tool = "ch_stream_out"
+
+[nodes.args]
+connection = "ch"
+sql = '''$report_body settings join_use_nulls = 1'''
+wire = "tsv"
+chunk_bytes = 65536
+out = "rows"
+
+[[nodes]]
+key = "pg"
+tool = "pg_stream_in"
+
+[nodes.args]
+connection = "pg"
+schema_name = "$dw"
+table_name = "orders_drift"
+schema_strategy = { kind = "drop_and_create" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+rules = { column_types = { tags = "$json_type", categories = "$json_type", lines_json = "$json_type" } }
+unknown_types = { kind = "fail_on_unknown" }
+copy_options = { chunk_bytes = 65536 }
+feed = "rows"
+"""
+
+DRIFT_CHECK = """
+name = "ch_to_pg_report_drift_check"
+version = 1
+
+[[nodes]]
+key = "src"
+tool = "ch_stream_out"
+
+[nodes.args]
+connection = "ch"
+sql = '''$report_body settings join_use_nulls = 1'''
+wire = "tsv"
+chunk_bytes = 65536
+out = "rows"
+
+[[nodes]]
+key = "pg"
+tool = "pg_stream_in"
+
+[nodes.args]
+connection = "pg"
+schema_name = "$dw"
+table_name = "orders_drift"
+schema_strategy = { kind = "error_if_schema_changed" }
+delete_strategy = { kind = "truncate" }
+insert_strategy = { kind = "full" }
+rules = { column_types = { tags = "$json_type", categories = "$json_type", lines_json = "$json_type" } }
+unknown_types = { kind = "fail_on_unknown" }
+copy_options = { chunk_bytes = 65536 }
+feed = "rows"
+"""
+
+DRIFT_BACKUP = """
+name = "ch_to_pg_report_drift_backup"
+version = 1
+
+[[nodes]]
+key = "src"
+tool = "ch_stream_out"
+
+[nodes.args]
+connection = "ch"
+sql = '''$report_body settings join_use_nulls = 1'''
+wire = "tsv"
+chunk_bytes = 65536
+out = "rows"
+
+[[nodes]]
+key = "pg"
+tool = "pg_stream_in"
+
+[nodes.args]
+connection = "pg"
+schema_name = "$dw"
+table_name = "orders_drift"
+schema_strategy = { kind = "backup_and_create_if_schema_changed" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+rules = { column_types = { tags = "$json_type", categories = "$json_type", lines_json = "$json_type" } }
+unknown_types = { kind = "fail_on_unknown" }
+copy_options = { chunk_bytes = 65536 }
+feed = "rows"
+"""
+
+TEMPLATE_GREENPLUM = """
+name = "ch_to_pg_report_template_greenplum"
+version = 1
+
+[[nodes]]
+key = "src"
+tool = "ch_stream_out"
+
+[nodes.args]
+connection = "ch"
+sql = '''$report_body settings join_use_nulls = 1'''
+wire = "tsv"
+chunk_bytes = 65536
+out = "rows"
+
+[[nodes]]
+key = "pg"
+tool = "pg_stream_in"
+
+[nodes.args]
+connection = "pg"
+schema_name = "$dw"
+table_name = "orders_tpl"
+schema_strategy = { kind = "drop_and_create" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+rules = { column_types = { tags = "$json_type", categories = "$json_type", lines_json = "$json_type" } }
+unknown_types = { kind = "fail_on_unknown" }
+create_table = "create table {schema_name}.{table_name} ({columns}) distributed by (order_id)"
+copy_options = { chunk_bytes = 65536 }
+feed = "rows"
+"""
+
+TEMPLATE_POSTGRES = """
+name = "ch_to_pg_report_template_postgres"
+version = 1
+
+[[nodes]]
+key = "src"
+tool = "ch_stream_out"
+
+[nodes.args]
+connection = "ch"
+sql = '''$report_body settings join_use_nulls = 1'''
+wire = "tsv"
+chunk_bytes = 65536
+out = "rows"
+
+[[nodes]]
+key = "pg"
+tool = "pg_stream_in"
+
+[nodes.args]
+connection = "pg"
+schema_name = "$dw"
+table_name = "orders_tpl"
+schema_strategy = { kind = "drop_and_create" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+rules = { column_types = { tags = "$json_type", categories = "$json_type", lines_json = "$json_type" } }
+unknown_types = { kind = "fail_on_unknown" }
+create_table = "create table {schema_name}.{table_name} ({columns}) with (fillfactor = 90)"
+copy_options = { chunk_bytes = 65536 }
+feed = "rows"
+"""
+
+# $$ в шагах after удвоен: string.Template сворачивает $$ в $
+SWAP_REFUSED = """
+name = "ch_to_pg_report_swap_refused"
+version = 1
+
+[[nodes]]
+key = "src"
+tool = "ch_stream_out"
+
+[nodes.args]
+connection = "ch"
+sql = '''$report_body settings join_use_nulls = 1'''
+wire = "tsv"
+chunk_bytes = 65536
+out = "rows"
+
+[[nodes]]
+key = "pg"
+tool = "pg_stream_in"
+
+[nodes.args]
+connection = "pg"
+schema_name = "$dw"
+table_name = "orders_report_stage"
+schema_strategy = { kind = "drop_and_create" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+rules = { column_types = { tags = "$json_type", categories = "$json_type", lines_json = "$json_type" } }
+unknown_types = { kind = "fail_on_unknown" }
+copy_options = { chunk_bytes = 65536 }
+after = [
+    "alter table $dw.orders_report rename to orders_report_old",
+    "alter table $dw.orders_report_stage rename to orders_report",
+    "do $$$$ begin raise exception 'swap refused'; end $$$$",
+]
+feed = "rows"
+"""
+
+SWAP = """
+name = "ch_to_pg_report_swap"
+version = 1
+
+[[nodes]]
+key = "src"
+tool = "ch_stream_out"
+
+[nodes.args]
+connection = "ch"
+sql = '''$report_body settings join_use_nulls = 1'''
+wire = "tsv"
+chunk_bytes = 65536
+out = "rows"
+
+[[nodes]]
+key = "pg"
+tool = "pg_stream_in"
+
+[nodes.args]
+connection = "pg"
+schema_name = "$dw"
+table_name = "orders_report_stage"
+schema_strategy = { kind = "drop_and_create" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+rules = { column_types = { tags = "$json_type", categories = "$json_type", lines_json = "$json_type" } }
+unknown_types = { kind = "fail_on_unknown" }
+copy_options = { chunk_bytes = 65536 }
+after = [
+    "alter table $dw.orders_report rename to orders_report_old",
+    "alter table $dw.orders_report_stage rename to orders_report",
+    "drop table $dw.orders_report_old",
+]
+feed = "rows"
+"""
+
+DRY_RUN = """
+name = "ch_to_pg_report_dry_run"
+version = 1
+
+[[nodes]]
+key = "src"
+tool = "ch_stream_out"
+
+[nodes.args]
+connection = "ch"
+sql = '''$report_body settings join_use_nulls = 1'''
+wire = "tsv"
+chunk_bytes = 65536
+out = "rows"
+
+[[nodes]]
+key = "pg"
+tool = "pg_stream_in"
+
+[nodes.args]
+connection = "pg"
+schema_name = "$dw"
+table_name = "orders_report"
+schema_strategy = { kind = "do_nothing" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "nothing" }
+rules = { column_types = { tags = "$json_type", categories = "$json_type", lines_json = "$json_type" } }
+unknown_types = { kind = "fail_on_unknown" }
+copy_options = { chunk_bytes = 65536 }
+feed = "rows"
+"""
+
+TRAFFIC_ARRAY_REFUSED = """
+name = "ch_to_pg_traffic_array_refused"
+version = 1
+
+[[nodes]]
+key = "src"
+tool = "ch_stream_out"
+
+[nodes.args]
+connection = "ch"
+sql = '''$traffic_sql'''
+wire = "tsv"
+chunk_bytes = 65536
+out = "rows"
+
+[[nodes]]
+key = "pg"
+tool = "pg_stream_in"
+
+[nodes.args]
+connection = "pg"
+schema_name = "$dw"
+table_name = "traffic"
+schema_strategy = { kind = "drop_and_create" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+rules = {}
+unknown_types = { kind = "fail_on_unknown" }
+copy_options = { chunk_bytes = 65536 }
+feed = "rows"
+"""
+
+TRAFFIC_LOCAL_TIME_REFUSED = """
+name = "ch_to_pg_traffic_local_time_refused"
+version = 1
+
+[[nodes]]
+key = "src"
+tool = "ch_stream_out"
+
+[nodes.args]
+connection = "ch"
+sql = '''$traffic_json_sql'''
+wire = "tsv"
+chunk_bytes = 65536
+out = "rows"
+
+[[nodes]]
+key = "pg"
+tool = "pg_stream_in"
+
+[nodes.args]
+connection = "pg"
+schema_name = "$dw"
+table_name = "traffic"
+schema_strategy = { kind = "drop_and_create" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+rules = { column_types = { top_urls = "$json_type" } }
+unknown_types = { kind = "fail_on_unknown" }
+copy_options = { chunk_bytes = 65536 }
+feed = "rows"
+"""
+
+TRAFFIC_FALLBACK = """
+name = "ch_to_pg_traffic_fallback"
+version = 1
+
+[[nodes]]
+key = "src"
+tool = "ch_stream_out"
+
+[nodes.args]
+connection = "ch"
+sql = '''$traffic_sql'''
+wire = "tsv"
+chunk_bytes = 65536
+out = "rows"
+
+[[nodes]]
+key = "pg"
+tool = "pg_stream_in"
+
+[nodes.args]
+connection = "pg"
+schema_name = "$dw"
+table_name = "traffic"
+schema_strategy = { kind = "drop_and_create" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+rules = {}
+unknown_types = { kind = "fallback_as_varchar" }
+copy_options = { chunk_bytes = 65536 }
+feed = "rows"
+"""
+
+TRAFFIC_REWRITTEN = """
+name = "ch_to_pg_traffic_rewritten"
+version = 1
+
+[[nodes]]
+key = "src"
+tool = "ch_stream_out"
+
+[nodes.args]
+connection = "ch"
+sql = '''$traffic_json_sql'''
+wire = "tsv"
+chunk_bytes = 65536
+out = "rows"
+
+[[nodes]]
+key = "pg"
+tool = "pg_stream_in"
+
+[nodes.args]
+connection = "pg"
+schema_name = "$dw"
+table_name = "traffic"
+schema_strategy = { kind = "drop_and_create" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+rules = { column_types = { top_urls = "$json_type", last_seen_msk = "timestamp(3)" } }
+unknown_types = { kind = "fail_on_unknown" }
+copy_options = { chunk_bytes = 65536 }
+feed = "rows"
+"""
+
+REPORT_ARROW = """
+name = "ch_to_pg_report_arrow"
+version = 1
+
+[[nodes]]
+key = "src"
+tool = "ch_stream_out"
+
+[nodes.args]
+connection = "ch"
+sql = '''select order_id, toString(status) as status, toString(customer_uid) as customer_uid, customer_name, toString(city) as city, gross, paid, placed_at from ($report_body) r settings join_use_nulls = 1, output_format_arrow_string_as_string = 1'''
+wire = "arrow"
+chunk_bytes = 65536
+out = "rows"
+
+[[nodes]]
+key = "pg"
+tool = "pg_stream_in"
+
+[nodes.args]
+connection = "pg"
+schema_name = "$dw"
+table_name = "orders_report_arrow"
+schema_strategy = { kind = "drop_and_create" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+rules = { column_types = { customer_uid = "uuid" } }
+unknown_types = { kind = "fail_on_unknown" }
+copy_options = { chunk_bytes = 65536 }
+feed = "rows"
+"""
+
+CITY_MONTH = """
+name = "pg_to_ch_city_month"
+version = 1
+
+[[nodes]]
+key = "src"
+tool = "pg_stream_out"
+
+[nodes.args]
+connection = "pg"
+sql = "select city, month, count(*) as orders, sum(gross)::numeric(18,2) as gross, sum(balance)::numeric(18,2) as balance from $dw.orders_report group by city, month"
+wire = "tsv"
+columns = [{ name = "city", nullable = false }, { name = "month", nullable = false }]
+copy_options = { chunk_bytes = 65536 }
+out = "rows"
+
+[[nodes]]
+key = "ch"
+tool = "ch_stream_in"
+
+[nodes.args]
+connection = "ch"
+database = "$src"
+table_name = "city_month"
+schema_strategy = { kind = "drop_and_create" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+rules = {}
+unknown_types = { kind = "fail_on_unknown" }
+create_table = "create table {database}.{table_name}[ on cluster {cluster}] ({columns}) engine = MergeTree order by {order_by}"
+order_by = "(city, month)"
+feed = "rows"
+"""
+
 
 @pytest.fixture(scope="module", params=STAND.demo_clickhouse(), ids=lambda s: s.name)
 async def source(request: Any) -> AsyncIterator[ClickHouseSide]:
@@ -417,6 +986,23 @@ async def target(request: Any, source: ClickHouseSide) -> AsyncIterator[Postgres
     await side.drop()
 
 
+@pytest.fixture
+def dags(tmp_path: Path, source: ClickHouseSide, target: PostgresSide) -> PumpDags:
+    return PumpDags(
+        tmp_path,
+        {"ch": source.profile, "pg": target.profile},
+        {
+            "src": SRC,
+            "dw": DW,
+            "month": MONTH,
+            "json_type": json_type(target),
+            "report_body": REPORT_BODY,
+            "traffic_sql": TRAFFIC_SQL,
+            "traffic_json_sql": TRAFFIC_JSON_SQL,
+        },
+    )
+
+
 JSONB_SINCE = 90400
 JSON_SINCE = 90200
 
@@ -441,73 +1027,21 @@ def expected_columns(target: PostgresSide) -> list[tuple[str, str, bool]]:
     return columns
 
 
-def report_rules(target: PostgresSide) -> ColumnRules:
-    """JSON-строки отчёта ClickHouse отдаёт String: LLM объявляет им JSON-тип
-    приёмника."""
-    json_kind = json_type(target)
-
-    return ColumnRules(
-        column_types={
-            "tags": json_kind,
-            "categories": json_kind,
-            "lines_json": json_kind,
-        }
-    )
-
-
-async def transfer(  # noqa: PLR0913
-    source: ClickHouseSide,
-    target: PostgresSide,
-    table: str,
-    schema: Any,
-    delete: Any,
-    select: str = REPORT_SQL,
-    rules: ColumnRules | None = None,
-    unknown_types: Any = FailOnUnknown(kind="fail_on_unknown"),
-    insert: Any = InsertFull(kind="full"),
-    create_table: str = PgTransferTable.CREATE_TABLE,
-    after: Sequence[str] = (),
-    wire: ChStreamWire = ChStreamWire.TSV,
+async def _landed(
+    dags: PumpDags, source: ClickHouseSide, target: PostgresSide, spec: str
 ) -> str:
-    """ch_stream_out на source -> pg_stream_in на target; без rules — правила
-    отчёта для версии приёмника."""
-    if rules is None:
-        rules = report_rules(target)
-
-    pumps = Pumps(postgres=target.profile, clickhouse=source.profile)
-    chained = await pumps.chain(
-        Leg("ch_stream_out", {"sql": select, "wire": wire, "chunk_bytes": CHUNK}),
-        Leg(
-            "pg_stream_in",
-            {
-                "schema_name": DW,
-                "table_name": table,
-                "schema_strategy": schema,
-                "delete_strategy": delete,
-                "insert_strategy": insert,
-                "rules": rules,
-                "unknown_types": unknown_types,
-                "create_table": create_table,
-                "after": after,
-                "copy_options": CopyOptions(chunk_bytes=CHUNK),
-            },
-        ),
-    )
+    """Запуск описания; отчёт приёмника — узла pg, отчёт источника — узла src."""
+    outcome = await dags.run(spec)
+    report = outcome.node("pg").content
     print(
-        f"\n--- {source.source.name} -> {target.source.name}: ch_stream_out "
-        f"({wire.value}) ---\n{chained.out_report}"
+        f"\n--- {source.source.name} -> {target.source.name}: {outcome.dag} ---\n"
+        f"{outcome.node('src').content}"
     )
-    print(f"--- pg_stream_in ---\n{chained.in_report}")
+    print(f"--- pg_stream_in ---\n{report}")
 
-    return chained.in_report
+    assert outcome.ok(), report
 
-
-def month_of(month: str) -> str:
-    """Выборка отчёта за один месяц: окна посчитаны по всему отчёту."""
-    return (
-        f"select * from ({REPORT_BODY}) r where r.month = toDate('{month}') "
-        f"{JOIN_NULLS}"
-    )
+    return report
 
 
 def parsed_json(texts: Sequence[Any]) -> list[Any]:
@@ -548,15 +1082,9 @@ async def same_content(
 
 class TestOrdersReport:
     async def test_report_lands_with_its_types(
-        self, source: ClickHouseSide, target: PostgresSide
+        self, dags: PumpDags, source: ClickHouseSide, target: PostgresSide
     ) -> None:
-        report = await transfer(
-            source,
-            target,
-            "orders_report",
-            DropAndCreate(kind="drop_and_create"),
-            DeleteNothing(kind="nothing"),
-        )
+        report = await _landed(dags, source, target, REPORT_CREATE)
         landed = Loaded(target, DW, "orders_report")
 
         assert f"{ORDERS} rows loaded" in report
@@ -569,15 +1097,9 @@ class TestOrdersReport:
         await same_content(source, target, "orders_report")
 
     async def test_reload_into_the_existing_table_passes_the_check(
-        self, source: ClickHouseSide, target: PostgresSide
+        self, dags: PumpDags, source: ClickHouseSide, target: PostgresSide
     ) -> None:
-        report = await transfer(
-            source,
-            target,
-            "orders_report",
-            ErrorIfSchemaChanged(kind="error_if_schema_changed"),
-            DeleteTruncate(kind="truncate"),
-        )
+        report = await _landed(dags, source, target, REPORT_RELOAD)
 
         assert "error" not in report.split("rows loaded")[0].lower()
         assert await Loaded(target, DW, "orders_report").count() == ORDERS
@@ -587,30 +1109,21 @@ class TestIncrementalMonth:
     """Перезаливка одного месяца в готовую витрину: delete_where по month
     удаляет только его, insert full кладёт свежие строки месяца."""
 
-    MONTH: ClassVar[str] = "2024-03-01"
-
     async def test_one_month_is_replaced(
-        self, source: ClickHouseSide, target: PostgresSide
+        self, dags: PumpDags, source: ClickHouseSide, target: PostgresSide
     ) -> None:
         landed = Loaded(target, DW, "orders_report")
         await target.execute(
             [
                 f"update {DW}.orders_report set note = 'stale' "
-                f"where month = date '{self.MONTH}'"
+                f"where month = date '{MONTH}'"
             ]
         )
         in_month = await ChLoaded(source, "orders_report").scalar(
-            f"countIf(month = toDate('{self.MONTH}'))"
+            f"countIf(month = toDate('{MONTH}'))"
         )
 
-        report = await transfer(
-            source,
-            target,
-            "orders_report",
-            ErrorIfSchemaChanged(kind="error_if_schema_changed"),
-            DeleteWhere(kind="delete_where", where=f"month = date '{self.MONTH}'"),
-            select=month_of(self.MONTH),
-        )
+        report = await _landed(dags, source, target, REPORT_MONTH)
 
         assert in_month > 0
         assert f"{in_month} rows deleted" in report
@@ -625,7 +1138,7 @@ class TestRenamedMart:
     колонки витрины с полями потока, column_types сужает UInt64 до bigint и
     Enum до varchar(10); timestamptz витрины точнее потока — предупреждение."""
 
-    MART: ClassVar[str] = f"""
+    MART_DDL = f"""
         create table {DW}.orders_mart (
             order_uid bigint not null,
             client text not null,
@@ -634,50 +1147,22 @@ class TestRenamedMart:
             gross numeric(18,2) not null,
             placed_at timestamptz not null
         )"""
-    SELECT: ClassVar[str] = (
-        f"select order_id, customer_name, tier, paid, gross, placed_at "
-        f"from ({REPORT_BODY}) r {JOIN_NULLS}"
-    )
-    RULES: ClassVar[ColumnRules] = ColumnRules(
-        rename_columns={
-            "order_uid": "order_id",
-            "client": "customer_name",
-            "client_tier": "tier",
-            "paid_amount": "paid",
-        },
-        column_types={"order_uid": "bigint", "client_tier": "varchar(10)"},
-    )
 
-    async def test_missing_mart_is_refused(
-        self, source: ClickHouseSide, target: PostgresSide
-    ) -> None:
-        with pytest.raises(TransferError, match="table is missing"):
-            await transfer(
-                source,
-                target,
-                "orders_mart",
-                ErrorIfNotExists(kind="error_if_not_exists"),
-                DeleteNothing(kind="nothing"),
-                select=self.SELECT,
-                rules=self.RULES,
-            )
+    async def test_missing_mart_is_refused(self, dags: PumpDags) -> None:
+        outcome = await dags.run(MART)
+
+        failure = outcome.failure("pg")
+        assert failure.error_kind == "TransferError", failure
+        assert "table is missing" in failure.llm_view()
 
     async def test_mart_is_filled_by_its_own_names(
-        self, source: ClickHouseSide, target: PostgresSide
+        self, dags: PumpDags, source: ClickHouseSide, target: PostgresSide
     ) -> None:
-        await target.execute([f"drop table if exists {DW}.orders_mart", self.MART])
+        await target.execute([f"drop table if exists {DW}.orders_mart", self.MART_DDL])
         view = ChLoaded(source, "orders_report")
         mart = Loaded(target, DW, "orders_mart")
 
-        report = await transfer(
-            source,
-            target,
-            "orders_mart",
-            ErrorIfNotExists(kind="error_if_not_exists"),
-            DeleteNothing(kind="nothing"),
-            select=self.SELECT,
-            rules=self.RULES,
-        )
+        report = await _landed(dags, source, target, MART)
 
         assert f"{ORDERS} rows loaded" in report
         assert re.search(
@@ -701,36 +1186,21 @@ class TestSchemaDrift:
     переименовывает её в _bak_<время> и создаёт заново."""
 
     async def test_drift_is_refused_then_backed_up(
-        self, source: ClickHouseSide, target: PostgresSide
+        self, dags: PumpDags, source: ClickHouseSide, target: PostgresSide
     ) -> None:
         drift = Loaded(target, DW, "orders_drift")
-        await transfer(
-            source,
-            target,
-            "orders_drift",
-            DropAndCreate(kind="drop_and_create"),
-            DeleteNothing(kind="nothing"),
-        )
+        await _landed(dags, source, target, DRIFT_CREATE)
         await target.execute(
             [f"alter table {DW}.orders_drift alter column note type varchar(200)"]
         )
 
-        with pytest.raises(TransferError, match="note: type differs"):
-            await transfer(
-                source,
-                target,
-                "orders_drift",
-                ErrorIfSchemaChanged(kind="error_if_schema_changed"),
-                DeleteTruncate(kind="truncate"),
-            )
+        refused = await dags.run(DRIFT_CHECK)
 
-        report = await transfer(
-            source,
-            target,
-            "orders_drift",
-            BackupAndCreateIfSchemaChanged(kind="backup_and_create_if_schema_changed"),
-            DeleteNothing(kind="nothing"),
-        )
+        failure = refused.failure("pg")
+        assert failure.error_kind == "TransferError", failure
+        assert "note: type differs" in failure.llm_view()
+
+        report = await _landed(dags, source, target, DRIFT_BACKUP)
         backups: list[str] = []
         for name in await drift.tables():
             if name.startswith("orders_drift_bak_"):
@@ -748,29 +1218,15 @@ class TestCreateTemplate:
     """Особенности таблицы из шаблона create table: у Greenplum ключ
     распределения, у postgres параметры хранения."""
 
-    GREENPLUM: ClassVar[str] = (
-        "create table {schema_name}.{table_name} ({columns}) distributed by (order_id)"
-    )
-    POSTGRES: ClassVar[str] = (
-        "create table {schema_name}.{table_name} ({columns}) with (fillfactor = 90)"
-    )
-
     async def test_table_gets_its_storage_options(
-        self, source: ClickHouseSide, target: PostgresSide
+        self, dags: PumpDags, source: ClickHouseSide, target: PostgresSide
     ) -> None:
-        template = self.POSTGRES
+        spec = TEMPLATE_POSTGRES
         if target.greenplum:
-            template = self.GREENPLUM
+            spec = TEMPLATE_GREENPLUM
 
         for _ in range(2):
-            report = await transfer(
-                source,
-                target,
-                "orders_tpl",
-                DropAndCreate(kind="drop_and_create"),
-                DeleteNothing(kind="nothing"),
-                create_table=template,
-            )
+            report = await _landed(dags, source, target, spec)
 
             assert f"{ORDERS} rows loaded" in report
 
@@ -797,29 +1253,15 @@ class TestStagingSwap:
     """Загрузка в staging и подмена витрины шагами after одной транзакцией:
     ошибка шага откатывает всё, включая staging."""
 
-    SWAP: ClassVar[tuple[str, ...]] = (
-        f"alter table {DW}.orders_report rename to orders_report_old",
-        f"alter table {DW}.orders_report_stage rename to orders_report",
-        f"drop table {DW}.orders_report_old",
-    )
-
     async def test_failed_swap_leaves_the_mart_intact(
-        self, source: ClickHouseSide, target: PostgresSide
+        self, dags: PumpDags, target: PostgresSide
     ) -> None:
         landed = Loaded(target, DW, "orders_report")
 
-        with pytest.raises(psycopg.Error, match="swap refused"):
-            await transfer(
-                source,
-                target,
-                "orders_report_stage",
-                DropAndCreate(kind="drop_and_create"),
-                DeleteNothing(kind="nothing"),
-                after=(
-                    *self.SWAP[:2],
-                    "do $$ begin raise exception 'swap refused'; end $$",
-                ),
-            )
+        outcome = await dags.run(SWAP_REFUSED)
+
+        failure = outcome.failure("pg")
+        assert "swap refused" in failure.llm_view()
 
         tables = await landed.tables()
 
@@ -829,19 +1271,12 @@ class TestStagingSwap:
         assert await landed.count() == ORDERS
 
     async def test_swap_replaces_the_mart(
-        self, source: ClickHouseSide, target: PostgresSide
+        self, dags: PumpDags, source: ClickHouseSide, target: PostgresSide
     ) -> None:
         landed = Loaded(target, DW, "orders_report")
         await target.execute([f"update {DW}.orders_report set note = 'old'"])
 
-        report = await transfer(
-            source,
-            target,
-            "orders_report_stage",
-            DropAndCreate(kind="drop_and_create"),
-            DeleteNothing(kind="nothing"),
-            after=self.SWAP,
-        )
+        report = await _landed(dags, source, target, SWAP)
         tables = await landed.tables()
 
         assert f"{ORDERS} rows loaded" in report
@@ -855,19 +1290,12 @@ class TestDryRun:
     тронута ни схемой, ни данными."""
 
     async def test_nothing_changes(
-        self, source: ClickHouseSide, target: PostgresSide
+        self, dags: PumpDags, source: ClickHouseSide, target: PostgresSide
     ) -> None:
         landed = Loaded(target, DW, "orders_report")
         columns = await landed.columns()
 
-        report = await transfer(
-            source,
-            target,
-            "orders_report",
-            DoNothing(kind="do_nothing"),
-            DeleteNothing(kind="nothing"),
-            insert=InsertNothing(kind="nothing"),
-        )
+        report = await _landed(dags, source, target, DRY_RUN)
 
         assert report.startswith("0 rows loaded")
         assert await landed.columns() == columns
@@ -882,7 +1310,7 @@ class TestDailyTraffic:
     переписанный запрос (toJSONString) с column_types даёт JSON-тип приёмника и
     timestamp(3) с временем Москвы."""
 
-    ROW: ClassVar[tuple[str, str]] = (
+    ROW = (
         "day::text || ' ' || device || ' ' || views || ' ' || sessions || ' ' "
         "|| customers || ' ' || anonymous || ' ' || p50_ms",
         "concat(toString(day), ' ', toString(device), ' ', toString(views), ' ', "
@@ -898,51 +1326,29 @@ class TestDailyTraffic:
 
         assert landed == expected
 
-    async def test_array_is_refused_first(
-        self, source: ClickHouseSide, target: PostgresSide
-    ) -> None:
-        with pytest.raises(TransferError, match=r"column top_urls: .*Array\(String\)"):
-            await transfer(
-                source,
-                target,
-                "traffic",
-                DropAndCreate(kind="drop_and_create"),
-                DeleteNothing(kind="nothing"),
-                select=TRAFFIC_SQL,
-                rules=ColumnRules(),
-            )
+    async def test_array_is_refused_first(self, dags: PumpDags) -> None:
+        outcome = await dags.run(TRAFFIC_ARRAY_REFUSED)
 
-    async def test_local_time_is_refused_with_a_hint(
-        self, source: ClickHouseSide, target: PostgresSide
-    ) -> None:
+        failure = outcome.failure("pg")
+        assert failure.error_kind == "TransferError", failure
+        assert re.search(r"column top_urls: .*Array\(String\)", failure.llm_view()), (
+            failure.llm_view()
+        )
+
+    async def test_local_time_is_refused_with_a_hint(self, dags: PumpDags) -> None:
         """LLM исправил массив, следующий отказ — время в поясе Москвы."""
-        with pytest.raises(
-            TransferError,
-            match=r"column last_seen_msk: .*toDateTime64\(x, 3, 'UTC'\)",
-        ):
-            await transfer(
-                source,
-                target,
-                "traffic",
-                DropAndCreate(kind="drop_and_create"),
-                DeleteNothing(kind="nothing"),
-                select=TRAFFIC_JSON_SQL,
-                rules=ColumnRules(column_types={"top_urls": json_type(target)}),
-            )
+        outcome = await dags.run(TRAFFIC_LOCAL_TIME_REFUSED)
+
+        failure = outcome.failure("pg")
+        assert failure.error_kind == "TransferError", failure
+        assert re.search(
+            r"column last_seen_msk: .*toDateTime64\(x, 3, 'UTC'\)", failure.llm_view()
+        ), failure.llm_view()
 
     async def test_fallback_lands_text(
-        self, source: ClickHouseSide, target: PostgresSide
+        self, dags: PumpDags, source: ClickHouseSide, target: PostgresSide
     ) -> None:
-        report = await transfer(
-            source,
-            target,
-            "traffic",
-            DropAndCreate(kind="drop_and_create"),
-            DeleteNothing(kind="nothing"),
-            select=TRAFFIC_SQL,
-            rules=ColumnRules(),
-            unknown_types=FallbackAsVarchar(kind="fallback_as_varchar"),
-        )
+        report = await _landed(dags, source, target, TRAFFIC_FALLBACK)
         landed = Loaded(target, DW, "traffic")
         types: dict[str, str] = {}
         for name, kind, _ in await landed.columns():
@@ -965,22 +1371,9 @@ class TestDailyTraffic:
         )
 
     async def test_rewritten_query_lands_json_and_local_time(
-        self, source: ClickHouseSide, target: PostgresSide
+        self, dags: PumpDags, source: ClickHouseSide, target: PostgresSide
     ) -> None:
-        report = await transfer(
-            source,
-            target,
-            "traffic",
-            DropAndCreate(kind="drop_and_create"),
-            DeleteNothing(kind="nothing"),
-            select=TRAFFIC_JSON_SQL,
-            rules=ColumnRules(
-                column_types={
-                    "top_urls": json_type(target),
-                    "last_seen_msk": "timestamp(3)",
-                }
-            ),
-        )
+        report = await _landed(dags, source, target, TRAFFIC_REWRITTEN)
         landed = Loaded(target, DW, "traffic")
         types: dict[str, str] = {}
         for name, kind, _ in await landed.columns():
@@ -1015,26 +1408,10 @@ class TestArrow:
     строке, тип uuid объявляет у приёмника, а String просит отдать строкой
     Arrow (по умолчанию ClickHouse пишет её binary, и приёмник отказывает)."""
 
-    SELECT: ClassVar[str] = (
-        f"select order_id, toString(status) as status, "
-        f"toString(customer_uid) as customer_uid, customer_name, "
-        f"toString(city) as city, gross, paid, placed_at "
-        f"from ({REPORT_BODY}) r {JOIN_NULLS}, output_format_arrow_string_as_string = 1"
-    )
-
     async def test_arrow_lands_the_report(
-        self, source: ClickHouseSide, target: PostgresSide
+        self, dags: PumpDags, source: ClickHouseSide, target: PostgresSide
     ) -> None:
-        report = await transfer(
-            source,
-            target,
-            "orders_report_arrow",
-            DropAndCreate(kind="drop_and_create"),
-            DeleteNothing(kind="nothing"),
-            select=self.SELECT,
-            rules=ColumnRules(column_types={"customer_uid": "uuid"}),
-            wire=ChStreamWire.ARROW,
-        )
+        report = await _landed(dags, source, target, REPORT_ARROW)
         landed = Loaded(target, DW, "orders_report_arrow")
         view = ChLoaded(source, "orders_report")
 
@@ -1055,53 +1432,20 @@ class TestBackToClickHouse:
     """Обратный путь: агрегат «город × месяц» с приёмника в ClickHouse парой
     postgres -> ClickHouse по tsv; суммы совпадают с отчётом источника."""
 
-    AGGREGATE: ClassVar[str] = (
-        f"select city, month, count(*) as orders, "
-        f"sum(gross)::numeric(18,2) as gross, "
-        f"sum(balance)::numeric(18,2) as balance "
-        f"from {DW}.orders_report group by city, month"
-    )
-
     async def test_city_month_comes_back(
-        self, source: ClickHouseSide, target: PostgresSide
+        self, dags: PumpDags, source: ClickHouseSide, target: PostgresSide
     ) -> None:
-        pumps = Pumps(postgres=target.profile, clickhouse=source.profile)
-        chained = await pumps.chain(
-            Leg(
-                "pg_stream_out",
-                {
-                    "sql": self.AGGREGATE,
-                    "wire": StreamWire.TSV,
-                    "columns": (
-                        PgColumnDeclaration(name="city", nullable=False),
-                        PgColumnDeclaration(name="month", nullable=False),
-                    ),
-                    "copy_options": CopyOptions(chunk_bytes=CHUNK),
-                },
-            ),
-            Leg(
-                "ch_stream_in",
-                {
-                    "database": SRC,
-                    "table_name": "city_month",
-                    "schema_strategy": DropAndCreate(kind="drop_and_create"),
-                    "delete_strategy": DeleteNothing(kind="nothing"),
-                    "insert_strategy": InsertFull(kind="full"),
-                    "rules": ColumnRules(),
-                    "unknown_types": FailOnUnknown(kind="fail_on_unknown"),
-                    "create_table": MERGE_TREE,
-                    "order_by": "(city, month)",
-                },
-            ),
-        )
+        outcome = await dags.run(CITY_MONTH)
+        report = outcome.node("ch").content
         print(f"\n--- {target.source.name} -> {source.source.name} ---")
-        print(chained.in_report)
+        print(report)
+
+        assert outcome.ok(), report
+
         city_month = ChLoaded(source, "city_month")
         view = ChLoaded(source, "orders_report")
 
-        assert f"{await view.scalar('uniqExact(city, month)')} rows loaded" in (
-            chained.in_report
-        )
+        assert f"{await view.scalar('uniqExact(city, month)')} rows loaded" in report
         assert await city_month.types() == [
             ("city", "String"),
             ("month", "Date32"),

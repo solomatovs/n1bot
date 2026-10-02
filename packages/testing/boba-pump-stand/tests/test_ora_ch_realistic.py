@@ -3,6 +3,9 @@
 (ora_stream_out и ch_stream_in) запросом, каким его написал бы LLM: CTE, join и
 left join с NULL, оконные функции, listagg, json_object, sys_guid.
 
+Каждый запуск описан toml-текстом (DagSpec) и исполняется DagRunner без
+модели: узлы — вызовы насосов с аргументами, как их присылает модель.
+
 Источник — каждый Oracle стенда, приёмник — каждый ClickHouse стенда.
 Сценарии идут по порядку на каждой паре и опираются на таблицы предыдущих:
     - первая попытка LLM с TIMESTAMP WITH TIME ZONE: отказ источника с
@@ -23,8 +26,10 @@ left join с NULL, оконные функции, listagg, json_object, sys_guid
 
 from __future__ import annotations
 
+import re
 from collections.abc import AsyncIterator, Mapping, Sequence
 from decimal import Decimal
+from pathlib import Path
 from typing import Any, ClassVar
 
 import pytest
@@ -36,35 +41,17 @@ from test_ora_pg_realistic import (
     SCHEMA_DDL,
 )
 
-from boba.db.clickhouse.target import ChStreamWire, ChTableRef
-from boba.db.oracle import OracleQueryError
-from boba.db.oracle.target import OraTableRef
 from boba.pump_stand import (
     ChLoaded,
     ClickHouseSide,
-    Leg,
     OracleSide,
     OraLoaded,
-    Pumps,
+    PumpDags,
     PumpStand,
 )
 from boba.pump_stand.oracle import PumpUser
 from boba.stand.names import StandNames
-from boba.toolkit.contract import ColumnDeclaration
-from boba.toolkit.transfer import (
-    BackupAndCreateIfSchemaChanged,
-    ColumnRules,
-    DeleteNothing,
-    DeleteTruncate,
-    DeleteWhere,
-    DoNothing,
-    DropAndCreate,
-    ErrorIfNotExists,
-    ErrorIfSchemaChanged,
-    InsertFull,
-    InsertNothing,
-    TransferError,
-)
+from boba.toolkit.result import FailureResult
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
 
@@ -72,25 +59,12 @@ STAND = PumpStand.required()
 OWNER = PumpUser().name
 DW = StandNames().of("shop_ora_dw")
 ARRAYSIZE = 2000
-CHUNK = 65536
 MONTHS = 8
 KEEPER_CLUSTER = "stand"
-MERGE_TREE = (
-    "create table {database}.{table_name}[ on cluster {cluster}] ({columns}) "
-    "engine = MergeTree order by {order_by}"
-)
-PARTITIONED = (
-    "create table {database}.{table_name}[ on cluster {cluster}] ({columns}) "
-    "engine = MergeTree partition by toYYYYMM(month) order by {order_by}"
-)
+MONTH = "2024-03-01"
 SYNC = {"mutations_sync": 2}
 
-DECLARED = (
-    ColumnDeclaration(name="order_id", nullable=False),
-    ColumnDeclaration(name="placed_at", nullable=False),
-    ColumnDeclaration(name="month", nullable=False),
-)
-RULES = ColumnRules(column_types={"signed_up": "DateTime64(0, 'UTC')"})
+MONTH_SQL = f"""select * from ({REPORT_SQL}) r where r."month" = to_date('{MONTH}', 'yyyy-mm-dd')"""
 
 EXPECTED_TYPES = [
     ("order_id", "Int64"),
@@ -147,6 +121,427 @@ COMPARED: Mapping[str, tuple[str, str]] = {
 """Как сравнить колонку: выражение ClickHouse и выражение Oracle с одинаковым
 значением; строки сравниваются как есть."""
 
+ZONED_REFUSED = """
+name = "ora_to_ch_zoned_refused"
+version = 1
+
+[[nodes]]
+key = "src"
+tool = "ora_stream_out"
+
+[nodes.args]
+connection = "ora"
+sql = '''select o.id as "order_id", c.signed_up as "signed_up" from $owner.orders o join $owner.customers c on c.id = o.customer_id'''
+columns = []
+out = "rows"
+
+[[nodes]]
+key = "dst"
+tool = "ch_stream_in"
+
+[nodes.args]
+connection = "ch"
+database = "$dw"
+table_name = "orders_raw"
+schema_strategy = { kind = "drop_and_create" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+rules = {}
+cluster = ""
+order_by = "order_id"
+create_table = "create table {database}.{table_name}[ on cluster {cluster}] ({columns}) engine = MergeTree order by {order_by}"
+feed = "rows"
+"""
+
+REPORT = """
+name = "ora_to_ch_report"
+version = 1
+
+[[nodes]]
+key = "src"
+tool = "ora_stream_out"
+
+[nodes.args]
+connection = "ora"
+sql = '''$report_sql'''
+columns = [{ name = "order_id", nullable = false }, { name = "placed_at", nullable = false }, { name = "month", nullable = false }]
+out = "rows"
+
+[[nodes]]
+key = "dst"
+tool = "ch_stream_in"
+
+[nodes.args]
+connection = "ch"
+database = "$dw"
+table_name = "orders_report"
+schema_strategy = { kind = "drop_and_create" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+rules = { column_types = { signed_up = "DateTime64(0, 'UTC')" } }
+cluster = ""
+order_by = "order_id"
+create_table = "create table {database}.{table_name}[ on cluster {cluster}] ({columns}) engine = MergeTree order by {order_by}"
+feed = "rows"
+"""
+
+REPORT_RELOAD = """
+name = "ora_to_ch_report_reload"
+version = 1
+
+[[nodes]]
+key = "src"
+tool = "ora_stream_out"
+
+[nodes.args]
+connection = "ora"
+sql = '''$report_sql'''
+columns = [{ name = "order_id", nullable = false }, { name = "placed_at", nullable = false }, { name = "month", nullable = false }]
+out = "rows"
+
+[[nodes]]
+key = "dst"
+tool = "ch_stream_in"
+
+[nodes.args]
+connection = "ch"
+database = "$dw"
+table_name = "orders_report"
+schema_strategy = { kind = "error_if_schema_changed" }
+delete_strategy = { kind = "truncate" }
+insert_strategy = { kind = "full" }
+rules = { column_types = { signed_up = "DateTime64(0, 'UTC')" } }
+cluster = ""
+order_by = "order_id"
+create_table = "create table {database}.{table_name}[ on cluster {cluster}] ({columns}) engine = MergeTree order by {order_by}"
+feed = "rows"
+"""
+
+ONE_MONTH = """
+name = "ora_to_ch_one_month"
+version = 1
+
+[[nodes]]
+key = "src"
+tool = "ora_stream_out"
+
+[nodes.args]
+connection = "ora"
+sql = '''$month_sql'''
+columns = [{ name = "order_id", nullable = false }, { name = "placed_at", nullable = false }, { name = "month", nullable = false }]
+out = "rows"
+
+[[nodes]]
+key = "dst"
+tool = "ch_stream_in"
+
+[nodes.args]
+connection = "ch"
+database = "$dw"
+table_name = "orders_report"
+schema_strategy = { kind = "error_if_schema_changed" }
+delete_strategy = { kind = "delete_where", where = "month = toDateTime64('$month 00:00:00', 0)" }
+insert_strategy = { kind = "full" }
+rules = { column_types = { signed_up = "DateTime64(0, 'UTC')" } }
+cluster = ""
+order_by = "order_id"
+create_table = "create table {database}.{table_name}[ on cluster {cluster}] ({columns}) engine = MergeTree order by {order_by}"
+feed = "rows"
+"""
+
+MART = """
+name = "ora_to_ch_mart"
+version = 1
+
+[[nodes]]
+key = "src"
+tool = "ora_stream_out"
+
+[nodes.args]
+connection = "ora"
+sql = '''select "order_id", "customer_name", "tier", "paid", "gross", "placed_at" from ($report_sql) r'''
+columns = [{ name = "order_id", nullable = false }, { name = "placed_at", nullable = false }]
+out = "rows"
+
+[[nodes]]
+key = "dst"
+tool = "ch_stream_in"
+
+[nodes.args]
+connection = "ch"
+database = "$dw"
+table_name = "orders_mart"
+schema_strategy = { kind = "error_if_not_exists" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+rules = { rename_columns = { order_uid = "order_id", client = "customer_name", client_tier = "tier", paid_amount = "paid" }, column_types = { client_tier = "LowCardinality(String)" } }
+cluster = ""
+order_by = "order_uid"
+create_table = "create table {database}.{table_name}[ on cluster {cluster}] ({columns}) engine = MergeTree order by {order_by}"
+feed = "rows"
+"""
+
+DRIFT = """
+name = "ora_to_ch_drift"
+version = 1
+
+[[nodes]]
+key = "src"
+tool = "ora_stream_out"
+
+[nodes.args]
+connection = "ora"
+sql = '''$report_sql'''
+columns = [{ name = "order_id", nullable = false }, { name = "placed_at", nullable = false }, { name = "month", nullable = false }]
+out = "rows"
+
+[[nodes]]
+key = "dst"
+tool = "ch_stream_in"
+
+[nodes.args]
+connection = "ch"
+database = "$dw"
+table_name = "orders_drift"
+schema_strategy = { kind = "drop_and_create" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+rules = { column_types = { signed_up = "DateTime64(0, 'UTC')" } }
+cluster = ""
+order_by = "order_id"
+create_table = "create table {database}.{table_name}[ on cluster {cluster}] ({columns}) engine = MergeTree order by {order_by}"
+feed = "rows"
+"""
+
+DRIFT_CHECKED = """
+name = "ora_to_ch_drift_checked"
+version = 1
+
+[[nodes]]
+key = "src"
+tool = "ora_stream_out"
+
+[nodes.args]
+connection = "ora"
+sql = '''$report_sql'''
+columns = [{ name = "order_id", nullable = false }, { name = "placed_at", nullable = false }, { name = "month", nullable = false }]
+out = "rows"
+
+[[nodes]]
+key = "dst"
+tool = "ch_stream_in"
+
+[nodes.args]
+connection = "ch"
+database = "$dw"
+table_name = "orders_drift"
+schema_strategy = { kind = "error_if_schema_changed" }
+delete_strategy = { kind = "truncate" }
+insert_strategy = { kind = "full" }
+rules = { column_types = { signed_up = "DateTime64(0, 'UTC')" } }
+cluster = ""
+order_by = "order_id"
+create_table = "create table {database}.{table_name}[ on cluster {cluster}] ({columns}) engine = MergeTree order by {order_by}"
+feed = "rows"
+"""
+
+DRIFT_BACKED_UP = """
+name = "ora_to_ch_drift_backed_up"
+version = 1
+
+[[nodes]]
+key = "src"
+tool = "ora_stream_out"
+
+[nodes.args]
+connection = "ora"
+sql = '''$report_sql'''
+columns = [{ name = "order_id", nullable = false }, { name = "placed_at", nullable = false }, { name = "month", nullable = false }]
+out = "rows"
+
+[[nodes]]
+key = "dst"
+tool = "ch_stream_in"
+
+[nodes.args]
+connection = "ch"
+database = "$dw"
+table_name = "orders_drift"
+schema_strategy = { kind = "backup_and_create_if_schema_changed" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+rules = { column_types = { signed_up = "DateTime64(0, 'UTC')" } }
+cluster = ""
+order_by = "order_id"
+create_table = "create table {database}.{table_name}[ on cluster {cluster}] ({columns}) engine = MergeTree order by {order_by}"
+feed = "rows"
+"""
+
+PARTITIONED = """
+name = "ora_to_ch_partitioned"
+version = 1
+
+[[nodes]]
+key = "src"
+tool = "ora_stream_out"
+
+[nodes.args]
+connection = "ora"
+sql = '''$report_sql'''
+columns = [{ name = "order_id", nullable = false }, { name = "placed_at", nullable = false }, { name = "month", nullable = false }]
+out = "rows"
+
+[[nodes]]
+key = "dst"
+tool = "ch_stream_in"
+
+[nodes.args]
+connection = "ch"
+database = "$dw"
+table_name = "orders_tpl"
+schema_strategy = { kind = "drop_and_create" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+rules = { column_types = { signed_up = "DateTime64(0, 'UTC')" } }
+cluster = ""
+order_by = "(month, order_id)"
+create_table = "create table {database}.{table_name}[ on cluster {cluster}] ({columns}) engine = MergeTree partition by toYYYYMM(month) order by {order_by}"
+feed = "rows"
+"""
+
+REPLICATED = """
+name = "ora_to_ch_replicated"
+version = 1
+
+[[nodes]]
+key = "src"
+tool = "ora_stream_out"
+
+[nodes.args]
+connection = "ora"
+sql = '''$report_sql'''
+columns = [{ name = "order_id", nullable = false }, { name = "placed_at", nullable = false }, { name = "month", nullable = false }]
+out = "rows"
+
+[[nodes]]
+key = "dst"
+tool = "ch_stream_in"
+
+[nodes.args]
+connection = "ch"
+database = "$dw"
+table_name = "orders_replicated"
+schema_strategy = { kind = "drop_and_create" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+rules = { column_types = { signed_up = "DateTime64(0, 'UTC')" } }
+cluster = "$keeper_cluster"
+order_by = "order_id"
+create_table = "create table {database}.{table_name}[ on cluster {cluster}] ({columns}) engine = ReplicatedMergeTree order by {order_by}"
+feed = "rows"
+"""
+
+SWAP = """
+name = "ora_to_ch_swap"
+version = 1
+
+[[nodes]]
+key = "src"
+tool = "ora_stream_out"
+
+[nodes.args]
+connection = "ora"
+sql = '''$report_sql'''
+columns = [{ name = "order_id", nullable = false }, { name = "placed_at", nullable = false }, { name = "month", nullable = false }]
+out = "rows"
+
+[[nodes]]
+key = "dst"
+tool = "ch_stream_in"
+
+[nodes.args]
+connection = "ch"
+database = "$dw"
+table_name = "orders_report_stage"
+schema_strategy = { kind = "drop_and_create" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+rules = { column_types = { signed_up = "DateTime64(0, 'UTC')" } }
+cluster = ""
+order_by = "order_id"
+create_table = "create table {database}.{table_name}[ on cluster {cluster}] ({columns}) engine = MergeTree order by {order_by}"
+after = [
+    "exchange tables $dw.orders_report and $dw.orders_report_stage",
+    "drop table $dw.orders_report_stage",
+]
+feed = "rows"
+"""
+
+DRY_RUN = """
+name = "ora_to_ch_dry_run"
+version = 1
+
+[[nodes]]
+key = "src"
+tool = "ora_stream_out"
+
+[nodes.args]
+connection = "ora"
+sql = '''$report_sql'''
+columns = [{ name = "order_id", nullable = false }, { name = "placed_at", nullable = false }, { name = "month", nullable = false }]
+out = "rows"
+
+[[nodes]]
+key = "dst"
+tool = "ch_stream_in"
+
+[nodes.args]
+connection = "ch"
+database = "$dw"
+table_name = "orders_report"
+schema_strategy = { kind = "do_nothing" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "nothing" }
+rules = { column_types = { signed_up = "DateTime64(0, 'UTC')" } }
+cluster = ""
+order_by = "order_id"
+create_table = "create table {database}.{table_name}[ on cluster {cluster}] ({columns}) engine = MergeTree order by {order_by}"
+feed = "rows"
+"""
+
+CITY_MONTH = """
+name = "ch_to_ora_city_month"
+version = 1
+
+[[nodes]]
+key = "src"
+tool = "ch_stream_out"
+
+[nodes.args]
+connection = "ch"
+sql = "select city, month, toInt64(count()) as orders, toDecimal64(sum(gross), 2) as gross, toDecimal64(sum(balance), 2) as balance from $dw.orders_report group by city, month settings output_format_arrow_string_as_string = 1"
+wire = "arrow"
+chunk_bytes = 65536
+out = "rows"
+
+[[nodes]]
+key = "dst"
+tool = "ora_stream_in"
+
+[nodes.args]
+connection = "ora"
+schema_name = "$owner"
+table_name = "city_month"
+schema_strategy = { kind = "drop_and_create" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+rules = {}
+unknown_types = { kind = "fail_on_unknown" }
+create_table = "create table {schema_name}.{table_name} ({columns})"
+chunk_bytes = 65536
+feed = "rows"
+"""
+
 
 @pytest.fixture(scope="module", params=STAND.ora_sources, ids=lambda s: s.name)
 async def source(request: Any) -> AsyncIterator[OracleSide]:
@@ -175,55 +570,50 @@ async def target(request: Any, source: OracleSide) -> AsyncIterator[ClickHouseSi
     await side.drop()
 
 
-async def transfer(  # noqa: PLR0913
-    source: OracleSide,
-    target: ClickHouseSide,
-    table: str,
-    schema: Any,
-    delete: Any,
-    select: str = REPORT_SQL,
-    columns: Sequence[ColumnDeclaration] = DECLARED,
-    rules: ColumnRules = RULES,
-    insert: Any = InsertFull(kind="full"),
-    create_table: str = MERGE_TREE,
-    order_by: str = "order_id",
-    cluster: str = "",
-    after: Sequence[str] = (),
+@pytest.fixture
+def dags(tmp_path: Path, source: OracleSide, target: ClickHouseSide) -> PumpDags:
+    return PumpDags(
+        tmp_path,
+        {"ora": source.profile, "ch": target.profile},
+        {
+            "owner": OWNER,
+            "dw": DW,
+            "report_sql": REPORT_SQL,
+            "month_sql": MONTH_SQL,
+            "month": MONTH,
+            "keeper_cluster": KEEPER_CLUSTER,
+        },
+    )
+
+
+async def _landed(
+    dags: PumpDags, source: OracleSide, target: ClickHouseSide, spec: str
 ) -> str:
-    """ora_stream_out на source -> ch_stream_in на target."""
-    pumps = Pumps(oracle=source.profile, clickhouse=target.profile)
-    chained = await pumps.chain(
-        Leg("ora_stream_out", {"sql": select, "columns": columns}),
-        Leg(
-            "ch_stream_in",
-            {
-                "database": DW,
-                "table_name": table,
-                "schema_strategy": schema,
-                "delete_strategy": delete,
-                "insert_strategy": insert,
-                "rules": rules,
-                "cluster": cluster,
-                "order_by": order_by,
-                "create_table": create_table,
-                "after": after,
-            },
-        ),
-    )
+    """Запуск описания; отчёт приёмника — узла dst."""
+    outcome = await dags.run(spec)
+    report = outcome.node("dst").content
     print(
-        f"\n--- {source.source.name} -> {target.source.name}: ora_stream_out ---\n"
-        f"{chained.out_report}"
+        f"\n--- {source.source.name} -> {target.source.name}: {outcome.dag} ---\n"
+        f"{report}"
     )
-    print(f"--- ch_stream_in ---\n{chained.in_report}")
 
-    return chained.in_report
+    assert outcome.ok(), report
+
+    return report
 
 
-def month_of(month: str) -> str:
-    return (
-        f'select * from ({REPORT_SQL}) r where r."month" = '
-        f"to_date('{month}', 'yyyy-mm-dd')"
+async def _refused(
+    dags: PumpDags, source: OracleSide, target: ClickHouseSide, spec: str, key: str
+) -> FailureResult:
+    """Запуск описания, которое обязано сорваться на узле key: его отказ."""
+    outcome = await dags.run(spec)
+    failure = outcome.failure(key)
+    print(
+        f"\n--- {source.source.name} -> {target.source.name}: {outcome.dag} "
+        f"refused ---\n{failure.llm_view()}"
     )
+
+    return failure
 
 
 def numbers(values: Sequence[Any]) -> list[Decimal | None]:
@@ -268,36 +658,19 @@ async def same_content(source: OracleSide, target: ClickHouseSide, table: str) -
 
 class TestFirstAttempt:
     async def test_zoned_timestamp_is_refused(
-        self, source: OracleSide, target: ClickHouseSide
+        self, dags: PumpDags, source: OracleSide, target: ClickHouseSide
     ) -> None:
-        with pytest.raises(OracleQueryError, match=r"signed_up.*sys_extract_utc"):
-            await transfer(
-                source,
-                target,
-                "orders_raw",
-                DropAndCreate(kind="drop_and_create"),
-                DeleteNothing(kind="nothing"),
-                select=(
-                    f'select o.id as "order_id", c.signed_up as "signed_up" '
-                    f"from {OWNER}.orders o join {OWNER}.customers c "
-                    f"on c.id = o.customer_id"
-                ),
-                columns=(),
-                rules=ColumnRules(),
-            )
+        failure = await _refused(dags, source, target, ZONED_REFUSED, "src")
+
+        assert failure.error_kind == "OracleQueryError"
+        assert re.search(r"signed_up.*sys_extract_utc", failure.llm_view())
 
 
 class TestOrdersReport:
     async def test_report_lands_with_its_types(
-        self, source: OracleSide, target: ClickHouseSide
+        self, dags: PumpDags, source: OracleSide, target: ClickHouseSide
     ) -> None:
-        report = await transfer(
-            source,
-            target,
-            "orders_report",
-            DropAndCreate(kind="drop_and_create"),
-            DeleteNothing(kind="nothing"),
-        )
+        report = await _landed(dags, source, target, REPORT)
         landed = ChLoaded(target, "orders_report")
 
         assert f"{ORDERS} rows loaded" in report
@@ -308,47 +681,29 @@ class TestOrdersReport:
         await same_content(source, target, "orders_report")
 
     async def test_reload_into_the_existing_table_passes_the_check(
-        self, source: OracleSide, target: ClickHouseSide
+        self, dags: PumpDags, source: OracleSide, target: ClickHouseSide
     ) -> None:
-        report = await transfer(
-            source,
-            target,
-            "orders_report",
-            ErrorIfSchemaChanged(kind="error_if_schema_changed"),
-            DeleteTruncate(kind="truncate"),
-        )
+        report = await _landed(dags, source, target, REPORT_RELOAD)
 
         assert "error" not in report.split("rows loaded")[0].lower()
         assert await ChLoaded(target, "orders_report").count() == ORDERS
 
 
 class TestIncrementalMonth:
-    MONTH: ClassVar[str] = "2024-03-01"
-
     async def test_one_month_is_replaced(
-        self, source: OracleSide, target: ClickHouseSide
+        self, dags: PumpDags, source: OracleSide, target: ClickHouseSide
     ) -> None:
         landed = ChLoaded(target, "orders_report")
         await target.command(
             f"alter table {DW}.orders_report update note = 'stale' "
-            f"where month = toDateTime64('{self.MONTH} 00:00:00', 0)",
+            f"where month = toDateTime64('{MONTH} 00:00:00', 0)",
             settings=SYNC,
         )
         in_month = await OraLoaded(source, "orders_report").scalar(
-            f"""count(case when "month" = to_date('{self.MONTH}', 'yyyy-mm-dd') then 1 end)"""
+            f"""count(case when "month" = to_date('{MONTH}', 'yyyy-mm-dd') then 1 end)"""
         )
 
-        report = await transfer(
-            source,
-            target,
-            "orders_report",
-            ErrorIfSchemaChanged(kind="error_if_schema_changed"),
-            DeleteWhere(
-                kind="delete_where",
-                where=f"month = toDateTime64('{self.MONTH} 00:00:00', 0)",
-            ),
-            select=month_of(self.MONTH),
-        )
+        report = await _landed(dags, source, target, ONE_MONTH)
 
         assert in_month > 0
         assert f"{in_month} rows loaded" in report
@@ -367,59 +722,23 @@ class TestRenamedMart:
             gross Nullable(Decimal(18, 2)),
             placed_at DateTime64(6)
         ) engine = MergeTree order by order_uid"""
-    SELECT: ClassVar[str] = (
-        f'select "order_id", "customer_name", "tier", "paid", "gross", "placed_at" '
-        f"from ({REPORT_SQL}) r"
-    )
-    COLUMNS: ClassVar[tuple[ColumnDeclaration, ...]] = (
-        ColumnDeclaration(name="order_id", nullable=False),
-        ColumnDeclaration(name="placed_at", nullable=False),
-    )
-    RULES: ClassVar[ColumnRules] = ColumnRules(
-        rename_columns={
-            "order_uid": "order_id",
-            "client": "customer_name",
-            "client_tier": "tier",
-            "paid_amount": "paid",
-        },
-        column_types={"client_tier": "LowCardinality(String)"},
-    )
 
     async def test_missing_mart_is_refused(
-        self, source: OracleSide, target: ClickHouseSide
+        self, dags: PumpDags, source: OracleSide, target: ClickHouseSide
     ) -> None:
-        with pytest.raises(TransferError, match="table is missing"):
-            await transfer(
-                source,
-                target,
-                "orders_mart",
-                ErrorIfNotExists(kind="error_if_not_exists"),
-                DeleteNothing(kind="nothing"),
-                select=self.SELECT,
-                columns=self.COLUMNS,
-                rules=self.RULES,
-                order_by="order_uid",
-            )
+        failure = await _refused(dags, source, target, MART, "dst")
+
+        assert "table is missing" in failure.llm_view()
 
     async def test_mart_is_filled_by_its_own_names(
-        self, source: OracleSide, target: ClickHouseSide
+        self, dags: PumpDags, source: OracleSide, target: ClickHouseSide
     ) -> None:
         await target.command(f"drop table if exists {DW}.orders_mart")
         await target.command(self.MART)
         view = OraLoaded(source, "orders_report")
         mart = ChLoaded(target, "orders_mart")
 
-        report = await transfer(
-            source,
-            target,
-            "orders_mart",
-            ErrorIfNotExists(kind="error_if_not_exists"),
-            DeleteNothing(kind="nothing"),
-            select=self.SELECT,
-            columns=self.COLUMNS,
-            rules=self.RULES,
-            order_by="order_uid",
-        )
+        report = await _landed(dags, source, target, MART)
 
         assert f"{ORDERS} rows loaded" in report
         assert "is wider" in report
@@ -437,37 +756,20 @@ class TestRenamedMart:
 
 class TestSchemaDrift:
     async def test_drift_is_refused_then_backed_up(
-        self, source: OracleSide, target: ClickHouseSide
+        self, dags: PumpDags, source: OracleSide, target: ClickHouseSide
     ) -> None:
         drift = ChLoaded(target, "orders_drift")
-        await transfer(
-            source,
-            target,
-            "orders_drift",
-            DropAndCreate(kind="drop_and_create"),
-            DeleteNothing(kind="nothing"),
-        )
+        await _landed(dags, source, target, DRIFT)
         await target.command(
             f"alter table {DW}.orders_drift modify column gross Nullable(Decimal(12, 1))",
             settings=SYNC,
         )
 
-        with pytest.raises(TransferError, match=r"gross: .*truncates"):
-            await transfer(
-                source,
-                target,
-                "orders_drift",
-                ErrorIfSchemaChanged(kind="error_if_schema_changed"),
-                DeleteTruncate(kind="truncate"),
-            )
+        failure = await _refused(dags, source, target, DRIFT_CHECKED, "dst")
 
-        report = await transfer(
-            source,
-            target,
-            "orders_drift",
-            BackupAndCreateIfSchemaChanged(kind="backup_and_create_if_schema_changed"),
-            DeleteNothing(kind="nothing"),
-        )
+        assert re.search(r"gross: .*truncates", failure.llm_view())
+
+        report = await _landed(dags, source, target, DRIFT_BACKED_UP)
         backups: list[str] = []
         for name in await drift.tables():
             if name.startswith("orders_drift_bak_"):
@@ -483,18 +785,10 @@ class TestSchemaDrift:
 
 class TestCreateTemplate:
     async def test_partitioned_by_month(
-        self, source: OracleSide, target: ClickHouseSide
+        self, dags: PumpDags, source: OracleSide, target: ClickHouseSide
     ) -> None:
         for _ in range(2):
-            report = await transfer(
-                source,
-                target,
-                "orders_tpl",
-                DropAndCreate(kind="drop_and_create"),
-                DeleteNothing(kind="nothing"),
-                create_table=PARTITIONED,
-                order_by="(month, order_id)",
-            )
+            report = await _landed(dags, source, target, PARTITIONED)
 
             assert f"{ORDERS} rows loaded" in report
 
@@ -505,21 +799,13 @@ class TestCreateTemplate:
         assert await landed.count() == ORDERS
 
     async def test_replicated_on_cluster(
-        self, source: OracleSide, target: ClickHouseSide
+        self, dags: PumpDags, source: OracleSide, target: ClickHouseSide
     ) -> None:
         landed = ChLoaded(target, "orders_replicated")
         if KEEPER_CLUSTER not in await landed.clusters():
             pytest.skip("the server has no Keeper cluster")
 
-        report = await transfer(
-            source,
-            target,
-            "orders_replicated",
-            DropAndCreate(kind="drop_and_create"),
-            DeleteNothing(kind="nothing"),
-            create_table=ChTableRef.CREATE_TABLE,
-            cluster=KEEPER_CLUSTER,
-        )
+        report = await _landed(dags, source, target, REPLICATED)
 
         assert f"{ORDERS} rows loaded" in report
         assert await landed.engine() == "ReplicatedMergeTree"
@@ -527,13 +813,8 @@ class TestCreateTemplate:
 
 
 class TestAfterSwap:
-    SWAP: ClassVar[tuple[str, ...]] = (
-        f"exchange tables {DW}.orders_report and {DW}.orders_report_stage",
-        f"drop table {DW}.orders_report_stage",
-    )
-
     async def test_swap_replaces_the_mart(
-        self, source: OracleSide, target: ClickHouseSide
+        self, dags: PumpDags, source: OracleSide, target: ClickHouseSide
     ) -> None:
         landed = ChLoaded(target, "orders_report")
         await target.command(
@@ -541,14 +822,7 @@ class TestAfterSwap:
             settings=SYNC,
         )
 
-        report = await transfer(
-            source,
-            target,
-            "orders_report_stage",
-            DropAndCreate(kind="drop_and_create"),
-            DeleteNothing(kind="nothing"),
-            after=self.SWAP,
-        )
+        report = await _landed(dags, source, target, SWAP)
 
         assert f"{ORDERS} rows loaded" in report
         assert "orders_report_stage" not in await landed.tables()
@@ -558,19 +832,12 @@ class TestAfterSwap:
 
 class TestDryRun:
     async def test_nothing_changes(
-        self, source: OracleSide, target: ClickHouseSide
+        self, dags: PumpDags, source: OracleSide, target: ClickHouseSide
     ) -> None:
         landed = ChLoaded(target, "orders_report")
         types = await landed.types()
 
-        report = await transfer(
-            source,
-            target,
-            "orders_report",
-            DoNothing(kind="do_nothing"),
-            DeleteNothing(kind="nothing"),
-            insert=InsertNothing(kind="nothing"),
-        )
+        report = await _landed(dags, source, target, DRY_RUN)
 
         assert report.startswith("0 rows loaded")
         assert await landed.types() == types
@@ -581,41 +848,10 @@ class TestBackToOracle:
     """Обратный путь: агрегат «город × месяц» из ClickHouse в Oracle парой
     ClickHouse -> Oracle по arrow; суммы совпадают с отчётом источника."""
 
-    AGGREGATE: ClassVar[str] = (
-        f"select city, month, toInt64(count()) as orders, "
-        f"toDecimal64(sum(gross), 2) as gross, toDecimal64(sum(balance), 2) as balance "
-        f"from {DW}.orders_report group by city, month "
-        f"settings output_format_arrow_string_as_string = 1"
-    )
-
     async def test_city_month_comes_back(
-        self, source: OracleSide, target: ClickHouseSide
+        self, dags: PumpDags, source: OracleSide, target: ClickHouseSide
     ) -> None:
-        pumps = Pumps(oracle=source.profile, clickhouse=target.profile)
-        chained = await pumps.chain(
-            Leg(
-                "ch_stream_out",
-                {
-                    "sql": self.AGGREGATE,
-                    "wire": ChStreamWire.ARROW,
-                    "chunk_bytes": CHUNK,
-                },
-            ),
-            Leg(
-                "ora_stream_in",
-                {
-                    "schema_name": OWNER,
-                    "table_name": "city_month",
-                    "schema_strategy": DropAndCreate(kind="drop_and_create"),
-                    "delete_strategy": DeleteNothing(kind="nothing"),
-                    "insert_strategy": InsertFull(kind="full"),
-                    "create_table": OraTableRef.CREATE_TABLE,
-                    "chunk_bytes": CHUNK,
-                },
-            ),
-        )
-        print(f"\n--- {target.source.name} -> {source.source.name} ---")
-        print(chained.in_report)
+        await _landed(dags, source, target, CITY_MONTH)
         city_month = OraLoaded(source, "city_month")
         view = OraLoaded(source, "orders_report")
 

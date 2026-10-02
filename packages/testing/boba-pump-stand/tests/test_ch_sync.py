@@ -1,6 +1,9 @@
-# ruff: noqa: S608
+# ruff: noqa: S608, E501
 """Приёмник ch_stream_in на потоке arrow: pg_stream_out и ch_stream_out в каждый
 ClickHouse стенда.
+
+Каждый запуск описан toml-текстом (DagSpec) и исполняется DagRunner без
+модели: узлы — вызовы насосов с аргументами, как их присылает модель.
 
 Источник — новейший postgres с таблицей всех ходовых типов: целые, numeric,
 float, bool, text и varchar, date, timestamp и timestamptz, uuid, jsonb,
@@ -20,45 +23,24 @@ ClickHouse и опираются на таблицы предыдущих:
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Sequence
+import re
+from collections.abc import AsyncIterator
 from decimal import Decimal
+from pathlib import Path
 from typing import Any, ClassVar
 
 import pytest
 
-from boba.db.clickhouse.errors import ClickHouseQueryError
-from boba.db.clickhouse.target import ChStreamWire, ChTableRef
-from boba.db.postgres.connection import CopyOptions
-from boba.db.postgres.transfer import PgColumnDeclaration
 from boba.pump_stand import (
     ChLoaded,
     ClickHouseSide,
-    Leg,
     Loaded,
     PostgresSide,
-    Pumps,
+    PumpDags,
     PumpStand,
 )
 from boba.stand.names import StandNames
-from boba.toolkit.contract import ColumnDeclaration
-from boba.toolkit.transfer import (
-    BackupAndCreateIfSchemaChanged,
-    ColumnRules,
-    CreateIfNotExists,
-    DeleteNothing,
-    DeleteTruncate,
-    DeleteWhere,
-    DoNothing,
-    DropAndCreate,
-    ErrorIfNotExists,
-    ErrorIfSchemaChanged,
-    FailOnUnknown,
-    FallbackAsVarchar,
-    InsertFull,
-    InsertNothing,
-    StreamWire,
-    TransferError,
-)
+from boba.toolkit.result import SqlFailureResult
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
 
@@ -66,13 +48,8 @@ STAND = PumpStand.required()
 PG_SCHEMA = StandNames().of("pump_ch_sync")
 CH_DATABASE = StandNames().of("pump_ch_sync")
 ROWS = 60
-CHUNK = 65536
-STRING_AS_STRING = "output_format_arrow_string_as_string = 1"
-MERGE_TREE = (
-    "create table {database}.{table_name}[ on cluster {cluster}] ({columns}) "
-    "engine = MergeTree order by {order_by}"
-)
-"""Шаблон для серверов без Keeper: дефолт ch_stream_in — ReplicatedMergeTree."""
+THIRD = ROWS // 3
+SIXTH = ROWS // 6
 STAND_CLUSTER = "stand"
 
 SOURCE_DDL = f"""
@@ -113,12 +90,6 @@ select g,
        decode(lpad(to_hex(g), 8, '0'), 'hex')
 from generate_series(1, {ROWS}) g"""
 
-SELECT = f"select * from {PG_SCHEMA}.src"
-DECLARED = (
-    PgColumnDeclaration(name="id", nullable=False),
-    PgColumnDeclaration(name="vc", nullable=False),
-)
-
 EXPECTED_TYPES = [
     ("id", "Int64"),
     ("i4", "Nullable(Int32)"),
@@ -138,6 +109,967 @@ EXPECTED_TYPES = [
 ]
 """Колонки ClickHouse после создания по нейтральному контракту: nullable
 кроме объявленных not null, json/inet/interval/bytea — строками."""
+
+ORDERS = """
+name = "pg_to_ch_arrow_orders"
+version = 1
+
+[[nodes]]
+key = "src"
+tool = "pg_stream_out"
+
+[nodes.args]
+connection = "pg"
+sql = "select * from $pg_schema.src where id <> 0"
+wire = "arrow"
+columns = [{ name = "id", nullable = false }, { name = "vc", nullable = false }]
+copy_options = { chunk_bytes = 65536 }
+out = "rows"
+
+[[nodes]]
+key = "ch"
+tool = "ch_stream_in"
+
+[nodes.args]
+connection = "ch"
+database = "$ch_database"
+table_name = "orders"
+schema_strategy = { kind = "drop_and_create" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+rules = {}
+unknown_types = { kind = "fail_on_unknown" }
+create_table = "create table {database}.{table_name}[ on cluster {cluster}] ({columns}) engine = MergeTree order by {order_by}"
+order_by = "tuple()"
+feed = "rows"
+"""
+
+TWIN_CREATE = """
+name = "pg_to_ch_arrow_twin_create"
+version = 1
+
+[[nodes]]
+key = "src"
+tool = "pg_stream_out"
+
+[nodes.args]
+connection = "pg"
+sql = "select * from $pg_schema.src"
+wire = "arrow"
+columns = [{ name = "id", nullable = false }, { name = "vc", nullable = false }]
+copy_options = { chunk_bytes = 65536 }
+out = "rows"
+
+[[nodes]]
+key = "ch"
+tool = "ch_stream_in"
+
+[nodes.args]
+connection = "ch"
+database = "$ch_database"
+table_name = "twin"
+schema_strategy = { kind = "drop_and_create" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+rules = {}
+unknown_types = { kind = "fail_on_unknown" }
+create_table = "create table {database}.{table_name}[ on cluster {cluster}] ({columns}) engine = MergeTree order by {order_by}"
+order_by = "tuple()"
+feed = "rows"
+"""
+
+TWIN_TRUNCATE = """
+name = "pg_to_ch_arrow_twin_truncate"
+version = 1
+
+[[nodes]]
+key = "src"
+tool = "pg_stream_out"
+
+[nodes.args]
+connection = "pg"
+sql = "select * from $pg_schema.src"
+wire = "arrow"
+columns = [{ name = "id", nullable = false }, { name = "vc", nullable = false }]
+copy_options = { chunk_bytes = 65536 }
+out = "rows"
+
+[[nodes]]
+key = "ch"
+tool = "ch_stream_in"
+
+[nodes.args]
+connection = "ch"
+database = "$ch_database"
+table_name = "twin"
+schema_strategy = { kind = "error_if_schema_changed" }
+delete_strategy = { kind = "truncate" }
+insert_strategy = { kind = "full" }
+rules = {}
+unknown_types = { kind = "fail_on_unknown" }
+create_table = "create table {database}.{table_name}[ on cluster {cluster}] ({columns}) engine = MergeTree order by {order_by}"
+order_by = "tuple()"
+feed = "rows"
+"""
+
+TWIN_DELETE_WHERE = """
+name = "pg_to_ch_arrow_twin_delete_where"
+version = 1
+
+[[nodes]]
+key = "src"
+tool = "pg_stream_out"
+
+[nodes.args]
+connection = "pg"
+sql = "select * from $pg_schema.src where id <= $third"
+wire = "arrow"
+columns = [{ name = "id", nullable = false }, { name = "vc", nullable = false }]
+copy_options = { chunk_bytes = 65536 }
+out = "rows"
+
+[[nodes]]
+key = "ch"
+tool = "ch_stream_in"
+
+[nodes.args]
+connection = "ch"
+database = "$ch_database"
+table_name = "twin"
+schema_strategy = { kind = "error_if_schema_changed" }
+delete_strategy = { kind = "delete_where", where = "id <= $third" }
+insert_strategy = { kind = "full" }
+rules = {}
+unknown_types = { kind = "fail_on_unknown" }
+create_table = "create table {database}.{table_name}[ on cluster {cluster}] ({columns}) engine = MergeTree order by {order_by}"
+order_by = "tuple()"
+feed = "rows"
+"""
+
+TWIN_APPEND = """
+name = "pg_to_ch_arrow_twin_append"
+version = 1
+
+[[nodes]]
+key = "src"
+tool = "pg_stream_out"
+
+[nodes.args]
+connection = "pg"
+sql = "select * from $pg_schema.src where id <= 10"
+wire = "arrow"
+columns = [{ name = "id", nullable = false }, { name = "vc", nullable = false }]
+copy_options = { chunk_bytes = 65536 }
+out = "rows"
+
+[[nodes]]
+key = "ch"
+tool = "ch_stream_in"
+
+[nodes.args]
+connection = "ch"
+database = "$ch_database"
+table_name = "twin"
+schema_strategy = { kind = "error_if_schema_changed" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+rules = {}
+unknown_types = { kind = "fail_on_unknown" }
+create_table = "create table {database}.{table_name}[ on cluster {cluster}] ({columns}) engine = MergeTree order by {order_by}"
+order_by = "tuple()"
+feed = "rows"
+"""
+
+MART = """
+name = "pg_to_ch_arrow_mart"
+version = 1
+
+[[nodes]]
+key = "src"
+tool = "pg_stream_out"
+
+[nodes.args]
+connection = "pg"
+sql = "select id, vc, n, tz from $pg_schema.src"
+wire = "arrow"
+columns = [{ name = "id", nullable = false }, { name = "vc", nullable = false }]
+copy_options = { chunk_bytes = 65536 }
+out = "rows"
+
+[[nodes]]
+key = "ch"
+tool = "ch_stream_in"
+
+[nodes.args]
+connection = "ch"
+database = "$ch_database"
+table_name = "mart"
+schema_strategy = { kind = "error_if_not_exists" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+rules = { rename_columns = { order_id = "id", label = "vc", amount = "n", moment = "tz" }, column_types = { amount = "Nullable(Decimal(20, 4))" } }
+unknown_types = { kind = "fail_on_unknown" }
+create_table = "create table {database}.{table_name}[ on cluster {cluster}] ({columns}) engine = MergeTree order by {order_by}"
+order_by = "tuple()"
+feed = "rows"
+"""
+
+DECLARED_NULLABLE = """
+name = "pg_to_ch_arrow_declared_nullable"
+version = 1
+
+[[nodes]]
+key = "src"
+tool = "pg_stream_out"
+
+[nodes.args]
+connection = "pg"
+sql = "select id, n, t, vc from $pg_schema.src"
+wire = "arrow"
+columns = [{ name = "id", nullable = false }, { name = "vc", nullable = false }]
+copy_options = { chunk_bytes = 65536 }
+out = "rows"
+
+[[nodes]]
+key = "ch"
+tool = "ch_stream_in"
+
+[nodes.args]
+connection = "ch"
+database = "$ch_database"
+table_name = "declared"
+schema_strategy = { kind = "drop_and_create" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+rules = { column_types = { n = "Decimal(20, 4)", t = "LowCardinality(String)", vc = "LowCardinality(String)" } }
+unknown_types = { kind = "fail_on_unknown" }
+create_table = "create table {database}.{table_name}[ on cluster {cluster}] ({columns}) engine = MergeTree order by {order_by}"
+order_by = "tuple()"
+feed = "rows"
+"""
+
+NULL_INTO_PLAIN = """
+name = "pg_to_ch_arrow_null_into_plain"
+version = 1
+
+[[nodes]]
+key = "src"
+tool = "pg_stream_out"
+
+[nodes.args]
+connection = "pg"
+sql = "select id, i4 from $pg_schema.src"
+wire = "arrow"
+columns = [{ name = "id", nullable = false }]
+copy_options = { chunk_bytes = 65536 }
+out = "rows"
+
+[[nodes]]
+key = "ch"
+tool = "ch_stream_in"
+
+[nodes.args]
+connection = "ch"
+database = "$ch_database"
+table_name = "plain"
+schema_strategy = { kind = "do_nothing" }
+delete_strategy = { kind = "truncate" }
+insert_strategy = { kind = "full" }
+rules = {}
+unknown_types = { kind = "fail_on_unknown" }
+create_table = "create table {database}.{table_name}[ on cluster {cluster}] ({columns}) engine = MergeTree order by {order_by}"
+order_by = "tuple()"
+feed = "rows"
+"""
+
+DRIFT_CREATE = """
+name = "pg_to_ch_arrow_drift_create"
+version = 1
+
+[[nodes]]
+key = "src"
+tool = "pg_stream_out"
+
+[nodes.args]
+connection = "pg"
+sql = "select * from $pg_schema.src"
+wire = "arrow"
+columns = [{ name = "id", nullable = false }, { name = "vc", nullable = false }]
+copy_options = { chunk_bytes = 65536 }
+out = "rows"
+
+[[nodes]]
+key = "ch"
+tool = "ch_stream_in"
+
+[nodes.args]
+connection = "ch"
+database = "$ch_database"
+table_name = "drift"
+schema_strategy = { kind = "drop_and_create" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+rules = {}
+unknown_types = { kind = "fail_on_unknown" }
+create_table = "create table {database}.{table_name}[ on cluster {cluster}] ({columns}) engine = MergeTree order by {order_by}"
+order_by = "tuple()"
+feed = "rows"
+"""
+
+DRIFT_CHECK = """
+name = "pg_to_ch_arrow_drift_check"
+version = 1
+
+[[nodes]]
+key = "src"
+tool = "pg_stream_out"
+
+[nodes.args]
+connection = "pg"
+sql = "select * from $pg_schema.src"
+wire = "arrow"
+columns = [{ name = "id", nullable = false }, { name = "vc", nullable = false }]
+copy_options = { chunk_bytes = 65536 }
+out = "rows"
+
+[[nodes]]
+key = "ch"
+tool = "ch_stream_in"
+
+[nodes.args]
+connection = "ch"
+database = "$ch_database"
+table_name = "drift"
+schema_strategy = { kind = "error_if_schema_changed" }
+delete_strategy = { kind = "truncate" }
+insert_strategy = { kind = "full" }
+rules = {}
+unknown_types = { kind = "fail_on_unknown" }
+create_table = "create table {database}.{table_name}[ on cluster {cluster}] ({columns}) engine = MergeTree order by {order_by}"
+order_by = "tuple()"
+feed = "rows"
+"""
+
+DRIFT_BACKUP = """
+name = "pg_to_ch_arrow_drift_backup"
+version = 1
+
+[[nodes]]
+key = "src"
+tool = "pg_stream_out"
+
+[nodes.args]
+connection = "pg"
+sql = "select * from $pg_schema.src"
+wire = "arrow"
+columns = [{ name = "id", nullable = false }, { name = "vc", nullable = false }]
+copy_options = { chunk_bytes = 65536 }
+out = "rows"
+
+[[nodes]]
+key = "ch"
+tool = "ch_stream_in"
+
+[nodes.args]
+connection = "ch"
+database = "$ch_database"
+table_name = "drift"
+schema_strategy = { kind = "backup_and_create_if_schema_changed" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+rules = {}
+unknown_types = { kind = "fail_on_unknown" }
+create_table = "create table {database}.{table_name}[ on cluster {cluster}] ({columns}) engine = MergeTree order by {order_by}"
+order_by = "tuple()"
+feed = "rows"
+"""
+
+TEMPLATED = """
+name = "pg_to_ch_arrow_templated"
+version = 1
+
+[[nodes]]
+key = "src"
+tool = "pg_stream_out"
+
+[nodes.args]
+connection = "pg"
+sql = "select * from $pg_schema.src"
+wire = "arrow"
+columns = [{ name = "id", nullable = false }, { name = "vc", nullable = false }]
+copy_options = { chunk_bytes = 65536 }
+out = "rows"
+
+[[nodes]]
+key = "ch"
+tool = "ch_stream_in"
+
+[nodes.args]
+connection = "ch"
+database = "$ch_database"
+table_name = "templated"
+schema_strategy = { kind = "drop_and_create" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+rules = {}
+unknown_types = { kind = "fail_on_unknown" }
+create_table = "create table {database}.{table_name}[ on cluster {cluster}] ({columns}) engine = ReplacingMergeTree order by {order_by} settings index_granularity = 1024"
+order_by = "id"
+feed = "rows"
+"""
+
+TEMPLATED_BAD = """
+name = "pg_to_ch_arrow_templated_bad"
+version = 1
+
+[[nodes]]
+key = "src"
+tool = "pg_stream_out"
+
+[nodes.args]
+connection = "pg"
+sql = "select * from $pg_schema.src"
+wire = "arrow"
+columns = [{ name = "id", nullable = false }, { name = "vc", nullable = false }]
+copy_options = { chunk_bytes = 65536 }
+out = "rows"
+
+[[nodes]]
+key = "ch"
+tool = "ch_stream_in"
+
+[nodes.args]
+connection = "ch"
+database = "$ch_database"
+table_name = "templated_bad"
+schema_strategy = { kind = "drop_and_create" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+rules = {}
+unknown_types = { kind = "fail_on_unknown" }
+create_table = "create table {schema_name}.{table_name} ({columns}) engine = MergeTree order by tuple()"
+order_by = "tuple()"
+feed = "rows"
+"""
+
+ARRAYS_REFUSED = """
+name = "pg_to_ch_arrow_arrays_refused"
+version = 1
+
+[[nodes]]
+key = "src"
+tool = "pg_stream_out"
+
+[nodes.args]
+connection = "pg"
+sql = "select id, vc, array[id, id + 1]::int[] as arr from $pg_schema.src"
+wire = "arrow"
+columns = [{ name = "id", nullable = false }, { name = "vc", nullable = false }]
+copy_options = { chunk_bytes = 65536 }
+out = "rows"
+
+[[nodes]]
+key = "ch"
+tool = "ch_stream_in"
+
+[nodes.args]
+connection = "ch"
+database = "$ch_database"
+table_name = "arrays"
+schema_strategy = { kind = "drop_and_create" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+rules = {}
+unknown_types = { kind = "fail_on_unknown" }
+create_table = "create table {database}.{table_name}[ on cluster {cluster}] ({columns}) engine = MergeTree order by {order_by}"
+order_by = "tuple()"
+feed = "rows"
+"""
+
+ARRAYS_AS_STRING = """
+name = "pg_to_ch_arrow_arrays_as_string"
+version = 1
+
+[[nodes]]
+key = "src"
+tool = "pg_stream_out"
+
+[nodes.args]
+connection = "pg"
+sql = "select id, vc, array[id, id + 1]::int[] as arr from $pg_schema.src"
+wire = "arrow"
+columns = [{ name = "id", nullable = false }, { name = "vc", nullable = false }]
+copy_options = { chunk_bytes = 65536 }
+out = "rows"
+
+[[nodes]]
+key = "ch"
+tool = "ch_stream_in"
+
+[nodes.args]
+connection = "ch"
+database = "$ch_database"
+table_name = "arrays"
+schema_strategy = { kind = "drop_and_create" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+rules = {}
+unknown_types = { kind = "fallback_as_varchar" }
+create_table = "create table {database}.{table_name}[ on cluster {cluster}] ({columns}) engine = MergeTree order by {order_by}"
+order_by = "tuple()"
+feed = "rows"
+"""
+
+DRY_RUN = """
+name = "pg_to_ch_arrow_dry_run"
+version = 1
+
+[[nodes]]
+key = "src"
+tool = "pg_stream_out"
+
+[nodes.args]
+connection = "pg"
+sql = "select * from $pg_schema.src"
+wire = "arrow"
+columns = [{ name = "id", nullable = false }, { name = "vc", nullable = false }]
+copy_options = { chunk_bytes = 65536 }
+out = "rows"
+
+[[nodes]]
+key = "ch"
+tool = "ch_stream_in"
+
+[nodes.args]
+connection = "ch"
+database = "$ch_database"
+table_name = "orders"
+schema_strategy = { kind = "do_nothing" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "nothing" }
+rules = {}
+unknown_types = { kind = "fail_on_unknown" }
+create_table = "create table {database}.{table_name}[ on cluster {cluster}] ({columns}) engine = MergeTree order by {order_by}"
+order_by = "tuple()"
+feed = "rows"
+"""
+
+CIRCLE = """
+name = "ch_to_ch_arrow_circle"
+version = 1
+
+[[nodes]]
+key = "src"
+tool = "ch_stream_out"
+
+[nodes.args]
+connection = "ch"
+sql = "select id, i4, n, f8, t, vc, d, ts, tz, toString(u) as u from $ch_database.orders settings output_format_arrow_string_as_string = 1"
+wire = "arrow"
+chunk_bytes = 65536
+out = "rows"
+
+[[nodes]]
+key = "ch"
+tool = "ch_stream_in"
+
+[nodes.args]
+connection = "ch"
+database = "$ch_database"
+table_name = "circle"
+schema_strategy = { kind = "drop_and_create" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+create_table = "create table {database}.{table_name}[ on cluster {cluster}] ({columns}) engine = MergeTree order by {order_by}"
+feed = "rows"
+"""
+
+TYPED_COPY_CREATE = """
+name = "ch_to_ch_tsv_typed_copy_create"
+version = 1
+
+[[nodes]]
+key = "src"
+tool = "ch_stream_out"
+
+[nodes.args]
+connection = "ch"
+sql = "select * from $ch_database.typed order by id"
+wire = "tsv"
+chunk_bytes = 65536
+out = "rows"
+
+[[nodes]]
+key = "ch"
+tool = "ch_stream_in"
+
+[nodes.args]
+connection = "ch"
+database = "$ch_database"
+table_name = "typed_copy"
+schema_strategy = { kind = "drop_and_create" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+create_table = "create table {database}.{table_name}[ on cluster {cluster}] ({columns}) engine = MergeTree order by {order_by}"
+order_by = "id"
+feed = "rows"
+"""
+
+TYPED_COPY_RELOAD = """
+name = "ch_to_ch_tsv_typed_copy_reload"
+version = 1
+
+[[nodes]]
+key = "src"
+tool = "ch_stream_out"
+
+[nodes.args]
+connection = "ch"
+sql = "select * from $ch_database.typed order by id"
+wire = "tsv"
+chunk_bytes = 65536
+out = "rows"
+
+[[nodes]]
+key = "ch"
+tool = "ch_stream_in"
+
+[nodes.args]
+connection = "ch"
+database = "$ch_database"
+table_name = "typed_copy"
+schema_strategy = { kind = "error_if_schema_changed" }
+delete_strategy = { kind = "truncate" }
+insert_strategy = { kind = "full" }
+create_table = "create table {database}.{table_name}[ on cluster {cluster}] ({columns}) engine = MergeTree order by {order_by}"
+order_by = "id"
+feed = "rows"
+"""
+
+TYPED_COPY_CHECK = """
+name = "ch_to_ch_tsv_typed_copy_check"
+version = 1
+
+[[nodes]]
+key = "src"
+tool = "ch_stream_out"
+
+[nodes.args]
+connection = "ch"
+sql = "select * from $ch_database.typed order by id"
+wire = "tsv"
+chunk_bytes = 65536
+out = "rows"
+
+[[nodes]]
+key = "ch"
+tool = "ch_stream_in"
+
+[nodes.args]
+connection = "ch"
+database = "$ch_database"
+table_name = "typed_copy"
+schema_strategy = { kind = "error_if_schema_changed" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+create_table = "create table {database}.{table_name}[ on cluster {cluster}] ({columns}) engine = MergeTree order by {order_by}"
+order_by = "id"
+feed = "rows"
+"""
+
+TYPED_WIDER_CHECK = """
+name = "ch_to_ch_tsv_typed_wider_check"
+version = 1
+
+[[nodes]]
+key = "src"
+tool = "ch_stream_out"
+
+[nodes.args]
+connection = "ch"
+sql = "select * from $ch_database.typed order by id"
+wire = "tsv"
+chunk_bytes = 65536
+out = "rows"
+
+[[nodes]]
+key = "ch"
+tool = "ch_stream_in"
+
+[nodes.args]
+connection = "ch"
+database = "$ch_database"
+table_name = "typed_wider"
+schema_strategy = { kind = "error_if_schema_changed" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+create_table = "create table {database}.{table_name}[ on cluster {cluster}] ({columns}) engine = MergeTree order by {order_by}"
+order_by = "id"
+feed = "rows"
+"""
+
+TYPED_NARROW_CHECK = """
+name = "ch_to_ch_tsv_typed_narrow_check"
+version = 1
+
+[[nodes]]
+key = "src"
+tool = "ch_stream_out"
+
+[nodes.args]
+connection = "ch"
+sql = "select * from $ch_database.typed order by id"
+wire = "tsv"
+chunk_bytes = 65536
+out = "rows"
+
+[[nodes]]
+key = "ch"
+tool = "ch_stream_in"
+
+[nodes.args]
+connection = "ch"
+database = "$ch_database"
+table_name = "typed_narrow"
+schema_strategy = { kind = "error_if_schema_changed" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+create_table = "create table {database}.{table_name}[ on cluster {cluster}] ({columns}) engine = MergeTree order by {order_by}"
+order_by = "id"
+feed = "rows"
+"""
+
+TYPED_MART = """
+name = "ch_to_ch_tsv_typed_mart"
+version = 1
+
+[[nodes]]
+key = "src"
+tool = "ch_stream_out"
+
+[nodes.args]
+connection = "ch"
+sql = "select * from $ch_database.typed order by id"
+wire = "tsv"
+chunk_bytes = 65536
+out = "rows"
+
+[[nodes]]
+key = "ch"
+tool = "ch_stream_in"
+
+[nodes.args]
+connection = "ch"
+database = "$ch_database"
+table_name = "typed_mart"
+schema_strategy = { kind = "drop_and_create" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+rules = { rename_columns = { key = "id", label = "lc" }, column_types = { label = "String", big = "Decimal(76, 10)" } }
+create_table = "create table {database}.{table_name}[ on cluster {cluster}] ({columns}) engine = MergeTree order by {order_by}"
+order_by = "key"
+feed = "rows"
+"""
+
+TSV_COLUMNS_REFUSED = """
+name = "ch_to_ch_tsv_columns_refused"
+version = 1
+
+[[nodes]]
+key = "src"
+tool = "ch_stream_out"
+
+[nodes.args]
+connection = "ch"
+sql = "select id from $ch_database.typed"
+wire = "tsv"
+columns = [{ name = "id", nullable = false }]
+chunk_bytes = 65536
+out = "rows"
+
+[[nodes]]
+key = "ch"
+tool = "ch_stream_in"
+
+[nodes.args]
+connection = "ch"
+database = "$ch_database"
+table_name = "typed_refused"
+schema_strategy = { kind = "drop_and_create" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+create_table = "create table {database}.{table_name}[ on cluster {cluster}] ({columns}) engine = MergeTree order by {order_by}"
+feed = "rows"
+"""
+
+ORDINARY = """
+name = "pg_to_ch_arrow_ordinary_database"
+version = 1
+
+[[nodes]]
+key = "src"
+tool = "pg_stream_out"
+
+[nodes.args]
+connection = "pg"
+sql = "select * from $pg_schema.src"
+wire = "arrow"
+columns = [{ name = "id", nullable = false }, { name = "vc", nullable = false }]
+copy_options = { chunk_bytes = 65536 }
+out = "rows"
+
+[[nodes]]
+key = "ch"
+tool = "ch_stream_in"
+
+[nodes.args]
+connection = "ch"
+database = "${ch_database}_ordinary"
+table_name = "orders"
+schema_strategy = { kind = "create_if_not_exists" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+rules = {}
+unknown_types = { kind = "fail_on_unknown" }
+create_table = "create table {database}.{table_name}[ on cluster {cluster}] ({columns}) engine = MergeTree order by {order_by}"
+order_by = "tuple()"
+feed = "rows"
+"""
+
+REPLICATED_NO_CLUSTER = """
+name = "pg_to_ch_arrow_replicated_no_cluster"
+version = 1
+
+[[nodes]]
+key = "src"
+tool = "pg_stream_out"
+
+[nodes.args]
+connection = "pg"
+sql = "select * from $pg_schema.src"
+wire = "arrow"
+columns = [{ name = "id", nullable = false }, { name = "vc", nullable = false }]
+copy_options = { chunk_bytes = 65536 }
+out = "rows"
+
+[[nodes]]
+key = "ch"
+tool = "ch_stream_in"
+
+[nodes.args]
+connection = "ch"
+database = "$ch_database"
+table_name = "replicated"
+schema_strategy = { kind = "drop_and_create" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+rules = {}
+unknown_types = { kind = "fail_on_unknown" }
+order_by = "id"
+feed = "rows"
+"""
+
+REPLICATED_BAD_CLUSTER = """
+name = "pg_to_ch_arrow_replicated_bad_cluster"
+version = 1
+
+[[nodes]]
+key = "src"
+tool = "pg_stream_out"
+
+[nodes.args]
+connection = "pg"
+sql = "select * from $pg_schema.src"
+wire = "arrow"
+columns = [{ name = "id", nullable = false }, { name = "vc", nullable = false }]
+copy_options = { chunk_bytes = 65536 }
+out = "rows"
+
+[[nodes]]
+key = "ch"
+tool = "ch_stream_in"
+
+[nodes.args]
+connection = "ch"
+database = "$ch_database"
+table_name = "replicated"
+schema_strategy = { kind = "drop_and_create" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+rules = {}
+unknown_types = { kind = "fail_on_unknown" }
+cluster = "nope"
+order_by = "id"
+feed = "rows"
+"""
+
+REPLICATED_CREATE = """
+name = "pg_to_ch_arrow_replicated_create"
+version = 1
+
+[[nodes]]
+key = "src"
+tool = "pg_stream_out"
+
+[nodes.args]
+connection = "pg"
+sql = "select * from $pg_schema.src"
+wire = "arrow"
+columns = [{ name = "id", nullable = false }, { name = "vc", nullable = false }]
+copy_options = { chunk_bytes = 65536 }
+out = "rows"
+
+[[nodes]]
+key = "ch"
+tool = "ch_stream_in"
+
+[nodes.args]
+connection = "ch"
+database = "$ch_database"
+table_name = "replicated"
+schema_strategy = { kind = "drop_and_create" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+rules = {}
+unknown_types = { kind = "fail_on_unknown" }
+cluster = "stand"
+order_by = "id"
+feed = "rows"
+"""
+
+REPLICATED_DELETE_WHERE = """
+name = "pg_to_ch_arrow_replicated_delete_where"
+version = 1
+
+[[nodes]]
+key = "src"
+tool = "pg_stream_out"
+
+[nodes.args]
+connection = "pg"
+sql = "select * from $pg_schema.src where id <= $sixth"
+wire = "arrow"
+columns = [{ name = "id", nullable = false }, { name = "vc", nullable = false }]
+copy_options = { chunk_bytes = 65536 }
+out = "rows"
+
+[[nodes]]
+key = "ch"
+tool = "ch_stream_in"
+
+[nodes.args]
+connection = "ch"
+database = "$ch_database"
+table_name = "replicated"
+schema_strategy = { kind = "error_if_schema_changed" }
+delete_strategy = { kind = "delete_where", where = "id <= $sixth" }
+insert_strategy = { kind = "full" }
+rules = {}
+unknown_types = { kind = "fail_on_unknown" }
+cluster = "stand"
+order_by = "id"
+feed = "rows"
+"""
 
 
 def _newest_postgres() -> Any:
@@ -174,66 +1106,44 @@ async def clickhouse(request: Any) -> AsyncIterator[ClickHouseSide]:
     await side.drop()
 
 
-async def land(  # noqa: PLR0913
-    postgres: PostgresSide,
-    clickhouse: ClickHouseSide,
-    table: str,
-    schema: Any,
-    delete: Any = DeleteNothing(kind="nothing"),
-    insert: Any = InsertFull(kind="full"),
-    rules: ColumnRules = ColumnRules(),
-    unknown_types: Any = FailOnUnknown(kind="fail_on_unknown"),
-    select: str = SELECT,
-    create_table: str = MERGE_TREE,
-    database: str = CH_DATABASE,
-    cluster: str = "",
-    order_by: str = ChTableRef.ORDER_BY,
-    columns: Sequence[PgColumnDeclaration] = DECLARED,
-) -> str:
-    """pg_stream_out потоком arrow -> ch_stream_in."""
-    pumps = Pumps(postgres=postgres.profile, clickhouse=clickhouse.profile)
-    chained = await pumps.chain(
-        Leg(
-            "pg_stream_out",
-            {
-                "sql": select,
-                "wire": StreamWire.ARROW,
-                "columns": columns,
-                "copy_options": CopyOptions(chunk_bytes=CHUNK),
-            },
-        ),
-        Leg(
-            "ch_stream_in",
-            {
-                "database": database,
-                "table_name": table,
-                "schema_strategy": schema,
-                "delete_strategy": delete,
-                "insert_strategy": insert,
-                "rules": rules,
-                "unknown_types": unknown_types,
-                "create_table": create_table,
-                "cluster": cluster,
-                "order_by": order_by,
-            },
-        ),
+@pytest.fixture
+def dags(
+    tmp_path: Path, postgres: PostgresSide, clickhouse: ClickHouseSide
+) -> PumpDags:
+    return PumpDags(
+        tmp_path,
+        {"pg": postgres.profile, "ch": clickhouse.profile},
+        {
+            "pg_schema": PG_SCHEMA,
+            "ch_database": CH_DATABASE,
+            "third": str(THIRD),
+            "sixth": str(SIXTH),
+        },
     )
-    print(f"\n--- {clickhouse.source.name}: ch_stream_in ---\n{chained.in_report}")
 
-    return chained.in_report
+
+@pytest.fixture
+def ch_dags(tmp_path: Path, clickhouse: ClickHouseSide) -> PumpDags:
+    """Круг ClickHouse -> ClickHouse: соединение одно."""
+    return PumpDags(tmp_path, {"ch": clickhouse.profile}, {"ch_database": CH_DATABASE})
+
+
+async def _landed(dags: PumpDags, clickhouse: ClickHouseSide, spec: str) -> str:
+    """Запуск описания; отчёт приёмника — узла ch."""
+    outcome = await dags.run(spec)
+    report = outcome.node("ch").content
+    print(f"\n--- {clickhouse.source.name}: {outcome.dag} ---\n{report}")
+
+    assert outcome.ok(), report
+
+    return report
 
 
 class TestCreate:
     async def test_types_and_values_land(
-        self, postgres: PostgresSide, clickhouse: ClickHouseSide
+        self, dags: PumpDags, postgres: PostgresSide, clickhouse: ClickHouseSide
     ) -> None:
-        report = await land(
-            postgres,
-            clickhouse,
-            "orders",
-            DropAndCreate(kind="drop_and_create"),
-            select=f"{SELECT} where id <> 0",
-        )
+        report = await _landed(dags, clickhouse, ORDERS)
         landed = ChLoaded(clickhouse, "orders")
         source = Loaded(postgres, PG_SCHEMA, "src")
 
@@ -259,43 +1169,29 @@ class TestTwin:
     все прежние строки."""
 
     async def test_reload_keeps_the_previous_version_in_the_twin(
-        self, postgres: PostgresSide, clickhouse: ClickHouseSide
+        self, dags: PumpDags, clickhouse: ClickHouseSide
     ) -> None:
-        await land(postgres, clickhouse, "twin", DropAndCreate(kind="drop_and_create"))
+        await _landed(dags, clickhouse, TWIN_CREATE)
 
-        report = await land(
-            postgres,
-            clickhouse,
-            "twin",
-            ErrorIfSchemaChanged(kind="error_if_schema_changed"),
-            DeleteTruncate(kind="truncate"),
-        )
+        report = await _landed(dags, clickhouse, TWIN_TRUNCATE)
 
         assert f"{ROWS} rows loaded" in report
         assert await ChLoaded(clickhouse, "twin").count() == ROWS
         assert await ChLoaded(clickhouse, "twin__ex").count() == ROWS
 
     async def test_delete_where_replaces_only_the_matching_rows(
-        self, postgres: PostgresSide, clickhouse: ClickHouseSide
+        self, dags: PumpDags, postgres: PostgresSide, clickhouse: ClickHouseSide
     ) -> None:
-        part = ROWS // 3
         await clickhouse.command(
-            f"alter table {CH_DATABASE}.twin update t = 'stale' where id <= {part}",
+            f"alter table {CH_DATABASE}.twin update t = 'stale' where id <= {THIRD}",
             settings={"mutations_sync": 2},
         )
 
-        report = await land(
-            postgres,
-            clickhouse,
-            "twin",
-            ErrorIfSchemaChanged(kind="error_if_schema_changed"),
-            DeleteWhere(kind="delete_where", where=f"id <= {part}"),
-            select=f"{SELECT} where id <= {part}",
-        )
+        report = await _landed(dags, clickhouse, TWIN_DELETE_WHERE)
         landed = ChLoaded(clickhouse, "twin")
 
-        assert f"{part} rows matching" in report
-        assert f"{part} rows loaded" in report
+        assert f"{THIRD} rows matching" in report
+        assert f"{THIRD} rows loaded" in report
         assert await landed.count() == ROWS
         assert await landed.scalar("countIf(t = 'stale')") == 0
         assert await landed.column("t") == await Loaded(
@@ -303,16 +1199,9 @@ class TestTwin:
         ).texts("t")
 
     async def test_delete_nothing_appends(
-        self, postgres: PostgresSide, clickhouse: ClickHouseSide
+        self, dags: PumpDags, clickhouse: ClickHouseSide
     ) -> None:
-        report = await land(
-            postgres,
-            clickhouse,
-            "twin",
-            ErrorIfSchemaChanged(kind="error_if_schema_changed"),
-            DeleteNothing(kind="nothing"),
-            select=f"{SELECT} where id <= 10",
-        )
+        report = await _landed(dags, clickhouse, TWIN_APPEND)
 
         assert "10 rows loaded" in report
         assert await ChLoaded(clickhouse, "twin").count() == ROWS + 10
@@ -329,46 +1218,25 @@ class TestRenamedMart:
         "moment Nullable(DateTime64(6, 'UTC'))) "
         "engine = MergeTree order by order_id"
     )
-    RULES: ClassVar[ColumnRules] = ColumnRules(
-        rename_columns={
-            "order_id": "id",
-            "label": "vc",
-            "amount": "n",
-            "moment": "tz",
-        },
-        column_types={"amount": "Nullable(Decimal(20, 4))"},
-    )
-    SELECT: ClassVar[str] = f"select id, vc, n, tz from {PG_SCHEMA}.src"
 
     async def test_missing_mart_is_refused(
-        self, postgres: PostgresSide, clickhouse: ClickHouseSide
+        self, dags: PumpDags, clickhouse: ClickHouseSide
     ) -> None:
         await clickhouse.command(f"drop table if exists {CH_DATABASE}.mart")
 
-        with pytest.raises(TransferError, match="table is missing"):
-            await land(
-                postgres,
-                clickhouse,
-                "mart",
-                ErrorIfNotExists(kind="error_if_not_exists"),
-                rules=self.RULES,
-                select=self.SELECT,
-            )
+        outcome = await dags.run(MART)
+
+        failure = outcome.failure("ch")
+        assert failure.error_kind == "TransferError", failure
+        assert "table is missing" in failure.llm_view()
 
     async def test_mart_is_filled_by_its_own_names(
-        self, postgres: PostgresSide, clickhouse: ClickHouseSide
+        self, dags: PumpDags, postgres: PostgresSide, clickhouse: ClickHouseSide
     ) -> None:
         await clickhouse.command(self.MART)
         source = Loaded(postgres, PG_SCHEMA, "src")
 
-        report = await land(
-            postgres,
-            clickhouse,
-            "mart",
-            ErrorIfNotExists(kind="error_if_not_exists"),
-            rules=self.RULES,
-            select=self.SELECT,
-        )
+        report = await _landed(dags, clickhouse, MART)
         mart = ChLoaded(clickhouse, "mart")
 
         assert f"{ROWS} rows loaded" in report
@@ -389,22 +1257,9 @@ class TestNulls:
     значение по умолчанию, таблица не меняется."""
 
     async def test_declared_type_of_a_nullable_column_gets_nullable(
-        self, postgres: PostgresSide, clickhouse: ClickHouseSide
+        self, dags: PumpDags, clickhouse: ClickHouseSide
     ) -> None:
-        await land(
-            postgres,
-            clickhouse,
-            "declared",
-            DropAndCreate(kind="drop_and_create"),
-            rules=ColumnRules(
-                column_types={
-                    "n": "Decimal(20, 4)",
-                    "t": "LowCardinality(String)",
-                    "vc": "LowCardinality(String)",
-                }
-            ),
-            select=f"select id, n, t, vc from {PG_SCHEMA}.src",
-        )
+        await _landed(dags, clickhouse, DECLARED_NULLABLE)
         types = dict(await ChLoaded(clickhouse, "declared").types())
 
         assert types["n"] == "Nullable(Decimal(20, 4))"
@@ -412,7 +1267,7 @@ class TestNulls:
         assert types["vc"] == "LowCardinality(String)"
 
     async def test_null_into_a_plain_column_is_refused(
-        self, postgres: PostgresSide, clickhouse: ClickHouseSide
+        self, dags: PumpDags, clickhouse: ClickHouseSide
     ) -> None:
         await clickhouse.command(f"drop table if exists {CH_DATABASE}.plain")
         await clickhouse.command(
@@ -421,45 +1276,32 @@ class TestNulls:
         )
         await clickhouse.command(f"insert into {CH_DATABASE}.plain values (0, 0)")
 
-        with pytest.raises(ClickHouseQueryError, match="NULL"):
-            await land(
-                postgres,
-                clickhouse,
-                "plain",
-                DoNothing(kind="do_nothing"),
-                DeleteTruncate(kind="truncate"),
-                select=f"select id, i4 from {PG_SCHEMA}.src",
-                columns=DECLARED[:1],
-            )
+        outcome = await dags.run(NULL_INTO_PLAIN)
 
+        failure = outcome.failure("ch")
+        assert isinstance(failure, SqlFailureResult), failure
+        assert failure.statements[-1].status == "failed: ClickHouseQueryError"
+        assert "NULL" in failure.llm_view()
         assert await ChLoaded(clickhouse, "plain").count() == 1
 
 
 class TestSchemaDrift:
     async def test_drift_is_refused_then_backed_up(
-        self, postgres: PostgresSide, clickhouse: ClickHouseSide
+        self, dags: PumpDags, clickhouse: ClickHouseSide
     ) -> None:
-        await land(postgres, clickhouse, "drift", DropAndCreate(kind="drop_and_create"))
+        await _landed(dags, clickhouse, DRIFT_CREATE)
         await clickhouse.command(
             f"alter table {CH_DATABASE}.drift modify column i4 Nullable(Int16)",
             settings={"mutations_sync": 2},
         )
 
-        with pytest.raises(TransferError, match="i4"):
-            await land(
-                postgres,
-                clickhouse,
-                "drift",
-                ErrorIfSchemaChanged(kind="error_if_schema_changed"),
-                DeleteTruncate(kind="truncate"),
-            )
+        refused = await dags.run(DRIFT_CHECK)
 
-        report = await land(
-            postgres,
-            clickhouse,
-            "drift",
-            BackupAndCreateIfSchemaChanged(kind="backup_and_create_if_schema_changed"),
-        )
+        failure = refused.failure("ch")
+        assert failure.error_kind == "TransferError", failure
+        assert "i4" in failure.llm_view()
+
+        report = await _landed(dags, clickhouse, DRIFT_BACKUP)
         drift = ChLoaded(clickhouse, "drift")
         backups: list[str] = []
         for name in await drift.tables():
@@ -475,23 +1317,10 @@ class TestSchemaDrift:
 
 
 class TestCreateTemplate:
-    TEMPLATE: ClassVar[str] = (
-        "create table {database}.{table_name}[ on cluster {cluster}] ({columns}) "
-        "engine = ReplacingMergeTree order by {order_by} "
-        "settings index_granularity = 1024"
-    )
-
     async def test_engine_and_order_come_from_the_template(
-        self, postgres: PostgresSide, clickhouse: ClickHouseSide
+        self, dags: PumpDags, clickhouse: ClickHouseSide
     ) -> None:
-        report = await land(
-            postgres,
-            clickhouse,
-            "templated",
-            DropAndCreate(kind="drop_and_create"),
-            create_table=self.TEMPLATE,
-            order_by="id",
-        )
+        report = await _landed(dags, clickhouse, TEMPLATED)
         table = ChLoaded(clickhouse, "templated")
         engine = await table.engine()
 
@@ -500,23 +1329,15 @@ class TestCreateTemplate:
         assert await table.sorting_key() == "id"
         assert await table.count() == ROWS
 
-    async def test_template_with_schema_name_is_refused(
-        self, postgres: PostgresSide, clickhouse: ClickHouseSide
-    ) -> None:
-        with pytest.raises(
-            TransferError,
-            match=r"create_table uses \{schema_name\}, but the receiver has no such",
-        ):
-            await land(
-                postgres,
-                clickhouse,
-                "templated_bad",
-                DropAndCreate(kind="drop_and_create"),
-                create_table=(
-                    "create table {schema_name}.{table_name} ({columns}) "
-                    "engine = MergeTree order by tuple()"
-                ),
-            )
+    async def test_template_with_schema_name_is_refused(self, dags: PumpDags) -> None:
+        outcome = await dags.run(TEMPLATED_BAD)
+
+        failure = outcome.failure("ch")
+        assert failure.error_kind == "TransferError", failure
+        assert (
+            "create_table uses {schema_name}, but the receiver has no such"
+            in failure.llm_view()
+        )
 
 
 class TestUnknownTypes:
@@ -524,33 +1345,17 @@ class TestUnknownTypes:
     ClickHouse нет: ошибка с подсказкой, по fallback_as_varchar — String с
     текстом массива postgres."""
 
-    SELECT: ClassVar[str] = (
-        f"select id, vc, array[id, id + 1]::int[] as arr from {PG_SCHEMA}.src"
-    )
+    async def test_array_is_refused_by_default(self, dags: PumpDags) -> None:
+        outcome = await dags.run(ARRAYS_REFUSED)
 
-    async def test_array_is_refused_by_default(
-        self, postgres: PostgresSide, clickhouse: ClickHouseSide
-    ) -> None:
-        with pytest.raises(TransferError, match="column arr: the target clickhouse"):
-            await land(
-                postgres,
-                clickhouse,
-                "arrays",
-                DropAndCreate(kind="drop_and_create"),
-                select=self.SELECT,
-            )
+        failure = outcome.failure("ch")
+        assert failure.error_kind == "TransferError", failure
+        assert "column arr: the target clickhouse" in failure.llm_view()
 
     async def test_array_lands_as_string_on_fallback(
-        self, postgres: PostgresSide, clickhouse: ClickHouseSide
+        self, dags: PumpDags, clickhouse: ClickHouseSide
     ) -> None:
-        await land(
-            postgres,
-            clickhouse,
-            "arrays",
-            DropAndCreate(kind="drop_and_create"),
-            unknown_types=FallbackAsVarchar(kind="fallback_as_varchar"),
-            select=self.SELECT,
-        )
+        await _landed(dags, clickhouse, ARRAYS_AS_STRING)
         table = ChLoaded(clickhouse, "arrays")
 
         assert ("arr", "Nullable(String)") in await table.types()
@@ -559,18 +1364,12 @@ class TestUnknownTypes:
 
 class TestDryRun:
     async def test_nothing_changes(
-        self, postgres: PostgresSide, clickhouse: ClickHouseSide
+        self, dags: PumpDags, clickhouse: ClickHouseSide
     ) -> None:
         table = ChLoaded(clickhouse, "orders")
         types = await table.types()
 
-        report = await land(
-            postgres,
-            clickhouse,
-            "orders",
-            DoNothing(kind="do_nothing"),
-            insert=InsertNothing(kind="nothing"),
-        )
+        report = await _landed(dags, clickhouse, DRY_RUN)
 
         assert report.startswith("0 rows loaded")
         assert await table.types() == types
@@ -582,36 +1381,14 @@ class TestClickHouseCircle:
     arrow, ch_stream_in кладёт её в новую. UUID ClickHouse до 26 в Arrow не
     выгружает, поэтому запрос отдаёт его toString, как советует etl_skill."""
 
-    async def test_orders_come_around(self, clickhouse: ClickHouseSide) -> None:
-        pumps = Pumps(clickhouse=clickhouse.profile)
-        chained = await pumps.chain(
-            Leg(
-                "ch_stream_out",
-                {
-                    "sql": (
-                        f"select id, i4, n, f8, t, vc, d, ts, tz, toString(u) as u "
-                        f"from {CH_DATABASE}.orders settings {STRING_AS_STRING}"
-                    ),
-                    "wire": ChStreamWire.ARROW,
-                    "chunk_bytes": CHUNK,
-                },
-            ),
-            Leg(
-                "ch_stream_in",
-                {
-                    "database": CH_DATABASE,
-                    "table_name": "circle",
-                    "create_table": MERGE_TREE,
-                    "schema_strategy": DropAndCreate(kind="drop_and_create"),
-                    "delete_strategy": DeleteNothing(kind="nothing"),
-                    "insert_strategy": InsertFull(kind="full"),
-                },
-            ),
-        )
+    async def test_orders_come_around(
+        self, ch_dags: PumpDags, clickhouse: ClickHouseSide
+    ) -> None:
+        report = await _landed(ch_dags, clickhouse, CIRCLE)
         circle = ChLoaded(clickhouse, "circle")
         orders = ChLoaded(clickhouse, "orders")
 
-        assert f"{ROWS} rows loaded" in chained.in_report
+        assert f"{ROWS} rows loaded" in report
         assert await circle.count() == ROWS
         assert await circle.scalar("sum(n)") == await orders.scalar("sum(n)")
         assert await circle.column("t") == await orders.column("t")
@@ -672,44 +1449,15 @@ class TestTsvCircle:
         "toString(u)",
     )
 
-    async def transfer(
-        self, clickhouse: ClickHouseSide, table: str, schema: Any, **extra: Any
-    ) -> str:
-        pumps = Pumps(clickhouse=clickhouse.profile)
-        arguments: dict[str, Any] = {
-            "database": CH_DATABASE,
-            "table_name": table,
-            "create_table": MERGE_TREE,
-            "order_by": "id",
-            "schema_strategy": schema,
-            "delete_strategy": DeleteNothing(kind="nothing"),
-            "insert_strategy": InsertFull(kind="full"),
-        }
-        arguments.update(extra)
-        chained = await pumps.chain(
-            Leg(
-                "ch_stream_out",
-                {
-                    "sql": f"select * from {CH_DATABASE}.typed order by id",
-                    "wire": ChStreamWire.TSV,
-                    "chunk_bytes": CHUNK,
-                },
-            ),
-            Leg("ch_stream_in", arguments),
-        )
-        print(f"\n--- {clickhouse.source.name}: tsv circle ---\n{chained.in_report}")
-
-        return chained.in_report
-
-    async def test_types_travel_as_they_are(self, clickhouse: ClickHouseSide) -> None:
+    async def test_types_travel_as_they_are(
+        self, ch_dags: PumpDags, clickhouse: ClickHouseSide
+    ) -> None:
         await clickhouse.command(f"drop table if exists {CH_DATABASE}.typed")
         await clickhouse.command(self.TYPED)
         await clickhouse.command(self.FILL)
         typed = ChLoaded(clickhouse, "typed")
 
-        report = await self.transfer(
-            clickhouse, "typed_copy", DropAndCreate(kind="drop_and_create")
-        )
+        report = await _landed(ch_dags, clickhouse, TYPED_COPY_CREATE)
         copy = ChLoaded(clickhouse, "typed_copy")
 
         assert f"{ROWS} rows loaded" in report
@@ -721,30 +1469,26 @@ class TestTsvCircle:
             )
 
     async def test_reload_passes_the_check_by_type_texts(
-        self, clickhouse: ClickHouseSide
+        self, ch_dags: PumpDags, clickhouse: ClickHouseSide
     ) -> None:
-        report = await self.transfer(
-            clickhouse,
-            "typed_copy",
-            ErrorIfSchemaChanged(kind="error_if_schema_changed"),
-            delete_strategy=DeleteTruncate(kind="truncate"),
-        )
+        report = await _landed(ch_dags, clickhouse, TYPED_COPY_RELOAD)
 
         assert f"{ROWS} rows loaded" in report
         assert await ChLoaded(clickhouse, "typed_copy").count() == ROWS
 
-    async def test_type_drift_is_refused(self, clickhouse: ClickHouseSide) -> None:
+    async def test_type_drift_is_refused(
+        self, ch_dags: PumpDags, clickhouse: ClickHouseSide
+    ) -> None:
         await clickhouse.command(
             f"alter table {CH_DATABASE}.typed_copy modify column big Nullable(Float64)",
             settings={"mutations_sync": 2},
         )
 
-        with pytest.raises(TransferError, match="big: type differs"):
-            await self.transfer(
-                clickhouse,
-                "typed_copy",
-                ErrorIfSchemaChanged(kind="error_if_schema_changed"),
-            )
+        outcome = await ch_dags.run(TYPED_COPY_CHECK)
+
+        failure = outcome.failure("ch")
+        assert failure.error_kind == "TransferError", failure
+        assert "big: type differs" in failure.llm_view()
 
     WIDER: ClassVar[str] = f"""
         create table {CH_DATABASE}.typed_wider (
@@ -761,16 +1505,12 @@ class TestTsvCircle:
         ) engine = MergeTree order by id"""
 
     async def test_wider_table_takes_the_stream_with_warnings(
-        self, clickhouse: ClickHouseSide
+        self, ch_dags: PumpDags, clickhouse: ClickHouseSide
     ) -> None:
         await clickhouse.command(f"drop table if exists {CH_DATABASE}.typed_wider")
         await clickhouse.command(self.WIDER)
 
-        report = await self.transfer(
-            clickhouse,
-            "typed_wider",
-            ErrorIfSchemaChanged(kind="error_if_schema_changed"),
-        )
+        report = await _landed(ch_dags, clickhouse, TYPED_WIDER_CHECK)
         wider = ChLoaded(clickhouse, "typed_wider")
         typed = ChLoaded(clickhouse, "typed")
 
@@ -814,7 +1554,12 @@ class TestTsvCircle:
         ],
     )
     async def test_narrower_table_is_refused(
-        self, clickhouse: ClickHouseSide, column: str, table_type: str, message: str
+        self,
+        ch_dags: PumpDags,
+        clickhouse: ClickHouseSide,
+        column: str,
+        table_type: str,
+        message: str,
     ) -> None:
         await clickhouse.command(f"drop table if exists {CH_DATABASE}.typed_narrow")
         await clickhouse.command(
@@ -823,26 +1568,16 @@ class TestTsvCircle:
             )
         )
 
-        with pytest.raises(TransferError, match=f"{column}: {message}"):
-            await self.transfer(
-                clickhouse,
-                "typed_narrow",
-                ErrorIfSchemaChanged(kind="error_if_schema_changed"),
-            )
+        outcome = await ch_dags.run(TYPED_NARROW_CHECK)
+
+        failure = outcome.failure("ch")
+        assert failure.error_kind == "TransferError", failure
+        assert re.search(f"{column}: {message}", failure.llm_view()), failure.llm_view()
 
     async def test_renamed_and_retyped_columns(
-        self, clickhouse: ClickHouseSide
+        self, ch_dags: PumpDags, clickhouse: ClickHouseSide
     ) -> None:
-        report = await self.transfer(
-            clickhouse,
-            "typed_mart",
-            DropAndCreate(kind="drop_and_create"),
-            order_by="key",
-            rules=ColumnRules(
-                rename_columns={"key": "id", "label": "lc"},
-                column_types={"label": "String", "big": "Decimal(76, 10)"},
-            ),
-        )
+        report = await _landed(ch_dags, clickhouse, TYPED_MART)
         types = dict(await ChLoaded(clickhouse, "typed_mart").types())
 
         assert f"{ROWS} rows loaded" in report
@@ -850,38 +1585,17 @@ class TestTsvCircle:
         assert types["label"] == "String"
         assert types["big"] == "Nullable(Decimal(76, 10))"
 
-    async def test_columns_are_refused_with_tsv(
-        self, clickhouse: ClickHouseSide
-    ) -> None:
-        pumps = Pumps(clickhouse=clickhouse.profile)
-        with pytest.raises(TransferError, match="columns apply to wire arrow"):
-            await pumps.chain(
-                Leg(
-                    "ch_stream_out",
-                    {
-                        "sql": f"select id from {CH_DATABASE}.typed",
-                        "wire": ChStreamWire.TSV,
-                        "columns": [ColumnDeclaration(name="id", nullable=False)],
-                        "chunk_bytes": CHUNK,
-                    },
-                ),
-                Leg(
-                    "ch_stream_in",
-                    {
-                        "database": CH_DATABASE,
-                        "table_name": "typed_refused",
-                        "create_table": MERGE_TREE,
-                        "schema_strategy": DropAndCreate(kind="drop_and_create"),
-                        "delete_strategy": DeleteNothing(kind="nothing"),
-                        "insert_strategy": InsertFull(kind="full"),
-                    },
-                ),
-            )
+    async def test_columns_are_refused_with_tsv(self, ch_dags: PumpDags) -> None:
+        outcome = await ch_dags.run(TSV_COLUMNS_REFUSED)
+
+        failure = outcome.failure("src")
+        assert failure.error_kind == "TransferError", failure
+        assert "columns apply to wire arrow" in failure.llm_view()
 
 
 class TestOrdinaryDatabase:
     async def test_non_atomic_database_is_refused(
-        self, postgres: PostgresSide, clickhouse: ClickHouseSide
+        self, dags: PumpDags, clickhouse: ClickHouseSide
     ) -> None:
         ordinary = f"{CH_DATABASE}_ordinary"
         try:
@@ -893,14 +1607,11 @@ class TestOrdinaryDatabase:
             pytest.skip(f"the server does not create Ordinary databases: {exc}")
 
         try:
-            with pytest.raises(TransferError, match="needs an Atomic database"):
-                await land(
-                    postgres,
-                    clickhouse,
-                    "orders",
-                    CreateIfNotExists(kind="create_if_not_exists"),
-                    database=ordinary,
-                )
+            outcome = await dags.run(ORDINARY)
+
+            failure = outcome.failure("ch")
+            assert failure.error_kind == "TransferError", failure
+            assert "needs an Atomic database" in failure.llm_view()
         finally:
             await clickhouse.command(f"drop database if exists {ordinary}")
 
@@ -917,67 +1628,36 @@ class TestReplicated:
         if STAND_CLUSTER not in clusters:
             pytest.skip(f"{clickhouse.source.name} has no cluster {STAND_CLUSTER}")
 
-    async def test_default_template_needs_a_cluster(
-        self, postgres: PostgresSide, clickhouse: ClickHouseSide
-    ) -> None:
-        with pytest.raises(ClickHouseQueryError, match="ON CLUSTER"):
-            await land(
-                postgres,
-                clickhouse,
-                "replicated",
-                DropAndCreate(kind="drop_and_create"),
-                create_table=ChTableRef.CREATE_TABLE,
-                order_by="id",
-            )
+    async def test_default_template_needs_a_cluster(self, dags: PumpDags) -> None:
+        outcome = await dags.run(REPLICATED_NO_CLUSTER)
 
-    async def test_unknown_cluster_is_refused_before_ddl(
-        self, postgres: PostgresSide, clickhouse: ClickHouseSide
-    ) -> None:
-        with pytest.raises(TransferError, match="cluster 'nope' is not in"):
-            await land(
-                postgres,
-                clickhouse,
-                "replicated",
-                DropAndCreate(kind="drop_and_create"),
-                create_table=ChTableRef.CREATE_TABLE,
-                cluster="nope",
-                order_by="id",
-            )
+        failure = outcome.failure("ch")
+        assert isinstance(failure, SqlFailureResult), failure
+        assert failure.statements[-1].status == "failed: ClickHouseQueryError"
+        assert "ON CLUSTER" in failure.llm_view()
+
+    async def test_unknown_cluster_is_refused_before_ddl(self, dags: PumpDags) -> None:
+        outcome = await dags.run(REPLICATED_BAD_CLUSTER)
+
+        failure = outcome.failure("ch")
+        assert failure.error_kind == "TransferError", failure
+        assert "cluster 'nope' is not in" in failure.llm_view()
 
     async def test_replicated_table_loads_through_the_twin(
-        self, postgres: PostgresSide, clickhouse: ClickHouseSide
+        self, dags: PumpDags, clickhouse: ClickHouseSide
     ) -> None:
         table = ChLoaded(clickhouse, "replicated")
-        report = await land(
-            postgres,
-            clickhouse,
-            "replicated",
-            DropAndCreate(kind="drop_and_create"),
-            create_table=ChTableRef.CREATE_TABLE,
-            cluster=STAND_CLUSTER,
-            order_by="id",
-        )
+        report = await _landed(dags, clickhouse, REPLICATED_CREATE)
 
         assert f"{ROWS} rows loaded" in report
         assert await table.engine() == "ReplicatedMergeTree"
         assert await table.sorting_key() == "id"
         assert await table.count() == ROWS
 
-        part = ROWS // 6
-        report = await land(
-            postgres,
-            clickhouse,
-            "replicated",
-            ErrorIfSchemaChanged(kind="error_if_schema_changed"),
-            DeleteWhere(kind="delete_where", where=f"id <= {part}"),
-            select=f"{SELECT} where id <= {part}",
-            create_table=ChTableRef.CREATE_TABLE,
-            cluster=STAND_CLUSTER,
-            order_by="id",
-        )
+        report = await _landed(dags, clickhouse, REPLICATED_DELETE_WHERE)
         twin = ChLoaded(clickhouse, "replicated__ex")
 
-        assert f"{part} rows matching" in report
+        assert f"{SIXTH} rows matching" in report
         assert await table.count() == ROWS
         assert await twin.engine() == "ReplicatedMergeTree"
         assert await twin.count() == ROWS

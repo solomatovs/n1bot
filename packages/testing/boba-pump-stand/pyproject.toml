@@ -17,13 +17,13 @@ dependencies = [
     "boba-tool-clickhouse==0.0.26.dev4",
     "boba-tool-postgres==0.0.26.dev4",
     "boba-tool-oracle==0.0.26.dev4",
+    "boba-toolrun==0.0.26.dev4",
+    "langchain-core>=1.4,<1.5",
     "pydantic>=2.10,<2.11",
 ]
 
 [project.optional-dependencies]
 dev = [
-    "langchain-core>=1.4,<1.5",
-    "boba-toolrun==0.0.26.dev4",
     "boba-stream-pg-to-pg==0.0.26.dev4",
     "boba-stream-ch-to-ch==0.0.26.dev4",
     "boba-stream-pg-to-ch==0.0.26.dev4",

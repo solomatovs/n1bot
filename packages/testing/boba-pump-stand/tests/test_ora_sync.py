@@ -1,6 +1,9 @@
-# ruff: noqa: S608
+# ruff: noqa: S608, E501
 """Насосы Oracle на потоке arrow: ora_stream_out как источник и ora_stream_in
 как приёмник со стратегиями, на каждом Oracle стенда.
+
+Каждый запуск описан toml-текстом (DagSpec) и исполняется DagRunner без
+модели: узлы — вызовы насосов с аргументами, как их присылает модель.
 
 Что проверяется:
     - круг Oracle -> Oracle: таблица всех ходовых типов уезжает
@@ -22,64 +25,39 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Sequence
+import re
+from collections.abc import AsyncIterator
 from decimal import Decimal
+from pathlib import Path
 from typing import Any, ClassVar
 
 import pytest
 
-from boba.db.clickhouse.target import ChStreamWire
-from boba.db.oracle import OracleQueryError
-from boba.db.oracle.target import OraTableRef
-from boba.db.postgres.connection import CopyOptions
-from boba.db.postgres.transfer import PgColumnDeclaration
 from boba.pump_stand import (
     ChLoaded,
     ClickHouseSide,
-    Leg,
     Loaded,
     OracleSide,
     OraLoaded,
     PostgresSide,
-    Pumps,
+    PumpDags,
     PumpStand,
 )
 from boba.pump_stand.oracle import PumpUser
 from boba.stand.names import StandNames
-from boba.toolkit.contract import ColumnDeclaration, ContractError
-from boba.toolkit.transfer import (
-    BackupAndCreateIfSchemaChanged,
-    ColumnRules,
-    CreateIfNotExists,
-    DeleteNothing,
-    DeleteTruncate,
-    DeleteWhere,
-    DoNothing,
-    DropAndCreate,
-    ErrorIfSchemaChanged,
-    FailOnUnknown,
-    FallbackAsVarchar,
-    InsertFull,
-    InsertNothing,
-    StreamWire,
-    TransferError,
-)
+from boba.toolkit.result import FailureResult, SqlFailureResult
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
 
 STAND = PumpStand.required()
 ROWS = 60
 ARRAYSIZE = 500
-CHUNK = 65536
 PG_SCHEMA = StandNames().of("pump_ora_sync")
 CH_DATABASE = StandNames().of("pump_ora_sync")
 BOOLEAN_SINCE = 23
-MERGE_TREE = (
-    "create table {database}.{table_name}[ on cluster {cluster}] ({columns}) "
-    "engine = MergeTree order by {order_by}"
-)
 SRC = StandNames().of("src")
 OWNER = PumpUser().name
+MONTH = "2024-03"
 
 TYPED_DDL = [
     "id number(10) not null",
@@ -120,22 +98,6 @@ select level,
        timestamp '2024-02-29 13:14:15.123456' + numtodsinterval(level, 'second'),
        timestamp '2024-02-29 13:14:15.123456789' + numtodsinterval(level, 'second')
 from dual connect by level <= {ROWS}"""
-
-SELECT = (
-    f'select id as "id", n19 as "n19", n18_4 as "n18_4", nfree as "nfree", '
-    f'f126 as "f126", bd as "bd", bf as "bf", vc as "vc", vcc as "vcc", '
-    f'nvc as "nvc", c5 as "c5", r16 as "r16", d as "d", ts6 as "ts6", '
-    f'ts9 as "ts9", cl as "cl", bl as "bl" from {OWNER}.{SRC}'
-)
-SELECT_TEXT_ONLY = (
-    f'select id as "id", n19 as "n19", n18_4 as "n18_4", nfree as "nfree", '
-    f'f126 as "f126", bd as "bd", bf as "bf", vc as "vc", vcc as "vcc", '
-    f'nvc as "nvc", c5 as "c5", rawtohex(r16) as "r16", d as "d", '
-    f'ts6 as "ts6", ts9 as "ts9", cl as "cl" from {OWNER}.{SRC}'
-)
-"""Для postgres: двоичные колонки текстом hex — COPY из arrow bytes не берёт."""
-
-DECLARED = (ColumnDeclaration(name="id", nullable=False),)
 
 EXPECTED_ORACLE = [
     ("id", "NUMBER(10,0)", True),
@@ -215,6 +177,968 @@ COMPARED_ORACLE = {
 FLOAT(126) драйвер читает как double, TIMESTAMP(9) — до микросекунд:
 сравниваются double и микросекунды."""
 
+CIRCLE = """
+name = "ora_circle"
+version = 1
+
+[[nodes]]
+key = "src"
+tool = "ora_stream_out"
+
+[nodes.args]
+connection = "ora"
+sql = '''select id as "id", n19 as "n19", n18_4 as "n18_4", nfree as "nfree", f126 as "f126", bd as "bd", bf as "bf", vc as "vc", vcc as "vcc", nvc as "nvc", c5 as "c5", r16 as "r16", d as "d", ts6 as "ts6", ts9 as "ts9", cl as "cl", bl as "bl" from $ora_schema.$src'''
+columns = [{ name = "id", nullable = false }]
+out = "rows"
+
+[[nodes]]
+key = "dst"
+tool = "ora_stream_in"
+
+[nodes.args]
+connection = "ora"
+schema_name = "$ora_schema"
+table_name = "circle"
+schema_strategy = { kind = "drop_and_create" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+rules = {}
+unknown_types = { kind = "fail_on_unknown" }
+create_table = "create table {schema_name}.{table_name} ({columns})"
+chunk_bytes = 65536
+feed = "rows"
+"""
+
+CIRCLE_RELOAD = """
+name = "ora_circle_reload"
+version = 1
+
+[[nodes]]
+key = "src"
+tool = "ora_stream_out"
+
+[nodes.args]
+connection = "ora"
+sql = '''select id as "id", n19 as "n19", n18_4 as "n18_4", nfree as "nfree", f126 as "f126", bd as "bd", bf as "bf", vc as "vc", vcc as "vcc", nvc as "nvc", c5 as "c5", r16 as "r16", d as "d", ts6 as "ts6", ts9 as "ts9", cl as "cl", bl as "bl" from $ora_schema.$src'''
+columns = [{ name = "id", nullable = false }]
+out = "rows"
+
+[[nodes]]
+key = "dst"
+tool = "ora_stream_in"
+
+[nodes.args]
+connection = "ora"
+schema_name = "$ora_schema"
+table_name = "circle"
+schema_strategy = { kind = "error_if_schema_changed" }
+delete_strategy = { kind = "truncate" }
+insert_strategy = { kind = "full" }
+rules = {}
+unknown_types = { kind = "fail_on_unknown" }
+create_table = "create table {schema_name}.{table_name} ({columns})"
+chunk_bytes = 65536
+feed = "rows"
+"""
+
+TO_POSTGRES = """
+name = "ora_to_postgres"
+version = 1
+
+[[nodes]]
+key = "src"
+tool = "ora_stream_out"
+
+[nodes.args]
+connection = "ora"
+sql = '''select id as "id", n19 as "n19", n18_4 as "n18_4", nfree as "nfree", f126 as "f126", bd as "bd", bf as "bf", vc as "vc", vcc as "vcc", nvc as "nvc", c5 as "c5", rawtohex(r16) as "r16", d as "d", ts6 as "ts6", ts9 as "ts9", cl as "cl" from $ora_schema.$src'''
+columns = [{ name = "id", nullable = false }]
+out = "rows"
+
+[[nodes]]
+key = "dst"
+tool = "pg_stream_in"
+
+[nodes.args]
+connection = "pg"
+schema_name = "$pg_schema"
+table_name = "$from_table"
+schema_strategy = { kind = "drop_and_create" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+copy_options = { chunk_bytes = 65536 }
+feed = "rows"
+"""
+"""Для postgres: двоичные колонки текстом hex — COPY из arrow bytes не берёт."""
+
+TO_CLICKHOUSE = """
+name = "ora_to_clickhouse"
+version = 1
+
+[[nodes]]
+key = "src"
+tool = "ora_stream_out"
+
+[nodes.args]
+connection = "ora"
+sql = '''select id as "id", n19 as "n19", n18_4 as "n18_4", nfree as "nfree", f126 as "f126", bd as "bd", bf as "bf", vc as "vc", c5 as "c5", r16 as "r16", d as "d", ts6 as "ts6", ts9 as "ts9", cl as "cl", bl as "bl" from $ora_schema.$src'''
+columns = [{ name = "id", nullable = false }]
+out = "rows"
+
+[[nodes]]
+key = "dst"
+tool = "ch_stream_in"
+
+[nodes.args]
+connection = "ch"
+database = "$ch_database"
+table_name = "$from_table"
+schema_strategy = { kind = "drop_and_create" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+create_table = "create table {database}.{table_name}[ on cluster {cluster}] ({columns}) engine = MergeTree order by {order_by}"
+order_by = "id"
+feed = "rows"
+"""
+
+PG_RAW_BOOL = """
+name = "pg_to_ora_raw_bool"
+version = 1
+
+[[nodes]]
+key = "src"
+tool = "pg_stream_out"
+
+[nodes.args]
+connection = "pg"
+sql = "select id, b from $pg_schema.src"
+wire = "arrow"
+columns = [{ name = "id", nullable = false }]
+copy_options = { chunk_bytes = 65536 }
+out = "rows"
+
+[[nodes]]
+key = "dst"
+tool = "ora_stream_in"
+
+[nodes.args]
+connection = "ora"
+schema_name = "$ora_schema"
+table_name = "from_pg"
+schema_strategy = { kind = "drop_and_create" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+rules = {}
+unknown_types = { kind = "fail_on_unknown" }
+create_table = "create table {schema_name}.{table_name} ({columns})"
+chunk_bytes = 65536
+feed = "rows"
+"""
+
+PG_ARRAY_REFUSED = """
+name = "pg_to_ora_array_refused"
+version = 1
+
+[[nodes]]
+key = "src"
+tool = "pg_stream_out"
+
+[nodes.args]
+connection = "pg"
+sql = "select id, arr from $pg_schema.src"
+wire = "arrow"
+columns = [{ name = "id", nullable = false }]
+copy_options = { chunk_bytes = 65536 }
+out = "rows"
+
+[[nodes]]
+key = "dst"
+tool = "ora_stream_in"
+
+[nodes.args]
+connection = "ora"
+schema_name = "$ora_schema"
+table_name = "from_pg"
+schema_strategy = { kind = "drop_and_create" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+rules = {}
+unknown_types = { kind = "fail_on_unknown" }
+create_table = "create table {schema_name}.{table_name} ({columns})"
+chunk_bytes = 65536
+feed = "rows"
+"""
+
+PG_ARRAY_AS_CLOB = """
+name = "pg_to_ora_array_as_clob"
+version = 1
+
+[[nodes]]
+key = "src"
+tool = "pg_stream_out"
+
+[nodes.args]
+connection = "pg"
+sql = "select id, arr from $pg_schema.src"
+wire = "arrow"
+columns = [{ name = "id", nullable = false }]
+copy_options = { chunk_bytes = 65536 }
+out = "rows"
+
+[[nodes]]
+key = "dst"
+tool = "ora_stream_in"
+
+[nodes.args]
+connection = "ora"
+schema_name = "$ora_schema"
+table_name = "from_pg"
+schema_strategy = { kind = "drop_and_create" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+rules = {}
+unknown_types = { kind = "fallback_as_varchar" }
+create_table = "create table {schema_name}.{table_name} ({columns})"
+chunk_bytes = 65536
+feed = "rows"
+"""
+
+PG_EVERY_FAMILY = """
+name = "pg_to_ora_every_family"
+version = 1
+
+[[nodes]]
+key = "src"
+tool = "pg_stream_out"
+
+[nodes.args]
+connection = "pg"
+sql = "select id, i2, n, f8, $pg_bool, t, vc, bin, d, ts, tz, tm, u, j, ip, iv from $pg_schema.src"
+wire = "arrow"
+columns = [{ name = "id", nullable = false }]
+copy_options = { chunk_bytes = 65536 }
+out = "rows"
+
+[[nodes]]
+key = "dst"
+tool = "ora_stream_in"
+
+[nodes.args]
+connection = "ora"
+schema_name = "$ora_schema"
+table_name = "from_pg"
+schema_strategy = { kind = "drop_and_create" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+rules = {}
+unknown_types = { kind = "fail_on_unknown" }
+create_table = "create table {schema_name}.{table_name} ({columns})"
+chunk_bytes = 65536
+feed = "rows"
+"""
+
+PG_RELOAD = """
+name = "pg_to_ora_reload"
+version = 1
+
+[[nodes]]
+key = "src"
+tool = "pg_stream_out"
+
+[nodes.args]
+connection = "pg"
+sql = "select id, i2, n, f8, $pg_bool, t, vc, bin, d, ts, tz, tm, u, j, ip, iv from $pg_schema.src"
+wire = "arrow"
+columns = [{ name = "id", nullable = false }]
+copy_options = { chunk_bytes = 65536 }
+out = "rows"
+
+[[nodes]]
+key = "dst"
+tool = "ora_stream_in"
+
+[nodes.args]
+connection = "ora"
+schema_name = "$ora_schema"
+table_name = "from_pg"
+schema_strategy = { kind = "error_if_schema_changed" }
+delete_strategy = { kind = "truncate" }
+insert_strategy = { kind = "full" }
+rules = {}
+unknown_types = { kind = "fail_on_unknown" }
+create_table = "create table {schema_name}.{table_name} ({columns})"
+chunk_bytes = 65536
+feed = "rows"
+"""
+
+PG_MOMENTS = """
+name = "pg_to_ora_moments"
+version = 1
+
+[[nodes]]
+key = "src"
+tool = "pg_stream_out"
+
+[nodes.args]
+connection = "pg"
+sql = "select id, ts from $pg_schema.src"
+wire = "arrow"
+columns = [{ name = "id", nullable = false }]
+copy_options = { chunk_bytes = 65536 }
+out = "rows"
+
+[[nodes]]
+key = "dst"
+tool = "ora_stream_in"
+
+[nodes.args]
+connection = "ora"
+schema_name = "$ora_schema"
+table_name = "moments"
+schema_strategy = { kind = "drop_and_create" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+rules = {}
+unknown_types = { kind = "fail_on_unknown" }
+create_table = "create table {schema_name}.{table_name} ({columns})"
+chunk_bytes = 65536
+feed = "rows"
+"""
+
+PG_MOMENTS_ZONED = """
+name = "pg_to_ora_moments_zoned"
+version = 1
+
+[[nodes]]
+key = "src"
+tool = "pg_stream_out"
+
+[nodes.args]
+connection = "pg"
+sql = "select id, tz as ts from $pg_schema.src"
+wire = "arrow"
+columns = [{ name = "id", nullable = false }]
+copy_options = { chunk_bytes = 65536 }
+out = "rows"
+
+[[nodes]]
+key = "dst"
+tool = "ora_stream_in"
+
+[nodes.args]
+connection = "ora"
+schema_name = "$ora_schema"
+table_name = "moments"
+schema_strategy = { kind = "error_if_schema_changed" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+rules = {}
+unknown_types = { kind = "fail_on_unknown" }
+create_table = "create table {schema_name}.{table_name} ({columns})"
+chunk_bytes = 65536
+feed = "rows"
+"""
+
+SLICES = """
+name = "pg_to_ora_slices"
+version = 1
+
+[[nodes]]
+key = "src"
+tool = "pg_stream_out"
+
+[nodes.args]
+connection = "pg"
+sql = "select id, d, vc from $pg_schema.src"
+wire = "arrow"
+columns = [{ name = "id", nullable = false }]
+copy_options = { chunk_bytes = 65536 }
+out = "rows"
+
+[[nodes]]
+key = "dst"
+tool = "ora_stream_in"
+
+[nodes.args]
+connection = "ora"
+schema_name = "$ora_schema"
+table_name = "slices"
+schema_strategy = { kind = "drop_and_create" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+rules = {}
+unknown_types = { kind = "fail_on_unknown" }
+create_table = "create table {schema_name}.{table_name} ({columns})"
+chunk_bytes = 65536
+feed = "rows"
+"""
+
+SLICES_MONTH = """
+name = "pg_to_ora_slices_month"
+version = 1
+
+[[nodes]]
+key = "src"
+tool = "pg_stream_out"
+
+[nodes.args]
+connection = "pg"
+sql = "select id, d, vc from $pg_schema.src where to_char(d, 'YYYY-MM') = '$month'"
+wire = "arrow"
+columns = [{ name = "id", nullable = false }]
+copy_options = { chunk_bytes = 65536 }
+out = "rows"
+
+[[nodes]]
+key = "dst"
+tool = "ora_stream_in"
+
+[nodes.args]
+connection = "ora"
+schema_name = "$ora_schema"
+table_name = "slices"
+schema_strategy = { kind = "error_if_schema_changed" }
+delete_strategy = { kind = "delete_where", where = "to_char(d, 'yyyy-mm') = '$month'" }
+insert_strategy = { kind = "full" }
+rules = {}
+unknown_types = { kind = "fail_on_unknown" }
+create_table = "create table {schema_name}.{table_name} ({columns})"
+chunk_bytes = 65536
+feed = "rows"
+"""
+
+MART = """
+name = "pg_to_ora_mart"
+version = 1
+
+[[nodes]]
+key = "src"
+tool = "pg_stream_out"
+
+[nodes.args]
+connection = "pg"
+sql = "select id, n, vc, ts from $pg_schema.src"
+wire = "arrow"
+columns = [{ name = "id", nullable = false }]
+copy_options = { chunk_bytes = 65536 }
+out = "rows"
+
+[[nodes]]
+key = "dst"
+tool = "ora_stream_in"
+
+[nodes.args]
+connection = "ora"
+schema_name = "$ora_schema"
+table_name = "mart"
+schema_strategy = { kind = "drop_and_create" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+rules = { rename_columns = { key = "id", amount = "n", label = "vc" }, column_types = { amount = "NUMBER(14,3)", label = "VARCHAR2(10)" } }
+unknown_types = { kind = "fail_on_unknown" }
+create_table = "create table {schema_name}.{table_name} ({columns})"
+chunk_bytes = 65536
+feed = "rows"
+"""
+
+NARROW = """
+name = "pg_to_ora_narrow"
+version = 1
+
+[[nodes]]
+key = "src"
+tool = "pg_stream_out"
+
+[nodes.args]
+connection = "pg"
+sql = "select id, n, vc from $pg_schema.src"
+wire = "arrow"
+columns = [{ name = "id", nullable = false }]
+copy_options = { chunk_bytes = 65536 }
+out = "rows"
+
+[[nodes]]
+key = "dst"
+tool = "ora_stream_in"
+
+[nodes.args]
+connection = "ora"
+schema_name = "$ora_schema"
+table_name = "narrow"
+schema_strategy = { kind = "error_if_schema_changed" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+rules = {}
+unknown_types = { kind = "fail_on_unknown" }
+create_table = "create table {schema_name}.{table_name} ({columns})"
+chunk_bytes = 65536
+feed = "rows"
+"""
+
+DRIFT = """
+name = "pg_to_ora_drift"
+version = 1
+
+[[nodes]]
+key = "src"
+tool = "pg_stream_out"
+
+[nodes.args]
+connection = "pg"
+sql = "select id, n, vc from $pg_schema.src"
+wire = "arrow"
+columns = [{ name = "id", nullable = false }]
+copy_options = { chunk_bytes = 65536 }
+out = "rows"
+
+[[nodes]]
+key = "dst"
+tool = "ora_stream_in"
+
+[nodes.args]
+connection = "ora"
+schema_name = "$ora_schema"
+table_name = "drift"
+schema_strategy = { kind = "drop_and_create" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+rules = {}
+unknown_types = { kind = "fail_on_unknown" }
+create_table = "create table {schema_name}.{table_name} ({columns})"
+chunk_bytes = 65536
+feed = "rows"
+"""
+
+DRIFT_CHECKED = """
+name = "pg_to_ora_drift_checked"
+version = 1
+
+[[nodes]]
+key = "src"
+tool = "pg_stream_out"
+
+[nodes.args]
+connection = "pg"
+sql = "select id, n, vc from $pg_schema.src"
+wire = "arrow"
+columns = [{ name = "id", nullable = false }]
+copy_options = { chunk_bytes = 65536 }
+out = "rows"
+
+[[nodes]]
+key = "dst"
+tool = "ora_stream_in"
+
+[nodes.args]
+connection = "ora"
+schema_name = "$ora_schema"
+table_name = "drift"
+schema_strategy = { kind = "error_if_schema_changed" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+rules = {}
+unknown_types = { kind = "fail_on_unknown" }
+create_table = "create table {schema_name}.{table_name} ({columns})"
+chunk_bytes = 65536
+feed = "rows"
+"""
+
+DRIFT_BACKED_UP = """
+name = "pg_to_ora_drift_backed_up"
+version = 1
+
+[[nodes]]
+key = "src"
+tool = "pg_stream_out"
+
+[nodes.args]
+connection = "pg"
+sql = "select id, n, vc from $pg_schema.src"
+wire = "arrow"
+columns = [{ name = "id", nullable = false }]
+copy_options = { chunk_bytes = 65536 }
+out = "rows"
+
+[[nodes]]
+key = "dst"
+tool = "ora_stream_in"
+
+[nodes.args]
+connection = "ora"
+schema_name = "$ora_schema"
+table_name = "drift"
+schema_strategy = { kind = "backup_and_create_if_schema_changed" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+rules = {}
+unknown_types = { kind = "fail_on_unknown" }
+create_table = "create table {schema_name}.{table_name} ({columns})"
+chunk_bytes = 65536
+feed = "rows"
+"""
+
+TEMPLATED = """
+name = "pg_to_ora_templated"
+version = 1
+
+[[nodes]]
+key = "src"
+tool = "pg_stream_out"
+
+[nodes.args]
+connection = "pg"
+sql = "select id, n from $pg_schema.src"
+wire = "arrow"
+columns = [{ name = "id", nullable = false }]
+copy_options = { chunk_bytes = 65536 }
+out = "rows"
+
+[[nodes]]
+key = "dst"
+tool = "ora_stream_in"
+
+[nodes.args]
+connection = "ora"
+schema_name = "$ora_schema"
+table_name = "templated"
+schema_strategy = { kind = "drop_and_create" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+rules = {}
+unknown_types = { kind = "fail_on_unknown" }
+create_table = "create table {schema_name}.{table_name} ({columns}) tablespace users nologging"
+chunk_bytes = 65536
+after = ["update $ora_schema.templated set n = n * 2"]
+feed = "rows"
+"""
+
+DRY_RUN = """
+name = "pg_to_ora_dry_run"
+version = 1
+
+[[nodes]]
+key = "src"
+tool = "pg_stream_out"
+
+[nodes.args]
+connection = "pg"
+sql = "select id, n from $pg_schema.src"
+wire = "arrow"
+columns = [{ name = "id", nullable = false }]
+copy_options = { chunk_bytes = 65536 }
+out = "rows"
+
+[[nodes]]
+key = "dst"
+tool = "ora_stream_in"
+
+[nodes.args]
+connection = "ora"
+schema_name = "$ora_schema"
+table_name = "templated"
+schema_strategy = { kind = "do_nothing" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "nothing" }
+rules = {}
+unknown_types = { kind = "fail_on_unknown" }
+create_table = "create table {schema_name}.{table_name} ({columns})"
+chunk_bytes = 65536
+feed = "rows"
+"""
+
+FAILED_AFTER_STEP = """
+name = "pg_to_ora_failed_after_step"
+version = 1
+
+[[nodes]]
+key = "src"
+tool = "pg_stream_out"
+
+[nodes.args]
+connection = "pg"
+sql = "select id, n from $pg_schema.src"
+wire = "arrow"
+columns = [{ name = "id", nullable = false }]
+copy_options = { chunk_bytes = 65536 }
+out = "rows"
+
+[[nodes]]
+key = "dst"
+tool = "ora_stream_in"
+
+[nodes.args]
+connection = "ora"
+schema_name = "$ora_schema"
+table_name = "templated"
+schema_strategy = { kind = "create_if_not_exists" }
+delete_strategy = { kind = "truncate" }
+insert_strategy = { kind = "full" }
+rules = {}
+unknown_types = { kind = "fail_on_unknown" }
+create_table = "create table {schema_name}.{table_name} ({columns})"
+chunk_bytes = 65536
+after = ["insert into no_such_table values (1)"]
+feed = "rows"
+"""
+
+CH_RAW_UUID = """
+name = "ch_to_ora_raw_uuid"
+version = 1
+
+[[nodes]]
+key = "src"
+tool = "ch_stream_out"
+
+[nodes.args]
+connection = "ch"
+sql = "select id, u from $ch_database.src order by id settings output_format_arrow_string_as_string = 1"
+wire = "arrow"
+chunk_bytes = 65536
+out = "rows"
+
+[[nodes]]
+key = "dst"
+tool = "ora_stream_in"
+
+[nodes.args]
+connection = "ora"
+schema_name = "$ora_schema"
+table_name = "from_ch"
+schema_strategy = { kind = "drop_and_create" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+rules = {}
+unknown_types = { kind = "fail_on_unknown" }
+create_table = "create table {schema_name}.{table_name} ({columns})"
+chunk_bytes = 65536
+feed = "rows"
+"""
+
+CH_EVERY_FAMILY = """
+name = "ch_to_ora_every_family"
+version = 1
+
+[[nodes]]
+key = "src"
+tool = "ch_stream_out"
+
+[nodes.args]
+connection = "ch"
+sql = "select id, u8, dec, f32, s, lc, d, dt, $ch_bool, toString(u) as u from $ch_database.src order by id settings output_format_arrow_string_as_string = 1"
+wire = "arrow"
+chunk_bytes = 65536
+out = "rows"
+
+[[nodes]]
+key = "dst"
+tool = "ora_stream_in"
+
+[nodes.args]
+connection = "ora"
+schema_name = "$ora_schema"
+table_name = "from_ch"
+schema_strategy = { kind = "drop_and_create" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+rules = {}
+unknown_types = { kind = "fail_on_unknown" }
+create_table = "create table {schema_name}.{table_name} ({columns})"
+chunk_bytes = 65536
+feed = "rows"
+"""
+
+ZONED_TIMESTAMP = """
+name = "ora_zoned_timestamp"
+version = 1
+
+[[nodes]]
+key = "src"
+tool = "ora_stream_out"
+
+[nodes.args]
+connection = "ora"
+sql = '''select id as "id", from_tz(ts6, '+03:00') as "tstz" from $ora_schema.$src'''
+columns = [{ name = "id", nullable = false }]
+out = "rows"
+
+[[nodes]]
+key = "dst"
+tool = "ora_stream_in"
+
+[nodes.args]
+connection = "ora"
+schema_name = "$ora_schema"
+table_name = "refused"
+schema_strategy = { kind = "drop_and_create" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+rules = {}
+unknown_types = { kind = "fail_on_unknown" }
+create_table = "create table {schema_name}.{table_name} ({columns})"
+chunk_bytes = 65536
+feed = "rows"
+"""
+
+UTC_WALL_TIME = """
+name = "ora_utc_wall_time"
+version = 1
+
+[[nodes]]
+key = "src"
+tool = "ora_stream_out"
+
+[nodes.args]
+connection = "ora"
+sql = '''select id as "id", sys_extract_utc(from_tz(ts6, '+03:00')) as "utc" from $ora_schema.$src'''
+columns = [{ name = "id", nullable = false }]
+out = "rows"
+
+[[nodes]]
+key = "dst"
+tool = "ora_stream_in"
+
+[nodes.args]
+connection = "ora"
+schema_name = "$ora_schema"
+table_name = "utc"
+schema_strategy = { kind = "drop_and_create" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+rules = { column_types = { utc = "TIMESTAMP(6) WITH TIME ZONE" } }
+unknown_types = { kind = "fail_on_unknown" }
+create_table = "create table {schema_name}.{table_name} ({columns})"
+chunk_bytes = 65536
+feed = "rows"
+"""
+
+INTERVAL_DS = """
+name = "ora_interval_ds"
+version = 1
+
+[[nodes]]
+key = "src"
+tool = "ora_stream_out"
+
+[nodes.args]
+connection = "ora"
+sql = '''select id as "id", numtodsinterval(id, 'second') as "v" from $ora_schema.$src'''
+columns = [{ name = "id", nullable = false }]
+out = "rows"
+
+[[nodes]]
+key = "dst"
+tool = "ora_stream_in"
+
+[nodes.args]
+connection = "ora"
+schema_name = "$ora_schema"
+table_name = "refused"
+schema_strategy = { kind = "drop_and_create" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+rules = {}
+unknown_types = { kind = "fail_on_unknown" }
+create_table = "create table {schema_name}.{table_name} ({columns})"
+chunk_bytes = 65536
+feed = "rows"
+"""
+
+INTERVAL_YM = """
+name = "ora_interval_ym"
+version = 1
+
+[[nodes]]
+key = "src"
+tool = "ora_stream_out"
+
+[nodes.args]
+connection = "ora"
+sql = '''select id as "id", numtoyminterval(id, 'month') as "v" from $ora_schema.$src'''
+columns = [{ name = "id", nullable = false }]
+out = "rows"
+
+[[nodes]]
+key = "dst"
+tool = "ora_stream_in"
+
+[nodes.args]
+connection = "ora"
+schema_name = "$ora_schema"
+table_name = "refused"
+schema_strategy = { kind = "drop_and_create" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+rules = {}
+unknown_types = { kind = "fail_on_unknown" }
+create_table = "create table {schema_name}.{table_name} ({columns})"
+chunk_bytes = 65536
+feed = "rows"
+"""
+
+XMLTYPE = """
+name = "ora_xmltype"
+version = 1
+
+[[nodes]]
+key = "src"
+tool = "ora_stream_out"
+
+[nodes.args]
+connection = "ora"
+sql = '''select id as "id", xmltype('<a/>') as "v" from $ora_schema.$src'''
+columns = [{ name = "id", nullable = false }]
+out = "rows"
+
+[[nodes]]
+key = "dst"
+tool = "ora_stream_in"
+
+[nodes.args]
+connection = "ora"
+schema_name = "$ora_schema"
+table_name = "refused"
+schema_strategy = { kind = "drop_and_create" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+rules = {}
+unknown_types = { kind = "fail_on_unknown" }
+create_table = "create table {schema_name}.{table_name} ({columns})"
+chunk_bytes = 65536
+feed = "rows"
+"""
+
+MISSING_DECLARATION = """
+name = "ora_missing_declaration"
+version = 1
+
+[[nodes]]
+key = "src"
+tool = "ora_stream_out"
+
+[nodes.args]
+connection = "ora"
+sql = '''select id as "id", n19 as "n19", n18_4 as "n18_4", nfree as "nfree", f126 as "f126", bd as "bd", bf as "bf", vc as "vc", vcc as "vcc", nvc as "nvc", c5 as "c5", r16 as "r16", d as "d", ts6 as "ts6", ts9 as "ts9", cl as "cl", bl as "bl" from $ora_schema.$src'''
+columns = [{ name = "nope", nullable = false }]
+out = "rows"
+
+[[nodes]]
+key = "dst"
+tool = "ora_stream_in"
+
+[nodes.args]
+connection = "ora"
+schema_name = "$ora_schema"
+table_name = "refused"
+schema_strategy = { kind = "drop_and_create" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+rules = {}
+unknown_types = { kind = "fail_on_unknown" }
+create_table = "create table {schema_name}.{table_name} ({columns})"
+chunk_bytes = 65536
+feed = "rows"
+"""
+
 
 def _newest_postgres() -> Any:
     newest: Any = None
@@ -267,44 +1191,71 @@ async def clickhouse() -> AsyncIterator[ClickHouseSide]:
     await side.drop()
 
 
-def ora_out(select: str, columns: Sequence[ColumnDeclaration] = DECLARED) -> Leg:
-    return Leg("ora_stream_out", {"sql": select, "columns": columns})
+def from_table(oracle: OracleSide) -> str:
+    """Имя таблицы приёмника по имени Oracle стенда."""
+    return f"from_{oracle.source.name}".replace("-", "_").replace(".", "_")
 
 
-def ora_in(  # noqa: PLR0913
-    table: str,
-    schema: Any,
-    delete: Any = DeleteNothing(kind="nothing"),
-    rules: ColumnRules = ColumnRules(),
-    unknown_types: Any = FailOnUnknown(kind="fail_on_unknown"),
-    insert: Any = InsertFull(kind="full"),
-    create_table: str = OraTableRef.CREATE_TABLE,
-    after: Sequence[str] = (),
-) -> Leg:
-    return Leg(
-        "ora_stream_in",
+def pg_bool(oracle: OracleSide) -> str:
+    """bool до 23 драйвер в Oracle не кладёт: LLM шлёт его числом."""
+    if oracle.version < BOOLEAN_SINCE:
+        return "b::int as b"
+
+    return "b"
+
+
+def ch_bool(oracle: OracleSide) -> str:
+    if oracle.version < BOOLEAN_SINCE:
+        return "toUInt8(b) as b"
+
+    return "b"
+
+
+@pytest.fixture
+def dags(
+    tmp_path: Path,
+    oracle: OracleSide,
+    postgres: PostgresSide,
+    clickhouse: ClickHouseSide,
+) -> PumpDags:
+    return PumpDags(
+        tmp_path,
+        {"ora": oracle.profile, "pg": postgres.profile, "ch": clickhouse.profile},
         {
-            "schema_name": OWNER,
-            "table_name": table,
-            "schema_strategy": schema,
-            "delete_strategy": delete,
-            "insert_strategy": insert,
-            "rules": rules,
-            "unknown_types": unknown_types,
-            "create_table": create_table,
-            "chunk_bytes": CHUNK,
-            "after": after,
+            "ora_schema": OWNER,
+            "src": SRC,
+            "pg_schema": PG_SCHEMA,
+            "ch_database": CH_DATABASE,
+            "from_table": from_table(oracle),
+            "pg_bool": pg_bool(oracle),
+            "ch_bool": ch_bool(oracle),
+            "month": MONTH,
         },
     )
 
 
-async def circle(oracle: OracleSide, out: Leg, into: Leg) -> str:
-    pumps = Pumps(oracle=oracle.profile)
-    chained = await pumps.chain(out, into)
-    print(f"\n--- {oracle.source.name}: ora_stream_out ---\n{chained.out_report}")
-    print(f"--- ora_stream_in ---\n{chained.in_report}")
+async def _landed(dags: PumpDags, oracle: OracleSide, spec: str) -> str:
+    """Запуск описания; отчёт приёмника — узла dst."""
+    outcome = await dags.run(spec)
+    report = outcome.node("dst").content
+    print(f"\n--- {oracle.source.name}: {outcome.dag} ---\n{report}")
 
-    return chained.in_report
+    assert outcome.ok(), report
+
+    return report
+
+
+async def _refused(
+    dags: PumpDags, oracle: OracleSide, spec: str, key: str
+) -> FailureResult:
+    """Запуск описания, которое обязано сорваться на узле key: его отказ."""
+    outcome = await dags.run(spec)
+    failure = outcome.failure(key)
+    print(
+        f"\n--- {oracle.source.name}: {outcome.dag} refused ---\n{failure.llm_view()}"
+    )
+
+    return failure
 
 
 def expected_oracle(oracle: OracleSide) -> list[tuple[str, str, bool]]:
@@ -331,12 +1282,10 @@ async def same_values(oracle: OracleSide, table: str) -> None:
 
 
 class TestOracleCircle:
-    async def test_types_survive_the_circle(self, oracle: OracleSide) -> None:
-        report = await circle(
-            oracle,
-            ora_out(SELECT),
-            ora_in("circle", DropAndCreate(kind="drop_and_create")),
-        )
+    async def test_types_survive_the_circle(
+        self, dags: PumpDags, oracle: OracleSide
+    ) -> None:
+        report = await _landed(dags, oracle, CIRCLE)
         landed = OraLoaded(oracle, "circle")
 
         assert f"{ROWS} rows loaded" in report
@@ -347,16 +1296,10 @@ class TestOracleCircle:
         )
         await same_values(oracle, "circle")
 
-    async def test_reload_passes_the_check(self, oracle: OracleSide) -> None:
-        report = await circle(
-            oracle,
-            ora_out(SELECT),
-            ora_in(
-                "circle",
-                ErrorIfSchemaChanged(kind="error_if_schema_changed"),
-                DeleteTruncate(kind="truncate"),
-            ),
-        )
+    async def test_reload_passes_the_check(
+        self, dags: PumpDags, oracle: OracleSide
+    ) -> None:
+        report = await _landed(dags, oracle, CIRCLE_RELOAD)
 
         assert f"{ROWS} rows loaded" in report
         assert "error" not in report.split("rows loaded")[0].lower()
@@ -365,28 +1308,13 @@ class TestOracleCircle:
 
 class TestOracleToOthers:
     async def test_postgres_creates_the_table(
-        self, oracle: OracleSide, postgres: PostgresSide
+        self, dags: PumpDags, oracle: OracleSide, postgres: PostgresSide
     ) -> None:
-        pumps = Pumps(oracle=oracle.profile, postgres=postgres.profile)
-        table = f"from_{oracle.source.name}".replace("-", "_").replace(".", "_")
-        chained = await pumps.chain(
-            ora_out(SELECT_TEXT_ONLY),
-            Leg(
-                "pg_stream_in",
-                {
-                    "schema_name": PG_SCHEMA,
-                    "table_name": table,
-                    "schema_strategy": DropAndCreate(kind="drop_and_create"),
-                    "delete_strategy": DeleteNothing(kind="nothing"),
-                    "insert_strategy": InsertFull(kind="full"),
-                    "copy_options": CopyOptions(chunk_bytes=CHUNK),
-                },
-            ),
-        )
-        landed = Loaded(postgres, PG_SCHEMA, table)
+        report = await _landed(dags, oracle, TO_POSTGRES)
+        landed = Loaded(postgres, PG_SCHEMA, from_table(oracle))
         source = OraLoaded(oracle, SRC)
 
-        assert f"{ROWS} rows loaded" in chained.in_report
+        assert f"{ROWS} rows loaded" in report
         assert await landed.columns() == EXPECTED_POSTGRES
         assert await landed.count() == ROWS
         assert await landed.aggregate("sum(n19)") == Decimal(
@@ -402,30 +1330,13 @@ class TestOracleToOthers:
         assert await landed.texts("r16") == await source.column("rawtohex(r16)")
 
     async def test_clickhouse_creates_the_table(
-        self, oracle: OracleSide, clickhouse: ClickHouseSide
+        self, dags: PumpDags, oracle: OracleSide, clickhouse: ClickHouseSide
     ) -> None:
-        pumps = Pumps(oracle=oracle.profile, clickhouse=clickhouse.profile)
-        table = f"from_{oracle.source.name}".replace("-", "_").replace(".", "_")
-        select = SELECT.replace(', nvc as "nvc"', "").replace(', vcc as "vcc"', "")
-        chained = await pumps.chain(
-            ora_out(select),
-            Leg(
-                "ch_stream_in",
-                {
-                    "database": CH_DATABASE,
-                    "table_name": table,
-                    "schema_strategy": DropAndCreate(kind="drop_and_create"),
-                    "delete_strategy": DeleteNothing(kind="nothing"),
-                    "insert_strategy": InsertFull(kind="full"),
-                    "create_table": MERGE_TREE,
-                    "order_by": "id",
-                },
-            ),
-        )
-        landed = ChLoaded(clickhouse, table)
+        report = await _landed(dags, oracle, TO_CLICKHOUSE)
+        landed = ChLoaded(clickhouse, from_table(oracle))
         source = OraLoaded(oracle, SRC)
 
-        assert f"{ROWS} rows loaded" in chained.in_report
+        assert f"{ROWS} rows loaded" in report
         assert dict(await landed.types()) == EXPECTED_CLICKHOUSE
         assert await landed.count() == ROWS
         assert await landed.scalar("sum(n18_4)") == await source.scalar("sum(n18_4)")
@@ -499,18 +1410,6 @@ def expected_from_postgres(oracle: OracleSide) -> list[tuple[str, str, bool]]:
     return columns
 
 
-def pg_out(select: str) -> Leg:
-    return Leg(
-        "pg_stream_out",
-        {
-            "sql": select,
-            "wire": StreamWire.ARROW,
-            "columns": (PgColumnDeclaration(name="id", nullable=False),),
-            "copy_options": CopyOptions(chunk_bytes=CHUNK),
-        },
-    )
-
-
 @pytest.fixture(scope="module")
 async def pg_source(postgres: PostgresSide) -> PostgresSide:
     await postgres.execute([PG_DDL, PG_FILL])
@@ -519,58 +1418,30 @@ async def pg_source(postgres: PostgresSide) -> PostgresSide:
 
 
 class TestPostgresIntoOracle:
-    SELECT: ClassVar[str] = (
-        f"select id, i2, n, f8, {{b}}, t, vc, bin, d, ts, tz, tm, u, j, ip, iv "
-        f"from {PG_SCHEMA}.src"
-    )
-
-    def select(self, oracle: OracleSide) -> str:
-        """bool до 23 драйвер в Oracle не кладёт: LLM шлёт его числом."""
-        if oracle.version < BOOLEAN_SINCE:
-            return self.SELECT.format(b="b::int as b")
-
-        return self.SELECT.format(b="b")
-
     async def test_raw_bool_is_refused_before_23(
-        self, oracle: OracleSide, pg_source: PostgresSide
+        self, dags: PumpDags, oracle: OracleSide, pg_source: PostgresSide
     ) -> None:
         if oracle.version >= BOOLEAN_SINCE:
             pytest.skip("the server has BOOLEAN")
 
-        pumps = Pumps(oracle=oracle.profile, postgres=pg_source.profile)
-        with pytest.raises(
-            TransferError, match=r"column b: bool .*send an integer 0 or 1"
-        ):
-            await pumps.chain(
-                pg_out(f"select id, b from {PG_SCHEMA}.src"),
-                ora_in("from_pg", DropAndCreate(kind="drop_and_create")),
-            )
+        failure = await _refused(dags, oracle, PG_RAW_BOOL, "dst")
+
+        assert re.search(r"column b: bool .*send an integer 0 or 1", failure.llm_view())
 
     async def test_array_is_refused(
-        self, oracle: OracleSide, pg_source: PostgresSide
+        self, dags: PumpDags, oracle: OracleSide, pg_source: PostgresSide
     ) -> None:
-        pumps = Pumps(oracle=oracle.profile, postgres=pg_source.profile)
-        with pytest.raises(TransferError, match=r"column arr: .*integer\[\]"):
-            await pumps.chain(
-                pg_out(f"select id, arr from {PG_SCHEMA}.src"),
-                ora_in("from_pg", DropAndCreate(kind="drop_and_create")),
-            )
+        failure = await _refused(dags, oracle, PG_ARRAY_REFUSED, "dst")
+
+        assert re.search(r"column arr: .*integer\[\]", failure.llm_view())
 
     async def test_array_lands_as_clob_on_fallback(
-        self, oracle: OracleSide, pg_source: PostgresSide
+        self, dags: PumpDags, oracle: OracleSide, pg_source: PostgresSide
     ) -> None:
-        pumps = Pumps(oracle=oracle.profile, postgres=pg_source.profile)
-        chained = await pumps.chain(
-            pg_out(f"select id, arr from {PG_SCHEMA}.src"),
-            ora_in(
-                "from_pg",
-                DropAndCreate(kind="drop_and_create"),
-                unknown_types=FallbackAsVarchar(kind="fallback_as_varchar"),
-            ),
-        )
+        report = await _landed(dags, oracle, PG_ARRAY_AS_CLOB)
         landed = OraLoaded(oracle, "from_pg")
 
-        assert f"{ROWS} rows loaded" in chained.in_report
+        assert f"{ROWS} rows loaded" in report
         assert await landed.columns() == [
             ("id", "NUMBER(19,0)", True),
             ("arr", "CLOB", False),
@@ -578,17 +1449,13 @@ class TestPostgresIntoOracle:
         assert (await landed.column("to_char(arr)"))[:2] == ["{1,2}", "{2,3}"]
 
     async def test_every_family_lands_with_oracle_types(
-        self, oracle: OracleSide, pg_source: PostgresSide
+        self, dags: PumpDags, oracle: OracleSide, pg_source: PostgresSide
     ) -> None:
-        pumps = Pumps(oracle=oracle.profile, postgres=pg_source.profile)
-        chained = await pumps.chain(
-            pg_out(self.select(oracle)),
-            ora_in("from_pg", DropAndCreate(kind="drop_and_create")),
-        )
+        report = await _landed(dags, oracle, PG_EVERY_FAMILY)
         landed = OraLoaded(oracle, "from_pg")
         source = Loaded(pg_source, PG_SCHEMA, "src")
 
-        assert f"{ROWS} rows loaded" in chained.in_report
+        assert f"{ROWS} rows loaded" in report
         assert await landed.columns() == expected_from_postgres(oracle)
         assert await landed.count() == ROWS
         assert await landed.scalar("sum(n)") == await source.aggregate("sum(n)")
@@ -613,99 +1480,56 @@ class TestPostgresIntoOracle:
         assert truthy == await source.aggregate("count(*) filter (where b)")
 
     async def test_reload_passes_the_check(
-        self, oracle: OracleSide, pg_source: PostgresSide
+        self, dags: PumpDags, oracle: OracleSide, pg_source: PostgresSide
     ) -> None:
-        pumps = Pumps(oracle=oracle.profile, postgres=pg_source.profile)
-        chained = await pumps.chain(
-            pg_out(self.select(oracle)),
-            ora_in(
-                "from_pg",
-                ErrorIfSchemaChanged(kind="error_if_schema_changed"),
-                DeleteTruncate(kind="truncate"),
-            ),
-        )
+        report = await _landed(dags, oracle, PG_RELOAD)
 
-        assert f"{ROWS} rows loaded" in chained.in_report
-        assert "error" not in chained.in_report.split("rows loaded")[0].lower()
+        assert f"{ROWS} rows loaded" in report
+        assert "error" not in report.split("rows loaded")[0].lower()
 
     async def test_zoned_stream_into_unzoned_table_is_refused(
-        self, oracle: OracleSide, pg_source: PostgresSide
+        self, dags: PumpDags, oracle: OracleSide, pg_source: PostgresSide
     ) -> None:
-        pumps = Pumps(oracle=oracle.profile, postgres=pg_source.profile)
-        await pumps.chain(
-            pg_out(f"select id, ts from {PG_SCHEMA}.src"),
-            ora_in("moments", DropAndCreate(kind="drop_and_create")),
-        )
-        with pytest.raises(TransferError, match="ts: time zone differs"):
-            await pumps.chain(
-                pg_out(f"select id, tz as ts from {PG_SCHEMA}.src"),
-                ora_in(
-                    "moments",
-                    ErrorIfSchemaChanged(kind="error_if_schema_changed"),
-                ),
-            )
+        await _landed(dags, oracle, PG_MOMENTS)
+
+        failure = await _refused(dags, oracle, PG_MOMENTS_ZONED, "dst")
+
+        assert "ts: time zone differs" in failure.llm_view()
 
 
 class TestStrategies:
     """Стратегии приёмника на потоке postgres -> Oracle."""
 
-    MONTH: ClassVar[str] = "2024-03"
-
     async def test_delete_where_replaces_a_slice(
-        self, oracle: OracleSide, pg_source: PostgresSide
+        self, dags: PumpDags, oracle: OracleSide, pg_source: PostgresSide
     ) -> None:
-        pumps = Pumps(oracle=oracle.profile, postgres=pg_source.profile)
-        select = f"select id, d, vc from {PG_SCHEMA}.src"
-        await pumps.chain(
-            pg_out(select), ora_in("slices", DropAndCreate(kind="drop_and_create"))
-        )
+        await _landed(dags, oracle, SLICES)
         landed = OraLoaded(oracle, "slices")
         await oracle.run(
             (
                 f"update {OWNER}.slices set vc = 'stale' "
-                f"where to_char(d, 'yyyy-mm') = '{self.MONTH}'",
+                f"where to_char(d, 'yyyy-mm') = '{MONTH}'",
             )
         )
         in_month = await Loaded(pg_source, PG_SCHEMA, "src").aggregate(
-            f"count(*) filter (where to_char(d, 'YYYY-MM') = '{self.MONTH}')"
+            f"count(*) filter (where to_char(d, 'YYYY-MM') = '{MONTH}')"
         )
 
-        chained = await pumps.chain(
-            pg_out(f"{select} where to_char(d, 'YYYY-MM') = '{self.MONTH}'"),
-            ora_in(
-                "slices",
-                ErrorIfSchemaChanged(kind="error_if_schema_changed"),
-                DeleteWhere(
-                    kind="delete_where",
-                    where=f"to_char(d, 'yyyy-mm') = '{self.MONTH}'",
-                ),
-            ),
-        )
+        report = await _landed(dags, oracle, SLICES_MONTH)
 
         assert in_month > 0
-        assert f"{in_month} rows deleted" in chained.in_report
-        assert f"{in_month} rows loaded" in chained.in_report
+        assert f"{in_month} rows deleted" in report
+        assert f"{in_month} rows loaded" in report
         assert await landed.scalar("count(case when vc = 'stale' then 1 end)") == 0
         assert await landed.count() == ROWS
 
     async def test_renamed_mart_with_declared_types(
-        self, oracle: OracleSide, pg_source: PostgresSide
+        self, dags: PumpDags, oracle: OracleSide, pg_source: PostgresSide
     ) -> None:
-        pumps = Pumps(oracle=oracle.profile, postgres=pg_source.profile)
-        chained = await pumps.chain(
-            pg_out(f"select id, n, vc, ts from {PG_SCHEMA}.src"),
-            ora_in(
-                "mart",
-                DropAndCreate(kind="drop_and_create"),
-                rules=ColumnRules(
-                    rename_columns={"key": "id", "amount": "n", "label": "vc"},
-                    column_types={"amount": "NUMBER(14,3)", "label": "VARCHAR2(10)"},
-                ),
-            ),
-        )
+        report = await _landed(dags, oracle, MART)
         landed = OraLoaded(oracle, "mart")
 
-        assert f"{ROWS} rows loaded" in chained.in_report
+        assert f"{ROWS} rows loaded" in report
         assert await landed.columns() == [
             ("key", "NUMBER(19,0)", True),
             ("amount", "NUMBER(14,3)", False),
@@ -717,87 +1541,51 @@ class TestStrategies:
         ).texts("vc")
 
     async def test_narrower_table_is_refused_before_loading(
-        self, oracle: OracleSide, pg_source: PostgresSide
+        self, dags: PumpDags, oracle: OracleSide, pg_source: PostgresSide
     ) -> None:
         await oracle.create(
             "narrow", ["id number(19) not null", "n number(8,1)", "vc varchar2(3)"]
         )
-        pumps = Pumps(oracle=oracle.profile, postgres=pg_source.profile)
         try:
-            with pytest.raises(
-                TransferError, match=r"n: table NUMBER\(8,1\) truncates"
-            ):
-                await pumps.chain(
-                    pg_out(f"select id, n, vc from {PG_SCHEMA}.src"),
-                    ora_in(
-                        "narrow", ErrorIfSchemaChanged(kind="error_if_schema_changed")
-                    ),
-                )
+            failure = await _refused(dags, oracle, NARROW, "dst")
 
+            assert re.search(r"n: table NUMBER\(8,1\) truncates", failure.llm_view())
             assert await OraLoaded(oracle, "narrow").count() == 0
         finally:
             await oracle.drop_table("narrow")
 
     async def test_drift_is_refused_then_backed_up(
-        self, oracle: OracleSide, pg_source: PostgresSide
+        self, dags: PumpDags, oracle: OracleSide, pg_source: PostgresSide
     ) -> None:
-        pumps = Pumps(oracle=oracle.profile, postgres=pg_source.profile)
-        select = f"select id, n, vc from {PG_SCHEMA}.src"
-        await pumps.chain(
-            pg_out(select), ora_in("drift", DropAndCreate(kind="drop_and_create"))
-        )
+        await _landed(dags, oracle, DRIFT)
         await oracle.run((f"alter table {OWNER}.drift drop column vc",))
 
-        with pytest.raises(
-            TransferError, match="vc: in the stream but not in the table"
-        ):
-            await pumps.chain(
-                pg_out(select),
-                ora_in("drift", ErrorIfSchemaChanged(kind="error_if_schema_changed")),
-            )
+        failure = await _refused(dags, oracle, DRIFT_CHECKED, "dst")
 
-        chained = await pumps.chain(
-            pg_out(select),
-            ora_in(
-                "drift",
-                BackupAndCreateIfSchemaChanged(
-                    kind="backup_and_create_if_schema_changed"
-                ),
-            ),
-        )
+        assert "vc: in the stream but not in the table" in failure.llm_view()
+
+        report = await _landed(dags, oracle, DRIFT_BACKED_UP)
         drift = OraLoaded(oracle, "drift")
         backups: list[str] = []
         for name in await drift.tables():
             if name.startswith("drift_bak_"):
                 backups.append(name)
 
-        assert "saved as" in chained.in_report
-        assert "drift_bak_" in chained.in_report
+        assert "saved as" in report
+        assert "drift_bak_" in report
         assert len(backups) == 1
         assert await OraLoaded(oracle, backups[0]).count() == ROWS
         assert await drift.count() == ROWS
         assert ("vc", "VARCHAR2(30 CHAR)", False) in await drift.columns()
 
     async def test_create_template_and_after_steps(
-        self, oracle: OracleSide, pg_source: PostgresSide
+        self, dags: PumpDags, oracle: OracleSide, pg_source: PostgresSide
     ) -> None:
-        pumps = Pumps(oracle=oracle.profile, postgres=pg_source.profile)
-        chained = await pumps.chain(
-            pg_out(f"select id, n from {PG_SCHEMA}.src"),
-            ora_in(
-                "templated",
-                DropAndCreate(kind="drop_and_create"),
-                create_table=(
-                    "create table {schema_name}.{table_name} ({columns}) "
-                    "tablespace users nologging"
-                ),
-                after=(f"update {OWNER}.templated set n = n * 2",),
-            ),
-        )
+        report = await _landed(dags, oracle, TEMPLATED)
         landed = OraLoaded(oracle, "templated")
 
-        assert f"{ROWS} rows loaded" in chained.in_report
-        assert f"statement: update {OWNER}.templated set n = n * 2" in chained.in_report
+        assert f"{ROWS} rows loaded" in report
+        assert f"statement: update {OWNER}.templated set n = n * 2" in report
         assert await landed.scalar("sum(n)") == 2 * await Loaded(
             pg_source, PG_SCHEMA, "src"
         ).aggregate("sum(n)")
@@ -810,40 +1598,27 @@ class TestStrategies:
         )
 
     async def test_dry_run_changes_nothing(
-        self, oracle: OracleSide, pg_source: PostgresSide
+        self, dags: PumpDags, oracle: OracleSide, pg_source: PostgresSide
     ) -> None:
-        pumps = Pumps(oracle=oracle.profile, postgres=pg_source.profile)
         landed = OraLoaded(oracle, "templated")
         columns = await landed.columns()
-        chained = await pumps.chain(
-            pg_out(f"select id, n from {PG_SCHEMA}.src"),
-            ora_in(
-                "templated",
-                DoNothing(kind="do_nothing"),
-                insert=InsertNothing(kind="nothing"),
-            ),
-        )
 
-        assert chained.in_report.startswith("0 rows loaded")
+        report = await _landed(dags, oracle, DRY_RUN)
+
+        assert report.startswith("0 rows loaded")
         assert await landed.columns() == columns
         assert await landed.count() == ROWS
 
     async def test_failed_after_step_rolls_back_the_rows(
-        self, oracle: OracleSide, pg_source: PostgresSide
+        self, dags: PumpDags, oracle: OracleSide, pg_source: PostgresSide
     ) -> None:
-        pumps = Pumps(oracle=oracle.profile, postgres=pg_source.profile)
         landed = OraLoaded(oracle, "templated")
-        with pytest.raises(OracleQueryError, match="ORA-00942"):
-            await pumps.chain(
-                pg_out(f"select id, n from {PG_SCHEMA}.src"),
-                ora_in(
-                    "templated",
-                    CreateIfNotExists(kind="create_if_not_exists"),
-                    DeleteTruncate(kind="truncate"),
-                    after=("insert into no_such_table values (1)",),
-                ),
-            )
 
+        failure = await _refused(dags, oracle, FAILED_AFTER_STEP, "dst")
+
+        assert isinstance(failure, SqlFailureResult), failure
+        assert "ORA-00942" in failure.llm_view()
+        assert failure.statements[-1].status == "failed: OracleQueryError"
         # truncate — DDL с автокоммитом, а вставка откатилась вместе с ошибкой шага
         assert await landed.count() == 0
 
@@ -894,49 +1669,20 @@ async def ch_source(clickhouse: ClickHouseSide) -> ClickHouseSide:
     return clickhouse
 
 
-def ch_out(select: str) -> Leg:
-    return Leg(
-        "ch_stream_out",
-        {
-            "sql": f"{select} settings output_format_arrow_string_as_string = 1",
-            "wire": ChStreamWire.ARROW,
-            "chunk_bytes": CHUNK,
-        },
-    )
-
-
 class TestClickHouseIntoOracle:
-    SELECT: ClassVar[str] = (
-        f"select id, u8, dec, f32, s, lc, d, dt, {{b}}, toString(u) as u "
-        f"from {CH_DATABASE}.src order by id"
-    )
-
-    def select(self, oracle: OracleSide) -> str:
-        if oracle.version < BOOLEAN_SINCE:
-            return self.SELECT.format(b="toUInt8(b) as b")
-
-        return self.SELECT.format(b="b")
-
     async def test_raw_uuid_is_refused(
-        self, oracle: OracleSide, ch_source: ClickHouseSide
+        self, dags: PumpDags, oracle: OracleSide, ch_source: ClickHouseSide
     ) -> None:
-        pumps = Pumps(oracle=oracle.profile, clickhouse=ch_source.profile)
-        with pytest.raises(
-            TransferError, match=r"column u: .*uuid extension: send utf8 text"
-        ):
-            await pumps.chain(
-                ch_out(f"select id, u from {CH_DATABASE}.src order by id"),
-                ora_in("from_ch", DropAndCreate(kind="drop_and_create")),
-            )
+        failure = await _refused(dags, oracle, CH_RAW_UUID, "dst")
+
+        assert re.search(
+            r"column u: .*uuid extension: send utf8 text", failure.llm_view()
+        )
 
     async def test_every_family_lands_with_oracle_types(
-        self, oracle: OracleSide, ch_source: ClickHouseSide
+        self, dags: PumpDags, oracle: OracleSide, ch_source: ClickHouseSide
     ) -> None:
-        pumps = Pumps(oracle=oracle.profile, clickhouse=ch_source.profile)
-        chained = await pumps.chain(
-            ch_out(self.select(oracle)),
-            ora_in("from_ch", DropAndCreate(kind="drop_and_create")),
-        )
+        report = await _landed(dags, oracle, CH_EVERY_FAMILY)
         landed = OraLoaded(oracle, "from_ch")
         source = ChLoaded(ch_source, "src")
         boolean = "BOOLEAN"
@@ -947,7 +1693,7 @@ class TestClickHouseIntoOracle:
         for name, kind, not_null in EXPECTED_FROM_CLICKHOUSE:
             expected.append((name, kind.format(boolean=boolean), not_null))
 
-        assert f"{ROWS} rows loaded" in chained.in_report
+        assert f"{ROWS} rows loaded" in report
         assert await landed.columns() == expected
         assert await landed.count() == ROWS
         assert await landed.scalar("sum(dec)") == await source.scalar("sum(dec)")
@@ -964,66 +1710,48 @@ class TestSourceRefusals:
     """Типы, которые драйвер в Arrow отдаёт с потерей или не отдаёт: отказ
     до выполнения запроса с подсказкой."""
 
-    async def test_zoned_timestamp_needs_a_conversion(self, oracle: OracleSide) -> None:
-        pumps = Pumps(oracle=oracle.profile)
-        select = (
-            f'select id as "id", from_tz(ts6, \'+03:00\') as "tstz" from {OWNER}.{SRC}'
-        )
-        with pytest.raises(OracleQueryError, match=r"tstz.*sys_extract_utc"):
-            await pumps.chain(
-                ora_out(select),
-                ora_in("refused", DropAndCreate(kind="drop_and_create")),
-            )
+    UNFETCHABLE: ClassVar[list[tuple[str, str]]] = [
+        (INTERVAL_DS, "INTERVAL_DS"),
+        (INTERVAL_YM, "INTERVAL_YM"),
+        (XMLTYPE, "xmlserialize"),
+    ]
 
+    async def test_zoned_timestamp_needs_a_conversion(
+        self, dags: PumpDags, oracle: OracleSide
+    ) -> None:
+        failure = await _refused(dags, oracle, ZONED_TIMESTAMP, "src")
+
+        assert failure.error_kind == "OracleQueryError"
+        assert re.search(r"tstz.*sys_extract_utc", failure.llm_view())
         assert "refused" not in await OraLoaded(oracle, SRC).tables()
 
     async def test_utc_wall_time_lands_as_zoned_column(
-        self, oracle: OracleSide
+        self, dags: PumpDags, oracle: OracleSide
     ) -> None:
-        pumps = Pumps(oracle=oracle.profile)
-        select = (
-            f'select id as "id", sys_extract_utc(from_tz(ts6, \'+03:00\')) as "utc" '
-            f"from {OWNER}.{SRC}"
-        )
-        chained = await pumps.chain(
-            ora_out(select),
-            ora_in(
-                "utc",
-                DropAndCreate(kind="drop_and_create"),
-                rules=ColumnRules(column_types={"utc": "TIMESTAMP(6) WITH TIME ZONE"}),
-            ),
-        )
+        report = await _landed(dags, oracle, UTC_WALL_TIME)
         landed = OraLoaded(oracle, "utc")
 
-        assert f"{ROWS} rows loaded" in chained.in_report
+        assert f"{ROWS} rows loaded" in report
         assert ("utc", "TIMESTAMP(6) WITH TIME ZONE", False) in await landed.columns()
         assert (
             await landed.column("to_char(utc, 'yyyy-mm-dd hh24:mi:ss.ff6 tzh:tzm')")
         )[0] == "2024-02-29 10:14:16.123456 +00:00"
 
     @pytest.mark.parametrize(
-        ("expression", "hint"),
-        [
-            ("numtodsinterval(id, 'second')", "INTERVAL_DS"),
-            ("numtoyminterval(id, 'month')", "INTERVAL_YM"),
-            ("xmltype('<a/>')", "xmlserialize"),
-        ],
+        ("spec", "hint"), UNFETCHABLE, ids=["interval_ds", "interval_ym", "xmltype"]
     )
     async def test_unfetchable_types_are_refused(
-        self, oracle: OracleSide, expression: str, hint: str
+        self, dags: PumpDags, oracle: OracleSide, spec: str, hint: str
     ) -> None:
-        pumps = Pumps(oracle=oracle.profile)
-        select = f'select id as "id", {expression} as "v" from {OWNER}.{SRC}'
-        with pytest.raises(OracleQueryError, match=hint):
-            await pumps.chain(
-                ora_out(select),
-                ora_in("refused", DropAndCreate(kind="drop_and_create")),
-            )
+        failure = await _refused(dags, oracle, spec, "src")
 
-    async def test_declaration_on_a_missing_column(self, oracle: OracleSide) -> None:
-        pumps = Pumps(oracle=oracle.profile)
-        with pytest.raises(ContractError, match="no column 'nope'"):
-            await pumps.chain(
-                ora_out(SELECT, (ColumnDeclaration(name="nope", nullable=False),)),
-                ora_in("refused", DropAndCreate(kind="drop_and_create")),
-            )
+        assert failure.error_kind == "OracleQueryError"
+        assert hint in failure.llm_view()
+
+    async def test_declaration_on_a_missing_column(
+        self, dags: PumpDags, oracle: OracleSide
+    ) -> None:
+        failure = await _refused(dags, oracle, MISSING_DECLARATION, "src")
+
+        assert failure.error_kind == "ContractError"
+        assert "no column 'nope'" in failure.llm_view()

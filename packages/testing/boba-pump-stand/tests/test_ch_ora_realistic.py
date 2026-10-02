@@ -1,8 +1,11 @@
-# ruff: noqa: S608
+# ruff: noqa: S608, E501
 """Перелив отчётов магазина из ClickHouse в Oracle парой ClickHouse -> Oracle
 (ch_stream_out с wire = arrow и ora_stream_in) запросами, какими их написал бы
 LLM: CTE, join и left join с join_use_nulls, оконные функции, агрегаты в
 JSON, Enum, LowCardinality, UUID, IPv4, Decimal, DateTime64 в UTC.
+
+Каждый запуск описан toml-текстом (DagSpec) и исполняется DagRunner без
+модели: узлы — вызовы насосов с аргументами, как их присылает модель.
 
 Источник — каждый ClickHouse стенда, приёмник — каждый Oracle стенда.
 Сценарии идут по порядку на каждой паре и опираются на таблицы предыдущих:
@@ -27,6 +30,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator, Mapping, Sequence
 from decimal import Decimal
+from pathlib import Path
 from typing import Any, ClassVar
 
 import pytest
@@ -39,50 +43,28 @@ from test_ch_pg_realistic import (
 )
 from test_ch_pg_realistic import SRC as CH_SRC
 
-from boba.db.clickhouse.target import ChStreamWire
-from boba.db.oracle import OracleQueryError
-from boba.db.oracle.target import OraTableRef
 from boba.pump_stand import (
     ChLoaded,
     ClickHouseSide,
-    Leg,
     OracleSide,
     OraLoaded,
-    Pumps,
+    PumpDags,
     PumpStand,
 )
 from boba.pump_stand.oracle import PumpUser
-from boba.toolkit.contract import ColumnDeclaration
-from boba.toolkit.transfer import (
-    BackupAndCreateIfSchemaChanged,
-    ColumnRules,
-    DeleteNothing,
-    DeleteTruncate,
-    DeleteWhere,
-    DoNothing,
-    DropAndCreate,
-    ErrorIfNotExists,
-    ErrorIfSchemaChanged,
-    InsertFull,
-    InsertNothing,
-    TransferError,
-)
+from boba.toolkit.result import FailureResult, SqlFailureResult
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
 
 STAND = PumpStand.required()
 OWNER = PumpUser().name
 ARRAYSIZE = 2000
-CHUNK = 65536
 BOOLEAN_SINCE = 23
+MONTH = "2024-03-01"
 STRING_AS_STRING = "output_format_arrow_string_as_string = 1"
 REPORT_SETTINGS = f"{JOIN_NULLS}, {STRING_AS_STRING}"
 """Настройки отчёта ставятся у самого внешнего запроса: ClickHouse до 24 не
 доносит settings подзапроса до формата ответа, и строки уходят binary."""
-MERGE_TREE = (
-    "create table {database}.{table_name}[ on cluster {cluster}] ({columns}) "
-    "engine = MergeTree order by {order_by}"
-)
 
 REPORT_COLUMNS = """
 select order_id,
@@ -119,6 +101,11 @@ from ({body}) r"""
 Date и DateTime — настоящими моментами (в Arrow они уходят числами), Bool
 до 23 — числом: приёмник значения не переписывает."""
 
+RAW_SQL = (
+    f"select order_id, signed_up, month from ({REPORT_BODY}) r limit 10 {JOIN_NULLS}"
+)
+"""Первая попытка LLM: Date и DateTime как есть."""
+
 
 def report_query(target: OracleSide) -> str:
     """Отчёт без settings: для вложения в другой запрос."""
@@ -129,8 +116,24 @@ def report_query(target: OracleSide) -> str:
     return REPORT_COLUMNS.format(is_active=is_active, body=REPORT_BODY)
 
 
-def report_sql(clickhouse: ClickHouseSide, target: OracleSide) -> str:
+def report_sql(target: OracleSide) -> str:
     return f"{report_query(target)}\n{REPORT_SETTINGS}"
+
+
+def month_of(target: OracleSide, month: str) -> str:
+    report = report_query(target)
+
+    return (
+        f"select * from ({report}) m where m.month = toDate32('{month}') "
+        f"{REPORT_SETTINGS}"
+    )
+
+
+def mart_sql(target: OracleSide) -> str:
+    return (
+        f"select order_id, customer_name, tier, paid, gross, placed_at "
+        f"from ({report_query(target)}) m {REPORT_SETTINGS}"
+    )
 
 
 def native_boolean(source: ClickHouseSide, target: OracleSide) -> bool:
@@ -149,12 +152,6 @@ def compared(source: ClickHouseSide, target: OracleSide) -> dict[str, tuple[str,
 
     return templates
 
-
-DECLARED = (
-    ColumnDeclaration(name="order_id", nullable=False),
-    ColumnDeclaration(name="placed_at", nullable=False),
-    ColumnDeclaration(name="month", nullable=False),
-)
 
 EXPECTED_COLUMNS = [
     ("order_id", "NUMBER(20,0)", True),
@@ -230,6 +227,452 @@ FLOAT_COLUMNS = {"month_avg": ("{c}", "{c}")}
 """Среднее окна ClickHouse считает заново при выгрузке, порядок сложения
 float меняется: сравнение с допуском в последних битах."""
 
+DATES_AS_NUMBERS = """
+name = "ch_to_ora_dates_as_numbers"
+version = 1
+
+[[nodes]]
+key = "src"
+tool = "ch_stream_out"
+
+[nodes.args]
+connection = "ch"
+sql = '''$raw_sql'''
+wire = "arrow"
+columns = [{ name = "order_id", nullable = false }]
+chunk_bytes = 65536
+out = "rows"
+
+[[nodes]]
+key = "dst"
+tool = "ora_stream_in"
+
+[nodes.args]
+connection = "ora"
+schema_name = "$owner"
+table_name = "orders_raw"
+schema_strategy = { kind = "drop_and_create" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+rules = {}
+unknown_types = { kind = "fail_on_unknown" }
+create_table = "create table {schema_name}.{table_name} ({columns})"
+chunk_bytes = 65536
+feed = "rows"
+"""
+
+REPORT = """
+name = "ch_to_ora_report"
+version = 1
+
+[[nodes]]
+key = "src"
+tool = "ch_stream_out"
+
+[nodes.args]
+connection = "ch"
+sql = '''$report_sql'''
+wire = "arrow"
+columns = [{ name = "order_id", nullable = false }, { name = "placed_at", nullable = false }, { name = "month", nullable = false }]
+chunk_bytes = 65536
+out = "rows"
+
+[[nodes]]
+key = "dst"
+tool = "ora_stream_in"
+
+[nodes.args]
+connection = "ora"
+schema_name = "$owner"
+table_name = "orders_report"
+schema_strategy = { kind = "drop_and_create" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+rules = {}
+unknown_types = { kind = "fail_on_unknown" }
+create_table = "create table {schema_name}.{table_name} ({columns})"
+chunk_bytes = 65536
+feed = "rows"
+"""
+
+REPORT_RELOAD = """
+name = "ch_to_ora_report_reload"
+version = 1
+
+[[nodes]]
+key = "src"
+tool = "ch_stream_out"
+
+[nodes.args]
+connection = "ch"
+sql = '''$report_sql'''
+wire = "arrow"
+columns = [{ name = "order_id", nullable = false }, { name = "placed_at", nullable = false }, { name = "month", nullable = false }]
+chunk_bytes = 65536
+out = "rows"
+
+[[nodes]]
+key = "dst"
+tool = "ora_stream_in"
+
+[nodes.args]
+connection = "ora"
+schema_name = "$owner"
+table_name = "orders_report"
+schema_strategy = { kind = "error_if_schema_changed" }
+delete_strategy = { kind = "truncate" }
+insert_strategy = { kind = "full" }
+rules = {}
+unknown_types = { kind = "fail_on_unknown" }
+create_table = "create table {schema_name}.{table_name} ({columns})"
+chunk_bytes = 65536
+feed = "rows"
+"""
+
+ONE_MONTH = """
+name = "ch_to_ora_one_month"
+version = 1
+
+[[nodes]]
+key = "src"
+tool = "ch_stream_out"
+
+[nodes.args]
+connection = "ch"
+sql = '''$month_sql'''
+wire = "arrow"
+columns = [{ name = "order_id", nullable = false }, { name = "placed_at", nullable = false }, { name = "month", nullable = false }]
+chunk_bytes = 65536
+out = "rows"
+
+[[nodes]]
+key = "dst"
+tool = "ora_stream_in"
+
+[nodes.args]
+connection = "ora"
+schema_name = "$owner"
+table_name = "orders_report"
+schema_strategy = { kind = "error_if_schema_changed" }
+delete_strategy = { kind = "delete_where", where = "month = to_date('$month', 'yyyy-mm-dd')" }
+insert_strategy = { kind = "full" }
+rules = {}
+unknown_types = { kind = "fail_on_unknown" }
+create_table = "create table {schema_name}.{table_name} ({columns})"
+chunk_bytes = 65536
+feed = "rows"
+"""
+
+MART = """
+name = "ch_to_ora_mart"
+version = 1
+
+[[nodes]]
+key = "src"
+tool = "ch_stream_out"
+
+[nodes.args]
+connection = "ch"
+sql = '''$mart_sql'''
+wire = "arrow"
+columns = [{ name = "order_id", nullable = false }, { name = "placed_at", nullable = false }]
+chunk_bytes = 65536
+out = "rows"
+
+[[nodes]]
+key = "dst"
+tool = "ora_stream_in"
+
+[nodes.args]
+connection = "ora"
+schema_name = "$owner"
+table_name = "orders_mart"
+schema_strategy = { kind = "error_if_not_exists" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+rules = { rename_columns = { order_uid = "order_id", client = "customer_name", client_tier = "tier", paid_amount = "paid" }, column_types = { client = "VARCHAR2(60 CHAR)", client_tier = "VARCHAR2(10)" } }
+unknown_types = { kind = "fail_on_unknown" }
+create_table = "create table {schema_name}.{table_name} ({columns})"
+chunk_bytes = 65536
+feed = "rows"
+"""
+
+DRIFT = """
+name = "ch_to_ora_drift"
+version = 1
+
+[[nodes]]
+key = "src"
+tool = "ch_stream_out"
+
+[nodes.args]
+connection = "ch"
+sql = '''$report_sql'''
+wire = "arrow"
+columns = [{ name = "order_id", nullable = false }, { name = "placed_at", nullable = false }, { name = "month", nullable = false }]
+chunk_bytes = 65536
+out = "rows"
+
+[[nodes]]
+key = "dst"
+tool = "ora_stream_in"
+
+[nodes.args]
+connection = "ora"
+schema_name = "$owner"
+table_name = "orders_drift"
+schema_strategy = { kind = "drop_and_create" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+rules = {}
+unknown_types = { kind = "fail_on_unknown" }
+create_table = "create table {schema_name}.{table_name} ({columns})"
+chunk_bytes = 65536
+feed = "rows"
+"""
+
+DRIFT_CHECKED = """
+name = "ch_to_ora_drift_checked"
+version = 1
+
+[[nodes]]
+key = "src"
+tool = "ch_stream_out"
+
+[nodes.args]
+connection = "ch"
+sql = '''$report_sql'''
+wire = "arrow"
+columns = [{ name = "order_id", nullable = false }, { name = "placed_at", nullable = false }, { name = "month", nullable = false }]
+chunk_bytes = 65536
+out = "rows"
+
+[[nodes]]
+key = "dst"
+tool = "ora_stream_in"
+
+[nodes.args]
+connection = "ora"
+schema_name = "$owner"
+table_name = "orders_drift"
+schema_strategy = { kind = "error_if_schema_changed" }
+delete_strategy = { kind = "truncate" }
+insert_strategy = { kind = "full" }
+rules = {}
+unknown_types = { kind = "fail_on_unknown" }
+create_table = "create table {schema_name}.{table_name} ({columns})"
+chunk_bytes = 65536
+feed = "rows"
+"""
+
+DRIFT_BACKED_UP = """
+name = "ch_to_ora_drift_backed_up"
+version = 1
+
+[[nodes]]
+key = "src"
+tool = "ch_stream_out"
+
+[nodes.args]
+connection = "ch"
+sql = '''$report_sql'''
+wire = "arrow"
+columns = [{ name = "order_id", nullable = false }, { name = "placed_at", nullable = false }, { name = "month", nullable = false }]
+chunk_bytes = 65536
+out = "rows"
+
+[[nodes]]
+key = "dst"
+tool = "ora_stream_in"
+
+[nodes.args]
+connection = "ora"
+schema_name = "$owner"
+table_name = "orders_drift"
+schema_strategy = { kind = "backup_and_create_if_schema_changed" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+rules = {}
+unknown_types = { kind = "fail_on_unknown" }
+create_table = "create table {schema_name}.{table_name} ({columns})"
+chunk_bytes = 65536
+feed = "rows"
+"""
+
+TEMPLATED = """
+name = "ch_to_ora_templated"
+version = 1
+
+[[nodes]]
+key = "src"
+tool = "ch_stream_out"
+
+[nodes.args]
+connection = "ch"
+sql = '''$report_sql'''
+wire = "arrow"
+columns = [{ name = "order_id", nullable = false }, { name = "placed_at", nullable = false }, { name = "month", nullable = false }]
+chunk_bytes = 65536
+out = "rows"
+
+[[nodes]]
+key = "dst"
+tool = "ora_stream_in"
+
+[nodes.args]
+connection = "ora"
+schema_name = "$owner"
+table_name = "orders_tpl"
+schema_strategy = { kind = "drop_and_create" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+rules = {}
+unknown_types = { kind = "fail_on_unknown" }
+create_table = "create table {schema_name}.{table_name} ({columns}) tablespace users nologging"
+chunk_bytes = 65536
+feed = "rows"
+"""
+
+FAILED_AFTER_STEP = """
+name = "ch_to_ora_failed_after_step"
+version = 1
+
+[[nodes]]
+key = "src"
+tool = "ch_stream_out"
+
+[nodes.args]
+connection = "ch"
+sql = '''$report_sql'''
+wire = "arrow"
+columns = [{ name = "order_id", nullable = false }, { name = "placed_at", nullable = false }, { name = "month", nullable = false }]
+chunk_bytes = 65536
+out = "rows"
+
+[[nodes]]
+key = "dst"
+tool = "ora_stream_in"
+
+[nodes.args]
+connection = "ora"
+schema_name = "$owner"
+table_name = "orders_report_stage"
+schema_strategy = { kind = "drop_and_create" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+rules = {}
+unknown_types = { kind = "fail_on_unknown" }
+create_table = "create table {schema_name}.{table_name} ({columns})"
+chunk_bytes = 65536
+after = ["insert into no_such_table values (1)"]
+feed = "rows"
+"""
+
+SWAP = """
+name = "ch_to_ora_swap"
+version = 1
+
+[[nodes]]
+key = "src"
+tool = "ch_stream_out"
+
+[nodes.args]
+connection = "ch"
+sql = '''$report_sql'''
+wire = "arrow"
+columns = [{ name = "order_id", nullable = false }, { name = "placed_at", nullable = false }, { name = "month", nullable = false }]
+chunk_bytes = 65536
+out = "rows"
+
+[[nodes]]
+key = "dst"
+tool = "ora_stream_in"
+
+[nodes.args]
+connection = "ora"
+schema_name = "$owner"
+table_name = "orders_report_stage"
+schema_strategy = { kind = "drop_and_create" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+rules = {}
+unknown_types = { kind = "fail_on_unknown" }
+create_table = "create table {schema_name}.{table_name} ({columns})"
+chunk_bytes = 65536
+after = [
+    "alter table $owner.orders_report rename to orders_report_old",
+    "alter table $owner.orders_report_stage rename to orders_report",
+    "drop table $owner.orders_report_old purge",
+]
+feed = "rows"
+"""
+
+DRY_RUN = """
+name = "ch_to_ora_dry_run"
+version = 1
+
+[[nodes]]
+key = "src"
+tool = "ch_stream_out"
+
+[nodes.args]
+connection = "ch"
+sql = '''$report_sql'''
+wire = "arrow"
+columns = [{ name = "order_id", nullable = false }, { name = "placed_at", nullable = false }, { name = "month", nullable = false }]
+chunk_bytes = 65536
+out = "rows"
+
+[[nodes]]
+key = "dst"
+tool = "ora_stream_in"
+
+[nodes.args]
+connection = "ora"
+schema_name = "$owner"
+table_name = "orders_report"
+schema_strategy = { kind = "do_nothing" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "nothing" }
+rules = {}
+unknown_types = { kind = "fail_on_unknown" }
+create_table = "create table {schema_name}.{table_name} ({columns})"
+chunk_bytes = 65536
+feed = "rows"
+"""
+
+CITY_MONTH = """
+name = "ora_to_ch_city_month"
+version = 1
+
+[[nodes]]
+key = "src"
+tool = "ora_stream_out"
+
+[nodes.args]
+connection = "ora"
+sql = '''select to_char(city) as "city", month as "month", count(*) as "orders", cast(sum(gross) as number(18,2)) as "gross", cast(sum(balance) as number(18,2)) as "balance" from $owner.orders_report group by to_char(city), month'''
+columns = [{ name = "city", nullable = false }, { name = "month", nullable = false }]
+out = "rows"
+
+[[nodes]]
+key = "dst"
+tool = "ch_stream_in"
+
+[nodes.args]
+connection = "ch"
+database = "$ch_src"
+table_name = "city_month"
+schema_strategy = { kind = "drop_and_create" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+rules = {}
+cluster = ""
+order_by = "(city, month)"
+create_table = "create table {database}.{table_name}[ on cluster {cluster}] ({columns}) engine = MergeTree order by {order_by}"
+feed = "rows"
+"""
+
 
 @pytest.fixture(scope="module", params=STAND.demo_clickhouse(), ids=lambda s: s.name)
 async def source(request: Any) -> AsyncIterator[ClickHouseSide]:
@@ -263,6 +706,23 @@ async def target(request: Any, source: ClickHouseSide) -> AsyncIterator[OracleSi
     await side.drop()
 
 
+@pytest.fixture
+def dags(tmp_path: Path, source: ClickHouseSide, target: OracleSide) -> PumpDags:
+    return PumpDags(
+        tmp_path,
+        {"ch": source.profile, "ora": target.profile},
+        {
+            "owner": OWNER,
+            "ch_src": CH_SRC,
+            "raw_sql": RAW_SQL,
+            "report_sql": report_sql(target),
+            "month_sql": month_of(target, MONTH),
+            "mart_sql": mart_sql(target),
+            "month": MONTH,
+        },
+    )
+
+
 def expected_columns(
     source: ClickHouseSide, target: OracleSide
 ) -> list[tuple[str, str, bool]]:
@@ -277,63 +737,34 @@ def expected_columns(
     return columns
 
 
-async def transfer(  # noqa: PLR0913
-    source: ClickHouseSide,
-    target: OracleSide,
-    table: str,
-    schema: Any,
-    delete: Any,
-    select: str,
-    columns: Sequence[ColumnDeclaration] = DECLARED,
-    rules: ColumnRules = ColumnRules(),
-    insert: Any = InsertFull(kind="full"),
-    create_table: str = OraTableRef.CREATE_TABLE,
-    after: Sequence[str] = (),
+async def _landed(
+    dags: PumpDags, source: ClickHouseSide, target: OracleSide, spec: str
 ) -> str:
-    """ch_stream_out (arrow) на source -> ora_stream_in на target."""
-    pumps = Pumps(clickhouse=source.profile, oracle=target.profile)
-    chained = await pumps.chain(
-        Leg(
-            "ch_stream_out",
-            {
-                "sql": select,
-                "wire": ChStreamWire.ARROW,
-                "columns": columns,
-                "chunk_bytes": CHUNK,
-            },
-        ),
-        Leg(
-            "ora_stream_in",
-            {
-                "schema_name": OWNER,
-                "table_name": table,
-                "schema_strategy": schema,
-                "delete_strategy": delete,
-                "insert_strategy": insert,
-                "rules": rules,
-                "create_table": create_table,
-                "chunk_bytes": CHUNK,
-                "after": after,
-            },
-        ),
-    )
+    """Запуск описания; отчёт приёмника — узла dst."""
+    outcome = await dags.run(spec)
+    report = outcome.node("dst").content
     print(
-        f"\n--- {source.source.name} -> {target.source.name}: "
-        f"ch_stream_out (arrow) ---\n"
-        f"{chained.out_report}"
+        f"\n--- {source.source.name} -> {target.source.name}: {outcome.dag} ---\n"
+        f"{report}"
     )
-    print(f"--- ora_stream_in ---\n{chained.in_report}")
 
-    return chained.in_report
+    assert outcome.ok(), report
+
+    return report
 
 
-def month_of(source: ClickHouseSide, target: OracleSide, month: str) -> str:
-    report = report_query(target)
-
-    return (
-        f"select * from ({report}) m where m.month = toDate32('{month}') "
-        f"{REPORT_SETTINGS}"
+async def _refused(
+    dags: PumpDags, source: ClickHouseSide, target: OracleSide, spec: str, key: str
+) -> FailureResult:
+    """Запуск описания, которое обязано сорваться на узле key: его отказ."""
+    outcome = await dags.run(spec)
+    failure = outcome.failure(key)
+    print(
+        f"\n--- {source.source.name} -> {target.source.name}: {outcome.dag} "
+        f"refused ---\n{failure.llm_view()}"
     )
+
+    return failure
 
 
 def numbers(values: Sequence[Any]) -> list[Decimal | None]:
@@ -391,20 +822,9 @@ class TestFirstAttempt:
     создаёт NUMBER, и это видно по колонкам. LLM переписывает запрос."""
 
     async def test_dates_become_numbers(
-        self, source: ClickHouseSide, target: OracleSide
+        self, dags: PumpDags, source: ClickHouseSide, target: OracleSide
     ) -> None:
-        report = await transfer(
-            source,
-            target,
-            "orders_raw",
-            DropAndCreate(kind="drop_and_create"),
-            DeleteNothing(kind="nothing"),
-            select=(
-                f"select order_id, signed_up, month from ({REPORT_BODY}) r "
-                f"limit 10 {JOIN_NULLS}"
-            ),
-            columns=(ColumnDeclaration(name="order_id", nullable=False),),
-        )
+        report = await _landed(dags, source, target, DATES_AS_NUMBERS)
         columns: dict[str, str] = {}
         for name, kind, _ in await OraLoaded(target, "orders_raw").columns():
             columns[name] = kind
@@ -419,16 +839,9 @@ class TestFirstAttempt:
 
 class TestOrdersReport:
     async def test_report_lands_with_its_types(
-        self, source: ClickHouseSide, target: OracleSide
+        self, dags: PumpDags, source: ClickHouseSide, target: OracleSide
     ) -> None:
-        report = await transfer(
-            source,
-            target,
-            "orders_report",
-            DropAndCreate(kind="drop_and_create"),
-            DeleteNothing(kind="nothing"),
-            select=report_sql(source, target),
-        )
+        report = await _landed(dags, source, target, REPORT)
         landed = OraLoaded(target, "orders_report")
 
         assert f"{ORDERS} rows loaded" in report
@@ -442,49 +855,30 @@ class TestOrdersReport:
         await same_content(source, target, "orders_report")
 
     async def test_reload_into_the_existing_table_passes_the_check(
-        self, source: ClickHouseSide, target: OracleSide
+        self, dags: PumpDags, source: ClickHouseSide, target: OracleSide
     ) -> None:
-        report = await transfer(
-            source,
-            target,
-            "orders_report",
-            ErrorIfSchemaChanged(kind="error_if_schema_changed"),
-            DeleteTruncate(kind="truncate"),
-            select=report_sql(source, target),
-        )
+        report = await _landed(dags, source, target, REPORT_RELOAD)
 
         assert "error" not in report.split("rows loaded")[0].lower()
         assert await OraLoaded(target, "orders_report").count() == ORDERS
 
 
 class TestIncrementalMonth:
-    MONTH: ClassVar[str] = "2024-03-01"
-
     async def test_one_month_is_replaced(
-        self, source: ClickHouseSide, target: OracleSide
+        self, dags: PumpDags, source: ClickHouseSide, target: OracleSide
     ) -> None:
         landed = OraLoaded(target, "orders_report")
         await target.run(
             (
                 f"update {OWNER}.orders_report set note = 'stale' "
-                f"where month = to_date('{self.MONTH}', 'yyyy-mm-dd')",
+                f"where month = to_date('{MONTH}', 'yyyy-mm-dd')",
             )
         )
         in_month = await ChLoaded(source, "orders_report").scalar(
-            f"countIf(month = toDate('{self.MONTH}'))"
+            f"countIf(month = toDate('{MONTH}'))"
         )
 
-        report = await transfer(
-            source,
-            target,
-            "orders_report",
-            ErrorIfSchemaChanged(kind="error_if_schema_changed"),
-            DeleteWhere(
-                kind="delete_where",
-                where=f"month = to_date('{self.MONTH}', 'yyyy-mm-dd')",
-            ),
-            select=month_of(source, target, self.MONTH),
-        )
+        report = await _landed(dags, source, target, ONE_MONTH)
 
         assert in_month > 0
         assert f"{in_month} rows deleted" in report
@@ -507,58 +901,22 @@ class TestRenamedMart:
             gross number(18, 2),
             placed_at timestamp(3) with time zone
         )"""
-    RULES: ClassVar[ColumnRules] = ColumnRules(
-        rename_columns={
-            "order_uid": "order_id",
-            "client": "customer_name",
-            "client_tier": "tier",
-            "paid_amount": "paid",
-        },
-        column_types={"client": "VARCHAR2(60 CHAR)", "client_tier": "VARCHAR2(10)"},
-    )
-    COLUMNS: ClassVar[tuple[ColumnDeclaration, ...]] = (
-        ColumnDeclaration(name="order_id", nullable=False),
-        ColumnDeclaration(name="placed_at", nullable=False),
-    )
-
-    def select(self, source: ClickHouseSide, target: OracleSide) -> str:
-        return (
-            f"select order_id, customer_name, tier, paid, gross, placed_at "
-            f"from ({report_query(target)}) m {REPORT_SETTINGS}"
-        )
 
     async def test_missing_mart_is_refused(
-        self, source: ClickHouseSide, target: OracleSide
+        self, dags: PumpDags, source: ClickHouseSide, target: OracleSide
     ) -> None:
-        with pytest.raises(TransferError, match="table is missing"):
-            await transfer(
-                source,
-                target,
-                "orders_mart",
-                ErrorIfNotExists(kind="error_if_not_exists"),
-                DeleteNothing(kind="nothing"),
-                select=self.select(source, target),
-                columns=self.COLUMNS,
-                rules=self.RULES,
-            )
+        failure = await _refused(dags, source, target, MART, "dst")
+
+        assert "table is missing" in failure.llm_view()
 
     async def test_mart_is_filled_by_its_own_names(
-        self, source: ClickHouseSide, target: OracleSide
+        self, dags: PumpDags, source: ClickHouseSide, target: OracleSide
     ) -> None:
         await target.run((self.MART,))
         view = ChLoaded(source, "orders_report")
         mart = OraLoaded(target, "orders_mart")
 
-        report = await transfer(
-            source,
-            target,
-            "orders_mart",
-            ErrorIfNotExists(kind="error_if_not_exists"),
-            DeleteNothing(kind="nothing"),
-            select=self.select(source, target),
-            columns=self.COLUMNS,
-            rules=self.RULES,
-        )
+        report = await _landed(dags, source, target, MART)
 
         assert f"{ORDERS} rows loaded" in report
         assert await mart.count() == ORDERS
@@ -575,39 +933,17 @@ class TestRenamedMart:
 
 class TestSchemaDrift:
     async def test_drift_is_refused_then_backed_up(
-        self, source: ClickHouseSide, target: OracleSide
+        self, dags: PumpDags, source: ClickHouseSide, target: OracleSide
     ) -> None:
         drift = OraLoaded(target, "orders_drift")
-        await transfer(
-            source,
-            target,
-            "orders_drift",
-            DropAndCreate(kind="drop_and_create"),
-            DeleteNothing(kind="nothing"),
-            select=report_sql(source, target),
-        )
+        await _landed(dags, source, target, DRIFT)
         await target.run((f"alter table {OWNER}.orders_drift drop column gross",))
 
-        with pytest.raises(
-            TransferError, match="gross: in the stream but not in the table"
-        ):
-            await transfer(
-                source,
-                target,
-                "orders_drift",
-                ErrorIfSchemaChanged(kind="error_if_schema_changed"),
-                DeleteTruncate(kind="truncate"),
-                select=report_sql(source, target),
-            )
+        failure = await _refused(dags, source, target, DRIFT_CHECKED, "dst")
 
-        report = await transfer(
-            source,
-            target,
-            "orders_drift",
-            BackupAndCreateIfSchemaChanged(kind="backup_and_create_if_schema_changed"),
-            DeleteNothing(kind="nothing"),
-            select=report_sql(source, target),
-        )
+        assert "gross: in the stream but not in the table" in failure.llm_view()
+
+        report = await _landed(dags, source, target, DRIFT_BACKED_UP)
         backups: list[str] = []
         for name in await drift.tables():
             if name.startswith("orders_drift_bak_"):
@@ -622,23 +958,11 @@ class TestSchemaDrift:
 
 
 class TestCreateTemplate:
-    TEMPLATE: ClassVar[str] = (
-        "create table {schema_name}.{table_name} ({columns}) tablespace users nologging"
-    )
-
     async def test_table_gets_its_storage_options(
-        self, source: ClickHouseSide, target: OracleSide
+        self, dags: PumpDags, source: ClickHouseSide, target: OracleSide
     ) -> None:
         for _ in range(2):
-            report = await transfer(
-                source,
-                target,
-                "orders_tpl",
-                DropAndCreate(kind="drop_and_create"),
-                DeleteNothing(kind="nothing"),
-                select=report_sql(source, target),
-                create_table=self.TEMPLATE,
-            )
+            report = await _landed(dags, source, target, TEMPLATED)
 
             assert f"{ORDERS} rows loaded" in report
 
@@ -655,46 +979,26 @@ class TestCreateTemplate:
 
 
 class TestStagingSwap:
-    SWAP: ClassVar[tuple[str, ...]] = (
-        f"alter table {OWNER}.orders_report rename to orders_report_old",
-        f"alter table {OWNER}.orders_report_stage rename to orders_report",
-        f"drop table {OWNER}.orders_report_old purge",
-    )
-
     async def test_failed_step_rolls_back_the_rows(
-        self, source: ClickHouseSide, target: OracleSide
+        self, dags: PumpDags, source: ClickHouseSide, target: OracleSide
     ) -> None:
         landed = OraLoaded(target, "orders_report")
 
-        with pytest.raises(OracleQueryError, match="ORA-00942"):
-            await transfer(
-                source,
-                target,
-                "orders_report_stage",
-                DropAndCreate(kind="drop_and_create"),
-                DeleteNothing(kind="nothing"),
-                select=report_sql(source, target),
-                after=("insert into no_such_table values (1)",),
-            )
+        failure = await _refused(dags, source, target, FAILED_AFTER_STEP, "dst")
 
+        assert isinstance(failure, SqlFailureResult), failure
+        assert "ORA-00942" in failure.llm_view()
+        assert failure.statements[-1].status == "failed: OracleQueryError"
         assert await OraLoaded(target, "orders_report_stage").count() == 0
         assert await landed.count() == ORDERS
 
     async def test_swap_replaces_the_mart(
-        self, source: ClickHouseSide, target: OracleSide
+        self, dags: PumpDags, source: ClickHouseSide, target: OracleSide
     ) -> None:
         landed = OraLoaded(target, "orders_report")
         await target.run((f"update {OWNER}.orders_report set note = 'old'",))
 
-        report = await transfer(
-            source,
-            target,
-            "orders_report_stage",
-            DropAndCreate(kind="drop_and_create"),
-            DeleteNothing(kind="nothing"),
-            select=report_sql(source, target),
-            after=self.SWAP,
-        )
+        report = await _landed(dags, source, target, SWAP)
         tables = await landed.tables()
 
         assert f"{ORDERS} rows loaded" in report
@@ -709,20 +1013,12 @@ class TestStagingSwap:
 
 class TestDryRun:
     async def test_nothing_changes(
-        self, source: ClickHouseSide, target: OracleSide
+        self, dags: PumpDags, source: ClickHouseSide, target: OracleSide
     ) -> None:
         landed = OraLoaded(target, "orders_report")
         columns = await landed.columns()
 
-        report = await transfer(
-            source,
-            target,
-            "orders_report",
-            DoNothing(kind="do_nothing"),
-            DeleteNothing(kind="nothing"),
-            select=report_sql(source, target),
-            insert=InsertNothing(kind="nothing"),
-        )
+        report = await _landed(dags, source, target, DRY_RUN)
 
         assert report.startswith("0 rows loaded")
         assert await landed.columns() == columns
@@ -733,43 +1029,10 @@ class TestBackToClickHouse:
     """Обратный путь: агрегат «город × месяц» из Oracle в ClickHouse парой
     Oracle -> ClickHouse; суммы совпадают с отчётом источника."""
 
-    AGGREGATE: ClassVar[str] = (
-        f'select to_char(city) as "city", month as "month", count(*) as "orders", '
-        f'cast(sum(gross) as number(18,2)) as "gross", '
-        f'cast(sum(balance) as number(18,2)) as "balance" '
-        f"from {OWNER}.orders_report group by to_char(city), month"
-    )
-
     async def test_city_month_comes_back(
-        self, source: ClickHouseSide, target: OracleSide
+        self, dags: PumpDags, source: ClickHouseSide, target: OracleSide
     ) -> None:
-        pumps = Pumps(clickhouse=source.profile, oracle=target.profile)
-        chained = await pumps.chain(
-            Leg(
-                "ora_stream_out",
-                {
-                    "sql": self.AGGREGATE,
-                    "columns": (
-                        ColumnDeclaration(name="city", nullable=False),
-                        ColumnDeclaration(name="month", nullable=False),
-                    ),
-                },
-            ),
-            Leg(
-                "ch_stream_in",
-                {
-                    "database": CH_SRC,
-                    "table_name": "city_month",
-                    "schema_strategy": DropAndCreate(kind="drop_and_create"),
-                    "delete_strategy": DeleteNothing(kind="nothing"),
-                    "insert_strategy": InsertFull(kind="full"),
-                    "create_table": MERGE_TREE,
-                    "order_by": "(city, month)",
-                },
-            ),
-        )
-        print(f"\n--- {target.source.name} -> {source.source.name} ---")
-        print(chained.in_report)
+        await _landed(dags, source, target, CITY_MONTH)
         city_month = ChLoaded(source, "city_month")
         view = ChLoaded(source, "orders_report")
 

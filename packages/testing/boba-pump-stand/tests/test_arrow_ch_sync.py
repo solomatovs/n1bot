@@ -1,6 +1,9 @@
-# ruff: noqa: S608
+# ruff: noqa: S608, E501
 """Приёмник ch_stream_in на потоке arrow: postgres, Greenplum, Oracle и ClickHouse
-через *_sync_out с wire = arrow в каждый ClickHouse стенда.
+через *_stream_out с wire = arrow в каждый ClickHouse стенда.
+
+Каждый запуск описан toml-текстом (DagSpec) и исполняется DagRunner без
+модели: узлы — вызовы насосов с аргументами, как их присылает модель.
 
 Что проверяется:
     - широкая таблица типов postgres по нейтральному контракту: родные типы
@@ -19,42 +22,24 @@
 from __future__ import annotations
 
 import re
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncIterator
 from decimal import Decimal
+from pathlib import Path
 from typing import Any, ClassVar
 
 import pytest
 
-from boba.db.clickhouse.target import ChStreamWire, ChTableRef
-from boba.db.postgres.connection import CopyOptions
-from boba.db.postgres.transfer import PgColumnDeclaration
 from boba.pump_stand import (
     ChLoaded,
     ClickHouseSide,
-    Leg,
     Loaded,
     OracleSide,
     PostgresSide,
-    Pumps,
+    PumpDags,
     PumpStand,
 )
 from boba.pump_stand.oracle import PumpUser
 from boba.stand.names import StandNames
-from boba.toolkit.contract import ColumnDeclaration
-from boba.toolkit.transfer import (
-    ColumnRules,
-    DeleteNothing,
-    DeleteTruncate,
-    DeleteWhere,
-    DropAndCreate,
-    ErrorIfNotExists,
-    ErrorIfSchemaChanged,
-    FailOnUnknown,
-    FallbackAsVarchar,
-    InsertFull,
-    StreamWire,
-    TransferError,
-)
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
 
@@ -62,13 +47,8 @@ STAND = PumpStand.required()
 PG_SCHEMA = StandNames().of("pump_arrow_ch")
 CH_DATABASE = StandNames().of("pump_arrow_ch")
 ROWS = 60
-CHUNK = 65536
+SIXTH = ROWS // 6
 ARRAYSIZE = 500
-STRING_AS_STRING = "output_format_arrow_string_as_string = 1"
-MERGE_TREE = (
-    "create table {database}.{table_name}[ on cluster {cluster}] ({columns}) "
-    "engine = MergeTree order by {order_by}"
-)
 
 SOURCE_DDL = f"""
 create table {PG_SCHEMA}.src (
@@ -130,16 +110,6 @@ select g,
        int4range(g, g + 10)
 from generate_series(1, {ROWS}) g"""
 
-NATIVE = (
-    "id, i2, i4, n, nw, f4, f8, b, t, vc, c5, by, d, ts, tz, iv, u, j, jb, ip, "
-    "mo, bt, xm"
-)
-SELECT = f"select {NATIVE} from {PG_SCHEMA}.src"
-DECLARED = (
-    PgColumnDeclaration(name="id", nullable=False),
-    PgColumnDeclaration(name="vc", nullable=False),
-)
-
 EXPECTED_TYPES = {
     "id": "Int64",
     "i2": "Nullable(Int16)",
@@ -168,6 +138,446 @@ EXPECTED_TYPES = {
 """Колонки ClickHouse по нейтральному контракту arrow: семейства без своего
 типа у ClickHouse — String; json и inet по arrow тоже String, в отличие от
 пары postgres -> ClickHouse по tsv."""
+
+TYPES_CREATE = """
+name = "pg_to_ch_arrow_types_create"
+version = 1
+
+[[nodes]]
+key = "src"
+tool = "pg_stream_out"
+
+[nodes.args]
+connection = "pg"
+sql = "select id, i2, i4, n, nw, f4, f8, b, t, vc, c5, by, d, ts, tz, iv, u, j, jb, ip, mo, bt, xm from $pg_schema.src"
+wire = "arrow"
+columns = [{ name = "id", nullable = false }, { name = "vc", nullable = false }]
+copy_options = { chunk_bytes = 65536 }
+out = "rows"
+
+[[nodes]]
+key = "ch"
+tool = "ch_stream_in"
+
+[nodes.args]
+connection = "ch"
+database = "$ch_database"
+table_name = "types"
+schema_strategy = { kind = "drop_and_create" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+rules = {}
+unknown_types = { kind = "fail_on_unknown" }
+create_table = "create table {database}.{table_name}[ on cluster {cluster}] ({columns}) engine = MergeTree order by {order_by}"
+order_by = "tuple()"
+feed = "rows"
+"""
+
+TYPES_DELETE_WHERE = """
+name = "pg_to_ch_arrow_types_delete_where"
+version = 1
+
+[[nodes]]
+key = "src"
+tool = "pg_stream_out"
+
+[nodes.args]
+connection = "pg"
+sql = "select id, i2, i4, n, nw, f4, f8, b, t, vc, c5, by, d, ts, tz, iv, u, j, jb, ip, mo, bt, xm from $pg_schema.src where id <= $sixth"
+wire = "arrow"
+columns = [{ name = "id", nullable = false }, { name = "vc", nullable = false }]
+copy_options = { chunk_bytes = 65536 }
+out = "rows"
+
+[[nodes]]
+key = "ch"
+tool = "ch_stream_in"
+
+[nodes.args]
+connection = "ch"
+database = "$ch_database"
+table_name = "types"
+schema_strategy = { kind = "error_if_schema_changed" }
+delete_strategy = { kind = "delete_where", where = "id <= $sixth" }
+insert_strategy = { kind = "full" }
+rules = {}
+unknown_types = { kind = "fail_on_unknown" }
+create_table = "create table {database}.{table_name}[ on cluster {cluster}] ({columns}) engine = MergeTree order by {order_by}"
+order_by = "tuple()"
+feed = "rows"
+"""
+
+TYPES_TRUNCATE = """
+name = "pg_to_ch_arrow_types_truncate"
+version = 1
+
+[[nodes]]
+key = "src"
+tool = "pg_stream_out"
+
+[nodes.args]
+connection = "pg"
+sql = "select id, i2, i4, n, nw, f4, f8, b, t, vc, c5, by, d, ts, tz, iv, u, j, jb, ip, mo, bt, xm from $pg_schema.src"
+wire = "arrow"
+columns = [{ name = "id", nullable = false }, { name = "vc", nullable = false }]
+copy_options = { chunk_bytes = 65536 }
+out = "rows"
+
+[[nodes]]
+key = "ch"
+tool = "ch_stream_in"
+
+[nodes.args]
+connection = "ch"
+database = "$ch_database"
+table_name = "types"
+schema_strategy = { kind = "error_if_schema_changed" }
+delete_strategy = { kind = "truncate" }
+insert_strategy = { kind = "full" }
+rules = {}
+unknown_types = { kind = "fail_on_unknown" }
+create_table = "create table {database}.{table_name}[ on cluster {cluster}] ({columns}) engine = MergeTree order by {order_by}"
+order_by = "tuple()"
+feed = "rows"
+"""
+
+UNKNOWN_TIME = """
+name = "pg_to_ch_arrow_unknown_time"
+version = 1
+
+[[nodes]]
+key = "src"
+tool = "pg_stream_out"
+
+[nodes.args]
+connection = "pg"
+sql = "select id, tm from $pg_schema.src"
+wire = "arrow"
+columns = [{ name = "id", nullable = false }]
+copy_options = { chunk_bytes = 65536 }
+out = "rows"
+
+[[nodes]]
+key = "ch"
+tool = "ch_stream_in"
+
+[nodes.args]
+connection = "ch"
+database = "$ch_database"
+table_name = "unknown"
+schema_strategy = { kind = "drop_and_create" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+rules = {}
+unknown_types = { kind = "fail_on_unknown" }
+create_table = "create table {database}.{table_name}[ on cluster {cluster}] ({columns}) engine = MergeTree order by {order_by}"
+order_by = "tuple()"
+feed = "rows"
+"""
+
+UNKNOWN_ARRAY = """
+name = "pg_to_ch_arrow_unknown_array"
+version = 1
+
+[[nodes]]
+key = "src"
+tool = "pg_stream_out"
+
+[nodes.args]
+connection = "pg"
+sql = "select id, ia from $pg_schema.src"
+wire = "arrow"
+columns = [{ name = "id", nullable = false }]
+copy_options = { chunk_bytes = 65536 }
+out = "rows"
+
+[[nodes]]
+key = "ch"
+tool = "ch_stream_in"
+
+[nodes.args]
+connection = "ch"
+database = "$ch_database"
+table_name = "unknown"
+schema_strategy = { kind = "drop_and_create" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+rules = {}
+unknown_types = { kind = "fail_on_unknown" }
+create_table = "create table {database}.{table_name}[ on cluster {cluster}] ({columns}) engine = MergeTree order by {order_by}"
+order_by = "tuple()"
+feed = "rows"
+"""
+
+UNKNOWN_RANGE = """
+name = "pg_to_ch_arrow_unknown_range"
+version = 1
+
+[[nodes]]
+key = "src"
+tool = "pg_stream_out"
+
+[nodes.args]
+connection = "pg"
+sql = "select id, tr from $pg_schema.src"
+wire = "arrow"
+columns = [{ name = "id", nullable = false }]
+copy_options = { chunk_bytes = 65536 }
+out = "rows"
+
+[[nodes]]
+key = "ch"
+tool = "ch_stream_in"
+
+[nodes.args]
+connection = "ch"
+database = "$ch_database"
+table_name = "unknown"
+schema_strategy = { kind = "drop_and_create" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+rules = {}
+unknown_types = { kind = "fail_on_unknown" }
+create_table = "create table {database}.{table_name}[ on cluster {cluster}] ({columns}) engine = MergeTree order by {order_by}"
+order_by = "tuple()"
+feed = "rows"
+"""
+
+UNKNOWN_AS_STRING = """
+name = "pg_to_ch_arrow_unknown_as_string"
+version = 1
+
+[[nodes]]
+key = "src"
+tool = "pg_stream_out"
+
+[nodes.args]
+connection = "pg"
+sql = "select id, tm, ia, tr from $pg_schema.src"
+wire = "arrow"
+columns = [{ name = "id", nullable = false }]
+copy_options = { chunk_bytes = 65536 }
+out = "rows"
+
+[[nodes]]
+key = "ch"
+tool = "ch_stream_in"
+
+[nodes.args]
+connection = "ch"
+database = "$ch_database"
+table_name = "unknown"
+schema_strategy = { kind = "drop_and_create" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+rules = {}
+unknown_types = { kind = "fallback_as_varchar" }
+create_table = "create table {database}.{table_name}[ on cluster {cluster}] ({columns}) engine = MergeTree order by {order_by}"
+order_by = "tuple()"
+feed = "rows"
+"""
+
+DECLARED_TYPES = """
+name = "pg_to_ch_arrow_declared_types"
+version = 1
+
+[[nodes]]
+key = "src"
+tool = "pg_stream_out"
+
+[nodes.args]
+connection = "pg"
+sql = "select id, tm, n from $pg_schema.src"
+wire = "arrow"
+columns = [{ name = "id", nullable = false }]
+copy_options = { chunk_bytes = 65536 }
+out = "rows"
+
+[[nodes]]
+key = "ch"
+tool = "ch_stream_in"
+
+[nodes.args]
+connection = "ch"
+database = "$ch_database"
+table_name = "declared"
+schema_strategy = { kind = "drop_and_create" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+rules = { column_types = { tm = "LowCardinality(String)", n = "Decimal(20, 6)" } }
+unknown_types = { kind = "fail_on_unknown" }
+create_table = "create table {database}.{table_name}[ on cluster {cluster}] ({columns}) engine = MergeTree order by {order_by}"
+order_by = "tuple()"
+feed = "rows"
+"""
+
+EXISTING_WIDER = """
+name = "pg_to_ch_arrow_existing_wider"
+version = 1
+
+[[nodes]]
+key = "src"
+tool = "pg_stream_out"
+
+[nodes.args]
+connection = "pg"
+sql = "select id, i4, n, f4, ts, vc from $pg_schema.src"
+wire = "arrow"
+columns = [{ name = "id", nullable = false }, { name = "vc", nullable = false }]
+copy_options = { chunk_bytes = 65536 }
+out = "rows"
+
+[[nodes]]
+key = "ch"
+tool = "ch_stream_in"
+
+[nodes.args]
+connection = "ch"
+database = "$ch_database"
+table_name = "existing"
+schema_strategy = { kind = "error_if_not_exists" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+rules = {}
+unknown_types = { kind = "fail_on_unknown" }
+create_table = "create table {database}.{table_name}[ on cluster {cluster}] ({columns}) engine = MergeTree order by {order_by}"
+order_by = "tuple()"
+feed = "rows"
+"""
+
+EXISTING_CHECK = """
+name = "pg_to_ch_arrow_existing_check"
+version = 1
+
+[[nodes]]
+key = "src"
+tool = "pg_stream_out"
+
+[nodes.args]
+connection = "pg"
+sql = "select id, i4, n, f4, ts, vc from $pg_schema.src"
+wire = "arrow"
+columns = [{ name = "id", nullable = false }, { name = "vc", nullable = false }]
+copy_options = { chunk_bytes = 65536 }
+out = "rows"
+
+[[nodes]]
+key = "ch"
+tool = "ch_stream_in"
+
+[nodes.args]
+connection = "ch"
+database = "$ch_database"
+table_name = "existing"
+schema_strategy = { kind = "error_if_schema_changed" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+rules = {}
+unknown_types = { kind = "fail_on_unknown" }
+create_table = "create table {database}.{table_name}[ on cluster {cluster}] ({columns}) engine = MergeTree order by {order_by}"
+order_by = "tuple()"
+feed = "rows"
+"""
+
+FROM_ORACLE = """
+name = "ora_to_ch_arrow"
+version = 1
+
+[[nodes]]
+key = "src"
+tool = "ora_stream_out"
+
+[nodes.args]
+connection = "ora"
+sql = 'select id as "id", amount as "amount", name as "name", ts as "ts" from $ora_user.$ora_table'
+columns = [{ name = "id", nullable = false }]
+out = "rows"
+
+[[nodes]]
+key = "ch"
+tool = "ch_stream_in"
+
+[nodes.args]
+connection = "ch"
+database = "$ch_database"
+table_name = "from_oracle"
+schema_strategy = { kind = "drop_and_create" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+rules = {}
+unknown_types = { kind = "fail_on_unknown" }
+create_table = "create table {database}.{table_name}[ on cluster {cluster}] ({columns}) engine = MergeTree order by {order_by}"
+order_by = "tuple()"
+feed = "rows"
+"""
+
+CIRCLE = """
+name = "ch_to_ch_arrow_circle"
+version = 1
+
+[[nodes]]
+key = "src"
+tool = "ch_stream_out"
+
+[nodes.args]
+connection = "ch"
+sql = "select id, u8, u64, i8, f, dec, lc, toString(en) as en, s, toDate32(d) as d, d32, toDateTime64(dt, 0, 'UTC') as dt, dt64, b, toString(big) as big, toString(arr) as arr, toString(m) as m from $ch_database.typed settings output_format_arrow_string_as_string = 1"
+wire = "arrow"
+columns = [{ name = "id", nullable = false }]
+chunk_bytes = 65536
+out = "rows"
+
+[[nodes]]
+key = "ch"
+tool = "ch_stream_in"
+
+[nodes.args]
+connection = "ch"
+database = "$ch_database"
+table_name = "circle"
+schema_strategy = { kind = "drop_and_create" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+rules = {}
+unknown_types = { kind = "fail_on_unknown" }
+create_table = "create table {database}.{table_name}[ on cluster {cluster}] ({columns}) engine = MergeTree order by {order_by}"
+order_by = "id"
+feed = "rows"
+"""
+
+RAW_DATES = """
+name = "ch_to_ch_arrow_raw_dates"
+version = 1
+
+[[nodes]]
+key = "src"
+tool = "ch_stream_out"
+
+[nodes.args]
+connection = "ch"
+sql = "select id, d, dt from $ch_database.typed settings output_format_arrow_string_as_string = 1"
+wire = "arrow"
+columns = [{ name = "id", nullable = false }]
+chunk_bytes = 65536
+out = "rows"
+
+[[nodes]]
+key = "ch"
+tool = "ch_stream_in"
+
+[nodes.args]
+connection = "ch"
+database = "$ch_database"
+table_name = "raw_dates"
+schema_strategy = { kind = "drop_and_create" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+rules = {}
+unknown_types = { kind = "fail_on_unknown" }
+create_table = "create table {database}.{table_name}[ on cluster {cluster}] ({columns}) engine = MergeTree order by {order_by}"
+order_by = "tuple()"
+feed = "rows"
+"""
 
 
 def _named(prefix: str) -> list[Any]:
@@ -223,62 +633,55 @@ async def oracle() -> AsyncIterator[OracleSide]:
     await side.drop()
 
 
-def receiver(table: str, schema: Any, **extra: Any) -> dict[str, Any]:
-    """Аргументы ch_stream_in: шаблон MergeTree, остальное — по умолчанию теста."""
-    arguments: dict[str, Any] = {
-        "database": CH_DATABASE,
-        "table_name": table,
-        "schema_strategy": schema,
-        "delete_strategy": DeleteNothing(kind="nothing"),
-        "insert_strategy": InsertFull(kind="full"),
-        "rules": ColumnRules(),
-        "unknown_types": FailOnUnknown(kind="fail_on_unknown"),
-        "create_table": MERGE_TREE,
-        "order_by": ChTableRef.ORDER_BY,
-    }
-    arguments.update(extra)
-
-    return arguments
-
-
-async def land(  # noqa: PLR0913
-    postgres: PostgresSide,
-    clickhouse: ClickHouseSide,
-    table: str,
-    schema: Any,
-    select: str = SELECT,
-    columns: Sequence[PgColumnDeclaration] = DECLARED,
-    **extra: Any,
-) -> str:
-    """pg_stream_out с wire = arrow -> ch_stream_in."""
-    pumps = Pumps(postgres=postgres.profile, clickhouse=clickhouse.profile)
-    chained = await pumps.chain(
-        Leg(
-            "pg_stream_out",
-            {
-                "sql": select,
-                "wire": StreamWire.ARROW,
-                "columns": columns,
-                "copy_options": CopyOptions(chunk_bytes=CHUNK),
-            },
-        ),
-        Leg("ch_stream_in", receiver(table, schema, **extra)),
-    )
-    print(
-        f"\n--- {postgres.source.name} -> {clickhouse.source.name}: arrow ---\n"
-        f"{chained.in_report}"
+@pytest.fixture
+def dags(
+    tmp_path: Path, postgres: PostgresSide, clickhouse: ClickHouseSide
+) -> PumpDags:
+    return PumpDags(
+        tmp_path,
+        {"pg": postgres.profile, "ch": clickhouse.profile},
+        {"pg_schema": PG_SCHEMA, "ch_database": CH_DATABASE, "sixth": str(SIXTH)},
     )
 
-    return chained.in_report
+
+@pytest.fixture
+def ora_dags(
+    tmp_path: Path, oracle: OracleSide, clickhouse: ClickHouseSide
+) -> PumpDags:
+    """Oracle -> ClickHouse: таблица источника своя на каждый ClickHouse."""
+    return PumpDags(
+        tmp_path,
+        {"ora": oracle.profile, "ch": clickhouse.profile},
+        {
+            "ch_database": CH_DATABASE,
+            "ora_user": PumpUser().name,
+            "ora_table": f"src_{clickhouse.major}",
+        },
+    )
+
+
+@pytest.fixture
+def ch_dags(tmp_path: Path, clickhouse: ClickHouseSide) -> PumpDags:
+    """Круг ClickHouse -> ClickHouse: соединение одно."""
+    return PumpDags(tmp_path, {"ch": clickhouse.profile}, {"ch_database": CH_DATABASE})
+
+
+async def _landed(dags: PumpDags, clickhouse: ClickHouseSide, spec: str) -> str:
+    """Запуск описания; отчёт приёмника — узла ch."""
+    outcome = await dags.run(spec)
+    report = outcome.node("ch").content
+    print(f"\n--- {clickhouse.source.name}: {outcome.dag} ---\n{report}")
+
+    assert outcome.ok(), report
+
+    return report
 
 
 class TestPostgresTypes:
     async def test_types_and_values_land(
-        self, postgres: PostgresSide, clickhouse: ClickHouseSide
+        self, dags: PumpDags, postgres: PostgresSide, clickhouse: ClickHouseSide
     ) -> None:
-        report = await land(
-            postgres, clickhouse, "types", DropAndCreate(kind="drop_and_create")
-        )
+        report = await _landed(dags, clickhouse, TYPES_CREATE)
         landed = ChLoaded(clickhouse, "types")
         source = Loaded(postgres, PG_SCHEMA, "src")
 
@@ -310,34 +713,20 @@ class TestPostgresTypes:
         assert await landed.column("ip") == await source.scalars("host(ip)")
 
     async def test_reload_through_the_twin(
-        self, postgres: PostgresSide, clickhouse: ClickHouseSide
+        self, dags: PumpDags, clickhouse: ClickHouseSide
     ) -> None:
-        part = ROWS // 6
-        report = await land(
-            postgres,
-            clickhouse,
-            "types",
-            ErrorIfSchemaChanged(kind="error_if_schema_changed"),
-            delete_strategy=DeleteWhere(kind="delete_where", where=f"id <= {part}"),
-            select=f"{SELECT} where id <= {part}",
-        )
+        report = await _landed(dags, clickhouse, TYPES_DELETE_WHERE)
         landed = ChLoaded(clickhouse, "types")
 
-        assert f"{part} rows matching" in report
-        assert f"{part} rows loaded" in report
+        assert f"{SIXTH} rows matching" in report
+        assert f"{SIXTH} rows loaded" in report
         assert await landed.count() == ROWS
         assert await ChLoaded(clickhouse, "types__ex").count() == ROWS
 
     async def test_truncate_reload(
-        self, postgres: PostgresSide, clickhouse: ClickHouseSide
+        self, dags: PumpDags, clickhouse: ClickHouseSide
     ) -> None:
-        report = await land(
-            postgres,
-            clickhouse,
-            "types",
-            ErrorIfSchemaChanged(kind="error_if_schema_changed"),
-            delete_strategy=DeleteTruncate(kind="truncate"),
-        )
+        report = await _landed(dags, clickhouse, TYPES_TRUNCATE)
 
         assert f"{ROWS} rows loaded" in report
         assert await ChLoaded(clickhouse, "types").count() == ROWS
@@ -346,34 +735,23 @@ class TestPostgresTypes:
 class TestUnknownTypes:
     """time, массив и диапазон по arrow — семейства без пары у ClickHouse."""
 
-    SELECT: ClassVar[str] = f"select id, tm, ia, tr from {PG_SCHEMA}.src"
-
-    @pytest.mark.parametrize("column", ["tm", "ia", "tr"])
+    @pytest.mark.parametrize(
+        ("column", "spec"),
+        [("tm", UNKNOWN_TIME), ("ia", UNKNOWN_ARRAY), ("tr", UNKNOWN_RANGE)],
+    )
     async def test_refused_by_default(
-        self, postgres: PostgresSide, clickhouse: ClickHouseSide, column: str
+        self, dags: PumpDags, column: str, spec: str
     ) -> None:
-        with pytest.raises(TransferError, match=f"column {column}: the target"):
-            await land(
-                postgres,
-                clickhouse,
-                "unknown",
-                DropAndCreate(kind="drop_and_create"),
-                select=f"select id, {column} from {PG_SCHEMA}.src",
-                columns=DECLARED[:1],
-            )
+        outcome = await dags.run(spec)
+
+        failure = outcome.failure("ch")
+        assert failure.error_kind == "TransferError", failure
+        assert f"column {column}: the target" in failure.llm_view()
 
     async def test_land_as_string_on_fallback(
-        self, postgres: PostgresSide, clickhouse: ClickHouseSide
+        self, dags: PumpDags, postgres: PostgresSide, clickhouse: ClickHouseSide
     ) -> None:
-        report = await land(
-            postgres,
-            clickhouse,
-            "unknown",
-            DropAndCreate(kind="drop_and_create"),
-            select=self.SELECT,
-            columns=DECLARED[:1],
-            unknown_types=FallbackAsVarchar(kind="fallback_as_varchar"),
-        )
+        report = await _landed(dags, clickhouse, UNKNOWN_AS_STRING)
         landed = ChLoaded(clickhouse, "unknown")
         source = Loaded(postgres, PG_SCHEMA, "src")
 
@@ -388,19 +766,9 @@ class TestUnknownTypes:
             assert await landed.column(column) == await source.texts(column), column
 
     async def test_declared_type_wins(
-        self, postgres: PostgresSide, clickhouse: ClickHouseSide
+        self, dags: PumpDags, postgres: PostgresSide, clickhouse: ClickHouseSide
     ) -> None:
-        report = await land(
-            postgres,
-            clickhouse,
-            "declared",
-            DropAndCreate(kind="drop_and_create"),
-            select=f"select id, tm, n from {PG_SCHEMA}.src",
-            columns=DECLARED[:1],
-            rules=ColumnRules(
-                column_types={"tm": "LowCardinality(String)", "n": "Decimal(20, 6)"}
-            ),
-        )
+        report = await _landed(dags, clickhouse, DECLARED_TYPES)
         landed = ChLoaded(clickhouse, "declared")
 
         assert f"{ROWS} rows loaded" in report
@@ -418,7 +786,6 @@ class TestExistingTable:
     """Сверка контракта с существующей таблицей по семействам: шире —
     предупреждение и загрузка, уже — отказ до загрузки."""
 
-    SELECT: ClassVar[str] = f"select id, i4, n, f4, ts, vc from {PG_SCHEMA}.src"
     BASE: ClassVar[dict[str, str]] = {
         "id": "Int64",
         "i4": "Nullable(Int32)",
@@ -437,7 +804,7 @@ class TestExistingTable:
         )
 
     async def test_wider_table_takes_the_stream(
-        self, postgres: PostgresSide, clickhouse: ClickHouseSide
+        self, dags: PumpDags, clickhouse: ClickHouseSide
     ) -> None:
         await self.create(
             clickhouse,
@@ -452,13 +819,7 @@ class TestExistingTable:
             },
         )
 
-        report = await land(
-            postgres,
-            clickhouse,
-            "existing",
-            ErrorIfNotExists(kind="error_if_not_exists"),
-            select=self.SELECT,
-        )
+        report = await _landed(dags, clickhouse, EXISTING_WIDER)
 
         assert f"{ROWS} rows loaded" in report
         assert re.search(
@@ -487,7 +848,7 @@ class TestExistingTable:
     )
     async def test_narrower_table_is_refused(
         self,
-        postgres: PostgresSide,
+        dags: PumpDags,
         clickhouse: ClickHouseSide,
         column: str,
         table_type: str,
@@ -495,14 +856,11 @@ class TestExistingTable:
     ) -> None:
         await self.create(clickhouse, {**self.BASE, column: table_type})
 
-        with pytest.raises(TransferError, match=f"{column}.*{message}"):
-            await land(
-                postgres,
-                clickhouse,
-                "existing",
-                ErrorIfSchemaChanged(kind="error_if_schema_changed"),
-                select=self.SELECT,
-            )
+        outcome = await dags.run(EXISTING_CHECK)
+
+        failure = outcome.failure("ch")
+        assert failure.error_kind == "TransferError", failure
+        assert re.search(f"{column}.*{message}", failure.llm_view()), failure.llm_view()
 
 
 class TestOracleSource:
@@ -511,7 +869,7 @@ class TestOracleSource:
     TIMESTAMP — DateTime64."""
 
     async def test_oracle_lands(
-        self, oracle: OracleSide, clickhouse: ClickHouseSide
+        self, ora_dags: PumpDags, oracle: OracleSide, clickhouse: ClickHouseSide
     ) -> None:
         table = f"src_{clickhouse.major}"
         await oracle.create(
@@ -531,25 +889,12 @@ class TestOracleSource:
                 f"connect by level <= {ROWS}",
             )
         )
-        pumps = Pumps(oracle=oracle.profile, clickhouse=clickhouse.profile)
-        chained = await pumps.chain(
-            Leg(
-                "ora_stream_out",
-                {
-                    "sql": 'select id as "id", amount as "amount", name as "name", '
-                    f'ts as "ts" from {PumpUser().name}.{table}',
-                    "columns": [ColumnDeclaration(name="id", nullable=False)],
-                },
-            ),
-            Leg(
-                "ch_stream_in",
-                receiver("from_oracle", DropAndCreate(kind="drop_and_create")),
-            ),
-        )
+
+        report = await _landed(ora_dags, clickhouse, FROM_ORACLE)
         landed = ChLoaded(clickhouse, "from_oracle")
         types = dict(await landed.types())
 
-        assert f"{ROWS} rows loaded" in chained.in_report
+        assert f"{ROWS} rows loaded" in report
         assert types["id"] == "Int64"
         assert types["amount"] == "Nullable(Decimal(18, 4))"
         assert types["name"] == "Nullable(String)"
@@ -598,45 +943,22 @@ class TestClickHouseCircle:
                number % 2 = 0, toInt128(number) * 1000000000000,
                [toInt32(number), 1], map('k', number)
         from numbers({ROWS})"""
-    SELECT: ClassVar[str] = (
-        f"select id, u8, u64, i8, f, dec, lc, toString(en) as en, s, "
-        f"toDate32(d) as d, d32, toDateTime64(dt, 0, 'UTC') as dt, dt64, b, "
-        f"toString(big) as big, toString(arr) as arr, toString(m) as m "
-        f"from {CH_DATABASE}.typed settings {STRING_AS_STRING}"
-    )
-    RAW_DATES: ClassVar[str] = (
-        f"select id, d, dt from {CH_DATABASE}.typed settings {STRING_AS_STRING}"
-    )
     ARROW_DATE_SINCE: ClassVar[int] = 26
     ARROW_BOOL_SINCE: ClassVar[int] = 23
 
-    async def test_types_come_around(self, clickhouse: ClickHouseSide) -> None:
+    async def test_types_come_around(
+        self, ch_dags: PumpDags, clickhouse: ClickHouseSide
+    ) -> None:
         await clickhouse.command(f"drop table if exists {CH_DATABASE}.typed")
         await clickhouse.command(self.TYPED)
         await clickhouse.command(self.FILL)
-        pumps = Pumps(clickhouse=clickhouse.profile)
-        chained = await pumps.chain(
-            Leg(
-                "ch_stream_out",
-                {
-                    "sql": self.SELECT,
-                    "wire": ChStreamWire.ARROW,
-                    "columns": [ColumnDeclaration(name="id", nullable=False)],
-                    "chunk_bytes": CHUNK,
-                },
-            ),
-            Leg(
-                "ch_stream_in",
-                receiver(
-                    "circle", DropAndCreate(kind="drop_and_create"), order_by="id"
-                ),
-            ),
-        )
+
+        report = await _landed(ch_dags, clickhouse, CIRCLE)
         circle = ChLoaded(clickhouse, "circle")
         typed = ChLoaded(clickhouse, "typed")
         types = dict(await circle.types())
 
-        assert f"{ROWS} rows loaded" in chained.in_report
+        assert f"{ROWS} rows loaded" in report
         assert types["id"] == "Int64"
         assert types["u64"] == "UInt64"
         assert types["dec"] == "Decimal(18, 4)"
@@ -675,27 +997,12 @@ class TestClickHouseCircle:
             ), expression
 
     async def test_dates_without_cast_become_numbers(
-        self, clickhouse: ClickHouseSide
+        self, ch_dags: PumpDags, clickhouse: ClickHouseSide
     ) -> None:
         """Ловушка: Date до 26 и DateTime на всех версиях уходят в Arrow целыми,
         контракт видит UInt16 и UInt32 — на приёмнике это числа; Bool на 22.12
         тем же образом становится UInt8."""
-        pumps = Pumps(clickhouse=clickhouse.profile)
-        await pumps.chain(
-            Leg(
-                "ch_stream_out",
-                {
-                    "sql": self.RAW_DATES,
-                    "wire": ChStreamWire.ARROW,
-                    "columns": [ColumnDeclaration(name="id", nullable=False)],
-                    "chunk_bytes": CHUNK,
-                },
-            ),
-            Leg(
-                "ch_stream_in",
-                receiver("raw_dates", DropAndCreate(kind="drop_and_create")),
-            ),
-        )
+        await _landed(ch_dags, clickhouse, RAW_DATES)
         types = dict(await ChLoaded(clickhouse, "raw_dates").types())
 
         assert types["dt"] == "UInt32"

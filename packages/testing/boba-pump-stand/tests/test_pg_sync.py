@@ -1,54 +1,638 @@
+# ruff: noqa: S608, E501
 """Приёмник pg_stream_in: стратегии схемы, удаления и вставки на потоке
 Arrow из postgres (круг), из Oracle и из ClickHouse на новейшем postgres;
-стратегии схемы — на каждой версии postgres и Greenplum стенда."""
+стратегии схемы — на каждой версии postgres и Greenplum стенда.
 
-# ruff: noqa: S608, PLR0913
+Каждый запуск описан toml-текстом (DagSpec) и исполняется DagRunner без
+модели: узлы — вызовы насосов с аргументами, как их присылает модель.
+Подстановкой в описания идут имена стенда ($pg_schema, $ora_user) и
+параметры матрицы: провод $wire и запись float $exact_floats (Greenplum 6).
+"""
 
 from __future__ import annotations
 
 from collections.abc import AsyncIterator, Sequence
+from pathlib import Path
 from typing import Any
 
 import pytest
 
-from boba.db.postgres.connection import CopyOptions
-from boba.db.postgres.transfer import PgColumnDeclaration
-from boba.pump_stand import Leg, Loaded, OracleSide, PostgresSide, Pumps, PumpStand
+from boba.pump_stand import Loaded, OracleSide, PostgresSide, PumpDags, PumpStand
 from boba.pump_stand.oracle import PumpUser
 from boba.stand.names import StandNames
-from boba.toolkit.transfer import (
-    BackupAndCreateIfSchemaChanged,
-    ColumnRules,
-    CreateIfNotExists,
-    DeleteAll,
-    DeleteNothing,
-    DeleteTruncate,
-    DeleteWhere,
-    DropAndCreateIfSchemaChanged,
-    ErrorIfNotExists,
-    ErrorIfSchemaChanged,
-    InsertFull,
-    InsertNothing,
-    StreamWire,
-    TransferError,
-)
+from boba.toolkit.transfer import StreamWire
+from boba.toolrun.dag_run import DagOutcome
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
 
 STAND = PumpStand.required()
 ROWS = 60
-CHUNK_BYTES = 4096
 PG_SCHEMA = StandNames().of("pump_sync")
 ARRAYSIZE = 500
 
-SELECT = (
-    "select g::bigint as id, (g / 7.0)::numeric(18,4) as amount, "
-    "('name ' || g)::varchar(50) as name, "
-    "timestamp '2024-02-29 13:14:15.123456' + g * interval '1 second' as ts, "
-    "g % 2 = 0 as flag, g::float8 / 3 as d "
-    f"from generate_series(1, {ROWS}) g"
-)
-"""Поток-источник: шесть семейств типов, тысяча строк."""
+FRESH = """
+name = "pg_sync_fresh"
+version = 1
+
+[[nodes]]
+key = "out"
+tool = "pg_stream_out"
+
+[nodes.args]
+connection = "pg"
+sql = "select g::bigint as id, (g / 7.0)::numeric(18,4) as amount, ('name ' || g)::varchar(50) as name, timestamp '2024-02-29 13:14:15.123456' + g * interval '1 second' as ts, g % 2 = 0 as flag, g::float8 / 3 as d from generate_series(1, 60) g"
+wire = "$wire"
+columns = []
+copy_options = { chunk_bytes = 4096 }
+out = "rows"
+
+[[nodes]]
+key = "in"
+tool = "pg_stream_in"
+
+[nodes.args]
+connection = "pg"
+schema_name = "$pg_schema"
+table_name = "fresh"
+schema_strategy = { kind = "create_if_not_exists" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+rules = {}
+copy_options = { chunk_bytes = 4096, exact_floats = $exact_floats }
+feed = "rows"
+"""
+"""Поток-источник у всех описаний круга postgres -> postgres один: шесть
+семейств типов, 60 строк."""
+
+TWICE_CREATE = """
+name = "pg_sync_twice_create"
+version = 1
+
+[[nodes]]
+key = "out"
+tool = "pg_stream_out"
+
+[nodes.args]
+connection = "pg"
+sql = "select g::bigint as id, (g / 7.0)::numeric(18,4) as amount, ('name ' || g)::varchar(50) as name, timestamp '2024-02-29 13:14:15.123456' + g * interval '1 second' as ts, g % 2 = 0 as flag, g::float8 / 3 as d from generate_series(1, 60) g"
+wire = "$wire"
+columns = []
+copy_options = { chunk_bytes = 4096 }
+out = "rows"
+
+[[nodes]]
+key = "in"
+tool = "pg_stream_in"
+
+[nodes.args]
+connection = "pg"
+schema_name = "$pg_schema"
+table_name = "twice"
+schema_strategy = { kind = "create_if_not_exists" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+rules = {}
+copy_options = { chunk_bytes = 4096, exact_floats = $exact_floats }
+feed = "rows"
+"""
+
+TWICE_KEPT = """
+name = "pg_sync_twice_kept"
+version = 1
+
+[[nodes]]
+key = "out"
+tool = "pg_stream_out"
+
+[nodes.args]
+connection = "pg"
+sql = "select g::bigint as id, (g / 7.0)::numeric(18,4) as amount, ('name ' || g)::varchar(50) as name, timestamp '2024-02-29 13:14:15.123456' + g * interval '1 second' as ts, g % 2 = 0 as flag, g::float8 / 3 as d from generate_series(1, 60) g"
+wire = "$wire"
+columns = []
+copy_options = { chunk_bytes = 4096 }
+out = "rows"
+
+[[nodes]]
+key = "in"
+tool = "pg_stream_in"
+
+[nodes.args]
+connection = "pg"
+schema_name = "$pg_schema"
+table_name = "twice"
+schema_strategy = { kind = "error_if_schema_changed" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+rules = {}
+copy_options = { chunk_bytes = 4096, exact_floats = $exact_floats }
+feed = "rows"
+"""
+
+ABSENT = """
+name = "pg_sync_absent"
+version = 1
+
+[[nodes]]
+key = "out"
+tool = "pg_stream_out"
+
+[nodes.args]
+connection = "pg"
+sql = "select g::bigint as id, (g / 7.0)::numeric(18,4) as amount, ('name ' || g)::varchar(50) as name, timestamp '2024-02-29 13:14:15.123456' + g * interval '1 second' as ts, g % 2 = 0 as flag, g::float8 / 3 as d from generate_series(1, 60) g"
+wire = "$wire"
+columns = []
+copy_options = { chunk_bytes = 4096 }
+out = "rows"
+
+[[nodes]]
+key = "in"
+tool = "pg_stream_in"
+
+[nodes.args]
+connection = "pg"
+schema_name = "$pg_schema"
+table_name = "absent"
+schema_strategy = { kind = "error_if_not_exists" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+rules = {}
+copy_options = { chunk_bytes = 4096, exact_floats = $exact_floats }
+feed = "rows"
+"""
+
+NARROW = """
+name = "pg_sync_narrow"
+version = 1
+
+[[nodes]]
+key = "out"
+tool = "pg_stream_out"
+
+[nodes.args]
+connection = "pg"
+sql = "select g::bigint as id, (g / 7.0)::numeric(18,4) as amount, ('name ' || g)::varchar(50) as name, timestamp '2024-02-29 13:14:15.123456' + g * interval '1 second' as ts, g % 2 = 0 as flag, g::float8 / 3 as d from generate_series(1, 60) g"
+wire = "$wire"
+columns = []
+copy_options = { chunk_bytes = 4096 }
+out = "rows"
+
+[[nodes]]
+key = "in"
+tool = "pg_stream_in"
+
+[nodes.args]
+connection = "pg"
+schema_name = "$pg_schema"
+table_name = "narrow"
+schema_strategy = { kind = "error_if_schema_changed" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+rules = {}
+copy_options = { chunk_bytes = 4096, exact_floats = $exact_floats }
+feed = "rows"
+"""
+
+KEEP_OLD = """
+name = "pg_sync_keep_old"
+version = 1
+
+[[nodes]]
+key = "out"
+tool = "pg_stream_out"
+
+[nodes.args]
+connection = "pg"
+sql = "select g::bigint as id, (g / 7.0)::numeric(18,4) as amount, ('name ' || g)::varchar(50) as name, timestamp '2024-02-29 13:14:15.123456' + g * interval '1 second' as ts, g % 2 = 0 as flag, g::float8 / 3 as d from generate_series(1, 60) g"
+wire = "$wire"
+columns = []
+copy_options = { chunk_bytes = 4096 }
+out = "rows"
+
+[[nodes]]
+key = "in"
+tool = "pg_stream_in"
+
+[nodes.args]
+connection = "pg"
+schema_name = "$pg_schema"
+table_name = "keep_old"
+schema_strategy = { kind = "backup_and_create_if_schema_changed" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+rules = {}
+copy_options = { chunk_bytes = 4096, exact_floats = $exact_floats }
+feed = "rows"
+"""
+
+REPLACED = """
+name = "pg_sync_replaced"
+version = 1
+
+[[nodes]]
+key = "out"
+tool = "pg_stream_out"
+
+[nodes.args]
+connection = "pg"
+sql = "select g::bigint as id, (g / 7.0)::numeric(18,4) as amount, ('name ' || g)::varchar(50) as name, timestamp '2024-02-29 13:14:15.123456' + g * interval '1 second' as ts, g % 2 = 0 as flag, g::float8 / 3 as d from generate_series(1, 60) g"
+wire = "$wire"
+columns = []
+copy_options = { chunk_bytes = 4096 }
+out = "rows"
+
+[[nodes]]
+key = "in"
+tool = "pg_stream_in"
+
+[nodes.args]
+connection = "pg"
+schema_name = "$pg_schema"
+table_name = "replaced"
+schema_strategy = { kind = "drop_and_create_if_schema_changed" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+rules = {}
+copy_options = { chunk_bytes = 4096, exact_floats = $exact_floats }
+feed = "rows"
+"""
+
+TRUNC_CREATE = """
+name = "pg_sync_trunc_create"
+version = 1
+
+[[nodes]]
+key = "out"
+tool = "pg_stream_out"
+
+[nodes.args]
+connection = "pg"
+sql = "select g::bigint as id, (g / 7.0)::numeric(18,4) as amount, ('name ' || g)::varchar(50) as name, timestamp '2024-02-29 13:14:15.123456' + g * interval '1 second' as ts, g % 2 = 0 as flag, g::float8 / 3 as d from generate_series(1, 60) g"
+wire = "$wire"
+columns = []
+copy_options = { chunk_bytes = 4096 }
+out = "rows"
+
+[[nodes]]
+key = "in"
+tool = "pg_stream_in"
+
+[nodes.args]
+connection = "pg"
+schema_name = "$pg_schema"
+table_name = "trunc"
+schema_strategy = { kind = "create_if_not_exists" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+rules = {}
+copy_options = { chunk_bytes = 4096, exact_floats = $exact_floats }
+feed = "rows"
+"""
+
+TRUNC_RELOAD = """
+name = "pg_sync_trunc_reload"
+version = 1
+
+[[nodes]]
+key = "out"
+tool = "pg_stream_out"
+
+[nodes.args]
+connection = "pg"
+sql = "select g::bigint as id, (g / 7.0)::numeric(18,4) as amount, ('name ' || g)::varchar(50) as name, timestamp '2024-02-29 13:14:15.123456' + g * interval '1 second' as ts, g % 2 = 0 as flag, g::float8 / 3 as d from generate_series(1, 60) g"
+wire = "$wire"
+columns = []
+copy_options = { chunk_bytes = 4096 }
+out = "rows"
+
+[[nodes]]
+key = "in"
+tool = "pg_stream_in"
+
+[nodes.args]
+connection = "pg"
+schema_name = "$pg_schema"
+table_name = "trunc"
+schema_strategy = { kind = "create_if_not_exists" }
+delete_strategy = { kind = "truncate" }
+insert_strategy = { kind = "full" }
+rules = {}
+copy_options = { chunk_bytes = 4096, exact_floats = $exact_floats }
+feed = "rows"
+"""
+
+WIPE_CREATE = """
+name = "pg_sync_wipe_create"
+version = 1
+
+[[nodes]]
+key = "out"
+tool = "pg_stream_out"
+
+[nodes.args]
+connection = "pg"
+sql = "select g::bigint as id, (g / 7.0)::numeric(18,4) as amount, ('name ' || g)::varchar(50) as name, timestamp '2024-02-29 13:14:15.123456' + g * interval '1 second' as ts, g % 2 = 0 as flag, g::float8 / 3 as d from generate_series(1, 60) g"
+wire = "$wire"
+columns = []
+copy_options = { chunk_bytes = 4096 }
+out = "rows"
+
+[[nodes]]
+key = "in"
+tool = "pg_stream_in"
+
+[nodes.args]
+connection = "pg"
+schema_name = "$pg_schema"
+table_name = "wipe"
+schema_strategy = { kind = "create_if_not_exists" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+rules = {}
+copy_options = { chunk_bytes = 4096, exact_floats = $exact_floats }
+feed = "rows"
+"""
+
+WIPE_RELOAD = """
+name = "pg_sync_wipe_reload"
+version = 1
+
+[[nodes]]
+key = "out"
+tool = "pg_stream_out"
+
+[nodes.args]
+connection = "pg"
+sql = "select g::bigint as id, (g / 7.0)::numeric(18,4) as amount, ('name ' || g)::varchar(50) as name, timestamp '2024-02-29 13:14:15.123456' + g * interval '1 second' as ts, g % 2 = 0 as flag, g::float8 / 3 as d from generate_series(1, 60) g"
+wire = "$wire"
+columns = []
+copy_options = { chunk_bytes = 4096 }
+out = "rows"
+
+[[nodes]]
+key = "in"
+tool = "pg_stream_in"
+
+[nodes.args]
+connection = "pg"
+schema_name = "$pg_schema"
+table_name = "wipe"
+schema_strategy = { kind = "create_if_not_exists" }
+delete_strategy = { kind = "delete_all" }
+insert_strategy = { kind = "full" }
+rules = {}
+copy_options = { chunk_bytes = 4096, exact_floats = $exact_floats }
+feed = "rows"
+"""
+
+PART_CREATE = """
+name = "pg_sync_part_create"
+version = 1
+
+[[nodes]]
+key = "out"
+tool = "pg_stream_out"
+
+[nodes.args]
+connection = "pg"
+sql = "select g::bigint as id, (g / 7.0)::numeric(18,4) as amount, ('name ' || g)::varchar(50) as name, timestamp '2024-02-29 13:14:15.123456' + g * interval '1 second' as ts, g % 2 = 0 as flag, g::float8 / 3 as d from generate_series(1, 60) g"
+wire = "$wire"
+columns = []
+copy_options = { chunk_bytes = 4096 }
+out = "rows"
+
+[[nodes]]
+key = "in"
+tool = "pg_stream_in"
+
+[nodes.args]
+connection = "pg"
+schema_name = "$pg_schema"
+table_name = "part"
+schema_strategy = { kind = "create_if_not_exists" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+rules = {}
+copy_options = { chunk_bytes = 4096, exact_floats = $exact_floats }
+feed = "rows"
+"""
+
+PART_HALF_REPLACED = """
+name = "pg_sync_part_half_replaced"
+version = 1
+
+[[nodes]]
+key = "out"
+tool = "pg_stream_out"
+
+[nodes.args]
+connection = "pg"
+sql = "select g::bigint as id, (g / 7.0)::numeric(18,4) as amount, ('name ' || g)::varchar(50) as name, timestamp '2024-02-29 13:14:15.123456' + g * interval '1 second' as ts, g % 2 = 0 as flag, g::float8 / 3 as d from generate_series(1, 60) g"
+wire = "$wire"
+columns = []
+copy_options = { chunk_bytes = 4096 }
+out = "rows"
+
+[[nodes]]
+key = "in"
+tool = "pg_stream_in"
+
+[nodes.args]
+connection = "pg"
+schema_name = "$pg_schema"
+table_name = "part"
+schema_strategy = { kind = "create_if_not_exists" }
+delete_strategy = { kind = "delete_where", where = "id <= 30" }
+insert_strategy = { kind = "full" }
+rules = {}
+copy_options = { chunk_bytes = 4096, exact_floats = $exact_floats }
+feed = "rows"
+"""
+
+PART_EMPTIED = """
+name = "pg_sync_part_emptied"
+version = 1
+
+[[nodes]]
+key = "out"
+tool = "pg_stream_out"
+
+[nodes.args]
+connection = "pg"
+sql = "select g::bigint as id, (g / 7.0)::numeric(18,4) as amount, ('name ' || g)::varchar(50) as name, timestamp '2024-02-29 13:14:15.123456' + g * interval '1 second' as ts, g % 2 = 0 as flag, g::float8 / 3 as d from generate_series(1, 60) g"
+wire = "$wire"
+columns = []
+copy_options = { chunk_bytes = 4096 }
+out = "rows"
+
+[[nodes]]
+key = "in"
+tool = "pg_stream_in"
+
+[nodes.args]
+connection = "pg"
+schema_name = "$pg_schema"
+table_name = "part"
+schema_strategy = { kind = "create_if_not_exists" }
+delete_strategy = { kind = "delete_where", where = "id between 1 and 60" }
+insert_strategy = { kind = "nothing" }
+rules = {}
+copy_options = { chunk_bytes = 4096, exact_floats = $exact_floats }
+feed = "rows"
+"""
+
+SHAPED = """
+name = "pg_sync_shaped"
+version = 1
+
+[[nodes]]
+key = "out"
+tool = "pg_stream_out"
+
+[nodes.args]
+connection = "pg"
+sql = "select g::bigint as id, (g / 7.0)::numeric(18,4) as amount, ('name ' || g)::varchar(50) as name, timestamp '2024-02-29 13:14:15.123456' + g * interval '1 second' as ts, g % 2 = 0 as flag, g::float8 / 3 as d from generate_series(1, 60) g"
+wire = "$wire"
+columns = []
+copy_options = { chunk_bytes = 4096 }
+out = "rows"
+
+[[nodes]]
+key = "in"
+tool = "pg_stream_in"
+
+[nodes.args]
+connection = "pg"
+schema_name = "$pg_schema"
+table_name = "shaped"
+schema_strategy = { kind = "create_if_not_exists" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+rules = { rename_columns = { title = "name" }, column_types = { amount = "numeric(20,6)" } }
+copy_options = { chunk_bytes = 4096, exact_floats = $exact_floats }
+feed = "rows"
+"""
+
+STRICT = """
+name = "pg_sync_strict"
+version = 1
+
+[[nodes]]
+key = "out"
+tool = "pg_stream_out"
+
+[nodes.args]
+connection = "pg"
+sql = "select * from $pg_schema.strict_src where id <= 50"
+wire = "$wire"
+columns = [{ name = "id", nullable = false }, { name = "amount", nullable = false }]
+copy_options = { chunk_bytes = 4096 }
+out = "rows"
+
+[[nodes]]
+key = "in"
+tool = "pg_stream_in"
+
+[nodes.args]
+connection = "pg"
+schema_name = "$pg_schema"
+table_name = "strict_dst"
+schema_strategy = { kind = "create_if_not_exists" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+rules = {}
+copy_options = { chunk_bytes = 4096, exact_floats = $exact_floats }
+feed = "rows"
+"""
+
+UNKNOWN_DECLARATION = """
+name = "pg_sync_unknown_declaration"
+version = 1
+
+[[nodes]]
+key = "out"
+tool = "pg_stream_out"
+
+[nodes.args]
+connection = "pg"
+sql = "select g::bigint as id, (g / 7.0)::numeric(18,4) as amount, ('name ' || g)::varchar(50) as name, timestamp '2024-02-29 13:14:15.123456' + g * interval '1 second' as ts, g % 2 = 0 as flag, g::float8 / 3 as d from generate_series(1, 60) g"
+wire = "$wire"
+columns = [{ name = "nope", nullable = false }]
+copy_options = { chunk_bytes = 4096 }
+out = "rows"
+
+[[nodes]]
+key = "in"
+tool = "pg_stream_in"
+
+[nodes.args]
+connection = "pg"
+schema_name = "$pg_schema"
+table_name = "never"
+schema_strategy = { kind = "create_if_not_exists" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+rules = {}
+copy_options = { chunk_bytes = 4096, exact_floats = $exact_floats }
+feed = "rows"
+"""
+
+ORA_STRICT = """
+name = "pg_sync_ora_strict"
+version = 1
+
+[[nodes]]
+key = "out"
+tool = "ora_stream_out"
+
+[nodes.args]
+connection = "ora"
+sql = "select * from $ora_user.strict where id <= 50"
+columns = [{ name = "ID", nullable = false }, { name = "AMOUNT", nullable = false }]
+out = "rows"
+
+[[nodes]]
+key = "in"
+tool = "pg_stream_in"
+
+[nodes.args]
+connection = "pg"
+schema_name = "$pg_schema"
+table_name = "strict_from_ora"
+schema_strategy = { kind = "create_if_not_exists" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+copy_options = { chunk_bytes = 4096 }
+feed = "rows"
+"""
+
+ORA_TYPES = """
+name = "pg_sync_ora_types"
+version = 1
+
+[[nodes]]
+key = "out"
+tool = "ora_stream_out"
+
+[nodes.args]
+connection = "ora"
+sql = '''select id as "id", amount as "amount", name as "name", ts as "ts", '\\\\x' || rawtohex(rw) as "rw" from $ora_user.src'''
+columns = []
+out = "rows"
+
+[[nodes]]
+key = "in"
+tool = "pg_stream_in"
+
+[nodes.args]
+connection = "pg"
+schema_name = "$pg_schema"
+table_name = "from_oracle"
+schema_strategy = { kind = "create_if_not_exists" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+copy_options = { chunk_bytes = 4096 }
+feed = "rows"
+"""
 
 
 def _newest(sources: Sequence[Any]) -> str:
@@ -94,54 +678,53 @@ async def oracle(mode: StreamWire) -> AsyncIterator[OracleSide]:
     await side.drop()
 
 
-async def sync(
-    postgres: PostgresSide,
-    mode: StreamWire,
-    table: str,
-    schema: Any,
-    delete: Any = DeleteNothing(kind="nothing"),
-    insert: Any = InsertFull(kind="full"),
-    rules: ColumnRules = ColumnRules(),
-    select: str = SELECT,
-    columns: Sequence[PgColumnDeclaration] = (),
-) -> str:
-    pumps = Pumps(postgres=postgres.profile)
-    chained = await pumps.chain(
-        Leg(
-            "pg_stream_out",
-            {
-                "sql": select,
-                "wire": mode,
-                "columns": columns,
-                "copy_options": CopyOptions(chunk_bytes=CHUNK_BYTES),
-            },
-        ),
-        Leg(
-            "pg_stream_in",
-            {
-                "schema_name": PG_SCHEMA,
-                "table_name": table,
-                "schema_strategy": schema,
-                "delete_strategy": delete,
-                "insert_strategy": insert,
-                "rules": rules,
-                "copy_options": CopyOptions(
-                    chunk_bytes=CHUNK_BYTES, exact_floats=postgres.greenplum_6
-                ),
-            },
-        ),
+def toml_bool(value: bool) -> str:
+    if value:
+        return "true"
+
+    return "false"
+
+
+@pytest.fixture
+def dags(tmp_path: Path, postgres: PostgresSide, mode: StreamWire) -> PumpDags:
+    """Запуск описаний postgres -> postgres на одном сервере."""
+    return PumpDags(
+        tmp_path,
+        {"pg": postgres.profile},
+        {
+            "pg_schema": PG_SCHEMA,
+            "wire": mode.value,
+            "exact_floats": toml_bool(postgres.greenplum_6),
+        },
     )
 
-    return chained.in_report
+
+@pytest.fixture
+def ora_dags(tmp_path: Path, postgres: PostgresSide, oracle: OracleSide) -> PumpDags:
+    """Запуск описаний Oracle -> postgres."""
+    return PumpDags(
+        tmp_path,
+        {"pg": postgres.profile, "ora": oracle.profile},
+        {"pg_schema": PG_SCHEMA, "ora_user": PumpUser().name},
+    )
+
+
+def landed(outcome: DagOutcome) -> str:
+    """Отчёт приёмника удавшегося запуска."""
+    report = outcome.node("in").content
+    print(f"\n--- {outcome.dag}: source ---\n{outcome.node('out').content}")
+    print(f"--- pg_stream_in ---\n{report}")
+
+    assert outcome.ok(), report
+
+    return report
 
 
 class TestSchemaStrategies:
     async def test_create_if_not_exists_builds_the_table_from_the_stream(
-        self, postgres: PostgresSide, mode: StreamWire
+        self, dags: PumpDags, postgres: PostgresSide
     ) -> None:
-        report = await sync(
-            postgres, mode, "fresh", CreateIfNotExists(kind="create_if_not_exists")
-        )
+        report = landed(await dags.run(FRESH))
         loaded = Loaded(postgres, PG_SCHEMA, "fresh")
 
         assert report.startswith(f"{ROWS} rows loaded into {PG_SCHEMA}.fresh")
@@ -157,31 +740,25 @@ class TestSchemaStrategies:
         assert await loaded.count() == ROWS
 
     async def test_second_run_keeps_the_table_and_appends(
-        self, postgres: PostgresSide, mode: StreamWire
+        self, dags: PumpDags, postgres: PostgresSide
     ) -> None:
-        await sync(
-            postgres, mode, "twice", CreateIfNotExists(kind="create_if_not_exists")
-        )
-        report = await sync(
-            postgres,
-            mode,
-            "twice",
-            ErrorIfSchemaChanged(kind="error_if_schema_changed"),
-        )
+        landed(await dags.run(TWICE_CREATE))
+        report = landed(await dags.run(TWICE_KEPT))
 
         assert "table: kept as is (schema matches)" in report
         assert await Loaded(postgres, PG_SCHEMA, "twice").count() == 2 * ROWS
 
     async def test_error_if_not_exists_refuses_a_missing_table(
-        self, postgres: PostgresSide, mode: StreamWire
+        self, dags: PumpDags
     ) -> None:
-        with pytest.raises(TransferError, match="table is missing"):
-            await sync(
-                postgres, mode, "absent", ErrorIfNotExists(kind="error_if_not_exists")
-            )
+        outcome = await dags.run(ABSENT)
+
+        failure = outcome.failure("in")
+        assert failure.error_kind == "TransferError"
+        assert "table is missing" in failure.llm_view()
 
     async def test_narrowed_column_is_a_schema_change(
-        self, postgres: PostgresSide, mode: StreamWire
+        self, dags: PumpDags, postgres: PostgresSide
     ) -> None:
         await postgres.create(
             "narrow",
@@ -194,24 +771,17 @@ class TestSchemaStrategies:
                 "d double precision",
             ],
         )
-        with pytest.raises(TransferError, match="amount"):
-            await sync(
-                postgres,
-                mode,
-                "narrow",
-                ErrorIfSchemaChanged(kind="error_if_schema_changed"),
-            )
+        outcome = await dags.run(NARROW)
+
+        failure = outcome.failure("in")
+        assert failure.error_kind == "TransferError"
+        assert "amount" in failure.llm_view()
 
     async def test_backup_and_create_renames_the_old_table(
-        self, postgres: PostgresSide, mode: StreamWire
+        self, dags: PumpDags, postgres: PostgresSide
     ) -> None:
         await postgres.create("keep_old", ["id bigint", "extra text"])
-        report = await sync(
-            postgres,
-            mode,
-            "keep_old",
-            BackupAndCreateIfSchemaChanged(kind="backup_and_create_if_schema_changed"),
-        )
+        report = landed(await dags.run(KEEP_OLD))
         loaded = Loaded(postgres, PG_SCHEMA, "keep_old")
         tables = await loaded.tables()
 
@@ -222,15 +792,10 @@ class TestSchemaStrategies:
         assert await loaded.count() == ROWS
 
     async def test_drop_and_create_replaces_the_old_table(
-        self, postgres: PostgresSide, mode: StreamWire
+        self, dags: PumpDags, postgres: PostgresSide
     ) -> None:
         await postgres.create("replaced", ["id bigint", "extra text"])
-        report = await sync(
-            postgres,
-            mode,
-            "replaced",
-            DropAndCreateIfSchemaChanged(kind="drop_and_create_if_schema_changed"),
-        )
+        report = landed(await dags.run(REPLACED))
         loaded = Loaded(postgres, PG_SCHEMA, "replaced")
 
         assert "table: dropped and recreated" in report
@@ -252,84 +817,44 @@ class TestDeleteAndInsert:
             pytest.skip("delete and insert strategies on the newest postgres")
 
     async def test_truncate_then_full(
-        self, postgres: PostgresSide, mode: StreamWire
+        self, dags: PumpDags, postgres: PostgresSide
     ) -> None:
-        await sync(
-            postgres, mode, "trunc", CreateIfNotExists(kind="create_if_not_exists")
-        )
-        report = await sync(
-            postgres,
-            mode,
-            "trunc",
-            CreateIfNotExists(kind="create_if_not_exists"),
-            delete=DeleteTruncate(kind="truncate"),
-        )
+        landed(await dags.run(TRUNC_CREATE))
+        report = landed(await dags.run(TRUNC_RELOAD))
 
         assert "removed by truncate" in report
         assert "statement: truncate table" in report
         assert await Loaded(postgres, PG_SCHEMA, "trunc").count() == ROWS
 
     async def test_delete_all_counts_rows(
-        self, postgres: PostgresSide, mode: StreamWire
+        self, dags: PumpDags, postgres: PostgresSide
     ) -> None:
-        await sync(
-            postgres, mode, "wipe", CreateIfNotExists(kind="create_if_not_exists")
-        )
-        report = await sync(
-            postgres,
-            mode,
-            "wipe",
-            CreateIfNotExists(kind="create_if_not_exists"),
-            delete=DeleteAll(kind="delete_all"),
-        )
+        landed(await dags.run(WIPE_CREATE))
+        report = landed(await dags.run(WIPE_RELOAD))
 
         assert f"{ROWS} rows deleted" in report
         assert "statement: delete from" in report
         assert await Loaded(postgres, PG_SCHEMA, "wipe").count() == ROWS
 
     async def test_delete_where_then_nothing_inserted(
-        self, postgres: PostgresSide, mode: StreamWire
+        self, dags: PumpDags, postgres: PostgresSide
     ) -> None:
-        await sync(
-            postgres, mode, "part", CreateIfNotExists(kind="create_if_not_exists")
-        )
+        landed(await dags.run(PART_CREATE))
         half = ROWS // 2
-        await sync(
-            postgres,
-            mode,
-            "part",
-            CreateIfNotExists(kind="create_if_not_exists"),
-            delete=DeleteWhere(kind="delete_where", where=f"id <= {half}"),
-        )
+        landed(await dags.run(PART_HALF_REPLACED))
 
         assert await Loaded(postgres, PG_SCHEMA, "part").count() == 2 * ROWS - half
 
-        report = await sync(
-            postgres,
-            mode,
-            "part",
-            CreateIfNotExists(kind="create_if_not_exists"),
-            delete=DeleteWhere(kind="delete_where", where=f"id between 1 and {ROWS}"),
-            insert=InsertNothing(kind="nothing"),
-        )
+        report = landed(await dags.run(PART_EMPTIED))
 
         assert f"{2 * ROWS - half} rows deleted" in report
         assert "0 rows loaded" in report
         assert await Loaded(postgres, PG_SCHEMA, "part").count() == 0
 
     async def test_rename_and_declaration_shape_the_ddl(
-        self, postgres: PostgresSide, mode: StreamWire
+        self, dags: PumpDags, postgres: PostgresSide
     ) -> None:
-        rules = ColumnRules(
-            rename_columns={"title": "name"}, column_types={"amount": "numeric(20,6)"}
-        )
-        await sync(
-            postgres,
-            mode,
-            "shaped",
-            CreateIfNotExists(kind="create_if_not_exists"),
-            rules=rules,
-        )
+        landed(await dags.run(SHAPED))
         columns = await Loaded(postgres, PG_SCHEMA, "shaped").columns()
 
         assert ("title", "character varying(50)", False) in columns
@@ -347,7 +872,7 @@ class TestDeclarations:
             pytest.skip("declarations on the newest postgres")
 
     async def test_pg_declarations_carry_not_null(
-        self, postgres: PostgresSide, mode: StreamWire
+        self, dags: PumpDags, postgres: PostgresSide
     ) -> None:
         await postgres.create(
             "strict_src",
@@ -359,17 +884,7 @@ class TestDeclarations:
                 "select g, 'n' || g, g / 3.0 from generate_series(1, 100) g"
             ]
         )
-        report = await sync(
-            postgres,
-            mode,
-            "strict_dst",
-            CreateIfNotExists(kind="create_if_not_exists"),
-            select=f"select * from {PG_SCHEMA}.strict_src where id <= 50",
-            columns=[
-                PgColumnDeclaration(name="id", nullable=False),
-                PgColumnDeclaration(name="amount", nullable=False),
-            ],
-        )
+        report = landed(await dags.run(STRICT))
 
         assert report.startswith("50 rows loaded")
         assert await Loaded(postgres, PG_SCHEMA, "strict_dst").columns() == [
@@ -379,19 +894,17 @@ class TestDeclarations:
         ]
 
     async def test_unknown_column_in_declarations_is_refused(
-        self, postgres: PostgresSide, mode: StreamWire
+        self, dags: PumpDags
     ) -> None:
-        with pytest.raises(TransferError, match="has no column 'nope'"):
-            await sync(
-                postgres,
-                mode,
-                "never",
-                CreateIfNotExists(kind="create_if_not_exists"),
-                columns=[PgColumnDeclaration(name="nope", nullable=False)],
-            )
+        """Отказ источника: у пары COPY — TransferError, у arrow —
+        ContractError, текст один."""
+        outcome = await dags.run(UNKNOWN_DECLARATION)
+
+        failure = outcome.failure("out")
+        assert "has no column 'nope'" in failure.llm_view()
 
     async def test_ora_declarations_carry_not_null(
-        self, postgres: PostgresSide, oracle: OracleSide
+        self, ora_dags: PumpDags, postgres: PostgresSide, oracle: OracleSide
     ) -> None:
         await oracle.create(
             "STRICT",
@@ -407,32 +920,9 @@ class TestDeclarations:
                 "level / 3 from dual connect by level <= 100",
             )
         )
-        pumps = Pumps(postgres=postgres.profile, oracle=oracle.profile)
-        chained = await pumps.chain(
-            Leg(
-                "ora_stream_out",
-                {
-                    "sql": f"select * from {PumpUser().name}.strict where id <= 50",
-                    "columns": [
-                        PgColumnDeclaration(name="ID", nullable=False),
-                        PgColumnDeclaration(name="AMOUNT", nullable=False),
-                    ],
-                },
-            ),
-            Leg(
-                "pg_stream_in",
-                {
-                    "schema_name": PG_SCHEMA,
-                    "table_name": "strict_from_ora",
-                    "schema_strategy": CreateIfNotExists(kind="create_if_not_exists"),
-                    "delete_strategy": DeleteNothing(kind="nothing"),
-                    "insert_strategy": InsertFull(kind="full"),
-                    "copy_options": CopyOptions(chunk_bytes=CHUNK_BYTES),
-                },
-            ),
-        )
+        report = landed(await ora_dags.run(ORA_STRICT))
 
-        assert chained.in_report.startswith("50 rows loaded")
+        assert report.startswith("50 rows loaded")
         assert await Loaded(postgres, PG_SCHEMA, "strict_from_ora").columns() == [
             ("ID", "bigint", True),
             ("NOTE", "character varying(20)", False),
@@ -447,7 +937,7 @@ class TestOtherSources:
             pytest.skip("other sources on the newest postgres")
 
     async def test_oracle_stream_creates_exact_types(
-        self, postgres: PostgresSide, mode: StreamWire, oracle: OracleSide
+        self, ora_dags: PumpDags, postgres: PostgresSide, oracle: OracleSide
     ) -> None:
         await oracle.create(
             "src",
@@ -466,32 +956,10 @@ class TestOtherSources:
                 "connect by level <= 100",
             )
         )
-        pumps = Pumps(postgres=postgres.profile, oracle=oracle.profile)
-        chained = await pumps.chain(
-            Leg(
-                "ora_stream_out",
-                {
-                    "sql": 'select id as "id", amount as "amount", name as "name", '
-                    'ts as "ts", \'\\\\x\' || rawtohex(rw) as "rw" '
-                    f"from {PumpUser().name}.src",
-                    "columns": [],
-                },
-            ),
-            Leg(
-                "pg_stream_in",
-                {
-                    "schema_name": PG_SCHEMA,
-                    "table_name": "from_oracle",
-                    "schema_strategy": CreateIfNotExists(kind="create_if_not_exists"),
-                    "delete_strategy": DeleteNothing(kind="nothing"),
-                    "insert_strategy": InsertFull(kind="full"),
-                    "copy_options": CopyOptions(chunk_bytes=CHUNK_BYTES),
-                },
-            ),
-        )
+        report = landed(await ora_dags.run(ORA_TYPES))
         columns = await Loaded(postgres, PG_SCHEMA, "from_oracle").columns()
 
-        assert chained.in_report.startswith("100 rows loaded")
+        assert report.startswith("100 rows loaded")
         assert ("id", "bigint", False) in columns
         assert ("amount", "numeric(18,4)", False) in columns
         assert ("name", "character varying(50)", False) in columns

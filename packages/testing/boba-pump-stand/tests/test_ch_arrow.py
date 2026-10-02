@@ -1,7 +1,13 @@
+# ruff: noqa: S608, E501
 """Перекачка из ClickHouse потоком Arrow IPC: ch_stream_out против pg_stream_in
 (каждый ClickHouse из ch_sources в каждый postgres и Greenplum из sources) и
 ora_stream_in (в каждый Oracle из ora_sources). Насосы соединены трубой ОС и
 работают одновременно; круг ClickHouse -> ClickHouse проверяет test_ch_sync.
+
+Каждый запуск описан toml-текстом (DagSpec) и исполняется DagRunner без
+модели; список select под приёмник и имя таблицы собираются из матрицы
+колонок и подставляются в описание именами $pg_sql/$pg_table и
+$ora_sql/$ora_table.
 
 Таблица ClickHouse несёт все семейства типов: целые до 256 бит, Decimal до
 256 бит, Float с NaN и бесконечностями, String и FixedString с NUL,
@@ -12,24 +18,20 @@ Arrow там, где приёмник его читает, и явный toStrin
 (широкие целые, DateTime64(9), Enum, UUID, IP, составные), — так по самим
 тестам видно, какие типы едут только строкой."""
 
-# ruff: noqa: S608 — стейтменты стенда собираются текстом, как их пишет LLM
-
 from __future__ import annotations
 
 from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 import pytest
 
-from boba.db.clickhouse.target import ChStreamWire
-from boba.db.postgres.connection import CopyOptions
 from boba.pump_stand import (
     ClickHouseSide,
-    Leg,
     OracleSide,
     PostgresSide,
-    Pumps,
+    PumpDags,
     PumpStand,
 )
 from boba.pump_stand.compare import (
@@ -50,22 +52,74 @@ from boba.pump_stand.matrix import (
 )
 from boba.pump_stand.oracle import PumpUser
 from boba.stand.names import StandNames
-from boba.toolkit.transfer import (
-    CreateIfNotExists,
-    DeleteNothing,
-    ErrorIfNotExists,
-    InsertFull,
-)
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
 
 STAND = PumpStand.required()
 ROWS = 60
 ARRAYSIZE = 97
-CHUNK_BYTES = 4096
 PG_SCHEMA = StandNames().of("pump_ch_arrow")
 CH_DATABASE = StandNames().of("pump_ch_arrow")
-STRING_AS_STRING = "output_format_arrow_string_as_string = 1"
+
+TO_POSTGRES = """
+name = "ch_to_pg_arrow_every_type"
+version = 1
+
+[[nodes]]
+key = "src"
+tool = "ch_stream_out"
+
+[nodes.args]
+connection = "ch"
+sql = '''select $pg_sql from $ch_database.src order by id settings output_format_arrow_string_as_string = 1'''
+wire = "arrow"
+chunk_bytes = 4096
+out = "rows"
+
+[[nodes]]
+key = "pg"
+tool = "pg_stream_in"
+
+[nodes.args]
+connection = "pg"
+schema_name = "$pg_schema"
+table_name = "$pg_table"
+schema_strategy = { kind = "create_if_not_exists" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+copy_options = { chunk_bytes = 4096 }
+feed = "rows"
+"""
+
+TO_ORACLE = """
+name = "ch_to_ora_arrow_every_type"
+version = 1
+
+[[nodes]]
+key = "src"
+tool = "ch_stream_out"
+
+[nodes.args]
+connection = "ch"
+sql = '''select $ora_sql from $ch_database.src order by id settings output_format_arrow_string_as_string = 1'''
+wire = "arrow"
+chunk_bytes = 4096
+out = "rows"
+
+[[nodes]]
+key = "ora"
+tool = "ora_stream_in"
+
+[nodes.args]
+connection = "ora"
+schema_name = "$ora_user"
+table_name = "$ora_table"
+schema_strategy = { kind = "error_if_not_exists" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+chunk_bytes = 4096
+feed = "rows"
+"""
 
 
 @dataclass(frozen=True)
@@ -423,6 +477,44 @@ CH_COLUMNS = (
 )
 
 
+@dataclass(frozen=True)
+class Landing:
+    """Колонки матрицы, которые берёт приёмник, и их стороны у него."""
+
+    columns: Sequence[ChColumn]
+    targets: Sequence[Target]
+
+    def names(self) -> list[str]:
+        return [c.name for c in self.columns]
+
+    def ddl(self) -> list[str]:
+        return [
+            f"{c.name} {t.type}"
+            for c, t in zip(self.columns, self.targets, strict=True)
+        ]
+
+    def exported(self) -> str:
+        return exported(self.names(), self.targets, False)
+
+    def source_refs(self) -> list[str]:
+        return [
+            first(t.src_ref, c.name)
+            for c, t in zip(self.columns, self.targets, strict=True)
+        ]
+
+    def target_refs(self) -> list[str]:
+        return [
+            first(t.ref, c.name)
+            for c, t in zip(self.columns, self.targets, strict=True)
+        ]
+
+    def compares(self) -> list[Values]:
+        return [c.compare for c in self.columns]
+
+    def tolerances(self) -> list[float]:
+        return [t.approx for t in self.targets]
+
+
 class Source:
     """Таблица src в базе ClickHouse с одной строкой на n = 1..ROWS."""
 
@@ -431,6 +523,37 @@ class Source:
 
     def columns(self) -> list[ChColumn]:
         return list(CH_COLUMNS)
+
+    def for_postgres(self) -> Landing:
+        columns: list[ChColumn] = []
+        targets: list[Target] = []
+        for column in self.columns():
+            if column.pg is None:
+                continue
+
+            columns.append(column)
+            targets.append(column.pg)
+
+        return Landing(columns, targets)
+
+    def for_oracle(self, unicode: bool) -> Landing:
+        columns: list[ChColumn] = []
+        targets: list[Target] = []
+        for column in self.columns():
+            if column.ora is None:
+                continue
+
+            if column.unicode and not unicode:
+                continue
+
+            columns.append(column)
+            targets.append(column.ora)
+
+        return Landing(columns, targets)
+
+    def table_name(self) -> str:
+        """Имя таблицы приёмника по имени источника ClickHouse."""
+        return "from_" + self.side.source.name.replace("-", "_").replace(".", "_")
 
     async def fill(self, rows: int) -> None:
         columns = self.columns()
@@ -444,14 +567,6 @@ class Source:
             f"insert into {CH_DATABASE}.src select {filled} "
             f"from (select number as n from numbers(1, {rows}))"
         )
-
-
-def _table_name(source_name: str) -> str:
-    return "from_" + source_name.replace("-", "_").replace(".", "_")
-
-
-def _names(columns: Sequence[ChColumn]) -> list[str]:
-    return [c.name for c in columns]
 
 
 @pytest.fixture(scope="module", params=STAND.demo_clickhouse(), ids=lambda s: s.name)
@@ -482,59 +597,54 @@ async def oracle(request: Any) -> AsyncIterator[OracleSide]:
     await side.drop()
 
 
+@pytest.fixture
+def pg_dags(tmp_path: Path, clickhouse: Source, postgres: PostgresSide) -> PumpDags:
+    return PumpDags(
+        tmp_path,
+        {"ch": clickhouse.side.profile, "pg": postgres.profile},
+        {
+            "ch_database": CH_DATABASE,
+            "pg_schema": PG_SCHEMA,
+            "pg_table": clickhouse.table_name(),
+            "pg_sql": clickhouse.for_postgres().exported(),
+        },
+    )
+
+
+@pytest.fixture
+def ora_dags(tmp_path: Path, clickhouse: Source, oracle: OracleSide) -> PumpDags:
+    return PumpDags(
+        tmp_path,
+        {"ch": clickhouse.side.profile, "ora": oracle.profile},
+        {
+            "ch_database": CH_DATABASE,
+            "ora_user": PumpUser().name,
+            "ora_table": clickhouse.table_name(),
+            "ora_sql": clickhouse.for_oracle(oracle.unicode).exported(),
+        },
+    )
+
+
 class TestClickHouseToPostgres:
     async def test_every_clickhouse_type_lands(
-        self, clickhouse: Source, postgres: PostgresSide
+        self, pg_dags: PumpDags, clickhouse: Source, postgres: PostgresSide
     ) -> None:
-        columns: list[ChColumn] = []
-        targets: list[Target] = []
-        for column in clickhouse.columns():
-            if column.pg is None:
-                continue
+        landing = clickhouse.for_postgres()
+        table = clickhouse.table_name()
+        await postgres.create(table, landing.ddl())
 
-            columns.append(column)
-            targets.append(column.pg)
+        outcome = await pg_dags.run(TO_POSTGRES)
+        report = outcome.node("pg").content
 
-        table = _table_name(clickhouse.side.source.name)
-        await postgres.create(
-            table, [f"{c.name} {t.type}" for c, t in zip(columns, targets, strict=True)]
-        )
-        pumps = Pumps(postgres=postgres.profile, clickhouse=clickhouse.side.profile)
-        chained = await pumps.chain(
-            Leg(
-                "ch_stream_out",
-                {
-                    "sql": f"select {exported(_names(columns), targets, False)} "
-                    f"from {CH_DATABASE}.src order by id settings {STRING_AS_STRING}",
-                    "wire": ChStreamWire.ARROW,
-                    "chunk_bytes": CHUNK_BYTES,
-                },
-            ),
-            Leg(
-                "pg_stream_in",
-                {
-                    "schema_name": PG_SCHEMA,
-                    "table_name": table,
-                    "schema_strategy": CreateIfNotExists(kind="create_if_not_exists"),
-                    "delete_strategy": DeleteNothing(kind="nothing"),
-                    "insert_strategy": InsertFull(kind="full"),
-                    "copy_options": CopyOptions(chunk_bytes=CHUNK_BYTES),
-                },
-            ),
-        )
-        assert chained.in_report.startswith(f"{ROWS} rows loaded")
+        assert outcome.ok(), report
+        assert report.startswith(f"{ROWS} rows loaded")
 
-        expected = await clickhouse.side.select(
-            "src",
-            [first(t.src_ref, c.name) for c, t in zip(columns, targets, strict=True)],
-        )
-        landed = await postgres.select(
-            table, [first(t.ref, c.name) for c, t in zip(columns, targets, strict=True)]
-        )
+        expected = await clickhouse.side.select("src", landing.source_refs())
+        landed = await postgres.select(table, landing.target_refs())
         report = compared(
-            _names(columns),
-            [c.compare for c in columns],
-            [t.approx for t in targets],
+            landing.names(),
+            landing.compares(),
+            landing.tolerances(),
             expected,
             landed,
         )
@@ -544,69 +654,27 @@ class TestClickHouseToPostgres:
 
 class TestClickHouseToOracle:
     async def test_every_clickhouse_type_lands(
-        self, clickhouse: Source, oracle: OracleSide
+        self, ora_dags: PumpDags, clickhouse: Source, oracle: OracleSide
     ) -> None:
-        columns: list[ChColumn] = []
-        targets: list[Target] = []
-        for column in clickhouse.columns():
-            if column.ora is None:
-                continue
-
-            if column.unicode and not oracle.unicode:
-                continue
-
-            columns.append(column)
-            targets.append(column.ora)
-
-        table = _table_name(clickhouse.side.source.name)
-        await oracle.create(
-            table, [f"{c.name} {t.type}" for c, t in zip(columns, targets, strict=True)]
-        )
-        pumps = Pumps(clickhouse=clickhouse.side.profile, oracle=oracle.profile)
+        landing = clickhouse.for_oracle(oracle.unicode)
+        table = clickhouse.table_name()
+        await oracle.create(table, landing.ddl())
         try:
-            chained = await pumps.chain(
-                Leg(
-                    "ch_stream_out",
-                    {
-                        "sql": f"select {exported(_names(columns), targets, False)} "
-                        f"from {CH_DATABASE}.src order by id "
-                        f"settings {STRING_AS_STRING}",
-                        "wire": ChStreamWire.ARROW,
-                        "chunk_bytes": CHUNK_BYTES,
-                    },
-                ),
-                Leg(
-                    "ora_stream_in",
-                    {
-                        "schema_name": PumpUser().name,
-                        "table_name": table,
-                        "schema_strategy": ErrorIfNotExists(kind="error_if_not_exists"),
-                        "delete_strategy": DeleteNothing(kind="nothing"),
-                        "insert_strategy": InsertFull(kind="full"),
-                        "chunk_bytes": CHUNK_BYTES,
-                    },
-                ),
-            )
-            assert chained.in_report.startswith(f"{ROWS} rows loaded")
+            outcome = await ora_dags.run(TO_ORACLE)
+            report = outcome.node("ora").content
 
-            expected = await clickhouse.side.select(
-                "src",
-                [
-                    first(t.src_ref, c.name)
-                    for c, t in zip(columns, targets, strict=True)
-                ],
-            )
-            landed = await oracle.select(
-                table,
-                [first(t.ref, c.name) for c, t in zip(columns, targets, strict=True)],
-            )
+            assert outcome.ok(), report
+            assert report.startswith(f"{ROWS} rows loaded")
+
+            expected = await clickhouse.side.select("src", landing.source_refs())
+            landed = await oracle.select(table, landing.target_refs())
         finally:
             await oracle.drop_table(table)
 
         report = compared(
-            _names(columns),
-            [c.compare for c in columns],
-            [t.approx for t in targets],
+            landing.names(),
+            landing.compares(),
+            landing.tolerances(),
             expected,
             landed,
         )
