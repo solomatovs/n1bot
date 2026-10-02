@@ -56,6 +56,7 @@ from boba.toolkit.result import (
     WorkflowResult,
 )
 from boba.toolrun.dag_run import DagHandle, DagRunError, DagRunner, NodeOutcome
+from boba.toolrun.intent import ToolIntentField
 from boba.toolrun.wrapping import ToolSchema
 
 __all__ = [
@@ -254,12 +255,15 @@ class WorkflowCall(BaseModel):
     """Аргументы вызова workflow: узлы связки, имена узлов уникальны.
 
     Форму проверяет эта модель; аргументы каждого узла проверяет сам
-    инструмент узла при запуске, как у любого вызова.
+    инструмент узла при запуске, как у любого вызова. intent — подпись
+    вызова, как у любого инструмента; шаги ленты рисуются по узлам, со
+    своими подписями.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     nodes: Sequence[WorkflowNode] = Field(min_length=1)
+    intent: str = ""
 
     @model_validator(mode="after")
     def _keys_are_unique(self) -> WorkflowCall:
@@ -319,12 +323,15 @@ class WorkflowTool:
         ]
         schema = create_model("WorkflowArgs", nodes=(nodes, ...))
 
-        return StructuredTool.from_function(
+        built = StructuredTool.from_function(
             coroutine=self._never_called,
             name=self.NAME,
             description=self.DESCRIPTION,
             args_schema=schema,
         )
+        ToolIntentField.attach_all([built])
+
+        return built
 
     def _node_model(self, pump: BaseTool) -> type[BaseModel]:
         """Модель узла инструмента pump: имя узла, имя инструмента и его

@@ -589,6 +589,7 @@ dependencies = [
     { name = "boba-canvas", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "boba-chat", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "boba-config", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "boba-connection-broker", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "boba-db-postgres", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "boba-identity", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "boba-krb", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
@@ -620,7 +621,6 @@ dependencies = [
 [package.optional-dependencies]
 dev = [
     { name = "boba-confluence", extra = ["html"], marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
-    { name = "boba-connection-broker", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "boba-connections", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "boba-db-clickhouse", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "boba-doc", extra = ["readers"], marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
@@ -659,7 +659,7 @@ requires-dist = [
     { name = "boba-chat", editable = "packages/core/boba-chat" },
     { name = "boba-config", editable = "packages/infra/config/boba-config" },
     { name = "boba-confluence", extras = ["html"], marker = "extra == 'dev'", editable = "packages/infra/format/boba-confluence" },
-    { name = "boba-connection-broker", marker = "extra == 'dev'", editable = "packages/services/boba-connection-broker" },
+    { name = "boba-connection-broker", editable = "packages/services/boba-connection-broker" },
     { name = "boba-connections", marker = "extra == 'dev'", editable = "packages/core/boba-connections" },
     { name = "boba-db-clickhouse", marker = "extra == 'dev'", editable = "packages/infra/db/boba-db-clickhouse" },
     { name = "boba-db-postgres", editable = "packages/infra/db/boba-db-postgres" },

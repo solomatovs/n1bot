@@ -591,6 +591,23 @@ class TestWorkflowGroups:
         assert replies["call_0"].status == "success"
         assert "rows" in _ok(nodes["drain"])
 
+    async def test_workflow_takes_the_call_note_like_any_tool(
+        self, tmp_path: Path
+    ) -> None:
+        """Подпись вызова — поле любого инструмента; у workflow она тоже
+        есть в схеме и вызов с ней исполняется."""
+        stand = ChannelStand(tmp_path)
+        call = _workflow(src=_emit("rows", 4, 16), sink=_collect("rows", "noted"))
+        call["args"]["intent"] = "copy the rows"
+
+        replies = await stand.turn([call])
+
+        workflow = stand.streams.model_tools()[-1]
+        schema = convert_to_openai_tool(workflow)["function"]["parameters"]
+        assert "intent" in schema["properties"]
+        assert replies["call_0"].status == "success"
+        assert (tmp_path / "noted").read_text() == _collected("m", 4, 16)
+
     async def test_broken_workflow_does_not_touch_its_neighbours(
         self, tmp_path: Path
     ) -> None:
