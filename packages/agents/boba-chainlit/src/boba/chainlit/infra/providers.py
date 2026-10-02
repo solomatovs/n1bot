@@ -58,6 +58,7 @@ from boba.runtime.di import Depends
 from boba.runtime.elements import ChatTables
 from boba.runtime.users import UsersTable
 from boba.toolrun.registry import ToolRegistry
+from boba.toolrun.stream_calls import StreamRuns
 
 
 def get_app_config() -> AppConfig:
@@ -381,7 +382,7 @@ def langchain_agent(  # noqa: PLR0913
         system_prompt=settings.system_prompt,
         checkpointer=saver,
         history=build_history_view(frozenset(names), settings.history_messages),
-        streams=StreamGroupMiddleware(registry.streams),
+        streams=StreamGroupMiddleware(StreamRuns(tools, registry.stream_config)),
     )
 
     return builder.build(spec)

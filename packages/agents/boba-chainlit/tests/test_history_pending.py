@@ -22,8 +22,8 @@ from boba.chainlit.chat.history import CheckpointMessages, TranscriptFeed
 from boba.chainlit.domain.fields import StepField
 from boba.chainlit.infra.providers import build_history_view
 from boba.chainlit.rendering.chat_view import StepKind
-from boba.toolkit.chain import StreamTimings
-from boba.toolrun.stream_calls import StreamGroups
+from boba.stand.tools import STREAM_CONFIG
+from boba.toolrun.stream_calls import StreamRuns
 
 pytestmark = pytest.mark.anyio
 
@@ -82,10 +82,7 @@ def _graph(saver: InMemorySaver):
         checkpointer=saver,
         history=build_history_view(frozenset({"fast_index", "slow_index"}), 30),
         streams=StreamGroupMiddleware(
-            StreamGroups(
-                StreamTimings(open_sec=30.0, stall_sec=60.0, poll_sec=0.2),
-                [fast_index, slow_index],
-            )
+            StreamRuns([fast_index, slow_index], STREAM_CONFIG)
         ),
     )
     return PlainGraphBuilder().build(spec)

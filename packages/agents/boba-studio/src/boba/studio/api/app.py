@@ -19,6 +19,7 @@ from boba.runtime.http import DomainErrorMiddleware, RequestTokens
 from boba.runtime.refs import RuntimeRefs
 from boba.studio.api.account import AccountApi, UsersSource
 from boba.studio.api.auth import ApiAuth
+from boba.studio.api.dags import DagRunning
 from boba.studio.api.signin import SignInApi, SignInWiring
 from boba.studio.api.streams import StreamApi
 from boba.studio.api.tools import ToolCalling
@@ -101,6 +102,12 @@ class ApiApp:
             refs.connection_types(),
         ).mount(app, router)
         ToolCalling(
+            refs.tool_registry,
+            profiles,
+            refs.live_locks,
+            refs.heartbeat_sec,
+        ).mount(router)
+        DagRunning(
             refs.tool_registry,
             profiles,
             refs.live_locks,

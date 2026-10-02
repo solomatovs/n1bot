@@ -1598,12 +1598,12 @@ dependencies = [
 
 [package.optional-dependencies]
 dev = [
-    { name = "boba-runtime", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "boba-stream-ch-to-ch", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "boba-stream-ch-to-pg", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "boba-stream-pg-to-ch", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "boba-stream-pg-to-pg", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "boba-toolrun", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "langchain-core", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "psycopg", extra = ["binary"], marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "pyarrow", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "pytest", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
@@ -1615,7 +1615,6 @@ requires-dist = [
     { name = "boba-db-clickhouse", extras = ["payload"], editable = "packages/infra/db/boba-db-clickhouse" },
     { name = "boba-db-oracle", extras = ["payload"], editable = "packages/infra/db/boba-db-oracle" },
     { name = "boba-db-postgres", extras = ["arrow"], editable = "packages/infra/db/boba-db-postgres" },
-    { name = "boba-runtime", marker = "extra == 'dev'", editable = "packages/services/boba-runtime" },
     { name = "boba-stand", editable = "packages/testing/boba-stand" },
     { name = "boba-stream-ch-to-ch", marker = "extra == 'dev'", editable = "packages/infra/stream/boba-stream-ch-to-ch" },
     { name = "boba-stream-ch-to-pg", marker = "extra == 'dev'", editable = "packages/infra/stream/boba-stream-ch-to-pg" },
@@ -1626,6 +1625,7 @@ requires-dist = [
     { name = "boba-tool-postgres", editable = "packages/tools/boba-tool-postgres" },
     { name = "boba-toolkit", extras = ["arrow"], editable = "packages/core/boba-toolkit" },
     { name = "boba-toolrun", marker = "extra == 'dev'", editable = "packages/services/boba-toolrun" },
+    { name = "langchain-core", marker = "extra == 'dev'", specifier = ">=1.4,<1.5" },
     { name = "psycopg", extras = ["binary"], specifier = ">=3.3" },
     { name = "psycopg", extras = ["binary"], marker = "extra == 'dev'", specifier = ">=3.3" },
     { name = "pyarrow", marker = "extra == 'dev'", specifier = ">=25,<26" },

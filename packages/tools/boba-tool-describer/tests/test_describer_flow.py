@@ -56,11 +56,11 @@ from boba.runtime.config import AppLayers, ConfigLocator
 from boba.sandbox import ZygoteRegistry
 from boba.stand.refs import StandRefs
 from boba.stand.site import Stand
+from boba.stand.tools import STREAM_CONFIG
 from boba.stand_core.context import use_context
 from boba.tool.describer.address import Addresses, EntityAddress
 from boba.tool.describer.edges import EdgeKind, EdgeListColumn
 from boba.tool.describer.nodes import NodeListColumn
-from boba.toolkit.chain import StreamTimings
 from boba.toolkit.result import (
     ErrorResult,
     ExceptionResult,
@@ -68,7 +68,7 @@ from boba.toolkit.result import (
     TableResult,
     ToolArtifact,
 )
-from boba.toolrun.stream_calls import StreamGroups
+from boba.toolrun.stream_calls import StreamRuns
 
 _REPO = Path(__file__).resolve().parents[4]
 _SANDBOX_STAGING = _REPO / "build" / "chainlit" / "src" / "sandbox"
@@ -421,11 +421,7 @@ def _graph(
         system_prompt=settings.system_prompt,
         checkpointer=InMemorySaver(),
         history=build_history_view(frozenset(names), settings.history_messages),
-        streams=StreamGroupMiddleware(
-            StreamGroups(
-                StreamTimings(open_sec=30.0, stall_sec=60.0, poll_sec=0.2), tools
-            )
-        ),
+        streams=StreamGroupMiddleware(StreamRuns(tools, STREAM_CONFIG)),
     )
 
     return PlainGraphBuilder().build(spec)

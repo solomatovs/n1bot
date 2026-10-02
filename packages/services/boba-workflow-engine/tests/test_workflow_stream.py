@@ -19,9 +19,9 @@ from boba.db.postgres import AsyncPostgresPool
 from boba.identity.context import CallContext
 from boba.identity.locks import MemoryLiveLocks, RunLocking
 from boba.messaging import MemoryMessageBus
+from boba.stand.tools import STREAM_CONFIG
 from boba.stand_core.context import TEST_PROFILE, make_context
 from boba.stand_core.fake_toolmod import FakeConfig, fake_echo, fake_stream
-from boba.toolkit.chain import StreamTimings
 from boba.toolkit.entry import ToolMain
 from boba.toolkit.facade import PayloadTool
 from boba.toolkit.wrap import ToolProcessWrap
@@ -29,7 +29,6 @@ from boba.toolrun.injected import InjectedConfig
 from boba.toolrun.intent import ToolIntentField
 from boba.toolrun.process import ProcessLauncherConfig, ProcessToolCaller
 from boba.toolrun.registry import ToolRegistry
-from boba.toolrun.stream_calls import StreamGroups
 from boba.workflow import RunStatus, TaskStatus
 from boba.workflow_engine.service import WorkflowService
 from boba.workflow_engine.store import WorkflowConfig, WorkflowStore
@@ -93,9 +92,7 @@ def _registry(workdir: Path) -> ToolRegistry:
     return ToolRegistry(
         tools=list(bridged),
         access=access,
-        streams=StreamGroups(
-            StreamTimings(open_sec=30.0, stall_sec=60.0, poll_sec=0.2), list(bridged)
-        ),
+        stream_config=STREAM_CONFIG,
     )
 
 

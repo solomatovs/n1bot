@@ -22,7 +22,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
-    "boba-runtime==0.0.26.dev4",
+    "langchain-core>=1.4,<1.5",
     "boba-toolrun==0.0.26.dev4",
     "boba-stream-pg-to-pg==0.0.26.dev4",
     "boba-stream-ch-to-ch==0.0.26.dev4",

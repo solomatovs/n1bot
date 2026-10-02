@@ -28,20 +28,19 @@ from boba.identity.token import CookieSpec, SessionRenewal
 from boba.runtime.config import StudioRuntimeConfig
 from boba.runtime.http import RequestTokens
 from boba.runtime.launchers import CallSurface
-from boba.runtime.plugins import ToolBridge
 from boba.runtime.users import UsersTable
+from boba.stand.tools import STREAM_CONFIG
 from boba.stand_core.auth import StubAuthenticator
 from boba.studio.api.auth import ApiAuth
 from boba.studio.api.tools import ToolCallBody, ToolCalling
-from boba.toolkit.chain import StreamTimings
 from boba.toolkit.facade import tool
 from boba.toolkit.result import MarkdownResult
+from boba.toolrun.bridge import ToolBridge
 from boba.toolrun.call_id import ToolCallIdField
 from boba.toolrun.errors import ToolErrorGuard
 from boba.toolrun.intent import ToolIntentField
 from boba.toolrun.registry import ToolRegistry
 from boba.toolrun.run_log import ToolRunLogger
-from boba.toolrun.stream_calls import StreamGroups
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
 
@@ -92,9 +91,7 @@ def _registry(probe: Probe, studio_config: StudioRuntimeConfig) -> ToolRegistry:
     return ToolRegistry(
         tools=tools,
         access=access,
-        streams=StreamGroups(
-            StreamTimings(open_sec=30.0, stall_sec=60.0, poll_sec=0.2), tools
-        ),
+        stream_config=STREAM_CONFIG,
     )
 
 

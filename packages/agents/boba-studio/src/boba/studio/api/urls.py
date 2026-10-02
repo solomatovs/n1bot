@@ -48,6 +48,12 @@ class ToolCallUrl(StrEnum):
     CALL = "/tools/{name}"
 
 
+class DagUrl(StrEnum):
+    """REST-запуск DAG потоковых вызовов: описание в теле."""
+
+    RUNS = "/dags/runs"
+
+
 class WorkflowUrl(StrEnum):
     """REST workflow: определения и запуски; профиль — в теле или query."""
 

@@ -14,12 +14,12 @@ from langchain_core.callbacks import AsyncCallbackHandler
 from pydantic import BaseModel, Field, SecretStr
 
 from boba.canvas.journal import CallStream
-from boba.runtime.plugins import ToolBridge
 from boba.toolkit.calls import ToolIntent
 from boba.toolkit.channels import JournalChannel
 from boba.toolkit.facade import Injected, tool
 from boba.toolkit.result import MarkdownResult, ToolArtifact
 from boba.toolkit.stream import ToolChannelsTap
+from boba.toolrun.bridge import ToolBridge
 from boba.toolrun.call_id import ToolCallIdField
 from boba.toolrun.injected import InjectedConfig
 from boba.toolrun.intent import ToolIntentField

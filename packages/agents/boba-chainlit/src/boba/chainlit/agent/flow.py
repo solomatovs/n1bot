@@ -17,13 +17,13 @@ from __future__ import annotations
 import asyncio
 import logging
 from abc import ABC, abstractmethod
-from collections.abc import Mapping, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, ClassVar, Protocol
 from uuid import uuid4
 
 from langchain.agents import create_agent
-from langchain.agents.middleware import AgentMiddleware, AgentState
+from langchain.agents.middleware import AgentMiddleware, AgentState, ToolCallRequest
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import (
     AIMessage,
@@ -36,6 +36,7 @@ from langchain_core.tools import BaseTool
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph.state import CompiledStateGraph
 from langgraph.runtime import Runtime
+from langgraph.types import Command
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from typing_extensions import override
 
@@ -46,7 +47,7 @@ from boba.toolkit.calls import ToolIntent
 from boba.toolkit.failure import FailurePacker
 from boba.toolkit.result import FailureResult, ToolArtifact
 from boba.toolkit.timing import Elapsed
-from boba.toolrun.stream_calls import StreamGroups
+from boba.toolrun.stream_calls import StreamRuns
 
 logger = logging.getLogger(__name__)
 
@@ -458,46 +459,61 @@ class PrefetchMiddleware(AgentMiddleware[AgentState[Any], Any, Any]):
 
 
 class StreamGroupMiddleware(AgentMiddleware[AgentState[Any], Any, Any]):
-    """Связывание потоковых вызовов ответа модели до их исполнения.
+    """Потоковые вызовы ответа модели исполняет DAG, а не ToolNode.
 
-    Модель связывает насосы и трансформы именами каналов в одном ответе; их
-    вызовы исполняются ToolNode одновременно и каналы должны найти друг
-    друга. После ответа модели, пока ни один вызов не начался, middleware
-    отдаёт все вызовы ответа реестру StreamGroups: тот строит план каналов и
-    группу, а обвязка StreamCallHooks потом ставит каждый вызов на его место.
+    Модель связывает насосы и трансформы именами каналов в одном ответе.
+    Такой вызов ToolNode не исполняет: middleware отдаёт его StreamRuns —
+    первый вызов ответа строит DAG и запускает исполнитель, каждый вызов
+    получает итог своего узла как ToolMessage. Остальные вызовы идут
+    обычным путём. Граф хода асинхронный; синхронный путь потоковый вызов
+    не исполняет.
     """
 
-    def __init__(self, streams: StreamGroups) -> None:
+    def __init__(self, runs: StreamRuns) -> None:
         super().__init__()
-        self._streams = streams
+        self._runs = runs
 
     @override
-    def after_model(
-        self, state: AgentState[Any], runtime: Runtime[Any]
-    ) -> dict[str, Any] | None:
-        self._open(state)
-        return None
+    def wrap_tool_call(
+        self,
+        request: ToolCallRequest,
+        handler: Callable[[ToolCallRequest], ToolMessage | Command[Any]],
+    ) -> ToolMessage | Command[Any]:
+        name = request.tool_call["name"]
+        if self._runs.streaming(name):
+            msg = f"stream tool {name!r} runs in the async agent graph only"
+            raise RuntimeError(msg)
+
+        return handler(request)
 
     @override
-    async def aafter_model(
-        self, state: AgentState[Any], runtime: Runtime[Any]
-    ) -> dict[str, Any] | None:
-        self._open(state)
-        return None
+    async def awrap_tool_call(
+        self,
+        request: ToolCallRequest,
+        handler: Callable[[ToolCallRequest], Awaitable[ToolMessage | Command[Any]]],
+    ) -> ToolMessage | Command[Any]:
+        call = request.tool_call
+        if not self._runs.streaming(call["name"]):
+            return await handler(request)
 
-    def _open(self, state: AgentState[Any]) -> None:
-        messages = state["messages"]
-        if not messages:
-            return
+        response = self._response_of(request.state, str(call["id"]))
 
-        last = messages[-1]
-        if not isinstance(last, AIMessage):
-            return
+        return await self._runs.message_for(response, call, request.runtime.config)
 
-        if not last.tool_calls:
-            return
+    @staticmethod
+    def _response_of(state: Any, call_id: str) -> AIMessage:
+        """Ответ модели, которому принадлежит вызов: последний AIMessage с ним."""
+        messages: Sequence[Any] = state["messages"]
+        for message in reversed(messages):
+            if not isinstance(message, AIMessage):
+                continue
 
-        self._streams.open(last.tool_calls)
+            for call in message.tool_calls:
+                if call["id"] == call_id:
+                    return message
+
+        msg = f"stream call {call_id!r}: no model response in the state carries it"
+        raise RuntimeError(msg)
 
 
 @dataclass(frozen=True)

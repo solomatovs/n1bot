@@ -36,14 +36,11 @@ from boba.toolkit.chain import (
     PipeTee,
     StreamFailureKind,
     StreamGroupRun,
-    StreamInput,
-    StreamNode,
-    StreamOutput,
     StreamPlan,
     StreamPlanError,
     StreamTimings,
 )
-from boba.toolkit.entry import ToolArgv
+from boba.toolkit.dag import DagNode, DagPlanner, DagSpec
 from boba.toolkit.launcher import CollectedCall, PayloadFailureError
 from boba.toolkit.ports import ToolStreamSpecs
 from boba.toolkit.protocol import CallInputSpec, CallOutputSpec, ReplyOk, ToolCommand
@@ -54,12 +51,23 @@ from boba.toolkit.result import (
     MarkdownResult,
 )
 from boba.toolkit.wrap import ToolProcessWrap
+from boba.toolrun.bridge import ToolBridge
+from boba.toolrun.dag_run import DagOutcome, DagRunner, NodeOutcome
 from boba.toolrun.dev_null import DevNullTool
+from boba.toolrun.injected import InjectedConfig
 from boba.toolrun.process import ProcessLauncherConfig, ProcessToolCaller
+from boba.toolrun.stream_calls import StreamChannelFields, StreamGroupsConfig
 
 CFG = FakeConfig(token=SecretStr("t0ken"), limit=5)
 MODULE = "boba.stand_core.fake_toolmod"
 FAST = StreamTimings(open_sec=20.0, stall_sec=3.0, poll_sec=0.1)
+STREAM_CFG = StreamGroupsConfig(
+    open_sec=20.0,
+    stall_sec=3.0,
+    poll_sec=0.1,
+    pipe_bytes=65536,
+    pipe_bytes_max=1 << 30,
+)
 
 
 def _launcher(workdir: Path) -> ProcessToolCaller:
@@ -90,7 +98,8 @@ class Call:
 
 
 class GroupStand:
-    """Инструменты стенда под обёрткой запуска и прогон группы вызовов."""
+    """Инструменты стенда, собранные как в приложении (обёртка запуска,
+    injected-конфиг, поля каналов), и прогон DAG исполнителем."""
 
     def __init__(self, workdir: Path) -> None:
         self._workdir = workdir
@@ -105,79 +114,84 @@ class GroupStand:
             fake_split,
             fake_shard,
         ):
-            copy = tool.model_copy()
-            self._tools[copy.name] = copy
+            bridged = ToolBridge.as_structured_tool(tool.model_copy())
+            self._tools[bridged.name] = bridged
 
-        ToolProcessWrap.guard_all(list(self._tools.values()), _launcher(workdir))
+        wrapped = list(self._tools.values())
+        ToolProcessWrap.guard_all(wrapped, _launcher(workdir))
+        InjectedConfig.bind_all(wrapped, self._config_of)
 
-        built = DevNullTool.build()
+        built = ToolBridge.as_structured_tool(DevNullTool.build())
         self._tools[built.name] = built
 
-    def plan(self, calls: Mapping[str, Call]) -> StreamPlan:
-        nodes: list[StreamNode] = []
+        StreamChannelFields(STREAM_CFG).attach_all(list(self._tools.values()))
+
+    @staticmethod
+    def _config_of(name: str, annotation: object) -> object:
+        return CFG
+
+    def dag(self, calls: Mapping[str, Call]) -> DagSpec:
+        """Вызовы стенда — узлы DAG."""
+        nodes: list[DagNode] = []
         for key, call in calls.items():
             nodes.append(self._node(key, call))
 
-        return StreamPlan(nodes)
+        return DagSpec(name="stand", version=1, nodes=nodes)
 
-    def _node(self, key: str, call: Call) -> StreamNode:
-        inputs: list[StreamInput] = []
-        for port, channel in call.inputs:
-            inputs.append(StreamInput(port=port, channel=channel))
+    def plan(self, calls: Mapping[str, Call]) -> StreamPlan:
+        return DagPlanner(ToolStreamSpecs.of).plan(self.dag(calls))
 
+    def _node(self, key: str, call: Call) -> DagNode:
+        """Узел из вызова: каналы ложатся в аргументы полями портов —
+        строкой у одиночного порта, списком у порта-списка."""
         spec = ToolStreamSpecs.of(call.tool)
 
-        outputs: list[StreamOutput] = []
+        args: dict[str, object] = dict(call.args)
         if call.output is not None:
-            outputs.append(
-                StreamOutput(port=spec.outbound()[0].name, channel=call.output)
-            )
+            args[spec.outbound()[0].name] = call.output
 
-        for port, channel in call.outputs:
-            outputs.append(StreamOutput(port=port, channel=channel))
+        bound: dict[str, list[str]] = {}
+        for port, channel in (*call.inputs, *call.outputs):
+            bound.setdefault(port, []).append(channel)
 
-        return StreamNode(
-            key=key,
-            tool=call.tool,
-            spec=spec,
-            outputs=tuple(outputs),
-            inputs=tuple(inputs),
-            pipe_bytes=call.pipe_bytes,
-        )
+        for port, channels in bound.items():
+            if spec.port(port).many:
+                args[port] = channels
+                continue
+
+            args[port] = channels[0]
+
+        if call.pipe_bytes:
+            args[DagPlanner.PIPE_FIELD] = call.pipe_bytes
+
+        return DagNode.model_validate({"key": key, "tool": call.tool, "args": args})
 
     async def run(
         self,
         calls: Mapping[str, Call],
         timings: StreamTimings = FAST,
-        skip: Sequence[str] = (),
-    ) -> tuple[StreamGroupRun, dict[str, Any]]:
-        group = StreamGroupRun(self.plan(calls), timings)
+    ) -> tuple[DagOutcome, dict[str, NodeOutcome]]:
+        """Прогон DAG исполнителем: итог целиком и итоги по ключам узлов."""
+        runner = DagRunner(self._tools, timings)
 
-        tasks: dict[str, asyncio.Task[Any]] = {}
-        for key, call in calls.items():
-            if key in skip:
-                continue
+        outcome = await asyncio.wait_for(runner.run(self.dag(calls)), timeout=60)
 
-            tasks[key] = asyncio.create_task(self._one(group, key, call))
+        results: dict[str, NodeOutcome] = {}
+        for node in outcome.nodes:
+            results[node.key] = node
 
-        results: dict[str, Any] = {}
-        for key, task in tasks.items():
-            results[key] = await asyncio.wait_for(task, timeout=60)
+        return outcome, results
 
-        return group, results
-
-    async def _one(self, group: StreamGroupRun, key: str, call: Call) -> Any:
+    async def one(self, group: StreamGroupRun, key: str, call: Call) -> Any:
+        """Один вызов под ручкой группы мимо исполнителя: тесты, где часть
+        вызовов группы намеренно не стартует."""
         tool = self._tools[call.tool]
         coroutine = tool.coroutine
         assert coroutine is not None
 
-        kwargs = dict(call.args)
-        if "cfg" in ToolArgv.schema_of(tool).model_fields:
-            kwargs["cfg"] = CFG
-
         token = PipelineSlot.set(group.slot(key))
         try:
-            return await coroutine(**kwargs)
+            return await coroutine(**call.args)
         except PayloadFailureError as exc:
             return exc
         finally:
@@ -204,15 +218,17 @@ def _expected(prefix: str, count: int, size: int) -> str:
     return f"collected {count} frames {total} bytes {digest.hexdigest()[:16]}"
 
 
-def _content(result: Any) -> str:
-    assert not isinstance(result, BaseException), result
-    content, _artifact = result
-    return str(content)
+def _content(result: NodeOutcome) -> str:
+    assert not result.failed(), result.content
+    return result.content
 
 
-def _failure(result: Any) -> PayloadFailureError:
-    assert isinstance(result, PayloadFailureError), result
-    assert result.failure().error_kind == StreamFailureKind.GROUP_FAILED
+def _failure(result: NodeOutcome) -> GroupFailureResult:
+    """Срыв группы глазами узла."""
+    assert result.failed(), result.content
+    assert isinstance(result.artifact, GroupFailureResult), result.artifact
+    assert result.artifact.error_kind == StreamFailureKind.GROUP_FAILED
+    return result.artifact
     return result
 
 
@@ -323,7 +339,7 @@ class TestAllOrNothing:
         _group, results = await stand.run(calls)
 
         for key in ("src", "one", "two"):
-            failure = _failure(results[key]).failure()
+            failure = _failure(results[key])
             assert isinstance(failure, GroupFailureResult), failure
             assert failure.origin == GroupCall(tool="fake_emit", call_id="src")
             assert "scripted failure after 20 frames" in failure.llm_view()
@@ -346,7 +362,7 @@ class TestAllOrNothing:
 
         _group, results = await stand.run(calls)
 
-        failure = _failure(results["loose"]).failure()
+        failure = _failure(results["loose"])
         assert isinstance(failure, GroupFailureResult), failure
         assert failure.origin == GroupCall(tool="fake_emit", call_id="src")
         assert not stand.marker("loose").exists()
@@ -377,7 +393,7 @@ class TestAllOrNothing:
         _group, results = await stand.run(calls)
 
         for key in ("src", "bad", "good"):
-            failure = _failure(results[key]).failure()
+            failure = _failure(results[key])
             assert isinstance(failure, GroupFailureResult), failure
             assert failure.origin == GroupCall(tool="fake_collect", call_id="bad")
 
@@ -404,13 +420,10 @@ class TestAllOrNothing:
         )
         group.refuse("ghost", denied)
 
-        token = PipelineSlot.set(group.slot("src"))
-        try:
-            coroutine = stand._tools["fake_emit"].coroutine
-            with pytest.raises(PayloadFailureError, match="access denied"):
-                await coroutine(**calls["src"].args, cfg=CFG)
-        finally:
-            PipelineSlot.reset(token)
+        result = await stand.one(group, "src", calls["src"])
+
+        assert isinstance(result, PayloadFailureError), result
+        assert "access denied" in str(result)
 
     @pytest.mark.anyio
     async def test_call_that_never_opens_times_the_group_out(
@@ -428,9 +441,12 @@ class TestAllOrNothing:
         }
         timings = StreamTimings(open_sec=1.0, stall_sec=3.0, poll_sec=0.1)
 
-        _group, results = await stand.run(calls, timings, skip=("ghost",))
+        group = StreamGroupRun(stand.plan(calls), timings)
 
-        message = str(_failure(results["src"]))
+        result = await stand.one(group, "src", calls["src"])
+
+        assert isinstance(result, PayloadFailureError), result
+        message = str(result)
         assert "fake_collect (ghost)" in message
         assert "did not open their channels within 1s" in message
 
@@ -452,7 +468,7 @@ class TestStall:
         _group, results = await stand.run(calls, timings)
 
         for key in ("src", "deaf"):
-            message = str(_failure(results[key]))
+            message = _failure(results[key]).llm_view()
             assert "stream group stalled" in message
             assert "fake_deaf (deaf) input #0" in message
 
@@ -579,7 +595,7 @@ class TestPipeBytes:
 
         # размер требуют и выход писателя, и вход читателя: кто первым
         # получил отказ ядра, тот и сорвал группу — порядок не фиксирован
-        texts = [str(_failure(results[key])) for key in ("src", "sink")]
+        texts = [_failure(results[key]).llm_view() for key in ("src", "sink")]
         assert any("pipe-user-pages-soft" in text for text in texts), texts
         for text in texts:
             assert "setting the pipe buffer" in text
@@ -617,7 +633,7 @@ class TestDevNull:
         _group, results = await stand.run(calls)
 
         assert marker.read_text().startswith("collected 4 frames 6 bytes")
-        dropped = results["drop"]
+        dropped = results["drop"].artifact
         assert isinstance(dropped, MarkdownResult), dropped
         assert "discarded bytes by channel" in dropped.text
         assert "o: " in dropped.text

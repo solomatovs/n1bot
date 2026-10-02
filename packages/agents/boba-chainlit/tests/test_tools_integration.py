@@ -27,7 +27,6 @@ from boba.db.postgres.connection import PostgresConfig
 from boba.kerberos import KeytabAuth
 from boba.krb import KeytabCredentials, ServiceTicketIssuer
 from boba.runtime.launchers import ZygoteLaunchers
-from boba.runtime.plugins import ToolBridge
 from boba.sandbox.zygote import ZygotePolicy, ZygoteRegistry, ZygoteToolCaller
 from boba.stand.sandbox import section_profile
 from boba.stand.shell import ShellRun
@@ -51,6 +50,7 @@ from boba.toolkit.result import (
     VisualResult,
 )
 from boba.toolkit.wrap import ToolProcessWrap
+from boba.toolrun.bridge import ToolBridge
 from boba.toolrun.injected import InjectedConfig
 from boba.transport.http.connection import HttpConnection
 

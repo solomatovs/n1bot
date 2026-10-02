@@ -19,13 +19,12 @@ TypeError — TOOLS модуля содержит не PayloadTool и не BaseT
 from __future__ import annotations
 
 import logging
-from collections.abc import Awaitable, Callable, Iterable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
-from functools import wraps
 from importlib.metadata import entry_points
 from typing import Any
 
-from langchain_core.tools import BaseTool, StructuredTool
+from langchain_core.tools import BaseTool
 from omegaconf import DictConfig, OmegaConf
 from pydantic import BaseModel, ConfigDict
 
@@ -38,15 +37,14 @@ from boba.connection_broker.user_connections import UserConnections
 from boba.identity.context import CallContext
 from boba.runtime.launchers import CallSurface, SectionLaunchers, ToolLaunchers
 from boba.runtime.refs import RuntimeRefs
-from boba.toolkit.entry import ToolAddress, ToolArgv, ToolEntryError, ToolLike, ToolMain
-from boba.toolkit.facade import PayloadTool
+from boba.toolkit.entry import ToolArgv, ToolEntryError, ToolMain
 from boba.toolkit.launcher import ToolLauncher
 from boba.toolkit.manifest import LaunchSpec, ToolPluginManifest
 from boba.toolkit.ports import ToolStreamSpecs
-from boba.toolkit.result import ToolResultBase
 from boba.toolkit.types import StringList
 from boba.toolkit.wrap import ToolProcessWrap
 from boba.toolrun.access import ToolAccessGuard
+from boba.toolrun.bridge import ToolBridge
 from boba.toolrun.call_id import ToolCallIdField
 from boba.toolrun.callvalues import CallContextValues
 from boba.toolrun.cancellation import CancellableTools
@@ -57,9 +55,7 @@ from boba.toolrun.intent import ToolIntentField
 from boba.toolrun.registry import ToolRegistry
 from boba.toolrun.run_log import ToolRunLogger
 from boba.toolrun.stream_calls import (
-    StreamCallHooks,
     StreamChannelFields,
-    StreamGroups,
     StreamGroupsConfig,
     StreamGroupsConfigError,
 )
@@ -108,103 +104,6 @@ class PluginMeta(BaseModel):
     headless: StringList = []
     """Инструменты из tools, которые модели в чате не отдаются: их зовут
     страница, REST и workflow (снятие снимка каталога и подобные задачи)."""
-
-
-class ToolBridge:
-    """Мост TOOLS модулей инструментов в langchain: toolkit langchain не знает."""
-
-    @classmethod
-    def as_structured_tool(cls, tool: ToolLike) -> BaseTool:
-        """PayloadTool фасада -> StructuredTool; langchain-инструмент — как есть.
-
-        Injected-параметры остаются в args_schema: их снимает InjectedConfig
-        после постановки обёртки запуска, LLM усечённую схему и увидит.
-        """
-        if isinstance(tool, BaseTool):
-            return tool
-
-        if not isinstance(tool, PayloadTool):
-            msg = (
-                f"module tool {tool!r}: expected PayloadTool or langchain "
-                f"BaseTool, got {type(tool).__name__}"
-            )
-            raise TypeError(msg)
-
-        func = None
-        if tool.func is not None:
-            func = cls._packed(tool, tool.func)
-
-        coroutine = None
-        if tool.coroutine is not None:
-            coroutine = cls._packed_async(tool, tool.coroutine)
-
-        return StructuredTool(
-            name=tool.name,
-            description=tool.description,
-            args_schema=tool.args_schema,
-            func=func,
-            coroutine=coroutine,
-            response_format=PayloadTool.RESPONSE_FORMAT,
-        )
-
-    @classmethod
-    def _packed(
-        cls, tool: PayloadTool, body: Callable[..., Any]
-    ) -> Callable[..., tuple[str, ToolResultBase]]:
-        """Тело, отдающее модель, -> тело с парой (content, artifact) langchain.
-
-        Аргументы langchain приходят по отдельности: тело с классом вызова
-        получает их его экземпляром. wraps сохраняет исходное тело в
-        __wrapped__: адрес запуска и каталог workflow читают оттуда модуль
-        и аннотацию результата.
-        """
-
-        @wraps(body)
-        def call(**kwargs: Any) -> tuple[str, ToolResultBase]:
-            return cls._pack(tool.name, body(**tool.packed_kwargs(kwargs)))
-
-        return call
-
-    @classmethod
-    def _packed_async(
-        cls, tool: PayloadTool, body: Callable[..., Awaitable[Any]]
-    ) -> Callable[..., Awaitable[tuple[str, ToolResultBase]]]:
-        @wraps(body)
-        async def call(**kwargs: Any) -> tuple[str, ToolResultBase]:
-            return cls._pack(tool.name, await body(**tool.packed_kwargs(kwargs)))
-
-        return call
-
-    @staticmethod
-    def _pack(name: str, result: object) -> tuple[str, ToolResultBase]:
-        if not isinstance(result, ToolResultBase):
-            msg = (
-                f"tool {name!r} must return a ToolResultBase model, "
-                f"got {type(result).__name__}"
-            )
-            raise TypeError(msg)
-
-        return result.packed()
-
-    @classmethod
-    def toolset(cls, tools: Sequence[ToolLike]) -> tuple[BaseTool, ...]:
-        """TOOLS модуля инструментов -> langchain-инструменты для реестра."""
-        checked: list[BaseTool] = []
-        for tool in tools:
-            checked.append(cls.as_structured_tool(tool))
-
-        return tuple(checked)
-
-    @staticmethod
-    def modules_of(tools: Sequence[ToolLike]) -> tuple[str, ...]:
-        """Уникальные модули тел, в порядке объявления."""
-        modules: list[str] = []
-        for tool in tools:
-            module = ToolAddress.of(tool).module
-            if module not in modules:
-                modules.append(module)
-
-        return tuple(modules)
 
 
 class ToolLoader:
@@ -278,11 +177,9 @@ class ToolLoader:
         )
         CancellableTools.guard_all(tools)
         ToolAccessGuard.guard_all(tools, access, CallContext.current_subject)
-        streams = StreamGroups(stream_cfg.timings(), tools)
-        StreamCallHooks(streams).guard_all(tools)
         ToolErrorGuard().guard_all(tools)
         ToolAsyncBody.ensure_all(tools)
-        return ToolRegistry(tools=tools, access=access, streams=streams)
+        return ToolRegistry(tools=tools, access=access, stream_config=stream_cfg)
 
     @staticmethod
     def _stream_writers(tools: Sequence[BaseTool]) -> Iterator[str]:

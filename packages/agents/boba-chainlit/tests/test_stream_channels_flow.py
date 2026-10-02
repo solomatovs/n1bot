@@ -2,8 +2,8 @@
 
 Агентный цикл create_agent с заскриптованной моделью: модель одним ответом
 зовёт источник, трансформ и приёмники, назвав каналы в полях out/feed/feeds.
-StreamGroupMiddleware строит группу по ответу, ToolNode исполняет вызовы
-одновременно, обвязка StreamCallHooks ставит каждый на его место. Тела —
+StreamGroupMiddleware перехватывает потоковые вызовы: первый строит DAG
+ответа и запускает исполнитель, каждый получает итог своего узла. Тела —
 настоящие субпроцессы инструментов стенда.
 """
 
@@ -26,22 +26,21 @@ from pydantic import SecretStr
 
 from boba.chainlit.agent.flow import GraphSpec, PlainGraphBuilder, StreamGroupMiddleware
 from boba.chainlit.infra.providers import build_history_view
-from boba.runtime.plugins import ToolBridge
 from boba.stand_core import fake_toolmod
 from boba.stand_core.fake_toolmod import FakeConfig
 from boba.toolkit.entry import ToolMain
 from boba.toolkit.result import FailureResult, GroupFailureResult, ToolArtifact
 from boba.toolkit.wrap import ToolProcessWrap
+from boba.toolrun.bridge import ToolBridge
 from boba.toolrun.call_id import ToolCallIdField
 from boba.toolrun.errors import ToolErrorGuard
 from boba.toolrun.injected import InjectedConfig
 from boba.toolrun.process import ProcessLauncherConfig, ProcessToolCaller
 from boba.toolrun.stream_calls import (
-    StreamCallHooks,
     StreamCallKind,
     StreamChannelFields,
-    StreamGroups,
     StreamGroupsConfig,
+    StreamRuns,
 )
 
 CFG = FakeConfig(token=SecretStr("t0ken"), limit=5)
@@ -103,9 +102,8 @@ class ChannelStand:
         InjectedConfig.bind_all(tools, resolve)
         StreamChannelFields(STREAM_CFG).attach_all(tools)
         ToolCallIdField.attach_all(tools)
-        self.streams = StreamGroups(TIMINGS, tools)
-        StreamCallHooks(self.streams).guard_all(tools)
         ToolErrorGuard().guard_all(tools)
+        self.streams = StreamRuns(tools, STREAM_CFG)
         self.tools = tools
 
     def tool(self, name: str) -> BaseTool:

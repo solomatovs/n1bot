@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from langchain_core.tools import BaseTool
 
 from boba.access import ToolAccess
-from boba.toolrun.stream_calls import StreamGroups
+from boba.toolrun.stream_calls import StreamGroupsConfig
 
 __all__ = ["ToolRegistry"]
 
@@ -21,12 +21,12 @@ logger = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class ToolRegistry:
-    """Собранные инструменты, права доступа к ним и реестр групп потоковых
-    вызовов: через него модель связывает насосы каналами в одном ответе."""
+    """Собранные инструменты, права доступа к ним и секция [stream_groups]:
+    по ней сессия собирает запуски DAG потоковых вызовов модели."""
 
     tools: list[BaseTool]
     access: ToolAccess
-    streams: StreamGroups
+    stream_config: StreamGroupsConfig
 
     def for_session(self, user_roles: Iterable[str], profile: str) -> list[BaseTool]:
         """Инструменты хода чата: всё, что решение допускает в чате."""
