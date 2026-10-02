@@ -211,10 +211,14 @@ class TestSecrets:
         """
         secret = "".join(["hun", "ter2"])
         raw = {"login": "svc", "password": secret, "port": "x"}
+        result: ExceptionResult | None = None
         try:
             Profile.model_validate(raw)
         except ValidationError as error:
             result = packed(error)
+
+        if not result:
+            raise AssertionError("result is None")
 
         for text in (result.llm_view(), result.log_view(), result.chat_view().markdown):
             if secret in text:

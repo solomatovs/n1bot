@@ -14,7 +14,7 @@ import asyncio
 import os
 from asyncio.streams import FlowControlMixin
 from collections.abc import AsyncIterable, Callable
-from typing import BinaryIO, TypeVar
+from typing import Any, BinaryIO, TypeVar, cast
 
 __all__ = ["AsyncPipe"]
 
@@ -51,7 +51,9 @@ class AsyncPipe:
         finally:
             writer.close()
 
-        return await consumer
+        res = cast(Any, await consumer)
+
+        return res
 
     @staticmethod
     async def _pump(chunks: AsyncIterable[bytes], writer: asyncio.StreamWriter) -> None:

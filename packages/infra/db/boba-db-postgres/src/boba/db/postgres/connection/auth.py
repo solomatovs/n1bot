@@ -76,8 +76,11 @@ class RequireAuth(StrEnum):
 
     SCRAM = "scram-sha-256"
     MD5 = "md5"
-    CERT = "cert"
     GSS = "gss"
+    SSPI = "sspi"
+    PASSWORD = "password"
+    OAUTH = "oauth"
+    NONE = "none"
 
     @classmethod
     def render(cls, methods: Sequence[RequireAuth]) -> str:
@@ -135,8 +138,21 @@ class PasswordAuth(PostgresAuthBase):
     method: Literal["password"]
 
     password: SecretStr = Field(min_length=1, description="Пароль роли (секрет).")
-    require_auth: Sequence[Literal[RequireAuth.SCRAM, RequireAuth.MD5]] = Field(
-        default=(RequireAuth.SCRAM,),
+    require_auth: (
+        Sequence[
+            Literal[
+                RequireAuth.SCRAM,
+                RequireAuth.MD5,
+                RequireAuth.PASSWORD,
+                RequireAuth.NONE,
+                RequireAuth.OAUTH,
+                RequireAuth.SSPI,
+                RequireAuth.GSS,
+            ]
+        ]
+        | None
+    ) = Field(
+        default=None,
         min_length=1,
         description=(
             "Методы, которые сервер вправе запросить: scram-sha-256 и/или md5; "
@@ -145,12 +161,20 @@ class PasswordAuth(PostgresAuthBase):
     )
 
     def libpq(self) -> dict[str, Any]:
-        return {
+        res = {
             "user": self.user,
             "password": self.password.get_secret_value(),
             "gssencmode": GssMode.OFF.value,
-            "require_auth": RequireAuth.render(self.require_auth),
         }
+
+        if self.require_auth:
+            res.update(
+                {
+                    "require_auth": RequireAuth.render(self.require_auth),
+                }
+            )
+
+        return res
 
     @field_serializer("password", when_used="json")
     def _dump_password(self, value: SecretStr, info: SerializationInfo) -> str | None:
@@ -174,7 +198,6 @@ class CertificateAuth(PostgresAuthBase):
             "sslcert": self.sslcert,
             "sslkey": self.sslkey,
             "gssencmode": GssMode.OFF.value,
-            "require_auth": RequireAuth.CERT.value,
         }
 
         if self.sslkey_password is not None:
