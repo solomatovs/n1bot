@@ -63,7 +63,6 @@ members = [
     "boba-tool-chart",
     "boba-tool-clickhouse",
     "boba-tool-confluence",
-    "boba-tool-connections",
     "boba-tool-describer",
     "boba-tool-doc",
     "boba-tool-knowledge",
@@ -636,7 +635,6 @@ dev = [
     { name = "boba-tool-chart", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "boba-tool-clickhouse", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "boba-tool-confluence", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
-    { name = "boba-tool-connections", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "boba-tool-doc", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "boba-tool-knowledge", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "boba-tool-postgres", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
@@ -683,7 +681,6 @@ requires-dist = [
     { name = "boba-tool-chart", marker = "extra == 'dev'", editable = "packages/tools/boba-tool-chart" },
     { name = "boba-tool-clickhouse", marker = "extra == 'dev'", editable = "packages/tools/boba-tool-clickhouse" },
     { name = "boba-tool-confluence", marker = "extra == 'dev'", editable = "packages/tools/boba-tool-confluence" },
-    { name = "boba-tool-connections", marker = "extra == 'dev'", editable = "packages/tools/boba-tool-connections" },
     { name = "boba-tool-doc", marker = "extra == 'dev'", editable = "packages/tools/boba-tool-doc" },
     { name = "boba-tool-knowledge", marker = "extra == 'dev'", editable = "packages/tools/boba-tool-knowledge" },
     { name = "boba-tool-postgres", marker = "extra == 'dev'", editable = "packages/tools/boba-tool-postgres" },
@@ -2224,42 +2221,6 @@ requires-dist = [
     { name = "lxml", marker = "extra == 'payload'", specifier = ">=5.0" },
     { name = "omegaconf", marker = "extra == 'dev'", specifier = ">=2.3,<3" },
     { name = "psycopg", extras = ["binary", "pool"], marker = "extra == 'dev'", specifier = ">=3.2" },
-    { name = "pydantic", specifier = ">=2.10,<2.11" },
-    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8" },
-]
-provides-extras = ["payload", "dev"]
-
-[[package]]
-name = "boba-tool-connections"
-version = "0.0.26.dev4"
-source = { editable = "packages/tools/boba-tool-connections" }
-dependencies = [
-    { name = "boba-access", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
-    { name = "boba-db-postgres", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
-    { name = "boba-identity", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
-    { name = "boba-toolkit", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
-    { name = "psycopg", extra = ["binary", "pool"], marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
-    { name = "pydantic", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
-]
-
-[package.optional-dependencies]
-dev = [
-    { name = "boba-connection-broker", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
-    { name = "boba-connections", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
-    { name = "boba-transport-http", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
-    { name = "pytest", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "boba-access", editable = "packages/core/boba-access" },
-    { name = "boba-connection-broker", marker = "extra == 'dev'", editable = "packages/services/boba-connection-broker" },
-    { name = "boba-connections", marker = "extra == 'dev'", editable = "packages/core/boba-connections" },
-    { name = "boba-db-postgres", editable = "packages/infra/db/boba-db-postgres" },
-    { name = "boba-identity", editable = "packages/core/boba-identity" },
-    { name = "boba-toolkit", editable = "packages/core/boba-toolkit" },
-    { name = "boba-transport-http", marker = "extra == 'dev'", editable = "packages/infra/transport/boba-transport-http" },
-    { name = "psycopg", extras = ["binary", "pool"], specifier = ">=3.2" },
     { name = "pydantic", specifier = ">=2.10,<2.11" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8" },
 ]

@@ -22,11 +22,37 @@ logger = logging.getLogger(__name__)
 @dataclass(frozen=True)
 class ToolRegistry:
     """Собранные инструменты, права доступа к ним и секция [stream_groups]:
-    по ней сессия собирает запуски DAG потоковых вызовов модели."""
+    по ней сессия исполняет вызовы инструментов через DAG.
+
+    own — имена собственных инструментов процесса: их тела он исполняет
+    сам, мимо DAG (чат — инструменты каталога соединений)."""
 
     tools: list[BaseTool]
     access: ToolAccess
     stream_config: StreamGroupsConfig
+    own: frozenset[str]
+
+    def dag_tools(self, tools: Iterable[BaseTool]) -> list[BaseTool]:
+        """Инструменты из tools, которые исполняет DAG."""
+        kept: list[BaseTool] = []
+        for tool in tools:
+            if tool.name in self.own:
+                continue
+
+            kept.append(tool)
+
+        return kept
+
+    def own_tools(self, tools: Iterable[BaseTool]) -> list[BaseTool]:
+        """Инструменты из tools, которые процесс исполняет сам."""
+        kept: list[BaseTool] = []
+        for tool in tools:
+            if tool.name not in self.own:
+                continue
+
+            kept.append(tool)
+
+        return kept
 
     def for_session(self, user_roles: Iterable[str], profile: str) -> list[BaseTool]:
         """Инструменты хода чата: всё, что решение допускает в чате."""

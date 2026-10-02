@@ -62,6 +62,7 @@ class TestRegistryFiltering:
             tools=tools,
             access=access,
             stream_config=STREAM_CONFIG,
+            own=frozenset(),
         )
 
     def test_admin_sees_everything(self) -> None:

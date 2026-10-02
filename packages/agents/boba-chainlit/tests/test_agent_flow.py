@@ -12,10 +12,11 @@ from chainlit_stand import RecordedTurn
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
 from langchain_core.runnables import RunnableConfig
-from langchain_core.tools import tool
+from langchain_core.tools import BaseTool, tool
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph.state import CompiledStateGraph
 from pydantic import Field, ValidationError
+from typing_extensions import override
 
 from boba.cancellation import StopReason, ToolStopped, run_cancellation
 from boba.chainlit.agent.flow import (
@@ -29,7 +30,6 @@ from boba.chainlit.agent.flow import (
     PrefetchStage,
     Rephraser,
     RephrasingsParser,
-    StreamGroupMiddleware,
 )
 from boba.chainlit.chat.tracing import AgentTracer, TracedStage
 from boba.chainlit.chat.turn import TurnState
@@ -62,7 +62,7 @@ from boba.stand.tools import STREAM_CONFIG
 from boba.toolkit.calls import ToolIntent
 from boba.toolkit.result import ErrorResult, TableResult, ToolArtifact
 from boba.toolrun.cancellation import CancellableTools
-from boba.toolrun.stream_calls import StreamRuns
+from boba.toolrun.stream_calls import DagCalls
 
 pytestmark = pytest.mark.anyio
 
@@ -255,7 +255,7 @@ def _graph(builder: Any, answers: Sequence[str]) -> CompiledStateGraph:
         system_prompt="you are a search assistant",
         checkpointer=InMemorySaver(),
         history=build_history_view(frozenset({"fts_probe", "vector_probe"}), 30),
-        streams=StreamGroupMiddleware(StreamRuns(tools, STREAM_CONFIG)),
+        calls=DagCalls(tools, STREAM_CONFIG),
     )
     return builder.build(spec)
 
@@ -755,6 +755,131 @@ class TestPlainGraph:
 
         if messages[-1].content != "plain answer":
             raise AssertionError(f"answer survived: {messages[-1].content!r}")
+
+
+class RecordingCalls(DagCalls):
+    """Исполнение через DAG, запоминающее, какие вызовы через него прошли."""
+
+    def __init__(self, tools: Sequence[BaseTool]) -> None:
+        super().__init__(tools, STREAM_CONFIG)
+        self.served: list[str] = []
+
+    @override
+    async def message_for(
+        self, call: Any, config: RunnableConfig | None
+    ) -> ToolMessage:
+        self.served.append(str(call["id"]))
+
+        return await super().message_for(call, config)
+
+
+class TestToolCallsRunInDag:
+    """Вызовы инструментов ответа модели исполняет DAG: и обычные, без
+    портов, — мимо исполнителя не идёт ни один."""
+
+    CALLS: ClassVar[list[dict[str, Any]]] = [
+        {"name": "fts_probe", "args": {"query": "kerberos"}, "id": "call_ok"},
+        {"name": "crashing_probe", "args": {"query": "kerberos"}, "id": "call_crash"},
+        {"name": "strict_probe", "args": {"query": "x"}, "id": "call_bad_args"},
+    ]
+
+    async def test_plain_calls_of_a_response_are_dag_nodes(self) -> None:
+        tools = [fts_probe, crashing_probe, strict_probe]
+        calls = RecordingCalls(tools)
+        scripted = [
+            AIMessage(content="", tool_calls=self.CALLS),
+            AIMessage(content="done"),
+        ]
+        spec = GraphSpec(
+            chat=ScriptedChat(messages=iter(scripted)),
+            tools=tools,
+            system_prompt="you are a search assistant",
+            checkpointer=InMemorySaver(),
+            history=build_history_view(
+                frozenset({"fts_probe", "crashing_probe", "strict_probe"}), 30
+            ),
+            calls=calls,
+        )
+        graph = PlainGraphBuilder().build(spec)
+
+        result = await graph.ainvoke(
+            {"messages": [HumanMessage("question")]}, config=THREAD
+        )
+        messages = result["messages"]
+
+        if sorted(calls.served) != ["call_bad_args", "call_crash", "call_ok"]:
+            raise AssertionError(f"каждый вызов прошёл через DAG: {calls.served}")
+
+        replies: dict[str, ToolMessage] = {}
+        for reply in _tool_messages(messages):
+            replies[reply.tool_call_id] = reply
+
+        if replies["call_ok"].status != "success":
+            raise AssertionError(f"удачный вызов: {replies['call_ok']!r}")
+        if "fts:kerberos" not in str(replies["call_ok"].content):
+            raise AssertionError(f"результат поиска: {replies['call_ok'].content!r}")
+
+        if replies["call_crash"].status != "error":
+            raise AssertionError(f"упавший вызов: {replies['call_crash']!r}")
+        if "sandbox crashed" not in str(replies["call_crash"].content):
+            raise AssertionError(f"причина сбоя: {replies['call_crash'].content!r}")
+
+        if replies["call_bad_args"].status != "error":
+            raise AssertionError(f"негодные аргументы: {replies['call_bad_args']!r}")
+        if "query" not in str(replies["call_bad_args"].content):
+            raise AssertionError(
+                f"отказ называет поле: {replies['call_bad_args'].content!r}"
+            )
+
+        if messages[-1].content != "done":
+            raise AssertionError(f"ход дошёл до ответа: {messages[-1].content!r}")
+
+
+class TestOwnToolsBypassTheDag:
+    """Собственный инструмент процесса (каталог соединений чата) исполняет
+    сам граф, мимо DAG; инструменты плагинов рядом идут через DAG."""
+
+    CALLS: ClassVar[list[dict[str, Any]]] = [
+        {"name": "fts_probe", "args": {"query": "kerberos"}, "id": "call_dag"},
+        {"name": "vector_probe", "args": {"query": "kerberos"}, "id": "call_own"},
+    ]
+
+    async def test_own_tool_is_called_by_the_graph_itself(self) -> None:
+        calls = RecordingCalls([fts_probe])
+        offered = calls.model_tools()
+        offered.append(vector_probe)
+
+        scripted = [
+            AIMessage(content="", tool_calls=self.CALLS),
+            AIMessage(content="done"),
+        ]
+        spec = GraphSpec(
+            chat=ScriptedChat(messages=iter(scripted)),
+            tools=offered,
+            system_prompt="you are a search assistant",
+            checkpointer=InMemorySaver(),
+            history=build_history_view(
+                calls.history_names() | frozenset({"vector_probe"}), 30
+            ),
+            calls=calls,
+        )
+        graph = PlainGraphBuilder().build(spec)
+
+        result = await graph.ainvoke(
+            {"messages": [HumanMessage("question")]}, config=THREAD
+        )
+
+        if calls.served != ["call_dag"]:
+            raise AssertionError(f"через DAG прошёл только свой вызов: {calls.served}")
+
+        replies: dict[str, ToolMessage] = {}
+        for reply in _tool_messages(result["messages"]):
+            replies[reply.tool_call_id] = reply
+
+        if "vector:kerberos" not in str(replies["call_own"].content):
+            raise AssertionError(f"свой инструмент ответил: {replies['call_own']!r}")
+        if "fts:kerberos" not in str(replies["call_dag"].content):
+            raise AssertionError(f"инструмент DAG ответил: {replies['call_dag']!r}")
 
 
 class TestFlowConfig:

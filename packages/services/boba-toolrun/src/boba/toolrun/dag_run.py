@@ -1,12 +1,16 @@
-"""Исполнитель DAG потоковых вызовов.
+"""Исполнитель DAG вызовов инструментов.
 
 DagRunner принимает описание DAG (boba.toolkit.dag) и обёрнутые инструменты
-реестра, строит план каналов и группу «все или никто» (boba.toolkit.chain) и
-сам запускает каждый узел: вызов инструмента идёт через его обвязки —
-права, журнал, отмена, упаковка ошибок — под ручкой группы в PipelineSlot.
-Узел, не дошедший до запуска (права, аргументы), срывает группу сразу. Итог
-— DagOutcome: результат каждого узла. Один исполнитель служит чату (узлы —
-вызовы ответа модели) и запуску без модели.
+реестра и сам запускает каждый узел — другого места исполнения инструментов
+нет. План делит узлы на группы исполнения: узлы, связанные каналами, — одна
+группа, узел инструмента без портов — группа из него одного. Каждая группа
+идёт по правилу «все или никто» (boba.toolkit.chain), каждый узел — под
+ручкой своей группы в PipelineSlot; сбой группы другие группы не трогает.
+Вызов узла идёт через обвязки инструмента: права, журнал, отмена, упаковка
+ошибок. Узел, не дошедший до запуска (права, аргументы), срывает свою
+группу сразу. Итог — DagOutcome: результат каждого узла. Один исполнитель
+служит чату (узлы — вызовы ответа модели и подготовки хода) и запуску без
+модели.
 
 Ошибки:
 StreamPlanError — описание не переводится в план: поле порта, pipe_bytes,
@@ -20,6 +24,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Iterator, Mapping, Sequence
+from typing import Literal
 
 from langchain_core.messages import ToolCall, ToolMessage
 from langchain_core.runnables import RunnableConfig
@@ -33,8 +38,8 @@ from boba.toolkit.ports import ToolStreamSpecs
 from boba.toolkit.result import (
     FailureResult,
     GroupFailureResult,
+    ToolArtifact,
     ToolResult,
-    ToolResultBase,
 )
 
 __all__ = ["DagHandle", "DagOutcome", "DagRunError", "DagRunner", "NodeOutcome"]
@@ -47,7 +52,12 @@ class DagRunError(RuntimeError):
 
 
 class NodeOutcome(BaseModel):
-    """Итог узла: текст для модели и результат семейства; сбой — FailureResult."""
+    """Итог узла: текст для модели и результат семейства; сбой — FailureResult.
+
+    errored — вызов кончился ошибкой самого вызова: инструмент поднял
+    исключение до тела (аргументы, права) либо ответил сообщением со
+    статусом error. Сообщение для модели несёт тот же статус.
+    """
 
     model_config = ConfigDict(frozen=True)
 
@@ -55,9 +65,24 @@ class NodeOutcome(BaseModel):
     tool: str
     content: str
     artifact: ToolResult
+    errored: bool = False
 
     def failed(self) -> bool:
         return isinstance(self.artifact, FailureResult)
+
+    def message(self, tool_call_id: str) -> ToolMessage:
+        """Итог узла сообщением инструмента для модели."""
+        status: Literal["success", "error"] = "success"
+        if self.errored:
+            status = "error"
+
+        return ToolMessage(
+            content=self.content,
+            artifact=self.artifact,
+            name=self.tool,
+            tool_call_id=tool_call_id,
+            status=status,
+        )
 
 
 class DagOutcome(BaseModel):
@@ -157,13 +182,13 @@ class DagHandle:
 
 
 class DagRunner:
-    """Запуск DAG: план, группа и по задаче на каждый узел.
+    """Запуск DAG: план, группы и по задаче на каждый узел.
 
     Инструменты приходят по именам — обёрнутые инструменты реестра (чат:
     набор хода, планировщик: for_headless). Узел зовётся как вызов модели
-    (ToolCall с id = ключ узла): обвязки получают tool_call_id, лента —
-    события вызова. Контекст вызова (CallContext, callbacks) задачи
-    наследуют от вызывающего.
+    (ToolCall с id = ключ узла) под ручкой своей группы: обвязки получают
+    tool_call_id, лента — события вызова. Контекст вызова (CallContext,
+    callbacks) задачи наследуют от вызывающего.
     """
 
     def __init__(
@@ -178,12 +203,17 @@ class DagRunner:
     async def run(
         self, dag: DagSpec, config: RunnableConfig | None = None
     ) -> DagOutcome:
+        """Исполнить DAG и дождаться всех узлов; обрыв ожидания гасит узлы."""
         handle = self.start(dag, config)
 
-        return await handle.outcome()
+        try:
+            return await handle.outcome()
+        except BaseException:
+            handle.cancel()
+            raise
 
     def start(self, dag: DagSpec, config: RunnableConfig | None = None) -> DagHandle:
-        """План и группа по описанию; узлы стартуют задачами сразу.
+        """План по описанию; узлы стартуют задачами сразу.
 
         config — конфиг langchain вызова (callbacks ленты), с ним зовётся
         каждый инструмент; без него — конфиг контекста.
@@ -193,15 +223,23 @@ class DagRunner:
         for node in dag.nodes:
             self._tool_of(node)
 
-        group = StreamGroupRun(plan, self._timings)
-        logger.info("dag %s v%d started: %s", dag.name, dag.version, group.labels())
-
         tasks: dict[str, asyncio.Task[NodeOutcome]] = {}
-        for node in dag.nodes:
-            tasks[node.key] = asyncio.create_task(
-                self._run_node(group, node, config),
-                name=f"dag {dag.name} v{dag.version}: {node.key}",
+        for planned in plan.groups:
+            group = StreamGroupRun(planned.plan, self._timings)
+            logger.info(
+                "dag %s v%d group %s started: %s",
+                dag.name,
+                dag.version,
+                planned.name,
+                group.labels(),
             )
+
+            for member in planned.plan.nodes():
+                node = dag.node(member.key)
+                tasks[node.key] = asyncio.create_task(
+                    self._run_node(group, node, config),
+                    name=f"dag {dag.name} v{dag.version}: {node.key}",
+                )
 
         return DagHandle(dag, tasks)
 
@@ -219,35 +257,52 @@ class DagRunner:
     async def _run_node(
         self, group: StreamGroupRun, node: DagNode, config: RunnableConfig | None
     ) -> NodeOutcome:
-        """Вызов узла под ручкой группы; сбой до открытия срывает группу."""
+        """Вызов узла под ручкой группы; его итог группа узнаёт всегда.
+
+        Сбой до открытия вызова срывает группу. Узел, открытый обёрткой
+        запуска, группа уже знает — повторное сообщение пусто; узел, который
+        обёртку запуска не проходит, группа узнаёт только отсюда.
+        """
+        token = PipelineSlot.set(group.slot(node.key))
+        try:
+            outcome = await self._invoke(node, config)
+        finally:
+            PipelineSlot.reset(token)
+
+        cause: FailureResult | None = None
+        if isinstance(outcome.artifact, FailureResult):
+            cause = outcome.artifact
+
+        group.done(node.key, cause=cause, stopped=False)
+
+        return outcome
+
+    async def _invoke(
+        self, node: DagNode, config: RunnableConfig | None
+    ) -> NodeOutcome:
+        """Вызов инструмента узла; исключение вызова — итог-ошибка узла."""
         tool = self._tool_of(node)
         call = ToolCall(
             name=node.tool, args=dict(node.args), id=node.key, type="tool_call"
         )
 
-        token = PipelineSlot.set(group.slot(node.key))
         try:
             message = await tool.ainvoke(call, config)
         except Exception as exc:
-            failure = self._failures.pack(exc)
-            group.refuse(node.key, failure)
-            return self._failed(node, failure)
-        finally:
-            PipelineSlot.reset(token)
+            return self._failed(node, self._failures.pack(exc))
 
-        outcome = self._outcome_of(node, message)
-        if isinstance(outcome.artifact, FailureResult):
-            # узел, закончившийся через обёртку, группа уже знает — повтор пуст
-            group.refuse(node.key, outcome.artifact)
-
-        return outcome
+        return self._outcome_of(node, message)
 
     @staticmethod
     def _failed(node: DagNode, failure: FailureResult) -> NodeOutcome:
         content, artifact = failure.packed()
 
         return NodeOutcome(
-            key=node.key, tool=node.tool, content=content, artifact=artifact
+            key=node.key,
+            tool=node.tool,
+            content=content,
+            artifact=artifact,
+            errored=True,
         )
 
     @staticmethod
@@ -259,14 +314,18 @@ class DagRunner:
             )
             raise DagRunError(msg)
 
-        artifact = message.artifact
-        if not isinstance(artifact, ToolResultBase):
+        artifact = ToolArtifact.revive(message.artifact)
+        if artifact is None:
             msg = (
                 f"dag node {node.label()}: expected a ToolResultBase artifact, "
-                f"got {type(artifact).__name__}"
+                f"got {type(message.artifact).__name__}"
             )
             raise DagRunError(msg)
 
         return NodeOutcome(
-            key=node.key, tool=node.tool, content=message.text, artifact=artifact
+            key=node.key,
+            tool=node.tool,
+            content=message.text,
+            artifact=artifact,
+            errored=message.status == "error",
         )

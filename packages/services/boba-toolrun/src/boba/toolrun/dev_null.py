@@ -247,8 +247,8 @@ class DevNullTool:
         if slot is None:
             failure = ErrorResult(
                 message=(
-                    f"tool {cls.NAME!r} drains stream channels and runs only in "
-                    "a group of calls of one model response"
+                    f"tool {cls.NAME!r} drains stream channels and runs only as "
+                    "a node of workflow"
                 ),
                 error_kind=cls.UNPLANNED,
             )

@@ -1,0 +1,49 @@
+{
+    "kind": "workflow",
+    "ok": false,
+    "elapsed_ms": 0,
+    "metadata": {},
+    "nodes": [
+        {
+            "key": "src",
+            "call_id": "call_00_0",
+            "tool": "pg_stream_out",
+            "args": {
+                "connection": "main",
+                "sql": "select id, name from orders",
+                "out": "orders"
+            },
+            "errored": false,
+            "content": "sent 3 rows into orders",
+            "result": {
+                "kind": "markdown",
+                "ok": true,
+                "elapsed_ms": 0,
+                "metadata": {},
+                "text": "sent 3 rows into orders",
+                "language": "",
+                "note": null
+            }
+        },
+        {
+            "key": "sink",
+            "call_id": "call_00_1",
+            "tool": "ch_stream_in",
+            "args": {
+                "connection": "sink",
+                "table_name": "orders",
+                "feed": "orders"
+            },
+            "errored": true,
+            "content": "table sink.orders does not exist",
+            "result": {
+                "kind": "error",
+                "ok": false,
+                "elapsed_ms": 0,
+                "metadata": {},
+                "error_kind": "no_table",
+                "message": "table sink.orders does not exist"
+            }
+        }
+    ]
+}

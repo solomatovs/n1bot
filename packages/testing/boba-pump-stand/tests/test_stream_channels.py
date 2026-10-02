@@ -1,28 +1,29 @@
 # ruff: noqa: S608
 """Модель связывает насосы каналами: postgres раздаётся в ClickHouse и в
-postgres одним ответом.
+postgres одним вызовом workflow.
 
-Вызовы идут путём чата: каждый вызов ответа модели отдаётся StreamRuns,
-первый строит DAG ответа и запускает исполнитель, остальные ждут итоги
-своих узлов; тела — настоящие процессы инструментов pg и ch на базах
+Вызов идёт путём чата: вызов workflow модели отдаётся DagCalls, тот
+раскрывает его в узлы DAG, запускает исполнитель и отдаёт итоги узлов
+одним результатом; тела — настоящие процессы инструментов pg и ch на базах
 стенда.
 
 Что проверяется:
     - один выход pg_stream_out по arrow читают ch_stream_in и pg_stream_in,
       обе таблицы совпадают с источником;
     - приёмник postgres отказал: группа срывается, ClickHouse не меняет
-      таблицу (exchange tables стоит за барьером группы).
+      таблицу (exchange tables стоит за барьером группы);
+    - две несвязанные группы одного вызова workflow: сорванная не мешает
+      второй зафиксировать таблицу;
+    - опечатка в имени канала: отказ до запуска, базы не тронуты.
 """
 
 from __future__ import annotations
 
-import asyncio
 from collections.abc import AsyncIterator, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
 import pytest
-from langchain_core.messages import AIMessage
 
 from boba.pump_stand import ClickHouseSide, PostgresSide, PumpStand
 from boba.tool.ch import tools as ch
@@ -33,6 +34,7 @@ from boba.toolkit.result import (
     GroupCall,
     GroupFailureResult,
     ToolArtifact,
+    WorkflowResult,
 )
 from boba.toolkit.types import SecretReveal
 from boba.toolkit.wrap import ToolProcessWrap
@@ -41,9 +43,10 @@ from boba.toolrun.call_id import ToolCallIdField
 from boba.toolrun.errors import ToolErrorGuard
 from boba.toolrun.process import ProcessLauncherConfig, ProcessToolCaller
 from boba.toolrun.stream_calls import (
+    DagCalls,
     StreamChannelFields,
     StreamGroupsConfig,
-    StreamRuns,
+    WorkflowTool,
 )
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
@@ -131,31 +134,37 @@ class ChannelTools:
         StreamChannelFields(STREAM_CFG).attach_all(tools)
         ToolCallIdField.attach_all(tools)
         ToolErrorGuard().guard_all(tools)
-        self._streams = StreamRuns(tools, STREAM_CFG)
+        self._streams = DagCalls(tools, STREAM_CFG)
 
     async def respond(self, calls: Sequence[Mapping[str, Any]]) -> list[Any]:
-        """Вызовы одного ответа модели: каждый ждёт итог своего узла DAG,
-        как в чате."""
-        tool_calls: list[Any] = []
+        """Узлы одного вызова workflow, как в чате: итоги узлов в порядке
+        узлов; вызов, отказанный до запуска, — один результат-отказ."""
+        nodes: list[dict[str, Any]] = []
         for index, call in enumerate(calls):
-            tool_calls.append({**call, "id": f"call_{index}", "type": "tool_call"})
+            nodes.append(
+                {"key": f"n{index}", "tool": call["name"], "args": call["args"]}
+            )
 
-        response = AIMessage(content="", tool_calls=tool_calls)
+        workflow: Any = {
+            "name": WorkflowTool.NAME,
+            "args": {"nodes": nodes},
+            "id": "call_0",
+            "type": "tool_call",
+        }
+        message = await self._streams.message_for(workflow, None)
 
-        runs: list[Any] = []
-        for call in tool_calls:
-            runs.append(self._streams.message_for(response, call, None))
+        artifact = ToolArtifact.revive(message.artifact)
+        if not isinstance(artifact, WorkflowResult):
+            return [artifact]
 
-        messages = await asyncio.gather(*runs)
+        results: list[Any] = []
+        for node in artifact.nodes:
+            results.append(node.result)
 
-        artifacts: list[Any] = []
-        for message in messages:
-            artifacts.append(ToolArtifact.revive(message.artifact))
-
-        return artifacts
+        return results
 
 
-def _source(postgres: PostgresSide) -> dict[str, Any]:
+def _source(postgres: PostgresSide, channel: str = "rows") -> dict[str, Any]:
     return {
         "name": "pg_stream_out",
         "args": {
@@ -163,12 +172,14 @@ def _source(postgres: PostgresSide) -> dict[str, Any]:
             "sql": f"select id, note, amount from {PG_SCHEMA}.src",
             "wire": "arrow",
             "columns": [{"name": "id", "nullable": False}],
-            "out": "rows",
+            "out": channel,
         },
     }
 
 
-def _pg_sink(postgres: PostgresSide, table: str, schema_kind: str) -> dict[str, Any]:
+def _pg_sink(
+    postgres: PostgresSide, table: str, schema_kind: str, channel: str = "rows"
+) -> dict[str, Any]:
     return {
         "name": "pg_stream_in",
         "args": {
@@ -178,12 +189,14 @@ def _pg_sink(postgres: PostgresSide, table: str, schema_kind: str) -> dict[str, 
             "schema_strategy": {"kind": schema_kind},
             "delete_strategy": {"kind": "nothing"},
             "insert_strategy": {"kind": "full"},
-            "feed": "rows",
+            "feed": channel,
         },
     }
 
 
-def _ch_sink(clickhouse: ClickHouseSide, table: str) -> dict[str, Any]:
+def _ch_sink(
+    clickhouse: ClickHouseSide, table: str, channel: str = "rows"
+) -> dict[str, Any]:
     return {
         "name": "ch_stream_in",
         "args": {
@@ -195,7 +208,7 @@ def _ch_sink(clickhouse: ClickHouseSide, table: str) -> dict[str, Any]:
             "insert_strategy": {"kind": "full"},
             "create_table": MERGE_TREE,
             "order_by": "id",
-            "feed": "rows",
+            "feed": channel,
         },
     }
 
@@ -268,8 +281,69 @@ class TestAllOrNothingAcrossEngines:
 
         for result in results:
             assert isinstance(result, GroupFailureResult), result
-            assert result.origin == GroupCall(tool="pg_stream_in", call_id="call_2")
+            assert result.origin == GroupCall(tool="pg_stream_in", call_id="call_0_2")
             assert "nothing was committed" in result.llm_view()
 
         kept = await clickhouse.select("kept", ["id", "note"])
+        assert [tuple(row) for row in kept] == [(1, "before")]
+
+
+class TestIndependentGroupsAcrossEngines:
+    async def test_failed_group_does_not_stop_the_other_group_of_the_workflow(
+        self, postgres: PostgresSide, clickhouse: ClickHouseSide, tmp_path: Path
+    ) -> None:
+        """Один вызов workflow несёт две несвязанные связки: приёмник
+        postgres второй отказал — сорвана только она, ClickHouse первой
+        зафиксировал таблицу."""
+        tools = ChannelTools(tmp_path)
+
+        results = await tools.respond(
+            [
+                _source(postgres, "to_ch"),
+                _ch_sink(clickhouse, "independent", "to_ch"),
+                _source(postgres, "to_pg"),
+                _pg_sink(postgres, "missing", "error_if_not_exists", "to_pg"),
+            ]
+        )
+
+        assert not isinstance(results[0], FailureResult), results[0]
+        assert not isinstance(results[1], FailureResult), results[1]
+
+        for result in results[2:]:
+            assert isinstance(result, GroupFailureResult), result
+            assert result.origin == GroupCall(tool="pg_stream_in", call_id="call_0_3")
+
+        source = await postgres.select("src", ["id"])
+        landed = await clickhouse.select("independent", ["id"])
+        assert len(landed) == len(source) == ROWS
+
+
+class TestRefusalAcrossEngines:
+    async def test_typo_in_the_channel_name_is_refused_before_the_databases(
+        self, postgres: PostgresSide, clickhouse: ClickHouseSide, tmp_path: Path
+    ) -> None:
+        """Приёмник называет канал с опечаткой: отказ называет узел, канал и
+        каналы, которые пишутся; таблица ClickHouse остаётся прежней."""
+        await clickhouse.create(
+            "guard", ["id Int64", "note String", "amount Decimal(18,4)"]
+        )
+        await clickhouse.command(
+            f"insert into {CH_DATABASE}.guard values (1, 'before', 1.0)"
+        )
+
+        tools = ChannelTools(tmp_path)
+
+        results = await tools.respond(
+            [_source(postgres, "rows"), _ch_sink(clickhouse, "guard", "row")]
+        )
+
+        assert len(results) == 1
+        refusal = results[0]
+        assert isinstance(refusal, FailureResult), refusal
+
+        text = refusal.llm_view()
+        assert "ch_stream_in (n1) reads channel 'row' in 'feed'" in text
+        assert "channels written here: ['rows']" in text
+
+        kept = await clickhouse.select("guard", ["id", "note"])
         assert [tuple(row) for row in kept] == [(1, "before")]

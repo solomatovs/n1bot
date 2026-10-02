@@ -210,7 +210,7 @@ class TestStreamPlan:
             StreamPlan([_node("a", SOURCE, "x")])
 
     def test_unknown_channel_is_refused(self) -> None:
-        with pytest.raises(StreamPlanError, match="no call of the response writes it"):
+        with pytest.raises(StreamPlanError, match="which no node writes"):
             StreamPlan([_node("t", TRANSFORM, None, ("feed", "ghost"))])
 
     def test_cycle_is_refused(self) -> None:

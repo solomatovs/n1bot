@@ -24,7 +24,6 @@ from boba.chainlit.agent.flow import (
     PlainGraphBuilder,
     PrefetchGraphBuilder,
     Rephraser,
-    StreamGroupMiddleware,
 )
 from boba.chainlit.chat.history import CheckpointMessages, TranscriptFeed
 from boba.chainlit.chat.tracing import TracedStage
@@ -58,7 +57,7 @@ from boba.runtime.di import Depends
 from boba.runtime.elements import ChatTables
 from boba.runtime.users import UsersTable
 from boba.toolrun.registry import ToolRegistry
-from boba.toolrun.stream_calls import StreamRuns
+from boba.toolrun.stream_calls import DagCalls
 
 
 def get_app_config() -> AppConfig:
@@ -372,17 +371,21 @@ def langchain_agent(  # noqa: PLR0913
     ],
     registry: Annotated[ToolRegistry, Depends(runtime.tool_registry)],
 ) -> CompiledStateGraph:
-    names: list[str] = []
-    for tool in tools:
-        names.append(tool.name)
+    calls = DagCalls(registry.dag_tools(tools), registry.stream_config)
+    own = registry.own_tools(tools)
+
+    offered = calls.model_tools()
+    offered.extend(own)
 
     spec = GraphSpec(
         chat=chat,
-        tools=tools,
+        tools=offered,
         system_prompt=settings.system_prompt,
         checkpointer=saver,
-        history=build_history_view(frozenset(names), settings.history_messages),
-        streams=StreamGroupMiddleware(StreamRuns(tools, registry.stream_config)),
+        history=build_history_view(
+            calls.history_names() | registry.own, settings.history_messages
+        ),
+        calls=calls,
     )
 
     return builder.build(spec)

@@ -33,7 +33,7 @@ from omegaconf import DictConfig, OmegaConf
 from psycopg import sql
 from pydantic import SecretStr
 
-from boba.chainlit.agent.flow import GraphSpec, PlainGraphBuilder, StreamGroupMiddleware
+from boba.chainlit.agent.flow import GraphSpec, PlainGraphBuilder
 from boba.chainlit.infra.config import AppConfig
 from boba.chainlit.infra.plugins import ChatPlugins
 from boba.chainlit.infra.providers import build_history_view
@@ -68,7 +68,7 @@ from boba.toolkit.result import (
     TableResult,
     ToolArtifact,
 )
-from boba.toolrun.stream_calls import StreamRuns
+from boba.toolrun.stream_calls import DagCalls
 
 _REPO = Path(__file__).resolve().parents[4]
 _SANDBOX_STAGING = _REPO / "build" / "chainlit" / "src" / "sandbox"
@@ -253,7 +253,6 @@ def flow_raw(raw_config: DictConfig, test_database: str) -> DictConfig:
     describer, и описываемые таблицы жили там же."""
     raw = raw_config.copy()
     OmegaConf.update(raw, "postgres.dbname", test_database)
-    OmegaConf.update(raw, "tool.connections.db_schema", CONNECTIONS_SCHEMA)
     OmegaConf.update(raw, "tool.describer.db_schema", DESCRIBER_SCHEMA)
     return raw
 
@@ -421,7 +420,7 @@ def _graph(
         system_prompt=settings.system_prompt,
         checkpointer=InMemorySaver(),
         history=build_history_view(frozenset(names), settings.history_messages),
-        streams=StreamGroupMiddleware(StreamRuns(tools, STREAM_CONFIG)),
+        calls=DagCalls(tools, STREAM_CONFIG),
     )
 
     return PlainGraphBuilder().build(spec)

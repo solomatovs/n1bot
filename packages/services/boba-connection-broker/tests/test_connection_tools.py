@@ -2,7 +2,7 @@
 и субъект.
 
 Строки и гранты кладутся хранилищем брокера (как их положит приложение),
-выборка идёт телом инструмента своим подключением к той же базе.
+выборка идёт каталогом инструментов через то же хранилище.
 """
 
 from __future__ import annotations
@@ -18,6 +18,7 @@ from pydantic import SecretStr
 
 from boba.access.grants import ConnectionFilter
 from boba.connection_broker.store import ConnectionsConfig, ConnectionStore
+from boba.connection_broker.tools import CatalogColumn, GrantedConnections
 from boba.connections.manifest import ConnectionTypes
 from boba.connections.stored import GrantTarget
 from boba.db.postgres import AsyncPostgresPool
@@ -28,11 +29,6 @@ from boba.db.postgres.connection import (
     PostgresPoolConfig,
 )
 from boba.identity.context import Subject
-from boba.tool.connections.tools import (
-    CatalogColumn,
-    ConnectionsToolConfig,
-    GrantedConnections,
-)
 from boba.transport.http.connection import HttpConnection
 
 pytestmark = [pytest.mark.anyio, pytest.mark.integration]
@@ -57,9 +53,11 @@ async def store(pool: AsyncPostgresPool) -> ConnectionStore:
 
 
 @pytest.fixture
-def catalog(test_postgres: PostgresConfig) -> GrantedConnections:
-    cfg = ConnectionsToolConfig(connection=test_postgres, db_schema=SCHEMA)
-    return GrantedConnections(cfg)
+def catalog(store: ConnectionStore) -> GrantedConnections:
+    def stored() -> ConnectionStore:
+        return store
+
+    return GrantedConnections(stored)
 
 
 def _subject(roles: frozenset[str] = frozenset()) -> Subject:

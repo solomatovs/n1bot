@@ -95,6 +95,8 @@ __all__ = [
     "VisualElement",
     "VisualResult",
     "WidgetBlock",
+    "WorkflowNodeResult",
+    "WorkflowResult",
 ]
 
 
@@ -1655,6 +1657,64 @@ class GroupFailureResult(FailureResult):
                 continue
 
             yield call.tool
+
+
+class WorkflowNodeResult(BaseModel):
+    """Итог узла workflow: какой инструмент с чем вызван и чем он кончился.
+
+    key — имя узла, данное моделью; call_id — идентификатор вызова узла, под
+    которым идут его журнал и шаг ленты. errored — вызов кончился ошибкой
+    самого вызова (аргументы, права), а не результатом инструмента.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    key: str
+    call_id: str
+    tool: str
+    args: Mapping[str, Any]
+    errored: bool
+    content: str
+    result: ToolResult
+
+
+class WorkflowResult(ToolResultBase):
+    """Итог вызова workflow: результаты его узлов в порядке описания.
+
+    Модель описывает связку потоковых инструментов одним вызовом workflow;
+    исполнитель DAG отдаёт итог каждого узла, а этот результат несёт их
+    модели и истории одним конвертом. Лента раскрывает его в шаги узлов —
+    так же, как рисует их вживую.
+    """
+
+    kind: Literal["workflow"] = "workflow"
+    nodes: Sequence[WorkflowNodeResult]
+
+    def llm_view(self) -> str:
+        parts: list[str] = []
+        for node in self.nodes:
+            parts.append(f"[{node.key}] {node.tool}:\n{node.content}")
+
+        return "\n\n".join(parts)
+
+    def chat_view(self) -> ChatView:
+        return ChatView(markdown=FactsBlock(facts=self._facts()).markdown())
+
+    def studio_view(self) -> StudioView:
+        summary = StudioSummary(figure=str(len(self.nodes)), detail="nodes")
+
+        return StudioView(summary=summary, blocks=[FactsBlock(facts=self._facts())])
+
+    def _facts(self) -> list[Fact]:
+        facts: list[Fact] = []
+        for node in self.nodes:
+            status = "ok"
+            if not node.result.ok:
+                status = "failed"
+
+            facts.append(Fact(key=f"{node.key} ({node.tool})", value=status))
+
+        return facts
 
 
 class ToolArtifact:

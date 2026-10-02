@@ -4,7 +4,9 @@ PlainGraphBuilder собирает обычный цикл модель-инст
 дополняет его подготовкой каждого хода: запрос пользователя превращается в
 поисковые (моделью-переформулировщиком либо как есть), инструменты flow
 вызываются сразу, их результаты ложатся в состояние обменом tool_calls —
-основная модель отвечает уже с готовым контекстом.
+основная модель отвечает уже с готовым контекстом. Инструменты и в цикле, и
+в подготовке исполняет DAG (DagRunner): DagMiddleware отдаёт ему вызовы
+ответа модели, подготовка — свои.
 
 Ошибки:
 PrefetchError — слой инструментов нарушил контракт ответа; сорванный вызов
@@ -14,7 +16,6 @@ PrefetchError — слой инструментов нарушил контра�
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from abc import ABC, abstractmethod
 from collections.abc import Awaitable, Callable, Mapping, Sequence
@@ -44,15 +45,17 @@ from boba.chainlit.agent.bridge import ResponseField
 from boba.llm.chat import LlmError, ToolSpec
 from boba.llm.schema import SchemaReply
 from boba.toolkit.calls import ToolIntent
-from boba.toolkit.failure import FailurePacker
-from boba.toolkit.result import FailureResult, ToolArtifact
+from boba.toolkit.dag import DagNode, DagSpec
+from boba.toolkit.result import FailureResult
 from boba.toolkit.timing import Elapsed
-from boba.toolrun.stream_calls import StreamRuns
+from boba.toolrun.dag_run import DagRunner
+from boba.toolrun.stream_calls import DagCalls
 
 logger = logging.getLogger(__name__)
 
 __all__ = [
     "AgentGraphBuilder",
+    "DagMiddleware",
     "GraphSpec",
     "LlmRephraser",
     "PassthroughRephraser",
@@ -296,20 +299,25 @@ class PrefetchMiddleware(AgentMiddleware[AgentState[Any], Any, Any]):
 
     Срабатывает на каждый вопрос пользователя — в начале хода, когда последнее
     сообщение состояния пришло от него. Продолжения цикла, где модель уже
-    ответила или сама зовёт инструменты, идут обычным графом.
+    ответила или сама зовёт инструменты, идут обычным графом. Вызовы
+    подготовки исполняет DAG: каждая переформулировка в каждый инструмент —
+    одиночный узел одного запуска.
     """
+
+    DAG_NAME: ClassVar[str] = "prefetch"
 
     def __init__(
         self,
         rephraser: Rephraser,
         tools: Sequence[BaseTool],
         stage: PrefetchStage,
+        runner: DagRunner,
     ) -> None:
         super().__init__()
         self._rephraser = rephraser
         self._tools = list(tools)
         self._stage = stage
-        self._failures = FailurePacker()
+        self._runner = runner
 
     @override
     async def abefore_model(
@@ -386,92 +394,71 @@ class PrefetchMiddleware(AgentMiddleware[AgentState[Any], Any, Any]):
         return calls
 
     async def _invoke(self, calls: Sequence[ToolCall]) -> list[ToolMessage]:
-        by_name: dict[str, BaseTool] = {}
-        for tool in self._tools:
-            by_name[tool.name] = tool
-
-        pending: list[Any] = []
+        """Вызовы подготовки одним DAG: итог каждого узла — сообщение модели."""
+        nodes: list[DagNode] = []
         for call in calls:
-            tool = by_name[call["name"]]
-            pending.append(tool.ainvoke(call))
+            nodes.append(
+                DagNode(key=self._id_of(call), tool=call["name"], args=call["args"])
+            )
 
-        outputs = await asyncio.gather(*pending, return_exceptions=True)
+        dag = DagSpec(name=self.DAG_NAME, version=1, nodes=nodes)
+        outcome = await self._runner.run(dag)
 
         results: list[ToolMessage] = []
-        for call, output in zip(calls, outputs, strict=True):
-            results.append(self._checked(call, output))
+        for node in outcome.nodes:
+            results.append(self._checked(node.message(node.key)))
 
         return results
 
-    def _checked(self, call: ToolCall, output: object) -> ToolMessage:
+    @staticmethod
+    def _id_of(call: ToolCall) -> str:
+        call_id = call["id"]
+        if not call_id:
+            name = call["name"]
+            msg = f"prefetch call {name!r} has no id"
+            raise PrefetchError(msg)
+
+        return call_id
+
+    @staticmethod
+    def _checked(output: ToolMessage) -> ToolMessage:
         """Результат поиска: отказ инструмента едет в контекст, а не роняет ход.
 
         Модель получает ошибку тем же конвертом tool_result, что и удачный
         ответ, и решает сама — переспросить, вызвать инструмент ещё раз или
         ответить без него; пользователь видит крест на шаге ленты. Так же
-        обрабатывается сорванный вызов — негодные аргументы, падение тела:
-        ход продолжается, а причину читает модель. Останавливает ход только
-        нарушение контракта самого слоя инструментов.
+        приходит сорванный вызов — негодные аргументы, падение тела:
+        исполнитель упаковал его причину в результат-ошибку со статусом
+        error. Отмена хода и нарушение контракта слоя инструментов идут
+        наверх исключением исполнителя.
         """
-        if isinstance(output, BaseException):
-            return self._failed(call, output)
-
-        if not isinstance(output, ToolMessage):
-            got = type(output).__name__
-            name = call["name"]
-            msg = f"prefetch tool {name!r} returned {got} instead of ToolMessage"
-            raise PrefetchError(msg)
-
         if output.status == "error":
             logger.warning("prefetch %s failed: %s", output.name, output.content)
             return output
 
-        artifact = ToolArtifact.revive(output.artifact)
-        if isinstance(artifact, FailureResult):
-            logger.warning("prefetch %s failed: %s", output.name, artifact.log_view())
+        if isinstance(output.artifact, FailureResult):
+            logger.warning(
+                "prefetch %s failed: %s", output.name, output.artifact.log_view()
+            )
 
         return output
 
-    def _failed(self, call: ToolCall, error: BaseException) -> ToolMessage:
-        """Сорванный вызов конвертом tool_result с результатом-ошибкой; отмена
-        хода идёт наверх."""
-        if not isinstance(error, Exception):
-            raise error
 
-        name = call["name"]
-        failure = self._failures.pack(error)
-        logger.warning("prefetch %s failed: %s", name, failure.log_view())
+class DagMiddleware(AgentMiddleware[AgentState[Any], Any, Any]):
+    """Вызовы инструментов ответа модели исполняет DAG, а не ToolNode.
 
-        call_id = call["id"]
-        if not call_id:
-            msg = f"prefetch call {name!r} has no id"
-            raise PrefetchError(msg)
-
-        content, artifact = failure.packed()
-
-        return ToolMessage(
-            content=content,
-            artifact=artifact,
-            tool_call_id=call_id,
-            name=name,
-            status="error",
-        )
-
-
-class StreamGroupMiddleware(AgentMiddleware[AgentState[Any], Any, Any]):
-    """Потоковые вызовы ответа модели исполняет DAG, а не ToolNode.
-
-    Модель связывает насосы и трансформы именами каналов в одном ответе.
-    Такой вызов ToolNode не исполняет: middleware отдаёт его StreamRuns —
-    первый вызов ответа строит DAG и запускает исполнитель, каждый вызов
-    получает итог своего узла как ToolMessage. Остальные вызовы идут
-    обычным путём. Граф хода асинхронный; синхронный путь потоковый вызов
-    не исполняет.
+    ToolNode раздаёт вызовы ответа по одному; middleware отдаёт каждый
+    DagCalls со своим конфигом: вызов строит свой DAG, исполнитель запускает
+    его узлы, вызов получает итог как ToolMessage. Вызов инструмента без
+    портов — DAG из одного узла; связку насосов и трансформов модель
+    описывает одним вызовом workflow. Мимо DAG проходит только вызов
+    инструмента, которого у DagCalls нет. Граф хода асинхронный; синхронный
+    путь инструменты DAG не исполняет.
     """
 
-    def __init__(self, runs: StreamRuns) -> None:
+    def __init__(self, calls: DagCalls) -> None:
         super().__init__()
-        self._runs = runs
+        self._calls = calls
 
     @override
     def wrap_tool_call(
@@ -480,8 +467,11 @@ class StreamGroupMiddleware(AgentMiddleware[AgentState[Any], Any, Any]):
         handler: Callable[[ToolCallRequest], ToolMessage | Command[Any]],
     ) -> ToolMessage | Command[Any]:
         name = request.tool_call["name"]
-        if self._runs.streaming(name):
-            msg = f"stream tool {name!r} runs in the async agent graph only"
+        if self._calls.owns(name):
+            msg = (
+                f"tool {name!r} is executed by the dag runner, which runs in the "
+                "async agent graph only"
+            )
             raise RuntimeError(msg)
 
         return handler(request)
@@ -493,27 +483,10 @@ class StreamGroupMiddleware(AgentMiddleware[AgentState[Any], Any, Any]):
         handler: Callable[[ToolCallRequest], Awaitable[ToolMessage | Command[Any]]],
     ) -> ToolMessage | Command[Any]:
         call = request.tool_call
-        if not self._runs.streaming(call["name"]):
+        if not self._calls.owns(call["name"]):
             return await handler(request)
 
-        response = self._response_of(request.state, str(call["id"]))
-
-        return await self._runs.message_for(response, call, request.runtime.config)
-
-    @staticmethod
-    def _response_of(state: Any, call_id: str) -> AIMessage:
-        """Ответ модели, которому принадлежит вызов: последний AIMessage с ним."""
-        messages: Sequence[Any] = state["messages"]
-        for message in reversed(messages):
-            if not isinstance(message, AIMessage):
-                continue
-
-            for call in message.tool_calls:
-                if call["id"] == call_id:
-                    return message
-
-        msg = f"stream call {call_id!r}: no model response in the state carries it"
-        raise RuntimeError(msg)
+        return await self._calls.message_for(call, request.runtime.config)
 
 
 @dataclass(frozen=True)
@@ -526,8 +499,8 @@ class GraphSpec:
     checkpointer: BaseCheckpointSaver
     history: AgentMiddleware[Any, Any, Any]
     """Представление истории для модели: обрезка и чистка чужих tool-вызовов."""
-    streams: StreamGroupMiddleware
-    """Связывание потоковых вызовов ответа модели каналами."""
+    calls: DagCalls
+    """Исполнение вызовов инструментов сессии через DAG."""
 
 
 class AgentGraphBuilder(ABC):
@@ -547,7 +520,7 @@ class PlainGraphBuilder(AgentGraphBuilder):
             tools=list(spec.tools),
             system_prompt=spec.system_prompt,
             checkpointer=spec.checkpointer,
-            middleware=[spec.history, spec.streams],
+            middleware=[spec.history, DagMiddleware(spec.calls)],
         )
 
 
@@ -560,14 +533,20 @@ class PrefetchGraphBuilder(AgentGraphBuilder):
         tools: Sequence[BaseTool],
         stage: PrefetchStage,
     ) -> None:
-        self._prefetch = PrefetchMiddleware(rephraser, tools, stage)
+        self._rephraser = rephraser
+        self._tools = list(tools)
+        self._stage = stage
 
     @override
     def build(self, spec: GraphSpec) -> CompiledStateGraph:
+        prefetch = PrefetchMiddleware(
+            self._rephraser, self._tools, self._stage, spec.calls.runner(self._tools)
+        )
+
         return create_agent(
             model=spec.chat,
             tools=list(spec.tools),
             system_prompt=spec.system_prompt,
             checkpointer=spec.checkpointer,
-            middleware=[self._prefetch, spec.history, spec.streams],
+            middleware=[prefetch, spec.history, DagMiddleware(spec.calls)],
         )

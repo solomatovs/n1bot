@@ -114,16 +114,20 @@ class ToolLoader:
     обёртка поверх уже обёрнутого ломала бы адрес тела и схему.
     """
 
-    def __init__(
+    def __init__(  # noqa: PLR0913 — загрузчик собирается всеми входами процесса
         self,
         raw_config: DictConfig,
         plugins: Mapping[str, ToolPlugin],
         refs: RuntimeRefs,
         grant_check: GrantCheck,
         surface_hooks: Sequence[CallHooks[Any]] = (),
+        own_tools: Sequence[BaseTool] = (),
     ) -> None:
         self._raw = raw_config
         self._plugins = plugins
+        self._own_tools = tuple(own_tools)
+        """Собственные инструменты процесса: идут под теми же обвязками, что
+        и инструменты плагинов, а исполняет их сам процесс, мимо DAG."""
         self._store_ref = refs.connection_store
         self._credentials_ref = refs.credentials
         self._types_ref = refs.connection_types
@@ -164,6 +168,11 @@ class ToolLoader:
         if next(self._stream_writers(tools), None) is not None:
             tools.append(ToolBridge.as_structured_tool(DevNullTool.build()))
 
+        own: list[str] = []
+        for tool in self._own_tools:
+            tools.append(tool)
+            own.append(tool.name)
+
         access = self._access_of(tools, headless_only)
         for hooks in self._surface_hooks:
             ToolBody.hook_all(tools, hooks)
@@ -179,7 +188,12 @@ class ToolLoader:
         ToolAccessGuard.guard_all(tools, access, CallContext.current_subject)
         ToolErrorGuard().guard_all(tools)
         ToolAsyncBody.ensure_all(tools)
-        return ToolRegistry(tools=tools, access=access, stream_config=stream_cfg)
+        return ToolRegistry(
+            tools=tools,
+            access=access,
+            stream_config=stream_cfg,
+            own=frozenset(own),
+        )
 
     @staticmethod
     def _stream_writers(tools: Sequence[BaseTool]) -> Iterator[str]:

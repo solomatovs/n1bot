@@ -82,4 +82,5 @@ class Probe:
             tools=tools,
             access=access,
             stream_config=STREAM_CONFIG,
+            own=frozenset(),
         )
