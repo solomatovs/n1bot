@@ -481,9 +481,13 @@ class StepCheck:
 
 
 class Coverage:
-    """Инструменты, которые прогон вызвал: сверяются со списком стенда."""
+    """Инструменты, которые прогон вызвал: сверяются со списком стенда.
+
+    nodes — потоковые инструменты, вызванные узлами workflow: отдельно
+    стенд их модели не отдаёт, они сверяются со схемой workflow."""
 
     called: ClassVar[set[str]] = set()
+    nodes: ClassVar[set[str]] = set()
 
 
 @dataclass
@@ -545,7 +549,7 @@ class ToolFeed:
         ожиданием."""
         nodes: list[dict[str, Any]] = []
         for index, (call, _) in enumerate(calls):
-            Coverage.called.add(call.tool)
+            Coverage.nodes.add(call.tool)
             request = call.request()
             nodes.append(
                 {
@@ -2474,8 +2478,16 @@ class TestCoverage:
             raise AssertionError("fake llm recorded no requests")
 
         offered: set[str] = set()
+        streams: set[str] = set()
         for spec in requests[-1].get("tools") or []:
-            offered.add(str(spec["function"]["name"]))
+            function = spec["function"]
+            offered.add(str(function["name"]))
+            if function["name"] != WorkflowTool.NAME:
+                continue
+
+            nodes = function["parameters"]["properties"]["nodes"]
+            for variant in nodes["items"]["anyOf"]:
+                streams.add(str(variant["properties"]["tool"]["const"]))
 
         missing = offered - Coverage.called
         if missing:
@@ -2485,6 +2497,18 @@ class TestCoverage:
         if unknown:
             raise AssertionError(
                 f"called tools the stand does not offer: {sorted(unknown)}"
+            )
+
+        idle = streams - Coverage.nodes
+        if idle:
+            raise AssertionError(
+                f"stream tools never called as workflow nodes: {sorted(idle)}"
+            )
+
+        stray = Coverage.nodes - streams
+        if stray:
+            raise AssertionError(
+                f"workflow nodes of tools the stand does not offer: {sorted(stray)}"
             )
 
 
