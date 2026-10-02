@@ -18,8 +18,6 @@ dependencies = [
     "boba-sandbox==0.0.26.dev4",
     "boba-tool-shell==0.0.26.dev4",
     "boba-tool-clickhouse==0.0.26.dev4",
-    "boba-workflow==0.0.26.dev4",
-    "boba-workflow-engine==0.0.26.dev4",
     "boba-catalog-service==0.0.26.dev4",
     "boba-catalog==0.0.26.dev4",
     "boba-config==0.0.26.dev4",

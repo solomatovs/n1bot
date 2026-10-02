@@ -1,295 +1,58 @@
-"""REST workflow для страницы: определения, запуск и остановка; каталог — /v1/tools.
+"""REST workflow отключён: каждый маршрут отвечает 501.
 
-Пользователь — из cookie входа, профиль — в теле либо ?profile= (без него
-берётся профиль по умолчанию). Запуск идёт в фоне процесса, ответ — id
-запуска; ход виден по GET записи, остановка — POST stop на этом инстансе.
+Движок запуска workflow удалён. Маршруты оставлены, чтобы страница получала
+внятный отказ, а не 404; запуск вне чата — POST /v1/tools/{name} и
+POST /v1/dags/runs.
 
 Ошибки (HTTP):
 401 — вход не сохранён слоем данных.
-403 — профиль недоступен ролям пользователя.
-400 — спека негодна или содержит недоступные инструменты.
-404 — workflow или запуск не пользователя.
-202 — запуск ведёт другой инстанс: команда остановки принята шиной.
-503 — хранилище workflow недоступно; [workflow] выключен — ServiceDisabledError,
-    её переводит DomainErrorMiddleware.
+501 — запуск workflow отключён.
 """
 
 from __future__ import annotations
 
-import logging
-from collections.abc import Awaitable, Callable, Mapping, Sequence
-from typing import Any, ClassVar
-from uuid import UUID
+from typing import ClassVar
 
-from fastapi import APIRouter, FastAPI, Request, Response
-from fastapi.responses import JSONResponse
-from pydantic import BaseModel, ConfigDict, Field
+from fastapi import APIRouter, HTTPException
 
-from boba.chat.profiles import ChatProfiles
-from boba.identity.api import ApiSubject, AuthenticatedUser
-from boba.identity.context import Scope
-from boba.studio.api.auth import ApiAuth, CurrentSubject, CurrentUser
+from boba.studio.api.auth import CurrentUser
 from boba.studio.api.urls import WorkflowUrl
-from boba.workflow import RunState
-from boba.workflow.records import (
-    StoredRun,
-    StoredWorkflow,
-    WorkflowStoreError,
-)
-from boba.workflow_engine.service import (
-    StopOutcome,
-    WorkflowError,
-    WorkflowRefusal,
-    WorkflowService,
-)
 
-__all__ = ["Deleted", "WorkflowApi", "WorkflowBody", "WorkflowHttp"]
-
-logger = logging.getLogger(__name__)
-
-ServiceSource = Callable[[], Awaitable[WorkflowService]]
-
-
-class WorkflowBody(BaseModel):
-    """Определение к сохранению или проверке."""
-
-    model_config = ConfigDict(frozen=True, extra="forbid")
-
-    profile: str | None = None
-    spec: str = Field(min_length=1)
-    layout: Mapping[str, Any] = Field(default_factory=dict)
-
-
-class DraftBody(BaseModel):
-    """Черновик билдера к записи: спека как есть, раскладка и сокет вкладки-автора."""
-
-    model_config = ConfigDict(frozen=True, extra="forbid")
-
-    profile: str | None = None
-    spec: str
-    layout: Mapping[str, Any] = Field(default_factory=dict)
-    sid: str = ""
-
-
-class ProfileBody(BaseModel):
-    """Действие без данных: только профиль."""
-
-    model_config = ConfigDict(frozen=True, extra="forbid")
-
-    profile: str | None = None
-
-
-class RunStarted(BaseModel):
-    model_config = ConfigDict(frozen=True, extra="forbid")
-
-    run_id: UUID
-
-
-class Stopped(BaseModel):
-    """Итог просьбы остановить: stopped — остановлен здесь, accepted — команда
-    принята для другого инстанса, finished — уже завершён.
-    """
-
-    model_config = ConfigDict(frozen=True, extra="forbid")
-
-    outcome: StopOutcome
-
-
-class Deleted(BaseModel):
-    model_config = ConfigDict(frozen=True, extra="forbid")
-
-    deleted: bool
+__all__ = ["WorkflowApi"]
 
 
 class WorkflowApi:
-    """Обработчики REST workflow."""
+    """Заглушка маршрутов /workflows и /workflow-runs: все отвечают 501."""
 
     TAG: ClassVar[str] = "workflows"
 
-    def __init__(self, service: ServiceSource, profiles: ChatProfiles) -> None:
-        self._service = service
-        self._profiles = profiles
+    DISABLED: ClassVar[str] = (
+        "workflow runs are disabled: the workflow engine was removed; call a "
+        "tool with POST /v1/tools/{name} or run a DAG with POST /v1/dags/runs"
+    )
 
-    def mount(self, app: FastAPI, router: APIRouter) -> None:
-        WorkflowHttp.install(app)
-        routes = (
-            (WorkflowUrl.VALIDATE, self.validate, "POST"),
-            (WorkflowUrl.WORKFLOWS, self.list_workflows, "GET"),
-            (WorkflowUrl.WORKFLOWS, self.save, "POST"),
-            (WorkflowUrl.WORKFLOW, self.get, "GET"),
-            (WorkflowUrl.WORKFLOW, self.save_into, "PUT"),
-            (WorkflowUrl.WORKFLOW, self.delete, "DELETE"),
-            (WorkflowUrl.WORKFLOW_DRAFT, self.put_draft, "PUT"),
-            (WorkflowUrl.WORKFLOW_DRAFT, self.clear_draft, "DELETE"),
-            (WorkflowUrl.RUN, self.run, "POST"),
-            (WorkflowUrl.RUNS, self.list_runs, "GET"),
-            (WorkflowUrl.RUN_ONE, self.get_run, "GET"),
-            (WorkflowUrl.STOP, self.stop, "POST"),
-        )
-        for path, handler, method in routes:
-            router.add_api_route(path.value, handler, methods=[method], tags=[self.TAG])
+    ROUTES: ClassVar[tuple[tuple[WorkflowUrl, str], ...]] = (
+        (WorkflowUrl.VALIDATE, "POST"),
+        (WorkflowUrl.WORKFLOWS, "GET"),
+        (WorkflowUrl.WORKFLOWS, "POST"),
+        (WorkflowUrl.WORKFLOW, "GET"),
+        (WorkflowUrl.WORKFLOW, "PUT"),
+        (WorkflowUrl.WORKFLOW, "DELETE"),
+        (WorkflowUrl.WORKFLOW_DRAFT, "PUT"),
+        (WorkflowUrl.WORKFLOW_DRAFT, "DELETE"),
+        (WorkflowUrl.RUN, "POST"),
+        (WorkflowUrl.RUNS, "GET"),
+        (WorkflowUrl.RUN_ONE, "GET"),
+        (WorkflowUrl.STOP, "POST"),
+        (WorkflowUrl.STREAM, "GET"),
+        (WorkflowUrl.STREAM_CHANNELS, "GET"),
+    )
 
-    async def validate(
-        self, body: WorkflowBody, current_user: CurrentUser, profile: str | None = None
-    ) -> RunState:
-        identity = self._identity(current_user, self._chosen(body.profile, profile))
-        service = await self._service()
+    def mount(self, router: APIRouter) -> None:
+        for path, method in self.ROUTES:
+            router.add_api_route(
+                path.value, self.disabled, methods=[method], tags=[self.TAG]
+            )
 
-        graph = await service.validate(identity.subject, body.spec)
-
-        return service.initial_state(graph)
-
-    async def list_workflows(
-        self, identity: CurrentSubject
-    ) -> Sequence[StoredWorkflow]:
-        service = await self._service()
-
-        return await service.list_workflows(identity.subject)
-
-    async def save(
-        self, body: WorkflowBody, current_user: CurrentUser, profile: str | None = None
-    ) -> StoredWorkflow:
-        identity = self._identity(current_user, self._chosen(body.profile, profile))
-        service = await self._service()
-
-        return await service.save(identity.subject, body.spec, body.layout)
-
-    async def save_into(
-        self,
-        workflow_id: UUID,
-        body: WorkflowBody,
-        current_user: CurrentUser,
-        profile: str | None = None,
-    ) -> StoredWorkflow:
-        identity = self._identity(current_user, self._chosen(body.profile, profile))
-        service = await self._service()
-
-        return await service.save_into(
-            identity.subject, workflow_id, body.spec, body.layout
-        )
-
-    async def get(self, workflow_id: UUID, identity: CurrentSubject) -> StoredWorkflow:
-        service = await self._service()
-
-        return await service.get(identity.subject, workflow_id)
-
-    async def delete(self, workflow_id: UUID, identity: CurrentSubject) -> Deleted:
-        service = await self._service()
-
-        deleted = await service.delete(identity.subject, workflow_id)
-        return Deleted(deleted=deleted)
-
-    async def put_draft(
-        self,
-        workflow_id: UUID,
-        body: DraftBody,
-        current_user: CurrentUser,
-        profile: str | None = None,
-    ) -> StoredWorkflow:
-        identity = self._identity(current_user, self._chosen(body.profile, profile))
-        service = await self._service()
-
-        return await service.put_draft(
-            identity.subject, workflow_id, body.spec, body.layout, body.sid
-        )
-
-    async def clear_draft(
-        self,
-        workflow_id: UUID,
-        identity: CurrentSubject,
-        sid: str = "",
-    ) -> StoredWorkflow:
-        service = await self._service()
-
-        return await service.clear_draft(identity.subject, workflow_id, sid)
-
-    async def run(
-        self,
-        workflow_id: UUID,
-        body: ProfileBody,
-        current_user: CurrentUser,
-        profile: str | None = None,
-    ) -> RunStarted:
-        identity = self._identity(current_user, self._chosen(body.profile, profile))
-        service = await self._service()
-
-        run_id = service.new_run_id()
-        context = identity.context(Scope.workflow(run_id))
-        stored = await service.get(identity.subject, workflow_id)
-        started = await service.start(context, stored, run_id)
-
-        service.launch(context, started)
-
-        return RunStarted(run_id=run_id)
-
-    async def list_runs(
-        self,
-        identity: CurrentSubject,
-        limit: int = 50,
-    ) -> Sequence[StoredRun]:
-        service = await self._service()
-
-        return await service.list_runs(identity.subject, limit)
-
-    async def get_run(self, run_id: UUID, identity: CurrentSubject) -> StoredRun:
-        service = await self._service()
-
-        return await service.get_run(identity.subject, run_id)
-
-    async def stop(
-        self,
-        run_id: UUID,
-        body: ProfileBody,
-        current_user: CurrentUser,
-        response: Response,
-        profile: str | None = None,
-    ) -> Stopped:
-        identity = self._identity(current_user, self._chosen(body.profile, profile))
-        service = await self._service()
-
-        outcome = await service.stop(identity.subject, run_id)
-        if outcome is StopOutcome.ACCEPTED:
-            response.status_code = 202
-
-        return Stopped(outcome=outcome)
-
-    @staticmethod
-    def _chosen(in_body: str | None, in_query: str | None) -> str | None:
-        """Профиль из тела главнее query-параметра, которым страница метит запросы."""
-        if in_body is not None:
-            return in_body
-
-        return in_query
-
-    def _identity(
-        self, current_user: AuthenticatedUser, profile: str | None
-    ) -> ApiSubject:
-        return ApiAuth.resolve(current_user, profile, self._profiles)
-
-
-class WorkflowHttp:
-    """Перевод отказов сервиса workflow в HTTP-ответы обработчиками
-    исключений приложения."""
-
-    @classmethod
-    def install(cls, app: FastAPI) -> None:
-        app.add_exception_handler(WorkflowError, cls.refusal)
-        app.add_exception_handler(WorkflowStoreError, cls.store_failure)
-
-    @staticmethod
-    async def refusal(request: Request, exc: Exception) -> Response:
-        if not isinstance(exc, WorkflowError):
-            raise exc
-
-        if exc.kind == WorkflowRefusal.NOT_FOUND:
-            return WorkflowHttp._reply(404, str(exc))
-
-        return WorkflowHttp._reply(400, str(exc))
-
-    @staticmethod
-    async def store_failure(request: Request, exc: Exception) -> Response:
-        return WorkflowHttp._reply(503, str(exc))
-
-    @staticmethod
-    def _reply(status: int, detail: str) -> Response:
-        return JSONResponse(status_code=status, content={"detail": detail})
+    async def disabled(self, current_user: CurrentUser) -> None:
+        raise HTTPException(status_code=501, detail=self.DISABLED)

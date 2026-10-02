@@ -45,7 +45,7 @@ class ToolRegistry:
     def for_headless(
         self, user_roles: Iterable[str], profile: str
     ) -> dict[str, BaseTool]:
-        """Инструменты вне чата (REST, workflow, планировщик) по именам."""
+        """Инструменты вне чата (REST, планировщик) по именам."""
         roles = frozenset(user_roles)
 
         by_name: dict[str, BaseTool] = {}
