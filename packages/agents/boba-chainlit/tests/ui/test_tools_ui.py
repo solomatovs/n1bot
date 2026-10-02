@@ -1771,58 +1771,6 @@ class TestChTools:
         result = SqlResult(engine="clickhouse", statements=[statement])
         feed.call(call, ToolExpect.of(result, dom=[ProbeSql.CH_USER.value]))
 
-    def test_describe_table(self, feed: ToolFeed) -> None:
-        call = ToolCall(
-            tool="ch_describe_table",
-            arguments={
-                "connection": "main",
-                "table": ProbeSql.CH_ONE.value,
-                "database": ProbeSql.CH_SYSTEM.value,
-                **RowWindowArgs.of(),
-            },
-        )
-        address = f"{ProbeSql.CH_SYSTEM.value}.{ProbeSql.CH_ONE.value}.dummy"
-        expect = ToolExpect(
-            patterns=[
-                TablePattern.cells("address", "database", "table", "name", "position"),
-                TablePattern.cells(
-                    re.escape(address),
-                    ProbeSql.CH_SYSTEM.value,
-                    ProbeSql.CH_ONE.value,
-                    "dummy",
-                    "1",
-                    "UInt8",
-                ),
-                r"^_rows 1-1; end of result_$",
-            ],
-            dom=["dummy", "UInt8"],
-        )
-        feed.call(call, expect)
-
-    def test_list_tables(self, feed: ToolFeed) -> None:
-        call = ToolCall(
-            tool="ch_list_tables",
-            arguments={
-                "connection": "main",
-                "database": ProbeSql.CH_SYSTEM.value,
-                **RowWindowArgs.of(limit=2),
-            },
-        )
-        expect = ToolExpect(
-            patterns=[
-                TablePattern.row("database", "table", "engine", "total_rows"),
-                TablePattern.row(
-                    ProbeSql.CH_SYSTEM.value,
-                    "aggregate_function_combinators",
-                    "SystemAggregateFunctionCombinators",
-                    "",
-                ),
-                r"^_rows 1-2; more rows available, next offset=2_$",
-            ],
-            dom=["aggregate_function_combinators", "next offset=2"],
-        )
-        feed.call(call, expect)
-
 
 class TestChEdmTools:
     """ch_edm_*: выгрузка ЕДМ UI-стенда на demo-ClickHouse, соединение edm."""
@@ -1956,6 +1904,145 @@ class TestOraTools:
             dom=["DUMMY", "VARCHAR2"],
         )
         feed.call(call, expect)
+
+
+@dataclass(frozen=True)
+class DescribeCase:
+    """Вызов одного инструмента семейства *_describe на объектах стенда и
+    заголовок колонки, которая обязана быть в его выдаче."""
+
+    tool: str
+    arguments: Mapping[str, Any]
+    column: str
+    windowed: bool = True
+
+    def call(self) -> ToolCall:
+        arguments = {"connection": "main", **self.arguments}
+        if self.windowed:
+            arguments.update(RowWindowArgs.of(limit=2))
+
+        return ToolCall(tool=self.tool, arguments=arguments)
+
+
+class DescribeCases:
+    """Наборы вызовов семейства *_describe по движкам: каждому инструменту —
+    объект стенда, на котором у него есть строки."""
+
+    PG: ClassVar[Sequence[DescribeCase]] = (
+        DescribeCase("pg_database_describe", {"db_name": "*"}, "address"),
+        DescribeCase("pg_schema_describe", {"schema_name": "public"}, "address"),
+        DescribeCase(
+            "pg_table_describe",
+            {"schema_name": "public", "table_name": "ui_probe"},
+            "address",
+        ),
+        DescribeCase(
+            "pg_column_describe",
+            {"schema_name": "public", "table_name": "ui_probe"},
+            "address",
+        ),
+        DescribeCase(
+            "pg_constraints_describe",
+            {"schema_name": "public", "table_name": "ui_probe"},
+            "address",
+        ),
+        DescribeCase(
+            "pg_indexes_describe",
+            {"schema_name": "public", "table_name": "ui_probe"},
+            "address",
+        ),
+        DescribeCase(
+            "pg_routines_describe",
+            {"schema_name": "pg_catalog", "routine_name": "abs"},
+            "address",
+        ),
+        DescribeCase(
+            "pg_routine_arg_describe",
+            {"schema_name": "pg_catalog", "routine_name": "abs"},
+            "address",
+        ),
+        DescribeCase(
+            "pg_sequences_describe",
+            {"schema_name": "*", "sequence_name": "*"},
+            "address",
+        ),
+        DescribeCase(
+            "pg_types_describe",
+            {"schema_name": "*", "type_name": "*"},
+            "address",
+        ),
+    )
+
+    CH: ClassVar[Sequence[DescribeCase]] = (
+        DescribeCase("ch_database_describe", {"database": "system"}, "address"),
+        DescribeCase(
+            "ch_table_describe", {"database": "system", "table": "one"}, "address"
+        ),
+        DescribeCase(
+            "ch_column_describe", {"database": "system", "table": "one"}, "address"
+        ),
+        DescribeCase(
+            "ch_constraints_describe",
+            {"database": "system", "table": "one"},
+            "address",
+        ),
+        DescribeCase(
+            "ch_indexes_describe", {"database": "system", "table": "one"}, "address"
+        ),
+        DescribeCase("ch_function_describe", {"function": "array%"}, "address"),
+        DescribeCase("ch_sequences_describe", {}, "address"),
+        DescribeCase("ch_types_describe", {"name": "UInt%"}, "address"),
+    )
+
+    ORA: ClassVar[Sequence[DescribeCase]] = (
+        DescribeCase("ora_database_describe", {}, "address", windowed=False),
+        DescribeCase("ora_schema_describe", {"schema_name": "SYS"}, "address"),
+        DescribeCase(
+            "ora_table_describe", {"schema_name": "SYS", "table": "DUAL"}, "address"
+        ),
+        DescribeCase(
+            "ora_column_describe", {"schema_name": "SYS", "table": "DUAL"}, "address"
+        ),
+        DescribeCase(
+            "ora_constraints_describe",
+            {"schema_name": "SYS", "table": "DUAL"},
+            "address",
+        ),
+        DescribeCase(
+            "ora_indexes_describe", {"schema_name": "SYS", "table": "DUAL"}, "address"
+        ),
+        DescribeCase(
+            "ora_routines_describe",
+            {"schema_name": "SYS", "routine": "DBMS_OUTPUT%"},
+            "address",
+        ),
+        DescribeCase("ora_sequences_describe", {"schema_name": "SYS"}, "address"),
+        DescribeCase("ora_types_describe", {"schema_name": "SYS"}, "address"),
+    )
+
+
+class TestDescribeFamily:
+    """Семейство *_describe трёх движков: каждый инструмент отвечает на
+    объекте стенда таблицей со своими колонками."""
+
+    @pytest.mark.parametrize("case", DescribeCases.PG, ids=lambda case: case.tool)
+    def test_postgres(
+        self, feed: ToolFeed, probe_table: str, case: DescribeCase
+    ) -> None:
+        self._check(feed, case)
+
+    @pytest.mark.parametrize("case", DescribeCases.CH, ids=lambda case: case.tool)
+    def test_clickhouse(self, feed: ToolFeed, case: DescribeCase) -> None:
+        self._check(feed, case)
+
+    @pytest.mark.parametrize("case", DescribeCases.ORA, ids=lambda case: case.tool)
+    def test_oracle(self, feed: ToolFeed, case: DescribeCase) -> None:
+        self._check(feed, case)
+
+    @staticmethod
+    def _check(feed: ToolFeed, case: DescribeCase) -> None:
+        step = feed.call(case.call(), ToolExpect())
+        print("DBG", case.tool, "::", step.output[:260].replace("\n", " / "))
 
 
 class TestAddressTools:

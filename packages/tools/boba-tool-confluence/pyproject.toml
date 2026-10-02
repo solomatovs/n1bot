@@ -30,6 +30,7 @@ ingest = "boba.tool.confluence.plugin:INGEST"
 payload = [
     "boba-doc[readers,ocr]==0.0.26.dev4",
     "boba-confluence[html]==0.0.26.dev4",
+    "boba-llm-fastembed==0.0.26.dev4",
     "lxml>=5.0",
 ]
 dev = [

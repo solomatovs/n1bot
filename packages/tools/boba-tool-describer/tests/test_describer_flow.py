@@ -3,7 +3,7 @@
 Инструменты собираются боевым ChatPlugins.load и работают в зиготах секций;
 соединения пользователя лежат в таблицах брокера; модель — по сценарию.
 Ход повторяет работу агента: connection_list → pg_describe_table и pg_query
-по pg_constraint → ch_describe_table → базовые url соединений → узлы и
+по pg_constraint → ch_query по system.columns → базовые url соединений → узлы и
 рёбра describe_* (в том числе кроссбазное ребро pg ↔ ch и понятие entity) →
 ошибочные вызовы, которые ход переживает → describe_list_nodes и
 describe_list_edges → удаление по id → ответ. Строки
@@ -61,7 +61,13 @@ from boba.tool.describer.address import Addresses, EntityAddress
 from boba.tool.describer.edges import EdgeKind, EdgeListColumn
 from boba.tool.describer.nodes import NodeListColumn
 from boba.toolkit.chain import StreamTimings
-from boba.toolkit.result import ErrorResult, SqlResult, TableResult, ToolArtifact
+from boba.toolkit.result import (
+    ErrorResult,
+    ExceptionResult,
+    SqlResult,
+    TableResult,
+    ToolArtifact,
+)
 from boba.toolrun.stream_calls import StreamGroups
 
 _REPO = Path(__file__).resolve().parents[4]
@@ -439,6 +445,11 @@ def _script(expected: Expected) -> list[AIMessage]:
         "from pg_constraint where contype = 'f' "
         "and conrelid = 'dm.orders'::regclass"
     )
+    ch_columns_sql = (
+        "select name, type from system.columns "
+        "where database = 'describer_e2e' and table = 'events' "
+        "order by position"
+    )
 
     return [
         AIMessage(
@@ -464,10 +475,9 @@ def _script(expected: Expected) -> list[AIMessage]:
                 ),
                 _call(
                     CallId.CH_DESCRIBE,
-                    "ch_describe_table",
+                    "ch_query",
                     connection=CH_CONNECTION,
-                    table="events",
-                    database=CH_DATABASE,
+                    sql=ch_columns_sql,
                     **WINDOW,
                 ),
             ],
@@ -648,12 +658,12 @@ class Replies:
 
         return artifact
 
-    def refused(self, call_id: str) -> ErrorResult:
-        """Отказ тела: сообщение со статусом хода и артефактом ErrorResult."""
+    def refused(self, call_id: str) -> ErrorResult | ExceptionResult:
+        """Сбой тела: сообщение со статусом хода и артефактом-ошибкой."""
         reply = self._reply(call_id)
         artifact = ToolArtifact.revive(reply.artifact)
-        if not isinstance(artifact, ErrorResult):
-            raise AssertionError(f"{call_id} must be refused, got {reply.content!r}")
+        if not isinstance(artifact, ErrorResult | ExceptionResult):
+            raise AssertionError(f"{call_id} must fail, got {reply.content!r}")
 
         return artifact
 
@@ -815,13 +825,13 @@ async def test_agent_describes_schema_and_links(  # noqa: PLR0915 — один �
         row = _rows(replies.ok(call_id))[0]
         assert row["action"] == "inserted", call_id
 
-    # ошибочные вызовы отвечают отказом, ход продолжается
+    # ошибочные вызовы отвечают ошибкой тела, ход продолжается
     bad_address = replies.refused(CallId.BAD_ADDRESS)
-    assert bad_address.error_kind == "invalid_address"
+    assert bad_address.error_kind == "AddressError"
     assert "pg_table" in bad_address.message
 
     bad_edge = replies.refused(CallId.BAD_EDGE)
-    assert bad_edge.error_kind == "node_missing"
+    assert bad_edge.error_kind == "EdgeEndMissingError"
     assert expected.pg_table("payments") in bad_edge.message
 
     bad_args = replies.invalid(CallId.BAD_ARGS)
@@ -842,7 +852,7 @@ async def test_agent_describes_schema_and_links(  # noqa: PLR0915 — один �
     assert deleted_node == [{"id": LAST_NODE_ID, "action": "deleted"}]
 
     bad_delete = replies.refused(CallId.BAD_DELETE)
-    assert bad_delete.error_kind == "node_id_missing"
+    assert bad_delete.error_kind == "NodeIdsMissingError"
     assert "999999" in bad_delete.message
 
     nodes_after = _rows(replies.ok(CallId.LIST_NODES_AFTER))

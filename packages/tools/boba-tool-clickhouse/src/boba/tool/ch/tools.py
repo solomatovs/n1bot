@@ -1550,7 +1550,6 @@ TOOLS: Final = ToolMain.toolset(
     ch_function_describe,
     ch_sequences_describe,
     ch_types_describe,
-    ch_types_describe,
     ch_edm_general_describe,
     ch_edm_table_describe,
     ch_edm_structure,
