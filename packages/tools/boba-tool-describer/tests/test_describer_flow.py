@@ -68,7 +68,7 @@ from boba.toolkit.result import (
     TableResult,
     ToolArtifact,
 )
-from boba.toolrun.stream_calls import DagCalls
+from boba.toolrun.stream_calls import LocalDagService
 
 _REPO = Path(__file__).resolve().parents[4]
 _SANDBOX_STAGING = _REPO / "build" / "chainlit" / "src" / "sandbox"
@@ -416,11 +416,11 @@ def _graph(
 
     spec = GraphSpec(
         chat=chat,
-        tools=tools,
+        service=LocalDagService(tools, STREAM_CONFIG),
+        own_tools=(),
         system_prompt=settings.system_prompt,
         checkpointer=InMemorySaver(),
         history=build_history_view(frozenset(names), settings.history_messages),
-        calls=DagCalls(tools, STREAM_CONFIG),
     )
 
     return PlainGraphBuilder().build(spec)

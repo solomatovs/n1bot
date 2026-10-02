@@ -2,10 +2,10 @@
 """Модель связывает насосы каналами: postgres раздаётся в ClickHouse и в
 postgres одним вызовом workflow.
 
-Вызов идёт путём чата: вызов workflow модели отдаётся DagCalls, тот
-раскрывает его в узлы DAG, запускает исполнитель и отдаёт итоги узлов
-одним результатом; тела — настоящие процессы инструментов pg и ch на базах
-стенда.
+Вызов идёт путём чата: вызов workflow модели отдаётся сервису исполнения
+(LocalDagService), тот раскрывает его в узлы DAG, запускает исполнитель и
+отдаёт итоги узлов одним результатом; тела — настоящие процессы
+инструментов pg и ch на базах стенда.
 
 Что проверяется:
     - один выход pg_stream_out по arrow читают ch_stream_in и pg_stream_in,
@@ -33,9 +33,9 @@ from boba.toolkit.result import (
     FailureResult,
     GroupCall,
     GroupFailureResult,
-    ToolArtifact,
     WorkflowResult,
 )
+from boba.toolkit.service import CallRequest
 from boba.toolkit.types import SecretReveal
 from boba.toolkit.wrap import ToolProcessWrap
 from boba.toolrun.bridge import ToolBridge
@@ -43,7 +43,7 @@ from boba.toolrun.call_id import ToolCallIdField
 from boba.toolrun.errors import ToolErrorGuard
 from boba.toolrun.process import ProcessLauncherConfig, ProcessToolCaller
 from boba.toolrun.stream_calls import (
-    DagCalls,
+    LocalDagService,
     StreamChannelFields,
     StreamGroupsConfig,
     WorkflowTool,
@@ -134,7 +134,7 @@ class ChannelTools:
         StreamChannelFields(STREAM_CFG).attach_all(tools)
         ToolCallIdField.attach_all(tools)
         ToolErrorGuard().guard_all(tools)
-        self._streams = DagCalls(tools, STREAM_CFG)
+        self._streams = LocalDagService(tools, STREAM_CFG)
 
     async def respond(self, calls: Sequence[Mapping[str, Any]]) -> list[Any]:
         """Узлы одного вызова workflow, как в чате: итоги узлов в порядке
@@ -145,15 +145,13 @@ class ChannelTools:
                 {"key": f"n{index}", "tool": call["name"], "args": call["args"]}
             )
 
-        workflow: Any = {
-            "name": WorkflowTool.NAME,
-            "args": {"nodes": nodes},
-            "id": "call_0",
-            "type": "tool_call",
-        }
-        message = await self._streams.message_for(workflow, None)
+        arguments: dict[str, Any] = {"nodes": nodes}
+        request = CallRequest(
+            run_id="call_0", tool=WorkflowTool.NAME, arguments=arguments
+        )
+        reply = await self._streams.call(request)
 
-        artifact = ToolArtifact.revive(message.artifact)
+        artifact = reply.artifact
         if not isinstance(artifact, WorkflowResult):
             return [artifact]
 

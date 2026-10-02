@@ -47,7 +47,7 @@ from boba.llm.schema import SchemaReply
 from boba.stand.refs import StandRefs
 from boba.stand.tools import STREAM_CONFIG
 from boba.toolkit.result import TableResult, ToolArtifact
-from boba.toolrun.stream_calls import DagCalls
+from boba.toolrun.stream_calls import LocalDagService
 from boba.transport.http.connection import HttpConnection, UrlScheme
 
 _REPO = Path(__file__).resolve().parents[4]
@@ -177,11 +177,11 @@ def _graph(
 
     spec = GraphSpec(
         chat=chat,
-        tools=tools,
+        service=LocalDagService(tools, STREAM_CONFIG),
+        own_tools=(),
         system_prompt=settings.system_prompt,
         checkpointer=InMemorySaver(),
         history=build_history_view(frozenset(names), settings.history_messages),
-        calls=DagCalls(tools, STREAM_CONFIG),
     )
 
     builder = session_graph_builder(providers, selected, tools)

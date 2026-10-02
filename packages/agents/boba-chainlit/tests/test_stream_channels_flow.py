@@ -3,7 +3,7 @@
 Агентный цикл create_agent с заскриптованной моделью: модель зовёт
 инструмент workflow, его узлы — источник, трансформ и приёмники, каналы
 названы в полях out/feed/feeds аргументов узлов. DagMiddleware перехватывает
-вызов: DagCalls раскрывает его в узлы DAG, исполнитель запускает их
+вызов и отдаёт сервису исполнения: тот раскрывает его в узлы DAG, запускает их
 группой, вызов получает итоги узлов одним результатом. Тела — настоящие
 субпроцессы инструментов стенда.
 """
@@ -25,7 +25,7 @@ from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph.state import CompiledStateGraph
 from pydantic import SecretStr
 
-from boba.chainlit.agent.flow import GraphSpec, PlainGraphBuilder
+from boba.chainlit.agent.flow import GraphSpec, PlainGraphBuilder, ServiceTools
 from boba.chainlit.chat.history import CheckpointMessages, TranscriptFeed
 from boba.chainlit.domain.fields import StepField
 from boba.chainlit.infra.providers import build_history_view
@@ -50,7 +50,7 @@ from boba.toolrun.errors import ToolErrorGuard
 from boba.toolrun.injected import InjectedConfig
 from boba.toolrun.process import ProcessLauncherConfig, ProcessToolCaller
 from boba.toolrun.stream_calls import (
-    DagCalls,
+    LocalDagService,
     StreamCallKind,
     StreamChannelFields,
     StreamGroupsConfig,
@@ -144,7 +144,7 @@ class ChannelStand:
         StreamChannelFields(STREAM_CFG).attach_all([drain])
         tools.append(drain)
 
-        self.streams = DagCalls(tools, STREAM_CFG)
+        self.streams = LocalDagService(tools, STREAM_CFG)
         self.tools = tools
 
     def started(self) -> list[tuple[str, ...]]:
@@ -172,11 +172,11 @@ class ChannelStand:
 
         spec = GraphSpec(
             chat=ScriptedChat(messages=iter(script), disable_streaming=True),
-            tools=self.streams.model_tools(),
+            service=self.streams,
+            own_tools=(),
             system_prompt="wire the streams",
             checkpointer=saver,
-            history=build_history_view(self.streams.history_names(), 30),
-            calls=self.streams,
+            history=build_history_view(ServiceTools(self.streams).names(), 30),
         )
         return PlainGraphBuilder().build(spec)
 
@@ -298,13 +298,12 @@ class TestChannelSchema:
         stand = ChannelStand(tmp_path)
 
         offered: list[str] = []
-        for tool in stand.streams.model_tools():
+        for tool in stand.streams.tools():
             offered.append(tool.name)
 
         assert offered == ["fake_echo", WorkflowTool.NAME]
 
-        workflow = stand.streams.model_tools()[-1]
-        schema = convert_to_openai_tool(workflow)["function"]["parameters"]
+        schema = stand.streams.tools()[-1].input_schema
 
         variants: dict[str, Any] = {}
         for variant in schema["properties"]["nodes"]["items"]["anyOf"]:
@@ -602,8 +601,7 @@ class TestWorkflowGroups:
 
         replies = await stand.turn([call])
 
-        workflow = stand.streams.model_tools()[-1]
-        schema = convert_to_openai_tool(workflow)["function"]["parameters"]
+        schema = stand.streams.tools()[-1].input_schema
         assert "intent" in schema["properties"]
         assert replies["call_0"].status == "success"
         assert (tmp_path / "noted").read_text() == _collected("m", 4, 16)
@@ -810,6 +808,21 @@ class TestWorkflowRefusals:
         assert error.error_kind == StreamCallKind.OUTSIDE_WORKFLOW, text
         assert "'fake_emit' reads or writes stream channels" in text
         assert "runs only as a node of 'workflow'" in text
+        assert stand.started() == []
+
+    async def test_made_up_tool_is_answered_with_the_available_ones(
+        self, tmp_path: Path
+    ) -> None:
+        """Модель зовёт инструмент, которого нет: сервис называет те, что есть."""
+        stand = ChannelStand(tmp_path)
+
+        replies = await stand.turn([{"name": "copy_table", "args": {"table": "x"}}])
+
+        error = _error(replies["call_0"])
+        text = error.llm_view()
+        assert error.error_kind == StreamCallKind.UNKNOWN_TOOL, text
+        assert "tool 'copy_table' does not exist" in text
+        assert "['fake_echo', 'workflow']" in text
         assert stand.started() == []
 
 

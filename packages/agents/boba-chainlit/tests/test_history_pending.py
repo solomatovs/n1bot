@@ -24,7 +24,7 @@ from boba.chainlit.infra.providers import build_history_view
 from boba.chainlit.rendering.chat_view import StepKind
 from boba.stand.tools import STREAM_CONFIG
 from boba.toolkit.result import MarkdownResult
-from boba.toolrun.stream_calls import DagCalls
+from boba.toolrun.stream_calls import LocalDagService
 
 pytestmark = pytest.mark.anyio
 
@@ -78,11 +78,11 @@ def _graph(saver: InMemorySaver):
     chat = ScriptedChat(messages=iter([calls, AIMessage(content="both indexed")]))
     spec = GraphSpec(
         chat=chat,
-        tools=[fast_index, slow_index],
+        service=LocalDagService([fast_index, slow_index], STREAM_CONFIG),
+        own_tools=(),
         system_prompt="index everything",
         checkpointer=saver,
         history=build_history_view(frozenset({"fast_index", "slow_index"}), 30),
-        calls=DagCalls([fast_index, slow_index], STREAM_CONFIG),
     )
     return PlainGraphBuilder().build(spec)
 
