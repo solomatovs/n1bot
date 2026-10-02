@@ -1,4 +1,4 @@
-"""Исполнитель вызова инструмента вне хода чата: REST, workflow, планировщик.
+"""Исполнитель вызова инструмента вне хода чата: REST, планировщик.
 
 Инструменты — уже собранные реестром с полной цепочкой хуков и отобранные
 под субъекта (ToolRegistry.for_headless). Исполнитель собирает ToolCall со
@@ -117,7 +117,7 @@ class ToolInvoker:
         return ToolCall(name=name, args=call_args, id=prefix.new_id(), type="tool_call")
 
     async def invoke(self, call: ToolCall) -> InvokeReply:
-        """Вызов вне дерева колбэков вызывающего: из хода чата задачи workflow
+        """Вызов вне дерева колбэков вызывающего: из хода чата фоновые задачи
         в ленту не попадают, их итог несёт отчёт самого запуска."""
         tool = self.tool(call["name"])
 

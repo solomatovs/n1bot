@@ -20,15 +20,10 @@ from boba.runtime.refs import RuntimeRefs
 from boba.studio.api.account import AccountApi, UsersSource
 from boba.studio.api.auth import ApiAuth
 from boba.studio.api.dags import DagRunning
+from boba.studio.api.page_socket import PageNamespace, PageSocket, StudioSessions
 from boba.studio.api.signin import SignInApi, SignInWiring
-from boba.studio.api.streams import StreamApi
 from boba.studio.api.tools import ToolCalling
 from boba.studio.api.urls import ApiVersion
-from boba.studio.api.workflow_socket import (
-    StudioSessions,
-    WorkflowNamespace,
-    WorkflowSocket,
-)
 from boba.studio.api.workflows import WorkflowApi
 
 __all__ = ["ApiAccess", "ApiApp", "ApiExtras", "ApiMount"]
@@ -113,22 +108,21 @@ class ApiApp:
             refs.live_locks,
             refs.heartbeat_sec,
         ).mount(router)
-        WorkflowApi(refs.workflow_service, profiles).mount(app, router)
-        StreamApi(refs.workflow_service, profiles).mount(router)
+        WorkflowApi().mount(router)
         for mount in extras.mounts:
             mount.mount(app, router)
 
         app.include_router(router)
 
         auth = ApiAuth.of_app(app)
-        namespace = WorkflowNamespace(
-            refs.workflow_service,
+        namespace = PageNamespace(
+            refs.message_bus,
             profiles,
             auth.socket_sign_in,
             refs.bus_watch,
             access.sessions,
         )
-        app.mount(WorkflowSocket.PATH, WorkflowSocket.build(namespace))
+        app.mount(PageSocket.PATH, PageSocket.build(namespace))
 
         app.add_middleware(DomainErrorMiddleware)
 
@@ -137,7 +131,7 @@ class ApiApp:
     @classmethod
     def socket_path(cls, url_prefix: str) -> str:
         """Полный путь socket.io API для страницы: {prefix}/api/socket.io."""
-        return f"{url_prefix}{cls.MOUNT}{WorkflowSocket.PATH}"
+        return f"{url_prefix}{cls.MOUNT}{PageSocket.PATH}"
 
     @classmethod
     def mount_prefix(cls, url_prefix: str) -> str:

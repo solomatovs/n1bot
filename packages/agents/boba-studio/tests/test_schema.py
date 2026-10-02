@@ -6,24 +6,22 @@ import subprocess
 import sys
 
 from boba.studio.api.schema import OpenApiDocument
-from boba.studio.api.urls import ApiVersion, ToolCallUrl, WorkflowUrl
+from boba.studio.api.urls import ApiVersion, DagUrl, ToolCallUrl, WorkflowUrl
 
 
 def test_schema_lists_v1_paths_and_models() -> None:
     document = OpenApiDocument.render()
 
     paths = set(document["paths"])
-    for url in [*WorkflowUrl, ToolCallUrl.CALL]:
+    for url in [*WorkflowUrl, *DagUrl, ToolCallUrl.CALL]:
         if f"{ApiVersion.V1}{url}" not in paths:
             raise AssertionError((url, sorted(paths)))
 
     schemas = set(document["components"]["schemas"])
     for name in (
-        "StoredWorkflow",
-        "StoredRun",
-        "RunState",
         "ToolCallReply",
-        "ToolFacts",
+        "DagRunBody",
+        "DagRunReply",
     ):
         if name not in schemas:
             raise AssertionError((name, sorted(schemas)))
