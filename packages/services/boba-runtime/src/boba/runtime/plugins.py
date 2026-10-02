@@ -19,7 +19,7 @@ TypeError — TOOLS модуля содержит не PayloadTool и не BaseT
 from __future__ import annotations
 
 import logging
-from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from functools import wraps
 from importlib.metadata import entry_points
@@ -42,6 +42,7 @@ from boba.toolkit.entry import ToolAddress, ToolArgv, ToolEntryError, ToolLike, 
 from boba.toolkit.facade import PayloadTool
 from boba.toolkit.launcher import ToolLauncher
 from boba.toolkit.manifest import LaunchSpec, ToolPluginManifest
+from boba.toolkit.ports import ToolStreamSpecs
 from boba.toolkit.result import ToolResultBase
 from boba.toolkit.types import StringList
 from boba.toolkit.wrap import ToolProcessWrap
@@ -261,7 +262,8 @@ class ToolLoader:
                 streamable.append(tool.name)
             ToolStreams.mark_streamable(streamable)
 
-        tools.append(ToolBridge.as_structured_tool(DevNullTool.build()))
+        if next(self._stream_writers(tools), None) is not None:
+            tools.append(ToolBridge.as_structured_tool(DevNullTool.build()))
 
         access = self._access_of(tools, headless_only)
         for hooks in self._surface_hooks:
@@ -281,6 +283,14 @@ class ToolLoader:
         ToolErrorGuard().guard_all(tools)
         ToolAsyncBody.ensure_all(tools)
         return ToolRegistry(tools=tools, access=access, streams=streams)
+
+    @staticmethod
+    def _stream_writers(tools: Sequence[BaseTool]) -> Iterator[str]:
+        """Инструменты-писатели каналов: только при них слив dev_null имеет
+        смысл, и модель его видит."""
+        for tool in tools:
+            if ToolStreamSpecs.of(tool.name).outbound():
+                yield tool.name
 
     def _stream_config(self) -> StreamGroupsConfig:
         """Секция [stream_groups]: сроки групп и размеры пайпов каналов."""
