@@ -28,6 +28,7 @@ Greenplum (6, 7) стенда. JSON-колонки LLM объявляет тем
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import AsyncIterator, Mapping, Sequence
 from typing import Any, ClassVar
 
@@ -679,7 +680,9 @@ class TestRenamedMart:
         )
 
         assert f"{ORDERS} rows loaded" in report
-        assert "warning placed_at" in report
+        assert re.search(
+            r'"column": "placed_at",[^}]*"note": "table [^"]+ is finer than', report
+        )
         assert await mart.count() == ORDERS
         assert await mart.texts("client", order_by="order_uid") == (
             await view.column("customer_name", order_by="order_id")

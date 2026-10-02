@@ -503,7 +503,10 @@ class TestCreateTemplate:
     async def test_template_with_schema_name_is_refused(
         self, postgres: PostgresSide, clickhouse: ClickHouseSide
     ) -> None:
-        with pytest.raises(TransferError, match="unknown variable \\{schema_name\\}"):
+        with pytest.raises(
+            TransferError,
+            match=r"create_table uses \{schema_name\}, but the receiver has no such",
+        ):
             await land(
                 postgres,
                 clickhouse,

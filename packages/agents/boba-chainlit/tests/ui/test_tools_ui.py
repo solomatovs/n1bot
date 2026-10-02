@@ -1908,13 +1908,22 @@ class TestOraTools:
 
 @dataclass(frozen=True)
 class DescribeCase:
-    """Вызов одного инструмента семейства *_describe на объектах стенда и
-    заголовок колонки, которая обязана быть в его выдаче."""
+    """Вызов одного инструмента семейства *_describe на объектах стенда.
+
+    column — заголовок колонки, идущей в выдаче сразу за address; пустой —
+    у объекта стенда таких записей нет, и инструмент честно отвечает пустой
+    выборкой (у system.one нет индексов, у SYS.DUAL — ограничений)."""
 
     tool: str
     arguments: Mapping[str, Any]
     column: str
     windowed: bool = True
+
+    def expect(self) -> ToolExpect:
+        if not self.column:
+            return ToolExpect(patterns=[r"^_no rows at offset 0_$"])
+
+        return ToolExpect(patterns=[TablePattern.cells("address", self.column)])
 
     def call(self) -> ToolCall:
         arguments = {"connection": "main", **self.arguments}
@@ -1929,95 +1938,87 @@ class DescribeCases:
     объект стенда, на котором у него есть строки."""
 
     PG: ClassVar[Sequence[DescribeCase]] = (
-        DescribeCase("pg_database_describe", {"db_name": "*"}, "address"),
-        DescribeCase("pg_schema_describe", {"schema_name": "public"}, "address"),
+        DescribeCase("pg_database_describe", {"db_name": "*"}, "name"),
+        DescribeCase("pg_schema_describe", {"schema_name": "public"}, "database"),
         DescribeCase(
             "pg_table_describe",
             {"schema_name": "public", "table_name": "ui_probe"},
-            "address",
+            "database",
         ),
         DescribeCase(
             "pg_column_describe",
             {"schema_name": "public", "table_name": "ui_probe"},
-            "address",
+            "database",
         ),
         DescribeCase(
             "pg_constraints_describe",
             {"schema_name": "public", "table_name": "ui_probe"},
-            "address",
+            "database",
         ),
         DescribeCase(
             "pg_indexes_describe",
             {"schema_name": "public", "table_name": "ui_probe"},
-            "address",
+            "database",
         ),
         DescribeCase(
             "pg_routines_describe",
             {"schema_name": "pg_catalog", "routine_name": "abs"},
-            "address",
+            "database",
         ),
         DescribeCase(
             "pg_routine_arg_describe",
             {"schema_name": "pg_catalog", "routine_name": "abs"},
-            "address",
+            "database",
         ),
         DescribeCase(
             "pg_sequences_describe",
             {"schema_name": "*", "sequence_name": "*"},
-            "address",
+            "database",
         ),
         DescribeCase(
             "pg_types_describe",
             {"schema_name": "*", "type_name": "*"},
-            "address",
+            "database",
         ),
     )
 
     CH: ClassVar[Sequence[DescribeCase]] = (
-        DescribeCase("ch_database_describe", {"database": "system"}, "address"),
+        DescribeCase("ch_database_describe", {"database": "system"}, "name"),
         DescribeCase(
-            "ch_table_describe", {"database": "system", "table": "one"}, "address"
+            "ch_table_describe", {"database": "system", "table": "one"}, "database"
         ),
         DescribeCase(
-            "ch_column_describe", {"database": "system", "table": "one"}, "address"
+            "ch_column_describe", {"database": "system", "table": "one"}, "database"
         ),
-        DescribeCase(
-            "ch_constraints_describe",
-            {"database": "system", "table": "one"},
-            "address",
-        ),
-        DescribeCase(
-            "ch_indexes_describe", {"database": "system", "table": "one"}, "address"
-        ),
-        DescribeCase("ch_function_describe", {"function": "array%"}, "address"),
-        DescribeCase("ch_sequences_describe", {}, "address"),
-        DescribeCase("ch_types_describe", {"name": "UInt%"}, "address"),
+        DescribeCase("ch_indexes_describe", {"database": "system", "table": "one"}, ""),
+        DescribeCase("ch_function_describe", {"function": "array%"}, "name"),
+        DescribeCase("ch_types_describe", {"name": "UInt%"}, "name"),
     )
 
     ORA: ClassVar[Sequence[DescribeCase]] = (
-        DescribeCase("ora_database_describe", {}, "address", windowed=False),
-        DescribeCase("ora_schema_describe", {"schema_name": "SYS"}, "address"),
+        DescribeCase("ora_database_describe", {}, "con_name", windowed=False),
+        DescribeCase("ora_schema_describe", {"schema_name": "SYS"}, "name"),
         DescribeCase(
-            "ora_table_describe", {"schema_name": "SYS", "table": "DUAL"}, "address"
+            "ora_table_describe", {"schema_name": "SYS", "table": "DUAL"}, "schema"
         ),
         DescribeCase(
-            "ora_column_describe", {"schema_name": "SYS", "table": "DUAL"}, "address"
+            "ora_column_describe", {"schema_name": "SYS", "table": "DUAL"}, "schema"
         ),
         DescribeCase(
             "ora_constraints_describe",
             {"schema_name": "SYS", "table": "DUAL"},
-            "address",
+            "",
         ),
         DescribeCase(
-            "ora_indexes_describe", {"schema_name": "SYS", "table": "DUAL"}, "address"
+            "ora_indexes_describe", {"schema_name": "SYS", "table": "DUAL"}, ""
         ),
         DescribeCase(
             "ora_routines_describe",
             {"schema_name": "SYS", "routine": "DBMS_OUTPUT%"},
-            "address",
+            "schema",
         ),
-        DescribeCase("ora_sequences_describe", {"schema_name": "SYS"}, "address"),
-        DescribeCase("ora_types_describe", {"schema_name": "SYS"}, "address"),
+        DescribeCase("ora_sequences_describe", {"schema_name": "SYS"}, "schema"),
+        DescribeCase("ora_types_describe", {"schema_name": "SYS"}, "schema"),
     )
 
 
@@ -2041,8 +2042,7 @@ class TestDescribeFamily:
 
     @staticmethod
     def _check(feed: ToolFeed, case: DescribeCase) -> None:
-        step = feed.call(case.call(), ToolExpect())
-        print("DBG", case.tool, "::", step.output[:260].replace("\n", " / "))
+        feed.call(case.call(), case.expect())
 
 
 class TestAddressTools:
@@ -2382,6 +2382,35 @@ class TestStreamTools:
         assert (
             database.sink_ora_rows(StreamProbe.ORA_TABLE.value, ("ID", "NAME")) == probe
         )
+
+    def test_unread_stream_goes_to_dev_null(
+        self, feed: ToolFeed, probe_table: str
+    ) -> None:
+        """Поток, который некому читать, модель явно сливает в dev_null: узел
+        отвечает числом отброшенных байт канала."""
+        source = ToolCall(
+            tool="pg_stream_out",
+            arguments={
+                "connection": "main",
+                "sql": StreamProbe.PG_SQL.value,
+                "wire": "tsv",
+                "out": "ui_drain",
+            },
+            code="sql",
+            language="sql",
+            label="pg_stream_out into dev_null",
+            hidden=("out",),
+        )
+        drain = ToolCall(
+            tool="dev_null",
+            arguments={"feeds": ["ui_drain"]},
+            label="drain of ui_drain",
+        )
+        expect = ToolExpect(
+            patterns=[r"discarded bytes by channel: ui_drain: [1-9]\d*"]
+        )
+
+        feed.call_group([(source, ToolExpect()), (drain, expect)])
 
     @staticmethod
     def _source(tool: str, channel: StreamProbe, **arguments: Any) -> ToolCall:

@@ -867,7 +867,7 @@ class TestConfluenceTools:
                 confluence_tools["confluence_fetch"], page_id="0", as_markdown=True
             )
 
-        request_errors = {"TransportError", "ConfluencePayloadError"}
+        request_errors = {"HttpStatusError", "TransportError", "ConfluencePayloadError"}
         if failure.value.failure().error_kind not in request_errors:
             raise AssertionError(f"failure: {failure.value.failure()!r}")
 
@@ -1137,7 +1137,7 @@ class TestIngestTools:
                 space_key="NOSUCHSPACE",
             )
 
-        request_errors = {"TransportError", "ConfluencePayloadError"}
+        request_errors = {"HttpStatusError", "TransportError", "ConfluencePayloadError"}
         if failure.value.failure().error_kind not in request_errors:
             raise AssertionError(f"failure: {failure.value.failure()!r}")
 

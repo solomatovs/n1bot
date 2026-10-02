@@ -20,6 +20,7 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import AsyncIterator, Sequence
 from decimal import Decimal
 from typing import Any, ClassVar
@@ -447,7 +448,9 @@ class TestExistingTable:
         )
 
         assert f"{ROWS} rows loaded" in report
-        assert "warning dec: table numeric(30,6) is wider" in report
+        assert re.search(
+            r'"column": "dec",[^}]*"note": "table numeric\(30,6\) is wider', report
+        )
         assert await Loaded(postgres, PG_SCHEMA, "existing").count() == ROWS
 
     CASES: ClassVar[Sequence[tuple[str, str]]] = (

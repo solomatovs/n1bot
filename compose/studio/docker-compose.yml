@@ -13,7 +13,7 @@ x-runtime: &runtime
 services:
   studio:
     <<: *runtime
-    image: boba-studio:${BOBA_TAG:-latest}
+    image: boba-studio:0.0.26.dev4
     hostname: studio
     container_name: studio
     env_file: ./conf/boba.env
