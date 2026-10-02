@@ -299,7 +299,7 @@ class PgArrowTable(TransferTable):
 
     BACKUP_STAMP: ClassVar[str] = "%Y%m%d_%H%M%S_%f"
 
-    def __init__(
+    def __init__(  # noqa: PLR0913 — ширина подписи задана контрактом
         self,
         conn: psycopg.AsyncConnection[Any],
         table: PgTableRef,
@@ -554,7 +554,7 @@ class PgArrowSink(TransferSink):
     """Реализация TransferSink для потока Arrow: пачки в COPY таблицы по
     именам колонок в порядке полей потока через PgArrowIn."""
 
-    def __init__(
+    def __init__(  # noqa: PLR0913 — ширина подписи задана контрактом
         self,
         conn: psycopg.AsyncConnection[Any],
         table: PgTableRef,

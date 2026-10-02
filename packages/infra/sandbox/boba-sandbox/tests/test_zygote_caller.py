@@ -837,18 +837,30 @@ class TestManyInputs:
     """Входов, заведомо умещающихся с фиксированными каналами в одно
     сообщение ZygoteWire (MAX_FDS)."""
 
+    BATCHED_INPUTS = 90
+    """Входов, заведомо НЕ умещающихся в одно сообщение: хвост дескрипторов
+    едет продолжениями FdsBatch (ZygoteWire.send_batched)."""
+
     def test_many_inputs_fit_one_message(self, zygote: Any) -> None:
         """Десятки входов вызова проходят одним сообщением зиготе."""
+        self._roundtrip(zygote, self.WIRE_FIT_INPUTS)
+
+    def test_input_tail_over_one_message_is_batched(self, zygote: Any) -> None:
+        """Хвост дескрипторов больше потолка сообщения доезжает пачками:
+        каждый вход доходит до тела и читается до EOF."""
+        self._roundtrip(zygote, self.BATCHED_INPUTS)
+
+    def _roundtrip(self, zygote: Any, inputs: int) -> None:
         caller = zygote(_profile())
 
-        with caller.open(self._merge(self.WIRE_FIT_INPUTS)) as call:
+        with caller.open(self._merge(inputs)) as call:
             call.done_sending()
             outcome = call.result()
 
         if not isinstance(outcome.reply, ReplyOk):
             raise AssertionError(f"reply={outcome.reply}")
 
-        expected = f"merged {self.WIRE_FIT_INPUTS}:"
+        expected = f"merged {inputs}:"
         if not outcome.reply.content.startswith(expected):
             raise AssertionError(f"content={outcome.reply.content!r}")
 

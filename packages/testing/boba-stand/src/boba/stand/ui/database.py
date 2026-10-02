@@ -396,7 +396,7 @@ class StandDatabase:
             .add(
                 """
                 select
-                    coalesce(meta -> 'llm', '{{}}'::jsonb) 
+                    coalesce(meta -> 'llm', '{{}}'::jsonb)
                 from
                     {schema}.users
                 where

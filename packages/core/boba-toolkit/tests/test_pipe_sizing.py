@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import fcntl
 import os
+from pathlib import Path
 
 import pytest
 
@@ -40,11 +41,11 @@ class TestRequire:
     def test_size_above_kernel_limit_is_refused_loudly(self) -> None:
         """Запрос выше fs.pipe-max-size непривилегированному не дают: отказ
         обязан назвать канал, размер и ручку ядра, а не промолчать."""
-        limit = int(open("/proc/sys/fs/pipe-max-size").read())
+        limit = int(Path("/proc/sys/fs/pipe-max-size").read_text())
 
         read_fd, write_fd = _pipe()
         try:
-            with pytest.raises(LauncherError, match="orders.*pipe-user-pages-soft"):
+            with pytest.raises(LauncherError, match=r"orders.*pipe-user-pages-soft"):
                 PipePlumbing.require(write_fd, limit * 2, "orders")
         finally:
             os.close(read_fd)

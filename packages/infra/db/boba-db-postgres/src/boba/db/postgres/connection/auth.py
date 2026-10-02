@@ -78,7 +78,7 @@ class RequireAuth(StrEnum):
     MD5 = "md5"
     GSS = "gss"
     SSPI = "sspi"
-    PASSWORD = "password"
+    PASSWORD = "password"  # noqa: S105 — имя метода libpq, не секрет
     OAUTH = "oauth"
     NONE = "none"
 
