@@ -797,7 +797,7 @@ class TestStrategies:
         landed = OraLoaded(oracle, "templated")
 
         assert f"{ROWS} rows loaded" in chained.in_report
-        assert "after:" in chained.in_report
+        assert f"statement: update {OWNER}.templated set n = n * 2" in chained.in_report
         assert await landed.scalar("sum(n)") == 2 * await Loaded(
             pg_source, PG_SCHEMA, "src"
         ).aggregate("sum(n)")

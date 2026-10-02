@@ -152,6 +152,23 @@ class TestGssModesAreDerived:
         settings = config.conn_settings()
         if settings["gssencmode"] != "disable":
             raise AssertionError(settings)
+        if "require_auth" in settings:
+            raise AssertionError(settings)
+
+    def test_password_require_auth_is_passed_through(self) -> None:
+        config = PostgresConfig.model_validate(
+            {
+                "host": "h",
+                "dbname": "d",
+                "auth": {
+                    "method": "password",
+                    "user": "u",
+                    "password": "p",
+                    "require_auth": ["scram-sha-256"],
+                },
+            }
+        )
+        settings = config.conn_settings()
         if settings["require_auth"] != "scram-sha-256":
             raise AssertionError(settings)
 

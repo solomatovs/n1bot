@@ -129,7 +129,7 @@ class TestPostgres:
         )
 
         assert await pg.rows("target") == UPSERTED
-        assert "after:\n- DELETE 1: delete from" in chained.in_report
+        assert "DELETE 1\nstatement: delete from" in chained.in_report
         assert "INSERT 0 2\nstatement: insert into" in chained.in_report
 
     async def test_failing_after_rolls_back_the_load(self, pg: PgScripts) -> None:
@@ -360,8 +360,8 @@ class TestClickHouse:
         )
 
         assert await ch.rows("mirror", "id", "v") == [(2, "old2")]
-        assert "before:\n- " in chained.out_report
-        assert "after:\n- 1: select count() from snap" in chained.out_report
+        assert "statement: create temporary table snap" in chained.out_report
+        assert "1\nstatement: select count() from snap" in chained.out_report
 
     async def test_replace_partition_from_stage(self, ch: ChScripts) -> None:
         """Загрузка в stage и replace partition в after: месяц подменён целиком,
@@ -505,7 +505,7 @@ class TestOracle:
         )
 
         assert await ora.rows("target", "id", "v") == UPSERTED
-        assert "before:\n- 0 rows: delete from stage_tmp" in chained.in_report
+        assert "0 rows\nstatement: delete from stage_tmp" in chained.in_report
         assert "1 rows\nstatement: delete from target" in chained.in_report
         assert "2 rows\nstatement: insert into target" in chained.in_report
 
@@ -526,8 +526,8 @@ class TestOracle:
         )
 
         assert await ora.rows("snapshot", "id", "v") == [(2, "old2")]
-        assert "before:\n- 1 rows: insert into snap_tmp" in chained.out_report
-        assert "after:\n- 1 rows: delete from snap_tmp" in chained.out_report
+        assert "1 rows\nstatement: insert into snap_tmp" in chained.out_report
+        assert "1 rows\nstatement: delete from snap_tmp" in chained.out_report
 
     async def test_failing_after_rolls_back_the_load(self, ora: OraScripts) -> None:
         """Блок PL/SQL с raise_application_error в after срывает вызов до
@@ -580,6 +580,6 @@ class TestOracle:
             (6, "sep6"),
         ]
         assert (
-            "after:\n- 0 rows: alter table part_target exchange partition"
+            "0 rows\nstatement: alter table part_target exchange partition"
             in chained.in_report
         )

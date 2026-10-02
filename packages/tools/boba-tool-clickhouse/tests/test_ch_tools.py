@@ -22,9 +22,6 @@ def ch_config() -> ChToolConfig:
 
 class TestChTools:
     _NAMES: ClassVar[list[str]] = [
-        "ch_list_tables",
-        "ch_list_columns",
-        "ch_describe_table",
         "ch_query",
         "ch_address",
         "ch_database_describe",
@@ -35,6 +32,8 @@ class TestChTools:
         "ch_function_describe",
         "ch_sequences_describe",
         "ch_types_describe",
+        "ch_edm_general_describe",
+        "ch_edm_table_describe",
         "ch_edm_structure",
         "ch_edm_descriptions",
         "ch_stream_out",
