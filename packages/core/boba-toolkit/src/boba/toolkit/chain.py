@@ -238,6 +238,7 @@ class ChannelFanOut:
         self._lock = threading.Lock()
         self._moved = [0] * len(self._reader_fds)
         self._running = len(self._reader_fds)
+        self._links: list[int] = []
 
     @property
     def channel(self) -> str:
@@ -252,8 +253,29 @@ class ChannelFanOut:
         return sum(self._moved)
 
     def start(self) -> None:
-        for hop in self._hops():
+        """Запустить звенья раздачи.
+
+        Ошибки:
+        LauncherError — ядро не дало буфер промежуточному пайпу: ни одно
+            звено не стартует, вход писателя и созданные пайпы закрыты,
+            on_drained не придёт.
+        """
+        try:
+            hops = list(self._hops())
+        except LauncherError:
+            self._abandon()
+            raise
+
+        for hop in hops:
             hop.start()
+
+    def _abandon(self) -> None:
+        """Раздача не стартовала: закрыть вход писателя и промежуточные пайпы."""
+        for fd in (self._source_fd, *self._links):
+            with suppress(OSError):
+                os.close(fd)
+
+        self._links = []
 
     def _hops(self) -> Iterator[threading.Thread]:
         last = len(self._reader_fds) - 1
@@ -265,6 +287,7 @@ class ChannelFanOut:
                 return
 
             next_r, next_w = os.pipe()
+            self._links.extend((next_r, next_w))
             PipePlumbing.require(next_w, self._pipe_bytes, self._channel)
             yield self._thread(index, self._tee_hop, inbound, reader_fd, next_w)
             inbound = next_r
@@ -851,7 +874,7 @@ class StreamGroupRun:
         call.gate().claim(lambda: self._at_gate(key))
 
         for fanout in fanouts:
-            fanout.start()
+            self._start_fanout(fanout)
 
         if fanouts:
             logger.info(
@@ -954,6 +977,15 @@ class StreamGroupRun:
             on_drained=lambda: self._drain(channel),
             pipe_bytes=self._plan.pipe_bytes_of(channel),
         )
+
+    def _start_fanout(self, fanout: ChannelFanOut) -> None:
+        """Запуск раздачи; не стартовала — срыв группы, канал считается
+        опустевшим: его звеньев нет, и ждать от него конца нечего."""
+        try:
+            fanout.start()
+        except LauncherError as exc:
+            self._fanout_failed(str(exc))
+            self._drain(fanout.channel)
 
     def _fanout_failed(self, cause: str) -> None:
         failure = ErrorResult(

@@ -94,13 +94,16 @@ class DagPlanner:
     приложении — ToolStreamSpecs.of). Для каждого узла планировщик читает
     из аргументов поля портов: у одиночного порта — имя канала строкой, у
     порта-списка — список имён; каждый порт назван обязательно. У писателя
-    читается pipe_bytes. Правила графа проверяет StreamPlan.
+    читается pipe_bytes; узел его не назвал — берётся pipe_bytes
+    планировщика (дефолт секции [stream_groups]). Правила графа проверяет
+    StreamPlan.
     """
 
     PIPE_FIELD: ClassVar[str] = "pipe_bytes"
 
-    def __init__(self, specs: Callable[[str], StreamSpec]) -> None:
+    def __init__(self, specs: Callable[[str], StreamSpec], pipe_bytes: int) -> None:
         self._specs = specs
+        self._default_pipe_bytes = pipe_bytes
 
     def plan(self, dag: DagSpec) -> StreamPlan:
         return StreamPlan(list(self._nodes(dag)))
@@ -185,7 +188,7 @@ class DagPlanner:
         return value
 
     def _pipe_bytes(self, node: DagNode) -> int:
-        value = node.args.get(self.PIPE_FIELD, 0)
+        value = node.args.get(self.PIPE_FIELD, self._default_pipe_bytes)
 
         if isinstance(value, bool):
             raise StreamPlanError(self._pipe_text(node, value))

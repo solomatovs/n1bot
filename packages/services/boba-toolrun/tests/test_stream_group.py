@@ -11,7 +11,7 @@ import asyncio
 import hashlib
 import os
 import threading
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -32,6 +32,7 @@ from boba.stand_core.fake_toolmod import (
 )
 from boba.toolkit.chain import (
     ChannelFanOut,
+    GroupVerdict,
     PipelineSlot,
     PipeTee,
     StreamFailureKind,
@@ -41,7 +42,16 @@ from boba.toolkit.chain import (
     StreamTimings,
 )
 from boba.toolkit.dag import DagNode, DagPlanner, DagSpec
-from boba.toolkit.launcher import CollectedCall, PayloadFailureError
+from boba.toolkit.launcher import (
+    CallGate,
+    CallInputPort,
+    CollectedCall,
+    LauncherError,
+    PayloadFailureError,
+    ToolCall,
+    ToolFrame,
+    ToolOutcome,
+)
 from boba.toolkit.ports import ToolStreamSpecs
 from boba.toolkit.protocol import CallInputSpec, CallOutputSpec, ReplyOk, ToolCommand
 from boba.toolkit.result import (
@@ -139,7 +149,9 @@ class GroupStand:
         return DagSpec(name="stand", version=1, nodes=nodes)
 
     def plan(self, calls: Mapping[str, Call]) -> StreamPlan:
-        return DagPlanner(ToolStreamSpecs.of).plan(self.dag(calls))
+        return DagPlanner(ToolStreamSpecs.of, STREAM_CFG.pipe_bytes).plan(
+            self.dag(calls)
+        )
 
     def _node(self, key: str, call: Call) -> DagNode:
         """Узел из вызова: каналы ложатся в аргументы полями портов —
@@ -172,7 +184,7 @@ class GroupStand:
         timings: StreamTimings = FAST,
     ) -> tuple[DagOutcome, dict[str, NodeOutcome]]:
         """Прогон DAG исполнителем: итог целиком и итоги по ключам узлов."""
-        runner = DagRunner(self._tools, timings)
+        runner = DagRunner(self._tools, timings, STREAM_CFG.pipe_bytes)
 
         outcome = await asyncio.wait_for(runner.run(self.dag(calls)), timeout=60)
 
@@ -646,6 +658,131 @@ class TestDevNull:
 
         with pytest.raises(PayloadFailureError, match="only in a group"):
             await coroutine(feeds=["ghost"])
+
+
+class IdleGate(CallGate):
+    """Барьер вызова-заглушки: сигналов нет, ответы ничего не делают."""
+
+    def claim(self, on_ready: Callable[[], None]) -> None:
+        return
+
+    def release(self) -> None:
+        return
+
+    def refuse(self) -> None:
+        return
+
+
+class IdleCall(ToolCall):
+    """Вызов без процесса: группе нужны только его барьер и close. Условие
+    теста — отказ ядра в буфере промежуточного пайпа — настоящим процессом
+    не воспроизвести: тот же размер раньше отвергнет пайп самого вызова."""
+
+    def __init__(self) -> None:
+        self.closed = False
+
+    def inputs(self) -> Sequence[CallInputPort]:
+        return ()
+
+    def done_sending(self) -> None:
+        return
+
+    def gate(self) -> CallGate:
+        return IdleGate()
+
+    def frames(self) -> Iterator[ToolFrame]:
+        return iter(())
+
+    def result(self) -> ToolOutcome:
+        raise LauncherError("idle call has no envelope")
+
+    def close(self) -> None:
+        self.closed = True
+
+
+class TestFanOutStartFailure:
+    """Ядро не дало буфер промежуточному пайпу раздачи (бюджет пайпов
+    пользователя исчерпан): раздача не стартует, группа срывается и
+    заканчивается, а не ждёт конца канала вечно."""
+
+    @staticmethod
+    def _too_big() -> int:
+        return int(Path("/proc/sys/fs/pipe-max-size").read_text()) * 2
+
+    @staticmethod
+    def _sink(marker: str) -> dict[str, object]:
+        return {"marker": marker, "fail": False, "gated": True}
+
+    def test_fanout_that_cannot_start_closes_its_pipes(self) -> None:
+        source_r, source_w = os.pipe()
+        first_r, first_w = os.pipe()
+        second_r, second_w = os.pipe()
+        drained = threading.Event()
+        errors: list[str] = []
+
+        fanout = ChannelFanOut(
+            "raw",
+            source_r,
+            [first_w, second_w],
+            PipeTee(),
+            on_error=errors.append,
+            on_drained=drained.set,
+            pipe_bytes=self._too_big(),
+        )
+        try:
+            with pytest.raises(LauncherError, match="pipe-user-pages-soft"):
+                fanout.start()
+
+            with pytest.raises(OSError, match="Bad file descriptor"):
+                os.fstat(source_r)
+
+            assert not drained.is_set()
+            assert errors == []
+        finally:
+            for fd in (source_w, first_r, first_w, second_r, second_w):
+                os.close(fd)
+
+    def test_group_settles_when_a_fanout_cannot_start(self, tmp_path: Path) -> None:
+        stand = GroupStand(tmp_path)
+        calls = {
+            "src": Call(
+                "fake_emit", _emit("s", 4, 0), "a", (), pipe_bytes=self._too_big()
+            ),
+            "one": Call("fake_collect", self._sink("one"), None, (("feed", "a"),)),
+            "two": Call("fake_collect", self._sink("two"), None, (("feed", "a"),)),
+        }
+        group = StreamGroupRun(stand.plan(calls), FAST)
+
+        source_r, source_w = os.pipe()
+        first_r, first_w = os.pipe()
+        second_r, second_w = os.pipe()
+        attached = {"src": IdleCall(), "one": IdleCall(), "two": IdleCall()}
+        try:
+            group.attach("src", attached["src"], [source_r], [])
+            group.attach("one", attached["one"], [], [first_w])
+            group.attach("two", attached["two"], [], [second_w])
+
+            for key in attached:
+                group.done(key, cause=None, stopped=False)
+
+            settled = threading.Event()
+            verdicts: list[GroupVerdict] = []
+
+            def wait() -> None:
+                verdicts.append(group.verdict())
+                settled.set()
+
+            threading.Thread(target=wait, daemon=True).start()
+
+            assert settled.wait(timeout=10), "the group did not settle"
+            failure = verdicts[0].failure
+            assert failure is not None
+            assert "pipe-user-pages-soft" in failure.llm_view()
+            assert attached["src"].closed
+            assert attached["one"].closed
+        finally:
+            for fd in (source_w, first_r, second_r):
+                os.close(fd)
 
 
 class TestRawFanOut:
