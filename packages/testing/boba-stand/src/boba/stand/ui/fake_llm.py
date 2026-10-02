@@ -352,9 +352,12 @@ class ScenarioBook:
             turns=[TurnScript(reasoning="I am thinking about it slowly", content="ok")]
         )
 
-    @staticmethod
-    def _answer() -> Scenario:
-        return Scenario(turns=[TurnScript(content="Here is a plain streamed answer")])
+    @classmethod
+    def _answer(cls) -> Scenario:
+        """Ответ в три десятка токенов: поток дольше окна склейки ленты."""
+        content = f"Here is a plain streamed answer: {cls._words(30, 3)}"
+
+        return Scenario(turns=[TurnScript(content=content)])
 
     @classmethod
     def _thinking_answer(cls) -> Scenario:
