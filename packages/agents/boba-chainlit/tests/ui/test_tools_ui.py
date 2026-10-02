@@ -583,7 +583,10 @@ class ToolFeed:
             )
 
         node = self.chat.expand_tool_titled(title)
-        return ToolStep(payload=payload, dom_text=node.inner_text())
+        dividers = node.locator(self.DIVIDER).evaluate_all(
+            "nodes => nodes.map(n => getComputedStyle(n).borderTopWidth)"
+        )
+        return ToolStep(payload=payload, dom_text=node.inner_text(), dividers=dividers)
 
     def thread_id(self) -> str:
         return self.chat.log.thread_id()

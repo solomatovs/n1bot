@@ -26,6 +26,8 @@ from boba.stand_core.fake_toolmod import (
     fake_emit,
     fake_head,
     fake_merge,
+    fake_shard,
+    fake_split,
     fake_stream,
 )
 from boba.toolkit.chain import (
@@ -36,15 +38,23 @@ from boba.toolkit.chain import (
     StreamGroupRun,
     StreamInput,
     StreamNode,
+    StreamOutput,
     StreamPlan,
+    StreamPlanError,
     StreamTimings,
 )
 from boba.toolkit.entry import ToolArgv
 from boba.toolkit.launcher import CollectedCall, PayloadFailureError
-from boba.toolkit.ports import StreamSpec
-from boba.toolkit.protocol import CallInputSpec, ReplyOk, ToolCommand
-from boba.toolkit.result import ErrorResult, GroupCall, GroupFailureResult
+from boba.toolkit.ports import ToolStreamSpecs
+from boba.toolkit.protocol import CallInputSpec, CallOutputSpec, ReplyOk, ToolCommand
+from boba.toolkit.result import (
+    ErrorResult,
+    GroupCall,
+    GroupFailureResult,
+    MarkdownResult,
+)
 from boba.toolkit.wrap import ToolProcessWrap
+from boba.toolrun.dev_null import DevNullTool
 from boba.toolrun.process import ProcessLauncherConfig, ProcessToolCaller
 
 CFG = FakeConfig(token=SecretStr("t0ken"), limit=5)
@@ -66,12 +76,17 @@ def _launcher(workdir: Path) -> ProcessToolCaller:
 
 @dataclass(frozen=True)
 class Call:
-    """Вызов группы в тесте: инструмент, аргументы модели и каналы."""
+    """Вызов группы в тесте: инструмент, аргументы модели и каналы.
+
+    output — канал единственного выходного порта; вызов с несколькими
+    выходами называет их парами (порт, канал) в outputs."""
 
     tool: str
     args: Mapping[str, object]
     output: str | None
     inputs: Sequence[tuple[str, str]]
+    outputs: Sequence[tuple[str, str]] = ()
+    pipe_bytes: int = 0
 
 
 class GroupStand:
@@ -87,11 +102,16 @@ class GroupStand:
             fake_stream,
             fake_merge,
             fake_deaf,
+            fake_split,
+            fake_shard,
         ):
             copy = tool.model_copy()
             self._tools[copy.name] = copy
 
         ToolProcessWrap.guard_all(list(self._tools.values()), _launcher(workdir))
+
+        built = DevNullTool.build()
+        self._tools[built.name] = built
 
     def plan(self, calls: Mapping[str, Call]) -> StreamPlan:
         nodes: list[StreamNode] = []
@@ -105,13 +125,24 @@ class GroupStand:
         for port, channel in call.inputs:
             inputs.append(StreamInput(port=port, channel=channel))
 
-        schema = ToolArgv.schema_of(self._tools[call.tool])
+        spec = ToolStreamSpecs.of(call.tool)
+
+        outputs: list[StreamOutput] = []
+        if call.output is not None:
+            outputs.append(
+                StreamOutput(port=spec.outbound()[0].name, channel=call.output)
+            )
+
+        for port, channel in call.outputs:
+            outputs.append(StreamOutput(port=port, channel=channel))
+
         return StreamNode(
             key=key,
             tool=call.tool,
-            spec=StreamSpec.of_schema(schema),
-            output=call.output,
+            spec=spec,
+            outputs=tuple(outputs),
             inputs=tuple(inputs),
+            pipe_bytes=call.pipe_bytes,
         )
 
     async def run(
@@ -136,12 +167,17 @@ class GroupStand:
         return group, results
 
     async def _one(self, group: StreamGroupRun, key: str, call: Call) -> Any:
-        coroutine = self._tools[call.tool].coroutine
+        tool = self._tools[call.tool]
+        coroutine = tool.coroutine
         assert coroutine is not None
+
+        kwargs = dict(call.args)
+        if "cfg" in ToolArgv.schema_of(tool).model_fields:
+            kwargs["cfg"] = CFG
 
         token = PipelineSlot.set(group.slot(key))
         try:
-            return await coroutine(**call.args, cfg=CFG)
+            return await coroutine(**kwargs)
         except PayloadFailureError as exc:
             return exc
         finally:
@@ -421,6 +457,181 @@ class TestStall:
             assert "fake_deaf (deaf) input #0" in message
 
 
+class TestMultiOut:
+    """Несколько выходов у вызова: делитель и шардер."""
+
+    @staticmethod
+    def _collect(marker: str) -> dict[str, object]:
+        return {"marker": marker, "fail": False, "gated": True}
+
+    @pytest.mark.anyio
+    async def test_split_sends_each_reader_its_own_half(self, tmp_path: Path) -> None:
+        stand = GroupStand(tmp_path)
+        even = tmp_path / "even"
+        odd = tmp_path / "odd"
+        calls = {
+            "src": Call("fake_emit", _emit("s", 6, 0), "raw", ()),
+            "cut": Call(
+                "fake_split",
+                {},
+                None,
+                (("feed", "raw"),),
+                outputs=(("even", "e"), ("odd", "o")),
+            ),
+            "le": Call("fake_collect", self._collect("even"), None, (("feed", "e"),)),
+            "lo": Call("fake_collect", self._collect("odd"), None, (("feed", "o"),)),
+        }
+
+        _group, results = await stand.run(calls)
+
+        assert "split 3+3" in _content(results["cut"])
+        assert even.read_text().startswith("collected 4 frames 6 bytes")
+        assert odd.read_text().startswith("collected 4 frames 6 bytes")
+        assert even.read_text() != odd.read_text()
+
+    @pytest.mark.anyio
+    async def test_shard_feeds_three_readers_round_robin(self, tmp_path: Path) -> None:
+        stand = GroupStand(tmp_path)
+        markers = [tmp_path / name for name in ("a", "b", "c")]
+        calls = {
+            "src": Call("fake_emit", _emit("s", 7, 0), "raw", ()),
+            "shard": Call(
+                "fake_shard",
+                {},
+                None,
+                (("feed", "raw"),),
+                outputs=(("outs", "a"), ("outs", "b"), ("outs", "c")),
+            ),
+        }
+        for marker in markers:
+            calls[marker.name] = Call(
+                "fake_collect",
+                self._collect(marker.name),
+                None,
+                (("feed", marker.name),),
+            )
+
+        _group, results = await stand.run(calls)
+
+        assert "sharded 7 into 3" in _content(results["shard"])
+        assert markers[0].read_text().startswith("collected 4 frames 6 bytes")
+        assert markers[1].read_text().startswith("collected 3 frames 4 bytes")
+        assert markers[2].read_text().startswith("collected 3 frames 4 bytes")
+
+    def test_unread_output_refuses_the_plan(self, tmp_path: Path) -> None:
+        stand = GroupStand(tmp_path)
+        calls = {
+            "src": Call("fake_emit", _emit("s", 2, 0), "raw", ()),
+            "cut": Call(
+                "fake_split",
+                {},
+                None,
+                (("feed", "raw"),),
+                outputs=(("even", "e"), ("odd", "o")),
+            ),
+            "le": Call("fake_collect", self._collect("e"), None, (("feed", "e"),)),
+        }
+
+        with pytest.raises(StreamPlanError, match="has no readers"):
+            stand.plan(calls)
+
+
+class TestPipeBytes:
+    """Размер пайпов канала задаёт писатель; невыполнимый размер срывает
+    группу до данных."""
+
+    @pytest.mark.anyio
+    async def test_writer_size_is_applied_end_to_end(self, tmp_path: Path) -> None:
+        stand = GroupStand(tmp_path)
+        marker = tmp_path / "sized"
+        calls = {
+            "src": Call("fake_emit", _emit("s", 8, 1024), "a", (), pipe_bytes=131072),
+            "sink": Call(
+                "fake_collect",
+                {"marker": "sized", "fail": False, "gated": True},
+                None,
+                (("feed", "a"),),
+            ),
+        }
+
+        _group, results = await stand.run(calls)
+
+        assert marker.read_text() == _expected("s", 8, 1024)
+        assert "emitted 8" in _content(results["src"])
+
+    @pytest.mark.anyio
+    async def test_unsatisfiable_size_fails_the_group_loudly(
+        self, tmp_path: Path
+    ) -> None:
+        limit = int(Path("/proc/sys/fs/pipe-max-size").read_text())
+        stand = GroupStand(tmp_path)
+        calls = {
+            "src": Call("fake_emit", _emit("s", 2, 0), "a", (), pipe_bytes=limit * 2),
+            "sink": Call(
+                "fake_collect",
+                {"marker": "never", "fail": False, "gated": True},
+                None,
+                (("feed", "a"),),
+            ),
+        }
+
+        _group, results = await stand.run(calls)
+
+        # размер требуют и выход писателя, и вход читателя: кто первым
+        # получил отказ ядра, тот и сорвал группу — порядок не фиксирован
+        texts = [str(_failure(results[key])) for key in ("src", "sink")]
+        assert any("pipe-user-pages-soft" in text for text in texts), texts
+        for text in texts:
+            assert "setting the pipe buffer" in text
+
+        assert not (tmp_path / "never").exists()
+
+
+class TestDevNull:
+    """Встроенный слив: явный читатель каналов, которые некому читать."""
+
+    @pytest.mark.anyio
+    async def test_unwanted_channel_is_discarded_with_a_byte_count(
+        self, tmp_path: Path
+    ) -> None:
+        stand = GroupStand(tmp_path)
+        marker = tmp_path / "even"
+        calls = {
+            "src": Call("fake_emit", _emit("s", 6, 0), "raw", ()),
+            "cut": Call(
+                "fake_split",
+                {},
+                None,
+                (("feed", "raw"),),
+                outputs=(("even", "e"), ("odd", "o")),
+            ),
+            "keep": Call(
+                "fake_collect",
+                {"marker": "even", "fail": False, "gated": True},
+                None,
+                (("feed", "e"),),
+            ),
+            "drop": Call("dev_null", {"feeds": ["o"]}, None, (("feeds", "o"),)),
+        }
+
+        _group, results = await stand.run(calls)
+
+        assert marker.read_text().startswith("collected 4 frames 6 bytes")
+        dropped = results["drop"]
+        assert isinstance(dropped, MarkdownResult), dropped
+        assert "discarded bytes by channel" in dropped.text
+        assert "o: " in dropped.text
+
+    @pytest.mark.anyio
+    async def test_dev_null_outside_a_group_is_refused(self) -> None:
+        built = DevNullTool.build()
+        coroutine = built.coroutine
+        assert coroutine is not None
+
+        with pytest.raises(PayloadFailureError, match="only in a group"):
+            await coroutine(feeds=["ghost"])
+
+
 class TestRawFanOut:
     def test_raw_stream_reaches_every_reader_verbatim(self, tmp_path: Path) -> None:
         """Сырой поток fake_relay раздаётся двум fake_relay напрямую через
@@ -433,6 +644,7 @@ class TestRawFanOut:
                 argv=("python3", "-m", MODULE, "fake_relay"),
                 config=b'{"cfg": {"token": "t0ken", "limit": 5}}',
                 inputs=(CallInputSpec(port="feed", raw=True),),
+                outputs=(CallOutputSpec(port="out", raw=True),),
             )
 
         source = launcher.open_tap(command())
@@ -446,7 +658,7 @@ class TestRawFanOut:
 
         fanout = ChannelFanOut(
             "raw",
-            source.frames_fd,
+            source.frames_fds[0],
             reader_fds,
             PipeTee(),
             on_error=errors.append,
@@ -459,7 +671,7 @@ class TestRawFanOut:
             collected.append(sink)
             collectors.append(
                 threading.Thread(
-                    target=self._collect, args=(reader.frames_fd, sink), daemon=True
+                    target=self._collect, args=(reader.frames_fds[0], sink), daemon=True
                 )
             )
 

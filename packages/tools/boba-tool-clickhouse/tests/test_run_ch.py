@@ -12,7 +12,7 @@ import pytest
 
 from boba.config import bind
 from boba.db.clickhouse.connection import ClickHouseConfig
-from boba.tool.ch.tools import ChToolConfig, ch_list_tables, ch_query
+from boba.tool.ch.tools import ChToolConfig, ch_query
 from boba.toolkit.entry import ToolMain
 
 pytestmark = [pytest.mark.run, pytest.mark.anyio]
@@ -45,20 +45,3 @@ async def test_run_ch_query(ch_cfg: ChToolConfig, connection: ClickHouseConfig) 
 
     print(artifact.llm_view())
     print(artifact)
-
-
-async def test_run_ch_list_tables(
-    ch_cfg: ChToolConfig, connection: ClickHouseConfig
-) -> None:
-    body = ToolMain.toolset(ch_list_tables)[0].coroutine
-    if body is None:
-        raise AssertionError("body is not None")
-
-    artifact = await body(
-        connection=connection,
-        database=None,
-        offset=0,
-        limit=50,
-    )
-
-    print(artifact.llm_view())

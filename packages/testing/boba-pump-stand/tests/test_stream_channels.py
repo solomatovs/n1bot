@@ -27,7 +27,6 @@ from boba.pump_stand import ClickHouseSide, PostgresSide, PumpStand
 from boba.runtime.plugins import ToolBridge
 from boba.tool.ch import tools as ch
 from boba.tool.pg import tools as pg
-from boba.toolkit.chain import StreamTimings
 from boba.toolkit.entry import ToolMain
 from boba.toolkit.result import (
     FailureResult,
@@ -39,7 +38,12 @@ from boba.toolkit.wrap import ToolProcessWrap
 from boba.toolrun.call_id import ToolCallIdField
 from boba.toolrun.errors import ToolErrorGuard
 from boba.toolrun.process import ProcessLauncherConfig, ProcessToolCaller
-from boba.toolrun.stream_calls import StreamCallHooks, StreamChannelFields, StreamGroups
+from boba.toolrun.stream_calls import (
+    StreamCallHooks,
+    StreamChannelFields,
+    StreamGroups,
+    StreamGroupsConfig,
+)
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
 
@@ -47,7 +51,14 @@ STAND = PumpStand.required()
 PG_SCHEMA = "pump_channels"
 CH_DATABASE = "pump_channels"
 ROWS = 20000
-TIMINGS = StreamTimings(open_sec=60.0, stall_sec=120.0, poll_sec=0.2)
+STREAM_CFG = StreamGroupsConfig(
+    open_sec=60.0,
+    stall_sec=120.0,
+    poll_sec=0.2,
+    pipe_bytes=1 << 20,
+    pipe_bytes_max=1 << 20,
+)
+TIMINGS = STREAM_CFG.timings()
 MERGE_TREE = (
     "create table {database}.{table_name}[ on cluster {cluster}] ({columns}) "
     "engine = MergeTree order by {order_by}"
@@ -116,7 +127,7 @@ class ChannelTools:
             tools.append(ToolBridge.as_structured_tool(payload.model_copy()))
 
         ToolProcessWrap.guard_all(ToolMain.toolset(*tools), launcher)
-        StreamChannelFields().attach_all(tools)
+        StreamChannelFields(STREAM_CFG).attach_all(tools)
         ToolCallIdField.attach_all(tools)
         self._streams = StreamGroups(TIMINGS, tools)
         StreamCallHooks(self._streams).guard_all(tools)

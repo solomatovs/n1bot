@@ -50,7 +50,12 @@ from boba.toolkit.launcher import (
     ToolOutcome,
 )
 from boba.toolkit.ports import PortDecl, PortDirection, StreamSpec
-from boba.toolkit.protocol import ReplyError, ToolCommand
+from boba.toolkit.protocol import (
+    CallInputSpec,
+    CallOutputSpec,
+    ReplyError,
+    ToolCommand,
+)
 from boba.toolkit.pump import PipePlumbing
 from boba.toolkit.result import (
     ErrorResult,
@@ -73,6 +78,7 @@ __all__ = [
     "StreamGroupRun",
     "StreamInput",
     "StreamNode",
+    "StreamOutput",
     "StreamPlan",
     "StreamPlanError",
     "StreamTimings",
@@ -124,6 +130,9 @@ class ChainCheck:
                 "a channel is read by an inbound port"
             )
             raise ChainMismatchError(msg)
+
+        if inbound.omnivore:
+            return
 
         if outbound.raw and inbound.raw:
             return
@@ -217,6 +226,7 @@ class ChannelFanOut:
         tee: PipeTee,
         on_error: Callable[[str], None],
         on_drained: Callable[[], None],
+        pipe_bytes: int = 0,
     ) -> None:
         self._channel = channel
         self._source_fd = source_fd
@@ -224,6 +234,7 @@ class ChannelFanOut:
         self._tee = tee
         self._on_error = on_error
         self._on_drained = on_drained
+        self._pipe_bytes = pipe_bytes
         self._lock = threading.Lock()
         self._moved = [0] * len(self._reader_fds)
         self._running = len(self._reader_fds)
@@ -254,7 +265,7 @@ class ChannelFanOut:
                 return
 
             next_r, next_w = os.pipe()
-            PipePlumbing.widen(next_w)
+            PipePlumbing.require(next_w, self._pipe_bytes, self._channel)
             yield self._thread(index, self._tee_hop, inbound, reader_fd, next_w)
             inbound = next_r
 
@@ -376,17 +387,28 @@ class StreamInput:
 
 
 @dataclass(frozen=True)
+class StreamOutput:
+    """Выход вызова в плане: выходной порт и канал, в который он пишет."""
+
+    port: str
+    channel: str
+
+
+@dataclass(frozen=True)
 class StreamNode:
     """Вызов в плане группы: ключ (tool_call_id), инструмент, его порты,
-    канал, который он пишет (None — вызов только читает), и его входы.
+    каналы, которые он пишет, и его входы.
 
-    Порядок входов одного порта-списка — порядок, который назвала модель."""
+    Порядок каналов одного порта-списка — порядок, который назвала модель.
+    pipe_bytes — требуемый буфер пайпов каналов, которые пишет этот вызов:
+    размер канала задаёт его писатель; 0 — требования нет."""
 
     key: str
     tool: str
     spec: StreamSpec
-    output: str | None
+    outputs: tuple[StreamOutput, ...]
     inputs: tuple[StreamInput, ...]
+    pipe_bytes: int = 0
 
     def label(self) -> str:
         return f"{self.tool} ({self.key})"
@@ -402,10 +424,12 @@ class ReaderRef:
 
 @dataclass(frozen=True)
 class ChannelRoute:
-    """Канал плана: его писатель и читатели в порядке объявления."""
+    """Канал плана: его писатель (вызов и позиция выхода среди выходов
+    вызова) и читатели в порядке объявления."""
 
     name: str
     writer: str
+    writer_index: int
     readers: tuple[ReaderRef, ...]
 
 
@@ -424,8 +448,10 @@ class StreamPlan:
             self._add(node)
 
         self._inputs: dict[str, tuple[StreamInput, ...]] = {}
+        self._outputs: dict[str, tuple[StreamOutput, ...]] = {}
         for node in self._nodes.values():
             self._inputs[node.key] = self._ordered_inputs(node)
+            self._outputs[node.key] = self._ordered_outputs(node)
 
         self._routes = self._build_routes()
         self._check_ports()
@@ -441,11 +467,19 @@ class StreamPlan:
         """Входы вызова в порядке ToolCommand.inputs."""
         return self._inputs[key]
 
+    def outputs_of(self, key: str) -> tuple[StreamOutput, ...]:
+        """Выходы вызова в порядке ToolCommand.outputs."""
+        return self._outputs[key]
+
     def routes(self) -> tuple[ChannelRoute, ...]:
         return tuple(self._routes.values())
 
     def route(self, channel: str) -> ChannelRoute:
         return self._routes[channel]
+
+    def pipe_bytes_of(self, channel: str) -> int:
+        """Требуемый буфер пайпов канала: его назвал писатель; 0 — нет."""
+        return self._nodes[self._routes[channel].writer].pipe_bytes
 
     def _add(self, node: StreamNode) -> None:
         if node.key in self._nodes:
@@ -455,83 +489,84 @@ class StreamPlan:
             )
             raise StreamPlanError(msg)
 
-        if node.output is not None:
-            if node.spec.outbound() is None:
-                msg = (
-                    f"stream plan: {node.label()} writes channel {node.output!r} "
-                    "but declares no outbound port"
-                )
-                raise StreamPlanError(msg)
-
-        if len(node.inputs) > ToolCommand.MAX_INPUTS:
-            msg = (
-                f"stream plan: {node.label()} reads {len(node.inputs)} channels, "
-                f"a call takes at most {ToolCommand.MAX_INPUTS}"
-            )
-            raise StreamPlanError(msg)
-
         self._nodes[node.key] = node
 
     def _ordered_inputs(self, node: StreamNode) -> tuple[StreamInput, ...]:
-        declared: set[str] = set()
-        for port in node.spec.inbound():
-            declared.add(port.name)
-
-        for bound in node.inputs:
-            if bound.port not in declared:
-                msg = (
-                    f"stream plan: {node.label()} binds channel {bound.channel!r} "
-                    f"to {bound.port!r}, its inbound ports are {sorted(declared)}"
-                )
-                raise StreamPlanError(msg)
+        ports = node.spec.inbound()
+        bound = self._ordered(node, ports, node.inputs, "inbound")
 
         ordered: list[StreamInput] = []
-        for port in node.spec.inbound():
-            bound = self._bound_to(node, port.name)
-            self._check_count(node, port, len(bound))
-            ordered.extend(bound)
+        for port in ports:
+            for item in bound[port.name]:
+                ordered.append(StreamInput(port=item.port, channel=item.channel))
+
+        return tuple(ordered)
+
+    def _ordered_outputs(self, node: StreamNode) -> tuple[StreamOutput, ...]:
+        ports = node.spec.outbound()
+        bound = self._ordered(node, ports, node.outputs, "outbound")
+
+        ordered: list[StreamOutput] = []
+        for port in ports:
+            for item in bound[port.name]:
+                ordered.append(StreamOutput(port=item.port, channel=item.channel))
 
         return tuple(ordered)
 
     @staticmethod
-    def _bound_to(node: StreamNode, port: str) -> list[StreamInput]:
-        bound: list[StreamInput] = []
-        for item in node.inputs:
-            if item.port == port:
-                bound.append(item)
+    def _ordered(
+        node: StreamNode,
+        ports: Sequence[PortDecl],
+        bound: Sequence[StreamInput] | Sequence[StreamOutput],
+        side: str,
+    ) -> dict[str, list[StreamInput | StreamOutput]]:
+        """Каналы вызова по портам одной стороны в порядке подписи.
 
-        return bound
+        Канал чужого порта и второй канал одиночного порта — StreamPlanError.
+        """
+        declared: dict[str, list[StreamInput | StreamOutput]] = {}
+        for port in ports:
+            declared[port.name] = []
 
-    @staticmethod
-    def _check_count(node: StreamNode, port: PortDecl, count: int) -> None:
-        """Одиночный порт читает не больше одного канала; без канала его вход
-        пуст."""
-        if port.many:
-            return
-
-        if count > 1:
-            msg = (
-                f"stream plan: inbound port {port.name!r} of {node.label()} "
-                f"reads at most one channel, got {count}"
-            )
-            raise StreamPlanError(msg)
-
-    def _build_routes(self) -> dict[str, ChannelRoute]:
-        writers: dict[str, str] = {}
-        for node in self._nodes.values():
-            if node.output is None:
-                continue
-
-            if node.output in writers:
-                first = self._nodes[writers[node.output]]
+        for item in bound:
+            own = declared.get(item.port)
+            if own is None:
                 msg = (
-                    f"stream plan: channel {node.output!r} has two writers, "
-                    f"{first.label()} and {node.label()}; a channel has "
-                    "exactly one writer"
+                    f"stream plan: {node.label()} binds channel {item.channel!r} "
+                    f"to {item.port!r}, its {side} ports are {sorted(declared)}"
                 )
                 raise StreamPlanError(msg)
 
-            writers[node.output] = node.key
+            own.append(item)
+
+        for port in ports:
+            if port.many:
+                continue
+
+            if len(declared[port.name]) > 1:
+                msg = (
+                    f"stream plan: {side} port {port.name!r} of {node.label()} "
+                    f"takes at most one channel, got {len(declared[port.name])}"
+                )
+                raise StreamPlanError(msg)
+
+        return declared
+
+    def _build_routes(self) -> dict[str, ChannelRoute]:
+        writers: dict[str, tuple[str, int]] = {}
+        for node in self._nodes.values():
+            for index, output in enumerate(self._outputs[node.key]):
+                taken = writers.get(output.channel)
+                if taken is not None:
+                    first = self._nodes[taken[0]]
+                    msg = (
+                        f"stream plan: channel {output.channel!r} has two "
+                        f"writers, {first.label()} and {node.label()}; a "
+                        "channel has exactly one writer"
+                    )
+                    raise StreamPlanError(msg)
+
+                writers[output.channel] = (node.key, index)
 
         readers: dict[str, list[ReaderRef]] = {}
         for channel in writers:
@@ -551,16 +586,20 @@ class StreamPlan:
                 listed.append(ReaderRef(node=node.key, index=index))
 
         routes: dict[str, ChannelRoute] = {}
-        for channel, writer in writers.items():
+        for channel, (writer, index) in writers.items():
             if not readers[channel]:
                 msg = (
                     f"stream plan: channel {channel!r} written by "
-                    f"{self._nodes[writer].label()} has no readers"
+                    f"{self._nodes[writer].label()} has no readers; an "
+                    "unread output is refused, route it explicitly"
                 )
                 raise StreamPlanError(msg)
 
             routes[channel] = ChannelRoute(
-                name=channel, writer=writer, readers=tuple(readers[channel])
+                name=channel,
+                writer=writer,
+                writer_index=index,
+                readers=tuple(readers[channel]),
             )
 
         return routes
@@ -568,9 +607,8 @@ class StreamPlan:
     def _check_ports(self) -> None:
         for route in self._routes.values():
             writer = self._nodes[route.writer]
-            outbound = writer.spec.outbound()
-            if outbound is None:
-                continue
+            output = self._outputs[route.writer][route.writer_index]
+            outbound = writer.spec.port(output.port)
 
             for reader in route.readers:
                 node = self._nodes[reader.node]
@@ -684,7 +722,7 @@ class _NodeRun:
         self.node = node
         self.state = NodeState.PENDING
         self.call: ToolCall | None = None
-        self.frames_fd = -1
+        self.out_fds: tuple[int, ...] = ()
         self.input_fds: tuple[int, ...] = ()
 
 
@@ -739,14 +777,31 @@ class StreamGroupRun:
         """Ручка вызова key для обёртки запуска."""
         node = self._plan.node(key)
 
-        counts: dict[str, int] = {}
+        in_counts: dict[str, int] = {}
         for port in node.spec.inbound():
-            counts[port.name] = 0
+            in_counts[port.name] = 0
 
         for bound in self._plan.inputs_of(key):
-            counts[bound.port] += 1
+            in_counts[bound.port] += 1
 
-        return NodeSlot(self, key, counts, has_downstream=node.output is not None)
+        out_counts: dict[str, int] = {}
+        for port in node.spec.outbound():
+            out_counts[port.name] = 0
+
+        for output in self._plan.outputs_of(key):
+            out_counts[output.port] += 1
+
+        in_sizes: list[int] = []
+        for bound in self._plan.inputs_of(key):
+            in_sizes.append(self._plan.pipe_bytes_of(bound.channel))
+
+        out_sizes: list[int] = []
+        for output in self._plan.outputs_of(key):
+            out_sizes.append(self._plan.pipe_bytes_of(output.channel))
+
+        return NodeSlot(
+            self, key, in_counts, out_counts, tuple(in_sizes), tuple(out_sizes)
+        )
 
     def refuse(self, key: str, cause: FailureResult) -> None:
         """Вызов key не дошёл до запуска (права, аргументы): группа срывается."""
@@ -780,8 +835,7 @@ class StreamGroupRun:
                 run.call = call
                 run.state = NodeState.OPEN
                 run.input_fds = tuple(inputs)
-                for fd in outputs:
-                    run.frames_fd = fd
+                run.out_fds = tuple(outputs)
 
             fanouts: list[ChannelFanOut] = []
             if self._all_open():
@@ -884,7 +938,7 @@ class StreamGroupRun:
         return fanouts
 
     def _fanout_of(self, route: ChannelRoute) -> ChannelFanOut:
-        source_fd = self._runs[route.writer].frames_fd
+        source_fd = self._runs[route.writer].out_fds[route.writer_index]
 
         reader_fds: list[int] = []
         for reader in route.readers:
@@ -898,6 +952,7 @@ class StreamGroupRun:
             self._tee,
             on_error=self._fanout_failed,
             on_drained=lambda: self._drain(channel),
+            pipe_bytes=self._plan.pipe_bytes_of(channel),
         )
 
     def _fanout_failed(self, cause: str) -> None:
@@ -1037,9 +1092,8 @@ class StreamGroupRun:
         with self._cond:
             fds: list[int] = []
             for run in self._runs.values():
-                if run.frames_fd >= 0:
-                    fds.append(run.frames_fd)
-                    run.frames_fd = -1
+                fds.extend(run.out_fds)
+                run.out_fds = ()
 
                 fds.extend(run.input_fds)
                 run.input_fds = ()
@@ -1181,26 +1235,29 @@ class NodeSlot:
     """Ручка одного вызова группы для обёртки запуска (ToolProcessWrap).
 
     Обёртка берёт её из PipelineSlot, открывает вызов потоково и отдаёт
-    группе через attach сам вызов, дескриптор выхода (open_tap) и
-    дескрипторы входов по порядку ToolCommand.inputs. counts — сколько
-    каналов у каждого входного порта вызова, 0 — вход пуст. По концу
+    группе через attach сам вызов, дескрипторы выходов (open_tap) и
+    дескрипторы входов по порядку ToolCommand.inputs. Счётчики — сколько
+    каналов у каждого порта вызова, 0 — канала нет. По концу
     вызова settle сообщает группе итог и ждёт её решения: вызов отдаёт свой
     итог, только если группа прошла целиком, иначе — срыв группы глазами
     этого вызова (GroupFailureResult).
     """
 
-    def __init__(
+    def __init__(  # noqa: PLR0913 — ручка несёт все стороны одного вызова
         self,
         group: StreamGroupRun,
         key: str,
-        counts: Mapping[str, int],
-        *,
-        has_downstream: bool,
+        in_counts: Mapping[str, int],
+        out_counts: Mapping[str, int],
+        in_sizes: tuple[int, ...] = (),
+        out_sizes: tuple[int, ...] = (),
     ) -> None:
         self._group = group
         self._key = key
-        self._counts = dict(counts)
-        self.has_downstream = has_downstream
+        self._in_counts = dict(in_counts)
+        self._out_counts = dict(out_counts)
+        self._in_sizes = in_sizes
+        self._out_sizes = out_sizes
         self._failures = FailurePacker()
 
     @property
@@ -1209,8 +1266,42 @@ class NodeSlot:
         return self._key
 
     def input_counts(self) -> dict[str, int]:
-        """Сколько входов у каждого входного порта вызова."""
-        return dict(self._counts)
+        """Сколько каналов у каждого входного порта вызова."""
+        return dict(self._in_counts)
+
+    def input_sizes(self) -> tuple[int, ...]:
+        """Требуемые буферы пайпов входов по порядку ToolCommand.inputs."""
+        return self._in_sizes
+
+    def output_counts(self) -> dict[str, int]:
+        """Сколько каналов у каждого выходного порта вызова."""
+        return dict(self._out_counts)
+
+    def has_outputs(self) -> bool:
+        """Вызов пишет хотя бы один канал: открывать его через open_tap."""
+        return any(self._out_counts.values())
+
+    def sized(self, command: ToolCommand) -> ToolCommand:
+        """Команда с размерами пайпов каналов из плана группы.
+
+        Размер канала задаёт его писатель, поэтому вход получает размер
+        канала, который читает, а выход — размер своего вызова. Порядок
+        каналов команды и плана один — порядок портов подписи.
+        """
+        if not self._in_sizes and not self._out_sizes:
+            return command
+
+        inputs: list[CallInputSpec] = []
+        for spec, size in zip(command.inputs, self._in_sizes, strict=True):
+            inputs.append(spec.model_copy(update={"pipe_bytes": size}))
+
+        outputs: list[CallOutputSpec] = []
+        for spec, size in zip(command.outputs, self._out_sizes, strict=True):
+            outputs.append(spec.model_copy(update={"pipe_bytes": size}))
+
+        return command.model_copy(
+            update={"inputs": tuple(inputs), "outputs": tuple(outputs)}
+        )
 
     def attach(
         self, call: ToolCall, outputs: Sequence[int], inputs: Sequence[int]

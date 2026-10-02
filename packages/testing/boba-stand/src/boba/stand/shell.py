@@ -67,6 +67,7 @@ class ShellRun:
             tool.args_schema,
             {"command": command, "cfg": cfg},
             input_counts={},
+            output_counts={},
         )
 
         outcome = CollectedCall.of(launcher, rendered)

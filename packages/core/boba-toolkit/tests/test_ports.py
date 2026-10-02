@@ -8,7 +8,7 @@ from collections.abc import Sequence
 from typing import Annotated, Literal
 
 import pytest
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel
 
 from boba.stand_core.fake_toolmod import fake_echo, fake_stream
 from boba.toolkit.entry import ToolArgv, ToolMain
@@ -121,18 +121,18 @@ class TestStreamSpec:
         spec = StreamSpec.of_schema(ToolArgv.schema_of(STREAM))
 
         outbound = spec.outbound()
-        assert outbound is not None
+        assert len(outbound) == 1
 
         assert spec.streaming()
         assert spec.port("feed").kinds == ("chunk", "done")
-        assert outbound.kinds == ("chunk", "done")
+        assert outbound[0].kinds == ("chunk", "done")
 
     def test_tool_without_ports_has_empty_spec(self) -> None:
         spec = StreamSpec.of_schema(ToolArgv.schema_of(ECHO))
 
         assert not spec.streaming()
         assert spec.inbound() == ()
-        assert spec.outbound() is None
+        assert spec.outbound() == ()
 
     def test_many_inbound_ports_and_port_lists_are_declared(self) -> None:
         class Merge(BaseModel):
@@ -155,24 +155,26 @@ class TestStreamSpec:
         assert spec.port("raws").many
         assert spec.port("raws").raw
 
-    def test_two_outbound_ports_are_refused(self) -> None:
-        class TwoOutbound(BaseModel):
+    def test_many_outbound_ports_are_declared(self) -> None:
+        """Выходы симметричны входам: одиночные и списком, raw вперемешку."""
+
+        class ManyOut(BaseModel):
             model_config = {"arbitrary_types_allowed": True}
 
-            first: Annotated[Outbound[ChunkHead], None]
+            good: Annotated[Outbound[ChunkHead], None]
             second: Annotated[RawOutbound, None]
+            shards: Annotated[Sequence[Outbound[ChunkHead]], None]
 
-        with pytest.raises(ValidationError, match="at most one outbound"):
-            StreamSpec.of_schema(TwoOutbound)
+        spec = StreamSpec.of_schema(ManyOut)
 
-    def test_outbound_port_list_is_refused(self) -> None:
-        class ListOut(BaseModel):
-            model_config = {"arbitrary_types_allowed": True}
+        names: list[str] = []
+        for port in spec.outbound():
+            names.append(port.name)
 
-            outs: Annotated[Sequence[Outbound[ChunkHead]], None]
-
-        with pytest.raises(PortDeclarationError, match="cannot be a list"):
-            StreamSpec.of_schema(ListOut)
+        assert names == ["good", "second", "shards"]
+        assert not spec.port("good").many
+        assert spec.port("second").raw
+        assert spec.port("shards").many
 
     def test_head_without_literal_kind_is_refused(self) -> None:
         with pytest.raises(PortDeclarationError, match="Literal"):

@@ -10,7 +10,7 @@ from pydantic import SecretStr
 
 from boba.stand_core.fake_toolmod import FakeChunkHead, FakeConfig
 from boba.toolkit.frames import ToolFrame
-from boba.toolkit.protocol import CallInputSpec, ReplyOk, ToolCommand
+from boba.toolkit.protocol import CallInputSpec, CallOutputSpec, ReplyOk, ToolCommand
 from boba.toolrun.process import ProcessLauncherConfig, ProcessToolCaller
 from boba.toolrun.streaming import AsyncToolCall
 
@@ -38,6 +38,7 @@ def _command(prefix: str) -> ToolCommand:
         argv=(*STREAM_ARGV, "--prefix", prefix),
         config=config,
         inputs=(CallInputSpec(port="feed", raw=False),),
+        outputs=(CallOutputSpec(port="out", raw=False),),
     )
 
 

@@ -127,6 +127,7 @@ def test_render_parse_roundtrip_carries_secret_off_argv() -> None:
         deep_echo.args_schema,
         {"text": "hi", "cfg": _config()},
         input_counts={},
+        output_counts={},
     )
 
     joined = " ".join(command.argv)

@@ -27,7 +27,13 @@ from boba.toolkit.launcher import (
     PayloadFailureError,
 )
 from boba.toolkit.ports import PortDeclarationError
-from boba.toolkit.protocol import CallInputSpec, ReplyError, ReplyOk, ToolCommand
+from boba.toolkit.protocol import (
+    CallInputSpec,
+    CallOutputSpec,
+    ReplyError,
+    ReplyOk,
+    ToolCommand,
+)
 from boba.toolkit.wrap import ToolProcessWrap
 from boba.toolrun.process import (
     ProcessCallError,
@@ -173,6 +179,7 @@ class TestStreamingCall:
             argv=(*self.STREAM_ARGV, "--prefix", prefix),
             config=config,
             inputs=(CallInputSpec(port="feed", raw=False),),
+            outputs=(CallOutputSpec(port="out", raw=False),),
         )
 
     def test_frames_answer_frames_and_envelope_closes_call(
@@ -253,6 +260,7 @@ class TestManyInputs:
             ToolArgv.schema_of(self.MERGE),
             {"cfg": CFG},
             input_counts={"feeds": inputs},
+            output_counts={},
         )
 
     def test_each_input_reaches_its_port_in_order(self, tmp_path: Path) -> None:
@@ -337,15 +345,16 @@ class TestManyInputs:
         outcome = CollectedCall.of(launcher, command)
 
         assert isinstance(outcome.reply, ReplyError)
-        assert "expects at most one --fd-in input, got 2" in (
+        assert "expects at most one channel, got 2" in (
             outcome.reply.failure.llm_view()
         )
 
     def test_render_refuses_many_inputs_for_a_single_port(self) -> None:
-        with pytest.raises(PortDeclarationError, match="takes at most one input"):
+        with pytest.raises(PortDeclarationError, match="takes at most one channel"):
             ToolArgv.render(
                 ToolAddress.of(self.STREAM),
                 ToolArgv.schema_of(self.STREAM),
                 {"prefix": "p", "cfg": CFG},
                 input_counts={"feed": 2},
+                output_counts={},
             )

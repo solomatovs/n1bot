@@ -304,9 +304,9 @@ class CallInputPort(Protocol):
     send и send_bytes пишут в пайп напрямую и блокируются на полном буфере,
     пока тело не прочитает своё, — так скорость входа прижимается к
     скорости тела; писать можно из любого потока, записи атомарны. finish
-    даёт телу EOF. take_fd отдаёт дескриптор перекачке (CallRelay): дальше
-    входом владеет она, send и finish больше не работают. Реализация —
-    FrameInput (boba.toolkit.pump).
+    даёт телу EOF. take_fd отдаёт дескриптор раздаче каналов группы:
+    дальше входом владеет она, send и finish больше не работают.
+    Реализация — FrameInput (boba.toolkit.pump).
     """
 
     @abstractmethod
@@ -413,12 +413,13 @@ class ToolCall(Protocol):
 
 @dataclass(frozen=True)
 class TappedCall:
-    """Вызов-источник для splice-перекачки: сам вызов и дескриптор его
-    канала кадров, который хост не разбирает. Возвращается методом
-    open_tap; дескриптором владеет перекачка (CallRelay.splice)."""
+    """Вызов-источник для splice-перекачки: сам вызов и дескрипторы его
+    выходных каналов по порядку ToolCommand.outputs, которые хост не
+    разбирает. Возвращается методом open_tap; дескрипторами владеет
+    раздача каналов (ChannelFanOut)."""
 
     call: ToolCall
-    frames_fd: int
+    frames_fds: tuple[int, ...]
 
 
 class ToolLauncher(Protocol):
@@ -426,8 +427,8 @@ class ToolLauncher(Protocol):
     окружении.
 
     open() начинает потоковый вызов команды модуля инструментов и отдаёт
-    ToolCall; open_tap() — вариант для перекачки: канал кадров вызова
-    отдаётся дескриптором и хостом не разбирается.
+    ToolCall; open_tap() — вариант для перекачки: выходные каналы вызова
+    отдаются дескрипторами и хостом не разбираются.
     Реализации: ProcessToolCaller (dev-режим без песочницы) и
     ZygoteToolCaller (bwrap-песочница). Накопительный вызов строится поверх
     open компонентом CollectedCall — отдельного входа в порт у него нет.
@@ -440,7 +441,7 @@ class ToolLauncher(Protocol):
 
     @abstractmethod
     def open_tap(self, command: ToolCommand) -> TappedCall:
-        """Открыть вызов-источник перекачки: канал кадров — дескриптором."""
+        """Открыть вызов-источник перекачки: выходы — дескрипторами."""
         ...
 
 

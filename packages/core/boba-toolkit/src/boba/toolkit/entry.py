@@ -34,6 +34,7 @@ from typing import (
     Any,
     ClassVar,
     Protocol,
+    Self,
     Union,
     get_args,
     get_origin,
@@ -55,7 +56,13 @@ from boba.toolkit.ports import (
     StreamPorts,
     StreamSpec,
 )
-from boba.toolkit.protocol import CallInputSpec, ReplyError, ReplyOk, ToolCommand
+from boba.toolkit.protocol import (
+    CallInputSpec,
+    CallOutputSpec,
+    ReplyError,
+    ReplyOk,
+    ToolCommand,
+)
 from boba.toolkit.result import FailureResult, ToolResultBase
 from boba.toolkit.timing import Elapsed
 from boba.toolkit.types import SecretReveal
@@ -66,6 +73,8 @@ __all__ = [
     "EntryErrorKind",
     "EntryFlag",
     "InputWire",
+    "OutputWire",
+    "PortWire",
     "ToolAddress",
     "ToolArgv",
     "ToolEntryError",
@@ -114,21 +123,22 @@ class EntryFlag(StrEnum):
     INJECTED = "--injected"
     INJECTED_FD = "--injected-fd"
     FD_RESULT = "--fd-result"
-    FD_FRAMES = "--fd-frames"
     FD_IN = "--fd-in"
+    FD_OUT = "--fd-out"
     FD_GATE = "--fd-gate"
     FD_VERDICT = "--fd-verdict"
     ARTIFACT = "--artifact"
     HELP = "--help"
 
 
-class InputWire(BaseModel):
-    """Один вход вызова в argv: входной порт тела и номер дескриптора пайпа.
+class PortWire(BaseModel):
+    """Один канал вызова в argv: порт тела и номер дескриптора пайпа.
 
     Лончер дописывает `--fd-in <порт>=<fd>` на каждый вход по порядку
-    ToolCommand.inputs; у порта-списка флагов столько, сколько у него
-    входов. Запись и разбор значения флага живут здесь, у обеих сторон
-    границы процесса.
+    ToolCommand.inputs и `--fd-out <порт>=<fd>` на каждый выход по порядку
+    ToolCommand.outputs; у порта-списка флагов столько, сколько у него
+    каналов. Запись и разбор значения флага живут здесь, у обеих сторон
+    границы процесса; направление задаёт наследник своим FLAG.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -137,32 +147,45 @@ class InputWire(BaseModel):
     fd: int = Field(ge=0)
 
     SEPARATOR: ClassVar[str] = "="
+    FLAG: ClassVar[EntryFlag]
 
     def argv(self) -> tuple[str, str]:
-        """Флаг входа и его значение для команды тела."""
-        return (EntryFlag.FD_IN.value, f"{self.port}{self.SEPARATOR}{self.fd}")
+        """Флаг канала и его значение для команды тела."""
+        return (self.FLAG.value, f"{self.port}{self.SEPARATOR}{self.fd}")
 
     @classmethod
-    def of_value(cls, raw: str) -> InputWire:
-        """Значение флага --fd-in обратно в модель; битое — ToolEntryError."""
+    def of_value(cls, raw: str) -> Self:
+        """Значение своего флага обратно в модель; битое — ToolEntryError."""
         port, separator, fd = raw.rpartition(cls.SEPARATOR)
         if not separator:
-            msg = f"{EntryFlag.FD_IN} expects <port>{cls.SEPARATOR}<fd>, got {raw!r}"
+            msg = f"{cls.FLAG} expects <port>{cls.SEPARATOR}<fd>, got {raw!r}"
             raise ToolEntryError(EntryErrorKind.INVALID_REQUEST, msg)
 
         try:
             return cls(port=port, fd=int(fd))
         except ValueError as exc:
             msg = (
-                f"{EntryFlag.FD_IN} expects <port>{cls.SEPARATOR}<fd> with a "
+                f"{cls.FLAG} expects <port>{cls.SEPARATOR}<fd> with a "
                 f"descriptor number, got {raw!r}: {exc}"
             )
             raise ToolEntryError(EntryErrorKind.INVALID_REQUEST, msg) from exc
 
 
+class InputWire(PortWire):
+    """Канал входа: флаг --fd-in."""
+
+    FLAG: ClassVar[EntryFlag] = EntryFlag.FD_IN
+
+
+class OutputWire(PortWire):
+    """Канал выхода: флаг --fd-out."""
+
+    FLAG: ClassVar[EntryFlag] = EntryFlag.FD_OUT
+
+
 class CallWiring(BaseModel):
     """Каналы вызова, разобранные из argv: номера дескрипторов конфига,
-    конверта, кадров и входов, которые лончер выдал телу.
+    конверта, входов и выходов, которые лончер выдал телу.
 
     Сами дескрипторы достаются процессу наследованием, а номера едут
     флагами — команда самодостаточна, по argv видно все каналы вызова.
@@ -174,20 +197,19 @@ class CallWiring(BaseModel):
 
     injected_fd: int = -1
     result_fd: int = -1
-    frames_fd: int = -1
     gate_fd: int = -1
     verdict_fd: int = -1
     inputs: tuple[InputWire, ...] = ()
+    outputs: tuple[OutputWire, ...] = ()
 
     def attached(self) -> bool:
-        """Вызов пришёл от лончера: канал кадров в argv. Без него читать и
-        писать кадры некуда — так выглядит запуск человеком."""
-        return self.frames_fd >= 0
+        """Вызов пришёл от лончера: канал конверта в argv. Без него вызов
+        запустил человек, и каналы данных отвязаны."""
+        return self.result_fd >= 0
 
     FLAGS: ClassVar[Mapping[str, str]] = {
         EntryFlag.INJECTED_FD.value: "injected_fd",
         EntryFlag.FD_RESULT.value: "result_fd",
-        EntryFlag.FD_FRAMES.value: "frames_fd",
         EntryFlag.FD_GATE.value: "gate_fd",
         EntryFlag.FD_VERDICT.value: "verdict_fd",
     }
@@ -212,7 +234,11 @@ class CallWiring(BaseModel):
         while raw_input := cls._pop_value(arguments, EntryFlag.FD_IN.value):
             inputs.append(InputWire.of_value(raw_input))
 
-        return cls(**values, inputs=tuple(inputs))
+        outputs: list[OutputWire] = []
+        while raw_output := cls._pop_value(arguments, EntryFlag.FD_OUT.value):
+            outputs.append(OutputWire.of_value(raw_output))
+
+        return cls(**values, inputs=tuple(inputs), outputs=tuple(outputs))
 
     @staticmethod
     def _pop_value(arguments: list[str], flag: str) -> str | None:
@@ -305,12 +331,13 @@ class ToolArgv:
         schema: type[BaseModel],
         kwargs: Mapping[str, object],
         input_counts: Mapping[str, int],
+        output_counts: Mapping[str, int],
     ) -> ToolCommand:
         """LLM-аргументы во флаги, injected-параметры в конфиг вызова.
 
-        input_counts — сколько входов у входных портов вызова по имени порта.
-        Одиночный порт без записи получает ровно один вход, порт-список без
-        записи — ни одного.
+        input_counts и output_counts — сколько каналов у портов вызова по
+        имени порта. Одиночный порт без записи получает ровно один канал,
+        порт-список без записи — ни одного.
         """
         argv = address.argv_head()
 
@@ -340,39 +367,55 @@ class ToolArgv:
 
         config = json.dumps(config_payload, ensure_ascii=False).encode("utf-8")
         spec = StreamSpec.of_schema(schema)
-        inputs = tuple(cls._inputs(spec, input_counts))
 
-        raw_frames = False
-        if outbound := spec.outbound():
-            raw_frames = outbound.raw
+        inputs: list[CallInputSpec] = []
+        for port, raw_port in cls._channels(spec, spec.inbound(), input_counts):
+            inputs.append(CallInputSpec(port=port, raw=raw_port))
+
+        outputs: list[CallOutputSpec] = []
+        for port, raw_port in cls._channels(spec, spec.outbound(), output_counts):
+            outputs.append(CallOutputSpec(port=port, raw=raw_port))
 
         return ToolCommand(
-            argv=tuple(argv), config=config, inputs=inputs, raw_frames=raw_frames
+            argv=tuple(argv),
+            config=config,
+            inputs=tuple(inputs),
+            outputs=tuple(outputs),
         )
 
     @classmethod
-    def _inputs(
-        cls, spec: StreamSpec, input_counts: Mapping[str, int]
-    ) -> Iterator[CallInputSpec]:
-        """Входы вызова по порядку входных портов подписи."""
-        for name, count in input_counts.items():
-            cls._check_count(spec.port(name), count)
+    def _channels(
+        cls,
+        spec: StreamSpec,
+        ports: Sequence[PortDecl],
+        counts: Mapping[str, int],
+    ) -> Iterator[tuple[str, bool]]:
+        """Каналы вызова по порядку портов одной стороны подписи."""
+        declared: set[str] = set()
+        for port in ports:
+            declared.add(port.name)
 
-        for port in spec.inbound():
+        for name, count in counts.items():
+            cls._check_count(spec.port(name), declared, count)
+
+        for port in ports:
             count = 1
             if port.many:
                 count = 0
 
-            if port.name in input_counts:
-                count = input_counts[port.name]
+            if port.name in counts:
+                count = counts[port.name]
 
             for _ in range(count):
-                yield CallInputSpec(port=port.name, raw=port.raw)
+                yield port.name, port.raw
 
     @staticmethod
-    def _check_count(port: PortDecl, count: int) -> None:
-        if port.direction is not PortDirection.INBOUND:
-            msg = f"port {port.name!r} is {port.direction}, inputs go to inbound ports"
+    def _check_count(port: PortDecl, declared: set[str], count: int) -> None:
+        if port.name not in declared:
+            msg = (
+                f"port {port.name!r} is {port.direction}, its channel count "
+                "belongs to the other side of the call"
+            )
             raise PortDeclarationError(msg)
 
         if port.many:
@@ -380,8 +423,8 @@ class ToolArgv:
 
         if count > 1:
             msg = (
-                f"inbound port {port.name!r} is a single port and takes at most "
-                f"one input, got {count}"
+                f"port {port.name!r} is a single port and takes at most "
+                f"one channel, got {count}"
             )
             raise PortDeclarationError(msg)
 
@@ -804,12 +847,13 @@ class ToolMain:
             )
             raise ToolEntryError(EntryErrorKind.INTERNAL_ERROR, msg) from exc
 
-        wires = cls._wires_by_port(tool, spec, wiring)
+        wires = cls._wires_by_port(tool, spec.inbound(), wiring.inputs)
+        wires.update(cls._wires_by_port(tool, spec.outbound(), wiring.outputs))
 
         ports: dict[str, Any] = {}
         for decl in spec.ports:
             element = StreamPorts.element_of(fields[decl.name])
-            ports[decl.name] = cls._port_value(tool, decl, element, wires, wiring)
+            ports[decl.name] = cls._port_value(tool, decl, element, wires)
 
         return ports
 
@@ -831,15 +875,20 @@ class ToolMain:
 
     @staticmethod
     def _refuse_inputs(tool: ToolLike, wiring: CallWiring) -> None:
-        """Инструмент без портов: вход из argv некому отдать."""
-        if not wiring.inputs:
-            return
+        """Инструмент без портов: канал из argv некому отдать."""
+        if wiring.inputs:
+            msg = (
+                f"tool {tool.name!r} declares no inbound ports, got "
+                f"{len(wiring.inputs)} {EntryFlag.FD_IN} inputs"
+            )
+            raise ToolEntryError(EntryErrorKind.INVALID_REQUEST, msg)
 
-        msg = (
-            f"tool {tool.name!r} declares no inbound ports, got "
-            f"{len(wiring.inputs)} {EntryFlag.FD_IN} inputs"
-        )
-        raise ToolEntryError(EntryErrorKind.INVALID_REQUEST, msg)
+        if wiring.outputs:
+            msg = (
+                f"tool {tool.name!r} declares no outbound ports, got "
+                f"{len(wiring.outputs)} {EntryFlag.FD_OUT} outputs"
+            )
+            raise ToolEntryError(EntryErrorKind.INVALID_REQUEST, msg)
 
     @classmethod
     def _port_value(
@@ -847,65 +896,64 @@ class ToolMain:
         tool: ToolLike,
         decl: PortDecl,
         element: Any,
-        wires: Mapping[str, Sequence[InputWire]],
-        wiring: CallWiring,
+        wires: Mapping[str, Sequence[PortWire]],
     ) -> object:
-        """Значение параметра-порта: порт, список портов или порт выхода."""
-        if decl.direction is PortDirection.OUTBOUND:
-            return StreamPorts.build(element, cls._outbound_io(wiring))
-
+        """Значение параметра-порта: порт либо кортеж портов по его каналам."""
         own = wires[decl.name]
+
         if decl.many:
-            return tuple(cls._inbound_ports(element, own))
+            return tuple(cls._ports_of(decl, element, own))
 
         if len(own) > 1:
             msg = (
-                f"tool {tool.name!r}: inbound port {decl.name!r} expects at most "
-                f"one {EntryFlag.FD_IN} input, got {len(own)}"
+                f"tool {tool.name!r}: port {decl.name!r} expects at most "
+                f"one channel, got {len(own)}"
             )
             raise ToolEntryError(EntryErrorKind.INVALID_REQUEST, msg)
 
-        # без входа порт пуст: так выглядит и запуск человеком
+        # без канала порт отвязан: так выглядит и запуск человеком
         for wire in own:
-            return StreamPorts.build(element, ToolIo.on_channels(wire.fd, -1))
+            return StreamPorts.build(element, cls._io_of(decl, wire))
 
         return StreamPorts.build(element, ToolIo.detached())
 
-    @staticmethod
-    def _inbound_ports(element: Any, wires: Sequence[InputWire]) -> Iterator[Any]:
+    @classmethod
+    def _ports_of(
+        cls, decl: PortDecl, element: Any, wires: Sequence[PortWire]
+    ) -> Iterator[Any]:
         for wire in wires:
-            yield StreamPorts.build(element, ToolIo.on_channels(wire.fd, -1))
+            yield StreamPorts.build(element, cls._io_of(decl, wire))
+
+    @staticmethod
+    def _io_of(decl: PortDecl, wire: PortWire) -> ToolIo:
+        """Транспорт канала: пайп входа читается, пайп выхода пишется."""
+        if decl.direction is PortDirection.INBOUND:
+            return ToolIo.on_channels(wire.fd, -1)
+
+        return ToolIo.on_channels(-1, wire.fd)
 
     @staticmethod
     def _wires_by_port(
-        tool: ToolLike, spec: StreamSpec, wiring: CallWiring
-    ) -> dict[str, list[InputWire]]:
-        """Входы из argv по входным портам; вход чужого порта — отказ."""
-        wires: dict[str, list[InputWire]] = {}
-        for port in spec.inbound():
-            wires[port.name] = []
+        tool: ToolLike, ports: Sequence[PortDecl], wires: Sequence[PortWire]
+    ) -> dict[str, list[PortWire]]:
+        """Каналы из argv по портам одной стороны; канал чужого порта — отказ."""
+        owned: dict[str, list[PortWire]] = {}
+        for port in ports:
+            owned[port.name] = []
 
-        for wire in wiring.inputs:
-            own = wires.get(wire.port)
+        for wire in wires:
+            own = owned.get(wire.port)
             if own is None:
-                known = sorted(wires)
+                known = sorted(owned)
                 msg = (
-                    f"tool {tool.name!r}: {EntryFlag.FD_IN} names port "
-                    f"{wire.port!r}, the inbound ports are {known}"
+                    f"tool {tool.name!r}: {wire.FLAG} names port "
+                    f"{wire.port!r}, the declared ports are {known}"
                 )
                 raise ToolEntryError(EntryErrorKind.INVALID_REQUEST, msg)
 
             own.append(wire)
 
-        return wires
-
-    @staticmethod
-    def _outbound_io(wiring: CallWiring) -> ToolIo:
-        """Транспорт выходного порта: канал кадров лончера либо лог человека."""
-        if not wiring.attached():
-            return ToolIo.detached()
-
-        return ToolIo.on_channels(-1, wiring.frames_fd)
+        return owned
 
     @classmethod
     def _config_source(

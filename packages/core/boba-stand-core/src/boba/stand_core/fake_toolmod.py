@@ -141,15 +141,18 @@ async def fake_hostage(
 @tool
 async def fake_garbage(
     cfg: Annotated[FakeConfig, Injected],
+    out: Annotated[Outbound[FakeChunkHead], Injected],
 ) -> MarkdownResult:
-    """Пишет мусор в канал кадров мимо кодека: читатель обязан увидеть обрыв.
+    """Пишет мусор в свой выход мимо кодека: читатель обязан увидеть обрыв.
 
-    Номер канала берётся из полного sys.argv: флаги каналов ToolMain из
-    argv тела вынимает, а вредителю нужен именно сырой дескриптор.
+    Порт объявлен ради канала, но не используется: номер дескриптора
+    берётся из полного sys.argv (значение --fd-out вида out=N) — вредителю
+    нужен именно сырой дескриптор.
     """
-    flag = EntryFlag.FD_FRAMES.value
+    flag = EntryFlag.FD_OUT.value
     if flag in sys.argv:
-        fd = int(sys.argv[sys.argv.index(flag) + 1])
+        value = sys.argv[sys.argv.index(flag) + 1]
+        fd = int(value.rpartition("=")[2])
         os.write(fd, b"\xff\xff\xff\xff not a frame at all")
 
     return MarkdownResult(text=f"garbage sent|{cfg.token.get_secret_value()}")
@@ -284,6 +287,78 @@ async def fake_collect(  # noqa: PLR0913
 
 
 @tool
+async def fake_split(
+    cfg: Annotated[FakeConfig, Injected],
+    feed: Annotated[Inbound[FakeChunkHead | FakeDoneHead], Injected],
+    even: Annotated[Outbound[FakeChunkHead | FakeDoneHead], Injected],
+    odd: Annotated[Outbound[FakeChunkHead | FakeDoneHead], Injected],
+) -> MarkdownResult:
+    """Делитель: кадры с чётным seq — в even, с нечётным — в odd.
+
+    Образец вызова с двумя выходами: разные данные уходят разным
+    читателям, итоговый done с общим счётом получает каждый выход.
+    """
+
+    def run() -> tuple[int, int]:
+        evens = 0
+        odds = 0
+        for item in feed:
+            if isinstance(item.head, FakeDoneHead):
+                continue
+
+            if item.head.seq % 2 == 0:
+                even.emit(item.head, item.body)
+                evens += 1
+            else:
+                odd.emit(item.head, item.body)
+                odds += 1
+
+        even.emit(FakeDoneHead(total=evens))
+        odd.emit(FakeDoneHead(total=odds))
+        return evens, odds
+
+    evens, odds = await asyncio.to_thread(run)
+
+    return MarkdownResult(text=f"split {evens}+{odds}|{cfg.token.get_secret_value()}")
+
+
+@tool
+async def fake_shard(
+    cfg: Annotated[FakeConfig, Injected],
+    feed: Annotated[Inbound[FakeChunkHead | FakeDoneHead], Injected],
+    outs: Annotated[Sequence[Outbound[FakeChunkHead | FakeDoneHead]], Injected],
+) -> MarkdownResult:
+    """Шардер: кадры раскладываются по выходам списка по кругу.
+
+    Образец порта-списка выходов: сколько каналов назвал вызывающий,
+    столько потоков и получилось, в каждом — своя доля кадров.
+    """
+
+    def run() -> int:
+        counts = [0] * len(outs)
+        total = 0
+        for item in feed:
+            if isinstance(item.head, FakeDoneHead):
+                continue
+
+            target = total % len(outs)
+            outs[target].emit(item.head, item.body)
+            counts[target] += 1
+            total += 1
+
+        for out, count in zip(outs, counts, strict=True):
+            out.emit(FakeDoneHead(total=count))
+
+        return total
+
+    total = await asyncio.to_thread(run)
+
+    return MarkdownResult(
+        text=f"sharded {total} into {len(outs)}|{cfg.token.get_secret_value()}"
+    )
+
+
+@tool
 async def fake_head(
     cfg: Annotated[FakeConfig, Injected],
     feed: Annotated[Inbound[FakeChunkHead | FakeDoneHead], Injected],
@@ -308,6 +383,8 @@ TOOLS: Final = ToolMain.toolset(
     fake_merge,
     fake_emit,
     fake_collect,
+    fake_split,
+    fake_shard,
     fake_head,
 )
 

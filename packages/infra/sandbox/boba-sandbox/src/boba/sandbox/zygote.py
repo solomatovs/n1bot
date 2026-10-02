@@ -34,7 +34,7 @@ import sys
 import threading
 import time
 import uuid
-from collections.abc import Callable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import suppress
 from dataclasses import dataclass
@@ -88,7 +88,12 @@ from boba.toolkit.launcher import (
     ToolLauncher,
     ToolOutcome,
 )
-from boba.toolkit.protocol import CallGateMode, ToolCommand
+from boba.toolkit.protocol import (
+    CallGateMode,
+    CallInputSpec,
+    CallOutputSpec,
+    ToolCommand,
+)
 from boba.toolkit.pump import (
     CallInput,
     CallSinks,
@@ -243,53 +248,63 @@ class ZygoteOutcome(BaseModel):
 
 class _CallChannels:
     """Все дескрипторы одного вызова, которые супервизор шлёт зиготе через
-    SCM_RIGHTS: пайпы stdin/stdout/stderr/result/frames/injected, control-
-    сокет и каталог cgroup-leaf'а.
+    SCM_RIGHTS: пайпы stdin/stdout/stderr/result/injected, control-сокет,
+    каталог cgroup-leaf'а и пайпы входов и выходов.
 
-    Порядок в child_fds() жёсткий — гость раскладывает их по CallFd, за ними
-    cgroup и входы после первого. После отправки child-концы закрываются
-    здесь, host-концы разбирают владельцы: stdin и входы забирает
-    CallInputs (take_stdin, take_inputs), канал конфига — писатель конфига
-    (take_injected), остальное читает насос и закрывает close_host_ends.
+    Порядок в child_fds() жёсткий — гость раскладывает их по CallFd, за
+    ними cgroup, затем входы и выходы, каждый своим пайпом. После отправки child-концы
+    закрываются здесь, host-концы разбирают владельцы: stdin и входы
+    забирает CallInputs (take_stdin, take_inputs), канал конфига — писатель
+    конфига (take_injected), выходы — перекачка (take_outputs) либо насос
+    (claim_frames), остальное читает насос и закрывает close_host_ends.
     """
 
-    def __init__(self, cgroup_fd: int, extra_inputs: int) -> None:
+    def __init__(
+        self,
+        cgroup_fd: int,
+        inputs: Sequence[CallInputSpec],
+        outputs: Sequence[CallOutputSpec],
+    ) -> None:
         self.cgroup_fd = cgroup_fd
         self.stdin_r, self.stdin_w = os.pipe()
         self.stdout_r, self.stdout_w = os.pipe()
         self.stderr_r, self.stderr_w = os.pipe()
         self.result_r, self.result_w = os.pipe()
-        self.frames_r, self.frames_w = os.pipe()
         self.injected_r, self.injected_w = os.pipe()
         self.gate_r, self.gate_w = os.pipe()
         self.verdict_r, self.verdict_w = os.pipe()
         PipePlumbing.widen(self.stdin_w)
-        PipePlumbing.widen(self.frames_w)
         self.control_host, self.control_child = socket.socketpair(
             socket.AF_UNIX, socket.SOCK_SEQPACKET
         )
         self.control_host.setsockopt(socket.SOL_SOCKET, socket.SO_PASSCRED, 1)
         self._stdin_open = True
         self._injected_open = True
-        self._frames_open = True
+        self._outputs_taken = False
+        self._claimed: int | None = None
         self._inputs_open = True
         self._gate_open = True
 
-        self._extra: list[tuple[int, int]] = []
-        for _ in range(extra_inputs):
+        self._ins: list[tuple[int, int]] = []
+        for spec in inputs:
             read_fd, write_fd = os.pipe()
-            PipePlumbing.widen(write_fd)
-            self._extra.append((read_fd, write_fd))
+            PipePlumbing.require(write_fd, spec.pipe_bytes, spec.port)
+            self._ins.append((read_fd, write_fd))
+
+        self._outs: list[tuple[int, int]] = []
+        for out_spec in outputs:
+            read_fd, write_fd = os.pipe()
+            PipePlumbing.require(write_fd, out_spec.pipe_bytes, out_spec.port)
+            self._outs.append((read_fd, write_fd))
 
     def child_fds(self) -> list[int]:
         """В порядке CallFd: так их ждёт зигота; cgroup — не всегда, входы
-        после первого — в хвосте."""
+        после первого и выходы — в хвосте."""
         listed = [
             self.stdin_r,
             self.stdout_w,
             self.stderr_w,
             self.result_w,
-            self.frames_w,
             self.injected_r,
             self.control_child.fileno(),
             self.gate_w,
@@ -298,8 +313,11 @@ class _CallChannels:
         if self.cgroup_fd >= 0:
             listed.append(self.cgroup_fd)
 
-        for read_fd, _ in self._extra:
+        for read_fd, _ in self._ins:
             listed.append(read_fd)
+
+        for _, write_fd in self._outs:
+            listed.append(write_fd)
 
         return listed
 
@@ -308,13 +326,15 @@ class _CallChannels:
         os.close(self.stdout_w)
         os.close(self.stderr_w)
         os.close(self.result_w)
-        os.close(self.frames_w)
         os.close(self.injected_r)
         self.control_child.close()
         os.close(self.gate_w)
         os.close(self.verdict_r)
-        for read_fd, _ in self._extra:
+        for read_fd, _ in self._ins:
             os.close(read_fd)
+
+        for _, write_fd in self._outs:
+            os.close(write_fd)
 
     def stdin_alive(self) -> bool:
         return self._stdin_open
@@ -339,8 +359,8 @@ class _CallChannels:
         return self.verdict_w
 
     def take_inputs(self) -> tuple[int, ...]:
-        """Отдать записывающие концы входов после первого их владельцу —
-        CallInputs вызова; каналы их больше не закрывают."""
+        """Отдать записывающие концы входов их владельцу — CallInputs
+        вызова; каналы их больше не закрывают."""
         if not self._inputs_open:
             msg = "call inputs are already taken or closed"
             raise LauncherError(msg)
@@ -348,7 +368,7 @@ class _CallChannels:
         self._inputs_open = False
 
         fds: list[int] = []
-        for _, write_fd in self._extra:
+        for _, write_fd in self._ins:
             fds.append(write_fd)
 
         return tuple(fds)
@@ -362,26 +382,62 @@ class _CallChannels:
         self._injected_open = False
         return self.injected_w
 
-    def take_frames(self) -> int:
-        """Отдать канал кадров перекачке: насос его не читает, каналы его
-        больше не закрывают; владеет дескриптором перекачка."""
-        if not self._frames_open:
-            msg = "call frames channel is already taken or closed"
+    def take_outputs(self) -> tuple[int, ...]:
+        """Отдать читающие концы всех выходов перекачке: насос их не читает,
+        каналы их больше не закрывают; владеет дескрипторами перекачка."""
+        if self._outputs_taken or self._claimed is not None:
+            msg = "call output channels are already taken or claimed"
             raise LauncherError(msg)
 
-        self._frames_open = False
-        return self.frames_r
+        self._outputs_taken = True
+
+        fds: list[int] = []
+        for read_fd, _ in self._outs:
+            fds.append(read_fd)
+
+        return tuple(fds)
+
+    def claim_frames(self) -> int | None:
+        """Единственный кадровый выход — насосу: его кадры читает хост.
+
+        None — выходов нет, их больше одного либо выход сырой: непрошенные
+        дочитает drain_reads. Сырость выхода называет вызывающий.
+        """
+        if self._outputs_taken:
+            msg = "call output channels are taken, claiming frames is refused"
+            raise LauncherError(msg)
+
+        if len(self._outs) != 1:
+            return None
+
+        self._claimed = 0
+        return self._outs[0][0]
+
+    def drain_reads(self) -> tuple[int, ...]:
+        """Читающие концы выходов без читателя: насос дочитывает их в никуда,
+        чтобы тело не встало на записи."""
+        if self._outputs_taken:
+            return ()
+
+        fds: list[int] = []
+        for index, (read_fd, _) in enumerate(self._outs):
+            if index == self._claimed:
+                continue
+
+            fds.append(read_fd)
+
+        return tuple(fds)
 
     def host_reads(self) -> tuple[tuple[ToolChannel, int], ...]:
-        """Читаемые насосом каналы вызова; отданный перекачке не входит."""
+        """Читаемые насосом каналы вызова; отданные перекачке не входят."""
         reads: list[tuple[ToolChannel, int]] = [
             (ToolChannel.STDOUT, self.stdout_r),
             (ToolChannel.STDERR, self.stderr_r),
             (ToolChannel.RESULT, self.result_r),
         ]
 
-        if self._frames_open:
-            reads.append((ToolChannel.FRAMES, self.frames_r))
+        if self._claimed is not None:
+            reads.append((ToolChannel.FRAMES, self._outs[self._claimed][0]))
 
         return tuple(reads)
 
@@ -397,7 +453,7 @@ class _CallChannels:
         self._close_inputs()
         self._close_gate()
         self._close_injected()
-        self._close_frames()
+        self._close_outputs()
         os.close(self.stdout_r)
         os.close(self.stderr_r)
         os.close(self.result_r)
@@ -417,7 +473,7 @@ class _CallChannels:
             return
 
         self._inputs_open = False
-        for _, write_fd in self._extra:
+        for _, write_fd in self._ins:
             os.close(write_fd)
 
     def _close_injected(self) -> None:
@@ -427,12 +483,13 @@ class _CallChannels:
         self._injected_open = False
         os.close(self.injected_w)
 
-    def _close_frames(self) -> None:
-        if not self._frames_open:
+    def _close_outputs(self) -> None:
+        if self._outputs_taken:
             return
 
-        self._frames_open = False
-        os.close(self.frames_r)
+        self._outputs_taken = True
+        for read_fd, _ in self._outs:
+            os.close(read_fd)
 
 
 class ZygoteSupervisor:
@@ -669,7 +726,8 @@ class ZygoteSupervisor:
         staging: Sequence[str] = (),
         cwd: str = "",
         module: str = "",
-        inputs: Sequence[str] = (),
+        inputs: Sequence[CallInputSpec] = (),
+        outputs: Sequence[CallOutputSpec] = (),
     ) -> _WiredCall:
         """Открыть проводку вызова: каналы и запрос зиготе, без насоса.
 
@@ -705,13 +763,14 @@ class ZygoteSupervisor:
             staging=tuple(staging),
             cwd=cwd,
             into_cgroup=cgroup_fd >= 0,
-            inputs=tuple(inputs),
+            inputs=tuple(spec.port for spec in inputs),
+            outputs=tuple(spec.port for spec in outputs),
         )
-        channels = _CallChannels(cgroup_fd, request.extra_inputs())
+        channels = _CallChannels(cgroup_fd, inputs, outputs)
 
         try:
             with self._send_lock:
-                ZygoteWire.send(sock, request, channels.child_fds())
+                ZygoteWire.send_batched(sock, request, channels.child_fds())
         except OSError as exc:
             channels.close_child_ends()
             channels.close_host_ends()
@@ -1030,6 +1089,9 @@ class _ZygotePump(ChannelPump):
                 continue
 
             self.add_read(fd, sink)
+
+        for fd in channels.drain_reads():
+            self.add_drain(fd)
 
         self.add_event(channels.control_host.fileno(), self._control_event)
 
@@ -1375,17 +1437,19 @@ class ZygoteToolCaller(ToolLauncher):
         return call
 
     def open_tap(self, command: ToolCommand) -> TappedCall:
-        """Вызов-источник splice-перекачки (CallRelay.splice).
+        """Вызов-источник splice-перекачки (раздача каналов группы).
 
-        Канал кадров хостом не разбирается и не журналируется — его
-        дескриптор отдаётся перекачке; frames() такого вызова пуст.
+        Выходные каналы хостом не разбираются и не журналируются — их
+        дескрипторы отдаются перекачке; frames() такого вызова пуст.
         """
-        call, fd = self._open_call(command, tap=True)
+        call, fds = self._open_call(command, tap=True)
 
-        return TappedCall(call=call, frames_fd=fd)
+        return TappedCall(call=call, frames_fds=fds)
 
-    def _open_call(self, command: ToolCommand, *, tap: bool) -> tuple[ToolCall, int]:
-        """Общий открыватель вызова модуля; tap отдаёт канал кадров наружу."""
+    def _open_call(
+        self, command: ToolCommand, *, tap: bool
+    ) -> tuple[ToolCall, tuple[int, ...]]:
+        """Общий открыватель вызова модуля; tap отдаёт выходы наружу."""
         argv_tail = self._argv_tail(command)
         module = command.argv[self.ARGV_HEAD - 1]
         plan = self._plan()
@@ -1406,14 +1470,6 @@ class ZygoteToolCaller(ToolLauncher):
         }
         journal = list(self.MODULE_JOURNAL)
 
-        # сырой канал кадров хост не разбирает и не журналирует: без tap
-        # насос дочитывает его в никуда, с tap — отдаёт перекачке
-        if not tap and not command.raw_frames:
-            own[ToolChannel.FRAMES] = inbox.feed
-            journal.append(ToolChannel.FRAMES)
-
-        sinks = CallSinks.merged(own, tuple(journal))
-
         manager, leaf = self._acquire_leaf()
 
         try:
@@ -1429,15 +1485,23 @@ class ZygoteToolCaller(ToolLauncher):
                 staging=plan.staging,
                 cwd=plan.cwd,
                 module=module,
-                inputs=tuple(self._input_ports(command)),
+                inputs=command.inputs,
+                outputs=command.outputs,
             )
         except BaseException:
             self._release_leaf(manager, leaf)
             raise
 
-        frames_fd = -1
+        # хост читает кадры лишь у единственного кадрового выхода без tap;
+        # прочие выходы без читателя насос дочитывает в никуда
+        frames_fds: tuple[int, ...] = ()
         if tap:
-            frames_fd = wired.channels.take_frames()
+            frames_fds = wired.channels.take_outputs()
+        elif self._claimable(command) and wired.channels.claim_frames() is not None:
+            own[ToolChannel.FRAMES] = inbox.feed
+            journal.append(ToolChannel.FRAMES)
+
+        sinks = CallSinks.merged(own, tuple(journal))
 
         inputs = CallSinks.call_inputs(
             wired.channels.take_stdin(), wired.channels.take_inputs(), command.inputs
@@ -1468,9 +1532,9 @@ class ZygoteToolCaller(ToolLauncher):
             # EOF каналов выведет тело, зигота пожнёт его сама
             inputs.abandon_all()
             gate.close()
-            if frames_fd >= 0:
+            for fd in frames_fds:
                 with suppress(OSError):
-                    os.close(frames_fd)
+                    os.close(fd)
             self._supervisor.abandon_wired(wired)
             self._release_leaf(manager, leaf)
             raise
@@ -1480,12 +1544,15 @@ class ZygoteToolCaller(ToolLauncher):
         config_input.send_bytes(command.config)
         config_input.finish()
 
-        return call, frames_fd
+        return call, frames_fds
 
     @staticmethod
-    def _input_ports(command: ToolCommand) -> Iterator[str]:
-        for spec in command.inputs:
-            yield spec.port
+    def _claimable(command: ToolCommand) -> bool:
+        """Кадры единственного кадрового выхода читает хост."""
+        if len(command.outputs) != 1:
+            return False
+
+        return not command.outputs[0].raw
 
     def outcome_of(
         self,

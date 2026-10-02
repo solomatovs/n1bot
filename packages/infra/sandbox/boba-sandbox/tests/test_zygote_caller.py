@@ -46,7 +46,7 @@ from boba.toolkit.channels import JournalChannel, ToolChannel
 from boba.toolkit.entry import ToolAddress, ToolArgv, ToolMain
 from boba.toolkit.frames import ToolFrame
 from boba.toolkit.launcher import CollectedCall, LauncherError
-from boba.toolkit.protocol import CallGateMode, ReplyError, ReplyOk, ToolCommand
+from boba.toolkit.protocol import CallGateMode, ReplyError, ReplyOk
 from boba.toolkit.stream import (
     ChannelSinks,
     Chunk,
@@ -201,7 +201,9 @@ def _command(text: str) -> Any:
     """ToolCommand для fx_echo — ровно как его строит обёртка запуска."""
     address = ToolAddress(module="fake_channel_tool", name="fx_echo")
     schema = ToolArgv.schema_of(FX_ECHO)
-    return ToolArgv.render(address, schema, {"text": text, "cfg": CFG}, input_counts={})
+    return ToolArgv.render(
+        address, schema, {"text": text, "cfg": CFG}, input_counts={}, output_counts={}
+    )
 
 
 def _stream_command(prefix: str) -> Any:
@@ -209,7 +211,11 @@ def _stream_command(prefix: str) -> Any:
     address = ToolAddress(module="fake_channel_tool", name="fx_stream")
     schema = ToolArgv.schema_of(FX_STREAM)
     return ToolArgv.render(
-        address, schema, {"prefix": prefix, "cfg": CFG}, input_counts={}
+        address,
+        schema,
+        {"prefix": prefix, "cfg": CFG},
+        input_counts={},
+        output_counts={},
     )
 
 
@@ -317,7 +323,9 @@ class TestRunTool:
 
         address = ToolAddress(module="fake_channel_tool", name="fx_probe_tmp")
         schema = ToolArgv.schema_of(FX_PROBE)
-        command = ToolArgv.render(address, schema, {"marker": "solo"}, input_counts={})
+        command = ToolArgv.render(
+            address, schema, {"marker": "solo"}, input_counts={}, output_counts={}
+        )
 
         outcome = CollectedCall.of(caller, command)
 
@@ -465,7 +473,8 @@ class TestWarmup:
             next(t for t in ToolMain.toolset(fx_warm_state) if t)
         )
         outcome = CollectedCall.of(
-            caller, ToolArgv.render(address, schema, {}, input_counts={})
+            caller,
+            ToolArgv.render(address, schema, {}, input_counts={}, output_counts={}),
         )
 
         if not isinstance(outcome.reply, ReplyOk):
@@ -677,7 +686,7 @@ class TestImageRootfs:
         address = ToolAddress(module="fake_channel_tool", name="fx_probe_tmp")
         schema = ToolArgv.schema_of(FX_PROBE)
         command = ToolArgv.render(
-            address, schema, {"marker": "img.txt"}, input_counts={}
+            address, schema, {"marker": "img.txt"}, input_counts={}, output_counts={}
         )
 
         outcome = CollectedCall.of(caller, command)
@@ -800,7 +809,11 @@ class TestManyInputs:
         address = ToolAddress(module="fake_channel_tool", name="fx_merge")
         schema = ToolArgv.schema_of(FX_MERGE)
         return ToolArgv.render(
-            address, schema, {"cfg": CFG}, input_counts={"feeds": inputs}
+            address,
+            schema,
+            {"cfg": CFG},
+            input_counts={"feeds": inputs},
+            output_counts={},
         )
 
     def test_each_input_reaches_its_port(self, zygote: Any) -> None:
@@ -820,18 +833,22 @@ class TestManyInputs:
         if outcome.reply.content != "merged 4:in0;in1;in2;in3|zc-s3cret":
             raise AssertionError(f"content={outcome.reply.content!r}")
 
-    def test_input_ceiling_fits_one_message(self, zygote: Any) -> None:
-        """Потолок входов вызова проходит одним сообщением зиготе."""
+    WIRE_FIT_INPUTS = 32
+    """Входов, заведомо умещающихся с фиксированными каналами в одно
+    сообщение ZygoteWire (MAX_FDS)."""
+
+    def test_many_inputs_fit_one_message(self, zygote: Any) -> None:
+        """Десятки входов вызова проходят одним сообщением зиготе."""
         caller = zygote(_profile())
 
-        with caller.open(self._merge(ToolCommand.MAX_INPUTS)) as call:
+        with caller.open(self._merge(self.WIRE_FIT_INPUTS)) as call:
             call.done_sending()
             outcome = call.result()
 
         if not isinstance(outcome.reply, ReplyOk):
             raise AssertionError(f"reply={outcome.reply}")
 
-        expected = f"merged {ToolCommand.MAX_INPUTS}:"
+        expected = f"merged {self.WIRE_FIT_INPUTS}:"
         if not outcome.reply.content.startswith(expected):
             raise AssertionError(f"content={outcome.reply.content!r}")
 
@@ -935,7 +952,7 @@ class TestFanOutInSandbox:
         drained = threading.Event()
         errors: list[str] = []
         fanout = ChannelFanOut(
-            "s", tapped.frames_fd, reader_fds, PipeTee(), errors.append, drained.set
+            "s", tapped.frames_fds[0], reader_fds, PipeTee(), errors.append, drained.set
         )
         fanout.start()
 
@@ -974,7 +991,11 @@ class TestGateInSandbox:
     def _gated(self, gate: CallGateMode) -> Any:
         address = ToolAddress(module="fake_channel_tool", name="fx_gated")
         command = ToolArgv.render(
-            address, ToolArgv.schema_of(FX_GATED), {"cfg": CFG}, input_counts={}
+            address,
+            ToolArgv.schema_of(FX_GATED),
+            {"cfg": CFG},
+            input_counts={},
+            output_counts={},
         )
         return command.model_copy(update={"gate": gate})
 
