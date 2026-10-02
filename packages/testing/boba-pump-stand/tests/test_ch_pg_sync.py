@@ -1,7 +1,10 @@
-# ruff: noqa: S608
+# ruff: noqa: S608, E501
 """Пара ClickHouse -> postgres по tsv: ch_stream_out с wire = tsv в pg_stream_in на
 приёмниках pg-16 и Greenplum 7, источник — каждый ClickHouse стенда с
 таблицей всех ходовых типов.
+
+Каждый запуск описан toml-текстом (DagSpec) и исполняется DagRunner без
+модели: узлы — вызовы насосов с аргументами, как их присылает модель.
 
 Что проверяется:
     - каждый тип ClickHouse ложится своим типом postgres, значения совпадают
@@ -23,37 +26,20 @@ from __future__ import annotations
 import re
 from collections.abc import AsyncIterator, Sequence
 from decimal import Decimal
+from pathlib import Path
 from typing import Any, ClassVar
 
-import psycopg
 import pytest
 
-from boba.db.clickhouse.target import ChStreamWire
-from boba.db.postgres.connection import CopyOptions
-from boba.db.postgres.transfer import PgTransferTable
 from boba.pump_stand import (
     ChLoaded,
     ClickHouseSide,
-    Leg,
     Loaded,
     PostgresSide,
-    Pumps,
+    PumpDags,
     PumpStand,
 )
 from boba.stand.names import StandNames
-from boba.toolkit.transfer import (
-    ColumnRules,
-    CreateIfNotExists,
-    DeleteNothing,
-    DeleteTruncate,
-    DropAndCreate,
-    ErrorIfNotExists,
-    ErrorIfSchemaChanged,
-    FailOnUnknown,
-    FallbackAsVarchar,
-    InsertFull,
-    TransferError,
-)
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
 
@@ -61,7 +47,6 @@ STAND = PumpStand.required()
 PG_SCHEMA = StandNames().of("pump_ch_pg")
 CH_DATABASE = StandNames().of("pump_ch_pg")
 ROWS = 60
-CHUNK = 65536
 TARGET_NAMES = ("pg-16", "gp-7")
 JSON_SINCE = 24
 JSON_SETTINGS = {
@@ -141,6 +126,454 @@ EXPECTED_COLUMNS = [
 ]
 """Колонки postgres по контракту ClickHouse: имя, тип, not null."""
 
+TYPES_CREATE = """
+name = "ch_to_pg_tsv_types_create"
+version = 1
+
+[[nodes]]
+key = "src"
+tool = "ch_stream_out"
+
+[nodes.args]
+connection = "ch"
+sql = "select * from $ch_database.src order by id"
+wire = "tsv"
+chunk_bytes = 65536
+out = "rows"
+
+[[nodes]]
+key = "pg"
+tool = "pg_stream_in"
+
+[nodes.args]
+connection = "pg"
+schema_name = "$pg_schema"
+table_name = "types"
+schema_strategy = { kind = "drop_and_create" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+rules = {}
+unknown_types = { kind = "fail_on_unknown" }
+copy_options = { chunk_bytes = 65536 }
+feed = "rows"
+"""
+
+TYPES_RELOAD = """
+name = "ch_to_pg_tsv_types_reload"
+version = 1
+
+[[nodes]]
+key = "src"
+tool = "ch_stream_out"
+
+[nodes.args]
+connection = "ch"
+sql = "select * from $ch_database.src order by id"
+wire = "tsv"
+chunk_bytes = 65536
+out = "rows"
+
+[[nodes]]
+key = "pg"
+tool = "pg_stream_in"
+
+[nodes.args]
+connection = "pg"
+schema_name = "$pg_schema"
+table_name = "types"
+schema_strategy = { kind = "error_if_schema_changed" }
+delete_strategy = { kind = "truncate" }
+insert_strategy = { kind = "full" }
+rules = {}
+unknown_types = { kind = "fail_on_unknown" }
+copy_options = { chunk_bytes = 65536 }
+feed = "rows"
+"""
+
+JSON_TABLE = """
+name = "ch_to_pg_tsv_json"
+version = 1
+
+[[nodes]]
+key = "src"
+tool = "ch_stream_out"
+
+[nodes.args]
+connection = "ch"
+sql = "select * from $ch_database.js order by id"
+wire = "tsv"
+chunk_bytes = 65536
+out = "rows"
+
+[[nodes]]
+key = "pg"
+tool = "pg_stream_in"
+
+[nodes.args]
+connection = "pg"
+schema_name = "$pg_schema"
+table_name = "js"
+schema_strategy = { kind = "drop_and_create" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+rules = {}
+unknown_types = { kind = "fail_on_unknown" }
+copy_options = { chunk_bytes = 65536 }
+feed = "rows"
+"""
+
+UNKNOWN_ARRAY = """
+name = "ch_to_pg_tsv_unknown_array"
+version = 1
+
+[[nodes]]
+key = "src"
+tool = "ch_stream_out"
+
+[nodes.args]
+connection = "ch"
+sql = "select id, [id, id + 1] as arr from $ch_database.src order by id"
+wire = "tsv"
+chunk_bytes = 65536
+out = "rows"
+
+[[nodes]]
+key = "pg"
+tool = "pg_stream_in"
+
+[nodes.args]
+connection = "pg"
+schema_name = "$pg_schema"
+table_name = "unknown"
+schema_strategy = { kind = "drop_and_create" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+rules = {}
+unknown_types = { kind = "fail_on_unknown" }
+copy_options = { chunk_bytes = 65536 }
+feed = "rows"
+"""
+
+UNKNOWN_MAP = """
+name = "ch_to_pg_tsv_unknown_map"
+version = 1
+
+[[nodes]]
+key = "src"
+tool = "ch_stream_out"
+
+[nodes.args]
+connection = "ch"
+sql = "select id, map('k', id) as m from $ch_database.src order by id"
+wire = "tsv"
+chunk_bytes = 65536
+out = "rows"
+
+[[nodes]]
+key = "pg"
+tool = "pg_stream_in"
+
+[nodes.args]
+connection = "pg"
+schema_name = "$pg_schema"
+table_name = "unknown"
+schema_strategy = { kind = "drop_and_create" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+rules = {}
+unknown_types = { kind = "fail_on_unknown" }
+copy_options = { chunk_bytes = 65536 }
+feed = "rows"
+"""
+
+UNKNOWN_TUPLE = """
+name = "ch_to_pg_tsv_unknown_tuple"
+version = 1
+
+[[nodes]]
+key = "src"
+tool = "ch_stream_out"
+
+[nodes.args]
+connection = "ch"
+sql = "select id, (id, 'x') as t from $ch_database.src order by id"
+wire = "tsv"
+chunk_bytes = 65536
+out = "rows"
+
+[[nodes]]
+key = "pg"
+tool = "pg_stream_in"
+
+[nodes.args]
+connection = "pg"
+schema_name = "$pg_schema"
+table_name = "unknown"
+schema_strategy = { kind = "drop_and_create" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+rules = {}
+unknown_types = { kind = "fail_on_unknown" }
+copy_options = { chunk_bytes = 65536 }
+feed = "rows"
+"""
+
+UNKNOWN_LOCAL_TIME = """
+name = "ch_to_pg_tsv_unknown_local_time"
+version = 1
+
+[[nodes]]
+key = "src"
+tool = "ch_stream_out"
+
+[nodes.args]
+connection = "ch"
+sql = "select id, toDateTime64(dt64, 3, 'Europe/Moscow') as local from $ch_database.src order by id"
+wire = "tsv"
+chunk_bytes = 65536
+out = "rows"
+
+[[nodes]]
+key = "pg"
+tool = "pg_stream_in"
+
+[nodes.args]
+connection = "pg"
+schema_name = "$pg_schema"
+table_name = "unknown"
+schema_strategy = { kind = "drop_and_create" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+rules = {}
+unknown_types = { kind = "fail_on_unknown" }
+copy_options = { chunk_bytes = 65536 }
+feed = "rows"
+"""
+
+UNKNOWN_AS_TEXT = """
+name = "ch_to_pg_tsv_unknown_as_text"
+version = 1
+
+[[nodes]]
+key = "src"
+tool = "ch_stream_out"
+
+[nodes.args]
+connection = "ch"
+sql = "select id, [id, id + 1] as arr, map('k', id) as m, (id, 'x') as t, toDateTime64(dt64, 3, 'Europe/Moscow') as local from $ch_database.src order by id"
+wire = "tsv"
+chunk_bytes = 65536
+out = "rows"
+
+[[nodes]]
+key = "pg"
+tool = "pg_stream_in"
+
+[nodes.args]
+connection = "pg"
+schema_name = "$pg_schema"
+table_name = "unknown"
+schema_strategy = { kind = "drop_and_create" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+rules = {}
+unknown_types = { kind = "fallback_as_varchar" }
+copy_options = { chunk_bytes = 65536 }
+feed = "rows"
+"""
+
+DECLARED_TYPES = """
+name = "ch_to_pg_tsv_declared_types"
+version = 1
+
+[[nodes]]
+key = "src"
+tool = "ch_stream_out"
+
+[nodes.args]
+connection = "ch"
+sql = "select id, u64, toDateTime64(dt64, 3, 'Europe/Moscow') as local from $ch_database.src order by id"
+wire = "tsv"
+chunk_bytes = 65536
+out = "rows"
+
+[[nodes]]
+key = "pg"
+tool = "pg_stream_in"
+
+[nodes.args]
+connection = "pg"
+schema_name = "$pg_schema"
+table_name = "declared"
+schema_strategy = { kind = "drop_and_create" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+rules = { column_types = { local = "timestamp(3)", u64 = "numeric(30, 2)" } }
+unknown_types = { kind = "fail_on_unknown" }
+copy_options = { chunk_bytes = 65536 }
+feed = "rows"
+"""
+
+EXISTING_WIDER = """
+name = "ch_to_pg_tsv_existing_wider"
+version = 1
+
+[[nodes]]
+key = "src"
+tool = "ch_stream_out"
+
+[nodes.args]
+connection = "ch"
+sql = "select id, i8, dec, s, dt64 from $ch_database.src order by id"
+wire = "tsv"
+chunk_bytes = 65536
+out = "rows"
+
+[[nodes]]
+key = "pg"
+tool = "pg_stream_in"
+
+[nodes.args]
+connection = "pg"
+schema_name = "$pg_schema"
+table_name = "existing"
+schema_strategy = { kind = "error_if_not_exists" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+rules = {}
+unknown_types = { kind = "fail_on_unknown" }
+copy_options = { chunk_bytes = 65536 }
+feed = "rows"
+"""
+
+EXISTING_CHECK = """
+name = "ch_to_pg_tsv_existing_check"
+version = 1
+
+[[nodes]]
+key = "src"
+tool = "ch_stream_out"
+
+[nodes.args]
+connection = "ch"
+sql = "select id, i8, dec, s, dt64 from $ch_database.src order by id"
+wire = "tsv"
+chunk_bytes = 65536
+out = "rows"
+
+[[nodes]]
+key = "pg"
+tool = "pg_stream_in"
+
+[nodes.args]
+connection = "pg"
+schema_name = "$pg_schema"
+table_name = "existing"
+schema_strategy = { kind = "error_if_schema_changed" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+rules = {}
+unknown_types = { kind = "fail_on_unknown" }
+copy_options = { chunk_bytes = 65536 }
+feed = "rows"
+"""
+
+FIXED_WITH_NUL = """
+name = "ch_to_pg_tsv_fixed_string_with_nul"
+version = 1
+
+[[nodes]]
+key = "src"
+tool = "ch_stream_out"
+
+[nodes.args]
+connection = "ch"
+sql = "select id, toFixedString('ab', 4) as fs from $ch_database.src"
+wire = "tsv"
+chunk_bytes = 65536
+out = "rows"
+
+[[nodes]]
+key = "pg"
+tool = "pg_stream_in"
+
+[nodes.args]
+connection = "pg"
+schema_name = "$pg_schema"
+table_name = "fixed"
+schema_strategy = { kind = "create_if_not_exists" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+rules = {}
+unknown_types = { kind = "fail_on_unknown" }
+copy_options = { chunk_bytes = 65536 }
+feed = "rows"
+"""
+
+FIXED_TRIMMED = """
+name = "ch_to_pg_tsv_fixed_string_trimmed"
+version = 1
+
+[[nodes]]
+key = "src"
+tool = "ch_stream_out"
+
+[nodes.args]
+connection = "ch"
+sql = '''select id, replaceAll(toString(toFixedString('ab', 4)), '\\\\0', '') as fs from $ch_database.src order by id'''
+wire = "tsv"
+chunk_bytes = 65536
+out = "rows"
+
+[[nodes]]
+key = "pg"
+tool = "pg_stream_in"
+
+[nodes.args]
+connection = "pg"
+schema_name = "$pg_schema"
+table_name = "fixed"
+schema_strategy = { kind = "drop_and_create" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+rules = {}
+unknown_types = { kind = "fail_on_unknown" }
+copy_options = { chunk_bytes = 65536 }
+feed = "rows"
+"""
+
+MART = """
+name = "ch_to_pg_tsv_mart"
+version = 1
+
+[[nodes]]
+key = "src"
+tool = "ch_stream_out"
+
+[nodes.args]
+connection = "ch"
+sql = "select id, dec, lc from $ch_database.src order by id"
+wire = "tsv"
+chunk_bytes = 65536
+out = "rows"
+
+[[nodes]]
+key = "pg"
+tool = "pg_stream_in"
+
+[nodes.args]
+connection = "pg"
+schema_name = "$pg_schema"
+table_name = "mart"
+schema_strategy = { kind = "drop_and_create" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+rules = { rename_columns = { key = "id", amount = "dec", label = "lc" }, column_types = { amount = "numeric(20, 2)", label = "varchar(10)" } }
+unknown_types = { kind = "fail_on_unknown" }
+copy_options = { chunk_bytes = 65536 }
+feed = "rows"
+"""
+
 
 def _sources_by_name() -> dict[str, Any]:
     return {source.name: source for source in STAND.sources}
@@ -180,54 +613,38 @@ async def postgres(request: Any) -> AsyncIterator[PostgresSide]:
     await side.drop()
 
 
-async def land(  # noqa: PLR0913
-    clickhouse: ClickHouseSide,
-    postgres: PostgresSide,
-    table: str,
-    schema: Any,
-    delete: Any = DeleteNothing(kind="nothing"),
-    rules: ColumnRules = ColumnRules(),
-    unknown_types: Any = FailOnUnknown(kind="fail_on_unknown"),
-    select: str = f"select * from {CH_DATABASE}.src order by id",
-    create_table: str = PgTransferTable.CREATE_TABLE,
-) -> str:
-    """ch_stream_out с wire = tsv -> pg_stream_in."""
-    pumps = Pumps(postgres=postgres.profile, clickhouse=clickhouse.profile)
-    chained = await pumps.chain(
-        Leg(
-            "ch_stream_out",
-            {"sql": select, "wire": ChStreamWire.TSV, "chunk_bytes": CHUNK},
-        ),
-        Leg(
-            "pg_stream_in",
-            {
-                "schema_name": PG_SCHEMA,
-                "table_name": table,
-                "schema_strategy": schema,
-                "delete_strategy": delete,
-                "insert_strategy": InsertFull(kind="full"),
-                "rules": rules,
-                "unknown_types": unknown_types,
-                "create_table": create_table,
-                "copy_options": CopyOptions(chunk_bytes=CHUNK),
-            },
-        ),
-    )
-    print(
-        f"\n--- {clickhouse.source.name} -> {postgres.source.name}: tsv ---\n"
-        f"{chained.in_report}"
+@pytest.fixture
+def dags(
+    tmp_path: Path, clickhouse: ClickHouseSide, postgres: PostgresSide
+) -> PumpDags:
+    return PumpDags(
+        tmp_path,
+        {"ch": clickhouse.profile, "pg": postgres.profile},
+        {"ch_database": CH_DATABASE, "pg_schema": PG_SCHEMA},
     )
 
-    return chained.in_report
+
+async def _landed(
+    dags: PumpDags, clickhouse: ClickHouseSide, postgres: PostgresSide, spec: str
+) -> str:
+    """Запуск описания; отчёт приёмника — узла pg."""
+    outcome = await dags.run(spec)
+    report = outcome.node("pg").content
+    print(
+        f"\n--- {clickhouse.source.name} -> {postgres.source.name}: {outcome.dag} "
+        f"---\n{report}"
+    )
+
+    assert outcome.ok(), report
+
+    return report
 
 
 class TestNativeTypes:
     async def test_types_and_values_land(
-        self, clickhouse: ClickHouseSide, postgres: PostgresSide
+        self, dags: PumpDags, clickhouse: ClickHouseSide, postgres: PostgresSide
     ) -> None:
-        report = await land(
-            clickhouse, postgres, "types", DropAndCreate(kind="drop_and_create")
-        )
+        report = await _landed(dags, clickhouse, postgres, TYPES_CREATE)
         landed = Loaded(postgres, PG_SCHEMA, "types")
         source = ChLoaded(clickhouse, "src")
 
@@ -275,21 +692,15 @@ class TestNativeTypes:
         assert await landed.scalars("host(ip6)") == await source.column("toString(ip6)")
 
     async def test_reload_passes_the_check(
-        self, clickhouse: ClickHouseSide, postgres: PostgresSide
+        self, dags: PumpDags, clickhouse: ClickHouseSide, postgres: PostgresSide
     ) -> None:
-        report = await land(
-            clickhouse,
-            postgres,
-            "types",
-            ErrorIfSchemaChanged(kind="error_if_schema_changed"),
-            DeleteTruncate(kind="truncate"),
-        )
+        report = await _landed(dags, clickhouse, postgres, TYPES_RELOAD)
 
         assert f"{ROWS} rows loaded" in report
         assert await Loaded(postgres, PG_SCHEMA, "types").count() == ROWS
 
     async def test_json_lands_as_jsonb(
-        self, clickhouse: ClickHouseSide, postgres: PostgresSide
+        self, dags: PumpDags, clickhouse: ClickHouseSide, postgres: PostgresSide
     ) -> None:
         if clickhouse.major < JSON_SINCE:
             pytest.skip("JSON of this server is Object('json') and prints a tuple")
@@ -307,13 +718,7 @@ class TestNativeTypes:
             settings=JSON_SETTINGS,
         )
 
-        report = await land(
-            clickhouse,
-            postgres,
-            "js",
-            DropAndCreate(kind="drop_and_create"),
-            select=f"select * from {CH_DATABASE}.js order by id",
-        )
+        report = await _landed(dags, clickhouse, postgres, JSON_TABLE)
         landed = Loaded(postgres, PG_SCHEMA, "js")
 
         assert f"{ROWS} rows loaded" in report
@@ -327,52 +732,29 @@ class TestUnknownTypes:
     """Array, Map, Tuple и DateTime64 не в UTC: у postgres нет типа, который
     прочитает текст ClickHouse без потерь."""
 
-    SELECT: ClassVar[str] = (
-        f"select id, [id, id + 1] as arr, map('k', id) as m, (id, 'x') as t, "
-        f"toDateTime64(dt64, 3, 'Europe/Moscow') as local "
-        f"from {CH_DATABASE}.src order by id"
-    )
-
     REFUSED: ClassVar[Sequence[tuple[str, str, str]]] = (
-        ("arr", "Array\\(Int64\\)", "[id, id + 1] as arr"),
-        ("m", "Map\\(String, Int64\\)", "map('k', id) as m"),
-        ("t", "Tuple\\(", "(id, 'x') as t"),
-        (
-            "local",
-            "TabSeparated carries no offset",
-            "toDateTime64(dt64, 3, 'Europe/Moscow') as local",
-        ),
+        ("arr", "Array\\(Int64\\)", UNKNOWN_ARRAY),
+        ("m", "Map\\(String, Int64\\)", UNKNOWN_MAP),
+        ("t", "Tuple\\(", UNKNOWN_TUPLE),
+        ("local", "TabSeparated carries no offset", UNKNOWN_LOCAL_TIME),
     )
 
-    @pytest.mark.parametrize(("column", "message", "expression"), REFUSED)
+    @pytest.mark.parametrize(("column", "message", "spec"), REFUSED)
     async def test_refused_by_default(
-        self,
-        clickhouse: ClickHouseSide,
-        postgres: PostgresSide,
-        column: str,
-        message: str,
-        expression: str,
+        self, dags: PumpDags, column: str, message: str, spec: str
     ) -> None:
-        with pytest.raises(TransferError, match=f"column {column}: .*{message}"):
-            await land(
-                clickhouse,
-                postgres,
-                "unknown",
-                DropAndCreate(kind="drop_and_create"),
-                select=f"select id, {expression} from {CH_DATABASE}.src order by id",
-            )
+        outcome = await dags.run(spec)
+
+        failure = outcome.failure("pg")
+        assert failure.error_kind == "TransferError", failure
+        assert re.search(f"column {column}: .*{message}", failure.llm_view()), (
+            failure.llm_view()
+        )
 
     async def test_land_as_text_on_fallback(
-        self, clickhouse: ClickHouseSide, postgres: PostgresSide
+        self, dags: PumpDags, clickhouse: ClickHouseSide, postgres: PostgresSide
     ) -> None:
-        report = await land(
-            clickhouse,
-            postgres,
-            "unknown",
-            DropAndCreate(kind="drop_and_create"),
-            unknown_types=FallbackAsVarchar(kind="fallback_as_varchar"),
-            select=self.SELECT,
-        )
+        report = await _landed(dags, clickhouse, postgres, UNKNOWN_AS_TEXT)
         landed = Loaded(postgres, PG_SCHEMA, "unknown")
 
         assert f"{ROWS} rows loaded" in report
@@ -387,21 +769,9 @@ class TestUnknownTypes:
         assert (await landed.texts("m"))[:1] == ["{'k':0}"]
 
     async def test_declared_type_wins(
-        self, clickhouse: ClickHouseSide, postgres: PostgresSide
+        self, dags: PumpDags, clickhouse: ClickHouseSide, postgres: PostgresSide
     ) -> None:
-        report = await land(
-            clickhouse,
-            postgres,
-            "declared",
-            DropAndCreate(kind="drop_and_create"),
-            rules=ColumnRules(
-                column_types={"local": "timestamp(3)", "u64": "numeric(30, 2)"}
-            ),
-            select=(
-                f"select id, u64, toDateTime64(dt64, 3, 'Europe/Moscow') as local "
-                f"from {CH_DATABASE}.src order by id"
-            ),
-        )
+        report = await _landed(dags, clickhouse, postgres, DECLARED_TYPES)
         landed = Loaded(postgres, PG_SCHEMA, "declared")
 
         assert f"{ROWS} rows loaded" in report
@@ -418,10 +788,6 @@ class TestUnknownTypes:
 
 
 class TestExistingTable:
-    SELECT: ClassVar[str] = (
-        f"select id, i8, dec, s, dt64 from {CH_DATABASE}.src order by id"
-    )
-
     async def create(self, postgres: PostgresSide, columns: str) -> None:
         await postgres.execute(
             [
@@ -431,7 +797,7 @@ class TestExistingTable:
         )
 
     async def test_wider_table_takes_the_stream(
-        self, clickhouse: ClickHouseSide, postgres: PostgresSide
+        self, dags: PumpDags, clickhouse: ClickHouseSide, postgres: PostgresSide
     ) -> None:
         await self.create(
             postgres,
@@ -439,13 +805,7 @@ class TestExistingTable:
             "s varchar(200), dt64 timestamptz",
         )
 
-        report = await land(
-            clickhouse,
-            postgres,
-            "existing",
-            ErrorIfNotExists(kind="error_if_not_exists"),
-            select=self.SELECT,
-        )
+        report = await _landed(dags, clickhouse, postgres, EXISTING_WIDER)
 
         assert f"{ROWS} rows loaded" in report
         assert re.search(
@@ -479,6 +839,7 @@ class TestExistingTable:
     @pytest.mark.parametrize(("columns", "message"), CASES)
     async def test_schema_check(
         self,
+        dags: PumpDags,
         clickhouse: ClickHouseSide,
         postgres: PostgresSide,
         columns: str,
@@ -486,62 +847,37 @@ class TestExistingTable:
     ) -> None:
         await self.create(postgres, columns)
         if message == "ok":
-            report = await land(
-                clickhouse,
-                postgres,
-                "existing",
-                ErrorIfSchemaChanged(kind="error_if_schema_changed"),
-                select=self.SELECT,
-            )
+            report = await _landed(dags, clickhouse, postgres, EXISTING_CHECK)
 
             assert f"{ROWS} rows loaded" in report
 
             return
 
-        with pytest.raises(TransferError, match=message):
-            await land(
-                clickhouse,
-                postgres,
-                "existing",
-                ErrorIfSchemaChanged(kind="error_if_schema_changed"),
-                select=self.SELECT,
-            )
+        outcome = await dags.run(EXISTING_CHECK)
+
+        failure = outcome.failure("pg")
+        assert failure.error_kind == "TransferError", failure
+        assert re.search(message, failure.llm_view()), failure.llm_view()
 
 
 class TestServerTraps:
     async def test_fixed_string_with_nul_rolls_back(
-        self, clickhouse: ClickHouseSide, postgres: PostgresSide
+        self, dags: PumpDags, postgres: PostgresSide
     ) -> None:
         """FixedString дополняется NUL-байтами, text postgres их не принимает:
         транзакция откатывается, таблицы нет."""
         await postgres.execute([f"drop table if exists {PG_SCHEMA}.fixed"])
 
-        with pytest.raises(psycopg.Error, match="0x00"):
-            await land(
-                clickhouse,
-                postgres,
-                "fixed",
-                CreateIfNotExists(kind="create_if_not_exists"),
-                select=(
-                    f"select id, toFixedString('ab', 4) as fs from {CH_DATABASE}.src"
-                ),
-            )
+        outcome = await dags.run(FIXED_WITH_NUL)
 
+        failure = outcome.failure("pg")
+        assert "0x00" in failure.llm_view()
         assert "fixed" not in await Loaded(postgres, PG_SCHEMA, "fixed").tables()
 
     async def test_fixed_string_trimmed_in_the_query(
-        self, clickhouse: ClickHouseSide, postgres: PostgresSide
+        self, dags: PumpDags, clickhouse: ClickHouseSide, postgres: PostgresSide
     ) -> None:
-        report = await land(
-            clickhouse,
-            postgres,
-            "fixed",
-            DropAndCreate(kind="drop_and_create"),
-            select=(
-                f"select id, replaceAll(toString(toFixedString('ab', 4)), '\\\\0', '') "
-                f"as fs from {CH_DATABASE}.src order by id"
-            ),
-        )
+        report = await _landed(dags, clickhouse, postgres, FIXED_TRIMMED)
 
         assert f"{ROWS} rows loaded" in report
         assert (await Loaded(postgres, PG_SCHEMA, "fixed").texts("fs"))[:1] == ["ab"]
@@ -549,19 +885,9 @@ class TestServerTraps:
 
 class TestMart:
     async def test_renamed_mart_with_declared_types(
-        self, clickhouse: ClickHouseSide, postgres: PostgresSide
+        self, dags: PumpDags, clickhouse: ClickHouseSide, postgres: PostgresSide
     ) -> None:
-        report = await land(
-            clickhouse,
-            postgres,
-            "mart",
-            DropAndCreate(kind="drop_and_create"),
-            rules=ColumnRules(
-                rename_columns={"key": "id", "amount": "dec", "label": "lc"},
-                column_types={"amount": "numeric(20, 2)", "label": "varchar(10)"},
-            ),
-            select=f"select id, dec, lc from {CH_DATABASE}.src order by id",
-        )
+        report = await _landed(dags, clickhouse, postgres, MART)
         landed = Loaded(postgres, PG_SCHEMA, "mart")
 
         assert f"{ROWS} rows loaded" in report

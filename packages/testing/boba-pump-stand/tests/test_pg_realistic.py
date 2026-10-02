@@ -16,39 +16,26 @@ postgres -> postgres (pg_stream_out и pg_stream_in) запросом, каки�
     - сухой прогон do_nothing + insert nothing;
     - обратный путь: агрегат с приёмника на новейший postgres, отказ binary
       между разными мажорными версиями.
+Каждый запуск описан toml-текстом (DagSpec) и исполняется DagRunner без
+модели: узлы — вызовы насосов с аргументами, как их присылает модель.
+Подстановкой в описания идут имена схем стенда ($dw, $back) и текст
+запроса отчёта $report_sql — он один на модуль и собран из имён стенда.
 Запускать из launch.json «pytest: текущий файл»; отчёты насосов печатаются,
 видны с -s.
 """
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncIterator
 from decimal import Decimal
+from pathlib import Path
 from typing import Any, ClassVar
 
-import psycopg
 import pytest
 
-from boba.db.postgres.connection import CopyOptions
-from boba.db.postgres.transfer import PgColumnDeclaration, PgTransferTable
-from boba.pump_stand import Leg, Loaded, PostgresSide, Pumps, PumpStand
+from boba.pump_stand import Loaded, PostgresSide, PumpDags, PumpStand
 from boba.stand.names import StandNames
-from boba.toolkit.transfer import (
-    BackupAndCreateIfSchemaChanged,
-    ColumnRules,
-    CreateIfNotExists,
-    DeleteNothing,
-    DeleteTruncate,
-    DeleteWhere,
-    DoNothing,
-    DropAndCreate,
-    ErrorIfNotExists,
-    ErrorIfSchemaChanged,
-    InsertFull,
-    InsertNothing,
-    StreamWire,
-    TransferError,
-)
+from boba.toolrun.dag_run import DagOutcome
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
 
@@ -56,7 +43,6 @@ STAND = PumpStand.required()
 SRC = StandNames().of("shop")
 DW = StandNames().of("shop_dw")
 BACK = StandNames().of("shop_back")
-CHUNK = 65536
 CUSTOMERS = 12
 PRODUCTS = 10
 ORDERS = 24
@@ -296,6 +282,536 @@ EXPECTED_COLUMNS = [
 """Колонки таблицы приёмника (имя, тип, not null): enum источника ложатся
 text по column_types, остальное — как описал стейтмент сервер источника."""
 
+REPORT_CSV = """
+name = "shop_report_csv"
+version = 1
+
+[[nodes]]
+key = "out"
+tool = "pg_stream_out"
+
+[nodes.args]
+connection = "shop"
+sql = \"\"\"$report_sql\"\"\"
+wire = "csv"
+columns = [{ name = "order_id", nullable = false }]
+copy_options = { chunk_bytes = 65536 }
+out = "rows"
+
+[[nodes]]
+key = "in"
+tool = "pg_stream_in"
+
+[nodes.args]
+connection = "dw"
+schema_name = "$dw"
+table_name = "orders_report"
+schema_strategy = { kind = "create_if_not_exists" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+rules = { column_types = { status = "text", tier = "text" } }
+copy_options = { chunk_bytes = 65536 }
+feed = "rows"
+"""
+"""order_id из join сервер считает nullable, LLM знает, что нет; enum
+источника на приёмнике нет — status и tier ложатся text. Так у всех
+описаний отчёта."""
+
+REPORT_RELOAD = """
+name = "shop_report_reload"
+version = 1
+
+[[nodes]]
+key = "out"
+tool = "pg_stream_out"
+
+[nodes.args]
+connection = "shop"
+sql = \"\"\"$report_sql\"\"\"
+wire = "csv"
+columns = [{ name = "order_id", nullable = false }]
+copy_options = { chunk_bytes = 65536 }
+out = "rows"
+
+[[nodes]]
+key = "in"
+tool = "pg_stream_in"
+
+[nodes.args]
+connection = "dw"
+schema_name = "$dw"
+table_name = "orders_report"
+schema_strategy = { kind = "error_if_schema_changed" }
+delete_strategy = { kind = "truncate" }
+insert_strategy = { kind = "full" }
+rules = { column_types = { status = "text", tier = "text" } }
+copy_options = { chunk_bytes = 65536 }
+feed = "rows"
+"""
+
+REPORT_TSV = """
+name = "shop_report_tsv"
+version = 1
+
+[[nodes]]
+key = "out"
+tool = "pg_stream_out"
+
+[nodes.args]
+connection = "shop"
+sql = \"\"\"$report_sql\"\"\"
+wire = "tsv"
+columns = [{ name = "order_id", nullable = false }]
+copy_options = { chunk_bytes = 65536 }
+out = "rows"
+
+[[nodes]]
+key = "in"
+tool = "pg_stream_in"
+
+[nodes.args]
+connection = "dw"
+schema_name = "$dw"
+table_name = "orders_report_tsv"
+schema_strategy = { kind = "create_if_not_exists" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+rules = { column_types = { status = "text", tier = "text" } }
+copy_options = { chunk_bytes = 65536 }
+feed = "rows"
+"""
+
+MONTH_REPLACED = """
+name = "shop_month_replaced"
+version = 1
+
+[[nodes]]
+key = "out"
+tool = "pg_stream_out"
+
+[nodes.args]
+connection = "shop"
+sql = \"\"\"select * from ($report_sql) r where r.month = date '2024-03-01'\"\"\"
+wire = "csv"
+columns = [{ name = "order_id", nullable = false }]
+copy_options = { chunk_bytes = 65536 }
+out = "rows"
+
+[[nodes]]
+key = "in"
+tool = "pg_stream_in"
+
+[nodes.args]
+connection = "dw"
+schema_name = "$dw"
+table_name = "orders_report"
+schema_strategy = { kind = "error_if_schema_changed" }
+delete_strategy = { kind = "delete_where", where = "month = date '2024-03-01'" }
+insert_strategy = { kind = "full" }
+rules = { column_types = { status = "text", tier = "text" } }
+copy_options = { chunk_bytes = 65536 }
+feed = "rows"
+"""
+"""Окна посчитаны по всему отчёту, как в представлении источника."""
+
+RENAMED_MART = """
+name = "shop_renamed_mart"
+version = 1
+
+[[nodes]]
+key = "out"
+tool = "pg_stream_out"
+
+[nodes.args]
+connection = "shop"
+sql = \"\"\"select order_id, customer_name, tier, paid, gross, placed_at from ($report_sql) r\"\"\"
+wire = "csv"
+columns = [{ name = "order_id", nullable = false }]
+copy_options = { chunk_bytes = 65536 }
+out = "rows"
+
+[[nodes]]
+key = "in"
+tool = "pg_stream_in"
+
+[nodes.args]
+connection = "dw"
+schema_name = "$dw"
+table_name = "orders_mart"
+schema_strategy = { kind = "error_if_not_exists" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+rules = { rename_columns = { order_uid = "order_id", client = "customer_name", client_tier = "tier", paid_amount = "paid" }, column_types = { client_tier = "varchar(10)" } }
+copy_options = { chunk_bytes = 65536 }
+feed = "rows"
+"""
+
+DRIFT_CREATE = """
+name = "shop_drift_create"
+version = 1
+
+[[nodes]]
+key = "out"
+tool = "pg_stream_out"
+
+[nodes.args]
+connection = "shop"
+sql = \"\"\"$report_sql\"\"\"
+wire = "csv"
+columns = [{ name = "order_id", nullable = false }]
+copy_options = { chunk_bytes = 65536 }
+out = "rows"
+
+[[nodes]]
+key = "in"
+tool = "pg_stream_in"
+
+[nodes.args]
+connection = "dw"
+schema_name = "$dw"
+table_name = "orders_drift"
+schema_strategy = { kind = "drop_and_create" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+rules = { column_types = { status = "text", tier = "text" } }
+copy_options = { chunk_bytes = 65536 }
+feed = "rows"
+"""
+
+DRIFT_REFUSED = """
+name = "shop_drift_refused"
+version = 1
+
+[[nodes]]
+key = "out"
+tool = "pg_stream_out"
+
+[nodes.args]
+connection = "shop"
+sql = \"\"\"$report_sql\"\"\"
+wire = "csv"
+columns = [{ name = "order_id", nullable = false }]
+copy_options = { chunk_bytes = 65536 }
+out = "rows"
+
+[[nodes]]
+key = "in"
+tool = "pg_stream_in"
+
+[nodes.args]
+connection = "dw"
+schema_name = "$dw"
+table_name = "orders_drift"
+schema_strategy = { kind = "error_if_schema_changed" }
+delete_strategy = { kind = "truncate" }
+insert_strategy = { kind = "full" }
+rules = { column_types = { status = "text", tier = "text" } }
+copy_options = { chunk_bytes = 65536 }
+feed = "rows"
+"""
+
+DRIFT_BACKED_UP = """
+name = "shop_drift_backed_up"
+version = 1
+
+[[nodes]]
+key = "out"
+tool = "pg_stream_out"
+
+[nodes.args]
+connection = "shop"
+sql = \"\"\"$report_sql\"\"\"
+wire = "csv"
+columns = [{ name = "order_id", nullable = false }]
+copy_options = { chunk_bytes = 65536 }
+out = "rows"
+
+[[nodes]]
+key = "in"
+tool = "pg_stream_in"
+
+[nodes.args]
+connection = "dw"
+schema_name = "$dw"
+table_name = "orders_drift"
+schema_strategy = { kind = "backup_and_create_if_schema_changed" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+rules = { column_types = { status = "text", tier = "text" } }
+copy_options = { chunk_bytes = 65536 }
+feed = "rows"
+"""
+
+TEMPLATE_POSTGRES = """
+name = "shop_template_postgres"
+version = 1
+
+[[nodes]]
+key = "out"
+tool = "pg_stream_out"
+
+[nodes.args]
+connection = "shop"
+sql = \"\"\"$report_sql\"\"\"
+wire = "csv"
+columns = [{ name = "order_id", nullable = false }]
+copy_options = { chunk_bytes = 65536 }
+out = "rows"
+
+[[nodes]]
+key = "in"
+tool = "pg_stream_in"
+
+[nodes.args]
+connection = "dw"
+schema_name = "$dw"
+table_name = "orders_tpl"
+schema_strategy = { kind = "drop_and_create" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+rules = { column_types = { status = "text", tier = "text" } }
+create_table = "create table {schema_name}.{table_name} ({columns}) with (fillfactor = 90)"
+copy_options = { chunk_bytes = 65536 }
+feed = "rows"
+"""
+
+TEMPLATE_GREENPLUM = """
+name = "shop_template_greenplum"
+version = 1
+
+[[nodes]]
+key = "out"
+tool = "pg_stream_out"
+
+[nodes.args]
+connection = "shop"
+sql = \"\"\"$report_sql\"\"\"
+wire = "csv"
+columns = [{ name = "order_id", nullable = false }]
+copy_options = { chunk_bytes = 65536 }
+out = "rows"
+
+[[nodes]]
+key = "in"
+tool = "pg_stream_in"
+
+[nodes.args]
+connection = "dw"
+schema_name = "$dw"
+table_name = "orders_tpl"
+schema_strategy = { kind = "drop_and_create" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+rules = { column_types = { status = "text", tier = "text" } }
+create_table = "create table {schema_name}.{table_name} ({columns}) distributed by (order_id)"
+copy_options = { chunk_bytes = 65536 }
+feed = "rows"
+"""
+
+SWAP_REFUSED = """
+name = "shop_swap_refused"
+version = 1
+
+[[nodes]]
+key = "out"
+tool = "pg_stream_out"
+
+[nodes.args]
+connection = "shop"
+sql = \"\"\"$report_sql\"\"\"
+wire = "csv"
+columns = [{ name = "order_id", nullable = false }]
+copy_options = { chunk_bytes = 65536 }
+out = "rows"
+
+[[nodes]]
+key = "in"
+tool = "pg_stream_in"
+
+[nodes.args]
+connection = "dw"
+schema_name = "$dw"
+table_name = "orders_report_stage"
+schema_strategy = { kind = "drop_and_create" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+rules = { column_types = { status = "text", tier = "text" } }
+copy_options = { chunk_bytes = 65536 }
+after = [
+    "alter table $dw.orders_report rename to orders_report_old",
+    "alter table $dw.orders_report_stage rename to orders_report",
+    "do $$$$ begin raise exception 'swap refused'; end $$$$",
+]
+feed = "rows"
+"""
+"""Третий шаг after падает: откат всего, включая staging."""
+
+SWAP = """
+name = "shop_swap"
+version = 1
+
+[[nodes]]
+key = "out"
+tool = "pg_stream_out"
+
+[nodes.args]
+connection = "shop"
+sql = \"\"\"$report_sql\"\"\"
+wire = "csv"
+columns = [{ name = "order_id", nullable = false }]
+copy_options = { chunk_bytes = 65536 }
+out = "rows"
+
+[[nodes]]
+key = "in"
+tool = "pg_stream_in"
+
+[nodes.args]
+connection = "dw"
+schema_name = "$dw"
+table_name = "orders_report_stage"
+schema_strategy = { kind = "drop_and_create" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+rules = { column_types = { status = "text", tier = "text" } }
+copy_options = { chunk_bytes = 65536 }
+after = [
+    "alter table $dw.orders_report rename to orders_report_old",
+    "alter table $dw.orders_report_stage rename to orders_report",
+    "drop table $dw.orders_report_old",
+]
+feed = "rows"
+"""
+"""Загрузка в staging и подмена витрины шагами after одной транзакцией."""
+
+REPORT_ARROW = """
+name = "shop_report_arrow"
+version = 1
+
+[[nodes]]
+key = "out"
+tool = "pg_stream_out"
+
+[nodes.args]
+connection = "shop"
+sql = \"\"\"$report_sql\"\"\"
+wire = "arrow"
+columns = [{ name = "order_id", nullable = false }]
+copy_options = { chunk_bytes = 65536 }
+out = "rows"
+
+[[nodes]]
+key = "in"
+tool = "pg_stream_in"
+
+[nodes.args]
+connection = "dw"
+schema_name = "$dw"
+table_name = "orders_report_arrow"
+schema_strategy = { kind = "drop_and_create" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+rules = { column_types = { status = "text", tier = "text" } }
+copy_options = { chunk_bytes = 65536 }
+feed = "rows"
+"""
+
+DRY_RUN = """
+name = "shop_dry_run"
+version = 1
+
+[[nodes]]
+key = "out"
+tool = "pg_stream_out"
+
+[nodes.args]
+connection = "shop"
+sql = \"\"\"$report_sql\"\"\"
+wire = "csv"
+columns = [{ name = "order_id", nullable = false }]
+copy_options = { chunk_bytes = 65536 }
+out = "rows"
+
+[[nodes]]
+key = "in"
+tool = "pg_stream_in"
+
+[nodes.args]
+connection = "dw"
+schema_name = "$dw"
+table_name = "orders_report"
+schema_strategy = { kind = "do_nothing" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "nothing" }
+rules = { column_types = { status = "text", tier = "text" } }
+copy_options = { chunk_bytes = 65536 }
+feed = "rows"
+"""
+
+CITY_MONTH = """
+name = "shop_city_month"
+version = 1
+
+[[nodes]]
+key = "out"
+tool = "pg_stream_out"
+
+[nodes.args]
+connection = "dw"
+sql = "select city, month, count(*) as orders, sum(gross)::numeric(16,2) as gross, sum(balance)::numeric(16,2) as balance from $dw.orders_report group by city, month"
+wire = "csv"
+columns = []
+copy_options = { chunk_bytes = 65536 }
+out = "rows"
+
+[[nodes]]
+key = "in"
+tool = "pg_stream_in"
+
+[nodes.args]
+connection = "back"
+schema_name = "$back"
+table_name = "city_month"
+schema_strategy = { kind = "drop_and_create" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+rules = {}
+copy_options = { chunk_bytes = 65536 }
+feed = "rows"
+"""
+
+CITY_MONTH_BINARY = """
+name = "shop_city_month_binary"
+version = 1
+
+[[nodes]]
+key = "out"
+tool = "pg_stream_out"
+
+[nodes.args]
+connection = "dw"
+sql = "select city, month, count(*) as orders, sum(gross)::numeric(16,2) as gross, sum(balance)::numeric(16,2) as balance from $dw.orders_report group by city, month"
+wire = "binary"
+columns = []
+copy_options = { chunk_bytes = 65536 }
+out = "rows"
+
+[[nodes]]
+key = "in"
+tool = "pg_stream_in"
+
+[nodes.args]
+connection = "back"
+schema_name = "$back"
+table_name = "city_month_bin"
+schema_strategy = { kind = "drop_and_create" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+rules = {}
+copy_options = { chunk_bytes = 65536 }
+feed = "rows"
+"""
+
 
 @pytest.fixture(scope="module")
 async def source() -> AsyncIterator[PostgresSide]:
@@ -333,139 +849,102 @@ async def back() -> AsyncIterator[PostgresSide]:
     await side.drop()
 
 
-DECLARED = (PgColumnDeclaration(name="order_id", nullable=False),)
-"""order_id из join в представлении сервер считает nullable, LLM знает, что нет."""
-
-RULES = ColumnRules(column_types={"status": "text", "tier": "text"})
-"""enum источника на приёмнике нет: колонки ложатся text."""
-
-
-async def transfer(  # noqa: PLR0913
-    source: PostgresSide,
-    target: PostgresSide,
-    table: str,
-    schema: Any,
-    delete: Any,
-    wire: StreamWire,
-    columns: Sequence[PgColumnDeclaration] = DECLARED,
-    select: str = REPORT_SQL,
-    rules: ColumnRules = RULES,
-    insert: Any = InsertFull(kind="full"),
-    create_table: str = PgTransferTable.CREATE_TABLE,
-    after: Sequence[str] = (),
-    schema_name: str = DW,
-) -> str:
-    """pg_stream_out на source -> pg_stream_in на target, два сервера."""
-    pumps = Pumps(postgres=source.profile, postgres_target=target.profile)
-    chained = await pumps.chain(
-        Leg(
-            "pg_stream_out",
-            {
-                "sql": select,
-                "wire": wire,
-                "columns": columns,
-                "copy_options": CopyOptions(chunk_bytes=CHUNK),
-            },
-        ),
-        Leg(
-            "pg_stream_in",
-            {
-                "schema_name": schema_name,
-                "table_name": table,
-                "schema_strategy": schema,
-                "delete_strategy": delete,
-                "insert_strategy": insert,
-                "rules": rules,
-                "create_table": create_table,
-                "after": after,
-                "copy_options": CopyOptions(chunk_bytes=CHUNK),
-            },
-        ),
+@pytest.fixture
+def dags(tmp_path: Path, source: PostgresSide, target: PostgresSide) -> PumpDags:
+    """Запуск описаний источник (shop) -> приёмник (dw), два сервера."""
+    return PumpDags(
+        tmp_path,
+        {"shop": source.profile, "dw": target.profile},
+        {"dw": DW, "report_sql": REPORT_SQL},
     )
-    print(
-        f"\n--- {source.source.name} -> {target.source.name}: pg_stream_out "
-        f"({wire.value}) ---\n{chained.out_report}"
+
+
+@pytest.fixture
+def back_dags(tmp_path: Path, target: PostgresSide, back: PostgresSide) -> PumpDags:
+    """Запуск описаний обратного пути: приёмник (dw) -> новейший postgres."""
+    return PumpDags(
+        tmp_path,
+        {"dw": target.profile, "back": back.profile},
+        {"dw": DW, "back": BACK},
     )
-    print(f"--- pg_stream_in ---\n{chained.in_report}")
-
-    return chained.in_report
 
 
-def month_of(month: str) -> str:
-    """Выборка отчёта за один месяц: окна посчитаны по всему отчёту, как в
-    представлении источника."""
-    return f"select * from ({REPORT_SQL}) r where r.month = date '{month}'"
+async def transfer(dags: PumpDags, spec: str) -> DagOutcome:
+    """Запуск описания; отчёты обоих насосов печатаются."""
+    outcome = await dags.run(spec)
+    print(f"\n--- {outcome.dag}: pg_stream_out ---\n{outcome.node('out').content}")
+    print(f"--- pg_stream_in ---\n{outcome.node('in').content}")
+
+    return outcome
+
+
+def landed(outcome: DagOutcome) -> str:
+    """Отчёт приёмника удавшегося запуска."""
+    report = outcome.node("in").content
+
+    assert outcome.ok(), report
+
+    return report
+
+
+def refused(outcome: DagOutcome, key: str, error_kind: str) -> str:
+    """Текст отказа узла key, исходная ошибка которого — класса error_kind."""
+    failure = outcome.failure(key)
+    text = failure.llm_view()
+
+    assert failure.error_kind == error_kind, text
+
+    return text
 
 
 async def same_content(source: PostgresSide, target: PostgresSide, table: str) -> None:
     """Каждая колонка отчёта текстом совпадает с представлением источника."""
     report = Loaded(source, SRC, "orders_report")
-    landed = Loaded(target, DW, table)
+    landed_table = Loaded(target, DW, table)
     for name, _, _ in EXPECTED_COLUMNS:
         expected = await report.texts(name, order_by="order_id")
-        actual = await landed.texts(name, order_by="order_id")
+        actual = await landed_table.texts(name, order_by="order_id")
 
         assert actual == expected, f"column {name} differs"
 
 
 class TestOrdersReport:
     async def test_csv_wire_creates_and_fills_the_report(
-        self, source: PostgresSide, target: PostgresSide
+        self, dags: PumpDags, source: PostgresSide, target: PostgresSide
     ) -> None:
-        report = await transfer(
-            source,
-            target,
-            "orders_report",
-            CreateIfNotExists(kind="create_if_not_exists"),
-            DeleteNothing(kind="nothing"),
-            StreamWire.CSV,
-        )
-        landed = Loaded(target, DW, "orders_report")
+        report = landed(await transfer(dags, REPORT_CSV))
+        landed_table = Loaded(target, DW, "orders_report")
 
         assert f"{ORDERS} rows loaded" in report
-        assert await landed.columns() == EXPECTED_COLUMNS
-        assert await landed.count() == ORDERS
-        assert await landed.aggregate("count(*) filter (where paid is null)") > 0
-        assert await landed.aggregate("sum(balance)") == await Loaded(
+        assert await landed_table.columns() == EXPECTED_COLUMNS
+        assert await landed_table.count() == ORDERS
+        assert await landed_table.aggregate("count(*) filter (where paid is null)") > 0
+        assert await landed_table.aggregate("sum(balance)") == await Loaded(
             source, SRC, "orders_report"
         ).aggregate("sum(balance)")
         await same_content(source, target, "orders_report")
 
     async def test_reload_into_the_existing_table_passes_the_check(
-        self, source: PostgresSide, target: PostgresSide
+        self, dags: PumpDags, target: PostgresSide
     ) -> None:
-        report = await transfer(
-            source,
-            target,
-            "orders_report",
-            ErrorIfSchemaChanged(kind="error_if_schema_changed"),
-            DeleteTruncate(kind="truncate"),
-            StreamWire.CSV,
-        )
+        report = landed(await transfer(dags, REPORT_RELOAD))
 
         assert "error" not in report.split("rows loaded")[0].lower()
         assert await Loaded(target, DW, "orders_report").count() == ORDERS
 
     async def test_tsv_wire_lands_the_same_content(
-        self, source: PostgresSide, target: PostgresSide
+        self, dags: PumpDags, source: PostgresSide, target: PostgresSide
     ) -> None:
-        report = await transfer(
-            source,
-            target,
-            "orders_report_tsv",
-            CreateIfNotExists(kind="create_if_not_exists"),
-            DeleteNothing(kind="nothing"),
-            StreamWire.TSV,
-        )
-        landed = Loaded(target, DW, "orders_report_tsv")
+        report = landed(await transfer(dags, REPORT_TSV))
+        landed_table = Loaded(target, DW, "orders_report_tsv")
 
         assert f"{ORDERS} rows loaded" in report
-        assert await landed.columns() == EXPECTED_COLUMNS
-        assert await landed.count() == ORDERS
-        assert await landed.aggregate("sum(gross)") == await Loaded(
+        assert await landed_table.columns() == EXPECTED_COLUMNS
+        assert await landed_table.count() == ORDERS
+        assert await landed_table.aggregate("sum(gross)") == await Loaded(
             source, SRC, "orders_report"
         ).aggregate("sum(gross)")
-        assert isinstance(await landed.aggregate("max(month_avg)"), Decimal)
+        assert isinstance(await landed_table.aggregate("max(month_avg)"), Decimal)
         await same_content(source, target, "orders_report_tsv")
 
 
@@ -476,9 +955,9 @@ class TestIncrementalMonth:
     MONTH: ClassVar[str] = "2024-03-01"
 
     async def test_one_month_is_replaced(
-        self, source: PostgresSide, target: PostgresSide
+        self, dags: PumpDags, source: PostgresSide, target: PostgresSide
     ) -> None:
-        landed = Loaded(target, DW, "orders_report")
+        landed_table = Loaded(target, DW, "orders_report")
         await target.execute(
             [
                 f"update {DW}.orders_report set note = 'stale' "
@@ -489,21 +968,15 @@ class TestIncrementalMonth:
             f"count(*) filter (where month = date '{self.MONTH}')"
         )
 
-        report = await transfer(
-            source,
-            target,
-            "orders_report",
-            ErrorIfSchemaChanged(kind="error_if_schema_changed"),
-            DeleteWhere(kind="delete_where", where=f"month = date '{self.MONTH}'"),
-            StreamWire.CSV,
-            select=month_of(self.MONTH),
-        )
+        report = landed(await transfer(dags, MONTH_REPLACED))
 
         assert in_month > 0
         assert f"{in_month} rows deleted" in report
         assert f"{in_month} rows loaded" in report
-        assert await landed.aggregate("count(*) filter (where note = 'stale')") == 0
-        assert await landed.count() == ORDERS
+        assert (
+            await landed_table.aggregate("count(*) filter (where note = 'stale')") == 0
+        )
+        assert await landed_table.count() == ORDERS
         await same_content(source, target, "orders_report")
 
 
@@ -522,52 +995,20 @@ class TestRenamedMart:
             gross numeric(14,2),
             placed_at timestamptz
         )"""
-    SELECT: ClassVar[str] = (
-        f"select order_id, customer_name, tier, paid, gross, placed_at "
-        f"from ({REPORT_SQL}) r"
-    )
-    RULES: ClassVar[ColumnRules] = ColumnRules(
-        rename_columns={
-            "order_uid": "order_id",
-            "client": "customer_name",
-            "client_tier": "tier",
-            "paid_amount": "paid",
-        },
-        column_types={"client_tier": "varchar(10)"},
-    )
 
-    async def test_missing_mart_is_refused(
-        self, source: PostgresSide, target: PostgresSide
-    ) -> None:
-        with pytest.raises(TransferError, match="table is missing"):
-            await transfer(
-                source,
-                target,
-                "orders_mart",
-                ErrorIfNotExists(kind="error_if_not_exists"),
-                DeleteNothing(kind="nothing"),
-                StreamWire.CSV,
-                select=self.SELECT,
-                rules=self.RULES,
-            )
+    async def test_missing_mart_is_refused(self, dags: PumpDags) -> None:
+        outcome = await transfer(dags, RENAMED_MART)
+
+        assert "table is missing" in refused(outcome, "in", "TransferError")
 
     async def test_mart_is_filled_by_its_own_names(
-        self, source: PostgresSide, target: PostgresSide
+        self, dags: PumpDags, source: PostgresSide, target: PostgresSide
     ) -> None:
         await target.execute([f"drop table if exists {DW}.orders_mart", self.MART])
         report_view = Loaded(source, SRC, "orders_report")
         mart = Loaded(target, DW, "orders_mart")
 
-        report = await transfer(
-            source,
-            target,
-            "orders_mart",
-            ErrorIfNotExists(kind="error_if_not_exists"),
-            DeleteNothing(kind="nothing"),
-            StreamWire.CSV,
-            select=self.SELECT,
-            rules=self.RULES,
-        )
+        report = landed(await transfer(dags, RENAMED_MART))
 
         assert f"{ORDERS} rows loaded" in report
         assert await mart.count() == ORDERS
@@ -588,39 +1029,19 @@ class TestSchemaDrift:
     переименовывает её в _bak_<время> и создаёт заново."""
 
     async def test_drift_is_refused_then_backed_up(
-        self, source: PostgresSide, target: PostgresSide
+        self, dags: PumpDags, target: PostgresSide
     ) -> None:
         drift = Loaded(target, DW, "orders_drift")
-        await transfer(
-            source,
-            target,
-            "orders_drift",
-            DropAndCreate(kind="drop_and_create"),
-            DeleteNothing(kind="nothing"),
-            StreamWire.CSV,
-        )
+        landed(await transfer(dags, DRIFT_CREATE))
         await target.execute(
             [f"alter table {DW}.orders_drift alter column note type varchar(200)"]
         )
 
-        with pytest.raises(TransferError, match="note: type differs"):
-            await transfer(
-                source,
-                target,
-                "orders_drift",
-                ErrorIfSchemaChanged(kind="error_if_schema_changed"),
-                DeleteTruncate(kind="truncate"),
-                StreamWire.CSV,
-            )
+        outcome = await transfer(dags, DRIFT_REFUSED)
 
-        report = await transfer(
-            source,
-            target,
-            "orders_drift",
-            BackupAndCreateIfSchemaChanged(kind="backup_and_create_if_schema_changed"),
-            DeleteNothing(kind="nothing"),
-            StreamWire.CSV,
-        )
+        assert "note: type differs" in refused(outcome, "in", "TransferError")
+
+        report = landed(await transfer(dags, DRIFT_BACKED_UP))
         tables = await drift.tables()
         backups: list[str] = []
         for name in tables:
@@ -640,50 +1061,35 @@ class TestCreateTemplate:
     распределения, у postgres параметры хранения; drop_and_create дважды
     подряд пересоздаёт таблицу по тому же шаблону."""
 
-    GREENPLUM: ClassVar[str] = (
-        "create table {schema_name}.{table_name} ({columns}) distributed by (order_id)"
-    )
-    POSTGRES: ClassVar[str] = (
-        "create table {schema_name}.{table_name} ({columns}) with (fillfactor = 90)"
-    )
-
     async def test_table_gets_its_storage_options(
-        self, source: PostgresSide, target: PostgresSide
+        self, dags: PumpDags, target: PostgresSide
     ) -> None:
-        template = self.POSTGRES
+        spec = TEMPLATE_POSTGRES
         if target.greenplum:
-            template = self.GREENPLUM
+            spec = TEMPLATE_GREENPLUM
 
         for _ in range(2):
-            report = await transfer(
-                source,
-                target,
-                "orders_tpl",
-                DropAndCreate(kind="drop_and_create"),
-                DeleteNothing(kind="nothing"),
-                StreamWire.CSV,
-                create_table=template,
-            )
+            report = landed(await transfer(dags, spec))
 
             assert f"{ORDERS} rows loaded" in report
 
-        landed = Loaded(target, DW, "orders_tpl")
+        landed_table = Loaded(target, DW, "orders_tpl")
         if target.greenplum:
-            policy = await landed.aggregate(
+            policy = await landed_table.aggregate(
                 "(select distkey::text from gp_distribution_policy "
                 f"where localoid = '{DW}.orders_tpl'::regclass)"
             )
 
             assert policy == "1"
         else:
-            options = await landed.aggregate(
+            options = await landed_table.aggregate(
                 "(select reloptions::text from pg_class "
                 f"where oid = '{DW}.orders_tpl'::regclass)"
             )
 
             assert options == "{fillfactor=90}"
 
-        assert await landed.count() == ORDERS
+        assert await landed_table.count() == ORDERS
 
 
 class TestStagingSwap:
@@ -691,59 +1097,35 @@ class TestStagingSwap:
     ошибка шага откатывает всё, включая staging; успешная подмена оставляет
     одну витрину со свежими строками."""
 
-    SWAP: ClassVar[tuple[str, ...]] = (
-        f"alter table {DW}.orders_report rename to orders_report_old",
-        f"alter table {DW}.orders_report_stage rename to orders_report",
-        f"drop table {DW}.orders_report_old",
-    )
-
     async def test_failed_swap_leaves_the_mart_intact(
-        self, source: PostgresSide, target: PostgresSide
+        self, dags: PumpDags, target: PostgresSide
     ) -> None:
-        landed = Loaded(target, DW, "orders_report")
+        landed_table = Loaded(target, DW, "orders_report")
 
-        with pytest.raises(psycopg.Error, match="swap refused"):
-            await transfer(
-                source,
-                target,
-                "orders_report_stage",
-                DropAndCreate(kind="drop_and_create"),
-                DeleteNothing(kind="nothing"),
-                StreamWire.CSV,
-                after=(
-                    *self.SWAP[:2],
-                    "do $$ begin raise exception 'swap refused'; end $$",
-                ),
-            )
+        outcome = await transfer(dags, SWAP_REFUSED)
 
-        tables = await landed.tables()
+        assert "swap refused" in refused(outcome, "in", "RaiseException")
+
+        tables = await landed_table.tables()
 
         assert "orders_report" in tables
         assert "orders_report_stage" not in tables
         assert "orders_report_old" not in tables
-        assert await landed.count() == ORDERS
+        assert await landed_table.count() == ORDERS
 
     async def test_swap_replaces_the_mart(
-        self, source: PostgresSide, target: PostgresSide
+        self, dags: PumpDags, source: PostgresSide, target: PostgresSide
     ) -> None:
-        landed = Loaded(target, DW, "orders_report")
+        landed_table = Loaded(target, DW, "orders_report")
         await target.execute([f"update {DW}.orders_report set note = 'old'"])
 
-        report = await transfer(
-            source,
-            target,
-            "orders_report_stage",
-            DropAndCreate(kind="drop_and_create"),
-            DeleteNothing(kind="nothing"),
-            StreamWire.CSV,
-            after=self.SWAP,
-        )
-        tables = await landed.tables()
+        report = landed(await transfer(dags, SWAP))
+        tables = await landed_table.tables()
 
         assert f"{ORDERS} rows loaded" in report
         assert "orders_report_stage" not in tables
         assert "orders_report_old" not in tables
-        assert await landed.aggregate("count(*) filter (where note = 'old')") == 0
+        assert await landed_table.aggregate("count(*) filter (where note = 'old')") == 0
         await same_content(source, target, "orders_report")
 
 
@@ -752,29 +1134,22 @@ class TestArrowBetweenServers:
     column_types; содержимое совпадает с представлением источника."""
 
     async def test_arrow_lands_the_report(
-        self, source: PostgresSide, target: PostgresSide
+        self, dags: PumpDags, source: PostgresSide, target: PostgresSide
     ) -> None:
-        report = await transfer(
-            source,
-            target,
-            "orders_report_arrow",
-            DropAndCreate(kind="drop_and_create"),
-            DeleteNothing(kind="nothing"),
-            StreamWire.ARROW,
-        )
-        landed = Loaded(target, DW, "orders_report_arrow")
+        report = landed(await transfer(dags, REPORT_ARROW))
+        landed_table = Loaded(target, DW, "orders_report_arrow")
         view = Loaded(source, SRC, "orders_report")
 
         assert f"{ORDERS} rows loaded" in report
-        assert await landed.count() == ORDERS
-        assert await landed.aggregate("sum(gross)") == await view.aggregate(
+        assert await landed_table.count() == ORDERS
+        assert await landed_table.aggregate("sum(gross)") == await view.aggregate(
             "sum(gross)"
         )
-        assert await landed.aggregate("sum(balance)") == await view.aggregate(
+        assert await landed_table.aggregate("sum(balance)") == await view.aggregate(
             "sum(balance)"
         )
         for name in ("order_id", "customer_uid", "customer_name", "city", "tier"):
-            assert await landed.texts(name, order_by="order_id") == (
+            assert await landed_table.texts(name, order_by="order_id") == (
                 await view.texts(name, order_by="order_id")
             ), f"column {name} differs"
 
@@ -783,25 +1158,15 @@ class TestDryRun:
     """do_nothing и insert nothing: поток прочитан до конца, таблица не
     тронута ни схемой, ни данными."""
 
-    async def test_nothing_changes(
-        self, source: PostgresSide, target: PostgresSide
-    ) -> None:
-        landed = Loaded(target, DW, "orders_report")
-        columns = await landed.columns()
+    async def test_nothing_changes(self, dags: PumpDags, target: PostgresSide) -> None:
+        landed_table = Loaded(target, DW, "orders_report")
+        columns = await landed_table.columns()
 
-        report = await transfer(
-            source,
-            target,
-            "orders_report",
-            DoNothing(kind="do_nothing"),
-            DeleteNothing(kind="nothing"),
-            StreamWire.CSV,
-            insert=InsertNothing(kind="nothing"),
-        )
+        report = landed(await transfer(dags, DRY_RUN))
 
         assert report.startswith("0 rows loaded")
-        assert await landed.columns() == columns
-        assert await landed.count() == ORDERS
+        assert await landed_table.columns() == columns
+        assert await landed_table.count() == ORDERS
 
 
 class TestBackToSource:
@@ -815,23 +1180,14 @@ class TestBackToSource:
         f"sum(balance)::numeric(16,2) as balance "
         f"from {DW}.orders_report group by city, month"
     )
+    """Тот же агрегат, что в описании CITY_MONTH: по нему строится
+    представление источника для сверки."""
     ROW: ClassVar[str] = "city || ' ' || month || ' ' || orders || ' ' || gross"
 
     async def test_city_month_comes_back(
-        self, source: PostgresSide, target: PostgresSide, back: PostgresSide
+        self, back_dags: PumpDags, source: PostgresSide, back: PostgresSide
     ) -> None:
-        report = await transfer(
-            target,
-            back,
-            "city_month",
-            DropAndCreate(kind="drop_and_create"),
-            DeleteNothing(kind="nothing"),
-            StreamWire.CSV,
-            columns=(),
-            select=self.AGGREGATE,
-            rules=ColumnRules(),
-            schema_name=BACK,
-        )
+        report = landed(await transfer(back_dags, CITY_MONTH))
         city_month = Loaded(back, BACK, "city_month")
         view = Loaded(source, SRC, "orders_report")
         expected = await view.aggregate("count(distinct (city, month))")
@@ -858,21 +1214,11 @@ class TestBackToSource:
         assert landed_rows == source_rows
 
     async def test_binary_across_major_versions_is_refused(
-        self, target: PostgresSide, back: PostgresSide
+        self, back_dags: PumpDags, target: PostgresSide, back: PostgresSide
     ) -> None:
         if target.version // 10000 == back.version // 10000:
             pytest.skip("the same major version accepts binary")
 
-        with pytest.raises(TransferError, match="major versions differ"):
-            await transfer(
-                target,
-                back,
-                "city_month_bin",
-                DropAndCreate(kind="drop_and_create"),
-                DeleteNothing(kind="nothing"),
-                StreamWire.BINARY,
-                columns=(),
-                select=self.AGGREGATE,
-                rules=ColumnRules(),
-                schema_name=BACK,
-            )
+        outcome = await transfer(back_dags, CITY_MONTH_BINARY)
+
+        assert "major versions differ" in refused(outcome, "in", "TransferError")

@@ -1,7 +1,12 @@
+# ruff: noqa: S608
 """Перекачка из PostgreSQL потоком Arrow IPC: pg_stream_out против pg_stream_in
 (круг на каждом postgres и Greenplum из sources), ch_stream_in (в каждый
 ClickHouse из ch_sources) и ora_stream_in (в каждый Oracle из ora_sources).
-Насосы соединены трубой ОС и работают одновременно.
+
+Каждый запуск описан toml-текстом (DagSpec) и исполняется DagRunner без
+модели: узлы — вызовы насосов с аргументами, как их присылает модель; список
+колонок select зависит от версии сервера и подставляется в описание именем
+$select.
 
 Таблица postgres несёт все семейства типов: целые, numeric с точностью и без,
 float с NaN и бесконечностями, boolean, text со спецсимволами и char, bytea,
@@ -16,32 +21,28 @@ json, составные), едет текстом сервера — по ка�
 float печатается точно на любой версии сервера, сессия COPY не зависит от
 настроек профиля."""
 
-# ruff: noqa: S608 — стейтменты стенда собираются текстом, как их пишет LLM
-
 from __future__ import annotations
 
 import io
 import struct
 import time
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncIterator, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime
+from pathlib import Path
 from typing import Any, ClassVar
 
 import pyarrow
 import pyarrow.ipc
 import pytest
 
-from boba.db.clickhouse.target import ChStreamWire
-from boba.db.postgres import PgArrowError
 from boba.db.postgres.connection import CopyOptions
-from boba.db.postgres.errors import PgDescribeError
 from boba.pump_stand import (
     ClickHouseSide,
-    Leg,
     OracleSide,
     PgSource,
     PostgresSide,
+    PumpDags,
     Pumps,
     PumpStand,
 )
@@ -66,15 +67,7 @@ from boba.pump_stand.ports import Feed
 from boba.stand.names import StandNames
 from boba.toolkit.arrow import ArrowColumns
 from boba.toolkit.contract import ArrowContract, StreamContract
-from boba.toolkit.transfer import (
-    CreateIfNotExists,
-    DeleteNothing,
-    Engine,
-    ErrorIfNotExists,
-    InsertFull,
-    SchemaHead,
-    StreamWire,
-)
+from boba.toolkit.transfer import Engine, SchemaHead, StreamWire
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
 
@@ -98,6 +91,365 @@ CHUNK_BYTES = 4096
 PG_SCHEMA = StandNames().of("pump_pg_arrow")
 CH_DATABASE = StandNames().of("pump_pg_arrow")
 NULL_EVERY = 7
+
+CIRCLE = """
+name = "pg_arrow_circle"
+version = 1
+
+[[nodes]]
+key = "src"
+tool = "pg_stream_out"
+
+[nodes.args]
+connection = "pg"
+sql = "$select"
+wire = "arrow"
+copy_options = { chunk_bytes = 4096 }
+out = "rows"
+
+[[nodes]]
+key = "dst"
+tool = "pg_stream_in"
+
+[nodes.args]
+connection = "pg"
+schema_name = "$pg_schema"
+table_name = "dst"
+schema_strategy = { kind = "create_if_not_exists" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+copy_options = { chunk_bytes = 4096 }
+feed = "rows"
+"""
+
+TO_CLICKHOUSE = """
+name = "pg_arrow_to_clickhouse"
+version = 1
+
+[[nodes]]
+key = "src"
+tool = "pg_stream_out"
+
+[nodes.args]
+connection = "pg"
+sql = "$select"
+wire = "arrow"
+copy_options = { chunk_bytes = 4096 }
+out = "rows"
+
+[[nodes]]
+key = "dst"
+tool = "ch_stream_in"
+
+[nodes.args]
+connection = "ch"
+database = "$ch_database"
+table_name = "$table"
+schema_strategy = { kind = "error_if_not_exists" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+feed = "rows"
+"""
+
+TO_ORACLE = """
+name = "pg_arrow_to_oracle"
+version = 1
+
+[[nodes]]
+key = "src"
+tool = "pg_stream_out"
+
+[nodes.args]
+connection = "pg"
+sql = "$select"
+wire = "arrow"
+copy_options = { chunk_bytes = 4096 }
+out = "rows"
+
+[[nodes]]
+key = "dst"
+tool = "ora_stream_in"
+
+[nodes.args]
+connection = "ora"
+schema_name = "$ora_schema"
+table_name = "$table"
+schema_strategy = { kind = "error_if_not_exists" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+chunk_bytes = 4096
+feed = "rows"
+"""
+
+UNBOUNDED_NUMERIC = """
+name = "pg_arrow_unbounded_numeric"
+version = 1
+
+[[nodes]]
+key = "src"
+tool = "pg_stream_out"
+
+[nodes.args]
+connection = "pg"
+sql = "select pg_sleep(30), 1::numeric as n"
+wire = "arrow"
+copy_options = { chunk_bytes = 4096 }
+out = "rows"
+
+[[nodes]]
+key = "dst"
+tool = "pg_stream_in"
+
+[nodes.args]
+connection = "pg"
+schema_name = "$pg_schema"
+table_name = "dst"
+schema_strategy = { kind = "create_if_not_exists" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+copy_options = { chunk_bytes = 4096 }
+feed = "rows"
+"""
+
+WIDE_NUMERIC = """
+name = "pg_arrow_wide_numeric"
+version = 1
+
+[[nodes]]
+key = "src"
+tool = "pg_stream_out"
+
+[nodes.args]
+connection = "pg"
+sql = "select pg_sleep(30), 1::numeric(50, 20) as n"
+wire = "arrow"
+copy_options = { chunk_bytes = 4096 }
+out = "rows"
+
+[[nodes]]
+key = "dst"
+tool = "pg_stream_in"
+
+[nodes.args]
+connection = "pg"
+schema_name = "$pg_schema"
+table_name = "dst"
+schema_strategy = { kind = "create_if_not_exists" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+copy_options = { chunk_bytes = 4096 }
+feed = "rows"
+"""
+
+BROKEN_STATEMENT = """
+name = "pg_arrow_broken_statement"
+version = 1
+
+[[nodes]]
+key = "src"
+tool = "pg_stream_out"
+
+[nodes.args]
+connection = "pg"
+sql = "select nothing from nowhere"
+wire = "arrow"
+copy_options = { chunk_bytes = 4096 }
+out = "rows"
+
+[[nodes]]
+key = "dst"
+tool = "pg_stream_in"
+
+[nodes.args]
+connection = "pg"
+schema_name = "$pg_schema"
+table_name = "dst"
+schema_strategy = { kind = "create_if_not_exists" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+copy_options = { chunk_bytes = 4096 }
+feed = "rows"
+"""
+
+ARRAYS_AS_TEXT = """
+name = "pg_arrow_arrays_as_text"
+version = 1
+
+[[nodes]]
+key = "src"
+tool = "pg_stream_out"
+
+[nodes.args]
+connection = "pg"
+sql = "select 1::bigint as id, array[array[1, 2], array[3, 4]] as a2"
+wire = "arrow"
+copy_options = { chunk_bytes = 4096 }
+out = "rows"
+
+[[nodes]]
+key = "dst"
+tool = "pg_stream_in"
+
+[nodes.args]
+connection = "pg"
+schema_name = "$pg_schema"
+table_name = "dims"
+schema_strategy = { kind = "create_if_not_exists" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+copy_options = { chunk_bytes = 4096 }
+feed = "rows"
+"""
+
+WIDE_ROW_SMALL_CHUNKS = """
+name = "pg_arrow_wide_row_small_chunks"
+version = 1
+
+[[nodes]]
+key = "src"
+tool = "pg_stream_out"
+
+[nodes.args]
+connection = "pg"
+sql = "select 1::bigint as id, repeat('x', 3 * 1024 * 1024) as t"
+wire = "arrow"
+copy_options = { chunk_bytes = 4096 }
+out = "rows"
+
+[[nodes]]
+key = "dst"
+tool = "pg_stream_in"
+
+[nodes.args]
+connection = "pg"
+schema_name = "$pg_schema"
+table_name = "wide"
+schema_strategy = { kind = "create_if_not_exists" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+copy_options = { chunk_bytes = 4096 }
+feed = "rows"
+"""
+
+WIDE_ROW_BIG_CHUNKS = """
+name = "pg_arrow_wide_row_big_chunks"
+version = 1
+
+[[nodes]]
+key = "src"
+tool = "pg_stream_out"
+
+[nodes.args]
+connection = "pg"
+sql = "select 1::bigint as id, repeat('x', 3 * 1024 * 1024) as t"
+wire = "arrow"
+copy_options = { chunk_bytes = 4194304 }
+out = "rows"
+
+[[nodes]]
+key = "dst"
+tool = "pg_stream_in"
+
+[nodes.args]
+connection = "pg"
+schema_name = "$pg_schema"
+table_name = "wide"
+schema_strategy = { kind = "create_if_not_exists" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+copy_options = { chunk_bytes = 4096 }
+feed = "rows"
+"""
+
+LIST_IN_THE_STREAM = """
+name = "pg_arrow_list_in_the_stream"
+version = 1
+
+[[nodes]]
+key = "src"
+tool = "ch_stream_out"
+
+[nodes.args]
+connection = "ch"
+sql = "select toInt64(1) as id, [toInt64(1), 2] as arr"
+wire = "arrow"
+chunk_bytes = 4096
+out = "rows"
+
+[[nodes]]
+key = "dst"
+tool = "pg_stream_in"
+
+[nodes.args]
+connection = "pg"
+schema_name = "$pg_schema"
+table_name = "lists"
+schema_strategy = { kind = "create_if_not_exists" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+copy_options = { chunk_bytes = 4096 }
+feed = "rows"
+"""
+
+COPY_SESSION = """
+name = "pg_arrow_copy_session"
+version = 1
+
+[[nodes]]
+key = "src"
+tool = "pg_stream_out"
+
+[nodes.args]
+connection = "pg"
+sql = '''$select'''
+wire = "arrow"
+copy_options = { chunk_bytes = 4096 }
+out = "rows"
+
+[[nodes]]
+key = "dst"
+tool = "pg_stream_in"
+
+[nodes.args]
+connection = "pg"
+schema_name = "$pg_schema"
+table_name = "session"
+schema_strategy = { kind = "create_if_not_exists" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+copy_options = { chunk_bytes = 4096 }
+feed = "rows"
+"""
+
+FLOATS = """
+name = "pg_arrow_floats"
+version = 1
+
+[[nodes]]
+key = "src"
+tool = "pg_stream_out"
+
+[nodes.args]
+connection = "pg"
+sql = "select g::bigint as id, g::float8 / 7 as r8 from generate_series(1, 1000) g"
+wire = "arrow"
+copy_options = { chunk_bytes = 4096 }
+out = "rows"
+
+[[nodes]]
+key = "dst"
+tool = "pg_stream_in"
+
+[nodes.args]
+connection = "pg"
+schema_name = "$pg_schema"
+table_name = "floats"
+schema_strategy = { kind = "create_if_not_exists" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+copy_options = { chunk_bytes = 4096 }
+feed = "rows"
+"""
 
 
 @dataclass(frozen=True)
@@ -510,6 +862,35 @@ async def _report(
     )
 
 
+def _dags(
+    tmp_path: Path, connections: Mapping[str, object], names: Mapping[str, str]
+) -> PumpDags:
+    """Платформа запуска с именами стенда и подстановками теста (select, table)."""
+    substitutions: dict[str, str] = {
+        "pg_schema": PG_SCHEMA,
+        "ch_database": CH_DATABASE,
+        "ora_schema": PumpUser().name,
+    }
+    substitutions.update(names)
+
+    return PumpDags(tmp_path, connections, substitutions)
+
+
+async def _landed(dags: PumpDags, spec: str) -> str:
+    """Запуск описания; отчёт приёмника — узла dst."""
+    outcome = await dags.run(spec)
+    report = outcome.node("dst").content
+    print(f"\n--- {outcome.dag} ---\n{report}")
+
+    failed: list[str] = []
+    for node in outcome.failures():
+        failed.append(f"{node.key}: {node.content}")
+
+    assert outcome.ok(), "\n".join(failed)
+
+    return report
+
+
 @pytest.fixture(scope="module", params=STAND.sources, ids=lambda s: s.name)
 async def postgres(request: Any) -> AsyncIterator[PostgresSide]:
     side = PostgresSide(request.param, PG_SCHEMA)
@@ -538,46 +919,31 @@ async def oracle(request: Any) -> AsyncIterator[OracleSide]:
 
 
 class TestPostgresToPostgres:
-    async def test_every_type_survives_the_circle(self, postgres: PostgresSide) -> None:
+    async def test_every_type_survives_the_circle(
+        self, tmp_path: Path, postgres: PostgresSide
+    ) -> None:
         source = Source(postgres)
         columns = source.columns()
         targets = [c.pg for c in columns]
-        pumps = Pumps(postgres=postgres.profile)
-
-        chained = await pumps.chain(
-            Leg(
-                "pg_stream_out",
-                {
-                    "wire": StreamWire.ARROW,
-                    "sql": _select(columns, targets),
-                    "copy_options": CopyOptions(chunk_bytes=CHUNK_BYTES),
-                },
-            ),
-            Leg(
-                "pg_stream_in",
-                {
-                    "schema_name": PG_SCHEMA,
-                    "table_name": "dst",
-                    "schema_strategy": CreateIfNotExists(kind="create_if_not_exists"),
-                    "delete_strategy": DeleteNothing(kind="nothing"),
-                    "insert_strategy": InsertFull(kind="full"),
-                    "copy_options": CopyOptions(chunk_bytes=CHUNK_BYTES),
-                },
-            ),
+        dags = _dags(
+            tmp_path, {"pg": postgres.profile}, {"select": _select(columns, targets)}
         )
-        assert chained.in_report.startswith(f"{ROWS} rows loaded")
+
+        report = await _landed(dags, CIRCLE)
+
+        assert report.startswith(f"{ROWS} rows loaded")
 
         # обе стороны postgres: опорное выражение источника годится и приёмнику
         refs = [first(t.src_ref, c.name) for c, t in zip(columns, targets, strict=True)]
         landed = await postgres.select("dst", refs)
-        report = await _report(source, columns, targets, landed)
+        compared_rows = await _report(source, columns, targets, landed)
 
-        assert not report.mismatches, report.render()
+        assert not compared_rows.mismatches, compared_rows.render()
 
 
 class TestPostgresToClickHouse:
     async def test_every_type_lands(
-        self, postgres: PostgresSide, clickhouse: ClickHouseSide
+        self, tmp_path: Path, postgres: PostgresSide, clickhouse: ClickHouseSide
     ) -> None:
         source = Source(postgres)
         columns: list[PgColumn] = []
@@ -599,42 +965,29 @@ class TestPostgresToClickHouse:
 
         table = _table_name(postgres.source.name)
         await clickhouse.create(table, parts)
-        pumps = Pumps(postgres=postgres.profile, clickhouse=clickhouse.profile)
-        chained = await pumps.chain(
-            Leg(
-                "pg_stream_out",
-                {
-                    "wire": StreamWire.ARROW,
-                    "sql": _select(columns, targets),
-                    "copy_options": CopyOptions(chunk_bytes=CHUNK_BYTES),
-                },
-            ),
-            Leg(
-                "ch_stream_in",
-                {
-                    "database": CH_DATABASE,
-                    "table_name": table,
-                    "schema_strategy": ErrorIfNotExists(kind="error_if_not_exists"),
-                    "delete_strategy": DeleteNothing(kind="nothing"),
-                    "insert_strategy": InsertFull(kind="full"),
-                },
-            ),
+        dags = _dags(
+            tmp_path,
+            {"pg": postgres.profile, "ch": clickhouse.profile},
+            {"select": _select(columns, targets), "table": table},
         )
-        assert chained.in_report.startswith(f"{ROWS} rows loaded")
+
+        report = await _landed(dags, TO_CLICKHOUSE)
+
+        assert report.startswith(f"{ROWS} rows loaded")
 
         landed = await clickhouse.select(
             table, [first(t.ref, c.name) for c, t in zip(columns, targets, strict=True)]
         )
-        report = await _report(source, columns, targets, landed)
+        compared_rows = await _report(source, columns, targets, landed)
 
-        assert not report.mismatches, report.render()
+        assert not compared_rows.mismatches, compared_rows.render()
 
 
 class TestPostgresToOracle:
     LOB: ClassVar[str] = "clob"
 
     async def test_every_type_lands(
-        self, postgres: PostgresSide, oracle: OracleSide
+        self, tmp_path: Path, postgres: PostgresSide, oracle: OracleSide
     ) -> None:
         """LOB-колонки приёмника идут последними: Oracle не принимает длинный
         bind после LOB в одном insert (ORA-24816), а порядок bind'ов — порядок
@@ -666,30 +1019,15 @@ class TestPostgresToOracle:
         await oracle.create(
             table, [f"{c.name} {t.type}" for c, t in zip(columns, targets, strict=True)]
         )
-        pumps = Pumps(postgres=postgres.profile, oracle=oracle.profile)
+        dags = _dags(
+            tmp_path,
+            {"pg": postgres.profile, "ora": oracle.profile},
+            {"select": _select(columns, targets), "table": table},
+        )
         try:
-            chained = await pumps.chain(
-                Leg(
-                    "pg_stream_out",
-                    {
-                        "wire": StreamWire.ARROW,
-                        "sql": _select(columns, targets),
-                        "copy_options": CopyOptions(chunk_bytes=CHUNK_BYTES),
-                    },
-                ),
-                Leg(
-                    "ora_stream_in",
-                    {
-                        "schema_name": PumpUser().name,
-                        "table_name": table,
-                        "schema_strategy": ErrorIfNotExists(kind="error_if_not_exists"),
-                        "delete_strategy": DeleteNothing(kind="nothing"),
-                        "insert_strategy": InsertFull(kind="full"),
-                        "chunk_bytes": CHUNK_BYTES,
-                    },
-                ),
-            )
-            assert chained.in_report.startswith(f"{ROWS} rows loaded")
+            report = await _landed(dags, TO_ORACLE)
+
+            assert report.startswith(f"{ROWS} rows loaded")
 
             landed = await oracle.select(
                 table,
@@ -698,153 +1036,78 @@ class TestPostgresToOracle:
         finally:
             await oracle.drop_table(table)
 
-        report = await _report(source, columns, targets, landed)
+        compared_rows = await _report(source, columns, targets, landed)
 
-        assert not report.mismatches, report.render()
+        assert not compared_rows.mismatches, compared_rows.render()
 
 
 class TestTraps:
     """Ловушки Arrow-пути postgres на новейшем сервере."""
 
-    SLOW: ClassVar[str] = "select pg_sleep(30), 1::numeric as n"
-
     async def test_unbounded_numeric_is_refused_before_execution(
-        self, postgres: PostgresSide
+        self, tmp_path: Path, postgres: PostgresSide
     ) -> None:
         """numeric без точности отвергается по описанию стейтмента: запрос с
         pg_sleep(30) не выполняется, ответ приходит сразу."""
         if postgres.source.name != NEWEST:
             pytest.skip("one postgres is enough for this trap")
 
-        pumps = Pumps(postgres=postgres.profile)
+        dags = _dags(tmp_path, {"pg": postgres.profile}, {})
         started = time.monotonic()
-        with pytest.raises(PgArrowError, match="numeric without precision"):
-            await pumps.chain(
-                Leg(
-                    "pg_stream_out",
-                    {
-                        "wire": StreamWire.ARROW,
-                        "sql": self.SLOW,
-                        "copy_options": CopyOptions(chunk_bytes=CHUNK_BYTES),
-                    },
-                ),
-                Leg(
-                    "pg_stream_in",
-                    {
-                        "schema_name": PG_SCHEMA,
-                        "table_name": "dst",
-                        "schema_strategy": CreateIfNotExists(
-                            kind="create_if_not_exists"
-                        ),
-                        "delete_strategy": DeleteNothing(kind="nothing"),
-                        "insert_strategy": InsertFull(kind="full"),
-                        "copy_options": CopyOptions(chunk_bytes=CHUNK_BYTES),
-                    },
-                ),
-            )
+        outcome = await dags.run(UNBOUNDED_NUMERIC)
 
         assert time.monotonic() - started < 5
 
-    async def test_wide_numeric_needs_text(self, postgres: PostgresSide) -> None:
+        failure = outcome.failure("src")
+        assert failure.error_kind == "PgArrowError", failure.llm_view()
+        assert "numeric without precision" in failure.llm_view()
+
+    async def test_wide_numeric_needs_text(
+        self, tmp_path: Path, postgres: PostgresSide
+    ) -> None:
         """numeric шире 38 знаков читатель CSV Arrow не собирает: отказ до
         выполнения с подсказкой ::text."""
         if postgres.source.name != NEWEST:
             pytest.skip("one postgres is enough for this trap")
 
-        pumps = Pumps(postgres=postgres.profile)
-        with pytest.raises(PgArrowError, match="up to 38 digits"):
-            await pumps.chain(
-                Leg(
-                    "pg_stream_out",
-                    {
-                        "wire": StreamWire.ARROW,
-                        "sql": "select pg_sleep(30), 1::numeric(50, 20) as n",
-                        "copy_options": CopyOptions(chunk_bytes=CHUNK_BYTES),
-                    },
-                ),
-                Leg(
-                    "pg_stream_in",
-                    {
-                        "schema_name": PG_SCHEMA,
-                        "table_name": "dst",
-                        "schema_strategy": CreateIfNotExists(
-                            kind="create_if_not_exists"
-                        ),
-                        "delete_strategy": DeleteNothing(kind="nothing"),
-                        "insert_strategy": InsertFull(kind="full"),
-                        "copy_options": CopyOptions(chunk_bytes=CHUNK_BYTES),
-                    },
-                ),
-            )
+        dags = _dags(tmp_path, {"pg": postgres.profile}, {})
+        outcome = await dags.run(WIDE_NUMERIC)
+
+        failure = outcome.failure("src")
+        assert failure.error_kind == "PgArrowError", failure.llm_view()
+        assert "up to 38 digits" in failure.llm_view()
 
     async def test_broken_statement_is_refused_by_describe(
-        self, postgres: PostgresSide
+        self, tmp_path: Path, postgres: PostgresSide
     ) -> None:
         if postgres.source.name != NEWEST:
             pytest.skip("one postgres is enough for this trap")
 
-        pumps = Pumps(postgres=postgres.profile)
-        with pytest.raises(PgDescribeError, match="the statement on postgres failed"):
-            await pumps.chain(
-                Leg(
-                    "pg_stream_out",
-                    {
-                        "wire": StreamWire.ARROW,
-                        "sql": "select nothing from nowhere",
-                        "copy_options": CopyOptions(chunk_bytes=CHUNK_BYTES),
-                    },
-                ),
-                Leg(
-                    "pg_stream_in",
-                    {
-                        "schema_name": PG_SCHEMA,
-                        "table_name": "dst",
-                        "schema_strategy": CreateIfNotExists(
-                            kind="create_if_not_exists"
-                        ),
-                        "delete_strategy": DeleteNothing(kind="nothing"),
-                        "insert_strategy": InsertFull(kind="full"),
-                        "copy_options": CopyOptions(chunk_bytes=CHUNK_BYTES),
-                    },
-                ),
-            )
+        dags = _dags(tmp_path, {"pg": postgres.profile}, {})
+        outcome = await dags.run(BROKEN_STATEMENT)
 
-    async def test_arrays_travel_as_text(self, postgres: PostgresSide) -> None:
+        failure = outcome.failure("src")
+        assert failure.error_kind == "PgDescribeError", failure.llm_view()
+        assert "the statement on postgres failed" in failure.llm_view()
+
+    async def test_arrays_travel_as_text(
+        self, tmp_path: Path, postgres: PostgresSide
+    ) -> None:
         """Массив любой размерности едет текстом postgres и ложится в колонку
         массива как есть."""
         if postgres.source.name != NEWEST:
             pytest.skip("one postgres is enough for this trap")
 
         await postgres.create("dims", ["id bigint", "a2 int[][]"])
-        pumps = Pumps(postgres=postgres.profile)
-        await pumps.chain(
-            Leg(
-                "pg_stream_out",
-                {
-                    "wire": StreamWire.ARROW,
-                    "sql": "select 1::bigint as id, "
-                    "array[array[1, 2], array[3, 4]] as a2",
-                    "copy_options": CopyOptions(chunk_bytes=CHUNK_BYTES),
-                },
-            ),
-            Leg(
-                "pg_stream_in",
-                {
-                    "schema_name": PG_SCHEMA,
-                    "table_name": "dims",
-                    "schema_strategy": CreateIfNotExists(kind="create_if_not_exists"),
-                    "delete_strategy": DeleteNothing(kind="nothing"),
-                    "insert_strategy": InsertFull(kind="full"),
-                    "copy_options": CopyOptions(chunk_bytes=CHUNK_BYTES),
-                },
-            ),
-        )
+        dags = _dags(tmp_path, {"pg": postgres.profile}, {})
+
+        await _landed(dags, ARRAYS_AS_TEXT)
         landed = await postgres.select("dims", ["id", "a2"])
 
         assert landed == [(1, [[1, 2], [3, 4]])]
 
     async def test_row_wider_than_the_parse_block_needs_bigger_chunks(
-        self, postgres: PostgresSide
+        self, tmp_path: Path, postgres: PostgresSide
     ) -> None:
         """Строка CSV обязана уместиться в один блок читателя: при chunk_bytes
         ниже пола блок — 1 MiB, строка в 3 MiB отвергается с подсказкой, а
@@ -853,54 +1116,14 @@ class TestTraps:
             pytest.skip("one postgres is enough for this trap")
 
         await postgres.create("wide", ["id bigint", "t text"])
-        pumps = Pumps(postgres=postgres.profile)
-        wide = "select 1::bigint as id, repeat('x', 3 * 1024 * 1024) as t"
-        with pytest.raises(PgArrowError, match="raise chunk_bytes"):
-            await pumps.chain(
-                Leg(
-                    "pg_stream_out",
-                    {
-                        "wire": StreamWire.ARROW,
-                        "sql": wide,
-                        "copy_options": CopyOptions(chunk_bytes=CHUNK_BYTES),
-                    },
-                ),
-                Leg(
-                    "pg_stream_in",
-                    {
-                        "schema_name": PG_SCHEMA,
-                        "table_name": "wide",
-                        "schema_strategy": CreateIfNotExists(
-                            kind="create_if_not_exists"
-                        ),
-                        "delete_strategy": DeleteNothing(kind="nothing"),
-                        "insert_strategy": InsertFull(kind="full"),
-                        "copy_options": CopyOptions(chunk_bytes=CHUNK_BYTES),
-                    },
-                ),
-            )
+        dags = _dags(tmp_path, {"pg": postgres.profile}, {})
+        outcome = await dags.run(WIDE_ROW_SMALL_CHUNKS)
 
-        await pumps.chain(
-            Leg(
-                "pg_stream_out",
-                {
-                    "wire": StreamWire.ARROW,
-                    "sql": wide,
-                    "copy_options": CopyOptions(chunk_bytes=4 * 1024 * 1024),
-                },
-            ),
-            Leg(
-                "pg_stream_in",
-                {
-                    "schema_name": PG_SCHEMA,
-                    "table_name": "wide",
-                    "schema_strategy": CreateIfNotExists(kind="create_if_not_exists"),
-                    "delete_strategy": DeleteNothing(kind="nothing"),
-                    "insert_strategy": InsertFull(kind="full"),
-                    "copy_options": CopyOptions(chunk_bytes=CHUNK_BYTES),
-                },
-            ),
-        )
+        failure = outcome.failure("src")
+        assert failure.error_kind == "PgArrowError", failure.llm_view()
+        assert "raise chunk_bytes" in failure.llm_view()
+
+        await _landed(dags, WIDE_ROW_BIG_CHUNKS)
         landed = await postgres.select("wide", ["id", "length(t)"])
 
         assert landed == [(1, 3 * 1024 * 1024)]
@@ -968,7 +1191,7 @@ class TestTraps:
         assert bytes(landed[0][1]) != packed[0]
 
     async def test_list_in_the_stream_is_refused_before_loading(
-        self, postgres: PostgresSide, clickhouse: ClickHouseSide
+        self, tmp_path: Path, postgres: PostgresSide, clickhouse: ClickHouseSide
     ) -> None:
         """Список Arrow (Array ClickHouse) CSV не несёт: pg_stream_in отвергает
         его по схеме, источник обязан отдать текст postgres."""
@@ -976,34 +1199,15 @@ class TestTraps:
             pytest.skip("one postgres is enough for this trap")
 
         await postgres.create("lists", ["id bigint", "arr bigint[]"])
-        pumps = Pumps(postgres=postgres.profile, clickhouse=clickhouse.profile)
-        with pytest.raises(PgArrowError, match="cannot be written as csv"):
-            await pumps.chain(
-                Leg(
-                    "ch_stream_out",
-                    {
-                        "sql": "select toInt64(1) as id, [toInt64(1), 2] as arr",
-                        "wire": ChStreamWire.ARROW,
-                        "chunk_bytes": CHUNK_BYTES,
-                    },
-                ),
-                Leg(
-                    "pg_stream_in",
-                    {
-                        "schema_name": PG_SCHEMA,
-                        "table_name": "lists",
-                        "schema_strategy": CreateIfNotExists(
-                            kind="create_if_not_exists"
-                        ),
-                        "delete_strategy": DeleteNothing(kind="nothing"),
-                        "insert_strategy": InsertFull(kind="full"),
-                        "copy_options": CopyOptions(chunk_bytes=CHUNK_BYTES),
-                    },
-                ),
-            )
+        dags = _dags(tmp_path, {"pg": postgres.profile, "ch": clickhouse.profile}, {})
+        outcome = await dags.run(LIST_IN_THE_STREAM)
+
+        failure = outcome.failure("dst")
+        assert failure.error_kind == "PgArrowError", failure.llm_view()
+        assert "cannot be written as csv" in failure.llm_view()
 
     async def test_copy_session_is_fixed_regardless_of_profile_options(
-        self, postgres: PostgresSide
+        self, tmp_path: Path, postgres: PostgresSide
     ) -> None:
         """Текст COPY не зависит от настроек сессии профиля: даты ISO, UTC, bytea
         hex, интервал в записи postgres, money без локали, float точно — у
@@ -1043,27 +1247,9 @@ class TestTraps:
                 "m text",
             ],
         )
-        await pumps.chain(
-            Leg(
-                "pg_stream_out",
-                {
-                    "wire": StreamWire.ARROW,
-                    "sql": select,
-                    "copy_options": CopyOptions(chunk_bytes=CHUNK_BYTES),
-                },
-            ),
-            Leg(
-                "pg_stream_in",
-                {
-                    "schema_name": PG_SCHEMA,
-                    "table_name": "session",
-                    "schema_strategy": CreateIfNotExists(kind="create_if_not_exists"),
-                    "delete_strategy": DeleteNothing(kind="nothing"),
-                    "insert_strategy": InsertFull(kind="full"),
-                    "copy_options": CopyOptions(chunk_bytes=CHUNK_BYTES),
-                },
-            ),
-        )
+        dags = _dags(tmp_path, {"pg": profile}, {"select": select})
+
+        await _landed(dags, COPY_SESSION)
         landed = await postgres.select(
             "session",
             ["f", "tz at time zone 'UTC'", "d", "iv", "encode(b, 'hex')", "m"],
@@ -1082,33 +1268,15 @@ class TestTraps:
         )
         assert landed[0][0] == 1.0 / 3
 
-    async def test_float_is_exact_on_every_server(self, postgres: PostgresSide) -> None:
+    async def test_float_is_exact_on_every_server(
+        self, tmp_path: Path, postgres: PostgresSide
+    ) -> None:
         """extra_float_digits = 3 в опциях сессии выгрузки: double едет точно
         и на серверах до 12-й версии, где обычная печать даёт 15 знаков."""
         await postgres.create("floats", ["id bigint", "r8 double precision"])
-        pumps = Pumps(postgres=postgres.profile)
-        await pumps.chain(
-            Leg(
-                "pg_stream_out",
-                {
-                    "wire": StreamWire.ARROW,
-                    "sql": "select g::bigint as id, g::float8 / 7 as r8 "
-                    "from generate_series(1, 1000) g",
-                    "copy_options": CopyOptions(chunk_bytes=CHUNK_BYTES),
-                },
-            ),
-            Leg(
-                "pg_stream_in",
-                {
-                    "schema_name": PG_SCHEMA,
-                    "table_name": "floats",
-                    "schema_strategy": CreateIfNotExists(kind="create_if_not_exists"),
-                    "delete_strategy": DeleteNothing(kind="nothing"),
-                    "insert_strategy": InsertFull(kind="full"),
-                    "copy_options": CopyOptions(chunk_bytes=CHUNK_BYTES),
-                },
-            ),
-        )
+        dags = _dags(tmp_path, {"pg": postgres.profile}, {})
+
+        await _landed(dags, FLOATS)
         landed = await postgres.select("floats", ["id", "r8"])
 
         assert [row[1] for row in landed] == [g / 7 for g in range(1, 1001)]

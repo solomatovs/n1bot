@@ -1,7 +1,10 @@
-# ruff: noqa: S608
+# ruff: noqa: S608, E501
 """Пара postgres -> ClickHouse по tsv: pg_stream_out с wire = tsv в ch_stream_in на
 каждом ClickHouse стенда, источник — новейший postgres с таблицей всех
 ходовых типов.
+
+Каждый запуск описан toml-текстом (DagSpec) и исполняется DagRunner без
+модели: узлы — вызовы насосов с аргументами, как их присылает модель.
 
 Что проверяется:
     - каждый тип postgres ложится своим типом ClickHouse, значения совпадают
@@ -16,41 +19,23 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncIterator
 from decimal import Decimal
-from typing import Any, ClassVar
+from pathlib import Path
+from typing import Any
 
 import pytest
 
-from boba.db.clickhouse.errors import ClickHouseQueryError
-from boba.db.clickhouse.target import ChTableRef
-from boba.db.postgres.connection import CopyOptions
-from boba.db.postgres.transfer import PgColumnDeclaration
 from boba.pump_stand import (
     ChLoaded,
     ClickHouseSide,
-    Leg,
     Loaded,
     PostgresSide,
-    Pumps,
+    PumpDags,
     PumpStand,
 )
 from boba.stand.names import StandNames
 from boba.toolkit.result import SqlFailureResult
-from boba.toolkit.transfer import (
-    ColumnRules,
-    CreateIfNotExists,
-    DeleteNothing,
-    DeleteTruncate,
-    DropAndCreate,
-    ErrorIfNotExists,
-    ErrorIfSchemaChanged,
-    FailOnUnknown,
-    FallbackAsVarchar,
-    InsertFull,
-    StreamWire,
-    TransferError,
-)
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
 
@@ -58,12 +43,8 @@ STAND = PumpStand.required()
 PG_SCHEMA = StandNames().of("pump_pg_ch")
 CH_DATABASE = StandNames().of("pump_pg_ch")
 ROWS = 60
-CHUNK = 65536
-MERGE_TREE = (
-    "create table {database}.{table_name}[ on cluster {cluster}] ({columns}) "
-    "engine = MergeTree order by {order_by}"
-)
 NULLABLE_JSON_SINCE = 25
+IPV4_IN_IPV6_SINCE = 23
 
 SOURCE_DDL = f"""
 create table {PG_SCHEMA}.src (
@@ -134,17 +115,6 @@ select g,
        int4range(g, g + 10)
 from generate_series(1, {ROWS}) g"""
 
-NATIVE = (
-    "id, i2, i4, n, f4, f8, b, t, vc, c5, by, d, ts, tz, tm, iv, u, j, jb, ip, "
-    "net, mac, mo, bt, xm, tr"
-)
-SELECT = f"select {NATIVE} from {PG_SCHEMA}.src"
-DECLARED = (
-    PgColumnDeclaration(name="id", nullable=False),
-    PgColumnDeclaration(name="vc", nullable=False),
-    PgColumnDeclaration(name="jb", nullable=False),
-)
-
 EXPECTED_TYPES = {
     "id": "Int64",
     "i2": "Nullable(Int16)",
@@ -172,6 +142,377 @@ EXPECTED_TYPES = {
 }
 """Типы ClickHouse по контракту postgres, кроме json и jsonb: они зависят от
 версии сервера."""
+
+NATIVE_TYPES = """
+name = "pg_to_ch_native_types"
+version = 1
+
+[[nodes]]
+key = "src"
+tool = "pg_stream_out"
+
+[nodes.args]
+connection = "pg"
+sql = "select id, i2, i4, n, f4, f8, b, t, vc, c5, by, d, ts, tz, tm, iv, u, j, jb, ip, net, mac, mo, bt, xm, tr from $pg_schema.src"
+wire = "tsv"
+columns = [{ name = "id", nullable = false }, { name = "vc", nullable = false }, { name = "jb", nullable = false }]
+copy_options = { chunk_bytes = 65536 }
+out = "rows"
+
+[[nodes]]
+key = "ch"
+tool = "ch_stream_in"
+
+[nodes.args]
+connection = "ch"
+database = "$ch_database"
+table_name = "types"
+schema_strategy = { kind = "drop_and_create" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+rules = {}
+unknown_types = { kind = "fail_on_unknown" }
+create_table = "create table {database}.{table_name}[ on cluster {cluster}] ({columns}) engine = MergeTree order by {order_by}"
+order_by = "id"
+feed = "rows"
+"""
+
+RELOAD = """
+name = "pg_to_ch_reload"
+version = 1
+
+[[nodes]]
+key = "src"
+tool = "pg_stream_out"
+
+[nodes.args]
+connection = "pg"
+sql = "select id, i2, i4, n, f4, f8, b, t, vc, c5, by, d, ts, tz, tm, iv, u, j, jb, ip, net, mac, mo, bt, xm, tr from $pg_schema.src"
+wire = "tsv"
+columns = [{ name = "id", nullable = false }, { name = "vc", nullable = false }, { name = "jb", nullable = false }]
+copy_options = { chunk_bytes = 65536 }
+out = "rows"
+
+[[nodes]]
+key = "ch"
+tool = "ch_stream_in"
+
+[nodes.args]
+connection = "ch"
+database = "$ch_database"
+table_name = "types"
+schema_strategy = { kind = "error_if_schema_changed" }
+delete_strategy = { kind = "truncate" }
+insert_strategy = { kind = "full" }
+rules = {}
+unknown_types = { kind = "fail_on_unknown" }
+create_table = "create table {database}.{table_name}[ on cluster {cluster}] ({columns}) engine = MergeTree order by {order_by}"
+order_by = "id"
+feed = "rows"
+"""
+
+WIDER = """
+name = "pg_to_ch_wider_table"
+version = 1
+
+[[nodes]]
+key = "src"
+tool = "pg_stream_out"
+
+[nodes.args]
+connection = "pg"
+sql = "select id, i4, n, tz, vc from $pg_schema.src"
+wire = "tsv"
+columns = [{ name = "id", nullable = false }, { name = "vc", nullable = false }]
+copy_options = { chunk_bytes = 65536 }
+out = "rows"
+
+[[nodes]]
+key = "ch"
+tool = "ch_stream_in"
+
+[nodes.args]
+connection = "ch"
+database = "$ch_database"
+table_name = "wider"
+schema_strategy = { kind = "error_if_not_exists" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+rules = {}
+unknown_types = { kind = "fail_on_unknown" }
+create_table = "create table {database}.{table_name}[ on cluster {cluster}] ({columns}) engine = MergeTree order by {order_by}"
+order_by = "id"
+feed = "rows"
+"""
+
+UNKNOWN_REFUSED = """
+name = "pg_to_ch_unknown_refused"
+version = 1
+
+[[nodes]]
+key = "src"
+tool = "pg_stream_out"
+
+[nodes.args]
+connection = "pg"
+sql = "select id, nfree, nwide, ia, en from $pg_schema.src"
+wire = "tsv"
+columns = [{ name = "id", nullable = false }]
+copy_options = { chunk_bytes = 65536 }
+out = "rows"
+
+[[nodes]]
+key = "ch"
+tool = "ch_stream_in"
+
+[nodes.args]
+connection = "ch"
+database = "$ch_database"
+table_name = "unknown"
+schema_strategy = { kind = "drop_and_create" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+rules = {}
+unknown_types = { kind = "fail_on_unknown" }
+create_table = "create table {database}.{table_name}[ on cluster {cluster}] ({columns}) engine = MergeTree order by {order_by}"
+order_by = "id"
+feed = "rows"
+"""
+
+UNKNOWN_AS_STRING = """
+name = "pg_to_ch_unknown_as_string"
+version = 1
+
+[[nodes]]
+key = "src"
+tool = "pg_stream_out"
+
+[nodes.args]
+connection = "pg"
+sql = "select id, nfree, nwide, ia, en from $pg_schema.src"
+wire = "tsv"
+columns = [{ name = "id", nullable = false }]
+copy_options = { chunk_bytes = 65536 }
+out = "rows"
+
+[[nodes]]
+key = "ch"
+tool = "ch_stream_in"
+
+[nodes.args]
+connection = "ch"
+database = "$ch_database"
+table_name = "unknown"
+schema_strategy = { kind = "drop_and_create" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+rules = {}
+unknown_types = { kind = "fallback_as_varchar" }
+create_table = "create table {database}.{table_name}[ on cluster {cluster}] ({columns}) engine = MergeTree order by {order_by}"
+order_by = "id"
+feed = "rows"
+"""
+
+DECLARED_TYPES = """
+name = "pg_to_ch_declared_types"
+version = 1
+
+[[nodes]]
+key = "src"
+tool = "pg_stream_out"
+
+[nodes.args]
+connection = "pg"
+sql = "select id, nfree, en from $pg_schema.src"
+wire = "tsv"
+columns = [{ name = "id", nullable = false }]
+copy_options = { chunk_bytes = 65536 }
+out = "rows"
+
+[[nodes]]
+key = "ch"
+tool = "ch_stream_in"
+
+[nodes.args]
+connection = "ch"
+database = "$ch_database"
+table_name = "declared"
+schema_strategy = { kind = "drop_and_create" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+rules = { column_types = { nfree = "Decimal(38, 4)", en = "Enum8('sad' = 1, 'happy' = 2)" } }
+unknown_types = { kind = "fail_on_unknown" }
+create_table = "create table {database}.{table_name}[ on cluster {cluster}] ({columns}) engine = MergeTree order by {order_by}"
+order_by = "id"
+feed = "rows"
+"""
+
+NULLABLE_KEY = """
+name = "pg_to_ch_nullable_sorting_key"
+version = 1
+
+[[nodes]]
+key = "src"
+tool = "pg_stream_out"
+
+[nodes.args]
+connection = "pg"
+sql = "select id, i2, i4, n, f4, f8, b, t, vc, c5, by, d, ts, tz, tm, iv, u, j, jb, ip, net, mac, mo, bt, xm, tr from $pg_schema.src"
+wire = "tsv"
+out = "rows"
+
+[[nodes]]
+key = "ch"
+tool = "ch_stream_in"
+
+[nodes.args]
+connection = "ch"
+database = "$ch_database"
+table_name = "nullable_key"
+schema_strategy = { kind = "create_if_not_exists" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+unknown_types = { kind = "fallback_as_varchar" }
+create_table = "create table {database}.{table_name} ({columns}) engine = MergeTree order by {order_by}"
+order_by = "id"
+feed = "rows"
+"""
+
+MASKED_INET = """
+name = "pg_to_ch_masked_inet"
+version = 1
+
+[[nodes]]
+key = "src"
+tool = "pg_stream_out"
+
+[nodes.args]
+connection = "pg"
+sql = "select id, '10.0.0.0/8'::inet as ip from $pg_schema.src"
+wire = "tsv"
+columns = [{ name = "id", nullable = false }]
+copy_options = { chunk_bytes = 65536 }
+out = "rows"
+
+[[nodes]]
+key = "ch"
+tool = "ch_stream_in"
+
+[nodes.args]
+connection = "ch"
+database = "$ch_database"
+table_name = "masked"
+schema_strategy = { kind = "drop_and_create" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+rules = {}
+unknown_types = { kind = "fail_on_unknown" }
+create_table = "create table {database}.{table_name}[ on cluster {cluster}] ({columns}) engine = MergeTree order by {order_by}"
+order_by = "id"
+feed = "rows"
+"""
+
+JSON_ARRAY = """
+name = "pg_to_ch_json_array_on_top"
+version = 1
+
+[[nodes]]
+key = "src"
+tool = "pg_stream_out"
+
+[nodes.args]
+connection = "pg"
+sql = "select id, '[1, 2]'::jsonb as jb from $pg_schema.src"
+wire = "tsv"
+columns = [{ name = "id", nullable = false }, { name = "jb", nullable = false }]
+copy_options = { chunk_bytes = 65536 }
+out = "rows"
+
+[[nodes]]
+key = "ch"
+tool = "ch_stream_in"
+
+[nodes.args]
+connection = "ch"
+database = "$ch_database"
+table_name = "json_array"
+schema_strategy = { kind = "drop_and_create" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+rules = {}
+unknown_types = { kind = "fail_on_unknown" }
+create_table = "create table {database}.{table_name}[ on cluster {cluster}] ({columns}) engine = MergeTree order by {order_by}"
+order_by = "id"
+feed = "rows"
+"""
+
+CLAMPED_DATES = """
+name = "pg_to_ch_clamped_dates"
+version = 1
+
+[[nodes]]
+key = "src"
+tool = "pg_stream_out"
+
+[nodes.args]
+connection = "pg"
+sql = "select id, date '1800-06-15' as d, timestamp '2500-01-01 00:00:00' as ts from $pg_schema.src limit 1"
+wire = "tsv"
+columns = [{ name = "id", nullable = false }]
+copy_options = { chunk_bytes = 65536 }
+out = "rows"
+
+[[nodes]]
+key = "ch"
+tool = "ch_stream_in"
+
+[nodes.args]
+connection = "ch"
+database = "$ch_database"
+table_name = "clamped"
+schema_strategy = { kind = "drop_and_create" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+rules = {}
+unknown_types = { kind = "fail_on_unknown" }
+create_table = "create table {database}.{table_name}[ on cluster {cluster}] ({columns}) engine = MergeTree order by {order_by}"
+order_by = "id"
+feed = "rows"
+"""
+
+MART = """
+name = "pg_to_ch_mart"
+version = 1
+
+[[nodes]]
+key = "src"
+tool = "pg_stream_out"
+
+[nodes.args]
+connection = "pg"
+sql = "select id, n, ip from $pg_schema.src"
+wire = "tsv"
+columns = [{ name = "id", nullable = false }]
+copy_options = { chunk_bytes = 65536 }
+out = "rows"
+
+[[nodes]]
+key = "ch"
+tool = "ch_stream_in"
+
+[nodes.args]
+connection = "ch"
+database = "$ch_database"
+table_name = "mart"
+schema_strategy = { kind = "drop_and_create" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+rules = { rename_columns = { key = "id", amount = "n", address = "ip" }, column_types = { amount = "Decimal(20, 4)", address = "String" } }
+unknown_types = { kind = "fail_on_unknown" }
+create_table = "create table {database}.{table_name}[ on cluster {cluster}] ({columns}) engine = MergeTree order by {order_by}"
+order_by = "key"
+feed = "rows"
+"""
 
 
 def _newest_postgres() -> Any:
@@ -210,51 +551,26 @@ async def clickhouse(request: Any) -> AsyncIterator[ClickHouseSide]:
     await side.drop()
 
 
-async def land(  # noqa: PLR0913
-    postgres: PostgresSide,
-    clickhouse: ClickHouseSide,
-    table: str,
-    schema: Any,
-    delete: Any = DeleteNothing(kind="nothing"),
-    rules: ColumnRules = ColumnRules(),
-    unknown_types: Any = FailOnUnknown(kind="fail_on_unknown"),
-    select: str = SELECT,
-    columns: Sequence[PgColumnDeclaration] = DECLARED,
-    order_by: str = ChTableRef.ORDER_BY,
-) -> str:
-    """pg_stream_out с wire = tsv -> ch_stream_in."""
-    pumps = Pumps(postgres=postgres.profile, clickhouse=clickhouse.profile)
-    chained = await pumps.chain(
-        Leg(
-            "pg_stream_out",
-            {
-                "sql": select,
-                "wire": StreamWire.TSV,
-                "columns": columns,
-                "copy_options": CopyOptions(chunk_bytes=CHUNK),
-            },
-        ),
-        Leg(
-            "ch_stream_in",
-            {
-                "database": CH_DATABASE,
-                "table_name": table,
-                "schema_strategy": schema,
-                "delete_strategy": delete,
-                "insert_strategy": InsertFull(kind="full"),
-                "rules": rules,
-                "unknown_types": unknown_types,
-                "create_table": MERGE_TREE,
-                "order_by": order_by,
-            },
-        ),
+@pytest.fixture
+def dags(
+    tmp_path: Path, postgres: PostgresSide, clickhouse: ClickHouseSide
+) -> PumpDags:
+    return PumpDags(
+        tmp_path,
+        {"pg": postgres.profile, "ch": clickhouse.profile},
+        {"pg_schema": PG_SCHEMA, "ch_database": CH_DATABASE},
     )
-    print(f"\n--- {clickhouse.source.name}: pg -> ch tsv ---\n{chained.in_report}")
-
-    return chained.in_report
 
 
-IPV4_IN_IPV6_SINCE = 23
+async def _landed(dags: PumpDags, clickhouse: ClickHouseSide, spec: str) -> str:
+    """Запуск описания; отчёт приёмника — узла ch."""
+    outcome = await dags.run(spec)
+    report = outcome.node("ch").content
+    print(f"\n--- {clickhouse.source.name}: {outcome.dag} ---\n{report}")
+
+    assert outcome.ok(), report
+
+    return report
 
 
 def inet_type(clickhouse: ClickHouseSide) -> dict[str, str]:
@@ -280,11 +596,9 @@ def json_types(clickhouse: ClickHouseSide) -> dict[str, str]:
 
 class TestNativeTypes:
     async def test_types_and_values_land(
-        self, postgres: PostgresSide, clickhouse: ClickHouseSide
+        self, dags: PumpDags, postgres: PostgresSide, clickhouse: ClickHouseSide
     ) -> None:
-        report = await land(
-            postgres, clickhouse, "types", DropAndCreate(kind="drop_and_create")
-        )
+        report = await _landed(dags, clickhouse, NATIVE_TYPES)
         landed = ChLoaded(clickhouse, "types")
         source = Loaded(postgres, PG_SCHEMA, "src")
 
@@ -325,21 +639,15 @@ class TestNativeTypes:
         assert await landed.column("bt") == await source.texts("bt")
 
     async def test_reload_passes_the_check(
-        self, postgres: PostgresSide, clickhouse: ClickHouseSide
+        self, dags: PumpDags, clickhouse: ClickHouseSide
     ) -> None:
-        report = await land(
-            postgres,
-            clickhouse,
-            "types",
-            ErrorIfSchemaChanged(kind="error_if_schema_changed"),
-            DeleteTruncate(kind="truncate"),
-        )
+        report = await _landed(dags, clickhouse, RELOAD)
 
         assert f"{ROWS} rows loaded" in report
         assert await ChLoaded(clickhouse, "types").count() == ROWS
 
     async def test_wider_table_takes_the_stream(
-        self, postgres: PostgresSide, clickhouse: ClickHouseSide
+        self, dags: PumpDags, clickhouse: ClickHouseSide
     ) -> None:
         await clickhouse.command(f"drop table if exists {CH_DATABASE}.wider")
         await clickhouse.command(
@@ -348,14 +656,7 @@ class TestNativeTypes:
             "vc LowCardinality(String)) engine = MergeTree order by id"
         )
 
-        report = await land(
-            postgres,
-            clickhouse,
-            "wider",
-            ErrorIfNotExists(kind="error_if_not_exists"),
-            select=f"select id, i4, n, tz, vc from {PG_SCHEMA}.src",
-            columns=DECLARED[:2],
-        )
+        report = await _landed(dags, clickhouse, WIDER)
 
         assert f"{ROWS} rows loaded" in report
         assert '"column": "id"' in report
@@ -367,33 +668,16 @@ class TestUnknownTypes:
     """Массив, numeric без точности, numeric(80, 2) и enum: у ClickHouse нет
     типа, который прочитает текст postgres без потерь."""
 
-    SELECT: ClassVar[str] = f"select id, nfree, nwide, ia, en from {PG_SCHEMA}.src"
+    async def test_refused_by_default(self, dags: PumpDags) -> None:
+        outcome = await dags.run(UNKNOWN_REFUSED)
 
-    async def test_refused_by_default(
-        self, postgres: PostgresSide, clickhouse: ClickHouseSide
-    ) -> None:
-        with pytest.raises(TransferError, match="column nfree: the target clickhouse"):
-            await land(
-                postgres,
-                clickhouse,
-                "unknown",
-                DropAndCreate(kind="drop_and_create"),
-                select=self.SELECT,
-                columns=DECLARED[:1],
-            )
+        failure = outcome.failure("ch")
+        assert "column nfree: the target clickhouse" in failure.llm_view()
 
     async def test_land_as_string_on_fallback(
-        self, postgres: PostgresSide, clickhouse: ClickHouseSide
+        self, dags: PumpDags, postgres: PostgresSide, clickhouse: ClickHouseSide
     ) -> None:
-        report = await land(
-            postgres,
-            clickhouse,
-            "unknown",
-            DropAndCreate(kind="drop_and_create"),
-            unknown_types=FallbackAsVarchar(kind="fallback_as_varchar"),
-            select=self.SELECT,
-            columns=DECLARED[:1],
-        )
+        report = await _landed(dags, clickhouse, UNKNOWN_AS_STRING)
         landed = ChLoaded(clickhouse, "unknown")
         source = Loaded(postgres, PG_SCHEMA, "src")
 
@@ -410,22 +694,9 @@ class TestUnknownTypes:
         assert await landed.column("en") == await source.texts("en")
 
     async def test_declared_type_wins(
-        self, postgres: PostgresSide, clickhouse: ClickHouseSide
+        self, dags: PumpDags, postgres: PostgresSide, clickhouse: ClickHouseSide
     ) -> None:
-        report = await land(
-            postgres,
-            clickhouse,
-            "declared",
-            DropAndCreate(kind="drop_and_create"),
-            rules=ColumnRules(
-                column_types={
-                    "nfree": "Decimal(38, 4)",
-                    "en": "Enum8('sad' = 1, 'happy' = 2)",
-                }
-            ),
-            select=f"select id, nfree, en from {PG_SCHEMA}.src",
-            columns=DECLARED[:1],
-        )
+        report = await _landed(dags, clickhouse, DECLARED_TYPES)
         landed = ChLoaded(clickhouse, "declared")
 
         assert f"{ROWS} rows loaded" in report
@@ -444,33 +715,11 @@ class TestFailureView:
     загрузка, и все команды вплоть до упавшей."""
 
     async def test_nullable_sorting_key_shows_columns_and_the_create(
-        self, postgres: PostgresSide, clickhouse: ClickHouseSide
+        self, dags: PumpDags
     ) -> None:
-        pumps = Pumps(postgres=postgres.profile, clickhouse=clickhouse.profile)
-        with pytest.raises(ClickHouseQueryError, match="Sorting key contains nullable"):
-            await pumps.chain(
-                Leg("pg_stream_out", {"sql": SELECT, "wire": StreamWire.TSV}),
-                Leg(
-                    "ch_stream_in",
-                    {
-                        "database": CH_DATABASE,
-                        "table_name": "nullable_key",
-                        "schema_strategy": CreateIfNotExists(
-                            kind="create_if_not_exists"
-                        ),
-                        "delete_strategy": DeleteNothing(kind="nothing"),
-                        "insert_strategy": InsertFull(kind="full"),
-                        "unknown_types": FallbackAsVarchar(kind="fallback_as_varchar"),
-                        "create_table": (
-                            "create table {database}.{table_name} ({columns}) "
-                            "engine = MergeTree order by {order_by}"
-                        ),
-                        "order_by": "id",
-                    },
-                ),
-            )
+        outcome = await dags.run(NULLABLE_KEY)
 
-        failure = pumps.failure_of("ch_stream_in")
+        failure = outcome.failure("ch")
         assert isinstance(failure, SqlFailureResult), failure
 
         rows = {row["column"]: row for row in failure.columns}
@@ -494,52 +743,32 @@ class TestServerTraps:
     таблица не меняется; даты вне 1900–2299 прижимаются к границе."""
 
     async def test_masked_inet_fails_at_load(
-        self, postgres: PostgresSide, clickhouse: ClickHouseSide
+        self, dags: PumpDags, clickhouse: ClickHouseSide
     ) -> None:
         if clickhouse.major < IPV4_IN_IPV6_SINCE:
             pytest.skip("inet lands as String on this server")
 
-        with pytest.raises(ClickHouseQueryError, match="Cannot parse"):
-            await land(
-                postgres,
-                clickhouse,
-                "masked",
-                DropAndCreate(kind="drop_and_create"),
-                select=f"select id, '10.0.0.0/8'::inet as ip from {PG_SCHEMA}.src",
-                columns=DECLARED[:1],
-            )
+        outcome = await dags.run(MASKED_INET)
 
+        failure = outcome.failure("ch")
+        assert isinstance(failure, SqlFailureResult), failure
+        assert "Cannot parse" in failure.chat_view().markdown
         assert await ChLoaded(clickhouse, "masked").count() == 0
 
     async def test_json_array_on_top_fails_at_load(
-        self, postgres: PostgresSide, clickhouse: ClickHouseSide
+        self, dags: PumpDags, clickhouse: ClickHouseSide
     ) -> None:
-        with pytest.raises(ClickHouseQueryError):
-            await land(
-                postgres,
-                clickhouse,
-                "json_array",
-                DropAndCreate(kind="drop_and_create"),
-                select=f"select id, '[1, 2]'::jsonb as jb from {PG_SCHEMA}.src",
-                columns=(DECLARED[0], DECLARED[2]),
-            )
+        outcome = await dags.run(JSON_ARRAY)
 
+        failure = outcome.failure("ch")
+        assert isinstance(failure, SqlFailureResult), failure
+        assert failure.statements[-1].status == "failed: ClickHouseQueryError"
         assert await ChLoaded(clickhouse, "json_array").count() == 0
 
     async def test_dates_outside_the_range_are_clamped(
-        self, postgres: PostgresSide, clickhouse: ClickHouseSide
+        self, dags: PumpDags, clickhouse: ClickHouseSide
     ) -> None:
-        await land(
-            postgres,
-            clickhouse,
-            "clamped",
-            DropAndCreate(kind="drop_and_create"),
-            select=(
-                f"select id, date '1800-06-15' as d, "
-                f"timestamp '2500-01-01 00:00:00' as ts from {PG_SCHEMA}.src limit 1"
-            ),
-            columns=DECLARED[:1],
-        )
+        await _landed(dags, clickhouse, CLAMPED_DATES)
         landed = ChLoaded(clickhouse, "clamped")
 
         assert await landed.column("toString(d)") == ["1900-01-01"]
@@ -548,21 +777,9 @@ class TestServerTraps:
 
 class TestMart:
     async def test_renamed_mart_with_declared_types(
-        self, postgres: PostgresSide, clickhouse: ClickHouseSide
+        self, dags: PumpDags, postgres: PostgresSide, clickhouse: ClickHouseSide
     ) -> None:
-        report = await land(
-            postgres,
-            clickhouse,
-            "mart",
-            DropAndCreate(kind="drop_and_create"),
-            rules=ColumnRules(
-                rename_columns={"key": "id", "amount": "n", "address": "ip"},
-                column_types={"amount": "Decimal(20, 4)", "address": "String"},
-            ),
-            select=f"select id, n, ip from {PG_SCHEMA}.src",
-            columns=DECLARED[:1],
-            order_by="key",
-        )
+        report = await _landed(dags, clickhouse, MART)
         landed = ChLoaded(clickhouse, "mart")
         source = Loaded(postgres, PG_SCHEMA, "src")
 

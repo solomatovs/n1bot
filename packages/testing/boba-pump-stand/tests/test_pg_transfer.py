@@ -1,65 +1,1278 @@
-# ruff: noqa: S608, PLR0913
+# ruff: noqa: S608, E501, PLR0913
 """Загрузка postgres -> postgres парой boba-stream-pg-to-pg через pg_stream_out и
 pg_stream_in с раскладками csv, tsv и binary: контракт RowDescription как есть, сверка
 по OID и typmod с каталогом приёмника, DDL текстом типа источника, тела COPY
 без перекодирования. Прогон по всем postgres стенда и Greenplum.
+
+Каждый запуск насосов описан toml-текстом (DagSpec) и исполняется DagRunner
+без модели: узлы — вызовы насосов с аргументами, как их присылает модель.
+Подстановкой в описания идёт только имя схемы стенда ($s).
 """
 
 from __future__ import annotations
 
+import re
 import shutil
 import subprocess
 import time
 from collections.abc import AsyncIterator, Sequence
 from decimal import Decimal
+from pathlib import Path
 from typing import Any, ClassVar
 
 import psycopg
 import pytest
 
 from boba.db.postgres import AsyncPostgresPool
-from boba.db.postgres.connection import CopyOptions
 from boba.db.postgres.query import PgQueryBuilder
 from boba.db.postgres.transfer import (
     PgCatalogColumn,
-    PgColumnDeclaration,
     PgCopyLayout,
     PgCopyOut,
-    PgTransferTable,
     PgTypeRules,
 )
-from boba.pump_stand import Leg, Loaded, PostgresSide, Pumps, PumpStand
+from boba.pump_stand import Loaded, PostgresSide, PumpDags, PumpStand
 from boba.pump_stand.ports import Sink, SinkOutbound
 from boba.stand.names import StandNames
 from boba.stream.pg_to_pg.transfer import PgStreamColumn
-from boba.toolkit.transfer import (
-    BackupAndCreateIfSchemaChanged,
-    ColumnRules,
-    CommandJournal,
-    CreateIfNotExists,
-    DeleteAll,
-    DeleteNothing,
-    DeleteTruncate,
-    DeleteWhere,
-    DropAndCreateIfSchemaChanged,
-    ErrorIfNotExists,
-    ErrorIfSchemaChanged,
-    FailOnUnknown,
-    FallbackAsVarchar,
-    InsertFull,
-    InsertNothing,
-    StreamWire,
-    TransferError,
-    TransferOutbound,
-)
+from boba.toolkit.result import SqlFailureResult
+from boba.toolkit.transfer import CommandJournal, TransferError, TransferOutbound
+from boba.toolrun.dag_run import DagOutcome
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
 
 STAND = PumpStand.required()
 S = StandNames().of("pump_transfer")
-CHUNK = 4096
 ROWS = 60
-SELECT = f"select * from {S}.src"
+
+CREATE = """
+name = "pg_transfer_create"
+version = 1
+
+[[nodes]]
+key = "out"
+tool = "pg_stream_out"
+
+[nodes.args]
+connection = "pg"
+sql = "select * from $s.src"
+wire = "csv"
+columns = [{ name = "id", nullable = false }]
+copy_options = { chunk_bytes = 4096 }
+out = "rows"
+
+[[nodes]]
+key = "in"
+tool = "pg_stream_in"
+
+[nodes.args]
+connection = "pg"
+schema_name = "$s"
+table_name = "t_create"
+schema_strategy = { kind = "create_if_not_exists" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+rules = {}
+unknown_types = { kind = "fail_on_unknown" }
+copy_options = { chunk_bytes = 4096 }
+feed = "rows"
+"""
+"""Источник -> приёмник на одном сервере, id объявлен not null."""
+
+TWICE_CREATE = """
+name = "pg_transfer_twice_create"
+version = 1
+
+[[nodes]]
+key = "out"
+tool = "pg_stream_out"
+
+[nodes.args]
+connection = "pg"
+sql = "select * from $s.src"
+wire = "csv"
+columns = [{ name = "id", nullable = false }]
+copy_options = { chunk_bytes = 4096 }
+out = "rows"
+
+[[nodes]]
+key = "in"
+tool = "pg_stream_in"
+
+[nodes.args]
+connection = "pg"
+schema_name = "$s"
+table_name = "t_twice"
+schema_strategy = { kind = "create_if_not_exists" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+rules = {}
+unknown_types = { kind = "fail_on_unknown" }
+copy_options = { chunk_bytes = 4096 }
+feed = "rows"
+"""
+
+TWICE_RELOAD = """
+name = "pg_transfer_twice_reload"
+version = 1
+
+[[nodes]]
+key = "out"
+tool = "pg_stream_out"
+
+[nodes.args]
+connection = "pg"
+sql = "select * from $s.src"
+wire = "csv"
+columns = [{ name = "id", nullable = false }]
+copy_options = { chunk_bytes = 4096 }
+out = "rows"
+
+[[nodes]]
+key = "in"
+tool = "pg_stream_in"
+
+[nodes.args]
+connection = "pg"
+schema_name = "$s"
+table_name = "t_twice"
+schema_strategy = { kind = "error_if_schema_changed" }
+delete_strategy = { kind = "truncate" }
+insert_strategy = { kind = "full" }
+rules = {}
+unknown_types = { kind = "fail_on_unknown" }
+copy_options = { chunk_bytes = 4096 }
+feed = "rows"
+"""
+
+ABSENT = """
+name = "pg_transfer_absent"
+version = 1
+
+[[nodes]]
+key = "out"
+tool = "pg_stream_out"
+
+[nodes.args]
+connection = "pg"
+sql = "select * from $s.src"
+wire = "csv"
+columns = [{ name = "id", nullable = false }]
+copy_options = { chunk_bytes = 4096 }
+out = "rows"
+
+[[nodes]]
+key = "in"
+tool = "pg_stream_in"
+
+[nodes.args]
+connection = "pg"
+schema_name = "$s"
+table_name = "t_absent"
+schema_strategy = { kind = "error_if_not_exists" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+rules = {}
+unknown_types = { kind = "fail_on_unknown" }
+copy_options = { chunk_bytes = 4096 }
+feed = "rows"
+"""
+
+NARROW_REFUSED = """
+name = "pg_transfer_narrow_refused"
+version = 1
+
+[[nodes]]
+key = "out"
+tool = "pg_stream_out"
+
+[nodes.args]
+connection = "pg"
+sql = "select * from $s.src"
+wire = "csv"
+columns = [{ name = "id", nullable = false }]
+copy_options = { chunk_bytes = 4096 }
+out = "rows"
+
+[[nodes]]
+key = "in"
+tool = "pg_stream_in"
+
+[nodes.args]
+connection = "pg"
+schema_name = "$s"
+table_name = "t_narrow"
+schema_strategy = { kind = "error_if_schema_changed" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+rules = {}
+unknown_types = { kind = "fail_on_unknown" }
+copy_options = { chunk_bytes = 4096 }
+feed = "rows"
+"""
+
+NARROW_RECREATED = """
+name = "pg_transfer_narrow_recreated"
+version = 1
+
+[[nodes]]
+key = "out"
+tool = "pg_stream_out"
+
+[nodes.args]
+connection = "pg"
+sql = "select * from $s.src"
+wire = "csv"
+columns = [{ name = "id", nullable = false }]
+copy_options = { chunk_bytes = 4096 }
+out = "rows"
+
+[[nodes]]
+key = "in"
+tool = "pg_stream_in"
+
+[nodes.args]
+connection = "pg"
+schema_name = "$s"
+table_name = "t_narrow"
+schema_strategy = { kind = "drop_and_create_if_schema_changed" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+rules = {}
+unknown_types = { kind = "fail_on_unknown" }
+copy_options = { chunk_bytes = 4096 }
+feed = "rows"
+"""
+
+BACKUP = """
+name = "pg_transfer_backup"
+version = 1
+
+[[nodes]]
+key = "out"
+tool = "pg_stream_out"
+
+[nodes.args]
+connection = "pg"
+sql = "select * from $s.src"
+wire = "csv"
+columns = [{ name = "id", nullable = false }]
+copy_options = { chunk_bytes = 4096 }
+out = "rows"
+
+[[nodes]]
+key = "in"
+tool = "pg_stream_in"
+
+[nodes.args]
+connection = "pg"
+schema_name = "$s"
+table_name = "t_bak"
+schema_strategy = { kind = "backup_and_create_if_schema_changed" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+rules = {}
+unknown_types = { kind = "fail_on_unknown" }
+copy_options = { chunk_bytes = 4096 }
+feed = "rows"
+"""
+
+DELETE_CREATE = """
+name = "pg_transfer_delete_create"
+version = 1
+
+[[nodes]]
+key = "out"
+tool = "pg_stream_out"
+
+[nodes.args]
+connection = "pg"
+sql = "select * from $s.src"
+wire = "csv"
+columns = [{ name = "id", nullable = false }]
+copy_options = { chunk_bytes = 4096 }
+out = "rows"
+
+[[nodes]]
+key = "in"
+tool = "pg_stream_in"
+
+[nodes.args]
+connection = "pg"
+schema_name = "$s"
+table_name = "t_del"
+schema_strategy = { kind = "create_if_not_exists" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+rules = {}
+unknown_types = { kind = "fail_on_unknown" }
+copy_options = { chunk_bytes = 4096 }
+feed = "rows"
+"""
+
+DELETE_WHERE_INSERT_NOTHING = """
+name = "pg_transfer_delete_where_insert_nothing"
+version = 1
+
+[[nodes]]
+key = "out"
+tool = "pg_stream_out"
+
+[nodes.args]
+connection = "pg"
+sql = "select * from $s.src"
+wire = "csv"
+columns = [{ name = "id", nullable = false }]
+copy_options = { chunk_bytes = 4096 }
+out = "rows"
+
+[[nodes]]
+key = "in"
+tool = "pg_stream_in"
+
+[nodes.args]
+connection = "pg"
+schema_name = "$s"
+table_name = "t_del"
+schema_strategy = { kind = "error_if_schema_changed" }
+delete_strategy = { kind = "delete_where", where = "id <= 20" }
+insert_strategy = { kind = "nothing" }
+rules = {}
+unknown_types = { kind = "fail_on_unknown" }
+copy_options = { chunk_bytes = 4096 }
+feed = "rows"
+"""
+
+DELETE_ALL = """
+name = "pg_transfer_delete_all"
+version = 1
+
+[[nodes]]
+key = "out"
+tool = "pg_stream_out"
+
+[nodes.args]
+connection = "pg"
+sql = "select * from $s.src"
+wire = "csv"
+columns = [{ name = "id", nullable = false }]
+copy_options = { chunk_bytes = 4096 }
+out = "rows"
+
+[[nodes]]
+key = "in"
+tool = "pg_stream_in"
+
+[nodes.args]
+connection = "pg"
+schema_name = "$s"
+table_name = "t_del"
+schema_strategy = { kind = "error_if_schema_changed" }
+delete_strategy = { kind = "delete_all" }
+insert_strategy = { kind = "full" }
+rules = {}
+unknown_types = { kind = "fail_on_unknown" }
+copy_options = { chunk_bytes = 4096 }
+feed = "rows"
+"""
+
+RULES = """
+name = "pg_transfer_rules"
+version = 1
+
+[[nodes]]
+key = "out"
+tool = "pg_stream_out"
+
+[nodes.args]
+connection = "pg"
+sql = "select * from $s.src"
+wire = "csv"
+columns = [{ name = "id", nullable = false }]
+copy_options = { chunk_bytes = 4096 }
+out = "rows"
+
+[[nodes]]
+key = "in"
+tool = "pg_stream_in"
+
+[nodes.args]
+connection = "pg"
+schema_name = "$s"
+table_name = "t_rules"
+schema_strategy = { kind = "create_if_not_exists" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+rules = { rename_columns = { title = "name" }, column_types = { amount = "numeric(20,6)" } }
+unknown_types = { kind = "fail_on_unknown" }
+copy_options = { chunk_bytes = 4096 }
+feed = "rows"
+"""
+
+DECLARED_TARGET_TYPE = """
+name = "pg_transfer_declared_target_type"
+version = 1
+
+[[nodes]]
+key = "out"
+tool = "pg_stream_out"
+
+[nodes.args]
+connection = "pg"
+sql = "select id, amount as v, 1 as extra from $s.src"
+wire = "csv"
+columns = [{ name = "id", nullable = false }]
+copy_options = { chunk_bytes = 4096 }
+out = "rows"
+
+[[nodes]]
+key = "in"
+tool = "pg_stream_in"
+
+[nodes.args]
+connection = "pg"
+schema_name = "$s"
+table_name = "t_dec"
+schema_strategy = { kind = "error_if_schema_changed" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+rules = { column_types = { v = "numeric(20,6)" } }
+unknown_types = { kind = "fail_on_unknown" }
+copy_options = { chunk_bytes = 4096 }
+feed = "rows"
+"""
+
+UNKNOWN_DECLARED_TYPE = """
+name = "pg_transfer_unknown_declared_type"
+version = 1
+
+[[nodes]]
+key = "out"
+tool = "pg_stream_out"
+
+[nodes.args]
+connection = "pg"
+sql = "select * from $s.src"
+wire = "csv"
+columns = [{ name = "id", nullable = false }]
+copy_options = { chunk_bytes = 4096 }
+out = "rows"
+
+[[nodes]]
+key = "in"
+tool = "pg_stream_in"
+
+[nodes.args]
+connection = "pg"
+schema_name = "$s"
+table_name = "t_bad"
+schema_strategy = { kind = "create_if_not_exists" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+rules = { column_types = { note = "no_such" } }
+unknown_types = { kind = "fail_on_unknown" }
+copy_options = { chunk_bytes = 4096 }
+feed = "rows"
+"""
+
+RENAME_MISSING = """
+name = "pg_transfer_rename_missing"
+version = 1
+
+[[nodes]]
+key = "out"
+tool = "pg_stream_out"
+
+[nodes.args]
+connection = "pg"
+sql = "select * from $s.src"
+wire = "csv"
+columns = [{ name = "id", nullable = false }]
+copy_options = { chunk_bytes = 4096 }
+out = "rows"
+
+[[nodes]]
+key = "in"
+tool = "pg_stream_in"
+
+[nodes.args]
+connection = "pg"
+schema_name = "$s"
+table_name = "t_miss"
+schema_strategy = { kind = "create_if_not_exists" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+rules = { rename_columns = { x = "nope" } }
+unknown_types = { kind = "fail_on_unknown" }
+copy_options = { chunk_bytes = 4096 }
+feed = "rows"
+"""
+
+COLUMN_TYPES_MISSING = """
+name = "pg_transfer_column_types_missing"
+version = 1
+
+[[nodes]]
+key = "out"
+tool = "pg_stream_out"
+
+[nodes.args]
+connection = "pg"
+sql = "select * from $s.src"
+wire = "csv"
+columns = [{ name = "id", nullable = false }]
+copy_options = { chunk_bytes = 4096 }
+out = "rows"
+
+[[nodes]]
+key = "in"
+tool = "pg_stream_in"
+
+[nodes.args]
+connection = "pg"
+schema_name = "$s"
+table_name = "t_miss2"
+schema_strategy = { kind = "create_if_not_exists" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+rules = { column_types = { x = "int" } }
+unknown_types = { kind = "fail_on_unknown" }
+copy_options = { chunk_bytes = 4096 }
+feed = "rows"
+"""
+
+DECLARATION_MISSING = """
+name = "pg_transfer_declaration_missing"
+version = 1
+
+[[nodes]]
+key = "out"
+tool = "pg_stream_out"
+
+[nodes.args]
+connection = "pg"
+sql = "select * from $s.src"
+wire = "csv"
+columns = [{ name = "id", nullable = false }, { name = "nope", nullable = false }]
+copy_options = { chunk_bytes = 4096 }
+out = "rows"
+
+[[nodes]]
+key = "in"
+tool = "pg_stream_in"
+
+[nodes.args]
+connection = "pg"
+schema_name = "$s"
+table_name = "t_miss3"
+schema_strategy = { kind = "create_if_not_exists" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+rules = {}
+unknown_types = { kind = "fail_on_unknown" }
+copy_options = { chunk_bytes = 4096 }
+feed = "rows"
+"""
+
+ENUM_REFUSED = """
+name = "pg_transfer_enum_refused"
+version = 1
+
+[[nodes]]
+key = "out"
+tool = "pg_stream_out"
+
+[nodes.args]
+connection = "pg"
+sql = "select * from $s.s_en"
+wire = "csv"
+columns = [{ name = "id", nullable = false }]
+copy_options = { chunk_bytes = 4096 }
+out = "rows"
+
+[[nodes]]
+key = "in"
+tool = "pg_stream_in"
+
+[nodes.args]
+connection = "pg"
+schema_name = "$s"
+table_name = "t_en"
+schema_strategy = { kind = "create_if_not_exists" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+rules = {}
+unknown_types = { kind = "fail_on_unknown" }
+copy_options = { chunk_bytes = 4096 }
+feed = "rows"
+"""
+
+ENUM_AS_VARCHAR = """
+name = "pg_transfer_enum_as_varchar"
+version = 1
+
+[[nodes]]
+key = "out"
+tool = "pg_stream_out"
+
+[nodes.args]
+connection = "pg"
+sql = "select * from $s.s_en2"
+wire = "csv"
+columns = [{ name = "id", nullable = false }]
+copy_options = { chunk_bytes = 4096 }
+out = "rows"
+
+[[nodes]]
+key = "in"
+tool = "pg_stream_in"
+
+[nodes.args]
+connection = "pg"
+schema_name = "$s"
+table_name = "t_en_var"
+schema_strategy = { kind = "create_if_not_exists" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+rules = {}
+unknown_types = { kind = "fallback_as_varchar" }
+copy_options = { chunk_bytes = 4096 }
+feed = "rows"
+"""
+
+ENUM_BY_COLUMN_TYPES = """
+name = "pg_transfer_enum_by_column_types"
+version = 1
+
+[[nodes]]
+key = "out"
+tool = "pg_stream_out"
+
+[nodes.args]
+connection = "pg"
+sql = "select * from $s.s_en2"
+wire = "csv"
+columns = [{ name = "id", nullable = false }]
+copy_options = { chunk_bytes = 4096 }
+out = "rows"
+
+[[nodes]]
+key = "in"
+tool = "pg_stream_in"
+
+[nodes.args]
+connection = "pg"
+schema_name = "$s"
+table_name = "t_en_typed"
+schema_strategy = { kind = "create_if_not_exists" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+rules = { column_types = { v = "$s.mood" } }
+unknown_types = { kind = "fail_on_unknown" }
+copy_options = { chunk_bytes = 4096 }
+feed = "rows"
+"""
+
+ENUM_BY_TYPE_TEXT = """
+name = "pg_transfer_enum_by_type_text"
+version = 1
+
+[[nodes]]
+key = "out"
+tool = "pg_stream_out"
+
+[nodes.args]
+connection = "pg"
+sql = "select * from $s.s_en2"
+wire = "csv"
+columns = [{ name = "id", nullable = false }, { name = "v", type_text = "$s.mood" }]
+copy_options = { chunk_bytes = 4096 }
+out = "rows"
+
+[[nodes]]
+key = "in"
+tool = "pg_stream_in"
+
+[nodes.args]
+connection = "pg"
+schema_name = "$s"
+table_name = "t_en_named"
+schema_strategy = { kind = "create_if_not_exists" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+rules = {}
+unknown_types = { kind = "fail_on_unknown" }
+copy_options = { chunk_bytes = 4096 }
+feed = "rows"
+"""
+
+ENUM_UNNAMED = """
+name = "pg_transfer_enum_unnamed"
+version = 1
+
+[[nodes]]
+key = "out"
+tool = "pg_stream_out"
+
+[nodes.args]
+connection = "pg"
+sql = "select * from $s.s_en3"
+wire = "csv"
+columns = [{ name = "id", nullable = false }]
+copy_options = { chunk_bytes = 4096 }
+out = "rows"
+
+[[nodes]]
+key = "in"
+tool = "pg_stream_in"
+
+[nodes.args]
+connection = "pg"
+schema_name = "$s"
+table_name = "t_en3"
+schema_strategy = { kind = "error_if_schema_changed" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+rules = {}
+unknown_types = { kind = "fail_on_unknown" }
+copy_options = { chunk_bytes = 4096 }
+feed = "rows"
+"""
+
+ENUM_NAMED_SAME = """
+name = "pg_transfer_enum_named_same"
+version = 1
+
+[[nodes]]
+key = "out"
+tool = "pg_stream_out"
+
+[nodes.args]
+connection = "pg"
+sql = "select * from $s.s_en4"
+wire = "csv"
+columns = [{ name = "id", nullable = false }, { name = "v", type_text = "$s.mood" }]
+copy_options = { chunk_bytes = 4096 }
+out = "rows"
+
+[[nodes]]
+key = "in"
+tool = "pg_stream_in"
+
+[nodes.args]
+connection = "pg"
+schema_name = "$s"
+table_name = "t_en4"
+schema_strategy = { kind = "error_if_schema_changed" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+rules = {}
+unknown_types = { kind = "fail_on_unknown" }
+copy_options = { chunk_bytes = 4096 }
+feed = "rows"
+"""
+
+ENUM_NAMED_OTHER = """
+name = "pg_transfer_enum_named_other"
+version = 1
+
+[[nodes]]
+key = "out"
+tool = "pg_stream_out"
+
+[nodes.args]
+connection = "pg"
+sql = "select * from $s.s_en4"
+wire = "csv"
+columns = [{ name = "id", nullable = false }, { name = "v", type_text = "$s.mood" }]
+copy_options = { chunk_bytes = 4096 }
+out = "rows"
+
+[[nodes]]
+key = "in"
+tool = "pg_stream_in"
+
+[nodes.args]
+connection = "pg"
+schema_name = "$s"
+table_name = "t_en4_other"
+schema_strategy = { kind = "error_if_schema_changed" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+rules = {}
+unknown_types = { kind = "fail_on_unknown" }
+copy_options = { chunk_bytes = 4096 }
+feed = "rows"
+"""
+
+EXACT_MISMATCH = """
+name = "pg_transfer_exact_mismatch"
+version = 1
+
+[[nodes]]
+key = "out"
+tool = "pg_stream_out"
+
+[nodes.args]
+connection = "pg"
+sql = "select * from $s.s_exact"
+wire = "csv"
+columns = [{ name = "id", nullable = false }]
+copy_options = { chunk_bytes = 4096 }
+out = "rows"
+
+[[nodes]]
+key = "in"
+tool = "pg_stream_in"
+
+[nodes.args]
+connection = "pg"
+schema_name = "$s"
+table_name = "t_exact"
+schema_strategy = { kind = "error_if_schema_changed" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+rules = {}
+unknown_types = { kind = "fail_on_unknown" }
+copy_options = { chunk_bytes = 4096 }
+feed = "rows"
+"""
+"""Пара таблиц одна на все случаи матрицы: тест пересоздаёт обе."""
+
+EXACT_WIDER = """
+name = "pg_transfer_exact_wider"
+version = 1
+
+[[nodes]]
+key = "out"
+tool = "pg_stream_out"
+
+[nodes.args]
+connection = "pg"
+sql = "select * from $s.s_wider"
+wire = "csv"
+columns = [{ name = "id", nullable = false }]
+copy_options = { chunk_bytes = 4096 }
+out = "rows"
+
+[[nodes]]
+key = "in"
+tool = "pg_stream_in"
+
+[nodes.args]
+connection = "pg"
+schema_name = "$s"
+table_name = "t_wider"
+schema_strategy = { kind = "error_if_schema_changed" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+rules = {}
+unknown_types = { kind = "fail_on_unknown" }
+copy_options = { chunk_bytes = 4096 }
+feed = "rows"
+"""
+
+ALL_BUILTIN_TYPES = """
+name = "pg_transfer_all_builtin_types"
+version = 1
+
+[[nodes]]
+key = "out"
+tool = "pg_stream_out"
+
+[nodes.args]
+connection = "pg"
+sql = "select * from $s.s_all"
+wire = "csv"
+columns = [{ name = "id", nullable = false }]
+copy_options = { chunk_bytes = 4096 }
+out = "rows"
+
+[[nodes]]
+key = "in"
+tool = "pg_stream_in"
+
+[nodes.args]
+connection = "pg"
+schema_name = "$s"
+table_name = "t_all"
+schema_strategy = { kind = "create_if_not_exists" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+rules = {}
+unknown_types = { kind = "fail_on_unknown" }
+copy_options = { chunk_bytes = 4096 }
+feed = "rows"
+"""
+
+OLDER_TARGET = """
+name = "pg_transfer_older_target"
+version = 1
+
+[[nodes]]
+key = "out"
+tool = "pg_stream_out"
+
+[nodes.args]
+connection = "pg"
+sql = "select * from $s.s_old"
+wire = "csv"
+columns = []
+copy_options = { chunk_bytes = 4096 }
+out = "rows"
+
+[[nodes]]
+key = "in"
+tool = "pg_stream_in"
+
+[nodes.args]
+connection = "pg_older"
+schema_name = "$s"
+table_name = "t_old"
+schema_strategy = { kind = "create_if_not_exists" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+rules = {}
+unknown_types = { kind = "fail_on_unknown" }
+copy_options = { chunk_bytes = 4096 }
+feed = "rows"
+"""
+
+TEMPLATE_WITH_OPTIONS = """
+name = "pg_transfer_template_with_options"
+version = 1
+
+[[nodes]]
+key = "out"
+tool = "pg_stream_out"
+
+[nodes.args]
+connection = "pg"
+sql = "select * from $s.src"
+wire = "csv"
+columns = [{ name = "id", nullable = false }]
+copy_options = { chunk_bytes = 4096 }
+out = "rows"
+
+[[nodes]]
+key = "in"
+tool = "pg_stream_in"
+
+[nodes.args]
+connection = "pg"
+schema_name = "$s"
+table_name = "t_tpl_with"
+schema_strategy = { kind = "create_if_not_exists" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+rules = {}
+unknown_types = { kind = "fail_on_unknown" }
+create_table = "create table {schema_name}.{table_name} ({columns}) with (fillfactor = 70)"
+copy_options = { chunk_bytes = 4096 }
+feed = "rows"
+"""
+
+TEMPLATE_DISTRIBUTED = """
+name = "pg_transfer_template_distributed"
+version = 1
+
+[[nodes]]
+key = "out"
+tool = "pg_stream_out"
+
+[nodes.args]
+connection = "pg"
+sql = "select * from $s.src"
+wire = "csv"
+columns = [{ name = "id", nullable = false }]
+copy_options = { chunk_bytes = 4096 }
+out = "rows"
+
+[[nodes]]
+key = "in"
+tool = "pg_stream_in"
+
+[nodes.args]
+connection = "pg"
+schema_name = "$s"
+table_name = "t_tpl_dist"
+schema_strategy = { kind = "create_if_not_exists" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+rules = {}
+unknown_types = { kind = "fail_on_unknown" }
+create_table = "create table {schema_name}.{table_name} ({columns}) distributed by (id)"
+copy_options = { chunk_bytes = 4096 }
+feed = "rows"
+"""
+
+TEMPLATE_ESCAPED_BRACES = """
+name = "pg_transfer_template_escaped_braces"
+version = 1
+
+[[nodes]]
+key = "out"
+tool = "pg_stream_out"
+
+[nodes.args]
+connection = "pg"
+sql = "select * from $s.src"
+wire = "csv"
+columns = [{ name = "id", nullable = false }]
+copy_options = { chunk_bytes = 4096 }
+out = "rows"
+
+[[nodes]]
+key = "in"
+tool = "pg_stream_in"
+
+[nodes.args]
+connection = "pg"
+schema_name = "$s"
+table_name = "t_tpl_esc"
+schema_strategy = { kind = "create_if_not_exists" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+rules = {}
+unknown_types = { kind = "fail_on_unknown" }
+create_table = "create table {schema_name}.{table_name} ({columns}) -- {{not a variable}}"
+copy_options = { chunk_bytes = 4096 }
+feed = "rows"
+"""
+
+TEMPLATE_UNKNOWN_TABLESPACE = """
+name = "pg_transfer_template_unknown_tablespace"
+version = 1
+
+[[nodes]]
+key = "out"
+tool = "pg_stream_out"
+
+[nodes.args]
+connection = "pg"
+sql = "select * from $s.src"
+wire = "csv"
+columns = [{ name = "id", nullable = false }]
+copy_options = { chunk_bytes = 4096 }
+out = "rows"
+
+[[nodes]]
+key = "in"
+tool = "pg_stream_in"
+
+[nodes.args]
+connection = "pg"
+schema_name = "$s"
+table_name = "t_tpl_unknown"
+schema_strategy = { kind = "create_if_not_exists" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+rules = {}
+unknown_types = { kind = "fail_on_unknown" }
+create_table = "create table {schema_name}.{table_name} ({columns}) tablespace {tablespace}"
+copy_options = { chunk_bytes = 4096 }
+feed = "rows"
+"""
+
+TEMPLATE_UNKNOWN_OWNER = """
+name = "pg_transfer_template_unknown_owner"
+version = 1
+
+[[nodes]]
+key = "out"
+tool = "pg_stream_out"
+
+[nodes.args]
+connection = "pg"
+sql = "select * from $s.src"
+wire = "csv"
+columns = [{ name = "id", nullable = false }]
+copy_options = { chunk_bytes = 4096 }
+out = "rows"
+
+[[nodes]]
+key = "in"
+tool = "pg_stream_in"
+
+[nodes.args]
+connection = "pg"
+schema_name = "$s"
+table_name = "t_tpl_unknown"
+schema_strategy = { kind = "create_if_not_exists" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+rules = {}
+unknown_types = { kind = "fail_on_unknown" }
+create_table = "create table {schema_name}.{table_name} ({columns}) tablespace {owner}"
+copy_options = { chunk_bytes = 4096 }
+feed = "rows"
+"""
+
+TEMPLATE_BAD_OPTION = """
+name = "pg_transfer_template_bad_option"
+version = 1
+
+[[nodes]]
+key = "out"
+tool = "pg_stream_out"
+
+[nodes.args]
+connection = "pg"
+sql = "select * from $s.src"
+wire = "csv"
+columns = [{ name = "id", nullable = false }]
+copy_options = { chunk_bytes = 4096 }
+out = "rows"
+
+[[nodes]]
+key = "in"
+tool = "pg_stream_in"
+
+[nodes.args]
+connection = "pg"
+schema_name = "$s"
+table_name = "t_tpl_bad"
+schema_strategy = { kind = "create_if_not_exists" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+rules = {}
+unknown_types = { kind = "fail_on_unknown" }
+create_table = "create table {schema_name}.{table_name} ({columns}) with (no_such_option = 1)"
+copy_options = { chunk_bytes = 4096 }
+feed = "rows"
+"""
+
+TSV = """
+name = "pg_transfer_tsv"
+version = 1
+
+[[nodes]]
+key = "out"
+tool = "pg_stream_out"
+
+[nodes.args]
+connection = "pg"
+sql = "select * from $s.s_tsv"
+wire = "tsv"
+columns = [{ name = "id", nullable = false }]
+copy_options = { chunk_bytes = 4096 }
+out = "rows"
+
+[[nodes]]
+key = "in"
+tool = "pg_stream_in"
+
+[nodes.args]
+connection = "pg"
+schema_name = "$s"
+table_name = "t_tsv"
+schema_strategy = { kind = "create_if_not_exists" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+rules = {}
+unknown_types = { kind = "fail_on_unknown" }
+copy_options = { chunk_bytes = 4096 }
+feed = "rows"
+"""
+
+BINARY = """
+name = "pg_transfer_binary"
+version = 1
+
+[[nodes]]
+key = "out"
+tool = "pg_stream_out"
+
+[nodes.args]
+connection = "pg"
+sql = "select * from $s.src"
+wire = "binary"
+columns = [{ name = "id", nullable = false }]
+copy_options = { chunk_bytes = 4096 }
+out = "rows"
+
+[[nodes]]
+key = "in"
+tool = "pg_stream_in"
+
+[nodes.args]
+connection = "pg"
+schema_name = "$s"
+table_name = "t_bin"
+schema_strategy = { kind = "create_if_not_exists" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+rules = {}
+unknown_types = { kind = "fail_on_unknown" }
+copy_options = { chunk_bytes = 4096 }
+feed = "rows"
+"""
+
+BINARY_ENUM = """
+name = "pg_transfer_binary_enum"
+version = 1
+
+[[nodes]]
+key = "out"
+tool = "pg_stream_out"
+
+[nodes.args]
+connection = "pg"
+sql = "select * from $s.s_bin_en"
+wire = "binary"
+columns = [{ name = "id", nullable = false }]
+copy_options = { chunk_bytes = 4096 }
+out = "rows"
+
+[[nodes]]
+key = "in"
+tool = "pg_stream_in"
+
+[nodes.args]
+connection = "pg"
+schema_name = "$s"
+table_name = "t_bin_en"
+schema_strategy = { kind = "create_if_not_exists" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+rules = {}
+unknown_types = { kind = "fail_on_unknown" }
+copy_options = { chunk_bytes = 4096 }
+feed = "rows"
+"""
+
+BINARY_OTHER_MAJOR = """
+name = "pg_transfer_binary_other_major"
+version = 1
+
+[[nodes]]
+key = "out"
+tool = "pg_stream_out"
+
+[nodes.args]
+connection = "pg"
+sql = "select * from $s.src"
+wire = "binary"
+columns = []
+copy_options = { chunk_bytes = 4096 }
+out = "rows"
+
+[[nodes]]
+key = "in"
+tool = "pg_stream_in"
+
+[nodes.args]
+connection = "pg_older"
+schema_name = "$s"
+table_name = "t_bin_old"
+schema_strategy = { kind = "create_if_not_exists" }
+delete_strategy = { kind = "nothing" }
+insert_strategy = { kind = "full" }
+rules = {}
+unknown_types = { kind = "fail_on_unknown" }
+copy_options = { chunk_bytes = 4096 }
+feed = "rows"
+"""
 
 
 def _newest(sources: Sequence[Any]) -> str:
@@ -120,54 +1333,36 @@ async def postgres(request: Any) -> AsyncIterator[PostgresSide]:
     await side.drop()
 
 
+@pytest.fixture
+def dags(tmp_path: Path, postgres: PostgresSide) -> PumpDags:
+    """Запуск описаний источник -> приёмник на одном сервере."""
+    return PumpDags(tmp_path, {"pg": postgres.profile}, {"s": S})
+
+
 def only_newest(postgres: PostgresSide) -> None:
     if postgres.source.name != NEWEST:
         pytest.skip("one postgres is enough here")
 
 
-async def land(
-    postgres: PostgresSide,
-    table: str,
-    schema: Any = CreateIfNotExists(kind="create_if_not_exists"),
-    delete: Any = DeleteNothing(kind="nothing"),
-    insert: Any = InsertFull(kind="full"),
-    rules: ColumnRules = ColumnRules(),
-    unknown_types: Any = FailOnUnknown(kind="fail_on_unknown"),
-    select: str = SELECT,
-    columns: Sequence[PgColumnDeclaration] = (),
-    wire: StreamWire = StreamWire.CSV,
-    create_table: str = PgTransferTable.CREATE_TABLE,
-) -> str:
-    """Источник -> приёмник на одном сервере, id объявлен not null."""
-    pumps = Pumps(postgres=postgres.profile)
-    declared = [PgColumnDeclaration(name="id", nullable=False), *columns]
-    chained = await pumps.chain(
-        Leg(
-            "pg_stream_out",
-            {
-                "sql": select,
-                "wire": wire,
-                "columns": declared,
-                "copy_options": CopyOptions(chunk_bytes=CHUNK),
-            },
-        ),
-        Leg(
-            "pg_stream_in",
-            {
-                "schema_name": S,
-                "table_name": table,
-                "schema_strategy": schema,
-                "delete_strategy": delete,
-                "insert_strategy": insert,
-                "rules": rules,
-                "unknown_types": unknown_types,
-                "create_table": create_table,
-                "copy_options": CopyOptions(chunk_bytes=CHUNK),
-            },
-        ),
-    )
+def landed(outcome: DagOutcome) -> str:
+    """Отчёт приёмника удавшегося запуска."""
+    report = outcome.node("in").content
+    print(f"\n--- {outcome.dag}: pg_stream_in ---\n{report}")
 
-    return chained.in_report
+    assert outcome.ok(), outcome.node("out").content
+
+    return report
+
+
+def refused(outcome: DagOutcome, key: str, error_kind: str) -> str:
+    """Текст отказа узла key, исходная ошибка которого — класса error_kind."""
+    failure = outcome.failure(key)
+    text = failure.llm_view()
+    print(f"\n--- {outcome.dag}: {key} failed ---\n{text}")
+
+    assert failure.error_kind == error_kind, text
+
+    return text
 
 
 async def fill(postgres: PostgresSide, table: str, kind: str, expr: str) -> None:
@@ -191,35 +1386,32 @@ async def existing(postgres: PostgresSide, table: str, kind: str) -> None:
 
 
 class TestSchemaStrategies:
-    async def test_create_keeps_the_source_types(self, postgres: PostgresSide) -> None:
-        report = await land(postgres, "t_create")
-        landed = Loaded(postgres, S, "t_create")
+    async def test_create_keeps_the_source_types(
+        self, dags: PumpDags, postgres: PostgresSide
+    ) -> None:
+        report = landed(await dags.run(CREATE))
+        landed_table = Loaded(postgres, S, "t_create")
 
         source_types = [
             column[:2] for column in await Loaded(postgres, S, "src").columns()
         ]
-        landed_columns = await landed.columns()
+        landed_columns = await landed_table.columns()
 
         assert f"{ROWS} rows loaded into {S}.t_create" in report
         assert "table: created (table is missing)" in report
         assert [column[:2] for column in landed_columns] == source_types
         assert landed_columns[0] == ("id", "bigint", True)
         assert landed_columns[1] == ("name", "character varying(50)", False)
-        assert await landed.count() == ROWS
-        assert await landed.texts("amount") == await Loaded(postgres, S, "src").texts(
-            "amount"
-        )
+        assert await landed_table.count() == ROWS
+        assert await landed_table.texts("amount") == await Loaded(
+            postgres, S, "src"
+        ).texts("amount")
 
     async def test_second_load_keeps_and_reports_the_check(
-        self, postgres: PostgresSide
+        self, dags: PumpDags, postgres: PostgresSide
     ) -> None:
-        await land(postgres, "t_twice")
-        report = await land(
-            postgres,
-            "t_twice",
-            ErrorIfSchemaChanged(kind="error_if_schema_changed"),
-            DeleteTruncate(kind="truncate"),
-        )
+        landed(await dags.run(TWICE_CREATE))
+        report = landed(await dags.run(TWICE_RELOAD))
 
         assert "table: kept as is (schema matches)" in report
         assert '"column": "amount"' in report
@@ -228,15 +1420,14 @@ class TestSchemaStrategies:
         assert await Loaded(postgres, S, "t_twice").count() == ROWS
 
     async def test_error_if_not_exists_refuses_a_missing_table(
-        self, postgres: PostgresSide
+        self, dags: PumpDags
     ) -> None:
-        with pytest.raises(TransferError, match="table is missing"):
-            await land(
-                postgres, "t_absent", ErrorIfNotExists(kind="error_if_not_exists")
-            )
+        outcome = await dags.run(ABSENT)
+
+        assert "table is missing" in refused(outcome, "in", "TransferError")
 
     async def test_narrower_column_is_a_schema_change(
-        self, postgres: PostgresSide
+        self, dags: PumpDags, postgres: PostgresSide
     ) -> None:
         await postgres.execute(
             [
@@ -245,36 +1436,27 @@ class TestSchemaStrategies:
                 "amount numeric(18,4), dt timestamp(3), flag boolean, note text)",
             ]
         )
-        with pytest.raises(TransferError, match="is shorter than stream"):
-            await land(
-                postgres,
-                "t_narrow",
-                ErrorIfSchemaChanged(kind="error_if_schema_changed"),
-            )
+        outcome = await dags.run(NARROW_REFUSED)
 
-        report = await land(
-            postgres,
-            "t_narrow",
-            DropAndCreateIfSchemaChanged(kind="drop_and_create_if_schema_changed"),
-        )
+        assert "is shorter than stream" in refused(outcome, "in", "TransferError")
+
+        report = landed(await dags.run(NARROW_RECREATED))
 
         assert "table: dropped and recreated" in report
         assert ("name", "character varying(50)", False) in await Loaded(
             postgres, S, "t_narrow"
         ).columns()
 
-    async def test_backup_renames_the_old_table(self, postgres: PostgresSide) -> None:
+    async def test_backup_renames_the_old_table(
+        self, dags: PumpDags, postgres: PostgresSide
+    ) -> None:
         await postgres.execute(
             [
                 f"drop table if exists {S}.t_bak",
                 f"create table {S}.t_bak (id bigint not null, extra int)",
             ]
         )
-        report = await land(
-            postgres,
-            "t_bak",
-            BackupAndCreateIfSchemaChanged(kind="backup_and_create_if_schema_changed"),
-        )
+        report = landed(await dags.run(BACKUP))
         tables = await Loaded(postgres, S, "t_bak").tables()
 
         assert "table: recreated (" in report
@@ -285,29 +1467,18 @@ class TestSchemaStrategies:
 
 class TestDeleteAndInsert:
     async def test_delete_all_and_where_and_insert_nothing(
-        self, postgres: PostgresSide
+        self, dags: PumpDags, postgres: PostgresSide
     ) -> None:
         part = ROWS // 3
-        await land(postgres, "t_del")
-        report = await land(
-            postgres,
-            "t_del",
-            ErrorIfSchemaChanged(kind="error_if_schema_changed"),
-            DeleteWhere(kind="delete_where", where=f"id <= {part}"),
-            InsertNothing(kind="nothing"),
-        )
+        landed(await dags.run(DELETE_CREATE))
+        report = landed(await dags.run(DELETE_WHERE_INSERT_NOTHING))
 
         assert f"{part} rows deleted" in report
         assert "statement: delete from" in report
         assert "0 rows loaded" in report
         assert await Loaded(postgres, S, "t_del").count() == ROWS - part
 
-        report = await land(
-            postgres,
-            "t_del",
-            ErrorIfSchemaChanged(kind="error_if_schema_changed"),
-            DeleteAll(kind="delete_all"),
-        )
+        report = landed(await dags.run(DELETE_ALL))
 
         assert f"{ROWS - part} rows deleted" in report
         assert "statement: delete from" in report
@@ -316,12 +1487,9 @@ class TestDeleteAndInsert:
 
 class TestRulesAndDeclarations:
     async def test_rename_and_column_types_shape_the_ddl(
-        self, postgres: PostgresSide
+        self, dags: PumpDags, postgres: PostgresSide
     ) -> None:
-        rules = ColumnRules(
-            rename_columns={"title": "name"}, column_types={"amount": "numeric(20,6)"}
-        )
-        await land(postgres, "t_rules", rules=rules)
+        landed(await dags.run(RULES))
         columns = await Loaded(postgres, S, "t_rules").columns()
 
         assert ("title", "character varying(50)", False) in columns
@@ -331,49 +1499,42 @@ class TestRulesAndDeclarations:
         )
 
     async def test_declared_target_type_takes_part_in_the_check(
-        self, postgres: PostgresSide
+        self, dags: PumpDags, postgres: PostgresSide
     ) -> None:
         await existing(postgres, "t_dec", "numeric(18,4)")
         await postgres.execute([f"alter table {S}.t_dec add column extra int"])
-        with pytest.raises(TransferError, match="truncates the scale of stream"):
-            await land(
-                postgres,
-                "t_dec",
-                ErrorIfSchemaChanged(kind="error_if_schema_changed"),
-                rules=ColumnRules(column_types={"v": "numeric(20,6)"}),
-                select=f"select id, amount as v, 1 as extra from {S}.src",
-            )
+        outcome = await dags.run(DECLARED_TARGET_TYPE)
+
+        assert "truncates the scale of stream" in refused(
+            outcome, "in", "TransferError"
+        )
 
     async def test_unknown_declared_type_is_refused_before_ddl(
-        self, postgres: PostgresSide
+        self, dags: PumpDags
     ) -> None:
-        with pytest.raises(TransferError, match="does not accept the declared types"):
-            await land(
-                postgres, "t_bad", rules=ColumnRules(column_types={"note": "no_such"})
-            )
+        outcome = await dags.run(UNKNOWN_DECLARED_TYPE)
 
-    async def test_rule_on_a_missing_column_is_refused(
-        self, postgres: PostgresSide
-    ) -> None:
-        with pytest.raises(TransferError, match="has no field 'nope'"):
-            await land(
-                postgres, "t_miss", rules=ColumnRules(rename_columns={"x": "nope"})
-            )
+        assert "does not accept the declared types" in refused(
+            outcome, "in", "TransferError"
+        )
 
-        with pytest.raises(TransferError, match="column_types: neither the stream"):
-            await land(
-                postgres, "t_miss2", rules=ColumnRules(column_types={"x": "int"})
-            )
+    async def test_rule_on_a_missing_column_is_refused(self, dags: PumpDags) -> None:
+        outcome = await dags.run(RENAME_MISSING)
+
+        assert "has no field 'nope'" in refused(outcome, "in", "TransferError")
+
+        outcome = await dags.run(COLUMN_TYPES_MISSING)
+
+        assert "column_types: neither the stream" in refused(
+            outcome, "in", "TransferError"
+        )
 
     async def test_declaration_on_a_missing_column_is_refused(
-        self, postgres: PostgresSide
+        self, dags: PumpDags
     ) -> None:
-        with pytest.raises(TransferError, match="has no column 'nope'"):
-            await land(
-                postgres,
-                "t_miss3",
-                columns=[PgColumnDeclaration(name="nope", nullable=False)],
-            )
+        outcome = await dags.run(DECLARATION_MISSING)
+
+        assert "has no column 'nope'" in refused(outcome, "out", "TransferError")
 
 
 class TestUnknownTypes:
@@ -381,34 +1542,22 @@ class TestUnknownTypes:
     varchar по стратегии, точный тип по column_types или по type_text."""
 
     async def test_enum_without_a_type_is_refused_with_the_oid(
-        self, postgres: PostgresSide
+        self, dags: PumpDags, postgres: PostgresSide
     ) -> None:
         await fill(postgres, "s_en", "mood", "'sad'::mood")
-        with pytest.raises(TransferError, match=r"source type oid \d+; declare"):
-            await land(postgres, "t_en", select=f"select * from {S}.s_en")
+        outcome = await dags.run(ENUM_REFUSED)
+
+        assert re.search(
+            r"source type oid \d+; declare", refused(outcome, "in", "TransferError")
+        )
 
     async def test_enum_lands_as_varchar_or_as_declared(
-        self, postgres: PostgresSide
+        self, dags: PumpDags, postgres: PostgresSide
     ) -> None:
         await fill(postgres, "s_en2", "mood", "'happy'::mood")
-        await land(
-            postgres,
-            "t_en_var",
-            select=f"select * from {S}.s_en2",
-            unknown_types=FallbackAsVarchar(kind="fallback_as_varchar"),
-        )
-        await land(
-            postgres,
-            "t_en_typed",
-            select=f"select * from {S}.s_en2",
-            rules=ColumnRules(column_types={"v": f"{S}.mood"}),
-        )
-        await land(
-            postgres,
-            "t_en_named",
-            select=f"select * from {S}.s_en2",
-            columns=[PgColumnDeclaration(name="v", type_text=f"{S}.mood")],
-        )
+        landed(await dags.run(ENUM_AS_VARCHAR))
+        landed(await dags.run(ENUM_BY_COLUMN_TYPES))
+        landed(await dags.run(ENUM_BY_TYPE_TEXT))
         source = Loaded(postgres, S, "s_en2")
 
         assert (await Loaded(postgres, S, "t_en_var").columns())[1] == (
@@ -423,18 +1572,13 @@ class TestUnknownTypes:
         )
 
     async def test_unnamed_enum_cannot_be_verified_but_loads(
-        self, postgres: PostgresSide
+        self, dags: PumpDags, postgres: PostgresSide
     ) -> None:
         """OID enum источника на приёмнике не значит ничего, даже если это
         тот же сервер: без имени — предупреждение, данные едут текстом."""
         await fill(postgres, "s_en3", "mood", "'sad'::mood")
         await existing(postgres, "t_en3", "mood")
-        report = await land(
-            postgres,
-            "t_en3",
-            ErrorIfSchemaChanged(kind="error_if_schema_changed"),
-            select=f"select * from {S}.s_en3",
-        )
+        report = landed(await dags.run(ENUM_UNNAMED))
 
         assert "type cannot be verified, the source named no type" in report
         assert await Loaded(postgres, S, "t_en3").texts("v") == [
@@ -445,7 +1589,7 @@ class TestUnknownTypes:
         ]
 
     async def test_named_enum_is_compared_by_name_on_the_target(
-        self, postgres: PostgresSide
+        self, dags: PumpDags, postgres: PostgresSide
     ) -> None:
         """Имя типа из контракта приёмник разбирает у себя и сравнивает свой
         OID с каталогом: тот же enum — ok, другой enum с теми же метками —
@@ -453,27 +1597,15 @@ class TestUnknownTypes:
         await fill(postgres, "s_en4", "mood", "'happy'::mood")
         await existing(postgres, "t_en4", "mood")
         await existing(postgres, "t_en4_other", "mood2")
-        named = [PgColumnDeclaration(name="v", type_text=f"{S}.mood")]
-        report = await land(
-            postgres,
-            "t_en4",
-            ErrorIfSchemaChanged(kind="error_if_schema_changed"),
-            select=f"select * from {S}.s_en4",
-            columns=named,
-        )
+        report = landed(await dags.run(ENUM_NAMED_SAME))
 
         assert '"column": "v"' in report
 
-        with pytest.raises(
-            TransferError, match=f"type differs: stream {S}.mood, table"
-        ):
-            await land(
-                postgres,
-                "t_en4_other",
-                ErrorIfSchemaChanged(kind="error_if_schema_changed"),
-                select=f"select * from {S}.s_en4",
-                columns=named,
-            )
+        outcome = await dags.run(ENUM_NAMED_OTHER)
+
+        assert f"type differs: stream {S}.mood, table" in refused(
+            outcome, "in", "TransferError"
+        )
 
 
 class TestExactTypes:
@@ -510,22 +1642,18 @@ class TestExactTypes:
     )
     async def test_mismatch_is_refused(
         self,
+        dags: PumpDags,
         postgres: PostgresSide,
         source_kind: str,
         expr: str,
         target_kind: str,
         expected: str,
     ) -> None:
-        name = source_kind.split("(", maxsplit=1)[0]
-        await fill(postgres, f"s_x_{name}", source_kind, expr)
-        await existing(postgres, f"t_x_{name}", target_kind)
-        with pytest.raises(TransferError, match=expected):
-            await land(
-                postgres,
-                f"t_x_{name}",
-                ErrorIfSchemaChanged(kind="error_if_schema_changed"),
-                select=f"select * from {S}.s_x_{name}",
-            )
+        await fill(postgres, "s_exact", source_kind, expr)
+        await existing(postgres, "t_exact", target_kind)
+        outcome = await dags.run(EXACT_MISMATCH)
+
+        assert expected in refused(outcome, "in", "TransferError")
 
     @pytest.mark.parametrize(
         ("source_kind", "expr", "target_kind", "expected"),
@@ -537,27 +1665,22 @@ class TestExactTypes:
     )
     async def test_wider_target_only_warns(
         self,
+        dags: PumpDags,
         postgres: PostgresSide,
         source_kind: str,
         expr: str,
         target_kind: str,
         expected: str,
     ) -> None:
-        name = source_kind.split("(", maxsplit=1)[0]
-        await fill(postgres, f"s_w_{name}", source_kind, expr)
-        await existing(postgres, f"t_w_{name}", target_kind)
-        report = await land(
-            postgres,
-            f"t_w_{name}",
-            ErrorIfSchemaChanged(kind="error_if_schema_changed"),
-            select=f"select * from {S}.s_w_{name}",
-        )
+        await fill(postgres, "s_wider", source_kind, expr)
+        await existing(postgres, "t_wider", target_kind)
+        report = landed(await dags.run(EXACT_WIDER))
 
         assert '"column": "v"' in report
         assert expected in report
 
     async def test_created_table_keeps_every_builtin_type(
-        self, postgres: PostgresSide
+        self, dags: PumpDags, postgres: PostgresSide
     ) -> None:
         await postgres.execute(
             [
@@ -574,7 +1697,7 @@ class TestExactTypes:
                 "'0/16B3748', 'pg_class', 1.5, '2024-01-01', 1.5, 1e300)",
             ]
         )
-        await land(postgres, "t_all", select=f"select * from {S}.s_all")
+        landed(await dags.run(ALL_BUILTIN_TYPES))
         source = Loaded(postgres, S, "s_all")
         target = Loaded(postgres, S, "t_all")
 
@@ -590,7 +1713,7 @@ class TestOlderTarget:
     с подсказкой от приёмника до загрузки."""
 
     async def test_missing_type_on_the_target_is_a_clear_error(
-        self, postgres: PostgresSide
+        self, tmp_path: Path, postgres: PostgresSide
     ) -> None:
         only_newest(postgres)
         if postgres.version < 140000:
@@ -604,39 +1727,15 @@ class TestOlderTarget:
         await target.connect()
         await target.recreate_schema()
         await fill(postgres, "s_old", "int4multirange", "'{[1,3)}'::int4multirange")
-        pumps = Pumps(postgres=postgres.profile, postgres_target=target.profile)
+        dags = PumpDags(
+            tmp_path, {"pg": postgres.profile, "pg_older": target.profile}, {"s": S}
+        )
         try:
-            with pytest.raises(
-                TransferError,
-                match='no such type: type "int4multirange" does not exist',
-            ):
-                await pumps.chain(
-                    Leg(
-                        "pg_stream_out",
-                        {
-                            "sql": f"select * from {S}.s_old",
-                            "wire": StreamWire.CSV,
-                            "columns": [],
-                            "copy_options": CopyOptions(chunk_bytes=CHUNK),
-                        },
-                    ),
-                    Leg(
-                        "pg_stream_in",
-                        {
-                            "schema_name": S,
-                            "table_name": "t_old",
-                            "schema_strategy": CreateIfNotExists(
-                                kind="create_if_not_exists"
-                            ),
-                            "delete_strategy": DeleteNothing(kind="nothing"),
-                            "insert_strategy": InsertFull(kind="full"),
-                            "rules": ColumnRules(),
-                            "unknown_types": FailOnUnknown(kind="fail_on_unknown"),
-                            "copy_options": CopyOptions(chunk_bytes=CHUNK),
-                        },
-                    ),
-                )
+            outcome = await dags.run(OLDER_TARGET)
 
+            assert 'no such type: type "int4multirange" does not exist' in refused(
+                outcome, "in", "TransferError"
+            )
             assert await Loaded(target, S, "t_old").tables() == []
         finally:
             await target.drop()
@@ -647,96 +1746,75 @@ class TestCreateTemplate:
     подставляет экранированные схему, имя и колонки; шаблон без
     обязательной переменной или с чужой — отказ до любого DDL."""
 
-    WITH_OPTIONS: ClassVar[str] = (
-        "create table {schema_name}.{table_name} ({columns}) with (fillfactor = 70)"
-    )
-    DISTRIBUTED: ClassVar[str] = (
-        "create table {schema_name}.{table_name} ({columns}) distributed by (id)"
-    )
-    ESCAPED: ClassVar[str] = (
-        "create table {schema_name}.{table_name} ({columns}) -- {{not a variable}}"
-    )
-
-    async def test_with_options_reach_reloptions(self, postgres: PostgresSide) -> None:
-        report = await land(postgres, "t_tpl_with", create_table=self.WITH_OPTIONS)
-        landed = Loaded(postgres, S, "t_tpl_with")
+    async def test_with_options_reach_reloptions(
+        self, dags: PumpDags, postgres: PostgresSide
+    ) -> None:
+        report = landed(await dags.run(TEMPLATE_WITH_OPTIONS))
+        landed_table = Loaded(postgres, S, "t_tpl_with")
 
         assert f"{ROWS} rows loaded" in report
-        assert await landed.count() == ROWS
-        options = await landed.aggregate(
+        assert await landed_table.count() == ROWS
+        options = await landed_table.aggregate(
             "(select reloptions::text from pg_class "
             f"where oid = '{S}.t_tpl_with'::regclass)"
         )
         assert options == "{fillfactor=70}"
 
-    async def test_distributed_by_on_greenplum(self, postgres: PostgresSide) -> None:
+    async def test_distributed_by_on_greenplum(
+        self, dags: PumpDags, postgres: PostgresSide
+    ) -> None:
         if not postgres.greenplum:
             pytest.skip("distributed by is Greenplum only")
 
-        report = await land(postgres, "t_tpl_dist", create_table=self.DISTRIBUTED)
-        landed = Loaded(postgres, S, "t_tpl_dist")
+        report = landed(await dags.run(TEMPLATE_DISTRIBUTED))
+        landed_table = Loaded(postgres, S, "t_tpl_dist")
 
         assert f"{ROWS} rows loaded" in report
-        policy = await landed.aggregate(
+        policy = await landed_table.aggregate(
             "(select distkey::text from gp_distribution_policy "
             f"where localoid = '{S}.t_tpl_dist'::regclass)"
         )
         assert policy == "1"
 
-    async def test_escaped_braces_stay_literal(self, postgres: PostgresSide) -> None:
-        report = await land(postgres, "t_tpl_esc", create_table=self.ESCAPED)
+    async def test_escaped_braces_stay_literal(
+        self, dags: PumpDags, postgres: PostgresSide
+    ) -> None:
+        report = landed(await dags.run(TEMPLATE_ESCAPED_BRACES))
 
         assert f"{ROWS} rows loaded" in report
         assert await Loaded(postgres, S, "t_tpl_esc").count() == ROWS
 
     async def test_template_with_an_unknown_variable_is_refused(
-        self, postgres: PostgresSide
+        self, dags: PumpDags, postgres: PostgresSide
     ) -> None:
-        with pytest.raises(TransferError, match="uses \\{tablespace\\}"):
-            await land(
-                postgres,
-                "t_tpl_unknown",
-                create_table=(
-                    "create table {schema_name}.{table_name} ({columns}) "
-                    "tablespace {tablespace}"
-                ),
-            )
+        outcome = await dags.run(TEMPLATE_UNKNOWN_TABLESPACE)
 
+        assert "uses {tablespace}" in refused(outcome, "in", "TransferError")
         assert (
             "t_tpl_no_cols" not in await Loaded(postgres, S, "t_tpl_no_cols").tables()
         )
 
-    async def test_unknown_variable_is_refused(self, postgres: PostgresSide) -> None:
-        with pytest.raises(
-            TransferError,
-            match=r"create_table uses \{owner\}, but the receiver has no such value",
-        ):
-            await land(
-                postgres,
-                "t_tpl_unknown",
-                create_table=(
-                    "create table {schema_name}.{table_name} ({columns}) "
-                    "tablespace {owner}"
-                ),
-            )
+    async def test_unknown_variable_is_refused(self, dags: PumpDags) -> None:
+        outcome = await dags.run(TEMPLATE_UNKNOWN_OWNER)
 
-    async def test_server_error_in_options_is_reported(
-        self, postgres: PostgresSide
-    ) -> None:
-        with pytest.raises(psycopg.Error, match="no_such_option"):
-            await land(
-                postgres,
-                "t_tpl_bad",
-                create_table=(
-                    "create table {schema_name}.{table_name} ({columns}) "
-                    "with (no_such_option = 1)"
-                ),
-            )
+        assert "create_table uses {owner}, but the receiver has no such value" in (
+            refused(outcome, "in", "TransferError")
+        )
+
+    async def test_server_error_in_options_is_reported(self, dags: PumpDags) -> None:
+        """Ошибка сервера на create table: сбой приёмника с упавшей командой
+        журнала последней."""
+        outcome = await dags.run(TEMPLATE_BAD_OPTION)
+
+        failure = outcome.failure("in")
+        assert isinstance(failure, SqlFailureResult), failure
+        assert "no_such_option" in failure.llm_view()
+        assert failure.statements[-1].status.startswith("failed: ")
 
 
 class TestTsvWire:
     async def test_text_layout_lands_the_same_rows(
-        self, postgres: PostgresSide
+        self, dags: PumpDags, postgres: PostgresSide
     ) -> None:
         await fill(
             postgres,
@@ -744,12 +1822,7 @@ class TestTsvWire:
             "text",
             "'tab\\there' || chr(10) || 'back\\\\slash' || g",
         )
-        report = await land(
-            postgres,
-            "t_tsv",
-            select=f"select * from {S}.s_tsv",
-            wire=StreamWire.TSV,
-        )
+        report = landed(await dags.run(TSV))
 
         assert "4 rows loaded" in report
         assert await Loaded(postgres, S, "t_tsv").texts("v") == await Loaded(
@@ -763,9 +1836,9 @@ class TestBinaryWire:
     отказ с подсказкой взять csv."""
 
     async def test_binary_lands_the_same_rows_on_the_same_server(
-        self, postgres: PostgresSide
+        self, dags: PumpDags, postgres: PostgresSide
     ) -> None:
-        report = await land(postgres, "t_bin", wire=StreamWire.BINARY)
+        report = landed(await dags.run(BINARY))
         source = Loaded(postgres, S, "src")
         target = Loaded(postgres, S, "t_bin")
 
@@ -773,17 +1846,19 @@ class TestBinaryWire:
         for column in ("name", "amount", "dt", "flag", "note"):
             assert await target.texts(column) == await source.texts(column)
 
-    async def test_user_type_is_refused_in_binary(self, postgres: PostgresSide) -> None:
+    async def test_user_type_is_refused_in_binary(
+        self, dags: PumpDags, postgres: PostgresSide
+    ) -> None:
         await fill(postgres, "s_bin_en", "mood", "'sad'::mood")
-        with pytest.raises(TransferError, match="outside the built-in registry"):
-            await land(
-                postgres,
-                "t_bin_en",
-                select=f"select * from {S}.s_bin_en",
-                wire=StreamWire.BINARY,
-            )
+        outcome = await dags.run(BINARY_ENUM)
 
-    async def test_other_major_version_is_refused(self, postgres: PostgresSide) -> None:
+        assert "outside the built-in registry" in refused(
+            outcome, "in", "TransferError"
+        )
+
+    async def test_other_major_version_is_refused(
+        self, tmp_path: Path, postgres: PostgresSide
+    ) -> None:
         only_newest(postgres)
         older = _older_than(postgres.version // 10000 * 10000)
         if older is None:
@@ -792,35 +1867,13 @@ class TestBinaryWire:
         target = PostgresSide(older, S)
         await target.connect()
         await target.recreate_schema()
-        pumps = Pumps(postgres=postgres.profile, postgres_target=target.profile)
+        dags = PumpDags(
+            tmp_path, {"pg": postgres.profile, "pg_older": target.profile}, {"s": S}
+        )
         try:
-            with pytest.raises(TransferError, match="major versions differ"):
-                await pumps.chain(
-                    Leg(
-                        "pg_stream_out",
-                        {
-                            "sql": SELECT,
-                            "wire": StreamWire.BINARY,
-                            "columns": [],
-                            "copy_options": CopyOptions(chunk_bytes=CHUNK),
-                        },
-                    ),
-                    Leg(
-                        "pg_stream_in",
-                        {
-                            "schema_name": S,
-                            "table_name": "t_bin_old",
-                            "schema_strategy": CreateIfNotExists(
-                                kind="create_if_not_exists"
-                            ),
-                            "delete_strategy": DeleteNothing(kind="nothing"),
-                            "insert_strategy": InsertFull(kind="full"),
-                            "rules": ColumnRules(),
-                            "unknown_types": FailOnUnknown(kind="fail_on_unknown"),
-                            "copy_options": CopyOptions(chunk_bytes=CHUNK),
-                        },
-                    ),
-                )
+            outcome = await dags.run(BINARY_OTHER_MAJOR)
+
+            assert "major versions differ" in refused(outcome, "in", "TransferError")
         finally:
             await target.drop()
 
@@ -1085,14 +2138,14 @@ class TestTypeRules:
         from psycopg.postgres import types as registry
 
         rules = PgTypeRules(registry)
-        refused = rules.compare(
+        refused_verdict = rules.compare(
             self.stream(self.TEXT, -1), self.table(self.TEXT, -1, True)
         )
         warned = rules.compare(
             self.stream(self.TEXT, -1, nullable=False), self.table(self.TEXT, -1)
         )
 
-        assert refused.level.value == "error"
+        assert refused_verdict.level.value == "error"
         assert warned.level.value == "warning"
 
 

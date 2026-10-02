@@ -1,24 +1,21 @@
-"""Тела насосов трёх баз, вызванные напрямую с профилями стенда: порты в
-памяти или труба ОС между двумя насосами, стейтменты целиком, как их писала
-бы LLM."""
+"""Тела насосов, вызванные напрямую с профилями стенда на портах в памяти:
+проверки самих кадров потока. Пары насосов стенд гоняет описаниями DAG
+(boba.pump_stand.dags)."""
 
 from __future__ import annotations
 
-import asyncio
-import time
-from collections.abc import Awaitable, Callable, Coroutine, Mapping
-from dataclasses import dataclass
+from collections.abc import Awaitable, Callable
 from typing import Any, ClassVar
 
 from boba.db.clickhouse.connection import ClickHouseConfig
 from boba.db.oracle.connection import OracleConfig
 from boba.db.postgres.connection import CopyOptions, PostgresConfig
-from boba.pump_stand.ports import Feed, Pipe, Sink
+from boba.pump_stand.ports import Feed, Sink
 from boba.tool.ch import tools as ch
 from boba.tool.ora import tools as ora
 from boba.tool.pg import tools as pg
 from boba.toolkit.entry import ToolArgv, ToolMain
-from boba.toolkit.ports import PortDirection, StreamGroup, StreamPorts
+from boba.toolkit.ports import StreamGroup
 from boba.toolkit.result import FailureResult
 from boba.toolkit.transfer import (
     CommandsFailedError,
@@ -28,33 +25,16 @@ from boba.toolkit.transfer import (
     StreamWire,
 )
 
-__all__ = ["Chained", "Leg", "Pumps"]
+__all__ = ["Pumps"]
 
 Body = Callable[..., Awaitable[Any]]
-
-
-@dataclass(frozen=True)
-class Leg:
-    """Конец цепочки: имя насоса и его аргументы, кроме соединения и порта."""
-
-    name: str
-    arguments: Mapping[str, Any]
-
-
-@dataclass(frozen=True)
-class Chained:
-    """Итог цепочки двух насосов через трубу: отчёты обоих и время целиком."""
-
-    out_report: str
-    in_report: str
-    seconds: float
 
 
 class Pumps:
     """Насосы postgres, ClickHouse и Oracle над профилями стенда. pg_out
     возвращает тела кадров порта, sync_in принимает кадры из памяти и отдаёт
     текст отчёта; extra — остальные аргументы фасада (before, after,
-    copy_options); chain соединяет два насоса трубой и гонит их одновременно."""
+    copy_options)."""
 
     CHUNK_BYTES: ClassVar[int] = 4096
     """Размер порции насосов с chunk_bytes: нижняя граница фасада."""
@@ -130,71 +110,6 @@ class Pumps:
                 feed=feed,
                 **self._detached_groups("pg_stream_in"),
                 **arguments,
-            ),
-        )
-
-        return report.llm_view()
-
-    async def chain(self, out: Leg, into: Leg) -> Chained:
-        """Выход out и вход into через трубу ОС одновременно."""
-        pipe = Pipe(
-            self._port(out.name, PortDirection.OUTBOUND),
-            self._port(into.name, PortDirection.INBOUND),
-        )
-        started = time.monotonic()
-
-        failures: list[tuple[float, BaseException]] = []
-
-        async def guarded(leg: Coroutine[Any, Any, str]) -> str:
-            # оба конца дожидаются друг друга: сорвавшийся конец рвёт трубу, и
-            # второй должен успеть закрыть свой дескриптор до следующей трубы
-            # теста; наружу идёт та ошибка, что случилась раньше, вторая —
-            # её следствие (обрыв трубы, пустой поток)
-            try:
-                return await leg
-            except BaseException as exc:
-                failures.append((time.monotonic(), exc))
-
-                return ""
-
-        async def produce() -> str:
-            try:
-                return await self._call(out, out=pipe.outbound)
-            finally:
-                pipe.close_write()
-
-        async def consume() -> str:
-            try:
-                return await self._call(into, feed=pipe.inbound)
-            finally:
-                pipe.close_read()
-
-        out_report, in_report = await asyncio.gather(
-            guarded(produce()), guarded(consume())
-        )
-        if failures:
-            failures.sort(key=lambda item: item[0])
-
-            raise failures[0][1]
-
-        return Chained(out_report, in_report, time.monotonic() - started)
-
-    def _port(self, name: str, direction: PortDirection) -> Any:
-        """Класс порта тела в направлении direction: как объявлен в подписи."""
-        for annotation in self._ports[name].values():
-            if StreamPorts.direction_of(annotation) is direction:
-                return annotation
-
-        raise AssertionError(f"{name}: no {direction} port declared")
-
-    async def _call(self, leg: Leg, **port: Any) -> str:
-        report = await self._invoked(
-            leg.name,
-            self._bodies[leg.name](
-                connection=self._required(leg.name),
-                **leg.arguments,
-                **port,
-                **self._detached_groups(leg.name),
             ),
         )
 
