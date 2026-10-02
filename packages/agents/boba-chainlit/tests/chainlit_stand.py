@@ -93,7 +93,7 @@ class Seed:
     """id шага итогового ответа — он же цель для feedback и вложений."""
 
 
-def in_process_llm(monkeypatch: pytest.MonkeyPatch, app: object) -> None:
+def in_process_llm(monkeypatch: pytest.MonkeyPatch, app: Any) -> None:
     """Все httpx-клиенты транспорта проекта ходят в ASGI-приложение fake llm
     прямо в процессе теста: сети нет, SSE идёт через ASGITransport."""
     import httpx

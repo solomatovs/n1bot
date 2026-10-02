@@ -385,6 +385,18 @@ class PayloadClickHouse:
                 release_lease(response)
 
     @staticmethod
+    async def _insert_body(
+        text: str, blocks: AsyncIterable[bytes | bytearray | memoryview]
+    ) -> AsyncIterator[bytes | bytearray | memoryview]:
+        # возвращает первым сам запрос
+        yield text.encode()
+        # потом идет разделитель между запросом и данными
+        yield b"\n"
+        # потом пускаем поток данных
+        async for block in blocks:
+            yield block
+
+    @staticmethod
     async def byte_stream_in(  # noqa: PLR0913
         client: AsyncClient,
         query: str,
@@ -409,30 +421,19 @@ class PayloadClickHouse:
                 f"(%(name)s), got server parameters {listed}: {query[:200]!r}"
             )
 
-        if isinstance(text, bytes):
-            raise ClickHouseQueryError(
-                f"statement with a streamed body must be text: {query[:200]!r}"
-            )
-
-        async def insert_body(
-            text: str, blocks: AsyncIterable[bytes | bytearray | memoryview]
-        ) -> AsyncIterator[bytes | bytearray | memoryview]:
-            # возвращает первым сам запрос
-            yield text.encode()
-            # потом идет разделитель между запросом и данными
-            yield b"\n"
-            # потом пускаем поток данных
-            async for block in blocks:
-                yield block
-
         headers: dict[str, str] = {}
         if transport_settings is not None:
             headers.update(transport_settings)
 
+        if not isinstance(text, str):
+            raise ClickHouseQueryError(
+                f"statement with a streamed body must be string: {query[:200]!r}"
+            )
+
         # аннотация у clickhouse_connect драйвера некорректна
         # он принимает AsyncIterator но не указывает это в аннотациях
         # поэтому приводим к Any типу
-        body: Any = insert_body(text, blocks)
+        body: Any = PayloadClickHouse._insert_body(text, blocks)
         runtime = QueryRuntime(
             database=client.database,
             settings=client._validate_settings(PayloadClickHouse._dict(settings)),
