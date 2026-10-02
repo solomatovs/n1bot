@@ -131,7 +131,7 @@ class ToolProcessWrap:
         kwargs: Mapping[str, object],
     ) -> ToolOutcome:
         """Вызов вне группы: накопительно либо с приёмником кадров."""
-        command = cls._render(address, schema, kwargs, {})
+        command = cls._render(address, schema, kwargs, {}, {})
 
         if sink := FrameTap.get():
             return ObservedCall.of(launcher, command, sink)
@@ -150,8 +150,10 @@ class ToolProcessWrap:
         """Вызов в группе: любой сбой до итога срывает группу, и вызов
         отвечает текстом её срыва."""
         try:
-            command = cls._render(address, schema, kwargs, slot.input_counts())
-            held = command.model_copy(update={"gate": CallGateMode.HELD})
+            command = cls._render(
+                address, schema, kwargs, slot.input_counts(), slot.output_counts()
+            )
+            held = slot.sized(command).model_copy(update={"gate": CallGateMode.HELD})
             return cls._piped_call(launcher, held, slot)
         except BaseException as exc:
             verdict = slot.settle_error(exc)
@@ -166,9 +168,10 @@ class ToolProcessWrap:
         schema: type[BaseModel],
         kwargs: Mapping[str, object],
         input_counts: Mapping[str, int],
+        output_counts: Mapping[str, int],
     ) -> ToolCommand:
         try:
-            return ToolArgv.render(address, schema, kwargs, input_counts)
+            return ToolArgv.render(address, schema, kwargs, input_counts, output_counts)
         except ArgumentTooLargeError as exc:
             failure = ErrorResult(
                 message=f"tool {address.name!r}: {exc}",
@@ -182,16 +185,16 @@ class ToolProcessWrap:
     ) -> ToolOutcome:
         """Вызов группы: каналы отдаются ей дескрипторами, итог — по её решению.
 
-        Вызов с выходом открывается open_tap (канал кадров хост не
+        Вызов с выходами открывается open_tap (выходные каналы хост не
         разбирает), входы забираются у вызова все разом; соединяет их
         раздача группы. Итог вызова уходит в группу, и ответ ждёт, пока
         решит вся группа.
         """
         outputs: tuple[int, ...] = ()
-        if slot.has_downstream:
+        if slot.has_outputs():
             tapped = launcher.open_tap(command)
             call = tapped.call
-            outputs = (tapped.frames_fd,)
+            outputs = tapped.frames_fds
         else:
             call = launcher.open(command)
 

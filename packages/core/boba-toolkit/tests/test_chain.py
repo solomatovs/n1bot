@@ -13,6 +13,7 @@ from boba.toolkit.chain import (
     ChainMismatchError,
     StreamInput,
     StreamNode,
+    StreamOutput,
     StreamPlan,
     StreamPlanError,
 )
@@ -150,8 +151,14 @@ def _node(
     for port, channel in inputs:
         bound.append(StreamInput(port=port, channel=channel))
 
+    outputs: tuple[StreamOutput, ...] = ()
+    if output is not None:
+        declared = spec.outbound()
+        port_name = declared[0].name if declared else "out"
+        outputs = (StreamOutput(port=port_name, channel=output),)
+
     return StreamNode(
-        key=key, tool=f"t_{key}", spec=spec, output=output, inputs=tuple(bound)
+        key=key, tool=f"t_{key}", spec=spec, outputs=outputs, inputs=tuple(bound)
     )
 
 
@@ -216,7 +223,7 @@ class TestStreamPlan:
             )
 
     def test_single_port_takes_one_channel(self) -> None:
-        with pytest.raises(StreamPlanError, match="reads at most one channel, got 2"):
+        with pytest.raises(StreamPlanError, match="takes at most one channel, got 2"):
             StreamPlan(
                 [
                     _node("a", SOURCE, "x"),
@@ -240,7 +247,7 @@ class TestStreamPlan:
 
     def test_output_without_outbound_port_is_refused(self) -> None:
         sink = StreamSpec.of_schema(_ChunkSink)
-        with pytest.raises(StreamPlanError, match="declares no outbound port"):
+        with pytest.raises(StreamPlanError, match="outbound ports are"):
             StreamPlan([_node("s", sink, "x")])
 
     def test_kind_mismatch_names_the_channel(self) -> None:

@@ -31,11 +31,11 @@ import sys
 from collections.abc import Mapping, Sequence
 from enum import IntEnum, StrEnum
 from types import ModuleType
-from typing import Any, ClassVar
+from typing import Any, ClassVar, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from boba.toolkit.entry import EntryFlag, InputWire, ToolLike, ToolMain
+from boba.toolkit.entry import EntryFlag, InputWire, OutputWire, ToolLike, ToolMain
 from boba.toolkit.facade import WarmupHooks
 from boba.toolkit.payload import PayloadLogging
 from boba.toolkit.timing import Elapsed
@@ -161,29 +161,36 @@ class MountFlag(IntEnum):
 
 
 class CallFd(IntEnum):
-    """Порядок дескрипторов в SCM_RIGHTS запроса вызова. За ними — cgroup, если
-    он едет, и входы вызова после первого (CallRequest.inputs): первый вход
-    едет по STDIN."""
+    """Порядок дескрипторов в SCM_RIGHTS запроса вызова. За ними — cgroup,
+    если он едет, затем входы вызова после первого (CallRequest.inputs,
+    первый вход едет по STDIN) и выходы (CallRequest.outputs)."""
 
     STDIN = 0
     STDOUT = 1
     STDERR = 2
     RESULT = 3
-    FRAMES = 4
-    INJECTED = 5
+    INJECTED = 4
     """Канал injected-конфига: хост пишет, тело читает до EOF."""
-    CONTROL = 6
-    GATE = 7
+    CONTROL = 5
+    GATE = 6
     """Готовность барьера группы: тело пишет, хост читает."""
-    VERDICT = 8
+    VERDICT = 7
     """Ответ барьера группы: хост пишет, тело читает."""
-    CGROUP = 9
+    CGROUP = 8
     """Каталог cgroup-leaf'а; едет только когда у вызова есть групповые лимиты."""
 
     @classmethod
     def count(cls) -> int:
         """Обязательные дескрипторы: cgroup среди них нет."""
         return len(cls) - 1
+
+
+class FdsBatch(BaseModel):
+    """Продолжение запроса: очередная пачка дескрипторов его хвоста."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    op: Literal["fds"] = "fds"
 
 
 class ControlMark(StrEnum):
@@ -326,22 +333,26 @@ class CallRequest(BaseModel):
     into_cgroup: bool = False
     """За фиксированными каналами приехал каталог cgroup-leaf'а вызова."""
     inputs: tuple[str, ...] = ()
-    """Входные порты тела по одному на вход: первый вход — STDIN, каждый
-    следующий приезжает своим дескриптором в хвосте SCM_RIGHTS."""
-
-    def extra_inputs(self) -> int:
-        """Сколько входов едет дескрипторами сверх STDIN."""
-        if not self.inputs:
-            return 0
-
-        return len(self.inputs) - 1
+    """Входные порты тела по одному на канал: каждый приезжает своим
+    дескриптором в хвосте SCM_RIGHTS. STDIN порта не несёт."""
+    outputs: tuple[str, ...] = ()
+    """Выходные порты тела по одному на канал: каждый приезжает своим
+    дескриптором в хвосте SCM_RIGHTS, после входов."""
 
     def inputs_at(self) -> int:
-        """Индекс первого дополнительного входа в списке дескрипторов."""
+        """Индекс первого входа в списке дескрипторов."""
         if self.into_cgroup:
             return CallFd.CGROUP + 1
 
         return CallFd.CGROUP
+
+    def outputs_at(self) -> int:
+        """Индекс первого выхода в списке дескрипторов."""
+        return self.inputs_at() + len(self.inputs)
+
+    def expected_fds(self) -> int:
+        """Сколько дескрипторов должно приехать с запросом."""
+        return self.outputs_at() + len(self.outputs)
 
 
 class WaitStatus:
@@ -431,8 +442,8 @@ class ZygoteWire:
 
     MAX_MESSAGE: ClassVar[int] = 262_144
     MAX_FDS: ClassVar[int] = 64
-    """Потолок дескрипторов сообщения: фиксированные каналы вызова, cgroup и
-    входы до ToolCommand.MAX_INPUTS."""
+    """Потолок дескрипторов одного сообщения; длинный хвост каналов вызова
+    едет несколькими сообщениями (send_batched, FdsBatch)."""
 
     @staticmethod
     def send(sock: socket.socket, payload: BaseModel, fds: Sequence[int] = ()) -> None:
@@ -444,6 +455,20 @@ class ZygoteWire:
             ancillary = [(socket.SOL_SOCKET, socket.SCM_RIGHTS, packed.tobytes())]
 
         sock.sendmsg([data], ancillary)
+
+    @classmethod
+    def send_batched(
+        cls, sock: socket.socket, payload: BaseModel, fds: Sequence[int]
+    ) -> None:
+        """Сообщение с любым числом дескрипторов: первая пачка едет с самим
+        сообщением, остальные — продолжениями FdsBatch следом. SEQPACKET
+        хранит границы и порядок, приёмник собирает хвост по счёту из
+        запроса (CallRequest.expected_fds)."""
+        listed = list(fds)
+        cls.send(sock, payload, listed[: cls.MAX_FDS])
+
+        for start in range(cls.MAX_FDS, len(listed), cls.MAX_FDS):
+            cls.send(sock, FdsBatch(), listed[start : start + cls.MAX_FDS])
 
     @classmethod
     def recv(cls, sock: socket.socket) -> tuple[dict[str, object], list[int]]:
@@ -822,6 +847,29 @@ class ZygoteMain:
 
             self._dispatch(message, fds)
 
+    def _collect_tail(
+        self, request: CallRequest, fds: list[int], expected: int
+    ) -> None:
+        """Добрать пачки дескрипторов запроса из продолжений FdsBatch.
+
+        Хост шлёт их сразу за запросом тем же сокетом (send_batched),
+        поэтому блокирующее чтение здесь не ждёт чужих событий. Чужое
+        сообщение вместо продолжения — нарушение протокола.
+        """
+        while len(fds) < expected:
+            message, more = ZygoteWire.recv(self._sock)
+            fds.extend(more)
+
+            if message.get("op") != FdsBatch().op:
+                for fd in fds:
+                    os.close(fd)
+
+                msg = (
+                    f"zygote call {request.call_id}: expected an fds batch "
+                    f"to finish {expected} descriptors, got {message!r}"
+                )
+                raise ZygoteProtocolError(msg)
+
     def _drain_wakeups(self) -> None:
         while True:
             try:
@@ -838,14 +886,18 @@ class ZygoteMain:
                 os.close(fd)
             raise
 
-        expected = request.inputs_at() + request.extra_inputs()
+        expected = request.expected_fds()
+        self._collect_tail(request, fds, expected)
+
         if len(fds) != expected:
             for fd in fds:
                 os.close(fd)
+
             msg = (
                 f"zygote call {request.call_id}: expected {expected} fds "
                 f"with the request (into_cgroup={request.into_cgroup}, "
-                f"inputs={len(request.inputs)}), got {len(fds)}"
+                f"inputs={len(request.inputs)}, outputs={len(request.outputs)}), "
+                f"got {len(fds)}"
             )
             raise ZygoteProtocolError(msg)
 
@@ -862,7 +914,6 @@ class ZygoteMain:
             CallFd.STDOUT,
             CallFd.STDERR,
             CallFd.RESULT,
-            CallFd.FRAMES,
             CallFd.INJECTED,
             CallFd.GATE,
             CallFd.VERDICT,
@@ -1040,8 +1091,6 @@ class ZygoteMain:
         argv = list(request.argv)
         argv.append(EntryFlag.FD_RESULT.value)
         argv.append(str(fds[CallFd.RESULT]))
-        argv.append(EntryFlag.FD_FRAMES.value)
-        argv.append(str(fds[CallFd.FRAMES]))
         argv.append(EntryFlag.INJECTED_FD.value)
         argv.append(str(fds[CallFd.INJECTED]))
         argv.append(EntryFlag.FD_GATE.value)
@@ -1049,15 +1098,13 @@ class ZygoteMain:
         argv.append(EntryFlag.FD_VERDICT.value)
         argv.append(str(fds[CallFd.VERDICT]))
 
-        if not request.inputs:
-            return argv
-
-        # STDIN к этому моменту уже переложен на 0
-        argv.extend(InputWire(port=request.inputs[0], fd=0).argv())
-
-        extra = fds[request.inputs_at() :]
-        for port, fd in zip(request.inputs[1:], extra, strict=True):
+        ins = fds[request.inputs_at() : request.outputs_at()]
+        for port, fd in zip(request.inputs, ins, strict=True):
             argv.extend(InputWire(port=port, fd=fd).argv())
+
+        outs = fds[request.outputs_at() :]
+        for port, fd in zip(request.outputs, outs, strict=True):
+            argv.extend(OutputWire(port=port, fd=fd).argv())
 
         return argv
 

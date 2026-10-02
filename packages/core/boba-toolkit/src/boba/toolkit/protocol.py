@@ -12,7 +12,7 @@
 from __future__ import annotations
 
 from enum import StrEnum
-from typing import Annotated, ClassVar, Final, Literal
+from typing import Annotated, Final, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
 
@@ -22,6 +22,7 @@ __all__ = [
     "REPLY",
     "CallGateMode",
     "CallInputSpec",
+    "CallOutputSpec",
     "ReplyError",
     "ReplyOk",
     "ToolCommand",
@@ -47,13 +48,32 @@ class CallInputSpec(BaseModel):
     Входной порт тела — одиночный Inbound (ровно один вход) либо список
     Sequence[Inbound] (сколько входов назвал вызывающий); у каждого входа
     свой пайп. raw — порт голых байтов: лончер такой вход не кадрирует и не
-    журналирует.
+    журналирует. pipe_bytes — требуемый буфер пайпа канала: его назвал
+    писатель канала, лончер обязан получить от ядра не меньше либо
+    отказать; 0 — требования нет, буфер расширяется мягко.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     port: str = Field(min_length=1)
     raw: bool
+    pipe_bytes: int = Field(default=0, ge=0)
+
+
+class CallOutputSpec(BaseModel):
+    """Один выход вызова: какому выходному порту тела он принадлежит и сырой ли.
+
+    Зеркало CallInputSpec: выходной порт тела — одиночный Outbound (ровно
+    один канал) либо список Sequence[Outbound]; у каждого выхода свой пайп.
+    Сырой выход лончер не разбирает и не журналирует. pipe_bytes — как у
+    входа: требуемый буфер пайпа, 0 — требования нет.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    port: str = Field(min_length=1)
+    raw: bool
+    pipe_bytes: int = Field(default=0, ge=0)
 
 
 class ToolCommand(BaseModel):
@@ -63,21 +83,16 @@ class ToolCommand(BaseModel):
     конфиг с секретами в argv не попадает — лончер отправляет его телу
     отдельным каналом --injected-fd. inputs — входы вызова по порядку, у
     каждого свой пайп и флаг --fd-in; первый едет по stdin процесса.
-    raw_frames выводится из декларации выходного порта: сырой канал несёт
-    голые байты, лончер его не разбирает и не журналирует. gate — режим
-    барьера тела: вне группы хост отвечает на него сразу.
+    outputs — выходы вызова по порядку, у каждого свой пайп и флаг --fd-out.
+    gate — режим барьера тела: вне группы хост отвечает на него сразу.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    MAX_INPUTS: ClassVar[int] = 32
-    """Потолок входов вызова: каждый — пайп, а в песочницу дескрипторы едут
-    одним сообщением SCM_RIGHTS."""
-
     argv: tuple[str, ...]
     config: bytes
-    inputs: tuple[CallInputSpec, ...] = Field(default=(), max_length=MAX_INPUTS)
-    raw_frames: bool = False
+    inputs: tuple[CallInputSpec, ...] = ()
+    outputs: tuple[CallOutputSpec, ...] = ()
     gate: CallGateMode = CallGateMode.AUTO
 
 

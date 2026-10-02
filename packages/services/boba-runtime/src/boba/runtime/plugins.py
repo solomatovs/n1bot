@@ -38,7 +38,6 @@ from boba.connection_broker.user_connections import UserConnections
 from boba.identity.context import CallContext
 from boba.runtime.launchers import CallSurface, SectionLaunchers, ToolLaunchers
 from boba.runtime.refs import RuntimeRefs
-from boba.toolkit.chain import StreamTimings
 from boba.toolkit.entry import ToolAddress, ToolArgv, ToolEntryError, ToolLike, ToolMain
 from boba.toolkit.facade import PayloadTool
 from boba.toolkit.launcher import ToolLauncher
@@ -50,6 +49,7 @@ from boba.toolrun.access import ToolAccessGuard
 from boba.toolrun.call_id import ToolCallIdField
 from boba.toolrun.callvalues import CallContextValues
 from boba.toolrun.cancellation import CancellableTools
+from boba.toolrun.dev_null import DevNullTool
 from boba.toolrun.errors import ToolErrorGuard
 from boba.toolrun.injected import InjectedConfig, ToolConfigError
 from boba.toolrun.intent import ToolIntentField
@@ -261,11 +261,14 @@ class ToolLoader:
                 streamable.append(tool.name)
             ToolStreams.mark_streamable(streamable)
 
+        tools.append(ToolBridge.as_structured_tool(DevNullTool.build()))
+
         access = self._access_of(tools, headless_only)
         for hooks in self._surface_hooks:
             ToolBody.hook_all(tools, hooks)
 
-        StreamChannelFields().attach_all(tools)
+        stream_cfg = self._stream_config()
+        StreamChannelFields(stream_cfg).attach_all(tools)
         ToolCallIdField.attach_all(tools)
         ToolIntentField.attach_all(tools)
         ToolRunLogger.guard_all(
@@ -273,23 +276,23 @@ class ToolLoader:
         )
         CancellableTools.guard_all(tools)
         ToolAccessGuard.guard_all(tools, access, CallContext.current_subject)
-        streams = StreamGroups(self._stream_timings(), tools)
+        streams = StreamGroups(stream_cfg.timings(), tools)
         StreamCallHooks(streams).guard_all(tools)
         ToolErrorGuard().guard_all(tools)
         ToolAsyncBody.ensure_all(tools)
         return ToolRegistry(tools=tools, access=access, streams=streams)
 
-    def _stream_timings(self) -> StreamTimings:
-        """Сроки групп потоковых вызовов из секции [stream_groups]."""
+    def _stream_config(self) -> StreamGroupsConfig:
+        """Секция [stream_groups]: сроки групп и размеры пайпов каналов."""
         section = StreamGroupsConfig.SECTION
         if OmegaConf.select(self._raw, section) is None:
             msg = (
                 f"config section [{section}] is missing: stream groups need "
-                "open_sec, stall_sec and poll_sec"
+                "open_sec, stall_sec, poll_sec, pipe_bytes and pipe_bytes_max"
             )
             raise StreamGroupsConfigError(msg)
 
-        return bind(self._raw, section, StreamGroupsConfig).timings()
+        return bind(self._raw, section, StreamGroupsConfig)
 
     def _plugin_tools(
         self,

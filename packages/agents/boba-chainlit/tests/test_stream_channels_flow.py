@@ -29,7 +29,6 @@ from boba.chainlit.infra.providers import build_history_view
 from boba.runtime.plugins import ToolBridge
 from boba.stand_core import fake_toolmod
 from boba.stand_core.fake_toolmod import FakeConfig
-from boba.toolkit.chain import StreamTimings
 from boba.toolkit.entry import ToolMain
 from boba.toolkit.result import FailureResult, GroupFailureResult, ToolArtifact
 from boba.toolkit.wrap import ToolProcessWrap
@@ -42,10 +41,18 @@ from boba.toolrun.stream_calls import (
     StreamCallKind,
     StreamChannelFields,
     StreamGroups,
+    StreamGroupsConfig,
 )
 
 CFG = FakeConfig(token=SecretStr("t0ken"), limit=5)
-TIMINGS = StreamTimings(open_sec=20.0, stall_sec=10.0, poll_sec=0.1)
+STREAM_CFG = StreamGroupsConfig(
+    open_sec=20.0,
+    stall_sec=10.0,
+    poll_sec=0.1,
+    pipe_bytes=1 << 20,
+    pipe_bytes_max=1 << 20,
+)
+TIMINGS = STREAM_CFG.timings()
 THREAD = RunnableConfig(configurable={"thread_id": "stream-channels"})
 FINAL = "streams are wired"
 
@@ -94,7 +101,7 @@ class ChannelStand:
             return CFG
 
         InjectedConfig.bind_all(tools, resolve)
-        StreamChannelFields().attach_all(tools)
+        StreamChannelFields(STREAM_CFG).attach_all(tools)
         ToolCallIdField.attach_all(tools)
         self.streams = StreamGroups(TIMINGS, tools)
         StreamCallHooks(self.streams).guard_all(tools)

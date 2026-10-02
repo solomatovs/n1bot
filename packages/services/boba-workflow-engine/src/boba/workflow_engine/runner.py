@@ -36,6 +36,7 @@ from boba.toolkit.chain import (
     StreamGroupRun,
     StreamInput,
     StreamNode,
+    StreamOutput,
     StreamPlan,
     StreamPlanError,
     StreamTimings,
@@ -245,9 +246,10 @@ class _RunSession:
         last = len(order) - 1
 
         for index, name in enumerate(order):
-            output: str | None = None
+            outputs: tuple[StreamOutput, ...] = ()
             if index < last:
-                output = name
+                port = self._outbound_of(name).name
+                outputs = (StreamOutput(port=port, channel=name),)
 
             inputs: tuple[StreamInput, ...] = ()
             if index > 0:
@@ -258,7 +260,7 @@ class _RunSession:
                 key=name,
                 tool=self._graph.spec.tasks[name].tool,
                 spec=self._spec_of(name),
-                output=output,
+                outputs=outputs,
                 inputs=inputs,
             )
 
@@ -306,12 +308,15 @@ class _RunSession:
         return ToolStreamSpecs.of(self._graph.spec.tasks[name].tool)
 
     def _outbound_of(self, name: str) -> PortDecl:
-        port = self._spec_of(name).outbound()
-        if port is None:
-            msg = f"task {name!r} feeds a stream edge but declares no outbound port"
+        ports = self._spec_of(name).outbound()
+        if len(ports) != 1:
+            msg = (
+                f"task {name!r} feeds a stream edge and must declare exactly "
+                f"one outbound port, got {len(ports)}"
+            )
             raise ChainMismatchError(msg)
 
-        return port
+        return ports[0]
 
     def _inbound_of(self, name: str) -> PortDecl:
         ports = self._spec_of(name).inbound()

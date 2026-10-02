@@ -10,7 +10,6 @@ import json
 import os
 import signal
 import time
-from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -29,7 +28,7 @@ from boba.toolkit.entry import ToolArgv, ToolMain
 from boba.toolkit.frames import FrameProtocolError, ToolFrame
 from boba.toolkit.launcher import LauncherError
 from boba.toolkit.ports import StreamSpec
-from boba.toolkit.protocol import CallInputSpec, ReplyError, ToolCommand
+from boba.toolkit.protocol import CallInputSpec, CallOutputSpec, ReplyError, ToolCommand
 from boba.toolrun.process import ProcessLauncherConfig, ProcessToolCaller
 
 CFG = FakeConfig(token=SecretStr("t0ken"), limit=5)
@@ -57,19 +56,27 @@ def _launcher(workdir: Path, **overrides: object) -> ProcessToolCaller:
 def _command(tool_name: str, *flags: str) -> ToolCommand:
     config = json.dumps({"cfg": CFG.revealed()}).encode("utf-8")
     argv = ("python3", "-m", MODULE, tool_name, *flags)
-    inputs = tuple(_inputs(tool_name))
+    spec = _spec(tool_name)
 
-    return ToolCommand(argv=argv, config=config, inputs=inputs)
+    inputs: list[CallInputSpec] = []
+    for port in spec.inbound():
+        inputs.append(CallInputSpec(port=port.name, raw=port.raw))
+
+    outputs: list[CallOutputSpec] = []
+    for port in spec.outbound():
+        outputs.append(CallOutputSpec(port=port.name, raw=port.raw))
+
+    return ToolCommand(
+        argv=argv, config=config, inputs=tuple(inputs), outputs=tuple(outputs)
+    )
 
 
-def _inputs(tool_name: str) -> Iterator[CallInputSpec]:
-    """По входу на каждый одиночный входной порт инструмента стенда."""
+def _spec(tool_name: str) -> StreamSpec:
     for tool in TOOLS:
-        if tool.name != tool_name:
-            continue
+        if tool.name == tool_name:
+            return StreamSpec.of_schema(ToolArgv.schema_of(tool))
 
-        for port in StreamSpec.of_schema(ToolArgv.schema_of(tool)).inbound():
-            yield CallInputSpec(port=port.name, raw=port.raw)
+    raise AssertionError(f"no stand tool {tool_name!r}")
 
 
 def _open_fds() -> int:

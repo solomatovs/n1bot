@@ -92,6 +92,44 @@ class PipePlumbing:
         except OSError:
             return
 
+    BUDGET_HINT: ClassVar[str] = (
+        "the kernel refused the size: the per-user pipe buffer budget is "
+        "likely exhausted (fs.pipe-user-pages-soft) or the size is above "
+        "fs.pipe-max-size"
+    )
+
+    @classmethod
+    def require(cls, fd: int, pipe_bytes: int, channel: str) -> None:
+        """Поставить пайпу канала ровно запрошенный буфер — или отказать.
+
+        Нулевой размер — требования нет: буфер расширяется мягко (widen).
+        Размер задаёт писатель канала (pipe_bytes вызова), и меньший буфер
+        молча замедлил бы перекачку — поэтому недодача ядра не глотается,
+        а срывает запуск с подсказкой про ручку ядра.
+
+        Ошибки:
+        LauncherError — ядро не дало пайпу запрошенный размер.
+        """
+        if pipe_bytes <= 0:
+            cls.widen(fd)
+            return
+
+        try:
+            got = fcntl.fcntl(fd, fcntl.F_SETPIPE_SZ, pipe_bytes)
+        except OSError as exc:
+            msg = (
+                f"channel {channel!r}: setting the pipe buffer to "
+                f"{pipe_bytes} bytes failed: {exc}; {cls.BUDGET_HINT}"
+            )
+            raise LauncherError(msg) from exc
+
+        if got < pipe_bytes:
+            msg = (
+                f"channel {channel!r}: asked for a {pipe_bytes}-byte pipe "
+                f"buffer, the kernel gave {got}; {cls.BUDGET_HINT}"
+            )
+            raise LauncherError(msg)
+
 
 class Tee:
     """Тройник: одна порция канала уходит в два приёмника сразу.
@@ -121,28 +159,26 @@ class CallSinks:
     def call_inputs(
         cls,
         stdin_fd: int,
-        extra_fds: Sequence[int],
+        port_fds: Sequence[int],
         specs: Sequence[CallInputSpec],
     ) -> CallInputs:
-        """Входы вызова по ToolCommand.inputs: первый — stdin процесса,
-        остальные — extra_fds по порядку. Журнал заголовков ведёт только
-        первый кадровый вход: канал tool_stdin в журнале один."""
-        if not specs:
-            return CallInputs(FrameInput(stdin_fd), ())
-
-        needed = len(specs) - 1
-        if len(extra_fds) != needed:
+        """Входы вызова по ToolCommand.inputs: у каждого свой пайп из
+        port_fds по порядку. stdin процесса порт не несёт — это служебный
+        канал (shell-команда, EOF телу без портов), его закрывает хост.
+        Журнал заголовков ведёт только первый кадровый вход: канал
+        tool_stdin в журнале один."""
+        if len(port_fds) != len(specs):
             msg = (
-                f"call inputs: {len(specs)} inputs need {needed} pipes besides "
-                f"stdin, got {len(extra_fds)}"
+                f"call inputs: {len(specs)} inputs need {len(specs)} pipes, "
+                f"got {len(port_fds)}"
             )
             raise LauncherError(msg)
 
-        slots: list[FrameInput] = [cls._input_of(stdin_fd, specs[0], journaled=True)]
-        for fd, spec in zip(extra_fds, specs[1:], strict=True):
-            slots.append(cls._input_of(fd, spec, journaled=False))
+        slots: list[FrameInput] = []
+        for index, (fd, spec) in enumerate(zip(port_fds, specs, strict=True)):
+            slots.append(cls._input_of(fd, spec, journaled=index == 0))
 
-        return CallInputs(slots[0], tuple(slots))
+        return CallInputs(FrameInput(stdin_fd), tuple(slots))
 
     @staticmethod
     def _input_of(fd: int, spec: CallInputSpec, *, journaled: bool) -> FrameInput:
@@ -233,9 +269,9 @@ class CallInput:
             self._close()
 
     def take_fd(self) -> int:
-        """Отдать дескриптор входа перекачке (CallRelay.splice).
+        """Отдать дескриптор входа раздаче каналов группы (ChannelFanOut).
 
-        Владение уходит вместе с дескриптором: закрывает его перекачка,
+        Владение уходит вместе с дескриптором: закрывает его раздача,
         а send/finish на этом входе больше не работают.
         """
         with self._lock:
@@ -435,9 +471,9 @@ class HostGate(CallGate):
 class CallInputs:
     """Входы открытого вызова: слоты по ToolCommand.inputs плюс stdin.
 
-    Первый слот едет по stdin процесса, остальные — своими пайпами. У
-    вызова без входов stdin всё равно есть: тело его не читает, но закрыть
-    его обязан хост — поэтому stdin хранится отдельно от слотов и
+    Каждый слот едет своим пайпом, симметрично выходам. stdin процесса
+    порта не несёт, но есть у любого вызова: тело модуля его не читает, а
+    закрыть его обязан хост — поэтому stdin хранится отдельно от слотов и
     закрывается вместе с ними. Собирает CallSinks.call_inputs.
     """
 
@@ -449,15 +485,8 @@ class CallInputs:
         return self._slots
 
     def entries(self) -> tuple[CallInput, ...]:
-        """Все пайпы входа для уборки: stdin и слоты без повторов."""
-        entries: list[CallInput] = [self._stdin]
-        for slot in self._slots:
-            if slot is self._stdin:
-                continue
-
-            entries.append(slot)
-
-        return tuple(entries)
+        """Все пайпы входа для уборки: stdin и слоты."""
+        return (self._stdin, *self._slots)
 
     def finish_all(self) -> None:
         for entry in self.entries():

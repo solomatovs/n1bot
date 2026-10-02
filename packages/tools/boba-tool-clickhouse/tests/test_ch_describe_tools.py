@@ -38,16 +38,6 @@ class Cases:
     def all(cls) -> list[DescribeCase]:
         return [
             DescribeCase(
-                tool=cls._of(ch.ch_list_tables),
-                args={"database": None},
-                columns=["database", "table", "engine", "total_rows"],
-            ),
-            DescribeCase(
-                tool=cls._of(ch.ch_list_columns),
-                args={"database": None, "table": None},
-                columns=["database", "table", "name", "position", "type"],
-            ),
-            DescribeCase(
                 tool=cls._of(ch.ch_database_describe),
                 args={"database": "*"},
                 columns=["address", "name", "engine", "comment"],

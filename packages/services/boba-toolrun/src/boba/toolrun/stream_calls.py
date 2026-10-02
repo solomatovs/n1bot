@@ -29,13 +29,14 @@ from typing import Annotated, Any, ClassVar, Protocol
 
 from langchain_core.messages import ToolCall
 from langchain_core.tools import BaseTool
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from boba.toolkit.chain import (
     PipelineSlot,
     StreamGroupRun,
     StreamInput,
     StreamNode,
+    StreamOutput,
     StreamPlan,
     StreamPlanError,
     StreamTimings,
@@ -43,7 +44,7 @@ from boba.toolkit.chain import (
 from boba.toolkit.entry import ToolArgv
 from boba.toolkit.failure import FailurePacker
 from boba.toolkit.launcher import PayloadFailureError
-from boba.toolkit.ports import PortDecl, PortDirection, StreamSpec, ToolStreamSpecs
+from boba.toolkit.ports import PortDecl, PortDirection, ToolStreamSpecs
 from boba.toolkit.result import ErrorResult, FailureResult
 from boba.toolrun.call_id import ToolCallIdField
 from boba.toolrun.wrapping import CallHooks, ToolBody, ToolSchema
@@ -72,11 +73,14 @@ class StreamCallKind(StrEnum):
 
 
 class StreamGroupsConfig(BaseModel):
-    """Секция конфига [stream_groups]: сроки группы связанных вызовов."""
+    """Секция конфига [stream_groups]: сроки группы связанных вызовов и
+    размер буфера пайпов каналов."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     SECTION: ClassVar[str] = "stream_groups"
+
+    PIPE_BYTES_FLOOR: ClassVar[int] = 4096
 
     open_sec: float = Field(
         gt=0, description="Сколько ждать, пока откроются все вызовы группы."
@@ -86,6 +90,25 @@ class StreamGroupsConfig(BaseModel):
         description="Сколько терпеть отсутствие движения данных по открытым каналам.",
     )
     poll_sec: float = Field(gt=0, description="Шаг проверки сроков группы.")
+    pipe_bytes: int = Field(
+        ge=PIPE_BYTES_FLOOR,
+        description="Буфер пайпа канала, когда вызов его не назвал.",
+    )
+    pipe_bytes_max: int = Field(
+        ge=PIPE_BYTES_FLOOR,
+        description="Потолок буфера, который можно запросить полем вызова.",
+    )
+
+    @model_validator(mode="after")
+    def _max_covers_default(self) -> StreamGroupsConfig:
+        if self.pipe_bytes > self.pipe_bytes_max:
+            msg = (
+                f"[{self.SECTION}]: pipe_bytes {self.pipe_bytes} exceeds "
+                f"pipe_bytes_max {self.pipe_bytes_max}"
+            )
+            raise ValueError(msg)
+
+        return self
 
     def timings(self) -> StreamTimings:
         return StreamTimings(
@@ -104,6 +127,12 @@ class StreamFieldText(StrEnum):
         "       каждый читатель получает поток целиком\n"
         "   - писатель и все его читатели вызываются в одном ответе\n"
     )
+    OUTBOUND_MANY = (
+        "Имена каналов, которые вызов пишет, списком:\n"
+        "   - каждый канал — отдельный поток со своими данными\n"
+        "   - у каждого имени свои читатели в этом же ответе\n"
+        "   - у канала один писатель, читателей сколько угодно\n"
+    )
     INBOUND = (
         "Имя канала, из которого вызов читает поток:\n"
         "   - имя выхода другого вызова этого же ответа\n"
@@ -118,6 +147,9 @@ class StreamFieldText(StrEnum):
     @classmethod
     def of(cls, port: PortDecl) -> StreamFieldText:
         if port.direction is PortDirection.OUTBOUND:
+            if port.many:
+                return cls.OUTBOUND_MANY
+
             return cls.OUTBOUND
 
         if port.many:
@@ -131,10 +163,25 @@ class StreamChannelFields:
 
     Порт — канал вызова, значение ему строит гость; модели же нужно назвать
     канал. Поле получает имя порта: одиночный порт — строка с именем канала,
-    порт-список — список имён. Барьер группы StreamGroup модели не виден.
-    Обёртка запуска поля каналов не сериализует: в её схеме на этих именах
-    порты, а их она пропускает.
+    порт-список — список имён. Писатель каналов получает ещё поле
+    pipe_bytes — буфер пайпов своих каналов, с дефолтом и потолком из
+    секции [stream_groups]. Барьер группы StreamGroup модели не виден.
+    Обёртка запуска поля каналов не сериализует: её схема захвачена до
+    пересборки, и этих имён в ней нет.
     """
+
+    PIPE_FIELD: ClassVar[str] = "pipe_bytes"
+
+    PIPE_TEXT: ClassVar[str] = (
+        "Буфер пайпа каждого канала этого вызова, в байтах:\n"
+        "   - крупнее — быстрее массивная перекачка\n"
+        "   - мельче — экономнее общий бюджет пайпов ядра\n"
+        "   - действует на выходы вызова и входы их читателей\n"
+        "   - ядро не дало запрошенное — группа не запускается\n"
+    )
+
+    def __init__(self, config: StreamGroupsConfig) -> None:
+        self._config = config
 
     def attach_all(self, tools: Sequence[BaseTool]) -> None:
         for tool in tools:
@@ -156,7 +203,21 @@ class StreamChannelFields:
             drop.append(port.name)
             fields[port.name] = self._field(port)
 
+        if spec.outbound():
+            fields[self.PIPE_FIELD] = self._pipe_field()
+
         tool.args_schema = ToolSchema.rebuild(schema, fields, drop)
+
+    def _pipe_field(self) -> tuple[Any, Any]:
+        declared = Annotated[
+            int,
+            Field(
+                ge=StreamGroupsConfig.PIPE_BYTES_FLOOR,
+                le=self._config.pipe_bytes_max,
+                description=self.PIPE_TEXT,
+            ),
+        ]
+        return (declared, self._config.pipe_bytes)
 
     @staticmethod
     def _field(port: PortDecl) -> tuple[Any, Any]:
@@ -356,21 +417,33 @@ class StreamGroups:
 
         spec = ToolStreamSpecs.of(name)
 
-        output: str | None = None
-        if outbound := spec.outbound():
-            output = str(getattr(args, outbound.name))
+        outputs: list[StreamOutput] = []
+        for port, channel in self._channels(spec.outbound(), args):
+            outputs.append(StreamOutput(port=port, channel=channel))
+
+        inputs: list[StreamInput] = []
+        for port, channel in self._channels(spec.inbound(), args):
+            inputs.append(StreamInput(port=port, channel=channel))
+
+        pipe_bytes = 0
+        if outputs:
+            pipe_bytes = int(getattr(args, StreamChannelFields.PIPE_FIELD))
 
         return StreamNode(
             key=key,
             tool=name,
             spec=spec,
-            output=output,
-            inputs=tuple(self._inputs(spec, args)),
+            outputs=tuple(outputs),
+            inputs=tuple(inputs),
+            pipe_bytes=pipe_bytes,
         )
 
     @staticmethod
-    def _inputs(spec: StreamSpec, args: BaseModel) -> Iterator[StreamInput]:
-        for port in spec.inbound():
+    def _channels(
+        ports: Sequence[PortDecl], args: BaseModel
+    ) -> Iterator[tuple[str, str]]:
+        """Каналы портов одной стороны из полей аргументов вызова."""
+        for port in ports:
             value = getattr(args, port.name)
 
             channels: list[str] = [str(value)]
@@ -378,7 +451,7 @@ class StreamGroups:
                 channels = list(value)
 
             for channel in channels:
-                yield StreamInput(port=port.name, channel=channel)
+                yield port.name, channel
 
     def _refuse(self, calls: Sequence[ToolCall], message: str) -> None:
         logger.warning("stream plan refused: %s", message)
