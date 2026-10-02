@@ -9,12 +9,13 @@ import threading
 from collections.abc import Generator, Mapping, Sequence
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, BinaryIO
+from typing import Any, BinaryIO, cast
 
 import docx
 import openpyxl
 import xlwt
 from docx.shared import Inches as DocxInches
+from openpyxl.worksheet import worksheet
 from PIL import Image, ImageDraw, ImageFont
 from pptx import Presentation
 from pptx.util import Inches
@@ -238,7 +239,8 @@ class Samples:
         workbook = openpyxl.Workbook()
         default = workbook.active
         if default is not None:
-            workbook.remove(default)
+            x = cast(worksheet.Worksheet, default)
+            workbook.remove(x)
 
         for title, rows in sheets.items():
             sheet = workbook.create_sheet(title)
