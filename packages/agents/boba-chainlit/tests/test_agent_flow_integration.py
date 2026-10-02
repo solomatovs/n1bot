@@ -31,7 +31,6 @@ from boba.chainlit.agent.flow import (
     LlmRephraser,
     PrefetchCall,
     PrefetchGraphBuilder,
-    StreamGroupMiddleware,
 )
 from boba.chainlit.infra.config import AppConfig
 from boba.chainlit.infra.plugins import ChatPlugins
@@ -48,7 +47,7 @@ from boba.llm.schema import SchemaReply
 from boba.stand.refs import StandRefs
 from boba.stand.tools import STREAM_CONFIG
 from boba.toolkit.result import TableResult, ToolArtifact
-from boba.toolrun.stream_calls import StreamRuns
+from boba.toolrun.stream_calls import DagCalls
 from boba.transport.http.connection import HttpConnection, UrlScheme
 
 _REPO = Path(__file__).resolve().parents[4]
@@ -182,7 +181,7 @@ def _graph(
         system_prompt=settings.system_prompt,
         checkpointer=InMemorySaver(),
         history=build_history_view(frozenset(names), settings.history_messages),
-        streams=StreamGroupMiddleware(StreamRuns(tools, STREAM_CONFIG)),
+        calls=DagCalls(tools, STREAM_CONFIG),
     )
 
     builder = session_graph_builder(providers, selected, tools)

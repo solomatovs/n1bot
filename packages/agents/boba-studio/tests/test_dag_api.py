@@ -93,7 +93,10 @@ class FakeStreamTools:
             },
         )
         return ToolRegistry(
-            tools=self.tools, access=access, stream_config=STREAM_CONFIG
+            tools=self.tools,
+            access=access,
+            stream_config=STREAM_CONFIG,
+            own=frozenset(),
         )
 
 

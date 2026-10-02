@@ -1,11 +1,13 @@
-"""Описание DAG потоковых вызовов и его перевод в план каналов.
+"""Описание DAG вызовов инструментов и его перевод в план исполнения.
 
 DagSpec — сериализуемая модель графа: узлы — вызовы инструментов в том
 виде, в каком их делает модель (имя и аргументы), каналы названы в
 аргументах полями с именами портов инструмента. Описание живёт отдельно от
 исполнения: его даёт ответ модели, файл или хранилище, а исполнитель
-принимает только его. DagPlanner переводит описание в StreamPlan по
-декларациям портов инструментов; все проверки графа остаются в StreamPlan.
+принимает только его. DagPlanner переводит описание в DagPlan по
+декларациям портов инструментов: план — всегда группы исполнения. Узлы,
+связанные каналами, собираются в одну группу, узел без каналов — группа из
+него одного; все проверки графа каналов остаются в StreamPlan.
 
 Ошибки:
 StreamPlanError — поле порта узла не имя канала, pipe_bytes не число либо
@@ -15,6 +17,7 @@ StreamPlanError — поле порта узла не имя канала, pipe_
 from __future__ import annotations
 
 from collections.abc import Callable, Iterator, Mapping, Sequence
+from dataclasses import dataclass
 from typing import ClassVar
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
@@ -28,7 +31,7 @@ from boba.toolkit.chain import (
 )
 from boba.toolkit.ports import PortDecl, StreamSpec
 
-__all__ = ["DagNode", "DagPlanner", "DagSpec"]
+__all__ = ["DagGroup", "DagNode", "DagPlan", "DagPlanner", "DagSpec"]
 
 
 class DagNode(BaseModel):
@@ -36,7 +39,8 @@ class DagNode(BaseModel):
 
     Поля каналов (имена портов инструмента) и pipe_bytes лежат среди
     аргументов, как в вызове модели; ключ узла в DAG уникален, из чата им
-    служит tool_call_id.
+    служит tool_call_id. title — имя узла, каким его назвал автор описания
+    (ключ узла вызова workflow): им узел называется в текстах отказов.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -44,8 +48,12 @@ class DagNode(BaseModel):
     key: str = Field(min_length=1)
     tool: str = Field(min_length=1)
     args: Mapping[str, JsonValue] = {}
+    title: str = ""
 
     def label(self) -> str:
+        if self.title:
+            return f"{self.tool} ({self.title})"
+
         return f"{self.tool} ({self.key})"
 
 
@@ -87,17 +95,110 @@ class DagSpec(BaseModel):
         raise KeyError(msg)
 
 
+@dataclass(frozen=True)
+class DagGroup:
+    """Группа исполнения DAG: узлы и план их каналов.
+
+    В группу попадают узлы, соединённые каналами прямо или через соседей;
+    исполняется она по правилу «все или никто», и сбой одной группы другие
+    не трогает. Узел без каналов — группа из него одного. Имя группе даёт
+    планировщик: имена её каналов через «+», а без каналов — ключ узла.
+    """
+
+    name: str
+    plan: StreamPlan
+
+
+@dataclass(frozen=True)
+class DagPlan:
+    """План исполнения DAG: его группы в порядке первых узлов описания.
+
+    Каждый узел описания принадлежит ровно одной группе. Строит план
+    DagPlanner, исполняет DagRunner.
+    """
+
+    groups: tuple[DagGroup, ...]
+
+
+@dataclass
+class _Component:
+    """Набор узлов, уже связанных каналами, и имена этих каналов."""
+
+    nodes: list[StreamNode]
+    channels: set[str]
+
+
+class ChannelComponents:
+    """Связные компоненты узлов по общим именам каналов.
+
+    DagPlanner отдаёт сюда узлы в порядке описания; узел, называющий канал
+    уже собранной компоненты, присоединяется к ней, а называющий каналы
+    нескольких — сливает их в одну. Узел без общих каналов остаётся
+    компонентой из себя одного.
+    """
+
+    def __init__(self) -> None:
+        self._components: list[_Component] = []
+        self._order: dict[str, int] = {}
+
+    def add(self, node: StreamNode) -> None:
+        self._order[node.key] = len(self._order)
+        channels = set(self._channels_of(node))
+
+        joined = _Component(nodes=[node], channels=set(channels))
+        apart: list[_Component] = []
+        for component in self._components:
+            if component.channels.isdisjoint(channels):
+                apart.append(component)
+                continue
+
+            joined.nodes.extend(component.nodes)
+            joined.channels.update(component.channels)
+
+        apart.append(joined)
+        self._components = apart
+
+    def components(self) -> Iterator[_Component]:
+        """Компоненты в порядке их первых узлов, узлы — в порядке описания."""
+        ordered: list[_Component] = []
+        for component in self._components:
+            nodes = sorted(component.nodes, key=self._position)
+            ordered.append(_Component(nodes=nodes, channels=component.channels))
+
+        ordered.sort(key=self._first_position)
+
+        yield from ordered
+
+    def _position(self, node: StreamNode) -> int:
+        return self._order[node.key]
+
+    def _first_position(self, component: _Component) -> int:
+        return self._order[component.nodes[0].key]
+
+    @staticmethod
+    def _channels_of(node: StreamNode) -> Iterator[str]:
+        for bound in node.inputs:
+            yield bound.channel
+
+        for output in node.outputs:
+            yield output.channel
+
+
 class DagPlanner:
-    """Перевод описания DAG в план каналов по декларациям инструментов.
+    """Перевод описания DAG в план исполнения по декларациям инструментов.
 
     Декларации приходят функцией «имя инструмента → StreamSpec» (в
     приложении — ToolStreamSpecs.of). Для каждого узла планировщик читает
     из аргументов поля портов: у одиночного порта — имя канала строкой, у
     порта-списка — список имён; каждый порт назван обязательно. У писателя
     читается pipe_bytes; узел его не назвал — берётся pipe_bytes
-    планировщика (дефолт секции [stream_groups]). Правила графа проверяет
-    StreamPlan.
+    планировщика (дефолт секции [stream_groups]). Узлы делятся на группы по
+    общим каналам: имена каналов и связывают вызовы в группу, узел
+    инструмента без портов остаётся группой из себя одного. Правила графа
+    каждой группы проверяет StreamPlan.
     """
+
+    NAME_SEPARATOR: ClassVar[str] = "+"
 
     PIPE_FIELD: ClassVar[str] = "pipe_bytes"
 
@@ -105,16 +206,71 @@ class DagPlanner:
         self._specs = specs
         self._default_pipe_bytes = pipe_bytes
 
-    def plan(self, dag: DagSpec) -> StreamPlan:
-        return StreamPlan(list(self._nodes(dag)))
-
-    def _nodes(self, dag: DagSpec) -> Iterator[StreamNode]:
+    def plan(self, dag: DagSpec) -> DagPlan:
+        nodes: list[StreamNode] = []
         for node in dag.nodes:
-            yield self._node(node)
+            nodes.append(self._node(node, self._specs(node.tool)))
 
-    def _node(self, node: DagNode) -> StreamNode:
-        spec = self._specs(node.tool)
+        self._check_channels(nodes)
 
+        components = ChannelComponents()
+        for planned in nodes:
+            components.add(planned)
+
+        groups: list[DagGroup] = []
+        for component in components.components():
+            name = self._name_of(component)
+            groups.append(DagGroup(name=name, plan=StreamPlan(component.nodes)))
+
+        return DagPlan(groups=tuple(groups))
+
+    @staticmethod
+    def _check_channels(nodes: Sequence[StreamNode]) -> None:
+        """Каждый читаемый канал кто-то пишет, каждый пишущийся — читают.
+
+        Проверка идёт по всем узлам описания до деления на группы: опечатка
+        в имени канала разносит писателя и читателя по разным группам, и
+        подсказать верное имя можно только отсюда.
+        """
+        written: dict[str, StreamNode] = {}
+        for node in nodes:
+            for output in node.outputs:
+                written.setdefault(output.channel, node)
+
+        read: set[str] = set()
+        for node in nodes:
+            for bound in node.inputs:
+                read.add(bound.channel)
+                if bound.channel in written:
+                    continue
+
+                msg = (
+                    f"stream plan: {node.label()} reads channel "
+                    f"{bound.channel!r} in {bound.port!r}, which no node writes; "
+                    f"channels written here: {sorted(written)}. Name one of them "
+                    "or add the node that writes this channel"
+                )
+                raise StreamPlanError(msg)
+
+        for channel, writer in written.items():
+            if channel in read:
+                continue
+
+            msg = (
+                f"stream plan: channel {channel!r} written by {writer.label()} "
+                f"has no readers; channels read here: {sorted(read)}. Add a node "
+                "that reads it, or drain it explicitly with dev_null"
+            )
+            raise StreamPlanError(msg)
+
+    def _name_of(self, component: _Component) -> str:
+        """Имя группы: её каналы, а без каналов — ключ единственного узла."""
+        if not component.channels:
+            return component.nodes[0].key
+
+        return self.NAME_SEPARATOR.join(sorted(component.channels))
+
+    def _node(self, node: DagNode, spec: StreamSpec) -> StreamNode:
         outputs: list[StreamOutput] = []
         for port, channel in self._channels(node, spec.outbound()):
             outputs.append(StreamOutput(port=port, channel=channel))
@@ -134,6 +290,7 @@ class DagPlanner:
             outputs=tuple(outputs),
             inputs=tuple(inputs),
             pipe_bytes=pipe_bytes,
+            title=node.title,
         )
 
     def _channels(

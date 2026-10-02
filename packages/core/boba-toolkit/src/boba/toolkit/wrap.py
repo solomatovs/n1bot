@@ -148,7 +148,8 @@ class ToolProcessWrap:
         kwargs: Mapping[str, object],
     ) -> ToolOutcome:
         """Вызов в группе: любой сбой до итога срывает группу, и вызов
-        отвечает текстом её срыва."""
+        отвечает текстом её срыва; единственный вызов группы — своей
+        ошибкой."""
         try:
             command = cls._render(
                 address, schema, kwargs, slot.input_counts(), slot.output_counts()
@@ -158,6 +159,9 @@ class ToolProcessWrap:
         except BaseException as exc:
             verdict = slot.settle_error(exc)
             if verdict.stopped:
+                raise
+
+            if slot.solitary():
                 raise
 
             raise PayloadFailureError(verdict.failure_of(slot.key)) from exc

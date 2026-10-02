@@ -314,6 +314,9 @@ def _use_di_container(app: FastAPI, c: AppConfig) -> Container:
     container.provide(runtime.get_runtime_config, c)
     container.provide(runtime.plugin_table, CoreTools.table)
     container.provide(runtime.surface_hooks, ChatPlugins.surface_hooks())
+    container.provide(
+        runtime.own_tools, ChatPlugins.own_tools(runtime.connection_store_ref)
+    )
     container.provide(runtime.grant_check, GrantCheck.STRICT)
     container.provide(runtime.app_name, AppName.CHAINLIT)
     tokens = runtime.session_tokens(c)

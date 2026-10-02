@@ -9,8 +9,8 @@ from typing import Annotated, Literal
 import pytest
 from pydantic import BaseModel, ValidationError
 
-from boba.toolkit.chain import StreamInput, StreamOutput, StreamPlanError
-from boba.toolkit.dag import DagNode, DagPlanner, DagSpec
+from boba.toolkit.chain import StreamInput, StreamOutput, StreamPlan, StreamPlanError
+from boba.toolkit.dag import DagNode, DagPlan, DagPlanner, DagSpec
 from boba.toolkit.ports import Inbound, Outbound, StreamSpec
 
 
@@ -112,13 +112,21 @@ def _dag(*nodes: DagNode) -> DagSpec:
 PLANNER = DagPlanner(_spec, 0)
 
 
+def _one_group(dag: DagSpec) -> StreamPlan:
+    """План единственной группы DAG: узлы описания связаны каналами."""
+    plan = PLANNER.plan(dag)
+    assert len(plan.groups) == 1
+
+    return plan.groups[0].plan
+
+
 class TestDagSpec:
     def test_toml_is_the_model_call_as_a_file(self) -> None:
         """Узел файла — тот же вызов, что делает модель: инструмент и
         аргументы с полями портов; план из него — тот же граф."""
         dag = DagSpec.model_validate(tomllib.loads(TOML))
 
-        plan = PLANNER.plan(dag)
+        plan = _one_group(dag)
 
         assert dag.node("sink").args == {"table": "orders", "feed": "cooked"}
         assert plan.inputs_of("t") == (
@@ -150,7 +158,7 @@ class TestDagSpec:
 
 class TestDagPlanner:
     def test_list_port_takes_every_named_channel(self) -> None:
-        plan = PLANNER.plan(
+        plan = _one_group(
             _dag(
                 _node("src", "source", out="raw"),
                 _node("sh", "shard", feed="raw", outs=["a", "b"]),
@@ -207,7 +215,7 @@ class TestDagPlanner:
                 )
 
     def test_pipe_bytes_of_a_reader_is_ignored(self) -> None:
-        plan = PLANNER.plan(
+        plan = _one_group(
             _dag(
                 _node("a", "source", out="x"),
                 _node("s", "sink", feed="x", pipe_bytes="whatever"),
@@ -220,8 +228,74 @@ class TestDagPlanner:
         with pytest.raises(StreamPlanError, match="has no readers"):
             PLANNER.plan(_dag(_node("a", "source", out="x")))
 
-    def test_tool_without_ports_is_a_plain_node(self) -> None:
+    def test_tool_without_ports_is_a_group_of_one(self) -> None:
         plan = PLANNER.plan(_dag(_node("p", "plain", query="select 1")))
 
-        assert plan.inputs_of("p") == ()
-        assert plan.outputs_of("p") == ()
+        assert len(plan.groups) == 1
+        assert plan.groups[0].name == "p"
+        assert plan.groups[0].plan.inputs_of("p") == ()
+        assert plan.groups[0].plan.outputs_of("p") == ()
+
+
+class TestDagGroups:
+    """Имена каналов связывают узлы в группы; узел без каналов — группа из
+    него одного с именем по ключу узла."""
+
+    @staticmethod
+    def _layout(plan: DagPlan) -> dict[str, list[str]]:
+        """Имя группы → ключи её узлов, в порядке плана."""
+        layout: dict[str, list[str]] = {}
+        for group in plan.groups:
+            keys: list[str] = []
+            for node in group.plan.nodes():
+                keys.append(node.key)
+
+            layout[group.name] = keys
+
+        return layout
+
+    def test_unrelated_pipelines_are_separate_groups(self) -> None:
+        plan = PLANNER.plan(
+            _dag(
+                _node("a", "source", out="x"),
+                _node("c", "source", out="y"),
+                _node("b", "sink", feed="x"),
+                _node("d", "sink", feed="y"),
+            )
+        )
+
+        assert self._layout(plan) == {"x": ["a", "b"], "y": ["c", "d"]}
+
+    def test_a_node_reading_two_groups_merges_them(self) -> None:
+        plan = PLANNER.plan(
+            _dag(
+                _node("a", "source", out="raw"),
+                _node("side", "source", out="side"),
+                _node("t", "transform", feed="raw", extra=["side"], out="cooked"),
+                _node("s", "sink", feed="cooked"),
+            )
+        )
+
+        assert self._layout(plan) == {"cooked+raw+side": ["a", "side", "t", "s"]}
+
+    def test_calls_without_ports_get_groups_of_their_own(self) -> None:
+        plan = PLANNER.plan(
+            _dag(
+                _node("p1", "plain", query="select 1"),
+                _node("a", "source", out="x"),
+                _node("p2", "plain", query="select 2"),
+                _node("b", "sink", feed="x"),
+            )
+        )
+
+        assert self._layout(plan) == {"p1": ["p1"], "x": ["a", "b"], "p2": ["p2"]}
+        assert list(self._layout(plan)) == ["p1", "x", "p2"]
+
+    def test_a_broken_group_refuses_the_whole_plan(self) -> None:
+        with pytest.raises(StreamPlanError, match="has no readers"):
+            PLANNER.plan(
+                _dag(
+                    _node("p", "plain", query="select 1"),
+                    _node("a", "source", out="x"),
+                )
+            )

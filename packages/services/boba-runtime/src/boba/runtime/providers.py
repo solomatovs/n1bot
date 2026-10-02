@@ -11,6 +11,7 @@ import logging
 from collections.abc import AsyncGenerator, Sequence
 from typing import Annotated, Any, TypeVar
 
+from langchain_core.tools import BaseTool
 from omegaconf import DictConfig
 
 from boba.access import GrantCheck
@@ -181,6 +182,12 @@ def surface_hooks() -> Sequence[CallHooks[Any]]:
     return ()
 
 
+def own_tools() -> Sequence[BaseTool]:
+    """Собственные инструменты процесса, исполняемые им самим мимо DAG; у
+    процесса без таких инструментов их нет."""
+    return ()
+
+
 def _root() -> Container:
     return Container.require_root("runtime providers")
 
@@ -257,9 +264,10 @@ def tool_registry(
     table: Annotated[PluginTable, Depends(plugin_table)],
     check: Annotated[GrantCheck, Depends(grant_check)],
     hooks: Annotated[Sequence[CallHooks[Any]], Depends(surface_hooks)],
+    own: Annotated[Sequence[BaseTool], Depends(own_tools)],
 ) -> ToolRegistry:
     refs = runtime_refs()
-    loader = ToolLoader(raw, table(), refs, check, hooks)
+    loader = ToolLoader(raw, table(), refs, check, hooks, own)
 
     return loader.load()
 

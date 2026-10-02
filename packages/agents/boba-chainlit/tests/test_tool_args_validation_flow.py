@@ -25,7 +25,7 @@ from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph.state import CompiledStateGraph
 from omegaconf import DictConfig
 
-from boba.chainlit.agent.flow import GraphSpec, PlainGraphBuilder, StreamGroupMiddleware
+from boba.chainlit.agent.flow import GraphSpec, PlainGraphBuilder
 from boba.chainlit.infra.config import AppConfig
 from boba.chainlit.infra.plugins import ChatPlugins
 from boba.chainlit.infra.providers import build_history_view
@@ -34,7 +34,7 @@ from boba.sandbox import ZygoteRegistry
 from boba.stand.refs import StandRefs
 from boba.stand.tools import STREAM_CONFIG
 from boba.toolkit.result import ErrorResult, ToolArtifact
-from boba.toolrun.stream_calls import StreamRuns
+from boba.toolrun.stream_calls import DagCalls
 
 _REPO = Path(__file__).resolve().parents[4]
 _SANDBOX_STAGING = _REPO / "build" / "chainlit" / "src" / "sandbox"
@@ -158,7 +158,7 @@ def _graph(
         system_prompt=settings.system_prompt,
         checkpointer=InMemorySaver(),
         history=build_history_view(frozenset(names), settings.history_messages),
-        streams=StreamGroupMiddleware(StreamRuns(tools, STREAM_CONFIG)),
+        calls=DagCalls(tools, STREAM_CONFIG),
     )
 
     return PlainGraphBuilder().build(spec)

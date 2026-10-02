@@ -42,6 +42,7 @@ from boba.chainlit.rendering.chat_view import (
     StepText,
     TurnDraft,
 )
+from boba.toolkit.result import ToolArtifact, WorkflowResult
 from chainlit.data.base import BaseDataLayer
 from chainlit.step import StepDict
 
@@ -332,6 +333,11 @@ class ConversationTranscript:
     async def _tool(self, message: ToolMessage, key: str) -> None:
         call = self._pending.pop(message.tool_call_id, None)
 
+        workflow = ToolArtifact.revive(message.artifact)
+        if isinstance(workflow, WorkflowResult):
+            await self._workflow(workflow)
+            return
+
         name = message.name
         if not name and call is not None:
             name = call.name
@@ -357,6 +363,18 @@ class ConversationTranscript:
         if artifact is None:
             artifact = self._text(message)
         await self._view.tool_finished(step, artifact, message.tool_call_id)
+
+    async def _workflow(self, result: WorkflowResult) -> None:
+        """Итог вызова workflow шагами его узлов — как их рисует живой ход:
+        шаг на узел под идентификатором вызова узла."""
+        for node in result.nodes:
+            step = await self._view.tool_started(node.tool, node.args, node.call_id)
+
+            if node.errored:
+                await self._view.tool_failed(step, node.result.chat_view().markdown)
+                continue
+
+            await self._view.tool_finished(step, node.result, node.call_id)
 
     async def _spend(self, message: AIMessage, key: str) -> None:
         """Расход прогона из записи истории: usage хранится в самом сообщении."""

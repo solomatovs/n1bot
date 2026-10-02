@@ -424,7 +424,9 @@ class StreamNode:
 
     Порядок каналов одного порта-списка — порядок, который назвала модель.
     pipe_bytes — требуемый буфер пайпов каналов, которые пишет этот вызов:
-    размер канала задаёт его писатель; 0 — требования нет."""
+    размер канала задаёт его писатель; 0 — требования нет. title — имя узла,
+    каким его назвал автор описания: им вызов называется в текстах отказов;
+    без него называется ключ."""
 
     key: str
     tool: str
@@ -432,8 +434,12 @@ class StreamNode:
     outputs: tuple[StreamOutput, ...]
     inputs: tuple[StreamInput, ...]
     pipe_bytes: int = 0
+    title: str = ""
 
     def label(self) -> str:
+        if self.title:
+            return f"{self.tool} ({self.title})"
+
         return f"{self.tool} ({self.key})"
 
 
@@ -601,7 +607,7 @@ class StreamPlan:
                 if listed is None:
                     msg = (
                         f"stream plan: {node.label()} reads channel "
-                        f"{bound.channel!r}, no call of the response writes it; "
+                        f"{bound.channel!r}, which no node writes; "
                         f"written channels: {sorted(writers)}"
                     )
                     raise StreamPlanError(msg)
@@ -768,6 +774,8 @@ class StreamGroupRun:
       него.
 
     Координатор живёт своим потоком: следит за сроком открытия и застоем.
+    Группа без каналов — один вызов инструмента без портов — исполняется
+    тем же путём, только координатор ей не нужен.
     """
 
     def __init__(self, plan: StreamPlan, timings: StreamTimings) -> None:
@@ -791,10 +799,12 @@ class StreamGroupRun:
         self._aborted = False
         self._opened_at = time.monotonic()
 
-        self._coordinator = threading.Thread(
-            target=self._coordinate, name="stream-group", daemon=True
-        )
-        self._coordinator.start()
+        # координатор следит за сроком открытия каналов и застоем данных:
+        # группе без каналов следить не за чем
+        if plan.routes():
+            threading.Thread(
+                target=self._coordinate, name="stream-group", daemon=True
+            ).start()
 
     def slot(self, key: str) -> NodeSlot:
         """Ручка вызова key для обёртки запуска."""
@@ -833,6 +843,10 @@ class StreamGroupRun:
     def abort(self, cause: FailureResult) -> None:
         """Сорвать группу снаружи (остановка хода)."""
         self._fail(cause, origin="", stopped=False)
+
+    def solitary(self) -> bool:
+        """Группа из одного вызова: её срыв — собственный итог этого вызова."""
+        return len(self._runs) == 1
 
     def finished(self) -> bool:
         """Группа кончилась: все вызовы закончились, каналы закрыты."""
@@ -1340,8 +1354,15 @@ class NodeSlot:
     ) -> None:
         self._group.attach(self._key, call, outputs, inputs)
 
+    def solitary(self) -> bool:
+        """Вызов — единственный в своей группе."""
+        return self._group.solitary()
+
     def settle(self, outcome: ToolOutcome) -> ToolOutcome:
-        """Итог вызова в группу; ответ — свой итог либо срыв группы."""
+        """Итог вызова в группу; ответ — свой итог либо срыв группы.
+
+        Единственный вызов группы отвечает своим итогом: делить срыв ему
+        не с кем."""
         reply = outcome.reply
 
         cause: FailureResult | None = None
@@ -1352,6 +1373,9 @@ class NodeSlot:
         verdict = self._group.verdict()
 
         if verdict.ok:
+            return outcome
+
+        if self._group.solitary():
             return outcome
 
         failed = ReplyError(failure=verdict.failure_of(self._key))

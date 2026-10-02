@@ -17,13 +17,14 @@ from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import tool
 from langgraph.checkpoint.memory import InMemorySaver
 
-from boba.chainlit.agent.flow import GraphSpec, PlainGraphBuilder, StreamGroupMiddleware
+from boba.chainlit.agent.flow import GraphSpec, PlainGraphBuilder
 from boba.chainlit.chat.history import CheckpointMessages, TranscriptFeed
 from boba.chainlit.domain.fields import StepField
 from boba.chainlit.infra.providers import build_history_view
 from boba.chainlit.rendering.chat_view import StepKind
 from boba.stand.tools import STREAM_CONFIG
-from boba.toolrun.stream_calls import StreamRuns
+from boba.toolkit.result import MarkdownResult
+from boba.toolrun.stream_calls import DagCalls
 
 pytestmark = pytest.mark.anyio
 
@@ -52,18 +53,18 @@ class Gate:
 GATE = Gate()
 
 
-@tool
-async def fast_index(space: str) -> str:
+@tool(response_format="content_and_artifact")
+async def fast_index(space: str) -> tuple[str, Any]:
     """Быстрая индексация."""
     GATE.fast_done.set()
-    return f"indexed {space}"
+    return MarkdownResult(text=f"indexed {space}").packed()
 
 
-@tool
-async def slow_index(space: str) -> str:
+@tool(response_format="content_and_artifact")
+async def slow_index(space: str) -> tuple[str, Any]:
     """Медленная индексация."""
     await GATE.release.wait()
-    return f"indexed {space}"
+    return MarkdownResult(text=f"indexed {space}").packed()
 
 
 def _graph(saver: InMemorySaver):
@@ -81,9 +82,7 @@ def _graph(saver: InMemorySaver):
         system_prompt="index everything",
         checkpointer=saver,
         history=build_history_view(frozenset({"fast_index", "slow_index"}), 30),
-        streams=StreamGroupMiddleware(
-            StreamRuns([fast_index, slow_index], STREAM_CONFIG)
-        ),
+        calls=DagCalls([fast_index, slow_index], STREAM_CONFIG),
     )
     return PlainGraphBuilder().build(spec)
 

@@ -159,6 +159,7 @@ class FakeSyncRegistry:
             tools=list(bridged),
             access=access,
             stream_config=STREAM_CONFIG,
+            own=frozenset(),
         )
 
 

@@ -76,6 +76,7 @@ from boba.toolkit.result import (
     TableResult,
     ToolResult,
 )
+from boba.toolrun.stream_calls import WorkflowTool
 from boba.transport.http import HttpxAuth
 from boba.transport.http.connection import HttpConnection
 
@@ -539,12 +540,23 @@ class ToolFeed:
         calls: Sequence[tuple[ToolCall, ToolExpect]],
         timeout_sec: float = TURN_TIMEOUT_SEC,
     ) -> list[ToolStep]:
-        """Один ход модели со всеми вызовами разом — так модель связывает
-        насосы каналами; шаг каждого вызова сверяется со своим ожиданием."""
-        requests: list[dict[str, Any]] = []
-        for call, _ in calls:
+        """Один вызов workflow со всеми вызовами узлами — так модель
+        связывает насосы каналами; шаг каждого узла сверяется со своим
+        ожиданием."""
+        nodes: list[dict[str, Any]] = []
+        for index, (call, _) in enumerate(calls):
             Coverage.called.add(call.tool)
-            requests.append(call.request())
+            request = call.request()
+            nodes.append(
+                {
+                    "key": f"n{index}",
+                    "tool": request["name"],
+                    "args": request["arguments"],
+                }
+            )
+
+        Coverage.called.add(WorkflowTool.NAME)
+        requests = [{"name": WorkflowTool.NAME, "arguments": {"nodes": nodes}}]
 
         log_mark = self.stand.log_lines()
         message = json.dumps(requests, ensure_ascii=False)

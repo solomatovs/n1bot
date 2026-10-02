@@ -17,12 +17,15 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from langchain_core import tools as langchain_tools
+from langchain_core.tools import BaseTool
 from pydantic import SecretStr
 
 from boba.stand_core.fake_toolmod import (
     FakeConfig,
     fake_collect,
     fake_deaf,
+    fake_echo,
     fake_emit,
     fake_head,
     fake_merge,
@@ -115,6 +118,7 @@ class GroupStand:
         self._workdir = workdir
         self._tools: dict[str, Any] = {}
         for tool in (
+            fake_echo,
             fake_emit,
             fake_collect,
             fake_head,
@@ -140,6 +144,10 @@ class GroupStand:
     def _config_of(name: str, annotation: object) -> object:
         return CFG
 
+    def adopt(self, extra: BaseTool) -> None:
+        """Готовый инструмент хоста рядом с инструментами стенда."""
+        self._tools[extra.name] = extra
+
     def dag(self, calls: Mapping[str, Call]) -> DagSpec:
         """Вызовы стенда — узлы DAG."""
         nodes: list[DagNode] = []
@@ -149,9 +157,15 @@ class GroupStand:
         return DagSpec(name="stand", version=1, nodes=nodes)
 
     def plan(self, calls: Mapping[str, Call]) -> StreamPlan:
-        return DagPlanner(ToolStreamSpecs.of, STREAM_CFG.pipe_bytes).plan(
+        """План единственной группы: вызовы стенда связаны каналами."""
+        plan = DagPlanner(ToolStreamSpecs.of, STREAM_CFG.pipe_bytes).plan(
             self.dag(calls)
         )
+        if len(plan.groups) != 1:
+            msg = f"stand calls must form one group, got {len(plan.groups)}"
+            raise AssertionError(msg)
+
+        return plan.groups[0].plan
 
     def _node(self, key: str, call: Call) -> DagNode:
         """Узел из вызова: каналы ложатся в аргументы полями портов —
@@ -242,6 +256,129 @@ def _failure(result: NodeOutcome) -> GroupFailureResult:
     assert result.artifact.error_kind == StreamFailureKind.GROUP_FAILED
     return result.artifact
     return result
+
+
+@langchain_tools.tool(response_format="content_and_artifact")
+async def plain_echo(text: str) -> tuple[str, Any]:
+    """Инструмент без портов: отвечает своим аргументом."""
+    return MarkdownResult(text=f"echo {text}").packed()
+
+
+@langchain_tools.tool(response_format="content_and_artifact")
+async def plain_crash(text: str) -> tuple[str, Any]:
+    """Инструмент без портов, падающий исключением."""
+    msg = f"plain crashed on {text}"
+    raise RuntimeError(msg)
+
+
+class TestIndependentGroups:
+    """Один DAG несёт несколько групп: вызовы, связанные каналами, и группы
+    из одного вызова без портов; сбой остаётся внутри своей группы."""
+
+    @staticmethod
+    def _pipeline(prefix: str, channel: str, *, fail: bool) -> dict[str, Call]:
+        return {
+            f"{prefix}_src": Call(
+                "fake_emit", _emit(prefix, 8, 1024, fail=fail), channel, ()
+            ),
+            f"{prefix}_sink": Call(
+                "fake_collect",
+                {"marker": f"{prefix}_sink", "fail": False, "gated": True},
+                None,
+                (("feed", channel),),
+            ),
+        }
+
+    @pytest.mark.anyio
+    async def test_calls_without_ports_fail_on_their_own(self, tmp_path: Path) -> None:
+        """Вызовы без портов — группы из одного узла: упавший и отказанный по
+        аргументам не мешают соседу, их итог — ошибка вызова со статусом
+        error."""
+        stand = GroupStand(tmp_path)
+        stand.adopt(plain_echo)
+        stand.adopt(plain_crash)
+        calls = {
+            "ok": Call("plain_echo", {"text": "hi"}, None, ()),
+            "crash": Call("plain_crash", {"text": "boom"}, None, ()),
+            "bad_args": Call("plain_echo", {}, None, ()),
+        }
+
+        outcome, results = await stand.run(calls)
+
+        assert _content(results["ok"]) == "echo hi"
+        assert not results["ok"].errored
+        assert results["ok"].message("ok").status == "success"
+
+        assert results["crash"].failed()
+        assert results["crash"].errored
+        assert "plain crashed on boom" in results["crash"].content
+        assert not isinstance(results["crash"].artifact, GroupFailureResult)
+
+        assert results["bad_args"].errored
+        assert "text" in results["bad_args"].content
+        assert results["bad_args"].message("bad_args").status == "error"
+
+        failed: list[str] = []
+        for node in outcome.failures():
+            failed.append(node.key)
+
+        assert failed == ["crash", "bad_args"]
+
+    @pytest.mark.anyio
+    async def test_failed_call_without_ports_leaves_a_pipeline_alone(
+        self, tmp_path: Path
+    ) -> None:
+        stand = GroupStand(tmp_path)
+        stand.adopt(plain_crash)
+        calls = self._pipeline("g", "a", fail=False)
+        calls["crash"] = Call("plain_crash", {"text": "boom"}, None, ())
+
+        _outcome, results = await stand.run(calls)
+
+        assert results["crash"].failed()
+        assert _content(results["g_sink"]).startswith(_expected("g", 8, 1024))
+        assert "emitted 8" in _content(results["g_src"])
+
+    @pytest.mark.anyio
+    async def test_process_call_without_ports_runs_as_a_group_of_one(
+        self, tmp_path: Path
+    ) -> None:
+        """Инструмент-процесс без портов идёт тем же путём, что и группа
+        каналов: под ручкой своей группы. Его сбой — его собственная ошибка,
+        а не срыв группы, и соседний такой же вызов он не трогает."""
+        stand = GroupStand(tmp_path)
+        calls = {
+            "ok": Call("fake_echo", {"text": "hi", "repeat": 2}, None, ()),
+            "down": Call("fake_echo", {"text": "boom", "repeat": 1}, None, ()),
+        }
+
+        _outcome, results = await stand.run(calls)
+
+        assert _content(results["ok"]) == "hi hi|t0ken"
+
+        assert results["down"].failed()
+        assert not isinstance(results["down"].artifact, GroupFailureResult)
+        assert "fake backend is down" in results["down"].content
+
+    @pytest.mark.anyio
+    async def test_group_failure_stays_inside_its_group(self, tmp_path: Path) -> None:
+        """Писатель одной группы упал: сорвана только она — вторая группа и
+        вызов без портов того же DAG доработали."""
+        stand = GroupStand(tmp_path)
+        stand.adopt(plain_echo)
+        calls = self._pipeline("bad", "a", fail=True)
+        calls.update(self._pipeline("good", "b", fail=False))
+        calls["single"] = Call("plain_echo", {"text": "alone"}, None, ())
+
+        _outcome, results = await stand.run(calls)
+
+        failure = _failure(results["bad_sink"])
+        assert failure.origin == GroupCall(tool="fake_emit", call_id="bad_src")
+        assert not stand.marker("bad_sink").exists()
+
+        assert _content(results["good_sink"]).startswith(_expected("good", 8, 1024))
+        assert stand.marker("good_sink").exists()
+        assert _content(results["single"]) == "echo alone"
 
 
 class TestFanOut:
@@ -656,7 +793,7 @@ class TestDevNull:
         coroutine = built.coroutine
         assert coroutine is not None
 
-        with pytest.raises(PayloadFailureError, match="only in a group"):
+        with pytest.raises(PayloadFailureError, match="only as a node of workflow"):
             await coroutine(feeds=["ghost"])
 
 

@@ -58,7 +58,6 @@ dev = [
     "boba-text==0.0.26.dev4",
     "boba-tool-chart==0.0.26.dev4",
     "boba-tool-clickhouse==0.0.26.dev4",
-    "boba-tool-connections==0.0.26.dev4",
     "boba-tool-canvas==0.0.26.dev4",
     "boba-tool-doc==0.0.26.dev4",
     "boba-confluence[html]==0.0.26.dev4",

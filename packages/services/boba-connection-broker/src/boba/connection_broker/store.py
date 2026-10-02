@@ -18,6 +18,7 @@ import base64
 import binascii
 import logging
 from collections.abc import Iterable, Iterator, Mapping, Sequence
+from dataclasses import dataclass
 from typing import Any, ClassVar
 from uuid import UUID
 
@@ -60,9 +61,29 @@ from boba.identity.context import Subject
 logger = logging.getLogger(__name__)
 
 __all__ = [
+    "CatalogEntry",
     "ConnectionStore",
     "ConnectionsConfig",
 ]
+
+
+class OpenProfile(BaseModel):
+    """Открытые поля jsonb профиля, нужные показу; остальное не читается."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    host: str = ""
+    description: str = ""
+
+
+@dataclass(frozen=True)
+class CatalogEntry:
+    """Соединение субъекта для показа: имя, вид и открытые поля профиля."""
+
+    name: str
+    kind: str
+    host: str
+    description: str
 
 
 class ConnectionsConfig(BaseModel):
@@ -656,6 +677,31 @@ class ConnectionStore(PostgresTable, ConnectionRepository):
         rows = await self._subject_rows(subject, ConnectionFilter.of_kind(kind))
 
         return list(self._granted_rows(rows))
+
+    async def catalog(
+        self, subject: Subject, flt: ConnectionFilter
+    ) -> Sequence[CatalogEntry]:
+        """Соединения субъекта для показа: имя, вид и открытые поля профиля.
+
+        Секреты не читаются. Имя-дубль внутри вида не показывается: вызов
+        отвергнет его как неоднозначное, выбирать из таких нечего.
+        """
+        unique = flt.model_copy(update={"unique_only": True})
+        rows = await self._subject_rows(subject, unique)
+
+        return list(self._catalog_entries(rows))
+
+    @staticmethod
+    def _catalog_entries(rows: Sequence[Mapping[str, Any]]) -> Iterator[CatalogEntry]:
+        for row in rows:
+            open_fields = OpenProfile.model_validate(row[SubjectRowColumn.DATA])
+
+            yield CatalogEntry(
+                name=row[SubjectRowColumn.NAME],
+                kind=row[SubjectRowColumn.KIND],
+                host=open_fields.host,
+                description=open_fields.description,
+            )
 
     async def _subject_rows(
         self, subject: Subject, flt: ConnectionFilter
