@@ -219,13 +219,9 @@ class StreamChannelFields:
 
 class ResponseDag:
     """DAG из ответа модели: потоковые вызовы ответа — узлы, ключ узла —
-    tool_call_id, аргументы — как назвала модель. Писатель без pipe_bytes
-    получает дефолт секции [stream_groups], как и в его схеме."""
+    tool_call_id, аргументы — как назвала модель."""
 
-    def __init__(
-        self, config: StreamGroupsConfig, streaming: Mapping[str, bool]
-    ) -> None:
-        self._config = config
+    def __init__(self, streaming: Mapping[str, bool]) -> None:
         self._streaming = dict(streaming)
 
     def of(self, response: AIMessage) -> DagSpec:
@@ -268,12 +264,7 @@ class ResponseDag:
             msg = f"stream plan: call of {name!r} has no tool call id"
             raise StreamPlanError(msg)
 
-        args: dict[str, Any] = dict(call["args"])
-        writes = bool(ToolStreamSpecs.of(name).outbound())
-        if writes and DagPlanner.PIPE_FIELD not in args:
-            args[DagPlanner.PIPE_FIELD] = self._config.pipe_bytes
-
-        return DagNode(key=key, tool=name, args=args)
+        return DagNode(key=key, tool=name, args=dict(call["args"]))
 
 
 @dataclass(frozen=True)
@@ -307,8 +298,8 @@ class StreamRuns:
             streaming[tool.name] = ToolStreamSpecs.of(tool.name).streaming()
 
         self._streaming = streaming
-        self._dags = ResponseDag(config, streaming)
-        self._runner = DagRunner(by_name, config.timings())
+        self._dags = ResponseDag(streaming)
+        self._runner = DagRunner(by_name, config.timings(), config.pipe_bytes)
 
     def streaming(self, tool: str) -> bool:
         return self._streaming.get(tool, False)

@@ -109,7 +109,7 @@ def _dag(*nodes: DagNode) -> DagSpec:
     return DagSpec(name="t", version=1, nodes=nodes)
 
 
-PLANNER = DagPlanner(_spec)
+PLANNER = DagPlanner(_spec, 0)
 
 
 class TestDagSpec:

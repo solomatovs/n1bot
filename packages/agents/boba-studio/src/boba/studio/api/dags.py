@@ -133,7 +133,8 @@ class DagRunning:
 
         registry = await self._registry()
         tools = registry.for_headless(identity.subject.roles, identity.subject.profile)
-        runner = DagRunner(tools, registry.stream_config.timings())
+        stream = registry.stream_config
+        runner = DagRunner(tools, stream.timings(), stream.pipe_bytes)
         dag = self._with_intent(body.dag, body.intent)
 
         logger.info(

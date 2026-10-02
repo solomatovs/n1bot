@@ -166,10 +166,13 @@ class DagRunner:
     наследуют от вызывающего.
     """
 
-    def __init__(self, tools: Mapping[str, BaseTool], timings: StreamTimings) -> None:
+    def __init__(
+        self, tools: Mapping[str, BaseTool], timings: StreamTimings, pipe_bytes: int
+    ) -> None:
+        """pipe_bytes — буфер пайпов каналов узла, который его не назвал."""
         self._tools = dict(tools)
         self._timings = timings
-        self._planner = DagPlanner(ToolStreamSpecs.of)
+        self._planner = DagPlanner(ToolStreamSpecs.of, pipe_bytes)
         self._failures = FailurePacker()
 
     async def run(

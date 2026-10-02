@@ -156,7 +156,9 @@ class PumpDags:
         for tool in every:
             by_name[tool.name] = tool
 
-        self._runner = DagRunner(by_name, self.STREAM_CONFIG.timings())
+        self._runner = DagRunner(
+            by_name, self.STREAM_CONFIG.timings(), self.STREAM_CONFIG.pipe_bytes
+        )
 
     def spec(self, text: str) -> DagSpec:
         """Описание из toml-текста с подставленными именами стенда."""
