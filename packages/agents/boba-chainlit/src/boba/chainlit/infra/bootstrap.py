@@ -338,8 +338,6 @@ def _use_di_container(app: FastAPI, c: AppConfig) -> Container:
     container.eager(runtime.stream_journal)
     container.eager(runtime.kb_schema)
     container.eager(runtime.connection_store)
-    container.eager(runtime.workflow_store)
-    container.eager(runtime.workflow_recovery)
     # инструменты собираются на старте: конфиг плагинов проверяется до сессий
     container.eager(runtime.tool_registry)
     # локальные модели грузятся на старте: первая сессия не ждёт веса

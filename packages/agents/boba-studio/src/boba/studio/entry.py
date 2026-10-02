@@ -34,9 +34,9 @@ from boba.runtime.spa import BuiltSpa, DevSpa, SpaPaths
 from boba.runtime.users import UsersTable
 from boba.sandbox.zygote import ZygoteRegistry
 from boba.studio.api.app import ApiAccess, ApiApp, ApiExtras
+from boba.studio.api.page_socket import StudioSessions
 from boba.studio.api.signin import PageUrls, SignInWiring
 from boba.studio.api.urls import ApiVersion, SignInUrl
-from boba.studio.api.workflow_socket import StudioSessions
 from boba.studio.catalog import providers as catalog
 from boba.studio.catalog.api import CatalogApi
 from boba.studio.catalog.sync_ports import CatalogHoldGuard
@@ -58,8 +58,6 @@ class StudioHost:
         container.eager(providers.stream_journal)
         container.eager(providers.kb_schema)
         container.eager(providers.connection_store)
-        container.eager(providers.workflow_store)
-        container.eager(providers.workflow_recovery)
         # реестр инструментов грузится на старте: ленивая загрузка в обработчике запроса
         # держит event loop дольше ping-таймаута socket.io, и вкладки теряют сокет
         container.eager(providers.tool_registry)

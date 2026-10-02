@@ -541,7 +541,6 @@ class ProcessToolCaller(ToolLauncher):
 
         channels = _CallPipes(inputs, outputs)
         stdin_r, stdin_w = os.pipe()
-        PipePlumbing.widen(stdin_w)
 
         started = time.monotonic()
         try:

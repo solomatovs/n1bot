@@ -11,7 +11,6 @@ from boba.identity.locks import LiveLocks
 from boba.messaging import MessageBus
 from boba.messaging.bus import BusWatch
 from boba.toolrun.registry import ToolRegistry
-from boba.workflow_engine.service import WorkflowService
 
 __all__ = ["RuntimeRefs"]
 
@@ -22,8 +21,6 @@ class RuntimeRefs:
 
     tool_registry: Callable[[], Awaitable[ToolRegistry]]
     """Реестр инструментов процесса; собирается контейнером на первый запрос."""
-    workflow_service: Callable[[], Awaitable[WorkflowService]]
-    """Сервис workflow; RuntimeError — секция [workflow] выключена."""
     connection_store: StoreRef
     connection_types: Callable[[], ConnectionTypes]
     """Реестр установленных типов соединений; зовётся на запрос."""

@@ -273,7 +273,6 @@ class _CallChannels:
         self.injected_r, self.injected_w = os.pipe()
         self.gate_r, self.gate_w = os.pipe()
         self.verdict_r, self.verdict_w = os.pipe()
-        PipePlumbing.widen(self.stdin_w)
         self.control_host, self.control_child = socket.socketpair(
             socket.AF_UNIX, socket.SOCK_SEQPACKET
         )

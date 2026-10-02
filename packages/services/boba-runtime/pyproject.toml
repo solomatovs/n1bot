@@ -22,7 +22,6 @@ dependencies = [
     "boba-config==0.0.26.dev4",
     "boba-toolkit==0.0.26.dev4",
     "boba-toolrun==0.0.26.dev4",
-    "boba-workflow-engine==0.0.26.dev4",
     "boba-krb[seal]==0.0.26.dev4",
     "boba-db-pgvector==0.0.26.dev4",
     "pydantic>=2.10,<3",
