@@ -707,7 +707,10 @@ class TestCreateTemplate:
         )
 
     async def test_unknown_variable_is_refused(self, postgres: PostgresSide) -> None:
-        with pytest.raises(TransferError, match="unknown variable \\{owner\\}"):
+        with pytest.raises(
+            TransferError,
+            match=r"create_table uses \{owner\}, but the receiver has no such value",
+        ):
             await land(
                 postgres,
                 "t_tpl_unknown",

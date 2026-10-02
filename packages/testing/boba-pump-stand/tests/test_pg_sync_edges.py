@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass
 from decimal import Decimal
@@ -613,7 +614,9 @@ class TestVarchar:
             ErrorIfSchemaChanged(kind="error_if_schema_changed"),
         )
 
-        assert "warning v: table limits the length to 10" in report
+        assert re.search(
+            r'"column": "v",[^}]*"note": "table limits the length to 10', report
+        )
 
         await fill(postgres, "s_text_long", "text", "repeat('y', g * 10)")
         with pytest.raises(psycopg.errors.StringDataRightTruncation):
@@ -686,8 +689,9 @@ class TestTimestamps:
             ErrorIfSchemaChanged(kind="error_if_schema_changed"),
         )
 
-        assert "warning v:" in report
-        assert "finer" in report
+        assert re.search(
+            r'"column": "v",[^}]*"note": "table [^"]+ is finer than', report
+        )
 
     async def test_time_zone_mismatch_is_refused(self, postgres: PostgresSide) -> None:
         await fill(

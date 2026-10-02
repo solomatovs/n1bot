@@ -24,13 +24,12 @@ pytestmark = [pytest.mark.integration, pytest.mark.anyio]
 
 STAND = IxStand.required()
 
-DDL = """
-create table fmt_probe (
+COLUMNS = """(
     i int, big bigint, num numeric(18,4), dbl double precision, flag boolean,
     s text, d date, ts timestamp, tstz timestamptz, u uuid,
     arr text[], nested int[][], j jsonb, raw bytea, maybe text
-)
-"""
+)"""
+DDL = sql.SQL("create table fmt_probe {}").format(sql.SQL(COLUMNS))
 ROW = (
     1,
     9007199254740993,
@@ -75,8 +74,7 @@ class TestCopyFormats:
             ).open_session() as session,
         ):
             await ix.execute("set timezone to 'UTC'")
-            columns = DDL[DDL.index("(") :]
-            q = sql.SQL("create temp table raw_fmt {}").format(columns)
+            q = sql.SQL("create temp table raw_fmt {}").format(sql.SQL(COLUMNS))
             await ix.execute(q)
             async with session.fetch_blocks("fmt", query, {}) as blocks:
                 await copy_blocks(ix, "raw_fmt", blocks)

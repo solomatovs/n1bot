@@ -18,6 +18,7 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import AsyncIterator, Sequence
 from decimal import Decimal
 from typing import Any, ClassVar
@@ -460,9 +461,15 @@ class TestExistingTable:
         )
 
         assert f"{ROWS} rows loaded" in report
-        assert "warning i4" in report
-        assert "warning n" in report
-        assert "warning ts" in report
+        assert re.search(
+            r'"column": "i4",[^}]*"note": "table [^"]+ is wider than', report
+        )
+        assert re.search(
+            r'"column": "n",[^}]*"note": "table [^"]+ is wider than', report
+        )
+        assert re.search(
+            r'"column": "ts",[^}]*"note": "table [^"]+ is finer than', report
+        )
         assert await ChLoaded(clickhouse, "existing").count() == ROWS
 
     @pytest.mark.parametrize(
