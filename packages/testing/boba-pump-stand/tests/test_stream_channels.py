@@ -2,9 +2,9 @@
 """Модель связывает насосы каналами: postgres раздаётся в ClickHouse и в
 postgres одним ответом.
 
-Вызовы идут путём чата: вызовы ответа модели отдаются StreamGroups до
-исполнения, затем все исполняются одновременно полными ToolCall, как их
-зовёт ToolNode; тела — настоящие процессы инструментов pg и ch на базах
+Вызовы идут путём чата: каждый вызов ответа модели отдаётся StreamRuns,
+первый строит DAG ответа и запускает исполнитель, остальные ждут итоги
+своих узлов; тела — настоящие процессы инструментов pg и ch на базах
 стенда.
 
 Что проверяется:
@@ -22,9 +22,9 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from langchain_core.messages import AIMessage
 
 from boba.pump_stand import ClickHouseSide, PostgresSide, PumpStand
-from boba.runtime.plugins import ToolBridge
 from boba.tool.ch import tools as ch
 from boba.tool.pg import tools as pg
 from boba.toolkit.entry import ToolMain
@@ -34,15 +34,16 @@ from boba.toolkit.result import (
     GroupFailureResult,
     ToolArtifact,
 )
+from boba.toolkit.types import SecretReveal
 from boba.toolkit.wrap import ToolProcessWrap
+from boba.toolrun.bridge import ToolBridge
 from boba.toolrun.call_id import ToolCallIdField
 from boba.toolrun.errors import ToolErrorGuard
 from boba.toolrun.process import ProcessLauncherConfig, ProcessToolCaller
 from boba.toolrun.stream_calls import (
-    StreamCallHooks,
     StreamChannelFields,
-    StreamGroups,
     StreamGroupsConfig,
+    StreamRuns,
 )
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
@@ -129,25 +130,21 @@ class ChannelTools:
         ToolProcessWrap.guard_all(ToolMain.toolset(*tools), launcher)
         StreamChannelFields(STREAM_CFG).attach_all(tools)
         ToolCallIdField.attach_all(tools)
-        self._streams = StreamGroups(TIMINGS, tools)
-        StreamCallHooks(self._streams).guard_all(tools)
         ToolErrorGuard().guard_all(tools)
-
-        self._tools: dict[str, Any] = {}
-        for tool in tools:
-            self._tools[tool.name] = tool
+        self._streams = StreamRuns(tools, STREAM_CFG)
 
     async def respond(self, calls: Sequence[Mapping[str, Any]]) -> list[Any]:
-        """Вызовы одного ответа модели: сначала план, затем все разом."""
+        """Вызовы одного ответа модели: каждый ждёт итог своего узла DAG,
+        как в чате."""
         tool_calls: list[Any] = []
         for index, call in enumerate(calls):
             tool_calls.append({**call, "id": f"call_{index}", "type": "tool_call"})
 
-        self._streams.open(tool_calls)
+        response = AIMessage(content="", tool_calls=tool_calls)
 
         runs: list[Any] = []
         for call in tool_calls:
-            runs.append(self._tools[call["name"]].ainvoke(call))
+            runs.append(self._streams.message_for(response, call, None))
 
         messages = await asyncio.gather(*runs)
 
@@ -162,7 +159,7 @@ def _source(postgres: PostgresSide) -> dict[str, Any]:
     return {
         "name": "pg_stream_out",
         "args": {
-            "connection": postgres.profile,
+            "connection": SecretReveal.dumped(postgres.profile),
             "sql": f"select id, note, amount from {PG_SCHEMA}.src",
             "wire": "arrow",
             "columns": [{"name": "id", "nullable": False}],
@@ -175,7 +172,7 @@ def _pg_sink(postgres: PostgresSide, table: str, schema_kind: str) -> dict[str, 
     return {
         "name": "pg_stream_in",
         "args": {
-            "connection": postgres.profile,
+            "connection": SecretReveal.dumped(postgres.profile),
             "schema_name": PG_SCHEMA,
             "table_name": table,
             "schema_strategy": {"kind": schema_kind},
@@ -190,7 +187,7 @@ def _ch_sink(clickhouse: ClickHouseSide, table: str) -> dict[str, Any]:
     return {
         "name": "ch_stream_in",
         "args": {
-            "connection": clickhouse.profile,
+            "connection": SecretReveal.dumped(clickhouse.profile),
             "database": CH_DATABASE,
             "table_name": table,
             "schema_strategy": {"kind": "create_if_not_exists"},

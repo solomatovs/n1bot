@@ -46,9 +46,9 @@ from boba.llm.http.openai import OpenAiProvider
 from boba.llm.providers import LlmProviders
 from boba.llm.schema import SchemaReply
 from boba.stand.refs import StandRefs
-from boba.toolkit.chain import StreamTimings
+from boba.stand.tools import STREAM_CONFIG
 from boba.toolkit.result import TableResult, ToolArtifact
-from boba.toolrun.stream_calls import StreamGroups
+from boba.toolrun.stream_calls import StreamRuns
 from boba.transport.http.connection import HttpConnection, UrlScheme
 
 _REPO = Path(__file__).resolve().parents[4]
@@ -182,11 +182,7 @@ def _graph(
         system_prompt=settings.system_prompt,
         checkpointer=InMemorySaver(),
         history=build_history_view(frozenset(names), settings.history_messages),
-        streams=StreamGroupMiddleware(
-            StreamGroups(
-                StreamTimings(open_sec=30.0, stall_sec=60.0, poll_sec=0.2), tools
-            )
-        ),
+        streams=StreamGroupMiddleware(StreamRuns(tools, STREAM_CONFIG)),
     )
 
     builder = session_graph_builder(providers, selected, tools)

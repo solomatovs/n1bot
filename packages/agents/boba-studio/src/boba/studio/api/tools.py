@@ -17,7 +17,8 @@ POST /v1/tools/{name}: тред, профиль, intent и аргументы в
 from __future__ import annotations
 
 import logging
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping
+from contextlib import asynccontextmanager
 from typing import Any, ClassVar
 from uuid import uuid4
 
@@ -51,7 +52,7 @@ from boba.toolrun.registry import ToolRegistry
 from boba.workflow import ToolFacts
 from boba.workflow_engine.catalog import CatalogBuilder
 
-__all__ = ["ToolCallBody", "ToolCallReply", "ToolCalling"]
+__all__ = ["JobLock", "ToolCallBody", "ToolCallReply", "ToolCalling"]
 
 logger = logging.getLogger(__name__)
 
@@ -94,6 +95,35 @@ class ToolCallReply(BaseModel):
         )
 
 
+class JobLock:
+    """Эксклюзивная блокировка области вызова через API на время работы.
+
+    Область занята ходом или другим вызовом — 409 с именем держателя;
+    пока вызов идёт, LockKeeper продлевает блокировку.
+    """
+
+    def __init__(self, locks: LocksSource, heartbeat_sec: float) -> None:
+        self._locks = locks
+        self._heartbeat_sec = heartbeat_sec
+
+    @asynccontextmanager
+    async def held(self, context: CallContext) -> AsyncGenerator[None, None]:
+        locks = self._locks()
+        try:
+            lock = await locks.acquire(
+                context.scope,
+                LockMode.EXCLUSIVE,
+                LockPurpose.TOOL_CALL,
+                context.subject.user_id,
+            )
+        except LockBusyError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+        keeper = LockKeeper(locks, lock, context.cancellation, self._heartbeat_sec)
+        async with keeper:
+            yield
+
+
 class ToolCalling:
     """Обработчик POST /tools/{name}."""
 
@@ -108,8 +138,7 @@ class ToolCalling:
     ) -> None:
         self._registry = registry
         self._profiles = profiles
-        self._locks = locks
-        self._heartbeat_sec = heartbeat_sec
+        self._job_lock = JobLock(locks, heartbeat_sec)
 
     def mount(self, router: APIRouter) -> None:
         router.add_api_route(
@@ -143,20 +172,7 @@ class ToolCalling:
         invoker = await self._invoker(identity.subject)
         context = identity.context(Scope.job(job_id))
 
-        # тред занят ходом или другим вызовом — 409 с именем держателя
-        locks = self._locks()
-        try:
-            lock = await locks.acquire(
-                context.scope,
-                LockMode.EXCLUSIVE,
-                LockPurpose.TOOL_CALL,
-                identity.subject.user_id,
-            )
-        except LockBusyError as exc:
-            raise HTTPException(status_code=409, detail=str(exc)) from exc
-
-        keeper = LockKeeper(locks, lock, context.cancellation, self._heartbeat_sec)
-        async with keeper:
+        async with self._job_lock.held(context):
             return await self._run(invoker, name, body, context)
 
     async def _invoker(self, subject: Subject) -> ToolInvoker:

@@ -12,7 +12,6 @@ from typing import ClassVar
 
 from langchain_core.tools import BaseTool
 
-from boba.runtime.plugins import ToolBridge
 from boba.tool.shell.tools import TOOLS, BashToolConfig
 from boba.toolkit.entry import ToolAddress, ToolArgv, ToolMain
 from boba.toolkit.facade import PayloadTool
@@ -20,6 +19,7 @@ from boba.toolkit.launcher import CollectedCall, PayloadFailureError, ToolLaunch
 from boba.toolkit.protocol import ReplyError
 from boba.toolkit.result import ErrorResult, ShellResult
 from boba.toolkit.wrap import ToolProcessWrap
+from boba.toolrun.bridge import ToolBridge
 from boba.toolrun.injected import InjectedConfig
 
 __all__ = ["ShellRun"]

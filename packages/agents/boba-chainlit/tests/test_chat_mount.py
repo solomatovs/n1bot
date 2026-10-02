@@ -28,9 +28,9 @@ from boba.chainlit.infra.config import LocalStorageConfig
 from boba.chainlit.rendering.mount import ChatMount
 from boba.identity.run import RunRegistry
 from boba.runtime.launchers import CallSurface
-from boba.runtime.plugins import ToolBridge
 from boba.tool.canvas.tools import TOOLS, CanvasToolConfig
 from boba.toolkit.result import CanvasResult, ErrorResult, FileResult
+from boba.toolrun.bridge import ToolBridge
 from boba.toolrun.call_id import ToolCallIdField
 from boba.toolrun.callvalues import CallContextValues
 from boba.toolrun.injected import InjectedConfig

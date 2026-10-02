@@ -6,56 +6,46 @@
 
 - StreamChannelFields заменяет порты в схеме модели полями каналов, барьер
   группы StreamGroup из схемы убирает.
-- StreamGroups строит по всему ответу модели план каналов и группу вызовов
-  (boba.toolkit.chain) и раздаёт их ручки по tool_call_id.
-- StreamCallHooks — обвязка вызова: ставит ручку группы в PipelineSlot,
-  чтобы обёртка запуска открыла вызов потоково, а сбой вызова раньше тела
-  (права, соединение, конфиг) срывает всю группу.
+- ResponseDag собирает из потоковых вызовов ответа модели описание DAG
+  (boba.toolkit.dag): узел — вызов как есть, ключ — tool_call_id.
+- StreamRuns — запуски DAG ответов в сессии: первый пришедший вызов ответа
+  строит DAG и отдаёт его исполнителю DagRunner, каждый вызов ответа ждёт
+  итог своего узла и получает его ToolMessage для модели. Отказ плана и
+  вызов вне плана тоже уходят модели сообщением-ошибкой.
 
 Ошибки:
 StreamGroupsConfigError — секции [stream_groups] нет в конфиге.
-PayloadFailureError — вызов потокового инструмента отвергнут: план каналов
-    его ответа нарушен либо плана для вызова нет; текст идёт модели.
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
-import threading
-from collections.abc import Callable, Iterator, Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Annotated, Any, ClassVar, Protocol
+from typing import Annotated, Any, ClassVar
 
-from langchain_core.messages import ToolCall
+from langchain_core.messages import AIMessage, ToolCall, ToolMessage
+from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import BaseTool
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from boba.toolkit.chain import (
-    PipelineSlot,
-    StreamGroupRun,
-    StreamInput,
-    StreamNode,
-    StreamOutput,
-    StreamPlan,
-    StreamPlanError,
-    StreamTimings,
-)
+from boba.toolkit.chain import StreamPlanError, StreamTimings
+from boba.toolkit.dag import DagNode, DagPlanner, DagSpec
 from boba.toolkit.entry import ToolArgv
-from boba.toolkit.failure import FailurePacker
-from boba.toolkit.launcher import PayloadFailureError
 from boba.toolkit.ports import PortDecl, PortDirection, ToolStreamSpecs
 from boba.toolkit.result import ErrorResult, FailureResult
-from boba.toolrun.call_id import ToolCallIdField
-from boba.toolrun.wrapping import CallHooks, ToolBody, ToolSchema
+from boba.toolrun.dag_run import DagHandle, DagRunError, DagRunner, NodeOutcome
+from boba.toolrun.wrapping import ToolSchema
 
 __all__ = [
-    "StreamCallHooks",
+    "ResponseDag",
     "StreamCallKind",
     "StreamChannelFields",
-    "StreamGroups",
     "StreamGroupsConfig",
     "StreamGroupsConfigError",
+    "StreamRuns",
 ]
 
 logger = logging.getLogger(__name__)
@@ -170,8 +160,6 @@ class StreamChannelFields:
     пересборки, и этих имён в ней нет.
     """
 
-    PIPE_FIELD: ClassVar[str] = "pipe_bytes"
-
     PIPE_TEXT: ClassVar[str] = (
         "Буфер пайпа каждого канала этого вызова, в байтах:\n"
         "   - крупнее — быстрее массивная перекачка\n"
@@ -204,7 +192,7 @@ class StreamChannelFields:
             fields[port.name] = self._field(port)
 
         if spec.outbound():
-            fields[self.PIPE_FIELD] = self._pipe_field()
+            fields[DagPlanner.PIPE_FIELD] = self._pipe_field()
 
         tool.args_schema = ToolSchema.rebuild(schema, fields, drop)
 
@@ -229,310 +217,190 @@ class StreamChannelFields:
         return (Annotated[str, Field(min_length=1, description=text)], ...)
 
 
-class StreamEntry(Protocol):
-    """Роль вызова в ответе модели: вход в группу либо отказ."""
+class ResponseDag:
+    """DAG из ответа модели: потоковые вызовы ответа — узлы, ключ узла —
+    tool_call_id, аргументы — как назвала модель. Писатель без pipe_bytes
+    получает дефолт секции [stream_groups], как и в его схеме."""
 
-    def enter(self) -> Callable[[], None]:
-        """Войти в вызов; отдаёт уборку. Отказ — PayloadFailureError."""
-        ...
+    def __init__(
+        self, config: StreamGroupsConfig, streaming: Mapping[str, bool]
+    ) -> None:
+        self._config = config
+        self._streaming = dict(streaming)
 
-    def fail(self, cause: FailureResult) -> None:
-        """Вызов сорвался раньше тела: сообщить группе."""
-        ...
+    def of(self, response: AIMessage) -> DagSpec:
+        """DAG потоковых вызовов ответа.
 
-    def finished(self) -> bool:
-        """Роль больше не нужна: её группа кончилась."""
-        ...
+        Ошибки:
+        StreamPlanError — у потокового вызова нет tool_call_id; потоковых
+            вызовов в ответе нет.
+        """
+        nodes = list(self._nodes(response))
+        if not nodes:
+            msg = "stream plan: the model response has no stream tool calls"
+            raise StreamPlanError(msg)
 
-
-class GroupEntry(StreamEntry):
-    """Вызов группы: ручка узла едет в PipelineSlot на время вызова."""
-
-    def __init__(self, group: StreamGroupRun, key: str) -> None:
-        self._group = group
-        self._key = key
-
-    def enter(self) -> Callable[[], None]:
-        token = PipelineSlot.set(self._group.slot(self._key))
-
-        def leave() -> None:
-            PipelineSlot.reset(token)
-
-        return leave
-
-    def fail(self, cause: FailureResult) -> None:
-        self._group.refuse(self._key, cause)
-
-    def finished(self) -> bool:
-        return self._group.finished()
-
-
-class RefusedEntry(StreamEntry):
-    """Вызов ответа с нарушенным планом каналов: отказ с текстом нарушения."""
-
-    def __init__(self, message: str) -> None:
-        self._message = message
-
-    def enter(self) -> Callable[[], None]:
-        failure = ErrorResult(
-            message=self._message, error_kind=StreamCallKind.PLAN_REFUSED
-        )
-        raise PayloadFailureError(failure)
-
-    def fail(self, cause: FailureResult) -> None:
-        return
-
-    def finished(self) -> bool:
-        return False
-
-
-class UnplannedEntry(StreamEntry):
-    """Потоковый вызов, для которого плана нет: вне ответа модели его
-    каналам не с кем соединиться."""
-
-    def __init__(self, tool: str, call_id: str) -> None:
-        self._tool = tool
-        self._call_id = call_id
-
-    def enter(self) -> Callable[[], None]:
-        msg = (
-            f"tool {self._tool!r} reads or writes stream channels and runs only "
-            "in a group of calls of one model response; no channel plan was "
-            f"made for call {self._call_id!r}"
-        )
-        failure = ErrorResult(message=msg, error_kind=StreamCallKind.UNPLANNED)
-        raise PayloadFailureError(failure)
-
-    def fail(self, cause: FailureResult) -> None:
-        return
-
-    def finished(self) -> bool:
-        return True
-
-
-class PassEntry(StreamEntry):
-    """Вызов вне связывания каналов моделью: ничего не меняется."""
-
-    def enter(self) -> Callable[[], None]:
-        return self._leave
-
-    def fail(self, cause: FailureResult) -> None:
-        return
-
-    def finished(self) -> bool:
-        return True
+        return DagSpec(name=self.key_of(response), version=1, nodes=nodes)
 
     @staticmethod
-    def _leave() -> None:
-        return
+    def key_of(response: AIMessage) -> str:
+        """Ключ ответа: его id, без id — id его вызовов."""
+        if response.id:
+            return response.id
 
+        ids: list[str] = []
+        for call in response.tool_calls:
+            ids.append(str(call["id"]))
 
-class StreamGroups:
-    """Реестр групп потоковых вызовов текущих ответов модели.
+        return "|".join(ids)
 
-    Middleware агента отдаёт сюда вызовы ответа модели до их исполнения
-    (open): потоковые из них собираются в план каналов и группу, каждому
-    вызову достаётся роль по его tool_call_id. Аргументы проверяются схемой
-    модели сразу — битый вызов отвергает всю группу, а не держит остальных
-    до срока открытия. Обвязка StreamCallHooks забирает роль вызова (take).
-    Создаётся загрузчиком инструментов и живёт в ToolRegistry.
-    """
+    def _nodes(self, response: AIMessage) -> Iterator[DagNode]:
+        for call in response.tool_calls:
+            if not self._streaming.get(call["name"], False):
+                continue
 
-    def __init__(self, timings: StreamTimings, tools: Sequence[BaseTool]) -> None:
-        self._timings = timings
-        self._lock = threading.Lock()
-        self._entries: dict[str, StreamEntry] = {}
-        self._groups: list[StreamGroupRun] = []
-        self._schemas: dict[str, type[BaseModel]] = {}
-        for tool in tools:
-            self._remember(tool)
-
-    def open(self, calls: Sequence[ToolCall]) -> None:
-        """План и группа по потоковым вызовам одного ответа модели."""
-        streaming = list(self._streaming(calls))
-        if not streaming:
-            return
-
-        self._purge()
-
-        try:
-            plan = StreamPlan(list(self._nodes(streaming)))
-        except StreamPlanError as exc:
-            self._refuse(streaming, str(exc))
-            return
-
-        group = StreamGroupRun(plan, self._timings)
-        with self._lock:
-            self._groups.append(group)
-            for call in streaming:
-                key = str(call["id"])
-                self._entries[key] = GroupEntry(group, key)
-
-        logger.info("stream group opened: %s", group.labels())
-
-    def take(self, tool: str, call_id: str) -> StreamEntry:
-        """Роль вызова; забирается один раз."""
-        with self._lock:
-            entry = self._entries.pop(call_id, None)
-
-        if entry is None:
-            return UnplannedEntry(tool, call_id)
-
-        return entry
-
-    def streaming(self, tool: str) -> bool:
-        return tool in self._schemas
-
-    def _remember(self, tool: BaseTool) -> None:
-        if not ToolStreamSpecs.of(tool.name).streaming():
-            return
-
-        schema = ToolSchema.of(tool)
-        if schema is None:
-            return
-
-        self._schemas[tool.name] = schema
-
-    def _streaming(self, calls: Sequence[ToolCall]) -> Iterator[ToolCall]:
-        for call in calls:
-            if call["name"] in self._schemas:
-                yield call
-
-    def _nodes(self, calls: Sequence[ToolCall]) -> Iterator[StreamNode]:
-        for call in calls:
             yield self._node(call)
 
-    def _node(self, call: ToolCall) -> StreamNode:
+    def _node(self, call: ToolCall) -> DagNode:
         name = call["name"]
         key = call["id"]
         if not key:
             msg = f"stream plan: call of {name!r} has no tool call id"
             raise StreamPlanError(msg)
 
-        try:
-            args = self._schemas[name].model_validate(call["args"])
-        except ValidationError as exc:
-            msg = f"stream plan: call {key!r} of {name!r} has invalid arguments: {exc}"
-            raise StreamPlanError(msg) from exc
+        args: dict[str, Any] = dict(call["args"])
+        writes = bool(ToolStreamSpecs.of(name).outbound())
+        if writes and DagPlanner.PIPE_FIELD not in args:
+            args[DagPlanner.PIPE_FIELD] = self._config.pipe_bytes
 
-        spec = ToolStreamSpecs.of(name)
-
-        outputs: list[StreamOutput] = []
-        for port, channel in self._channels(spec.outbound(), args):
-            outputs.append(StreamOutput(port=port, channel=channel))
-
-        inputs: list[StreamInput] = []
-        for port, channel in self._channels(spec.inbound(), args):
-            inputs.append(StreamInput(port=port, channel=channel))
-
-        pipe_bytes = 0
-        if outputs:
-            pipe_bytes = int(getattr(args, StreamChannelFields.PIPE_FIELD))
-
-        return StreamNode(
-            key=key,
-            tool=name,
-            spec=spec,
-            outputs=tuple(outputs),
-            inputs=tuple(inputs),
-            pipe_bytes=pipe_bytes,
-        )
-
-    @staticmethod
-    def _channels(
-        ports: Sequence[PortDecl], args: BaseModel
-    ) -> Iterator[tuple[str, str]]:
-        """Каналы портов одной стороны из полей аргументов вызова."""
-        for port in ports:
-            value = getattr(args, port.name)
-
-            channels: list[str] = [str(value)]
-            if port.many:
-                channels = list(value)
-
-            for channel in channels:
-                yield port.name, channel
-
-    def _refuse(self, calls: Sequence[ToolCall], message: str) -> None:
-        logger.warning("stream plan refused: %s", message)
-
-        with self._lock:
-            for call in calls:
-                key = call["id"]
-                if key:
-                    self._entries[key] = RefusedEntry(message)
-
-    def _purge(self) -> None:
-        """Забыть группы, которые уже кончились, и их невостребованные роли."""
-        with self._lock:
-            finished: list[StreamGroupRun] = []
-            for group in self._groups:
-                if group.finished():
-                    finished.append(group)
-
-            for group in finished:
-                self._groups.remove(group)
-
-            stale: list[str] = []
-            for key, entry in self._entries.items():
-                if entry.finished():
-                    stale.append(key)
-
-            for key in stale:
-                del self._entries[key]
+        return DagNode(key=key, tool=name, args=args)
 
 
 @dataclass(frozen=True)
-class _EntryScope:
-    """Роль вызова на время его исполнения и её уборка."""
+class _ResponseRun:
+    """Запуск DAG одного ответа: ручка исполнителя либо текст отказа плана."""
 
-    entry: StreamEntry
-    leave: Callable[[], None]
+    handle: DagHandle | None
+    refusal: str
 
 
-class StreamCallHooks(CallHooks[_EntryScope]):
-    """Обвязка потокового вызова: роль из StreamGroups на время вызова.
+class StreamRuns:
+    """Запуски DAG ответов модели в сессии чата.
 
-    Ставится снаружи проверки прав: отказ прав, соединения или конфига
-    внутри неё приходит сюда ошибкой и срывает группу вызова — остальные
-    вызовы группы не ждут его до срока. Вызов, уже поставленный в группу
-    своим оркестратором (PipelineSlot занят), проходит как есть.
+    Все вызовы ответа модели идут через middleware агента; первый из
+    потоковых строит DAG ответа и запускает исполнитель с конфигом своего
+    вызова (callbacks ленты), остальные находят готовый запуск. Каждый
+    вызов ждёт итог своего узла и получает ToolMessage для модели; отказ
+    плана — ошибка каждому вызову ответа, вызов без узла — ошибка ему
+    одному. Создаётся на сессию из её инструментов и секции [stream_groups].
     """
 
-    PASS: ClassVar[PassEntry] = PassEntry()
+    def __init__(self, tools: Sequence[BaseTool], config: StreamGroupsConfig) -> None:
+        self._config = config
+        self._lock = asyncio.Lock()
+        self._runs: dict[str, _ResponseRun] = {}
 
-    def __init__(self, groups: StreamGroups) -> None:
-        self._groups = groups
-        self._failures = FailurePacker()
+        by_name: dict[str, BaseTool] = {}
+        streaming: dict[str, bool] = {}
+        for tool in tools:
+            by_name[tool.name] = tool
+            streaming[tool.name] = ToolStreamSpecs.of(tool.name).streaming()
 
-    def guard_all(self, tools: Sequence[BaseTool]) -> None:
-        ToolBody.hook_all(tools, self)
+        self._streaming = streaming
+        self._dags = ResponseDag(config, streaming)
+        self._runner = DagRunner(by_name, config.timings())
 
-    def before(
-        self,
-        name: str,
-        args: tuple[object, ...],
-        kwargs: dict[str, object],
-    ) -> _EntryScope:
-        entry = self._entry_of(name, kwargs)
-        return _EntryScope(entry=entry, leave=entry.enter())
+    def streaming(self, tool: str) -> bool:
+        return self._streaming.get(tool, False)
 
-    def on_error(self, ctx: _EntryScope, error: Exception) -> object:
-        ctx.entry.fail(self._failures.pack(error))
-        raise error
+    async def message_for(
+        self, response: AIMessage, call: ToolCall, config: RunnableConfig | None
+    ) -> ToolMessage:
+        """Итог узла вызова call ответа response как сообщение модели."""
+        run = await self._run_of(response, config)
+        call_id = str(call["id"])
 
-    def cleanup(self, ctx: _EntryScope) -> None:
-        ctx.leave()
+        if run.handle is None:
+            failure = ErrorResult(
+                message=run.refusal, error_kind=StreamCallKind.PLAN_REFUSED
+            )
+            return self._failed(call, failure)
 
-    def _entry_of(self, name: str, kwargs: Mapping[str, object]) -> StreamEntry:
-        if not self._groups.streaming(name):
-            return self.PASS
+        if not run.handle.has(call_id):
+            msg = (
+                f"tool {call['name']!r} reads or writes stream channels and runs "
+                "only in a group of calls of one model response; no channel plan "
+                f"was made for call {call_id!r}"
+            )
+            failure = ErrorResult(message=msg, error_kind=StreamCallKind.UNPLANNED)
+            return self._failed(call, failure)
 
-        if PipelineSlot.get() is not None:
-            return self.PASS
+        try:
+            outcome = await run.handle.result(call_id)
+        except asyncio.CancelledError:
+            run.handle.cancel()
+            raise
 
-        call_id = kwargs.get(ToolCallIdField.NAME)
-        if not isinstance(call_id, str):
-            return UnplannedEntry(name, "")
+        return self._message(call, outcome)
 
-        return self._groups.take(name, call_id)
+    async def _run_of(
+        self, response: AIMessage, config: RunnableConfig | None
+    ) -> _ResponseRun:
+        key = ResponseDag.key_of(response)
+
+        async with self._lock:
+            run = self._runs.get(key)
+            if run is not None:
+                return run
+
+            self._purge()
+            run = self._start(response, config)
+            self._runs[key] = run
+
+        return run
+
+    def _start(
+        self, response: AIMessage, config: RunnableConfig | None
+    ) -> _ResponseRun:
+        try:
+            dag = self._dags.of(response)
+            handle = self._runner.start(dag, config)
+        except (StreamPlanError, DagRunError) as exc:
+            logger.warning("stream plan refused: %s", exc)
+            return _ResponseRun(handle=None, refusal=str(exc))
+
+        return _ResponseRun(handle=handle, refusal="")
+
+    def _purge(self) -> None:
+        """Забыть запуски, которые уже кончились."""
+        stale: list[str] = []
+        for key, run in self._runs.items():
+            if run.handle is None:
+                stale.append(key)
+                continue
+
+            if run.handle.done():
+                stale.append(key)
+
+        for key in stale:
+            del self._runs[key]
+
+    @staticmethod
+    def _message(call: ToolCall, outcome: NodeOutcome) -> ToolMessage:
+        return ToolMessage(
+            content=outcome.content,
+            artifact=outcome.artifact,
+            name=outcome.tool,
+            tool_call_id=str(call["id"]),
+        )
+
+    @staticmethod
+    def _failed(call: ToolCall, failure: FailureResult) -> ToolMessage:
+        content, artifact = failure.packed()
+
+        return ToolMessage(
+            content=content,
+            artifact=artifact,
+            name=call["name"],
+            tool_call_id=str(call["id"]),
+        )

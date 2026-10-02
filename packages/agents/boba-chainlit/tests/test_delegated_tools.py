@@ -53,7 +53,6 @@ from boba.kerberos import (
 from boba.krb import SpnegoAcceptor, TicketCapture
 from boba.krb.seal import SsoTickets
 from boba.messaging import MemoryMessageBus
-from boba.runtime.plugins import ToolBridge
 from boba.runtime.refresh import BusRefreshSignal
 from boba.sandbox.zygote import ZygoteRegistry
 from boba.stand.site import Stand
@@ -63,6 +62,7 @@ from boba.tool.pg.tools import PgToolConfig
 from boba.tool.web.tools import WebToolsConfig
 from boba.toolkit.entry import ToolMain
 from boba.toolkit.wrap import ToolProcessWrap
+from boba.toolrun.bridge import ToolBridge
 from boba.toolrun.callvalues import CallContextValues
 from boba.toolrun.injected import InjectedConfig
 from boba.transport.http.connection import HttpConnection, NegotiateAuth, UrlScheme
