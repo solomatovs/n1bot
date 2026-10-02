@@ -416,6 +416,8 @@ class TestDragAndDrop:
         added = page.locator(catalog_seed.node(Ed.EVENTS))
         expect(added).to_be_visible(timeout=Canvas.LIVE_TIMEOUT_MS)
         expect(added.locator(".proc-node__group")).to_have_text(Ed.SRC)
+        # рамка перерисовывается, когда в группу входит узел: ждём её обратно
+        expect(frame).to_be_visible(timeout=Canvas.LIVE_TIMEOUT_MS)
         assert Css.box(frame).contains(Css.box(added), slack=2)
 
         stored = _stored_node(catalog_api, draft_id, catalog_seed, Ed.EVENTS)
