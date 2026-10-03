@@ -24,18 +24,16 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from langchain_core.messages import ToolCall
 
 from boba.pump_stand import ClickHouseSide, PostgresSide, PumpStand
 from boba.tool.ch import tools as ch
 from boba.tool.pg import tools as pg
+from boba.toolkit.chain import GroupCall, GroupFailureResult
 from boba.toolkit.entry import ToolMain
 from boba.toolkit.result import (
     FailureResult,
-    GroupCall,
-    GroupFailureResult,
-    WorkflowResult,
 )
-from boba.toolkit.service import CallRequest
 from boba.toolkit.types import SecretReveal
 from boba.toolkit.wrap import ToolProcessWrap
 from boba.toolrun.bridge import ToolBridge
@@ -46,6 +44,7 @@ from boba.toolrun.stream_calls import (
     LocalDagService,
     StreamChannelFields,
     StreamGroupsConfig,
+    WorkflowResult,
     WorkflowTool,
 )
 
@@ -146,8 +145,8 @@ class ChannelTools:
             )
 
         arguments: dict[str, Any] = {"nodes": nodes}
-        request = CallRequest(
-            run_id="call_0", tool=WorkflowTool.NAME, arguments=arguments
+        request = ToolCall(
+            name=WorkflowTool.NAME, args=arguments, id="call_0", type="tool_call"
         )
         reply = await self._streams.call(request)
 

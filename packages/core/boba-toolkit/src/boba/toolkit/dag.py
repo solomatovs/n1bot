@@ -4,10 +4,11 @@ DagSpec — сериализуемая модель графа: узлы — в�
 виде, в каком их делает модель (имя и аргументы), каналы названы в
 аргументах полями с именами портов инструмента. Описание живёт отдельно от
 исполнения: его даёт ответ модели, файл или хранилище, а исполнитель
-принимает только его. DagPlanner переводит описание в DagPlan по
-декларациям портов инструментов: план — всегда группы исполнения. Узлы,
-связанные каналами, собираются в одну группу, узел без каналов — группа из
-него одного; все проверки графа каналов остаются в StreamPlan.
+принимает только его. DagPlanner переводит описание в планы групп
+исполнения (StreamPlan) по декларациям портов инструментов: узлы, связанные
+каналами, собираются в одну группу и исполняются по правилу «все или никто»,
+узел без каналов — группа из него одного. Все проверки графа каналов
+остаются в StreamPlan.
 
 Ошибки:
 StreamPlanError — поле порта узла не имя канала, pipe_bytes не число либо
@@ -31,7 +32,7 @@ from boba.toolkit.chain import (
 )
 from boba.toolkit.ports import PortDecl, StreamSpec
 
-__all__ = ["DagGroup", "DagNode", "DagPlan", "DagPlanner", "DagSpec"]
+__all__ = ["DagNode", "DagPlanner", "DagSpec"]
 
 
 class DagNode(BaseModel):
@@ -93,31 +94,6 @@ class DagSpec(BaseModel):
 
         msg = f"dag {self.name!r} v{self.version}: no node with key {key!r}"
         raise KeyError(msg)
-
-
-@dataclass(frozen=True)
-class DagGroup:
-    """Группа исполнения DAG: узлы и план их каналов.
-
-    В группу попадают узлы, соединённые каналами прямо или через соседей;
-    исполняется она по правилу «все или никто», и сбой одной группы другие
-    не трогает. Узел без каналов — группа из него одного. Имя группе даёт
-    планировщик: имена её каналов через «+», а без каналов — ключ узла.
-    """
-
-    name: str
-    plan: StreamPlan
-
-
-@dataclass(frozen=True)
-class DagPlan:
-    """План исполнения DAG: его группы в порядке первых узлов описания.
-
-    Каждый узел описания принадлежит ровно одной группе. Строит план
-    DagPlanner, исполняет DagRunner.
-    """
-
-    groups: tuple[DagGroup, ...]
 
 
 @dataclass
@@ -198,77 +174,30 @@ class DagPlanner:
     каждой группы проверяет StreamPlan.
     """
 
-    NAME_SEPARATOR: ClassVar[str] = "+"
-
     PIPE_FIELD: ClassVar[str] = "pipe_bytes"
 
     def __init__(self, specs: Callable[[str], StreamSpec], pipe_bytes: int) -> None:
         self._specs = specs
         self._default_pipe_bytes = pipe_bytes
 
-    def plan(self, dag: DagSpec) -> DagPlan:
+    def plan(self, dag: DagSpec) -> tuple[StreamPlan, ...]:
+        """Планы групп исполнения в порядке первых узлов описания."""
         nodes: list[StreamNode] = []
         for node in dag.nodes:
             nodes.append(self._node(node, self._specs(node.tool)))
 
-        self._check_channels(nodes)
+        # опечатка в канале разносит писателя и читателя по группам
+        StreamPlan(nodes)
 
         components = ChannelComponents()
         for planned in nodes:
             components.add(planned)
 
-        groups: list[DagGroup] = []
+        plans: list[StreamPlan] = []
         for component in components.components():
-            name = self._name_of(component)
-            groups.append(DagGroup(name=name, plan=StreamPlan(component.nodes)))
+            plans.append(StreamPlan(component.nodes))
 
-        return DagPlan(groups=tuple(groups))
-
-    @staticmethod
-    def _check_channels(nodes: Sequence[StreamNode]) -> None:
-        """Каждый читаемый канал кто-то пишет, каждый пишущийся — читают.
-
-        Проверка идёт по всем узлам описания до деления на группы: опечатка
-        в имени канала разносит писателя и читателя по разным группам, и
-        подсказать верное имя можно только отсюда.
-        """
-        written: dict[str, StreamNode] = {}
-        for node in nodes:
-            for output in node.outputs:
-                written.setdefault(output.channel, node)
-
-        read: set[str] = set()
-        for node in nodes:
-            for bound in node.inputs:
-                read.add(bound.channel)
-                if bound.channel in written:
-                    continue
-
-                msg = (
-                    f"stream plan: {node.label()} reads channel "
-                    f"{bound.channel!r} in {bound.port!r}, which no node writes; "
-                    f"channels written here: {sorted(written)}. Name one of them "
-                    "or add the node that writes this channel"
-                )
-                raise StreamPlanError(msg)
-
-        for channel, writer in written.items():
-            if channel in read:
-                continue
-
-            msg = (
-                f"stream plan: channel {channel!r} written by {writer.label()} "
-                f"has no readers; channels read here: {sorted(read)}. Add a node "
-                "that reads it, or drain it explicitly with dev_null"
-            )
-            raise StreamPlanError(msg)
-
-    def _name_of(self, component: _Component) -> str:
-        """Имя группы: её каналы, а без каналов — ключ единственного узла."""
-        if not component.channels:
-            return component.nodes[0].key
-
-        return self.NAME_SEPARATOR.join(sorted(component.channels))
+        return tuple(plans)
 
     def _node(self, node: DagNode, spec: StreamSpec) -> StreamNode:
         outputs: list[StreamOutput] = []

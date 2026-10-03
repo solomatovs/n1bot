@@ -5,9 +5,9 @@ PlainGraphBuilder собирает обычный цикл модель-инст
 поисковые (моделью-переформулировщиком либо как есть), инструменты flow
 вызываются сразу, их результаты ложатся в состояние обменом tool_calls —
 основная модель отвечает уже с готовым контекстом. Инструменты и в цикле, и
-в подготовке исполняет сервис исполнения за портом DagService: чат берёт у
-него инструменты для модели (ServiceTools), DagMiddleware отдаёт ему вызовы
-ответа модели, подготовка — свои.
+в подготовке исполняет сервер инструментов за портом ToolServer: чат берёт у
+него инструменты для модели, ServerCallMiddleware отдаёт ему вызовы ответа
+модели, подготовка — свои.
 
 Ошибки:
 PrefetchError — слой инструментов нарушил контракт ответа; сорванный вызов
@@ -22,7 +22,7 @@ import logging
 from abc import ABC, abstractmethod
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any, ClassVar, Literal, Protocol
+from typing import Any, ClassVar, Protocol
 from uuid import uuid4
 
 from langchain.agents import create_agent
@@ -35,7 +35,7 @@ from langchain_core.messages import (
     ToolCall,
     ToolMessage,
 )
-from langchain_core.tools import BaseTool, StructuredTool
+from langchain_core.tools import BaseTool
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph.state import CompiledStateGraph
 from langgraph.runtime import Runtime
@@ -48,14 +48,13 @@ from boba.llm.chat import LlmError, ToolSpec
 from boba.llm.schema import SchemaReply
 from boba.toolkit.calls import ToolIntent
 from boba.toolkit.result import FailureResult
-from boba.toolkit.service import CallReply, CallRequest, DagService
 from boba.toolkit.timing import Elapsed
+from boba.toolrun.stream_calls import ToolServer
 
 logger = logging.getLogger(__name__)
 
 __all__ = [
     "AgentGraphBuilder",
-    "DagMiddleware",
     "GraphSpec",
     "LlmRephraser",
     "PassthroughRephraser",
@@ -69,8 +68,7 @@ __all__ = [
     "Rephraser",
     "Rephrasings",
     "RephrasingsParser",
-    "ReplyMessages",
-    "ServiceTools",
+    "ServerCallMiddleware",
 ]
 
 
@@ -185,79 +183,6 @@ class RephrasingsParser:
             return
 
         found.append(text)
-
-
-class ReplyMessages:
-    """Итог вызова сервиса исполнения сообщением инструмента для модели."""
-
-    def of(self, call: ToolCall, reply: CallReply) -> ToolMessage:
-        status: Literal["success", "error"] = "success"
-        if reply.errored:
-            status = "error"
-
-        return ToolMessage(
-            content=reply.content,
-            artifact=reply.artifact,
-            name=call["name"],
-            tool_call_id=self.id_of(call),
-            status=status,
-        )
-
-    @staticmethod
-    def id_of(call: ToolCall) -> str:
-        """Идентификатор вызова; без него ответ модели не к чему привязать."""
-        call_id = call["id"]
-        if not call_id:
-            name = call["name"]
-            msg = (
-                f"tool call of {name!r} has no id: expected the model response "
-                "to name every tool call"
-            )
-            raise RuntimeError(msg)
-
-        return call_id
-
-
-class ServiceTools:
-    """Инструменты сервиса исполнения как инструменты графа хода.
-
-    Модели нужны имя, описание и схема аргументов — их отдаёт сервис
-    (DagService.tools). Тело у такого инструмента — заглушка: вызов
-    перехватывает DagMiddleware и отдаёт сервису, до тела он не доходит.
-    Создают их билдеры графа из порта сервиса.
-    """
-
-    def __init__(self, service: DagService) -> None:
-        self._offered = tuple(service.tools())
-
-    def names(self) -> frozenset[str]:
-        names: list[str] = []
-        for offered in self._offered:
-            names.append(offered.name)
-
-        return frozenset(names)
-
-    def build(self) -> list[BaseTool]:
-        built: list[BaseTool] = []
-        for offered in self._offered:
-            built.append(
-                StructuredTool(
-                    name=offered.name,
-                    description=offered.description,
-                    args_schema=dict(offered.input_schema),
-                    coroutine=self._never_called,
-                )
-            )
-
-        return built
-
-    @staticmethod
-    async def _never_called(**kwargs: object) -> str:
-        msg = (
-            "a tool of the dag service is executed by the service through the "
-            "agent middleware; its local body must not be called"
-        )
-        raise RuntimeError(msg)
 
 
 class PrefetchCall:
@@ -375,7 +300,7 @@ class PrefetchMiddleware(AgentMiddleware[AgentState[Any], Any, Any]):
     Срабатывает на каждый вопрос пользователя — в начале хода, когда последнее
     сообщение состояния пришло от него. Продолжения цикла, где модель уже
     ответила или сама зовёт инструменты, идут обычным графом. Вызовы
-    подготовки исполняет сервис исполнения: каждая переформулировка в
+    подготовки исполняет сервер инструментов: каждая переформулировка в
     каждый инструмент — свой вызов, все идут одновременно.
     """
 
@@ -384,14 +309,13 @@ class PrefetchMiddleware(AgentMiddleware[AgentState[Any], Any, Any]):
         rephraser: Rephraser,
         tools: Sequence[str],
         stage: PrefetchStage,
-        service: DagService,
+        service: ToolServer,
     ) -> None:
         super().__init__()
         self._rephraser = rephraser
         self._tools = list(tools)
         self._stage = stage
         self._service = service
-        self._messages = ReplyMessages()
 
     @override
     async def abefore_model(
@@ -468,16 +392,11 @@ class PrefetchMiddleware(AgentMiddleware[AgentState[Any], Any, Any]):
         return calls
 
     async def _invoke(self, calls: Sequence[ToolCall]) -> list[ToolMessage]:
-        """Вызовы подготовки идут в сервис одновременно; обрыв любого гасит
+        """Вызовы подготовки идут серверу одновременно; обрыв любого гасит
         остальные и уходит наверх."""
-        pending: list[asyncio.Task[CallReply]] = []
+        pending: list[asyncio.Task[ToolMessage]] = []
         for call in calls:
-            request = CallRequest(
-                run_id=self._messages.id_of(call),
-                tool=call["name"],
-                arguments=call["args"],
-            )
-            pending.append(asyncio.create_task(self._service.call(request)))
+            pending.append(asyncio.create_task(self._service.call(call)))
 
         try:
             replies = await asyncio.gather(*pending)
@@ -488,8 +407,8 @@ class PrefetchMiddleware(AgentMiddleware[AgentState[Any], Any, Any]):
             raise
 
         results: list[ToolMessage] = []
-        for call, reply in zip(calls, replies, strict=True):
-            results.append(self._checked(self._messages.of(call, reply)))
+        for reply in replies:
+            results.append(self._checked(reply))
 
         return results
 
@@ -501,7 +420,7 @@ class PrefetchMiddleware(AgentMiddleware[AgentState[Any], Any, Any]):
         ответ, и решает сама — переспросить, вызвать инструмент ещё раз или
         ответить без него; пользователь видит крест на шаге ленты. Так же
         приходит сорванный вызов — негодные аргументы, падение тела:
-        сервис упаковал его причину в результат-ошибку со статусом error.
+        сервер упаковал его причину в результат-ошибку со статусом error.
         Отмена хода и нарушение контракта слоя инструментов идут наверх
         исключением.
         """
@@ -517,23 +436,20 @@ class PrefetchMiddleware(AgentMiddleware[AgentState[Any], Any, Any]):
         return output
 
 
-class DagMiddleware(AgentMiddleware[AgentState[Any], Any, Any]):
-    """Вызовы инструментов исполняет сервис, а не ToolNode.
+class ServerCallMiddleware(AgentMiddleware[AgentState[Any], Any, Any]):
+    """Вызовы инструментов исполняет сервер инструментов, а не ToolNode.
 
     ToolNode раздаёт вызовы ответа по одному; middleware отдаёт каждый
-    вызов порту DagService и возвращает его итог как ToolMessage. Вызов
-    инструмента без портов — запуск из одного узла; связку насосов и
-    трансформов модель описывает одним вызовом workflow. Мимо сервиса
-    проходит только собственный инструмент чата (own). Вызов с выдуманным
-    именем тоже уходит сервису: он отвечает, какие инструменты есть. Граф
-    хода асинхронный; синхронный путь инструменты сервиса не исполняет.
+    вызов порту ToolServer и возвращает его итог. Мимо порта проходит
+    только собственный инструмент чата (own). Вызов с выдуманным именем
+    тоже уходит в порт: он отвечает, какие инструменты есть. Граф хода
+    асинхронный; синхронный путь инструменты сервера не исполняет.
     """
 
-    def __init__(self, service: DagService, own: frozenset[str]) -> None:
+    def __init__(self, service: ToolServer, own: frozenset[str]) -> None:
         super().__init__()
         self._service = service
         self._own = own
-        self._messages = ReplyMessages()
 
     @override
     def wrap_tool_call(
@@ -546,7 +462,7 @@ class DagMiddleware(AgentMiddleware[AgentState[Any], Any, Any]):
             return handler(request)
 
         msg = (
-            f"tool {name!r} is executed by the dag service, which is called "
+            f"tool {name!r} is executed by a tool server, which is called "
             "in the async agent graph only"
         )
         raise RuntimeError(msg)
@@ -561,15 +477,7 @@ class DagMiddleware(AgentMiddleware[AgentState[Any], Any, Any]):
         if call["name"] in self._own:
             return await handler(request)
 
-        reply = await self._service.call(
-            CallRequest(
-                run_id=self._messages.id_of(call),
-                tool=call["name"],
-                arguments=call["args"],
-            )
-        )
-
-        return self._messages.of(call, reply)
+        return await self._service.call(call)
 
 
 @dataclass(frozen=True)
@@ -577,10 +485,10 @@ class GraphSpec:
     """Общие части графа хода: их собирает инфраструктура, билдер — компонует."""
 
     chat: BaseChatModel
-    service: DagService
-    """Сервис исполнения: его инструменты получает модель, ему уходят вызовы."""
+    service: ToolServer
+    """Сервер инструментов: его инструменты получает модель, ему уходят вызовы."""
     own_tools: Sequence[BaseTool]
-    """Собственные инструменты чата: их исполняет сам граф, мимо сервиса."""
+    """Собственные инструменты чата: их исполняет сам граф, мимо сервера."""
     system_prompt: str
     checkpointer: BaseCheckpointSaver
     history: AgentMiddleware[Any, Any, Any]
@@ -589,10 +497,10 @@ class GraphSpec:
 
 class GraphTools:
     """Инструменты графа хода и middleware их вызовов по общим частям графа:
-    заглушки инструментов сервиса плюс собственные инструменты чата."""
+    инструменты сервера плюс собственные инструменты чата."""
 
     def __init__(self, spec: GraphSpec) -> None:
-        tools = ServiceTools(spec.service).build()
+        tools = list(spec.service.tools())
 
         own: list[str] = []
         for tool in spec.own_tools:
@@ -600,7 +508,7 @@ class GraphTools:
             own.append(tool.name)
 
         self.tools = tools
-        self.middleware = DagMiddleware(spec.service, frozenset(own))
+        self.middleware = ServerCallMiddleware(spec.service, frozenset(own))
 
 
 class AgentGraphBuilder(ABC):
@@ -635,7 +543,7 @@ class PrefetchGraphBuilder(AgentGraphBuilder):
         tools: Sequence[str],
         stage: PrefetchStage,
     ) -> None:
-        """tools — имена инструментов сервиса, которые зовёт подготовка."""
+        """tools — имена инструментов сервера, которые зовёт подготовка."""
         self._rephraser = rephraser
         self._tools = list(tools)
         self._stage = stage

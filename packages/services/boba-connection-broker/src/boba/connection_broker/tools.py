@@ -14,36 +14,24 @@ RefusalError — вызов идёт вне контекста CallContext.
 
 from __future__ import annotations
 
-from collections.abc import Iterator, Sequence
-from enum import StrEnum
 from typing import Annotated, Any, ClassVar
 
 from langchain_core.tools import BaseTool
 from pydantic import Field
 
 from boba.access.grants import ConnectionFilter
-from boba.connection_broker.store import CatalogEntry
 from boba.connection_broker.user_connections import StoreRef
 from boba.identity.context import CallContext, Subject
 from boba.toolkit.facade import PayloadTool, tool
 from boba.toolkit.result import TableResult
 from boba.toolrun.bridge import ToolBridge
 
-__all__ = ["CatalogColumn", "ConnectionTools", "GrantedConnections"]
-
-
-class CatalogColumn(StrEnum):
-    """Колонки выдачи обоих инструментов; их же читает модель в ответе."""
-
-    NAME = "connection"
-    KIND = "kind"
-    HOST = "host"
-    DESCRIPTION = "description"
+__all__ = ["ConnectionTools", "GrantedConnections"]
 
 
 class GrantedConnections:
     """Каталог соединений субъекта для модели: записи ConnectionStore.catalog
-    в раскладке CatalogColumn. Создаёт его ConnectionTools; хранилище
+    строками таблицы. Создаёт его ConnectionTools; хранилище
     приходит ссылкой и берётся на каждый запрос."""
 
     EMPTY_NOTE: ClassVar[str] = "no connections are granted to you"
@@ -58,20 +46,11 @@ class GrantedConnections:
 
     async def search(self, subject: Subject, flt: ConnectionFilter) -> TableResult:
         """Соединения субъекта, прошедшие фильтры."""
-        entries = await self._store_ref().catalog(subject, flt)
-        rows = list(self._rows(entries))
+        rows: list[dict[str, Any]] = []
+        for entry in await self._store_ref().catalog(subject, flt):
+            rows.append(entry.model_dump())
 
         return TableResult(rows=rows, note=self._note(len(rows), flt))
-
-    @staticmethod
-    def _rows(entries: Sequence[CatalogEntry]) -> Iterator[dict[str, Any]]:
-        for entry in entries:
-            yield {
-                CatalogColumn.NAME.value: entry.name,
-                CatalogColumn.KIND.value: entry.kind,
-                CatalogColumn.HOST.value: entry.host,
-                CatalogColumn.DESCRIPTION.value: entry.description,
-            }
 
     @classmethod
     def _note(cls, count: int, flt: ConnectionFilter) -> str | None:

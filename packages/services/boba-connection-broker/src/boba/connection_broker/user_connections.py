@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable, Mapping, Sequence
-from typing import Annotated, Any, ClassVar
+from typing import Any, ClassVar
 
 from langchain_core.tools import BaseTool
 from pydantic.fields import FieldInfo
@@ -36,12 +36,13 @@ from boba.connections.whitelist import AmbiguousConnectionError, ConnectionWhite
 from boba.identity.context import CallContext
 from boba.identity.errors import RefusalError
 from boba.kerberos import TicketAuth
-from boba.toolkit.calls import ConnectionEditor
 from boba.toolkit.entry import ToolArgv
 from boba.toolrun.injected import AsyncInjected, ToolConfigError
 from boba.toolrun.wrapping import ToolBody, ToolSchema
 
 __all__ = [
+    "CallerApplication",
+    "ConnectionParamHooks",
     "ConnectionRefusal",
     "CredentialsRef",
     "StoreRef",
@@ -53,9 +54,19 @@ logger = logging.getLogger(__name__)
 
 
 class CallerApplication:
-    """Имя приложения в подписи сессии: под ним ходят все инструменты."""
+    """Подпись профиля клиентом вызова: приложение, пользователь, инструмент.
+
+    Под именем приложения ходят все инструменты; как записать подпись в
+    сессию, решает сам профиль. Пользуются ею обвязки параметров-соединений.
+    """
 
     NAME: ClassVar[str] = "boba"
+
+    def labelled(self, connection: ConnectionBase, tool: str) -> ConnectionBase:
+        login = CallContext.current().subject.login
+        client = ClientIdentity(application=self.NAME, login=login, tool=tool)
+
+        return connection.labeled(client)
 
 
 StoreRef = Callable[[], ConnectionStore]
@@ -65,67 +76,34 @@ TypesRef = Callable[[], ConnectionTypes]
 """Реестр установленных типов; по нему модель профиля превращается в kind."""
 
 
-class ConnectionArgument:
-    """Поле, которым параметр-соединение показывается модели: имя строки.
+HookFactory = Callable[[str, str], AsyncInjected]
+"""Обвязка параметра-соединения по его имени и виду соединения."""
 
-    Семейство соединения едет метадатой ConnectionEditor: по ней форма
-    задачи на странице workflow рисует выбор из соединений нужного вида.
+
+class ConnectionParamHooks:
+    """Постановка обвязок на параметры-соединения инструментов.
+
+    Инструмент объявляет соединение параметром с моделью профиля. Здесь
+    каждый такой параметр получает обвязку, которая отдаст телу профиль, а в
+    схеме для LLM становится строкой с описанием description. Вид
+    соединения берётся из типа параметра — реестр знает, какому пакету
+    принадлежит модель профиля.
+    Откуда обвязка возьмёт профиль, решает вызывающий фабрикой make:
+    из таблицы соединений (UserConnections) либо из запечатанного значения
+    клиента (SealedConnectionParams).
     """
 
-    DESCRIPTION: ClassVar[str] = (
-        "Имя соединения из connection_list или connection_search. Бери имя "
-        "строки, чей kind подходит инструменту, а описание — задаче пользователя."
-    )
-
-    @classmethod
-    def field(cls, kind: str) -> tuple[Any, FieldInfo]:
-        annotation = Annotated[str, ConnectionEditor(family=kind)]
-
-        return annotation, FieldInfo(min_length=1, description=cls.DESCRIPTION)
-
-
-class UserConnections(AsyncInjected):
-    """Обвязка одного параметра-соединения: имя от модели, профиль от хоста."""
-
-    def __init__(
-        self,
-        store_ref: StoreRef,
-        credentials_ref: CredentialsRef,
-        types_ref: TypesRef,
-        param: str,
-        kind: str,
-    ) -> None:
-        super().__init__(param, None)
-        self._store_ref = store_ref
-        self._credentials_ref = credentials_ref
+    def __init__(self, types_ref: TypesRef, description: str) -> None:
         self._types_ref = types_ref
-        self._kind = kind
+        self._description = description
 
-    @classmethod
-    def bind_all(
-        cls,
-        tools: Sequence[BaseTool],
-        store_ref: StoreRef,
-        credentials_ref: CredentialsRef,
-        types_ref: TypesRef,
-    ) -> None:
-        """Ставит обвязку на каждый параметр-соединение и правит схему для LLM.
-
-        Зовётся до InjectedConfig: параметры читаются со схемы, пока она полная.
-        Вид соединения берётся из типа параметра — реестр знает, какому пакету
-        принадлежит модель профиля.
-        """
+    def bind_all(self, tools: Sequence[BaseTool], make: HookFactory) -> None:
+        """Зовётся до InjectedConfig: параметры читаются со схемы, пока она
+        полная."""
         for tool in tools:
-            cls._bind_one(tool, store_ref, credentials_ref, types_ref)
+            self._bind_one(tool, make)
 
-    @classmethod
-    def _bind_one(
-        cls,
-        tool: BaseTool,
-        store_ref: StoreRef,
-        credentials_ref: CredentialsRef,
-        types_ref: TypesRef,
-    ) -> None:
+    def _bind_one(self, tool: BaseTool, make: HookFactory) -> None:
         schema = ToolSchema.of(tool)
         if schema is None:
             return
@@ -136,12 +114,10 @@ class UserConnections(AsyncInjected):
 
         shown: dict[str, tuple[Any, FieldInfo]] = {}
         for param, annotation in fields.items():
-            kind = cls._kind_of(tool.name, param, annotation, types_ref)
+            kind = self._kind_of(tool.name, param, annotation)
 
-            ToolBody.hook_all(
-                [tool], cls(store_ref, credentials_ref, types_ref, param, kind)
-            )
-            shown[param] = ConnectionArgument.field(kind)
+            ToolBody.hook_all([tool], make(param, kind))
+            shown[param] = self._field()
 
             logger.info(
                 "tool %s: %s is a %s connection of the caller", tool.name, param, kind
@@ -149,8 +125,10 @@ class UserConnections(AsyncInjected):
 
         tool.args_schema = ToolSchema.rebuild(schema, shown, ())
 
-    @staticmethod
-    def _kind_of(tool: str, param: str, annotation: object, types_ref: TypesRef) -> str:
+    def _field(self) -> tuple[Any, FieldInfo]:
+        return str, FieldInfo(min_length=1, description=self._description)
+
+    def _kind_of(self, tool: str, param: str, annotation: object) -> str:
         """Вид соединения по модели профиля параметра."""
         if not isinstance(annotation, type):
             msg = (
@@ -167,13 +145,52 @@ class UserConnections(AsyncInjected):
             raise ToolConfigError(msg)
 
         try:
-            return types_ref().kind_of(annotation)
+            return self._types_ref().kind_of(annotation)
         except UnknownConnectionKindError as exc:
             msg = (
                 f"tool {tool!r}: {param} needs connection type "
                 f"{annotation.__name__}, whose package is not installed: {exc}"
             )
             raise ToolConfigError(msg) from exc
+
+
+class UserConnections(AsyncInjected):
+    """Обвязка одного параметра-соединения: имя от модели, профиль от хоста."""
+
+    ARGUMENT: ClassVar[str] = (
+        "Имя соединения из connection_list или connection_search. Бери имя "
+        "строки, чей kind подходит инструменту, а описание — задаче пользователя."
+    )
+
+    def __init__(
+        self,
+        store_ref: StoreRef,
+        credentials_ref: CredentialsRef,
+        types_ref: TypesRef,
+        param: str,
+        kind: str,
+    ) -> None:
+        super().__init__(param, None)
+        self._store_ref = store_ref
+        self._credentials_ref = credentials_ref
+        self._types_ref = types_ref
+        self._kind = kind
+        self._caller = CallerApplication()
+
+    @classmethod
+    def bind_all(
+        cls,
+        tools: Sequence[BaseTool],
+        store_ref: StoreRef,
+        credentials_ref: CredentialsRef,
+        types_ref: TypesRef,
+    ) -> None:
+        """Ставит обвязку на каждый параметр-соединение и правит схему для LLM."""
+
+        def make(param: str, kind: str) -> AsyncInjected:
+            return cls(store_ref, credentials_ref, types_ref, param, kind)
+
+        ConnectionParamHooks(types_ref, cls.ARGUMENT).bind_all(tools, make)
 
     async def value(self, name: str, kwargs: dict[str, object]) -> object:
         requested = self._requested(name, kwargs)
@@ -183,7 +200,7 @@ class UserConnections(AsyncInjected):
         whitelist = ConnectionWhitelist.of(rows)
 
         picked = self._pick(whitelist, requested)
-        connection = self._labelled(picked.connection, name)
+        connection = self._caller.labelled(picked.connection, name)
         armed = await self._armed(connection, picked.name)
 
         logger.info(
@@ -230,16 +247,6 @@ class UserConnections(AsyncInjected):
             f"to you; yours are: {known}"
         )
         raise RefusalError(ConnectionRefusal.NOT_VISIBLE, msg)
-
-    @staticmethod
-    def _labelled(connection: ConnectionBase, tool: str) -> ConnectionBase:
-        """Профиль, подписанный клиентом вызова; как подписать, решает профиль."""
-        login = CallContext.current().subject.login
-        client = ClientIdentity(
-            application=CallerApplication.NAME, login=login, tool=tool
-        )
-
-        return connection.labeled(client)
 
     async def _armed(self, connection: ConnectionBase, name: str) -> ConnectionBase:
         """Профиль с билетом вызова вместо kerberos-секции строки."""

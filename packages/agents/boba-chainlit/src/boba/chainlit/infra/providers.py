@@ -24,7 +24,6 @@ from boba.chainlit.agent.flow import (
     PlainGraphBuilder,
     PrefetchGraphBuilder,
     Rephraser,
-    ServiceTools,
 )
 from boba.chainlit.chat.history import CheckpointMessages, TranscriptFeed
 from boba.chainlit.chat.tracing import TracedStage
@@ -375,7 +374,9 @@ def langchain_agent(  # noqa: PLR0913
     service = LocalDagService(registry.dag_tools(tools), registry.stream_config)
     own = registry.own_tools(tools)
 
-    names = ServiceTools(service).names() | registry.own
+    names: set[str] = set(registry.own)
+    for offered in service.tools():
+        names.add(offered.name)
 
     spec = GraphSpec(
         chat=chat,
@@ -383,7 +384,7 @@ def langchain_agent(  # noqa: PLR0913
         own_tools=own,
         system_prompt=settings.system_prompt,
         checkpointer=saver,
-        history=build_history_view(names, settings.history_messages),
+        history=build_history_view(frozenset(names), settings.history_messages),
     )
 
     return builder.build(spec)

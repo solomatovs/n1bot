@@ -40,7 +40,9 @@ from contextlib import suppress
 from contextvars import ContextVar, Token
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import ClassVar
+from typing import ClassVar, Literal
+
+from pydantic import BaseModel, ConfigDict
 
 from boba.toolkit.failure import FailurePacker
 from boba.toolkit.launcher import (
@@ -58,10 +60,13 @@ from boba.toolkit.protocol import (
 )
 from boba.toolkit.pump import PipePlumbing
 from boba.toolkit.result import (
+    DetailBlock,
     ErrorResult,
+    Fact,
+    FactsBlock,
     FailureResult,
-    GroupCall,
-    GroupFailureResult,
+    FailureResultField,
+    NoteBlock,
 )
 
 __all__ = [
@@ -69,6 +74,8 @@ __all__ = [
     "ChainMismatchError",
     "ChannelFanOut",
     "ChannelRoute",
+    "GroupCall",
+    "GroupFailureResult",
     "GroupVerdict",
     "NodeSlot",
     "PipeTee",
@@ -86,6 +93,82 @@ __all__ = [
 ]
 
 logger = logging.getLogger(__name__)
+
+
+class GroupCall(BaseModel):
+    """Вызов группы каналов: инструмент и id вызова модели."""
+
+    model_config = ConfigDict(frozen=True)
+
+    tool: str
+    call_id: str
+
+
+class GroupFailureResult(FailureResult):
+    """Срыв группы вызовов, связанных каналами: «все или никто».
+
+    Вызов, который сорвал группу (own), показывает свою ошибку целиком и
+    пометку, что остальные вызовы ничего не зафиксировали. Остальные вызовы
+    получают короткий итог со ссылкой на сорвавшийся вызов — копия чужой
+    ошибки в каждом шаге ничего не объясняет. Без origin группу сорвала она
+    сама (застой, срок открытия каналов), и причину видят все.
+    """
+
+    kind: Literal["stream_group_failure"] = "stream_group_failure"
+    cause: FailureResultField
+    origin: GroupCall | None = None
+    calls: Sequence[GroupCall] = ()
+    own: bool = False
+
+    def headline(self) -> str:
+        if self.origin is None:
+            return self.cause.headline()
+
+        if self.own:
+            return self.cause.headline()
+
+        return f"stopped: {self.origin.tool} failed in the stream group"
+
+    def details(self) -> Sequence[DetailBlock]:
+        if self.origin is None:
+            return (*self.cause.details(), NoteBlock(text=self._stopped_note()))
+
+        if self.own:
+            return (*self.cause.details(), NoteBlock(text=self._stopped_note()))
+
+        facts = [
+            Fact(
+                key="failed call", value=f"{self.origin.tool} ({self.origin.call_id})"
+            ),
+            Fact(key="cause", value=self.cause.headline()),
+        ]
+
+        return (FactsBlock(facts=facts), NoteBlock(text="nothing was committed"))
+
+    def trace(self) -> str:
+        if self.origin is None:
+            return self.cause.trace()
+
+        if self.own:
+            return self.cause.trace()
+
+        return ""
+
+    def _stopped_note(self) -> str:
+        others = list(self._others())
+        if not others:
+            return "the stream group was stopped, nothing was committed"
+
+        joined = ", ".join(others)
+
+        return f"the stream group was stopped, nothing was committed by: {joined}"
+
+    def _others(self) -> Iterator[str]:
+        for call in self.calls:
+            if call == self.origin:
+                continue
+
+            yield call.tool
 
 
 class ChainMismatchError(LauncherError):
@@ -607,8 +690,9 @@ class StreamPlan:
                 if listed is None:
                     msg = (
                         f"stream plan: {node.label()} reads channel "
-                        f"{bound.channel!r}, which no node writes; "
-                        f"written channels: {sorted(writers)}"
+                        f"{bound.channel!r} in {bound.port!r}, which no node "
+                        f"writes; channels written here: {sorted(writers)}. Name "
+                        "one of them or add the node that writes this channel"
                     )
                     raise StreamPlanError(msg)
 
@@ -617,10 +701,12 @@ class StreamPlan:
         routes: dict[str, ChannelRoute] = {}
         for channel, (writer, index) in writers.items():
             if not readers[channel]:
+                read = list(self._read_channels(readers))
                 msg = (
                     f"stream plan: channel {channel!r} written by "
-                    f"{self._nodes[writer].label()} has no readers; an "
-                    "unread output is refused, route it explicitly"
+                    f"{self._nodes[writer].label()} has no readers; channels "
+                    f"read here: {read}. Add a node that reads it, or drain it "
+                    "explicitly with dev_null"
                 )
                 raise StreamPlanError(msg)
 
@@ -632,6 +718,13 @@ class StreamPlan:
             )
 
         return routes
+
+    @staticmethod
+    def _read_channels(readers: Mapping[str, Sequence[ReaderRef]]) -> Iterator[str]:
+        """Каналы, у которых есть хотя бы один читатель, по алфавиту."""
+        for name in sorted(readers):
+            if readers[name]:
+                yield name
 
     def _check_ports(self) -> None:
         for route in self._routes.values():

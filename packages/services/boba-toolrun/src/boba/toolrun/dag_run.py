@@ -31,13 +31,17 @@ from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import BaseTool
 from pydantic import BaseModel, ConfigDict
 
-from boba.toolkit.chain import PipelineSlot, StreamGroupRun, StreamTimings
+from boba.toolkit.chain import (
+    GroupFailureResult,
+    PipelineSlot,
+    StreamGroupRun,
+    StreamTimings,
+)
 from boba.toolkit.dag import DagNode, DagPlanner, DagSpec
 from boba.toolkit.failure import FailurePacker
 from boba.toolkit.ports import ToolStreamSpecs
 from boba.toolkit.result import (
     FailureResult,
-    GroupFailureResult,
     ToolArtifact,
     ToolResult,
 )
@@ -146,10 +150,6 @@ class DagHandle:
         self._dag = dag
         self._tasks = dict(tasks)
 
-    def has(self, key: str) -> bool:
-        """Узел с таким ключом есть в DAG."""
-        return key in self._tasks
-
     async def result(self, key: str) -> NodeOutcome:
         """Итог узла key; ждёт его конца."""
         task = self._tasks.get(key)
@@ -166,15 +166,6 @@ class DagHandle:
             nodes.append(await self._tasks[node.key])
 
         return DagOutcome(dag=self._dag.name, version=self._dag.version, nodes=nodes)
-
-    def done(self) -> bool:
-        """Все узлы закончились."""
-        return not any(self._pending())
-
-    def _pending(self) -> Iterator[asyncio.Task[NodeOutcome]]:
-        for task in self._tasks.values():
-            if not task.done():
-                yield task
 
     def cancel(self) -> None:
         for task in self._tasks.values():
@@ -218,23 +209,19 @@ class DagRunner:
         config — конфиг langchain вызова (callbacks ленты), с ним зовётся
         каждый инструмент; без него — конфиг контекста.
         """
-        plan = self._planner.plan(dag)
+        plans = self._planner.plan(dag)
 
         for node in dag.nodes:
             self._tool_of(node)
 
         tasks: dict[str, asyncio.Task[NodeOutcome]] = {}
-        for planned in plan.groups:
-            group = StreamGroupRun(planned.plan, self._timings)
+        for planned in plans:
+            group = StreamGroupRun(planned, self._timings)
             logger.info(
-                "dag %s v%d group %s started: %s",
-                dag.name,
-                dag.version,
-                planned.name,
-                group.labels(),
+                "dag %s v%d group started: %s", dag.name, dag.version, group.labels()
             )
 
-            for member in planned.plan.nodes():
+            for member in planned.nodes():
                 node = dag.node(member.key)
                 tasks[node.key] = asyncio.create_task(
                     self._run_node(group, node, config),

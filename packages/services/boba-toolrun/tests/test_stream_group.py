@@ -35,6 +35,8 @@ from boba.stand_core.fake_toolmod import (
 )
 from boba.toolkit.chain import (
     ChannelFanOut,
+    GroupCall,
+    GroupFailureResult,
     GroupVerdict,
     PipelineSlot,
     PipeTee,
@@ -59,8 +61,6 @@ from boba.toolkit.ports import ToolStreamSpecs
 from boba.toolkit.protocol import CallInputSpec, CallOutputSpec, ReplyOk, ToolCommand
 from boba.toolkit.result import (
     ErrorResult,
-    GroupCall,
-    GroupFailureResult,
     MarkdownResult,
 )
 from boba.toolkit.wrap import ToolProcessWrap
@@ -158,14 +158,14 @@ class GroupStand:
 
     def plan(self, calls: Mapping[str, Call]) -> StreamPlan:
         """План единственной группы: вызовы стенда связаны каналами."""
-        plan = DagPlanner(ToolStreamSpecs.of, STREAM_CFG.pipe_bytes).plan(
+        plans = DagPlanner(ToolStreamSpecs.of, STREAM_CFG.pipe_bytes).plan(
             self.dag(calls)
         )
-        if len(plan.groups) != 1:
-            msg = f"stand calls must form one group, got {len(plan.groups)}"
+        if len(plans) != 1:
+            msg = f"stand calls must form one group, got {len(plans)}"
             raise AssertionError(msg)
 
-        return plan.groups[0].plan
+        return plans[0]
 
     def _node(self, key: str, call: Call) -> DagNode:
         """Узел из вызова: каналы ложатся в аргументы полями портов —

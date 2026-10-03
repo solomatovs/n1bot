@@ -823,7 +823,6 @@ dependencies = [
 [package.optional-dependencies]
 dev = [
     { name = "boba-auth", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
-    { name = "boba-cancellation", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "boba-db-clickhouse", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "boba-stand", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "boba-stand-core", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
@@ -835,7 +834,6 @@ dev = [
 requires-dist = [
     { name = "boba-access", editable = "packages/core/boba-access" },
     { name = "boba-auth", marker = "extra == 'dev'", editable = "packages/services/boba-auth" },
-    { name = "boba-cancellation", marker = "extra == 'dev'", editable = "packages/core/boba-cancellation" },
     { name = "boba-connections", editable = "packages/core/boba-connections" },
     { name = "boba-db-clickhouse", marker = "extra == 'dev'", editable = "packages/infra/db/boba-db-clickhouse" },
     { name = "boba-db-postgres", editable = "packages/infra/db/boba-db-postgres" },
@@ -864,6 +862,7 @@ dependencies = [
     { name = "boba-kerberos", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "boba-toolkit", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "cryptography", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "joserfc", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "pydantic", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
 ]
 
@@ -886,6 +885,7 @@ requires-dist = [
     { name = "boba-toolkit", editable = "packages/core/boba-toolkit" },
     { name = "boba-transport-http", marker = "extra == 'dev'", editable = "packages/infra/transport/boba-transport-http" },
     { name = "cryptography", specifier = ">=42" },
+    { name = "joserfc", specifier = ">=1.7,<2" },
     { name = "pydantic", specifier = ">=2.10,<3" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8" },
 ]
@@ -2543,7 +2543,6 @@ name = "boba-toolkit"
 version = "0.0.26.dev4"
 source = { editable = "packages/core/boba-toolkit" }
 dependencies = [
-    { name = "annotated-types", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "boba-cancellation", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "pydantic", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "pydantic-core", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
@@ -2561,7 +2560,6 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "annotated-types", specifier = ">=0.7" },
     { name = "boba-cancellation", editable = "packages/core/boba-cancellation" },
     { name = "boba-stand-core", marker = "extra == 'dev'", editable = "packages/core/boba-stand-core" },
     { name = "pyarrow", marker = "extra == 'arrow'", specifier = ">=25,<26" },
@@ -3706,6 +3704,18 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/34/56/55d76614af37fe3f22a3347d1e410d2a15da581997cb2da499a625000bb5/jiter-0.15.0-graalpy311-graalpy242_311_native-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:b15d3ec9b0449c40e85319bdb4caa8b77ab526e74f5532ed94bec15e2f66822c", size = 345606, upload-time = "2026-05-19T10:09:40.727Z" },
     { url = "https://files.pythonhosted.org/packages/23/85/7270d7ad41d6061a25b950c6bf91d638bd9aacb113200a8c8d57a055fd67/jiter-0.15.0-graalpy312-graalpy250_312_native-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:1d54fb5b31dea401a41af3f8a7d2512e9b6a6a005491e6166c7e4ffab9639a9c", size = 340459, upload-time = "2026-05-19T10:09:45.452Z" },
     { url = "https://files.pythonhosted.org/packages/c8/8d/302cb2057b7513327b4d575cff6b1d066ee6431a5357fc3f8867cd684406/jiter-0.15.0-graalpy312-graalpy250_312_native-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:54d5d6090cdc1b7c9e780dfb04949a990adb1e301a2fc0bbcee7de4638d33f9a", size = 344469, upload-time = "2026-05-19T10:09:46.864Z" },
+]
+
+[[package]]
+name = "joserfc"
+version = "1.7.5"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "cryptography", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/19/94/80fea1514b7c6d7d37804d3fe9ca81455f633347fc98731bd71ffe1faa17/joserfc-1.7.5.tar.gz", hash = "sha256:d5ff536e658e17664f8c1b1ab60dc4aa62aa973fcef1edd33cc44bda45d6f5ea", size = 234990, upload-time = "2026-08-29T13:05:42.057Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/67/c5/82addfd375e5ee6520644e0553e4aadde92d668c4fc99cc716d337fe7bb3/joserfc-1.7.5-py3-none-any.whl", hash = "sha256:add2c2c84e8373b084d526a8b53daba5d7a513a118cd2dcd9fc9f979d0922159", size = 71269, upload-time = "2026-08-29T13:05:40.718Z" },
 ]
 
 [[package]]

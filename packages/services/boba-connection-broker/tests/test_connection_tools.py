@@ -18,7 +18,7 @@ from pydantic import SecretStr
 
 from boba.access.grants import ConnectionFilter
 from boba.connection_broker.store import ConnectionsConfig, ConnectionStore
-from boba.connection_broker.tools import CatalogColumn, GrantedConnections
+from boba.connection_broker.tools import GrantedConnections
 from boba.connections.manifest import ConnectionTypes
 from boba.connections.stored import GrantTarget
 from boba.db.postgres import AsyncPostgresPool
@@ -78,7 +78,7 @@ def _pg(description: str, host: str = "db.example") -> PostgresConfig:
 def _names(rows: Sequence[Mapping[str, object]]) -> list[object]:
     names: list[object] = []
     for row in rows:
-        names.append(row[CatalogColumn.NAME])
+        names.append(row["connection"])
 
     return names
 
@@ -103,13 +103,13 @@ async def test_personal_and_role_grants_are_listed(
     if _names(result.rows) != ["mine", "shared"]:
         raise AssertionError(f"granted rows only, sorted by name: {result.rows}")
 
-    if result.rows[0][CatalogColumn.KIND] != "postgres":
+    if result.rows[0]["kind"] != "postgres":
         raise AssertionError(f"kind comes from the connection: {result.rows[0]}")
 
-    if result.rows[1][CatalogColumn.DESCRIPTION] != "by role":
+    if result.rows[1]["description"] != "by role":
         raise AssertionError(f"description comes from the connection: {result.rows[1]}")
 
-    if result.rows[0][CatalogColumn.HOST] != "db.example":
+    if result.rows[0]["host"] != "db.example":
         raise AssertionError(f"host comes from the connection: {result.rows[0]}")
 
 
@@ -227,7 +227,7 @@ async def test_search_filters_combine_and_skip_foreign_rows(
     if _names(web.rows) != ["wiki"]:
         raise AssertionError(f"web row carries its host and description: {web.rows}")
 
-    if web.rows[0][CatalogColumn.HOST] != "wiki.corp":
+    if web.rows[0]["host"] != "wiki.corp":
         raise AssertionError(f"web host comes from the connection: {web.rows[0]}")
 
 

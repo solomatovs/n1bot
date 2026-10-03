@@ -10,7 +10,7 @@ import pytest
 from pydantic import BaseModel, ValidationError
 
 from boba.toolkit.chain import StreamInput, StreamOutput, StreamPlan, StreamPlanError
-from boba.toolkit.dag import DagNode, DagPlan, DagPlanner, DagSpec
+from boba.toolkit.dag import DagNode, DagPlanner, DagSpec
 from boba.toolkit.ports import Inbound, Outbound, StreamSpec
 
 
@@ -114,10 +114,10 @@ PLANNER = DagPlanner(_spec, 0)
 
 def _one_group(dag: DagSpec) -> StreamPlan:
     """План единственной группы DAG: узлы описания связаны каналами."""
-    plan = PLANNER.plan(dag)
-    assert len(plan.groups) == 1
+    plans = PLANNER.plan(dag)
+    assert len(plans) == 1
 
-    return plan.groups[0].plan
+    return plans[0]
 
 
 class TestDagSpec:
@@ -229,28 +229,26 @@ class TestDagPlanner:
             PLANNER.plan(_dag(_node("a", "source", out="x")))
 
     def test_tool_without_ports_is_a_group_of_one(self) -> None:
-        plan = PLANNER.plan(_dag(_node("p", "plain", query="select 1")))
+        plan = _one_group(_dag(_node("p", "plain", query="select 1")))
 
-        assert len(plan.groups) == 1
-        assert plan.groups[0].name == "p"
-        assert plan.groups[0].plan.inputs_of("p") == ()
-        assert plan.groups[0].plan.outputs_of("p") == ()
+        assert plan.inputs_of("p") == ()
+        assert plan.outputs_of("p") == ()
 
 
 class TestDagGroups:
     """Имена каналов связывают узлы в группы; узел без каналов — группа из
-    него одного с именем по ключу узла."""
+    него одного."""
 
     @staticmethod
-    def _layout(plan: DagPlan) -> dict[str, list[str]]:
-        """Имя группы → ключи её узлов, в порядке плана."""
-        layout: dict[str, list[str]] = {}
-        for group in plan.groups:
+    def _layout(plans: Sequence[StreamPlan]) -> list[list[str]]:
+        """Ключи узлов каждой группы, в порядке плана."""
+        layout: list[list[str]] = []
+        for plan in plans:
             keys: list[str] = []
-            for node in group.plan.nodes():
+            for node in plan.nodes():
                 keys.append(node.key)
 
-            layout[group.name] = keys
+            layout.append(keys)
 
         return layout
 
@@ -264,7 +262,7 @@ class TestDagGroups:
             )
         )
 
-        assert self._layout(plan) == {"x": ["a", "b"], "y": ["c", "d"]}
+        assert self._layout(plan) == [["a", "b"], ["c", "d"]]
 
     def test_a_node_reading_two_groups_merges_them(self) -> None:
         plan = PLANNER.plan(
@@ -276,7 +274,7 @@ class TestDagGroups:
             )
         )
 
-        assert self._layout(plan) == {"cooked+raw+side": ["a", "side", "t", "s"]}
+        assert self._layout(plan) == [["a", "side", "t", "s"]]
 
     def test_calls_without_ports_get_groups_of_their_own(self) -> None:
         plan = PLANNER.plan(
@@ -288,8 +286,7 @@ class TestDagGroups:
             )
         )
 
-        assert self._layout(plan) == {"p1": ["p1"], "x": ["a", "b"], "p2": ["p2"]}
-        assert list(self._layout(plan)) == ["p1", "x", "p2"]
+        assert self._layout(plan) == [["p1"], ["a", "b"], ["p2"]]
 
     def test_a_broken_group_refuses_the_whole_plan(self) -> None:
         with pytest.raises(StreamPlanError, match="has no readers"):
