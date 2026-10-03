@@ -37,6 +37,7 @@ pythonpath = [
     "packages/core/boba-messaging/src",
     "packages/services/boba-toolrun/src",
     "packages/services/boba-connection-broker/src",
+    "packages/services/boba-mcp-client/src",
     "packages/services/boba-catalog-service/src",
     "packages/services/boba-runtime/src",
     "packages/services/boba-auth/src",
@@ -122,6 +123,7 @@ extraPaths = [
     "packages/core/boba-messaging/src",
     "packages/services/boba-toolrun/src",
     "packages/services/boba-connection-broker/src",
+    "packages/services/boba-mcp-client/src",
     "packages/services/boba-catalog-service/src",
     "packages/services/boba-runtime/src",
     "packages/services/boba-auth/src",
@@ -236,6 +238,7 @@ boba-canvas         = { workspace = true }
 boba-messaging      = { workspace = true }
 boba-toolrun        = { workspace = true }
 boba-connection-broker = { workspace = true }
+boba-mcp-client = { workspace = true }
 boba-catalog-service = { workspace = true }
 boba-runtime = { workspace = true }
 boba-auth = { workspace = true }

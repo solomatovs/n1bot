@@ -64,7 +64,7 @@ from boba.toolkit.chain import CallAmbient
 from boba.toolkit.entry import ToolMain
 from boba.toolkit.wrap import ToolProcessWrap
 from boba.toolrun.bridge import ToolBridge
-from boba.toolrun.injected import InjectedConfig
+from boba.toolrun.injected import InjectedConfig, StaticConfig
 from boba.transport.http.connection import HttpConnection, NegotiateAuth, UrlScheme
 
 _REPO = Path(__file__).resolve().parents[4]
@@ -259,7 +259,7 @@ class Tools:
             ConnectionTypes.discover,
             call_stand.contexts,
         ).bind_all(functions)
-        InjectedConfig.bind_all(functions, resolve)
+        InjectedConfig(resolve, StaticConfig()).bind_all(functions)
 
         return ToolSetup.by_name(functions)
 

@@ -32,7 +32,7 @@ from boba.toolkit.result import CanvasResult, ErrorResult, FileResult
 from boba.toolrun.bridge import ToolBridge
 from boba.toolrun.call_id import CallFields
 from boba.toolrun.callvalues import CallContextValues
-from boba.toolrun.injected import InjectedConfig
+from boba.toolrun.injected import InjectedConfig, StaticConfig
 from boba.toolrun.run_log import ToolRunLogger
 from boba.workspace.binaries import TrustedBinaries
 from boba.workspace.launcher import MountingConfig
@@ -124,10 +124,10 @@ class Stand:
 
     def _bridged(self) -> list[Any]:
         bridged = [ToolBridge.as_structured_tool(tool) for tool in TOOLS]
-        CallContextValues.bind_all(bridged, self._calls.contexts)
-        InjectedConfig.bind_all(
-            bridged, lambda name, annotation: CanvasToolConfig(max_chars=32000)
-        )
+        CallContextValues(self._calls.contexts).bind_all(bridged)
+        InjectedConfig(
+            lambda name, annotation: CanvasToolConfig(max_chars=32000), StaticConfig()
+        ).bind_all(bridged)
         ChatMount(self._calls.contexts, self._runtime.runs).guard_all(bridged)
         CallFields().attach_all(bridged)
         ToolRunLogger(

@@ -15,75 +15,81 @@ RefusalError — вызов идёт вне контекста CallContext.
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable, Sequence
+from collections.abc import Sequence
 from typing import Any, ClassVar
 
 from langchain_core.tools import BaseTool
 
 from boba.canvas.keys import WorkspaceRoot
-from boba.identity.context import CallContext, CallContexts, Scope, Subject
+from boba.identity.context import CallContexts, Scope, Subject
 from boba.toolkit.entry import ToolArgv
-from boba.toolrun.injected import AsyncInjected
+from boba.toolrun.injected import AsyncInjected, ParamSource
 from boba.toolrun.wrapping import ToolBody, ToolSchema
 
 __all__ = ["CallContextValues"]
 
 logger = logging.getLogger(__name__)
 
-ValueOf = Callable[[CallContext], object]
 
+class CallContextValues(ParamSource):
+    """Реализация ParamSource значениями контекста вызова: снимает параметр
+    со схемы и подставляет его на каждый вызов.
 
-class CallContextValues(AsyncInjected):
-    """Обвязка параметра контекста: снимает его со схемы и подставляет на вызов."""
+    Создаёт его загрузчик инструментов из держателя контекста процесса и
+    ставит первым из источников: контексту нечего взять из toml, и поле
+    обязано уйти со схемы раньше, чем резолвер конфига его увидит.
+    """
 
-    SOURCES: ClassVar[dict[type, ValueOf]] = {
-        Subject: lambda context: context.subject,
-        Scope: lambda context: context.scope,
-        WorkspaceRoot: lambda context: WorkspaceRoot.current(),
-    }
+    MODELS: ClassVar[frozenset[type]] = frozenset({Subject, Scope, WorkspaceRoot})
     """Модели контекста, которые тело может объявить injected-параметром."""
 
-    def __init__(self, param: str, model: type, contexts: CallContexts) -> None:
-        super().__init__(param, model)
-        self._model = model
+    class _Value(AsyncInjected):
+        def __init__(self, param: str, model: type, contexts: CallContexts) -> None:
+            super().__init__(param, model)
+            self._model = model
+            self._contexts = contexts
+
+        async def value(self, name: str, kwargs: dict[str, object]) -> object:
+            context = self._contexts.current()
+            if self._model is Subject:
+                return context.subject
+
+            if self._model is Scope:
+                return context.scope
+
+            return WorkspaceRoot.current()
+
+    def __init__(self, contexts: CallContexts) -> None:
         self._contexts = contexts
 
-    @classmethod
-    def bind_all(cls, tools: Sequence[BaseTool], contexts: CallContexts) -> None:
-        """Зовётся до InjectedConfig: контексту нечего взять из toml, и поле
-        обязано уйти со схемы раньше, чем резолвер конфига его увидит."""
+    def bind_all(self, tools: Sequence[BaseTool]) -> None:
         for tool in tools:
-            cls._bind_one(tool, contexts)
+            self._bind_one(tool)
 
-    @classmethod
-    def _bind_one(cls, tool: BaseTool, contexts: CallContexts) -> None:
+    def _bind_one(self, tool: BaseTool) -> None:
         schema = ToolSchema.of(tool)
         if schema is None:
             return
 
-        params = cls._context_params(ToolArgv.injected_fields(schema))
+        params = self._context_params(ToolArgv.injected_fields(schema))
         if not params:
             return
 
         for param, model in params.items():
-            ToolBody.hook_all([tool], cls(param, model, contexts))
+            ToolBody.hook_all([tool], self._Value(param, model, self._contexts))
             logger.info(
                 "tool %s: %s is the %s of the call", tool.name, param, model.__name__
             )
 
         tool.args_schema = ToolSchema.rebuild(schema, {}, params)
 
-    @classmethod
-    def _context_params(cls, fields: dict[str, Any]) -> dict[str, type]:
+    def _context_params(self, fields: dict[str, Any]) -> dict[str, type]:
         params: dict[str, type] = {}
         for name, annotation in fields.items():
             if not isinstance(annotation, type):
                 continue
 
-            if annotation in cls.SOURCES:
+            if annotation in self.MODELS:
                 params[name] = annotation
 
         return params
-
-    async def value(self, name: str, kwargs: dict[str, object]) -> object:
-        return self.SOURCES[self._model](self._contexts.current())

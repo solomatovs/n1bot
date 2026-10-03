@@ -69,7 +69,7 @@ class HostConfig:
         """
         payload: dict[str, Any] = {}
         for name, annotation in fields.items():
-            if annotation in CallContextValues.SOURCES:
+            if annotation in CallContextValues.MODELS:
                 msg = (
                     f"toolcli: parameter {name!r} is a call context value "
                     f"({annotation.__name__}) and cannot be built from the toml; "

@@ -53,7 +53,7 @@ from boba.toolkit.result import (
 )
 from boba.toolkit.wrap import ToolProcessWrap
 from boba.toolrun.bridge import ToolBridge
-from boba.toolrun.injected import InjectedConfig
+from boba.toolrun.injected import InjectedConfig, StaticConfig
 from boba.transport.http.connection import HttpConnection
 
 _REPO = Path(__file__).resolve().parents[4]
@@ -270,7 +270,7 @@ def doc_tools(zygote_stand: ZygoteStand, raw_config):
     def resolve(name: str, annotation: Any) -> object:
         return bind(raw_config, path=annotation.SECTION, model=annotation)
 
-    InjectedConfig.bind_all(functions, resolve)
+    InjectedConfig(resolve, StaticConfig()).bind_all(functions)
 
     return ToolSetup.by_name(functions)
 
@@ -308,7 +308,7 @@ def web_tools(zygote_stand: ZygoteStand, raw_config):
     def resolve(name: str, annotation: Any) -> object:
         return ToolSetup.web_config(raw_config)
 
-    InjectedConfig.bind_all(functions, resolve)
+    InjectedConfig(resolve, StaticConfig()).bind_all(functions)
 
     return ToolSetup.by_name(functions)
 
@@ -345,7 +345,7 @@ def confluence_tools(zygote_stand: ZygoteStand, raw_config):
     def resolve(name: str, annotation: Any) -> object:
         return bind(raw_config, path=annotation.SECTION, model=annotation)
 
-    InjectedConfig.bind_all(functions, resolve)
+    InjectedConfig(resolve, StaticConfig()).bind_all(functions)
 
     return ToolSetup.by_name(functions)
 
@@ -373,7 +373,7 @@ def pg_tools(zygote_stand: ZygoteStand, raw_config):
     def resolve(name: str, annotation: Any) -> object:
         return ToolSetup.pg_config(raw_config)
 
-    InjectedConfig.bind_all(functions, resolve)
+    InjectedConfig(resolve, StaticConfig()).bind_all(functions)
 
     return ToolSetup.by_name(functions)
 
@@ -456,8 +456,7 @@ def ingest_tools(zygote_stand: ZygoteStand, raw_config, kb_collection: str):
         cfg = bind(sandboxed, path=annotation.SECTION, model=annotation)
         return cfg.model_copy(update={"collection": kb_collection})
 
-    ServiceTickets.bind_all(functions, _credentials, resolve)
-    InjectedConfig.bind_all(functions, resolve)
+    InjectedConfig(resolve, ServiceTickets(_credentials)).bind_all(functions)
 
     return ToolSetup.by_name(functions)
 
@@ -488,8 +487,7 @@ def kb_tools(zygote_stand: ZygoteStand, raw_config, kb_collection: str):
 
         return cfg.model_copy(update={"collection": kb_collection})
 
-    ServiceTickets.bind_all(functions, _credentials, resolve)
-    InjectedConfig.bind_all(functions, resolve)
+    InjectedConfig(resolve, ServiceTickets(_credentials)).bind_all(functions)
 
     return ToolSetup.by_name(functions)
 

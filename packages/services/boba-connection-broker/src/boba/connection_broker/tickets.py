@@ -14,10 +14,8 @@ InjectedAsyncOnlyError — тело инструмента вызвано син
 
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence
+from collections.abc import Callable
 from typing import ClassVar
-
-from langchain_core.tools import BaseTool
 
 from boba.connections.credentials import (
     ArmedValues,
@@ -26,11 +24,7 @@ from boba.connections.credentials import (
 )
 from boba.identity.context import NoUserCredential
 from boba.kerberos import DelegatedAuth
-from boba.toolrun.injected import (
-    AsyncInjected,
-    ConfigResolver,
-    ToolConfigError,
-)
+from boba.toolrun.injected import ConfigArming, ToolConfigError
 
 __all__ = ["CredentialsRef", "ServiceTickets"]
 
@@ -38,53 +32,40 @@ CredentialsRef = Callable[[], CredentialSource]
 """Источник кредов вызова; зовётся на вызов, а не при загрузке инструментов."""
 
 
-class ServiceTickets(AsyncInjected):
-    """Обвязка секции: статический injected-конфиг с keytab едет билетом вызова."""
+class ServiceTickets(ConfigArming):
+    """Реализация ConfigArming билетом вызова: статический injected-конфиг с
+    keytab-секцией едет в песочницу сервисным билетом к SPN соединения.
+
+    Создаёт его загрузчик инструментов из источника кредов вызова и отдаёт
+    источнику конфига (InjectedConfig).
+    """
 
     NO_DELEGATION: ClassVar[str] = (
         "a delegated kerberos section needs a user session; "
         "service configs must carry keytab credentials"
     )
 
-    def __init__(
-        self, credentials_ref: CredentialsRef, param: str, base: object
-    ) -> None:
-        super().__init__(param, base)
+    def __init__(self, credentials_ref: CredentialsRef) -> None:
         self._credentials_ref = credentials_ref
 
-    @classmethod
-    def bind_all(
-        cls,
-        tools: Sequence[BaseTool],
-        credentials_ref: CredentialsRef,
-        resolve: ConfigResolver,
-    ) -> None:
-        """Ставит обвязку на инструменты, чей injected-конфиг несёт kerberos-секцию.
+    def needs(self, value: object) -> bool:
+        return ConnectionSections.needs_arming(value)
 
-        Зовётся до InjectedConfig: injected-поля читаются со схемы, пока их
-        с неё не сняли.
-        """
-
-        def make(param: str, base: object) -> AsyncInjected:
-            return cls(credentials_ref, param, base)
-
-        cls.bind_each(tools, resolve, ConnectionSections.needs_arming, make)
-
-    async def value(self, name: str, kwargs: dict[str, object]) -> object:
-        self._require_static()
+    async def armed(self, param: str, value: object) -> object:
+        self._require_static(param, value)
 
         armed = ArmedValues(
             self._credentials_ref(), NoUserCredential(reason=self.NO_DELEGATION)
         )
 
-        return await armed.arm(self._base)
+        return await armed.arm(value)
 
-    def _require_static(self) -> None:
-        for profile in ConnectionSections.connections(self._base):
+    def _require_static(self, param: str, value: object) -> None:
+        for profile in ConnectionSections.connections(value):
             section = profile.kerberos_section()
             if isinstance(section, DelegatedAuth):
                 msg = (
-                    f"injected config {self._param!r}: profile "
+                    f"injected config {param!r}: profile "
                     f"{type(profile).__name__} carries a delegated kerberos "
                     f"section; {self.NO_DELEGATION}"
                 )

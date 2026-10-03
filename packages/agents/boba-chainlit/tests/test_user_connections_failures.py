@@ -47,7 +47,7 @@ from boba.tool.web.tools import WebToolsConfig
 from boba.toolkit.facade import Injected, UserConnection
 from boba.toolkit.result import FailureResult, ToolArtifact
 from boba.toolrun.errors import ToolErrorGuard
-from boba.toolrun.injected import InjectedConfig
+from boba.toolrun.injected import InjectedConfig, StaticConfig
 from boba.transport.http.connection import HttpConnection
 
 pytestmark = pytest.mark.anyio
@@ -325,7 +325,7 @@ class Guarded:
             ConnectionTypes.discover,
             self._calls.contexts,
         ).bind_all([tool])
-        InjectedConfig.bind_all([tool], resolve)
+        InjectedConfig(resolve, StaticConfig()).bind_all([tool])
         ToolErrorGuard().guard_all([tool])
         return tool
 

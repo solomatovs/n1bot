@@ -24,9 +24,8 @@ from boba.stand_core import fake_toolmod
 from boba.stand_core.fake_toolmod import FakeConfig
 from boba.studio.api.dags import DagRunBody, DagRunning, DagRunReply
 from boba.toolkit.chain import CallAmbient, StreamFailureKind
-from boba.toolkit.wrap import ToolProcessWrap
 from boba.toolrun.bridge import ToolBridge
-from boba.toolrun.injected import InjectedConfig
+from boba.toolrun.injected import InjectedConfig, StaticConfig
 from boba.toolrun.process import ProcessLauncherConfig, ProcessToolCaller
 from boba.toolrun.registry import ToolChain, ToolRegistry
 from boba.toolrun.streams import CallJournals
@@ -64,12 +63,16 @@ class FakeStreamTools:
         for payload in (fake_toolmod.fake_emit, fake_toolmod.fake_collect):
             tools.append(ToolBridge.as_structured_tool(payload.model_copy()))
 
-        self.specs = ToolProcessWrap(self.ambient).guard_all(tools, launcher)
-        InjectedConfig.bind_all(tools, self._config_of)
         self.tools = tools
         self._chain = ToolChain(
-            StandRefs.STREAM_CONFIG, self.journals, self.contexts, self.ambient
+            StandRefs.STREAM_CONFIG,
+            self.journals,
+            self.contexts,
+            self.ambient,
+            (InjectedConfig(self._config_of, StaticConfig()),),
+            (),
         )
+        self.specs = self._chain.launch(tools, launcher)
 
     @staticmethod
     def _config_of(name: str, annotation: object) -> object:

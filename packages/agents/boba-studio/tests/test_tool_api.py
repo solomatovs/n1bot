@@ -91,7 +91,7 @@ def _registry(probe: Probe, studio_config: StudioRuntimeConfig) -> ToolRegistry:
     )
     # та же цепочка обвязок, что ставит загрузчик
     ToolChain(
-        StandRefs.STREAM_CONFIG, probe.journals, probe.contexts, probe.ambient
+        StandRefs.STREAM_CONFIG, probe.journals, probe.contexts, probe.ambient, (), ()
     ).seal(tools, access, StreamSpecs({}))
     return ToolRegistry(
         tools=tools,

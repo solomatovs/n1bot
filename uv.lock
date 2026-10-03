@@ -45,6 +45,7 @@ members = [
     "boba-llm-fastembed",
     "boba-llm-http",
     "boba-llm-onnx",
+    "boba-mcp-client",
     "boba-messaging",
     "boba-ora-meta-scraper",
     "boba-pg-meta-scraper",
@@ -1495,6 +1496,38 @@ requires-dist = [
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8" },
 ]
 provides-extras = ["generation", "dev"]
+
+[[package]]
+name = "boba-mcp-client"
+version = "0.0.26.dev4"
+source = { editable = "packages/services/boba-mcp-client" }
+dependencies = [
+    { name = "anyio", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "boba-toolkit", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "boba-toolrun", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "httpx", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "langchain-core", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "mcp", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "pydantic", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+]
+
+[package.optional-dependencies]
+dev = [
+    { name = "pytest", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "anyio", specifier = ">=4" },
+    { name = "boba-toolkit", editable = "packages/core/boba-toolkit" },
+    { name = "boba-toolrun", editable = "packages/services/boba-toolrun" },
+    { name = "httpx", specifier = ">=0.28,<1" },
+    { name = "langchain-core", specifier = ">=1.4,<1.5" },
+    { name = "mcp", specifier = ">=1.12,<2" },
+    { name = "pydantic", specifier = ">=2.10,<3" },
+    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8" },
+]
+provides-extras = ["dev"]
 
 [[package]]
 name = "boba-messaging"

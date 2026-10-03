@@ -67,7 +67,7 @@ from boba.toolkit.wrap import ToolProcessWrap
 from boba.toolrun.bridge import ToolBridge
 from boba.toolrun.dag_run import DagOutcome, DagRunner, NodeOutcome
 from boba.toolrun.dev_null import DevNullTool
-from boba.toolrun.injected import InjectedConfig
+from boba.toolrun.injected import InjectedConfig, StaticConfig
 from boba.toolrun.process import ProcessLauncherConfig, ProcessToolCaller
 from boba.toolrun.stream_calls import StreamChannelFields, StreamGroupsConfig
 
@@ -137,7 +137,7 @@ class GroupStand:
         launcher = _launcher(workdir, self._ambient)
         specs = ToolProcessWrap(self._ambient).guard_all(wrapped, launcher)
         self._specs = specs.declaring(DevNullTool.NAME, self._drain.spec())
-        InjectedConfig.bind_all(wrapped, self._config_of)
+        InjectedConfig(self._config_of, StaticConfig()).bind_all(wrapped)
 
         built = ToolBridge.as_structured_tool(self._drain.build())
         self._tools[built.name] = built

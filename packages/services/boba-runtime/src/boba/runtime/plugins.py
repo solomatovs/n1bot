@@ -34,12 +34,11 @@ from boba.connection_broker.sealed import SealedConnectionParams
 from boba.connection_broker.tickets import ServiceTickets
 from boba.runtime.launchers import SectionLaunchers
 from boba.runtime.refs import RuntimeRefs
-from boba.toolkit.entry import ToolArgv, ToolEntryError, ToolMain
+from boba.toolkit.entry import ToolArgv, ToolEntryError
 from boba.toolkit.launcher import ToolLauncher
 from boba.toolkit.manifest import LaunchSpec, ToolPluginManifest
 from boba.toolkit.ports import StreamSpecs
 from boba.toolkit.types import StringList
-from boba.toolkit.wrap import ToolProcessWrap
 from boba.toolrun.bridge import ToolBridge
 from boba.toolrun.callvalues import CallContextValues
 from boba.toolrun.dev_null import DevNullTool
@@ -129,25 +128,30 @@ class ToolLoader:
         """Собственные инструменты процесса: идут под теми же обвязками, что
         и инструменты плагинов, а за портом инструментов образуют отдельный
         сервер (ToolRegistry.server)."""
-        self._credentials_ref = refs.credentials
         self._contexts = refs.contexts
         self._journals = refs.journals
         self._stream_cfg = self._stream_config()
         self._ambient = refs.ambient
-        self._wrap = ToolProcessWrap(refs.ambient)
         self._drain = DevNullTool(refs.ambient)
-        self._chain = ToolChain(
-            self._stream_cfg,
-            refs.journals,
-            refs.contexts,
-            refs.ambient,
-            surface_hooks,
-        )
         self._sealed = SealedConnectionParams(
             refs.seal_keys, refs.connection_types, refs.contexts
         )
         """Приём запечатанных соединений: обвязки параметров-соединений,
         правило аргументов узлов и возможность сервера с ключом."""
+        self._chain = ToolChain(
+            self._stream_cfg,
+            refs.journals,
+            refs.contexts,
+            refs.ambient,
+            (
+                CallContextValues(refs.contexts),
+                self._sealed,
+                InjectedConfig(
+                    self._config_resolver(), ServiceTickets(refs.credentials)
+                ),
+            ),
+            surface_hooks,
+        )
         self._grant_check = grant_check
 
     def load(self) -> ToolRegistry:
@@ -255,14 +259,7 @@ class ToolLoader:
         if not functions:
             return PluginTools(tools=[], specs=StreamSpecs({}))
 
-        specs = self._wrap.guard_all(ToolMain.toolset(*functions), launcher)
-        CallContextValues.bind_all(functions, self._contexts)
-
-        self._sealed.bind_all(functions)
-
-        resolve = self._config_resolver()
-        ServiceTickets.bind_all(functions, self._credentials_ref, resolve)
-        InjectedConfig.bind_all(functions, resolve)
+        specs = self._chain.launch(functions, launcher)
 
         return PluginTools(tools=functions, specs=specs)
 

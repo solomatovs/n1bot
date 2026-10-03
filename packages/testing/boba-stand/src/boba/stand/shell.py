@@ -21,7 +21,7 @@ from boba.toolkit.protocol import ReplyError
 from boba.toolkit.result import ErrorResult, ShellResult
 from boba.toolkit.wrap import ToolProcessWrap
 from boba.toolrun.bridge import ToolBridge
-from boba.toolrun.injected import InjectedConfig
+from boba.toolrun.injected import InjectedConfig, StaticConfig
 
 __all__ = ["ShellRun"]
 
@@ -51,7 +51,7 @@ class ShellRun:
         copy = payload.model_copy()
         bridged = ToolBridge.as_structured_tool(copy)
         ToolProcessWrap(CallAmbient()).guard_all(ToolMain.toolset(bridged), launcher)
-        InjectedConfig.bind_all([bridged], lambda name, annotation: cfg)
+        InjectedConfig(lambda name, annotation: cfg, StaticConfig()).bind_all([bridged])
 
         return bridged
 

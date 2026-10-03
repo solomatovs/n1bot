@@ -16,12 +16,16 @@ from langchain_core.tools import BaseTool
 from boba.access import ToolAccess
 from boba.identity.context import CallContexts
 from boba.toolkit.chain import CallAmbient
+from boba.toolkit.entry import ToolMain
+from boba.toolkit.launcher import ToolLauncher
 from boba.toolkit.ports import StreamSpecs
+from boba.toolkit.wrap import ToolProcessWrap
 from boba.toolrun.access import ToolAccessGuard
 from boba.toolrun.call_id import CallFields
 from boba.toolrun.cancellation import CancellableTools
 from boba.toolrun.dag_run import DagRunner
 from boba.toolrun.errors import ToolErrorGuard
+from boba.toolrun.injected import ParamSource
 from boba.toolrun.run_log import ToolRunLogger
 from boba.toolrun.stream_calls import (
     LocalDagService,
@@ -45,20 +49,26 @@ class ToolChain:
 
     Создаёт его загрузчик инструментов (ToolLoader) из секции
     [stream_groups], журналов вызовов и держателя контекста процесса; стенды
-    тестов создают такой же. seal() ставит обвязки на уже собранные
-    инструменты, изнутри наружу: обвязки поверхности процесса, поля каналов
-    и служебные поля вызова в схеме, журнал, отмена, права, упаковка ошибок;
-    последним sync-телу даётся корутина.
+    тестов создают такой же. launch() ставит на инструменты секции обёртку
+    запуска и источники служебных параметров тела; seal() ставит обвязки на
+    уже собранные инструменты, изнутри наружу: обвязки поверхности процесса,
+    поля каналов и служебные поля вызова в схеме, журнал, отмена, права,
+    упаковка ошибок; последним sync-телу даётся корутина.
     """
 
-    def __init__(
+    def __init__(  # noqa: PLR0913 — цепочка собирается всеми входами процесса
         self,
         stream_config: StreamGroupsConfig,
         journals: CallJournals,
         contexts: CallContexts,
         ambient: CallAmbient,
-        surface_hooks: Sequence[CallHooks[Any]] = (),
+        sources: Sequence[ParamSource],
+        surface_hooks: Sequence[CallHooks[Any]],
     ) -> None:
+        self._wrap = ToolProcessWrap(ambient)
+        self._sources = tuple(sources)
+        """Источники служебных параметров тела в порядке постановки: контекст
+        вызова, соединения, конфиг."""
         self._surface_hooks = tuple(surface_hooks)
         """Обвязки поверхности процесса (чат монтирует элементы результата):
         ставятся сразу после тела, до журнала и разбора ошибок."""
@@ -69,6 +79,16 @@ class ToolChain:
         self._access = ToolAccessGuard(contexts.subject)
         self._errors = ToolErrorGuard()
         self._async_body = ToolAsyncBody()
+
+    def launch(self, tools: Sequence[BaseTool], launcher: ToolLauncher) -> StreamSpecs:
+        """Ставит обёртку запуска и источники служебных параметров на
+        инструменты одной секции; отдаёт их потоковые декларации, снятые,
+        пока порты ещё на схеме."""
+        specs = self._wrap.guard_all(ToolMain.toolset(*tools), launcher)
+        for source in self._sources:
+            source.bind_all(tools)
+
+        return specs
 
     def seal(
         self, tools: Sequence[BaseTool], access: ToolAccess, specs: StreamSpecs
