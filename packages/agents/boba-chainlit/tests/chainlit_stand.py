@@ -42,6 +42,8 @@ from boba.chainlit.rendering.chat_view import (
 )
 from boba.chainlit.rendering.renderer import ChatRenderer, NoSurface
 from boba.config import bind
+from boba.connection_broker.store import ConnectionStore
+from boba.connection_broker.tools import ConnectionTools
 from boba.db.postgres import AsyncPostgresPool
 from boba.identity.context import (
     CallContext,
@@ -412,6 +414,17 @@ def use_session(
         install_context(monkeypatch, session.call_context(TEST_TURN, profile))
 
     return session
+
+
+@pytest.fixture
+def catalog(store: ConnectionStore) -> Any:
+    """connection_list чата над теми же таблицами, что и инструменты: тело
+    исполняется в процессе и читает хранилище соединений."""
+
+    def stored() -> ConnectionStore:
+        return store
+
+    return ConnectionTools(stored).build()[0]
 
 
 @pytest.fixture(autouse=True)

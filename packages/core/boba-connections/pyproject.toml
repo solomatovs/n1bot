@@ -12,6 +12,7 @@ dependencies = [
     "boba-identity==0.0.26.dev4",
     "boba-kerberos==0.0.26.dev4",
     "cryptography>=42",
+    "joserfc>=1.7,<2",
     "pydantic>=2.10,<3",
 ]
 

@@ -2,10 +2,10 @@
 
 Агентный цикл create_agent с заскриптованной моделью: модель зовёт
 инструмент workflow, его узлы — источник, трансформ и приёмники, каналы
-названы в полях out/feed/feeds аргументов узлов. DagMiddleware перехватывает
-вызов и отдаёт сервису исполнения: тот раскрывает его в узлы DAG, запускает их
-группой, вызов получает итоги узлов одним результатом. Тела — настоящие
-субпроцессы инструментов стенда.
+названы в полях out/feed/feeds аргументов узлов. ServerCallMiddleware
+перехватывает вызов и отдаёт серверу инструментов: тот раскрывает его в узлы
+DAG, запускает их группой, вызов получает итоги узлов одним результатом.
+Тела — настоящие субпроцессы инструментов стенда.
 """
 
 from __future__ import annotations
@@ -25,22 +25,20 @@ from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph.state import CompiledStateGraph
 from pydantic import SecretStr
 
-from boba.chainlit.agent.flow import GraphSpec, PlainGraphBuilder, ServiceTools
+from boba.chainlit.agent.flow import GraphSpec, PlainGraphBuilder
 from boba.chainlit.chat.history import CheckpointMessages, TranscriptFeed
 from boba.chainlit.domain.fields import StepField
 from boba.chainlit.infra.providers import build_history_view
 from boba.chainlit.rendering.chat_view import StepKind
 from boba.stand_core import fake_toolmod
 from boba.stand_core.fake_toolmod import FakeConfig
-from boba.toolkit.entry import ToolMain
+from boba.toolkit.chain import GroupFailureResult
+from boba.toolkit.entry import EntryErrorKind, ToolMain
 from boba.toolkit.launcher import TappedCall, ToolCall, ToolLauncher
 from boba.toolkit.protocol import ToolCommand
 from boba.toolkit.result import (
     FailureResult,
-    GroupFailureResult,
     ToolArtifact,
-    WorkflowNodeResult,
-    WorkflowResult,
 )
 from boba.toolkit.wrap import ToolProcessWrap
 from boba.toolrun.bridge import ToolBridge
@@ -54,6 +52,8 @@ from boba.toolrun.stream_calls import (
     StreamCallKind,
     StreamChannelFields,
     StreamGroupsConfig,
+    WorkflowNodeResult,
+    WorkflowResult,
     WorkflowTool,
 )
 
@@ -170,13 +170,17 @@ class ChannelStand:
             AIMessage(content=FINAL),
         ]
 
+        names: list[str] = []
+        for offered in self.streams.tools():
+            names.append(offered.name)
+
         spec = GraphSpec(
             chat=ScriptedChat(messages=iter(script), disable_streaming=True),
             service=self.streams,
             own_tools=(),
             system_prompt="wire the streams",
             checkpointer=saver,
-            history=build_history_view(ServiceTools(self.streams).names(), 30),
+            history=build_history_view(frozenset(names), 30),
         )
         return PlainGraphBuilder().build(spec)
 
@@ -204,6 +208,11 @@ def _error(message: ToolMessage) -> FailureResult:
     artifact = ToolArtifact.revive(message.artifact)
     assert isinstance(artifact, FailureResult), message.content
     return artifact
+
+
+def _model_schema(offered: BaseTool) -> dict[str, Any]:
+    """Схема аргументов инструмента в том виде, в каком её получает модель."""
+    return convert_to_openai_tool(offered)["function"]["parameters"]
 
 
 def _nodes(message: ToolMessage) -> dict[str, WorkflowNodeResult]:
@@ -303,7 +312,7 @@ class TestChannelSchema:
 
         assert offered == ["fake_echo", WorkflowTool.NAME]
 
-        schema = stand.streams.tools()[-1].input_schema
+        schema = _model_schema(stand.streams.tools()[-1])
 
         variants: dict[str, Any] = {}
         for variant in schema["properties"]["nodes"]["items"]["anyOf"]:
@@ -601,7 +610,7 @@ class TestWorkflowGroups:
 
         replies = await stand.turn([call])
 
-        schema = stand.streams.tools()[-1].input_schema
+        schema = _model_schema(stand.streams.tools()[-1])
         assert "intent" in schema["properties"]
         assert replies["call_0"].status == "success"
         assert (tmp_path / "noted").read_text() == _collected("m", 4, 16)
@@ -727,7 +736,7 @@ REFUSALS: dict[str, tuple[dict[str, Any], tuple[str, ...]]] = {
                 ]
             },
         },
-        ("workflow node key 'src' is repeated",),
+        ("node keys must be unique, repeated: ['src']",),
     ),
     "no_nodes": (
         {"name": WorkflowTool.NAME, "args": {"nodes": []}},
@@ -820,7 +829,7 @@ class TestWorkflowRefusals:
 
         error = _error(replies["call_0"])
         text = error.llm_view()
-        assert error.error_kind == StreamCallKind.UNKNOWN_TOOL, text
+        assert error.error_kind == EntryErrorKind.UNKNOWN_TOOL, text
         assert "tool 'copy_table' does not exist" in text
         assert "['fake_echo', 'workflow']" in text
         assert stand.started() == []

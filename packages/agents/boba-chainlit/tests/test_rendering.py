@@ -7,7 +7,7 @@ from typing import Any
 
 import pytest
 
-from boba.toolkit.calls import ToolCallBase, ToolCallModels
+from boba.toolkit.calls import FieldMarks, ToolCallBase, ToolCallModels
 from boba.toolkit.result import (
     ErrorResult,
     MarkdownResult,
@@ -365,8 +365,7 @@ class TestDeclaredDisplays:
         }
         for (name, arg), language in expected.items():
             call = ToolCallModels.call_of(name, {arg: "x"})
-            fields = {field.name: field for field in call.studio_view().fields}
-            display = fields[arg].display
+            display = FieldMarks.display(type(call).model_fields[arg])
             if not isinstance(display, MarkdownResult):
                 raise AssertionError(f"{name}.{arg}: display is MarkdownResult")
             if display.language != language:

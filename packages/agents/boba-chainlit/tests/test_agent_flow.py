@@ -11,6 +11,7 @@ from chainlit.step import StepDict
 from chainlit_stand import RecordedTurn
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
+from langchain_core.messages import ToolCall as GraphToolCall
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import BaseTool, tool
 from langgraph.checkpoint.memory import InMemorySaver
@@ -30,7 +31,6 @@ from boba.chainlit.agent.flow import (
     PrefetchStage,
     Rephraser,
     RephrasingsParser,
-    ServiceTools,
 )
 from boba.chainlit.chat.tracing import AgentTracer, TracedStage
 from boba.chainlit.chat.turn import TurnState
@@ -62,7 +62,6 @@ from boba.llm.schema import SchemaReply
 from boba.stand.tools import STREAM_CONFIG
 from boba.toolkit.calls import ToolIntent
 from boba.toolkit.result import ErrorResult, TableResult, ToolArtifact
-from boba.toolkit.service import CallReply, CallRequest
 from boba.toolrun.cancellation import CancellableTools
 from boba.toolrun.stream_calls import LocalDagService
 
@@ -297,6 +296,40 @@ def _tool_messages(messages: Sequence[BaseMessage]) -> list[ToolMessage]:
             found.append(message)
 
     return found
+
+
+async def _replies(
+    service: LocalDagService,
+    own_tools: Sequence[BaseTool],
+    calls: Sequence[dict[str, Any]],
+) -> tuple[dict[str, ToolMessage], BaseMessage]:
+    """Ход, в котором модель зовёт calls: ответы инструментов по id вызова и
+    последнее сообщение хода."""
+    names: list[str] = []
+    for offered in (*service.tools(), *own_tools):
+        names.append(offered.name)
+
+    scripted = [AIMessage(content="", tool_calls=calls), AIMessage(content="done")]
+    spec = GraphSpec(
+        chat=ScriptedChat(messages=iter(scripted)),
+        service=service,
+        own_tools=own_tools,
+        system_prompt="you are a search assistant",
+        checkpointer=InMemorySaver(),
+        history=build_history_view(frozenset(names), 30),
+    )
+    graph = PlainGraphBuilder().build(spec)
+
+    result = await graph.ainvoke(
+        {"messages": [HumanMessage("question")]}, config=THREAD
+    )
+    messages = result["messages"]
+
+    replies: dict[str, ToolMessage] = {}
+    for reply in _tool_messages(messages):
+        replies[reply.tool_call_id] = reply
+
+    return replies, messages[-1]
 
 
 class TestRephrasingsParser:
@@ -777,10 +810,10 @@ class RecordingService(LocalDagService):
         self.served: list[str] = []
 
     @override
-    async def call(self, request: CallRequest) -> CallReply:
-        self.served.append(request.run_id)
+    async def call(self, call: GraphToolCall) -> ToolMessage:
+        self.served.append(str(call["id"]))
 
-        return await super().call(request)
+        return await super().call(call)
 
 
 class TestToolCallsGoToTheService:
@@ -795,33 +828,11 @@ class TestToolCallsGoToTheService:
 
     async def test_plain_calls_of_a_response_are_service_calls(self) -> None:
         service = RecordingService([fts_probe, crashing_probe, strict_probe])
-        scripted = [
-            AIMessage(content="", tool_calls=self.CALLS),
-            AIMessage(content="done"),
-        ]
-        spec = GraphSpec(
-            chat=ScriptedChat(messages=iter(scripted)),
-            service=service,
-            own_tools=(),
-            system_prompt="you are a search assistant",
-            checkpointer=InMemorySaver(),
-            history=build_history_view(
-                frozenset({"fts_probe", "crashing_probe", "strict_probe"}), 30
-            ),
-        )
-        graph = PlainGraphBuilder().build(spec)
 
-        result = await graph.ainvoke(
-            {"messages": [HumanMessage("question")]}, config=THREAD
-        )
-        messages = result["messages"]
+        replies, last = await _replies(service, (), self.CALLS)
 
         if sorted(service.served) != ["call_bad_args", "call_crash", "call_ok"]:
             raise AssertionError(f"каждый вызов ушёл в сервис: {service.served}")
-
-        replies: dict[str, ToolMessage] = {}
-        for reply in _tool_messages(messages):
-            replies[reply.tool_call_id] = reply
 
         if replies["call_ok"].status != "success":
             raise AssertionError(f"удачный вызов: {replies['call_ok']!r}")
@@ -840,23 +851,8 @@ class TestToolCallsGoToTheService:
                 f"отказ называет поле: {replies['call_bad_args'].content!r}"
             )
 
-        if messages[-1].content != "done":
-            raise AssertionError(f"ход дошёл до ответа: {messages[-1].content!r}")
-
-    async def test_model_gets_the_tools_the_service_offers(self) -> None:
-        """Инструменты графа строятся из списка сервиса: имя, описание и
-        схема аргументов — как их отдал сервис."""
-        service = RecordingService([fts_probe])
-
-        offered = ServiceTools(service)
-        built = offered.build()
-
-        if offered.names() != frozenset({"fts_probe"}):
-            raise AssertionError(f"имена из сервиса: {offered.names()}")
-        if built[0].description != service.tools()[0].description:
-            raise AssertionError(f"описание из сервиса: {built[0].description!r}")
-        if built[0].args_schema != dict(service.tools()[0].input_schema):
-            raise AssertionError(f"схема из сервиса: {built[0].args_schema!r}")
+        if last.content != "done":
+            raise AssertionError(f"ход дошёл до ответа: {last.content!r}")
 
 
 class TestOwnToolsBypassTheService:
@@ -871,30 +867,10 @@ class TestOwnToolsBypassTheService:
     async def test_own_tool_is_called_by_the_graph_itself(self) -> None:
         service = RecordingService([fts_probe])
 
-        scripted = [
-            AIMessage(content="", tool_calls=self.CALLS),
-            AIMessage(content="done"),
-        ]
-        spec = GraphSpec(
-            chat=ScriptedChat(messages=iter(scripted)),
-            service=service,
-            own_tools=[vector_probe],
-            system_prompt="you are a search assistant",
-            checkpointer=InMemorySaver(),
-            history=build_history_view(frozenset({"fts_probe", "vector_probe"}), 30),
-        )
-        graph = PlainGraphBuilder().build(spec)
-
-        result = await graph.ainvoke(
-            {"messages": [HumanMessage("question")]}, config=THREAD
-        )
+        replies, _ = await _replies(service, [vector_probe], self.CALLS)
 
         if service.served != ["call_dag"]:
             raise AssertionError(f"в сервис ушёл только его вызов: {service.served}")
-
-        replies: dict[str, ToolMessage] = {}
-        for reply in _tool_messages(result["messages"]):
-            replies[reply.tool_call_id] = reply
 
         if "vector:kerberos" not in str(replies["call_own"].content):
             raise AssertionError(f"свой инструмент ответил: {replies['call_own']!r}")

@@ -18,7 +18,6 @@ import base64
 import binascii
 import logging
 from collections.abc import Iterable, Iterator, Mapping, Sequence
-from dataclasses import dataclass
 from typing import Any, ClassVar
 from uuid import UUID
 
@@ -67,23 +66,20 @@ __all__ = [
 ]
 
 
-class OpenProfile(BaseModel):
-    """Открытые поля jsonb профиля, нужные показу; остальное не читается."""
+class CatalogEntry(BaseModel):
+    """Соединение субъекта для показа модели: имя, вид и открытые поля профиля.
 
-    model_config = ConfigDict(extra="ignore")
+    Поля — колонки выдачи connection_list и connection_search. Строка
+    собирается из jsonb профиля: host и description берутся из него, а
+    остальное, включая секреты, не читается.
+    """
 
+    model_config = ConfigDict(frozen=True, extra="ignore")
+
+    connection: str
+    kind: str
     host: str = ""
     description: str = ""
-
-
-@dataclass(frozen=True)
-class CatalogEntry:
-    """Соединение субъекта для показа: имя, вид и открытые поля профиля."""
-
-    name: str
-    kind: str
-    host: str
-    description: str
 
 
 class ConnectionsConfig(BaseModel):
@@ -694,14 +690,11 @@ class ConnectionStore(PostgresTable, ConnectionRepository):
     @staticmethod
     def _catalog_entries(rows: Sequence[Mapping[str, Any]]) -> Iterator[CatalogEntry]:
         for row in rows:
-            open_fields = OpenProfile.model_validate(row[SubjectRowColumn.DATA])
+            fields = dict(row[SubjectRowColumn.DATA])
+            fields["connection"] = row[SubjectRowColumn.NAME]
+            fields["kind"] = row[SubjectRowColumn.KIND]
 
-            yield CatalogEntry(
-                name=row[SubjectRowColumn.NAME],
-                kind=row[SubjectRowColumn.KIND],
-                host=open_fields.host,
-                description=open_fields.description,
-            )
+            yield CatalogEntry.model_validate(fields)
 
     async def _subject_rows(
         self, subject: Subject, flt: ConnectionFilter

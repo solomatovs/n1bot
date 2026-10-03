@@ -42,7 +42,8 @@ from boba.chainlit.rendering.chat_view import (
     StepText,
     TurnDraft,
 )
-from boba.toolkit.result import ToolArtifact, WorkflowResult
+from boba.toolkit.result import ToolArtifact
+from boba.toolrun.stream_calls import WorkflowResult
 from chainlit.data.base import BaseDataLayer
 from chainlit.step import StepDict
 

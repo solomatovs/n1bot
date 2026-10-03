@@ -9,15 +9,6 @@ import pytest
 from pydantic import BaseModel, Field, SecretStr
 
 from boba.toolkit.calls import (
-    BoolEditor,
-    ConnectionEditor,
-    FieldPlacement,
-    JsonEditor,
-    NumberEditor,
-    SecretEditor,
-    SelectEditor,
-    StudioField,
-    TextEditor,
     ToolCallBase,
     ToolCallModels,
 )
@@ -47,7 +38,7 @@ class Args(ToolCallBase):
     sql: Annotated[
         str, Field(min_length=1, description="query"), MarkdownResult(language="sql")
     ]
-    connection_name: Annotated[str, ConnectionEditor(family="postgres")]
+    connection_name: str
     stdin: Annotated[str, Field(max_length=4000)] = ""
     top_k: Annotated[int, Field(ge=1, le=50)] = 5
     ratio: float | None = None
@@ -59,43 +50,6 @@ class Args(ToolCallBase):
     tags: list[str] = []
     intent: str = ""
     cfg: Annotated[Limits, Injected] = Limits(rows=1)
-
-
-def _field(name: str) -> StudioField:
-    for field in Args.studio_view().fields:
-        if field.name == name:
-            return field
-
-    raise AssertionError(f"no field {name}")
-
-
-def test_declared_editor_wins() -> None:
-    assert _field("connection_name").editor == ConnectionEditor(family="postgres")
-
-
-def test_display_is_the_declared_result() -> None:
-    field = _field("sql")
-    assert field.display == MarkdownResult(language="sql")
-    assert field.editor == TextEditor()
-    assert field.description == "query"
-    assert field.required
-
-
-def test_intent_goes_to_header_and_injected_is_hidden() -> None:
-    assert _field("intent").placement is FieldPlacement.HEADER
-    assert _field("cfg").placement is FieldPlacement.HIDDEN
-
-
-def test_inferred_editors() -> None:
-    assert _field("stdin").editor == TextEditor(multiline=True)
-    assert _field("top_k").editor == NumberEditor(minimum=1, maximum=50)
-    assert _field("ratio").editor == NumberEditor()
-    assert _field("strict").editor == BoolEditor()
-    assert _field("mode").editor == SelectEditor(options=("fast", "safe"))
-    assert _field("kind").editor == SelectEditor(options=("a", "b"))
-    assert _field("token").editor == SecretEditor()
-    assert _field("limits").editor == JsonEditor()
-    assert _field("tags").editor == JsonEditor()
 
 
 def test_llm_view_hides_injected() -> None:

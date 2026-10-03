@@ -2,8 +2,7 @@
 
 Тело инструмента возвращает модель-наследника ToolResultBase; всё, что нужно
 остальным частям системы, семейство отдаёт методами базы: llm_view для
-LLM, chat_view для ленты чата (markdown и элемент интерфейса), studio_view
-для страницы studio (блоки словаря StudioBlock и сводка узла). Экземпляр
+LLM, chat_view для ленты чата (markdown и элемент интерфейса). Экземпляр
 результата без данных служит объявлением показа аргумента вызова: bound
 кладёт значение аргумента на место данных. Наследник регистрируется
 по kind при объявлении, и значение поля типа ToolResult восстанавливается из
@@ -56,6 +55,7 @@ __all__ = [
     "ChatItem",
     "ChatView",
     "CodeBlock",
+    "DetailBlock",
     "ErrorResult",
     "ExceptionResult",
     "Fact",
@@ -69,8 +69,6 @@ __all__ = [
     "FileElement",
     "FileResult",
     "GridBlock",
-    "GroupCall",
-    "GroupFailureResult",
     "JsonBlock",
     "MarkdownResult",
     "MarkdownTable",
@@ -84,9 +82,6 @@ __all__ = [
     "SqlFailureResult",
     "SqlResult",
     "SqlStatement",
-    "StudioBlock",
-    "StudioSummary",
-    "StudioView",
     "TableResult",
     "TableText",
     "ToolArtifact",
@@ -94,9 +89,6 @@ __all__ = [
     "ToolResultBase",
     "VisualElement",
     "VisualResult",
-    "WidgetBlock",
-    "WorkflowNodeResult",
-    "WorkflowResult",
 ]
 
 
@@ -328,7 +320,7 @@ ChatItem: TypeAlias = Annotated[
     Field(discriminator="item"),
 ]
 """Словарь того, что лента умеет смонтировать помимо markdown: закрыт
-намеренно, как блоки страницы studio; результаты собирают показ из него."""
+намеренно; результаты собирают показ из него."""
 
 
 class ChatView(BaseModel):
@@ -453,48 +445,12 @@ class NoteBlock(BaseModel):
         return self.text
 
 
-class WidgetBlock(BaseModel):
-    """Элемент интерфейса: plotly или jsx-компонент с props."""
-
-    model_config = ConfigDict(frozen=True)
-
-    block: Literal["widget"] = "widget"
-    element: str
-    props: Mapping[str, Any]
-    title: str = ""
-
-    def markdown(self) -> str:
-        """Лента виджет блоком не рисует: остаётся подпись."""
-        return NoteLine.render(self.title)
-
-    def plain(self) -> str:
-        return self.title
-
-
-StudioBlock: TypeAlias = Annotated[
-    CodeBlock | GridBlock | FactsBlock | NoteBlock | WidgetBlock,
+DetailBlock: TypeAlias = Annotated[
+    CodeBlock | GridBlock | FactsBlock | NoteBlock,
     Field(discriminator="block"),
 ]
-"""Словарь блоков страницы: закрыт намеренно, как синтаксис markdown для чата;
-результаты собирают показ из него открыто."""
-
-
-class StudioSummary(BaseModel):
-    """Сводка результата для бейджа узла: цифра и подпись к ней."""
-
-    model_config = ConfigDict(frozen=True)
-
-    figure: str
-    detail: str
-
-
-class StudioView(BaseModel):
-    """Показ результата на странице studio: сводка и блоки по порядку."""
-
-    model_config = ConfigDict(frozen=True)
-
-    summary: StudioSummary
-    blocks: Sequence[StudioBlock]
+"""Словарь блоков, из которых ошибка собирает свои детали: закрыт намеренно,
+как синтаксис markdown для чата."""
 
 
 class ResultKinds:
@@ -703,10 +659,6 @@ class ToolResultBase(BaseModel, ABC):
     def chat_view(self) -> ChatView:
         """Показ результата в ленте чата: markdown шага и элемент."""
 
-    @abstractmethod
-    def studio_view(self) -> StudioView:
-        """Показ результата на странице studio: сводка и блоки."""
-
     def bound(self, value: Any) -> Self:
         """Копия с значением аргумента вызова на месте данных: показ аргумента
         этим классом. Результат без такого места аргументом не объявляется.
@@ -767,19 +719,6 @@ class MarkdownResult(ToolResultBase):
             return ChatView(markdown=body)
 
         return ChatView(markdown=f"{body}\n\n{NoteLine.render(self.note)}")
-
-    def studio_view(self) -> StudioView:
-        blocks: list[StudioBlock] = [CodeBlock(text=self.text, language=self.language)]
-        if self.note:
-            blocks.append(NoteBlock(text=self.note))
-
-        lines = 0
-        if self.text:
-            lines = len(self.text.splitlines())
-
-        return StudioView(
-            summary=StudioSummary(figure=str(lines), detail="lines"), blocks=blocks
-        )
 
     def bound(self, value: Any) -> Self:
         return self.model_copy(update={"text": str(value).strip("\n")})
@@ -851,16 +790,6 @@ class TableResult(ToolResultBase):
             return ChatView(markdown=f"\n{body}\n\n{NoteLine.render(self.note)}")
 
         return ChatView(markdown=f"\n{body}")
-
-    def studio_view(self) -> StudioView:
-        blocks: list[StudioBlock] = [GridBlock(rows=self.rows)]
-        if self.note:
-            blocks.append(NoteBlock(text=self.note))
-
-        return StudioView(
-            summary=StudioSummary(figure=str(len(self.rows)), detail="rows"),
-            blocks=blocks,
-        )
 
     def bound(self, value: Any) -> Self:
         return self.model_copy(update={"rows": list(value)})
@@ -951,22 +880,6 @@ class SqlStatement(BaseModel):
 
         return "\n\n".join(parts)
 
-    def studio_blocks(self) -> Iterator[StudioBlock]:
-        """Текст команды, сетка строк либо статус, факты и note."""
-        if self.text:
-            yield CodeBlock(text=self.text, language="sql")
-
-        if self.rows is None:
-            yield FactsBlock(facts=[Fact(key="status", value=self.caption())])
-        else:
-            yield GridBlock(rows=self.rows)
-
-        if self.facts:
-            yield FactsBlock(facts=self.facts)
-
-        if self.note:
-            yield NoteBlock(text=self.note)
-
     def _captioned(self, captioned: bool) -> bool:
         """Подпись нужна среди нескольких команд, у команды без строк и у
         отчёта — команды с текстом или фактами."""
@@ -1015,33 +928,6 @@ class SqlResult(ToolResultBase):
 
         return ChatView(markdown="\n\n".join(blocks))
 
-    def studio_view(self) -> StudioView:
-        blocks: list[StudioBlock] = [
-            FactsBlock(facts=[Fact(key="engine", value=self.engine)])
-        ]
-        for statement in self.statements:
-            if len(self.statements) > 1:
-                blocks.append(NoteBlock(text=statement.caption()))
-
-            blocks.extend(statement.studio_blocks())
-
-        return StudioView(summary=self._summary(), blocks=blocks)
-
-    def _summary(self) -> StudioSummary:
-        """Строки единственной выборки, счётчик единственной команды, иначе
-        число команд."""
-        if len(self.statements) == 1:
-            single = self.statements[0]
-            if single.rows is not None:
-                return StudioSummary(figure=str(len(single.rows)), detail="rows")
-
-            if single.affected_rows is not None:
-                return StudioSummary(
-                    figure=str(single.affected_rows), detail="affected"
-                )
-
-        return StudioSummary(figure=str(len(self.statements)), detail="statements")
-
 
 class VisualResult(ToolResultBase):
     """Визуальный виджет ленты: имя элемента и его props.
@@ -1089,17 +975,6 @@ class VisualResult(ToolResultBase):
 
         return ChatView(markdown=caption, items=[widget])
 
-    def studio_view(self) -> StudioView:
-        title = self.title
-        if title is None:
-            title = ""
-
-        widget = WidgetBlock(element=self.element, props=self.props, title=title)
-
-        return StudioView(
-            summary=StudioSummary(figure=self.element, detail=title), blocks=[widget]
-        )
-
     def bound(self, value: Any) -> Self:
         return self.model_copy(update={"props": dict(value)})
 
@@ -1119,18 +994,6 @@ class FileResult(ToolResultBase):
         attachment = FileElement(path=self.path, name=self.name, mime=self.mime)
 
         return ChatView(markdown=self.llm_view(), items=[attachment])
-
-    def studio_view(self) -> StudioView:
-        facts = [
-            Fact(key="path", value=self.path),
-            Fact(key="name", value=self.name),
-            Fact(key="mime", value=self.mime),
-        ]
-
-        return StudioView(
-            summary=StudioSummary(figure="file", detail=self.name),
-            blocks=[FactsBlock(facts=facts)],
-        )
 
 
 class CanvasResult(ToolResultBase):
@@ -1157,16 +1020,6 @@ class CanvasResult(ToolResultBase):
 
     def chat_view(self) -> ChatView:
         return ChatView(markdown=self.llm_view(), items=[PanelOpen(path=self.path)])
-
-    def studio_view(self) -> StudioView:
-        facts = [Fact(key="path", value=self.path), Fact(key="label", value=self.label)]
-        blocks: list[StudioBlock] = [FactsBlock(facts=facts)]
-        if self.note:
-            blocks.append(NoteBlock(text=self.note))
-
-        return StudioView(
-            summary=StudioSummary(figure="canvas", detail=self.label), blocks=blocks
-        )
 
 
 class ShellResult(ToolResultBase):
@@ -1241,28 +1094,6 @@ class ShellResult(ToolResultBase):
 
         return ChatView(markdown="\n\n".join(blocks))
 
-    def studio_view(self) -> StudioView:
-        facts = [
-            Fact(key="exit code", value=str(self.exit_code)),
-            Fact(key="duration", value=f"{self.duration_ms} ms"),
-        ]
-        if self.timed_out:
-            facts.append(Fact(key="timed out", value="yes"))
-
-        blocks: list[StudioBlock] = [FactsBlock(facts=facts)]
-        if self.stdout:
-            blocks.append(CodeBlock(text=self.stdout, language="stdout"))
-
-        if self.stderr:
-            blocks.append(CodeBlock(text=self.stderr, language="stderr"))
-
-        lines = len(self.stdout.splitlines())
-        summary = StudioSummary(
-            figure=f"exit {self.exit_code}", detail=f"{lines} lines"
-        )
-
-        return StudioView(summary=summary, blocks=blocks)
-
     def _note(self) -> str:
         """Итог выполнения одной строкой: код возврата всегда, помехи следом.
 
@@ -1288,7 +1119,7 @@ class ShellResult(ToolResultBase):
 class FailureLayout:
     """Раскладка ошибки по каналам: markdown ленты и плоский текст LLM и журнала.
 
-    Ошибка описывает себя заголовком и блоками словаря studio; блок сам
+    Ошибка описывает себя заголовком и блоками словаря DetailBlock; блок сам
     знает свой markdown и плоский текст, а раскладка ставит над ними
     заголовок — поэтому любая ошибка семейства выглядит одинаково во всех
     каналах.
@@ -1296,14 +1127,14 @@ class FailureLayout:
 
     MARKDOWN_SPECIALS: ClassVar[str] = "\\`*_[]<>|~"
 
-    def markdown(self, headline: str, blocks: Sequence[StudioBlock]) -> str:
+    def markdown(self, headline: str, blocks: Sequence[DetailBlock]) -> str:
         parts: list[str] = [f"**{self._escaped(headline)}**"]
         for block in blocks:
             parts.append(block.markdown())
 
         return "\n\n".join(parts)
 
-    def plain(self, headline: str, blocks: Sequence[StudioBlock]) -> str:
+    def plain(self, headline: str, blocks: Sequence[DetailBlock]) -> str:
         parts: list[str] = [headline]
         for block in blocks:
             parts.append(block.plain())
@@ -1327,9 +1158,9 @@ class FailureResult(ToolResultBase):
     Ошибка — такой же результат, как таблица или SQL: едет в конверте
     инструмента, ложится в историю LLM артефактом и поднимается из неё по
     kind. Наследник описывает ошибку данными — заголовком в одну строку
-    (что сломалось), деталями из словаря блоков studio, которые видят все
-    каналы, и трассой для журнала и studio, — а текст для ленты, LLM,
-    журнала и studio собирает раскладка FailureLayout. Любое исключение
+    (что сломалось), деталями из словаря блоков DetailBlock, которые видят все
+    каналы, и трассой для журнала, — а текст для ленты, LLM и
+    журнала собирает раскладка FailureLayout. Любое исключение
     превращает в наследника упаковщик FailurePacker (boba.toolkit.failure).
     """
 
@@ -1344,11 +1175,11 @@ class FailureResult(ToolResultBase):
         """Одна строка: что сломалось."""
 
     @abstractmethod
-    def details(self) -> Sequence[StudioBlock]:
+    def details(self) -> Sequence[DetailBlock]:
         """Подробности для всех каналов: текст ошибки, причины, место."""
 
     def trace(self) -> str:
-        """Трасса стека для журнала и studio; пусто — трассы нет."""
+        """Трасса стека для журнала; пусто — трассы нет."""
         return ""
 
     def llm_view(self) -> str:
@@ -1366,19 +1197,6 @@ class FailureResult(ToolResultBase):
             return text
 
         return f"{text}\n{trace}"
-
-    def studio_view(self) -> StudioView:
-        blocks: list[StudioBlock] = [NoteBlock(text=self.headline())]
-        blocks.extend(self.details())
-        blocks.append(FactsBlock(facts=[Fact(key="kind", value=self.error_kind)]))
-
-        trace = self.trace()
-        if trace:
-            blocks.append(CodeBlock(text=trace))
-
-        return StudioView(
-            summary=StudioSummary(figure="✕", detail=self.error_kind), blocks=blocks
-        )
 
 
 FailureResultField: TypeAlias = SerializeAsAny[FailureResult]
@@ -1399,7 +1217,7 @@ class ErrorResult(FailureResult):
 
         return first
 
-    def details(self) -> Sequence[StudioBlock]:
+    def details(self) -> Sequence[DetailBlock]:
         _, _, rest = self.message.partition("\n")
         if not rest.strip():
             return ()
@@ -1421,7 +1239,7 @@ class ExceptionResult(FailureResult):
 
     Заголовок — тип и первая строка текста; остальной текст, место
     возникновения и цепочка причин идут подробностями, полная трасса —
-    только в журнал и studio. Причина, чей текст уже показан выше по
+    только в журнал. Причина, чей текст уже показан выше по
     цепочке, называется одним типом: драйверы и обёртки часто повторяют
     одно и то же сообщение.
     """
@@ -1441,8 +1259,8 @@ class ExceptionResult(FailureResult):
 
         return f"{self.error_kind}: {self._clipped(first)}"
 
-    def details(self) -> Sequence[StudioBlock]:
-        blocks: list[StudioBlock] = []
+    def details(self) -> Sequence[DetailBlock]:
+        blocks: list[DetailBlock] = []
 
         if body := self._body():
             blocks.append(CodeBlock(text=body))
@@ -1483,7 +1301,7 @@ class ExceptionResult(FailureResult):
 
         return rest
 
-    def _facts(self) -> list[StudioBlock]:
+    def _facts(self) -> list[DetailBlock]:
         facts: list[Fact] = []
         if self.raised_at:
             facts.append(Fact(key="raised at", value=self.raised_at))
@@ -1541,8 +1359,8 @@ class SqlFailureResult(FailureResult):
     def headline(self) -> str:
         return self.cause.headline()
 
-    def details(self) -> Sequence[StudioBlock]:
-        blocks: list[StudioBlock] = list(self.cause.details())
+    def details(self) -> Sequence[DetailBlock]:
+        blocks: list[DetailBlock] = list(self.cause.details())
         if self.columns:
             blocks.append(GridBlock(rows=self.columns))
 
@@ -1572,149 +1390,6 @@ class SqlFailureResult(FailureResult):
             parts.append(statement.markdown(True))
 
         return ChatView(markdown="\n\n".join(parts))
-
-    def studio_view(self) -> StudioView:
-        view = super().studio_view()
-
-        blocks: list[StudioBlock] = list(view.blocks)
-        for statement in self.statements:
-            blocks.extend(statement.studio_blocks())
-
-        return StudioView(summary=view.summary, blocks=blocks)
-
-
-class GroupCall(BaseModel):
-    """Вызов группы каналов: инструмент и id вызова модели."""
-
-    model_config = ConfigDict(frozen=True)
-
-    tool: str
-    call_id: str
-
-
-class GroupFailureResult(FailureResult):
-    """Срыв группы вызовов, связанных каналами: «все или никто».
-
-    Вызов, который сорвал группу (own), показывает свою ошибку целиком и
-    пометку, что остальные вызовы ничего не зафиксировали. Остальные вызовы
-    получают короткий итог со ссылкой на сорвавшийся вызов — копия чужой
-    ошибки в каждом шаге ничего не объясняет. Без origin группу сорвала она
-    сама (застой, срок открытия каналов), и причину видят все.
-    """
-
-    kind: Literal["stream_group_failure"] = "stream_group_failure"
-    cause: FailureResultField
-    origin: GroupCall | None = None
-    calls: Sequence[GroupCall] = ()
-    own: bool = False
-
-    def headline(self) -> str:
-        if self.origin is None:
-            return self.cause.headline()
-
-        if self.own:
-            return self.cause.headline()
-
-        return f"stopped: {self.origin.tool} failed in the stream group"
-
-    def details(self) -> Sequence[StudioBlock]:
-        if self.origin is None:
-            return (*self.cause.details(), NoteBlock(text=self._stopped_note()))
-
-        if self.own:
-            return (*self.cause.details(), NoteBlock(text=self._stopped_note()))
-
-        facts = [
-            Fact(
-                key="failed call", value=f"{self.origin.tool} ({self.origin.call_id})"
-            ),
-            Fact(key="cause", value=self.cause.headline()),
-        ]
-
-        return (FactsBlock(facts=facts), NoteBlock(text="nothing was committed"))
-
-    def trace(self) -> str:
-        if self.origin is None:
-            return self.cause.trace()
-
-        if self.own:
-            return self.cause.trace()
-
-        return ""
-
-    def _stopped_note(self) -> str:
-        others = list(self._others())
-        if not others:
-            return "the stream group was stopped, nothing was committed"
-
-        joined = ", ".join(others)
-
-        return f"the stream group was stopped, nothing was committed by: {joined}"
-
-    def _others(self) -> Iterator[str]:
-        for call in self.calls:
-            if call == self.origin:
-                continue
-
-            yield call.tool
-
-
-class WorkflowNodeResult(BaseModel):
-    """Итог узла workflow: какой инструмент с чем вызван и чем он кончился.
-
-    key — имя узла, данное моделью; call_id — идентификатор вызова узла, под
-    которым идут его журнал и шаг ленты. errored — вызов кончился ошибкой
-    самого вызова (аргументы, права), а не результатом инструмента.
-    """
-
-    model_config = ConfigDict(frozen=True, extra="forbid")
-
-    key: str
-    call_id: str
-    tool: str
-    args: Mapping[str, Any]
-    errored: bool
-    content: str
-    result: ToolResult
-
-
-class WorkflowResult(ToolResultBase):
-    """Итог вызова workflow: результаты его узлов в порядке описания.
-
-    Модель описывает связку потоковых инструментов одним вызовом workflow;
-    исполнитель DAG отдаёт итог каждого узла, а этот результат несёт их
-    модели и истории одним конвертом. Лента раскрывает его в шаги узлов —
-    так же, как рисует их вживую.
-    """
-
-    kind: Literal["workflow"] = "workflow"
-    nodes: Sequence[WorkflowNodeResult]
-
-    def llm_view(self) -> str:
-        parts: list[str] = []
-        for node in self.nodes:
-            parts.append(f"[{node.key}] {node.tool}:\n{node.content}")
-
-        return "\n\n".join(parts)
-
-    def chat_view(self) -> ChatView:
-        return ChatView(markdown=FactsBlock(facts=self._facts()).markdown())
-
-    def studio_view(self) -> StudioView:
-        summary = StudioSummary(figure=str(len(self.nodes)), detail="nodes")
-
-        return StudioView(summary=summary, blocks=[FactsBlock(facts=self._facts())])
-
-    def _facts(self) -> list[Fact]:
-        facts: list[Fact] = []
-        for node in self.nodes:
-            status = "ok"
-            if not node.result.ok:
-                status = "failed"
-
-            facts.append(Fact(key=f"{node.key} ({node.tool})", value=status))
-
-        return facts
 
 
 class ToolArtifact:

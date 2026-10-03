@@ -27,7 +27,6 @@ from boba.chainlit.auth.kerberos import KerberosAuth
 from boba.chainlit.data.data_layer import PostgresDataLayer
 from boba.config import bind
 from boba.connection_broker.store import ConnectionsConfig, ConnectionStore
-from boba.connection_broker.tools import ConnectionTools
 from boba.connection_broker.user_connections import UserConnections
 from boba.connections.manifest import ConnectionTypes
 from boba.connections.marks import ConnectionRefusal
@@ -137,17 +136,6 @@ def sso(tmp_path: Path) -> tuple[SsoTickets, str]:
         tickets, SERVICE_PRINCIPAL, credentials.ccache, DelegationMode.FORWARDED, 3600
     )
     return tickets, sealed
-
-
-@pytest.fixture
-def catalog(store: ConnectionStore) -> Any:
-    """connection_list чата над теми же таблицами, что и инструменты: тело
-    исполняется в процессе и читает хранилище соединений."""
-
-    def stored() -> ConnectionStore:
-        return store
-
-    return ConnectionTools(stored).build()[0]
 
 
 def _credentials() -> KerberosCredentialSource:

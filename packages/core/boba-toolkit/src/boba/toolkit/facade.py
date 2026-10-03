@@ -22,7 +22,7 @@ ToolFacadeError — подпись тела не годится для моде�
 from __future__ import annotations
 
 import inspect
-from collections.abc import Awaitable, Callable, Coroutine, Mapping
+from collections.abc import Awaitable, Callable, Coroutine, Iterator, Mapping, Sequence
 from typing import (
     Annotated,
     Any,
@@ -35,6 +35,8 @@ from typing import (
 )
 
 from pydantic import BaseModel, ConfigDict, create_model
+from pydantic.fields import FieldInfo
+from pydantic_core import PydanticUndefined
 
 from boba.toolkit.calls import FieldMarks, ToolCallBase, ToolCallModels
 from boba.toolkit.ports import StreamPorts
@@ -312,16 +314,17 @@ class _CallModel(BaseModel):
                 param = name
                 continue
 
-            default = parameter.default
-            if default is inspect.Parameter.empty:
-                default = ...
-
             if StreamPorts.is_port(bare):
                 # порт строит гость на вызове: хост значения не передаёт, и в
                 # схеме поле обязательным быть не может
-                default = None
+                fields[name] = (annotation, None)
+                continue
 
-            fields[name] = (annotation, default)
+            if parameter.default is not inspect.Parameter.empty:
+                fields[name] = (annotation, parameter.default)
+                continue
+
+            fields[name] = _required(annotation)
 
         base: type[ToolCallBase] = ToolCallBase
         if declared is not None:
@@ -349,6 +352,32 @@ class _CallModel(BaseModel):
                 "must be injected or a port; LLM arguments belong to the model"
             )
             raise ToolFacadeError(msg)
+
+
+def _required(annotation: Any) -> tuple[Any, Any]:
+    """Определение поля без дефолта в подписи: дефолт может лежать в Field
+    внутри Annotated, и пара (аннотация, ...) с pydantic 2.11 его затирает —
+    в пару идёт сам дефолт из Field."""
+    if get_origin(annotation) is not Annotated:
+        return annotation, ...
+
+    defaults = list(_defaults(get_args(annotation)[1:]))
+    if not defaults:
+        return annotation, ...
+
+    return annotation, defaults[-1]
+
+
+def _defaults(metadata: Sequence[Any]) -> Iterator[Any]:
+    """Дефолты, объявленные значением в Field среди метадаты Annotated."""
+    for item in metadata:
+        if not isinstance(item, FieldInfo):
+            continue
+
+        if item.default is PydanticUndefined:
+            continue
+
+        yield item.default
 
 
 def _bare(annotation: Any) -> Any:

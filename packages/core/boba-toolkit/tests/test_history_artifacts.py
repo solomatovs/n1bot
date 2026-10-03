@@ -8,45 +8,27 @@
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 import pytest
 
-from boba.toolkit.result import ResultKinds, ToolArtifact
+from boba.stand_core.history import HistorySnapshots
+from boba.toolkit.chain import GroupFailureResult
 
-HISTORY = Path(__file__).parent / "history"
-
-
-def _snapshots() -> list[Path]:
-    return sorted(HISTORY.glob("*.json"))
+SNAPSHOTS = HistorySnapshots(Path(__file__).parent / "history", "boba.toolkit")
 
 
 class TestHistoryArtifacts:
     def test_every_kind_has_a_snapshot(self) -> None:
         """Новый вид результата обязан оставить снимок: иначе его историю
         никто не проверяет."""
-        covered: set[str] = set()
-        for path in _snapshots():
-            covered.add(json.loads(path.read_text(encoding="utf-8"))["kind"])
+        if GroupFailureResult.declared_kind() is None:
+            raise AssertionError("вид срыва группы объявлен в boba.toolkit.chain")
 
-        missing = sorted(ResultKinds.kinds() - covered)
+        missing = SNAPSHOTS.missing()
         if missing:
             raise AssertionError(f"kinds without a history snapshot: {missing}")
 
-    @pytest.mark.parametrize("path", _snapshots(), ids=lambda path: path.stem)
+    @pytest.mark.parametrize("path", SNAPSHOTS.paths(), ids=lambda path: path.stem)
     def test_snapshot_revives_and_renders(self, path: Path) -> None:
-        stored = json.loads(path.read_text(encoding="utf-8"))
-
-        revived = ToolArtifact.revive(stored)
-        if revived is None:
-            raise AssertionError(f"{path.name}: kind {stored['kind']!r} is unknown")
-
-        if revived.kind != stored["kind"]:
-            raise AssertionError(f"{path.name}: revived as {revived.kind}")
-
-        if not revived.llm_view():
-            raise AssertionError(f"{path.name}: empty llm view")
-
-        revived.chat_view()
-        revived.studio_view()
+        SNAPSHOTS.check(path)

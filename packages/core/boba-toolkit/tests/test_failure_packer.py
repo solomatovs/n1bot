@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from pydantic import BaseModel, SecretStr, ValidationError
 
+from boba.toolkit.chain import GroupCall, GroupFailureResult
 from boba.toolkit.failure import FailurePacker, ToolRefusalError
 from boba.toolkit.launcher import PayloadFailureError
 from boba.toolkit.protocol import REPLY, ReplyError
@@ -17,8 +18,6 @@ from boba.toolkit.result import (
     ErrorResult,
     ExceptionResult,
     FailureResult,
-    GroupCall,
-    GroupFailureResult,
     ToolArtifact,
 )
 
