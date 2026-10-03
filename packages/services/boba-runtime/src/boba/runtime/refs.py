@@ -10,9 +10,11 @@ from boba.connections.manifest import ConnectionTypes
 from boba.connections.sealed import SealKeys
 from boba.identity.context import CallContexts
 from boba.identity.locks import LiveLocks
+from boba.identity.run import Runs
 from boba.messaging import MessageBus
 from boba.messaging.bus import BusWatch
 from boba.toolrun.registry import ToolRegistry
+from boba.toolrun.streams import CallJournals
 
 __all__ = ["RuntimeRefs"]
 
@@ -31,6 +33,11 @@ class RuntimeRefs:
     contexts: CallContexts
     """Держатель контекста вызова процесса: его получают обвязки
     инструментов и исполнители."""
+    runs: Runs
+    """Реестр идущих запусков процесса: его получают те, кто открывает
+    запуски и кто их останавливает."""
+    journals: CallJournals
+    """Журналы живого вывода вызовов процесса."""
     seal_keys: SealKeys
     """Ключевая пара исполнителя: ею открываются соединения, запечатанные
     клиентом; одна на процесс."""

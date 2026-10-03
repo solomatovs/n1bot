@@ -10,13 +10,12 @@ from __future__ import annotations
 
 import os
 import shutil
-from collections.abc import Iterator, Sequence
+from collections.abc import AsyncIterator, Iterator, Sequence
 from pathlib import Path
 from typing import Any
 
 import chainlit as cl
 import pytest
-from chainlit_stand import use_context
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
 from langchain_core.runnables import RunnableConfig
@@ -32,7 +31,7 @@ from boba.chainlit.infra.providers import build_history_view
 from boba.sandbox import ZygoteRegistry
 from boba.stand.refs import StandRefs
 from boba.stand.tools import STREAM_CONFIG
-from boba.stand_core.context import TEST_CONTEXTS
+from boba.stand_core.context import CallStand
 from boba.toolkit.result import ErrorResult, ToolArtifact
 from boba.toolrun.stream_calls import LocalDagService
 
@@ -89,10 +88,23 @@ class ScriptedChat(GenericFakeChatModel):
         return self
 
 
+@pytest.fixture(scope="module")
+def call_stand() -> CallStand:
+    """Держатель контекста модуля: инструменты собираются раз на модуль и читают
+    контекст через него."""
+    return CallStand()
+
+
+@pytest.fixture(scope="module")
+def runtime_stand(call_stand: CallStand) -> StandRefs:
+    """Объекты процесса модуля поверх того же держателя контекста."""
+    return StandRefs(call_stand.contexts)
+
+
 @pytest.fixture
 async def chainlit_context(
-    app_config: AppConfig, monkeypatch: pytest.MonkeyPatch
-) -> None:
+    call_stand: CallStand, app_config: AppConfig, monkeypatch: pytest.MonkeyPatch
+) -> AsyncIterator[None]:
     """Сессия с ролями и профилем: их читают guard'ы доступа к инструментам."""
     from chainlit.context import init_http_context
 
@@ -101,13 +113,16 @@ async def chainlit_context(
 
     context = init_http_context(user=user)
     context.session.chat_profile = PROFILE
-    use_context(
-        monkeypatch,
-        thread_id="args-validation",
-        roles=roles,
-        profile=PROFILE,
-        login="args-validation",
+    call_stand.use(
+        call_stand.context(
+            thread_id="args-validation",
+            roles=roles,
+            profile=PROFILE,
+            login="args-validation",
+        )
     )
+    yield
+    call_stand.clear()
 
 
 @pytest.fixture(scope="module")
@@ -121,10 +136,16 @@ def app_sandbox() -> Iterator[None]:
 
 @pytest.fixture(scope="module")
 def session_tools(
-    raw_config: DictConfig, app_config: AppConfig, app_sandbox: None
+    runtime_stand: StandRefs,
+    call_stand: CallStand,
+    raw_config: DictConfig,
+    app_config: AppConfig,
+    app_sandbox: None,
 ) -> list[BaseTool]:
     """Инструменты профиля, собранные боевым загрузчиком."""
-    registry = ChatPlugins(TEST_CONTEXTS).load(raw_config, StandRefs.none())
+    registry = ChatPlugins(runtime_stand.contexts, runtime_stand.runs).load(
+        raw_config, runtime_stand.none()
+    )
     roles = frozenset(app_config.roles)
     return registry.for_session(roles, PROFILE)
 

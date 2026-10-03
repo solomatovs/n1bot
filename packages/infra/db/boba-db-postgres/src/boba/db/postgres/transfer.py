@@ -1419,7 +1419,7 @@ class PgTransfer(Protocol):
     источника, сверяет его с таблицей, планирует DDL и ведёт стратегии.
     Реализация в пакете пары, создаётся фабрикой из реестра."""
 
-    async def run(  # noqa: PLR0913
+    async def run(  # noqa: PLR0913 — фикстуры теста
         self,
         schema_strategy: SchemaStrategyPlan,
         delete_strategy: DeleteStrategyApply,

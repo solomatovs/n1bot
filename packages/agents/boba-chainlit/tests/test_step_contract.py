@@ -23,6 +23,7 @@ from boba.chainlit.chat.tracing import AgentTracer
 from boba.chainlit.chat.turn import TurnState
 from boba.chainlit.rendering.chat_view import ChatView, RecordingSink, StepRole
 from boba.connection_broker.sealing import SentConnections
+from boba.stand.refs import StandRefs
 
 THREAD = "22222222-2222-2222-2222-222222222222"
 TURN_KEY = "human-msg-1"
@@ -91,10 +92,10 @@ class TestStepContract:
         )
         return sink
 
-    async def _replay(self) -> RecordingSink:
+    async def _replay(self, runtime_stand: StandRefs) -> RecordingSink:
         """Тот же ход, восстановленный из истории checkpointer'а."""
         sink = RecordingSink()
-        view = ChatView(THREAD, sink, user_name="tester")
+        view = ChatView(THREAD, sink, runtime_stand.journals, user_name="tester")
         messages = [
             HumanMessage(content="вопрос", id=TURN_KEY),
             AIMessage(
@@ -121,9 +122,9 @@ class TestStepContract:
             steps[str(step.get("id"))] = dict(step)
         return steps
 
-    def test_live_ids_match_replay(self) -> None:
+    def test_live_ids_match_replay(self, runtime_stand: StandRefs) -> None:
         live = self._by_id(run(self._live()))
-        replay = self._by_id(run(self._replay()))
+        replay = self._by_id(run(self._replay(runtime_stand)))
 
         # live не рисует вопрос (его шлёт фронт) и ответ (он идёт стримом)
         missing = set(live) - set(replay)
@@ -139,9 +140,11 @@ class TestStepContract:
         if set(live) != {container_id, thinking_id, tool_id}:
             raise AssertionError("set(live) == {container_id, thinking_id, tool_id}")
 
-    def test_children_stay_under_the_same_container(self) -> None:
+    def test_children_stay_under_the_same_container(
+        self, runtime_stand: StandRefs
+    ) -> None:
         live = self._by_id(run(self._live()))
-        replay = self._by_id(run(self._replay()))
+        replay = self._by_id(run(self._replay(runtime_stand)))
         container_id = ChatView.derive_id(THREAD, TURN_KEY, StepRole.PROCESS)
 
         for steps in (live, replay):
@@ -156,7 +159,7 @@ class TestStepContract:
             if set(children) != {container_id}:
                 raise AssertionError("set(children) == {container_id}")
 
-    def test_replayed_names_match_live(self) -> None:
+    def test_replayed_names_match_live(self, runtime_stand: StandRefs) -> None:
         """Заголовок шага («✓ demo», «✓ process...») живёт в name и обязан совпасть.
 
         «Кружка сверху» в live-вкладке — это то же, что кружок resumed-вкладки:
@@ -165,7 +168,7 @@ class TestStepContract:
         он разный; сравниваем только признак завершённости (start == end).
         """
         live = self._by_id(run(self._live()))
-        replay = self._by_id(run(self._replay()))
+        replay = self._by_id(run(self._replay(runtime_stand)))
         shared = set(live) & set(replay)
         for step_id in shared:
             live_step = live[step_id]
@@ -196,9 +199,9 @@ class TestStepContract:
             if replay_step.get("start") != replay_step.get("end"):
                 raise AssertionError('replay_step.get("start") == replay_step.get("en…')
 
-    def test_answer_id_matches_stream_target(self) -> None:
+    def test_answer_id_matches_stream_target(self, runtime_stand: StandRefs) -> None:
         """stream_token дописывает по id: ответ истории обязан совпасть с live."""
-        replay = self._by_id(run(self._replay()))
+        replay = self._by_id(run(self._replay(runtime_stand)))
         answer_id = ChatView.derive_id(THREAD, TURN_KEY, StepRole.ANSWER)
         if answer_id not in replay:
             raise AssertionError("answer_id in replay")
@@ -211,9 +214,9 @@ class TestSpendSurvivesReplay:
 
     REASONING = "прикинул объём"
 
-    async def _replay(self) -> RecordingSink:
+    async def _replay(self, runtime_stand: StandRefs) -> RecordingSink:
         sink = RecordingSink()
-        view = ChatView(THREAD, sink, user_name="tester")
+        view = ChatView(THREAD, sink, runtime_stand.journals, user_name="tester")
         messages = [
             HumanMessage(content="вопрос", id=TURN_KEY),
             AIMessage(
@@ -231,8 +234,10 @@ class TestSpendSurvivesReplay:
         await ConversationTranscript(messages, view).replay()
         return sink
 
-    def test_thinking_and_container_carry_the_spend(self) -> None:
-        sink = run(self._replay())
+    def test_thinking_and_container_carry_the_spend(
+        self, runtime_stand: StandRefs
+    ) -> None:
+        sink = run(self._replay(runtime_stand))
 
         names: dict[str, str] = {}
         for step in sink.steps:

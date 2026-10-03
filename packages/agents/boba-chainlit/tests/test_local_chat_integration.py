@@ -31,13 +31,16 @@ from boba.chainlit.domain.fields import StepField
 from boba.chainlit.infra.config import AppConfig
 from boba.config import bind
 from boba.connection_broker.sealing import SentConnections
+from boba.identity.context import CallContexts
+from boba.identity.run import Runs
 from boba.llm.onnx import OnnxProvider
 from boba.llm.providers import ChatModelConfig, LlmProviders, LlmProviderTypes
 from boba.runtime.config import AppLayers
 from boba.toolkit.calls import ToolIntent
 from boba.toolrun.call_id import ToolCallIdField
 from boba.toolrun.intent import ToolIntentField
-from boba.toolrun.run_log import NoCallScope, ToolRunLogger
+from boba.toolrun.run_log import ToolRunLogger
+from boba.toolrun.streams import CallJournals
 from boba.toolrun.wrapping import ToolAsyncBody
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
@@ -117,7 +120,8 @@ class TestLocalChatTurn:
         tools = [kb_probe]
         ToolCallIdField.attach_all(tools)
         ToolIntentField.attach_all(tools)
-        ToolRunLogger.guard_all(tools, lambda tool, call_id: None, NoCallScope.enter)
+        contexts = CallContexts()
+        ToolRunLogger(CallJournals(None, Runs(contexts)), contexts).guard_all(tools)
         ToolAsyncBody.ensure_all(tools)
 
         agent = create_agent(

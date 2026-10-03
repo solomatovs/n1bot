@@ -48,11 +48,10 @@ from boba.db.postgres.catalog import CatalogDomainError, SnapshotOutcome
 from boba.identity.api import ApiSubject
 from boba.identity.context import (
     CallContext,
-    CallContexts,
     Scope,
     Subject,
 )
-from boba.identity.run import RunRegistry
+from boba.identity.run import Runs
 from boba.messaging import ChangeAction
 from boba.toolkit.calls import CallIdPrefix
 from boba.toolkit.failure import ToolUnavailableError
@@ -169,11 +168,11 @@ class SyncPorts:
         self,
         tools: SyncTools,
         connections: ConnectionDirectory,
-        contexts: CallContexts,
+        runs: Runs,
     ) -> None:
         self.tools = tools
         self.connections = connections
-        self.contexts = contexts
+        self.runs = runs
 
 
 class SyncToolArg:
@@ -218,7 +217,7 @@ class SyncRunner:
         self._store = store
         self._tools = ports.tools
         self._names = ports.connections
-        self._contexts = ports.contexts
+        self._runs = ports.runs
         self._observer = observer
         self._jobs: JobTasks[RunCancellation] = JobTasks(self._stop)
 
@@ -261,7 +260,7 @@ class SyncRunner:
         sync = await self._store.start_sync(sync_id, request, caller.subject.user_id)
         context = caller.context(Scope.job(str(sync_id)))
         job = SyncJob(sync=sync, tool_name=tool_name, context=context)
-        drive = SyncDrive(self._store, job, invoker, self._contexts)
+        drive = SyncDrive(self._store, job, invoker, self._runs)
         self._jobs.start(
             sync_id, self._guarded(drive, caller.subject), context.cancellation
         )
@@ -313,12 +312,12 @@ class SyncDrive:
         store: ConnectionStore,
         job: SyncJob,
         invoker: ToolInvoker,
-        contexts: CallContexts,
+        runs: Runs,
     ) -> None:
         self._store = store
         self._job = job
         self._invoker = invoker
-        self._contexts = contexts
+        self._runs = runs
 
     @property
     def sync_id(self) -> UUID:
@@ -341,7 +340,7 @@ class SyncDrive:
         call = ToolInvoker.call(
             self._job.tool_name, self._job.call_args(), intent, CallIdPrefix.API
         )
-        with RunRegistry.open(self._contexts, self._job.context):
+        with self._runs.open(self._job.context):
             return await self._invoker.invoke(call)
 
     async def _close(self, reply: NodeOutcome | None, failure: str) -> Sync:

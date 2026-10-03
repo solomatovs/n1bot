@@ -25,9 +25,8 @@ from boba.chainlit.data.storage import LocalStorageClient
 from boba.chainlit.domain.keys import AttachmentLinks
 from boba.chainlit.infra.config import LocalStorageConfig
 from boba.chainlit.rendering.mount import ChatMount
-from boba.identity.run import RunRegistry
-from boba.runtime.launchers import CallSurface
-from boba.stand_core.context import TEST_CONTEXTS
+from boba.stand.refs import StandRefs
+from boba.stand_core.context import CallStand
 from boba.tool.canvas.tools import TOOLS, CanvasToolConfig
 from boba.toolkit.result import CanvasResult, ErrorResult, FileResult
 from boba.toolrun.bridge import ToolBridge
@@ -76,7 +75,13 @@ class Stand:
     читает вьювер панели.
     """
 
-    def __init__(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def __init__(
+        self,
+        runtime_stand: StandRefs,
+        call_stand: CallStand,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
         config = LocalStorageConfig(
             files_dir=str(tmp_path),
             mounting=MountingConfig(
@@ -89,6 +94,8 @@ class Stand:
             mount_dir="/tmp",  # noqa: S108
             binaries=TrustedBinaries(dirs=("/usr/bin", "/bin")),
         )
+        self._calls = call_stand
+        self._runtime = runtime_stand
         self.storage = LocalStorageClient(config)
         self.layer = _StorageOnlyLayer(self.storage)
         self.turn = FakeTurn()
@@ -96,9 +103,9 @@ class Stand:
 
         # запуск открывается контекстом сессии: телу и обвязке нужен контекст
         # чата с поверхностью, реестру — запись о порте хода
-        use_session(monkeypatch, user_id=USER, thread_id=THREAD)
-        self.run = RunRegistry.open(
-            TEST_CONTEXTS, TEST_CONTEXTS.current(), cast(Any, self.turn)
+        use_session(monkeypatch, call_stand, user_id=USER, thread_id=THREAD)
+        self.run = runtime_stand.runs.open(
+            call_stand.contexts.current(), cast(Any, self.turn)
         )
         self.run.__enter__()
         monkeypatch.setattr(
@@ -114,20 +121,15 @@ class Stand:
 
         self.tools = {tool.name: tool for tool in self._bridged()}
 
-    @staticmethod
-    def _bridged() -> list[Any]:
+    def _bridged(self) -> list[Any]:
         bridged = [ToolBridge.as_structured_tool(tool) for tool in TOOLS]
-        CallContextValues.bind_all(bridged, TEST_CONTEXTS)
+        CallContextValues.bind_all(bridged, self._calls.contexts)
         InjectedConfig.bind_all(
             bridged, lambda name, annotation: CanvasToolConfig(max_chars=32000)
         )
-        ChatMount(TEST_CONTEXTS).guard_all(bridged)
+        ChatMount(self._calls.contexts, self._runtime.runs).guard_all(bridged)
         ToolCallIdField.attach_all(bridged)
-        ToolRunLogger.guard_all(
-            bridged,
-            lambda tool, call_id: None,
-            CallSurface(TEST_CONTEXTS).tool_call_scope,
-        )
+        ToolRunLogger(self._runtime.journals, self._calls.contexts).guard_all(bridged)
         return bridged
 
     async def call(self, name: str, args: dict[str, Any]) -> Any:
@@ -158,8 +160,13 @@ class Stand:
 
 
 @pytest.fixture
-def stand(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Any:
-    built = Stand(tmp_path, monkeypatch)
+def stand(
+    runtime_stand: StandRefs,
+    call_stand: CallStand,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> Any:
+    built = Stand(runtime_stand, call_stand, tmp_path, monkeypatch)
     yield built
     built.run.__exit__(None, None, None)
 

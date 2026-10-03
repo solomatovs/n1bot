@@ -22,6 +22,7 @@ from boba.chainlit.chat.history import CheckpointMessages, TranscriptFeed
 from boba.chainlit.domain.fields import StepField
 from boba.chainlit.infra.providers import build_history_view
 from boba.chainlit.rendering.chat_view import StepKind
+from boba.stand.refs import StandRefs
 from boba.stand.tools import STREAM_CONFIG
 from boba.toolkit.result import MarkdownResult
 from boba.toolrun.stream_calls import LocalDagService
@@ -99,10 +100,12 @@ def _tool_steps(steps: Sequence[StepDict]) -> list[str]:
     return names
 
 
-async def test_finished_call_of_a_running_batch_is_in_the_history() -> None:
+async def test_finished_call_of_a_running_batch_is_in_the_history(
+    runtime_stand: StandRefs,
+) -> None:
     saver = InMemorySaver()
     graph = _graph(saver)
-    feed = TranscriptFeed(CheckpointMessages(saver))
+    feed = TranscriptFeed(CheckpointMessages(saver), runtime_stand.journals)
     question = HumanMessage(content="index A and B", id="q1")
 
     run = asyncio.create_task(graph.ainvoke({"messages": [question]}, config=CONFIG))

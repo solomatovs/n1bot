@@ -21,7 +21,7 @@ from langchain_core import tools as langchain_tools
 from langchain_core.tools import BaseTool
 from pydantic import SecretStr
 
-from boba.stand_core.context import TEST_CONTEXTS
+from boba.identity.context import CallContexts
 from boba.stand_core.fake_toolmod import (
     FakeConfig,
     fake_collect,
@@ -93,7 +93,7 @@ def _launcher(workdir: Path) -> ProcessToolCaller:
         stderr_tail_bytes=8192,
         kill_grace_sec=0.5,
     )
-    return ProcessToolCaller("stream-group", cfg, TEST_CONTEXTS)
+    return ProcessToolCaller("stream-group", cfg, CallContexts())
 
 
 @dataclass(frozen=True)

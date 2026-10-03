@@ -19,19 +19,23 @@ from boba.access import ProfileGrant, RoleConfig, ToolAccess
 from boba.auth import AuthService, JwtTokens
 from boba.chat.profiles import ChatProfiles
 from boba.db.postgres import AsyncPostgresPool
-from boba.identity.context import CallContext, HumanInitiator, ScopeKind
+from boba.identity.context import (
+    CallContext,
+    CallContexts,
+    HumanInitiator,
+    ScopeKind,
+)
 from boba.identity.errors import AuthenticationError, AuthorizationError
 from boba.identity.locks import MemoryLiveLocks
+from boba.identity.run import Runs
 from boba.identity.session import Login
 from boba.identity.signin import SignedIn, SignInMetadata
 from boba.identity.token import CookieSpec, SessionRenewal
 from boba.runtime.config import StudioRuntimeConfig
 from boba.runtime.http import RequestTokens
-from boba.runtime.launchers import CallSurface
 from boba.runtime.users import UsersTable
 from boba.stand.tools import STREAM_CONFIG
 from boba.stand_core.auth import StubAuthenticator
-from boba.stand_core.context import TEST_CONTEXTS
 from boba.studio.api.auth import ApiAuth
 from boba.studio.api.tools import ToolCallBody, ToolCalling
 from boba.toolkit.facade import tool
@@ -42,6 +46,7 @@ from boba.toolrun.errors import ToolErrorGuard
 from boba.toolrun.intent import ToolIntentField
 from boba.toolrun.registry import ToolRegistry
 from boba.toolrun.run_log import ToolRunLogger
+from boba.toolrun.streams import CallJournals
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
 
@@ -51,25 +56,25 @@ class Probe:
 
     def __init__(self) -> None:
         self.seen: list[CallContext] = []
+        self.contexts = CallContexts()
+        self.runs = Runs(self.contexts)
+        self.journals = CallJournals(None, self.runs)
 
     def tools(self) -> list[Any]:
         seen = self.seen
+        contexts = self.contexts
 
         @tool
         async def probe(query: str) -> MarkdownResult:
             """Зонд контекста вызова."""
-            seen.append(TEST_CONTEXTS.current())
+            seen.append(contexts.current())
             return MarkdownResult(text=f"seen {query}")
 
         # та же обвязка, что ставит load_tools: id и intent вызова, журнал, ошибки
         tools = list(ToolBridge.toolset([probe]))
         ToolCallIdField.attach_all(tools)
         ToolIntentField.attach_all(tools)
-        ToolRunLogger.guard_all(
-            tools,
-            CallSurface(TEST_CONTEXTS).stream_source,
-            CallSurface(TEST_CONTEXTS).tool_call_scope,
-        )
+        ToolRunLogger(self.journals, self.contexts).guard_all(tools)
         ToolErrorGuard().guard_all(tools)
         return tools
 
@@ -109,7 +114,7 @@ def _calling(probe: Probe, studio_config: StudioRuntimeConfig) -> ToolCalling:
         StandProfiles.profiles(studio_config),
         lambda: MemoryLiveLocks("test:0", 20),
         1.0,
-        TEST_CONTEXTS,
+        probe.runs,
     )
 
 
@@ -151,7 +156,7 @@ class TestServe:
         if context.scope.kind is not ScopeKind.JOB:
             raise AssertionError(context.scope)
 
-        if TEST_CONTEXTS.peek() is not None:
+        if probe.contexts.peek() is not None:
             raise AssertionError("the call context must not outlive the call")
 
     async def test_unknown_tool_is_not_found(

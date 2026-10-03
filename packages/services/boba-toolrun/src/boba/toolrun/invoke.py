@@ -4,7 +4,7 @@
 под субъекта (ToolRegistry.for_headless). ToolInvoker собирает ToolCall со
 служебными полями (id, intent) и исполняет его тем же исполнителем, что и
 чат: DAG из одного узла в DagRunner. Контекст и запуск открывает
-вызывающий: RunRegistry.open.
+вызывающий: Runs.open.
 
 Ошибки:
 ToolUnavailableError — инструмента нет среди видимых субъекту вне чата.

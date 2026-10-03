@@ -1,5 +1,5 @@
 """Потоки живого вывода вызовов инструментов: запись в журнал, окна для
-панели, реестр потоков по областям запусков.
+панели, живые журналы запусков.
 
 Ошибки:
 StreamJournalError — журнал недоступен или окно нарушает контракт.
@@ -11,7 +11,9 @@ import asyncio
 import contextlib
 import logging
 import threading
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Generator, Iterable, Iterator, Sequence
+from contextlib import contextmanager
+from functools import partial
 from typing import ClassVar
 
 from pydantic import ValidationError
@@ -24,15 +26,19 @@ from boba.canvas.journal import (
     CallStream,
     ChannelProbe,
     StreamJournalError,
-    StreamJournalHub,
     StreamKey,
     StreamRecorderPort,
     StreamSlice,
     StreamStorePort,
 )
-from boba.identity.run import LiveStream, RunRegistry
+from boba.identity.run import Run, Runs
 from boba.messaging import StreamAppended, StreamFeed
-from boba.toolkit.channels import JournalChannel, JournalChannels, ToolChannel
+from boba.toolkit.channels import (
+    CallOutcome,
+    JournalChannel,
+    JournalChannels,
+    ToolChannel,
+)
 from boba.toolkit.frames import (
     FrameCodec,
     FrameLimit,
@@ -42,22 +48,22 @@ from boba.toolkit.frames import (
 from boba.toolkit.stream import ChannelSinks, Chunk, StreamSink
 
 __all__ = [
+    "CallJournals",
     "FrameHeadsSink",
     "JournalWatchSource",
     "StreamPump",
     "StreamPumps",
     "ToolStream",
-    "ToolStreams",
 ]
 
 logger = logging.getLogger(__name__)
 
 
-class ToolStream(ChannelSinks, CallStream, LiveStream):
+class ToolStream(ChannelSinks, CallStream):
     """Журнал одного живого вызова инструмента: рекордер на каждый канал
     плюс будильники для слежения из event loop'а. Реализует ChannelSinks
-    (его получает исполнитель через ToolChannelsTap), CallStream (чтение
-    панелью) и LiveStream (жизнь в RunRegistry).
+    (его получает исполнитель через ToolChannelsTap) и CallStream (чтение
+    панелью); создаёт и держит его CallJournals.
 
     Создаётся в потоке исполнения инструмента; свой event loop стрим не
     запоминает. Будильники подключают слежение и насос шины из loop'а
@@ -71,12 +77,13 @@ class ToolStream(ChannelSinks, CallStream, LiveStream):
         key: StreamKey,
         tool_name: str,
         journal: StreamStorePort,
-        protected_prefixes: frozenset[str],
+        protected_prefixes: Callable[[], frozenset[str]],
     ) -> None:
         self._key = key
         self._tool_name = tool_name
         self._journal = journal
-        self._protected = protected_prefixes | {key.call_prefix()}
+        self._protected = protected_prefixes
+        """Префиксы живых вызовов процесса на момент открытия канала."""
         self._lock = threading.Lock()
         self._wakers: dict[asyncio.Event, asyncio.AbstractEventLoop] = {}
         self._recorders: dict[JournalChannel, StreamRecorderPort] = {}
@@ -158,8 +165,9 @@ class ToolStream(ChannelSinks, CallStream, LiveStream):
             if recorder is not None:
                 return recorder
 
+            protected = self._protected() | {self._key.call_prefix()}
             recorder = self._journal.recorder(
-                self._key, self._tool_name, channel, self._wake, self._protected
+                self._key, self._tool_name, channel, self._wake, protected
             )
             self._recorders[channel] = recorder
             return recorder
@@ -294,11 +302,8 @@ class StreamPumps:
         self._feed = feed
         self._tasks: set[asyncio.Task[None]] = set()
 
-    def opened(self, call_id: str, stream: LiveStream) -> None:
-        """Наблюдатель RunRegistry: журнал открыт — насос запущен в текущем loop'е."""
-        if not isinstance(stream, ToolStream):
-            return
-
+    def opened(self, call_id: str, stream: ToolStream) -> None:
+        """Наблюдатель CallJournals: журнал открыт — насос запущен в текущем loop'е."""
         pump = StreamPump(stream, self._feed)
         task = asyncio.create_task(pump.run(), name=f"stream-pump:{call_id}")
         self._tasks.add(task)
@@ -330,98 +335,122 @@ class StreamPumps:
             )
 
 
-class ToolStreams:
-    """Потоки инструментов: журнал вызовов и доступ к живым стримам хода.
+StreamObserver = Callable[[str, ToolStream], None]
+"""Узнаёт об открытом журнале вызова (call_id, stream); зовётся в loop'е запуска."""
 
-    Потоковыми считаются инструменты, отмеченные при сборке реестра тулов, —
-    только они запускают процессы, чей вывод есть смысл журналировать; без
-    настроенного журнала потоков нет вовсе. Живые стримы живут в RunRegistry
-    и закрываются вместе с ходом; файлы журнала переживают ход.
 
-    Стрим открывает обвязка ToolRunLogger в потоке инструмента: call_id
-    приезжает синтетическим полем схемы, очереди и обмена журналами между
-    параллельными вызовами нет.
+class CallJournals:
+    """Журналы живого вывода вызовов процесса: открытие, живые стримы, чтение.
+
+    Объект один на процесс: его создаёт сборка приложения из хранилища
+    журнала (None — журнал выключен, потоков нет вовсе) и реестра запусков.
+    Журнал вызова открывает обвязка ToolRunLogger в потоке инструмента;
+    живой стрим принадлежит запуску области и закрывается вместе с ним,
+    файлы журнала переживают запуск. Панель и слой данных читают записанное
+    отсюда же. Потоковыми считаются инструменты, отмеченные загрузчиком:
+    только они запускают процессы, чей вывод есть смысл журналировать.
     """
 
-    _STREAMABLE: ClassVar[set[str]] = set()
+    def __init__(self, store: StreamStorePort | None, runs: Runs) -> None:
+        self._store = store
+        self._runs = runs
+        self._lock = threading.Lock()
+        self._live: dict[Run, dict[str, ToolStream]] = {}
+        self._followers: dict[Run, tuple[asyncio.AbstractEventLoop, StreamObserver]]
+        self._followers = {}
+        self._streamable: set[str] = set()
 
-    @classmethod
-    def configure(cls, journal: StreamStorePort) -> None:
-        StreamJournalHub.configure(journal)
+    @property
+    def store(self) -> StreamStorePort | None:
+        """Хранилище журнала; None — журнал выключен."""
+        return self._store
 
-    @classmethod
-    def active(cls) -> bool:
+    def active(self) -> bool:
         """Журнал настроен: потоки пишутся и кнопки имеют смысл."""
-        return StreamJournalHub.get() is not None
+        return self._store is not None
 
-    @classmethod
-    def journal(cls) -> StreamStorePort | None:
-        return StreamJournalHub.get()
+    def mark_streamable(self, names: Iterable[str]) -> None:
+        with self._lock:
+            self._streamable.update(names)
 
-    @classmethod
-    def mark_streamable(cls, names: Iterable[str]) -> None:
-        cls._STREAMABLE.update(names)
-
-    @classmethod
-    def streamable(cls, tool_name: str) -> bool:
-        if not cls.active():
+    def streamable(self, tool_name: str) -> bool:
+        if self._store is None:
             return False
 
-        return tool_name in cls._STREAMABLE
+        with self._lock:
+            return tool_name in self._streamable
 
-    @classmethod
+    @contextmanager
+    def following(
+        self, run: Run, observer: StreamObserver
+    ) -> Generator[None, None, None]:
+        """На время блока сообщает observer о каждом журнале, открытом запуском;
+        зовёт его в loop'е, из которого открыт блок."""
+        with self._lock:
+            self._followers[run] = (asyncio.get_running_loop(), observer)
+
+        try:
+            yield
+        finally:
+            with self._lock:
+                self._followers.pop(run, None)
+
     def begin(
-        cls, user_id: str, thread_id: str, call_id: str, tool_name: str
+        self, user_id: str, scope_id: str, call_id: str, tool_name: str
     ) -> ToolStream | None:
         """Открыть журнал вызова; сбой журнала не трогает ход инструмента."""
-        journal = StreamJournalHub.get()
-        if journal is None:
+        store = self._store
+        if store is None:
             return None
 
-        context = RunRegistry.active(thread_id)
-        if context is None:
+        if not self.streamable(tool_name):
+            return None
+
+        run = self._runs.active(scope_id)
+        if run is None:
             logger.warning(
-                "stream journal skipped call %s of %s: thread %s has no active run "
+                "stream journal skipped call %s of %s: scope %s has no active run "
                 "to attach the stream to",
                 call_id,
                 tool_name,
-                thread_id,
+                scope_id,
             )
             return None
 
         try:
-            key = StreamKey(user_id=user_id, thread_id=thread_id, call_id=call_id)
-            stream = ToolStream(key, tool_name, journal, RunRegistry.live_prefixes())
+            key = StreamKey(user_id=user_id, thread_id=scope_id, call_id=call_id)
+            stream = ToolStream(key, tool_name, store, self.live_prefixes)
         except (StreamJournalError, ValidationError) as exc:
             logger.warning(
-                "stream journal refused call %s of %s in thread %s of user %s: %s",
+                "stream journal refused call %s of %s in scope %s of user %s: %s",
                 call_id,
                 tool_name,
-                thread_id,
+                scope_id,
                 user_id,
                 exc,
                 exc_info=True,
             )
             return None
 
-        context.add_stream(call_id, stream)
+        self._attach(run, call_id, stream)
         return stream
 
-    @classmethod
-    def get(cls, thread_id: str, call_id: str) -> ToolStream | None:
-        context = RunRegistry.active(thread_id)
-        if context is None:
+    def live(self, scope_id: str, call_id: str) -> ToolStream | None:
+        """Живой журнал вызова; None — вызов не журналируется или закончился."""
+        run = self._runs.active(scope_id)
+        if run is None:
             return None
 
-        stream = context.stream(call_id)
-        if not isinstance(stream, ToolStream):
-            return None
+        with self._lock:
+            return self._live.get(run, {}).get(call_id)
 
-        return stream
+    def live_prefixes(self) -> frozenset[str]:
+        """Префиксы файлов живых вызовов: вытеснять их из тома нельзя."""
+        with self._lock:
+            return frozenset(self._live_call_prefixes())
 
-    @classmethod
     def recorded_slice(
-        cls,
+        self,
         user_id: str,
         thread_id: str,
         call_id: str,
@@ -430,14 +459,13 @@ class ToolStreams:
     ) -> StreamSlice | None:
         """Окно журнала от смещения; отказ журнала — «нет данных», не сбой чата."""
 
-        def read(journal: StreamStorePort, key: StreamKey) -> StreamSlice | None:
-            return journal.slice_at(key, offset, channel)
+        def read(store: StreamStorePort, key: StreamKey) -> StreamSlice | None:
+            return store.slice_at(key, offset, channel)
 
-        return cls._recorded(user_id, thread_id, call_id, read)
+        return self._recorded(user_id, thread_id, call_id, read)
 
-    @classmethod
     def recorded_slice_before(
-        cls,
+        self,
         user_id: str,
         thread_id: str,
         call_id: str,
@@ -446,14 +474,13 @@ class ToolStreams:
     ) -> StreamSlice | None:
         """Окно перед смещением: прокрутка вверх; отказ — «нет данных»."""
 
-        def read(journal: StreamStorePort, key: StreamKey) -> StreamSlice | None:
-            return journal.slice_before(key, end, channel)
+        def read(store: StreamStorePort, key: StreamKey) -> StreamSlice | None:
+            return store.slice_before(key, end, channel)
 
-        return cls._recorded(user_id, thread_id, call_id, read)
+        return self._recorded(user_id, thread_id, call_id, read)
 
-    @classmethod
     def recorded_channels(
-        cls, user_id: str, thread_id: str, call_id: str
+        self, user_id: str, thread_id: str, call_id: str
     ) -> tuple[JournalChannel, ...]:
         """Каналы вызова с записью, доступные пользователю.
 
@@ -461,13 +488,13 @@ class ToolStreams:
         панель не попадают: пишутся они всегда, читает их только разбор
         сбоев на сервере. Отказ журнала — пустой список вкладок.
         """
-        journal = StreamJournalHub.get()
-        if journal is None:
+        store = self._store
+        if store is None:
             return ()
 
         try:
             key = StreamKey(user_id=user_id, thread_id=thread_id, call_id=call_id)
-            written = journal.channels_of(key)
+            written = store.channels_of(key)
         except (StreamJournalError, ValidationError) as exc:
             logger.warning(
                 "stream journal: listing channels of call %s in thread %s of "
@@ -489,21 +516,64 @@ class ToolStreams:
 
         return tuple(readable)
 
-    @classmethod
+    def _attach(self, run: Run, call_id: str, stream: ToolStream) -> None:
+        """Журнал живёт с запуском: первый журнал запуска подписывает закрытие."""
+        with self._lock:
+            streams = self._live.get(run)
+            first = streams is None
+            if streams is None:
+                streams = {}
+                self._live[run] = streams
+
+            streams[call_id] = stream
+            follower = self._followers.get(run)
+
+        if first:
+            run.on_close(partial(self._close_run, run))
+
+        if follower is None:
+            return
+
+        loop, observer = follower
+        try:
+            loop.call_soon_threadsafe(observer, call_id, stream)
+        except RuntimeError as exc:
+            logger.warning(
+                "call journals of scope %s: stream %s opened after the run loop "
+                "closed, observer not notified: %s",
+                run.scope_id,
+                call_id,
+                exc,
+            )
+
+    def _close_run(self, run: Run) -> None:
+        """Конец запуска: живые журналы закрываются, файлы журнала остаются."""
+        with self._lock:
+            streams = self._live.pop(run, {})
+
+        for stream in streams.values():
+            if not stream.closed:
+                stream.close(CallOutcome.STOPPED.value)
+
+    def _live_call_prefixes(self) -> Iterator[str]:
+        for streams in self._live.values():
+            for stream in streams.values():
+                yield stream.call_prefix
+
     def _recorded(
-        cls,
+        self,
         user_id: str,
         thread_id: str,
         call_id: str,
         read: Callable[[StreamStorePort, StreamKey], StreamSlice | None],
     ) -> StreamSlice | None:
-        journal = StreamJournalHub.get()
-        if journal is None:
+        store = self._store
+        if store is None:
             return None
 
         try:
             key = StreamKey(user_id=user_id, thread_id=thread_id, call_id=call_id)
-            return read(journal, key)
+            return read(store, key)
         except (StreamJournalError, ValidationError) as exc:
             logger.warning(
                 "stream journal: reading call %s in thread %s of user %s failed: %s",
@@ -514,12 +584,6 @@ class ToolStreams:
                 exc_info=True,
             )
             return None
-
-    @classmethod
-    def reset(cls) -> None:
-        """Сброс реестра: пользуются тесты, приложению это не нужно."""
-        StreamJournalHub.reset()
-        cls._STREAMABLE.clear()
 
 
 class JournalWatchSource(WatchSource):

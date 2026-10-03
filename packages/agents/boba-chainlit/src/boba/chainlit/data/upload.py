@@ -32,7 +32,7 @@ from pydantic import ValidationError
 from python_multipart.multipart import MultipartParser, parse_options_header
 from starlette.datastructures import Headers
 
-from boba.canvas.journal import StreamJournalError, StreamJournalHub, StreamKey
+from boba.canvas.journal import StreamJournalError, StreamKey
 from boba.canvas.keys import ObjectKey, ThreadDir
 from boba.canvas.storage import OpenedStream, StorageFullError, StorageNotFoundError
 from boba.canvas.transfer import (
@@ -51,6 +51,7 @@ from boba.identity.errors import AuthenticationError
 from boba.identity.session import Login
 from boba.toolkit.channels import JournalChannels, ToolChannel
 from boba.toolkit.failure import ValidationText
+from boba.toolrun.streams import CallJournals
 from boba.workspace.launcher import ReadWindow
 from chainlit.auth import get_current_user
 from chainlit.data.base import BaseDataLayer
@@ -885,9 +886,17 @@ class StreamServing:
 
     MIME: ClassVar[str] = "text/plain; charset=utf-8"
 
-    def __init__(self, config: LocalStorageConfig, policy: UploadPolicy) -> None:
+    def __init__(
+        self,
+        config: LocalStorageConfig,
+        policy: UploadPolicy,
+        journals_ref: Callable[[], CallJournals],
+    ) -> None:
         self._config = config
         self._policy = policy
+        self._journals_ref = journals_ref
+        """Журналы процесса; резолвятся на запрос: роут ставится до сборки
+        контейнера."""
         self._files: dict[str, StreamedFile] = {}
 
     async def serve(
@@ -903,7 +912,7 @@ class StreamServing:
             msg = f"sign-in required: expected a persisted user, got {got}"
             raise HTTPException(status_code=401, detail=msg)
 
-        journal = StreamJournalHub.get()
+        journal = self._journals_ref().store
         if journal is None:
             msg = (
                 f"stream {call_id}/{channel} of thread {thread_id} is not found: "

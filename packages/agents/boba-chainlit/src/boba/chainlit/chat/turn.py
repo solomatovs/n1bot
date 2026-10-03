@@ -1,5 +1,5 @@
 """Один ход чата: состояние с однократным исходом (TurnState), отчёт об исходе в
-шину, историю и журнал (TurnReporter), стрим ответа под отменой RunRegistry
+шину, историю и журнал (TurnReporter), стрим ответа под отменой запуска (Runs)
 (ChatTurn).
 
 Ошибки:
@@ -39,9 +39,9 @@ from boba.identity.locks import (
     LockPurpose,
     RunLocking,
 )
-from boba.identity.run import ElementTarget, RunPort, RunRefusal, RunRegistry
+from boba.identity.run import ElementTarget, RunPort, RunRefusal, Runs
 from boba.messaging import NoticeLevel, TurnOutcome
-from boba.toolrun.streams import StreamPumps
+from boba.toolrun.streams import CallJournals, StreamPumps
 
 __all__ = [
     "ChatTurn",
@@ -394,7 +394,7 @@ class TurnReporter:
 
 
 class ChatTurn(RunPort):
-    """Один ход чата: гонит стрим ответа под отменой RunRegistry, публикует события
+    """Один ход чата: гонит стрим ответа под отменой запуска (Runs), публикует события
     через TurnFeed и отчитывается ровно одним исходом.
     """
 
@@ -410,6 +410,8 @@ class ChatTurn(RunPort):
         locking: RunLocking,
         sent: SentConnections,
         contexts: CallContexts,
+        runs: Runs,
+        journals: CallJournals,
     ) -> None:
         self._thread_id = thread_id
         self._feed = feed
@@ -421,6 +423,8 @@ class ChatTurn(RunPort):
         self._answered = False
         self._tracer = AgentTracer(feed, self._state, sent)
         self._contexts = contexts
+        self._runs = runs
+        self._journals = journals
         self._reporter = TurnReporter(
             feed=feed,
             state=self._state,
@@ -432,20 +436,6 @@ class ChatTurn(RunPort):
     def tracer(self) -> AgentTracer:
         """Трасер хода; его отдают в callbacks прогона графа."""
         return self._tracer
-
-    @classmethod
-    def stop(cls, thread_id: str) -> bool:
-        """Обрывает живой ход треда по кнопке Stop; False, если останавливать нечего."""
-        return RunRegistry.stop(thread_id, StopReason.USER_STOP)
-
-    @classmethod
-    def active(cls, thread_id: str) -> ChatTurn | None:
-        """Возвращает живой ход треда; None, если тред ничем не занят."""
-        turn = RunRegistry.port_of(thread_id)
-        if not isinstance(turn, ChatTurn):
-            return None
-
-        return turn
 
     def element_target(self, tool_call_id: str) -> ElementTarget:
         """Возвращает адрес элемента вызова инструмента: он крепится к шагу ответа."""
@@ -555,8 +545,9 @@ class ChatTurn(RunPort):
         pumps = StreamPumps(self._feed)
         try:
             with (
-                RunRegistry.open(self._contexts, context, self, pumps.opened),
-                RunRegistry.task_abort(cancellation),
+                self._runs.open(context, self) as run,
+                self._journals.following(run, pumps.opened),
+                self._runs.task_abort(cancellation),
             ):
                 try:
                     # ход объявляется до первого чанка: запрос в модель уходит с первой

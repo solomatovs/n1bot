@@ -8,7 +8,7 @@ from pathlib import Path
 
 from pydantic import SecretStr
 
-from boba.stand_core.context import TEST_CONTEXTS
+from boba.identity.context import CallContexts
 from boba.stand_core.fake_toolmod import FakeChunkHead, FakeConfig
 from boba.toolkit.frames import ToolFrame
 from boba.toolkit.protocol import CallInputSpec, CallOutputSpec, ReplyOk, ToolCommand
@@ -31,7 +31,7 @@ def _launcher(workdir: Path) -> ProcessToolCaller:
     }
 
     return ProcessToolCaller(
-        "fake", ProcessLauncherConfig.model_validate(values), TEST_CONTEXTS
+        "fake", ProcessLauncherConfig.model_validate(values), CallContexts()
     )
 
 

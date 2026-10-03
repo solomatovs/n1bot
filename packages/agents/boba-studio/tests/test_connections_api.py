@@ -21,6 +21,7 @@ from boba.connections.stored import GrantTarget, StoredRole
 from boba.db.postgres import AsyncPostgresPool
 from boba.runtime.config import StudioRuntimeConfig
 from boba.stand.refs import StandRefs
+from boba.stand_core.context import CallStand
 from boba.studio.api.urls import ApiVersion, ConnectionUrl
 from boba.transport.http.connection import HttpConnection
 
@@ -104,13 +105,17 @@ def _web_body(name: str, host: str) -> dict[str, object]:
 
 @pytest.fixture
 async def client(
-    store: ConnectionStore, studio_config: StudioRuntimeConfig
+    runtime_stand: StandRefs,
+    call_stand: CallStand,
+    store: ConnectionStore,
+    studio_config: StudioRuntimeConfig,
 ) -> AsyncIterator[AsyncClient]:
     user = StandProfiles.with_roles(
         studio_config, StandProfiles.user(studio_config), {ROLE}
     )
     stand = ApiStand(
-        StandRefs.of(lambda: store, lambda: None), ChatProfiles(studio_config.profiles)
+        runtime_stand.of(lambda: store, lambda: None),
+        ChatProfiles(studio_config.profiles),
     )
     async with stand.client(user) as built:
         yield built

@@ -8,6 +8,7 @@ from omegaconf import OmegaConf
 from boba.access import GrantCheck
 from boba.runtime.plugins import EntryPointPlugins, ToolLoader, ToolPlugin
 from boba.stand.refs import StandRefs
+from boba.stand_core.context import CallStand
 from boba.toolkit.entry import ToolArgv
 from boba.toolrun.wrapping import ToolSchema
 
@@ -54,10 +55,13 @@ def test_bash_plugin_is_a_module_tool() -> None:
     assert bash.modules == ("boba.tool.shell.tools",)
 
 
-def test_discovered_plugin_without_config_file_refuses_start() -> None:
+def test_discovered_plugin_without_config_file_refuses_start(
+    runtime_stand: StandRefs,
+    call_stand: CallStand,
+) -> None:
     raw = OmegaConf.create({"tool_launcher": {"provider": "sandbox"}})
     plugins = {"pg": ToolPlugin(section="pg")}
-    loader = ToolLoader(raw, plugins, StandRefs.none(), GrantCheck.HOSTED)
+    loader = ToolLoader(raw, plugins, runtime_stand.none(), GrantCheck.HOSTED)
 
     with pytest.raises(RuntimeError, match=r"conf/plugins/pg\.toml is missing"):
         loader.load()

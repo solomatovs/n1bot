@@ -8,10 +8,7 @@ from uuid import UUID
 import jwt
 import pytest
 from chainlit_stand import (
-    TEST_PROFILE,
-    TEST_TURN,
     StandTokens,
-    use_context,
     use_session,
 )
 from pydantic import ValidationError
@@ -27,7 +24,8 @@ from boba.identity.context import (
 )
 from boba.identity.errors import AuthenticationError, RefusalError
 from boba.identity.session import LoginTemplate, LogUserMark
-from boba.stand_core.context import TEST_CONTEXTS
+from boba.stand.refs import StandRefs
+from boba.stand_core.context import CallStand, StandIdentity
 
 THREAD = "55555555-5555-5555-5555-555555555555"
 
@@ -38,36 +36,40 @@ def chainlit_context() -> None:
 
 
 class TestCurrent:
-    def test_outside_context_is_a_refusal(self) -> None:
+    def test_outside_context_is_a_refusal(self, call_stand: CallStand) -> None:
         with pytest.raises(RefusalError) as caught:
-            TEST_CONTEXTS.current()
+            call_stand.contexts.current()
 
         if caught.value.kind != ContextKind.NO_CONTEXT:
             raise AssertionError(caught.value.kind)
-        if TEST_CONTEXTS.peek() is not None:
+        if call_stand.contexts.peek() is not None:
             raise AssertionError("peek outside a context must be None")
 
     def test_applied_sets_context_and_log_mark_for_the_block(
-        self, monkeypatch: pytest.MonkeyPatch
+        self, call_stand: CallStand, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        context = use_context(monkeypatch, thread_id=THREAD, login="ivanov")
-        TEST_CONTEXTS.reset()
+        context = call_stand.use(call_stand.context(thread_id=THREAD, login="ivanov"))
+        call_stand.clear()
 
-        with TEST_CONTEXTS.applied(context):
-            if TEST_CONTEXTS.current() is not context:
+        with call_stand.contexts.applied(context):
+            if call_stand.contexts.current() is not context:
                 raise AssertionError("context inside the block")
             if LogUserMark.current() != f"ivanov {THREAD[:8]}":
                 raise AssertionError(LogUserMark.current())
 
-        if TEST_CONTEXTS.peek() is not None:
+        if call_stand.contexts.peek() is not None:
             raise AssertionError("context must be gone after the block")
         if LogUserMark.current() != "":
             raise AssertionError("log mark must be gone after the block")
 
-    def test_subject_is_the_access_facts(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        use_context(monkeypatch, thread_id=THREAD, roles=("ADM",), profile="general")
+    def test_subject_is_the_access_facts(
+        self, call_stand: CallStand, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        call_stand.use(
+            call_stand.context(thread_id=THREAD, roles=("ADM",), profile="general")
+        )
 
-        subject = TEST_CONTEXTS.subject()
+        subject = call_stand.contexts.subject()
         if subject.roles != frozenset({"ADM"}) or subject.profile != "general":
             raise AssertionError(subject)
         if subject.user_key != str(UUID(int=7)):
@@ -75,30 +77,35 @@ class TestCurrent:
 
 
 class TestChatContext:
-    def test_plain_context_is_not_a_chat(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        use_context(monkeypatch, thread_id=THREAD)
+    def test_plain_context_is_not_a_chat(
+        self,
+        runtime_stand: StandRefs,
+        call_stand: CallStand,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        call_stand.use(call_stand.context(thread_id=THREAD))
 
         with pytest.raises(RefusalError) as caught:
-            ChatMount(TEST_CONTEXTS).chat_context()
+            ChatMount(runtime_stand.contexts, runtime_stand.runs).chat_context()
 
         if caught.value.kind != ContextKind.CHAT_ONLY:
             raise AssertionError(caught.value.kind)
 
     def test_session_context_is_a_chat_with_a_surface(
-        self, monkeypatch: pytest.MonkeyPatch
+        self, call_stand: CallStand, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        use_session(monkeypatch, user_id=str(UUID(int=7)), thread_id=THREAD)
+        use_session(monkeypatch, call_stand, user_id=str(UUID(int=7)), thread_id=THREAD)
 
-        context = TEST_CONTEXTS.current()
+        context = call_stand.contexts.current()
         if not isinstance(context, ChatCallContext):
             raise AssertionError(f"session context is a chat context: {context!r}")
         if not isinstance(context.surface, ChatSurface):
             raise AssertionError("chat context carries a surface")
 
     def test_tool_call_derives_llm_initiator(
-        self, monkeypatch: pytest.MonkeyPatch
+        self, call_stand: CallStand, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        context = use_context(monkeypatch, thread_id=THREAD)
+        context = call_stand.use(call_stand.context(thread_id=THREAD))
 
         derived = context.as_tool_call("call-1")
         if not isinstance(derived.initiator, LlmInitiator):
@@ -139,11 +146,14 @@ class TestPrincipalFormat:
 
 class TestExpiredSignIn:
     def test_expired_token_refuses_the_call_context(
-        self, monkeypatch: pytest.MonkeyPatch
+        self, call_stand: CallStand, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Сокет пережил срок JWT: ход отказывает входом, а не пустыми ролями."""
         session = use_session(
-            monkeypatch, user_id=str(UUID(int=5)), thread_id="thread-expired"
+            monkeypatch,
+            call_stand,
+            user_id=str(UUID(int=5)),
+            thread_id="thread-expired",
         )
         expired = jwt.encode(
             {"identifier": "user-expired", "exp": int(time.time()) - 5},
@@ -155,4 +165,4 @@ class TestExpiredSignIn:
         stub.token = expired
 
         with pytest.raises(AuthenticationError, match="expired"):
-            session.call_context(TEST_TURN, TEST_PROFILE)
+            session.call_context(StandIdentity.TURN, StandIdentity.PROFILE)

@@ -7,7 +7,8 @@
 from __future__ import annotations
 
 from collections import Counter
-from collections.abc import Sequence
+from collections.abc import Generator, Sequence
+from contextlib import contextmanager
 from datetime import timedelta
 from typing import Annotated, Any, Literal
 from uuid import uuid4
@@ -23,8 +24,8 @@ from boba.connections.base import ClientIdentity, ConnectionBase
 from boba.connections.manifest import ConnectionTypeManifest, ConnectionTypes
 from boba.connections.sealed import SealKeys
 from boba.connections.stored import GrantedConnection, StoredConnection
-from boba.identity.context import Subject
-from boba.stand_core.context import TEST_CONTEXTS, make_context
+from boba.identity.context import CallContext, Subject
+from boba.stand_core.context import CallStand
 from boba.toolkit.calls import ToolCallBase
 from boba.toolkit.facade import UserConnection, tool
 from boba.toolkit.result import TableResult
@@ -81,7 +82,21 @@ TYPES = ConnectionTypes(
 
 
 class ProbeTools:
-    """Инструменты с параметрами-соединениями и их вызов в контексте LOGIN."""
+    """Инструменты с параметрами-соединениями и их вызов в контексте LOGIN.
+
+    Держатель контекста вызова — свой на объект: им же обвязка запечатанных
+    соединений читает вызывающего.
+    """
+
+    def __init__(self) -> None:
+        self._calls = CallStand()
+
+    def bound(self, tool: BaseTool, keys: SealKeys) -> BaseTool:
+        """Инструмент под обвязкой запечатанных соединений с ключами keys."""
+        params = SealedConnectionParams(keys, lambda: TYPES, self._calls.contexts)
+        params.bind_all([tool])
+
+        return tool
 
     def tool(self, name: str, fields: dict[str, Any]) -> BaseTool:
         """Инструмент, чьё тело возвращает полученные аргументы как есть."""
@@ -111,7 +126,8 @@ class ProbeTools:
         return self.tool("probe_copy", fields)
 
     async def call(self, tool: BaseTool, args: dict[str, Any]) -> dict[str, Any]:
-        with TEST_CONTEXTS.applied(make_context("t1", login=LOGIN, roles=("read",))):
+        context = self._calls.context("t1", login=LOGIN, roles=("read",))
+        with self._calls.applied(context):
             return await tool.ainvoke(args)
 
 
@@ -167,8 +183,11 @@ class SealedStand:
     )
 
     def __init__(self, rows: Sequence[StoredConnection]) -> None:
+        self._calls = CallStand()
         self.keys = SealKeys()
-        self.params = SealedConnectionParams(self.keys, lambda: TYPES, TEST_CONTEXTS)
+        self.params = SealedConnectionParams(
+            self.keys, lambda: TYPES, self._calls.contexts
+        )
         self.sent = SentConnections()
 
         tools = [self._query_tool(), self._copy_tool()]
@@ -178,7 +197,7 @@ class SealedStand:
         self.connections = ArmedConnections(
             lambda: store,  # type: ignore[arg-type]
             Credentials,  # type: ignore[arg-type]
-            TEST_CONTEXTS,
+            self._calls.contexts,
         )
         self.executor = LocalDagService(tools, self.STREAM_CONFIG, (self.params,))
         self.client = SealingToolServer(
@@ -200,6 +219,13 @@ class SealedStand:
         """Вызов через порт клиента, как его шлёт модель."""
         return await self.call_through(self.client, name, args)
 
+    @contextmanager
+    def as_caller(self) -> Generator[CallContext, None, None]:
+        """Блок в контексте LOGIN — вызывающего стенда."""
+        context = self._calls.context("t1", login=LOGIN, roles=("read",))
+        with self._calls.applied(context):
+            yield context
+
     async def call_through(
         self, server: ToolServer, name: str, args: dict[str, Any]
     ) -> ToolMessage:
@@ -207,7 +233,7 @@ class SealedStand:
         call = ToolCall(
             name=name, args=args, id=f"call_{uuid4().hex}", type="tool_call"
         )
-        with TEST_CONTEXTS.applied(make_context("t1", login=LOGIN, roles=("read",))):
+        with self.as_caller():
             return await server.call(call)
 
     @staticmethod

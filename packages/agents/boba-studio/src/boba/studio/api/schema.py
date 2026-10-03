@@ -22,6 +22,7 @@ from boba.identity.api import (
 )
 from boba.identity.context import CallContexts
 from boba.identity.locks import MemoryLiveLocks
+from boba.identity.run import Runs
 from boba.identity.session import Login
 from boba.identity.signin import SignedIn
 from boba.identity.token import CookieSpec, SessionRenewal
@@ -33,6 +34,7 @@ from boba.studio.api.app import ApiAccess, ApiApp, ApiExtras
 from boba.studio.api.signin import PageUrls, SignInWiring
 from boba.studio.catalog.api import CatalogApi
 from boba.toolrun.registry import ToolRegistry
+from boba.toolrun.streams import CallJournals
 
 __all__ = ["OpenApiDocument"]
 
@@ -125,12 +127,17 @@ class OpenApiDocument:
 
     @classmethod
     def _refs(cls) -> RuntimeRefs:
+        contexts = CallContexts()
+        runs = Runs(contexts)
+
         return RuntimeRefs(
             tool_registry=cls._no_registry,
             connection_store=cls._no_store,
             connection_types=ConnectionTypes.discover,
             credentials=cls._no_credentials,
-            contexts=CallContexts(),
+            contexts=contexts,
+            runs=runs,
+            journals=CallJournals(None, runs),
             seal_keys=SealKeys(),
             live_locks=lambda: MemoryLiveLocks("stand", 20),
             heartbeat_sec=1.0,

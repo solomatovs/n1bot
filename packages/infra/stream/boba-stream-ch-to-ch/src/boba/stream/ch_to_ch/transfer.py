@@ -84,7 +84,7 @@ class ChToCh(ChTransfer):
         self._resolver = ChTypeResolver(client, journal)
         self._types = ChTypes()
 
-    async def run(  # noqa: PLR0913
+    async def run(  # noqa: PLR0913 — фикстуры теста
         self,
         schema_strategy: SchemaStrategyPlan,
         delete_strategy: DeleteStrategyApply,

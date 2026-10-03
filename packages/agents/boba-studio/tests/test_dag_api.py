@@ -15,12 +15,12 @@ from pydantic import SecretStr
 from studio_stand import StandProfiles
 
 from boba.access import ProfileGrant, RoleConfig, ToolAccess
+from boba.identity.context import CallContexts
 from boba.identity.locks import MemoryLiveLocks
+from boba.identity.run import Runs
 from boba.runtime.config import StudioRuntimeConfig
-from boba.runtime.launchers import CallSurface
 from boba.stand.tools import STREAM_CONFIG
 from boba.stand_core import fake_toolmod
-from boba.stand_core.context import TEST_CONTEXTS
 from boba.stand_core.fake_toolmod import FakeConfig
 from boba.studio.api.dags import DagRunBody, DagRunning, DagRunReply
 from boba.toolkit.chain import StreamFailureKind
@@ -34,6 +34,7 @@ from boba.toolrun.process import ProcessLauncherConfig, ProcessToolCaller
 from boba.toolrun.registry import ToolRegistry
 from boba.toolrun.run_log import ToolRunLogger
 from boba.toolrun.stream_calls import StreamChannelFields
+from boba.toolrun.streams import CallJournals
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
 
@@ -46,6 +47,9 @@ class FakeStreamTools:
     журнал, упаковка ошибок."""
 
     def __init__(self, workdir: Path) -> None:
+        self.contexts = CallContexts()
+        self.runs = Runs(self.contexts)
+        self.journals = CallJournals(None, self.runs)
         launcher = ProcessToolCaller(
             "dag-api",
             ProcessLauncherConfig(
@@ -56,7 +60,7 @@ class FakeStreamTools:
                 stderr_tail_bytes=8192,
                 kill_grace_sec=0.5,
             ),
-            TEST_CONTEXTS,
+            self.contexts,
         )
 
         tools: list[Any] = []
@@ -68,11 +72,7 @@ class FakeStreamTools:
         StreamChannelFields(STREAM_CONFIG).attach_all(tools)
         ToolCallIdField.attach_all(tools)
         ToolIntentField.attach_all(tools)
-        ToolRunLogger.guard_all(
-            tools,
-            CallSurface(TEST_CONTEXTS).stream_source,
-            CallSurface(TEST_CONTEXTS).tool_call_scope,
-        )
+        ToolRunLogger(self.journals, self.contexts).guard_all(tools)
         ToolErrorGuard().guard_all(tools)
         self.tools = tools
 
@@ -114,7 +114,7 @@ def _running(stand: FakeStreamTools, config: StudioRuntimeConfig) -> DagRunning:
         StandProfiles.profiles(config),
         lambda: MemoryLiveLocks("test:0", 20),
         1.0,
-        TEST_CONTEXTS,
+        stand.runs,
     )
 
 

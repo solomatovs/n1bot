@@ -30,8 +30,9 @@ from boba.chainlit.chat.history import CheckpointMessages, TranscriptFeed
 from boba.chainlit.domain.fields import StepField
 from boba.chainlit.infra.providers import build_history_view
 from boba.chainlit.rendering.chat_view import StepKind
+from boba.identity.context import CallContexts
+from boba.stand.refs import StandRefs
 from boba.stand_core import fake_toolmod
-from boba.stand_core.context import TEST_CONTEXTS
 from boba.stand_core.fake_toolmod import FakeConfig
 from boba.toolkit.chain import GroupFailureResult, StreamFailureKind
 from boba.toolkit.dag import WorkflowNodeResult, WorkflowResult
@@ -115,7 +116,7 @@ class ChannelStand:
             kill_grace_sec=0.5,
         )
         launcher = RecordingLauncher(
-            ProcessToolCaller("stream-channels", cfg, TEST_CONTEXTS)
+            ProcessToolCaller("stream-channels", cfg, CallContexts())
         )
         self._launcher = launcher
 
@@ -537,7 +538,7 @@ class TestModelWiresStreams:
         assert not (tmp_path / "cut").exists()
 
     async def test_history_draws_the_workflow_as_steps_of_its_nodes(
-        self, tmp_path: Path
+        self, runtime_stand: StandRefs, tmp_path: Path
     ) -> None:
         """Лента из истории раскрывает результат workflow в шаги узлов."""
         stand = ChannelStand(tmp_path)
@@ -548,7 +549,9 @@ class TestModelWiresStreams:
             saver,
         )
 
-        steps = await TranscriptFeed(CheckpointMessages(saver)).steps(THREAD_ID, "user")
+        steps = await TranscriptFeed(
+            CheckpointMessages(saver), runtime_stand.journals
+        ).steps(THREAD_ID, "user")
 
         names: list[str] = []
         for step in steps:

@@ -601,7 +601,7 @@ class OraArrowTable(TransferTable):
     BACKUP_STAMP: ClassVar[str] = "%Y%m%d_%H%M%S_%f"
     NO_SUCH_TYPE: ClassVar[str] = "ORA-00902"
 
-    def __init__(  # noqa: PLR0913
+    def __init__(  # noqa: PLR0913 — фикстуры теста
         self,
         conn: AsyncConnection,
         table: OraTableRef,
@@ -756,7 +756,7 @@ class OraArrowSink(TransferSink):
     пачки как есть. Колонки LOB стоят в стейтменте последними, их массивы в
     пачке — тоже: select колонок пачки не копирует значения."""
 
-    def __init__(  # noqa: PLR0913
+    def __init__(  # noqa: PLR0913 — фикстуры теста
         self,
         conn: AsyncConnection,
         table: OraTableRef,
@@ -839,7 +839,7 @@ class OraArrowLoader:
 
     SESSION_UTC: ClassVar[str] = "alter session set time_zone = 'UTC'"
 
-    def __init__(  # noqa: PLR0913
+    def __init__(  # noqa: PLR0913 — фикстуры теста
         self,
         conn: AsyncConnection,
         table: OraTableRef,
@@ -867,7 +867,7 @@ class OraArrowLoader:
         self._declared = OraDeclaredTypes(conn, payload, journal)
         self._ipc = ArrowIpc()
 
-    async def run(  # noqa: PLR0913
+    async def run(  # noqa: PLR0913 — фикстуры теста
         self,
         schema_strategy: SchemaStrategyPlan,
         delete_strategy: DeleteStrategyApply,

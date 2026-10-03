@@ -11,15 +11,13 @@ RuntimeError — секция запуска не согласована с ко
 from __future__ import annotations
 
 from abc import abstractmethod
-from collections.abc import Callable, Mapping, Sequence
-from contextlib import ExitStack
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Annotated, Any, ClassVar, Literal, Protocol
 
 from omegaconf import DictConfig, OmegaConf
 from pydantic import BaseModel, ConfigDict, Field, RootModel, model_validator
 
-from boba.canvas.journal import CallStream
 from boba.canvas.keys import WorkspaceMount
 from boba.config import bind
 from boba.identity.context import CallContexts
@@ -36,8 +34,6 @@ from boba.toolkit.facade import WarmupHooks
 from boba.toolkit.launcher import ToolLauncher
 from boba.toolkit.manifest import LaunchSpec
 from boba.toolrun.process import ProcessLauncherConfig, ProcessToolCaller
-from boba.toolrun.run_log import NoCallScope
-from boba.toolrun.streams import ToolStreams
 
 __all__ = [
     "CallSurface",
@@ -241,41 +237,14 @@ class SandboxDefaults:
 
 
 class CallSurface:
-    """Значения из контекста вызова для обвязок запуска инструментов.
+    """Значения из контекста вызова для исполнителя песочницы.
 
-    Создаёт его загрузчик инструментов из держателя контекста процесса; его
-    методы отдаются обвязкам журнала и исполнителю песочницы.
+    Создаёт его запуск секции из держателя контекста процесса; метод
+    отдаётся исполнителю песочницы источником переменных путей профиля.
     """
 
     def __init__(self, contexts: CallContexts) -> None:
         self._contexts = contexts
-
-    def stream_source(self, tool: str, call_id: str) -> CallStream | None:
-        """Журнал живого вывода вызова; область и субъект — из контекста вызова."""
-        if not ToolStreams.streamable(tool):
-            return None
-
-        context = self._contexts.peek()
-        if context is None:
-            return None
-
-        return ToolStreams.begin(
-            context.subject.user_key, context.scope.id, call_id, tool
-        )
-
-    def tool_call_scope(self, call_id: str) -> Callable[[], None]:
-        """Контекст вызова инструмента моделью на время вызова: инициатор llm.
-
-        Без контекста ставить нечего — снимать тоже.
-        """
-        context = self._contexts.peek()
-        if context is None:
-            return NoCallScope.leave
-
-        entered = ExitStack()
-        entered.enter_context(self._contexts.applied(context.as_tool_call(call_id)))
-
-        return entered.close
 
     def sandbox_path_vars(self) -> dict[str, str]:
         """Значения {user_id}/{thread_id} для путей профиля на момент вызова.

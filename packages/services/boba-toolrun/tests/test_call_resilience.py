@@ -16,7 +16,7 @@ import pytest
 from pydantic import SecretStr
 
 from boba.cancellation import ToolStopped, run_cancellation
-from boba.stand_core.context import TEST_CONTEXTS
+from boba.identity.context import CallContexts
 from boba.stand_core.fake_toolmod import (
     TOOLS,
     FakeChunkHead,
@@ -52,7 +52,7 @@ def _launcher(workdir: Path, **overrides: object) -> ProcessToolCaller:
     values.update(overrides)
 
     return ProcessToolCaller(
-        "fake", ProcessLauncherConfig.model_validate(values), TEST_CONTEXTS
+        "fake", ProcessLauncherConfig.model_validate(values), CallContexts()
     )
 
 

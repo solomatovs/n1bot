@@ -288,7 +288,7 @@ class CallContexts:
 
     def current(self) -> CallContext:
         """Контекст текущего вызова; вне контекста — RefusalError."""
-        context = self._current.get()
+        context = self.peek()
         if context is None:
             msg = (
                 "the call runs outside a call context, expected "
@@ -305,10 +305,6 @@ class CallContexts:
     def subject(self) -> Subject:
         """Субъект текущего вызова."""
         return self.current().subject
-
-    def reset(self) -> None:
-        """Снять контекст: пользуются тесты."""
-        self._current.set(None)
 
     @contextmanager
     def applied(self, context: CallContext) -> Generator[CallContext, None, None]:

@@ -16,7 +16,7 @@ from pydantic import BaseModel
 from boba.chainlit.infra.plugins import ChatPlugins
 from boba.sandbox import ZygoteRegistry
 from boba.stand.refs import StandRefs
-from boba.stand_core.context import TEST_CONTEXTS
+from boba.stand_core.context import CallStand
 from boba.tool.pg.tools import TOOLS as PG_TOOLS
 from boba.tool.pg.tools import pg_query
 from boba.toolrun.call_id import ToolCallIdField
@@ -53,9 +53,15 @@ def _schema_fields(tool: object) -> set[str]:
     return set(schema.model_fields)
 
 
-def test_repeated_load_serves_wrapped_copies(reload_config: DictConfig) -> None:
-    first = ChatPlugins(TEST_CONTEXTS).load(reload_config, StandRefs.none())
-    second = ChatPlugins(TEST_CONTEXTS).load(reload_config, StandRefs.none())
+def test_repeated_load_serves_wrapped_copies(
+    runtime_stand: StandRefs, call_stand: CallStand, reload_config: DictConfig
+) -> None:
+    first = ChatPlugins(runtime_stand.contexts, runtime_stand.runs).load(
+        reload_config, runtime_stand.none()
+    )
+    second = ChatPlugins(runtime_stand.contexts, runtime_stand.runs).load(
+        reload_config, runtime_stand.none()
+    )
 
     if [t.name for t in first.tools] != [t.name for t in second.tools]:
         raise AssertionError("[t.name for t in first.tools] == [t.name for t in secon…")
@@ -69,9 +75,15 @@ def test_repeated_load_serves_wrapped_copies(reload_config: DictConfig) -> None:
         raise AssertionError('"cfg" not in _schema_fields(loaded)')
 
 
-def test_module_singletons_stay_pristine(reload_config: DictConfig) -> None:
-    ChatPlugins(TEST_CONTEXTS).load(reload_config, StandRefs.none())
-    ChatPlugins(TEST_CONTEXTS).load(reload_config, StandRefs.none())
+def test_module_singletons_stay_pristine(
+    runtime_stand: StandRefs, call_stand: CallStand, reload_config: DictConfig
+) -> None:
+    ChatPlugins(runtime_stand.contexts, runtime_stand.runs).load(
+        reload_config, runtime_stand.none()
+    )
+    ChatPlugins(runtime_stand.contexts, runtime_stand.runs).load(
+        reload_config, runtime_stand.none()
+    )
 
     for tool in PG_TOOLS:
         if ToolCallIdField.NAME not in _schema_fields(tool):

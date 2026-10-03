@@ -37,7 +37,8 @@ from boba.messaging import ChangeAction
 from boba.stand.catalog_ports import FakeConnections, FakeSyncPorts
 from boba.stand.catalog_stand import CatalogStand, ChangeCollector
 from boba.stand.fake_sync import FakeSyncScenario
-from boba.stand_core.context import TEST_PROFILE
+from boba.stand.refs import StandRefs
+from boba.stand_core.context import StandIdentity
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
 
@@ -50,7 +51,7 @@ CH_CONNECTION = FakeConnections.info("dwh-ch", "clickhouse")
 
 
 def _subject(user_id: UUID, *roles: str) -> Subject:
-    return Subject.of_user(user_id, f"user-{user_id.int}", roles, TEST_PROFILE)
+    return Subject.of_user(user_id, f"user-{user_id.int}", roles, StandIdentity.PROFILE)
 
 
 EDITOR = _subject(UUID(int=1), ROLE)
@@ -66,11 +67,20 @@ def _caller(subject: Subject) -> ApiSubject:
 
 @pytest.fixture
 async def service(
-    pool: AsyncPostgresPool, tmp_path: Path, test_postgres: PostgresConfig
+    runtime_stand: StandRefs,
+    pool: AsyncPostgresPool,
+    tmp_path: Path,
+    test_postgres: PostgresConfig,
 ) -> CatalogService:
     stand = await CatalogStand.build(pool, CONFIG, CatalogStand.fake_kinds())
-    site = stand.fake_site(tmp_path, ROLE, TEST_PROFILE, test_postgres)
-    ports = FakeSyncPorts(site, (CONNECTION, CH_CONNECTION), (EDITOR.user_id,))
+    site = stand.fake_site(tmp_path, ROLE, StandIdentity.PROFILE, test_postgres)
+    ports = FakeSyncPorts(
+        runtime_stand.contexts,
+        runtime_stand.runs,
+        site,
+        (CONNECTION, CH_CONNECTION),
+        (EDITOR.user_id,),
+    )
     return stand.service(ports)
 
 

@@ -56,7 +56,7 @@ from boba.runtime.refresh import BusRefreshSignal
 from boba.sandbox.zygote import ZygoteRegistry
 from boba.stand.connections import StandUserConnections
 from boba.stand.site import Stand
-from boba.stand_core.context import TEST_CONTEXTS
+from boba.stand_core.context import CallStand
 from boba.tool.ch.tools import ChToolConfig
 from boba.tool.pg.tools import PgToolConfig
 from boba.tool.web.tools import WebToolsConfig
@@ -199,7 +199,7 @@ def tickets(sso_login: tuple[SsoTickets, str]) -> SsoTickets:
 
 @pytest.fixture
 async def session(
-    layer: PostgresDataLayer, sso_login: tuple[SsoTickets, str]
+    call_stand: CallStand, layer: PostgresDataLayer, sso_login: tuple[SsoTickets, str]
 ) -> PersistedUser:
     """Пользователь чата, вошедший этим SSO-входом: метки лежат в JWT сессии."""
     from chainlit.auth.jwt import create_jwt
@@ -220,7 +220,7 @@ async def session(
     token = create_jwt(StandTokens.user(user.identifier, metadata))
     context = init_http_context(user=user, auth_token=token, thread_id=THREAD)
     context.session.chat_profile = PROFILE
-    enter_context()
+    enter_context(call_stand)
     return user
 
 
@@ -228,7 +228,8 @@ class Tools:
     """Инструменты секции с боевой обвязкой соединений пользователя."""
 
     @staticmethod
-    def of(  # noqa: PLR0913 — секция описывается всеми своими частями сразу
+    def of(  # noqa: PLR0913 — фикстуры теста
+        call_stand: CallStand,
         raw_config: Any,
         store: ConnectionStore,
         tickets: SsoTickets,
@@ -253,9 +254,10 @@ class Tools:
             lambda: store,
             lambda: KerberosCredentialSource(
                 tickets,
-                BusRefreshSignal(lambda: MemoryMessageBus("test"), TEST_CONTEXTS),
+                BusRefreshSignal(lambda: MemoryMessageBus("test"), call_stand.contexts),
             ),
             ConnectionTypes.discover,
+            call_stand.contexts,
         ).bind_all(functions)
         InjectedConfig.bind_all(functions, resolve)
 
@@ -267,8 +269,11 @@ def _credentials() -> KerberosCredentialSource:
 
 
 @pytest.fixture
-def pg_tools(raw_config: Any, store: ConnectionStore, tickets: SsoTickets):
+def pg_tools(
+    call_stand: CallStand, raw_config: Any, store: ConnectionStore, tickets: SsoTickets
+):
     return Tools.of(
+        call_stand,
         raw_config,
         store,
         tickets,
@@ -280,8 +285,11 @@ def pg_tools(raw_config: Any, store: ConnectionStore, tickets: SsoTickets):
 
 
 @pytest.fixture
-def ch_tools(raw_config: Any, store: ConnectionStore, tickets: SsoTickets):
+def ch_tools(
+    call_stand: CallStand, raw_config: Any, store: ConnectionStore, tickets: SsoTickets
+):
     return Tools.of(
+        call_stand,
         raw_config,
         store,
         tickets,
@@ -293,8 +301,11 @@ def ch_tools(raw_config: Any, store: ConnectionStore, tickets: SsoTickets):
 
 
 @pytest.fixture
-def web_tools(raw_config: Any, store: ConnectionStore, tickets: SsoTickets):
+def web_tools(
+    call_stand: CallStand, raw_config: Any, store: ConnectionStore, tickets: SsoTickets
+):
     return Tools.of(
+        call_stand,
         raw_config,
         store,
         tickets,

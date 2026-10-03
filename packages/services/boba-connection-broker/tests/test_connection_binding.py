@@ -30,7 +30,7 @@ from boba.connection_broker.sealing import SealingToolServer
 from boba.connections.base import ConnectionBase
 from boba.connections.marks import ConnectionRefusal
 from boba.connections.sealed import ConnectionRef, SealFeature, SealKeys
-from boba.stand_core.context import TEST_CONTEXTS, make_context
+from boba.stand_core.context import CallStand
 from boba.toolkit.facade import UserConnection
 from boba.toolkit.result import ErrorResult, TableResult, ToolArtifact
 from boba.toolrun.injected import ToolConfigError
@@ -327,7 +327,7 @@ class TestShownToTheUser:
             type="tool_call",
         )
 
-        with TEST_CONTEXTS.applied(make_context("t1", login=LOGIN, roles=("read",))):
+        with stand.as_caller():
             pending = await client.submit([call])
             running = stand.sent.shown(recorder.calls[0]["args"])
             await pending[0]
@@ -361,17 +361,17 @@ class TestExecutorRule:
 
 
 class TestDeclarationIsChecked:
-    def test_parameter_must_be_a_connection_model(self) -> None:
+    def test_parameter_must_be_a_connection_model(self, call_stand: CallStand) -> None:
         tool = ProbeTools().tool(
             "broken", {"connection": (Annotated[str, UserConnection], ...)}
         )
 
         with pytest.raises(ToolConfigError, match="not a connection model"):
-            SealedConnectionParams(SealKeys(), lambda: TYPES, TEST_CONTEXTS).bind_all(
-                [tool]
-            )
+            SealedConnectionParams(
+                SealKeys(), lambda: TYPES, call_stand.contexts
+            ).bind_all([tool])
 
-    def test_type_package_must_be_installed(self) -> None:
+    def test_type_package_must_be_installed(self, call_stand: CallStand) -> None:
         class Unregistered(ConnectionBase):
             kind: Literal["unregistered"] = "unregistered"
 
@@ -383,6 +383,6 @@ class TestDeclarationIsChecked:
         )
 
         with pytest.raises(ToolConfigError, match="not installed"):
-            SealedConnectionParams(SealKeys(), lambda: TYPES, TEST_CONTEXTS).bind_all(
-                [tool]
-            )
+            SealedConnectionParams(
+                SealKeys(), lambda: TYPES, call_stand.contexts
+            ).bind_all([tool])

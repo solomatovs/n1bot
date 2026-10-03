@@ -47,11 +47,12 @@ from boba.connection_broker.tools import ConnectionTools
 from boba.db.postgres import AsyncPostgresPool
 from boba.identity.context import (
     CallContext,
+    CallContexts,
     Scope,
 )
 from boba.identity.errors import RefusalError
 from boba.identity.locks import MemoryLiveLocks
-from boba.identity.run import ElementTarget, RunPort, RunRefusal
+from boba.identity.run import ElementTarget, RunPort, RunRefusal, Runs
 from boba.identity.session import Login, UserMetadataField
 from boba.identity.signin import SignedIn, SignInMetadata
 from boba.identity.token import SessionClaims, TokenReader
@@ -61,15 +62,12 @@ from boba.llm.providers import ChatModelConfig, LlmProviders, LlmProviderTypes
 from boba.messaging import LockToken, MemoryMessageBus, MemoryPayloadStore
 from boba.runtime.config import AppLayers
 from boba.runtime.elements import ChatTables
+from boba.stand.refs import StandRefs
 from boba.stand.signin import SignInStand
-from boba.stand_core.context import TEST_CONTEXTS
-from boba.stand_core.context import TEST_PROFILE as TEST_PROFILE
-from boba.stand_core.context import TEST_TURN as TEST_TURN
-from boba.stand_core.context import install_context as install_context
-from boba.stand_core.context import make_context as make_context
-from boba.stand_core.context import use_context as use_context
+from boba.stand_core.context import CallStand, StandIdentity
 from boba.stand_core.fakes import FakeSecret as FakeSecret
 from boba.stand_core.fakes import FakeUrl as FakeUrl
+from boba.toolrun.streams import CallJournals
 
 AUTH_USER = "test-user"
 
@@ -175,12 +173,13 @@ def data_bus() -> MemoryMessageBus:
 
 
 @pytest.fixture
-async def layer(
+async def layer(  # noqa: PLR0913 — фикстуры теста
     app_config: AppConfig,
     pool: AsyncPostgresPool,
     storage: LocalStorageClient,
     thread_messages: FakeThreadMessages,
     data_bus: MemoryMessageBus,
+    runtime_stand: StandRefs,
 ) -> PostgresDataLayer:
     schema = app_config.data_layer.db_schema
     async with pool.connection() as conn:
@@ -195,10 +194,11 @@ async def layer(
         elements=tables.elements,
         feedbacks=tables.feedbacks,
         storage=storage,
-        feed=TranscriptFeed(thread_messages),
+        feed=TranscriptFeed(thread_messages, runtime_stand.journals),
         links=AttachmentLinks(app_config.storage.public_prefix),
         sessions=ChainlitSessions(StandTokens()),
         bus=data_bus,
+        journals=runtime_stand.journals,
     )
     return data_layer
 
@@ -223,10 +223,8 @@ async def chainlit_context(auth_token: str) -> AsyncIterator[None]:
     """
     from chainlit.context import init_http_context
 
-    TEST_CONTEXTS.reset()
     init_http_context(user=ChainlitUser(identifier=AUTH_USER), auth_token=auth_token)
     yield
-    TEST_CONTEXTS.reset()
     init_http_context()
 
 
@@ -251,16 +249,17 @@ class FakeTurn(RunPort):
         )
 
 
-def enter_context(profile: str = TEST_PROFILE) -> CallContext:
+def enter_context(
+    stand: CallStand, profile: str = StandIdentity.PROFILE
+) -> CallContext:
     """Контекст вызова из текущей сессии chainlit — как его собирает on_message.
 
     Сессии нужны тред, сохранённый пользователь и профиль: тест готовит их
     через init_http_context(user=..., thread_id=...) и chat_profile.
     """
-    context = current_session().call_context(TEST_TURN, profile)
-    TEST_CONTEXTS._current.set(context)
+    context = current_session().call_context(StandIdentity.TURN, profile)
 
-    return context
+    return stand.use(context)
 
 
 @pytest.fixture
@@ -388,8 +387,9 @@ class SessionStub:
         self.token = StandTokens.tokens().issue(signed)
 
 
-def use_session(
+def use_session(  # noqa: PLR0913 — фикстуры теста
     monkeypatch: pytest.MonkeyPatch,
+    stand: CallStand,
     *,
     user_id: str | None = None,
     thread_id: str | None = None,
@@ -403,7 +403,7 @@ def use_session(
     """
     profile = chat_profile
     if profile is None:
-        profile = TEST_PROFILE
+        profile = StandIdentity.PROFILE
 
     stub = SessionStub(user_id, thread_id, profile, identifier)
     session = ChainlitSession(stub, StandTokens())
@@ -412,24 +412,24 @@ def use_session(
     monkeypatch.setattr(ChainlitSessions, "current", lambda self: session)
 
     if user_id is not None and thread_id is not None:
-        install_context(monkeypatch, session.call_context(TEST_TURN, profile))
+        stand.use(session.call_context(StandIdentity.TURN, profile))
 
     return session
 
 
 @pytest.fixture
-def catalog(store: ConnectionStore) -> Any:
+def catalog(store: ConnectionStore, call_stand: CallStand) -> Any:
     """connection_list чата над теми же таблицами, что и инструменты: тело
     исполняется в процессе и читает хранилище соединений."""
 
     def stored() -> ConnectionStore:
         return store
 
-    return ConnectionTools(stored, TEST_CONTEXTS).build()[0]
+    return ConnectionTools(stored, call_stand.contexts).build()[0]
 
 
 @pytest.fixture(autouse=True)
-def di_root(app_config: AppConfig) -> Iterator[None]:
+def di_root(app_config: AppConfig, runtime_stand: StandRefs) -> Iterator[None]:
     """Корневой контейнер с источником сессий, как его собирает приложение.
 
     Без него ref-функции падают: отсутствие контейнера — ошибка сборки, а
@@ -448,7 +448,9 @@ def di_root(app_config: AppConfig) -> Iterator[None]:
     root.provide(runtime.live_locks, MemoryLiveLocks("test-chainlit", 20))
     root.provide(runtime.message_bus, MemoryMessageBus("test-chainlit"))
     root.provide(runtime.payload_store, MemoryPayloadStore())
-    root.provide(runtime.call_contexts, TEST_CONTEXTS)
+    root.provide(runtime.call_contexts, runtime_stand.contexts)
+    root.provide(runtime.runs, runtime_stand.runs)
+    root.provide(runtime.call_journals, runtime_stand.journals)
     Container.set_root(root)
     try:
         yield
@@ -509,7 +511,8 @@ class RecordedTurn:
         self.bus = MemoryMessageBus("test-chainlit")
         self.payloads = MemoryPayloadStore()
         self.sink = sink
-        self.view = ChatView(thread_id, sink, user_name=user_name)
+        journals = CallJournals(None, Runs(CallContexts()))
+        self.view = ChatView(thread_id, sink, journals, user_name=user_name)
         self.renderer = ChatRenderer(thread_id, self.view, self.payloads, NoSurface())
         self.leave = self.bus.subscribe(Scope.chat(thread_id), self.renderer.apply)
         self.feed = TurnFeed(

@@ -169,7 +169,7 @@ class PgToPg(PgTransfer):
 
         return names
 
-    async def run(  # noqa: PLR0913
+    async def run(  # noqa: PLR0913 — фикстуры теста
         self,
         schema_strategy: SchemaStrategyPlan,
         delete_strategy: DeleteStrategyApply,

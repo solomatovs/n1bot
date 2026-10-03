@@ -17,12 +17,12 @@ import pytest
 from chainlit.config import config as chainlit_config
 from chainlit.server import sio
 from chainlit.session import WebsocketSession
-from chainlit_stand import FakeTurn, make_context
+from chainlit_stand import FakeTurn
 
 from boba.chainlit.infra.session import SessionContainers
 from boba.chainlit.infra.socket_events import SocketEvent, SocketEvents
-from boba.identity.run import RunRegistry
-from boba.stand_core.context import TEST_CONTEXTS
+from boba.stand.refs import StandRefs
+from boba.stand_core.context import CallStand
 
 pytestmark = pytest.mark.anyio
 
@@ -54,12 +54,6 @@ class EmittedEvents:
 @pytest.fixture(autouse=True)
 def chainlit_context() -> None:
     "обёртки работают с сессией напрямую, http-контекст им не нужен"
-
-
-@pytest.fixture(autouse=True)
-def clean_contexts() -> None:
-    "чистый реестр ходов на тест"
-    RunRegistry.reset()
 
 
 @pytest.fixture(autouse=True)
@@ -107,11 +101,13 @@ async def _handler(event: SocketEvent) -> Any:
 class TestLoadingSurvivesReconnect:
     """Ход живёт дольше сокета — индикатор хода обязан жить столько же."""
 
-    async def test_live_turn_gets_task_start_back(self, session: EmittedEvents) -> None:
+    async def test_live_turn_gets_task_start_back(
+        self, runtime_stand: StandRefs, call_stand: CallStand, session: EmittedEvents
+    ) -> None:
         """Реконнект при живом ходе: за task_end приходит task_start."""
         connected = await _handler(SocketEvent.CONNECTED)
 
-        with RunRegistry.open(TEST_CONTEXTS, make_context(THREAD), FakeTurn()):
+        with runtime_stand.runs.open(call_stand.context(THREAD), FakeTurn()):
             await connected(SOCKET_ID)
 
         if SocketEvent.TASK_START.value not in session.names:
@@ -141,12 +137,16 @@ class TestStopHandler:
     """Событие, которым chainlit шлёт в ленту своё «Task manually stopped.»."""
 
     async def test_stop_does_not_send_its_own_message(
-        self, session: EmittedEvents, monkeypatch: pytest.MonkeyPatch
+        self,
+        runtime_stand: StandRefs,
+        call_stand: CallStand,
+        session: EmittedEvents,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         stop = await _handler(SocketEvent.STOP)
         monkeypatch.setattr(chainlit_config.code, "on_stop", None, raising=False)
 
-        with RunRegistry.open(TEST_CONTEXTS, make_context(THREAD), FakeTurn()):
+        with runtime_stand.runs.open(call_stand.context(THREAD), FakeTurn()):
             await stop(SOCKET_ID)
 
         if self.MESSAGE_EVENT in session.names:
@@ -190,7 +190,11 @@ class TestConnectionJournal:
     """Причину разрыва задаёт engine.io — без неё диагностика слепа."""
 
     async def test_disconnect_reason_reaches_the_log(
-        self, session: EmittedEvents, caplog: pytest.LogCaptureFixture
+        self,
+        runtime_stand: StandRefs,
+        call_stand: CallStand,
+        session: EmittedEvents,
+        caplog: pytest.LogCaptureFixture,
     ) -> None:
         """Разрыв пишется в журнал вместе с причиной и состоянием хода."""
         del session
@@ -200,7 +204,10 @@ class TestConnectionJournal:
         journal = caplog.at_level(
             logging.INFO, logger="boba.chainlit.infra.socket_events"
         )
-        with journal, RunRegistry.open(TEST_CONTEXTS, make_context(THREAD), FakeTurn()):
+        with (
+            journal,
+            runtime_stand.runs.open(call_stand.context(THREAD), FakeTurn()),
+        ):
             await disconnect(SOCKET_ID, reason)
 
         written = "\n".join(record.getMessage() for record in caplog.records)

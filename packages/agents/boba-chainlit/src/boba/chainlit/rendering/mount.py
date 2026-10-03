@@ -30,7 +30,7 @@ from boba.chainlit.domain.context import ChatCallContext
 from boba.chainlit.rendering.tool import ChatElements
 from boba.identity.context import CallContexts, ContextKind
 from boba.identity.errors import RefusalError
-from boba.identity.run import ElementTarget, RunRegistry
+from boba.identity.run import ElementTarget, Runs
 from boba.toolkit.result import (
     ErrorResult,
     FileElement,
@@ -67,8 +67,9 @@ class ChatMount(CallHooks[MountedCall]):
 
     RETRY_NOTE: ClassVar[str] = "fix the file and call the tool again"
 
-    def __init__(self, contexts: CallContexts) -> None:
+    def __init__(self, contexts: CallContexts, runs: Runs) -> None:
         self._contexts = contexts
+        self._runs = runs
 
     def guard_all(self, tools: Sequence[BaseTool]) -> None:
         ToolBody.hook_all(tools, self)
@@ -149,7 +150,7 @@ class ChatMount(CallHooks[MountedCall]):
         await AttachmentDataLayer.require().create_element(element)
 
         context = self.chat_context()
-        port = RunRegistry.require_port(thread_id)
+        port = self._runs.require_port(thread_id)
         await port.show_element(context.tool_call_id(), element.to_dict())
 
     def _key(self, path: str) -> ObjectKey:
@@ -164,6 +165,6 @@ class ChatMount(CallHooks[MountedCall]):
 
     def _target(self, thread_id: str) -> ElementTarget:
         context = self.chat_context()
-        port = RunRegistry.require_port(thread_id)
+        port = self._runs.require_port(thread_id)
 
         return port.element_target(context.tool_call_id())

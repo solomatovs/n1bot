@@ -34,6 +34,7 @@ from boba.identity.sso import OwnRequest
 from boba.identity.token import CookieSpec, SessionRenewal
 from boba.stand.refs import StandRefs
 from boba.stand.signin import SignInStand
+from boba.stand_core.context import CallStand
 from boba.studio.api.app import ApiAccess, ApiApp
 from boba.studio.api.signin import PageUrls, SignInWiring
 from boba.studio.api.urls import AccountUrl, ApiVersion, SignInUrl
@@ -97,7 +98,9 @@ def _proxy() -> ProxyAuthConfig:
 
 
 @pytest.fixture
-async def client() -> AsyncIterator[AsyncClient]:
+async def client(
+    runtime_stand: StandRefs, call_stand: CallStand
+) -> AsyncIterator[AsyncClient]:
     users = Users()
     proxy = _proxy()
     auth = AuthService(
@@ -120,7 +123,7 @@ async def client() -> AsyncIterator[AsyncClient]:
         ),
     )
     access = ApiAccess(auth, COOKIE, lambda: users)
-    app = ApiApp.build(StandRefs.none(), access, _profiles(), wiring)
+    app = ApiApp.build(runtime_stand.none(), access, _profiles(), wiring)
     async with AsyncClient(
         transport=ASGITransport(app=app),
         base_url="http://api",

@@ -13,7 +13,7 @@ from boba.runtime.launchers import (
     ToolLaunchers,
     ZygoteLaunchers,
 )
-from boba.stand_core.context import TEST_CONTEXTS
+from boba.stand_core.context import CallStand
 from boba.toolkit.manifest import LaunchSpec
 from boba.toolrun.process import ProcessToolCaller
 
@@ -56,7 +56,9 @@ def test_sandbox_probe_requires_env_paths() -> None:
         launchers.probe()
 
 
-def test_process_provider_builds_process_launchers(tmp_path: Path) -> None:
+def test_process_provider_builds_process_launchers(
+    call_stand: CallStand, tmp_path: Path
+) -> None:
     raw = OmegaConf.create(_process_section(tmp_path))
 
     launchers = ToolLaunchers.of(raw)
@@ -64,7 +66,7 @@ def test_process_provider_builds_process_launchers(tmp_path: Path) -> None:
     assert isinstance(launchers, ProcessLaunchers)
 
     launchers.probe()
-    launcher = launchers.launcher_of(LaunchSpec(section="fake"), TEST_CONTEXTS)
+    launcher = launchers.launcher_of(LaunchSpec(section="fake"), call_stand.contexts)
 
     assert isinstance(launcher, ProcessToolCaller)
 

@@ -64,6 +64,7 @@ from boba.runtime.di import Depends
 from boba.runtime.elements import ChatTables
 from boba.runtime.users import UsersTable
 from boba.toolrun.registry import ToolRegistry
+from boba.toolrun.streams import CallJournals
 
 
 def get_app_config() -> AppConfig:
@@ -209,6 +210,7 @@ async def chainlit_data_layer(  # noqa: PLR0913 — слой данных соб
     bus: Annotated[MessageBus, Depends(runtime.message_bus)],
     users: Annotated[UsersTable, Depends(runtime.users_table)],
     sessions: Annotated[SessionSource, Depends(session_source)],
+    journals: Annotated[CallJournals, Depends(runtime.call_journals)],
 ) -> PostgresDataLayer:
     """Слой данных чата на общем пуле процесса: схему таблицы ставят в запрос."""
     pool = await AsyncPostgresPool.get(cfg.postgres)
@@ -221,10 +223,11 @@ async def chainlit_data_layer(  # noqa: PLR0913 — слой данных соб
         elements=tables.elements,
         feedbacks=tables.feedbacks,
         storage=storage,
-        feed=TranscriptFeed(CheckpointMessages(saver)),
+        feed=TranscriptFeed(CheckpointMessages(saver), journals),
         links=AttachmentLinks(storage_cfg.public_prefix),
         sessions=sessions,
         bus=bus,
+        journals=journals,
     )
 
 
@@ -371,7 +374,7 @@ def sent_connections() -> SentConnections:
     return SentConnections()
 
 
-def langchain_agent(  # noqa: PLR0913
+def langchain_agent(  # noqa: PLR0913 — фикстуры теста
     chat: Annotated[BaseChatModel, Depends(session_chat, scope="session")],
     builder: Annotated[
         AgentGraphBuilder, Depends(session_graph_builder, scope="session")

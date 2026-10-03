@@ -46,7 +46,7 @@ from boba.stand.catalog_ports import (
 from boba.stand.catalog_stand import CatalogStand
 from boba.stand.refs import StandRefs
 from boba.stand.signin import SignInStand
-from boba.stand_core.context import TEST_CONTEXTS
+from boba.stand_core.context import CallStand
 from boba.studio.api.app import ApiExtras
 from boba.studio.catalog.api import CatalogApi, CatalogUrl
 from boba.studio.catalog.sync_ports import (
@@ -88,6 +88,7 @@ class Stand(ApiStand):
 
     def __init__(
         self,
+        runtime_stand: StandRefs,
         service: CatalogService,
         profiles: ChatProfiles,
         connections: BrokerStore | None = None,
@@ -108,7 +109,11 @@ class Stand(ApiStand):
             mounts=(CatalogApi(source),),
             delete_guards=(CatalogHoldGuard(source),),
         )
-        super().__init__(StandRefs.of(store, lambda: None), profiles, extras=extras)
+        super().__init__(
+            runtime_stand.of(store, lambda: None),
+            profiles,
+            extras=extras,
+        )
 
     @staticmethod
     def url(path: CatalogUrl, **params: Any) -> str:
@@ -116,14 +121,17 @@ class Stand(ApiStand):
 
 
 @pytest.fixture
-async def stand(pool: AsyncPostgresPool, studio_config: StudioAppConfig) -> Stand:
+async def stand(
+    runtime_stand: StandRefs, pool: AsyncPostgresPool, studio_config: StudioAppConfig
+) -> Stand:
     catalog = await CatalogStand.build(pool, CONFIG, CatalogStand.kinds())
-    service = catalog.service(StubSyncPorts(STAND_CONNECTIONS))
-    return Stand(service, ChatProfiles(studio_config.profiles))
+    service = catalog.service(StubSyncPorts(runtime_stand.runs, STAND_CONNECTIONS))
+    return Stand(runtime_stand, service, ChatProfiles(studio_config.profiles))
 
 
 @pytest.fixture
 async def sync_stand(
+    runtime_stand: StandRefs,
     pool: AsyncPostgresPool,
     studio_config: StudioAppConfig,
     tmp_path: Path,
@@ -133,8 +141,10 @@ async def sync_stand(
     catalog = await CatalogStand.build(pool, CONFIG, CatalogStand.fake_kinds())
     profiles = ChatProfiles(studio_config.profiles)
     site = catalog.fake_site(tmp_path, "wrt", profiles.default_name(), test_postgres)
-    ports = FakeSyncPorts(site, (PG_CONNECTION,), (EDITOR_ID,))
-    return Stand(catalog.service(ports), profiles)
+    ports = FakeSyncPorts(
+        runtime_stand.contexts, runtime_stand.runs, site, (PG_CONNECTION,), (EDITOR_ID,)
+    )
+    return Stand(runtime_stand, catalog.service(ports), profiles)
 
 
 @pytest.fixture
@@ -609,14 +619,18 @@ async def test_share_link_serves_the_process_to_a_guest(
         assert gone.status_code == 404
 
 
-async def test_disabled_service_gives_503(studio_config: StudioAppConfig) -> None:
+async def test_disabled_service_gives_503(
+    runtime_stand: StandRefs, call_stand: CallStand, studio_config: StudioAppConfig
+) -> None:
     async def source() -> CatalogService:
         msg = "[catalog] is disabled: the data catalog is unavailable"
         raise ServiceDisabledError("catalog", msg)
 
     extras = ApiExtras(mounts=(CatalogApi(source),))
     stand = ApiStand(
-        StandRefs.none(), ChatProfiles(studio_config.profiles), extras=extras
+        runtime_stand.none(),
+        ChatProfiles(studio_config.profiles),
+        extras=extras,
     )
     async with stand.client(_user(EDITOR_ID, "wrt")) as client:
         response = await client.get(Stand.url(CatalogUrl.PROCESSES))
@@ -842,14 +856,19 @@ async def connections(pool: AsyncPostgresPool) -> BrokerStore:
 
 @pytest.fixture
 async def connections_stand(
-    pool: AsyncPostgresPool, studio_config: StudioAppConfig, connections: BrokerStore
+    runtime_stand: StandRefs,
+    pool: AsyncPostgresPool,
+    studio_config: StudioAppConfig,
+    connections: BrokerStore,
 ) -> Stand:
     """Стенд каталога с общим API соединений под тем же префиксом."""
     catalog = await CatalogStand.build(pool, CONFIG, CatalogStand.kinds())
     # каталог видит подключения тем же брокером, что и общий API
     directory = BrokerConnectionDirectory(UserConnectionsService(lambda: connections))
-    service = catalog.service(SyncPorts(NoSyncTools(), directory, TEST_CONTEXTS))
-    return Stand(service, ChatProfiles(studio_config.profiles), connections)
+    service = catalog.service(SyncPorts(NoSyncTools(), directory, runtime_stand.runs))
+    return Stand(
+        runtime_stand, service, ChatProfiles(studio_config.profiles), connections
+    )
 
 
 def _web_body(name: str, host: str) -> dict[str, object]:

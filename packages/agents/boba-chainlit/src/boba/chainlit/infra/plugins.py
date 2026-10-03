@@ -20,6 +20,7 @@ from boba.chainlit.rendering.mount import ChatMount
 from boba.connection_broker.tools import ConnectionTools
 from boba.connection_broker.user_connections import StoreRef
 from boba.identity.context import CallContexts
+from boba.identity.run import Runs
 from boba.runtime.plugins import EntryPointPlugins, ToolLoader
 from boba.runtime.refs import RuntimeRefs
 from boba.toolrun.registry import ToolRegistry
@@ -35,11 +36,12 @@ class ChatPlugins:
     получают обвязка элементов результата и инструменты каталога.
     """
 
-    def __init__(self, contexts: CallContexts) -> None:
+    def __init__(self, contexts: CallContexts, runs: Runs) -> None:
         self._contexts = contexts
+        self._runs = runs
 
     def surface_hooks(self) -> Sequence[CallHooks[Any]]:
-        return (ChatMount(self._contexts),)
+        return (ChatMount(self._contexts, self._runs),)
 
     def own_tools(self, store_ref: StoreRef) -> Sequence[BaseTool]:
         """Собственный сервер инструментов чата: каталог соединений."""
