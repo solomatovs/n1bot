@@ -8,7 +8,8 @@ DagSpec — сериализуемая модель графа: узлы — в�
 исполнения (StreamPlan) по декларациям портов инструментов: узлы, связанные
 каналами, собираются в одну группу и исполняются по правилу «все или никто»,
 узел без каналов — группа из него одного. Все проверки графа каналов
-остаются в StreamPlan.
+остаются в StreamPlan. WorkflowResult — итог вызова связки для клиента:
+результаты узлов одним конвертом.
 
 Ошибки:
 StreamPlanError — поле порта узла не имя канала, pipe_bytes не число либо
@@ -19,7 +20,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
-from typing import ClassVar
+from typing import Any, ClassVar, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
 
@@ -31,8 +32,15 @@ from boba.toolkit.chain import (
     StreamPlanError,
 )
 from boba.toolkit.ports import PortDecl, StreamSpec
+from boba.toolkit.result import ChatView, Fact, FactsBlock, ToolResult, ToolResultBase
 
-__all__ = ["DagNode", "DagPlanner", "DagSpec"]
+__all__ = [
+    "DagNode",
+    "DagPlanner",
+    "DagSpec",
+    "WorkflowNodeResult",
+    "WorkflowResult",
+]
 
 
 class DagNode(BaseModel):
@@ -292,3 +300,56 @@ class DagPlanner:
             f"stream plan: {node.label()} field {self.PIPE_FIELD!r} expects a "
             f"non-negative integer, got {value!r}"
         )
+
+
+class WorkflowNodeResult(BaseModel):
+    """Итог узла workflow: какой инструмент с чем вызван и чем он кончился.
+
+    key — имя узла, данное моделью; call_id — идентификатор вызова узла, под
+    которым идут его журнал и шаг ленты. errored — вызов кончился ошибкой
+    самого вызова (аргументы, права), а не результатом инструмента.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    key: str
+    call_id: str
+    tool: str
+    args: Mapping[str, Any]
+    errored: bool
+    content: str
+    result: ToolResult
+
+
+class WorkflowResult(ToolResultBase):
+    """Итог вызова workflow: результаты его узлов в порядке описания.
+
+    Модель описывает связку инструментов одним вызовом workflow; исполнитель
+    DAG отдаёт итог каждого узла, а этот результат несёт их модели и
+    истории одним конвертом. Клиент оживляет его по kind и раскрывает в
+    шаги узлов.
+    """
+
+    kind: Literal["workflow"] = "workflow"
+    nodes: Sequence[WorkflowNodeResult]
+
+    def llm_view(self) -> str:
+        parts: list[str] = []
+        for node in self.nodes:
+            parts.append(f"[{node.key}] {node.tool}:\n{node.content}")
+
+        return "\n\n".join(parts)
+
+    def chat_view(self) -> ChatView:
+        return ChatView(markdown=FactsBlock(facts=self._facts()).markdown())
+
+    def _facts(self) -> list[Fact]:
+        facts: list[Fact] = []
+        for node in self.nodes:
+            status = "ok"
+            if not node.result.ok:
+                status = "failed"
+
+            facts.append(Fact(key=f"{node.key} ({node.tool})", value=status))
+
+        return facts

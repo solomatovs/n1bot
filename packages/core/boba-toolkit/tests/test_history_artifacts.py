@@ -14,6 +14,7 @@ import pytest
 
 from boba.stand_core.history import HistorySnapshots
 from boba.toolkit.chain import GroupFailureResult
+from boba.toolkit.dag import WorkflowResult
 
 SNAPSHOTS = HistorySnapshots(Path(__file__).parent / "history", "boba.toolkit")
 
