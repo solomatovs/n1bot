@@ -7,8 +7,6 @@
 
 from __future__ import annotations
 
-import pytest
-
 from boba.identity.errors import (
     AuthenticationError,
     ExternalServiceError,
@@ -16,11 +14,6 @@ from boba.identity.errors import (
     InternalServiceError,
     UserInputError,
 )
-
-
-@pytest.fixture(autouse=True)
-def chainlit_context() -> None:
-    pass
 
 
 class TestPlainException:

@@ -59,8 +59,10 @@ from boba.llm.chat import (
 )
 from boba.llm.providers import LlmProviders, LlmProviderTypes
 from boba.llm.schema import SchemaReply
-from boba.stand.tools import STREAM_CONFIG
+from boba.stand.refs import StandRefs
 from boba.toolkit.calls import CallIdPrefix, ToolIntent
+from boba.toolkit.chain import CallAmbient
+from boba.toolkit.ports import StreamSpecs
 from boba.toolkit.result import ErrorResult, TableResult, ToolArtifact
 from boba.toolrun.cancellation import CancellableTools
 from boba.toolrun.stream_calls import LocalDagService, ToolServer, ToolServers
@@ -257,7 +259,9 @@ def _graph(
 
     spec = GraphSpec(
         chat=chat,
-        service=LocalDagService(tools, STREAM_CONFIG, ()),
+        service=LocalDagService(
+            tools, StandRefs.STREAM_CONFIG, (), StreamSpecs({}), CallAmbient()
+        ),
         system_prompt="you are a search assistant",
         checkpointer=InMemorySaver(),
         history=build_history_view(frozenset({"fts_probe", "vector_probe"}), 30),
@@ -681,7 +685,7 @@ class TestPrefetchCancellation:
 
     async def test_stop_breaks_the_turn_instead_of_feeding_the_model(self) -> None:
         stage = RecordingStage()
-        guarded = CancellableTools.guard_all([slow_probe])
+        guarded = CancellableTools().guard_all([slow_probe])
         graph = _graph(
             PrefetchGraphBuilder(FakeRephraser(["variant"]), ["slow_probe"], stage),
             answers=["never reached"],
@@ -713,7 +717,7 @@ class TestPrefetchCancellation:
     async def test_stop_before_the_call_refuses_to_start_it(self) -> None:
         """Остановка до вызова: инструмент не стартует, ход обрывается."""
         stage = RecordingStage()
-        guarded = CancellableTools.guard_all([slow_probe])
+        guarded = CancellableTools().guard_all([slow_probe])
         graph = _graph(
             PrefetchGraphBuilder(FakeRephraser(["variant"]), ["slow_probe"], stage),
             answers=["never reached"],
@@ -803,7 +807,9 @@ class RecordingService(LocalDagService):
     """Сервис исполнения, запоминающий, какие вызовы через него прошли."""
 
     def __init__(self, tools: Sequence[BaseTool]) -> None:
-        super().__init__(tools, STREAM_CONFIG, ())
+        super().__init__(
+            tools, StandRefs.STREAM_CONFIG, (), StreamSpecs({}), CallAmbient()
+        )
         self.served: list[str] = []
 
     @override

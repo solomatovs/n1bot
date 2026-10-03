@@ -374,7 +374,7 @@ def sent_connections() -> SentConnections:
     return SentConnections()
 
 
-def langchain_agent(  # noqa: PLR0913 — фикстуры теста
+def langchain_agent(  # noqa: PLR0913
     chat: Annotated[BaseChatModel, Depends(session_chat, scope="session")],
     builder: Annotated[
         AgentGraphBuilder, Depends(session_graph_builder, scope="session")

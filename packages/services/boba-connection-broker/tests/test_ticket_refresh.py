@@ -35,11 +35,6 @@ live_kdc = pytest.mark.skipif(
 )
 
 
-@pytest.fixture(autouse=True)
-def chainlit_context() -> None:
-    """Проверка работает с моделями конфига: сессия приложения ей не нужна."""
-
-
 class ToolConfig(BaseModel):
     """Конфиг секции: соединение лежит вложенно, как у kb/ingest."""
 

@@ -1,7 +1,7 @@
 """Логи вызова инструмента и журнал его живого вывода.
 
 Обвязка знает вызов целиком: имя, tool_call_id из синтетического поля схемы
-(ToolCallIdField), исход и длительность. Поэтому она же открывает журнал
+(CallFields), исход и длительность. Поэтому она же открывает журнал
 живого вывода в CallJournals, ставит приёмники каналов в тап
 исполнителя и закрывает журнал по исходу вызова. Здесь же снимается подпись
 вызова (ToolIntent): её показывает лента, телу инструмента она не нужна.
@@ -22,12 +22,12 @@ from langchain_core.tools import BaseTool
 
 from boba.identity.context import CallContexts
 from boba.toolkit.calls import FieldMarks, ToolIntent
+from boba.toolkit.chain import CallAmbient
 from boba.toolkit.channels import CallOutcome
 from boba.toolkit.failure import FailurePacker
 from boba.toolkit.result import FailureResult, ToolResultBase
-from boba.toolkit.stream import ToolChannelsTap
 from boba.toolkit.timing import Elapsed
-from boba.toolrun.call_id import ToolCallIdField
+from boba.toolrun.call_id import CallFields
 from boba.toolrun.streams import CallJournals, ToolStream
 from boba.toolrun.wrapping import CallHooks, ToolBody, ToolSchema
 
@@ -55,7 +55,8 @@ class ToolRunLogger(CallHooks[_CallScope]):
     контекста процесса и ставит на все инструменты (guard_all). На время
     вызова она ставит контекст вызова моделью (инициатор llm с call_id),
     открывает журнал живого вывода в CallJournals и отдаёт его приёмники
-    исполнителю через ToolChannelsTap; по исходу вызова закрывает журнал.
+    исполнителю через обстановку вызова (CallAmbient); по исходу вызова
+    закрывает журнал.
     """
 
     ARGS_LIMIT: ClassVar[int] = 500
@@ -63,10 +64,14 @@ class ToolRunLogger(CallHooks[_CallScope]):
     PACKED_RESULT: ClassVar[int] = 2
     """Длина кортежа (content, artifact) у tool'ов с content_and_artifact."""
 
-    def __init__(self, journals: CallJournals, contexts: CallContexts) -> None:
+    def __init__(
+        self, journals: CallJournals, contexts: CallContexts, ambient: CallAmbient
+    ) -> None:
         self._journals = journals
         self._contexts = contexts
+        self._ambient = ambient
         self._failures = FailurePacker()
+        self._fields = CallFields()
         self._not_logged: dict[str, frozenset[str]] = {}
         """Аргументы, которые в лог не пишутся, по именам инструментов."""
 
@@ -82,7 +87,7 @@ class ToolRunLogger(CallHooks[_CallScope]):
         args: tuple[object, ...],
         kwargs: dict[str, object],
     ) -> _CallScope:
-        call_id = ToolCallIdField.pop(kwargs)
+        call_id = self._fields.call_id(kwargs)
         not_logged = self._not_logged.get(name, frozenset())
         self._log_start(name, args, kwargs, not_logged)
         ToolIntent.pop(kwargs)
@@ -91,7 +96,7 @@ class ToolRunLogger(CallHooks[_CallScope]):
         journal_open = Elapsed()
         stream = self._open_stream(name, call_id, entered)
         if stream is not None:
-            ToolChannelsTap.set(stream)
+            self._ambient.set_sinks(stream)
             logger.info(
                 "tool[%s]: stream journal opened in %dms", name, journal_open.ms()
             )
@@ -116,7 +121,7 @@ class ToolRunLogger(CallHooks[_CallScope]):
 
     def cleanup(self, ctx: _CallScope) -> None:
         if ctx.stream is not None:
-            ToolChannelsTap.set(None)
+            self._ambient.set_sinks(None)
             ctx.stream.close(ctx.note)
 
         ctx.entered.close()

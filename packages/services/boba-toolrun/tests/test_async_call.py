@@ -10,6 +10,7 @@ from pydantic import SecretStr
 
 from boba.identity.context import CallContexts
 from boba.stand_core.fake_toolmod import FakeChunkHead, FakeConfig
+from boba.toolkit.chain import CallAmbient
 from boba.toolkit.frames import ToolFrame
 from boba.toolkit.protocol import CallInputSpec, CallOutputSpec, ReplyOk, ToolCommand
 from boba.toolrun.process import ProcessLauncherConfig, ProcessToolCaller
@@ -31,7 +32,10 @@ def _launcher(workdir: Path) -> ProcessToolCaller:
     }
 
     return ProcessToolCaller(
-        "fake", ProcessLauncherConfig.model_validate(values), CallContexts()
+        "fake",
+        ProcessLauncherConfig.model_validate(values),
+        CallContexts(),
+        CallAmbient(),
     )
 
 

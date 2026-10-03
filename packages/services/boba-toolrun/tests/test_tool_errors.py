@@ -16,11 +16,6 @@ from boba.toolrun.errors import ToolErrorGuard
 __all__: list[str] = []
 
 
-@pytest.fixture(autouse=True)
-def chainlit_context() -> None:
-    """независимость от сессии chainlit"""
-
-
 class _BoomError(Exception):
     """исключение инструмента, которое должно превратиться в ErrorResult"""
 

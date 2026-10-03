@@ -27,9 +27,10 @@ from pydantic import SecretStr
 
 from boba.sandbox import SandboxProfile
 from boba.sandbox.guest import WarmupCall
-from boba.sandbox.zygote import ZygoteRegistry, ZygoteSpawner, ZygoteState
+from boba.sandbox.zygote import ZygoteSpawner, ZygoteState
 from boba.stand.shell import ShellRun
 from boba.stand.zygote import ROOTFS_IMAGE, SandboxStand, ZygoteStand
+from boba.toolkit.chain import CallAmbient
 from boba.toolkit.channels import JournalChannel, ToolChannel
 from boba.toolkit.entry import ToolAddress, ToolArgv, ToolMain
 from boba.toolkit.launcher import CollectedCall, LauncherError
@@ -38,7 +39,6 @@ from boba.toolkit.stream import (
     ChannelSinks,
     Chunk,
     StreamSink,
-    ToolChannelsTap,
 )
 from boba.workspace.images import PartialCopy
 
@@ -217,13 +217,13 @@ def _command(name: str, arguments: dict[str, Any]) -> ToolCommand:
 
 
 @pytest.fixture
-def section() -> Iterator[str]:
+def section(zygote_stand: ZygoteStand) -> Iterator[str]:
     """Уникальная секция на тест: зиготы реестра гасятся после него."""
     name = f"defect-{uuid4().hex[:8]}"
 
     yield name
 
-    ZygoteRegistry.stop_all()
+    zygote_stand.stop()
 
 
 class TestBodyOutputIsNotLost:
@@ -233,15 +233,19 @@ class TestBodyOutputIsNotLost:
     без flush не доезжала до журнала вовсе.
     """
 
-    def test_print_without_flush_reaches_the_journal(self, section: str) -> None:
-        caller = ZygoteStand.caller(section, _profile(), [MODULE], warmup_calls=WARMUP)
+    def test_print_without_flush_reaches_the_journal(
+        self, zygote_stand: ZygoteStand, call_ambient: CallAmbient, section: str
+    ) -> None:
+        caller = zygote_stand.journaled(
+            section, _profile(), call_ambient, [MODULE], warmup_calls=WARMUP
+        )
 
         sinks = RecordingSinks()
-        ToolChannelsTap.set(sinks)
+        call_ambient.set_sinks(sinks)
         try:
             outcome = CollectedCall.of(caller, _command("fx_chatter", {}))
         finally:
-            ToolChannelsTap.set(None)
+            call_ambient.set_sinks(None)
 
         if not isinstance(outcome.reply, ReplyOk):
             raise AssertionError(f"reply={outcome.reply}")
@@ -259,35 +263,41 @@ class TestBodyLogLevel:
     """
 
     @staticmethod
-    def _stdout_at(level: int, section: str) -> str:
+    def _stdout_at(
+        zygote_stand: ZygoteStand, call_ambient: CallAmbient, level: int, section: str
+    ) -> str:
         """Вывод тела при заданном уровне логера приложения."""
         app_logger = logging.getLogger(ZygoteSpawner.APP_LOGGER)
         previous = app_logger.level
         app_logger.setLevel(level)
 
         try:
-            caller = ZygoteStand.caller(
-                section, _profile(), [MODULE], warmup_calls=WARMUP
+            caller = zygote_stand.journaled(
+                section, _profile(), call_ambient, [MODULE], warmup_calls=WARMUP
             )
             sinks = RecordingSinks()
-            ToolChannelsTap.set(sinks)
+            call_ambient.set_sinks(sinks)
             try:
                 CollectedCall.of(caller, _command("fx_chatter", {}))
             finally:
-                ToolChannelsTap.set(None)
+                call_ambient.set_sinks(None)
         finally:
             app_logger.setLevel(previous)
 
         return sinks.text_of(ToolChannel.STDOUT)
 
-    def test_info_level_lets_the_body_talk(self, section: str) -> None:
-        stdout = self._stdout_at(logging.INFO, section)
+    def test_info_level_lets_the_body_talk(
+        self, zygote_stand: ZygoteStand, call_ambient: CallAmbient, section: str
+    ) -> None:
+        stdout = self._stdout_at(zygote_stand, call_ambient, logging.INFO, section)
 
         if "info line from the body" not in stdout:
             raise AssertionError(f"уровень приложения не доехал: stdout={stdout!r}")
 
-    def test_warning_level_silences_info(self, section: str) -> None:
-        stdout = self._stdout_at(logging.WARNING, section)
+    def test_warning_level_silences_info(
+        self, zygote_stand: ZygoteStand, call_ambient: CallAmbient, section: str
+    ) -> None:
+        stdout = self._stdout_at(zygote_stand, call_ambient, logging.WARNING, section)
 
         if "info line from the body" in stdout:
             raise AssertionError(f"тело пишет ниже уровня приложения: {stdout!r}")
@@ -306,9 +316,9 @@ class TestFailureIsLogged:
     LOGGER: ClassVar[str] = "boba.sandbox.zygote"
 
     def test_failed_call_logs_reason_and_tail(
-        self, section: str, caplog: pytest.LogCaptureFixture
+        self, zygote_stand: ZygoteStand, section: str, caplog: pytest.LogCaptureFixture
     ) -> None:
-        caller = ZygoteStand.caller(section, _profile())
+        caller = zygote_stand.caller(section, _profile())
 
         # код команды — штатный ShellResult; вызов падает лишь со смертью
         # тела, и bash-тул умирает тем же сигналом, что и его команда
@@ -341,8 +351,10 @@ class TestBrokenSinkFreesTheCall:
     держать образ пользователя до конца жизни зиготы.
     """
 
-    def test_failing_sink_kills_the_executor(self, section: str) -> None:
-        caller = ZygoteStand.caller(section, _profile())
+    def test_failing_sink_kills_the_executor(
+        self, zygote_stand: ZygoteStand, call_ambient: CallAmbient, section: str
+    ) -> None:
+        caller = zygote_stand.journaled(section, _profile(), call_ambient)
         ShellRun.call_text(caller, "echo warm")
 
         zygote_pid = caller.supervisor.pid
@@ -351,12 +363,12 @@ class TestBrokenSinkFreesTheCall:
 
         known = ProcTree.descendants_of(zygote_pid)
 
-        ToolChannelsTap.set(BrokenSinks())
+        call_ambient.set_sinks(BrokenSinks())
         try:
             with pytest.raises(RuntimeError, match=BrokenSink.FAILURE):
                 ShellRun.call_text(caller, "echo noise; sleep 300")
         finally:
-            ToolChannelsTap.set(None)
+            call_ambient.set_sinks(None)
 
         survivors = ProcTree.wait_tree_settled(zygote_pid, known)
         if survivors:
@@ -376,11 +388,13 @@ class TestConcurrentStart:
 
     THREADS: ClassVar[int] = 6
 
-    def test_parallel_first_calls_all_succeed(self, section: str) -> None:
+    def test_parallel_first_calls_all_succeed(
+        self, zygote_stand: ZygoteStand, section: str
+    ) -> None:
         profile = _profile()
 
         def call(index: int) -> int:
-            caller = ZygoteStand.caller(section, profile)
+            caller = zygote_stand.caller(section, profile)
             outcome = ShellRun.call_text(caller, f"echo {index}")
             return outcome.exit_code
 
@@ -405,11 +419,13 @@ class TestZygoteOutlivesSpawningThread:
     завершения этого треда.
     """
 
-    def test_zygote_survives_the_pool_thread(self, section: str) -> None:
+    def test_zygote_survives_the_pool_thread(
+        self, zygote_stand: ZygoteStand, section: str
+    ) -> None:
         profile = _profile()
 
         pool = ThreadPoolExecutor(max_workers=1)
-        caller = pool.submit(ZygoteStand.caller, section, profile).result()
+        caller = pool.submit(zygote_stand.caller, section, profile).result()
         pool.shutdown(wait=True)
 
         born = caller.supervisor.pid
@@ -477,10 +493,10 @@ class TestRootMountRecovery:
 
     @needs_image
     def test_dead_root_daemon_restarts_the_section(
-        self, section: str, caplog: pytest.LogCaptureFixture
+        self, zygote_stand: ZygoteStand, section: str, caplog: pytest.LogCaptureFixture
     ) -> None:
         profile = _profile(rootfs=str(ROOTFS_IMAGE))
-        caller = ZygoteStand.caller(section, profile)
+        caller = zygote_stand.caller(section, profile)
 
         warm = ShellRun.call_text(caller, "echo warm")
         if warm.exit_code != 0:
@@ -542,13 +558,15 @@ done
         reason="нет делегированного /sys/fs/cgroup/boba (прогнать cgroup-init.sh)",
     )
 
-    def test_shell_gets_only_stdio(self, section: str) -> None:
+    def test_shell_gets_only_stdio(
+        self, zygote_stand: ZygoteStand, section: str
+    ) -> None:
         """Каналы модуля (конверт, кадры, конфиг) закрыты для shell-команды.
 
         До правки они наследовались телом: команда пользователя могла писать
         в конверт вызова и читать канал конфига.
         """
-        caller = ZygoteStand.caller(section, _profile())
+        caller = zygote_stand.caller(section, _profile())
 
         outcome = ShellRun.call_text(caller, self.PROBE)
         if outcome.exit_code != 0:
@@ -566,14 +584,16 @@ done
             raise AssertionError(f"лишние каналы у shell-тела: {pipes}")
 
     @needs_cgroup
-    def test_body_has_no_cgroup_descriptor(self, section: str) -> None:
+    def test_body_has_no_cgroup_descriptor(
+        self, zygote_stand: ZygoteStand, section: str
+    ) -> None:
         profile = _profile(
             cgroup_base=self.CGROUP_BASE,
             group_memory_bytes=512 * 1024 * 1024,
             group_swap_bytes=0,
             group_pids_max=64,
         )
-        caller = ZygoteStand.caller(section, profile)
+        caller = zygote_stand.caller(section, profile)
 
         outcome = ShellRun.call_text(caller, self.PROBE)
         if outcome.exit_code != 0:
@@ -597,7 +617,9 @@ done
             raise AssertionError(f"телу достался дескриптор cgroup: {leaked}")
 
     @needs_cgroup
-    def test_body_cannot_lift_its_memory_limit(self, section: str) -> None:
+    def test_body_cannot_lift_its_memory_limit(
+        self, zygote_stand: ZygoteStand, section: str
+    ) -> None:
         """Через дескриптор leaf'а лимит снимался записью в memory.max."""
         limit = 512 * 1024 * 1024
         profile = _profile(
@@ -606,7 +628,7 @@ done
             group_swap_bytes=0,
             group_pids_max=64,
         )
-        caller = ZygoteStand.caller(section, profile)
+        caller = zygote_stand.caller(section, profile)
 
         attack = """
 for fd in /proc/self/fd/*; do
@@ -641,7 +663,7 @@ class TestPartialCopyCleanup:
 
     @needs_mkfs
     def test_copy_named_by_the_namespace_pid_is_removed(
-        self, section: str, tmp_path: Path
+        self, zygote_stand: ZygoteStand, section: str, tmp_path: Path
     ) -> None:
         """Мусор подкладывается к готовому образу: свою копию вызов не делает.
 
@@ -654,7 +676,7 @@ class TestPartialCopyCleanup:
         if workspace is None:
             raise AssertionError("профиль стенда без секции workspace")
 
-        caller = ZygoteStand.caller(
+        caller = zygote_stand.caller(
             section, profile, path_vars=lambda: {"user_id": self.USER}
         )
         first = ShellRun.call_text(caller, "echo warm")

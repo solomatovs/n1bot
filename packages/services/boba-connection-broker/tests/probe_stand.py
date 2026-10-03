@@ -27,7 +27,9 @@ from boba.connections.stored import GrantedConnection, StoredConnection
 from boba.identity.context import CallContext, Subject
 from boba.stand_core.context import CallStand
 from boba.toolkit.calls import ToolCallBase
+from boba.toolkit.chain import CallAmbient
 from boba.toolkit.facade import UserConnection, tool
+from boba.toolkit.ports import StreamSpecs
 from boba.toolkit.result import TableResult
 from boba.toolrun.bridge import ToolBridge
 from boba.toolrun.stream_calls import (
@@ -199,7 +201,9 @@ class SealedStand:
             Credentials,  # type: ignore[arg-type]
             self._calls.contexts,
         )
-        self.executor = LocalDagService(tools, self.STREAM_CONFIG, (self.params,))
+        self.executor = LocalDagService(
+            tools, self.STREAM_CONFIG, (self.params,), StreamSpecs({}), CallAmbient()
+        )
         self.client = SealingToolServer(
             self.executor,
             self.connections,

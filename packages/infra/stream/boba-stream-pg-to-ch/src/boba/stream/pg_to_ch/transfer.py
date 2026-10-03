@@ -251,7 +251,7 @@ class PgToCh(ChTransfer):
         self._inet_probe = ChInetProbe(client, journal)
         self._registry = psycopg.postgres.types
 
-    async def run(  # noqa: PLR0913 — фикстуры теста
+    async def run(  # noqa: PLR0913
         self,
         schema_strategy: SchemaStrategyPlan,
         delete_strategy: DeleteStrategyApply,

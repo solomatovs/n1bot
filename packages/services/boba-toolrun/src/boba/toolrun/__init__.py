@@ -5,10 +5,9 @@ from boba.toolrun.access import (
     ToolAccessDeniedError,
     ToolAccessGuard,
 )
-from boba.toolrun.call_id import ToolCallIdField
+from boba.toolrun.call_id import CallFields
 from boba.toolrun.cancellation import CancellableTools
 from boba.toolrun.errors import ToolErrorGuard
-from boba.toolrun.intent import ToolIntentField
 from boba.toolrun.run_log import (
     ToolRunLogger,
 )
@@ -23,6 +22,7 @@ from boba.toolrun.wrapping import (
 __all__ = [
     "AsyncCall",
     "AsyncToolCall",
+    "CallFields",
     "CallHooks",
     "CancellableTools",
     "SyncCall",
@@ -30,8 +30,6 @@ __all__ = [
     "ToolAccessDeniedError",
     "ToolAccessGuard",
     "ToolBody",
-    "ToolCallIdField",
     "ToolErrorGuard",
-    "ToolIntentField",
     "ToolRunLogger",
 ]

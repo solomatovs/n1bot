@@ -25,6 +25,7 @@ from boba.stand_core.fake_toolmod import (
     fake_relay,
     fake_stream,
 )
+from boba.toolkit.chain import CallAmbient
 from boba.toolkit.entry import ToolArgv, ToolMain
 from boba.toolkit.frames import FrameProtocolError, ToolFrame
 from boba.toolkit.launcher import LauncherError
@@ -52,7 +53,10 @@ def _launcher(workdir: Path, **overrides: object) -> ProcessToolCaller:
     values.update(overrides)
 
     return ProcessToolCaller(
-        "fake", ProcessLauncherConfig.model_validate(values), CallContexts()
+        "fake",
+        ProcessLauncherConfig.model_validate(values),
+        CallContexts(),
+        CallAmbient(),
     )
 
 

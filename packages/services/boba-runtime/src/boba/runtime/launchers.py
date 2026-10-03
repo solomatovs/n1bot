@@ -29,6 +29,7 @@ from boba.sandbox import (
 )
 from boba.sandbox.guest import WarmupCall
 from boba.sandbox.zygote import ZygotePolicy, ZygoteRegistry, ZygoteToolCaller
+from boba.toolkit.chain import CallAmbient
 from boba.toolkit.entry import ToolArgv
 from boba.toolkit.facade import WarmupHooks
 from boba.toolkit.launcher import ToolLauncher
@@ -270,18 +271,32 @@ class SectionLaunchers(Protocol):
         """Проверяет предпосылки способа запуска; нарушение — отказ старта."""
 
     @abstractmethod
-    def launcher_of(self, spec: LaunchSpec, contexts: CallContexts) -> ToolLauncher:
+    def launcher_of(
+        self, spec: LaunchSpec, contexts: CallContexts, ambient: CallAmbient
+    ) -> ToolLauncher:
         """Исполнитель секции спеки; её конфиг и изоляция проверяются здесь.
         contexts — держатель контекста вызова: по нему исполнитель узнаёт
         пользователя и область на момент вызова."""
 
+    @abstractmethod
+    def stop(self) -> None:
+        """Гасит всё, что способ запуска держит между вызовами; зовётся на
+        остановке процесса."""
+
 
 class ZygoteLaunchers(SectionLaunchers):
     """Запуск в песочнице: зигота на секцию, профиль собирается из [env],
-    дефолтов и секции [sandbox] файла плагина."""
+    дефолтов и секции [sandbox] файла плагина.
+
+    Реализация SectionLaunchers; объект один на процесс, зиготы секций живут
+    в его реестре (ZygoteRegistry) между сборками инструментов."""
 
     def __init__(self, raw: DictConfig) -> None:
         self._raw = raw
+        self._zygotes = ZygoteRegistry()
+
+    def stop(self) -> None:
+        self._zygotes.stop_all()
 
     def probe(self) -> None:
         """Пути конвенций проверяются разбором [env]; cgroup-лимиты каждой
@@ -292,11 +307,13 @@ class ZygoteLaunchers(SectionLaunchers):
     def _env(self) -> EnvPaths:
         return bind(self._raw, "env", EnvPaths)
 
-    def launcher_of(self, spec: LaunchSpec, contexts: CallContexts) -> ToolLauncher:
+    def launcher_of(
+        self, spec: LaunchSpec, contexts: CallContexts, ambient: CallAmbient
+    ) -> ToolLauncher:
         profile = self.profile_of(spec)
         sandbox = self._plugin_sandbox(spec.section)
 
-        supervisor = ZygoteRegistry.obtain(
+        supervisor = self._zygotes.obtain(
             spec.section,
             profile,
             tuple(spec.modules),
@@ -307,7 +324,7 @@ class ZygoteLaunchers(SectionLaunchers):
         surface = CallSurface(contexts)
 
         return ZygoteToolCaller(
-            spec.section, supervisor, profile, surface.sandbox_path_vars
+            spec.section, supervisor, profile, ambient, surface.sandbox_path_vars
         )
 
     @staticmethod
@@ -432,18 +449,32 @@ class ProcessLaunchers(SectionLaunchers):
         # файловые ссылки канваса читают файлы инструментов из workdir
         WorkspaceMount.configure(self._cfg.workdir)
 
-    def launcher_of(self, spec: LaunchSpec, contexts: CallContexts) -> ToolLauncher:
-        return ProcessToolCaller(spec.section, self._cfg, contexts)
+    def launcher_of(
+        self, spec: LaunchSpec, contexts: CallContexts, ambient: CallAmbient
+    ) -> ToolLauncher:
+        return ProcessToolCaller(spec.section, self._cfg, contexts, ambient)
+
+    def stop(self) -> None:
+        return
 
 
 class ToolLaunchers:
-    """Сборка способа запуска по секции [tool_launcher]."""
+    """Сборка способа запуска по секции [tool_launcher].
+
+    Создаётся из сырого конфига: загрузкой конфига — чтобы проверить
+    предпосылки способа запуска на старте, и корнем сборки приложения —
+    чтобы построить способ запуска процесса, один на все сборки
+    инструментов.
+    """
 
     SECTION: ClassVar[str] = "tool_launcher"
 
-    @classmethod
-    def of(cls, raw: DictConfig) -> SectionLaunchers:
-        node = OmegaConf.select(raw, cls.SECTION)
+    def __init__(self, raw: DictConfig) -> None:
+        self._raw = raw
+
+    def build(self) -> SectionLaunchers:
+        raw = self._raw
+        node = OmegaConf.select(raw, self.SECTION)
         if node is None:
             msg = (
                 "[tool_launcher] is required but the config has no such section: "
@@ -451,7 +482,7 @@ class ToolLaunchers:
             )
             raise RuntimeError(msg)
 
-        section = bind(raw, cls.SECTION, ToolLauncherSection).root
+        section = bind(raw, self.SECTION, ToolLauncherSection).root
 
         match section:
             case SandboxLauncherConfig():

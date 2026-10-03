@@ -393,7 +393,7 @@ class ChArrowLoader:
 
     FORMAT: ClassVar[str] = "ArrowStream"
 
-    def __init__(  # noqa: PLR0913 — фикстуры теста
+    def __init__(  # noqa: PLR0913
         self,
         client: AsyncClient,
         table: ChTableRef,
@@ -441,7 +441,7 @@ class ChArrowLoader:
 
         return names
 
-    async def run(  # noqa: PLR0913 — фикстуры теста
+    async def run(  # noqa: PLR0913
         self,
         schema_strategy: SchemaStrategyPlan,
         delete_strategy: DeleteStrategyApply,

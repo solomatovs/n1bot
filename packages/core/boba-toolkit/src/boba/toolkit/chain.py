@@ -12,7 +12,7 @@
   читатели получают только после успешного итога писателя, барьер
   StreamGroup отпускается, когда до него дошли все, сбой любого вызова
   или застой данных срывает всю группу.
-- NodeSlot / PipelineSlot — роль одного вызова в группе для обёртки
+- NodeSlot / CallAmbient — роль одного вызова в группе для обёртки
   запуска (ToolProcessWrap): она открывает вызов потоково и отдаёт группе
   его каналы.
 
@@ -35,9 +35,9 @@ import struct
 import termios
 import threading
 import time
-from collections.abc import Callable, Iterator, Mapping, Sequence
-from contextlib import suppress
-from contextvars import ContextVar, Token
+from collections.abc import Callable, Generator, Iterator, Mapping, Sequence
+from contextlib import contextmanager, suppress
+from contextvars import ContextVar
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import ClassVar, Literal
@@ -68,8 +68,10 @@ from boba.toolkit.result import (
     FailureResultField,
     NoteBlock,
 )
+from boba.toolkit.stream import ChannelSinks
 
 __all__ = [
+    "CallAmbient",
     "ChainCheck",
     "ChainMismatchError",
     "ChannelFanOut",
@@ -79,7 +81,6 @@ __all__ = [
     "GroupVerdict",
     "NodeSlot",
     "PipeTee",
-    "PipelineSlot",
     "ReaderRef",
     "StreamFailureKind",
     "StreamGroupRun",
@@ -302,7 +303,7 @@ class ChannelFanOut:
 
     CHUNK_BYTES: ClassVar[int] = 1 << 20
 
-    def __init__(  # noqa: PLR0913 — фикстуры теста
+    def __init__(  # noqa: PLR0913
         self,
         channel: str,
         source_fd: int,
@@ -1374,7 +1375,7 @@ class StreamGroupRun:
 class NodeSlot:
     """Ручка одного вызова группы для обёртки запуска (ToolProcessWrap).
 
-    Обёртка берёт её из PipelineSlot, открывает вызов потоково и отдаёт
+    Обёртка берёт её из CallAmbient, открывает вызов потоково и отдаёт
     группе через attach сам вызов, дескрипторы выходов (open_tap) и
     дескрипторы входов по порядку ToolCommand.inputs. Счётчики — сколько
     каналов у каждого порта вызова, 0 — канала нет. По концу
@@ -1489,23 +1490,43 @@ class NodeSlot:
         return self._group.verdict()
 
 
-class PipelineSlot:
-    """Contextvar-переноска ручки вызова в группе: владелец группы ставит её
-    перед вызовом инструмента, обёртка запуска читает в потоке тела. Вне
-    группы ручки нет, и вызов идёт обычным накопительным путём."""
+class CallAmbient:
+    """Обстановка текущего вызова инструмента для исполнителей: приёмники
+    журнала вызова и ручка вызова в группе.
 
-    _SLOT: ClassVar[ContextVar[NodeSlot | None]] = ContextVar(
-        "boba_pipeline_slot", default=None
-    )
+    Объект один на процесс: его создаёт сборка приложения и отдаёт через
+    конструкторы тем, кто ставит обстановку (обвязка журнала ToolRunLogger,
+    исполнитель DAG) и кто её читает (обёртка запуска, исполнители процесса
+    и песочницы, слив dev_null). Значения живут в переменных контекста
+    исполнения, поэтому переезжают в поток тела вызова; UI-слой при этом
+    исполнителем не импортируется. Вне группы ручки нет, и вызов идёт
+    обычным накопительным путём.
+    """
 
-    @classmethod
-    def set(cls, slot: NodeSlot) -> Token[NodeSlot | None]:
-        return cls._SLOT.set(slot)
+    def __init__(self) -> None:
+        self._sinks: ContextVar[ChannelSinks | None] = ContextVar(
+            "boba_call_sinks", default=None
+        )
+        self._slot: ContextVar[NodeSlot | None] = ContextVar(
+            "boba_call_slot", default=None
+        )
 
-    @classmethod
-    def reset(cls, token: Token[NodeSlot | None]) -> None:
-        cls._SLOT.reset(token)
+    def sinks(self) -> ChannelSinks | None:
+        """Приёмники журнала текущего вызова; None — вызов не журналируется."""
+        return self._sinks.get()
 
-    @classmethod
-    def get(cls) -> NodeSlot | None:
-        return cls._SLOT.get()
+    def set_sinks(self, sinks: ChannelSinks | None) -> None:
+        self._sinks.set(sinks)
+
+    def slot(self) -> NodeSlot | None:
+        """Ручка текущего вызова в группе; None — вызов вне группы."""
+        return self._slot.get()
+
+    @contextmanager
+    def in_slot(self, slot: NodeSlot) -> Generator[None, None, None]:
+        """Ставит ручку вызова в группе на время блока."""
+        token = self._slot.set(slot)
+        try:
+            yield
+        finally:
+            self._slot.reset(token)

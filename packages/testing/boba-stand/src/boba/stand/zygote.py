@@ -1,7 +1,8 @@
 """Стенд песочницы для тестов: профиль сборки и зигота секции.
 
 Запуск инструментов в тестах идёт тем же путём, что в приложении: зигота
-секции плюс ZygoteToolCaller. Гасить зиготы обязан сам тест — ZygoteStand.stop().
+секции плюс ZygoteToolCaller. Гасить зиготы обязан сам тест — stop() объекта
+стенда ZygoteStand.
 """
 
 from __future__ import annotations
@@ -21,6 +22,7 @@ from boba.sandbox.zygote import (
     ZygoteToolCaller,
 )
 from boba.stand.shell import ShellRun
+from boba.toolkit.chain import CallAmbient
 
 REPO = Path(__file__).resolve().parents[6]
 SANDBOX = REPO / "build" / "chainlit" / "src" / "sandbox"
@@ -275,7 +277,12 @@ class SandboxStand:
 
 
 class ZygoteStand:
-    """Вызывающие поверх зигот; имя секции — ключ реестра."""
+    """Вызывающие поверх зигот; имя секции — ключ реестра.
+
+    Объект один на прогон тестов (фикстура zygote_stand), как способ
+    запуска в приложении один на процесс: зиготы секций живут в его реестре.
+    Гасит зиготы сам тест — stop(); остаток гасит конец прогона.
+    """
 
     POLICY: ClassVar[ZygotePolicy] = ZygotePolicy(
         start_timeout_sec=60.0,
@@ -286,42 +293,61 @@ class ZygoteStand:
         call_poll_sec=0.05,
     )
 
-    @classmethod
+    def __init__(self) -> None:
+        self._zygotes = ZygoteRegistry()
+
+    def registry(self) -> ZygoteRegistry:
+        """Реестр зигот стенда для тестов, которым нужен сам супервизор."""
+        return self._zygotes
+
     def caller(
-        cls,
+        self,
         section: str,
         profile: SandboxProfile,
         modules: Sequence[str] = (),
         path_vars: Callable[[], Mapping[str, str]] = dict,
         warmup_calls: Sequence[WarmupCall] = (),
     ) -> ZygoteToolCaller:
+        """Вызывающий без журнала вызова: обстановка у него своя и пустая."""
+        return self.journaled(
+            section, profile, CallAmbient(), modules, path_vars, warmup_calls
+        )
+
+    def journaled(  # noqa: PLR0913 — вызывающий собирается всеми частями стенда
+        self,
+        section: str,
+        profile: SandboxProfile,
+        ambient: CallAmbient,
+        modules: Sequence[str] = (),
+        path_vars: Callable[[], Mapping[str, str]] = dict,
+        warmup_calls: Sequence[WarmupCall] = (),
+    ) -> ZygoteToolCaller:
+        """Вызывающий с обстановкой теста: тест ставит в неё приёмники журнала."""
         # модуль bash грузится всегда: shell-команды стенда идут через него
         loaded = [
             ShellRun.MODULE,
             *(name for name in modules if name != ShellRun.MODULE),
         ]
         provisioned = SandboxStand.with_shell(profile)
-        supervisor = ZygoteRegistry.obtain(
-            section, provisioned, loaded, cls.POLICY, warmup_calls=warmup_calls
+        supervisor = self._zygotes.obtain(
+            section, provisioned, loaded, self.POLICY, warmup_calls=warmup_calls
         )
-        return ZygoteToolCaller(section, supervisor, provisioned, path_vars)
+        return ZygoteToolCaller(section, supervisor, provisioned, ambient, path_vars)
 
-    @classmethod
     def launchers(
-        cls,
+        self,
         section: str,
         profile: SandboxProfile,
         modules: Sequence[str] = (),
         path_vars: Callable[[], Mapping[str, str]] = dict,
     ) -> Callable[[str], ZygoteToolCaller]:
         """LauncherFactory секции: одна зигота на все её инструменты."""
-        caller = cls.caller(section, profile, modules, path_vars)
+        caller = self.caller(section, profile, modules, path_vars)
 
         def factory(tool: str) -> ZygoteToolCaller:
             return caller
 
         return factory
 
-    @staticmethod
-    def stop() -> None:
-        ZygoteRegistry.stop_all()
+    def stop(self) -> None:
+        self._zygotes.stop_all()

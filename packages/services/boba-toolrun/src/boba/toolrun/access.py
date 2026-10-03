@@ -20,7 +20,15 @@ class ToolAccessDeniedError(Exception):
 
 
 class ToolAccessGuard:
-    """Проверка прав в момент вызова инструмента."""
+    """Обвязка прав: проверяет доступ к инструменту в момент вызова.
+
+    Создаётся цепочкой обвязок (ToolChain) с источником субъекта вызова;
+    права (ToolAccess) приходят на постановку — их считает загрузчик по
+    собранным инструментам.
+    """
+
+    def __init__(self, subject_source: Callable[[], AccessSubject]) -> None:
+        self._subject_source = subject_source
 
     class _Hooks(CallHooks[None]):
         def __init__(
@@ -63,13 +71,9 @@ class ToolAccessGuard:
             )
             raise ToolAccessDeniedError(msg)
 
-    @classmethod
     def guard_all(
-        cls,
-        tools: Sequence[BaseTool],
-        access: ToolAccess,
-        subject_source: Callable[[], AccessSubject],
+        self, tools: Sequence[BaseTool], access: ToolAccess
     ) -> list[BaseTool]:
         """Права проверяются на вызове: субъект берётся источником, не полями."""
-        hooks = cls._Hooks(access, subject_source)
+        hooks = self._Hooks(access, self._subject_source)
         return ToolBody.hook_all(tools, hooks)

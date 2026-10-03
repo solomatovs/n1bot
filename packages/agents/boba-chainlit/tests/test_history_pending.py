@@ -23,7 +23,8 @@ from boba.chainlit.domain.fields import StepField
 from boba.chainlit.infra.providers import build_history_view
 from boba.chainlit.rendering.chat_view import StepKind
 from boba.stand.refs import StandRefs
-from boba.stand.tools import STREAM_CONFIG
+from boba.toolkit.chain import CallAmbient
+from boba.toolkit.ports import StreamSpecs
 from boba.toolkit.result import MarkdownResult
 from boba.toolrun.stream_calls import LocalDagService
 
@@ -79,7 +80,13 @@ def _graph(saver: InMemorySaver):
     chat = ScriptedChat(messages=iter([calls, AIMessage(content="both indexed")]))
     spec = GraphSpec(
         chat=chat,
-        service=LocalDagService([fast_index, slow_index], STREAM_CONFIG, ()),
+        service=LocalDagService(
+            [fast_index, slow_index],
+            StandRefs.STREAM_CONFIG,
+            (),
+            StreamSpecs({}),
+            CallAmbient(),
+        ),
         system_prompt="index everything",
         checkpointer=saver,
         history=build_history_view(frozenset({"fast_index", "slow_index"}), 30),

@@ -46,7 +46,12 @@ from pydantic import (
     model_validator,
 )
 
-from boba.toolkit.chain import StreamFailureKind, StreamPlanError, StreamTimings
+from boba.toolkit.chain import (
+    CallAmbient,
+    StreamFailureKind,
+    StreamPlanError,
+    StreamTimings,
+)
 from boba.toolkit.dag import (
     DagNode,
     DagPlanner,
@@ -56,14 +61,14 @@ from boba.toolkit.dag import (
 )
 from boba.toolkit.entry import EntryErrorKind, ToolArgv
 from boba.toolkit.failure import ToolRefusalError, ValidationText
-from boba.toolkit.ports import PortDecl, PortDirection, ToolStreamSpecs
+from boba.toolkit.ports import PortDecl, PortDirection, StreamSpecs
 from boba.toolkit.result import (
     ErrorResult,
     FailureResult,
     ToolResultBase,
 )
+from boba.toolrun.call_id import CallFields
 from boba.toolrun.dag_run import DagOutcome, DagRunError, DagRunner, NodeOutcome
-from boba.toolrun.intent import ToolIntentField
 from boba.toolrun.wrapping import ToolSchema
 
 __all__ = [
@@ -200,16 +205,16 @@ class StreamChannelFields:
     def __init__(self, config: StreamGroupsConfig) -> None:
         self._config = config
 
-    def attach_all(self, tools: Sequence[BaseTool]) -> None:
+    def attach_all(self, tools: Sequence[BaseTool], specs: StreamSpecs) -> None:
         for tool in tools:
-            self._attach(tool)
+            self._attach(tool, specs)
 
-    def _attach(self, tool: BaseTool) -> None:
+    def _attach(self, tool: BaseTool, specs: StreamSpecs) -> None:
         schema = ToolSchema.of(tool)
         if schema is None:
             return
 
-        spec = ToolStreamSpecs.of(tool.name)
+        spec = specs.of(tool.name)
         groups = ToolArgv.group_fields(schema)
         if not spec.streaming() and not groups:
             return
@@ -308,6 +313,9 @@ class WorkflowTool:
         "   - имена каналов действуют внутри одного вызова workflow\n"
     )
 
+    def __init__(self) -> None:
+        self._fields = CallFields()
+
     def build(self) -> BaseTool:
         """Инструмент для модели: узлы называют инструменты сервера по имени."""
         built = StructuredTool.from_function(
@@ -316,7 +324,7 @@ class WorkflowTool:
             description=self.DESCRIPTION,
             args_schema=WorkflowCall,
         )
-        ToolIntentField.attach_all([built])
+        self._fields.attach_all([built])
 
         return built
 
@@ -489,8 +497,8 @@ class LocalDagService(ToolServer):
     имена каналов. Отказ плана и отказ правила аргументов (NodeArgs) —
     итог-ошибка вызова до старта узлов; у общего DAG её получает каждый его
     вызов. Выдуманное имя получает отказ со списком инструментов. Создаётся
-    из обёрнутых инструментов реестра, секции [stream_groups] и правил
-    аргументов.
+    из обёрнутых инструментов реестра, секции [stream_groups], правил
+    аргументов и потоковых деклараций инструментов.
     """
 
     def __init__(
@@ -498,6 +506,8 @@ class LocalDagService(ToolServer):
         tools: Sequence[BaseTool],
         config: StreamGroupsConfig,
         rules: Sequence[NodeArgs],
+        specs: StreamSpecs,
+        ambient: CallAmbient,
     ) -> None:
         self._rules = tuple(rules)
 
@@ -505,7 +515,7 @@ class LocalDagService(ToolServer):
         linked: list[str] = []
         for tool in tools:
             by_name[tool.name] = tool
-            if ToolStreamSpecs.of(tool.name).streaming():
+            if specs.of(tool.name).streaming():
                 linked.append(tool.name)
 
         offered = list(tools)
@@ -519,7 +529,9 @@ class LocalDagService(ToolServer):
         self._unknown = UnknownTool(self._offered_names)
         self._linked_names = frozenset(linked)
         self._dags = CallDag()
-        self._runner = DagRunner(by_name, config.timings(), config.pipe_bytes)
+        self._runner = DagRunner(
+            by_name, specs, ambient, config.timings(), config.pipe_bytes
+        )
 
     def tools(self) -> Sequence[BaseTool]:
         return self._offered

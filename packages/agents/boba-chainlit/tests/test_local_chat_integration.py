@@ -37,8 +37,8 @@ from boba.llm.onnx import OnnxProvider
 from boba.llm.providers import ChatModelConfig, LlmProviders, LlmProviderTypes
 from boba.runtime.config import AppLayers
 from boba.toolkit.calls import ToolIntent
-from boba.toolrun.call_id import ToolCallIdField
-from boba.toolrun.intent import ToolIntentField
+from boba.toolkit.chain import CallAmbient
+from boba.toolrun.call_id import CallFields
 from boba.toolrun.run_log import ToolRunLogger
 from boba.toolrun.streams import CallJournals
 from boba.toolrun.wrapping import ToolAsyncBody
@@ -118,11 +118,12 @@ class TestLocalChatTurn:
 
         # обвязка как в load_tools: подпись вызова снимает ToolRunLogger
         tools = [kb_probe]
-        ToolCallIdField.attach_all(tools)
-        ToolIntentField.attach_all(tools)
+        CallFields().attach_all(tools)
         contexts = CallContexts()
-        ToolRunLogger(CallJournals(None, Runs(contexts)), contexts).guard_all(tools)
-        ToolAsyncBody.ensure_all(tools)
+        ToolRunLogger(
+            CallJournals(None, Runs(contexts)), contexts, CallAmbient()
+        ).guard_all(tools)
+        ToolAsyncBody().ensure_all(tools)
 
         agent = create_agent(
             model=_chat(model_dir),

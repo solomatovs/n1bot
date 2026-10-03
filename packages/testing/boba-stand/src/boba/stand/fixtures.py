@@ -3,7 +3,7 @@
 Конфиг берётся как приложением: BOBA_CONFIG_PATH либо conf/config.toml в BOBA_BASE.
 """
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Iterator
 
 import pytest
 from omegaconf import DictConfig
@@ -15,16 +15,39 @@ from boba.runtime.config import ConfigLocator, RawConfig, RuntimeConfig
 from boba.stand.database import TestDatabase
 from boba.stand.refs import StandRefs
 from boba.stand.site import StandLayers
+from boba.stand.zygote import ZygoteStand
 from boba.stand_core.context import CallStand, call_stand
+from boba.toolkit.chain import CallAmbient
 
 __all__ = ["call_stand"]
 
 
 @pytest.fixture
-def runtime_stand(call_stand: CallStand) -> StandRefs:
+def runtime_stand(call_stand: CallStand) -> Iterator[StandRefs]:
     """Объекты процесса для теста: реестр запусков и журналы вызовов поверх
-    держателя контекста этого теста."""
-    return StandRefs(call_stand.contexts)
+    держателя контекста этого теста; способы запуска гасятся после теста."""
+    stand = StandRefs(call_stand.contexts)
+    try:
+        yield stand
+    finally:
+        stand.stop()
+
+
+@pytest.fixture
+def call_ambient() -> CallAmbient:
+    """Обстановка вызова теста: в неё тест ставит приёмники журнала, её же
+    получают исполнители под тестом."""
+    return CallAmbient()
+
+
+@pytest.fixture(scope="session")
+def zygote_stand() -> Iterator[ZygoteStand]:
+    """Стенд зигот прогона: один реестр зигот на процесс тестов."""
+    stand = ZygoteStand()
+    try:
+        yield stand
+    finally:
+        stand.stop()
 
 
 @pytest.fixture(scope="session")

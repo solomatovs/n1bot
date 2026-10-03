@@ -27,10 +27,11 @@ from boba.identity.context import CallContexts
 from boba.tool.ch import tools as ch
 from boba.tool.ora import tools as ora
 from boba.tool.pg import tools as pg
+from boba.toolkit.chain import CallAmbient
 from boba.toolkit.dag import DagSpec
 from boba.toolkit.wrap import ToolProcessWrap
 from boba.toolrun.bridge import ToolBridge
-from boba.toolrun.call_id import ToolCallIdField
+from boba.toolrun.call_id import CallFields
 from boba.toolrun.dag_run import DagOutcome, DagRunner
 from boba.toolrun.dev_null import DevNullTool
 from boba.toolrun.errors import ToolErrorGuard
@@ -92,6 +93,7 @@ class PumpDags:
         names: Mapping[str, str],
     ) -> None:
         self._names = dict(names)
+        ambient = CallAmbient()
 
         launcher = ProcessToolCaller(
             "pump-dags",
@@ -104,6 +106,7 @@ class PumpDags:
                 kill_grace_sec=1.0,
             ),
             CallContexts(),
+            ambient,
         )
 
         tools: list[StructuredTool] = []
@@ -122,15 +125,17 @@ class PumpDags:
 
             tools.append(bridged)
 
-        ToolProcessWrap.guard_all(tools, launcher)
+        drain_tool = DevNullTool(ambient)
+        specs = ToolProcessWrap(ambient).guard_all(tools, launcher)
+        specs = specs.declaring(DevNullTool.NAME, drain_tool.spec())
         self._directory = dict(connections)
         hooks = ConnectionParamHooks(ConnectionTypes.discover, self.CONNECTION_TEXT)
         hooks.bind_all(tools, self._connection_hook)
 
-        drain = ToolBridge.as_structured_tool(DevNullTool.build())
+        drain = ToolBridge.as_structured_tool(drain_tool.build())
         every: list[BaseTool] = [*tools, drain]
-        StreamChannelFields(self.STREAM_CONFIG).attach_all(every)
-        ToolCallIdField.attach_all(every)
+        StreamChannelFields(self.STREAM_CONFIG).attach_all(every, specs)
+        CallFields().attach_all(every)
         ToolErrorGuard().guard_all(every)
 
         by_name: dict[str, BaseTool] = {}
@@ -138,7 +143,11 @@ class PumpDags:
             by_name[tool.name] = tool
 
         self._runner = DagRunner(
-            by_name, self.STREAM_CONFIG.timings(), self.STREAM_CONFIG.pipe_bytes
+            by_name,
+            specs,
+            ambient,
+            self.STREAM_CONFIG.timings(),
+            self.STREAM_CONFIG.pipe_bytes,
         )
 
     def _connection_hook(self, tool: str, param: str, kind: str) -> AsyncInjected:

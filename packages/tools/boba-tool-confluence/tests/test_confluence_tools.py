@@ -20,11 +20,6 @@ from boba.transport.http.connection import HttpConnection, UrlScheme
 # порт 1 закрыт всегда: тест проверяет ошибку соединения, а не адрес
 
 
-@pytest.fixture(autouse=True)
-def chainlit_context() -> None:
-    pass
-
-
 class TestConfluenceTools:
     pytestmark = pytest.mark.anyio
 

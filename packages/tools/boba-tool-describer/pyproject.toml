@@ -31,7 +31,6 @@ dev = [
     "boba-connection-broker==0.0.26.dev4",
     "boba-db-clickhouse[payload]==0.0.26.dev4",
     "boba-runtime==0.0.26.dev4",
-    "boba-sandbox==0.0.26.dev4",
     "boba-stand==0.0.26.dev4",
     "boba-stand-core==0.0.26.dev4",
     "boba-toolrun==0.0.26.dev4",

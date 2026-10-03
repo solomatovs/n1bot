@@ -45,7 +45,7 @@ from __future__ import annotations
 import asyncio
 import io
 import os
-from collections.abc import AsyncIterator, Iterator, Sequence
+from collections.abc import AsyncIterator, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from types import UnionType
@@ -92,7 +92,7 @@ __all__ = [
     "StreamGroupAbortedError",
     "StreamPorts",
     "StreamSpec",
-    "ToolStreamSpecs",
+    "StreamSpecs",
 ]
 
 HeadT = TypeVar("HeadT", bound=BaseModel)
@@ -580,36 +580,6 @@ class StreamPorts:
         return values[0]
 
 
-class ToolStreamSpecs:
-    """Процессный реестр потоковых деклараций собранных инструментов.
-
-    Наполняет обёртка запуска (ToolProcessWrap.guard_all) — в этот момент
-    схема инструмента ещё полная, с портами; позже injected-поля из видимой
-    схемы снимаются. Читает оркестратор конвейеров: по спекам он строит
-    каталог узлов и проверяет стыковку рёбер до запуска.
-    """
-
-    _SPECS: ClassVar[dict[str, StreamSpec]] = {}
-
-    @classmethod
-    def register(cls, name: str, spec: StreamSpec) -> None:
-        cls._SPECS[name] = spec
-
-    @classmethod
-    def of(cls, name: str) -> StreamSpec:
-        """Декларация инструмента; неизвестное имя — пустая (не потоковый)."""
-        spec = cls._SPECS.get(name)
-        if spec is None:
-            return StreamSpec()
-
-        return spec
-
-    @classmethod
-    def reset(cls) -> None:
-        """Сброс реестра: пользуются тесты."""
-        cls._SPECS.clear()
-
-
 class PortDecl(BaseModel):
     """Декларация одного порта для интроспекции: имя параметра, направление,
     kind'ы кадров и список ли это; raw-порт структур не объявляет — kinds пуст.
@@ -709,3 +679,33 @@ class StreamSpec(BaseModel):
 
         msg = f"no port {name!r} among the declared ports {declared}"
         raise PortDeclarationError(msg)
+
+
+class StreamSpecs:
+    """Потоковые декларации собранных инструментов по именам.
+
+    Значение без состояния процесса: его отдаёт обёртка запуска
+    (ToolProcessWrap.guard_all) — в этот момент схема инструмента ещё полная,
+    с портами; позже порты из видимой схемы снимаются. Загрузчик складывает
+    декларации плагинов в одно значение и кладёт его в реестр инструментов;
+    читают цепочка обвязок (поля каналов) и планировщик DAG.
+    """
+
+    def __init__(self, declared: Mapping[str, StreamSpec]) -> None:
+        self._declared = dict(declared)
+
+    def of(self, name: str) -> StreamSpec:
+        """Декларация инструмента; неизвестное имя — пустая (не потоковый)."""
+        spec = self._declared.get(name)
+        if spec is None:
+            return StreamSpec()
+
+        return spec
+
+    def merged(self, other: StreamSpecs) -> StreamSpecs:
+        """Эти декларации вместе с other; совпавшее имя берётся из other."""
+        return StreamSpecs({**self._declared, **other._declared})
+
+    def declaring(self, name: str, spec: StreamSpec) -> StreamSpecs:
+        """Эти декларации и ещё одна — инструмента name."""
+        return StreamSpecs({**self._declared, name: spec})

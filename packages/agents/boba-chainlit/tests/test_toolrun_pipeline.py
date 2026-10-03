@@ -1,6 +1,6 @@
 """Конвейер обёрток приложения: ToolCall-конверт -> обёртки -> тело функции.
 
-Сборка повторяет загрузчик поверх тела: InjectedConfig -> ToolCallIdField
+Сборка повторяет загрузчик поверх тела: InjectedConfig -> CallFields
 -> ToolRunLogger; вызов — ainvoke полным ToolCall, как зовёт ToolNode агента.
 """
 
@@ -19,14 +19,13 @@ from boba.identity.run import Runs
 from boba.runtime.journal import DirVault, StreamJournal
 from boba.stand_core.context import CallStand
 from boba.toolkit.calls import ToolIntent
+from boba.toolkit.chain import CallAmbient
 from boba.toolkit.channels import ToolChannel
 from boba.toolkit.facade import Injected, tool
 from boba.toolkit.result import MarkdownResult, ToolArtifact
-from boba.toolkit.stream import ToolChannelsTap
 from boba.toolrun.bridge import ToolBridge
-from boba.toolrun.call_id import ToolCallIdField
+from boba.toolrun.call_id import CallFields
 from boba.toolrun.injected import InjectedConfig
-from boba.toolrun.intent import ToolIntentField
 from boba.toolrun.run_log import ToolRunLogger
 from boba.toolrun.streams import CallJournals, ToolStream
 from boba.toolrun.wrapping import ToolAsyncBody
@@ -60,10 +59,11 @@ def build_pipeline() -> Any:
         [bridged],
         lambda name, annotation: PipeConfig(token=SecretStr("p1p3")),
     )
-    ToolCallIdField.attach_all([bridged])
-    ToolIntentField.attach_all([bridged])
+    CallFields().attach_all([bridged])
     contexts = CallContexts()
-    ToolRunLogger(CallJournals(None, Runs(contexts)), contexts).guard_all([bridged])
+    ToolRunLogger(
+        CallJournals(None, Runs(contexts)), contexts, CallAmbient()
+    ).guard_all([bridged])
 
     return bridged
 
@@ -159,7 +159,7 @@ class TestArtifactRendering:
 
 
 class TestChannelTap:
-    """ToolRunLogger обязан подключить приёмники каналов: без ToolChannelsTap
+    """ToolRunLogger обязан подключить приёмники каналов: без обстановки вызова
     канальный запуск не журналирует ни байта."""
 
     @pytest.mark.anyio
@@ -171,6 +171,7 @@ class TestChannelTap:
         store = StreamJournal(DirVault(str(tmp_path / "journal")), reserve_bytes=0)
         journals = CallJournals(store, runs)
         journals.mark_streamable(["tap_probe"])
+        ambient = CallAmbient()
         seen: list[Any] = []
 
         @tool
@@ -178,12 +179,12 @@ class TestChannelTap:
             text: Annotated[str, Field(min_length=1, description="Что вернуть")],
         ) -> MarkdownResult:
             """Фиксирует, какие тапы видит тело во время вызова."""
-            seen.append(ToolChannelsTap.get())
+            seen.append(ambient.sinks())
             return MarkdownResult(text=text)
 
         bridged = ToolBridge.as_structured_tool(tap_probe)
-        ToolCallIdField.attach_all([bridged])
-        ToolRunLogger(journals, contexts).guard_all([bridged])
+        CallFields().attach_all([bridged])
+        ToolRunLogger(journals, contexts, ambient).guard_all([bridged])
 
         with runs.open(call_stand.context("tap-thread")):
             await bridged.ainvoke(
@@ -203,8 +204,10 @@ class TestChannelTap:
             raise AssertionError(
                 f"the body sees the call journal in the tap: {stream!r}"
             )
-        if ToolChannelsTap.get() is not None:
-            raise AssertionError("ToolChannelsTap.get() is None")
+        if ambient.sinks() is not None:
+            raise AssertionError(
+                "the call journal must leave the ambient after the call"
+            )
         if stream.probe(ToolChannel.STDOUT).note != "finished":
             raise AssertionError(stream.probe(ToolChannel.STDOUT).note)
 
@@ -239,7 +242,7 @@ class TestAsyncBody:
     @pytest.mark.anyio
     async def test_callbacks_run_in_the_caller_loop(self) -> None:
         sync_echo = self._sync_tool()
-        ToolAsyncBody.ensure_all([sync_echo])
+        ToolAsyncBody().ensure_all([sync_echo])
 
         recorder = _LoopRecorder()
         envelope = {

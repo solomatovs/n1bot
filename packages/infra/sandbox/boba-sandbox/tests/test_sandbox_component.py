@@ -70,11 +70,6 @@ _PROFILE_BASE: dict[str, Any] = {
 }
 
 
-@pytest.fixture(autouse=True)
-def chainlit_context() -> None:
-    pass
-
-
 def _profile(**kw: Any) -> SandboxProfile:
     return SandboxProfile.model_validate(ProfileFields.merged(_PROFILE_BASE, kw))
 

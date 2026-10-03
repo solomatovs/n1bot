@@ -42,11 +42,6 @@ RARE = "квазарпротокол"
 """Слово десятка документов: на частом слове seq scan остаётся правильным планом."""
 
 
-@pytest.fixture(autouse=True)
-def chainlit_context() -> None:
-    pass
-
-
 @pytest.fixture(scope="module")
 def schema_cfg() -> PostgresStoreSchema:
     return PostgresStoreSchema(pg_schema=SCHEMA, sources_table="kb_sources")

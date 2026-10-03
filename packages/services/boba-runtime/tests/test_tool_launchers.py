@@ -14,6 +14,7 @@ from boba.runtime.launchers import (
     ZygoteLaunchers,
 )
 from boba.stand_core.context import CallStand
+from boba.toolkit.chain import CallAmbient
 from boba.toolkit.manifest import LaunchSpec
 from boba.toolrun.process import ProcessToolCaller
 
@@ -35,13 +36,13 @@ def test_missing_section_is_refused() -> None:
     raw = OmegaConf.create({})
 
     with pytest.raises(RuntimeError, match=r"\[tool_launcher\] is required"):
-        ToolLaunchers.of(raw)
+        ToolLaunchers(raw).build()
 
 
 def test_sandbox_provider_builds_zygote_launchers() -> None:
     raw = OmegaConf.create({"tool_launcher": {"provider": "sandbox"}})
 
-    launchers = ToolLaunchers.of(raw)
+    launchers = ToolLaunchers(raw).build()
 
     assert isinstance(launchers, ZygoteLaunchers)
 
@@ -49,7 +50,7 @@ def test_sandbox_provider_builds_zygote_launchers() -> None:
 def test_sandbox_probe_requires_env_paths() -> None:
     raw = OmegaConf.create({"tool_launcher": {"provider": "sandbox"}})
 
-    launchers = ToolLaunchers.of(raw)
+    launchers = ToolLaunchers(raw).build()
 
     # конвенции песочницы стоят на путях [env]: без них probe отказывает
     with pytest.raises(ValidationError):
@@ -61,12 +62,14 @@ def test_process_provider_builds_process_launchers(
 ) -> None:
     raw = OmegaConf.create(_process_section(tmp_path))
 
-    launchers = ToolLaunchers.of(raw)
+    launchers = ToolLaunchers(raw).build()
 
     assert isinstance(launchers, ProcessLaunchers)
 
     launchers.probe()
-    launcher = launchers.launcher_of(LaunchSpec(section="fake"), call_stand.contexts)
+    launcher = launchers.launcher_of(
+        LaunchSpec(section="fake"), call_stand.contexts, CallAmbient()
+    )
 
     assert isinstance(launcher, ProcessToolCaller)
 
@@ -74,7 +77,7 @@ def test_process_provider_builds_process_launchers(
 def test_process_probe_requires_existing_workdir(tmp_path: Path) -> None:
     raw = OmegaConf.create(_process_section(tmp_path / "absent"))
 
-    launchers = ToolLaunchers.of(raw)
+    launchers = ToolLaunchers(raw).build()
 
     with pytest.raises(RuntimeError, match="workdir"):
         launchers.probe()

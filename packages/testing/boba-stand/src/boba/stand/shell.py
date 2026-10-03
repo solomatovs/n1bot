@@ -13,6 +13,7 @@ from typing import ClassVar
 from langchain_core.tools import BaseTool
 
 from boba.tool.shell.tools import TOOLS, BashToolConfig
+from boba.toolkit.chain import CallAmbient
 from boba.toolkit.entry import ToolAddress, ToolArgv, ToolMain
 from boba.toolkit.facade import PayloadTool
 from boba.toolkit.launcher import CollectedCall, PayloadFailureError, ToolLauncher
@@ -49,7 +50,7 @@ class ShellRun:
 
         copy = payload.model_copy()
         bridged = ToolBridge.as_structured_tool(copy)
-        ToolProcessWrap.guard_all(ToolMain.toolset(bridged), launcher)
+        ToolProcessWrap(CallAmbient()).guard_all(ToolMain.toolset(bridged), launcher)
         InjectedConfig.bind_all([bridged], lambda name, annotation: cfg)
 
         return bridged

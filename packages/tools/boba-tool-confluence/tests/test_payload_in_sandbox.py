@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import json
 import zipfile
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from io import BytesIO
 from pathlib import Path
 from typing import Any, ClassVar
@@ -21,9 +21,11 @@ import pytest
 from boba.sandbox import (
     SandboxToolConfig,
 )
-from boba.sandbox.zygote import ZygotePolicy, ZygoteRegistry, ZygoteToolCaller
+from boba.sandbox.zygote import ZygotePolicy, ZygoteToolCaller
 from boba.stand.sandbox import needs_sandbox, needs_userns, sandbox_profile
 from boba.stand.shell import ShellRun
+from boba.stand.zygote import ZygoteStand
+from boba.toolkit.chain import CallAmbient
 from boba.toolkit.launcher import CollectedCall, LauncherError, ToolOutcome
 from boba.toolkit.protocol import ReplyError, ReplyOk, ToolCommand
 
@@ -58,7 +60,9 @@ ZYGOTE = ZygotePolicy(
 )
 
 
-def _caller(docs_dir: Path | None = None, **kw: Any) -> ZygoteToolCaller:
+def _caller(
+    zygote_stand: ZygoteStand, docs_dir: Path | None = None, **kw: Any
+) -> ZygoteToolCaller:
     """Зигота под каждый набор путей и лимитов: имя секции — ключ реестра."""
     sandbox = SandboxToolConfig.model_validate(
         {
@@ -69,8 +73,8 @@ def _caller(docs_dir: Path | None = None, **kw: Any) -> ZygoteToolCaller:
     profile = sandbox.profile
 
     section = f"doc-test-{docs_dir}-{sorted(kw.items())}"
-    supervisor = ZygoteRegistry.obtain(section, profile, [DOC_MODULE], ZYGOTE)
-    return ZygoteToolCaller(section, supervisor, profile)
+    supervisor = zygote_stand.registry().obtain(section, profile, [DOC_MODULE], ZYGOTE)
+    return ZygoteToolCaller(section, supervisor, profile, CallAmbient())
 
 
 def _cfg(**kw: Any) -> dict[str, Any]:
@@ -110,12 +114,15 @@ def docs(tmp_path: Path) -> Path:
 class TestDocumentsInSandbox:
     """Инструменты doc: файл лежит в песочнице, читают его ридеры boba-doc оттуда."""
 
-    def teardown_method(self) -> None:
-        ZygoteRegistry.stop_all()
+    @pytest.fixture(autouse=True)
+    def zygotes_stopped(self, zygote_stand: ZygoteStand) -> Iterator[None]:
+        """Зиготы секций гасятся после каждого теста класса."""
+        yield
+        zygote_stand.stop()
 
-    def test_read_document(self, docs: Path) -> None:
+    def test_read_document(self, zygote_stand: ZygoteStand, docs: Path) -> None:
         outcome = _run_doc(
-            _caller(docs),
+            _caller(zygote_stand, docs),
             "read_document",
             {"path": "/workspace/report.pdf", "pages": "1-2"},
             _cfg(),
@@ -129,9 +136,11 @@ class TestDocumentsInSandbox:
         if "Beta page two" not in reply.content:
             raise AssertionError('"Beta page two" in reply.content')
 
-    def test_read_document_page_subset(self, docs: Path) -> None:
+    def test_read_document_page_subset(
+        self, zygote_stand: ZygoteStand, docs: Path
+    ) -> None:
         outcome = _run_doc(
-            _caller(docs),
+            _caller(zygote_stand, docs),
             "read_document",
             {"path": "/workspace/report.pdf", "pages": "2"},
             _cfg(),
@@ -145,9 +154,9 @@ class TestDocumentsInSandbox:
         if "page one" in reply.content:
             raise AssertionError('"page one" not in reply.content')
 
-    def test_document_outline(self, docs: Path) -> None:
+    def test_document_outline(self, zygote_stand: ZygoteStand, docs: Path) -> None:
         outcome = _run_doc(
-            _caller(docs),
+            _caller(zygote_stand, docs),
             "document_outline",
             {"path": "/workspace/report.pdf"},
             _cfg(),
@@ -159,9 +168,9 @@ class TestDocumentsInSandbox:
         if "pages 2" not in reply.content:
             raise AssertionError('"pages 2" in reply.content')
 
-    def test_search_document(self, docs: Path) -> None:
+    def test_search_document(self, zygote_stand: ZygoteStand, docs: Path) -> None:
         outcome = _run_doc(
-            _caller(docs),
+            _caller(zygote_stand, docs),
             "search_document",
             {
                 "path": "/workspace/report.pdf",
@@ -178,12 +187,14 @@ class TestDocumentsInSandbox:
         if "Alpha" not in reply.content:
             raise AssertionError('"Alpha" in reply.content')
 
-    def test_small_address_space_is_reported(self, docs: Path) -> None:
+    def test_small_address_space_is_reported(
+        self, zygote_stand: ZygoteStand, docs: Path
+    ) -> None:
         """Заниженный RLIMIT_AS валит тело на первой же библиотеке, которой
         не хватает адресного пространства (OpenBLAS под onnxruntime, pdfium):
         оно умирает своим кодом без конверта, и ошибка несёт его stderr —
         лаунчер вывод не толкует."""
-        caller = _caller(docs, process_memory_bytes=512 * 1024 * 1024)
+        caller = _caller(zygote_stand, docs, process_memory_bytes=512 * 1024 * 1024)
 
         # конкретный класс задаёт исполнитель; контракт слоя — LauncherError
         with pytest.raises(LauncherError) as failure:
@@ -204,10 +215,12 @@ class TestDocumentsInSandbox:
         if "Memory allocation" not in message and "pdfium" not in message:
             raise AssertionError(f"stderr тела не про память: {message}")
 
-    def test_ocr_without_provider_is_reported(self, docs: Path) -> None:
+    def test_ocr_without_provider_is_reported(
+        self, zygote_stand: ZygoteStand, docs: Path
+    ) -> None:
         """OCR просят у секции с provider = off: отказ объявленного вида."""
         outcome = _run_doc(
-            _caller(docs),
+            _caller(zygote_stand, docs),
             "read_document",
             {"path": "/workspace/report.pdf", "pages": "1-2", "ocr-enabled": "true"},
             _cfg(),
@@ -221,9 +234,11 @@ class TestDocumentsInSandbox:
         if "Traceback" in reply.failure.llm_view():
             raise AssertionError("llm view must not carry the trace")
 
-    def test_missing_file_is_a_declared_failure(self, docs: Path) -> None:
+    def test_missing_file_is_a_declared_failure(
+        self, zygote_stand: ZygoteStand, docs: Path
+    ) -> None:
         outcome = _run_doc(
-            _caller(docs),
+            _caller(zygote_stand, docs),
             "read_document",
             {"path": "/workspace/нет-такого.pdf", "pages": "1"},
             _cfg(),
@@ -244,8 +259,11 @@ class TestOfficeNonAsciiNames:
     """Конвертация office-документов не должна зависеть от алфавита имени:
     содержимое обоих файлов одинаковое, единственная переменная — имя."""
 
-    def teardown_method(self) -> None:
-        ZygoteRegistry.stop_all()
+    @pytest.fixture(autouse=True)
+    def zygotes_stopped(self, zygote_stand: ZygoteStand) -> Iterator[None]:
+        """Зиготы секций гасятся после каждого теста класса."""
+        yield
+        zygote_stand.stop()
 
     ASCII_NAME: ClassVar[str] = "user manual_v9.docx"
     CYRILLIC_NAME: ClassVar[str] = "Инструкция пользователя Магазина данных_v9.docx"
@@ -277,9 +295,9 @@ class TestOfficeNonAsciiNames:
         (workspace / self.CYRILLIC_NAME).write_bytes(payload)
         return workspace
 
-    def _read(self, workspace: Path, name: str) -> ReplyOk:
+    def _read(self, zygote_stand: ZygoteStand, workspace: Path, name: str) -> ReplyOk:
         outcome = _run_doc(
-            _caller(workspace),
+            _caller(zygote_stand, workspace),
             "read_document",
             {"path": f"/workspace/{name}", "pages": "1"},
             _cfg(),
@@ -290,13 +308,17 @@ class TestOfficeNonAsciiNames:
             raise AssertionError(reply)
         return reply
 
-    def test_ascii_named_docx_is_readable(self, office_docs: Path) -> None:
-        reply = self._read(office_docs, self.ASCII_NAME)
+    def test_ascii_named_docx_is_readable(
+        self, zygote_stand: ZygoteStand, office_docs: Path
+    ) -> None:
+        reply = self._read(zygote_stand, office_docs, self.ASCII_NAME)
         if "Alpha section one" not in reply.content:
             raise AssertionError('"Alpha section one" in reply.content')
 
-    def test_cyrillic_named_docx_is_readable(self, office_docs: Path) -> None:
-        reply = self._read(office_docs, self.CYRILLIC_NAME)
+    def test_cyrillic_named_docx_is_readable(
+        self, zygote_stand: ZygoteStand, office_docs: Path
+    ) -> None:
+        reply = self._read(zygote_stand, office_docs, self.CYRILLIC_NAME)
         if "Alpha section one" not in reply.content:
             raise AssertionError('"Alpha section one" in reply.content')
 
@@ -318,17 +340,17 @@ class TestRootfsContents:
             "onnxruntime",
         ],
     )
-    def test_module_is_installed(self, module: str) -> None:
+    def test_module_is_installed(self, zygote_stand: ZygoteStand, module: str) -> None:
         sandbox = SandboxToolConfig.model_validate(
             {"profile": sandbox_profile("boba-tool-confluence")}
         )
         profile = sandbox.profile
-        supervisor = ZygoteRegistry.obtain("rootfs-test", profile, (), ZYGOTE)
-        caller = ZygoteToolCaller("rootfs-test", supervisor, profile)
+        supervisor = zygote_stand.registry().obtain("rootfs-test", profile, (), ZYGOTE)
+        caller = ZygoteToolCaller("rootfs-test", supervisor, profile, CallAmbient())
         try:
             outcome = ShellRun.call_text(caller, f"python3 -c 'import {module}'")
         finally:
-            ZygoteRegistry.stop_all()
+            zygote_stand.stop()
 
         if outcome.exit_code != 0:
             raise AssertionError(
@@ -344,19 +366,19 @@ class TestEmbedderInSandbox:
 
     WEIGHTS: str = "/var/cache/fastembed"
 
-    def test_weights_are_mounted(self) -> None:
+    def test_weights_are_mounted(self, zygote_stand: ZygoteStand) -> None:
         sandbox = SandboxToolConfig.model_validate(
             {"profile": sandbox_profile("boba-tool-confluence")}
         )
         profile = sandbox.profile
-        supervisor = ZygoteRegistry.obtain("kb-test", profile, (), ZYGOTE)
-        caller = ZygoteToolCaller("kb-test", supervisor, profile)
+        supervisor = zygote_stand.registry().obtain("kb-test", profile, (), ZYGOTE)
+        caller = ZygoteToolCaller("kb-test", supervisor, profile, CallAmbient())
         try:
             outcome = ShellRun.call_text(
                 caller, f"test -d {self.WEIGHTS} && ls {self.WEIGHTS}"
             )
         finally:
-            ZygoteRegistry.stop_all()
+            zygote_stand.stop()
 
         if outcome.exit_code != 0:
             raise AssertionError(f"нет весов {self.WEIGHTS}: скачай — make fetch")

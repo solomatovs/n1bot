@@ -32,31 +32,24 @@ from boba.chat.profiles import ProfilesSection, RolesSection
 from boba.config import bind
 from boba.connection_broker.sealed import SealedConnectionParams
 from boba.connection_broker.tickets import ServiceTickets
-from boba.runtime.launchers import SectionLaunchers, ToolLaunchers
+from boba.runtime.launchers import SectionLaunchers
 from boba.runtime.refs import RuntimeRefs
 from boba.toolkit.entry import ToolArgv, ToolEntryError, ToolMain
 from boba.toolkit.launcher import ToolLauncher
 from boba.toolkit.manifest import LaunchSpec, ToolPluginManifest
-from boba.toolkit.ports import ToolStreamSpecs
+from boba.toolkit.ports import StreamSpecs
 from boba.toolkit.types import StringList
 from boba.toolkit.wrap import ToolProcessWrap
-from boba.toolrun.access import ToolAccessGuard
 from boba.toolrun.bridge import ToolBridge
-from boba.toolrun.call_id import ToolCallIdField
 from boba.toolrun.callvalues import CallContextValues
-from boba.toolrun.cancellation import CancellableTools
 from boba.toolrun.dev_null import DevNullTool
-from boba.toolrun.errors import ToolErrorGuard
 from boba.toolrun.injected import InjectedConfig, ToolConfigError
-from boba.toolrun.intent import ToolIntentField
-from boba.toolrun.registry import ToolRegistry
-from boba.toolrun.run_log import ToolRunLogger
+from boba.toolrun.registry import ToolChain, ToolRegistry
 from boba.toolrun.stream_calls import (
-    StreamChannelFields,
     StreamGroupsConfig,
     StreamGroupsConfigError,
 )
-from boba.toolrun.wrapping import CallHooks, ToolAsyncBody, ToolBody
+from boba.toolrun.wrapping import CallHooks
 
 __all__ = [
     "EntryPointPlugins",
@@ -101,6 +94,15 @@ class PluginMeta(BaseModel):
     страница, REST и workflow (снятие снимка каталога и подобные задачи)."""
 
 
+@dataclass(frozen=True)
+class PluginTools:
+    """Инструменты одного плагина под обёрткой запуска и их потоковые
+    декларации, снятые до того, как порты ушли из видимой схемы."""
+
+    tools: list[BaseTool]
+    specs: StreamSpecs
+
+
 class ToolLoader:
     """Сборка реестра инструментов из включённых секций [tool.<name>].
 
@@ -114,11 +116,14 @@ class ToolLoader:
         raw_config: DictConfig,
         plugins: Mapping[str, ToolPlugin],
         refs: RuntimeRefs,
+        launchers: SectionLaunchers,
         grant_check: GrantCheck,
         surface_hooks: Sequence[CallHooks[Any]] = (),
         own_tools: Sequence[BaseTool] = (),
     ) -> None:
         self._raw = raw_config
+        self._launchers = launchers
+        """Способ запуска процесса: один на все сборки инструментов."""
         self._plugins = plugins
         self._own_tools = tuple(own_tools)
         """Собственные инструменты процесса: идут под теми же обвязками, что
@@ -127,21 +132,28 @@ class ToolLoader:
         self._credentials_ref = refs.credentials
         self._contexts = refs.contexts
         self._journals = refs.journals
-        self._run_log = ToolRunLogger(refs.journals, refs.contexts)
+        self._stream_cfg = self._stream_config()
+        self._ambient = refs.ambient
+        self._wrap = ToolProcessWrap(refs.ambient)
+        self._drain = DevNullTool(refs.ambient)
+        self._chain = ToolChain(
+            self._stream_cfg,
+            refs.journals,
+            refs.contexts,
+            refs.ambient,
+            surface_hooks,
+        )
         self._sealed = SealedConnectionParams(
             refs.seal_keys, refs.connection_types, refs.contexts
         )
         """Приём запечатанных соединений: обвязки параметров-соединений,
         правило аргументов узлов и возможность сервера с ключом."""
         self._grant_check = grant_check
-        self._surface_hooks = tuple(surface_hooks)
-        """Обвязки поверхности процесса (чат монтирует элементы результата):
-        ставятся сразу после тела, до журнала и разбора ошибок."""
 
     def load(self) -> ToolRegistry:
-        launchers = ToolLaunchers.of(self._raw)
 
         tools: list[BaseTool] = []
+        specs = StreamSpecs({})
         headless_only: set[str] = set()
         for name, plugin in self._plugins.items():
             section = OmegaConf.select(self._raw, f"tool.{name}")
@@ -156,8 +168,10 @@ class ToolLoader:
             if not meta.enable:
                 continue
 
-            built = self._plugin_tools(plugin, meta, launchers)
+            plugged = self._plugin_tools(plugin, meta, self._launchers)
+            built = plugged.tools
             tools.extend(built)
+            specs = specs.merged(plugged.specs)
             headless_only.update(self._headless_of(name, meta, built))
 
             # живой вывод есть у отдельных процессов: кнопка потока
@@ -167,8 +181,9 @@ class ToolLoader:
                 streamable.append(tool.name)
             self._journals.mark_streamable(streamable)
 
-        if next(self._stream_writers(tools), None) is not None:
-            tools.append(ToolBridge.as_structured_tool(DevNullTool.build()))
+        if next(self._stream_writers(tools, specs), None) is not None:
+            tools.append(ToolBridge.as_structured_tool(self._drain.build()))
+            specs = specs.declaring(DevNullTool.NAME, self._drain.spec())
 
         own: list[str] = []
         for tool in self._own_tools:
@@ -176,32 +191,23 @@ class ToolLoader:
             own.append(tool.name)
 
         access = self._access_of(tools, headless_only)
-        for hooks in self._surface_hooks:
-            ToolBody.hook_all(tools, hooks)
-
-        stream_cfg = self._stream_config()
-        StreamChannelFields(stream_cfg).attach_all(tools)
-        ToolCallIdField.attach_all(tools)
-        ToolIntentField.attach_all(tools)
-        self._run_log.guard_all(tools)
-        CancellableTools.guard_all(tools)
-        ToolAccessGuard.guard_all(tools, access, self._contexts.subject)
-        ToolErrorGuard().guard_all(tools)
-        ToolAsyncBody.ensure_all(tools)
+        self._chain.seal(tools, access, specs)
         return ToolRegistry(
             tools=tools,
             access=access,
-            stream_config=stream_cfg,
+            stream_config=self._stream_cfg,
             own=frozenset(own),
             node_args=(self._sealed,),
+            specs=specs,
+            ambient=self._ambient,
         )
 
     @staticmethod
-    def _stream_writers(tools: Sequence[BaseTool]) -> Iterator[str]:
+    def _stream_writers(tools: Sequence[BaseTool], specs: StreamSpecs) -> Iterator[str]:
         """Инструменты-писатели каналов: только при них слив dev_null имеет
         смысл, и модель его видит."""
         for tool in tools:
-            if ToolStreamSpecs.of(tool.name).outbound():
+            if specs.of(tool.name).outbound():
                 yield tool.name
 
     def _stream_config(self) -> StreamGroupsConfig:
@@ -221,14 +227,14 @@ class ToolLoader:
         plugin: ToolPlugin,
         meta: PluginMeta,
         launchers: SectionLaunchers,
-    ) -> list[BaseTool]:
+    ) -> PluginTools:
         """Инструменты плагина: функции модуля под launcher'ом секции."""
         spec = LaunchSpec(
             section=plugin.section,
             modules=plugin.modules,
             package=plugin.package,
         )
-        launcher = launchers.launcher_of(spec, self._contexts)
+        launcher = launchers.launcher_of(spec, self._contexts, self._ambient)
 
         return self._module_tools(plugin, meta, launcher)
 
@@ -237,7 +243,7 @@ class ToolLoader:
         plugin: ToolPlugin,
         meta: PluginMeta,
         launcher: ToolLauncher,
-    ) -> list[BaseTool]:
+    ) -> PluginTools:
         """Функции модуля новой модели: обёртка запуска + partial конфига."""
         functions: list[BaseTool] = []
         for tool in plugin.module_tools:
@@ -247,9 +253,9 @@ class ToolLoader:
             functions.append(tool.model_copy())
 
         if not functions:
-            return []
+            return PluginTools(tools=[], specs=StreamSpecs({}))
 
-        ToolProcessWrap.guard_all(ToolMain.toolset(*functions), launcher)
+        specs = self._wrap.guard_all(ToolMain.toolset(*functions), launcher)
         CallContextValues.bind_all(functions, self._contexts)
 
         self._sealed.bind_all(functions)
@@ -258,7 +264,7 @@ class ToolLoader:
         ServiceTickets.bind_all(functions, self._credentials_ref, resolve)
         InjectedConfig.bind_all(functions, resolve)
 
-        return functions
+        return PluginTools(tools=functions, specs=specs)
 
     def _config_resolver(self) -> Callable[[str, Any], object]:
         """Значения injected-параметров: модель собирается из своей секции."""

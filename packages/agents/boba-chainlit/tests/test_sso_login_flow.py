@@ -16,7 +16,7 @@ import chainlit as cl
 import krb5
 import pytest
 from chainlit.auth.jwt import create_jwt
-from chainlit_stand import SESSIONS, StandTokens
+from chainlit_stand import StandTokens
 from gssapi import Credentials, Name, NameType, SecurityContext
 from starlette.requests import Request
 
@@ -29,6 +29,7 @@ from boba.auth.config import (
 from boba.auth.sso import SpnegoGate
 from boba.chainlit.auth.kerberos import KerberosAuth
 from boba.chainlit.auth.refresh import PageUrls, SessionRefresh
+from boba.chainlit.infra.session import ChainlitSessions
 from boba.config import bind
 from boba.db.postgres import AsyncPostgresPool
 from boba.identity.admission import RoleExcludeConfig
@@ -223,7 +224,9 @@ class Refresh:
             "client": ("127.0.0.1", 1234),
         }
 
-        refresh = SessionRefresh(auth._urls, auth.auth, SESSIONS, APP_ROOT)
+        refresh = SessionRefresh(
+            auth._urls, auth.auth, ChainlitSessions(StandTokens()), APP_ROOT
+        )
         response = await refresh.refresh(Request(scope))
         raw = [(key, value) for key, value in response.raw_headers]
 
@@ -286,7 +289,7 @@ async def test_sign_in_puts_principal_and_ticket_into_the_jwt(
     if not metadata.get(UserMetadataField.ROLES):
         raise AssertionError(f"roles must be mapped: {metadata}")
 
-    sso = SESSIONS.ticket_of_token(create_jwt(user))
+    sso = ChainlitSessions(StandTokens()).ticket_of_token(create_jwt(user))
     if sso is None:
         raise AssertionError("JWT of the sign-in must carry the ticket")
     if sso.principal != USER_PRINCIPAL:
@@ -329,7 +332,7 @@ async def test_stale_jwt_without_ticket_is_refused(
             UserMetadataField.ROLES: ["read"],
         },
     )
-    if SESSIONS.ticket_of_token(create_jwt(stale)) is not None:
+    if ChainlitSessions(StandTokens()).ticket_of_token(create_jwt(stale)) is not None:
         raise AssertionError("a sign-in without a ticket must not resolve")
 
 
@@ -342,7 +345,7 @@ async def test_refresh_issues_a_new_jwt_with_a_fresh_ticket(
     """Билет входа на исходе, а сессия жива: обмен выдаёт новый JWT с новым билетом."""
     user = await _signed_in(kerberos_auth, tmp_path)
     token = create_jwt(user)
-    before = SESSIONS.ticket_of_token(token)
+    before = ChainlitSessions(StandTokens()).ticket_of_token(token)
     if before is None:
         raise AssertionError("JWT of the sign-in must carry the ticket")
 
@@ -354,7 +357,7 @@ async def test_refresh_issues_a_new_jwt_with_a_fresh_ticket(
     if not renewed:
         raise AssertionError("refresh must set a new session cookie")
 
-    after = SESSIONS.ticket_of_token(renewed)
+    after = ChainlitSessions(StandTokens()).ticket_of_token(renewed)
     if after is None:
         raise AssertionError(f"the new JWT must carry a ticket: {len(renewed)} chars")
     if after.sealed == before.sealed:
@@ -404,7 +407,10 @@ async def test_refresh_of_another_principal_is_refused(
 async def test_page_script_knows_where_to_refresh(kerberos_auth: KerberosAuth) -> None:
     """Адрес обмена подставляет сервер: скрипт страницы не собирает его сам."""
     refresh = SessionRefresh(
-        kerberos_auth._urls, kerberos_auth.auth, SESSIONS, APP_ROOT
+        kerberos_auth._urls,
+        kerberos_auth.auth,
+        ChainlitSessions(StandTokens()),
+        APP_ROOT,
     )
     script = refresh.script()
     if kerberos_auth._urls.refresh not in script:

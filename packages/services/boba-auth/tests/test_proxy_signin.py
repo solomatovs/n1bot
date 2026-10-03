@@ -36,11 +36,6 @@ pytestmark = pytest.mark.anyio
 SECRET = "proxy-stand-secret"
 
 
-@pytest.fixture(autouse=True)
-def chainlit_context() -> None:
-    """Провайдер зовётся напрямую: сессия чата не нужна."""
-
-
 def _providers(**update: object) -> ProxyRoleProviders:
     base = ProxyRoleProviders(
         local=LocalRolesConfig(

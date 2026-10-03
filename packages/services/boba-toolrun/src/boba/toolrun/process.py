@@ -33,7 +33,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from boba.cancellation import RunCancellation
 from boba.identity.context import CallContexts
-from boba.toolkit.chain import TappedCall
+from boba.toolkit.chain import CallAmbient, TappedCall
 from boba.toolkit.channels import ToolChannel
 from boba.toolkit.entry import EntryFlag, InputWire, OutputWire
 from boba.toolkit.frames import CallInbox
@@ -401,11 +401,17 @@ class ProcessToolCaller(ToolLauncher):
     """Каналы вызова модуля, попадающие в журнал при поставленном тапе."""
 
     def __init__(
-        self, tool: str, cfg: ProcessLauncherConfig, contexts: CallContexts
+        self,
+        tool: str,
+        cfg: ProcessLauncherConfig,
+        contexts: CallContexts,
+        ambient: CallAmbient,
     ) -> None:
         self._tool = tool
         self._cfg = cfg
         self._contexts = contexts
+        self._ambient = ambient
+        self._sinks = CallSinks()
 
     def open(self, command: ToolCommand) -> ToolCall:
         """Вызов модуля инструментов: конфиг первым кадром, кадры тела наружу."""
@@ -452,10 +458,11 @@ class ProcessToolCaller(ToolLauncher):
             own[ToolChannel.FRAMES] = inbox.feed
             journal.append(ToolChannel.FRAMES)
 
-        sinks = CallSinks.merged(own, tuple(journal))
+        call_journal = self._ambient.sinks()
+        sinks = self._sinks.merged(own, tuple(journal), call_journal)
 
-        inputs = CallSinks.call_inputs(
-            live.stdin_w, live.channels.take_inputs(), command.inputs
+        inputs = self._sinks.call_inputs(
+            live.stdin_w, live.channels.take_inputs(), command.inputs, call_journal
         )
         gate = HostGate(live.channels.take_verdict(), command.gate)
 

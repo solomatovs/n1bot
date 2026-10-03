@@ -10,6 +10,8 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable
 from typing import ClassVar
 
+from omegaconf import DictConfig
+
 from boba.auth.credentials import KerberosCredentialSource, NoRefresh
 from boba.connection_broker.store import ConnectionStore
 from boba.connection_broker.user_connections import StoreRef
@@ -22,8 +24,11 @@ from boba.identity.run import Runs
 from boba.krb.seal import SsoTickets
 from boba.messaging import MemoryMessageBus
 from boba.messaging.bus import ListenerState, StaticBusWatch
+from boba.runtime.launchers import SectionLaunchers, ToolLaunchers
 from boba.runtime.refs import RuntimeRefs
+from boba.toolkit.chain import CallAmbient
 from boba.toolrun.registry import ToolRegistry
+from boba.toolrun.stream_calls import StreamGroupsConfig
 from boba.toolrun.streams import CallJournals
 
 __all__ = ["StandRefs"]
@@ -42,12 +47,37 @@ class StandRefs:
     LOCK_TTL_SEC: ClassVar[int] = 20
     NAME: ClassVar[str] = "stand"
 
+    STREAM_CONFIG: ClassVar[StreamGroupsConfig] = StreamGroupsConfig(
+        open_sec=30.0,
+        stall_sec=60.0,
+        poll_sec=0.2,
+        pipe_bytes=65536,
+        pipe_bytes_max=1 << 30,
+    )
+    """Секция [stream_groups] стендов: сроки групп и размеры пайпов каналов."""
+
     def __init__(self, contexts: CallContexts) -> None:
         self.contexts = contexts
         self.runs = Runs(contexts)
         self.journals = CallJournals(None, self.runs)
+        self.ambient = CallAmbient()
+        self._launchers: list[SectionLaunchers] = []
         self._locks = MemoryLiveLocks(self.NAME, self.LOCK_TTL_SEC)
         self._bus = MemoryMessageBus(self.NAME)
+
+    def launchers(self, raw: DictConfig) -> SectionLaunchers:
+        """Способ запуска инструментов по конфигу raw; стенд гасит его в stop()."""
+        built = ToolLaunchers(raw).build()
+        self._launchers.append(built)
+
+        return built
+
+    def stop(self) -> None:
+        """Гасит способы запуска, построенные стендом: зиготы секций."""
+        for built in self._launchers:
+            built.stop()
+
+        self._launchers.clear()
 
     def none(self) -> RuntimeRefs:
         """Ни реестра, ни соединений: как процесс без этих секций."""
@@ -74,6 +104,7 @@ class StandRefs:
             contexts=self.contexts,
             runs=self.runs,
             journals=self.journals,
+            ambient=self.ambient,
             seal_keys=SealKeys(),
             live_locks=self._live_locks,
             heartbeat_sec=self.HEARTBEAT_SEC,

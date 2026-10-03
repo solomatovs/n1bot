@@ -19,11 +19,6 @@ from boba.transport.http.connection import HttpConnection
 NOW = datetime(2026, 10, 3, 12, 0, tzinfo=UTC)
 
 
-@pytest.fixture(autouse=True)
-def chainlit_context() -> None:
-    """Чистая логика: сессия приложения не нужна."""
-
-
 def _connection() -> SealedConnection:
     profile = HttpConnection(
         host="wiki.example.com",

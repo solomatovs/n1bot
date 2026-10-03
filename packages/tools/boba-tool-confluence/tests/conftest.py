@@ -10,11 +10,6 @@ import pytest
 from boba.runtime.config import AppLayers
 
 
-@pytest.fixture(autouse=True)
-def chainlit_context() -> None:
-    pass
-
-
 @pytest.fixture(scope="session")
 def raw_config():
     """Конфиг приложения: проверки идут по нему, а не по выдуманным значениям."""

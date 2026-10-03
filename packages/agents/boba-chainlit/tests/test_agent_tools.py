@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import shutil
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any, ClassVar, cast
 
@@ -17,10 +18,11 @@ from boba.sandbox.profile import (
     SandboxProfile,
     SandboxToolConfig,
 )
-from boba.sandbox.zygote import ZygotePolicy, ZygoteRegistry, ZygoteToolCaller
+from boba.sandbox.zygote import ZygotePolicy, ZygoteToolCaller
 from boba.stand.shell import ShellRun
-from boba.stand.zygote import SandboxStand
+from boba.stand.zygote import SandboxStand, ZygoteStand
 from boba.tool.shell.tools import BashToolConfig
+from boba.toolkit.chain import CallAmbient
 from boba.toolkit.launcher import LauncherError
 from boba.toolkit.result import ShellResult
 
@@ -311,8 +313,11 @@ class TestBwrapArgv:
 class TestBashTool:
     """Интеграционные: реально запускают bwrap."""
 
-    def teardown_method(self) -> None:
-        ZygoteRegistry.stop_all()
+    @pytest.fixture(autouse=True)
+    def zygotes_stopped(self, zygote_stand: ZygoteStand) -> Iterator[None]:
+        """Зиготы секций гасятся после каждого теста класса."""
+        yield
+        zygote_stand.stop()
 
     LIMITS: ClassVar[BashToolConfig] = BashToolConfig(
         max_output_bytes=4 * 1024 * 1024, timeout_sec=60.0
@@ -321,6 +326,7 @@ class TestBashTool:
     @classmethod
     def _make_tool(
         cls,
+        zygote_stand: ZygoteStand,
         workspace_root: Path,
         profile: SandboxProfile | None = None,
         limits: BashToolConfig | None = None,
@@ -350,10 +356,10 @@ class TestBashTool:
 
         tmp_size = profile.mounts.tmp
         section = f"bash-{workspace_root.name}-{profile.limits.timeout_sec}-{tmp_size}"
-        supervisor = ZygoteRegistry.obtain(
+        supervisor = zygote_stand.registry().obtain(
             section, profile, (ShellRun.MODULE,), _ZYGOTE
         )
-        caller = ZygoteToolCaller(section, supervisor, profile)
+        caller = ZygoteToolCaller(section, supervisor, profile, CallAmbient())
 
         return ShellRun.tool(caller, output)
 
@@ -364,8 +370,12 @@ class TestBashTool:
             raise AssertionError("isinstance(msg.artifact, ShellResult)")
         return msg.artifact
 
-    def test_echo_inside_sandbox(self, tmp_path: Path) -> None:
-        payload = self._invoke(self._make_tool(tmp_path), command="echo hello")
+    def test_echo_inside_sandbox(
+        self, zygote_stand: ZygoteStand, tmp_path: Path
+    ) -> None:
+        payload = self._invoke(
+            self._make_tool(zygote_stand, tmp_path), command="echo hello"
+        )
         if payload.exit_code != 0:
             raise AssertionError("payload.exit_code == 0")
         if payload.stdout.rstrip() != "hello":
@@ -373,14 +383,18 @@ class TestBashTool:
         if payload.timed_out:
             raise AssertionError("not payload.timed_out")
 
-    def test_cwd_is_workspace_root(self, tmp_path: Path) -> None:
-        payload = self._invoke(self._make_tool(tmp_path), command="pwd")
+    def test_cwd_is_workspace_root(
+        self, zygote_stand: ZygoteStand, tmp_path: Path
+    ) -> None:
+        payload = self._invoke(self._make_tool(zygote_stand, tmp_path), command="pwd")
         if payload.stdout.rstrip() != _WORKSPACE:
             raise AssertionError("payload.stdout.rstrip() == _WORKSPACE")
 
-    def test_workspace_writes_persist_on_host(self, tmp_path: Path) -> None:
+    def test_workspace_writes_persist_on_host(
+        self, zygote_stand: ZygoteStand, tmp_path: Path
+    ) -> None:
         payload = self._invoke(
-            self._make_tool(tmp_path),
+            self._make_tool(zygote_stand, tmp_path),
             command="echo content > out.txt",
         )
         if payload.exit_code != 0:
@@ -388,9 +402,11 @@ class TestBashTool:
         if (tmp_path / "out.txt").read_text() != "content\n":
             raise AssertionError('(tmp_path / "out.txt").read_text() == "content\\n"')
 
-    def test_outside_workspace_write_does_not_reach_host(self, tmp_path: Path) -> None:
+    def test_outside_workspace_write_does_not_reach_host(
+        self, zygote_stand: ZygoteStand, tmp_path: Path
+    ) -> None:
         payload = self._invoke(
-            self._make_tool(tmp_path),
+            self._make_tool(zygote_stand, tmp_path),
             command="echo x > /etc/from-sandbox 2>&1; echo rc=$?",
         )
         if payload.exit_code != 0:
@@ -398,9 +414,11 @@ class TestBashTool:
         if Path("/etc/from-sandbox").exists():
             raise AssertionError('not Path("/etc/from-sandbox").exists()')
 
-    def test_ro_bind_write_denied(self, tmp_path: Path) -> None:
+    def test_ro_bind_write_denied(
+        self, zygote_stand: ZygoteStand, tmp_path: Path
+    ) -> None:
         payload = self._invoke(
-            self._make_tool(tmp_path),
+            self._make_tool(zygote_stand, tmp_path),
             command="echo x > /usr/from-sandbox 2>&1",
         )
         if payload.exit_code == 0:
@@ -408,68 +426,86 @@ class TestBashTool:
         if Path("/usr/from-sandbox").exists():
             raise AssertionError('not Path("/usr/from-sandbox").exists()')
 
-    def test_network_disabled_by_default(self, tmp_path: Path) -> None:
+    def test_network_disabled_by_default(
+        self, zygote_stand: ZygoteStand, tmp_path: Path
+    ) -> None:
         payload = self._invoke(
-            self._make_tool(tmp_path),
+            self._make_tool(zygote_stand, tmp_path),
             command="getent hosts example.com 2>&1; echo done-$?",
         )
         if not ("done-2" in payload.stdout or "done-1" in payload.stdout):
             raise AssertionError('"done-2" in payload.stdout or "done-1" in payloa…')
 
-    def test_command_timeout_marks_timed_out(self, tmp_path: Path) -> None:
+    def test_command_timeout_marks_timed_out(
+        self, zygote_stand: ZygoteStand, tmp_path: Path
+    ) -> None:
         """Таймаут команды из [tool.bash]: штатный результат с timed_out."""
         limits = BashToolConfig(max_output_bytes=4096, timeout_sec=1.0)
         payload = self._invoke(
-            self._make_tool(tmp_path, limits=limits), command="sleep 10"
+            self._make_tool(zygote_stand, tmp_path, limits=limits), command="sleep 10"
         )
         if not payload.timed_out:
             raise AssertionError("payload.timed_out")
 
-    def test_profile_timeout_kills_the_call(self, tmp_path: Path) -> None:
+    def test_profile_timeout_kills_the_call(
+        self, zygote_stand: ZygoteStand, tmp_path: Path
+    ) -> None:
         """Таймаут профиля снимает весь вызов: объясняет его лаунчер."""
-        tool = self._make_tool(tmp_path, _profile(timeout_sec=1))
+        tool = self._make_tool(zygote_stand, tmp_path, _profile(timeout_sec=1))
 
         with pytest.raises(LauncherError, match="timeout_sec=1"):
             tool.invoke(_tool_call("bash", {"command": "sleep 10"}))
 
-    def test_llm_does_not_choose_profile(self, tmp_path: Path) -> None:
+    def test_llm_does_not_choose_profile(
+        self, zygote_stand: ZygoteStand, tmp_path: Path
+    ) -> None:
         """Профиль задаёт конфиг: у инструмента нет такого аргумента."""
-        tool = self._make_tool(tmp_path)
+        tool = self._make_tool(zygote_stand, tmp_path)
         schema = cast(type[BaseModel], tool.args_schema)
         if set(schema.model_fields) != {"command"}:
             raise AssertionError('set(schema.model_fields) == {"command"}')
 
-    def test_pid_namespace_isolation(self, tmp_path: Path) -> None:
+    def test_pid_namespace_isolation(
+        self, zygote_stand: ZygoteStand, tmp_path: Path
+    ) -> None:
         payload = self._invoke(
-            self._make_tool(tmp_path),
+            self._make_tool(zygote_stand, tmp_path),
             command="ps -e --no-headers | wc -l",
         )
         if int(payload.stdout.strip()) >= 10:
             raise AssertionError("int(payload.stdout.strip()) < 10")
 
-    def test_memory_limit_applied_without_image(self, tmp_path: Path) -> None:
+    def test_memory_limit_applied_without_image(
+        self, zygote_stand: ZygoteStand, tmp_path: Path
+    ) -> None:
         tool = self._make_tool(
-            tmp_path, _profile(process_memory_bytes=64 * 1024 * 1024)
+            zygote_stand, tmp_path, _profile(process_memory_bytes=64 * 1024 * 1024)
         )
         payload = self._invoke(tool, command="ulimit -v")
         if payload.stdout.strip() != str(64 * 1024):
             raise AssertionError("payload.stdout.strip() == str(64 * 1024)")
 
-    def test_cpu_limit_applied_without_image(self, tmp_path: Path) -> None:
-        tool = self._make_tool(tmp_path, _profile(process_cpu_sec=5))
+    def test_cpu_limit_applied_without_image(
+        self, zygote_stand: ZygoteStand, tmp_path: Path
+    ) -> None:
+        tool = self._make_tool(zygote_stand, tmp_path, _profile(process_cpu_sec=5))
         payload = self._invoke(tool, command="ulimit -t")
         if payload.stdout.strip() != "5":
             raise AssertionError('payload.stdout.strip() == "5"')
 
-    def test_tmpfs_size_limit_enforced(self, tmp_path: Path) -> None:
+    def test_tmpfs_size_limit_enforced(
+        self, zygote_stand: ZygoteStand, tmp_path: Path
+    ) -> None:
         payload = self._invoke(
-            self._make_tool(tmp_path, _profile(tmp="1M")),
+            self._make_tool(zygote_stand, tmp_path, _profile(tmp="1M")),
             command="dd if=/dev/zero of=/tmp/blob bs=1M count=4 2>&1; echo rc=$?",
         )
         if "rc=0" in payload.stdout:
             raise AssertionError('"rc=0" not in payload.stdout')
 
-    def test_per_call_variables_in_binds_are_refused(self, tmp_path: Path) -> None:
+    def test_per_call_variables_in_binds_are_refused(
+        self, zygote_stand: ZygoteStand, tmp_path: Path
+    ) -> None:
         """Бинды зиготы статичны: пути на вызов живут только в rw_images."""
         template = f"{tmp_path}/{{user_id}}/{{thread_id}}"
         profile_dto = _profile(
@@ -481,18 +517,24 @@ class TestBashTool:
         profile = SandboxToolConfig(profile=profile_dto).profile
 
         with pytest.raises(LauncherError, match="per-call path variables"):
-            ZygoteRegistry.obtain("bash-vars", profile, (), _ZYGOTE)
+            zygote_stand.registry().obtain("bash-vars", profile, (), _ZYGOTE)
 
-    def test_short_output_is_not_clipped(self, tmp_path: Path) -> None:
-        payload = self._invoke(self._make_tool(tmp_path), command="echo hello")
+    def test_short_output_is_not_clipped(
+        self, zygote_stand: ZygoteStand, tmp_path: Path
+    ) -> None:
+        payload = self._invoke(
+            self._make_tool(zygote_stand, tmp_path), command="echo hello"
+        )
         if payload.stdout_truncated:
             raise AssertionError("not payload.stdout_truncated")
         if payload.stdout_bytes != len(b"hello\n"):
             raise AssertionError('payload.stdout_bytes == len(b"hello\\n")')
 
-    def test_large_output_is_clipped_to_budget(self, tmp_path: Path) -> None:
+    def test_large_output_is_clipped_to_budget(
+        self, zygote_stand: ZygoteStand, tmp_path: Path
+    ) -> None:
         limits = BashToolConfig(max_output_bytes=200, timeout_sec=60.0)
-        tool = self._make_tool(tmp_path, limits=limits)
+        tool = self._make_tool(zygote_stand, tmp_path, limits=limits)
 
         payload = self._invoke(tool, command="seq 1 100000")
 

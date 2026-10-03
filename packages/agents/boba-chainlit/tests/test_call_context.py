@@ -8,8 +8,8 @@ from uuid import UUID
 import jwt
 import pytest
 from chainlit_stand import (
+    ChatSessionStand,
     StandTokens,
-    use_session,
 )
 from pydantic import ValidationError
 
@@ -46,7 +46,8 @@ class TestCurrent:
             raise AssertionError("peek outside a context must be None")
 
     def test_applied_sets_context_and_log_mark_for_the_block(
-        self, call_stand: CallStand, monkeypatch: pytest.MonkeyPatch
+        self,
+        call_stand: CallStand,
     ) -> None:
         context = call_stand.use(call_stand.context(thread_id=THREAD, login="ivanov"))
         call_stand.clear()
@@ -63,7 +64,8 @@ class TestCurrent:
             raise AssertionError("log mark must be gone after the block")
 
     def test_subject_is_the_access_facts(
-        self, call_stand: CallStand, monkeypatch: pytest.MonkeyPatch
+        self,
+        call_stand: CallStand,
     ) -> None:
         call_stand.use(
             call_stand.context(thread_id=THREAD, roles=("ADM",), profile="general")
@@ -81,7 +83,6 @@ class TestChatContext:
         self,
         runtime_stand: StandRefs,
         call_stand: CallStand,
-        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         call_stand.use(call_stand.context(thread_id=THREAD))
 
@@ -92,9 +93,11 @@ class TestChatContext:
             raise AssertionError(caught.value.kind)
 
     def test_session_context_is_a_chat_with_a_surface(
-        self, call_stand: CallStand, monkeypatch: pytest.MonkeyPatch
+        self,
+        chat_session: ChatSessionStand,
+        call_stand: CallStand,
     ) -> None:
-        use_session(monkeypatch, call_stand, user_id=str(UUID(int=7)), thread_id=THREAD)
+        chat_session.use(user_id=str(UUID(int=7)), thread_id=THREAD)
 
         context = call_stand.contexts.current()
         if not isinstance(context, ChatCallContext):
@@ -103,7 +106,8 @@ class TestChatContext:
             raise AssertionError("chat context carries a surface")
 
     def test_tool_call_derives_llm_initiator(
-        self, call_stand: CallStand, monkeypatch: pytest.MonkeyPatch
+        self,
+        call_stand: CallStand,
     ) -> None:
         context = call_stand.use(call_stand.context(thread_id=THREAD))
 
@@ -146,12 +150,11 @@ class TestPrincipalFormat:
 
 class TestExpiredSignIn:
     def test_expired_token_refuses_the_call_context(
-        self, call_stand: CallStand, monkeypatch: pytest.MonkeyPatch
+        self,
+        chat_session: ChatSessionStand,
     ) -> None:
         """Сокет пережил срок JWT: ход отказывает входом, а не пустыми ролями."""
-        session = use_session(
-            monkeypatch,
-            call_stand,
+        session = chat_session.use(
             user_id=str(UUID(int=5)),
             thread_id="thread-expired",
         )

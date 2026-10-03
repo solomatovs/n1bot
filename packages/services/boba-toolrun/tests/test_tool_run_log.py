@@ -14,19 +14,15 @@ from boba.identity.context import CallContexts, LlmInitiator
 from boba.identity.run import Runs
 from boba.sandbox.runner import FailureLog
 from boba.stand_core.context import CallStand
+from boba.toolkit.chain import CallAmbient
 from boba.toolkit.facade import NotLogged
 from boba.toolkit.launcher import RunResult
 from boba.toolkit.result import MarkdownResult, ToolArtifact
-from boba.toolrun.call_id import ToolCallIdField
+from boba.toolrun.call_id import CallFields
 from boba.toolrun.run_log import ToolRunLogger
 from boba.toolrun.streams import CallJournals
 
 LOGGER_NAME = "boba.toolrun.run_log"
-
-
-@pytest.fixture(autouse=True)
-def chainlit_context() -> None:
-    pass
 
 
 TAIL_CHARS = 2000
@@ -43,7 +39,9 @@ class TestToolRunLogger:
     def test_success_logs_start_and_ok(self, caplog: pytest.LogCaptureFixture) -> None:
         tool = self._tool(lambda query: "done")
         contexts = CallContexts()
-        ToolRunLogger(CallJournals(None, Runs(contexts)), contexts).guard_all([tool])
+        ToolRunLogger(
+            CallJournals(None, Runs(contexts)), contexts, CallAmbient()
+        ).guard_all([tool])
         with caplog.at_level(logging.INFO, logger=LOGGER_NAME):
             if tool.func is None:
                 raise AssertionError("tool.func is not None")
@@ -71,7 +69,9 @@ class TestToolRunLogger:
             args_schema=Args,
         )
         contexts = CallContexts()
-        ToolRunLogger(CallJournals(None, Runs(contexts)), contexts).guard_all([tool])
+        ToolRunLogger(
+            CallJournals(None, Runs(contexts)), contexts, CallAmbient()
+        ).guard_all([tool])
 
         with caplog.at_level(logging.INFO, logger=LOGGER_NAME):
             if tool.func is None:
@@ -95,7 +95,9 @@ class TestToolRunLogger:
 
         tool = self._tool(boom)
         contexts = CallContexts()
-        ToolRunLogger(CallJournals(None, Runs(contexts)), contexts).guard_all([tool])
+        ToolRunLogger(
+            CallJournals(None, Runs(contexts)), contexts, CallAmbient()
+        ).guard_all([tool])
         with caplog.at_level(logging.INFO, logger=LOGGER_NAME):
             if tool.func is None:
                 raise AssertionError("tool.func is not None")
@@ -124,7 +126,9 @@ class TestToolRunLogger:
             return "ok"
 
         tool = self._tool(probe)
-        ToolRunLogger(CallJournals(None, Runs(contexts)), contexts).guard_all([tool])
+        ToolRunLogger(
+            CallJournals(None, Runs(contexts)), contexts, CallAmbient()
+        ).guard_all([tool])
         if tool.func is None:
             raise AssertionError("tool.func is not None")
 
@@ -143,7 +147,9 @@ class TestToolRunLogger:
 
         tool = self._tool(lambda query: "sync", probe)
         contexts = CallContexts()
-        ToolRunLogger(CallJournals(None, Runs(contexts)), contexts).guard_all([tool])
+        ToolRunLogger(
+            CallJournals(None, Runs(contexts)), contexts, CallAmbient()
+        ).guard_all([tool])
 
         async def invoke() -> object:
             if tool.coroutine is None:
@@ -220,11 +226,11 @@ class TestElapsedInResult:
             await asyncio.sleep(0.05)
             return MarkdownResult(text=f"found {query}").packed()
 
-        ToolCallIdField.attach_all([slow_probe])
+        CallFields().attach_all([slow_probe])
         contexts = CallContexts()
-        ToolRunLogger(CallJournals(None, Runs(contexts)), contexts).guard_all(
-            [slow_probe]
-        )
+        ToolRunLogger(
+            CallJournals(None, Runs(contexts)), contexts, CallAmbient()
+        ).guard_all([slow_probe])
 
         message = await slow_probe.ainvoke(
             {
@@ -251,11 +257,11 @@ class TestElapsedInResult:
             """Инструмент со свободным ответом."""
             return f"plain {query}"
 
-        ToolCallIdField.attach_all([plain_probe])
+        CallFields().attach_all([plain_probe])
         contexts = CallContexts()
-        ToolRunLogger(CallJournals(None, Runs(contexts)), contexts).guard_all(
-            [plain_probe]
-        )
+        ToolRunLogger(
+            CallJournals(None, Runs(contexts)), contexts, CallAmbient()
+        ).guard_all([plain_probe])
 
         message = await plain_probe.ainvoke(
             {

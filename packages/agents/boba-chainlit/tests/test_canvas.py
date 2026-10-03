@@ -9,7 +9,7 @@ from uuid import UUID
 
 import chainlit as cl
 import pytest
-from chainlit_stand import use_session
+from chainlit_stand import ChatSessionStand
 
 from boba.canvas.canvas import (
     CanvasAction,
@@ -207,7 +207,9 @@ class _StorageOnlyLayer:
 
 @pytest.fixture
 def storage(
-    call_stand: CallStand, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    chat_session: ChatSessionStand,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> LocalStorageClient:
     config = LocalStorageConfig(
         files_dir=str(tmp_path),
@@ -224,7 +226,7 @@ def storage(
     client = LocalStorageClient(config)
     layer = _StorageOnlyLayer(client)
 
-    use_session(monkeypatch, call_stand, user_id=USER, thread_id=THREAD)
+    chat_session.use(user_id=USER, thread_id=THREAD)
     monkeypatch.setattr(rendering_canvas, "get_data_layer", lambda: layer)
 
     return client

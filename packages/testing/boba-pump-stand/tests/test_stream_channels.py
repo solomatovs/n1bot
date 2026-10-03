@@ -30,7 +30,7 @@ from boba.identity.context import CallContexts
 from boba.pump_stand import ClickHouseSide, PostgresSide, PumpStand
 from boba.tool.ch import tools as ch
 from boba.tool.pg import tools as pg
-from boba.toolkit.chain import GroupCall, GroupFailureResult
+from boba.toolkit.chain import CallAmbient, GroupCall, GroupFailureResult
 from boba.toolkit.dag import WorkflowResult
 from boba.toolkit.entry import ToolMain
 from boba.toolkit.result import (
@@ -39,7 +39,7 @@ from boba.toolkit.result import (
 from boba.toolkit.types import SecretReveal
 from boba.toolkit.wrap import ToolProcessWrap
 from boba.toolrun.bridge import ToolBridge
-from boba.toolrun.call_id import ToolCallIdField
+from boba.toolrun.call_id import CallFields
 from boba.toolrun.errors import ToolErrorGuard
 from boba.toolrun.process import ProcessLauncherConfig, ProcessToolCaller
 from boba.toolrun.stream_calls import (
@@ -124,17 +124,18 @@ class ChannelTools:
             stderr_tail_bytes=16384,
             kill_grace_sec=1.0,
         )
-        launcher = ProcessToolCaller("pump-channels", cfg, CallContexts())
+        ambient = CallAmbient()
+        launcher = ProcessToolCaller("pump-channels", cfg, CallContexts(), ambient)
 
         tools: list[Any] = []
         for payload in (pg.pg_stream_out, pg.pg_stream_in, ch.ch_stream_in):
             tools.append(ToolBridge.as_structured_tool(payload.model_copy()))
 
-        ToolProcessWrap.guard_all(ToolMain.toolset(*tools), launcher)
-        StreamChannelFields(STREAM_CFG).attach_all(tools)
-        ToolCallIdField.attach_all(tools)
+        specs = ToolProcessWrap(ambient).guard_all(ToolMain.toolset(*tools), launcher)
+        StreamChannelFields(STREAM_CFG).attach_all(tools, specs)
+        CallFields().attach_all(tools)
         ToolErrorGuard().guard_all(tools)
-        self._streams = LocalDagService(tools, STREAM_CFG, ())
+        self._streams = LocalDagService(tools, STREAM_CFG, (), specs, ambient)
 
     async def respond(self, calls: Sequence[Mapping[str, Any]]) -> list[Any]:
         """Узлы одного вызова workflow, как в чате: итоги узлов в порядке

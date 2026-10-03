@@ -34,11 +34,6 @@ def _bin_dirs() -> list[str]:
 LABEL = "doc:read_document"
 
 
-@pytest.fixture(autouse=True)
-def chainlit_context() -> None:
-    "релей не зависит от сессии chainlit"
-
-
 class RecordingSink(StreamSink):
     """Приёмник одного канала в памяти: тест читает записанные строки."""
 

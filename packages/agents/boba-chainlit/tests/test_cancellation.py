@@ -22,10 +22,11 @@ from boba.cancellation import (
     run_cancellation,
 )
 from boba.sandbox import SandboxProfile, SandboxToolConfig
-from boba.sandbox.zygote import ZygotePolicy, ZygoteRegistry, ZygoteToolCaller
+from boba.sandbox.zygote import ZygotePolicy, ZygoteToolCaller
 from boba.stand.shell import ShellRun
-from boba.stand.zygote import SandboxStand
+from boba.stand.zygote import SandboxStand, ZygoteStand
 from boba.tool.shell.tools import BashToolConfig
+from boba.toolkit.chain import CallAmbient
 from boba.toolkit.result import ErrorResult
 from boba.toolrun.cancellation import CancellableTools
 from boba.transport.http import (
@@ -216,7 +217,7 @@ class TestToolGuard:
             """инструмент, переводящий любую ошибку в ErrorResult"""
             return ErrorResult(message=text, error_kind="whatever")
 
-        return CancellableTools.guard_all([echo, swallowing])
+        return CancellableTools().guard_all([echo, swallowing])
 
     def test_runs_normally_without_cancellation(self) -> None:
         echo, _ = self._tools()
@@ -325,8 +326,11 @@ class TestSubprocessAbort:
     """Порог отсекает запасной proc.wait(timeout=5) в _pump: без прерывателя
     процесс тоже умирает, но лишь через пять секунд после остановки."""
 
-    def teardown_method(self) -> None:
-        ZygoteRegistry.stop_all()
+    @pytest.fixture(autouse=True)
+    def zygotes_stopped(self, zygote_stand: ZygoteStand) -> Iterator[None]:
+        """Зиготы секций гасятся после каждого теста класса."""
+        yield
+        zygote_stand.stop()
 
     @classmethod
     def _running(cls) -> int:
@@ -342,13 +346,13 @@ class TestSubprocessAbort:
                 alive += 1
         return alive
 
-    def test_cancel_kills_running_process(self) -> None:
+    def test_cancel_kills_running_process(self, zygote_stand: ZygoteStand) -> None:
         profile = _sandbox_config().profile
 
-        supervisor = ZygoteRegistry.obtain(
+        supervisor = zygote_stand.registry().obtain(
             "cancel-bash", profile, (ShellRun.MODULE,), _ZYGOTE
         )
-        caller = ZygoteToolCaller("cancel-bash", supervisor, profile)
+        caller = ZygoteToolCaller("cancel-bash", supervisor, profile, CallAmbient())
 
         tool_ = ShellRun.tool(caller, self.LIMITS)
         with run_cancellation() as c:

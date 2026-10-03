@@ -3,9 +3,9 @@
 Пока тело инструмента работает, его вывод читается порциями и куда-то
 складывается: в файл журнала, в кольцевое окно памяти для панели, в буфер
 вызова. Здесь объявлен общий интерфейс такого приёмника (StreamSink),
-кольцевое окно (ToolStreamBuffer) и тап (ToolChannelsTap) — способ передать
-приёмники журнала из UI-слоя в исполнителя через contextvar, не связывая
-слои импортами.
+кольцевое окно (ToolStreamBuffer) и протокол приёмников журнала
+(ChannelSinks) — способ передать приёмники журнала из UI-слоя в исполнителя
+через обстановку вызова (CallAmbient), не связывая слои импортами.
 
 Ошибки: наружу ничего не выходит; on_data обязан не поднимать исключений.
 """
@@ -16,8 +16,7 @@ import threading
 from abc import abstractmethod
 from collections import deque
 from collections.abc import Callable
-from contextvars import ContextVar
-from typing import ClassVar, Protocol, TypeAlias
+from typing import Protocol, TypeAlias
 
 from pydantic import BaseModel, ConfigDict
 
@@ -29,7 +28,6 @@ __all__ = [
     "ChunkSink",
     "StreamSink",
     "StreamWindow",
-    "ToolChannelsTap",
     "ToolStreamBuffer",
 ]
 
@@ -157,28 +155,7 @@ class ToolStreamBuffer(StreamSink):
 class ChannelSinks(Protocol):
     """Протокол журнала одного вызова: по каналу отдаёт его приёмник.
     Реализация — ToolStream в boba.toolrun.streams; в исполнитель попадает
-    через ToolChannelsTap."""
+    через CallAmbient."""
 
     @abstractmethod
     def sink_of(self, channel: JournalChannel) -> StreamSink: ...
-
-
-class ToolChannelsTap:
-    """Contextvar-переноска журнала текущего вызова: обвязка запуска ставит
-    ChannelSinks перед вызовом, исполнитель (CallSinks.merged) забирает.
-
-    Нужна, чтобы UI-слой не импортировался исполнителем: связь идёт через
-    контекст исполнения, а не через модули.
-    """
-
-    _SINKS: ClassVar[ContextVar[ChannelSinks | None]] = ContextVar(
-        "tool_channels_tap", default=None
-    )
-
-    @classmethod
-    def set(cls, sinks: ChannelSinks | None) -> None:
-        cls._SINKS.set(sinks)
-
-    @classmethod
-    def get(cls) -> ChannelSinks | None:
-        return cls._SINKS.get()

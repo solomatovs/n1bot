@@ -777,7 +777,7 @@ class Edm(StrEnum):
 
 
 @tool
-async def ch_edm_structure(  # noqa: PLR0913 — фикстуры теста
+async def ch_edm_structure(  # noqa: PLR0913
     connection: ChConnection,
     database: Annotated[
         str,
@@ -872,7 +872,7 @@ async def ch_edm_structure(  # noqa: PLR0913 — фикстуры теста
 
 
 @tool
-async def ch_edm_descriptions(  # noqa: PLR0913 — фикстуры теста
+async def ch_edm_descriptions(  # noqa: PLR0913
     connection: ChConnection,
     database: Annotated[
         str,
@@ -993,7 +993,7 @@ async def ch_edm_descriptions(  # noqa: PLR0913 — фикстуры теста
 
 
 @tool
-async def ch_stream_out(  # noqa: PLR0913 — фикстуры теста
+async def ch_stream_out(  # noqa: PLR0913
     connection: ChConnection,
     sql: Annotated[
         str,
@@ -1084,7 +1084,7 @@ async def ch_stream_out(  # noqa: PLR0913 — фикстуры теста
 
 
 @tool
-async def ch_stream_in(  # noqa: PLR0913 — фикстуры теста
+async def ch_stream_in(  # noqa: PLR0913
     connection: ChConnection,
     database: Annotated[str, Field(min_length=1, description="База таблицы-приёмника")],
     table_name: Annotated[

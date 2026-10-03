@@ -4,17 +4,18 @@ from __future__ import annotations
 
 import os
 import shutil
+from collections.abc import Iterator
 from typing import Any
 
 import pytest
 
 from boba.stand.shell import ShellRun
 from boba.stand.zygote import SandboxStand, ZygoteStand
+from boba.toolkit.chain import CallAmbient
 from boba.toolkit.channels import JournalChannel, ToolChannel, WrapChannel
 from boba.toolkit.stream import (
     ChannelSinks,
     StreamSink,
-    ToolChannelsTap,
     ToolStreamBuffer,
 )
 
@@ -23,12 +24,6 @@ _PROFILE_OVERRIDES: dict[str, Any] = {
     "process_memory_bytes": 512 * 1024 * 1024,
     "process_cpu_sec": 30,
 }
-
-
-@pytest.fixture(autouse=True)
-def clean_tap() -> Any:
-    yield
-    ToolChannelsTap.set(None)
 
 
 class Windows(ChannelSinks):
@@ -69,19 +64,28 @@ class Windows(ChannelSinks):
 class TestCallTextTap:
     """Текстовый запуск: stdout и stderr тела ложатся в свои каналы журнала."""
 
-    def teardown_method(self) -> None:
-        ZygoteStand.stop()
+    @pytest.fixture(autouse=True)
+    def zygotes_stopped(self, zygote_stand: ZygoteStand) -> Iterator[None]:
+        """Зиготы секций гасятся после каждого теста класса."""
+        yield
+        zygote_stand.stop()
 
     @staticmethod
-    def _caller(**profile_kw: Any) -> Any:
+    def _caller(
+        zygote_stand: ZygoteStand, ambient: CallAmbient, **profile_kw: Any
+    ) -> Any:
         profile = SandboxStand.profile(**{**_PROFILE_OVERRIDES, **profile_kw})
-        return ZygoteStand.caller("bash", profile)
+        return zygote_stand.journaled("bash", profile, ambient)
 
-    def test_streams_go_to_their_own_channels_and_result_is_kept(self) -> None:
+    def test_streams_go_to_their_own_channels_and_result_is_kept(
+        self, zygote_stand: ZygoteStand, call_ambient: CallAmbient
+    ) -> None:
         windows = Windows()
-        ToolChannelsTap.set(windows)
+        call_ambient.set_sinks(windows)
 
-        outcome = ShellRun.call_text(self._caller(), "echo привет; echo беда >&2")
+        outcome = ShellRun.call_text(
+            self._caller(zygote_stand, call_ambient), "echo привет; echo беда >&2"
+        )
 
         out = windows.text_of(ToolChannel.STDOUT)
         err = windows.text_of(ToolChannel.STDERR)
@@ -102,15 +106,21 @@ class TestCallTextTap:
         if "беда" not in outcome.stderr:
             raise AssertionError('"беда" in outcome.stderr')
 
-    def test_without_tap_nothing_changes(self) -> None:
-        ToolChannelsTap.set(None)
+    def test_without_tap_nothing_changes(
+        self, zygote_stand: ZygoteStand, call_ambient: CallAmbient
+    ) -> None:
+        call_ambient.set_sinks(None)
 
-        outcome = ShellRun.call_text(self._caller(), "echo одинокий")
+        outcome = ShellRun.call_text(
+            self._caller(zygote_stand, call_ambient), "echo одинокий"
+        )
 
         if "одинокий" not in outcome.stdout:
             raise AssertionError('"одинокий" in outcome.stdout')
 
-    def test_window_stays_bounded_on_huge_output(self) -> None:
+    def test_window_stays_bounded_on_huge_output(
+        self, zygote_stand: ZygoteStand, call_ambient: CallAmbient
+    ) -> None:
         """Мегабайты вывода не оседают в окне: оно держит только хвост.
 
         Результат отдаётся целиком, а окно продолжает ехать до конца
@@ -118,10 +128,12 @@ class TestCallTextTap:
         """
         window_bytes = 64 * 1024
         windows = Windows(window_bytes)
-        ToolChannelsTap.set(windows)
+        call_ambient.set_sinks(windows)
 
         # ~1.6 МБ: 200000 строк по 8 байт
-        outcome = ShellRun.call_text(self._caller(), "seq -w 1 200000")
+        outcome = ShellRun.call_text(
+            self._caller(zygote_stand, call_ambient), "seq -w 1 200000"
+        )
 
         window = windows.buffer_of(ToolChannel.STDOUT).snapshot()
         if len(window.text.encode()) > window_bytes:
@@ -135,12 +147,17 @@ class TestCallTextTap:
         if not (outcome.stdout.startswith("000001\n")):
             raise AssertionError('outcome.stdout.startswith("000001\\n")')
 
-    def test_window_fills_while_the_process_runs(self) -> None:
+    def test_window_fills_while_the_process_runs(
+        self, zygote_stand: ZygoteStand, call_ambient: CallAmbient
+    ) -> None:
         """Пробуждения приходят по ходу процесса, а не одним махом в конце."""
         windows = Windows()
-        ToolChannelsTap.set(windows)
+        call_ambient.set_sinks(windows)
 
-        ShellRun.call_text(self._caller(), "echo старт; sleep 0.3; echo финиш")
+        ShellRun.call_text(
+            self._caller(zygote_stand, call_ambient),
+            "echo старт; sleep 0.3; echo финиш",
+        )
 
         sizes = windows.wake_sizes
 

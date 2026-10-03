@@ -21,7 +21,7 @@ from typing import Any
 
 from pydantic import BaseModel
 
-from boba.toolkit.chain import NodeSlot, PipelineSlot
+from boba.toolkit.chain import CallAmbient, NodeSlot
 from boba.toolkit.entry import (
     ArgumentTooLargeError,
     ReplyError,
@@ -36,7 +36,7 @@ from boba.toolkit.launcher import (
     ToolLauncher,
     ToolOutcome,
 )
-from boba.toolkit.ports import StreamSpec, ToolStreamSpecs
+from boba.toolkit.ports import StreamSpec, StreamSpecs
 from boba.toolkit.protocol import CallGateMode, ToolCommand
 from boba.toolkit.result import ErrorResult
 
@@ -59,33 +59,37 @@ class ToolProcessWrap:
     (CollectedCall), конверт разворачивается в возврат или
     PayloadFailureError.
 
-    Внутри конвейера (оркестратор поставил PipelineSlot) вызов открывается
-    потоково: каналы узла отдаются слоту дескрипторами, и данные текут
+    Внутри конвейера (оркестратор поставил ручку в CallAmbient) вызов
+    открывается потоково: каналы узла отдаются слоту дескрипторами, и данные текут
     между узлами мимо хоста; конверт разворачивается так же. Попутно
-    guard_all публикует потоковую декларацию инструмента в ToolStreamSpecs
-    — позже injected-поля снимаются из видимой схемы, и портов в ней уже
-    не найти.
+    guard_all отдаёт потоковые декларации инструментов (StreamSpecs) —
+    позже injected-поля снимаются из видимой схемы, и портов в ней уже не
+    найти.
     """
 
-    @classmethod
-    def guard_all(cls, tools: Sequence[ToolLike], launcher: ToolLauncher) -> None:
-        for tool in tools:
-            ToolStreamSpecs.register(
-                tool.name, StreamSpec.of_schema(ToolArgv.schema_of(tool))
-            )
-            cls._guard(tool, launcher)
+    def __init__(self, ambient: CallAmbient) -> None:
+        self._ambient = ambient
 
-    @classmethod
-    def _guard(cls, tool: ToolLike, launcher: ToolLauncher) -> None:
+    def guard_all(
+        self, tools: Sequence[ToolLike], launcher: ToolLauncher
+    ) -> StreamSpecs:
+        declared: dict[str, StreamSpec] = {}
+        for tool in tools:
+            declared[tool.name] = StreamSpec.of_schema(ToolArgv.schema_of(tool))
+            self._guard(tool, launcher)
+
+        return StreamSpecs(declared)
+
+    def _guard(self, tool: ToolLike, launcher: ToolLauncher) -> None:
         address = ToolAddress.of(tool)
         schema = ToolArgv.schema_of(tool)
 
-        call = cls._process_call(address, schema, launcher)
+        call = self._process_call(address, schema, launcher)
 
         # wraps сохраняет исходное тело в __wrapped__: оттуда читается аннотация
         # результата
         if tool.func is not None:
-            cls._set_func(tool, wraps(tool.func)(call))
+            self._set_func(tool, wraps(tool.func)(call))
 
         if tool.coroutine is not None:
 
@@ -93,21 +97,20 @@ class ToolProcessWrap:
             async def acall(**kwargs: object) -> object:
                 return await asyncio.to_thread(lambda: call(**kwargs))
 
-            cls._set_coroutine(tool, acall)
+            self._set_coroutine(tool, acall)
 
-    @classmethod
     def _process_call(
-        cls,
+        self,
         address: ToolAddress,
         schema: type[BaseModel],
         launcher: ToolLauncher,
     ) -> Callable[..., object]:
         def call(**kwargs: object) -> object:
-            slot = PipelineSlot.get()
+            slot = self._ambient.slot()
             if slot is not None:
-                outcome = cls._group_call(address, schema, launcher, slot, kwargs)
+                outcome = self._group_call(address, schema, launcher, slot, kwargs)
             else:
-                outcome = cls._single_call(address, schema, launcher, kwargs)
+                outcome = self._single_call(address, schema, launcher, kwargs)
 
             reply = outcome.reply
             if isinstance(reply, ReplyError):
@@ -117,22 +120,20 @@ class ToolProcessWrap:
 
         return call
 
-    @classmethod
     def _single_call(
-        cls,
+        self,
         address: ToolAddress,
         schema: type[BaseModel],
         launcher: ToolLauncher,
         kwargs: Mapping[str, object],
     ) -> ToolOutcome:
         """Вызов вне группы: накопительно."""
-        command = cls._render(address, schema, kwargs, {}, {})
+        command = self._render(address, schema, kwargs, {}, {})
 
         return CollectedCall.of(launcher, command)
 
-    @classmethod
     def _group_call(
-        cls,
+        self,
         address: ToolAddress,
         schema: type[BaseModel],
         launcher: ToolLauncher,
@@ -143,11 +144,11 @@ class ToolProcessWrap:
         отвечает текстом её срыва; единственный вызов группы — своей
         ошибкой."""
         try:
-            command = cls._render(
+            command = self._render(
                 address, schema, kwargs, slot.input_counts(), slot.output_counts()
             )
             held = slot.sized(command).model_copy(update={"gate": CallGateMode.HELD})
-            return cls._piped_call(launcher, held, slot)
+            return self._piped_call(launcher, held, slot)
         except BaseException as exc:
             verdict = slot.settle_error(exc)
             if verdict.stopped:

@@ -393,7 +393,7 @@ async def pg_query(
 
 
 @tool
-async def pg_stream_out(  # noqa: PLR0913 — фикстуры теста
+async def pg_stream_out(  # noqa: PLR0913
     connection: PgConnection,
     sql: Annotated[
         str,
@@ -496,7 +496,7 @@ async def pg_stream_out(  # noqa: PLR0913 — фикстуры теста
 
 
 @tool
-async def pg_stream_in(  # noqa: PLR0913 — фикстуры теста
+async def pg_stream_in(  # noqa: PLR0913
     connection: PgConnection,
     schema_name: Annotated[
         str, Field(min_length=1, description="Схема таблицы-приёмника: dwh")

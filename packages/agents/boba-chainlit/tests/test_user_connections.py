@@ -17,7 +17,7 @@ from uuid import UUID
 import pytest
 from chainlit.user import PersistedUser
 from chainlit.user import User as ChainlitUser
-from chainlit_stand import SsoStand, StandTokens, enter_context
+from chainlit_stand import ChatSessionStand, SsoStand
 from psycopg import sql
 from pydantic import SecretStr
 from test_tools_integration import Call, ToolSetup
@@ -41,12 +41,13 @@ from boba.krb import KeytabCredentials
 from boba.krb.seal import SsoTickets
 from boba.messaging import MemoryMessageBus
 from boba.runtime.refresh import BusRefreshSignal
-from boba.sandbox.zygote import ZygoteRegistry
 from boba.stand.connections import StandUserConnections
 from boba.stand.site import Stand
+from boba.stand.zygote import ZygoteStand
 from boba.stand_core.context import CallStand
 from boba.tool.pg.tools import PgToolConfig
 from boba.tool.web.tools import WebToolsConfig
+from boba.toolkit.chain import CallAmbient
 from boba.toolkit.entry import ToolMain
 from boba.toolkit.launcher import PayloadFailureError
 from boba.toolkit.wrap import ToolProcessWrap
@@ -90,11 +91,11 @@ def _key() -> SecretStr:
 
 
 @pytest.fixture(scope="module", autouse=True)
-def stop_zygotes():
+def stop_zygotes(zygote_stand: ZygoteStand):
     try:
         yield
     finally:
-        ZygoteRegistry.stop_all()
+        zygote_stand.stop()
 
 
 @pytest.fixture
@@ -146,6 +147,7 @@ def _credentials() -> KerberosCredentialSource:
 
 @pytest.fixture
 def pg_tools(
+    zygote_stand: ZygoteStand,
     call_stand: CallStand,
     raw_config: Any,
     store: ConnectionStore,
@@ -157,10 +159,10 @@ def pg_tools(
     import boba.tool.pg.tools as pg_module
 
     module = reload(pg_module)
-    launcher = ToolSetup.caller(raw_config, "pg", [module.__name__])
+    launcher = ToolSetup.caller(zygote_stand, raw_config, "pg", [module.__name__])
 
     functions = [ToolBridge.as_structured_tool(tool) for tool in module.TOOLS]
-    ToolProcessWrap.guard_all(ToolMain.toolset(*functions), launcher)
+    ToolProcessWrap(CallAmbient()).guard_all(ToolMain.toolset(*functions), launcher)
 
     def resolve(name: str, annotation: Any) -> object:
         return bind(raw_config, path="tool.pg", model=PgToolConfig)
@@ -196,38 +198,18 @@ class Session:
         return persisted
 
     @staticmethod
-    def enter(call_stand: CallStand, user: PersistedUser) -> None:
-        """Сессия с JWT входа: роли берутся из токена, а не из строки users."""
-        from chainlit.auth.jwt import create_jwt
-        from chainlit.context import init_http_context
-
-        token = create_jwt(StandTokens.user(user.identifier, user.metadata))
-        context = init_http_context(user=user, thread_id=THREAD, auth_token=token)
-        context.session.chat_profile = PROFILE
-        enter_context(call_stand)
-
-    @staticmethod
-    def enter_sso(
-        call_stand: CallStand, user: PersistedUser, principal: str, sealed: str
-    ) -> None:
-        """Сессия с JWT SSO-входа: провайдер, принципал и метка входа."""
-        from chainlit.auth.jwt import create_jwt
-        from chainlit.context import init_http_context
-
-        metadata = {
+    def sso_metadata(principal: str, sealed: str) -> dict[str, object]:
+        """Метки JWT SSO-входа: провайдер, принципал и метка входа."""
+        return {
             UserMetadataField.ROLES: [ROLE],
             UserMetadataField.PROVIDER: KerberosAuth.__name__,
             UserMetadataField.PRINCIPAL: principal,
             UserMetadataField.TICKET: sealed,
         }
-        token = create_jwt(StandTokens.user(user.identifier, metadata))
-        context = init_http_context(user=user, auth_token=token, thread_id=THREAD)
-        context.session.chat_profile = PROFILE
-        enter_context(call_stand)
 
 
 async def test_granted_connection_is_visible_and_works(  # noqa: PLR0913 — фикстуры теста
-    call_stand: CallStand,
+    chat_session: ChatSessionStand,
     pg_tools: dict[str, Any],
     catalog: Any,
     store: ConnectionStore,
@@ -237,7 +219,7 @@ async def test_granted_connection_is_visible_and_works(  # noqa: PLR0913 — ф�
     user = await Session.user(layer, "conn-owner")
     connection_id = await store.add("main", service_pg)
     await store.grant(connection_id, GrantTarget.user(UUID(user.id)))
-    Session.enter(call_stand, user)
+    chat_session.sign_in(user, user.metadata, THREAD, PROFILE)
 
     targets = await Call.ok(catalog)
     names = [ConnectionRefs().parse(row["connection"]).name for row in targets.rows]
@@ -256,7 +238,7 @@ async def test_granted_connection_is_visible_and_works(  # noqa: PLR0913 — ф�
 
 
 async def test_role_grant_reaches_every_role_holder(  # noqa: PLR0913 — фикстуры теста
-    call_stand: CallStand,
+    chat_session: ChatSessionStand,
     pg_tools: dict[str, Any],
     catalog: Any,
     store: ConnectionStore,
@@ -267,7 +249,7 @@ async def test_role_grant_reaches_every_role_holder(  # noqa: PLR0913 — фик
     roles = StoredRole.by_name(await store.roles())
     connection_id = await store.add("shared", service_pg)
     await store.grant(connection_id, GrantTarget.role(roles[ROLE]))
-    Session.enter(call_stand, user)
+    chat_session.sign_in(user, user.metadata, THREAD, PROFILE)
 
     targets = await Call.ok(catalog)
     names = [ConnectionRefs().parse(row["connection"]).name for row in targets.rows]
@@ -276,7 +258,7 @@ async def test_role_grant_reaches_every_role_holder(  # noqa: PLR0913 — фик
 
 
 async def test_stranger_sees_nothing(  # noqa: PLR0913 — фикстуры теста
-    call_stand: CallStand,
+    chat_session: ChatSessionStand,
     pg_tools: dict[str, Any],
     catalog: Any,
     store: ConnectionStore,
@@ -287,7 +269,7 @@ async def test_stranger_sees_nothing(  # noqa: PLR0913 — фикстуры те
     stranger = await Session.user(layer, "conn-stranger")
     connection_id = await store.add("main", service_pg)
     await store.grant(connection_id, GrantTarget.user(UUID(owner.id)))
-    Session.enter(call_stand, stranger)
+    chat_session.sign_in(stranger, stranger.metadata, THREAD, PROFILE)
 
     targets = await Call.ok(catalog)
     if targets.rows:
@@ -303,7 +285,7 @@ async def test_stranger_sees_nothing(  # noqa: PLR0913 — фикстуры те
 
 
 async def test_revoke_applies_to_the_next_call(  # noqa: PLR0913 — фикстуры теста
-    call_stand: CallStand,
+    chat_session: ChatSessionStand,
     pg_tools: dict[str, Any],
     catalog: Any,
     store: ConnectionStore,
@@ -314,7 +296,7 @@ async def test_revoke_applies_to_the_next_call(  # noqa: PLR0913 — фикст�
     connection_id = await store.add("main", service_pg)
     target = GrantTarget.user(UUID(user.id))
     await store.grant(connection_id, target)
-    Session.enter(call_stand, user)
+    chat_session.sign_in(user, user.metadata, THREAD, PROFILE)
 
     before = await Call.ok(catalog)
     if not before.rows:
@@ -328,7 +310,7 @@ async def test_revoke_applies_to_the_next_call(  # noqa: PLR0913 — фикст�
 
 
 async def test_ambiguous_name_is_refused(  # noqa: PLR0913 — фикстуры теста
-    call_stand: CallStand,
+    chat_session: ChatSessionStand,
     pg_tools: dict[str, Any],
     catalog: Any,
     store: ConnectionStore,
@@ -340,7 +322,7 @@ async def test_ambiguous_name_is_refused(  # noqa: PLR0913 — фикстуры 
     second = await store.add("main", service_pg)
     await store.grant(first, GrantTarget.user(UUID(user.id)))
     await store.grant(second, GrantTarget.user(UUID(user.id)))
-    Session.enter(call_stand, user)
+    chat_session.sign_in(user, user.metadata, THREAD, PROFILE)
 
     targets = await Call.ok(catalog)
     if targets.rows:
@@ -356,7 +338,7 @@ async def test_ambiguous_name_is_refused(  # noqa: PLR0913 — фикстуры 
 
 
 async def test_delegated_connection_runs_as_the_session_principal(  # noqa: PLR0913 — фикстуры теста
-    call_stand: CallStand,
+    chat_session: ChatSessionStand,
     sso: tuple[SsoTickets, str],
     pg_tools: dict[str, Any],
     store: ConnectionStore,
@@ -370,7 +352,9 @@ async def test_delegated_connection_runs_as_the_session_principal(  # noqa: PLR0
     )
     connection_id = await store.add("mine", delegated)
     await store.grant(connection_id, GrantTarget.user(UUID(user.id)))
-    Session.enter_sso(call_stand, user, SERVICE_PRINCIPAL, sso[1])
+    chat_session.sign_in(
+        user, Session.sso_metadata(SERVICE_PRINCIPAL, sso[1]), THREAD, PROFILE
+    )
 
     result = await Call.ok(
         pg_tools["pg_query"],
@@ -384,7 +368,7 @@ async def test_delegated_connection_runs_as_the_session_principal(  # noqa: PLR0
 
 
 async def test_delegated_connection_refuses_local_login(
-    call_stand: CallStand,
+    chat_session: ChatSessionStand,
     pg_tools: dict[str, Any],
     store: ConnectionStore,
     layer: PostgresDataLayer,
@@ -396,7 +380,7 @@ async def test_delegated_connection_refuses_local_login(
     )
     connection_id = await store.add("mine", delegated)
     await store.grant(connection_id, GrantTarget.user(UUID(user.id)))
-    Session.enter(call_stand, user)
+    chat_session.sign_in(user, user.metadata, THREAD, PROFILE)
 
     with pytest.raises(RefusalError) as caught:
         await Call.result(
@@ -408,7 +392,7 @@ async def test_delegated_connection_refuses_local_login(
 
 
 async def test_unreachable_database_is_reported_by_the_body(
-    call_stand: CallStand,
+    chat_session: ChatSessionStand,
     pg_tools: dict[str, Any],
     store: ConnectionStore,
     layer: PostgresDataLayer,
@@ -428,7 +412,7 @@ async def test_unreachable_database_is_reported_by_the_body(
     )
     connection_id = await store.add("dead", dead)
     await store.grant(connection_id, GrantTarget.user(UUID(user.id)))
-    Session.enter(call_stand, user)
+    chat_session.sign_in(user, user.metadata, THREAD, PROFILE)
 
     with pytest.raises(PayloadFailureError) as caught:
         await Call.result(
@@ -442,6 +426,7 @@ async def test_unreachable_database_is_reported_by_the_body(
 
 @pytest.fixture
 def web_tools(
+    zygote_stand: ZygoteStand,
     call_stand: CallStand,
     raw_config: Any,
     store: ConnectionStore,
@@ -453,10 +438,10 @@ def web_tools(
     import boba.tool.web.tools as web_module
 
     module = reload(web_module)
-    launcher = ToolSetup.caller(raw_config, "web", [module.__name__])
+    launcher = ToolSetup.caller(zygote_stand, raw_config, "web", [module.__name__])
 
     functions = [ToolBridge.as_structured_tool(tool) for tool in module.TOOLS]
-    ToolProcessWrap.guard_all(ToolMain.toolset(*functions), launcher)
+    ToolProcessWrap(CallAmbient()).guard_all(ToolMain.toolset(*functions), launcher)
 
     def resolve(name: str, annotation: Any) -> object:
         return bind(raw_config, path="tool.web", model=WebToolsConfig)
@@ -479,7 +464,7 @@ def web_tools(
     not STAND.ch_addr, reason="в конфиге стенда нет clickhouse (ch_addr)"
 )
 async def test_web_negotiate_connection_authenticates_as_the_principal(
-    call_stand: CallStand,
+    chat_session: ChatSessionStand,
     sso: tuple[SsoTickets, str],
     web_tools: dict[str, Any],
     store: ConnectionStore,
@@ -500,7 +485,9 @@ async def test_web_negotiate_connection_authenticates_as_the_principal(
     )
     connection_id = await store.add("ch-http", row)
     await store.grant(connection_id, GrantTarget.user(UUID(user.id)))
-    Session.enter_sso(call_stand, user, SERVICE_PRINCIPAL, sso[1])
+    chat_session.sign_in(
+        user, Session.sso_metadata(SERVICE_PRINCIPAL, sso[1]), THREAD, PROFILE
+    )
 
     result = await Call.ok(
         web_tools["web_fetch_page"],
