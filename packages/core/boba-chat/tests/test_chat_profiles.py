@@ -26,11 +26,6 @@ BACKEND: dict[str, Any] = {
 }
 
 
-@pytest.fixture(autouse=True)
-def chainlit_context() -> None:
-    pass
-
-
 def _profile(**kw) -> ChatProfileConfig:
     base = {
         "display_name": "Profile",

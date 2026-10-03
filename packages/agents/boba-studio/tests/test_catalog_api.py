@@ -22,7 +22,7 @@ from boba.catalog import (
     OperationList,
 )
 from boba.catalog.samples import ProcessSample
-from boba.catalog_service import CatalogService, ConnectionInfo, SyncPorts
+from boba.catalog_service import CatalogService, ConnectionInfo
 from boba.chat.profiles import ChatProfiles
 from boba.connection_broker.api import ConnectionUrl
 from boba.connection_broker.service import UserConnectionsService
@@ -38,10 +38,8 @@ from boba.identity.errors import ServiceDisabledError
 from boba.identity.session import Login
 from boba.identity.signin import SignInMetadata
 from boba.stand.catalog_ports import (
+    CatalogPorts,
     FakeConnections,
-    FakeSyncPorts,
-    NoSyncTools,
-    StubSyncPorts,
 )
 from boba.stand.catalog_stand import CatalogStand
 from boba.stand.refs import StandRefs
@@ -125,7 +123,7 @@ async def stand(
     runtime_stand: StandRefs, pool: AsyncPostgresPool, studio_config: StudioAppConfig
 ) -> Stand:
     catalog = await CatalogStand.build(pool, CONFIG, CatalogStand.kinds())
-    service = catalog.service(StubSyncPorts(runtime_stand.runs, STAND_CONNECTIONS))
+    service = catalog.service(CatalogPorts(runtime_stand).stub(STAND_CONNECTIONS))
     return Stand(runtime_stand, service, ChatProfiles(studio_config.profiles))
 
 
@@ -141,9 +139,7 @@ async def sync_stand(
     catalog = await CatalogStand.build(pool, CONFIG, CatalogStand.fake_kinds())
     profiles = ChatProfiles(studio_config.profiles)
     site = catalog.fake_site(tmp_path, "wrt", profiles.default_name(), test_postgres)
-    ports = FakeSyncPorts(
-        runtime_stand.contexts, runtime_stand.runs, site, (PG_CONNECTION,), (EDITOR_ID,)
-    )
+    ports = CatalogPorts(runtime_stand).fake(site, (PG_CONNECTION,), (EDITOR_ID,))
     return Stand(runtime_stand, catalog.service(ports), profiles)
 
 
@@ -865,7 +861,7 @@ async def connections_stand(
     catalog = await CatalogStand.build(pool, CONFIG, CatalogStand.kinds())
     # каталог видит подключения тем же брокером, что и общий API
     directory = BrokerConnectionDirectory(UserConnectionsService(lambda: connections))
-    service = catalog.service(SyncPorts(NoSyncTools(), directory, runtime_stand.runs))
+    service = catalog.service(CatalogPorts(runtime_stand).over(directory))
     return Stand(
         runtime_stand, service, ChatProfiles(studio_config.profiles), connections
     )

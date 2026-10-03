@@ -34,11 +34,6 @@ from boba.stand_core.fakes import FakeSecret
 pytestmark = pytest.mark.anyio
 
 
-@pytest.fixture(autouse=True)
-def chainlit_context() -> None:
-    pass
-
-
 def _local_sign_in(config: LocalAuthConfig) -> PasswordSignIn:
     """Вход по конфигу через сборку стенда: тест — точка bootstrap."""
     signed = SignInStand.assembly().password([config])

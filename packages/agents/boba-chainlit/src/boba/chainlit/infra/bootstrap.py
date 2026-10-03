@@ -42,7 +42,6 @@ from boba.runtime.config import AppName
 from boba.runtime.di import Container
 from boba.runtime.http import DomainErrorMiddleware, StaleSessionMiddleware
 from boba.runtime.plugins import EntryPointPlugins
-from boba.sandbox.zygote import ZygoteRegistry
 
 
 def run_app(config_path: Path):
@@ -124,7 +123,7 @@ async def _run_container(app: FastAPI) -> AsyncGenerator[None, None]:
         yield
     finally:
         container.resolved(runtime.runs).stop_all(StopReason.SHUTDOWN)
-        ZygoteRegistry.stop_all()
+        container.resolved(runtime.tool_launchers).stop()
         Container.set_session_hook(None)
         await SessionContainers.close_all()
         Container.set_root(None)
@@ -346,10 +345,12 @@ def _use_di_container(app: FastAPI, c: AppConfig) -> Container:
     container.eager(providers.langchain_checkpoint_saver)
     container.eager(runtime.message_bus)
     container.eager(runtime.payload_store)
+    container.eager(runtime.call_ambient)
     container.eager(runtime.call_journals)
     container.eager(runtime.kb_schema)
     container.eager(runtime.connection_store)
     # инструменты собираются на старте: конфиг плагинов проверяется до сессий
+    container.eager(runtime.tool_launchers)
     container.eager(runtime.tool_registry)
     # локальные модели грузятся на старте: первая сессия не ждёт веса
     container.eager(providers.llm_providers)

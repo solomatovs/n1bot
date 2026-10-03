@@ -39,11 +39,6 @@ else:
 """
 
 
-@pytest.fixture(autouse=True)
-def chainlit_context() -> None:
-    """Тест сравнивает cookie двух приложений: сессия чата ему не нужна."""
-
-
 class CookieHeaders:
     """Разбор заголовков Set-Cookie в пары имя -> значение и атрибуты."""
 

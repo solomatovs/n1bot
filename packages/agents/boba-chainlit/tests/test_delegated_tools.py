@@ -24,7 +24,7 @@ import krb5
 import pytest
 from chainlit.user import PersistedUser
 from chainlit.user import User as ChainlitUser
-from chainlit_stand import SsoStand, StandTokens, enter_context
+from chainlit_stand import ChatSessionStand, SsoStand
 from gssapi import Credentials, Name, NameType, SecurityContext
 from psycopg import sql
 from pydantic import SecretStr
@@ -53,13 +53,14 @@ from boba.krb import SpnegoAcceptor, TicketCapture
 from boba.krb.seal import SsoTickets
 from boba.messaging import MemoryMessageBus
 from boba.runtime.refresh import BusRefreshSignal
-from boba.sandbox.zygote import ZygoteRegistry
 from boba.stand.connections import StandUserConnections
 from boba.stand.site import Stand
+from boba.stand.zygote import ZygoteStand
 from boba.stand_core.context import CallStand
 from boba.tool.ch.tools import ChToolConfig
 from boba.tool.pg.tools import PgToolConfig
 from boba.tool.web.tools import WebToolsConfig
+from boba.toolkit.chain import CallAmbient
 from boba.toolkit.entry import ToolMain
 from boba.toolkit.wrap import ToolProcessWrap
 from boba.toolrun.bridge import ToolBridge
@@ -118,11 +119,11 @@ def _key() -> SecretStr:
 
 
 @pytest.fixture(scope="module", autouse=True)
-def stop_zygotes():
+def stop_zygotes(zygote_stand: ZygoteStand):
     try:
         yield
     finally:
-        ZygoteRegistry.stop_all()
+        zygote_stand.stop()
 
 
 @pytest.fixture
@@ -199,12 +200,11 @@ def tickets(sso_login: tuple[SsoTickets, str]) -> SsoTickets:
 
 @pytest.fixture
 async def session(
-    call_stand: CallStand, layer: PostgresDataLayer, sso_login: tuple[SsoTickets, str]
+    chat_session: ChatSessionStand,
+    layer: PostgresDataLayer,
+    sso_login: tuple[SsoTickets, str],
 ) -> PersistedUser:
     """Пользователь чата, вошедший этим SSO-входом: метки лежат в JWT сессии."""
-    from chainlit.auth.jwt import create_jwt
-    from chainlit.context import init_http_context
-
     metadata: dict[str, object] = {
         UserMetadataField.ROLES: [ROLE],
         UserMetadataField.PROVIDER: KerberosAuth.__name__,
@@ -217,10 +217,7 @@ async def session(
     if user is None:
         raise AssertionError("user was not created")
 
-    token = create_jwt(StandTokens.user(user.identifier, metadata))
-    context = init_http_context(user=user, auth_token=token, thread_id=THREAD)
-    context.session.chat_profile = PROFILE
-    enter_context(call_stand)
+    chat_session.sign_in(user, metadata, THREAD, PROFILE)
     return user
 
 
@@ -228,7 +225,8 @@ class Tools:
     """Инструменты секции с боевой обвязкой соединений пользователя."""
 
     @staticmethod
-    def of(  # noqa: PLR0913 — фикстуры теста
+    def of(  # noqa: PLR0913 — стенд собирается всеми частями теста
+        zygote_stand: ZygoteStand,
         call_stand: CallStand,
         raw_config: Any,
         store: ConnectionStore,
@@ -242,10 +240,12 @@ class Tools:
         from importlib import import_module, reload
 
         module = reload(import_module(module_name))
-        launcher = ToolSetup.caller(raw_config, section, [module.__name__])
+        launcher = ToolSetup.caller(
+            zygote_stand, raw_config, section, [module.__name__]
+        )
 
         functions = [ToolBridge.as_structured_tool(tool) for tool in module.TOOLS]
-        ToolProcessWrap.guard_all(ToolMain.toolset(*functions), launcher)
+        ToolProcessWrap(CallAmbient()).guard_all(ToolMain.toolset(*functions), launcher)
 
         def resolve(name: str, annotation: Any) -> object:
             return bind(raw_config, path=f"tool.{section}", model=config_model)
@@ -270,9 +270,14 @@ def _credentials() -> KerberosCredentialSource:
 
 @pytest.fixture
 def pg_tools(
-    call_stand: CallStand, raw_config: Any, store: ConnectionStore, tickets: SsoTickets
+    zygote_stand: ZygoteStand,
+    call_stand: CallStand,
+    raw_config: Any,
+    store: ConnectionStore,
+    tickets: SsoTickets,
 ):
     return Tools.of(
+        zygote_stand,
         call_stand,
         raw_config,
         store,
@@ -286,9 +291,14 @@ def pg_tools(
 
 @pytest.fixture
 def ch_tools(
-    call_stand: CallStand, raw_config: Any, store: ConnectionStore, tickets: SsoTickets
+    zygote_stand: ZygoteStand,
+    call_stand: CallStand,
+    raw_config: Any,
+    store: ConnectionStore,
+    tickets: SsoTickets,
 ):
     return Tools.of(
+        zygote_stand,
         call_stand,
         raw_config,
         store,
@@ -302,9 +312,14 @@ def ch_tools(
 
 @pytest.fixture
 def web_tools(
-    call_stand: CallStand, raw_config: Any, store: ConnectionStore, tickets: SsoTickets
+    zygote_stand: ZygoteStand,
+    call_stand: CallStand,
+    raw_config: Any,
+    store: ConnectionStore,
+    tickets: SsoTickets,
 ):
     return Tools.of(
+        zygote_stand,
         call_stand,
         raw_config,
         store,

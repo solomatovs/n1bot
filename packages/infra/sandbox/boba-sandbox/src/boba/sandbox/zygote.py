@@ -75,7 +75,7 @@ from boba.sandbox.runner import (
     SandboxMountError,
     StderrTee,
 )
-from boba.toolkit.chain import TappedCall
+from boba.toolkit.chain import CallAmbient, TappedCall
 from boba.toolkit.channels import ToolChannel
 from boba.toolkit.frames import CallInbox
 from boba.toolkit.launcher import (
@@ -106,7 +106,6 @@ from boba.toolkit.pump import (
 from boba.toolkit.stream import (
     ChannelSinks,
     ChunkSink,
-    ToolChannelsTap,
 )
 from boba.workspace.binaries import SandboxBinary
 from boba.workspace.launcher import (
@@ -503,7 +502,7 @@ class ZygoteSupervisor:
     строит поверх этого протокол ToolLauncher.
     """
 
-    def __init__(  # noqa: PLR0913 — фикстуры теста
+    def __init__(  # noqa: PLR0913
         self,
         name: str,
         spawner: Spawner,
@@ -711,7 +710,7 @@ class ZygoteSupervisor:
         self._journal.stopped(self._report(proc))
         self._spawns.shutdown(wait=False)
 
-    def begin(  # noqa: PLR0913 — фикстуры теста
+    def begin(  # noqa: PLR0913
         self,
         call_id: str,
         argv: Sequence[str],
@@ -787,7 +786,7 @@ class ZygoteSupervisor:
 
         return _WiredCall(request=request, channels=channels)
 
-    def run_wired(  # noqa: PLR0913 — фикстуры теста
+    def run_wired(  # noqa: PLR0913
         self,
         wired: _WiredCall,
         sinks: Mapping[ToolChannel, ChunkSink],
@@ -828,7 +827,7 @@ class ZygoteSupervisor:
         with self._lock:
             self._in_flight.pop(wired.request.call_id, None)
 
-    def call(  # noqa: PLR0913 — фикстуры теста
+    def call(  # noqa: PLR0913
         self,
         call_id: str,
         argv: Sequence[str],
@@ -1406,11 +1405,14 @@ class ZygoteToolCaller(ToolLauncher):
         tool: str,
         supervisor: ZygoteSupervisor,
         profile: SandboxProfile,
+        ambient: CallAmbient,
         path_vars: Callable[[], Mapping[str, str]] = dict,
     ) -> None:
         self._tool = tool
         self._supervisor = supervisor
         self._profile = profile
+        self._ambient = ambient
+        self._sinks = CallSinks()
         self._path_vars = path_vars
         self._call_mounts = ZygoteSpawner.call_mounts(profile)
 
@@ -1459,9 +1461,8 @@ class ZygoteToolCaller(ToolLauncher):
         stderr_tail = ChannelTail(self._profile.host.stderr_tail_bytes)
         inbox = CallInbox()
 
-        relay = SandboxLogRelay(
-            self._tool, _RelayTee(ToolChannelsTap.get(), stderr_tail)
-        )
+        call_journal = self._ambient.sinks()
+        relay = SandboxLogRelay(self._tool, _RelayTee(call_journal, stderr_tail))
 
         own: dict[ToolChannel, ChunkSink] = {
             ToolChannel.STDERR: relay.feed,
@@ -1500,10 +1501,13 @@ class ZygoteToolCaller(ToolLauncher):
             own[ToolChannel.FRAMES] = inbox.feed
             journal.append(ToolChannel.FRAMES)
 
-        sinks = CallSinks.merged(own, tuple(journal))
+        sinks = self._sinks.merged(own, tuple(journal), call_journal)
 
-        inputs = CallSinks.call_inputs(
-            wired.channels.take_stdin(), wired.channels.take_inputs(), command.inputs
+        inputs = self._sinks.call_inputs(
+            wired.channels.take_stdin(),
+            wired.channels.take_inputs(),
+            command.inputs,
+            call_journal,
         )
         gate = HostGate(wired.channels.take_verdict(), command.gate)
 
@@ -1725,19 +1729,21 @@ class _CallPlan:
 
 
 class ZygoteRegistry:
-    """Процессный реестр супервизоров: одна живая зигота на tool-секцию,
+    """Реестр супервизоров процесса: одна живая зигота на tool-секцию,
     сколько бы раз ни собирались инструменты.
 
-    load_tools зовётся несколько раз (bootstrap, DI): повторный obtain отдаёт
-    уже поднятый супервизор. stop_all гасит всех на shutdown приложения.
+    Создаёт и держит его способ запуска в песочнице (ZygoteLaunchers) — один
+    на процесс. Инструменты собираются несколько раз: повторный obtain
+    отдаёт уже поднятый супервизор. stop_all гасит всех на shutdown
+    приложения.
     """
 
-    _lock: ClassVar[threading.Lock] = threading.Lock()
-    _entries: ClassVar[dict[str, ZygoteSupervisor]] = {}
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._entries: dict[str, ZygoteSupervisor] = {}
 
-    @classmethod
     def obtain(
-        cls,
+        self,
         name: str,
         profile: SandboxProfile,
         modules: Sequence[str],
@@ -1749,8 +1755,8 @@ class ZygoteRegistry:
         start() зовётся и для найденного супервизора: он идемпотентен и ждёт,
         если зиготу в этот момент поднимает другой поток.
         """
-        with cls._lock:
-            supervisor = cls._entries.get(name)
+        with self._lock:
+            supervisor = self._entries.get(name)
             if supervisor is None or supervisor.state is ZygoteState.STOPPED:
                 spawner = ZygoteSpawner(profile, modules, policy)
                 supervisor = ZygoteSupervisor(
@@ -1762,16 +1768,15 @@ class ZygoteRegistry:
                     modules=modules,
                     root=spawner.root_label(),
                 )
-                cls._entries[name] = supervisor
+                self._entries[name] = supervisor
 
         supervisor.start()
         return supervisor
 
-    @classmethod
-    def stop_all(cls) -> None:
-        with cls._lock:
-            entries = list(cls._entries.values())
-            cls._entries.clear()
+    def stop_all(self) -> None:
+        with self._lock:
+            entries = list(self._entries.values())
+            self._entries.clear()
 
         for supervisor in entries:
             supervisor.stop()

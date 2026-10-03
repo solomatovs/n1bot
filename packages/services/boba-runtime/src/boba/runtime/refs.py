@@ -13,6 +13,7 @@ from boba.identity.locks import LiveLocks
 from boba.identity.run import Runs
 from boba.messaging import MessageBus
 from boba.messaging.bus import BusWatch
+from boba.toolkit.chain import CallAmbient
 from boba.toolrun.registry import ToolRegistry
 from boba.toolrun.streams import CallJournals
 
@@ -38,6 +39,9 @@ class RuntimeRefs:
     запуски и кто их останавливает."""
     journals: CallJournals
     """Журналы живого вывода вызовов процесса."""
+    ambient: CallAmbient
+    """Обстановка вызова инструмента процесса: приёмники журнала и ручка
+    группы для исполнителей."""
     seal_keys: SealKeys
     """Ключевая пара исполнителя: ею открываются соединения, запечатанные
     клиентом; одна на процесс."""

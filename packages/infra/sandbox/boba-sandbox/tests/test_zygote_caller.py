@@ -11,6 +11,7 @@ import os
 import shutil
 import subprocess
 import threading
+from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, ClassVar
@@ -33,15 +34,14 @@ from boba.sandbox import SandboxProfile
 from boba.sandbox.guest import WarmupCall
 from boba.sandbox.zygote import (
     ZygotePolicy,
-    ZygoteRegistry,
     ZygoteSpawner,
     ZygoteState,
     ZygoteSupervisor,
     ZygoteToolCaller,
 )
 from boba.stand.shell import ShellRun
-from boba.stand.zygote import ProfileFields, SandboxStand
-from boba.toolkit.chain import ChannelFanOut, PipeTee
+from boba.stand.zygote import ProfileFields, SandboxStand, ZygoteStand
+from boba.toolkit.chain import CallAmbient, ChannelFanOut, PipeTee
 from boba.toolkit.channels import JournalChannel, ToolChannel
 from boba.toolkit.entry import ToolAddress, ToolArgv, ToolMain
 from boba.toolkit.frames import ToolFrame
@@ -51,7 +51,6 @@ from boba.toolkit.stream import (
     ChannelSinks,
     Chunk,
     StreamSink,
-    ToolChannelsTap,
 )
 
 REPO = Path(__file__).resolve().parents[5]
@@ -220,7 +219,7 @@ def _stream_command(prefix: str) -> Any:
 
 
 @pytest.fixture
-def zygote() -> Any:
+def zygote(call_ambient: CallAmbient) -> Any:
     born: list[ZygoteSupervisor] = []
 
     def make(profile: SandboxProfile) -> ZygoteToolCaller:
@@ -236,7 +235,7 @@ def zygote() -> Any:
         )
         supervisor.start()
         born.append(supervisor)
-        return ZygoteToolCaller("fx", supervisor, profile)
+        return ZygoteToolCaller("fx", supervisor, profile, call_ambient)
 
     yield make
 
@@ -296,15 +295,17 @@ class TestRunTool:
         with pytest.raises(LauncherError, match="ended without a result"):
             CollectedCall.of(caller, _command("sleepy"))
 
-    def test_journal_sinks_receive_channels(self, zygote: Any) -> None:
+    def test_journal_sinks_receive_channels(
+        self, call_ambient: CallAmbient, zygote: Any
+    ) -> None:
         caller = zygote(_profile())
 
         sinks = RecordingSinks()
-        ToolChannelsTap.set(sinks)
+        call_ambient.set_sinks(sinks)
         try:
             outcome = CollectedCall.of(caller, _command("journal"))
         finally:
-            ToolChannelsTap.set(None)
+            call_ambient.set_sinks(None)
 
         if not isinstance(outcome.reply, ReplyOk):
             raise AssertionError(f"reply={outcome.reply}")
@@ -420,16 +421,19 @@ class TestCgroup:
 class TestRegistry:
     """Реестр супервизоров: один живой процесс на секцию, гашение на shutdown."""
 
-    def teardown_method(self) -> None:
-        ZygoteRegistry.stop_all()
+    @pytest.fixture(autouse=True)
+    def zygotes_stopped(self, zygote_stand: ZygoteStand) -> Iterator[None]:
+        """Зиготы секций гасятся после каждого теста класса."""
+        yield
+        zygote_stand.stop()
 
-    def test_obtain_reuses_running_supervisor(self) -> None:
+    def test_obtain_reuses_running_supervisor(self, zygote_stand: ZygoteStand) -> None:
         profile = _profile()
 
-        first = ZygoteRegistry.obtain(
+        first = zygote_stand.registry().obtain(
             "fx-reg", profile, ["fake_channel_tool"], FAST, warmup_calls=WARMUP_CALLS
         )
-        second = ZygoteRegistry.obtain(
+        second = zygote_stand.registry().obtain(
             "fx-reg", profile, ["fake_channel_tool"], FAST, warmup_calls=WARMUP_CALLS
         )
 
@@ -439,18 +443,20 @@ class TestRegistry:
         if first.state is not ZygoteState.READY:
             raise AssertionError(f"state={first.state}")
 
-    def test_stop_all_stops_and_next_obtain_restarts(self) -> None:
+    def test_stop_all_stops_and_next_obtain_restarts(
+        self, zygote_stand: ZygoteStand
+    ) -> None:
         profile = _profile()
 
-        first = ZygoteRegistry.obtain(
+        first = zygote_stand.registry().obtain(
             "fx-reg", profile, ["fake_channel_tool"], FAST, warmup_calls=WARMUP_CALLS
         )
-        ZygoteRegistry.stop_all()
+        zygote_stand.stop()
 
         if first.state is not ZygoteState.STOPPED:
             raise AssertionError(f"state={first.state}")
 
-        second = ZygoteRegistry.obtain(
+        second = zygote_stand.registry().obtain(
             "fx-reg", profile, ["fake_channel_tool"], FAST, warmup_calls=WARMUP_CALLS
         )
 
@@ -464,8 +470,11 @@ class TestRegistry:
 class TestWarmup:
     """Прогрев модуля: исполняется в зиготе до ready, дети видят результат."""
 
-    def teardown_method(self) -> None:
-        ZygoteRegistry.stop_all()
+    @pytest.fixture(autouse=True)
+    def zygotes_stopped(self, zygote_stand: ZygoteStand) -> Iterator[None]:
+        """Зиготы секций гасятся после каждого теста класса."""
+        yield
+        zygote_stand.stop()
 
     def _call_warm_state(self, caller: ZygoteToolCaller) -> str:
         address = ToolAddress(module="fake_channel_tool", name="fx_warm_state")
@@ -482,27 +491,31 @@ class TestWarmup:
 
         return outcome.reply.content
 
-    def test_warmup_runs_before_ready_and_children_inherit(self) -> None:
+    def test_warmup_runs_before_ready_and_children_inherit(
+        self, zygote_stand: ZygoteStand
+    ) -> None:
         profile = _profile()
-        supervisor = ZygoteRegistry.obtain(
+        supervisor = zygote_stand.registry().obtain(
             "fx-warm",
             profile,
             ["fake_channel_tool"],
             FAST,
             warmup_calls=WARMUP_CALLS,
         )
-        caller = ZygoteToolCaller("fx-warm", supervisor, profile)
+        caller = ZygoteToolCaller("fx-warm", supervisor, profile, CallAmbient())
 
         state = self._call_warm_state(caller)
         if state != "warmed:privet":
             raise AssertionError(f"кэш прогрева не унаследован: {state!r}")
 
-    def test_missing_config_fails_the_start(self) -> None:
+    def test_missing_config_fails_the_start(self, zygote_stand: ZygoteStand) -> None:
         """Молчаливой деградации нет: без конфига хука зигота не поднимается."""
         profile = _profile()
 
         with pytest.raises(LauncherError, match="not ready"):
-            ZygoteRegistry.obtain("fx-plain", profile, ["fake_channel_tool"], FAST)
+            zygote_stand.registry().obtain(
+                "fx-plain", profile, ["fake_channel_tool"], FAST
+            )
 
 
 def _mkfs_template(tmp_path: Path) -> str:
@@ -547,16 +560,21 @@ needs_mkfs = pytest.mark.skipif(
 class TestWorkspaceImages:
     """rw-образ монтирует ребёнок в своём namespace: зигота одна на всех."""
 
-    def teardown_method(self) -> None:
-        ZygoteRegistry.stop_all()
+    @pytest.fixture(autouse=True)
+    def zygotes_stopped(self, zygote_stand: ZygoteStand) -> Iterator[None]:
+        """Зиготы секций гасятся после каждого теста класса."""
+        yield
+        zygote_stand.stop()
 
-    def _caller(self, tmp_path: Path, user_id: str) -> ZygoteToolCaller:
+    def _caller(
+        self, zygote_stand: ZygoteStand, tmp_path: Path, user_id: str
+    ) -> ZygoteToolCaller:
         profile = _image_profile(tmp_path)
-        supervisor = ZygoteRegistry.obtain(
+        supervisor = zygote_stand.registry().obtain(
             "fx-ws", profile, ["fake_channel_tool"], FAST, warmup_calls=WARMUP_CALLS
         )
         return ZygoteToolCaller(
-            "fx-ws", supervisor, profile, lambda: {"user_id": user_id}
+            "fx-ws", supervisor, profile, CallAmbient(), lambda: {"user_id": user_id}
         )
 
     def _workspace_listing(self, caller: ZygoteToolCaller) -> str:
@@ -566,8 +584,10 @@ class TestWorkspaceImages:
 
         return outcome.reply.artifact.model_dump_json()
 
-    def test_image_created_from_template_and_persists(self, tmp_path: Path) -> None:
-        caller = self._caller(tmp_path, "7")
+    def test_image_created_from_template_and_persists(
+        self, zygote_stand: ZygoteStand, tmp_path: Path
+    ) -> None:
+        caller = self._caller(zygote_stand, tmp_path, "7")
 
         first = self._workspace_listing(caller)
         if "fx-probe.txt" not in first:
@@ -587,9 +607,11 @@ class TestWorkspaceImages:
         if "fx-probe.txt" not in second:
             raise AssertionError(f"запись не пережила размонтирование: {second}")
 
-    def test_users_get_separate_images(self, tmp_path: Path) -> None:
-        seven = self._caller(tmp_path, "7")
-        eight = self._caller(tmp_path, "8")
+    def test_users_get_separate_images(
+        self, zygote_stand: ZygoteStand, tmp_path: Path
+    ) -> None:
+        seven = self._caller(zygote_stand, tmp_path, "7")
+        eight = self._caller(zygote_stand, tmp_path, "8")
 
         self._workspace_listing(seven)
         listing_eight = self._workspace_listing(eight)
@@ -601,8 +623,10 @@ class TestWorkspaceImages:
         if "workspace:fx-probe.txt" not in listing_eight:
             raise AssertionError(f"второй пользователь видит чужое: {listing_eight}")
 
-    def test_parallel_calls_on_one_image_are_serialized(self, tmp_path: Path) -> None:
-        caller = self._caller(tmp_path, "7")
+    def test_parallel_calls_on_one_image_are_serialized(
+        self, zygote_stand: ZygoteStand, tmp_path: Path
+    ) -> None:
+        caller = self._caller(zygote_stand, tmp_path, "7")
 
         with ThreadPoolExecutor(3) as pool:
             listings = list(
@@ -625,27 +649,38 @@ needs_rootfs_image = pytest.mark.skipif(
 class TestImageRootfs:
     """Корень образом: зигота монтирует rootfs.ext4 сама, хост чист."""
 
-    def teardown_method(self) -> None:
-        ZygoteRegistry.stop_all()
+    @pytest.fixture(autouse=True)
+    def zygotes_stopped(self, zygote_stand: ZygoteStand) -> Iterator[None]:
+        """Зиготы секций гасятся после каждого теста класса."""
+        yield
+        zygote_stand.stop()
 
-    def _caller(self, name: str, tmp_path: Path) -> ZygoteToolCaller:
+    def _caller(
+        self, zygote_stand: ZygoteStand, name: str, tmp_path: Path
+    ) -> ZygoteToolCaller:
         profile = _profile(
             rootfs=str(ROOTFS_IMAGE),
         )
-        return self._on_profile(name, profile)
+        return self._on_profile(zygote_stand, name, profile)
 
-    def _image_caller(self, name: str, tmp_path: Path) -> ZygoteToolCaller:
+    def _image_caller(
+        self, zygote_stand: ZygoteStand, name: str, tmp_path: Path
+    ) -> ZygoteToolCaller:
         profile = _image_profile(
             tmp_path,
             rootfs=str(ROOTFS_IMAGE),
         )
-        return self._on_profile(name, profile)
+        return self._on_profile(zygote_stand, name, profile)
 
-    def _on_profile(self, name: str, profile: SandboxProfile) -> ZygoteToolCaller:
-        supervisor = ZygoteRegistry.obtain(
+    def _on_profile(
+        self, zygote_stand: ZygoteStand, name: str, profile: SandboxProfile
+    ) -> ZygoteToolCaller:
+        supervisor = zygote_stand.registry().obtain(
             name, profile, ["fake_channel_tool"], SLOW_START, warmup_calls=WARMUP_CALLS
         )
-        return ZygoteToolCaller(name, supervisor, profile, lambda: {"user_id": "7"})
+        return ZygoteToolCaller(
+            name, supervisor, profile, CallAmbient(), lambda: {"user_id": "7"}
+        )
 
     FSTYPE_SEPARATOR: ClassVar[str] = " - "
     FUSE_PREFIX: ClassVar[str] = "fuse"
@@ -665,9 +700,11 @@ class TestImageRootfs:
 
         return targets
 
-    def test_zygote_serves_calls_from_the_image_root(self, tmp_path: Path) -> None:
+    def test_zygote_serves_calls_from_the_image_root(
+        self, zygote_stand: ZygoteStand, tmp_path: Path
+    ) -> None:
         before = self._fuse_mounts_of_host()
-        caller = self._caller("fx-img", tmp_path)
+        caller = self._caller(zygote_stand, "fx-img", tmp_path)
 
         outcome = CollectedCall.of(caller, _command("ping"))
 
@@ -680,8 +717,10 @@ class TestImageRootfs:
         if self._fuse_mounts_of_host() != before:
             raise AssertionError("зигота смонтировала корень на хосте")
 
-    def test_children_stay_isolated_on_the_image_root(self, tmp_path: Path) -> None:
-        caller = self._caller("fx-img-iso", tmp_path)
+    def test_children_stay_isolated_on_the_image_root(
+        self, zygote_stand: ZygoteStand, tmp_path: Path
+    ) -> None:
+        caller = self._caller(zygote_stand, "fx-img-iso", tmp_path)
 
         address = ToolAddress(module="fake_channel_tool", name="fx_probe_tmp")
         schema = ToolArgv.schema_of(FX_PROBE)
@@ -704,8 +743,10 @@ class TestImageRootfs:
         if state["userns_max"] != "0":
             raise AssertionError(f"вложенные userns не закрыты: {state}")
 
-    def test_workspace_image_works_on_the_image_root(self, tmp_path: Path) -> None:
-        caller = self._image_caller("fx-img-ws", tmp_path)
+    def test_workspace_image_works_on_the_image_root(
+        self, zygote_stand: ZygoteStand, tmp_path: Path
+    ) -> None:
+        caller = self._image_caller(zygote_stand, "fx-img-ws", tmp_path)
 
         first = ShellRun.call_text(caller, "echo hello > note.txt; pwd")
         if first.exit_code != 0:
@@ -723,18 +764,25 @@ class TestImageRootfs:
 class TestShell:
     """call_text через зиготу: bash-команда в изолированном ребёнке с образом."""
 
-    def teardown_method(self) -> None:
-        ZygoteRegistry.stop_all()
+    @pytest.fixture(autouse=True)
+    def zygotes_stopped(self, zygote_stand: ZygoteStand) -> Iterator[None]:
+        """Зиготы секций гасятся после каждого теста класса."""
+        yield
+        zygote_stand.stop()
 
-    def _caller(self, tmp_path: Path, user_id: str = "7") -> ZygoteToolCaller:
+    def _caller(
+        self, zygote_stand: ZygoteStand, tmp_path: Path, user_id: str = "7"
+    ) -> ZygoteToolCaller:
         profile = _image_profile(tmp_path, timeout_sec=5)
-        supervisor = ZygoteRegistry.obtain("fx-sh", profile, (), FAST)
+        supervisor = zygote_stand.registry().obtain("fx-sh", profile, (), FAST)
         return ZygoteToolCaller(
-            "fx-sh", supervisor, profile, lambda: {"user_id": user_id}
+            "fx-sh", supervisor, profile, CallAmbient(), lambda: {"user_id": user_id}
         )
 
-    def test_stdout_stderr_closed_stdin_and_exit_code(self, tmp_path: Path) -> None:
-        caller = self._caller(tmp_path)
+    def test_stdout_stderr_closed_stdin_and_exit_code(
+        self, zygote_stand: ZygoteStand, tmp_path: Path
+    ) -> None:
+        caller = self._caller(zygote_stand, tmp_path)
 
         outcome = ShellRun.call_text(
             caller, "cat; echo out-line; echo err-line >&2; exit 3"
@@ -756,8 +804,10 @@ class TestShell:
         if "sandbox-mount" in outcome.stderr:
             raise AssertionError(f"кадры обвязки в stderr команды: {outcome.stderr!r}")
 
-    def test_workspace_persists_between_commands(self, tmp_path: Path) -> None:
-        caller = self._caller(tmp_path)
+    def test_workspace_persists_between_commands(
+        self, zygote_stand: ZygoteStand, tmp_path: Path
+    ) -> None:
+        caller = self._caller(zygote_stand, tmp_path)
 
         first = ShellRun.call_text(caller, "pwd; echo hello > note.txt; ls")
         if first.exit_code != 0:
@@ -770,15 +820,19 @@ class TestShell:
         if second.stdout.strip() != "hello":
             raise AssertionError(f"файл не пережил вызов: {second.stdout!r}")
 
-    def test_timeout_kills_command(self, tmp_path: Path) -> None:
+    def test_timeout_kills_command(
+        self, zygote_stand: ZygoteStand, tmp_path: Path
+    ) -> None:
         """Таймаут профиля короче таймаута команды: умирает весь вызов."""
-        caller = self._caller(tmp_path)
+        caller = self._caller(zygote_stand, tmp_path)
 
         with pytest.raises(LauncherError, match="timeout_sec=5"):
             ShellRun.call_text(caller, "sleep 30")
 
-    def test_command_runs_isolated_without_capabilities(self, tmp_path: Path) -> None:
-        caller = self._caller(tmp_path)
+    def test_command_runs_isolated_without_capabilities(
+        self, zygote_stand: ZygoteStand, tmp_path: Path
+    ) -> None:
+        caller = self._caller(zygote_stand, tmp_path)
 
         # bash — ребёнок исполнителя (тот ещё гасит fuse2fs после команды),
         # поэтому init своего pid ns — python-исполнитель, а bash рядом с ним
@@ -918,11 +972,13 @@ class TestStreamingCall:
         if not isinstance(outcome.reply, ReplyOk):
             raise AssertionError(f"reply={outcome.reply}")
 
-    def test_frames_journal_keeps_heads_without_bodies(self, zygote: Any) -> None:
+    def test_frames_journal_keeps_heads_without_bodies(
+        self, call_ambient: CallAmbient, zygote: Any
+    ) -> None:
         caller = zygote(_profile())
 
         sinks = RecordingSinks()
-        ToolChannelsTap.set(sinks)
+        call_ambient.set_sinks(sinks)
         try:
             with caller.open(_stream_command("j:")) as call:
                 call.inputs()[0].send(ToolFrame.of(FxChunkHead(seq=1), b"body-bytes"))
@@ -930,7 +986,7 @@ class TestStreamingCall:
                 list(call.frames())
                 call.result()
         finally:
-            ToolChannelsTap.set(None)
+            call_ambient.set_sinks(None)
 
         journal = sinks.text_of(ToolChannel.FRAMES)
         if '"seq":1' not in journal:

@@ -15,11 +15,6 @@ from boba.tool.pg.tools import TOOLS as PG_TOOLS
 from boba.tool.pg.tools import PgToolConfig
 
 
-@pytest.fixture(autouse=True)
-def chainlit_context() -> None:
-    pass
-
-
 def pg_config() -> PgToolConfig:
     return PgToolConfig.model_validate({"limit": 10, "sandbox": _SANDBOX})
 

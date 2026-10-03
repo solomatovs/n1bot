@@ -153,11 +153,6 @@ def _resolvable_host() -> str:
     pytest.skip("ни один сервисный хост конфига не резолвится на самой машине")
 
 
-@pytest.fixture(autouse=True)
-def chainlit_context() -> None:
-    """Профиль песочницы не зависит от сессии chainlit."""
-
-
 class TestNetworkProfiles:
     """Сетевой профиль без резолвера — тихо сломанный инструмент."""
 
@@ -165,16 +160,20 @@ class TestNetworkProfiles:
     PATH_VARS: ClassVar[dict[str, str]] = {"user_id": "0", "thread_id": "probe"}
 
     @classmethod
-    def _run(cls, profile: SandboxProfile, command: str) -> str:
+    def _run(
+        cls, zygote_stand: ZygoteStand, profile: SandboxProfile, command: str
+    ) -> str:
         """Команда тем же путём, что в проде: зигота секции и её исполнитель."""
         if not has_bwrap(profile):
             pytest.skip("bwrap недоступен в доверенных каталогах профиля")
 
-        caller = ZygoteStand.caller(cls.LABEL, profile, path_vars=lambda: cls.PATH_VARS)
+        caller = zygote_stand.caller(
+            cls.LABEL, profile, path_vars=lambda: cls.PATH_VARS
+        )
         try:
             outcome = ShellRun.call_text(caller, command)
         finally:
-            ZygoteStand.stop()
+            zygote_stand.stop()
 
         if outcome.exit_code != 0:
             raise AssertionError(
@@ -200,20 +199,24 @@ class TestNetworkProfiles:
         if missing != []:
             raise AssertionError("missing == []")
 
-    def test_resolver_is_visible_inside(self) -> None:
+    def test_resolver_is_visible_inside(self, zygote_stand: ZygoteStand) -> None:
         """Внутри песочницы виден host-резолвер, а не пустой файл из rootfs."""
         for _name, profile in _networked():
-            resolver = self._run(profile, ProbeCommand.RESOLVER.render(""))
+            resolver = self._run(
+                zygote_stand, profile, ProbeCommand.RESOLVER.render("")
+            )
 
             if "nameserver" not in resolver:
                 raise AssertionError('"nameserver" in resolver')
 
-    def test_configured_host_resolves_inside(self) -> None:
+    def test_configured_host_resolves_inside(self, zygote_stand: ZygoteStand) -> None:
         """Имя, которое резолвится на машине, обязано резолвиться и в песочнице."""
         host = _resolvable_host()
 
         for _name, profile in _networked():
-            resolved = self._run(profile, ProbeCommand.LOOKUP.render(host))
+            resolved = self._run(
+                zygote_stand, profile, ProbeCommand.LOOKUP.render(host)
+            )
 
             if host not in resolved:
                 raise AssertionError("host in resolved")

@@ -23,7 +23,6 @@ from omegaconf import DictConfig
 from boba.runtime.plugins import EntryPointPlugins
 from boba.sandbox import SandboxProfile
 from boba.sandbox.zygote import (
-    ZygoteRegistry,
     ZygoteState,
     ZygoteToolCaller,
 )
@@ -100,13 +99,15 @@ CallerFactory: TypeAlias = Callable[[SandboxSection], ZygoteToolCaller]
 
 
 @pytest.fixture
-def caller_of(sections: list[SandboxSection]) -> Iterator[CallerFactory]:
+def caller_of(
+    zygote_stand: ZygoteStand, sections: list[SandboxSection]
+) -> Iterator[CallerFactory]:
     """Фабрика вызывающих: зиготы теста гасятся после него."""
     made: dict[str, ZygoteToolCaller] = {}
 
     def factory(section: SandboxSection) -> ZygoteToolCaller:
         key = f"exposure-{section.name}-{uuid4().hex[:6]}"
-        caller = ZygoteStand.caller(
+        caller = zygote_stand.caller(
             key,
             section.profile,
             path_vars=lambda: {"user_id": USER, "thread_id": "exposure"},
@@ -116,7 +117,7 @@ def caller_of(sections: list[SandboxSection]) -> Iterator[CallerFactory]:
 
     yield factory
 
-    ZygoteRegistry.stop_all()
+    zygote_stand.stop()
 
 
 class TestImagesAreHidden:
@@ -282,11 +283,13 @@ class TestChannelCapStopsTheFlood:
     LIMIT: ClassVar[int] = 1 << 20
     """Потолок теста: мегабайт хватает, чтобы отличить обрыв от прохода."""
 
-    def test_flood_is_cut_by_the_limit(self, sections: list[SandboxSection]) -> None:
+    def test_flood_is_cut_by_the_limit(
+        self, zygote_stand: ZygoteStand, sections: list[SandboxSection]
+    ) -> None:
         section = sections[0]
         profile = self._with_limit(section.profile)
 
-        caller = ZygoteStand.caller(
+        caller = zygote_stand.caller(
             f"exposure-flood-{uuid4().hex[:6]}",
             profile,
             path_vars=lambda: {"user_id": USER, "thread_id": "exposure"},

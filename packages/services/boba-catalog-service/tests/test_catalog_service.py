@@ -42,7 +42,7 @@ from boba.catalog_service import (
 from boba.db.postgres import AsyncPostgresPool
 from boba.db.postgres.snapshot_sample import PgSample
 from boba.identity.context import Subject
-from boba.stand.catalog_ports import StubSyncPorts
+from boba.stand.catalog_ports import CatalogPorts
 from boba.stand.catalog_stand import CatalogStand, ChangeCollector
 from boba.stand.refs import StandRefs
 from boba.stand_core.context import CallStand
@@ -70,7 +70,7 @@ async def service(
 ) -> CatalogService:
     stand = await CatalogStand.build(pool, CONFIG, CatalogStand.kinds())
     return stand.service(
-        StubSyncPorts(runtime_stand.runs, (PG_CONNECTION, WEB_CONNECTION))
+        CatalogPorts(runtime_stand).stub((PG_CONNECTION, WEB_CONNECTION))
     )
 
 

@@ -12,9 +12,11 @@ from omegaconf import DictConfig, OmegaConf
 from boba.config import bind
 from boba.sandbox import SandboxToolConfig
 from boba.sandbox.guest import WarmupCall
-from boba.sandbox.zygote import ZygotePolicy, ZygoteRegistry, ZygoteToolCaller
+from boba.sandbox.zygote import ZygotePolicy, ZygoteToolCaller
 from boba.stand.sandbox import needs_sandbox, needs_userns, sandbox_profile
+from boba.stand.zygote import ZygoteStand
 from boba.tool.confluence.ingest_tools import IngestWarmupConfig
+from boba.toolkit.chain import CallAmbient
 from boba.toolkit.entry import ToolArgv
 from boba.toolkit.launcher import CollectedCall
 from boba.toolkit.protocol import ReplyError, ToolCommand
@@ -31,7 +33,7 @@ ZYGOTE = ZygotePolicy(
 )
 
 
-def _caller(raw_config: DictConfig) -> ZygoteToolCaller:
+def _caller(zygote_stand: ZygoteStand, raw_config: DictConfig) -> ZygoteToolCaller:
     """Зигота ingest: прогрев объявлен модулем, конфиг ему даёт вызывающий."""
     sandbox = SandboxToolConfig.model_validate(
         {"profile": sandbox_profile("boba-tool-confluence")}
@@ -50,15 +52,17 @@ def _caller(raw_config: DictConfig) -> ZygoteToolCaller:
         ),
     )
 
-    supervisor = ZygoteRegistry.obtain(
+    supervisor = zygote_stand.registry().obtain(
         "ingest-test", profile, [MODULE], ZYGOTE, warmup_calls=calls
     )
-    return ZygoteToolCaller("ingest-test", supervisor, profile)
+    return ZygoteToolCaller("ingest-test", supervisor, profile, CallAmbient())
 
 
 @needs_sandbox
 @needs_userns
-def test_module_loads_and_validates_config(raw_config: DictConfig) -> None:
+def test_module_loads_and_validates_config(
+    zygote_stand: ZygoteStand, raw_config: DictConfig
+) -> None:
     """Пустой конфиг: важно, что ответ — про поля конфига, а не про импорт."""
     command = ToolCommand(
         argv=(
@@ -73,9 +77,9 @@ def test_module_loads_and_validates_config(raw_config: DictConfig) -> None:
     )
 
     try:
-        outcome = CollectedCall.of(_caller(raw_config), command)
+        outcome = CollectedCall.of(_caller(zygote_stand, raw_config), command)
     finally:
-        ZygoteRegistry.stop_all()
+        zygote_stand.stop()
 
     reply = outcome.reply
     if not (isinstance(reply, ReplyError)):

@@ -42,11 +42,6 @@ _HTML = """
 """
 
 
-@pytest.fixture(autouse=True)
-def chainlit_context() -> None:
-    pass
-
-
 def _document(html: str) -> RawDocument:
     meta = Metadata.empty()
     meta = meta.set(ReaderKeys.PAGE_TITLE, "Клиент")

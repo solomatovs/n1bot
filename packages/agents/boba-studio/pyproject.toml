@@ -21,7 +21,6 @@ dependencies = [
     "boba-toolkit==0.0.26.dev4",
     "boba-toolrun==0.0.26.dev4",
     "boba-runtime==0.0.26.dev4",
-    "boba-sandbox==0.0.26.dev4",
     "fastapi>=0.115,<1",
     "pydantic>=2.10,<3",
     "python-socketio>=5.11,<6",

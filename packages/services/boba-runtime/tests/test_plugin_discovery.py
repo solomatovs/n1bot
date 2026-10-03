@@ -59,9 +59,26 @@ def test_discovered_plugin_without_config_file_refuses_start(
     runtime_stand: StandRefs,
     call_stand: CallStand,
 ) -> None:
-    raw = OmegaConf.create({"tool_launcher": {"provider": "sandbox"}})
+    raw = OmegaConf.create(
+        {
+            "tool_launcher": {"provider": "sandbox"},
+            "stream_groups": {
+                "open_sec": 60.0,
+                "stall_sec": 120.0,
+                "poll_sec": 0.2,
+                "pipe_bytes": 65536,
+                "pipe_bytes_max": 1 << 30,
+            },
+        }
+    )
     plugins = {"pg": ToolPlugin(section="pg")}
-    loader = ToolLoader(raw, plugins, runtime_stand.none(), GrantCheck.HOSTED)
+    loader = ToolLoader(
+        raw,
+        plugins,
+        runtime_stand.none(),
+        runtime_stand.launchers(raw),
+        GrantCheck.HOSTED,
+    )
 
     with pytest.raises(RuntimeError, match=r"conf/plugins/pg\.toml is missing"):
         loader.load()

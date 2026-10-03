@@ -50,9 +50,9 @@ from boba.runtime.di import Container
 from boba.runtime.journal import DirVault, StreamJournal
 from boba.stand.refs import StandRefs
 from boba.stand_core.context import CallStand
+from boba.toolkit.chain import CallAmbient
 from boba.toolkit.channels import CallOutcome, ToolChannel, WrapChannel
-from boba.toolkit.stream import ToolChannelsTap
-from boba.toolrun.call_id import ToolCallIdField
+from boba.toolrun.call_id import CallFields
 from boba.toolrun.run_log import ToolRunLogger
 from boba.toolrun.streams import CallJournals, JournalWatchSource, ToolStream
 
@@ -142,7 +142,6 @@ def chainlit_context(
     call_stand.use(call_stand.context(thread_id=THREAD, user_id=UUID(USER)))
     yield
     CanvasWatch.reset()
-    ToolChannelsTap.set(None)
     # контекст сбрасывается за собой: иначе сессия утечёт в тесты без неё
     context_var.reset(token)
 
@@ -169,30 +168,37 @@ class TestJournalThroughWrapper:
 
     @staticmethod
     def _tool_and_seen(
-        journals: CallJournals, call_stand: CallStand
+        call_ambient: CallAmbient, journals: CallJournals, call_stand: CallStand
     ) -> tuple[Any, list[object]]:
         seen: list[object] = []
 
         @tool
         def fake_bash(command: str) -> str:
             """Пишет в журнал то, что видит в тапе."""
-            sinks = ToolChannelsTap.get()
+            sinks = call_ambient.sinks()
             seen.append(sinks)
             if sinks is not None:
                 sinks.sink_of(STDOUT).feed(f"ran: {command}".encode())
             return "done"
 
-        ToolCallIdField.attach_all([fake_bash])
-        ToolRunLogger(journals, call_stand.contexts).guard_all([fake_bash])
+        CallFields().attach_all([fake_bash])
+        ToolRunLogger(journals, call_stand.contexts, call_ambient).guard_all(
+            [fake_bash]
+        )
         return fake_bash, seen
 
     async def _invoke(
-        self, journals: CallJournals, call_stand: CallStand, *, streamable: bool = True
+        self,
+        call_ambient: CallAmbient,
+        journals: CallJournals,
+        call_stand: CallStand,
+        *,
+        streamable: bool = True,
     ) -> list[object]:
         if streamable:
             journals.mark_streamable([TOOL_NAME])
 
-        fake_bash, seen = self._tool_and_seen(journals, call_stand)
+        fake_bash, seen = self._tool_and_seen(call_ambient, journals, call_stand)
         await fake_bash.ainvoke(
             {
                 "name": TOOL_NAME,
@@ -204,9 +210,9 @@ class TestJournalThroughWrapper:
         return seen
 
     def test_sync_tool_sees_its_recorder(
-        self, journals: CallJournals, call_stand: CallStand
+        self, call_ambient: CallAmbient, journals: CallJournals, call_stand: CallStand
     ) -> None:
-        seen = run(self._invoke(journals, call_stand))
+        seen = run(self._invoke(call_ambient, journals, call_stand))
 
         if len(seen) != 1:
             raise AssertionError("len(seen) == 1")
@@ -214,9 +220,9 @@ class TestJournalThroughWrapper:
             raise AssertionError("seen[0] is not None")
 
     def test_tool_output_lands_in_the_journal(
-        self, journals: CallJournals, call_stand: CallStand
+        self, call_ambient: CallAmbient, journals: CallJournals, call_stand: CallStand
     ) -> None:
-        run(self._invoke(journals, call_stand))
+        run(self._invoke(call_ambient, journals, call_stand))
 
         piece = journals.recorded_slice(USER, THREAD, CALL_ID, offset=0, channel=STDOUT)
         if piece is None:
@@ -225,9 +231,9 @@ class TestJournalThroughWrapper:
             raise AssertionError('"ran: echo hi" in piece.text')
 
     def test_journal_is_closed_after_the_call(
-        self, journals: CallJournals, call_stand: CallStand
+        self, call_ambient: CallAmbient, journals: CallJournals, call_stand: CallStand
     ) -> None:
-        run(self._invoke(journals, call_stand))
+        run(self._invoke(call_ambient, journals, call_stand))
 
         piece = journals.recorded_slice(USER, THREAD, CALL_ID, offset=0, channel=STDOUT)
         if piece is None:
@@ -238,9 +244,9 @@ class TestJournalThroughWrapper:
             raise AssertionError("piece.note == str(CallOutcome.FINISHED)")
 
     def test_not_streamable_tool_gets_no_recorder(
-        self, journals: CallJournals, call_stand: CallStand
+        self, call_ambient: CallAmbient, journals: CallJournals, call_stand: CallStand
     ) -> None:
-        seen = run(self._invoke(journals, call_stand, streamable=False))
+        seen = run(self._invoke(call_ambient, journals, call_stand, streamable=False))
 
         if seen != [None]:
             raise AssertionError("seen == [None]")
@@ -248,22 +254,24 @@ class TestJournalThroughWrapper:
             raise AssertionError("journals.live(THREAD, CALL_ID) is None")
 
     def test_failed_call_closes_with_failure_note(
-        self, journals: CallJournals, call_stand: CallStand
+        self, call_ambient: CallAmbient, journals: CallJournals, call_stand: CallStand
     ) -> None:
         journals.mark_streamable([TOOL_NAME])
 
         @tool
         def fake_bash(command: str) -> str:
             """Падает после записи в журнал."""
-            sinks = ToolChannelsTap.get()
+            sinks = call_ambient.sinks()
             if sinks is None:
                 raise AssertionError("sinks is not None")
             sinks.sink_of(STDOUT).feed(b"partial")
             msg = "boom"
             raise RuntimeError(msg)
 
-        ToolCallIdField.attach_all([fake_bash])
-        ToolRunLogger(journals, call_stand.contexts).guard_all([fake_bash])
+        CallFields().attach_all([fake_bash])
+        ToolRunLogger(journals, call_stand.contexts, call_ambient).guard_all(
+            [fake_bash]
+        )
 
         async def scenario() -> None:
             with pytest.raises(RuntimeError):
@@ -289,7 +297,7 @@ class TestJournalThroughWrapper:
             raise AssertionError('piece.text == "partial"')
 
     def test_parallel_same_name_calls_keep_own_journals(
-        self, journals: CallJournals, call_stand: CallStand
+        self, call_ambient: CallAmbient, journals: CallJournals, call_stand: CallStand
     ) -> None:
         """Два одноимённых вызова: каждый пишет в файл своего call_id."""
         journals.mark_streamable([TOOL_NAME])
@@ -297,14 +305,16 @@ class TestJournalThroughWrapper:
         @tool
         def fake_bash(command: str) -> str:
             """Пишет свою команду в свой журнал."""
-            sinks = ToolChannelsTap.get()
+            sinks = call_ambient.sinks()
             if sinks is None:
                 raise AssertionError("sinks is not None")
             sinks.sink_of(STDOUT).feed(f"cmd: {command}".encode())
             return "done"
 
-        ToolCallIdField.attach_all([fake_bash])
-        ToolRunLogger(journals, call_stand.contexts).guard_all([fake_bash])
+        CallFields().attach_all([fake_bash])
+        ToolRunLogger(journals, call_stand.contexts, call_ambient).guard_all(
+            [fake_bash]
+        )
 
         async def scenario() -> None:
             first = fake_bash.ainvoke(

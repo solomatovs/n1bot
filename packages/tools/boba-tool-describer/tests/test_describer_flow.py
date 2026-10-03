@@ -55,7 +55,6 @@ from boba.db.postgres.address import (
 )
 from boba.db.postgres.connection import PostgresConfig
 from boba.runtime.config import AppLayers, ConfigLocator
-from boba.sandbox import ZygoteRegistry
 from boba.stand.connections import StandUserConnections
 from boba.stand.refs import StandRefs
 from boba.stand.site import Stand
@@ -243,15 +242,6 @@ def app_config() -> AppConfig:
 
 
 @pytest.fixture(scope="module")
-def app_sandbox() -> Iterator[None]:
-    """Зиготы секций гасятся после модуля, как это делает выход приложения."""
-    try:
-        yield
-    finally:
-        ZygoteRegistry.stop_all()
-
-
-@pytest.fixture(scope="module")
 def flow_raw(raw_config: DictConfig, test_database: str) -> DictConfig:
     """Конфиг хода: сервисный postgres смотрит в тестовую базу, чтобы и таблицы
     describer, и описываемые таблицы жили там же."""
@@ -267,13 +257,12 @@ def session_service(
     call_stand: CallStand,
     flow_raw: DictConfig,
     app_config: AppConfig,
-    app_sandbox: None,
 ) -> ToolServer:
     """Порт инструментов профиля: боевой загрузчик над хранилищем стенда,
     исполнитель и клиент, запечатывающий ссылки на соединения."""
     refs = runtime_stand.of(StoreHolder.current, lambda: None)
     registry = ChatPlugins(runtime_stand.contexts, runtime_stand.runs).load(
-        flow_raw, refs
+        flow_raw, refs, runtime_stand.launchers(flow_raw)
     )
     roles = frozenset(app_config.roles)
     tools = registry.for_session(roles, PROFILE)
@@ -403,9 +392,14 @@ def call_stand() -> CallStand:
 
 
 @pytest.fixture(scope="module")
-def runtime_stand(call_stand: CallStand) -> StandRefs:
-    """Объекты процесса модуля поверх того же держателя контекста."""
-    return StandRefs(call_stand.contexts)
+def runtime_stand(call_stand: CallStand) -> Iterator[StandRefs]:
+    """Объекты процесса модуля поверх того же держателя контекста; способы
+    запуска гасятся после модуля, как это делает выход приложения."""
+    stand = StandRefs(call_stand.contexts)
+    try:
+        yield stand
+    finally:
+        stand.stop()
 
 
 @pytest.fixture

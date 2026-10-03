@@ -36,15 +36,15 @@ from boba.sandbox.cgroup import CgroupManager
 from boba.sandbox.profile import SandboxMount
 from boba.sandbox.zygote import (
     ZygotePolicy,
-    ZygoteRegistry,
     ZygoteSpawner,
     ZygoteToolCaller,
 )
 from boba.stand.shell import ShellRun
-from boba.stand.zygote import ROOTFS_IMAGE, ProfileFields, SandboxStand
+from boba.stand.zygote import ROOTFS_IMAGE, ProfileFields, SandboxStand, ZygoteStand
+from boba.toolkit.chain import CallAmbient
 from boba.toolkit.launcher import LauncherError
 from boba.toolkit.result import ShellResult
-from boba.toolkit.stream import Chunk, JournalChannel, StreamSink, ToolChannelsTap
+from boba.toolkit.stream import Chunk, JournalChannel, StreamSink
 from boba.workspace.images import PartialCopy
 from boba.workspace.launcher import (
     FUSE_DEVICE,
@@ -547,9 +547,17 @@ class LoadStand:
 
     TEMPLATE_BYTES: ClassVar[int] = 16 * 1024 * 1024
 
-    def __init__(self, root: Path, template: Path, **profile_kw: object) -> None:
+    def __init__(
+        self,
+        zygotes: ZygoteStand,
+        root: Path,
+        template: Path,
+        **profile_kw: object,
+    ) -> None:
+        self._zygotes = zygotes
         self._root = root
         self._template = template
+        self.ambient = CallAmbient()
         self._profile_kw = profile_kw
 
     @property
@@ -660,8 +668,8 @@ class LoadStand:
             return {"user_id": user_id, "thread_id": thread_id}
 
         section = f"bash-{sorted(overrides.items())}"
-        supervisor = ZygoteRegistry.obtain(section, profile, (), self.ZYGOTE)
-        return ZygoteToolCaller(section, supervisor, profile, path_vars)
+        supervisor = self._zygotes.registry().obtain(section, profile, (), self.ZYGOTE)
+        return ZygoteToolCaller(section, supervisor, profile, self.ambient, path_vars)
 
     def storage(self) -> ImageStorageClient:
         cfg = LocalStorageConfig.model_validate(
@@ -758,16 +766,18 @@ def template(tmp_path: Path) -> Path:
 
 
 @pytest.fixture
-def stand(tmp_path: Path, template: Path) -> Iterator[LoadStand]:
+def stand(
+    zygote_stand: ZygoteStand, tmp_path: Path, template: Path
+) -> Iterator[LoadStand]:
     """Зиготы гасятся вместе со стендом: реестр общий на процесс тестов."""
-    stand = LoadStand(tmp_path / "stand", template)
+    stand = LoadStand(zygote_stand, tmp_path / "stand", template)
     stand.images_dir.mkdir(parents=True, exist_ok=True)
     stand.signals_dir.mkdir(parents=True, exist_ok=True)
 
     try:
         yield stand
     finally:
-        ZygoteRegistry.stop_all()
+        zygote_stand.stop()
 
 
 @needs_fuse
@@ -1009,12 +1019,12 @@ class TestAbnormalTermination:
         before = stand.census()
 
         caller = stand.caller("sink")
-        ToolChannelsTap.set(BrokenSinks())
+        stand.ambient.set_sinks(BrokenSinks())
         try:
             with pytest.raises(RuntimeError, match="consumer is broken"):
                 ShellRun.call_text(caller, "echo noise; sleep 300")
         finally:
-            ToolChannelsTap.set(None)
+            stand.ambient.set_sinks(None)
 
         leak = stand.settle(before)
         if not (leak.empty):
@@ -1239,7 +1249,7 @@ def path_vars():
 
 
 print("ready", flush=True)
-caller = ZygoteStand.caller("bash", profile, path_vars=path_vars)
+caller = ZygoteStand().caller("bash", profile, path_vars=path_vars)
 outcome = ShellRun.call_text(caller, command)
 print(json.dumps({"rc": outcome.exit_code}), flush=True)
 '''

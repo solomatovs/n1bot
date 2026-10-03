@@ -26,11 +26,6 @@ STDOUT = ToolChannel.STDOUT
 STDERR = ToolChannel.STDERR
 
 
-@pytest.fixture(autouse=True)
-def chainlit_context() -> None:
-    "журнал не зависит от сессии chainlit"
-
-
 def _wake() -> None:
     pass
 

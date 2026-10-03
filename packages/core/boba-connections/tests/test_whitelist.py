@@ -14,11 +14,6 @@ from boba.connections.whitelist import (
 from boba.transport.http.connection import HttpConnection
 
 
-@pytest.fixture(autouse=True)
-def chainlit_context() -> None:
-    """Чистая логика: сессия приложения не нужна."""
-
-
 def _row(
     row_id: UUID, name: str, host: str, *, ambiguous: bool = False
 ) -> GrantedConnection:

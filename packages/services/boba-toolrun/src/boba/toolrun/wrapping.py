@@ -43,13 +43,11 @@ class ToolAsyncBody:
     обвязок: тело к этому моменту уже обёрнуто, корутине обвязка не нужна.
     """
 
-    @classmethod
-    def ensure_all(cls, tools: Sequence[BaseTool]) -> None:
+    def ensure_all(self, tools: Sequence[BaseTool]) -> None:
         for tool in tools:
-            cls._ensure(tool)
+            self._ensure(tool)
 
-    @classmethod
-    def _ensure(cls, tool: BaseTool) -> None:
+    def _ensure(self, tool: BaseTool) -> None:
         if not isinstance(tool, StructuredTool):
             return
 
@@ -60,7 +58,7 @@ class ToolAsyncBody:
         if func is None:
             return
 
-        tool.coroutine = cls._threaded(func)
+        tool.coroutine = self._threaded(func)
 
     @staticmethod
     def _threaded(func: SyncCall) -> AsyncCall:

@@ -249,19 +249,6 @@ class FakeTurn(RunPort):
         )
 
 
-def enter_context(
-    stand: CallStand, profile: str = StandIdentity.PROFILE
-) -> CallContext:
-    """Контекст вызова из текущей сессии chainlit — как его собирает on_message.
-
-    Сессии нужны тред, сохранённый пользователь и профиль: тест готовит их
-    через init_http_context(user=..., thread_id=...) и chat_profile.
-    """
-    context = current_session().call_context(StandIdentity.TURN, profile)
-
-    return stand.use(context)
-
-
 @pytest.fixture
 async def seeded(
     layer: PostgresDataLayer,
@@ -344,10 +331,6 @@ class StandTokens(TokenReader):
         return self.tokens().read_stale(token, grace_sec)
 
 
-SESSIONS = ChainlitSessions(StandTokens())
-"""Источник сессий для тестов: подмену ставит use_session на класс."""
-
-
 class SessionStub:
     """Сессия в объёме, который читает ChainlitSession: пользователь и тред.
 
@@ -387,34 +370,85 @@ class SessionStub:
         self.token = StandTokens.tokens().issue(signed)
 
 
-def use_session(  # noqa: PLR0913 — фикстуры теста
-    monkeypatch: pytest.MonkeyPatch,
-    stand: CallStand,
-    *,
-    user_id: str | None = None,
-    thread_id: str | None = None,
-    chat_profile: str | None = None,
-    identifier: str | None = None,
-) -> ChainlitSession:
-    """Подменяет сессию текущего вызова на подставную; отдаёт её обёртку.
+class ChatSessionStand:
+    """Сессия chainlit теста и контекст вызова, который из неё собрал бы ход.
 
-    Полная личность — пользователь и тред — даёт и контекст вызова, как
-    его собрал бы ход чата; без неё контекста нет, и инструменты отказывают.
+    Создаётся фикстурой chat_session из стенда контекста вызова теста.
+    use() подменяет сессию текущего вызова на подставную; sign_in() ставит
+    настоящую сессию chainlit пользователя из таблицы users с JWT его
+    входа; enter() ставит контекст вызова из текущей сессии.
     """
-    profile = chat_profile
-    if profile is None:
-        profile = StandIdentity.PROFILE
 
-    stub = SessionStub(user_id, thread_id, profile, identifier)
-    session = ChainlitSession(stub, StandTokens())
-    # подменяется источник, а не отдельные функции: так стенд попадает во
-    # все пути — и в DI-провайдер, и в ref мест вне графа
-    monkeypatch.setattr(ChainlitSessions, "current", lambda self: session)
+    def __init__(self, calls: CallStand, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._calls = calls
+        self._monkeypatch = monkeypatch
 
-    if user_id is not None and thread_id is not None:
-        stand.use(session.call_context(StandIdentity.TURN, profile))
+    def use(
+        self,
+        *,
+        user_id: str | None = None,
+        thread_id: str | None = None,
+        chat_profile: str | None = None,
+        identifier: str | None = None,
+    ) -> ChainlitSession:
+        """Подменяет сессию текущего вызова на подставную; отдаёт её обёртку.
 
-    return session
+        Полная личность — пользователь и тред — даёт и контекст вызова, как
+        его собрал бы ход чата; без неё контекста нет, и инструменты
+        отказывают.
+        """
+        profile = chat_profile
+        if profile is None:
+            profile = StandIdentity.PROFILE
+
+        stub = SessionStub(user_id, thread_id, profile, identifier)
+        session = ChainlitSession(stub, StandTokens())
+        # подменяется источник, а не отдельные функции: так стенд попадает во
+        # все пути — и в DI-провайдер, и в ref мест вне графа
+        self._monkeypatch.setattr(ChainlitSessions, "current", lambda self: session)
+
+        if user_id is not None and thread_id is not None:
+            self._calls.use(session.call_context(StandIdentity.TURN, profile))
+
+        return session
+
+    def enter(self, profile: str = StandIdentity.PROFILE) -> CallContext:
+        """Контекст вызова из текущей сессии chainlit — как его собирает on_message.
+
+        Сессии нужны тред, сохранённый пользователь и профиль: тест готовит
+        их через init_http_context(user=..., thread_id=...) и chat_profile
+        либо зовёт sign_in().
+        """
+        context = current_session().call_context(StandIdentity.TURN, profile)
+
+        return self._calls.use(context)
+
+    def sign_in(
+        self,
+        user: PersistedUser,
+        login_metadata: Mapping[str, Any],
+        thread_id: str,
+        profile: str,
+    ) -> str:
+        """Сессия пользователя с JWT данного входа и контекст вызова из неё;
+        итог — сам токен."""
+        from chainlit.auth.jwt import create_jwt
+        from chainlit.context import init_http_context
+
+        token = create_jwt(StandTokens.user(user.identifier, dict(login_metadata)))
+        context = init_http_context(user=user, auth_token=token, thread_id=thread_id)
+        context.session.chat_profile = profile
+        self.enter(profile)
+
+        return token
+
+
+@pytest.fixture
+def chat_session(
+    call_stand: CallStand, monkeypatch: pytest.MonkeyPatch
+) -> ChatSessionStand:
+    """Сессия chainlit теста поверх его стенда контекста вызова."""
+    return ChatSessionStand(call_stand, monkeypatch)
 
 
 @pytest.fixture

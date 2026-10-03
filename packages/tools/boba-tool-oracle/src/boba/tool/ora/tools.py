@@ -796,7 +796,7 @@ async def ora_address(connection: OraConnection) -> TableResult:
 
 
 @tool
-async def ora_stream_out(  # noqa: PLR0913 — фикстуры теста
+async def ora_stream_out(  # noqa: PLR0913
     connection: OraConnection,
     sql: Annotated[
         str,
@@ -865,7 +865,7 @@ async def ora_stream_out(  # noqa: PLR0913 — фикстуры теста
 
 
 @tool
-async def ora_stream_in(  # noqa: PLR0913 — фикстуры теста
+async def ora_stream_in(  # noqa: PLR0913
     connection: OraConnection,
     schema_name: Annotated[
         str, Field(min_length=1, description="Схема таблицы-приёмника: HR")

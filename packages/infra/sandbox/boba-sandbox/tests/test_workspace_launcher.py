@@ -39,11 +39,6 @@ from boba.workspace.launcher import (
 CHUNK = 1 << 16
 
 
-@pytest.fixture(autouse=True)
-def chainlit_context() -> None:
-    pass
-
-
 @pytest.fixture
 def template(tmp_path: Path) -> Path:
     path = tmp_path / "template.img"

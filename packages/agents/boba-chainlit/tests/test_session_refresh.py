@@ -10,12 +10,13 @@ from uuid import UUID
 
 import jwt
 import pytest
-from chainlit_stand import SESSIONS, StandTokens
+from chainlit_stand import StandTokens
 from fastapi import Request
 
 from boba.auth import AuthService, JwtTokens
 from boba.auth.config import LocalAuthConfig, LocalRoleProviders, LocalRolesConfig
 from boba.chainlit.auth.refresh import PageUrls, SessionRefresh
+from boba.chainlit.infra.session import ChainlitSessions
 from boba.identity.admission import RoleMappingConfig
 from boba.identity.api import AuthenticatedUser, PersistedUsers, UsersUpsert
 from boba.identity.session import Login
@@ -73,7 +74,9 @@ def _refresh() -> SessionRefresh:
         renewal=SessionRenewal.of(60, 3600),
     )
 
-    return SessionRefresh(PageUrls.of("/boba", ""), auth, SESSIONS, APP_ROOT)
+    return SessionRefresh(
+        PageUrls.of("/boba", ""), auth, ChainlitSessions(StandTokens()), APP_ROOT
+    )
 
 
 def _request(token: str, own_header: bool) -> Request:

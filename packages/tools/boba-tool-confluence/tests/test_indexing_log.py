@@ -46,11 +46,6 @@ def anyio_backend() -> str:
     return "asyncio"
 
 
-@pytest.fixture(autouse=True)
-def chainlit_context() -> None:
-    pass
-
-
 class _CountingReader(Reader[str]):
     """Reader, который считает, сколько секций у него уже забрали."""
 

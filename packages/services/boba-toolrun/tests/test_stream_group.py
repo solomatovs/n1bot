@@ -1,7 +1,7 @@
 """Группа связанных каналами вызовов на настоящих субпроцессах.
 
 Вызовы идут тем же путём, что из чата: обёртка запуска (ToolProcessWrap)
-видит ручку группы в PipelineSlot, открывает вызов потоково и отдаёт группе
+видит ручку группы в CallAmbient, открывает вызов потоково и отдаёт группе
 каналы; раздача ChannelFanOut соединяет выход писателя со входами читателей.
 """
 
@@ -35,11 +35,11 @@ from boba.stand_core.fake_toolmod import (
     fake_stream,
 )
 from boba.toolkit.chain import (
+    CallAmbient,
     ChannelFanOut,
     GroupCall,
     GroupFailureResult,
     GroupVerdict,
-    PipelineSlot,
     PipeTee,
     StreamFailureKind,
     StreamGroupRun,
@@ -58,7 +58,6 @@ from boba.toolkit.launcher import (
     ToolFrame,
     ToolOutcome,
 )
-from boba.toolkit.ports import ToolStreamSpecs
 from boba.toolkit.protocol import CallInputSpec, CallOutputSpec, ReplyOk, ToolCommand
 from boba.toolkit.result import (
     ErrorResult,
@@ -84,7 +83,7 @@ STREAM_CFG = StreamGroupsConfig(
 )
 
 
-def _launcher(workdir: Path) -> ProcessToolCaller:
+def _launcher(workdir: Path, ambient: CallAmbient) -> ProcessToolCaller:
     cfg = ProcessLauncherConfig(
         provider="process",
         workdir=str(workdir),
@@ -93,7 +92,7 @@ def _launcher(workdir: Path) -> ProcessToolCaller:
         stderr_tail_bytes=8192,
         kill_grace_sec=0.5,
     )
-    return ProcessToolCaller("stream-group", cfg, CallContexts())
+    return ProcessToolCaller("stream-group", cfg, CallContexts(), ambient)
 
 
 @dataclass(frozen=True)
@@ -117,6 +116,8 @@ class GroupStand:
 
     def __init__(self, workdir: Path) -> None:
         self._workdir = workdir
+        self._ambient = CallAmbient()
+        self._drain = DevNullTool(self._ambient)
         self._tools: dict[str, Any] = {}
         for tool in (
             fake_echo,
@@ -133,13 +134,17 @@ class GroupStand:
             self._tools[bridged.name] = bridged
 
         wrapped = list(self._tools.values())
-        ToolProcessWrap.guard_all(wrapped, _launcher(workdir))
+        launcher = _launcher(workdir, self._ambient)
+        specs = ToolProcessWrap(self._ambient).guard_all(wrapped, launcher)
+        self._specs = specs.declaring(DevNullTool.NAME, self._drain.spec())
         InjectedConfig.bind_all(wrapped, self._config_of)
 
-        built = ToolBridge.as_structured_tool(DevNullTool.build())
+        built = ToolBridge.as_structured_tool(self._drain.build())
         self._tools[built.name] = built
 
-        StreamChannelFields(STREAM_CFG).attach_all(list(self._tools.values()))
+        StreamChannelFields(STREAM_CFG).attach_all(
+            list(self._tools.values()), self._specs
+        )
 
     @staticmethod
     def _config_of(name: str, annotation: object) -> object:
@@ -159,9 +164,7 @@ class GroupStand:
 
     def plan(self, calls: Mapping[str, Call]) -> StreamPlan:
         """План единственной группы: вызовы стенда связаны каналами."""
-        plans = DagPlanner(ToolStreamSpecs.of, STREAM_CFG.pipe_bytes).plan(
-            self.dag(calls)
-        )
+        plans = DagPlanner(self._specs.of, STREAM_CFG.pipe_bytes).plan(self.dag(calls))
         if len(plans) != 1:
             msg = f"stand calls must form one group, got {len(plans)}"
             raise AssertionError(msg)
@@ -171,7 +174,7 @@ class GroupStand:
     def _node(self, key: str, call: Call) -> DagNode:
         """Узел из вызова: каналы ложатся в аргументы полями портов —
         строкой у одиночного порта, списком у порта-списка."""
-        spec = ToolStreamSpecs.of(call.tool)
+        spec = self._specs.of(call.tool)
 
         args: dict[str, object] = dict(call.args)
         if call.output is not None:
@@ -199,7 +202,9 @@ class GroupStand:
         timings: StreamTimings = FAST,
     ) -> tuple[DagOutcome, dict[str, NodeOutcome]]:
         """Прогон DAG исполнителем: итог целиком и итоги по ключам узлов."""
-        runner = DagRunner(self._tools, timings, STREAM_CFG.pipe_bytes)
+        runner = DagRunner(
+            self._tools, self._specs, self._ambient, timings, STREAM_CFG.pipe_bytes
+        )
 
         outcome = await asyncio.wait_for(runner.run(self.dag(calls)), timeout=60)
 
@@ -216,13 +221,11 @@ class GroupStand:
         coroutine = tool.coroutine
         assert coroutine is not None
 
-        token = PipelineSlot.set(group.slot(key))
-        try:
-            return await coroutine(**call.args)
-        except PayloadFailureError as exc:
-            return exc
-        finally:
-            PipelineSlot.reset(token)
+        with self._ambient.in_slot(group.slot(key)):
+            try:
+                return await coroutine(**call.args)
+            except PayloadFailureError as exc:
+                return exc
 
     def marker(self, name: str) -> Path:
         return self._workdir / name
@@ -790,7 +793,7 @@ class TestDevNull:
 
     @pytest.mark.anyio
     async def test_dev_null_outside_a_group_is_refused(self) -> None:
-        built = DevNullTool.build()
+        built = DevNullTool(CallAmbient()).build()
         coroutine = built.coroutine
         assert coroutine is not None
 
@@ -927,7 +930,7 @@ class TestRawFanOut:
     def test_raw_stream_reaches_every_reader_verbatim(self, tmp_path: Path) -> None:
         """Сырой поток fake_relay раздаётся двум fake_relay напрямую через
         ChannelFanOut: байты у обоих совпадают с исходными."""
-        launcher = _launcher(tmp_path)
+        launcher = _launcher(tmp_path, CallAmbient())
         payload = os.urandom(3 << 20)
 
         def command() -> ToolCommand:
@@ -1006,7 +1009,7 @@ class TestGateOutsideGroup:
     def test_lone_gated_call_commits_without_waiting(self, tmp_path: Path) -> None:
         """Вне группы барьер отвечает сразу (CallGateMode.AUTO): тело с
         StreamGroup фиксирует результат как обычно."""
-        launcher = _launcher(tmp_path)
+        launcher = _launcher(tmp_path, CallAmbient())
         command = ToolCommand(
             argv=(
                 "python3",

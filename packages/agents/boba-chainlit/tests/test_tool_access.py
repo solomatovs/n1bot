@@ -9,7 +9,9 @@ from langchain_core.tools import tool
 from boba.access import ProfileGrant, RoleConfig, ToolAccess
 from boba.chainlit.infra.providers import build_llm_view
 from boba.runtime.plugins import PluginMeta
-from boba.stand.tools import STREAM_CONFIG
+from boba.stand.refs import StandRefs
+from boba.toolkit.chain import CallAmbient
+from boba.toolkit.ports import StreamSpecs
 from boba.toolrun.access import ToolAccessDeniedError, ToolAccessGuard
 from boba.toolrun.registry import ToolRegistry
 
@@ -61,9 +63,11 @@ class TestRegistryFiltering:
         return ToolRegistry(
             tools=tools,
             access=access,
-            stream_config=STREAM_CONFIG,
+            stream_config=StandRefs.STREAM_CONFIG,
             own=frozenset(),
             node_args=(),
+            specs=StreamSpecs({}),
+            ambient=CallAmbient(),
         )
 
     def test_admin_sees_everything(self) -> None:
@@ -109,7 +113,7 @@ class TestAccessGuard:
             profiles={"general": ProfileGrant(tools=["*"], roles=["*"])},
         )
         facts = _AccessFacts(roles, profile)
-        guarded = ToolAccessGuard.guard_all([query], access, lambda: facts)
+        guarded = ToolAccessGuard(lambda: facts).guard_all([query], access)
         return guarded[0]
 
     def test_allowed_role_runs(self) -> None:

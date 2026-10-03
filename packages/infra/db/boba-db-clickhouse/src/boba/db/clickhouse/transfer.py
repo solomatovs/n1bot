@@ -665,7 +665,7 @@ class ChTransferTable(TransferTable):
     BACKUP_STAMP: ClassVar[str] = "%Y%m%d_%H%M%S_%f"
     STRING: ClassVar[str] = "String"
 
-    def __init__(  # noqa: PLR0913 — фикстуры теста
+    def __init__(  # noqa: PLR0913
         self,
         client: AsyncClient,
         table: ChTableRef,
@@ -841,7 +841,7 @@ class ChInputSink(TransferSink):
     SETTINGS: ClassVar[Mapping[str, Any]] = {"insert_null_as_default": 0}
     """Настройки каждой вставки; пара добавляет свои (разбор текста)."""
 
-    def __init__(  # noqa: PLR0913 — фикстуры теста
+    def __init__(  # noqa: PLR0913
         self,
         client: AsyncClient,
         twin: ChTwin,
@@ -1308,7 +1308,7 @@ class ChTransfer(Protocol):
     источника, сверяет его с таблицей, планирует DDL и ведёт стратегии.
     Реализация в пакете пары, создаётся фабрикой из реестра."""
 
-    async def run(  # noqa: PLR0913 — фикстуры теста
+    async def run(  # noqa: PLR0913
         self,
         schema_strategy: SchemaStrategyPlan,
         delete_strategy: DeleteStrategyApply,

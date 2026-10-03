@@ -34,7 +34,7 @@ from boba.db.postgres.snapshot_sample import PgSample
 from boba.identity.api import ApiSubject
 from boba.identity.context import NoUserCredential, Subject
 from boba.messaging import ChangeAction
-from boba.stand.catalog_ports import FakeConnections, FakeSyncPorts
+from boba.stand.catalog_ports import CatalogPorts, FakeConnections
 from boba.stand.catalog_stand import CatalogStand, ChangeCollector
 from boba.stand.fake_sync import FakeSyncScenario
 from boba.stand.refs import StandRefs
@@ -74,12 +74,8 @@ async def service(
 ) -> CatalogService:
     stand = await CatalogStand.build(pool, CONFIG, CatalogStand.fake_kinds())
     site = stand.fake_site(tmp_path, ROLE, StandIdentity.PROFILE, test_postgres)
-    ports = FakeSyncPorts(
-        runtime_stand.contexts,
-        runtime_stand.runs,
-        site,
-        (CONNECTION, CH_CONNECTION),
-        (EDITOR.user_id,),
+    ports = CatalogPorts(runtime_stand).fake(
+        site, (CONNECTION, CH_CONNECTION), (EDITOR.user_id,)
     )
     return stand.service(ports)
 

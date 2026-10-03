@@ -40,11 +40,6 @@ from boba.transport.http.connection import (
 )
 
 
-@pytest.fixture(autouse=True)
-def chainlit_context() -> None:
-    pass
-
-
 def _key() -> SecretStr:
     return SecretStr(base64.b64encode(std_secrets.token_bytes(32)).decode())
 

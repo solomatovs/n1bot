@@ -46,11 +46,6 @@ def _config() -> IngestToolConfig:
     )
 
 
-@pytest.fixture(autouse=True)
-def chainlit_context() -> None:
-    pass
-
-
 class TestIngestOcrParams:
     _NAMES: ClassVar[list[str]] = [
         "confluence_index_page",

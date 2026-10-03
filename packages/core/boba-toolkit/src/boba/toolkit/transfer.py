@@ -1251,7 +1251,7 @@ class TransferRun:
         self._journal = journal
         self._columns = LoadColumns()
 
-    async def run(  # noqa: PLR0913 — фикстуры теста
+    async def run(  # noqa: PLR0913
         self,
         table_name: str,
         exists: bool,

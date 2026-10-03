@@ -33,15 +33,17 @@ from boba.catalog_service import (
 from boba.connection_broker.tickets import ServiceTickets
 from boba.connections.credentials import CredentialSource
 from boba.db.postgres.catalog import CatalogStoreConfig
-from boba.identity.context import CallContexts, Subject
-from boba.identity.run import Runs
+from boba.identity.context import Subject
 from boba.stand.fake_sync import FakeConnection, fake_pg_snapshot
-from boba.stand.tools import STREAM_CONFIG
+from boba.stand.refs import StandRefs
+from boba.toolkit.chain import CallAmbient
 from boba.toolkit.entry import ToolMain
 from boba.toolkit.facade import PayloadTool
+from boba.toolkit.ports import StreamSpecs
 from boba.toolkit.wrap import ToolProcessWrap
+from boba.toolrun.call_id import CallFields
+from boba.toolrun.dag_run import DagRunner
 from boba.toolrun.injected import InjectedConfig, ToolConfigError
-from boba.toolrun.intent import ToolIntentField
 from boba.toolrun.invoke import ToolInvoker
 from boba.toolrun.process import ProcessLauncherConfig, ProcessToolCaller
 from boba.toolrun.registry import ToolRegistry
@@ -51,16 +53,15 @@ class NoSyncTools(SyncTools):
     """Реализация SyncTools без инструментов."""
 
     async def invoker(self, subject: Subject) -> ToolInvoker:
-        return ToolInvoker({}, STREAM_CONFIG)
+        runner = DagRunner(
+            {},
+            StreamSpecs({}),
+            CallAmbient(),
+            StandRefs.STREAM_CONFIG.timings(),
+            StandRefs.STREAM_CONFIG.pipe_bytes,
+        )
 
-
-class StubSyncPorts(SyncPorts):
-    """Порты стенда без синхронизаций: инструментов нет, подключения из
-    таблицы видны всем."""
-
-    def __init__(self, runs: Runs, connections: Iterable[ConnectionInfo] = ()) -> None:
-        directory = KnownConnectionDirectory(connections, None)
-        super().__init__(NoSyncTools(), directory, runs)
+        return ToolInvoker({}, runner)
 
 
 class FakeConnections:
@@ -83,15 +84,46 @@ class FakeSyncSite(BaseModel):
     catalog: CatalogStoreConfig
 
 
-class FakeSyncRegistry:
-    """Реестр инструментов с фейком снятия поверх субпроцессного лончера;
-    домен каталога подставляется injected-конфигом, keytab его подключения
-    едет билетом вызова."""
+class CatalogPorts:
+    """Порты каталога на стенде: без синхронизаций либо с фейком снятия.
 
-    def __init__(self, contexts: CallContexts) -> None:
-        self._contexts = contexts
+    Создаётся тестом из стенда процесса (StandRefs): запуски открываются в
+    его реестре, инструменты читают его держатель контекста вызова. stub()
+    — инструментов нет, подключения из таблицы видны всем; fake() — фейк
+    снятия субпроцессом и таблица подключений, видимых перечисленным
+    пользователям; over() — без инструментов над своим каталогом
+    подключений.
+    """
 
-    def build(self, site: FakeSyncSite) -> ToolRegistry:
+    def __init__(self, stand: StandRefs) -> None:
+        self._contexts = stand.contexts
+        self._runs = stand.runs
+        self._ambient = stand.ambient
+
+    def stub(self, connections: Iterable[ConnectionInfo]) -> SyncPorts:
+        return self.over(KnownConnectionDirectory(connections, None))
+
+    def over(self, directory: ConnectionDirectory) -> SyncPorts:
+        return SyncPorts(NoSyncTools(), directory, self._runs)
+
+    def fake(
+        self,
+        site: FakeSyncSite,
+        connections: Iterable[ConnectionInfo],
+        visible_to: Iterable[UUID],
+    ) -> SyncPorts:
+        registry = self._registry(site)
+        directory = KnownConnectionDirectory(connections, visible_to)
+
+        async def registry_ref() -> ToolRegistry:
+            return registry
+
+        return SyncPorts(RegistrySyncTools(registry_ref), directory, self._runs)
+
+    def _registry(self, site: FakeSyncSite) -> ToolRegistry:
+        """Реестр инструментов с фейком снятия поверх субпроцессного лончера;
+        домен каталога подставляется injected-конфигом, keytab его подключения
+        едет билетом вызова."""
         workdir = site.workdir
         role = site.role
         profile = site.profile
@@ -109,6 +141,7 @@ class FakeSyncRegistry:
                 }
             ),
             self._contexts,
+            self._ambient,
         )
 
         copies: list[PayloadTool] = []
@@ -119,7 +152,7 @@ class FakeSyncRegistry:
 
             copies.append(tool.model_copy())
 
-        ToolProcessWrap.guard_all(copies, launcher)
+        specs = ToolProcessWrap(self._ambient).guard_all(copies, launcher)
 
         def resolve(param: str, annotation: object) -> object:
             if annotation is CatalogStoreConfig:
@@ -149,7 +182,7 @@ class FakeSyncRegistry:
 
         ServiceTickets.bind_all(bridged, credentials, resolve)
         InjectedConfig.bind_all(bridged, resolve)
-        ToolIntentField.attach_all(list(bridged))
+        CallFields().attach_all(list(bridged))
 
         names: list[str] = []
         for tool in bridged:
@@ -163,9 +196,11 @@ class FakeSyncRegistry:
         return ToolRegistry(
             tools=list(bridged),
             access=access,
-            stream_config=STREAM_CONFIG,
+            stream_config=StandRefs.STREAM_CONFIG,
             own=frozenset(),
             node_args=(),
+            specs=specs,
+            ambient=self._ambient,
         )
 
 
@@ -204,23 +239,3 @@ class KnownConnectionDirectory(ConnectionDirectory):
 
         msg = f"connection {name!r} is not visible to {subject.login!r}"
         raise SyncSetupError(msg)
-
-
-class FakeSyncPorts(SyncPorts):
-    """Порты стенда синхронизации: фейк снятия и таблица подключений."""
-
-    def __init__(
-        self,
-        contexts: CallContexts,
-        runs: Runs,
-        site: FakeSyncSite,
-        connections: Iterable[ConnectionInfo],
-        visible_to: Iterable[UUID],
-    ) -> None:
-        registry = FakeSyncRegistry(contexts).build(site)
-        directory = KnownConnectionDirectory(connections, visible_to)
-
-        async def registry_ref() -> ToolRegistry:
-            return registry
-
-        super().__init__(RegistrySyncTools(registry_ref), directory, runs)

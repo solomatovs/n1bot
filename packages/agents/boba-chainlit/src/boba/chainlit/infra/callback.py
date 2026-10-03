@@ -86,7 +86,7 @@ logger = logging.getLogger(__name__)
 
 @chainlit_error_ctx_handler
 @di_inject
-async def on_message(  # noqa: PLR0913 — фикстуры теста
+async def on_message(  # noqa: PLR0913
     msg: cl.Message,
     graph: Annotated[
         CompiledStateGraph,

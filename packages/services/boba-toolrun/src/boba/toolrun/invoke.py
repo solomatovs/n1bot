@@ -27,7 +27,6 @@ from boba.toolkit.dag import DagNode, DagSpec
 from boba.toolkit.failure import ToolUnavailableError
 from boba.toolrun.dag_run import DagRunner, NodeOutcome
 from boba.toolrun.registry import ToolRegistry
-from boba.toolrun.stream_calls import StreamGroupsConfig
 
 __all__ = ["ToolInvoker"]
 
@@ -35,22 +34,21 @@ __all__ = ["ToolInvoker"]
 class ToolInvoker:
     """Вызовы инструментов, видимых субъекту вне чата.
 
-    Создаётся из инструментов субъекта и секции [stream_groups]; исполняет
-    вызов DagRunner'ом — другого места исполнения инструментов нет.
+    Создаётся из инструментов субъекта и исполнителя DAG над ними (его
+    собирает реестр инструментов); исполняет вызов DagRunner'ом — другого
+    места исполнения инструментов нет.
     """
 
-    def __init__(
-        self, tools: Mapping[str, BaseTool], config: StreamGroupsConfig
-    ) -> None:
+    def __init__(self, tools: Mapping[str, BaseTool], runner: DagRunner) -> None:
         self._tools = dict(tools)
-        self._runner = DagRunner(self._tools, config.timings(), config.pipe_bytes)
+        self._runner = runner
 
     @classmethod
     def for_subject(cls, registry: ToolRegistry, subject: Subject) -> ToolInvoker:
         """Инструменты субъекта вне чата: по его ролям и профилю."""
         tools = registry.for_headless(subject.roles, subject.profile)
 
-        return cls(tools, registry.stream_config)
+        return cls(tools, registry.runner(tools))
 
     @property
     def names(self) -> frozenset[str]:

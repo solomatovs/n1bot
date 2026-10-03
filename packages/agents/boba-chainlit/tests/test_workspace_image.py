@@ -166,7 +166,13 @@ def _profile(**kw: object) -> SandboxProfile:
     return SandboxProfile.model_validate(ProfileFields.merged(_PROFILE_BASE, kw))
 
 
-def _bash(tmp_path: Path, template: Path, thread_id: str = "t1", **profile_kw):
+def _bash(
+    zygote_stand: ZygoteStand,
+    tmp_path: Path,
+    template: Path,
+    thread_id: str = "t1",
+    **profile_kw,
+):
     """Bash на зиготе секции: обвязка образов объявлена биндами профиля."""
     images_dir = f"{tmp_path}/ws"
     os.makedirs(images_dir, exist_ok=True)
@@ -183,7 +189,7 @@ def _bash(tmp_path: Path, template: Path, thread_id: str = "t1", **profile_kw):
 
     # у каждого теста свой tmp_path и свои лимиты: имя секции — ключ реестра
     section = f"ws-{tmp_path.name}-{thread_id}-{profile_kw.get('timeout_sec', 0)}"
-    return ZygoteStand.caller(
+    return zygote_stand.caller(
         section,
         profile_dto,
         path_vars=lambda: {"user_id": "7", "thread_id": thread_id},
@@ -555,48 +561,60 @@ class TestErrorBoundary:
 class TestLiveImage:
     """Реальные монтирования: bash и storage поверх одного образа."""
 
-    def teardown_method(self) -> None:
-        ZygoteStand.stop()
+    @pytest.fixture(autouse=True)
+    def zygotes_stopped(self, zygote_stand: ZygoteStand) -> Iterator[None]:
+        """Зиготы секций гасятся после каждого теста класса."""
+        yield
+        zygote_stand.stop()
 
-    def test_write_persists_between_calls(self, tmp_path: Path, template: Path) -> None:
-        tool = _bash(tmp_path, template)
+    def test_write_persists_between_calls(
+        self, zygote_stand: ZygoteStand, tmp_path: Path, template: Path
+    ) -> None:
+        tool = _bash(zygote_stand, tmp_path, template)
         _invoke(tool, "echo hello > f.txt")
         if _invoke(tool, "cat f.txt").stdout.strip() != "hello":
             raise AssertionError('_invoke(tool, "cat f.txt").stdout.strip() == "he…')
 
-    def test_image_created_from_template(self, tmp_path: Path, template: Path) -> None:
-        _invoke(_bash(tmp_path, template), "true")
+    def test_image_created_from_template(
+        self, zygote_stand: ZygoteStand, tmp_path: Path, template: Path
+    ) -> None:
+        _invoke(_bash(zygote_stand, tmp_path, template), "true")
         if not ((tmp_path / "ws" / "7.ext4").is_file()):
             raise AssertionError('(tmp_path / "ws" / "7.ext4").is_file()')
 
-    def test_no_mount_leaks_to_host(self, tmp_path: Path, template: Path) -> None:
-        _invoke(_bash(tmp_path, template), "true")
+    def test_no_mount_leaks_to_host(
+        self, zygote_stand: ZygoteStand, tmp_path: Path, template: Path
+    ) -> None:
+        _invoke(_bash(zygote_stand, tmp_path, template), "true")
         if "fuse2fs" in Path("/proc/mounts").read_text():
             raise AssertionError('"fuse2fs" not in Path("/proc/mounts").read_text()')
 
-    def test_size_limit_is_enforced(self, tmp_path: Path, template: Path) -> None:
+    def test_size_limit_is_enforced(
+        self, zygote_stand: ZygoteStand, tmp_path: Path, template: Path
+    ) -> None:
         payload = _invoke(
-            _bash(tmp_path, template),
+            _bash(zygote_stand, tmp_path, template),
             "dd if=/dev/zero of=/workspace/big bs=1M count=64 2>&1",
         )
         if "No space left" not in payload.stdout:
             raise AssertionError('"No space left" in payload.stdout')
 
     def test_storage_upload_visible_in_sandbox(
-        self, tmp_path: Path, template: Path
+        self, zygote_stand: ZygoteStand, tmp_path: Path, template: Path
     ) -> None:
         storage = _storage(tmp_path, template)
         asyncio.run(storage.upload_file("7/t1/upload/отчёт.csv", b"attachment"))
         payload = _invoke(
-            _bash(tmp_path, template), "cat '/workspace/t1/upload/отчёт.csv'"
+            _bash(zygote_stand, tmp_path, template),
+            "cat '/workspace/t1/upload/отчёт.csv'",
         )
         if payload.stdout.strip() != "attachment":
             raise AssertionError('payload.stdout.strip() == "attachment"')
 
     def test_sandbox_write_readable_by_storage(
-        self, tmp_path: Path, template: Path
+        self, zygote_stand: ZygoteStand, tmp_path: Path, template: Path
     ) -> None:
-        tool = _bash(tmp_path, template)
+        tool = _bash(zygote_stand, tmp_path, template)
         _invoke(tool, "mkdir -p t1/upload && echo from-bash > t1/upload/x")
         storage = _storage(tmp_path, template)
         if asyncio.run(read_all(storage, "7/t1/upload/x")).strip() != b"from-bash":
@@ -695,11 +713,12 @@ class TestLiveImage:
             raise AssertionError("not isinstance(failure.value, StorageNotFoundError)")
 
     def test_fifo_in_image_does_not_hang_read(
-        self, tmp_path: Path, template: Path
+        self, zygote_stand: ZygoteStand, tmp_path: Path, template: Path
     ) -> None:
         """Именованный канал в образе: read отказывает, а не ждёт писателя."""
         _invoke(
-            _bash(tmp_path, template), "mkdir -p t1/upload && mkfifo t1/upload/pipe"
+            _bash(zygote_stand, tmp_path, template),
+            "mkdir -p t1/upload && mkfifo t1/upload/pipe",
         )
         storage = _storage(tmp_path, template, op_timeout_sec=15)
 
@@ -710,14 +729,14 @@ class TestLiveImage:
             raise AssertionError("not isinstance(failure.value, StorageNotFoundError)")
 
     def test_symlink_planted_by_bash_leaks_nothing(
-        self, tmp_path: Path, template: Path
+        self, zygote_stand: ZygoteStand, tmp_path: Path, template: Path
     ) -> None:
         """Содержимое образа пишет bash: ссылка на файл хоста не должна читаться."""
         secret = tmp_path / "outside.txt"
         secret.write_bytes(b"host secret")
 
         _invoke(
-            _bash(tmp_path, template),
+            _bash(zygote_stand, tmp_path, template),
             f"mkdir -p t1/upload && ln -s {secret} t1/upload/leak",
         )
         storage = _storage(tmp_path, template)
@@ -729,7 +748,7 @@ class TestLiveImage:
             raise AssertionError('"host secret" not in str(failure.value)')
 
     def test_symlinked_dir_planted_by_bash_leaks_nothing(
-        self, tmp_path: Path, template: Path
+        self, zygote_stand: ZygoteStand, tmp_path: Path, template: Path
     ) -> None:
         """Подмена каталога вложений ссылкой наружу тоже не проходит."""
         outside = tmp_path / "outside"
@@ -737,7 +756,7 @@ class TestLiveImage:
         (outside / "secret.txt").write_bytes(b"host secret")
 
         _invoke(
-            _bash(tmp_path, template),
+            _bash(zygote_stand, tmp_path, template),
             f"mkdir -p t1 && ln -s {outside} t1/upload",
         )
         storage = _storage(tmp_path, template)
@@ -760,9 +779,11 @@ class TestLiveImage:
         if (tmp_path / "ws" / "7.ext4").exists():
             raise AssertionError('not (tmp_path / "ws" / "7.ext4").exists()')
 
-    def test_storage_waits_for_busy_image(self, tmp_path: Path, template: Path) -> None:
+    def test_storage_waits_for_busy_image(
+        self, zygote_stand: ZygoteStand, tmp_path: Path, template: Path
+    ) -> None:
         """flock блокирующий: storage дожидается занятой песочницы."""
-        tool = _bash(tmp_path, template, timeout_sec=30)
+        tool = _bash(zygote_stand, tmp_path, template, timeout_sec=30)
         storage = _storage(tmp_path, template)
 
         async def race() -> bytes:
@@ -778,9 +799,9 @@ class TestLiveImage:
             raise AssertionError('asyncio.run(race()) == b"waited"')
 
     def test_image_not_recreated_on_second_call(
-        self, tmp_path: Path, template: Path
+        self, zygote_stand: ZygoteStand, tmp_path: Path, template: Path
     ) -> None:
-        tool = _bash(tmp_path, template)
+        tool = _bash(zygote_stand, tmp_path, template)
         _invoke(tool, "true")
         image = tmp_path / "ws" / "7.ext4"
         ino = image.stat().st_ino
@@ -788,16 +809,18 @@ class TestLiveImage:
         if image.stat().st_ino != ino:
             raise AssertionError("image.stat().st_ino == ino")
 
-    def test_image_copy_is_sparse(self, tmp_path: Path, template: Path) -> None:
-        _invoke(_bash(tmp_path, template), "true")
+    def test_image_copy_is_sparse(
+        self, zygote_stand: ZygoteStand, tmp_path: Path, template: Path
+    ) -> None:
+        _invoke(_bash(zygote_stand, tmp_path, template), "true")
         image = tmp_path / "ws" / "7.ext4"
         if image.stat().st_blocks * 512 >= image.stat().st_size:
             raise AssertionError("image.stat().st_blocks * 512 < image.stat().st_size")
 
     def test_concurrent_bash_calls_serialized(
-        self, tmp_path: Path, template: Path
+        self, zygote_stand: ZygoteStand, tmp_path: Path, template: Path
     ) -> None:
-        tool = _bash(tmp_path, template, timeout_sec=60)
+        tool = _bash(zygote_stand, tmp_path, template, timeout_sec=60)
         futures = []
         with ThreadPoolExecutor(max_workers=2) as pool:
             for i in range(2):
@@ -810,29 +833,42 @@ class TestLiveImage:
             raise AssertionError('both.stdout.split() == ["0", "1"]')
 
     def test_run_command_has_no_capabilities(
-        self, tmp_path: Path, template: Path
+        self, zygote_stand: ZygoteStand, tmp_path: Path, template: Path
     ) -> None:
-        payload = _invoke(_bash(tmp_path, template), "grep CapEff /proc/self/status")
+        payload = _invoke(
+            _bash(zygote_stand, tmp_path, template), "grep CapEff /proc/self/status"
+        )
         if payload.stdout.split()[1] != "0000000000000000":
             raise AssertionError('payload.stdout.split()[1] == "0000000000000000"')
 
-    def test_userns_creation_blocked(self, tmp_path: Path, template: Path) -> None:
-        payload = _invoke(_bash(tmp_path, template), "unshare -U true 2>&1; echo rc=$?")
+    def test_userns_creation_blocked(
+        self, zygote_stand: ZygoteStand, tmp_path: Path, template: Path
+    ) -> None:
+        payload = _invoke(
+            _bash(zygote_stand, tmp_path, template), "unshare -U true 2>&1; echo rc=$?"
+        )
         if "rc=0" in payload.stdout:
             raise AssertionError('"rc=0" not in payload.stdout')
 
     def test_workspace_shared_between_threads(
-        self, tmp_path: Path, template: Path
+        self, zygote_stand: ZygoteStand, tmp_path: Path, template: Path
     ) -> None:
         """Образ на пользователя: второй тред видит файлы первого."""
-        _invoke(_bash(tmp_path, template, thread_id="t1"), "echo from-t1 > shared.txt")
-        payload = _invoke(_bash(tmp_path, template, thread_id="t2"), "cat shared.txt")
+        _invoke(
+            _bash(zygote_stand, tmp_path, template, thread_id="t1"),
+            "echo from-t1 > shared.txt",
+        )
+        payload = _invoke(
+            _bash(zygote_stand, tmp_path, template, thread_id="t2"), "cat shared.txt"
+        )
         if payload.stdout.strip() != "from-t1":
             raise AssertionError('payload.stdout.strip() == "from-t1"')
 
-    def test_single_image_per_user(self, tmp_path: Path, template: Path) -> None:
-        _invoke(_bash(tmp_path, template, thread_id="t1"), "true")
-        _invoke(_bash(tmp_path, template, thread_id="t2"), "true")
+    def test_single_image_per_user(
+        self, zygote_stand: ZygoteStand, tmp_path: Path, template: Path
+    ) -> None:
+        _invoke(_bash(zygote_stand, tmp_path, template, thread_id="t1"), "true")
+        _invoke(_bash(zygote_stand, tmp_path, template, thread_id="t2"), "true")
         images: list[Path] = []
         for path in (tmp_path / "ws").iterdir():
             if path.suffix == ".ext4":
@@ -841,67 +877,89 @@ class TestLiveImage:
             raise AssertionError('[p.name for p in images] == ["7.ext4"]')
 
     def test_upload_of_one_thread_visible_in_another(
-        self, tmp_path: Path, template: Path
+        self, zygote_stand: ZygoteStand, tmp_path: Path, template: Path
     ) -> None:
         storage = _storage(tmp_path, template)
         asyncio.run(storage.upload_file("7/t1/upload/shared.txt", b"attachment"))
         payload = _invoke(
-            _bash(tmp_path, template, thread_id="t2"),
+            _bash(zygote_stand, tmp_path, template, thread_id="t2"),
             "cat /workspace/t1/upload/shared.txt",
         )
         if payload.stdout.strip() != "attachment":
             raise AssertionError('payload.stdout.strip() == "attachment"')
 
-    def test_hostname_is_neutral(self, tmp_path: Path, template: Path) -> None:
-        payload = _invoke(_bash(tmp_path, template), "uname -n")
+    def test_hostname_is_neutral(
+        self, zygote_stand: ZygoteStand, tmp_path: Path, template: Path
+    ) -> None:
+        payload = _invoke(_bash(zygote_stand, tmp_path, template), "uname -n")
         if payload.stdout.strip() != "sandbox":
             raise AssertionError('payload.stdout.strip() == "sandbox"')
 
-    def test_memory_limit_visible(self, tmp_path: Path, template: Path) -> None:
-        tool = _bash(tmp_path, template, process_memory_bytes=64 * 1024 * 1024)
+    def test_memory_limit_visible(
+        self, zygote_stand: ZygoteStand, tmp_path: Path, template: Path
+    ) -> None:
+        tool = _bash(
+            zygote_stand, tmp_path, template, process_memory_bytes=64 * 1024 * 1024
+        )
         payload = _invoke(tool, "ulimit -v")
         if payload.stdout.strip() != str(64 * 1024):
             raise AssertionError("payload.stdout.strip() == str(64 * 1024)")
 
-    def test_cpu_limit_visible(self, tmp_path: Path, template: Path) -> None:
-        tool = _bash(tmp_path, template, process_cpu_sec=5)
+    def test_cpu_limit_visible(
+        self, zygote_stand: ZygoteStand, tmp_path: Path, template: Path
+    ) -> None:
+        tool = _bash(zygote_stand, tmp_path, template, process_cpu_sec=5)
         payload = _invoke(tool, "ulimit -t")
         if payload.stdout.strip() != "5":
             raise AssertionError('payload.stdout.strip() == "5"')
 
-    def test_memory_limit_enforced(self, tmp_path: Path, template: Path) -> None:
-        tool = _bash(tmp_path, template, process_memory_bytes=64 * 1024 * 1024)
+    def test_memory_limit_enforced(
+        self, zygote_stand: ZygoteStand, tmp_path: Path, template: Path
+    ) -> None:
+        tool = _bash(
+            zygote_stand, tmp_path, template, process_memory_bytes=64 * 1024 * 1024
+        )
         payload = _invoke(
             tool, "dd if=/dev/zero of=/dev/null bs=200M count=1 2>&1; echo rc=$?"
         )
         if "rc=0" in payload.stdout:
             raise AssertionError('"rc=0" not in payload.stdout')
 
-    def test_file_size_limit_visible(self, tmp_path: Path, template: Path) -> None:
-        tool = _bash(tmp_path, template, process_file_bytes=8 * 1024 * 1024)
+    def test_file_size_limit_visible(
+        self, zygote_stand: ZygoteStand, tmp_path: Path, template: Path
+    ) -> None:
+        tool = _bash(
+            zygote_stand, tmp_path, template, process_file_bytes=8 * 1024 * 1024
+        )
         payload = _invoke(tool, "ulimit -f")
         # bash показывает RLIMIT_FSIZE в блоках по 1024 байта
         if payload.stdout.strip() != str(8 * 1024 * 1024 // 1024):
             raise AssertionError("payload.stdout.strip() == str(8 * 1024 * 1024 //…")
 
-    def test_open_files_limit_visible(self, tmp_path: Path, template: Path) -> None:
-        tool = _bash(tmp_path, template, process_open_files=128)
+    def test_open_files_limit_visible(
+        self, zygote_stand: ZygoteStand, tmp_path: Path, template: Path
+    ) -> None:
+        tool = _bash(zygote_stand, tmp_path, template, process_open_files=128)
         payload = _invoke(tool, "ulimit -n")
         if payload.stdout.strip() != "128":
             raise AssertionError('payload.stdout.strip() == "128"')
 
-    def test_file_size_limit_enforced(self, tmp_path: Path, template: Path) -> None:
-        tool = _bash(tmp_path, template, process_file_bytes=1024 * 1024)
+    def test_file_size_limit_enforced(
+        self, zygote_stand: ZygoteStand, tmp_path: Path, template: Path
+    ) -> None:
+        tool = _bash(zygote_stand, tmp_path, template, process_file_bytes=1024 * 1024)
         payload = _invoke(
             tool, "dd if=/dev/zero of=big bs=64k count=32 2>&1; echo rc=$?"
         )
         if "rc=0" in payload.stdout:
             raise AssertionError('"rc=0" not in payload.stdout')
 
-    def test_broken_template_raises_mount_error(self, tmp_path: Path) -> None:
+    def test_broken_template_raises_mount_error(
+        self, zygote_stand: ZygoteStand, tmp_path: Path
+    ) -> None:
         bad = tmp_path / "bad.ext4"
         bad.write_bytes(b"not an ext4 image")
-        tool = _bash(tmp_path, bad)
+        tool = _bash(zygote_stand, tmp_path, bad)
         with pytest.raises(SandboxMountError, match="image not mounted"):
             _invoke(tool, "true")
 

@@ -62,7 +62,7 @@ logger = logging.getLogger(__name__)
 class ToolStream(ChannelSinks, CallStream):
     """Журнал одного живого вызова инструмента: рекордер на каждый канал
     плюс будильники для слежения из event loop'а. Реализует ChannelSinks
-    (его получает исполнитель через ToolChannelsTap) и CallStream (чтение
+    (его получает исполнитель через CallAmbient) и CallStream (чтение
     панелью); создаёт и держит его CallJournals.
 
     Создаётся в потоке исполнения инструмента; свой event loop стрим не

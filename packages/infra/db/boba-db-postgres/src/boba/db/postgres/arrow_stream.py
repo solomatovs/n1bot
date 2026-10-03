@@ -596,7 +596,7 @@ class PgArrowLoader:
     -> сверка по семействам -> план таблицы -> ход стратегий TransferRun с
     вставкой пачек через PgArrowSink, всё одной транзакцией соединения."""
 
-    def __init__(  # noqa: PLR0913 — фикстуры теста
+    def __init__(  # noqa: PLR0913
         self,
         conn: psycopg.AsyncConnection[Any],
         table: PgTableRef,
@@ -620,7 +620,7 @@ class PgArrowLoader:
         self._declared = PgDeclaredTypes(conn, journal)
         self._ipc = ArrowIpc()
 
-    async def run(  # noqa: PLR0913 — фикстуры теста
+    async def run(  # noqa: PLR0913
         self,
         schema_strategy: SchemaStrategyPlan,
         delete_strategy: DeleteStrategyApply,

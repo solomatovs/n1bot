@@ -28,11 +28,6 @@ pytestmark = [
 ]
 
 
-@pytest.fixture(autouse=True)
-def chainlit_context() -> None:
-    """Каталог опрашивается напрямую: сессия чата не нужна."""
-
-
 def _reader_login() -> str:
     _, _, name = STAND.ldap_bind_user.rpartition(Stand.NETBIOS_SEPARATOR)
 

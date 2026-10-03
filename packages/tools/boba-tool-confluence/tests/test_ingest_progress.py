@@ -58,11 +58,6 @@ def anyio_backend() -> str:
     return "asyncio"
 
 
-@pytest.fixture(autouse=True)
-def chainlit_context() -> None:
-    """Прогон не зависит от сессии chainlit."""
-
-
 def _stub(attachments_per_page: int) -> ConfluenceStub:
     stub = ConfluenceStub()
     for page_id in PAGE_IDS:

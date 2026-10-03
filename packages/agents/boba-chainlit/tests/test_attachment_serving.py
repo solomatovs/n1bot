@@ -8,7 +8,7 @@ import plotly.graph_objects as go
 import pytest
 from chainlit.auth import get_current_user
 from chainlit.user import PersistedUser
-from chainlit_stand import FakeUrl, Seed, use_session
+from chainlit_stand import ChatSessionStand, FakeUrl, Seed
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
@@ -19,7 +19,6 @@ from boba.chainlit.data.upload import AttachmentServing
 from boba.chainlit.domain.keys import AttachmentUrl
 from boba.chainlit.rendering.chat_view import ChatView, StepRole
 from boba.chainlit.rendering.mount import WorkspaceFile
-from boba.stand_core.context import CallStand
 
 pytestmark = pytest.mark.anyio
 
@@ -59,13 +58,12 @@ async def create_chart_element(seeded: Seed) -> cl.Plotly:
 
 
 async def test_persisted_plotly_chart_is_served_as_json(
-    call_stand: CallStand,
+    chat_session: ChatSessionStand,
     seeded: Seed,
     storage: LocalStorageClient,
-    monkeypatch: pytest.MonkeyPatch,
 ):
     layer = seeded.layer
-    use_session(monkeypatch, call_stand, user_id=seeded.user.id)
+    chat_session.use(user_id=seeded.user.id)
     element = await create_chart_element(seeded)
 
     url = AttachmentUrl(
@@ -105,15 +103,14 @@ async def test_persisted_plotly_chart_is_served_as_json(
 
 
 async def test_bot_file_is_shown_without_copying(
-    call_stand: CallStand,
+    chat_session: ChatSessionStand,
     seeded: Seed,
     storage: LocalStorageClient,
     files_dir: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ):
     """Тул send_file заводит элемент на готовый файл: содержимое не копируется."""
     layer = seeded.layer
-    use_session(monkeypatch, call_stand, user_id=seeded.user.id)
+    chat_session.use(user_id=seeded.user.id)
 
     # файл уже в каталоге вложений треда — его туда положил агент через bash
     key = ObjectKey.build(seeded.user.id, seeded.thread_id, REPORT_NAME, "el")
@@ -177,14 +174,13 @@ async def test_bot_file_is_shown_without_copying(
 
 
 async def test_attachment_range_is_served_partially(
-    call_stand: CallStand,
+    chat_session: ChatSessionStand,
     seeded: Seed,
     storage: LocalStorageClient,
-    monkeypatch: pytest.MonkeyPatch,
 ):
     """Range — транспорт оконного чтения: вьюверы канваса тянут файл кусками."""
     layer = seeded.layer
-    use_session(monkeypatch, call_stand, user_id=seeded.user.id)
+    chat_session.use(user_id=seeded.user.id)
 
     key = ObjectKey.build(seeded.user.id, seeded.thread_id, REPORT_NAME, "el")
     await storage.upload_file(
@@ -232,13 +228,12 @@ async def test_attachment_range_is_served_partially(
 
 
 async def test_foreign_user_gets_no_file(
-    call_stand: CallStand,
+    chat_session: ChatSessionStand,
     seeded: Seed,
     storage: LocalStorageClient,
-    monkeypatch: pytest.MonkeyPatch,
 ):
     layer = seeded.layer
-    use_session(monkeypatch, call_stand, user_id=seeded.user.id)
+    chat_session.use(user_id=seeded.user.id)
     element = await create_chart_element(seeded)
 
     stranger = PersistedUser(
@@ -261,14 +256,13 @@ async def test_foreign_user_gets_no_file(
 
 
 async def test_diagram_from_mermaid_dir_is_served(
-    call_stand: CallStand,
+    chat_session: ChatSessionStand,
     seeded: Seed,
     storage: LocalStorageClient,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Файл из mermaid/ отдаётся по своей ссылке: раньше отдача звала upload/."""
     layer = seeded.layer
-    use_session(monkeypatch, call_stand, user_id=seeded.user.id)
+    chat_session.use(user_id=seeded.user.id)
     key = ObjectKey.build(
         seeded.user.id,
         seeded.thread_id,

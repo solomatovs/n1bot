@@ -269,7 +269,7 @@ class StreamFileView:
             os.close(fd)
 
     @staticmethod
-    def _slice(  # noqa: PLR0913 — фикстуры теста
+    def _slice(  # noqa: PLR0913
         data: bytes,
         start: int,
         end: int,
@@ -331,7 +331,7 @@ class StreamJournal(StreamStorePort):
 
         return self._open_recorder(key, root, tool_name, channel, on_data, protected)
 
-    def _open_recorder(  # noqa: PLR0913 — фикстуры теста
+    def _open_recorder(  # noqa: PLR0913
         self,
         key: StreamKey,
         root: str,

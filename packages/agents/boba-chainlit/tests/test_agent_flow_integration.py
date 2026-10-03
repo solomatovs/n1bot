@@ -11,7 +11,8 @@ from __future__ import annotations
 
 import os
 import shutil
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncIterator, Iterator, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -42,11 +43,10 @@ from boba.llm.http.openai import OpenAiProvider
 from boba.llm.providers import LlmProviders
 from boba.llm.schema import SchemaReply
 from boba.stand.refs import StandRefs
-from boba.stand.tools import STREAM_CONFIG
 from boba.stand_core.context import CallStand
 from boba.toolkit.calls import CallIdPrefix
 from boba.toolkit.result import TableResult, ToolArtifact
-from boba.toolrun.stream_calls import LocalDagService
+from boba.toolrun.stream_calls import ToolServer
 from boba.transport.http.connection import HttpConnection, UrlScheme
 
 _REPO = Path(__file__).resolve().parents[4]
@@ -110,9 +110,14 @@ def call_stand() -> CallStand:
 
 
 @pytest.fixture(scope="module")
-def runtime_stand(call_stand: CallStand) -> StandRefs:
-    """Объекты процесса модуля поверх того же держателя контекста."""
-    return StandRefs(call_stand.contexts)
+def runtime_stand(call_stand: CallStand) -> Iterator[StandRefs]:
+    """Объекты процесса модуля поверх того же держателя контекста; способы
+    запуска гасятся после модуля, как это делает выход приложения."""
+    stand = StandRefs(call_stand.contexts)
+    try:
+        yield stand
+    finally:
+        stand.stop()
 
 
 @pytest.fixture
@@ -143,19 +148,29 @@ async def chainlit_context(
     call_stand.clear()
 
 
+@dataclass(frozen=True)
+class SessionTools:
+    """Инструменты сессии и порт инструментов над ними, как их отдаёт реестр."""
+
+    tools: list[BaseTool]
+    service: ToolServer
+
+
 @pytest.fixture(scope="module")
 def session_tools(
     runtime_stand: StandRefs,
     call_stand: CallStand,
     raw_config: DictConfig,
     app_config: AppConfig,
-) -> list[BaseTool]:
-    """Инструменты профиля, собранные боевым загрузчиком."""
+) -> SessionTools:
+    """Инструменты профиля, собранные боевым загрузчиком, и их порт."""
     registry = ChatPlugins(runtime_stand.contexts, runtime_stand.runs).load(
-        raw_config, runtime_stand.none()
+        raw_config, runtime_stand.none(), runtime_stand.launchers(raw_config)
     )
     roles = frozenset(app_config.roles)
-    return registry.for_session(roles, PROFILE)
+    tools = registry.for_session(roles, PROFILE)
+
+    return SessionTools(tools=tools, service=registry.server(tools))
 
 
 @pytest.fixture(scope="module")
@@ -172,7 +187,7 @@ async def providers(app_config: AppConfig) -> Any:
 def _graph(
     app_config: AppConfig,
     providers: LlmProviders,
-    tools: Sequence[BaseTool],
+    session: SessionTools,
 ) -> CompiledStateGraph:
     """Граф профиля: боевой билдер, память вместо postgres-checkpointer."""
     selected = SelectedProfile(name=PROFILE, config=app_config.profiles[PROFILE])
@@ -185,18 +200,18 @@ def _graph(
     )
 
     names: list[str] = []
-    for tool in tools:
+    for tool in session.tools:
         names.append(tool.name)
 
     spec = GraphSpec(
         chat=chat,
-        service=LocalDagService(tools, STREAM_CONFIG, ()),
+        service=session.service,
         system_prompt=settings.system_prompt,
         checkpointer=InMemorySaver(),
         history=build_history_view(frozenset(names), settings.history_messages),
     )
 
-    builder = session_graph_builder(providers, selected, tools)
+    builder = session_graph_builder(providers, selected, session.tools)
     if not isinstance(builder, PrefetchGraphBuilder):
         pytest.fail(f"профиль {PROFILE} должен строить prefetch-граф, а не {builder}")
 
@@ -290,7 +305,7 @@ class TestPrefetchGraph:
         flow_config: PrefetchFlowConfig,
         rephraser_config: ChatSettings,
         providers: LlmProviders,
-        session_tools: list[BaseTool],
+        session_tools: SessionTools,
     ) -> None:
         graph = _graph(app_config, providers, session_tools)
 
@@ -340,7 +355,7 @@ class TestPrefetchGraph:
         self,
         app_config: AppConfig,
         providers: LlmProviders,
-        session_tools: list[BaseTool],
+        session_tools: SessionTools,
         chainlit_context: None,
     ) -> None:
         """Каждый вопрос треда обогащается своим поиском."""
@@ -369,7 +384,7 @@ class TestPrefetchGraph:
         app_config: AppConfig,
         flow_config: PrefetchFlowConfig,
         providers: LlmProviders,
-        session_tools: list[BaseTool],
+        session_tools: SessionTools,
         chainlit_context: None,
     ) -> None:
         """Профиль без секции rephraser ищет по самому запросу пользователя."""
@@ -414,7 +429,7 @@ class TestPrefetchGraph:
         app_config: AppConfig,
         flow_config: PrefetchFlowConfig,
         rephraser_config: ChatSettings,
-        session_tools: list[BaseTool],
+        session_tools: SessionTools,
     ) -> None:
         """Переформулировщик недоступен: ход отвечает, поиск идёт по запросу."""
         provider = rephraser_config.provider

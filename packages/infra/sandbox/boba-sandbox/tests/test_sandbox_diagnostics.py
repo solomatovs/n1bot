@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import shutil
+from collections.abc import Iterator
 from typing import Any
 
 import pytest
@@ -27,11 +28,6 @@ needs_sandbox = pytest.mark.skipif(
     or not os.path.exists(FUSE_DEVICE),
     reason="нужны bwrap, fuse2fs, mkfs.ext4 и /dev/fuse",
 )
-
-
-@pytest.fixture(autouse=True)
-def chainlit_context() -> None:
-    pass
 
 
 def _profile(**kw: Any) -> SandboxProfile:
@@ -93,9 +89,11 @@ class TestDiagnosticText:
             raise AssertionError('_explain(_result(exit_code=0), _profile()) == ""')
 
 
-def _caller(section: str, profile: SandboxProfile) -> ZygoteToolCaller:
+def _caller(
+    zygote_stand: ZygoteStand, section: str, profile: SandboxProfile
+) -> ZygoteToolCaller:
     """Зигота теста: у теста свои лимиты — своя секция."""
-    return ZygoteStand.caller(
+    return zygote_stand.caller(
         section, profile, path_vars=lambda: {"user_id": "7", "thread_id": "t1"}
     )
 
@@ -116,50 +114,61 @@ class TestDiagnosticAppearsLive:
     """Лимит реально превышается: сигнал ядра доходит до обвязки запуска и
     объясняется профилем; ошибка команды остаётся её кодом и stderr."""
 
-    def teardown_method(self) -> None:
-        ZygoteStand.stop()
+    @pytest.fixture(autouse=True)
+    def zygotes_stopped(self, zygote_stand: ZygoteStand) -> Iterator[None]:
+        """Зиготы секций гасятся после каждого теста класса."""
+        yield
+        zygote_stand.stop()
 
-    def test_file_size_kills_the_call_with_the_limit_named(self) -> None:
+    def test_file_size_kills_the_call_with_the_limit_named(
+        self, zygote_stand: ZygoteStand
+    ) -> None:
         """SIGXFSZ убивает команду, тело умирает тем же сигналом — вызов без
         конверта, обвязка называет лимит по коду возврата."""
-        caller = _caller("dg-fsize", _profile(process_file_bytes=1024 * 1024))
+        caller = _caller(
+            zygote_stand, "dg-fsize", _profile(process_file_bytes=1024 * 1024)
+        )
 
         with pytest.raises(LauncherError, match="process_file_bytes=1048576"):
             _invoke(caller, "dd if=/dev/zero of=/tmp/big bs=64k count=64")
 
-    def test_open_files_is_a_plain_failure(self) -> None:
+    def test_open_files_is_a_plain_failure(self, zygote_stand: ZygoteStand) -> None:
         """EMFILE — ошибка команды, не сигнал: код и stderr как есть."""
         code = (
             "held = []\n"
             "for i in range(200):\n"
             "    held.append(open('/tmp/probe-%d' % i, 'w'))\n"
         )
-        caller = _caller("dg-files", _profile(process_open_files=40))
+        caller = _caller(zygote_stand, "dg-files", _profile(process_open_files=40))
         payload = _invoke(caller, _python(code))
         if payload.exit_code == 0:
             raise AssertionError("payload.exit_code != 0")
         if "Too many open files" not in payload.stderr:
             raise AssertionError('"Too many open files" in payload.stderr')
 
-    def test_address_space_is_a_plain_failure(self) -> None:
+    def test_address_space_is_a_plain_failure(self, zygote_stand: ZygoteStand) -> None:
         """RLIMIT_AS даёт MemoryError, а не сигнал: команда отчитывается сама."""
         code = "x = bytearray(400 * 1024 * 1024)\n"
-        caller = _caller("dg-mem", _profile(process_memory_bytes=64 * 1024 * 1024))
+        caller = _caller(
+            zygote_stand, "dg-mem", _profile(process_memory_bytes=64 * 1024 * 1024)
+        )
         payload = _invoke(caller, _python(code))
         if payload.exit_code == 0:
             raise AssertionError("payload.exit_code != 0")
         if "MemoryError" not in payload.stderr:
             raise AssertionError('"MemoryError" in payload.stderr')
 
-    def test_profile_timeout_kills_the_call(self) -> None:
-        caller = _caller("dg-timeout", _profile(timeout_sec=1))
+    def test_profile_timeout_kills_the_call(self, zygote_stand: ZygoteStand) -> None:
+        caller = _caller(zygote_stand, "dg-timeout", _profile(timeout_sec=1))
 
         with pytest.raises(LauncherError, match="timeout_sec=1"):
             _invoke(caller, "sleep 10")
 
-    def test_command_timeout_is_reported_by_the_tool(self) -> None:
+    def test_command_timeout_is_reported_by_the_tool(
+        self, zygote_stand: ZygoteStand
+    ) -> None:
         """Таймаут самой команды из [tool.bash]: результат с timed_out."""
-        caller = _caller("dg-cmd-timeout", _profile(timeout_sec=30))
+        caller = _caller(zygote_stand, "dg-cmd-timeout", _profile(timeout_sec=30))
         limits = BashToolConfig(max_output_bytes=4096, timeout_sec=1.0)
         payload = _invoke(caller, "echo before; sleep 10", cfg=limits)
         if payload.timed_out is not True:
@@ -169,15 +178,17 @@ class TestDiagnosticAppearsLive:
         if "before" not in payload.stdout:
             raise AssertionError('"before" in payload.stdout')
 
-    def test_network_disabled_is_a_plain_failure(self) -> None:
+    def test_network_disabled_is_a_plain_failure(
+        self, zygote_stand: ZygoteStand
+    ) -> None:
         code = "import socket\nsocket.getaddrinfo('example.com', 443)\n"
-        caller = _caller("dg-net", _profile(network=False))
+        caller = _caller(zygote_stand, "dg-net", _profile(network=False))
         payload = _invoke(caller, _python(code))
         if payload.exit_code == 0:
             raise AssertionError("payload.exit_code != 0")
 
-    def test_successful_command(self) -> None:
-        payload = _invoke(_caller("dg-ok", _profile()), "echo ok")
+    def test_successful_command(self, zygote_stand: ZygoteStand) -> None:
+        payload = _invoke(_caller(zygote_stand, "dg-ok", _profile()), "echo ok")
         if payload.exit_code != 0:
             raise AssertionError("payload.exit_code == 0")
         if payload.stdout.strip() != "ok":

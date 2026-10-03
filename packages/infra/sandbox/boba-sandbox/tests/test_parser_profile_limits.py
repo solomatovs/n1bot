@@ -5,8 +5,6 @@
 
 from __future__ import annotations
 
-import pytest
-
 from boba.sandbox import SandboxProfile
 from boba.stand.sandbox import section_profile
 
@@ -28,11 +26,6 @@ _NETWORK_SECTIONS = [
     "tool.pg",
     "tool.kb",
 ]
-
-
-@pytest.fixture(autouse=True)
-def chainlit_context() -> None:
-    pass
 
 
 def _bound(raw, sections) -> list[tuple[str, SandboxProfile]]:

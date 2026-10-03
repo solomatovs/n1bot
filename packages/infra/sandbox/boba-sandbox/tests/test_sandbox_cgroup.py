@@ -31,11 +31,6 @@ def _bin_dirs() -> list[str]:
     return dirs
 
 
-@pytest.fixture(autouse=True)
-def chainlit_context() -> None:
-    pass
-
-
 class TestGroupLimits:
     """Чистая логика: контроллеры, формат cpu.max, признак «запрошено»."""
 

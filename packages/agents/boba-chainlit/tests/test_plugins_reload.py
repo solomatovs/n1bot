@@ -7,33 +7,21 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterator
-
 import pytest
 from omegaconf import DictConfig, OmegaConf
 from pydantic import BaseModel
 
 from boba.chainlit.infra.plugins import ChatPlugins
-from boba.sandbox import ZygoteRegistry
 from boba.stand.refs import StandRefs
 from boba.stand_core.context import CallStand
 from boba.tool.pg.tools import TOOLS as PG_TOOLS
 from boba.tool.pg.tools import pg_query
-from boba.toolrun.call_id import ToolCallIdField
+from boba.toolrun.call_id import CallFields
 
 
 @pytest.fixture(autouse=True)
 def chainlit_context() -> None:
     pass
-
-
-@pytest.fixture(autouse=True)
-def app_sandbox() -> Iterator[None]:
-    """Зиготы секций гасятся после теста, как это делает выход приложения."""
-    try:
-        yield
-    finally:
-        ZygoteRegistry.stop_all()
 
 
 @pytest.fixture
@@ -56,11 +44,12 @@ def _schema_fields(tool: object) -> set[str]:
 def test_repeated_load_serves_wrapped_copies(
     runtime_stand: StandRefs, call_stand: CallStand, reload_config: DictConfig
 ) -> None:
+    launchers = runtime_stand.launchers(reload_config)
     first = ChatPlugins(runtime_stand.contexts, runtime_stand.runs).load(
-        reload_config, runtime_stand.none()
+        reload_config, runtime_stand.none(), launchers
     )
     second = ChatPlugins(runtime_stand.contexts, runtime_stand.runs).load(
-        reload_config, runtime_stand.none()
+        reload_config, runtime_stand.none(), launchers
     )
 
     if [t.name for t in first.tools] != [t.name for t in second.tools]:
@@ -69,8 +58,8 @@ def test_repeated_load_serves_wrapped_copies(
     by_name = {t.name: t for t in second.tools}
     loaded = by_name["pg_query"]
 
-    if ToolCallIdField.NAME not in _schema_fields(loaded):
-        raise AssertionError("ToolCallIdField.NAME in _schema_fields(loaded)")
+    if CallFields.CALL_ID not in _schema_fields(loaded):
+        raise AssertionError("CallFields.CALL_ID in _schema_fields(loaded)")
     if "cfg" in _schema_fields(loaded):
         raise AssertionError('"cfg" not in _schema_fields(loaded)')
 
@@ -78,15 +67,16 @@ def test_repeated_load_serves_wrapped_copies(
 def test_module_singletons_stay_pristine(
     runtime_stand: StandRefs, call_stand: CallStand, reload_config: DictConfig
 ) -> None:
+    launchers = runtime_stand.launchers(reload_config)
     ChatPlugins(runtime_stand.contexts, runtime_stand.runs).load(
-        reload_config, runtime_stand.none()
+        reload_config, runtime_stand.none(), launchers
     )
     ChatPlugins(runtime_stand.contexts, runtime_stand.runs).load(
-        reload_config, runtime_stand.none()
+        reload_config, runtime_stand.none(), launchers
     )
 
     for tool in PG_TOOLS:
-        if ToolCallIdField.NAME not in _schema_fields(tool):
+        if CallFields.CALL_ID not in _schema_fields(tool):
             continue
 
         raise AssertionError(f"{tool.name}: обвязка пришила call_id синглтону")

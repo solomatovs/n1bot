@@ -21,6 +21,7 @@ from boba.connection_broker.tools import ConnectionTools
 from boba.connection_broker.user_connections import StoreRef
 from boba.identity.context import CallContexts
 from boba.identity.run import Runs
+from boba.runtime.launchers import SectionLaunchers
 from boba.runtime.plugins import EntryPointPlugins, ToolLoader
 from boba.runtime.refs import RuntimeRefs
 from boba.toolrun.registry import ToolRegistry
@@ -47,11 +48,14 @@ class ChatPlugins:
         """Собственный сервер инструментов чата: каталог соединений."""
         return ConnectionTools(store_ref, self._contexts).build()
 
-    def load(self, raw_config: DictConfig, refs: RuntimeRefs) -> ToolRegistry:
+    def load(
+        self, raw_config: DictConfig, refs: RuntimeRefs, launchers: SectionLaunchers
+    ) -> ToolRegistry:
         loader = ToolLoader(
             raw_config,
             EntryPointPlugins.discover(),
             refs,
+            launchers,
             GrantCheck.STRICT,
             self.surface_hooks(),
             self.own_tools(refs.connection_store),

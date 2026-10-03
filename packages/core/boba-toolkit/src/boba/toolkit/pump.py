@@ -54,7 +54,7 @@ from boba.toolkit.launcher import (
 )
 from boba.toolkit.ports import GateSignal
 from boba.toolkit.protocol import CallGateMode, CallInputSpec
-from boba.toolkit.stream import Chunk, ChunkSink, ToolChannelsTap
+from boba.toolkit.stream import ChannelSinks, Chunk, ChunkSink
 
 __all__ = [
     "CallInput",
@@ -149,18 +149,19 @@ class Tee:
 class CallSinks:
     """Собирает приёмники каналов вызова: свои буферы плюс журнал.
 
-    Журнал вызова обвязка передаёт через contextvar (ToolChannelsTap);
-    здесь его приёмники подключаются тройником (Tee) к своим, а каналы без
-    своего приёмника пишутся только в журнал. Зовётся в потоке вызывающего:
-    в поток насоса contextvar не переезжает, и журнал там уже не найти.
+    Журнал вызова исполнитель берёт из обстановки вызова (CallAmbient) и
+    передаёт сюда; его приёмники подключаются тройником (Tee) к своим, а
+    каналы без своего приёмника пишутся только в журнал. Зовётся в потоке
+    вызывающего: в поток насоса обстановка не переезжает, и журнал там уже
+    не найти. Создаётся исполнителем в его конструкторе.
     """
 
-    @classmethod
     def call_inputs(
-        cls,
+        self,
         stdin_fd: int,
         port_fds: Sequence[int],
         specs: Sequence[CallInputSpec],
+        journal: ChannelSinks | None,
     ) -> CallInputs:
         """Входы вызова по ToolCommand.inputs: у каждого свой пайп из
         port_fds по порядку. stdin процесса порт не несёт — это служебный
@@ -176,21 +177,23 @@ class CallSinks:
 
         slots: list[FrameInput] = []
         for index, (fd, spec) in enumerate(zip(port_fds, specs, strict=True)):
-            slots.append(cls._input_of(fd, spec, journaled=index == 0))
+            journaled = journal
+            if index != 0:
+                journaled = None
+
+            slots.append(self._input_of(fd, spec, journaled))
 
         return CallInputs(FrameInput(stdin_fd), tuple(slots))
 
     @staticmethod
-    def _input_of(fd: int, spec: CallInputSpec, *, journaled: bool) -> FrameInput:
-        """Вход кадровый — с журналом заголовков, когда тап поставлен; сырой —
+    def _input_of(
+        fd: int, spec: CallInputSpec, journal: ChannelSinks | None
+    ) -> FrameInput:
+        """Вход кадровый — с журналом заголовков, когда журнал передан; сырой —
         голые байты без кадров и журнала."""
         if spec.raw:
             return RawInput(fd)
 
-        if not journaled:
-            return FrameInput(fd)
-
-        journal = ToolChannelsTap.get()
         if journal is None:
             return FrameInput(fd)
 
@@ -200,10 +203,10 @@ class CallSinks:
     def merged(
         own: Mapping[ToolChannel, ChunkSink],
         journal_channels: Sequence[ToolChannel],
+        journal: ChannelSinks | None,
     ) -> dict[ToolChannel, ChunkSink]:
         sinks: dict[ToolChannel, ChunkSink] = dict(own)
 
-        journal = ToolChannelsTap.get()
         if journal is None:
             return sinks
 
@@ -758,7 +761,7 @@ class PumpedCall(OpenRun[RunEnd], ToolCall):
     ToolOutcome переданной функцией finish.
     """
 
-    def __init__(  # noqa: PLR0913 — фикстуры теста
+    def __init__(  # noqa: PLR0913
         self,
         tool: str,
         inputs: CallInputs,

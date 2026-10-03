@@ -52,6 +52,7 @@ from boba.runtime.config import (
 )
 from boba.runtime.di import Container, Depends
 from boba.runtime.journal import DirVault, StreamJournal
+from boba.runtime.launchers import SectionLaunchers, ToolLaunchers
 from boba.runtime.locks import LockReaper, PgLiveLocks
 from boba.runtime.payloads import PgPayloadStore
 from boba.runtime.plugins import PluginMeta, PluginTable, ToolLoader
@@ -61,6 +62,7 @@ from boba.runtime.signin import SignInAssembly
 from boba.runtime.threads import ThreadsTable
 from boba.runtime.turns import StaleTurnCloser
 from boba.runtime.users import UsersTable
+from boba.toolkit.chain import CallAmbient
 from boba.toolrun.registry import ToolRegistry
 from boba.toolrun.streams import CallJournals
 from boba.toolrun.wrapping import CallHooks
@@ -285,6 +287,7 @@ def runtime_refs() -> RuntimeRefs:
         contexts=_root().resolved(call_contexts),
         runs=_root().resolved(runs),
         journals=_root().resolved(call_journals),
+        ambient=_root().resolved(call_ambient),
         seal_keys=_root().resolved(seal_keys),
         live_locks=live_locks_ref,
         heartbeat_sec=_root().resolved(get_runtime_config).cluster.heartbeat_sec,
@@ -293,15 +296,23 @@ def runtime_refs() -> RuntimeRefs:
     )
 
 
-def tool_registry(
+def tool_launchers(
+    raw: Annotated[DictConfig, Depends(get_raw_config)],
+) -> SectionLaunchers:
+    """Способ запуска инструментов процесса: один на все сборки реестра."""
+    return ToolLaunchers(raw).build()
+
+
+def tool_registry(  # noqa: PLR0913 — реестр собирается всеми входами процесса
     raw: Annotated[DictConfig, Depends(get_raw_config)],
     table: Annotated[PluginTable, Depends(plugin_table)],
     check: Annotated[GrantCheck, Depends(grant_check)],
     hooks: Annotated[Sequence[CallHooks[Any]], Depends(surface_hooks)],
     own: Annotated[Sequence[BaseTool], Depends(own_tools)],
+    launchers: Annotated[SectionLaunchers, Depends(tool_launchers)],
 ) -> ToolRegistry:
     refs = runtime_refs()
-    loader = ToolLoader(raw, table(), refs, check, hooks, own)
+    loader = ToolLoader(raw, table(), refs, launchers, check, hooks, own)
 
     return loader.load()
 
@@ -383,6 +394,12 @@ async def connection_store(
     await store.sync_roles(roles)
 
     return store
+
+
+def call_ambient() -> CallAmbient:
+    """Обстановка вызова инструмента процесса: одна на всех, кто её ставит
+    и читает."""
+    return CallAmbient()
 
 
 def runs(

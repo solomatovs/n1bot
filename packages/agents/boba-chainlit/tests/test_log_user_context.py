@@ -8,7 +8,7 @@ from typing import Any, ClassVar
 from uuid import UUID
 
 import pytest
-from chainlit_stand import use_session
+from chainlit_stand import ChatSessionStand
 
 from boba.auth import JwtTokens
 from boba.chainlit.infra.log_context import (
@@ -19,7 +19,6 @@ from boba.chainlit.infra.log_context import (
 from boba.chainlit.infra.session import ChainlitSession
 from boba.identity.session import Login
 from boba.identity.signin import SignedIn, SignInMetadata
-from boba.stand_core.context import CallStand
 
 
 @pytest.fixture(autouse=True)
@@ -45,11 +44,10 @@ class TestUserInEveryRecord:
             raise AssertionError("getattr(record, UserLogContext.ATTRIBUTE) == UserLo…")
 
     def test_user_label_taken_from_session(
-        self, call_stand: CallStand, monkeypatch: pytest.MonkeyPatch
+        self,
+        chat_session: ChatSessionStand,
     ) -> None:
-        use_session(
-            monkeypatch, call_stand, user_id=str(UUID(int=7)), identifier="ivanov"
-        )
+        chat_session.use(user_id=str(UUID(int=7)), identifier="ivanov")
         if getattr(self._record(), UserLogContext.ATTRIBUTE) != "ivanov":
             raise AssertionError("getattr(self._record(), UserLogContext.ATTRIBUTE) =…")
 
@@ -73,11 +71,10 @@ class TestUserInEveryRecord:
             raise AssertionError("logging.getLogRecordFactory() is factory")
 
     def test_format_with_user_field(
-        self, call_stand: CallStand, monkeypatch: pytest.MonkeyPatch
+        self,
+        chat_session: ChatSessionStand,
     ) -> None:
-        use_session(
-            monkeypatch, call_stand, user_id=str(UUID(int=7)), identifier="petrov"
-        )
+        chat_session.use(user_id=str(UUID(int=7)), identifier="petrov")
         formatter = logging.Formatter("[%(user)s] %(message)s")
         if formatter.format(self._record()) != "[petrov] сообщение":
             raise AssertionError('formatter.format(self._record()) == "[petrov] сообщ…')
@@ -91,11 +88,10 @@ class TestUserInEveryRecord:
             RequestUserContext.reset(token)
 
     def test_session_wins_over_request_context(
-        self, call_stand: CallStand, monkeypatch: pytest.MonkeyPatch
+        self,
+        chat_session: ChatSessionStand,
     ) -> None:
-        use_session(
-            monkeypatch, call_stand, user_id=str(UUID(int=7)), identifier="ivanov"
-        )
+        chat_session.use(user_id=str(UUID(int=7)), identifier="ivanov")
         token = RequestUserContext.set("sidorov")
         try:
             if getattr(self._record(), UserLogContext.ATTRIBUTE) != "ivanov":

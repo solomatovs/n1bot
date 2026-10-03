@@ -8,7 +8,7 @@ from typing import Any
 from uuid import UUID
 
 import pytest
-from chainlit_stand import use_session
+from chainlit_stand import ChatSessionStand
 
 from boba.canvas.canvas import (
     CanvasError,
@@ -22,7 +22,6 @@ from boba.chainlit.canvas.diagram import DiagramFiles, MermaidViewer
 from boba.chainlit.data.data_layer import AttachmentDataLayer
 from boba.chainlit.data.storage import LocalStorageClient
 from boba.chainlit.infra.config import LocalStorageConfig
-from boba.stand_core.context import CallStand
 from boba.toolkit.result import VisualResult
 from boba.workspace.binaries import TrustedBinaries
 from boba.workspace.launcher import MountingConfig
@@ -114,7 +113,9 @@ class _StorageOnlyLayer:
 
 @pytest.fixture
 def files(
-    call_stand: CallStand, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    chat_session: ChatSessionStand,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> DiagramFiles:
     config = LocalStorageConfig(
         files_dir=str(tmp_path),
@@ -131,7 +132,7 @@ def files(
     storage = LocalStorageClient(config)
     layer = _StorageOnlyLayer(storage)
 
-    use_session(monkeypatch, call_stand, user_id=str(UUID(int=7)), thread_id=THREAD)
+    chat_session.use(user_id=str(UUID(int=7)), thread_id=THREAD)
     monkeypatch.setattr(AttachmentDataLayer, "require", classmethod(lambda cls: layer))
 
     return DiagramFiles()

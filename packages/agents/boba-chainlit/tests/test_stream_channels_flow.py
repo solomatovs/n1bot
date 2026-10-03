@@ -34,7 +34,7 @@ from boba.identity.context import CallContexts
 from boba.stand.refs import StandRefs
 from boba.stand_core import fake_toolmod
 from boba.stand_core.fake_toolmod import FakeConfig
-from boba.toolkit.chain import GroupFailureResult, StreamFailureKind
+from boba.toolkit.chain import CallAmbient, GroupFailureResult, StreamFailureKind
 from boba.toolkit.dag import WorkflowNodeResult, WorkflowResult
 from boba.toolkit.entry import EntryErrorKind, ToolMain
 from boba.toolkit.launcher import TappedCall, ToolCall, ToolLauncher
@@ -45,7 +45,7 @@ from boba.toolkit.result import (
 )
 from boba.toolkit.wrap import ToolProcessWrap
 from boba.toolrun.bridge import ToolBridge
-from boba.toolrun.call_id import ToolCallIdField
+from boba.toolrun.call_id import CallFields
 from boba.toolrun.dev_null import DevNullTool
 from boba.toolrun.errors import ToolErrorGuard
 from boba.toolrun.injected import InjectedConfig
@@ -107,6 +107,8 @@ class ChannelStand:
 
     def __init__(self, workdir: Path) -> None:
         self.workdir = workdir
+        ambient = CallAmbient()
+        drain_tool = DevNullTool(ambient)
         cfg = ProcessLauncherConfig(
             provider="process",
             workdir=str(workdir),
@@ -116,7 +118,7 @@ class ChannelStand:
             kill_grace_sec=0.5,
         )
         launcher = RecordingLauncher(
-            ProcessToolCaller("stream-channels", cfg, CallContexts())
+            ProcessToolCaller("stream-channels", cfg, CallContexts(), ambient)
         )
         self._launcher = launcher
 
@@ -131,22 +133,23 @@ class ChannelStand:
         for payload in payloads:
             tools.append(ToolBridge.as_structured_tool(payload.model_copy()))
 
-        ToolProcessWrap.guard_all(ToolMain.toolset(*tools), launcher)
+        specs = ToolProcessWrap(ambient).guard_all(ToolMain.toolset(*tools), launcher)
+        specs = specs.declaring(DevNullTool.NAME, drain_tool.spec())
 
         def resolve(name: str, annotation: Any) -> object:
             return CFG
 
         InjectedConfig.bind_all(tools, resolve)
-        StreamChannelFields(STREAM_CFG).attach_all(tools)
-        ToolCallIdField.attach_all(tools)
+        StreamChannelFields(STREAM_CFG).attach_all(tools, specs)
+        CallFields().attach_all(tools)
         ToolErrorGuard().guard_all(tools)
 
         # сток хоста идёт без поля id вызова: снимать его в стенде некому
-        drain = ToolBridge.as_structured_tool(DevNullTool.build())
-        StreamChannelFields(STREAM_CFG).attach_all([drain])
+        drain = ToolBridge.as_structured_tool(drain_tool.build())
+        StreamChannelFields(STREAM_CFG).attach_all([drain], specs)
         tools.append(drain)
 
-        self.streams = LocalDagService(tools, STREAM_CFG, ())
+        self.streams = LocalDagService(tools, STREAM_CFG, (), specs, ambient)
         self.tools = tools
 
     def started(self) -> list[tuple[str, ...]]:

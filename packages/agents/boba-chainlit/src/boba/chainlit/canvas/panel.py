@@ -665,7 +665,7 @@ class StreamActions:
         CanvasWatch.leave(thread_id, request.nonce)
 
     @staticmethod
-    def content(  # noqa: PLR0913 — фикстуры теста
+    def content(  # noqa: PLR0913
         thread_id: str,
         stream_path: StreamPath,
         label: str,

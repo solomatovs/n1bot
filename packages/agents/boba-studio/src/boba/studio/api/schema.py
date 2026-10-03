@@ -33,6 +33,7 @@ from boba.runtime.users import UsersTable
 from boba.studio.api.app import ApiAccess, ApiApp, ApiExtras
 from boba.studio.api.signin import PageUrls, SignInWiring
 from boba.studio.catalog.api import CatalogApi
+from boba.toolkit.chain import CallAmbient
 from boba.toolrun.registry import ToolRegistry
 from boba.toolrun.streams import CallJournals
 
@@ -138,6 +139,7 @@ class OpenApiDocument:
             contexts=contexts,
             runs=runs,
             journals=CallJournals(None, runs),
+            ambient=CallAmbient(),
             seal_keys=SealKeys(),
             live_locks=lambda: MemoryLiveLocks("stand", 20),
             heartbeat_sec=1.0,

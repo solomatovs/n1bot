@@ -9,6 +9,7 @@ import pytest
 from pydantic import SecretStr
 
 from boba.stand_core.fake_toolmod import FakeConfig
+from boba.toolkit.chain import CallAmbient
 from boba.toolkit.entry import ToolMain
 from boba.toolkit.frames import ToolFrame
 from boba.toolkit.launcher import (
@@ -106,7 +107,7 @@ class TestSandboxMode:
     def test_call_is_rendered_and_reply_returned(self) -> None:
         tool = fresh_tool()
         launcher = RecordingLauncher(self.OK_REPLY)
-        ToolProcessWrap.guard_all([tool], launcher)
+        ToolProcessWrap(CallAmbient()).guard_all([tool], launcher)
 
         if tool.coroutine is None:
             raise AssertionError("tool.coroutine is not None")
@@ -133,7 +134,7 @@ class TestSandboxMode:
         tool = fresh_tool()
         failure = ErrorResult(message="down", error_kind="fake_unavailable")
         reply = ReplyError(failure=failure).model_dump_json()
-        ToolProcessWrap.guard_all([tool], RecordingLauncher(reply))
+        ToolProcessWrap(CallAmbient()).guard_all([tool], RecordingLauncher(reply))
 
         if tool.coroutine is None:
             raise AssertionError("tool.coroutine is not None")
@@ -147,7 +148,9 @@ class TestSandboxMode:
 
     def test_oversized_argument_is_expected_failure(self) -> None:
         tool = fresh_tool()
-        ToolProcessWrap.guard_all([tool], RecordingLauncher(self.OK_REPLY))
+        ToolProcessWrap(CallAmbient()).guard_all(
+            [tool], RecordingLauncher(self.OK_REPLY)
+        )
 
         if tool.coroutine is None:
             raise AssertionError("tool.coroutine is not None")
@@ -165,7 +168,7 @@ class TestSandboxMode:
             failure=ErrorResult(message="m", error_kind="k")
         ).model_dump_json()
         launcher = RecordingLauncher(reply)
-        ToolProcessWrap.guard_all([tool], launcher)
+        ToolProcessWrap(CallAmbient()).guard_all([tool], launcher)
 
         if tool.coroutine is None:
             raise AssertionError("tool.coroutine is not None")

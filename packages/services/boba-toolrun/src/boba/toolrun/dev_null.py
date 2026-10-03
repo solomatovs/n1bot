@@ -25,7 +25,7 @@ from typing import Annotated, ClassVar
 
 from pydantic import Field
 
-from boba.toolkit.chain import PipelineSlot
+from boba.toolkit.chain import CallAmbient
 from boba.toolkit.facade import PayloadTool, tool
 from boba.toolkit.frames import ToolFrame
 from boba.toolkit.launcher import (
@@ -36,7 +36,7 @@ from boba.toolkit.launcher import (
     ToolCall,
     ToolOutcome,
 )
-from boba.toolkit.ports import PortDecl, PortDirection, StreamSpec, ToolStreamSpecs
+from boba.toolkit.ports import PortDecl, PortDirection, StreamSpec
 from boba.toolkit.protocol import ReplyError, ReplyOk
 from boba.toolkit.pump import PipePlumbing
 from boba.toolkit.result import ErrorResult, MarkdownResult
@@ -187,9 +187,10 @@ class DevNullCall(ToolCall):
 class DevNullTool:
     """Сборка встроенного инструмента dev_null и его потоковой декларации.
 
-    Инструмент собирает загрузчик реестра рядом с плагинами; тело живёт на
-    хосте и исполняется только в группе связанных вызовов: вне её каналам
-    не с кем соединиться.
+    Создаёт его загрузчик реестра с обстановкой вызова процесса и собирает
+    инструмент рядом с плагинами; тело живёт на хосте и исполняется только
+    в группе связанных вызовов — ручку группы оно читает из обстановки: вне
+    группы каналам не с кем соединиться.
     """
 
     NAME: ClassVar[str] = "dev_null"
@@ -197,18 +198,16 @@ class DevNullTool:
 
     UNPLANNED: ClassVar[str] = "stream_call_unplanned"
 
-    @classmethod
-    def build(cls) -> PayloadTool:
-        built = cls._tool()
-        ToolStreamSpecs.register(built.name, cls.spec())
+    def __init__(self, ambient: CallAmbient) -> None:
+        self._ambient = ambient
 
-        return built
+    def build(self) -> PayloadTool:
+        return self._tool()
 
-    @classmethod
-    def spec(cls) -> StreamSpec:
+    def spec(self) -> StreamSpec:
         """Декларация: один всеядный входной порт-список."""
         port = PortDecl(
-            name=cls.PORT,
+            name=self.PORT,
             direction=PortDirection.INBOUND,
             kinds=(),
             raw=False,
@@ -217,8 +216,7 @@ class DevNullTool:
         )
         return StreamSpec(ports=(port,))
 
-    @classmethod
-    def _tool(cls) -> PayloadTool:
+    def _tool(self) -> PayloadTool:
         @tool
         async def dev_null(
             feeds: Annotated[
@@ -235,22 +233,21 @@ class DevNullTool:
             ],
         ) -> MarkdownResult:
             """Слив каналов группы в никуда: явный приёмник ненужных потоков."""
-            return await asyncio.to_thread(cls._run, feeds)
+            return await asyncio.to_thread(self._run, feeds)
 
         return dev_null
 
-    @classmethod
-    def _run(cls, feeds: Sequence[str]) -> MarkdownResult:
+    def _run(self, feeds: Sequence[str]) -> MarkdownResult:
         started = time.monotonic()
 
-        slot = PipelineSlot.get()
+        slot = self._ambient.slot()
         if slot is None:
             failure = ErrorResult(
                 message=(
-                    f"tool {cls.NAME!r} drains stream channels and runs only as "
+                    f"tool {self.NAME!r} drains stream channels and runs only as "
                     "a node of workflow"
                 ),
-                error_kind=cls.UNPLANNED,
+                error_kind=self.UNPLANNED,
             )
             raise PayloadFailureError(failure)
 

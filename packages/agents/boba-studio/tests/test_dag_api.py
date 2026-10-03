@@ -19,21 +19,16 @@ from boba.identity.context import CallContexts
 from boba.identity.locks import MemoryLiveLocks
 from boba.identity.run import Runs
 from boba.runtime.config import StudioRuntimeConfig
-from boba.stand.tools import STREAM_CONFIG
+from boba.stand.refs import StandRefs
 from boba.stand_core import fake_toolmod
 from boba.stand_core.fake_toolmod import FakeConfig
 from boba.studio.api.dags import DagRunBody, DagRunning, DagRunReply
-from boba.toolkit.chain import StreamFailureKind
+from boba.toolkit.chain import CallAmbient, StreamFailureKind
 from boba.toolkit.wrap import ToolProcessWrap
 from boba.toolrun.bridge import ToolBridge
-from boba.toolrun.call_id import ToolCallIdField
-from boba.toolrun.errors import ToolErrorGuard
 from boba.toolrun.injected import InjectedConfig
-from boba.toolrun.intent import ToolIntentField
 from boba.toolrun.process import ProcessLauncherConfig, ProcessToolCaller
-from boba.toolrun.registry import ToolRegistry
-from boba.toolrun.run_log import ToolRunLogger
-from boba.toolrun.stream_calls import StreamChannelFields
+from boba.toolrun.registry import ToolChain, ToolRegistry
 from boba.toolrun.streams import CallJournals
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
@@ -43,13 +38,14 @@ CFG = FakeConfig(token=SecretStr("t0ken"), limit=5)
 
 class FakeStreamTools:
     """Источник и приёмник стенда под обвязками реестра, как их ставит
-    загрузчик: обёртка запуска, конфиг, поля каналов, id и intent вызова,
-    журнал, упаковка ошибок."""
+    загрузчик: обёртка запуска, конфиг и цепочка обвязок ToolChain; объект —
+    на один запрос, реестр строится один раз."""
 
     def __init__(self, workdir: Path) -> None:
         self.contexts = CallContexts()
         self.runs = Runs(self.contexts)
         self.journals = CallJournals(None, self.runs)
+        self.ambient = CallAmbient()
         launcher = ProcessToolCaller(
             "dag-api",
             ProcessLauncherConfig(
@@ -61,20 +57,19 @@ class FakeStreamTools:
                 kill_grace_sec=0.5,
             ),
             self.contexts,
+            self.ambient,
         )
 
         tools: list[Any] = []
         for payload in (fake_toolmod.fake_emit, fake_toolmod.fake_collect):
             tools.append(ToolBridge.as_structured_tool(payload.model_copy()))
 
-        ToolProcessWrap.guard_all(tools, launcher)
+        self.specs = ToolProcessWrap(self.ambient).guard_all(tools, launcher)
         InjectedConfig.bind_all(tools, self._config_of)
-        StreamChannelFields(STREAM_CONFIG).attach_all(tools)
-        ToolCallIdField.attach_all(tools)
-        ToolIntentField.attach_all(tools)
-        ToolRunLogger(self.journals, self.contexts).guard_all(tools)
-        ToolErrorGuard().guard_all(tools)
         self.tools = tools
+        self._chain = ToolChain(
+            StandRefs.STREAM_CONFIG, self.journals, self.contexts, self.ambient
+        )
 
     @staticmethod
     def _config_of(name: str, annotation: object) -> object:
@@ -96,12 +91,15 @@ class FakeStreamTools:
                 StandProfiles.profile(config): ProfileGrant(tools=["*"], roles=["*"])
             },
         )
+        self._chain.seal(self.tools, access, self.specs)
         return ToolRegistry(
             tools=self.tools,
             access=access,
-            stream_config=STREAM_CONFIG,
+            stream_config=StandRefs.STREAM_CONFIG,
             own=frozenset(),
             node_args=(),
+            specs=self.specs,
+            ambient=self.ambient,
         )
 
 

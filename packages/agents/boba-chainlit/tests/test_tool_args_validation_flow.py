@@ -11,6 +11,7 @@ from __future__ import annotations
 import os
 import shutil
 from collections.abc import AsyncIterator, Iterator, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -28,12 +29,10 @@ from boba.chainlit.agent.flow import GraphSpec, PlainGraphBuilder
 from boba.chainlit.infra.config import AppConfig
 from boba.chainlit.infra.plugins import ChatPlugins
 from boba.chainlit.infra.providers import build_history_view
-from boba.sandbox import ZygoteRegistry
 from boba.stand.refs import StandRefs
-from boba.stand.tools import STREAM_CONFIG
 from boba.stand_core.context import CallStand
 from boba.toolkit.result import ErrorResult, ToolArtifact
-from boba.toolrun.stream_calls import LocalDagService
+from boba.toolrun.stream_calls import ToolServer
 
 _REPO = Path(__file__).resolve().parents[4]
 _SANDBOX_STAGING = _REPO / "build" / "chainlit" / "src" / "sandbox"
@@ -96,9 +95,14 @@ def call_stand() -> CallStand:
 
 
 @pytest.fixture(scope="module")
-def runtime_stand(call_stand: CallStand) -> StandRefs:
-    """Объекты процесса модуля поверх того же держателя контекста."""
-    return StandRefs(call_stand.contexts)
+def runtime_stand(call_stand: CallStand) -> Iterator[StandRefs]:
+    """Объекты процесса модуля поверх того же держателя контекста; способы
+    запуска гасятся после модуля, как это делает выход приложения."""
+    stand = StandRefs(call_stand.contexts)
+    try:
+        yield stand
+    finally:
+        stand.stop()
 
 
 @pytest.fixture
@@ -125,13 +129,12 @@ async def chainlit_context(
     call_stand.clear()
 
 
-@pytest.fixture(scope="module")
-def app_sandbox() -> Iterator[None]:
-    """Зиготы секций гасятся после теста, как это делает выход приложения."""
-    try:
-        yield
-    finally:
-        ZygoteRegistry.stop_all()
+@dataclass(frozen=True)
+class SessionTools:
+    """Инструменты сессии и порт инструментов над ними, как их отдаёт реестр."""
+
+    tools: list[BaseTool]
+    service: ToolServer
 
 
 @pytest.fixture(scope="module")
@@ -140,19 +143,20 @@ def session_tools(
     call_stand: CallStand,
     raw_config: DictConfig,
     app_config: AppConfig,
-    app_sandbox: None,
-) -> list[BaseTool]:
-    """Инструменты профиля, собранные боевым загрузчиком."""
+) -> SessionTools:
+    """Инструменты профиля, собранные боевым загрузчиком, и их порт."""
     registry = ChatPlugins(runtime_stand.contexts, runtime_stand.runs).load(
-        raw_config, runtime_stand.none()
+        raw_config, runtime_stand.none(), runtime_stand.launchers(raw_config)
     )
     roles = frozenset(app_config.roles)
-    return registry.for_session(roles, PROFILE)
+    tools = registry.for_session(roles, PROFILE)
+
+    return SessionTools(tools=tools, service=registry.server(tools))
 
 
 def _graph(
     app_config: AppConfig,
-    tools: Sequence[BaseTool],
+    session: SessionTools,
     scripted: Sequence[AIMessage],
 ) -> CompiledStateGraph:
     """Граф профиля на модели по сценарию: боевой билдер, память вместо postgres."""
@@ -161,12 +165,12 @@ def _graph(
     chat = ScriptedChat(messages=iter(list(scripted)), disable_streaming=True)
 
     names: list[str] = []
-    for tool in tools:
+    for tool in session.tools:
         names.append(tool.name)
 
     spec = GraphSpec(
         chat=chat,
-        service=LocalDagService(tools, STREAM_CONFIG, ()),
+        service=session.service,
         system_prompt=settings.system_prompt,
         checkpointer=InMemorySaver(),
         history=build_history_view(frozenset(names), settings.history_messages),
@@ -201,9 +205,9 @@ class TestInvalidArguments:
 
     @pytest.mark.usefixtures("chainlit_context")
     async def test_validation_error_is_reported_and_turn_goes_on(
-        self, app_config: AppConfig, session_tools: list[BaseTool]
+        self, app_config: AppConfig, session_tools: SessionTools
     ) -> None:
-        if TOOL not in [tool.name for tool in session_tools]:
+        if TOOL not in [tool.name for tool in session_tools.tools]:
             pytest.fail(f"{TOOL} is not among tools of profile {PROFILE}")
 
         scripted = [

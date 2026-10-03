@@ -28,11 +28,6 @@ _HTML = (
 )
 
 
-@pytest.fixture(autouse=True)
-def chainlit_context() -> None:
-    pass
-
-
 class TestToMarkdown:
     """Конвертация HTML в Markdown."""
 

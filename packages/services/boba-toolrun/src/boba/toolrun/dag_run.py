@@ -5,7 +5,7 @@ DagRunner принимает описание DAG (boba.toolkit.dag) и обёр
 нет. План делит узлы на группы исполнения: узлы, связанные каналами, — одна
 группа, узел инструмента без портов — группа из него одного. Каждая группа
 идёт по правилу «все или никто» (boba.toolkit.chain), каждый узел — под
-ручкой своей группы в PipelineSlot; сбой группы другие группы не трогает.
+ручкой своей группы в CallAmbient; сбой группы другие группы не трогает.
 Вызов узла идёт через обвязки инструмента: права, журнал, отмена, упаковка
 ошибок. Узел, не дошедший до запуска (права, аргументы), срывает свою
 группу сразу. Итог — DagOutcome: результат каждого узла. Один исполнитель
@@ -31,14 +31,14 @@ from langchain_core.tools import BaseTool
 from pydantic import BaseModel, ConfigDict
 
 from boba.toolkit.chain import (
+    CallAmbient,
     GroupFailureResult,
-    PipelineSlot,
     StreamGroupRun,
     StreamTimings,
 )
 from boba.toolkit.dag import DagNode, DagPlanner, DagSpec
 from boba.toolkit.failure import FailurePacker
-from boba.toolkit.ports import ToolStreamSpecs
+from boba.toolkit.ports import StreamSpecs
 from boba.toolkit.result import (
     FailureResult,
     ToolArtifact,
@@ -189,12 +189,20 @@ class DagRunner:
     """
 
     def __init__(
-        self, tools: Mapping[str, BaseTool], timings: StreamTimings, pipe_bytes: int
+        self,
+        tools: Mapping[str, BaseTool],
+        specs: StreamSpecs,
+        ambient: CallAmbient,
+        timings: StreamTimings,
+        pipe_bytes: int,
     ) -> None:
-        """pipe_bytes — буфер пайпов каналов узла, который его не назвал."""
+        """specs — потоковые декларации инструментов; ambient — обстановка
+        вызова, в которую ставится ручка узла; pipe_bytes — буфер
+        пайпов каналов узла, который его не назвал."""
         self._tools = dict(tools)
+        self._ambient = ambient
         self._timings = timings
-        self._planner = DagPlanner(ToolStreamSpecs.of, pipe_bytes)
+        self._planner = DagPlanner(specs.of, pipe_bytes)
         self._failures = FailurePacker()
 
     async def run(self, dag: DagSpec) -> DagOutcome:
@@ -249,11 +257,8 @@ class DagRunner:
         запуска, группа уже знает — повторное сообщение пусто; узел, который
         обёртку запуска не проходит, группа узнаёт только отсюда.
         """
-        token = PipelineSlot.set(group.slot(node.key))
-        try:
+        with self._ambient.in_slot(group.slot(node.key)):
             outcome = await self._invoke(node)
-        finally:
-            PipelineSlot.reset(token)
 
         cause: FailureResult | None = None
         if isinstance(outcome.artifact, FailureResult):

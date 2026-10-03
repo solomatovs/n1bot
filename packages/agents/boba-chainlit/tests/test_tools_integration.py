@@ -27,15 +27,17 @@ from boba.db.postgres.connection import PostgresConfig
 from boba.kerberos import KeytabAuth
 from boba.krb import KeytabCredentials, ServiceTicketIssuer
 from boba.runtime.launchers import ZygoteLaunchers
-from boba.sandbox.zygote import ZygotePolicy, ZygoteRegistry, ZygoteToolCaller
+from boba.sandbox.zygote import ZygotePolicy, ZygoteToolCaller
 from boba.stand.sandbox import section_profile
 from boba.stand.shell import ShellRun
+from boba.stand.zygote import ZygoteStand
 from boba.tool.confluence.ingest_base import ConfluenceIngestConfig
 from boba.tool.kb.search import ConfluenceCollection
 from boba.tool.pg.tools import PgToolConfig
 from boba.tool.shell.tools import BashToolConfig
 from boba.tool.web.tools import WebToolsConfig
 from boba.toolkit.calls import ToolCallModels
+from boba.toolkit.chain import CallAmbient
 from boba.toolkit.entry import ToolMain
 from boba.toolkit.launcher import LauncherFactory, PayloadFailureError, ToolLauncher
 from boba.toolkit.result import (
@@ -174,24 +176,28 @@ class ToolSetup:
         return copied
 
     @staticmethod
-    def caller(raw: Any, section: str, modules: Sequence[str] = ()) -> ZygoteToolCaller:
+    def caller(
+        zygote_stand: ZygoteStand, raw: Any, section: str, modules: Sequence[str] = ()
+    ) -> ZygoteToolCaller:
         """Зигота секции конфига: тот же путь запуска, что в приложении."""
         raw = ToolSetup.sandbox_raw(raw)
         connection = section_profile(raw, section)
 
-        supervisor = ZygoteRegistry.obtain(
+        supervisor = zygote_stand.registry().obtain(
             section,
             connection,
             modules,
             ZYGOTE,
             warmup_calls=ZygoteLaunchers.warmup_configs(section, modules, raw),
         )
-        return ZygoteToolCaller(section, supervisor, connection, ToolSetup.path_vars)
+        return ZygoteToolCaller(
+            section, supervisor, connection, CallAmbient(), ToolSetup.path_vars
+        )
 
     @staticmethod
-    def launchers(raw: Any, section: str) -> LauncherFactory:
+    def launchers(zygote_stand: ZygoteStand, raw: Any, section: str) -> LauncherFactory:
         """Фабрика исполнителей секции: одна зигота на все её инструменты."""
-        caller = ToolSetup.caller(raw, section)
+        caller = ToolSetup.caller(zygote_stand, raw, section)
 
         def launcher(tool: str) -> ToolLauncher:
             return caller
@@ -228,10 +234,10 @@ class Call:
 
 
 @pytest.fixture(scope="module", autouse=True)
-def stop_zygotes():
+def stop_zygotes(zygote_stand: ZygoteStand):
     """Зиготы секций гасятся после модуля, как это делает выход приложения."""
     yield
-    ZygoteRegistry.stop_all()
+    zygote_stand.stop()
 
 
 @pytest.fixture(autouse=True)
@@ -240,15 +246,15 @@ def chainlit_context() -> None:
 
 
 @pytest.fixture(scope="module")
-def bash_tool(raw_config):
+def bash_tool(zygote_stand: ZygoteStand, raw_config):
     cfg = ToolSetup.config(raw_config, "tool.bash", BashToolConfig)
-    launcher = ToolSetup.caller(raw_config, "bash", [ShellRun.MODULE])
+    launcher = ToolSetup.caller(zygote_stand, raw_config, "bash", [ShellRun.MODULE])
 
     return ShellRun.tool(launcher, cfg)
 
 
 @pytest.fixture(scope="module")
-def doc_tools(raw_config):
+def doc_tools(zygote_stand: ZygoteStand, raw_config):
     """doc-функции новой модели: обёртка запуска + конфиг, как в загрузчике."""
     from importlib import reload
 
@@ -256,10 +262,10 @@ def doc_tools(raw_config):
 
     module = reload(doc_module)
 
-    launcher = ToolSetup.caller(raw_config, "doc", [module.__name__])
+    launcher = ToolSetup.caller(zygote_stand, raw_config, "doc", [module.__name__])
 
     functions = [ToolBridge.as_structured_tool(tool) for tool in module.TOOLS]
-    ToolProcessWrap.guard_all(ToolMain.toolset(*functions), launcher)
+    ToolProcessWrap(CallAmbient()).guard_all(ToolMain.toolset(*functions), launcher)
 
     def resolve(name: str, annotation: Any) -> object:
         return bind(raw_config, path=annotation.SECTION, model=annotation)
@@ -270,7 +276,7 @@ def doc_tools(raw_config):
 
 
 @pytest.fixture(scope="module")
-def chart_tool(raw_config):
+def chart_tool(zygote_stand: ZygoteStand, raw_config):
     """visualize новой модели: обёртка запуска на профиле секции."""
     from importlib import reload
 
@@ -278,15 +284,15 @@ def chart_tool(raw_config):
 
     module = reload(chart_module)
 
-    launcher = ToolSetup.caller(raw_config, "chart", [module.__name__])
+    launcher = ToolSetup.caller(zygote_stand, raw_config, "chart", [module.__name__])
 
     visualize = ToolBridge.as_structured_tool(module.visualize)
-    ToolProcessWrap.guard_all(ToolMain.toolset(visualize), launcher)
+    ToolProcessWrap(CallAmbient()).guard_all(ToolMain.toolset(visualize), launcher)
     return visualize
 
 
 @pytest.fixture(scope="module")
-def web_tools(raw_config):
+def web_tools(zygote_stand: ZygoteStand, raw_config):
     """web-функции новой модели: обёртка запуска + конфиг, как в загрузчике."""
     from importlib import reload
 
@@ -294,10 +300,10 @@ def web_tools(raw_config):
 
     module = reload(web_module)
 
-    launcher = ToolSetup.caller(raw_config, "web", [module.__name__])
+    launcher = ToolSetup.caller(zygote_stand, raw_config, "web", [module.__name__])
 
     functions = [ToolBridge.as_structured_tool(tool) for tool in module.TOOLS]
-    ToolProcessWrap.guard_all(ToolMain.toolset(*functions), launcher)
+    ToolProcessWrap(CallAmbient()).guard_all(ToolMain.toolset(*functions), launcher)
 
     def resolve(name: str, annotation: Any) -> object:
         return ToolSetup.web_config(raw_config)
@@ -321,7 +327,7 @@ def covered_url(raw_config) -> str:
 
 
 @pytest.fixture(scope="module")
-def confluence_tools(raw_config):
+def confluence_tools(zygote_stand: ZygoteStand, raw_config):
     """confluence-функции новой модели: обёртка запуска + конфиг."""
     from importlib import reload
 
@@ -329,10 +335,12 @@ def confluence_tools(raw_config):
 
     module = reload(confluence_module)
 
-    launcher = ToolSetup.caller(raw_config, "confluence", [module.__name__])
+    launcher = ToolSetup.caller(
+        zygote_stand, raw_config, "confluence", [module.__name__]
+    )
 
     functions = [ToolBridge.as_structured_tool(tool) for tool in module.TOOLS]
-    ToolProcessWrap.guard_all(ToolMain.toolset(*functions), launcher)
+    ToolProcessWrap(CallAmbient()).guard_all(ToolMain.toolset(*functions), launcher)
 
     def resolve(name: str, annotation: Any) -> object:
         return bind(raw_config, path=annotation.SECTION, model=annotation)
@@ -349,7 +357,7 @@ def pg_connection(raw_config) -> PostgresConfig:
 
 
 @pytest.fixture(scope="module")
-def pg_tools(raw_config):
+def pg_tools(zygote_stand: ZygoteStand, raw_config):
     """pg-функции новой модели: обёртка запуска + конфиг, как в загрузчике."""
     from importlib import reload
 
@@ -357,10 +365,10 @@ def pg_tools(raw_config):
 
     module = reload(pg_module)
 
-    launcher = ToolSetup.caller(raw_config, "pg", [module.__name__])
+    launcher = ToolSetup.caller(zygote_stand, raw_config, "pg", [module.__name__])
 
     functions = [ToolBridge.as_structured_tool(tool) for tool in module.TOOLS]
-    ToolProcessWrap.guard_all(ToolMain.toolset(*functions), launcher)
+    ToolProcessWrap(CallAmbient()).guard_all(ToolMain.toolset(*functions), launcher)
 
     def resolve(name: str, annotation: Any) -> object:
         return ToolSetup.pg_config(raw_config)
@@ -430,7 +438,7 @@ class KbCleanup:
 
 
 @pytest.fixture(scope="module")
-def ingest_tools(raw_config, kb_collection: str):
+def ingest_tools(zygote_stand: ZygoteStand, raw_config, kb_collection: str):
     """ingest-функции новой модели: обёртка запуска + конфиг прогона."""
     from importlib import reload
 
@@ -438,10 +446,10 @@ def ingest_tools(raw_config, kb_collection: str):
 
     module = reload(ingest_module)
 
-    launcher = ToolSetup.caller(raw_config, "ingest", [module.__name__])
+    launcher = ToolSetup.caller(zygote_stand, raw_config, "ingest", [module.__name__])
 
     functions = [ToolBridge.as_structured_tool(tool) for tool in module.TOOLS]
-    ToolProcessWrap.guard_all(ToolMain.toolset(*functions), launcher)
+    ToolProcessWrap(CallAmbient()).guard_all(ToolMain.toolset(*functions), launcher)
 
     def resolve(name: str, annotation: Any) -> object:
         sandboxed = ToolSetup.sandbox_raw(raw_config)
@@ -459,7 +467,7 @@ def _credentials() -> KerberosCredentialSource:
 
 
 @pytest.fixture(scope="module")
-def kb_tools(raw_config, kb_collection: str):
+def kb_tools(zygote_stand: ZygoteStand, raw_config, kb_collection: str):
     """kb-функции новой модели: обёртка запуска + конфиг, как в загрузчике."""
     from importlib import reload
 
@@ -467,10 +475,10 @@ def kb_tools(raw_config, kb_collection: str):
 
     module = reload(kb_module)
 
-    launcher = ToolSetup.caller(raw_config, "kb", [module.__name__])
+    launcher = ToolSetup.caller(zygote_stand, raw_config, "kb", [module.__name__])
 
     functions = [ToolBridge.as_structured_tool(tool) for tool in module.TOOLS]
-    ToolProcessWrap.guard_all(ToolMain.toolset(*functions), launcher)
+    ToolProcessWrap(CallAmbient()).guard_all(ToolMain.toolset(*functions), launcher)
 
     def resolve(name: str, annotation: Any) -> object:
         sandboxed = ToolSetup.sandbox_raw(raw_config)

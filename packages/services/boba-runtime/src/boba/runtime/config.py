@@ -572,7 +572,7 @@ class RuntimeConfig(BaseModel):
         raw = RawConfig.load(config_path)
         config = bind(raw, path=cls.SECTION, model=cls)
         # предпосылки способа запуска проверяются на старте: отказ виден сразу
-        ToolLaunchers.of(raw).probe()
+        ToolLaunchers(raw).build().probe()
         # кэши билетов раскладывает приложение: строкам соединений пути не задают
         config.krb.apply()
 

@@ -33,7 +33,6 @@ from boba.runtime.di import Container
 from boba.runtime.plugins import EntryPointPlugins
 from boba.runtime.spa import BuiltSpa, DevSpa, SpaPaths
 from boba.runtime.users import UsersTable
-from boba.sandbox.zygote import ZygoteRegistry
 from boba.studio.api.app import ApiAccess, ApiApp, ApiExtras
 from boba.studio.api.page_socket import StudioSessions
 from boba.studio.api.signin import PageUrls, SignInWiring
@@ -58,12 +57,14 @@ class StudioHost:
         container.provide(providers.seal_keys, SealKeys())
         container.provide(providers.call_contexts, CallContexts())
         container.eager(providers.message_bus)
+        container.eager(providers.call_ambient)
         container.eager(providers.runs)
         container.eager(providers.call_journals)
         container.eager(providers.kb_schema)
         container.eager(providers.connection_store)
         # реестр инструментов грузится на старте: ленивая загрузка в обработчике запроса
         # держит event loop дольше ping-таймаута socket.io, и вкладки теряют сокет
+        container.eager(providers.tool_launchers)
         container.eager(providers.tool_registry)
         # инстанс регистрируется после блокирующего старта зигот: иначе его пульс
         # молчит дольше lock_ttl, и соседи снимают его как мёртвый
@@ -194,7 +195,7 @@ class StudioHost:
             yield
         finally:
             container.resolved(providers.runs).stop_all(StopReason.SHUTDOWN)
-            ZygoteRegistry.stop_all()
+            container.resolved(providers.tool_launchers).stop()
             Container.set_root(None)
             await container.aclose()
             await AsyncPostgresPool.close_all()

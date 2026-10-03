@@ -14,7 +14,7 @@ from typing import Any, cast
 from uuid import UUID
 
 import pytest
-from chainlit_stand import FakeTurn, use_session
+from chainlit_stand import ChatSessionStand, FakeTurn
 
 from boba.canvas.canvas import CanvasErrorKind, RenderVerdicts
 from boba.canvas.keys import WorkspaceMount
@@ -30,7 +30,7 @@ from boba.stand_core.context import CallStand
 from boba.tool.canvas.tools import TOOLS, CanvasToolConfig
 from boba.toolkit.result import CanvasResult, ErrorResult, FileResult
 from boba.toolrun.bridge import ToolBridge
-from boba.toolrun.call_id import ToolCallIdField
+from boba.toolrun.call_id import CallFields
 from boba.toolrun.callvalues import CallContextValues
 from boba.toolrun.injected import InjectedConfig
 from boba.toolrun.run_log import ToolRunLogger
@@ -77,6 +77,7 @@ class Stand:
 
     def __init__(
         self,
+        chat_session: ChatSessionStand,
         runtime_stand: StandRefs,
         call_stand: CallStand,
         tmp_path: Path,
@@ -103,7 +104,7 @@ class Stand:
 
         # запуск открывается контекстом сессии: телу и обвязке нужен контекст
         # чата с поверхностью, реестру — запись о порте хода
-        use_session(monkeypatch, call_stand, user_id=USER, thread_id=THREAD)
+        chat_session.use(user_id=USER, thread_id=THREAD)
         self.run = runtime_stand.runs.open(
             call_stand.contexts.current(), cast(Any, self.turn)
         )
@@ -128,8 +129,10 @@ class Stand:
             bridged, lambda name, annotation: CanvasToolConfig(max_chars=32000)
         )
         ChatMount(self._calls.contexts, self._runtime.runs).guard_all(bridged)
-        ToolCallIdField.attach_all(bridged)
-        ToolRunLogger(self._runtime.journals, self._calls.contexts).guard_all(bridged)
+        CallFields().attach_all(bridged)
+        ToolRunLogger(
+            self._runtime.journals, self._calls.contexts, self._runtime.ambient
+        ).guard_all(bridged)
         return bridged
 
     async def call(self, name: str, args: dict[str, Any]) -> Any:
@@ -161,12 +164,13 @@ class Stand:
 
 @pytest.fixture
 def stand(
+    chat_session: ChatSessionStand,
     runtime_stand: StandRefs,
     call_stand: CallStand,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> Any:
-    built = Stand(runtime_stand, call_stand, tmp_path, monkeypatch)
+    built = Stand(chat_session, runtime_stand, call_stand, tmp_path, monkeypatch)
     yield built
     built.run.__exit__(None, None, None)
 

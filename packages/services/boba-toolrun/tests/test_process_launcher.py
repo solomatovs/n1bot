@@ -19,6 +19,7 @@ from boba.stand_core.fake_toolmod import (
     fake_merge,
     fake_stream,
 )
+from boba.toolkit.chain import CallAmbient
 from boba.toolkit.entry import ToolAddress, ToolArgv, ToolMain
 from boba.toolkit.frames import ToolFrame
 from boba.toolkit.launcher import (
@@ -59,7 +60,10 @@ def _launcher(workdir: Path, **overrides: object) -> ProcessToolCaller:
     values.update(overrides)
 
     return ProcessToolCaller(
-        "fake", ProcessLauncherConfig.model_validate(values), CallContexts()
+        "fake",
+        ProcessLauncherConfig.model_validate(values),
+        CallContexts(),
+        CallAmbient(),
     )
 
 
@@ -89,7 +93,7 @@ def _call(tool, **kwargs: object) -> tuple[object, object]:
 class TestRunTool:
     def test_envelope_round_trip(self, tmp_path: Path) -> None:
         tool = _fresh_tool()
-        ToolProcessWrap.guard_all([tool], _launcher(tmp_path))
+        ToolProcessWrap(CallAmbient()).guard_all([tool], _launcher(tmp_path))
 
         content, artifact = _call(tool, text="hi", repeat=2, cfg=CFG)
 
@@ -98,7 +102,7 @@ class TestRunTool:
 
     def test_expected_failure_becomes_payload_error(self, tmp_path: Path) -> None:
         tool = _fresh_tool()
-        ToolProcessWrap.guard_all([tool], _launcher(tmp_path))
+        ToolProcessWrap(CallAmbient()).guard_all([tool], _launcher(tmp_path))
 
         with pytest.raises(PayloadFailureError) as err:
             _call(tool, text="boom", repeat=1, cfg=CFG)
