@@ -33,6 +33,7 @@ from boba.chainlit.rendering.chat_view import StepKind
 from boba.stand_core import fake_toolmod
 from boba.stand_core.fake_toolmod import FakeConfig
 from boba.toolkit.chain import GroupFailureResult
+from boba.toolkit.dag import WorkflowNodeResult, WorkflowResult
 from boba.toolkit.entry import EntryErrorKind, ToolMain
 from boba.toolkit.launcher import TappedCall, ToolCall, ToolLauncher
 from boba.toolkit.protocol import ToolCommand
@@ -52,8 +53,6 @@ from boba.toolrun.stream_calls import (
     StreamCallKind,
     StreamChannelFields,
     StreamGroupsConfig,
-    WorkflowNodeResult,
-    WorkflowResult,
     WorkflowTool,
 )
 

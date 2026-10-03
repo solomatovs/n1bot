@@ -34,7 +34,7 @@ import logging
 from abc import abstractmethod
 from collections.abc import Iterator, Mapping, Sequence
 from enum import StrEnum
-from typing import Annotated, Any, ClassVar, Literal, Protocol
+from typing import Annotated, Any, ClassVar, Protocol
 
 from langchain_core.messages import ToolCall, ToolMessage
 from langchain_core.tools import BaseTool, StructuredTool
@@ -47,17 +47,19 @@ from pydantic import (
 )
 
 from boba.toolkit.chain import StreamPlanError, StreamTimings
-from boba.toolkit.dag import DagNode, DagPlanner, DagSpec
+from boba.toolkit.dag import (
+    DagNode,
+    DagPlanner,
+    DagSpec,
+    WorkflowNodeResult,
+    WorkflowResult,
+)
 from boba.toolkit.entry import EntryErrorKind, ToolArgv
 from boba.toolkit.failure import ToolRefusalError, ValidationText
 from boba.toolkit.ports import PortDecl, PortDirection, ToolStreamSpecs
 from boba.toolkit.result import (
-    ChatView,
     ErrorResult,
-    Fact,
-    FactsBlock,
     FailureResult,
-    ToolResult,
     ToolResultBase,
 )
 from boba.toolrun.dag_run import DagOutcome, DagRunError, DagRunner, NodeOutcome
@@ -75,8 +77,6 @@ __all__ = [
     "ToolServer",
     "ToolServers",
     "ToolServersError",
-    "WorkflowNodeResult",
-    "WorkflowResult",
     "WorkflowTool",
 ]
 
@@ -336,59 +336,6 @@ class WorkflowTool:
             "middleware; its body must not be called"
         )
         raise RuntimeError(msg)
-
-
-class WorkflowNodeResult(BaseModel):
-    """Итог узла workflow: какой инструмент с чем вызван и чем он кончился.
-
-    key — имя узла, данное моделью; call_id — идентификатор вызова узла, под
-    которым идут его журнал и шаг ленты. errored — вызов кончился ошибкой
-    самого вызова (аргументы, права), а не результатом инструмента.
-    """
-
-    model_config = ConfigDict(frozen=True, extra="forbid")
-
-    key: str
-    call_id: str
-    tool: str
-    args: Mapping[str, Any]
-    errored: bool
-    content: str
-    result: ToolResult
-
-
-class WorkflowResult(ToolResultBase):
-    """Итог вызова workflow: результаты его узлов в порядке описания.
-
-    Модель описывает связку потоковых инструментов одним вызовом workflow;
-    исполнитель DAG отдаёт итог каждого узла, а этот результат несёт их
-    модели и истории одним конвертом. Лента раскрывает его в шаги узлов —
-    так же, как рисует их вживую.
-    """
-
-    kind: Literal["workflow"] = "workflow"
-    nodes: Sequence[WorkflowNodeResult]
-
-    def llm_view(self) -> str:
-        parts: list[str] = []
-        for node in self.nodes:
-            parts.append(f"[{node.key}] {node.tool}:\n{node.content}")
-
-        return "\n\n".join(parts)
-
-    def chat_view(self) -> ChatView:
-        return ChatView(markdown=FactsBlock(facts=self._facts()).markdown())
-
-    def _facts(self) -> list[Fact]:
-        facts: list[Fact] = []
-        for node in self.nodes:
-            status = "ok"
-            if not node.result.ok:
-                status = "failed"
-
-            facts.append(Fact(key=f"{node.key} ({node.tool})", value=status))
-
-        return facts
 
 
 class CallDag:

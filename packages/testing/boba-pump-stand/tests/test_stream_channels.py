@@ -30,6 +30,7 @@ from boba.pump_stand import ClickHouseSide, PostgresSide, PumpStand
 from boba.tool.ch import tools as ch
 from boba.tool.pg import tools as pg
 from boba.toolkit.chain import GroupCall, GroupFailureResult
+from boba.toolkit.dag import WorkflowResult
 from boba.toolkit.entry import ToolMain
 from boba.toolkit.result import (
     FailureResult,
@@ -44,7 +45,6 @@ from boba.toolrun.stream_calls import (
     LocalDagService,
     StreamChannelFields,
     StreamGroupsConfig,
-    WorkflowResult,
     WorkflowTool,
 )
 
