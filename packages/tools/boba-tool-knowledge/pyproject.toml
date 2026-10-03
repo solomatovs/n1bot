@@ -17,7 +17,7 @@ dependencies = [
     "boba-kbdoc==0.0.26.dev4",
     "boba-llm==0.0.26.dev4",
     "psycopg[binary,pool]>=3.2",
-    "pydantic>=2.10,<2.11",
+    "pydantic>=2.10,<3",
 ]
 
 [project.entry-points."boba.tools"]

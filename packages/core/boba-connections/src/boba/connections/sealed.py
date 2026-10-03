@@ -41,6 +41,7 @@ from pydantic_core import CoreSchema
 
 from boba.connections.marks import ConnectionRefusal
 from boba.identity.errors import RefusalError
+from boba.toolkit.facade import NotLogged
 from boba.toolkit.failure import ValidationText
 
 __all__ = [
@@ -90,12 +91,14 @@ class ConnectionRef:
 
 
 @dataclass(frozen=True)
-class ConnectionSchemaMark:
+class ConnectionSchemaMark(NotLogged):
     """Метка параметра-соединения в JSON-схеме инструмента.
 
     Кладётся в метаданные поля (Annotated) и дописывает в его схему ключ
-    ConnectionRef.SCHEMA_MARK с видом соединения. Метаданные, в отличие от
-    json_schema_extra, переживают пересборку схемы вызова langchain.
+    ConnectionRef.SCHEMA_MARK с видом соединения. Она же запрещает писать
+    аргумент в лог приложения: там лежит запечатанное соединение.
+    Метаданные, в отличие от json_schema_extra, переживают пересборку схемы
+    вызова langchain.
     """
 
     kind: str

@@ -13,7 +13,7 @@ dependencies = [
     "boba-ix-core==0.0.26.dev4",
     "boba-llm==0.0.26.dev4",
     "psycopg[binary]>=3.2",
-    "pydantic>=2.10,<2.11",
+    "pydantic>=2.10,<3",
     "tokenizers>=0.20",
 ]
 
