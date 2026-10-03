@@ -29,7 +29,6 @@ from boba.chainlit.agent.bridge import ChatModelBridge
 from boba.chainlit.agent.flow import (
     GraphSpec,
     LlmRephraser,
-    PrefetchCall,
     PrefetchGraphBuilder,
 )
 from boba.chainlit.infra.config import AppConfig
@@ -40,12 +39,13 @@ from boba.chainlit.infra.providers import (
     session_graph_builder,
 )
 from boba.chat.profiles import ChatSettings, PrefetchFlowConfig, SelectedProfile
-from boba.connection_broker.store import ConnectionStore
 from boba.llm.http.openai import OpenAiProvider
 from boba.llm.providers import LlmProviders
 from boba.llm.schema import SchemaReply
 from boba.stand.refs import StandRefs
 from boba.stand.tools import STREAM_CONFIG
+from boba.stand_core.context import TEST_CONTEXTS
+from boba.toolkit.calls import CallIdPrefix
 from boba.toolkit.result import TableResult, ToolArtifact
 from boba.toolrun.stream_calls import LocalDagService
 from boba.transport.http.connection import HttpConnection, UrlScheme
@@ -128,19 +128,10 @@ async def chainlit_context(
     )
 
 
-def _no_registry() -> None:
-    return None
-
-
-def _no_store() -> ConnectionStore:
-    msg = "the flow under test does not reach user connections"
-    raise RuntimeError(msg)
-
-
 @pytest.fixture(scope="module")
 def session_tools(raw_config: DictConfig, app_config: AppConfig) -> list[BaseTool]:
     """Инструменты профиля, собранные боевым загрузчиком."""
-    registry = ChatPlugins.load(raw_config, StandRefs.of(_no_store, _no_registry))
+    registry = ChatPlugins(TEST_CONTEXTS).load(raw_config, StandRefs.none())
     roles = frozenset(app_config.roles)
     return registry.for_session(roles, PROFILE)
 
@@ -211,7 +202,7 @@ def _prefetch_calls(messages: Sequence[BaseMessage]) -> list[dict[str, Any]]:
 
         for call in message.tool_calls:
             call_id = call["id"]
-            if call_id and call_id.startswith(PrefetchCall.PREFIX):
+            if CallIdPrefix.PREFETCH.marks(call_id):
                 calls.append(dict(call))
 
     return calls

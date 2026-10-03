@@ -7,8 +7,7 @@
 среди своих возможностей при подключении клиента (SealFeature); модель про
 ключ не знает. Здесь три части:
 
-- MarkedConnections — обход аргументов вызова по схеме инструмента: находит
-  значения параметров-соединений на любой глубине.
+- ConnectionParams — параметры-соединения инструмента по его схеме.
 - SentConnections — что ушло серверу вместо ссылок в идущих вызовах: по нему
   клиент показывает пользователю ссылку, а не запечатанное значение.
 - SealingToolServer — порт ToolServer поверх другого порта: запечатывает
@@ -28,8 +27,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Awaitable, Callable, Mapping, Sequence
-from datetime import UTC, datetime, timedelta
+from collections.abc import Mapping, Sequence
+from datetime import timedelta
 from typing import Any, ClassVar
 
 from langchain_core.messages import ToolCall, ToolMessage
@@ -42,22 +41,16 @@ from boba.connections.sealed import (
     ConnectionRef,
     ConnectionRefs,
     ConnectionSeal,
-    SealedConnection,
     SealFeature,
     SealKey,
 )
-from boba.identity.context import CallContext
 from boba.identity.errors import RefusalError
 from boba.toolkit.failure import ToolRefusalError, ValidationText
-from boba.toolkit.types import SecretReveal
-from boba.toolrun.stream_calls import CallDag, ToolServer, WorkflowTool
+from boba.toolrun.stream_calls import CallDag, CallReply, ToolServer, WorkflowTool
 
-__all__ = ["MarkedConnections", "SealingToolServer", "SentConnections"]
+__all__ = ["ConnectionParams", "SealingToolServer", "SentConnections"]
 
 logger = logging.getLogger(__name__)
-
-Replace = Callable[[str, str], Awaitable[str]]
-"""Замена значения параметра-соединения: (значение, вид по схеме) → новое."""
 
 
 class WorkflowNode:
@@ -132,136 +125,31 @@ class SentForget:
         self._sent.forget(self._args)
 
 
-class MarkedConnections:
-    """Обход аргументов вызова по JSON-схеме инструмента.
+class ConnectionParams:
+    """Параметры-соединения инструмента: имя параметра → вид соединения.
 
-    Параметр-соединение помечен в схеме ключом ConnectionRef.SCHEMA_MARK со
-    значением — видом соединения. Обход идёт по значению и схеме вместе:
-    свойства объектов, элементы списков, ветки anyOf/oneOf (узлы workflow
-    различаются константами свойств), ссылки $ref. Каждое строковое значение на
-    помеченном месте заменяется результатом replace. Создаётся на один
+    Параметр помечен в схеме инструмента ключом ConnectionRef.SCHEMA_MARK;
+    метку ставит сервер на параметрах верхнего уровня. Создаётся на один
     инструмент из его схемы.
     """
 
-    REF: ClassVar[str] = "$ref"
-    DEFS_PREFIX: ClassVar[str] = "#/$defs/"
-    BRANCHES: ClassVar[tuple[str, ...]] = ("anyOf", "oneOf")
-
     def __init__(self, schema: Mapping[str, object]) -> None:
-        self._schema = schema
-        defs = schema.get("$defs")
-        self._defs: Mapping[str, object] = {}
-        if isinstance(defs, Mapping):
-            self._defs = defs
+        self._kinds: dict[str, str] = {}
 
-    async def replaced(self, args: Mapping[str, object], replace: Replace) -> object:
-        return await self._walk(args, self._schema, replace)
-
-    async def _walk(
-        self, value: object, schema: Mapping[str, object], replace: Replace
-    ) -> object:
-        schema = self._resolved(schema)
-
-        kind = schema.get(ConnectionRef.SCHEMA_MARK)
-        if isinstance(kind, str):
-            if isinstance(value, str):
-                return await replace(value, kind)
-
-            return value
-
-        for branch in self._branches(schema):
-            if self._fits(value, branch):
-                value = await self._walk(value, branch, replace)
-
-        if isinstance(value, Mapping):
-            return await self._walk_object(value, schema, replace)
-
-        if isinstance(value, list):
-            return await self._walk_items(value, schema, replace)
-
-        return value
-
-    async def _walk_object(
-        self,
-        value: Mapping[str, object],
-        schema: Mapping[str, object],
-        replace: Replace,
-    ) -> object:
         properties = schema.get("properties")
         if not isinstance(properties, Mapping):
-            return value
-
-        walked = dict(value)
-        for name, declared in properties.items():
-            if name not in walked:
-                continue
-
-            if isinstance(declared, Mapping):
-                walked[name] = await self._walk(walked[name], declared, replace)
-
-        return walked
-
-    async def _walk_items(
-        self, value: Sequence[object], schema: Mapping[str, object], replace: Replace
-    ) -> object:
-        items = schema.get("items")
-        if not isinstance(items, Mapping):
-            return value
-
-        walked: list[object] = []
-        for item in value:
-            walked.append(await self._walk(item, items, replace))
-
-        return walked
-
-    def _branches(self, schema: Mapping[str, object]) -> list[Mapping[str, object]]:
-        branches: list[Mapping[str, object]] = []
-        for key in self.BRANCHES:
-            declared = schema.get(key)
-            if not isinstance(declared, list):
-                continue
-
-            for branch in declared:
-                if isinstance(branch, Mapping):
-                    branches.append(self._resolved(branch))
-
-        return branches
-
-    @staticmethod
-    def _fits(value: object, branch: Mapping[str, object]) -> bool:
-        """Подходит ли ветка значению: константы её свойств совпали."""
-        properties = branch.get("properties")
-        if not isinstance(properties, Mapping):
-            return True
-
-        if not isinstance(value, Mapping):
-            return False
+            return
 
         for name, declared in properties.items():
             if not isinstance(declared, Mapping):
                 continue
 
-            if "const" not in declared:
-                continue
+            kind = declared.get(ConnectionRef.SCHEMA_MARK)
+            if isinstance(kind, str):
+                self._kinds[name] = kind
 
-            if value.get(name) != declared["const"]:
-                return False
-
-        return True
-
-    def _resolved(self, schema: Mapping[str, object]) -> Mapping[str, object]:
-        ref = schema.get(self.REF)
-        if not isinstance(ref, str):
-            return schema
-
-        if not ref.startswith(self.DEFS_PREFIX):
-            return schema
-
-        target = self._defs.get(ref.removeprefix(self.DEFS_PREFIX))
-        if not isinstance(target, Mapping):
-            return schema
-
-        return target
+    def kinds(self) -> Mapping[str, str]:
+        return self._kinds
 
 
 class SealingToolServer(ToolServer):
@@ -288,9 +176,9 @@ class SealingToolServer(ToolServer):
         self._sent = sent
         self._ttl = ttl
         self._refs = ConnectionRefs()
-        self._marked: dict[str, MarkedConnections] = {}
+        self._params: dict[str, ConnectionParams] = {}
         for tool in inner.tools():
-            self._marked[tool.name] = self._marked_of(tool)
+            self._params[tool.name] = self._params_of(tool)
 
     def tools(self) -> Sequence[BaseTool]:
         return self._inner.tools()
@@ -313,7 +201,7 @@ class SealingToolServer(ToolServer):
                 logger.warning(
                     "sealing connections of %s refused: %s", call["name"], exc
                 )
-                pending[position] = self._refused(call, exc)
+                pending[position] = CallReply(call).refused(exc.failure())
                 continue
 
             positions.append(position)
@@ -345,15 +233,18 @@ class SealingToolServer(ToolServer):
         if tool == self._workflow_tool():
             return await self._sealed_nodes(args)
 
-        marked = self._marked.get(tool)
-        if marked is None:
-            return dict(args)
+        sent = dict(args)
 
-        replaced = await marked.replaced(args, self._seal)
-        if not isinstance(replaced, dict):
-            return dict(args)
+        params = self._params.get(tool)
+        if params is None:
+            return sent
 
-        return replaced
+        for param, kind in params.kinds().items():
+            value = sent.get(param)
+            if isinstance(value, str):
+                sent[param] = await self._seal(value, kind)
+
+        return sent
 
     async def _sealed_nodes(self, args: Mapping[str, object]) -> dict[str, Any]:
         nodes = args.get(WorkflowNode.NODES)
@@ -415,12 +306,7 @@ class SealingToolServer(ToolServer):
             raise RefusalError(ConnectionRefusal.ANOTHER_KIND, msg)
 
         key = self._key(value)
-        connection = await self._connections.armed(ref)
-        sealed = SealedConnection(
-            login=CallContext.current().subject.login,
-            expires_at=datetime.now(UTC) + self._ttl,
-            profile=SecretReveal.dumped(connection),
-        )
+        sealed = await self._connections.sealed(ref, self._ttl)
 
         sent = ConnectionSeal(key).seal(sealed)
         self._sent.remember(sent, value)
@@ -449,34 +335,16 @@ class SealingToolServer(ToolServer):
             raise RefusalError(ConnectionRefusal.SEAL_KEY_UNKNOWN, msg) from exc
 
     @staticmethod
-    def _marked_of(tool: BaseTool) -> MarkedConnections:
+    def _params_of(tool: BaseTool) -> ConnectionParams:
         schema = tool.tool_call_schema
         if isinstance(schema, dict):
-            return MarkedConnections(schema)
+            return ConnectionParams(schema)
 
         if issubclass(schema, BaseModel):
-            return MarkedConnections(schema.model_json_schema())
+            return ConnectionParams(schema.model_json_schema())
 
         msg = (
             f"tool {tool.name!r}: expected a pydantic v2 model or a JSON schema "
             f"as its call schema, got {schema.__name__}"
         )
         raise TypeError(msg)
-
-    @staticmethod
-    def _refused(
-        call: ToolCall, refusal: ToolRefusalError
-    ) -> asyncio.Future[ToolMessage]:
-        content, artifact = refusal.failure().packed()
-        message = ToolMessage(
-            content=content,
-            artifact=artifact,
-            name=call["name"],
-            tool_call_id=call["id"],
-            status="error",
-        )
-
-        done: asyncio.Future[ToolMessage] = asyncio.get_running_loop().create_future()
-        done.set_result(message)
-
-        return done

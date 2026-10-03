@@ -21,7 +21,7 @@ from typing import Any, ClassVar
 from langchain_core.tools import BaseTool
 
 from boba.canvas.keys import WorkspaceRoot
-from boba.identity.context import CallContext, Scope, Subject
+from boba.identity.context import CallContext, CallContexts, Scope, Subject
 from boba.toolkit.entry import ToolArgv
 from boba.toolrun.injected import AsyncInjected
 from boba.toolrun.wrapping import ToolBody, ToolSchema
@@ -43,19 +43,20 @@ class CallContextValues(AsyncInjected):
     }
     """Модели контекста, которые тело может объявить injected-параметром."""
 
-    def __init__(self, param: str, model: type) -> None:
+    def __init__(self, param: str, model: type, contexts: CallContexts) -> None:
         super().__init__(param, model)
         self._model = model
+        self._contexts = contexts
 
     @classmethod
-    def bind_all(cls, tools: Sequence[BaseTool]) -> None:
+    def bind_all(cls, tools: Sequence[BaseTool], contexts: CallContexts) -> None:
         """Зовётся до InjectedConfig: контексту нечего взять из toml, и поле
         обязано уйти со схемы раньше, чем резолвер конфига его увидит."""
         for tool in tools:
-            cls._bind_one(tool)
+            cls._bind_one(tool, contexts)
 
     @classmethod
-    def _bind_one(cls, tool: BaseTool) -> None:
+    def _bind_one(cls, tool: BaseTool, contexts: CallContexts) -> None:
         schema = ToolSchema.of(tool)
         if schema is None:
             return
@@ -65,7 +66,7 @@ class CallContextValues(AsyncInjected):
             return
 
         for param, model in params.items():
-            ToolBody.hook_all([tool], cls(param, model))
+            ToolBody.hook_all([tool], cls(param, model, contexts))
             logger.info(
                 "tool %s: %s is the %s of the call", tool.name, param, model.__name__
             )
@@ -85,4 +86,4 @@ class CallContextValues(AsyncInjected):
         return params
 
     async def value(self, name: str, kwargs: dict[str, object]) -> object:
-        return self.SOURCES[self._model](CallContext.current())
+        return self.SOURCES[self._model](self._contexts.current())

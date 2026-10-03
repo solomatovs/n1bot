@@ -62,6 +62,7 @@ from boba.messaging import LockToken, MemoryMessageBus, MemoryPayloadStore
 from boba.runtime.config import AppLayers
 from boba.runtime.elements import ChatTables
 from boba.stand.signin import SignInStand
+from boba.stand_core.context import TEST_CONTEXTS
 from boba.stand_core.context import TEST_PROFILE as TEST_PROFILE
 from boba.stand_core.context import TEST_TURN as TEST_TURN
 from boba.stand_core.context import install_context as install_context
@@ -222,10 +223,10 @@ async def chainlit_context(auth_token: str) -> AsyncIterator[None]:
     """
     from chainlit.context import init_http_context
 
-    CallContext.reset()
+    TEST_CONTEXTS.reset()
     init_http_context(user=ChainlitUser(identifier=AUTH_USER), auth_token=auth_token)
     yield
-    CallContext.reset()
+    TEST_CONTEXTS.reset()
     init_http_context()
 
 
@@ -257,7 +258,7 @@ def enter_context(profile: str = TEST_PROFILE) -> CallContext:
     через init_http_context(user=..., thread_id=...) и chat_profile.
     """
     context = current_session().call_context(TEST_TURN, profile)
-    CallContext._CURRENT.set(context)
+    TEST_CONTEXTS._current.set(context)
 
     return context
 
@@ -424,7 +425,7 @@ def catalog(store: ConnectionStore) -> Any:
     def stored() -> ConnectionStore:
         return store
 
-    return ConnectionTools(stored).build()[0]
+    return ConnectionTools(stored, TEST_CONTEXTS).build()[0]
 
 
 @pytest.fixture(autouse=True)
@@ -447,6 +448,7 @@ def di_root(app_config: AppConfig) -> Iterator[None]:
     root.provide(runtime.live_locks, MemoryLiveLocks("test-chainlit", 20))
     root.provide(runtime.message_bus, MemoryMessageBus("test-chainlit"))
     root.provide(runtime.payload_store, MemoryPayloadStore())
+    root.provide(runtime.call_contexts, TEST_CONTEXTS)
     Container.set_root(root)
     try:
         yield

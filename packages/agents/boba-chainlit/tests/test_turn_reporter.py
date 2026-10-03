@@ -40,6 +40,7 @@ from boba.messaging import (
     MemoryPayloadStore,
     MessageBusError,
 )
+from boba.stand_core.context import TEST_CONTEXTS
 
 pytestmark = pytest.mark.anyio
 
@@ -264,10 +265,11 @@ class TestFailedTurnKeepsHistory:
             question=Question(key=TURN_KEY, text="question"),
             locking=RunLocking(locks=MemoryLiveLocks("test:0", 20), heartbeat_sec=1.0),
             sent=SentConnections(),
+            contexts=TEST_CONTEXTS,
         )
 
         # контекст вызова ставится до создания задачи: она копирует его при старте
-        with use_context(monkeypatch, thread_id=THREAD).applied():
+        with TEST_CONTEXTS.applied(use_context(monkeypatch, thread_id=THREAD)):
             task = asyncio.create_task(turn.run(failing_stream()))
             with contextlib.suppress(asyncio.CancelledError):
                 await task
@@ -339,9 +341,10 @@ class TestPulseOfTheTurn:
             question=Question(key=TURN_KEY, text="question"),
             locking=RunLocking(locks=MemoryLiveLocks("test:0", 20), heartbeat_sec=1.0),
             sent=SentConnections(),
+            contexts=TEST_CONTEXTS,
         )
 
-        with use_context(monkeypatch, thread_id=THREAD).applied():
+        with TEST_CONTEXTS.applied(use_context(monkeypatch, thread_id=THREAD)):
             task = asyncio.create_task(turn.run(stream))
             with contextlib.suppress(asyncio.CancelledError):
                 await task
@@ -389,9 +392,10 @@ class TestBusyThread:
             question=Question(key=TURN_KEY, text="question"),
             locking=RunLocking(locks=locks, heartbeat_sec=1.0),
             sent=SentConnections(),
+            contexts=TEST_CONTEXTS,
         )
 
-        with use_context(monkeypatch, thread_id=THREAD).applied():
+        with TEST_CONTEXTS.applied(use_context(monkeypatch, thread_id=THREAD)):
             await turn.run(silent_stream())
 
         errors = [s for s in recorded.steps if s.get(StepField.IS_ERROR)]

@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from boba.connection_broker.user_connections import CredentialsRef, StoreRef
 from boba.connections.manifest import ConnectionTypes
 from boba.connections.sealed import SealKeys
+from boba.identity.context import CallContexts
 from boba.identity.locks import LiveLocks
 from boba.messaging import MessageBus
 from boba.messaging.bus import BusWatch
@@ -27,6 +28,9 @@ class RuntimeRefs:
     """Реестр установленных типов соединений; зовётся на запрос."""
     credentials: CredentialsRef
     """Источник кредов вызова: профиль соединения с билетом к его SPN."""
+    contexts: CallContexts
+    """Держатель контекста вызова процесса: его получают обвязки
+    инструментов и исполнители."""
     seal_keys: SealKeys
     """Ключевая пара исполнителя: ею открываются соединения, запечатанные
     клиентом; одна на процесс."""

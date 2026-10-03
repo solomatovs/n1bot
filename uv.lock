@@ -1581,10 +1581,13 @@ name = "boba-pump-stand"
 version = "0.0.26.dev4"
 source = { editable = "packages/testing/boba-pump-stand" }
 dependencies = [
+    { name = "boba-connection-broker", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "boba-connections", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "boba-db-clickhouse", extra = ["payload"], marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "boba-db-oracle", extra = ["payload"], marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "boba-db-postgres", extra = ["arrow"], marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "boba-stand", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "boba-stand-core", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "boba-tool-clickhouse", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "boba-tool-oracle", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "boba-tool-postgres", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
@@ -1609,10 +1612,13 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "boba-connection-broker", editable = "packages/services/boba-connection-broker" },
+    { name = "boba-connections", editable = "packages/core/boba-connections" },
     { name = "boba-db-clickhouse", extras = ["payload"], editable = "packages/infra/db/boba-db-clickhouse" },
     { name = "boba-db-oracle", extras = ["payload"], editable = "packages/infra/db/boba-db-oracle" },
     { name = "boba-db-postgres", extras = ["arrow"], editable = "packages/infra/db/boba-db-postgres" },
     { name = "boba-stand", editable = "packages/testing/boba-stand" },
+    { name = "boba-stand-core", editable = "packages/core/boba-stand-core" },
     { name = "boba-stream-ch-to-ch", marker = "extra == 'dev'", editable = "packages/infra/stream/boba-stream-ch-to-ch" },
     { name = "boba-stream-ch-to-pg", marker = "extra == 'dev'", editable = "packages/infra/stream/boba-stream-ch-to-pg" },
     { name = "boba-stream-pg-to-ch", marker = "extra == 'dev'", editable = "packages/infra/stream/boba-stream-pg-to-ch" },
@@ -1667,6 +1673,7 @@ dependencies = [
 [package.optional-dependencies]
 dev = [
     { name = "boba-stand", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "boba-stand-core", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "pyjwt", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "pytest", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
 ]
@@ -1689,6 +1696,7 @@ requires-dist = [
     { name = "boba-messaging", editable = "packages/core/boba-messaging" },
     { name = "boba-sandbox", editable = "packages/infra/sandbox/boba-sandbox" },
     { name = "boba-stand", marker = "extra == 'dev'", editable = "packages/testing/boba-stand" },
+    { name = "boba-stand-core", marker = "extra == 'dev'", editable = "packages/core/boba-stand-core" },
     { name = "boba-toolkit", editable = "packages/core/boba-toolkit" },
     { name = "boba-toolrun", editable = "packages/services/boba-toolrun" },
     { name = "fastapi", extras = ["standard"] },

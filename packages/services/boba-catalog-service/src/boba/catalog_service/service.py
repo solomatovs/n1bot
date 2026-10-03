@@ -97,10 +97,10 @@ from boba.catalog_service.records import (
 )
 from boba.catalog_service.sync_runner import (
     JobTasks,
-    SyncCaller,
     SyncPorts,
     SyncRunner,
 )
+from boba.identity.api import ApiSubject
 from boba.identity.context import Scope, Subject
 from boba.identity.locks import LockToken
 from boba.messaging import CatalogChanged, ChangeAction, MessageBus
@@ -1088,7 +1088,7 @@ class CatalogService:
     # --- синхронизации ---
 
     async def start_sync(
-        self, caller: SyncCaller, connection_id: UUID, scope: SyncScope
+        self, caller: ApiSubject, connection_id: UUID, scope: SyncScope
     ) -> Sync:
         """Синхронизация подключения инструментом вида от имени субъекта:
         нужны edit_roles, видимое подключение и доступ к инструменту."""

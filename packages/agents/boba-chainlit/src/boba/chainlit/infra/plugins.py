@@ -19,7 +19,8 @@ from boba.access import GrantCheck
 from boba.chainlit.rendering.mount import ChatMount
 from boba.connection_broker.tools import ConnectionTools
 from boba.connection_broker.user_connections import StoreRef
-from boba.runtime.plugins import CoreTools, ToolLoader
+from boba.identity.context import CallContexts
+from boba.runtime.plugins import EntryPointPlugins, ToolLoader
 from boba.runtime.refs import RuntimeRefs
 from boba.toolrun.registry import ToolRegistry
 from boba.toolrun.wrapping import CallHooks
@@ -28,26 +29,30 @@ __all__ = ["ChatPlugins"]
 
 
 class ChatPlugins:
-    """Загрузка реестра инструментов чата с обвязками его поверхности."""
+    """Загрузка реестра инструментов чата с обвязками его поверхности.
 
-    @staticmethod
-    def surface_hooks() -> Sequence[CallHooks[Any]]:
-        return (ChatMount(),)
+    Создаётся сборкой чата из держателя контекста вызова процесса: его
+    получают обвязка элементов результата и инструменты каталога.
+    """
 
-    @staticmethod
-    def own_tools(store_ref: StoreRef) -> Sequence[BaseTool]:
+    def __init__(self, contexts: CallContexts) -> None:
+        self._contexts = contexts
+
+    def surface_hooks(self) -> Sequence[CallHooks[Any]]:
+        return (ChatMount(self._contexts),)
+
+    def own_tools(self, store_ref: StoreRef) -> Sequence[BaseTool]:
         """Собственный сервер инструментов чата: каталог соединений."""
-        return ConnectionTools(store_ref).build()
+        return ConnectionTools(store_ref, self._contexts).build()
 
-    @classmethod
-    def load(cls, raw_config: DictConfig, refs: RuntimeRefs) -> ToolRegistry:
+    def load(self, raw_config: DictConfig, refs: RuntimeRefs) -> ToolRegistry:
         loader = ToolLoader(
             raw_config,
-            CoreTools.table(),
+            EntryPointPlugins.discover(),
             refs,
             GrantCheck.STRICT,
-            cls.surface_hooks(),
-            cls.own_tools(refs.connection_store),
+            self.surface_hooks(),
+            self.own_tools(refs.connection_store),
         )
 
         return loader.load()

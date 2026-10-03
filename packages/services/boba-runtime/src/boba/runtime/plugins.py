@@ -32,7 +32,6 @@ from boba.chat.profiles import ProfilesSection, RolesSection
 from boba.config import bind
 from boba.connection_broker.sealed import SealedConnectionParams
 from boba.connection_broker.tickets import ServiceTickets
-from boba.identity.context import CallContext
 from boba.runtime.launchers import CallSurface, SectionLaunchers, ToolLaunchers
 from boba.runtime.refs import RuntimeRefs
 from boba.toolkit.entry import ToolArgv, ToolEntryError, ToolMain
@@ -61,7 +60,6 @@ from boba.toolrun.streams import ToolStreams
 from boba.toolrun.wrapping import CallHooks, ToolAsyncBody, ToolBody
 
 __all__ = [
-    "CoreTools",
     "EntryPointPlugins",
     "PluginMeta",
     "PluginTable",
@@ -128,7 +126,11 @@ class ToolLoader:
         и инструменты плагинов, а за портом инструментов образуют отдельный
         сервер (ToolRegistry.server)."""
         self._credentials_ref = refs.credentials
-        self._sealed = SealedConnectionParams(refs.seal_keys, refs.connection_types)
+        self._contexts = refs.contexts
+        self._surface = CallSurface(refs.contexts)
+        self._sealed = SealedConnectionParams(
+            refs.seal_keys, refs.connection_types, refs.contexts
+        )
         """Приём запечатанных соединений: обвязки параметров-соединений,
         правило аргументов узлов и возможность сервера с ключом."""
         self._grant_check = grant_check
@@ -182,10 +184,10 @@ class ToolLoader:
         ToolCallIdField.attach_all(tools)
         ToolIntentField.attach_all(tools)
         ToolRunLogger.guard_all(
-            tools, CallSurface.stream_source, CallSurface.tool_call_scope
+            tools, self._surface.stream_source, self._surface.tool_call_scope
         )
         CancellableTools.guard_all(tools)
-        ToolAccessGuard.guard_all(tools, access, CallContext.current_subject)
+        ToolAccessGuard.guard_all(tools, access, self._contexts.subject)
         ToolErrorGuard().guard_all(tools)
         ToolAsyncBody.ensure_all(tools)
         return ToolRegistry(
@@ -228,7 +230,7 @@ class ToolLoader:
             modules=plugin.modules,
             package=plugin.package,
         )
-        launcher = launchers.launcher_of(spec)
+        launcher = launchers.launcher_of(spec, self._contexts)
 
         return self._module_tools(plugin, meta, launcher)
 
@@ -250,7 +252,7 @@ class ToolLoader:
             return []
 
         ToolProcessWrap.guard_all(ToolMain.toolset(*functions), launcher)
-        CallContextValues.bind_all(functions)
+        CallContextValues.bind_all(functions, self._contexts)
 
         self._sealed.bind_all(functions)
 
@@ -372,12 +374,3 @@ class EntryPointPlugins:
             modules=ToolBridge.modules_of(manifest.tools),
             package=package,
         )
-
-
-class CoreTools:
-    """Таблица плагинов, общая для процессов: обнаруженные пакеты."""
-
-    @staticmethod
-    def table() -> dict[str, ToolPlugin]:
-        """Плагины установленных пакетов: все инструменты приходят entry point'ами."""
-        return EntryPointPlugins.discover()

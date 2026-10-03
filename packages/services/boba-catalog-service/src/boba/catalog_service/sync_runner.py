@@ -48,9 +48,7 @@ from boba.db.postgres.catalog import CatalogDomainError, SnapshotOutcome
 from boba.identity.api import ApiSubject
 from boba.identity.context import (
     CallContext,
-    Credential,
-    HumanInitiator,
-    Initiator,
+    CallContexts,
     Scope,
     Subject,
 )
@@ -58,7 +56,8 @@ from boba.identity.run import RunRegistry
 from boba.messaging import ChangeAction
 from boba.toolkit.calls import CallIdPrefix
 from boba.toolkit.failure import ToolUnavailableError
-from boba.toolrun.invoke import InvokeReply, ToolInvoker
+from boba.toolrun.dag_run import NodeOutcome
+from boba.toolrun.invoke import ToolInvoker
 from boba.toolrun.registry import ToolRegistry
 
 logger = logging.getLogger(__name__)
@@ -67,7 +66,6 @@ __all__ = [
     "ConnectionDirectory",
     "JobTasks",
     "RegistrySyncTools",
-    "SyncCaller",
     "SyncObserver",
     "SyncPorts",
     "SyncRunner",
@@ -126,44 +124,6 @@ class SyncSetupError(CatalogServiceError):
     """Синхронизацию не запустить: нет инструмента, доступа или подключения."""
 
 
-class SyncCaller(BaseModel):
-    """От чьего имени и откуда запущена синхронизация: субъект, инициатор и
-    секреты для инструмента снятия."""
-
-    model_config = ConfigDict(frozen=True, extra="forbid", arbitrary_types_allowed=True)
-
-    subject: Subject
-    initiator: Initiator
-    credential: Credential
-
-    @classmethod
-    def of_context(cls, context: CallContext) -> SyncCaller:
-        """Вызывающий из контекста вызова инструмента."""
-        return cls(
-            subject=context.subject,
-            initiator=context.initiator,
-            credential=context.credential,
-        )
-
-    @classmethod
-    def of_api(cls, identity: ApiSubject) -> SyncCaller:
-        """Вызывающий из входа API: инструмент снятия ходит в базу под его билетом."""
-        return cls(
-            subject=identity.subject,
-            initiator=HumanInitiator(via="api"),
-            credential=identity.credential,
-        )
-
-    def context(self, sync_id: UUID, cancellation: RunCancellation) -> CallContext:
-        return CallContext(
-            subject=self.subject,
-            scope=Scope.job(str(sync_id)),
-            initiator=self.initiator,
-            credential=self.credential,
-            cancellation=cancellation,
-        )
-
-
 class SyncTools(Protocol):
     """Инструменты, видимые субъекту вне чата; собирает хост из реестра."""
 
@@ -205,9 +165,15 @@ class ConnectionDirectory(Protocol):
 class SyncPorts:
     """Порты синхронизации от хоста: инструменты субъекта и имена подключений."""
 
-    def __init__(self, tools: SyncTools, connections: ConnectionDirectory) -> None:
+    def __init__(
+        self,
+        tools: SyncTools,
+        connections: ConnectionDirectory,
+        contexts: CallContexts,
+    ) -> None:
         self.tools = tools
         self.connections = connections
+        self.contexts = contexts
 
 
 class SyncToolArg:
@@ -252,6 +218,7 @@ class SyncRunner:
         self._store = store
         self._tools = ports.tools
         self._names = ports.connections
+        self._contexts = ports.contexts
         self._observer = observer
         self._jobs: JobTasks[RunCancellation] = JobTasks(self._stop)
 
@@ -260,7 +227,7 @@ class SyncRunner:
         return self._names
 
     async def start(
-        self, caller: SyncCaller, connection_id: UUID, scope: SyncScope
+        self, caller: ApiSubject, connection_id: UUID, scope: SyncScope
     ) -> Sync:
         """Запись синхронизации и задача инструмента; возвращает сразу.
 
@@ -292,14 +259,12 @@ class SyncRunner:
         request = SyncRequest(connection=connection, scope=scope)
         sync_id = uuid4()
         sync = await self._store.start_sync(sync_id, request, caller.subject.user_id)
-        cancellation = RunCancellation()
-        job = SyncJob(
-            sync=sync,
-            tool_name=tool_name,
-            context=caller.context(sync_id, cancellation),
+        context = caller.context(Scope.job(str(sync_id)))
+        job = SyncJob(sync=sync, tool_name=tool_name, context=context)
+        drive = SyncDrive(self._store, job, invoker, self._contexts)
+        self._jobs.start(
+            sync_id, self._guarded(drive, caller.subject), context.cancellation
         )
-        drive = SyncDrive(self._store, job, invoker)
-        self._jobs.start(sync_id, self._guarded(drive, caller.subject), cancellation)
         await self._observer(caller.subject, sync, ChangeAction.CREATED)
 
         return sync
@@ -344,18 +309,23 @@ class SyncDrive:
     инструмента — в шапку версии и запись синхронизации."""
 
     def __init__(
-        self, store: ConnectionStore, job: SyncJob, invoker: ToolInvoker
+        self,
+        store: ConnectionStore,
+        job: SyncJob,
+        invoker: ToolInvoker,
+        contexts: CallContexts,
     ) -> None:
         self._store = store
         self._job = job
         self._invoker = invoker
+        self._contexts = contexts
 
     @property
     def sync_id(self) -> UUID:
         return self._job.sync_id
 
     async def run(self) -> Sync:
-        reply: InvokeReply | None = None
+        reply: NodeOutcome | None = None
         failure = ""
         try:
             reply = await self._invoke()
@@ -366,15 +336,15 @@ class SyncDrive:
 
         return await self._close(reply, failure)
 
-    async def _invoke(self) -> InvokeReply:
+    async def _invoke(self) -> NodeOutcome:
         intent = f"catalog sync {self.sync_id}"
         call = ToolInvoker.call(
             self._job.tool_name, self._job.call_args(), intent, CallIdPrefix.API
         )
-        with RunRegistry.open(self._job.context):
+        with RunRegistry.open(self._contexts, self._job.context):
             return await self._invoker.invoke(call)
 
-    async def _close(self, reply: InvokeReply | None, failure: str) -> Sync:
+    async def _close(self, reply: NodeOutcome | None, failure: str) -> Sync:
         if self._job.cancellation.reason is StopReason.USER_STOP:
             return await self._failed(SyncStatus.CANCELLED, "cancelled by the user")
 
@@ -385,14 +355,15 @@ class SyncDrive:
             error = f"sync {self.sync_id}: {self._job.tool_name} returned no reply"
             return await self._failed(SyncStatus.FAILED, error)
 
-        if not reply.ok:
+        if not reply.ok():
             error = (
-                f"sync {self.sync_id}: {self._job.tool_name} failed: {reply.error_text}"
+                f"sync {self.sync_id}: {self._job.tool_name} failed: "
+                f"{reply.error_text()}"
             )
             return await self._failed(SyncStatus.FAILED, error)
 
         try:
-            outcome = SnapshotOutcome.of_result(reply.result)
+            outcome = SnapshotOutcome.of_result(reply.artifact)
             return await self._store.record_sync(self.sync_id, outcome)
         except (CatalogDomainError, SyncOutcomeError, SnapshotKindMismatchError) as exc:
             return await self._failed(SyncStatus.FAILED, f"sync {self.sync_id}: {exc}")

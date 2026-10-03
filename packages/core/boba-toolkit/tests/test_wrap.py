@@ -10,12 +10,10 @@ from pydantic import SecretStr
 
 from boba.stand_core.fake_toolmod import FakeConfig
 from boba.toolkit.entry import ToolMain
-from boba.toolkit.frames import FrameHead, ToolFrame
+from boba.toolkit.frames import ToolFrame
 from boba.toolkit.launcher import (
     CallGate,
     CallInputPort,
-    FrameSink,
-    FrameTap,
     PayloadFailureError,
     RunResult,
     TappedCall,
@@ -178,46 +176,3 @@ class TestSandboxMode:
             raise AssertionError("isinstance(launcher.commands, list)")
         if not (isinstance(REPLY.validate_json(reply), ReplyError)):
             raise AssertionError("isinstance( REPLY.validate_json(reply), ReplyError )")
-
-
-class Collected(FrameSink):
-    """Приёмник кадров теста: копит, что отдала обёртка."""
-
-    def __init__(self) -> None:
-        self.frames: list[ToolFrame] = []
-
-    def take(self, frame: ToolFrame) -> None:
-        self.frames.append(frame)
-
-
-class TestFrameTap:
-    """С приёмником кадров в контексте обёртка отдаёт кадры тела ему, без
-    приёмника — дочитывает в никуда; конверт разбирается одинаково."""
-
-    OK_REPLY = TestSandboxMode.OK_REPLY
-
-    def test_frames_reach_the_sink_only_inside_the_tap(self) -> None:
-        frames = (
-            ToolFrame.of(FrameHead(kind="one"), b"a"),
-            ToolFrame.of(FrameHead(kind="two"), b"bb"),
-        )
-        tool = fresh_tool()
-        launcher = RecordingLauncher(self.OK_REPLY, frames)
-        ToolProcessWrap.guard_all([tool], launcher)
-        if tool.coroutine is None:
-            raise AssertionError("tool.coroutine is not None")
-
-        sink = Collected()
-        with FrameTap.applied(sink):
-            content, _artifact = run_body(
-                tool.coroutine, text="hello", repeat=1, cfg=CFG
-            )
-
-        assert content == "done"
-        assert [frame.kind for frame in sink.frames] == ["one", "two"]
-        assert sink.frames[1].body == b"bb"
-        assert FrameTap.get() is None
-
-        outside = Collected()
-        run_body(tool.coroutine, text="hello", repeat=1, cfg=CFG)
-        assert outside.frames == []

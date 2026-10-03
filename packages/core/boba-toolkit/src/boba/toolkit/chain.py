@@ -180,8 +180,9 @@ class StreamPlanError(LauncherError):
 
 
 class StreamFailureKind(StrEnum):
-    """Коды error_kind срывов группы каналов."""
+    """Коды error_kind отказа плана и срывов группы каналов."""
 
+    PLAN_REFUSED = "stream_plan_refused"
     GROUP_FAILED = "stream_group_failed"
     CHANNEL_FAILED = "stream_channel_failed"
     STALLED = "stream_stalled"

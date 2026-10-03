@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from collections.abc import Generator, Iterable
 from contextlib import contextmanager
-from contextvars import ContextVar, Token
+from contextvars import ContextVar
 from enum import StrEnum
 from typing import Annotated, ClassVar, Literal
 from uuid import UUID
@@ -28,6 +28,7 @@ from boba.identity.session import LogUserMark
 
 __all__ = [
     "CallContext",
+    "CallContexts",
     "ChatInitiator",
     "ContextKind",
     "Credential",
@@ -222,7 +223,10 @@ Credential = Annotated[DelegatedTicket | NoUserCredential, Field(discriminator="
 
 
 class CallContext(BaseModel):
-    """Контекст вызова в contextvar: субъект, область, инициатор, секреты, отмена."""
+    """Контекст вызова: субъект, область, инициатор, секреты, отмена.
+
+    Значение; где оно сейчас действует, знает CallContexts.
+    """
 
     model_config = ConfigDict(frozen=True, extra="forbid", arbitrary_types_allowed=True)
 
@@ -231,46 +235,6 @@ class CallContext(BaseModel):
     initiator: Initiator
     credential: Credential
     cancellation: RunCancellation
-
-    _CURRENT: ClassVar[ContextVar[CallContext | None]] = ContextVar(
-        "boba_call_context", default=None
-    )
-
-    @classmethod
-    def current(cls) -> CallContext:
-        """Контекст текущего вызова; вне контекста — RefusalError."""
-        context = cls._CURRENT.get()
-        if context is None:
-            msg = (
-                "CallContext.current(): the call runs outside a call context, "
-                "expected CallContext.applied() up the stack"
-            )
-            raise RefusalError(ContextKind.NO_CONTEXT, msg)
-
-        return context
-
-    @classmethod
-    def peek(cls) -> CallContext | None:
-        """Контекст, если он есть: для журнала и логов, которым без него можно."""
-        return cls._CURRENT.get()
-
-    @classmethod
-    def current_subject(cls) -> Subject:
-        return cls.current().subject
-
-    @classmethod
-    def reset(cls) -> None:
-        """Снять контекст: пользуются тесты."""
-        cls._CURRENT.set(None)
-
-    @classmethod
-    def push(cls, context: CallContext) -> Token[CallContext | None]:
-        """Ставит производный контекст на время вызова; снимает pop."""
-        return cls._CURRENT.set(context)
-
-    @classmethod
-    def pop(cls, token: Token[CallContext | None]) -> None:
-        cls._CURRENT.reset(token)
 
     def log_mark(self) -> LogUserMark:
         return LogUserMark(self.subject.login, self.scope.id)
@@ -305,12 +269,53 @@ class CallContext(BaseModel):
             cancellation=RunCancellation(),
         )
 
+
+class CallContexts:
+    """Текущий контекст вызова процесса: кто сейчас вызывает и в какой области.
+
+    Контекст ставит вход вызова (ход чата, запрос API, задание) на время его
+    исполнения — applied(); код ниже по стеку читает его отсюда (current,
+    peek). Объект один на процесс: его создаёт сборка приложения и отдаёт
+    через конструкторы всем, кто ставит или читает контекст. Переменная
+    контекста исполнения живёт в нём, поэтому задачи и потоки вызова видят
+    тот же контекст.
+    """
+
+    def __init__(self) -> None:
+        self._current: ContextVar[CallContext | None] = ContextVar(
+            "boba_call_context", default=None
+        )
+
+    def current(self) -> CallContext:
+        """Контекст текущего вызова; вне контекста — RefusalError."""
+        context = self._current.get()
+        if context is None:
+            msg = (
+                "the call runs outside a call context, expected "
+                "CallContexts.applied() up the stack"
+            )
+            raise RefusalError(ContextKind.NO_CONTEXT, msg)
+
+        return context
+
+    def peek(self) -> CallContext | None:
+        """Контекст, если он есть: для журнала и логов, которым без него можно."""
+        return self._current.get()
+
+    def subject(self) -> Subject:
+        """Субъект текущего вызова."""
+        return self.current().subject
+
+    def reset(self) -> None:
+        """Снять контекст: пользуются тесты."""
+        self._current.set(None)
+
     @contextmanager
-    def applied(self) -> Generator[CallContext, None, None]:
+    def applied(self, context: CallContext) -> Generator[CallContext, None, None]:
         """Ставит контекст и метку лога на время блока."""
-        token = self._CURRENT.set(self)
+        token = self._current.set(context)
         try:
-            with self.log_mark().applied():
-                yield self
+            with context.log_mark().applied():
+                yield context
         finally:
-            self._CURRENT.reset(token)
+            self._current.reset(token)

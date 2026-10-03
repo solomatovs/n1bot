@@ -75,7 +75,6 @@ from boba.catalog_service import (
     SnapshotKindMismatchError,
     SnapshotRejectedError,
     Sync,
-    SyncCaller,
     SyncClosedError,
     SyncedConnection,
     SyncNotFoundError,
@@ -745,9 +744,7 @@ class CatalogApi(ApiMount):
     ) -> Sync:
         """Синхронизация подключения инструментом вида от имени пользователя
         входа: возвращает запись сразу, ход виден по GET и событиям."""
-        caller = SyncCaller.of_api(identity)
-
-        return await service.start_sync(caller, connection_id, body)
+        return await service.start_sync(identity, connection_id, body)
 
     async def get_sync(
         self, sync_id: UUID, identity: CurrentSubject, service: CurrentCatalog

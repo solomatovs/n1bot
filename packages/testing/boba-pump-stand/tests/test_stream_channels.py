@@ -27,6 +27,7 @@ import pytest
 from langchain_core.messages import ToolCall
 
 from boba.pump_stand import ClickHouseSide, PostgresSide, PumpStand
+from boba.stand_core.context import TEST_CONTEXTS
 from boba.tool.ch import tools as ch
 from boba.tool.pg import tools as pg
 from boba.toolkit.chain import GroupCall, GroupFailureResult
@@ -123,7 +124,7 @@ class ChannelTools:
             stderr_tail_bytes=16384,
             kill_grace_sec=1.0,
         )
-        launcher = ProcessToolCaller("pump-channels", cfg)
+        launcher = ProcessToolCaller("pump-channels", cfg, TEST_CONTEXTS)
 
         tools: list[Any] = []
         for payload in (pg.pg_stream_out, pg.pg_stream_in, ch.ch_stream_in):

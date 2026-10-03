@@ -28,6 +28,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from boba.chat.profiles import ChatProfiles
 from boba.identity.context import (
     CallContext,
+    CallContexts,
     Scope,
     Subject,
 )
@@ -42,9 +43,9 @@ from boba.identity.run import RunRegistry
 from boba.studio.api.auth import ApiAuth, CurrentUser
 from boba.studio.api.urls import ToolCallUrl
 from boba.toolkit.calls import ToolIntent
+from boba.toolrun.dag_run import NodeOutcome
 from boba.toolrun.invoke import (
     CallIdPrefix,
-    InvokeReply,
     ToolInvoker,
     ToolUnavailableError,
 )
@@ -84,12 +85,12 @@ class ToolCallReply(BaseModel):
     result: Mapping[str, Any]
 
     @classmethod
-    def of(cls, reply: InvokeReply, call_id: str) -> ToolCallReply:
+    def of(cls, reply: NodeOutcome, call_id: str) -> ToolCallReply:
         return cls(
             call_id=call_id,
-            ok=reply.ok,
+            ok=reply.ok(),
             content=reply.content,
-            result=reply.result.model_dump(mode="json"),
+            result=reply.artifact.model_dump(mode="json"),
         )
 
 
@@ -139,10 +140,12 @@ class ToolCalling:
         profiles: ChatProfiles,
         locks: LocksSource,
         heartbeat_sec: float,
+        contexts: CallContexts,
     ) -> None:
         self._registry = registry
         self._profiles = profiles
         self._job_lock = JobLock(locks, heartbeat_sec)
+        self._contexts = contexts
 
     def mount(self, router: APIRouter) -> None:
         router.add_api_route(
@@ -181,9 +184,8 @@ class ToolCalling:
 
         return ToolInvoker.for_subject(registry, subject)
 
-    @staticmethod
     async def _run(
-        invoker: ToolInvoker, name: str, body: ToolCallBody, context: CallContext
+        self, invoker: ToolInvoker, name: str, body: ToolCallBody, context: CallContext
     ) -> ToolCallReply:
         try:
             invoker.tool(name)
@@ -200,7 +202,7 @@ class ToolCalling:
             context.scope.id,
         )
 
-        with RunRegistry.open(context):
+        with RunRegistry.open(self._contexts, context):
             reply = await invoker.invoke(call)
 
         return ToolCallReply.of(reply, call_id)

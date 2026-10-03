@@ -25,6 +25,8 @@ class TestHistoryArtifacts:
         никто не проверяет."""
         if GroupFailureResult.declared_kind() is None:
             raise AssertionError("вид срыва группы объявлен в boba.toolkit.chain")
+        if WorkflowResult.declared_kind() is None:
+            raise AssertionError("вид workflow объявлен в boba.toolkit.dag")
 
         missing = SNAPSHOTS.missing()
         if missing:

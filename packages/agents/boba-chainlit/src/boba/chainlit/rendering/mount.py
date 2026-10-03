@@ -28,6 +28,8 @@ from boba.chainlit.canvas.panel import CanvasPanel
 from boba.chainlit.data.data_layer import AttachmentDataLayer
 from boba.chainlit.domain.context import ChatCallContext
 from boba.chainlit.rendering.tool import ChatElements
+from boba.identity.context import CallContexts, ContextKind
+from boba.identity.errors import RefusalError
 from boba.identity.run import ElementTarget, RunRegistry
 from boba.toolkit.result import (
     ErrorResult,
@@ -65,9 +67,21 @@ class ChatMount(CallHooks[MountedCall]):
 
     RETRY_NOTE: ClassVar[str] = "fix the file and call the tool again"
 
-    @classmethod
-    def guard_all(cls, tools: Sequence[BaseTool]) -> None:
-        ToolBody.hook_all(tools, cls())
+    def __init__(self, contexts: CallContexts) -> None:
+        self._contexts = contexts
+
+    def guard_all(self, tools: Sequence[BaseTool]) -> None:
+        ToolBody.hook_all(tools, self)
+
+    def chat_context(self) -> ChatCallContext:
+        """Контекст хода чата; вызов вне чата — RefusalError(CHAT_ONLY)."""
+        context = self._contexts.current()
+        if isinstance(context, ChatCallContext):
+            return context
+
+        got = type(context).__name__
+        msg = f"this tool works only inside a chat turn, called from {got}"
+        raise RefusalError(ContextKind.CHAT_ONLY, msg)
 
     def before(
         self,
@@ -134,14 +148,13 @@ class ChatMount(CallHooks[MountedCall]):
         element.for_id = target.for_id
         await AttachmentDataLayer.require().create_element(element)
 
-        context = ChatCallContext.require()
+        context = self.chat_context()
         port = RunRegistry.require_port(thread_id)
         await port.show_element(context.tool_call_id(), element.to_dict())
 
-    @staticmethod
-    def _key(path: str) -> ObjectKey:
+    def _key(self, path: str) -> ObjectKey:
         """Ключ файла в области хода; путь вне каталогов треда — отказ."""
-        context = ChatCallContext.require()
+        context = self.chat_context()
         try:
             return ObjectKey.from_workspace(
                 context.subject.user_key, context.scope.id, path
@@ -149,9 +162,8 @@ class ChatMount(CallHooks[MountedCall]):
         except ValueError as e:
             raise CanvasError(CanvasErrorKind.BAD_PATH, str(e)) from e
 
-    @staticmethod
-    def _target(thread_id: str) -> ElementTarget:
-        context = ChatCallContext.require()
+    def _target(self, thread_id: str) -> ElementTarget:
+        context = self.chat_context()
         port = RunRegistry.require_port(thread_id)
 
         return port.element_target(context.tool_call_id())

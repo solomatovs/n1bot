@@ -53,6 +53,7 @@ from boba.connection_broker.sealing import SealingToolServer, SentConnections
 from boba.connection_broker.store import ConnectionsConfig
 from boba.connection_broker.user_connections import ArmedConnections
 from boba.db.postgres import AsyncPostgresPool, PostgresError, PostgresSchema
+from boba.identity.context import CallContexts
 from boba.identity.errors import InternalServiceError
 from boba.identity.session import SessionSource
 from boba.llm.providers import LlmProviders, LlmProviderTypes
@@ -365,13 +366,9 @@ def session_chat(
 
 
 def sent_connections() -> SentConnections:
-    """Что чат отправил серверу инструментов вместо ссылок на соединения;
-    кладёт процесс: объект общий для порта инструментов и ленты."""
-    msg = (
-        "DI provider sent_connections resolved before the process supplied "
-        "SentConnections via Container.provide"
-    )
-    raise RuntimeError(msg)
+    """Что чат отправил серверу инструментов вместо ссылок на соединения:
+    один объект на процесс, общий для порта инструментов и ленты."""
+    return SentConnections()
 
 
 def langchain_agent(  # noqa: PLR0913
@@ -387,10 +384,13 @@ def langchain_agent(  # noqa: PLR0913
     registry: Annotated[ToolRegistry, Depends(runtime.tool_registry)],
     raw: Annotated[DictConfig, Depends(runtime.get_raw_config)],
     sent: Annotated[SentConnections, Depends(sent_connections)],
+    contexts: Annotated[CallContexts, Depends(runtime.call_contexts)],
 ) -> CompiledStateGraph:
     service = SealingToolServer(
         registry.server(tools),
-        ArmedConnections(runtime.connection_store_ref, runtime.credential_source_ref),
+        ArmedConnections(
+            runtime.connection_store_ref, runtime.credential_source_ref, contexts
+        ),
         sent,
         timedelta(seconds=bind(raw, "connections", ConnectionsConfig).seal_ttl_sec),
     )

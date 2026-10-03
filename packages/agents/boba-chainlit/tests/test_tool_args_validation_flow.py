@@ -29,10 +29,10 @@ from boba.chainlit.agent.flow import GraphSpec, PlainGraphBuilder
 from boba.chainlit.infra.config import AppConfig
 from boba.chainlit.infra.plugins import ChatPlugins
 from boba.chainlit.infra.providers import build_history_view
-from boba.connection_broker.store import ConnectionStore
 from boba.sandbox import ZygoteRegistry
 from boba.stand.refs import StandRefs
 from boba.stand.tools import STREAM_CONFIG
+from boba.stand_core.context import TEST_CONTEXTS
 from boba.toolkit.result import ErrorResult, ToolArtifact
 from boba.toolrun.stream_calls import LocalDagService
 
@@ -119,21 +119,12 @@ def app_sandbox() -> Iterator[None]:
         ZygoteRegistry.stop_all()
 
 
-def _no_registry() -> None:
-    return None
-
-
-def _no_store() -> ConnectionStore:
-    msg = "the flow under test does not reach user connections"
-    raise RuntimeError(msg)
-
-
 @pytest.fixture(scope="module")
 def session_tools(
     raw_config: DictConfig, app_config: AppConfig, app_sandbox: None
 ) -> list[BaseTool]:
     """Инструменты профиля, собранные боевым загрузчиком."""
-    registry = ChatPlugins.load(raw_config, StandRefs.of(_no_store, _no_registry))
+    registry = ChatPlugins(TEST_CONTEXTS).load(raw_config, StandRefs.none())
     roles = frozenset(app_config.roles)
     return registry.for_session(roles, PROFILE)
 

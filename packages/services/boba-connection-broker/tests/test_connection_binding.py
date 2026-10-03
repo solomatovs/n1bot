@@ -30,8 +30,7 @@ from boba.connection_broker.sealing import SealingToolServer
 from boba.connections.base import ConnectionBase
 from boba.connections.marks import ConnectionRefusal
 from boba.connections.sealed import ConnectionRef, SealFeature, SealKeys
-from boba.identity.context import CallContext
-from boba.stand_core.context import make_context
+from boba.stand_core.context import TEST_CONTEXTS, make_context
 from boba.toolkit.facade import UserConnection
 from boba.toolkit.result import ErrorResult, TableResult, ToolArtifact
 from boba.toolrun.injected import ToolConfigError
@@ -328,13 +327,10 @@ class TestShownToTheUser:
             type="tool_call",
         )
 
-        token = CallContext.push(make_context("t1", login=LOGIN, roles=("read",)))
-        try:
+        with TEST_CONTEXTS.applied(make_context("t1", login=LOGIN, roles=("read",))):
             pending = await client.submit([call])
             running = stand.sent.shown(recorder.calls[0]["args"])
             await pending[0]
-        finally:
-            CallContext.pop(token)
 
         if running["connection"] != MAIN:
             raise AssertionError(f"во время вызова показана ссылка: {running}")
@@ -371,7 +367,9 @@ class TestDeclarationIsChecked:
         )
 
         with pytest.raises(ToolConfigError, match="not a connection model"):
-            SealedConnectionParams(SealKeys(), lambda: TYPES).bind_all([tool])
+            SealedConnectionParams(SealKeys(), lambda: TYPES, TEST_CONTEXTS).bind_all(
+                [tool]
+            )
 
     def test_type_package_must_be_installed(self) -> None:
         class Unregistered(ConnectionBase):
@@ -385,4 +383,6 @@ class TestDeclarationIsChecked:
         )
 
         with pytest.raises(ToolConfigError, match="not installed"):
-            SealedConnectionParams(SealKeys(), lambda: TYPES).bind_all([tool])
+            SealedConnectionParams(SealKeys(), lambda: TYPES, TEST_CONTEXTS).bind_all(
+                [tool]
+            )

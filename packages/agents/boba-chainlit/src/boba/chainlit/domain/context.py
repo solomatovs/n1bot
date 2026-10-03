@@ -33,17 +33,6 @@ class ChatCallContext(CallContext):
 
     surface: ChatSurface
 
-    @classmethod
-    def require(cls) -> ChatCallContext:
-        """Контекст чата; вызов вне чата — RefusalError(CHAT_ONLY)."""
-        context = cls.current()
-        if not isinstance(context, ChatCallContext):
-            got = type(context).__name__
-            msg = f"this tool works only inside a chat turn, called from {got}"
-            raise RefusalError(ContextKind.CHAT_ONLY, msg)
-
-        return context
-
     def tool_call_id(self) -> str:
         """id вызова модели: к нему привязываются элементы, созданные инструментом."""
         if not isinstance(self.initiator, LlmInitiator):

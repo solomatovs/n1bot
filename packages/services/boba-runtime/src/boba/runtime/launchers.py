@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from abc import abstractmethod
 from collections.abc import Callable, Mapping, Sequence
+from contextlib import ExitStack
 from pathlib import Path
 from typing import Annotated, Any, ClassVar, Literal, Protocol
 
@@ -21,7 +22,7 @@ from pydantic import BaseModel, ConfigDict, Field, RootModel, model_validator
 from boba.canvas.journal import CallStream
 from boba.canvas.keys import WorkspaceMount
 from boba.config import bind
-from boba.identity.context import CallContext
+from boba.identity.context import CallContexts
 from boba.sandbox import (
     BindSpec,
     CgroupManager,
@@ -240,15 +241,21 @@ class SandboxDefaults:
 
 
 class CallSurface:
-    """Значения из контекста вызова для обвязок запуска инструментов."""
+    """Значения из контекста вызова для обвязок запуска инструментов.
 
-    @staticmethod
-    def stream_source(tool: str, call_id: str) -> CallStream | None:
+    Создаёт его загрузчик инструментов из держателя контекста процесса; его
+    методы отдаются обвязкам журнала и исполнителю песочницы.
+    """
+
+    def __init__(self, contexts: CallContexts) -> None:
+        self._contexts = contexts
+
+    def stream_source(self, tool: str, call_id: str) -> CallStream | None:
         """Журнал живого вывода вызова; область и субъект — из контекста вызова."""
         if not ToolStreams.streamable(tool):
             return None
 
-        context = CallContext.peek()
+        context = self._contexts.peek()
         if context is None:
             return None
 
@@ -256,31 +263,27 @@ class CallSurface:
             context.subject.user_key, context.scope.id, call_id, tool
         )
 
-    @staticmethod
-    def tool_call_scope(call_id: str) -> Callable[[], None]:
+    def tool_call_scope(self, call_id: str) -> Callable[[], None]:
         """Контекст вызова инструмента моделью на время вызова: инициатор llm.
 
         Без контекста ставить нечего — снимать тоже.
         """
-        context = CallContext.peek()
+        context = self._contexts.peek()
         if context is None:
             return NoCallScope.leave
 
-        token = CallContext.push(context.as_tool_call(call_id))
+        entered = ExitStack()
+        entered.enter_context(self._contexts.applied(context.as_tool_call(call_id)))
 
-        def leave() -> None:
-            CallContext.pop(token)
+        return entered.close
 
-        return leave
-
-    @staticmethod
-    def sandbox_path_vars() -> dict[str, str]:
+    def sandbox_path_vars(self) -> dict[str, str]:
         """Значения {user_id}/{thread_id} для путей профиля на момент вызова.
 
         Вне контекста вызова значений нет: профиль с такими переменными
         отказывает рендером, называя недостающую.
         """
-        context = CallContext.peek()
+        context = self._contexts.peek()
         if context is None:
             return {}
 
@@ -298,8 +301,10 @@ class SectionLaunchers(Protocol):
         """Проверяет предпосылки способа запуска; нарушение — отказ старта."""
 
     @abstractmethod
-    def launcher_of(self, spec: LaunchSpec) -> ToolLauncher:
-        """Исполнитель секции спеки; её конфиг и изоляция проверяются здесь."""
+    def launcher_of(self, spec: LaunchSpec, contexts: CallContexts) -> ToolLauncher:
+        """Исполнитель секции спеки; её конфиг и изоляция проверяются здесь.
+        contexts — держатель контекста вызова: по нему исполнитель узнаёт
+        пользователя и область на момент вызова."""
 
 
 class ZygoteLaunchers(SectionLaunchers):
@@ -318,7 +323,7 @@ class ZygoteLaunchers(SectionLaunchers):
     def _env(self) -> EnvPaths:
         return bind(self._raw, "env", EnvPaths)
 
-    def launcher_of(self, spec: LaunchSpec) -> ToolLauncher:
+    def launcher_of(self, spec: LaunchSpec, contexts: CallContexts) -> ToolLauncher:
         profile = self.profile_of(spec)
         sandbox = self._plugin_sandbox(spec.section)
 
@@ -330,8 +335,10 @@ class ZygoteLaunchers(SectionLaunchers):
             warmup_calls=self.warmup_configs(spec.section, spec.modules, self._raw),
         )
 
+        surface = CallSurface(contexts)
+
         return ZygoteToolCaller(
-            spec.section, supervisor, profile, CallSurface.sandbox_path_vars
+            spec.section, supervisor, profile, surface.sandbox_path_vars
         )
 
     @staticmethod
@@ -456,8 +463,8 @@ class ProcessLaunchers(SectionLaunchers):
         # файловые ссылки канваса читают файлы инструментов из workdir
         WorkspaceMount.configure(self._cfg.workdir)
 
-    def launcher_of(self, spec: LaunchSpec) -> ToolLauncher:
-        return ProcessToolCaller(spec.section, self._cfg)
+    def launcher_of(self, spec: LaunchSpec, contexts: CallContexts) -> ToolLauncher:
+        return ProcessToolCaller(spec.section, self._cfg, contexts)
 
 
 class ToolLaunchers:

@@ -19,21 +19,11 @@ from boba.connections.stored import ConnectionBase, GrantedConnection
 __all__ = [
     "AmbiguousConnectionError",
     "ConnectionWhitelist",
-    "Picked",
 ]
 
 
 class AmbiguousConnectionError(LookupError):
     """Запрошенное имя выдано субъекту несколько раз; выбирать наугад нельзя."""
-
-
-class Picked(BaseModel):
-    """Строка, выбранная под запрос вызова."""
-
-    model_config = ConfigDict(frozen=True)
-
-    name: str
-    connection: ConnectionBase
 
 
 class ConnectionWhitelist(BaseModel):
@@ -61,8 +51,8 @@ class ConnectionWhitelist(BaseModel):
     def names(self) -> tuple[str, ...]:
         return tuple(sorted(self.connections))
 
-    def pick(self, requested: str) -> Picked | None:
-        """Строка под запрос; None — такого имени у субъекта нет.
+    def pick(self, requested: str) -> ConnectionBase | None:
+        """Соединение под запрос; None — такого имени у субъекта нет.
 
         Ошибки:
         AmbiguousConnectionError — имя выдано субъекту дважды.
@@ -74,8 +64,4 @@ class ConnectionWhitelist(BaseModel):
             )
             raise AmbiguousConnectionError(msg)
 
-        connection = self.connections.get(requested)
-        if connection is None:
-            return None
-
-        return Picked(name=requested, connection=connection)
+        return self.connections.get(requested)

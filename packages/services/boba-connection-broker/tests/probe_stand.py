@@ -23,8 +23,8 @@ from boba.connections.base import ClientIdentity, ConnectionBase
 from boba.connections.manifest import ConnectionTypeManifest, ConnectionTypes
 from boba.connections.sealed import SealKeys
 from boba.connections.stored import GrantedConnection, StoredConnection
-from boba.identity.context import CallContext, Subject
-from boba.stand_core.context import make_context
+from boba.identity.context import Subject
+from boba.stand_core.context import TEST_CONTEXTS, make_context
 from boba.toolkit.calls import ToolCallBase
 from boba.toolkit.facade import UserConnection, tool
 from boba.toolkit.result import TableResult
@@ -111,11 +111,8 @@ class ProbeTools:
         return self.tool("probe_copy", fields)
 
     async def call(self, tool: BaseTool, args: dict[str, Any]) -> dict[str, Any]:
-        token = CallContext.push(make_context("t1", login=LOGIN, roles=("read",)))
-        try:
+        with TEST_CONTEXTS.applied(make_context("t1", login=LOGIN, roles=("read",))):
             return await tool.ainvoke(args)
-        finally:
-            CallContext.pop(token)
 
 
 class Rows:
@@ -171,7 +168,7 @@ class SealedStand:
 
     def __init__(self, rows: Sequence[StoredConnection]) -> None:
         self.keys = SealKeys()
-        self.params = SealedConnectionParams(self.keys, lambda: TYPES)
+        self.params = SealedConnectionParams(self.keys, lambda: TYPES, TEST_CONTEXTS)
         self.sent = SentConnections()
 
         tools = [self._query_tool(), self._copy_tool()]
@@ -181,6 +178,7 @@ class SealedStand:
         self.connections = ArmedConnections(
             lambda: store,  # type: ignore[arg-type]
             Credentials,  # type: ignore[arg-type]
+            TEST_CONTEXTS,
         )
         self.executor = LocalDagService(tools, self.STREAM_CONFIG, (self.params,))
         self.client = SealingToolServer(
@@ -209,11 +207,8 @@ class SealedStand:
         call = ToolCall(
             name=name, args=args, id=f"call_{uuid4().hex}", type="tool_call"
         )
-        token = CallContext.push(make_context("t1", login=LOGIN, roles=("read",)))
-        try:
+        with TEST_CONTEXTS.applied(make_context("t1", login=LOGIN, roles=("read",))):
             return await server.call(call)
-        finally:
-            CallContext.pop(token)
 
     @staticmethod
     def _query_tool() -> BaseTool:

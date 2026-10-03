@@ -20,7 +20,6 @@ from boba.catalog_service import (
     CatalogRefusalError,
     CatalogService,
     ProcessSpec,
-    SyncCaller,
     SyncClosedError,
     SyncRunningError,
     SyncScope,
@@ -32,7 +31,8 @@ from boba.db.postgres.catalog import StagingTables
 from boba.db.postgres.connection import PostgresConfig
 from boba.db.postgres.snapshot import PgSnapshot
 from boba.db.postgres.snapshot_sample import PgSample
-from boba.identity.context import HumanInitiator, NoUserCredential, Subject
+from boba.identity.api import ApiSubject
+from boba.identity.context import NoUserCredential, Subject
 from boba.messaging import ChangeAction
 from boba.stand.catalog_ports import FakeConnections, FakeSyncPorts
 from boba.stand.catalog_stand import CatalogStand, ChangeCollector
@@ -57,10 +57,9 @@ EDITOR = _subject(UUID(int=1), ROLE)
 VIEWER = _subject(UUID(int=2), "viewer")
 
 
-def _caller(subject: Subject) -> SyncCaller:
-    return SyncCaller(
+def _caller(subject: Subject) -> ApiSubject:
+    return ApiSubject(
         subject=subject,
-        initiator=HumanInitiator(via="api"),
         credential=NoUserCredential(reason="the sync stand carries no ticket"),
     )
 

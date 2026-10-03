@@ -22,12 +22,12 @@ from boba.chainlit.canvas.panel import CanvasPanel
 from boba.chainlit.canvas.tools import CanvasViewers
 from boba.chainlit.data.data_layer import AttachmentDataLayer
 from boba.chainlit.data.storage import LocalStorageClient
-from boba.chainlit.domain.context import ChatCallContext
 from boba.chainlit.domain.keys import AttachmentLinks
 from boba.chainlit.infra.config import LocalStorageConfig
 from boba.chainlit.rendering.mount import ChatMount
 from boba.identity.run import RunRegistry
 from boba.runtime.launchers import CallSurface
+from boba.stand_core.context import TEST_CONTEXTS
 from boba.tool.canvas.tools import TOOLS, CanvasToolConfig
 from boba.toolkit.result import CanvasResult, ErrorResult, FileResult
 from boba.toolrun.bridge import ToolBridge
@@ -97,7 +97,9 @@ class Stand:
         # запуск открывается контекстом сессии: телу и обвязке нужен контекст
         # чата с поверхностью, реестру — запись о порте хода
         use_session(monkeypatch, user_id=USER, thread_id=THREAD)
-        self.run = RunRegistry.open(ChatCallContext.require(), cast(Any, self.turn))
+        self.run = RunRegistry.open(
+            TEST_CONTEXTS, TEST_CONTEXTS.current(), cast(Any, self.turn)
+        )
         self.run.__enter__()
         monkeypatch.setattr(
             AttachmentDataLayer, "require", classmethod(lambda cls: self.layer)
@@ -115,14 +117,16 @@ class Stand:
     @staticmethod
     def _bridged() -> list[Any]:
         bridged = [ToolBridge.as_structured_tool(tool) for tool in TOOLS]
-        CallContextValues.bind_all(bridged)
+        CallContextValues.bind_all(bridged, TEST_CONTEXTS)
         InjectedConfig.bind_all(
             bridged, lambda name, annotation: CanvasToolConfig(max_chars=32000)
         )
-        ChatMount.guard_all(bridged)
+        ChatMount(TEST_CONTEXTS).guard_all(bridged)
         ToolCallIdField.attach_all(bridged)
         ToolRunLogger.guard_all(
-            bridged, lambda tool, call_id: None, CallSurface.tool_call_scope
+            bridged,
+            lambda tool, call_id: None,
+            CallSurface(TEST_CONTEXTS).tool_call_scope,
         )
         return bridged
 

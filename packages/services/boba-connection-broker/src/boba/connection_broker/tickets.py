@@ -81,7 +81,7 @@ class ServiceTickets(AsyncInjected):
 
     def _require_static(self) -> None:
         for profile in ConnectionSections.connections(self._base):
-            section = ConnectionSections.section_of(profile)
+            section = profile.kerberos_section()
             if isinstance(section, DelegatedAuth):
                 msg = (
                     f"injected config {self._param!r}: profile "

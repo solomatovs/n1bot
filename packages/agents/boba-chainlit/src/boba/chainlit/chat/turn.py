@@ -30,7 +30,7 @@ from boba.chainlit.chat.tracing import AgentTracer, TurnArtifacts
 from boba.chainlit.domain.keys import AttachmentLinks
 from boba.chainlit.rendering.chat_view import ChatView, StepRole, StepText
 from boba.connection_broker.sealing import SentConnections
-from boba.identity.context import CallContext
+from boba.identity.context import CallContexts
 from boba.identity.errors import FailureReport, RefusalError
 from boba.identity.locks import (
     LockBusyError,
@@ -409,6 +409,7 @@ class ChatTurn(RunPort):
         question: Question,
         locking: RunLocking,
         sent: SentConnections,
+        contexts: CallContexts,
     ) -> None:
         self._thread_id = thread_id
         self._feed = feed
@@ -419,6 +420,7 @@ class ChatTurn(RunPort):
         self._state = TurnState()
         self._answered = False
         self._tracer = AgentTracer(feed, self._state, sent)
+        self._contexts = contexts
         self._reporter = TurnReporter(
             feed=feed,
             state=self._state,
@@ -502,7 +504,7 @@ class ChatTurn(RunPort):
         started = time.monotonic()
         logger.info("turn start: thread=%s key=%s", self._thread_id, self._key)
 
-        context = CallContext.current()
+        context = self._contexts.current()
         try:
             lock = await self._locks.acquire(
                 context.scope,
@@ -548,12 +550,12 @@ class ChatTurn(RunPort):
     async def _run(
         self, stream: AsyncIterator[tuple[BaseMessage, dict[str, Any]]]
     ) -> None:
-        context = CallContext.current()
+        context = self._contexts.current()
         cancellation = context.cancellation
         pumps = StreamPumps(self._feed)
         try:
             with (
-                RunRegistry.open(context, self, pumps.opened),
+                RunRegistry.open(self._contexts, context, self, pumps.opened),
                 RunRegistry.task_abort(cancellation),
             ):
                 try:

@@ -28,15 +28,14 @@ from typing import ClassVar
 from langchain_core.tools import BaseTool
 
 from boba.connection_broker.user_connections import (
-    CallerApplication,
     ConnectionParamHooks,
     TypesRef,
 )
-from boba.connections.base import ConnectionBase
+from boba.connections.base import ClientIdentity, ConnectionBase
 from boba.connections.manifest import ConnectionTypesError
 from boba.connections.marks import ConnectionRefusal
 from boba.connections.sealed import SealedConnection, SealFeature, SealKeys
-from boba.identity.context import CallContext
+from boba.identity.context import CallContexts
 from boba.identity.errors import RefusalError
 from boba.toolrun.injected import AsyncInjected
 from boba.toolrun.stream_calls import NodeArgs
@@ -64,22 +63,32 @@ class SealedConnectionParam(AsyncInjected):
         "пользователя"
     )
 
+    APPLICATION: ClassVar[str] = "boba"
+    """Имя приложения в подписи профиля: под ним ходят все инструменты."""
+
     RESEAL_HINT: ClassVar[str] = (
         "repeat the call with the connection reference from connection_list"
     )
 
     def __init__(
-        self, keys: SealKeys, types_ref: TypesRef, param: str, kind: str
+        self,
+        keys: SealKeys,
+        types_ref: TypesRef,
+        contexts: CallContexts,
+        param: str,
+        kind: str,
     ) -> None:
         super().__init__(param, None)
         self._keys = keys
+        self._contexts = contexts
         self._types_ref = types_ref
         self._kind = kind
-        self._caller = CallerApplication()
 
     async def value(self, name: str, kwargs: dict[str, object]) -> object:
         connection = self.verified(name, kwargs.get(self._param))
-        labelled = self._caller.labelled(connection, name)
+        login = self._contexts.subject().login
+        client = ClientIdentity(application=self.APPLICATION, login=login, tool=name)
+        labelled = connection.labeled(client)
 
         logger.info(
             "tool %s: sealed connection in %s (%s) %s",
@@ -98,7 +107,7 @@ class SealedConnectionParam(AsyncInjected):
     def verified(self, name: str, value: object) -> ConnectionBase:
         """Профиль из запечатанного значения, сверенный с вызовом."""
         sealed = self._opened(name, value)
-        login = CallContext.current().subject.login
+        login = self._contexts.subject().login
 
         if sealed.login != login:
             msg = (
@@ -161,9 +170,12 @@ class SealedConnectionParams(NodeArgs):
     итоге вызова показывает параметры-соединения без значений.
     """
 
-    def __init__(self, keys: SealKeys, types_ref: TypesRef) -> None:
+    def __init__(
+        self, keys: SealKeys, types_ref: TypesRef, contexts: CallContexts
+    ) -> None:
         self._keys = keys
         self._types_ref = types_ref
+        self._contexts = contexts
         self._hooks = ConnectionParamHooks(types_ref, SealedConnectionParam.ARGUMENT)
         self._params: dict[str, dict[str, SealedConnectionParam]] = {}
 
@@ -195,7 +207,9 @@ class SealedConnectionParams(NodeArgs):
         return shown
 
     def _hook(self, tool: str, param: str, kind: str) -> AsyncInjected:
-        hook = SealedConnectionParam(self._keys, self._types_ref, param, kind)
+        hook = SealedConnectionParam(
+            self._keys, self._types_ref, self._contexts, param, kind
+        )
         self._params.setdefault(tool, {})[param] = hook
 
         return hook

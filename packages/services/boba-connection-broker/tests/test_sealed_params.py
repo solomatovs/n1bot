@@ -29,6 +29,7 @@ from boba.connections.sealed import (
     SealKeys,
 )
 from boba.identity.errors import RefusalError
+from boba.stand_core.context import TEST_CONTEXTS
 from boba.toolkit.entry import ToolArgv
 from boba.toolkit.types import SecretReveal
 from boba.toolrun.wrapping import ToolSchema
@@ -39,7 +40,7 @@ TOOLS = ProbeTools()
 
 
 def _bound(tool: BaseTool, keys: SealKeys) -> BaseTool:
-    SealedConnectionParams(keys, lambda: TYPES).bind_all([tool])
+    SealedConnectionParams(keys, lambda: TYPES, TEST_CONTEXTS).bind_all([tool])
 
     return tool
 
@@ -180,7 +181,7 @@ class TestRefusals:
 class TestDeclaredFeature:
     def test_feature_carries_the_key_a_client_can_seal_with(self) -> None:
         keys = SealKeys()
-        params = SealedConnectionParams(keys, lambda: TYPES)
+        params = SealedConnectionParams(keys, lambda: TYPES, TEST_CONTEXTS)
         params.bind_all([TOOLS.one_connection()])
 
         declared = SealFeature.model_validate(params.features()[SealFeature.ID])
@@ -193,7 +194,7 @@ class TestDeclaredFeature:
             raise AssertionError(f"запечатанное ключом возможности открылось: {opened}")
 
     def test_server_without_connection_tools_declares_nothing(self) -> None:
-        params = SealedConnectionParams(SealKeys(), lambda: TYPES)
+        params = SealedConnectionParams(SealKeys(), lambda: TYPES, TEST_CONTEXTS)
 
         if params.features():
             raise AssertionError(f"возможности нет: {params.features()}")

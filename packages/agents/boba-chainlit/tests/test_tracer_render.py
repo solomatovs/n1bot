@@ -9,7 +9,7 @@ import pytest
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from pydantic import ValidationError
 
-from boba.chainlit.agent.flow import PrefetchCall, PrefetchStamp
+from boba.chainlit.agent.flow import PrefetchStamp
 from boba.chainlit.chat.history import ConversationTranscript
 from boba.chainlit.domain.fields import StepField
 from boba.chainlit.rendering.chat_view import (
@@ -19,6 +19,7 @@ from boba.chainlit.rendering.chat_view import (
     StepStatus,
     StepText,
 )
+from boba.toolkit.calls import CallIdPrefix
 from boba.toolkit.result import (
     ErrorResult,
     MarkdownResult,
@@ -372,7 +373,7 @@ class TestPrefetchStageReplay:
         calls = []
         replies = []
         for index, query in enumerate(("kerberos postgres", "gss keytab")):
-            call_id = f"{PrefetchCall.PREFIX}{index}"
+            call_id = f"{CallIdPrefix.PREFETCH.value}{index}"
             calls.append(
                 {
                     "name": "kb_fts_search",

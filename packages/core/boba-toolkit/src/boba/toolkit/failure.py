@@ -33,7 +33,6 @@ __all__ = [
     "FailurePacker",
     "InvokeErrorKind",
     "ReportedError",
-    "ToolContractError",
     "ToolRefusalError",
     "ToolUnavailableError",
     "ValidationText",
@@ -249,15 +248,8 @@ class ToolUnavailableError(Exception):
     """Инструмент не виден субъекту вне чата: не собран или запрещён."""
 
 
-class ToolContractError(Exception):
-    """Инструмент нарушил контракт цепочки: ответ — не ToolMessage."""
-
-
 class InvokeErrorKind(StrEnum):
     """Коды error_kind результатов, которые ставит исполнитель вместо инструмента."""
 
-    NO_RESULT = "no_result"
-    CRASHED = "crashed"
-    STOPPED = "stopped"
     TOOL_ERROR = "tool_error"
     """ToolMessage со статусом error: текст отказа собрал langchain."""

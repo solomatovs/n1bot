@@ -46,6 +46,7 @@ from boba.stand.catalog_ports import (
 from boba.stand.catalog_stand import CatalogStand
 from boba.stand.refs import StandRefs
 from boba.stand.signin import SignInStand
+from boba.stand_core.context import TEST_CONTEXTS
 from boba.studio.api.app import ApiExtras
 from boba.studio.catalog.api import CatalogApi, CatalogUrl
 from boba.studio.catalog.sync_ports import (
@@ -847,7 +848,7 @@ async def connections_stand(
     catalog = await CatalogStand.build(pool, CONFIG, CatalogStand.kinds())
     # каталог видит подключения тем же брокером, что и общий API
     directory = BrokerConnectionDirectory(UserConnectionsService(lambda: connections))
-    service = catalog.service(SyncPorts(NoSyncTools(), directory))
+    service = catalog.service(SyncPorts(NoSyncTools(), directory, TEST_CONTEXTS))
     return Stand(service, ChatProfiles(studio_config.profiles), connections)
 
 

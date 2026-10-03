@@ -40,7 +40,7 @@ from boba.chainlit.canvas.tools import (
 )
 from boba.chainlit.data.storage import LocalStorageClient
 from boba.chainlit.infra.config import LocalStorageConfig
-from boba.identity.context import CallContext
+from boba.stand_core.context import TEST_CONTEXTS
 from boba.toolkit.result import VisualResult
 from boba.workspace.binaries import TrustedBinaries
 from boba.workspace.launcher import MountingConfig
@@ -604,7 +604,7 @@ class TestActionsWithoutCallContext:
 
     @pytest.mark.anyio
     async def test_content_action_needs_no_call_context(self) -> None:
-        CallContext.reset()
+        TEST_CONTEXTS.reset()
         action = cl.Action(
             name=CanvasAction.CONTENT.value,
             payload={CanvasAction.PATH.value: f"/workspace/{THREAD}/upload/a.log"},

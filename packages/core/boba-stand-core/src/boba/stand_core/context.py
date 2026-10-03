@@ -9,6 +9,7 @@ import pytest
 from boba.cancellation import RunCancellation
 from boba.identity.context import (
     CallContext,
+    CallContexts,
     ChatInitiator,
     NoUserCredential,
     Scope,
@@ -21,7 +22,10 @@ TEST_TURN = "test-turn"
 TEST_PROFILE = "test"
 TEST_USER_ID = UUID(int=7)
 """Пользователь тестового контекста по умолчанию."""
-"""Профиль контекста вызова, если тест не назвал свой."""
+
+TEST_CONTEXTS = CallContexts()
+"""Держатель контекста вызова тестового процесса: стенды отдают его коду под
+тестом, фикстуры ставят и снимают через него контекст."""
 
 
 def install_context(monkeypatch: pytest.MonkeyPatch, context: CallContext) -> None:
@@ -33,7 +37,7 @@ def install_context(monkeypatch: pytest.MonkeyPatch, context: CallContext) -> No
     current: ContextVar[CallContext | None] = ContextVar(
         "boba_call_context", default=context
     )
-    monkeypatch.setattr(CallContext, "_CURRENT", current)
+    monkeypatch.setattr(TEST_CONTEXTS, "_current", current)
 
 
 def make_context(  # noqa: PLR0913 — личность собирается по частям, как в сессии
@@ -80,6 +84,6 @@ def use_context(  # noqa: PLR0913 — личность собирается по
 @pytest.fixture(autouse=True)
 def call_context_cleared() -> Iterator[None]:
     """Контекст вызова — contextvar: без сброса он утёк бы между sync-тестами."""
-    CallContext.reset()
+    TEST_CONTEXTS.reset()
     yield
-    CallContext.reset()
+    TEST_CONTEXTS.reset()

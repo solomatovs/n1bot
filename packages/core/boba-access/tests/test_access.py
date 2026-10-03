@@ -67,32 +67,32 @@ class TestToolAccess:
         assert self.ACCESS.decide("query", {"ADM"}, "general").headless
 
     def test_profile_cuts_role_wildcard(self) -> None:
-        assert self.ACCESS.allowed("query", {"ADM"}, "search") is False
+        assert self.ACCESS.decide("query", {"ADM"}, "search").headless is False
 
     def test_role_cuts_profile_wildcard(self) -> None:
-        assert self.ACCESS.allowed("query", {"DEV"}, "general") is False
+        assert self.ACCESS.decide("query", {"DEV"}, "general").headless is False
 
     def test_any_role_intersection_is_enough(self) -> None:
-        assert self.ACCESS.allowed("query", {"DEV", "ADM"}, "general") is True
+        assert self.ACCESS.decide("query", {"DEV", "ADM"}, "general").headless is True
 
     def test_profile_invisible_to_roles_denies(self) -> None:
-        assert self.ACCESS.allowed("query", {"DEV"}, "adm-only") is False
-        assert self.ACCESS.allowed("query", {"ADM"}, "adm-only") is True
+        assert self.ACCESS.decide("query", {"DEV"}, "adm-only").headless is False
+        assert self.ACCESS.decide("query", {"ADM"}, "adm-only").headless is True
 
     def test_unknown_profile_denies(self) -> None:
-        assert self.ACCESS.allowed("query", {"ADM"}, "ghost") is False
+        assert self.ACCESS.decide("query", {"ADM"}, "ghost").headless is False
 
     def test_empty_profile_denies(self) -> None:
-        assert self.ACCESS.allowed("query", {"ADM"}, "") is False
+        assert self.ACCESS.decide("query", {"ADM"}, "").headless is False
 
     def test_unknown_role_denies(self) -> None:
-        assert self.ACCESS.allowed("query", {"GHOST"}, "general") is False
+        assert self.ACCESS.decide("query", {"GHOST"}, "general").headless is False
 
     def test_no_roles_denies_even_wildcard_profile(self) -> None:
-        assert self.ACCESS.allowed("query", set(), "general") is False
+        assert self.ACCESS.decide("query", set(), "general").headless is False
 
     def test_empty_role_grant_denies(self) -> None:
-        assert self.ACCESS.allowed("query", {"EMPTY"}, "general") is False
+        assert self.ACCESS.decide("query", {"EMPTY"}, "general").headless is False
 
     def test_unknown_tool_denied(self) -> None:
         assert self.ACCESS.decide("nope", {"ADM"}, "general") is ToolAvailability.DENIED
@@ -112,7 +112,7 @@ class TestToolAccess:
         assert decision is ToolAvailability.HEADLESS_ONLY
         assert decision.headless
         assert not decision.in_chat
-        assert self.ACCESS.allowed("snapshot", {"DEV"}, "general")
+        assert self.ACCESS.decide("snapshot", {"DEV"}, "general").headless
         assert self.ACCESS.decide("snapshot", {"EMPTY"}, "general") is (
             ToolAvailability.DENIED
         )

@@ -20,6 +20,7 @@ from boba.identity.api import (
     AuthenticatedUser,
     Authenticator,
 )
+from boba.identity.context import CallContexts
 from boba.identity.locks import MemoryLiveLocks
 from boba.identity.session import Login
 from boba.identity.signin import SignedIn
@@ -129,6 +130,7 @@ class OpenApiDocument:
             connection_store=cls._no_store,
             connection_types=ConnectionTypes.discover,
             credentials=cls._no_credentials,
+            contexts=CallContexts(),
             seal_keys=SealKeys(),
             live_locks=lambda: MemoryLiveLocks("stand", 20),
             heartbeat_sec=1.0,

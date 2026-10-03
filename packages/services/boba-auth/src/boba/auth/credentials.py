@@ -16,7 +16,7 @@ from __future__ import annotations
 import logging
 from typing import ClassVar
 
-from boba.connections.credentials import ConnectionSections, CredentialSource
+from boba.connections.credentials import CredentialSource
 from boba.connections.marks import ConnectionRefusal
 from boba.connections.stored import ConnectionBase
 from boba.identity.context import Credential, DelegatedTicket
@@ -73,7 +73,7 @@ class KerberosCredentialSource(CredentialSource):
     async def for_connection(
         self, connection: ConnectionBase, credential: Credential
     ) -> ConnectionBase:
-        section = ConnectionSections.section_of(connection)
+        section = connection.kerberos_section()
         if section is None:
             return connection
 
