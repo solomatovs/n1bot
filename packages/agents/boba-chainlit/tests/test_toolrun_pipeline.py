@@ -25,7 +25,7 @@ from boba.toolkit.facade import Injected, tool
 from boba.toolkit.result import MarkdownResult, ToolArtifact
 from boba.toolrun.bridge import ToolBridge
 from boba.toolrun.call_id import CallFields
-from boba.toolrun.injected import InjectedConfig
+from boba.toolrun.injected import InjectedConfig, StaticConfig
 from boba.toolrun.run_log import ToolRunLogger
 from boba.toolrun.streams import CallJournals, ToolStream
 from boba.toolrun.wrapping import ToolAsyncBody
@@ -55,10 +55,9 @@ def build_pipeline() -> Any:
         return MarkdownResult(text=f"{text}|{cfg.token.get_secret_value()}")
 
     bridged = ToolBridge.as_structured_tool(pipe_echo)
-    InjectedConfig.bind_all(
-        [bridged],
-        lambda name, annotation: PipeConfig(token=SecretStr("p1p3")),
-    )
+    InjectedConfig(
+        lambda name, annotation: PipeConfig(token=SecretStr("p1p3")), StaticConfig()
+    ).bind_all([bridged])
     CallFields().attach_all([bridged])
     contexts = CallContexts()
     ToolRunLogger(

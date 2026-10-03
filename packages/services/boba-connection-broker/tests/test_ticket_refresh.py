@@ -100,8 +100,7 @@ class Fixtures:
         def credentials() -> KerberosCredentialSource:
             return KerberosCredentialSource(None, NoRefresh())
 
-        ServiceTickets.bind_all([tool], credentials, resolve)
-        InjectedConfig.bind_all([tool], resolve)
+        InjectedConfig(resolve, ServiceTickets(credentials)).bind_all([tool])
         return tool
 
 

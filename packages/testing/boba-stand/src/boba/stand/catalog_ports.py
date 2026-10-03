@@ -180,8 +180,7 @@ class CatalogPorts:
                 )
             )
 
-        ServiceTickets.bind_all(bridged, credentials, resolve)
-        InjectedConfig.bind_all(bridged, resolve)
+        InjectedConfig(resolve, ServiceTickets(credentials)).bind_all(bridged)
         CallFields().attach_all(list(bridged))
 
         names: list[str] = []

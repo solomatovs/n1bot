@@ -51,7 +51,7 @@ from boba.stand_core.context import CallStand
 from boba.tool.pg.tools import PgToolConfig
 from boba.tool.web.tools import WebToolsConfig
 from boba.toolkit.facade import Injected, UserConnection
-from boba.toolrun.injected import InjectedConfig
+from boba.toolrun.injected import InjectedConfig, StaticConfig
 from boba.transport.http.connection import HttpConnection
 
 pytestmark = pytest.mark.anyio
@@ -209,7 +209,7 @@ class Capture:
             ConnectionTypes.discover,
             self._calls.contexts,
         ).bind_all([tool])
-        InjectedConfig.bind_all([tool], resolve)
+        InjectedConfig(resolve, StaticConfig()).bind_all([tool])
         return tool
 
     def web_tool(self, tickets: SsoTickets):
@@ -244,7 +244,7 @@ class Capture:
             ConnectionTypes.discover,
             self._calls.contexts,
         ).bind_all([tool])
-        InjectedConfig.bind_all([tool], resolve)
+        InjectedConfig(resolve, StaticConfig()).bind_all([tool])
         return tool
 
     @staticmethod

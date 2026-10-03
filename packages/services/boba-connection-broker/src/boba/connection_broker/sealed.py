@@ -37,7 +37,7 @@ from boba.connections.marks import ConnectionRefusal
 from boba.connections.sealed import SealedConnection, SealFeature, SealKeys
 from boba.identity.context import CallContexts
 from boba.identity.errors import RefusalError
-from boba.toolrun.injected import AsyncInjected
+from boba.toolrun.injected import AsyncInjected, ParamSource
 from boba.toolrun.stream_calls import NodeArgs
 
 __all__ = ["SealedConnectionParam", "SealedConnectionParams"]
@@ -160,7 +160,7 @@ class SealedConnectionParam(AsyncInjected):
         return connection
 
 
-class SealedConnectionParams(NodeArgs):
+class SealedConnectionParams(NodeArgs, ParamSource):
     """Постановка SealedConnectionParam на параметры-соединения инструментов.
 
     Создаёт её сборка исполнителя из его ключевой пары и реестра типов

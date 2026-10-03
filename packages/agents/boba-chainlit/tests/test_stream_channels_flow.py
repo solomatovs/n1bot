@@ -48,7 +48,7 @@ from boba.toolrun.bridge import ToolBridge
 from boba.toolrun.call_id import CallFields
 from boba.toolrun.dev_null import DevNullTool
 from boba.toolrun.errors import ToolErrorGuard
-from boba.toolrun.injected import InjectedConfig
+from boba.toolrun.injected import InjectedConfig, StaticConfig
 from boba.toolrun.process import ProcessLauncherConfig, ProcessToolCaller
 from boba.toolrun.stream_calls import (
     LocalDagService,
@@ -139,7 +139,7 @@ class ChannelStand:
         def resolve(name: str, annotation: Any) -> object:
             return CFG
 
-        InjectedConfig.bind_all(tools, resolve)
+        InjectedConfig(resolve, StaticConfig()).bind_all(tools)
         StreamChannelFields(STREAM_CFG).attach_all(tools, specs)
         CallFields().attach_all(tools)
         ToolErrorGuard().guard_all(tools)

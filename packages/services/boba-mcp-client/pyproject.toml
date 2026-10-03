@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "boba-mcp-client"
+version = "0.0.26.dev4"
+description = "Boba mcp client: порт сервера инструментов над любым MCP-сервером — streamable HTTP, SSE или stdio; результаты семейства boba оживают моделями."
+requires-python = ">=3.11,<4"
+dependencies = [
+    "boba-toolkit==0.0.26.dev4",
+    "boba-toolrun==0.0.26.dev4",
+    "mcp>=1.12,<2",
+    "httpx>=0.28,<1",
+    "anyio>=4",
+    "pydantic>=2.10,<3",
+    "langchain-core>=1.4,<1.5",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["boba*"]
+namespaces = true
