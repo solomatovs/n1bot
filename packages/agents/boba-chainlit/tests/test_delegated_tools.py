@@ -35,9 +35,9 @@ from boba.chainlit.auth.kerberos import KerberosAuth
 from boba.chainlit.data.data_layer import PostgresDataLayer
 from boba.config import bind
 from boba.connection_broker.store import ConnectionsConfig, ConnectionStore
-from boba.connection_broker.user_connections import UserConnections
 from boba.connections.manifest import ConnectionTypes
 from boba.connections.marks import ConnectionRefusal
+from boba.connections.sealed import ConnectionRefs
 from boba.connections.stored import ConnectionBase, GrantTarget
 from boba.db.clickhouse.connection import ClickHouseConfig
 from boba.db.postgres import AsyncPostgresPool
@@ -54,6 +54,7 @@ from boba.krb.seal import SsoTickets
 from boba.messaging import MemoryMessageBus
 from boba.runtime.refresh import BusRefreshSignal
 from boba.sandbox.zygote import ZygoteRegistry
+from boba.stand.connections import StandUserConnections
 from boba.stand.site import Stand
 from boba.tool.ch.tools import ChToolConfig
 from boba.tool.pg.tools import PgToolConfig
@@ -247,14 +248,13 @@ class Tools:
         def resolve(name: str, annotation: Any) -> object:
             return bind(raw_config, path=f"tool.{section}", model=config_model)
 
-        UserConnections.bind_all(
-            functions,
+        StandUserConnections(
             lambda: store,
             lambda: KerberosCredentialSource(
                 tickets, BusRefreshSignal(lambda: MemoryMessageBus("test"))
             ),
             ConnectionTypes.discover,
-        )
+        ).bind_all(functions)
         InjectedConfig.bind_all(functions, resolve)
 
         return ToolSetup.by_name(functions)
@@ -442,7 +442,8 @@ async def test_targets_list_only_granted_connections(  # noqa: PLR0913 — тр�
     listed = await Call.ok(catalog)
     by_kind: dict[str, list[str]] = {}
     for row in listed.rows:
-        by_kind.setdefault(str(row["kind"]), []).append(str(row["connection"]))
+        name = ConnectionRefs().parse(str(row["connection"])).name
+        by_kind.setdefault(str(row["kind"]), []).append(name)
 
     if by_kind.get("postgres") != ["pg-me"]:
         raise AssertionError(f"pg targets: {listed.rows}")

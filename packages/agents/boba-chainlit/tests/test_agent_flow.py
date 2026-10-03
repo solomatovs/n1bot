@@ -49,6 +49,7 @@ from boba.chat.profiles import (
     PrefetchFlowConfig,
     SelectedProfile,
 )
+from boba.connection_broker.sealing import SentConnections
 from boba.llm.chat import (
     ChatEvent,
     ChatModel,
@@ -63,7 +64,7 @@ from boba.stand.tools import STREAM_CONFIG
 from boba.toolkit.calls import ToolIntent
 from boba.toolkit.result import ErrorResult, TableResult, ToolArtifact
 from boba.toolrun.cancellation import CancellableTools
-from boba.toolrun.stream_calls import LocalDagService
+from boba.toolrun.stream_calls import LocalDagService, ToolServer, ToolServers
 
 pytestmark = pytest.mark.anyio
 
@@ -257,8 +258,7 @@ def _graph(
 
     spec = GraphSpec(
         chat=chat,
-        service=LocalDagService(tools, STREAM_CONFIG),
-        own_tools=(),
+        service=LocalDagService(tools, STREAM_CONFIG, ()),
         system_prompt="you are a search assistant",
         checkpointer=InMemorySaver(),
         history=build_history_view(frozenset({"fts_probe", "vector_probe"}), 30),
@@ -299,21 +299,19 @@ def _tool_messages(messages: Sequence[BaseMessage]) -> list[ToolMessage]:
 
 
 async def _replies(
-    service: LocalDagService,
-    own_tools: Sequence[BaseTool],
+    service: ToolServer,
     calls: Sequence[dict[str, Any]],
 ) -> tuple[dict[str, ToolMessage], BaseMessage]:
     """Ход, в котором модель зовёт calls: ответы инструментов по id вызова и
     последнее сообщение хода."""
     names: list[str] = []
-    for offered in (*service.tools(), *own_tools):
+    for offered in service.tools():
         names.append(offered.name)
 
     scripted = [AIMessage(content="", tool_calls=calls), AIMessage(content="done")]
     spec = GraphSpec(
         chat=ScriptedChat(messages=iter(scripted)),
         service=service,
-        own_tools=own_tools,
         system_prompt="you are a search assistant",
         checkpointer=InMemorySaver(),
         history=build_history_view(frozenset(names), 30),
@@ -760,7 +758,7 @@ class TestPrefetchFeed:
 
         config = RunnableConfig(
             configurable={"thread_id": "feed-thread"},
-            callbacks=[AgentTracer(turn.feed, TurnState())],
+            callbacks=[AgentTracer(turn.feed, TurnState(), SentConnections())],
         )
         await graph.ainvoke({"messages": [HumanMessage("question")]}, config=config)
 
@@ -806,14 +804,17 @@ class RecordingService(LocalDagService):
     """Сервис исполнения, запоминающий, какие вызовы через него прошли."""
 
     def __init__(self, tools: Sequence[BaseTool]) -> None:
-        super().__init__(tools, STREAM_CONFIG)
+        super().__init__(tools, STREAM_CONFIG, ())
         self.served: list[str] = []
 
     @override
-    async def call(self, call: GraphToolCall) -> ToolMessage:
-        self.served.append(str(call["id"]))
+    async def submit(
+        self, calls: Sequence[GraphToolCall]
+    ) -> Sequence[asyncio.Future[ToolMessage]]:
+        for call in calls:
+            self.served.append(str(call["id"]))
 
-        return await super().call(call)
+        return await super().submit(calls)
 
 
 class TestToolCallsGoToTheService:
@@ -829,7 +830,7 @@ class TestToolCallsGoToTheService:
     async def test_plain_calls_of_a_response_are_service_calls(self) -> None:
         service = RecordingService([fts_probe, crashing_probe, strict_probe])
 
-        replies, last = await _replies(service, (), self.CALLS)
+        replies, last = await _replies(service, self.CALLS)
 
         if sorted(service.served) != ["call_bad_args", "call_crash", "call_ok"]:
             raise AssertionError(f"каждый вызов ушёл в сервис: {service.served}")
@@ -855,27 +856,46 @@ class TestToolCallsGoToTheService:
             raise AssertionError(f"ход дошёл до ответа: {last.content!r}")
 
 
-class TestOwnToolsBypassTheService:
-    """Собственный инструмент процесса (каталог соединений чата) исполняет
-    сам граф, мимо сервиса; инструменты сервиса рядом идут в сервис."""
+class TestCallsRouteByToolName:
+    """За одним портом несколько серверов: вызовы одного ответа уходят каждый
+    своему серверу по имени инструмента, граф про деление не знает."""
 
     CALLS: ClassVar[list[dict[str, Any]]] = [
-        {"name": "fts_probe", "args": {"query": "kerberos"}, "id": "call_dag"},
-        {"name": "vector_probe", "args": {"query": "kerberos"}, "id": "call_own"},
+        {"name": "fts_probe", "args": {"query": "kerberos"}, "id": "call_first"},
+        {"name": "vector_probe", "args": {"query": "kerberos"}, "id": "call_second"},
+        {"name": "no_such_tool", "args": {}, "id": "call_unknown"},
     ]
 
-    async def test_own_tool_is_called_by_the_graph_itself(self) -> None:
-        service = RecordingService([fts_probe])
+    async def test_each_call_reaches_the_server_of_its_tool(self) -> None:
+        first = RecordingService([fts_probe])
+        second = RecordingService([vector_probe])
 
-        replies, _ = await _replies(service, [vector_probe], self.CALLS)
+        replies, _ = await _replies(ToolServers([first, second]), self.CALLS)
 
-        if service.served != ["call_dag"]:
-            raise AssertionError(f"в сервис ушёл только его вызов: {service.served}")
+        if first.served != ["call_first"]:
+            raise AssertionError(f"первому серверу ушёл его вызов: {first.served}")
+        if second.served != ["call_second"]:
+            raise AssertionError(f"второму серверу ушёл его вызов: {second.served}")
 
-        if "vector:kerberos" not in str(replies["call_own"].content):
-            raise AssertionError(f"свой инструмент ответил: {replies['call_own']!r}")
-        if "fts:kerberos" not in str(replies["call_dag"].content):
-            raise AssertionError(f"инструмент сервиса ответил: {replies['call_dag']!r}")
+        if "fts:kerberos" not in str(replies["call_first"].content):
+            raise AssertionError(f"первый сервер ответил: {replies['call_first']!r}")
+        if "vector:kerberos" not in str(replies["call_second"].content):
+            raise AssertionError(f"второй сервер ответил: {replies['call_second']!r}")
+
+    async def test_unknown_name_is_refused_with_tools_of_every_server(self) -> None:
+        servers = ToolServers(
+            [RecordingService([fts_probe]), RecordingService([vector_probe])]
+        )
+
+        replies, _ = await _replies(servers, self.CALLS)
+
+        refused = replies["call_unknown"]
+        if refused.status != "error":
+            raise AssertionError(f"выдуманное имя — отказ: {refused!r}")
+        if "fts_probe" not in str(refused.content):
+            raise AssertionError(f"отказ называет инструменты: {refused.content!r}")
+        if "vector_probe" not in str(refused.content):
+            raise AssertionError(f"отказ называет инструменты: {refused.content!r}")
 
 
 class TestFlowConfig:

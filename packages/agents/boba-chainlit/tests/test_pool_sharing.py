@@ -20,6 +20,7 @@ from boba.chainlit.infra import providers
 from boba.chainlit.infra.config import AppConfig
 from boba.chainlit.infra.session import ChainlitSessions
 from boba.config import bind
+from boba.connections.sealed import SealKeys
 from boba.db.postgres import AsyncPostgresPool
 from boba.runtime import providers as runtime
 from boba.runtime.config import AppName
@@ -65,6 +66,7 @@ def app_container(
     container.provide(providers.storage_provider, storage)
     container.provide(providers.session_source, ChainlitSessions(StandTokens()))
     container.provide(runtime.connection_types, runtime.connection_types())
+    container.provide(runtime.seal_keys, SealKeys())
     container.eager(runtime.users_table)
     container.eager(runtime.message_bus)
     container.eager(runtime.payload_store)

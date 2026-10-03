@@ -4,6 +4,7 @@
 """
 
 from collections.abc import AsyncIterator, Sequence
+from datetime import timedelta
 from typing import Annotated
 
 from langchain.agents.middleware import ModelRequest, wrap_model_call
@@ -13,6 +14,7 @@ from langchain_core.tools import BaseTool
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from langgraph.graph.state import CompiledStateGraph
+from omegaconf import DictConfig
 
 from boba.auth import JwtTokens
 from boba.chainlit.agent.bridge import ChatModelBridge
@@ -46,6 +48,10 @@ from boba.chat.profiles import (
     SettingsView,
     UserMeta,
 )
+from boba.config import bind
+from boba.connection_broker.sealing import SealingToolServer, SentConnections
+from boba.connection_broker.store import ConnectionsConfig
+from boba.connection_broker.user_connections import ArmedConnections
 from boba.db.postgres import AsyncPostgresPool, PostgresError, PostgresSchema
 from boba.identity.errors import InternalServiceError
 from boba.identity.session import SessionSource
@@ -57,7 +63,6 @@ from boba.runtime.di import Depends
 from boba.runtime.elements import ChatTables
 from boba.runtime.users import UsersTable
 from boba.toolrun.registry import ToolRegistry
-from boba.toolrun.stream_calls import LocalDagService
 
 
 def get_app_config() -> AppConfig:
@@ -359,6 +364,16 @@ def session_chat(
     )
 
 
+def sent_connections() -> SentConnections:
+    """Что чат отправил серверу инструментов вместо ссылок на соединения;
+    кладёт процесс: объект общий для порта инструментов и ленты."""
+    msg = (
+        "DI provider sent_connections resolved before the process supplied "
+        "SentConnections via Container.provide"
+    )
+    raise RuntimeError(msg)
+
+
 def langchain_agent(  # noqa: PLR0913
     chat: Annotated[BaseChatModel, Depends(session_chat, scope="session")],
     builder: Annotated[
@@ -370,18 +385,23 @@ def langchain_agent(  # noqa: PLR0913
         AgentSettings, Depends(session_agent_settings, scope="session")
     ],
     registry: Annotated[ToolRegistry, Depends(runtime.tool_registry)],
+    raw: Annotated[DictConfig, Depends(runtime.get_raw_config)],
+    sent: Annotated[SentConnections, Depends(sent_connections)],
 ) -> CompiledStateGraph:
-    service = LocalDagService(registry.dag_tools(tools), registry.stream_config)
-    own = registry.own_tools(tools)
+    service = SealingToolServer(
+        registry.server(tools),
+        ArmedConnections(runtime.connection_store_ref, runtime.credential_source_ref),
+        sent,
+        timedelta(seconds=bind(raw, "connections", ConnectionsConfig).seal_ttl_sec),
+    )
 
-    names: set[str] = set(registry.own)
+    names: list[str] = []
     for offered in service.tools():
-        names.add(offered.name)
+        names.append(offered.name)
 
     spec = GraphSpec(
         chat=chat,
         service=service,
-        own_tools=own,
         system_prompt=settings.system_prompt,
         checkpointer=saver,
         history=build_history_view(frozenset(names), settings.history_messages),

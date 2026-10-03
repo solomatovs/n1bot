@@ -1,27 +1,30 @@
-"""Профиль соединения в параметр инструмента перед каждым вызовом.
+"""Соединения пользователя: параметр инструмента и профиль по ссылке.
 
 Инструмент объявляет соединение параметром `Annotated[<Профиль>, UserConnection]`.
-Модель видит на этом месте строку — имя соединения; хост по типу параметра
-узнаёт вид, ищет строку среди выданных субъекту вызова, заменяет kerberos-секцию
-билетом этого вызова и подставляет готовый профиль. Тело получает профиль и про
-пользователя, гранты и билеты не знает.
+Модель видит на этом месте строку. Здесь две части пути соединения:
+
+- ConnectionParamHooks ставит на такие параметры обвязку, которая отдаст телу
+  профиль, а в схеме для LLM делает параметр строкой с меткой вида
+  соединения. Откуда обвязка берёт профиль, решает её владелец
+  (запечатанное значение клиента — boba.connection_broker.sealed).
+- ArmedConnections — сторона клиента: по ссылке модели ищет соединение среди
+  выданных субъекту вызова и заменяет kerberos-секцию билетом этого вызова.
+  Готовый профиль клиент запечатывает и отправляет серверу инструментов.
 
 Ошибки:
-RefusalError — вызов вне сессии, имя не выдано субъекту, выдано дважды либо
-    делегированных кредов у сессии нет; kind из ConnectionRefusal.
+RefusalError — вызов вне сессии, соединение не выдано субъекту, выдано дважды
+    либо делегированных кредов у сессии нет; kind из ConnectionRefusal.
 ConnectionStoreError — таблица соединений недоступна.
 KerberosError — билет к соединению не выпущен, вызов начинать нечем.
 ToolConfigError — параметр объявлен непригодной моделью либо строка таблицы
     несёт готовый билет.
-InjectedAsyncOnlyError — тело инструмента вызвано синхронно: профиль
-    подставляется только в async-теле.
 """
 
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable, Mapping, Sequence
-from typing import Any, ClassVar
+from collections.abc import Callable, Sequence
+from typing import Annotated, Any, ClassVar
 
 from langchain_core.tools import BaseTool
 from pydantic.fields import FieldInfo
@@ -32,7 +35,12 @@ from boba.connections.base import ClientIdentity, ConnectionBase
 from boba.connections.credentials import ConnectionSections
 from boba.connections.manifest import ConnectionTypes, UnknownConnectionKindError
 from boba.connections.marks import ConnectionRefusal
-from boba.connections.whitelist import AmbiguousConnectionError, ConnectionWhitelist
+from boba.connections.sealed import ConnectionRef, ConnectionSchemaMark
+from boba.connections.whitelist import (
+    AmbiguousConnectionError,
+    ConnectionWhitelist,
+    Picked,
+)
 from boba.identity.context import CallContext
 from boba.identity.errors import RefusalError
 from boba.kerberos import TicketAuth
@@ -41,13 +49,13 @@ from boba.toolrun.injected import AsyncInjected, ToolConfigError
 from boba.toolrun.wrapping import ToolBody, ToolSchema
 
 __all__ = [
+    "ArmedConnections",
     "CallerApplication",
     "ConnectionParamHooks",
     "ConnectionRefusal",
     "CredentialsRef",
     "StoreRef",
     "TypesRef",
-    "UserConnections",
 ]
 
 logger = logging.getLogger(__name__)
@@ -76,8 +84,9 @@ TypesRef = Callable[[], ConnectionTypes]
 """Реестр установленных типов; по нему модель профиля превращается в kind."""
 
 
-HookFactory = Callable[[str, str], AsyncInjected]
-"""Обвязка параметра-соединения по его имени и виду соединения."""
+HookFactory = Callable[[str, str, str], AsyncInjected]
+"""Обвязка параметра-соединения по имени инструмента, имени параметра и
+виду соединения."""
 
 
 class ConnectionParamHooks:
@@ -85,12 +94,11 @@ class ConnectionParamHooks:
 
     Инструмент объявляет соединение параметром с моделью профиля. Здесь
     каждый такой параметр получает обвязку, которая отдаст телу профиль, а в
-    схеме для LLM становится строкой с описанием description. Вид
-    соединения берётся из типа параметра — реестр знает, какому пакету
-    принадлежит модель профиля.
-    Откуда обвязка возьмёт профиль, решает вызывающий фабрикой make:
-    из таблицы соединений (UserConnections) либо из запечатанного значения
-    клиента (SealedConnectionParams).
+    схеме для LLM становится строкой с описанием description и меткой вида
+    соединения (ConnectionRef.SCHEMA_MARK): по метке клиент узнаёт, куда
+    подставлять соединение. Вид берётся из типа параметра — реестр знает,
+    какому пакету принадлежит модель профиля. Откуда обвязка возьмёт
+    профиль, решает вызывающий фабрикой make (SealedConnectionParams).
     """
 
     def __init__(self, types_ref: TypesRef, description: str) -> None:
@@ -116,8 +124,8 @@ class ConnectionParamHooks:
         for param, annotation in fields.items():
             kind = self._kind_of(tool.name, param, annotation)
 
-            ToolBody.hook_all([tool], make(param, kind))
-            shown[param] = self._field()
+            ToolBody.hook_all([tool], make(tool.name, param, kind))
+            shown[param] = self._field(kind)
 
             logger.info(
                 "tool %s: %s is a %s connection of the caller", tool.name, param, kind
@@ -125,8 +133,10 @@ class ConnectionParamHooks:
 
         tool.args_schema = ToolSchema.rebuild(schema, shown, ())
 
-    def _field(self) -> tuple[Any, FieldInfo]:
-        return str, FieldInfo(min_length=1, description=self._description)
+    def _field(self, kind: str) -> tuple[Any, FieldInfo]:
+        marked = Annotated[str, ConnectionSchemaMark(kind)]
+
+        return marked, FieldInfo(min_length=1, description=self._description)
 
     def _kind_of(self, tool: str, param: str, annotation: object) -> str:
         """Вид соединения по модели профиля параметра."""
@@ -154,83 +164,42 @@ class ConnectionParamHooks:
             raise ToolConfigError(msg) from exc
 
 
-class UserConnections(AsyncInjected):
-    """Обвязка одного параметра-соединения: имя от модели, профиль от хоста."""
+class ArmedConnections:
+    """Соединение пользователя по ссылке модели, готовое к отправке серверу.
 
-    ARGUMENT: ClassVar[str] = (
-        "Имя соединения из connection_list или connection_search. Бери имя "
-        "строки, чей kind подходит инструменту, а описание — задаче пользователя."
-    )
+    Сторона клиента: соединения и гранты хранит чат. По ссылке ищет строку
+    среди выданных субъекту вызова и заменяет её kerberos-секцию билетом
+    этого вызова. Пользуется им запечатывание перед отправкой вызова
+    (boba.connection_broker.sealing); субъект и креды берутся из CallContext.
+    """
 
-    def __init__(
-        self,
-        store_ref: StoreRef,
-        credentials_ref: CredentialsRef,
-        types_ref: TypesRef,
-        param: str,
-        kind: str,
-    ) -> None:
-        super().__init__(param, None)
+    def __init__(self, store_ref: StoreRef, credentials_ref: CredentialsRef) -> None:
         self._store_ref = store_ref
         self._credentials_ref = credentials_ref
-        self._types_ref = types_ref
-        self._kind = kind
-        self._caller = CallerApplication()
 
-    @classmethod
-    def bind_all(
-        cls,
-        tools: Sequence[BaseTool],
-        store_ref: StoreRef,
-        credentials_ref: CredentialsRef,
-        types_ref: TypesRef,
-    ) -> None:
-        """Ставит обвязку на каждый параметр-соединение и правит схему для LLM."""
-
-        def make(param: str, kind: str) -> AsyncInjected:
-            return cls(store_ref, credentials_ref, types_ref, param, kind)
-
-        ConnectionParamHooks(types_ref, cls.ARGUMENT).bind_all(tools, make)
-
-    async def value(self, name: str, kwargs: dict[str, object]) -> object:
-        requested = self._requested(name, kwargs)
-
-        subject = CallContext.current().subject
-        rows = await self._store_ref().for_subject(subject, self._kind)
+    async def armed(self, ref: ConnectionRef) -> ConnectionBase:
+        context = CallContext.current()
+        rows = await self._store_ref().for_subject(context.subject, ref.kind)
         whitelist = ConnectionWhitelist.of(rows)
 
-        picked = self._pick(whitelist, requested)
-        connection = self._caller.labelled(picked.connection, name)
-        armed = await self._armed(connection, picked.name)
+        picked = self._pick(whitelist, ref)
+        self._require_stored_section(picked.connection, ref)
 
-        logger.info(
-            "tool %s: connection %r (%s) %s",
-            name,
-            picked.name,
-            self._kind,
-            armed.trace(),
+        armed = await self._credentials_ref().for_connection(
+            picked.connection, context.credential
         )
+
+        logger.info("connection %s armed: %s", ref.render(), armed.trace())
 
         return armed
 
-    def _requested(self, tool: str, kwargs: Mapping[str, object]) -> str:
-        value = kwargs.get(self._param)
-        if isinstance(value, str) and value:
-            return value
-
-        msg = (
-            f"{tool} needs a connection name in {self._param!r}, got {value!r}; "
-            "call connection_list or connection_search to see the names "
-            "available to you"
-        )
-        raise RefusalError(ConnectionRefusal.NOT_VISIBLE, msg)
-
-    def _pick(self, whitelist: ConnectionWhitelist, requested: str):
+    @staticmethod
+    def _pick(whitelist: ConnectionWhitelist, ref: ConnectionRef) -> Picked:
         try:
-            picked = whitelist.pick(requested)
+            picked = whitelist.pick(ref.name)
         except AmbiguousConnectionError as exc:
             msg = (
-                f"connection {requested!r} matches more than one of your "
+                f"connection {ref.name!r} matches more than one of your "
                 f"connections: {exc}; ask the administrator to resolve the overlap"
             )
             raise RefusalError(ConnectionRefusal.AMBIGUOUS, msg) from exc
@@ -243,22 +212,21 @@ class UserConnections(AsyncInjected):
             known = "none"
 
         msg = (
-            f"connection {requested!r} of kind {self._kind!r} is not available "
+            f"connection {ref.name!r} of kind {ref.kind!r} is not available "
             f"to you; yours are: {known}"
         )
         raise RefusalError(ConnectionRefusal.NOT_VISIBLE, msg)
 
-    async def _armed(self, connection: ConnectionBase, name: str) -> ConnectionBase:
-        """Профиль с билетом вызова вместо kerberos-секции строки."""
+    @staticmethod
+    def _require_stored_section(connection: ConnectionBase, ref: ConnectionRef) -> None:
+        """В таблице лежат только делегированные и keytab-секции."""
         section = ConnectionSections.section_of(connection)
-        if isinstance(section, TicketAuth):
-            msg = (
-                f"stored connection {name!r} of kind {self._kind!r} carries a "
-                "ticket kerberos section: only delegated or keytab credentials "
-                "are allowed in the table"
-            )
-            raise ToolConfigError(msg)
+        if not isinstance(section, TicketAuth):
+            return
 
-        credential = CallContext.current().credential
-
-        return await self._credentials_ref().for_connection(connection, credential)
+        msg = (
+            f"stored connection {ref.name!r} of kind {ref.kind!r} carries a "
+            "ticket kerberos section: only delegated or keytab credentials "
+            "are allowed in the table"
+        )
+        raise ToolConfigError(msg)

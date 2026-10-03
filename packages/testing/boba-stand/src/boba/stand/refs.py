@@ -13,6 +13,7 @@ from boba.auth.credentials import KerberosCredentialSource, NoRefresh
 from boba.connection_broker.store import ConnectionStore
 from boba.connection_broker.user_connections import StoreRef
 from boba.connections.manifest import ConnectionTypes
+from boba.connections.sealed import SealKeys
 from boba.identity.errors import ServiceDisabledError
 from boba.identity.locks import MemoryLiveLocks
 from boba.krb.seal import SsoTickets
@@ -58,6 +59,7 @@ class StandRefs:
             connection_store=store,
             connection_types=ConnectionTypes.discover,
             credentials=credentials,
+            seal_keys=SealKeys(),
             live_locks=lambda: MemoryLiveLocks(cls.NAME, cls.LOCK_TTL_SEC),
             heartbeat_sec=cls.HEARTBEAT_SEC,
             bus_watch=lambda: StaticBusWatch(ListenerState.LISTENING),

@@ -133,7 +133,7 @@ class ChannelTools:
         StreamChannelFields(STREAM_CFG).attach_all(tools)
         ToolCallIdField.attach_all(tools)
         ToolErrorGuard().guard_all(tools)
-        self._streams = LocalDagService(tools, STREAM_CFG)
+        self._streams = LocalDagService(tools, STREAM_CFG, ())
 
     async def respond(self, calls: Sequence[Mapping[str, Any]]) -> list[Any]:
         """Узлы одного вызова workflow, как в чате: итоги узлов в порядке

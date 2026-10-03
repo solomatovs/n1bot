@@ -28,7 +28,6 @@ from boba.chainlit.auth.kerberos import KerberosAuth
 from boba.chainlit.data.data_layer import PostgresDataLayer
 from boba.config import bind
 from boba.connection_broker.store import ConnectionsConfig, ConnectionStore
-from boba.connection_broker.user_connections import UserConnections
 from boba.connections.manifest import ConnectionTypes
 from boba.connections.marks import ConnectionRefusal
 from boba.connections.stored import GrantTarget, StoredRole
@@ -46,6 +45,7 @@ from boba.krb import KerberosEnv, KeytabCredentials, TicketCredentials
 from boba.krb.seal import SsoTickets
 from boba.messaging import MemoryMessageBus
 from boba.runtime.refresh import BusRefreshSignal
+from boba.stand.connections import StandUserConnections
 from boba.stand.site import Stand
 from boba.tool.pg.tools import PgToolConfig
 from boba.tool.web.tools import WebToolsConfig
@@ -187,14 +187,13 @@ class Capture:
         def resolve(name: str, annotation: Any) -> object:
             return bind(raw_config, path="tool.pg", model=PgToolConfig)
 
-        UserConnections.bind_all(
-            [tool],
+        StandUserConnections(
             lambda: store,
             lambda: KerberosCredentialSource(
                 tickets, BusRefreshSignal(lambda: MemoryMessageBus("test"))
             ),
             ConnectionTypes.discover,
-        )
+        ).bind_all([tool])
         InjectedConfig.bind_all([tool], resolve)
         return tool
 
@@ -220,14 +219,13 @@ class Capture:
         def resolve(name: str, annotation: Any) -> object:
             return bind(raw_config, path="tool.web", model=WebToolsConfig)
 
-        UserConnections.bind_all(
-            [tool],
+        StandUserConnections(
             lambda: store,
             lambda: KerberosCredentialSource(
                 tickets, BusRefreshSignal(lambda: MemoryMessageBus("test"))
             ),
             ConnectionTypes.discover,
-        )
+        ).bind_all([tool])
         InjectedConfig.bind_all([tool], resolve)
         return tool
 

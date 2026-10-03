@@ -78,8 +78,7 @@ def _graph(saver: InMemorySaver):
     chat = ScriptedChat(messages=iter([calls, AIMessage(content="both indexed")]))
     spec = GraphSpec(
         chat=chat,
-        service=LocalDagService([fast_index, slow_index], STREAM_CONFIG),
-        own_tools=(),
+        service=LocalDagService([fast_index, slow_index], STREAM_CONFIG, ()),
         system_prompt="index everything",
         checkpointer=saver,
         history=build_history_view(frozenset({"fast_index", "slow_index"}), 30),

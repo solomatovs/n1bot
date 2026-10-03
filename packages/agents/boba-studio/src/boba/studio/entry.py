@@ -18,6 +18,7 @@ from fastapi import FastAPI
 from boba.auth import AuthService
 from boba.cancellation import StopReason
 from boba.chat.profiles import ChatProfiles
+from boba.connections.sealed import SealKeys
 from boba.db.postgres import AsyncPostgresPool
 from boba.identity.run import RunRegistry
 from boba.runtime import providers
@@ -54,6 +55,7 @@ class StudioHost:
         container.provide(providers.get_runtime_config, config)
         container.provide(providers.plugin_table, CoreTools.table)
         container.provide(providers.app_name, AppName.STUDIO)
+        container.provide(providers.seal_keys, SealKeys())
         container.eager(providers.message_bus)
         container.eager(providers.stream_journal)
         container.eager(providers.kb_schema)

@@ -97,6 +97,7 @@ class FakeStreamTools:
             access=access,
             stream_config=STREAM_CONFIG,
             own=frozenset(),
+            node_args=(),
         )
 
 

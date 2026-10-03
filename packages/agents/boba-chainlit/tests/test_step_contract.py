@@ -22,6 +22,7 @@ from boba.chainlit.chat.history import ConversationTranscript
 from boba.chainlit.chat.tracing import AgentTracer
 from boba.chainlit.chat.turn import TurnState
 from boba.chainlit.rendering.chat_view import ChatView, RecordingSink, StepRole
+from boba.connection_broker.sealing import SentConnections
 
 THREAD = "22222222-2222-2222-2222-222222222222"
 TURN_KEY = "human-msg-1"
@@ -52,7 +53,7 @@ class TestStepContract:
         """Ход глазами трейсера: reasoning, инструмент, завершение."""
         turn = RecordedTurn.recording(THREAD, TURN_KEY)
         sink = turn.recording_sink
-        tracer = AgentTracer(turn.feed, TurnState())
+        tracer = AgentTracer(turn.feed, TurnState(), SentConnections())
 
         llm_run = uuid4()
         await tracer.on_llm_start({}, [""], run_id=llm_run)

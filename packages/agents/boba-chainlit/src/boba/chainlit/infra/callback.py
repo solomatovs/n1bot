@@ -28,6 +28,7 @@ from boba.chainlit.infra.providers import (
     chat_profiles_registry,
     get_app_config,
     langchain_agent,
+    sent_connections,
     session_profile,
 )
 from boba.chainlit.infra.session import (
@@ -49,6 +50,7 @@ from boba.chat.profiles import (
     UserLlmOverrides,
     UserMeta,
 )
+from boba.connection_broker.sealing import SentConnections
 from boba.identity.context import Scope
 from boba.identity.errors import InternalServiceError
 from boba.identity.locks import LiveLocks, RunLocking
@@ -93,6 +95,7 @@ async def on_message(  # noqa: PLR0913
     payloads: Annotated[PayloadStore, Depends(runtime.payload_store)],
     locks: Annotated[LiveLocks, Depends(runtime.live_locks)],
     app_config: Annotated[AppConfig, Depends(get_app_config)],
+    sent: Annotated[SentConnections, Depends(sent_connections)],
 ):
     session = current_session()
     thread_id = session.thread_id
@@ -118,6 +121,7 @@ async def on_message(  # noqa: PLR0913
             msg, thread_id, AttachmentDataLayer.require().links
         ),
         locking=RunLocking(locks=locks, heartbeat_sec=app_config.cluster.heartbeat_sec),
+        sent=sent,
     )
 
     # сбой в любом месте хода — включая подготовку — отчитывается ходом же:

@@ -2,12 +2,12 @@
 
 Исполнитель соединений не хранит. Клиент присылает профиль на месте
 параметра-соединения запечатанным открытым ключом исполнителя
-(boba.connections.sealed). Здесь две части этого пути:
-
-- EncryptionKeyTool — инструмент encryption_key: отдаёт клиенту открытый ключ.
-- SealedConnectionParams ставит на параметры-соединения обвязку
-  SealedConnectionParam: она открывает значение, сверяет его с вызовом и
-  отдаёт телу готовый профиль.
+(boba.connections.sealed); ключ клиент узнаёт из возможностей сервера при
+подключении. SealedConnectionParams ставит на параметры-соединения обвязку
+SealedConnectionParam: она открывает значение, сверяет его с вызовом и отдаёт
+телу готовый профиль. Он же — правило аргументов узла (NodeArgs): исполнитель
+проверяет печати всех узлов до старта DAG и не возвращает запечатанные
+значения в итоге вызова; и он же объявляет возможность сервера с ключом.
 
 Ошибки:
 RefusalError — значение не запечатано, запечатано другим ключом, повреждено,
@@ -21,7 +21,7 @@ InjectedAsyncOnlyError — тело инструмента вызвано син
 from __future__ import annotations
 
 import logging
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from typing import ClassVar
 
@@ -35,50 +35,15 @@ from boba.connection_broker.user_connections import (
 from boba.connections.base import ConnectionBase
 from boba.connections.manifest import ConnectionTypesError
 from boba.connections.marks import ConnectionRefusal
-from boba.connections.sealed import SealedConnection, SealKeys
+from boba.connections.sealed import SealedConnection, SealFeature, SealKeys
 from boba.identity.context import CallContext
 from boba.identity.errors import RefusalError
-from boba.toolkit.facade import PayloadTool, tool
-from boba.toolkit.result import TableResult
-from boba.toolrun.bridge import ToolBridge
 from boba.toolrun.injected import AsyncInjected
+from boba.toolrun.stream_calls import NodeArgs
 
-__all__ = ["EncryptionKeyTool", "SealedConnectionParam", "SealedConnectionParams"]
+__all__ = ["SealedConnectionParam", "SealedConnectionParams"]
 
 logger = logging.getLogger(__name__)
-
-
-class EncryptionKeyTool:
-    """Инструмент encryption_key: открытый ключ исполнителя для клиента.
-
-    Клиент обязан запечатать соединение этим ключом, прежде чем отдать его
-    инструменту. Ключ запрашивает модель обычным вызовом; клиент берёт его
-    из строки результата (SealKey). Создаёт инструмент загрузчик из
-    ключевой пары исполнителя.
-    """
-
-    NAME: ClassVar[str] = "encryption_key"
-
-    def __init__(self, keys: SealKeys) -> None:
-        self._keys = keys
-
-    def build(self) -> BaseTool:
-        return ToolBridge.as_structured_tool(self._tool())
-
-    def _tool(self) -> PayloadTool:
-        keys = self._keys
-
-        @tool
-        async def encryption_key() -> TableResult:
-            """Получить ключ шифрования соединений этого сервера.
-            Вызывать:
-               - один раз перед первым вызовом инструмента с параметром-соединением
-               - ещё раз, если инструмент ответил, что ключ устарел
-            После вызова ссылки на соединения из connection_list передаются
-            инструментам как есть."""
-            return TableResult(rows=[keys.public().model_dump()])
-
-        return encryption_key
 
 
 class SealedConnectionParam(AsyncInjected):
@@ -96,13 +61,11 @@ class SealedConnectionParam(AsyncInjected):
         "   - значение колонки connection из connection_list или "
         "connection_search, как есть\n"
         "   - kind строки должен подходить инструменту, описание — задаче "
-        "пользователя\n"
-        f"   - перед первым вызовом с соединением вызови {EncryptionKeyTool.NAME}"
+        "пользователя"
     )
 
     RESEAL_HINT: ClassVar[str] = (
-        f"call {EncryptionKeyTool.NAME}, then repeat the call with the "
-        "connection reference from connection_list"
+        "repeat the call with the connection reference from connection_list"
     )
 
     def __init__(
@@ -115,7 +78,26 @@ class SealedConnectionParam(AsyncInjected):
         self._caller = CallerApplication()
 
     async def value(self, name: str, kwargs: dict[str, object]) -> object:
-        sealed = self._opened(name, kwargs.get(self._param))
+        connection = self.verified(name, kwargs.get(self._param))
+        labelled = self._caller.labelled(connection, name)
+
+        logger.info(
+            "tool %s: sealed connection in %s (%s) %s",
+            name,
+            self._param,
+            self._kind,
+            labelled.trace(),
+        )
+
+        return labelled
+
+    def shown(self) -> str:
+        """Чем параметр показывается в итоге вызова вместо запечатанного значения."""
+        return f"<sealed {self._kind} connection>"
+
+    def verified(self, name: str, value: object) -> ConnectionBase:
+        """Профиль из запечатанного значения, сверенный с вызовом."""
+        sealed = self._opened(name, value)
         login = CallContext.current().subject.login
 
         if sealed.login != login:
@@ -132,24 +114,13 @@ class SealedConnectionParam(AsyncInjected):
             )
             raise RefusalError(ConnectionRefusal.SEAL_EXPIRED, msg)
 
-        connection = self._profile(name, sealed)
-        labelled = self._caller.labelled(connection, name)
-
-        logger.info(
-            "tool %s: sealed connection in %s (%s) %s",
-            name,
-            self._param,
-            self._kind,
-            labelled.trace(),
-        )
-
-        return labelled
+        return self._profile(name, sealed)
 
     def _opened(self, tool_name: str, value: object) -> SealedConnection:
         if not isinstance(value, str):
             msg = (
                 f"{tool_name} needs a sealed connection in {self._param!r}, got "
-                f"{value!r}; {self.RESEAL_HINT}"
+                f"a value of type {type(value).__name__}; {self.RESEAL_HINT}"
             )
             raise RefusalError(ConnectionRefusal.NOT_SEALED, msg)
 
@@ -180,21 +151,51 @@ class SealedConnectionParam(AsyncInjected):
         return connection
 
 
-class SealedConnectionParams:
+class SealedConnectionParams(NodeArgs):
     """Постановка SealedConnectionParam на параметры-соединения инструментов.
 
     Создаёт её сборка исполнителя из его ключевой пары и реестра типов
-    соединений; сама постановка и правка схемы для LLM — общие с
-    UserConnections (ConnectionParamHooks).
+    соединений; сама постановка и правка схемы для LLM — у
+    ConnectionParamHooks. Помнит обвязки по инструментам и этим реализует
+    NodeArgs: исполнитель до старта DAG проверяет печати каждого узла, а в
+    итоге вызова показывает параметры-соединения без значений.
     """
 
     def __init__(self, keys: SealKeys, types_ref: TypesRef) -> None:
         self._keys = keys
         self._types_ref = types_ref
         self._hooks = ConnectionParamHooks(types_ref, SealedConnectionParam.ARGUMENT)
+        self._params: dict[str, dict[str, SealedConnectionParam]] = {}
 
     def bind_all(self, tools: Sequence[BaseTool]) -> None:
         self._hooks.bind_all(tools, self._hook)
 
-    def _hook(self, param: str, kind: str) -> AsyncInjected:
-        return SealedConnectionParam(self._keys, self._types_ref, param, kind)
+    def features(self) -> Mapping[str, Mapping[str, object]]:
+        """Возможности сервера для объявления клиентам: приём запечатанных
+        соединений с текущим ключом, если хоть один инструмент их берёт."""
+        if not self._params:
+            return {}
+
+        return {SealFeature.ID: self._keys.feature().model_dump()}
+
+    async def check(self, tool: str, args: Mapping[str, object]) -> None:
+        for param, hook in self._params.get(tool, {}).items():
+            hook.verified(tool, args.get(param))
+
+    def shown(self, tool: str, args: Mapping[str, object]) -> Mapping[str, object]:
+        hooks = self._params.get(tool)
+        if not hooks:
+            return args
+
+        shown = dict(args)
+        for param, hook in hooks.items():
+            if param in shown:
+                shown[param] = hook.shown()
+
+        return shown
+
+    def _hook(self, tool: str, param: str, kind: str) -> AsyncInjected:
+        hook = SealedConnectionParam(self._keys, self._types_ref, param, kind)
+        self._params.setdefault(tool, {})[param] = hook
+
+        return hook

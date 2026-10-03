@@ -20,6 +20,7 @@ from boba.access.grants import ConnectionFilter
 from boba.connection_broker.store import ConnectionsConfig, ConnectionStore
 from boba.connection_broker.tools import GrantedConnections
 from boba.connections.manifest import ConnectionTypes
+from boba.connections.sealed import ConnectionRefs
 from boba.connections.stored import GrantTarget
 from boba.db.postgres import AsyncPostgresPool
 from boba.db.postgres.connection import (
@@ -78,7 +79,7 @@ def _pg(description: str, host: str = "db.example") -> PostgresConfig:
 def _names(rows: Sequence[Mapping[str, object]]) -> list[object]:
     names: list[object] = []
     for row in rows:
-        names.append(row["connection"])
+        names.append(ConnectionRefs().parse(str(row["connection"])).name)
 
     return names
 

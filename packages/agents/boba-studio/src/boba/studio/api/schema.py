@@ -15,6 +15,7 @@ from boba.auth.credentials import KerberosCredentialSource, NoRefresh
 from boba.catalog_service import CatalogService
 from boba.chat.profiles import ChatProfileConfig, ChatProfiles
 from boba.connections.manifest import ConnectionTypes
+from boba.connections.sealed import SealKeys
 from boba.identity.api import (
     AuthenticatedUser,
     Authenticator,
@@ -128,6 +129,7 @@ class OpenApiDocument:
             connection_store=cls._no_store,
             connection_types=ConnectionTypes.discover,
             credentials=cls._no_credentials,
+            seal_keys=SealKeys(),
             live_locks=lambda: MemoryLiveLocks("stand", 20),
             heartbeat_sec=1.0,
             bus_watch=lambda: StaticBusWatch(ListenerState.LISTENING),

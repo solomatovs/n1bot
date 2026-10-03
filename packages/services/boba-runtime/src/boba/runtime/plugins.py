@@ -7,8 +7,7 @@
 RuntimeError — конфиг противоречит плагину: у установленного плагина нет
     conf/plugins/<name>.toml, entry point отдал не манифест, секции плагинов
     совпали, способ запуска из [tool_launcher] не согласован с секциями
-    (см. boba.runtime.launchers), секция с соединениями пользователя без
-    [connections].
+    (см. boba.runtime.launchers).
 ToolConfigError — injected-параметр инструмента не привязан к секции конфига.
 StreamGroupsConfigError — нет секции [stream_groups] со сроками групп
     потоковых вызовов.
@@ -31,9 +30,8 @@ from pydantic import BaseModel, ConfigDict
 from boba.access import GrantCheck, ToolAccess, ToolSurfaces
 from boba.chat.profiles import ProfilesSection, RolesSection
 from boba.config import bind
-from boba.connection_broker.store import ConnectionsConfig
+from boba.connection_broker.sealed import SealedConnectionParams
 from boba.connection_broker.tickets import ServiceTickets
-from boba.connection_broker.user_connections import UserConnections
 from boba.identity.context import CallContext
 from boba.runtime.launchers import CallSurface, SectionLaunchers, ToolLaunchers
 from boba.runtime.refs import RuntimeRefs
@@ -60,7 +58,7 @@ from boba.toolrun.stream_calls import (
     StreamGroupsConfigError,
 )
 from boba.toolrun.streams import ToolStreams
-from boba.toolrun.wrapping import CallHooks, ToolAsyncBody, ToolBody, ToolSchema
+from boba.toolrun.wrapping import CallHooks, ToolAsyncBody, ToolBody
 
 __all__ = [
     "CoreTools",
@@ -127,10 +125,12 @@ class ToolLoader:
         self._plugins = plugins
         self._own_tools = tuple(own_tools)
         """Собственные инструменты процесса: идут под теми же обвязками, что
-        и инструменты плагинов, а исполняет их сам процесс, мимо DAG."""
-        self._store_ref = refs.connection_store
+        и инструменты плагинов, а за портом инструментов образуют отдельный
+        сервер (ToolRegistry.server)."""
         self._credentials_ref = refs.credentials
-        self._types_ref = refs.connection_types
+        self._sealed = SealedConnectionParams(refs.seal_keys, refs.connection_types)
+        """Приём запечатанных соединений: обвязки параметров-соединений,
+        правило аргументов узлов и возможность сервера с ключом."""
         self._grant_check = grant_check
         self._surface_hooks = tuple(surface_hooks)
         """Обвязки поверхности процесса (чат монтирует элементы результата):
@@ -193,6 +193,7 @@ class ToolLoader:
             access=access,
             stream_config=stream_cfg,
             own=frozenset(own),
+            node_args=(self._sealed,),
         )
 
     @staticmethod
@@ -251,30 +252,13 @@ class ToolLoader:
         ToolProcessWrap.guard_all(ToolMain.toolset(*functions), launcher)
         CallContextValues.bind_all(functions)
 
-        if self._takes_connections(functions):
-            self._require_connections(plugin.section)
-            UserConnections.bind_all(
-                functions, self._store_ref, self._credentials_ref, self._types_ref
-            )
+        self._sealed.bind_all(functions)
 
         resolve = self._config_resolver()
         ServiceTickets.bind_all(functions, self._credentials_ref, resolve)
         InjectedConfig.bind_all(functions, resolve)
 
         return functions
-
-    @staticmethod
-    def _takes_connections(tools: Sequence[BaseTool]) -> bool:
-        """Есть ли у инструментов параметры-соединения: их объявляет подпись."""
-        for tool in tools:
-            schema = ToolSchema.of(tool)
-            if schema is None:
-                continue
-
-            if ToolArgv.connection_fields(schema):
-                return True
-
-        return False
 
     def _config_resolver(self) -> Callable[[str, Any], object]:
         """Значения injected-параметров: модель собирается из своей секции."""
@@ -325,18 +309,6 @@ class ToolLoader:
 
         surfaces = ToolSurfaces(headless_only=frozenset(headless_only))
         return ToolAccess(known, roles, profiles, surfaces, self._grant_check)
-
-    def _require_connections(self, name: str) -> None:
-        """Инструменты с соединениями пользователя работают только при [connections]."""
-        cfg = bind(self._raw, "connections", ConnectionsConfig)
-        if cfg.enable:
-            return
-
-        msg = (
-            f"[tool.{name}] takes its connections from the connections table: "
-            "set [connections] enable = true"
-        )
-        raise RuntimeError(msg)
 
 
 PluginTable = Callable[[], Mapping[str, ToolPlugin]]

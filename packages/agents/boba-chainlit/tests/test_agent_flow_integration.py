@@ -177,8 +177,7 @@ def _graph(
 
     spec = GraphSpec(
         chat=chat,
-        service=LocalDagService(tools, STREAM_CONFIG),
-        own_tools=(),
+        service=LocalDagService(tools, STREAM_CONFIG, ()),
         system_prompt=settings.system_prompt,
         checkpointer=InMemorySaver(),
         history=build_history_view(frozenset(names), settings.history_messages),

@@ -33,6 +33,8 @@ from boba.chainlit.infra.session import (
 )
 from boba.chainlit.infra.socket_events import SocketEvents
 from boba.chainlit.infra.stale_action import StaleActionMiddleware
+from boba.connection_broker.sealing import SentConnections
+from boba.connections.sealed import SealKeys
 from boba.db.postgres import AsyncPostgresPool
 from boba.identity.run import RunRegistry
 from boba.runtime import providers as runtime
@@ -328,6 +330,8 @@ def _use_di_container(app: FastAPI, c: AppConfig) -> Container:
     # реестр типов нужен загрузчику плагинов ещё до старта контейнера:
     # по нему параметры-соединения получают вид; сам реестр — чистый discover
     container.provide(runtime.connection_types, runtime.connection_types())
+    container.provide(runtime.seal_keys, SealKeys())
+    container.provide(providers.sent_connections, SentConnections())
     container.eager(providers.get_app_config)
     container.eager(runtime.users_table)
     container.eager(runtime.auth_service)
