@@ -24,33 +24,36 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable, Sequence
-from typing import Annotated, Any, ClassVar
+from datetime import UTC, datetime, timedelta
+from typing import Annotated, Any
 
 from langchain_core.tools import BaseTool
 from pydantic.fields import FieldInfo
 
 from boba.connection_broker.store import ConnectionStore
 from boba.connection_broker.tickets import CredentialsRef
-from boba.connections.base import ClientIdentity, ConnectionBase
-from boba.connections.credentials import ConnectionSections
+from boba.connections.base import ConnectionBase
 from boba.connections.manifest import ConnectionTypes, UnknownConnectionKindError
 from boba.connections.marks import ConnectionRefusal
-from boba.connections.sealed import ConnectionRef, ConnectionSchemaMark
+from boba.connections.sealed import (
+    ConnectionRef,
+    ConnectionSchemaMark,
+    SealedConnection,
+)
 from boba.connections.whitelist import (
     AmbiguousConnectionError,
     ConnectionWhitelist,
-    Picked,
 )
-from boba.identity.context import CallContext
+from boba.identity.context import CallContexts
 from boba.identity.errors import RefusalError
 from boba.kerberos import TicketAuth
 from boba.toolkit.entry import ToolArgv
+from boba.toolkit.types import SecretReveal
 from boba.toolrun.injected import AsyncInjected, ToolConfigError
 from boba.toolrun.wrapping import ToolBody, ToolSchema
 
 __all__ = [
     "ArmedConnections",
-    "CallerApplication",
     "ConnectionParamHooks",
     "ConnectionRefusal",
     "CredentialsRef",
@@ -59,22 +62,6 @@ __all__ = [
 ]
 
 logger = logging.getLogger(__name__)
-
-
-class CallerApplication:
-    """Подпись профиля клиентом вызова: приложение, пользователь, инструмент.
-
-    Под именем приложения ходят все инструменты; как записать подпись в
-    сессию, решает сам профиль. Пользуются ею обвязки параметров-соединений.
-    """
-
-    NAME: ClassVar[str] = "boba"
-
-    def labelled(self, connection: ConnectionBase, tool: str) -> ConnectionBase:
-        login = CallContext.current().subject.login
-        client = ClientIdentity(application=self.NAME, login=login, tool=tool)
-
-        return connection.labeled(client)
 
 
 StoreRef = Callable[[], ConnectionStore]
@@ -168,33 +155,45 @@ class ArmedConnections:
     """Соединение пользователя по ссылке модели, готовое к отправке серверу.
 
     Сторона клиента: соединения и гранты хранит чат. По ссылке ищет строку
-    среди выданных субъекту вызова и заменяет её kerberos-секцию билетом
-    этого вызова. Пользуется им запечатывание перед отправкой вызова
-    (boba.connection_broker.sealing); субъект и креды берутся из CallContext.
+    среди выданных субъекту вызова, заменяет её kerberos-секцию билетом
+    этого вызова и отдаёт содержимое для запечатывания. Пользуется им
+    запечатывание перед отправкой вызова (boba.connection_broker.sealing);
+    субъект и креды берутся из контекста вызова.
     """
 
-    def __init__(self, store_ref: StoreRef, credentials_ref: CredentialsRef) -> None:
+    def __init__(
+        self,
+        store_ref: StoreRef,
+        credentials_ref: CredentialsRef,
+        contexts: CallContexts,
+    ) -> None:
         self._store_ref = store_ref
         self._credentials_ref = credentials_ref
+        self._contexts = contexts
 
-    async def armed(self, ref: ConnectionRef) -> ConnectionBase:
-        context = CallContext.current()
+    async def sealed(self, ref: ConnectionRef, ttl: timedelta) -> SealedConnection:
+        """Соединение субъекта по ссылке ref, готовое к запечатыванию: профиль
+        с кредами этого вызова, логин субъекта и срок годности."""
+        context = self._contexts.current()
         rows = await self._store_ref().for_subject(context.subject, ref.kind)
-        whitelist = ConnectionWhitelist.of(rows)
 
-        picked = self._pick(whitelist, ref)
-        self._require_stored_section(picked.connection, ref)
+        connection = self._pick(ConnectionWhitelist.of(rows), ref)
+        self._require_stored_section(connection, ref)
 
         armed = await self._credentials_ref().for_connection(
-            picked.connection, context.credential
+            connection, context.credential
         )
 
         logger.info("connection %s armed: %s", ref.render(), armed.trace())
 
-        return armed
+        return SealedConnection(
+            login=context.subject.login,
+            expires_at=datetime.now(UTC) + ttl,
+            profile=SecretReveal.dumped(armed),
+        )
 
     @staticmethod
-    def _pick(whitelist: ConnectionWhitelist, ref: ConnectionRef) -> Picked:
+    def _pick(whitelist: ConnectionWhitelist, ref: ConnectionRef) -> ConnectionBase:
         try:
             picked = whitelist.pick(ref.name)
         except AmbiguousConnectionError as exc:
@@ -220,7 +219,7 @@ class ArmedConnections:
     @staticmethod
     def _require_stored_section(connection: ConnectionBase, ref: ConnectionRef) -> None:
         """В таблице лежат только делегированные и keytab-секции."""
-        section = ConnectionSections.section_of(connection)
+        section = connection.kerberos_section()
         if not isinstance(section, TicketAuth):
             return
 

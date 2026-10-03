@@ -17,6 +17,7 @@ from boba.cancellation import (
 )
 from boba.chainlit.chat.turn import ChatTurn
 from boba.identity.run import LiveStream, RunRegistry
+from boba.stand_core.context import TEST_CONTEXTS
 from boba.toolkit.channels import CallOutcome
 
 THREAD = "thread-1"
@@ -39,14 +40,18 @@ class TestRegistry:
     def test_turn_is_addressable_while_open(self) -> None:
         if RunRegistry.active(THREAD) is not None:
             raise AssertionError("RunRegistry.active(THREAD) is None")
-        with RunRegistry.open(make_context(THREAD), FakeTurn()) as context:
+        with RunRegistry.open(
+            TEST_CONTEXTS, make_context(THREAD), FakeTurn()
+        ) as context:
             if RunRegistry.active(THREAD) is not context:
                 raise AssertionError("RunRegistry.active(THREAD) is context")
         if RunRegistry.active(THREAD) is not None:
             raise AssertionError("RunRegistry.active(THREAD) is None")
 
     def test_stop_cancels_the_open_turn(self) -> None:
-        with RunRegistry.open(make_context(THREAD), FakeTurn()) as context:
+        with RunRegistry.open(
+            TEST_CONTEXTS, make_context(THREAD), FakeTurn()
+        ) as context:
             if RunRegistry.stop(THREAD, StopReason.USER_STOP) is not True:
                 raise AssertionError("RunRegistry.stop(THREAD, StopReason.USER_STOP) …")
             if context.cancellation.cancelled is not True:
@@ -60,7 +65,7 @@ class TestRegistry:
 
     def test_stop_reaches_the_context_of_the_turn(self) -> None:
         """Инструменты читают отмену из контекста: снаружи и изнутри один объект."""
-        with RunRegistry.open(make_context(THREAD), FakeTurn()):
+        with RunRegistry.open(TEST_CONTEXTS, make_context(THREAD), FakeTurn()):
             RunRegistry.stop(THREAD, StopReason.USER_STOP)
             if current_cancellation().cancelled is not True:
                 raise AssertionError("current_cancellation().cancelled is True")
@@ -69,7 +74,7 @@ class TestRegistry:
 
     def test_stop_reaches_worker_threads(self) -> None:
         """Синхронные инструменты живут в тред-пуле: флаг обязан доезжать и туда."""
-        with RunRegistry.open(make_context(THREAD), FakeTurn()):
+        with RunRegistry.open(TEST_CONTEXTS, make_context(THREAD), FakeTurn()):
             ctx = copy_context()
             RunRegistry.stop(THREAD, StopReason.USER_STOP)
             with ThreadPoolExecutor(1) as pool:
@@ -79,7 +84,9 @@ class TestRegistry:
 
     def test_stop_is_thread_safe(self) -> None:
         """Кнопку жмут из обработчика сокета — это чужой поток."""
-        with RunRegistry.open(make_context(THREAD), FakeTurn()) as context:
+        with RunRegistry.open(
+            TEST_CONTEXTS, make_context(THREAD), FakeTurn()
+        ) as context:
             stopper = threading.Thread(
                 target=RunRegistry.stop, args=(THREAD, StopReason.USER_STOP)
             )
@@ -91,8 +98,8 @@ class TestRegistry:
     def test_new_turn_supersedes_the_stale_one(self) -> None:
         """Второй ход того же треда обрывает забытый первый, а не копится рядом."""
         with (
-            RunRegistry.open(make_context(THREAD), FakeTurn()) as first,
-            RunRegistry.open(make_context(THREAD), FakeTurn()) as second,
+            RunRegistry.open(TEST_CONTEXTS, make_context(THREAD), FakeTurn()) as first,
+            RunRegistry.open(TEST_CONTEXTS, make_context(THREAD), FakeTurn()) as second,
         ):
             if first.cancellation.cancelled is not True:
                 raise AssertionError("first.cancellation.cancelled is True")
@@ -103,8 +110,10 @@ class TestRegistry:
 
     def test_release_keeps_the_newer_turn(self) -> None:
         """Выход из старого хода не должен снимать с учёта новый."""
-        with RunRegistry.open(make_context(THREAD), FakeTurn()):
-            with RunRegistry.open(make_context(THREAD), FakeTurn()) as second:
+        with RunRegistry.open(TEST_CONTEXTS, make_context(THREAD), FakeTurn()):
+            with RunRegistry.open(
+                TEST_CONTEXTS, make_context(THREAD), FakeTurn()
+            ) as second:
                 pass
             if RunRegistry.active(THREAD) is second:
                 raise AssertionError("RunRegistry.active(THREAD) is not second")
@@ -112,7 +121,7 @@ class TestRegistry:
     def test_tools_reach_the_turn_of_the_thread(self) -> None:
         """Инструменты находят ход по thread_id — им нужен шаг ответа."""
         turn = FakeTurn()
-        with RunRegistry.open(make_context(THREAD), turn):
+        with RunRegistry.open(TEST_CONTEXTS, make_context(THREAD), turn):
             if RunRegistry.port_of(THREAD) is not turn:
                 raise AssertionError("RunRegistry.port_of(THREAD) is turn")
         if RunRegistry.port_of(THREAD) is not None:
@@ -139,7 +148,9 @@ class TestLiveArtifacts:
 
     def test_streams_close_when_the_context_does(self) -> None:
         stream = self.FakeStream()
-        with RunRegistry.open(make_context(THREAD), FakeTurn()) as context:
+        with RunRegistry.open(
+            TEST_CONTEXTS, make_context(THREAD), FakeTurn()
+        ) as context:
             context.add_stream("call-1", stream)
             if context.stream("call-1") is not stream:
                 raise AssertionError('context.stream("call-1") is stream')
@@ -152,7 +163,7 @@ class TestLiveArtifacts:
             raise AssertionError("RunRegistry.live_scopes() == frozenset()")
 
     def test_thread_without_streams_is_not_live(self) -> None:
-        with RunRegistry.open(make_context(THREAD), FakeTurn()):
+        with RunRegistry.open(TEST_CONTEXTS, make_context(THREAD), FakeTurn()):
             if RunRegistry.live_scopes() != frozenset():
                 raise AssertionError("RunRegistry.live_scopes() == frozenset()")
 
@@ -167,7 +178,7 @@ class TestAsyncTurn:
             async def turn() -> str:
                 context = make_context(THREAD)
                 with (
-                    RunRegistry.open(context, FakeTurn()),
+                    RunRegistry.open(TEST_CONTEXTS, context, FakeTurn()),
                     RunRegistry.task_abort(context.cancellation),
                 ):
                     started.set()
@@ -192,7 +203,7 @@ class TestAsyncTurn:
             async def turn() -> None:
                 context = make_context(THREAD)
                 with (
-                    RunRegistry.open(context, FakeTurn()),
+                    RunRegistry.open(TEST_CONTEXTS, context, FakeTurn()),
                     RunRegistry.task_abort(context.cancellation),
                 ):
                     started.set()
@@ -214,7 +225,9 @@ class TestStopButton:
 
     def test_button_stops_the_open_turn(self) -> None:
         async def scenario() -> StopReason | None:
-            with RunRegistry.open(make_context(THREAD), FakeTurn()) as context:
+            with RunRegistry.open(
+                TEST_CONTEXTS, make_context(THREAD), FakeTurn()
+            ) as context:
                 if ChatTurn.stop(THREAD) is not True:
                     raise AssertionError("ChatTurn.stop(THREAD) is True")
                 return context.cancellation.reason
@@ -230,7 +243,9 @@ class TestStopButton:
         """Разрыв связи сам по себе ход не трогает: он доигрывает до конца."""
 
         async def scenario() -> bool:
-            with RunRegistry.open(make_context(THREAD), FakeTurn()) as context:
+            with RunRegistry.open(
+                TEST_CONTEXTS, make_context(THREAD), FakeTurn()
+            ) as context:
                 await asyncio.sleep(0)
                 return context.cancellation.cancelled
 

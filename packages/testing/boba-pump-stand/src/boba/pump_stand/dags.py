@@ -14,19 +14,20 @@ DagRunError — узел зовёт инструмент, которого у с
 from __future__ import annotations
 
 import tomllib
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping
 from pathlib import Path
 from string import Template
-from typing import Annotated, Any, ClassVar
+from typing import ClassVar
 
 from langchain_core.tools import BaseTool, StructuredTool
-from pydantic import Field
 
+from boba.connection_broker.user_connections import ConnectionParamHooks
+from boba.connections.manifest import ConnectionTypes
+from boba.stand_core.context import TEST_CONTEXTS
 from boba.tool.ch import tools as ch
 from boba.tool.ora import tools as ora
 from boba.tool.pg import tools as pg
 from boba.toolkit.dag import DagSpec
-from boba.toolkit.entry import ToolArgv
 from boba.toolkit.wrap import ToolProcessWrap
 from boba.toolrun.bridge import ToolBridge
 from boba.toolrun.call_id import ToolCallIdField
@@ -36,15 +37,14 @@ from boba.toolrun.errors import ToolErrorGuard
 from boba.toolrun.injected import AsyncInjected
 from boba.toolrun.process import ProcessLauncherConfig, ProcessToolCaller
 from boba.toolrun.stream_calls import StreamChannelFields, StreamGroupsConfig
-from boba.toolrun.wrapping import ToolBody, ToolSchema
 
 __all__ = ["PumpDags", "StandConnections"]
 
 
 class StandConnections(AsyncInjected):
-    """Обвязка параметра-соединения: имя из аргументов узла → профиль из
-    справочника стенда, как UserConnections делает это по справочнику
-    пользователя. В схеме параметр становится строкой-именем."""
+    """Обвязка параметра-соединения стенда: имя из аргументов узла → профиль
+    из справочника стенда. Ставит её PumpDags через ConnectionParamHooks —
+    тем же порядком, что приложение ставит свои обвязки соединений."""
 
     def __init__(self, param: str, directory: Mapping[str, object]) -> None:
         super().__init__(param, None)
@@ -69,35 +69,13 @@ class StandConnections(AsyncInjected):
 
         return config
 
-    @classmethod
-    def bind_all(
-        cls, tools: Sequence[BaseTool], directory: Mapping[str, object]
-    ) -> None:
-        for tool in tools:
-            cls._bind(tool, directory)
-
-    @classmethod
-    def _bind(cls, tool: BaseTool, directory: Mapping[str, object]) -> None:
-        schema = ToolSchema.of(tool)
-        if schema is None:
-            return
-
-        fields = ToolArgv.connection_fields(schema)
-        if not fields:
-            return
-
-        shown: dict[str, tuple[Any, Any]] = {}
-        for param in fields:
-            ToolBody.hook_all([tool], cls(param, directory))
-            shown[param] = (Annotated[str, Field(min_length=1)], ...)
-
-        tool.args_schema = ToolSchema.rebuild(schema, shown, ())
-
 
 class PumpDags:
     """Платформа запуска DAG на стенде: насосы под обвязками приложения и
     исполнитель. Тест пишет описание toml и получает DagOutcome; имена
     стенда для описания — names, соединения по имени — connections."""
+
+    CONNECTION_TEXT: ClassVar[str] = "Имя соединения из справочника стенда."
 
     STREAM_CONFIG: ClassVar[StreamGroupsConfig] = StreamGroupsConfig(
         open_sec=60.0,
@@ -125,6 +103,7 @@ class PumpDags:
                 stderr_tail_bytes=16384,
                 kill_grace_sec=1.0,
             ),
+            TEST_CONTEXTS,
         )
 
         tools: list[StructuredTool] = []
@@ -144,7 +123,9 @@ class PumpDags:
             tools.append(bridged)
 
         ToolProcessWrap.guard_all(tools, launcher)
-        StandConnections.bind_all(tools, connections)
+        self._directory = dict(connections)
+        hooks = ConnectionParamHooks(ConnectionTypes.discover, self.CONNECTION_TEXT)
+        hooks.bind_all(tools, self._connection_hook)
 
         drain = ToolBridge.as_structured_tool(DevNullTool.build())
         every: list[BaseTool] = [*tools, drain]
@@ -159,6 +140,9 @@ class PumpDags:
         self._runner = DagRunner(
             by_name, self.STREAM_CONFIG.timings(), self.STREAM_CONFIG.pipe_bytes
         )
+
+    def _connection_hook(self, tool: str, param: str, kind: str) -> AsyncInjected:
+        return StandConnections(param, self._directory)
 
     def spec(self, text: str) -> DagSpec:
         """Описание из toml-текста с подставленными именами стенда."""

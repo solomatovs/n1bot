@@ -31,6 +31,7 @@ from boba.runtime.launchers import CallSurface
 from boba.runtime.users import UsersTable
 from boba.stand.tools import STREAM_CONFIG
 from boba.stand_core.auth import StubAuthenticator
+from boba.stand_core.context import TEST_CONTEXTS
 from boba.studio.api.auth import ApiAuth
 from boba.studio.api.tools import ToolCallBody, ToolCalling
 from boba.toolkit.facade import tool
@@ -57,7 +58,7 @@ class Probe:
         @tool
         async def probe(query: str) -> MarkdownResult:
             """Зонд контекста вызова."""
-            seen.append(CallContext.current())
+            seen.append(TEST_CONTEXTS.current())
             return MarkdownResult(text=f"seen {query}")
 
         # та же обвязка, что ставит load_tools: id и intent вызова, журнал, ошибки
@@ -65,7 +66,9 @@ class Probe:
         ToolCallIdField.attach_all(tools)
         ToolIntentField.attach_all(tools)
         ToolRunLogger.guard_all(
-            tools, CallSurface.stream_source, CallSurface.tool_call_scope
+            tools,
+            CallSurface(TEST_CONTEXTS).stream_source,
+            CallSurface(TEST_CONTEXTS).tool_call_scope,
         )
         ToolErrorGuard().guard_all(tools)
         return tools
@@ -106,6 +109,7 @@ def _calling(probe: Probe, studio_config: StudioRuntimeConfig) -> ToolCalling:
         StandProfiles.profiles(studio_config),
         lambda: MemoryLiveLocks("test:0", 20),
         1.0,
+        TEST_CONTEXTS,
     )
 
 
@@ -147,7 +151,7 @@ class TestServe:
         if context.scope.kind is not ScopeKind.JOB:
             raise AssertionError(context.scope)
 
-        if CallContext.peek() is not None:
+        if TEST_CONTEXTS.peek() is not None:
             raise AssertionError("the call context must not outlive the call")
 
     async def test_unknown_tool_is_not_found(

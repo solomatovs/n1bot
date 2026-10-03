@@ -51,7 +51,7 @@ from boba.chat.profiles import (
     UserMeta,
 )
 from boba.connection_broker.sealing import SentConnections
-from boba.identity.context import Scope
+from boba.identity.context import CallContexts, Scope
 from boba.identity.errors import InternalServiceError
 from boba.identity.locks import LiveLocks, RunLocking
 from boba.identity.session import UserMetadataField
@@ -96,6 +96,7 @@ async def on_message(  # noqa: PLR0913
     locks: Annotated[LiveLocks, Depends(runtime.live_locks)],
     app_config: Annotated[AppConfig, Depends(get_app_config)],
     sent: Annotated[SentConnections, Depends(sent_connections)],
+    contexts: Annotated[CallContexts, Depends(runtime.call_contexts)],
 ):
     session = current_session()
     thread_id = session.thread_id
@@ -122,6 +123,7 @@ async def on_message(  # noqa: PLR0913
         ),
         locking=RunLocking(locks=locks, heartbeat_sec=app_config.cluster.heartbeat_sec),
         sent=sent,
+        contexts=contexts,
     )
 
     # сбой в любом месте хода — включая подготовку — отчитывается ходом же:
@@ -133,7 +135,7 @@ async def on_message(  # noqa: PLR0913
         await turn.crash(e)
         return
 
-    with context.applied():
+    with contexts.applied(context):
         # дампы HTTP-обмена хода именуются пользователем и тредом
         who = session.label
         if not who:

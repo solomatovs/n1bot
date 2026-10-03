@@ -46,7 +46,7 @@ from pydantic import (
     model_validator,
 )
 
-from boba.toolkit.chain import StreamPlanError, StreamTimings
+from boba.toolkit.chain import StreamFailureKind, StreamPlanError, StreamTimings
 from boba.toolkit.dag import (
     DagNode,
     DagPlanner,
@@ -68,9 +68,9 @@ from boba.toolrun.wrapping import ToolSchema
 
 __all__ = [
     "CallDag",
+    "CallReply",
     "LocalDagService",
     "NodeArgs",
-    "StreamCallKind",
     "StreamChannelFields",
     "StreamGroupsConfig",
     "StreamGroupsConfigError",
@@ -89,12 +89,6 @@ class StreamGroupsConfigError(RuntimeError):
 
 class ToolServersError(RuntimeError):
     """Серверы за одним портом нельзя собрать: имена инструментов совпали."""
-
-
-class StreamCallKind(StrEnum):
-    """Kind отказа потокового вызова до его запуска."""
-
-    PLAN_REFUSED = "stream_plan_refused"
 
 
 class StreamGroupsConfig(BaseModel):
@@ -351,16 +345,12 @@ class CallDag:
 
     NODES: ClassVar[str] = "nodes"
 
-    def __init__(self, tools: frozenset[str]) -> None:
-        """tools — имена инструментов, которые может звать узел workflow."""
-        self._tools = tools
-
     def of(self, call: ToolCall) -> DagSpec:
         """DAG одного вызова.
 
         Ошибки:
         StreamPlanError — вызов без tool_call_id; вызов workflow не проходит
-            форму описания DAG либо зовёт инструмент, которого нет.
+            форму описания DAG.
         """
         call_id = self.id_of(call)
 
@@ -405,13 +395,6 @@ class CallDag:
 
     def _nodes(self, call_id: str, described: DagSpec) -> Iterator[DagNode]:
         for index, node in enumerate(described.nodes):
-            if node.tool not in self._tools:
-                msg = (
-                    f"workflow call {call_id!r}: node {node.key!r} names tool "
-                    f"{node.tool!r}, expected one of the tools {sorted(self._tools)}"
-                )
-                raise StreamPlanError(msg)
-
             yield node.model_copy(
                 update={"key": f"{call_id}_{index}", "title": node.key}
             )
@@ -533,8 +516,9 @@ class LocalDagService(ToolServer):
 
         self._offered = offered
         self._offered_names = self._names_of(offered)
+        self._unknown = UnknownTool(self._offered_names)
         self._linked_names = frozenset(linked)
-        self._dags = CallDag(frozenset(by_name))
+        self._dags = CallDag()
         self._runner = DagRunner(by_name, config.timings(), config.pipe_bytes)
 
     def tools(self) -> Sequence[BaseTool]:
@@ -574,7 +558,7 @@ class LocalDagService(ToolServer):
         """Итог вызова, который идёт своим DAG: обычный инструмент или workflow."""
         name = call["name"]
         if name not in self._offered_names:
-            return self._refused(call, self._unknown_tool(name))
+            return self._refused(call, self._unknown.refusal(name))
 
         try:
             dag = self._dags.of(call)
@@ -594,7 +578,9 @@ class LocalDagService(ToolServer):
 
         failed = not outcome.ok()
 
-        return self._message(call, WorkflowResult(nodes=nodes, ok=not failed), failed)
+        result = WorkflowResult(nodes=nodes, ok=not failed)
+
+        return CallReply(call).message(result, failed)
 
     async def _linked_run(
         self, calls: Sequence[ToolCall]
@@ -655,7 +641,7 @@ class LocalDagService(ToolServer):
     def _plan_refusal(exc: Exception) -> ErrorResult:
         logger.warning("dag plan refused: %s", exc)
 
-        return ErrorResult(message=str(exc), error_kind=StreamCallKind.PLAN_REFUSED)
+        return ErrorResult(message=str(exc), error_kind=StreamFailureKind.PLAN_REFUSED)
 
     async def _check_args(self, dag: DagSpec) -> None:
         """Правила аргументов по каждому узлу; отказ узла workflow называет узел."""
@@ -692,17 +678,8 @@ class LocalDagService(ToolServer):
             result=outcome.artifact,
         )
 
-    def _unknown_tool(self, name: str) -> ErrorResult:
-        return UnknownTool(self._offered_names).refusal(name)
-
     def _refused(self, call: ToolCall, failure: FailureResult) -> ToolMessage:
-        return self._message(call, failure, True)
-
-    def _message(
-        self, call: ToolCall, result: ToolResultBase, errored: bool
-    ) -> ToolMessage:
-        """Результат вызова сообщением инструмента: тот же путь, что у узла."""
-        return CallReply(call).message(result, errored)
+        return CallReply(call).message(failure, True)
 
     @staticmethod
     def _names_of(tools: Sequence[BaseTool]) -> frozenset[str]:
@@ -748,6 +725,13 @@ class CallReply:
 
         return outcome.message(call_id)
 
+    def refused(self, failure: FailureResult) -> asyncio.Future[ToolMessage]:
+        """Готовый отказ вызову, который до исполнения не дошёл."""
+        done: asyncio.Future[ToolMessage] = asyncio.get_running_loop().create_future()
+        done.set_result(self.message(failure, True))
+
+        return done
+
 
 class ToolServers(ToolServer):
     """Несколько серверов инструментов за одним портом.
@@ -790,7 +774,8 @@ class ToolServers(ToolServer):
         for position, call in enumerate(calls):
             owner = self._owner.get(call["name"])
             if owner is None:
-                pending[position] = self._refused(call)
+                refusal = self._unknown.refusal(call["name"])
+                pending[position] = CallReply(call).refused(refusal)
                 continue
 
             routed.setdefault(owner, []).append(position)
@@ -809,14 +794,6 @@ class ToolServers(ToolServer):
             ordered.append(pending[position])
 
         return ordered
-
-    def _refused(self, call: ToolCall) -> asyncio.Future[ToolMessage]:
-        """Готовый отказ вызову с именем, которого нет ни у одного сервера."""
-        refusal = self._unknown.refusal(call["name"])
-        done: asyncio.Future[ToolMessage] = asyncio.get_running_loop().create_future()
-        done.set_result(CallReply(call).message(refusal, True))
-
-        return done
 
     def _claim(self, name: str, index: int) -> None:
         if name in self._owner:

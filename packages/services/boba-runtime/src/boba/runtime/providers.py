@@ -25,6 +25,7 @@ from boba.connections.manifest import ConnectionTypes
 from boba.connections.sealed import SealKeys
 from boba.db.pgvector.config import KnowledgeBaseSchemaConfig
 from boba.db.pgvector.schema import KbSchema
+from boba.identity.context import CallContexts
 from boba.identity.directory import UserDirectory
 from boba.identity.errors import ServiceDisabledError
 from boba.identity.locks import LiveLocks, MemoryLiveLocks, StaleLock
@@ -154,9 +155,21 @@ def plugin_table() -> PluginTable:
     raise RuntimeError(msg)
 
 
-def refresh_signal() -> RefreshSignal:
+def call_contexts() -> CallContexts:
+    """Держатель контекста вызова процесса; кладёт процесс: он один на всех,
+    кто ставит и читает контекст."""
+    msg = (
+        "DI provider call_contexts resolved before the process supplied "
+        "CallContexts via Container.provide"
+    )
+    raise RuntimeError(msg)
+
+
+def refresh_signal(
+    contexts: Annotated[CallContexts, Depends(call_contexts)],
+) -> RefreshSignal:
     """Сигнал обновления билета входа: в область пользователя через шину процесса."""
-    return BusRefreshSignal(message_bus_ref)
+    return BusRefreshSignal(message_bus_ref, contexts)
 
 
 def user_directory() -> UserDirectory:
@@ -241,6 +254,11 @@ def connection_store_ref() -> ConnectionStore:
     return required(store, "connections", "the connection store")
 
 
+def call_contexts_ref() -> CallContexts:
+    """Держатель контекста вызова из корневого контейнера."""
+    return _root().resolved(call_contexts)
+
+
 def connection_types_ref() -> ConnectionTypes:
     """Реестр типов соединений; зовётся на запрос."""
     return _root().resolved(connection_types)
@@ -253,6 +271,7 @@ def runtime_refs() -> RuntimeRefs:
         connection_store=connection_store_ref,
         connection_types=connection_types_ref,
         credentials=credential_source_ref,
+        contexts=_root().resolved(call_contexts),
         seal_keys=_root().resolved(seal_keys),
         live_locks=live_locks_ref,
         heartbeat_sec=_root().resolved(get_runtime_config).cluster.heartbeat_sec,

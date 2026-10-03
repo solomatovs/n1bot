@@ -32,7 +32,7 @@ from typing import ClassVar, Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 from boba.cancellation import RunCancellation
-from boba.identity.context import CallContext
+from boba.identity.context import CallContexts
 from boba.toolkit.chain import TappedCall
 from boba.toolkit.channels import ToolChannel
 from boba.toolkit.entry import EntryFlag, InputWire, OutputWire
@@ -400,9 +400,12 @@ class ProcessToolCaller(ToolLauncher):
     )
     """Каналы вызова модуля, попадающие в журнал при поставленном тапе."""
 
-    def __init__(self, tool: str, cfg: ProcessLauncherConfig) -> None:
+    def __init__(
+        self, tool: str, cfg: ProcessLauncherConfig, contexts: CallContexts
+    ) -> None:
         self._tool = tool
         self._cfg = cfg
+        self._contexts = contexts
 
     def open(self, command: ToolCommand) -> ToolCall:
         """Вызов модуля инструментов: конфиг первым кадром, кадры тела наружу."""
@@ -518,7 +521,7 @@ class ProcessToolCaller(ToolLauncher):
 
         Вне контекста вызова (прогрев, пробы) тело работает в общем workdir.
         """
-        context = CallContext.peek()
+        context = self._contexts.peek()
         if context is None:
             return self._cfg.workdir
 

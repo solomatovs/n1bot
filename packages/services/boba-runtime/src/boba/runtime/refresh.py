@@ -25,7 +25,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from boba.identity.context import CallContext, Scope
+from boba.identity.context import CallContexts, Scope
 from boba.identity.sso import RefreshSignal
 from boba.identity.token import SessionRenewal, TokenReader, TokenRejectedError
 from boba.messaging import LockToken, MessageBus, SignInRefreshRequested
@@ -38,11 +38,12 @@ logger = logging.getLogger(__name__)
 class BusRefreshSignal(RefreshSignal):
     """Просит фронт молча пройти обновление входа через шину процесса."""
 
-    def __init__(self, bus: Callable[[], MessageBus]) -> None:
+    def __init__(self, bus: Callable[[], MessageBus], contexts: CallContexts) -> None:
         self._bus = bus
+        self._contexts = contexts
 
     async def send(self) -> bool:
-        subject = CallContext.current().subject
+        subject = self._contexts.subject()
         message = SignInRefreshRequested(principal=subject.login)
         await self._bus().publish(
             Scope.user(subject.user_id), message, LockToken.local()

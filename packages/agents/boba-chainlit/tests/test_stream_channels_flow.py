@@ -31,8 +31,9 @@ from boba.chainlit.domain.fields import StepField
 from boba.chainlit.infra.providers import build_history_view
 from boba.chainlit.rendering.chat_view import StepKind
 from boba.stand_core import fake_toolmod
+from boba.stand_core.context import TEST_CONTEXTS
 from boba.stand_core.fake_toolmod import FakeConfig
-from boba.toolkit.chain import GroupFailureResult
+from boba.toolkit.chain import GroupFailureResult, StreamFailureKind
 from boba.toolkit.dag import WorkflowNodeResult, WorkflowResult
 from boba.toolkit.entry import EntryErrorKind, ToolMain
 from boba.toolkit.launcher import TappedCall, ToolCall, ToolLauncher
@@ -50,7 +51,6 @@ from boba.toolrun.injected import InjectedConfig
 from boba.toolrun.process import ProcessLauncherConfig, ProcessToolCaller
 from boba.toolrun.stream_calls import (
     LocalDagService,
-    StreamCallKind,
     StreamChannelFields,
     StreamGroupsConfig,
     WorkflowTool,
@@ -114,7 +114,9 @@ class ChannelStand:
             stderr_tail_bytes=8192,
             kill_grace_sec=0.5,
         )
-        launcher = RecordingLauncher(ProcessToolCaller("stream-channels", cfg))
+        launcher = RecordingLauncher(
+            ProcessToolCaller("stream-channels", cfg, TEST_CONTEXTS)
+        )
         self._launcher = launcher
 
         payloads = (
@@ -388,7 +390,7 @@ class TestSeparateCallsOfOneResponse:
         )
 
         error = _error(replies["call_0"])
-        assert error.error_kind == StreamCallKind.PLAN_REFUSED, error.llm_view()
+        assert error.error_kind == StreamFailureKind.PLAN_REFUSED, error.llm_view()
         assert replies["call_1"].status == "success", replies["call_1"].content
 
 
@@ -488,7 +490,7 @@ class TestModelWiresStreams:
 
         error = _error(replies["call_0"])
         assert "channel 'rows' has two writers" in error.llm_view()
-        assert error.error_kind == StreamCallKind.PLAN_REFUSED
+        assert error.error_kind == StreamFailureKind.PLAN_REFUSED
         assert not (tmp_path / "never").exists()
 
     async def test_malformed_workflow_is_refused_with_the_field(
@@ -507,7 +509,7 @@ class TestModelWiresStreams:
         )
 
         error = _error(replies["call_0"])
-        assert error.error_kind == StreamCallKind.PLAN_REFUSED
+        assert error.error_kind == StreamFailureKind.PLAN_REFUSED
         assert "nodes.0.tool: Field required" in error.llm_view()
 
     async def test_failed_writer_leaves_no_commit(self, tmp_path: Path) -> None:
@@ -689,7 +691,7 @@ class TestWorkflowGroups:
             ]
         )
 
-        assert _error(replies["call_0"]).error_kind == StreamCallKind.PLAN_REFUSED
+        assert _error(replies["call_0"]).error_kind == StreamFailureKind.PLAN_REFUSED
         assert not (tmp_path / "never").exists()
 
         assert replies["call_1"].status == "success"
@@ -770,8 +772,8 @@ REFUSALS: dict[str, tuple[dict[str, Any], tuple[str, ...]]] = {
             sink={"tool": "fake_sink_into_nowhere", "args": {"feed": "rows"}},
         ),
         (
-            "node 'sink' names tool 'fake_sink_into_nowhere'",
-            "expected one of the tools",
+            "fake_sink_into_nowhere (sink)",
+            "tool 'fake_sink_into_nowhere' is not available",
             "fake_collect",
         ),
     ),
@@ -843,7 +845,7 @@ class TestWorkflowRefusals:
         text = error.llm_view()
 
         assert reply.status == "error"
-        assert error.error_kind == StreamCallKind.PLAN_REFUSED, text
+        assert error.error_kind == StreamFailureKind.PLAN_REFUSED, text
         for fragment in expected:
             assert fragment in text, text
 
@@ -866,7 +868,7 @@ class TestWorkflowRefusals:
         error = _error(reply)
         text = error.llm_view()
         assert reply.status == "error"
-        assert error.error_kind == StreamCallKind.PLAN_REFUSED, text
+        assert error.error_kind == StreamFailureKind.PLAN_REFUSED, text
         assert "channel 'rows'" in text
         assert "has no readers" in text
         assert "dev_null" in text

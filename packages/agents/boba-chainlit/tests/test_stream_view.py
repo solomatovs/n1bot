@@ -44,6 +44,7 @@ from boba.chainlit.rendering.chat_view import (
 from boba.identity.run import RunRegistry
 from boba.runtime.journal import DirVault, StreamJournal
 from boba.runtime.launchers import CallSurface
+from boba.stand_core.context import TEST_CONTEXTS
 from boba.toolkit.channels import CallOutcome, ToolChannel, WrapChannel
 from boba.toolkit.stream import ToolChannelsTap
 from boba.toolrun.call_id import ToolCallIdField
@@ -88,7 +89,7 @@ class TurnScope:
     @classmethod
     def start(cls) -> None:
         cls.end()
-        cls._SCOPE = RunRegistry.open(make_context(THREAD), FakeTurn())
+        cls._SCOPE = RunRegistry.open(TEST_CONTEXTS, make_context(THREAD), FakeTurn())
         cls._SCOPE.__enter__()
 
     @classmethod
@@ -164,7 +165,9 @@ class TestJournalThroughWrapper:
 
         ToolCallIdField.attach_all([fake_bash])
         ToolRunLogger.guard_all(
-            [fake_bash], CallSurface.stream_source, CallSurface.tool_call_scope
+            [fake_bash],
+            CallSurface(TEST_CONTEXTS).stream_source,
+            CallSurface(TEST_CONTEXTS).tool_call_scope,
         )
         return fake_bash, seen
 
@@ -238,7 +241,9 @@ class TestJournalThroughWrapper:
 
         ToolCallIdField.attach_all([fake_bash])
         ToolRunLogger.guard_all(
-            [fake_bash], CallSurface.stream_source, CallSurface.tool_call_scope
+            [fake_bash],
+            CallSurface(TEST_CONTEXTS).stream_source,
+            CallSurface(TEST_CONTEXTS).tool_call_scope,
         )
 
         async def scenario() -> None:
@@ -281,7 +286,9 @@ class TestJournalThroughWrapper:
 
         ToolCallIdField.attach_all([fake_bash])
         ToolRunLogger.guard_all(
-            [fake_bash], CallSurface.stream_source, CallSurface.tool_call_scope
+            [fake_bash],
+            CallSurface(TEST_CONTEXTS).stream_source,
+            CallSurface(TEST_CONTEXTS).tool_call_scope,
         )
 
         async def scenario() -> None:

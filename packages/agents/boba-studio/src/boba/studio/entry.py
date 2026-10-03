@@ -20,6 +20,7 @@ from boba.cancellation import StopReason
 from boba.chat.profiles import ChatProfiles
 from boba.connections.sealed import SealKeys
 from boba.db.postgres import AsyncPostgresPool
+from boba.identity.context import CallContexts
 from boba.identity.run import RunRegistry
 from boba.runtime import providers
 from boba.runtime.config import (
@@ -30,7 +31,7 @@ from boba.runtime.config import (
     StudioRuntimeConfig,
 )
 from boba.runtime.di import Container
-from boba.runtime.plugins import CoreTools
+from boba.runtime.plugins import EntryPointPlugins
 from boba.runtime.spa import BuiltSpa, DevSpa, SpaPaths
 from boba.runtime.users import UsersTable
 from boba.sandbox.zygote import ZygoteRegistry
@@ -53,9 +54,10 @@ class StudioHost:
     def build(cls, config: StudioAppConfig) -> FastAPI:
         container = Container(level="app")
         container.provide(providers.get_runtime_config, config)
-        container.provide(providers.plugin_table, CoreTools.table)
+        container.provide(providers.plugin_table, EntryPointPlugins.discover)
         container.provide(providers.app_name, AppName.STUDIO)
         container.provide(providers.seal_keys, SealKeys())
+        container.provide(providers.call_contexts, CallContexts())
         container.eager(providers.message_bus)
         container.eager(providers.stream_journal)
         container.eager(providers.kb_schema)

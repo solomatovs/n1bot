@@ -21,7 +21,7 @@ from pydantic import Field
 
 from boba.access.grants import ConnectionFilter
 from boba.connection_broker.user_connections import StoreRef
-from boba.identity.context import CallContext, Subject
+from boba.identity.context import CallContexts, Subject
 from boba.toolkit.facade import PayloadTool, tool
 from boba.toolkit.result import TableResult
 from boba.toolrun.bridge import ToolBridge
@@ -69,11 +69,12 @@ class ConnectionTools:
     Соединения и гранты на них хранит чат, поэтому эти инструменты — его
     собственные: чат собирает их здесь и отдаёт загрузчику инструментов
     рядом с плагинами (ChatPlugins) как свой сервер инструментов. Субъект
-    вызова берётся из CallContext.
+    вызова берётся из контекста вызова.
     """
 
-    def __init__(self, store_ref: StoreRef) -> None:
+    def __init__(self, store_ref: StoreRef, contexts: CallContexts) -> None:
         self._catalog = GrantedConnections(store_ref)
+        self._contexts = contexts
 
     def build(self) -> list[BaseTool]:
         """Инструменты connection_list и connection_search."""
@@ -84,6 +85,7 @@ class ConnectionTools:
 
     def _list_tool(self) -> PayloadTool:
         catalog = self._catalog
+        contexts = self._contexts
 
         @tool
         async def connection_list() -> TableResult:
@@ -91,12 +93,13 @@ class ConnectionTools:
             clickhouse, web, ...), хост и описание. Ссылка из колонки connection
             передаётся инструментам в параметр соединения как есть; вид говорит,
             какому инструменту соединение подходит."""
-            return await catalog.rows(CallContext.current().subject)
+            return await catalog.rows(contexts.subject())
 
         return connection_list
 
     def _search_tool(self) -> PayloadTool:
         catalog = self._catalog
+        contexts = self._contexts
 
         @tool
         async def connection_search(
@@ -146,6 +149,6 @@ class ConnectionTools:
                 kind=kind, name=name, host=host, description=description
             )
 
-            return await catalog.search(CallContext.current().subject, flt)
+            return await catalog.search(contexts.subject(), flt)
 
         return connection_search

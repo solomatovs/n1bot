@@ -1,13 +1,15 @@
-"""Исполнитель вызова инструмента вне хода чата: REST, планировщик.
+"""Вызов инструмента вне хода чата: REST, планировщик.
 
 Инструменты — уже собранные реестром с полной цепочкой хуков и отобранные
-под субъекта (ToolRegistry.for_headless). Исполнитель собирает ToolCall со
-служебными полями (id, intent), зовёт инструмент и разбирает ответ в
-InvokeReply. Контекст и запуск открывает вызывающий: RunRegistry.open(context).
+под субъекта (ToolRegistry.for_headless). ToolInvoker собирает ToolCall со
+служебными полями (id, intent) и исполняет его тем же исполнителем, что и
+чат: DAG из одного узла в DagRunner. Контекст и запуск открывает
+вызывающий: RunRegistry.open.
 
 Ошибки:
 ToolUnavailableError — инструмента нет среди видимых субъекту вне чата.
-ToolContractError — инструмент вернул не ToolMessage.
+StreamPlanError, DagRunError — вызов не переводится в план либо инструмент
+    ответил не сообщением с результатом.
 """
 
 from __future__ import annotations
@@ -15,78 +17,40 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
-from langchain_core.messages import ToolCall, ToolMessage
+from langchain_core.messages import ToolCall
 from langchain_core.runnables.config import var_child_runnable_config
 from langchain_core.tools import BaseTool
-from pydantic import BaseModel, ConfigDict
 
 from boba.identity.context import Subject
 from boba.toolkit.calls import CallIdPrefix, ToolIntent
-from boba.toolkit.failure import (
-    InvokeErrorKind,
-    ToolContractError,
-    ToolUnavailableError,
-)
-from boba.toolkit.result import ErrorResult, ToolArtifact, ToolResult
+from boba.toolkit.dag import DagNode, DagSpec
+from boba.toolkit.failure import ToolUnavailableError
+from boba.toolrun.dag_run import DagRunner, NodeOutcome
 from boba.toolrun.registry import ToolRegistry
+from boba.toolrun.stream_calls import StreamGroupsConfig
 
-__all__ = [
-    "InvokeReply",
-    "ToolInvoker",
-]
-
-
-class InvokeReply(BaseModel):
-    """Ответ инструмента, разобранный один раз: сообщение и модель результата."""
-
-    model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)
-
-    message: ToolMessage
-    result: ToolResult
-
-    @classmethod
-    def of(cls, message: ToolMessage) -> InvokeReply:
-        result = ToolArtifact.revive(message.artifact)
-        if result is None:
-            result = ErrorResult(
-                message=str(message.content), error_kind=InvokeErrorKind.NO_RESULT
-            )
-
-        return cls(message=message, result=result)
-
-    @property
-    def content(self) -> str:
-        return str(self.message.content)
-
-    @property
-    def ok(self) -> bool:
-        if self.message.status == "error":
-            return False
-
-        return self.result.ok
-
-    @property
-    def error_text(self) -> str:
-        """Текст отказа для журнала и рёбер; пустой — вызов удался."""
-        if self.message.status == "error":
-            return self.content
-
-        if not self.result.ok:
-            return self.result.llm_view()
-
-        return ""
+__all__ = ["ToolInvoker"]
 
 
 class ToolInvoker:
-    """Вызовы инструментов, видимых субъекту вне чата."""
+    """Вызовы инструментов, видимых субъекту вне чата.
 
-    def __init__(self, tools: Mapping[str, BaseTool]) -> None:
+    Создаётся из инструментов субъекта и секции [stream_groups]; исполняет
+    вызов DagRunner'ом — другого места исполнения инструментов нет.
+    """
+
+    def __init__(
+        self, tools: Mapping[str, BaseTool], config: StreamGroupsConfig
+    ) -> None:
         self._tools = dict(tools)
+        self._runner = DagRunner(self._tools, config.timings(), config.pipe_bytes)
 
     @classmethod
     def for_subject(cls, registry: ToolRegistry, subject: Subject) -> ToolInvoker:
         """Инструменты субъекта вне чата: по его ролям и профилю."""
-        return cls(registry.for_headless(subject.roles, subject.profile))
+        tools = registry.for_headless(subject.roles, subject.profile)
+
+        return cls(tools, registry.stream_config)
 
     @property
     def names(self) -> frozenset[str]:
@@ -116,23 +80,19 @@ class ToolInvoker:
 
         return ToolCall(name=name, args=call_args, id=prefix.new_id(), type="tool_call")
 
-    async def invoke(self, call: ToolCall) -> InvokeReply:
+    async def invoke(self, call: ToolCall) -> NodeOutcome:
         """Вызов вне дерева колбэков вызывающего: из хода чата фоновые задачи
         в ленту не попадают, их итог несёт отчёт самого запуска."""
-        tool = self.tool(call["name"])
+        self.tool(call["name"])
+
+        key = str(call["id"])
+        node = DagNode(key=key, tool=call["name"], args=dict(call["args"]))
+        dag = DagSpec(name=key, version=1, nodes=[node])
 
         detached = var_child_runnable_config.set(None)
         try:
-            message = await tool.ainvoke(call)
+            outcome = await self._runner.run(dag)
         finally:
             var_child_runnable_config.reset(detached)
 
-        if not isinstance(message, ToolMessage):
-            got = type(message).__name__
-            msg = (
-                f"tool {call['name']!r} invoked as {call['id']}: expected a "
-                f"ToolMessage from ainvoke, got {got}"
-            )
-            raise ToolContractError(msg)
-
-        return InvokeReply.of(message)
+        return outcome.nodes[0]

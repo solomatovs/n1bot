@@ -27,7 +27,7 @@ from langgraph.graph.message import REMOVE_ALL_MESSAGES
 from langgraph.graph.state import CompiledStateGraph
 
 from boba.chainlit.agent.bridge import LangchainMessages, ResponseField
-from boba.chainlit.agent.flow import PrefetchCall, PrefetchStamp
+from boba.chainlit.agent.flow import PrefetchStamp
 from boba.chainlit.chat.tracing import LlmUsage
 from boba.chainlit.chat.turn import (
     ChatTurnAttachments,
@@ -42,6 +42,7 @@ from boba.chainlit.rendering.chat_view import (
     StepText,
     TurnDraft,
 )
+from boba.toolkit.calls import CallIdPrefix
 from boba.toolkit.dag import WorkflowResult
 from boba.toolkit.result import ToolArtifact
 from chainlit.data.base import BaseDataLayer
@@ -270,13 +271,15 @@ class ConversationTranscript:
     @staticmethod
     def _prepares(message: AIMessage) -> bool:
         """Сообщение подготовки: его вызовы рисуются этапом, а не ходом."""
-        marks = (PrefetchCall.marks(call.get("id")) for call in message.tool_calls)
+        for call in message.tool_calls:
+            if CallIdPrefix.PREFETCH.marks(call.get("id")):
+                return True
 
-        return any(marks)
+        return False
 
     async def _open_stage(self, message: ToolMessage) -> None:
         """Первый ответ подготовки открывает этап, остальные копят запросы."""
-        if not PrefetchCall.marks(message.tool_call_id):
+        if not CallIdPrefix.PREFETCH.marks(message.tool_call_id):
             return
 
         if self._view.stage_step is None:

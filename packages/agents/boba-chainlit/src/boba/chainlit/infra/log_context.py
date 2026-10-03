@@ -10,7 +10,6 @@ from starlette.requests import HTTPConnection
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from boba.chainlit.infra.session import current_session
-from boba.identity.context import CallContext
 from boba.identity.session import LogUserMark
 from boba.identity.token import TokenReader, TokenRejectedError
 from boba.runtime.http import RequestTokens
@@ -101,9 +100,6 @@ class UserLogContext:
     def _label(cls) -> str:
         if mark := LogUserMark.current():
             return mark
-
-        if context := CallContext.peek():
-            return context.log_mark().label
 
         # логирование не имеет права падать из-за отсутствия контекста
         try:

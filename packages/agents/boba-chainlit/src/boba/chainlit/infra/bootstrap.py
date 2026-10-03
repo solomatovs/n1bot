@@ -33,15 +33,15 @@ from boba.chainlit.infra.session import (
 )
 from boba.chainlit.infra.socket_events import SocketEvents
 from boba.chainlit.infra.stale_action import StaleActionMiddleware
-from boba.connection_broker.sealing import SentConnections
 from boba.connections.sealed import SealKeys
 from boba.db.postgres import AsyncPostgresPool
+from boba.identity.context import CallContexts
 from boba.identity.run import RunRegistry
 from boba.runtime import providers as runtime
 from boba.runtime.config import AppName
 from boba.runtime.di import Container
 from boba.runtime.http import DomainErrorMiddleware, StaleSessionMiddleware
-from boba.runtime.plugins import CoreTools
+from boba.runtime.plugins import EntryPointPlugins
 from boba.sandbox.zygote import ZygoteRegistry
 
 
@@ -314,10 +314,13 @@ def _use_di_container(app: FastAPI, c: AppConfig) -> Container:
     container = Container(level="app")
     container.provide(providers.get_app_config, c)
     container.provide(runtime.get_runtime_config, c)
-    container.provide(runtime.plugin_table, CoreTools.table)
-    container.provide(runtime.surface_hooks, ChatPlugins.surface_hooks())
+    container.provide(runtime.plugin_table, EntryPointPlugins.discover)
+    contexts = CallContexts()
+    plugins = ChatPlugins(contexts)
+    container.provide(runtime.call_contexts, contexts)
+    container.provide(runtime.surface_hooks, plugins.surface_hooks())
     container.provide(
-        runtime.own_tools, ChatPlugins.own_tools(runtime.connection_store_ref)
+        runtime.own_tools, plugins.own_tools(runtime.connection_store_ref)
     )
     container.provide(runtime.grant_check, GrantCheck.STRICT)
     container.provide(runtime.app_name, AppName.CHAINLIT)
@@ -331,7 +334,6 @@ def _use_di_container(app: FastAPI, c: AppConfig) -> Container:
     # по нему параметры-соединения получают вид; сам реестр — чистый discover
     container.provide(runtime.connection_types, runtime.connection_types())
     container.provide(runtime.seal_keys, SealKeys())
-    container.provide(providers.sent_connections, SentConnections())
     container.eager(providers.get_app_config)
     container.eager(runtime.users_table)
     container.eager(runtime.auth_service)

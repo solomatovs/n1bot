@@ -20,9 +20,7 @@ from __future__ import annotations
 
 import json
 from abc import abstractmethod
-from collections.abc import Callable, Generator, Iterator, Mapping, Sequence
-from contextlib import contextmanager
-from contextvars import ContextVar, Token
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from types import TracebackType
 from typing import Any, ClassVar, Protocol, Self
@@ -44,12 +42,9 @@ __all__ = [
     "ClippedText",
     "CollectedCall",
     "EnvelopeReply",
-    "FrameSink",
-    "FrameTap",
     "LaunchPayload",
     "LauncherError",
     "LauncherFactory",
-    "ObservedCall",
     "PayloadFailureError",
     "RowStream",
     "RunResult",
@@ -463,66 +458,6 @@ class CollectedCall:
                 continue
 
             return call.result()
-
-
-class FrameSink(Protocol):
-    """Приёмник кадров вызова на хосте: зовётся в потоке чтения кадров по
-    одному кадру, порядок — порядок канала."""
-
-    @abstractmethod
-    def take(self, frame: ToolFrame) -> None: ...
-
-
-class ObservedCall:
-    """Вызов, кадры которого хост читает сам: открыть, отдать каждый кадр
-    приёмнику, вернуть конверт.
-
-    Так хост запускает инструменты, у которых кадры — и есть результат
-    (снятие метаданных источника): накопительный путь их выбросил бы.
-    """
-
-    @staticmethod
-    def of(
-        launcher: ToolLauncher, command: ToolCommand, sink: FrameSink
-    ) -> ToolOutcome:
-        with launcher.open(command) as call:
-            call.done_sending()
-
-            for frame in call.frames():
-                sink.take(frame)
-
-            return call.result()
-
-
-class FrameTap:
-    """Contextvar-переноска приёмника кадров: вызывающий ставит приёмник перед
-    вызовом инструмента, обёртка запуска читает его в потоке тела и ведёт
-    вызов через ObservedCall. Без приёмника вызов идёт накопительно."""
-
-    _SINK: ClassVar[ContextVar[FrameSink | None]] = ContextVar(
-        "boba_frame_tap", default=None
-    )
-
-    @classmethod
-    def set(cls, sink: FrameSink) -> Token[FrameSink | None]:
-        return cls._SINK.set(sink)
-
-    @classmethod
-    def reset(cls, token: Token[FrameSink | None]) -> None:
-        cls._SINK.reset(token)
-
-    @classmethod
-    def get(cls) -> FrameSink | None:
-        return cls._SINK.get()
-
-    @classmethod
-    @contextmanager
-    def applied(cls, sink: FrameSink) -> Generator[None, None, None]:
-        token = cls.set(sink)
-        try:
-            yield
-        finally:
-            cls.reset(token)
 
 
 class LauncherFactory(Protocol):

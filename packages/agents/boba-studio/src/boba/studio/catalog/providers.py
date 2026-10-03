@@ -100,7 +100,7 @@ def catalog_service(
     names = BrokerConnectionDirectory(
         UserConnectionsService(runtime.connection_store_ref)
     )
-    ports = SyncPorts(tools, names)
+    ports = SyncPorts(tools, names, runtime.call_contexts_ref())
 
     return CatalogService(processes, connections, cfg, bus, ports)
 

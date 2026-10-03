@@ -13,6 +13,7 @@ from boba.runtime.launchers import (
     ToolLaunchers,
     ZygoteLaunchers,
 )
+from boba.stand_core.context import TEST_CONTEXTS
 from boba.toolkit.manifest import LaunchSpec
 from boba.toolrun.process import ProcessToolCaller
 
@@ -63,7 +64,7 @@ def test_process_provider_builds_process_launchers(tmp_path: Path) -> None:
     assert isinstance(launchers, ProcessLaunchers)
 
     launchers.probe()
-    launcher = launchers.launcher_of(LaunchSpec(section="fake"))
+    launcher = launchers.launcher_of(LaunchSpec(section="fake"), TEST_CONTEXTS)
 
     assert isinstance(launcher, ProcessToolCaller)
 

@@ -20,6 +20,7 @@ from boba.krb.seal import SsoTickets
 from boba.messaging import MemoryMessageBus
 from boba.messaging.bus import ListenerState, StaticBusWatch
 from boba.runtime.refs import RuntimeRefs
+from boba.stand_core.context import TEST_CONTEXTS
 from boba.toolrun.registry import ToolRegistry
 
 __all__ = ["StandRefs"]
@@ -59,6 +60,7 @@ class StandRefs:
             connection_store=store,
             connection_types=ConnectionTypes.discover,
             credentials=credentials,
+            contexts=TEST_CONTEXTS,
             seal_keys=SealKeys(),
             live_locks=lambda: MemoryLiveLocks(cls.NAME, cls.LOCK_TTL_SEC),
             heartbeat_sec=cls.HEARTBEAT_SEC,
@@ -72,14 +74,6 @@ class StandRefs:
             f"resolving the tool registry: it is not part of the {StandRefs.NAME} stand"
         )
         raise ServiceDisabledError("tool", msg)
-
-    @staticmethod
-    def _no_store() -> ConnectionStore:
-        msg = (
-            f"resolving the connection store: it is not part of the "
-            f"{StandRefs.NAME} stand"
-        )
-        raise ServiceDisabledError("connections", msg)
 
     @staticmethod
     def _disabled_store() -> ConnectionStore:

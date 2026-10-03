@@ -17,8 +17,8 @@ from chainlit_stand import (
 from pydantic import ValidationError
 
 from boba.chainlit.domain.context import ChatCallContext, ChatSurface
+from boba.chainlit.rendering.mount import ChatMount
 from boba.identity.context import (
-    CallContext,
     ContextKind,
     HumanInitiator,
     LlmInitiator,
@@ -27,6 +27,7 @@ from boba.identity.context import (
 )
 from boba.identity.errors import AuthenticationError, RefusalError
 from boba.identity.session import LoginTemplate, LogUserMark
+from boba.stand_core.context import TEST_CONTEXTS
 
 THREAD = "55555555-5555-5555-5555-555555555555"
 
@@ -39,26 +40,26 @@ def chainlit_context() -> None:
 class TestCurrent:
     def test_outside_context_is_a_refusal(self) -> None:
         with pytest.raises(RefusalError) as caught:
-            CallContext.current()
+            TEST_CONTEXTS.current()
 
         if caught.value.kind != ContextKind.NO_CONTEXT:
             raise AssertionError(caught.value.kind)
-        if CallContext.peek() is not None:
+        if TEST_CONTEXTS.peek() is not None:
             raise AssertionError("peek outside a context must be None")
 
     def test_applied_sets_context_and_log_mark_for_the_block(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         context = use_context(monkeypatch, thread_id=THREAD, login="ivanov")
-        CallContext.reset()
+        TEST_CONTEXTS.reset()
 
-        with context.applied():
-            if CallContext.current() is not context:
+        with TEST_CONTEXTS.applied(context):
+            if TEST_CONTEXTS.current() is not context:
                 raise AssertionError("context inside the block")
             if LogUserMark.current() != f"ivanov {THREAD[:8]}":
                 raise AssertionError(LogUserMark.current())
 
-        if CallContext.peek() is not None:
+        if TEST_CONTEXTS.peek() is not None:
             raise AssertionError("context must be gone after the block")
         if LogUserMark.current() != "":
             raise AssertionError("log mark must be gone after the block")
@@ -66,7 +67,7 @@ class TestCurrent:
     def test_subject_is_the_access_facts(self, monkeypatch: pytest.MonkeyPatch) -> None:
         use_context(monkeypatch, thread_id=THREAD, roles=("ADM",), profile="general")
 
-        subject = CallContext.current_subject()
+        subject = TEST_CONTEXTS.subject()
         if subject.roles != frozenset({"ADM"}) or subject.profile != "general":
             raise AssertionError(subject)
         if subject.user_key != str(UUID(int=7)):
@@ -78,7 +79,7 @@ class TestChatContext:
         use_context(monkeypatch, thread_id=THREAD)
 
         with pytest.raises(RefusalError) as caught:
-            ChatCallContext.require()
+            ChatMount(TEST_CONTEXTS).chat_context()
 
         if caught.value.kind != ContextKind.CHAT_ONLY:
             raise AssertionError(caught.value.kind)
@@ -88,7 +89,9 @@ class TestChatContext:
     ) -> None:
         use_session(monkeypatch, user_id=str(UUID(int=7)), thread_id=THREAD)
 
-        context = ChatCallContext.require()
+        context = TEST_CONTEXTS.current()
+        if not isinstance(context, ChatCallContext):
+            raise AssertionError(f"session context is a chat context: {context!r}")
         if not isinstance(context.surface, ChatSurface):
             raise AssertionError("chat context carries a surface")
 

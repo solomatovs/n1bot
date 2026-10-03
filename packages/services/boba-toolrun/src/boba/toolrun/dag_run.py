@@ -27,7 +27,6 @@ from collections.abc import Iterator, Mapping, Sequence
 from typing import Literal
 
 from langchain_core.messages import ToolCall, ToolMessage
-from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import BaseTool
 from pydantic import BaseModel, ConfigDict
 
@@ -73,6 +72,23 @@ class NodeOutcome(BaseModel):
 
     def failed(self) -> bool:
         return isinstance(self.artifact, FailureResult)
+
+    def ok(self) -> bool:
+        """Вызов дошёл до тела, и тело вернуло удачный результат."""
+        if self.errored:
+            return False
+
+        return self.artifact.ok
+
+    def error_text(self) -> str:
+        """Текст отказа для журнала; пустой — вызов удался."""
+        if self.errored:
+            return self.content
+
+        if not self.artifact.ok:
+            return self.artifact.llm_view()
+
+        return ""
 
     def message(self, tool_call_id: str) -> ToolMessage:
         """Итог узла сообщением инструмента для модели."""
@@ -138,10 +154,9 @@ class DagOutcome(BaseModel):
 
 
 class DagHandle:
-    """Запущенный DAG: итог каждого узла по готовности и общий итог.
+    """Запущенный DAG: общий итог и остановка.
 
-    Отдаёт его DagRunner.start; чат ждёт по ключу узла (tool_call_id) ответ
-    для модели, запуск без модели ждёт outcome целиком.
+    Отдаёт его DagRunner.start; вызывающий ждёт outcome либо гасит узлы.
     """
 
     def __init__(
@@ -149,15 +164,6 @@ class DagHandle:
     ) -> None:
         self._dag = dag
         self._tasks = dict(tasks)
-
-    async def result(self, key: str) -> NodeOutcome:
-        """Итог узла key; ждёт его конца."""
-        task = self._tasks.get(key)
-        if task is None:
-            msg = f"dag {self._dag.name!r} v{self._dag.version}: no node {key!r}"
-            raise DagRunError(msg)
-
-        return await task
 
     async def outcome(self) -> DagOutcome:
         """Итог всего DAG: ждёт конца каждого узла."""
@@ -191,11 +197,9 @@ class DagRunner:
         self._planner = DagPlanner(ToolStreamSpecs.of, pipe_bytes)
         self._failures = FailurePacker()
 
-    async def run(
-        self, dag: DagSpec, config: RunnableConfig | None = None
-    ) -> DagOutcome:
+    async def run(self, dag: DagSpec) -> DagOutcome:
         """Исполнить DAG и дождаться всех узлов; обрыв ожидания гасит узлы."""
-        handle = self.start(dag, config)
+        handle = self.start(dag)
 
         try:
             return await handle.outcome()
@@ -203,16 +207,13 @@ class DagRunner:
             handle.cancel()
             raise
 
-    def start(self, dag: DagSpec, config: RunnableConfig | None = None) -> DagHandle:
-        """План по описанию; узлы стартуют задачами сразу.
-
-        config — конфиг langchain вызова (callbacks ленты), с ним зовётся
-        каждый инструмент; без него — конфиг контекста.
-        """
-        plans = self._planner.plan(dag)
-
+    def start(self, dag: DagSpec) -> DagHandle:
+        """План по описанию; узлы стартуют задачами сразу. Инструменты
+        зовутся с конфигом langchain из контекста вызывающего."""
         for node in dag.nodes:
             self._tool_of(node)
+
+        plans = self._planner.plan(dag)
 
         tasks: dict[str, asyncio.Task[NodeOutcome]] = {}
         for planned in plans:
@@ -224,7 +225,7 @@ class DagRunner:
             for member in planned.nodes():
                 node = dag.node(member.key)
                 tasks[node.key] = asyncio.create_task(
-                    self._run_node(group, node, config),
+                    self._run_node(group, node),
                     name=f"dag {dag.name} v{dag.version}: {node.key}",
                 )
 
@@ -241,9 +242,7 @@ class DagRunner:
 
         return tool
 
-    async def _run_node(
-        self, group: StreamGroupRun, node: DagNode, config: RunnableConfig | None
-    ) -> NodeOutcome:
+    async def _run_node(self, group: StreamGroupRun, node: DagNode) -> NodeOutcome:
         """Вызов узла под ручкой группы; его итог группа узнаёт всегда.
 
         Сбой до открытия вызова срывает группу. Узел, открытый обёрткой
@@ -252,7 +251,7 @@ class DagRunner:
         """
         token = PipelineSlot.set(group.slot(node.key))
         try:
-            outcome = await self._invoke(node, config)
+            outcome = await self._invoke(node)
         finally:
             PipelineSlot.reset(token)
 
@@ -264,9 +263,7 @@ class DagRunner:
 
         return outcome
 
-    async def _invoke(
-        self, node: DagNode, config: RunnableConfig | None
-    ) -> NodeOutcome:
+    async def _invoke(self, node: DagNode) -> NodeOutcome:
         """Вызов инструмента узла; исключение вызова — итог-ошибка узла."""
         tool = self._tool_of(node)
         call = ToolCall(
@@ -274,7 +271,7 @@ class DagRunner:
         )
 
         try:
-            message = await tool.ainvoke(call, config)
+            message = await tool.ainvoke(call)
         except Exception as exc:
             return self._failed(node, self._failures.pack(exc))
 

@@ -33,7 +33,7 @@ from boba.connections.sealed import ConnectionRefs
 from boba.connections.stored import GrantTarget, StoredRole
 from boba.db.postgres import AsyncPostgresPool
 from boba.db.postgres.connection import PasswordAuth, PostgresConfig
-from boba.identity.context import CallContext, ContextKind
+from boba.identity.context import ContextKind
 from boba.identity.errors import RefusalError
 from boba.identity.session import UserMetadataField
 from boba.kerberos import DelegatedAuth, DelegationMode, KeytabAuth
@@ -44,6 +44,7 @@ from boba.runtime.refresh import BusRefreshSignal
 from boba.sandbox.zygote import ZygoteRegistry
 from boba.stand.connections import StandUserConnections
 from boba.stand.site import Stand
+from boba.stand_core.context import TEST_CONTEXTS
 from boba.tool.pg.tools import PgToolConfig
 from boba.tool.web.tools import WebToolsConfig
 from boba.toolkit.entry import ToolMain
@@ -164,7 +165,7 @@ def pg_tools(
     StandUserConnections(
         lambda: store,
         lambda: KerberosCredentialSource(
-            sso[0], BusRefreshSignal(lambda: MemoryMessageBus("test"))
+            sso[0], BusRefreshSignal(lambda: MemoryMessageBus("test"), TEST_CONTEXTS)
         ),
         ConnectionTypes.discover,
     ).bind_all(functions)
@@ -445,7 +446,7 @@ def web_tools(
     StandUserConnections(
         lambda: store,
         lambda: KerberosCredentialSource(
-            sso[0], BusRefreshSignal(lambda: MemoryMessageBus("test"))
+            sso[0], BusRefreshSignal(lambda: MemoryMessageBus("test"), TEST_CONTEXTS)
         ),
         ConnectionTypes.discover,
     ).bind_all(functions)
@@ -496,7 +497,7 @@ async def test_call_outside_session_is_refused(catalog: Any) -> None:
     from chainlit.context import init_http_context
 
     init_http_context(user=None)
-    CallContext.reset()
+    TEST_CONTEXTS.reset()
 
     with pytest.raises(RefusalError) as caught:
         await Call.result(catalog)

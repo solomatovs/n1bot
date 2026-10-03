@@ -359,11 +359,6 @@ class ToolStreams:
         return StreamJournalHub.get()
 
     @classmethod
-    def live_scopes(cls) -> frozenset[str]:
-        """Треды с живыми потоками: их нельзя удалять инструментом уборки."""
-        return RunRegistry.live_scopes()
-
-    @classmethod
     def mark_streamable(cls, names: Iterable[str]) -> None:
         cls._STREAMABLE.update(names)
 

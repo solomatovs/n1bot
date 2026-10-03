@@ -36,6 +36,7 @@ from boba.db.postgres.catalog import CatalogStoreConfig
 from boba.identity.context import Subject
 from boba.stand.fake_sync import FakeConnection, fake_pg_snapshot
 from boba.stand.tools import STREAM_CONFIG
+from boba.stand_core.context import TEST_CONTEXTS
 from boba.toolkit.entry import ToolMain
 from boba.toolkit.facade import PayloadTool
 from boba.toolkit.wrap import ToolProcessWrap
@@ -50,7 +51,7 @@ class NoSyncTools(SyncTools):
     """Реализация SyncTools без инструментов."""
 
     async def invoker(self, subject: Subject) -> ToolInvoker:
-        return ToolInvoker({})
+        return ToolInvoker({}, STREAM_CONFIG)
 
 
 class StubSyncPorts(SyncPorts):
@@ -58,7 +59,8 @@ class StubSyncPorts(SyncPorts):
     таблицы видны всем."""
 
     def __init__(self, connections: Iterable[ConnectionInfo] = ()) -> None:
-        super().__init__(NoSyncTools(), KnownConnectionDirectory(connections, None))
+        directory = KnownConnectionDirectory(connections, None)
+        super().__init__(NoSyncTools(), directory, TEST_CONTEXTS)
 
 
 class FakeConnections:
@@ -104,6 +106,7 @@ class FakeSyncRegistry:
                     "kill_grace_sec": 0.5,
                 }
             ),
+            TEST_CONTEXTS,
         )
 
         copies: list[PayloadTool] = []
@@ -216,4 +219,4 @@ class FakeSyncPorts(SyncPorts):
         async def registry_ref() -> ToolRegistry:
             return registry
 
-        super().__init__(RegistrySyncTools(registry_ref), directory)
+        super().__init__(RegistrySyncTools(registry_ref), directory, TEST_CONTEXTS)

@@ -201,16 +201,6 @@ class ToolAccess:
 
         return self._role_covers(tool_name, roles)
 
-    def allowed(
-        self,
-        tool_name: str,
-        user_roles: Iterable[str],
-        profile: str,
-    ) -> bool:
-        """Разрешён хоть где-то: в чате или вне его; где именно — decide()."""
-        decision = self.decide(tool_name, user_roles, profile)
-        return decision is not ToolAvailability.DENIED
-
     def _role_covers(self, tool_name: str, user_roles: frozenset[str]) -> bool:
         for role in user_roles:
             grant = self._roles.get(role)

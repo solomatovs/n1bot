@@ -22,6 +22,7 @@ from chainlit_stand import FakeTurn, make_context
 from boba.chainlit.infra.session import SessionContainers
 from boba.chainlit.infra.socket_events import SocketEvent, SocketEvents
 from boba.identity.run import RunRegistry
+from boba.stand_core.context import TEST_CONTEXTS
 
 pytestmark = pytest.mark.anyio
 
@@ -110,7 +111,7 @@ class TestLoadingSurvivesReconnect:
         """Реконнект при живом ходе: за task_end приходит task_start."""
         connected = await _handler(SocketEvent.CONNECTED)
 
-        with RunRegistry.open(make_context(THREAD), FakeTurn()):
+        with RunRegistry.open(TEST_CONTEXTS, make_context(THREAD), FakeTurn()):
             await connected(SOCKET_ID)
 
         if SocketEvent.TASK_START.value not in session.names:
@@ -145,7 +146,7 @@ class TestStopHandler:
         stop = await _handler(SocketEvent.STOP)
         monkeypatch.setattr(chainlit_config.code, "on_stop", None, raising=False)
 
-        with RunRegistry.open(make_context(THREAD), FakeTurn()):
+        with RunRegistry.open(TEST_CONTEXTS, make_context(THREAD), FakeTurn()):
             await stop(SOCKET_ID)
 
         if self.MESSAGE_EVENT in session.names:
@@ -199,7 +200,7 @@ class TestConnectionJournal:
         journal = caplog.at_level(
             logging.INFO, logger="boba.chainlit.infra.socket_events"
         )
-        with journal, RunRegistry.open(make_context(THREAD), FakeTurn()):
+        with journal, RunRegistry.open(TEST_CONTEXTS, make_context(THREAD), FakeTurn()):
             await disconnect(SOCKET_ID, reason)
 
         written = "\n".join(record.getMessage() for record in caplog.records)

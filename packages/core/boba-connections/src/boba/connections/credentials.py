@@ -20,7 +20,6 @@ from boba.connections.base import ConnectionBase
 from boba.identity.context import Credential
 from boba.kerberos import (
     DelegatedAuth,
-    KerberosAuthBase,
     KerberosPasswordAuth,
     KeytabAuth,
 )
@@ -30,11 +29,6 @@ __all__ = ["ArmedValues", "ConnectionSections", "CredentialSource"]
 
 class ConnectionSections:
     """Kerberos-секции соединений внутри произвольного значения."""
-
-    @staticmethod
-    def section_of(connection: ConnectionBase) -> KerberosAuthBase | None:
-        """Kerberos-часть соединения: где она лежит, знает само соединение."""
-        return connection.kerberos_section()
 
     @classmethod
     def needs_arming(cls, value: object) -> bool:

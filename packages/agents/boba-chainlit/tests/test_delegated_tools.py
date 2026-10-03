@@ -56,6 +56,7 @@ from boba.runtime.refresh import BusRefreshSignal
 from boba.sandbox.zygote import ZygoteRegistry
 from boba.stand.connections import StandUserConnections
 from boba.stand.site import Stand
+from boba.stand_core.context import TEST_CONTEXTS
 from boba.tool.ch.tools import ChToolConfig
 from boba.tool.pg.tools import PgToolConfig
 from boba.tool.web.tools import WebToolsConfig
@@ -251,7 +252,8 @@ class Tools:
         StandUserConnections(
             lambda: store,
             lambda: KerberosCredentialSource(
-                tickets, BusRefreshSignal(lambda: MemoryMessageBus("test"))
+                tickets,
+                BusRefreshSignal(lambda: MemoryMessageBus("test"), TEST_CONTEXTS),
             ),
             ConnectionTypes.discover,
         ).bind_all(functions)

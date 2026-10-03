@@ -25,7 +25,6 @@ from boba.chainlit.agent.flow import (
     LlmRephraser,
     PassthroughRephraser,
     PlainGraphBuilder,
-    PrefetchCall,
     PrefetchError,
     PrefetchGraphBuilder,
     PrefetchStage,
@@ -61,7 +60,7 @@ from boba.llm.chat import (
 from boba.llm.providers import LlmProviders, LlmProviderTypes
 from boba.llm.schema import SchemaReply
 from boba.stand.tools import STREAM_CONFIG
-from boba.toolkit.calls import ToolIntent
+from boba.toolkit.calls import CallIdPrefix, ToolIntent
 from boba.toolkit.result import ErrorResult, TableResult, ToolArtifact
 from boba.toolrun.cancellation import CancellableTools
 from boba.toolrun.stream_calls import LocalDagService, ToolServer, ToolServers
@@ -283,7 +282,7 @@ def _prefetch_calls(messages: Sequence[BaseMessage]) -> list[dict[str, Any]]:
 
         for call in message.tool_calls:
             call_id = call["id"]
-            if call_id and call_id.startswith(PrefetchCall.PREFIX):
+            if CallIdPrefix.PREFETCH.marks(call_id):
                 calls.append(dict(call))
 
     return calls

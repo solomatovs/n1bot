@@ -41,6 +41,7 @@ from boba.runtime.journal import DirVault, StreamJournal
 from boba.runtime.locks import PgLiveLocks
 from boba.runtime.payloads import PgPayloadStore
 from boba.runtime.turns import StaleTurnCloser
+from boba.stand_core.context import TEST_CONTEXTS
 from boba.toolkit.channels import CallOutcome, ToolChannel
 from boba.toolkit.result import MarkdownResult
 from boba.toolrun.streams import StreamPump, StreamPumps, ToolStream, ToolStreams
@@ -334,7 +335,9 @@ async def test_stream_growth_is_published_through_the_pump(
         stream.close(str(CallOutcome.FINISHED))
 
     try:
-        with RunRegistry.open(make_context(thread_id), on_stream=pumps.opened):
+        with RunRegistry.open(
+            TEST_CONTEXTS, make_context(thread_id), on_stream=pumps.opened
+        ):
             stream = ToolStreams.begin("7", thread_id, CALL, "shell")
             assert stream is not None
             await asyncio.to_thread(write_all, stream)

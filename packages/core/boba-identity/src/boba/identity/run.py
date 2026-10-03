@@ -29,7 +29,7 @@ from typing import Any, ClassVar, Protocol
 from pydantic import BaseModel, ConfigDict, Field
 
 from boba.cancellation import RunCancellation, StopReason
-from boba.identity.context import CallContext
+from boba.identity.context import CallContext, CallContexts
 from boba.identity.errors import FailureReport, RefusalError
 from boba.toolkit.channels import CallOutcome
 
@@ -141,6 +141,7 @@ class RunRegistry:
     @contextmanager
     def open(
         cls,
+        contexts: CallContexts,
         context: CallContext,
         port: RunPort | None = None,
         on_stream: StreamObserver | None = None,
@@ -151,7 +152,7 @@ class RunRegistry:
         журнала переживают запуск, живые объекты нет. on_stream узнаёт о
         каждом открытом журнале из loop'а, в котором открыт запуск.
         """
-        with context.applied(), context.cancellation.published():
+        with contexts.applied(context), context.cancellation.published():
             registry = cls(context, port, on_stream)
             cls._register(registry)
             try:

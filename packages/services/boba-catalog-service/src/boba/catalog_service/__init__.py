@@ -68,7 +68,6 @@ from boba.catalog_service.service import CatalogService
 from boba.catalog_service.sync_runner import (
     ConnectionDirectory,
     RegistrySyncTools,
-    SyncCaller,
     SyncPorts,
     SyncRunner,
     SyncSetupError,
@@ -121,7 +120,6 @@ __all__ = [
     "SnapshotKindMismatchError",
     "SnapshotRejectedError",
     "Sync",
-    "SyncCaller",
     "SyncClosedError",
     "SyncNotFoundError",
     "SyncOutcomeError",

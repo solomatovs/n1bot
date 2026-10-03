@@ -40,7 +40,7 @@ class ToolAccessGuard:
             subject = self._subject_source()
             roles = frozenset(subject.roles)
             profile = subject.profile
-            if self._access.allowed(name, roles, profile):
+            if self._access.decide(name, roles, profile).headless:
                 return
 
             shown_roles = ", ".join(sorted(roles))

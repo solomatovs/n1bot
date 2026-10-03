@@ -37,7 +37,9 @@ from boba.chainlit.infra.config import AppConfig
 from boba.chainlit.infra.plugins import ChatPlugins
 from boba.chainlit.infra.providers import build_history_view
 from boba.config import bind
+from boba.connection_broker.sealing import SealingToolServer, SentConnections
 from boba.connection_broker.store import ConnectionsConfig, ConnectionStore
+from boba.connection_broker.user_connections import ArmedConnections
 from boba.connections.manifest import ConnectionTypes
 from boba.connections.sealed import ConnectionRef
 from boba.connections.stored import GrantTarget
@@ -54,11 +56,10 @@ from boba.db.postgres.address import (
 from boba.db.postgres.connection import PostgresConfig
 from boba.runtime.config import AppLayers, ConfigLocator
 from boba.sandbox import ZygoteRegistry
-from boba.stand.connections import StandSealedServer
+from boba.stand.connections import StandUserConnections
 from boba.stand.refs import StandRefs
 from boba.stand.site import Stand
-from boba.stand.tools import STREAM_CONFIG
-from boba.stand_core.context import use_context
+from boba.stand_core.context import TEST_CONTEXTS, use_context
 from boba.tool.describer.address import Addresses, EntityAddress
 from boba.tool.describer.edges import EdgeKind, EdgeListColumn
 from boba.tool.describer.nodes import NodeListColumn
@@ -69,7 +70,7 @@ from boba.toolkit.result import (
     TableResult,
     ToolArtifact,
 )
-from boba.toolrun.stream_calls import LocalDagService, ToolServer
+from boba.toolrun.stream_calls import ToolServer
 
 _REPO = Path(__file__).resolve().parents[4]
 _SANDBOX_STAGING = _REPO / "build" / "chainlit" / "src" / "sandbox"
@@ -267,12 +268,15 @@ def session_service(
     """Порт инструментов профиля: боевой загрузчик над хранилищем стенда,
     исполнитель и клиент, запечатывающий ссылки на соединения."""
     refs = StandRefs.of(StoreHolder.current, lambda: None)
-    registry = ChatPlugins.load(flow_raw, refs)
+    registry = ChatPlugins(TEST_CONTEXTS).load(flow_raw, refs)
     roles = frozenset(app_config.roles)
     tools = registry.for_session(roles, PROFILE)
-    executor = LocalDagService(tools, STREAM_CONFIG, registry.node_args)
-
-    return StandSealedServer(refs).over(executor)
+    return SealingToolServer(
+        registry.server(tools),
+        ArmedConnections(refs.connection_store, refs.credentials, refs.contexts),
+        SentConnections(),
+        StandUserConnections.TTL,
+    )
 
 
 @pytest.fixture

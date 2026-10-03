@@ -14,9 +14,9 @@ from omegaconf import DictConfig, OmegaConf
 from pydantic import BaseModel
 
 from boba.chainlit.infra.plugins import ChatPlugins
-from boba.connection_broker.store import ConnectionStore
 from boba.sandbox import ZygoteRegistry
 from boba.stand.refs import StandRefs
+from boba.stand_core.context import TEST_CONTEXTS
 from boba.tool.pg.tools import TOOLS as PG_TOOLS
 from boba.tool.pg.tools import pg_query
 from boba.toolrun.call_id import ToolCallIdField
@@ -44,15 +44,6 @@ def reload_config(raw_config: DictConfig) -> DictConfig:
     return copied
 
 
-def _no_registry() -> None:
-    return None
-
-
-def _no_store() -> ConnectionStore:
-    msg = "connection store is not used by the reload test"
-    raise RuntimeError(msg)
-
-
 def _schema_fields(tool: object) -> set[str]:
     schema = getattr(tool, "args_schema", None)
     if not (isinstance(schema, type)):
@@ -63,8 +54,8 @@ def _schema_fields(tool: object) -> set[str]:
 
 
 def test_repeated_load_serves_wrapped_copies(reload_config: DictConfig) -> None:
-    first = ChatPlugins.load(reload_config, StandRefs.of(_no_store, _no_registry))
-    second = ChatPlugins.load(reload_config, StandRefs.of(_no_store, _no_registry))
+    first = ChatPlugins(TEST_CONTEXTS).load(reload_config, StandRefs.none())
+    second = ChatPlugins(TEST_CONTEXTS).load(reload_config, StandRefs.none())
 
     if [t.name for t in first.tools] != [t.name for t in second.tools]:
         raise AssertionError("[t.name for t in first.tools] == [t.name for t in secon…")
@@ -79,8 +70,8 @@ def test_repeated_load_serves_wrapped_copies(reload_config: DictConfig) -> None:
 
 
 def test_module_singletons_stay_pristine(reload_config: DictConfig) -> None:
-    ChatPlugins.load(reload_config, StandRefs.of(_no_store, _no_registry))
-    ChatPlugins.load(reload_config, StandRefs.of(_no_store, _no_registry))
+    ChatPlugins(TEST_CONTEXTS).load(reload_config, StandRefs.none())
+    ChatPlugins(TEST_CONTEXTS).load(reload_config, StandRefs.none())
 
     for tool in PG_TOOLS:
         if ToolCallIdField.NAME not in _schema_fields(tool):

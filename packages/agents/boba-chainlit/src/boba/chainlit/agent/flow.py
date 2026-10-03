@@ -23,7 +23,6 @@ from abc import ABC, abstractmethod
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, ClassVar, Protocol
-from uuid import uuid4
 
 from langchain.agents import create_agent
 from langchain.agents.middleware import AgentMiddleware, AgentState, ToolCallRequest
@@ -45,7 +44,7 @@ from typing_extensions import override
 from boba.chainlit.agent.bridge import ResponseField
 from boba.llm.chat import LlmError, ToolSpec
 from boba.llm.schema import SchemaReply
-from boba.toolkit.calls import ToolIntent
+from boba.toolkit.calls import CallIdPrefix, ToolIntent
 from boba.toolkit.result import FailureResult
 from boba.toolkit.timing import Elapsed
 from boba.toolrun.stream_calls import ToolServer
@@ -58,7 +57,6 @@ __all__ = [
     "LlmRephraser",
     "PassthroughRephraser",
     "PlainGraphBuilder",
-    "PrefetchCall",
     "PrefetchError",
     "PrefetchGraphBuilder",
     "PrefetchMiddleware",
@@ -182,24 +180,6 @@ class RephrasingsParser:
             return
 
         found.append(text)
-
-
-class PrefetchCall:
-    """Идентификатор вызова подготовки: по нему его узнаёт сборка ленты."""
-
-    PREFIX: ClassVar[str] = "prefetch-"
-
-    @classmethod
-    def new_id(cls) -> str:
-        return f"{cls.PREFIX}{uuid4().hex}"
-
-    @classmethod
-    def marks(cls, call_id: str | None) -> bool:
-        """Вызов сделан подготовкой, а не моделью."""
-        if not call_id:
-            return False
-
-        return call_id.startswith(cls.PREFIX)
 
 
 class PrefetchStamp:
@@ -383,7 +363,7 @@ class PrefetchMiddleware(AgentMiddleware[AgentState[Any], Any, Any]):
                 call = ToolCall(
                     name=tool,
                     args={"query": query, ToolIntent.NAME: query},
-                    id=PrefetchCall.new_id(),
+                    id=CallIdPrefix.PREFETCH.new_id(),
                     type="tool_call",
                 )
                 calls.append(call)

@@ -41,6 +41,7 @@ from boba.messaging import MemoryMessageBus
 from boba.runtime.refresh import BusRefreshSignal
 from boba.stand.connections import StandUserConnections
 from boba.stand.site import Stand
+from boba.stand_core.context import TEST_CONTEXTS
 from boba.tool.pg.tools import PgToolConfig
 from boba.tool.web.tools import WebToolsConfig
 from boba.toolkit.facade import Injected, UserConnection
@@ -318,7 +319,8 @@ class Guarded:
         StandUserConnections(
             lambda: store,
             lambda: KerberosCredentialSource(
-                tickets, BusRefreshSignal(lambda: MemoryMessageBus("test"))
+                tickets,
+                BusRefreshSignal(lambda: MemoryMessageBus("test"), TEST_CONTEXTS),
             ),
             ConnectionTypes.discover,
         ).bind_all([tool])

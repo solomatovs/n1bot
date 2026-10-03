@@ -114,11 +114,17 @@ class CallIdPrefix(StrEnum):
     """Префикс id вызова по источнику: отличим от id, которые выдаёт модель."""
 
     API = "api-"
-    WORKFLOW = "wf-"
-    PIPELINE = "pl-"
+    PREFETCH = "prefetch-"
 
     def new_id(self) -> str:
         return f"{self.value}{uuid4().hex}"
+
+    def marks(self, call_id: str | None) -> bool:
+        """Идентификатор выдан этим источником, а не моделью."""
+        if not call_id:
+            return False
+
+        return call_id.startswith(self.value)
 
 
 class FieldPlacement(StrEnum):

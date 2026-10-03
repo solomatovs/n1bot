@@ -16,6 +16,7 @@ from boba.identity.context import (
 )
 from boba.runtime.launchers import CallSurface
 from boba.sandbox import BindSpec
+from boba.stand_core.context import TEST_CONTEXTS
 
 pytestmark = pytest.mark.anyio
 
@@ -39,16 +40,18 @@ class TestSandboxPathVars:
     """Контекст вызова отдаёт значения, которыми профиль разворачивает пути."""
 
     async def test_context_fills_both_variables(self) -> None:
-        with _context(UUID(int=18)).applied():
-            values = CallSurface.sandbox_path_vars()
+        with TEST_CONTEXTS.applied(_context(UUID(int=18))):
+            values = CallSurface(TEST_CONTEXTS).sandbox_path_vars()
 
         if values != {"user_id": str(UUID(int=18)), "thread_id": THREAD_ID}:
             raise AssertionError(f"оба значения из контекста, дано {values!r}")
 
     async def test_workspace_path_renders_from_the_context(self) -> None:
         """Путь образа собирается целиком: это и падало у bash."""
-        with _context(UUID(int=18)).applied():
-            rendered = BindSpec.parse(WORKSPACE).render(CallSurface.sandbox_path_vars())
+        with TEST_CONTEXTS.applied(_context(UUID(int=18))):
+            rendered = BindSpec.parse(WORKSPACE).render(
+                CallSurface(TEST_CONTEXTS).sandbox_path_vars()
+            )
 
         if rendered.host != f"/app/boba/data/workspace/{UUID(int=18)}.ext4":
             raise AssertionError(f"host подставлен, дано {rendered.host!r}")
@@ -59,10 +62,10 @@ class TestSandboxPathVars:
     async def test_each_user_gets_its_own_image(self) -> None:
         hosts: list[str] = []
         for user_id in (UUID(int=18), UUID(int=42)):
-            with _context(user_id).applied():
+            with TEST_CONTEXTS.applied(_context(user_id)):
                 hosts.append(
                     BindSpec.parse(WORKSPACE)
-                    .render(CallSurface.sandbox_path_vars())
+                    .render(CallSurface(TEST_CONTEXTS).sandbox_path_vars())
                     .host
                 )
 
@@ -74,8 +77,10 @@ class TestSandboxPathVars:
 
     async def test_without_context_there_are_no_values(self) -> None:
         """Вне контекста значений нет: профиль с переменными откажет рендером."""
-        if CallSurface.sandbox_path_vars() != {}:
+        if CallSurface(TEST_CONTEXTS).sandbox_path_vars() != {}:
             raise AssertionError("вне контекста переменных быть не должно")
 
         with pytest.raises(RuntimeError, match="user_id"):
-            BindSpec.parse(WORKSPACE).render(CallSurface.sandbox_path_vars())
+            BindSpec.parse(WORKSPACE).render(
+                CallSurface(TEST_CONTEXTS).sandbox_path_vars()
+            )
