@@ -18,18 +18,18 @@ from probe_stand import (
 )
 from pydantic import SecretStr
 
-from boba.connection_broker.sealed import EncryptionKeyTool, SealedConnectionParams
+from boba.connection_broker.sealed import SealedConnectionParams
 from boba.connections.base import ConnectionBase
 from boba.connections.marks import ConnectionRefusal
 from boba.connections.sealed import (
     ConnectionSeal,
     SealedConnection,
+    SealFeature,
     SealKey,
     SealKeys,
 )
 from boba.identity.errors import RefusalError
 from boba.toolkit.entry import ToolArgv
-from boba.toolkit.result import TableResult
 from boba.toolkit.types import SecretReveal
 from boba.toolrun.wrapping import ToolSchema
 
@@ -91,8 +91,6 @@ class TestSchemaShownToTheModel:
         description = str(field.description)
         if "connection_list" not in description:
             raise AssertionError(f"описание ведёт к connection_list: {description}")
-        if EncryptionKeyTool.NAME not in description:
-            raise AssertionError(f"описание ведёт к ключу: {description}")
 
 
 class TestSealedValueReachesTheBody:
@@ -130,12 +128,12 @@ class TestSealedValueReachesTheBody:
 
 class TestRefusals:
     async def test_plain_reference_asks_to_seal(self) -> None:
-        refused = await _refusal(SealKeys(), "conn:probe:main")
+        refused = await _refusal(SealKeys(), "conn://probe/main")
 
         if refused.kind != ConnectionRefusal.NOT_SEALED:
             raise AssertionError(f"kind отказа: {refused.kind}")
-        if EncryptionKeyTool.NAME not in str(refused):
-            raise AssertionError(f"подсказка про ключ: {refused}")
+        if "connection_list" not in str(refused):
+            raise AssertionError(f"подсказка повторить со ссылкой: {refused}")
 
     async def test_value_for_an_old_key_asks_for_a_new_one(self) -> None:
         previous = SealKeys().public()
@@ -144,8 +142,8 @@ class TestRefusals:
 
         if refused.kind != ConnectionRefusal.SEAL_KEY_UNKNOWN:
             raise AssertionError(f"kind отказа: {refused.kind}")
-        if EncryptionKeyTool.NAME not in str(refused):
-            raise AssertionError(f"подсказка про новый ключ: {refused}")
+        if "current key of the server" not in str(refused):
+            raise AssertionError(f"отказ велит клиенту взять новый ключ: {refused}")
 
     async def test_value_of_another_user_is_refused(self) -> None:
         keys = SealKeys()
@@ -179,23 +177,23 @@ class TestRefusals:
             raise AssertionError(f"отказ называет оба вида: {refused}")
 
 
-class TestEncryptionKeyTool:
-    async def test_tool_hands_out_the_key_as_a_table_row(self) -> None:
+class TestDeclaredFeature:
+    def test_feature_carries_the_key_a_client_can_seal_with(self) -> None:
         keys = SealKeys()
-        tool = EncryptionKeyTool(keys).build()
+        params = SealedConnectionParams(keys, lambda: TYPES)
+        params.bind_all([TOOLS.one_connection()])
 
-        message = await tool.ainvoke(
-            {"name": tool.name, "args": {}, "id": "call_key", "type": "tool_call"}
-        )
+        declared = SealFeature.model_validate(params.features()[SealFeature.ID])
 
-        artifact = message.artifact
-        if not isinstance(artifact, TableResult):
-            raise AssertionError(f"результат — обычная таблица: {artifact!r}")
+        if declared.key != keys.public():
+            raise AssertionError("возможность несёт открытый ключ исполнителя")
 
-        key = SealKey.model_validate(artifact.rows[0])
-        if key != keys.public():
-            raise AssertionError("строка таблицы — открытый ключ исполнителя")
-
-        opened = keys.open(_sealed(key, _probe("db.local")))
+        opened = keys.open(_sealed(declared.key, _probe("db.local")))
         if opened.login != LOGIN:
-            raise AssertionError("ключ из результата запечатывает для исполнителя")
+            raise AssertionError(f"запечатанное ключом возможности открылось: {opened}")
+
+    def test_server_without_connection_tools_declares_nothing(self) -> None:
+        params = SealedConnectionParams(SealKeys(), lambda: TYPES)
+
+        if params.features():
+            raise AssertionError(f"возможности нет: {params.features()}")

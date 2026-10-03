@@ -144,7 +144,7 @@ class ChannelStand:
         StreamChannelFields(STREAM_CFG).attach_all([drain])
         tools.append(drain)
 
-        self.streams = LocalDagService(tools, STREAM_CFG)
+        self.streams = LocalDagService(tools, STREAM_CFG, ())
         self.tools = tools
 
     def started(self) -> list[tuple[str, ...]]:
@@ -177,7 +177,6 @@ class ChannelStand:
         spec = GraphSpec(
             chat=ScriptedChat(messages=iter(script), disable_streaming=True),
             service=self.streams,
-            own_tools=(),
             system_prompt="wire the streams",
             checkpointer=saver,
             history=build_history_view(frozenset(names), 30),
@@ -299,38 +298,99 @@ class TestChannelSchema:
             merge["properties"]["feeds"]["description"]
         )
 
-    def test_stream_tools_reach_the_model_only_inside_workflow(
+    def test_stream_tools_reach_the_model_as_tools_of_their_own(
         self, tmp_path: Path
     ) -> None:
-        """Потоковые инструменты модели отдельно не отдаются: она видит один
-        workflow, а в схеме его узла — выбор инструмента и его аргументы."""
+        """Потоковые инструменты модель видит обычными инструментами; workflow
+        рядом с ними называет инструмент узла по имени и схем их не несёт."""
         stand = ChannelStand(tmp_path)
 
-        offered: list[str] = []
+        offered: dict[str, BaseTool] = {}
         for tool in stand.streams.tools():
-            offered.append(tool.name)
+            offered[tool.name] = tool
 
-        assert offered == ["fake_echo", WorkflowTool.NAME]
-
-        schema = _model_schema(stand.streams.tools()[-1])
-
-        variants: dict[str, Any] = {}
-        for variant in schema["properties"]["nodes"]["items"]["anyOf"]:
-            variants[variant["properties"]["tool"]["const"]] = variant
-
-        assert sorted(variants) == [
+        assert sorted(offered) == [
             "dev_null",
             "fake_collect",
+            "fake_echo",
             "fake_emit",
             "fake_merge",
             "fake_stream",
+            WorkflowTool.NAME,
         ]
-        assert sorted(variants["fake_emit"]["required"]) == ["args", "key", "tool"]
 
-        emit_args = variants["fake_emit"]["properties"]["args"]
-        assert emit_args["properties"]["out"]["type"] == "string"
-        assert "boba_tool_call_id" not in emit_args["properties"]
-        assert "$defs" not in str(schema)
+        schema = _model_schema(offered[WorkflowTool.NAME])
+        node = schema["properties"]["nodes"]["items"]
+
+        assert sorted(node["required"]) == ["args", "key", "tool"]
+        assert node["properties"]["tool"]["type"] == "string"
+        assert node["properties"]["args"]["type"] == "object"
+        assert "fake_emit" not in str(schema)
+
+
+def _call(node: Mapping[str, Any]) -> dict[str, Any]:
+    """Узел как отдельный вызов модели: имя инструмента и его аргументы."""
+    return {"name": node["tool"], "args": node["args"]}
+
+
+@pytest.mark.anyio
+class TestSeparateCallsOfOneResponse:
+    """Модель зовёт потоковые инструменты отдельными вызовами в одном ответе:
+    имена каналов связывают их в один запуск, как узлы workflow."""
+
+    async def test_separate_calls_are_wired_by_channel_names(
+        self, tmp_path: Path
+    ) -> None:
+        stand = ChannelStand(tmp_path)
+
+        replies = await stand.turn(
+            [
+                _call(_emit("rows", 48, 65536)),
+                _call(_collect("rows", "left")),
+                _call(_collect("rows", "right")),
+            ]
+        )
+
+        expected = _collected("m", 48, 65536)
+        assert replies["call_0"].status == "success", replies["call_0"].content
+        assert "emitted 48" in str(replies["call_0"].content)
+        assert str(replies["call_1"].content).startswith(expected)
+        assert str(replies["call_2"].content).startswith(expected)
+        assert (tmp_path / "left").read_text() == expected
+        assert (tmp_path / "right").read_text() == expected
+
+    async def test_writer_without_a_reader_is_drained_by_dev_null(
+        self, tmp_path: Path
+    ) -> None:
+        stand = ChannelStand(tmp_path)
+
+        replies = await stand.turn(
+            [
+                _call(_emit("rows", 4, 0)),
+                {"name": "dev_null", "args": {"feeds": ["rows"]}},
+            ]
+        )
+
+        assert replies["call_0"].status == "success", replies["call_0"].content
+        assert "emitted 4" in str(replies["call_0"].content)
+        assert replies["call_1"].status == "success", replies["call_1"].content
+
+    async def test_plain_call_next_to_a_broken_stream_call_still_runs(
+        self, tmp_path: Path
+    ) -> None:
+        """Отказ плана потоковых вызовов соседний обычный вызов не трогает."""
+        stand = ChannelStand(tmp_path)
+
+        replies = await stand.turn(
+            [
+                _call(_emit("rows", 4, 0)),
+                {"name": "fake_echo", "args": {"text": "hi", "repeat": 1}},
+            ]
+        )
+
+        error = _error(replies["call_0"])
+        assert error.error_kind == StreamCallKind.PLAN_REFUSED, error.llm_view()
+        assert replies["call_1"].status == "success", replies["call_1"].content
 
 
 @pytest.mark.anyio
@@ -712,18 +772,8 @@ REFUSALS: dict[str, tuple[dict[str, Any], tuple[str, ...]]] = {
         ),
         (
             "node 'sink' names tool 'fake_sink_into_nowhere'",
-            "expected one of the stream tools",
+            "expected one of the tools",
             "fake_collect",
-        ),
-    ),
-    "plain_tool_inside_workflow": (
-        _workflow(
-            src=_emit("rows", 4, 0),
-            echo={"tool": "fake_echo", "args": {"text": "hi", "repeat": 1}},
-        ),
-        (
-            "node 'echo' names tool 'fake_echo'",
-            "a tool without stream ports is called directly, not through workflow",
         ),
     ),
     "repeated_node_key": (
@@ -802,21 +852,25 @@ class TestWorkflowRefusals:
         assert not (tmp_path / "never").exists()
         assert stand.started() == []
 
-    async def test_stream_tool_called_outside_workflow_is_told_to_use_it(
+    async def test_stream_tool_called_alone_is_refused_by_the_plan(
         self, tmp_path: Path
     ) -> None:
-        """Модель зовёт насос отдельным вызовом, как обычный инструмент."""
+        """Модель зовёт писателя канала одного, без читателя: отказ плана
+        называет канал и подсказывает слив."""
         stand = ChannelStand(tmp_path)
 
         replies = await stand.turn(
             [{"name": "fake_emit", "args": _emit("rows", 4, 0)["args"]}]
         )
 
-        error = _error(replies["call_0"])
+        reply = replies["call_0"]
+        error = _error(reply)
         text = error.llm_view()
-        assert error.error_kind == StreamCallKind.OUTSIDE_WORKFLOW, text
-        assert "'fake_emit' reads or writes stream channels" in text
-        assert "runs only as a node of 'workflow'" in text
+        assert reply.status == "error"
+        assert error.error_kind == StreamCallKind.PLAN_REFUSED, text
+        assert "channel 'rows'" in text
+        assert "has no readers" in text
+        assert "dev_null" in text
         assert stand.started() == []
 
     async def test_made_up_tool_is_answered_with_the_available_ones(
@@ -831,7 +885,8 @@ class TestWorkflowRefusals:
         text = error.llm_view()
         assert error.error_kind == EntryErrorKind.UNKNOWN_TOOL, text
         assert "tool 'copy_table' does not exist" in text
-        assert "['fake_echo', 'workflow']" in text
+        assert "'fake_echo'" in text
+        assert "'workflow'" in text
         assert stand.started() == []
 
 

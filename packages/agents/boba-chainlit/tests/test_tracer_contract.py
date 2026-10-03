@@ -29,6 +29,7 @@ from langchain_core.tools import BaseTool, StructuredTool
 
 from boba.chainlit.chat.tracing import AgentTracer
 from boba.chainlit.chat.turn import TurnState
+from boba.connection_broker.sealing import SentConnections
 from boba.stand.ui.fake_llm import FakeLlmApp, ScenarioName
 
 pytestmark = pytest.mark.anyio
@@ -102,7 +103,7 @@ class TestTracerRunIndex:
     def _tracer() -> AgentTracer:
         turn = RecordedTurn.live(THREAD, "turn-1")
 
-        return AgentTracer(turn.feed, TurnState())
+        return AgentTracer(turn.feed, TurnState(), SentConnections())
 
     async def _turn(self, provider: None, scenario: ScenarioName) -> AgentTracer:
         """Ход как в проде: агент langgraph, стрим сообщениями, живой трасер."""

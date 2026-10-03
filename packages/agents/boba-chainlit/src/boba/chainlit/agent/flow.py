@@ -35,7 +35,6 @@ from langchain_core.messages import (
     ToolCall,
     ToolMessage,
 )
-from langchain_core.tools import BaseTool
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph.state import CompiledStateGraph
 from langgraph.runtime import Runtime
@@ -436,20 +435,107 @@ class PrefetchMiddleware(AgentMiddleware[AgentState[Any], Any, Any]):
         return output
 
 
+class ResponseCalls:
+    """Вызовы одного ответа модели уходят серверу инструментов одним пакетом.
+
+    ToolNode раздаёт вызовы ответа по одному и одновременно. Серверу они
+    нужны вместе: потоковые вызовы одного ответа связаны именами каналов и
+    идут одним запуском. Первый пришедший вызов ответа отправляет весь
+    пакет, остальные берут из того же пакета своё ожидание; каждый вызов
+    отвечает, как только готов сам, не дожидаясь соседей.
+    """
+
+    def __init__(self, service: ToolServer) -> None:
+        self._service = service
+        self._batches: dict[
+            str, asyncio.Future[Sequence[asyncio.Future[ToolMessage]]]
+        ] = {}
+        self._waiting: dict[str, set[str]] = {}
+
+    async def reply(self, request: ToolCallRequest) -> ToolMessage:
+        calls = self._response_calls(request)
+        call_id = str(request.tool_call["id"])
+        batch_id = str(calls[0]["id"])
+
+        batch = self._batches.get(batch_id)
+        if batch is None:
+            batch = asyncio.ensure_future(self._service.submit(calls))
+            self._batches[batch_id] = batch
+            self._waiting[batch_id] = self._ids_of(calls)
+
+        pending = await batch
+        own = self._own(calls, pending, call_id)
+
+        try:
+            return await own
+        except asyncio.CancelledError:
+            own.cancel()
+            raise
+        finally:
+            self._taken(batch_id, call_id)
+
+    def _taken(self, batch_id: str, call_id: str) -> None:
+        """Вызов забрал свой итог; пакет забывается, когда забрали все."""
+        waiting = self._waiting.get(batch_id)
+        if waiting is None:
+            return
+
+        waiting.discard(call_id)
+        if waiting:
+            return
+
+        self._batches.pop(batch_id, None)
+        self._waiting.pop(batch_id, None)
+
+    @staticmethod
+    def _own(
+        calls: Sequence[ToolCall],
+        pending: Sequence[asyncio.Future[ToolMessage]],
+        call_id: str,
+    ) -> asyncio.Future[ToolMessage]:
+        for call, future in zip(calls, pending, strict=True):
+            if str(call["id"]) == call_id:
+                return future
+
+        msg = f"tool server accepted no call with id {call_id!r}"
+        raise RuntimeError(msg)
+
+    @staticmethod
+    def _ids_of(calls: Sequence[ToolCall]) -> set[str]:
+        ids: set[str] = set()
+        for call in calls:
+            ids.add(str(call["id"]))
+
+        return ids
+
+    @staticmethod
+    def _response_calls(request: ToolCallRequest) -> Sequence[ToolCall]:
+        """Все вызовы ответа модели, которому принадлежит вызов request."""
+        own = request.tool_call
+        for message in reversed(request.state["messages"]):
+            if not isinstance(message, AIMessage):
+                continue
+
+            for call in message.tool_calls:
+                if call["id"] == own["id"]:
+                    return message.tool_calls
+
+        return [own]
+
+
 class ServerCallMiddleware(AgentMiddleware[AgentState[Any], Any, Any]):
     """Вызовы инструментов исполняет сервер инструментов, а не ToolNode.
 
-    ToolNode раздаёт вызовы ответа по одному; middleware отдаёт каждый
-    вызов порту ToolServer и возвращает его итог. Мимо порта проходит
-    только собственный инструмент чата (own). Вызов с выдуманным именем
-    тоже уходит в порт: он отвечает, какие инструменты есть. Граф хода
-    асинхронный; синхронный путь инструменты сервера не исполняет.
+    ToolNode раздаёт вызовы ответа по одному; middleware собирает их в пакет
+    ответа (ResponseCalls) и отдаёт порту ToolServer. Какой сервер стоит за
+    инструментом, граф не знает. Вызов с выдуманным именем тоже уходит в
+    порт: он отвечает, какие инструменты есть. Граф хода асинхронный;
+    синхронный путь инструменты сервера не исполняет.
     """
 
-    def __init__(self, service: ToolServer, own: frozenset[str]) -> None:
+    def __init__(self, service: ToolServer) -> None:
         super().__init__()
-        self._service = service
-        self._own = own
+        self._calls = ResponseCalls(service)
 
     @override
     def wrap_tool_call(
@@ -458,9 +544,6 @@ class ServerCallMiddleware(AgentMiddleware[AgentState[Any], Any, Any]):
         handler: Callable[[ToolCallRequest], ToolMessage | Command[Any]],
     ) -> ToolMessage | Command[Any]:
         name = request.tool_call["name"]
-        if name in self._own:
-            return handler(request)
-
         msg = (
             f"tool {name!r} is executed by a tool server, which is called "
             "in the async agent graph only"
@@ -473,11 +556,7 @@ class ServerCallMiddleware(AgentMiddleware[AgentState[Any], Any, Any]):
         request: ToolCallRequest,
         handler: Callable[[ToolCallRequest], Awaitable[ToolMessage | Command[Any]]],
     ) -> ToolMessage | Command[Any]:
-        call = request.tool_call
-        if call["name"] in self._own:
-            return await handler(request)
-
-        return await self._service.call(call)
+        return await self._calls.reply(request)
 
 
 @dataclass(frozen=True)
@@ -486,9 +565,7 @@ class GraphSpec:
 
     chat: BaseChatModel
     service: ToolServer
-    """Сервер инструментов: его инструменты получает модель, ему уходят вызовы."""
-    own_tools: Sequence[BaseTool]
-    """Собственные инструменты чата: их исполняет сам граф, мимо сервера."""
+    """Порт инструментов: его инструменты получает модель, ему уходят вызовы."""
     system_prompt: str
     checkpointer: BaseCheckpointSaver
     history: AgentMiddleware[Any, Any, Any]
@@ -496,19 +573,11 @@ class GraphSpec:
 
 
 class GraphTools:
-    """Инструменты графа хода и middleware их вызовов по общим частям графа:
-    инструменты сервера плюс собственные инструменты чата."""
+    """Инструменты графа хода и middleware их вызовов по порту инструментов."""
 
     def __init__(self, spec: GraphSpec) -> None:
-        tools = list(spec.service.tools())
-
-        own: list[str] = []
-        for tool in spec.own_tools:
-            tools.append(tool)
-            own.append(tool.name)
-
-        self.tools = tools
-        self.middleware = ServerCallMiddleware(spec.service, frozenset(own))
+        self.tools = list(spec.service.tools())
+        self.middleware = ServerCallMiddleware(spec.service)
 
 
 class AgentGraphBuilder(ABC):

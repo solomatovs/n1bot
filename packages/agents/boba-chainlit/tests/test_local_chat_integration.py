@@ -30,6 +30,7 @@ from boba.chainlit.chat.turn import TurnState
 from boba.chainlit.domain.fields import StepField
 from boba.chainlit.infra.config import AppConfig
 from boba.config import bind
+from boba.connection_broker.sealing import SentConnections
 from boba.llm.onnx import OnnxProvider
 from boba.llm.providers import ChatModelConfig, LlmProviders, LlmProviderTypes
 from boba.runtime.config import AppLayers
@@ -131,7 +132,7 @@ class TestLocalChatTurn:
 
         turn = RecordedTurn.recording(THREAD, TURN)
         sink = turn.recording_sink
-        tracer = AgentTracer(turn.feed, TurnState())
+        tracer = AgentTracer(turn.feed, TurnState(), SentConnections())
 
         config = RunnableConfig(
             configurable={"thread_id": "local-turn"},

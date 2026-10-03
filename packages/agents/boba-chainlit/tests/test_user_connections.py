@@ -27,9 +27,9 @@ from boba.chainlit.auth.kerberos import KerberosAuth
 from boba.chainlit.data.data_layer import PostgresDataLayer
 from boba.config import bind
 from boba.connection_broker.store import ConnectionsConfig, ConnectionStore
-from boba.connection_broker.user_connections import UserConnections
 from boba.connections.manifest import ConnectionTypes
 from boba.connections.marks import ConnectionRefusal
+from boba.connections.sealed import ConnectionRefs
 from boba.connections.stored import GrantTarget, StoredRole
 from boba.db.postgres import AsyncPostgresPool
 from boba.db.postgres.connection import PasswordAuth, PostgresConfig
@@ -42,6 +42,7 @@ from boba.krb.seal import SsoTickets
 from boba.messaging import MemoryMessageBus
 from boba.runtime.refresh import BusRefreshSignal
 from boba.sandbox.zygote import ZygoteRegistry
+from boba.stand.connections import StandUserConnections
 from boba.stand.site import Stand
 from boba.tool.pg.tools import PgToolConfig
 from boba.tool.web.tools import WebToolsConfig
@@ -160,14 +161,13 @@ def pg_tools(
     def resolve(name: str, annotation: Any) -> object:
         return bind(raw_config, path="tool.pg", model=PgToolConfig)
 
-    UserConnections.bind_all(
-        functions,
+    StandUserConnections(
         lambda: store,
         lambda: KerberosCredentialSource(
             sso[0], BusRefreshSignal(lambda: MemoryMessageBus("test"))
         ),
         ConnectionTypes.discover,
-    )
+    ).bind_all(functions)
     InjectedConfig.bind_all(functions, resolve)
 
     return ToolSetup.by_name(functions)
@@ -231,7 +231,7 @@ async def test_granted_connection_is_visible_and_works(
     Session.enter(user)
 
     targets = await Call.ok(catalog)
-    names = [row["connection"] for row in targets.rows]
+    names = [ConnectionRefs().parse(row["connection"]).name for row in targets.rows]
     if names != ["main"]:
         raise AssertionError(f"whitelist must hold the granted row only: {names}")
 
@@ -260,7 +260,7 @@ async def test_role_grant_reaches_every_role_holder(
     Session.enter(user)
 
     targets = await Call.ok(catalog)
-    names = [row["connection"] for row in targets.rows]
+    names = [ConnectionRefs().parse(row["connection"]).name for row in targets.rows]
     if names != ["shared"]:
         raise AssertionError(f"role grant must be visible: {names}")
 
@@ -442,14 +442,13 @@ def web_tools(
     def resolve(name: str, annotation: Any) -> object:
         return bind(raw_config, path="tool.web", model=WebToolsConfig)
 
-    UserConnections.bind_all(
-        functions,
+    StandUserConnections(
         lambda: store,
         lambda: KerberosCredentialSource(
             sso[0], BusRefreshSignal(lambda: MemoryMessageBus("test"))
         ),
         ConnectionTypes.discover,
-    )
+    ).bind_all(functions)
     InjectedConfig.bind_all(functions, resolve)
 
     return ToolSetup.by_name(functions)

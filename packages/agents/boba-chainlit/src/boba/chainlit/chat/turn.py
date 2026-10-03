@@ -29,6 +29,7 @@ from boba.chainlit.chat.feed import QuestionBody, ShownElement, TurnFeed
 from boba.chainlit.chat.tracing import AgentTracer, TurnArtifacts
 from boba.chainlit.domain.keys import AttachmentLinks
 from boba.chainlit.rendering.chat_view import ChatView, StepRole, StepText
+from boba.connection_broker.sealing import SentConnections
 from boba.identity.context import CallContext
 from boba.identity.errors import FailureReport, RefusalError
 from boba.identity.locks import (
@@ -400,13 +401,14 @@ class ChatTurn(RunPort):
     _REPORTS: ClassVar[set[asyncio.Future[None]]] = set()
     """Живые отчёты об остановке: без ссылки задачу заберёт сборщик мусора."""
 
-    def __init__(
+    def __init__(  # noqa: PLR0913 — ход собирается всеми своими входами
         self,
         thread_id: str,
         feed: TurnFeed,
         history: TurnHistory,
         question: Question,
         locking: RunLocking,
+        sent: SentConnections,
     ) -> None:
         self._thread_id = thread_id
         self._feed = feed
@@ -416,7 +418,7 @@ class ChatTurn(RunPort):
         self._heartbeat_sec = locking.heartbeat_sec
         self._state = TurnState()
         self._answered = False
-        self._tracer = AgentTracer(feed, self._state)
+        self._tracer = AgentTracer(feed, self._state, sent)
         self._reporter = TurnReporter(
             feed=feed,
             state=self._state,

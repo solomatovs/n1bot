@@ -30,6 +30,7 @@ from boba.chainlit.agent.flow import PrefetchStage
 from boba.chainlit.chat.feed import TurnFeed
 from boba.chainlit.rendering.chat_view import StepText
 from boba.chainlit.rendering.errors import show_error
+from boba.connection_broker.sealing import SentConnections
 from boba.identity.errors import FailureReport
 from boba.identity.session import LogUserMark
 from boba.toolkit.failure import FailurePacker
@@ -94,8 +95,13 @@ class AgentTracer(AsyncBaseTracer):
     их итоги в шину; учёт прогонов ведётся до публикации.
     """
 
-    def __init__(self, feed: TurnFeed, state: TurnArtifacts) -> None:
+    def __init__(
+        self, feed: TurnFeed, state: TurnArtifacts, sent: SentConnections
+    ) -> None:
+        """sent — что чат отправил серверу вместо ссылок на соединения: шаг
+        инструмента показывает ссылку, а не запечатанное значение."""
         super().__init__()
+        self._sent = sent
         self._messages = LangchainMessages()
         self._context = context_var.get()
         self._feed = feed
@@ -272,7 +278,7 @@ class AgentTracer(AsyncBaseTracer):
 
         args: Mapping[str, Any] = {}
         if inputs:
-            args = inputs
+            args = self._sent.shown(inputs)
 
         await self._feed.tool_started(call_id, tool_name, args)
         self._state.open_tool(str(run_id), call_id)

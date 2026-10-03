@@ -29,6 +29,7 @@ from boba.chainlit.chat.turn import (
 )
 from boba.chainlit.domain.fields import StepField
 from boba.chainlit.rendering.chat_view import ChatView, StepRole, StepStatus, StepText
+from boba.connection_broker.sealing import SentConnections
 from boba.identity.context import Scope
 from boba.identity.errors import FailureReport, UserInputError
 from boba.identity.locks import LockMode, LockPurpose, MemoryLiveLocks, RunLocking
@@ -262,6 +263,7 @@ class TestFailedTurnKeepsHistory:
             history=cast(Any, history),
             question=Question(key=TURN_KEY, text="question"),
             locking=RunLocking(locks=MemoryLiveLocks("test:0", 20), heartbeat_sec=1.0),
+            sent=SentConnections(),
         )
 
         # контекст вызова ставится до создания задачи: она копирует его при старте
@@ -336,6 +338,7 @@ class TestPulseOfTheTurn:
             history=cast(Any, RememberedHistory()),
             question=Question(key=TURN_KEY, text="question"),
             locking=RunLocking(locks=MemoryLiveLocks("test:0", 20), heartbeat_sec=1.0),
+            sent=SentConnections(),
         )
 
         with use_context(monkeypatch, thread_id=THREAD).applied():
@@ -385,6 +388,7 @@ class TestBusyThread:
             history=cast(Any, history),
             question=Question(key=TURN_KEY, text="question"),
             locking=RunLocking(locks=locks, heartbeat_sec=1.0),
+            sent=SentConnections(),
         )
 
         with use_context(monkeypatch, thread_id=THREAD).applied():

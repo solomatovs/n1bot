@@ -26,7 +26,6 @@ import pytest
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
 from langchain_core.runnables import RunnableConfig
-from langchain_core.tools import BaseTool
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph.state import CompiledStateGraph
 from omegaconf import DictConfig, OmegaConf
@@ -40,6 +39,7 @@ from boba.chainlit.infra.providers import build_history_view
 from boba.config import bind
 from boba.connection_broker.store import ConnectionsConfig, ConnectionStore
 from boba.connections.manifest import ConnectionTypes
+from boba.connections.sealed import ConnectionRef
 from boba.connections.stored import GrantTarget
 from boba.db.clickhouse.address import ChAddresses, ChTableColumnAddress
 from boba.db.clickhouse.connection import ClickHouseConfig
@@ -54,6 +54,7 @@ from boba.db.postgres.address import (
 from boba.db.postgres.connection import PostgresConfig
 from boba.runtime.config import AppLayers, ConfigLocator
 from boba.sandbox import ZygoteRegistry
+from boba.stand.connections import StandSealedServer
 from boba.stand.refs import StandRefs
 from boba.stand.site import Stand
 from boba.stand.tools import STREAM_CONFIG
@@ -68,7 +69,7 @@ from boba.toolkit.result import (
     TableResult,
     ToolArtifact,
 )
-from boba.toolrun.stream_calls import LocalDagService
+from boba.toolrun.stream_calls import LocalDagService, ToolServer
 
 _REPO = Path(__file__).resolve().parents[4]
 _SANDBOX_STAGING = _REPO / "build" / "chainlit" / "src" / "sandbox"
@@ -112,6 +113,8 @@ DESCRIBER_SCHEMA = "describer_e2e"
 
 PG_CONNECTION = "dwh"
 CH_CONNECTION = "logs"
+PG_REF = ConnectionRef(kind="postgres", name=PG_CONNECTION).render()
+CH_REF = ConnectionRef(kind="clickhouse", name=CH_CONNECTION).render()
 
 DM = "dm"
 CH_DATABASE = "describer_e2e"
@@ -258,14 +261,18 @@ def flow_raw(raw_config: DictConfig, test_database: str) -> DictConfig:
 
 
 @pytest.fixture(scope="module")
-def session_tools(
+def session_service(
     flow_raw: DictConfig, app_config: AppConfig, app_sandbox: None
-) -> list[BaseTool]:
-    """Инструменты профиля, собранные боевым загрузчиком над хранилищем стенда."""
+) -> ToolServer:
+    """Порт инструментов профиля: боевой загрузчик над хранилищем стенда,
+    исполнитель и клиент, запечатывающий ссылки на соединения."""
     refs = StandRefs.of(StoreHolder.current, lambda: None)
     registry = ChatPlugins.load(flow_raw, refs)
     roles = frozenset(app_config.roles)
-    return registry.for_session(roles, PROFILE)
+    tools = registry.for_session(roles, PROFILE)
+    executor = LocalDagService(tools, STREAM_CONFIG, registry.node_args)
+
+    return StandSealedServer(refs).over(executor)
 
 
 @pytest.fixture
@@ -402,7 +409,7 @@ async def chainlit_context(
 
 def _graph(
     app_config: AppConfig,
-    tools: Sequence[BaseTool],
+    service: ToolServer,
     scripted: Sequence[AIMessage],
 ) -> CompiledStateGraph:
     """Граф профиля на модели по сценарию: боевой билдер, память вместо postgres."""
@@ -411,13 +418,12 @@ def _graph(
     chat = ScriptedChat(messages=iter(list(scripted)), disable_streaming=True)
 
     names: list[str] = []
-    for tool in tools:
+    for tool in service.tools():
         names.append(tool.name)
 
     spec = GraphSpec(
         chat=chat,
-        service=LocalDagService(tools, STREAM_CONFIG),
-        own_tools=(),
+        service=service,
         system_prompt=settings.system_prompt,
         checkpointer=InMemorySaver(),
         history=build_history_view(frozenset(names), settings.history_messages),
@@ -456,7 +462,7 @@ def _script(expected: Expected) -> list[AIMessage]:
                 _call(
                     CallId.PG_DESCRIBE,
                     "pg_describe_table",
-                    connection=PG_CONNECTION,
+                    connection=PG_REF,
                     table="orders",
                     pg_schema=DM,
                     **WINDOW,
@@ -464,14 +470,14 @@ def _script(expected: Expected) -> list[AIMessage]:
                 _call(
                     CallId.PG_FK,
                     "pg_query",
-                    connection=PG_CONNECTION,
+                    connection=PG_REF,
                     sql=fk_sql,
                     **WINDOW,
                 ),
                 _call(
                     CallId.CH_DESCRIBE,
                     "ch_query",
-                    connection=CH_CONNECTION,
+                    connection=CH_REF,
                     sql=ch_columns_sql,
                     **WINDOW,
                 ),
@@ -480,8 +486,8 @@ def _script(expected: Expected) -> list[AIMessage]:
         AIMessage(
             content="",
             tool_calls=[
-                _call(CallId.PG_ADDRESS, "pg_address", connection=PG_CONNECTION),
-                _call(CallId.CH_ADDRESS, "ch_address", connection=CH_CONNECTION),
+                _call(CallId.PG_ADDRESS, "pg_address", connection=PG_REF),
+                _call(CallId.CH_ADDRESS, "ch_address", connection=CH_REF),
             ],
         ),
         AIMessage(
@@ -760,13 +766,13 @@ async def _stored_edges(pool: AsyncPostgresPool) -> list[tuple[str, str, str]]:
 @pytest.mark.usefixtures("chainlit_context", "granted", "seeded_pg", "seeded_ch")
 async def test_agent_describes_schema_and_links(  # noqa: PLR0915 — один ход, много проверок
     app_config: AppConfig,
-    session_tools: list[BaseTool],
+    session_service: ToolServer,
     pg_profile: PostgresConfig,
     ch_profile: ClickHouseConfig,
     pool: AsyncPostgresPool,
 ) -> None:
     expected = Expected(pg_profile, ch_profile)
-    graph = _graph(app_config, session_tools, _script(expected))
+    graph = _graph(app_config, session_service, _script(expected))
 
     result = await graph.ainvoke(
         {"messages": [HumanMessage("describe the dm schema and its links")]},
@@ -777,7 +783,7 @@ async def test_agent_describes_schema_and_links(  # noqa: PLR0915 — один �
 
     # разведка: оба соединения видны, метаданные приходят из настоящих баз
     names = _column(_rows(replies.ok(CallId.CONNECTIONS)), "connection")
-    assert sorted(names) == [PG_CONNECTION, CH_CONNECTION]
+    assert sorted(names) == sorted([PG_REF, CH_REF])
 
     columns = _column(_rows(replies.ok(CallId.PG_DESCRIBE)), "column_name")
     assert columns == ["id", "customer_id", "amount"]
@@ -904,7 +910,7 @@ async def test_agent_describes_schema_and_links(  # noqa: PLR0915 — один �
 @pytest.mark.usefixtures("chainlit_context", "granted", "seeded_pg", "seeded_ch")
 async def test_second_turn_updates_instead_of_duplicating(
     app_config: AppConfig,
-    session_tools: list[BaseTool],
+    session_service: ToolServer,
     pg_profile: PostgresConfig,
     ch_profile: ClickHouseConfig,
     pool: AsyncPostgresPool,
@@ -928,7 +934,7 @@ async def test_second_turn_updates_instead_of_duplicating(
         ),
         AIMessage(content=FINAL_ANSWER),
     ]
-    await _graph(app_config, session_tools, first).ainvoke(
+    await _graph(app_config, session_service, first).ainvoke(
         {"messages": [HumanMessage("describe orders")]}, config=THREAD
     )
 
@@ -947,7 +953,7 @@ async def test_second_turn_updates_instead_of_duplicating(
         ),
         AIMessage(content=FINAL_ANSWER),
     ]
-    result = await _graph(app_config, session_tools, second).ainvoke(
+    result = await _graph(app_config, session_service, second).ainvoke(
         {"messages": [HumanMessage("describe orders better")]}, config=THREAD
     )
 

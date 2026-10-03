@@ -6,13 +6,19 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Iterable, Iterator
+from collections.abc import Iterable, Iterator, Sequence
 from dataclasses import dataclass
 
 from langchain_core.tools import BaseTool
 
 from boba.access import ToolAccess
-from boba.toolrun.stream_calls import StreamGroupsConfig
+from boba.toolrun.stream_calls import (
+    LocalDagService,
+    NodeArgs,
+    StreamGroupsConfig,
+    ToolServer,
+    ToolServers,
+)
 
 __all__ = ["ToolRegistry"]
 
@@ -24,35 +30,39 @@ class ToolRegistry:
     """Собранные инструменты, права доступа к ним и секция [stream_groups]:
     по ней сессия исполняет вызовы инструментов через DAG.
 
-    own — имена собственных инструментов процесса: их тела он исполняет
-    сам, мимо DAG (чат — инструменты каталога соединений)."""
+    own — имена собственных инструментов процесса (чат — инструменты
+    каталога соединений): они образуют отдельный сервер инструментов, и
+    только реестр знает, какой инструмент какому серверу принадлежит.
+    node_args — правила аргументов узлов, которые исполнитель применяет до
+    старта DAG."""
 
     tools: list[BaseTool]
     access: ToolAccess
     stream_config: StreamGroupsConfig
     own: frozenset[str]
+    node_args: Sequence[NodeArgs]
 
-    def dag_tools(self, tools: Iterable[BaseTool]) -> list[BaseTool]:
-        """Инструменты из tools, которые исполняет DAG."""
-        kept: list[BaseTool] = []
+    def server(self, tools: Iterable[BaseTool]) -> ToolServer:
+        """Порт инструментов для клиента по инструментам tools.
+
+        За портом два сервера: собственные инструменты процесса и остальные;
+        вызов уходит по имени инструмента. Клиент про деление не знает.
+        """
+        own: list[BaseTool] = []
+        hosted: list[BaseTool] = []
         for tool in tools:
             if tool.name in self.own:
+                own.append(tool)
                 continue
 
-            kept.append(tool)
+            hosted.append(tool)
 
-        return kept
-
-    def own_tools(self, tools: Iterable[BaseTool]) -> list[BaseTool]:
-        """Инструменты из tools, которые процесс исполняет сам."""
-        kept: list[BaseTool] = []
-        for tool in tools:
-            if tool.name not in self.own:
-                continue
-
-            kept.append(tool)
-
-        return kept
+        return ToolServers(
+            [
+                LocalDagService(hosted, self.stream_config, self.node_args),
+                LocalDagService(own, self.stream_config, ()),
+            ]
+        )
 
     def for_session(self, user_roles: Iterable[str], profile: str) -> list[BaseTool]:
         """Инструменты хода чата: всё, что решение допускает в чате."""

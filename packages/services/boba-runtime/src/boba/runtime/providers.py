@@ -22,6 +22,7 @@ from boba.chat.profiles import ChatProfiles, RolesSection
 from boba.config import bind
 from boba.connection_broker.store import ConnectionsConfig, ConnectionStore
 from boba.connections.manifest import ConnectionTypes
+from boba.connections.sealed import SealKeys
 from boba.db.pgvector.config import KnowledgeBaseSchemaConfig
 from boba.db.pgvector.schema import KbSchema
 from boba.identity.directory import UserDirectory
@@ -183,8 +184,8 @@ def surface_hooks() -> Sequence[CallHooks[Any]]:
 
 
 def own_tools() -> Sequence[BaseTool]:
-    """Собственные инструменты процесса, исполняемые им самим мимо DAG; у
-    процесса без таких инструментов их нет."""
+    """Собственные инструменты процесса — отдельный сервер за портом
+    инструментов; у процесса без таких инструментов их нет."""
     return ()
 
 
@@ -252,6 +253,7 @@ def runtime_refs() -> RuntimeRefs:
         connection_store=connection_store_ref,
         connection_types=connection_types_ref,
         credentials=credential_source_ref,
+        seal_keys=_root().resolved(seal_keys),
         live_locks=live_locks_ref,
         heartbeat_sec=_root().resolved(get_runtime_config).cluster.heartbeat_sec,
         bus_watch=bus_watch_ref,
@@ -317,6 +319,15 @@ async def live_locks(
 def live_locks_ref() -> LiveLocks:
     """Блокировки для обвязок инструментов; зовётся на каждый вызов."""
     return _root().resolved(live_locks)
+
+
+def seal_keys() -> SealKeys:
+    """Ключевая пара исполнителя для запечатанных соединений; кладёт процесс."""
+    msg = (
+        "DI provider seal_keys resolved before the process supplied SealKeys "
+        "via Container.provide"
+    )
+    raise RuntimeError(msg)
 
 
 def connection_types() -> ConnectionTypes:

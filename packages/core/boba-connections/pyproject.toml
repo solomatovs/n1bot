@@ -14,6 +14,7 @@ dependencies = [
     "cryptography>=42",
     "joserfc>=1.7,<2",
     "pydantic>=2.10,<3",
+    "pydantic-core>=2.27",
 ]
 
 [project.optional-dependencies]
