@@ -44,7 +44,7 @@ from boba.runtime.refresh import BusRefreshSignal
 from boba.sandbox.zygote import ZygoteRegistry
 from boba.stand.connections import StandUserConnections
 from boba.stand.site import Stand
-from boba.stand_core.context import TEST_CONTEXTS
+from boba.stand_core.context import CallStand
 from boba.tool.pg.tools import PgToolConfig
 from boba.tool.web.tools import WebToolsConfig
 from boba.toolkit.entry import ToolMain
@@ -146,7 +146,10 @@ def _credentials() -> KerberosCredentialSource:
 
 @pytest.fixture
 def pg_tools(
-    raw_config: Any, store: ConnectionStore, sso: tuple[SsoTickets, str]
+    call_stand: CallStand,
+    raw_config: Any,
+    store: ConnectionStore,
+    sso: tuple[SsoTickets, str],
 ) -> dict[str, Any]:
     """pg-инструменты с боевой обвязкой соединений пользователя."""
     from importlib import reload
@@ -165,9 +168,11 @@ def pg_tools(
     StandUserConnections(
         lambda: store,
         lambda: KerberosCredentialSource(
-            sso[0], BusRefreshSignal(lambda: MemoryMessageBus("test"), TEST_CONTEXTS)
+            sso[0],
+            BusRefreshSignal(lambda: MemoryMessageBus("test"), call_stand.contexts),
         ),
         ConnectionTypes.discover,
+        call_stand.contexts,
     ).bind_all(functions)
     InjectedConfig.bind_all(functions, resolve)
 
@@ -191,7 +196,7 @@ class Session:
         return persisted
 
     @staticmethod
-    def enter(user: PersistedUser) -> None:
+    def enter(call_stand: CallStand, user: PersistedUser) -> None:
         """Сессия с JWT входа: роли берутся из токена, а не из строки users."""
         from chainlit.auth.jwt import create_jwt
         from chainlit.context import init_http_context
@@ -199,10 +204,12 @@ class Session:
         token = create_jwt(StandTokens.user(user.identifier, user.metadata))
         context = init_http_context(user=user, thread_id=THREAD, auth_token=token)
         context.session.chat_profile = PROFILE
-        enter_context()
+        enter_context(call_stand)
 
     @staticmethod
-    def enter_sso(user: PersistedUser, principal: str, sealed: str) -> None:
+    def enter_sso(
+        call_stand: CallStand, user: PersistedUser, principal: str, sealed: str
+    ) -> None:
         """Сессия с JWT SSO-входа: провайдер, принципал и метка входа."""
         from chainlit.auth.jwt import create_jwt
         from chainlit.context import init_http_context
@@ -216,10 +223,11 @@ class Session:
         token = create_jwt(StandTokens.user(user.identifier, metadata))
         context = init_http_context(user=user, auth_token=token, thread_id=THREAD)
         context.session.chat_profile = PROFILE
-        enter_context()
+        enter_context(call_stand)
 
 
-async def test_granted_connection_is_visible_and_works(
+async def test_granted_connection_is_visible_and_works(  # noqa: PLR0913 — фикстуры теста
+    call_stand: CallStand,
     pg_tools: dict[str, Any],
     catalog: Any,
     store: ConnectionStore,
@@ -229,7 +237,7 @@ async def test_granted_connection_is_visible_and_works(
     user = await Session.user(layer, "conn-owner")
     connection_id = await store.add("main", service_pg)
     await store.grant(connection_id, GrantTarget.user(UUID(user.id)))
-    Session.enter(user)
+    Session.enter(call_stand, user)
 
     targets = await Call.ok(catalog)
     names = [ConnectionRefs().parse(row["connection"]).name for row in targets.rows]
@@ -247,7 +255,8 @@ async def test_granted_connection_is_visible_and_works(
         raise AssertionError(f"query must run on the granted connection: {result}")
 
 
-async def test_role_grant_reaches_every_role_holder(
+async def test_role_grant_reaches_every_role_holder(  # noqa: PLR0913 — фикстуры теста
+    call_stand: CallStand,
     pg_tools: dict[str, Any],
     catalog: Any,
     store: ConnectionStore,
@@ -258,7 +267,7 @@ async def test_role_grant_reaches_every_role_holder(
     roles = StoredRole.by_name(await store.roles())
     connection_id = await store.add("shared", service_pg)
     await store.grant(connection_id, GrantTarget.role(roles[ROLE]))
-    Session.enter(user)
+    Session.enter(call_stand, user)
 
     targets = await Call.ok(catalog)
     names = [ConnectionRefs().parse(row["connection"]).name for row in targets.rows]
@@ -266,7 +275,8 @@ async def test_role_grant_reaches_every_role_holder(
         raise AssertionError(f"role grant must be visible: {names}")
 
 
-async def test_stranger_sees_nothing(
+async def test_stranger_sees_nothing(  # noqa: PLR0913 — фикстуры теста
+    call_stand: CallStand,
     pg_tools: dict[str, Any],
     catalog: Any,
     store: ConnectionStore,
@@ -277,7 +287,7 @@ async def test_stranger_sees_nothing(
     stranger = await Session.user(layer, "conn-stranger")
     connection_id = await store.add("main", service_pg)
     await store.grant(connection_id, GrantTarget.user(UUID(owner.id)))
-    Session.enter(stranger)
+    Session.enter(call_stand, stranger)
 
     targets = await Call.ok(catalog)
     if targets.rows:
@@ -292,7 +302,8 @@ async def test_stranger_sees_nothing(
         raise AssertionError(f"unexpected refusal kind: {caught.value.kind}")
 
 
-async def test_revoke_applies_to_the_next_call(
+async def test_revoke_applies_to_the_next_call(  # noqa: PLR0913 — фикстуры теста
+    call_stand: CallStand,
     pg_tools: dict[str, Any],
     catalog: Any,
     store: ConnectionStore,
@@ -303,7 +314,7 @@ async def test_revoke_applies_to_the_next_call(
     connection_id = await store.add("main", service_pg)
     target = GrantTarget.user(UUID(user.id))
     await store.grant(connection_id, target)
-    Session.enter(user)
+    Session.enter(call_stand, user)
 
     before = await Call.ok(catalog)
     if not before.rows:
@@ -316,7 +327,8 @@ async def test_revoke_applies_to_the_next_call(
         raise AssertionError("revoked row must disappear without a restart")
 
 
-async def test_ambiguous_name_is_refused(
+async def test_ambiguous_name_is_refused(  # noqa: PLR0913 — фикстуры теста
+    call_stand: CallStand,
     pg_tools: dict[str, Any],
     catalog: Any,
     store: ConnectionStore,
@@ -328,7 +340,7 @@ async def test_ambiguous_name_is_refused(
     second = await store.add("main", service_pg)
     await store.grant(first, GrantTarget.user(UUID(user.id)))
     await store.grant(second, GrantTarget.user(UUID(user.id)))
-    Session.enter(user)
+    Session.enter(call_stand, user)
 
     targets = await Call.ok(catalog)
     if targets.rows:
@@ -343,7 +355,8 @@ async def test_ambiguous_name_is_refused(
         raise AssertionError(f"unexpected refusal kind: {caught.value.kind}")
 
 
-async def test_delegated_connection_runs_as_the_session_principal(
+async def test_delegated_connection_runs_as_the_session_principal(  # noqa: PLR0913 — фикстуры теста
+    call_stand: CallStand,
     sso: tuple[SsoTickets, str],
     pg_tools: dict[str, Any],
     store: ConnectionStore,
@@ -357,7 +370,7 @@ async def test_delegated_connection_runs_as_the_session_principal(
     )
     connection_id = await store.add("mine", delegated)
     await store.grant(connection_id, GrantTarget.user(UUID(user.id)))
-    Session.enter_sso(user, SERVICE_PRINCIPAL, sso[1])
+    Session.enter_sso(call_stand, user, SERVICE_PRINCIPAL, sso[1])
 
     result = await Call.ok(
         pg_tools["pg_query"],
@@ -371,6 +384,7 @@ async def test_delegated_connection_runs_as_the_session_principal(
 
 
 async def test_delegated_connection_refuses_local_login(
+    call_stand: CallStand,
     pg_tools: dict[str, Any],
     store: ConnectionStore,
     layer: PostgresDataLayer,
@@ -382,7 +396,7 @@ async def test_delegated_connection_refuses_local_login(
     )
     connection_id = await store.add("mine", delegated)
     await store.grant(connection_id, GrantTarget.user(UUID(user.id)))
-    Session.enter(user)
+    Session.enter(call_stand, user)
 
     with pytest.raises(RefusalError) as caught:
         await Call.result(
@@ -394,6 +408,7 @@ async def test_delegated_connection_refuses_local_login(
 
 
 async def test_unreachable_database_is_reported_by_the_body(
+    call_stand: CallStand,
     pg_tools: dict[str, Any],
     store: ConnectionStore,
     layer: PostgresDataLayer,
@@ -413,7 +428,7 @@ async def test_unreachable_database_is_reported_by_the_body(
     )
     connection_id = await store.add("dead", dead)
     await store.grant(connection_id, GrantTarget.user(UUID(user.id)))
-    Session.enter(user)
+    Session.enter(call_stand, user)
 
     with pytest.raises(PayloadFailureError) as caught:
         await Call.result(
@@ -427,7 +442,10 @@ async def test_unreachable_database_is_reported_by_the_body(
 
 @pytest.fixture
 def web_tools(
-    raw_config: Any, store: ConnectionStore, sso: tuple[SsoTickets, str]
+    call_stand: CallStand,
+    raw_config: Any,
+    store: ConnectionStore,
+    sso: tuple[SsoTickets, str],
 ) -> dict[str, Any]:
     """web-инструменты с боевой обвязкой соединений пользователя."""
     from importlib import reload
@@ -446,9 +464,11 @@ def web_tools(
     StandUserConnections(
         lambda: store,
         lambda: KerberosCredentialSource(
-            sso[0], BusRefreshSignal(lambda: MemoryMessageBus("test"), TEST_CONTEXTS)
+            sso[0],
+            BusRefreshSignal(lambda: MemoryMessageBus("test"), call_stand.contexts),
         ),
         ConnectionTypes.discover,
+        call_stand.contexts,
     ).bind_all(functions)
     InjectedConfig.bind_all(functions, resolve)
 
@@ -459,6 +479,7 @@ def web_tools(
     not STAND.ch_addr, reason="в конфиге стенда нет clickhouse (ch_addr)"
 )
 async def test_web_negotiate_connection_authenticates_as_the_principal(
+    call_stand: CallStand,
     sso: tuple[SsoTickets, str],
     web_tools: dict[str, Any],
     store: ConnectionStore,
@@ -479,7 +500,7 @@ async def test_web_negotiate_connection_authenticates_as_the_principal(
     )
     connection_id = await store.add("ch-http", row)
     await store.grant(connection_id, GrantTarget.user(UUID(user.id)))
-    Session.enter_sso(user, SERVICE_PRINCIPAL, sso[1])
+    Session.enter_sso(call_stand, user, SERVICE_PRINCIPAL, sso[1])
 
     result = await Call.ok(
         web_tools["web_fetch_page"],
@@ -493,11 +514,13 @@ async def test_web_negotiate_connection_authenticates_as_the_principal(
         raise AssertionError(f"clickhouse must see the principal: {result.text}")
 
 
-async def test_call_outside_session_is_refused(catalog: Any) -> None:
+async def test_call_outside_session_is_refused(
+    call_stand: CallStand, catalog: Any
+) -> None:
     from chainlit.context import init_http_context
 
     init_http_context(user=None)
-    TEST_CONTEXTS.reset()
+    call_stand.clear()
 
     with pytest.raises(RefusalError) as caught:
         await Call.result(catalog)

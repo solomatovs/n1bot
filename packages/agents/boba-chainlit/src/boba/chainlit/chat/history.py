@@ -45,6 +45,7 @@ from boba.chainlit.rendering.chat_view import (
 from boba.toolkit.calls import CallIdPrefix
 from boba.toolkit.dag import WorkflowResult
 from boba.toolkit.result import ToolArtifact
+from boba.toolrun.streams import CallJournals
 from chainlit.data.base import BaseDataLayer
 from chainlit.step import StepDict
 
@@ -139,8 +140,9 @@ class TranscriptFeed:
     зависит от слоя данных, зависимость идёт в обратную сторону.
     """
 
-    def __init__(self, messages: ThreadMessages) -> None:
+    def __init__(self, messages: ThreadMessages, journals: CallJournals) -> None:
         self._messages = messages
+        self._journals = journals
 
     async def steps(self, thread_id: str, user_name: str | None) -> Sequence[StepDict]:
         messages = await self._messages.load(thread_id)
@@ -148,7 +150,7 @@ class TranscriptFeed:
             return []
 
         sink = RecordingSink()
-        view = ChatView(thread_id, sink, user_name=user_name)
+        view = ChatView(thread_id, sink, self._journals, user_name=user_name)
         await ConversationTranscript(messages, view).replay()
         return sink.steps
 

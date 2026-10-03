@@ -10,7 +10,7 @@ from __future__ import annotations
 import logging
 
 from boba.cancellation import StopReason
-from boba.identity.run import RunRegistry
+from boba.identity.run import Runs
 from boba.messaging import CommandEnvelope, MessageBus, StopRequested, Unsubscribe
 
 __all__ = ["CommandRunner"]
@@ -21,11 +21,12 @@ logger = logging.getLogger(__name__)
 class CommandRunner:
     """Подписывается на команды шины и исполняет те, чья область ведётся этим
     процессом: забирает команду через take и останавливает область через
-    RunRegistry.
+    реестр запусков.
     """
 
-    def __init__(self, bus: MessageBus, instance: str) -> None:
+    def __init__(self, bus: MessageBus, instance: str, runs: Runs) -> None:
         self._bus = bus
+        self._runs = runs
         self._instance = instance
         self._leave: Unsubscribe | None = None
 
@@ -41,7 +42,7 @@ class CommandRunner:
 
     async def handle(self, envelope: CommandEnvelope) -> None:
         scope_id = envelope.scope.id
-        if RunRegistry.active(scope_id) is None:
+        if self._runs.active(scope_id) is None:
             return
 
         taken = await self._bus.take(
@@ -60,4 +61,4 @@ class CommandRunner:
                 command.by_user,
                 command.by_instance,
             )
-            RunRegistry.stop(scope_id, StopReason.USER_STOP)
+            self._runs.stop(scope_id, StopReason.USER_STOP)

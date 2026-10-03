@@ -1,7 +1,9 @@
 """Контекст вызова в тестах: личность без сессии приложения на время теста."""
 
-from collections.abc import Iterable, Iterator
-from contextvars import ContextVar
+from collections.abc import Generator, Iterable
+from contextlib import contextmanager
+from enum import StrEnum
+from typing import ClassVar
 from uuid import UUID
 
 import pytest
@@ -16,74 +18,97 @@ from boba.identity.context import (
     Subject,
 )
 
-TEST_TURN = "test-turn"
-"""Метка хода в контекстах вызова, которые ставят тесты."""
 
-TEST_PROFILE = "test"
-TEST_USER_ID = UUID(int=7)
-"""Пользователь тестового контекста по умолчанию."""
+class StandIdentity(StrEnum):
+    """Личность тестового контекста по умолчанию: метка хода, профиль, логин."""
 
-TEST_CONTEXTS = CallContexts()
-"""Держатель контекста вызова тестового процесса: стенды отдают его коду под
-тестом, фикстуры ставят и снимают через него контекст."""
+    TURN = "test-turn"
+    PROFILE = "test"
+    LOGIN = "tester"
 
 
-def install_context(monkeypatch: pytest.MonkeyPatch, context: CallContext) -> None:
-    """Ставит контекст вызова на время теста в любом контексте исполнения.
+class StandContexts(CallContexts):
+    """Держатель контекста вызова одного теста.
 
-    Async-тесты живут в одном контексте раннера anyio, и set() на contextvar
-    пережил бы тест; подмена самой переменной снимается monkeypatch'ем.
+    Создаётся в CallStand и уходит коду под тестом как обычный CallContexts.
+    Кроме контекста блока applied() знает закреплённый контекст теста: он
+    виден из любого контекста исполнения — и sync-тесту, и задаче раннера
+    anyio, и фикстуре, — чего одна переменная контекста исполнения не даёт.
     """
-    current: ContextVar[CallContext | None] = ContextVar(
-        "boba_call_context", default=context
-    )
-    monkeypatch.setattr(TEST_CONTEXTS, "_current", current)
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._pinned: CallContext | None = None
+
+    def pin(self, context: CallContext | None) -> None:
+        self._pinned = context
+
+    def peek(self) -> CallContext | None:
+        applied = super().peek()
+        if applied is not None:
+            return applied
+
+        return self._pinned
 
 
-def make_context(  # noqa: PLR0913 — личность собирается по частям, как в сессии
-    thread_id: str,
-    cancellation: RunCancellation | None = None,
-    *,
-    user_id: UUID = TEST_USER_ID,
-    login: str = "tester",
-    roles: Iterable[str] = (),
-    profile: str = TEST_PROFILE,
-) -> CallContext:
-    """Контекст хода чата, как его собирает on_message, без сессии приложения."""
-    if cancellation is None:
-        cancellation = RunCancellation()
+class CallStand:
+    """Контекст вызова теста: держатель и сборка контекстов хода чата.
 
-    return CallContext(
-        subject=Subject(
-            user_id=user_id, login=login, roles=frozenset(roles), profile=profile
-        ),
-        scope=Scope.chat(thread_id),
-        initiator=ChatInitiator(thread_id=thread_id, turn_id=TEST_TURN),
-        credential=NoUserCredential(reason="the test context carries no ticket"),
-        cancellation=cancellation,
-    )
+    Создаётся фикстурой call_stand на каждый тест. Держатель contexts тест
+    передаёт в конструкторы кода под тестом; контекст ставит use() — до конца
+    теста — или applied() — на блок.
+    """
+
+    USER_ID: ClassVar[UUID] = UUID(int=7)
+
+    def __init__(self) -> None:
+        self._contexts = StandContexts()
+
+    @property
+    def contexts(self) -> CallContexts:
+        return self._contexts
+
+    def context(  # noqa: PLR0913 — личность собирается по частям, как в сессии
+        self,
+        thread_id: str,
+        cancellation: RunCancellation | None = None,
+        *,
+        user_id: UUID = USER_ID,
+        login: str = StandIdentity.LOGIN,
+        roles: Iterable[str] = (),
+        profile: str = StandIdentity.PROFILE,
+    ) -> CallContext:
+        """Контекст хода чата, как его собирает on_message, без сессии приложения."""
+        if cancellation is None:
+            cancellation = RunCancellation()
+
+        return CallContext(
+            subject=Subject(
+                user_id=user_id, login=login, roles=frozenset(roles), profile=profile
+            ),
+            scope=Scope.chat(thread_id),
+            initiator=ChatInitiator(thread_id=thread_id, turn_id=StandIdentity.TURN),
+            credential=NoUserCredential(reason="the test context carries no ticket"),
+            cancellation=cancellation,
+        )
+
+    def use(self, context: CallContext) -> CallContext:
+        """Ставит контекст до конца теста в любом контексте исполнения."""
+        self._contexts.pin(context)
+        return context
+
+    def clear(self) -> None:
+        """Снимает контекст, поставленный use()."""
+        self._contexts.pin(None)
+
+    @contextmanager
+    def applied(self, context: CallContext) -> Generator[CallContext, None, None]:
+        """Ставит контекст и метку лога на время блока."""
+        with self._contexts.applied(context):
+            yield context
 
 
-def use_context(  # noqa: PLR0913 — личность собирается по частям, как в сессии
-    monkeypatch: pytest.MonkeyPatch,
-    *,
-    thread_id: str,
-    user_id: UUID = TEST_USER_ID,
-    login: str = "tester",
-    roles: Iterable[str] = (),
-    profile: str = TEST_PROFILE,
-) -> CallContext:
-    """Ставит контекст вызова хода чата на время теста."""
-    context = make_context(
-        thread_id, user_id=user_id, login=login, roles=roles, profile=profile
-    )
-    install_context(monkeypatch, context)
-    return context
-
-
-@pytest.fixture(autouse=True)
-def call_context_cleared() -> Iterator[None]:
-    """Контекст вызова — contextvar: без сброса он утёк бы между sync-тестами."""
-    TEST_CONTEXTS.reset()
-    yield
-    TEST_CONTEXTS.reset()
+@pytest.fixture
+def call_stand() -> CallStand:
+    """Контекст вызова теста: свой держатель на каждый тест."""
+    return CallStand()

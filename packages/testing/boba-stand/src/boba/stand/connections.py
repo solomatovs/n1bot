@@ -36,7 +36,7 @@ from boba.connections.sealed import (
     ConnectionSeal,
     SealKeys,
 )
-from boba.stand_core.context import TEST_CONTEXTS
+from boba.identity.context import CallContexts
 from boba.toolrun.injected import AsyncInjected
 
 __all__ = ["StandUserConnections"]
@@ -96,12 +96,17 @@ class StandUserConnections:
     TTL: ClassVar[timedelta] = timedelta(minutes=10)
 
     def __init__(
-        self, store_ref: StoreRef, credentials_ref: CredentialsRef, types_ref: TypesRef
+        self,
+        store_ref: StoreRef,
+        credentials_ref: CredentialsRef,
+        types_ref: TypesRef,
+        contexts: CallContexts,
     ) -> None:
         self._types_ref = types_ref
+        self._contexts = contexts
         self._keys = SealKeys()
         self._seal = ConnectionSeal(self._keys.public())
-        self._connections = ArmedConnections(store_ref, credentials_ref, TEST_CONTEXTS)
+        self._connections = ArmedConnections(store_ref, credentials_ref, contexts)
         self._hooks = ConnectionParamHooks(types_ref, SealedConnectionParam.ARGUMENT)
 
     def bind_all(self, tools: Sequence[BaseTool]) -> None:
@@ -109,7 +114,7 @@ class StandUserConnections:
 
     def _hook(self, tool: str, param: str, kind: str) -> AsyncInjected:
         executor = SealedConnectionParam(
-            self._keys, self._types_ref, TEST_CONTEXTS, param, kind
+            self._keys, self._types_ref, self._contexts, param, kind
         )
 
         return StandConnectionParam(self._connections, executor, self._seal, kind)

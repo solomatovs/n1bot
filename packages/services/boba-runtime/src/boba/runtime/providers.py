@@ -29,6 +29,7 @@ from boba.identity.context import CallContexts
 from boba.identity.directory import UserDirectory
 from boba.identity.errors import ServiceDisabledError
 from boba.identity.locks import LiveLocks, MemoryLiveLocks, StaleLock
+from boba.identity.run import Runs
 from boba.identity.sso import RefreshSignal
 from boba.identity.token import CookieSpec
 from boba.ldap import Ldap3Directory
@@ -61,7 +62,7 @@ from boba.runtime.threads import ThreadsTable
 from boba.runtime.turns import StaleTurnCloser
 from boba.runtime.users import UsersTable
 from boba.toolrun.registry import ToolRegistry
-from boba.toolrun.streams import ToolStreams
+from boba.toolrun.streams import CallJournals
 from boba.toolrun.wrapping import CallHooks
 
 logger = logging.getLogger(__name__)
@@ -259,6 +260,16 @@ def call_contexts_ref() -> CallContexts:
     return _root().resolved(call_contexts)
 
 
+def runs_ref() -> Runs:
+    """Реестр идущих запусков из корневого контейнера."""
+    return _root().resolved(runs)
+
+
+def call_journals_ref() -> CallJournals:
+    """Журналы живого вывода из корневого контейнера."""
+    return _root().resolved(call_journals)
+
+
 def connection_types_ref() -> ConnectionTypes:
     """Реестр типов соединений; зовётся на запрос."""
     return _root().resolved(connection_types)
@@ -272,6 +283,8 @@ def runtime_refs() -> RuntimeRefs:
         connection_types=connection_types_ref,
         credentials=credential_source_ref,
         contexts=_root().resolved(call_contexts),
+        runs=_root().resolved(runs),
+        journals=_root().resolved(call_journals),
         seal_keys=_root().resolved(seal_keys),
         live_locks=live_locks_ref,
         heartbeat_sec=_root().resolved(get_runtime_config).cluster.heartbeat_sec,
@@ -372,16 +385,24 @@ async def connection_store(
     return store
 
 
-def stream_journal(
+def runs(
+    contexts: Annotated[CallContexts, Depends(call_contexts)],
+) -> Runs:
+    """Реестр идущих запусков процесса."""
+    return Runs(contexts)
+
+
+def call_journals(
     config: Annotated[RuntimeConfig, Depends(get_runtime_config)],
-) -> None:
-    """Журнал живого вывода инструментов на процесс; без секции потоков нет."""
+    active: Annotated[Runs, Depends(runs)],
+) -> CallJournals:
+    """Журналы живого вывода инструментов на процесс; без секции потоков нет."""
     section = config.stream_journal
     if not section.enable:
-        return
+        return CallJournals(None, active)
 
     vault = DirVault(section.dir)
-    ToolStreams.configure(StreamJournal(vault, section.reserve_bytes))
+    return CallJournals(StreamJournal(vault, section.reserve_bytes), active)
 
 
 def users_table(
@@ -541,9 +562,10 @@ async def lock_reaper(
 def command_runner(
     bus: Annotated[MessageBus, Depends(message_bus)],
     instance: Annotated[str, Depends(instance_name)],
+    active: Annotated[Runs, Depends(runs)],
 ) -> CommandRunner:
     """Запускает исполнителя команд шины для запусков и ходов этого процесса."""
-    runner = CommandRunner(bus, instance)
+    runner = CommandRunner(bus, instance, active)
     runner.start()
     return runner
 

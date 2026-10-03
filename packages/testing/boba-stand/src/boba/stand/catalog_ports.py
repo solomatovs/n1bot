@@ -33,10 +33,10 @@ from boba.catalog_service import (
 from boba.connection_broker.tickets import ServiceTickets
 from boba.connections.credentials import CredentialSource
 from boba.db.postgres.catalog import CatalogStoreConfig
-from boba.identity.context import Subject
+from boba.identity.context import CallContexts, Subject
+from boba.identity.run import Runs
 from boba.stand.fake_sync import FakeConnection, fake_pg_snapshot
 from boba.stand.tools import STREAM_CONFIG
-from boba.stand_core.context import TEST_CONTEXTS
 from boba.toolkit.entry import ToolMain
 from boba.toolkit.facade import PayloadTool
 from boba.toolkit.wrap import ToolProcessWrap
@@ -58,9 +58,9 @@ class StubSyncPorts(SyncPorts):
     """Порты стенда без синхронизаций: инструментов нет, подключения из
     таблицы видны всем."""
 
-    def __init__(self, connections: Iterable[ConnectionInfo] = ()) -> None:
+    def __init__(self, runs: Runs, connections: Iterable[ConnectionInfo] = ()) -> None:
         directory = KnownConnectionDirectory(connections, None)
-        super().__init__(NoSyncTools(), directory, TEST_CONTEXTS)
+        super().__init__(NoSyncTools(), directory, runs)
 
 
 class FakeConnections:
@@ -88,8 +88,10 @@ class FakeSyncRegistry:
     домен каталога подставляется injected-конфигом, keytab его подключения
     едет билетом вызова."""
 
-    @classmethod
-    def build(cls, site: FakeSyncSite) -> ToolRegistry:
+    def __init__(self, contexts: CallContexts) -> None:
+        self._contexts = contexts
+
+    def build(self, site: FakeSyncSite) -> ToolRegistry:
         workdir = site.workdir
         role = site.role
         profile = site.profile
@@ -106,7 +108,7 @@ class FakeSyncRegistry:
                     "kill_grace_sec": 0.5,
                 }
             ),
-            TEST_CONTEXTS,
+            self._contexts,
         )
 
         copies: list[PayloadTool] = []
@@ -209,14 +211,16 @@ class FakeSyncPorts(SyncPorts):
 
     def __init__(
         self,
+        contexts: CallContexts,
+        runs: Runs,
         site: FakeSyncSite,
         connections: Iterable[ConnectionInfo],
         visible_to: Iterable[UUID],
     ) -> None:
-        registry = FakeSyncRegistry.build(site)
+        registry = FakeSyncRegistry(contexts).build(site)
         directory = KnownConnectionDirectory(connections, visible_to)
 
         async def registry_ref() -> ToolRegistry:
             return registry
 
-        super().__init__(RegistrySyncTools(registry_ref), directory, TEST_CONTEXTS)
+        super().__init__(RegistrySyncTools(registry_ref), directory, runs)

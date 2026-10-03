@@ -758,7 +758,7 @@ class PumpedCall(OpenRun[RunEnd], ToolCall):
     ToolOutcome переданной функцией finish.
     """
 
-    def __init__(  # noqa: PLR0913
+    def __init__(  # noqa: PLR0913 — фикстуры теста
         self,
         tool: str,
         inputs: CallInputs,

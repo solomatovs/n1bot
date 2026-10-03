@@ -19,7 +19,7 @@ from boba.canvas.canvas import CanvasAction
 from boba.chainlit.rendering.tool import ChatElements
 from boba.toolkit.calls import ToolCallModels, ToolIntent
 from boba.toolkit.result import ToolArtifact, VisualElement
-from boba.toolrun.streams import ToolStreams
+from boba.toolrun.streams import CallJournals
 from chainlit.config import config as chainlit_config
 from chainlit.context import context
 from chainlit.element import CustomElement
@@ -574,10 +574,12 @@ class ChatView:
         self,
         thread_id: str,
         sink: ChatSink,
+        journals: CallJournals,
         *,
         user_name: str | None = None,
     ) -> None:
         self._thread_id = thread_id
+        self._journals = journals
         self._batch = StreamBatch()
         self._sink = BatchedSink(sink, self._batch)
         display_name = user_name
@@ -977,7 +979,7 @@ class ChatView:
         if not key:
             return None
 
-        if not ToolStreams.streamable(name):
+        if not self._journals.streamable(name):
             return None
 
         element = CustomElement(

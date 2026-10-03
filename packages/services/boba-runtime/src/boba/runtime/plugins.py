@@ -32,7 +32,7 @@ from boba.chat.profiles import ProfilesSection, RolesSection
 from boba.config import bind
 from boba.connection_broker.sealed import SealedConnectionParams
 from boba.connection_broker.tickets import ServiceTickets
-from boba.runtime.launchers import CallSurface, SectionLaunchers, ToolLaunchers
+from boba.runtime.launchers import SectionLaunchers, ToolLaunchers
 from boba.runtime.refs import RuntimeRefs
 from boba.toolkit.entry import ToolArgv, ToolEntryError, ToolMain
 from boba.toolkit.launcher import ToolLauncher
@@ -56,7 +56,6 @@ from boba.toolrun.stream_calls import (
     StreamGroupsConfig,
     StreamGroupsConfigError,
 )
-from boba.toolrun.streams import ToolStreams
 from boba.toolrun.wrapping import CallHooks, ToolAsyncBody, ToolBody
 
 __all__ = [
@@ -127,7 +126,8 @@ class ToolLoader:
         сервер (ToolRegistry.server)."""
         self._credentials_ref = refs.credentials
         self._contexts = refs.contexts
-        self._surface = CallSurface(refs.contexts)
+        self._journals = refs.journals
+        self._run_log = ToolRunLogger(refs.journals, refs.contexts)
         self._sealed = SealedConnectionParams(
             refs.seal_keys, refs.connection_types, refs.contexts
         )
@@ -165,7 +165,7 @@ class ToolLoader:
             streamable: list[str] = []
             for tool in built:
                 streamable.append(tool.name)
-            ToolStreams.mark_streamable(streamable)
+            self._journals.mark_streamable(streamable)
 
         if next(self._stream_writers(tools), None) is not None:
             tools.append(ToolBridge.as_structured_tool(DevNullTool.build()))
@@ -183,9 +183,7 @@ class ToolLoader:
         StreamChannelFields(stream_cfg).attach_all(tools)
         ToolCallIdField.attach_all(tools)
         ToolIntentField.attach_all(tools)
-        ToolRunLogger.guard_all(
-            tools, self._surface.stream_source, self._surface.tool_call_scope
-        )
+        self._run_log.guard_all(tools)
         CancellableTools.guard_all(tools)
         ToolAccessGuard.guard_all(tools, access, self._contexts.subject)
         ToolErrorGuard().guard_all(tools)

@@ -18,7 +18,6 @@ from boba.chainlit.rendering.renderer import ChatRenderers, RenderSurface, Signa
 from boba.identity.context import Scope
 from boba.identity.errors import InternalServiceError
 from boba.identity.locks import LockMode
-from boba.identity.run import RunRegistry
 from boba.messaging import (
     CanvasChanged,
     ChatSettingsChanged,
@@ -262,7 +261,7 @@ class ChatRoomSurface(RenderSurface):
         return ChatRenderers.ensure(
             thread_id,
             root.resolved(runtime.message_bus),
-            ChatView(thread_id, LiveSink()),
+            ChatView(thread_id, LiveSink(), root.resolved(runtime.call_journals)),
             root.resolved(runtime.payload_store),
             cls(anchor, thread_id),
         )
@@ -449,12 +448,12 @@ class ThreadLive:
 
     @staticmethod
     async def turn_alive(thread_id: str) -> bool:
-        if RunRegistry.active(thread_id) is not None:
-            return True
-
         root = Container.root
         if root is None:
             return False
+
+        if root.resolved(runtime.runs).active(thread_id) is not None:
+            return True
 
         locks = root.resolved(runtime.live_locks)
         holders = await locks.holders_of(Scope.chat(thread_id))

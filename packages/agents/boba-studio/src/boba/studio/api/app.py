@@ -101,14 +101,14 @@ class ApiApp:
             profiles,
             refs.live_locks,
             refs.heartbeat_sec,
-            refs.contexts,
+            refs.runs,
         ).mount(router)
         DagRunning(
             refs.tool_registry,
             profiles,
             refs.live_locks,
             refs.heartbeat_sec,
-            refs.contexts,
+            refs.runs,
         ).mount(router)
         WorkflowApi().mount(router)
         for mount in extras.mounts:

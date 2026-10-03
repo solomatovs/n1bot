@@ -35,7 +35,7 @@ from boba.chainlit.infra.session import (
 from boba.chainlit.infra.thread_room import ChatRoomSurface, ThreadLive, ThreadRoom
 from boba.chainlit.rendering.renderer import ChatRenderers
 from boba.identity.errors import InternalServiceError
-from boba.identity.run import RunRegistry
+from boba.runtime import providers as runtime
 from chainlit.config import config as chainlit_config
 from chainlit.context import init_ws_context
 from chainlit.session import WebsocketSession
@@ -89,7 +89,7 @@ class SocketFacts:
 
         turn_alive = False
         if thread_id:
-            turn_alive = RunRegistry.active(thread_id) is not None
+            turn_alive = runtime.runs_ref().active(thread_id) is not None
 
         return cls(
             sid=session.socket_id,

@@ -25,8 +25,8 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 
 from boba.chat.profiles import ChatProfiles
-from boba.identity.context import CallContexts, Scope
-from boba.identity.run import RunRegistry
+from boba.identity.context import Scope
+from boba.identity.run import Runs
 from boba.studio.api.auth import ApiAuth, CurrentUser
 from boba.studio.api.tools import JobLock, LocksSource, RegistrySource
 from boba.studio.api.urls import DagUrl
@@ -115,12 +115,12 @@ class DagRunning:
         profiles: ChatProfiles,
         locks: LocksSource,
         heartbeat_sec: float,
-        contexts: CallContexts,
+        runs: Runs,
     ) -> None:
         self._registry = registry
         self._profiles = profiles
         self._job_lock = JobLock(locks, heartbeat_sec)
-        self._contexts = contexts
+        self._runs = runs
 
     def mount(self, router: APIRouter) -> None:
         router.add_api_route(
@@ -148,7 +148,7 @@ class DagRunning:
         )
 
         async with self._job_lock.held(context):
-            with RunRegistry.open(self._contexts, context):
+            with self._runs.open(context):
                 handle = self._start(runner, dag)
                 outcome = await handle.outcome()
 

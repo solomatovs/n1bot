@@ -44,6 +44,8 @@ from boba.db.postgres.snapshot_sample import PgSample
 from boba.identity.context import Subject
 from boba.stand.catalog_ports import StubSyncPorts
 from boba.stand.catalog_stand import CatalogStand, ChangeCollector
+from boba.stand.refs import StandRefs
+from boba.stand_core.context import CallStand
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
 
@@ -63,9 +65,13 @@ STRANGER = _subject(UUID(int=4))
 
 
 @pytest.fixture
-async def service(pool: AsyncPostgresPool) -> CatalogService:
+async def service(
+    runtime_stand: StandRefs, call_stand: CallStand, pool: AsyncPostgresPool
+) -> CatalogService:
     stand = await CatalogStand.build(pool, CONFIG, CatalogStand.kinds())
-    return stand.service(StubSyncPorts((PG_CONNECTION, WEB_CONNECTION)))
+    return stand.service(
+        StubSyncPorts(runtime_stand.runs, (PG_CONNECTION, WEB_CONNECTION))
+    )
 
 
 @pytest.fixture

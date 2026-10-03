@@ -59,7 +59,7 @@ from boba.sandbox import ZygoteRegistry
 from boba.stand.connections import StandUserConnections
 from boba.stand.refs import StandRefs
 from boba.stand.site import Stand
-from boba.stand_core.context import TEST_CONTEXTS, use_context
+from boba.stand_core.context import CallStand
 from boba.tool.describer.address import Addresses, EntityAddress
 from boba.tool.describer.edges import EdgeKind, EdgeListColumn
 from boba.tool.describer.nodes import NodeListColumn
@@ -263,12 +263,18 @@ def flow_raw(raw_config: DictConfig, test_database: str) -> DictConfig:
 
 @pytest.fixture(scope="module")
 def session_service(
-    flow_raw: DictConfig, app_config: AppConfig, app_sandbox: None
+    runtime_stand: StandRefs,
+    call_stand: CallStand,
+    flow_raw: DictConfig,
+    app_config: AppConfig,
+    app_sandbox: None,
 ) -> ToolServer:
     """Порт инструментов профиля: боевой загрузчик над хранилищем стенда,
     исполнитель и клиент, запечатывающий ссылки на соединения."""
-    refs = StandRefs.of(StoreHolder.current, lambda: None)
-    registry = ChatPlugins(TEST_CONTEXTS).load(flow_raw, refs)
+    refs = runtime_stand.of(StoreHolder.current, lambda: None)
+    registry = ChatPlugins(runtime_stand.contexts, runtime_stand.runs).load(
+        flow_raw, refs
+    )
     roles = frozenset(app_config.roles)
     tools = registry.for_session(roles, PROFILE)
     return SealingToolServer(
@@ -389,10 +395,23 @@ async def seeded_ch(ch_profile: ClickHouseConfig) -> AsyncIterator[None]:
         await client.command(f"drop database if exists {CH_DATABASE}")
 
 
+@pytest.fixture(scope="module")
+def call_stand() -> CallStand:
+    """Держатель контекста модуля: инструменты собираются раз на модуль и читают
+    контекст через него."""
+    return CallStand()
+
+
+@pytest.fixture(scope="module")
+def runtime_stand(call_stand: CallStand) -> StandRefs:
+    """Объекты процесса модуля поверх того же держателя контекста."""
+    return StandRefs(call_stand.contexts)
+
+
 @pytest.fixture
 async def chainlit_context(
-    app_config: AppConfig, monkeypatch: pytest.MonkeyPatch
-) -> None:
+    call_stand: CallStand, app_config: AppConfig, monkeypatch: pytest.MonkeyPatch
+) -> AsyncIterator[None]:
     """Сессия пользователя хода: его id совпадает с целью грантов."""
     from chainlit.context import init_http_context
 
@@ -401,14 +420,17 @@ async def chainlit_context(
 
     context = init_http_context(user=user)
     context.session.chat_profile = PROFILE
-    use_context(
-        monkeypatch,
-        thread_id=THREAD_ID,
-        user_id=USER_ID,
-        roles=roles,
-        profile=PROFILE,
-        login=LOGIN,
+    call_stand.use(
+        call_stand.context(
+            thread_id=THREAD_ID,
+            user_id=USER_ID,
+            roles=roles,
+            profile=PROFILE,
+            login=LOGIN,
+        )
     )
+    yield
+    call_stand.clear()
 
 
 def _graph(

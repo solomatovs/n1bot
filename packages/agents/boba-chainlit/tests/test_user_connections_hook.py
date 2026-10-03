@@ -47,7 +47,7 @@ from boba.messaging import MemoryMessageBus
 from boba.runtime.refresh import BusRefreshSignal
 from boba.stand.connections import StandUserConnections
 from boba.stand.site import Stand
-from boba.stand_core.context import TEST_CONTEXTS
+from boba.stand_core.context import CallStand
 from boba.tool.pg.tools import PgToolConfig
 from boba.tool.web.tools import WebToolsConfig
 from boba.toolkit.facade import Injected, UserConnection
@@ -168,7 +168,12 @@ class Capture:
     """Инструмент-перехватчик: возвращает kwargs, с которыми пошло бы тело."""
 
     @staticmethod
-    def tool(raw_config: Any, store: ConnectionStore, tickets: SsoTickets | None):
+    def tool(
+        call_stand: CallStand,
+        raw_config: Any,
+        store: ConnectionStore,
+        tickets: SsoTickets | None,
+    ):
         schema = create_model(
             "CaptureArgs",
             connection=(Annotated[PostgresConfig, UserConnection], ...),
@@ -192,15 +197,21 @@ class Capture:
             lambda: store,
             lambda: KerberosCredentialSource(
                 tickets,
-                BusRefreshSignal(lambda: MemoryMessageBus("test"), TEST_CONTEXTS),
+                BusRefreshSignal(lambda: MemoryMessageBus("test"), call_stand.contexts),
             ),
             ConnectionTypes.discover,
+            call_stand.contexts,
         ).bind_all([tool])
         InjectedConfig.bind_all([tool], resolve)
         return tool
 
     @staticmethod
-    def web_tool(raw_config: Any, store: ConnectionStore, tickets: SsoTickets):
+    def web_tool(
+        call_stand: CallStand,
+        raw_config: Any,
+        store: ConnectionStore,
+        tickets: SsoTickets,
+    ):
         schema = create_model(
             "CaptureWebArgs",
             url=(str, ...),
@@ -225,9 +236,10 @@ class Capture:
             lambda: store,
             lambda: KerberosCredentialSource(
                 tickets,
-                BusRefreshSignal(lambda: MemoryMessageBus("test"), TEST_CONTEXTS),
+                BusRefreshSignal(lambda: MemoryMessageBus("test"), call_stand.contexts),
             ),
             ConnectionTypes.discover,
+            call_stand.contexts,
         ).bind_all([tool])
         InjectedConfig.bind_all([tool], resolve)
         return tool
@@ -279,7 +291,9 @@ class Session:
         return persisted
 
     @staticmethod
-    def enter(user: PersistedUser, login_metadata: dict[str, object]) -> str:
+    def enter(
+        call_stand: CallStand, user: PersistedUser, login_metadata: dict[str, object]
+    ) -> str:
         """Сессия пользователя с JWT данного входа; итог — сам токен."""
         from chainlit.auth.jwt import create_jwt
         from chainlit.context import init_http_context
@@ -287,7 +301,7 @@ class Session:
         token = create_jwt(StandTokens.user(user.identifier, login_metadata))
         context = init_http_context(user=user, auth_token=token, thread_id=THREAD)
         context.session.chat_profile = PROFILE
-        enter_context()
+        enter_context(call_stand)
         return token
 
 
@@ -300,6 +314,7 @@ def _servers(ticket: TicketAuth) -> list[str]:
 
 
 async def test_only_requested_profile_is_shipped(
+    call_stand: CallStand,
     raw_config: Any,
     store: ConnectionStore,
     layer: PostgresDataLayer,
@@ -313,17 +328,19 @@ async def test_only_requested_profile_is_shipped(
     second = await store.add("beta", plain)
     await store.grant(first, GrantTarget.user(UUID(user.id)))
     await store.grant(second, GrantTarget.user(UUID(user.id)))
-    Session.enter(user, dict(user.metadata))
+    Session.enter(call_stand, user, dict(user.metadata))
 
     connection = await Capture.connection(
-        Capture.tool(raw_config, store, None), "alpha"
+        Capture.tool(call_stand, raw_config, store, None), "alpha"
     )
 
     if connection.dbname != plain.dbname:
         raise AssertionError("the requested row must reach the body")
 
     with pytest.raises(RefusalError) as caught:
-        await Capture.connection(Capture.tool(raw_config, store, None), "gamma")
+        await Capture.connection(
+            Capture.tool(call_stand, raw_config, store, None), "gamma"
+        )
 
     if caught.value.kind != ConnectionRefusal.NOT_VISIBLE:
         raise AssertionError(f"unknown name must be refused: {caught.value.kind}")
@@ -332,6 +349,7 @@ async def test_only_requested_profile_is_shipped(
 
 
 async def test_client_label_names_the_user_and_the_tool(
+    call_stand: CallStand,
     raw_config: Any,
     store: ConnectionStore,
     layer: PostgresDataLayer,
@@ -343,10 +361,10 @@ async def test_client_label_names_the_user_and_the_tool(
     )
     user = await Session.user(layer, "hook-label", Session.local_metadata())
     await store.grant(await store.add("alpha", plain), GrantTarget.user(UUID(user.id)))
-    Session.enter(user, dict(user.metadata))
+    Session.enter(call_stand, user, dict(user.metadata))
 
     connection = await Capture.connection(
-        Capture.tool(raw_config, store, None), "alpha"
+        Capture.tool(call_stand, raw_config, store, None), "alpha"
     )
 
     shipped = connection
@@ -357,6 +375,7 @@ async def test_client_label_names_the_user_and_the_tool(
 
 
 async def test_unrequested_call_ships_names_only(
+    call_stand: CallStand,
     raw_config: Any,
     store: ConnectionStore,
     layer: PostgresDataLayer,
@@ -368,10 +387,12 @@ async def test_unrequested_call_ships_names_only(
     user = await Session.user(layer, "hook-names", Session.local_metadata())
     connection_id = await store.add("alpha", plain)
     await store.grant(connection_id, GrantTarget.user(UUID(user.id)))
-    Session.enter(user, dict(user.metadata))
+    Session.enter(call_stand, user, dict(user.metadata))
 
     with pytest.raises(RefusalError) as caught:
-        await Capture.connection(Capture.tool(raw_config, store, None), "nothing")
+        await Capture.connection(
+            Capture.tool(call_stand, raw_config, store, None), "nothing"
+        )
 
     if caught.value.kind != ConnectionRefusal.NOT_VISIBLE:
         raise AssertionError(f"unknown name must be refused: {caught.value.kind}")
@@ -381,6 +402,7 @@ async def test_unrequested_call_ships_names_only(
 
 @live_kdc
 async def test_keytab_row_ships_a_service_ticket_only(
+    call_stand: CallStand,
     raw_config: Any,
     store: ConnectionStore,
     layer: PostgresDataLayer,
@@ -389,9 +411,11 @@ async def test_keytab_row_ships_a_service_ticket_only(
     user = await Session.user(layer, "hook-keytab", Session.local_metadata())
     connection_id = await store.add("main", service_pg)
     await store.grant(connection_id, GrantTarget.user(UUID(user.id)))
-    Session.enter(user, dict(user.metadata))
+    Session.enter(call_stand, user, dict(user.metadata))
 
-    connection = await Capture.connection(Capture.tool(raw_config, store, None), "main")
+    connection = await Capture.connection(
+        Capture.tool(call_stand, raw_config, store, None), "main"
+    )
 
     shipped = connection.auth
     if not isinstance(shipped, TicketAuth):
@@ -407,7 +431,8 @@ async def test_keytab_row_ships_a_service_ticket_only(
 
 
 @live_kdc
-async def test_delegated_row_uses_the_session_principal(
+async def test_delegated_row_uses_the_session_principal(  # noqa: PLR0913 — фикстуры теста
+    call_stand: CallStand,
     raw_config: Any,
     store: ConnectionStore,
     layer: PostgresDataLayer,
@@ -418,10 +443,10 @@ async def test_delegated_row_uses_the_session_principal(
     user = await Session.user(layer, "hook-sso", sso_meta)
     connection_id = await store.add("main", delegated_pg)
     await store.grant(connection_id, GrantTarget.user(UUID(user.id)))
-    Session.enter(user, sso_meta)
+    Session.enter(call_stand, user, sso_meta)
 
     connection = await Capture.connection(
-        Capture.tool(raw_config, store, sso[0]), "main"
+        Capture.tool(call_stand, raw_config, store, sso[0]), "main"
     )
 
     shipped = connection.auth
@@ -438,7 +463,8 @@ async def test_delegated_row_uses_the_session_principal(
 
 
 @live_kdc
-async def test_role_shared_delegated_row_gives_each_user_their_own_ticket(
+async def test_role_shared_delegated_row_gives_each_user_their_own_ticket(  # noqa: PLR0913 — фикстуры теста
+    call_stand: CallStand,
     raw_config: Any,
     store: ConnectionStore,
     layer: PostgresDataLayer,
@@ -448,17 +474,17 @@ async def test_role_shared_delegated_row_gives_each_user_their_own_ticket(
     roles = StoredRole.by_name(await store.roles())
     connection_id = await store.add("shared", delegated_pg)
     await store.grant(connection_id, GrantTarget.role(roles[ROLE]))
-    tool = Capture.tool(raw_config, store, sso[0])
+    tool = Capture.tool(call_stand, raw_config, store, sso[0])
 
     first_meta = Session.sso_metadata(SERVICE_PRINCIPAL, sso[1][SERVICE_PRINCIPAL])
     second_meta = Session.sso_metadata(READER_PRINCIPAL, sso[1][READER_PRINCIPAL])
     first = await Session.user(layer, "hook-role-a", first_meta)
     second = await Session.user(layer, "hook-role-b", second_meta)
 
-    Session.enter(first, first_meta)
+    Session.enter(call_stand, first, first_meta)
     ticket_a = (await Capture.connection(tool, "shared")).auth
 
-    Session.enter(second, second_meta)
+    Session.enter(call_stand, second, second_meta)
     ticket_b = (await Capture.connection(tool, "shared")).auth
 
     if not isinstance(ticket_a, TicketAuth) or not isinstance(ticket_b, TicketAuth):
@@ -474,7 +500,8 @@ async def test_role_shared_delegated_row_gives_each_user_their_own_ticket(
 
 
 @live_kdc
-async def test_delegated_row_refuses_session_without_sso(
+async def test_delegated_row_refuses_session_without_sso(  # noqa: PLR0913 — фикстуры теста
+    call_stand: CallStand,
     raw_config: Any,
     store: ConnectionStore,
     layer: PostgresDataLayer,
@@ -484,17 +511,20 @@ async def test_delegated_row_refuses_session_without_sso(
     user = await Session.user(layer, "hook-local", Session.local_metadata())
     connection_id = await store.add("main", delegated_pg)
     await store.grant(connection_id, GrantTarget.user(UUID(user.id)))
-    Session.enter(user, dict(user.metadata))
+    Session.enter(call_stand, user, dict(user.metadata))
 
     with pytest.raises(RefusalError) as caught:
-        await Capture.connection(Capture.tool(raw_config, store, sso[0]), "main")
+        await Capture.connection(
+            Capture.tool(call_stand, raw_config, store, sso[0]), "main"
+        )
 
     if caught.value.kind != ConnectionRefusal.NO_DELEGATION:
         raise AssertionError(f"unexpected refusal: {caught.value.kind}")
 
 
 @live_kdc
-async def test_delegated_row_refuses_unknown_principal(
+async def test_delegated_row_refuses_unknown_principal(  # noqa: PLR0913 — фикстуры теста
+    call_stand: CallStand,
     raw_config: Any,
     store: ConnectionStore,
     layer: PostgresDataLayer,
@@ -507,16 +537,19 @@ async def test_delegated_row_refuses_unknown_principal(
     user = await Session.user(layer, "hook-no-ticket", sso_meta)
     connection_id = await store.add("main", delegated_pg)
     await store.grant(connection_id, GrantTarget.user(UUID(user.id)))
-    Session.enter(user, sso_meta)
+    Session.enter(call_stand, user, sso_meta)
 
     with pytest.raises(RefusalError) as caught:
-        await Capture.connection(Capture.tool(raw_config, store, sso[0]), "main")
+        await Capture.connection(
+            Capture.tool(call_stand, raw_config, store, sso[0]), "main"
+        )
 
     if caught.value.kind != ConnectionRefusal.NO_DELEGATION:
         raise AssertionError(f"unexpected refusal: {caught.value.kind}")
 
 
 async def test_delegated_row_refuses_without_sso_configured(
+    call_stand: CallStand,
     raw_config: Any,
     store: ConnectionStore,
     layer: PostgresDataLayer,
@@ -526,17 +559,20 @@ async def test_delegated_row_refuses_without_sso_configured(
     user = await Session.user(layer, "hook-no-sso", sso_meta)
     connection_id = await store.add("main", delegated_pg)
     await store.grant(connection_id, GrantTarget.user(UUID(user.id)))
-    Session.enter(user, sso_meta)
+    Session.enter(call_stand, user, sso_meta)
 
     with pytest.raises(RefusalError) as caught:
-        await Capture.connection(Capture.tool(raw_config, store, None), "main")
+        await Capture.connection(
+            Capture.tool(call_stand, raw_config, store, None), "main"
+        )
 
     if caught.value.kind != ConnectionRefusal.NO_DELEGATION:
         raise AssertionError(f"unexpected refusal: {caught.value.kind}")
 
 
 @live_kdc
-async def test_stale_users_row_does_not_grant_a_local_login(
+async def test_stale_users_row_does_not_grant_a_local_login(  # noqa: PLR0913 — фикстуры теста
+    call_stand: CallStand,
     raw_config: Any,
     store: ConnectionStore,
     layer: PostgresDataLayer,
@@ -548,17 +584,20 @@ async def test_stale_users_row_does_not_grant_a_local_login(
     user = await Session.user(layer, "hook-stale", sso_meta)
     connection_id = await store.add("main", delegated_pg)
     await store.grant(connection_id, GrantTarget.user(UUID(user.id)))
-    Session.enter(user, Session.local_metadata())
+    Session.enter(call_stand, user, Session.local_metadata())
 
     with pytest.raises(RefusalError) as caught:
-        await Capture.connection(Capture.tool(raw_config, store, sso[0]), "main")
+        await Capture.connection(
+            Capture.tool(call_stand, raw_config, store, sso[0]), "main"
+        )
 
     if caught.value.kind != ConnectionRefusal.NO_DELEGATION:
         raise AssertionError(f"unexpected refusal: {caught.value.kind}")
 
 
 @live_kdc
-async def test_login_label_must_match_its_principal(
+async def test_login_label_must_match_its_principal(  # noqa: PLR0913 — фикстуры теста
+    call_stand: CallStand,
     raw_config: Any,
     store: ConnectionStore,
     layer: PostgresDataLayer,
@@ -570,10 +609,12 @@ async def test_login_label_must_match_its_principal(
     user = await Session.user(layer, "hook-forged", forged)
     connection_id = await store.add("main", delegated_pg)
     await store.grant(connection_id, GrantTarget.user(UUID(user.id)))
-    Session.enter(user, forged)
+    Session.enter(call_stand, user, forged)
 
     with pytest.raises(RefusalError) as caught:
-        await Capture.connection(Capture.tool(raw_config, store, sso[0]), "main")
+        await Capture.connection(
+            Capture.tool(call_stand, raw_config, store, sso[0]), "main"
+        )
 
     if caught.value.kind != ConnectionRefusal.NO_DELEGATION:
         raise AssertionError(f"unexpected refusal: {caught.value.kind}")

@@ -41,7 +41,7 @@ from boba.messaging import MemoryMessageBus
 from boba.runtime.refresh import BusRefreshSignal
 from boba.stand.connections import StandUserConnections
 from boba.stand.site import Stand
-from boba.stand_core.context import TEST_CONTEXTS
+from boba.stand_core.context import CallStand
 from boba.tool.pg.tools import PgToolConfig
 from boba.tool.web.tools import WebToolsConfig
 from boba.toolkit.facade import Injected, UserConnection
@@ -246,21 +246,28 @@ class Session:
         return persisted
 
     @staticmethod
-    def enter(user: PersistedUser, login_metadata: dict[str, object]) -> None:
+    def enter(
+        call_stand: CallStand, user: PersistedUser, login_metadata: dict[str, object]
+    ) -> None:
         from chainlit.auth.jwt import create_jwt
         from chainlit.context import init_http_context
 
         token = create_jwt(StandTokens.user(user.identifier, login_metadata))
         context = init_http_context(user=user, auth_token=token, thread_id=THREAD)
         context.session.chat_profile = PROFILE
-        enter_context()
+        enter_context(call_stand)
 
 
 class Guarded:
     """Инструмент с обвязкой соединений и охранником ошибок, как в приложении."""
 
     @staticmethod
-    def pg(raw_config: Any, store: ConnectionStore, tickets: SsoTickets | None):
+    def pg(
+        call_stand: CallStand,
+        raw_config: Any,
+        store: ConnectionStore,
+        tickets: SsoTickets | None,
+    ):
         schema = create_model(
             "GuardedPgArgs",
             connection=(Annotated[PostgresConfig, UserConnection], ...),
@@ -270,10 +277,10 @@ class Guarded:
         def resolve(name: str, annotation: Any) -> object:
             return bind(raw_config, path="tool.pg", model=PgToolConfig)
 
-        return Guarded._build(schema, store, tickets, resolve)
+        return Guarded._build(call_stand, schema, store, tickets, resolve)
 
     @staticmethod
-    def web(raw_config: Any, store: ConnectionStore):
+    def web(call_stand: CallStand, raw_config: Any, store: ConnectionStore):
         """Как web_fetch_page: соединение параметром, покрытие хоста URL
         проверяет само тело через HttpConnection.for_url."""
         schema = create_model(
@@ -298,10 +305,12 @@ class Guarded:
             connection.for_url(url)
             return "ok", kwargs
 
-        return Guarded._build(schema, store, None, resolve, body)
+        return Guarded._build(call_stand, schema, store, None, resolve, body)
 
     @staticmethod
-    def _build(schema, store, tickets, resolve, body=None) -> StructuredTool:
+    def _build(  # noqa: PLR0913 — фикстуры теста
+        call_stand: CallStand, schema, store, tickets, resolve, body=None
+    ) -> StructuredTool:
         async def echo(**kwargs: object) -> tuple[str, dict[str, object]]:
             return "ok", kwargs
 
@@ -320,9 +329,10 @@ class Guarded:
             lambda: store,
             lambda: KerberosCredentialSource(
                 tickets,
-                BusRefreshSignal(lambda: MemoryMessageBus("test"), TEST_CONTEXTS),
+                BusRefreshSignal(lambda: MemoryMessageBus("test"), call_stand.contexts),
             ),
             ConnectionTypes.discover,
+            call_stand.contexts,
         ).bind_all([tool])
         InjectedConfig.bind_all([tool], resolve)
         ToolErrorGuard().guard_all([tool])
@@ -365,16 +375,22 @@ async def _grant_delegated(
 class TestDelegationUnavailable:
     """1.1: делегированный тикет не получить."""
 
-    async def test_sso_not_configured(
-        self, raw_config, store, layer, delegated_pg, tmp_path: Path
+    async def test_sso_not_configured(  # noqa: PLR0913 — фикстуры теста
+        self,
+        call_stand: CallStand,
+        raw_config,
+        store,
+        layer,
+        delegated_pg,
+        tmp_path: Path,
     ) -> None:
         sso = Session.sso(SERVICE_PRINCIPAL, "sealed-unused")
         user = await Session.user(layer, "f-no-sso", sso)
         await _grant_delegated(store, delegated_pg, user)
-        Session.enter(user, sso)
+        Session.enter(call_stand, user, sso)
 
         result = await Guarded.failure(
-            Guarded.pg(raw_config, store, None), connection="main"
+            Guarded.pg(call_stand, raw_config, store, None), connection="main"
         )
 
         _expect(
@@ -384,15 +400,21 @@ class TestDelegationUnavailable:
         )
 
     @live_kdc
-    async def test_local_login(
-        self, raw_config, store, layer, delegated_pg, tmp_path: Path
+    async def test_local_login(  # noqa: PLR0913 — фикстуры теста
+        self,
+        call_stand: CallStand,
+        raw_config,
+        store,
+        layer,
+        delegated_pg,
+        tmp_path: Path,
     ) -> None:
         user = await Session.user(layer, "f-local", Session.local())
         await _grant_delegated(store, delegated_pg, user)
-        Session.enter(user, Session.local())
+        Session.enter(call_stand, user, Session.local())
 
         result = await Guarded.failure(
-            Guarded.pg(raw_config, store, Tickets.healthy(tmp_path)[0]),
+            Guarded.pg(call_stand, raw_config, store, Tickets.healthy(tmp_path)[0]),
             connection="main",
         )
 
@@ -404,17 +426,23 @@ class TestDelegationUnavailable:
         )
 
     @live_kdc
-    async def test_sso_login_without_delegation(
-        self, raw_config, store, layer, delegated_pg, tmp_path: Path
+    async def test_sso_login_without_delegation(  # noqa: PLR0913 — фикстуры теста
+        self,
+        call_stand: CallStand,
+        raw_config,
+        store,
+        layer,
+        delegated_pg,
+        tmp_path: Path,
     ) -> None:
         """AD не выдал форвардный тикет: вход прошёл, метки входа нет."""
         metadata = Session.sso_without_delegation(SERVICE_PRINCIPAL)
         user = await Session.user(layer, "f-no-delegation", metadata)
         await _grant_delegated(store, delegated_pg, user)
-        Session.enter(user, metadata)
+        Session.enter(call_stand, user, metadata)
 
         result = await Guarded.failure(
-            Guarded.pg(raw_config, store, Tickets.healthy(tmp_path)[0]),
+            Guarded.pg(call_stand, raw_config, store, Tickets.healthy(tmp_path)[0]),
             connection="main",
         )
 
@@ -426,8 +454,14 @@ class TestDelegationUnavailable:
         )
 
     @live_kdc
-    async def test_ticket_sealed_by_another_secret(
-        self, raw_config, store, layer, delegated_pg, tmp_path: Path
+    async def test_ticket_sealed_by_another_secret(  # noqa: PLR0913 — фикстуры теста
+        self,
+        call_stand: CallStand,
+        raw_config,
+        store,
+        layer,
+        delegated_pg,
+        tmp_path: Path,
     ) -> None:
         """Билет запечатан другим секретом (другой инстанс): открыть его нельзя."""
         healthy = Tickets.healthy(tmp_path)
@@ -438,10 +472,10 @@ class TestDelegationUnavailable:
         metadata = Session.sso(SERVICE_PRINCIPAL, sealed)
         user = await Session.user(layer, "f-foreign-secret", metadata)
         await _grant_delegated(store, delegated_pg, user)
-        Session.enter(user, metadata)
+        Session.enter(call_stand, user, metadata)
 
         result = await Guarded.failure(
-            Guarded.pg(raw_config, store, healthy[0]), connection="main"
+            Guarded.pg(call_stand, raw_config, store, healthy[0]), connection="main"
         )
 
         _expect(
@@ -451,59 +485,83 @@ class TestDelegationUnavailable:
             "sign in again",
         )
 
-    async def test_delegated_ticket_expired(
-        self, raw_config, store, layer, delegated_pg, tmp_path: Path
+    async def test_delegated_ticket_expired(  # noqa: PLR0913 — фикстуры теста
+        self,
+        call_stand: CallStand,
+        raw_config,
+        store,
+        layer,
+        delegated_pg,
+        tmp_path: Path,
     ) -> None:
         tickets, sealed = Tickets.expired(tmp_path)
         sso = Session.sso(SERVICE_PRINCIPAL, sealed)
         user = await Session.user(layer, "f-expired", sso)
         await _grant_delegated(store, delegated_pg, user)
-        Session.enter(user, sso)
+        Session.enter(call_stand, user, sso)
 
         result = await Guarded.failure(
-            Guarded.pg(raw_config, store, tickets),
+            Guarded.pg(call_stand, raw_config, store, tickets),
             connection="main",
         )
 
         _expect(result, "CredentialsExpiredError", "expired", "sign in again")
 
-    async def test_kdc_unreachable(
-        self, raw_config, store, layer, delegated_pg, tmp_path: Path
+    async def test_kdc_unreachable(  # noqa: PLR0913 — фикстуры теста
+        self,
+        call_stand: CallStand,
+        raw_config,
+        store,
+        layer,
+        delegated_pg,
+        tmp_path: Path,
     ) -> None:
         tickets, sealed = Tickets.dead_kdc(tmp_path)
         sso = Session.sso(SERVICE_PRINCIPAL, sealed)
         user = await Session.user(layer, "f-kdc", sso)
         await _grant_delegated(store, delegated_pg, user)
-        Session.enter(user, sso)
+        Session.enter(call_stand, user, sso)
 
         result = await Guarded.failure(
-            Guarded.pg(raw_config, store, tickets),
+            Guarded.pg(call_stand, raw_config, store, tickets),
             connection="main",
         )
 
         _expect(result, "KerberosError", "KDC")
 
     @live_kdc
-    async def test_service_unknown_to_kdc(
-        self, raw_config, store, layer, delegated_pg, tmp_path: Path
+    async def test_service_unknown_to_kdc(  # noqa: PLR0913 — фикстуры теста
+        self,
+        call_stand: CallStand,
+        raw_config,
+        store,
+        layer,
+        delegated_pg,
+        tmp_path: Path,
     ) -> None:
         nowhere = delegated_pg.model_copy(update={"host": UNKNOWN_HOST})
         tickets, sealed = Tickets.healthy(tmp_path)
         sso = Session.sso(SERVICE_PRINCIPAL, sealed)
         user = await Session.user(layer, "f-spn", sso)
         await _grant_delegated(store, nowhere, user)
-        Session.enter(user, sso)
+        Session.enter(call_stand, user, sso)
 
         result = await Guarded.failure(
-            Guarded.pg(raw_config, store, tickets),
+            Guarded.pg(call_stand, raw_config, store, tickets),
             connection="main",
         )
 
         _expect(result, "KerberosError", UNKNOWN_HOST)
 
     @live_kdc
-    async def test_ticket_too_short_for_the_row(
-        self, raw_config, store, layer, service_pg, tmp_path: Path
+    async def test_ticket_too_short_for_the_row(  # noqa: PLR0913 — фикстуры теста
+        self,
+        call_stand: CallStand,
+        raw_config,
+        store,
+        layer,
+        service_pg,
+        tmp_path: Path,
     ) -> None:
         strict = service_pg.model_copy(
             update={
@@ -514,10 +572,10 @@ class TestDelegationUnavailable:
         sso = Session.sso(SERVICE_PRINCIPAL, sealed)
         user = await Session.user(layer, "f-short", sso)
         await _grant_delegated(store, strict, user)
-        Session.enter(user, sso)
+        Session.enter(call_stand, user, sso)
 
         result = await Guarded.failure(
-            Guarded.pg(raw_config, store, tickets),
+            Guarded.pg(call_stand, raw_config, store, tickets),
             connection="main",
         )
 
@@ -533,15 +591,21 @@ class TestRefusalText:
             if noise in result.llm_view():
                 raise AssertionError(f"{noise!r} leaked into {result.llm_view()!r}")
 
-    async def test_kind_is_the_refusal_kind(
-        self, raw_config, store, layer, delegated_pg, tmp_path: Path
+    async def test_kind_is_the_refusal_kind(  # noqa: PLR0913 — фикстуры теста
+        self,
+        call_stand: CallStand,
+        raw_config,
+        store,
+        layer,
+        delegated_pg,
+        tmp_path: Path,
     ) -> None:
         user = await Session.user(layer, "f-kind", Session.local())
         await _grant_delegated(store, delegated_pg, user)
-        Session.enter(user, Session.local())
+        Session.enter(call_stand, user, Session.local())
 
         result = await Guarded.failure(
-            Guarded.pg(raw_config, store, Tickets.healthy(tmp_path)[0]),
+            Guarded.pg(call_stand, raw_config, store, Tickets.healthy(tmp_path)[0]),
             connection="main",
         )
 
@@ -550,15 +614,21 @@ class TestRefusalText:
             raise AssertionError(msg)
         self._refusal(result)
 
-    async def test_message_names_the_provider_and_the_way_out(
-        self, raw_config, store, layer, delegated_pg, tmp_path: Path
+    async def test_message_names_the_provider_and_the_way_out(  # noqa: PLR0913 — фикстуры теста
+        self,
+        call_stand: CallStand,
+        raw_config,
+        store,
+        layer,
+        delegated_pg,
+        tmp_path: Path,
     ) -> None:
         user = await Session.user(layer, "f-text", Session.local())
         await _grant_delegated(store, delegated_pg, user)
-        Session.enter(user, Session.local())
+        Session.enter(call_stand, user, Session.local())
 
         result = await Guarded.failure(
-            Guarded.pg(raw_config, store, Tickets.healthy(tmp_path)[0]),
+            Guarded.pg(call_stand, raw_config, store, Tickets.healthy(tmp_path)[0]),
             connection="main",
         )
 
@@ -575,12 +645,14 @@ class TestRefusalText:
 class TestNoConnections:
     """1.2: соединений нет или они непригодны."""
 
-    async def test_no_grants_at_all(self, raw_config, store, layer) -> None:
+    async def test_no_grants_at_all(
+        self, call_stand: CallStand, raw_config, store, layer
+    ) -> None:
         user = await Session.user(layer, "f-empty", Session.local())
-        Session.enter(user, Session.local())
+        Session.enter(call_stand, user, Session.local())
 
         result = await Guarded.failure(
-            Guarded.pg(raw_config, store, None), connection="main"
+            Guarded.pg(call_stand, raw_config, store, None), connection="main"
         )
 
         _expect(
@@ -590,11 +662,17 @@ class TestNoConnections:
             "yours are: none",
         )
 
-    async def test_store_unavailable(
-        self, raw_config, layer, app_config, test_database, key: SecretStr
+    async def test_store_unavailable(  # noqa: PLR0913 — фикстуры теста
+        self,
+        call_stand: CallStand,
+        raw_config,
+        layer,
+        app_config,
+        test_database,
+        key: SecretStr,
     ) -> None:
         user = await Session.user(layer, "f-store-down", Session.local())
-        Session.enter(user, Session.local())
+        Session.enter(call_stand, user, Session.local())
 
         closed = AsyncPostgresPool(
             app_config.data_layer.postgres.model_copy(update={"dbname": test_database})
@@ -605,13 +683,13 @@ class TestNoConnections:
         broken = ConnectionStore(cfg, ConnectionTypes.discover(), closed)
 
         result = await Guarded.failure(
-            Guarded.pg(raw_config, broken, None), connection="main"
+            Guarded.pg(call_stand, raw_config, broken, None), connection="main"
         )
 
         _expect(result, "ConnectionStoreError", "for subject in schema", "failed")
 
     async def test_row_is_not_a_profile(
-        self, raw_config, store, layer, pool: AsyncPostgresPool
+        self, call_stand: CallStand, raw_config, store, layer, pool: AsyncPostgresPool
     ) -> None:
         user = await Session.user(layer, "f-garbage", Session.local())
         async with pool.cursor() as cur:
@@ -625,16 +703,22 @@ class TestNoConnections:
         if row is None:
             raise AssertionError("row must be inserted")
         await store.grant(UUID(str(row[0])), GrantTarget.user(UUID(user.id)))
-        Session.enter(user, Session.local())
+        Session.enter(call_stand, user, Session.local())
 
         result = await Guarded.failure(
-            Guarded.pg(raw_config, store, None), connection="broken"
+            Guarded.pg(call_stand, raw_config, store, None), connection="broken"
         )
 
         _expect(result, "ConnectionStoreError", "is not a valid connection")
 
-    async def test_wrong_encryption_key(
-        self, raw_config, store, layer, pool: AsyncPostgresPool, service_pg
+    async def test_wrong_encryption_key(  # noqa: PLR0913 — фикстуры теста
+        self,
+        call_stand: CallStand,
+        raw_config,
+        store,
+        layer,
+        pool: AsyncPostgresPool,
+        service_pg,
     ) -> None:
         user = await Session.user(layer, "f-key", Session.local())
         secret = service_pg.model_copy(
@@ -646,13 +730,13 @@ class TestNoConnections:
         )
         connection_id = await store.add("main", secret)
         await store.grant(connection_id, GrantTarget.user(UUID(user.id)))
-        Session.enter(user, Session.local())
+        Session.enter(call_stand, user, Session.local())
 
         cfg = ConnectionsConfig(enable=True, db_schema=SCHEMA, encryption_key=_key())
         foreign = ConnectionStore(cfg, ConnectionTypes.discover(), pool)
 
         result = await Guarded.failure(
-            Guarded.pg(raw_config, foreign, None), connection="main"
+            Guarded.pg(call_stand, raw_config, foreign, None), connection="main"
         )
 
         _expect(result, "SecretCryptoError", "decrypting a stored secret failed")
@@ -671,8 +755,14 @@ class TestNoConnections:
         ],
         ids=["keytab-with-own-ccache", "ticket-in-the-table", "unknown-method"],
     )
-    async def test_row_with_a_bad_auth_is_not_a_profile(
-        self, raw_config, store, layer, pool: AsyncPostgresPool, auth
+    async def test_row_with_a_bad_auth_is_not_a_profile(  # noqa: PLR0913 — фикстуры теста
+        self,
+        call_stand: CallStand,
+        raw_config,
+        store,
+        layer,
+        pool: AsyncPostgresPool,
+        auth,
     ) -> None:
         """Путь кэша, внутренний билет и неизвестный метод профилем не считаются."""
         user = await Session.user(layer, "f-bad-auth", Session.local())
@@ -694,16 +784,22 @@ class TestNoConnections:
         if row is None:
             raise AssertionError("row must be inserted")
         await store.grant(UUID(str(row[0])), GrantTarget.user(UUID(user.id)))
-        Session.enter(user, Session.local())
+        Session.enter(call_stand, user, Session.local())
 
         result = await Guarded.failure(
-            Guarded.pg(raw_config, store, None), connection="main"
+            Guarded.pg(call_stand, raw_config, store, None), connection="main"
         )
 
         _expect(result, "ConnectionStoreError", "is not a valid connection")
 
-    async def test_keytab_file_missing(
-        self, raw_config, store, layer, service_pg, tmp_path: Path
+    async def test_keytab_file_missing(  # noqa: PLR0913 — фикстуры теста
+        self,
+        call_stand: CallStand,
+        raw_config,
+        store,
+        layer,
+        service_pg,
+        tmp_path: Path,
     ) -> None:
         missing = KeytabAuth(
             method="kerberos_keytab",
@@ -713,24 +809,24 @@ class TestNoConnections:
         user = await Session.user(layer, "f-keytab", Session.local())
         row = service_pg.model_copy(update={"auth": missing})
         await store.grant(await store.add("main", row), GrantTarget.user(UUID(user.id)))
-        Session.enter(user, Session.local())
+        Session.enter(call_stand, user, Session.local())
 
         result = await Guarded.failure(
-            Guarded.pg(raw_config, store, None), connection="main"
+            Guarded.pg(call_stand, raw_config, store, None), connection="main"
         )
 
         _expect(result, "KeytabError", "absent.keytab")
 
     async def test_web_url_outside_the_connection_host(
-        self, raw_config, store, layer
+        self, call_stand: CallStand, raw_config, store, layer
     ) -> None:
         user = await Session.user(layer, "f-web-host", Session.local())
         row = HttpConnection(host="*.example.com", port=443, ssl_verify=False)
         await store.grant(await store.add("lab", row), GrantTarget.user(UUID(user.id)))
-        Session.enter(user, Session.local())
+        Session.enter(call_stand, user, Session.local())
 
         result = await Guarded.failure(
-            Guarded.web(raw_config, store),
+            Guarded.web(call_stand, raw_config, store),
             url="https://example.com/",
             connection="lab",
         )

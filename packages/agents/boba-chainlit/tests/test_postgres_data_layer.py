@@ -27,6 +27,7 @@ from boba.messaging import (
     ThreadChanged,
 )
 from boba.runtime.elements import ChatTables
+from boba.stand_core.context import CallStand
 
 pytestmark = pytest.mark.anyio
 
@@ -213,10 +214,13 @@ async def test_upsert_and_delete_feedback(seeded: Seed):
 
 
 async def test_create_get_delete_element(
-    seeded: Seed, files_dir: Path, monkeypatch: pytest.MonkeyPatch
+    call_stand: CallStand,
+    seeded: Seed,
+    files_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ):
     layer = seeded.layer
-    use_session(monkeypatch, user_id=seeded.user.id)
+    use_session(monkeypatch, call_stand, user_id=seeded.user.id)
 
     element = Text(
         thread_id=seeded.thread_id,
@@ -251,11 +255,14 @@ async def test_create_get_delete_element(
 
 
 async def test_element_uploaded_by_route_keeps_its_stored_content(
-    seeded: Seed, files_dir: Path, monkeypatch: pytest.MonkeyPatch
+    call_stand: CallStand,
+    seeded: Seed,
+    files_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ):
     """Вложение пользователя уже в хранилище: слой пишет строку и не трогает файл."""
     layer = seeded.layer
-    use_session(monkeypatch, user_id=seeded.user.id)
+    use_session(monkeypatch, call_stand, user_id=seeded.user.id)
 
     # так выглядит element после загрузки: путь из реестра сессии, копии на диске нет
     element = Text(
@@ -282,7 +289,10 @@ async def test_element_uploaded_by_route_keeps_its_stored_content(
 
 
 async def test_custom_element_keeps_props_out_of_storage(
-    seeded: Seed, files_dir: Path, monkeypatch: pytest.MonkeyPatch
+    call_stand: CallStand,
+    seeded: Seed,
+    files_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ):
     """Кастом-элемент несёт только props: тела в хранилище у него нет.
 
@@ -290,7 +300,7 @@ async def test_custom_element_keeps_props_out_of_storage(
     стоит монтирования образа пользователя.
     """
     layer = seeded.layer
-    use_session(monkeypatch, user_id=seeded.user.id)
+    use_session(monkeypatch, call_stand, user_id=seeded.user.id)
 
     element = CustomElement(
         thread_id=seeded.thread_id,
@@ -416,6 +426,7 @@ async def test_thread_changes_are_published_to_the_user_scope(
 
 
 async def test_feedback_and_element_removal_reach_the_thread_scope(
+    call_stand: CallStand,
     layer: PostgresDataLayer,
     seeded: Seed,
     data_bus: MemoryMessageBus,
@@ -442,7 +453,9 @@ async def test_feedback_and_element_removal_reach_the_thread_scope(
         assert await layer.delete_feedback(feedback_id) is True
         assert await layer.delete_feedback(feedback_id) is False
 
-        use_session(monkeypatch, user_id=seeded.user.id, thread_id=seeded.thread_id)
+        use_session(
+            monkeypatch, call_stand, user_id=seeded.user.id, thread_id=seeded.thread_id
+        )
         element = Text(name="note.txt", content="x", display="inline")
         element.id = str(uuid4())
         element.thread_id = seeded.thread_id

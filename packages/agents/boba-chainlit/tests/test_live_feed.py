@@ -12,7 +12,6 @@ from uuid import UUID, uuid4
 
 import pytest
 from chainlit.element import ElementDict
-from chainlit_stand import make_context
 
 from boba.chainlit.chat.feed import QuestionBody, ShownElement, TurnFeed
 from boba.chainlit.domain.fields import StepField
@@ -22,7 +21,6 @@ from boba.chainlit.rendering.renderer import ChatRenderer, NoSurface
 from boba.db.postgres import AsyncPostgresPool
 from boba.identity.context import Scope
 from boba.identity.locks import LockMode, LockPurpose
-from boba.identity.run import RunRegistry
 from boba.messaging import (
     ElementRemoved,
     Envelope,
@@ -41,10 +39,11 @@ from boba.runtime.journal import DirVault, StreamJournal
 from boba.runtime.locks import PgLiveLocks
 from boba.runtime.payloads import PgPayloadStore
 from boba.runtime.turns import StaleTurnCloser
-from boba.stand_core.context import TEST_CONTEXTS
+from boba.stand.refs import StandRefs
+from boba.stand_core.context import CallStand
 from boba.toolkit.channels import CallOutcome, ToolChannel
 from boba.toolkit.result import MarkdownResult
-from boba.toolrun.streams import StreamPump, StreamPumps, ToolStream, ToolStreams
+from boba.toolrun.streams import CallJournals, StreamPump, StreamPumps, ToolStream
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
 
@@ -114,9 +113,11 @@ async def _stopped(bus: PgMessageBus) -> None:
         raise AssertionError(msg) from exc
 
 
-def _renderer(thread_id: str, node: Node) -> tuple[ChatRenderer, RecordingSink]:
+def _renderer(
+    runtime_stand: StandRefs, thread_id: str, node: Node
+) -> tuple[ChatRenderer, RecordingSink]:
     sink = RecordingSink()
-    view = ChatView(thread_id, sink, user_name="tester")
+    view = ChatView(thread_id, sink, runtime_stand.journals, user_name="tester")
     return ChatRenderer(thread_id, view, node.payloads, NoSurface()), sink
 
 
@@ -143,12 +144,13 @@ def _stream_messages(seen: Iterator[Envelope]) -> Iterator[StreamAppended]:
 
 
 async def test_turn_on_one_instance_is_rendered_on_another(
+    runtime_stand: StandRefs,
     nodes: tuple[Node, Node],
 ) -> None:
     holder, viewer = nodes
     thread_id = str(uuid4())
     scope = Scope.chat(thread_id)
-    renderer, sink = _renderer(thread_id, viewer)
+    renderer, sink = _renderer(runtime_stand, thread_id, viewer)
     leave = viewer.bus.subscribe(scope, renderer.apply)
 
     lock = await holder.locks.acquire(
@@ -180,7 +182,7 @@ async def test_turn_on_one_instance_is_rendered_on_another(
         assert "hits" in _outputs(sink)
 
         # вкладка подключилась посреди хода на другом инстансе: догон по replay
-        late, late_sink = _renderer(thread_id, viewer)
+        late, late_sink = _renderer(runtime_stand, thread_id, viewer)
         assert (await late.catch_up(viewer.bus)).alive is True
         assert "hits" in _outputs(late_sink)
         assert late.turn_alive
@@ -193,7 +195,7 @@ async def test_turn_on_one_instance_is_rendered_on_another(
 
         after = ChatRenderer(
             thread_id,
-            ChatView(thread_id, RecordingSink()),
+            ChatView(thread_id, RecordingSink(), runtime_stand.journals),
             viewer.payloads,
             NoSurface(),
         )
@@ -225,7 +227,10 @@ async def test_payload_store_keeps_bodies_and_purges_idle(
 
 
 async def test_reaper_closes_the_turn_of_a_dead_holder_and_resume_marks_it(
-    app_config: AppConfig, test_database: str, pool: AsyncPostgresPool
+    runtime_stand: StandRefs,
+    app_config: AppConfig,
+    test_database: str,
+    pool: AsyncPostgresPool,
 ) -> None:
     """Держатель хода умер: сторож закрывает ход, чужой рендерер видит причину."""
     short = app_config.model_copy(
@@ -254,7 +259,7 @@ async def test_reaper_closes_the_turn_of_a_dead_holder_and_resume_marks_it(
         closed = await StaleTurnCloser(viewer.bus, viewer.locks).close(stale)
         assert closed == 1
 
-        late, _ = _renderer(thread_id, viewer)
+        late, _ = _renderer(runtime_stand, thread_id, viewer)
         caught = await late.catch_up(viewer.bus)
         assert caught.alive is False
         assert caught.interrupted == TurnFinished.HOLDER_GONE
@@ -298,7 +303,11 @@ async def test_queue_usage_stays_low_under_load(nodes: tuple[Node, Node]) -> Non
 
 
 async def test_stream_growth_is_published_through_the_pump(
-    nodes: tuple[Node, Node], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    runtime_stand: StandRefs,
+    call_stand: CallStand,
+    nodes: tuple[Node, Node],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Инструмент пишет журнал в своём потоке на инстансе A; насос хода публикует
     StreamAppended, и инстанс B видит рост канала и его закрытие с итогом.
@@ -306,10 +315,9 @@ async def test_stream_growth_is_published_through_the_pump(
     holder, viewer = nodes
     thread_id = str(uuid4())
     scope = Scope.chat(thread_id)
-    ToolStreams.reset()
-    ToolStreams.configure(
-        StreamJournal(DirVault(str(tmp_path / "journal")), reserve_bytes=0)
-    )
+    store = StreamJournal(DirVault(str(tmp_path / "journal")), reserve_bytes=0)
+    journals = CallJournals(store, runtime_stand.runs)
+    journals.mark_streamable(["shell"])
     monkeypatch.setattr(StreamPump, "COALESCE_SEC", 0.02)
 
     seen: list[Envelope] = []
@@ -335,10 +343,11 @@ async def test_stream_growth_is_published_through_the_pump(
         stream.close(str(CallOutcome.FINISHED))
 
     try:
-        with RunRegistry.open(
-            TEST_CONTEXTS, make_context(thread_id), on_stream=pumps.opened
+        with (
+            runtime_stand.runs.open(call_stand.context(thread_id)) as run,
+            journals.following(run, pumps.opened),
         ):
-            stream = ToolStreams.begin("7", thread_id, CALL, "shell")
+            stream = journals.begin("7", thread_id, CALL, "shell")
             assert stream is not None
             await asyncio.to_thread(write_all, stream)
 
@@ -362,8 +371,6 @@ async def test_stream_growth_is_published_through_the_pump(
     finally:
         leave()
         await holder.locks.release(lock.token)
-        RunRegistry.reset()
-        ToolStreams.reset()
 
 
 class RecordingSurface(NoSurface):
@@ -411,6 +418,7 @@ ELEMENT = {
 
 
 async def test_rewind_and_elements_reach_the_viewer_instance(
+    runtime_stand: StandRefs,
     nodes: tuple[Node, Node],
 ) -> None:
     """Правка вопроса перечитывает ленту, а карточка вызова показывается у зрителя
@@ -420,7 +428,9 @@ async def test_rewind_and_elements_reach_the_viewer_instance(
     thread_id = str(uuid4())
     scope = Scope.chat(thread_id)
     surface = RecordingSurface()
-    view = ChatView(thread_id, RecordingSink(), user_name="tester")
+    view = ChatView(
+        thread_id, RecordingSink(), runtime_stand.journals, user_name="tester"
+    )
     renderer = ChatRenderer(thread_id, view, viewer.payloads, surface)
     leave = viewer.bus.subscribe(scope, renderer.apply)
 
@@ -462,7 +472,9 @@ async def test_rewind_and_elements_reach_the_viewer_instance(
         late_surface = RecordingSurface()
         late = ChatRenderer(
             thread_id,
-            ChatView(thread_id, RecordingSink(), user_name="tester"),
+            ChatView(
+                thread_id, RecordingSink(), runtime_stand.journals, user_name="tester"
+            ),
             viewer.payloads,
             late_surface,
         )

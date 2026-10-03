@@ -21,7 +21,6 @@ from boba.chat.profiles import ChatProfiles
 from boba.connections.sealed import SealKeys
 from boba.db.postgres import AsyncPostgresPool
 from boba.identity.context import CallContexts
-from boba.identity.run import RunRegistry
 from boba.runtime import providers
 from boba.runtime.config import (
     AppName,
@@ -59,7 +58,8 @@ class StudioHost:
         container.provide(providers.seal_keys, SealKeys())
         container.provide(providers.call_contexts, CallContexts())
         container.eager(providers.message_bus)
-        container.eager(providers.stream_journal)
+        container.eager(providers.runs)
+        container.eager(providers.call_journals)
         container.eager(providers.kb_schema)
         container.eager(providers.connection_store)
         # реестр инструментов грузится на старте: ленивая загрузка в обработчике запроса
@@ -193,7 +193,7 @@ class StudioHost:
         try:
             yield
         finally:
-            RunRegistry.stop_all(StopReason.SHUTDOWN)
+            container.resolved(providers.runs).stop_all(StopReason.SHUTDOWN)
             ZygoteRegistry.stop_all()
             Container.set_root(None)
             await container.aclose()

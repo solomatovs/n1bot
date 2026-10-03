@@ -7,15 +7,19 @@
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 from typing import Annotated, Any, ClassVar
 
 import pytest
 from langchain_core.callbacks import AsyncCallbackHandler
 from pydantic import BaseModel, Field, SecretStr
 
-from boba.canvas.journal import CallStream
+from boba.identity.context import CallContexts
+from boba.identity.run import Runs
+from boba.runtime.journal import DirVault, StreamJournal
+from boba.stand_core.context import CallStand
 from boba.toolkit.calls import ToolIntent
-from boba.toolkit.channels import JournalChannel
+from boba.toolkit.channels import ToolChannel
 from boba.toolkit.facade import Injected, tool
 from boba.toolkit.result import MarkdownResult, ToolArtifact
 from boba.toolkit.stream import ToolChannelsTap
@@ -23,7 +27,8 @@ from boba.toolrun.bridge import ToolBridge
 from boba.toolrun.call_id import ToolCallIdField
 from boba.toolrun.injected import InjectedConfig
 from boba.toolrun.intent import ToolIntentField
-from boba.toolrun.run_log import NoCallScope, ToolRunLogger
+from boba.toolrun.run_log import ToolRunLogger
+from boba.toolrun.streams import CallJournals, ToolStream
 from boba.toolrun.wrapping import ToolAsyncBody
 
 
@@ -57,7 +62,8 @@ def build_pipeline() -> Any:
     )
     ToolCallIdField.attach_all([bridged])
     ToolIntentField.attach_all([bridged])
-    ToolRunLogger.guard_all([bridged], lambda tool, call_id: None, NoCallScope.enter)
+    contexts = CallContexts()
+    ToolRunLogger(CallJournals(None, Runs(contexts)), contexts).guard_all([bridged])
 
     return bridged
 
@@ -152,36 +158,19 @@ class TestArtifactRendering:
             raise AssertionError("ToolArtifact.revive(legacy) is None")
 
 
-class _FakeStream(CallStream):
-    """Журнал вызова для теста: приёмники каналов и заметка закрытия."""
-
-    def __init__(self) -> None:
-        self.fed: dict[JournalChannel, bytearray] = {}
-        self.note = ""
-
-    def sink_of(self, channel: JournalChannel) -> Any:
-        buffer = self.fed.setdefault(channel, bytearray())
-
-        class _Sink:
-            def feed(self, data: bytes) -> None:
-                buffer.extend(data)
-
-            def feed_text(self, text: str) -> None:
-                buffer.extend(text.encode())
-
-        return _Sink()
-
-    def close(self, note: str) -> None:
-        self.note = note
-
-
 class TestChannelTap:
     """ToolRunLogger обязан подключить приёмники каналов: без ToolChannelsTap
     канальный запуск не журналирует ни байта."""
 
     @pytest.mark.anyio
-    async def test_channels_tap_is_set_during_the_call(self) -> None:
-        stream = _FakeStream()
+    async def test_channels_tap_is_set_during_the_call(
+        self, call_stand: CallStand, tmp_path: Path
+    ) -> None:
+        contexts = call_stand.contexts
+        runs = Runs(contexts)
+        store = StreamJournal(DirVault(str(tmp_path / "journal")), reserve_bytes=0)
+        journals = CallJournals(store, runs)
+        journals.mark_streamable(["tap_probe"])
         seen: list[Any] = []
 
         @tool
@@ -194,25 +183,30 @@ class TestChannelTap:
 
         bridged = ToolBridge.as_structured_tool(tap_probe)
         ToolCallIdField.attach_all([bridged])
-        ToolRunLogger.guard_all(
-            [bridged], lambda tool, call_id: stream, NoCallScope.enter
-        )
+        ToolRunLogger(journals, contexts).guard_all([bridged])
 
-        await bridged.ainvoke(
-            {
-                "name": "tap_probe",
-                "args": {"text": "ping"},
-                "id": "call-tap-1",
-                "type": "tool_call",
-            }
-        )
+        with runs.open(call_stand.context("tap-thread")):
+            await bridged.ainvoke(
+                {
+                    "name": "tap_probe",
+                    "args": {"text": "ping"},
+                    "id": "call-tap-1",
+                    "type": "tool_call",
+                }
+            )
 
-        if seen != [stream]:
-            raise AssertionError("seen == [stream]")
+        if len(seen) != 1:
+            raise AssertionError(seen)
+
+        stream = seen[0]
+        if not isinstance(stream, ToolStream):
+            raise AssertionError(
+                f"the body sees the call journal in the tap: {stream!r}"
+            )
         if ToolChannelsTap.get() is not None:
             raise AssertionError("ToolChannelsTap.get() is None")
-        if stream.note != "finished":
-            raise AssertionError('stream.note == "finished"')
+        if stream.probe(ToolChannel.STDOUT).note != "finished":
+            raise AssertionError(stream.probe(ToolChannel.STDOUT).note)
 
 
 class _LoopRecorder(AsyncCallbackHandler):

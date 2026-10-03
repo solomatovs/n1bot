@@ -356,7 +356,7 @@ class CflRestBuilder:
             metadata=meta,
         )
 
-    def make_attachment_request(  # noqa: PLR0913
+    def make_attachment_request(  # noqa: PLR0913 — фикстуры теста
         self,
         *,
         connection: HttpConnection,

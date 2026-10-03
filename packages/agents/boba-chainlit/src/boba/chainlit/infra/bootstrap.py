@@ -36,7 +36,7 @@ from boba.chainlit.infra.stale_action import StaleActionMiddleware
 from boba.connections.sealed import SealKeys
 from boba.db.postgres import AsyncPostgresPool
 from boba.identity.context import CallContexts
-from boba.identity.run import RunRegistry
+from boba.identity.run import Runs
 from boba.runtime import providers as runtime
 from boba.runtime.config import AppName
 from boba.runtime.di import Container
@@ -123,7 +123,7 @@ async def _run_container(app: FastAPI) -> AsyncGenerator[None, None]:
     try:
         yield
     finally:
-        RunRegistry.stop_all(StopReason.SHUTDOWN)
+        container.resolved(runtime.runs).stop_all(StopReason.SHUTDOWN)
         ZygoteRegistry.stop_all()
         Container.set_session_hook(None)
         await SessionContainers.close_all()
@@ -242,7 +242,7 @@ def _use_stream_journal(c: AppConfig) -> None:
     if not c.stream_journal.enable:
         return
 
-    serving = StreamServing(c.storage, UploadPolicy())
+    serving = StreamServing(c.storage, UploadPolicy(), runtime.call_journals_ref)
     chainlit_app.add_api_route(
         StreamUrl.ROUTE, serving.serve, methods=["GET"], include_in_schema=False
     )
@@ -316,8 +316,10 @@ def _use_di_container(app: FastAPI, c: AppConfig) -> Container:
     container.provide(runtime.get_runtime_config, c)
     container.provide(runtime.plugin_table, EntryPointPlugins.discover)
     contexts = CallContexts()
-    plugins = ChatPlugins(contexts)
+    runs = Runs(contexts)
+    plugins = ChatPlugins(contexts, runs)
     container.provide(runtime.call_contexts, contexts)
+    container.provide(runtime.runs, runs)
     container.provide(runtime.surface_hooks, plugins.surface_hooks())
     container.provide(
         runtime.own_tools, plugins.own_tools(runtime.connection_store_ref)
@@ -344,7 +346,7 @@ def _use_di_container(app: FastAPI, c: AppConfig) -> Container:
     container.eager(providers.langchain_checkpoint_saver)
     container.eager(runtime.message_bus)
     container.eager(runtime.payload_store)
-    container.eager(runtime.stream_journal)
+    container.eager(runtime.call_journals)
     container.eager(runtime.kb_schema)
     container.eager(runtime.connection_store)
     # инструменты собираются на старте: конфиг плагинов проверяется до сессий

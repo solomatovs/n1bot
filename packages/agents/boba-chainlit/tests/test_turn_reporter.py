@@ -14,7 +14,7 @@ from typing import Any, cast
 from uuid import UUID
 
 import pytest
-from chainlit_stand import RecordedTurn, use_context
+from chainlit_stand import RecordedTurn
 from langchain_core.messages import BaseMessage
 
 from boba.cancellation import StopReason
@@ -40,7 +40,8 @@ from boba.messaging import (
     MemoryPayloadStore,
     MessageBusError,
 )
-from boba.stand_core.context import TEST_CONTEXTS
+from boba.stand.refs import StandRefs
+from boba.stand_core.context import CallStand
 
 pytestmark = pytest.mark.anyio
 
@@ -243,12 +244,15 @@ class TestStopped:
 class TestFailedTurnKeepsHistory:
     """Регрессия: cancel(FAILED) отменяет задачу хода — отчёт обязан выжить.
 
-    Прерыватель RunRegistry на cancel снимает задачу самого хода; если запись
+    Прерыватель запуска на cancel снимает задачу самого хода; если запись
     истории идёт после отмены, она молча гибнет на первом же await.
     """
 
     async def test_history_is_written_despite_the_cancellation(
-        self, monkeypatch: pytest.MonkeyPatch
+        self,
+        runtime_stand: StandRefs,
+        call_stand: CallStand,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         from boba.chainlit.chat.turn import ChatTurn
 
@@ -265,11 +269,13 @@ class TestFailedTurnKeepsHistory:
             question=Question(key=TURN_KEY, text="question"),
             locking=RunLocking(locks=MemoryLiveLocks("test:0", 20), heartbeat_sec=1.0),
             sent=SentConnections(),
-            contexts=TEST_CONTEXTS,
+            contexts=call_stand.contexts,
+            runs=runtime_stand.runs,
+            journals=runtime_stand.journals,
         )
 
         # контекст вызова ставится до создания задачи: она копирует его при старте
-        with TEST_CONTEXTS.applied(use_context(monkeypatch, thread_id=THREAD)):
+        with call_stand.applied(call_stand.context(THREAD)):
             task = asyncio.create_task(turn.run(failing_stream()))
             with contextlib.suppress(asyncio.CancelledError):
                 await task
@@ -328,8 +334,9 @@ class TestPulseOfTheTurn:
 
     async def _run(
         self,
+        runtime_stand: StandRefs,
+        call_stand: CallStand,
         stream: AsyncIterator[tuple[BaseMessage, dict[str, Any]]],
-        monkeypatch: pytest.MonkeyPatch,
     ) -> ChatView:
         from boba.chainlit.chat.turn import ChatTurn
 
@@ -341,10 +348,12 @@ class TestPulseOfTheTurn:
             question=Question(key=TURN_KEY, text="question"),
             locking=RunLocking(locks=MemoryLiveLocks("test:0", 20), heartbeat_sec=1.0),
             sent=SentConnections(),
-            contexts=TEST_CONTEXTS,
+            contexts=call_stand.contexts,
+            runs=runtime_stand.runs,
+            journals=runtime_stand.journals,
         )
 
-        with TEST_CONTEXTS.applied(use_context(monkeypatch, thread_id=THREAD)):
+        with call_stand.applied(call_stand.context(THREAD)):
             task = asyncio.create_task(turn.run(stream))
             with contextlib.suppress(asyncio.CancelledError):
                 await task
@@ -352,17 +361,17 @@ class TestPulseOfTheTurn:
         return recorded.view
 
     async def test_finished_turn_clears_the_pulse(
-        self, monkeypatch: pytest.MonkeyPatch
+        self, runtime_stand: StandRefs, call_stand: CallStand
     ) -> None:
-        view = await self._run(self._silent_stream(), monkeypatch)
+        view = await self._run(runtime_stand, call_stand, self._silent_stream())
 
         if view.pulse_step is not None:
             raise AssertionError("finished turn leaves no pulse")
 
     async def test_failed_turn_clears_the_pulse(
-        self, monkeypatch: pytest.MonkeyPatch
+        self, runtime_stand: StandRefs, call_stand: CallStand
     ) -> None:
-        view = await self._run(self._failing_stream(), monkeypatch)
+        view = await self._run(runtime_stand, call_stand, self._failing_stream())
 
         if view.pulse_step is not None:
             raise AssertionError("failed turn leaves no pulse")
@@ -372,7 +381,10 @@ class TestBusyThread:
     """Занятый тред: ход не начинается, лента получает отказ с именем держателя."""
 
     async def test_turn_is_refused_while_another_holder_runs(
-        self, monkeypatch: pytest.MonkeyPatch
+        self,
+        runtime_stand: StandRefs,
+        call_stand: CallStand,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         from boba.chainlit.chat.turn import ChatTurn
 
@@ -392,10 +404,12 @@ class TestBusyThread:
             question=Question(key=TURN_KEY, text="question"),
             locking=RunLocking(locks=locks, heartbeat_sec=1.0),
             sent=SentConnections(),
-            contexts=TEST_CONTEXTS,
+            contexts=call_stand.contexts,
+            runs=runtime_stand.runs,
+            journals=runtime_stand.journals,
         )
 
-        with TEST_CONTEXTS.applied(use_context(monkeypatch, thread_id=THREAD)):
+        with call_stand.applied(call_stand.context(THREAD)):
             await turn.run(silent_stream())
 
         errors = [s for s in recorded.steps if s.get(StepField.IS_ERROR)]

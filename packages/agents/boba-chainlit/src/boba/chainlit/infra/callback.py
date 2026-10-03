@@ -11,6 +11,7 @@ from langchain_core.runnables import RunnableConfig
 from langgraph.graph.state import CompiledStateGraph
 
 import chainlit as cl
+from boba.cancellation import StopReason
 from boba.canvas.canvas import CanvasAction, RenderVerdicts
 from boba.chainlit.canvas.panel import StreamActions
 from boba.chainlit.canvas.tools import CanvasActions, CanvasScope
@@ -54,6 +55,7 @@ from boba.connection_broker.sealing import SentConnections
 from boba.identity.context import CallContexts, Scope
 from boba.identity.errors import InternalServiceError
 from boba.identity.locks import LiveLocks, RunLocking
+from boba.identity.run import Runs
 from boba.identity.session import UserMetadataField
 from boba.identity.token import CookieSpec
 from boba.messaging import (
@@ -68,6 +70,7 @@ from boba.runtime import providers as runtime
 from boba.runtime.config import RuntimeConfig
 from boba.runtime.di import Container, Depends, di_inject
 from boba.runtime.http import SessionCookie
+from boba.toolrun.streams import CallJournals
 from boba.transport.http import DumpLabel
 from chainlit.config import config as chainlit_config
 from chainlit.context import ChainlitContext, context, context_var
@@ -83,7 +86,7 @@ logger = logging.getLogger(__name__)
 
 @chainlit_error_ctx_handler
 @di_inject
-async def on_message(  # noqa: PLR0913
+async def on_message(  # noqa: PLR0913 — фикстуры теста
     msg: cl.Message,
     graph: Annotated[
         CompiledStateGraph,
@@ -97,6 +100,8 @@ async def on_message(  # noqa: PLR0913
     app_config: Annotated[AppConfig, Depends(get_app_config)],
     sent: Annotated[SentConnections, Depends(sent_connections)],
     contexts: Annotated[CallContexts, Depends(runtime.call_contexts)],
+    runs: Annotated[Runs, Depends(runtime.runs)],
+    journals: Annotated[CallJournals, Depends(runtime.call_journals)],
 ):
     session = current_session()
     thread_id = session.thread_id
@@ -124,6 +129,8 @@ async def on_message(  # noqa: PLR0913
         locking=RunLocking(locks=locks, heartbeat_sec=app_config.cluster.heartbeat_sec),
         sent=sent,
         contexts=contexts,
+        runs=runs,
+        journals=journals,
     )
 
     # сбой в любом месте хода — включая подготовку — отчитывается ходом же:
@@ -440,6 +447,7 @@ def _session_cookie() -> SessionCookie:
 async def on_stop(
     bus: Annotated[MessageBus, Depends(runtime.message_bus)],
     instance: Annotated[str, Depends(runtime.instance_name)],
+    runs: Annotated[Runs, Depends(runtime.runs)],
 ):
     """Кнопка Stop: свой ход обрывается сразу, чужой получает команду через шину."""
     session = current_session()
@@ -447,7 +455,7 @@ async def on_stop(
     if thread_id is None:
         return
 
-    if ChatTurn.stop(thread_id):
+    if runs.stop(thread_id, StopReason.USER_STOP):
         return
 
     user_id = session.user_id
@@ -615,6 +623,7 @@ async def _resume_feed(
     graph: Annotated[CompiledStateGraph, Depends(langchain_agent, scope="session")],
     app_config: Annotated[AppConfig, Depends(get_app_config)],
     registry: Annotated[ChatProfiles, Depends(chat_profiles_registry)],
+    runs: Annotated[Runs, Depends(runtime.runs)],
 ):
     """Лента треда при возврате вкладки: если ход жив — сохранить loading и
     живые шаги.
@@ -625,7 +634,7 @@ async def _resume_feed(
     их в ленту до её отправки клиенту.
     """
     thread_id = thread_dict[ThreadField.ID]
-    turn = ChatTurn.active(thread_id)
+    turn = runs.active(thread_id)
     renderer = ChatRoomSurface.renderer_of(ThreadRoom.websocket(), thread_id)
     if user_id := current_session().user_id:
         UserRoom.join(UUID(user_id))

@@ -302,7 +302,7 @@ class ChannelFanOut:
 
     CHUNK_BYTES: ClassVar[int] = 1 << 20
 
-    def __init__(  # noqa: PLR0913
+    def __init__(  # noqa: PLR0913 — фикстуры теста
         self,
         channel: str,
         source_fd: int,

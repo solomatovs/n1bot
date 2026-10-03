@@ -11,6 +11,7 @@ from studio_stand import ApiStand
 
 from boba.chat.profiles import ChatProfileConfig, ChatProfiles
 from boba.identity.api import AuthenticatedUser
+from boba.identity.context import CallContexts
 from boba.identity.session import Login
 from boba.identity.signin import SignInMetadata
 from boba.stand.refs import StandRefs
@@ -63,7 +64,11 @@ def _user(roles: list[str]) -> AuthenticatedUser:
 
 
 def _client(user: AuthenticatedUser | None) -> AsyncClient:
-    stand = ApiStand(StandRefs.none(), _profiles(), users=MemoryUsers(user).source)
+    stand = ApiStand(
+        StandRefs(CallContexts()).none(),
+        _profiles(),
+        users=MemoryUsers(user).source,
+    )
     return stand.client(user)
 
 

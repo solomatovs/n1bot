@@ -19,7 +19,7 @@ from uuid import UUID, uuid4
 import aiofiles
 import aiofiles.os
 
-from boba.canvas.journal import StreamJournalError, StreamJournalHub
+from boba.canvas.journal import StreamJournalError
 from boba.canvas.keys import ElementProps, ObjectKey
 from boba.chainlit.data.storage import StorageClient
 from boba.chainlit.domain.fields import ElementField, StepField, ThreadField
@@ -51,6 +51,7 @@ from boba.messaging import (
     MessageBus,
     ThreadChanged,
 )
+from boba.toolrun.streams import CallJournals
 from chainlit.data import get_data_layer
 from chainlit.data.base import BaseDataLayer
 from chainlit.data.utils import queue_until_user_message
@@ -315,6 +316,7 @@ class PostgresDataLayer(AttachmentDataLayer, ThreadOwnership):
         links: AttachmentLinks,
         sessions: SessionSource,
         bus: MessageBus,
+        journals: CallJournals,
     ) -> None:
         self._users = users
         self._threads = threads
@@ -325,6 +327,7 @@ class PostgresDataLayer(AttachmentDataLayer, ThreadOwnership):
         self._links = links
         self._sessions = sessions
         self._bus = bus
+        self._journals = journals
 
     @property
     def links(self) -> AttachmentLinks:
@@ -647,8 +650,7 @@ class PostgresDataLayer(AttachmentDataLayer, ThreadOwnership):
         message = ThreadChanged(thread_id=thread_id, name=name, action=action)
         await self._bus.publish(Scope.user(user_id), message, LockToken.local())
 
-    @staticmethod
-    def _purge_stream_journal(owner: UUID | None, thread_id: str) -> None:
+    def _purge_stream_journal(self, owner: UUID | None, thread_id: str) -> None:
         """Журналы вывода инструментов умирают вместе с тредом.
 
         Сбой уборки не отменяет удаление треда — журнал доберёт ротация.
@@ -656,7 +658,7 @@ class PostgresDataLayer(AttachmentDataLayer, ThreadOwnership):
         if owner is None:
             return
 
-        journal = StreamJournalHub.get()
+        journal = self._journals.store
         if journal is None:
             return
 

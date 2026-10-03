@@ -23,7 +23,7 @@ from langchain_core.tools import BaseTool, StructuredTool
 
 from boba.connection_broker.user_connections import ConnectionParamHooks
 from boba.connections.manifest import ConnectionTypes
-from boba.stand_core.context import TEST_CONTEXTS
+from boba.identity.context import CallContexts
 from boba.tool.ch import tools as ch
 from boba.tool.ora import tools as ora
 from boba.tool.pg import tools as pg
@@ -103,7 +103,7 @@ class PumpDags:
                 stderr_tail_bytes=16384,
                 kill_grace_sec=1.0,
             ),
-            TEST_CONTEXTS,
+            CallContexts(),
         )
 
         tools: list[StructuredTool] = []

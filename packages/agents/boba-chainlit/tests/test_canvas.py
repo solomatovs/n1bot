@@ -40,7 +40,7 @@ from boba.chainlit.canvas.tools import (
 )
 from boba.chainlit.data.storage import LocalStorageClient
 from boba.chainlit.infra.config import LocalStorageConfig
-from boba.stand_core.context import TEST_CONTEXTS
+from boba.stand_core.context import CallStand
 from boba.toolkit.result import VisualResult
 from boba.workspace.binaries import TrustedBinaries
 from boba.workspace.launcher import MountingConfig
@@ -206,7 +206,9 @@ class _StorageOnlyLayer:
 
 
 @pytest.fixture
-def storage(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> LocalStorageClient:
+def storage(
+    call_stand: CallStand, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> LocalStorageClient:
     config = LocalStorageConfig(
         files_dir=str(tmp_path),
         mounting=MountingConfig(
@@ -222,7 +224,7 @@ def storage(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> LocalStorageClie
     client = LocalStorageClient(config)
     layer = _StorageOnlyLayer(client)
 
-    use_session(monkeypatch, user_id=USER, thread_id=THREAD)
+    use_session(monkeypatch, call_stand, user_id=USER, thread_id=THREAD)
     monkeypatch.setattr(rendering_canvas, "get_data_layer", lambda: layer)
 
     return client
@@ -603,8 +605,10 @@ class TestActionsWithoutCallContext:
     """Действия фронта идут из сессии чата: контекста вызова у клика нет."""
 
     @pytest.mark.anyio
-    async def test_content_action_needs_no_call_context(self) -> None:
-        TEST_CONTEXTS.reset()
+    async def test_content_action_needs_no_call_context(
+        self, call_stand: CallStand
+    ) -> None:
+        call_stand.clear()
         action = cl.Action(
             name=CanvasAction.CONTENT.value,
             payload={CanvasAction.PATH.value: f"/workspace/{THREAD}/upload/a.log"},

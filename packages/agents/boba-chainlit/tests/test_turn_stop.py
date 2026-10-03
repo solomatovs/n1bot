@@ -6,19 +6,21 @@ import asyncio
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from contextvars import copy_context
+from pathlib import Path
 
 import pytest
-from chainlit_stand import FakeTurn, make_context
+from chainlit_stand import FakeTurn
 
 from boba.cancellation import (
     StopReason,
     ToolStopped,
     current_cancellation,
 )
-from boba.chainlit.chat.turn import ChatTurn
-from boba.identity.run import LiveStream, RunRegistry
-from boba.stand_core.context import TEST_CONTEXTS
-from boba.toolkit.channels import CallOutcome
+from boba.runtime.journal import DirVault, StreamJournal
+from boba.stand.refs import StandRefs
+from boba.stand_core.context import CallStand
+from boba.toolkit.channels import CallOutcome, ToolChannel
+from boba.toolrun.streams import CallJournals
 
 THREAD = "thread-1"
 
@@ -28,78 +30,82 @@ def chainlit_context() -> None:
     "остановка хода не зависит от сессии chainlit"
 
 
-@pytest.fixture(autouse=True)
-def clean_contexts() -> None:
-    "чистый реестр на тест: ходы не должны протекать между сценариями"
-    RunRegistry.reset()
-
-
 class TestRegistry:
     """Ход адресуется thread_id — иначе до него не дотянуться снаружи."""
 
-    def test_turn_is_addressable_while_open(self) -> None:
-        if RunRegistry.active(THREAD) is not None:
-            raise AssertionError("RunRegistry.active(THREAD) is None")
-        with RunRegistry.open(
-            TEST_CONTEXTS, make_context(THREAD), FakeTurn()
-        ) as context:
-            if RunRegistry.active(THREAD) is not context:
-                raise AssertionError("RunRegistry.active(THREAD) is context")
-        if RunRegistry.active(THREAD) is not None:
-            raise AssertionError("RunRegistry.active(THREAD) is None")
+    def test_turn_is_addressable_while_open(
+        self, runtime_stand: StandRefs, call_stand: CallStand
+    ) -> None:
+        if runtime_stand.runs.active(THREAD) is not None:
+            raise AssertionError("runtime_stand.runs.active(THREAD) is None")
+        with runtime_stand.runs.open(call_stand.context(THREAD), FakeTurn()) as context:
+            if runtime_stand.runs.active(THREAD) is not context:
+                raise AssertionError("runtime_stand.runs.active(THREAD) is context")
+        if runtime_stand.runs.active(THREAD) is not None:
+            raise AssertionError("runtime_stand.runs.active(THREAD) is None")
 
-    def test_stop_cancels_the_open_turn(self) -> None:
-        with RunRegistry.open(
-            TEST_CONTEXTS, make_context(THREAD), FakeTurn()
-        ) as context:
-            if RunRegistry.stop(THREAD, StopReason.USER_STOP) is not True:
-                raise AssertionError("RunRegistry.stop(THREAD, StopReason.USER_STOP) …")
+    def test_stop_cancels_the_open_turn(
+        self, runtime_stand: StandRefs, call_stand: CallStand
+    ) -> None:
+        with runtime_stand.runs.open(call_stand.context(THREAD), FakeTurn()) as context:
+            if runtime_stand.runs.stop(THREAD, StopReason.USER_STOP) is not True:
+                raise AssertionError(
+                    "runtime_stand.runs.stop(THREAD, StopReason.USER_STOP) …"
+                )
             if context.cancellation.cancelled is not True:
                 raise AssertionError("context.cancellation.cancelled is True")
             if context.cancellation.reason is not StopReason.USER_STOP:
                 raise AssertionError("context.cancellation.reason is StopReason.USER_…")
 
-    def test_stop_without_turn_is_reported(self) -> None:
-        if RunRegistry.stop(THREAD, StopReason.USER_STOP) is not False:
-            raise AssertionError("RunRegistry.stop(THREAD, StopReason.USER_STOP) is F…")
+    def test_stop_without_turn_is_reported(self, runtime_stand: StandRefs) -> None:
+        if runtime_stand.runs.stop(THREAD, StopReason.USER_STOP) is not False:
+            raise AssertionError(
+                "runtime_stand.runs.stop(THREAD, StopReason.USER_STOP) is F…"
+            )
 
-    def test_stop_reaches_the_context_of_the_turn(self) -> None:
+    def test_stop_reaches_the_context_of_the_turn(
+        self, runtime_stand: StandRefs, call_stand: CallStand
+    ) -> None:
         """Инструменты читают отмену из контекста: снаружи и изнутри один объект."""
-        with RunRegistry.open(TEST_CONTEXTS, make_context(THREAD), FakeTurn()):
-            RunRegistry.stop(THREAD, StopReason.USER_STOP)
+        with runtime_stand.runs.open(call_stand.context(THREAD), FakeTurn()):
+            runtime_stand.runs.stop(THREAD, StopReason.USER_STOP)
             if current_cancellation().cancelled is not True:
                 raise AssertionError("current_cancellation().cancelled is True")
             with pytest.raises(ToolStopped):
                 current_cancellation().raise_if_cancelled()
 
-    def test_stop_reaches_worker_threads(self) -> None:
+    def test_stop_reaches_worker_threads(
+        self, runtime_stand: StandRefs, call_stand: CallStand
+    ) -> None:
         """Синхронные инструменты живут в тред-пуле: флаг обязан доезжать и туда."""
-        with RunRegistry.open(TEST_CONTEXTS, make_context(THREAD), FakeTurn()):
+        with runtime_stand.runs.open(call_stand.context(THREAD), FakeTurn()):
             ctx = copy_context()
-            RunRegistry.stop(THREAD, StopReason.USER_STOP)
+            runtime_stand.runs.stop(THREAD, StopReason.USER_STOP)
             with ThreadPoolExecutor(1) as pool:
                 seen = pool.submit(ctx.run, lambda: current_cancellation().cancelled)
                 if seen.result() is not True:
                     raise AssertionError("seen.result() is True")
 
-    def test_stop_is_thread_safe(self) -> None:
+    def test_stop_is_thread_safe(
+        self, runtime_stand: StandRefs, call_stand: CallStand
+    ) -> None:
         """Кнопку жмут из обработчика сокета — это чужой поток."""
-        with RunRegistry.open(
-            TEST_CONTEXTS, make_context(THREAD), FakeTurn()
-        ) as context:
+        with runtime_stand.runs.open(call_stand.context(THREAD), FakeTurn()) as context:
             stopper = threading.Thread(
-                target=RunRegistry.stop, args=(THREAD, StopReason.USER_STOP)
+                target=runtime_stand.runs.stop, args=(THREAD, StopReason.USER_STOP)
             )
             stopper.start()
             stopper.join()
             if context.cancellation.cancelled is not True:
                 raise AssertionError("context.cancellation.cancelled is True")
 
-    def test_new_turn_supersedes_the_stale_one(self) -> None:
+    def test_new_turn_supersedes_the_stale_one(
+        self, runtime_stand: StandRefs, call_stand: CallStand
+    ) -> None:
         """Второй ход того же треда обрывает забытый первый, а не копится рядом."""
         with (
-            RunRegistry.open(TEST_CONTEXTS, make_context(THREAD), FakeTurn()) as first,
-            RunRegistry.open(TEST_CONTEXTS, make_context(THREAD), FakeTurn()) as second,
+            runtime_stand.runs.open(call_stand.context(THREAD), FakeTurn()) as first,
+            runtime_stand.runs.open(call_stand.context(THREAD), FakeTurn()) as second,
         ):
             if first.cancellation.cancelled is not True:
                 raise AssertionError("first.cancellation.cancelled is True")
@@ -108,78 +114,90 @@ class TestRegistry:
             if second.cancellation.cancelled is not False:
                 raise AssertionError("second.cancellation.cancelled is False")
 
-    def test_release_keeps_the_newer_turn(self) -> None:
+    def test_release_keeps_the_newer_turn(
+        self, runtime_stand: StandRefs, call_stand: CallStand
+    ) -> None:
         """Выход из старого хода не должен снимать с учёта новый."""
-        with RunRegistry.open(TEST_CONTEXTS, make_context(THREAD), FakeTurn()):
-            with RunRegistry.open(
-                TEST_CONTEXTS, make_context(THREAD), FakeTurn()
+        with runtime_stand.runs.open(call_stand.context(THREAD), FakeTurn()):
+            with runtime_stand.runs.open(
+                call_stand.context(THREAD), FakeTurn()
             ) as second:
                 pass
-            if RunRegistry.active(THREAD) is second:
-                raise AssertionError("RunRegistry.active(THREAD) is not second")
+            if runtime_stand.runs.active(THREAD) is second:
+                raise AssertionError("runtime_stand.runs.active(THREAD) is not second")
 
-    def test_tools_reach_the_turn_of_the_thread(self) -> None:
+    def test_tools_reach_the_turn_of_the_thread(
+        self, runtime_stand: StandRefs, call_stand: CallStand
+    ) -> None:
         """Инструменты находят ход по thread_id — им нужен шаг ответа."""
         turn = FakeTurn()
-        with RunRegistry.open(TEST_CONTEXTS, make_context(THREAD), turn):
-            if RunRegistry.port_of(THREAD) is not turn:
-                raise AssertionError("RunRegistry.port_of(THREAD) is turn")
-        if RunRegistry.port_of(THREAD) is not None:
-            raise AssertionError("RunRegistry.port_of(THREAD) is None")
+        with runtime_stand.runs.open(call_stand.context(THREAD), turn):
+            if runtime_stand.runs.port_of(THREAD) is not turn:
+                raise AssertionError("runtime_stand.runs.port_of(THREAD) is turn")
+        if runtime_stand.runs.port_of(THREAD) is not None:
+            raise AssertionError("runtime_stand.runs.port_of(THREAD) is None")
 
 
 class TestLiveArtifacts:
-    """Живые журналы и насос гаснут вместе с контекстом, файлы — нет."""
+    """Живые журналы гаснут вместе с запуском, файлы — нет."""
 
-    class FakeStream(LiveStream):
-        def __init__(self) -> None:
-            self.note: str | None = None
+    @staticmethod
+    def _journals(runtime_stand: StandRefs, tmp_path: Path) -> CallJournals:
+        store = StreamJournal(DirVault(str(tmp_path / "journal")), reserve_bytes=0)
+        journals = CallJournals(store, runtime_stand.runs)
+        journals.mark_streamable(["shell"])
 
-        @property
-        def closed(self) -> bool:
-            return self.note is not None
+        return journals
 
-        @property
-        def call_prefix(self) -> str:
-            return f"{THREAD}/call-1."
+    def test_streams_close_when_the_run_does(
+        self, runtime_stand: StandRefs, call_stand: CallStand, tmp_path: Path
+    ) -> None:
+        journals = self._journals(runtime_stand, tmp_path)
+        with runtime_stand.runs.open(call_stand.context(THREAD), FakeTurn()):
+            stream = journals.begin("7", THREAD, "call-1", "shell")
+            if stream is None:
+                raise AssertionError("the journal of a streamable tool is opened")
+            if journals.live(THREAD, "call-1") is not stream:
+                raise AssertionError('journals.live(THREAD, "call-1") is stream')
+            if journals.live_prefixes() != frozenset({stream.call_prefix}):
+                raise AssertionError(journals.live_prefixes())
 
-        def close(self, note: str) -> None:
-            self.note = note
+        if stream.probe(ToolChannel.STDOUT).note != CallOutcome.STOPPED.value:
+            raise AssertionError(stream.probe(ToolChannel.STDOUT).note)
+        if journals.live_prefixes() != frozenset():
+            raise AssertionError(journals.live_prefixes())
 
-    def test_streams_close_when_the_context_does(self) -> None:
-        stream = self.FakeStream()
-        with RunRegistry.open(
-            TEST_CONTEXTS, make_context(THREAD), FakeTurn()
-        ) as context:
-            context.add_stream("call-1", stream)
-            if context.stream("call-1") is not stream:
-                raise AssertionError('context.stream("call-1") is stream')
-            if RunRegistry.live_scopes() != frozenset({THREAD}):
-                raise AssertionError("RunRegistry.live_scopes() == frozenset({THREAD…")
+    def test_run_without_streams_protects_nothing(
+        self, runtime_stand: StandRefs, call_stand: CallStand, tmp_path: Path
+    ) -> None:
+        journals = self._journals(runtime_stand, tmp_path)
+        with runtime_stand.runs.open(call_stand.context(THREAD), FakeTurn()):
+            if journals.live_prefixes() != frozenset():
+                raise AssertionError(journals.live_prefixes())
 
-        if stream.note != CallOutcome.STOPPED.value:
-            raise AssertionError("stream.note == CallOutcome.STOPPED.value")
-        if RunRegistry.live_scopes() != frozenset():
-            raise AssertionError("RunRegistry.live_scopes() == frozenset()")
+    def test_call_without_a_run_gets_no_journal(
+        self, runtime_stand: StandRefs, tmp_path: Path
+    ) -> None:
+        journals = self._journals(runtime_stand, tmp_path)
 
-    def test_thread_without_streams_is_not_live(self) -> None:
-        with RunRegistry.open(TEST_CONTEXTS, make_context(THREAD), FakeTurn()):
-            if RunRegistry.live_scopes() != frozenset():
-                raise AssertionError("RunRegistry.live_scopes() == frozenset()")
+        if journals.begin("7", THREAD, "call-1", "shell") is not None:
+            raise AssertionError("a journal needs an active run to live in")
 
 
 class TestAsyncTurn:
     """Обрыв корутины хода — прерыватель, который владелец подключает сам."""
 
-    def test_cancel_interrupts_awaiting_turn(self) -> None:
+    def test_cancel_interrupts_awaiting_turn(
+        self, runtime_stand: StandRefs, call_stand: CallStand
+    ) -> None:
         started = asyncio.Event()
 
         async def scenario() -> str:
             async def turn() -> str:
-                context = make_context(THREAD)
+                context = call_stand.context(THREAD)
                 with (
-                    RunRegistry.open(TEST_CONTEXTS, context, FakeTurn()),
-                    RunRegistry.task_abort(context.cancellation),
+                    runtime_stand.runs.open(context, FakeTurn()),
+                    runtime_stand.runs.task_abort(context.cancellation),
                 ):
                     started.set()
                     try:
@@ -190,31 +208,33 @@ class TestAsyncTurn:
 
             task = asyncio.create_task(turn())
             await started.wait()
-            RunRegistry.stop(THREAD, StopReason.USER_STOP)
+            runtime_stand.runs.stop(THREAD, StopReason.USER_STOP)
             return await task
 
         if asyncio.run(scenario()) != "cancelled":
             raise AssertionError('asyncio.run(scenario()) == "cancelled"')
 
-    def test_turn_is_unregistered_after_cancel(self) -> None:
+    def test_turn_is_unregistered_after_cancel(
+        self, runtime_stand: StandRefs, call_stand: CallStand
+    ) -> None:
         async def scenario() -> bool:
             started = asyncio.Event()
 
             async def turn() -> None:
-                context = make_context(THREAD)
+                context = call_stand.context(THREAD)
                 with (
-                    RunRegistry.open(TEST_CONTEXTS, context, FakeTurn()),
-                    RunRegistry.task_abort(context.cancellation),
+                    runtime_stand.runs.open(context, FakeTurn()),
+                    runtime_stand.runs.task_abort(context.cancellation),
                 ):
                     started.set()
                     await asyncio.sleep(30)
 
             task = asyncio.create_task(turn())
             await started.wait()
-            RunRegistry.stop(THREAD, StopReason.USER_STOP)
+            runtime_stand.runs.stop(THREAD, StopReason.USER_STOP)
             with pytest.raises(asyncio.CancelledError):
                 await task
-            return RunRegistry.active(THREAD) is None
+            return runtime_stand.runs.active(THREAD) is None
 
         if asyncio.run(scenario()) is not True:
             raise AssertionError("asyncio.run(scenario()) is True")
@@ -223,28 +243,32 @@ class TestAsyncTurn:
 class TestStopButton:
     """Кнопка Stop — единственный способ оборвать ход."""
 
-    def test_button_stops_the_open_turn(self) -> None:
+    def test_button_stops_the_open_turn(
+        self, runtime_stand: StandRefs, call_stand: CallStand
+    ) -> None:
         async def scenario() -> StopReason | None:
-            with RunRegistry.open(
-                TEST_CONTEXTS, make_context(THREAD), FakeTurn()
+            with runtime_stand.runs.open(
+                call_stand.context(THREAD), FakeTurn()
             ) as context:
-                if ChatTurn.stop(THREAD) is not True:
-                    raise AssertionError("ChatTurn.stop(THREAD) is True")
+                if runtime_stand.runs.stop(THREAD, StopReason.USER_STOP) is not True:
+                    raise AssertionError("the open turn is stopped by the button")
                 return context.cancellation.reason
 
         if asyncio.run(scenario()) is not StopReason.USER_STOP:
             raise AssertionError("asyncio.run(scenario()) is StopReason.USER_STOP")
 
-    def test_button_without_turn_stops_nothing(self) -> None:
-        if ChatTurn.stop(THREAD) is not False:
-            raise AssertionError("ChatTurn.stop(THREAD) is False")
+    def test_button_without_turn_stops_nothing(self, runtime_stand: StandRefs) -> None:
+        if runtime_stand.runs.stop(THREAD, StopReason.USER_STOP) is not False:
+            raise AssertionError("there is no turn to stop")
 
-    def test_turn_survives_when_nobody_pressed_stop(self) -> None:
+    def test_turn_survives_when_nobody_pressed_stop(
+        self, runtime_stand: StandRefs, call_stand: CallStand
+    ) -> None:
         """Разрыв связи сам по себе ход не трогает: он доигрывает до конца."""
 
         async def scenario() -> bool:
-            with RunRegistry.open(
-                TEST_CONTEXTS, make_context(THREAD), FakeTurn()
+            with runtime_stand.runs.open(
+                call_stand.context(THREAD), FakeTurn()
             ) as context:
                 await asyncio.sleep(0)
                 return context.cancellation.cancelled

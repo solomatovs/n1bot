@@ -30,7 +30,6 @@ __all__ = [
     "LogName",
     "PathSegment",
     "StreamJournalError",
-    "StreamJournalHub",
     "StreamKey",
     "StreamMeta",
     "StreamNote",
@@ -430,22 +429,3 @@ class StreamStorePort(Protocol):
     def purge_thread(self, user_id: str, thread_id: str) -> int: ...
 
     def vault_root(self, user_id: str) -> str: ...
-
-
-class StreamJournalHub:
-    """Журнал приложения: одна точка доступа для панели, тулов и слоя данных."""
-
-    _JOURNAL: ClassVar[StreamStorePort | None] = None
-
-    @classmethod
-    def configure(cls, journal: StreamStorePort) -> None:
-        cls._JOURNAL = journal
-
-    @classmethod
-    def get(cls) -> StreamStorePort | None:
-        return cls._JOURNAL
-
-    @classmethod
-    def reset(cls) -> None:
-        """Сброс: пользуются тесты, приложению это не нужно."""
-        cls._JOURNAL = None

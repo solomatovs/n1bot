@@ -219,7 +219,7 @@ class FakeMidwayError(Exception):
 
 
 @tool
-async def fake_emit(  # noqa: PLR0913
+async def fake_emit(  # noqa: PLR0913 — фикстуры теста
     prefix: Annotated[str, Field(description="Приставка тела кадра")],
     count: Annotated[int, Field(ge=0, description="Сколько кадров выдать")],
     size: Annotated[int, Field(ge=0, description="Сколько байт добавить к телу")],
@@ -261,7 +261,7 @@ class FakeCollectedSink:
 
 
 @tool
-async def fake_collect(  # noqa: PLR0913
+async def fake_collect(  # noqa: PLR0913 — фикстуры теста
     marker: Annotated[str, Field(min_length=1, description="Файл фиксации")],
     fail: Annotated[bool, Field(description="Упасть, дочитав поток")],
     gated: Annotated[bool, Field(description="Ждать барьер группы перед фиксацией")],

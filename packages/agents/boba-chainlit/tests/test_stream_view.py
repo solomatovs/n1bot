@@ -11,6 +11,8 @@ import asyncio
 import os
 import threading
 import time
+from collections.abc import Iterator
+from contextlib import ExitStack
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, ClassVar, cast
@@ -19,7 +21,7 @@ from uuid import UUID
 import pytest
 from chainlit.context import ChainlitContext, context_var
 from chainlit.step import Step
-from chainlit_stand import FakeTurn, make_context, use_context
+from chainlit_stand import FakeTurn
 from langchain_core.tools import tool
 from pydantic import ValidationError
 
@@ -33,7 +35,7 @@ from boba.canvas.canvas import (
     WatchProbe,
     WatchSource,
 )
-from boba.canvas.journal import JournalWindow, StreamJournalHub, StreamKey
+from boba.canvas.journal import JournalWindow, StreamKey
 from boba.chainlit.canvas.panel import CanvasPanel, StreamActions
 from boba.chainlit.rendering.chat_view import (
     ChatSink,
@@ -41,15 +43,18 @@ from boba.chainlit.rendering.chat_view import (
     RecordingSink,
     StepRole,
 )
-from boba.identity.run import RunRegistry
+from boba.identity.context import CallContext
+from boba.identity.run import Runs
+from boba.runtime import providers as runtime
+from boba.runtime.di import Container
 from boba.runtime.journal import DirVault, StreamJournal
-from boba.runtime.launchers import CallSurface
-from boba.stand_core.context import TEST_CONTEXTS
+from boba.stand.refs import StandRefs
+from boba.stand_core.context import CallStand
 from boba.toolkit.channels import CallOutcome, ToolChannel, WrapChannel
 from boba.toolkit.stream import ToolChannelsTap
 from boba.toolrun.call_id import ToolCallIdField
 from boba.toolrun.run_log import ToolRunLogger
-from boba.toolrun.streams import JournalWatchSource, ToolStream, ToolStreams
+from boba.toolrun.streams import CallJournals, JournalWatchSource, ToolStream
 
 STDOUT = ToolChannel.STDOUT
 
@@ -82,27 +87,47 @@ STREAM_PATH = stream_path(CALL_ID)
 
 
 class TurnScope:
-    """Контекст хода теста: живые стримы регистрируются в нём и гаснут с ним."""
+    """Запуск области теста: живые стримы регистрируются в нём и гаснут с ним."""
 
-    _SCOPE: ClassVar[Any] = None
+    def __init__(self, runs: Runs, context: CallContext) -> None:
+        self._runs = runs
+        self._context = context
+        self._opened = ExitStack()
 
-    @classmethod
-    def start(cls) -> None:
-        cls.end()
-        cls._SCOPE = RunRegistry.open(TEST_CONTEXTS, make_context(THREAD), FakeTurn())
-        cls._SCOPE.__enter__()
+    def start(self) -> None:
+        self._opened.enter_context(self._runs.open(self._context, FakeTurn()))
 
-    @classmethod
-    def end(cls) -> None:
-        """Конец хода: контекст закрывается, файлы журнала остаются на диске."""
-        scope = cls._SCOPE
-        cls._SCOPE = None
-        if scope is not None:
-            scope.__exit__(None, None, None)
+    def end(self) -> None:
+        """Конец хода: запуск закрывается, файлы журнала остаются на диске."""
+        self._opened.close()
+
+
+@pytest.fixture
+def journals(runtime_stand: StandRefs, di_root: None, tmp_path: Path) -> CallJournals:
+    """Журналы вызовов с хранилищем в каталоге теста; панель читает их из
+    корневого контейнера."""
+    store = StreamJournal(DirVault(str(tmp_path / "journal")), reserve_bytes=0)
+    built = CallJournals(store, runtime_stand.runs)
+    root = Container.root
+    if root is None:
+        raise AssertionError("di_root installs the root container")
+
+    root.provide(runtime.call_journals, built)
+    return built
+
+
+@pytest.fixture
+def turn_scope(runtime_stand: StandRefs, call_stand: CallStand) -> Iterator[TurnScope]:
+    scope = TurnScope(runtime_stand.runs, call_stand.context(THREAD))
+    scope.start()
+    yield scope
+    scope.end()
 
 
 @pytest.fixture(autouse=True)
-def chainlit_context(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Any:
+def chainlit_context(
+    call_stand: CallStand, journals: CallJournals, turn_scope: TurnScope
+) -> Any:
     """Контекст с thread_id и user сессии, журнал в каталоге на время теста."""
     session = SimpleNamespace(
         id="session-1",
@@ -114,16 +139,8 @@ def chainlit_context(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Any:
         client_type="webapp",
     )
     token = context_var.set(cast("ChainlitContext", SimpleNamespace(session=session)))
-    use_context(monkeypatch, thread_id=THREAD, user_id=UUID(USER))
-    ToolStreams.reset()
-    ToolStreams.configure(
-        StreamJournal(DirVault(str(tmp_path / "journal")), reserve_bytes=0)
-    )
-    TurnScope.start()
+    call_stand.use(call_stand.context(thread_id=THREAD, user_id=UUID(USER)))
     yield
-    TurnScope.end()
-    RunRegistry.reset()
-    ToolStreams.reset()
     CanvasWatch.reset()
     ToolChannelsTap.set(None)
     # контекст сбрасывается за собой: иначе сессия утечёт в тесты без неё
@@ -134,9 +151,9 @@ def run(coro: Any) -> Any:
     return asyncio.run(coro)
 
 
-def begin_stream(call_id: str = CALL_ID) -> ToolStream:
-    ToolStreams.mark_streamable([TOOL_NAME])
-    stream = ToolStreams.begin(USER, THREAD, call_id, TOOL_NAME)
+def begin_stream(journals: CallJournals, call_id: str = CALL_ID) -> ToolStream:
+    journals.mark_streamable([TOOL_NAME])
+    stream = journals.begin(USER, THREAD, call_id, TOOL_NAME)
     if stream is None:
         raise AssertionError("stream is not None")
     return stream
@@ -151,7 +168,9 @@ class TestJournalThroughWrapper:
     """
 
     @staticmethod
-    def _tool_and_seen() -> tuple[Any, list[object]]:
+    def _tool_and_seen(
+        journals: CallJournals, call_stand: CallStand
+    ) -> tuple[Any, list[object]]:
         seen: list[object] = []
 
         @tool
@@ -164,18 +183,16 @@ class TestJournalThroughWrapper:
             return "done"
 
         ToolCallIdField.attach_all([fake_bash])
-        ToolRunLogger.guard_all(
-            [fake_bash],
-            CallSurface(TEST_CONTEXTS).stream_source,
-            CallSurface(TEST_CONTEXTS).tool_call_scope,
-        )
+        ToolRunLogger(journals, call_stand.contexts).guard_all([fake_bash])
         return fake_bash, seen
 
-    async def _invoke(self, *, streamable: bool = True) -> list[object]:
+    async def _invoke(
+        self, journals: CallJournals, call_stand: CallStand, *, streamable: bool = True
+    ) -> list[object]:
         if streamable:
-            ToolStreams.mark_streamable([TOOL_NAME])
+            journals.mark_streamable([TOOL_NAME])
 
-        fake_bash, seen = self._tool_and_seen()
+        fake_bash, seen = self._tool_and_seen(journals, call_stand)
         await fake_bash.ainvoke(
             {
                 "name": TOOL_NAME,
@@ -186,31 +203,33 @@ class TestJournalThroughWrapper:
         )
         return seen
 
-    def test_sync_tool_sees_its_recorder(self) -> None:
-        seen = run(self._invoke())
+    def test_sync_tool_sees_its_recorder(
+        self, journals: CallJournals, call_stand: CallStand
+    ) -> None:
+        seen = run(self._invoke(journals, call_stand))
 
         if len(seen) != 1:
             raise AssertionError("len(seen) == 1")
         if seen[0] is None:
             raise AssertionError("seen[0] is not None")
 
-    def test_tool_output_lands_in_the_journal(self) -> None:
-        run(self._invoke())
+    def test_tool_output_lands_in_the_journal(
+        self, journals: CallJournals, call_stand: CallStand
+    ) -> None:
+        run(self._invoke(journals, call_stand))
 
-        piece = ToolStreams.recorded_slice(
-            USER, THREAD, CALL_ID, offset=0, channel=STDOUT
-        )
+        piece = journals.recorded_slice(USER, THREAD, CALL_ID, offset=0, channel=STDOUT)
         if piece is None:
             raise AssertionError("piece is not None")
         if "ran: echo hi" not in piece.text:
             raise AssertionError('"ran: echo hi" in piece.text')
 
-    def test_journal_is_closed_after_the_call(self) -> None:
-        run(self._invoke())
+    def test_journal_is_closed_after_the_call(
+        self, journals: CallJournals, call_stand: CallStand
+    ) -> None:
+        run(self._invoke(journals, call_stand))
 
-        piece = ToolStreams.recorded_slice(
-            USER, THREAD, CALL_ID, offset=0, channel=STDOUT
-        )
+        piece = journals.recorded_slice(USER, THREAD, CALL_ID, offset=0, channel=STDOUT)
         if piece is None:
             raise AssertionError("piece is not None")
         if piece.closed is not True:
@@ -218,16 +237,20 @@ class TestJournalThroughWrapper:
         if piece.note != str(CallOutcome.FINISHED):
             raise AssertionError("piece.note == str(CallOutcome.FINISHED)")
 
-    def test_not_streamable_tool_gets_no_recorder(self) -> None:
-        seen = run(self._invoke(streamable=False))
+    def test_not_streamable_tool_gets_no_recorder(
+        self, journals: CallJournals, call_stand: CallStand
+    ) -> None:
+        seen = run(self._invoke(journals, call_stand, streamable=False))
 
         if seen != [None]:
             raise AssertionError("seen == [None]")
-        if ToolStreams.get(THREAD, CALL_ID) is not None:
-            raise AssertionError("ToolStreams.get(THREAD, CALL_ID) is None")
+        if journals.live(THREAD, CALL_ID) is not None:
+            raise AssertionError("journals.live(THREAD, CALL_ID) is None")
 
-    def test_failed_call_closes_with_failure_note(self) -> None:
-        ToolStreams.mark_streamable([TOOL_NAME])
+    def test_failed_call_closes_with_failure_note(
+        self, journals: CallJournals, call_stand: CallStand
+    ) -> None:
+        journals.mark_streamable([TOOL_NAME])
 
         @tool
         def fake_bash(command: str) -> str:
@@ -240,11 +263,7 @@ class TestJournalThroughWrapper:
             raise RuntimeError(msg)
 
         ToolCallIdField.attach_all([fake_bash])
-        ToolRunLogger.guard_all(
-            [fake_bash],
-            CallSurface(TEST_CONTEXTS).stream_source,
-            CallSurface(TEST_CONTEXTS).tool_call_scope,
-        )
+        ToolRunLogger(journals, call_stand.contexts).guard_all([fake_bash])
 
         async def scenario() -> None:
             with pytest.raises(RuntimeError):
@@ -259,9 +278,7 @@ class TestJournalThroughWrapper:
 
         run(scenario())
 
-        piece = ToolStreams.recorded_slice(
-            USER, THREAD, CALL_ID, offset=0, channel=STDOUT
-        )
+        piece = journals.recorded_slice(USER, THREAD, CALL_ID, offset=0, channel=STDOUT)
         if piece is None:
             raise AssertionError("piece is not None")
         if piece.closed is not True:
@@ -271,9 +288,11 @@ class TestJournalThroughWrapper:
         if piece.text != "partial":
             raise AssertionError('piece.text == "partial"')
 
-    def test_parallel_same_name_calls_keep_own_journals(self) -> None:
+    def test_parallel_same_name_calls_keep_own_journals(
+        self, journals: CallJournals, call_stand: CallStand
+    ) -> None:
         """Два одноимённых вызова: каждый пишет в файл своего call_id."""
-        ToolStreams.mark_streamable([TOOL_NAME])
+        journals.mark_streamable([TOOL_NAME])
 
         @tool
         def fake_bash(command: str) -> str:
@@ -285,11 +304,7 @@ class TestJournalThroughWrapper:
             return "done"
 
         ToolCallIdField.attach_all([fake_bash])
-        ToolRunLogger.guard_all(
-            [fake_bash],
-            CallSurface(TEST_CONTEXTS).stream_source,
-            CallSurface(TEST_CONTEXTS).tool_call_scope,
-        )
+        ToolRunLogger(journals, call_stand.contexts).guard_all([fake_bash])
 
         async def scenario() -> None:
             first = fake_bash.ainvoke(
@@ -312,12 +327,10 @@ class TestJournalThroughWrapper:
 
         run(scenario())
 
-        alpha = ToolStreams.recorded_slice(
+        alpha = journals.recorded_slice(
             USER, THREAD, "call-a", offset=0, channel=STDOUT
         )
-        beta = ToolStreams.recorded_slice(
-            USER, THREAD, "call-b", offset=0, channel=STDOUT
-        )
+        beta = journals.recorded_slice(USER, THREAD, "call-b", offset=0, channel=STDOUT)
         if alpha is None:
             raise AssertionError("alpha is not None")
         if beta is None:
@@ -331,18 +344,18 @@ class TestJournalThroughWrapper:
 class TestJournalOutlivesTheTurn:
     """Журнал переживает конец хода: история открывает поток заново."""
 
-    def test_slice_after_the_turn_ends(self) -> None:
-        stream = begin_stream()
+    def test_slice_after_the_turn_ends(
+        self, turn_scope: TurnScope, journals: CallJournals
+    ) -> None:
+        stream = begin_stream(journals)
         stream.sink_of(STDOUT).feed("прошлый ход".encode())
         stream.close(str(CallOutcome.FINISHED))
-        TurnScope.end()
+        turn_scope.end()
 
-        if ToolStreams.get(THREAD, CALL_ID) is not None:
-            raise AssertionError("ToolStreams.get(THREAD, CALL_ID) is None")
+        if journals.live(THREAD, CALL_ID) is not None:
+            raise AssertionError("journals.live(THREAD, CALL_ID) is None")
 
-        piece = ToolStreams.recorded_slice(
-            USER, THREAD, CALL_ID, offset=0, channel=STDOUT
-        )
+        piece = journals.recorded_slice(USER, THREAD, CALL_ID, offset=0, channel=STDOUT)
         if piece is None:
             raise AssertionError("piece is not None")
         if piece.text != "прошлый ход":
@@ -350,15 +363,15 @@ class TestJournalOutlivesTheTurn:
         if piece.closed is not True:
             raise AssertionError("piece.closed is True")
 
-    def test_turn_end_closes_abandoned_recorder(self) -> None:
-        stream = begin_stream()
+    def test_turn_end_closes_abandoned_recorder(
+        self, turn_scope: TurnScope, journals: CallJournals
+    ) -> None:
+        stream = begin_stream(journals)
         stream.sink_of(STDOUT).feed(b"data")
 
-        TurnScope.end()
+        turn_scope.end()
 
-        piece = ToolStreams.recorded_slice(
-            USER, THREAD, CALL_ID, offset=0, channel=STDOUT
-        )
+        piece = journals.recorded_slice(USER, THREAD, CALL_ID, offset=0, channel=STDOUT)
         if piece is None:
             raise AssertionError("piece is not None")
         if piece.closed is not True:
@@ -366,12 +379,14 @@ class TestJournalOutlivesTheTurn:
         if piece.note != CallOutcome.STOPPED.value:
             raise AssertionError("piece.note == CallOutcome.STOPPED.value")
 
-    def test_foreign_user_cannot_read_the_journal(self) -> None:
-        stream = begin_stream()
+    def test_foreign_user_cannot_read_the_journal(
+        self, turn_scope: TurnScope, journals: CallJournals
+    ) -> None:
+        stream = begin_stream(journals)
         stream.sink_of(STDOUT).feed(b"secret")
-        TurnScope.end()
+        turn_scope.end()
 
-        piece = ToolStreams.recorded_slice(
+        piece = journals.recorded_slice(
             "999", THREAD, CALL_ID, offset=0, channel=STDOUT
         )
         if piece is not None:
@@ -381,18 +396,18 @@ class TestJournalOutlivesTheTurn:
 class TestBegin:
     """Регистрация живого вызова отвергает небезопасные идентификаторы."""
 
-    def test_unsafe_call_id_is_refused(self) -> None:
-        ToolStreams.mark_streamable([TOOL_NAME])
+    def test_unsafe_call_id_is_refused(self, journals: CallJournals) -> None:
+        journals.mark_streamable([TOOL_NAME])
 
-        stream = ToolStreams.begin(USER, THREAD, "../../etc/passwd", TOOL_NAME)
+        stream = journals.begin(USER, THREAD, "../../etc/passwd", TOOL_NAME)
 
         if stream is not None:
             raise AssertionError("stream is None")
 
-    def test_dotted_call_id_is_refused(self) -> None:
-        ToolStreams.mark_streamable([TOOL_NAME])
+    def test_dotted_call_id_is_refused(self, journals: CallJournals) -> None:
+        journals.mark_streamable([TOOL_NAME])
 
-        stream = ToolStreams.begin(USER, THREAD, "call.0", TOOL_NAME)
+        stream = journals.begin(USER, THREAD, "call.0", TOOL_NAME)
 
         if stream is not None:
             raise AssertionError("stream is None")
@@ -417,8 +432,10 @@ def _speed_up_watch(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(CanvasWatch, "COALESCE_SEC", 0.05)
 
 
-def _journal_source(call_id: str, live: ToolStream | None) -> JournalWatchSource:
-    journal = ToolStreams.journal()
+def _journal_source(
+    journals: CallJournals, call_id: str, live: ToolStream | None
+) -> JournalWatchSource:
+    journal = journals.store
     if journal is None:
         raise AssertionError("journal is not None")
 
@@ -442,7 +459,7 @@ class TestWatch:
     CHUNK = b"x" * 1024
 
     def _watched_writes(
-        self, monkeypatch: pytest.MonkeyPatch
+        self, journals: CallJournals, monkeypatch: pytest.MonkeyPatch
     ) -> tuple[FakeTransport, int]:
         _speed_up_watch(monkeypatch)
 
@@ -450,8 +467,8 @@ class TestWatch:
             transport = FakeTransport()
             CanvasWatch.configure(transport)
 
-            stream = begin_stream()
-            source = _journal_source(CALL_ID, stream)
+            stream = begin_stream(journals)
+            source = _journal_source(journals, CALL_ID, stream)
             CanvasWatch.show(THREAD, STREAM_PATH, "n-1", source, seen="0:0")
 
             total = 0
@@ -475,9 +492,9 @@ class TestWatch:
         return run(scenario())
 
     def test_signals_carry_state_and_no_content(
-        self, monkeypatch: pytest.MonkeyPatch
+        self, journals: CallJournals, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        transport, total = self._watched_writes(monkeypatch)
+        transport, total = self._watched_writes(journals, monkeypatch)
 
         if not transport.sent:
             raise AssertionError("transport.sent")
@@ -497,33 +514,35 @@ class TestWatch:
         if final["note"] != str(CallOutcome.FINISHED):
             raise AssertionError('final["note"] == str(CallOutcome.FINISHED)')
 
-    def test_signals_are_coalesced(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        transport, _ = self._watched_writes(monkeypatch)
+    def test_signals_are_coalesced(
+        self, journals: CallJournals, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        transport, _ = self._watched_writes(journals, monkeypatch)
 
         if len(transport.sent) >= self.CHUNKS / 10:
             raise AssertionError("len(transport.sent) < self.CHUNKS / 10")
 
     def test_show_replaces_previous_watch(
-        self, monkeypatch: pytest.MonkeyPatch
+        self, journals: CallJournals, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         _speed_up_watch(monkeypatch)
 
         async def scenario() -> str | None:
             CanvasWatch.configure(FakeTransport())
-            first = begin_stream("call-a")
-            second = begin_stream("call-b")
+            first = begin_stream(journals, "call-a")
+            second = begin_stream(journals, "call-b")
 
             CanvasWatch.show(
                 THREAD,
                 stream_path("call-a"),
                 "n-a",
-                _journal_source("call-a", first),
+                _journal_source(journals, "call-a", first),
             )
             CanvasWatch.show(
                 THREAD,
                 stream_path("call-b"),
                 "n-b",
-                _journal_source("call-b", second),
+                _journal_source(journals, "call-b", second),
             )
 
             watching = CanvasWatch.watching(THREAD)
@@ -534,18 +553,20 @@ class TestWatch:
         if watching != stream_path("call-b"):
             raise AssertionError('watching == stream_path("call-b")')
 
-    def test_leave_respects_the_nonce(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_leave_respects_the_nonce(
+        self, journals: CallJournals, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """Гонка переоткрытия: leave старого показа не снимает свежий вотчер."""
         _speed_up_watch(monkeypatch)
 
         async def scenario() -> tuple[str | None, str | None]:
             CanvasWatch.configure(FakeTransport())
-            stream = begin_stream()
+            stream = begin_stream(journals)
             CanvasWatch.show(
                 THREAD,
                 STREAM_PATH,
                 "n-new",
-                _journal_source(CALL_ID, stream),
+                _journal_source(journals, CALL_ID, stream),
             )
 
             CanvasWatch.leave(THREAD, "n-old")
@@ -562,19 +583,19 @@ class TestWatch:
             raise AssertionError("after_own is None")
 
     def test_watch_stops_when_the_room_dies(
-        self, monkeypatch: pytest.MonkeyPatch
+        self, journals: CallJournals, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         _speed_up_watch(monkeypatch)
 
         async def scenario() -> None:
             transport = FakeTransport()
             CanvasWatch.configure(transport)
-            stream = begin_stream()
+            stream = begin_stream(journals)
             CanvasWatch.show(
                 THREAD,
                 STREAM_PATH,
                 "n-1",
-                _journal_source(CALL_ID, stream),
+                _journal_source(journals, CALL_ID, stream),
             )
 
             transport.dead = True
@@ -633,15 +654,18 @@ class TestWatch:
             raise AssertionError('sent[0]["revision"] == "r2"')
 
     def test_closed_journal_watch_ends_without_signals(
-        self, monkeypatch: pytest.MonkeyPatch
+        self,
+        journals: CallJournals,
+        turn_scope: TurnScope,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Закрытый вызов статичен: слежение снимается без единого сигнала."""
         _speed_up_watch(monkeypatch)
 
-        stream = begin_stream()
+        stream = begin_stream(journals)
         stream.sink_of(STDOUT).feed(b"done output")
         stream.close(str(CallOutcome.FINISHED))
-        TurnScope.end()
+        turn_scope.end()
 
         async def scenario() -> FakeTransport:
             transport = FakeTransport()
@@ -650,7 +674,7 @@ class TestWatch:
                 THREAD,
                 STREAM_PATH,
                 "n-1",
-                _journal_source(CALL_ID, None),
+                _journal_source(journals, CALL_ID, None),
             )
             await _watch_finished()
             return transport
@@ -668,14 +692,16 @@ class TestWindowAction:
 
     PATH = STREAM_PATH
 
-    def _recorded(self) -> None:
-        stream = begin_stream()
+    def _recorded(self, journals: CallJournals, turn_scope: TurnScope) -> None:
+        stream = begin_stream(journals)
         stream.sink_of(STDOUT).feed(self.BODY)
         stream.close(str(CallOutcome.FINISHED))
-        TurnScope.end()
+        turn_scope.end()
 
-    def test_windows_walk_the_journal(self) -> None:
-        self._recorded()
+    def test_windows_walk_the_journal(
+        self, turn_scope: TurnScope, journals: CallJournals
+    ) -> None:
+        self._recorded(journals, turn_scope)
 
         first = run(
             StreamActions.window(USER, THREAD, {"path": self.PATH, "offset": 0})
@@ -693,8 +719,10 @@ class TestWindowAction:
         if len(middle["text"].encode()) != first["stream"]["window"]:
             raise AssertionError('len(middle["text"].encode()) == first["stream"]["wi…')
 
-    def test_tail_window_by_negative_offset(self) -> None:
-        self._recorded()
+    def test_tail_window_by_negative_offset(
+        self, turn_scope: TurnScope, journals: CallJournals
+    ) -> None:
+        self._recorded(journals, turn_scope)
 
         tail = run(
             StreamActions.window(USER, THREAD, {"path": self.PATH, "offset": -1})
@@ -705,8 +733,10 @@ class TestWindowAction:
         if len(tail["text"].encode()) > JournalWindow.BYTES:
             raise AssertionError('len(tail["text"].encode()) <= JournalWindow.BYTES')
 
-    def test_window_before_joins_backwards(self) -> None:
-        self._recorded()
+    def test_window_before_joins_backwards(
+        self, turn_scope: TurnScope, journals: CallJournals
+    ) -> None:
+        self._recorded(journals, turn_scope)
 
         before = run(
             StreamActions.window(USER, THREAD, {"path": self.PATH, "before": 70000})
@@ -715,8 +745,10 @@ class TestWindowAction:
         if before["stream"]["end"] != 70000:
             raise AssertionError('before["stream"]["end"] == 70000')
 
-    def test_offset_beyond_the_file_gives_empty_window(self) -> None:
-        self._recorded()
+    def test_offset_beyond_the_file_gives_empty_window(
+        self, turn_scope: TurnScope, journals: CallJournals
+    ) -> None:
+        self._recorded(journals, turn_scope)
 
         beyond = run(
             StreamActions.window(USER, THREAD, {"path": self.PATH, "offset": 10**9})
@@ -744,16 +776,18 @@ class TestChannelAccess:
     WRAP_PATH = f"{StreamPath.SCHEME}{CALL_ID}/{WrapChannel.STDERR.value}"
 
     @staticmethod
-    def _recorded_with_wrap() -> None:
+    def _recorded_with_wrap(journals: CallJournals, turn_scope: TurnScope) -> None:
         """Вызов, у которого писались и тело, и обвязка запуска."""
-        stream = begin_stream()
+        stream = begin_stream(journals)
         stream.sink_of(STDOUT).feed(b"tool output")
         stream.sink_of(WrapChannel.STDERR).feed(b"image mounted")
         stream.close(str(CallOutcome.FINISHED))
-        TurnScope.end()
+        turn_scope.end()
 
-    def test_wrap_channel_window_is_refused(self) -> None:
-        self._recorded_with_wrap()
+    def test_wrap_channel_window_is_refused(
+        self, turn_scope: TurnScope, journals: CallJournals
+    ) -> None:
+        self._recorded_with_wrap(journals, turn_scope)
 
         answer = run(
             StreamActions.window(USER, THREAD, {"path": self.WRAP_PATH, "offset": 0})
@@ -762,8 +796,10 @@ class TestChannelAccess:
         if answer != {}:
             raise AssertionError("answer == {}")
 
-    def test_wrap_channel_show_is_refused(self) -> None:
-        self._recorded_with_wrap()
+    def test_wrap_channel_show_is_refused(
+        self, turn_scope: TurnScope, journals: CallJournals
+    ) -> None:
+        self._recorded_with_wrap(journals, turn_scope)
 
         try:
             run(
@@ -778,10 +814,12 @@ class TestChannelAccess:
 
         raise AssertionError("StreamActions.show отвергает закрытый канал")
 
-    def test_wrap_channel_is_written_but_not_offered_as_a_tab(self) -> None:
-        self._recorded_with_wrap()
+    def test_wrap_channel_is_written_but_not_offered_as_a_tab(
+        self, turn_scope: TurnScope, journals: CallJournals
+    ) -> None:
+        self._recorded_with_wrap(journals, turn_scope)
 
-        journal = StreamJournalHub.get()
+        journal = journals.store
         if journal is None:
             raise AssertionError("journal is not None")
 
@@ -789,7 +827,7 @@ class TestChannelAccess:
         if WrapChannel.STDERR not in journal.channels_of(key):
             raise AssertionError("WrapChannel.STDERR in journal.channels_of(key)")
 
-        offered = ToolStreams.recorded_channels(USER, THREAD, CALL_ID)
+        offered = journals.recorded_channels(USER, THREAD, CALL_ID)
         if WrapChannel.STDERR in offered:
             raise AssertionError("WrapChannel.STDERR not in offered")
         if STDOUT not in offered:
@@ -812,12 +850,15 @@ class TestShowAction:
     """Кнопка потока: окно с начала журнала в панель плюс слежение."""
 
     def test_recorded_stream_is_shown_from_the_start(
-        self, monkeypatch: pytest.MonkeyPatch
+        self,
+        journals: CallJournals,
+        turn_scope: TurnScope,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        stream = begin_stream()
+        stream = begin_stream(journals)
         stream.sink_of(STDOUT).feed("сохранённый вывод".encode())
         stream.close(str(CallOutcome.FINISHED))
-        TurnScope.end()
+        turn_scope.end()
 
         probe = PanelProbe(monkeypatch)
 
@@ -838,15 +879,18 @@ class TestShowAction:
             raise AssertionError("shown.nonce")
 
     def test_inline_show_answers_instead_of_pushing(
-        self, monkeypatch: pytest.MonkeyPatch
+        self,
+        journals: CallJournals,
+        turn_scope: TurnScope,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Вкладка канала в открытой панели: элемент не пушится, панель цела."""
         _speed_up_watch(monkeypatch)
-        stream = begin_stream()
+        stream = begin_stream(journals)
         stream.sink_of(STDOUT).feed(b"tool output")
         stream.sink_of(ToolChannel.STDERR).feed(b"tool complains")
         stream.close(str(CallOutcome.FINISHED))
-        TurnScope.end()
+        turn_scope.end()
 
         probe = PanelProbe(monkeypatch)
 
@@ -878,11 +922,11 @@ class TestShowAction:
             raise AssertionError('answer["nonce"]')
 
     def test_inline_show_moves_the_watch_to_the_channel(
-        self, monkeypatch: pytest.MonkeyPatch
+        self, journals: CallJournals, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Слежение переезжает на выбранный канал: сигналы идут о нём."""
         _speed_up_watch(monkeypatch)
-        stream = begin_stream()
+        stream = begin_stream(journals)
         stream.sink_of(STDOUT).feed(b"live")
         stream.sink_of(ToolChannel.STDERR).feed(b"live complaints")
         PanelProbe(monkeypatch)
@@ -907,9 +951,11 @@ class TestShowAction:
         if watching != stream_path(CALL_ID, ToolChannel.STDERR):
             raise AssertionError("watching == stream_path(CALL_ID, ToolChannel.STDERR)")
 
-    def test_show_registers_the_watch(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_show_registers_the_watch(
+        self, journals: CallJournals, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         _speed_up_watch(monkeypatch)
-        stream = begin_stream()
+        stream = begin_stream(journals)
         stream.sink_of(STDOUT).feed(b"live")
 
         probe = PanelProbe(monkeypatch)
@@ -938,10 +984,10 @@ class TestShowAction:
             raise AssertionError('"unavailable" in probe.shown[0].note')
 
     def test_leave_action_drops_the_watch(
-        self, monkeypatch: pytest.MonkeyPatch
+        self, journals: CallJournals, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         _speed_up_watch(monkeypatch)
-        stream = begin_stream()
+        stream = begin_stream(journals)
         stream.sink_of(STDOUT).feed(b"live")
 
         probe = PanelProbe(monkeypatch)
@@ -987,16 +1033,23 @@ class ElementSink(ChatSink):
 class TestStreamButton:
     """Кнопка потока живёт на шаге потокового тула и адресуется по call_id."""
 
-    async def _tool_step(self, sink: ChatSink, name: str) -> Step:
-        view = ChatView(THREAD, sink, user_name="tester")
+    async def _tool_step(
+        self,
+        journals: CallJournals,
+        sink: ChatSink,
+        name: str,
+    ) -> Step:
+        view = ChatView(THREAD, sink, journals, user_name="tester")
         view.begin_turn("turn-1")
         return await view.tool_started(name, {"command": "ls"}, CALL_ID)
 
-    def test_streamable_tool_gets_the_button(self) -> None:
-        ToolStreams.mark_streamable([TOOL_NAME])
+    def test_streamable_tool_gets_the_button(
+        self, journals: CallJournals, runtime_stand: StandRefs
+    ) -> None:
+        journals.mark_streamable([TOOL_NAME])
         sink = ElementSink()
 
-        step = run(self._tool_step(sink, TOOL_NAME))
+        step = run(self._tool_step(journals, sink, TOOL_NAME))
 
         elements = step.elements or []
         if len(elements) != 1:
@@ -1009,37 +1062,43 @@ class TestStreamButton:
         if element.id != ChatView.derive_id(THREAD, CALL_ID, StepRole.STREAM):
             raise AssertionError("element.id == ChatView.derive_id(THREAD, CALL_ID, S…")
 
-    def test_no_journal_means_no_button(self) -> None:
-        ToolStreams.reset()
-        ToolStreams.mark_streamable([TOOL_NAME])
+    def test_no_journal_means_no_button(self, runtime_stand: StandRefs) -> None:
+        silent = CallJournals(None, runtime_stand.runs)
+        silent.mark_streamable([TOOL_NAME])
 
-        step = run(self._tool_step(ElementSink(), TOOL_NAME))
+        step = run(self._tool_step(silent, ElementSink(), TOOL_NAME))
 
         if step.elements:
             raise AssertionError("not step.elements")
 
-    def test_other_tools_stay_clean(self) -> None:
+    def test_other_tools_stay_clean(
+        self, journals: CallJournals, runtime_stand: StandRefs
+    ) -> None:
         sink = ElementSink()
 
-        step = run(self._tool_step(sink, "diagram_save"))
+        step = run(self._tool_step(journals, sink, "diagram_save"))
 
         if step.elements:
             raise AssertionError("not step.elements")
 
-    def test_replay_sink_never_emits_the_button(self) -> None:
-        ToolStreams.mark_streamable([TOOL_NAME])
+    def test_replay_sink_never_emits_the_button(
+        self, journals: CallJournals, runtime_stand: StandRefs
+    ) -> None:
+        journals.mark_streamable([TOOL_NAME])
 
-        step = run(self._tool_step(RecordingSink(), TOOL_NAME))
+        step = run(self._tool_step(journals, RecordingSink(), TOOL_NAME))
 
         if step.elements:
             raise AssertionError("not step.elements")
 
-    def test_replayed_step_dict_matches_live(self) -> None:
+    def test_replayed_step_dict_matches_live(
+        self, journals: CallJournals, runtime_stand: StandRefs
+    ) -> None:
         """Кнопка не должна ломать контракт шагов: сравниваются StepDict."""
-        ToolStreams.mark_streamable([TOOL_NAME])
+        journals.mark_streamable([TOOL_NAME])
 
-        live = run(self._tool_step(ElementSink(), TOOL_NAME)).to_dict()
-        replay = run(self._tool_step(RecordingSink(), TOOL_NAME)).to_dict()
+        live = run(self._tool_step(journals, ElementSink(), TOOL_NAME)).to_dict()
+        replay = run(self._tool_step(journals, RecordingSink(), TOOL_NAME)).to_dict()
 
         if live["id"] != replay["id"]:
             raise AssertionError('live["id"] == replay["id"]')
@@ -1053,7 +1112,7 @@ class TestStreamDownload:
     """Скачивание журнала вызова: тот же StreamedFile, что отдаёт вложения."""
 
     @staticmethod
-    def _app(user_id: str, base_dir: str) -> Any:
+    def _app(journals: CallJournals, user_id: str, base_dir: str) -> Any:
         from chainlit.auth import get_current_user
         from chainlit.user import PersistedUser
         from fastapi import FastAPI
@@ -1079,7 +1138,7 @@ class TestStreamDownload:
                 "binaries": {"dirs": _bin_dirs()},
             }
         )
-        serving = StreamServing(config, UploadPolicy())
+        serving = StreamServing(config, UploadPolicy(), lambda: journals)
 
         app = FastAPI()
         app.add_api_route(StreamUrl.ROUTE, serving.serve, methods=["GET"])
@@ -1089,15 +1148,17 @@ class TestStreamDownload:
         app.dependency_overrides[get_current_user] = lambda: user
         return app
 
-    def test_log_downloads_whole_and_by_range(self, tmp_path: Path) -> None:
-        stream = begin_stream()
+    def test_log_downloads_whole_and_by_range(
+        self, journals: CallJournals, tmp_path: Path
+    ) -> None:
+        stream = begin_stream(journals)
         body = "строка вывода\n" * 20
         stream.sink_of(STDOUT).feed(body.encode())
         stream.close(str(CallOutcome.FINISHED))
 
         from httpx import ASGITransport, AsyncClient
 
-        app = self._app(USER, str(tmp_path))
+        app = self._app(journals, USER, str(tmp_path))
 
         async def scenario() -> Any:
             transport = ASGITransport(app=app)
@@ -1130,14 +1191,16 @@ class TestStreamDownload:
         if missing.status_code != 404:
             raise AssertionError("missing.status_code == 404")
 
-    def test_foreign_user_gets_no_log(self, tmp_path: Path) -> None:
-        stream = begin_stream()
+    def test_foreign_user_gets_no_log(
+        self, journals: CallJournals, tmp_path: Path
+    ) -> None:
+        stream = begin_stream(journals)
         stream.sink_of(STDOUT).feed(b"secret output")
         stream.close(str(CallOutcome.FINISHED))
 
         from httpx import ASGITransport, AsyncClient
 
-        app = self._app("999", str(tmp_path))
+        app = self._app(journals, "999", str(tmp_path))
 
         async def scenario() -> Any:
             transport = ASGITransport(app=app)

@@ -22,6 +22,7 @@ from boba.auth.sso import SpnegoGate
 from boba.chat.profiles import ChatProfiles
 from boba.config import bind
 from boba.identity.api import AuthenticatedUser, PersistedUsers, UsersUpsert
+from boba.identity.context import CallContexts
 from boba.identity.session import UserMetadataField
 from boba.identity.signin import SignedIn
 from boba.identity.sso import OwnRequest
@@ -101,7 +102,9 @@ class Stand:
             page=PageUrls(root=PAGE, login=f"{PAGE}/login", home=f"{PAGE}/observe"),
         )
         self.api = ApiStand(
-            StandRefs.none(), ChatProfiles(studio_config.profiles), signin=wiring
+            StandRefs(CallContexts()).none(),
+            ChatProfiles(studio_config.profiles),
+            signin=wiring,
         )
 
 

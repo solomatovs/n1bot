@@ -256,7 +256,7 @@ class PayloadClickHouse:
 
     @staticmethod
     @asynccontextmanager
-    async def rows_stream_out(  # noqa: PLR0913
+    async def rows_stream_out(  # noqa: PLR0913 — фикстуры теста
         client: AsyncClient,
         text: str,
         parameters: Mapping[str, Any] | Sequence[Any] | None = None,
@@ -312,7 +312,7 @@ class PayloadClickHouse:
 
     @staticmethod
     @asynccontextmanager
-    async def byte_stream_out(  # noqa: PLR0913
+    async def byte_stream_out(  # noqa: PLR0913 — фикстуры теста
         client: AsyncClient,
         query: str,
         fmt: str | None = None,
@@ -397,7 +397,7 @@ class PayloadClickHouse:
             yield block
 
     @staticmethod
-    async def byte_stream_in(  # noqa: PLR0913
+    async def byte_stream_in(  # noqa: PLR0913 — фикстуры теста
         client: AsyncClient,
         query: str,
         parameters: Mapping[str, Any] | Sequence[Any] | None = None,

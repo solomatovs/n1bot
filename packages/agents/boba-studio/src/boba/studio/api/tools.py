@@ -28,7 +28,6 @@ from pydantic import BaseModel, ConfigDict, Field
 from boba.chat.profiles import ChatProfiles
 from boba.identity.context import (
     CallContext,
-    CallContexts,
     Scope,
     Subject,
 )
@@ -39,7 +38,7 @@ from boba.identity.locks import (
     LockMode,
     LockPurpose,
 )
-from boba.identity.run import RunRegistry
+from boba.identity.run import Runs
 from boba.studio.api.auth import ApiAuth, CurrentUser
 from boba.studio.api.urls import ToolCallUrl
 from boba.toolkit.calls import ToolIntent
@@ -140,12 +139,12 @@ class ToolCalling:
         profiles: ChatProfiles,
         locks: LocksSource,
         heartbeat_sec: float,
-        contexts: CallContexts,
+        runs: Runs,
     ) -> None:
         self._registry = registry
         self._profiles = profiles
         self._job_lock = JobLock(locks, heartbeat_sec)
-        self._contexts = contexts
+        self._runs = runs
 
     def mount(self, router: APIRouter) -> None:
         router.add_api_route(
@@ -202,7 +201,7 @@ class ToolCalling:
             context.scope.id,
         )
 
-        with RunRegistry.open(self._contexts, context):
+        with self._runs.open(context):
             reply = await invoker.invoke(call)
 
         return ToolCallReply.of(reply, call_id)

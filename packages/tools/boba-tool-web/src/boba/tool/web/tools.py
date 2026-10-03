@@ -214,7 +214,7 @@ class WebPage:
 
 
 @tool
-async def web_fetch_page(  # noqa: PLR0913
+async def web_fetch_page(  # noqa: PLR0913 — фикстуры теста
     url: Annotated[str, Field(min_length=1, description="URL для скачивания")],
     connection: WebTarget,
     as_markdown: Annotated[bool, Field(description=_AS_MARKDOWN_DESCRIPTION)],
@@ -250,7 +250,7 @@ async def web_fetch_page(  # noqa: PLR0913
 
 
 @tool
-async def web_grep_page(  # noqa: PLR0913
+async def web_grep_page(  # noqa: PLR0913 — фикстуры теста
     url: Annotated[
         str,
         Field(min_length=1, description="URL для скачивания."),

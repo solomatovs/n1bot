@@ -19,6 +19,8 @@ from boba.chainlit.rendering.chat_view import (
     StepStatus,
     StepText,
 )
+from boba.identity.context import CallContexts
+from boba.identity.run import Runs
 from boba.toolkit.calls import CallIdPrefix
 from boba.toolkit.result import (
     ErrorResult,
@@ -27,6 +29,7 @@ from boba.toolkit.result import (
     ToolArtifact,
     VisualResult,
 )
+from boba.toolrun.streams import CallJournals
 
 THREAD = "11111111-1111-1111-1111-111111111111"
 
@@ -42,7 +45,8 @@ def run(coro: Any) -> Any:
 
 def make_view() -> tuple[ChatView, RecordingSink]:
     sink = RecordingSink()
-    return ChatView(THREAD, sink, user_name="tester"), sink
+    journals = CallJournals(None, Runs(CallContexts()))
+    return ChatView(THREAD, sink, journals, user_name="tester"), sink
 
 
 class TestToolArtifact:

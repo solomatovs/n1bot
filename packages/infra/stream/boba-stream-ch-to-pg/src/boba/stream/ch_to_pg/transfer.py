@@ -217,7 +217,7 @@ class ChToPg(PgTransfer):
         self._types = ChPgTypes()
         self._ch_types = ChTypes()
 
-    async def run(  # noqa: PLR0913
+    async def run(  # noqa: PLR0913 — фикстуры теста
         self,
         schema_strategy: SchemaStrategyPlan,
         delete_strategy: DeleteStrategyApply,

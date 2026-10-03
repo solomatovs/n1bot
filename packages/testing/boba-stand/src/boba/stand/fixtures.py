@@ -13,10 +13,18 @@ from boba.db.postgres import AsyncPostgresPool
 from boba.db.postgres.connection import PostgresConfig
 from boba.runtime.config import ConfigLocator, RawConfig, RuntimeConfig
 from boba.stand.database import TestDatabase
+from boba.stand.refs import StandRefs
 from boba.stand.site import StandLayers
-from boba.stand_core.context import call_context_cleared
+from boba.stand_core.context import CallStand, call_stand
 
-__all__ = ["call_context_cleared"]
+__all__ = ["call_stand"]
+
+
+@pytest.fixture
+def runtime_stand(call_stand: CallStand) -> StandRefs:
+    """Объекты процесса для теста: реестр запусков и журналы вызовов поверх
+    держателя контекста этого теста."""
+    return StandRefs(call_stand.contexts)
 
 
 @pytest.fixture(scope="session")

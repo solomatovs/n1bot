@@ -8,20 +8,23 @@ ServiceDisabledError — стенд попросили сервис, котор�
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
+from typing import ClassVar
 
 from boba.auth.credentials import KerberosCredentialSource, NoRefresh
 from boba.connection_broker.store import ConnectionStore
 from boba.connection_broker.user_connections import StoreRef
 from boba.connections.manifest import ConnectionTypes
 from boba.connections.sealed import SealKeys
+from boba.identity.context import CallContexts
 from boba.identity.errors import ServiceDisabledError
 from boba.identity.locks import MemoryLiveLocks
+from boba.identity.run import Runs
 from boba.krb.seal import SsoTickets
 from boba.messaging import MemoryMessageBus
 from boba.messaging.bus import ListenerState, StaticBusWatch
 from boba.runtime.refs import RuntimeRefs
-from boba.stand_core.context import TEST_CONTEXTS
 from boba.toolrun.registry import ToolRegistry
+from boba.toolrun.streams import CallJournals
 
 __all__ = ["StandRefs"]
 
@@ -29,25 +32,33 @@ TicketsRef = Callable[[], SsoTickets | None]
 
 
 class StandRefs:
-    """Сборка RuntimeRefs под стенд: шина, блокировки и слушатель — в памяти."""
+    """Сборка RuntimeRefs под стенд: шина, блокировки и слушатель — в памяти.
 
-    HEARTBEAT_SEC: float = 1.0
-    LOCK_TTL_SEC: int = 20
-    NAME: str = "stand"
+    Создаётся тестом с держателем контекста вызова своего CallStand; шина и
+    блокировки — одни на объект.
+    """
 
-    @classmethod
-    def none(cls) -> RuntimeRefs:
+    HEARTBEAT_SEC: ClassVar[float] = 1.0
+    LOCK_TTL_SEC: ClassVar[int] = 20
+    NAME: ClassVar[str] = "stand"
+
+    def __init__(self, contexts: CallContexts) -> None:
+        self.contexts = contexts
+        self.runs = Runs(contexts)
+        self.journals = CallJournals(None, self.runs)
+        self._locks = MemoryLiveLocks(self.NAME, self.LOCK_TTL_SEC)
+        self._bus = MemoryMessageBus(self.NAME)
+
+    def none(self) -> RuntimeRefs:
         """Ни реестра, ни соединений: как процесс без этих секций."""
-        return cls._build(cls._no_registry, cls._disabled_store, cls._no_tickets)
+        return self._build(self._no_registry, self._disabled_store, self._no_tickets)
 
-    @classmethod
-    def of(cls, store: StoreRef, tickets: TicketsRef) -> RuntimeRefs:
+    def of(self, store: StoreRef, tickets: TicketsRef) -> RuntimeRefs:
         """Соединения и билеты есть, реестра нет."""
-        return cls._build(cls._no_registry, store, tickets)
+        return self._build(self._no_registry, store, tickets)
 
-    @classmethod
     def _build(
-        cls,
+        self,
         tool_registry: Callable[[], Awaitable[ToolRegistry]],
         store: StoreRef,
         tickets: TicketsRef,
@@ -60,13 +71,21 @@ class StandRefs:
             connection_store=store,
             connection_types=ConnectionTypes.discover,
             credentials=credentials,
-            contexts=TEST_CONTEXTS,
+            contexts=self.contexts,
+            runs=self.runs,
+            journals=self.journals,
             seal_keys=SealKeys(),
-            live_locks=lambda: MemoryLiveLocks(cls.NAME, cls.LOCK_TTL_SEC),
-            heartbeat_sec=cls.HEARTBEAT_SEC,
+            live_locks=self._live_locks,
+            heartbeat_sec=self.HEARTBEAT_SEC,
             bus_watch=lambda: StaticBusWatch(ListenerState.LISTENING),
-            message_bus=lambda: MemoryMessageBus(cls.NAME),
+            message_bus=self._message_bus,
         )
+
+    def _live_locks(self) -> MemoryLiveLocks:
+        return self._locks
+
+    def _message_bus(self) -> MemoryMessageBus:
+        return self._bus
 
     @staticmethod
     async def _no_registry() -> ToolRegistry:

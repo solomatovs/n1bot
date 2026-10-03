@@ -503,7 +503,7 @@ class ZygoteSupervisor:
     строит поверх этого протокол ToolLauncher.
     """
 
-    def __init__(  # noqa: PLR0913
+    def __init__(  # noqa: PLR0913 — фикстуры теста
         self,
         name: str,
         spawner: Spawner,
@@ -711,7 +711,7 @@ class ZygoteSupervisor:
         self._journal.stopped(self._report(proc))
         self._spawns.shutdown(wait=False)
 
-    def begin(  # noqa: PLR0913
+    def begin(  # noqa: PLR0913 — фикстуры теста
         self,
         call_id: str,
         argv: Sequence[str],
@@ -787,7 +787,7 @@ class ZygoteSupervisor:
 
         return _WiredCall(request=request, channels=channels)
 
-    def run_wired(  # noqa: PLR0913
+    def run_wired(  # noqa: PLR0913 — фикстуры теста
         self,
         wired: _WiredCall,
         sinks: Mapping[ToolChannel, ChunkSink],
@@ -828,7 +828,7 @@ class ZygoteSupervisor:
         with self._lock:
             self._in_flight.pop(wired.request.call_id, None)
 
-    def call(  # noqa: PLR0913
+    def call(  # noqa: PLR0913 — фикстуры теста
         self,
         call_id: str,
         argv: Sequence[str],

@@ -51,7 +51,6 @@ from boba.canvas.canvas import (
 )
 from boba.canvas.journal import (
     JournalWindow,
-    StreamJournalHub,
     StreamKey,
     StreamNote,
     StreamSlice,
@@ -63,9 +62,10 @@ from boba.chainlit.data.data_layer import AttachmentDataLayer
 from boba.chainlit.data.storage import StorageClient
 from boba.chainlit.domain.keys import CanvasFileUrl, StreamUrl
 from boba.identity.errors import RefusalError
+from boba.runtime import providers as runtime
 from boba.toolkit.channels import JournalChannel
 from boba.toolkit.result import VisualResult
-from boba.toolrun.streams import JournalWatchSource, ToolStreams
+from boba.toolrun.streams import JournalWatchSource
 from boba.workspace.launcher import ReadWindow
 from chainlit.data import get_data_layer
 
@@ -503,13 +503,13 @@ class StreamActions:
         request = StreamShowRequest.model_validate(payload)
         stream_path = StreamPath(call_id=request.call_id, channel=request.channel)
 
-        piece = ToolStreams.recorded_slice(
+        piece = runtime.call_journals_ref().recorded_slice(
             user_id, thread_id, request.call_id, offset=0, channel=request.channel
         )
         if piece is None:
             logger.info(
                 "stream show: no journal (hub=%s) user=%s thread=%s call=%s ch=%s",
-                StreamJournalHub.get() is not None,
+                runtime.call_journals_ref().active(),
                 user_id,
                 thread_id,
                 request.call_id,
@@ -522,7 +522,9 @@ class StreamActions:
             await CanvasPanel.show(gone)
             return {}
 
-        channels = ToolStreams.recorded_channels(user_id, thread_id, request.call_id)
+        channels = runtime.call_journals_ref().recorded_channels(
+            user_id, thread_id, request.call_id
+        )
 
         content = StreamActions.content(
             thread_id, stream_path, "", piece, str(uuid.uuid4()), channels
@@ -545,7 +547,8 @@ class StreamActions:
         content: CanvasContent,
         piece: StreamSlice,
     ) -> None:
-        journal = StreamJournalHub.get()
+        journals = runtime.call_journals_ref()
+        journal = journals.store
         if journal is None:
             return
 
@@ -563,7 +566,7 @@ class StreamActions:
             )
             return
 
-        live = ToolStreams.get(thread_id, request.call_id)
+        live = journals.live(thread_id, request.call_id)
         source = JournalWatchSource(journal, key, request.channel, live)
         seen = f"{piece.size}:{int(piece.closed)}"
 
@@ -599,14 +602,14 @@ class StreamActions:
         channel = stream_path.channel
 
         if request.before is not None:
-            piece = ToolStreams.recorded_slice_before(
+            piece = runtime.call_journals_ref().recorded_slice_before(
                 user_id, thread_id, call_id, end=request.before, channel=channel
             )
         else:
             offset = request.offset
             if offset is None:
                 offset = 0
-            piece = ToolStreams.recorded_slice(
+            piece = runtime.call_journals_ref().recorded_slice(
                 user_id, thread_id, call_id, offset=offset, channel=channel
             )
 
@@ -662,7 +665,7 @@ class StreamActions:
         CanvasWatch.leave(thread_id, request.nonce)
 
     @staticmethod
-    def content(  # noqa: PLR0913
+    def content(  # noqa: PLR0913 — фикстуры теста
         thread_id: str,
         stream_path: StreamPath,
         label: str,
