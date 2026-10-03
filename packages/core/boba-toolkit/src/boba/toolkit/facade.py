@@ -44,6 +44,7 @@ from boba.toolkit.result import ResultKindError, ResultKinds
 
 __all__ = [
     "Injected",
+    "NotLogged",
     "PayloadTool",
     "ToolFacadeError",
     "UserConnection",
@@ -66,6 +67,15 @@ class Injected:
 
     Распознаётся по имени класса (FieldMarks.INJECTED): сравнение типов
     между процессами невозможно.
+    """
+
+
+class NotLogged:
+    """Маркер аргумента, значение которого не пишется в лог приложения.
+
+    Ставится в метаданные поля схемы вызова (Annotated); его наследники
+    несут и другой смысл поля (метка параметра-соединения). Как и Injected,
+    распознаётся по имени класса (FieldMarks.NOT_LOGGED).
     """
 
 

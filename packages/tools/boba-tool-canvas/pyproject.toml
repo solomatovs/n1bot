@@ -11,7 +11,7 @@ dependencies = [
     "boba-toolkit==0.0.26.dev4",
     "boba-identity==0.0.26.dev4",
     "boba-canvas==0.0.26.dev4",
-    "pydantic>=2.10,<2.11",
+    "pydantic>=2.10,<3",
 ]
 
 [project.entry-points."boba.tools"]

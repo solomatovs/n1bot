@@ -13,7 +13,7 @@ dependencies = [
     "boba-krb==0.0.26.dev4",
     "boba-toolkit==0.0.26.dev4",
     "psycopg[binary]>=3.2",
-    "pydantic>=2.10,<2.11",
+    "pydantic>=2.10,<3",
 ]
 
 [project.scripts]

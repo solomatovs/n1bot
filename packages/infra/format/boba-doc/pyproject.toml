@@ -10,7 +10,7 @@ requires-python = ">=3.11,<4"
 dependencies = [
     "boba-llm==0.0.26.dev4",
     "pillow>=10",
-    "pydantic>=2.10,<2.11",
+    "pydantic>=2.10,<3",
 ]
 
 [project.optional-dependencies]

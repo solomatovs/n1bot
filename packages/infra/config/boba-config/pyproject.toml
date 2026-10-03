@@ -8,7 +8,7 @@ version = "0.0.26.dev4"
 description = "Boba config: загрузка toml/yaml/CLI в OmegaConf и привязка секций к pydantic-моделям."
 requires-python = ">=3.11,<4"
 dependencies = [
-    "pydantic>=2.10,<2.11",
+    "pydantic>=2.10,<3",
     "omegaconf>=2.3,<3",
 ]
 

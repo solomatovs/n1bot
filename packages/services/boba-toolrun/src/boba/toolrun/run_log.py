@@ -13,21 +13,21 @@ from __future__ import annotations
 
 import logging
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import ClassVar, TypeAlias
 
 from langchain_core.tools import BaseTool
 
 from boba.canvas.journal import CallStream
-from boba.toolkit.calls import ToolIntent
+from boba.toolkit.calls import FieldMarks, ToolIntent
 from boba.toolkit.channels import CallOutcome
 from boba.toolkit.failure import FailurePacker
 from boba.toolkit.result import FailureResult, ToolResultBase
 from boba.toolkit.stream import ToolChannelsTap
 from boba.toolkit.timing import Elapsed
 from boba.toolrun.call_id import ToolCallIdField
-from boba.toolrun.wrapping import CallHooks, ToolBody
+from boba.toolrun.wrapping import CallHooks, ToolBody, ToolSchema
 
 __all__ = [
     "CallScopeSource",
@@ -83,10 +83,15 @@ class ToolRunLogger:
 
     class _Hooks(CallHooks["_CallScope"]):
         def __init__(
-            self, stream_source: StreamSource, call_scope: CallScopeSource
+            self,
+            stream_source: StreamSource,
+            call_scope: CallScopeSource,
+            not_logged: Mapping[str, frozenset[str]],
         ) -> None:
             self._stream_source = stream_source
             self._call_scope = call_scope
+            self._not_logged = not_logged
+            """Аргументы, которые в лог не пишутся, по именам инструментов."""
 
         def before(
             self,
@@ -95,7 +100,8 @@ class ToolRunLogger:
             kwargs: dict[str, object],
         ) -> _CallScope:
             call_id = ToolCallIdField.pop(kwargs)
-            ToolRunLogger._log_start(name, args, kwargs)
+            not_logged = self._not_logged.get(name, frozenset())
+            ToolRunLogger._log_start(name, args, kwargs, not_logged)
             ToolIntent.pop(kwargs)
 
             leave_call = self._call_scope(call_id)
@@ -141,7 +147,27 @@ class ToolRunLogger:
         stream_source: StreamSource,
         call_scope: CallScopeSource,
     ) -> list[BaseTool]:
-        return ToolBody.hook_all(tools, cls._Hooks(stream_source, call_scope))
+        not_logged: dict[str, frozenset[str]] = {}
+        for tool in tools:
+            not_logged[tool.name] = cls._not_logged_of(tool)
+
+        return ToolBody.hook_all(
+            tools, cls._Hooks(stream_source, call_scope, not_logged)
+        )
+
+    @staticmethod
+    def _not_logged_of(tool: BaseTool) -> frozenset[str]:
+        """Имена аргументов инструмента, помеченных в схеме NotLogged."""
+        schema = ToolSchema.of(tool)
+        if schema is None:
+            return frozenset()
+
+        names: list[str] = []
+        for name, field in schema.model_fields.items():
+            if FieldMarks.not_logged(field):
+                names.append(name)
+
+        return frozenset(names)
 
     @staticmethod
     def _open_stream(
@@ -159,8 +185,11 @@ class ToolRunLogger:
         name: str,
         args: tuple[object, ...],
         kwargs: dict[str, object],
+        not_logged: frozenset[str],
     ) -> None:
-        logger.info("tool[%s]: start args=%s", name, cls._render_args(args, kwargs))
+        logger.info(
+            "tool[%s]: start args=%s", name, cls._render_args(args, kwargs, not_logged)
+        )
 
     @staticmethod
     def _log_outcome(name: str, started: float, result: object) -> None:
@@ -224,11 +253,16 @@ class ToolRunLogger:
         cls,
         args: tuple[object, ...],
         kwargs: dict[str, object],
+        not_logged: frozenset[str],
     ) -> str:
+        """Аргументы вызова для лога; помеченные NotLogged не пишутся."""
         parts: list[str] = []
         for value in args:
             parts.append(repr(value))
         for key, value in kwargs.items():
+            if key in not_logged:
+                continue
+
             parts.append(f"{key}={value!r}")
         text = ", ".join(parts)
         if len(text) > cls.ARGS_LIMIT:

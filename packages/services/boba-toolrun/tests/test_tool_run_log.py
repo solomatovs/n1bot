@@ -5,12 +5,14 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Callable
-from typing import Any
+from typing import Annotated, Any
 
 import pytest
 from langchain_core.tools import StructuredTool, tool
+from pydantic import BaseModel
 
 from boba.sandbox.runner import FailureLog
+from boba.toolkit.facade import NotLogged
 from boba.toolkit.launcher import RunResult
 from boba.toolkit.result import MarkdownResult, ToolArtifact
 from boba.toolrun.call_id import ToolCallIdField
@@ -55,6 +57,36 @@ class TestToolRunLogger:
             raise AssertionError("any(m.startswith(start_prefix) for m in messages)")
         if not (any(m.startswith("tool[probe]: ok in ") for m in messages)):
             raise AssertionError('any(m.startswith("tool[probe]: ok in ") for m in me…')
+
+    def test_not_logged_argument_is_not_written(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Аргумент, помеченный в схеме NotLogged, в лог не пишется вовсе."""
+
+        class Args(BaseModel):
+            connection: Annotated[str, NotLogged()]
+            sql: str
+
+        tool = StructuredTool.from_function(
+            func=lambda connection, sql: "done",
+            name="probe",
+            description="probe",
+            args_schema=Args,
+        )
+        ToolRunLogger.guard_all([tool], NO_STREAMS, NoCallScope.enter)
+
+        with caplog.at_level(logging.INFO, logger=LOGGER_NAME):
+            if tool.func is None:
+                raise AssertionError("tool.func is not None")
+            tool.func(connection="not_logged-value", sql="select 1")
+
+        started = [r.getMessage() for r in caplog.records if "start args" in r.message]
+        if "connection" in started[0]:
+            raise AssertionError(f"помеченный аргумент попал в лог: {started[0]}")
+        if "not_logged-value" in started[0]:
+            raise AssertionError(f"значение попало в лог: {started[0]}")
+        if "sql='select 1'" not in started[0]:
+            raise AssertionError(f"остальные аргументы как есть: {started[0]}")
 
     def test_failure_logged_and_reraised(
         self, caplog: pytest.LogCaptureFixture
@@ -129,7 +161,7 @@ class TestToolRunLogger:
             raise AssertionError('any(m.startswith("tool[probe]: ok in ") for m in me…')
 
     def test_args_render_truncated(self) -> None:
-        rendered = ToolRunLogger._render_args((), {"query": "x" * 1000})
+        rendered = ToolRunLogger._render_args((), {"query": "x" * 1000}, frozenset())
         if len(rendered) != ToolRunLogger.ARGS_LIMIT + 1:
             raise AssertionError("len(rendered) == ToolRunLogger.ARGS_LIMIT + 1")
         if not (rendered.endswith("…")):

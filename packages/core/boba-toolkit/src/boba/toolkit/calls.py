@@ -137,6 +137,8 @@ class FieldMarks:
     """Injected фасада и InjectedToolCallId langchain: последним обвязка
     call_id помечает поле идентификатора вызова, дописанное в схему."""
     CONNECTION: ClassVar[frozenset[str]] = frozenset({"UserConnection"})
+    NOT_LOGGED: ClassVar[frozenset[str]] = frozenset({"NotLogged"})
+    """NotLogged фасада и его наследники: значение поля в лог не идёт."""
 
     @classmethod
     def injected(cls, field: FieldInfo) -> bool:
@@ -145,6 +147,10 @@ class FieldMarks:
     @classmethod
     def connection(cls, field: FieldInfo) -> bool:
         return cls._marked(field.metadata, cls.CONNECTION)
+
+    @classmethod
+    def not_logged(cls, field: FieldInfo) -> bool:
+        return cls._marked(field.metadata, cls.NOT_LOGGED)
 
     @staticmethod
     def port(field: FieldInfo) -> bool:

@@ -8,7 +8,7 @@ version = "0.0.26.dev4"
 description = "Boba HTTP transport: HttpRequest + HttpTransport + auth callables (PatAuth/BasicAuth) на httpx."
 requires-python = ">=3.11,<4"
 dependencies = [
-    "pydantic>=2.10,<2.11",
+    "pydantic>=2.10,<3",
     "boba-connections==0.0.26.dev4",
     "boba-kerberos==0.0.26.dev4",
     "boba-cancellation==0.0.26.dev4",
