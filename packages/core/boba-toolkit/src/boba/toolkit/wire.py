@@ -28,6 +28,7 @@ __all__ = [
     "JournalFeature",
     "JournalRead",
     "JournalSignal",
+    "RequestMeta",
     "ResultWire",
     "RevivedResult",
     "WireMeta",
@@ -40,6 +41,15 @@ class CallStatus(StrEnum):
 
     SUCCESS = "success"
     ERROR = "error"
+
+
+class RequestMeta(StrEnum):
+    """Ключи служебных полей запроса tools/call в _meta. Их ставит программа-
+    клиент, не модель: идентификатор вызова модели и область (scope), в
+    которой живут файлы вызова."""
+
+    CALL_ID = "boba/tool_call_id"
+    SCOPE = "boba/scope"
 
 
 class WireMeta(StrEnum):

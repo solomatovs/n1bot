@@ -20,7 +20,7 @@ from boba.sandbox import SandboxProfile
 from boba.toolkit.manifest import LaunchSpec
 
 REPO = Path(__file__).resolve().parents[6]
-SANDBOX = REPO / "build" / "chainlit" / "src" / "sandbox"
+SANDBOX = REPO / "build" / "src" / "sandbox"
 PLUGIN_IMAGES = SANDBOX / "plugins"
 ROOTFS_IMAGE = PLUGIN_IMAGES / "boba-tool-shell" / "rootfs.ext4"
 """Базовый корень стендов: образ shell-плагина, bash и python без payload'ов."""
@@ -41,7 +41,7 @@ needs_sandbox = pytest.mark.skipif(
     or not ROOTFS_IMAGE.exists(),
     reason=(
         "нет bwrap или образов плагинов "
-        "(собрать: make -C build/chainlit fetch plugin-rootfs-all)"
+        "(собрать: make -C build fetch plugin-rootfs-all)"
     ),
 )
 needs_userns = pytest.mark.skipif(

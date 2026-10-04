@@ -17,6 +17,9 @@ dependencies = [
     "httpcore>=1.0",
 ]
 
+[project.entry-points."boba.connections"]
+web = "boba.transport.http.manifest:MANIFEST"
+
 [project.optional-dependencies]
 dev = [
     "boba-stand==0.0.26.dev4",
@@ -27,6 +30,3 @@ dev = [
 where = ["src"]
 include = ["boba*"]
 namespaces = true
-
-[project.entry-points."boba.connections"]
-web = "boba.transport.http.manifest:MANIFEST"

@@ -3,7 +3,7 @@
 # запускать через: source dev.sh
 
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-CONF="$DIR/build/chainlit/conf"
+CONF="$DIR/build/conf"
 
 unset PYTHONHOME
 unset PYTHONPATH
@@ -46,19 +46,19 @@ else
   apt-get install -y $PACKAGES
 fi
 
-export PATH="$DIR/build/chainlit/src/uv:$PATH"
+export PATH="$DIR/build/src/uv:$PATH"
 
-# python-oracledb в .venv идёт патченным колесом из build/chainlit/src/oracledb
+# python-oracledb в .venv идёт патченным колесом из build/src/oracledb
 # (плоский индекс boba-wheels в pyproject); без него uv sync не соберёт окружение
-ORACLEDB_WHEELS="$DIR/build/chainlit/src/oracledb"
+ORACLEDB_WHEELS="$DIR/build/src/oracledb"
 ORACLEDB_PYTHON="$DIR/.venv/bin/python"
 if [ ! -d "$DIR/.venv" ]; then
   ORACLEDB_PYTHON=python3
 fi
 
 if ! ls "$ORACLEDB_WHEELS"/oracledb-*.whl > /dev/null 2>&1; then
-  echo "dev: собираю колесо python-oracledb: make -C build/chainlit oracledb-wheel"
-  if ! make -C "$DIR/build/chainlit" oracledb-wheel PYTHON="$ORACLEDB_PYTHON"; then
+  echo "dev: собираю колесо python-oracledb: make -C build oracledb-wheel"
+  if ! make -C "$DIR/build" oracledb-wheel PYTHON="$ORACLEDB_PYTHON"; then
     echo "dev: колесо python-oracledb не собралось, .venv не готовится" >&2
     return 1 2> /dev/null || exit 1
   fi
@@ -74,7 +74,7 @@ OK=$?
 if [ $OK -eq 0 ]; then
   source "$DIR/.venv/bin/activate"
   # activate перезаписывает PATH, поэтому uv возвращаем обратно
-  export PATH="$DIR/build/chainlit/src/uv:$PATH"
+  export PATH="$DIR/build/src/uv:$PATH"
   echo "dev: окружение .venv активировано"
 else
   echo "dev: ошибка подготовки окружения (.venv не активировано)" >&2

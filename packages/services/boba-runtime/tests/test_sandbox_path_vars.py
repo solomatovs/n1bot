@@ -30,6 +30,7 @@ def _context(user_id: UUID) -> CallContext:
             user_id=user_id, login="maksimov.ma", roles=frozenset(), profile="general"
         ),
         scope=Scope.chat(THREAD_ID),
+        run_id=THREAD_ID,
         initiator=ChatInitiator(thread_id=THREAD_ID, turn_id="m1"),
         credential=NoUserCredential(reason="test"),
         cancellation=RunCancellation(),

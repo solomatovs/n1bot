@@ -4,7 +4,7 @@
 (tools/list), строит по их схемам инструменты для модели и исполняет вызовы
 (tools/call). Транспорт — streamable HTTP, SSE или stdio. Итог вызова
 сервера, который не знает о семействе результатов boba, — текст его content;
-сервер boba-dag присылает ещё и модель результата, и она оживает как есть.
+сервер boba-mcp присылает ещё и модель результата, и она оживает как есть.
 Сервер с авторизацией proxy (сервис boba) подключается от имени пользователя
 сессии: клиент называет его логин и роли заголовками под подписью и получает
 токен сервера.
@@ -54,6 +54,7 @@ from pydantic import BaseModel, ConfigDict, Field, SecretStr, ValidationError
 
 from boba.auth.proxy import ProxySignature
 from boba.canvas.journal import StreamSlice
+from boba.identity.context import CallContexts
 from boba.identity.signin import ProxyHeaderNames, ProxyRequest
 from boba.toolkit.result import (
     ErrorResult,
@@ -65,6 +66,7 @@ from boba.toolkit.wire import (
     JournalFeature,
     JournalRead,
     JournalSignal,
+    RequestMeta,
     ResultWire,
     WireMeta,
     WireResult,
@@ -667,7 +669,7 @@ class JournalListener(Protocol):
 
 
 class CallSignals(Protocol):
-    """Куда клиент отдаёт сигналы роста журнала вызовов сервера boba-dag.
+    """Куда клиент отдаёт сигналы роста журнала вызовов сервера boba-mcp.
 
     Реализует хозяин клиента: чат по сигналам ведёт панель живого вывода.
     listener() зовётся в контексте вызова до отправки запроса; сигналы
@@ -719,7 +721,7 @@ class McpResults:
     """Итог вызова MCP как сообщение инструмента истории.
 
     Создаётся портом McpToolServer. Результат с полями boba в _meta —
-    итог сервера boba-dag: его модель оживает по kind. Результат любого
+    итог сервера boba-mcp: его модель оживает по kind. Результат любого
     другого сервера — текст его content: текстовые блоки подряд, блоки-файлы
     (картинки, звук, вложенные ресурсы) уходят хозяину клиента (BlockFiles)
     и остаются в тексте его строкой, structuredContent без текста — JSON.
@@ -770,7 +772,7 @@ class McpResults:
     def _own(
         self, result: mt.CallToolResult, text: str, failed: bool
     ) -> ToolResultBase | None:
-        """Модель результата сервера boba-dag; None — сервер её не прислал
+        """Модель результата сервера boba-mcp; None — сервер её не прислал
         либо прислал вид, которого клиент не знает."""
         meta = result.meta
         if not meta:
@@ -866,19 +868,18 @@ class McpToolServer(ToolServer):
 
     FEATURE_PREFIX: ClassVar[str] = "com.boba/"
 
-    META_CALL_ID: ClassVar[str] = "boba/tool_call_id"
-    """Ключ _meta запроса с идентификатором вызова модели."""
-
-    def __init__(
+    def __init__(  # noqa: PLR0913 — порт собирается всеми своими зависимостями
         self,
         name: str,
         config: McpServerConfig,
         files: BlockFiles,
         signals: CallSignals,
+        contexts: CallContexts,
         caller: McpCaller | None,
     ) -> None:
         self._name = name
         self._signals = signals
+        self._contexts = contexts
         self._config = config
         self._connection = McpConnection(
             config.endpoint, caller, config.connect_timeout_sec
@@ -1074,10 +1075,11 @@ class McpToolServer(ToolServer):
         self, remote: str, call: ToolCall, sent: Mapping[str, object]
     ) -> mt.CallToolRequest:
         """Запрос tools/call. Серверу, объявившему возможности boba, в _meta
-        едет идентификатор вызова модели: его журнал и итог несут тот же id."""
+        едут идентификатор вызова модели (его журнал и итог несут тот же id)
+        и область текущего вызова: по ней сервер держит файлы разговора."""
         arguments = dict(sent)
-        call_id = call["id"]
-        if not self._features or not call_id:
+        meta = self._meta(call)
+        if not meta:
             params = mt.CallToolRequestParams(name=remote, arguments=arguments)
 
             return mt.CallToolRequest(method="tools/call", params=params)
@@ -1085,10 +1087,24 @@ class McpToolServer(ToolServer):
         params = mt.CallToolRequestParams(
             name=remote,
             arguments=arguments,
-            _meta=mt.RequestParams.Meta.model_validate({self.META_CALL_ID: call_id}),
+            _meta=mt.RequestParams.Meta.model_validate(meta),
         )
 
         return mt.CallToolRequest(method="tools/call", params=params)
+
+    def _meta(self, call: ToolCall) -> dict[str, str]:
+        """Служебные поля запроса; стороннему серверу они не уходят."""
+        meta: dict[str, str] = {}
+        if not self._features:
+            return meta
+
+        if call_id := call["id"]:
+            meta[RequestMeta.CALL_ID.value] = call_id
+
+        if context := self._contexts.peek():
+            meta[RequestMeta.SCOPE.value] = context.scope.id
+
+        return meta
 
     @staticmethod
     async def _list(session: ClientSession) -> list[mt.Tool]:
@@ -1133,11 +1149,16 @@ class McpServers:
     """Сколько личных подключений держать; давно не нужные закрываются."""
 
     def __init__(
-        self, config: McpServersConfig, files: BlockFiles, signals: CallSignals
+        self,
+        config: McpServersConfig,
+        files: BlockFiles,
+        signals: CallSignals,
+        contexts: CallContexts,
     ) -> None:
         self._configs = dict(config.servers)
         self._files = files
         self._signals = signals
+        self._contexts = contexts
         self._shared: dict[str, McpToolServer] = {}
         self._personal: OrderedDict[tuple[str, McpCaller], McpToolServer]
         self._personal = OrderedDict()
@@ -1145,7 +1166,9 @@ class McpServers:
             if server.endpoint.personal():
                 continue
 
-            self._shared[name] = McpToolServer(name, server, files, signals, None)
+            self._shared[name] = McpToolServer(
+                name, server, files, signals, contexts, None
+            )
 
     async def start(self) -> None:
         for name, server in self._shared.items():
@@ -1231,7 +1254,12 @@ class McpServers:
         server = self._personal.get(key)
         if server is None:
             server = McpToolServer(
-                name, self._configs[name], self._files, self._signals, caller
+                name,
+                self._configs[name],
+                self._files,
+                self._signals,
+                self._contexts,
+                caller,
             )
             self._personal[key] = server
 

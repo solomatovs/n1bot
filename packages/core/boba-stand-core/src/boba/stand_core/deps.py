@@ -7,7 +7,7 @@ dependencies и extras кроме dev, tests — с dependencies и экстро
 владельца boba.* — каталоги src пакетов репозитория. Подмодуль, который живёт
 за extra владельца ([tool.boba.extras] в его pyproject), требует у импортёра
 объявления этого extra. Слой пакета — каталог под packages: core ← infra ←
-services ← agents/apps; ребро против направления в src — расхождение, tools —
+services ← apps; ребро против направления в src — расхождение, tools —
 плагины и в services не импортируются, testing вне оси. Циклы ищутся по
 dependencies.
 
@@ -93,7 +93,6 @@ class Layer(StrEnum):
     INFRA = "infra"
     SERVICES = "services"
     TOOLS = "tools"
-    AGENTS = "agents"
     APPS = "apps"
     TESTING = "testing"
 
@@ -115,7 +114,6 @@ class Layer(StrEnum):
             Layer.INFRA: 1,
             Layer.SERVICES: 2,
             Layer.TOOLS: 2,
-            Layer.AGENTS: 3,
             Layer.APPS: 3,
             Layer.TESTING: 4,
         }
@@ -124,12 +122,12 @@ class Layer(StrEnum):
 
     def may_import(self, other: Layer) -> bool:
         """Ребро слоя к слою: только вниз или вбок; tools — плагины, их знают
-        только agents, apps и testing; testing вне оси и импортирует что угодно."""
+        только apps и testing; testing вне оси и импортирует что угодно."""
         if self is Layer.TESTING:
             return True
 
         if other is Layer.TOOLS:
-            return self in (Layer.TOOLS, Layer.AGENTS, Layer.APPS)
+            return self in (Layer.TOOLS, Layer.APPS)
 
         return other.rank() <= self.rank()
 
@@ -563,8 +561,45 @@ class Finding(BaseModel):
         return line.rstrip()
 
 
+class WorkspaceMembers(BaseModel):
+    """Секция [tool.uv.workspace] корневого pyproject: что из workspace исключено."""
+
+    model_config = ConfigDict(frozen=True, extra="ignore")
+
+    exclude: Sequence[str] = ()
+
+
+class UvSection(BaseModel):
+    """Секция [tool.uv] корневого pyproject."""
+
+    model_config = ConfigDict(frozen=True, extra="ignore")
+
+    workspace: WorkspaceMembers = WorkspaceMembers()
+
+
+class ToolSection(BaseModel):
+    """Секция [tool] корневого pyproject."""
+
+    model_config = ConfigDict(frozen=True, extra="ignore")
+
+    uv: UvSection = UvSection()
+
+
+class WorkspaceExclude(BaseModel):
+    """Корневой pyproject глазами аудита: только исключения workspace."""
+
+    model_config = ConfigDict(frozen=True, extra="ignore")
+
+    tool: ToolSection = ToolSection()
+
+
 class DepsAudit:
-    """Проход по всем пакетам репозитория: src против pyproject, tests против dev."""
+    """Проход по всем пакетам репозитория: src против pyproject, tests против dev.
+
+    Пакет, исключённый из workspace корневого pyproject ([tool.uv.workspace]
+    exclude), в проход не входит: у него своё окружение и свой lock, и его
+    зависимости в окружении репозитория не установлены.
+    """
 
     GLOBS: ClassVar[tuple[str, ...]] = ("*/*/pyproject.toml", "*/*/*/pyproject.toml")
 
@@ -580,12 +615,40 @@ class DepsAudit:
         self._layers = {p.name: Layer.of(packages_root, p.root) for p in self._projects}
 
     def _load_projects(self) -> list[PackageProject]:
+        excluded = self._excluded()
         projects: list[PackageProject] = []
         for pattern in self.GLOBS:
             for pyproject in sorted(self._root.glob(pattern)):
+                if pyproject.parent in excluded:
+                    continue
+
                 projects.append(PackageProject.load(pyproject))
 
         return projects
+
+    def _excluded(self) -> frozenset[Path]:
+        """Каталоги пакетов вне workspace: exclude корневого pyproject."""
+        repo = self._root.parent
+        workspace = repo / PackageProject.FILE
+        if not workspace.is_file():
+            return frozenset()
+
+        try:
+            with workspace.open("rb") as handle:
+                document = tomllib.load(handle)
+        except (OSError, tomllib.TOMLDecodeError) as exc:
+            msg = (
+                f"deps audit: reading [tool.uv.workspace] of {workspace}: "
+                f"{type(exc).__name__}: {exc}"
+            )
+            raise DepsAuditError(msg) from exc
+
+        declared = WorkspaceExclude.model_validate(document)
+        paths: set[Path] = set()
+        for entry in declared.tool.uv.workspace.exclude:
+            paths.add(repo / entry)
+
+        return frozenset(paths)
 
     def projects(self) -> Sequence[PackageProject]:
         return self._projects
@@ -715,7 +778,7 @@ class DepsAudit:
     def _layer_findings(
         self, project: PackageProject, used: Mapping[str, set[str]]
     ) -> Iterator[Finding]:
-        """Ребро src против направления слоёв: core ← infra ← services ← agents/apps."""
+        """Ребро src против направления слоёв: core ← infra ← services ← apps."""
         layer = self._layers[project.name]
         for dist in sorted(used):
             other = self._layers.get(dist)

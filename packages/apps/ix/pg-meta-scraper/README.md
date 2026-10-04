@@ -18,8 +18,8 @@ layout/   запросы к своей базе: raw_* -> stage_* -> ix
 `ix-core`:
 
 ```
-.venv/bin/boba-ix-core upgrade --config ../../compose/apps/ix-core/conf.toml
-.venv/bin/boba-pg-meta-scraper upgrade --config ../../compose/apps/pg-meta-scraper/conf.toml
+.venv/bin/boba-ix-core upgrade --config ../../compose/ix-core/conf.toml
+.venv/bin/boba-pg-meta-scraper upgrade --config ../../compose/pg-meta-scraper/conf.toml
 ```
 
 Схема хранения задаётся полем `db_schema` секции: в sql-файлах она
@@ -56,7 +56,7 @@ layout/   запросы к своей базе: raw_* -> stage_* -> ix
 Готовый прогон одного источника на Python, ровно по шагам ниже, с повторами при изменении
 каталога во время чтения и при занятом `ix`:
 
-Настройки берутся из одного файла конфига, секция [ix.meta_scraper]. Конфиг приложения на dev-стенде лежит в `compose/apps/pg-meta-scraper/conf.toml`
+Настройки берутся из одного файла конфига, секция [ix.meta_scraper]. Конфиг приложения на dev-стенде лежит в `compose/pg-meta-scraper/conf.toml`
 (каталог вне git, в нём креды). Одним файлом можно запускать и несколько приложений:
 каждое читает только свою секцию.
 
@@ -67,7 +67,7 @@ layout/   запросы к своей базе: raw_* -> stage_* -> ix
 берутся из AsyncPostgresPool, воркер async.
 
 ```
-.venv/bin/boba-pg-meta-scraper --config ../../compose/apps/pg-meta-scraper/conf.toml [--source pg-18]
+.venv/bin/boba-pg-meta-scraper --config ../../compose/pg-meta-scraper/conf.toml [--source pg-18]
 ```
 
 Источники перечислены в секции списком `sources`, у каждого `name` и профиль `postgres`

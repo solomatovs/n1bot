@@ -84,6 +84,7 @@ class ApiSubject(BaseModel):
         return CallContext(
             subject=self.subject,
             scope=scope,
+            run_id=scope.id,
             initiator=HumanInitiator(via="api"),
             credential=self.credential,
             cancellation=RunCancellation(),

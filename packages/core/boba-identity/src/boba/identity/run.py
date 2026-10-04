@@ -88,8 +88,9 @@ class Run:
         self._closers: list[Callable[[], None]] = []
 
     @property
-    def scope_id(self) -> str:
-        return self._context.scope.id
+    def key(self) -> str:
+        """Ключ запуска в реестре: run_id контекста вызова."""
+        return self._context.run_id
 
     @property
     def context(self) -> CallContext:
@@ -121,7 +122,7 @@ class Run:
 
 
 class Runs:
-    """Реестр идущих запусков процесса: один запуск на область (scope.id).
+    """Реестр идущих запусков процесса: один запуск на ключ (run_id контекста).
 
     Объект один на процесс: его создаёт сборка приложения рядом с держателем
     контекста вызова и отдаёт через конструкторы тем, кто открывает запуски
@@ -163,39 +164,36 @@ class Runs:
         with cancellation.abort_with(abort):
             yield
 
-    def active(self, scope_id: str) -> Run | None:
+    def active(self, run_id: str) -> Run | None:
         """Запись идущего запуска; None — область ничем не занята."""
         with self._lock:
-            return self._active.get(scope_id)
+            return self._active.get(run_id)
 
-    def port_of(self, scope_id: str) -> RunPort | None:
+    def port_of(self, run_id: str) -> RunPort | None:
         """Владелец запуска области для инструментов; None — запуска нет."""
-        run = self.active(scope_id)
+        run = self.active(run_id)
         if run is None:
             return None
 
         return run.port
 
-    def require_port(self, scope_id: str) -> RunPort:
+    def require_port(self, run_id: str) -> RunPort:
         """Владелец с лентой чата; без него — RefusalError(RunRefusal.NO_TURN)."""
-        port = self.port_of(scope_id)
+        port = self.port_of(run_id)
         if port is None:
-            msg = (
-                f"runs: scope {scope_id!r} has no active run, "
-                "the turn is already finished"
-            )
+            msg = f"runs: run {run_id!r} is not active, the turn is already finished"
             raise RefusalError(RunRefusal.NO_TURN, msg)
 
         return port
 
-    def stop(self, scope_id: str, reason: StopReason) -> bool:
+    def stop(self, run_id: str, reason: StopReason) -> bool:
         """Останавливает запуск области из любого потока; False — нечего."""
-        run = self.active(scope_id)
+        run = self.active(run_id)
         if run is None:
-            logger.info("stop requested for scope %s: no active run", scope_id)
+            logger.info("stop requested for run %s: no active run", run_id)
             return False
 
-        logger.info("stopping run of scope %s (%s)", scope_id, reason.value)
+        logger.info("stopping run %s (%s)", run_id, reason.value)
         run.cancellation.cancel(reason)
         return True
 
@@ -211,24 +209,24 @@ class Runs:
 
     def _register(self, run: Run) -> None:
         with self._lock:
-            stale = self._active.get(run.scope_id)
-            self._active[run.scope_id] = run
+            stale = self._active.get(run.key)
+            self._active[run.key] = run
 
         if stale is None:
             return
 
         # новый запуск той же области: предыдущий дорабатывать незачем
         logger.warning(
-            "runs: scope %s already had an active run, "
+            "runs: key %s already had an active run, "
             "stopping the previous one as superseded",
-            run.scope_id,
+            run.key,
         )
         stale.cancellation.cancel(StopReason.SUPERSEDED)
 
     def _release(self, run: Run) -> None:
         with self._lock:
-            if self._active.get(run.scope_id) is run:
-                del self._active[run.scope_id]
+            if self._active.get(run.key) is run:
+                del self._active[run.key]
 
     @staticmethod
     def _task_canceller() -> Callable[[], None] | None:

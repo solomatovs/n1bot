@@ -21,6 +21,12 @@ dependencies = [
 [project.entry-points."boba.addresses"]
 postgresql = "boba.db.postgres.address:PgAddresses"
 
+[project.entry-points."boba.catalog"]
+postgres = "boba.db.postgres.snapshot:PgSnapshot"
+
+[project.entry-points."boba.connections"]
+postgres = "boba.db.postgres.manifest:MANIFEST"
+
 [project.optional-dependencies]
 arrow = [
     "boba-toolkit[arrow]==0.0.26.dev4",
@@ -39,9 +45,3 @@ dev = [
 where = ["src"]
 include = ["boba*"]
 namespaces = true
-
-[project.entry-points."boba.catalog"]
-postgres = "boba.db.postgres.snapshot:PgSnapshot"
-
-[project.entry-points."boba.connections"]
-postgres = "boba.db.postgres.manifest:MANIFEST"

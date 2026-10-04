@@ -19,7 +19,7 @@ import pytest
 from boba.stand.sandbox import SandboxLayout, plugin_rootfs
 
 REPO = Path(__file__).resolve().parents[5]
-FUSE2FS = REPO / "build" / "chainlit" / "src" / "sandbox" / "third" / "bin" / "fuse2fs"
+FUSE2FS = REPO / "build" / "src" / "sandbox" / "third" / "bin" / "fuse2fs"
 
 PACKAGES = sorted(SandboxLayout.DATA_BINDS)
 
@@ -27,8 +27,7 @@ needs_images = pytest.mark.skipif(
     not FUSE2FS.exists()
     or not all(plugin_rootfs(package).exists() for package in PACKAGES),
     reason=(
-        "нет артефактов песочницы "
-        "(собрать: make -C build/chainlit sandbox plugin-rootfs-all)"
+        "нет артефактов песочницы (собрать: make -C build sandbox plugin-rootfs-all)"
     ),
 )
 

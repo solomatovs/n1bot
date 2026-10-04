@@ -41,9 +41,8 @@ from boba.auth.roles import (
 )
 from boba.auth.signin import CompositeSignIn, LdapSignIn, LocalSignIn
 from boba.auth.sso import SsoSignIn
-from boba.chat.profiles import ChatProfiles
 from boba.identity.directory import UserDirectory
-from boba.identity.signin import PasswordSignIn
+from boba.identity.signin import PasswordSignIn, ProfileCatalog
 
 __all__ = ["SignInAssembly"]
 
@@ -51,7 +50,7 @@ __all__ = ["SignInAssembly"]
 class SignInAssembly:
     """Входы приложения по [auth]: пароли, SPNEGO и proxy с их провайдерами."""
 
-    def __init__(self, directory: UserDirectory, profiles: ChatProfiles) -> None:
+    def __init__(self, directory: UserDirectory, profiles: ProfileCatalog) -> None:
         self._directory = directory
         self._profiles = profiles
 

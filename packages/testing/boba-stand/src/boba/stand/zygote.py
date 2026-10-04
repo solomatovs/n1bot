@@ -25,7 +25,7 @@ from boba.stand.shell import ShellRun
 from boba.toolkit.chain import CallAmbient
 
 REPO = Path(__file__).resolve().parents[6]
-SANDBOX = REPO / "build" / "chainlit" / "src" / "sandbox"
+SANDBOX = REPO / "build" / "src" / "sandbox"
 ROOTFS_IMAGE = SANDBOX / "plugins" / "boba-tool-shell" / "rootfs.ext4"
 DEPLOY_BIN = SANDBOX / "third" / "bin"
 """Бинарные артефакты сборки: bwrap и fuse2fs из make sandbox."""

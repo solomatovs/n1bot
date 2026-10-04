@@ -23,7 +23,7 @@ from pydantic import (
 
 from boba.access import ProfileGrant, RoleConfig, ToolGrant
 from boba.identity.errors import RefusalError
-from boba.identity.signin import SignInMetadata
+from boba.identity.signin import ProfileCatalog, SignInMetadata
 from boba.llm.providers import ChatModelConfig
 from boba.toolkit.types import StringList
 
@@ -206,12 +206,18 @@ class ChatProfileConfig(AgentSettings, ProfileGrant):
 
     @model_validator(mode="after")
     def _validate_flow(self) -> Self:
-        """Инструменты flow обязаны входить в набор инструментов профиля."""
+        """Инструменты flow обязаны входить в набор инструментов профиля.
+
+        Профиль с MCP-серверами здесь не проверяется: имена их инструментов
+        до подключения неизвестны, сверка идёт при сборке графа сессии."""
         flow = self.flow
         if not isinstance(flow, PrefetchFlowConfig):
             return self
 
         if ToolGrant.WILDCARD in self.tools:
+            return self
+
+        if self.mcp:
             return self
 
         missing: list[str] = []
@@ -256,8 +262,9 @@ class SelectedProfile(BaseModel):
     config: ChatProfileConfig
 
 
-class ChatProfiles:
+class ChatProfiles(ProfileCatalog):
     """Реестр профилей чата: набор, выданный входом, и выбор профиля сессии.
+    Реализация ProfileCatalog для провайдеров профилей входа.
 
     Какие профили доступны, решают провайдеры входа: по ролям через
     granted_by_roles и, у proxy, по заголовку; итог лежит в metadata входа и

@@ -16,8 +16,8 @@ layout/   запросы к своей базе: raw_* -> stage_* -> ix
 `ix-core`:
 
 ```
-.venv/bin/boba-ix-core upgrade --config ../../compose/apps/ix-core/conf.toml
-.venv/bin/boba-ch-meta-scraper upgrade --config ../../compose/apps/ch-meta-scraper/conf.toml
+.venv/bin/boba-ix-core upgrade --config ../../compose/ix-core/conf.toml
+.venv/bin/boba-ch-meta-scraper upgrade --config ../../compose/ch-meta-scraper/conf.toml
 ```
 
 ## 0. Воркер
@@ -40,7 +40,7 @@ layout/   запросы к своей базе: raw_* -> stage_* -> ix
 ```
 
 ```
-.venv/bin/boba-ch-meta-scraper run --config ../../compose/apps/ch-meta-scraper/conf.toml [--source ch-prod]
+.venv/bin/boba-ch-meta-scraper run --config ../../compose/ch-meta-scraper/conf.toml [--source ch-prod]
 ```
 
 Один прогон это один сервер: в ClickHouse подключение идёт к серверу, а не к базе,

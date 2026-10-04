@@ -396,7 +396,7 @@ class CallJournals:
                 self._followers.pop(run, None)
 
     def begin(
-        self, user_id: str, scope_id: str, call_id: str, tool_name: str
+        self, user_id: str, run_id: str, call_id: str, tool_name: str
     ) -> ToolStream | None:
         """Открыть журнал вызова; сбой журнала не трогает ход инструмента."""
         store = self._store
@@ -406,26 +406,26 @@ class CallJournals:
         if not self.streamable(tool_name):
             return None
 
-        run = self._runs.active(scope_id)
+        run = self._runs.active(run_id)
         if run is None:
             logger.warning(
-                "stream journal skipped call %s of %s: scope %s has no active run "
+                "stream journal skipped call %s of %s: run %s is not active "
                 "to attach the stream to",
                 call_id,
                 tool_name,
-                scope_id,
+                run_id,
             )
             return None
 
         try:
-            key = StreamKey(user_id=user_id, thread_id=scope_id, call_id=call_id)
+            key = StreamKey(user_id=user_id, thread_id=run_id, call_id=call_id)
             stream = ToolStream(key, tool_name, store, self.live_prefixes)
         except (StreamJournalError, ValidationError) as exc:
             logger.warning(
-                "stream journal refused call %s of %s in scope %s of user %s: %s",
+                "stream journal refused call %s of %s in run %s of user %s: %s",
                 call_id,
                 tool_name,
-                scope_id,
+                run_id,
                 user_id,
                 exc,
                 exc_info=True,
@@ -435,9 +435,9 @@ class CallJournals:
         self._attach(run, call_id, stream)
         return stream
 
-    def live(self, scope_id: str, call_id: str) -> ToolStream | None:
+    def live(self, run_id: str, call_id: str) -> ToolStream | None:
         """Живой журнал вызова; None — вызов не журналируется или закончился."""
-        run = self._runs.active(scope_id)
+        run = self._runs.active(run_id)
         if run is None:
             return None
 
@@ -557,9 +557,9 @@ class CallJournals:
             loop.call_soon_threadsafe(observer, call_id, stream)
         except RuntimeError as exc:
             logger.warning(
-                "call journals of scope %s: stream %s opened after the run loop "
+                "call journals of run %s: stream %s opened after the run loop "
                 "closed, observer not notified: %s",
-                run.scope_id,
+                run.key,
                 call_id,
                 exc,
             )

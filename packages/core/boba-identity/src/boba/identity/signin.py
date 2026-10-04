@@ -21,6 +21,7 @@ from boba.identity.session import Login, SignInProvider, UserMetadataField
 
 __all__ = [
     "PasswordSignIn",
+    "ProfileCatalog",
     "ProxyHeaderNames",
     "ProxyRequest",
     "ProxySignIn",
@@ -178,6 +179,20 @@ class SignInMetadata(BaseModel):
             names.add(str(role))
 
         return frozenset(names)
+
+
+class ProfileCatalog(Protocol):
+    """Профили приложения глазами входа: какие выданы ролям и какие имена
+    существуют. У чата это профили [profiles.*], у сервиса boba-mcp — его
+    endpoint'ы; провайдеры профилей входа знают только этот протокол."""
+
+    @abstractmethod
+    def granted_by_roles(self, user_roles: frozenset[str]) -> frozenset[str]:
+        """Имена профилей, выданных ролям входа."""
+
+    @abstractmethod
+    def known(self, name: str) -> bool:
+        """Есть ли профиль с таким именем."""
 
 
 class SignedIn(BaseModel):

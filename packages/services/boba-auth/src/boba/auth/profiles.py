@@ -19,9 +19,9 @@ from pydantic import BaseModel, ConfigDict
 
 from boba.auth.config import HeaderProfilesConfig
 from boba.auth.roles import HeaderAttribute
-from boba.chat.profiles import ChatProfiles
 from boba.identity.admission import PrincipalFacts
 from boba.identity.errors import AuthorizationError
+from boba.identity.signin import ProfileCatalog
 
 __all__ = [
     "HeaderProfiles",
@@ -56,7 +56,7 @@ class RoleProfiles(ProfileProvider):
     """Реализация ProfileProvider по ролям: профили, чьи [profiles.X].roles
     пересекаются с ролями входа; выбора не даёт."""
 
-    def __init__(self, profiles: ChatProfiles) -> None:
+    def __init__(self, profiles: ProfileCatalog) -> None:
         self._profiles = profiles
 
     async def profiles_of(
@@ -70,7 +70,7 @@ class HeaderProfiles(ProfileProvider):
     запятую и, если настроено, выбранный профиль. Имя, которого нет в
     [profiles], — отказ входа, а не молчаливый пропуск."""
 
-    def __init__(self, config: HeaderProfilesConfig, profiles: ChatProfiles) -> None:
+    def __init__(self, config: HeaderProfilesConfig, profiles: ProfileCatalog) -> None:
         self._config = config
         self._profiles = profiles
 

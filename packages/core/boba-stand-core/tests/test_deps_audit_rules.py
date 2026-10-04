@@ -104,12 +104,12 @@ def test_services_importing_tools_is_a_layer_finding(tmp_path: Path) -> None:
     assert found == ["boba-tool-x (services -> tools)"]
 
 
-def test_agents_importing_tools_and_testing_importing_anything_pass(
+def test_apps_importing_tools_and_testing_importing_anything_pass(
     tmp_path: Path,
 ) -> None:
     tree = FakeTree(tmp_path)
     tree.add(FakePackage("tools", "boba-tool-x"))
-    tree.add(FakePackage("agents", "boba-app", ["boba.tool_x"], ["boba-tool-x"]))
+    tree.add(FakePackage("apps", "boba-app", ["boba.tool_x"], ["boba-tool-x"]))
     tree.add(FakePackage("testing", "boba-stand-x", ["boba.app"], ["boba-app"]))
 
     assert _kinds(tree.audit(), FindingKind.LAYER) == []

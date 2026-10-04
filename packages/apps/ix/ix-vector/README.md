@@ -32,7 +32,7 @@ embedding.py  AspectEmbedding: чанки, векторы и запись наб
 скрапера: он сам находит, чего не хватает, и доводит таблицу до структуры; параллельные
 запуски не мешают друг другу.
 
-Настройки берутся из одного файла конфига, секция [ix.vector]. Конфиг приложения на dev-стенде лежит в `compose/apps/ix-vector/conf.toml`
+Настройки берутся из одного файла конфига, секция [ix.vector]. Конфиг приложения на dev-стенде лежит в `compose/ix-vector/conf.toml`
 (каталог вне git, в нём креды). Одним файлом можно запускать и несколько приложений:
 каждое читает только свою секцию.
 
@@ -43,7 +43,7 @@ embedding.py  AspectEmbedding: чанки, векторы и запись наб
 берутся из AsyncPostgresPool, воркер async.
 
 ```
-.venv/bin/boba-ix-vector --config ../../compose/apps/ix-vector/conf.toml
+.venv/bin/boba-ix-vector --config ../../compose/ix-vector/conf.toml
 ```
 
 Схема хранения задаётся полем `db_schema` секции: в sql-файлах она
@@ -61,7 +61,7 @@ CPU, модель `intfloat/multilingual-e5-large` из каталога `models
 `passage:` подставляет fastembed). Запуск из venv проекта:
 
 ```
-.venv/bin/boba-ix-vector --config ../../compose/apps/ix-vector/conf.toml
+.venv/bin/boba-ix-vector --config ../../compose/ix-vector/conf.toml
 ```
 
 Поля секции: `model` (по умолчанию `intfloat/multilingual-e5-large`), `dim` (1024), `batch`
