@@ -6,7 +6,8 @@
 
 import sys
 
-from mcp.server.fastmcp import FastMCP, Image
+from mcp.server.mcpserver import Image, MCPServer
+from mcp.server.mcpserver.exceptions import ToolError
 
 
 class StandardServer:
@@ -15,7 +16,8 @@ class StandardServer:
     PNG: bytes = b"\x89PNG\r\n\x1a\n" + b"\x00" * 16
 
     def __init__(self, port: int) -> None:
-        self._mcp = FastMCP("standard", host="127.0.0.1", port=port)
+        self._mcp = MCPServer("standard")
+        self._port = port
         self._mcp.tool()(self.add)
         self._mcp.tool()(self.shout)
         self._mcp.tool()(self.broken)
@@ -32,7 +34,7 @@ class StandardServer:
     def broken(self) -> str:
         """Always fails."""
         msg = "no such table: orders"
-        raise ValueError(msg)
+        raise ToolError(msg)
 
     def picture(self) -> Image:
         """Returns a tiny image."""
@@ -43,7 +45,7 @@ class StandardServer:
             self._mcp.run("stdio")
             return
 
-        self._mcp.run("streamable-http")
+        self._mcp.run("streamable-http", host="127.0.0.1", port=self._port)
 
 
 if __name__ == "__main__":

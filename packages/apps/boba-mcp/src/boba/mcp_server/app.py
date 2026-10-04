@@ -28,17 +28,21 @@ from boba.cancellation import StopReason
 from boba.chat.profiles import ChatProfileConfig
 from boba.connections.sealed import SealKeys
 from boba.identity.context import CallContexts
-from boba.mcp_server.auth import ProxySignInRoute, SessionTokenVerifier
+from boba.mcp_server.auth import (
+    ProxySignInRoute,
+    SessionTokenVerifier,
+    TokenClaim,
+)
 from boba.mcp_server.server import (
     EndpointCatalog,
     McpEndpoints,
     RunLimits,
-    TokenClaim,
 )
 from boba.runtime import providers
 from boba.runtime.config import AppName, RuntimeConfig
 from boba.runtime.di import Container
 from boba.runtime.plugins import EntryPointPlugins
+from boba.runtime.storage import LocalStorageConfig, StorageFactory
 from boba.toolkit.types import StringList
 
 __all__ = ["McpAppConfig", "McpEntry", "McpHost", "McpSection", "McpToken"]
@@ -94,6 +98,9 @@ class McpAppConfig(RuntimeConfig):
     """Секции процесса сервиса: общие секции приложения и [mcp]."""
 
     mcp: McpSection
+    storage: LocalStorageConfig
+    """Хранилище workspace: туда пишут маршруты файлов и оттуда читают
+    инструменты."""
     profiles: dict[str, ChatProfileConfig] = Field(default_factory=dict)
     """Профилей чата у сервиса нет: их место занимают endpoint'ы [mcp.endpoints]."""
     roles: dict[str, RoleConfig] = Field(default_factory=dict)
@@ -148,6 +155,7 @@ class McpHost:
                 section.limits,
                 section.path,
                 self._sign_in_routes(auth),
+                StorageFactory.create(self._config.storage),
             )
             listener = uvicorn.Server(
                 uvicorn.Config(

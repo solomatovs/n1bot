@@ -15,7 +15,6 @@ from pydantic import (
 
 from boba.access import RoleConfig
 from boba.auth.config import AuthConfig
-from boba.chainlit.domain.config import LocalStorageConfig
 from boba.chat.profiles import (
     ChatProfileConfig,
     SettingsBounds,
@@ -24,6 +23,7 @@ from boba.db.postgres.connection import PostgresConfig
 from boba.krb import KerberosWorkspaceConfig
 from boba.mcp_client.client import McpServersConfig
 from boba.runtime.config import DataLayerConfig, RuntimeConfig
+from boba.runtime.storage import LocalStorageConfig
 
 LOGGING_CONFIG: dict[str, Any] = {
     "version": 1,

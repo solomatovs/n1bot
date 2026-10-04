@@ -13,9 +13,9 @@ from httpx import ASGITransport, AsyncClient
 
 from boba.canvas.storage import StorageFullError
 from boba.canvas.transfer import UploadPolicy
-from boba.chainlit.data.storage import LocalStorageClient
 from boba.chainlit.data.upload import UploadRoute
 from boba.runtime.http import DomainErrorMiddleware
+from boba.runtime.storage import LocalStorageClient
 from boba.workspace.launcher import ReadWindow
 
 pytestmark = pytest.mark.anyio

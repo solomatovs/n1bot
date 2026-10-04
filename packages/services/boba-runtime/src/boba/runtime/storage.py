@@ -26,10 +26,11 @@ import time
 from abc import ABC, abstractmethod
 from collections.abc import AsyncGenerator, AsyncIterator, Sequence
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import Any, ClassVar, Literal, Self
 
 import aiofiles
 import aiofiles.os
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from boba.canvas.keys import DirKey, ObjectKey
 from boba.canvas.storage import (
@@ -44,24 +45,25 @@ from boba.canvas.storage import (
     StorageOp,
     StorageUrl,
 )
-from boba.chainlit.domain.config import LocalStorageConfig
 from boba.sandbox import WorkspaceSpec
+from boba.workspace.binaries import TrustedBinaries
 from boba.workspace.launcher import (
     ImageMountPoint,
     LauncherExit,
     LauncherMarker,
     LauncherMode,
+    MountingConfig,
     ReadHeader,
     ReadWindow,
     ResourceLimits,
     build_chain_argv,
     require_fuse,
 )
-from chainlit.data.storage_clients.base import BaseStorageClient
 
 __all__ = [
     "ImageStorageClient",
     "LocalStorageClient",
+    "LocalStorageConfig",
     "StorageClient",
     "StorageFactory",
 ]
@@ -69,7 +71,77 @@ __all__ = [
 logger = logging.getLogger(__name__)
 
 
-class StorageClient(BaseStorageClient, ABC):
+class LocalStorageConfig(BaseModel):
+    """Секция [storage]: где и как хранятся файлы workspace."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    kind: Literal["local", "image"] = Field(
+        default="local",
+        description="local — файлы на диске; image — внутри per-thread ext4-образа.",
+    )
+    files_dir: str = Field(
+        default="",
+        description=(
+            "Корневая папка на диске для файлов вложений "
+            "(<files_dir>/<object_key>); обязательна при kind=local."
+        ),
+    )
+    public_prefix: str = Field(
+        default="/upload",
+        description="URL-префикс serve-роута; из него собирается url элемента.",
+    )
+    workspace: WorkspaceSpec | None = Field(
+        default=None,
+        description=(
+            "kind=image: рабочий каталог чата — та же запись, что у песочницы "
+            "(${sandbox.workspace}). Хранилище кладёт вложения в образ "
+            "пользователя, а инструмент видит их по точке монтирования."
+        ),
+    )
+    op_timeout_sec: int = Field(
+        default=60,
+        ge=1,
+        description="kind=image: таймаут одной операции с образом, сек.",
+    )
+    mounting: MountingConfig = Field(
+        description=(
+            "kind=image: тайминги и размеры операций монтирования — та же "
+            "запись, что у песочницы (${sandbox.mounting})."
+        ),
+    )
+    mount_dir: str = Field(
+        min_length=1,
+        description=(
+            "kind=image: каталог, куда хранилище монтирует образ пользователя "
+            "на время операции. Поверх него кладётся tmpfs, поэтому на хосте "
+            "не остаётся ни точки монтирования, ни пустых каталогов."
+        ),
+    )
+    binaries: TrustedBinaries = Field(
+        description=(
+            "kind=image: каталоги, откуда берутся bwrap и fuse2fs; "
+            "$PATH не используется."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _validate_kind(self) -> Self:
+        if self.kind == "local" and not self.files_dir:
+            msg = (
+                "section [storage] with kind=local expects files_dir as a "
+                f"non-empty path, got {self.files_dir!r}"
+            )
+            raise ValueError(msg)
+
+        if self.kind == "image" and self.workspace is None:
+            msg = "section [storage] with kind=image expects the workspace record"
+            raise ValueError(msg)
+
+        return self
+
+
+class StorageClient(ABC):
     """Фасад хранилища: потоковые операции и их граница ошибок.
 
     Каждая операция идёт через StorageGuard, поэтому наружу выходят только
@@ -97,7 +169,8 @@ class StorageClient(BaseStorageClient, ABC):
         return self.render_url(StorageUrl.TEMPLATE, object_key)
 
     async def close(self) -> None:
-        pass
+        """Хранилище без долгоживущих ресурсов: закрывать нечего."""
+        return
 
     @staticmethod
     def _payload_bytes(data: bytes | str) -> bytes:

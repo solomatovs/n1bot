@@ -22,10 +22,9 @@ from boba.canvas.keys import WorkspaceMount
 from boba.chainlit.canvas.panel import CanvasPanel
 from boba.chainlit.canvas.tools import CanvasViewers
 from boba.chainlit.data.data_layer import AttachmentDataLayer
-from boba.chainlit.data.storage import LocalStorageClient
 from boba.chainlit.domain.keys import AttachmentLinks
-from boba.chainlit.infra.config import LocalStorageConfig
 from boba.chainlit.rendering.mount import ChatAttachments, ChatMount
+from boba.runtime.storage import LocalStorageClient, LocalStorageConfig
 from boba.stand.refs import StandRefs
 from boba.stand_core.context import CallStand
 from boba.tool.canvas.tools import TOOLS, CanvasToolConfig

@@ -60,10 +60,10 @@ from boba.canvas.keys import ObjectKey
 from boba.canvas.storage import StorageError, StorageNotFoundError
 from boba.chainlit.canvas.remote import RemoteStreams
 from boba.chainlit.data.data_layer import AttachmentDataLayer
-from boba.chainlit.data.storage import StorageClient
 from boba.chainlit.domain.keys import CanvasFileUrl, StreamUrl
 from boba.identity.errors import RefusalError
 from boba.runtime import providers as runtime
+from boba.runtime.storage import StorageClient
 from boba.toolkit.channels import JournalChannel
 from boba.toolkit.result import VisualResult
 from boba.toolrun.streams import JournalWatchSource

@@ -24,16 +24,16 @@ from httpx import AsyncClient
 
 from boba.canvas.keys import ObjectKey
 from boba.canvas.transfer import UploadPolicy
-from boba.chainlit.data.storage import LocalStorageClient
 from boba.chainlit.data.upload import SessionFiles, UploadRoute
 from boba.chainlit.infra.session import ChainlitSession
+from boba.runtime.storage import LocalStorageClient
 
 pytestmark = pytest.mark.anyio
 
 THREAD_ID = "1f000000-0000-4000-8000-000000000abc"
 USER_ID = str(UUID(int=7))
 FILE_NAME = "big.bin"
-UPLOAD_LOGGER = "boba.chainlit.data.upload"
+TRANSFER_LOGGER = "boba"
 
 
 class PatternPayload:
@@ -305,7 +305,7 @@ class TestServedStreaming:
         """Лог отдачи: строка до первого байта, отметки по ходу и итог."""
         app, session, file_id = served
 
-        with caplog.at_level(logging.INFO, logger=UPLOAD_LOGGER):
+        with caplog.at_level(logging.INFO, logger=TRANSFER_LOGGER):
             async with (
                 LiveServer(app) as server,
                 AsyncClient(base_url=server.base_url) as client,
@@ -342,7 +342,7 @@ class TestServedStreaming:
         """Клиент ушёл на первом чанке: недоотданное тело видно в логе."""
         app, session, file_id = served
 
-        with caplog.at_level(logging.INFO, logger=UPLOAD_LOGGER):
+        with caplog.at_level(logging.INFO, logger=TRANSFER_LOGGER):
             async with (
                 LiveServer(app) as server,
                 AsyncClient(base_url=server.base_url) as client,

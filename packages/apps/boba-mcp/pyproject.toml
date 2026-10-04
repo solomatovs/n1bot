@@ -19,6 +19,7 @@ dependencies = [
     "boba-toolkit==0.0.26.dev4",
     "boba-connection-broker==0.0.26.dev4",
     "boba-connections==0.0.26.dev4",
+    "boba-tool-canvas==0.0.26.dev4",
     "boba-tool-chart==0.0.26.dev4",
     "boba-tool-clickhouse==0.0.26.dev4",
     "boba-tool-confluence==0.0.26.dev4",
@@ -68,6 +69,7 @@ boba-toolrun            = { path = "../../../packages/services/boba-toolrun", ed
 boba-toolkit            = { path = "../../../packages/core/boba-toolkit", editable = true }
 boba-connection-broker  = { path = "../../../packages/services/boba-connection-broker", editable = true }
 boba-connections        = { path = "../../../packages/core/boba-connections", editable = true }
+boba-tool-canvas        = { path = "../../../packages/tools/boba-tool-canvas", editable = true }
 boba-tool-chart         = { path = "../../../packages/tools/boba-tool-chart", editable = true }
 boba-tool-clickhouse    = { path = "../../../packages/tools/boba-tool-clickhouse", editable = true }
 boba-tool-confluence    = { path = "../../../packages/tools/boba-tool-confluence", editable = true }

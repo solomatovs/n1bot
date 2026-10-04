@@ -213,6 +213,7 @@ extend-immutable-calls = [
 
 [tool.uv]
 find-links = ["build/src/oracledb"]
+override-dependencies = ["mcp>=2.3,<3"]
 python-downloads = "never"
 python-preference = "only-system"
 environments = ["python_full_version >= '3.11' and python_full_version < '3.12' and sys_platform == 'linux'"]

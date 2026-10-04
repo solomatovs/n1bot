@@ -1150,7 +1150,7 @@ class TestStreamDownload:
 
         from boba.chainlit.data.upload import StreamServing, UploadPolicy
         from boba.chainlit.domain.keys import StreamUrl
-        from boba.chainlit.infra.config import LocalStorageConfig
+        from boba.runtime.storage import LocalStorageConfig
 
         # files_dir на серве подменяется корнем тома пользователя; здесь нужен
         # лишь валидный конфиг — LocalStorageConfig требует непустой files_dir

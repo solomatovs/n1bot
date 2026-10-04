@@ -32,6 +32,7 @@ dependencies = [
     "fastapi[standard]",
     "httpx>=0.28,<1",
     "websockets>=13",
+    "aiofiles",
     "boba-auth==0.0.26.dev4",
 ]
 

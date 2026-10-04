@@ -31,13 +31,20 @@ from service_stand import (
 from boba.auth.proxy import ProxySignature
 from boba.connections.sealed import SealFeature
 from boba.identity.signin import ProxyRequest
+from boba.mcp_server.files import FileUploadTool
 from boba.mcp_server.server import (
     RunLimitMiddleware,
     RunLimits,
     StreamReadTool,
 )
 from boba.toolkit.channels import ToolChannel
-from boba.toolkit.wire import JournalFeature, JournalSignal, RequestMeta, WireMeta
+from boba.toolkit.wire import (
+    FilesFeature,
+    JournalFeature,
+    JournalSignal,
+    RequestMeta,
+    WireMeta,
+)
 from boba.toolrun.call_id import CallFields
 from boba.toolrun.stream_calls import WorkflowTool
 
@@ -82,6 +89,7 @@ class TestToolList:
             "fake_scope",
             "fake_sleep",
             "fake_whoami",
+            FileUploadTool.NAME,
             StreamReadTool.NAME,
             WorkflowTool.NAME,
         ]
@@ -112,7 +120,7 @@ class TestToolList:
             listed = await client.list_tools()
 
         names = [tool.name for tool in listed]
-        if names != ["fake_echo", StreamReadTool.NAME]:
+        if names != ["fake_echo", FileUploadTool.NAME, StreamReadTool.NAME]:
             raise AssertionError(f"role weak is granted one tool: {names}")
 
 
@@ -221,31 +229,22 @@ class TestCall:
     async def test_server_declares_its_features_on_connect(
         self, stand: ServiceStand, url: str
     ) -> None:
-        """Возможности едут ответом на initialize: клиент узнаёт ключ
-        запечатывания и инструмент-связку, не вызывая инструментов."""
-        hello = {
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "initialize",
-            "params": {
-                "protocolVersion": "2025-06-18",
-                "capabilities": {},
-                "clientInfo": {"name": "stand", "version": "1"},
-            },
-        }
-        headers = {
-            "Authorization": f"Bearer {DEV_TOKEN}",
-            "Accept": "application/json, text/event-stream",
-        }
-        async with httpx.AsyncClient() as http:
-            reply = await http.post(url, json=hello, headers=headers)
+        """Возможности объявлены расширениями: клиент узнаёт ключ
+        запечатывания, инструмент-связку и операцию журнала при согласовании
+        протокола, не вызывая инструментов."""
+        async with _client(url, DEV_TOKEN) as client:
+            capabilities = client.session.server_capabilities
 
-        if SealFeature.ID not in reply.text:
-            raise AssertionError(f"the seal key is declared on connect: {reply.text}")
-        if WorkflowTool.FEATURE not in reply.text:
-            raise AssertionError(f"the workflow tool is declared: {reply.text}")
-        if JournalFeature.ID.value not in reply.text:
-            raise AssertionError(f"the journal operation is declared: {reply.text}")
+        if capabilities is None:
+            raise AssertionError("the protocol is negotiated on connect")
+
+        declared = capabilities.extensions
+        if declared is None:
+            raise AssertionError(f"the server declares extensions: {capabilities}")
+
+        for feature in (SealFeature.ID, WorkflowTool.FEATURE, JournalFeature.ID.value):
+            if feature not in declared:
+                raise AssertionError(f"{feature} is declared: {sorted(declared)}")
 
     async def test_linked_nodes_run_as_one_workflow_call(
         self, stand: ServiceStand, url: str, tmp_path: Path
@@ -547,7 +546,7 @@ class TestEndpoints:
             listed = await client.list_tools()
 
         names = sorted(tool.name for tool in listed)
-        if names != ["fake_echo", StreamReadTool.NAME]:
+        if names != ["fake_echo", FileUploadTool.NAME, StreamReadTool.NAME]:
             raise AssertionError(f"the endpoint offers its own tools: {names}")
 
     async def test_endpoint_outside_the_roles_is_forbidden(
@@ -637,3 +636,116 @@ class TestProxySignIn:
 
         if reply.status_code != httpx.codes.FORBIDDEN:
             raise AssertionError(f"a sign-in without roles is 403: {reply}")
+
+
+class TestWorkspaceFiles:
+    """Файлы workspace по маршруту endpoint'а: потоком в обе стороны."""
+
+    SCOPE: str = "3f0d6b1e-1b0e-4f55-9a52-6f4d2a1c9e01"
+
+    @staticmethod
+    def _headers(token: str) -> dict[str, str]:
+        return {"Authorization": f"Bearer {token}"}
+
+    def _address(self, url: str, name: str) -> str:
+        return f"{url}/files/{self.SCOPE}/upload/{name}"
+
+    @staticmethod
+    async def _chunks(payload: bytes, size: int) -> AsyncIterator[bytes]:
+        for start in range(0, len(payload), size):
+            yield payload[start : start + size]
+
+    async def test_stored_stream_is_read_back_whole_and_by_range(
+        self, stand: ServiceStand, url: str
+    ) -> None:
+        payload = bytes(range(256)) * 4096
+        address = self._address(url, "data.bin")
+        headers = self._headers(DEV_TOKEN)
+        async with httpx.AsyncClient() as http:
+            stored = await http.put(
+                address, content=self._chunks(payload, 65536), headers=headers
+            )
+            whole = await http.get(address, headers=headers)
+            ranged = await http.get(
+                address, headers={**headers, "Range": "bytes=10-19"}
+            )
+            head = await http.head(address, headers=headers)
+
+        if stored.status_code != 201 or stored.json()["size"] != len(payload):
+            raise AssertionError(
+                f"the stream is stored: {stored.status_code} {stored.text}"
+            )
+        if stored.json()["path"] != f"/workspace/{self.SCOPE}/upload/data.bin":
+            raise AssertionError(f"the reply names the workspace path: {stored.text}")
+        if whole.content != payload:
+            raise AssertionError("the file is read back as written")
+        if ranged.status_code != 206 or ranged.content != payload[10:20]:
+            raise AssertionError(f"a range answers 206: {ranged.status_code}")
+        if head.headers.get("content-length") != str(len(payload)):
+            raise AssertionError(f"HEAD names the size: {head.headers}")
+        if not head.headers.get("etag"):
+            raise AssertionError(f"HEAD names the revision: {head.headers}")
+
+    async def test_request_without_a_token_is_refused(
+        self, stand: ServiceStand, url: str
+    ) -> None:
+        async with httpx.AsyncClient() as http:
+            reply = await http.put(self._address(url, "note.txt"), content=b"x")
+
+        if reply.status_code != 401:
+            raise AssertionError(f"no token, no file: {reply.status_code} {reply.text}")
+
+    async def test_workspace_of_another_user_is_out_of_reach(
+        self, stand: ServiceStand, url: str
+    ) -> None:
+        """Адрес не называет пользователя: тот же путь у другого вошедшего
+        ведёт в его собственный workspace."""
+        address = self._address(url, "private.txt")
+        async with httpx.AsyncClient() as http:
+            await http.put(address, content=b"secret", headers=self._headers(DEV_TOKEN))
+            other = await http.get(
+                address.replace("/mcp/service/", "/mcp/narrow/"),
+                headers=self._headers(DEV_TOKEN),
+            )
+            stranger = await http.get(address, headers=self._headers(WEAK_TOKEN))
+
+        if other.content != b"secret":
+            raise AssertionError(f"endpoints share the user's workspace: {other.text}")
+        if stranger.status_code != 404:
+            raise AssertionError(
+                f"another user sees no such file: {stranger.status_code}"
+            )
+
+    async def test_address_outside_the_scope_dirs_is_refused(
+        self, stand: ServiceStand, url: str
+    ) -> None:
+        address = f"{url}/files/{self.SCOPE}/elsewhere/note.txt"
+        async with httpx.AsyncClient() as http:
+            reply = await http.put(
+                address, content=b"x", headers=self._headers(DEV_TOKEN)
+            )
+
+        if reply.status_code != 400:
+            raise AssertionError(f"only scope dirs are addressed: {reply.status_code}")
+
+    async def test_file_upload_names_the_address_for_the_client(
+        self, stand: ServiceStand, url: str
+    ) -> None:
+        async with _client(url, DEV_TOKEN) as client:
+            result = await client.call_tool_mcp(
+                FileUploadTool.NAME,
+                {"name": "report.csv"},
+                meta={RequestMeta.SCOPE: self.SCOPE},
+            )
+            declared = client.session.server_capabilities
+
+        structured = result.structured_content
+        expected = f"/mcp/service/files/{self.SCOPE}/upload/report.csv"
+        if structured is None or structured.get("path") != expected:
+            raise AssertionError(f"the tool names the upload address: {result}")
+        if declared is None or declared.extensions is None:
+            raise AssertionError("the server declares extensions")
+
+        files = declared.extensions.get(FilesFeature.ID.value)
+        if files != {"path": "/mcp/service/files", "upload": FileUploadTool.NAME}:
+            raise AssertionError(f"the files extension is declared: {files}")
