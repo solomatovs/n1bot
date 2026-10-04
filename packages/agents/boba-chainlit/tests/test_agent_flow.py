@@ -62,6 +62,7 @@ from boba.llm.chat import (
 from boba.llm.providers import LlmProviders, LlmProviderTypes
 from boba.llm.schema import SchemaReply
 from boba.mcp_client.client import (
+    DroppedSignals,
     McpServerConfig,
     McpToolServer,
     NamedBlocks,
@@ -914,7 +915,7 @@ class TestCallsRouteByToolName:
             connect_timeout_sec=20.0,
             call_timeout_sec=60.0,
         )
-        remote = McpToolServer("standard", config, NamedBlocks())
+        remote = McpToolServer("standard", config, NamedBlocks(), DroppedSignals())
         await remote.open()
         calls = [
             {"name": "fts_probe", "args": {"query": "kerberos"}, "id": "call_own"},

@@ -9,7 +9,7 @@ from uuid import UUID
 
 import chainlit as cl
 import pytest
-from chainlit_stand import ChatSessionStand
+from chainlit_stand import ChatSessionStand, RemoteStand
 
 from boba.canvas.canvas import (
     CanvasAction,
@@ -47,6 +47,9 @@ from boba.workspace.launcher import MountingConfig
 
 THREAD = "11111111-1111-1111-1111-111111111111"
 USER = str(UUID(int=7))
+
+NO_REMOTE = RemoteStand().streams
+"""Журналы MCP-серверов: в этих тестах серверов нет, вызовы только свои."""
 
 
 @pytest.fixture(autouse=True)
@@ -576,10 +579,10 @@ class TestFileWindowAction:
         path = f"/workspace/{THREAD}/upload/run.log"
 
         first = await rendering_canvas.StreamActions.window(
-            USER, THREAD, {"path": path, "offset": 0}
+            USER, THREAD, {"path": path, "offset": 0}, NO_REMOTE
         )
         follow_up = await rendering_canvas.StreamActions.window(
-            USER, THREAD, {"path": path, "offset": first["stream"]["end"]}
+            USER, THREAD, {"path": path, "offset": first["stream"]["end"]}, NO_REMOTE
         )
 
         if first["stream"]["offset"] != 0:
@@ -597,6 +600,7 @@ class TestFileWindowAction:
             USER,
             THREAD,
             {"path": f"/workspace/{THREAD}/upload/absent.log", "offset": 0},
+            NO_REMOTE,
         )
 
         if answer != {}:

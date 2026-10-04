@@ -1506,6 +1506,7 @@ source = { editable = "packages/services/boba-mcp-client" }
 dependencies = [
     { name = "anyio", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "boba-access", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "boba-canvas", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "boba-toolkit", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "boba-toolrun", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "httpx", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
@@ -1526,6 +1527,7 @@ dev = [
 requires-dist = [
     { name = "anyio", specifier = ">=4" },
     { name = "boba-access", editable = "packages/core/boba-access" },
+    { name = "boba-canvas", editable = "packages/core/boba-canvas" },
     { name = "boba-connections", marker = "extra == 'dev'", editable = "packages/core/boba-connections" },
     { name = "boba-db-postgres", marker = "extra == 'dev'", editable = "packages/infra/db/boba-db-postgres" },
     { name = "boba-runtime", marker = "extra == 'dev'", editable = "packages/services/boba-runtime" },

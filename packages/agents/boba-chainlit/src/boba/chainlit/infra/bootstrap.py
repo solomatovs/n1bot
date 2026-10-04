@@ -354,6 +354,7 @@ def _use_di_container(app: FastAPI, c: AppConfig) -> Container:
     container.eager(runtime.tool_registry)
     # MCP-серверы подключаются на старте: первая сессия не ждёт инициализации
     container.eager(providers.mcp_servers)
+    container.eager(providers.remote_streams)
     # локальные модели грузятся на старте: первая сессия не ждёт веса
     container.eager(providers.llm_providers)
     # инстанс регистрируется после блокирующего старта зигот и моделей: иначе

@@ -21,7 +21,7 @@ from uuid import UUID
 import pytest
 from chainlit.context import ChainlitContext, context_var
 from chainlit.step import Step
-from chainlit_stand import FakeTurn
+from chainlit_stand import FakeTurn, RemoteStand
 from langchain_core.tools import tool
 from pydantic import ValidationError
 
@@ -75,6 +75,9 @@ def _bin_dirs() -> list[str]:
 THREAD = "33333333-3333-3333-3333-333333333333"
 USER = str(UUID(int=7))
 CALL_ID = "call-stream-1"
+
+NO_REMOTE = RemoteStand().streams
+"""Журналы MCP-серверов: в этих тестах серверов нет, вызовы только свои."""
 TOOL_NAME = "fake_bash"
 
 
@@ -714,10 +717,14 @@ class TestWindowAction:
         self._recorded(journals, turn_scope)
 
         first = run(
-            StreamActions.window(USER, THREAD, {"path": self.PATH, "offset": 0})
+            StreamActions.window(
+                USER, THREAD, {"path": self.PATH, "offset": 0}, NO_REMOTE
+            )
         )
         middle = run(
-            StreamActions.window(USER, THREAD, {"path": self.PATH, "offset": 70000})
+            StreamActions.window(
+                USER, THREAD, {"path": self.PATH, "offset": 70000}, NO_REMOTE
+            )
         )
 
         if first["stream"]["offset"] != 0:
@@ -735,7 +742,9 @@ class TestWindowAction:
         self._recorded(journals, turn_scope)
 
         tail = run(
-            StreamActions.window(USER, THREAD, {"path": self.PATH, "offset": -1})
+            StreamActions.window(
+                USER, THREAD, {"path": self.PATH, "offset": -1}, NO_REMOTE
+            )
         )
 
         if tail["stream"]["end"] != len(self.BODY):
@@ -749,7 +758,9 @@ class TestWindowAction:
         self._recorded(journals, turn_scope)
 
         before = run(
-            StreamActions.window(USER, THREAD, {"path": self.PATH, "before": 70000})
+            StreamActions.window(
+                USER, THREAD, {"path": self.PATH, "before": 70000}, NO_REMOTE
+            )
         )
 
         if before["stream"]["end"] != 70000:
@@ -761,7 +772,9 @@ class TestWindowAction:
         self._recorded(journals, turn_scope)
 
         beyond = run(
-            StreamActions.window(USER, THREAD, {"path": self.PATH, "offset": 10**9})
+            StreamActions.window(
+                USER, THREAD, {"path": self.PATH, "offset": 10**9}, NO_REMOTE
+            )
         )
 
         if beyond["text"] != "":
@@ -772,7 +785,10 @@ class TestWindowAction:
     def test_unknown_call_gives_empty_answer(self) -> None:
         answer = run(
             StreamActions.window(
-                USER, THREAD, {"path": stream_path("no-such-call"), "offset": 0}
+                USER,
+                THREAD,
+                {"path": stream_path("no-such-call"), "offset": 0},
+                NO_REMOTE,
             )
         )
 
@@ -800,7 +816,9 @@ class TestChannelAccess:
         self._recorded_with_wrap(journals, turn_scope)
 
         answer = run(
-            StreamActions.window(USER, THREAD, {"path": self.WRAP_PATH, "offset": 0})
+            StreamActions.window(
+                USER, THREAD, {"path": self.WRAP_PATH, "offset": 0}, NO_REMOTE
+            )
         )
 
         if answer != {}:
@@ -817,6 +835,7 @@ class TestChannelAccess:
                     USER,
                     THREAD,
                     {"call_id": CALL_ID, "channel": WrapChannel.STDERR.value},
+                    NO_REMOTE,
                 )
             )
         except ValidationError:
@@ -872,7 +891,7 @@ class TestShowAction:
 
         probe = PanelProbe(monkeypatch)
 
-        run(StreamActions.show(USER, THREAD, {"call_id": CALL_ID}))
+        run(StreamActions.show(USER, THREAD, {"call_id": CALL_ID}, NO_REMOTE))
 
         if len(probe.shown) != 1:
             raise AssertionError("len(probe.shown) == 1")
@@ -914,6 +933,7 @@ class TestShowAction:
                     "channel": ToolChannel.STDERR.value,
                     "inline": True,
                 },
+                NO_REMOTE,
             )
             CanvasWatch.drop(THREAD)
             return answer
@@ -943,7 +963,7 @@ class TestShowAction:
 
         async def scenario() -> str | None:
             CanvasWatch.configure(FakeTransport())
-            await StreamActions.show(USER, THREAD, {"call_id": CALL_ID})
+            await StreamActions.show(USER, THREAD, {"call_id": CALL_ID}, NO_REMOTE)
             await StreamActions.show(
                 USER,
                 THREAD,
@@ -952,6 +972,7 @@ class TestShowAction:
                     "channel": ToolChannel.STDERR.value,
                     "inline": True,
                 },
+                NO_REMOTE,
             )
             watching = CanvasWatch.watching(THREAD)
             CanvasWatch.drop(THREAD)
@@ -972,7 +993,7 @@ class TestShowAction:
 
         async def scenario() -> str | None:
             CanvasWatch.configure(FakeTransport())
-            await StreamActions.show(USER, THREAD, {"call_id": CALL_ID})
+            await StreamActions.show(USER, THREAD, {"call_id": CALL_ID}, NO_REMOTE)
             watching = CanvasWatch.watching(THREAD)
             CanvasWatch.drop(THREAD)
             return watching
@@ -986,7 +1007,7 @@ class TestShowAction:
     def test_unknown_stream_is_explained(self, monkeypatch: pytest.MonkeyPatch) -> None:
         probe = PanelProbe(monkeypatch)
 
-        run(StreamActions.show(USER, THREAD, {"call_id": "no-such"}))
+        run(StreamActions.show(USER, THREAD, {"call_id": "no-such"}, NO_REMOTE))
 
         if probe.shown[0].kind is not CanvasKind.NOTICE:
             raise AssertionError("probe.shown[0].kind is CanvasKind.NOTICE")
@@ -1004,7 +1025,7 @@ class TestShowAction:
 
         async def scenario() -> str | None:
             CanvasWatch.configure(FakeTransport())
-            await StreamActions.show(USER, THREAD, {"call_id": CALL_ID})
+            await StreamActions.show(USER, THREAD, {"call_id": CALL_ID}, NO_REMOTE)
             nonce = probe.shown[0].nonce
 
             StreamActions.leave(THREAD, {"path": probe.shown[0].path, "nonce": nonce})

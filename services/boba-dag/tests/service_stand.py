@@ -23,6 +23,7 @@ from boba.connections.sealed import SealKeys
 from boba.dag_service.server import CallSchemas, DagServer, RunLimits
 from boba.identity.context import CallContexts
 from boba.identity.run import Runs
+from boba.runtime.journal import DirVault, StreamJournal
 from boba.stand import fake_connection
 from boba.stand_core import fake_caller, fake_toolmod
 from boba.stand_core.fake_toolmod import FakeConfig
@@ -84,9 +85,18 @@ class ServiceStand:
         ):
             tools.append(ToolBridge.as_structured_tool(payload.model_copy()))
 
+        names: list[str] = []
+        for tool in tools:
+            names.append(tool.name)
+
+        journals = CallJournals(
+            StreamJournal(DirVault(str(workdir / "journal")), 0), runs
+        )
+        journals.mark_streamable(names)
+
         chain = ToolChain(
             self.STREAM,
-            CallJournals(None, runs),
+            journals,
             contexts,
             ambient,
             (
@@ -97,10 +107,6 @@ class ServiceStand:
             (),
         )
         specs = chain.launch(tools, launcher)
-
-        names: list[str] = []
-        for tool in tools:
-            names.append(tool.name)
 
         access = ToolAccess(
             tool_names=names,
@@ -127,7 +133,9 @@ class ServiceStand:
                 WEAK_TOKEN: self._claims("bob", "weak"),
             }
         )
-        self.mcp = DagServer(self.registry, runs, verifier, PROFILE, limits).mcp()
+        self.mcp = DagServer(
+            self.registry, runs, journals, verifier, PROFILE, limits
+        ).mcp()
 
     @staticmethod
     def _claims(login: str, role: str) -> dict[str, Any]:

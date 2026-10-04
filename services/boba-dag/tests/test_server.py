@@ -24,8 +24,10 @@ from boba.dag_service.server import (
     DagTool,
     RunLimitMiddleware,
     RunLimits,
+    StreamReadTool,
 )
-from boba.toolkit.wire import WireMeta
+from boba.toolkit.channels import ToolChannel
+from boba.toolkit.wire import JournalFeature, JournalSignal, WireMeta
 from boba.toolrun.call_id import CallFields
 from boba.toolrun.stream_calls import WorkflowTool
 
@@ -62,6 +64,7 @@ class TestToolList:
             "fake_emit",
             "fake_sleep",
             "fake_whoami",
+            StreamReadTool.NAME,
             WorkflowTool.NAME,
         ]
         if names != sorted(expected):
@@ -91,7 +94,7 @@ class TestToolList:
             listed = await client.list_tools()
 
         names = [tool.name for tool in listed]
-        if names != ["fake_echo"]:
+        if names != ["fake_echo", StreamReadTool.NAME]:
             raise AssertionError(f"role weak is granted one tool: {names}")
 
 
@@ -167,6 +170,8 @@ class TestCall:
             raise AssertionError(f"the seal key is declared on connect: {reply.text}")
         if WorkflowTool.FEATURE not in reply.text:
             raise AssertionError(f"the workflow tool is declared: {reply.text}")
+        if JournalFeature.ID.value not in reply.text:
+            raise AssertionError(f"the journal operation is declared: {reply.text}")
 
     async def test_linked_nodes_run_as_one_workflow_call(
         self, stand: ServiceStand, url: str, tmp_path: Path
@@ -205,6 +210,97 @@ class TestCall:
             raise AssertionError(f"the outcome is the workflow model: {structured}")
         if len(structured.get("nodes", [])) != len(nodes):
             raise AssertionError(f"every node reports its outcome: {structured}")
+
+
+class TestJournal:
+    """Журнал вызова: сигналы роста уведомлениями прогресса и чтение окнами."""
+
+    async def _echoed(self, client: Client[Any]) -> tuple[Any, list[JournalSignal]]:
+        signals: list[JournalSignal] = []
+
+        async def on_progress(
+            progress: float, total: float | None, message: str | None
+        ) -> None:
+            if message is None:
+                raise AssertionError(f"a signal carries its model: {progress}")
+
+            signals.append(JournalSignal.model_validate_json(message))
+
+        result = await client.call_tool_mcp(
+            "fake_echo", {"text": "hi", "repeat": 2}, progress_handler=on_progress
+        )
+
+        return result, signals
+
+    async def test_call_signals_the_growth_of_its_journal(
+        self, stand: ServiceStand, url: str
+    ) -> None:
+        async with _client(url, DEV_TOKEN) as client:
+            result, signals = await self._echoed(client)
+
+        own = (result.meta or {}).get(WireMeta.NAMESPACE.value, {})
+        run = own.get(WireMeta.RUN.value)
+        if not run:
+            raise AssertionError(f"the result names its run: {result.meta}")
+
+        stdout: list[JournalSignal] = []
+        for signal in signals:
+            if signal.run != run or signal.node != own.get(WireMeta.CALL_ID.value):
+                raise AssertionError(f"a signal names the run and the call: {signal}")
+
+            if signal.channel == ToolChannel.STDOUT.value:
+                stdout.append(signal)
+
+        if not stdout:
+            raise AssertionError(f"the output channel is signalled: {signals}")
+
+        last = stdout[-1]
+        if not last.closed or last.size == 0:
+            raise AssertionError(f"the last signal arrives before the result: {last}")
+
+    async def test_windows_of_the_journal_join_at_line_borders(
+        self, stand: ServiceStand, url: str
+    ) -> None:
+        async with _client(url, DEV_TOKEN) as client:
+            _result, signals = await self._echoed(client)
+            address = {
+                "run": signals[-1].run,
+                "node": signals[-1].node,
+                "channel": ToolChannel.STDOUT.value,
+            }
+            whole = await client.call_tool_mcp(StreamReadTool.NAME, address)
+            tail = await client.call_tool_mcp(
+                StreamReadTool.NAME, {**address, "offset": 1}
+            )
+
+        piece = whole.structured_content
+        if whole.is_error or piece is None:
+            raise AssertionError(f"the journal is readable after the call: {whole}")
+        if "echo progress: hi" not in piece["text"] or not piece["closed"]:
+            raise AssertionError(f"the window carries the output of the body: {piece}")
+        if piece["offset"] != 0 or piece["end"] != piece["size"]:
+            raise AssertionError(f"the window names its place in the file: {piece}")
+
+        rest = tail.structured_content
+        if rest is None or not piece["text"].endswith(rest["text"]):
+            raise AssertionError(f"a window from the middle starts at a line: {rest}")
+
+    async def test_journal_of_another_caller_is_not_readable(
+        self, stand: ServiceStand, url: str
+    ) -> None:
+        async with _client(url, DEV_TOKEN) as client:
+            _result, signals = await self._echoed(client)
+
+        address = {
+            "run": signals[-1].run,
+            "node": signals[-1].node,
+            "channel": ToolChannel.STDOUT.value,
+        }
+        async with _client(url, WEAK_TOKEN) as client:
+            foreign = await client.call_tool_mcp(StreamReadTool.NAME, address)
+
+        if not foreign.is_error:
+            raise AssertionError(f"a journal is read only by its caller: {foreign}")
 
 
 class TestFailures:

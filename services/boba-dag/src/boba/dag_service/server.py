@@ -6,6 +6,10 @@
 middleware из токена. Логики во входе нет: DagTool.run разбирает запрос в
 ToolCall и зовёт порт.
 
+Во время вызова сервер шлёт сигналы роста журнала уведомлениями
+notifications/progress (ProgressSignals); кусок журнала читает операция
+stream_read (StreamReadTool).
+
 Ошибки:
 наружу уходит только итог вызова — сбой любого вида возвращается
     результатом с isError и моделью отказа (FailureResult) в structuredContent.
@@ -23,7 +27,7 @@ from typing import Any, ClassVar
 from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
 import mcp_types as mt
-from fastmcp import FastMCP
+from fastmcp import Context, FastMCP
 from fastmcp.server.auth import AccessToken, AuthProvider
 from fastmcp.server.dependencies import get_access_token, get_context
 from fastmcp.server.middleware import CallNext, Middleware, MiddlewareContext
@@ -37,6 +41,7 @@ from langchain_core.tools import BaseTool
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, ValidationError
 
 from boba.cancellation import RunCancellation, StopReason
+from boba.canvas.journal import StreamSlice
 from boba.identity.context import (
     CallContext,
     HumanInitiator,
@@ -45,12 +50,22 @@ from boba.identity.context import (
     Subject,
 )
 from boba.identity.run import Runs
+from boba.messaging import StreamAppended, StreamFeed
 from boba.toolkit.calls import CallIdPrefix
+from boba.toolkit.channels import JournalChannels
 from boba.toolkit.failure import FailurePacker
 from boba.toolkit.result import ErrorResult, MarkdownResult, ToolResultBase
-from boba.toolkit.wire import CallStatus, ResultWire, WireResult
+from boba.toolkit.wire import (
+    CallStatus,
+    JournalFeature,
+    JournalRead,
+    JournalSignal,
+    ResultWire,
+    WireResult,
+)
 from boba.toolrun.registry import ToolRegistry
 from boba.toolrun.stream_calls import ToolServer
+from boba.toolrun.streams import CallJournals, StreamPumps
 
 __all__ = [
     "CallContextMiddleware",
@@ -58,9 +73,11 @@ __all__ = [
     "DagServer",
     "DagTool",
     "DagToolProvider",
+    "ProgressSignals",
     "RoleToolServers",
     "RunLimitMiddleware",
     "RunLimits",
+    "StreamReadTool",
     "TokenClaim",
     "TokenClaimsError",
     "TokenSubjects",
@@ -274,15 +291,22 @@ class DagToolProvider(Provider):
 
     Создаётся сборкой сервера. На каждый запрос узнаёт субъекта по токену,
     берёт его порт инструментов и отдаёт инструменты порта как DagTool;
-    объекты DagTool строятся один раз на порт.
+    объекты DagTool строятся один раз на порт. Операции сервиса (operations)
+    видит каждый вызывающий.
     """
 
-    def __init__(self, servers: RoleToolServers, subjects: TokenSubjects) -> None:
+    def __init__(
+        self,
+        servers: RoleToolServers,
+        subjects: TokenSubjects,
+        operations: Sequence[Tool],
+    ) -> None:
         super().__init__()
         self._servers = servers
         self._subjects = subjects
+        self._operations = tuple(operations)
         self._schemas = CallSchemas()
-        self._tools: dict[ToolServer, dict[str, DagTool]] = {}
+        self._tools: dict[ToolServer, dict[str, Tool]] = {}
 
     async def _list_tools(self) -> Sequence[Tool]:
         return list(self._offered().values())
@@ -296,7 +320,7 @@ class DagToolProvider(Provider):
         """Фоновых задач у сервиса нет: вызов живёт, пока живо соединение."""
         return []
 
-    def _offered(self) -> dict[str, DagTool]:
+    def _offered(self) -> dict[str, Tool]:
         server = self._servers.of(self._subjects.current())
         offered = self._tools.get(server)
         if offered is not None:
@@ -306,47 +330,222 @@ class DagToolProvider(Provider):
         for tool in server.tools():
             offered[tool.name] = DagTool(tool, server, self._schemas.of(tool))
 
+        for operation in self._operations:
+            offered[operation.name] = operation
+
         self._tools[server] = offered
 
         return offered
 
 
+class ProgressSignals(StreamFeed):
+    """Реализация StreamFeed уведомлениями notifications/progress вызова.
+
+    Создаётся CallContextMiddleware на каждый вызов инструмента. Насосы
+    журнала (StreamPumps) сообщают сюда о росте каналов; сигналы ждут в
+    очереди, а отправляет их задача, заведённая start() внутри запроса:
+    уведомление привязано к запросу, и из чужой задачи оно не уходит.
+    progress — растущий счётчик сигналов, сам сигнал едет в message
+    моделью JournalSignal. Клиент без токена прогресса сигналов не получает.
+    """
+
+    def __init__(self, context: Context, run: str) -> None:
+        self._context = context
+        self._run = run
+        self._queue: asyncio.Queue[StreamAppended | None] = asyncio.Queue()
+        self._sender: asyncio.Task[None] | None = None
+
+    def start(self) -> None:
+        self._sender = asyncio.create_task(self._send(), name=f"progress:{self._run}")
+
+    async def stream_appended(self, message: StreamAppended) -> None:
+        self._queue.put_nowait(message)
+
+    async def close(self) -> None:
+        """Дожидается отправки всех сигналов: после ответа на вызов
+        уведомления теряются без ошибки."""
+        sender = self._sender
+        if sender is None:
+            return
+
+        self._queue.put_nowait(None)
+        await sender
+
+    async def _send(self) -> None:
+        sent = 0
+        while True:
+            message = await self._queue.get()
+            if message is None:
+                return
+
+            sent += 1
+            signal = JournalSignal(
+                run=self._run,
+                node=message.call_id,
+                channel=message.channel,
+                size=message.size,
+                closed=message.closed,
+                note=message.note,
+            )
+            await self._context.report_progress(
+                progress=sent, message=signal.model_dump_json()
+            )
+
+
+class StreamReadTool(Tool):
+    """Операция сервиса stream_read: кусок журнала вызова по границам строк.
+
+    Создаётся сборкой сервера из журналов процесса. Вызывающий читает
+    только свои журналы: ключ журнала — пользователь токена, запуск и узел.
+    Итог — текст окна и его координаты (StreamSlice) в structuredContent;
+    по ним клиент стыкует следующее окно. Запуск области операция не
+    открывает и в предел запусков не входит.
+    """
+
+    NAME: ClassVar[str] = "stream_read"
+
+    DESCRIPTION: ClassVar[str] = (
+        "Read a window of the output journal of a tool call:\n"
+        "   - run — run id from the result of the call\n"
+        "   - node — id of the call\n"
+        "   - channel — journal channel\n"
+        "   - offset — window from this byte, or before — window ending at this byte"
+    )
+
+    _journals: CallJournals = PrivateAttr()
+    _subjects: TokenSubjects = PrivateAttr()
+
+    def __init__(self, journals: CallJournals, subjects: TokenSubjects) -> None:
+        super().__init__(
+            name=self.NAME,
+            description=self.DESCRIPTION,
+            parameters=JournalRead.model_json_schema(),
+        )
+        self._journals = journals
+        self._subjects = subjects
+
+    def feature(self) -> dict[str, Any]:
+        return {JournalFeature.READ.value: self.NAME}
+
+    async def run(self, arguments: dict[str, object]) -> ToolResult:
+        try:
+            request = JournalRead.model_validate(arguments)
+        except ValidationError as exc:
+            return self._refused(f"stream_read: the arguments are invalid: {exc}")
+
+        if not JournalChannels.visible(request.channel):
+            return self._refused(
+                f"stream_read: channel {request.channel.value!r} is not readable"
+            )
+
+        piece = self._slice(request)
+        if piece is None:
+            return self._refused(
+                f"stream_read: no journal of call {request.node!r} in run "
+                f"{request.run!r} on channel {request.channel.value!r}"
+            )
+
+        return ToolResult(
+            content=[mt.TextContent(type="text", text=piece.text)],
+            structured_content=piece.model_dump(mode="json"),
+        )
+
+    def _slice(self, request: JournalRead) -> StreamSlice | None:
+        user = self._subjects.current().user_key
+        if request.before is not None:
+            return self._journals.recorded_slice_before(
+                user, request.run, request.node, request.before, request.channel
+            )
+
+        offset = request.offset
+        if offset is None:
+            offset = 0
+
+        return self._journals.recorded_slice(
+            user, request.run, request.node, offset, request.channel
+        )
+
+    @staticmethod
+    def _refused(message: str) -> ToolResult:
+        return ToolResult(
+            content=[mt.TextContent(type="text", text=message)], is_error=True
+        )
+
+
 class CallContextMiddleware(Middleware):
     """Контекст вызова и запуск области вокруг вызова инструмента.
 
-    Создаётся сборкой сервера из реестра запусков. Из токена запроса
-    собирает контекст вызова (субъект, область запуска, отмена) и держит
-    запуск открытым на время вызова: задачи узлов DAG и тела в потоках
-    наследуют контекст, обвязки прав и значений контекста читают его как в
-    чате. Клиент закрыл соединение — отмена помечается, DAG гаснет.
+    Создаётся сборкой сервера из реестра запусков и журналов. Из токена
+    запроса собирает контекст вызова (субъект, область запуска, отмена) и
+    держит запуск открытым на время вызова: задачи узлов DAG и тела в
+    потоках наследуют контекст, обвязки прав и значений контекста читают его
+    как в чате. Рост журналов запуска уходит клиенту сигналами
+    (ProgressSignals), идентификатор запуска — в _meta итога. Клиент закрыл
+    соединение — отмена помечается, DAG гаснет. Операции сервиса
+    (operations) проходят мимо: запуска у них нет.
     """
 
     NO_CREDENTIAL: ClassVar[str] = "a service call carries no delegated credential"
 
-    def __init__(self, runs: Runs, subjects: TokenSubjects) -> None:
+    def __init__(
+        self,
+        runs: Runs,
+        journals: CallJournals,
+        subjects: TokenSubjects,
+        operations: frozenset[str],
+    ) -> None:
         self._runs = runs
+        self._journals = journals
         self._subjects = subjects
+        self._operations = operations
+        self._wire = ResultWire()
 
     async def on_call_tool(
         self,
         context: MiddlewareContext[mt.CallToolRequestParams],
         call_next: CallNext[mt.CallToolRequestParams, ToolResult],
     ) -> ToolResult:
+        if context.message.name in self._operations:
+            return await call_next(context)
+
         cancellation = RunCancellation()
+        run_id = uuid4().hex
         call = CallContext(
             subject=self._subjects.current(),
-            scope=Scope.job(uuid4().hex),
+            scope=Scope.job(run_id),
             initiator=HumanInitiator(via="api"),
             credential=NoUserCredential(reason=self.NO_CREDENTIAL),
             cancellation=cancellation,
         )
 
-        with self._runs.open(call):
-            try:
-                return await call_next(context)
-            except asyncio.CancelledError:
-                cancellation.cancel(StopReason.ABORTED)
-                raise
+        signals = ProgressSignals(get_context(), run_id)
+        pumps = StreamPumps(signals)
+        signals.start()
+        try:
+            with (
+                self._runs.open(call) as run,
+                self._journals.following(run, pumps.opened),
+            ):
+                try:
+                    result = await call_next(context)
+                except asyncio.CancelledError:
+                    cancellation.cancel(StopReason.ABORTED)
+                    raise
+        finally:
+            # журналы закрыты вместе с запуском: насосы досылают итог каналов
+            await pumps.close()
+            await signals.close()
+
+        meta = result.meta
+        if meta is None:
+            meta = {}
+
+        return ToolResult(
+            content=result.content,
+            structured_content=result.structured_content,
+            meta=self._wire.stamped(meta, run_id),
+            is_error=result.is_error,
+        )
 
 
 class RunLimits(BaseModel):
@@ -368,12 +567,14 @@ class RunLimitMiddleware(Middleware):
     Создаётся сборкой сервера из пределов (RunLimits) и ставится снаружи
     middleware контекста: ждущий вызов запуска ещё не открыл. Мест нет —
     вызов ждёт; очередь ожидания полна — отказ результатом с isError.
+    Операции сервиса (operations) запусками не считаются и не ждут.
     """
 
     REFUSED: ClassVar[str] = "run_limit"
 
-    def __init__(self, limits: RunLimits) -> None:
+    def __init__(self, limits: RunLimits, operations: frozenset[str]) -> None:
         self._limits = limits
+        self._operations = operations
         self._slots = asyncio.Semaphore(limits.max_runs)
         self._running = 0
         self._waiting = 0
@@ -384,6 +585,9 @@ class RunLimitMiddleware(Middleware):
         context: MiddlewareContext[mt.CallToolRequestParams],
         call_next: CallNext[mt.CallToolRequestParams, ToolResult],
     ) -> ToolResult:
+        if context.message.name in self._operations:
+            return await call_next(context)
+
         if self._running >= self._limits.max_runs:
             if self._waiting >= self._limits.max_waiting:
                 return self._refusal(context.message.name)
@@ -433,20 +637,35 @@ class DagServer:
 
     NAME: ClassVar[str] = "boba-dag"
 
-    def __init__(
+    def __init__(  # noqa: PLR0913 — сервер собирается всеми своими входами
         self,
         registry: ToolRegistry,
         runs: Runs,
+        journals: CallJournals,
         auth: AuthProvider,
         default_profile: str,
         limits: RunLimits,
     ) -> None:
         self._auth = auth
-        self._features = self._features_of(registry)
-        self._limits = RunLimitMiddleware(limits)
         self._subjects = TokenSubjects(default_profile)
-        self._provider = DagToolProvider(RoleToolServers(registry), self._subjects)
-        self._contexts = CallContextMiddleware(runs, self._subjects)
+        operations: list[Tool] = []
+        self._features = self._features_of(registry)
+        if journals.active():
+            stream_read = StreamReadTool(journals, self._subjects)
+            operations.append(stream_read)
+            self._features[JournalFeature.ID.value] = stream_read.feature()
+
+        names: list[str] = []
+        for operation in operations:
+            names.append(operation.name)
+
+        self._limits = RunLimitMiddleware(limits, frozenset(names))
+        self._provider = DagToolProvider(
+            RoleToolServers(registry), self._subjects, operations
+        )
+        self._contexts = CallContextMiddleware(
+            runs, journals, self._subjects, frozenset(names)
+        )
 
     @staticmethod
     def _features_of(registry: ToolRegistry) -> dict[str, dict[str, Any]]:

@@ -19,8 +19,16 @@ import base64
 import json
 import logging
 from abc import abstractmethod
-from collections.abc import AsyncIterator, Iterable, Mapping, Sequence
+from collections.abc import (
+    AsyncIterator,
+    Awaitable,
+    Callable,
+    Iterable,
+    Mapping,
+    Sequence,
+)
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
+from contextvars import ContextVar
 from datetime import timedelta
 from enum import StrEnum
 from typing import Annotated, Any, ClassVar, Literal, Protocol
@@ -38,15 +46,33 @@ from mcp.shared.message import SessionMessage
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, ValidationError
 
 from boba.access import ProfileGrant
-from boba.toolkit.result import ErrorResult, MarkdownResult, ToolResultBase
+from boba.canvas.journal import StreamSlice
+from boba.toolkit.result import (
+    ErrorResult,
+    FailureResult,
+    MarkdownResult,
+    ToolResultBase,
+)
 from boba.toolkit.types import StringList
-from boba.toolkit.wire import ResultWire, WireMeta, WireResult
+from boba.toolkit.wire import (
+    JournalFeature,
+    JournalRead,
+    JournalSignal,
+    ResultWire,
+    WireMeta,
+    WireResult,
+)
 from boba.toolrun.stream_calls import CallReply, ToolServer
 
 __all__ = [
     "BearerAuth",
     "BlockFiles",
+    "CallSignals",
+    "DroppedSignals",
     "HttpEndpoint",
+    "JournalAddress",
+    "JournalAddresses",
+    "JournalListener",
     "McpClientError",
     "McpServerConfig",
     "McpServers",
@@ -357,21 +383,47 @@ class McpConnection:
             raise
 
 
+ToolBody = Callable[..., Awaitable[tuple[str, ToolResultBase]]]
+"""Тело инструмента MCP: аргументы вызова -> текст и модель результата."""
+
+RemoteCall = Callable[
+    [str, Mapping[str, object]], Awaitable[tuple[str, ToolResultBase]]
+]
+"""Вызов сервера: имя инструмента на сервере и аргументы -> итог."""
+
+
+class McpToolBody:
+    """Тело одного инструмента MCP-сервера для langchain.
+
+    Создаётся портом McpToolServer на каждый инструмент списка. langchain
+    зовёт called() с аргументами модели; тело передаёт их вызову сервера
+    вместе с именем инструмента на сервере.
+    """
+
+    def __init__(self, remote: str, call: RemoteCall) -> None:
+        self._remote = remote
+        self._call = call
+
+    async def called(self, **arguments: object) -> tuple[str, ToolResultBase]:
+        return await self._call(self._remote, arguments)
+
+
 class McpToolStubs:
     """Инструменты модели по списку инструментов MCP-сервера.
 
-    Создаётся портом McpToolServer. Инструмент — заглушка со схемой сервера:
-    модель видит имя, описание и аргументы, а исполняет вызов порт, не тело.
+    Создаётся портом McpToolServer. Инструмент несёт имя, описание и схему
+    аргументов сервера; его тело — вызов сервера, который даёт порт. Вызов
+    идёт обычным путём инструмента langchain, поэтому лента клиента получает
+    те же события шага, что и от своих инструментов.
     """
 
-    def __init__(self, server: str, prefix: str) -> None:
-        self._server = server
+    def __init__(self, prefix: str) -> None:
         self._prefix = prefix
 
     def name_of(self, tool: mt.Tool) -> str:
         return f"{self._prefix}{tool.name}"
 
-    def stub(self, tool: mt.Tool) -> BaseTool:
+    def stub(self, tool: mt.Tool, body: ToolBody) -> BaseTool:
         description = tool.description
         if not description:
             description = tool.name
@@ -380,15 +432,9 @@ class McpToolStubs:
             name=self.name_of(tool),
             description=description,
             args_schema=dict(tool.inputSchema),
-            coroutine=self._never_called,
+            coroutine=body,
+            response_format="content_and_artifact",
         )
-
-    async def _never_called(self, **kwargs: object) -> str:
-        msg = (
-            f"a tool of mcp server {self._server!r} is executed by the tool "
-            "server port; its body must not be called"
-        )
-        raise RuntimeError(msg)
 
 
 class BlockFiles(Protocol):
@@ -412,6 +458,103 @@ class NamedBlocks(BlockFiles):
         return f"[{mime}, {len(data)} bytes]"
 
 
+class JournalAddress(BaseModel):
+    """Где лежит журнал вызова: сервер клиента и запуск на нём.
+
+    Клиент кладёт адрес в response_metadata сообщения инструмента: история
+    хранит его вместе с итогом, и журнал читается после конца хода.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    KEY: ClassVar[str] = "boba_journal"
+
+    server: str = Field(min_length=1)
+    run: str = Field(min_length=1)
+
+    def stamp(self, message: ToolMessage) -> None:
+        message.response_metadata[self.KEY] = self.model_dump(mode="json")
+
+
+class JournalAddresses:
+    """Разбор адреса журнала из сообщения инструмента истории. Создаётся
+    тем, кто читает журнал по истории (панель живого вывода чата)."""
+
+    def of(self, message: ToolMessage) -> JournalAddress | None:
+        """Адрес журнала вызова; None — вызов исполнял не сервер с журналом."""
+        stamped = message.response_metadata.get(JournalAddress.KEY)
+        if stamped is None:
+            return None
+
+        return JournalAddress.model_validate(stamped)
+
+
+class LiveCall:
+    """Вызов, чьё тело сейчас исполняется: сам вызов и запуск, которым его
+    исполнил сервер (известен из итога). Создаётся портом на время вызова."""
+
+    def __init__(self, call: ToolCall) -> None:
+        self.call = call
+        self.run = ""
+
+
+class JournalListener(Protocol):
+    """Приёмник сигналов роста журнала одного вызова."""
+
+    @abstractmethod
+    async def appended(self, signal: JournalSignal) -> None:
+        """Канал журнала вызова дорос; зовётся из задачи сессии MCP."""
+
+
+class CallSignals(Protocol):
+    """Куда клиент отдаёт сигналы роста журнала вызовов сервера boba-dag.
+
+    Реализует хозяин клиента: чат по сигналам ведёт панель живого вывода.
+    listener() зовётся в контексте вызова до отправки запроса; сигналы
+    приходят в задаче сессии MCP, где контекста вызова уже нет.
+    """
+
+    @abstractmethod
+    def listener(self, server: str, call: ToolCall) -> JournalListener:
+        """Приёмник сигналов вызова call сервера server."""
+
+
+class DroppedSignals(CallSignals, JournalListener):
+    """Реализация CallSignals без получателя: сигналы не нужны клиенту, у
+    которого нет панели живого вывода; журнал при этом читается окнами."""
+
+    def listener(self, server: str, call: ToolCall) -> JournalListener:
+        return self
+
+    async def appended(self, signal: JournalSignal) -> None:
+        return
+
+
+class CallProgress:
+    """Уведомления notifications/progress одного вызова как сигналы журнала.
+
+    Создаётся портом McpToolServer на вызов сервера, объявившего журнал.
+    Сигнал — модель JournalSignal в поле message; уведомление без неё —
+    обычный прогресс сервера, журнала оно не касается.
+    """
+
+    def __init__(self, listener: JournalListener) -> None:
+        self._listener = listener
+
+    async def __call__(
+        self, progress: float, total: float | None, message: str | None
+    ) -> None:
+        if message is None:
+            return
+
+        try:
+            signal = JournalSignal.model_validate_json(message)
+        except ValidationError:
+            return
+
+        await self._listener.appended(signal)
+
+
 class McpResults:
     """Итог вызова MCP как сообщение инструмента истории.
 
@@ -427,14 +570,16 @@ class McpResults:
         self._wire = ResultWire()
         self._causes = ErrorCauses()
 
-    async def message(self, call: ToolCall, result: mt.CallToolResult) -> ToolMessage:
+    async def parts(
+        self, call: ToolCall, result: mt.CallToolResult
+    ) -> tuple[str, ToolResultBase]:
+        """Текст для модели и модель результата вызова call."""
         text = await self._text(call, result)
-        failed = bool(result.isError)
-        artifact = self._artifact(result, text, failed)
+        artifact = self._artifact(result, text, bool(result.isError))
 
-        return CallReply(call).message(artifact, failed)
+        return artifact.packed()
 
-    def failed(self, call: ToolCall, error: Exception) -> ToolMessage:
+    def failed(self, call: ToolCall, error: Exception) -> tuple[str, ToolResultBase]:
         """Итог вызова, который до сервера не дошёл или остался без ответа."""
         failure = ErrorResult(
             message=(
@@ -444,7 +589,7 @@ class McpResults:
             error_kind=McpFailure.TRANSPORT,
         )
 
-        return CallReply(call).message(failure, True)
+        return failure.packed()
 
     def _artifact(
         self, result: mt.CallToolResult, text: str, failed: bool
@@ -563,15 +708,25 @@ class McpToolServer(ToolServer):
     META_CALL_ID: ClassVar[str] = "boba/tool_call_id"
     """Ключ _meta запроса с идентификатором вызова модели."""
 
-    def __init__(self, name: str, config: McpServerConfig, files: BlockFiles) -> None:
+    def __init__(
+        self,
+        name: str,
+        config: McpServerConfig,
+        files: BlockFiles,
+        signals: CallSignals,
+    ) -> None:
         self._name = name
+        self._signals = signals
         self._config = config
         self._connection = McpConnection(config.endpoint, config.connect_timeout_sec)
-        self._stubs = McpToolStubs(name, config.prefix)
+        self._stubs = McpToolStubs(config.prefix)
+        self._calls: ContextVar[LiveCall] = ContextVar(f"mcp_call_{name}")
+        """Вызов, чьё тело сейчас исполняется: телу нужен его id."""
+        self._wire = ResultWire()
+        self._by_name: dict[str, BaseTool] = {}
+        """Имя инструмента у модели -> инструмент."""
         self._results = McpResults(files)
         self._tools: list[BaseTool] | None = None
-        self._remote: dict[str, str] = {}
-        """Имя инструмента у модели -> имя на сервере."""
         self._features: dict[str, Mapping[str, object]] = {}
 
     async def open(self) -> None:
@@ -591,17 +746,17 @@ class McpToolServer(ToolServer):
             raise McpClientError(msg) from exc
 
         tools: list[BaseTool] = []
-        remote: dict[str, str] = {}
+        remote: dict[str, BaseTool] = {}
         for tool in listed:
             if not self._config.covers(tool.name):
                 continue
 
-            stub = self._stubs.stub(tool)
+            stub = self._stubs.stub(tool, McpToolBody(tool.name, self._body).called)
             tools.append(stub)
-            remote[stub.name] = tool.name
+            remote[stub.name] = stub
 
         self._tools = tools
-        self._remote = remote
+        self._by_name = remote
         logger.info(
             "mcp server %s: %d tools, features %s",
             self._name,
@@ -640,15 +795,49 @@ class McpToolServer(ToolServer):
         return pending
 
     async def _called(self, call: ToolCall) -> ToolMessage:
-        remote = self._remote.get(call["name"], call["name"])
+        """Вызов инструмента обычным путём langchain: его события получает
+        лента клиента. Итог тела — модель результата; сбой — модель отказа."""
+        tool = self._by_name.get(call["name"])
+        if tool is None:
+            failure = ErrorResult(
+                message=f"mcp server {self._name!r} has no tool {call['name']!r}",
+                error_kind=McpFailure.TOOL_ERROR,
+            )
+
+            return CallReply(call).message(failure, True)
+
+        live = LiveCall(call)
+        token = self._calls.set(live)
+        try:
+            message = await tool.ainvoke(call)
+        finally:
+            self._calls.reset(token)
+
+        artifact = message.artifact
+        if not isinstance(artifact, ToolResultBase):
+            artifact = MarkdownResult(text=str(message.content))
+
+        reply = CallReply(call).message(artifact, isinstance(artifact, FailureResult))
+        if live.run:
+            JournalAddress(server=self._name, run=live.run).stamp(reply)
+
+        return reply
+
+    async def _body(
+        self, remote: str, arguments: Mapping[str, object]
+    ) -> tuple[str, ToolResultBase]:
+        """Тело инструмента: запрос tools/call серверу от имени текущего вызова."""
+        live = self._calls.get()
+        call = live.call
         try:
             session, _hello = await self._connection.open()
             result = await session.send_request(
-                mt.ClientRequest(self._request(remote, call)),
+                mt.ClientRequest(self._request(remote, call, arguments)),
                 mt.CallToolResult,
                 request_read_timeout_seconds=timedelta(
                     seconds=self._config.call_timeout_sec
                 ),
+                progress_callback=self._progress(call),
             )
         except asyncio.CancelledError:
             raise
@@ -664,12 +853,68 @@ class McpToolServer(ToolServer):
 
             return self._results.failed(call, exc)
 
-        return await self._results.message(call, result)
+        if result.meta:
+            live.run = self._wire.run_of(result.meta)
 
-    def _request(self, remote: str, call: ToolCall) -> mt.CallToolRequest:
+        return await self._results.parts(call, result)
+
+    def _progress(self, call: ToolCall) -> CallProgress | None:
+        """Приёмник прогресса вызова; None — сервер журнал не объявлял, и
+        токен прогресса ему не шлётся."""
+        if JournalFeature.ID.value not in self._features:
+            return None
+
+        return CallProgress(self._signals.listener(self._name, call))
+
+    async def journal(self, request: JournalRead) -> StreamSlice | None:
+        """Окно журнала вызова с сервера; None — сервер журнал не объявлял
+        либо такого журнала у него нет.
+
+        Ошибки:
+        McpClientError — сервер недоступен или ответил не окном журнала.
+        """
+        feature = self._features.get(JournalFeature.ID.value)
+        if feature is None:
+            return None
+
+        tool = str(feature.get(JournalFeature.READ.value))
+        arguments = request.model_dump(mode="json", exclude_none=True)
+        try:
+            session, _hello = await self._connection.open()
+            result = await session.call_tool(
+                tool,
+                arguments,
+                read_timeout_seconds=timedelta(seconds=self._config.call_timeout_sec),
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            msg = (
+                f"mcp server {self._name!r}: reading the journal of call "
+                f"{request.node!r} in run {request.run!r} with {tool!r} failed: "
+                f"{type(exc).__name__}: {exc}"
+            )
+            raise McpClientError(msg) from exc
+
+        if result.isError:
+            return None
+
+        try:
+            return StreamSlice.model_validate(result.structuredContent)
+        except ValidationError as exc:
+            msg = (
+                f"mcp server {self._name!r}: {tool!r} answered call "
+                f"{request.node!r} of run {request.run!r} with something other "
+                f"than a journal window: {exc}"
+            )
+            raise McpClientError(msg) from exc
+
+    def _request(
+        self, remote: str, call: ToolCall, sent: Mapping[str, object]
+    ) -> mt.CallToolRequest:
         """Запрос tools/call. Серверу, объявившему возможности boba, в _meta
         едет идентификатор вызова модели: его журнал и итог несут тот же id."""
-        arguments = dict(call["args"])
+        arguments = dict(sent)
         call_id = call["id"]
         if not self._features or not call_id:
             params = mt.CallToolRequestParams(name=remote, arguments=arguments)
@@ -721,11 +966,42 @@ class McpServers:
     отдаёт порты серверов, доступных ролям и профилю сессии.
     """
 
-    def __init__(self, config: McpServersConfig, files: BlockFiles) -> None:
+    def __init__(
+        self, config: McpServersConfig, files: BlockFiles, signals: CallSignals
+    ) -> None:
         self._configs = dict(config.servers)
         self._servers: dict[str, McpToolServer] = {}
         for name, server in config.servers.items():
-            self._servers[name] = McpToolServer(name, server, files)
+            self._servers[name] = McpToolServer(name, server, files, signals)
+
+    async def journal(self, server: str, request: JournalRead) -> StreamSlice | None:
+        """Окно журнала вызова с сервера server; None — такого сервера или
+        журнала нет.
+
+        Ошибки:
+        McpClientError — сервер недоступен или ответил не окном журнала.
+        """
+        port = self._servers.get(server)
+        if port is None:
+            return None
+
+        return await port.journal(request)
+
+    def journaled(self) -> frozenset[str]:
+        """Имена инструментов подключённых серверов, которые ведут журнал
+        вызовов: у их шагов есть живой вывод."""
+        names: set[str] = set()
+        for server in self._servers.values():
+            if not server.opened:
+                continue
+
+            if JournalFeature.ID.value not in server.features():
+                continue
+
+            for tool in server.tools():
+                names.add(tool.name)
+
+        return frozenset(names)
 
     async def start(self) -> None:
         for name, config in self._configs.items():

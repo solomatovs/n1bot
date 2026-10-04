@@ -27,6 +27,7 @@ from boba.chainlit.agent.flow import (
     PrefetchGraphBuilder,
     Rephraser,
 )
+from boba.chainlit.canvas.remote import RemoteJournals, RemoteStreams
 from boba.chainlit.chat.history import CheckpointMessages, TranscriptFeed
 from boba.chainlit.chat.tracing import TracedStage
 from boba.chainlit.data import PostgresDataLayer
@@ -378,21 +379,39 @@ def sent_connections() -> SentConnections:
     return SentConnections()
 
 
+def remote_journals(
+    contexts: Annotated[CallContexts, Depends(runtime.call_contexts)],
+    saver: Annotated[BaseCheckpointSaver, Depends(langchain_checkpoint_saver)],
+) -> RemoteJournals:
+    """Реестр журналов вызовов, исполненных MCP-серверами, на процесс."""
+    return RemoteJournals(contexts, CheckpointMessages(saver))
+
+
 async def mcp_servers(
     c: Annotated[AppConfig, Depends(get_app_config)],
     storage: Annotated[StorageClient, Depends(storage_provider)],
     contexts: Annotated[CallContexts, Depends(runtime.call_contexts)],
     runs: Annotated[Runs, Depends(runtime.runs)],
+    journals: Annotated[RemoteJournals, Depends(remote_journals)],
 ) -> AsyncIterator[McpServers]:
     """MCP-серверы процесса: подключаются на старте, закрываются на остановке.
-    Файлы из их результатов ложатся в workspace треда вложениями чата."""
+    Файлы из их результатов ложатся в workspace треда вложениями чата,
+    сигналы роста журналов вызовов уходят реестру журналов."""
     files = ChatAttachments(contexts, storage, ChatMount(contexts, runs))
-    servers = McpServers(c.mcp, files)
+    servers = McpServers(c.mcp, files, journals)
     await servers.start()
     try:
         yield servers
     finally:
         await servers.stop()
+
+
+def remote_streams(
+    journals: Annotated[RemoteJournals, Depends(remote_journals)],
+    servers: Annotated[McpServers, Depends(mcp_servers)],
+) -> RemoteStreams:
+    """Чтение журналов вызовов MCP-серверов для панели живого вывода."""
+    return RemoteStreams(journals, servers)
 
 
 async def langchain_agent(  # noqa: PLR0913
@@ -410,11 +429,13 @@ async def langchain_agent(  # noqa: PLR0913
     sent: Annotated[SentConnections, Depends(sent_connections)],
     contexts: Annotated[CallContexts, Depends(runtime.call_contexts)],
     mcp: Annotated[McpServers, Depends(mcp_servers)],
+    journals: Annotated[CallJournals, Depends(runtime.call_journals)],
     selected: Annotated[SelectedProfile, Depends(session_profile, scope="session")],
 ) -> CompiledStateGraph:
     # один порт для графа: свои серверы и MCP-серверы, доступные сессии.
     # Соединения запечатываются на каждом сервере его собственным ключом
     remote = await mcp.for_session(current_session().roles, selected.name)
+    journals.mark_streamable(mcp.journaled())
     connections = ArmedConnections(
         runtime.connection_store_ref, runtime.credential_source_ref, contexts
     )
