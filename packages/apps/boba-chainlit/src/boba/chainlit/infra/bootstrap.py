@@ -185,7 +185,6 @@ def _use_chainlit_middleware(app: FastAPI, config: ChainlitExtendConfig):
 
 def _use_file_serving(c: AppConfig) -> None:
     from boba.chainlit.data.data_layer import PostgresDataLayer  # noqa: PLC0415
-    from boba.chainlit.data.storage import StorageFactory  # noqa: PLC0415
     from boba.chainlit.data.upload import (  # noqa: PLC0415
         AttachmentServing,
         CanvasServing,
@@ -197,6 +196,7 @@ def _use_file_serving(c: AppConfig) -> None:
         CanvasFileUrl,
     )
     from boba.identity.errors import InternalServiceError  # noqa: PLC0415
+    from boba.runtime.storage import StorageFactory  # noqa: PLC0415
     from chainlit.data import get_data_layer  # noqa: PLC0415
     from chainlit.server import app as chainlit_app  # noqa: PLC0415
 

@@ -25,6 +25,7 @@ from boba.toolkit.result import FailureResult, ToolArtifact, ToolResultBase
 
 __all__ = [
     "CallStatus",
+    "FilesFeature",
     "JournalFeature",
     "JournalRead",
     "JournalSignal",
@@ -67,6 +68,19 @@ class JournalFeature(StrEnum):
 
     ID = "com.boba/journal"
     READ = "read"
+
+
+class FilesFeature(StrEnum):
+    """Расширение сервера «файлы workspace»: идентификатор и ключи настроек.
+
+    PATH — путь маршрута файлов на сервере: файл области лежит на
+    `{PATH}/{scope}/{dir}/{name}` (PUT — запись потоком, GET — чтение с
+    Range, HEAD — размер и версия, DELETE — удаление). UPLOAD — имя
+    инструмента, которым модель узнаёт адрес загрузки файла."""
+
+    ID = "com.boba/files"
+    PATH = "path"
+    UPLOAD = "upload"
 
 
 class JournalRead(BaseModel):

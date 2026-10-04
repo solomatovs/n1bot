@@ -36,24 +36,34 @@ from collections.abc import (
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
-from datetime import timedelta
 from enum import StrEnum
 from typing import Annotated, Any, ClassVar, Literal, Protocol
+from urllib.parse import quote
 
-import httpx
+import httpx2
 import mcp.types as mt
-from anyio.streams.memory import MemoryObjectReceiveStream, MemoryObjectSendStream
 from langchain_core.messages import ToolCall, ToolMessage
 from langchain_core.tools import BaseTool, StructuredTool
-from mcp import ClientSession, StdioServerParameters
+from mcp import Client, ClientSession, StdioServerParameters
+from mcp.client.extension import ClientExtension, advertise
 from mcp.client.sse import sse_client
 from mcp.client.stdio import stdio_client
-from mcp.client.streamable_http import streamablehttp_client
+from mcp.client.streamable_http import streamable_http_client
+from mcp.shared._httpx_utils import create_mcp_http_client
+from mcp.shared._stream_protocols import ReadStream, WriteStream
 from mcp.shared.message import SessionMessage
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, ValidationError
 
 from boba.auth.proxy import ProxySignature
 from boba.canvas.journal import StreamSlice
+from boba.canvas.keys import ObjectKey
+from boba.canvas.storage import (
+    FileStat,
+    OpenedStream,
+    StorageError,
+    StorageFullError,
+    StorageNotFoundError,
+)
 from boba.identity.context import CallContexts
 from boba.identity.signin import ProxyHeaderNames, ProxyRequest
 from boba.toolkit.result import (
@@ -63,6 +73,7 @@ from boba.toolkit.result import (
     ToolResultBase,
 )
 from boba.toolkit.wire import (
+    FilesFeature,
     JournalFeature,
     JournalRead,
     JournalSignal,
@@ -72,6 +83,7 @@ from boba.toolkit.wire import (
     WireResult,
 )
 from boba.toolrun.stream_calls import CallReply, ToolServer
+from boba.workspace.launcher import ReadWindow
 
 __all__ = [
     "BearerAuth",
@@ -98,10 +110,7 @@ __all__ = [
 
 logger = logging.getLogger(__name__)
 
-Streams = tuple[
-    MemoryObjectReceiveStream[SessionMessage | Exception],
-    MemoryObjectSendStream[SessionMessage],
-]
+Streams = tuple[ReadStream[SessionMessage | Exception], WriteStream[SessionMessage]]
 """Пара потоков сообщений транспорта MCP: чтение и запись."""
 
 
@@ -145,7 +154,7 @@ class HttpLocation(BaseModel):
 
     def url(self) -> str:
         return str(
-            httpx.URL(
+            httpx2.URL(
                 scheme=self.scheme, host=self.host, port=self.port, path=self.path
             )
         )
@@ -160,17 +169,17 @@ class NoAuth(BaseModel):
 
     auth: Literal["none"] = "none"
 
-    def httpx_auth(self, caller: McpCaller | None, resource: str) -> httpx.Auth | None:
+    def httpx_auth(self, caller: McpCaller | None, resource: str) -> httpx2.Auth | None:
         return None
 
 
-class BearerToken(httpx.Auth):
+class BearerToken(httpx2.Auth):
     """Готовый токен заголовком Authorization каждого запроса."""
 
     def __init__(self, token: SecretStr) -> None:
         self._token = token
 
-    def auth_flow(self, request: httpx.Request) -> Any:
+    def auth_flow(self, request: httpx2.Request) -> Any:
         request.headers["Authorization"] = f"Bearer {self._token.get_secret_value()}"
         yield request
 
@@ -185,7 +194,7 @@ class BearerAuth(BaseModel):
     auth: Literal["bearer"] = "bearer"
     token: SecretStr
 
-    def httpx_auth(self, caller: McpCaller | None, resource: str) -> httpx.Auth | None:
+    def httpx_auth(self, caller: McpCaller | None, resource: str) -> httpx2.Auth | None:
         return BearerToken(self.token)
 
 
@@ -209,7 +218,7 @@ class ProxyAuth(BaseModel):
     sign_in: HttpLocation
     headers: ProxyHeaderNames
 
-    def httpx_auth(self, caller: McpCaller | None, resource: str) -> httpx.Auth | None:
+    def httpx_auth(self, caller: McpCaller | None, resource: str) -> httpx2.Auth | None:
         if caller is None:
             msg = (
                 f"mcp auth proxy for {resource}: the connection is opened "
@@ -220,7 +229,7 @@ class ProxyAuth(BaseModel):
         return ProxySession(self, caller)
 
 
-class ProxySession(httpx.Auth):
+class ProxySession(httpx2.Auth):
     """Токен сервера для одного пользователя по входу proxy.
 
     Создаётся ProxyAuth на подключение пользователя. Перед запросом без
@@ -241,8 +250,8 @@ class ProxySession(httpx.Auth):
         self._lock = asyncio.Lock()
 
     async def async_auth_flow(
-        self, request: httpx.Request
-    ) -> AsyncGenerator[httpx.Request, httpx.Response]:
+        self, request: httpx2.Request
+    ) -> AsyncGenerator[httpx2.Request, httpx2.Response]:
         async with self._lock:
             if time.monotonic() >= self._expires:
                 response = yield self._sign_in_request()
@@ -251,7 +260,7 @@ class ProxySession(httpx.Auth):
 
         request.headers["Authorization"] = f"Bearer {self._token}"
         response = yield request
-        if response.status_code != httpx.codes.UNAUTHORIZED:
+        if response.status_code != httpx2.codes.UNAUTHORIZED:
             return
 
         async with self._lock:
@@ -262,7 +271,7 @@ class ProxySession(httpx.Auth):
         request.headers["Authorization"] = f"Bearer {self._token}"
         yield request
 
-    def _sign_in_request(self) -> httpx.Request:
+    def _sign_in_request(self) -> httpx2.Request:
         names = self._config.headers
         roles = ",".join(sorted(self._caller.roles))
         unsigned = ProxyRequest(
@@ -276,11 +285,11 @@ class ProxySession(httpx.Auth):
         if names.roles:
             headers[names.roles] = roles
 
-        return httpx.Request("POST", self._config.sign_in.url(), headers=headers)
+        return httpx2.Request("POST", self._config.sign_in.url(), headers=headers)
 
-    def _take(self, response: httpx.Response) -> None:
+    def _take(self, response: httpx2.Response) -> None:
         url = self._config.sign_in.url()
-        if response.status_code != httpx.codes.OK:
+        if response.status_code != httpx2.codes.OK:
             msg = (
                 f"POST {url}: proxy sign-in of {self._caller.login!r} with roles "
                 f"{sorted(self._caller.roles)} expected 200, got "
@@ -326,6 +335,41 @@ class Transport(Protocol):
         """Адрес сервера для сообщений об ошибках и логов."""
 
 
+class HttpRefusals:
+    """Отказы HTTP одного подключения к серверу.
+
+    Создаётся транспортом HttpEndpoint на каждое открытие и ставится
+    наблюдателем ответов его HTTP-клиента. Библиотека mcp заменяет ответ с
+    отказом (401, 403, 502) безликой ошибкой протокола; по последнему
+    отказу запроса POST транспорт возвращает в текст ошибки адрес и статус.
+    Отказ на GET не считается: им сервер без потока уведомлений отвечает
+    исправной сессии.
+    """
+
+    FIRST_REFUSAL: ClassVar[int] = 400
+    REQUEST: ClassVar[str] = "POST"
+
+    def __init__(self) -> None:
+        self._last: str | None = None
+
+    async def seen(self, response: httpx2.Response) -> None:
+        request = response.request
+        if request.method != self.REQUEST:
+            return
+
+        if response.status_code < self.FIRST_REFUSAL:
+            self._last = None
+            return
+
+        self._last = (
+            f"{request.method} {request.url}: expected a reply of the MCP server, "
+            f"got HTTP {response.status_code} {response.reason_phrase}"
+        )
+
+    def last(self) -> str | None:
+        return self._last
+
+
 class HttpAddress(HttpLocation):
     """Адрес HTTP-сервера MCP: место и способ авторизации."""
 
@@ -348,9 +392,18 @@ class HttpEndpoint(HttpAddress):
     @asynccontextmanager
     async def opened(self, caller: McpCaller | None) -> AsyncIterator[Streams]:
         auth = self.auth.httpx_auth(caller, self.url())
-        client = streamablehttp_client(self.url(), auth=auth)
-        async with client as (read, write, _session_id):
-            yield read, write
+        refusals = HttpRefusals()
+        async with create_mcp_http_client(auth=auth) as http:
+            http.event_hooks["response"].append(refusals.seen)
+            async with streamable_http_client(self.url(), http_client=http) as streams:
+                try:
+                    yield streams
+                except Exception as exc:
+                    refused = refusals.last()
+                    if refused is None:
+                        raise
+
+                    raise McpClientError(refused) from exc
 
 
 class SseEndpoint(HttpAddress):
@@ -462,6 +515,12 @@ class McpConnection:
         name="boba-chat", version="1"
     )
 
+    EXTENSIONS: ClassVar[Sequence[ClientExtension]] = (
+        advertise(JournalFeature.ID.value),
+    )
+    """Расширения, которые клиент объявляет серверу: журнал вызовов он
+    читает окнами и слушает сигналы его роста."""
+
     def __init__(
         self,
         transport: Transport,
@@ -474,12 +533,11 @@ class McpConnection:
         self._causes = ErrorCauses()
         self._task: asyncio.Task[None] | None = None
         self._stop = asyncio.Event()
-        self._ready: asyncio.Future[tuple[ClientSession, mt.InitializeResult]] | None
-        self._ready = None
+        self._ready: asyncio.Future[ClientSession] | None = None
 
-    async def open(self) -> tuple[ClientSession, mt.InitializeResult]:
-        """Сессия и ответ сервера на инициализацию; повторный вызов отдаёт
-        уже открытую."""
+    async def open(self) -> ClientSession:
+        """Сессия с согласованным протоколом; повторный вызов отдаёт уже
+        открытую."""
         if self._ready is None:
             self._stop = asyncio.Event()
             self._ready = asyncio.get_running_loop().create_future()
@@ -494,8 +552,8 @@ class McpConnection:
         except TimeoutError as exc:
             await self.close()
             msg = (
-                f"mcp {self._transport.label()}: no answer to initialize within "
-                f"{self._connect_timeout_sec}s"
+                f"mcp {self._transport.label()}: the protocol was not negotiated "
+                f"within {self._connect_timeout_sec}s"
             )
             raise McpClientError(msg) from exc
         except McpClientError:
@@ -521,17 +579,20 @@ class McpConnection:
                 exc,
             )
 
-    async def _serve(
-        self, ready: asyncio.Future[tuple[ClientSession, mt.InitializeResult]]
-    ) -> None:
+    async def _serve(self, ready: asyncio.Future[ClientSession]) -> None:
+        """Сессия живёт в этой задаче. Протокол согласует библиотека: сервер
+        новой спецификации отвечает на server/discover, прежний — на
+        initialize."""
         stop = self._stop
         try:
-            async with (
-                self._transport.opened(self._caller) as (read, write),
-                ClientSession(read, write, client_info=self.CLIENT) as session,
-            ):
-                hello = await session.initialize()
-                ready.set_result((session, hello))
+            client = Client(
+                self._transport.opened(self._caller),
+                client_info=self.CLIENT,
+                extensions=self.EXTENSIONS,
+                cache=None,
+            )
+            async with client:
+                ready.set_result(client.session)
                 await stop.wait()
         except Exception as exc:
             if not ready.done():
@@ -543,6 +604,173 @@ class McpConnection:
                 return
 
             raise
+
+
+class McpFiles:
+    """Файлы workspace пользователя на сервере boba-mcp.
+
+    Создаётся портом McpToolServer, когда сервер объявил расширение
+    FilesFeature, из адреса сервера, пути маршрута файлов и пользователя,
+    чьим именем идёт подключение. Байты идут потоком в обе стороны: запись
+    шлёт чанки источника телом PUT, чтение отдаёт чанки ответа GET окном
+    Range. Владельца workspace сервер берёт из токена входа, поэтому из
+    ключа файла на сервер уходят только область, каталог и имя.
+
+    Ошибки те же, что у хранилища: StorageNotFoundError — файла нет,
+    StorageFullError — в workspace нет места, StorageError — прочий отказ.
+    """
+
+    NOT_FOUND: ClassVar[int] = 404
+    BAD_RANGE: ClassVar[int] = 416
+    NO_SPACE: ClassVar[int] = 507
+    FIRST_REFUSAL: ClassVar[int] = 400
+    CHUNK_BYTES: ClassVar[int] = 1024 * 1024
+
+    def __init__(
+        self, server: str, endpoint: HttpAddress, caller: McpCaller | None, path: str
+    ) -> None:
+        self._server = server
+        self._root = HttpLocation(
+            scheme=endpoint.scheme, host=endpoint.host, port=endpoint.port, path=path
+        )
+        auth = endpoint.auth.httpx_auth(caller, endpoint.url())
+        self._http = create_mcp_http_client(auth=auth)
+
+    async def close(self) -> None:
+        await self._http.aclose()
+
+    async def upload(self, key: ObjectKey, source: AsyncIterator[bytes]) -> int:
+        """Пишет файл потоком; возвращает число принятых сервером байт."""
+        url = self._url(key)
+        reply = await self._http.put(url, content=source)
+        self._check("PUT", url, reply)
+        try:
+            return FileStored.model_validate(reply.json()).size
+        except (ValidationError, ValueError) as exc:
+            msg = (
+                f"PUT {url}: expected the stored file as JSON with path and size, "
+                f"got {reply.text[:200]!r}: {exc}"
+            )
+            raise StorageError(msg) from exc
+
+    async def stat(self, key: ObjectKey) -> FileStat:
+        url = self._url(key)
+        reply = await self._http.head(url)
+        self._check("HEAD", url, reply)
+
+        return FileStat(size=self._length(url, reply), revision=self._revision(reply))
+
+    async def open(self, key: ObjectKey, window: ReadWindow) -> OpenedStream:
+        """Открывает файл на чтение окном: размер известен до первого байта."""
+        url = self._url(key)
+        request = self._http.build_request("GET", url, headers=self._range(window))
+        reply = await self._http.send(request, stream=True)
+        if reply.status_code == self.BAD_RANGE:
+            size = self._total(url, reply)
+            await reply.aclose()
+
+            return OpenedStream(
+                stat=FileStat(size=size), chunks=self._nothing(), release=self._idle
+            )
+
+        if reply.status_code >= self.FIRST_REFUSAL:
+            await reply.aread()
+            await reply.aclose()
+            self._check("GET", url, reply)
+
+        stat = FileStat(size=self._total(url, reply))
+
+        return OpenedStream(stat=stat, chunks=self._chunks(reply), release=reply.aclose)
+
+    async def delete(self, key: ObjectKey) -> bool:
+        url = self._url(key)
+        reply = await self._http.delete(url)
+        if reply.status_code == self.NOT_FOUND:
+            return False
+
+        self._check("DELETE", url, reply)
+
+        return True
+
+    def _url(self, key: ObjectKey) -> str:
+        return "/".join((self._root.url(), quote(key.in_thread())))
+
+    def _check(self, method: str, url: str, reply: httpx2.Response) -> None:
+        if reply.status_code < self.FIRST_REFUSAL:
+            return
+
+        text = (
+            f"{method} {url} of mcp server {self._server!r}: got HTTP "
+            f"{reply.status_code}: {reply.text[:200]}"
+        )
+        if reply.status_code == self.NOT_FOUND:
+            raise StorageNotFoundError(text)
+
+        if reply.status_code == self.NO_SPACE:
+            raise StorageFullError(text)
+
+        raise StorageError(text)
+
+    @staticmethod
+    def _range(window: ReadWindow) -> dict[str, str]:
+        if window.length is None:
+            if window.offset == 0:
+                return {}
+
+            return {"Range": f"bytes={window.offset}-"}
+
+        last = window.offset + max(window.length, 1) - 1
+
+        return {"Range": f"bytes={window.offset}-{last}"}
+
+    def _length(self, url: str, reply: httpx2.Response) -> int:
+        declared = reply.headers.get("content-length", "")
+        if not declared.isdigit():
+            msg = f"{url}: expected Content-Length as a number, got {declared!r}"
+            raise StorageError(msg)
+
+        return int(declared)
+
+    def _total(self, url: str, reply: httpx2.Response) -> int:
+        """Полный размер файла: из Content-Range окна, иначе длина тела."""
+        ranged = reply.headers.get("content-range", "")
+        _span, slash, total = ranged.rpartition("/")
+        if slash and total.isdigit():
+            return int(total)
+
+        return self._length(url, reply)
+
+    @staticmethod
+    def _revision(reply: httpx2.Response) -> int:
+        tag = reply.headers.get("etag", "").strip('"')
+        if not tag.isdigit():
+            return 0
+
+        return int(tag)
+
+    async def _chunks(self, reply: httpx2.Response) -> AsyncGenerator[bytes, None]:
+        async for chunk in reply.aiter_bytes(self.CHUNK_BYTES):
+            yield chunk
+
+    @staticmethod
+    async def _nothing() -> AsyncGenerator[bytes, None]:
+        """Тело окна за концом файла: чанков нет."""
+        empty: tuple[bytes, ...] = ()
+        for chunk in empty:
+            yield chunk
+
+    @staticmethod
+    async def _idle() -> None:
+        return
+
+
+class FileStored(BaseModel):
+    """Ответ сервера на запись файла: путь в workspace и принятый размер."""
+
+    model_config = ConfigDict(frozen=True, extra="ignore")
+
+    path: str
+    size: int = Field(ge=0)
 
 
 ToolBody = Callable[..., Awaitable[tuple[str, ToolResultBase]]]
@@ -593,7 +821,7 @@ class McpToolStubs:
         return StructuredTool(
             name=self.name_of(tool),
             description=description,
-            args_schema=dict(tool.inputSchema),
+            args_schema=dict(tool.input_schema),
             coroutine=body,
             response_format="content_and_artifact",
         )
@@ -737,7 +965,7 @@ class McpResults:
     ) -> tuple[str, ToolResultBase]:
         """Текст для модели и модель результата вызова call."""
         text = await self._text(call, result)
-        artifact = self._artifact(result, text, bool(result.isError))
+        artifact = self._artifact(result, text, bool(result.is_error))
 
         return artifact.packed()
 
@@ -783,7 +1011,7 @@ class McpResults:
 
         wire = WireResult(
             content=text,
-            structured=result.structuredContent,
+            structured=result.structured_content,
             is_error=failed,
             meta=meta,
         )
@@ -814,8 +1042,8 @@ class McpResults:
         if text:
             return text
 
-        if result.structuredContent is not None:
-            return json.dumps(result.structuredContent, ensure_ascii=False, indent=2)
+        if result.structured_content is not None:
+            return json.dumps(result.structured_content, ensure_ascii=False, indent=2)
 
         return ""
 
@@ -823,7 +1051,7 @@ class McpResults:
     def _payload(block: mt.ContentBlock) -> tuple[str, bytes] | None:
         """Тип и байты блока-файла; None — блок текстовый или ссылка."""
         if isinstance(block, mt.ImageContent | mt.AudioContent):
-            return block.mimeType, base64.b64decode(block.data)
+            return block.mime_type, base64.b64decode(block.data)
 
         if not isinstance(block, mt.EmbeddedResource):
             return None
@@ -832,7 +1060,7 @@ class McpResults:
         if not isinstance(resource, mt.BlobResourceContents):
             return None
 
-        mime = resource.mimeType
+        mime = resource.mime_type
         if not mime:
             mime = "application/octet-stream"
 
@@ -893,13 +1121,15 @@ class McpToolServer(ToolServer):
         self._results = McpResults(files)
         self._tools: list[BaseTool] | None = None
         self._features: dict[str, Mapping[str, object]] = {}
+        self._caller = caller
+        self._files: McpFiles | None = None
 
     async def open(self) -> None:
         """Ошибки:
         McpClientError — сервер недоступен или не отдал список инструментов.
         """
-        session, hello = await self._connection.open()
-        self._features = self._declared(hello)
+        session = await self._connection.open()
+        self._features = self._declared(session)
 
         try:
             listed = await self._list(session)
@@ -910,15 +1140,20 @@ class McpToolServer(ToolServer):
             )
             raise McpClientError(msg) from exc
 
+        client_side = self._client_side()
         tools: list[BaseTool] = []
         remote: dict[str, BaseTool] = {}
         for tool in listed:
+            if tool.name in client_side:
+                continue
+
             stub = self._stubs.stub(tool, McpToolBody(tool.name, self._body).called)
             tools.append(stub)
             remote[stub.name] = stub
 
         self._tools = tools
         self._by_name = remote
+        await self._open_files()
         logger.info(
             "mcp server %s: %d tools, features %s",
             self._name,
@@ -926,7 +1161,53 @@ class McpToolServer(ToolServer):
             sorted(self._features),
         )
 
+    def files(self) -> McpFiles | None:
+        """Файлы workspace на сервере; None — сервер их не объявил."""
+        return self._files
+
+    async def _open_files(self) -> None:
+        """Клиент файлов по расширению FilesFeature; прежний закрывается."""
+        if self._files is not None:
+            await self._files.close()
+            self._files = None
+
+        declared = self._features.get(FilesFeature.ID.value)
+        if declared is None:
+            return
+
+        endpoint = self._config.endpoint
+        if not isinstance(endpoint, HttpAddress):
+            return
+
+        path = declared.get(FilesFeature.PATH.value)
+        if not isinstance(path, str):
+            msg = (
+                f"mcp server {self._name!r}: extension {FilesFeature.ID.value} "
+                f"expects {FilesFeature.PATH.value} as a string, got {path!r}"
+            )
+            raise McpClientError(msg)
+
+        self._files = McpFiles(self._name, endpoint, self._caller, path)
+
+    def _client_side(self) -> frozenset[str]:
+        """Инструменты сервера, которые исполняет сам клиент, а не модель:
+        загрузку файла клиент шлёт потоком на маршрут файлов сервера, модели
+        адрес загрузки не нужен."""
+        files = self._features.get(FilesFeature.ID.value)
+        if files is None:
+            return frozenset()
+
+        upload = files.get(FilesFeature.UPLOAD.value)
+        if not isinstance(upload, str):
+            return frozenset()
+
+        return frozenset({upload})
+
     async def close(self) -> None:
+        if self._files is not None:
+            await self._files.close()
+            self._files = None
+
         await self._connection.close()
 
     @property
@@ -992,13 +1273,11 @@ class McpToolServer(ToolServer):
         live = self._calls.get()
         call = live.call
         try:
-            session, _hello = await self._connection.open()
+            session = await self._connection.open()
             result = await session.send_request(
-                mt.ClientRequest(self._request(remote, call, arguments)),
+                self._request(remote, call, arguments),
                 mt.CallToolResult,
-                request_read_timeout_seconds=timedelta(
-                    seconds=self._config.call_timeout_sec
-                ),
+                request_read_timeout_seconds=self._config.call_timeout_sec,
                 progress_callback=self._progress(call),
             )
         except asyncio.CancelledError:
@@ -1042,11 +1321,11 @@ class McpToolServer(ToolServer):
         tool = str(feature.get(JournalFeature.READ.value))
         arguments = request.model_dump(mode="json", exclude_none=True)
         try:
-            session, _hello = await self._connection.open()
+            session = await self._connection.open()
             result = await session.call_tool(
                 tool,
                 arguments,
-                read_timeout_seconds=timedelta(seconds=self._config.call_timeout_sec),
+                read_timeout_seconds=self._config.call_timeout_sec,
             )
         except asyncio.CancelledError:
             raise
@@ -1058,11 +1337,11 @@ class McpToolServer(ToolServer):
             )
             raise McpClientError(msg) from exc
 
-        if result.isError:
+        if result.is_error:
             return None
 
         try:
-            return StreamSlice.model_validate(result.structuredContent)
+            return StreamSlice.model_validate(result.structured_content)
         except ValidationError as exc:
             msg = (
                 f"mcp server {self._name!r}: {tool!r} answered call "
@@ -1087,14 +1366,14 @@ class McpToolServer(ToolServer):
         params = mt.CallToolRequestParams(
             name=remote,
             arguments=arguments,
-            _meta=mt.RequestParams.Meta.model_validate(meta),
+            _meta=meta,
         )
 
         return mt.CallToolRequest(method="tools/call", params=params)
 
-    def _meta(self, call: ToolCall) -> dict[str, str]:
+    def _meta(self, call: ToolCall) -> mt.RequestParamsMeta:
         """Служебные поля запроса; стороннему серверу они не уходят."""
-        meta: dict[str, str] = {}
+        meta: mt.RequestParamsMeta = {}
         if not self._features:
             return meta
 
@@ -1112,20 +1391,26 @@ class McpToolServer(ToolServer):
         listed: list[mt.Tool] = []
         cursor: str | None = None
         while True:
-            page = await session.list_tools(cursor=cursor)
+            page = await session.list_tools(
+                params=mt.PaginatedRequestParams(cursor=cursor)
+            )
             listed.extend(page.tools)
-            cursor = page.nextCursor
+            cursor = page.next_cursor
             if not cursor:
                 return listed
 
-    def _declared(self, hello: mt.InitializeResult) -> dict[str, Mapping[str, object]]:
-        """Возможности boba среди экспериментальных возможностей сервера."""
-        experimental = hello.capabilities.experimental
-        if not experimental:
+    def _declared(self, session: ClientSession) -> dict[str, Mapping[str, object]]:
+        """Расширения boba среди расширений, объявленных сервером."""
+        capabilities = session.server_capabilities
+        if capabilities is None:
+            return {}
+
+        extensions = capabilities.extensions
+        if not extensions:
             return {}
 
         declared: dict[str, Mapping[str, object]] = {}
-        for feature, settings in experimental.items():
+        for feature, settings in extensions.items():
             if not feature.startswith(self.FEATURE_PREFIX):
                 continue
 

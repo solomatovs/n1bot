@@ -13,9 +13,9 @@ dependencies = [
     "boba-auth==0.0.26.dev4",
     "boba-identity==0.0.26.dev4",
     "boba-toolrun==0.0.26.dev4",
-    "mcp>=1.12,<2",
-    "httpx>=0.28,<1",
-    "anyio>=4",
+    "boba-sandbox==0.0.26.dev4",
+    "mcp>=2.3,<3",
+    "httpx2>=2.10,<3",
     "pydantic>=2.10,<3",
     "langchain-core>=1.4,<1.5",
 ]
@@ -27,6 +27,7 @@ dev = [
     "boba-runtime==0.0.26.dev4",
     "boba-config==0.0.26.dev4",
     "boba-stand-core==0.0.26.dev4",
+    "httpx>=0.28,<1",
     "pytest>=8",
 ]
 

@@ -34,7 +34,7 @@ dependencies = [
     "chainlit==2.11.1",
     "fastapi[standard]",
     "uvicorn[standard]",
-    "pydantic>=2.10,<2.11",
+    "pydantic>=2.12,<3",
     "langchain[openai]",
     "langchain-core>=1.4,<1.5",
     "langgraph",

@@ -23,14 +23,14 @@ import asyncio
 import logging
 from collections.abc import AsyncIterator, Mapping, Sequence
 from contextlib import AsyncExitStack, asynccontextmanager
-from enum import StrEnum
 from typing import Any, ClassVar
-from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
+from uuid import uuid4
 
 import mcp_types as mt
 from fastmcp import Context, FastMCP
-from fastmcp.server.auth import AccessToken, AuthProvider, TokenVerifier
-from fastmcp.server.dependencies import get_access_token, get_context
+from fastmcp.server.auth import TokenVerifier
+from fastmcp.server.dependencies import get_context
+from fastmcp.server.extensions import ServerExtension
 from fastmcp.server.http import StarletteWithLifespan
 from fastmcp.server.middleware import CallNext, Middleware, MiddlewareContext
 from fastmcp.server.providers import Provider
@@ -55,19 +55,26 @@ from boba.identity.context import (
     CallContext,
     HumanInitiator,
     NoUserCredential,
-    Scope,
     Subject,
 )
 from boba.identity.run import Runs
 from boba.identity.signin import ProfileCatalog
-from boba.mcp_server.auth import EndpointGate
+from boba.mcp_server.auth import (
+    CallScopeError,
+    CallScopes,
+    EndpointGate,
+    TokenSubjects,
+)
+from boba.mcp_server.files import FileRoutes, FileUploadTool
 from boba.messaging import StreamAppended, StreamFeed
+from boba.runtime.storage import StorageClient
 from boba.toolkit.calls import CallIdPrefix
 from boba.toolkit.channels import JournalChannels
 from boba.toolkit.failure import FailurePacker
 from boba.toolkit.result import ErrorResult, MarkdownResult, ToolResultBase
 from boba.toolkit.wire import (
     CallStatus,
+    FilesFeature,
     JournalFeature,
     JournalRead,
     JournalSignal,
@@ -92,83 +99,9 @@ __all__ = [
     "RunLimitMiddleware",
     "RunLimits",
     "StreamReadTool",
-    "TokenClaim",
-    "TokenClaimsError",
-    "TokenSubjects",
 ]
 
 logger = logging.getLogger(__name__)
-
-
-class TokenClaim(StrEnum):
-    """Клеймы токена доступа, по которым сервис узнаёт вызывающего."""
-
-    LOGIN = "login"
-    ROLES = "roles"
-    USER_ID = "user_id"
-
-
-class TokenClaimsError(Exception):
-    """Токен принят, но вызывающего по нему не узнать."""
-
-
-class TokenClaims(BaseModel):
-    """Клеймы вызывающего в токене доступа.
-
-    login и roles обязательны. user_id несёт готовый токен конфига, у
-    которого он задан; без него сервис выводит идентификатор из логина.
-    """
-
-    model_config = ConfigDict(frozen=True, extra="ignore")
-
-    login: str = Field(min_length=1)
-    roles: frozenset[str]
-    user_id: UUID | None = None
-
-
-class TokenSubjects:
-    """Субъект вызова по токену доступа.
-
-    Создаётся сервером endpoint'а с его профилем; им пользуются провайдер
-    инструментов (по ролям и профилю — список) и middleware контекста (по
-    субъекту — контекст вызова).
-    """
-
-    def __init__(self, profile: str) -> None:
-        self._profile = profile
-
-    def current(self) -> Subject:
-        """Субъект токена текущего запроса; без токена — TokenClaimsError."""
-        token = get_access_token()
-        if token is None:
-            msg = (
-                "resolving the caller: the request carries no access token, "
-                "expected a bearer token with login and roles"
-            )
-            raise TokenClaimsError(msg)
-
-        return self.of(token)
-
-    def of(self, token: AccessToken) -> Subject:
-        try:
-            claims = TokenClaims.model_validate(token.claims)
-        except ValidationError as exc:
-            msg = (
-                f"resolving the caller of client {token.client_id!r}: the token "
-                f"claims do not carry login and roles: {exc}"
-            )
-            raise TokenClaimsError(msg) from exc
-
-        user_id = claims.user_id
-        if user_id is None:
-            user_id = uuid5(NAMESPACE_URL, f"boba-mcp:{claims.login}")
-
-        return Subject(
-            user_id=user_id,
-            login=claims.login,
-            roles=claims.roles,
-            profile=self._profile,
-        )
 
 
 class RoleToolServers:
@@ -499,56 +432,6 @@ class StreamReadTool(Tool):
         )
 
 
-class CallScopeError(Exception):
-    """Клиент прислал область, которая не годится сегментом пути."""
-
-
-class CallScopes:
-    """Область вызова по _meta запроса.
-
-    Создаётся сборкой сервера, зовёт её CallContextMiddleware. Область —
-    место файлов и описаний вызова в workspace пользователя; клиент с
-    собственными разговорами (чат) присылает в ней id разговора, чтобы
-    вызовы одного разговора видели файлы друг друга. Клиент без области
-    получает область по умолчанию — id самого пользователя, то есть свою
-    у каждого пользователя.
-    """
-
-    def of(self, subject: Subject) -> Scope:
-        """Область текущего запроса; негодный id области — CallScopeError."""
-        sent = self._sent()
-        if sent is None:
-            return Scope.chat(str(subject.user_id))
-
-        try:
-            return Scope.chat(sent)
-        except ValidationError as exc:
-            msg = (
-                f"resolving the scope of the call: _meta[{RequestMeta.SCOPE.value!r}] "
-                f"expects one path segment, got {sent!r}: {exc}"
-            )
-            raise CallScopeError(msg) from exc
-
-    @staticmethod
-    def _sent() -> str | None:
-        request = get_context().request_context
-        if request is None:
-            return None
-
-        meta = request.meta
-        if meta is None:
-            return None
-
-        sent = meta.get(RequestMeta.SCOPE)
-        if not isinstance(sent, str):
-            return None
-
-        if not sent:
-            return None
-
-        return sent
-
-
 class CallContextMiddleware(Middleware):
     """Контекст вызова и запуск области вокруг вызова инструмента.
 
@@ -715,6 +598,22 @@ class RunLimitMiddleware(Middleware):
         )
 
 
+class FeatureExtension(ServerExtension):
+    """Возможность сервиса как расширение MCP: идентификатор и настройки,
+    которые клиент получает при согласовании протокола.
+
+    Создаётся сборкой сервера endpoint'а на каждую возможность (журнал
+    вызовов, запечатывание соединений) и регистрируется в сервере fastmcp.
+    """
+
+    def __init__(self, identifier: str, settings: Mapping[str, Any]) -> None:
+        self.identifier = identifier
+        self._settings = dict(settings)
+
+    def settings(self) -> dict[str, Any]:
+        return dict(self._settings)
+
+
 class McpServer:
     """Сборка MCP-сервера одного endpoint'а сервиса исполнения.
 
@@ -732,16 +631,21 @@ class McpServer:
         registry: ToolRegistry,
         runs: Runs,
         journals: CallJournals,
-        auth: AuthProvider,
+        auth: TokenVerifier,
         profile: str,
         limits: RunLimitMiddleware,
+        storage: StorageClient,
+        path: str,
     ) -> None:
         self._name = f"{self.NAME}/{profile}"
         self._auth = auth
         self._subjects = TokenSubjects(profile)
         self._limits = limits
-        operations: list[Tool] = []
+        self._files = FileRoutes(storage, auth, self._subjects, path)
+        upload = FileUploadTool(self._files, self._subjects)
+        operations: list[Tool] = [upload]
         self._features = self._features_of(registry)
+        self._features[FilesFeature.ID.value] = self._files.settings(upload.name)
         if journals.active():
             stream_read = StreamReadTool(journals, self._subjects)
             operations.append(stream_read)
@@ -772,10 +676,13 @@ class McpServer:
             providers=[self._provider],
             middleware=[self._limits, self._contexts],
             dereference_schemas=False,
-            experimental_capabilities=self._features,
         )
         # сбой списка инструментов — ошибка, а не «у вызывающего нет инструментов»
         server.provider_error_strategy = "raise"
+        for identifier, settings in self._features.items():
+            server.add_extension(FeatureExtension(identifier, settings))
+
+        self._files.install(server)
 
         return server
 
@@ -844,7 +751,9 @@ class McpEndpoints:
     HEALTH: ClassVar[str] = "/health"
     """Путь пробы готовности: без входа, отдаёт пути endpoint'ов."""
 
-    OPERATIONS: ClassVar[frozenset[str]] = frozenset({StreamReadTool.NAME})
+    OPERATIONS: ClassVar[frozenset[str]] = frozenset(
+        {StreamReadTool.NAME, FileUploadTool.NAME}
+    )
     """Операции сервиса: запуска не открывают и в предел запусков не входят."""
 
     def __init__(  # noqa: PLR0913 — endpoint'ы собираются всеми входами процесса
@@ -856,6 +765,7 @@ class McpEndpoints:
         limits: RunLimits,
         base_path: str,
         routes: Sequence[Route],
+        storage: StorageClient,
     ) -> None:
         self._routes = tuple(routes)
         self._endpoints: list[EndpointApp] = []
@@ -866,7 +776,9 @@ class McpEndpoints:
                 continue
 
             path = f"{base_path}/{profile}"
-            server = McpServer(registry, runs, journals, verifier, profile, slots)
+            server = McpServer(
+                registry, runs, journals, verifier, profile, slots, storage, path
+            )
             served = server.mcp().http_app(path=path, stateless_http=True)
             gate = EndpointGate(served, verifier, profile, grant)
             self._endpoints.append(EndpointApp(path, gate, served))

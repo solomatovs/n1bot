@@ -240,7 +240,7 @@ async def _user_id_of(config: Any, identifier: str) -> str:
 
 
 async def _upload(thread_id: str) -> None:
-    from boba.chainlit.data.storage import StorageFactory
+    from boba.runtime.storage import StorageFactory
 
     config = _app_config()
     storage = StorageFactory.create(config.storage)
@@ -791,7 +791,7 @@ async def test_bar_survives_scrolling(panel: Any) -> None:
 
 async def _rewrite(thread_id: str, name: str, blob: bytes) -> None:
     """Переписать файл workspace: так его меняет инструмент между показами."""
-    from boba.chainlit.data.storage import StorageFactory
+    from boba.runtime.storage import StorageFactory
 
     config = _app_config()
     storage = StorageFactory.create(config.storage)

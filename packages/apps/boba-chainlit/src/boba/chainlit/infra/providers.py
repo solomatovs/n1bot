@@ -31,7 +31,6 @@ from boba.chainlit.canvas.remote import RemoteJournals
 from boba.chainlit.chat.history import CheckpointMessages, TranscriptFeed
 from boba.chainlit.chat.tracing import TracedStage
 from boba.chainlit.data import PostgresDataLayer
-from boba.chainlit.data.storage import StorageClient, StorageFactory
 from boba.chainlit.domain.keys import AttachmentLinks
 from boba.chainlit.infra.config import (
     AppConfig,
@@ -66,6 +65,7 @@ from boba.messaging import MessageBus
 from boba.runtime import providers as runtime
 from boba.runtime.di import Depends
 from boba.runtime.elements import ChatTables
+from boba.runtime.storage import StorageClient, StorageFactory
 from boba.runtime.users import UsersTable
 from boba.toolrun.registry import ToolRegistry
 from boba.toolrun.stream_calls import ToolServer, ToolServers

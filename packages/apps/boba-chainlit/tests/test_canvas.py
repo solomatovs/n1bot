@@ -38,8 +38,7 @@ from boba.chainlit.canvas.tools import (
     PdfViewer,
     VideoViewer,
 )
-from boba.chainlit.data.storage import LocalStorageClient
-from boba.chainlit.infra.config import LocalStorageConfig
+from boba.runtime.storage import LocalStorageClient, LocalStorageConfig
 from boba.stand_core.context import CallStand
 from boba.toolkit.result import VisualResult
 from boba.workspace.binaries import TrustedBinaries

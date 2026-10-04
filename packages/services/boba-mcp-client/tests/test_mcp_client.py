@@ -23,6 +23,8 @@ from langchain_core.messages import ToolCall
 from pydantic import SecretStr
 
 from boba.auth.config import ProxyAuthConfig
+from boba.canvas.keys import ObjectKey
+from boba.canvas.storage import StorageNotFoundError
 from boba.config.section import bind_section
 from boba.connections.sealed import ConnectionSeal, SealedConnection, SealFeature
 from boba.db.postgres.connection import PostgresConfig
@@ -62,6 +64,7 @@ from boba.toolkit.result import (
 from boba.toolkit.types import SecretReveal
 from boba.toolkit.wire import JournalFeature, JournalRead, JournalSignal
 from boba.toolrun.stream_calls import ToolServer
+from boba.workspace.launcher import ReadWindow
 
 pytestmark = pytest.mark.anyio
 
@@ -529,6 +532,69 @@ class TestScopeOfTheCall:
 
         if self.THREAD not in str(message.content):
             raise AssertionError(f"the body runs in the caller's scope: {message}")
+
+
+@pytest.mark.integration
+class TestWorkspaceFiles:
+    """Файлы workspace на сервере: клиент пишет и читает их потоком."""
+
+    SCOPE: ClassVar[str] = "6c1b2f7e-9a44-4d0a-8e13-51d2a7b0c4f1"
+
+    @staticmethod
+    async def _source(payload: bytes, size: int) -> AsyncIterator[bytes]:
+        for start in range(0, len(payload), size):
+            yield payload[start : start + size]
+
+    async def test_uploaded_stream_is_read_back_by_window(
+        self, dag: McpToolServer
+    ) -> None:
+        files = dag.files()
+        if files is None:
+            raise AssertionError(f"the server declares its files: {dag.features()}")
+
+        payload = bytes(range(256)) * 2048
+        key = ObjectKey(user_id="-", thread_id=self.SCOPE, name="data.bin")
+        stored = await files.upload(key, self._source(payload, 50000))
+        stat = await files.stat(key)
+        async with await files.open(key, ReadWindow(offset=100, length=1000)) as part:
+            window = b"".join([chunk async for chunk in part.chunks])
+        async with await files.open(key, ReadWindow.entire()) as whole:
+            body = b"".join([chunk async for chunk in whole.chunks])
+        beyond = await files.open(key, ReadWindow(offset=len(payload) + 5, length=None))
+        await beyond.close()
+
+        if stored != len(payload) or stat.size != len(payload):
+            raise AssertionError(f"the size is kept: {stored} {stat}")
+        if stat.revision == 0:
+            raise AssertionError(f"the revision is known: {stat}")
+        if window != payload[100:1100] or part.stat.size != len(payload):
+            raise AssertionError("the window is the asked slice of the file")
+        if body != payload:
+            raise AssertionError("the file is read back as written")
+        if beyond.stat.size != len(payload):
+            raise AssertionError(f"a window past the end names the size: {beyond.stat}")
+
+    async def test_missing_file_is_a_storage_not_found_error(
+        self, dag: McpToolServer
+    ) -> None:
+        files = dag.files()
+        if files is None:
+            raise AssertionError(f"the server declares its files: {dag.features()}")
+
+        key = ObjectKey(user_id="-", thread_id=self.SCOPE, name="ghost.bin")
+        with pytest.raises(StorageNotFoundError, match="404"):
+            await files.stat(key)
+        with pytest.raises(StorageNotFoundError, match="404"):
+            await files.open(key, ReadWindow.entire())
+        if await files.delete(key):
+            raise AssertionError("a missing file is not deleted")
+
+    async def test_upload_tool_is_not_offered_to_the_model(
+        self, dag: McpToolServer
+    ) -> None:
+        names = [tool.name for tool in dag.tools()]
+        if "file_upload" in names:
+            raise AssertionError(f"the client uploads files itself: {names}")
 
 
 class HeardSignals(CallSignals, JournalListener):

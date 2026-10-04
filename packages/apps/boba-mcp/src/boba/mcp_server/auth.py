@@ -8,7 +8,9 @@
 подписи. Готовые токены секции [mcp.tokens] принимаются наравне.
 
 Ошибки:
-наружу уходят только ответы HTTP: 401 — подпись, окно времени или токен не
+TokenClaimsError — токен принят, но логина и ролей вызывающего в нём нет.
+CallScopeError — область вызова из _meta не годится сегментом пути.
+маршруты входа и ворота отвечают по HTTP: 401 — подпись, окно времени или токен не
     приняты; 403 — вход запрещён (адрес клиента, исключение, нет ролей) либо
     endpoint не выдан ролям вошедшего.
 """
@@ -17,30 +19,163 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Mapping
+from enum import StrEnum
 from typing import Any, ClassVar, Literal
+from uuid import NAMESPACE_URL, UUID, uuid5
 
 from fastmcp.server.auth import AccessToken, TokenVerifier
-from pydantic import BaseModel, ConfigDict, Field
+from fastmcp.server.dependencies import get_access_token, get_context
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 from starlette.routing import Route
-from starlette.types import ASGIApp, Receive, Scope, Send
+from starlette.types import ASGIApp, Receive, Send
+from starlette.types import Scope as AsgiScope
 
 from boba.access import ProfileGrant
 from boba.auth import AuthService
 from boba.auth.config import ProxyAuthConfig
+from boba.identity.context import Scope, Subject
 from boba.identity.errors import AuthenticationError, AuthorizationError
 from boba.identity.token import TokenRejectedError
 from boba.runtime.http import ProxyRequests
+from boba.toolkit.wire import RequestMeta
 
 __all__ = [
+    "CallScopeError",
+    "CallScopes",
     "EndpointGate",
     "IssuedToken",
     "ProxySignInRoute",
     "SessionTokenVerifier",
+    "TokenClaim",
+    "TokenClaims",
+    "TokenClaimsError",
+    "TokenSubjects",
 ]
 
 logger = logging.getLogger(__name__)
+
+
+class TokenClaim(StrEnum):
+    """Клеймы токена доступа, по которым сервис узнаёт вызывающего."""
+
+    LOGIN = "login"
+    ROLES = "roles"
+    USER_ID = "user_id"
+
+
+class TokenClaimsError(Exception):
+    """Токен принят, но вызывающего по нему не узнать."""
+
+
+class TokenClaims(BaseModel):
+    """Клеймы вызывающего в токене доступа.
+
+    login и roles обязательны. user_id несёт готовый токен конфига, у
+    которого он задан; без него сервис выводит идентификатор из логина.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="ignore")
+
+    login: str = Field(min_length=1)
+    roles: frozenset[str]
+    user_id: UUID | None = None
+
+
+class TokenSubjects:
+    """Субъект вызова по токену доступа.
+
+    Создаётся сервером endpoint'а с его профилем; им пользуются провайдер
+    инструментов (по ролям и профилю — список) и middleware контекста (по
+    субъекту — контекст вызова).
+    """
+
+    def __init__(self, profile: str) -> None:
+        self._profile = profile
+
+    def current(self) -> Subject:
+        """Субъект токена текущего запроса; без токена — TokenClaimsError."""
+        token = get_access_token()
+        if token is None:
+            msg = (
+                "resolving the caller: the request carries no access token, "
+                "expected a bearer token with login and roles"
+            )
+            raise TokenClaimsError(msg)
+
+        return self.of(token)
+
+    def of(self, token: AccessToken) -> Subject:
+        try:
+            claims = TokenClaims.model_validate(token.claims)
+        except ValidationError as exc:
+            msg = (
+                f"resolving the caller of client {token.client_id!r}: the token "
+                f"claims do not carry login and roles: {exc}"
+            )
+            raise TokenClaimsError(msg) from exc
+
+        user_id = claims.user_id
+        if user_id is None:
+            user_id = uuid5(NAMESPACE_URL, f"boba-mcp:{claims.login}")
+
+        return Subject(
+            user_id=user_id,
+            login=claims.login,
+            roles=claims.roles,
+            profile=self._profile,
+        )
+
+
+class CallScopeError(Exception):
+    """Клиент прислал область, которая не годится сегментом пути."""
+
+
+class CallScopes:
+    """Область вызова по _meta запроса.
+
+    Создаётся сборкой сервера, зовёт её CallContextMiddleware. Область —
+    место файлов и описаний вызова в workspace пользователя; клиент с
+    собственными разговорами (чат) присылает в ней id разговора, чтобы
+    вызовы одного разговора видели файлы друг друга. Клиент без области
+    получает область по умолчанию — id самого пользователя, то есть свою
+    у каждого пользователя.
+    """
+
+    def of(self, subject: Subject) -> Scope:
+        """Область текущего запроса; негодный id области — CallScopeError."""
+        sent = self._sent()
+        if sent is None:
+            return Scope.chat(str(subject.user_id))
+
+        try:
+            return Scope.chat(sent)
+        except ValidationError as exc:
+            msg = (
+                f"resolving the scope of the call: _meta[{RequestMeta.SCOPE.value!r}] "
+                f"expects one path segment, got {sent!r}: {exc}"
+            )
+            raise CallScopeError(msg) from exc
+
+    @staticmethod
+    def _sent() -> str | None:
+        request = get_context().request_context
+        if request is None:
+            return None
+
+        meta = request.meta
+        if meta is None:
+            return None
+
+        sent = meta.get(RequestMeta.SCOPE)
+        if not isinstance(sent, str):
+            return None
+
+        if not sent:
+            return None
+
+        return sent
 
 
 class IssuedToken(BaseModel):
@@ -162,7 +297,7 @@ class EndpointGate:
         self._name = name
         self._grant = grant
 
-    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+    async def __call__(self, scope: AsgiScope, receive: Receive, send: Send) -> None:
         if scope["type"] != "http":
             await self._app(scope, receive, send)
             return

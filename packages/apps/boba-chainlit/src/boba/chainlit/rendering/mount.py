@@ -29,13 +29,13 @@ from boba.canvas.canvas import CanvasError, CanvasErrorKind
 from boba.canvas.keys import ElementProps, ObjectKey
 from boba.chainlit.canvas.panel import CanvasPanel
 from boba.chainlit.data.data_layer import AttachmentDataLayer
-from boba.chainlit.data.storage import StorageClient
 from boba.chainlit.domain.context import ChatCallContext
 from boba.chainlit.rendering.tool import ChatElements
 from boba.identity.context import CallContexts, ContextKind
 from boba.identity.errors import RefusalError
 from boba.identity.run import ElementTarget, Runs
 from boba.mcp_client.client import BlockFiles
+from boba.runtime.storage import StorageClient
 from boba.toolkit.result import (
     ErrorResult,
     FileElement,

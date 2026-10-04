@@ -29,8 +29,7 @@ import pytest
 from pydantic import BaseModel, ConfigDict
 
 from boba.cancellation import RunCancellation, ToolStopped, run_cancellation
-from boba.chainlit.data.storage import ImageStorageClient, StorageFactory
-from boba.chainlit.infra.config import LocalStorageConfig
+from boba.runtime.storage import ImageStorageClient, LocalStorageConfig, StorageFactory
 from boba.sandbox import SandboxProfile
 from boba.sandbox.cgroup import CgroupManager
 from boba.sandbox.profile import SandboxMount

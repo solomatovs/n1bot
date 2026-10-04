@@ -20,8 +20,7 @@ from boba.canvas.diagram import DiagramEntry, DiagramSpecError, MermaidSpec
 from boba.canvas.keys import ObjectKey, ThreadDir
 from boba.chainlit.canvas.diagram import DiagramFiles, MermaidViewer
 from boba.chainlit.data.data_layer import AttachmentDataLayer
-from boba.chainlit.data.storage import LocalStorageClient
-from boba.chainlit.infra.config import LocalStorageConfig
+from boba.runtime.storage import LocalStorageClient, LocalStorageConfig
 from boba.toolkit.result import VisualResult
 from boba.workspace.binaries import TrustedBinaries
 from boba.workspace.launcher import MountingConfig

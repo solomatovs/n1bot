@@ -21,7 +21,6 @@ import aiofiles.os
 
 from boba.canvas.journal import StreamJournalError
 from boba.canvas.keys import ElementProps, ObjectKey
-from boba.chainlit.data.storage import StorageClient
 from boba.chainlit.domain.fields import ElementField, StepField, ThreadField
 from boba.chainlit.domain.keys import AttachmentLinks
 from boba.chat.threads import (
@@ -51,6 +50,7 @@ from boba.messaging import (
     MessageBus,
     ThreadChanged,
 )
+from boba.runtime.storage import StorageClient
 from boba.toolrun.streams import CallJournals
 from chainlit.data import get_data_layer
 from chainlit.data.base import BaseDataLayer

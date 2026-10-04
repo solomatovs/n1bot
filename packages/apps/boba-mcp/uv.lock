@@ -30,6 +30,15 @@ wheels = [
 ]
 
 [[package]]
+name = "aiofiles"
+version = "25.1.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/41/c3/534eac40372d8ee36ef40df62ec129bee4fdb5ad9706e58a29be53b2c970/aiofiles-25.1.0.tar.gz", hash = "sha256:a8d728f0a29de45dc521f18f07297428d56992a742f0cd2701ba86e44d23d5b2", size = 46354, upload-time = "2025-10-09T20:51:04.358Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/bc/8a/340a1555ae33d7354dbca4faa54948d76d89a27ceef032c8c3bc661d003e/aiofiles-25.1.0-py3-none-any.whl", hash = "sha256:abe311e527c862958650f9438e859c1fa7568a141b22abcd015e120e86a85695", size = 14668, upload-time = "2025-10-09T20:51:03.174Z" },
+]
+
+[[package]]
 name = "aiohappyeyeballs"
 version = "2.7.1"
 source = { registry = "https://pypi.org/simple" }
@@ -971,6 +980,7 @@ dependencies = [
     { name = "boba-identity", marker = "sys_platform == 'linux'" },
     { name = "boba-llm-fastembed", marker = "sys_platform == 'linux'" },
     { name = "boba-runtime", marker = "sys_platform == 'linux'" },
+    { name = "boba-tool-canvas", marker = "sys_platform == 'linux'" },
     { name = "boba-tool-chart", marker = "sys_platform == 'linux'" },
     { name = "boba-tool-clickhouse", marker = "sys_platform == 'linux'" },
     { name = "boba-tool-confluence", marker = "sys_platform == 'linux'" },
@@ -1024,6 +1034,7 @@ requires-dist = [
     { name = "boba-runtime", editable = "../../services/boba-runtime" },
     { name = "boba-stand", marker = "extra == 'dev'", editable = "../../testing/boba-stand" },
     { name = "boba-stand-core", marker = "extra == 'dev'", editable = "../../core/boba-stand-core" },
+    { name = "boba-tool-canvas", editable = "../../tools/boba-tool-canvas" },
     { name = "boba-tool-chart", editable = "../../tools/boba-tool-chart" },
     { name = "boba-tool-clickhouse", editable = "../../tools/boba-tool-clickhouse" },
     { name = "boba-tool-confluence", editable = "../../tools/boba-tool-confluence" },
@@ -1124,6 +1135,7 @@ name = "boba-runtime"
 version = "0.0.26.dev4"
 source = { editable = "../../services/boba-runtime" }
 dependencies = [
+    { name = "aiofiles", marker = "sys_platform == 'linux'" },
     { name = "boba-access", marker = "sys_platform == 'linux'" },
     { name = "boba-auth", marker = "sys_platform == 'linux'" },
     { name = "boba-cancellation", marker = "sys_platform == 'linux'" },
@@ -1153,6 +1165,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
+    { name = "aiofiles" },
     { name = "boba-access", editable = "../../core/boba-access" },
     { name = "boba-auth", editable = "../../services/boba-auth" },
     { name = "boba-cancellation", editable = "../../core/boba-cancellation" },
@@ -1349,6 +1362,27 @@ requires-dist = [
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8" },
 ]
 provides-extras = ["dev"]
+
+[[package]]
+name = "boba-tool-canvas"
+version = "0.0.26.dev4"
+source = { editable = "../../tools/boba-tool-canvas" }
+dependencies = [
+    { name = "boba-canvas", marker = "sys_platform == 'linux'" },
+    { name = "boba-identity", marker = "sys_platform == 'linux'" },
+    { name = "boba-toolkit", marker = "sys_platform == 'linux'" },
+    { name = "pydantic", marker = "sys_platform == 'linux'" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "boba-canvas", editable = "../../core/boba-canvas" },
+    { name = "boba-identity", editable = "../../core/boba-identity" },
+    { name = "boba-toolkit", editable = "../../core/boba-toolkit" },
+    { name = "pydantic", specifier = ">=2.10,<3" },
+    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8" },
+]
+provides-extras = ["payload", "dev"]
 
 [[package]]
 name = "boba-tool-chart"
