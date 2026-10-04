@@ -442,10 +442,22 @@ class DagServer:
         limits: RunLimits,
     ) -> None:
         self._auth = auth
+        self._features = self._features_of(registry)
         self._limits = RunLimitMiddleware(limits)
         self._subjects = TokenSubjects(default_profile)
         self._provider = DagToolProvider(RoleToolServers(registry), self._subjects)
         self._contexts = CallContextMiddleware(runs, self._subjects)
+
+    @staticmethod
+    def _features_of(registry: ToolRegistry) -> dict[str, dict[str, Any]]:
+        """Возможности сервера для объявления при подключении клиента: те,
+        что объявляет порт над всеми инструментами реестра (инструмент-связка,
+        ключ запечатывания соединений)."""
+        declared: dict[str, dict[str, Any]] = {}
+        for feature, settings in registry.server(registry.tools).features().items():
+            declared[feature] = dict(settings)
+
+        return declared
 
     def mcp(self) -> FastMCP:
         server = FastMCP(
@@ -454,6 +466,7 @@ class DagServer:
             providers=[self._provider],
             middleware=[self._limits, self._contexts],
             dereference_schemas=False,
+            experimental_capabilities=self._features,
         )
         # сбой списка инструментов — ошибка, а не «у вызывающего нет инструментов»
         server.provider_error_strategy = "raise"

@@ -15,10 +15,13 @@ RefusalError — вызов идёт вне хода чата или без жи
 from __future__ import annotations
 
 import logging
+import mimetypes
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any, ClassVar
+from uuid import uuid4
 
+from langchain_core.messages import ToolCall
 from langchain_core.tools import BaseTool
 
 import chainlit as cl
@@ -26,11 +29,13 @@ from boba.canvas.canvas import CanvasError, CanvasErrorKind
 from boba.canvas.keys import ElementProps, ObjectKey
 from boba.chainlit.canvas.panel import CanvasPanel
 from boba.chainlit.data.data_layer import AttachmentDataLayer
+from boba.chainlit.data.storage import StorageClient
 from boba.chainlit.domain.context import ChatCallContext
 from boba.chainlit.rendering.tool import ChatElements
 from boba.identity.context import CallContexts, ContextKind
 from boba.identity.errors import RefusalError
 from boba.identity.run import ElementTarget, Runs
+from boba.mcp_client.client import BlockFiles
 from boba.toolkit.result import (
     ErrorResult,
     FileElement,
@@ -39,7 +44,7 @@ from boba.toolkit.result import (
 )
 from boba.toolrun.wrapping import CallHooks, ToolBody
 
-__all__ = ["ChatMount", "MountedCall", "WorkspaceFile"]
+__all__ = ["ChatAttachments", "ChatMount", "MountedCall", "WorkspaceFile"]
 
 logger = logging.getLogger(__name__)
 
@@ -119,6 +124,10 @@ class ChatMount(CallHooks[MountedCall]):
             if isinstance(item, FileElement):
                 await self._file(item)
 
+    async def attach(self, item: FileElement) -> None:
+        """Прикрепляет файл workspace вложением к шагу текущего вызова."""
+        await self._file(item)
+
     async def _panel(self, item: PanelOpen) -> None:
         """Панель с файлом плюс ссылка на него в переписке."""
         key = self._key(item.path)
@@ -168,3 +177,50 @@ class ChatMount(CallHooks[MountedCall]):
         port = self._runs.require_port(thread_id)
 
         return port.element_target(context.tool_call_id())
+
+
+class ChatAttachments(BlockFiles):
+    """Реализация BlockFiles чатом: файл из результата MCP-сервера ложится в
+    workspace треда и показывается вложением.
+
+    Создаётся сборкой чата из держателя контекста, хранилища вложений и
+    обвязки ChatMount. Файл пишется в каталог upload треда того хода, в
+    котором идёт вызов, поэтому виден и пользователю, и инструментам
+    песочницы. Размер ограничен самим workspace пользователя. Вложением
+    показывается первый файл вызова: элемент вызова у шага один; остальные
+    лежат в workspace, и путь каждого назван в тексте результата.
+    """
+
+    def __init__(
+        self, contexts: CallContexts, storage: StorageClient, mount: ChatMount
+    ) -> None:
+        self._contexts = contexts
+        self._storage = storage
+        self._mount = mount
+
+    async def attached(self, call: ToolCall, index: int, mime: str, data: bytes) -> str:
+        call_id = str(call["id"])
+        context = self._contexts.current()
+        key = ObjectKey.build(
+            context.subject.user_key,
+            context.scope.id,
+            self._name(call, index, mime),
+            call_id,
+        )
+        await self._storage.upload_file(key.render(), data, mime)
+
+        path = key.in_workspace()
+        if index == 0:
+            item = FileElement(path=path, name=key.name, mime=mime)
+            with self._contexts.applied(context.as_tool_call(call_id)):
+                await self._mount.attach(item)
+
+        return f"file saved to the workspace: {path} ({mime}, {len(data)} bytes)"
+
+    @staticmethod
+    def _name(call: ToolCall, index: int, mime: str) -> str:
+        extension = mimetypes.guess_extension(mime)
+        if extension is None:
+            extension = ""
+
+        return f"{call['name']}-{uuid4().hex[:8]}-{index}{extension}"

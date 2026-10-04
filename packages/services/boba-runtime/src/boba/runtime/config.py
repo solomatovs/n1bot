@@ -308,6 +308,7 @@ class AppName(StrEnum):
 
     CHAINLIT = "chainlit"
     STUDIO = "studio"
+    DAG = "dag"
 
 
 class ClusterConfig(BaseModel):

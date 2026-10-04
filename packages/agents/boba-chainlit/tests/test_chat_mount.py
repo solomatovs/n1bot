@@ -15,6 +15,7 @@ from uuid import UUID
 
 import pytest
 from chainlit_stand import ChatSessionStand, FakeTurn
+from langchain_core.messages import ToolCall
 
 from boba.canvas.canvas import CanvasErrorKind, RenderVerdicts
 from boba.canvas.keys import WorkspaceMount
@@ -24,7 +25,7 @@ from boba.chainlit.data.data_layer import AttachmentDataLayer
 from boba.chainlit.data.storage import LocalStorageClient
 from boba.chainlit.domain.keys import AttachmentLinks
 from boba.chainlit.infra.config import LocalStorageConfig
-from boba.chainlit.rendering.mount import ChatMount
+from boba.chainlit.rendering.mount import ChatAttachments, ChatMount
 from boba.stand.refs import StandRefs
 from boba.stand_core.context import CallStand
 from boba.tool.canvas.tools import TOOLS, CanvasToolConfig
@@ -284,3 +285,67 @@ class TestDiagramSave:
         stored = Path(WorkspaceMount.path()) / THREAD / "mermaid" / "orders.mmd"
         if stored.read_text(encoding="utf-8") != ER_SPEC:
             raise AssertionError(stored)
+
+
+class TestMcpFileBlock:
+    """Картинка из результата MCP-сервера: файл в workspace треда и вложение
+    у шага вызова."""
+
+    PNG: bytes = b"\x89PNG\r\n\x1a\n" + b"\x00" * 16
+
+    @pytest.mark.anyio
+    async def test_block_is_saved_to_the_workspace_and_attached(
+        self,
+        stand: Stand,
+        runtime_stand: StandRefs,
+        call_stand: CallStand,
+        tmp_path: Path,
+        http_context: None,
+    ) -> None:
+        files = ChatAttachments(
+            call_stand.contexts,
+            stand.storage,
+            ChatMount(call_stand.contexts, runtime_stand.runs),
+        )
+        call = ToolCall(name="std_picture", args={}, id="call-9", type="tool_call")
+
+        note = await files.attached(call, 0, "image/png", self.PNG)
+
+        saved = list((tmp_path / USER / THREAD / "upload").glob("std_picture-*.png"))
+        if len(saved) != 1 or saved[0].read_bytes() != self.PNG:
+            raise AssertionError(f"the block is a file of the thread: {saved}")
+        if stand.upload_path(saved[0].name) not in note:
+            raise AssertionError(f"the model is told where the file is: {note}")
+
+        element = stand.layer.elements[0]
+        if element.mime != "image/png" or element.name != saved[0].name:
+            raise AssertionError(f"the file is attached to the chat: {element}")
+
+        shown = [shown[0] for shown in stand.turn.shown]
+        if shown != ["call-9"]:
+            raise AssertionError(f"the attachment belongs to its call: {shown}")
+
+    @pytest.mark.anyio
+    async def test_second_block_is_saved_without_a_second_attachment(
+        self,
+        stand: Stand,
+        runtime_stand: StandRefs,
+        call_stand: CallStand,
+        tmp_path: Path,
+        http_context: None,
+    ) -> None:
+        files = ChatAttachments(
+            call_stand.contexts,
+            stand.storage,
+            ChatMount(call_stand.contexts, runtime_stand.runs),
+        )
+        call = ToolCall(name="std_picture", args={}, id="call-9", type="tool_call")
+
+        await files.attached(call, 0, "image/png", self.PNG)
+        await files.attached(call, 1, "image/png", self.PNG)
+
+        saved = list((tmp_path / USER / THREAD / "upload").glob("std_picture-*.png"))
+        if len(saved) != 2:
+            raise AssertionError(f"every block is saved: {saved}")
+        if len(stand.layer.elements) != 1:
+            raise AssertionError(f"one attachment per call: {stand.layer.elements}")

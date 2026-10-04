@@ -256,6 +256,7 @@ class StandConfig:
         self._use_catalog_roles(doc)
         self._use_test_database(doc)
         self._use_local_storage(doc)
+        self._without_mcp_servers(doc)
         self._use_local_auth(doc)
         self._use_studio(doc)
         self._use_sandbox_artifacts(doc)
@@ -426,6 +427,11 @@ class StandConfig:
         journal_dir = self.workdir / "tool-logs"
         journal_dir.mkdir(parents=True, exist_ok=True)
         doc["stream_journal"]["dir"] = str(journal_dir)
+
+    def _without_mcp_servers(self, doc: MutableMapping[str, Any]) -> None:
+        """Внешние MCP-серверы рабочего конфига стенду не нужны: набор
+        инструментов сессии не должен зависеть от сети."""
+        doc["mcp"] = {"servers": {}}
 
     def _use_local_auth(self, doc: MutableMapping[str, Any]) -> None:
         """Учётки и роли стенда: рабочий [auth.local] не трогаем и не наследуем."""

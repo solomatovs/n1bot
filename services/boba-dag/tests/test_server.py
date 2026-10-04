@@ -19,7 +19,9 @@ from fastmcp.client.transports import StreamableHttpTransport
 from fastmcp.utilities.tests import run_server_async
 from service_stand import DEV_TOKEN, PROFILE, WEAK_TOKEN, ServiceStand
 
+from boba.connections.sealed import SealFeature
 from boba.dag_service.server import (
+    DagTool,
     RunLimitMiddleware,
     RunLimits,
 )
@@ -55,6 +57,7 @@ class TestToolList:
         names = sorted(tool.name for tool in listed)
         expected = [
             "fake_collect",
+            "fake_connection_host",
             "fake_echo",
             "fake_emit",
             "fake_sleep",
@@ -123,6 +126,47 @@ class TestCall:
         structured = result.structured_content
         if structured is None or structured.get("text") != f"alice|dev|{PROFILE}":
             raise AssertionError(f"the body is called as the token's caller: {result}")
+
+    async def test_call_id_of_the_client_is_the_id_of_the_call(
+        self, stand: ServiceStand, url: str
+    ) -> None:
+        async with _client(url, DEV_TOKEN) as client:
+            result = await client.call_tool_mcp(
+                "fake_echo",
+                {"text": "hi", "repeat": 1},
+                meta={DagTool.META_CALL_ID: "call-of-the-model"},
+            )
+
+        own = (result.meta or {}).get(WireMeta.NAMESPACE.value, {})
+        if own.get(WireMeta.CALL_ID.value) != "call-of-the-model":
+            raise AssertionError(f"the client's call id is kept: {result.meta}")
+
+    async def test_server_declares_its_features_on_connect(
+        self, stand: ServiceStand, url: str
+    ) -> None:
+        """Возможности едут ответом на initialize: клиент узнаёт ключ
+        запечатывания и инструмент-связку, не вызывая инструментов."""
+        hello = {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2025-06-18",
+                "capabilities": {},
+                "clientInfo": {"name": "stand", "version": "1"},
+            },
+        }
+        headers = {
+            "Authorization": f"Bearer {DEV_TOKEN}",
+            "Accept": "application/json, text/event-stream",
+        }
+        async with httpx.AsyncClient() as http:
+            reply = await http.post(url, json=hello, headers=headers)
+
+        if SealFeature.ID not in reply.text:
+            raise AssertionError(f"the seal key is declared on connect: {reply.text}")
+        if WorkflowTool.FEATURE not in reply.text:
+            raise AssertionError(f"the workflow tool is declared: {reply.text}")
 
     async def test_linked_nodes_run_as_one_workflow_call(
         self, stand: ServiceStand, url: str, tmp_path: Path

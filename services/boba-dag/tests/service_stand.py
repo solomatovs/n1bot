@@ -17,9 +17,13 @@ from fastmcp.server.auth.providers.jwt import StaticTokenVerifier
 from pydantic import SecretStr
 
 from boba.access import ProfileGrant, RoleConfig, ToolAccess
+from boba.connection_broker.sealed import SealedConnectionParams
+from boba.connections.manifest import ConnectionTypes
+from boba.connections.sealed import SealKeys
 from boba.dag_service.server import CallSchemas, DagServer, RunLimits
 from boba.identity.context import CallContexts
 from boba.identity.run import Runs
+from boba.stand import fake_connection
 from boba.stand_core import fake_caller, fake_toolmod
 from boba.stand_core.fake_toolmod import FakeConfig
 from boba.toolkit.chain import CallAmbient
@@ -67,6 +71,8 @@ class ServiceStand:
             ambient,
         )
 
+        sealed = SealedConnectionParams(SealKeys(), ConnectionTypes.discover, contexts)
+
         tools: list[Any] = []
         for payload in (
             fake_toolmod.fake_echo,
@@ -74,6 +80,7 @@ class ServiceStand:
             fake_toolmod.fake_collect,
             fake_caller.fake_whoami,
             fake_caller.fake_sleep,
+            fake_connection.fake_connection_host,
         ):
             tools.append(ToolBridge.as_structured_tool(payload.model_copy()))
 
@@ -84,6 +91,7 @@ class ServiceStand:
             ambient,
             (
                 CallContextValues(contexts),
+                sealed,
                 InjectedConfig(self._config_of, StaticConfig()),
             ),
             (),
@@ -109,7 +117,7 @@ class ServiceStand:
             access=access,
             stream_config=self.STREAM,
             own=frozenset(),
-            node_args=(),
+            node_args=(sealed,),
             specs=specs,
             ambient=ambient,
         )

@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import sys
 from collections.abc import AsyncIterator, Sequence
+from pathlib import Path
 from typing import Annotated, Any, ClassVar
 
 import pytest
@@ -59,6 +61,12 @@ from boba.llm.chat import (
 )
 from boba.llm.providers import LlmProviders, LlmProviderTypes
 from boba.llm.schema import SchemaReply
+from boba.mcp_client.client import (
+    McpServerConfig,
+    McpToolServer,
+    NamedBlocks,
+    StdioCommand,
+)
 from boba.stand.refs import StandRefs
 from boba.toolkit.calls import CallIdPrefix, ToolIntent
 from boba.toolkit.chain import CallAmbient
@@ -886,6 +894,42 @@ class TestCallsRouteByToolName:
             raise AssertionError(f"первый сервер ответил: {replies['call_first']!r}")
         if "vector:kerberos" not in str(replies["call_second"].content):
             raise AssertionError(f"второй сервер ответил: {replies['call_second']!r}")
+
+    async def test_call_reaches_an_mcp_server_behind_the_same_port(self) -> None:
+        """MCP-сервер — ещё один сервер за портом: граф зовёт его инструмент
+        так же, как свой."""
+        script = (
+            Path(__file__).resolve().parents[3]
+            / "services"
+            / "boba-mcp-client"
+            / "tests"
+            / "standard_server.py"
+        )
+        config = McpServerConfig(
+            endpoint=StdioCommand(command=sys.executable, args=(str(script), "stdio")),
+            roles=["*"],
+            profiles=["*"],
+            tools=["*"],
+            prefix="std_",
+            connect_timeout_sec=20.0,
+            call_timeout_sec=60.0,
+        )
+        remote = McpToolServer("standard", config, NamedBlocks())
+        await remote.open()
+        calls = [
+            {"name": "fts_probe", "args": {"query": "kerberos"}, "id": "call_own"},
+            {"name": "std_add", "args": {"a": 2, "b": 3}, "id": "call_mcp"},
+        ]
+        try:
+            own = RecordingService([fts_probe])
+            replies, _ = await _replies(ToolServers([own, remote]), calls)
+        finally:
+            await remote.close()
+
+        if own.served != ["call_own"]:
+            raise AssertionError(f"свой вызов ушёл своему серверу: {own.served}")
+        if str(replies["call_mcp"].content) != "5":
+            raise AssertionError(f"MCP-сервер ответил: {replies['call_mcp']!r}")
 
     async def test_unknown_name_is_refused_with_tools_of_every_server(self) -> None:
         servers = ToolServers(
