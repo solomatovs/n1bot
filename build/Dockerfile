@@ -182,8 +182,8 @@ COPY uv.lock         /tmp/boba/uv.lock
 COPY packages/       /tmp/boba/packages/
 
 COPY --from=oracledb-wheel /out/  /tmp/wheels/
-# find-links обоих pyproject (корневого и boba-mcp) ведёт сюда: колесо с патчем
-# лежит там же, где на хосте его держит build/src
+# find-links корневого pyproject ведёт сюда: колесо с патчем лежит там же, где
+# на хосте его держит build/src
 COPY --from=oracledb-wheel /out/  /tmp/boba/build/src/oracledb/
 
 WORKDIR /tmp/boba
@@ -369,7 +369,7 @@ RUN pip3 list --path /opt/app-site --format=freeze | grep '^boba-' | cut -d= -f1
 
 
 # общая основа образов приложений: python, библиотеки и бинарники песочницы; код
-# приложения кладут стадии runtime-base (чат) и runtime-mcp (boba-mcp)
+# приложения кладёт стадия runtime-base
 FROM ${GLIBC_IMAGE} AS runtime-os
 
 ARG PYTHON_VERSION=3.11
@@ -483,46 +483,14 @@ USER ${BOBA_UID}:${BOBA_GID}
 CMD ["-m", "boba.studio", "--config", "/app/boba/conf/config.toml"]
 
 
-# --- boba-mcp: MCP-сервер с инструментами boba, отдельный сервис -------------------
-
-# у сервиса свой lock (fastmcp 4 на mcp 2.x, pydantic 2.13): колёса пакетов
-# репозитория общие, constraints — из packages/apps/boba-mcp/uv.lock
-FROM boba-wheels AS mcp-wheels
-
-WORKDIR /tmp/boba/packages/apps/boba-mcp
-RUN uv build --wheel --no-sources -o /tmp/wheels
-RUN uv export --frozen --all-extras --no-emit-local --no-hashes \
-        -o /tmp/wheels/constraints-mcp.txt
-
-
-FROM base AS mcp-site
-
-ARG APP_PACKAGES
-ARG APP_IMPORTS
-
-COPY --from=mcp-wheels /tmp/wheels/  /tmp/wheels/
-
-RUN uv pip install --python "$(command -v python3)" --target /opt/app-site \
-        --constraint /tmp/wheels/constraints-mcp.txt --find-links=/tmp/wheels \
-        ${APP_PACKAGES}
-
-ENV PYTHONPATH=/opt/app-site
-RUN for name in ${APP_IMPORTS}; do python3 -c "import $name; print('$name ok')"; done
-RUN pip3 list --path /opt/app-site --format=freeze | grep '^boba-' | cut -d= -f1 > /opt/app-packages.txt
-
+# --- boba-mcp: MCP-сервер с инструментами boba -------------------------------------
 
 # образ сервиса: конфиг и данные приходят деревом compose/mcp, образы корней
 # плагинов и workspace — те же, что у чата
-FROM runtime-os AS runtime-mcp
+FROM runtime-base AS runtime-mcp
 
-ARG BOBA_DIR=/app/boba
 ARG BOBA_UID=1000
 ARG BOBA_GID=1000
-
-COPY --from=mcp-site /opt/app-site          ${BOBA_DIR}/app/
-COPY --from=mcp-site /opt/app-packages.txt  ${BOBA_DIR}/app/packages.txt
-
-RUN sed -i "1s|^#!.*python3.*|#!${BOBA_DIR}/third/bin/python3|" ${BOBA_DIR}/app/bin/*
 
 EXPOSE 8650
 USER ${BOBA_UID}:${BOBA_GID}

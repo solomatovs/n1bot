@@ -50,16 +50,13 @@ PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 16
 
 
 class BobaMcpStand:
-    """Сервер boba-mcp отдельным процессом в окружении сервиса.
+    """Сервер boba-mcp отдельным процессом.
 
     Создаётся фикстурой boba_mcp_stand до стенда чата: чат подключается к нему
     по HTTP от имени пользователя сессии: называет его логин и роли
     заголовками под подписью и получает токен сервиса (вход proxy).
     """
 
-    PYTHON: Path = (
-        REPO_ROOT / "packages" / "apps" / "boba-mcp" / ".venv" / "bin" / "python"
-    )
     STAND: Path = (
         REPO_ROOT / "packages" / "apps" / "boba-mcp" / "tests" / "service_stand.py"
     )
@@ -70,7 +67,7 @@ class BobaMcpStand:
         self.port = free_port()
         workdir.mkdir(parents=True, exist_ok=True)
         self._process = subprocess.Popen(
-            [str(self.PYTHON), str(self.STAND), str(self.port), str(workdir)]
+            [sys.executable, str(self.STAND), str(self.port), str(workdir)]
         )
 
     def await_listening(self) -> None:
@@ -123,9 +120,6 @@ class BobaMcpStand:
 
 @pytest.fixture(scope="module")
 def boba_mcp_stand(stand_workdir: Path) -> Iterator[BobaMcpStand]:
-    if not BobaMcpStand.PYTHON.exists():
-        pytest.skip(f"the service environment is not built: {BobaMcpStand.PYTHON}")
-
     process = BobaMcpStand(stand_workdir / "boba-mcp")
     try:
         process.await_listening()

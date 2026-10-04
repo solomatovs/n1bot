@@ -45,9 +45,8 @@ CGROUP_studio    := boba-sandbox-studio
 MODELS_studio    := fastembed rapidocr
 PARTS_studio     := app_root/public app_root/public/workflow app_root/public/vendor
 
-# boba-mcp — MCP-сервер с инструментами boba: свой lock (fastmcp 4, pydantic 2.13),
-# плагины приходят зависимостями пакета; фронта у него нет
-PACKAGES_mcp      = boba-mcp
+# boba-mcp — MCP-сервер с инструментами boba; фронта у него нет
+PACKAGES_mcp      = boba-mcp $(PLUGIN_PACKAGES) boba-llm-fastembed
 IMPORTS_mcp      := boba.mcp_server.app fastmcp
 MODULE_mcp       := boba.mcp_server
 STAGE_mcp        := runtime-mcp
