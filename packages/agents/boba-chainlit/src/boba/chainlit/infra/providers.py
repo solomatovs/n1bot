@@ -27,7 +27,7 @@ from boba.chainlit.agent.flow import (
     PrefetchGraphBuilder,
     Rephraser,
 )
-from boba.chainlit.canvas.remote import RemoteJournals, RemoteStreams
+from boba.chainlit.canvas.remote import RemoteJournals
 from boba.chainlit.chat.history import CheckpointMessages, TranscriptFeed
 from boba.chainlit.chat.tracing import TracedStage
 from boba.chainlit.data import PostgresDataLayer
@@ -61,7 +61,7 @@ from boba.identity.run import Runs
 from boba.identity.session import SessionSource
 from boba.llm.providers import LlmProviders, LlmProviderTypes
 from boba.llm.schema import SchemaReply
-from boba.mcp_client.client import McpServers
+from boba.mcp_client.client import McpCaller, McpServers
 from boba.messaging import MessageBus
 from boba.runtime import providers as runtime
 from boba.runtime.di import Depends
@@ -406,14 +406,6 @@ async def mcp_servers(
         await servers.stop()
 
 
-def remote_streams(
-    journals: Annotated[RemoteJournals, Depends(remote_journals)],
-    servers: Annotated[McpServers, Depends(mcp_servers)],
-) -> RemoteStreams:
-    """Чтение журналов вызовов MCP-серверов для панели живого вывода."""
-    return RemoteStreams(journals, servers)
-
-
 async def langchain_agent(  # noqa: PLR0913
     chat: Annotated[BaseChatModel, Depends(session_chat, scope="session")],
     builder: Annotated[
@@ -432,9 +424,14 @@ async def langchain_agent(  # noqa: PLR0913
     journals: Annotated[CallJournals, Depends(runtime.call_journals)],
     selected: Annotated[SelectedProfile, Depends(session_profile, scope="session")],
 ) -> CompiledStateGraph:
-    # один порт для графа: свои серверы и MCP-серверы, доступные сессии.
-    # Соединения запечатываются на каждом сервере его собственным ключом
-    remote = await mcp.for_session(current_session().roles, selected.name)
+    # один порт для графа: свои серверы и MCP-серверы профиля сессии.
+    # На MCP-сервер чат входит от имени пользователя: его identifier — логин,
+    # роли — те, с которыми он вошёл в чат. Соединения запечатываются на
+    # каждом сервере его собственным ключом
+    caller = McpCaller(
+        login=current_session().identifier, roles=current_session().roles
+    )
+    remote = await mcp.for_session(caller, selected.config.mcp)
     journals.mark_streamable(mcp.journaled())
     connections = ArmedConnections(
         runtime.connection_store_ref, runtime.credential_source_ref, contexts

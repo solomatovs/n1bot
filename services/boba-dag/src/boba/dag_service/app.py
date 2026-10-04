@@ -1,8 +1,9 @@
 """Процесс сервиса исполнения: сборка объектов и запуск MCP-сервера.
 
 `boba-dag --config <toml>` читает конфиг, поднимает контейнер общих сервисов
-(журналы вызовов, реестр запусков, способ запуска, реестр инструментов),
-строит MCP-сервер над реестром и слушает адрес секции [dag].
+(журналы вызовов, реестр запусков, способ запуска, реестр инструментов,
+сервис входа), строит endpoint'ы MCP над реестром — по одному на профиль
+конфига — и слушает адрес секции [dag].
 
 Ошибки:
 SystemExit — конфиг не прочитан либо сервис не поднялся; текст называет причину.
@@ -18,12 +19,14 @@ from pathlib import Path
 from uuid import UUID
 
 import uvicorn
-from fastmcp.server.auth.providers.jwt import StaticTokenVerifier
 from pydantic import BaseModel, ConfigDict, Field, SecretStr
+from starlette.routing import Route
 
+from boba.auth import AuthService
 from boba.cancellation import StopReason
 from boba.connections.sealed import SealKeys
-from boba.dag_service.server import DagServer, RunLimits, TokenClaim
+from boba.dag_service.auth import ProxySignInRoute, SessionTokenVerifier
+from boba.dag_service.server import DagEndpoints, RunLimits, TokenClaim
 from boba.identity.context import CallContexts
 from boba.runtime import providers
 from boba.runtime.config import AppName, RuntimeConfig
@@ -37,10 +40,10 @@ logger = logging.getLogger(__name__)
 
 
 class DagToken(BaseModel):
-    """Токен доступа из конфига и вызывающий, которого он означает.
+    """Готовый токен доступа из конфига и вызывающий, которого он означает.
 
-    Временный вход до сервера авторизации: клиент предъявляет готовый токен,
-    сервис узнаёт по нему логин и роли.
+    Вход клиента без утверждений о пользователе (скрипт, сторонний клиент
+    MCP): он предъявляет токен, сервис узнаёт по нему логин и роли.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -49,7 +52,6 @@ class DagToken(BaseModel):
     login: str = Field(min_length=1)
     roles: StringList
     user_id: UUID | None = None
-    profile: str | None = None
 
     def claims(self) -> dict[str, object]:
         claims: dict[str, object] = {
@@ -61,22 +63,19 @@ class DagToken(BaseModel):
         if self.user_id is not None:
             claims[TokenClaim.USER_ID.value] = str(self.user_id)
 
-        if self.profile is not None:
-            claims[TokenClaim.PROFILE.value] = self.profile
-
         return claims
 
 
 class DagSection(BaseModel):
-    """Секция [dag]: адрес MCP-сервера, профиль по умолчанию, пределы
-    запусков и токены доступа."""
+    """Секция [dag]: адрес сервиса, общий путь endpoint'ов MCP, пределы
+    запусков и готовые токены доступа. Endpoint'ы — профили [profiles.*]
+    конфига сервиса: `{path}/{профиль}`; вход — секции [auth.*]."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     host: str = Field(min_length=1)
     port: int = Field(gt=0, lt=65536)
     path: str = Field(min_length=1)
-    default_profile: str = Field(min_length=1)
     limits: RunLimits
     tokens: dict[str, DagToken]
     """Токены доступа по именам записей конфига."""
@@ -106,6 +105,10 @@ class DagHost:
         self._container.eager(providers.runs)
         self._container.eager(providers.call_journals)
         self._container.eager(providers.credential_source)
+        self._container.eager(providers.users_table)
+        self._container.eager(providers.session_tokens)
+        self._container.eager(providers.user_directory)
+        self._container.eager(providers.auth_service)
         self._container.eager(providers.tool_launchers)
         self._container.eager(providers.tool_registry)
 
@@ -116,22 +119,29 @@ class DagHost:
         Container.set_root(self._container)
         await self._container.start()
         try:
-            server = DagServer(
+            auth = self._container.resolved(providers.auth_service)
+            endpoints = DagEndpoints(
                 self._container.resolved(providers.tool_registry),
                 self._container.resolved(providers.runs),
                 self._container.resolved(providers.call_journals),
-                self._verifier(section),
-                section.default_profile,
+                SessionTokenVerifier(auth, self._tokens(section)),
                 section.limits,
+                section.path,
+                self._sign_in_routes(auth),
             )
-            app = server.mcp().http_app(path=section.path, stateless_http=True)
             listener = uvicorn.Server(
                 uvicorn.Config(
-                    app, host=section.host, port=section.port, log_config=None
+                    endpoints.app(),
+                    host=section.host,
+                    port=section.port,
+                    log_config=None,
                 )
             )
             logger.info(
-                "boba-dag listens on %s:%d%s", section.host, section.port, section.path
+                "boba-dag listens on %s:%d, mcp endpoints: %s",
+                section.host,
+                section.port,
+                ", ".join(endpoints.paths()),
             )
             await listener.serve()
         finally:
@@ -141,12 +151,20 @@ class DagHost:
             await self._container.aclose()
 
     @staticmethod
-    def _verifier(section: DagSection) -> StaticTokenVerifier:
+    def _tokens(section: DagSection) -> dict[str, dict[str, object]]:
         tokens: dict[str, dict[str, object]] = {}
         for declared in section.tokens.values():
             tokens[declared.token.get_secret_value()] = declared.claims()
 
-        return StaticTokenVerifier(tokens=tokens)
+        return tokens
+
+    def _sign_in_routes(self, auth: AuthService) -> list[Route]:
+        """Маршруты входа по [auth]: пока подключён вход proxy."""
+        routes: list[Route] = []
+        if proxy := self._config.proxy():
+            routes.append(ProxySignInRoute(proxy, auth).route())
+
+        return routes
 
 
 class DagEntry:

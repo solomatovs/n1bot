@@ -10,6 +10,9 @@ requires-python = ">=3.11,<3.12"
 dependencies = [
     "fastmcp>=4.0,<5",
     "boba-runtime==0.0.26.dev4",
+    "boba-auth==0.0.26.dev4",
+    "boba-access==0.0.26.dev4",
+    "boba-identity==0.0.26.dev4",
     "boba-toolrun==0.0.26.dev4",
     "boba-toolkit==0.0.26.dev4",
     "boba-connection-broker==0.0.26.dev4",

@@ -21,15 +21,17 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Sequence
+from collections.abc import AsyncIterator, Sequence
+from contextlib import AsyncExitStack, asynccontextmanager
 from enum import StrEnum
 from typing import Any, ClassVar
 from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
 import mcp_types as mt
 from fastmcp import Context, FastMCP
-from fastmcp.server.auth import AccessToken, AuthProvider
+from fastmcp.server.auth import AccessToken, AuthProvider, TokenVerifier
 from fastmcp.server.dependencies import get_access_token, get_context
+from fastmcp.server.http import StarletteWithLifespan
 from fastmcp.server.middleware import CallNext, Middleware, MiddlewareContext
 from fastmcp.server.providers import Provider
 from fastmcp.tools import Tool
@@ -39,9 +41,15 @@ from fastmcp.utilities.versions import VersionSpec
 from langchain_core.messages import ToolCall, ToolMessage
 from langchain_core.tools import BaseTool
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, ValidationError
+from starlette.applications import Starlette
+from starlette.responses import JSONResponse
+from starlette.routing import BaseRoute, Mount, Route
+from starlette.types import ASGIApp, Receive, Send
+from starlette.types import Scope as AsgiScope
 
 from boba.cancellation import RunCancellation, StopReason
 from boba.canvas.journal import StreamSlice
+from boba.dag_service.auth import EndpointGate
 from boba.identity.context import (
     CallContext,
     HumanInitiator,
@@ -70,6 +78,7 @@ from boba.toolrun.streams import CallJournals, StreamPumps
 __all__ = [
     "CallContextMiddleware",
     "CallSchemas",
+    "DagEndpoints",
     "DagServer",
     "DagTool",
     "DagToolProvider",
@@ -92,7 +101,6 @@ class TokenClaim(StrEnum):
     LOGIN = "login"
     ROLES = "roles"
     USER_ID = "user_id"
-    PROFILE = "profile"
 
 
 class TokenClaimsError(Exception):
@@ -102,9 +110,8 @@ class TokenClaimsError(Exception):
 class TokenClaims(BaseModel):
     """Клеймы вызывающего в токене доступа.
 
-    login и roles обязательны. user_id и profile присылает клиент, у
-    которого они есть (чат: строка users и профиль чата); без них сервис
-    выводит идентификатор из логина и берёт профиль по умолчанию.
+    login и roles обязательны. user_id несёт готовый токен конфига, у
+    которого он задан; без него сервис выводит идентификатор из логина.
     """
 
     model_config = ConfigDict(frozen=True, extra="ignore")
@@ -112,19 +119,18 @@ class TokenClaims(BaseModel):
     login: str = Field(min_length=1)
     roles: frozenset[str]
     user_id: UUID | None = None
-    profile: str | None = None
 
 
 class TokenSubjects:
     """Субъект вызова по токену доступа.
 
-    Создаётся сборкой сервера с профилем по умолчанию; им пользуются
-    провайдер инструментов (по ролям — список) и middleware контекста (по
+    Создаётся сервером endpoint'а с его профилем; им пользуются провайдер
+    инструментов (по ролям и профилю — список) и middleware контекста (по
     субъекту — контекст вызова).
     """
 
-    def __init__(self, default_profile: str) -> None:
-        self._default_profile = default_profile
+    def __init__(self, profile: str) -> None:
+        self._profile = profile
 
     def current(self) -> Subject:
         """Субъект токена текущего запроса; без токена — TokenClaimsError."""
@@ -152,12 +158,11 @@ class TokenSubjects:
         if user_id is None:
             user_id = uuid5(NAMESPACE_URL, f"boba-dag:{claims.login}")
 
-        profile = claims.profile
-        if profile is None:
-            profile = self._default_profile
-
         return Subject(
-            user_id=user_id, login=claims.login, roles=claims.roles, profile=profile
+            user_id=user_id,
+            login=claims.login,
+            roles=claims.roles,
+            profile=self._profile,
         )
 
 
@@ -395,14 +400,18 @@ class ProgressSignals(StreamFeed):
 class StreamReadTool(Tool):
     """Операция сервиса stream_read: кусок журнала вызова по границам строк.
 
-    Создаётся сборкой сервера из журналов процесса. Вызывающий читает
-    только свои журналы: ключ журнала — пользователь токена, запуск и узел.
+    Создаётся сборкой сервера из журналов процесса. Журнал доступен только
+    тому, кто вызывал инструмент: ключ журнала — пользователь токена, запуск
+    и узел; чужой запуск — отказ 403.
     Итог — текст окна и его координаты (StreamSlice) в structuredContent;
     по ним клиент стыкует следующее окно. Запуск области операция не
     открывает и в предел запусков не входит.
     """
 
     NAME: ClassVar[str] = "stream_read"
+
+    FORBIDDEN: ClassVar[int] = 403
+    """Статус отказа в structuredContent: журнал чужой."""
 
     DESCRIPTION: ClassVar[str] = (
         "Read a window of the output journal of a tool call:\n"
@@ -438,7 +447,12 @@ class StreamReadTool(Tool):
                 f"stream_read: channel {request.channel.value!r} is not readable"
             )
 
-        piece = self._slice(request)
+        user = self._subjects.current().user_key
+        owner = self._journals.owner_of(request.run)
+        if owner is not None and owner != user:
+            return self._forbidden(request)
+
+        piece = self._slice(request, user)
         if piece is None:
             return self._refused(
                 f"stream_read: no journal of call {request.node!r} in run "
@@ -450,8 +464,7 @@ class StreamReadTool(Tool):
             structured_content=piece.model_dump(mode="json"),
         )
 
-    def _slice(self, request: JournalRead) -> StreamSlice | None:
-        user = self._subjects.current().user_key
+    def _slice(self, request: JournalRead, user: str) -> StreamSlice | None:
         if request.before is not None:
             return self._journals.recorded_slice_before(
                 user, request.run, request.node, request.before, request.channel
@@ -469,6 +482,18 @@ class StreamReadTool(Tool):
     def _refused(message: str) -> ToolResult:
         return ToolResult(
             content=[mt.TextContent(type="text", text=message)], is_error=True
+        )
+
+    def _forbidden(self, request: JournalRead) -> ToolResult:
+        """Отказ 403: журнал запуска принадлежит другому пользователю."""
+        message = (
+            f"403 Forbidden: the journal of run {request.run!r} belongs to another user"
+        )
+
+        return ToolResult(
+            content=[mt.TextContent(type="text", text=message)],
+            structured_content={"status": self.FORBIDDEN, "error": message},
+            is_error=True,
         )
 
 
@@ -628,11 +653,13 @@ class RunLimitMiddleware(Middleware):
 
 
 class DagServer:
-    """Сборка MCP-сервера сервиса исполнения.
+    """Сборка MCP-сервера одного endpoint'а сервиса исполнения.
 
-    Создаётся корнем сборки сервиса из реестра инструментов, реестра
-    запусков, проверяющего токены, профиля по умолчанию и пределов запусков;
-    mcp() отдаёт готовый сервер fastmcp.
+    Создаётся сборкой endpoint'ов (DagEndpoints) на профиль конфига сервиса:
+    из реестра инструментов, реестра запусков, журналов, проверяющего
+    токены, имени профиля и общего на процесс предела запусков. Инструменты
+    endpoint'а — те, что профиль и роли вошедшего разрешают; mcp() отдаёт
+    готовый сервер fastmcp.
     """
 
     NAME: ClassVar[str] = "boba-dag"
@@ -643,11 +670,13 @@ class DagServer:
         runs: Runs,
         journals: CallJournals,
         auth: AuthProvider,
-        default_profile: str,
-        limits: RunLimits,
+        profile: str,
+        limits: RunLimitMiddleware,
     ) -> None:
+        self._name = f"{self.NAME}/{profile}"
         self._auth = auth
-        self._subjects = TokenSubjects(default_profile)
+        self._subjects = TokenSubjects(profile)
+        self._limits = limits
         operations: list[Tool] = []
         self._features = self._features_of(registry)
         if journals.active():
@@ -655,16 +684,11 @@ class DagServer:
             operations.append(stream_read)
             self._features[JournalFeature.ID.value] = stream_read.feature()
 
-        names: list[str] = []
-        for operation in operations:
-            names.append(operation.name)
-
-        self._limits = RunLimitMiddleware(limits, frozenset(names))
         self._provider = DagToolProvider(
             RoleToolServers(registry), self._subjects, operations
         )
         self._contexts = CallContextMiddleware(
-            runs, journals, self._subjects, frozenset(names)
+            runs, journals, self._subjects, DagEndpoints.OPERATIONS
         )
 
     @staticmethod
@@ -680,7 +704,7 @@ class DagServer:
 
     def mcp(self) -> FastMCP:
         server = FastMCP(
-            self.NAME,
+            self._name,
             auth=self._auth,
             providers=[self._provider],
             middleware=[self._limits, self._contexts],
@@ -691,3 +715,94 @@ class DagServer:
         server.provider_error_strategy = "raise"
 
         return server
+
+
+class EndpointApp:
+    """Приложение одного endpoint'а MCP и путь, на котором оно отвечает."""
+
+    def __init__(
+        self, path: str, app: ASGIApp, lifespan: StarletteWithLifespan
+    ) -> None:
+        self.path = path
+        self.app = app
+        self.lifespan = lifespan
+
+    def serves(self, path: str) -> bool:
+        if path == self.path:
+            return True
+
+        return path.startswith(f"{self.path}/")
+
+
+class DagEndpoints:
+    """Endpoint'ы MCP сервиса исполнения: по одному на профиль конфига.
+
+    Создаётся сборкой процесса. Профиль конфига сервиса — набор инструментов
+    и роли, которым он выдан; каждый профиль отвечает отдельным MCP-сервером
+    на пути `{base_path}/{профиль}`. Вошедший без ролей профиля получает 403
+    (EndpointGate). Реестр инструментов, запуски, журналы и предел запусков
+    у endpoint'ов общие. app() — приложение ASGI со всеми endpoint'ами и
+    маршрутами входа.
+    """
+
+    OPERATIONS: ClassVar[frozenset[str]] = frozenset({StreamReadTool.NAME})
+    """Операции сервиса: запуска не открывают и в предел запусков не входят."""
+
+    def __init__(  # noqa: PLR0913 — endpoint'ы собираются всеми входами процесса
+        self,
+        registry: ToolRegistry,
+        runs: Runs,
+        journals: CallJournals,
+        verifier: TokenVerifier,
+        limits: RunLimits,
+        base_path: str,
+        routes: Sequence[Route],
+    ) -> None:
+        self._routes = tuple(routes)
+        self._endpoints: list[EndpointApp] = []
+        slots = RunLimitMiddleware(limits, self.OPERATIONS)
+        for profile in sorted(registry.access.profiles()):
+            grant = registry.access.profile_grant(profile)
+            if grant is None:
+                continue
+
+            path = f"{base_path}/{profile}"
+            server = DagServer(registry, runs, journals, verifier, profile, slots)
+            served = server.mcp().http_app(path=path, stateless_http=True)
+            gate = EndpointGate(served, verifier, profile, grant)
+            self._endpoints.append(EndpointApp(path, gate, served))
+
+    def paths(self) -> Sequence[str]:
+        paths: list[str] = []
+        for endpoint in self._endpoints:
+            paths.append(endpoint.path)
+
+        return paths
+
+    def app(self) -> Starlette:
+        routes: list[BaseRoute] = [*self._routes, Mount("/", app=self._dispatch)]
+
+        return Starlette(routes=routes, lifespan=self._lifespan)
+
+    async def _dispatch(self, scope: AsgiScope, receive: Receive, send: Send) -> None:
+        """Запрос — endpoint'у, чей это путь; чужой путь — 404."""
+        for endpoint in self._endpoints:
+            if not endpoint.serves(scope["path"]):
+                continue
+
+            await endpoint.app(scope, receive, send)
+            return
+
+        known = ", ".join(self.paths())
+        message = f"404 Not Found: no mcp endpoint at {scope['path']}; known: {known}"
+        await JSONResponse({"error": message}, status_code=404)(scope, receive, send)
+
+    @asynccontextmanager
+    async def _lifespan(self, app: Starlette) -> AsyncIterator[None]:
+        """Жизненный цикл endpoint'ов: у каждого свой менеджер сессий MCP."""
+        async with AsyncExitStack() as stack:
+            for endpoint in self._endpoints:
+                served = endpoint.lifespan
+                await stack.enter_async_context(served.router.lifespan_context(served))
+
+            yield

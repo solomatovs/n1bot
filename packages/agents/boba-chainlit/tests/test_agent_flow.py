@@ -908,14 +908,13 @@ class TestCallsRouteByToolName:
         )
         config = McpServerConfig(
             endpoint=StdioCommand(command=sys.executable, args=(str(script), "stdio")),
-            roles=["*"],
-            profiles=["*"],
-            tools=["*"],
             prefix="std_",
             connect_timeout_sec=20.0,
             call_timeout_sec=60.0,
         )
-        remote = McpToolServer("standard", config, NamedBlocks(), DroppedSignals())
+        remote = McpToolServer(
+            "standard", config, NamedBlocks(), DroppedSignals(), None
+        )
         await remote.open()
         calls = [
             {"name": "fts_probe", "args": {"query": "kerberos"}, "id": "call_own"},

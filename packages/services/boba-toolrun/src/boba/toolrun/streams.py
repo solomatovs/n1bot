@@ -479,6 +479,24 @@ class CallJournals:
 
         return self._recorded(user_id, thread_id, call_id, read)
 
+    def owner_of(self, thread_id: str) -> str | None:
+        """Пользователь, чьи вызовы писали журналы области thread_id; None —
+        журналов области нет либо журнал выключен."""
+        store = self._store
+        if store is None:
+            return None
+
+        try:
+            return store.owner_of(thread_id)
+        except (StreamJournalError, ValueError) as exc:
+            logger.warning(
+                "stream journal: looking up the owner of %s failed: %s",
+                thread_id,
+                exc,
+                exc_info=True,
+            )
+            return None
+
     def recorded_channels(
         self, user_id: str, thread_id: str, call_id: str
     ) -> tuple[JournalChannel, ...]:
