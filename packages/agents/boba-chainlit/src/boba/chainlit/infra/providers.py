@@ -40,6 +40,7 @@ from boba.chainlit.infra.config import (
 )
 from boba.chainlit.infra.session import ChainlitSessions, current_session
 from boba.chainlit.rendering.chat_view import StepText
+from boba.chainlit.rendering.mount import ChatAttachments, ChatMount
 from boba.chat.profiles import (
     AgentSettings,
     ChatProfiles,
@@ -55,15 +56,18 @@ from boba.connection_broker.user_connections import ArmedConnections
 from boba.db.postgres import AsyncPostgresPool, PostgresError, PostgresSchema
 from boba.identity.context import CallContexts
 from boba.identity.errors import InternalServiceError
+from boba.identity.run import Runs
 from boba.identity.session import SessionSource
 from boba.llm.providers import LlmProviders, LlmProviderTypes
 from boba.llm.schema import SchemaReply
+from boba.mcp_client.client import McpServers
 from boba.messaging import MessageBus
 from boba.runtime import providers as runtime
 from boba.runtime.di import Depends
 from boba.runtime.elements import ChatTables
 from boba.runtime.users import UsersTable
 from boba.toolrun.registry import ToolRegistry
+from boba.toolrun.stream_calls import ToolServer, ToolServers
 from boba.toolrun.streams import CallJournals
 
 
@@ -374,7 +378,24 @@ def sent_connections() -> SentConnections:
     return SentConnections()
 
 
-def langchain_agent(  # noqa: PLR0913
+async def mcp_servers(
+    c: Annotated[AppConfig, Depends(get_app_config)],
+    storage: Annotated[StorageClient, Depends(storage_provider)],
+    contexts: Annotated[CallContexts, Depends(runtime.call_contexts)],
+    runs: Annotated[Runs, Depends(runtime.runs)],
+) -> AsyncIterator[McpServers]:
+    """MCP-серверы процесса: подключаются на старте, закрываются на остановке.
+    Файлы из их результатов ложатся в workspace треда вложениями чата."""
+    files = ChatAttachments(contexts, storage, ChatMount(contexts, runs))
+    servers = McpServers(c.mcp, files)
+    await servers.start()
+    try:
+        yield servers
+    finally:
+        await servers.stop()
+
+
+async def langchain_agent(  # noqa: PLR0913
     chat: Annotated[BaseChatModel, Depends(session_chat, scope="session")],
     builder: Annotated[
         AgentGraphBuilder, Depends(session_graph_builder, scope="session")
@@ -388,15 +409,22 @@ def langchain_agent(  # noqa: PLR0913
     raw: Annotated[DictConfig, Depends(runtime.get_raw_config)],
     sent: Annotated[SentConnections, Depends(sent_connections)],
     contexts: Annotated[CallContexts, Depends(runtime.call_contexts)],
+    mcp: Annotated[McpServers, Depends(mcp_servers)],
+    selected: Annotated[SelectedProfile, Depends(session_profile, scope="session")],
 ) -> CompiledStateGraph:
-    service = SealingToolServer(
-        registry.server(tools),
-        ArmedConnections(
-            runtime.connection_store_ref, runtime.credential_source_ref, contexts
-        ),
-        sent,
-        timedelta(seconds=bind(raw, "connections", ConnectionsConfig).seal_ttl_sec),
+    # один порт для графа: свои серверы и MCP-серверы, доступные сессии.
+    # Соединения запечатываются на каждом сервере его собственным ключом
+    remote = await mcp.for_session(current_session().roles, selected.name)
+    connections = ArmedConnections(
+        runtime.connection_store_ref, runtime.credential_source_ref, contexts
     )
+    ttl = timedelta(seconds=bind(raw, "connections", ConnectionsConfig).seal_ttl_sec)
+
+    ports: list[ToolServer] = []
+    for port in (registry.server(tools), *remote):
+        ports.append(SealingToolServer(port, connections, sent, ttl))
+
+    service = ToolServers(ports)
 
     names: list[str] = []
     for offered in service.tools():

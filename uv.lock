@@ -596,6 +596,7 @@ dependencies = [
     { name = "boba-identity", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "boba-krb", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "boba-llm", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "boba-mcp-client", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "boba-messaging", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "boba-runtime", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "boba-sandbox", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
@@ -672,6 +673,7 @@ requires-dist = [
     { name = "boba-llm", editable = "packages/core/boba-llm" },
     { name = "boba-llm-http", marker = "extra == 'dev'", editable = "packages/infra/llm/boba-llm-http" },
     { name = "boba-llm-onnx", marker = "extra == 'dev'", editable = "packages/infra/llm/boba-llm-onnx" },
+    { name = "boba-mcp-client", editable = "packages/services/boba-mcp-client" },
     { name = "boba-messaging", editable = "packages/core/boba-messaging" },
     { name = "boba-runtime", editable = "packages/services/boba-runtime" },
     { name = "boba-sandbox", editable = "packages/infra/sandbox/boba-sandbox" },
@@ -1503,6 +1505,7 @@ version = "0.0.26.dev4"
 source = { editable = "packages/services/boba-mcp-client" }
 dependencies = [
     { name = "anyio", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "boba-access", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "boba-toolkit", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "boba-toolrun", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "httpx", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
@@ -1513,12 +1516,19 @@ dependencies = [
 
 [package.optional-dependencies]
 dev = [
+    { name = "boba-connections", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "boba-db-postgres", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "boba-runtime", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "pytest", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "anyio", specifier = ">=4" },
+    { name = "boba-access", editable = "packages/core/boba-access" },
+    { name = "boba-connections", marker = "extra == 'dev'", editable = "packages/core/boba-connections" },
+    { name = "boba-db-postgres", marker = "extra == 'dev'", editable = "packages/infra/db/boba-db-postgres" },
+    { name = "boba-runtime", marker = "extra == 'dev'", editable = "packages/services/boba-runtime" },
     { name = "boba-toolkit", editable = "packages/core/boba-toolkit" },
     { name = "boba-toolrun", editable = "packages/services/boba-toolrun" },
     { name = "httpx", specifier = ">=0.28,<1" },

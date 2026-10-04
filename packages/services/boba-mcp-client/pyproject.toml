@@ -9,6 +9,7 @@ description = "Boba mcp client: порт сервера инструментов
 requires-python = ">=3.11,<4"
 dependencies = [
     "boba-toolkit==0.0.26.dev4",
+    "boba-access==0.0.26.dev4",
     "boba-toolrun==0.0.26.dev4",
     "mcp>=1.12,<2",
     "httpx>=0.28,<1",
@@ -19,6 +20,9 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
+    "boba-connections==0.0.26.dev4",
+    "boba-db-postgres==0.0.26.dev4",
+    "boba-runtime==0.0.26.dev4",
     "pytest>=8",
 ]
 

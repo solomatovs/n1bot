@@ -15,10 +15,11 @@ McpClientError — сервер недоступен, не прошёл иниц
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import logging
 from abc import abstractmethod
-from collections.abc import AsyncIterator, Mapping, Sequence
+from collections.abc import AsyncIterator, Iterable, Mapping, Sequence
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from datetime import timedelta
 from enum import StrEnum
@@ -36,16 +37,22 @@ from mcp.client.streamable_http import streamablehttp_client
 from mcp.shared.message import SessionMessage
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, ValidationError
 
+from boba.access import ProfileGrant
 from boba.toolkit.result import ErrorResult, MarkdownResult, ToolResultBase
+from boba.toolkit.types import StringList
 from boba.toolkit.wire import ResultWire, WireMeta, WireResult
 from boba.toolrun.stream_calls import CallReply, ToolServer
 
 __all__ = [
     "BearerAuth",
+    "BlockFiles",
     "HttpEndpoint",
     "McpClientError",
     "McpServerConfig",
+    "McpServers",
+    "McpServersConfig",
     "McpToolServer",
+    "NamedBlocks",
     "NoAuth",
     "SseEndpoint",
     "StdioCommand",
@@ -203,20 +210,43 @@ McpEndpoint = Annotated[
 ]
 
 
-class McpServerConfig(BaseModel):
-    """Один MCP-сервер в конфиге клиента.
+class McpServerConfig(ProfileGrant):
+    """Один MCP-сервер в конфиге клиента: секция [mcp.servers.<имя>].
 
-    prefix добавляется к именам инструментов сервера: им разводят серверы с
-    совпавшими именами. Сроки — на подключение с инициализацией и на один
-    вызов инструмента.
+    Доступ задаётся на сервер целиком, грантом профиля: roles — роли,
+    которым сервер виден ('*' — всем), profiles — профили чата, в которых
+    он подключён ('*' — во всех), tools — какие инструменты сервера брать
+    ('*' — все). Имена инструментов сервера до подключения неизвестны,
+    поэтому в списки инструментов профилей они не вносятся. prefix
+    добавляется к именам инструментов: им разводят серверы с совпавшими
+    именами. Сроки — на подключение с инициализацией и на один вызов.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     endpoint: McpEndpoint
+    profiles: StringList
     prefix: str = ""
     connect_timeout_sec: float = Field(gt=0)
     call_timeout_sec: float = Field(gt=0)
+
+    def granted(self, roles: Iterable[str], profile: str) -> bool:
+        """Подключён ли сервер сессии с такими ролями и профилем."""
+        if not self.visible_for(roles):
+            return False
+
+        if self.WILDCARD in self.profiles:
+            return True
+
+        return profile in self.profiles
+
+
+class McpServersConfig(BaseModel):
+    """Секция [mcp]: MCP-серверы клиента по именам."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    servers: Mapping[str, McpServerConfig]
 
 
 class ErrorCauses:
@@ -361,21 +391,44 @@ class McpToolStubs:
         raise RuntimeError(msg)
 
 
+class BlockFiles(Protocol):
+    """Куда клиент кладёт нетекстовые блоки результата: картинки, звук,
+    вложенные файлы.
+
+    Реализует хозяин клиента: чат сохраняет блок файлом в workspace треда и
+    показывает вложением. Итог — строка для модели о том, где теперь файл.
+    """
+
+    @abstractmethod
+    async def attached(self, call: ToolCall, index: int, mime: str, data: bytes) -> str:
+        """Принять блок номер index результата вызова call."""
+
+
+class NamedBlocks(BlockFiles):
+    """Реализация BlockFiles без хранилища: блок только называется в тексте
+    результата. Ей пользуется клиент, которому некуда класть файлы."""
+
+    async def attached(self, call: ToolCall, index: int, mime: str, data: bytes) -> str:
+        return f"[{mime}, {len(data)} bytes]"
+
+
 class McpResults:
     """Итог вызова MCP как сообщение инструмента истории.
 
     Создаётся портом McpToolServer. Результат с полями boba в _meta —
     итог сервера boba-dag: его модель оживает по kind. Результат любого
-    другого сервера — текст его content: текстовые блоки подряд, остальные
-    блоки названы одной строкой, structuredContent без текста — JSON.
+    другого сервера — текст его content: текстовые блоки подряд, блоки-файлы
+    (картинки, звук, вложенные ресурсы) уходят хозяину клиента (BlockFiles)
+    и остаются в тексте его строкой, structuredContent без текста — JSON.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, files: BlockFiles) -> None:
+        self._files = files
         self._wire = ResultWire()
         self._causes = ErrorCauses()
 
-    def message(self, call: ToolCall, result: mt.CallToolResult) -> ToolMessage:
-        text = self._text(result)
+    async def message(self, call: ToolCall, result: mt.CallToolResult) -> ToolMessage:
+        text = await self._text(call, result)
         failed = bool(result.isError)
         artifact = self._artifact(result, text, failed)
 
@@ -437,10 +490,18 @@ class McpResults:
             )
             return None
 
-    def _text(self, result: mt.CallToolResult) -> str:
+    async def _text(self, call: ToolCall, result: mt.CallToolResult) -> str:
         parts: list[str] = []
+        files = 0
         for block in result.content:
-            parts.append(self._block_text(block))
+            payload = self._payload(block)
+            if payload is None:
+                parts.append(self._block_text(block))
+                continue
+
+            mime, data = payload
+            parts.append(await self._files.attached(call, files, mime, data))
+            files += 1
 
         text = "\n".join(part for part in parts if part)
         if text:
@@ -451,31 +512,39 @@ class McpResults:
 
         return ""
 
-    def _block_text(self, block: mt.ContentBlock) -> str:
+    @staticmethod
+    def _payload(block: mt.ContentBlock) -> tuple[str, bytes] | None:
+        """Тип и байты блока-файла; None — блок текстовый или ссылка."""
+        if isinstance(block, mt.ImageContent | mt.AudioContent):
+            return block.mimeType, base64.b64decode(block.data)
+
+        if not isinstance(block, mt.EmbeddedResource):
+            return None
+
+        resource = block.resource
+        if not isinstance(resource, mt.BlobResourceContents):
+            return None
+
+        mime = resource.mimeType
+        if not mime:
+            mime = "application/octet-stream"
+
+        return mime, base64.b64decode(resource.blob)
+
+    @staticmethod
+    def _block_text(block: mt.ContentBlock) -> str:
         if isinstance(block, mt.TextContent):
             return block.text
 
-        if isinstance(block, mt.ImageContent | mt.AudioContent):
-            kind = type(block).__name__.removesuffix("Content").lower()
-
-            return f"[{kind} {block.mimeType}, {len(block.data)} base64 chars]"
-
         if isinstance(block, mt.EmbeddedResource):
-            return self._resource_text(block.resource)
+            resource = block.resource
+            if isinstance(resource, mt.TextResourceContents):
+                return resource.text
 
         if isinstance(block, mt.ResourceLink):
             return f"[resource link {block.uri}]"
 
         return f"[{type(block).__name__}]"
-
-    @staticmethod
-    def _resource_text(
-        resource: mt.TextResourceContents | mt.BlobResourceContents,
-    ) -> str:
-        if isinstance(resource, mt.TextResourceContents):
-            return resource.text
-
-        return f"[resource {resource.uri}]"
 
 
 class McpToolServer(ToolServer):
@@ -491,12 +560,15 @@ class McpToolServer(ToolServer):
 
     FEATURE_PREFIX: ClassVar[str] = "com.boba/"
 
-    def __init__(self, name: str, config: McpServerConfig) -> None:
+    META_CALL_ID: ClassVar[str] = "boba/tool_call_id"
+    """Ключ _meta запроса с идентификатором вызова модели."""
+
+    def __init__(self, name: str, config: McpServerConfig, files: BlockFiles) -> None:
         self._name = name
         self._config = config
         self._connection = McpConnection(config.endpoint, config.connect_timeout_sec)
         self._stubs = McpToolStubs(name, config.prefix)
-        self._results = McpResults()
+        self._results = McpResults(files)
         self._tools: list[BaseTool] | None = None
         self._remote: dict[str, str] = {}
         """Имя инструмента у модели -> имя на сервере."""
@@ -521,6 +593,9 @@ class McpToolServer(ToolServer):
         tools: list[BaseTool] = []
         remote: dict[str, str] = {}
         for tool in listed:
+            if not self._config.covers(tool.name):
+                continue
+
             stub = self._stubs.stub(tool)
             tools.append(stub)
             remote[stub.name] = tool.name
@@ -536,6 +611,11 @@ class McpToolServer(ToolServer):
 
     async def close(self) -> None:
         await self._connection.close()
+
+    @property
+    def opened(self) -> bool:
+        """Список инструментов прочитан: порт можно отдавать модели."""
+        return self._tools is not None
 
     def tools(self) -> Sequence[BaseTool]:
         if self._tools is None:
@@ -563,10 +643,12 @@ class McpToolServer(ToolServer):
         remote = self._remote.get(call["name"], call["name"])
         try:
             session, _hello = await self._connection.open()
-            result = await session.call_tool(
-                remote,
-                dict(call["args"]),
-                read_timeout_seconds=timedelta(seconds=self._config.call_timeout_sec),
+            result = await session.send_request(
+                mt.ClientRequest(self._request(remote, call)),
+                mt.CallToolResult,
+                request_read_timeout_seconds=timedelta(
+                    seconds=self._config.call_timeout_sec
+                ),
             )
         except asyncio.CancelledError:
             raise
@@ -582,7 +664,25 @@ class McpToolServer(ToolServer):
 
             return self._results.failed(call, exc)
 
-        return self._results.message(call, result)
+        return await self._results.message(call, result)
+
+    def _request(self, remote: str, call: ToolCall) -> mt.CallToolRequest:
+        """Запрос tools/call. Серверу, объявившему возможности boba, в _meta
+        едет идентификатор вызова модели: его журнал и итог несут тот же id."""
+        arguments = dict(call["args"])
+        call_id = call["id"]
+        if not self._features or not call_id:
+            params = mt.CallToolRequestParams(name=remote, arguments=arguments)
+
+            return mt.CallToolRequest(method="tools/call", params=params)
+
+        params = mt.CallToolRequestParams(
+            name=remote,
+            arguments=arguments,
+            _meta=mt.RequestParams.Meta.model_validate({self.META_CALL_ID: call_id}),
+        )
+
+        return mt.CallToolRequest(method="tools/call", params=params)
 
     @staticmethod
     async def _list(session: ClientSession) -> list[mt.Tool]:
@@ -610,3 +710,59 @@ class McpToolServer(ToolServer):
             declared[feature] = dict(settings)
 
         return declared
+
+
+class McpServers:
+    """MCP-серверы клиента: подключение на старте и порты для сессии.
+
+    Создаётся сборкой приложения из секции [mcp]. start() подключает все
+    серверы; сервер, который не ответил, приложение не роняет — он
+    подключается при первой сессии, которой он положен. for_session()
+    отдаёт порты серверов, доступных ролям и профилю сессии.
+    """
+
+    def __init__(self, config: McpServersConfig, files: BlockFiles) -> None:
+        self._configs = dict(config.servers)
+        self._servers: dict[str, McpToolServer] = {}
+        for name, server in config.servers.items():
+            self._servers[name] = McpToolServer(name, server, files)
+
+    async def start(self) -> None:
+        for name, config in self._configs.items():
+            # сервер, не выданный ни одному профилю или роли, не подключается
+            if not config.profiles:
+                continue
+
+            if not config.roles:
+                continue
+
+            await self._open(name)
+
+    async def stop(self) -> None:
+        for server in self._servers.values():
+            await server.close()
+
+    async def for_session(
+        self, roles: Iterable[str], profile: str
+    ) -> Sequence[ToolServer]:
+        granted = frozenset(roles)
+        ports: list[ToolServer] = []
+        for name, server in self._servers.items():
+            if not self._configs[name].granted(granted, profile):
+                continue
+
+            if not server.opened:
+                await self._open(name)
+
+            if server.opened:
+                ports.append(server)
+
+        return ports
+
+    async def _open(self, name: str) -> None:
+        """Подключение сервера; сбой журналируется и сервер остаётся без порта
+        до следующей попытки."""
+        try:
+            await self._servers[name].open()
+        except McpClientError as exc:
+            logger.error("mcp server %s is unavailable: %s", name, exc)

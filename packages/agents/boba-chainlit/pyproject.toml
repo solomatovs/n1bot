@@ -17,6 +17,7 @@ dependencies = [
     "boba-chat==0.0.26.dev4",
     "boba-config==0.0.26.dev4",
     "boba-connection-broker==0.0.26.dev4",
+    "boba-mcp-client==0.0.26.dev4",
     "boba-connections==0.0.26.dev4",
     "boba-toolkit==0.0.26.dev4",
     "boba-cancellation==0.0.26.dev4",

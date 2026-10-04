@@ -21,6 +21,7 @@ from boba.chat.profiles import (
 )
 from boba.db.postgres.connection import PostgresConfig
 from boba.krb import KerberosWorkspaceConfig
+from boba.mcp_client.client import McpServersConfig
 from boba.runtime.config import DataLayerConfig, RuntimeConfig
 
 LOGGING_CONFIG: dict[str, Any] = {
@@ -205,6 +206,11 @@ class AppConfig(RuntimeConfig):
                 "Права ролей по имени; в конфиге подключается ссылкой ${roles}."
             ),
         ),
+    ]
+
+    mcp: Annotated[
+        McpServersConfig,
+        Field(description="Секция [mcp]: MCP-серверы, чьи инструменты видит модель."),
     ]
 
     settings: SettingsBounds = Field(

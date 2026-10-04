@@ -13,6 +13,7 @@ import socket
 import subprocess
 import sys
 from collections.abc import AsyncIterator, Iterator
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import httpx
@@ -20,17 +21,30 @@ import pytest
 from langchain_core.messages import ToolCall
 from pydantic import SecretStr
 
+from boba.connections.sealed import ConnectionSeal, SealedConnection, SealFeature
+from boba.db.postgres.connection import PostgresConfig
 from boba.mcp_client.client import (
     BearerAuth,
+    BlockFiles,
     HttpEndpoint,
     McpClientError,
     McpFailure,
     McpServerConfig,
+    McpServers,
+    McpServersConfig,
     McpToolServer,
+    NamedBlocks,
     StdioCommand,
 )
+from boba.runtime.config import ConfigLocator
 from boba.toolkit.dag import WorkflowResult
-from boba.toolkit.result import ErrorResult, FailureResult, MarkdownResult
+from boba.toolkit.result import (
+    ErrorResult,
+    FailureResult,
+    MarkdownResult,
+    ShellResult,
+)
+from boba.toolkit.types import SecretReveal
 
 pytestmark = pytest.mark.anyio
 
@@ -40,6 +54,9 @@ SERVER = Path(__file__).with_name("standard_server.py")
 def _config(endpoint: HttpEndpoint | StdioCommand, prefix: str = "") -> McpServerConfig:
     return McpServerConfig(
         endpoint=endpoint,
+        roles=["*"],
+        profiles=["*"],
+        tools=["*"],
         prefix=prefix,
         connect_timeout_sec=20.0,
         call_timeout_sec=60.0,
@@ -53,7 +70,7 @@ def _call(name: str, **args: object) -> ToolCall:
 @pytest.fixture
 async def stdio() -> AsyncIterator[McpToolServer]:
     endpoint = StdioCommand(command=sys.executable, args=(str(SERVER), "stdio"))
-    server = McpToolServer("standard", _config(endpoint, prefix="std_"))
+    server = McpToolServer("standard", _config(endpoint, prefix="std_"), NamedBlocks())
     await server.open()
     try:
         yield server
@@ -82,7 +99,7 @@ async def http(http_port: int) -> AsyncIterator[McpToolServer]:
     endpoint = HttpEndpoint(
         scheme="http", host="127.0.0.1", port=http_port, path="/mcp"
     )
-    server = McpToolServer("standard", _config(endpoint))
+    server = McpToolServer("standard", _config(endpoint), NamedBlocks())
     for _ in range(100):
         try:
             await server.open()
@@ -156,8 +173,38 @@ class TestStandardServerOverStdio:
     ) -> None:
         message = await stdio.call(_call("std_picture"))
 
-        if "[image image/png" not in str(message.content):
+        if "[image/png, 24 bytes]" not in str(message.content):
             raise AssertionError(f"an image block is named, not dropped: {message}")
+
+    async def test_file_block_goes_to_the_host_of_the_client(self) -> None:
+        """Картинку клиент отдаёт хозяину байтами; в тексте — его строка."""
+        received: list[tuple[str, int, str, bytes]] = []
+
+        class Recording(BlockFiles):
+            async def attached(
+                self, call: ToolCall, index: int, mime: str, data: bytes
+            ) -> str:
+                received.append((str(call["id"]), index, mime, data))
+                return "saved as picture.png"
+
+        endpoint = StdioCommand(command=sys.executable, args=(str(SERVER), "stdio"))
+        server = McpToolServer("standard", _config(endpoint), Recording())
+        await server.open()
+        try:
+            message = await server.call(_call("picture"))
+        finally:
+            await server.close()
+
+        if len(received) != 1:
+            raise AssertionError(f"the host gets the block once: {received}")
+
+        call_id, index, mime, data = received[0]
+        if (call_id, index, mime) != ("call-picture", 0, "image/png"):
+            raise AssertionError(f"the block is described to the host: {received[0]}")
+        if not data.startswith(b"\x89PNG"):
+            raise AssertionError(f"the host gets the decoded bytes: {data[:8]!r}")
+        if message.content != "saved as picture.png":
+            raise AssertionError(f"the host's line is the text: {message}")
 
     async def test_calls_of_one_answer_run_together(self, stdio: McpToolServer) -> None:
         pending = await stdio.submit(
@@ -180,14 +227,14 @@ class TestStandardServerOverHttp:
 class TestUnreachableServer:
     async def test_missing_command_is_a_client_error(self) -> None:
         endpoint = StdioCommand(command="/nonexistent/mcp-server")
-        server = McpToolServer("ghost", _config(endpoint))
+        server = McpToolServer("ghost", _config(endpoint), NamedBlocks())
 
         with pytest.raises(McpClientError, match=r"ghost|nonexistent"):
             await server.open()
 
     async def test_tools_before_open_is_a_client_error(self) -> None:
         endpoint = StdioCommand(command=sys.executable, args=(str(SERVER), "stdio"))
-        server = McpToolServer("standard", _config(endpoint))
+        server = McpToolServer("standard", _config(endpoint), NamedBlocks())
 
         with pytest.raises(McpClientError, match="before open"):
             server.tools()
@@ -220,7 +267,9 @@ class TestPublicServers:
 
     async def test_deepwiki_lists_tools_and_answers_a_call(self) -> None:
         await self._reachable(self.DEEPWIKI)
-        server = McpToolServer("deepwiki", _config(self.DEEPWIKI, prefix="dw_"))
+        server = McpToolServer(
+            "deepwiki", _config(self.DEEPWIKI, prefix="dw_"), NamedBlocks()
+        )
         await server.open()
         try:
             names = [tool.name for tool in server.tools()]
@@ -241,7 +290,7 @@ class TestPublicServers:
 
     async def test_context7_lists_tools_and_answers_a_call(self) -> None:
         await self._reachable(self.CONTEXT7)
-        server = McpToolServer("context7", _config(self.CONTEXT7))
+        server = McpToolServer("context7", _config(self.CONTEXT7), NamedBlocks())
         await server.open()
         try:
             names = [tool.name for tool in server.tools()]
@@ -263,6 +312,63 @@ class TestPublicServers:
 
         if not str(message.content).strip():
             raise AssertionError(f"context7 answers with text: {message}")
+
+
+class TestServersOfASession:
+    """Какие серверы и инструменты достаются сессии: грант секции сервера."""
+
+    @staticmethod
+    def _servers(**grant: list[str]) -> McpServers:
+        endpoint = StdioCommand(command=sys.executable, args=(str(SERVER), "stdio"))
+        base = _config(endpoint).model_dump()
+        base.update(grant)
+        ghost = _config(StdioCommand(command="/nonexistent/mcp-server")).model_dump()
+        config = McpServersConfig.model_validate(
+            {"servers": {"standard": base, "ghost": ghost}}
+        )
+
+        return McpServers(config, NamedBlocks())
+
+    async def test_granted_session_gets_the_port_and_a_dead_server_is_skipped(
+        self,
+    ) -> None:
+        servers = self._servers()
+        await servers.start()
+        try:
+            ports = await servers.for_session(["DEV"], "general")
+            names = sorted(tool.name for port in ports for tool in port.tools())
+        finally:
+            await servers.stop()
+
+        if names != ["add", "broken", "picture", "shout"]:
+            raise AssertionError(f"only the live server gives tools: {names}")
+
+    async def test_profile_and_role_outside_the_grant_get_nothing(self) -> None:
+        servers = self._servers(roles=["ADM"], profiles=["search"])
+        await servers.start()
+        try:
+            wrong_role = await servers.for_session(["DEV"], "search")
+            wrong_profile = await servers.for_session(["ADM"], "general")
+            granted = await servers.for_session(["ADM"], "search")
+        finally:
+            await servers.stop()
+
+        if wrong_role or wrong_profile:
+            raise AssertionError(f"the grant is both role and profile: {wrong_role}")
+        if len(granted) != 1:
+            raise AssertionError(f"the granted session gets the server: {granted}")
+
+    async def test_tool_list_of_the_section_limits_the_offered_tools(self) -> None:
+        servers = self._servers(tools=["add"])
+        await servers.start()
+        try:
+            ports = await servers.for_session(["DEV"], "general")
+            names = [tool.name for port in ports for tool in port.tools()]
+        finally:
+            await servers.stop()
+
+        if names != ["add"]:
+            raise AssertionError(f"only the listed tools are offered: {names}")
 
 
 class DagProcess:
@@ -311,7 +417,7 @@ def dag_process(tmp_path: Path) -> Iterator[DagProcess]:
 
 @pytest.fixture
 async def dag(dag_process: DagProcess) -> AsyncIterator[McpToolServer]:
-    server = McpToolServer("dag", _config(dag_process.endpoint()))
+    server = McpToolServer("dag", _config(dag_process.endpoint()), NamedBlocks())
     for _ in range(150):
         try:
             await server.open()
@@ -390,11 +496,49 @@ class TestBobaDagServer:
         if len(outcome.nodes) != len(nodes):
             raise AssertionError(f"every node reports its outcome: {outcome}")
 
+    async def test_connection_sealed_with_the_declared_key_reaches_the_body(
+        self, dag: McpToolServer
+    ) -> None:
+        """Ключ запечатывания сервер объявляет при подключении; значение,
+        запечатанное им для вызывающего, тело получает профилем."""
+        declared = dag.features().get(SealFeature.ID)
+        if declared is None:
+            raise AssertionError(f"the server declares the seal key: {dag.features()}")
+
+        profile = PostgresConfig.model_validate(
+            {
+                "host": "db.local",
+                "dbname": "orders",
+                "auth": {"method": "trust", "user": "u"},
+            }
+        )
+        sealed = SealedConnection(
+            login="alice",
+            expires_at=datetime.now(UTC) + timedelta(minutes=5),
+            profile=SecretReveal.dumped(profile),
+        )
+        value = ConnectionSeal(SealFeature.model_validate(declared).key).seal(sealed)
+
+        message = await dag.call(_call("fake_connection_host", connection=value))
+
+        if message.status != "success" or message.content != "db.local|orders":
+            raise AssertionError(f"the body got the sealed profile: {message}")
+
+    async def test_plain_reference_is_refused_by_the_server(
+        self, dag: McpToolServer
+    ) -> None:
+        message = await dag.call(
+            _call("fake_connection_host", connection="conn://postgres/main")
+        )
+
+        if message.status != "error":
+            raise AssertionError(f"an unsealed reference is refused: {message}")
+
     async def test_wrong_token_is_a_client_error(self, dag_process: DagProcess) -> None:
         endpoint = dag_process.endpoint().model_copy(
             update={"auth": BearerAuth(token=SecretStr("stranger"))}
         )
-        server = McpToolServer("dag", _config(endpoint))
+        server = McpToolServer("dag", _config(endpoint), NamedBlocks())
 
         for _ in range(150):
             try:
@@ -409,3 +553,85 @@ class TestBobaDagServer:
             raise AssertionError("a token the server does not know must not open")
 
         raise AssertionError("the server never answered 401 to a stranger token")
+
+
+class DagService:
+    """Настоящий процесс сервиса на рабочем конфиге: `python -m
+    boba.dag_service --config …` в окружении сервиса, адрес и токен — из
+    секции [dag] конфига стенда."""
+
+    HOST: str = "127.0.0.1"
+    PORT: int = 8650
+    TOKEN: SecretStr = SecretStr("dag-dev-token")
+
+    def __init__(self, config: Path, log: Path) -> None:
+        self._log = log.open("wb")
+        self._process = subprocess.Popen(
+            [
+                str(DagProcess.PYTHON),
+                "-m",
+                "boba.dag_service",
+                "--config",
+                str(config),
+            ],
+            stdout=self._log,
+            stderr=subprocess.STDOUT,
+        )
+
+    def endpoint(self) -> HttpEndpoint:
+        return HttpEndpoint(
+            scheme="http",
+            host=self.HOST,
+            port=self.PORT,
+            path="/mcp",
+            auth=BearerAuth(token=self.TOKEN),
+        )
+
+    def stop(self) -> None:
+        self._process.terminate()
+        self._process.wait(timeout=30)
+        self._log.close()
+
+
+@pytest.mark.integration
+@pytest.mark.xdist_group("dag-service")
+class TestDagServiceProcess:
+    """Приёмка двумя процессами: сервис со всеми плагинами рабочего конфига,
+    клиент чата ходит к нему по сети."""
+
+    @pytest.fixture
+    async def service(self, tmp_path: Path) -> AsyncIterator[McpToolServer]:
+        if not DagProcess.PYTHON.exists():
+            pytest.skip(f"the service environment is not built: {DagProcess.PYTHON}")
+
+        process = DagService(ConfigLocator.path(), tmp_path / "dag.log")
+        server = McpToolServer("dag", _config(process.endpoint()), NamedBlocks())
+        try:
+            for _ in range(600):
+                try:
+                    await server.open()
+                except McpClientError:
+                    await asyncio.sleep(0.2)
+                    continue
+
+                break
+
+            yield server
+        finally:
+            await server.close()
+            process.stop()
+
+    async def test_plugin_tool_runs_in_the_service_process(
+        self, service: McpToolServer
+    ) -> None:
+        names = [tool.name for tool in service.tools()]
+        if "bash" not in names or "workflow" not in names:
+            raise AssertionError(f"the service offers its plugin tools: {names}")
+
+        message = await service.call(_call("bash", command="echo from the service"))
+
+        artifact = message.artifact
+        if not isinstance(artifact, ShellResult):
+            raise AssertionError(f"the shell model is revived: {message}")
+        if artifact.stdout.strip() != "from the service":
+            raise AssertionError(f"the body ran in the service: {artifact}")
