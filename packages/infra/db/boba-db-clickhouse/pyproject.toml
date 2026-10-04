@@ -19,6 +19,12 @@ dependencies = [
 [project.entry-points."boba.addresses"]
 clickhouse = "boba.db.clickhouse.address:ChAddresses"
 
+[project.entry-points."boba.catalog"]
+clickhouse = "boba.db.clickhouse.snapshot:ChSnapshot"
+
+[project.entry-points."boba.connections"]
+clickhouse = "boba.db.clickhouse.manifest:MANIFEST"
+
 [project.optional-dependencies]
 payload = [
     "boba-toolkit[arrow]==0.0.26.dev4",
@@ -45,9 +51,3 @@ namespaces = true
 "boba.db.clickhouse.formats" = "payload"
 "boba.db.clickhouse.arrow_stream" = "payload"
 "boba.db.clickhouse.transfer" = "payload"
-
-[project.entry-points."boba.catalog"]
-clickhouse = "boba.db.clickhouse.snapshot:ChSnapshot"
-
-[project.entry-points."boba.connections"]
-clickhouse = "boba.db.clickhouse.manifest:MANIFEST"

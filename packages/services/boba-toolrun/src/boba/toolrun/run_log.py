@@ -143,7 +143,7 @@ class ToolRunLogger(CallHooks[_CallScope]):
             return None
 
         return self._journals.begin(
-            context.subject.user_key, context.scope.id, call_id, name
+            context.subject.user_key, context.run_id, call_id, name
         )
 
     @staticmethod

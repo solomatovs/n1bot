@@ -1,0 +1,1078 @@
+"""Тесты графов flow: подготовка контекста хода и обычный цикл."""
+
+from __future__ import annotations
+
+import asyncio
+import sys
+from collections.abc import AsyncIterator, Sequence
+from pathlib import Path
+from typing import Annotated, Any, ClassVar
+
+import pytest
+from chainlit.step import StepDict
+from chainlit_stand import RecordedTurn
+from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
+from langchain_core.messages import ToolCall as GraphToolCall
+from langchain_core.runnables import RunnableConfig
+from langchain_core.tools import BaseTool, tool
+from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.graph.state import CompiledStateGraph
+from pydantic import Field, ValidationError
+from typing_extensions import override
+
+from boba.cancellation import StopReason, ToolStopped, run_cancellation
+from boba.chainlit.agent.flow import (
+    GraphSpec,
+    LlmRephraser,
+    PassthroughRephraser,
+    PlainGraphBuilder,
+    PrefetchError,
+    PrefetchGraphBuilder,
+    PrefetchStage,
+    Rephraser,
+    RephrasingsParser,
+)
+from boba.chainlit.chat.tracing import AgentTracer, TracedStage
+from boba.chainlit.chat.turn import TurnState
+from boba.chainlit.domain.fields import StepField
+from boba.chainlit.infra.config import AppConfig
+from boba.chainlit.infra.providers import (
+    build_history_view,
+    llm_providers,
+    session_graph_builder,
+)
+from boba.chainlit.rendering.chat_view import StepText
+from boba.chat.profiles import (
+    ChatProfileConfig,
+    PlainFlowConfig,
+    PrefetchFlowConfig,
+    SelectedProfile,
+)
+from boba.connection_broker.sealing import SentConnections
+from boba.identity.context import CallContexts
+from boba.llm.chat import (
+    ChatEvent,
+    ChatModel,
+    ChatReply,
+    ChatRequest,
+    LlmError,
+    ToolCall,
+)
+from boba.llm.providers import LlmProviders, LlmProviderTypes
+from boba.llm.schema import SchemaReply
+from boba.mcp_client.client import (
+    DroppedSignals,
+    McpServerConfig,
+    McpToolServer,
+    NamedBlocks,
+    StdioCommand,
+)
+from boba.stand.refs import StandRefs
+from boba.toolkit.calls import CallIdPrefix, ToolIntent
+from boba.toolkit.chain import CallAmbient
+from boba.toolkit.ports import StreamSpecs
+from boba.toolkit.result import ErrorResult, TableResult, ToolArtifact
+from boba.toolrun.cancellation import CancellableTools
+from boba.toolrun.stream_calls import LocalDagService, ToolServer, ToolServers
+
+pytestmark = pytest.mark.anyio
+
+BACKEND: dict[str, Any] = {
+    "kind": "openai",
+    "transport": {},
+    "connection": {
+        "host": "llm.example",
+        "path": "/v1",
+        "auth": {"method": "bearer", "token": "token"},
+    },
+}
+
+REPHRASER: dict[str, Any] = {
+    "provider": BACKEND,
+    "model": "small-model",
+    "system_prompt": "rephrase",
+    "sampling": {"max_tokens": 256, "temperature": 0},
+}
+
+THREAD = RunnableConfig(configurable={"thread_id": "flow-thread"})
+
+QUESTION_FALLBACK = "исходный запрос"
+
+
+FEED_THREAD = "33333333-3333-3333-3333-333333333333"
+FEED_TURN = "44444444-4444-4444-4444-444444444444"
+
+
+@pytest.fixture(autouse=True)
+def chainlit_context() -> None:
+    pass
+
+
+@pytest.fixture
+async def http_context() -> None:
+    """Step пишет в emitter сессии."""
+    from chainlit.context import init_http_context
+
+    init_http_context()
+
+
+class ScriptedChat(GenericFakeChatModel):
+    """Основная модель по сценарию: bind_tools у фейка не реализован."""
+
+    def bind_tools(self, tools: Any, **kwargs: Any) -> Any:
+        return self
+
+
+class FakeRephraser(Rephraser):
+    """Переформулировщик без сети: отдаёт заготовленные варианты."""
+
+    def __init__(self, queries: Sequence[str]) -> None:
+        self.queries = queries
+        self.asked: list[str] = []
+
+    async def rephrase(self, query: str) -> Sequence[str]:
+        self.asked.append(query)
+        return self.queries
+
+
+class RecordingStage(PrefetchStage):
+    """Этап без ленты: запоминает, что подготовка открылась и закрылась."""
+
+    def __init__(self) -> None:
+        self.opened = 0
+        self.searched: list[Sequence[str]] = []
+        self.closed: list[Sequence[str]] = []
+        self.elapsed: list[int] = []
+
+    async def begin(self) -> None:
+        self.opened += 1
+
+    async def searching(self, queries: Sequence[str]) -> None:
+        self.searched.append(list(queries))
+
+    async def end(self, queries: Sequence[str], elapsed_ms: int) -> None:
+        self.closed.append(list(queries))
+        self.elapsed.append(elapsed_ms)
+
+
+class BrokenRephraser(Rephraser):
+    """Переформулировщик, у которого недоступен провайдер."""
+
+    async def rephrase(self, query: str) -> Sequence[str]:
+        msg = "provider is down"
+        raise RuntimeError(msg)
+
+
+class FakeChatModel(ChatModel):
+    """Чат-модель без сети: отвечает по схеме вызовом либо голым текстом."""
+
+    def __init__(
+        self, arguments: dict[str, Any] | None = None, content: str = ""
+    ) -> None:
+        self.arguments = arguments
+        self.content = content
+        self.asked: list[str] = []
+
+    async def chat(self, request: ChatRequest) -> AsyncIterator[ChatEvent]:
+        self.asked.append(request.messages[-1].content)
+
+        calls: list[ToolCall] = []
+        if self.arguments is not None:
+            calls.append(
+                ToolCall(id="c1", name="Rephrasings", arguments=self.arguments)
+            )
+
+        yield ChatReply(content=self.content, tool_calls=calls)
+
+
+class BrokenChatModel(ChatModel):
+    """Чат-модель, у которой недоступен провайдер."""
+
+    async def chat(self, request: ChatRequest) -> AsyncIterator[ChatEvent]:
+        msg = "provider is down"
+        raise LlmError(msg)
+        yield ChatReply()
+
+
+def _rephraser(chat: ChatModel) -> LlmRephraser:
+    return LlmRephraser(SchemaReply(chat, {}), "rephrase")
+
+
+@tool(response_format="content_and_artifact")
+async def fts_probe(
+    query: Annotated[str, Field(description="Search query.")],
+) -> tuple[str, Any]:
+    """Полнотекстовый поиск-заглушка."""
+    return TableResult(rows=[{"hit": f"fts:{query}"}]).packed()
+
+
+@tool(response_format="content_and_artifact")
+async def vector_probe(
+    query: Annotated[str, Field(description="Search query.")],
+) -> tuple[str, Any]:
+    """Векторный поиск-заглушка."""
+    return TableResult(rows=[{"hit": f"vector:{query}"}]).packed()
+
+
+@tool(response_format="content_and_artifact")
+async def failing_probe(
+    query: Annotated[str, Field(description="Search query.")],
+) -> tuple[str, Any]:
+    """Поиск, отвечающий отказом инструмента."""
+    failure = ErrorResult(message="database is down", error_kind="database_unavailable")
+
+    return failure.packed()
+
+
+@tool(response_format="content_and_artifact")
+async def slow_probe(
+    query: Annotated[str, Field(description="Search query.")],
+) -> tuple[str, Any]:
+    """Поиск, не успевающий закончиться до остановки хода."""
+    await asyncio.sleep(0.2)
+
+    return TableResult(rows=[{"hit": f"slow:{query}"}]).packed()
+
+
+@tool(response_format="content_and_artifact")
+async def strict_probe(
+    query: Annotated[str, Field(min_length=5, description="Search query.")],
+) -> tuple[str, Any]:
+    """Поиск, не принимающий короткий запрос."""
+    return TableResult(rows=[{"hit": f"strict:{query}"}]).packed()
+
+
+@tool(response_format="content_and_artifact")
+async def crashing_probe(
+    query: Annotated[str, Field(description="Search query.")],
+) -> tuple[str, Any]:
+    """Поиск, падающий исключением."""
+    msg = "sandbox crashed"
+    raise RuntimeError(msg)
+
+
+def _graph(
+    builder: Any, answers: Sequence[str], extra: Sequence[BaseTool] = ()
+) -> CompiledStateGraph:
+    """Граф на фейковой модели: реальные create_agent, checkpointer и history.
+
+    extra — инструменты теста, которые сервис исполняет помимо поисковых."""
+    scripted: list[AIMessage | str] = []
+    for answer in answers:
+        scripted.append(AIMessage(content=answer))
+
+    chat = ScriptedChat(messages=iter(scripted))
+    tools: list[BaseTool] = [fts_probe, vector_probe]
+    tools.extend(extra)
+
+    spec = GraphSpec(
+        chat=chat,
+        service=LocalDagService(
+            tools, StandRefs.STREAM_CONFIG, (), StreamSpecs({}), CallAmbient()
+        ),
+        system_prompt="you are a search assistant",
+        checkpointer=InMemorySaver(),
+        history=build_history_view(frozenset({"fts_probe", "vector_probe"}), 30),
+    )
+    return builder.build(spec)
+
+
+def _step_named(steps: Sequence[StepDict], name: str) -> StepDict | None:
+    """Шаг ленты, чьё название содержит имя; None — такого шага нет."""
+    for step in steps:
+        if name in str(step.get(StepField.NAME, "")):
+            return step
+
+    return None
+
+
+def _prefetch_calls(messages: Sequence[BaseMessage]) -> list[dict[str, Any]]:
+    calls: list[dict[str, Any]] = []
+    for message in messages:
+        if not isinstance(message, AIMessage):
+            continue
+
+        for call in message.tool_calls:
+            call_id = call["id"]
+            if CallIdPrefix.PREFETCH.marks(call_id):
+                calls.append(dict(call))
+
+    return calls
+
+
+def _tool_messages(messages: Sequence[BaseMessage]) -> list[ToolMessage]:
+    found: list[ToolMessage] = []
+    for message in messages:
+        if isinstance(message, ToolMessage):
+            found.append(message)
+
+    return found
+
+
+async def _replies(
+    service: ToolServer,
+    calls: Sequence[dict[str, Any]],
+) -> tuple[dict[str, ToolMessage], BaseMessage]:
+    """Ход, в котором модель зовёт calls: ответы инструментов по id вызова и
+    последнее сообщение хода."""
+    names: list[str] = []
+    for offered in service.tools():
+        names.append(offered.name)
+
+    scripted = [AIMessage(content="", tool_calls=calls), AIMessage(content="done")]
+    spec = GraphSpec(
+        chat=ScriptedChat(messages=iter(scripted)),
+        service=service,
+        system_prompt="you are a search assistant",
+        checkpointer=InMemorySaver(),
+        history=build_history_view(frozenset(names), 30),
+    )
+    graph = PlainGraphBuilder().build(spec)
+
+    result = await graph.ainvoke(
+        {"messages": [HumanMessage("question")]}, config=THREAD
+    )
+    messages = result["messages"]
+
+    replies: dict[str, ToolMessage] = {}
+    for reply in _tool_messages(messages):
+        replies[reply.tool_call_id] = reply
+
+    return replies, messages[-1]
+
+
+class TestRephrasingsParser:
+    """Разбор объекта ответа переформулировщика: схема либо чужой объект."""
+
+    SCHEMA_ANSWER: ClassVar[dict[str, Any]] = {
+        "keywords": "kerberos cloudbeaver samba",
+        "expanded": "настройка kerberos в cloudbeaver через samba AD",
+        "english": "kerberos authentication in cloudbeaver with samba AD",
+    }
+
+    def test_schema_answer_gives_every_field(self) -> None:
+        parsed = RephrasingsParser().parse(self.SCHEMA_ANSWER)
+        if len(parsed) != 3:
+            raise AssertionError(f"три варианта, получено {parsed}")
+
+    def test_foreign_object_gives_its_strings(self) -> None:
+        parsed = RephrasingsParser().parse({"queries": ["first one", "second one"]})
+        if list(parsed) != ["first one", "second one"]:
+            raise AssertionError(f"строки чужой схемы взяты как есть: {parsed}")
+
+    def test_repeated_variants_are_dropped(self) -> None:
+        answer = {
+            "keywords": "same text",
+            "expanded": "same text",
+            "english": "same text",
+        }
+        if list(RephrasingsParser().parse(answer)) != ["same text"]:
+            raise AssertionError("повторы не размножают запросы")
+
+    def test_empty_object_gives_nothing(self) -> None:
+        if RephrasingsParser().parse({}):
+            raise AssertionError("пустой объект разбирать нечем")
+
+
+class TestLlmRephraser:
+    """Переформулировщик поверх чат-модели: ответ разобран либо откат на запрос."""
+
+    async def test_schema_answer_becomes_queries(self) -> None:
+        chat = FakeChatModel(TestRephrasingsParser.SCHEMA_ANSWER)
+
+        queries = await _rephraser(chat).rephrase("исходный запрос")
+
+        if len(queries) != 3:
+            raise AssertionError(f"три варианта, получено {queries}")
+        if chat.asked != ["исходный запрос"]:
+            raise AssertionError(f"в модель ушёл запрос: {chat.asked}")
+
+    async def test_json_in_text_answer_is_used_as_well(self) -> None:
+        chat = FakeChatModel(
+            content='```json\n{"queries": ["first variant", "second variant"]}\n```'
+        )
+
+        queries = await _rephraser(chat).rephrase("исходный запрос")
+
+        if list(queries) != ["first variant", "second variant"]:
+            raise AssertionError(f"текстовый ответ разобран: {queries}")
+
+    async def test_broken_provider_searches_by_user_query(self) -> None:
+        queries = await _rephraser(BrokenChatModel()).rephrase("исходный запрос")
+
+        if list(queries) != [QUESTION_FALLBACK]:
+            raise AssertionError(f"откат на исходный запрос: {queries}")
+
+    async def test_unusable_answer_searches_by_user_query(self) -> None:
+        queries = await _rephraser(FakeChatModel(content="")).rephrase(
+            "исходный запрос"
+        )
+
+        if list(queries) != [QUESTION_FALLBACK]:
+            raise AssertionError(f"откат на исходный запрос: {queries}")
+
+
+class TestPrefetchGraph:
+    """Prefetch-граф: ход получает контекст до обращения к основной модели."""
+
+    def test_flow_tool_missing_at_the_session_port_is_a_build_error(self) -> None:
+        with pytest.raises(RuntimeError, match="not available"):
+            _graph(
+                PrefetchGraphBuilder(
+                    FakeRephraser(["variant"]), ["kb_fts_search"], RecordingStage()
+                ),
+                answers=["never reached"],
+            )
+
+    async def test_turn_prefetches_search_results(self) -> None:
+        rephraser = FakeRephraser(["variant one", "variant two"])
+        graph = _graph(
+            PrefetchGraphBuilder(
+                rephraser, ["fts_probe", "vector_probe"], RecordingStage()
+            ),
+            answers=["answered with context"],
+        )
+
+        result = await graph.ainvoke(
+            {"messages": [HumanMessage("how to configure kerberos?")]},
+            config=THREAD,
+        )
+        messages = result["messages"]
+
+        if rephraser.asked != ["how to configure kerberos?"]:
+            raise AssertionError(f"rephraser got {rephraser.asked}")
+
+        calls = _prefetch_calls(messages)
+        if len(calls) != 4:
+            raise AssertionError(f"2 queries x 2 tools == 4 calls, got {len(calls)}")
+
+        names = set()
+        for call in calls:
+            names.add(call["name"])
+        if names != {"fts_probe", "vector_probe"}:
+            raise AssertionError(f"both tools are called, got {names}")
+
+        replies = _tool_messages(messages)
+        if len(replies) != 4:
+            raise AssertionError(f"4 tool messages expected, got {len(replies)}")
+
+        revived = ToolArtifact.revive(replies[0].artifact)
+        if not isinstance(revived, TableResult):
+            raise AssertionError(f"artifact is TableResult, got {type(revived)}")
+
+        if not isinstance(messages[-1], AIMessage):
+            raise AssertionError("last message is the model answer")
+        if messages[-1].content != "answered with context":
+            raise AssertionError(f"answer survived: {messages[-1].content!r}")
+
+    async def test_stage_wraps_the_preparation(self) -> None:
+        """Этап открывается до подготовки и закрывается запросами, что ушли в поиск."""
+        rephraser = FakeRephraser(["variant one", "variant two"])
+        stage = RecordingStage()
+        graph = _graph(
+            PrefetchGraphBuilder(rephraser, ["fts_probe"], stage),
+            answers=["answered"],
+        )
+
+        await graph.ainvoke(
+            {"messages": [HumanMessage("question")]},
+            config=THREAD,
+        )
+
+        if stage.opened != 1:
+            raise AssertionError(f"этап открывается один раз, а не {stage.opened}")
+
+        if stage.searched != [["variant one", "variant two"]]:
+            raise AssertionError(f"фаза поиска подписана запросами {stage.searched}")
+
+        if stage.closed != [["variant one", "variant two"]]:
+            raise AssertionError(f"этап закрыт запросами {stage.closed}")
+
+    async def test_search_phase_is_not_announced_when_rephrasing_fails(self) -> None:
+        """Переформулировщик сорвался — фаза поиска не наступила."""
+        stage = RecordingStage()
+        graph = _graph(
+            PrefetchGraphBuilder(BrokenRephraser(), ["fts_probe"], stage),
+            answers=["never reached"],
+        )
+
+        with pytest.raises(PrefetchError):
+            await graph.ainvoke(
+                {"messages": [HumanMessage("question")]},
+                config=THREAD,
+            )
+
+        if stage.searched:
+            raise AssertionError(f"фазы поиска не было, получено {stage.searched}")
+
+    async def test_prefetch_calls_carry_the_query_as_intent(self) -> None:
+        """Подпись вызова подготовки — сам поисковый запрос: его покажет лента."""
+        rephraser = FakeRephraser(["variant one"])
+        graph = _graph(
+            PrefetchGraphBuilder(rephraser, ["fts_probe"], RecordingStage()),
+            answers=["answered"],
+        )
+
+        result = await graph.ainvoke(
+            {"messages": [HumanMessage("question")]},
+            config=THREAD,
+        )
+
+        calls = _prefetch_calls(result["messages"])
+        if len(calls) != 1:
+            raise AssertionError(f"один запрос в один инструмент, got {len(calls)}")
+
+        intent = ToolIntent.of(calls[0]["args"])
+        if intent != "variant one":
+            raise AssertionError(f"подпись вызова: {intent!r}")
+
+    async def test_stage_closes_when_preparation_fails(self) -> None:
+        """Сбой подготовки не оставляет этап открытым висеть в ленте."""
+        stage = RecordingStage()
+        graph = _graph(
+            PrefetchGraphBuilder(BrokenRephraser(), ["fts_probe"], stage),
+            answers=["never reached"],
+        )
+
+        with pytest.raises(PrefetchError):
+            await graph.ainvoke(
+                {"messages": [HumanMessage("question")]},
+                config=THREAD,
+            )
+
+        if stage.opened != 1:
+            raise AssertionError("этап был открыт")
+        if stage.closed != [[]]:
+            raise AssertionError(f"этап закрыт без запросов, получено {stage.closed}")
+
+    async def test_query_goes_as_is_without_rephraser(self) -> None:
+        """Профиль без модели-переформулировщика ищет по запросу пользователя."""
+        stage = RecordingStage()
+        graph = _graph(
+            PrefetchGraphBuilder(
+                PassthroughRephraser(), ["fts_probe", "vector_probe"], stage
+            ),
+            answers=["answered"],
+        )
+
+        result = await graph.ainvoke(
+            {"messages": [HumanMessage("как настроить kerberos?")]},
+            config=THREAD,
+        )
+
+        calls = _prefetch_calls(result["messages"])
+        if len(calls) != 2:
+            raise AssertionError(f"один запрос в каждый инструмент, а не {len(calls)}")
+
+        asked = set()
+        for call in calls:
+            asked.add(call["args"]["query"])
+        if asked != {"как настроить kerberos?"}:
+            raise AssertionError(f"в поиск ушёл не исходный запрос: {asked}")
+
+        if stage.closed != [["как настроить kerberos?"]]:
+            raise AssertionError(f"этап подписан запросами {stage.closed}")
+
+    async def test_every_turn_is_prefetched(self) -> None:
+        rephraser = FakeRephraser(["variant"])
+        graph = _graph(
+            PrefetchGraphBuilder(rephraser, ["fts_probe"], RecordingStage()),
+            answers=["first answer", "second answer"],
+        )
+
+        first = await graph.ainvoke(
+            {"messages": [HumanMessage("first question")]},
+            config=THREAD,
+        )
+        second = await graph.ainvoke(
+            {"messages": [HumanMessage("follow-up question")]},
+            config=THREAD,
+        )
+
+        if len(_prefetch_calls(first["messages"])) != 1:
+            raise AssertionError("первый ход обязан готовить контекст")
+
+        if len(_prefetch_calls(second["messages"])) != 2:
+            raise AssertionError(
+                "второй вопрос обязан добрать контекст: "
+                f"{len(_prefetch_calls(second['messages']))} вызовов"
+            )
+
+        if rephraser.asked != ["first question", "follow-up question"]:
+            raise AssertionError(f"запросы каждого хода: {rephraser.asked}")
+
+    async def test_search_error_result_reaches_the_model(self) -> None:
+        """Отказ инструмента едет в контекст: модель отвечает, ход не рвётся."""
+        rephraser = FakeRephraser(["variant"])
+        graph = _graph(
+            PrefetchGraphBuilder(rephraser, ["failing_probe"], RecordingStage()),
+            answers=["answered anyway"],
+            extra=[failing_probe],
+        )
+
+        result = await graph.ainvoke(
+            {"messages": [HumanMessage("question")]},
+            config=THREAD,
+        )
+        messages = result["messages"]
+
+        replies = _tool_messages(messages)
+        if len(replies) != 1:
+            raise AssertionError(f"отказ доехал конвертом: {replies}")
+
+        revived = ToolArtifact.revive(replies[0].artifact)
+        if not isinstance(revived, ErrorResult):
+            raise AssertionError(f"в конверте отказ инструмента: {revived}")
+
+        if messages[-1].content != "answered anyway":
+            raise AssertionError(f"ход дошёл до ответа: {messages[-1].content!r}")
+
+    async def test_search_crash_reaches_the_model(self) -> None:
+        """Упавшее тело инструмента ход не роняет: причина уходит модели."""
+        rephraser = FakeRephraser(["variant"])
+        graph = _graph(
+            PrefetchGraphBuilder(rephraser, ["crashing_probe"], RecordingStage()),
+            answers=["answered anyway"],
+            extra=[crashing_probe],
+        )
+
+        result = await graph.ainvoke(
+            {"messages": [HumanMessage("question")]},
+            config=THREAD,
+        )
+        messages = result["messages"]
+
+        replies = _tool_messages(messages)
+        if len(replies) != 1:
+            raise AssertionError(f"сбой доехал конвертом: {replies}")
+
+        if replies[0].status != "error":
+            raise AssertionError(f"конверт помечен ошибкой: {replies[0].status}")
+
+        if "sandbox crashed" not in str(replies[0].content):
+            raise AssertionError(f"причина в тексте: {replies[0].content!r}")
+
+        if messages[-1].content != "answered anyway":
+            raise AssertionError(f"ход дошёл до ответа: {messages[-1].content!r}")
+
+    async def test_bad_arguments_do_not_break_the_turn(self) -> None:
+        """Вызов с негодными аргументами: ошибка валидации уходит модели."""
+        rephraser = FakeRephraser(["x"])
+        graph = _graph(
+            PrefetchGraphBuilder(rephraser, ["strict_probe"], RecordingStage()),
+            answers=["answered anyway"],
+            extra=[strict_probe],
+        )
+
+        result = await graph.ainvoke(
+            {"messages": [HumanMessage("question")]},
+            config=THREAD,
+        )
+        messages = result["messages"]
+
+        replies = _tool_messages(messages)
+        if len(replies) != 1:
+            raise AssertionError(f"сорванный вызов доехал конвертом: {replies}")
+
+        if replies[0].status != "error":
+            raise AssertionError(f"конверт помечен ошибкой: {replies[0].status}")
+
+        if messages[-1].content != "answered anyway":
+            raise AssertionError(f"ход дошёл до ответа: {messages[-1].content!r}")
+
+    async def test_rephraser_failure_fails_the_turn(self) -> None:
+        graph = _graph(
+            PrefetchGraphBuilder(BrokenRephraser(), ["fts_probe"], RecordingStage()),
+            answers=["never reached"],
+        )
+
+        with pytest.raises(PrefetchError, match="provider is down"):
+            await graph.ainvoke(
+                {"messages": [HumanMessage("question")]},
+                config=THREAD,
+            )
+
+
+class TestPrefetchCancellation:
+    """Остановка хода во время подготовки: обрыв, а не отказ инструмента.
+
+    Инструменты обёрнуты тем же CancellableTools, что и в приложении: после
+    остановки их результат в контекст не идёт.
+    """
+
+    async def test_stop_breaks_the_turn_instead_of_feeding_the_model(self) -> None:
+        stage = RecordingStage()
+        guarded = CancellableTools().guard_all([slow_probe])
+        graph = _graph(
+            PrefetchGraphBuilder(FakeRephraser(["variant"]), ["slow_probe"], stage),
+            answers=["never reached"],
+            extra=guarded,
+        )
+
+        with run_cancellation() as cancellation:
+
+            async def stop_soon() -> None:
+                await asyncio.sleep(0.05)
+                cancellation.cancel(StopReason.USER_STOP)
+
+            stopper = asyncio.create_task(stop_soon())
+
+            with pytest.raises(ToolStopped):
+                await graph.ainvoke(
+                    {"messages": [HumanMessage("question")]},
+                    config=THREAD,
+                )
+
+            await stopper
+
+        if cancellation.reason is not StopReason.USER_STOP:
+            raise AssertionError(f"причина остановки: {cancellation.reason}")
+
+        if stage.closed != [["variant"]]:
+            raise AssertionError(f"этап закрыт даже на обрыве: {stage.closed}")
+
+    async def test_stop_before_the_call_refuses_to_start_it(self) -> None:
+        """Остановка до вызова: инструмент не стартует, ход обрывается."""
+        stage = RecordingStage()
+        guarded = CancellableTools().guard_all([slow_probe])
+        graph = _graph(
+            PrefetchGraphBuilder(FakeRephraser(["variant"]), ["slow_probe"], stage),
+            answers=["never reached"],
+            extra=guarded,
+        )
+
+        with run_cancellation() as cancellation:
+            cancellation.cancel(StopReason.USER_STOP)
+
+            with pytest.raises(ToolStopped):
+                await graph.ainvoke(
+                    {"messages": [HumanMessage("question")]},
+                    config=THREAD,
+                )
+
+        if stage.closed != [["variant"]]:
+            raise AssertionError(f"этап закрыт даже на обрыве: {stage.closed}")
+
+
+class TestPrefetchFeed:
+    """Подготовка в ленте: этап с фазами и шаги инструментов с подписями.
+
+    Стенд повторяет прод: граф зовут с колбэком AgentTracer, шаги копит
+    RecordingSink — так лента и получает вызовы подготовки.
+    """
+
+    async def test_prefetch_calls_are_drawn_inside_the_stage(
+        self, http_context: None
+    ) -> None:
+        turn = RecordedTurn.recording(FEED_THREAD, FEED_TURN, user_name="Пользователь")
+        sink = turn.recording_sink
+
+        graph = _graph(
+            PrefetchGraphBuilder(
+                FakeRephraser(["variant one"]),
+                ["fts_probe"],
+                TracedStage(StepText.PREFETCH.value),
+            ),
+            answers=["answered"],
+        )
+
+        config = RunnableConfig(
+            configurable={"thread_id": "feed-thread"},
+            callbacks=[AgentTracer(turn.feed, TurnState(), SentConnections())],
+        )
+        await graph.ainvoke({"messages": [HumanMessage("question")]}, config=config)
+
+        stage = _step_named(sink.steps, StepText.PREFETCH.value)
+        if stage is None:
+            raise AssertionError(f"этап подготовки нарисован: {sink.steps}")
+
+        if stage.get(StepField.OUTPUT) != "- variant one":
+            raise AssertionError(f"этап подписан запросами: {stage}")
+
+        tool_step = _step_named(sink.steps, "fts_probe")
+        if tool_step is None:
+            raise AssertionError("вызов подготовки нарисован шагом")
+
+        if tool_step.get(StepField.PARENT_ID) != stage.get(StepField.ID):
+            raise AssertionError("шаг вызова лежит внутри этапа")
+
+        drawn = str(tool_step.get(StepField.NAME, ""))
+        if "variant one" not in drawn:
+            raise AssertionError(f"шаг назван подписью: {drawn!r}")
+
+
+class TestPlainGraph:
+    """Plain-граф: обычный цикл без подготовки контекста."""
+
+    async def test_no_prefetch_happens(self) -> None:
+        graph = _graph(PlainGraphBuilder(), answers=["plain answer"])
+
+        result = await graph.ainvoke(
+            {"messages": [HumanMessage("question")]},
+            config=THREAD,
+        )
+        messages = result["messages"]
+
+        if _prefetch_calls(messages):
+            raise AssertionError("plain graph must not prefetch")
+
+        if messages[-1].content != "plain answer":
+            raise AssertionError(f"answer survived: {messages[-1].content!r}")
+
+
+class RecordingService(LocalDagService):
+    """Сервис исполнения, запоминающий, какие вызовы через него прошли."""
+
+    def __init__(self, tools: Sequence[BaseTool]) -> None:
+        super().__init__(
+            tools, StandRefs.STREAM_CONFIG, (), StreamSpecs({}), CallAmbient()
+        )
+        self.served: list[str] = []
+
+    @override
+    async def submit(
+        self, calls: Sequence[GraphToolCall]
+    ) -> Sequence[asyncio.Future[ToolMessage]]:
+        for call in calls:
+            self.served.append(str(call["id"]))
+
+        return await super().submit(calls)
+
+
+class TestToolCallsGoToTheService:
+    """Вызовы инструментов ответа модели исполняет сервис исполнения: и
+    обычные, без портов, — мимо него не идёт ни один."""
+
+    CALLS: ClassVar[list[dict[str, Any]]] = [
+        {"name": "fts_probe", "args": {"query": "kerberos"}, "id": "call_ok"},
+        {"name": "crashing_probe", "args": {"query": "kerberos"}, "id": "call_crash"},
+        {"name": "strict_probe", "args": {"query": "x"}, "id": "call_bad_args"},
+    ]
+
+    async def test_plain_calls_of_a_response_are_service_calls(self) -> None:
+        service = RecordingService([fts_probe, crashing_probe, strict_probe])
+
+        replies, last = await _replies(service, self.CALLS)
+
+        if sorted(service.served) != ["call_bad_args", "call_crash", "call_ok"]:
+            raise AssertionError(f"каждый вызов ушёл в сервис: {service.served}")
+
+        if replies["call_ok"].status != "success":
+            raise AssertionError(f"удачный вызов: {replies['call_ok']!r}")
+        if "fts:kerberos" not in str(replies["call_ok"].content):
+            raise AssertionError(f"результат поиска: {replies['call_ok'].content!r}")
+
+        if replies["call_crash"].status != "error":
+            raise AssertionError(f"упавший вызов: {replies['call_crash']!r}")
+        if "sandbox crashed" not in str(replies["call_crash"].content):
+            raise AssertionError(f"причина сбоя: {replies['call_crash'].content!r}")
+
+        if replies["call_bad_args"].status != "error":
+            raise AssertionError(f"негодные аргументы: {replies['call_bad_args']!r}")
+        if "query" not in str(replies["call_bad_args"].content):
+            raise AssertionError(
+                f"отказ называет поле: {replies['call_bad_args'].content!r}"
+            )
+
+        if last.content != "done":
+            raise AssertionError(f"ход дошёл до ответа: {last.content!r}")
+
+
+class TestCallsRouteByToolName:
+    """За одним портом несколько серверов: вызовы одного ответа уходят каждый
+    своему серверу по имени инструмента, граф про деление не знает."""
+
+    CALLS: ClassVar[list[dict[str, Any]]] = [
+        {"name": "fts_probe", "args": {"query": "kerberos"}, "id": "call_first"},
+        {"name": "vector_probe", "args": {"query": "kerberos"}, "id": "call_second"},
+        {"name": "no_such_tool", "args": {}, "id": "call_unknown"},
+    ]
+
+    async def test_each_call_reaches_the_server_of_its_tool(self) -> None:
+        first = RecordingService([fts_probe])
+        second = RecordingService([vector_probe])
+
+        replies, _ = await _replies(ToolServers([first, second]), self.CALLS)
+
+        if first.served != ["call_first"]:
+            raise AssertionError(f"первому серверу ушёл его вызов: {first.served}")
+        if second.served != ["call_second"]:
+            raise AssertionError(f"второму серверу ушёл его вызов: {second.served}")
+
+        if "fts:kerberos" not in str(replies["call_first"].content):
+            raise AssertionError(f"первый сервер ответил: {replies['call_first']!r}")
+        if "vector:kerberos" not in str(replies["call_second"].content):
+            raise AssertionError(f"второй сервер ответил: {replies['call_second']!r}")
+
+    async def test_call_reaches_an_mcp_server_behind_the_same_port(self) -> None:
+        """MCP-сервер — ещё один сервер за портом: граф зовёт его инструмент
+        так же, как свой."""
+        script = (
+            Path(__file__).resolve().parents[3]
+            / "services"
+            / "boba-mcp-client"
+            / "tests"
+            / "standard_server.py"
+        )
+        config = McpServerConfig(
+            endpoint=StdioCommand(command=sys.executable, args=(str(script), "stdio")),
+            prefix="std_",
+            connect_timeout_sec=20.0,
+            call_timeout_sec=60.0,
+        )
+        remote = McpToolServer(
+            "standard", config, NamedBlocks(), DroppedSignals(), CallContexts(), None
+        )
+        await remote.open()
+        calls = [
+            {"name": "fts_probe", "args": {"query": "kerberos"}, "id": "call_own"},
+            {"name": "std_add", "args": {"a": 2, "b": 3}, "id": "call_mcp"},
+        ]
+        try:
+            own = RecordingService([fts_probe])
+            replies, _ = await _replies(ToolServers([own, remote]), calls)
+        finally:
+            await remote.close()
+
+        if own.served != ["call_own"]:
+            raise AssertionError(f"свой вызов ушёл своему серверу: {own.served}")
+        if str(replies["call_mcp"].content) != "5":
+            raise AssertionError(f"MCP-сервер ответил: {replies['call_mcp']!r}")
+
+    async def test_unknown_name_is_refused_with_tools_of_every_server(self) -> None:
+        servers = ToolServers(
+            [RecordingService([fts_probe]), RecordingService([vector_probe])]
+        )
+
+        replies, _ = await _replies(servers, self.CALLS)
+
+        refused = replies["call_unknown"]
+        if refused.status != "error":
+            raise AssertionError(f"выдуманное имя — отказ: {refused!r}")
+        if "fts_probe" not in str(refused.content):
+            raise AssertionError(f"отказ называет инструменты: {refused.content!r}")
+        if "vector_probe" not in str(refused.content):
+            raise AssertionError(f"отказ называет инструменты: {refused.content!r}")
+
+
+class TestFlowConfig:
+    """Секция flow профиля: дефолт, разбор prefetch и согласие с tools."""
+
+    def _profile(self, **kw: Any) -> ChatProfileConfig:
+        base: dict[str, Any] = {
+            "display_name": "Profile",
+            "description": "test profile",
+            "provider": BACKEND,
+            "model": "test-model",
+        }
+        base.update(kw)
+        return ChatProfileConfig.model_validate(base)
+
+    def test_flow_defaults_to_plain(self) -> None:
+        profile = self._profile()
+        if not isinstance(profile.flow, PlainFlowConfig):
+            raise AssertionError(f"default flow is plain, got {profile.flow}")
+
+    def test_prefetch_flow_is_parsed(self) -> None:
+        profile = self._profile(
+            tools=["kb_fts_search", "kb_vector_search", "web_fetch_page"],
+            flow={
+                "kind": "prefetch",
+                "tools": ["kb_fts_search", "kb_vector_search"],
+                "rephraser": REPHRASER,
+            },
+        )
+
+        flow = profile.flow
+        if not isinstance(flow, PrefetchFlowConfig):
+            raise AssertionError(f"flow is prefetch, got {flow}")
+        if flow.rephraser is None:
+            raise AssertionError("rephraser expected")
+        if flow.rephraser.provider.kind != "openai":
+            raise AssertionError(f"openai rephraser expected, got {flow.rephraser}")
+        if flow.rephraser.model != "small-model":
+            raise AssertionError(f"model is parsed, got {flow.rephraser.model}")
+
+    def test_flow_tool_outside_profile_is_config_error(self) -> None:
+        with pytest.raises(ValidationError, match="flow tools"):
+            self._profile(
+                tools=["web_fetch_page"],
+                flow={
+                    "kind": "prefetch",
+                    "tools": ["kb_fts_search"],
+                    "rephraser": REPHRASER,
+                },
+            )
+
+    def test_wildcard_profile_accepts_any_flow_tools(self) -> None:
+        profile = self._profile(
+            tools=["*"],
+            flow={
+                "kind": "prefetch",
+                "tools": ["kb_fts_search"],
+                "rephraser": REPHRASER,
+            },
+        )
+        if not isinstance(profile.flow, PrefetchFlowConfig):
+            raise AssertionError("prefetch flow is parsed with wildcard tools")
+
+
+class TestProviderAssembly:
+    """Сборка на стороне провайдеров: билдер по профилю и клиент flow."""
+
+    def _selected(self, **profile_kw: Any) -> SelectedProfile:
+        base: dict[str, Any] = {
+            "display_name": "Search",
+            "description": "search profile",
+            "provider": BACKEND,
+            "model": "test-model",
+            "tools": ["*"],
+        }
+        base.update(profile_kw)
+        config = ChatProfileConfig.model_validate(base)
+        return SelectedProfile(name="search", config=config)
+
+    def _flow(self, **kw: Any) -> dict[str, Any]:
+        flow: dict[str, Any] = {
+            "kind": "prefetch",
+            "tools": ["fts_probe"],
+            "rephraser": REPHRASER,
+        }
+        flow.update(kw)
+        return flow
+
+    def test_plain_profile_gets_plain_builder(self) -> None:
+        providers = LlmProviders(LlmProviderTypes.installed())
+        builder = session_graph_builder(providers, self._selected())
+        if not isinstance(builder, PlainGraphBuilder):
+            raise AssertionError(f"plain builder expected, got {type(builder)}")
+
+    def test_prefetch_profile_gets_prefetch_builder(self) -> None:
+        selected = self._selected(flow=self._flow())
+        providers = LlmProviders(LlmProviderTypes.installed())
+
+        builder = session_graph_builder(providers, selected)
+        if not isinstance(builder, PrefetchGraphBuilder):
+            raise AssertionError(f"prefetch builder expected, got {type(builder)}")
+
+    async def test_llm_providers_serve_profile_and_flow(
+        self, app_config: AppConfig
+    ) -> None:
+        profile = self._selected(flow=self._flow()).config
+        config = app_config.model_copy(update={"profiles": {"search": profile}})
+
+        providers_gen = llm_providers(config)
+        providers = await anext(providers_gen)
+        try:
+            if not isinstance(profile.flow, PrefetchFlowConfig):
+                raise AssertionError("prefetch flow expected")
+            if profile.flow.rephraser is None:
+                raise AssertionError("rephraser expected")
+
+            chat = providers.chat(profile)
+            rephraser = providers.chat(profile.flow.rephraser)
+            if not isinstance(chat, ChatModel) or not isinstance(rephraser, ChatModel):
+                raise AssertionError("providers build chat models for both uses")
+        finally:
+            await anext(providers_gen, None)

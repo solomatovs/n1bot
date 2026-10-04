@@ -44,8 +44,8 @@ pythonpath = [
     "packages/core/boba-indexing/src",
     "packages/infra/config/boba-config/src",
     "packages/core/boba-toolkit/src",
-    "packages/agents/boba-studio/src",
-    "packages/agents/boba-chainlit/src",
+    "packages/apps/boba-studio/src",
+    "packages/apps/boba-chainlit/src",
     "packages/tools/boba-tool-shell/src",
     "packages/tools/boba-tool-canvas/src",
     "packages/tools/boba-tool-chart/src",
@@ -79,7 +79,7 @@ markers = [
 ]
 
 [tool.pyright]
-include = ["packages", "build/chainlit/test", "build/studio/test"]
+include = ["packages", "build/test", "build/test"]
 exclude = [
     ".venv",
     "**/node_modules",
@@ -130,8 +130,8 @@ extraPaths = [
     "packages/core/boba-indexing/src",
     "packages/infra/config/boba-config/src",
     "packages/core/boba-toolkit/src",
-    "packages/agents/boba-studio/src",
-    "packages/agents/boba-chainlit/src",
+    "packages/apps/boba-studio/src",
+    "packages/apps/boba-chainlit/src",
     "packages/tools/boba-tool-shell/src",
     "packages/tools/boba-tool-canvas/src",
     "packages/tools/boba-tool-chart/src",
@@ -211,11 +211,19 @@ extend-immutable-calls = [
 "build/*/test/**" = ["T201", "E402", "TID251", "S603", "PLW1510", "S108"]
 "build/*/scripts/**" = ["T201", "PLR2004", "PLC0415"]
 
+[tool.uv]
+find-links = ["build/src/oracledb"]
+python-downloads = "never"
+python-preference = "only-system"
+environments = ["python_full_version >= '3.11' and python_full_version < '3.12' and sys_platform == 'linux'"]
+
 [tool.uv.workspace]
+exclude = ["packages/apps/boba-mcp"]
 members = [
     "packages/core/*",
-    "packages/agents/*",
-    "packages/apps/*/*",
+    "packages/apps/boba-chainlit",
+    "packages/apps/boba-studio",
+    "packages/apps/ix/*",
     "packages/tools/*",
     "packages/infra/*/*",
     "packages/services/*",
@@ -223,7 +231,6 @@ members = [
 ]
 
 [tool.uv.sources]
-oracledb            = { index = "boba-wheels" }
 boba-config         = { workspace = true }
 boba-cancellation   = { workspace = true }
 boba-access         = { workspace = true }
@@ -303,14 +310,3 @@ dev = [
     "onnxruntime-genai>=0.15,<1",
     "xlwt>=1.3",
 ]
-
-[[tool.uv.index]]
-name = "boba-wheels"
-url = "build/chainlit/src/oracledb"
-format = "flat"
-explicit = true
-
-[tool.uv]
-python-downloads = "never"
-python-preference = "only-system"
-environments = ["python_full_version >= '3.11' and python_full_version < '3.12' and sys_platform == 'linux'"]

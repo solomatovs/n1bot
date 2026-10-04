@@ -13,6 +13,12 @@ dependencies = [
     "boba-connections==0.0.26.dev4",
 ]
 
+[project.entry-points."boba.connections"]
+oracle = "boba.db.oracle.manifest:MANIFEST"
+
+[project.entry-points."boba.addresses"]
+oracle = "boba.db.oracle.address:OraAddresses"
+
 [project.optional-dependencies]
 payload = [
     "boba-toolkit[arrow]==0.0.26.dev4",
@@ -29,9 +35,3 @@ dev = [
 where = ["src"]
 include = ["boba*"]
 namespaces = true
-
-[project.entry-points."boba.connections"]
-oracle = "boba.db.oracle.manifest:MANIFEST"
-
-[project.entry-points."boba.addresses"]
-oracle = "boba.db.oracle.address:OraAddresses"

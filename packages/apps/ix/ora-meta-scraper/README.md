@@ -15,8 +15,8 @@ layout/   запросы к своей базе: raw_* -> stage_* -> ix
 `ix-core`:
 
 ```
-.venv/bin/boba-ix-core upgrade --config ../../compose/apps/ix-core/conf.toml
-.venv/bin/boba-ora-meta-scraper upgrade --config ../../compose/apps/ora-meta-scraper/conf.toml
+.venv/bin/boba-ix-core upgrade --config ../../compose/ix-core/conf.toml
+.venv/bin/boba-ora-meta-scraper upgrade --config ../../compose/ora-meta-scraper/conf.toml
 ```
 
 ## 0. Воркер
@@ -39,7 +39,7 @@ layout/   запросы к своей базе: raw_* -> stage_* -> ix
 ```
 
 ```
-.venv/bin/boba-ora-meta-scraper run --config ../../compose/apps/ora-meta-scraper/conf.toml [--source ora-prod]
+.venv/bin/boba-ora-meta-scraper run --config ../../compose/ora-meta-scraper/conf.toml [--source ora-prod]
 ```
 
 Один прогон это один сервис: соединение с Oracle идёт в PDB или сервис экземпляра,
@@ -202,7 +202,7 @@ pg_meta_edge: index и constraint перечисляют колонки по п�
 21 и 23: 139 MiB при демо-словаре и 142 MiB при 106 000 применённых строках. Строки идут
 из курсора Oracle пачками по `arraysize` профиля (на стенде 2000) в `COPY` CSV-блоками, в память они не
 собираются. Драйвер — python-oracledb `26.0.0+boba.1`: колесо с патчем из
-`build/chainlit/scripts/oracledb-26.0.0-arrow-duplicates.patch` (два дефекта Arrow-пути
+`build/scripts/oracledb-26.0.0-arrow-duplicates.patch` (два дефекта Arrow-пути
 в 26.0.0: разбор строки после `OutOfPackets` с колонкой-дубликатом и decimal-ветка
 `append_last_value`), собирает стадия `oracledb-wheel` (`make fetch`), в `.venv` его
 ставит `dev.sh`; разбор — `docs/bulk-copy-formats.md` §4.

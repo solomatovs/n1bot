@@ -23,7 +23,7 @@ worker.py оркестратор
 источнику, затем описатель, затем `ix-fts` и `ix-vector`, чтобы описания
 попали в поиск. Роль профиля читает `ix.*` и пишет в `ix.llm_description`.
 
-Настройки берутся из одного файла конфига, секция [ix.llm_describer]. Конфиг приложения на dev-стенде лежит в `compose/apps/ix-llm-describer/conf.toml`
+Настройки берутся из одного файла конфига, секция [ix.llm_describer]. Конфиг приложения на dev-стенде лежит в `compose/ix-llm-describer/conf.toml`
 (каталог вне git, в нём креды). Одним файлом можно запускать и несколько приложений:
 каждое читает только свою секцию.
 
@@ -34,14 +34,14 @@ worker.py оркестратор
 берутся из AsyncPostgresPool, воркер async.
 
 ```
-.venv/bin/boba-ix-llm-describer --config ../../compose/apps/ix-llm-describer/conf.toml
+.venv/bin/boba-ix-llm-describer --config ../../compose/ix-llm-describer/conf.toml
 ```
 
 Схема хранения задаётся полем `db_schema` секции: в sql-файлах она
 стоит плейсхолдером `{schema}`, имя берётся из конфига, а квотирует его psycopg.
 
 Провайдер выбирается ключом `provider` секции: `openai` (`base_url`, `api_key`, `model`) или
-`local` (`model_dir`, например `compose/chainlit/models/onnx-genai/qwen3-4b-int4`). Остальные
+`local` (`model_dir`, например `compose/ix-llm-describer/models/onnx-genai/qwen3-4b-int4`). Остальные
 поля секции: `max_tokens`, `temperature`, `tool_choice` (auto по умолчанию: deepseek в
 thinking mode через роутер проекта другого не принимает), `batch` и обязательный
 `max_input_chars`. Воркер всегда идёт до пустой очереди и заканчивает prune.

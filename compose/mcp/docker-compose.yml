@@ -1,0 +1,29 @@
+services:
+  mcp:
+    init: true
+    user: "${BOBA_UID:-1000}:${BOBA_GID:-1000}"
+    devices:
+      - /dev/fuse
+    security_opt:
+      - seccomp=unconfined
+      - systempaths=unconfined
+    restart: unless-stopped
+    image: boba-mcp:0.0.26.dev4
+    hostname: boba-mcp
+    container_name: boba-mcp
+    env_file: ./conf/boba.env
+    volumes:
+      - ./conf:/app/boba/conf:ro
+      - ./conf/krb/krb5.conf:/etc/krb5.conf:ro
+      - ./data:/app/boba/data:rw
+      - ./models:/app/boba/models:ro
+      - ../../build/src/sandbox:/app/boba/sandbox:ro
+      - /sys/fs/cgroup/boba.slice:/cgroup:rw
+    ports:
+      - 127.0.0.1:8650:8650
+
+
+networks:
+  default:
+    name: docker
+    external: true

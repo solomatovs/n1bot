@@ -48,8 +48,8 @@ class StandPaths(StrEnum):
     STUDIO_BASE_CONFIG = "compose/studio/conf/config.toml"
     CHAINLIT_BASE = "compose/chainlit"
     STUDIO_BASE = "compose/studio"
-    CHAINLIT_SANDBOX = "build/chainlit/src/sandbox"
-    STUDIO_SANDBOX = "build/studio/src/sandbox"
+    CHAINLIT_SANDBOX = "build/src/sandbox"
+    STUDIO_SANDBOX = "build/src/sandbox"
     PACKAGES = "packages"
 
     def under(self, root: Path) -> Path:

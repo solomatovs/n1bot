@@ -87,6 +87,7 @@ class CallStand:
                 user_id=user_id, login=login, roles=frozenset(roles), profile=profile
             ),
             scope=Scope.chat(thread_id),
+            run_id=thread_id,
             initiator=ChatInitiator(thread_id=thread_id, turn_id=StandIdentity.TURN),
             credential=NoUserCredential(reason="the test context carries no ticket"),
             cancellation=cancellation,

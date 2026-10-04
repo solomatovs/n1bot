@@ -20,7 +20,7 @@ sql/      запросы поиска по таблицам индексов: ft
 файлы применяются по порядку имён, каждая команда отдельной транзакцией, повторный запуск
 ничего не ломает.
 
-Настройки берутся из одного файла конфига, секция `[ix.core]`. Конфиг приложения на dev-стенде лежит в `compose/apps/ix-core/conf.toml`
+Настройки берутся из одного файла конфига, секция `[ix.core]`. Конфиг приложения на dev-стенде лежит в `compose/ix-core/conf.toml`
 (каталог вне git, в нём креды). Одним файлом можно запускать и несколько приложений:
 каждое читает только свою секцию.
 
@@ -31,7 +31,7 @@ sql/      запросы поиска по таблицам индексов: ft
 берутся из AsyncPostgresPool, воркер async.
 
 ```
-.venv/bin/boba-ix-core upgrade --config ../../compose/apps/ix-core/conf.toml
+.venv/bin/boba-ix-core upgrade --config ../../compose/ix-core/conf.toml
 ```
 
 Схема хранения задаётся полем `db_schema` секции: в sql-файлах она
@@ -42,8 +42,8 @@ psycopg (`sql.Identifier`).
 `btree_gin`) в базе. Дальше каждый пакет накатывает свою схему своей же командой:
 
 ```
-.venv/bin/boba-pg-meta-scraper upgrade --config ../../compose/apps/pg-meta-scraper/conf.toml
-.venv/bin/boba-ix-fts      upgrade --config ../../compose/apps/ix-fts/conf.toml
+.venv/bin/boba-pg-meta-scraper upgrade --config ../../compose/pg-meta-scraper/conf.toml
+.venv/bin/boba-ix-fts      upgrade --config ../../compose/ix-fts/conf.toml
 ```
 
 Пакет без накаченного ядра отказывается работать с внятным сообщением, а не падает на

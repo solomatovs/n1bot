@@ -27,7 +27,7 @@ from langchain_core.tools import BaseTool
 from omegaconf import DictConfig, OmegaConf
 from pydantic import BaseModel, ConfigDict
 
-from boba.access import GrantCheck, ToolAccess, ToolSurfaces
+from boba.access import GrantCheck, ToolAccess, ToolGrants, ToolSurfaces
 from boba.chat.profiles import ProfilesSection, RolesSection
 from boba.config import bind
 from boba.connection_broker.sealed import SealedConnectionParams
@@ -51,6 +51,7 @@ from boba.toolrun.stream_calls import (
 from boba.toolrun.wrapping import CallHooks
 
 __all__ = [
+    "ConfigGrants",
     "EntryPointPlugins",
     "PluginMeta",
     "PluginTable",
@@ -116,7 +117,7 @@ class ToolLoader:
         plugins: Mapping[str, ToolPlugin],
         refs: RuntimeRefs,
         launchers: SectionLaunchers,
-        grant_check: GrantCheck,
+        grants: ToolGrants,
         surface_hooks: Sequence[CallHooks[Any]] = (),
         own_tools: Sequence[BaseTool] = (),
     ) -> None:
@@ -152,7 +153,7 @@ class ToolLoader:
             ),
             surface_hooks,
         )
-        self._grant_check = grant_check
+        self._grants = grants
 
     def load(self) -> ToolRegistry:
 
@@ -305,13 +306,30 @@ class ToolLoader:
         tools: Sequence[BaseTool],
         headless_only: Iterable[str],
     ) -> ToolAccess:
-        """Права из [roles.*]/[profiles.*]; опечатка в имени инструмента — отказ."""
-        roles = bind(self._raw, "roles", RolesSection).root
-        profiles = bind(self._raw, "profiles", ProfilesSection).root
+        """Права по грантам процесса; опечатка в имени инструмента — отказ."""
         known = frozenset(tool.name for tool in tools)
+        grants = self._grants
 
         surfaces = ToolSurfaces(headless_only=frozenset(headless_only))
-        return ToolAccess(known, roles, profiles, surfaces, self._grant_check)
+        return ToolAccess(known, grants.roles, grants.profiles, surfaces, grants.check)
+
+
+class ConfigGrants:
+    """Гранты приложения с профилями чата: секции [roles.*] и [profiles.*].
+
+    Создаётся сборкой приложения (провайдер tool_grants, загрузчик чата) из
+    сырого конфига; приложение с другим источником грантов собирает
+    ToolGrants само.
+    """
+
+    def __init__(self, raw_config: DictConfig) -> None:
+        self._raw = raw_config
+
+    def grants(self, check: GrantCheck) -> ToolGrants:
+        roles = bind(self._raw, "roles", RolesSection).root
+        profiles = bind(self._raw, "profiles", ProfilesSection).root
+
+        return ToolGrants(roles=roles, profiles=profiles, check=check)
 
 
 PluginTable = Callable[[], Mapping[str, ToolPlugin]]

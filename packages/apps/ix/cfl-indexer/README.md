@@ -24,11 +24,11 @@ worker.py      конфиг, обход спейса, процесс на спе
 Ядро ставится пакетом `ix-core`, дальше схема этого пакета своей командой:
 
 ```
-.venv/bin/boba-ix-core upgrade --config ../../compose/apps/ix-core/conf.toml
-.venv/bin/boba-cfl-indexer upgrade --config ../../compose/apps/cfl-indexer/conf.toml
+.venv/bin/boba-ix-core upgrade --config ../../compose/ix-core/conf.toml
+.venv/bin/boba-cfl-indexer upgrade --config ../../compose/cfl-indexer/conf.toml
 ```
 
-Конфиг приложения на dev-стенде лежит в `compose/apps/cfl-indexer/conf.toml` (каталог
+Конфиг приложения на dev-стенде лежит в `compose/cfl-indexer/conf.toml` (каталог
 вне git, в нём креды). Пути в конфиге пишутся от `${env.base}` — каталога, где лежит
 файл. Секция `[ix.cfl_indexer]`: база ix (`db_schema`, `postgres`, `krb`), список
 `sources` — по записи на сервер Confluence с именем, `spaces` и endpoint
@@ -77,7 +77,7 @@ union по `provider`: `off` либо `rapidocr` (`models_dir`, `language`, `tex
 ## Запуск
 
 ```
-.venv/bin/boba-cfl-indexer run --config ../../compose/apps/cfl-indexer/conf.toml [--source cwiki] [--space DEV] [--reindex]
+.venv/bin/boba-cfl-indexer run --config ../../compose/cfl-indexer/conf.toml [--source cwiki] [--space DEV] [--reindex]
 ```
 
 `--source` ограничивает прогон одним сервером, `--space` — одним спейсом (при

@@ -14,7 +14,7 @@ from typing import Annotated, Any, TypeVar
 from langchain_core.tools import BaseTool
 from omegaconf import DictConfig
 
-from boba.access import GrantCheck
+from boba.access import GrantCheck, ToolGrants
 from boba.auth import AuthService, JwtTokens
 from boba.auth.credentials import KerberosCredentialSource
 from boba.auth.sso import SpnegoGate
@@ -30,6 +30,7 @@ from boba.identity.directory import UserDirectory
 from boba.identity.errors import ServiceDisabledError
 from boba.identity.locks import LiveLocks, MemoryLiveLocks, StaleLock
 from boba.identity.run import Runs
+from boba.identity.signin import ProfileCatalog
 from boba.identity.sso import RefreshSignal
 from boba.identity.token import CookieSpec
 from boba.ldap import Ldap3Directory
@@ -55,7 +56,7 @@ from boba.runtime.journal import DirVault, StreamJournal
 from boba.runtime.launchers import SectionLaunchers, ToolLaunchers
 from boba.runtime.locks import LockReaper, PgLiveLocks
 from boba.runtime.payloads import PgPayloadStore
-from boba.runtime.plugins import PluginMeta, PluginTable, ToolLoader
+from boba.runtime.plugins import ConfigGrants, PluginMeta, PluginTable, ToolLoader
 from boba.runtime.refresh import BusRefreshSignal, LiveSessions, SessionKeeper
 from boba.runtime.refs import RuntimeRefs
 from boba.runtime.signin import SignInAssembly
@@ -303,16 +304,33 @@ def tool_launchers(
     return ToolLaunchers(raw).build()
 
 
+def tool_grants(
+    raw: Annotated[DictConfig, Depends(get_raw_config)],
+    check: Annotated[GrantCheck, Depends(grant_check)],
+) -> ToolGrants:
+    """Гранты процесса: по умолчанию секции [roles.*] и [profiles.*]; приложение
+    с другим источником (endpoint'ы boba-mcp) отдаёт свои через provide."""
+    return ConfigGrants(raw).grants(check)
+
+
+def profile_catalog(
+    config: Annotated[RuntimeConfig, Depends(get_runtime_config)],
+) -> ProfileCatalog:
+    """Профили приложения для провайдеров профилей входа: по умолчанию профили
+    чата из [profiles]; приложение без них отдаёт свой каталог через provide."""
+    return ChatProfiles(config.profiles)
+
+
 def tool_registry(  # noqa: PLR0913 — реестр собирается всеми входами процесса
     raw: Annotated[DictConfig, Depends(get_raw_config)],
     table: Annotated[PluginTable, Depends(plugin_table)],
-    check: Annotated[GrantCheck, Depends(grant_check)],
+    grants: Annotated[ToolGrants, Depends(tool_grants)],
     hooks: Annotated[Sequence[CallHooks[Any]], Depends(surface_hooks)],
     own: Annotated[Sequence[BaseTool], Depends(own_tools)],
     launchers: Annotated[SectionLaunchers, Depends(tool_launchers)],
 ) -> ToolRegistry:
     refs = runtime_refs()
-    loader = ToolLoader(raw, table(), refs, launchers, check, hooks, own)
+    loader = ToolLoader(raw, table(), refs, launchers, grants, hooks, own)
 
     return loader.load()
 
@@ -453,6 +471,7 @@ def auth_service(
     table: Annotated[UsersTable, Depends(users_table)],
     tokens: Annotated[JwtTokens, Depends(session_tokens)],
     directory: Annotated[UserDirectory, Depends(user_directory)],
+    profiles: Annotated[ProfileCatalog, Depends(profile_catalog)],
 ) -> AuthService:
     """Вход пользователя: пароли, SPNEGO и proxy из [auth], профили входа из
     [profiles], токен и cookie из [session]."""
@@ -462,7 +481,7 @@ def auth_service(
         samesite=session.cookie_samesite,
         ttl_sec=session.session_ttl_sec,
     )
-    assembly = SignInAssembly(directory, ChatProfiles(config.profiles))
+    assembly = SignInAssembly(directory, profiles)
 
     sso = None
     if kerberos := config.kerberos():

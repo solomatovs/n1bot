@@ -12,6 +12,7 @@ ToolAccessError — гранты ссылаются на инструменты,
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
+from dataclasses import dataclass
 from enum import StrEnum
 from typing import ClassVar, Protocol
 
@@ -28,6 +29,7 @@ __all__ = [
     "ToolAccessError",
     "ToolAvailability",
     "ToolGrant",
+    "ToolGrants",
     "ToolSurfaces",
 ]
 
@@ -139,6 +141,17 @@ class GrantCheck(StrEnum):
     HOSTED = "hosted"
 
 
+@dataclass(frozen=True)
+class ToolGrants:
+    """Гранты процесса для ToolAccess: что разрешают роли и профили и как
+    сверять имена инструментов. Собирает сборка приложения из своего конфига;
+    роль с именем '*' (ToolGrant.WILDCARD) — грант любой роли вошедшего."""
+
+    roles: Mapping[str, ToolGrant]
+    profiles: Mapping[str, ProfileGrant]
+    check: GrantCheck
+
+
 class ToolAccess:
     """Права доступа: роли, профили и инструменты чата под одним решением."""
 
@@ -211,6 +224,11 @@ class ToolAccess:
         return self._role_covers(tool_name, roles)
 
     def _role_covers(self, tool_name: str, user_roles: frozenset[str]) -> bool:
+        any_role = self._roles.get(ToolGrant.WILDCARD)
+        if any_role is not None and user_roles:
+            if any_role.covers(tool_name):
+                return True
+
         for role in user_roles:
             grant = self._roles.get(role)
             if grant is None:

@@ -15,14 +15,18 @@ import sys
 from collections.abc import AsyncIterator, Iterator, Sequence
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import ClassVar
 
 import httpx
 import pytest
 from langchain_core.messages import ToolCall
 from pydantic import SecretStr
 
+from boba.auth.config import ProxyAuthConfig
+from boba.config.section import bind_section
 from boba.connections.sealed import ConnectionSeal, SealedConnection, SealFeature
 from boba.db.postgres.connection import PostgresConfig
+from boba.identity.context import CallContexts
 from boba.identity.signin import ProxyHeaderNames
 from boba.mcp_client.client import (
     BearerAuth,
@@ -45,7 +49,8 @@ from boba.mcp_client.client import (
     ProxyAuth,
     StdioCommand,
 )
-from boba.runtime.config import ConfigLocator
+from boba.runtime.config import EnvOverride
+from boba.stand_core.context import CallStand
 from boba.toolkit.channels import ToolChannel
 from boba.toolkit.dag import WorkflowResult
 from boba.toolkit.result import (
@@ -87,6 +92,7 @@ async def stdio() -> AsyncIterator[McpToolServer]:
         _config(endpoint, prefix="std_"),
         NamedBlocks(),
         DroppedSignals(),
+        CallContexts(),
         None,
     )
     await server.open()
@@ -118,7 +124,12 @@ async def http(http_port: int) -> AsyncIterator[McpToolServer]:
         scheme="http", host="127.0.0.1", port=http_port, path="/mcp"
     )
     server = McpToolServer(
-        "standard", _config(endpoint), NamedBlocks(), DroppedSignals(), None
+        "standard",
+        _config(endpoint),
+        NamedBlocks(),
+        DroppedSignals(),
+        CallContexts(),
+        None,
     )
     for _ in range(100):
         try:
@@ -209,7 +220,12 @@ class TestStandardServerOverStdio:
 
         endpoint = StdioCommand(command=sys.executable, args=(str(SERVER), "stdio"))
         server = McpToolServer(
-            "standard", _config(endpoint), Recording(), DroppedSignals(), None
+            "standard",
+            _config(endpoint),
+            Recording(),
+            DroppedSignals(),
+            CallContexts(),
+            None,
         )
         await server.open()
         try:
@@ -250,7 +266,12 @@ class TestUnreachableServer:
     async def test_missing_command_is_a_client_error(self) -> None:
         endpoint = StdioCommand(command="/nonexistent/mcp-server")
         server = McpToolServer(
-            "ghost", _config(endpoint), NamedBlocks(), DroppedSignals(), None
+            "ghost",
+            _config(endpoint),
+            NamedBlocks(),
+            DroppedSignals(),
+            CallContexts(),
+            None,
         )
 
         with pytest.raises(McpClientError, match=r"ghost|nonexistent"):
@@ -259,7 +280,12 @@ class TestUnreachableServer:
     async def test_tools_before_open_is_a_client_error(self) -> None:
         endpoint = StdioCommand(command=sys.executable, args=(str(SERVER), "stdio"))
         server = McpToolServer(
-            "standard", _config(endpoint), NamedBlocks(), DroppedSignals(), None
+            "standard",
+            _config(endpoint),
+            NamedBlocks(),
+            DroppedSignals(),
+            CallContexts(),
+            None,
         )
 
         with pytest.raises(McpClientError, match="before open"):
@@ -298,6 +324,7 @@ class TestPublicServers:
             _config(self.DEEPWIKI, prefix="dw_"),
             NamedBlocks(),
             DroppedSignals(),
+            CallContexts(),
             None,
         )
         await server.open()
@@ -321,7 +348,12 @@ class TestPublicServers:
     async def test_context7_lists_tools_and_answers_a_call(self) -> None:
         await self._reachable(self.CONTEXT7)
         server = McpToolServer(
-            "context7", _config(self.CONTEXT7), NamedBlocks(), DroppedSignals(), None
+            "context7",
+            _config(self.CONTEXT7),
+            NamedBlocks(),
+            DroppedSignals(),
+            CallContexts(),
+            None,
         )
         await server.open()
         try:
@@ -357,7 +389,7 @@ class TestServersOfASession:
             servers={"standard": _config(endpoint), "ghost": ghost}
         )
 
-        return McpServers(config, NamedBlocks(), DroppedSignals())
+        return McpServers(config, NamedBlocks(), DroppedSignals(), CallContexts())
 
     async def test_named_servers_give_ports_and_a_dead_server_is_skipped(
         self,
@@ -393,13 +425,13 @@ class TestServersOfASession:
             await servers.stop()
 
 
-class DagProcess:
-    """Сервер boba-dag отдельным процессом в окружении сервиса: клиент видит
+class BobaMcpStand:
+    """Сервер boba-mcp отдельным процессом в окружении сервиса: клиент видит
     его только по сети, как в приложении."""
 
     REPO: Path = Path(__file__).resolve().parents[4]
-    PYTHON: Path = REPO / "services" / "boba-dag" / ".venv" / "bin" / "python"
-    STAND: Path = REPO / "services" / "boba-dag" / "tests" / "service_stand.py"
+    PYTHON: Path = REPO / "packages" / "apps" / "boba-mcp" / ".venv" / "bin" / "python"
+    STAND: Path = REPO / "packages" / "apps" / "boba-mcp" / "tests" / "service_stand.py"
     TOKEN: SecretStr = SecretStr("dev-token")
 
     def __init__(self, workdir: Path) -> None:
@@ -426,11 +458,11 @@ class DagProcess:
 
 
 @pytest.fixture
-def dag_process(tmp_path: Path) -> Iterator[DagProcess]:
-    if not DagProcess.PYTHON.exists():
-        pytest.skip(f"the service environment is not built: {DagProcess.PYTHON}")
+def boba_mcp_stand(tmp_path: Path) -> Iterator[BobaMcpStand]:
+    if not BobaMcpStand.PYTHON.exists():
+        pytest.skip(f"the service environment is not built: {BobaMcpStand.PYTHON}")
 
-    process = DagProcess(tmp_path)
+    process = BobaMcpStand(tmp_path)
     try:
         yield process
     finally:
@@ -438,9 +470,14 @@ def dag_process(tmp_path: Path) -> Iterator[DagProcess]:
 
 
 @pytest.fixture
-async def dag(dag_process: DagProcess) -> AsyncIterator[McpToolServer]:
+async def dag(boba_mcp_stand: BobaMcpStand) -> AsyncIterator[McpToolServer]:
     server = McpToolServer(
-        "dag", _config(dag_process.endpoint()), NamedBlocks(), DroppedSignals(), None
+        "boba",
+        _config(boba_mcp_stand.endpoint()),
+        NamedBlocks(),
+        DroppedSignals(),
+        CallContexts(),
+        None,
     )
     for _ in range(150):
         try:
@@ -455,6 +492,43 @@ async def dag(dag_process: DagProcess) -> AsyncIterator[McpToolServer]:
         yield server
     finally:
         await server.close()
+
+
+@pytest.mark.integration
+class TestScopeOfTheCall:
+    """Область вызова клиента доезжает до тела инструмента сервера."""
+
+    THREAD: ClassVar[str] = "5d0c0a52-7f0e-4c56-9d55-0b7a5f0f3c21"
+
+    async def test_scope_of_the_current_call_travels_to_the_server(
+        self, boba_mcp_stand: BobaMcpStand
+    ) -> None:
+        stand = CallStand()
+        server = McpToolServer(
+            "boba",
+            _config(boba_mcp_stand.endpoint()),
+            NamedBlocks(),
+            DroppedSignals(),
+            stand.contexts,
+            None,
+        )
+        for _ in range(150):
+            try:
+                await server.open()
+            except McpClientError:
+                await asyncio.sleep(0.2)
+                continue
+
+            break
+
+        try:
+            with stand.contexts.applied(stand.context(self.THREAD)):
+                message = await server.call(_call("fake_scope"))
+        finally:
+            await server.close()
+
+        if self.THREAD not in str(message.content):
+            raise AssertionError(f"the body runs in the caller's scope: {message}")
 
 
 class HeardSignals(CallSignals, JournalListener):
@@ -473,12 +547,17 @@ class HeardSignals(CallSignals, JournalListener):
 
 
 @pytest.mark.integration
-class TestBobaDagJournal:
+class TestBobaMcpJournal:
     """Журнал вызова своего сервера: сигналы роста и чтение окнами."""
 
-    async def _opened(self, process: DagProcess, heard: CallSignals) -> McpToolServer:
+    async def _opened(self, process: BobaMcpStand, heard: CallSignals) -> McpToolServer:
         server = McpToolServer(
-            "dag", _config(process.endpoint()), NamedBlocks(), heard, None
+            "boba",
+            _config(process.endpoint()),
+            NamedBlocks(),
+            heard,
+            CallContexts(),
+            None,
         )
         for _ in range(150):
             try:
@@ -489,20 +568,20 @@ class TestBobaDagJournal:
 
             return server
 
-        raise AssertionError("the boba-dag stand did not start")
+        raise AssertionError("the boba-mcp stand did not start")
 
     async def test_call_delivers_journal_signals_and_windows(
-        self, dag_process: DagProcess
+        self, boba_mcp_stand: BobaMcpStand
     ) -> None:
         heard = HeardSignals()
-        server = await self._opened(dag_process, heard)
+        server = await self._opened(boba_mcp_stand, heard)
         try:
             call = _call("fake_echo", text="hi", repeat=2)
             message = await server.call(call)
             if message.status != "success":
                 raise AssertionError(f"the call succeeds: {message}")
 
-            if heard.calls != [("dag", str(call["id"]))]:
+            if heard.calls != [("boba", str(call["id"]))]:
                 raise AssertionError(f"the listener is asked per call: {heard.calls}")
 
             stdout: list[JournalSignal] = []
@@ -524,7 +603,7 @@ class TestBobaDagJournal:
             await server.close()
 
         address = JournalAddresses().of(message)
-        if address != JournalAddress(server="dag", run=stdout[-1].run):
+        if address != JournalAddress(server="boba", run=stdout[-1].run):
             raise AssertionError(f"the message keeps the journal address: {address}")
 
         if window is None or "echo progress: hi" not in window.text:
@@ -532,8 +611,10 @@ class TestBobaDagJournal:
         if window.size != stdout[-1].size or not window.closed:
             raise AssertionError(f"the window agrees with the signal: {window}")
 
-    async def test_missing_journal_is_no_window(self, dag_process: DagProcess) -> None:
-        server = await self._opened(dag_process, DroppedSignals())
+    async def test_missing_journal_is_no_window(
+        self, boba_mcp_stand: BobaMcpStand
+    ) -> None:
+        server = await self._opened(boba_mcp_stand, DroppedSignals())
         try:
             if JournalFeature.ID.value not in server.features():
                 raise AssertionError(f"the journal is declared: {server.features()}")
@@ -550,7 +631,7 @@ class TestBobaDagJournal:
         endpoint = StdioCommand(command=sys.executable, args=(str(SERVER), "stdio"))
         heard = HeardSignals()
         server = McpToolServer(
-            "standard", _config(endpoint), NamedBlocks(), heard, None
+            "standard", _config(endpoint), NamedBlocks(), heard, CallContexts(), None
         )
         await server.open()
         try:
@@ -571,7 +652,7 @@ class TestSignInAsTheUser:
 
     SECRET: SecretStr = SecretStr("stand-proxy-secret")
 
-    def _auth(self, process: DagProcess, secret: SecretStr) -> ProxyAuth:
+    def _auth(self, process: BobaMcpStand, secret: SecretStr) -> ProxyAuth:
         return ProxyAuth(
             secret=secret,
             sign_in=HttpLocation(
@@ -585,15 +666,15 @@ class TestSignInAsTheUser:
             ),
         )
 
-    def _servers(self, process: DagProcess, secret: SecretStr) -> McpServers:
+    def _servers(self, process: BobaMcpStand, secret: SecretStr) -> McpServers:
         auth = self._auth(process, secret)
         wide = process.endpoint().model_copy(update={"auth": auth})
         narrow = wide.model_copy(update={"path": "/mcp/narrow"})
         config = McpServersConfig(
-            servers={"dag": _config(wide), "narrow": _config(narrow)}
+            servers={"boba": _config(wide), "narrow": _config(narrow)}
         )
 
-        return McpServers(config, NamedBlocks(), DroppedSignals())
+        return McpServers(config, NamedBlocks(), DroppedSignals(), CallContexts())
 
     async def _ports(
         self, servers: McpServers, caller: McpCaller, names: Sequence[str]
@@ -608,12 +689,12 @@ class TestSignInAsTheUser:
         return []
 
     async def test_body_runs_as_the_user_of_the_client(
-        self, dag_process: DagProcess
+        self, boba_mcp_stand: BobaMcpStand
     ) -> None:
-        servers = self._servers(dag_process, self.SECRET)
+        servers = self._servers(boba_mcp_stand, self.SECRET)
         caller = McpCaller(login="ivanov", roles=frozenset({"dev"}))
         try:
-            ports = await self._ports(servers, caller, ["dag"])
+            ports = await self._ports(servers, caller, ["boba"])
             if len(ports) != 1:
                 raise AssertionError(f"the user gets the port of the service: {ports}")
 
@@ -625,12 +706,12 @@ class TestSignInAsTheUser:
             raise AssertionError(f"the body sees the user and the roles: {message}")
 
     async def test_endpoint_gives_the_tools_of_its_profile(
-        self, dag_process: DagProcess
+        self, boba_mcp_stand: BobaMcpStand
     ) -> None:
-        servers = self._servers(dag_process, self.SECRET)
+        servers = self._servers(boba_mcp_stand, self.SECRET)
         caller = McpCaller(login="ivanov", roles=frozenset({"dev"}))
         try:
-            await self._ports(servers, caller, ["dag"])
+            await self._ports(servers, caller, ["boba"])
             ports = await servers.for_session(caller, ["narrow"])
             names = sorted(tool.name for port in ports for tool in port.tools())
         finally:
@@ -640,12 +721,12 @@ class TestSignInAsTheUser:
             raise AssertionError(f"the endpoint decides the tools: {names}")
 
     async def test_endpoint_outside_the_roles_gives_no_port(
-        self, dag_process: DagProcess
+        self, boba_mcp_stand: BobaMcpStand
     ) -> None:
-        servers = self._servers(dag_process, self.SECRET)
+        servers = self._servers(boba_mcp_stand, self.SECRET)
         weak = McpCaller(login="petrov", roles=frozenset({"weak"}))
         try:
-            await self._ports(servers, weak, ["dag"])
+            await self._ports(servers, weak, ["boba"])
             ports = await servers.for_session(weak, ["narrow"])
         finally:
             await servers.stop()
@@ -654,14 +735,14 @@ class TestSignInAsTheUser:
             raise AssertionError(f"role weak has no endpoint narrow: {ports}")
 
     async def test_forged_signature_opens_no_port(
-        self, dag_process: DagProcess
+        self, boba_mcp_stand: BobaMcpStand
     ) -> None:
-        honest = self._servers(dag_process, self.SECRET)
-        forged = self._servers(dag_process, SecretStr("forged"))
+        honest = self._servers(boba_mcp_stand, self.SECRET)
+        forged = self._servers(boba_mcp_stand, SecretStr("forged"))
         caller = McpCaller(login="ivanov", roles=frozenset({"dev"}))
         try:
-            await self._ports(honest, caller, ["dag"])
-            ports = await forged.for_session(caller, ["dag"])
+            await self._ports(honest, caller, ["boba"])
+            ports = await forged.for_session(caller, ["boba"])
         finally:
             await honest.stop()
             await forged.stop()
@@ -671,7 +752,7 @@ class TestSignInAsTheUser:
 
 
 @pytest.mark.integration
-class TestBobaDagServer:
+class TestBobaMcpServer:
     """Свой сервер: тот же стандартный путь плюс модель результата."""
 
     async def test_result_revives_as_its_model(self, dag: McpToolServer) -> None:
@@ -771,12 +852,19 @@ class TestBobaDagServer:
         if message.status != "error":
             raise AssertionError(f"an unsealed reference is refused: {message}")
 
-    async def test_wrong_token_is_a_client_error(self, dag_process: DagProcess) -> None:
-        endpoint = dag_process.endpoint().model_copy(
+    async def test_wrong_token_is_a_client_error(
+        self, boba_mcp_stand: BobaMcpStand
+    ) -> None:
+        endpoint = boba_mcp_stand.endpoint().model_copy(
             update={"auth": BearerAuth(token=SecretStr("stranger"))}
         )
         server = McpToolServer(
-            "dag", _config(endpoint), NamedBlocks(), DroppedSignals(), None
+            "boba",
+            _config(endpoint),
+            NamedBlocks(),
+            DroppedSignals(),
+            CallContexts(),
+            None,
         )
 
         for _ in range(150):
@@ -794,37 +882,57 @@ class TestBobaDagServer:
         raise AssertionError("the server never answered 401 to a stranger token")
 
 
-class DagService:
-    """Настоящий процесс сервиса на рабочем конфиге: `python -m
-    boba.dag_service --config …` в окружении сервиса, адрес и токен — из
-    секции [dag] конфига стенда."""
+class BobaMcpService:
+    """Настоящий процесс сервиса на его собственном конфиге: `python -m
+    boba.mcp_server --config compose/mcp/conf/config.toml` в окружении
+    сервиса. Порт и способ запуска стенд задаёт переопределениями [env];
+    вход — proxy, ключ подписи берётся из секции [auth.proxy] того же конфига."""
 
     HOST: str = "127.0.0.1"
-    PORT: int = 8650
-    TOKEN: SecretStr = SecretStr("dag-dev-token")
     PROFILE: str = "general"
+    CONFIG: Path = BobaMcpStand.REPO / "compose" / "mcp" / "conf" / "config.toml"
+    THIRD: Path = BobaMcpStand.REPO / "build" / "src" / "sandbox" / "third"
 
-    def __init__(self, config: Path, log: Path) -> None:
+    def __init__(self, log: Path) -> None:
+        with socket.socket() as probe:
+            probe.bind((self.HOST, 0))
+            self.port = int(probe.getsockname()[1])
+
+        self._proxy = bind_section(self.CONFIG, "auth.proxy", ProxyAuthConfig)
         self._log = log.open("wb")
         self._process = subprocess.Popen(
             [
-                str(DagProcess.PYTHON),
+                str(BobaMcpStand.PYTHON),
                 "-m",
-                "boba.dag_service",
+                "boba.mcp_server",
                 "--config",
-                str(config),
+                str(self.CONFIG),
             ],
+            env={
+                EnvOverride.PORT.var: str(self.port),
+                EnvOverride.TOOL_LAUNCHER.var: "process",
+                "PATH": f"{self.THIRD / 'bin'}:/usr/local/bin:/usr/bin:/bin",
+                "LD_LIBRARY_PATH": str(self.THIRD / "lib"),
+            },
             stdout=self._log,
             stderr=subprocess.STDOUT,
         )
 
     def endpoint(self) -> HttpEndpoint:
+        auth = ProxyAuth(
+            secret=self._proxy.secret,
+            sign_in=HttpLocation(
+                scheme="http", host=self.HOST, port=self.port, path=self._proxy.path
+            ),
+            headers=self._proxy.header_names(),
+        )
+
         return HttpEndpoint(
             scheme="http",
             host=self.HOST,
-            port=self.PORT,
+            port=self.port,
             path=f"/mcp/{self.PROFILE}",
-            auth=BearerAuth(token=self.TOKEN),
+            auth=auth,
         )
 
     def stop(self) -> None:
@@ -834,19 +942,33 @@ class DagService:
 
 
 @pytest.mark.integration
-@pytest.mark.xdist_group("dag-service")
-class TestDagServiceProcess:
-    """Приёмка двумя процессами: сервис со всеми плагинами рабочего конфига,
-    клиент чата ходит к нему по сети."""
+@pytest.mark.xdist_group("boba-mcp-service")
+class TestBobaMcpService:
+    """Приёмка двумя процессами: сервис со всеми плагинами своего конфига,
+    клиент чата входит через proxy и ходит к нему по сети."""
 
     @pytest.fixture
-    async def service(self, tmp_path: Path) -> AsyncIterator[McpToolServer]:
-        if not DagProcess.PYTHON.exists():
-            pytest.skip(f"the service environment is not built: {DagProcess.PYTHON}")
+    def call_stand(self) -> CallStand:
+        return CallStand()
 
-        process = DagService(ConfigLocator.path(), tmp_path / "dag.log")
+    @pytest.fixture
+    async def service(
+        self, tmp_path: Path, call_stand: CallStand
+    ) -> AsyncIterator[McpToolServer]:
+        if not BobaMcpStand.PYTHON.exists():
+            pytest.skip(f"the service environment is not built: {BobaMcpStand.PYTHON}")
+        if not BobaMcpService.CONFIG.exists():
+            pytest.skip(f"the service config is not placed: {BobaMcpService.CONFIG}")
+
+        process = BobaMcpService(tmp_path / "mcp.log")
+        caller = McpCaller(login="tester", roles=frozenset({"wrt"}))
         server = McpToolServer(
-            "dag", _config(process.endpoint()), NamedBlocks(), DroppedSignals(), None
+            "boba",
+            _config(process.endpoint()),
+            NamedBlocks(),
+            DroppedSignals(),
+            call_stand.contexts,
+            caller,
         )
         try:
             for _ in range(600):
@@ -877,3 +999,26 @@ class TestDagServiceProcess:
             raise AssertionError(f"the shell model is revived: {message}")
         if artifact.stdout.strip() != "from the service":
             raise AssertionError(f"the body ran in the service: {artifact}")
+
+    async def test_calls_of_one_scope_share_the_files_of_the_scope(
+        self, service: McpToolServer, call_stand: CallStand
+    ) -> None:
+        """Файл, записанный вызовом области, виден следующему вызову той же
+        области и не виден вызову другой."""
+        first = "8a1d7f2c-3b54-4e0a-9c1e-2f4b6d8a0c11"
+        other = "8a1d7f2c-3b54-4e0a-9c1e-2f4b6d8a0c12"
+
+        with call_stand.contexts.applied(call_stand.context(first)):
+            await service.call(_call("bash", command="echo kept > note.txt"))
+            again = await service.call(_call("bash", command="cat note.txt"))
+
+        with call_stand.contexts.applied(call_stand.context(other)):
+            apart = await service.call(_call("bash", command="cat note.txt"))
+
+        seen = again.artifact
+        if not isinstance(seen, ShellResult) or seen.stdout.strip() != "kept":
+            raise AssertionError(f"the next call of the scope sees the file: {again}")
+
+        missed = apart.artifact
+        if not isinstance(missed, ShellResult) or missed.stdout.strip() == "kept":
+            raise AssertionError(f"another scope does not see the file: {apart}")

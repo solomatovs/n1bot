@@ -6,7 +6,12 @@ import pytest
 from omegaconf import OmegaConf
 
 from boba.access import GrantCheck
-from boba.runtime.plugins import EntryPointPlugins, ToolLoader, ToolPlugin
+from boba.runtime.plugins import (
+    ConfigGrants,
+    EntryPointPlugins,
+    ToolLoader,
+    ToolPlugin,
+)
 from boba.stand.refs import StandRefs
 from boba.stand_core.context import CallStand
 from boba.toolkit.entry import ToolArgv
@@ -77,7 +82,7 @@ def test_discovered_plugin_without_config_file_refuses_start(
         plugins,
         runtime_stand.none(),
         runtime_stand.launchers(raw),
-        GrantCheck.HOSTED,
+        ConfigGrants(raw).grants(GrantCheck.HOSTED),
     )
 
     with pytest.raises(RuntimeError, match=r"conf/plugins/pg\.toml is missing"):

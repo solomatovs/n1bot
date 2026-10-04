@@ -9,7 +9,6 @@ description = "Boba auth: вход пользователя общий для ch
 requires-python = ">=3.11,<4"
 dependencies = [
     "boba-identity==0.0.26.dev4",
-    "boba-chat==0.0.26.dev4",
     "boba-connections==0.0.26.dev4",
     "boba-kerberos==0.0.26.dev4",
     "boba-krb[seal]==0.0.26.dev4",

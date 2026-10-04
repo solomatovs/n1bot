@@ -232,6 +232,10 @@ class CallContext(BaseModel):
 
     subject: Subject
     scope: Scope
+    run_id: str = Field(min_length=1)
+    """Ключ запуска в реестре Runs и журнале вызовов. Ход чата занимает
+    область целиком и берёт её id; сервис ведёт в одной области несколько
+    вызовов сразу и даёт каждому свой ключ."""
     initiator: Initiator
     credential: Credential
     cancellation: RunCancellation
@@ -264,6 +268,7 @@ class CallContext(BaseModel):
         return CallContext(
             subject=self.subject,
             scope=scope,
+            run_id=scope.id,
             initiator=self.initiator,
             credential=self.credential,
             cancellation=RunCancellation(),

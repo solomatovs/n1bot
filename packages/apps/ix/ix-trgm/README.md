@@ -19,8 +19,8 @@ run/      SQL шагов цикла, их выполняет worker.py
 `ix-core`:
 
 ```
-.venv/bin/boba-ix-core upgrade --config ../../compose/apps/ix-core/conf.toml
-.venv/bin/boba-ix-trgm upgrade --config ../../compose/apps/ix-trgm/conf.toml
+.venv/bin/boba-ix-core upgrade --config ../../compose/ix-core/conf.toml
+.venv/bin/boba-ix-trgm upgrade --config ../../compose/ix-trgm/conf.toml
 ```
 
 Схема хранения задаётся полем `db_schema` секции: в sql-файлах она
@@ -38,7 +38,7 @@ run/      SQL шагов цикла, их выполняет worker.py
 скрапера: он сам находит, чего не хватает, и доводит таблицу до структуры; параллельные
 запуски не мешают друг другу.
 
-Настройки берутся из одного файла конфига, секция [ix.trgm]. Конфиг приложения на dev-стенде лежит в `compose/apps/ix-trgm/conf.toml`
+Настройки берутся из одного файла конфига, секция [ix.trgm]. Конфиг приложения на dev-стенде лежит в `compose/ix-trgm/conf.toml`
 (каталог вне git, в нём креды). Одним файлом можно запускать и несколько приложений:
 каждое читает только свою секцию.
 
@@ -49,7 +49,7 @@ run/      SQL шагов цикла, их выполняет worker.py
 берутся из AsyncPostgresPool, воркер async.
 
 ```
-.venv/bin/boba-ix-trgm --config ../../compose/apps/ix-trgm/conf.toml
+.venv/bin/boba-ix-trgm --config ../../compose/ix-trgm/conf.toml
 ```
 
 Роль профиля должна иметь права на чтение `ix.node`, `ix.tree`, surface-таблиц `ix.pg_*` и на
@@ -60,7 +60,7 @@ run/      SQL шагов цикла, их выполняет worker.py
 ## Воркер: worker.py
 
 ```
-.venv/bin/boba-ix-trgm --config ../../compose/apps/ix-trgm/conf.toml
+.venv/bin/boba-ix-trgm --config ../../compose/ix-trgm/conf.toml
 ```
 
 Крутит `run/10_upsert.sql` пачками до applied = 0, затем `run/20_prune.sql`; креды только в конфиге.

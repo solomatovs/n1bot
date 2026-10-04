@@ -17,7 +17,7 @@ from typing import Annotated, Final
 
 from pydantic import Field
 
-from boba.identity.context import Subject
+from boba.identity.context import Scope, Subject
 from boba.toolkit.entry import ToolMain
 from boba.toolkit.facade import Injected, tool
 from boba.toolkit.result import MarkdownResult
@@ -34,6 +34,14 @@ async def fake_whoami(
 
 
 @tool
+async def fake_scope(
+    scope: Annotated[Scope, Injected],
+) -> MarkdownResult:
+    """Называет область, в которой идёт вызов."""
+    return MarkdownResult(text=scope.id)
+
+
+@tool
 async def fake_sleep(
     seconds: Annotated[float, Field(ge=0, description="Сколько секунд спать")],
     marker: Annotated[str, Field(min_length=1, description="Файл с pid тела")],
@@ -45,7 +53,7 @@ async def fake_sleep(
     return MarkdownResult(text=f"slept {seconds}")
 
 
-TOOLS: Final = ToolMain.toolset(fake_whoami, fake_sleep)
+TOOLS: Final = ToolMain.toolset(fake_whoami, fake_scope, fake_sleep)
 
 if __name__ == "__main__":
     sys.exit(ToolMain.run(TOOLS))

@@ -372,7 +372,6 @@ name = "boba-auth"
 version = "0.0.26.dev4"
 source = { editable = "packages/services/boba-auth" }
 dependencies = [
-    { name = "boba-chat", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "boba-connections", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "boba-identity", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "boba-kerberos", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
@@ -394,7 +393,6 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "boba-chat", editable = "packages/core/boba-chat" },
     { name = "boba-config", marker = "extra == 'dev'", editable = "packages/infra/config/boba-config" },
     { name = "boba-connections", editable = "packages/core/boba-connections" },
     { name = "boba-identity", editable = "packages/core/boba-identity" },
@@ -581,7 +579,7 @@ provides-extras = ["dev"]
 [[package]]
 name = "boba-chainlit"
 version = "0.0.26.dev4"
-source = { editable = "packages/agents/boba-chainlit" }
+source = { editable = "packages/apps/boba-chainlit" }
 dependencies = [
     { name = "aiofiles", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "boba-access", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
@@ -975,7 +973,7 @@ requires-dist = [
     { name = "boba-stand", marker = "extra == 'dev'", editable = "packages/testing/boba-stand" },
     { name = "boba-toolkit", editable = "packages/core/boba-toolkit" },
     { name = "boba-toolkit", extras = ["arrow"], marker = "extra == 'payload'", editable = "packages/core/boba-toolkit" },
-    { name = "oracledb", marker = "extra == 'payload'", specifier = "==26.0.0+boba.1", index = "file:///app/docker/compose/boba/build/chainlit/src/oracledb" },
+    { name = "oracledb", marker = "extra == 'payload'", specifier = "==26.0.0+boba.1" },
     { name = "pyarrow", marker = "extra == 'payload'", specifier = ">=25,<26" },
     { name = "pydantic", specifier = ">=2.10,<3" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8" },
@@ -1518,9 +1516,11 @@ dependencies = [
 
 [package.optional-dependencies]
 dev = [
+    { name = "boba-config", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "boba-connections", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "boba-db-postgres", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "boba-runtime", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "boba-stand-core", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "pytest", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
 ]
 
@@ -1529,10 +1529,12 @@ requires-dist = [
     { name = "anyio", specifier = ">=4" },
     { name = "boba-auth", editable = "packages/services/boba-auth" },
     { name = "boba-canvas", editable = "packages/core/boba-canvas" },
+    { name = "boba-config", marker = "extra == 'dev'", editable = "packages/infra/config/boba-config" },
     { name = "boba-connections", marker = "extra == 'dev'", editable = "packages/core/boba-connections" },
     { name = "boba-db-postgres", marker = "extra == 'dev'", editable = "packages/infra/db/boba-db-postgres" },
     { name = "boba-identity", editable = "packages/core/boba-identity" },
     { name = "boba-runtime", marker = "extra == 'dev'", editable = "packages/services/boba-runtime" },
+    { name = "boba-stand-core", marker = "extra == 'dev'", editable = "packages/core/boba-stand-core" },
     { name = "boba-toolkit", editable = "packages/core/boba-toolkit" },
     { name = "boba-toolrun", editable = "packages/services/boba-toolrun" },
     { name = "httpx", specifier = ">=0.28,<1" },
@@ -1858,7 +1860,7 @@ requires-dist = [
     { name = "boba-catalog", editable = "packages/core/boba-catalog" },
     { name = "boba-catalog-service", editable = "packages/services/boba-catalog-service" },
     { name = "boba-cfl-indexer", editable = "packages/apps/ix/cfl-indexer" },
-    { name = "boba-chainlit", marker = "extra == 'dev'", editable = "packages/agents/boba-chainlit" },
+    { name = "boba-chainlit", marker = "extra == 'dev'", editable = "packages/apps/boba-chainlit" },
     { name = "boba-chat", editable = "packages/core/boba-chat" },
     { name = "boba-config", editable = "packages/infra/config/boba-config" },
     { name = "boba-confluence", editable = "packages/infra/format/boba-confluence" },
@@ -2026,7 +2028,7 @@ provides-extras = ["dev"]
 [[package]]
 name = "boba-studio"
 version = "0.0.26.dev4"
-source = { editable = "packages/agents/boba-studio" }
+source = { editable = "packages/apps/boba-studio" }
 dependencies = [
     { name = "boba-auth", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "boba-cancellation", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
@@ -2314,7 +2316,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "boba-chainlit", marker = "extra == 'dev'", editable = "packages/agents/boba-chainlit" },
+    { name = "boba-chainlit", marker = "extra == 'dev'", editable = "packages/apps/boba-chainlit" },
     { name = "boba-config", marker = "extra == 'dev'", editable = "packages/infra/config/boba-config" },
     { name = "boba-connection-broker", marker = "extra == 'dev'", editable = "packages/services/boba-connection-broker" },
     { name = "boba-connections", editable = "packages/core/boba-connections" },
@@ -2485,7 +2487,7 @@ requires-dist = [
     { name = "boba-stand", marker = "extra == 'dev'", editable = "packages/testing/boba-stand" },
     { name = "boba-toolkit", editable = "packages/core/boba-toolkit" },
     { name = "boba-toolkit", extras = ["arrow"], marker = "extra == 'payload'", editable = "packages/core/boba-toolkit" },
-    { name = "oracledb", marker = "extra == 'dev'", specifier = "==26.0.0+boba.1", index = "file:///app/docker/compose/boba/build/chainlit/src/oracledb" },
+    { name = "oracledb", marker = "extra == 'dev'", specifier = "==26.0.0+boba.1" },
     { name = "pydantic", specifier = ">=2.10,<3" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8" },
 ]
@@ -5241,7 +5243,7 @@ wheels = [
 [[package]]
 name = "oracledb"
 version = "26.0.0+boba.1"
-source = { registry = "build/chainlit/src/oracledb" }
+source = { registry = "build/src/oracledb" }
 dependencies = [
     { name = "cryptography", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "typing-extensions", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },

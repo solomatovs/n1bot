@@ -11,13 +11,13 @@ if [ -n "${PYTHONHOME:-}" ] || [ -n "${PYTHONPATH:-}" ]; then
   unset PYTHONHOME PYTHONPATH
 fi
 
-_uv="$_sec_dir/build/chainlit/src/uv/uv"
+_uv="$_sec_dir/build/src/uv/uv"
 if [ ! -x "$_uv" ]; then
   _uv=$(command -v uv)
 fi
 
 if [ -z "$_uv" ]; then
-  echo "sec: не найден uv (build/chainlit/src/uv/uv или в PATH)" >&2
+  echo "sec: не найден uv (build/src/uv/uv или в PATH)" >&2
   exit 1
 fi
 
@@ -79,7 +79,7 @@ PY
 
   echo "== bandit: без порогов, вместе с тестами =="
   "$_uv" tool run --system-certs bandit                     \
-    -q -r "$_sec_dir/packages" "$_sec_dir/build/chainlit/test" "$_sec_dir/build/studio/test"       \
+    -q -r "$_sec_dir/packages" "$_sec_dir/build/test"       \
     --exclude '**/.venv/**' -f json 2>/dev/null > "$_bandit_json" || true
 
   python3 - "$_bandit_json" <<'PY'

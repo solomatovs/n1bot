@@ -25,6 +25,8 @@ dev = [
     "boba-connections==0.0.26.dev4",
     "boba-db-postgres==0.0.26.dev4",
     "boba-runtime==0.0.26.dev4",
+    "boba-config==0.0.26.dev4",
+    "boba-stand-core==0.0.26.dev4",
     "pytest>=8",
 ]
 

@@ -100,6 +100,7 @@ class EnvOverride(StrEnum):
     WORKFLOW_PAGE = "workflow_page"
     MESSAGING = "messaging_provider"
     TOOL_LAUNCHER = "tool_launcher"
+    MCP_HOST = "mcp_host"
 
     @property
     def var(self) -> str:
@@ -308,7 +309,7 @@ class AppName(StrEnum):
 
     CHAINLIT = "chainlit"
     STUDIO = "studio"
-    DAG = "dag"
+    MCP = "mcp"
 
 
 class ClusterConfig(BaseModel):

@@ -35,7 +35,7 @@ vector) поверх схемы `ix`. Нужен, чтобы подбирать 
 уходит в запрос повторами параметра `surface`; не выбрано ничего — ищем везде, и стенд
 подставляет все имена сам, поэтому фильтр в sql один и тот же.
 
-Настройки берутся из одного файла конфига, секция [ix.search_lab]. Конфиг приложения на dev-стенде лежит в `compose/apps/ix-search-lab/conf.toml`
+Настройки берутся из одного файла конфига, секция [ix.search_lab]. Конфиг приложения на dev-стенде лежит в `compose/ix-search-lab/conf.toml`
 (каталог вне git, в нём креды). Одним файлом можно запускать и несколько приложений:
 каждое читает только свою секцию.
 
@@ -46,7 +46,7 @@ vector) поверх схемы `ix`. Нужен, чтобы подбирать 
 берутся из AsyncPostgresPool, воркер async.
 
 ```
-.venv/bin/boba-ix-search-lab --config ../../compose/apps/ix-search-lab/conf.toml
+.venv/bin/boba-ix-search-lab --config ../../compose/ix-search-lab/conf.toml
 ```
 
 Схема хранения задаётся полем `db_schema` секции: в sql-файлах она

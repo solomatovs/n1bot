@@ -38,7 +38,7 @@ from boba.toolkit.protocol import REPLY, ReplyOk
 from boba.toolkit.stream import Chunk
 
 REPO = Path(__file__).resolve().parents[5]
-SANDBOX = REPO / "build" / "chainlit" / "src" / "sandbox"
+SANDBOX = REPO / "build" / "src" / "sandbox"
 ROOTFS_IMAGE = SANDBOX / "plugins" / "boba-tool-shell" / "rootfs.ext4"
 FUSE2FS = SANDBOX / "third" / "bin" / "fuse2fs"
 
