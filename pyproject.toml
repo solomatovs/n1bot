@@ -46,6 +46,7 @@ pythonpath = [
     "packages/core/boba-toolkit/src",
     "packages/apps/boba-studio/src",
     "packages/apps/boba-chainlit/src",
+    "packages/apps/boba-mcp/src",
     "packages/tools/boba-tool-shell/src",
     "packages/tools/boba-tool-canvas/src",
     "packages/tools/boba-tool-chart/src",
@@ -132,6 +133,7 @@ extraPaths = [
     "packages/core/boba-toolkit/src",
     "packages/apps/boba-studio/src",
     "packages/apps/boba-chainlit/src",
+    "packages/apps/boba-mcp/src",
     "packages/tools/boba-tool-shell/src",
     "packages/tools/boba-tool-canvas/src",
     "packages/tools/boba-tool-chart/src",
@@ -219,11 +221,11 @@ python-preference = "only-system"
 environments = ["python_full_version >= '3.11' and python_full_version < '3.12' and sys_platform == 'linux'"]
 
 [tool.uv.workspace]
-exclude = ["packages/apps/boba-mcp"]
 members = [
     "packages/core/*",
     "packages/apps/boba-chainlit",
     "packages/apps/boba-studio",
+    "packages/apps/boba-mcp",
     "packages/apps/ix/*",
     "packages/tools/*",
     "packages/infra/*/*",
@@ -247,6 +249,8 @@ boba-messaging      = { workspace = true }
 boba-toolrun        = { workspace = true }
 boba-connection-broker = { workspace = true }
 boba-mcp-client = { workspace = true }
+boba-mcp = { workspace = true }
+boba-tool-describer = { workspace = true }
 boba-catalog-service = { workspace = true }
 boba-runtime = { workspace = true }
 boba-auth = { workspace = true }

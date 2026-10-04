@@ -429,11 +429,10 @@ class TestServersOfASession:
 
 
 class BobaMcpStand:
-    """Сервер boba-mcp отдельным процессом в окружении сервиса: клиент видит
-    его только по сети, как в приложении."""
+    """Сервер boba-mcp отдельным процессом: клиент видит его только по сети,
+    как в приложении."""
 
     REPO: Path = Path(__file__).resolve().parents[4]
-    PYTHON: Path = REPO / "packages" / "apps" / "boba-mcp" / ".venv" / "bin" / "python"
     STAND: Path = REPO / "packages" / "apps" / "boba-mcp" / "tests" / "service_stand.py"
     TOKEN: SecretStr = SecretStr("dev-token")
 
@@ -443,7 +442,7 @@ class BobaMcpStand:
             self.port = probe.getsockname()[1]
 
         self._process = subprocess.Popen(
-            [str(self.PYTHON), str(self.STAND), str(self.port), str(workdir)]
+            [sys.executable, str(self.STAND), str(self.port), str(workdir)]
         )
 
     def endpoint(self) -> HttpEndpoint:
@@ -462,9 +461,6 @@ class BobaMcpStand:
 
 @pytest.fixture
 def boba_mcp_stand(tmp_path: Path) -> Iterator[BobaMcpStand]:
-    if not BobaMcpStand.PYTHON.exists():
-        pytest.skip(f"the service environment is not built: {BobaMcpStand.PYTHON}")
-
     process = BobaMcpStand(tmp_path)
     try:
         yield process
@@ -950,9 +946,9 @@ class TestBobaMcpServer:
 
 class BobaMcpService:
     """Настоящий процесс сервиса на его собственном конфиге: `python -m
-    boba.mcp_server --config compose/mcp/conf/config.toml` в окружении
-    сервиса. Порт и способ запуска стенд задаёт переопределениями [env];
-    вход — proxy, ключ подписи берётся из секции [auth.proxy] того же конфига."""
+    boba.mcp_server --config compose/mcp/conf/config.toml`. Порт и способ
+    запуска стенд задаёт переопределениями [env]; вход — proxy, ключ подписи
+    берётся из секции [auth.proxy] того же конфига."""
 
     HOST: str = "127.0.0.1"
     PROFILE: str = "general"
@@ -968,7 +964,7 @@ class BobaMcpService:
         self._log = log.open("wb")
         self._process = subprocess.Popen(
             [
-                str(BobaMcpStand.PYTHON),
+                sys.executable,
                 "-m",
                 "boba.mcp_server",
                 "--config",
@@ -1021,8 +1017,6 @@ class TestBobaMcpService:
     async def service(
         self, tmp_path: Path, call_stand: CallStand
     ) -> AsyncIterator[McpToolServer]:
-        if not BobaMcpStand.PYTHON.exists():
-            pytest.skip(f"the service environment is not built: {BobaMcpStand.PYTHON}")
         if not BobaMcpService.CONFIG.exists():
             pytest.skip(f"the service config is not placed: {BobaMcpService.CONFIG}")
 

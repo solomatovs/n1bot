@@ -561,45 +561,8 @@ class Finding(BaseModel):
         return line.rstrip()
 
 
-class WorkspaceMembers(BaseModel):
-    """Секция [tool.uv.workspace] корневого pyproject: что из workspace исключено."""
-
-    model_config = ConfigDict(frozen=True, extra="ignore")
-
-    exclude: Sequence[str] = ()
-
-
-class UvSection(BaseModel):
-    """Секция [tool.uv] корневого pyproject."""
-
-    model_config = ConfigDict(frozen=True, extra="ignore")
-
-    workspace: WorkspaceMembers = WorkspaceMembers()
-
-
-class ToolSection(BaseModel):
-    """Секция [tool] корневого pyproject."""
-
-    model_config = ConfigDict(frozen=True, extra="ignore")
-
-    uv: UvSection = UvSection()
-
-
-class WorkspaceExclude(BaseModel):
-    """Корневой pyproject глазами аудита: только исключения workspace."""
-
-    model_config = ConfigDict(frozen=True, extra="ignore")
-
-    tool: ToolSection = ToolSection()
-
-
 class DepsAudit:
-    """Проход по всем пакетам репозитория: src против pyproject, tests против dev.
-
-    Пакет, исключённый из workspace корневого pyproject ([tool.uv.workspace]
-    exclude), в проход не входит: у него своё окружение и свой lock, и его
-    зависимости в окружении репозитория не установлены.
-    """
+    """Проход по всем пакетам репозитория: src против pyproject, tests против dev."""
 
     GLOBS: ClassVar[tuple[str, ...]] = ("*/*/pyproject.toml", "*/*/*/pyproject.toml")
 
@@ -615,40 +578,12 @@ class DepsAudit:
         self._layers = {p.name: Layer.of(packages_root, p.root) for p in self._projects}
 
     def _load_projects(self) -> list[PackageProject]:
-        excluded = self._excluded()
         projects: list[PackageProject] = []
         for pattern in self.GLOBS:
             for pyproject in sorted(self._root.glob(pattern)):
-                if pyproject.parent in excluded:
-                    continue
-
                 projects.append(PackageProject.load(pyproject))
 
         return projects
-
-    def _excluded(self) -> frozenset[Path]:
-        """Каталоги пакетов вне workspace: exclude корневого pyproject."""
-        repo = self._root.parent
-        workspace = repo / PackageProject.FILE
-        if not workspace.is_file():
-            return frozenset()
-
-        try:
-            with workspace.open("rb") as handle:
-                document = tomllib.load(handle)
-        except (OSError, tomllib.TOMLDecodeError) as exc:
-            msg = (
-                f"deps audit: reading [tool.uv.workspace] of {workspace}: "
-                f"{type(exc).__name__}: {exc}"
-            )
-            raise DepsAuditError(msg) from exc
-
-        declared = WorkspaceExclude.model_validate(document)
-        paths: set[Path] = set()
-        for entry in declared.tool.uv.workspace.exclude:
-            paths.add(repo / entry)
-
-        return frozenset(paths)
 
     def projects(self) -> Sequence[PackageProject]:
         return self._projects

@@ -13,7 +13,6 @@ build/src/*
 build/test
 
 **/__pycache__
-packages/**/.venv
 packages/**/*.egg-info
 packages/**/node_modules
 

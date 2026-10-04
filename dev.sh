@@ -49,7 +49,7 @@ fi
 export PATH="$DIR/build/src/uv:$PATH"
 
 # python-oracledb в .venv идёт патченным колесом из build/src/oracledb
-# (плоский индекс boba-wheels в pyproject); без него uv sync не соберёт окружение
+# (find-links в pyproject); без него uv sync не соберёт окружение
 ORACLEDB_WHEELS="$DIR/build/src/oracledb"
 ORACLEDB_PYTHON="$DIR/.venv/bin/python"
 if [ ! -d "$DIR/.venv" ]; then
@@ -68,7 +68,7 @@ if [ ! -d "$DIR/.venv" ]; then
   (cd "$DIR" && uv venv --python 3.11 --clear --no-managed-python)
 fi
 
-(cd "$DIR" && uv sync -v --system-certs)
+(cd "$DIR" && uv sync -v --system-certs --all-packages --all-extras)
 OK=$?
 
 if [ $OK -eq 0 ]; then
