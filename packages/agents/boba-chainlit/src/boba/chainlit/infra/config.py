@@ -4,12 +4,13 @@
 Ошибки: своих не выпускает; выбор профиля — boba.chat.profiles.
 """
 
-from typing import Annotated, Any
+from typing import Annotated, Any, Self
 
 from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
+    model_validator,
 )
 
 from boba.access import RoleConfig
@@ -212,6 +213,24 @@ class AppConfig(RuntimeConfig):
         McpServersConfig,
         Field(description="Секция [mcp]: MCP-серверы, чьи инструменты видит модель."),
     ]
+
+    @model_validator(mode="after")
+    def _profiles_name_declared_servers(self) -> Self:
+        """Профиль называет только серверы из [mcp.servers]: опечатка в имени
+        — отказ на старте, а не профиль без инструментов."""
+        declared = sorted(self.mcp.servers)
+        for name, profile in self.profiles.items():
+            for server in profile.mcp:
+                if server in self.mcp.servers:
+                    continue
+
+                msg = (
+                    f"[profiles.{name}].mcp names server {server!r} that is not "
+                    f"declared in [mcp.servers], declared: {declared}"
+                )
+                raise ValueError(msg)
+
+        return self
 
     settings: SettingsBounds = Field(
         default_factory=SettingsBounds,

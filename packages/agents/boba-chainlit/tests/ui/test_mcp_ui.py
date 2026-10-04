@@ -41,6 +41,10 @@ SERVER = (
     REPO_ROOT / "packages" / "services" / "boba-mcp-client" / "tests"
 ) / "standard_server.py"
 
+CHAT_LOGIN = "admin"
+CHAT_ROLE = "ADM"
+"""Логин пользователя стенда чата: под ним открыт чат в браузере."""
+
 PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 16
 """Картинка, которую отдаёт инструмент picture стандартного сервера."""
 
@@ -49,12 +53,13 @@ class DagProcess:
     """Сервер boba-dag отдельным процессом в окружении сервиса.
 
     Создаётся фикстурой dag_process до стенда чата: чат подключается к нему
-    при старте по HTTP с токеном, как к любому MCP-серверу.
+    по HTTP от имени пользователя сессии: называет его логин и роли
+    заголовками под подписью и получает токен сервиса (вход proxy).
     """
 
     PYTHON: Path = REPO_ROOT / "services" / "boba-dag" / ".venv" / "bin" / "python"
     STAND: Path = REPO_ROOT / "services" / "boba-dag" / "tests" / "service_stand.py"
-    TOKEN: str = "dev-token"
+    PROXY_SECRET: str = "stand-proxy-secret"
     BOOT_SEC: float = 60.0
 
     def __init__(self, workdir: Path) -> None:
@@ -79,9 +84,6 @@ class DagProcess:
     def server(self) -> dict[str, Any]:
         """Секция [mcp.servers.<имя>] чата для этого сервера."""
         return {
-            "roles": ["*"],
-            "profiles": ["*"],
-            "tools": ["*"],
             "prefix": "dag_",
             "connect_timeout_sec": 30.0,
             "call_timeout_sec": 60.0,
@@ -90,8 +92,23 @@ class DagProcess:
                 "scheme": "http",
                 "host": "127.0.0.1",
                 "port": self.port,
-                "path": "/mcp",
-                "auth": {"auth": "bearer", "token": self.TOKEN},
+                "path": "/mcp/service",
+                "auth": {
+                    "auth": "proxy",
+                    "secret": self.PROXY_SECRET,
+                    "sign_in": {
+                        "scheme": "http",
+                        "host": "127.0.0.1",
+                        "port": self.port,
+                        "path": "/auth/proxy",
+                    },
+                    "headers": {
+                        "user": "X-Remote-User",
+                        "timestamp": "X-Boba-Timestamp",
+                        "signature": "X-Boba-Signature",
+                        "roles": "X-Remote-Roles",
+                    },
+                },
             },
         }
 
@@ -123,9 +140,6 @@ def mcp_stand(
 ) -> Iterator[StandProcess]:
     """Стенд чата с двумя MCP-серверами: обычный по stdio (std_) и boba-dag (dag_)."""
     server: dict[str, Any] = {
-        "roles": ["*"],
-        "profiles": ["*"],
-        "tools": ["*"],
         "prefix": "std_",
         "connect_timeout_sec": 30.0,
         "call_timeout_sec": 60.0,
@@ -227,6 +241,21 @@ class TestOwnServerInTheFeed:
             raise AssertionError(f"the step is named after the tool: {step}")
         if "hi hi|t0ken" not in str(step.get(StepField.OUTPUT.value)):
             raise AssertionError(f"the step shows the result of the service: {step}")
+
+    def test_body_of_boba_dag_runs_as_the_chat_user(
+        self, mcp_stand: StandProcess, open_chat: OpenChat
+    ) -> None:
+        """Сервис узнаёт пользователя чата: логин и роли, с которыми тот
+        вошёл в чат, приходят при входе proxy; тело исполняется от его имени."""
+        chat = open_chat(mcp_stand, "")
+
+        step = _ask(chat, "dag_fake_whoami", {})
+
+        output = str(step.get(StepField.OUTPUT.value))
+        if not output.startswith(f"{CHAT_LOGIN}|{CHAT_ROLE}|"):
+            raise AssertionError(
+                f"the body runs as the user of the chat with his roles: {step}"
+            )
 
     def test_failed_body_of_boba_dag_is_a_failed_step(
         self, mcp_stand: StandProcess, open_chat: OpenChat

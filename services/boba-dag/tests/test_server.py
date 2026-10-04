@@ -8,6 +8,8 @@
 from __future__ import annotations
 
 import asyncio
+import socket
+import time
 from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
@@ -16,9 +18,16 @@ import httpx
 import pytest
 from fastmcp import Client
 from fastmcp.client.transports import StreamableHttpTransport
-from fastmcp.utilities.tests import run_server_async
-from service_stand import DEV_TOKEN, PROFILE, WEAK_TOKEN, ServiceStand
+from service_stand import (
+    DEV_TOKEN,
+    NARROW,
+    PROFILE,
+    PROXY_SECRET,
+    WEAK_TOKEN,
+    ServiceStand,
+)
 
+from boba.auth.proxy import ProxySignature
 from boba.connections.sealed import SealFeature
 from boba.dag_service.server import (
     DagTool,
@@ -26,6 +35,7 @@ from boba.dag_service.server import (
     RunLimits,
     StreamReadTool,
 )
+from boba.identity.signin import ProxyRequest
 from boba.toolkit.channels import ToolChannel
 from boba.toolkit.wire import JournalFeature, JournalSignal, WireMeta
 from boba.toolrun.call_id import CallFields
@@ -35,14 +45,21 @@ pytestmark = [pytest.mark.integration, pytest.mark.anyio]
 
 
 @pytest.fixture
-def stand(tmp_path: Path) -> ServiceStand:
-    return ServiceStand(tmp_path, RunLimits(max_runs=4, max_waiting=4))
+def port() -> int:
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        return int(probe.getsockname()[1])
+
+
+@pytest.fixture
+def stand(tmp_path: Path, port: int) -> ServiceStand:
+    return ServiceStand(tmp_path, RunLimits(max_runs=4, max_waiting=4), port)
 
 
 @pytest.fixture
 async def url(stand: ServiceStand) -> AsyncIterator[str]:
-    async with run_server_async(stand.mcp) as served:
-        yield served
+    async with stand.serving():
+        yield stand.url(PROFILE)
 
 
 def _client(url: str, token: str) -> Client[Any]:
@@ -302,6 +319,10 @@ class TestJournal:
         if not foreign.is_error:
             raise AssertionError(f"a journal is read only by its caller: {foreign}")
 
+        refusal = foreign.structured_content
+        if refusal is None or refusal.get("status") != StreamReadTool.FORBIDDEN:
+            raise AssertionError(f"a foreign journal is refused with 403: {foreign}")
+
 
 class TestFailures:
     async def test_bad_arguments_are_an_error_result_with_a_model(
@@ -364,6 +385,16 @@ class TestFailures:
         if not result.is_error:
             raise AssertionError(f"role weak has no fake_emit: {result}")
 
+    async def test_unknown_token_is_rejected(
+        self, stand: ServiceStand, url: str
+    ) -> None:
+        headers = {"Authorization": "Bearer not-a-token-of-the-service"}
+        async with httpx.AsyncClient() as http:
+            reply = await http.post(url, json={}, headers=headers)
+
+        if reply.status_code != httpx.codes.UNAUTHORIZED:
+            raise AssertionError(f"a foreign token means 401: {reply.status_code}")
+
     async def test_request_without_a_token_is_rejected(
         self, stand: ServiceStand, url: str
     ) -> None:
@@ -376,8 +407,8 @@ class TestFailures:
 
 class TestRunLimit:
     @pytest.fixture
-    def stand(self, tmp_path: Path) -> ServiceStand:
-        return ServiceStand(tmp_path, RunLimits(max_runs=1, max_waiting=1))
+    def stand(self, tmp_path: Path, port: int) -> ServiceStand:
+        return ServiceStand(tmp_path, RunLimits(max_runs=1, max_waiting=1), port)
 
     async def test_calls_over_the_limit_wait_and_over_the_queue_are_refused(
         self, stand: ServiceStand, url: str, tmp_path: Path
@@ -447,3 +478,105 @@ class TestCancellation:
             await asyncio.sleep(0.05)
 
         raise AssertionError(f"the body process {pid} outlived its cancelled call")
+
+
+class TestEndpoints:
+    """Endpoint — профиль конфига: свой набор инструментов и свои роли."""
+
+    async def test_endpoint_offers_the_tools_of_its_profile(
+        self, stand: ServiceStand, url: str
+    ) -> None:
+        async with _client(stand.url(NARROW), DEV_TOKEN) as client:
+            listed = await client.list_tools()
+
+        names = sorted(tool.name for tool in listed)
+        if names != ["fake_echo", StreamReadTool.NAME]:
+            raise AssertionError(f"the endpoint offers its own tools: {names}")
+
+    async def test_endpoint_outside_the_roles_is_forbidden(
+        self, stand: ServiceStand, url: str
+    ) -> None:
+        headers = {"Authorization": f"Bearer {WEAK_TOKEN}"}
+        async with httpx.AsyncClient() as http:
+            reply = await http.post(stand.url(NARROW), json={}, headers=headers)
+
+        if reply.status_code != httpx.codes.FORBIDDEN:
+            raise AssertionError(f"role weak has no endpoint narrow: {reply}")
+
+    async def test_unknown_endpoint_is_not_found(
+        self, stand: ServiceStand, url: str
+    ) -> None:
+        headers = {"Authorization": f"Bearer {DEV_TOKEN}"}
+        async with httpx.AsyncClient() as http:
+            reply = await http.post(stand.url("nowhere"), json={}, headers=headers)
+
+        if reply.status_code != httpx.codes.NOT_FOUND:
+            raise AssertionError(f"an unknown endpoint is 404: {reply}")
+
+
+class TestProxySignIn:
+    """Вход proxy: доверенный клиент называет логин и роли под подписью."""
+
+    def _headers(self, login: str, roles: str, secret: str) -> dict[str, str]:
+        request = ProxyRequest(
+            login=login, timestamp=str(int(time.time())), signature="", roles=roles
+        )
+        signed = ProxySignature(secret).sign(request)
+
+        return {
+            "X-Remote-User": login,
+            "X-Boba-Timestamp": request.timestamp,
+            "X-Boba-Signature": signed,
+            "X-Remote-Roles": roles,
+        }
+
+    async def _signed_in(self, stand: ServiceStand, headers: dict[str, str]) -> Any:
+        address = f"http://127.0.0.1:{stand.port}/auth/proxy"
+        async with httpx.AsyncClient() as http:
+            return await http.post(address, headers=headers)
+
+    async def test_signed_login_and_roles_become_the_caller(
+        self, stand: ServiceStand, url: str
+    ) -> None:
+        reply = await self._signed_in(
+            stand, self._headers("ivanov", "dev", PROXY_SECRET)
+        )
+        if reply.status_code != httpx.codes.OK:
+            raise AssertionError(f"the signed request signs in: {reply.text}")
+
+        token = reply.json()["access_token"]
+        async with _client(url, token) as client:
+            result = await client.call_tool_mcp("fake_whoami", {})
+
+        structured = result.structured_content
+        if structured is None or structured.get("text") != f"ivanov|dev|{PROFILE}":
+            raise AssertionError(f"the body runs as the signed-in user: {result}")
+
+    async def test_roles_of_the_sign_in_open_the_endpoints(
+        self, stand: ServiceStand, url: str
+    ) -> None:
+        reply = await self._signed_in(
+            stand, self._headers("petrov", "weak", PROXY_SECRET)
+        )
+        headers = {"Authorization": f"Bearer {reply.json()['access_token']}"}
+        async with httpx.AsyncClient() as http:
+            narrow = await http.post(stand.url(NARROW), json={}, headers=headers)
+
+        if narrow.status_code != httpx.codes.FORBIDDEN:
+            raise AssertionError(f"role weak is refused on narrow: {narrow}")
+
+    async def test_wrong_signature_is_rejected(
+        self, stand: ServiceStand, url: str
+    ) -> None:
+        reply = await self._signed_in(stand, self._headers("ivanov", "dev", "forged"))
+
+        if reply.status_code != httpx.codes.UNAUTHORIZED:
+            raise AssertionError(f"a forged signature is 401: {reply}")
+
+    async def test_sign_in_without_roles_is_forbidden(
+        self, stand: ServiceStand, url: str
+    ) -> None:
+        reply = await self._signed_in(stand, self._headers("ivanov", "", PROXY_SECRET))
+
+        if reply.status_code != httpx.codes.FORBIDDEN:
+            raise AssertionError(f"a sign-in without roles is 403: {reply}")

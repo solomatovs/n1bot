@@ -24,6 +24,7 @@ from boba.mcp_client.client import (
     JournalAddress,
     JournalAddresses,
     JournalListener,
+    McpCaller,
     McpServers,
 )
 from boba.toolkit.channels import JournalChannel, JournalChannels
@@ -179,14 +180,18 @@ class RemoteJournals(CallSignals):
 class RemoteStreams:
     """Чтение журналов вызовов MCP-серверов для панели живого вывода.
 
-    Создаётся сборкой чата из реестра журналов и клиента MCP. Панель зовёт
-    его, когда своего журнала у вызова нет: окно читает операция сервера,
-    адрес журнала даёт реестр RemoteJournals.
+    Создаётся обработчиком действия панели из реестра журналов, клиента MCP
+    и пользователя сессии: сервер отдаёт журнал только тому, кто вызывал.
+    Панель зовёт его, когда своего журнала у вызова нет: окно читает
+    операция сервера, адрес журнала даёт реестр RemoteJournals.
     """
 
-    def __init__(self, journals: RemoteJournals, servers: McpServers) -> None:
+    def __init__(
+        self, journals: RemoteJournals, servers: McpServers, caller: McpCaller
+    ) -> None:
         self._journals = journals
         self._servers = servers
+        self._caller = caller
 
     async def slice_at(
         self, thread_id: str, call_id: str, channel: JournalChannel, offset: int
@@ -199,7 +204,7 @@ class RemoteStreams:
             run=address.run, node=call_id, channel=channel, offset=offset
         )
 
-        return await self._servers.journal(address.server, request)
+        return await self._servers.journal(address.server, self._caller, request)
 
     async def slice_before(
         self, thread_id: str, call_id: str, channel: JournalChannel, end: int
@@ -212,7 +217,7 @@ class RemoteStreams:
             run=address.run, node=call_id, channel=channel, before=end
         )
 
-        return await self._servers.journal(address.server, request)
+        return await self._servers.journal(address.server, self._caller, request)
 
     async def channels(
         self, thread_id: str, call_id: str

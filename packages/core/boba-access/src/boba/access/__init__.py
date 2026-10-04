@@ -169,6 +169,15 @@ class ToolAccess:
     def known(self, tool_name: str) -> bool:
         return tool_name in self._tool_names
 
+    def profiles(self) -> frozenset[str]:
+        """Имена профилей, для которых заданы гранты."""
+        return frozenset(self._profiles)
+
+    def profile_grant(self, profile: str) -> ProfileGrant | None:
+        """Грант профиля: какие инструменты профиль оставляет доступными,
+        откуда бы они ни были подключены; None — такого профиля нет."""
+        return self._profiles.get(profile)
+
     def decide(
         self,
         tool_name: str,

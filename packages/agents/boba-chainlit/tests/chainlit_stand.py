@@ -62,6 +62,7 @@ from boba.krb.seal import SsoTickets, TicketSealer
 from boba.llm.providers import ChatModelConfig, LlmProviders, LlmProviderTypes
 from boba.mcp_client.client import (
     DroppedSignals,
+    McpCaller,
     McpServers,
     McpServersConfig,
     NamedBlocks,
@@ -98,7 +99,8 @@ class RemoteStand:
         servers = McpServers(
             McpServersConfig(servers={}), NamedBlocks(), DroppedSignals()
         )
-        self.streams = RemoteStreams(journals, servers)
+        caller = McpCaller(login=StandIdentity.LOGIN, roles=frozenset())
+        self.streams = RemoteStreams(journals, servers, caller)
 
 
 @dataclass

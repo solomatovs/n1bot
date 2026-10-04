@@ -12,7 +12,7 @@ import asyncio
 import socket
 import subprocess
 import sys
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import AsyncIterator, Iterator, Sequence
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -23,15 +23,18 @@ from pydantic import SecretStr
 
 from boba.connections.sealed import ConnectionSeal, SealedConnection, SealFeature
 from boba.db.postgres.connection import PostgresConfig
+from boba.identity.signin import ProxyHeaderNames
 from boba.mcp_client.client import (
     BearerAuth,
     BlockFiles,
     CallSignals,
     DroppedSignals,
     HttpEndpoint,
+    HttpLocation,
     JournalAddress,
     JournalAddresses,
     JournalListener,
+    McpCaller,
     McpClientError,
     McpFailure,
     McpServerConfig,
@@ -39,6 +42,7 @@ from boba.mcp_client.client import (
     McpServersConfig,
     McpToolServer,
     NamedBlocks,
+    ProxyAuth,
     StdioCommand,
 )
 from boba.runtime.config import ConfigLocator
@@ -52,6 +56,7 @@ from boba.toolkit.result import (
 )
 from boba.toolkit.types import SecretReveal
 from boba.toolkit.wire import JournalFeature, JournalRead, JournalSignal
+from boba.toolrun.stream_calls import ToolServer
 
 pytestmark = pytest.mark.anyio
 
@@ -61,13 +66,13 @@ SERVER = Path(__file__).with_name("standard_server.py")
 def _config(endpoint: HttpEndpoint | StdioCommand, prefix: str = "") -> McpServerConfig:
     return McpServerConfig(
         endpoint=endpoint,
-        roles=["*"],
-        profiles=["*"],
-        tools=["*"],
         prefix=prefix,
         connect_timeout_sec=20.0,
         call_timeout_sec=60.0,
     )
+
+
+CALLER = McpCaller(login="alice", roles=frozenset({"dev"}))
 
 
 def _call(name: str, **args: object) -> ToolCall:
@@ -78,7 +83,11 @@ def _call(name: str, **args: object) -> ToolCall:
 async def stdio() -> AsyncIterator[McpToolServer]:
     endpoint = StdioCommand(command=sys.executable, args=(str(SERVER), "stdio"))
     server = McpToolServer(
-        "standard", _config(endpoint, prefix="std_"), NamedBlocks(), DroppedSignals()
+        "standard",
+        _config(endpoint, prefix="std_"),
+        NamedBlocks(),
+        DroppedSignals(),
+        None,
     )
     await server.open()
     try:
@@ -109,7 +118,7 @@ async def http(http_port: int) -> AsyncIterator[McpToolServer]:
         scheme="http", host="127.0.0.1", port=http_port, path="/mcp"
     )
     server = McpToolServer(
-        "standard", _config(endpoint), NamedBlocks(), DroppedSignals()
+        "standard", _config(endpoint), NamedBlocks(), DroppedSignals(), None
     )
     for _ in range(100):
         try:
@@ -200,7 +209,7 @@ class TestStandardServerOverStdio:
 
         endpoint = StdioCommand(command=sys.executable, args=(str(SERVER), "stdio"))
         server = McpToolServer(
-            "standard", _config(endpoint), Recording(), DroppedSignals()
+            "standard", _config(endpoint), Recording(), DroppedSignals(), None
         )
         await server.open()
         try:
@@ -241,7 +250,7 @@ class TestUnreachableServer:
     async def test_missing_command_is_a_client_error(self) -> None:
         endpoint = StdioCommand(command="/nonexistent/mcp-server")
         server = McpToolServer(
-            "ghost", _config(endpoint), NamedBlocks(), DroppedSignals()
+            "ghost", _config(endpoint), NamedBlocks(), DroppedSignals(), None
         )
 
         with pytest.raises(McpClientError, match=r"ghost|nonexistent"):
@@ -250,7 +259,7 @@ class TestUnreachableServer:
     async def test_tools_before_open_is_a_client_error(self) -> None:
         endpoint = StdioCommand(command=sys.executable, args=(str(SERVER), "stdio"))
         server = McpToolServer(
-            "standard", _config(endpoint), NamedBlocks(), DroppedSignals()
+            "standard", _config(endpoint), NamedBlocks(), DroppedSignals(), None
         )
 
         with pytest.raises(McpClientError, match="before open"):
@@ -289,6 +298,7 @@ class TestPublicServers:
             _config(self.DEEPWIKI, prefix="dw_"),
             NamedBlocks(),
             DroppedSignals(),
+            None,
         )
         await server.open()
         try:
@@ -311,7 +321,7 @@ class TestPublicServers:
     async def test_context7_lists_tools_and_answers_a_call(self) -> None:
         await self._reachable(self.CONTEXT7)
         server = McpToolServer(
-            "context7", _config(self.CONTEXT7), NamedBlocks(), DroppedSignals()
+            "context7", _config(self.CONTEXT7), NamedBlocks(), DroppedSignals(), None
         )
         await server.open()
         try:
@@ -337,27 +347,25 @@ class TestPublicServers:
 
 
 class TestServersOfASession:
-    """Какие серверы и инструменты достаются сессии: грант секции сервера."""
+    """Какие серверы достаются сессии: те, что назвал её профиль."""
 
     @staticmethod
-    def _servers(**grant: list[str]) -> McpServers:
+    def _servers() -> McpServers:
         endpoint = StdioCommand(command=sys.executable, args=(str(SERVER), "stdio"))
-        base = _config(endpoint).model_dump()
-        base.update(grant)
-        ghost = _config(StdioCommand(command="/nonexistent/mcp-server")).model_dump()
-        config = McpServersConfig.model_validate(
-            {"servers": {"standard": base, "ghost": ghost}}
+        ghost = _config(StdioCommand(command="/nonexistent/mcp-server"))
+        config = McpServersConfig(
+            servers={"standard": _config(endpoint), "ghost": ghost}
         )
 
         return McpServers(config, NamedBlocks(), DroppedSignals())
 
-    async def test_granted_session_gets_the_port_and_a_dead_server_is_skipped(
+    async def test_named_servers_give_ports_and_a_dead_server_is_skipped(
         self,
     ) -> None:
         servers = self._servers()
         await servers.start()
         try:
-            ports = await servers.for_session(["DEV"], "general")
+            ports = await servers.for_session(CALLER, ["standard", "ghost"])
             names = sorted(tool.name for port in ports for tool in port.tools())
         finally:
             await servers.stop()
@@ -365,32 +373,24 @@ class TestServersOfASession:
         if names != ["add", "broken", "picture", "shout"]:
             raise AssertionError(f"only the live server gives tools: {names}")
 
-    async def test_profile_and_role_outside_the_grant_get_nothing(self) -> None:
-        servers = self._servers(roles=["ADM"], profiles=["search"])
+    async def test_session_without_named_servers_gets_nothing(self) -> None:
+        servers = self._servers()
         await servers.start()
         try:
-            wrong_role = await servers.for_session(["DEV"], "search")
-            wrong_profile = await servers.for_session(["ADM"], "general")
-            granted = await servers.for_session(["ADM"], "search")
+            ports = await servers.for_session(CALLER, [])
         finally:
             await servers.stop()
 
-        if wrong_role or wrong_profile:
-            raise AssertionError(f"the grant is both role and profile: {wrong_role}")
-        if len(granted) != 1:
-            raise AssertionError(f"the granted session gets the server: {granted}")
+        if ports:
+            raise AssertionError(f"a profile without servers gets no ports: {ports}")
 
-    async def test_tool_list_of_the_section_limits_the_offered_tools(self) -> None:
-        servers = self._servers(tools=["add"])
-        await servers.start()
+    async def test_undeclared_server_name_is_an_error(self) -> None:
+        servers = self._servers()
         try:
-            ports = await servers.for_session(["DEV"], "general")
-            names = [tool.name for port in ports for tool in port.tools()]
+            with pytest.raises(McpClientError, match="not declared"):
+                await servers.for_session(CALLER, ["typo"])
         finally:
             await servers.stop()
-
-        if names != ["add"]:
-            raise AssertionError(f"only the listed tools are offered: {names}")
 
 
 class DagProcess:
@@ -416,7 +416,7 @@ class DagProcess:
             scheme="http",
             host="127.0.0.1",
             port=self.port,
-            path="/mcp",
+            path="/mcp/service",
             auth=BearerAuth(token=self.TOKEN),
         )
 
@@ -440,7 +440,7 @@ def dag_process(tmp_path: Path) -> Iterator[DagProcess]:
 @pytest.fixture
 async def dag(dag_process: DagProcess) -> AsyncIterator[McpToolServer]:
     server = McpToolServer(
-        "dag", _config(dag_process.endpoint()), NamedBlocks(), DroppedSignals()
+        "dag", _config(dag_process.endpoint()), NamedBlocks(), DroppedSignals(), None
     )
     for _ in range(150):
         try:
@@ -477,7 +477,9 @@ class TestBobaDagJournal:
     """Журнал вызова своего сервера: сигналы роста и чтение окнами."""
 
     async def _opened(self, process: DagProcess, heard: CallSignals) -> McpToolServer:
-        server = McpToolServer("dag", _config(process.endpoint()), NamedBlocks(), heard)
+        server = McpToolServer(
+            "dag", _config(process.endpoint()), NamedBlocks(), heard, None
+        )
         for _ in range(150):
             try:
                 await server.open()
@@ -547,7 +549,9 @@ class TestBobaDagJournal:
     async def test_standard_server_has_no_journal(self) -> None:
         endpoint = StdioCommand(command=sys.executable, args=(str(SERVER), "stdio"))
         heard = HeardSignals()
-        server = McpToolServer("standard", _config(endpoint), NamedBlocks(), heard)
+        server = McpToolServer(
+            "standard", _config(endpoint), NamedBlocks(), heard, None
+        )
         await server.open()
         try:
             await server.call(_call("add", a=2, b=3))
@@ -558,6 +562,112 @@ class TestBobaDagJournal:
 
         if heard.calls or window is not None:
             raise AssertionError(f"a standard server is not asked: {heard.calls}")
+
+
+@pytest.mark.integration
+class TestSignInAsTheUser:
+    """Вход proxy: клиент называет логин и роли пользователя под подписью,
+    сервис выдаёт ему свой токен и исполняет вызовы от его имени."""
+
+    SECRET: SecretStr = SecretStr("stand-proxy-secret")
+
+    def _auth(self, process: DagProcess, secret: SecretStr) -> ProxyAuth:
+        return ProxyAuth(
+            secret=secret,
+            sign_in=HttpLocation(
+                scheme="http", host="127.0.0.1", port=process.port, path="/auth/proxy"
+            ),
+            headers=ProxyHeaderNames(
+                user="X-Remote-User",
+                timestamp="X-Boba-Timestamp",
+                signature="X-Boba-Signature",
+                roles="X-Remote-Roles",
+            ),
+        )
+
+    def _servers(self, process: DagProcess, secret: SecretStr) -> McpServers:
+        auth = self._auth(process, secret)
+        wide = process.endpoint().model_copy(update={"auth": auth})
+        narrow = wide.model_copy(update={"path": "/mcp/narrow"})
+        config = McpServersConfig(
+            servers={"dag": _config(wide), "narrow": _config(narrow)}
+        )
+
+        return McpServers(config, NamedBlocks(), DroppedSignals())
+
+    async def _ports(
+        self, servers: McpServers, caller: McpCaller, names: Sequence[str]
+    ) -> Sequence[ToolServer]:
+        for _ in range(150):
+            ports = await servers.for_session(caller, names)
+            if ports:
+                return ports
+
+            await asyncio.sleep(0.2)
+
+        return []
+
+    async def test_body_runs_as_the_user_of_the_client(
+        self, dag_process: DagProcess
+    ) -> None:
+        servers = self._servers(dag_process, self.SECRET)
+        caller = McpCaller(login="ivanov", roles=frozenset({"dev"}))
+        try:
+            ports = await self._ports(servers, caller, ["dag"])
+            if len(ports) != 1:
+                raise AssertionError(f"the user gets the port of the service: {ports}")
+
+            message = await ports[0].call(_call("fake_whoami"))
+        finally:
+            await servers.stop()
+
+        if not str(message.content).startswith("ivanov|dev|"):
+            raise AssertionError(f"the body sees the user and the roles: {message}")
+
+    async def test_endpoint_gives_the_tools_of_its_profile(
+        self, dag_process: DagProcess
+    ) -> None:
+        servers = self._servers(dag_process, self.SECRET)
+        caller = McpCaller(login="ivanov", roles=frozenset({"dev"}))
+        try:
+            await self._ports(servers, caller, ["dag"])
+            ports = await servers.for_session(caller, ["narrow"])
+            names = sorted(tool.name for port in ports for tool in port.tools())
+        finally:
+            await servers.stop()
+
+        if names != ["fake_echo", "stream_read"]:
+            raise AssertionError(f"the endpoint decides the tools: {names}")
+
+    async def test_endpoint_outside_the_roles_gives_no_port(
+        self, dag_process: DagProcess
+    ) -> None:
+        servers = self._servers(dag_process, self.SECRET)
+        weak = McpCaller(login="petrov", roles=frozenset({"weak"}))
+        try:
+            await self._ports(servers, weak, ["dag"])
+            ports = await servers.for_session(weak, ["narrow"])
+        finally:
+            await servers.stop()
+
+        if ports:
+            raise AssertionError(f"role weak has no endpoint narrow: {ports}")
+
+    async def test_forged_signature_opens_no_port(
+        self, dag_process: DagProcess
+    ) -> None:
+        honest = self._servers(dag_process, self.SECRET)
+        forged = self._servers(dag_process, SecretStr("forged"))
+        caller = McpCaller(login="ivanov", roles=frozenset({"dev"}))
+        try:
+            await self._ports(honest, caller, ["dag"])
+            ports = await forged.for_session(caller, ["dag"])
+        finally:
+            await honest.stop()
+            await forged.stop()
+
+        if ports:
+            raise AssertionError(f"a forged signature opens no port: {ports}")
 
 
 @pytest.mark.integration
@@ -666,7 +776,7 @@ class TestBobaDagServer:
             update={"auth": BearerAuth(token=SecretStr("stranger"))}
         )
         server = McpToolServer(
-            "dag", _config(endpoint), NamedBlocks(), DroppedSignals()
+            "dag", _config(endpoint), NamedBlocks(), DroppedSignals(), None
         )
 
         for _ in range(150):
@@ -692,6 +802,7 @@ class DagService:
     HOST: str = "127.0.0.1"
     PORT: int = 8650
     TOKEN: SecretStr = SecretStr("dag-dev-token")
+    PROFILE: str = "general"
 
     def __init__(self, config: Path, log: Path) -> None:
         self._log = log.open("wb")
@@ -712,7 +823,7 @@ class DagService:
             scheme="http",
             host=self.HOST,
             port=self.PORT,
-            path="/mcp",
+            path=f"/mcp/{self.PROFILE}",
             auth=BearerAuth(token=self.TOKEN),
         )
 
@@ -735,7 +846,7 @@ class TestDagServiceProcess:
 
         process = DagService(ConfigLocator.path(), tmp_path / "dag.log")
         server = McpToolServer(
-            "dag", _config(process.endpoint()), NamedBlocks(), DroppedSignals()
+            "dag", _config(process.endpoint()), NamedBlocks(), DroppedSignals(), None
         )
         try:
             for _ in range(600):

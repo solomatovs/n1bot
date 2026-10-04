@@ -5,6 +5,9 @@
 (tools/call). Транспорт — streamable HTTP, SSE или stdio. Итог вызова
 сервера, который не знает о семействе результатов boba, — текст его content;
 сервер boba-dag присылает ещё и модель результата, и она оживает как есть.
+Сервер с авторизацией proxy (сервис boba) подключается от имени пользователя
+сессии: клиент называет его логин и роли заголовками под подписью и получает
+токен сервера.
 
 Ошибки:
 McpClientError — сервер недоступен, не прошёл инициализацию, не отдал список
@@ -18,8 +21,11 @@ import asyncio
 import base64
 import json
 import logging
+import time
 from abc import abstractmethod
+from collections import OrderedDict
 from collections.abc import (
+    AsyncGenerator,
     AsyncIterator,
     Awaitable,
     Callable,
@@ -29,6 +35,7 @@ from collections.abc import (
 )
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from contextvars import ContextVar
+from dataclasses import dataclass
 from datetime import timedelta
 from enum import StrEnum
 from typing import Annotated, Any, ClassVar, Literal, Protocol
@@ -45,15 +52,15 @@ from mcp.client.streamable_http import streamablehttp_client
 from mcp.shared.message import SessionMessage
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, ValidationError
 
-from boba.access import ProfileGrant
+from boba.auth.proxy import ProxySignature
 from boba.canvas.journal import StreamSlice
+from boba.identity.signin import ProxyHeaderNames, ProxyRequest
 from boba.toolkit.result import (
     ErrorResult,
     FailureResult,
     MarkdownResult,
     ToolResultBase,
 )
-from boba.toolkit.types import StringList
 from boba.toolkit.wire import (
     JournalFeature,
     JournalRead,
@@ -70,9 +77,11 @@ __all__ = [
     "CallSignals",
     "DroppedSignals",
     "HttpEndpoint",
+    "HttpLocation",
     "JournalAddress",
     "JournalAddresses",
     "JournalListener",
+    "McpCaller",
     "McpClientError",
     "McpServerConfig",
     "McpServers",
@@ -80,6 +89,7 @@ __all__ = [
     "McpToolServer",
     "NamedBlocks",
     "NoAuth",
+    "ProxyAuth",
     "SseEndpoint",
     "StdioCommand",
 ]
@@ -105,14 +115,50 @@ class McpFailure(StrEnum):
     TRANSPORT = "mcp_transport_error"
 
 
+@dataclass(frozen=True)
+class McpCaller:
+    """От чьего имени сессия клиента ходит на сервер: логин пользователя
+    (его identifier в клиенте) и роли, с которыми он вошёл в клиент. Сервер
+    с авторизацией proxy получает их при входе и по ним решает, какие его
+    endpoint'ы пользователю доступны."""
+
+    login: str
+    roles: frozenset[str]
+
+    def __post_init__(self) -> None:
+        if not self.login:
+            msg = "mcp caller: login expects a non-empty string, got an empty one"
+            raise ValueError(msg)
+
+
+class HttpLocation(BaseModel):
+    """Адрес HTTP частями, как у HTTP-соединений."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    scheme: Literal["http", "https"]
+    host: str = Field(min_length=1)
+    port: int | None = Field(default=None, gt=0, lt=65536)
+    path: str = Field(min_length=1)
+
+    def url(self) -> str:
+        return str(
+            httpx.URL(
+                scheme=self.scheme, host=self.host, port=self.port, path=self.path
+            )
+        )
+
+
 class NoAuth(BaseModel):
     """Сервер без авторизации."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
+    PERSONAL: ClassVar[bool] = False
+
     auth: Literal["none"] = "none"
 
-    def httpx_auth(self) -> httpx.Auth | None:
+    def httpx_auth(self, caller: McpCaller | None, resource: str) -> httpx.Auth | None:
         return None
 
 
@@ -128,48 +174,164 @@ class BearerToken(httpx.Auth):
 
 
 class BearerAuth(BaseModel):
-    """Готовый токен доступа из конфига."""
+    """Готовый токен доступа из конфига: один на всех пользователей клиента."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
+
+    PERSONAL: ClassVar[bool] = False
 
     auth: Literal["bearer"] = "bearer"
     token: SecretStr
 
-    def httpx_auth(self) -> httpx.Auth | None:
+    def httpx_auth(self, caller: McpCaller | None, resource: str) -> httpx.Auth | None:
         return BearerToken(self.token)
 
 
-McpAuth = Annotated[NoAuth | BearerAuth, Field(discriminator="auth")]
+class ProxyAuth(BaseModel):
+    """Вход proxy сервиса boba от имени пользователя сессии.
+
+    Клиент — доверенный бэкенд: он уже проверил пользователя и называет
+    серверу его логин (identifier пользователя в клиенте) и роли, с
+    которыми тот вошёл в клиент, заголовками headers под подписью HMAC
+    ключом secret. sign_in — адрес входа сервера ([auth.proxy].path); ответ
+    — токен сессии сервера. Токен свой у каждого пользователя, поэтому и
+    подключение к серверу у каждого своё.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    PERSONAL: ClassVar[bool] = True
+
+    auth: Literal["proxy"] = "proxy"
+    secret: SecretStr
+    sign_in: HttpLocation
+    headers: ProxyHeaderNames
+
+    def httpx_auth(self, caller: McpCaller | None, resource: str) -> httpx.Auth | None:
+        if caller is None:
+            msg = (
+                f"mcp auth proxy for {resource}: the connection is opened "
+                "without a caller, expected the login and roles of the session user"
+            )
+            raise McpClientError(msg)
+
+        return ProxySession(self, caller)
+
+
+class ProxySession(httpx.Auth):
+    """Токен сервера для одного пользователя по входу proxy.
+
+    Создаётся ProxyAuth на подключение пользователя. Перед запросом без
+    действующего токена входит на сервер подписанными заголовками; токен
+    живёт до своего срока, отказ 401 сбрасывает его, и запрос повторяется
+    один раз.
+    """
+
+    MARGIN_SEC: ClassVar[float] = 15.0
+    """За сколько до конца срока токен считается истёкшим."""
+
+    def __init__(self, config: ProxyAuth, caller: McpCaller) -> None:
+        self._config = config
+        self._caller = caller
+        self._signature = ProxySignature(config.secret.get_secret_value())
+        self._token = ""
+        self._expires = 0.0
+        self._lock = asyncio.Lock()
+
+    async def async_auth_flow(
+        self, request: httpx.Request
+    ) -> AsyncGenerator[httpx.Request, httpx.Response]:
+        async with self._lock:
+            if time.monotonic() >= self._expires:
+                response = yield self._sign_in_request()
+                await response.aread()
+                self._take(response)
+
+        request.headers["Authorization"] = f"Bearer {self._token}"
+        response = yield request
+        if response.status_code != httpx.codes.UNAUTHORIZED:
+            return
+
+        async with self._lock:
+            response = yield self._sign_in_request()
+            await response.aread()
+            self._take(response)
+
+        request.headers["Authorization"] = f"Bearer {self._token}"
+        yield request
+
+    def _sign_in_request(self) -> httpx.Request:
+        names = self._config.headers
+        roles = ",".join(sorted(self._caller.roles))
+        unsigned = ProxyRequest(
+            login=self._caller.login, timestamp=str(int(time.time())), roles=roles
+        )
+        headers = {
+            names.user: unsigned.login,
+            names.timestamp: unsigned.timestamp,
+            names.signature: self._signature.sign(unsigned),
+        }
+        if names.roles:
+            headers[names.roles] = roles
+
+        return httpx.Request("POST", self._config.sign_in.url(), headers=headers)
+
+    def _take(self, response: httpx.Response) -> None:
+        url = self._config.sign_in.url()
+        if response.status_code != httpx.codes.OK:
+            msg = (
+                f"POST {url}: proxy sign-in of {self._caller.login!r} with roles "
+                f"{sorted(self._caller.roles)} expected 200, got "
+                f"{response.status_code}: {response.text[:300]}"
+            )
+            raise McpClientError(msg)
+
+        try:
+            issued = IssuedToken.model_validate_json(response.content)
+        except ValidationError as exc:
+            msg = (
+                f"POST {url}: proxy sign-in of {self._caller.login!r} expected "
+                f"access_token and expires_in, got {response.text[:300]}: {exc}"
+            )
+            raise McpClientError(msg) from exc
+
+        self._token = issued.access_token
+        self._expires = time.monotonic() + issued.expires_in - self.MARGIN_SEC
+
+
+class IssuedToken(BaseModel):
+    """Ответ входа сервера: токен доступа и срок его жизни."""
+
+    model_config = ConfigDict(frozen=True, extra="ignore")
+
+    access_token: str = Field(min_length=1)
+    expires_in: float = Field(gt=0)
+
+
+McpAuth = Annotated[NoAuth | BearerAuth | ProxyAuth, Field(discriminator="auth")]
 
 
 class Transport(Protocol):
     """Транспорт MCP-сервера: открывает потоки сообщений сессии."""
 
     @abstractmethod
-    def opened(self) -> AbstractAsyncContextManager[Streams]: ...
+    def opened(self, caller: McpCaller | None) -> AbstractAsyncContextManager[Streams]:
+        """Потоки сессии; caller — пользователь, от чьего имени она идёт
+        (None — подключение общее для всех сессий)."""
 
     @abstractmethod
     def label(self) -> str:
         """Адрес сервера для сообщений об ошибках и логов."""
 
 
-class HttpAddress(BaseModel):
-    """Адрес HTTP-сервера частями, как у HTTP-соединений."""
+class HttpAddress(HttpLocation):
+    """Адрес HTTP-сервера MCP: место и способ авторизации."""
 
-    model_config = ConfigDict(frozen=True, extra="forbid")
-
-    scheme: Literal["http", "https"]
-    host: str = Field(min_length=1)
-    port: int | None = Field(default=None, gt=0, lt=65536)
-    path: str = Field(min_length=1)
     auth: McpAuth = NoAuth()
 
-    def url(self) -> str:
-        return str(
-            httpx.URL(
-                scheme=self.scheme, host=self.host, port=self.port, path=self.path
-            )
-        )
+    def personal(self) -> bool:
+        """Подключение своё у каждого пользователя: токен выдаётся ему."""
+        return self.auth.PERSONAL
 
 
 class HttpEndpoint(HttpAddress):
@@ -182,8 +344,9 @@ class HttpEndpoint(HttpAddress):
         return self.url()
 
     @asynccontextmanager
-    async def opened(self) -> AsyncIterator[Streams]:
-        client = streamablehttp_client(self.url(), auth=self.auth.httpx_auth())
+    async def opened(self, caller: McpCaller | None) -> AsyncIterator[Streams]:
+        auth = self.auth.httpx_auth(caller, self.url())
+        client = streamablehttp_client(self.url(), auth=auth)
         async with client as (read, write, _session_id):
             yield read, write
 
@@ -198,8 +361,9 @@ class SseEndpoint(HttpAddress):
         return self.url()
 
     @asynccontextmanager
-    async def opened(self) -> AsyncIterator[Streams]:
-        async with sse_client(self.url(), auth=self.auth.httpx_auth()) as streams:
+    async def opened(self, caller: McpCaller | None) -> AsyncIterator[Streams]:
+        auth = self.auth.httpx_auth(caller, self.url())
+        async with sse_client(self.url(), auth=auth) as streams:
             yield streams
 
 
@@ -218,8 +382,11 @@ class StdioCommand(BaseModel):
     def label(self) -> str:
         return " ".join((self.command, *self.args))
 
+    def personal(self) -> bool:
+        return False
+
     @asynccontextmanager
-    async def opened(self) -> AsyncIterator[Streams]:
+    async def opened(self, caller: McpCaller | None) -> AsyncIterator[Streams]:
         env: dict[str, str] | None = None
         if self.env:
             env = dict(self.env)
@@ -236,35 +403,22 @@ McpEndpoint = Annotated[
 ]
 
 
-class McpServerConfig(ProfileGrant):
+class McpServerConfig(BaseModel):
     """Один MCP-сервер в конфиге клиента: секция [mcp.servers.<имя>].
 
-    Доступ задаётся на сервер целиком, грантом профиля: roles — роли,
-    которым сервер виден ('*' — всем), profiles — профили чата, в которых
-    он подключён ('*' — во всех), tools — какие инструменты сервера брать
-    ('*' — все). Имена инструментов сервера до подключения неизвестны,
-    поэтому в списки инструментов профилей они не вносятся. prefix
-    добавляется к именам инструментов: им разводят серверы с совпавшими
-    именами. Сроки — на подключение с инициализацией и на один вызов.
+    Адрес сервера (endpoint) и способ авторизации в нём. Сервер подключён
+    тем сессиям, чей профиль клиента его называет; набор инструментов решает
+    сам сервер. prefix добавляется к именам инструментов: им разводят
+    серверы с совпавшими именами. Сроки — на подключение с инициализацией
+    и на один вызов.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     endpoint: McpEndpoint
-    profiles: StringList
     prefix: str = ""
     connect_timeout_sec: float = Field(gt=0)
     call_timeout_sec: float = Field(gt=0)
-
-    def granted(self, roles: Iterable[str], profile: str) -> bool:
-        """Подключён ли сервер сессии с такими ролями и профилем."""
-        if not self.visible_for(roles):
-            return False
-
-        if self.WILDCARD in self.profiles:
-            return True
-
-        return profile in self.profiles
 
 
 class McpServersConfig(BaseModel):
@@ -306,8 +460,14 @@ class McpConnection:
         name="boba-chat", version="1"
     )
 
-    def __init__(self, transport: Transport, connect_timeout_sec: float) -> None:
+    def __init__(
+        self,
+        transport: Transport,
+        caller: McpCaller | None,
+        connect_timeout_sec: float,
+    ) -> None:
         self._transport = transport
+        self._caller = caller
         self._connect_timeout_sec = connect_timeout_sec
         self._causes = ErrorCauses()
         self._task: asyncio.Task[None] | None = None
@@ -365,7 +525,7 @@ class McpConnection:
         stop = self._stop
         try:
             async with (
-                self._transport.opened() as (read, write),
+                self._transport.opened(self._caller) as (read, write),
                 ClientSession(read, write, client_info=self.CLIENT) as session,
             ):
                 hello = await session.initialize()
@@ -700,7 +860,8 @@ class McpToolServer(ToolServer):
     него tools() отдаёт заглушки для модели, submit() шлёт вызовы серверу.
     Возможности boba (features) берутся из экспериментальных возможностей,
     объявленных сервером при инициализации: у стороннего сервера их нет.
-    Оборванная сессия открывается заново следующим вызовом.
+    Оборванная сессия открывается заново следующим вызовом. caller — чьим
+    именем идёт подключение; None — оно общее для всех сессий клиента.
     """
 
     FEATURE_PREFIX: ClassVar[str] = "com.boba/"
@@ -714,11 +875,14 @@ class McpToolServer(ToolServer):
         config: McpServerConfig,
         files: BlockFiles,
         signals: CallSignals,
+        caller: McpCaller | None,
     ) -> None:
         self._name = name
         self._signals = signals
         self._config = config
-        self._connection = McpConnection(config.endpoint, config.connect_timeout_sec)
+        self._connection = McpConnection(
+            config.endpoint, caller, config.connect_timeout_sec
+        )
         self._stubs = McpToolStubs(config.prefix)
         self._calls: ContextVar[LiveCall] = ContextVar(f"mcp_call_{name}")
         """Вызов, чьё тело сейчас исполняется: телу нужен его id."""
@@ -748,9 +912,6 @@ class McpToolServer(ToolServer):
         tools: list[BaseTool] = []
         remote: dict[str, BaseTool] = {}
         for tool in listed:
-            if not self._config.covers(tool.name):
-                continue
-
             stub = self._stubs.stub(tool, McpToolBody(tool.name, self._body).called)
             tools.append(stub)
             remote[stub.name] = stub
@@ -960,30 +1121,87 @@ class McpToolServer(ToolServer):
 class McpServers:
     """MCP-серверы клиента: подключение на старте и порты для сессии.
 
-    Создаётся сборкой приложения из секции [mcp]. start() подключает все
-    серверы; сервер, который не ответил, приложение не роняет — он
-    подключается при первой сессии, которой он положен. for_session()
-    отдаёт порты серверов, доступных ролям и профилю сессии.
+    Создаётся сборкой приложения из секции [mcp]. Сервер с общей
+    авторизацией подключён один раз на процесс; сервер с личной (proxy)
+    — отдельно от имени каждого пользователя, по его первой сессии. start()
+    подключает общие серверы; сервер, который не ответил, приложение не
+    роняет — он подключается при первой сессии, которой он положен.
+    for_session() отдаёт порты серверов, названных профилем сессии.
     """
+
+    KEEP: ClassVar[int] = 256
+    """Сколько личных подключений держать; давно не нужные закрываются."""
 
     def __init__(
         self, config: McpServersConfig, files: BlockFiles, signals: CallSignals
     ) -> None:
         self._configs = dict(config.servers)
-        self._servers: dict[str, McpToolServer] = {}
+        self._files = files
+        self._signals = signals
+        self._shared: dict[str, McpToolServer] = {}
+        self._personal: OrderedDict[tuple[str, McpCaller], McpToolServer]
+        self._personal = OrderedDict()
         for name, server in config.servers.items():
-            self._servers[name] = McpToolServer(name, server, files, signals)
+            if server.endpoint.personal():
+                continue
 
-    async def journal(self, server: str, request: JournalRead) -> StreamSlice | None:
-        """Окно журнала вызова с сервера server; None — такого сервера или
-        журнала нет.
+            self._shared[name] = McpToolServer(name, server, files, signals, None)
+
+    async def start(self) -> None:
+        for name, server in self._shared.items():
+            await self._open(name, server)
+
+    async def stop(self) -> None:
+        for server in self._shared.values():
+            await server.close()
+
+        for server in self._personal.values():
+            await server.close()
+
+    def known(self, name: str) -> bool:
+        """Есть ли сервер с таким именем в секции [mcp.servers]."""
+        return name in self._configs
+
+    async def for_session(
+        self, caller: McpCaller, names: Iterable[str]
+    ) -> Sequence[ToolServer]:
+        """Порты серверов names для сессии пользователя caller.
+
+        Ошибки:
+        McpClientError — имя не названо в [mcp.servers].
+        """
+        ports: list[ToolServer] = []
+        for name in names:
+            if name not in self._configs:
+                msg = (
+                    f"mcp servers of the session of {caller.login!r}: server "
+                    f"{name!r} is not declared in [mcp.servers], declared: "
+                    f"{sorted(self._configs)}"
+                )
+                raise McpClientError(msg)
+
+            server = await self._port(name, caller)
+            if not server.opened:
+                await self._open(name, server)
+
+            if server.opened:
+                ports.append(server)
+
+        return ports
+
+    async def journal(
+        self, server: str, caller: McpCaller, request: JournalRead
+    ) -> StreamSlice | None:
+        """Окно журнала вызова с сервера server от имени caller; None —
+        такого сервера или журнала нет.
 
         Ошибки:
         McpClientError — сервер недоступен или ответил не окном журнала.
         """
-        port = self._servers.get(server)
-        if port is None:
+        if server not in self._configs:
             return None
+
+        port = await self._port(server, caller)
 
         return await port.journal(request)
 
@@ -991,7 +1209,7 @@ class McpServers:
         """Имена инструментов подключённых серверов, которые ведут журнал
         вызовов: у их шагов есть живой вывод."""
         names: set[str] = set()
-        for server in self._servers.values():
+        for server in (*self._shared.values(), *self._personal.values()):
             if not server.opened:
                 continue
 
@@ -1003,42 +1221,31 @@ class McpServers:
 
         return frozenset(names)
 
-    async def start(self) -> None:
-        for name, config in self._configs.items():
-            # сервер, не выданный ни одному профилю или роли, не подключается
-            if not config.profiles:
-                continue
+    async def _port(self, name: str, caller: McpCaller) -> McpToolServer:
+        """Порт сервера для пользователя: общий либо его личный."""
+        shared = self._shared.get(name)
+        if shared is not None:
+            return shared
 
-            if not config.roles:
-                continue
+        key = (name, caller)
+        server = self._personal.get(key)
+        if server is None:
+            server = McpToolServer(
+                name, self._configs[name], self._files, self._signals, caller
+            )
+            self._personal[key] = server
 
-            await self._open(name)
+        self._personal.move_to_end(key)
+        while len(self._personal) > self.KEEP:
+            _stale, evicted = self._personal.popitem(last=False)
+            await evicted.close()
 
-    async def stop(self) -> None:
-        for server in self._servers.values():
-            await server.close()
+        return server
 
-    async def for_session(
-        self, roles: Iterable[str], profile: str
-    ) -> Sequence[ToolServer]:
-        granted = frozenset(roles)
-        ports: list[ToolServer] = []
-        for name, server in self._servers.items():
-            if not self._configs[name].granted(granted, profile):
-                continue
-
-            if not server.opened:
-                await self._open(name)
-
-            if server.opened:
-                ports.append(server)
-
-        return ports
-
-    async def _open(self, name: str) -> None:
+    async def _open(self, name: str, server: McpToolServer) -> None:
         """Подключение сервера; сбой журналируется и сервер остаётся без порта
         до следующей попытки."""
         try:
-            await self._servers[name].open()
+            await server.open()
         except McpClientError as exc:
             logger.error("mcp server %s is unavailable: %s", name, exc)

@@ -148,6 +148,15 @@ class ChatProfileConfig(AgentSettings, ProfileGrant):
         description="Профиль, предвыбранный в интерфейсе; ровно один в конфиге.",
     )
 
+    mcp: StringList = Field(
+        default=[],
+        description=(
+            "MCP-серверы профиля: имена секций [mcp.servers.<имя>]. Они "
+            "подключаются сессии при выборе профиля, и отключить их "
+            "пользователь не может; набор инструментов решает сам сервер."
+        ),
+    )
+
     settings: StringList = Field(
         default=[],
         description=(

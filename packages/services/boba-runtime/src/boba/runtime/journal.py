@@ -83,6 +83,19 @@ class DirVault:
     def __init__(self, root: str) -> None:
         self._root = root
 
+    def users(self) -> Iterator[str]:
+        """Пользователи, у которых в томе есть каталог."""
+        try:
+            entries = sorted(os.scandir(self._root), key=lambda entry: entry.name)
+        except FileNotFoundError:
+            return
+
+        for entry in entries:
+            if not entry.is_dir():
+                continue
+
+            yield entry.name
+
     def root_for(self, user_id: str) -> str:
         """Каталог тома; сегмент сверяется с шаблоном прямо перед сборкой пути."""
         if not PathSegment.SAFE.fullmatch(user_id):
@@ -304,6 +317,15 @@ class StreamJournal(StreamStorePort):
 
         self._vault = vault
         self._reserve = reserve_bytes
+
+    def owner_of(self, thread_id: str) -> str | None:
+        segment = PathSegment.checked(thread_id)
+        for user_id in self._vault.users():
+            root = self._vault.root_for(user_id)
+            if os.path.isdir(VaultPath.inside(root, segment)):
+                return user_id
+
+        return None
 
     def recorder(
         self,

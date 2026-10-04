@@ -435,8 +435,10 @@ class StandConfig:
     def _without_mcp_servers(self, doc: MutableMapping[str, Any]) -> None:
         """Внешние MCP-серверы рабочего конфига стенду не нужны: набор
         инструментов сессии не должен зависеть от сети. Остаются только
-        серверы, заданные самим стендом."""
+        серверы, заданные самим стендом: их называет каждый профиль стенда."""
         doc["mcp"] = {"servers": dict(self.mcp_servers)}
+        for profile in doc["profiles"].values():
+            profile["mcp"] = sorted(self.mcp_servers)
 
     def _use_local_auth(self, doc: MutableMapping[str, Any]) -> None:
         """Учётки и роли стенда: рабочий [auth.local] не трогаем и не наследуем."""

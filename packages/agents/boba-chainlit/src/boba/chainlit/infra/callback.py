@@ -60,6 +60,7 @@ from boba.identity.locks import LiveLocks, RunLocking
 from boba.identity.run import Runs
 from boba.identity.session import UserMetadataField
 from boba.identity.token import CookieSpec
+from boba.mcp_client.client import McpCaller
 from boba.messaging import (
     ChatSettingsChanged,
     LockToken,
@@ -200,8 +201,8 @@ def _root_bus() -> MessageBus:
 
 
 def _root_remote_streams() -> RemoteStreams:
-    """Журналы вызовов MCP-серверов из корневого контейнера для обработчиков
-    панели."""
+    """Журналы вызовов MCP-серверов для обработчиков панели: реестр и клиент
+    из корневого контейнера, читает их пользователь текущей сессии."""
     root = Container.root
     if root is None:
         raise InternalServiceError(
@@ -212,7 +213,15 @@ def _root_remote_streams() -> RemoteStreams:
             user_detail=None,
         )
 
-    return root.resolved(providers.remote_streams)
+    caller = McpCaller(
+        login=current_session().identifier, roles=current_session().roles
+    )
+
+    return RemoteStreams(
+        root.resolved(providers.remote_journals),
+        root.resolved(providers.mcp_servers),
+        caller,
+    )
 
 
 @cl.set_chat_profiles
