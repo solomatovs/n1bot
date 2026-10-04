@@ -196,6 +196,10 @@ class StandConfig:
     sso_roles: dict[str, list[str]] = field(default_factory=dict)
     """Роли SSO-входа по принципалу: без них вход отклоняется как безролевой."""
 
+    mcp_servers: dict[str, dict[str, Any]] = field(default_factory=dict)
+    """MCP-серверы стенда по именам, как секции [mcp.servers.<имя>]; внешние
+    серверы рабочего конфига стенд не наследует."""
+
     @property
     def config_path(self) -> Path:
         return self.workdir / "config.toml"
@@ -430,8 +434,9 @@ class StandConfig:
 
     def _without_mcp_servers(self, doc: MutableMapping[str, Any]) -> None:
         """Внешние MCP-серверы рабочего конфига стенду не нужны: набор
-        инструментов сессии не должен зависеть от сети."""
-        doc["mcp"] = {"servers": {}}
+        инструментов сессии не должен зависеть от сети. Остаются только
+        серверы, заданные самим стендом."""
+        doc["mcp"] = {"servers": dict(self.mcp_servers)}
 
     def _use_local_auth(self, doc: MutableMapping[str, Any]) -> None:
         """Учётки и роли стенда: рабочий [auth.local] не трогаем и не наследуем."""

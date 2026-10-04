@@ -119,6 +119,7 @@ class DagHost:
             server = DagServer(
                 self._container.resolved(providers.tool_registry),
                 self._container.resolved(providers.runs),
+                self._container.resolved(providers.call_journals),
                 self._verifier(section),
                 section.default_profile,
                 section.limits,

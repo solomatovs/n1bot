@@ -58,6 +58,7 @@ from boba.canvas.journal import (
 )
 from boba.canvas.keys import ObjectKey
 from boba.canvas.storage import StorageError, StorageNotFoundError
+from boba.chainlit.canvas.remote import RemoteStreams
 from boba.chainlit.data.data_layer import AttachmentDataLayer
 from boba.chainlit.data.storage import StorageClient
 from boba.chainlit.domain.keys import CanvasFileUrl, StreamUrl
@@ -493,9 +494,15 @@ class StreamActions:
 
     @staticmethod
     async def show(
-        user_id: str, thread_id: str, payload: Mapping[str, object]
+        user_id: str,
+        thread_id: str,
+        payload: Mapping[str, object],
+        remote: RemoteStreams,
     ) -> dict[str, Any]:
         """Кнопка на шаге или вкладка канала: журнал в панель плюс слежение.
+
+        Своего журнала у вызова нет — его исполнял MCP-сервер, и журнал
+        читается оттуда (remote).
 
         Открытая панель просит содержимое ответом (inline) и подменяет его у
         себя; иначе панель открывается пушем элемента.
@@ -507,20 +514,9 @@ class StreamActions:
             user_id, thread_id, request.call_id, offset=0, channel=request.channel
         )
         if piece is None:
-            logger.info(
-                "stream show: no journal (hub=%s) user=%s thread=%s call=%s ch=%s",
-                runtime.call_journals_ref().active(),
-                user_id,
-                thread_id,
-                request.call_id,
-                request.channel.value,
+            return await StreamActions._show_remote(
+                thread_id, request, stream_path, remote
             )
-            gone = StreamActions._gone(stream_path.render())
-            if request.inline:
-                return gone.props()
-
-            await CanvasPanel.show(gone)
-            return {}
 
         channels = runtime.call_journals_ref().recorded_channels(
             user_id, thread_id, request.call_id
@@ -533,6 +529,48 @@ class StreamActions:
             await CanvasPanel.show(content)
 
         StreamActions._watch(user_id, thread_id, request, content, piece)
+
+        if not request.inline:
+            return {}
+
+        return content.props()
+
+    @staticmethod
+    async def _show_remote(
+        thread_id: str,
+        request: StreamShowRequest,
+        stream_path: StreamPath,
+        remote: RemoteStreams,
+    ) -> dict[str, Any]:
+        """Журнал вызова, исполненного MCP-сервером: окно читает сервер,
+        слежение идёт по его сигналам роста."""
+        piece = await remote.slice_at(thread_id, request.call_id, request.channel, 0)
+        if piece is None:
+            logger.info(
+                "stream show: no journal (hub=%s) thread=%s call=%s ch=%s",
+                runtime.call_journals_ref().active(),
+                thread_id,
+                request.call_id,
+                request.channel.value,
+            )
+            gone = StreamActions._gone(stream_path.render())
+            if request.inline:
+                return gone.props()
+
+            await CanvasPanel.show(gone)
+            return {}
+
+        channels = await remote.channels(thread_id, request.call_id)
+        content = StreamActions.content(
+            thread_id, stream_path, "", piece, str(uuid.uuid4()), channels
+        )
+        if not request.inline:
+            await CanvasPanel.show(content)
+
+        source = remote.watch_source(thread_id, request.call_id, request.channel)
+        if source is not None:
+            seen = f"{piece.size}:{int(piece.closed)}"
+            CanvasWatch.show(thread_id, content.path, content.nonce, source, seen)
 
         if not request.inline:
             return {}
@@ -574,15 +612,18 @@ class StreamActions:
 
     @staticmethod
     async def window(
-        user_id: str, thread_id: str, payload: Mapping[str, object]
+        user_id: str,
+        thread_id: str,
+        payload: Mapping[str, object],
+        remote: RemoteStreams,
     ) -> dict[str, Any]:
         """Окно по границе: канал журнала или текстовый файл workspace."""
         request = StreamWindowRequest.model_validate(payload)
 
         stream_path = StreamPath.parse(request.path)
         if stream_path is not None:
-            return StreamActions._journal_window(
-                user_id, thread_id, stream_path, request
+            return await StreamActions._journal_window(
+                user_id, thread_id, stream_path, request, remote
             )
 
         if StreamPath.is_stream(request.path):
@@ -592,11 +633,12 @@ class StreamActions:
         return await StreamActions._file_window(user_id, thread_id, request)
 
     @staticmethod
-    def _journal_window(
+    async def _journal_window(
         user_id: str,
         thread_id: str,
         stream_path: StreamPath,
         request: StreamWindowRequest,
+        remote: RemoteStreams,
     ) -> dict[str, Any]:
         call_id = stream_path.call_id
         channel = stream_path.channel
@@ -614,11 +656,36 @@ class StreamActions:
             )
 
         if piece is None:
+            piece = await StreamActions._remote_window(
+                thread_id, stream_path, request, remote
+            )
+
+        if piece is None:
             return {}
 
         # вкладки едут с показом: окно двигает только текст и координаты
         content = StreamActions.content(thread_id, stream_path, "", piece, "", ())
         return content.props()
+
+    @staticmethod
+    async def _remote_window(
+        thread_id: str,
+        stream_path: StreamPath,
+        request: StreamWindowRequest,
+        remote: RemoteStreams,
+    ) -> StreamSlice | None:
+        """Окно журнала вызова, исполненного MCP-сервером."""
+        call_id = stream_path.call_id
+        if request.before is not None:
+            return await remote.slice_before(
+                thread_id, call_id, stream_path.channel, request.before
+            )
+
+        offset = request.offset
+        if offset is None:
+            offset = 0
+
+        return await remote.slice_at(thread_id, call_id, stream_path.channel, offset)
 
     @staticmethod
     async def _file_window(

@@ -26,7 +26,12 @@ from boba.db.postgres.connection import PostgresConfig
 from boba.mcp_client.client import (
     BearerAuth,
     BlockFiles,
+    CallSignals,
+    DroppedSignals,
     HttpEndpoint,
+    JournalAddress,
+    JournalAddresses,
+    JournalListener,
     McpClientError,
     McpFailure,
     McpServerConfig,
@@ -37,6 +42,7 @@ from boba.mcp_client.client import (
     StdioCommand,
 )
 from boba.runtime.config import ConfigLocator
+from boba.toolkit.channels import ToolChannel
 from boba.toolkit.dag import WorkflowResult
 from boba.toolkit.result import (
     ErrorResult,
@@ -45,6 +51,7 @@ from boba.toolkit.result import (
     ShellResult,
 )
 from boba.toolkit.types import SecretReveal
+from boba.toolkit.wire import JournalFeature, JournalRead, JournalSignal
 
 pytestmark = pytest.mark.anyio
 
@@ -70,7 +77,9 @@ def _call(name: str, **args: object) -> ToolCall:
 @pytest.fixture
 async def stdio() -> AsyncIterator[McpToolServer]:
     endpoint = StdioCommand(command=sys.executable, args=(str(SERVER), "stdio"))
-    server = McpToolServer("standard", _config(endpoint, prefix="std_"), NamedBlocks())
+    server = McpToolServer(
+        "standard", _config(endpoint, prefix="std_"), NamedBlocks(), DroppedSignals()
+    )
     await server.open()
     try:
         yield server
@@ -99,7 +108,9 @@ async def http(http_port: int) -> AsyncIterator[McpToolServer]:
     endpoint = HttpEndpoint(
         scheme="http", host="127.0.0.1", port=http_port, path="/mcp"
     )
-    server = McpToolServer("standard", _config(endpoint), NamedBlocks())
+    server = McpToolServer(
+        "standard", _config(endpoint), NamedBlocks(), DroppedSignals()
+    )
     for _ in range(100):
         try:
             await server.open()
@@ -188,7 +199,9 @@ class TestStandardServerOverStdio:
                 return "saved as picture.png"
 
         endpoint = StdioCommand(command=sys.executable, args=(str(SERVER), "stdio"))
-        server = McpToolServer("standard", _config(endpoint), Recording())
+        server = McpToolServer(
+            "standard", _config(endpoint), Recording(), DroppedSignals()
+        )
         await server.open()
         try:
             message = await server.call(_call("picture"))
@@ -227,14 +240,18 @@ class TestStandardServerOverHttp:
 class TestUnreachableServer:
     async def test_missing_command_is_a_client_error(self) -> None:
         endpoint = StdioCommand(command="/nonexistent/mcp-server")
-        server = McpToolServer("ghost", _config(endpoint), NamedBlocks())
+        server = McpToolServer(
+            "ghost", _config(endpoint), NamedBlocks(), DroppedSignals()
+        )
 
         with pytest.raises(McpClientError, match=r"ghost|nonexistent"):
             await server.open()
 
     async def test_tools_before_open_is_a_client_error(self) -> None:
         endpoint = StdioCommand(command=sys.executable, args=(str(SERVER), "stdio"))
-        server = McpToolServer("standard", _config(endpoint), NamedBlocks())
+        server = McpToolServer(
+            "standard", _config(endpoint), NamedBlocks(), DroppedSignals()
+        )
 
         with pytest.raises(McpClientError, match="before open"):
             server.tools()
@@ -268,7 +285,10 @@ class TestPublicServers:
     async def test_deepwiki_lists_tools_and_answers_a_call(self) -> None:
         await self._reachable(self.DEEPWIKI)
         server = McpToolServer(
-            "deepwiki", _config(self.DEEPWIKI, prefix="dw_"), NamedBlocks()
+            "deepwiki",
+            _config(self.DEEPWIKI, prefix="dw_"),
+            NamedBlocks(),
+            DroppedSignals(),
         )
         await server.open()
         try:
@@ -290,7 +310,9 @@ class TestPublicServers:
 
     async def test_context7_lists_tools_and_answers_a_call(self) -> None:
         await self._reachable(self.CONTEXT7)
-        server = McpToolServer("context7", _config(self.CONTEXT7), NamedBlocks())
+        server = McpToolServer(
+            "context7", _config(self.CONTEXT7), NamedBlocks(), DroppedSignals()
+        )
         await server.open()
         try:
             names = [tool.name for tool in server.tools()]
@@ -327,7 +349,7 @@ class TestServersOfASession:
             {"servers": {"standard": base, "ghost": ghost}}
         )
 
-        return McpServers(config, NamedBlocks())
+        return McpServers(config, NamedBlocks(), DroppedSignals())
 
     async def test_granted_session_gets_the_port_and_a_dead_server_is_skipped(
         self,
@@ -417,7 +439,9 @@ def dag_process(tmp_path: Path) -> Iterator[DagProcess]:
 
 @pytest.fixture
 async def dag(dag_process: DagProcess) -> AsyncIterator[McpToolServer]:
-    server = McpToolServer("dag", _config(dag_process.endpoint()), NamedBlocks())
+    server = McpToolServer(
+        "dag", _config(dag_process.endpoint()), NamedBlocks(), DroppedSignals()
+    )
     for _ in range(150):
         try:
             await server.open()
@@ -431,6 +455,109 @@ async def dag(dag_process: DagProcess) -> AsyncIterator[McpToolServer]:
         yield server
     finally:
         await server.close()
+
+
+class HeardSignals(CallSignals, JournalListener):
+    """Приёмник сигналов журнала теста: копит сигналы и вызовы, чьи они."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, str]] = []
+        self.signals: list[JournalSignal] = []
+
+    def listener(self, server: str, call: ToolCall) -> JournalListener:
+        self.calls.append((server, str(call["id"])))
+        return self
+
+    async def appended(self, signal: JournalSignal) -> None:
+        self.signals.append(signal)
+
+
+@pytest.mark.integration
+class TestBobaDagJournal:
+    """Журнал вызова своего сервера: сигналы роста и чтение окнами."""
+
+    async def _opened(self, process: DagProcess, heard: CallSignals) -> McpToolServer:
+        server = McpToolServer("dag", _config(process.endpoint()), NamedBlocks(), heard)
+        for _ in range(150):
+            try:
+                await server.open()
+            except McpClientError:
+                await asyncio.sleep(0.2)
+                continue
+
+            return server
+
+        raise AssertionError("the boba-dag stand did not start")
+
+    async def test_call_delivers_journal_signals_and_windows(
+        self, dag_process: DagProcess
+    ) -> None:
+        heard = HeardSignals()
+        server = await self._opened(dag_process, heard)
+        try:
+            call = _call("fake_echo", text="hi", repeat=2)
+            message = await server.call(call)
+            if message.status != "success":
+                raise AssertionError(f"the call succeeds: {message}")
+
+            if heard.calls != [("dag", str(call["id"]))]:
+                raise AssertionError(f"the listener is asked per call: {heard.calls}")
+
+            stdout: list[JournalSignal] = []
+            for signal in heard.signals:
+                if signal.node != call["id"]:
+                    raise AssertionError(f"signals name the model's call: {signal}")
+
+                if signal.channel == ToolChannel.STDOUT.value:
+                    stdout.append(signal)
+
+            if not stdout or not stdout[-1].closed:
+                raise AssertionError(f"the output channel is closed: {heard.signals}")
+
+            request = JournalRead(
+                run=stdout[-1].run, node=stdout[-1].node, channel=ToolChannel.STDOUT
+            )
+            window = await server.journal(request)
+        finally:
+            await server.close()
+
+        address = JournalAddresses().of(message)
+        if address != JournalAddress(server="dag", run=stdout[-1].run):
+            raise AssertionError(f"the message keeps the journal address: {address}")
+
+        if window is None or "echo progress: hi" not in window.text:
+            raise AssertionError(f"the journal is read from the server: {window}")
+        if window.size != stdout[-1].size or not window.closed:
+            raise AssertionError(f"the window agrees with the signal: {window}")
+
+    async def test_missing_journal_is_no_window(self, dag_process: DagProcess) -> None:
+        server = await self._opened(dag_process, DroppedSignals())
+        try:
+            if JournalFeature.ID.value not in server.features():
+                raise AssertionError(f"the journal is declared: {server.features()}")
+
+            request = JournalRead(run="nope", node="nope", channel=ToolChannel.STDOUT)
+            window = await server.journal(request)
+        finally:
+            await server.close()
+
+        if window is not None:
+            raise AssertionError(f"an unknown call has no journal: {window}")
+
+    async def test_standard_server_has_no_journal(self) -> None:
+        endpoint = StdioCommand(command=sys.executable, args=(str(SERVER), "stdio"))
+        heard = HeardSignals()
+        server = McpToolServer("standard", _config(endpoint), NamedBlocks(), heard)
+        await server.open()
+        try:
+            await server.call(_call("add", a=2, b=3))
+            request = JournalRead(run="r", node="n", channel=ToolChannel.STDOUT)
+            window = await server.journal(request)
+        finally:
+            await server.close()
+
+        if heard.calls or window is not None:
+            raise AssertionError(f"a standard server is not asked: {heard.calls}")
 
 
 @pytest.mark.integration
@@ -538,7 +665,9 @@ class TestBobaDagServer:
         endpoint = dag_process.endpoint().model_copy(
             update={"auth": BearerAuth(token=SecretStr("stranger"))}
         )
-        server = McpToolServer("dag", _config(endpoint), NamedBlocks())
+        server = McpToolServer(
+            "dag", _config(endpoint), NamedBlocks(), DroppedSignals()
+        )
 
         for _ in range(150):
             try:
@@ -605,7 +734,9 @@ class TestDagServiceProcess:
             pytest.skip(f"the service environment is not built: {DagProcess.PYTHON}")
 
         process = DagService(ConfigLocator.path(), tmp_path / "dag.log")
-        server = McpToolServer("dag", _config(process.endpoint()), NamedBlocks())
+        server = McpToolServer(
+            "dag", _config(process.endpoint()), NamedBlocks(), DroppedSignals()
+        )
         try:
             for _ in range(600):
                 try:

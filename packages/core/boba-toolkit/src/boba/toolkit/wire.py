@@ -18,9 +18,21 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any
 
+from pydantic import BaseModel, ConfigDict, Field
+
+from boba.toolkit.channels import JournalChannel
 from boba.toolkit.result import FailureResult, ToolArtifact, ToolResultBase
 
-__all__ = ["CallStatus", "ResultWire", "RevivedResult", "WireMeta", "WireResult"]
+__all__ = [
+    "CallStatus",
+    "JournalFeature",
+    "JournalRead",
+    "JournalSignal",
+    "ResultWire",
+    "RevivedResult",
+    "WireMeta",
+    "WireResult",
+]
 
 
 class CallStatus(StrEnum):
@@ -36,6 +48,55 @@ class WireMeta(StrEnum):
     NAMESPACE = "boba"
     STATUS = "status"
     CALL_ID = "call_id"
+    RUN = "run"
+
+
+class JournalFeature(StrEnum):
+    """Возможность сервера «журнал вызовов» в объявлении при подключении:
+    идентификатор возможности и ключ с именем инструмента чтения."""
+
+    ID = "com.boba/journal"
+    READ = "read"
+
+
+class JournalRead(BaseModel):
+    """Аргументы чтения журнала вызова: окно от offset либо перед before.
+
+    Адрес журнала — запуск run (приходит в сигнале роста и в _meta итога
+    вызова) и узел node (идентификатор вызова).
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    run: str = Field(
+        min_length=1, description="Run id: the `run` of the call result or signal."
+    )
+    node: str = Field(min_length=1, description="Call id of the tool call (node).")
+    channel: JournalChannel = Field(description="Journal channel of the call.")
+    offset: int | None = Field(
+        default=None, ge=0, description="Read the window starting at this byte."
+    )
+    before: int | None = Field(
+        default=None, ge=0, description="Read the window ending before this byte."
+    )
+
+
+class JournalSignal(BaseModel):
+    """Сигнал роста журнала вызова: канал channel узла node запуска run
+    дорос до size байт. Текста в сигнале нет — его читают окнами.
+
+    Сервер шлёт сигнал JSON-строкой в поле message уведомления
+    notifications/progress вызова; клиент разбирает его этой же моделью.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    run: str = Field(min_length=1)
+    node: str = Field(min_length=1)
+    channel: str = Field(min_length=1)
+    size: int = Field(ge=0)
+    closed: bool
+    note: str
 
 
 @dataclass(frozen=True)
@@ -97,6 +158,29 @@ class ResultWire:
             is_error=failed,
             meta=meta,
         )
+
+    def stamped(self, meta: Mapping[str, Any], run: str) -> dict[str, Any]:
+        """Служебные поля итога с идентификатором запуска: по нему клиент
+        читает журнал вызова после ответа."""
+        own = dict(meta.get(WireMeta.NAMESPACE.value, {}))
+        own[WireMeta.RUN.value] = run
+
+        stamped = dict(meta)
+        stamped[WireMeta.NAMESPACE.value] = own
+
+        return stamped
+
+    def run_of(self, meta: Mapping[str, Any]) -> str:
+        """Идентификатор запуска из служебных полей итога; пусто — его нет."""
+        own = meta.get(WireMeta.NAMESPACE.value)
+        if not isinstance(own, Mapping):
+            return ""
+
+        run = own.get(WireMeta.RUN.value)
+        if isinstance(run, str):
+            return run
+
+        return ""
 
     def revived(self, wire: WireResult) -> RevivedResult:
         """Ошибки:

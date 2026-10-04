@@ -22,6 +22,7 @@ from psycopg import sql
 from boba.auth import JwtTokens
 from boba.canvas.keys import WorkspaceMount
 from boba.chainlit.agent.bridge import ChatModelBridge
+from boba.chainlit.canvas.remote import RemoteJournals, RemoteStreams
 from boba.chainlit.chat.feed import TurnFeed
 from boba.chainlit.chat.history import ThreadMessages, TranscriptFeed
 from boba.chainlit.data.data_layer import PostgresDataLayer
@@ -59,6 +60,12 @@ from boba.identity.token import SessionClaims, TokenReader
 from boba.kerberos import DelegationMode, SignInTicket
 from boba.krb.seal import SsoTickets, TicketSealer
 from boba.llm.providers import ChatModelConfig, LlmProviders, LlmProviderTypes
+from boba.mcp_client.client import (
+    DroppedSignals,
+    McpServers,
+    McpServersConfig,
+    NamedBlocks,
+)
 from boba.messaging import LockToken, MemoryMessageBus, MemoryPayloadStore
 from boba.runtime.config import AppLayers
 from boba.runtime.elements import ChatTables
@@ -80,6 +87,18 @@ class FakeThreadMessages(ThreadMessages):
 
     async def load(self, thread_id: str) -> list[BaseMessage]:
         return self.by_thread.get(thread_id, [])
+
+
+class RemoteStand:
+    """Журналы вызовов MCP-серверов для тестов панели: клиент без серверов и
+    тред без истории, поэтому любой вызов — свой, не удалённый."""
+
+    def __init__(self) -> None:
+        journals = RemoteJournals(CallContexts(), FakeThreadMessages())
+        servers = McpServers(
+            McpServersConfig(servers={}), NamedBlocks(), DroppedSignals()
+        )
+        self.streams = RemoteStreams(journals, servers)
 
 
 @dataclass

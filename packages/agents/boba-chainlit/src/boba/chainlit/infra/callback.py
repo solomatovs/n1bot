@@ -14,6 +14,7 @@ import chainlit as cl
 from boba.cancellation import StopReason
 from boba.canvas.canvas import CanvasAction, RenderVerdicts
 from boba.chainlit.canvas.panel import StreamActions
+from boba.chainlit.canvas.remote import RemoteStreams
 from boba.chainlit.canvas.tools import CanvasActions, CanvasScope
 from boba.chainlit.chat.feed import TurnFeed
 from boba.chainlit.chat.history import GraphTurnHistory, InterruptedTurn, ThreadRewind
@@ -23,6 +24,7 @@ from boba.chainlit.chat.tracing import LlmStateLog
 from boba.chainlit.chat.turn import ChatTurn, Question
 from boba.chainlit.data.data_layer import AttachmentDataLayer, PostgresDataLayer
 from boba.chainlit.domain.fields import ThreadField, ThreadMetaField
+from boba.chainlit.infra import providers
 from boba.chainlit.infra.config import AppConfig
 from boba.chainlit.infra.providers import (
     chainlit_data_layer,
@@ -195,6 +197,22 @@ def _root_bus() -> MessageBus:
         )
 
     return root.resolved(runtime.message_bus)
+
+
+def _root_remote_streams() -> RemoteStreams:
+    """Журналы вызовов MCP-серверов из корневого контейнера для обработчиков
+    панели."""
+    root = Container.root
+    if root is None:
+        raise InternalServiceError(
+            internal_detail=(
+                "_root_remote_streams: Container.root is not initialised, "
+                "bootstrap has not run"
+            ),
+            user_detail=None,
+        )
+
+    return root.resolved(providers.remote_streams)
 
 
 @cl.set_chat_profiles
@@ -537,7 +555,9 @@ async def on_canvas_stream(action: cl.Action) -> dict[str, Any]:
         dict(action.payload),
     )
 
-    return await StreamActions.show(str(user_id), thread_id, action.payload)
+    return await StreamActions.show(
+        str(user_id), thread_id, action.payload, _root_remote_streams()
+    )
 
 
 @cl.action_callback(CanvasAction.WINDOW)
@@ -552,7 +572,9 @@ async def on_canvas_stream_window(action: cl.Action) -> dict[str, Any]:
     if user_id is None:
         return {}
 
-    return await StreamActions.window(str(user_id), thread_id, action.payload)
+    return await StreamActions.window(
+        str(user_id), thread_id, action.payload, _root_remote_streams()
+    )
 
 
 @cl.action_callback(CanvasAction.LEAVE)
