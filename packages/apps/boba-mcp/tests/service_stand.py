@@ -41,7 +41,14 @@ from boba.connections.sealed import SealKeys
 from boba.identity.admission import RoleMappingConfig
 from boba.identity.context import CallContexts
 from boba.identity.run import Runs
-from boba.mcp_server.auth import AuthServer, McpClient, ServiceAuth, ServiceTokens
+from boba.mcp_server.auth import (
+    AuthServer,
+    McpClient,
+    RegisteredClients,
+    SealedValues,
+    ServiceAuth,
+    ServiceTokens,
+)
 from boba.mcp_server.server import (
     CallSchemas,
     EndpointCatalog,
@@ -212,12 +219,15 @@ class ServiceStand:
         WorkspaceMount.configure("/workspace")
         public_url = f"http://127.0.0.1:{port}"
         tokens = ServiceTokens(public_url, "stand-session-secret", 300, 3600, "stand")
+        sealed = SealedValues("stand-session-secret")
+        declared = McpClient(secret=SecretStr(CLIENT_SECRET)).registered(CLIENT_ID)
         server = AuthServer(
             public_url,
             sign_ins,
             tokens,
             ProxyAssertions(PROXY_SECRET, 60),
-            {CLIENT_ID: McpClient(secret=SecretStr(CLIENT_SECRET))},
+            RegisteredClients(sealed, {CLIENT_ID: declared}),
+            sealed,
             [f"{public_url}/mcp/{PROFILE}", f"{public_url}/mcp/{NARROW}"],
         )
         auth = ServiceAuth(

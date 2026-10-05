@@ -20,6 +20,7 @@ from uuid import UUID
 
 import uvicorn
 from fastmcp.server.auth import AccessToken
+from mcp.shared.auth import OAuthClientInformationFull
 from pydantic import BaseModel, ConfigDict, Field, SecretStr
 
 from boba.access import ProfileGrant
@@ -31,6 +32,8 @@ from boba.identity.context import CallContexts
 from boba.mcp_server.auth import (
     AuthServer,
     McpClient,
+    RegisteredClients,
+    SealedValues,
     ServiceAuth,
     ServiceTokens,
     TokenClaim,
@@ -197,6 +200,7 @@ class McpHost:
                 proxy.secret.get_secret_value(), proxy.max_skew_sec
             )
 
+        sealed = SealedValues(session.auth_secret)
         resources: list[str] = []
         for name in section.endpoints:
             resources.append(f"{public_url}{section.path}/{name}")
@@ -206,11 +210,20 @@ class McpHost:
             self._container.resolved(providers.sign_ins),
             tokens,
             assertions,
-            section.clients,
+            self._clients(section, sealed),
+            sealed,
             resources,
         )
 
         return ServiceAuth(public_url, server, tokens, self._static(section))
+
+    def _clients(self, section: McpSection, sealed: SealedValues) -> RegisteredClients:
+        """Клиенты OAuth: доверенные из [mcp.clients] и регистрирующиеся сами."""
+        declared: dict[str, OAuthClientInformationFull] = {}
+        for client_id, client in section.clients.items():
+            declared[client_id] = client.registered(client_id)
+
+        return RegisteredClients(sealed, declared)
 
     def _static(self, section: McpSection) -> dict[str, AccessToken]:
         """Готовые токены конфига как вошедшие: области — endpoint'ы,

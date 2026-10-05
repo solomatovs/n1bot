@@ -31,7 +31,13 @@ from boba.auth.sso import SpnegoGate
 from boba.config import bind
 from boba.krb import KerberosEnv
 from boba.ldap import Ldap3Directory
-from boba.mcp_server.auth import AuthServer, LoginPages, ServiceTokens
+from boba.mcp_server.auth import (
+    AuthServer,
+    LoginPages,
+    RegisteredClients,
+    SealedValues,
+    ServiceTokens,
+)
 from boba.mcp_server.server import EndpointCatalog
 from boba.runtime.signin import SignInAssembly
 from boba.stand.site import Stand, StandLayers
@@ -89,7 +95,8 @@ def server(chat_config: DictConfig, krb5_env: None) -> AuthServer:
         sign_ins,
         ServiceTokens(PUBLIC, SECRET, 300, 3600, "stand"),
         None,
-        {},
+        RegisteredClients(SealedValues(SECRET), {}),
+        SealedValues(SECRET),
         [f"{PUBLIC}/mcp/{ENDPOINT}"],
     )
 
@@ -103,8 +110,8 @@ async def browser(server: AuthServer) -> AsyncIterator[httpx.AsyncClient]:
         yield http
 
 
-async def _started(server: AuthServer) -> str:
-    """Идентификатор начатого входа: клиент пришёл на authorize."""
+async def _started(server: AuthServer) -> tuple[str, OAuthClientInformationFull]:
+    """Идентификатор начатого входа и клиент, который его начал."""
     client = OAuthClientInformationFull(
         client_id=CLIENT_ID,
         redirect_uris=[AnyUrl(REDIRECT)],
@@ -121,7 +128,7 @@ async def _started(server: AuthServer) -> str:
     )
     address = httpx.URL(await server.authorize(client, params))
 
-    return address.params[AuthServer.TXN]
+    return address.params[AuthServer.TXN], client
 
 
 def _ticket(tmp_path: Path) -> str:
@@ -150,7 +157,7 @@ def _ticket(tmp_path: Path) -> str:
 async def test_page_offers_kerberos(
     server: AuthServer, browser: httpx.AsyncClient
 ) -> None:
-    txn = await _started(server)
+    txn, _ = await _started(server)
 
     page = await browser.get("/login", params={"txn": txn})
 
@@ -168,7 +175,7 @@ async def test_page_offers_kerberos(
 async def test_request_without_a_ticket_is_challenged(
     server: AuthServer, browser: httpx.AsyncClient
 ) -> None:
-    txn = await _started(server)
+    txn, _ = await _started(server)
 
     reply = await browser.get("/login/sso", params={"txn": txn})
 
@@ -185,7 +192,7 @@ async def test_request_without_a_ticket_is_challenged(
 async def test_ticket_signs_in_and_issues_a_token(
     server: AuthServer, browser: httpx.AsyncClient, tmp_path: Path
 ) -> None:
-    txn = await _started(server)
+    txn, client = await _started(server)
 
     reply = await browser.get(
         "/login/sso",
@@ -196,9 +203,6 @@ async def test_ticket_signs_in_and_issues_a_token(
         raise AssertionError(f"the ticket returns to the client: {reply.text}")
 
     back = httpx.URL(reply.headers["location"])
-    client = await server.get_client(CLIENT_ID)
-    if client is None:
-        raise AssertionError("the client stays registered")
 
     code = await server.load_authorization_code(client, back.params["code"])
     if code is None:

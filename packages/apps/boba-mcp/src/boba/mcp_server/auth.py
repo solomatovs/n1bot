@@ -13,7 +13,8 @@ EndpointTokens и требует свою область; 401 и 403 отвеч�
 токеном обновления до потолка сессии; все входы разом снимает смена
 поколения сессий (рестарт либо generation в конфиге). Cookie и строк
 пользователей у сервиса нет; коды авторизации и клиенты динамической
-регистрации живут в памяти процесса.
+регистрации живут без хранения: начатые входы и коды — в памяти процесса,
+запись зарегистрировавшегося клиента — в его же идентификаторе.
 
 Ошибки:
 TokenClaimsError — токен принят, но логина и ролей вызывающего в нём нет.
@@ -29,15 +30,15 @@ from __future__ import annotations
 
 import html
 import logging
-import secrets
 import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Any, ClassVar
-from urllib.parse import urlsplit
+from typing import Any, ClassVar, TypeVar
+from urllib.parse import urlencode, urlsplit
 from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
+from cryptography.fernet import Fernet, InvalidToken
 from fastmcp.server.auth import (
     AccessToken,
     OAuthProvider,
@@ -94,6 +95,8 @@ __all__ = [
     "EndpointTokens",
     "LoginPages",
     "McpClient",
+    "RegisteredClients",
+    "SealedValues",
     "ServiceAuth",
     "ServiceTokens",
     "TokenClaim",
@@ -503,42 +506,137 @@ class EndpointTokens(TokenVerifier):
         return self._tokens.read(token)
 
 
-@dataclass(frozen=True)
-class PendingLogin:
+ValueT = TypeVar("ValueT", bound=BaseModel)
+
+
+class SealedValues:
+    """Значения входа без хранения: модель шифруется ключом сервиса и уходит
+    наружу строкой, обратно читается тем же ключом.
+
+    Создаётся сборкой процесса из секрета [session]; им пользуются реестр
+    клиентов и сервер авторизации. Сервису так нечего помнить между
+    запросами: запись клиента едет в его идентификаторе, начатый вход — в
+    адресе страницы входа, итог входа — в коде авторизации. Рестарт процесса
+    и другой инстанс с тем же секретом читают их одинаково. Срок жизни
+    значения проверяется при чтении по времени его выпуска.
+    """
+
+    SALT: ClassVar[str] = "boba-mcp-sealed-values"
+    ENCODING: ClassVar[str] = "utf-8"
+
+    def __init__(self, secret: str) -> None:
+        self._box = Fernet(derive_jwt_key(high_entropy_material=secret, salt=self.SALT))
+
+    def seal(self, value: BaseModel) -> str:
+        record = value.model_dump_json()
+
+        return self._box.encrypt(record.encode(self.ENCODING)).decode(self.ENCODING)
+
+    def opened(
+        self, sealed: str, model: type[ValueT], ttl_sec: int | None
+    ) -> ValueT | None:
+        """Значение модели model; None — выпущено не этим сервисом, испорчено
+        либо старше ttl_sec."""
+        try:
+            record = self._box.decrypt(sealed.encode(self.ENCODING), ttl=ttl_sec)
+            return model.model_validate_json(record)
+        except (InvalidToken, ValidationError) as exc:
+            logger.info(
+                "sealed %s %.16s… is not accepted: %s",
+                model.__name__,
+                sealed,
+                type(exc).__name__,
+            )
+            return None
+
+
+class RegisteredClients:
+    """Клиенты OAuth сервера авторизации: объявленные в конфиге и
+    зарегистрировавшиеся сами (DCR).
+
+    Создаётся сборкой процесса для сервера авторизации (AuthServer). Запись
+    зарегистрировавшегося клиента отдаётся ему же его идентификатором
+    client_id (SealedValues): клиент, запомнивший свой идентификатор,
+    остаётся известен после рестарта сервиса.
+    """
+
+    SEALED: ClassVar[str] = "sealed"
+
+    def __init__(
+        self, sealed: SealedValues, declared: Mapping[str, OAuthClientInformationFull]
+    ) -> None:
+        self._sealed = sealed
+        self._declared = dict(declared)
+
+    def register(self, client: OAuthClientInformationFull) -> None:
+        """Выдаёт клиенту идентификатор, несущий его же запись регистрации."""
+        # запись несёт заглушку идентификатора: настоящий — сама печать записи
+        record = client.model_copy(update={"client_id": self.SEALED})
+        client.client_id = self._sealed.seal(record)
+
+    def find(self, client_id: str) -> OAuthClientInformationFull | None:
+        """Клиент по идентификатору; None — не объявлен и не выдан этим
+        сервисом."""
+        declared = self._declared.get(client_id)
+        if declared is not None:
+            return declared
+
+        client = self._sealed.opened(client_id, OAuthClientInformationFull, None)
+        if client is None:
+            return None
+
+        client.client_id = client_id
+
+        return client
+
+
+class PendingLogin(BaseModel):
     """Начатый вход человека: кто просит (клиент OAuth) и с какими
-    параметрами авторизации; ждёт формы или обмена SPNEGO."""
+    параметрами авторизации; едет в адресе страницы входа и ждёт формы или
+    обмена SPNEGO."""
 
-    client_id: str
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    client_id: str = Field(min_length=1)
     params: AuthorizationParams
-    expires_at: float
 
 
-@dataclass(frozen=True)
-class GrantedCode:
-    """Выданный код авторизации и вошедший, которому он принадлежит."""
+class GrantedLogin(BaseModel):
+    """Итог входа человека: кому выдан код авторизации, на каких условиях и
+    кто вошёл; едет самим кодом авторизации."""
 
-    code: AuthorizationCode
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    client_id: str = Field(min_length=1)
+    params: AuthorizationParams
     signed: SignedIn
+    expires_at: float
 
 
 class AuthServer(OAuthProvider):
     """Сервер авторизации сервиса: OAuthProvider fastmcp над ядром входа.
 
     Создаётся сборкой процесса из способов входа SignIns, выпуска токенов
-    ServiceTokens, проверки утверждений proxy и клиентов конфига; его
+    ServiceTokens, проверки утверждений proxy и клиентов RegisteredClients; его
     маршруты (метаданные, /authorize, /token, /register) сборка endpoint'ов
     ставит в корень приложения, страницы входа — LoginPages. Вход человека:
-    authorize() запоминает начатый вход и ведёт на страницу входа, та зовёт
+    authorize() отдаёт адрес страницы входа с начатым входом, та зовёт
     signed_in() и получает адрес возврата с кодом. Вход proxy:
     exchange_identity_assertion(). Вход человека продлевается токеном
     обновления до потолка [session].session_max_sec; вход proxy токена
     обновления не получает — клиент повторяет обмен утверждения сам.
+
+    Состояния между запросами нет: начатый вход и код авторизации —
+    запечатанные значения (SealedValues), рестарт посреди входа его не рвёт.
+    Код авторизации поэтому не гасится первым обменом, а живёт свои
+    CODE_SEC; увести вход им нельзя — обмен требует секрет PKCE клиента,
+    начавшего вход.
     """
 
     LOGIN_PATH: ClassVar[str] = "/login"
     TXN: ClassVar[str] = "txn"
-    PENDING_SEC: ClassVar[float] = 300.0
-    CODE_SEC: ClassVar[float] = 60.0
+    PENDING_SEC: ClassVar[int] = 300
+    CODE_SEC: ClassVar[int] = 60
     TOKEN_PATH: ClassVar[str] = "/token"  # noqa: S105 — путь маршрута
     METADATA_PATH: ClassVar[str] = "/.well-known/oauth-authorization-server"
 
@@ -548,7 +646,8 @@ class AuthServer(OAuthProvider):
         sign_ins: SignIns,
         tokens: ServiceTokens,
         assertions: ProxyAssertions | None,
-        clients: Mapping[str, McpClient],
+        clients: RegisteredClients,
+        sealed: SealedValues,
         resources: Sequence[str],
     ) -> None:
         super().__init__(
@@ -561,33 +660,25 @@ class AuthServer(OAuthProvider):
         self._tokens = tokens
         self._assertions = assertions
         self._resources = frozenset(resources)
-        self._clients: dict[str, OAuthClientInformationFull] = {}
-        for client_id, declared in clients.items():
-            self._clients[client_id] = declared.registered(client_id)
-
-        self._pending: dict[str, PendingLogin] = {}
-        self._codes: dict[str, GrantedCode] = {}
+        self._clients = clients
+        self._sealed = sealed
 
     def sign_ins(self) -> SignIns:
         return self._sign_ins
 
     def login_url(self, txn: str) -> str:
-        return f"{self._public_url}{self.LOGIN_PATH}?{self.TXN}={txn}"
+        return f"{self._public_url}{self.LOGIN_PATH}?{urlencode({self.TXN: txn})}"
 
     async def get_client(self, client_id: str) -> OAuthClientInformationFull | None:
-        return self._clients.get(client_id)
+        return self._clients.find(client_id)
 
     async def register_client(self, client_info: OAuthClientInformationFull) -> None:
-        if client_info.client_id is None:
-            msg = "client registration: expected a client_id, got none"
-            raise ValueError(msg)
-
-        self._clients[client_info.client_id] = client_info
+        self._clients.register(client_info)
 
     async def authorize(
         self, client: OAuthClientInformationFull, params: AuthorizationParams
     ) -> str:
-        """Запоминает начатый вход и отдаёт адрес страницы входа."""
+        """Адрес страницы входа с начатым входом."""
         if client.client_id is None:
             raise AuthorizeError(
                 error="invalid_request",
@@ -595,87 +686,73 @@ class AuthServer(OAuthProvider):
             )
 
         self._known_resource(params.resource, AuthorizeError)
-        now = time.time()
-        for txn in [
-            txn for txn, held in self._pending.items() if held.expires_at < now
-        ]:
-            del self._pending[txn]
-
-        txn = secrets.token_urlsafe(32)
-        self._pending[txn] = PendingLogin(
-            client_id=client.client_id, params=params, expires_at=now + self.PENDING_SEC
-        )
+        txn = self._sealed.seal(PendingLogin(client_id=client.client_id, params=params))
 
         return self.login_url(txn)
 
     def pending(self, txn: str) -> PendingLogin | None:
         """Начатый вход по его идентификатору; None — не начат или истёк."""
-        held = self._pending.get(txn)
-        if held is None:
-            return None
+        return self._sealed.opened(txn, PendingLogin, self.PENDING_SEC)
 
-        if held.expires_at < time.time():
-            del self._pending[txn]
-            return None
-
-        return held
-
-    def signed_in(self, txn: str, signed: SignedIn) -> str:
+    def signed_in(self, held: PendingLogin, signed: SignedIn) -> str:
         """Завершает начатый вход: адрес возврата клиента с кодом авторизации."""
-        held = self._pending.pop(txn)
         params = held.params
-        scopes = sorted(signed.sign_in.profiles)
-        code = AuthorizationCode(
-            code=secrets.token_urlsafe(32),
-            scopes=scopes,
-            expires_at=time.time() + self.CODE_SEC,
-            client_id=held.client_id,
-            code_challenge=params.code_challenge,
-            redirect_uri=params.redirect_uri,
-            redirect_uri_provided_explicitly=params.redirect_uri_provided_explicitly,
-            resource=params.resource,
-            subject=signed.identifier,
+        code = self._sealed.seal(
+            GrantedLogin(
+                client_id=held.client_id,
+                params=params,
+                signed=signed,
+                expires_at=time.time() + self.CODE_SEC,
+            )
         )
-        self._codes[code.code] = GrantedCode(code=code, signed=signed)
         logger.info(
-            "sign-in [user=%s] [provider=%s] [client=%s] [roles=%s]",
+            "sign-in [user=%s] [provider=%s] [roles=%s]",
             signed.identifier,
             signed.sign_in.provider,
-            held.client_id,
             ",".join(sorted(signed.sign_in.roles)),
         )
 
         return construct_redirect_uri(
-            str(params.redirect_uri), code=code.code, state=params.state
+            str(params.redirect_uri), code=code, state=params.state
         )
 
     async def load_authorization_code(
         self, client: OAuthClientInformationFull, authorization_code: str
     ) -> AuthorizationCode | None:
-        granted = self._codes.get(authorization_code)
+        granted = self._sealed.opened(authorization_code, GrantedLogin, self.CODE_SEC)
         if granted is None:
             return None
 
-        if granted.code.client_id != client.client_id:
+        if granted.client_id != client.client_id:
             return None
 
-        if granted.code.expires_at < time.time():
-            del self._codes[authorization_code]
-            return None
+        params = granted.params
 
-        return granted.code
+        return AuthorizationCode(
+            code=authorization_code,
+            scopes=sorted(granted.signed.sign_in.profiles),
+            expires_at=granted.expires_at,
+            client_id=granted.client_id,
+            code_challenge=params.code_challenge,
+            redirect_uri=params.redirect_uri,
+            redirect_uri_provided_explicitly=params.redirect_uri_provided_explicitly,
+            resource=params.resource,
+            subject=granted.signed.identifier,
+        )
 
     async def exchange_authorization_code(
         self, client: OAuthClientInformationFull, authorization_code: AuthorizationCode
     ) -> OAuthToken:
-        granted = self._codes.pop(authorization_code.code, None)
+        granted = self._sealed.opened(
+            authorization_code.code, GrantedLogin, self.CODE_SEC
+        )
         if granted is None:
             raise TokenError(
-                "invalid_grant", "the authorization code is unknown or already used"
+                "invalid_grant", "the authorization code is unknown or has expired"
             )
 
         return self._tokens.session(
-            self._tokens.holder(granted.signed), granted.code.client_id
+            self._tokens.holder(granted.signed), granted.client_id
         )
 
     async def exchange_identity_assertion(
@@ -872,7 +949,8 @@ class LoginPages:
     async def submit(self, request: Request) -> Response:
         fields = await request.form()
         txn = str(fields.get(LoginField.TXN.value, ""))
-        if self._server.pending(txn) is None:
+        held = self._server.pending(txn)
+        if held is None:
             return self._expired()
 
         login = str(fields.get(LoginField.LOGIN.value, ""))
@@ -884,11 +962,12 @@ class LoginPages:
         except AuthorizationError as exc:
             return self._page(txn, str(exc), 403)
 
-        return RedirectResponse(self._server.signed_in(txn, signed), status_code=302)
+        return RedirectResponse(self._server.signed_in(held, signed), status_code=302)
 
     async def sso(self, request: Request) -> Response:
         txn = request.query_params.get(LoginField.TXN.value, "")
-        if self._server.pending(txn) is None:
+        held = self._server.pending(txn)
+        if held is None:
             return self._expired()
 
         try:
@@ -904,7 +983,7 @@ class LoginPages:
             return self._page(txn, self.NO_TICKET, 401, self._responses.headers())
 
         return RedirectResponse(
-            self._server.signed_in(txn, outcome.signed), status_code=302
+            self._server.signed_in(held, outcome.signed), status_code=302
         )
 
     def _page(
@@ -931,7 +1010,8 @@ class LoginPages:
 
         sso = ""
         if providers.sso:
-            url = f"{self._public_url}{LoginField.SSO.value}?{AuthServer.TXN}={txn}"
+            query = urlencode({AuthServer.TXN: txn})
+            url = f"{self._public_url}{LoginField.SSO.value}?{query}"
             sso = self.SSO.format(url=html.escape(url))
 
         return HTMLResponse(

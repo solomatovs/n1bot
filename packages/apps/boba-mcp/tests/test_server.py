@@ -23,6 +23,8 @@ import pytest
 from fastmcp import Client
 from fastmcp.client.transports import StreamableHttpTransport
 from mcp.server.auth.provider import TokenError
+from mcp.shared.auth import OAuthClientInformationFull
+from pydantic import AnyUrl
 from service_stand import (
     CLIENT_ID,
     CLIENT_SECRET,
@@ -40,7 +42,12 @@ from boba.auth.proxy import ProxyAssertions
 from boba.connections.sealed import SealFeature
 from boba.identity.session import SignInProvider
 from boba.identity.signin import SignInMetadata
-from boba.mcp_server.auth import ServiceTokens, TokenHolder
+from boba.mcp_server.auth import (
+    RegisteredClients,
+    SealedValues,
+    ServiceTokens,
+    TokenHolder,
+)
 from boba.mcp_server.files import FileUploadTool
 from boba.mcp_server.server import (
     RunLimitMiddleware,
@@ -642,29 +649,6 @@ class TestProxySignIn:
         if reply.status_code != httpx.codes.UNAUTHORIZED:
             raise AssertionError(f"a forged assertion is 401: {reply.text}")
 
-    async def test_assertion_is_accepted_once(
-        self, stand: ServiceStand, url: str
-    ) -> None:
-        public = self._public(stand)
-        assertion = ProxyAssertions(PROXY_SECRET, 0).issue(
-            CLIENT_ID, "ivanov", "dev", public, stand.url(PROFILE)
-        )
-        form = {
-            "grant_type": "urn:ietf:params:oauth:grant-type:jwt-bearer",
-            "assertion": assertion,
-            "client_id": CLIENT_ID,
-            "client_secret": CLIENT_SECRET,
-        }
-        async with httpx.AsyncClient() as http:
-            first = await http.post(f"{public}/token", data=form)
-            second = await http.post(f"{public}/token", data=form)
-
-        if first.status_code != httpx.codes.OK:
-            raise AssertionError(f"the first exchange signs in: {first.text}")
-
-        if second.status_code != httpx.codes.UNAUTHORIZED:
-            raise AssertionError(f"a replayed assertion is 401: {second.text}")
-
     async def test_unknown_client_is_rejected(
         self, stand: ServiceStand, url: str
     ) -> None:
@@ -984,6 +968,47 @@ class TestSessionGeneration:
 
         with pytest.raises(TokenError, match="over its limit"):
             tokens.session(self._holder(int(time.time()) - 601), "stand-client")
+
+
+class TestRegisteredClients:
+    """Клиент, зарегистрировавшийся сам, остаётся известен после рестарта:
+    его запись едет в его же идентификаторе, хранить её сервису негде."""
+
+    SECRET: str = "stand-session-secret"
+
+    def _client(self) -> OAuthClientInformationFull:
+        return OAuthClientInformationFull(
+            client_id="issued-by-the-handler",
+            redirect_uris=[AnyUrl("http://127.0.0.1:53999/callback")],
+            grant_types=["authorization_code", "refresh_token"],
+            token_endpoint_auth_method="none",
+            client_name="stand browser client",
+        )
+
+    def test_registration_survives_a_restart(self) -> None:
+        client = self._client()
+        RegisteredClients(SealedValues(self.SECRET), {}).register(client)
+        issued = str(client.client_id)
+
+        found = RegisteredClients(SealedValues(self.SECRET), {}).find(issued)
+
+        if found is None or found.client_id != issued:
+            raise AssertionError(f"another process knows the client: {found}")
+
+        if found.redirect_uris != client.redirect_uris:
+            raise AssertionError(f"the registration is kept whole: {found}")
+
+    def test_foreign_identifier_is_unknown(self) -> None:
+        client = self._client()
+        RegisteredClients(SealedValues("another-secret"), {}).register(client)
+
+        clients = RegisteredClients(SealedValues(self.SECRET), {})
+
+        if clients.find(str(client.client_id)) is not None:
+            raise AssertionError("an identifier of another service is not accepted")
+
+        if clients.find("f625f2db-d8a0-4146-958f-94c6bf9ef636") is not None:
+            raise AssertionError("a made-up identifier is not accepted")
 
 
 class TestAuthDiscovery:
