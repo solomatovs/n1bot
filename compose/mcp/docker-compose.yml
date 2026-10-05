@@ -1,13 +1,16 @@
+x-runtime: &runtime
+  init: true
+  user: "${BOBA_UID:-1000}:${BOBA_GID:-1000}"
+  devices:
+    - /dev/fuse
+  security_opt:
+    - seccomp=unconfined
+    - systempaths=unconfined
+  restart: unless-stopped
+
 services:
   mcp:
-    init: true
-    user: "${BOBA_UID:-1000}:${BOBA_GID:-1000}"
-    devices:
-      - /dev/fuse
-    security_opt:
-      - seccomp=unconfined
-      - systempaths=unconfined
-    restart: unless-stopped
+    <<: *runtime
     image: boba-mcp:0.0.26.dev4
     hostname: boba-mcp
     container_name: boba-mcp
@@ -17,10 +20,25 @@ services:
       - ./conf/krb/krb5.conf:/etc/krb5.conf:ro
       - ./data:/app/boba/data:rw
       - ./models:/app/boba/models:ro
-      - ../../build/src/sandbox:/app/boba/sandbox:ro
       - /sys/fs/cgroup/boba.slice:/cgroup:rw
     ports:
       - 127.0.0.1:8650:8650
+  mcp2:
+    <<: *runtime
+    image: boba-mcp:0.0.26.dev4
+    hostname: boba-mcp2
+    container_name: boba-mcp2
+    env_file: ./conf2/boba.env
+    environment:
+      BOBA_INSTANCE_ID: mcp2
+    volumes:
+      - ./conf2:/app/boba/conf:ro
+      - ./conf2/krb/krb5.conf:/etc/krb5.conf:ro
+      - ./data:/app/boba/data:rw
+      - ./models:/app/boba/models:ro
+      - /sys/fs/cgroup/boba.slice:/cgroup:rw
+    ports:
+      - 127.0.0.1:8651:8650
 
 
 networks:
