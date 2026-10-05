@@ -15,13 +15,12 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
-from uuid import NAMESPACE_URL, uuid5
 
 import uvicorn
 from pydantic import SecretStr
 
 from boba.access import ProfileGrant, RoleConfig, ToolAccess
-from boba.auth import AuthService, JwtTokens
+from boba.auth import JwtTokens, SignIns
 from boba.auth.config import HeaderRolesConfig, ProxyAuthConfig, ProxyRoleProviders
 from boba.auth.profiles import ProfileProviders
 from boba.auth.proxy import HmacProxySignIn
@@ -30,13 +29,9 @@ from boba.canvas.keys import WorkspaceMount
 from boba.connection_broker.sealed import SealedConnectionParams
 from boba.connections.manifest import ConnectionTypes
 from boba.connections.sealed import SealKeys
-from boba.identity.api import AuthenticatedUser
 from boba.identity.context import CallContexts
 from boba.identity.run import Runs
-from boba.identity.session import Login
-from boba.identity.signin import SignedIn
-from boba.identity.token import CookieSpec, SessionRenewal
-from boba.mcp_server.auth import ProxySignInRoute, SessionTokenVerifier
+from boba.mcp_server.auth import SessionAuthProvider
 from boba.mcp_server.server import CallSchemas, McpEndpoints, RunLimits
 from boba.runtime.journal import DirVault, StreamJournal
 from boba.runtime.storage import LocalStorageConfig
@@ -63,27 +58,6 @@ NARROW = "narrow"
 
 PROXY_SECRET = "stand-proxy-secret"
 """Ключ подписи proxy-входа: им доверенный клиент подписывает заголовки."""
-
-
-class MemoryUsers:
-    """Строки users стенда в памяти: вход заводит строку, как в приложении
-    (протокол AuthUsers сервиса входа)."""
-
-    def __init__(self) -> None:
-        self._users: dict[str, AuthenticatedUser] = {}
-
-    async def get_user(self, identifier: Login) -> AuthenticatedUser | None:
-        return self._users.get(identifier)
-
-    async def ensure_user(self, signed: SignedIn) -> AuthenticatedUser:
-        user = AuthenticatedUser(
-            id=uuid5(NAMESPACE_URL, f"stand:{signed.identifier}"),
-            identifier=signed.identifier,
-            sign_in=signed.sign_in,
-        )
-        self._users[signed.identifier] = user
-
-        return user
 
 
 class ServiceStand:
@@ -186,23 +160,21 @@ class ServiceStand:
             secret=SecretStr(PROXY_SECRET),
             roles=ProxyRoleProviders(header=HeaderRolesConfig()),
         )
-        auth = AuthService(
-            tokens=JwtTokens("stand-session-secret", 300, "stand"),
-            cookie=CookieSpec(name="access_token", samesite="lax", ttl_sec=300),
-            password=None,
-            sso=None,
-            proxy=HmacProxySignIn(
+        sign_ins = SignIns(
+            None,
+            None,
+            HmacProxySignIn(
                 proxy,
                 RoleProviders([HeaderRoles(HeaderRolesConfig())], True),
                 ProfileProviders([]),
             ),
-            users=MemoryUsers(),
-            renewal=SessionRenewal.of(300, 3600),
         )
         # в сервисе точку workspace ставит загрузчик плагинов из профиля песочницы
         WorkspaceMount.configure("/workspace")
-        verifier = SessionTokenVerifier(
-            auth,
+        verifier = SessionAuthProvider(
+            sign_ins,
+            JwtTokens("stand-session-secret", 300, "stand"),
+            proxy,
             {
                 DEV_TOKEN: self._claims("alice", "dev"),
                 WEAK_TOKEN: self._claims("bob", "weak"),
@@ -215,7 +187,6 @@ class ServiceStand:
             verifier,
             limits,
             "/mcp",
-            [ProxySignInRoute(proxy, auth).route()],
             LocalStorageConfig(
                 files_dir=str(workdir / "files"),
                 mounting=MountingConfig(

@@ -16,7 +16,7 @@ import pytest
 from httpx import AsyncClient
 from studio_stand import ApiStand
 
-from boba.auth import AuthService, JwtTokens
+from boba.auth import AuthService, JwtTokens, SignIns
 from boba.auth.config import KerberosAuthConfig
 from boba.auth.sso import SpnegoGate
 from boba.chat.profiles import ChatProfiles
@@ -89,9 +89,7 @@ class Stand:
         self.auth = AuthService(
             tokens=JwtTokens(secret, 3600, "stand-generation"),
             cookie=CookieSpec(name=COOKIE, samesite="lax", ttl_sec=3600),
-            password=None,
-            sso=SpnegoGate(self.sign_in),
-            proxy=None,
+            sign_ins=SignIns(None, SpnegoGate(self.sign_in), None),
             users=self.users,
             renewal=SessionRenewal.of(3600, 3600 * 24),
         )

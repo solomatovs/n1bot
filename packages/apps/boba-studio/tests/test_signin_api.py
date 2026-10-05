@@ -9,7 +9,7 @@ import jwt
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-from boba.auth import AuthService, JwtTokens
+from boba.auth import AuthService, JwtTokens, SignIns
 from boba.auth.config import LocalAuthConfig, LocalRoleProviders, LocalRolesConfig
 from boba.chat.profiles import ChatProfileConfig, ChatProfiles
 from boba.identity.admission import RoleExcludeConfig, RoleMappingConfig
@@ -97,9 +97,9 @@ async def client(
     auth = AuthService(
         tokens=JwtTokens(SECRET, 3600, "stand-generation"),
         cookie=CookieSpec(name=COOKIE, samesite="lax", ttl_sec=3600),
-        password=SignInStand.assembly(_profiles()).password([_local()]),
-        sso=None,
-        proxy=None,
+        sign_ins=SignIns(
+            SignInStand.assembly(_profiles()).password([_local()]), None, None
+        ),
         users=users,
         renewal=SessionRenewal.of(3600, 3600 * 24),
     )

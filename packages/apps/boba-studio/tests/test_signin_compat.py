@@ -8,7 +8,7 @@ from uuid import uuid4
 import jwt
 import pytest
 
-from boba.auth import AuthService, JwtTokens
+from boba.auth import AuthService, JwtTokens, SignIns
 from boba.identity.api import AuthenticatedUser, PersistedUsers, UsersUpsert
 from boba.identity.session import Login
 from boba.identity.signin import SignedIn, SignInMetadata
@@ -51,9 +51,7 @@ def _service(secret: str) -> AuthService:
     return AuthService(
         tokens=JwtTokens(secret, 60, "stand-generation"),
         cookie=CookieSpec(name="access_token", samesite="lax", ttl_sec=60),
-        password=None,
-        sso=None,
-        proxy=None,
+        sign_ins=SignIns(None, None, None),
         users=OneUser(),
         renewal=SessionRenewal.of(60, 60 * 24),
     )

@@ -13,7 +13,7 @@ from chainlit_stand import StandTokens
 from fastapi import FastAPI, Request
 from pydantic import SecretStr
 
-from boba.auth import AuthService, JwtTokens
+from boba.auth import AuthService, JwtTokens, SignIns
 from boba.auth.config import (
     HeaderRolesConfig,
     LocalRolesConfig,
@@ -77,9 +77,7 @@ def _route(config: ProxyAuthConfig) -> ProxyAuth:
     auth = AuthService(
         tokens=JwtTokens(StandTokens.secret(), 60, StandTokens.GENERATION),
         cookie=CookieSpec(name=COOKIE, samesite="lax", ttl_sec=60),
-        password=None,
-        sso=None,
-        proxy=SignInStand.assembly().proxy(config),
+        sign_ins=SignIns(None, None, SignInStand.assembly().proxy(config)),
         users=Users(),
         renewal=SessionRenewal.of(60, 3600),
     )

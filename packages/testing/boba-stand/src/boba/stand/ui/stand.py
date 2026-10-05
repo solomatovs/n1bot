@@ -226,13 +226,15 @@ class ServiceStand(StandService):
 
     Создаётся конфигом стенда чата (StandConfig.companion): чат ходит к нему
     клиентом MCP со входом proxy. Конфиг — рабочий конфиг сервиса с правками
-    стенда: своя база, каталог файлов вместо образов workspace, endpoint'ы
+    стенда: своя база плагинов, каталог файлов вместо образов workspace,
+    endpoint'ы
     под профили стенда.
     """
 
     workdir: Path
     app_port: int
     db_name: str
+    """База стенда, в которую ходят плагины сервиса (kb, ingest, describer)."""
     sandbox: bool
     app: StandApp = StandApp.MCP
     url_prefix: str = ""

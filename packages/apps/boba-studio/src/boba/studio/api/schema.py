@@ -10,7 +10,7 @@ import json
 import sys
 from typing import Any, ClassVar
 
-from boba.auth import AuthService, AuthUsers, JwtTokens
+from boba.auth import AuthService, AuthUsers, JwtTokens, SignIns
 from boba.auth.credentials import KerberosCredentialSource, NoRefresh
 from boba.catalog_service import CatalogService
 from boba.chat.profiles import ChatProfileConfig, ChatProfiles
@@ -100,9 +100,7 @@ class OpenApiDocument:
         auth = AuthService(
             tokens=JwtTokens(cls.JWT_KEY, 1, "stand-generation"),
             cookie=CookieSpec(name=cls.COOKIE, samesite="lax", ttl_sec=1),
-            password=None,
-            sso=None,
-            proxy=None,
+            sign_ins=SignIns(None, None, None),
             users=NoUsers(),
             renewal=SessionRenewal.of(1, 1 * 24),
         )

@@ -785,10 +785,10 @@ class McpEndpoints:
         verifier: TokenVerifier,
         limits: RunLimits,
         base_path: str,
-        routes: Sequence[Route],
         storage: LocalStorageConfig,
     ) -> None:
-        self._routes = tuple(routes)
+        # маршруты входа провайдера стоят в корне: путь входа — вне endpoint'ов
+        self._routes = tuple(verifier.get_routes())
         self._endpoints: list[EndpointApp] = []
         slots = RunLimitMiddleware(limits, self.OPERATIONS)
         for profile in sorted(registry.access.profiles()):

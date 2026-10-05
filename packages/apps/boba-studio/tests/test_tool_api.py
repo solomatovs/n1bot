@@ -16,7 +16,7 @@ from starlette.requests import Request
 from studio_stand import StandProfiles
 
 from boba.access import ProfileGrant, RoleConfig, ToolAccess
-from boba.auth import AuthService, JwtTokens
+from boba.auth import AuthService, JwtTokens, SignIns
 from boba.chat.profiles import ChatProfiles
 from boba.db.postgres import AsyncPostgresPool
 from boba.identity.context import (
@@ -277,9 +277,7 @@ class TestAuthenticator:
         authenticator = AuthService(
             tokens=issuer,
             cookie=CookieSpec(name="access_token", samesite="lax", ttl_sec=60),
-            password=None,
-            sso=None,
-            proxy=None,
+            sign_ins=SignIns(None, None, None),
             users=users,
             renewal=SessionRenewal.of(60, 60 * 24),
         )

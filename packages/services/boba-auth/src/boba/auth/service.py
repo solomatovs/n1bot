@@ -1,5 +1,6 @@
-"""Вход пользователя: пароль, SPNEGO, доверенный заголовок, выпуск и чтение токена —
-одна точка для обоих приложений. Строка users заводится входом; чужой токен
+"""Вход пользователя слоями: SignIns — способы входа [auth] без токена и
+хранения, AuthService — сессия приложения с браузером поверх них (токен,
+cookie, продление, строка users). Строка users заводится входом; чужой токен
 строку не заводит.
 
 Ошибки:
@@ -44,7 +45,7 @@ from boba.identity.token import (
     TokenRejectedError,
 )
 
-__all__ = ["AuthService", "AuthUsers", "IssuedSession", "SignInProviders"]
+__all__ = ["AuthService", "AuthUsers", "IssuedSession", "SignInProviders", "SignIns"]
 
 logger = logging.getLogger(__name__)
 
@@ -73,25 +74,96 @@ class IssuedSession(BaseModel):
     token: str
 
 
-class AuthService(Authenticator):
-    """Вход по паролю, SPNEGO и доверенному заголовку, токен и cookie сессии,
-    пользователь по токену."""
+class SignIns:
+    """Способы входа процесса: пароль, SPNEGO и доверенный заголовок.
 
-    def __init__(  # noqa: PLR0913 — сервис входа собирается всеми зависимостями сразу
+    Ядро входа, общее для всех приложений: по предъявленному отдаёт итог
+    входа SignedIn (кто вошёл, роли, профили) и ничего не знает о токене,
+    cookie и хранении пользователей. Собирается провайдером из секций [auth]
+    (SignInAssembly); поверх него стоят слой сессии приложения с браузером
+    (AuthService) и провайдер авторизации fastmcp сервиса boba-mcp.
+    """
+
+    def __init__(
         self,
-        tokens: JwtTokens,
-        cookie: CookieSpec,
         password: PasswordSignIn | None,
         sso: SpnegoExchange | None,
         proxy: ProxySignIn | None,
-        users: AuthUsers,
-        renewal: SessionRenewal,
     ) -> None:
-        self._tokens = tokens
-        self._cookie = cookie
         self._password = password
         self._sso = sso
         self._proxy = proxy
+
+    def providers(self) -> SignInProviders:
+        return SignInProviders(
+            password=self._password is not None,
+            sso=self._sso is not None,
+            proxy=self._proxy is not None,
+        )
+
+    def has_sso(self) -> bool:
+        return self._sso is not None
+
+    async def by_password(self, username: str, password: str) -> SignedIn:
+        if self._password is None:
+            message = (
+                f"password sign-in of {username!r}: [auth] has no local or ldap "
+                "provider configured"
+            )
+            raise ExternalServiceError("auth", message)
+
+        signed = await self._password.sign_in(username, password)
+        if signed is None:
+            message = (
+                f"Invalid username or password: no [auth] provider accepted "
+                f"the sign-in of {username!r}"
+            )
+            raise AuthenticationError(message)
+
+        return signed
+
+    async def by_proxy(self, request: ProxyRequest) -> SignedIn:
+        """Вход по подписанному заголовку доверенного бэкенда."""
+        if self._proxy is None:
+            message = (
+                f"proxy sign-in of {request.login!r} from {request.client}: "
+                "[auth] has no proxy provider configured"
+            )
+            raise ExternalServiceError("auth", message)
+
+        return await self._proxy.sign_in(request)
+
+    def exchange(self) -> SpnegoExchange:
+        """SPNEGO-обмен процесса; без kerberos в [auth] — ExternalServiceError."""
+        if self._sso is None:
+            message = (
+                "SPNEGO exchange requested but [auth] has no kerberos provider "
+                "configured"
+            )
+            raise ExternalServiceError("auth", message)
+
+        return self._sso
+
+
+class AuthService(Authenticator):
+    """Сессия приложения с браузером поверх способов входа: токен и cookie
+    сессии, её продление и строка users вошедшего.
+
+    Создаётся провайдером процесса чата и studio из SignIns, читателя токенов
+    и секции [session]; им пользуются маршруты входа этих приложений.
+    """
+
+    def __init__(
+        self,
+        sign_ins: SignIns,
+        tokens: JwtTokens,
+        cookie: CookieSpec,
+        users: AuthUsers,
+        renewal: SessionRenewal,
+    ) -> None:
+        self._sign_ins = sign_ins
+        self._tokens = tokens
+        self._cookie = cookie
         self._users = users
         self._renewal = renewal
 
@@ -100,11 +172,7 @@ class AuthService(Authenticator):
         return self._renewal
 
     def providers(self) -> SignInProviders:
-        return SignInProviders(
-            password=self._password is not None,
-            sso=self._sso is not None,
-            proxy=self._proxy is not None,
-        )
+        return self._sign_ins.providers()
 
     def cookie(self) -> CookieSpec:
         return self._cookie
@@ -126,33 +194,13 @@ class AuthService(Authenticator):
         заводит пользователя и выпускает сессию сам (chainlit). Вход уже помечен
         поколением сессий, чтобы токен хоста прошёл проверку.
         """
-        if self._password is None:
-            message = (
-                f"password sign-in of {username!r}: [auth] has no local or ldap "
-                "provider configured"
-            )
-            raise ExternalServiceError("auth", message)
-
-        signed = await self._password.sign_in(username, password)
-        if signed is None:
-            message = (
-                f"Invalid username or password: no [auth] provider accepted "
-                f"the sign-in of {username!r}"
-            )
-            raise AuthenticationError(message)
+        signed = await self._sign_ins.by_password(username, password)
 
         return self._tokens.stamp(signed)
 
     async def by_proxy(self, request: ProxyRequest) -> IssuedSession:
         """Вход по подписанному заголовку доверенного бэкенда."""
-        if self._proxy is None:
-            message = (
-                f"proxy sign-in of {request.login!r} from {request.client}: "
-                "[auth] has no proxy provider configured"
-            )
-            raise ExternalServiceError("auth", message)
-
-        signed = await self._proxy.sign_in(request)
+        signed = await self._sign_ins.by_proxy(request)
 
         return await self.issue(signed)
 
@@ -202,7 +250,7 @@ class AuthService(Authenticator):
     async def _refresh_kerberos(
         self, request: SsoRequest, token: str
     ) -> SsoChallenge | SsoRefused | IssuedSession:
-        if self._sso is None:
+        if not self._sign_ins.has_sso():
             reason = (
                 f"kerberos session refresh from [{request.client}]: [auth] has "
                 "no kerberos provider configured"
@@ -322,11 +370,4 @@ class AuthService(Authenticator):
         return IssuedSession(signed=signed, user=user, token=self._tokens.renew(claims))
 
     def _exchange(self) -> SpnegoExchange:
-        if self._sso is None:
-            message = (
-                "SPNEGO exchange requested but [auth] has no kerberos provider "
-                "configured"
-            )
-            raise ExternalServiceError("auth", message)
-
-        return self._sso
+        return self._sign_ins.exchange()

@@ -21,7 +21,6 @@ payload = [
     "boba-db-oracle[payload]==0.0.26.dev4",
 ]
 dev = [
-    "boba-config==0.0.26.dev4",
     "boba-runtime==0.0.26.dev4",
     "omegaconf>=2.3,<3",
     "boba-db-oracle[payload]==0.0.26.dev4",

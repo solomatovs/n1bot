@@ -15,7 +15,6 @@ dependencies = [
     "boba-access==0.0.26.dev4",
     "boba-cancellation==0.0.26.dev4",
     "boba-canvas==0.0.26.dev4",
-    "boba-chat==0.0.26.dev4",
     "boba-identity==0.0.26.dev4",
     "boba-messaging==0.0.26.dev4",
     "boba-toolrun==0.0.26.dev4",

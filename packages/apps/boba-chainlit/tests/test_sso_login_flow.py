@@ -20,7 +20,7 @@ from chainlit_stand import StandTokens
 from gssapi import Credentials, Name, NameType, SecurityContext
 from starlette.requests import Request
 
-from boba.auth import AuthService, IssuedSession, JwtTokens
+from boba.auth import AuthService, IssuedSession, JwtTokens, SignIns
 from boba.auth.config import (
     KerberosAuthConfig,
     KerberosRoleProviders,
@@ -98,9 +98,11 @@ def _kerberos_auth(
             samesite=session.cookie_samesite,
             ttl_sec=session.session_ttl_sec,
         ),
-        password=None,
-        sso=SpnegoGate(SignInStand.assembly().sso(config, session.auth_secret)),
-        proxy=None,
+        sign_ins=SignIns(
+            None,
+            SpnegoGate(SignInStand.assembly().sso(config, session.auth_secret)),
+            None,
+        ),
         users=users,
         renewal=SessionRenewal.of(
             session.session_ttl_sec, session.session_ttl_sec * 24

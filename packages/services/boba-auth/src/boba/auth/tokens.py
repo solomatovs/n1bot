@@ -65,6 +65,10 @@ class JwtTokens(TokenIssuer, TokenReader):
     def generation(self) -> str:
         return self._generation
 
+    @property
+    def ttl_sec(self) -> int:
+        return self._ttl_sec
+
     def stamp(self, signed: SignedIn) -> SignedIn:
         """Итог входа с текущим поколением: для токенов, которые выпускает не этот
         класс, а chainlit из cl.User."""
