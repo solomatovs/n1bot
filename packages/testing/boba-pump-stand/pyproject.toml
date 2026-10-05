@@ -13,7 +13,7 @@ dependencies = [
     "boba-connection-broker==0.0.26.dev4",
     "boba-connections==0.0.26.dev4",
     "boba-toolkit[arrow]==0.0.26.dev4",
-    "psycopg[binary]>=3.3",
+    "psycopg>=3.3,<4",
     "boba-db-clickhouse[payload]==0.0.26.dev4",
     "boba-db-postgres[arrow]==0.0.26.dev4",
     "boba-db-oracle[payload]==0.0.26.dev4",
@@ -22,7 +22,7 @@ dependencies = [
     "boba-tool-oracle==0.0.26.dev4",
     "boba-toolrun==0.0.26.dev4",
     "langchain-core>=1.4,<1.5",
-    "pydantic>=2.10,<3",
+    "pydantic>=2.12,<3",
 ]
 
 [project.optional-dependencies]
@@ -31,10 +31,9 @@ dev = [
     "boba-stream-ch-to-ch==0.0.26.dev4",
     "boba-stream-pg-to-ch==0.0.26.dev4",
     "boba-stream-ch-to-pg==0.0.26.dev4",
-    "psycopg[binary]>=3.3",
     "pyarrow>=25,<26",
-    "pytest>=8",
-    "pytest-xdist>=3.6",
+    "pytest>=9.1,<10",
+    "pytest-xdist>=3.6,<4",
 ]
 
 [tool.setuptools.packages.find]

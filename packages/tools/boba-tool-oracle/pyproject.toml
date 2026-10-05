@@ -10,7 +10,7 @@ requires-python = ">=3.11,<4"
 dependencies = [
     "boba-toolkit==0.0.26.dev4",
     "boba-db-oracle==0.0.26.dev4",
-    "pydantic>=2.10,<3",
+    "pydantic>=2.12,<3",
 ]
 
 [project.entry-points."boba.tools"]
@@ -19,12 +19,14 @@ ora = "boba.tool.ora.plugin:MANIFEST"
 [project.optional-dependencies]
 payload = [
     "boba-db-oracle[payload]==0.0.26.dev4",
-    "boba-toolkit[arrow]==0.0.26.dev4",
 ]
 dev = [
-    "oracledb==26.0.0+boba.1",
+    "boba-config==0.0.26.dev4",
+    "boba-runtime==0.0.26.dev4",
+    "omegaconf>=2.3,<3",
+    "boba-db-oracle[payload]==0.0.26.dev4",
     "boba-stand==0.0.26.dev4",
-    "pytest>=8",
+    "pytest>=9.1,<10",
 ]
 
 [tool.setuptools.packages.find]

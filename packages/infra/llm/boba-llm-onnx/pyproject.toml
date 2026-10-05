@@ -10,7 +10,7 @@ requires-python = ">=3.11,<4"
 dependencies = [
     "boba-llm==0.0.26.dev4",
     "boba-toolkit==0.0.26.dev4",
-    "pydantic>=2.10,<3",
+    "pydantic>=2.12,<3",
 ]
 
 [project.optional-dependencies]
@@ -18,7 +18,8 @@ generation = [
     "onnxruntime-genai>=0.15,<1",
 ]
 dev = [
-    "pytest>=8",
+    "boba-stand==0.0.26.dev4",
+    "pytest>=9.1,<10",
 ]
 
 [project.entry-points."boba.llm"]

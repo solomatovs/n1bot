@@ -9,12 +9,7 @@ description = "Boba ldap: каталог пользователей Active Direc
 requires-python = ">=3.11,<4"
 dependencies = [
     "boba-identity==0.0.26.dev4",
-    "ldap3",
-]
-
-[project.optional-dependencies]
-dev = [
-    "pytest>=8",
+    "ldap3>=2.9,<3",
 ]
 
 [tool.setuptools.packages.find]

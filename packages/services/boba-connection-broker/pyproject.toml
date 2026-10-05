@@ -16,10 +16,10 @@ dependencies = [
     "boba-toolrun==0.0.26.dev4",
     "boba-db-postgres==0.0.26.dev4",
     "boba-messaging==0.0.26.dev4",
-    "fastapi[standard]",
-    "pydantic>=2.10,<3",
+    "fastapi>=0.116,<1",
+    "pydantic>=2.12,<3",
     "langchain-core>=1.4,<1.5",
-    "psycopg[binary,pool]>=3.2,<4",
+    "psycopg>=3.3,<4",
 ]
 
 [project.optional-dependencies]
@@ -29,7 +29,7 @@ dev = [
     "boba-auth==0.0.26.dev4",
     "boba-stand==0.0.26.dev4",
     "boba-stand-core==0.0.26.dev4",
-    "pytest>=8",
+    "pytest>=9.1,<10",
 ]
 
 [tool.setuptools.packages.find]

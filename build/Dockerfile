@@ -373,8 +373,8 @@ RUN for name in ${APP_IMPORTS}; do python3 -c "import $name; print('$name ok')";
 RUN pip3 list --path /opt/app-site --format=freeze | grep '^boba-' | cut -d= -f1 > /opt/app-packages.txt
 
 
-# общая основа образов приложений: python, библиотеки и бинарники песочницы; код
-# приложения кладёт стадия runtime-base
+# общая основа образов приложений: python и библиотеки; код приложения кладёт стадия
+# runtime-base, бинарники песочницы — runtime-sandbox
 FROM ${GLIBC_IMAGE} AS runtime-os
 
 ARG PYTHON_VERSION=3.11
@@ -393,17 +393,11 @@ COPY --from=python-slim /python/                                              ${
 COPY --from=base /usr/lib/x86_64-linux-gnu/libstdc++.so.6                     ${BOBA_DIR}/third/lib/
 COPY --from=base /usr/lib/x86_64-linux-gnu/libstdc++.so.${LIBSTDCXX_VERSION}  ${BOBA_DIR}/third/lib/
 COPY --from=base /usr/lib/x86_64-linux-gnu/libgcc_s.so.1                      ${BOBA_DIR}/third/lib/
-COPY --from=bwrap-build /out/bwrap                                            ${BOBA_DIR}/third/bin/bwrap
-COPY --from=fuse2fs-build /out/fuse2fs                                        ${BOBA_DIR}/third/bin/fuse2fs
 COPY build/scripts/healthcheck.py                                    ${BOBA_DIR}/app/healthcheck.py
 
-RUN mkdir -p ${BOBA_DIR}/conf ${BOBA_DIR}/app_root/public ${BOBA_DIR}/sandbox
+RUN mkdir -p ${BOBA_DIR}/conf ${BOBA_DIR}/app_root/public
 
-# TrustedBinaries не примет third/bin, доступный на запись посторонним
-RUN chmod -R go-w ${BOBA_DIR}/third ${BOBA_DIR}/sandbox \
-    && test -z "$(find ${BOBA_DIR}/third/bin -maxdepth 1 -type f -perm /022)" \
-    && ${BOBA_DIR}/third/bin/bwrap --version \
-    && ${BOBA_DIR}/third/bin/fuse2fs -V
+RUN chmod -R go-w ${BOBA_DIR}/third
 
 WORKDIR /app
 ENV BOBA_DIR=${BOBA_DIR} \
@@ -425,6 +419,24 @@ COPY --from=app-site /opt/app-packages.txt  ${BOBA_DIR}/app/packages.txt
 
 # шебанги стадии сборки ведут на /usr/local/bin/python3, которого здесь нет
 RUN sed -i "1s|^#!.*python3.*|#!${BOBA_DIR}/third/bin/python3|" ${BOBA_DIR}/app/bin/*
+
+
+# основа приложений, которые исполняют инструменты в песочнице (studio, mcp): bwrap,
+# fuse2fs и каталог образов корней плагинов и workspace
+FROM runtime-base AS runtime-sandbox
+
+ARG BOBA_DIR=/app/boba
+
+COPY --from=bwrap-build /out/bwrap      ${BOBA_DIR}/third/bin/bwrap
+COPY --from=fuse2fs-build /out/fuse2fs  ${BOBA_DIR}/third/bin/fuse2fs
+
+RUN mkdir -p ${BOBA_DIR}/sandbox
+
+# TrustedBinaries не примет third/bin, доступный на запись посторонним
+RUN chmod -R go-w ${BOBA_DIR}/third/bin ${BOBA_DIR}/sandbox \
+    && test -z "$(find ${BOBA_DIR}/third/bin -maxdepth 1 -type f -perm /022)" \
+    && ${BOBA_DIR}/third/bin/bwrap --version \
+    && ${BOBA_DIR}/third/bin/fuse2fs -V
 
 
 # образ чата: ассеты chainlit, vendor-шрифты и стили формул вместо CDN, локальная
@@ -472,7 +484,7 @@ RUN npm ci --no-audit --no-fund && npm run generate && npm run check && npm run 
 
 
 # образ studio: страница workflow и vendor-шрифты; моделей чата нет
-FROM runtime-base AS runtime-studio
+FROM runtime-sandbox AS runtime-studio
 
 ARG BOBA_DIR=/app/boba
 ARG BOBA_UID=1000
@@ -491,8 +503,8 @@ CMD ["-m", "boba.studio", "--config", "/app/boba/conf/config.toml"]
 # --- boba-mcp: MCP-сервер с инструментами boba -------------------------------------
 
 # образ сервиса: конфиг и данные приходят деревом compose/mcp, образы корней
-# плагинов и workspace — те же, что у чата
-FROM runtime-base AS runtime-mcp
+# плагинов и workspace монтируются из src/sandbox
+FROM runtime-sandbox AS runtime-mcp
 
 ARG BOBA_UID=1000
 ARG BOBA_GID=1000

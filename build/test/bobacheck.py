@@ -31,9 +31,15 @@ parser.add_argument(
     help="каталог с исходниками boba (если нет --names)",
 )
 parser.add_argument("--app", required=True, help="приложение: chainlit, studio или mcp")
+parser.add_argument(
+    "--sandbox",
+    action="store_true",
+    help="приложение исполняет инструменты: проверять образы плагинов и их модели",
+)
 args = parser.parse_args()
 
 APP = args.app
+SANDBOX = args.sandbox
 PACKAGES_DIR = args.packages
 NAMES_FILE = args.names
 # каталог установки: в контейнере его несёт ENV образа BOBA_DIR
@@ -210,8 +216,8 @@ if APP == "studio":
     print("== workflow page ==")
     check("workflow page built", t_workflow_page)
 
-# 7) образы корня плагинов: по одному rootfs.ext4 на пакет с entry point boba.tools
-print("== plugin rootfs images ==")
+# 7) образы корня плагинов: по одному rootfs.ext4 на пакет с entry point boba.tools;
+# они, веса эмбеддера и модели OCR есть только у приложения, исполняющего инструменты
 PLUGINS_DIR = os.path.join(BASE_DIR, "sandbox", "plugins")
 
 
@@ -230,11 +236,12 @@ def t_plugin_images_present():
     print(f"  образов плагинов: {len(images)}")
 
 
-check("plugin images present", t_plugin_images_present)
+if SANDBOX:
+    print("== plugin rootfs images ==")
+    check("plugin images present", t_plugin_images_present)
 
 # 8) веса эмбеддера: лежат в релизе рядом с моделями и едут биндом в песочницы,
 # где считается эмбеддинг: поиск kb и индексация confluence
-print("== fastembed weights shipped next to the models ==")
 EMBED_DIR = os.path.join(BASE_DIR, "models", "fastembed")
 EMBED_PACKAGES = ("boba-tool-knowledge", "boba-tool-confluence")
 
@@ -256,11 +263,12 @@ def t_embed_weights_shipped():
     print(f"  файлов весов: {len(weights)}")
 
 
-check("weights shipped", t_embed_weights_shipped)
+if SANDBOX:
+    print("== fastembed weights shipped next to the models ==")
+    check("weights shipped", t_embed_weights_shipped)
 
 # 9) модели OCR: детектор, классификатор и распознаватель по языку лежат в релизе
 # и едут биндом в песочницы чтения документов и confluence
-print("== rapidocr models shipped next to the models ==")
 OCR_DIR = os.path.join(BASE_DIR, "models", "rapidocr")
 OCR_MODELS = (
     "ch_PP-OCRv5_det_mobile.onnx",
@@ -286,7 +294,9 @@ def t_ocr_models_shipped():
     print(f"  моделей: {len(OCR_MODELS)}")
 
 
-check("ocr models shipped", t_ocr_models_shipped)
+if SANDBOX:
+    print("== rapidocr models shipped next to the models ==")
+    check("ocr models shipped", t_ocr_models_shipped)
 
 print()
 if failures:

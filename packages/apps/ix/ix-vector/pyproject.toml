@@ -12,9 +12,9 @@ dependencies = [
     "boba-db-postgres==0.0.26.dev4",
     "boba-ix-core==0.0.26.dev4",
     "boba-llm==0.0.26.dev4",
-    "psycopg[binary]>=3.2",
-    "pydantic>=2.10,<3",
-    "tokenizers>=0.20",
+    "psycopg>=3.3,<4",
+    "pydantic>=2.12,<3",
+    "tokenizers>=0.20,<1",
 ]
 
 [project.scripts]

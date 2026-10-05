@@ -11,7 +11,7 @@ dependencies = [
     "boba-toolkit==0.0.26.dev4",
     "boba-doc==0.0.26.dev4",
     "boba-llm==0.0.26.dev4",
-    "pydantic>=2.10,<3",
+    "pydantic>=2.12,<3",
 ]
 
 # зависимости payload'а: нужны только внутри песочницы,
@@ -22,12 +22,14 @@ doc = "boba.tool.doc.plugin:MANIFEST"
 [project.optional-dependencies]
 payload = [
     "boba-doc[readers,ocr]==0.0.26.dev4",
-    "lxml>=5.0",
 ]
 dev = [
+    "boba-runtime==0.0.26.dev4",
+    "boba-stand==0.0.26.dev4",
+    "omegaconf>=2.3,<3",
     "boba-config==0.0.26.dev4",
     "boba-stand-core==0.0.26.dev4",
-    "pytest>=8",
+    "pytest>=9.1,<10",
 ]
 
 [tool.setuptools.packages.find]

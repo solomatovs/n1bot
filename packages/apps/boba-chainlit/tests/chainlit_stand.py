@@ -1,6 +1,7 @@
 """Общие фикстуры для тестов PostgresDataLayer."""
 
 import os
+import shutil
 import socket
 import subprocess
 import sys
@@ -9,8 +10,10 @@ from collections.abc import (
     AsyncIterator,
     Iterator,
     Mapping,
+    Sequence,
 )
 from dataclasses import dataclass
+from datetime import timedelta
 from pathlib import Path
 from typing import Any, ClassVar
 from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
@@ -19,10 +22,19 @@ import pytest
 from chainlit.step import StepDict
 from chainlit.user import PersistedUser
 from chainlit.user import User as ChainlitUser
-from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
+from langchain_core.messages import (
+    AIMessage,
+    BaseMessage,
+    HumanMessage,
+    ToolCall,
+    ToolMessage,
+)
+from langchain_core.tools import BaseTool
+from omegaconf import DictConfig, OmegaConf
 from psycopg import sql
 
 from boba.auth import JwtTokens
+from boba.auth.credentials import KerberosCredentialSource, NoRefresh
 from boba.canvas.journal import StreamSlice
 from boba.canvas.keys import WorkspaceMount
 from boba.chainlit.agent.bridge import ChatModelBridge
@@ -30,11 +42,13 @@ from boba.chainlit.canvas.remote import RemoteJournals, RemoteStreams
 from boba.chainlit.chat.feed import TurnFeed
 from boba.chainlit.chat.history import ThreadMessages, TranscriptFeed
 from boba.chainlit.data.data_layer import PostgresDataLayer
-from boba.chainlit.domain.keys import AppPrefix, AttachmentLinks
+from boba.chainlit.data.remote_storage import FileOwners, RemoteStorageClient
+from boba.chainlit.domain.keys import AppPrefix, AttachmentLinks, AttachmentUrl
 from boba.chainlit.infra.config import AppConfig
 from boba.chainlit.infra.session import (
     ChainlitSession,
     ChainlitSessions,
+    OwnerSessions,
     current_session,
 )
 from boba.chainlit.rendering.chat_view import (
@@ -45,10 +59,14 @@ from boba.chainlit.rendering.chat_view import (
     StepRole,
 )
 from boba.chainlit.rendering.renderer import ChatRenderer, NoSurface
+from boba.chat.profiles import ChatProfileConfig, ChatProfiles
 from boba.config import bind
+from boba.connection_broker.sealing import SealingToolServer, SentConnections
 from boba.connection_broker.store import ConnectionStore
 from boba.connection_broker.tools import ConnectionTools
+from boba.connection_broker.user_connections import ArmedConnections
 from boba.db.postgres import AsyncPostgresPool
+from boba.identity.api import StoredUser, UserRows
 from boba.identity.context import (
     CallContext,
     CallContexts,
@@ -81,15 +99,23 @@ from boba.runtime.storage import (
 from boba.stand.refs import StandRefs
 from boba.stand.signin import SignInStand
 from boba.stand.storage import StorageSeed
+from boba.stand.ui.stand import (
+    REPO_ROOT,
+    ServiceStand,
+    StandApp,
+    StandProcess,
+    free_port,
+)
 from boba.stand_core.context import CallStand, StandIdentity
 from boba.stand_core.context import FakeTurn as FakeTurn
 from boba.stand_core.fakes import FakeSecret as FakeSecret
 from boba.stand_core.fakes import FakeUrl as FakeUrl
 from boba.toolkit.channels import JournalChannel
 from boba.toolkit.wire import JournalSignal
+from boba.toolrun.stream_calls import ToolServer
 from boba.toolrun.streams import CallJournals
 from boba.workspace.binaries import TrustedBinaries
-from boba.workspace.launcher import MountingConfig
+from boba.workspace.launcher import MountingConfig, ReadWindow
 
 AUTH_USER = "test-user"
 
@@ -187,6 +213,252 @@ class ServiceProcess:
     def stop(self) -> None:
         self._process.terminate()
         self._process.wait(timeout=10)
+
+
+class ToolService:
+    """Сервис boba-mcp стенда с настоящими плагинами в песочнице, отдельным
+    процессом на модуль тестов.
+
+    Нужен тестам, которые проверяют путь вызова целиком: чат запечатывает
+    соединение пользователя, сервис открывает его и исполняет тело
+    инструмента в песочнице. Создаётся модульной фикстурой теста из
+    рабочего каталога и конфига сервиса; порты к нему собирает ServiceTools.
+    """
+
+    ENDPOINT: ClassVar[str] = "general"
+    BOOT_TIMEOUT_SEC: ClassVar[float] = 300.0
+    ROOTFS: ClassVar[str] = "plugins/boba-tool-shell/rootfs.ext4"
+    CGROUP_PROCS: ClassVar[str] = "cgroup.procs"
+
+    def __init__(self, workdir: Path, service_raw_config: DictConfig) -> None:
+        db_name = OmegaConf.select(service_raw_config, "postgres.dbname")
+        if not isinstance(db_name, str):
+            msg = (
+                "tool service stand: section [postgres] of the service config "
+                f"expects dbname as a string, got {db_name!r}"
+            )
+            raise TypeError(msg)
+
+        self._config = ServiceStand(
+            workdir=workdir, app_port=free_port(), db_name=db_name, sandbox=True
+        )
+        self._process = StandProcess[ServiceStand](
+            config=self._config, log_path=workdir / "mcp.log"
+        )
+
+    @classmethod
+    def missing(cls) -> str:
+        """Чего сервису не хватает для песочницы на этом хосте; пустая
+        строка — всё на месте."""
+        app = StandApp.MCP
+        if shutil.which("bwrap") is None:
+            return "bwrap is not on PATH (build: make fetch sandbox)"
+
+        rootfs = app.sandbox.under(REPO_ROOT) / cls.ROOTFS
+        if not rootfs.exists():
+            return f"plugin rootfs {rootfs} is not built (make plugin-rootfs-all)"
+
+        procs = Path(app.cgroup_base) / cls.CGROUP_PROCS
+        if not os.access(procs, os.W_OK):
+            return f"cgroup {app.cgroup_base} is not delegated to the user"
+
+        return ""
+
+    @property
+    def server_name(self) -> str:
+        return self._config.server_name(self.ENDPOINT)
+
+    def start(self) -> None:
+        self._process.start(self.BOOT_TIMEOUT_SEC)
+
+    def stop(self) -> None:
+        self._process.stop()
+
+    def servers(self) -> McpServersConfig:
+        """Секция [mcp.servers] чата с одним сервером — этим сервисом."""
+        servers = {self.server_name: self._config.server(self.ENDPOINT)}
+
+        return McpServersConfig.model_validate({"servers": servers})
+
+    def tail(self) -> str:
+        return self._process.tail()
+
+
+class ServiceTool:
+    """Инструмент сервиса глазами теста: вызов уходит портом чата от имени
+    пользователя текущей сессии, ответ — ToolMessage, как у хода.
+
+    Создаётся ServiceTools по имени инструмента; интерфейс ainvoke тот же,
+    что у инструмента langchain, поэтому вызов разбирает boba.stand.toolsetup.Call.
+    """
+
+    def __init__(self, name: str, tools: "ServiceTools") -> None:
+        self.name = name
+        self._tools = tools
+
+    async def ainvoke(self, call: ToolCall) -> ToolMessage:
+        return await self._tools.submit(call)
+
+
+class ServiceTools:
+    """Порт чата к сервису инструментов стенда: тот же состав, что у хода —
+    SealingToolServer над MCP-портом сессии.
+
+    Создаётся фикстурой теста из сервиса (ToolService), хранилища соединений
+    и источника кредов теста. Вызывающий — пользователь текущей сессии
+    chainlit: его логин и роли уходят сервису входом proxy, его соединения
+    запечатываются ключом сервиса.
+    """
+
+    SEAL_TTL: ClassVar[timedelta] = timedelta(seconds=120)
+
+    def __init__(
+        self,
+        service: ToolService,
+        connections: ArmedConnections,
+        contexts: CallContexts,
+    ) -> None:
+        self._service = service
+        self._connections = connections
+        self._servers = McpServers(
+            service.servers(), NamedBlocks(), DroppedSignals(), contexts
+        )
+        self.sent = SentConnections()
+        """Что ушло сервису вместо ссылок на соединения в идущих вызовах."""
+
+    async def start(self) -> None:
+        await self._servers.start()
+
+    async def stop(self) -> None:
+        await self._servers.stop()
+
+    def __getitem__(self, name: str) -> ServiceTool:
+        return ServiceTool(name, self)
+
+    async def port(self) -> ToolServer:
+        """MCP-порт сервиса для пользователя текущей сессии chainlit."""
+        session = current_session()
+        caller = McpCaller(login=session.identifier, roles=session.roles)
+
+        return await self.port_of(caller)
+
+    async def port_of(self, caller: McpCaller) -> ToolServer:
+        """MCP-порт сервиса для названного пользователя и его ролей."""
+        ports = await self._servers.for_session(caller, [self._service.server_name])
+        if not ports:
+            msg = (
+                f"tool service {self._service.server_name!r} did not open for "
+                f"{caller.login!r}; service log:\n{self._service.tail()}"
+            )
+            raise AssertionError(msg)
+
+        return ports[0]
+
+    async def submit(self, call: ToolCall) -> ToolMessage:
+        port = SealingToolServer(
+            await self.port(), self._connections, self.sent, self.SEAL_TTL
+        )
+        pending = await port.submit([call])
+
+        return await pending[0]
+
+    def storage(self, owner: StoredUser, profile: str) -> RemoteStorageClient:
+        """Хранилище чата поверх файлов сервиса: владельца ключа оно находит
+        по строке users owner, сервер файлов — по профилю profile."""
+        profiles = ChatProfiles(
+            {
+                profile: ChatProfileConfig.model_construct(
+                    mcp=[self._service.server_name], roles=["*"], default=True
+                )
+            }
+        )
+        sessions = NoTabs()
+        users = OwnerRows(owner)
+        owners = FileOwners(lambda: sessions, lambda: users, profiles)
+
+        return RemoteStorageClient(AttachmentUrl.MOUNT, owners, lambda: self._servers)
+
+
+class NoConnectionStore:
+    """Ссылка на хранилище соединений стенда, которому соединения не нужны:
+    обращение к ней — ошибка теста."""
+
+    def __call__(self) -> ConnectionStore:
+        msg = "the stand of this test holds no user connections"
+        raise AssertionError(msg)
+
+
+@dataclass(frozen=True)
+class SessionTools:
+    """Инструменты сессии и порт инструментов над ними, как их видит граф хода."""
+
+    tools: list[BaseTool]
+    service: ToolServer
+
+
+@pytest.fixture(scope="module")
+def tool_service(
+    tmp_path_factory: pytest.TempPathFactory, service_raw_config: DictConfig
+) -> Iterator[ToolService]:
+    """Сервис инструментов модуля: настоящий boba-mcp с плагинами в песочнице."""
+    process = ToolService(tmp_path_factory.mktemp("boba-mcp"), service_raw_config)
+    try:
+        process.start()
+        yield process
+    finally:
+        process.stop()
+
+
+@pytest.fixture
+async def service_tools(
+    tool_service: ToolService, call_stand: CallStand
+) -> AsyncIterator[ServiceTools]:
+    """Порт чата к сервису инструментов для тестов без соединений пользователя."""
+    credentials = KerberosCredentialSource(None, NoRefresh())
+    connections = ArmedConnections(
+        NoConnectionStore(), lambda: credentials, call_stand.contexts
+    )
+    opened = ServiceTools(tool_service, connections, call_stand.contexts)
+    await opened.start()
+    try:
+        yield opened
+    finally:
+        await opened.stop()
+
+
+class NoTabs(OwnerSessions):
+    """Источник сессий без живых вкладок: владелец файла ищется по строке users."""
+
+    def of_user(self, user_id: UUID) -> Sequence[ChainlitSession]:
+        return ()
+
+
+class OwnerRows(UserRows):
+    """Строки users стенда файлов: один пользователь с ролями и профилями входа.
+
+    Реализация UserRows только на чтение по id: её читает FileOwners, когда
+    у владельца файла нет живой сессии.
+    """
+
+    def __init__(self, owner: StoredUser) -> None:
+        self._owner = owner
+
+    async def stored(self, identifier: Login) -> StoredUser | None:
+        return None
+
+    async def stored_by_id(self, user_id: UUID) -> StoredUser | None:
+        if user_id != self._owner.id:
+            return None
+
+        return self._owner
+
+    async def upsert(self, identifier: Login, meta: Mapping[str, Any]) -> StoredUser:
+        raise NotImplementedError
+
+    async def set_llm_settings(
+        self, user_id: UUID, profile: str, values: Mapping[str, Any]
+    ) -> None:
+        raise NotImplementedError
 
 
 class PerCallStreams(RemoteStreams):
@@ -781,3 +1053,14 @@ class RecordedTurn:
 async def put_bytes(storage: StorageClient, object_key: str, data: bytes | str) -> None:
     """Кладёт в хранилище готовые байты теста: запись у хранилища только потоком."""
     await StorageSeed().put(storage, object_key, data)
+
+
+async def get_bytes(storage: StorageClient, object_key: str) -> bytes:
+    """Читает файл хранилища целиком: чтение у хранилища только потоком."""
+    window = ReadWindow(offset=0, length=None)
+    parts: list[bytes] = []
+    async with await storage.open_stream(object_key, window) as opened:
+        async for chunk in opened.chunks:
+            parts.append(chunk)
+
+    return b"".join(parts)

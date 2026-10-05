@@ -8,12 +8,13 @@ version = "0.0.26.dev4"
 description = "Boba LLM: порты ChatModel/EmbeddingModel, конверты запросов и реестр провайдеров по entry points."
 requires-python = ">=3.11,<4"
 dependencies = [
-    "pydantic>=2.10,<3",
+    "pydantic>=2.12,<3",
 ]
 
 [project.optional-dependencies]
 dev = [
-    "pytest>=8",
+    "boba-stand==0.0.26.dev4",
+    "pytest>=9.1,<10",
 ]
 
 [tool.setuptools.packages.find]

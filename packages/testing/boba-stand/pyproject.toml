@@ -43,25 +43,25 @@ dependencies = [
     "boba-confluence==0.0.26.dev4",
     "boba-llm==0.0.26.dev4",
     "boba-llm-fastembed==0.0.26.dev4",
-    "fastapi>=0.115,<1",
+    "fastapi>=0.116,<1",
     "httpx>=0.28,<1",
-    "typing-extensions>=4.12",
-    "playwright>=1.47",
-    "pydantic>=2.10,<3",
-    "uvicorn>=0.30",
-    "pytest>=8",
-    "anyio>=4",
-    "psycopg[binary,pool]>=3.2,<4",
+    "typing-extensions>=4.12,<5",
+    "playwright>=1.47,<2",
+    "pydantic>=2.12,<3",
+    "uvicorn>=0.35,<1",
+    "pytest>=9.1,<10",
+    "anyio>=4,<5",
+    "psycopg>=3.3,<4",
     "omegaconf>=2.3,<3",
-    "langchain-core>=0.3",
-    "krb5>=0.7",
-    "gssapi>=1.9",
+    "langchain-core>=1.4,<1.5",
+    "krb5>=0.7,<1",
+    "gssapi>=1.9,<2",
 ]
 
 [project.optional-dependencies]
 dev = [
     "boba-chainlit==0.0.26.dev4",
-    "starlette>=0.40",
+    "starlette>=1.0,<2",
 ]
 
 [tool.setuptools.packages.find]

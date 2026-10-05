@@ -2,7 +2,11 @@
 правилами графа.
 
 Источник правды — pyproject каждого пакета и AST его модулей: src сверяется с
-dependencies и extras кроме dev, tests — с dependencies и экстрой dev. Владельца
+dependencies и extras кроме dev, tests — с dependencies и экстрой dev. К tests
+пакета относятся и conftest.py каталогов над ним до корня packages: pytest
+подключает их к его тестам, и без их импортов набор не стартует. Дистрибутив,
+который нужен без импорта (парсер по имени, драйвер), пакет называет в
+[tool.boba.unimported] с причиной — тогда он не считается лишним. Владельца
 стороннего модуля даёт список файлов дистрибутивов текущего интерпретатора,
 владельца boba.* — каталоги src пакетов репозитория. Подмодуль, который живёт
 за extra владельца ([tool.boba.extras] в его pyproject), требует у импортёра
@@ -186,11 +190,15 @@ class PackageProject(BaseModel):
     TOOL_EXTRAS: ClassVar[tuple[str, ...]] = ("tool", "boba", "extras")
     """Таблица [tool.boba.extras]: модуль пакета → extra, за которым он живёт."""
 
+    TOOL_UNIMPORTED: ClassVar[tuple[str, ...]] = ("tool", "boba", "unimported")
+    """Таблица [tool.boba.unimported]: дистрибутив, нужный без импорта → причина."""
+
     name: str
     root: Path
     dependencies: Sequence[Requirement]
     extras: Mapping[str, Sequence[Requirement]]
     module_extras: Mapping[str, str] = {}
+    unimported: frozenset[str] = frozenset()
 
     @classmethod
     def load(cls, pyproject: Path) -> PackageProject:
@@ -202,7 +210,10 @@ class PackageProject(BaseModel):
             msg = f"reading [project] of {pyproject}: {type(exc).__name__}: {exc}"
             raise DepsAuditError(msg) from exc
 
-        module_extras = cls._module_extras(document, pyproject)
+        module_extras = cls._string_table(document, pyproject, cls.TOOL_EXTRAS)
+        unimported: set[str] = set()
+        for dist in cls._string_table(document, pyproject, cls.TOOL_UNIMPORTED):
+            unimported.add(Requirement.normalize(dist))
 
         dependencies: list[Requirement] = []
         for spec in project.get("dependencies", []):
@@ -220,31 +231,35 @@ class PackageProject(BaseModel):
             dependencies=dependencies,
             extras=extras,
             module_extras=module_extras,
+            unimported=frozenset(unimported),
         )
 
     @classmethod
-    def _module_extras(
-        cls, document: Mapping[str, object], pyproject: Path
+    def _string_table(
+        cls, document: Mapping[str, object], pyproject: Path, keys: Sequence[str]
     ) -> dict[str, str]:
+        """Таблица pyproject по пути keys со строковыми ключами и значениями;
+        отсутствующая — пустая."""
+        table = f"[{'.'.join(keys)}]"
         section: object = document
-        for key in cls.TOOL_EXTRAS:
+        for key in keys:
             if not isinstance(section, Mapping):
                 return {}
             section = section.get(key, {})
 
         if not isinstance(section, Mapping):
-            msg = f"{pyproject}: [tool.boba.extras] expects a table module = extra"
+            msg = f"{pyproject}: {table} expects a table of strings, got {section!r}"
             raise DepsAuditError(msg)
 
         declared: dict[str, str] = {}
-        for module, extra in section.items():
-            if not isinstance(module, str) or not isinstance(extra, str):
+        for name, value in section.items():
+            if not isinstance(name, str) or not isinstance(value, str):
                 msg = (
-                    f"{pyproject}: [tool.boba.extras] expects string keys and "
-                    f"values, got {module!r} = {extra!r}"
+                    f"{pyproject}: {table} expects string keys and "
+                    f"values, got {name!r} = {value!r}"
                 )
                 raise DepsAuditError(msg)
-            declared[module] = extra
+            declared[name] = value
 
         return declared
 
@@ -510,9 +525,9 @@ class ImportScan:
 
     def modules_by_file(self, directory: Path) -> Iterator[tuple[Path, set[str]]]:
         for path in sorted(directory.rglob(self.SUFFIX)):
-            yield path, self._modules_of(path)
+            yield path, self.modules_of(path)
 
-    def _modules_of(self, path: Path) -> set[str]:
+    def modules_of(self, path: Path) -> set[str]:
         try:
             tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         except (OSError, SyntaxError) as exc:
@@ -565,6 +580,7 @@ class DepsAudit:
     """Проход по всем пакетам репозитория: src против pyproject, tests против dev."""
 
     GLOBS: ClassVar[tuple[str, ...]] = ("*/*/pyproject.toml", "*/*/*/pyproject.toml")
+    SHARED_CONFTEST: ClassVar[str] = "conftest.py"
 
     def __init__(self, packages_root: Path) -> None:
         if not packages_root.is_dir():
@@ -649,6 +665,13 @@ class DepsAudit:
             return
 
         used = self._used(project, project.tests)
+        for path in self._shared_conftests(project):
+            shared = self._owners.dists_of(self._scan.modules_of(path), (path.parent,))
+            for dist in shared:
+                if dist == project.name:
+                    continue
+
+                used.setdefault(dist, set()).add(str(path.relative_to(self._root)))
 
         covered: set[str] = set()
         for requirement in project.dependencies:
@@ -768,6 +791,16 @@ class DepsAudit:
                     continue
                 stack.append((target, [*path, target]))
 
+    def _shared_conftests(self, project: PackageProject) -> Iterator[Path]:
+        """conftest.py каталогов над пакетом до корня packages включительно."""
+        directory = project.root.parent
+        while directory.is_relative_to(self._root):
+            candidate = directory / self.SHARED_CONFTEST
+            if candidate.is_file():
+                yield candidate
+
+            directory = directory.parent
+
     def _used(self, project: PackageProject, directory: Path) -> dict[str, set[str]]:
         used: dict[str, set[str]] = {}
         for path, modules in self._scan.modules_by_file(directory):
@@ -794,6 +827,9 @@ class DepsAudit:
 
         for requirement in requirements:
             if requirement.name in used:
+                continue
+
+            if requirement.name in project.unimported:
                 continue
 
             is_plugin = self._owners.is_plugin_of_pytest(requirement.name)

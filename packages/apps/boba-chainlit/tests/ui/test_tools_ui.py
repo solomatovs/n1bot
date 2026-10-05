@@ -26,6 +26,7 @@ from typing import Any, ClassVar
 import httpx
 import pytest
 from chat_ui import ChatOpener
+from pydantic import BaseModel, ConfigDict
 
 from boba.canvas.diagram import DiagramPrompt
 from boba.config import bind
@@ -60,10 +61,6 @@ from boba.stand.ui.stand import (
     free_port,
 )
 from boba.text.grep import GrepLimits, TextGrep
-from boba.tool.canvas.tools import CanvasPrompt
-from boba.tool.confluence.ingest_tools import IngestToolConfig
-from boba.tool.confluence.tools import ConfluenceToolsConfig, CqlQuery
-from boba.tool.kb.search import ConfluenceCollection
 from boba.toolkit.calls import ToolIntent
 from boba.toolkit.result import (
     CanvasResult,
@@ -94,6 +91,12 @@ STREAM_ELEMENT = "CanvasStream"
 """Имя элемента кнопки живого вывода на шаге инструмента песочницы."""
 
 CANVAS_ELEMENT = "CanvasView"
+OPENED_NOTE = (
+    "the panel is open for the user and a link to it stays in the chat; "
+    "mermaid files are rendered by the browser and a render failure "
+    "comes back to you as a tool error"
+)
+"""Что canvas_open обязан сказать модели об открытой панели."""
 """Имя элемента карточки диаграммы в ленте."""
 
 """Имя элемента ссылки на страницу каталога в ленте."""
@@ -712,6 +715,30 @@ class ConfluenceAttachment:
         return tuple(found)
 
 
+class ConfluenceSection(BaseModel):
+    """Секция [tool.confluence] сервиса в объёме стенда: профиль Confluence,
+    формат тела и предел текста страницы, по которым тест считает ожидаемую
+    выдачу."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    SECTION: ClassVar[str] = "tool.confluence"
+
+    confluence: HttpConnection
+    body_format: str
+    max_text_chars: int
+
+
+class IngestSection(BaseModel):
+    """Секция [tool.ingest] сервиса в объёме стенда: форма таблиц в тексте."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    SECTION: ClassVar[str] = "tool.ingest"
+
+    table_shape: TableShape
+
+
 class ConfluenceSite:
     """Живой Confluence глазами теста: тот же профиль, что у инструментов."""
 
@@ -721,7 +748,7 @@ class ConfluenceSite:
     EXPAND: ClassVar[str] = "body.view,version,space"
     PAGE_ID_IN_URL: ClassVar[str] = r"(?:pageId=|/pages/)(\d+)"
 
-    def __init__(self, config: ConfluenceToolsConfig, table_shape: TableShape) -> None:
+    def __init__(self, config: ConfluenceSection, table_shape: TableShape) -> None:
         self._config = config
         self._table_shape = table_shape
         self._rest = CflRestBuilder()
@@ -737,10 +764,8 @@ class ConfluenceSite:
     @classmethod
     def load(cls) -> ConfluenceSite:
         built = AppLayers.compose(StandApp.CHAINLIT.tools_config.under(REPO_ROOT))
-        config = bind(
-            built, path=ConfluenceToolsConfig.SECTION, model=ConfluenceToolsConfig
-        )
-        ingest = bind(built, path=IngestToolConfig.SECTION, model=IngestToolConfig)
+        config = bind(built, path=ConfluenceSection.SECTION, model=ConfluenceSection)
+        ingest = bind(built, path=IngestSection.SECTION, model=IngestSection)
         return cls(config, ingest.table_shape)
 
     @property
@@ -789,9 +814,16 @@ class ConfluenceSite:
         response.raise_for_status()
         return response.content
 
+    @staticmethod
+    def _text_cql(query: str) -> str:
+        """CQL полнотекстового поиска по всем спейсам, как его шлёт инструмент."""
+        escaped = query.replace("\\", "\\\\").replace('"', '\\"')
+
+        return f'text ~ "{escaped}"'
+
     def find_page(self, query: str) -> ConfluencePage:
         """Самая короткая непустая страница из выдачи того же CQL, что у тула."""
-        cql = CqlQuery(query, None).render()
+        cql = self._text_cql(query)
         path = self._rest.cql_search_path(
             cql, limit=self.SEARCH_LIMIT, start=0, expand=self.EXPAND
         )
@@ -834,7 +866,7 @@ class ConfluenceSite:
 
     def find_attachment(self, query: str) -> ConfluenceAttachment:
         """Вложение .docx из поиска; текст считается теми же ридерами boba-doc."""
-        cql = CqlQuery(query, None).render()
+        cql = self._text_cql(query)
         path = self._rest.cql_search_path(cql, limit=self.ATTACHMENT_LIMIT, start=0)
         data = self.get_json(path)
 
@@ -1528,13 +1560,25 @@ class TestIngestTools:
 class TestKbTools:
     """kb: поиск по проиндексированной странице и пустая выдача."""
 
+    META_COLUMNS: ClassVar[tuple[str, ...]] = (
+        "page_title",
+        "source_url",
+        "parent_url",
+        "doc_type",
+        "page",
+        "anchor",
+        "page_id",
+        "version",
+        "heading_path",
+        "space",
+        "kind",
+        "table_caption",
+    )
+    """Колонки метаданных выдачи коллекции Confluence в порядке показа."""
+
     def _columns(self) -> list[str]:
         """Шапка выдачи: те же колонки, что строит строка коллекции Confluence."""
-        columns = ["distance", "format_content", "tags"]
-        for meta in ConfluenceCollection.META_FIELDS:
-            columns.append(meta.column)
-
-        return columns
+        return ["distance", "format_content", "tags", *self.META_COLUMNS]
 
     def _hit_patterns(self, page: ConfluencePage) -> list[str]:
         return [
@@ -2259,7 +2303,7 @@ class TestCanvasTools:
         result = CanvasResult(
             path=saved_diagram.path,
             label=ProbeDiagram.NAME.value,
-            note=CanvasPrompt.OPENED_NOTE.value,
+            note=OPENED_NOTE,
         )
         opened = f"opened in the canvas: {ProbeDiagram.NAME.value}"
         canvas_feed.call(call, ToolExpect.of(result, dom=[opened]))

@@ -12,8 +12,8 @@ dependencies = [
     "boba-identity==0.0.26.dev4",
     "boba-connections==0.0.26.dev4",
     "boba-db-postgres==0.0.26.dev4",
-    "psycopg[binary,pool]>=3.2",
-    "pydantic>=2.10,<3",
+    "psycopg>=3.3,<4",
+    "pydantic>=2.12,<3",
 ]
 
 [project.entry-points."boba.tools"]
@@ -26,7 +26,6 @@ entity = "boba.tool.describer.address:EntityAddresses"
 payload = [
 ]
 dev = [
-    "boba-chainlit==0.0.26.dev4",
     "boba-config==0.0.26.dev4",
     "boba-connection-broker==0.0.26.dev4",
     "boba-db-clickhouse[payload]==0.0.26.dev4",
@@ -34,12 +33,9 @@ dev = [
     "boba-stand==0.0.26.dev4",
     "boba-stand-core==0.0.26.dev4",
     "boba-toolrun==0.0.26.dev4",
-    "chainlit==2.11.1",
     "langchain-core>=1.4,<1.5",
-    "langgraph",
-    "langgraph-checkpoint>=4.1,<5",
     "omegaconf>=2.3,<3",
-    "pytest>=8",
+    "pytest>=9.1,<10",
 ]
 
 [tool.setuptools.packages.find]
