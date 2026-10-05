@@ -1875,6 +1875,7 @@ dependencies = [
     { name = "psycopg", extra = ["binary", "pool"], marker = "sys_platform == 'linux'" },
     { name = "pydantic", marker = "sys_platform == 'linux'" },
     { name = "pytest", marker = "sys_platform == 'linux'" },
+    { name = "typing-extensions", marker = "sys_platform == 'linux'" },
     { name = "uvicorn", marker = "sys_platform == 'linux'" },
 ]
 
@@ -1931,6 +1932,7 @@ requires-dist = [
     { name = "pydantic", specifier = ">=2.10,<3" },
     { name = "pytest", specifier = ">=8" },
     { name = "starlette", marker = "extra == 'dev'", specifier = ">=0.40" },
+    { name = "typing-extensions", specifier = ">=4.12" },
     { name = "uvicorn", specifier = ">=0.30" },
 ]
 provides-extras = ["dev"]

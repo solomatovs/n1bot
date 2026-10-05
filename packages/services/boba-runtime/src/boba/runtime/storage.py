@@ -144,11 +144,14 @@ class LocalStorageConfig(BaseModel):
 class StorageClient(ABC):
     """Фасад хранилища: потоковые операции и их граница ошибок.
 
+    Запись и чтение идут только чанками: метода, который принял бы или
+    вернул содержимое целиком, у хранилища нет.
+
     Каждая операция идёт через StorageGuard, поэтому наружу выходят только
     StorageError и его подклассы:
 
-    * upload_file, upload_stream — StorageFullError, когда места нет;
-      StorageError на любом другом отказе записи;
+    * upload_stream — StorageFullError, когда места нет; StorageError на
+      любом другом отказе записи;
     * stat, open_stream — StorageNotFoundError, когда объекта нет;
       StorageError на отказе чтения;
     * delete_file — False, когда объекта нет; StorageError на отказе;
@@ -159,11 +162,12 @@ class StorageClient(ABC):
     переопределяют — иначе ошибка уйдёт мимо границы.
     """
 
-    def __init__(self, config: LocalStorageConfig) -> None:
-        self._config = config
+    def __init__(self, public_prefix: str, chunk_bytes: int) -> None:
+        self._public_prefix = public_prefix
+        self._chunk_bytes = chunk_bytes
 
     def render_url(self, url: str, object_key: str) -> str:
-        return StorageUrl.render(url, self._config.public_prefix, object_key)
+        return StorageUrl.render(url, self._public_prefix, object_key)
 
     async def get_read_url(self, object_key: str) -> str:
         return self.render_url(StorageUrl.TEMPLATE, object_key)
@@ -173,39 +177,8 @@ class StorageClient(ABC):
         return
 
     @staticmethod
-    def _payload_bytes(data: bytes | str) -> bytes:
-        if isinstance(data, str):
-            return data.encode()
-        return data
-
-    @staticmethod
     def _uploaded(object_key: str) -> dict[str, Any]:
         return {"object_key": object_key, "url": StorageUrl.TEMPLATE.value}
-
-    @staticmethod
-    async def _once(payload: bytes) -> AsyncGenerator[bytes, None]:
-        """Готовые байты в виде источника: путь записи один на всех."""
-        yield payload
-
-    async def upload_file(
-        self,
-        object_key: str,
-        data: bytes | str,
-        mime: str = "application/octet-stream",
-        overwrite: bool = True,
-        content_disposition: str | None = None,
-    ) -> dict[str, Any]:
-        """Байты из памяти тем же потоковым путём, что и upload_stream."""
-        with StorageGuard(StorageOp.WRITE, object_key):
-            keep = False
-            if not overwrite:
-                keep = await self._exists(object_key)
-
-            if keep:
-                return self._uploaded(object_key)
-
-            payload = self._payload_bytes(data)
-            return await self._upload_stream(object_key, self._once(payload), mime)
 
     async def upload_stream(
         self,
@@ -235,7 +208,7 @@ class StorageClient(ABC):
 
     async def disk_source(self, path: str) -> AsyncGenerator[bytes, None]:
         """Файл локального диска как источник чанков для upload_stream."""
-        chunk_bytes = self._config.mounting.copy_chunk_bytes
+        chunk_bytes = self._chunk_bytes
 
         async with aiofiles.open(path, "rb") as f:
             while True:
@@ -252,14 +225,6 @@ class StorageClient(ABC):
     async def list_dir(self, prefix: str) -> Sequence[str]:
         with StorageGuard(StorageOp.LIST, prefix):
             return await self._list_dir(prefix)
-
-    async def _exists(self, object_key: str) -> bool:
-        try:
-            await self._stat(object_key)
-        except (StorageNotFoundError, FileNotFoundError):
-            return False
-
-        return True
 
     async def _guarded_chunks(
         self, object_key: str, chunks: AsyncGenerator[bytes, None]
@@ -303,7 +268,17 @@ class StorageFactory:
         return LocalStorageClient(config)
 
 
-class LocalStorageClient(StorageClient):
+class ConfiguredStorageClient(StorageClient, ABC):
+    """База хранилищ процесса, собранных из секции [storage]: локального
+    диска и образа пользователя. Наследники читают свои настройки из
+    self._config."""
+
+    def __init__(self, config: LocalStorageConfig) -> None:
+        super().__init__(config.public_prefix, config.mounting.copy_chunk_bytes)
+        self._config = config
+
+
+class LocalStorageClient(ConfiguredStorageClient):
     """Хранит файлы вложений на локальном диске под files_dir."""
 
     def _resolve(self, object_key: str) -> Path:
@@ -399,7 +374,7 @@ class LocalStorageClient(StorageClient):
         return tuple(names)
 
 
-class ImageStorageClient(StorageClient):
+class ImageStorageClient(ConfiguredStorageClient):
     """Хранит вложения внутри per-thread ext4-образа: fuse2fs на одну операцию."""
 
     WATCH_POLL_SEC: ClassVar[float] = 1.0

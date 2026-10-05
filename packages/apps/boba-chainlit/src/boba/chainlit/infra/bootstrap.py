@@ -42,6 +42,7 @@ from boba.runtime.config import AppName
 from boba.runtime.di import Container
 from boba.runtime.http import DomainErrorMiddleware, StaleSessionMiddleware
 from boba.runtime.plugins import EntryPointPlugins
+from boba.runtime.storage import StorageClient
 
 
 def run_app(config_path: Path):
@@ -57,9 +58,13 @@ def run_app(config_path: Path):
 
     _use_chainlit_middleware(app, c.chainlit)
 
-    _use_file_serving(c)
+    storage = providers.storage_provider(
+        c.storage, providers.file_owners(providers.chat_profiles_registry(c))
+    )
+    _use_file_serving(c, storage)
 
     container = _use_di_container(app, c)
+    container.provide(providers.storage_provider, storage)
     app.state.container = container
 
     _use_stream_journal(c)
@@ -183,7 +188,7 @@ def _use_chainlit_middleware(app: FastAPI, config: ChainlitExtendConfig):
     app.mount(config.url_prefix, chainlit_app)
 
 
-def _use_file_serving(c: AppConfig) -> None:
+def _use_file_serving(c: AppConfig, storage: StorageClient) -> None:
     from boba.chainlit.data.data_layer import PostgresDataLayer  # noqa: PLC0415
     from boba.chainlit.data.upload import (  # noqa: PLC0415
         AttachmentServing,
@@ -196,11 +201,9 @@ def _use_file_serving(c: AppConfig) -> None:
         CanvasFileUrl,
     )
     from boba.identity.errors import InternalServiceError  # noqa: PLC0415
-    from boba.runtime.storage import StorageFactory  # noqa: PLC0415
     from chainlit.data import get_data_layer  # noqa: PLC0415
     from chainlit.server import app as chainlit_app  # noqa: PLC0415
 
-    storage = StorageFactory.create(c.storage)
     UploadRoute(storage, UploadPolicy()).install(chainlit_app)
     route_path = c.storage.public_prefix.removeprefix(c.chainlit.url_prefix)
 

@@ -31,16 +31,14 @@ ADMIN_LOGIN = "admin"
 STAND_TOOLS = frozenset(
     {"send_file", "diagram_save", "canvas_open", "connection_list", "connection_search"}
 )
-"""Инструменты, собранные стендом: песочные секции выключены StandConfig,
-остаются чатовые и каталог соединений."""
+"""Инструменты профиля general стенда: каталог соединений исполняет сам чат,
+остальные отдаёт endpoint general сервиса boba-mcp (песочные секции выключены)."""
 
-DEV_ROLE_TOOLS = frozenset(
-    {"diagram_save", "send_file", "connection_list", "connection_search"}
-)
-"""Набор роли DEV в конфиге стенда: без canvas_open."""
+DEV_OWN_TOOLS = frozenset({"connection_list"})
+"""Собственные инструменты чата, выданные роли DEV: без connection_search."""
 
 SEARCH_PROFILE_TOOLS = frozenset({"diagram_save", "canvas_open"})
-"""Набор профиля search в конфиге стенда."""
+"""Набор endpoint'а search сервиса: его называет профиль search стенда."""
 
 
 @pytest.fixture(autouse=True)
@@ -250,7 +248,8 @@ class TestProfileSettingsApplied:
 
 
 class TestRoleIntersection:
-    """Инструменты хода — пересечение набора профиля и набора роли."""
+    """Роль режет собственные инструменты чата; набор инструментов сервиса
+    решает endpoint профиля, а не роль."""
 
     @staticmethod
     def _dev_login(stand: StandProcess) -> str:
@@ -261,7 +260,7 @@ class TestRoleIntersection:
 
         pytest.skip("no DEV-only login in [auth.local] of the base config")
 
-    def test_dev_search_gets_the_intersection(
+    def test_dev_search_gets_the_endpoint_tools(
         self, open_chat: OpenChat, stand: StandProcess, llm_port: int
     ) -> None:
         page = open_chat(stand, self._dev_login(stand))
@@ -270,11 +269,11 @@ class TestRoleIntersection:
         _ask_and_wait(page)
 
         tools = _tool_names(_last_request(llm_port))
-        expected = SEARCH_PROFILE_TOOLS & DEV_ROLE_TOOLS
+        expected = SEARCH_PROFILE_TOOLS
         if tools != expected:
             raise AssertionError(f"tools {sorted(tools)} != {sorted(expected)}")
 
-    def test_dev_general_is_cut_by_the_role(
+    def test_dev_general_loses_only_own_chat_tools(
         self, open_chat: OpenChat, stand: StandProcess, llm_port: int
     ) -> None:
         page = open_chat(stand, self._dev_login(stand))
@@ -282,8 +281,9 @@ class TestRoleIntersection:
         _ask_and_wait(page)
 
         tools = _tool_names(_last_request(llm_port))
-        if tools != DEV_ROLE_TOOLS:
-            raise AssertionError(f"tools {sorted(tools)} != {sorted(DEV_ROLE_TOOLS)}")
+        expected = (STAND_TOOLS - {"connection_search"}) | DEV_OWN_TOOLS
+        if tools != expected:
+            raise AssertionError(f"tools {sorted(tools)} != {sorted(expected)}")
 
 
 class TestSingleProfile:

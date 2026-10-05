@@ -26,6 +26,7 @@ from typing import ClassVar
 from uuid import uuid4
 
 import pytest
+from chainlit_stand import put_bytes
 from pydantic import BaseModel, ConfigDict
 
 from boba.cancellation import RunCancellation, ToolStopped, run_cancellation
@@ -878,7 +879,7 @@ class TestParallelLoad:
 
         def upload(index: int) -> None:
             payload = f"attachment-{index}".encode()
-            asyncio.run(storage.upload_file(self._attachment_key(index), payload))
+            asyncio.run(put_bytes(storage, self._attachment_key(index), payload))
 
         def shell(index: int) -> ShellResult:
             return self._write_and_read(stand, self.MIX_USER, index)

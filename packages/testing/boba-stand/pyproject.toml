@@ -42,6 +42,7 @@ dependencies = [
     "boba-llm-fastembed==0.0.26.dev4",
     "fastapi>=0.115,<1",
     "httpx>=0.28,<1",
+    "typing-extensions>=4.12",
     "playwright>=1.47",
     "pydantic>=2.10,<3",
     "uvicorn>=0.30",

@@ -58,6 +58,10 @@ class DagNode(BaseModel):
     tool: str = Field(min_length=1)
     args: Mapping[str, JsonValue] = {}
     title: str = ""
+    call_id: str = ""
+    """Идентификатор вызова узла, заданный клиентом, который сам собрал
+    вызов workflow из отдельных вызовов модели: под ним идут журнал и шаг
+    узла. Пусто — исполнитель выводит его из идентификатора вызова workflow."""
 
     def label(self) -> str:
         if self.title:

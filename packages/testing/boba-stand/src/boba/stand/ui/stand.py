@@ -14,14 +14,16 @@ import subprocess
 import sys
 import time
 import tomllib
-from collections.abc import MutableMapping
+from abc import abstractmethod
+from collections.abc import Mapping, MutableMapping, Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
 from http import HTTPStatus
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import Any, ClassVar, Generic, Protocol
 
 import httpx
+from typing_extensions import TypeVar
 
 from boba.stand.ui.toml_text import TomlText
 
@@ -46,10 +48,11 @@ class StandPaths(StrEnum):
 
     BASE_CONFIG = "compose/chainlit/conf/config.toml"
     STUDIO_BASE_CONFIG = "compose/studio/conf/config.toml"
+    MCP_BASE_CONFIG = "compose/mcp/conf/config.toml"
     CHAINLIT_BASE = "compose/chainlit"
     STUDIO_BASE = "compose/studio"
-    CHAINLIT_SANDBOX = "build/src/sandbox"
-    STUDIO_SANDBOX = "build/src/sandbox"
+    MCP_BASE = "compose/mcp"
+    SANDBOX = "build/src/sandbox"
     PACKAGES = "packages"
 
     def under(self, root: Path) -> Path:
@@ -98,67 +101,315 @@ class StandCredential:
     password: str
 
 
+@dataclass(frozen=True)
+class StandAppTraits:
+    """Чем приложения стенда отличаются друг от друга: модуль запуска, корень
+    рантайма, конфиг, cgroup, проба готовности и секция хранения."""
+
+    module: str
+    base: StandPaths
+    base_config: StandPaths
+    cgroup_base: str
+    ready_path: str
+    data_layer_section: str
+
+
 class StandApp(StrEnum):
     """Приложения стенда: у каждого свой корень рантайма, конфиг, данные и порт."""
 
     CHAINLIT = "chainlit"
     STUDIO = "studio"
+    MCP = "mcp"
+
+    def traits(self) -> StandAppTraits:
+        known = {
+            StandApp.CHAINLIT: StandAppTraits(
+                module="boba.chainlit.main",
+                base=StandPaths.CHAINLIT_BASE,
+                base_config=StandPaths.BASE_CONFIG,
+                cgroup_base="/sys/fs/cgroup/boba.slice/boba-sandbox",
+                ready_path="/",
+                data_layer_section="data_layer",
+            ),
+            StandApp.STUDIO: StandAppTraits(
+                module="boba.studio",
+                base=StandPaths.STUDIO_BASE,
+                base_config=StandPaths.STUDIO_BASE_CONFIG,
+                cgroup_base="/sys/fs/cgroup/boba.slice/boba-sandbox-studio",
+                ready_path="/api/openapi.json",
+                data_layer_section="automation",
+            ),
+            StandApp.MCP: StandAppTraits(
+                module="boba.mcp_server",
+                base=StandPaths.MCP_BASE,
+                base_config=StandPaths.MCP_BASE_CONFIG,
+                cgroup_base="/sys/fs/cgroup/boba.slice/boba-sandbox-mcp",
+                ready_path="/health",
+                data_layer_section="data_layer",
+            ),
+        }
+
+        return known[self]
 
     @property
     def module(self) -> str:
-        if self is StandApp.CHAINLIT:
-            return "boba.chainlit.main"
-
-        return "boba.studio"
+        return self.traits().module
 
     @property
     def base(self) -> StandPaths:
-        if self is StandApp.CHAINLIT:
-            return StandPaths.CHAINLIT_BASE
-
-        return StandPaths.STUDIO_BASE
+        return self.traits().base
 
     @property
     def base_config(self) -> StandPaths:
-        if self is StandApp.CHAINLIT:
-            return StandPaths.BASE_CONFIG
-
-        return StandPaths.STUDIO_BASE_CONFIG
+        return self.traits().base_config
 
     @property
     def sandbox(self) -> StandPaths:
-        """Артефакты песочницы из сборки этого приложения."""
-        if self is StandApp.CHAINLIT:
-            return StandPaths.CHAINLIT_SANDBOX
-
-        return StandPaths.STUDIO_SANDBOX
+        """Артефакты песочницы из сборки: общие у всех приложений."""
+        return StandPaths.SANDBOX
 
     @property
     def cgroup_base(self) -> str:
-        if self is StandApp.CHAINLIT:
-            return "/sys/fs/cgroup/boba.slice/boba-sandbox"
-
-        return "/sys/fs/cgroup/boba.slice/boba-sandbox-studio"
+        return self.traits().cgroup_base
 
     @property
     def ready_path(self) -> str:
         """Путь готовности под префиксом приложения."""
-        if self is StandApp.CHAINLIT:
-            return "/"
-
-        return "/api/openapi.json"
+        return self.traits().ready_path
 
     @property
     def data_layer_section(self) -> str:
         """Секция конфига со схемой хранения приложения."""
-        if self is StandApp.CHAINLIT:
-            return "data_layer"
+        return self.traits().data_layer_section
 
-        return "automation"
+
+class StandService(Protocol):
+    """Приложение стенда глазами процесса: конфиг, окружение, адрес и
+    приложение-спутник, без которого оно не работает."""
+
+    app: StandApp
+    app_port: int
+    url_prefix: str
+
+    @property
+    @abstractmethod
+    def config_path(self) -> Path:
+        """Файл конфига, который уходит приложению аргументом --config."""
+
+    @abstractmethod
+    def write(self) -> Path:
+        """Кладёт конфиг приложения в рабочий каталог стенда."""
+
+    @abstractmethod
+    def env(self) -> dict[str, str]:
+        """Окружение процесса приложения."""
+
+    @abstractmethod
+    def companion(self) -> StandService | None:
+        """Приложение, которое поднимается раньше этого; None — его нет."""
 
 
 @dataclass
-class StandConfig:
+class ServiceStand(StandService):
+    """Сервис boba-mcp стенда: исполняет инструменты и держит файлы чата.
+
+    Создаётся конфигом стенда чата (StandConfig.companion): чат ходит к нему
+    клиентом MCP со входом proxy. Конфиг — рабочий конфиг сервиса с правками
+    стенда: своя база, каталог файлов вместо образов workspace, endpoint'ы
+    под профили стенда.
+    """
+
+    workdir: Path
+    app_port: int
+    db_name: str
+    sandbox: bool
+    app: StandApp = StandApp.MCP
+    url_prefix: str = ""
+
+    PROXY_SECRET: ClassVar[str] = "stand-proxy-secret"  # noqa: S105 — ключ стенда
+    """Ключ подписи входа proxy: его знают сервис и чат стенда."""
+
+    ENDPOINTS: ClassVar[Mapping[str, Sequence[str]]] = {
+        "general": ("*",),
+        "search": ("diagram_save", "canvas_open"),
+    }
+    """Endpoint'ы стенда по профилям чата: general — все инструменты,
+    search — узкий набор."""
+
+    HEADERS: ClassVar[Mapping[str, str]] = {
+        "user": "X-Remote-User",
+        "timestamp": "X-Boba-Timestamp",
+        "signature": "X-Boba-Signature",
+    }
+    ROLES_HEADER: ClassVar[str] = "X-Remote-Roles"
+
+    @property
+    def config_path(self) -> Path:
+        return self.workdir / "config.toml"
+
+    @property
+    def data_dir(self) -> Path:
+        return self.workdir / "data"
+
+    def companion(self) -> StandService | None:
+        return None
+
+    def server_name(self, endpoint: str) -> str:
+        """Имя сервера endpoint'а в секции [mcp.servers] чата."""
+        return f"boba_{endpoint}"
+
+    def server(self, endpoint: str) -> dict[str, Any]:
+        """Секция [mcp.servers.<имя>] чата для endpoint'а сервиса."""
+        location = {
+            "scheme": StandUrl.SCHEME.value,
+            "host": StandUrl.HOST.value,
+            "port": self.app_port,
+        }
+
+        return {
+            "connect_timeout_sec": 30.0,
+            "call_timeout_sec": 120.0,
+            "endpoint": {
+                "transport": "streamable-http",
+                **location,
+                "path": f"/mcp/{endpoint}",
+                "auth": {
+                    "auth": "proxy",
+                    "secret": self.PROXY_SECRET,
+                    "sign_in": {**location, "path": "/auth/proxy"},
+                    "headers": {**self.HEADERS, "roles": self.ROLES_HEADER},
+                },
+            },
+        }
+
+    def write(self) -> Path:
+        self.workdir.mkdir(parents=True, exist_ok=True)
+        base = self.app.base_config.under(REPO_ROOT)
+        with base.open("rb") as handle:
+            doc: dict[str, Any] = tomllib.load(handle)
+
+        doc["postgres"]["dbname"] = self.db_name
+        pool = doc["postgres"]["pool"]
+        pool["min_size"] = 1
+        pool["max_size"] = 6
+
+        journal_dir = self.workdir / "tool-logs"
+        journal_dir.mkdir(parents=True, exist_ok=True)
+        doc["stream_journal"]["dir"] = str(journal_dir)
+
+        if self.sandbox:
+            doc["env"]["sandbox"] = str(self.app.sandbox.under(REPO_ROOT))
+        else:
+            files_dir = self.workdir / "files"
+            files_dir.mkdir(parents=True, exist_ok=True)
+            doc["storage"]["kind"] = "local"
+            doc["storage"]["files_dir"] = str(files_dir)
+
+        endpoints: dict[str, Any] = {}
+        for name, tools in self.ENDPOINTS.items():
+            endpoints[name] = {"roles": ["*"], "tools": list(tools)}
+
+        doc["mcp"]["endpoints"] = endpoints
+        doc["mcp"]["tokens"] = {}
+        doc["auth"]["proxy"] = {
+            "type": "proxy",
+            "path": "/auth/proxy",
+            "secret": self.PROXY_SECRET,
+            "max_skew_sec": 60,
+            "allowed_clients": ["0.0.0.0/0"],
+            "require_roles": True,
+            "headers": dict(self.HEADERS),
+            "roles": {"header": {"name": self.ROLES_HEADER}},
+        }
+        doc["app"]["auth"] = ["${auth.proxy}"]
+
+        self.config_path.write_text(TomlText.dumps(doc), encoding="utf-8")
+        StandPlugins(self.app, self.sandbox).copy_to(self.workdir / "plugins")
+
+        return self.config_path
+
+    def env(self) -> dict[str, str]:
+        data_dir = self.data_dir
+        for name in ("workspace", "tool-logs", "dump", "krb"):
+            (data_dir / name).mkdir(parents=True, exist_ok=True)
+
+        env = dict(os.environ)
+        env["BOBA_BASE"] = str(self.app.base.under(REPO_ROOT))
+        env["BOBA_DATA"] = str(data_dir)
+        env["BOBA_CGROUP_BASE"] = self.app.cgroup_base
+        env["BOBA_PORT"] = str(self.app_port)
+        env["BOBA_INSTANCE_ID"] = f"stand{self.app_port}"
+        env["PGGSSENCMODE"] = "disable"
+        if self.sandbox:
+            env["BOBA_TOOL_LAUNCHER"] = "sandbox"
+        else:
+            env["BOBA_TOOL_LAUNCHER"] = "process"
+
+        env["PYTHONUNBUFFERED"] = "1"
+        env.pop("BOBA_URL_PREFIX", None)
+        env.pop("BOBA_CONFIG_PATH", None)
+        env.pop("KRB5_CLIENT_KTNAME", None)
+        env.pop("KRB5CCNAME", None)
+
+        return env
+
+
+class StandPlugins:
+    """Файлы conf/plugins приложения стенда рядом с его конфигом: загрузчик
+    требует файл на каждый установленный плагин.
+
+    Создаётся конфигом приложения на запись. У чата инструменты исполняет
+    сервис boba-mcp, поэтому включён остаётся только его собственный плагин
+    соединений; у сервиса и studio без песочницы выключены инструменты,
+    которым нужна она или внешние сервисы.
+    """
+
+    SANDBOXED: ClassVar[tuple[str, ...]] = (
+        "bash",
+        "doc",
+        "chart",
+        "web",
+        "confluence",
+        "ingest",
+        "kb",
+        "pg",
+        "ch",
+        "ora",
+        "describer",
+    )
+    """Инструменты, которым нужна песочница или внешние сервисы."""
+
+    CHAT_OWN: ClassVar[tuple[str, ...]] = ("connections",)
+    """Плагины, которые чат исполняет сам."""
+
+    def __init__(self, app: StandApp, sandbox: bool) -> None:
+        self._app = app
+        self._sandbox = sandbox
+
+    def copy_to(self, target: Path) -> None:
+        source = self._app.base_config.under(REPO_ROOT).parent / "plugins"
+        target.mkdir(parents=True, exist_ok=True)
+        for path in sorted(source.glob("*.toml")):
+            with path.open("rb") as handle:
+                doc: dict[str, Any] = tomllib.load(handle)
+
+            if not self._enabled(path.stem):
+                doc["enable"] = False
+
+            (target / path.name).write_text(TomlText.dumps(doc), encoding="utf-8")
+
+    def _enabled(self, plugin: str) -> bool:
+        if self._app is StandApp.CHAINLIT:
+            return plugin in self.CHAT_OWN
+
+        if self._sandbox:
+            return True
+
+        return plugin not in self.SANDBOXED
+
+
+@dataclass
+class StandConfig(StandService):
     """Конфиг стенда: пишет свой config.toml и env для дочернего процесса."""
 
     workdir: Path
@@ -175,21 +426,6 @@ class StandConfig:
     sandbox: bool = False
     """True — инструменты песочницы остаются включёнными: боевой путь целиком."""
 
-    SANDBOXED_TOOLS: ClassVar[tuple[str, ...]] = (
-        "bash",
-        "doc",
-        "chart",
-        "web",
-        "confluence",
-        "ingest",
-        "kb",
-        "pg",
-        "ch",
-        "ora",
-        "describer",
-    )
-    """Инструменты, которым нужна песочница или внешние сервисы."""
-
     auth: StandAuth = StandAuth.LOCAL
     """Набор провайдеров входа стенда."""
 
@@ -199,6 +435,27 @@ class StandConfig:
     mcp_servers: dict[str, dict[str, Any]] = field(default_factory=dict)
     """MCP-серверы стенда по именам, как секции [mcp.servers.<имя>]; внешние
     серверы рабочего конфига стенд не наследует."""
+
+    service_port: int = field(default_factory=free_port)
+    """Порт сервиса boba-mcp стенда чата."""
+
+    CHAT_TOOLS: ClassVar[tuple[str, ...]] = ("connection_list", "connection_search")
+    """Инструменты, которые чат исполняет сам; остальные — у сервиса boba-mcp."""
+
+    def companion(self) -> StandService | None:
+        """Сервис boba-mcp чата стенда: инструменты и файлы живут у него."""
+        return self.service()
+
+    def service(self) -> ServiceStand | None:
+        if self.app is not StandApp.CHAINLIT:
+            return None
+
+        return ServiceStand(
+            workdir=self.workdir / "mcp",
+            app_port=self.service_port,
+            db_name=self.db_name,
+            sandbox=self.sandbox,
+        )
 
     @property
     def config_path(self) -> Path:
@@ -267,25 +524,8 @@ class StandConfig:
         self._shrink_pools(doc)
 
         self.config_path.write_text(TomlText.dumps(doc), encoding="utf-8")
-        self._copy_plugins()
+        StandPlugins(self.app, self.sandbox).copy_to(self.workdir / "plugins")
         return self.config_path
-
-    def _copy_plugins(self) -> None:
-        """Файлы conf/plugins рядом с конфигом стенда: загрузчик требует файл
-        для каждого установленного плагина. Без песочницы остаются инструменты,
-        которым она не нужна."""
-        source = self.app.base_config.under(REPO_ROOT).parent / "plugins"
-        target = self.workdir / "plugins"
-        target.mkdir(parents=True, exist_ok=True)
-
-        for path in sorted(source.glob("*.toml")):
-            with path.open("rb") as handle:
-                doc: dict[str, Any] = tomllib.load(handle)
-
-            if not self.sandbox and path.stem in self.SANDBOXED_TOOLS:
-                doc["enable"] = False
-
-            (target / path.name).write_text(TomlText.dumps(doc), encoding="utf-8")
 
     @staticmethod
     def _shrink_pools(doc: MutableMapping[str, Any]) -> None:
@@ -355,20 +595,19 @@ class StandConfig:
     def _use_test_profiles(self, doc: MutableMapping[str, Any]) -> None:
         """Профили и роли стенда: фиксированные, тесты знают их наизусть.
 
-        general — все инструменты, search — узкий набор; DEV-роль не покрывает
-        canvas_open, чтобы было видно пересечение роли и профиля. Сценарий
+        general — все инструменты, search — узкий набор; DEV-роль покрывает
+        не все инструменты, чтобы было видно пересечение роли и профиля. Сценарий
         fake llm выбирается по тексту сообщения, поэтому имя модели свободно.
         """
+        # у чата роль режет только его собственные инструменты: DEV без поиска
+        # соединений; набор инструментов сервиса решает endpoint, не роль
+        own = ["connection_list"]
+        if self.app is not StandApp.CHAINLIT:
+            own = ["diagram_save", "send_file", *self.CHAT_TOOLS]
+
         doc["roles"] = {
             "ADM": {"tools": ["*"]},
-            "DEV": {
-                "tools": [
-                    "diagram_save",
-                    "send_file",
-                    "connection_list",
-                    "connection_search",
-                ]
-            },
+            "DEV": {"tools": own},
             "GST": {"tools": []},
         }
 
@@ -395,7 +634,7 @@ class StandConfig:
                 "description": "Stand profile with a narrow toolset",
                 "default": False,
                 "roles": ["*"],
-                "tools": ["diagram_save", "canvas_open"],
+                "tools": self._search_tools(),
                 "provider": "${llm.fake}",
                 "model": "fake-model-search",
                 "settings": ["user_prompt"],
@@ -410,6 +649,14 @@ class StandConfig:
 
         if self.single_profile:
             doc["profiles"] = {"general": doc["profiles"]["general"]}
+
+    def _search_tools(self) -> list[str]:
+        """Свои инструменты профиля search: у чата узкий набор отдаёт endpoint
+        сервиса, у studio — её собственные инструменты."""
+        if self.app is StandApp.CHAINLIT:
+            return []
+
+        return ["diagram_save", "canvas_open"]
 
     def _use_test_database(self, doc: MutableMapping[str, Any]) -> None:
         """Сервер и учётка — из конфига приложения; стенду — отдельная база.
@@ -436,9 +683,23 @@ class StandConfig:
         """Внешние MCP-серверы рабочего конфига стенду не нужны: набор
         инструментов сессии не должен зависеть от сети. Остаются только
         серверы, заданные самим стендом: их называет каждый профиль стенда."""
-        doc["mcp"] = {"servers": dict(self.mcp_servers)}
-        for profile in doc["profiles"].values():
-            profile["mcp"] = sorted(self.mcp_servers)
+        service = self.service()
+        servers: dict[str, dict[str, Any]] = {}
+        own: dict[str, str] = {}
+        if service is not None:
+            for endpoint in service.ENDPOINTS:
+                own[endpoint] = service.server_name(endpoint)
+                servers[own[endpoint]] = service.server(endpoint)
+
+        servers.update(self.mcp_servers)
+        doc["mcp"] = {"servers": servers}
+        for name, profile in doc["profiles"].items():
+            named: list[str] = []
+            if name in own:
+                named.append(own[name])
+
+            named.extend(sorted(self.mcp_servers))
+            profile["mcp"] = named
 
     def _use_local_auth(self, doc: MutableMapping[str, Any]) -> None:
         """Учётки и роли стенда: рабочий [auth.local] не трогаем и не наследуем."""
@@ -496,13 +757,18 @@ class StandConfig:
         env["sandbox"] = str(self.app.sandbox.under(REPO_ROOT))
 
 
+ConfigT = TypeVar("ConfigT", bound=StandService, default=StandConfig)
+
+
 @dataclass
-class StandProcess:
+class StandProcess(Generic[ConfigT]):
     """Процесс приложения стенда: живёт на время сессии тестов."""
 
-    config: StandConfig
+    config: ConfigT
     log_path: Path
     process: subprocess.Popen[bytes] | None = None
+    companion: StandProcess[StandService] | None = None
+    """Процесс приложения-спутника: поднимается раньше, гаснет позже."""
 
     COMPLAINT_MARKERS: ClassVar[tuple[str, ...]] = (
         "ERROR:",
@@ -521,6 +787,14 @@ class StandProcess:
             raise
 
     def _start(self, boot_timeout_sec: float) -> None:
+        needed = self.config.companion()
+        if needed is not None:
+            log_path = self.log_path.with_name(f"{needed.app.value}.log")
+            self.companion = StandProcess[StandService](
+                config=needed, log_path=log_path
+            )
+            self.companion.start(boot_timeout_sec)
+
         self.config.write()
         self.process = self._spawn()
         deadline = time.monotonic() + boot_timeout_sec
@@ -546,6 +820,11 @@ class StandProcess:
         )
 
     def stop(self) -> None:
+        self._stop_own()
+        if self.companion is not None:
+            self.companion.stop()
+
+    def _stop_own(self) -> None:
         if self.process is None:
             return
 

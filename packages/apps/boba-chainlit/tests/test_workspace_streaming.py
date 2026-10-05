@@ -21,6 +21,7 @@ from types import TracebackType
 from typing import Any, ClassVar, Self
 
 import pytest
+from chainlit_stand import put_bytes
 
 from boba.canvas.storage import OpenedStream
 from boba.runtime.storage import ImageStorageClient, LocalStorageConfig, StorageFactory
@@ -373,7 +374,7 @@ class TestStreamingReads:
 
             await opened.close()
 
-            await storage.upload_file("7/t1/upload/after.txt", b"lock released")
+            await put_bytes(storage, "7/t1/upload/after.txt", b"lock released")
             return (await storage.stat("7/t1/upload/after.txt")).size
 
         if asyncio.run(abandon_then_write()) != len(b"lock released"):
@@ -434,7 +435,7 @@ class TestStreamingReads:
             opened = await client.open_stream(KEY, ReadWindow.entire())
             await opened.close()
 
-            writing = client.upload_file("7/t1/upload/after.txt", b"x")
+            writing = put_bytes(client, "7/t1/upload/after.txt", b"x")
             await asyncio.wait_for(writing, self.OVERLAP_TIMEOUT_SEC)
 
             stat = await client.stat("7/t1/upload/after.txt")

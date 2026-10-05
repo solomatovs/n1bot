@@ -68,7 +68,7 @@ from boba.mcp_server.auth import (
 from boba.mcp_server.files import FileRoutes, FileUploadTool
 from boba.messaging import StreamAppended, StreamFeed
 from boba.runtime.storage import StorageClient
-from boba.toolkit.calls import CallIdPrefix
+from boba.toolkit.calls import CallIdPrefix, CallViews
 from boba.toolkit.channels import JournalChannels
 from boba.toolkit.failure import FailurePacker
 from boba.toolkit.result import ErrorResult, MarkdownResult, ToolResultBase
@@ -131,9 +131,17 @@ class RoleToolServers:
 
 class CallSchemas:
     """Схема вызова инструмента для клиента: та, что видит модель после
-    всех обвязок. Создаётся провайдером инструментов."""
+    всех обвязок, с видом аргументов для ленты клиента (CallViews).
+    Создаётся провайдером инструментов."""
+
+    def __init__(self) -> None:
+        self._views = CallViews()
 
     def of(self, tool: BaseTool) -> dict[str, Any]:
+        return self._views.marked(tool.name, self._schema(tool))
+
+    @staticmethod
+    def _schema(tool: BaseTool) -> dict[str, Any]:
         schema = tool.tool_call_schema
         if isinstance(schema, dict):
             return schema

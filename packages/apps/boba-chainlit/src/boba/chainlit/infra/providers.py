@@ -31,6 +31,7 @@ from boba.chainlit.canvas.remote import RemoteJournals
 from boba.chainlit.chat.history import CheckpointMessages, TranscriptFeed
 from boba.chainlit.chat.tracing import TracedStage
 from boba.chainlit.data import PostgresDataLayer
+from boba.chainlit.data.remote_storage import FileOwners, RemoteStorageClient
 from boba.chainlit.domain.keys import AttachmentLinks
 from boba.chainlit.infra.config import (
     AppConfig,
@@ -38,9 +39,17 @@ from boba.chainlit.infra.config import (
     DataLayerConfig,
     LocalStorageConfig,
 )
-from boba.chainlit.infra.session import ChainlitSessions, current_session
+from boba.chainlit.infra.session import (
+    ChainlitSessions,
+    current_session,
+    session_source_ref,
+)
 from boba.chainlit.rendering.chat_view import StepText
-from boba.chainlit.rendering.mount import ChatAttachments, ChatMount
+from boba.chainlit.rendering.mount import (
+    ChatAttachments,
+    ChatMount,
+    MountedToolServer,
+)
 from boba.chat.profiles import (
     AgentSettings,
     ChatProfiles,
@@ -54,6 +63,7 @@ from boba.connection_broker.sealing import SealingToolServer, SentConnections
 from boba.connection_broker.store import ConnectionsConfig
 from boba.connection_broker.user_connections import ArmedConnections
 from boba.db.postgres import AsyncPostgresPool, PostgresError, PostgresSchema
+from boba.identity.api import UserRows
 from boba.identity.context import CallContexts
 from boba.identity.errors import InternalServiceError
 from boba.identity.run import Runs
@@ -63,9 +73,9 @@ from boba.llm.schema import SchemaReply
 from boba.mcp_client.client import McpCaller, McpServers
 from boba.messaging import MessageBus
 from boba.runtime import providers as runtime
-from boba.runtime.di import Depends
+from boba.runtime.di import Container, Depends
 from boba.runtime.elements import ChatTables
-from boba.runtime.storage import StorageClient, StorageFactory
+from boba.runtime.storage import StorageClient
 from boba.runtime.users import UsersTable
 from boba.toolrun.registry import ToolRegistry
 from boba.toolrun.stream_calls import ToolServer, ToolServers
@@ -99,16 +109,37 @@ def get_local_storage_config(
     return app_config.storage
 
 
-def storage_provider(
-    cfg: Annotated[LocalStorageConfig, Depends(get_local_storage_config)],
-) -> StorageClient:
-    return StorageFactory.create(cfg)
-
-
 def chat_profiles_registry(
     app_config: Annotated[AppConfig, Depends(get_app_config)],
 ) -> ChatProfiles:
     return ChatProfiles(app_config.profiles)
+
+
+def mcp_servers_ref() -> McpServers:
+    """MCP-серверы процесса из корневого контейнера; зовётся на каждую
+    операцию с файлами."""
+    return Container.require_root("chat providers").resolved(mcp_servers)
+
+
+def user_rows_ref() -> UserRows:
+    """Строки users из корневого контейнера; зовётся на каждую операцию."""
+    return Container.require_root("chat providers").resolved(runtime.users_table)
+
+
+def file_owners(
+    profiles: Annotated[ChatProfiles, Depends(chat_profiles_registry)],
+) -> FileOwners:
+    """Владельцы файлов: по ключу объекта — пользователь и его сервер файлов."""
+    return FileOwners(session_source_ref, user_rows_ref, profiles)
+
+
+def storage_provider(
+    cfg: Annotated[LocalStorageConfig, Depends(get_local_storage_config)],
+    owners: Annotated[FileOwners, Depends(file_owners)],
+) -> StorageClient:
+    """Хранилище вложений чата: файлы лежат в workspace пользователя на
+    MCP-сервере его профиля."""
+    return RemoteStorageClient(cfg.public_prefix, owners, mcp_servers_ref)
 
 
 def session_profile(
@@ -399,6 +430,7 @@ async def langchain_agent(  # noqa: PLR0913
     contexts: Annotated[CallContexts, Depends(runtime.call_contexts)],
     mcp: Annotated[McpServers, Depends(mcp_servers)],
     journals: Annotated[CallJournals, Depends(runtime.call_journals)],
+    runs: Annotated[Runs, Depends(runtime.runs)],
     selected: Annotated[SelectedProfile, Depends(session_profile, scope="session")],
 ) -> CompiledStateGraph:
     # один порт для графа: свои серверы и MCP-серверы профиля сессии.
@@ -415,9 +447,15 @@ async def langchain_agent(  # noqa: PLR0913
     )
     ttl = timedelta(seconds=bind(raw, "connections", ConnectionsConfig).seal_ttl_sec)
 
-    ports: list[ToolServer] = []
-    for port in (registry.server(tools), *remote):
-        ports.append(SealingToolServer(port, connections, sent, ttl))
+    # тело удалённого инструмента о чате не знает: панель и вложения его
+    # результата монтирует порт-обёртка, как обвязка ChatMount у своих тел
+    mount = ChatMount(contexts, runs)
+    ports: list[ToolServer] = [
+        SealingToolServer(registry.server(tools), connections, sent, ttl)
+    ]
+    for port in remote:
+        mounted = MountedToolServer(port, mount, contexts)
+        ports.append(SealingToolServer(mounted, connections, sent, ttl))
 
     service = ToolServers(ports)
 

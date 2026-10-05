@@ -14,7 +14,7 @@ from typing import Any, cast
 from uuid import UUID
 
 import pytest
-from chainlit_stand import ChatSessionStand, FakeTurn
+from chainlit_stand import ChatSessionStand, FakeTurn, put_bytes
 from langchain_core.messages import ToolCall
 
 from boba.canvas.canvas import CanvasErrorKind, RenderVerdicts
@@ -180,7 +180,7 @@ class TestSendFile:
     async def test_attachment_reaches_the_feed(
         self, stand: Stand, http_context: None
     ) -> None:
-        await stand.storage.upload_file(f"{USER}/{THREAD}/upload/report.pdf", b"%PDF")
+        await put_bytes(stand.storage, f"{USER}/{THREAD}/upload/report.pdf", b"%PDF")
 
         result = await stand.call(
             "send_file", {"path": stand.upload_path("report.pdf")}
@@ -218,7 +218,7 @@ class TestCanvasOpen:
     async def test_png_goes_to_the_panel_and_the_feed(
         self, stand: Stand, http_context: None
     ) -> None:
-        await stand.storage.upload_file(f"{USER}/{THREAD}/upload/chart.png", PNG)
+        await put_bytes(stand.storage, f"{USER}/{THREAD}/upload/chart.png", PNG)
 
         result = await stand.call(
             "canvas_open", {"path": stand.upload_path("chart.png")}

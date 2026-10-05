@@ -9,7 +9,7 @@ from uuid import UUID
 
 import chainlit as cl
 import pytest
-from chainlit_stand import ChatSessionStand, RemoteStand
+from chainlit_stand import ChatSessionStand, RemoteStand, put_bytes
 
 from boba.canvas.canvas import (
     CanvasAction,
@@ -243,7 +243,7 @@ class TestShow:
     ) -> None:
         viewer = FakeViewer(".mmd")
         CanvasRegistry.register(viewer)
-        await storage.upload_file(f"{USER}/{THREAD}/mermaid/a.mmd", "erDiagram")
+        await put_bytes(storage, f"{USER}/{THREAD}/mermaid/a.mmd", "erDiagram")
 
         opened = await CanvasOpener().show(
             f"/workspace/{THREAD}/mermaid/a.mmd",
@@ -269,8 +269,8 @@ class TestShow:
         """
         CanvasRegistry.register(ImageViewer())
         png = b"\x89PNG\r\n\x1a\n" + bytes(8)
-        await storage.upload_file(f"{USER}/{THREAD}/upload/a.png", png)
-        await storage.upload_file(f"{USER}/{THREAD}/upload/b.png", png)
+        await put_bytes(storage, f"{USER}/{THREAD}/upload/a.png", png)
+        await put_bytes(storage, f"{USER}/{THREAD}/upload/b.png", png)
 
         shown: list[Any] = []
         titles: list[str] = []
@@ -329,7 +329,7 @@ class TestFileViewers:
         self, storage: LocalStorageClient, http_context: None
     ) -> None:
         """Тело файла не поднимается в память: элемент несёт ссылку на роут."""
-        await storage.upload_file(f"{USER}/{THREAD}/upload/график.png", self.PNG)
+        await put_bytes(storage, f"{USER}/{THREAD}/upload/график.png", self.PNG)
         key = ObjectKey.build(USER, THREAD, "график.png", "el-1")
 
         sink = ElementSink()
@@ -361,7 +361,7 @@ class TestFileViewers:
         переподключение; сессионная ссылка умирала раньше него, и картинка
         молча превращалась в битый img.
         """
-        await storage.upload_file(f"{USER}/{THREAD}/upload/график.png", self.PNG)
+        await put_bytes(storage, f"{USER}/{THREAD}/upload/график.png", self.PNG)
         key = ObjectKey.build(USER, THREAD, "график.png", "el-1")
 
         sink = ElementSink()
@@ -394,7 +394,7 @@ class TestFileViewers:
     ) -> None:
         """Сценарий из бага: bash сгенерировал png — панель обязана показать."""
         CanvasViewers.register_all()
-        await storage.upload_file(f"{USER}/{THREAD}/upload/график.png", self.PNG)
+        await put_bytes(storage, f"{USER}/{THREAD}/upload/график.png", self.PNG)
 
         opened = await CanvasOpener().show(
             f"/workspace/{THREAD}/upload/график.png",
@@ -422,7 +422,7 @@ class TestStorageWindows:
         self, storage: LocalStorageClient, body: bytes
     ) -> rendering_canvas.StorageWindows:
         object_key = f"{USER}/{THREAD}/upload/run.log"
-        await storage.upload_file(object_key, body)
+        await put_bytes(storage, object_key, body)
         return rendering_canvas.StorageWindows(storage, object_key)
 
     @pytest.mark.anyio
@@ -507,7 +507,7 @@ class TestLogViewer:
         self, storage: LocalStorageClient
     ) -> None:
         body = TestStorageWindows._body(TestStorageWindows.LINES)
-        await storage.upload_file(f"{USER}/{THREAD}/upload/run.log", body)
+        await put_bytes(storage, f"{USER}/{THREAD}/upload/run.log", body)
         key = ObjectKey.build(USER, THREAD, "run.log", "el-1")
 
         content = await rendering_canvas.LogViewer().content(key)
@@ -540,7 +540,7 @@ class TestLogViewer:
     @pytest.mark.anyio
     async def test_watch_source_sees_appends(self, storage: LocalStorageClient) -> None:
         object_key = f"{USER}/{THREAD}/upload/run.log"
-        await storage.upload_file(object_key, b"first\n")
+        await put_bytes(storage, object_key, b"first\n")
         key = ObjectKey.build(USER, THREAD, "run.log", "el-1")
 
         source = rendering_canvas.LogViewer().watch_source(key)
@@ -549,7 +549,7 @@ class TestLogViewer:
 
         first = await source.probe()
 
-        await storage.upload_file(object_key, b"first\nsecond\n", overwrite=True)
+        await put_bytes(storage, object_key, b"first\nsecond\n")
         second = await source.probe()
 
         if first is None or second is None:
@@ -574,7 +574,7 @@ class TestFileWindowAction:
     @pytest.mark.anyio
     async def test_windows_walk_the_file(self, storage: LocalStorageClient) -> None:
         body = TestStorageWindows._body(TestStorageWindows.LINES)
-        await storage.upload_file(f"{USER}/{THREAD}/upload/run.log", body)
+        await put_bytes(storage, f"{USER}/{THREAD}/upload/run.log", body)
         path = f"/workspace/{THREAD}/upload/run.log"
 
         first = await rendering_canvas.StreamActions.window(

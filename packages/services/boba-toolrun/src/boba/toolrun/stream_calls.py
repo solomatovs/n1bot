@@ -328,8 +328,16 @@ class WorkflowTool:
 
         return built
 
-    def feature(self) -> Mapping[str, object]:
-        return {"tool": self.NAME}
+    TOOL: ClassVar[str] = "tool"
+    """Ключ настроек возможности: имя инструмента-связки."""
+
+    LINKED: ClassVar[str] = "linked"
+    """Ключ настроек возможности: имена потоковых инструментов. Их вызовы
+    из одного ответа модели связывают имена каналов, поэтому клиент шлёт
+    такие вызовы одной связкой."""
+
+    def feature(self, linked: frozenset[str]) -> Mapping[str, object]:
+        return {self.TOOL: self.NAME, self.LINKED: sorted(linked)}
 
     @classmethod
     async def _never_called(cls, **kwargs: object) -> str:
@@ -346,9 +354,10 @@ class CallDag:
     Обычный вызов — DAG из одного узла с ключом tool_call_id. Потоковые
     вызовы одного ответа модели — один DAG: узел на вызов, ключ узла —
     tool_call_id вызова. Узлы вызова workflow — уже узлы описания DAG
-    (DagSpec); ключ узла заменяется на tool_call_id вызова с номером узла
-    (под ним идут журнал и шаг ленты узла), а имя, данное узлу моделью, едет
-    в title — им узел называется в текстах отказов.
+    (DagSpec); ключ узла заменяется на идентификатор вызова узла (под ним
+    идут журнал и шаг ленты узла): заданный клиентом call_id, иначе
+    tool_call_id вызова с номером узла. Имя, данное узлу моделью, едет в
+    title — им узел называется в текстах отказов.
     """
 
     NODES: ClassVar[str] = "nodes"
@@ -403,9 +412,11 @@ class CallDag:
 
     def _nodes(self, call_id: str, described: DagSpec) -> Iterator[DagNode]:
         for index, node in enumerate(described.nodes):
-            yield node.model_copy(
-                update={"key": f"{call_id}_{index}", "title": node.key}
-            )
+            key = node.call_id
+            if not key:
+                key = f"{call_id}_{index}"
+
+            yield node.model_copy(update={"key": key, "title": node.key})
 
     @staticmethod
     def id_of(call: ToolCall) -> str:
@@ -542,7 +553,7 @@ class LocalDagService(ToolServer):
             declared.update(rule.features())
 
         if self._workflow is not None:
-            declared[WorkflowTool.FEATURE] = self._workflow.feature()
+            declared[WorkflowTool.FEATURE] = self._workflow.feature(self._linked_names)
 
         return declared
 

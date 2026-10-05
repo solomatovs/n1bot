@@ -9,6 +9,7 @@ import pytest
 from pydantic import BaseModel, Field, SecretStr
 
 from boba.toolkit.calls import (
+    CallViews,
     ToolCallBase,
     ToolCallModels,
 )
@@ -155,3 +156,42 @@ class TestDeclaredCallClass:
             def bad(call: BashCall, extra: str) -> MarkdownResult:
                 """Bad."""
                 return MarkdownResult(text=extra)
+
+
+class TestViewsTravelWithTheSchema:
+    """Вид аргументов едет со схемой инструмента: клиент без кода инструмента
+    рисует вход шага так же, как процесс, где инструмент объявлен."""
+
+    ARGS: dict[str, object] = {
+        "sql": "select 1",
+        "connection_name": "main",
+        "top_k": 7,
+        "intent": "count the rows",
+        "stdin": "",
+    }
+
+    def test_remote_call_is_shown_like_the_local_one(self) -> None:
+        ToolCallModels.register("remote_probe", Args)
+        views = CallViews()
+        schema = views.marked("remote_probe", Args.model_json_schema())
+
+        model = views.model_of("remote_probe", schema)
+        if model is None:
+            raise AssertionError(f"the schema carries the views: {schema}")
+
+        local = ToolCallModels.call_of("remote_probe", self.ARGS).chat_view().markdown
+        ToolCallModels.register("remote_probe", model)
+        remote = ToolCallModels.call_of("remote_probe", self.ARGS).chat_view().markdown
+        if remote != local:
+            raise AssertionError(f"same step input:\n{remote}\n---\n{local}")
+        if "```sql" not in remote:
+            raise AssertionError(f"the declared display draws the value: {remote}")
+
+    def test_schema_without_the_mark_gives_no_model(self) -> None:
+        if CallViews().model_of("foreign", {"type": "object"}) is not None:
+            raise AssertionError("a foreign tool has no call model")
+
+    def test_tool_without_a_call_model_is_left_unmarked(self) -> None:
+        schema = CallViews().marked("no_such_tool_here", {"type": "object"})
+        if CallViews.MARK in schema:
+            raise AssertionError(f"nothing to say about an unknown tool: {schema}")

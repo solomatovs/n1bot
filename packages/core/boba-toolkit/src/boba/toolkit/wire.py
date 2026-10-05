@@ -76,11 +76,14 @@ class FilesFeature(StrEnum):
     PATH — путь маршрута файлов на сервере: файл области лежит на
     `{PATH}/{scope}/{dir}/{name}` (PUT — запись потоком, GET — чтение с
     Range, HEAD — размер и версия, DELETE — удаление). UPLOAD — имя
-    инструмента, которым модель узнаёт адрес загрузки файла."""
+    инструмента, которым модель узнаёт адрес загрузки файла. WORKSPACE —
+    каталог workspace глазами инструментов сервера: пути файлов в их
+    результатах начинаются с него."""
 
     ID = "com.boba/files"
     PATH = "path"
     UPLOAD = "upload"
+    WORKSPACE = "workspace"
 
 
 class JournalRead(BaseModel):

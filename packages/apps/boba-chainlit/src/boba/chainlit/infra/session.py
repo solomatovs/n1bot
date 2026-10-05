@@ -15,9 +15,10 @@ InternalServiceError — контекст вызова не собрать: у �
 from __future__ import annotations
 
 import logging
-from collections.abc import Awaitable, Mapping
+from abc import abstractmethod
+from collections.abc import Awaitable, Mapping, Sequence
 from pathlib import Path
-from typing import Any, ClassVar, cast
+from typing import Any, ClassVar, Protocol, cast
 from uuid import UUID
 
 import chainlit as cl
@@ -312,7 +313,17 @@ class ChainlitSession(Session):
         return SignInMetadata.parse(cls.metadata_of(user)).profiles
 
 
-class ChainlitSessions(SessionSource, LiveSessions):
+class OwnerSessions(Protocol):
+    """Живые сессии пользователя на этом инстансе: по ним хранилище файлов
+    узнаёт, от чьего имени и в каком профиле пользователь сейчас работает.
+    Реализует ChainlitSessions."""
+
+    @abstractmethod
+    def of_user(self, user_id: UUID) -> Sequence[ChainlitSession]:
+        """Все вкладки пользователя; без живых сессий — пусто."""
+
+
+class ChainlitSessions(SessionSource, LiveSessions, OwnerSessions):
     """Источник сессий chainlit: контекст вызова, реестр сокетов и тред."""
 
     _installed: ClassVar[ChainlitSessions | None] = None
@@ -409,7 +420,7 @@ class ChainlitSessions(SessionSource, LiveSessions):
 
         return found
 
-    def of_user(self, user_id: UUID) -> list[ChainlitSession]:
+    def of_user(self, user_id: UUID) -> Sequence[ChainlitSession]:
         """Живые сессии пользователя на этом инстансе: все его вкладки."""
         found: list[ChainlitSession] = []
         for session in list(ws_sessions_id.values()):
