@@ -502,9 +502,19 @@ CMD ["-m", "boba.studio", "--config", "/app/boba/conf/config.toml"]
 
 # --- boba-mcp: MCP-сервер с инструментами boba -------------------------------------
 
-# образ сервиса: конфиг и данные приходят деревом compose/mcp, образы корней
-# плагинов и workspace монтируются из src/sandbox
-FROM runtime-sandbox AS runtime-mcp
+# образы корней плагинов и шаблон workspace внутри образа: снаружи приложению нужны
+# только конфиг и данные, и пересборка плагинов не меняет файлы под живым контейнером.
+# Собирает их make plugin-rootfs-all и make sandbox до этой стадии
+FROM runtime-sandbox AS runtime-plugins
+
+ARG BOBA_DIR=/app/boba
+
+COPY --chown=root:root --chmod=0644 build/src/sandbox/workspace.ext4  ${BOBA_DIR}/sandbox/workspace.ext4
+COPY --chown=root:root build/src/sandbox/plugins/                     ${BOBA_DIR}/sandbox/plugins/
+
+
+# образ сервиса: снаружи приходят конфиг и данные деревом compose/mcp
+FROM runtime-plugins AS runtime-mcp
 
 ARG BOBA_UID=1000
 ARG BOBA_GID=1000

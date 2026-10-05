@@ -56,6 +56,8 @@ HEALTH_mcp       := /health
 PORT_mcp         := 8650
 PREFIX_mcp       :=
 SANDBOX_mcp      := yes
+# образы корней плагинов и шаблон workspace лежат внутри образа приложения
+EMBED_mcp        := yes
 CGROUP_mcp       := boba-sandbox-mcp
 MODELS_mcp       := fastembed rapidocr
 PARTS_mcp        :=
@@ -68,6 +70,7 @@ APP_HEALTH        = $(HEALTH_$(APP))
 APP_PORT          = $(PORT_$(APP))
 APP_PREFIX        = $(PREFIX_$(APP))
 APP_SANDBOX       = $(SANDBOX_$(APP))
+APP_EMBED         = $(EMBED_$(APP))
 APP_CGROUP        = $(CGROUP_$(APP))
 APP_MODELS        = $(MODELS_$(APP))
 # юнит systemd: приложению с песочницей нужны устройства, namespaces и делегирование cgroup
@@ -231,6 +234,8 @@ SANDBOX_PARTS   := $(SANDBOX_DIR)/third/bin/bwrap $(SANDBOX_DIR)/third/bin/fuse2
                    $(SANDBOX_DIR)/workspace.ext4
 # библиотеки времени исполнения колёс: нужны любому приложению
 RUNTIME_LIBS    := $(SANDBOX_DIR)/third/lib/libstdc++.so.6 $(SANDBOX_DIR)/third/lib/libgcc_s.so.1
+# образы корней всех плагинов репозитория
+PLUGIN_IMAGES    = $(PLUGIN_PACKAGES:%=$(SANDBOX_DIR)/plugins/%/rootfs.ext4)
 # приложения, которые исполняют инструменты в песочнице
 SANDBOX_APPS    := $(foreach app,$(APPS),$(if $(SANDBOX_$(app)),$(app)))
 # mke2fs из сборки: им make делает workspace.ext4 и rootfs плагинов вне docker build
@@ -376,7 +381,8 @@ define HELP
   web-dev               vite dev-сервер страницы workflow на 127.0.0.1:$(WEB_DEV_PORT); STOP=1 — остановить
 
 По приложению: APP=<$(APPS)> либо <цель>-<приложение>; без APP — все приложения
-  build                 образ boba-<приложение>:$(BOBA_TAG)
+  build                 образ boba-<приложение>:$(BOBA_TAG); в образ mcp уезжают образы корней
+                        плагинов и шаблон workspace из src/sandbox
   test                  проверка релиза внутри образа
   dev                   рантайм в $(SRC_DIR)/compose/<приложение> из src/ для отладки и compose
   release               дерево установки из образа -> $(RELEASE_DIR)/$(VERSION)/<приложение>;
@@ -695,11 +701,24 @@ endef
 
 build: version-check
 	@$(call check,$(INPUTS),запусти: make fetch)
+	if [ -n "$(APP_EMBED)" ]; then
+	    $(call check,$(SANDBOX_DIR)/workspace.ext4,запусти: make sandbox)
+	    $(call check,$(PLUGIN_IMAGES),запусти: make plugin-rootfs-all)
+	    # в образ уезжает каталог целиком: образ плагина, которого больше нет, там лишний
+	    for dir in "$(SANDBOX_DIR)/plugins"/*/; do
+	        name=$$(basename "$$dir")
+	        case " $(PLUGIN_PACKAGES) " in
+	            *" $$name "*) ;;
+	            *) echo "$$dir: в репозитории нет плагина $$name — удали каталог" >&2; exit 1 ;;
+	        esac
+	    done
+	fi
 	echo "== образ $(IMAGE), релиз внутри него лежит в $(DEST_DIR) =="
 	$(call docker-stage,$(APP_STAGE),$(IMAGE),--tag boba-$(APP):latest $(APP_ARGS))
 
 # бинды образов песочницы для проверки приложения, которое исполняет инструменты
-TEST_SANDBOX_BINDS = -v "$(SANDBOX_DIR)/plugins:$(DEST_DIR)/sandbox/plugins:ro" \
+TEST_SANDBOX_BINDS = $(if $(APP_EMBED),,$(TEST_SANDBOX_MOUNTS))
+TEST_SANDBOX_MOUNTS = -v "$(SANDBOX_DIR)/plugins:$(DEST_DIR)/sandbox/plugins:ro" \
                      -v "$(SANDBOX_DIR)/workspace.ext4:$(DEST_DIR)/sandbox/workspace.ext4:ro"
 
 # проверка релиза внутри образа тем же окружением, что уедет в compose и systemd
@@ -713,7 +732,8 @@ test: build
 	env_file=$$(mktemp)
 	trap 'rm -f "$$env_file"' EXIT
 	$(call app-env,$(DEST_DIR),$(DEST_DIR)/data) > "$$env_file"
-	# модели и песочница в образе не лежат, в релизе они рядом: подставляем их биндами
+	# модели в образе не лежат, песочница — только у приложения с плагинами внутри;
+	# в релизе они рядом: подставляем их биндами
 	docker run --rm -i --env-file "$$env_file" --entrypoint sh                              \
 	    $(foreach model,$(APP_MODELS),-v "$(DEPS_DIR)/$(model):$(DEST_DIR)/models/$(model):ro") \
 	    $(if $(APP_SANDBOX),$(TEST_SANDBOX_BINDS))                                            \
@@ -731,7 +751,8 @@ release:
 	rm -rf "$(OUT)"
 	mkdir -p "$(OUT)/conf" "$(OUT)/models"
 	$(call image-copy,$(RELEASE_IMAGE),$(DEST_DIR)/.,$(OUT)/)
-	if [ -n "$(APP_SANDBOX)" ]; then
+	# у приложения с образами плагинов внутри sandbox/ уже приехал из образа
+	if [ -n "$(APP_SANDBOX)" ] && [ -z "$(APP_EMBED)" ]; then
 	    mkdir -p "$(OUT)/sandbox"
 	    cp -a "$(SANDBOX_DIR)/plugins" "$(OUT)/sandbox/plugins"
 	    cp -a "$(SANDBOX_DIR)/workspace.ext4" "$(OUT)/sandbox/workspace.ext4"
@@ -775,8 +796,9 @@ dev: web-$(APP)
 	rm -rf "$(OUT)/sandbox"
 	$(call refill,$(OUT)/third)
 	cp -al "$(SANDBOX_DIR)/third/lib" "$(OUT)/third/lib"
-	# образы песочницы compose монтирует из src/sandbox; bwrap и fuse2fs нужны и
-	# process-режиму отладки: хранилище файлов монтирует ими workspace.ext4
+	# образы песочницы лежат в образе приложения либо монтируются compose из
+	# src/sandbox; bwrap и fuse2fs нужны и process-режиму отладки: хранилище файлов
+	# монтирует ими workspace.ext4
 	if [ -n "$(APP_SANDBOX)" ]; then
 	    mkdir -p "$(OUT)/data/workspace" "$(OUT)/data/tool-logs"
 	    install -m 0755 "$(CONF_DIR)/cgroup-init.sh" "$(OUT)/cgroup-init.sh"
