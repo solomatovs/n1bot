@@ -79,7 +79,6 @@ from boba.runtime.storage import StorageClient
 from boba.runtime.users import UsersTable
 from boba.toolrun.registry import ToolRegistry
 from boba.toolrun.stream_calls import ToolServer, ToolServers
-from boba.toolrun.streams import CallJournals
 
 
 def get_app_config() -> AppConfig:
@@ -119,6 +118,11 @@ def mcp_servers_ref() -> McpServers:
     """MCP-серверы процесса из корневого контейнера; зовётся на каждую
     операцию с файлами."""
     return Container.require_root("chat providers").resolved(mcp_servers)
+
+
+def remote_journals_ref() -> RemoteJournals:
+    """Реестр журналов вызовов MCP-серверов из корневого контейнера."""
+    return Container.require_root("chat providers").resolved(remote_journals)
 
 
 def user_rows_ref() -> UserRows:
@@ -238,6 +242,14 @@ async def langchain_checkpoint_saver(
     return saver
 
 
+def remote_journals(
+    contexts: Annotated[CallContexts, Depends(runtime.call_contexts)],
+    saver: Annotated[BaseCheckpointSaver, Depends(langchain_checkpoint_saver)],
+) -> RemoteJournals:
+    """Реестр журналов вызовов, исполненных MCP-серверами, на процесс."""
+    return RemoteJournals(contexts, CheckpointMessages(saver))
+
+
 async def chainlit_data_layer(  # noqa: PLR0913 — слой данных собирается всеми зависимостями сразу
     cfg: Annotated[DataLayerConfig, Depends(get_data_layer_config)],
     storage_cfg: Annotated[LocalStorageConfig, Depends(get_local_storage_config)],
@@ -246,7 +258,7 @@ async def chainlit_data_layer(  # noqa: PLR0913 — слой данных соб
     bus: Annotated[MessageBus, Depends(runtime.message_bus)],
     users: Annotated[UsersTable, Depends(runtime.users_table)],
     sessions: Annotated[SessionSource, Depends(session_source)],
-    journals: Annotated[CallJournals, Depends(runtime.call_journals)],
+    streamable: Annotated[RemoteJournals, Depends(remote_journals)],
 ) -> PostgresDataLayer:
     """Слой данных чата на общем пуле процесса: схему таблицы ставят в запрос."""
     pool = await AsyncPostgresPool.get(cfg.postgres)
@@ -259,11 +271,10 @@ async def chainlit_data_layer(  # noqa: PLR0913 — слой данных соб
         elements=tables.elements,
         feedbacks=tables.feedbacks,
         storage=storage,
-        feed=TranscriptFeed(CheckpointMessages(saver), journals),
+        feed=TranscriptFeed(CheckpointMessages(saver), streamable),
         links=AttachmentLinks(storage_cfg.public_prefix),
         sessions=sessions,
         bus=bus,
-        journals=journals,
     )
 
 
@@ -387,14 +398,6 @@ def sent_connections() -> SentConnections:
     return SentConnections()
 
 
-def remote_journals(
-    contexts: Annotated[CallContexts, Depends(runtime.call_contexts)],
-    saver: Annotated[BaseCheckpointSaver, Depends(langchain_checkpoint_saver)],
-) -> RemoteJournals:
-    """Реестр журналов вызовов, исполненных MCP-серверами, на процесс."""
-    return RemoteJournals(contexts, CheckpointMessages(saver))
-
-
 async def mcp_servers(
     c: Annotated[AppConfig, Depends(get_app_config)],
     storage: Annotated[StorageClient, Depends(storage_provider)],
@@ -429,7 +432,7 @@ async def langchain_agent(  # noqa: PLR0913
     sent: Annotated[SentConnections, Depends(sent_connections)],
     contexts: Annotated[CallContexts, Depends(runtime.call_contexts)],
     mcp: Annotated[McpServers, Depends(mcp_servers)],
-    journals: Annotated[CallJournals, Depends(runtime.call_journals)],
+    journals: Annotated[RemoteJournals, Depends(remote_journals)],
     runs: Annotated[Runs, Depends(runtime.runs)],
     selected: Annotated[SelectedProfile, Depends(session_profile, scope="session")],
 ) -> CompiledStateGraph:

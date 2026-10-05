@@ -40,12 +40,12 @@ from boba.chainlit.rendering.chat_view import (
     RecordingSink,
     StepRole,
     StepText,
+    StreamableTools,
     TurnDraft,
 )
 from boba.toolkit.calls import CallIdPrefix
 from boba.toolkit.dag import WorkflowResult
 from boba.toolkit.result import ToolArtifact
-from boba.toolrun.streams import CallJournals
 from chainlit.data.base import BaseDataLayer
 from chainlit.step import StepDict
 
@@ -140,7 +140,7 @@ class TranscriptFeed:
     зависит от слоя данных, зависимость идёт в обратную сторону.
     """
 
-    def __init__(self, messages: ThreadMessages, journals: CallJournals) -> None:
+    def __init__(self, messages: ThreadMessages, journals: StreamableTools) -> None:
         self._messages = messages
         self._journals = journals
 

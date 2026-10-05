@@ -807,6 +807,37 @@ class TestBobaMcpJournal:
         if window.size != stdout[-1].size or not window.closed:
             raise AssertionError(f"the window agrees with the signal: {window}")
 
+    async def test_journal_channel_is_downloaded_whole_and_by_range(
+        self, boba_mcp_stand: BobaMcpStand
+    ) -> None:
+        server = await self._opened(boba_mcp_stand, DroppedSignals())
+        try:
+            call = _call("fake_echo", text="hi", repeat=2)
+            message = await server.call(call)
+            address = JournalAddresses().of(message)
+            files = server.journal_files()
+            if address is None or files is None:
+                raise AssertionError(f"the journal is addressable: {message}")
+
+            rel = f"{address.run}/{call['id']}/{ToolChannel.STDOUT.value}"
+            whole = await files.relay(rel, "")
+            body = b"".join([chunk async for chunk in whole.chunks])
+            await whole.release()
+            part = await files.relay(rel, "bytes=0-3")
+            head = b"".join([chunk async for chunk in part.chunks])
+            await part.release()
+            with pytest.raises(StorageNotFoundError):
+                await files.relay(f"{address.run}/ghost/stdout", "")
+        finally:
+            await server.close()
+
+        if whole.status != 200 or b"echo progress: hi" not in body:
+            raise AssertionError(f"the channel is downloaded whole: {body[:200]!r}")
+        if "attachment" not in whole.headers.get("content-disposition", ""):
+            raise AssertionError(f"the server names the file: {whole.headers}")
+        if part.status != 206 or head != body[:4]:
+            raise AssertionError(f"a range is relayed as 206: {part.status} {head!r}")
+
     async def test_missing_journal_is_no_window(
         self, boba_mcp_stand: BobaMcpStand
     ) -> None:

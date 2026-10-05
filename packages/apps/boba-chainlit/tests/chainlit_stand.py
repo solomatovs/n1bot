@@ -1,6 +1,9 @@
 """Общие фикстуры для тестов PostgresDataLayer."""
 
 import os
+import socket
+import subprocess
+import sys
 import time
 from collections.abc import (
     AsyncIterator,
@@ -10,16 +13,17 @@ from collections.abc import (
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, ClassVar
-from uuid import UUID, uuid4
+from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
 import pytest
 from chainlit.step import StepDict
 from chainlit.user import PersistedUser
 from chainlit.user import User as ChainlitUser
-from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
 from psycopg import sql
 
 from boba.auth import JwtTokens
+from boba.canvas.journal import StreamSlice
 from boba.canvas.keys import WorkspaceMount
 from boba.chainlit.agent.bridge import ChatModelBridge
 from boba.chainlit.canvas.remote import RemoteJournals, RemoteStreams
@@ -61,6 +65,7 @@ from boba.krb.seal import SsoTickets, TicketSealer
 from boba.llm.providers import ChatModelConfig, LlmProviders, LlmProviderTypes
 from boba.mcp_client.client import (
     DroppedSignals,
+    JournalAddress,
     McpCaller,
     McpServers,
     McpServersConfig,
@@ -75,6 +80,8 @@ from boba.stand.signin import SignInStand
 from boba.stand_core.context import CallStand, StandIdentity
 from boba.stand_core.fakes import FakeSecret as FakeSecret
 from boba.stand_core.fakes import FakeUrl as FakeUrl
+from boba.toolkit.channels import JournalChannel
+from boba.toolkit.wire import JournalSignal
 from boba.toolrun.streams import CallJournals
 
 AUTH_USER = "test-user"
@@ -90,18 +97,181 @@ class FakeThreadMessages(ThreadMessages):
         return self.by_thread.get(thread_id, [])
 
 
+class ServiceProcess:
+    """Стенд сервиса boba-mcp отдельным процессом; вход — proxy."""
+
+    STAND: ClassVar[Path] = (
+        Path(__file__).resolve().parents[4]
+        / "packages/apps/boba-mcp/tests/service_stand.py"
+    )
+    SECRET: ClassVar[str] = "stand-proxy-secret"
+
+    TOKEN: ClassVar[str] = "dev-token"
+    """Готовый токен стенда: пользователь alice с ролью dev."""
+
+    OWNER: ClassVar[str] = str(uuid5(NAMESPACE_URL, "boba-mcp:alice"))
+    """Под этим id сервис держит журналы и файлы пользователя токена TOKEN."""
+
+    def __init__(self, workdir: Path) -> None:
+        self.journal_dir = workdir / "journal"
+        """Каталог журналов вызовов стенда сервиса."""
+        with socket.socket() as probe:
+            probe.bind(("127.0.0.1", 0))
+            self.port = int(probe.getsockname()[1])
+
+        self._process = subprocess.Popen(
+            [sys.executable, str(self.STAND), str(self.port), str(workdir)]
+        )
+
+    def await_listening(self) -> None:
+        deadline = time.monotonic() + 60.0
+        while time.monotonic() < deadline:
+            try:
+                with socket.create_connection(("127.0.0.1", self.port), timeout=1.0):
+                    return
+            except OSError:
+                time.sleep(0.2)
+
+        raise AssertionError(f"the service did not listen on port {self.port}")
+
+    def servers(self) -> McpServersConfig:
+        location = {"scheme": "http", "host": "127.0.0.1", "port": self.port}
+        endpoint = {
+            "transport": "streamable-http",
+            **location,
+            "path": "/mcp/service",
+            "auth": {
+                "auth": "proxy",
+                "secret": self.SECRET,
+                "sign_in": {**location, "path": "/auth/proxy"},
+                "headers": {
+                    "user": "X-Remote-User",
+                    "timestamp": "X-Boba-Timestamp",
+                    "signature": "X-Boba-Signature",
+                    "roles": "X-Remote-Roles",
+                },
+            },
+        }
+        server = {
+            "endpoint": endpoint,
+            "connect_timeout_sec": 30.0,
+            "call_timeout_sec": 60.0,
+        }
+
+        return McpServersConfig.model_validate({"servers": {"boba": server}})
+
+    def token_servers(self, name: str) -> McpServersConfig:
+        """Секция [mcp.servers] с одним сервером name: вход готовым токеном."""
+        server = {
+            "endpoint": {
+                "transport": "streamable-http",
+                "scheme": "http",
+                "host": "127.0.0.1",
+                "port": self.port,
+                "path": "/mcp/service",
+                "auth": {"auth": "bearer", "token": self.TOKEN},
+            },
+            "connect_timeout_sec": 30.0,
+            "call_timeout_sec": 60.0,
+        }
+
+        return McpServersConfig.model_validate({"servers": {name: server}})
+
+    def stop(self) -> None:
+        self._process.terminate()
+        self._process.wait(timeout=10)
+
+
+class PerCallStreams(RemoteStreams):
+    """RemoteStreams тестов панели: на каждое чтение свой клиент MCP.
+
+    Тесты зовут действия панели отдельными asyncio.run, а подключение
+    клиента живёт в цикле событий, где открыто: общий клиент второй вызов
+    не пережил бы. Реестр журналов при этом один на стенд.
+    """
+
+    def __init__(
+        self, journals: RemoteJournals, contexts: CallContexts, caller: McpCaller
+    ) -> None:
+        self._contexts = contexts
+        self._config = McpServersConfig(servers={})
+        super().__init__(journals, self._client(), caller)
+
+    def serve(self, config: McpServersConfig) -> None:
+        """Серверы, с которых дальше читаются журналы."""
+        self._config = config
+
+    def _client(self) -> McpServers:
+        return McpServers(self._config, NamedBlocks(), DroppedSignals(), self._contexts)
+
+    async def slice_at(
+        self, thread_id: str, call_id: str, channel: JournalChannel, offset: int
+    ) -> StreamSlice | None:
+        self._servers = self._client()
+        await self._servers.start()
+        try:
+            return await super().slice_at(thread_id, call_id, channel, offset)
+        finally:
+            await self._servers.stop()
+
+    async def slice_before(
+        self, thread_id: str, call_id: str, channel: JournalChannel, end: int
+    ) -> StreamSlice | None:
+        self._servers = self._client()
+        await self._servers.start()
+        try:
+            return await super().slice_before(thread_id, call_id, channel, end)
+        finally:
+            await self._servers.stop()
+
+
 class RemoteStand:
-    """Журналы вызовов MCP-серверов для тестов панели: клиент без серверов и
-    тред без истории, поэтому любой вызов — свой, не удалённый."""
+    """Журналы вызовов MCP-серверов для тестов панели.
+
+    Без сервиса (serve() не звали) серверов нет и любой журнал не найден.
+    Тест с сервисом зовёт serve() и называет вызовы, чьи журналы лежат на
+    сервере, через recorded() — так адрес журнала хранит история треда.
+    """
+
+    SERVER: ClassVar[str] = "boba"
 
     def __init__(self) -> None:
         contexts = CallContexts()
-        journals = RemoteJournals(contexts, FakeThreadMessages())
-        servers = McpServers(
-            McpServersConfig(servers={}), NamedBlocks(), DroppedSignals(), contexts
-        )
+        self.history = FakeThreadMessages()
+        self.journals = RemoteJournals(contexts, self.history)
         caller = McpCaller(login=StandIdentity.LOGIN, roles=frozenset())
-        self.streams = RemoteStreams(journals, servers, caller)
+        self.streams = PerCallStreams(self.journals, contexts, caller)
+
+    def serve(self, service: ServiceProcess) -> None:
+        self.streams.serve(service.token_servers(self.SERVER))
+
+    def recorded(self, thread_id: str, call_id: str) -> None:
+        """Вызов треда исполнил сервер стенда: запуск — сам тред."""
+        message = ToolMessage(content="", tool_call_id=call_id)
+        JournalAddress(server=self.SERVER, run=thread_id).stamp(message)
+        self.history.by_thread.setdefault(thread_id, []).append(message)
+
+    def live(self, thread_id: str, call_id: str, channel: str, size: int) -> None:
+        """Сигнал роста журнала идущего вызова: канал дорос до size байт."""
+        signal = JournalSignal(
+            run=thread_id,
+            node=call_id,
+            channel=channel,
+            size=size,
+            closed=False,
+            note="",
+        )
+        self.journals.take(thread_id, self.SERVER, signal)
+
+    def forget(self) -> None:
+        """Сброс между тестами: ни истории, ни живых журналов."""
+        self.history.by_thread.clear()
+        self.journals = RemoteJournals(CallContexts(), self.history)
+        self.streams = PerCallStreams(
+            self.journals,
+            CallContexts(),
+            McpCaller(login=StandIdentity.LOGIN, roles=frozenset()),
+        )
 
 
 @dataclass
@@ -220,7 +390,6 @@ async def layer(  # noqa: PLR0913 — фикстуры теста
         links=AttachmentLinks(app_config.storage.public_prefix),
         sessions=ChainlitSessions(StandTokens()),
         bus=data_bus,
-        journals=runtime_stand.journals,
     )
     return data_layer
 
@@ -491,7 +660,7 @@ def di_root(app_config: AppConfig, runtime_stand: StandRefs) -> Iterator[None]:
     Без него ref-функции падают: отсутствие контейнера — ошибка сборки, а
     не режим работы.
     """
-    from boba.chainlit.infra.providers import session_source
+    from boba.chainlit.infra.providers import remote_journals, session_source
     from boba.runtime import providers as runtime
     from boba.runtime.di import Container
 
@@ -507,6 +676,10 @@ def di_root(app_config: AppConfig, runtime_stand: StandRefs) -> Iterator[None]:
     root.provide(runtime.call_contexts, runtime_stand.contexts)
     root.provide(runtime.runs, runtime_stand.runs)
     root.provide(runtime.call_journals, runtime_stand.journals)
+    root.provide(
+        remote_journals,
+        RemoteJournals(runtime_stand.contexts, FakeThreadMessages()),
+    )
     Container.set_root(root)
     try:
         yield

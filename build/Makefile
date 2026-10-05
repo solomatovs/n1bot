@@ -22,7 +22,7 @@ RELEASE_DIR     := $(SRC_DIR)/release
 APPS            := chainlit studio mcp
 APP             ?=
 
-PACKAGES_chainlit = boba-chainlit $(PLUGIN_PACKAGES) boba-llm-http boba-llm-onnx[generation] boba-llm-fastembed
+PACKAGES_chainlit = boba-chainlit boba-llm-http boba-llm-onnx[generation] boba-llm-fastembed
 IMPORTS_chainlit := boba.chainlit onnxruntime_genai
 MODULE_chainlit  := boba.chainlit.main
 STAGE_chainlit   := runtime-chainlit

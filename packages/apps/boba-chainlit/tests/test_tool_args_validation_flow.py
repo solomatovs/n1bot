@@ -1,6 +1,6 @@
 """Вызов инструмента с неверными аргументами внутри хода (pytest -m integration).
 
-Инструменты собираются боевым ChatPlugins.load и работают в зиготе; модель —
+Инструменты собираются боевым StandRefs.registry и работают в зиготе; модель —
 по сценарию: первый вызов без обязательного аргумента, второй правильный,
 затем ответ. Ход не прерывается: отказ валидации ложится в историю
 сообщением инструмента со статусом error, модель его видит и повторяет вызов.
@@ -27,7 +27,6 @@ from omegaconf import DictConfig
 
 from boba.chainlit.agent.flow import GraphSpec, PlainGraphBuilder
 from boba.chainlit.infra.config import AppConfig
-from boba.chainlit.infra.plugins import ChatPlugins
 from boba.chainlit.infra.providers import build_history_view
 from boba.stand.refs import StandRefs
 from boba.stand_core.context import CallStand
@@ -145,9 +144,7 @@ def session_tools(
     app_config: AppConfig,
 ) -> SessionTools:
     """Инструменты профиля, собранные боевым загрузчиком, и их порт."""
-    registry = ChatPlugins(runtime_stand.contexts, runtime_stand.runs).load(
-        raw_config, runtime_stand.none(), runtime_stand.launchers(raw_config)
-    )
+    registry = runtime_stand.registry(raw_config, runtime_stand.none())
     roles = frozenset(app_config.roles)
     tools = registry.for_session(roles, PROFILE)
 

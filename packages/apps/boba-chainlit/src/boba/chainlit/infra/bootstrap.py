@@ -41,7 +41,6 @@ from boba.runtime import providers as runtime
 from boba.runtime.config import AppName
 from boba.runtime.di import Container
 from boba.runtime.http import DomainErrorMiddleware, StaleSessionMiddleware
-from boba.runtime.plugins import EntryPointPlugins
 from boba.runtime.storage import StorageClient
 
 
@@ -67,7 +66,7 @@ def run_app(config_path: Path):
     container.provide(providers.storage_provider, storage)
     app.state.container = container
 
-    _use_stream_journal(c)
+    _use_stream_journal()
 
     _use_canvas_viewers()
 
@@ -232,19 +231,13 @@ def _use_file_serving(c: AppConfig, storage: StorageClient) -> None:
     chainlit_app.router.routes.insert(0, chainlit_app.router.routes.pop())
 
 
-def _use_stream_journal(c: AppConfig) -> None:
-    """Роут скачивания журнала; сам журнал поднимает провайдер runtime."""
-    from boba.chainlit.data.upload import (  # noqa: PLC0415
-        StreamServing,
-        UploadPolicy,
-    )
+def _use_stream_journal() -> None:
+    """Роут скачивания журнала вызова: сам журнал лежит у MCP-сервера."""
+    from boba.chainlit.data.upload import StreamServing  # noqa: PLC0415
     from boba.chainlit.domain.keys import StreamUrl  # noqa: PLC0415
     from chainlit.server import app as chainlit_app  # noqa: PLC0415
 
-    if not c.stream_journal.enable:
-        return
-
-    serving = StreamServing(c.storage, UploadPolicy(), runtime.call_journals_ref)
+    serving = StreamServing(providers.remote_journals_ref, providers.mcp_servers_ref)
     chainlit_app.add_api_route(
         StreamUrl.ROUTE, serving.serve, methods=["GET"], include_in_schema=False
     )
@@ -316,13 +309,12 @@ def _use_di_container(app: FastAPI, c: AppConfig) -> Container:
     container = Container(level="app")
     container.provide(providers.get_app_config, c)
     container.provide(runtime.get_runtime_config, c)
-    container.provide(runtime.plugin_table, EntryPointPlugins.discover)
     contexts = CallContexts()
     runs = Runs(contexts)
-    plugins = ChatPlugins(contexts, runs)
+    plugins = ChatPlugins(contexts)
+    container.provide(runtime.plugin_table, plugins.table)
     container.provide(runtime.call_contexts, contexts)
     container.provide(runtime.runs, runs)
-    container.provide(runtime.surface_hooks, plugins.surface_hooks())
     container.provide(
         runtime.own_tools, plugins.own_tools(runtime.connection_store_ref)
     )
@@ -349,6 +341,7 @@ def _use_di_container(app: FastAPI, c: AppConfig) -> Container:
     container.eager(runtime.message_bus)
     container.eager(runtime.payload_store)
     container.eager(runtime.call_ambient)
+    # своих журналов у чата нет, но реестр инструментов читает их держатель
     container.eager(runtime.call_journals)
     container.eager(runtime.kb_schema)
     container.eager(runtime.connection_store)

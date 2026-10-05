@@ -271,7 +271,6 @@ class TestFailedTurnKeepsHistory:
             sent=SentConnections(),
             contexts=call_stand.contexts,
             runs=runtime_stand.runs,
-            journals=runtime_stand.journals,
         )
 
         # контекст вызова ставится до создания задачи: она копирует его при старте
@@ -350,7 +349,6 @@ class TestPulseOfTheTurn:
             sent=SentConnections(),
             contexts=call_stand.contexts,
             runs=runtime_stand.runs,
-            journals=runtime_stand.journals,
         )
 
         with call_stand.applied(call_stand.context(THREAD)):
@@ -406,7 +404,6 @@ class TestBusyThread:
             sent=SentConnections(),
             contexts=call_stand.contexts,
             runs=runtime_stand.runs,
-            journals=runtime_stand.journals,
         )
 
         with call_stand.applied(call_stand.context(THREAD)):

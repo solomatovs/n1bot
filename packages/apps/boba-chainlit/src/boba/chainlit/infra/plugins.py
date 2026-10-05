@@ -1,64 +1,39 @@
-"""Инструменты процесса чата: таблица плагинов, обвязки поверхности и
-собственные инструменты.
+"""Собственные инструменты процесса чата: каталог соединений пользователя.
 
-Таблица — общая для процессов (entry points установленных пакетов); чат
-добавляет поверх тел обвязку ChatMount, монтирующую элементы результата в
-ленту и панель. Свои инструменты чата — каталог соединений пользователя:
-соединения хранит чат, поэтому это его собственный сервер инструментов.
+Инструменты исполняет сервис boba-mcp; у чата остаётся то, что завязано на
+его собственные данные и права: соединения хранит чат, поэтому каталог
+соединений — его собственный сервер инструментов. Плагинов инструментов чат
+не загружает.
 """
 
 from __future__ import annotations
 
-from collections.abc import Sequence
-from typing import Any
+from collections.abc import Mapping, Sequence
 
 from langchain_core.tools import BaseTool
-from omegaconf import DictConfig
 
-from boba.access import GrantCheck
-from boba.chainlit.rendering.mount import ChatMount
 from boba.connection_broker.tools import ConnectionTools
 from boba.connection_broker.user_connections import StoreRef
 from boba.identity.context import CallContexts
-from boba.identity.run import Runs
-from boba.runtime.launchers import SectionLaunchers
-from boba.runtime.plugins import ConfigGrants, EntryPointPlugins, ToolLoader
-from boba.runtime.refs import RuntimeRefs
-from boba.toolrun.registry import ToolRegistry
-from boba.toolrun.wrapping import CallHooks
+from boba.runtime.plugins import ToolPlugin
 
 __all__ = ["ChatPlugins"]
 
 
 class ChatPlugins:
-    """Загрузка реестра инструментов чата с обвязками его поверхности.
+    """Инструменты, которые чат исполняет сам.
 
-    Создаётся сборкой чата из держателя контекста вызова процесса: его
-    получают обвязка элементов результата и инструменты каталога.
+    Создаётся сборкой чата из держателя контекста вызова процесса и отдаёт
+    сборке реестра его входы: собственные инструменты и таблицу плагинов.
     """
 
-    def __init__(self, contexts: CallContexts, runs: Runs) -> None:
+    def __init__(self, contexts: CallContexts) -> None:
         self._contexts = contexts
-        self._runs = runs
-
-    def surface_hooks(self) -> Sequence[CallHooks[Any]]:
-        return (ChatMount(self._contexts, self._runs),)
 
     def own_tools(self, store_ref: StoreRef) -> Sequence[BaseTool]:
         """Собственный сервер инструментов чата: каталог соединений."""
         return ConnectionTools(store_ref, self._contexts).build()
 
-    def load(
-        self, raw_config: DictConfig, refs: RuntimeRefs, launchers: SectionLaunchers
-    ) -> ToolRegistry:
-        loader = ToolLoader(
-            raw_config,
-            EntryPointPlugins.discover(),
-            refs,
-            launchers,
-            ConfigGrants(raw_config).grants(GrantCheck.STRICT),
-            self.surface_hooks(),
-            self.own_tools(refs.connection_store),
-        )
-
-        return loader.load()
+    def table(self) -> Mapping[str, ToolPlugin]:
+        """Таблица плагинов чата: пустая, плагины исполняет сервис."""
+        return {}

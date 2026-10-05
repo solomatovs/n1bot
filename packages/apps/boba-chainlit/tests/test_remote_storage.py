@@ -3,17 +3,14 @@
 
 from __future__ import annotations
 
-import socket
-import subprocess
-import sys
-import time
 from collections.abc import AsyncIterator, Iterator, Mapping, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import Any
 from uuid import UUID
 
 import pytest
+from chainlit_stand import ServiceProcess
 
 from boba.canvas.keys import ObjectKey, ThreadDir
 from boba.canvas.storage import StorageError, StorageNotFoundError
@@ -26,7 +23,6 @@ from boba.identity.session import Login, UserMetadataField
 from boba.mcp_client.client import (
     DroppedSignals,
     McpServers,
-    McpServersConfig,
     NamedBlocks,
 )
 from boba.workspace.launcher import ReadWindow
@@ -36,63 +32,6 @@ pytestmark = [pytest.mark.anyio, pytest.mark.integration]
 REPO = Path(__file__).resolve().parents[4]
 USER = UUID("11111111-2222-4333-8444-555555555555")
 THREAD = "7a1c0d5e-2b3f-4a6b-9c8d-0e1f2a3b4c5d"
-
-
-class ServiceProcess:
-    """Стенд сервиса boba-mcp отдельным процессом; вход — proxy."""
-
-    STAND: ClassVar[Path] = REPO / "packages/apps/boba-mcp/tests/service_stand.py"
-    SECRET: ClassVar[str] = "stand-proxy-secret"
-
-    def __init__(self, workdir: Path) -> None:
-        with socket.socket() as probe:
-            probe.bind(("127.0.0.1", 0))
-            self.port = int(probe.getsockname()[1])
-
-        self._process = subprocess.Popen(
-            [sys.executable, str(self.STAND), str(self.port), str(workdir)]
-        )
-
-    def await_listening(self) -> None:
-        deadline = time.monotonic() + 60.0
-        while time.monotonic() < deadline:
-            try:
-                with socket.create_connection(("127.0.0.1", self.port), timeout=1.0):
-                    return
-            except OSError:
-                time.sleep(0.2)
-
-        raise AssertionError(f"the service did not listen on port {self.port}")
-
-    def servers(self) -> McpServersConfig:
-        location = {"scheme": "http", "host": "127.0.0.1", "port": self.port}
-        endpoint = {
-            "transport": "streamable-http",
-            **location,
-            "path": "/mcp/service",
-            "auth": {
-                "auth": "proxy",
-                "secret": self.SECRET,
-                "sign_in": {**location, "path": "/auth/proxy"},
-                "headers": {
-                    "user": "X-Remote-User",
-                    "timestamp": "X-Boba-Timestamp",
-                    "signature": "X-Boba-Signature",
-                    "roles": "X-Remote-Roles",
-                },
-            },
-        }
-        server = {
-            "endpoint": endpoint,
-            "connect_timeout_sec": 30.0,
-            "call_timeout_sec": 60.0,
-        }
-
-        return McpServersConfig.model_validate({"servers": {"boba": server}})
-
-    def stop(self) -> None:
-        self._process.terminate()
-        self._process.wait(timeout=10)
 
 
 class NoSessions(OwnerSessions):

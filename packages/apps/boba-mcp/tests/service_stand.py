@@ -39,7 +39,7 @@ from boba.identity.token import CookieSpec, SessionRenewal
 from boba.mcp_server.auth import ProxySignInRoute, SessionTokenVerifier
 from boba.mcp_server.server import CallSchemas, McpEndpoints, RunLimits
 from boba.runtime.journal import DirVault, StreamJournal
-from boba.runtime.storage import LocalStorageClient, LocalStorageConfig
+from boba.runtime.storage import LocalStorageConfig
 from boba.stand import fake_connection
 from boba.stand_core import fake_caller, fake_toolmod
 from boba.stand_core.fake_toolmod import FakeConfig
@@ -216,19 +216,17 @@ class ServiceStand:
             limits,
             "/mcp",
             [ProxySignInRoute(proxy, auth).route()],
-            LocalStorageClient(
-                LocalStorageConfig(
-                    files_dir=str(workdir / "files"),
-                    mounting=MountingConfig(
-                        mount_wait_sec=1.0,
-                        mount_poll_sec=0.1,
-                        shutdown_wait_sec=1.0,
-                        lock_wait_sec=1.0,
-                        copy_chunk_bytes=65536,
-                    ),
-                    mount_dir=str(workdir),
-                    binaries=TrustedBinaries(dirs=("/usr/bin", "/bin")),
-                )
+            LocalStorageConfig(
+                files_dir=str(workdir / "files"),
+                mounting=MountingConfig(
+                    mount_wait_sec=1.0,
+                    mount_poll_sec=0.1,
+                    shutdown_wait_sec=1.0,
+                    lock_wait_sec=1.0,
+                    copy_chunk_bytes=65536,
+                ),
+                mount_dir=str(workdir),
+                binaries=TrustedBinaries(dirs=("/usr/bin", "/bin")),
             ),
         )
 

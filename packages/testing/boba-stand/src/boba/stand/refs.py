@@ -12,8 +12,10 @@ from typing import ClassVar
 
 from omegaconf import DictConfig
 
+from boba.access import GrantCheck
 from boba.auth.credentials import KerberosCredentialSource, NoRefresh
 from boba.connection_broker.store import ConnectionStore
+from boba.connection_broker.tools import ConnectionTools
 from boba.connection_broker.user_connections import StoreRef
 from boba.connections.manifest import ConnectionTypes
 from boba.connections.sealed import SealKeys
@@ -25,6 +27,7 @@ from boba.krb.seal import SsoTickets
 from boba.messaging import MemoryMessageBus
 from boba.messaging.bus import ListenerState, StaticBusWatch
 from boba.runtime.launchers import SectionLaunchers, ToolLaunchers
+from boba.runtime.plugins import ConfigGrants, EntryPointPlugins, ToolLoader
 from boba.runtime.refs import RuntimeRefs
 from boba.toolkit.chain import CallAmbient
 from boba.toolrun.registry import ToolRegistry
@@ -71,6 +74,23 @@ class StandRefs:
         self._launchers.append(built)
 
         return built
+
+    def registry(self, raw: DictConfig, refs: RuntimeRefs) -> ToolRegistry:
+        """Реестр инструментов боевым загрузчиком: плагины установленных
+        пакетов, включённые в конфиге raw, и каталог соединений под грантами
+        ролей и профилей того же конфига. Так инструменты собирают процессы,
+        которые их исполняют: сервис — плагины, чат — каталог соединений."""
+        loader = ToolLoader(
+            raw,
+            EntryPointPlugins.discover(),
+            refs,
+            self.launchers(raw),
+            ConfigGrants(raw).grants(GrantCheck.STRICT),
+            (),
+            ConnectionTools(refs.connection_store, self.contexts).build(),
+        )
+
+        return loader.load()
 
     def stop(self) -> None:
         """Гасит способы запуска, построенные стендом: зиготы секций."""

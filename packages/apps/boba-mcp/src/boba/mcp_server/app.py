@@ -42,7 +42,7 @@ from boba.runtime import providers
 from boba.runtime.config import AppName, RuntimeConfig
 from boba.runtime.di import Container
 from boba.runtime.plugins import EntryPointPlugins
-from boba.runtime.storage import LocalStorageConfig, StorageFactory
+from boba.runtime.storage import LocalStorageConfig
 from boba.toolkit.types import StringList
 
 __all__ = ["McpAppConfig", "McpEntry", "McpHost", "McpSection", "McpToken"]
@@ -155,7 +155,7 @@ class McpHost:
                 section.limits,
                 section.path,
                 self._sign_in_routes(auth),
-                StorageFactory.create(self._config.storage),
+                self._config.storage,
             )
             listener = uvicorn.Server(
                 uvicorn.Config(

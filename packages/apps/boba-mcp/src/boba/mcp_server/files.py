@@ -32,17 +32,24 @@ from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, ValidationError
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 
+from boba.canvas.journal import StreamJournalError, StreamKey
 from boba.canvas.keys import ObjectKey, ThreadDir, WorkspaceMount
 from boba.canvas.storage import StorageFullError, StorageNotFoundError
 from boba.canvas.transfer import FileHeader, UploadPolicy
 from boba.identity.context import Scope, Subject
 from boba.mcp_server.auth import CallScopeError, CallScopes, TokenSubjects
 from boba.runtime.served import StreamedFile
-from boba.runtime.storage import StorageClient
+from boba.runtime.storage import (
+    LocalStorageClient,
+    LocalStorageConfig,
+    StorageClient,
+)
+from boba.toolkit.channels import JournalChannels
 from boba.toolkit.failure import ValidationText
 from boba.toolkit.wire import FilesFeature
+from boba.toolrun.streams import CallJournals
 
-__all__ = ["FileRoutes", "FileUploadTool"]
+__all__ = ["FileRoutes", "FileUploadTool", "JournalRoutes", "RouteCallers"]
 
 logger = logging.getLogger(__name__)
 
@@ -68,26 +75,141 @@ class FileStored(BaseModel):
     size: int = Field(ge=0)
 
 
+class RouteCallers:
+    """Вошедший по токену запроса к маршруту сервиса.
+
+    Создаётся сервером endpoint'а для маршрутов файлов и журналов. Вход MCP
+    чужие маршруты не закрывает, поэтому токен каждый запрос проверяет сам:
+    без токена или с негодным токеном — 401.
+    """
+
+    def __init__(self, verifier: TokenVerifier, subjects: TokenSubjects) -> None:
+        self._verifier = verifier
+        self._subjects = subjects
+
+    async def of(self, request: Request) -> Subject:
+        header = request.headers.get(FilePart.AUTHORIZATION.value, "")
+        if not header.lower().startswith(FilePart.BEARER.value):
+            msg = (
+                f"{request.method} {request.url.path}: expected a bearer token "
+                "of the sign-in, got none"
+            )
+            raise HTTPException(status_code=401, detail=msg)
+
+        token = header[len(FilePart.BEARER.value) :].strip()
+        access = await self._verifier.verify_token(token)
+        if access is None:
+            msg = f"{request.method} {request.url.path}: the bearer token is not valid"
+            raise HTTPException(status_code=401, detail=msg)
+
+        return self._subjects.of(access)
+
+
+class JournalRoutes:
+    """Журнал вызова целым файлом по маршруту endpoint'а.
+
+    Создаётся сервером endpoint'а из журналов процесса. Окна журнала читает
+    операция stream_read; скачать канал целиком — этот маршрут:
+    `{base}/journals/{run}/{node}/{channel}`, потоком и с Range. Журнал
+    отдаётся только тому, кто вызывал инструмент: чужой запуск — 404.
+    """
+
+    MIME: ClassVar[str] = "text/plain; charset=utf-8"
+
+    def __init__(
+        self,
+        journals: CallJournals,
+        callers: RouteCallers,
+        config: LocalStorageConfig,
+        base: str,
+    ) -> None:
+        self._journals = journals
+        self._callers = callers
+        self._config = config
+        self._base = f"{base}/journals"
+        self._policy = UploadPolicy()
+        self._files: dict[str, StreamedFile] = {}
+
+    def path(self) -> str:
+        """Путь маршрута журналов: настройка расширения журнала."""
+        return self._base
+
+    def install(self, server: FastMCP) -> None:
+        path = "/".join((self._base, "{run}", "{node}", "{channel}"))
+        server.custom_route(path, methods=["GET"])(self.get)
+
+    async def get(self, request: Request) -> Response:
+        subject = await self._callers.of(request)
+        params = request.path_params
+        run = str(params["run"])
+        node = str(params["node"])
+        store = self._journals.store
+        if store is None:
+            msg = f"GET {request.url.path}: the stream journal is disabled"
+            raise HTTPException(status_code=404, detail=msg)
+
+        channel = JournalChannels.parse_visible(str(params["channel"]))
+        if channel is None:
+            visible = ", ".join(str(item) for item in JournalChannels.VISIBLE)
+            msg = (
+                f"GET {request.url.path}: channel {params['channel']!r} is not "
+                f"downloadable, visible channels: {visible}"
+            )
+            raise HTTPException(status_code=404, detail=msg)
+
+        try:
+            key = StreamKey(user_id=subject.user_key, thread_id=run, call_id=node)
+            root = store.vault_root(key.user_id)
+        except (ValueError, StreamJournalError) as exc:
+            msg = f"GET {request.url.path}: no journal of call {node!r}: {exc}"
+            raise HTTPException(status_code=404, detail=msg) from exc
+
+        rel_log = store.log_rel_path(key, channel)
+        if rel_log is None:
+            msg = (
+                f"GET {request.url.path}: call {node!r} of run {run!r} has no "
+                f"journal on channel {channel.value!r}"
+            )
+            raise HTTPException(status_code=404, detail=msg)
+
+        disposition = f'attachment; filename="{key.call_id}.{channel}.log"'
+
+        return await self._files_for(root).respond(
+            rel_log,
+            mime=self.MIME,
+            range_header=request.headers.get("range", ""),
+            content_disposition=disposition,
+        )
+
+    def _files_for(self, root: str) -> StreamedFile:
+        files = self._files.get(root)
+        if files is not None:
+            return files
+
+        config = self._config.model_copy(update={"kind": "local", "files_dir": root})
+        files = StreamedFile(LocalStorageClient(config), self._policy)
+        self._files[root] = files
+
+        return files
+
+
 class FileRoutes:
     """Маршруты файлов workspace одного endpoint'а.
 
-    Создаётся сервером endpoint'а (McpServer) из хранилища workspace,
-    проверяющего токены и источника субъектов; install() ставит маршруты в
-    сервер fastmcp. Вход MCP чужие маршруты не закрывает, поэтому токен
-    каждый запрос проверяет сам. settings() — настройки расширения
+    Создаётся сервером endpoint'а (McpServer) из хранилища workspace и
+    разбора вошедшего (RouteCallers); install() ставит маршруты в сервер
+    fastmcp. settings() — настройки расширения
     FilesFeature, по которым клиент узнаёт адрес маршрута.
     """
 
     def __init__(
         self,
         storage: StorageClient,
-        verifier: TokenVerifier,
-        subjects: TokenSubjects,
+        callers: RouteCallers,
         base: str,
     ) -> None:
         self._storage = storage
-        self._verifier = verifier
-        self._subjects = subjects
+        self._callers = callers
         self._base = f"{base}/files"
         self._policy = UploadPolicy()
         self._files = StreamedFile(storage, self._policy)
@@ -175,7 +297,7 @@ class FileRoutes:
 
     async def _key(self, request: Request) -> ObjectKey:
         """Ключ файла в workspace вошедшего по адресу запроса."""
-        subject = await self._subject(request)
+        subject = await self._callers.of(request)
         params = request.path_params
         try:
             scope = Scope.chat(str(params[FilePart.SCOPE.value]))
@@ -199,23 +321,6 @@ class FileRoutes:
                 f"dirs {dirs}: {exc}"
             )
             raise HTTPException(status_code=400, detail=msg) from exc
-
-    async def _subject(self, request: Request) -> Subject:
-        header = request.headers.get(FilePart.AUTHORIZATION.value, "")
-        if not header.lower().startswith(FilePart.BEARER.value):
-            msg = (
-                f"{request.method} {request.url.path}: expected a bearer token "
-                "of the sign-in, got none"
-            )
-            raise HTTPException(status_code=401, detail=msg)
-
-        token = header[len(FilePart.BEARER.value) :].strip()
-        access = await self._verifier.verify_token(token)
-        if access is None:
-            msg = f"{request.method} {request.url.path}: the bearer token is not valid"
-            raise HTTPException(status_code=401, detail=msg)
-
-        return self._subjects.of(access)
 
     @staticmethod
     def _mime(key: ObjectKey) -> str:
