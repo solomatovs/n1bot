@@ -12,7 +12,7 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 from pydantic import SecretStr
 
-from boba.auth import AuthService, JwtTokens
+from boba.auth import AuthService, JwtTokens, SignIns
 from boba.auth.config import (
     HeaderRolesConfig,
     LocalRolesConfig,
@@ -106,9 +106,7 @@ async def client(
     auth = AuthService(
         tokens=JwtTokens(SECRET, 3600, "stand-generation"),
         cookie=CookieSpec(name=COOKIE, samesite="lax", ttl_sec=3600),
-        password=None,
-        sso=None,
-        proxy=SignInStand.assembly(_profiles()).proxy(proxy),
+        sign_ins=SignIns(None, None, SignInStand.assembly(_profiles()).proxy(proxy)),
         users=users,
         renewal=SessionRenewal.of(3600, 3600 * 24),
     )

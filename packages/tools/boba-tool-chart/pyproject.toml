@@ -22,7 +22,6 @@ payload = [
     "plotly>=5.24,<6",
 ]
 dev = [
-    "boba-config==0.0.26.dev4",
     "boba-runtime==0.0.26.dev4",
     "omegaconf>=2.3,<3",
     "boba-sandbox==0.0.26.dev4",

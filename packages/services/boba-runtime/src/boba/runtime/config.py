@@ -25,7 +25,7 @@ from boba.auth.config import (
 from boba.chat.profiles import ChatProfileConfig
 from boba.config import ConfigBuilder, bind
 from boba.db.postgres.connection import PostgresConfig
-from boba.identity.token import SessionRenewal
+from boba.identity.token import CookieSpec, SessionRenewal
 from boba.krb import KerberosWorkspaceConfig
 from boba.krb.seal import SsoTickets, TicketSealer
 from boba.runtime.launchers import ToolLaunchers
@@ -43,6 +43,7 @@ __all__ = [
     "MessagingConfig",
     "PageSource",
     "PostgresMessagingConfig",
+    "ProcessConfig",
     "ProcessLogging",
     "RawConfig",
     "RuntimeConfig",
@@ -51,6 +52,7 @@ __all__ = [
     "StudioConfig",
     "StudioPath",
     "StudioRuntimeConfig",
+    "TokenConfig",
 ]
 
 
@@ -402,9 +404,10 @@ class StudioPath(StrEnum):
     PAGE = "/workflow"
 
 
-class SessionConfig(BaseModel):
-    """Секция [session]: JWT и cookie входа, общие для обоих приложений — токен одного
-    принимает другое.
+class TokenConfig(BaseModel):
+    """Секция [session] процесса без браузера: подпись, срок и поколение токена
+    сессии. Базовая для SessionConfig; сама описывает [session] сервиса
+    boba-mcp, который выдаёт токен телом ответа, а не cookie.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -412,17 +415,7 @@ class SessionConfig(BaseModel):
     auth_secret: str = Field(
         min_length=1, description="Секрет JWT входа: подпись и печать билета."
     )
-    cookie: str = Field(min_length=1, description="Имя cookie входа.")
-    cookie_samesite: Literal["lax", "strict", "none"] = Field(
-        description="SameSite cookie входа; none включает Secure."
-    )
-    session_ttl_sec: int = Field(gt=0, description="Срок JWT и cookie входа.")
-    session_max_sec: int = Field(
-        gt=0,
-        description=(
-            "Потолок сессии от первого входа: дольше без нового входа не продлить."
-        ),
-    )
+    session_ttl_sec: int = Field(gt=0, description="Срок JWT входа.")
     generation: str = Field(
         default="",
         description=(
@@ -430,6 +423,37 @@ class SessionConfig(BaseModel):
             "случайное на каждый старт процесса, и рестарт разлогинивает всех; "
             "задано — общее для приложений, которые должны принимать токены "
             "друг друга."
+        ),
+    )
+
+    _process_generation: ClassVar[str] = ""
+    """Случайное поколение процесса: одно на все читатели токенов в нём."""
+
+    def session_generation(self) -> str:
+        """Поколение из конфига либо случайное, общее для процесса."""
+        if self.generation:
+            return self.generation
+
+        if not TokenConfig._process_generation:
+            TokenConfig._process_generation = secrets.token_hex(16)
+
+        return TokenConfig._process_generation
+
+
+class SessionConfig(TokenConfig):
+    """Секция [session] приложения с браузером: к токену сессии добавлены
+    cookie входа и потолок продления. Общая для чата и studio — токен одного
+    принимает другое.
+    """
+
+    cookie: str = Field(min_length=1, description="Имя cookie входа.")
+    cookie_samesite: Literal["lax", "strict", "none"] = Field(
+        description="SameSite cookie входа; none включает Secure."
+    )
+    session_max_sec: int = Field(
+        gt=0,
+        description=(
+            "Потолок сессии от первого входа: дольше без нового входа не продлить."
         ),
     )
 
@@ -448,18 +472,12 @@ class SessionConfig(BaseModel):
     def renewal(self) -> SessionRenewal:
         return SessionRenewal.of(self.session_ttl_sec, self.session_max_sec)
 
-    _process_generation: ClassVar[str] = ""
-    """Случайное поколение процесса: одно на все читатели токенов в нём."""
-
-    def session_generation(self) -> str:
-        """Поколение из конфига либо случайное, общее для процесса."""
-        if self.generation:
-            return self.generation
-
-        if not SessionConfig._process_generation:
-            SessionConfig._process_generation = secrets.token_hex(16)
-
-        return SessionConfig._process_generation
+    def cookie_spec(self) -> CookieSpec:
+        return CookieSpec(
+            name=self.cookie,
+            samesite=self.cookie_samesite,
+            ttl_sec=self.session_ttl_sec,
+        )
 
 
 class StudioConfig(BaseModel):
@@ -548,21 +566,21 @@ class ProcessLogging:
         }
 
 
-class RuntimeConfig(BaseModel):
-    """Секции [app], нужные любому процессу приложения; остальное читает сам процесс."""
+class ProcessConfig(BaseModel):
+    """Секции [app], нужные любому процессу, который исполняет инструменты и
+    принимает вход: kerberos, способы входа, токен сессии, журналы, шина.
+    Базовая для RuntimeConfig (чат, studio) и конфига сервиса boba-mcp.
+    """
 
     model_config = ConfigDict(extra="ignore")
 
     SECTION: ClassVar[str] = "app"
 
     krb: KerberosWorkspaceConfig
-    profiles: dict[str, ChatProfileConfig]
-    roles: dict[str, RoleConfig]
     auth: list[AuthConfig]
     logger: dict[str, Any] = Field(default_factory=ProcessLogging.default)
-    data_layer: DataLayerConfig
     stream_journal: StreamJournalConfig
-    session: SessionConfig
+    session: TokenConfig
     cluster: ClusterConfig
     messaging: MessagingConfig
 
@@ -645,6 +663,16 @@ class RuntimeConfig(BaseModel):
             sealer=TicketSealer(self.session.auth_secret),
             krb5_config=kerberos.delegation.krb5_config,
         )
+
+
+class RuntimeConfig(ProcessConfig):
+    """Секции [app] приложения с браузером: к секциям процесса добавлены
+    профили и роли чата, data layer и браузерная часть сессии."""
+
+    profiles: dict[str, ChatProfileConfig]
+    roles: dict[str, RoleConfig]
+    data_layer: DataLayerConfig
+    session: SessionConfig
 
 
 class StudioRuntimeConfig(RuntimeConfig):

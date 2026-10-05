@@ -8,7 +8,7 @@ from uuid import UUID
 import jwt
 import pytest
 
-from boba.auth import AuthService, JwtTokens
+from boba.auth import AuthService, JwtTokens, SignIns
 from boba.auth.config import LocalAuthConfig, LocalRoleProviders, LocalRolesConfig
 from boba.identity.admission import RoleMappingConfig
 from boba.identity.api import AuthenticatedUser, PersistedUsers, UsersUpsert
@@ -65,9 +65,7 @@ def _service(users: Users, password: bool = False) -> AuthService:
     return AuthService(
         tokens=JwtTokens(SECRET, 60, GENERATION),
         cookie=CookieSpec(name="access_token", samesite="lax", ttl_sec=60),
-        password=provider,
-        sso=None,
-        proxy=None,
+        sign_ins=SignIns(provider, None, None),
         users=users,
         renewal=SessionRenewal.of(60, 60 * 24),
     )
@@ -164,9 +162,7 @@ class TestRenew:
         return AuthService(
             tokens=JwtTokens(SECRET, ttl, GENERATION),
             cookie=CookieSpec(name="access_token", samesite="lax", ttl_sec=ttl),
-            password=None,
-            sso=None,
-            proxy=None,
+            sign_ins=SignIns(None, None, None),
             users=users,
             renewal=SessionRenewal.of(ttl, max_sec),
         )

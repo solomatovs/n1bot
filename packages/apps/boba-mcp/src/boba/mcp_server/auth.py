@@ -1,11 +1,13 @@
-"""Вход в сервис исполнения: система входа boba как есть поверх MCP.
+"""Вход в сервис исполнения: провайдер авторизации fastmcp над ядром входа boba.
 
 Способы входа, провайдеры и маппинги ролей — те же, что у чата: секции
-[auth.*] конфига сервиса и сервис входа AuthService. Первый подключённый
-способ — proxy: доверенный клиент (чат) называет логин и роли пользователя
-заголовками под подписью HMAC и получает токен сессии сервиса. Токен
-предъявляется на endpoint'ах MCP как Bearer; проверка — локальная, по
-подписи. Готовые токены секции [mcp.tokens] принимаются наравне.
+[auth.*] конфига сервиса и ядро входа SignIns. Слой сервиса —
+SessionAuthProvider: он выпускает токен сессии по итогу входа, проверяет
+его на endpoint'ах MCP как Bearer (локально, по подписи) и отдаёт fastmcp
+маршруты входа. Первый подключённый способ — proxy: доверенный клиент (чат)
+называет логин и роли пользователя заголовками под подписью HMAC. Готовые
+токены секции [mcp.tokens] принимаются наравне. Строк пользователей, cookie
+и продления сессии у сервиса нет.
 
 Ошибки:
 TokenClaimsError — токен принят, но логина и ролей вызывающего в нём нет.
@@ -33,7 +35,7 @@ from starlette.types import ASGIApp, Receive, Send
 from starlette.types import Scope as AsgiScope
 
 from boba.access import ProfileGrant
-from boba.auth import AuthService
+from boba.auth import JwtTokens, SignIns
 from boba.auth.config import ProxyAuthConfig
 from boba.identity.context import Scope, Subject
 from boba.identity.errors import AuthenticationError, AuthorizationError
@@ -47,7 +49,7 @@ __all__ = [
     "EndpointGate",
     "IssuedToken",
     "ProxySignInRoute",
-    "SessionTokenVerifier",
+    "SessionAuthProvider",
     "TokenClaim",
     "TokenClaims",
     "TokenClaimsError",
@@ -188,12 +190,59 @@ class IssuedToken(BaseModel):
     expires_in: int = Field(gt=0)
 
 
-class SessionTokenVerifier(TokenVerifier):
-    """Проверка токена на endpoint'ах MCP: токен сессии сервиса входа либо
-    готовый токен конфига.
+class ProxySignInRoute:
+    """Маршрут входа proxy: POST [auth.proxy].path.
 
-    Создаётся сборкой процесса из сервиса входа и токенов [mcp.tokens];
-    отдаётся в FastMCP(auth=…) каждого endpoint'а и воротам EndpointGate.
+    Создаётся провайдером авторизации, когда в [auth] есть proxy. Заголовки
+    доверенного клиента читает по именам из того же конфига и отдаёт ядру
+    входа; ответ — токен сессии сервиса телом JSON, клиент MCP предъявляет
+    его как Bearer.
+    """
+
+    BEARER: ClassVar[Literal["Bearer"]] = "Bearer"
+
+    def __init__(
+        self, config: ProxyAuthConfig, sign_ins: SignIns, tokens: JwtTokens
+    ) -> None:
+        self._config = config
+        self._sign_ins = sign_ins
+        self._tokens = tokens
+
+    def route(self) -> Route:
+        return Route(self._config.path, self.sign_in, methods=["POST"])
+
+    async def sign_in(self, request: Request) -> Response:
+        proxy_request = ProxyRequests.of(request, self._config.header_names())
+        try:
+            signed = await self._sign_ins.by_proxy(proxy_request)
+        except AuthenticationError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=401)
+        except AuthorizationError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=403)
+
+        logger.info(
+            "proxy sign-in [user=%s] [client=%s] [roles=%s]",
+            signed.identifier,
+            proxy_request.client,
+            ",".join(sorted(signed.sign_in.roles)),
+        )
+        issued = IssuedToken(
+            access_token=self._tokens.issue(signed),
+            token_type=self.BEARER,
+            expires_in=self._tokens.ttl_sec,
+        )
+
+        return JSONResponse(issued.model_dump(mode="json"))
+
+
+class SessionAuthProvider(TokenVerifier):
+    """Провайдер авторизации fastmcp сервиса: вход способами [auth] и проверка
+    токена сессии либо готового токена конфига.
+
+    Создаётся сборкой процесса из ядра входа SignIns, читателя токенов
+    JwtTokens, конфига proxy и токенов [mcp.tokens]; отдаётся в
+    FastMCP(auth=…) каждого endpoint'а, воротам EndpointGate и сборке
+    endpoint'ов, которая ставит его маршруты входа в корень приложения.
     Токен сессии проверяется подписью и сроком, без обращения к хранилищу.
     Клеймы login и roles читает TokenSubjects.
     """
@@ -202,15 +251,28 @@ class SessionTokenVerifier(TokenVerifier):
     CLAIM_ROLES: ClassVar[str] = "roles"
 
     def __init__(
-        self, auth: AuthService, tokens: Mapping[str, Mapping[str, Any]]
+        self,
+        sign_ins: SignIns,
+        tokens: JwtTokens,
+        proxy: ProxyAuthConfig | None,
+        static: Mapping[str, Mapping[str, Any]],
     ) -> None:
         super().__init__()
-        self._auth = auth
-        self._tokens = dict(tokens)
+        self._tokens = tokens
+        self._static = dict(static)
+        self._sign_in_routes: list[Route] = []
+        if proxy is not None:
+            self._sign_in_routes.append(
+                ProxySignInRoute(proxy, sign_ins, tokens).route()
+            )
+
+    def get_routes(self, mcp_path: str | None = None) -> list[Route]:
+        """Маршруты провайдера: штатные fastmcp и входы по [auth]."""
+        return [*super().get_routes(mcp_path), *self._sign_in_routes]
 
     async def verify_token(self, token: str) -> AccessToken | None:
         """Вызывающий по токену; None — токен не принят (401)."""
-        static = self._tokens.get(token)
+        static = self._static.get(token)
         if static is not None:
             return AccessToken(
                 token=token,
@@ -220,7 +282,7 @@ class SessionTokenVerifier(TokenVerifier):
             )
 
         try:
-            claims = self._auth.tokens.read(token)
+            claims = self._tokens.read(token)
         except TokenRejectedError as exc:
             logger.info("access token is rejected as %s: %s", exc.reason, exc)
             return None
@@ -234,48 +296,6 @@ class SessionTokenVerifier(TokenVerifier):
             expires_at=claims.exp,
             claims={self.CLAIM_LOGIN: claims.identifier, self.CLAIM_ROLES: roles},
         )
-
-
-class ProxySignInRoute:
-    """Маршрут входа proxy: POST [auth.proxy].path.
-
-    Создаётся сборкой процесса, когда в [auth] есть proxy. Заголовки
-    доверенного клиента читает по именам из того же конфига и отдаёт сервису
-    входа; ответ — токен сессии сервиса телом JSON, клиент MCP предъявляет
-    его как Bearer.
-    """
-
-    BEARER: ClassVar[Literal["Bearer"]] = "Bearer"
-
-    def __init__(self, config: ProxyAuthConfig, auth: AuthService) -> None:
-        self._config = config
-        self._auth = auth
-
-    def route(self) -> Route:
-        return Route(self._config.path, self.sign_in, methods=["POST"])
-
-    async def sign_in(self, request: Request) -> Response:
-        proxy_request = ProxyRequests.of(request, self._config.header_names())
-        try:
-            session = await self._auth.by_proxy(proxy_request)
-        except AuthenticationError as exc:
-            return JSONResponse({"error": str(exc)}, status_code=401)
-        except AuthorizationError as exc:
-            return JSONResponse({"error": str(exc)}, status_code=403)
-
-        logger.info(
-            "proxy sign-in [user=%s] [client=%s] [roles=%s]",
-            session.signed.identifier,
-            proxy_request.client,
-            ",".join(sorted(session.signed.sign_in.roles)),
-        )
-        issued = IssuedToken(
-            access_token=session.token,
-            token_type=self.BEARER,
-            expires_in=self._auth.cookie().ttl_sec,
-        )
-
-        return JSONResponse(issued.model_dump(mode="json"))
 
 
 class EndpointGate:
@@ -313,7 +333,7 @@ class EndpointGate:
             await self._app(scope, receive, send)
             return
 
-        roles = access.claims.get(SessionTokenVerifier.CLAIM_ROLES, [])
+        roles = access.claims.get(SessionAuthProvider.CLAIM_ROLES, [])
         if self._grant.visible_for(roles):
             await self._app(scope, receive, send)
             return

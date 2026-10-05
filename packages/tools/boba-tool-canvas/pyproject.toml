@@ -21,7 +21,6 @@ canvas = "boba.tool.canvas.plugin:MANIFEST"
 payload = [
 ]
 dev = [
-    "boba-config==0.0.26.dev4",
     "boba-runtime==0.0.26.dev4",
     "boba-stand==0.0.26.dev4",
     "omegaconf>=2.3,<3",

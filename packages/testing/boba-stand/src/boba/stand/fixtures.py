@@ -12,10 +12,16 @@ from omegaconf import DictConfig, OmegaConf
 from boba.config import bind
 from boba.db.postgres import AsyncPostgresPool
 from boba.db.postgres.connection import PostgresConfig
-from boba.runtime.config import ConfigLocator, RawConfig, RuntimeConfig
+from boba.runtime.config import (
+    ConfigLocator,
+    DataLayerConfig,
+    ProcessConfig,
+    RawConfig,
+    RuntimeConfig,
+)
 from boba.stand.database import TestDatabase
 from boba.stand.refs import StandRefs
-from boba.stand.site import StandLayers
+from boba.stand.site import ServiceRuntime, StandLayers
 from boba.stand.ui.stand import REPO_ROOT, StandPaths
 from boba.stand.zygote import ZygoteStand
 from boba.stand_core.context import CallStand, call_stand
@@ -113,35 +119,57 @@ def runtime_config(raw_config: DictConfig) -> RuntimeConfig:
     return bind(raw_config, path=RuntimeConfig.SECTION, model=RuntimeConfig)
 
 
+@pytest.fixture(scope="session")
+def service_runtime(service_raw_config: DictConfig) -> ServiceRuntime:
+    """Конфиг процесса сервиса boba-mcp со стендовой базой тестов."""
+    return bind(service_raw_config, path=ServiceRuntime.SECTION, model=ServiceRuntime)
+
+
+@pytest.fixture(scope="session")
+def process_config(runtime_config: RuntimeConfig) -> ProcessConfig:
+    """Секции процесса набора: по умолчанию — приложения с браузером; набор
+    над конфигом сервиса отдаёт service_runtime."""
+    return runtime_config
+
+
+@pytest.fixture(scope="session")
+def stand_data_layer(runtime_config: RuntimeConfig) -> DataLayerConfig:
+    """Сервер и схема базы тестов набора: по умолчанию — data layer
+    приложения; набор над конфигом сервиса отдаёт слой стенда."""
+    return runtime_config.data_layer
+
+
 @pytest.fixture(scope="session", autouse=True)
 def kerberos_workspace(
-    runtime_config: RuntimeConfig, tmp_path_factory: pytest.TempPathFactory
+    process_config: ProcessConfig, tmp_path_factory: pytest.TempPathFactory
 ) -> None:
     """Кэши билетов теста: тела инструментов ждут настроенный workspace."""
     from boba.krb import KerberosWorkspace  # noqa: PLC0415
 
     cache = tmp_path_factory.mktemp("krb-cache")
-    KerberosWorkspace.configure(runtime_config.krb.config, str(cache))
+    KerberosWorkspace.configure(process_config.krb.config, str(cache))
 
 
 @pytest.fixture(scope="session")
-async def test_database(runtime_config: RuntimeConfig) -> str:
-    return await TestDatabase.ensure(runtime_config.data_layer.postgres)
+async def test_database(stand_data_layer: DataLayerConfig) -> str:
+    return await TestDatabase.ensure(stand_data_layer.postgres)
 
 
 @pytest.fixture
-def test_postgres(runtime_config: RuntimeConfig, test_database: str) -> PostgresConfig:
+def test_postgres(
+    stand_data_layer: DataLayerConfig, test_database: str
+) -> PostgresConfig:
     """Профиль тестовой базы: тем, кто подключается сам, а не пулом."""
-    return TestDatabase.config_of(runtime_config.data_layer.postgres, test_database)
+    return TestDatabase.config_of(stand_data_layer.postgres, test_database)
 
 
 @pytest.fixture
 async def pool(
-    runtime_config: RuntimeConfig, test_database: str
+    stand_data_layer: DataLayerConfig, test_database: str
 ) -> AsyncIterator[AsyncPostgresPool]:
     """Пул в тестовой базе с search_path на схему хранения приложения."""
-    postgres = TestDatabase.config_of(runtime_config.data_layer.postgres, test_database)
-    p = AsyncPostgresPool(postgres.with_schema(runtime_config.data_layer.db_schema))
+    postgres = TestDatabase.config_of(stand_data_layer.postgres, test_database)
+    p = AsyncPostgresPool(postgres.with_schema(stand_data_layer.db_schema))
     await p.open()
     try:
         yield p

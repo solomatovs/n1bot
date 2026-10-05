@@ -1549,7 +1549,6 @@ dependencies = [
     { name = "boba-auth", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "boba-cancellation", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "boba-canvas", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
-    { name = "boba-chat", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "boba-connections", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "boba-identity", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "boba-messaging", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
@@ -1596,7 +1595,6 @@ requires-dist = [
     { name = "boba-auth", editable = "packages/services/boba-auth" },
     { name = "boba-cancellation", editable = "packages/core/boba-cancellation" },
     { name = "boba-canvas", editable = "packages/core/boba-canvas" },
-    { name = "boba-chat", editable = "packages/core/boba-chat" },
     { name = "boba-config", marker = "extra == 'dev'", editable = "packages/infra/config/boba-config" },
     { name = "boba-connection-broker", marker = "extra == 'dev'", editable = "packages/services/boba-connection-broker" },
     { name = "boba-connections", editable = "packages/core/boba-connections" },
@@ -2279,7 +2277,6 @@ dependencies = [
 
 [package.optional-dependencies]
 dev = [
-    { name = "boba-config", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "boba-runtime", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "boba-stand", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "omegaconf", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
@@ -2289,7 +2286,6 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "boba-canvas", editable = "packages/core/boba-canvas" },
-    { name = "boba-config", marker = "extra == 'dev'", editable = "packages/infra/config/boba-config" },
     { name = "boba-identity", editable = "packages/core/boba-identity" },
     { name = "boba-runtime", marker = "extra == 'dev'", editable = "packages/services/boba-runtime" },
     { name = "boba-stand", marker = "extra == 'dev'", editable = "packages/testing/boba-stand" },
@@ -2311,7 +2307,6 @@ dependencies = [
 
 [package.optional-dependencies]
 dev = [
-    { name = "boba-config", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "boba-runtime", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "boba-sandbox", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "boba-stand", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
@@ -2324,7 +2319,6 @@ payload = [
 
 [package.metadata]
 requires-dist = [
-    { name = "boba-config", marker = "extra == 'dev'", editable = "packages/infra/config/boba-config" },
     { name = "boba-runtime", marker = "extra == 'dev'", editable = "packages/services/boba-runtime" },
     { name = "boba-sandbox", marker = "extra == 'dev'", editable = "packages/infra/sandbox/boba-sandbox" },
     { name = "boba-stand", marker = "extra == 'dev'", editable = "packages/testing/boba-stand" },
@@ -2606,7 +2600,6 @@ dependencies = [
 
 [package.optional-dependencies]
 dev = [
-    { name = "boba-config", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "boba-db-oracle", extra = ["payload"], marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "boba-runtime", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "boba-stand", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
@@ -2619,7 +2612,6 @@ payload = [
 
 [package.metadata]
 requires-dist = [
-    { name = "boba-config", marker = "extra == 'dev'", editable = "packages/infra/config/boba-config" },
     { name = "boba-db-oracle", editable = "packages/infra/db/boba-db-oracle" },
     { name = "boba-db-oracle", extras = ["payload"], marker = "extra == 'dev'", editable = "packages/infra/db/boba-db-oracle" },
     { name = "boba-db-oracle", extras = ["payload"], marker = "extra == 'payload'", editable = "packages/infra/db/boba-db-oracle" },

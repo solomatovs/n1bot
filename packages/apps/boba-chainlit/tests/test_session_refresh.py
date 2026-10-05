@@ -13,7 +13,7 @@ import pytest
 from chainlit_stand import StandTokens
 from fastapi import Request
 
-from boba.auth import AuthService, JwtTokens
+from boba.auth import AuthService, JwtTokens, SignIns
 from boba.auth.config import LocalAuthConfig, LocalRoleProviders, LocalRolesConfig
 from boba.chainlit.auth.refresh import PageUrls, SessionRefresh
 from boba.chainlit.infra.session import ChainlitSessions
@@ -67,9 +67,7 @@ def _refresh() -> SessionRefresh:
     auth = AuthService(
         tokens=JwtTokens(secret, 60, StandTokens.GENERATION),
         cookie=CookieSpec(name=COOKIE, samesite="lax", ttl_sec=60),
-        password=SignInStand.assembly().password([config]),
-        sso=None,
-        proxy=None,
+        sign_ins=SignIns(SignInStand.assembly().password([config]), None, None),
         users=Users(),
         renewal=SessionRenewal.of(60, 3600),
     )

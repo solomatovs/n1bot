@@ -2,7 +2,7 @@
 
 `boba-mcp --config <toml>` читает конфиг, поднимает контейнер общих сервисов
 (журналы вызовов, реестр запусков, способ запуска, реестр инструментов,
-сервис входа), строит endpoint'ы MCP над реестром — по одному на профиль
+способы входа), строит endpoint'ы MCP над реестром — по одному на профиль
 конфига — и слушает адрес секции [mcp].
 
 Ошибки:
@@ -20,26 +20,19 @@ from uuid import UUID
 
 import uvicorn
 from pydantic import BaseModel, ConfigDict, Field, SecretStr
-from starlette.routing import Route
 
-from boba.access import ProfileGrant, RoleConfig
-from boba.auth import AuthService
+from boba.access import ProfileGrant
 from boba.cancellation import StopReason
-from boba.chat.profiles import ChatProfileConfig
 from boba.connections.sealed import SealKeys
 from boba.identity.context import CallContexts
-from boba.mcp_server.auth import (
-    ProxySignInRoute,
-    SessionTokenVerifier,
-    TokenClaim,
-)
+from boba.mcp_server.auth import SessionAuthProvider, TokenClaim
 from boba.mcp_server.server import (
     EndpointCatalog,
     McpEndpoints,
     RunLimits,
 )
 from boba.runtime import providers
-from boba.runtime.config import AppName, RuntimeConfig
+from boba.runtime.config import AppName, ProcessConfig
 from boba.runtime.di import Container
 from boba.runtime.plugins import EntryPointPlugins
 from boba.runtime.storage import LocalStorageConfig
@@ -94,17 +87,13 @@ class McpSection(BaseModel):
     """Токены доступа по именам записей конфига."""
 
 
-class McpAppConfig(RuntimeConfig):
-    """Секции процесса сервиса: общие секции приложения и [mcp]."""
+class McpAppConfig(ProcessConfig):
+    """Секции процесса сервиса: секции процесса, [mcp] и хранилище workspace."""
 
     mcp: McpSection
     storage: LocalStorageConfig
     """Хранилище workspace: туда пишут маршруты файлов и оттуда читают
     инструменты."""
-    profiles: dict[str, ChatProfileConfig] = Field(default_factory=dict)
-    """Профилей чата у сервиса нет: их место занимают endpoint'ы [mcp.endpoints]."""
-    roles: dict[str, RoleConfig] = Field(default_factory=dict)
-    """Грантов ролей чата у сервиса нет: роль решает только доступ к endpoint'у."""
 
 
 class McpHost:
@@ -114,7 +103,7 @@ class McpHost:
     def __init__(self, config: McpAppConfig) -> None:
         self._config = config
         self._container = Container(level="app")
-        self._container.provide(providers.get_runtime_config, config)
+        self._container.provide(providers.get_process_config, config)
         self._container.provide(providers.plugin_table, EntryPointPlugins.discover)
         self._container.provide(providers.app_name, AppName.MCP)
         self._container.provide(providers.seal_keys, SealKeys())
@@ -130,10 +119,9 @@ class McpHost:
         self._container.eager(providers.runs)
         self._container.eager(providers.call_journals)
         self._container.eager(providers.credential_source)
-        self._container.eager(providers.users_table)
         self._container.eager(providers.session_tokens)
         self._container.eager(providers.user_directory)
-        self._container.eager(providers.auth_service)
+        self._container.eager(providers.sign_ins)
         self._container.eager(providers.tool_launchers)
         self._container.eager(providers.tool_registry)
 
@@ -144,17 +132,19 @@ class McpHost:
         Container.set_root(self._container)
         await self._container.start()
         try:
-            # вход заводит строку users в схеме сервиса: таблица — своя, не чата
-            await self._container.resolved(providers.users_table).setup()
-            auth = self._container.resolved(providers.auth_service)
+            auth = SessionAuthProvider(
+                self._container.resolved(providers.sign_ins),
+                self._container.resolved(providers.session_tokens),
+                self._config.proxy(),
+                self._tokens(section),
+            )
             endpoints = McpEndpoints(
                 self._container.resolved(providers.tool_registry),
                 self._container.resolved(providers.runs),
                 self._container.resolved(providers.call_journals),
-                SessionTokenVerifier(auth, self._tokens(section)),
+                auth,
                 section.limits,
                 section.path,
-                self._sign_in_routes(auth),
                 self._config.storage,
             )
             listener = uvicorn.Server(
@@ -185,14 +175,6 @@ class McpHost:
             tokens[declared.token.get_secret_value()] = declared.claims()
 
         return tokens
-
-    def _sign_in_routes(self, auth: AuthService) -> list[Route]:
-        """Маршруты входа по [auth]: пока подключён вход proxy."""
-        routes: list[Route] = []
-        if proxy := self._config.proxy():
-            routes.append(ProxySignInRoute(proxy, auth).route())
-
-        return routes
 
 
 class McpEntry:

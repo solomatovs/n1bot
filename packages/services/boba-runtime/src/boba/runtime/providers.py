@@ -1,6 +1,8 @@
 """Общие провайдеры процессов приложения: конфиг, сторы, реестр инструментов, входы.
 
 Заглушки (get_runtime_config, plugin_table, instance_name) кладёт процесс через provide.
+Процесс без браузера (boba-mcp) кладёт вместо get_runtime_config свой
+get_process_config: провайдеры ядра читают только секции ProcessConfig.
 
 Ошибки:
 RuntimeError — контейнер не поднят или процесс не дал значение.
@@ -15,7 +17,7 @@ from langchain_core.tools import BaseTool
 from omegaconf import DictConfig
 
 from boba.access import GrantCheck, ToolGrants
-from boba.auth import AuthService, JwtTokens
+from boba.auth import AuthService, JwtTokens, SignIns
 from boba.auth.credentials import KerberosCredentialSource
 from boba.auth.sso import SpnegoGate
 from boba.chat.profiles import ChatProfiles, RolesSection
@@ -32,7 +34,6 @@ from boba.identity.locks import LiveLocks, MemoryLiveLocks, StaleLock
 from boba.identity.run import Runs
 from boba.identity.signin import ProfileCatalog
 from boba.identity.sso import RefreshSignal
-from boba.identity.token import CookieSpec
 from boba.ldap import Ldap3Directory
 from boba.messaging import (
     ListenerState,
@@ -48,6 +49,7 @@ from boba.runtime.commands import CommandRunner
 from boba.runtime.config import (
     AppName,
     LocalMessagingConfig,
+    ProcessConfig,
     RawConfig,
     RuntimeConfig,
 )
@@ -87,6 +89,14 @@ def get_runtime_config() -> RuntimeConfig:
     raise RuntimeError(msg)
 
 
+def get_process_config(
+    config: Annotated[RuntimeConfig, Depends(get_runtime_config)],
+) -> ProcessConfig:
+    """Секции процесса для провайдеров ядра: у приложения с браузером — его
+    RuntimeConfig; процесс без браузера кладёт свой конфиг через provide."""
+    return config
+
+
 def app_name() -> AppName:
     """Какое приложение поднимает процесс; кладёт процесс через provide."""
     msg = (
@@ -97,7 +107,7 @@ def app_name() -> AppName:
 
 
 def instance_name(
-    config: Annotated[RuntimeConfig, Depends(get_runtime_config)],
+    config: Annotated[ProcessConfig, Depends(get_process_config)],
     app: Annotated[AppName, Depends(app_name)],
 ) -> str:
     """Имя инстанса: узел из [cluster] плюс имя приложения."""
@@ -105,7 +115,7 @@ def instance_name(
 
 
 async def message_bus(
-    config: Annotated[RuntimeConfig, Depends(get_runtime_config)],
+    config: Annotated[ProcessConfig, Depends(get_process_config)],
     app: Annotated[AppName, Depends(app_name)],
     instance: Annotated[str, Depends(instance_name)],
 ) -> AsyncGenerator[MessageBus, None]:
@@ -134,7 +144,7 @@ async def message_bus(
 
 
 async def payload_store(
-    config: Annotated[RuntimeConfig, Depends(get_runtime_config)],
+    config: Annotated[ProcessConfig, Depends(get_process_config)],
     bus: Annotated[MessageBus, Depends(message_bus)],
 ) -> PayloadStore:
     """Хранилище тел сообщений: при local — в памяти рядом с шиной, при postgres —
@@ -221,7 +231,7 @@ def required(value: ValueT | None, section: str, what: str) -> ValueT:
 
 
 def credential_source(
-    config: Annotated[RuntimeConfig, Depends(get_runtime_config)],
+    config: Annotated[ProcessConfig, Depends(get_process_config)],
     refresh: Annotated[RefreshSignal, Depends(refresh_signal)],
 ) -> KerberosCredentialSource:
     """Источник кредов вызова на процесс; без kerberos в [auth] делегирование
@@ -291,7 +301,7 @@ def runtime_refs() -> RuntimeRefs:
         ambient=_root().resolved(call_ambient),
         seal_keys=_root().resolved(seal_keys),
         live_locks=live_locks_ref,
-        heartbeat_sec=_root().resolved(get_runtime_config).cluster.heartbeat_sec,
+        heartbeat_sec=_root().resolved(get_process_config).cluster.heartbeat_sec,
         bus_watch=bus_watch_ref,
         message_bus=message_bus_ref,
     )
@@ -353,7 +363,7 @@ async def kb_schema(
 
 
 async def live_locks(
-    config: Annotated[RuntimeConfig, Depends(get_runtime_config)],
+    config: Annotated[ProcessConfig, Depends(get_process_config)],
     instance: Annotated[str, Depends(instance_name)],
     app: Annotated[AppName, Depends(app_name)],
     bus: Annotated[MessageBus, Depends(message_bus)],
@@ -428,7 +438,7 @@ def runs(
 
 
 def call_journals(
-    config: Annotated[RuntimeConfig, Depends(get_runtime_config)],
+    config: Annotated[ProcessConfig, Depends(get_process_config)],
     active: Annotated[Runs, Depends(runs)],
 ) -> CallJournals:
     """Журналы живого вывода инструментов на процесс; без секции потоков нет."""
@@ -455,7 +465,7 @@ def threads_table(
 
 
 def session_tokens(
-    config: Annotated[RuntimeConfig, Depends(get_runtime_config)],
+    config: Annotated[ProcessConfig, Depends(get_process_config)],
 ) -> JwtTokens:
     """Выпуск и чтение JWT сессии под секретом [session]: один читатель на процесс,
     поколение сессий выбирается здесь же и живёт до конца процесса."""
@@ -466,37 +476,40 @@ def session_tokens(
     return JwtTokens(session.auth_secret, session.session_ttl_sec, generation)
 
 
-def auth_service(
-    config: Annotated[RuntimeConfig, Depends(get_runtime_config)],
-    table: Annotated[UsersTable, Depends(users_table)],
-    tokens: Annotated[JwtTokens, Depends(session_tokens)],
+def sign_ins(
+    config: Annotated[ProcessConfig, Depends(get_process_config)],
     directory: Annotated[UserDirectory, Depends(user_directory)],
     profiles: Annotated[ProfileCatalog, Depends(profile_catalog)],
-) -> AuthService:
-    """Вход пользователя: пароли, SPNEGO и proxy из [auth], профили входа из
-    [profiles], токен и cookie из [session]."""
-    session = config.session
-    cookie = CookieSpec(
-        name=session.cookie,
-        samesite=session.cookie_samesite,
-        ttl_sec=session.session_ttl_sec,
-    )
+) -> SignIns:
+    """Способы входа процесса из [auth]: пароли, SPNEGO и proxy с их
+    провайдерами ролей и профилей."""
     assembly = SignInAssembly(directory, profiles)
 
     sso = None
     if kerberos := config.kerberos():
-        sso = SpnegoGate(assembly.sso(kerberos, session.auth_secret))
+        sso = SpnegoGate(assembly.sso(kerberos, config.session.auth_secret))
 
     proxy = None
     if proxy_config := config.proxy():
         proxy = assembly.proxy(proxy_config)
 
+    return SignIns(assembly.password(config.auth), sso, proxy)
+
+
+def auth_service(
+    config: Annotated[RuntimeConfig, Depends(get_runtime_config)],
+    table: Annotated[UsersTable, Depends(users_table)],
+    tokens: Annotated[JwtTokens, Depends(session_tokens)],
+    entries: Annotated[SignIns, Depends(sign_ins)],
+) -> AuthService:
+    """Сессия приложения с браузером: способы входа, токен и cookie из
+    [session], строки users."""
+    session = config.session
+
     return AuthService(
+        sign_ins=entries,
         tokens=tokens,
-        cookie=cookie,
-        password=assembly.password(config.auth),
-        sso=sso,
-        proxy=proxy,
+        cookie=session.cookie_spec(),
         users=table,
         renewal=session.renewal(),
     )
@@ -507,7 +520,7 @@ class ReaperHandlers:
 
     def __init__(
         self,
-        config: RuntimeConfig,
+        config: ProcessConfig,
         locks: PgLiveLocks,
         bus: PgMessageBus,
         payloads: PgPayloadStore,
@@ -548,7 +561,7 @@ class ReaperHandlers:
 
 
 async def lock_reaper(
-    config: Annotated[RuntimeConfig, Depends(get_runtime_config)],
+    config: Annotated[ProcessConfig, Depends(get_process_config)],
     locks: Annotated[LiveLocks, Depends(live_locks)],
     bus: Annotated[MessageBus, Depends(message_bus)],
     payloads: Annotated[PayloadStore, Depends(payload_store)],
