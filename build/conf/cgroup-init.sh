@@ -13,7 +13,7 @@ set -eu
 
 USER_NAME="${BOBA_USER:-boba}"
 SLICE=/sys/fs/cgroup/boba.slice
-# поддерево своё у каждого приложения: boba-sandbox — чат, boba-sandbox-mcp — boba-mcp
+# поддерево своё у каждого приложения с песочницей: boba-sandbox-studio — studio, boba-sandbox-mcp — boba-mcp
 BASE="$SLICE/${BOBA_CGROUP:-boba-sandbox}"
 CONTROLLERS="cpu memory pids"
 

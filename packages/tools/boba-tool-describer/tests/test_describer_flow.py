@@ -1,8 +1,9 @@
 """Сквозной сценарий describer внутри хода (pytest -m integration).
 
 Инструменты собираются боевым StandRefs.registry и работают в зиготах секций;
-соединения пользователя лежат в таблицах брокера; модель — по сценарию.
-Ход повторяет работу агента: connection_list → pg_describe_table и pg_query
+соединения пользователя лежат в таблицах брокера. Модели и графа нет: вызовы
+сценария уходят порту инструментов пачками, как их отправил бы ход агента.
+Сценарий повторяет работу агента: connection_list → pg_describe_table и pg_query
 по pg_constraint → ch_query по system.columns → базовые url соединений → узлы и
 рёбра describe_* (в том числе кроссбазное ребро pg ↔ ch и понятие entity) →
 ошибочные вызовы, которые ход переживает → describe_list_nodes и
@@ -21,20 +22,12 @@ from pathlib import Path
 from typing import Any, ClassVar
 from uuid import UUID
 
-import chainlit as cl
 import pytest
-from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
-from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
-from langchain_core.runnables import RunnableConfig
-from langgraph.checkpoint.memory import InMemorySaver
-from langgraph.graph.state import CompiledStateGraph
+from langchain_core.messages import AIMessage, BaseMessage, ToolMessage
 from omegaconf import DictConfig, OmegaConf
 from psycopg import sql
 from pydantic import SecretStr
 
-from boba.chainlit.agent.flow import GraphSpec, PlainGraphBuilder
-from boba.chainlit.infra.config import AppConfig
-from boba.chainlit.infra.providers import build_history_view
 from boba.config import bind
 from boba.connection_broker.sealing import SealingToolServer, SentConnections
 from boba.connection_broker.store import ConnectionsConfig, ConnectionStore
@@ -53,7 +46,6 @@ from boba.db.postgres.address import (
     PgTableColumnAddress,
 )
 from boba.db.postgres.connection import PostgresConfig
-from boba.runtime.config import AppLayers, ConfigLocator
 from boba.stand.connections import StandUserConnections
 from boba.stand.refs import StandRefs
 from boba.stand.site import Stand
@@ -106,6 +98,7 @@ THREAD_ID = "55555555-5555-4555-8555-555555555555"
 
 USER_ID = UUID("66666666-6666-4666-8666-666666666666")
 LOGIN = "describer-flow"
+ROLES = ("analyst",)
 
 CONNECTIONS_SCHEMA = "connections_describer"
 DESCRIBER_SCHEMA = "describer_e2e"
@@ -118,7 +111,6 @@ CH_REF = ConnectionRef(kind="clickhouse", name=CH_CONNECTION).render()
 DM = "dm"
 CH_DATABASE = "describer_e2e"
 
-THREAD = RunnableConfig(configurable={"thread_id": THREAD_ID})
 
 FINAL_ANSWER = "the schema is described and linked"
 
@@ -161,11 +153,29 @@ class CallId:
     LIST_EDGES_AFTER = "call-list-edges-after"
 
 
-class ScriptedChat(GenericFakeChatModel):
-    """Модель по сценарию: bind_tools у фейка не реализован."""
+class ScriptedTurn:
+    """Ход по сценарию без модели: вызовы каждого шага уходят порту
+    инструментов одной пачкой, ответы ложатся в историю следом за шагом.
 
-    def bind_tools(self, tools: Any, **kwargs: Any) -> Any:
-        return self
+    Создаётся тестом из порта инструментов; run отдаёт историю хода — шаги
+    сценария и сообщения инструментов в порядке вызовов.
+    """
+
+    def __init__(self, service: ToolServer) -> None:
+        self._service = service
+
+    async def run(self, scripted: Sequence[AIMessage]) -> list[BaseMessage]:
+        history: list[BaseMessage] = []
+        for step in scripted:
+            history.append(step)
+            if not step.tool_calls:
+                continue
+
+            pending = await self._service.submit(step.tool_calls)
+            for reply in pending:
+                history.append(await reply)
+
+        return history
 
 
 class StoreHolder:
@@ -235,12 +245,6 @@ def _call(call_id: str, name: str, **args: Any) -> dict[str, Any]:
 
 
 @pytest.fixture(scope="module")
-def app_config() -> AppConfig:
-    """Конфиг приложения чата: профили, роли, лимиты истории."""
-    return bind(AppLayers.compose(ConfigLocator.path()), path="app", model=AppConfig)
-
-
-@pytest.fixture(scope="module")
 def flow_raw(service_raw_config: DictConfig, test_database: str) -> DictConfig:
     """Конфиг хода: сервисный postgres смотрит в тестовую базу, чтобы и таблицы
     describer, и описываемые таблицы жили там же."""
@@ -255,14 +259,12 @@ def session_service(
     runtime_stand: StandRefs,
     call_stand: CallStand,
     flow_raw: DictConfig,
-    app_config: AppConfig,
 ) -> ToolServer:
     """Порт инструментов профиля: боевой загрузчик над хранилищем стенда,
     исполнитель и клиент, запечатывающий ссылки на соединения."""
     refs = runtime_stand.of(StoreHolder.current, lambda: None)
     registry = runtime_stand.registry(flow_raw, refs, StandRefs.granted(PROFILE, ["*"]))
-    roles = frozenset(app_config.roles)
-    tools = registry.for_session(roles, PROFILE)
+    tools = registry.for_session(frozenset(ROLES), PROFILE)
     return SealingToolServer(
         registry.server(tools),
         ArmedConnections(refs.connection_store, refs.credentials, refs.contexts),
@@ -400,53 +402,21 @@ def runtime_stand(call_stand: CallStand) -> Iterator[StandRefs]:
 
 
 @pytest.fixture
-async def chainlit_context(
-    call_stand: CallStand, app_config: AppConfig, monkeypatch: pytest.MonkeyPatch
-) -> AsyncIterator[None]:
-    """Сессия пользователя хода: его id совпадает с целью грантов."""
-    from chainlit.context import init_http_context
-
-    roles = sorted(app_config.roles)
-    user = cl.User(identifier=LOGIN, metadata={"roles": roles})
-
-    context = init_http_context(user=user)
-    context.session.chat_profile = PROFILE
+def turn_context(call_stand: CallStand) -> Iterator[None]:
+    """Контекст вызова пользователя хода: его id совпадает с целью грантов."""
     call_stand.use(
         call_stand.context(
             thread_id=THREAD_ID,
             user_id=USER_ID,
-            roles=roles,
+            roles=list(ROLES),
             profile=PROFILE,
             login=LOGIN,
         )
     )
-    yield
-    call_stand.clear()
-
-
-def _graph(
-    app_config: AppConfig,
-    service: ToolServer,
-    scripted: Sequence[AIMessage],
-) -> CompiledStateGraph:
-    """Граф профиля на модели по сценарию: боевой билдер, память вместо postgres."""
-    settings = app_config.profiles[PROFILE]
-
-    chat = ScriptedChat(messages=iter(list(scripted)), disable_streaming=True)
-
-    names: list[str] = []
-    for tool in service.tools():
-        names.append(tool.name)
-
-    spec = GraphSpec(
-        chat=chat,
-        service=service,
-        system_prompt=settings.system_prompt,
-        checkpointer=InMemorySaver(),
-        history=build_history_view(frozenset(names), settings.history_messages),
-    )
-
-    return PlainGraphBuilder().build(spec)
+    try:
+        yield
+    finally:
+        call_stand.clear()
 
 
 def _script(expected: Expected) -> list[AIMessage]:
@@ -780,22 +750,15 @@ async def _stored_edges(pool: AsyncPostgresPool) -> list[tuple[str, str, str]]:
     return edges
 
 
-@pytest.mark.usefixtures("chainlit_context", "granted", "seeded_pg", "seeded_ch")
+@pytest.mark.usefixtures("turn_context", "granted", "seeded_pg", "seeded_ch")
 async def test_agent_describes_schema_and_links(  # noqa: PLR0915 — один ход, много проверок
-    app_config: AppConfig,
     session_service: ToolServer,
     pg_profile: PostgresConfig,
     ch_profile: ClickHouseConfig,
     pool: AsyncPostgresPool,
 ) -> None:
     expected = Expected(pg_profile, ch_profile)
-    graph = _graph(app_config, session_service, _script(expected))
-
-    result = await graph.ainvoke(
-        {"messages": [HumanMessage("describe the dm schema and its links")]},
-        config=THREAD,
-    )
-    messages = result["messages"]
+    messages = await ScriptedTurn(session_service).run(_script(expected))
     replies = Replies(messages)
 
     # разведка: оба соединения видны, метаданные приходят из настоящих баз
@@ -924,9 +887,8 @@ async def test_agent_describes_schema_and_links(  # noqa: PLR0915 — один �
     assert set(edges) < expected_edges
 
 
-@pytest.mark.usefixtures("chainlit_context", "granted", "seeded_pg", "seeded_ch")
+@pytest.mark.usefixtures("turn_context", "granted", "seeded_pg", "seeded_ch")
 async def test_second_turn_updates_instead_of_duplicating(
-    app_config: AppConfig,
     session_service: ToolServer,
     pg_profile: PostgresConfig,
     ch_profile: ClickHouseConfig,
@@ -951,9 +913,7 @@ async def test_second_turn_updates_instead_of_duplicating(
         ),
         AIMessage(content=FINAL_ANSWER),
     ]
-    await _graph(app_config, session_service, first).ainvoke(
-        {"messages": [HumanMessage("describe orders")]}, config=THREAD
-    )
+    await ScriptedTurn(session_service).run(first)
 
     second = [
         AIMessage(
@@ -970,11 +930,9 @@ async def test_second_turn_updates_instead_of_duplicating(
         ),
         AIMessage(content=FINAL_ANSWER),
     ]
-    result = await _graph(app_config, session_service, second).ainvoke(
-        {"messages": [HumanMessage("describe orders better")]}, config=THREAD
-    )
+    messages = await ScriptedTurn(session_service).run(second)
 
-    row = _rows(Replies(result["messages"]).ok("call-node-orders-again"))[0]
+    row = _rows(Replies(messages).ok("call-node-orders-again"))[0]
     assert row["action"] == "updated"
 
     nodes = await _stored_nodes(pool)

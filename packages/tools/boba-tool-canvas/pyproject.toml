@@ -11,7 +11,7 @@ dependencies = [
     "boba-toolkit==0.0.26.dev4",
     "boba-identity==0.0.26.dev4",
     "boba-canvas==0.0.26.dev4",
-    "pydantic>=2.10,<3",
+    "pydantic>=2.12,<3",
 ]
 
 [project.entry-points."boba.tools"]
@@ -21,7 +21,11 @@ canvas = "boba.tool.canvas.plugin:MANIFEST"
 payload = [
 ]
 dev = [
-    "pytest>=8",
+    "boba-config==0.0.26.dev4",
+    "boba-runtime==0.0.26.dev4",
+    "boba-stand==0.0.26.dev4",
+    "omegaconf>=2.3,<3",
+    "pytest>=9.1,<10",
 ]
 
 [tool.setuptools.packages.find]

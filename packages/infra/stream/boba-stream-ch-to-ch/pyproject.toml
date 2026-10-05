@@ -10,15 +10,11 @@ requires-python = ">=3.11,<4"
 dependencies = [
     "boba-toolkit==0.0.26.dev4",
     "boba-db-clickhouse[payload]==0.0.26.dev4",
+    "clickhouse-connect>=1.6,<2",
 ]
 
 [project.entry-points."boba.transfer.clickhouse"]
 clickhouse = "boba.stream.ch_to_ch.transfer:ChToCh"
-
-[project.optional-dependencies]
-dev = [
-    "pytest>=8",
-]
 
 [tool.setuptools.packages.find]
 where = ["src"]

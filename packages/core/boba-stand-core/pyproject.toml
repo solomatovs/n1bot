@@ -12,12 +12,14 @@ dependencies = [
     "boba-chat==0.0.26.dev4",
     "boba-identity==0.0.26.dev4",
     "boba-toolkit==0.0.26.dev4",
-    "pydantic>=2.10,<3",
-    "pytest>=8",
+    "pydantic>=2.12,<3",
+    "pytest>=9.1,<10",
 ]
 
 [project.optional-dependencies]
-dev = []
+dev = [
+    "boba-stand==0.0.26.dev4",
+]
 
 [tool.setuptools.packages.find]
 where = ["src"]

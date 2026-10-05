@@ -1,15 +1,15 @@
-"""Соединения пользователя из таблицы доезжают до pg-инструмента в песочнице.
+"""Соединения пользователя из таблицы доезжают до инструмента сервиса в песочнице.
 
 Стенд: пользователь в users, его соединение в connections, грант в grants;
-инструмент собран боевой обвязкой и вызван из сессии этого пользователя.
+вызов идёт портом чата от имени этого пользователя на настоящий сервис
+boba-mcp: чат запечатывает соединение, сервис открывает его и исполняет тело.
 """
 
 from __future__ import annotations
 
 import base64
-import os
 import secrets as std_secrets
-import shutil
+from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
 from uuid import UUID
@@ -17,18 +17,19 @@ from uuid import UUID
 import pytest
 from chainlit.user import PersistedUser
 from chainlit.user import User as ChainlitUser
-from chainlit_stand import ChatSessionStand, SsoStand
+from chainlit_stand import ChatSessionStand, ServiceTools, SsoStand, ToolService
 from psycopg import sql
 from pydantic import SecretStr
 
-from boba.auth.credentials import KerberosCredentialSource, NoRefresh
+from boba.auth.credentials import KerberosCredentialSource
 from boba.chainlit.auth.kerberos import KerberosAuth
 from boba.chainlit.data.data_layer import PostgresDataLayer
 from boba.config import bind
 from boba.connection_broker.store import ConnectionsConfig, ConnectionStore
+from boba.connection_broker.user_connections import ArmedConnections
 from boba.connections.manifest import ConnectionTypes
 from boba.connections.marks import ConnectionRefusal
-from boba.connections.sealed import ConnectionRefs
+from boba.connections.sealed import ConnectionRef, ConnectionRefs
 from boba.connections.stored import GrantTarget, StoredRole
 from boba.db.postgres import AsyncPostgresPool
 from boba.db.postgres.connection import PasswordAuth, PostgresConfig
@@ -40,62 +41,25 @@ from boba.krb import KeytabCredentials
 from boba.krb.seal import SsoTickets
 from boba.messaging import MemoryMessageBus
 from boba.runtime.refresh import BusRefreshSignal
-from boba.stand.connections import StandUserConnections
 from boba.stand.site import Stand
-from boba.stand.toolsetup import Call, ToolSetup
-from boba.stand.zygote import ZygoteStand
+from boba.stand.toolsetup import Call
 from boba.stand_core.context import CallStand
-from boba.tool.pg.tools import PgToolConfig
-from boba.tool.web.tools import WebToolsConfig
-from boba.toolkit.chain import CallAmbient
-from boba.toolkit.entry import ToolMain
-from boba.toolkit.launcher import PayloadFailureError
-from boba.toolkit.wrap import ToolProcessWrap
-from boba.toolrun.bridge import ToolBridge
-from boba.toolrun.injected import InjectedConfig, StaticConfig
 from boba.transport.http.connection import HttpConnection, NegotiateAuth, UrlScheme
-
-_REPO = Path(__file__).resolve().parents[4]
-_SANDBOX_STAGING = _REPO / "build" / "src" / "sandbox"
-_ROOTFS_IMAGE = _SANDBOX_STAGING / "plugins" / "boba-tool-shell" / "rootfs.ext4"
-_CGROUP_BASE = os.environ.get("BOBA_CGROUP_BASE", "/sys/fs/cgroup/boba")
 
 SCHEMA = "connections_e2e"
 ROLE = "analyst"
 THREAD = "44444444-4444-4444-4444-444444444444"
 PROFILE = "test"
 
-
-def _cgroup_delegated() -> bool:
-    base_ok = os.access(os.path.join(_CGROUP_BASE, "cgroup.procs"), os.W_OK)
-    root_ok = os.access("/sys/fs/cgroup/cgroup.procs", os.W_OK)
-    return base_ok and root_ok
-
-
 pytestmark = [
     pytest.mark.integration,
     pytest.mark.anyio,
-    pytest.mark.skipif(
-        shutil.which("bwrap") is None or not _ROOTFS_IMAGE.exists(),
-        reason="нет bwrap или артефактов песочницы (собрать: make fetch sandbox)",
-    ),
-    pytest.mark.skipif(
-        not _cgroup_delegated(),
-        reason=f"cgroup base {_CGROUP_BASE} не делегирован пользователю",
-    ),
+    pytest.mark.skipif(bool(ToolService.missing()), reason=ToolService.missing()),
 ]
 
 
 def _key() -> SecretStr:
     return SecretStr(base64.b64encode(std_secrets.token_bytes(32)).decode())
-
-
-@pytest.fixture(scope="module", autouse=True)
-def stop_zygotes(zygote_stand: ZygoteStand):
-    try:
-        yield
-    finally:
-        zygote_stand.stop()
 
 
 @pytest.fixture
@@ -141,46 +105,32 @@ def sso(tmp_path: Path) -> tuple[SsoTickets, str]:
     return tickets, sealed
 
 
-def _credentials() -> KerberosCredentialSource:
-    return KerberosCredentialSource(None, NoRefresh())
-
-
 @pytest.fixture
-def pg_tools(
-    zygote_stand: ZygoteStand,
+async def tools(
+    tool_service: ToolService,
     call_stand: CallStand,
-    service_raw_config: Any,
     store: ConnectionStore,
     sso: tuple[SsoTickets, str],
-) -> dict[str, Any]:
-    """pg-инструменты с боевой обвязкой соединений пользователя."""
-    from importlib import reload
-
-    import boba.tool.pg.tools as pg_module
-
-    module = reload(pg_module)
-    launcher = ToolSetup.caller(
-        zygote_stand, service_raw_config, "pg", [module.__name__]
+) -> AsyncIterator[ServiceTools]:
+    """Инструменты сервиса портом чата: соединения пользователя берутся из
+    таблицы теста, креды — из билета входа."""
+    credentials = KerberosCredentialSource(
+        sso[0],
+        BusRefreshSignal(lambda: MemoryMessageBus("test"), call_stand.contexts),
     )
+    connections = ArmedConnections(
+        lambda: store, lambda: credentials, call_stand.contexts
+    )
+    opened = ServiceTools(tool_service, connections, call_stand.contexts)
+    await opened.start()
+    try:
+        yield opened
+    finally:
+        await opened.stop()
 
-    functions = [ToolBridge.as_structured_tool(tool) for tool in module.TOOLS]
-    ToolProcessWrap(CallAmbient()).guard_all(ToolMain.toolset(*functions), launcher)
 
-    def resolve(name: str, annotation: Any) -> object:
-        return bind(service_raw_config, path="tool.pg", model=PgToolConfig)
-
-    StandUserConnections(
-        lambda: store,
-        lambda: KerberosCredentialSource(
-            sso[0],
-            BusRefreshSignal(lambda: MemoryMessageBus("test"), call_stand.contexts),
-        ),
-        ConnectionTypes.discover,
-        call_stand.contexts,
-    ).bind_all(functions)
-    InjectedConfig(resolve, StaticConfig()).bind_all(functions)
-
-    return ToolSetup.by_name(functions)
+def _pg(name: str) -> str:
+    return ConnectionRef(kind="postgres", name=name).render()
 
 
 class Session:
@@ -212,7 +162,7 @@ class Session:
 
 async def test_granted_connection_is_visible_and_works(  # noqa: PLR0913 — фикстуры теста
     chat_session: ChatSessionStand,
-    pg_tools: dict[str, Any],
+    tools: ServiceTools,
     catalog: Any,
     store: ConnectionStore,
     layer: PostgresDataLayer,
@@ -229,8 +179,8 @@ async def test_granted_connection_is_visible_and_works(  # noqa: PLR0913 — ф�
         raise AssertionError(f"whitelist must hold the granted row only: {names}")
 
     result = await Call.ok(
-        pg_tools["pg_query"],
-        connection="main",
+        tools["pg_query"],
+        connection=_pg("main"),
         sql="select 1 as answer",
         offset=0,
         limit=50,
@@ -241,7 +191,7 @@ async def test_granted_connection_is_visible_and_works(  # noqa: PLR0913 — ф�
 
 async def test_role_grant_reaches_every_role_holder(  # noqa: PLR0913 — фикстуры теста
     chat_session: ChatSessionStand,
-    pg_tools: dict[str, Any],
+    tools: ServiceTools,
     catalog: Any,
     store: ConnectionStore,
     layer: PostgresDataLayer,
@@ -261,7 +211,7 @@ async def test_role_grant_reaches_every_role_holder(  # noqa: PLR0913 — фик
 
 async def test_stranger_sees_nothing(  # noqa: PLR0913 — фикстуры теста
     chat_session: ChatSessionStand,
-    pg_tools: dict[str, Any],
+    tools: ServiceTools,
     catalog: Any,
     store: ConnectionStore,
     layer: PostgresDataLayer,
@@ -277,18 +227,17 @@ async def test_stranger_sees_nothing(  # noqa: PLR0913 — фикстуры те
     if targets.rows:
         raise AssertionError(f"stranger must see no connections: {targets.rows}")
 
-    with pytest.raises(RefusalError) as caught:
-        await Call.result(
-            pg_tools["pg_query"], connection="main", sql="select 1", offset=0, limit=50
-        )
+    refused = await Call.result(
+        tools["pg_query"], connection=_pg("main"), sql="select 1", offset=0, limit=50
+    )
 
-    if caught.value.kind != ConnectionRefusal.NOT_VISIBLE:
-        raise AssertionError(f"unexpected refusal kind: {caught.value.kind}")
+    if refused.error_kind != ConnectionRefusal.NOT_VISIBLE:
+        raise AssertionError(f"unexpected refusal: {refused}")
 
 
 async def test_revoke_applies_to_the_next_call(  # noqa: PLR0913 — фикстуры теста
     chat_session: ChatSessionStand,
-    pg_tools: dict[str, Any],
+    tools: ServiceTools,
     catalog: Any,
     store: ConnectionStore,
     layer: PostgresDataLayer,
@@ -313,7 +262,7 @@ async def test_revoke_applies_to_the_next_call(  # noqa: PLR0913 — фикст�
 
 async def test_ambiguous_name_is_refused(  # noqa: PLR0913 — фикстуры теста
     chat_session: ChatSessionStand,
-    pg_tools: dict[str, Any],
+    tools: ServiceTools,
     catalog: Any,
     store: ConnectionStore,
     layer: PostgresDataLayer,
@@ -330,19 +279,18 @@ async def test_ambiguous_name_is_refused(  # noqa: PLR0913 — фикстуры 
     if targets.rows:
         raise AssertionError(f"ambiguous name must not be listed: {targets.rows}")
 
-    with pytest.raises(RefusalError) as caught:
-        await Call.result(
-            pg_tools["pg_query"], connection="main", sql="select 1", offset=0, limit=50
-        )
+    refused = await Call.result(
+        tools["pg_query"], connection=_pg("main"), sql="select 1", offset=0, limit=50
+    )
 
-    if caught.value.kind != ConnectionRefusal.AMBIGUOUS:
-        raise AssertionError(f"unexpected refusal kind: {caught.value.kind}")
+    if refused.error_kind != ConnectionRefusal.AMBIGUOUS:
+        raise AssertionError(f"unexpected refusal: {refused}")
 
 
 async def test_delegated_connection_runs_as_the_session_principal(  # noqa: PLR0913 — фикстуры теста
     chat_session: ChatSessionStand,
     sso: tuple[SsoTickets, str],
-    pg_tools: dict[str, Any],
+    tools: ServiceTools,
     store: ConnectionStore,
     layer: PostgresDataLayer,
     service_pg: PostgresConfig,
@@ -359,8 +307,8 @@ async def test_delegated_connection_runs_as_the_session_principal(  # noqa: PLR0
     )
 
     result = await Call.ok(
-        pg_tools["pg_query"],
-        connection="mine",
+        tools["pg_query"],
+        connection=_pg("mine"),
         sql="select current_user as who",
         offset=0,
         limit=50,
@@ -371,7 +319,7 @@ async def test_delegated_connection_runs_as_the_session_principal(  # noqa: PLR0
 
 async def test_delegated_connection_refuses_local_login(
     chat_session: ChatSessionStand,
-    pg_tools: dict[str, Any],
+    tools: ServiceTools,
     store: ConnectionStore,
     layer: PostgresDataLayer,
     service_pg: PostgresConfig,
@@ -384,18 +332,17 @@ async def test_delegated_connection_refuses_local_login(
     await store.grant(connection_id, GrantTarget.user(UUID(user.id)))
     chat_session.sign_in(user, user.metadata, THREAD, PROFILE)
 
-    with pytest.raises(RefusalError) as caught:
-        await Call.result(
-            pg_tools["pg_query"], connection="mine", sql="select 1", offset=0, limit=50
-        )
+    refused = await Call.result(
+        tools["pg_query"], connection=_pg("mine"), sql="select 1", offset=0, limit=50
+    )
 
-    if caught.value.kind != ConnectionRefusal.NO_DELEGATION:
-        raise AssertionError(f"unexpected refusal kind: {caught.value.kind}")
+    if refused.error_kind != ConnectionRefusal.NO_DELEGATION:
+        raise AssertionError(f"unexpected refusal: {refused}")
 
 
 async def test_unreachable_database_is_reported_by_the_body(
     chat_session: ChatSessionStand,
-    pg_tools: dict[str, Any],
+    tools: ServiceTools,
     store: ConnectionStore,
     layer: PostgresDataLayer,
     service_pg: PostgresConfig,
@@ -416,52 +363,12 @@ async def test_unreachable_database_is_reported_by_the_body(
     await store.grant(connection_id, GrantTarget.user(UUID(user.id)))
     chat_session.sign_in(user, user.metadata, THREAD, PROFILE)
 
-    with pytest.raises(PayloadFailureError) as caught:
-        await Call.result(
-            pg_tools["pg_query"], connection="dead", sql="select 1", offset=0, limit=50
-        )
-
-    error_kind = caught.value.failure().error_kind
-    if error_kind != "PostgresError":
-        raise AssertionError(f"unexpected failure kind: {error_kind}")
-
-
-@pytest.fixture
-def web_tools(
-    zygote_stand: ZygoteStand,
-    call_stand: CallStand,
-    service_raw_config: Any,
-    store: ConnectionStore,
-    sso: tuple[SsoTickets, str],
-) -> dict[str, Any]:
-    """web-инструменты с боевой обвязкой соединений пользователя."""
-    from importlib import reload
-
-    import boba.tool.web.tools as web_module
-
-    module = reload(web_module)
-    launcher = ToolSetup.caller(
-        zygote_stand, service_raw_config, "web", [module.__name__]
+    refused = await Call.result(
+        tools["pg_query"], connection=_pg("dead"), sql="select 1", offset=0, limit=50
     )
 
-    functions = [ToolBridge.as_structured_tool(tool) for tool in module.TOOLS]
-    ToolProcessWrap(CallAmbient()).guard_all(ToolMain.toolset(*functions), launcher)
-
-    def resolve(name: str, annotation: Any) -> object:
-        return bind(service_raw_config, path="tool.web", model=WebToolsConfig)
-
-    StandUserConnections(
-        lambda: store,
-        lambda: KerberosCredentialSource(
-            sso[0],
-            BusRefreshSignal(lambda: MemoryMessageBus("test"), call_stand.contexts),
-        ),
-        ConnectionTypes.discover,
-        call_stand.contexts,
-    ).bind_all(functions)
-    InjectedConfig(resolve, StaticConfig()).bind_all(functions)
-
-    return ToolSetup.by_name(functions)
+    if refused.error_kind != "PostgresError":
+        raise AssertionError(f"unexpected failure: {refused}")
 
 
 @pytest.mark.skipif(
@@ -470,7 +377,7 @@ def web_tools(
 async def test_web_negotiate_connection_authenticates_as_the_principal(
     chat_session: ChatSessionStand,
     sso: tuple[SsoTickets, str],
-    web_tools: dict[str, Any],
+    tools: ServiceTools,
     store: ConnectionStore,
     layer: PostgresDataLayer,
 ) -> None:
@@ -494,9 +401,9 @@ async def test_web_negotiate_connection_authenticates_as_the_principal(
     )
 
     result = await Call.ok(
-        web_tools["web_fetch_page"],
+        tools["web_fetch_page"],
         url=f"{CH_URL}/?query=select%20currentUser()",
-        connection="ch-http",
+        connection=ConnectionRef(kind="web", name="ch-http").render(),
         as_markdown=False,
         line_offset=0,
         line_count=5,

@@ -11,16 +11,11 @@ dependencies = [
     "boba-toolkit==0.0.26.dev4",
     "boba-db-postgres==0.0.26.dev4",
     "boba-db-clickhouse==0.0.26.dev4",
-    "psycopg[binary,pool]>=3.3",
+    "psycopg>=3.3,<4",
 ]
 
 [project.entry-points."boba.transfer.postgres"]
 clickhouse = "boba.stream.ch_to_pg.transfer:ChToPg"
-
-[project.optional-dependencies]
-dev = [
-    "pytest>=8",
-]
 
 [tool.setuptools.packages.find]
 where = ["src"]

@@ -11,19 +11,20 @@ dependencies = [
     "boba-toolkit==0.0.26.dev4",
     "boba-identity==0.0.26.dev4",
     "boba-kerberos==0.0.26.dev4",
-    "cryptography>=42",
+    "cryptography>=45.0.1",
     "joserfc>=1.7,<2",
-    "pydantic>=2.10,<3",
-    "pydantic-core>=2.27",
+    "pydantic>=2.12,<3",
+    "pydantic-core>=2.41,<3",
 ]
 
 [project.optional-dependencies]
 dev = [
+    "boba-stand==0.0.26.dev4",
     "boba-db-clickhouse==0.0.26.dev4",
     "boba-db-postgres==0.0.26.dev4",
     "boba-stand-core==0.0.26.dev4",
     "boba-transport-http==0.0.26.dev4",
-    "pytest>=8",
+    "pytest>=9.1,<10",
 ]
 
 [tool.setuptools.packages.find]

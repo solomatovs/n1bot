@@ -3,21 +3,20 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Iterator, Mapping, Sequence
+from collections.abc import AsyncIterator, Iterator, Mapping
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 from uuid import UUID
 
 import pytest
-from chainlit_stand import ServiceProcess
+from chainlit_stand import NoTabs, OwnerRows, ServiceProcess
 
 from boba.canvas.keys import ObjectKey, ThreadDir
 from boba.canvas.storage import StorageError, StorageNotFoundError
 from boba.chainlit.data.remote_storage import FileOwners, RemoteStorageClient
-from boba.chainlit.infra.session import ChainlitSession, OwnerSessions
 from boba.chat.profiles import ChatProfileConfig, ChatProfiles
-from boba.identity.api import StoredUser, UserRows
+from boba.identity.api import StoredUser
 from boba.identity.context import CallContexts
 from boba.identity.session import Login, UserMetadataField
 from boba.mcp_client.client import (
@@ -32,42 +31,6 @@ pytestmark = [pytest.mark.anyio, pytest.mark.integration]
 REPO = Path(__file__).resolve().parents[4]
 USER = UUID("11111111-2222-4333-8444-555555555555")
 THREAD = "7a1c0d5e-2b3f-4a6b-9c8d-0e1f2a3b4c5d"
-
-
-class NoSessions(OwnerSessions):
-    """Источник сессий без живых вкладок: владелец ищется по строке users."""
-
-    def of_user(self, user_id: UUID) -> Sequence[ChainlitSession]:
-        return ()
-
-
-class KnownUsers(UserRows):
-    """Строки users стенда: один пользователь с ролями и профилями входа."""
-
-    def __init__(self, meta: Mapping[str, Any]) -> None:
-        self._meta = dict(meta)
-
-    async def stored(self, identifier: Login) -> StoredUser | None:
-        return None
-
-    async def stored_by_id(self, user_id: UUID) -> StoredUser | None:
-        if user_id != USER:
-            return None
-
-        return StoredUser(
-            id=USER,
-            identifier=Login("alice"),
-            created_at=datetime.now(UTC),
-            meta=self._meta,
-        )
-
-    async def upsert(self, identifier: Login, meta: Mapping[str, Any]) -> StoredUser:
-        raise NotImplementedError
-
-    async def set_llm_settings(
-        self, user_id: UUID, profile: str, values: Mapping[str, Any]
-    ) -> None:
-        raise NotImplementedError
 
 
 @pytest.fixture(scope="module")
@@ -103,8 +66,15 @@ def _storage(servers: McpServers, meta: Mapping[str, Any]) -> RemoteStorageClien
             ),
         }
     )
-    sessions = NoSessions()
-    users = KnownUsers(meta)
+    sessions = NoTabs()
+    users = OwnerRows(
+        StoredUser(
+            id=USER,
+            identifier=Login("alice"),
+            created_at=datetime.now(UTC),
+            meta=meta,
+        )
+    )
     owners = FileOwners(lambda: sessions, lambda: users, profiles)
 
     return RemoteStorageClient("/workspace", owners, lambda: servers)

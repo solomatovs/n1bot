@@ -1,6 +1,6 @@
 """Вызов инструмента с неверными аргументами внутри хода (pytest -m integration).
 
-Инструменты собираются боевым StandRefs.registry и работают в зиготе; модель —
+Инструменты исполняет сервис boba-mcp, граф ходит к нему портом чата; модель —
 по сценарию: первый вызов без обязательного аргумента, второй правильный,
 затем ответ. Ход не прерывается: отказ валидации ложится в историю
 сообщением инструмента со статусом error, модель его видит и повторяет вызов.
@@ -8,55 +8,30 @@
 
 from __future__ import annotations
 
-import os
-import shutil
 from collections.abc import AsyncIterator, Iterator, Sequence
-from dataclasses import dataclass
-from pathlib import Path
 from typing import Any
 
 import chainlit as cl
 import pytest
+from chainlit_stand import ServiceTools, SessionTools, ToolService
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
 from langchain_core.runnables import RunnableConfig
-from langchain_core.tools import BaseTool
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph.state import CompiledStateGraph
-from omegaconf import DictConfig, OmegaConf
 
 from boba.chainlit.agent.flow import GraphSpec, PlainGraphBuilder
 from boba.chainlit.infra.config import AppConfig
 from boba.chainlit.infra.providers import build_history_view
+from boba.mcp_client.client import McpCaller
 from boba.stand.refs import StandRefs
 from boba.stand_core.context import CallStand
 from boba.toolkit.result import ErrorResult, ToolArtifact
-from boba.toolrun.stream_calls import ToolServer
-
-_REPO = Path(__file__).resolve().parents[4]
-_SANDBOX_STAGING = _REPO / "build" / "src" / "sandbox"
-_ROOTFS_IMAGE = _SANDBOX_STAGING / "plugins" / "boba-tool-shell" / "rootfs.ext4"
-
-_CGROUP_BASE = os.environ.get("BOBA_CGROUP_BASE", "/sys/fs/cgroup/boba")
-
-
-def _cgroup_delegated() -> bool:
-    base_ok = os.access(os.path.join(_CGROUP_BASE, "cgroup.procs"), os.W_OK)
-    root_ok = os.access("/sys/fs/cgroup/cgroup.procs", os.W_OK)
-    return base_ok and root_ok
-
 
 pytestmark = [
     pytest.mark.integration,
     pytest.mark.anyio,
-    pytest.mark.skipif(
-        shutil.which("bwrap") is None or not _ROOTFS_IMAGE.exists(),
-        reason="нет bwrap или артефактов песочницы (собрать: make fetch sandbox)",
-    ),
-    pytest.mark.skipif(
-        not _cgroup_delegated(),
-        reason=f"cgroup base {_CGROUP_BASE} не делегирован пользователю",
-    ),
+    pytest.mark.skipif(bool(ToolService.missing()), reason=ToolService.missing()),
 ]
 
 PROFILE = "search"
@@ -128,34 +103,16 @@ async def chainlit_context(
     call_stand.clear()
 
 
-@dataclass(frozen=True)
-class SessionTools:
-    """Инструменты сессии и порт инструментов над ними, как их отдаёт реестр."""
-
-    tools: list[BaseTool]
-    service: ToolServer
-
-
-@pytest.fixture(scope="module")
-def session_tools(
-    runtime_stand: StandRefs,
-    call_stand: CallStand,
-    service_raw_config: DictConfig,
-    app_config: AppConfig,
+@pytest.fixture
+async def session_tools(
+    service_tools: ServiceTools, app_config: AppConfig
 ) -> SessionTools:
-    """Инструменты профиля, собранные боевым загрузчиком из конфига сервиса,
-    который их исполняет, и их порт. Набор профиля — набор endpoint'а сервиса
-    с тем же именем."""
-    endpoint = OmegaConf.select(service_raw_config, f"mcp.endpoints.{PROFILE}.tools")
-    registry = runtime_stand.registry(
-        service_raw_config,
-        runtime_stand.none(),
-        StandRefs.granted(PROFILE, list(endpoint)),
-    )
-    roles = frozenset(app_config.roles)
-    tools = registry.for_session(roles, PROFILE)
+    """Инструменты сервиса boba-mcp и его порт от имени пользователя теста:
+    тела исполняет сервис, граф видит их так же, как в приложении."""
+    caller = McpCaller(login="args-validation", roles=frozenset(app_config.roles))
+    port = await service_tools.port_of(caller)
 
-    return SessionTools(tools=tools, service=registry.server(tools))
+    return SessionTools(tools=list(port.tools()), service=port)
 
 
 def _graph(

@@ -8,14 +8,15 @@ version = "0.0.26.dev4"
 description = "Boba catalog: домен каталога данных — слои, наборы, колонки, виды загрузки, потоки; снимок, операции, diff. Без I/O."
 requires-python = ">=3.11,<4"
 dependencies = [
-    "pydantic>=2.10,<3",
+    "pydantic>=2.12,<3",
 ]
 
 [project.optional-dependencies]
 dev = [
+    "boba-stand==0.0.26.dev4",
     "boba-db-clickhouse==0.0.26.dev4",
     "boba-db-postgres==0.0.26.dev4",
-    "pytest>=8",
+    "pytest>=9.1,<10",
 ]
 
 [tool.setuptools.packages.find]

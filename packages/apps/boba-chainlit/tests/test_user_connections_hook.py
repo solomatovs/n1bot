@@ -48,10 +48,7 @@ from boba.runtime.refresh import BusRefreshSignal
 from boba.stand.connections import StandUserConnections
 from boba.stand.site import Stand
 from boba.stand_core.context import CallStand
-from boba.tool.pg.tools import PgToolConfig
-from boba.tool.web.tools import WebToolsConfig
-from boba.toolkit.facade import Injected, UserConnection
-from boba.toolrun.injected import InjectedConfig, StaticConfig
+from boba.toolkit.facade import UserConnection
 from boba.transport.http.connection import HttpConnection
 
 pytestmark = pytest.mark.anyio
@@ -167,22 +164,18 @@ def sso(tmp_path: Path, service_raw_config: Any) -> tuple[SsoTickets, dict[str, 
 class Capture:
     """Инструмент-перехватчик: возвращает kwargs, с которыми пошло бы тело.
 
-    Создаётся фикстурой capture из стенда контекста вызова, конфига и
-    хранилища соединений теста.
+    Создаётся фикстурой capture из стенда контекста вызова и хранилища
+    соединений теста.
     """
 
-    def __init__(
-        self, calls: CallStand, service_raw_config: Any, store: ConnectionStore
-    ) -> None:
+    def __init__(self, calls: CallStand, store: ConnectionStore) -> None:
         self._calls = calls
-        self._raw = service_raw_config
         self._store = store
 
     def tool(self, tickets: SsoTickets | None):
         schema = create_model(
             "CaptureArgs",
             connection=(Annotated[PostgresConfig, UserConnection], ...),
-            cfg=(Annotated[PgToolConfig, Injected], ...),
         )
 
         async def body(**kwargs: object) -> dict[str, object]:
@@ -195,9 +188,6 @@ class Capture:
             coroutine=body,
         )
 
-        def resolve(name: str, annotation: Any) -> object:
-            return bind(self._raw, path="tool.pg", model=PgToolConfig)
-
         StandUserConnections(
             lambda: self._store,
             lambda: KerberosCredentialSource(
@@ -209,7 +199,6 @@ class Capture:
             ConnectionTypes.discover,
             self._calls.contexts,
         ).bind_all([tool])
-        InjectedConfig(resolve, StaticConfig()).bind_all([tool])
         return tool
 
     def web_tool(self, tickets: SsoTickets):
@@ -217,7 +206,6 @@ class Capture:
             "CaptureWebArgs",
             url=(str, ...),
             connection=(Annotated[HttpConnection, UserConnection], ...),
-            cfg=(Annotated[WebToolsConfig, Injected], ...),
         )
 
         async def body(**kwargs: object) -> dict[str, object]:
@@ -230,9 +218,6 @@ class Capture:
             coroutine=body,
         )
 
-        def resolve(name: str, annotation: Any) -> object:
-            return bind(self._raw, path="tool.web", model=WebToolsConfig)
-
         StandUserConnections(
             lambda: self._store,
             lambda: KerberosCredentialSource(
@@ -244,7 +229,6 @@ class Capture:
             ConnectionTypes.discover,
             self._calls.contexts,
         ).bind_all([tool])
-        InjectedConfig(resolve, StaticConfig()).bind_all([tool])
         return tool
 
     @staticmethod
@@ -295,10 +279,8 @@ class Session:
 
 
 @pytest.fixture
-def capture(
-    call_stand: CallStand, service_raw_config: Any, store: ConnectionStore
-) -> Capture:
-    return Capture(call_stand, service_raw_config, store)
+def capture(call_stand: CallStand, store: ConnectionStore) -> Capture:
+    return Capture(call_stand, store)
 
 
 def _servers(ticket: TicketAuth) -> list[str]:

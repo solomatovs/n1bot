@@ -13,7 +13,8 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
-    "pytest>=8",
+    "boba-stand==0.0.26.dev4",
+    "pytest>=9.1,<10",
 ]
 
 [tool.setuptools.packages.find]

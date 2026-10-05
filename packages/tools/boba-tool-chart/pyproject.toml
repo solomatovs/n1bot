@@ -9,7 +9,7 @@ description = "Инструмент visualize: Plotly figure-спека, про�
 requires-python = ">=3.11,<4"
 dependencies = [
     "boba-toolkit==0.0.26.dev4",
-    "pydantic>=2.10,<3",
+    "pydantic>=2.12,<3",
 ]
 
 # зависимости payload'а: нужны только внутри песочницы,
@@ -22,9 +22,12 @@ payload = [
     "plotly>=5.24,<6",
 ]
 dev = [
+    "boba-config==0.0.26.dev4",
+    "boba-runtime==0.0.26.dev4",
+    "omegaconf>=2.3,<3",
     "boba-sandbox==0.0.26.dev4",
     "boba-stand==0.0.26.dev4",
-    "pytest>=8",
+    "pytest>=9.1,<10",
 ]
 
 [tool.setuptools.packages.find]

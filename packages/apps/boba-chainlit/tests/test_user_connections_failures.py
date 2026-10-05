@@ -42,12 +42,9 @@ from boba.runtime.refresh import BusRefreshSignal
 from boba.stand.connections import StandUserConnections
 from boba.stand.site import Stand
 from boba.stand_core.context import CallStand
-from boba.tool.pg.tools import PgToolConfig
-from boba.tool.web.tools import WebToolsConfig
-from boba.toolkit.facade import Injected, UserConnection
+from boba.toolkit.facade import UserConnection
 from boba.toolkit.result import FailureResult, ToolArtifact
 from boba.toolrun.errors import ToolErrorGuard
-from boba.toolrun.injected import InjectedConfig, StaticConfig
 from boba.transport.http.connection import HttpConnection
 
 pytestmark = pytest.mark.anyio
@@ -249,28 +246,21 @@ class Session:
 class Guarded:
     """Инструмент с обвязкой соединений и охранником ошибок, как в приложении.
 
-    Создаётся фикстурой guarded из стенда контекста вызова, конфига и
-    хранилища соединений теста.
+    Создаётся фикстурой guarded из стенда контекста вызова и хранилища
+    соединений теста.
     """
 
-    def __init__(
-        self, calls: CallStand, service_raw_config: Any, store: ConnectionStore
-    ) -> None:
+    def __init__(self, calls: CallStand, store: ConnectionStore) -> None:
         self._calls = calls
-        self._raw = service_raw_config
         self._store = store
 
     def pg(self, tickets: SsoTickets | None):
         schema = create_model(
             "GuardedPgArgs",
             connection=(Annotated[PostgresConfig, UserConnection], ...),
-            cfg=(Annotated[PgToolConfig, Injected], ...),
         )
 
-        def resolve(name: str, annotation: Any) -> object:
-            return bind(self._raw, path="tool.pg", model=PgToolConfig)
-
-        return self._build(schema, tickets, resolve)
+        return self._build(schema, tickets)
 
     def web(self):
         """Как web_fetch_page: соединение параметром, покрытие хоста URL
@@ -279,11 +269,7 @@ class Guarded:
             "GuardedWebArgs",
             url=(str, ...),
             connection=(Annotated[HttpConnection, UserConnection], ...),
-            cfg=(Annotated[WebToolsConfig, Injected], ...),
         )
-
-        def resolve(name: str, annotation: Any) -> object:
-            return bind(self._raw, path="tool.web", model=WebToolsConfig)
 
         async def body(**kwargs: object) -> tuple[str, dict[str, object]]:
             connection = kwargs["connection"]
@@ -297,9 +283,9 @@ class Guarded:
             connection.for_url(url)
             return "ok", kwargs
 
-        return self._build(schema, None, resolve, body)
+        return self._build(schema, None, body)
 
-    def _build(self, schema, tickets, resolve, body=None) -> StructuredTool:
+    def _build(self, schema, tickets, body=None) -> StructuredTool:
         async def echo(**kwargs: object) -> tuple[str, dict[str, object]]:
             return "ok", kwargs
 
@@ -325,7 +311,6 @@ class Guarded:
             ConnectionTypes.discover,
             self._calls.contexts,
         ).bind_all([tool])
-        InjectedConfig(resolve, StaticConfig()).bind_all([tool])
         ToolErrorGuard().guard_all([tool])
         return tool
 
@@ -346,10 +331,8 @@ class Guarded:
 
 
 @pytest.fixture
-def guarded(
-    call_stand: CallStand, service_raw_config: Any, store: ConnectionStore
-) -> Guarded:
-    return Guarded(call_stand, service_raw_config, store)
+def guarded(call_stand: CallStand, store: ConnectionStore) -> Guarded:
+    return Guarded(call_stand, store)
 
 
 def _expect(result: FailureResult, kind: str, *phrases: str) -> None:
@@ -680,7 +663,7 @@ class TestNoConnections:
         broken = ConnectionStore(cfg, ConnectionTypes.discover(), closed)
 
         result = await Guarded.failure(
-            Guarded(call_stand, service_raw_config, broken).pg(None), connection="main"
+            Guarded(call_stand, broken).pg(None), connection="main"
         )
 
         _expect(result, "ConnectionStoreError", "for subject in schema", "failed")
@@ -737,7 +720,7 @@ class TestNoConnections:
         foreign = ConnectionStore(cfg, ConnectionTypes.discover(), pool)
 
         result = await Guarded.failure(
-            Guarded(call_stand, service_raw_config, foreign).pg(None), connection="main"
+            Guarded(call_stand, foreign).pg(None), connection="main"
         )
 
         _expect(result, "SecretCryptoError", "decrypting a stored secret failed")

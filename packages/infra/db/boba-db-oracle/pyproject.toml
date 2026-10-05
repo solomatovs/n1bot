@@ -8,7 +8,7 @@ version = "0.0.26.dev4"
 description = "Boba Oracle: тип соединения OracleConfig (пароль или wallet), адреса объектов, thin-клиент python-oracledb."
 requires-python = ">=3.11,<4"
 dependencies = [
-    "pydantic>=2.10,<3",
+    "pydantic>=2.12,<3",
     "boba-toolkit==0.0.26.dev4",
     "boba-connections==0.0.26.dev4",
 ]
@@ -28,8 +28,13 @@ payload = [
 dev = [
     "boba-db-postgres==0.0.26.dev4",
     "boba-stand==0.0.26.dev4",
-    "pytest>=8",
+    "pytest>=9.1,<10",
 ]
+
+[tool.boba.extras]
+"boba.db.oracle.payload" = "payload"
+"boba.db.oracle.arrow_stream" = "payload"
+"boba.db.oracle.trace" = "payload"
 
 [tool.setuptools.packages.find]
 where = ["src"]

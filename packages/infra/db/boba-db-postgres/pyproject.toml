@@ -8,14 +8,14 @@ version = "0.0.26.dev4"
 description = "Boba PostgreSQL: PostgresConfig + AsyncPostgresPool — единственный async-пул системы, с kerberos-кредами на подключение."
 requires-python = ">=3.11,<4"
 dependencies = [
-    "pydantic>=2.10,<3",
+    "pydantic>=2.12,<3",
     "boba-catalog==0.0.26.dev4",
     "boba-connections==0.0.26.dev4",
     "boba-kerberos==0.0.26.dev4",
     "boba-cancellation==0.0.26.dev4",
     "boba-krb==0.0.26.dev4",
     "boba-toolkit==0.0.26.dev4",
-    "psycopg[binary,pool]>=3.3",
+    "psycopg[binary,pool]>=3.3,<4",
 ]
 
 [project.entry-points."boba.addresses"]
@@ -34,7 +34,7 @@ arrow = [
 ]
 dev = [
     "boba-stand==0.0.26.dev4",
-    "pytest>=8",
+    "pytest>=9.1,<10",
 ]
 
 [tool.boba.extras]

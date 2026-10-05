@@ -22,15 +22,16 @@ RELEASE_DIR     := $(SRC_DIR)/release
 APPS            := chainlit studio mcp
 APP             ?=
 
-PACKAGES_chainlit = boba-chainlit boba-llm-http boba-llm-onnx[generation] boba-llm-fastembed
+# чат инструментов не исполняет: песочницы, cgroup и моделей плагинов у него нет
+PACKAGES_chainlit = boba-chainlit boba-llm-http boba-llm-onnx[generation]
 IMPORTS_chainlit := boba.chainlit onnxruntime_genai
 MODULE_chainlit  := boba.chainlit.main
 STAGE_chainlit   := runtime-chainlit
 HEALTH_chainlit  := /
 PORT_chainlit    := 8501
 PREFIX_chainlit  := /boba
-CGROUP_chainlit  := boba-sandbox
-MODELS_chainlit  := onnx-genai fastembed rapidocr
+SANDBOX_chainlit :=
+MODELS_chainlit  := onnx-genai
 PARTS_chainlit   := app_root/public app_root/public/page.js app_root/public/vendor \
                     app_root/ui/index.html app_root/ui/index.js
 
@@ -41,6 +42,7 @@ STAGE_studio     := runtime-studio
 HEALTH_studio    := /api/openapi.json
 PORT_studio      := 8502
 PREFIX_studio    := /boba-studio
+SANDBOX_studio   := yes
 CGROUP_studio    := boba-sandbox-studio
 MODELS_studio    := fastembed rapidocr
 PARTS_studio     := app_root/public app_root/public/workflow app_root/public/vendor
@@ -53,6 +55,7 @@ STAGE_mcp        := runtime-mcp
 HEALTH_mcp       := /health
 PORT_mcp         := 8650
 PREFIX_mcp       :=
+SANDBOX_mcp      := yes
 CGROUP_mcp       := boba-sandbox-mcp
 MODELS_mcp       := fastembed rapidocr
 PARTS_mcp        :=
@@ -64,8 +67,11 @@ APP_STAGE         = $(STAGE_$(APP))
 APP_HEALTH        = $(HEALTH_$(APP))
 APP_PORT          = $(PORT_$(APP))
 APP_PREFIX        = $(PREFIX_$(APP))
+APP_SANDBOX       = $(SANDBOX_$(APP))
 APP_CGROUP        = $(CGROUP_$(APP))
 APP_MODELS        = $(MODELS_$(APP))
+# юнит systemd: приложению с песочницей нужны устройства, namespaces и делегирование cgroup
+APP_UNIT          = $(CONF_DIR)/$(if $(APP_SANDBOX),boba-sandbox.service,boba.service)
 
 ifneq ($(APP),)
 ifeq ($(filter $(APP),$(APPS)),)
@@ -223,15 +229,20 @@ WEB_DEV_WAIT    ?= 180
 SANDBOX_PARTS   := $(SANDBOX_DIR)/third/bin/bwrap $(SANDBOX_DIR)/third/bin/fuse2fs \
                    $(SANDBOX_DIR)/third/lib/libstdc++.so.6 $(SANDBOX_DIR)/third/lib/libgcc_s.so.1 \
                    $(SANDBOX_DIR)/workspace.ext4
+# библиотеки времени исполнения колёс: нужны любому приложению
+RUNTIME_LIBS    := $(SANDBOX_DIR)/third/lib/libstdc++.so.6 $(SANDBOX_DIR)/third/lib/libgcc_s.so.1
+# приложения, которые исполняют инструменты в песочнице
+SANDBOX_APPS    := $(foreach app,$(APPS),$(if $(SANDBOX_$(app)),$(app)))
 # mke2fs из сборки: им make делает workspace.ext4 и rootfs плагинов вне docker build
 SANDBOX_TOOLS   := $(SANDBOX_DIR)/tools/mke2fs $(SANDBOX_DIR)/tools/mke2fs.conf
 
-RELEASE_PARTS    = sandbox/plugins sandbox/workspace.ext4 third/bin/bwrap third/bin/fuse2fs \
+RELEASE_SANDBOX := sandbox/plugins sandbox/workspace.ext4 third/bin/bwrap third/bin/fuse2fs
+RELEASE_PARTS    = $(if $(APP_SANDBOX),$(RELEASE_SANDBOX)) \
                    third/lib/libstdc++.so.6 third/lib/libgcc_s.so.1 app/bin \
                    $(PARTS_$(APP)) $(APP_MODELS:%=models/%)
 
 # каталоги krb dev-деревьев: точки монтирования в образе корня плагина
-SANDBOX_DEV_KRB := $(foreach app,$(APPS),$(SRC_DIR)/compose/$(app)/conf/krb)
+SANDBOX_DEV_KRB := $(foreach app,$(SANDBOX_APPS),$(SRC_DIR)/compose/$(app)/conf/krb)
 
 # --- docker ---------------------------------------------------------------------
 
@@ -355,7 +366,8 @@ define HELP
   oracledb-wheel        только колесо python-oracledb (стадия oracledb-wheel -> src/oracledb)
 
 Общее для приложений (сеть — только реестры pypi/npm, результат файлами в src/):
-  sandbox               bwrap, fuse2fs и шаблон workspace.ext4 -> src/sandbox
+  sandbox               bwrap, fuse2fs, шаблон workspace.ext4 и библиотеки колёс -> src/sandbox;
+                        песочница нужна приложениям, исполняющим инструменты: $(SANDBOX_APPS)
   plugin-rootfs         rootfs.ext4 одного плагина: PLUGIN=<пакет>
   plugin-rootfs-all     rootfs.ext4 всех плагинов с entry points boba.tools
   web                   фронт для dev-деревьев: web-chainlit и web-studio
@@ -686,10 +698,16 @@ build: version-check
 	echo "== образ $(IMAGE), релиз внутри него лежит в $(DEST_DIR) =="
 	$(call docker-stage,$(APP_STAGE),$(IMAGE),--tag boba-$(APP):latest $(APP_ARGS))
 
+# бинды образов песочницы для проверки приложения, которое исполняет инструменты
+TEST_SANDBOX_BINDS = -v "$(SANDBOX_DIR)/plugins:$(DEST_DIR)/sandbox/plugins:ro" \
+                     -v "$(SANDBOX_DIR)/workspace.ext4:$(DEST_DIR)/sandbox/workspace.ext4:ro"
+
 # проверка релиза внутри образа тем же окружением, что уедет в compose и systemd
 test: build
-	@$(call check,$(SANDBOX_PARTS),запусти: make sandbox)
-	$(call check,$(SANDBOX_DIR)/plugins,запусти: make plugin-rootfs-all)
+	@if [ -n "$(APP_SANDBOX)" ]; then
+	    $(call check,$(SANDBOX_PARTS),запусти: make sandbox)
+	    $(call check,$(SANDBOX_DIR)/plugins,запусти: make plugin-rootfs-all)
+	fi
 	echo "== проверка релиза $(VERSION) в образе $(IMAGE) =="
 	# окружение контейнера — шаблон conf/boba.env с путями образа, живёт только на время проверки
 	env_file=$$(mktemp)
@@ -698,36 +716,45 @@ test: build
 	# модели и песочница в образе не лежат, в релизе они рядом: подставляем их биндами
 	docker run --rm -i --env-file "$$env_file" --entrypoint sh                              \
 	    $(foreach model,$(APP_MODELS),-v "$(DEPS_DIR)/$(model):$(DEST_DIR)/models/$(model):ro") \
-	    -v "$(SANDBOX_DIR)/plugins:$(DEST_DIR)/sandbox/plugins:ro"                            \
-	    -v "$(SANDBOX_DIR)/workspace.ext4:$(DEST_DIR)/sandbox/workspace.ext4:ro"              \
+	    $(if $(APP_SANDBOX),$(TEST_SANDBOX_BINDS))                                            \
 	    $(IMAGE)                                                                              \
-	    -c '"$$PYTHONHOME/bin/python3" - --app $(APP) --names "$(DEST_DIR)/app/packages.txt"' < "$(TEST_DIR)/bobacheck.py"
+	    -c '"$$PYTHONHOME/bin/python3" - --app $(APP) $(if $(APP_SANDBOX),--sandbox) --names "$(DEST_DIR)/app/packages.txt"' < "$(TEST_DIR)/bobacheck.py"
 
 # дерево установки из готового образа: пути и шебанги переводятся с DEST_DIR на INSTALL_DIR
 release:
 	@docker image inspect "$(RELEASE_IMAGE)" > /dev/null
 	$(call check,$(INPUTS),запусти: make fetch)
-	$(call check,$(SANDBOX_PARTS),запусти: make sandbox)
-	$(call check,$(SANDBOX_DIR)/plugins,запусти: make plugin-rootfs-all)
+	if [ -n "$(APP_SANDBOX)" ]; then
+	    $(call check,$(SANDBOX_PARTS),запусти: make sandbox)
+	    $(call check,$(SANDBOX_DIR)/plugins,запусти: make plugin-rootfs-all)
+	fi
 	rm -rf "$(OUT)"
-	mkdir -p "$(OUT)/conf" "$(OUT)/sandbox" "$(OUT)/models"
+	mkdir -p "$(OUT)/conf" "$(OUT)/models"
 	$(call image-copy,$(RELEASE_IMAGE),$(DEST_DIR)/.,$(OUT)/)
-	cp -a "$(SANDBOX_DIR)/plugins" "$(OUT)/sandbox/plugins"
-	cp -a "$(SANDBOX_DIR)/workspace.ext4" "$(OUT)/sandbox/workspace.ext4"
+	if [ -n "$(APP_SANDBOX)" ]; then
+	    mkdir -p "$(OUT)/sandbox"
+	    cp -a "$(SANDBOX_DIR)/plugins" "$(OUT)/sandbox/plugins"
+	    cp -a "$(SANDBOX_DIR)/workspace.ext4" "$(OUT)/sandbox/workspace.ext4"
+	fi
 	for model in $(APP_MODELS); do
 	    cp -al "$(DEPS_DIR)/$$model" "$(OUT)/models/$$model"
 	done
 	sed -i "1s|^#!.*python3.*|#!$(INSTALL_DIR)/third/bin/python3|" "$(OUT)/app/bin"/*
 	export INSTALL_DIR="$(INSTALL_DIR)" BOBA_APP="$(APP)" BOBA_MODULE="$(APP_MODULE)"
 	$(call app-env,$(INSTALL_DIR),$(DATA_DIR)) > "$(OUT)/conf/boba.env"
-	envsubst '$${INSTALL_DIR} $${BOBA_DATA} $${BOBA_APP} $${BOBA_MODULE}' < "$(CONF_DIR)/boba.service" > "$(OUT)/boba-$(APP).service"
-	install -m 0755 "$(CONF_DIR)/cgroup-init.sh" "$(OUT)/cgroup-init.sh"
+	envsubst '$${INSTALL_DIR} $${BOBA_DATA} $${BOBA_APP} $${BOBA_MODULE}' < "$(APP_UNIT)" > "$(OUT)/boba-$(APP).service"
 	chmod go-w "$(OUT)"
-	chmod -R go-w "$(OUT)/third" "$(OUT)/sandbox"
+	chmod -R go-w "$(OUT)/third"
+	if [ -n "$(APP_SANDBOX)" ]; then
+	    install -m 0755 "$(CONF_DIR)/cgroup-init.sh" "$(OUT)/cgroup-init.sh"
+	    chmod -R go-w "$(OUT)/sandbox"
+	fi
 	$(call check,$(addprefix $(OUT)/,$(RELEASE_PARTS)),собери заново: make build release APP=$(APP))
 	echo ">>> релиз готов: $(OUT) ($$(du -sh --apparent-size "$(OUT)" | cut -f1))"
 	echo "    conf/config.toml в дереве нет — положи его при установке"
-	echo "    cgroup:    BOBA_CGROUP=$(APP_CGROUP) $(INSTALL_DIR)/cgroup-init.sh"
+	if [ -n "$(APP_SANDBOX)" ]; then
+	    echo "    cgroup:    BOBA_CGROUP=$(APP_CGROUP) $(INSTALL_DIR)/cgroup-init.sh"
+	fi
 	echo "    установка: cp -a $(OUT)/. $(INSTALL_DIR)/"
 
 # рабочее дерево приложения для отладки и docker compose: раскладка релиза, но из
@@ -735,21 +762,26 @@ release:
 dev: OUT = $(SRC_DIR)/compose/$(APP)
 dev: web-$(APP)
 	@$(call check,$(INPUTS),запусти: make fetch)
-	$(call check,$(SANDBOX_PARTS),запусти: make sandbox)
+	$(call check,$(RUNTIME_LIBS),запусти: make sandbox)
+	if [ -n "$(APP_SANDBOX)" ]; then
+	    $(call check,$(SANDBOX_PARTS),запусти: make sandbox)
+	fi
 	echo "== рантайм $(APP) в $(OUT) =="
-	mkdir -p "$(OUT)/conf" "$(OUT)/data/workspace" "$(OUT)/data/tool-logs" "$(OUT)/data/dump" "$(OUT)/data/krb"
-	# в dev веса эмбеддера нужны process-режиму отладки; релиз их не таскает
+	mkdir -p "$(OUT)/conf" "$(OUT)/data/dump" "$(OUT)/data/krb"
 	$(call refill,$(OUT)/models)
 	for model in $(APP_MODELS); do
 	    cp -al "$(DEPS_DIR)/$$model" "$(OUT)/models/$$model"
 	done
-	install -m 0755 "$(CONF_DIR)/cgroup-init.sh" "$(OUT)/cgroup-init.sh"
-	# dev-хост работает process-режимом: образы песочницы compose монтирует из src/sandbox,
-	# но bwrap и fuse2fs нужны хранилищу приложения (workspace.ext4 канваса)
 	rm -rf "$(OUT)/sandbox"
 	$(call refill,$(OUT)/third)
-	cp -al "$(SANDBOX_DIR)/third/bin" "$(OUT)/third/bin"
 	cp -al "$(SANDBOX_DIR)/third/lib" "$(OUT)/third/lib"
+	# образы песочницы compose монтирует из src/sandbox; bwrap и fuse2fs нужны и
+	# process-режиму отладки: хранилище файлов монтирует ими workspace.ext4
+	if [ -n "$(APP_SANDBOX)" ]; then
+	    mkdir -p "$(OUT)/data/workspace" "$(OUT)/data/tool-logs"
+	    install -m 0755 "$(CONF_DIR)/cgroup-init.sh" "$(OUT)/cgroup-init.sh"
+	    cp -al "$(SANDBOX_DIR)/third/bin" "$(OUT)/third/bin"
+	fi
 	chmod -R go-w "$(OUT)/third"
 	$(call refill,$(OUT)/app_root)
 	$(DEV_ROOT_$(APP))
@@ -757,7 +789,9 @@ dev: web-$(APP)
 	chmod go-w "$(OUT)"
 	$(call check,$(OUT)/conf/config.toml,положи конфиг приложения $(APP))
 	echo ">>> дерево готово: $(OUT)"
-	echo "    cgroup:  BOBA_CGROUP=$(APP_CGROUP) BOBA_USER=<пользователь> $(OUT)/cgroup-init.sh"
+	if [ -n "$(APP_SANDBOX)" ]; then
+	    echo "    cgroup:  BOBA_CGROUP=$(APP_CGROUP) BOBA_USER=<пользователь> $(OUT)/cgroup-init.sh"
+	fi
 	echo "    debug:   python -m $(APP_MODULE) --config $(OUT)/conf/config.toml"
 	echo "    compose: cd $(OUT) && docker compose up -d"
 
@@ -766,8 +800,8 @@ endif
 # --- прочее ---------------------------------------------------------------------
 
 # всё целиком: артефакты, песочница, образы корней плагинов, фронт, образы и
-# compose-деревья всех приложений. Compose монтирует app_root поверх образа, поэтому
-# фронт нужен и в дереве, а не только в образе
+# compose-деревья всех приложений. Compose studio монтирует app_root поверх образа,
+# поэтому фронт нужен и в дереве, а не только в образе
 .PHONY: all
 all: fetch sandbox plugin-rootfs-all web
 	@$(MAKE) -f "$(MAKEFILE)" build APP=
