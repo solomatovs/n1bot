@@ -90,10 +90,13 @@ class SessionCookie:
 
 class ProxyRequests:
     """Запрос proxy-входа из запроса starlette: заголовки по именам из
-    ProxyHeaderNames и адрес клиента."""
+    ProxyHeaderNames и адрес клиента. Создаётся маршрутом входа proxy
+    приложения и лежит у него полем."""
 
-    @classmethod
-    def of(cls, request: Request, names: ProxyHeaderNames) -> ProxyRequest:
+    def __init__(self) -> None:
+        self._requests = SsoRequests()
+
+    def of(self, request: Request, names: ProxyHeaderNames) -> ProxyRequest:
         roles = ""
         if names.roles:
             roles = request.headers.get(names.roles, "")
@@ -113,38 +116,36 @@ class ProxyRequests:
             roles=roles,
             profiles=profiles,
             profile=profile,
-            client=SsoRequests.client_of(request),
+            client=self._requests.client_of(request),
         )
 
 
 class SsoResponses:
-    """Ответы SPNEGO-обмена: 401 Negotiate — браузер домена повторит запрос сам."""
+    """Ответы SPNEGO-обмена: 401 Negotiate — браузер домена повторит запрос сам.
+    Создаётся маршрутом входа kerberos приложения и лежит у него полем."""
 
     NEGOTIATE: ClassVar[str] = "Negotiate"
     PAGE: ClassVar[str] = (
         '<!doctype html><meta http-equiv="refresh" content="0;url={url}">'
     )
 
-    @classmethod
-    def headers(cls) -> dict[str, str]:
-        return {RequestHeader.WWW_AUTHENTICATE.value: cls.NEGOTIATE}
+    def headers(self) -> dict[str, str]:
+        return {RequestHeader.WWW_AUTHENTICATE.value: self.NEGOTIATE}
 
-    @classmethod
-    def challenge(cls, login_url: str) -> Response:
+    def challenge(self, login_url: str) -> Response:
         """401 со страницей-переходом: без тикета браузер уйдёт на логин с кодом."""
         url = html.escape(SsoErrorCode.TICKET.login_url(login_url), quote=True)
 
         return Response(
-            content=cls.PAGE.format(url=url),
+            content=self.PAGE.format(url=url),
             status_code=401,
-            headers=cls.headers(),
+            headers=self.headers(),
             media_type="text/html",
         )
 
-    @classmethod
-    def silent_challenge(cls) -> Response:
+    def silent_challenge(self) -> Response:
         """401 без страницы: ответ читает скрипт обновления, не человек."""
-        return Response(status_code=401, headers=cls.headers())
+        return Response(status_code=401, headers=self.headers())
 
 
 class RequestTokens:
@@ -346,20 +347,19 @@ class DomainErrorMiddleware:
 
 
 class SsoRequests:
-    """Запрос SPNEGO-обмена из запроса starlette: заголовки и адрес клиента."""
+    """Запрос SPNEGO-обмена из запроса starlette: заголовки и адрес клиента.
+    Создаётся маршрутом входа приложения и лежит у него полем."""
 
-    @classmethod
-    def of(cls, request: Request) -> SsoRequest:
+    def of(self, request: Request) -> SsoRequest:
         mark = request.headers.get(OwnRequest.HEADER, "")
 
         return SsoRequest(
             authorization=request.headers.get(RequestHeader.AUTHORIZATION, ""),
             own_request=OwnRequest.asked(mark),
-            client=cls.client_of(request),
+            client=self.client_of(request),
         )
 
-    @staticmethod
-    def client_of(request: Request) -> str:
+    def client_of(self, request: Request) -> str:
         """Лучший идентификатор клиента: реальный IP за прокси, иначе peer.
 
         X-Forwarded-For и X-Real-IP доверяются, потому что nginx перед

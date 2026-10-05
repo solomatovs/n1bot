@@ -29,8 +29,6 @@ services:
     hostname: boba-mcp2
     container_name: boba-mcp2
     env_file: ./conf2/boba.env
-    environment:
-      BOBA_INSTANCE_ID: mcp2
     volumes:
       - ./conf2:/app/boba/conf:ro
       - ./conf2/krb/krb5.conf:/etc/krb5.conf:ro

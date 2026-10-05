@@ -19,20 +19,29 @@ from pathlib import Path
 from uuid import UUID
 
 import uvicorn
+from fastmcp.server.auth import AccessToken
 from pydantic import BaseModel, ConfigDict, Field, SecretStr
 
 from boba.access import ProfileGrant
+from boba.auth.credentials import NoRefresh
+from boba.auth.proxy import ProxyAssertions
 from boba.cancellation import StopReason
 from boba.connections.sealed import SealKeys
 from boba.identity.context import CallContexts
-from boba.mcp_server.auth import SessionAuthProvider, TokenClaim
+from boba.mcp_server.auth import (
+    AuthServer,
+    McpClient,
+    ServiceAuth,
+    ServiceTokens,
+    TokenClaim,
+)
 from boba.mcp_server.server import (
     EndpointCatalog,
     McpEndpoints,
     RunLimits,
 )
 from boba.runtime import providers
-from boba.runtime.config import AppName, ProcessConfig
+from boba.runtime.config import ProcessConfig
 from boba.runtime.di import Container
 from boba.runtime.plugins import EntryPointPlugins
 from boba.runtime.storage import LocalStorageConfig
@@ -72,7 +81,7 @@ class McpToken(BaseModel):
 
 class McpSection(BaseModel):
     """Секция [mcp]: адрес сервиса, общий путь endpoint'ов MCP, пределы
-    запусков, endpoint'ы и готовые токены доступа. Endpoint
+    запусков, endpoint'ы, готовые токены доступа и доверенные клиенты. Endpoint
     [mcp.endpoints.<имя>] — набор инструментов (tools) и роли, которым он
     доступен (roles); отвечает на `{path}/{имя}`. Вход — секции [auth.*]."""
 
@@ -82,9 +91,15 @@ class McpSection(BaseModel):
     port: int = Field(gt=0, lt=65536)
     path: str = Field(min_length=1)
     limits: RunLimits
+    public_url: str = Field(min_length=1)
+    """Адрес сервиса, каким его видят клиенты (за nginx — с префиксом): от
+    него строятся метаданные OAuth, адреса входа и издатель токена. Вне
+    localhost — только https."""
     endpoints: dict[str, ProfileGrant] = Field(min_length=1)
     tokens: dict[str, McpToken]
     """Токены доступа по именам записей конфига."""
+    clients: dict[str, McpClient]
+    """Доверенные клиенты OAuth по client_id: им разрешён вход proxy."""
 
 
 class McpAppConfig(ProcessConfig):
@@ -105,21 +120,20 @@ class McpHost:
         self._container = Container(level="app")
         self._container.provide(providers.get_process_config, config)
         self._container.provide(providers.plugin_table, EntryPointPlugins.discover)
-        self._container.provide(providers.app_name, AppName.MCP)
         self._container.provide(providers.seal_keys, SealKeys())
         self._container.provide(providers.call_contexts, CallContexts())
+        # сигнал «обнови билет входа» слушает страница чата: у сервиса её нет
+        self._container.provide(providers.refresh_signal, NoRefresh())
         # гранты и каталог профилей входа у сервиса — его endpoint'ы, а не
         # профили чата; роль вошедшего решает только доступ к endpoint'у
-        endpoints = EndpointCatalog(config.mcp.endpoints)
-        self._container.provide(providers.tool_grants, endpoints.grants())
-        self._container.provide(providers.profile_catalog, endpoints)
-        self._container.eager(providers.message_bus)
+        self._endpoints = EndpointCatalog(config.mcp.endpoints)
+        self._container.provide(providers.tool_grants, self._endpoints.grants())
+        self._container.provide(providers.profile_catalog, self._endpoints)
         self._container.eager(providers.connection_types)
         self._container.eager(providers.call_ambient)
         self._container.eager(providers.runs)
         self._container.eager(providers.call_journals)
         self._container.eager(providers.credential_source)
-        self._container.eager(providers.session_tokens)
         self._container.eager(providers.user_directory)
         self._container.eager(providers.sign_ins)
         self._container.eager(providers.tool_launchers)
@@ -132,12 +146,7 @@ class McpHost:
         Container.set_root(self._container)
         await self._container.start()
         try:
-            auth = SessionAuthProvider(
-                self._container.resolved(providers.sign_ins),
-                self._container.resolved(providers.session_tokens),
-                self._config.proxy(),
-                self._tokens(section),
-            )
+            auth = self._auth(section)
             endpoints = McpEndpoints(
                 self._container.resolved(providers.tool_registry),
                 self._container.resolved(providers.runs),
@@ -168,13 +177,56 @@ class McpHost:
             Container.set_root(None)
             await self._container.aclose()
 
-    @staticmethod
-    def _tokens(section: McpSection) -> dict[str, dict[str, object]]:
-        tokens: dict[str, dict[str, object]] = {}
-        for declared in section.tokens.values():
-            tokens[declared.token.get_secret_value()] = declared.claims()
+    def _auth(self, section: McpSection) -> ServiceAuth:
+        """Вход сервиса: сервер авторизации над способами входа [auth] и
+        проверяющие токена endpoint'ов."""
+        session = self._config.session
+        public_url = section.public_url.rstrip("/")
+        generation = session.session_generation()
+        logger.info("session generation of this process: %s", generation)
+        tokens = ServiceTokens(
+            public_url,
+            session.auth_secret,
+            session.session_ttl_sec,
+            session.session_max_sec,
+            generation,
+        )
+        assertions = None
+        if proxy := self._config.proxy():
+            assertions = ProxyAssertions(
+                proxy.secret.get_secret_value(), proxy.max_skew_sec
+            )
 
-        return tokens
+        resources: list[str] = []
+        for name in section.endpoints:
+            resources.append(f"{public_url}{section.path}/{name}")
+
+        server = AuthServer(
+            public_url,
+            self._container.resolved(providers.sign_ins),
+            tokens,
+            assertions,
+            section.clients,
+            resources,
+        )
+
+        return ServiceAuth(public_url, server, tokens, self._static(section))
+
+    def _static(self, section: McpSection) -> dict[str, AccessToken]:
+        """Готовые токены конфига как вошедшие: области — endpoint'ы,
+        выданные ролям токена."""
+        static: dict[str, AccessToken] = {}
+        for declared in section.tokens.values():
+            token = declared.token.get_secret_value()
+            granted = self._endpoints.granted_by_roles(frozenset(declared.roles))
+            static[token] = AccessToken(
+                token=token,
+                client_id=declared.login,
+                scopes=sorted(granted),
+                claims=declared.claims(),
+            )
+
+        return static
 
 
 class McpEntry:

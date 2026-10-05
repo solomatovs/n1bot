@@ -38,7 +38,6 @@ from boba.identity.sso import OwnRequest, SsoChallenge
 from boba.identity.token import CookieSpec, SessionRenewal
 from boba.krb import KerberosEnv, ServiceTicketIssuer
 from boba.runtime.config import RuntimeConfig
-from boba.runtime.http import SsoRequests
 from boba.runtime.users import UsersTable
 from boba.stand.signin import SignInStand
 from boba.stand.site import Stand
@@ -187,7 +186,7 @@ class Sso:
             "headers": [(b"authorization", b"Negotiate " + base64.b64encode(token))],
             "client": ("127.0.0.1", 1234),
         }
-        outcome = await auth.auth.by_spnego(SsoRequests.of(Request(scope)))
+        outcome = await auth.auth.by_spnego(auth._requests.of(Request(scope)))
         if isinstance(outcome, SsoChallenge):
             raise AssertionError(f"SPNEGO must sign the browser in: {outcome.reason}")
 

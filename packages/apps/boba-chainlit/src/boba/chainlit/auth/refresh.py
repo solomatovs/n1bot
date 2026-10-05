@@ -90,6 +90,8 @@ class SessionRefresh:
         self._sessions = sessions
         self._script_path = app_root / self.SCRIPT_PATH
         self._tokens = RequestTokens(auth.cookie().name)
+        self._requests = SsoRequests()
+        self._responses = SsoResponses()
         self._logger = logging.getLogger(SessionRefresh.__name__)
 
     @property
@@ -112,13 +114,13 @@ class SessionRefresh:
     async def refresh(self, request: Request) -> Response:
         """204 + новая cookie; 401 Negotiate — браузер повторит сам; 403 — разлогин."""
         token = self._tokens.of_request(request)
-        outcome = await self._auth.refresh_session(SsoRequests.of(request), token)
+        outcome = await self._auth.refresh_session(self._requests.of(request), token)
         if isinstance(outcome, SsoRefused):
             self._logger.info("session refresh refused: %s", outcome.reason)
             return Response(status_code=403)
 
         if isinstance(outcome, SsoChallenge):
-            return SsoResponses.silent_challenge()
+            return self._responses.silent_challenge()
 
         return self._adopted(request, outcome)
 

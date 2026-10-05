@@ -1,9 +1,14 @@
-"""Вход по доверенному заголовку: бэкенд партнёра называет логин и подписывает
-запрос общим секретом, роли — провайдерами roles.* конфига.
+"""Вход по утверждению доверенного бэкенда: он называет логин пользователя и
+подтверждает запрос общим секретом, роли — провайдерами roles.* конфига.
+Упаковок две: подпись HMAC по заголовкам (ProxySignature, чат и studio) и
+подписанный JWT для обмена на токен (ProxyAssertions, сервис boba-mcp); допуск
+после проверки — общий (HmacProxySignIn.admit).
 
 Ошибки:
 AuthenticationError — подпись не сходится, метка времени вне окна, заголовки
     пусты.
+AssertionRejectedError — утверждение JWT не принято: подпись, срок, издатель,
+    получатель либо повтор.
 AuthorizationError — адрес клиента вне allowed_clients, исключение по логину
     или ни одной роли при require_roles.
 ExternalServiceError — каталог ролей недоступен.
@@ -16,7 +21,13 @@ import hashlib
 import hmac
 import logging
 import time
+from enum import StrEnum
 from ipaddress import ip_address
+from typing import ClassVar
+from uuid import uuid4
+
+import jwt
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from boba.auth.config import ProxyAuthConfig
 from boba.auth.profiles import ProfileProviders
@@ -26,7 +37,14 @@ from boba.identity.errors import AuthenticationError, AuthorizationError
 from boba.identity.session import SignInProvider, UserLogin
 from boba.identity.signin import ProxyRequest, ProxySignIn, SignedIn, SignInMetadata
 
-__all__ = ["HmacProxySignIn", "ProxySignature"]
+__all__ = [
+    "AssertionClaim",
+    "AssertionRejectedError",
+    "HmacProxySignIn",
+    "ProxyAssertion",
+    "ProxyAssertions",
+    "ProxySignature",
+]
 
 logger = logging.getLogger(__name__)
 
@@ -45,6 +63,137 @@ class ProxySignature:
 
     def matches(self, request: ProxyRequest) -> bool:
         return hmac.compare_digest(self.sign(request), request.signature.lower())
+
+
+class AssertionRejectedError(Exception):
+    """Утверждение доверенного бэкенда не принято."""
+
+
+class AssertionClaim(StrEnum):
+    """Имена клеймов и заголовка утверждения (RFC 7523, SEP-990)."""
+
+    TYPE = "oauth-id-jag+jwt"
+    ALGORITHM = "HS256"
+    ROLES = "roles"
+
+
+class ProxyAssertion(BaseModel):
+    """Утверждение доверенного бэкенда о пользователе: кто выпустил (iss и
+    client_id — идентификатор клиента OAuth), о ком (sub — логин), для какого
+    сервера авторизации (aud) и ресурса (resource), с какими ролями пользователь
+    вошёл в бэкенд. Живёт секунды: iat..exp; jti — против повтора."""
+
+    model_config = ConfigDict(frozen=True, extra="ignore")
+
+    iss: str = Field(min_length=1)
+    sub: str = Field(min_length=1)
+    aud: str = Field(min_length=1)
+    client_id: str = Field(min_length=1)
+    resource: str = Field(min_length=1)
+    roles: str = ""
+    jti: str = Field(min_length=1)
+    iat: int
+    exp: int
+
+
+class ProxyAssertions:
+    """Выпуск и проверка утверждения общим секретом [auth.proxy].secret.
+
+    Выпускает клиент (чат) на каждый обмен, проверяет сервер авторизации
+    сервиса boba-mcp в exchange_identity_assertion. Повтор отсекается памятью
+    jti на срок жизни утверждения.
+    """
+
+    TTL_SEC: ClassVar[int] = 60
+
+    def __init__(self, secret: str, max_skew_sec: int) -> None:
+        self._secret = secret
+        self._max_skew_sec = max_skew_sec
+        self._seen: dict[str, int] = {}
+
+    def issue(
+        self, client_id: str, login: str, roles: str, audience: str, resource: str
+    ) -> str:
+        now = int(time.time())
+        claims = ProxyAssertion(
+            iss=client_id,
+            sub=login,
+            aud=audience,
+            client_id=client_id,
+            resource=resource,
+            roles=roles,
+            jti=uuid4().hex,
+            iat=now,
+            exp=now + self.TTL_SEC,
+        )
+
+        return jwt.encode(
+            claims.model_dump(mode="json"),
+            self._secret,
+            algorithm=AssertionClaim.ALGORITHM.value,
+            headers={"typ": AssertionClaim.TYPE.value},
+        )
+
+    def read(self, assertion: str, client_id: str, audience: str) -> ProxyAssertion:
+        """Утверждение клиента client_id для сервера audience; иначе —
+        AssertionRejectedError с причиной."""
+        # издатель в метаданных и у клиента может отличаться завершающим слэшем
+        issuer = audience.rstrip("/")
+        try:
+            header = jwt.get_unverified_header(assertion)
+            raw = jwt.decode(
+                assertion,
+                self._secret,
+                algorithms=[AssertionClaim.ALGORITHM.value],
+                audience=[issuer, f"{issuer}/"],
+                leeway=self._max_skew_sec,
+            )
+            claims = ProxyAssertion.model_validate(raw)
+        except (jwt.PyJWTError, ValidationError) as exc:
+            msg = (
+                f"identity assertion of client {client_id!r} for {audience}: "
+                f"expected an HS256 JWT under [auth.proxy].secret, got {exc}"
+            )
+            raise AssertionRejectedError(msg) from exc
+
+        if header.get("typ") != AssertionClaim.TYPE.value:
+            msg = (
+                f"identity assertion of client {client_id!r}: header typ expects "
+                f"{AssertionClaim.TYPE.value!r}, got {header.get('typ')!r}"
+            )
+            raise AssertionRejectedError(msg)
+
+        if claims.client_id != client_id:
+            msg = (
+                f"identity assertion of {claims.sub!r}: issued to client "
+                f"{claims.client_id!r}, presented by client {client_id!r}"
+            )
+            raise AssertionRejectedError(msg)
+
+        if claims.exp - claims.iat > self.TTL_SEC:
+            msg = (
+                f"identity assertion of {claims.sub!r}: lifetime "
+                f"{claims.exp - claims.iat}s exceeds {self.TTL_SEC}s"
+            )
+            raise AssertionRejectedError(msg)
+
+        self._remember(claims)
+
+        return claims
+
+    def _remember(self, claims: ProxyAssertion) -> None:
+        now = int(time.time())
+        for jti in [jti for jti, until in self._seen.items() if until < now]:
+            del self._seen[jti]
+
+        if claims.jti in self._seen:
+            msg = (
+                f"identity assertion of {claims.sub!r}: jti {claims.jti} is "
+                "presented again"
+            )
+            raise AssertionRejectedError(msg)
+
+        self._seen[claims.jti] = claims.exp + self._max_skew_sec
 
 
 class HmacProxySignIn(ProxySignIn):
@@ -71,6 +220,13 @@ class HmacProxySignIn(ProxySignIn):
         self._check_timestamp(request)
         self._check_signature(request)
 
+        return await self.admit(request)
+
+    async def admit(self, request: ProxyRequest) -> SignedIn:
+        """Допуск по уже подтверждённому запросу: роли и профили. Кто и как
+        подтвердил — дело упаковки: подпись заголовков здесь же либо
+        утверждение JWT у сервера авторизации, где клиента подтверждает его
+        секрет."""
         login = UserLogin.of(request.login)
         facts = self._facts_of(request, login)
         roles = frozenset(await self._roles.admit(facts))

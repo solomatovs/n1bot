@@ -17,7 +17,22 @@ from boba.toolkit.chain import CallAmbient
 from boba.toolrun.registry import ToolRegistry
 from boba.toolrun.streams import CallJournals
 
-__all__ = ["RuntimeRefs"]
+__all__ = ["ExecRefs", "RuntimeRefs"]
+
+
+@dataclass(frozen=True)
+class ExecRefs:
+    """Входы исполнения инструментов: то, из чего загрузчик (ToolLoader)
+    собирает обвязки тел. Собирает провайдер процесса; одинаков у чата,
+    studio и сервиса boba-mcp — шины, блокировок и хранилища соединений
+    здесь нет."""
+
+    connection_types: Callable[[], ConnectionTypes]
+    credentials: CredentialsRef
+    contexts: CallContexts
+    journals: CallJournals
+    ambient: CallAmbient
+    seal_keys: SealKeys
 
 
 @dataclass(frozen=True)
@@ -53,3 +68,14 @@ class RuntimeRefs:
     """Слушатель шины процесса: состояние для лампочки страницы."""
     message_bus: Callable[[], MessageBus]
     """Шина процесса: api публикует в неё изменения списков пользователя."""
+
+    def execution(self) -> ExecRefs:
+        """Часть входов, нужная загрузчику инструментов."""
+        return ExecRefs(
+            connection_types=self.connection_types,
+            credentials=self.credentials,
+            contexts=self.contexts,
+            journals=self.journals,
+            ambient=self.ambient,
+            seal_keys=self.seal_keys,
+        )

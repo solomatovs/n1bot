@@ -86,7 +86,7 @@ class StandRefs:
         loader = ToolLoader(
             raw,
             EntryPointPlugins.discover(),
-            refs,
+            refs.execution(),
             self.launchers(raw),
             grants,
             (),

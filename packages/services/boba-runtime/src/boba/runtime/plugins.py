@@ -33,7 +33,7 @@ from boba.config import bind
 from boba.connection_broker.sealed import SealedConnectionParams
 from boba.connection_broker.tickets import ServiceTickets
 from boba.runtime.launchers import SectionLaunchers
-from boba.runtime.refs import RuntimeRefs
+from boba.runtime.refs import ExecRefs
 from boba.toolkit.entry import ToolArgv, ToolEntryError
 from boba.toolkit.launcher import ToolLauncher
 from boba.toolkit.manifest import LaunchSpec, ToolPluginManifest
@@ -115,7 +115,7 @@ class ToolLoader:
         self,
         raw_config: DictConfig,
         plugins: Mapping[str, ToolPlugin],
-        refs: RuntimeRefs,
+        refs: ExecRefs,
         launchers: SectionLaunchers,
         grants: ToolGrants,
         surface_hooks: Sequence[CallHooks[Any]] = (),

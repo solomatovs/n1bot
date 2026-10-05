@@ -60,7 +60,7 @@ from boba.runtime.locks import LockReaper, PgLiveLocks
 from boba.runtime.payloads import PgPayloadStore
 from boba.runtime.plugins import ConfigGrants, PluginMeta, PluginTable, ToolLoader
 from boba.runtime.refresh import BusRefreshSignal, LiveSessions, SessionKeeper
-from boba.runtime.refs import RuntimeRefs
+from boba.runtime.refs import ExecRefs, RuntimeRefs
 from boba.runtime.signin import SignInAssembly
 from boba.runtime.threads import ThreadsTable
 from boba.runtime.turns import StaleTurnCloser
@@ -107,7 +107,7 @@ def app_name() -> AppName:
 
 
 def instance_name(
-    config: Annotated[ProcessConfig, Depends(get_process_config)],
+    config: Annotated[RuntimeConfig, Depends(get_runtime_config)],
     app: Annotated[AppName, Depends(app_name)],
 ) -> str:
     """Имя инстанса: узел из [cluster] плюс имя приложения."""
@@ -115,7 +115,7 @@ def instance_name(
 
 
 async def message_bus(
-    config: Annotated[ProcessConfig, Depends(get_process_config)],
+    config: Annotated[RuntimeConfig, Depends(get_runtime_config)],
     app: Annotated[AppName, Depends(app_name)],
     instance: Annotated[str, Depends(instance_name)],
 ) -> AsyncGenerator[MessageBus, None]:
@@ -144,7 +144,7 @@ async def message_bus(
 
 
 async def payload_store(
-    config: Annotated[ProcessConfig, Depends(get_process_config)],
+    config: Annotated[RuntimeConfig, Depends(get_runtime_config)],
     bus: Annotated[MessageBus, Depends(message_bus)],
 ) -> PayloadStore:
     """Хранилище тел сообщений: при local — в памяти рядом с шиной, при postgres —
@@ -288,6 +288,18 @@ def connection_types_ref() -> ConnectionTypes:
     return _root().resolved(connection_types)
 
 
+def exec_refs() -> ExecRefs:
+    """Входы исполнения инструментов: ссылки в корневой контейнер."""
+    return ExecRefs(
+        connection_types=connection_types_ref,
+        credentials=credential_source_ref,
+        contexts=_root().resolved(call_contexts),
+        journals=_root().resolved(call_journals),
+        ambient=_root().resolved(call_ambient),
+        seal_keys=_root().resolved(seal_keys),
+    )
+
+
 def runtime_refs() -> RuntimeRefs:
     """Входы приложения для api и обвязок: ссылки в корневой контейнер."""
     return RuntimeRefs(
@@ -301,7 +313,7 @@ def runtime_refs() -> RuntimeRefs:
         ambient=_root().resolved(call_ambient),
         seal_keys=_root().resolved(seal_keys),
         live_locks=live_locks_ref,
-        heartbeat_sec=_root().resolved(get_process_config).cluster.heartbeat_sec,
+        heartbeat_sec=_root().resolved(get_runtime_config).cluster.heartbeat_sec,
         bus_watch=bus_watch_ref,
         message_bus=message_bus_ref,
     )
@@ -339,8 +351,7 @@ def tool_registry(  # noqa: PLR0913 — реестр собирается все
     own: Annotated[Sequence[BaseTool], Depends(own_tools)],
     launchers: Annotated[SectionLaunchers, Depends(tool_launchers)],
 ) -> ToolRegistry:
-    refs = runtime_refs()
-    loader = ToolLoader(raw, table(), refs, launchers, grants, hooks, own)
+    loader = ToolLoader(raw, table(), exec_refs(), launchers, grants, hooks, own)
 
     return loader.load()
 
@@ -363,7 +374,7 @@ async def kb_schema(
 
 
 async def live_locks(
-    config: Annotated[ProcessConfig, Depends(get_process_config)],
+    config: Annotated[RuntimeConfig, Depends(get_runtime_config)],
     instance: Annotated[str, Depends(instance_name)],
     app: Annotated[AppName, Depends(app_name)],
     bus: Annotated[MessageBus, Depends(message_bus)],
@@ -465,7 +476,7 @@ def threads_table(
 
 
 def session_tokens(
-    config: Annotated[ProcessConfig, Depends(get_process_config)],
+    config: Annotated[RuntimeConfig, Depends(get_runtime_config)],
 ) -> JwtTokens:
     """Выпуск и чтение JWT сессии под секретом [session]: один читатель на процесс,
     поколение сессий выбирается здесь же и живёт до конца процесса."""
@@ -520,7 +531,7 @@ class ReaperHandlers:
 
     def __init__(
         self,
-        config: ProcessConfig,
+        config: RuntimeConfig,
         locks: PgLiveLocks,
         bus: PgMessageBus,
         payloads: PgPayloadStore,
@@ -561,7 +572,7 @@ class ReaperHandlers:
 
 
 async def lock_reaper(
-    config: Annotated[ProcessConfig, Depends(get_process_config)],
+    config: Annotated[RuntimeConfig, Depends(get_runtime_config)],
     locks: Annotated[LiveLocks, Depends(live_locks)],
     bus: Annotated[MessageBus, Depends(message_bus)],
     payloads: Annotated[PayloadStore, Depends(payload_store)],

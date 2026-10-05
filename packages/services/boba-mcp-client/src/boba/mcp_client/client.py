@@ -21,7 +21,6 @@ import asyncio
 import base64
 import json
 import logging
-import time
 from abc import abstractmethod
 from collections import OrderedDict
 from collections.abc import (
@@ -46,16 +45,21 @@ import mcp.types as mt
 from langchain_core.messages import ToolCall, ToolMessage
 from langchain_core.tools import BaseTool, StructuredTool
 from mcp import Client, ClientSession, StdioServerParameters
+from mcp.client.auth import TokenStorage
+from mcp.client.auth.extensions.identity_assertion import (
+    IdentityAssertionOAuthProvider,
+)
 from mcp.client.extension import ClientExtension, advertise
 from mcp.client.sse import sse_client
 from mcp.client.stdio import stdio_client
 from mcp.client.streamable_http import streamable_http_client
 from mcp.shared._httpx_utils import create_mcp_http_client
 from mcp.shared._stream_protocols import ReadStream, WriteStream
+from mcp.shared.auth import OAuthClientInformationFull, OAuthToken
 from mcp.shared.message import SessionMessage
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, ValidationError
 
-from boba.auth.proxy import ProxySignature
+from boba.auth.proxy import ProxyAssertions
 from boba.canvas.journal import StreamSlice
 from boba.canvas.keys import ObjectKey, WorkspaceMount
 from boba.canvas.storage import (
@@ -66,7 +70,6 @@ from boba.canvas.storage import (
     StorageNotFoundError,
 )
 from boba.identity.context import CallContexts
-from boba.identity.signin import ProxyHeaderNames, ProxyRequest
 from boba.toolkit.calls import CallViews, ToolCallModels
 from boba.toolkit.dag import DagNode, DagSpec, WorkflowResult
 from boba.toolkit.result import (
@@ -204,12 +207,13 @@ class BearerAuth(BaseModel):
 class ProxyAuth(BaseModel):
     """Вход proxy сервиса boba от имени пользователя сессии.
 
-    Клиент — доверенный бэкенд: он уже проверил пользователя и называет
-    серверу его логин (identifier пользователя в клиенте) и роли, с
-    которыми тот вошёл в клиент, заголовками headers под подписью HMAC
-    ключом secret. sign_in — адрес входа сервера ([auth.proxy].path); ответ
-    — токен сессии сервера. Токен свой у каждого пользователя, поэтому и
-    подключение к серверу у каждого своё.
+    Клиент — доверенный бэкенд: он уже проверил пользователя и утверждает
+    серверу авторизации issuer его логин (identifier пользователя в клиенте)
+    и роли, с которыми тот вошёл в клиент, — подписанным JWT под общим
+    ключом secret ([auth.proxy].secret сервера). Утверждение меняется на
+    токен доступа штатным обменом OAuth (grant jwt-bearer); клиента сервер
+    узнаёт по client_id и client_secret ([mcp.clients] сервера). Токен свой
+    у каждого пользователя, поэтому и подключение к серверу у каждого своё.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -217,9 +221,10 @@ class ProxyAuth(BaseModel):
     PERSONAL: ClassVar[bool] = True
 
     auth: Literal["proxy"] = "proxy"
+    issuer: HttpLocation
+    client_id: str = Field(min_length=1)
+    client_secret: SecretStr
     secret: SecretStr
-    sign_in: HttpLocation
-    headers: ProxyHeaderNames
 
     def httpx_auth(self, caller: McpCaller | None, resource: str) -> httpx2.Auth | None:
         if caller is None:
@@ -229,97 +234,63 @@ class ProxyAuth(BaseModel):
             )
             raise McpClientError(msg)
 
-        return ProxySession(self, caller)
+        assertions = CallerAssertions(
+            ProxyAssertions(self.secret.get_secret_value(), 0), self.client_id, caller
+        )
+
+        return IdentityAssertionOAuthProvider(
+            server_url=resource,
+            storage=HeldTokens(),
+            client_id=self.client_id,
+            client_secret=self.client_secret.get_secret_value(),
+            issuer=self.issuer.url(),
+            assertion_provider=assertions.issue,
+        )
 
 
-class ProxySession(httpx2.Auth):
-    """Токен сервера для одного пользователя по входу proxy.
+class CallerAssertions:
+    """Утверждения о пользователе сессии для обмена на токен сервера.
 
-    Создаётся ProxyAuth на подключение пользователя. Перед запросом без
-    действующего токена входит на сервер подписанными заголовками; токен
-    живёт до своего срока, отказ 401 сбрасывает его, и запрос повторяется
-    один раз.
+    Создаётся ProxyAuth на подключение пользователя; штатный клиент обмена
+    (IdentityAssertionOAuthProvider) зовёт issue() перед каждым обменом и
+    получает свежее утверждение.
     """
 
-    MARGIN_SEC: ClassVar[float] = 15.0
-    """За сколько до конца срока токен считается истёкшим."""
-
-    def __init__(self, config: ProxyAuth, caller: McpCaller) -> None:
-        self._config = config
+    def __init__(
+        self, assertions: ProxyAssertions, client_id: str, caller: McpCaller
+    ) -> None:
+        self._assertions = assertions
+        self._client_id = client_id
         self._caller = caller
-        self._signature = ProxySignature(config.secret.get_secret_value())
-        self._token = ""
-        self._expires = 0.0
-        self._lock = asyncio.Lock()
 
-    async def async_auth_flow(
-        self, request: httpx2.Request
-    ) -> AsyncGenerator[httpx2.Request, httpx2.Response]:
-        async with self._lock:
-            if time.monotonic() >= self._expires:
-                response = yield self._sign_in_request()
-                await response.aread()
-                self._take(response)
-
-        request.headers["Authorization"] = f"Bearer {self._token}"
-        response = yield request
-        if response.status_code != httpx2.codes.UNAUTHORIZED:
-            return
-
-        async with self._lock:
-            response = yield self._sign_in_request()
-            await response.aread()
-            self._take(response)
-
-        request.headers["Authorization"] = f"Bearer {self._token}"
-        yield request
-
-    def _sign_in_request(self) -> httpx2.Request:
-        names = self._config.headers
+    async def issue(self, audience: str, resource: str) -> str:
         roles = ",".join(sorted(self._caller.roles))
-        unsigned = ProxyRequest(
-            login=self._caller.login, timestamp=str(int(time.time())), roles=roles
+
+        return self._assertions.issue(
+            self._client_id, self._caller.login, roles, audience, resource
         )
-        headers = {
-            names.user: unsigned.login,
-            names.timestamp: unsigned.timestamp,
-            names.signature: self._signature.sign(unsigned),
-        }
-        if names.roles:
-            headers[names.roles] = roles
-
-        return httpx2.Request("POST", self._config.sign_in.url(), headers=headers)
-
-    def _take(self, response: httpx2.Response) -> None:
-        url = self._config.sign_in.url()
-        if response.status_code != httpx2.codes.OK:
-            msg = (
-                f"POST {url}: proxy sign-in of {self._caller.login!r} with roles "
-                f"{sorted(self._caller.roles)} expected 200, got "
-                f"{response.status_code}: {response.text[:300]}"
-            )
-            raise McpClientError(msg)
-
-        try:
-            issued = IssuedToken.model_validate_json(response.content)
-        except ValidationError as exc:
-            msg = (
-                f"POST {url}: proxy sign-in of {self._caller.login!r} expected "
-                f"access_token and expires_in, got {response.text[:300]}: {exc}"
-            )
-            raise McpClientError(msg) from exc
-
-        self._token = issued.access_token
-        self._expires = time.monotonic() + issued.expires_in - self.MARGIN_SEC
 
 
-class IssuedToken(BaseModel):
-    """Ответ входа сервера: токен доступа и срок его жизни."""
+class HeldTokens(TokenStorage):
+    """Токен сервера одного подключения в памяти: реализация TokenStorage
+    клиента mcp. Подключение своё у каждого пользователя, переживать процесс
+    токену незачем — обмен утверждения повторяется сам."""
 
-    model_config = ConfigDict(frozen=True, extra="ignore")
+    def __init__(self) -> None:
+        self._tokens: OAuthToken | None = None
+        self._client: OAuthClientInformationFull | None = None
 
-    access_token: str = Field(min_length=1)
-    expires_in: float = Field(gt=0)
+    async def get_tokens(self) -> OAuthToken | None:
+        return self._tokens
+
+    async def set_tokens(self, tokens: OAuthToken) -> None:
+        self._tokens = tokens
+
+    async def get_client_info(self) -> OAuthClientInformationFull | None:
+        return self._client
+
+    async def set_client_info(self, client_info: OAuthClientInformationFull) -> None:
+        self._client = client_info
 
 
 McpAuth = Annotated[NoAuth | BearerAuth | ProxyAuth, Field(discriminator="auth")]
@@ -667,6 +638,9 @@ class McpFiles:
     async def upload(self, key: ObjectKey, source: AsyncIterator[bytes]) -> int:
         """Пишет файл потоком; возвращает число принятых сервером байт."""
         url = self._url(key)
+        # вход клиента получает токен по отказу 401, а тело потока второй раз
+        # не отправить: токен берёт запрос без тела перед записью
+        await self._http.head(url)
         reply = await self._http.put(url, content=source)
         self._check("PUT", url, reply)
         try:

@@ -23,12 +23,13 @@ from enum import StrEnum
 from typing import Any, ClassVar
 
 import mcp_types as mt
-from fastapi import HTTPException
 from fastmcp import FastMCP
-from fastmcp.server.auth import TokenVerifier
+from fastmcp.server.auth import AccessToken
 from fastmcp.tools import Tool
 from fastmcp.tools.base import ToolResult
+from mcp.server.auth.middleware.bearer_auth import AuthenticatedUser
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, ValidationError
+from starlette.exceptions import HTTPException
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 
@@ -78,29 +79,44 @@ class FileStored(BaseModel):
 class RouteCallers:
     """Вошедший по токену запроса к маршруту сервиса.
 
-    Создаётся сервером endpoint'а для маршрутов файлов и журналов. Вход MCP
-    чужие маршруты не закрывает, поэтому токен каждый запрос проверяет сам:
-    без токена или с негодным токеном — 401.
+    Создаётся сервером endpoint'а для маршрутов файлов и журналов. Токен
+    запроса уже проверен входом fastmcp всего приложения endpoint'а: итог
+    лежит в самом запросе (scope["user"]). Наличие токена и область
+    endpoint'а вход на чужих маршрутах не требует, поэтому их сверяет
+    маршрут: без токена — 401, без области endpoint'а — 403.
     """
 
-    def __init__(self, verifier: TokenVerifier, subjects: TokenSubjects) -> None:
-        self._verifier = verifier
+    def __init__(self, subjects: TokenSubjects, endpoint: str) -> None:
         self._subjects = subjects
+        self._endpoint = endpoint
 
     async def of(self, request: Request) -> Subject:
-        header = request.headers.get(FilePart.AUTHORIZATION.value, "")
-        if not header.lower().startswith(FilePart.BEARER.value):
+        # вошедший берётся из этого запроса: get_access_token() без токена в
+        # запросе отдаёт вошедшего прошлого запроса того же соединения
+        user = request.scope.get("user")
+        if not isinstance(user, AuthenticatedUser):
             msg = (
-                f"{request.method} {request.url.path}: expected a bearer token "
-                "of the sign-in, got none"
+                f"{request.method} {request.url.path}: expected a valid bearer "
+                "token of the sign-in, got none"
             )
             raise HTTPException(status_code=401, detail=msg)
 
-        token = header[len(FilePart.BEARER.value) :].strip()
-        access = await self._verifier.verify_token(token)
-        if access is None:
-            msg = f"{request.method} {request.url.path}: the bearer token is not valid"
+        access = user.access_token
+        if not isinstance(access, AccessToken):
+            msg = (
+                f"{request.method} {request.url.path}: the sign-in of "
+                f"{access.client_id!r} expects a token of this service, got "
+                f"{type(access).__name__}"
+            )
             raise HTTPException(status_code=401, detail=msg)
+
+        if self._endpoint not in access.scopes:
+            msg = (
+                f"{request.method} {request.url.path}: mcp endpoint "
+                f"{self._endpoint!r} is not granted to {access.client_id!r}, "
+                f"the token carries scopes {sorted(access.scopes)}"
+            )
+            raise HTTPException(status_code=403, detail=msg)
 
         return self._subjects.of(access)
 
@@ -122,17 +138,20 @@ class JournalRoutes:
         callers: RouteCallers,
         config: LocalStorageConfig,
         base: str,
+        published: str,
     ) -> None:
         self._journals = journals
         self._callers = callers
         self._config = config
         self._base = f"{base}/journals"
+        self._published = f"{published}{self._base}"
         self._policy = UploadPolicy()
         self._files: dict[str, StreamedFile] = {}
 
     def path(self) -> str:
-        """Путь маршрута журналов: настройка расширения журнала."""
-        return self._base
+        """Путь маршрута журналов, каким его видит клиент (за прокси — с
+        префиксом публикации): настройка расширения журнала."""
+        return self._published
 
     def install(self, server: FastMCP) -> None:
         path = "/".join((self._base, "{run}", "{node}", "{channel}"))
@@ -198,8 +217,9 @@ class FileRoutes:
 
     Создаётся сервером endpoint'а (McpServer) из хранилища workspace и
     разбора вошедшего (RouteCallers); install() ставит маршруты в сервер
-    fastmcp. settings() — настройки расширения
-    FilesFeature, по которым клиент узнаёт адрес маршрута.
+    fastmcp. settings() — настройки расширения FilesFeature, по которым
+    клиент узнаёт адрес маршрута: путь с префиксом публикации published,
+    под которым сервис стоит за прокси (без прокси — пустым).
     """
 
     def __init__(
@@ -207,23 +227,25 @@ class FileRoutes:
         storage: StorageClient,
         callers: RouteCallers,
         base: str,
+        published: str,
     ) -> None:
         self._storage = storage
         self._callers = callers
         self._base = f"{base}/files"
+        self._published = f"{published}{self._base}"
         self._policy = UploadPolicy()
         self._files = StreamedFile(storage, self._policy)
 
     def settings(self, upload_tool: str) -> dict[str, Any]:
         return {
-            FilesFeature.PATH.value: self._base,
+            FilesFeature.PATH.value: self._published,
             FilesFeature.UPLOAD.value: upload_tool,
             FilesFeature.WORKSPACE.value: WorkspaceMount.path(),
         }
 
     def address(self, scope: str, name: str) -> str:
         """Путь маршрута, куда клиент шлёт файл вложением области scope."""
-        return "/".join((self._base, scope, ThreadDir.UPLOAD.value, name))
+        return "/".join((self._published, scope, ThreadDir.UPLOAD.value, name))
 
     def install(self, server: FastMCP) -> None:
         path = "/".join(

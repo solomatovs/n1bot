@@ -80,7 +80,7 @@ def test_discovered_plugin_without_config_file_refuses_start(
     loader = ToolLoader(
         raw,
         plugins,
-        runtime_stand.none(),
+        runtime_stand.none().execution(),
         runtime_stand.launchers(raw),
         ConfigGrants(raw).grants(GrantCheck.HOSTED),
     )

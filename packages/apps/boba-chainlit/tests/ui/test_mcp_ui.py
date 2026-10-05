@@ -96,19 +96,15 @@ class BobaMcpStand:
                 "path": "/mcp/service",
                 "auth": {
                     "auth": "proxy",
-                    "secret": self.PROXY_SECRET,
-                    "sign_in": {
+                    "issuer": {
                         "scheme": "http",
                         "host": "127.0.0.1",
                         "port": self.port,
-                        "path": "/auth/proxy",
+                        "path": "/",
                     },
-                    "headers": {
-                        "user": "X-Remote-User",
-                        "timestamp": "X-Boba-Timestamp",
-                        "signature": "X-Boba-Signature",
-                        "roles": "X-Remote-Roles",
-                    },
+                    "client_id": "stand-chat",
+                    "client_secret": "stand-client-secret",
+                    "secret": self.PROXY_SECRET,
                 },
             },
         }

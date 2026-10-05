@@ -28,7 +28,7 @@ from uuid import uuid4
 
 import mcp_types as mt
 from fastmcp import Context, FastMCP
-from fastmcp.server.auth import TokenVerifier
+from fastmcp.server.auth import AuthProvider
 from fastmcp.server.dependencies import get_context
 from fastmcp.server.extensions import ServerExtension
 from fastmcp.server.http import StarletteWithLifespan
@@ -54,7 +54,6 @@ from boba.canvas.journal import StreamSlice
 from boba.identity.context import (
     CallContext,
     HumanInitiator,
-    NoUserCredential,
     Subject,
 )
 from boba.identity.run import Runs
@@ -62,7 +61,7 @@ from boba.identity.signin import ProfileCatalog
 from boba.mcp_server.auth import (
     CallScopeError,
     CallScopes,
-    EndpointGate,
+    ServiceAuth,
     TokenSubjects,
 )
 from boba.mcp_server.files import (
@@ -459,8 +458,6 @@ class CallContextMiddleware(Middleware):
     (operations) проходят мимо: запуска у них нет.
     """
 
-    NO_CREDENTIAL: ClassVar[str] = "a service call carries no delegated credential"
-
     def __init__(
         self,
         runs: Runs,
@@ -498,7 +495,7 @@ class CallContextMiddleware(Middleware):
             scope=scope,
             run_id=run_id,
             initiator=HumanInitiator(via="api"),
-            credential=NoUserCredential(reason=self.NO_CREDENTIAL),
+            credential=self._subjects.credential(),
             cancellation=cancellation,
         )
 
@@ -644,19 +641,22 @@ class McpServer:
         registry: ToolRegistry,
         runs: Runs,
         journals: CallJournals,
-        auth: TokenVerifier,
+        auth: AuthProvider,
         profile: str,
         limits: RunLimitMiddleware,
         storage: LocalStorageConfig,
         path: str,
+        published: str,
     ) -> None:
         self._name = f"{self.NAME}/{profile}"
         self._auth = auth
         self._subjects = TokenSubjects(profile)
         self._limits = limits
-        callers = RouteCallers(auth, self._subjects)
-        self._files = FileRoutes(StorageFactory.create(storage), callers, path)
-        self._journal_files = JournalRoutes(journals, callers, storage, path)
+        callers = RouteCallers(self._subjects, profile)
+        self._files = FileRoutes(
+            StorageFactory.create(storage), callers, path, published
+        )
+        self._journal_files = JournalRoutes(journals, callers, storage, path, published)
         upload = FileUploadTool(self._files, self._subjects)
         operations: list[Tool] = [upload]
         self._features = self._features_of(registry)
@@ -763,8 +763,8 @@ class McpEndpoints:
 
     Создаётся сборкой процесса. Endpoint — набор инструментов и роли,
     которым он выдан; каждый отвечает отдельным MCP-сервером на пути
-    `{base_path}/{имя}`. Вошедший без ролей профиля получает 403
-    (EndpointGate). Реестр инструментов, запуски, журналы и предел запусков
+    `{base_path}/{имя}`. Токен без области endpoint'а получает 403 от входа
+    fastmcp (EndpointTokens). Реестр инструментов, запуски, журналы и предел запусков
     у endpoint'ов общие. app() — приложение ASGI со всеми endpoint'ами,
     маршрутами входа и пробой готовности.
     """
@@ -782,27 +782,33 @@ class McpEndpoints:
         registry: ToolRegistry,
         runs: Runs,
         journals: CallJournals,
-        verifier: TokenVerifier,
+        auth: ServiceAuth,
         limits: RunLimits,
         base_path: str,
         storage: LocalStorageConfig,
     ) -> None:
-        # маршруты входа провайдера стоят в корне: путь входа — вне endpoint'ов
-        self._routes = tuple(verifier.get_routes())
+        # маршруты входа стоят в корне: сервер авторизации — вне endpoint'ов
+        self._routes: list[BaseRoute] = list(auth.routes())
         self._endpoints: list[EndpointApp] = []
         slots = RunLimitMiddleware(limits, self.OPERATIONS)
         for profile in sorted(registry.access.profiles()):
-            grant = registry.access.profile_grant(profile)
-            if grant is None:
-                continue
-
             path = f"{base_path}/{profile}"
+            provider = auth.endpoint(profile)
             server = McpServer(
-                registry, runs, journals, verifier, profile, slots, storage, path
+                registry,
+                runs,
+                journals,
+                provider,
+                profile,
+                slots,
+                storage,
+                path,
+                auth.published(),
             )
             served = server.mcp().http_app(path=path, stateless_http=True)
-            gate = EndpointGate(served, verifier, profile, grant)
-            self._endpoints.append(EndpointApp(path, gate, served))
+            self._endpoints.append(EndpointApp(path, served, served))
+            # метаданные ресурса клиент ищет от корня хоста, а не под endpoint'ом
+            self._routes.extend(provider.get_well_known_routes(path))
 
     def paths(self) -> Sequence[str]:
         paths: list[str] = []
