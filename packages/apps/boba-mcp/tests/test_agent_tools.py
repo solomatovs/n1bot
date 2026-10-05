@@ -40,11 +40,6 @@ def _bin_dirs() -> list[str]:
     return dirs
 
 
-@pytest.fixture(autouse=True)
-def chainlit_context() -> None:
-    pass
-
-
 def _tool_call(name: str, args: dict) -> dict:
     return {"args": args, "id": f"call-{name}", "name": name, "type": "tool_call"}
 

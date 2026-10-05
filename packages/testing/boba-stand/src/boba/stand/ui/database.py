@@ -145,6 +145,8 @@ class StandDatabase:
         self._app = app
         self._name = name
         self._built = StandLayers.compose(app.base_config.under(REPO_ROOT))
+        self._tools = StandLayers.compose(app.tools_config.under(REPO_ROOT))
+        """Конфиг процесса, исполняющего инструменты: секции [tool.*]."""
         layer = bind(self._built, path=app.data_layer_section, model=DataLayerConfig)
         pool = layer.postgres.pool.model_copy(update=self.POOL_OVERRIDE)
         self._maintenance = layer.postgres.model_copy(update={"pool": pool})
@@ -535,7 +537,7 @@ class StandDatabase:
         return run_blocking(self._seed_ix(pages))
 
     async def _seed_ix(self, pages: Sequence[IxPage]) -> list[int]:
-        schema = self._setting(self.KB_SCHEMA)
+        schema = self._tool_setting(self.KB_SCHEMA)
         cache_dir = self._setting(self.EMBEDDING_CACHE)
         database = IxDatabase(db_schema=schema, postgres=self._postgres)
 
@@ -555,6 +557,14 @@ class StandDatabase:
         await indexers.vectors()
 
         return nodes
+
+    def _tool_setting(self, path: str) -> str:
+        value = OmegaConf.select(self._tools, path)
+        if not value:
+            msg = f"stand tools config: expected a non-empty {path}, got {value!r}"
+            raise StandError(msg)
+
+        return str(value)
 
     def _setting(self, path: str) -> str:
         value = OmegaConf.select(self._built, path)

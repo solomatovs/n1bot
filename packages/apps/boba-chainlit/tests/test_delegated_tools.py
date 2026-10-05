@@ -28,7 +28,6 @@ from chainlit_stand import ChatSessionStand, SsoStand
 from gssapi import Credentials, Name, NameType, SecurityContext
 from psycopg import sql
 from pydantic import SecretStr
-from test_tools_integration import Call, ToolSetup
 
 from boba.auth.credentials import KerberosCredentialSource, NoRefresh
 from boba.chainlit.auth.kerberos import KerberosAuth
@@ -55,6 +54,7 @@ from boba.messaging import MemoryMessageBus
 from boba.runtime.refresh import BusRefreshSignal
 from boba.stand.connections import StandUserConnections
 from boba.stand.site import Stand
+from boba.stand.toolsetup import Call, ToolSetup
 from boba.stand.zygote import ZygoteStand
 from boba.stand_core.context import CallStand
 from boba.tool.ch.tools import ChToolConfig
@@ -164,11 +164,11 @@ class Browser:
 
 
 @pytest.fixture
-def user_password(raw_config: Any) -> str:
+def user_password(service_raw_config: Any) -> str:
     """Пароль тестового пользователя домена; браузер им получает свой TGT."""
     from omegaconf import OmegaConf
 
-    return str(OmegaConf.select(raw_config, "site.ldap_bind_password"))
+    return str(OmegaConf.select(service_raw_config, "site.ldap_bind_password"))
 
 
 @pytest.fixture
@@ -228,7 +228,7 @@ class Tools:
     def of(  # noqa: PLR0913 — стенд собирается всеми частями теста
         zygote_stand: ZygoteStand,
         call_stand: CallStand,
-        raw_config: Any,
+        service_raw_config: Any,
         store: ConnectionStore,
         tickets: SsoTickets,
         *,
@@ -241,14 +241,14 @@ class Tools:
 
         module = reload(import_module(module_name))
         launcher = ToolSetup.caller(
-            zygote_stand, raw_config, section, [module.__name__]
+            zygote_stand, service_raw_config, section, [module.__name__]
         )
 
         functions = [ToolBridge.as_structured_tool(tool) for tool in module.TOOLS]
         ToolProcessWrap(CallAmbient()).guard_all(ToolMain.toolset(*functions), launcher)
 
         def resolve(name: str, annotation: Any) -> object:
-            return bind(raw_config, path=f"tool.{section}", model=config_model)
+            return bind(service_raw_config, path=f"tool.{section}", model=config_model)
 
         StandUserConnections(
             lambda: store,
@@ -272,14 +272,14 @@ def _credentials() -> KerberosCredentialSource:
 def pg_tools(
     zygote_stand: ZygoteStand,
     call_stand: CallStand,
-    raw_config: Any,
+    service_raw_config: Any,
     store: ConnectionStore,
     tickets: SsoTickets,
 ):
     return Tools.of(
         zygote_stand,
         call_stand,
-        raw_config,
+        service_raw_config,
         store,
         tickets,
         section="pg",
@@ -293,14 +293,14 @@ def pg_tools(
 def ch_tools(
     zygote_stand: ZygoteStand,
     call_stand: CallStand,
-    raw_config: Any,
+    service_raw_config: Any,
     store: ConnectionStore,
     tickets: SsoTickets,
 ):
     return Tools.of(
         zygote_stand,
         call_stand,
-        raw_config,
+        service_raw_config,
         store,
         tickets,
         section="ch",
@@ -314,14 +314,14 @@ def ch_tools(
 def web_tools(
     zygote_stand: ZygoteStand,
     call_stand: CallStand,
-    raw_config: Any,
+    service_raw_config: Any,
     store: ConnectionStore,
     tickets: SsoTickets,
 ):
     return Tools.of(
         zygote_stand,
         call_stand,
-        raw_config,
+        service_raw_config,
         store,
         tickets,
         section="web",
@@ -347,14 +347,14 @@ async def _granted(
 
 
 @pytest.fixture
-def delegated_pg(raw_config: Any) -> PostgresConfig:
-    service = bind(raw_config, path="postgres", model=PostgresConfig)
+def delegated_pg(service_raw_config: Any) -> PostgresConfig:
+    service = bind(service_raw_config, path="postgres", model=PostgresConfig)
     return service.model_copy(update={"auth": _delegated()})
 
 
 @pytest.fixture
-def delegated_ch(raw_config: Any) -> ClickHouseConfig:
-    service = bind(raw_config, path="clickhouse", model=ClickHouseConfig)
+def delegated_ch(service_raw_config: Any) -> ClickHouseConfig:
+    service = bind(service_raw_config, path="clickhouse", model=ClickHouseConfig)
     return service.model_copy(update={"auth": _delegated()})
 
 

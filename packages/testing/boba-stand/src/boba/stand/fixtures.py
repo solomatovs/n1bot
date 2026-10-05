@@ -15,6 +15,7 @@ from boba.runtime.config import ConfigLocator, RawConfig, RuntimeConfig
 from boba.stand.database import TestDatabase
 from boba.stand.refs import StandRefs
 from boba.stand.site import StandLayers
+from boba.stand.ui.stand import REPO_ROOT, StandPaths
 from boba.stand.zygote import ZygoteStand
 from boba.stand_core.context import CallStand, call_stand
 from boba.toolkit.chain import CallAmbient
@@ -65,6 +66,20 @@ def raw_config() -> DictConfig:
     if not isinstance(raw, DictConfig):
         got = type(raw).__name__
         msg = f"stand config {path}: expected to compose into a table, got {got}"
+        raise TypeError(msg)
+
+    return raw
+
+
+@pytest.fixture(scope="session")
+def service_raw_config() -> DictConfig:
+    """Конфиг сервиса boba-mcp со стендовым слоем его conf/stand.toml: секции
+    инструментов и их плагины живут у сервиса, который инструменты исполняет."""
+    path = StandPaths.MCP_BASE_CONFIG.under(REPO_ROOT)
+    raw = StandLayers.compose(path)
+    if not isinstance(raw, DictConfig):
+        got = type(raw).__name__
+        msg = f"service config {path}: expected to compose into a table, got {got}"
         raise TypeError(msg)
 
     return raw

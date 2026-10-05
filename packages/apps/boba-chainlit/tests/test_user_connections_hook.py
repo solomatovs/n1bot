@@ -102,8 +102,8 @@ async def store(pool: AsyncPostgresPool) -> ConnectionStore:
 
 
 @pytest.fixture
-def service_pg(raw_config: Any) -> PostgresConfig:
-    return bind(raw_config, path="postgres", model=PostgresConfig)
+def service_pg(service_raw_config: Any) -> PostgresConfig:
+    return bind(service_raw_config, path="postgres", model=PostgresConfig)
 
 
 @pytest.fixture
@@ -146,12 +146,12 @@ class Tgt:
 
 
 @pytest.fixture
-def sso(tmp_path: Path, raw_config: Any) -> tuple[SsoTickets, dict[str, str]]:
+def sso(tmp_path: Path, service_raw_config: Any) -> tuple[SsoTickets, dict[str, str]]:
     """Билеты входов стенда: TGT сервиса и TGT второй учётки, запечатанные для JWT."""
     tickets = SsoStand.tickets(str(KRB5_CONF))
     service = Tgt.from_keytab()
     reader = f"FILE:{tmp_path / 'reader'}"
-    password = str(OmegaConf.select(raw_config, "site.ldap_bind_password"))
+    password = str(OmegaConf.select(service_raw_config, "site.ldap_bind_password"))
     Tgt.from_password(reader, READER_PRINCIPAL, password)
     sealed = {
         SERVICE_PRINCIPAL: SsoStand.sealed(
@@ -172,10 +172,10 @@ class Capture:
     """
 
     def __init__(
-        self, calls: CallStand, raw_config: Any, store: ConnectionStore
+        self, calls: CallStand, service_raw_config: Any, store: ConnectionStore
     ) -> None:
         self._calls = calls
-        self._raw = raw_config
+        self._raw = service_raw_config
         self._store = store
 
     def tool(self, tickets: SsoTickets | None):
@@ -295,8 +295,10 @@ class Session:
 
 
 @pytest.fixture
-def capture(call_stand: CallStand, raw_config: Any, store: ConnectionStore) -> Capture:
-    return Capture(call_stand, raw_config, store)
+def capture(
+    call_stand: CallStand, service_raw_config: Any, store: ConnectionStore
+) -> Capture:
+    return Capture(call_stand, service_raw_config, store)
 
 
 def _servers(ticket: TicketAuth) -> list[str]:

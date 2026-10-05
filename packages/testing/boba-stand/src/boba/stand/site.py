@@ -19,7 +19,9 @@ import pytest
 from omegaconf import OmegaConf
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, ValidationError
 
-from boba.runtime.config import AppLayers, ConfigLocator
+from boba.access import RoleConfig
+from boba.chat.profiles import ChatProfileConfig
+from boba.runtime.config import AppLayers, ConfigLocator, RuntimeConfig
 
 __all__ = ["Stand", "StandError", "StandLayers"]
 
@@ -50,6 +52,16 @@ class StandLayers:
             overlay = tomllib.load(handle)
 
         return OmegaConf.merge(raw, OmegaConf.create(overlay))
+
+
+class ServiceRuntime(RuntimeConfig):
+    """Конфиг рантайма процесса без профилей и ролей чата: так собран сервис
+    boba-mcp, чьи секции инструментов читают тесты плагинов. Модель самого
+    сервиса лежит в его пакете; пакетам инструментов она недоступна по
+    слоям, а общих секций рантайма им достаточно."""
+
+    profiles: dict[str, ChatProfileConfig] = Field(default_factory=dict)
+    roles: dict[str, RoleConfig] = Field(default_factory=dict)
 
 
 class Stand(BaseModel):

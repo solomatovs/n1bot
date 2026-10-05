@@ -18,11 +18,6 @@ from boba.tool.pg.tools import pg_query
 from boba.toolrun.call_id import CallFields
 
 
-@pytest.fixture(autouse=True)
-def chainlit_context() -> None:
-    pass
-
-
 @pytest.fixture
 def reload_config(raw_config: DictConfig) -> DictConfig:
     """Конфиг с процессным запуском: тест про обвязку tools, не про песочницу."""
@@ -43,8 +38,12 @@ def _schema_fields(tool: object) -> set[str]:
 def test_repeated_load_serves_wrapped_copies(
     runtime_stand: StandRefs, call_stand: CallStand, reload_config: DictConfig
 ) -> None:
-    first = runtime_stand.registry(reload_config, runtime_stand.none())
-    second = runtime_stand.registry(reload_config, runtime_stand.none())
+    first = runtime_stand.registry(
+        reload_config, runtime_stand.none(), StandRefs.granted("all", ["*"])
+    )
+    second = runtime_stand.registry(
+        reload_config, runtime_stand.none(), StandRefs.granted("all", ["*"])
+    )
 
     if [t.name for t in first.tools] != [t.name for t in second.tools]:
         raise AssertionError("[t.name for t in first.tools] == [t.name for t in secon…")
@@ -61,8 +60,12 @@ def test_repeated_load_serves_wrapped_copies(
 def test_module_singletons_stay_pristine(
     runtime_stand: StandRefs, call_stand: CallStand, reload_config: DictConfig
 ) -> None:
-    runtime_stand.registry(reload_config, runtime_stand.none())
-    runtime_stand.registry(reload_config, runtime_stand.none())
+    runtime_stand.registry(
+        reload_config, runtime_stand.none(), StandRefs.granted("all", ["*"])
+    )
+    runtime_stand.registry(
+        reload_config, runtime_stand.none(), StandRefs.granted("all", ["*"])
+    )
 
     for tool in PG_TOOLS:
         if CallFields.CALL_ID not in _schema_fields(tool):

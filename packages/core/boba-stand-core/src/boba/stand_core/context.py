@@ -1,9 +1,9 @@
 """Контекст вызова в тестах: личность без сессии приложения на время теста."""
 
-from collections.abc import Generator, Iterable
+from collections.abc import Generator, Iterable, Mapping
 from contextlib import contextmanager
 from enum import StrEnum
-from typing import ClassVar
+from typing import Any, ClassVar
 from uuid import UUID
 
 import pytest
@@ -17,6 +17,8 @@ from boba.identity.context import (
     Scope,
     Subject,
 )
+from boba.identity.errors import RefusalError
+from boba.identity.run import ElementTarget, RunPort, RunRefusal
 
 
 class StandIdentity(StrEnum):
@@ -107,6 +109,29 @@ class CallStand:
         """Ставит контекст и метку лога на время блока."""
         with self._contexts.applied(context):
             yield context
+
+
+class FakeTurn(RunPort):
+    """Реализация RunPort для тестов: владелец запуска, который запоминает
+    показанные элементы и адресует элемент вызова. Реестру запусков его
+    достаточно, чтобы запуск считался ходом с лентой."""
+
+    ANSWER_STEP: ClassVar[str] = "answer-step"
+
+    def __init__(self) -> None:
+        self.shown: list[tuple[str, Mapping[str, Any]]] = []
+
+    async def show_element(self, tool_call_id: str, element: Mapping[str, Any]) -> None:
+        self.shown.append((tool_call_id, dict(element)))
+
+    def element_target(self, tool_call_id: str) -> ElementTarget:
+        if not tool_call_id:
+            msg = f"stand element target needs a tool call id, got {tool_call_id!r}"
+            raise RefusalError(RunRefusal.NO_TOOL_CALL, msg)
+
+        return ElementTarget(
+            for_id=self.ANSWER_STEP, element_id=f"element-{tool_call_id}"
+        )
 
 
 @pytest.fixture

@@ -29,7 +29,7 @@ from boba.chainlit.agent.bridge import ChatModelBridge
 from boba.chainlit.canvas.remote import RemoteJournals, RemoteStreams
 from boba.chainlit.chat.feed import TurnFeed
 from boba.chainlit.chat.history import ThreadMessages, TranscriptFeed
-from boba.chainlit.data.data_layer import HeldContent, PostgresDataLayer
+from boba.chainlit.data.data_layer import PostgresDataLayer
 from boba.chainlit.domain.keys import AppPrefix, AttachmentLinks
 from boba.chainlit.infra.config import AppConfig
 from boba.chainlit.infra.session import (
@@ -54,9 +54,8 @@ from boba.identity.context import (
     CallContexts,
     Scope,
 )
-from boba.identity.errors import RefusalError
 from boba.identity.locks import MemoryLiveLocks
-from boba.identity.run import ElementTarget, RunPort, RunRefusal, Runs
+from boba.identity.run import Runs
 from boba.identity.session import Login, UserMetadataField
 from boba.identity.signin import SignedIn, SignInMetadata
 from boba.identity.token import SessionClaims, TokenReader
@@ -74,15 +73,23 @@ from boba.mcp_client.client import (
 from boba.messaging import LockToken, MemoryMessageBus, MemoryPayloadStore
 from boba.runtime.config import AppLayers
 from boba.runtime.elements import ChatTables
-from boba.runtime.storage import LocalStorageClient, StorageClient
+from boba.runtime.storage import (
+    LocalStorageClient,
+    LocalStorageConfig,
+    StorageClient,
+)
 from boba.stand.refs import StandRefs
 from boba.stand.signin import SignInStand
+from boba.stand.storage import StorageSeed
 from boba.stand_core.context import CallStand, StandIdentity
+from boba.stand_core.context import FakeTurn as FakeTurn
 from boba.stand_core.fakes import FakeSecret as FakeSecret
 from boba.stand_core.fakes import FakeUrl as FakeUrl
 from boba.toolkit.channels import JournalChannel
 from boba.toolkit.wire import JournalSignal
 from boba.toolrun.streams import CallJournals
+from boba.workspace.binaries import TrustedBinaries
+from boba.workspace.launcher import MountingConfig
 
 AUTH_USER = "test-user"
 
@@ -348,8 +355,22 @@ def files_dir(tmp_path: Path) -> Path:
 
 
 @pytest.fixture
-def storage(app_config: AppConfig, files_dir: Path) -> LocalStorageClient:
-    config = app_config.storage.model_copy(update={"files_dir": str(files_dir)})
+def storage(files_dir: Path) -> LocalStorageClient:
+    """Хранилище вложений теста на диске: у приложения его держит сервис
+    boba-mcp, тестам слоя данных достаточно каталога."""
+    config = LocalStorageConfig(
+        files_dir=str(files_dir),
+        mounting=MountingConfig(
+            mount_wait_sec=1.0,
+            mount_poll_sec=0.1,
+            shutdown_wait_sec=1.0,
+            lock_wait_sec=1.0,
+            copy_chunk_bytes=65536,
+        ),
+        mount_dir=str(files_dir),
+        binaries=TrustedBinaries(dirs=("/usr/bin", "/bin")),
+    )
+
     return LocalStorageClient(config)
 
 
@@ -387,7 +408,7 @@ async def layer(  # noqa: PLR0913 — фикстуры теста
         feedbacks=tables.feedbacks,
         storage=storage,
         feed=TranscriptFeed(thread_messages, runtime_stand.journals),
-        links=AttachmentLinks(app_config.storage.public_prefix),
+        links=AttachmentLinks(app_config.chainlit.url_prefix),
         sessions=ChainlitSessions(StandTokens()),
         bus=data_bus,
     )
@@ -417,27 +438,6 @@ async def chainlit_context(auth_token: str) -> AsyncIterator[None]:
     init_http_context(user=ChainlitUser(identifier=AUTH_USER), auth_token=auth_token)
     yield
     init_http_context()
-
-
-class FakeTurn(RunPort):
-    """Ход под тест: реестру достаточно порта, который адресует элемент вызова."""
-
-    ANSWER_STEP: ClassVar[str] = "answer-step"
-
-    def __init__(self) -> None:
-        self.shown: list[tuple[str, Mapping[str, Any]]] = []
-
-    async def show_element(self, tool_call_id: str, element: Mapping[str, Any]) -> None:
-        self.shown.append((tool_call_id, dict(element)))
-
-    def element_target(self, tool_call_id: str) -> ElementTarget:
-        if not tool_call_id:
-            msg = f"stand element target needs a tool call id, got {tool_call_id!r}"
-            raise RefusalError(RunRefusal.NO_TOOL_CALL, msg)
-
-        return ElementTarget(
-            for_id=self.ANSWER_STEP, element_id=f"element-{tool_call_id}"
-        )
 
 
 @pytest.fixture
@@ -780,4 +780,4 @@ class RecordedTurn:
 
 async def put_bytes(storage: StorageClient, object_key: str, data: bytes | str) -> None:
     """Кладёт в хранилище готовые байты теста: запись у хранилища только потоком."""
-    await storage.upload_stream(object_key, HeldContent(data).chunks())
+    await StorageSeed().put(storage, object_key, data)

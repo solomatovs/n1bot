@@ -5,8 +5,6 @@ from __future__ import annotations
 import json
 from typing import Any
 
-import pytest
-
 from boba.toolkit.calls import FieldMarks, ToolCallBase, ToolCallModels
 from boba.toolkit.result import (
     ErrorResult,
@@ -37,11 +35,6 @@ def shell_result(**overrides: object) -> ShellResult:
     fields.update(overrides)
 
     return ShellResult.model_validate(fields)
-
-
-@pytest.fixture(autouse=True)
-def chainlit_context() -> None:
-    pass
 
 
 class TestRenderForLlm:

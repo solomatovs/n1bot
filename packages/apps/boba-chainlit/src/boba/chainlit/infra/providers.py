@@ -37,7 +37,6 @@ from boba.chainlit.infra.config import (
     AppConfig,
     CheckpointerConfig,
     DataLayerConfig,
-    LocalStorageConfig,
 )
 from boba.chainlit.infra.session import (
     ChainlitSessions,
@@ -102,10 +101,11 @@ def get_data_layer_config(
     return app_config.data_layer
 
 
-def get_local_storage_config(
+def attachment_links(
     app_config: Annotated[AppConfig, Depends(get_app_config)],
-) -> LocalStorageConfig:
-    return app_config.storage
+) -> AttachmentLinks:
+    """Ссылки на вложения под префиксом приложения."""
+    return AttachmentLinks(app_config.chainlit.url_prefix)
 
 
 def chat_profiles_registry(
@@ -138,12 +138,12 @@ def file_owners(
 
 
 def storage_provider(
-    cfg: Annotated[LocalStorageConfig, Depends(get_local_storage_config)],
+    links: Annotated[AttachmentLinks, Depends(attachment_links)],
     owners: Annotated[FileOwners, Depends(file_owners)],
 ) -> StorageClient:
     """Хранилище вложений чата: файлы лежат в workspace пользователя на
     MCP-сервере его профиля."""
-    return RemoteStorageClient(cfg.public_prefix, owners, mcp_servers_ref)
+    return RemoteStorageClient(links.public_prefix(), owners, mcp_servers_ref)
 
 
 def session_profile(
@@ -252,7 +252,7 @@ def remote_journals(
 
 async def chainlit_data_layer(  # noqa: PLR0913 — слой данных собирается всеми зависимостями сразу
     cfg: Annotated[DataLayerConfig, Depends(get_data_layer_config)],
-    storage_cfg: Annotated[LocalStorageConfig, Depends(get_local_storage_config)],
+    links: Annotated[AttachmentLinks, Depends(attachment_links)],
     storage: Annotated[StorageClient, Depends(storage_provider)],
     saver: Annotated[BaseCheckpointSaver, Depends(langchain_checkpoint_saver)],
     bus: Annotated[MessageBus, Depends(runtime.message_bus)],
@@ -272,7 +272,7 @@ async def chainlit_data_layer(  # noqa: PLR0913 — слой данных соб
         feedbacks=tables.feedbacks,
         storage=storage,
         feed=TranscriptFeed(CheckpointMessages(saver), streamable),
-        links=AttachmentLinks(storage_cfg.public_prefix),
+        links=links,
         sessions=sessions,
         bus=bus,
     )

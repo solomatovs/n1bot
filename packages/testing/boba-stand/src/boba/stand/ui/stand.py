@@ -112,6 +112,9 @@ class StandAppTraits:
     cgroup_base: str
     ready_path: str
     data_layer_section: str
+    tools_config: StandPaths
+    """Конфиг процесса, который исполняет инструменты приложения: у чата —
+    конфиг сервиса boba-mcp, у остальных — собственный."""
 
 
 class StandApp(StrEnum):
@@ -130,6 +133,7 @@ class StandApp(StrEnum):
                 cgroup_base="/sys/fs/cgroup/boba.slice/boba-sandbox",
                 ready_path="/",
                 data_layer_section="data_layer",
+                tools_config=StandPaths.MCP_BASE_CONFIG,
             ),
             StandApp.STUDIO: StandAppTraits(
                 module="boba.studio",
@@ -138,6 +142,7 @@ class StandApp(StrEnum):
                 cgroup_base="/sys/fs/cgroup/boba.slice/boba-sandbox-studio",
                 ready_path="/api/openapi.json",
                 data_layer_section="automation",
+                tools_config=StandPaths.STUDIO_BASE_CONFIG,
             ),
             StandApp.MCP: StandAppTraits(
                 module="boba.mcp_server",
@@ -146,6 +151,7 @@ class StandApp(StrEnum):
                 cgroup_base="/sys/fs/cgroup/boba.slice/boba-sandbox-mcp",
                 ready_path="/health",
                 data_layer_section="data_layer",
+                tools_config=StandPaths.MCP_BASE_CONFIG,
             ),
         }
 
@@ -176,6 +182,11 @@ class StandApp(StrEnum):
     def ready_path(self) -> str:
         """Путь готовности под префиксом приложения."""
         return self.traits().ready_path
+
+    @property
+    def tools_config(self) -> StandPaths:
+        """Конфиг с секциями инструментов приложения."""
+        return self.traits().tools_config
 
     @property
     def data_layer_section(self) -> str:

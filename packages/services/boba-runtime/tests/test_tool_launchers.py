@@ -9,6 +9,7 @@ from omegaconf import OmegaConf
 from pydantic import ValidationError
 
 from boba.runtime.launchers import (
+    NoLaunchers,
     ProcessLaunchers,
     ToolLaunchers,
     ZygoteLaunchers,
@@ -32,11 +33,22 @@ def _process_section(workdir: Path) -> dict[str, object]:
     }
 
 
-def test_missing_section_is_refused() -> None:
+def test_process_without_the_section_launches_no_tool_sections(
+    call_stand: CallStand,
+) -> None:
     raw = OmegaConf.create({})
 
-    with pytest.raises(RuntimeError, match=r"\[tool_launcher\] is required"):
-        ToolLaunchers(raw).build()
+    launchers = ToolLaunchers(raw).build()
+
+    assert isinstance(launchers, NoLaunchers)
+
+    launchers.probe()
+    with pytest.raises(
+        RuntimeError, match=r"'fake' cannot be launched.*\[tool_launcher\]"
+    ):
+        launchers.launcher_of(
+            LaunchSpec(section="fake"), call_stand.contexts, CallAmbient()
+        )
 
 
 def test_sandbox_provider_builds_zygote_launchers() -> None:

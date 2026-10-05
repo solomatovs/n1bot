@@ -241,10 +241,10 @@ def app_config() -> AppConfig:
 
 
 @pytest.fixture(scope="module")
-def flow_raw(raw_config: DictConfig, test_database: str) -> DictConfig:
+def flow_raw(service_raw_config: DictConfig, test_database: str) -> DictConfig:
     """Конфиг хода: сервисный postgres смотрит в тестовую базу, чтобы и таблицы
     describer, и описываемые таблицы жили там же."""
-    raw = raw_config.copy()
+    raw = service_raw_config.copy()
     OmegaConf.update(raw, "postgres.dbname", test_database)
     OmegaConf.update(raw, "tool.describer.db_schema", DESCRIBER_SCHEMA)
     return raw
@@ -260,7 +260,7 @@ def session_service(
     """Порт инструментов профиля: боевой загрузчик над хранилищем стенда,
     исполнитель и клиент, запечатывающий ссылки на соединения."""
     refs = runtime_stand.of(StoreHolder.current, lambda: None)
-    registry = runtime_stand.registry(flow_raw, refs)
+    registry = runtime_stand.registry(flow_raw, refs, StandRefs.granted(PROFILE, ["*"]))
     roles = frozenset(app_config.roles)
     tools = registry.for_session(roles, PROFILE)
     return SealingToolServer(

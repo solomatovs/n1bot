@@ -50,11 +50,6 @@ def _bin_dirs() -> list[str]:
     return dirs
 
 
-@pytest.fixture(autouse=True)
-def chainlit_context() -> None:
-    "механизм остановки не зависит от сессии chainlit"
-
-
 _SANDBOX = Path(__file__).resolve().parents[4] / "build" / "src" / "sandbox"
 _ROOTFS_IMAGE = _SANDBOX / "plugins" / "boba-tool-shell" / "rootfs.ext4"
 _SITE_PACKAGES = "/usr/local/lib/python3.11/site-packages"

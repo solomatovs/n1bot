@@ -7,12 +7,12 @@ ServiceDisabledError — стенд попросили сервис, котор�
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from typing import ClassVar
 
 from omegaconf import DictConfig
 
-from boba.access import GrantCheck
+from boba.access import GrantCheck, ProfileGrant, ToolGrant, ToolGrants
 from boba.auth.credentials import KerberosCredentialSource, NoRefresh
 from boba.connection_broker.store import ConnectionStore
 from boba.connection_broker.tools import ConnectionTools
@@ -27,7 +27,7 @@ from boba.krb.seal import SsoTickets
 from boba.messaging import MemoryMessageBus
 from boba.messaging.bus import ListenerState, StaticBusWatch
 from boba.runtime.launchers import SectionLaunchers, ToolLaunchers
-from boba.runtime.plugins import ConfigGrants, EntryPointPlugins, ToolLoader
+from boba.runtime.plugins import EntryPointPlugins, ToolLoader
 from boba.runtime.refs import RuntimeRefs
 from boba.toolkit.chain import CallAmbient
 from boba.toolrun.registry import ToolRegistry
@@ -75,22 +75,36 @@ class StandRefs:
 
         return built
 
-    def registry(self, raw: DictConfig, refs: RuntimeRefs) -> ToolRegistry:
+    def registry(
+        self, raw: DictConfig, refs: RuntimeRefs, grants: ToolGrants
+    ) -> ToolRegistry:
         """Реестр инструментов боевым загрузчиком: плагины установленных
-        пакетов, включённые в конфиге raw, и каталог соединений под грантами
-        ролей и профилей того же конфига. Так инструменты собирают процессы,
-        которые их исполняют: сервис — плагины, чат — каталог соединений."""
+        пакетов, включённые в конфиге raw, и каталог соединений под правами
+        grants. raw — конфиг процесса, который инструменты исполняет (сервис
+        boba-mcp); права тест называет сам: у сервиса их задают endpoint'ы,
+        у чата — роли и профили."""
         loader = ToolLoader(
             raw,
             EntryPointPlugins.discover(),
             refs,
             self.launchers(raw),
-            ConfigGrants(raw).grants(GrantCheck.STRICT),
+            grants,
             (),
             ConnectionTools(refs.connection_store, self.contexts).build(),
         )
 
         return loader.load()
+
+    @staticmethod
+    def granted(profile: str, tools: Sequence[str]) -> ToolGrants:
+        """Права стенда: любая роль разрешает любой инструмент, профиль
+        profile виден всем и отдаёт инструменты tools ('*' — все)."""
+        any_role = {ToolGrant.WILDCARD: ToolGrant(tools=[ToolGrant.WILDCARD])}
+        profiles = {
+            profile: ProfileGrant(tools=list(tools), roles=[ToolGrant.WILDCARD])
+        }
+
+        return ToolGrants(roles=any_role, profiles=profiles, check=GrantCheck.STRICT)
 
     def stop(self) -> None:
         """Гасит способы запуска, построенные стендом: зиготы секций."""
