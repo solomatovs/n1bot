@@ -10,6 +10,7 @@ McpClientError — сервер недоступен или ответил не 
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections import OrderedDict
 from typing import ClassVar
 
@@ -18,6 +19,7 @@ from langchain_core.messages import ToolCall, ToolMessage
 from boba.canvas.canvas import WatchProbe, WatchSource
 from boba.canvas.journal import StreamSlice
 from boba.chainlit.chat.history import ThreadMessages
+from boba.chainlit.rendering.chat_view import StreamableTools
 from boba.identity.context import CallContexts
 from boba.mcp_client.client import (
     CallSignals,
@@ -25,12 +27,16 @@ from boba.mcp_client.client import (
     JournalAddresses,
     JournalListener,
     McpCaller,
+    McpClientError,
     McpServers,
 )
 from boba.toolkit.channels import JournalChannel, JournalChannels
 from boba.toolkit.wire import JournalRead, JournalSignal
 
 __all__ = ["RemoteJournal", "RemoteJournals", "RemoteStreams"]
+
+
+logger = logging.getLogger(__name__)
 
 
 class RemoteJournal:
@@ -118,7 +124,7 @@ class CallJournalListener(JournalListener):
         self._journals.take(self._thread_id, self._server, signal)
 
 
-class RemoteJournals(CallSignals):
+class RemoteJournals(CallSignals, StreamableTools):
     """Реестр журналов вызовов, исполненных MCP-серверами.
 
     Реализация CallSignals клиента MCP: объект один на процесс, его создаёт
@@ -136,6 +142,15 @@ class RemoteJournals(CallSignals):
         self._history = history
         self._addresses = JournalAddresses()
         self._live: OrderedDict[tuple[str, str], RemoteJournal] = OrderedDict()
+        self._streamable: frozenset[str] = frozenset()
+
+    def mark_streamable(self, tool_names: frozenset[str]) -> None:
+        """Инструменты подключённых серверов с журналом вызовов: набор
+        только растёт — серверы подключаются по мере прихода сессий."""
+        self._streamable = self._streamable | tool_names
+
+    def streamable(self, tool_name: str) -> bool:
+        return tool_name in self._streamable
 
     def listener(self, server: str, call: ToolCall) -> JournalListener:
         thread_id = self._contexts.current().scope.id
@@ -240,11 +255,68 @@ class RemoteStreams:
 
     def watch_source(
         self, thread_id: str, call_id: str, channel: JournalChannel
-    ) -> WatchSource | None:
-        """Слежение за живым журналом; None — вызов уже не в памяти, его
-        журнал закрыт и следить не за чем."""
+    ) -> WatchSource:
+        """Слежение за журналом вызова: по сигналам сервера, пока вызов идёт
+        через этот процесс, иначе опросом сервера — вызов мог начаться до
+        перезапуска чата или идти через другой его экземпляр."""
         journal = self._journals.live(thread_id, call_id)
         if journal is None:
-            return None
+            return PolledChannelWatch(self, thread_id, call_id, channel)
 
         return journal.watched(channel)
+
+
+class PolledChannelWatch(WatchSource):
+    """Слежение панели за каналом журнала опросом сервера.
+
+    Создаётся RemoteStreams.watch_source() для вызова, о котором у процесса
+    нет сигналов. Состояние канала — размер и признак конца — берётся пустым
+    окном за концом журнала: текст при этом не читается. Будильника нет,
+    панель опрашивает источник своим тактом.
+    """
+
+    BEYOND: ClassVar[int] = 1 << 62
+    """Смещение заведомо за концом журнала: окно без текста, только координаты."""
+
+    def __init__(
+        self,
+        streams: RemoteStreams,
+        thread_id: str,
+        call_id: str,
+        channel: JournalChannel,
+    ) -> None:
+        self._streams = streams
+        self._thread_id = thread_id
+        self._call_id = call_id
+        self._channel = channel
+
+    async def probe(self) -> WatchProbe | None:
+        try:
+            piece = await self._streams.slice_at(
+                self._thread_id, self._call_id, self._channel, self.BEYOND
+            )
+        except McpClientError as exc:
+            logger.warning(
+                "journal watch: probing call %s of thread %s failed: %s",
+                self._call_id,
+                self._thread_id,
+                exc,
+            )
+            return None
+
+        if piece is None:
+            return None
+
+        return WatchProbe(
+            revision=f"{piece.size}:{int(piece.closed)}",
+            size=piece.size,
+            closed=piece.closed,
+            final=piece.closed,
+            note=piece.note,
+        )
+
+    def attach_waker(self) -> asyncio.Event | None:
+        return None
+
+    def detach_waker(self, event: asyncio.Event) -> None:
+        return None

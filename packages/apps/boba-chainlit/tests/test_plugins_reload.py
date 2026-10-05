@@ -1,4 +1,4 @@
-"""Повторный ChatPlugins.load: модульные TOOLS-синглтоны остаются нетронутыми.
+"""Повторный StandRefs.registry: модульные TOOLS-синглтоны остаются нетронутыми.
 
 Загрузчик зовётся не один раз за процесс (bootstrap, DI-провайдер на сессию);
 обвязки обязаны ставиться на копии — иначе второй проход видит уже пришитое
@@ -11,7 +11,6 @@ import pytest
 from omegaconf import DictConfig, OmegaConf
 from pydantic import BaseModel
 
-from boba.chainlit.infra.plugins import ChatPlugins
 from boba.stand.refs import StandRefs
 from boba.stand_core.context import CallStand
 from boba.tool.pg.tools import TOOLS as PG_TOOLS
@@ -44,13 +43,8 @@ def _schema_fields(tool: object) -> set[str]:
 def test_repeated_load_serves_wrapped_copies(
     runtime_stand: StandRefs, call_stand: CallStand, reload_config: DictConfig
 ) -> None:
-    launchers = runtime_stand.launchers(reload_config)
-    first = ChatPlugins(runtime_stand.contexts, runtime_stand.runs).load(
-        reload_config, runtime_stand.none(), launchers
-    )
-    second = ChatPlugins(runtime_stand.contexts, runtime_stand.runs).load(
-        reload_config, runtime_stand.none(), launchers
-    )
+    first = runtime_stand.registry(reload_config, runtime_stand.none())
+    second = runtime_stand.registry(reload_config, runtime_stand.none())
 
     if [t.name for t in first.tools] != [t.name for t in second.tools]:
         raise AssertionError("[t.name for t in first.tools] == [t.name for t in secon…")
@@ -67,13 +61,8 @@ def test_repeated_load_serves_wrapped_copies(
 def test_module_singletons_stay_pristine(
     runtime_stand: StandRefs, call_stand: CallStand, reload_config: DictConfig
 ) -> None:
-    launchers = runtime_stand.launchers(reload_config)
-    ChatPlugins(runtime_stand.contexts, runtime_stand.runs).load(
-        reload_config, runtime_stand.none(), launchers
-    )
-    ChatPlugins(runtime_stand.contexts, runtime_stand.runs).load(
-        reload_config, runtime_stand.none(), launchers
-    )
+    runtime_stand.registry(reload_config, runtime_stand.none())
+    runtime_stand.registry(reload_config, runtime_stand.none())
 
     for tool in PG_TOOLS:
         if CallFields.CALL_ID not in _schema_fields(tool):

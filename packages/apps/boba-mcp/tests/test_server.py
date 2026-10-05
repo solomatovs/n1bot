@@ -754,3 +754,42 @@ class TestWorkspaceFiles:
         }
         if files != expected_files:
             raise AssertionError(f"the files extension is declared: {files}")
+
+
+class TestJournalFile:
+    """Журнал вызова целым файлом по маршруту endpoint'а."""
+
+    async def test_channel_is_served_to_the_caller_only(
+        self, stand: ServiceStand, url: str
+    ) -> None:
+        async with _client(url, DEV_TOKEN) as client:
+            result = await client.call_tool_mcp(
+                "fake_echo",
+                {"text": "hi", "repeat": 2},
+                meta={RequestMeta.CALL_ID: "call-journal-file"},
+            )
+
+        own = (result.meta or {}).get(WireMeta.NAMESPACE.value, {})
+        run = own.get(WireMeta.RUN.value)
+        address = f"{url}/journals/{run}/call-journal-file/{ToolChannel.STDOUT.value}"
+        async with httpx.AsyncClient() as http:
+            mine = await http.get(
+                address, headers={"Authorization": f"Bearer {DEV_TOKEN}"}
+            )
+            part = await http.get(
+                address,
+                headers={"Authorization": f"Bearer {DEV_TOKEN}", "Range": "bytes=0-3"},
+            )
+            foreign = await http.get(
+                address, headers={"Authorization": f"Bearer {WEAK_TOKEN}"}
+            )
+            anonymous = await http.get(address)
+
+        if mine.status_code != 200 or "echo progress: hi" not in mine.text:
+            raise AssertionError(f"the caller gets the channel: {mine.status_code}")
+        if part.status_code != 206 or part.content != mine.content[:4]:
+            raise AssertionError(f"a range answers 206: {part.status_code}")
+        if foreign.status_code != 404:
+            raise AssertionError(f"another user gets no journal: {foreign.status_code}")
+        if anonymous.status_code != 401:
+            raise AssertionError(f"no token, no journal: {anonymous.status_code}")

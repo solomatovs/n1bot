@@ -1,6 +1,6 @@
 """Сквозной сценарий describer внутри хода (pytest -m integration).
 
-Инструменты собираются боевым ChatPlugins.load и работают в зиготах секций;
+Инструменты собираются боевым StandRefs.registry и работают в зиготах секций;
 соединения пользователя лежат в таблицах брокера; модель — по сценарию.
 Ход повторяет работу агента: connection_list → pg_describe_table и pg_query
 по pg_constraint → ch_query по system.columns → базовые url соединений → узлы и
@@ -34,7 +34,6 @@ from pydantic import SecretStr
 
 from boba.chainlit.agent.flow import GraphSpec, PlainGraphBuilder
 from boba.chainlit.infra.config import AppConfig
-from boba.chainlit.infra.plugins import ChatPlugins
 from boba.chainlit.infra.providers import build_history_view
 from boba.config import bind
 from boba.connection_broker.sealing import SealingToolServer, SentConnections
@@ -261,9 +260,7 @@ def session_service(
     """Порт инструментов профиля: боевой загрузчик над хранилищем стенда,
     исполнитель и клиент, запечатывающий ссылки на соединения."""
     refs = runtime_stand.of(StoreHolder.current, lambda: None)
-    registry = ChatPlugins(runtime_stand.contexts, runtime_stand.runs).load(
-        flow_raw, refs, runtime_stand.launchers(flow_raw)
-    )
+    registry = runtime_stand.registry(flow_raw, refs)
     roles = frozenset(app_config.roles)
     tools = registry.for_session(roles, PROFILE)
     return SealingToolServer(

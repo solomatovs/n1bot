@@ -65,9 +65,14 @@ from boba.mcp_server.auth import (
     EndpointGate,
     TokenSubjects,
 )
-from boba.mcp_server.files import FileRoutes, FileUploadTool
+from boba.mcp_server.files import (
+    FileRoutes,
+    FileUploadTool,
+    JournalRoutes,
+    RouteCallers,
+)
 from boba.messaging import StreamAppended, StreamFeed
-from boba.runtime.storage import StorageClient
+from boba.runtime.storage import LocalStorageConfig, StorageFactory
 from boba.toolkit.calls import CallIdPrefix, CallViews
 from boba.toolkit.channels import JournalChannels
 from boba.toolkit.failure import FailurePacker
@@ -642,22 +647,28 @@ class McpServer:
         auth: TokenVerifier,
         profile: str,
         limits: RunLimitMiddleware,
-        storage: StorageClient,
+        storage: LocalStorageConfig,
         path: str,
     ) -> None:
         self._name = f"{self.NAME}/{profile}"
         self._auth = auth
         self._subjects = TokenSubjects(profile)
         self._limits = limits
-        self._files = FileRoutes(storage, auth, self._subjects, path)
+        callers = RouteCallers(auth, self._subjects)
+        self._files = FileRoutes(StorageFactory.create(storage), callers, path)
+        self._journal_files = JournalRoutes(journals, callers, storage, path)
         upload = FileUploadTool(self._files, self._subjects)
         operations: list[Tool] = [upload]
         self._features = self._features_of(registry)
         self._features[FilesFeature.ID.value] = self._files.settings(upload.name)
-        if journals.active():
+        self._journaled = journals.active()
+        if self._journaled:
             stream_read = StreamReadTool(journals, self._subjects)
             operations.append(stream_read)
-            self._features[JournalFeature.ID.value] = stream_read.feature()
+            self._features[JournalFeature.ID.value] = {
+                **stream_read.feature(),
+                JournalFeature.PATH.value: self._journal_files.path(),
+            }
 
         self._provider = McpToolProvider(
             RoleToolServers(registry), self._subjects, operations
@@ -691,6 +702,8 @@ class McpServer:
             server.add_extension(FeatureExtension(identifier, settings))
 
         self._files.install(server)
+        if self._journaled:
+            self._journal_files.install(server)
 
         return server
 
@@ -773,7 +786,7 @@ class McpEndpoints:
         limits: RunLimits,
         base_path: str,
         routes: Sequence[Route],
-        storage: StorageClient,
+        storage: LocalStorageConfig,
     ) -> None:
         self._routes = tuple(routes)
         self._endpoints: list[EndpointApp] = []

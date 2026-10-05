@@ -14,7 +14,7 @@ from __future__ import annotations
 import os
 import uuid
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
@@ -24,6 +24,7 @@ from psycopg import sql
 from psycopg.types.json import Jsonb
 from test_canvas_e2e import (
     BASE,
+    FILES_PROFILE,
     LOGIN,
     _user_id_of,
     anyio_backend,
@@ -38,6 +39,8 @@ from boba.chainlit.infra.config import AppConfig
 from boba.chainlit.rendering.chat_view import ChatView, StepRole
 from boba.config import bind
 from boba.db.postgres import AsyncPostgresPool
+from boba.identity.session import Login
+from boba.mcp_client.client import JournalAddress
 from boba.runtime.config import AppLayers
 from boba.runtime.journal import DirVault, StreamJournal
 from boba.toolkit.channels import ToolChannel
@@ -52,6 +55,39 @@ LIVE_LINES = 15000
 FIRST_LINE = "L0000000,start"
 LAST_LINE = f"L{LINES - 1:07d},row"
 ERR_LINE = "E0000000,warning"
+
+
+class ServiceJournal:
+    """Журнал вызовов сервиса boba-mcp стенда.
+
+    Вызовы исполняет сервис, и журнал их вывода лежит у него: под id,
+    который сервис выводит из логина вошедшего, в каталоге запуска. Тест
+    кладёт журнал туда же и называет его адрес в истории треда — так журнал
+    оставил бы настоящий вызов; запуском служит сам тред.
+    """
+
+    DIR: ClassVar[Path] = (
+        Path(__file__).resolve().parents[4] / "compose" / "mcp" / "data" / "tool-logs"
+    )
+
+    def __init__(self) -> None:
+        self._owner = str(uuid.uuid5(uuid.NAMESPACE_URL, f"boba-mcp:{Login(LOGIN[0])}"))
+
+    def store(self) -> StreamJournal:
+        return StreamJournal(DirVault(str(self.DIR)), reserve_bytes=0)
+
+    def key(self, thread_id: str, call_id: str) -> StreamKey:
+        return StreamKey(user_id=self._owner, thread_id=thread_id, call_id=call_id)
+
+    def stamped(self, config: AppConfig, thread_id: str, call_id: str) -> ToolMessage:
+        """Сообщение инструмента истории с адресом журнала на сервере."""
+        message = ToolMessage(
+            content='{"exit_code": 0}', tool_call_id=call_id, id=f"tm-{call_id}"
+        )
+        server = config.profiles[FILES_PROFILE].mcp[0]
+        JournalAddress(server=server, run=thread_id).stamp(message)
+
+        return message
 
 
 def _config() -> AppConfig:
@@ -70,21 +106,24 @@ async def _seed_history(config: AppConfig, thread_id: str) -> None:
         graph.add_edge(START, "noop")
         compiled = graph.compile(checkpointer=AsyncPostgresSaver(pool.raw))
 
+        served = ServiceJournal()
+        calls = []
+        for call_id in (CALL_ID, LIVE_CALL_ID, SHORT_CALL_ID):
+            calls.append(
+                {
+                    "name": "bash",
+                    "args": {"command": "generate"},
+                    "id": call_id,
+                    "type": "tool_call",
+                }
+            )
+
         history = [
             HumanMessage(content="сгенерируй csv", id="q-1"),
-            AIMessage(
-                content="",
-                id="ai-1",
-                tool_calls=[
-                    {
-                        "name": "bash",
-                        "args": {"command": "generate"},
-                        "id": CALL_ID,
-                        "type": "tool_call",
-                    }
-                ],
-            ),
-            ToolMessage(content='{"exit_code": 0}', tool_call_id=CALL_ID, id="tm-1"),
+            AIMessage(content="", id="ai-1", tool_calls=calls),
+            served.stamped(config, thread_id, CALL_ID),
+            served.stamped(config, thread_id, LIVE_CALL_ID),
+            served.stamped(config, thread_id, SHORT_CALL_ID),
             AIMessage(content="готово", id="ai-2"),
         ]
         await compiled.ainvoke(
@@ -175,11 +214,9 @@ async def _seed_thread_and_button(
 
 def _seed_journals(config: AppConfig, owner: str, thread_id: str) -> None:
     """Журналы вызовов — в служебный том до старта работы приложения с ним."""
-    journal_cfg = config.stream_journal
-    vault = DirVault(journal_cfg.dir)
-    journal = StreamJournal(vault, reserve_bytes=0)
+    journal = ServiceJournal().store()
 
-    key = StreamKey(user_id=owner, thread_id=thread_id, call_id=CALL_ID)
+    key = ServiceJournal().key(thread_id, CALL_ID)
     recorder = journal.recorder(
         key, "bash", ToolChannel.STDOUT, lambda: None, frozenset()
     )
@@ -200,7 +237,7 @@ def _seed_journals(config: AppConfig, owner: str, thread_id: str) -> None:
     errors.feed(f"{ERR_LINE}\n".encode())
     errors.close("rc=0")
 
-    live_key = StreamKey(user_id=owner, thread_id=thread_id, call_id=LIVE_CALL_ID)
+    live_key = ServiceJournal().key(thread_id, LIVE_CALL_ID)
     live = journal.recorder(
         live_key, "bash", ToolChannel.STDOUT, lambda: None, frozenset()
     )
@@ -209,7 +246,7 @@ def _seed_journals(config: AppConfig, owner: str, thread_id: str) -> None:
     # живой журнал не закрывается: вызов «ещё идёт» с точки зрения чтения
 
     # короткий живой журнал: содержимое не заполняет окно, прокручивать нечего
-    short_key = StreamKey(user_id=owner, thread_id=thread_id, call_id=SHORT_CALL_ID)
+    short_key = ServiceJournal().key(thread_id, SHORT_CALL_ID)
     short = journal.recorder(
         short_key, "bash", ToolChannel.STDOUT, lambda: None, frozenset()
     )
@@ -460,8 +497,8 @@ def _append_live(
     config: AppConfig, owner: str, thread_id: str, marker: str, lines: int
 ) -> None:
     """Дописать строки в живой журнал: как это делает инструмент из песочницы."""
-    journal = StreamJournal(DirVault(config.stream_journal.dir), reserve_bytes=0)
-    key = StreamKey(user_id=owner, thread_id=thread_id, call_id=LIVE_CALL_ID)
+    journal = ServiceJournal().store()
+    key = ServiceJournal().key(thread_id, LIVE_CALL_ID)
     recorder = journal.recorder(
         key, "bash", ToolChannel.STDOUT, lambda: None, frozenset()
     )
@@ -982,8 +1019,8 @@ def _append_short(
     config: AppConfig, owner: str, thread_id: str, marker: str, lines: int
 ) -> None:
     """Дописать строки в короткий живой журнал."""
-    journal = StreamJournal(DirVault(config.stream_journal.dir), reserve_bytes=0)
-    key = StreamKey(user_id=owner, thread_id=thread_id, call_id=SHORT_CALL_ID)
+    journal = ServiceJournal().store()
+    key = ServiceJournal().key(thread_id, SHORT_CALL_ID)
     recorder = journal.recorder(
         key, "bash", ToolChannel.STDOUT, lambda: None, frozenset()
     )

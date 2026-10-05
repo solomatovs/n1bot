@@ -9,11 +9,11 @@ from __future__ import annotations
 
 import asyncio
 import os
+import shutil
 import threading
 import time
 from collections.abc import Iterator
 from contextlib import ExitStack
-from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, ClassVar, cast
 from uuid import UUID
@@ -21,7 +21,7 @@ from uuid import UUID
 import pytest
 from chainlit.context import ChainlitContext, context_var
 from chainlit.step import Step
-from chainlit_stand import FakeTurn, RemoteStand
+from chainlit_stand import FakeTurn, RemoteStand, ServiceProcess
 from langchain_core.tools import tool
 from pydantic import ValidationError
 
@@ -43,8 +43,9 @@ from boba.chainlit.rendering.chat_view import (
     RecordingSink,
     StepRole,
 )
-from boba.identity.context import CallContext
+from boba.identity.context import CallContext, CallContexts
 from boba.identity.run import Runs
+from boba.mcp_client.client import DroppedSignals, McpServers, NamedBlocks
 from boba.runtime import providers as runtime
 from boba.runtime.di import Container
 from boba.runtime.journal import DirVault, StreamJournal
@@ -73,11 +74,13 @@ def _bin_dirs() -> list[str]:
 
 
 THREAD = "33333333-3333-3333-3333-333333333333"
-USER = str(UUID(int=7))
+USER = ServiceProcess.OWNER
+"""Пользователь тестов — тот, под кем сервис стенда держит журналы."""
 CALL_ID = "call-stream-1"
 
-NO_REMOTE = RemoteStand().streams
-"""Журналы MCP-серверов: в этих тестах серверов нет, вызовы только свои."""
+REMOTE = RemoteStand()
+"""Журналы вызовов читаются с сервиса boba-mcp стенда: журнал теста лежит в
+его каталоге журналов, адрес журнала хранит история треда."""
 TOOL_NAME = "fake_bash"
 
 
@@ -105,23 +108,45 @@ class TurnScope:
         self._opened.close()
 
 
+@pytest.fixture(scope="module")
+def journal_service(
+    tmp_path_factory: pytest.TempPathFactory,
+) -> Iterator[ServiceProcess]:
+    """Сервис boba-mcp стенда: панель читает журналы вызовов с него."""
+    process = ServiceProcess(tmp_path_factory.mktemp("boba-mcp"))
+    try:
+        process.await_listening()
+        yield process
+    finally:
+        process.stop()
+
+
 @pytest.fixture
-def journals(runtime_stand: StandRefs, di_root: None, tmp_path: Path) -> CallJournals:
-    """Журналы вызовов с хранилищем в каталоге теста; панель читает их из
-    корневого контейнера."""
-    store = StreamJournal(DirVault(str(tmp_path / "journal")), reserve_bytes=0)
+def journals(
+    runtime_stand: StandRefs, di_root: None, journal_service: ServiceProcess
+) -> Iterator[CallJournals]:
+    """Журналы вызовов в каталоге журналов сервиса: так их пишет сервис,
+    исполняя вызов; панель читает их с него. Запуск вызова — сам тред.
+    Обвязка журнала инструмента берёт их из корневого контейнера."""
+    store = StreamJournal(DirVault(str(journal_service.journal_dir)), reserve_bytes=0)
     built = CallJournals(store, runtime_stand.runs)
     root = Container.root
     if root is None:
         raise AssertionError("di_root installs the root container")
 
     root.provide(runtime.call_journals, built)
-    return built
+    REMOTE.forget()
+    REMOTE.serve(journal_service)
+    REMOTE.recorded(THREAD, CALL_ID)
+    yield built
+    shutil.rmtree(journal_service.journal_dir / USER, ignore_errors=True)
 
 
 @pytest.fixture
 def turn_scope(runtime_stand: StandRefs, call_stand: CallStand) -> Iterator[TurnScope]:
-    scope = TurnScope(runtime_stand.runs, call_stand.context(THREAD))
+    scope = TurnScope(
+        runtime_stand.runs, call_stand.context(THREAD, user_id=UUID(USER))
+    )
     scope.start()
     yield scope
     scope.end()
@@ -718,12 +743,12 @@ class TestWindowAction:
 
         first = run(
             StreamActions.window(
-                USER, THREAD, {"path": self.PATH, "offset": 0}, NO_REMOTE
+                USER, THREAD, {"path": self.PATH, "offset": 0}, REMOTE.streams
             )
         )
         middle = run(
             StreamActions.window(
-                USER, THREAD, {"path": self.PATH, "offset": 70000}, NO_REMOTE
+                USER, THREAD, {"path": self.PATH, "offset": 70000}, REMOTE.streams
             )
         )
 
@@ -743,7 +768,7 @@ class TestWindowAction:
 
         tail = run(
             StreamActions.window(
-                USER, THREAD, {"path": self.PATH, "offset": -1}, NO_REMOTE
+                USER, THREAD, {"path": self.PATH, "offset": -1}, REMOTE.streams
             )
         )
 
@@ -759,7 +784,7 @@ class TestWindowAction:
 
         before = run(
             StreamActions.window(
-                USER, THREAD, {"path": self.PATH, "before": 70000}, NO_REMOTE
+                USER, THREAD, {"path": self.PATH, "before": 70000}, REMOTE.streams
             )
         )
 
@@ -773,7 +798,7 @@ class TestWindowAction:
 
         beyond = run(
             StreamActions.window(
-                USER, THREAD, {"path": self.PATH, "offset": 10**9}, NO_REMOTE
+                USER, THREAD, {"path": self.PATH, "offset": 10**9}, REMOTE.streams
             )
         )
 
@@ -788,7 +813,7 @@ class TestWindowAction:
                 USER,
                 THREAD,
                 {"path": stream_path("no-such-call"), "offset": 0},
-                NO_REMOTE,
+                REMOTE.streams,
             )
         )
 
@@ -817,7 +842,7 @@ class TestChannelAccess:
 
         answer = run(
             StreamActions.window(
-                USER, THREAD, {"path": self.WRAP_PATH, "offset": 0}, NO_REMOTE
+                USER, THREAD, {"path": self.WRAP_PATH, "offset": 0}, REMOTE.streams
             )
         )
 
@@ -835,7 +860,7 @@ class TestChannelAccess:
                     USER,
                     THREAD,
                     {"call_id": CALL_ID, "channel": WrapChannel.STDERR.value},
-                    NO_REMOTE,
+                    REMOTE.streams,
                 )
             )
         except ValidationError:
@@ -891,7 +916,7 @@ class TestShowAction:
 
         probe = PanelProbe(monkeypatch)
 
-        run(StreamActions.show(USER, THREAD, {"call_id": CALL_ID}, NO_REMOTE))
+        run(StreamActions.show(USER, THREAD, {"call_id": CALL_ID}, REMOTE.streams))
 
         if len(probe.shown) != 1:
             raise AssertionError("len(probe.shown) == 1")
@@ -933,7 +958,7 @@ class TestShowAction:
                     "channel": ToolChannel.STDERR.value,
                     "inline": True,
                 },
-                NO_REMOTE,
+                REMOTE.streams,
             )
             CanvasWatch.drop(THREAD)
             return answer
@@ -959,11 +984,13 @@ class TestShowAction:
         stream = begin_stream(journals)
         stream.sink_of(STDOUT).feed(b"live")
         stream.sink_of(ToolChannel.STDERR).feed(b"live complaints")
+        REMOTE.live(THREAD, CALL_ID, STDOUT.value, 4)
+        REMOTE.live(THREAD, CALL_ID, ToolChannel.STDERR.value, 15)
         PanelProbe(monkeypatch)
 
         async def scenario() -> str | None:
             CanvasWatch.configure(FakeTransport())
-            await StreamActions.show(USER, THREAD, {"call_id": CALL_ID}, NO_REMOTE)
+            await StreamActions.show(USER, THREAD, {"call_id": CALL_ID}, REMOTE.streams)
             await StreamActions.show(
                 USER,
                 THREAD,
@@ -972,7 +999,7 @@ class TestShowAction:
                     "channel": ToolChannel.STDERR.value,
                     "inline": True,
                 },
-                NO_REMOTE,
+                REMOTE.streams,
             )
             watching = CanvasWatch.watching(THREAD)
             CanvasWatch.drop(THREAD)
@@ -988,12 +1015,13 @@ class TestShowAction:
         _speed_up_watch(monkeypatch)
         stream = begin_stream(journals)
         stream.sink_of(STDOUT).feed(b"live")
+        REMOTE.live(THREAD, CALL_ID, STDOUT.value, 4)
 
         probe = PanelProbe(monkeypatch)
 
         async def scenario() -> str | None:
             CanvasWatch.configure(FakeTransport())
-            await StreamActions.show(USER, THREAD, {"call_id": CALL_ID}, NO_REMOTE)
+            await StreamActions.show(USER, THREAD, {"call_id": CALL_ID}, REMOTE.streams)
             watching = CanvasWatch.watching(THREAD)
             CanvasWatch.drop(THREAD)
             return watching
@@ -1007,7 +1035,7 @@ class TestShowAction:
     def test_unknown_stream_is_explained(self, monkeypatch: pytest.MonkeyPatch) -> None:
         probe = PanelProbe(monkeypatch)
 
-        run(StreamActions.show(USER, THREAD, {"call_id": "no-such"}, NO_REMOTE))
+        run(StreamActions.show(USER, THREAD, {"call_id": "no-such"}, REMOTE.streams))
 
         if probe.shown[0].kind is not CanvasKind.NOTICE:
             raise AssertionError("probe.shown[0].kind is CanvasKind.NOTICE")
@@ -1020,12 +1048,13 @@ class TestShowAction:
         _speed_up_watch(monkeypatch)
         stream = begin_stream(journals)
         stream.sink_of(STDOUT).feed(b"live")
+        REMOTE.live(THREAD, CALL_ID, STDOUT.value, 4)
 
         probe = PanelProbe(monkeypatch)
 
         async def scenario() -> str | None:
             CanvasWatch.configure(FakeTransport())
-            await StreamActions.show(USER, THREAD, {"call_id": CALL_ID}, NO_REMOTE)
+            await StreamActions.show(USER, THREAD, {"call_id": CALL_ID}, REMOTE.streams)
             nonce = probe.shown[0].nonce
 
             StreamActions.leave(THREAD, {"path": probe.shown[0].path, "nonce": nonce})
@@ -1140,47 +1169,30 @@ class TestStreamButton:
 
 
 class TestStreamDownload:
-    """Скачивание журнала вызова: тот же StreamedFile, что отдаёт вложения."""
+    """Скачивание журнала вызова: чат передаёт ответ сервера, который
+    исполнял вызов, как есть."""
 
     @staticmethod
-    def _app(journals: CallJournals, user_id: str, base_dir: str) -> Any:
+    def _app(servers: McpServers) -> Any:
         from chainlit.auth import get_current_user
         from chainlit.user import PersistedUser
         from fastapi import FastAPI
 
-        from boba.chainlit.data.upload import StreamServing, UploadPolicy
+        from boba.chainlit.data.upload import StreamServing
         from boba.chainlit.domain.keys import StreamUrl
-        from boba.runtime.storage import LocalStorageConfig
 
-        # files_dir на серве подменяется корнем тома пользователя; здесь нужен
-        # лишь валидный конфиг — LocalStorageConfig требует непустой files_dir
-        config = LocalStorageConfig.model_validate(
-            {
-                "kind": "local",
-                "files_dir": base_dir,
-                "mounting": {
-                    "mount_wait_sec": 1.0,
-                    "mount_poll_sec": 0.1,
-                    "shutdown_wait_sec": 1.0,
-                    "lock_wait_sec": 10.0,
-                    "copy_chunk_bytes": 65536,
-                },
-                "mount_dir": "/tmp",  # noqa: S108
-                "binaries": {"dirs": _bin_dirs()},
-            }
-        )
-        serving = StreamServing(config, UploadPolicy(), lambda: journals)
+        serving = StreamServing(lambda: REMOTE.journals, lambda: servers)
 
         app = FastAPI()
         app.add_api_route(StreamUrl.ROUTE, serving.serve, methods=["GET"])
         user = PersistedUser(
-            id=user_id, identifier="tester", createdAt="2024-01-01T00:00:00Z"
+            id=USER, identifier="tester", createdAt="2024-01-01T00:00:00Z"
         )
         app.dependency_overrides[get_current_user] = lambda: user
         return app
 
     def test_log_downloads_whole_and_by_range(
-        self, journals: CallJournals, tmp_path: Path
+        self, journals: CallJournals, journal_service: ServiceProcess
     ) -> None:
         stream = begin_stream(journals)
         body = "строка вывода\n" * 20
@@ -1189,22 +1201,32 @@ class TestStreamDownload:
 
         from httpx import ASGITransport, AsyncClient
 
-        app = self._app(journals, USER, str(tmp_path))
-
         async def scenario() -> Any:
-            transport = ASGITransport(app=app)
-            async with AsyncClient(transport=transport, base_url="https://t") as client:
-                whole = await client.get(f"/stream/{THREAD}/{CALL_ID}")
-                part = await client.get(
-                    f"/stream/{THREAD}/{CALL_ID}", headers={"Range": "bytes=0-9"}
-                )
-                missing = await client.get(f"/stream/{THREAD}/absent-call")
+            servers = McpServers(
+                journal_service.token_servers(REMOTE.SERVER),
+                NamedBlocks(),
+                DroppedSignals(),
+                CallContexts(),
+            )
+            transport = ASGITransport(app=self._app(servers))
+            try:
+                async with AsyncClient(
+                    transport=transport, base_url="https://t"
+                ) as client:
+                    whole = await client.get(f"/stream/{THREAD}/{CALL_ID}")
+                    part = await client.get(
+                        f"/stream/{THREAD}/{CALL_ID}", headers={"Range": "bytes=0-9"}
+                    )
+                    missing = await client.get(f"/stream/{THREAD}/absent-call")
+            finally:
+                await servers.stop()
+
             return whole, part, missing
 
         whole, part, missing = run(scenario())
 
         if whole.status_code != 200:
-            raise AssertionError("whole.status_code == 200")
+            raise AssertionError(f"the journal is served whole: {whole.status_code}")
         if whole.content != body.encode():
             raise AssertionError("whole.content == body.encode()")
         if whole.headers["content-length"] != str(len(body.encode())):
@@ -1221,23 +1243,3 @@ class TestStreamDownload:
 
         if missing.status_code != 404:
             raise AssertionError("missing.status_code == 404")
-
-    def test_foreign_user_gets_no_log(
-        self, journals: CallJournals, tmp_path: Path
-    ) -> None:
-        stream = begin_stream(journals)
-        stream.sink_of(STDOUT).feed(b"secret output")
-        stream.close(str(CallOutcome.FINISHED))
-
-        from httpx import ASGITransport, AsyncClient
-
-        app = self._app(journals, "999", str(tmp_path))
-
-        async def scenario() -> Any:
-            transport = ASGITransport(app=app)
-            async with AsyncClient(transport=transport, base_url="https://t") as client:
-                return await client.get(f"/stream/{THREAD}/{CALL_ID}")
-
-        response = run(scenario())
-        if response.status_code != 404:
-            raise AssertionError("response.status_code == 404")

@@ -75,7 +75,6 @@ from boba.runtime import providers as runtime
 from boba.runtime.config import RuntimeConfig
 from boba.runtime.di import Container, Depends, di_inject
 from boba.runtime.http import SessionCookie
-from boba.toolrun.streams import CallJournals
 from boba.transport.http import DumpLabel
 from chainlit.config import (
     ChainlitConfigOverrides,
@@ -111,7 +110,6 @@ async def on_message(  # noqa: PLR0913
     sent: Annotated[SentConnections, Depends(sent_connections)],
     contexts: Annotated[CallContexts, Depends(runtime.call_contexts)],
     runs: Annotated[Runs, Depends(runtime.runs)],
-    journals: Annotated[CallJournals, Depends(runtime.call_journals)],
 ):
     session = current_session()
     thread_id = session.thread_id
@@ -140,7 +138,6 @@ async def on_message(  # noqa: PLR0913
         sent=sent,
         contexts=contexts,
         runs=runs,
-        journals=journals,
     )
 
     # сбой в любом месте хода — включая подготовку — отчитывается ходом же:

@@ -26,10 +26,6 @@ import uuid
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from typing import Any, ClassVar
 
-from pydantic import (
-    ValidationError,
-)
-
 import chainlit as cl
 from boba.canvas.canvas import (
     CanvasContent,
@@ -51,7 +47,6 @@ from boba.canvas.canvas import (
 )
 from boba.canvas.journal import (
     JournalWindow,
-    StreamKey,
     StreamNote,
     StreamSlice,
     WindowAlign,
@@ -62,11 +57,9 @@ from boba.chainlit.canvas.remote import RemoteStreams
 from boba.chainlit.data.data_layer import AttachmentDataLayer
 from boba.chainlit.domain.keys import CanvasFileUrl, StreamUrl
 from boba.identity.errors import RefusalError
-from boba.runtime import providers as runtime
 from boba.runtime.storage import StorageClient
 from boba.toolkit.channels import JournalChannel
 from boba.toolkit.result import VisualResult
-from boba.toolrun.streams import JournalWatchSource
 from boba.workspace.launcher import ReadWindow
 from chainlit.data import get_data_layer
 
@@ -510,30 +503,7 @@ class StreamActions:
         request = StreamShowRequest.model_validate(payload)
         stream_path = StreamPath(call_id=request.call_id, channel=request.channel)
 
-        piece = runtime.call_journals_ref().recorded_slice(
-            user_id, thread_id, request.call_id, offset=0, channel=request.channel
-        )
-        if piece is None:
-            return await StreamActions._show_remote(
-                thread_id, request, stream_path, remote
-            )
-
-        channels = runtime.call_journals_ref().recorded_channels(
-            user_id, thread_id, request.call_id
-        )
-
-        content = StreamActions.content(
-            thread_id, stream_path, "", piece, str(uuid.uuid4()), channels
-        )
-        if not request.inline:
-            await CanvasPanel.show(content)
-
-        StreamActions._watch(user_id, thread_id, request, content, piece)
-
-        if not request.inline:
-            return {}
-
-        return content.props()
+        return await StreamActions._show_remote(thread_id, request, stream_path, remote)
 
     @staticmethod
     async def _show_remote(
@@ -547,8 +517,7 @@ class StreamActions:
         piece = await remote.slice_at(thread_id, request.call_id, request.channel, 0)
         if piece is None:
             logger.info(
-                "stream show: no journal (hub=%s) thread=%s call=%s ch=%s",
-                runtime.call_journals_ref().active(),
+                "stream show: no journal thread=%s call=%s ch=%s",
                 thread_id,
                 request.call_id,
                 request.channel.value,
@@ -568,47 +537,13 @@ class StreamActions:
             await CanvasPanel.show(content)
 
         source = remote.watch_source(thread_id, request.call_id, request.channel)
-        if source is not None:
-            seen = f"{piece.size}:{int(piece.closed)}"
-            CanvasWatch.show(thread_id, content.path, content.nonce, source, seen)
+        seen = f"{piece.size}:{int(piece.closed)}"
+        CanvasWatch.show(thread_id, content.path, content.nonce, source, seen)
 
         if not request.inline:
             return {}
 
         return content.props()
-
-    @staticmethod
-    def _watch(
-        user_id: str,
-        thread_id: str,
-        request: StreamShowRequest,
-        content: CanvasContent,
-        piece: StreamSlice,
-    ) -> None:
-        journals = runtime.call_journals_ref()
-        journal = journals.store
-        if journal is None:
-            return
-
-        try:
-            key = StreamKey(
-                user_id=user_id, thread_id=thread_id, call_id=request.call_id
-            )
-        except ValidationError as exc:
-            logger.warning(
-                "stream watch refused for call %s of thread %s: %s",
-                request.call_id,
-                thread_id,
-                exc,
-                exc_info=True,
-            )
-            return
-
-        live = journals.live(thread_id, request.call_id)
-        source = JournalWatchSource(journal, key, request.channel, live)
-        seen = f"{piece.size}:{int(piece.closed)}"
-
-        CanvasWatch.show(thread_id, content.path, content.nonce, source, seen)
 
     @staticmethod
     async def window(
@@ -640,25 +575,9 @@ class StreamActions:
         request: StreamWindowRequest,
         remote: RemoteStreams,
     ) -> dict[str, Any]:
-        call_id = stream_path.call_id
-        channel = stream_path.channel
-
-        if request.before is not None:
-            piece = runtime.call_journals_ref().recorded_slice_before(
-                user_id, thread_id, call_id, end=request.before, channel=channel
-            )
-        else:
-            offset = request.offset
-            if offset is None:
-                offset = 0
-            piece = runtime.call_journals_ref().recorded_slice(
-                user_id, thread_id, call_id, offset=offset, channel=channel
-            )
-
-        if piece is None:
-            piece = await StreamActions._remote_window(
-                thread_id, stream_path, request, remote
-            )
+        piece = await StreamActions._remote_window(
+            thread_id, stream_path, request, remote
+        )
 
         if piece is None:
             return {}

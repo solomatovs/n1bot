@@ -12,6 +12,7 @@ from uuid import UUID
 from boba.canvas.canvas import CanvasSignal, SignalTransport
 from boba.chainlit.chat.feed import TextClip
 from boba.chainlit.domain.fields import StepField, ThreadField
+from boba.chainlit.infra import providers
 from boba.chainlit.infra.session import current_session, session_source_ref
 from boba.chainlit.rendering.chat_view import ChatView, LiveSink
 from boba.chainlit.rendering.renderer import ChatRenderers, RenderSurface, SignalType
@@ -261,7 +262,7 @@ class ChatRoomSurface(RenderSurface):
         return ChatRenderers.ensure(
             thread_id,
             root.resolved(runtime.message_bus),
-            ChatView(thread_id, LiveSink(), root.resolved(runtime.call_journals)),
+            ChatView(thread_id, LiveSink(), root.resolved(providers.remote_journals)),
             root.resolved(runtime.payload_store),
             cls(anchor, thread_id),
         )

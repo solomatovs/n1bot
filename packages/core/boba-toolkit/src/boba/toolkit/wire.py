@@ -63,11 +63,15 @@ class WireMeta(StrEnum):
 
 
 class JournalFeature(StrEnum):
-    """Возможность сервера «журнал вызовов» в объявлении при подключении:
-    идентификатор возможности и ключ с именем инструмента чтения."""
+    """Расширение сервера «журнал вызовов»: идентификатор и ключи настроек.
+
+    READ — имя инструмента, читающего журнал окнами. PATH — путь маршрута,
+    по которому канал журнала скачивается целиком:
+    `{PATH}/{run}/{node}/{channel}` (GET, потоком, с Range)."""
 
     ID = "com.boba/journal"
     READ = "read"
+    PATH = "path"
 
 
 class FilesFeature(StrEnum):
@@ -101,7 +105,11 @@ class JournalRead(BaseModel):
     node: str = Field(min_length=1, description="Call id of the tool call (node).")
     channel: JournalChannel = Field(description="Journal channel of the call.")
     offset: int | None = Field(
-        default=None, ge=0, description="Read the window starting at this byte."
+        default=None,
+        description=(
+            "Read the window starting at this byte; a negative value reads the "
+            "last window of the journal."
+        ),
     )
     before: int | None = Field(
         default=None, ge=0, description="Read the window ending before this byte."

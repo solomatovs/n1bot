@@ -1,7 +1,7 @@
 """Prefetch-flow целиком на боевом конфиге (pytest -m integration).
 
 Граф собирается той же цепочкой провайдеров, что и в приложении: инструменты
-приходят из ChatPlugins.load и работают в песочнице, переформулировщик и основная
+приходят из StandRefs.registry и работают в песочнице, переформулировщик и основная
 модель ходят к провайдеру из конфига.
 
 Cgroup-лимиты сняты: pytest живёт вне делегированного cgroup.
@@ -32,7 +32,6 @@ from boba.chainlit.agent.flow import (
     PrefetchGraphBuilder,
 )
 from boba.chainlit.infra.config import AppConfig
-from boba.chainlit.infra.plugins import ChatPlugins
 from boba.chainlit.infra.providers import (
     build_history_view,
     llm_providers,
@@ -164,9 +163,7 @@ def session_tools(
     app_config: AppConfig,
 ) -> SessionTools:
     """Инструменты профиля, собранные боевым загрузчиком, и их порт."""
-    registry = ChatPlugins(runtime_stand.contexts, runtime_stand.runs).load(
-        raw_config, runtime_stand.none(), runtime_stand.launchers(raw_config)
-    )
+    registry = runtime_stand.registry(raw_config, runtime_stand.none())
     roles = frozenset(app_config.roles)
     tools = registry.for_session(roles, PROFILE)
 

@@ -609,12 +609,25 @@ class McpConnection:
             raise
 
 
+@dataclass(frozen=True)
+class RelayedFile:
+    """Ответ сервера на чтение файла как он есть: статус, заголовки тела и
+    чанки. Так клиент отдаёт файл дальше, не разбирая его; release закрывает
+    соединение с сервером."""
+
+    status: int
+    headers: Mapping[str, str]
+    chunks: AsyncGenerator[bytes, None]
+    release: Callable[[], Awaitable[None]]
+
+
 class McpFiles:
-    """Файлы workspace пользователя на сервере boba-mcp.
+    """Файлы пользователя на сервере boba-mcp под одним маршрутом: файлы
+    workspace либо журналы вызовов.
 
     Создаётся портом McpToolServer, когда сервер объявил расширение
-    FilesFeature, из адреса сервера, пути маршрута файлов и пользователя,
-    чьим именем идёт подключение. Байты идут потоком в обе стороны: запись
+    (FilesFeature, JournalFeature), из адреса сервера, пути маршрута и
+    пользователя, чьим именем идёт подключение. Байты идут потоком в обе стороны: запись
     шлёт чанки источника телом PUT, чтение отдаёт чанки ответа GET окном
     Range. Владельца workspace сервер берёт из токена входа, поэтому из
     ключа файла на сервер уходят только область, каталог и имя.
@@ -622,6 +635,15 @@ class McpFiles:
     Ошибки те же, что у хранилища: StorageNotFoundError — файла нет,
     StorageFullError — в workspace нет места, StorageError — прочий отказ.
     """
+
+    BODY_HEADERS: ClassVar[tuple[str, ...]] = (
+        "content-type",
+        "content-length",
+        "content-range",
+        "accept-ranges",
+        "content-disposition",
+    )
+    """Заголовки ответа сервера, описывающие тело файла."""
 
     NOT_FOUND: ClassVar[int] = 404
     BAD_RANGE: ClassVar[int] = 416
@@ -684,6 +706,35 @@ class McpFiles:
         stat = FileStat(size=self._total(url, reply))
 
         return OpenedStream(stat=stat, chunks=self._chunks(reply), release=reply.aclose)
+
+    async def relay(self, rel: str, range_header: str) -> RelayedFile:
+        """Файл по пути rel под маршрутом как ответ сервера: статус 200, 206
+        или 416 и заголовки тела уходят дальше как есть."""
+        url = "/".join((self._root.url(), quote(rel)))
+        headers: dict[str, str] = {}
+        if range_header:
+            headers["Range"] = range_header
+
+        request = self._http.build_request("GET", url, headers=headers)
+        reply = await self._http.send(request, stream=True)
+        refused = reply.status_code >= self.FIRST_REFUSAL
+        if refused and reply.status_code != self.BAD_RANGE:
+            await reply.aread()
+            await reply.aclose()
+            self._check("GET", url, reply)
+
+        passed: dict[str, str] = {}
+        for name in self.BODY_HEADERS:
+            value = reply.headers.get(name)
+            if value is not None:
+                passed[name] = value
+
+        return RelayedFile(
+            status=reply.status_code,
+            headers=passed,
+            chunks=self._chunks(reply),
+            release=reply.aclose,
+        )
 
     async def delete(self, key: ObjectKey) -> bool:
         url = self._url(key)
@@ -1299,6 +1350,7 @@ class McpToolServer(ToolServer):
         self._views = CallViews()
         self._caller = caller
         self._files: McpFiles | None = None
+        self._journal_files: McpFiles | None = None
 
     async def open(self) -> None:
         """Ошибки:
@@ -1333,6 +1385,7 @@ class McpToolServer(ToolServer):
         self._tools = tools
         self._by_name = remote
         await self._open_files()
+        await self._open_journal_files()
         logger.info(
             "mcp server %s: %d tools, features %s",
             self._name,
@@ -1343,6 +1396,30 @@ class McpToolServer(ToolServer):
     def files(self) -> McpFiles | None:
         """Файлы workspace на сервере; None — сервер их не объявил."""
         return self._files
+
+    def journal_files(self) -> McpFiles | None:
+        """Журналы вызовов сервера целыми файлами: канал журнала лежит по
+        пути `{run}/{node}/{channel}`; None — сервер такого не объявил."""
+        return self._journal_files
+
+    async def _open_journal_files(self) -> None:
+        if self._journal_files is not None:
+            await self._journal_files.close()
+            self._journal_files = None
+
+        declared = self._features.get(JournalFeature.ID.value)
+        if declared is None:
+            return
+
+        endpoint = self._config.endpoint
+        if not isinstance(endpoint, HttpAddress):
+            return
+
+        path = declared.get(JournalFeature.PATH.value)
+        if not isinstance(path, str):
+            return
+
+        self._journal_files = McpFiles(self._name, endpoint, self._caller, path)
 
     async def _open_files(self) -> None:
         """Клиент файлов по расширению FilesFeature; прежний закрывается."""
@@ -1404,6 +1481,10 @@ class McpToolServer(ToolServer):
         if self._files is not None:
             await self._files.close()
             self._files = None
+
+        if self._journal_files is not None:
+            await self._journal_files.close()
+            self._journal_files = None
 
         await self._connection.close()
 
@@ -1918,6 +1999,18 @@ class McpServers:
             await self._open(server, port)
 
         return port.files()
+
+    async def journal_files(self, server: str, caller: McpCaller) -> McpFiles | None:
+        """Журналы вызовов сервера server целыми файлами от имени caller;
+        None — сервер не назван, недоступен или такого не объявил."""
+        if server not in self._configs:
+            return None
+
+        port = await self._port(server, caller)
+        if not port.opened:
+            await self._open(server, port)
+
+        return port.journal_files()
 
     def journaled(self) -> frozenset[str]:
         """Имена инструментов подключённых серверов, которые ведут журнал

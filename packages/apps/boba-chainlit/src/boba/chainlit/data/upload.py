@@ -26,30 +26,34 @@ from uuid import UUID
 
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.datastructures import UploadFile
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import ValidationError
 from python_multipart.multipart import MultipartParser, parse_options_header
 from starlette.datastructures import Headers
 
-from boba.canvas.journal import StreamJournalError, StreamKey
 from boba.canvas.keys import ObjectKey, ThreadDir
-from boba.canvas.storage import StorageFullError
+from boba.canvas.storage import (
+    StorageError,
+    StorageFullError,
+    StorageNotFoundError,
+)
 from boba.canvas.transfer import (
     ContentDisposition,
     FileHeader,
     TransferFormat,
     UploadPolicy,
 )
+from boba.chainlit.canvas.remote import RemoteJournals
 from boba.chainlit.domain.fields import ElementField, FileField
 from boba.chainlit.domain.keys import AppPrefix
 from boba.chainlit.infra.session import ChainlitSession, session_source_ref
 from boba.identity.errors import AuthenticationError
 from boba.identity.session import Login
+from boba.mcp_client.client import McpCaller, McpServers, RelayedFile
 from boba.runtime.served import StreamedFile
-from boba.runtime.storage import LocalStorageClient, LocalStorageConfig, StorageClient
+from boba.runtime.storage import StorageClient
 from boba.toolkit.channels import JournalChannels, ToolChannel
 from boba.toolkit.failure import ValidationText
-from boba.toolrun.streams import CallJournals
 from chainlit.auth import get_current_user
 from chainlit.data.base import BaseDataLayer
 from chainlit.user import PersistedUser, User
@@ -599,27 +603,26 @@ class CanvasServing:
 
 
 class StreamServing:
-    """Отдаёт .log вызова из тома журнала тем же StreamedFile, что и вложения.
+    """Отдаёт канал журнала вызова файлом.
 
-    Журнал лежит в каталоге служебного тома — обычная ФС, поэтому источником
-    служит LocalStorageClient над корнем тома пользователя; клиент на том
-    кэшируется.
+    Журнал лежит у MCP-сервера, который исполнял вызов: адрес журнала даёт
+    реестр RemoteJournals (из памяти живого вызова либо из истории треда),
+    файл читается клиентом MCP от имени вошедшего, и ответ сервера — статус,
+    заголовки тела, чанки — уходит браузеру как есть. Чужой журнал сервер не
+    отдаёт.
     """
 
-    MIME: ClassVar[str] = "text/plain; charset=utf-8"
+    BAD_GATEWAY: ClassVar[int] = 502
 
     def __init__(
         self,
-        config: LocalStorageConfig,
-        policy: UploadPolicy,
-        journals_ref: Callable[[], CallJournals],
+        journals_ref: Callable[[], RemoteJournals],
+        servers_ref: Callable[[], McpServers],
     ) -> None:
-        self._config = config
-        self._policy = policy
         self._journals_ref = journals_ref
-        """Журналы процесса; резолвятся на запрос: роут ставится до сборки
-        контейнера."""
-        self._files: dict[str, StreamedFile] = {}
+        self._servers_ref = servers_ref
+        """Реестр журналов и клиент серверов резолвятся на запрос: роут
+        ставится до сборки контейнера."""
 
     async def serve(
         self,
@@ -634,14 +637,6 @@ class StreamServing:
             msg = f"sign-in required: expected a persisted user, got {got}"
             raise HTTPException(status_code=401, detail=msg)
 
-        journal = self._journals_ref().store
-        if journal is None:
-            msg = (
-                f"stream {call_id}/{channel} of thread {thread_id} is not found: "
-                "the stream journal is disabled in the app config"
-            )
-            raise HTTPException(status_code=404, detail=msg)
-
         # служебные каналы вызова наружу не отдаются: скачать можно то же,
         # что показывает панель
         log_channel = JournalChannels.parse_visible(channel)
@@ -653,44 +648,46 @@ class StreamServing:
             )
             raise HTTPException(status_code=404, detail=msg)
 
-        try:
-            key = StreamKey(
-                user_id=str(current_user.id), thread_id=thread_id, call_id=call_id
-            )
-        except ValueError as e:
+        address = await self._journals_ref().address(thread_id, call_id)
+        if address is None:
             msg = (
-                f"stream {call_id}/{channel} of thread {thread_id!r} is not found: {e}"
-            )
-            raise HTTPException(status_code=404, detail=msg) from e
-
-        try:
-            root = journal.vault_root(key.user_id)
-        except StreamJournalError as e:
-            msg = f"stream vault of user {key.user_id} is unavailable: {e}"
-            raise HTTPException(status_code=503, detail=msg) from e
-
-        rel_log = journal.log_rel_path(key, log_channel)
-        if rel_log is None:
-            msg = (
-                f"stream {call_id}/{log_channel} of thread {thread_id} has no "
-                "journal file"
+                f"stream {call_id}/{log_channel} of thread {thread_id} is not "
+                "found: no server keeps a journal of this call"
             )
             raise HTTPException(status_code=404, detail=msg)
 
-        disposition = f'attachment; filename="{key.call_id}.{log_channel}.log"'
-        return await self._files_for(root).respond(
-            rel_log,
-            mime=self.MIME,
-            range_header=request.headers.get(FileHeader.RANGE, ""),
-            content_disposition=disposition,
+        caller = McpCaller(
+            login=Login(current_user.identifier),
+            roles=ChainlitSession.roles_of(current_user),
+        )
+        files = await self._servers_ref().journal_files(address.server, caller)
+        if files is None:
+            msg = (
+                f"stream {call_id}/{log_channel} of thread {thread_id}: mcp "
+                f"server {address.server!r} is unavailable or serves no journals"
+            )
+            raise HTTPException(status_code=404, detail=msg)
+
+        rel = "/".join((address.run, call_id, log_channel.value))
+        try:
+            relayed = await files.relay(rel, request.headers.get(FileHeader.RANGE, ""))
+        except StorageNotFoundError as e:
+            msg = f"stream {call_id}/{log_channel} of thread {thread_id}: {e}"
+            raise HTTPException(status_code=404, detail=msg) from e
+        except StorageError as e:
+            msg = f"stream {call_id}/{log_channel} of thread {thread_id}: {e}"
+            raise HTTPException(status_code=self.BAD_GATEWAY, detail=msg) from e
+
+        return StreamingResponse(
+            self._body(relayed),
+            status_code=relayed.status,
+            headers=dict(relayed.headers),
         )
 
-    def _files_for(self, root: str) -> StreamedFile:
-        files = self._files.get(root)
-        if files is not None:
-            return files
-
-        config = self._config.model_copy(update={"kind": "local", "files_dir": root})
-        files = StreamedFile(LocalStorageClient(config), self._policy)
-        self._files[root] = files
-        return files
+    @staticmethod
+    async def _body(relayed: RelayedFile) -> AsyncIterator[bytes]:
+        try:
+            async for chunk in relayed.chunks:
+                yield chunk
+        finally:
+            await relayed.release()

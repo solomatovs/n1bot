@@ -41,7 +41,6 @@ from boba.identity.locks import (
 )
 from boba.identity.run import ElementTarget, RunPort, RunRefusal, Runs
 from boba.messaging import NoticeLevel, TurnOutcome
-from boba.toolrun.streams import CallJournals, StreamPumps
 
 __all__ = [
     "ChatTurn",
@@ -411,7 +410,6 @@ class ChatTurn(RunPort):
         sent: SentConnections,
         contexts: CallContexts,
         runs: Runs,
-        journals: CallJournals,
     ) -> None:
         self._thread_id = thread_id
         self._feed = feed
@@ -424,7 +422,6 @@ class ChatTurn(RunPort):
         self._tracer = AgentTracer(feed, self._state, sent)
         self._contexts = contexts
         self._runs = runs
-        self._journals = journals
         self._reporter = TurnReporter(
             feed=feed,
             state=self._state,
@@ -542,42 +539,37 @@ class ChatTurn(RunPort):
     ) -> None:
         context = self._contexts.current()
         cancellation = context.cancellation
-        pumps = StreamPumps(self._feed)
-        try:
-            with (
-                self._runs.open(context, self) as run,
-                self._journals.following(run, pumps.opened),
-                self._runs.task_abort(cancellation),
-            ):
-                try:
-                    # ход объявляется до первого чанка: запрос в модель уходит с первой
-                    # итерацией стрима, и до её ответа лента иначе пуста
-                    await self._feed.started(self._key, self._question.body())
-                    async for chunk, _metadata in stream:
-                        cancellation.raise_if_cancelled()
-                        await self._model_answered()
-                        await self._on_chunk(chunk)
+        with (
+            self._runs.open(context, self),
+            self._runs.task_abort(cancellation),
+        ):
+            try:
+                # ход объявляется до первого чанка: запрос в модель уходит с первой
+                # итерацией стрима, и до её ответа лента иначе пуста
+                await self._feed.started(self._key, self._question.body())
+                async for chunk, _metadata in stream:
+                    cancellation.raise_if_cancelled()
+                    await self._model_answered()
+                    await self._on_chunk(chunk)
 
-                    await self._feed.answer_closed(self._key)
-                except asyncio.CancelledError:
-                    # задачу сняли снаружи; после кнопки Stop причина уже своя
-                    cancellation.cancel(StopReason.ABORTED)
-                    if self._state.settle_stopped(cancellation.reason):
-                        await self._report_stop(cancellation.reason)
-                    raise
-                except ToolStopped:
-                    if self._state.settle_stopped(cancellation.reason):
-                        await self._report_stop(cancellation.reason)
-                    return
-                except Exception as e:
-                    # отчёт до cancel: отмена гасит и задачу самого хода, незащищённый
-                    # await после неё умирает — история сбоя была бы потеряна
-                    if self._state.settle_failed(e):
-                        await self._reporter.failed(e)
-                    cancellation.cancel(StopReason.FAILED)
-                    return
-        finally:
-            await pumps.close()
+                await self._feed.answer_closed(self._key)
+            except asyncio.CancelledError:
+                # задачу сняли снаружи; после кнопки Stop причина уже своя
+                cancellation.cancel(StopReason.ABORTED)
+                if self._state.settle_stopped(cancellation.reason):
+                    await self._report_stop(cancellation.reason)
+                raise
+            except ToolStopped:
+                if self._state.settle_stopped(cancellation.reason):
+                    await self._report_stop(cancellation.reason)
+                return
+            except Exception as e:
+                # отчёт до cancel: отмена гасит и задачу самого хода, незащищённый
+                # await после неё умирает — история сбоя была бы потеряна
+                if self._state.settle_failed(e):
+                    await self._reporter.failed(e)
+                cancellation.cancel(StopReason.FAILED)
+                return
 
         if self._state.settle_ok():
             await self._reporter.ok()

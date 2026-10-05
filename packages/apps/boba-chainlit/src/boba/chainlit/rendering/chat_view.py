@@ -19,7 +19,6 @@ from boba.canvas.canvas import CanvasAction
 from boba.chainlit.rendering.tool import ChatElements
 from boba.toolkit.calls import ToolCallModels, ToolIntent
 from boba.toolkit.result import ToolArtifact, VisualElement
-from boba.toolrun.streams import CallJournals
 from chainlit.config import config as chainlit_config
 from chainlit.context import context
 from chainlit.element import CustomElement
@@ -551,6 +550,15 @@ class TurnPulse:
         self._shown = False
 
 
+class StreamableTools(Protocol):
+    """Инструменты, у шага которых есть живой вывод: по нему лента решает,
+    рисовать ли у шага кнопку журнала. Реализует RemoteJournals."""
+
+    @abstractmethod
+    def streamable(self, tool_name: str) -> bool:
+        """Ведёт ли сервер журнал вызовов этого инструмента."""
+
+
 class ChatView:
     """Строит step-иерархию хода диалога и пишет её в sink.
 
@@ -574,7 +582,7 @@ class ChatView:
         self,
         thread_id: str,
         sink: ChatSink,
-        journals: CallJournals,
+        journals: StreamableTools,
         *,
         user_name: str | None = None,
     ) -> None:
