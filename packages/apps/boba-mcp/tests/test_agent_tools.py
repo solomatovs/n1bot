@@ -472,11 +472,11 @@ class TestBashTool:
         self, zygote_stand: ZygoteStand, tmp_path: Path
     ) -> None:
         tool = self._make_tool(
-            zygote_stand, tmp_path, _profile(process_memory_bytes=64 * 1024 * 1024)
+            zygote_stand, tmp_path, _profile(process_memory_bytes=128 * 1024 * 1024)
         )
         payload = self._invoke(tool, command="ulimit -v")
-        if payload.stdout.strip() != str(64 * 1024):
-            raise AssertionError("payload.stdout.strip() == str(64 * 1024)")
+        if payload.stdout.strip() != str(128 * 1024):
+            raise AssertionError("payload.stdout.strip() == str(128 * 1024)")
 
     def test_cpu_limit_applied_without_image(
         self, zygote_stand: ZygoteStand, tmp_path: Path
