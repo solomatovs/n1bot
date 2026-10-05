@@ -8,7 +8,7 @@ import plotly.graph_objects as go
 import pytest
 from chainlit.auth import get_current_user
 from chainlit.user import PersistedUser
-from chainlit_stand import ChatSessionStand, FakeUrl, Seed
+from chainlit_stand import ChatSessionStand, FakeUrl, Seed, put_bytes
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
@@ -114,9 +114,7 @@ async def test_bot_file_is_shown_without_copying(
 
     # файл уже в каталоге вложений треда — его туда положил агент через bash
     key = ObjectKey.build(seeded.user.id, seeded.thread_id, REPORT_NAME, "el")
-    await storage.upload_file(
-        object_key=key.render(), data=REPORT_BODY, mime="text/plain"
-    )
+    await put_bytes(storage, object_key=key.render(), data=REPORT_BODY)
     stored_before = sorted(p.name for p in files_dir.rglob("*") if p.is_file())
 
     element_id = ChatView.derive_id(seeded.thread_id, "call_1", StepRole.ELEMENT)
@@ -183,9 +181,7 @@ async def test_attachment_range_is_served_partially(
     chat_session.use(user_id=seeded.user.id)
 
     key = ObjectKey.build(seeded.user.id, seeded.thread_id, REPORT_NAME, "el")
-    await storage.upload_file(
-        object_key=key.render(), data=REPORT_BODY, mime="text/plain"
-    )
+    await put_bytes(storage, object_key=key.render(), data=REPORT_BODY)
 
     element_id = ChatView.derive_id(seeded.thread_id, "call_rng", StepRole.ELEMENT)
     if element_id is None:
@@ -270,9 +266,7 @@ async def test_diagram_from_mermaid_dir_is_served(
         "el",
         dir_thread=ThreadDir.MERMAID,
     )
-    await storage.upload_file(
-        object_key=key.render(), data="flowchart LR\n  A --> B\n", mime="text/plain"
-    )
+    await put_bytes(storage, object_key=key.render(), data="flowchart LR\n  A --> B\n")
 
     element_id = ChatView.derive_id(seeded.thread_id, "call_diagram", StepRole.ELEMENT)
     if element_id is None:

@@ -32,7 +32,7 @@ from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, ValidationError
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 
-from boba.canvas.keys import ObjectKey, ThreadDir
+from boba.canvas.keys import ObjectKey, ThreadDir, WorkspaceMount
 from boba.canvas.storage import StorageFullError, StorageNotFoundError
 from boba.canvas.transfer import FileHeader, UploadPolicy
 from boba.identity.context import Scope, Subject
@@ -96,6 +96,7 @@ class FileRoutes:
         return {
             FilesFeature.PATH.value: self._base,
             FilesFeature.UPLOAD.value: upload_tool,
+            FilesFeature.WORKSPACE.value: WorkspaceMount.path(),
         }
 
     def address(self, scope: str, name: str) -> str:

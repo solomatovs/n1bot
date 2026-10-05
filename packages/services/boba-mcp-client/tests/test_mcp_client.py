@@ -15,11 +15,13 @@ import sys
 from collections.abc import AsyncIterator, Iterator, Sequence
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import ClassVar
+from typing import Any, ClassVar
 
 import httpx
 import pytest
-from langchain_core.messages import ToolCall
+from langchain_core.callbacks import AsyncCallbackHandler
+from langchain_core.messages import ToolCall, ToolMessage
+from langchain_core.runnables import RunnableConfig, RunnableLambda
 from pydantic import SecretStr
 
 from boba.auth.config import ProxyAuthConfig
@@ -530,6 +532,138 @@ class TestScopeOfTheCall:
             raise AssertionError(f"the body runs in the caller's scope: {message}")
 
 
+class StartedTools(AsyncCallbackHandler):
+    """Имена инструментов, чьи вызовы начались: так их видит лента клиента."""
+
+    def __init__(self, started: list[str]) -> None:
+        self._started = started
+
+    async def on_tool_start(
+        self, serialized: dict[str, Any], input_str: str, **kwargs: Any
+    ) -> None:
+        self._started.append(str(serialized.get("name")))
+
+
+@pytest.mark.integration
+class TestLinkedCalls:
+    """Потоковые вызовы одного ответа модели уходят серверу одной связкой:
+    сервер связывает их каналами, а итог у каждого вызова свой."""
+
+    async def test_stream_calls_of_one_response_meet_on_the_server(
+        self, dag: McpToolServer, tmp_path: Path
+    ) -> None:
+        marker = tmp_path / "collected"
+        emit = ToolCall(
+            name="fake_emit",
+            args={
+                "prefix": "a",
+                "count": 3,
+                "size": 0,
+                "fail_midway": False,
+                "out": "c1",
+            },
+            id="call-emit",
+            type="tool_call",
+        )
+        collect = ToolCall(
+            name="fake_collect",
+            args={"marker": str(marker), "fail": False, "gated": False, "feed": "c1"},
+            id="call-collect",
+            type="tool_call",
+        )
+
+        pending = await dag.submit([emit, collect])
+        emitted, collected = await asyncio.gather(*pending)
+
+        if emitted.status != "success" or collected.status != "success":
+            raise AssertionError(
+                f"both calls of the group succeed: {emitted} {collected}"
+            )
+        if emitted.tool_call_id != "call-emit":
+            raise AssertionError(f"each call gets its own outcome: {emitted}")
+        if collected.tool_call_id != "call-collect":
+            raise AssertionError(f"each call gets its own outcome: {collected}")
+        if isinstance(emitted.artifact, WorkflowResult):
+            raise AssertionError(
+                f"the outcome is the tool's, not the group's: {emitted}"
+            )
+        if not marker.exists():
+            raise AssertionError("the reader ran to its end on the writer's stream")
+
+    async def test_workflow_call_runs_as_the_calls_of_its_nodes(
+        self, dag: McpToolServer, tmp_path: Path
+    ) -> None:
+        """Вызов связки — несколько вызовов инструментов, запущенных вместе:
+        у каждого узла свой вызов под идентификатором связки с номером узла,
+        и те же идентификаторы несёт итог связки для истории."""
+        started: list[str] = []
+        nodes = [
+            {
+                "key": "src",
+                "tool": "fake_emit",
+                "args": {
+                    "prefix": "a",
+                    "count": 2,
+                    "size": 0,
+                    "fail_midway": False,
+                    "out": "c1",
+                },
+            },
+            {
+                "key": "dst",
+                "tool": "fake_collect",
+                "args": {
+                    "marker": str(tmp_path / "done"),
+                    "fail": False,
+                    "gated": False,
+                    "feed": "c1",
+                },
+            },
+        ]
+        whole = ToolCall(
+            name="workflow", args={"nodes": nodes}, id="call-wf", type="tool_call"
+        )
+
+        async def called(_: None) -> ToolMessage:
+            return await dag.call(whole)
+
+        watched = RunnableConfig(callbacks=[StartedTools(started)])
+        message = await RunnableLambda(called).ainvoke(None, config=watched)
+
+        artifact = message.artifact
+        if not isinstance(artifact, WorkflowResult):
+            raise AssertionError(f"the outcome is the workflow result: {message}")
+
+        ids = [node.call_id for node in artifact.nodes]
+        if ids != ["call-wf_0", "call-wf_1"]:
+            raise AssertionError(f"nodes are numbered calls of the workflow: {ids}")
+        if [node.key for node in artifact.nodes] != ["src", "dst"]:
+            raise AssertionError(f"nodes keep the names of the model: {artifact}")
+        if sorted(started) != ["fake_collect", "fake_emit"]:
+            raise AssertionError(f"each node is a tool call of its own: {started}")
+
+    async def test_lonely_stream_call_goes_as_an_ordinary_call(
+        self, dag: McpToolServer
+    ) -> None:
+        emit = ToolCall(
+            name="fake_emit",
+            args={
+                "prefix": "a",
+                "count": 1,
+                "size": 0,
+                "fail_midway": False,
+                "out": "c1",
+            },
+            id="call-lonely",
+            type="tool_call",
+        )
+
+        message = await dag.call(emit)
+
+        if message.status != "error":
+            raise AssertionError(f"a stream without a reader is refused: {message}")
+
+
 @pytest.mark.integration
 class TestWorkspaceFiles:
     """Файлы workspace на сервере: клиент пишет и читает их потоком."""
@@ -779,7 +913,7 @@ class TestSignInAsTheUser:
         finally:
             await servers.stop()
 
-        if names != ["fake_echo", "stream_read"]:
+        if names != ["fake_echo"]:
             raise AssertionError(f"the endpoint decides the tools: {names}")
 
     async def test_endpoint_outside_the_roles_gives_no_port(

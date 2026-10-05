@@ -31,6 +31,7 @@ from boba.chainlit.infra.providers import (
     chat_profiles_registry,
     get_app_config,
     langchain_agent,
+    mcp_servers,
     sent_connections,
     session_profile,
 )
@@ -47,6 +48,7 @@ from boba.chainlit.infra.thread_room import (
 )
 from boba.chainlit.rendering.errors import chainlit_error_ctx_handler
 from boba.chat.profiles import (
+    ChatProfileConfig,
     ChatProfiles,
     SelectedProfile,
     SettingsView,
@@ -58,9 +60,9 @@ from boba.identity.context import CallContexts, Scope
 from boba.identity.errors import InternalServiceError
 from boba.identity.locks import LiveLocks, RunLocking
 from boba.identity.run import Runs
-from boba.identity.session import UserMetadataField
+from boba.identity.session import Login, UserMetadataField
 from boba.identity.token import CookieSpec
-from boba.mcp_client.client import McpCaller
+from boba.mcp_client.client import McpCaller, McpServers
 from boba.messaging import (
     ChatSettingsChanged,
     LockToken,
@@ -75,6 +77,11 @@ from boba.runtime.di import Container, Depends, di_inject
 from boba.runtime.http import SessionCookie
 from boba.toolrun.streams import CallJournals
 from boba.transport.http import DumpLabel
+from chainlit.config import (
+    ChainlitConfigOverrides,
+    FeaturesSettings,
+    SpontaneousFileUploadFeature,
+)
 from chainlit.config import config as chainlit_config
 from chainlit.context import ChainlitContext, context, context_var
 from chainlit.data.base import BaseDataLayer
@@ -230,9 +237,13 @@ async def set_chat_profiles(
     user: cl.User | None,
     language: str | None,
     registry: Annotated[ChatProfiles, Depends(chat_profiles_registry)],
+    servers: Annotated[McpServers, Depends(mcp_servers)],
 ) -> list[cl.ChatProfile]:
-    """Профили, выданные входу пользователя; выбор профиля обязателен."""
+    """Профили, выданные входу пользователя; выбор профиля обязателен.
+    Загрузка файлов включена в профиле, чей первый MCP-сервер объявил
+    хранилище файлов: своего хранилища у чата нет."""
     granted = ChainlitSession.profiles_of(user)
+    uploads = ProfileUploads(servers, user)
 
     profiles: list[cl.ChatProfile] = []
     for name, profile in registry.visible_for(granted).items():
@@ -247,10 +258,47 @@ async def set_chat_profiles(
                 markdown_description=profile.description,
                 icon=icon,
                 default=profile.default,
+                config_overrides=await uploads.overrides(profile),
             )
         )
 
     return profiles
+
+
+class ProfileUploads:
+    """Доступность загрузки файлов в профиле для пользователя.
+
+    Создаётся обработчиком set_chat_profiles на один запрос настроек. Файлы
+    пользователя лежат на первом MCP-сервере профиля; если сервера нет, он
+    недоступен или хранилища файлов не объявил, кнопка загрузки в этом
+    профиле скрыта.
+    """
+
+    def __init__(self, servers: McpServers, user: cl.User | None) -> None:
+        self._servers = servers
+        self._user = user
+
+    async def overrides(self, profile: ChatProfileConfig) -> ChainlitConfigOverrides:
+        upload = SpontaneousFileUploadFeature(enabled=await self.enabled(profile))
+
+        return ChainlitConfigOverrides(
+            features=FeaturesSettings(spontaneous_file_upload=upload)
+        )
+
+    async def enabled(self, profile: ChatProfileConfig) -> bool:
+        user = self._user
+        if user is None:
+            return False
+
+        if not profile.mcp:
+            return False
+
+        caller = McpCaller(
+            login=Login(user.identifier), roles=ChainlitSession.roles_of(user)
+        )
+        files = await self._servers.files(profile.mcp[0], caller)
+
+        return files is not None
 
 
 def _session_selected_profile(registry: ChatProfiles) -> SelectedProfile:

@@ -25,7 +25,7 @@ from boba.chainlit.agent.bridge import ChatModelBridge
 from boba.chainlit.canvas.remote import RemoteJournals, RemoteStreams
 from boba.chainlit.chat.feed import TurnFeed
 from boba.chainlit.chat.history import ThreadMessages, TranscriptFeed
-from boba.chainlit.data.data_layer import PostgresDataLayer
+from boba.chainlit.data.data_layer import HeldContent, PostgresDataLayer
 from boba.chainlit.domain.keys import AppPrefix, AttachmentLinks
 from boba.chainlit.infra.config import AppConfig
 from boba.chainlit.infra.session import (
@@ -69,7 +69,7 @@ from boba.mcp_client.client import (
 from boba.messaging import LockToken, MemoryMessageBus, MemoryPayloadStore
 from boba.runtime.config import AppLayers
 from boba.runtime.elements import ChatTables
-from boba.runtime.storage import LocalStorageClient
+from boba.runtime.storage import LocalStorageClient, StorageClient
 from boba.stand.refs import StandRefs
 from boba.stand.signin import SignInStand
 from boba.stand_core.context import CallStand, StandIdentity
@@ -603,3 +603,8 @@ class RecordedTurn:
     @property
     def steps(self) -> list[StepDict]:
         return self.recording_sink.steps
+
+
+async def put_bytes(storage: StorageClient, object_key: str, data: bytes | str) -> None:
+    """Кладёт в хранилище готовые байты теста: запись у хранилища только потоком."""
+    await storage.upload_stream(object_key, HeldContent(data).chunks())

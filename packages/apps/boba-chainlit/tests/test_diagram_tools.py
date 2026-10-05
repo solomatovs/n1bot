@@ -8,7 +8,7 @@ from typing import Any
 from uuid import UUID
 
 import pytest
-from chainlit_stand import ChatSessionStand
+from chainlit_stand import ChatSessionStand, put_bytes
 
 from boba.canvas.canvas import (
     CanvasError,
@@ -142,11 +142,10 @@ async def _stored(
 ) -> None:
     """Спека в storage тем путём, каким её кладёт тело diagram_save."""
     storage = AttachmentDataLayer.require().storage
-    await storage.upload_file(
+    await put_bytes(
+        storage,
         object_key=f"{UUID(int=7)}/{THREAD}/{dir_thread.value}/{name}",
         data=text,
-        mime="text/plain",
-        overwrite=True,
     )
 
 
@@ -267,10 +266,10 @@ class TestEntry:
     @pytest.mark.anyio
     async def test_read_binary_file(self, files: DiagramFiles) -> None:
         storage = AttachmentDataLayer.require().storage
-        await storage.upload_file(
+        await put_bytes(
+            storage,
             object_key=f"{UUID(int=7)}/{THREAD}/mermaid/bin.mmd",
             data=b"\xff\xfe\x00\x01",
-            mime="application/octet-stream",
         )
 
         key = ObjectKey.build(

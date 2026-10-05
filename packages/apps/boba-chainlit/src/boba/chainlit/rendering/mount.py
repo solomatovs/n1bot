@@ -14,21 +14,22 @@ RefusalError — вызов идёт вне хода чата или без жи
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import mimetypes
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, ClassVar
 from uuid import uuid4
 
-from langchain_core.messages import ToolCall
+from langchain_core.messages import ToolCall, ToolMessage
 from langchain_core.tools import BaseTool
 
 import chainlit as cl
 from boba.canvas.canvas import CanvasError, CanvasErrorKind
 from boba.canvas.keys import ElementProps, ObjectKey
 from boba.chainlit.canvas.panel import CanvasPanel
-from boba.chainlit.data.data_layer import AttachmentDataLayer
+from boba.chainlit.data.data_layer import AttachmentDataLayer, HeldContent
 from boba.chainlit.domain.context import ChatCallContext
 from boba.chainlit.rendering.tool import ChatElements
 from boba.identity.context import CallContexts, ContextKind
@@ -42,6 +43,7 @@ from boba.toolkit.result import (
     PanelOpen,
     ToolResultBase,
 )
+from boba.toolrun.stream_calls import CallReply, ToolServer
 from boba.toolrun.wrapping import CallHooks, ToolBody
 
 __all__ = ["ChatAttachments", "ChatMount", "MountedCall", "WorkspaceFile"]
@@ -179,6 +181,67 @@ class ChatMount(CallHooks[MountedCall]):
         return port.element_target(context.tool_call_id())
 
 
+class MountedToolServer(ToolServer):
+    """Порт ToolServer, монтирующий результат удалённого вызова на поверхность
+    чата.
+
+    Создаётся сборкой агента поверх порта MCP-сервера. Тело инструмента
+    исполнил сервер и о чате не знает; когда вызов вернулся, порт отдаёт его
+    результат обвязке ChatMount — та открывает файл в панели, прикрепляет
+    вложение. Отказ поверхности (диаграмма не отрисовалась) подменяет итог
+    вызова ошибкой, и модель видит его как отказ инструмента.
+    """
+
+    def __init__(
+        self, inner: ToolServer, mount: ChatMount, contexts: CallContexts
+    ) -> None:
+        self._inner = inner
+        self._mount = mount
+        self._contexts = contexts
+
+    def tools(self) -> Sequence[BaseTool]:
+        return self._inner.tools()
+
+    def features(self) -> Mapping[str, Mapping[str, object]]:
+        return self._inner.features()
+
+    async def submit(
+        self, calls: Sequence[ToolCall]
+    ) -> Sequence[asyncio.Future[ToolMessage]]:
+        accepted = await self._inner.submit(calls)
+        mounted: list[asyncio.Future[ToolMessage]] = []
+        for call, future in zip(calls, accepted, strict=True):
+            mounted.append(asyncio.ensure_future(self._mounted(call, future)))
+
+        return mounted
+
+    async def _mounted(
+        self, call: ToolCall, future: asyncio.Future[ToolMessage]
+    ) -> ToolMessage:
+        message = await future
+        artifact = message.artifact
+        if not isinstance(artifact, ToolResultBase):
+            return message
+
+        call_id = str(call["id"])
+        pair = (message.content, artifact)
+        context = self._contexts.current()
+        with self._contexts.applied(context.as_tool_call(call_id)):
+            result = await self._mount.after_async(MountedCall(tool=call["name"]), pair)
+
+        if result is pair:
+            return message
+
+        if not isinstance(result, tuple):
+            return message
+
+        refusal = result[1]
+        if not isinstance(refusal, ToolResultBase):
+            return message
+
+        return CallReply(call).message(refusal, True)
+
+
 class ChatAttachments(BlockFiles):
     """Реализация BlockFiles чатом: файл из результата MCP-сервера ложится в
     workspace треда и показывается вложением.
@@ -207,7 +270,9 @@ class ChatAttachments(BlockFiles):
             self._name(call, index, mime),
             call_id,
         )
-        await self._storage.upload_file(key.render(), data, mime)
+        await self._storage.upload_stream(
+            key.render(), HeldContent(data).chunks(), mime
+        )
 
         path = key.in_workspace()
         if index == 0:

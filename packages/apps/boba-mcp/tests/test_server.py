@@ -747,5 +747,10 @@ class TestWorkspaceFiles:
             raise AssertionError("the server declares extensions")
 
         files = declared.extensions.get(FilesFeature.ID.value)
-        if files != {"path": "/mcp/service/files", "upload": FileUploadTool.NAME}:
+        expected_files = {
+            "path": "/mcp/service/files",
+            "upload": FileUploadTool.NAME,
+            "workspace": "/workspace",
+        }
+        if files != expected_files:
             raise AssertionError(f"the files extension is declared: {files}")

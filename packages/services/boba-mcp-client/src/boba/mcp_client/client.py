@@ -39,6 +39,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Annotated, Any, ClassVar, Literal, Protocol
 from urllib.parse import quote
+from uuid import uuid4
 
 import httpx2
 import mcp.types as mt
@@ -56,7 +57,7 @@ from pydantic import BaseModel, ConfigDict, Field, SecretStr, ValidationError
 
 from boba.auth.proxy import ProxySignature
 from boba.canvas.journal import StreamSlice
-from boba.canvas.keys import ObjectKey
+from boba.canvas.keys import ObjectKey, WorkspaceMount
 from boba.canvas.storage import (
     FileStat,
     OpenedStream,
@@ -66,6 +67,8 @@ from boba.canvas.storage import (
 )
 from boba.identity.context import CallContexts
 from boba.identity.signin import ProxyHeaderNames, ProxyRequest
+from boba.toolkit.calls import CallViews, ToolCallModels
+from boba.toolkit.dag import DagNode, DagSpec, WorkflowResult
 from boba.toolkit.result import (
     ErrorResult,
     FailureResult,
@@ -82,7 +85,7 @@ from boba.toolkit.wire import (
     WireMeta,
     WireResult,
 )
-from boba.toolrun.stream_calls import CallReply, ToolServer
+from boba.toolrun.stream_calls import CallReply, ToolServer, WorkflowTool
 from boba.workspace.launcher import ReadWindow
 
 __all__ = [
@@ -813,6 +816,14 @@ class McpToolStubs:
     def name_of(self, tool: mt.Tool) -> str:
         return f"{self._prefix}{tool.name}"
 
+    def remote_name(self, name: str) -> str:
+        """Имя инструмента на сервере по его имени у модели."""
+        return name.removeprefix(self._prefix)
+
+    def local_name(self, remote: str) -> str:
+        """Имя инструмента у модели по его имени на сервере."""
+        return f"{self._prefix}{remote}"
+
     def stub(self, tool: mt.Tool, body: ToolBody) -> BaseTool:
         description = tool.description
         if not description:
@@ -879,13 +890,174 @@ class JournalAddresses:
         return JournalAddress.model_validate(stamped)
 
 
-class LiveCall:
-    """Вызов, чьё тело сейчас исполняется: сам вызов и запуск, которым его
-    исполнил сервер (известен из итога). Создаётся портом на время вызова."""
+@dataclass(frozen=True)
+class LinkedPlan:
+    """Что в пачке вызовов идёт связкой: имена инструментов её вызовов и
+    сама связка; group None — связки в пачке нет."""
 
-    def __init__(self, call: ToolCall) -> None:
+    names: frozenset[str]
+    group: LinkedCalls | None
+
+
+class LiveCall:
+    """Вызов, чьё тело сейчас исполняется: сам вызов, запуск, которым его
+    исполнил сервер (известен из итога), и связка, в которой он идёт.
+    Создаётся портом на время вызова."""
+
+    def __init__(self, call: ToolCall, seat: LinkedSeat | None) -> None:
         self.call = call
         self.run = ""
+        self.seat = seat
+        self.joined = False
+        """Тело вызова присоединилось к связке."""
+
+
+@dataclass(frozen=True)
+class LinkedSeat:
+    """Место вызова в связке: сама связка, номер узла по порядку описания и
+    имя узла, каким его назвал автор связки."""
+
+    group: LinkedCalls
+    index: int
+    key: str
+
+
+@dataclass(frozen=True)
+class LinkedNode:
+    """Вызов связки, готовый к отправке: имя инструмента на сервере,
+    аргументы и приёмник сигналов его журнала."""
+
+    call: ToolCall
+    remote: str
+    arguments: Mapping[str, object]
+    listener: JournalListener | None
+    index: int
+    key: str
+
+
+@dataclass(frozen=True)
+class LinkedOutcome:
+    """Итог связки: запуск сервера и итоги её вызовов по их идентификаторам.
+    Вызов, которого среди итогов нет, получает общий итог связки."""
+
+    run: str
+    nodes: Mapping[str, tuple[str, ToolResultBase]]
+    shared: tuple[str, ToolResultBase]
+
+    def of(self, call: ToolCall) -> tuple[str, ToolResultBase]:
+        own = self.nodes.get(str(call["id"]))
+        if own is None:
+            return self.shared
+
+        return own
+
+
+LinkedSend = Callable[[Sequence[LinkedNode]], Awaitable[LinkedOutcome]]
+"""Отправка связки серверу одним вызовом."""
+
+
+class LinkedCalls:
+    """Вызовы инструментов, уходящие серверу одной связкой.
+
+    Создаётся портом McpToolServer: на потоковые вызовы одного ответа модели
+    и на узлы вызова инструмента-связки. Потоковым инструментам нужны
+    партнёры на другом конце канала; сервер связывает их только внутри
+    одного вызова инструмента-связки. Каждый вызов связки идёт обычным путём
+    langchain до своего тела — у него свой шаг ленты и свой журнал, — там
+    присоединяется к связке и ждёт её итога; связка уходит серверу, когда
+    присоединились все, кто не выбыл раньше.
+    """
+
+    def __init__(self, size: int, send: LinkedSend) -> None:
+        self._size = size
+        self._send = send
+        self._nodes: list[LinkedNode] = []
+        self._left = 0
+        self._done: asyncio.Future[LinkedOutcome]
+        self._done = asyncio.get_running_loop().create_future()
+        self._sent = False
+
+    async def joined(self, node: LinkedNode) -> LinkedOutcome:
+        """Присоединяет вызов и ждёт итога связки."""
+        self._nodes.append(node)
+        self._fire()
+
+        return await asyncio.shield(self._done)
+
+    def left(self) -> None:
+        """Вызов кончился, не дойдя до тела: связка его больше не ждёт."""
+        self._left += 1
+        self._fire()
+
+    async def outcome(self) -> LinkedOutcome:
+        """Итог связки для того, кто её собрал.
+
+        Ошибки:
+        McpClientError — до тела не дошёл ни один вызов связки.
+        """
+        return await asyncio.shield(self._done)
+
+    def _fire(self) -> None:
+        if self._sent:
+            return
+
+        if len(self._nodes) + self._left < self._size:
+            return
+
+        self._sent = True
+        if not self._nodes:
+            msg = (
+                f"linked call of {self._size} tools: none of the calls reached "
+                "its body, nothing is sent to the server"
+            )
+            self._done.set_exception(McpClientError(msg))
+            return
+
+        ordered = sorted(self._nodes, key=self._index_of)
+        task = asyncio.ensure_future(self._send(tuple(ordered)))
+        task.add_done_callback(self._settle)
+
+    @staticmethod
+    def _index_of(node: LinkedNode) -> int:
+        return node.index
+
+    def _settle(self, task: asyncio.Future[LinkedOutcome]) -> None:
+        if task.cancelled():
+            self._done.cancel()
+            return
+
+        error = task.exception()
+        if error is not None:
+            self._done.set_exception(error)
+            return
+
+        self._done.set_result(task.result())
+
+
+class LinkedProgress:
+    """Уведомления прогресса связки как сигналы журналов её вызовов: сигнал
+    называет узел, его получает приёмник вызова с этим идентификатором.
+    Создаётся портом McpToolServer на отправку связки."""
+
+    def __init__(self, listeners: Mapping[str, JournalListener]) -> None:
+        self._listeners = listeners
+
+    async def __call__(
+        self, progress: float, total: float | None, message: str | None
+    ) -> None:
+        if message is None:
+            return
+
+        try:
+            signal = JournalSignal.model_validate_json(message)
+        except ValidationError:
+            return
+
+        listener = self._listeners.get(signal.node)
+        if listener is None:
+            return
+
+        await listener.appended(signal)
 
 
 class JournalListener(Protocol):
@@ -1096,6 +1268,9 @@ class McpToolServer(ToolServer):
 
     FEATURE_PREFIX: ClassVar[str] = "com.boba/"
 
+    LINKED_MIN: ClassVar[int] = 2
+    """С какого числа потоковых вызовов в пачке они уходят связкой."""
+
     def __init__(  # noqa: PLR0913 — порт собирается всеми своими зависимостями
         self,
         name: str,
@@ -1121,6 +1296,7 @@ class McpToolServer(ToolServer):
         self._results = McpResults(files)
         self._tools: list[BaseTool] | None = None
         self._features: dict[str, Mapping[str, object]] = {}
+        self._views = CallViews()
         self._caller = caller
         self._files: McpFiles | None = None
 
@@ -1150,6 +1326,9 @@ class McpToolServer(ToolServer):
             stub = self._stubs.stub(tool, McpToolBody(tool.name, self._body).called)
             tools.append(stub)
             remote[stub.name] = stub
+            # вид аргументов для ленты сервер кладёт в схему инструмента
+            if viewed := self._views.model_of(stub.name, tool.input_schema):
+                ToolCallModels.register(stub.name, viewed)
 
         self._tools = tools
         self._by_name = remote
@@ -1187,21 +1366,39 @@ class McpToolServer(ToolServer):
             )
             raise McpClientError(msg)
 
+        workspace = declared.get(FilesFeature.WORKSPACE.value)
+        if not isinstance(workspace, str):
+            msg = (
+                f"mcp server {self._name!r}: extension {FilesFeature.ID.value} "
+                f"expects {FilesFeature.WORKSPACE.value} as a string, got "
+                f"{workspace!r}"
+            )
+            raise McpClientError(msg)
+
+        # пути файлов в результатах инструментов сервера начинаются с его
+        # каталога workspace: по нему клиент разбирает их в ключи файлов
+        WorkspaceMount.configure(workspace)
         self._files = McpFiles(self._name, endpoint, self._caller, path)
 
     def _client_side(self) -> frozenset[str]:
-        """Инструменты сервера, которые исполняет сам клиент, а не модель:
-        загрузку файла клиент шлёт потоком на маршрут файлов сервера, модели
-        адрес загрузки не нужен."""
-        files = self._features.get(FilesFeature.ID.value)
-        if files is None:
-            return frozenset()
+        """Операции сервера, которые исполняет сам клиент, а не модель: файл
+        он шлёт потоком на маршрут файлов, журнал вызова читает окнами для
+        панели живого вывода."""
+        operations = (
+            (FilesFeature.ID.value, FilesFeature.UPLOAD.value),
+            (JournalFeature.ID.value, JournalFeature.READ.value),
+        )
+        names: set[str] = set()
+        for feature, setting in operations:
+            declared = self._features.get(feature)
+            if declared is None:
+                continue
 
-        upload = files.get(FilesFeature.UPLOAD.value)
-        if not isinstance(upload, str):
-            return frozenset()
+            name = declared.get(setting)
+            if isinstance(name, str):
+                names.add(name)
 
-        return frozenset({upload})
+        return frozenset(names)
 
     async def close(self) -> None:
         if self._files is not None:
@@ -1231,13 +1428,189 @@ class McpToolServer(ToolServer):
     async def submit(
         self, calls: Sequence[ToolCall]
     ) -> Sequence[asyncio.Future[ToolMessage]]:
+        linked = self._linked(calls)
         pending: list[asyncio.Future[ToolMessage]] = []
+        position = 0
         for call in calls:
-            pending.append(asyncio.ensure_future(self._called(call)))
+            if self._describes_nodes(call):
+                pending.append(asyncio.ensure_future(self._nodes_called(call)))
+                continue
+
+            seat: LinkedSeat | None = None
+            if linked.group is not None and call["name"] in linked.names:
+                seat = LinkedSeat(linked.group, position, f"n{position}")
+                position += 1
+
+            pending.append(asyncio.ensure_future(self._called(call, seat)))
 
         return pending
 
-    async def _called(self, call: ToolCall) -> ToolMessage:
+    def _workflow_tool(self) -> str | None:
+        """Имя инструмента-связки сервера; None — сервер такой не объявил."""
+        declared = self._features.get(WorkflowTool.FEATURE)
+        if declared is None:
+            return None
+
+        name = declared.get(WorkflowTool.TOOL)
+        if isinstance(name, str):
+            return name
+
+        return None
+
+    def _described(self, call: ToolCall) -> Sequence[DagNode] | None:
+        """Узлы вызова инструмента-связки; None — вызов не связка либо её
+        узлы клиент разложить не может, и вызов уходит серверу как есть."""
+        if self._stubs.remote_name(call["name"]) != self._workflow_tool():
+            return None
+
+        raw: dict[str, object] = {
+            "name": str(call["id"]),
+            "version": 1,
+            "nodes": call["args"].get("nodes"),
+        }
+        try:
+            described = DagSpec.model_validate(raw)
+        except ValidationError:
+            return None
+
+        for node in described.nodes:
+            if self._stubs.local_name(node.tool) not in self._by_name:
+                return None
+
+        return described.nodes
+
+    def _describes_nodes(self, call: ToolCall) -> bool:
+        return self._described(call) is not None
+
+    async def _nodes_called(self, call: ToolCall) -> ToolMessage:
+        """Вызов инструмента-связки как вызовы его узлов.
+
+        Связка — несколько инструментов, запущенных вместе: каждый узел идёт
+        обычным вызовом своего инструмента под идентификатором вызова связки
+        с номером узла, серверу они уходят одной связкой. Итог вызова — итог
+        связки от сервера, с результатами узлов под теми же идентификаторами.
+        """
+        nodes = self._described(call)
+        if nodes is None:
+            return await self._called(call, None)
+
+        whole_id = str(call["id"])
+        group = LinkedCalls(len(nodes), self._send_linked)
+        running: list[asyncio.Future[ToolMessage]] = []
+        for index, node in enumerate(nodes):
+            node_call = ToolCall(
+                name=self._stubs.local_name(node.tool),
+                args=dict(node.args),
+                id=f"{whole_id}_{index}",
+                type="tool_call",
+            )
+            seat = LinkedSeat(group, index, node.key)
+            running.append(asyncio.ensure_future(self._called(node_call, seat)))
+
+        await asyncio.gather(*running)
+        try:
+            outcome = await group.outcome()
+        except McpClientError as exc:
+            failure = ErrorResult(message=str(exc), error_kind=McpFailure.TOOL_ERROR)
+
+            return CallReply(call).message(failure, True)
+
+        artifact = outcome.shared[1]
+        reply = CallReply(call).message(artifact, isinstance(artifact, FailureResult))
+        if outcome.run:
+            JournalAddress(server=self._name, run=outcome.run).stamp(reply)
+
+        return reply
+
+    def _linked(self, calls: Sequence[ToolCall]) -> LinkedPlan:
+        """Связка потоковых вызовов пачки. Сервер называет потоковые
+        инструменты в возможности инструмента-связки; связка нужна, когда
+        таких вызовов в пачке больше одного."""
+        declared = self._features.get(WorkflowTool.FEATURE)
+        if declared is None:
+            return LinkedPlan(frozenset(), None)
+
+        streaming = declared.get(WorkflowTool.LINKED)
+        if not isinstance(streaming, Sequence):
+            return LinkedPlan(frozenset(), None)
+
+        names: set[str] = set()
+        count = 0
+        for call in calls:
+            if self._describes_nodes(call):
+                continue
+
+            if self._stubs.remote_name(call["name"]) not in streaming:
+                continue
+
+            names.add(call["name"])
+            count += 1
+
+        if count < self.LINKED_MIN:
+            return LinkedPlan(frozenset(), None)
+
+        return LinkedPlan(frozenset(names), LinkedCalls(count, self._send_linked))
+
+    async def _send_linked(self, nodes: Sequence[LinkedNode]) -> LinkedOutcome:
+        """Связка одним вызовом инструмента-связки сервера: узел на вызов,
+        идентификатор вызова узла — идентификатор вызова модели."""
+        declared = self._features[WorkflowTool.FEATURE]
+        tool = str(declared.get(WorkflowTool.TOOL))
+        described: list[dict[str, object]] = []
+        listeners: dict[str, JournalListener] = {}
+        for node in nodes:
+            call_id = str(node.call["id"])
+            described.append(
+                {
+                    "key": node.key,
+                    "tool": node.remote,
+                    "args": dict(node.arguments),
+                    "call_id": call_id,
+                }
+            )
+            if node.listener is not None:
+                listeners[call_id] = node.listener
+
+        arguments: dict[str, object] = {"nodes": described}
+        whole = ToolCall(
+            name=tool, args=arguments, id=f"linked_{uuid4().hex}", type="tool_call"
+        )
+        try:
+            session = await self._connection.open()
+            result = await session.send_request(
+                self._request(tool, whole, arguments),
+                mt.CallToolResult,
+                request_read_timeout_seconds=self._config.call_timeout_sec,
+                progress_callback=LinkedProgress(listeners),
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.warning(
+                "mcp server %s: linked call of %d tools got no result: %s: %s",
+                self._name,
+                len(nodes),
+                type(exc).__name__,
+                exc,
+            )
+            await self._connection.close()
+
+            return LinkedOutcome("", {}, self._results.failed(whole, exc))
+
+        run = ""
+        if result.meta:
+            run = self._wire.run_of(result.meta)
+
+        shared = await self._results.parts(whole, result)
+        outcomes: dict[str, tuple[str, ToolResultBase]] = {}
+        artifact = shared[1]
+        if isinstance(artifact, WorkflowResult):
+            for done in artifact.nodes:
+                outcomes[done.call_id] = (done.content, done.result)
+
+        return LinkedOutcome(run, outcomes, shared)
+
+    async def _called(self, call: ToolCall, seat: LinkedSeat | None) -> ToolMessage:
         """Вызов инструмента обычным путём langchain: его события получает
         лента клиента. Итог тела — модель результата; сбой — модель отказа."""
         tool = self._by_name.get(call["name"])
@@ -1249,12 +1622,14 @@ class McpToolServer(ToolServer):
 
             return CallReply(call).message(failure, True)
 
-        live = LiveCall(call)
+        live = LiveCall(call, seat)
         token = self._calls.set(live)
         try:
             message = await tool.ainvoke(call)
         finally:
             self._calls.reset(token)
+            if seat is not None and not live.joined:
+                seat.group.left()
 
         artifact = message.artifact
         if not isinstance(artifact, ToolResultBase):
@@ -1272,6 +1647,17 @@ class McpToolServer(ToolServer):
         """Тело инструмента: запрос tools/call серверу от имени текущего вызова."""
         live = self._calls.get()
         call = live.call
+        seat = live.seat
+        if seat is not None:
+            node = LinkedNode(
+                call, remote, arguments, self._listener(call), seat.index, seat.key
+            )
+            live.joined = True
+            outcome = await seat.group.joined(node)
+            live.run = outcome.run
+
+            return outcome.of(call)
+
         try:
             session = await self._connection.open()
             result = await session.send_request(
@@ -1302,10 +1688,18 @@ class McpToolServer(ToolServer):
     def _progress(self, call: ToolCall) -> CallProgress | None:
         """Приёмник прогресса вызова; None — сервер журнал не объявлял, и
         токен прогресса ему не шлётся."""
+        listener = self._listener(call)
+        if listener is None:
+            return None
+
+        return CallProgress(listener)
+
+    def _listener(self, call: ToolCall) -> JournalListener | None:
+        """Приёмник сигналов журнала вызова; None — сервер журнал не объявлял."""
         if JournalFeature.ID.value not in self._features:
             return None
 
-        return CallProgress(self._signals.listener(self._name, call))
+        return self._signals.listener(self._name, call)
 
     async def journal(self, request: JournalRead) -> StreamSlice | None:
         """Окно журнала вызова с сервера; None — сервер журнал не объявлял
@@ -1512,6 +1906,18 @@ class McpServers:
         port = await self._port(server, caller)
 
         return await port.journal(request)
+
+    async def files(self, server: str, caller: McpCaller) -> McpFiles | None:
+        """Файлы workspace на сервере server от имени caller; None — сервер
+        не назван в [mcp.servers], недоступен или файлов не объявил."""
+        if server not in self._configs:
+            return None
+
+        port = await self._port(server, caller)
+        if not port.opened:
+            await self._open(server, port)
+
+        return port.files()
 
     def journaled(self) -> frozenset[str]:
         """Имена инструментов подключённых серверов, которые ведут журнал

@@ -190,6 +190,10 @@ WORKDIR /tmp/boba
 RUN uv build --all-packages --wheel --no-sources -o /tmp/wheels
 RUN uv export --frozen --all-packages --all-extras --no-emit-workspace --no-hashes \
         -o /tmp/wheels/constraints.txt
+# uv pip install не читает [tool.uv] проекта: переопределения зависимостей,
+# с которыми собран uv.lock, едут к установке приложения отдельным файлом
+RUN python3 -c "import tomllib, pathlib; uv = tomllib.loads(pathlib.Path('pyproject.toml').read_text())['tool']['uv']; print('\\n'.join(uv['override-dependencies']))" \
+        > /tmp/wheels/overrides.txt
 
 
 # --- образ корня одного плагина: make plugin-rootfs PLUGIN=<пакет> ---------------
@@ -361,6 +365,7 @@ COPY --from=boba-wheels /tmp/wheels/  /tmp/wheels/
 
 RUN uv pip install --python "$(command -v python3)" --target /opt/app-site \
         --constraint /tmp/wheels/constraints.txt --find-links=/tmp/wheels \
+        --override /tmp/wheels/overrides.txt \
         ${APP_PACKAGES}
 
 ENV PYTHONPATH=/opt/app-site

@@ -11,9 +11,9 @@ DataLayerError — контракт слоя данных: чужое пакуе
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from collections.abc import Mapping, Sequence
+from collections.abc import AsyncGenerator, Mapping, Sequence
 from datetime import UTC, datetime
-from typing import Any, Protocol, TypeVar
+from typing import Any, ClassVar, Protocol, TypeVar
 from uuid import UUID, uuid4
 
 import aiofiles
@@ -75,6 +75,7 @@ from chainlit.user import User as ChainlitUser
 
 __all__ = [
     "AttachmentDataLayer",
+    "HeldContent",
     "PostgresDataLayer",
 ]
 
@@ -91,6 +92,28 @@ class ThreadFeed(Protocol):
     async def steps(
         self, thread_id: str, user_name: str | None
     ) -> Sequence[StepDict]: ...
+
+
+class HeldContent:
+    """Содержимое, которое чату отдали уже целиком в памяти, как источник
+    чанков для хранилища.
+
+    Создаётся там, где чужой контракт вручает готовые байты: тело элемента
+    chainlit, блок результата MCP-сервера. Хранилище пишет только потоком,
+    поэтому такие байты идут в него одним чанком.
+    """
+
+    ENCODING: ClassVar[str] = "utf-8"
+
+    def __init__(self, content: bytes | str) -> None:
+        self._content = content
+
+    async def chunks(self) -> AsyncGenerator[bytes, None]:
+        content = self._content
+        if isinstance(content, str):
+            content = content.encode(self.ENCODING)
+
+        yield content
 
 
 class AttachmentDataLayer(BaseDataLayer, ABC):
@@ -402,11 +425,9 @@ class PostgresDataLayer(AttachmentDataLayer, ThreadOwnership):
             return
 
         if element.content is not None:
-            uploaded = await self._storage.upload_file(
-                object_key=object_key,
-                data=element.content,
-                mime=mime,
-                overwrite=True,
+            held = HeldContent(element.content)
+            uploaded = await self._storage.upload_stream(
+                object_key, held.chunks(), mime
             )
             self._require_uploaded(uploaded, object_key)
             return

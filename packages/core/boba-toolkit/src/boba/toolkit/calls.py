@@ -38,13 +38,17 @@ from boba.toolkit.result import (
     FieldLines,
     JsonBlock,
     MarkdownResult,
+    ToolArtifact,
     ToolResultBase,
 )
 
 __all__ = [
     "CallIdPrefix",
+    "CallViews",
     "FieldMarks",
     "FieldPlacement",
+    "FieldView",
+    "SchemaCall",
     "ToolCallBase",
     "ToolCallModels",
     "ToolIntent",
@@ -225,7 +229,7 @@ class ToolCallBase(BaseModel, ABC):
             if name not in self.model_fields_set:
                 continue
 
-            if self._placement(field, name) is not FieldPlacement.BODY:
+            if self.placement_of(field, name) is not FieldPlacement.BODY:
                 continue
 
             value = getattr(self, name, None)
@@ -246,7 +250,7 @@ class ToolCallBase(BaseModel, ABC):
             yield MarkdownResult(text=FieldLines.line(name, value))
 
     @staticmethod
-    def _placement(field: FieldInfo, name: str) -> FieldPlacement:
+    def placement_of(field: FieldInfo, name: str) -> FieldPlacement:
         """Injected и порты скрыты, intent в шапке, остальное в теле."""
         if FieldMarks.injected(field):
             return FieldPlacement.HIDDEN
@@ -274,6 +278,11 @@ class ToolCallModels:
         cls._MODELS[tool_name] = model
 
     @classmethod
+    def model_of(cls, tool_name: str) -> type[ToolCallBase] | None:
+        """Модель вызова инструмента; None — у инструмента её нет."""
+        return cls._MODELS.get(tool_name)
+
+    @classmethod
     def call_of(cls, tool_name: str, args: Mapping[str, Any]) -> ToolCallBase:
         """Вызов по аргументам без валидации: битые аргументы показываются
         как есть. Инструмент без модели — аргументы json-текстом."""
@@ -287,6 +296,138 @@ class ToolCallModels:
     def reset(cls) -> None:
         """Сброс реестра: пользуются тесты, приложению это не нужно."""
         cls._MODELS.clear()
+
+
+class FieldView(BaseModel):
+    """Вид одного аргумента вызова в ленте: где он показывается и чем.
+
+    display — объявленный показ значения: дамп результата (с kind), которым
+    значение рисуется; None — обычная строка «имя: значение».
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    placement: FieldPlacement
+    display: Mapping[str, Any] | None
+
+
+class SchemaCall(ToolCallBase):
+    """Вызов инструмента, вид аргументов которого пришёл вместе с его схемой.
+
+    Инструмент исполняет сервер, и его кода в процессе клиента нет: вид
+    аргументов сервер кладёт в схему инструмента (CallViews), а клиент
+    строит из него наследника этого класса и регистрирует в ToolCallModels.
+    Показ тот же, что у вызова своего инструмента: скрытые поля не идут во
+    вход шага, объявленный показ рисует значение своим результатом,
+    остальные поля — строкой «имя: значение».
+    """
+
+    model_config = ConfigDict(frozen=True, extra="allow")
+
+    VIEWS: ClassVar[Mapping[str, FieldView]] = {}
+
+    def chat_view(self) -> ChatView:
+        blocks: list[str] = []
+        for result in self._shown():
+            blocks.append(result.chat_view().markdown)
+
+        return ChatView(markdown="\n\n".join(blocks))
+
+    def _shown(self) -> Iterator[ToolResultBase]:
+        sent = self.model_extra
+        if sent is None:
+            return
+
+        for name, value in sent.items():
+            if value is None:
+                continue
+
+            if name == ToolIntent.NAME:
+                continue
+
+            view = self.VIEWS.get(name)
+            if view is None:
+                yield from self._line(name, value)
+                continue
+
+            if view.placement is not FieldPlacement.BODY:
+                continue
+
+            if view.display is None:
+                yield from self._line(name, value)
+                continue
+
+            display = ToolArtifact.revive(view.display)
+            if display is None:
+                yield from self._line(name, value)
+                continue
+
+            yield display.bound(value)
+
+    @staticmethod
+    def _line(name: str, value: object) -> Iterator[ToolResultBase]:
+        if isinstance(value, str) and not value:
+            return
+
+        yield MarkdownResult(text=FieldLines.line(name, value))
+
+
+class CallViews:
+    """Вид аргументов вызова как часть схемы инструмента.
+
+    Сервер зовёт marked(): дописывает в схему инструмента вид его аргументов
+    из модели вызова, которую построил фасад @tool. Клиент зовёт
+    model_of(): по этой метке строит модель вызова для ленты. Схема без
+    метки — инструмент чужого сервера: модели у него нет, и лента покажет
+    его аргументы json-текстом.
+    """
+
+    MARK: ClassVar[str] = "x-boba-call-view"
+    """Ключ схемы инструмента: вид аргументов по их именам."""
+
+    def marked(self, tool_name: str, schema: Mapping[str, Any]) -> dict[str, Any]:
+        """Схема с видом аргументов; у инструмента без модели вызова — как есть."""
+        marked = dict(schema)
+        model = ToolCallModels.model_of(tool_name)
+        if model is None:
+            return marked
+
+        views: dict[str, Any] = {}
+        for name, view in self._views(model):
+            views[name] = view.model_dump(mode="json")
+
+        marked[self.MARK] = views
+
+        return marked
+
+    def model_of(
+        self, tool_name: str, schema: Mapping[str, Any]
+    ) -> type[SchemaCall] | None:
+        """Модель вызова по метке схемы; None — метки нет."""
+        raw = schema.get(self.MARK)
+        if not isinstance(raw, Mapping):
+            return None
+
+        views: dict[str, FieldView] = {}
+        for name, view in raw.items():
+            views[str(name)] = FieldView.model_validate(view)
+
+        return type(f"{tool_name}_call", (SchemaCall,), {"VIEWS": views})
+
+    @staticmethod
+    def _views(model: type[ToolCallBase]) -> Iterator[tuple[str, FieldView]]:
+        """Вид полей, который отличается от обычной строки «имя: значение»."""
+        for name, field in model.model_fields.items():
+            placement = model.placement_of(field, name)
+            display = FieldMarks.display(field)
+            dumped: dict[str, Any] | None = None
+            if display is not None:
+                dumped = display.model_dump(mode="json")
+
+            if placement is FieldPlacement.BODY and dumped is None:
+                continue
+
+            yield name, FieldView(placement=placement, display=dumped)
 
 
 class RawCall(ToolCallBase):
