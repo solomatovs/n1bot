@@ -4,9 +4,10 @@
 """
 
 from collections.abc import AsyncIterator, Iterator
+from enum import StrEnum
 
 import pytest
-from omegaconf import DictConfig
+from omegaconf import DictConfig, OmegaConf
 
 from boba.config import bind
 from boba.db.postgres import AsyncPostgresPool
@@ -56,6 +57,15 @@ def anyio_backend() -> str:
     return "asyncio"
 
 
+class ServiceData(StrEnum):
+    """Подкаталоги каталога данных сервиса, которые он ждёт готовыми."""
+
+    WORKSPACE = "workspace"
+    TOOL_LOGS = "tool-logs"
+    DUMP = "dump"
+    KRB = "krb"
+
+
 @pytest.fixture(scope="session")
 def raw_config() -> DictConfig:
     """Конфиг приложения со стендовым слоем conf/stand.toml поверх."""
@@ -72,15 +82,27 @@ def raw_config() -> DictConfig:
 
 
 @pytest.fixture(scope="session")
-def service_raw_config() -> DictConfig:
+def service_raw_config(tmp_path_factory: pytest.TempPathFactory) -> DictConfig:
     """Конфиг сервиса boba-mcp со стендовым слоем его conf/stand.toml: секции
-    инструментов и их плагины живут у сервиса, который инструменты исполняет."""
+    инструментов и их плагины живут у сервиса, который инструменты исполняет.
+
+    Корень — дерево сервиса, каким бы приложением ни был запущен прогон:
+    модели плагинов лежат там. Каталог данных — временный: образы workspace,
+    журналы и выгрузки тестов не должны ложиться в данные развёрнутого
+    приложения."""
     path = StandPaths.MCP_BASE_CONFIG.under(REPO_ROOT)
     raw = StandLayers.compose(path)
     if not isinstance(raw, DictConfig):
         got = type(raw).__name__
         msg = f"service config {path}: expected to compose into a table, got {got}"
         raise TypeError(msg)
+
+    data = tmp_path_factory.mktemp("service-data")
+    for name in ServiceData:
+        (data / name.value).mkdir()
+
+    OmegaConf.update(raw, "env.base", str(StandPaths.MCP_BASE.under(REPO_ROOT)))
+    OmegaConf.update(raw, "env.data", str(data))
 
     return raw
 

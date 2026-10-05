@@ -81,19 +81,19 @@ overrides = [{ name = "mcp", specifier = ">=2.3,<3" }]
 
 [manifest.dependency-groups]
 dev = [
-    { name = "beautifulsoup4", specifier = ">=4.12" },
+    { name = "beautifulsoup4", specifier = ">=4.12,<5" },
     { name = "boba-doc", extras = ["readers", "ocr"], editable = "packages/infra/format/boba-doc" },
-    { name = "clickhouse-connect", extras = ["async"], specifier = ">=1.6,<2" },
+    { name = "clickhouse-connect", specifier = ">=1.6,<2" },
     { name = "fastembed", specifier = ">=0.4,<1" },
-    { name = "lxml", specifier = ">=5.0" },
-    { name = "markdownify", specifier = ">=0.11,<1.0" },
+    { name = "lxml", specifier = ">=5.0,<7" },
+    { name = "markdownify", specifier = ">=0.11,<1" },
     { name = "onnxruntime-genai", specifier = ">=0.15,<1" },
-    { name = "playwright", specifier = ">=1.40" },
+    { name = "playwright", specifier = ">=1.47,<2" },
     { name = "pyright", specifier = ">=1.1.400" },
-    { name = "pytest", specifier = ">=9.1.0" },
-    { name = "pytest-xdist", specifier = ">=3.6" },
+    { name = "pytest", specifier = ">=9.1,<10" },
+    { name = "pytest-xdist", specifier = ">=3.6,<4" },
     { name = "ruff", specifier = ">=0.15.17" },
-    { name = "xlwt", specifier = ">=1.3" },
+    { name = "xlwt", specifier = ">=1.3,<2" },
 ]
 
 [[package]]
@@ -2408,7 +2408,6 @@ dev = [
 payload = [
     { name = "boba-confluence", extra = ["html"], marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "boba-doc", extra = ["ocr", "readers"], marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
-    { name = "boba-llm-fastembed", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
 ]
 
 [package.metadata]
@@ -2423,7 +2422,6 @@ requires-dist = [
     { name = "boba-doc", extras = ["readers", "ocr"], marker = "extra == 'payload'", editable = "packages/infra/format/boba-doc" },
     { name = "boba-indexing", editable = "packages/core/boba-indexing" },
     { name = "boba-llm", editable = "packages/core/boba-llm" },
-    { name = "boba-llm-fastembed", marker = "extra == 'payload'", editable = "packages/infra/llm/boba-llm-fastembed" },
     { name = "boba-runtime", marker = "extra == 'dev'", editable = "packages/services/boba-runtime" },
     { name = "boba-sandbox", marker = "extra == 'dev'", editable = "packages/infra/sandbox/boba-sandbox" },
     { name = "boba-stand", marker = "extra == 'dev'", editable = "packages/testing/boba-stand" },
@@ -3121,11 +3119,6 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/22/bf/c85f78c4063b51b454ccd071b8d703c46a869a6edb77b718a558b05f5500/clickhouse_connect-1.6.0-cp314-cp314t-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:9dac7ce419ced91f035bd26a86dd49067461547cb9e3b9b1d7c5975b460b650c", size = 1376316, upload-time = "2026-07-23T18:02:58.221Z" },
     { url = "https://files.pythonhosted.org/packages/37/26/818d83db4d5b5a208956c600737d3d1e987eca8c104d3b25e6450c42aada/clickhouse_connect-1.6.0-cp314-cp314t-musllinux_1_2_aarch64.whl", hash = "sha256:01367cc75ddd3081f750ccba65c252385feff72f38f68613ea02dd056d047922", size = 1349149, upload-time = "2026-07-23T18:03:00.262Z" },
     { url = "https://files.pythonhosted.org/packages/8b/0c/7021c7227df21bdce7059e7fd8275c70452d364987b8ace945366289eb39/clickhouse_connect-1.6.0-cp314-cp314t-musllinux_1_2_x86_64.whl", hash = "sha256:508d3b7cc893b5d889b92702cc7dc4a1c975f59ee8da383054076969e4cb17c3", size = 1366133, upload-time = "2026-07-23T18:03:01.956Z" },
-]
-
-[package.optional-dependencies]
-async = [
-    { name = "aiohttp", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
 ]
 
 [[package]]

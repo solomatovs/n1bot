@@ -17,6 +17,7 @@ from omegaconf import DictConfig, OmegaConf
 from boba.runtime.launchers import ZygoteLaunchers
 from boba.runtime.plugins import EntryPointPlugins
 from boba.sandbox import SandboxProfile
+from boba.stand.ui.stand import StandPaths
 from boba.toolkit.manifest import LaunchSpec
 
 REPO = Path(__file__).resolve().parents[6]
@@ -109,15 +110,8 @@ class SandboxLayout:
 
     @staticmethod
     def models_dir() -> Path:
-        base = os.environ.get("BOBA_BASE")
-        if base is None:
-            msg = (
-                "locating model data for the sandbox: environment variable "
-                "BOBA_BASE is not set, expected the application base directory"
-            )
-            raise RuntimeError(msg)
-
-        return Path(base) / "models"
+        """Модели плагинов лежат в дереве сервиса boba-mcp: он их исполняет."""
+        return StandPaths.MCP_BASE.under(REPO) / "models"
 
     @staticmethod
     def python_path() -> str:

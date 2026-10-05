@@ -150,7 +150,7 @@ class TestDiagnosticAppearsLive:
         """RLIMIT_AS даёт MemoryError, а не сигнал: команда отчитывается сама."""
         code = "x = bytearray(400 * 1024 * 1024)\n"
         caller = _caller(
-            zygote_stand, "dg-mem", _profile(process_memory_bytes=64 * 1024 * 1024)
+            zygote_stand, "dg-mem", _profile(process_memory_bytes=128 * 1024 * 1024)
         )
         payload = _invoke(caller, _python(code))
         if payload.exit_code == 0:
