@@ -58,7 +58,8 @@ def run_app(config_path: Path):
     _use_chainlit_middleware(app, c.chainlit)
 
     storage = providers.storage_provider(
-        c.storage, providers.file_owners(providers.chat_profiles_registry(c))
+        providers.attachment_links(c),
+        providers.file_owners(providers.chat_profiles_registry(c)),
     )
     _use_file_serving(c, storage)
 
@@ -204,7 +205,6 @@ def _use_file_serving(c: AppConfig, storage: StorageClient) -> None:
     from chainlit.server import app as chainlit_app  # noqa: PLC0415
 
     UploadRoute(storage, UploadPolicy()).install(chainlit_app)
-    route_path = c.storage.public_prefix.removeprefix(c.chainlit.url_prefix)
 
     def data_layer() -> PostgresDataLayer:
         layer = get_data_layer()
@@ -220,7 +220,7 @@ def _use_file_serving(c: AppConfig, storage: StorageClient) -> None:
 
     serving = AttachmentServing(storage, data_layer, UploadPolicy())
     chainlit_app.add_api_route(
-        f"{route_path}{AttachmentUrl.ROUTE}", serving.serve, methods=["GET"]
+        f"{AttachmentUrl.MOUNT}{AttachmentUrl.ROUTE}", serving.serve, methods=["GET"]
     )
     chainlit_app.router.routes.insert(0, chainlit_app.router.routes.pop())
 

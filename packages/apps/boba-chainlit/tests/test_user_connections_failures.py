@@ -93,8 +93,8 @@ async def store(pool: AsyncPostgresPool, key: SecretStr) -> ConnectionStore:
 
 
 @pytest.fixture
-def service_pg(raw_config: Any) -> PostgresConfig:
-    return bind(raw_config, path="postgres", model=PostgresConfig)
+def service_pg(service_raw_config: Any) -> PostgresConfig:
+    return bind(service_raw_config, path="postgres", model=PostgresConfig)
 
 
 @pytest.fixture
@@ -254,10 +254,10 @@ class Guarded:
     """
 
     def __init__(
-        self, calls: CallStand, raw_config: Any, store: ConnectionStore
+        self, calls: CallStand, service_raw_config: Any, store: ConnectionStore
     ) -> None:
         self._calls = calls
-        self._raw = raw_config
+        self._raw = service_raw_config
         self._store = store
 
     def pg(self, tickets: SsoTickets | None):
@@ -346,8 +346,10 @@ class Guarded:
 
 
 @pytest.fixture
-def guarded(call_stand: CallStand, raw_config: Any, store: ConnectionStore) -> Guarded:
-    return Guarded(call_stand, raw_config, store)
+def guarded(
+    call_stand: CallStand, service_raw_config: Any, store: ConnectionStore
+) -> Guarded:
+    return Guarded(call_stand, service_raw_config, store)
 
 
 def _expect(result: FailureResult, kind: str, *phrases: str) -> None:
@@ -660,7 +662,7 @@ class TestNoConnections:
         self,
         chat_session: ChatSessionStand,
         call_stand: CallStand,
-        raw_config,
+        service_raw_config,
         layer,
         app_config,
         test_database,
@@ -678,7 +680,7 @@ class TestNoConnections:
         broken = ConnectionStore(cfg, ConnectionTypes.discover(), closed)
 
         result = await Guarded.failure(
-            Guarded(call_stand, raw_config, broken).pg(None), connection="main"
+            Guarded(call_stand, service_raw_config, broken).pg(None), connection="main"
         )
 
         _expect(result, "ConnectionStoreError", "for subject in schema", "failed")
@@ -713,7 +715,7 @@ class TestNoConnections:
         self,
         chat_session: ChatSessionStand,
         call_stand: CallStand,
-        raw_config,
+        service_raw_config,
         store,
         layer,
         pool: AsyncPostgresPool,
@@ -735,7 +737,7 @@ class TestNoConnections:
         foreign = ConnectionStore(cfg, ConnectionTypes.discover(), pool)
 
         result = await Guarded.failure(
-            Guarded(call_stand, raw_config, foreign).pg(None), connection="main"
+            Guarded(call_stand, service_raw_config, foreign).pg(None), connection="main"
         )
 
         _expect(result, "SecretCryptoError", "decrypting a stored secret failed")

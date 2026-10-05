@@ -284,6 +284,28 @@ class SectionLaunchers(Protocol):
         остановке процесса."""
 
 
+class NoLaunchers(SectionLaunchers):
+    """Реализация SectionLaunchers процесса, который плагинов инструментов не
+    исполняет: в его конфиге нет секции [tool_launcher]. Так собран чат —
+    его инструменты исполняет сервис boba-mcp. Плагин, включённый в конфиге
+    такого процесса, получает отказ на сборке реестра."""
+
+    def probe(self) -> None:
+        return
+
+    def launcher_of(
+        self, spec: LaunchSpec, contexts: CallContexts, ambient: CallAmbient
+    ) -> ToolLauncher:
+        msg = (
+            f"tool section {spec.section!r} cannot be launched: the config has no "
+            "[tool_launcher] section, expected provider = sandbox | process"
+        )
+        raise RuntimeError(msg)
+
+    def stop(self) -> None:
+        return
+
+
 class ZygoteLaunchers(SectionLaunchers):
     """Запуск в песочнице: зигота на секцию, профиль собирается из [env],
     дефолтов и секции [sandbox] файла плагина.
@@ -459,7 +481,8 @@ class ProcessLaunchers(SectionLaunchers):
 
 
 class ToolLaunchers:
-    """Сборка способа запуска по секции [tool_launcher].
+    """Сборка способа запуска по секции [tool_launcher]. Процесс без этой
+    секции плагинов инструментов не исполняет (NoLaunchers).
 
     Создаётся из сырого конфига: загрузкой конфига — чтобы проверить
     предпосылки способа запуска на старте, и корнем сборки приложения —
@@ -476,11 +499,7 @@ class ToolLaunchers:
         raw = self._raw
         node = OmegaConf.select(raw, self.SECTION)
         if node is None:
-            msg = (
-                "[tool_launcher] is required but the config has no such section: "
-                "expected provider = sandbox | process"
-            )
-            raise RuntimeError(msg)
+            return NoLaunchers()
 
         section = bind(raw, self.SECTION, ToolLauncherSection).root
 

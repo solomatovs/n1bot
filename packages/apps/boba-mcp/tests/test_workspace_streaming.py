@@ -21,10 +21,10 @@ from types import TracebackType
 from typing import Any, ClassVar, Self
 
 import pytest
-from chainlit_stand import put_bytes
 
 from boba.canvas.storage import OpenedStream
 from boba.runtime.storage import ImageStorageClient, LocalStorageConfig, StorageFactory
+from boba.stand.storage import StorageSeed
 from boba.workspace.launcher import FUSE_DEVICE, ReadWindow
 
 needs_fuse = pytest.mark.skipif(
@@ -115,11 +115,6 @@ class ChildMemory:
     @staticmethod
     def peak_bytes() -> int:
         return resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss * 1024
-
-
-@pytest.fixture(autouse=True)
-def chainlit_context() -> None:
-    pass
 
 
 @pytest.fixture(scope="module")
@@ -374,7 +369,7 @@ class TestStreamingReads:
 
             await opened.close()
 
-            await put_bytes(storage, "7/t1/upload/after.txt", b"lock released")
+            await StorageSeed().put(storage, "7/t1/upload/after.txt", b"lock released")
             return (await storage.stat("7/t1/upload/after.txt")).size
 
         if asyncio.run(abandon_then_write()) != len(b"lock released"):
@@ -435,7 +430,7 @@ class TestStreamingReads:
             opened = await client.open_stream(KEY, ReadWindow.entire())
             await opened.close()
 
-            writing = put_bytes(client, "7/t1/upload/after.txt", b"x")
+            writing = StorageSeed().put(client, "7/t1/upload/after.txt", b"x")
             await asyncio.wait_for(writing, self.OVERLAP_TIMEOUT_SEC)
 
             stat = await client.stat("7/t1/upload/after.txt")

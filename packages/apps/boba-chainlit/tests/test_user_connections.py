@@ -20,7 +20,6 @@ from chainlit.user import User as ChainlitUser
 from chainlit_stand import ChatSessionStand, SsoStand
 from psycopg import sql
 from pydantic import SecretStr
-from test_tools_integration import Call, ToolSetup
 
 from boba.auth.credentials import KerberosCredentialSource, NoRefresh
 from boba.chainlit.auth.kerberos import KerberosAuth
@@ -43,6 +42,7 @@ from boba.messaging import MemoryMessageBus
 from boba.runtime.refresh import BusRefreshSignal
 from boba.stand.connections import StandUserConnections
 from boba.stand.site import Stand
+from boba.stand.toolsetup import Call, ToolSetup
 from boba.stand.zygote import ZygoteStand
 from boba.stand_core.context import CallStand
 from boba.tool.pg.tools import PgToolConfig
@@ -113,8 +113,8 @@ async def store(pool: AsyncPostgresPool) -> ConnectionStore:
 
 
 @pytest.fixture
-def service_pg(raw_config: Any) -> PostgresConfig:
-    return bind(raw_config, path="postgres", model=PostgresConfig)
+def service_pg(service_raw_config: Any) -> PostgresConfig:
+    return bind(service_raw_config, path="postgres", model=PostgresConfig)
 
 
 STAND = Stand.required()
@@ -149,7 +149,7 @@ def _credentials() -> KerberosCredentialSource:
 def pg_tools(
     zygote_stand: ZygoteStand,
     call_stand: CallStand,
-    raw_config: Any,
+    service_raw_config: Any,
     store: ConnectionStore,
     sso: tuple[SsoTickets, str],
 ) -> dict[str, Any]:
@@ -159,13 +159,15 @@ def pg_tools(
     import boba.tool.pg.tools as pg_module
 
     module = reload(pg_module)
-    launcher = ToolSetup.caller(zygote_stand, raw_config, "pg", [module.__name__])
+    launcher = ToolSetup.caller(
+        zygote_stand, service_raw_config, "pg", [module.__name__]
+    )
 
     functions = [ToolBridge.as_structured_tool(tool) for tool in module.TOOLS]
     ToolProcessWrap(CallAmbient()).guard_all(ToolMain.toolset(*functions), launcher)
 
     def resolve(name: str, annotation: Any) -> object:
-        return bind(raw_config, path="tool.pg", model=PgToolConfig)
+        return bind(service_raw_config, path="tool.pg", model=PgToolConfig)
 
     StandUserConnections(
         lambda: store,
@@ -428,7 +430,7 @@ async def test_unreachable_database_is_reported_by_the_body(
 def web_tools(
     zygote_stand: ZygoteStand,
     call_stand: CallStand,
-    raw_config: Any,
+    service_raw_config: Any,
     store: ConnectionStore,
     sso: tuple[SsoTickets, str],
 ) -> dict[str, Any]:
@@ -438,13 +440,15 @@ def web_tools(
     import boba.tool.web.tools as web_module
 
     module = reload(web_module)
-    launcher = ToolSetup.caller(zygote_stand, raw_config, "web", [module.__name__])
+    launcher = ToolSetup.caller(
+        zygote_stand, service_raw_config, "web", [module.__name__]
+    )
 
     functions = [ToolBridge.as_structured_tool(tool) for tool in module.TOOLS]
     ToolProcessWrap(CallAmbient()).guard_all(ToolMain.toolset(*functions), launcher)
 
     def resolve(name: str, annotation: Any) -> object:
-        return bind(raw_config, path="tool.web", model=WebToolsConfig)
+        return bind(service_raw_config, path="tool.web", model=WebToolsConfig)
 
     StandUserConnections(
         lambda: store,

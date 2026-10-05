@@ -26,7 +26,6 @@ kb = "boba.tool.kb.plugin:KB"
 [project.optional-dependencies]
 dev = [
     "boba-llm-fastembed==0.0.26.dev4",
-    "boba-runtime==0.0.26.dev4",
     "boba-sandbox==0.0.26.dev4",
     "boba-config==0.0.26.dev4",
     "boba-stand==0.0.26.dev4",

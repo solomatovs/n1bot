@@ -9,7 +9,6 @@ from contextvars import copy_context
 from pathlib import Path
 
 import pytest
-from chainlit_stand import FakeTurn
 
 from boba.cancellation import (
     StopReason,
@@ -18,16 +17,11 @@ from boba.cancellation import (
 )
 from boba.runtime.journal import DirVault, StreamJournal
 from boba.stand.refs import StandRefs
-from boba.stand_core.context import CallStand
+from boba.stand_core.context import CallStand, FakeTurn
 from boba.toolkit.channels import CallOutcome, ToolChannel
 from boba.toolrun.streams import CallJournals
 
 THREAD = "thread-1"
-
-
-@pytest.fixture(autouse=True)
-def chainlit_context() -> None:
-    "остановка хода не зависит от сессии chainlit"
 
 
 class TestRegistry:

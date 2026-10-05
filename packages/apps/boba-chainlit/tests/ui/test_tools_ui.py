@@ -55,7 +55,6 @@ from boba.stand.ui.stand import (
     REPO_ROOT,
     StandApp,
     StandConfig,
-    StandPaths,
     StandProcess,
     StandUrl,
     free_port,
@@ -737,7 +736,7 @@ class ConfluenceSite:
 
     @classmethod
     def load(cls) -> ConfluenceSite:
-        built = AppLayers.compose(StandPaths.BASE_CONFIG.under(REPO_ROOT))
+        built = AppLayers.compose(StandApp.CHAINLIT.tools_config.under(REPO_ROOT))
         config = bind(
             built, path=ConfluenceToolsConfig.SECTION, model=ConfluenceToolsConfig
         )

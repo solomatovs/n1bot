@@ -16,7 +16,6 @@ from typing import Any
 from uuid import uuid4
 
 import pytest
-from omegaconf import OmegaConf
 from psycopg import sql
 
 from boba.auth.credentials import KerberosCredentialSource, NoRefresh
@@ -24,22 +23,17 @@ from boba.config import bind
 from boba.connection_broker.tickets import ServiceTickets
 from boba.db.postgres import AsyncPostgresPool
 from boba.db.postgres.connection import PostgresConfig
-from boba.kerberos import KeytabAuth
-from boba.krb import KeytabCredentials, ServiceTicketIssuer
-from boba.runtime.launchers import ZygoteLaunchers
-from boba.sandbox.zygote import ZygotePolicy, ZygoteToolCaller
 from boba.stand.sandbox import section_profile
 from boba.stand.shell import ShellRun
+from boba.stand.toolsetup import Call, ToolSetup
 from boba.stand.zygote import ZygoteStand
 from boba.tool.confluence.ingest_base import ConfluenceIngestConfig
 from boba.tool.kb.search import ConfluenceCollection
-from boba.tool.pg.tools import PgToolConfig
 from boba.tool.shell.tools import BashToolConfig
-from boba.tool.web.tools import WebToolsConfig
 from boba.toolkit.calls import ToolCallModels
 from boba.toolkit.chain import CallAmbient
 from boba.toolkit.entry import ToolMain
-from boba.toolkit.launcher import LauncherFactory, PayloadFailureError, ToolLauncher
+from boba.toolkit.launcher import PayloadFailureError
 from boba.toolkit.result import (
     ChatElement,
     MarkdownResult,
@@ -47,7 +41,6 @@ from boba.toolkit.result import (
     SqlResult,
     SqlStatement,
     TableResult,
-    ToolArtifact,
     ToolResultBase,
     VisualResult,
 )
@@ -112,137 +105,11 @@ trailer<</Root 1 0 R/Size 8>>
 WORKSPACE_PDF = "/workspace/integration.pdf"
 
 
-ZYGOTE = ZygotePolicy(
-    start_timeout_sec=60.0,
-    max_start_attempts=1,
-    restart_backoff_sec=0.05,
-    healthy_after_sec=0.5,
-    stop_wait_sec=5.0,
-    call_poll_sec=0.05,
-)
-
-
-class ToolSetup:
-    """Сборка инструмента из конфига приложения для прогона вне chainlit."""
-
-    @staticmethod
-    def config(raw: Any, section: str, model: type) -> Any:
-        """Секция конфига как есть, с cgroup-лимитами — они часть контракта."""
-        return bind(raw, path=section, model=model)
-
-    @staticmethod
-    def path_vars() -> dict[str, str]:
-        return {"user_id": USER_ID, "thread_id": THREAD_ID}
-
-    @staticmethod
-    def pg_config(raw: Any) -> PgToolConfig:
-        """Лимиты выдачи [tool.pg]: соединение приходит параметром вызова."""
-        return bind(raw, path="tool.pg", model=PgToolConfig)
-
-    @staticmethod
-    def pg_connection(raw: Any) -> PostgresConfig:
-        """Профиль соединения теста: сервисный [postgres] с билетом вызова.
-
-        В приложении профиль подаёт обвязка из таблицы соединений, а
-        kerberos-секция едет внутрь билетом — ccache сервиса в песочнице нет.
-        """
-        service = bind(raw, path="postgres", model=PostgresConfig)
-
-        auth = service.auth
-        if not isinstance(auth, KeytabAuth):
-            return service
-
-        issuer = ServiceTicketIssuer(auth.min_lifetime)
-        source = KeytabCredentials.of(auth)
-        ticket = issuer.issue(source, service.service_name())
-
-        return service.model_copy(update={"auth": ticket})
-
-    @staticmethod
-    def web_config(raw: Any) -> WebToolsConfig:
-        """Лимиты выдачи [tool.web]: соединение приходит параметром вызова."""
-        return bind(raw, path="tool.web", model=WebToolsConfig)
-
-    @staticmethod
-    def web_connection(raw: Any) -> HttpConnection:
-        """Профиль соединения теста: в бою его подаёт хост из строк субъекта."""
-        return bind(raw, path="tool.ingest.confluence", model=HttpConnection)
-
-    @staticmethod
-    def sandbox_raw(raw: Any) -> Any:
-        """Зиготы тестов живут в песочнице: режимные развилки конфига — sandbox."""
-        copied = raw.copy()
-        OmegaConf.update(copied, "env.tool_launcher", "sandbox")
-        return copied
-
-    @staticmethod
-    def caller(
-        zygote_stand: ZygoteStand, raw: Any, section: str, modules: Sequence[str] = ()
-    ) -> ZygoteToolCaller:
-        """Зигота секции конфига: тот же путь запуска, что в приложении."""
-        raw = ToolSetup.sandbox_raw(raw)
-        connection = section_profile(raw, section)
-
-        supervisor = zygote_stand.registry().obtain(
-            section,
-            connection,
-            modules,
-            ZYGOTE,
-            warmup_calls=ZygoteLaunchers.warmup_configs(section, modules, raw),
-        )
-        return ZygoteToolCaller(
-            section, supervisor, connection, CallAmbient(), ToolSetup.path_vars
-        )
-
-    @staticmethod
-    def launchers(zygote_stand: ZygoteStand, raw: Any, section: str) -> LauncherFactory:
-        """Фабрика исполнителей секции: одна зигота на все её инструменты."""
-        caller = ToolSetup.caller(zygote_stand, raw, section)
-
-        def launcher(tool: str) -> ToolLauncher:
-            return caller
-
-        return launcher
-
-    @staticmethod
-    def by_name(built: list[Any]) -> dict[str, Any]:
-        tools: dict[str, Any] = {}
-        for tool in built:
-            tools[tool.name] = tool
-        return tools
-
-
-class Call:
-    """Вызов инструмента: ответ разбирается как типизированный artifact."""
-
-    @staticmethod
-    async def result(tool: Any, **args: Any) -> Any:
-        message = await tool.ainvoke(
-            {"name": tool.name, "args": args, "id": "c1", "type": "tool_call"}
-        )
-        result = ToolArtifact.revive(message.artifact)
-        if result is None:
-            raise AssertionError(f"{tool.name}: artifact не разобран")
-        return result
-
-    @staticmethod
-    async def ok(tool: Any, **args: Any) -> Any:
-        result = await Call.result(tool, **args)
-        if not (result.ok):
-            raise AssertionError(f"{tool.name}: {result}")
-        return result
-
-
 @pytest.fixture(scope="module", autouse=True)
 def stop_zygotes(zygote_stand: ZygoteStand):
     """Зиготы секций гасятся после модуля, как это делает выход приложения."""
     yield
     zygote_stand.stop()
-
-
-@pytest.fixture(autouse=True)
-def chainlit_context() -> None:
-    pass
 
 
 @pytest.fixture(scope="module")

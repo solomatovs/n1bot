@@ -23,7 +23,7 @@ from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import BaseTool
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph.state import CompiledStateGraph
-from omegaconf import DictConfig
+from omegaconf import DictConfig, OmegaConf
 
 from boba.chainlit.agent.bridge import ChatModelBridge
 from boba.chainlit.agent.flow import (
@@ -159,11 +159,18 @@ class SessionTools:
 def session_tools(
     runtime_stand: StandRefs,
     call_stand: CallStand,
-    raw_config: DictConfig,
+    service_raw_config: DictConfig,
     app_config: AppConfig,
 ) -> SessionTools:
-    """Инструменты профиля, собранные боевым загрузчиком, и их порт."""
-    registry = runtime_stand.registry(raw_config, runtime_stand.none())
+    """Инструменты профиля, собранные боевым загрузчиком из конфига сервиса,
+    который их исполняет, и их порт. Набор профиля — набор endpoint'а сервиса
+    с тем же именем."""
+    endpoint = OmegaConf.select(service_raw_config, f"mcp.endpoints.{PROFILE}.tools")
+    registry = runtime_stand.registry(
+        service_raw_config,
+        runtime_stand.none(),
+        StandRefs.granted(PROFILE, list(endpoint)),
+    )
     roles = frozenset(app_config.roles)
     tools = registry.for_session(roles, PROFILE)
 

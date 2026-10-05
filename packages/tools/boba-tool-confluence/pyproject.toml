@@ -35,7 +35,6 @@ payload = [
 ]
 dev = [
     "boba-db-postgres==0.0.26.dev4",
-    "boba-runtime==0.0.26.dev4",
     "boba-sandbox==0.0.26.dev4",
     "boba-config==0.0.26.dev4",
     "boba-confluence[html]==0.0.26.dev4",

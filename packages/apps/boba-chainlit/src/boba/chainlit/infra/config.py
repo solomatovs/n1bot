@@ -23,7 +23,6 @@ from boba.db.postgres.connection import PostgresConfig
 from boba.krb import KerberosWorkspaceConfig
 from boba.mcp_client.client import McpServersConfig
 from boba.runtime.config import DataLayerConfig, RuntimeConfig
-from boba.runtime.storage import LocalStorageConfig
 
 LOGGING_CONFIG: dict[str, Any] = {
     "version": 1,
@@ -258,9 +257,4 @@ class AppConfig(RuntimeConfig):
     data_layer: Annotated[
         DataLayerConfig,
         Field(description="Сервис chainlit data layer: подключение + схема."),
-    ]
-
-    storage: Annotated[
-        LocalStorageConfig,
-        Field(description="Файловое хранилище вложений."),
     ]

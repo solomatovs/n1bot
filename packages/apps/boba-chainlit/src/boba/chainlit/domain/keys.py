@@ -62,8 +62,11 @@ class AttachmentUrl:
     dir: ThreadDir
     element_id: str
 
+    MOUNT: ClassVar[str] = "/workspace"
+    """Путь отдачи вложений под префиксом приложения."""
+
     ROUTE: ClassVar[str] = "/attachment/{thread_id}/{dir}/{element_id}"
-    """Общий шаблон route и ссылки."""
+    """Общий шаблон route и ссылки под MOUNT."""
 
     def path(self) -> str:
         return self.ROUTE.format(
@@ -75,13 +78,18 @@ class AttachmentUrl:
 
 @dataclass(frozen=True, slots=True)
 class AttachmentLinks:
-    """Выдаёт публичные ссылки на вложения; url-префикс знает только он."""
+    """Выдаёт публичные ссылки на вложения; url-префикс знает только он.
+    prefix — префикс приложения ([chainlit].url_prefix)."""
 
     prefix: str
 
     def url(self, thread_id: object, element_id: object, dir_thread: ThreadDir) -> str:
         path = AttachmentUrl(str(thread_id), dir_thread, str(element_id)).path()
-        return self.prefix.rstrip("/") + path
+        return self.public_prefix() + path
+
+    def public_prefix(self) -> str:
+        """Адрес, под которым приложение отдаёт вложения."""
+        return self.prefix.rstrip("/") + AttachmentUrl.MOUNT
 
 
 class CanvasFileUrl:

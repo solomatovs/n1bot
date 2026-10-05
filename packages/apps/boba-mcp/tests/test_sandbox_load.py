@@ -26,7 +26,6 @@ from typing import ClassVar
 from uuid import uuid4
 
 import pytest
-from chainlit_stand import put_bytes
 from pydantic import BaseModel, ConfigDict
 
 from boba.cancellation import RunCancellation, ToolStopped, run_cancellation
@@ -40,6 +39,7 @@ from boba.sandbox.zygote import (
     ZygoteToolCaller,
 )
 from boba.stand.shell import ShellRun
+from boba.stand.storage import StorageSeed
 from boba.stand.zygote import ROOTFS_IMAGE, ProfileFields, SandboxStand, ZygoteStand
 from boba.toolkit.chain import CallAmbient
 from boba.toolkit.launcher import LauncherError
@@ -743,11 +743,6 @@ class LoadStand:
         return SandboxStand.bin_dirs()
 
 
-@pytest.fixture(autouse=True)
-def chainlit_context() -> None:
-    """Нагрузка не зависит от сессии chainlit."""
-
-
 @pytest.fixture
 def template(tmp_path: Path) -> Path:
     """Шаблонный ext4-образ; без журнала — fuse2fs пишет только так."""
@@ -879,7 +874,9 @@ class TestParallelLoad:
 
         def upload(index: int) -> None:
             payload = f"attachment-{index}".encode()
-            asyncio.run(put_bytes(storage, self._attachment_key(index), payload))
+            asyncio.run(
+                StorageSeed().put(storage, self._attachment_key(index), payload)
+            )
 
         def shell(index: int) -> ShellResult:
             return self._write_and_read(stand, self.MIX_USER, index)
