@@ -31,6 +31,7 @@ class ProxyAuth:
     def __init__(self, config: ProxyAuthConfig, auth: AuthService) -> None:
         self._config = config
         self._auth = auth
+        self._requests = ProxyRequests()
         self._logger = logging.getLogger(ProxyAuth.__name__)
 
     def install(self, chainlit_app: FastAPI) -> None:
@@ -43,7 +44,7 @@ class ProxyAuth:
         )
 
     async def auth_proxy(self, request: Request) -> Response:
-        proxy_request = ProxyRequests.of(request, self._config.header_names())
+        proxy_request = self._requests.of(request, self._config.header_names())
         session = await self._auth.by_proxy(proxy_request)
 
         self._logger.info(

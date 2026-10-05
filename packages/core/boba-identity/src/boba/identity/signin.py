@@ -263,3 +263,8 @@ class ProxySignIn(Protocol):
     async def sign_in(self, request: ProxyRequest) -> SignedIn:
         """AuthenticationError — запрос не подтверждён; AuthorizationError — вход
         запрещён."""
+
+    @abstractmethod
+    async def admit(self, request: ProxyRequest) -> SignedIn:
+        """Допуск по запросу, который вызывающий уже подтвердил сам;
+        AuthorizationError — вход запрещён."""

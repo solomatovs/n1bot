@@ -133,6 +133,18 @@ class SignIns:
 
         return await self._proxy.sign_in(request)
 
+    async def admit_proxy(self, request: ProxyRequest) -> SignedIn:
+        """Допуск по утверждению доверенного бэкенда, которое вызывающий уже
+        проверил (обмен утверждения на токен у сервиса boba-mcp)."""
+        if self._proxy is None:
+            message = (
+                f"proxy admission of {request.login!r} from {request.client}: "
+                "[auth] has no proxy provider configured"
+            )
+            raise ExternalServiceError("auth", message)
+
+        return await self._proxy.admit(request)
+
     def exchange(self) -> SpnegoExchange:
         """SPNEGO-обмен процесса; без kerberos в [auth] — ExternalServiceError."""
         if self._sso is None:

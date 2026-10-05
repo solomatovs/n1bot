@@ -1,55 +1,101 @@
-"""Вход в сервис исполнения: провайдер авторизации fastmcp над ядром входа boba.
+"""Вход в сервис исполнения: сервер авторизации OAuth 2.1 на fastmcp над ядром
+входа boba.
 
 Способы входа, провайдеры и маппинги ролей — те же, что у чата: секции
-[auth.*] конфига сервиса и ядро входа SignIns. Слой сервиса —
-SessionAuthProvider: он выпускает токен сессии по итогу входа, проверяет
-его на endpoint'ах MCP как Bearer (локально, по подписи) и отдаёт fastmcp
-маршруты входа. Первый подключённый способ — proxy: доверенный клиент (чат)
-называет логин и роли пользователя заголовками под подписью HMAC. Готовые
-токены секции [mcp.tokens] принимаются наравне. Строк пользователей, cookie
-и продления сессии у сервиса нет.
+[auth.*] конфига сервиса и ядро входа SignIns. Слой сервиса — AuthServer,
+наследник OAuthProvider fastmcp: local и ldap входят формой на шаге
+authorize, kerberos — обменом SPNEGO там же, proxy — обменом утверждения
+доверенного клиента на токен (grant jwt-bearer). Итог любого входа — токен
+доступа сервиса (ServiceTokens): JWT с логином, ролями и областями —
+endpoint'ами, выданными ролям вошедшего. Endpoint проверяет токен своим
+EndpointTokens и требует свою область; 401 и 403 отвечает fastmcp. Готовые
+токены секции [mcp.tokens] принимаются наравне. Вход человека продлевается
+токеном обновления до потолка сессии; все входы разом снимает смена
+поколения сессий (рестарт либо generation в конфиге). Cookie и строк
+пользователей у сервиса нет; коды авторизации и клиенты динамической
+регистрации живут в памяти процесса.
 
 Ошибки:
 TokenClaimsError — токен принят, но логина и ролей вызывающего в нём нет.
 CallScopeError — область вызова из _meta не годится сегментом пути.
-маршруты входа и ворота отвечают по HTTP: 401 — подпись, окно времени или токен не
-    приняты; 403 — вход запрещён (адрес клиента, исключение, нет ролей) либо
-    endpoint не выдан ролям вошедшего.
+AuthorizeError — запрос авторизации не принят (по контракту OAuthProvider).
+TokenError — код авторизации или утверждение не приняты (по контракту
+    OAuthProvider).
+страницы входа отвечают по HTTP: 400 — вход не начат или истёк; 401 — логин
+    или пароль неверен либо нужен билет kerberos; 403 — вход запрещён.
 """
 
 from __future__ import annotations
 
+import html
 import logging
-from collections.abc import Mapping
+import secrets
+import time
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from enum import StrEnum
-from typing import Any, ClassVar, Literal
-from uuid import NAMESPACE_URL, UUID, uuid5
+from typing import Any, ClassVar
+from urllib.parse import urlsplit
+from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
-from fastmcp.server.auth import AccessToken, TokenVerifier
+from fastmcp.server.auth import (
+    AccessToken,
+    OAuthProvider,
+    RemoteAuthProvider,
+    TokenVerifier,
+)
+from fastmcp.server.auth.auth import TokenHandler
+from fastmcp.server.auth.jwt_issuer import JWTIssuer, derive_jwt_key
 from fastmcp.server.dependencies import get_access_token, get_context
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from joserfc.errors import JoseError
+from mcp.server.auth.handlers.metadata import MetadataHandler
+from mcp.server.auth.middleware.client_auth import ClientAuthenticator
+from mcp.server.auth.provider import (
+    AuthorizationCode,
+    AuthorizationParams,
+    AuthorizeError,
+    IdentityAssertionParams,
+    RefreshToken,
+    TokenError,
+    construct_redirect_uri,
+)
+from mcp.server.auth.routes import build_metadata, cors_middleware
+from mcp.server.auth.settings import ClientRegistrationOptions, RevocationOptions
+from mcp.shared.auth import (
+    JWT_BEARER_GRANT_TYPE,
+    OAuthClientInformationFull,
+    OAuthToken,
+)
+from pydantic import (
+    AnyHttpUrl,
+    BaseModel,
+    ConfigDict,
+    Field,
+    SecretStr,
+    ValidationError,
+)
 from starlette.requests import Request
-from starlette.responses import JSONResponse, Response
+from starlette.responses import HTMLResponse, RedirectResponse, Response
 from starlette.routing import Route
-from starlette.types import ASGIApp, Receive, Send
-from starlette.types import Scope as AsgiScope
 
-from boba.access import ProfileGrant
-from boba.auth import JwtTokens, SignIns
-from boba.auth.config import ProxyAuthConfig
-from boba.identity.context import Scope, Subject
+from boba.auth import SignIns
+from boba.auth.proxy import AssertionRejectedError, ProxyAssertions
+from boba.identity.context import Credential, Scope, Subject
 from boba.identity.errors import AuthenticationError, AuthorizationError
-from boba.identity.token import TokenRejectedError
-from boba.runtime.http import ProxyRequests
+from boba.identity.signin import ProxyRequest, SignedIn, SignInMetadata
+from boba.identity.sso import SsoChallenge
+from boba.runtime.http import SsoRequests, SsoResponses
 from boba.toolkit.wire import RequestMeta
 
 __all__ = [
+    "AuthServer",
     "CallScopeError",
     "CallScopes",
-    "EndpointGate",
-    "IssuedToken",
-    "ProxySignInRoute",
-    "SessionAuthProvider",
+    "EndpointTokens",
+    "LoginPages",
+    "McpClient",
+    "ServiceAuth",
+    "ServiceTokens",
     "TokenClaim",
     "TokenClaims",
     "TokenClaimsError",
@@ -65,6 +111,7 @@ class TokenClaim(StrEnum):
     LOGIN = "login"
     ROLES = "roles"
     USER_ID = "user_id"
+    METADATA = "metadata"
 
 
 class TokenClaimsError(Exception):
@@ -76,6 +123,9 @@ class TokenClaims(BaseModel):
 
     login и roles обязательны. user_id несёт готовый токен конфига, у
     которого он задан; без него сервис выводит идентификатор из логина.
+    metadata — то, что вход знает о себе (SignInMetadata, как в токене
+    чата): провайдер, принципал и запечатанный билет kerberos, поколение
+    сессий; у готового токена конфига её нет.
     """
 
     model_config = ConfigDict(frozen=True, extra="ignore")
@@ -83,6 +133,7 @@ class TokenClaims(BaseModel):
     login: str = Field(min_length=1)
     roles: frozenset[str]
     user_id: UUID | None = None
+    metadata: Mapping[str, object] = Field(default_factory=dict)
 
 
 class TokenSubjects:
@@ -108,16 +159,23 @@ class TokenSubjects:
 
         return self.of(token)
 
-    def of(self, token: AccessToken) -> Subject:
-        try:
-            claims = TokenClaims.model_validate(token.claims)
-        except ValidationError as exc:
+    def credential(self) -> Credential:
+        """Секреты вызова по токену текущего запроса: делегированный билет
+        входа kerberos либо причина его отсутствия."""
+        token = get_access_token()
+        if token is None:
             msg = (
-                f"resolving the caller of client {token.client_id!r}: the token "
-                f"claims do not carry login and roles: {exc}"
+                "resolving the credential of the caller: the request carries "
+                "no access token"
             )
-            raise TokenClaimsError(msg) from exc
+            raise TokenClaimsError(msg)
 
+        claims = self._claims(token)
+
+        return SignInMetadata.parse(claims.metadata).credential()
+
+    def of(self, token: AccessToken) -> Subject:
+        claims = self._claims(token)
         user_id = claims.user_id
         if user_id is None:
             user_id = uuid5(NAMESPACE_URL, f"boba-mcp:{claims.login}")
@@ -128,6 +186,17 @@ class TokenSubjects:
             roles=claims.roles,
             profile=self._profile,
         )
+
+    @staticmethod
+    def _claims(token: AccessToken) -> TokenClaims:
+        try:
+            return TokenClaims.model_validate(token.claims)
+        except ValidationError as exc:
+            msg = (
+                f"resolving the caller of client {token.client_id!r}: the token "
+                f"claims do not carry login and roles: {exc}"
+            )
+            raise TokenClaimsError(msg) from exc
 
 
 class CallScopeError(Exception):
@@ -180,175 +249,755 @@ class CallScopes:
         return sent
 
 
-class IssuedToken(BaseModel):
-    """Ответ входа: токен сессии сервиса и срок его жизни в секундах."""
+class McpClient(BaseModel):
+    """Клиент OAuth из конфига [mcp.clients.<client_id>]: доверенное
+    приложение, которому разрешён обмен утверждения о пользователе на токен
+    (вход proxy). Клиенты с входом человека регистрируются сами (DCR)."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    access_token: str = Field(min_length=1)
-    token_type: Literal["Bearer"]
-    expires_in: int = Field(gt=0)
+    secret: SecretStr
 
-
-class ProxySignInRoute:
-    """Маршрут входа proxy: POST [auth.proxy].path.
-
-    Создаётся провайдером авторизации, когда в [auth] есть proxy. Заголовки
-    доверенного клиента читает по именам из того же конфига и отдаёт ядру
-    входа; ответ — токен сессии сервиса телом JSON, клиент MCP предъявляет
-    его как Bearer.
-    """
-
-    BEARER: ClassVar[Literal["Bearer"]] = "Bearer"
-
-    def __init__(
-        self, config: ProxyAuthConfig, sign_ins: SignIns, tokens: JwtTokens
-    ) -> None:
-        self._config = config
-        self._sign_ins = sign_ins
-        self._tokens = tokens
-
-    def route(self) -> Route:
-        return Route(self._config.path, self.sign_in, methods=["POST"])
-
-    async def sign_in(self, request: Request) -> Response:
-        proxy_request = ProxyRequests.of(request, self._config.header_names())
-        try:
-            signed = await self._sign_ins.by_proxy(proxy_request)
-        except AuthenticationError as exc:
-            return JSONResponse({"error": str(exc)}, status_code=401)
-        except AuthorizationError as exc:
-            return JSONResponse({"error": str(exc)}, status_code=403)
-
-        logger.info(
-            "proxy sign-in [user=%s] [client=%s] [roles=%s]",
-            signed.identifier,
-            proxy_request.client,
-            ",".join(sorted(signed.sign_in.roles)),
-        )
-        issued = IssuedToken(
-            access_token=self._tokens.issue(signed),
-            token_type=self.BEARER,
-            expires_in=self._tokens.ttl_sec,
+    def registered(self, client_id: str) -> OAuthClientInformationFull:
+        return OAuthClientInformationFull(
+            client_id=client_id,
+            client_secret=self.secret.get_secret_value(),
+            redirect_uris=None,
+            grant_types=[JWT_BEARER_GRANT_TYPE],
+            token_endpoint_auth_method="client_secret_post",  # noqa: S106 — имя метода
         )
 
-        return JSONResponse(issued.model_dump(mode="json"))
+
+@dataclass(frozen=True)
+class TokenHolder:
+    """Кому выпускается токен сервиса: логин, то, что вход знает о себе
+    (провайдер, роли, выданные endpoint'ы, билет kerberos), и момент
+    первого входа, от которого считается потолок сессии."""
+
+    login: str
+    sign_in: SignInMetadata
+    started: int
+
+    def scopes(self) -> list[str]:
+        """Области токена: endpoint'ы, выданные ролям вошедшего."""
+        return sorted(self.sign_in.profiles)
 
 
-class SessionAuthProvider(TokenVerifier):
-    """Провайдер авторизации fastmcp сервиса: вход способами [auth] и проверка
-    токена сессии либо готового токена конфига.
+class RefreshClaims(BaseModel):
+    """Клеймы токена обновления: держатель сессии и metadata его входа."""
 
-    Создаётся сборкой процесса из ядра входа SignIns, читателя токенов
-    JwtTokens, конфига proxy и токенов [mcp.tokens]; отдаётся в
-    FastMCP(auth=…) каждого endpoint'а, воротам EndpointGate и сборке
-    endpoint'ов, которая ставит его маршруты входа в корень приложения.
-    Токен сессии проверяется подписью и сроком, без обращения к хранилищу.
-    Клеймы login и roles читает TokenSubjects.
+    model_config = ConfigDict(frozen=True, extra="ignore")
+
+    login: str = Field(min_length=1)
+    metadata: Mapping[str, object]
+    started: int
+
+
+class ServiceTokens:
+    """Токены сервиса: выпуск по итогу входа, чтение и продление.
+
+    Создаётся сборкой процесса из публичного адреса сервиса и секции
+    [session]; выпускает сервер авторизации (AuthServer), читают проверяющие
+    endpoint'ов (EndpointTokens). Токен — JWT fastmcp (JWTIssuer): издатель и
+    получатель — сам сервис, области — endpoint'ы, выданные ролям вошедшего,
+    логин и роли — клеймами TokenClaim. Какой бы способ входа ни сработал,
+    токен один и тот же и несёт metadata входа, как токен чата: провайдер,
+    принципал и запечатанный билет kerberos — им инструменты ходят от имени
+    пользователя. Проверка локальная, по подписи.
+
+    Токен доступа живёт session_ttl_sec. Вход человека получает ещё и токен
+    обновления: по нему клиент сам берёт новую пару без формы входа, пока
+    от первого входа не прошло session_max_sec. Хранения нет: оба токена
+    несут поколение сессий, и токен другого поколения отвергается — рестарт
+    процесса или смена generation в конфиге разом снимает все входы.
     """
 
-    CLAIM_LOGIN: ClassVar[str] = "login"
-    CLAIM_ROLES: ClassVar[str] = "roles"
+    SALT: ClassVar[str] = "boba-mcp-access-token"
+    REFRESH: ClassVar[str] = "refresh"
 
     def __init__(
-        self,
-        sign_ins: SignIns,
-        tokens: JwtTokens,
-        proxy: ProxyAuthConfig | None,
-        static: Mapping[str, Mapping[str, Any]],
+        self, issuer: str, secret: str, ttl_sec: int, max_sec: int, generation: str
     ) -> None:
-        super().__init__()
-        self._tokens = tokens
-        self._static = dict(static)
-        self._sign_in_routes: list[Route] = []
-        if proxy is not None:
-            self._sign_in_routes.append(
-                ProxySignInRoute(proxy, sign_ins, tokens).route()
+        key = derive_jwt_key(high_entropy_material=secret, salt=self.SALT)
+        self._issuer = JWTIssuer(issuer, issuer, key)
+        self._ttl_sec = ttl_sec
+        self._max_sec = max_sec
+        self._generation = generation
+
+    def holder(self, signed: SignedIn) -> TokenHolder:
+        """Держатель токена по итогу входа: сессия начинается сейчас."""
+        return TokenHolder(
+            login=signed.identifier, sign_in=signed.sign_in, started=int(time.time())
+        )
+
+    def access(self, holder: TokenHolder, client_id: str) -> OAuthToken:
+        """Токен доступа без обновления: вход proxy повторяет обмен сам."""
+        return OAuthToken(
+            access_token=self._access(holder, client_id),
+            token_type="Bearer",  # noqa: S106 — вид токена, не секрет
+            expires_in=self._ttl_sec,
+            scope=" ".join(holder.scopes()),
+        )
+
+    def session(self, holder: TokenHolder, client_id: str) -> OAuthToken:
+        """Токен доступа и токен обновления до потолка сессии держателя;
+        TokenError — потолок сессии пройден."""
+        left = holder.started + self._max_sec - int(time.time())
+        if left <= 0:
+            raise TokenError(
+                "invalid_grant",
+                f"the session of {holder.login!r} started at {holder.started} is "
+                f"over its limit of {self._max_sec}s: sign in again",
             )
 
-    def get_routes(self, mcp_path: str | None = None) -> list[Route]:
-        """Маршруты провайдера: штатные fastmcp и входы по [auth]."""
-        return [*super().get_routes(mcp_path), *self._sign_in_routes]
+        refresh = self._issuer.issue_refresh_token(
+            client_id=client_id,
+            scopes=holder.scopes(),
+            jti=uuid4().hex,
+            expires_in=left,
+            upstream_claims=RefreshClaims(
+                login=holder.login,
+                metadata=self._metadata(holder),
+                started=holder.started,
+            ).model_dump(mode="json"),
+        )
+
+        return OAuthToken(
+            access_token=self._access(holder, client_id),
+            token_type="Bearer",  # noqa: S106 — вид токена, не секрет
+            expires_in=min(self._ttl_sec, left),
+            scope=" ".join(holder.scopes()),
+            refresh_token=refresh,
+        )
+
+    def _access(self, holder: TokenHolder, client_id: str) -> str:
+        return self._issuer.issue_access_token(
+            client_id=client_id,
+            scopes=holder.scopes(),
+            jti=uuid4().hex,
+            expires_in=self._ttl_sec,
+            subject=holder.login,
+            extra_claims={
+                TokenClaim.LOGIN.value: holder.login,
+                TokenClaim.ROLES.value: sorted(holder.sign_in.roles),
+                TokenClaim.METADATA.value: self._metadata(holder),
+            },
+        )
+
+    def _metadata(self, holder: TokenHolder) -> dict[str, object]:
+        """Metadata входа с текущим поколением сессий."""
+        return holder.sign_in.issued_at(self._generation).render()
+
+    def read(self, token: str) -> AccessToken | None:
+        """Вызывающий по токену доступа; None — токен не принят."""
+        try:
+            claims = self._issuer.verify_token(token)
+        except JoseError as exc:
+            logger.info("access token is rejected: %s", exc)
+            return None
+
+        issued = self._sign_in(claims.get(TokenClaim.METADATA.value)).generation
+        if issued != self._generation:
+            logger.info(
+                "access token of %r belongs to session generation %r, this "
+                "process accepts %r",
+                claims.get(TokenClaim.LOGIN.value),
+                issued,
+                self._generation,
+            )
+            return None
+
+        return AccessToken(
+            token=token,
+            client_id=str(claims["client_id"]),
+            scopes=str(claims["scope"]).split(),
+            expires_at=int(claims["exp"]),
+            claims=dict(claims),
+        )
+
+    def refreshed(self, token: str) -> RefreshToken | None:
+        """Токен обновления глазами OAuthProvider; None — токен не принят."""
+        read = self._refresh(token)
+        if read is None:
+            return None
+
+        claims, _ = read
+
+        return RefreshToken(
+            token=token,
+            client_id=str(claims["client_id"]),
+            scopes=str(claims["scope"]).split(),
+            expires_at=int(claims["exp"]),
+        )
+
+    def renewed(self, refresh: RefreshToken) -> OAuthToken:
+        """Новая пара токенов тому же держателю: тот же вход, новый срок,
+        потолок сессии прежний; TokenError — токен обновления не принят."""
+        read = self._refresh(refresh.token)
+        if read is None:
+            raise TokenError(
+                "invalid_grant", "the refresh token is not accepted: sign in again"
+            )
+
+        _, held = read
+        holder = TokenHolder(
+            login=held.login,
+            sign_in=SignInMetadata.parse(held.metadata),
+            started=held.started,
+        )
+
+        return self.session(holder, refresh.client_id)
+
+    def _refresh(self, token: str) -> tuple[dict[str, Any], RefreshClaims] | None:
+        try:
+            claims = self._issuer.verify_token(token, self.REFRESH)
+            held = RefreshClaims.model_validate(claims.get("upstream_claims"))
+        except (JoseError, ValidationError) as exc:
+            logger.info("refresh token is rejected: %s", exc)
+            return None
+
+        issued = SignInMetadata.parse(held.metadata).generation
+        if issued != self._generation:
+            logger.info(
+                "refresh token of %r belongs to session generation %r, this "
+                "process accepts %r",
+                held.login,
+                issued,
+                self._generation,
+            )
+            return None
+
+        return claims, held
+
+    @staticmethod
+    def _sign_in(metadata: object) -> SignInMetadata:
+        if not isinstance(metadata, Mapping):
+            return SignInMetadata()
+
+        return SignInMetadata.parse(metadata)
+
+
+class EndpointTokens(TokenVerifier):
+    """Проверка токена на одном endpoint'е MCP: токен сервиса либо готовый
+    токен конфига; область endpoint'а обязательна.
+
+    Создаётся сборкой endpoint'ов на каждый endpoint и отдаётся в
+    FastMCP(auth=…) внутри RemoteAuthProvider: без токена fastmcp отвечает
+    401 со ссылкой на метаданные ресурса, без области endpoint'а — 403
+    insufficient_scope.
+    """
+
+    def __init__(
+        self, tokens: ServiceTokens, static: Mapping[str, AccessToken], endpoint: str
+    ) -> None:
+        super().__init__(required_scopes=[endpoint])
+        self._tokens = tokens
+        self._static = dict(static)
 
     async def verify_token(self, token: str) -> AccessToken | None:
         """Вызывающий по токену; None — токен не принят (401)."""
         static = self._static.get(token)
         if static is not None:
-            return AccessToken(
-                token=token,
-                client_id=str(static[self.CLAIM_LOGIN]),
-                scopes=[],
-                claims=dict(static),
-            )
+            return static
 
-        try:
-            claims = self._tokens.read(token)
-        except TokenRejectedError as exc:
-            logger.info("access token is rejected as %s: %s", exc.reason, exc)
-            return None
-
-        roles = sorted(claims.sign_in().roles)
-
-        return AccessToken(
-            token=token,
-            client_id=claims.identifier,
-            scopes=[],
-            expires_at=claims.exp,
-            claims={self.CLAIM_LOGIN: claims.identifier, self.CLAIM_ROLES: roles},
-        )
+        return self._tokens.read(token)
 
 
-class EndpointGate:
-    """Ворота endpoint'а MCP: пускает вошедшего, которому endpoint выдан.
+@dataclass(frozen=True)
+class PendingLogin:
+    """Начатый вход человека: кто просит (клиент OAuth) и с какими
+    параметрами авторизации; ждёт формы или обмена SPNEGO."""
 
-    Создаётся сборкой endpoint'ов вокруг приложения одного endpoint'а из
-    проверяющего токены и гранта профиля. Запрос без токена или с негодным
-    токеном идёт дальше — приложение ответит 401; токен принят, а ролям
-    вошедшего endpoint не выдан — 403.
+    client_id: str
+    params: AuthorizationParams
+    expires_at: float
+
+
+@dataclass(frozen=True)
+class GrantedCode:
+    """Выданный код авторизации и вошедший, которому он принадлежит."""
+
+    code: AuthorizationCode
+    signed: SignedIn
+
+
+class AuthServer(OAuthProvider):
+    """Сервер авторизации сервиса: OAuthProvider fastmcp над ядром входа.
+
+    Создаётся сборкой процесса из способов входа SignIns, выпуска токенов
+    ServiceTokens, проверки утверждений proxy и клиентов конфига; его
+    маршруты (метаданные, /authorize, /token, /register) сборка endpoint'ов
+    ставит в корень приложения, страницы входа — LoginPages. Вход человека:
+    authorize() запоминает начатый вход и ведёт на страницу входа, та зовёт
+    signed_in() и получает адрес возврата с кодом. Вход proxy:
+    exchange_identity_assertion(). Вход человека продлевается токеном
+    обновления до потолка [session].session_max_sec; вход proxy токена
+    обновления не получает — клиент повторяет обмен утверждения сам.
     """
 
-    BEARER_PREFIX: ClassVar[str] = "bearer "
+    LOGIN_PATH: ClassVar[str] = "/login"
+    TXN: ClassVar[str] = "txn"
+    PENDING_SEC: ClassVar[float] = 300.0
+    CODE_SEC: ClassVar[float] = 60.0
+    TOKEN_PATH: ClassVar[str] = "/token"  # noqa: S105 — путь маршрута
+    METADATA_PATH: ClassVar[str] = "/.well-known/oauth-authorization-server"
 
-    def __init__(
-        self, app: ASGIApp, verifier: TokenVerifier, name: str, grant: ProfileGrant
+    def __init__(  # noqa: PLR0913 — сервер собирается всеми своими входами
+        self,
+        public_url: str,
+        sign_ins: SignIns,
+        tokens: ServiceTokens,
+        assertions: ProxyAssertions | None,
+        clients: Mapping[str, McpClient],
+        resources: Sequence[str],
     ) -> None:
-        self._app = app
-        self._verifier = verifier
-        self._name = name
-        self._grant = grant
-
-    async def __call__(self, scope: AsgiScope, receive: Receive, send: Send) -> None:
-        if scope["type"] != "http":
-            await self._app(scope, receive, send)
-            return
-
-        request = Request(scope)
-        token = self._bearer(request)
-        if token is None:
-            await self._app(scope, receive, send)
-            return
-
-        access = await self._verifier.verify_token(token)
-        if access is None:
-            await self._app(scope, receive, send)
-            return
-
-        roles = access.claims.get(SessionAuthProvider.CLAIM_ROLES, [])
-        if self._grant.visible_for(roles):
-            await self._app(scope, receive, send)
-            return
-
-        message = (
-            f"403 Forbidden: mcp endpoint {self._name!r} is not granted to the "
-            f"roles {sorted(roles)} of {access.client_id!r}"
+        super().__init__(
+            base_url=public_url,
+            client_registration_options=ClientRegistrationOptions(enabled=True),
+            revocation_options=RevocationOptions(enabled=False),
         )
-        logger.warning("%s", message)
-        refusal = JSONResponse({"error": message}, status_code=403)
-        await refusal(scope, receive, send)
+        self._public_url = public_url.rstrip("/")
+        self._sign_ins = sign_ins
+        self._tokens = tokens
+        self._assertions = assertions
+        self._resources = frozenset(resources)
+        self._clients: dict[str, OAuthClientInformationFull] = {}
+        for client_id, declared in clients.items():
+            self._clients[client_id] = declared.registered(client_id)
 
-    def _bearer(self, request: Request) -> str | None:
-        header = request.headers.get("authorization", "")
-        if not header.lower().startswith(self.BEARER_PREFIX):
+        self._pending: dict[str, PendingLogin] = {}
+        self._codes: dict[str, GrantedCode] = {}
+
+    def sign_ins(self) -> SignIns:
+        return self._sign_ins
+
+    def login_url(self, txn: str) -> str:
+        return f"{self._public_url}{self.LOGIN_PATH}?{self.TXN}={txn}"
+
+    async def get_client(self, client_id: str) -> OAuthClientInformationFull | None:
+        return self._clients.get(client_id)
+
+    async def register_client(self, client_info: OAuthClientInformationFull) -> None:
+        if client_info.client_id is None:
+            msg = "client registration: expected a client_id, got none"
+            raise ValueError(msg)
+
+        self._clients[client_info.client_id] = client_info
+
+    async def authorize(
+        self, client: OAuthClientInformationFull, params: AuthorizationParams
+    ) -> str:
+        """Запоминает начатый вход и отдаёт адрес страницы входа."""
+        if client.client_id is None:
+            raise AuthorizeError(
+                error="invalid_request",
+                error_description="authorize: the client has no client_id",
+            )
+
+        self._known_resource(params.resource, AuthorizeError)
+        now = time.time()
+        for txn in [
+            txn for txn, held in self._pending.items() if held.expires_at < now
+        ]:
+            del self._pending[txn]
+
+        txn = secrets.token_urlsafe(32)
+        self._pending[txn] = PendingLogin(
+            client_id=client.client_id, params=params, expires_at=now + self.PENDING_SEC
+        )
+
+        return self.login_url(txn)
+
+    def pending(self, txn: str) -> PendingLogin | None:
+        """Начатый вход по его идентификатору; None — не начат или истёк."""
+        held = self._pending.get(txn)
+        if held is None:
             return None
 
-        return header[len(self.BEARER_PREFIX) :].strip()
+        if held.expires_at < time.time():
+            del self._pending[txn]
+            return None
+
+        return held
+
+    def signed_in(self, txn: str, signed: SignedIn) -> str:
+        """Завершает начатый вход: адрес возврата клиента с кодом авторизации."""
+        held = self._pending.pop(txn)
+        params = held.params
+        scopes = sorted(signed.sign_in.profiles)
+        code = AuthorizationCode(
+            code=secrets.token_urlsafe(32),
+            scopes=scopes,
+            expires_at=time.time() + self.CODE_SEC,
+            client_id=held.client_id,
+            code_challenge=params.code_challenge,
+            redirect_uri=params.redirect_uri,
+            redirect_uri_provided_explicitly=params.redirect_uri_provided_explicitly,
+            resource=params.resource,
+            subject=signed.identifier,
+        )
+        self._codes[code.code] = GrantedCode(code=code, signed=signed)
+        logger.info(
+            "sign-in [user=%s] [provider=%s] [client=%s] [roles=%s]",
+            signed.identifier,
+            signed.sign_in.provider,
+            held.client_id,
+            ",".join(sorted(signed.sign_in.roles)),
+        )
+
+        return construct_redirect_uri(
+            str(params.redirect_uri), code=code.code, state=params.state
+        )
+
+    async def load_authorization_code(
+        self, client: OAuthClientInformationFull, authorization_code: str
+    ) -> AuthorizationCode | None:
+        granted = self._codes.get(authorization_code)
+        if granted is None:
+            return None
+
+        if granted.code.client_id != client.client_id:
+            return None
+
+        if granted.code.expires_at < time.time():
+            del self._codes[authorization_code]
+            return None
+
+        return granted.code
+
+    async def exchange_authorization_code(
+        self, client: OAuthClientInformationFull, authorization_code: AuthorizationCode
+    ) -> OAuthToken:
+        granted = self._codes.pop(authorization_code.code, None)
+        if granted is None:
+            raise TokenError(
+                "invalid_grant", "the authorization code is unknown or already used"
+            )
+
+        return self._tokens.session(
+            self._tokens.holder(granted.signed), granted.code.client_id
+        )
+
+    async def exchange_identity_assertion(
+        self, client: OAuthClientInformationFull, params: IdentityAssertionParams
+    ) -> OAuthToken:
+        """Вход proxy: утверждение доверенного клиента о пользователе меняется
+        на токен сервиса; роли пользователя решают провайдеры [auth.proxy]."""
+        if self._assertions is None:
+            raise TokenError(
+                "unsupported_grant_type",
+                "identity assertion: [auth] has no proxy provider configured",
+            )
+
+        client_id = str(client.client_id)
+        try:
+            claims = self._assertions.read(
+                params.assertion, client_id, self._public_url
+            )
+        except AssertionRejectedError as exc:
+            logger.warning("%s", exc)
+            raise TokenError("invalid_grant", str(exc)) from exc
+
+        self._known_resource(claims.resource, TokenError)
+        request = ProxyRequest(login=claims.sub, roles=claims.roles, client=client_id)
+        try:
+            signed = await self._sign_ins.admit_proxy(request)
+        except (AuthenticationError, AuthorizationError) as exc:
+            logger.warning("%s", exc)
+            raise TokenError("invalid_grant", str(exc)) from exc
+
+        logger.info(
+            "proxy sign-in [user=%s] [client=%s] [roles=%s]",
+            signed.identifier,
+            client_id,
+            ",".join(sorted(signed.sign_in.roles)),
+        )
+
+        return self._tokens.access(self._tokens.holder(signed), client_id)
+
+    def _known_resource(
+        self, resource: str | None, refusal: type[AuthorizeError | TokenError]
+    ) -> None:
+        if resource is None:
+            return
+
+        if resource.rstrip("/") in self._resources:
+            return
+
+        known = ", ".join(sorted(self._resources))
+        raise refusal(
+            "invalid_target",
+            f"resource {resource!r} is not an mcp endpoint of this server; "
+            f"known: {known}",
+        )
+
+    async def load_refresh_token(
+        self, client: OAuthClientInformationFull, refresh_token: str
+    ) -> RefreshToken | None:
+        held = self._tokens.refreshed(refresh_token)
+        if held is None:
+            return None
+
+        if held.client_id != client.client_id:
+            return None
+
+        return held
+
+    async def exchange_refresh_token(
+        self,
+        client: OAuthClientInformationFull,
+        refresh_token: RefreshToken,
+        scopes: list[str],
+    ) -> OAuthToken:
+        """Новая пара токенов по токену обновления, без формы входа."""
+        return self._tokens.renewed(refresh_token)
+
+    async def load_access_token(self, token: str) -> AccessToken | None:
+        return self._tokens.read(token)
+
+    async def revoke_token(self, token: AccessToken | RefreshToken) -> None:
+        return None
+
+    def get_routes(self, mcp_path: str | None = None) -> list[Route]:
+        """Маршруты OAuthProvider с обменом утверждения: базовый класс собирает
+        /token и метаданные без него."""
+        routes: list[Route] = []
+        for route in super().get_routes(mcp_path):
+            if route.path == self.TOKEN_PATH:
+                routes.append(self._token_route())
+                continue
+
+            if route.path == self.METADATA_PATH:
+                routes.append(self._metadata_route(route))
+                continue
+
+            routes.append(route)
+
+        return routes
+
+    def _token_route(self) -> Route:
+        handler = TokenHandler(
+            provider=self,
+            client_authenticator=ClientAuthenticator(self),
+            identity_assertion_enabled=True,
+        )
+
+        return Route(
+            self.TOKEN_PATH,
+            endpoint=cors_middleware(handler.handle, ["POST", "OPTIONS"]),
+            methods=["POST", "OPTIONS"],
+        )
+
+    def _metadata_route(self, route: Route) -> Route:
+        metadata = build_metadata(
+            AnyHttpUrl(self._public_url),
+            None,
+            ClientRegistrationOptions(enabled=True),
+            RevocationOptions(enabled=False),
+            supports_identity_assertion=True,
+        )
+        handler = MetadataHandler(metadata)
+
+        return Route(
+            route.path,
+            endpoint=cors_middleware(handler.handle, ["GET", "OPTIONS"]),
+            methods=["GET", "OPTIONS"],
+        )
+
+
+class LoginField(StrEnum):
+    """Поля формы входа и её адреса."""
+
+    TXN = "txn"
+    LOGIN = "login"
+    PASSWORD = "password"  # noqa: S105 — имя поля формы
+    SSO = "/login/sso"
+
+
+class LoginPages:
+    """Страницы входа человека на шаге authorize: форма логина и пароля
+    (local, ldap) и обмен SPNEGO (kerberos).
+
+    Создаётся сборкой процесса над сервером авторизации; routes() ставятся
+    в корень приложения рядом с его маршрутами. Удачный вход завершает
+    начатый вход сервера и ведёт браузер на адрес возврата клиента с кодом.
+    """
+
+    PAGE: ClassVar[str] = (
+        '<!doctype html><html><head><meta charset="utf-8">'
+        "<title>boba-mcp sign-in</title></head><body>"
+        "<h1>Sign in to boba-mcp</h1>{error}{form}{sso}</body></html>"
+    )
+    FORM: ClassVar[str] = (
+        '<form method="post" action="{action}">'
+        '<input type="hidden" name="txn" value="{txn}">'
+        '<p><label>Login <input name="login" autofocus></label></p>'
+        '<p><label>Password <input name="password" type="password"></label></p>'
+        '<p><button type="submit">Sign in</button></p></form>'
+    )
+    SSO: ClassVar[str] = '<p><a href="{url}">Sign in with Kerberos</a></p>'
+    ERROR: ClassVar[str] = '<p role="alert">{text}</p>'
+    NO_TICKET: ClassVar[str] = (
+        "kerberos sign-in needs a ticket of your domain session: the browser sent none"
+    )
+    NO_PROVIDERS: ClassVar[str] = (
+        "no sign-in method for people is configured: [auth] of the service "
+        "has no local, ldap or kerberos entry"
+    )
+
+    def __init__(self, server: AuthServer, public_url: str) -> None:
+        self._server = server
+        self._sign_ins = server.sign_ins()
+        self._public_url = public_url.rstrip("/")
+        self._requests = SsoRequests()
+        self._responses = SsoResponses()
+
+    def routes(self) -> list[Route]:
+        routes = [
+            Route(AuthServer.LOGIN_PATH, self.form, methods=["GET"]),
+            Route(AuthServer.LOGIN_PATH, self.submit, methods=["POST"]),
+        ]
+        if self._sign_ins.has_sso():
+            routes.append(Route(LoginField.SSO.value, self.sso, methods=["GET"]))
+
+        return routes
+
+    async def form(self, request: Request) -> Response:
+        txn = request.query_params.get(LoginField.TXN.value, "")
+        if self._server.pending(txn) is None:
+            return self._expired()
+
+        return self._page(txn, "", 200)
+
+    async def submit(self, request: Request) -> Response:
+        fields = await request.form()
+        txn = str(fields.get(LoginField.TXN.value, ""))
+        if self._server.pending(txn) is None:
+            return self._expired()
+
+        login = str(fields.get(LoginField.LOGIN.value, ""))
+        password = str(fields.get(LoginField.PASSWORD.value, ""))
+        try:
+            signed = await self._sign_ins.by_password(login, password)
+        except AuthenticationError as exc:
+            return self._page(txn, str(exc), 401)
+        except AuthorizationError as exc:
+            return self._page(txn, str(exc), 403)
+
+        return RedirectResponse(self._server.signed_in(txn, signed), status_code=302)
+
+    async def sso(self, request: Request) -> Response:
+        txn = request.query_params.get(LoginField.TXN.value, "")
+        if self._server.pending(txn) is None:
+            return self._expired()
+
+        try:
+            outcome = await self._sign_ins.exchange().handshake(
+                self._requests.of(request)
+            )
+        except AuthorizationError as exc:
+            return self._page(txn, str(exc), 403)
+
+        if isinstance(outcome, SsoChallenge):
+            # браузер домена повторит запрос с билетом сам; остальным страница
+            # входа остаётся с причиной и формой
+            return self._page(txn, self.NO_TICKET, 401, self._responses.headers())
+
+        return RedirectResponse(
+            self._server.signed_in(txn, outcome.signed), status_code=302
+        )
+
+    def _page(
+        self,
+        txn: str,
+        error: str,
+        status: int,
+        headers: Mapping[str, str] | None = None,
+    ) -> Response:
+        providers = self._sign_ins.providers()
+        if not error and not providers.password and not providers.sso:
+            error = self.NO_PROVIDERS
+
+        shown = ""
+        if error:
+            shown = self.ERROR.format(text=html.escape(error))
+
+        form = ""
+        if providers.password:
+            form = self.FORM.format(
+                action=html.escape(f"{self._public_url}{AuthServer.LOGIN_PATH}"),
+                txn=html.escape(txn),
+            )
+
+        sso = ""
+        if providers.sso:
+            url = f"{self._public_url}{LoginField.SSO.value}?{AuthServer.TXN}={txn}"
+            sso = self.SSO.format(url=html.escape(url))
+
+        return HTMLResponse(
+            self.PAGE.format(error=shown, form=form, sso=sso),
+            status_code=status,
+            headers=headers,
+        )
+
+    def _expired(self) -> Response:
+        text = (
+            "the sign-in is not started or has expired: start it again from the client"
+        )
+
+        return HTMLResponse(
+            self.PAGE.format(error=self.ERROR.format(text=text), form="", sso=""),
+            status_code=400,
+        )
+
+
+class ServiceAuth:
+    """Вход сервиса целиком: сервер авторизации, страницы входа и проверяющие
+    токена endpoint'ов.
+
+    Создаётся сборкой процесса; сборка endpoint'ов (McpEndpoints) берёт у
+    него провайдер авторизации на каждый endpoint и маршруты входа для корня
+    приложения.
+    """
+
+    def __init__(
+        self,
+        public_url: str,
+        server: AuthServer,
+        tokens: ServiceTokens,
+        static: Mapping[str, AccessToken],
+    ) -> None:
+        self._public_url = public_url
+        self._server = server
+        self._pages = LoginPages(server, public_url)
+        self._tokens = tokens
+        self._static = dict(static)
+
+    def published(self) -> str:
+        """Префикс пути, под которым сервис виден клиентам: путь публичного
+        адреса; без прокси — пустой."""
+        return urlsplit(self._public_url).path.rstrip("/")
+
+    def endpoint(self, name: str) -> RemoteAuthProvider:
+        """Провайдер авторизации одного endpoint'а: его отдают в
+        FastMCP(auth=…); объявляет сервер авторизации в метаданных ресурса."""
+        return RemoteAuthProvider(
+            token_verifier=EndpointTokens(self._tokens, self._static, name),
+            authorization_servers=[AnyHttpUrl(self._public_url)],
+            base_url=self._public_url,
+        )
+
+    def routes(self) -> list[Route]:
+        """Маршруты входа для корня приложения: сервер авторизации, его
+        метаданные по пути издателя и страницы входа."""
+        routes = self._server.get_routes()
+        taken = {route.path for route in routes}
+        for route in self._server.get_well_known_routes():
+            if route.path in taken:
+                continue
+
+            routes.append(route)
+
+        routes.extend(self._pages.routes())
+
+        return routes

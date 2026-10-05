@@ -103,6 +103,7 @@ class EnvOverride(StrEnum):
     MESSAGING = "messaging_provider"
     TOOL_LAUNCHER = "tool_launcher"
     MCP_HOST = "mcp_host"
+    PUBLIC_URL = "public_url"
 
     @property
     def var(self) -> str:
@@ -405,9 +406,10 @@ class StudioPath(StrEnum):
 
 
 class TokenConfig(BaseModel):
-    """Секция [session] процесса без браузера: подпись, срок и поколение токена
-    сессии. Базовая для SessionConfig; сама описывает [session] сервиса
-    boba-mcp, который выдаёт токен телом ответа, а не cookie.
+    """Секция [session] любого процесса со входом: секрет подписи, срок
+    токена, потолок сессии и поколение сессий. Базовая для SessionConfig;
+    сама описывает [session] сервиса boba-mcp, который выдаёт токены OAuth,
+    а не cookie.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -416,6 +418,12 @@ class TokenConfig(BaseModel):
         min_length=1, description="Секрет JWT входа: подпись и печать билета."
     )
     session_ttl_sec: int = Field(gt=0, description="Срок JWT входа.")
+    session_max_sec: int = Field(
+        gt=0,
+        description=(
+            "Потолок сессии от первого входа: дольше без нового входа не продлить."
+        ),
+    )
     generation: str = Field(
         default="",
         description=(
@@ -425,6 +433,18 @@ class TokenConfig(BaseModel):
             "друг друга."
         ),
     )
+
+    @model_validator(mode="after")
+    def _max_covers_ttl(self) -> Self:
+        if self.session_max_sec < self.session_ttl_sec:
+            msg = (
+                "[session]: session_max_sec must not be shorter than "
+                f"session_ttl_sec, got session_max_sec = {self.session_max_sec} "
+                f"and session_ttl_sec = {self.session_ttl_sec}"
+            )
+            raise ValueError(msg)
+
+        return self
 
     _process_generation: ClassVar[str] = ""
     """Случайное поколение процесса: одно на все читатели токенов в нём."""
@@ -439,38 +459,19 @@ class TokenConfig(BaseModel):
 
         return TokenConfig._process_generation
 
+    def renewal(self) -> SessionRenewal:
+        return SessionRenewal.of(self.session_ttl_sec, self.session_max_sec)
+
 
 class SessionConfig(TokenConfig):
-    """Секция [session] приложения с браузером: к токену сессии добавлены
-    cookie входа и потолок продления. Общая для чата и studio — токен одного
-    принимает другое.
+    """Секция [session] приложения с браузером: к токену сессии добавлена
+    cookie входа. Общая для чата и studio — токен одного принимает другое.
     """
 
     cookie: str = Field(min_length=1, description="Имя cookie входа.")
     cookie_samesite: Literal["lax", "strict", "none"] = Field(
         description="SameSite cookie входа; none включает Secure."
     )
-    session_max_sec: int = Field(
-        gt=0,
-        description=(
-            "Потолок сессии от первого входа: дольше без нового входа не продлить."
-        ),
-    )
-
-    @model_validator(mode="after")
-    def _max_covers_ttl(self) -> SessionConfig:
-        if self.session_max_sec < self.session_ttl_sec:
-            msg = (
-                "[session]: session_max_sec must not be shorter than "
-                f"session_ttl_sec, got session_max_sec = {self.session_max_sec} "
-                f"and session_ttl_sec = {self.session_ttl_sec}"
-            )
-            raise ValueError(msg)
-
-        return self
-
-    def renewal(self) -> SessionRenewal:
-        return SessionRenewal.of(self.session_ttl_sec, self.session_max_sec)
 
     def cookie_spec(self) -> CookieSpec:
         return CookieSpec(
@@ -568,7 +569,7 @@ class ProcessLogging:
 
 class ProcessConfig(BaseModel):
     """Секции [app], нужные любому процессу, который исполняет инструменты и
-    принимает вход: kerberos, способы входа, токен сессии, журналы, шина.
+    принимает вход: kerberos, способы входа, токен сессии, журналы вызовов.
     Базовая для RuntimeConfig (чат, studio) и конфига сервиса boba-mcp.
     """
 
@@ -581,8 +582,6 @@ class ProcessConfig(BaseModel):
     logger: dict[str, Any] = Field(default_factory=ProcessLogging.default)
     stream_journal: StreamJournalConfig
     session: TokenConfig
-    cluster: ClusterConfig
-    messaging: MessagingConfig
 
     @classmethod
     def load(cls, config_path: Path) -> Self:
@@ -615,17 +614,6 @@ class ProcessConfig(BaseModel):
             raise ValueError(msg)
 
         return value
-
-    def pg_messaging(self) -> PostgresMessagingConfig:
-        """Секция [messaging] postgres-провайдера; при local — RuntimeError."""
-        if isinstance(self.messaging, PostgresMessagingConfig):
-            return self.messaging
-
-        msg = (
-            "[messaging]: a postgres provider is required here, "
-            f"got provider = {self.messaging.provider!r}"
-        )
-        raise RuntimeError(msg)
 
     def kerberos(self) -> KerberosAuthConfig | None:
         for entry in self.auth:
@@ -667,12 +655,26 @@ class ProcessConfig(BaseModel):
 
 class RuntimeConfig(ProcessConfig):
     """Секции [app] приложения с браузером: к секциям процесса добавлены
-    профили и роли чата, data layer и браузерная часть сессии."""
+    профили и роли чата, data layer, браузерная часть сессии, шина сообщений
+    и узел кластера."""
 
     profiles: dict[str, ChatProfileConfig]
     roles: dict[str, RoleConfig]
     data_layer: DataLayerConfig
     session: SessionConfig
+    cluster: ClusterConfig
+    messaging: MessagingConfig
+
+    def pg_messaging(self) -> PostgresMessagingConfig:
+        """Секция [messaging] postgres-провайдера; при local — RuntimeError."""
+        if isinstance(self.messaging, PostgresMessagingConfig):
+            return self.messaging
+
+        msg = (
+            "[messaging]: a postgres provider is required here, "
+            f"got provider = {self.messaging.provider!r}"
+        )
+        raise RuntimeError(msg)
 
 
 class StudioRuntimeConfig(RuntimeConfig):

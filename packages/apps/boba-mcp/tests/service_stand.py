@@ -17,22 +17,37 @@ from pathlib import Path
 from typing import Any
 
 import uvicorn
+from fastmcp.server.auth import AccessToken
 from pydantic import SecretStr
 
 from boba.access import ProfileGrant, RoleConfig, ToolAccess
-from boba.auth import JwtTokens, SignIns
-from boba.auth.config import HeaderRolesConfig, ProxyAuthConfig, ProxyRoleProviders
-from boba.auth.profiles import ProfileProviders
-from boba.auth.proxy import HmacProxySignIn
-from boba.auth.roles import HeaderRoles, RoleProviders
+from boba.auth import SignIns
+from boba.auth.config import (
+    HeaderRolesConfig,
+    LocalAuthConfig,
+    LocalRoleProviders,
+    LocalRolesConfig,
+    ProxyAuthConfig,
+    ProxyRoleProviders,
+)
+from boba.auth.profiles import ProfileProviders, RoleProfiles
+from boba.auth.proxy import HmacProxySignIn, ProxyAssertions
+from boba.auth.roles import HeaderRoles, LocalRoles, RoleProviders
+from boba.auth.signin import CompositeSignIn, LocalSignIn
 from boba.canvas.keys import WorkspaceMount
 from boba.connection_broker.sealed import SealedConnectionParams
 from boba.connections.manifest import ConnectionTypes
 from boba.connections.sealed import SealKeys
+from boba.identity.admission import RoleMappingConfig
 from boba.identity.context import CallContexts
 from boba.identity.run import Runs
-from boba.mcp_server.auth import SessionAuthProvider
-from boba.mcp_server.server import CallSchemas, McpEndpoints, RunLimits
+from boba.mcp_server.auth import AuthServer, McpClient, ServiceAuth, ServiceTokens
+from boba.mcp_server.server import (
+    CallSchemas,
+    EndpointCatalog,
+    McpEndpoints,
+    RunLimits,
+)
 from boba.runtime.journal import DirVault, StreamJournal
 from boba.runtime.storage import LocalStorageConfig
 from boba.stand import fake_connection
@@ -57,7 +72,16 @@ NARROW = "narrow"
 """Второй endpoint стенда: один инструмент и только роли dev."""
 
 PROXY_SECRET = "stand-proxy-secret"
-"""Ключ подписи proxy-входа: им доверенный клиент подписывает заголовки."""
+"""Ключ утверждений proxy-входа: им доверенный клиент подписывает утверждение
+о пользователе."""
+
+CLIENT_ID = "stand-chat"
+CLIENT_SECRET = "stand-client-secret"
+"""Доверенный клиент OAuth стенда: ему разрешён обмен утверждения на токен."""
+
+LOCAL_LOGIN = "carol"
+LOCAL_PASSWORD = "carol-pw"
+"""Пользователь входа local стенда: роль dev по таблице конфига."""
 
 
 class ServiceStand:
@@ -133,6 +157,10 @@ class ServiceStand:
         )
         specs = chain.launch(tools, launcher)
 
+        granted = {
+            PROFILE: ProfileGrant(tools=["*"], roles=["*"]),
+            NARROW: ProfileGrant(tools=["fake_echo"], roles=["dev"]),
+        }
         access = ToolAccess(
             tool_names=names,
             roles={
@@ -140,10 +168,7 @@ class ServiceStand:
                 "ADM": RoleConfig(tools=["*"]),
                 "weak": RoleConfig(tools=["fake_echo"]),
             },
-            profiles={
-                PROFILE: ProfileGrant(tools=["*"], roles=["*"]),
-                NARROW: ProfileGrant(tools=["fake_echo"], roles=["dev"]),
-            },
+            profiles=granted,
         )
         chain.seal(tools, access, specs)
 
@@ -160,31 +185,55 @@ class ServiceStand:
             secret=SecretStr(PROXY_SECRET),
             roles=ProxyRoleProviders(header=HeaderRolesConfig()),
         )
+        catalog = EndpointCatalog(granted)
+        by_roles = ProfileProviders([RoleProfiles(catalog)])
+        local_roles = LocalRolesConfig(
+            mapping=RoleMappingConfig(root={LOCAL_LOGIN: ["dev"]})
+        )
+        local = LocalAuthConfig(
+            users={LOCAL_LOGIN: LOCAL_PASSWORD},
+            roles=LocalRoleProviders(local=local_roles),
+        )
+        password = CompositeSignIn(
+            [
+                LocalSignIn(
+                    local, RoleProviders([LocalRoles(local_roles)], True), by_roles
+                )
+            ]
+        )
         sign_ins = SignIns(
-            None,
+            password,
             None,
             HmacProxySignIn(
-                proxy,
-                RoleProviders([HeaderRoles(HeaderRolesConfig())], True),
-                ProfileProviders([]),
+                proxy, RoleProviders([HeaderRoles(HeaderRolesConfig())], True), by_roles
             ),
         )
         # в сервисе точку workspace ставит загрузчик плагинов из профиля песочницы
         WorkspaceMount.configure("/workspace")
-        verifier = SessionAuthProvider(
+        public_url = f"http://127.0.0.1:{port}"
+        tokens = ServiceTokens(public_url, "stand-session-secret", 300, 3600, "stand")
+        server = AuthServer(
+            public_url,
             sign_ins,
-            JwtTokens("stand-session-secret", 300, "stand"),
-            proxy,
+            tokens,
+            ProxyAssertions(PROXY_SECRET, 60),
+            {CLIENT_ID: McpClient(secret=SecretStr(CLIENT_SECRET))},
+            [f"{public_url}/mcp/{PROFILE}", f"{public_url}/mcp/{NARROW}"],
+        )
+        auth = ServiceAuth(
+            public_url,
+            server,
+            tokens,
             {
-                DEV_TOKEN: self._claims("alice", "dev"),
-                WEAK_TOKEN: self._claims("bob", "weak"),
+                DEV_TOKEN: self._static(DEV_TOKEN, "alice", "dev", catalog),
+                WEAK_TOKEN: self._static(WEAK_TOKEN, "bob", "weak", catalog),
             },
         )
         self.endpoints = McpEndpoints(
             self.registry,
             runs,
             journals,
-            verifier,
+            auth,
             limits,
             "/mcp",
             LocalStorageConfig(
@@ -229,8 +278,16 @@ class ServiceStand:
             await task
 
     @staticmethod
-    def _claims(login: str, role: str) -> dict[str, Any]:
-        return {"client_id": "stand", "scopes": [], "login": login, "roles": [role]}
+    def _static(
+        token: str, login: str, role: str, catalog: EndpointCatalog
+    ) -> AccessToken:
+        """Готовый токен стенда: области — endpoint'ы, выданные его роли."""
+        return AccessToken(
+            token=token,
+            client_id=login,
+            scopes=sorted(catalog.granted_by_roles(frozenset({role}))),
+            claims={"login": login, "roles": [role]},
+        )
 
     @staticmethod
     def _config_of(name: str, annotation: object) -> object:

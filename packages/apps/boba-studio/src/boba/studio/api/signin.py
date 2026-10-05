@@ -85,6 +85,9 @@ class SignInApi:
         self._wiring = wiring
         self._auth = wiring.auth
         self._cookie = SessionCookie(wiring.auth.cookie())
+        self._proxy_requests = ProxyRequests()
+        self._sso_requests = SsoRequests()
+        self._sso_responses = SsoResponses()
 
     def mount(self, router: APIRouter) -> None:
         router.add_api_route(
@@ -161,7 +164,7 @@ class SignInApi:
             raise InternalServiceError(internal_detail=msg, user_detail=None)
 
         session = await self._auth.by_proxy(
-            ProxyRequests.of(request, proxy.header_names())
+            self._proxy_requests.of(request, proxy.header_names())
         )
 
         response = Response(status_code=204)
@@ -176,10 +179,9 @@ class SignInApi:
 
         return response
 
-    @staticmethod
-    def _own(request: Request) -> None:
+    def _own(self, request: Request) -> None:
         """Вход и выход меняют сессию: чужая форма без своей метки не пройдёт."""
-        sso = SsoRequests.of(request)
+        sso = self._sso_requests.of(request)
         if sso.own_request:
             return
 
@@ -208,14 +210,14 @@ class SignInApi:
     async def sso(self, request: Request, next: str | None = None) -> Response:  # noqa: A002
         """SPNEGO-вход: 401 Negotiate без токена, иначе строка users, cookie и 303."""
         try:
-            outcome = await self._auth.by_spnego(SsoRequests.of(request))
+            outcome = await self._auth.by_spnego(self._sso_requests.of(request))
         except AuthorizationError:
             return self._to_login(SsoErrorCode.DENIED)
         except (AuthenticationError, ExternalServiceError, InternalServiceError):
             return self._to_login(SsoErrorCode.FAILED)
 
         if isinstance(outcome, SsoChallenge):
-            return SsoResponses.challenge(self._wiring.page.login)
+            return self._sso_responses.challenge(self._wiring.page.login)
 
         response = RedirectResponse(url=self._next_of(next), status_code=303)
         self._cookie.put(response, request.cookies, outcome.token)
@@ -227,12 +229,14 @@ class SignInApi:
         (браузер повторит сам), 403 — сессию не продлить, страница уходит на вход.
         """
         token = self._cookie.token_of(request.cookies)
-        outcome = await self._auth.refresh_session(SsoRequests.of(request), token)
+        outcome = await self._auth.refresh_session(
+            self._sso_requests.of(request), token
+        )
         if isinstance(outcome, SsoRefused):
             return Response(status_code=403)
 
         if isinstance(outcome, SsoChallenge):
-            return SsoResponses.silent_challenge()
+            return self._sso_responses.silent_challenge()
 
         return self._issued(request, outcome)
 

@@ -48,6 +48,8 @@ class KerberosAuth:
         self._sso_path = sso_path
         self._urls = urls
         self.auth = auth
+        self._requests = SsoRequests()
+        self._responses = SsoResponses()
         self._logger = logging.getLogger(KerberosAuth.__name__)
 
     def install(self, chainlit_app: FastAPI) -> None:
@@ -80,12 +82,12 @@ class KerberosAuth:
 
     def _challenge(self) -> Response:
         """401 Negotiate: с тикетом браузер повторит сам, без него уйдёт на логин."""
-        return SsoResponses.challenge(self._urls.login)
+        return self._responses.challenge(self._urls.login)
 
     async def auth_sso(self, request: Request) -> Response:
         """Вход: SPNEGO → строка users и токен сервисом входа → cookie → в чат."""
         try:
-            outcome = await self.auth.by_spnego(SsoRequests.of(request))
+            outcome = await self.auth.by_spnego(self._requests.of(request))
         except BaseError as exc:
             return self._login_redirect(exc)
 

@@ -22,7 +22,7 @@ import pytest
 from langchain_core.callbacks import AsyncCallbackHandler
 from langchain_core.messages import ToolCall, ToolMessage
 from langchain_core.runnables import RunnableConfig, RunnableLambda
-from pydantic import SecretStr
+from pydantic import BaseModel, ConfigDict, SecretStr
 
 from boba.auth.config import ProxyAuthConfig
 from boba.canvas.keys import ObjectKey
@@ -31,7 +31,6 @@ from boba.config.section import bind_section
 from boba.connections.sealed import ConnectionSeal, SealedConnection, SealFeature
 from boba.db.postgres.connection import PostgresConfig
 from boba.identity.context import CallContexts
-from boba.identity.signin import ProxyHeaderNames
 from boba.mcp_client.client import (
     BearerAuth,
     BlockFiles,
@@ -874,23 +873,20 @@ class TestBobaMcpJournal:
 
 @pytest.mark.integration
 class TestSignInAsTheUser:
-    """Вход proxy: клиент называет логин и роли пользователя под подписью,
-    сервис выдаёт ему свой токен и исполняет вызовы от его имени."""
+    """Вход proxy: клиент утверждает логин и роли пользователя подписанным
+    JWT, сервис меняет утверждение на свой токен и исполняет вызовы от его
+    имени."""
 
     SECRET: SecretStr = SecretStr("stand-proxy-secret")
 
     def _auth(self, process: BobaMcpStand, secret: SecretStr) -> ProxyAuth:
         return ProxyAuth(
+            issuer=HttpLocation(
+                scheme="http", host="127.0.0.1", port=process.port, path="/"
+            ),
+            client_id="stand-chat",
+            client_secret=SecretStr("stand-client-secret"),
             secret=secret,
-            sign_in=HttpLocation(
-                scheme="http", host="127.0.0.1", port=process.port, path="/auth/proxy"
-            ),
-            headers=ProxyHeaderNames(
-                user="X-Remote-User",
-                timestamp="X-Boba-Timestamp",
-                signature="X-Boba-Signature",
-                roles="X-Remote-Roles",
-            ),
         )
 
     def _servers(self, process: BobaMcpStand, secret: SecretStr) -> McpServers:
@@ -1109,14 +1105,26 @@ class TestBobaMcpServer:
         raise AssertionError("the server never answered 401 to a stranger token")
 
 
+class DeclaredClient(BaseModel):
+    """Доверенный клиент из [mcp.clients.<client_id>] конфига сервиса."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    secret: SecretStr
+
+
 class BobaMcpService:
     """Настоящий процесс сервиса на его собственном конфиге: `python -m
     boba.mcp_server --config compose/mcp/conf/config.toml`. Порт и способ
-    запуска стенд задаёт переопределениями [env]; вход — proxy, ключ подписи
-    берётся из секции [auth.proxy] того же конфига."""
+    запуска стенд задаёт переопределениями [env]; вход — proxy, ключ
+    утверждений и клиент берутся из [auth.proxy] и [mcp.clients] того же
+    конфига."""
 
-    HOST: str = "127.0.0.1"
+    HOST: str = "localhost"
+    """Имя публичного адреса, который стенд задаёт сервису: издатель токена
+    и адрес ресурса обязаны совпадать с тем, как клиент называет сервис."""
     PROFILE: str = "general"
+    CLIENT: str = "boba-chat"
     CONFIG: Path = BobaMcpStand.REPO / "compose" / "mcp" / "conf" / "config.toml"
     THIRD: Path = BobaMcpStand.REPO / "build" / "src" / "sandbox" / "third"
 
@@ -1126,6 +1134,9 @@ class BobaMcpService:
             self.port = int(probe.getsockname()[1])
 
         self._proxy = bind_section(self.CONFIG, "auth.proxy", ProxyAuthConfig)
+        self._client = bind_section(
+            self.CONFIG, f"mcp.clients.{self.CLIENT}", DeclaredClient
+        )
         self._log = log.open("wb")
         self._process = subprocess.Popen(
             [
@@ -1137,6 +1148,7 @@ class BobaMcpService:
             ],
             env={
                 EnvOverride.PORT.var: str(self.port),
+                EnvOverride.PUBLIC_URL.var: f"http://{self.HOST}:{self.port}",
                 EnvOverride.TOOL_LAUNCHER.var: "process",
                 "PATH": f"{self.THIRD / 'bin'}:/usr/local/bin:/usr/bin:/bin",
                 "LD_LIBRARY_PATH": str(self.THIRD / "lib"),
@@ -1147,11 +1159,12 @@ class BobaMcpService:
 
     def endpoint(self) -> HttpEndpoint:
         auth = ProxyAuth(
-            secret=self._proxy.secret,
-            sign_in=HttpLocation(
-                scheme="http", host=self.HOST, port=self.port, path=self._proxy.path
+            issuer=HttpLocation(
+                scheme="http", host=self.HOST, port=self.port, path="/"
             ),
-            headers=self._proxy.header_names(),
+            client_id=self.CLIENT,
+            client_secret=self._client.secret,
+            secret=self._proxy.secret,
         )
 
         return HttpEndpoint(

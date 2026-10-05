@@ -8,6 +8,9 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import hashlib
+import secrets
 import socket
 import time
 from collections.abc import AsyncIterator
@@ -19,8 +22,13 @@ import httpx
 import pytest
 from fastmcp import Client
 from fastmcp.client.transports import StreamableHttpTransport
+from mcp.server.auth.provider import TokenError
 from service_stand import (
+    CLIENT_ID,
+    CLIENT_SECRET,
     DEV_TOKEN,
+    LOCAL_LOGIN,
+    LOCAL_PASSWORD,
     NARROW,
     PROFILE,
     PROXY_SECRET,
@@ -28,9 +36,11 @@ from service_stand import (
     ServiceStand,
 )
 
-from boba.auth.proxy import ProxySignature
+from boba.auth.proxy import ProxyAssertions
 from boba.connections.sealed import SealFeature
-from boba.identity.signin import ProxyRequest
+from boba.identity.session import SignInProvider
+from boba.identity.signin import SignInMetadata
+from boba.mcp_server.auth import ServiceTokens, TokenHolder
 from boba.mcp_server.files import FileUploadTool
 from boba.mcp_server.server import (
     RunLimitMiddleware,
@@ -571,34 +581,35 @@ class TestEndpoints:
 
 
 class TestProxySignIn:
-    """Вход proxy: доверенный клиент называет логин и роли под подписью."""
+    """Вход proxy: доверенный клиент меняет подписанное утверждение о
+    пользователе на токен сервиса штатным обменом OAuth (grant jwt-bearer)."""
 
-    def _headers(self, login: str, roles: str, secret: str) -> dict[str, str]:
-        request = ProxyRequest(
-            login=login, timestamp=str(int(time.time())), signature="", roles=roles
+    def _public(self, stand: ServiceStand) -> str:
+        return f"http://127.0.0.1:{stand.port}"
+
+    async def _exchanged(
+        self, stand: ServiceStand, login: str, roles: str, secret: str
+    ) -> httpx.Response:
+        public = self._public(stand)
+        assertion = ProxyAssertions(secret, 0).issue(
+            CLIENT_ID, login, roles, public, stand.url(PROFILE)
         )
-        signed = ProxySignature(secret).sign(request)
-
-        return {
-            "X-Remote-User": login,
-            "X-Boba-Timestamp": request.timestamp,
-            "X-Boba-Signature": signed,
-            "X-Remote-Roles": roles,
+        form = {
+            "grant_type": "urn:ietf:params:oauth:grant-type:jwt-bearer",
+            "assertion": assertion,
+            "client_id": CLIENT_ID,
+            "client_secret": CLIENT_SECRET,
+            "resource": stand.url(PROFILE),
         }
-
-    async def _signed_in(self, stand: ServiceStand, headers: dict[str, str]) -> Any:
-        address = f"http://127.0.0.1:{stand.port}/auth/proxy"
         async with httpx.AsyncClient() as http:
-            return await http.post(address, headers=headers)
+            return await http.post(f"{public}/token", data=form)
 
-    async def test_signed_login_and_roles_become_the_caller(
+    async def test_assertion_becomes_the_caller(
         self, stand: ServiceStand, url: str
     ) -> None:
-        reply = await self._signed_in(
-            stand, self._headers("ivanov", "dev", PROXY_SECRET)
-        )
+        reply = await self._exchanged(stand, "ivanov", "dev", PROXY_SECRET)
         if reply.status_code != httpx.codes.OK:
-            raise AssertionError(f"the signed request signs in: {reply.text}")
+            raise AssertionError(f"the signed assertion signs in: {reply.text}")
 
         token = reply.json()["access_token"]
         async with _client(url, token) as client:
@@ -611,9 +622,7 @@ class TestProxySignIn:
     async def test_roles_of_the_sign_in_open_the_endpoints(
         self, stand: ServiceStand, url: str
     ) -> None:
-        reply = await self._signed_in(
-            stand, self._headers("petrov", "weak", PROXY_SECRET)
-        )
+        reply = await self._exchanged(stand, "petrov", "weak", PROXY_SECRET)
         headers = {"Authorization": f"Bearer {reply.json()['access_token']}"}
         async with httpx.AsyncClient() as http:
             narrow = await http.post(stand.url(NARROW), json={}, headers=headers)
@@ -621,21 +630,403 @@ class TestProxySignIn:
         if narrow.status_code != httpx.codes.FORBIDDEN:
             raise AssertionError(f"role weak is refused on narrow: {narrow}")
 
-    async def test_wrong_signature_is_rejected(
+        challenge = narrow.headers.get("www-authenticate", "")
+        if "insufficient_scope" not in challenge:
+            raise AssertionError(f"the refusal names the missing scope: {challenge}")
+
+    async def test_forged_assertion_is_rejected(
         self, stand: ServiceStand, url: str
     ) -> None:
-        reply = await self._signed_in(stand, self._headers("ivanov", "dev", "forged"))
+        reply = await self._exchanged(stand, "ivanov", "dev", "forged")
 
         if reply.status_code != httpx.codes.UNAUTHORIZED:
-            raise AssertionError(f"a forged signature is 401: {reply}")
+            raise AssertionError(f"a forged assertion is 401: {reply.text}")
 
-    async def test_sign_in_without_roles_is_forbidden(
+    async def test_assertion_is_accepted_once(
         self, stand: ServiceStand, url: str
     ) -> None:
-        reply = await self._signed_in(stand, self._headers("ivanov", "", PROXY_SECRET))
+        public = self._public(stand)
+        assertion = ProxyAssertions(PROXY_SECRET, 0).issue(
+            CLIENT_ID, "ivanov", "dev", public, stand.url(PROFILE)
+        )
+        form = {
+            "grant_type": "urn:ietf:params:oauth:grant-type:jwt-bearer",
+            "assertion": assertion,
+            "client_id": CLIENT_ID,
+            "client_secret": CLIENT_SECRET,
+        }
+        async with httpx.AsyncClient() as http:
+            first = await http.post(f"{public}/token", data=form)
+            second = await http.post(f"{public}/token", data=form)
 
-        if reply.status_code != httpx.codes.FORBIDDEN:
-            raise AssertionError(f"a sign-in without roles is 403: {reply}")
+        if first.status_code != httpx.codes.OK:
+            raise AssertionError(f"the first exchange signs in: {first.text}")
+
+        if second.status_code != httpx.codes.UNAUTHORIZED:
+            raise AssertionError(f"a replayed assertion is 401: {second.text}")
+
+    async def test_unknown_client_is_rejected(
+        self, stand: ServiceStand, url: str
+    ) -> None:
+        public = self._public(stand)
+        assertion = ProxyAssertions(PROXY_SECRET, 0).issue(
+            CLIENT_ID, "ivanov", "dev", public, stand.url(PROFILE)
+        )
+        form = {
+            "grant_type": "urn:ietf:params:oauth:grant-type:jwt-bearer",
+            "assertion": assertion,
+            "client_id": CLIENT_ID,
+            "client_secret": "not-the-secret",
+        }
+        async with httpx.AsyncClient() as http:
+            reply = await http.post(f"{public}/token", data=form)
+
+        if reply.status_code != httpx.codes.UNAUTHORIZED:
+            raise AssertionError(f"a wrong client secret is 401: {reply.text}")
+
+    async def test_sign_in_without_roles_is_refused(
+        self, stand: ServiceStand, url: str
+    ) -> None:
+        reply = await self._exchanged(stand, "ivanov", "", PROXY_SECRET)
+
+        if reply.status_code != httpx.codes.UNAUTHORIZED:
+            raise AssertionError(f"a sign-in without roles is refused: {reply.text}")
+
+
+class TestHumanSignIn:
+    """Вход человека: клиент OAuth регистрируется сам, ведёт браузер на
+    authorize, сервис спрашивает логин и пароль формой и возвращает код,
+    код меняется на токен с проверкой PKCE."""
+
+    REDIRECT: str = "http://127.0.0.1:53999/callback"
+
+    def _public(self, stand: ServiceStand) -> str:
+        return f"http://127.0.0.1:{stand.port}"
+
+    async def _registered(self, http: httpx.AsyncClient, public: str) -> str:
+        reply = await http.post(
+            f"{public}/register",
+            json={
+                "redirect_uris": [self.REDIRECT],
+                "token_endpoint_auth_method": "none",
+                "grant_types": ["authorization_code", "refresh_token"],
+                "response_types": ["code"],
+                "client_name": "stand browser client",
+            },
+        )
+        if reply.status_code != httpx.codes.CREATED:
+            raise AssertionError(f"the client registers itself: {reply.text}")
+
+        return str(reply.json()["client_id"])
+
+    async def _login_page(
+        self,
+        http: httpx.AsyncClient,
+        stand: ServiceStand,
+        client_id: str,
+        challenge: str,
+    ) -> str:
+        """Идентификатор начатого входа: authorize ведёт на страницу входа."""
+        reply = await http.get(
+            f"{self._public(stand)}/authorize",
+            params={
+                "response_type": "code",
+                "client_id": client_id,
+                "redirect_uri": self.REDIRECT,
+                "code_challenge": challenge,
+                "code_challenge_method": "S256",
+                "state": "stand-state",
+                "resource": stand.url(PROFILE),
+            },
+        )
+        if reply.status_code != httpx.codes.FOUND:
+            raise AssertionError(f"authorize leads to the sign-in page: {reply.text}")
+
+        location = httpx.URL(reply.headers["location"])
+        if location.path != "/login":
+            raise AssertionError(f"authorize leads to /login, got {location}")
+
+        return location.params["txn"]
+
+    @staticmethod
+    def _pkce() -> tuple[str, str]:
+        verifier = secrets.token_urlsafe(48)
+        digest = hashlib.sha256(verifier.encode()).digest()
+        challenge = base64.urlsafe_b64encode(digest).rstrip(b"=").decode()
+
+        return verifier, challenge
+
+    async def test_password_sign_in_issues_a_token(
+        self, stand: ServiceStand, url: str
+    ) -> None:
+        public = self._public(stand)
+        verifier, challenge = self._pkce()
+        async with httpx.AsyncClient() as http:
+            client_id = await self._registered(http, public)
+            txn = await self._login_page(http, stand, client_id, challenge)
+            page = await http.get(f"{public}/login", params={"txn": txn})
+            if page.status_code != httpx.codes.OK or "password" not in page.text:
+                raise AssertionError(f"the sign-in page shows the form: {page.text}")
+
+            signed = await http.post(
+                f"{public}/login",
+                data={"txn": txn, "login": LOCAL_LOGIN, "password": LOCAL_PASSWORD},
+            )
+            if signed.status_code != httpx.codes.FOUND:
+                raise AssertionError(
+                    f"the sign-in returns to the client: {signed.text}"
+                )
+
+            back = httpx.URL(signed.headers["location"])
+            if back.params.get("state") != "stand-state":
+                raise AssertionError(f"the return carries the client state: {back}")
+
+            issued = await http.post(
+                f"{public}/token",
+                data={
+                    "grant_type": "authorization_code",
+                    "code": back.params["code"],
+                    "client_id": client_id,
+                    "redirect_uri": self.REDIRECT,
+                    "code_verifier": verifier,
+                    "resource": stand.url(PROFILE),
+                },
+            )
+
+        if issued.status_code != httpx.codes.OK:
+            raise AssertionError(f"the code is exchanged for a token: {issued.text}")
+
+        async with _client(url, issued.json()["access_token"]) as client:
+            result = await client.call_tool_mcp("fake_whoami", {})
+
+        structured = result.structured_content
+        expected = f"{LOCAL_LOGIN}|dev|{PROFILE}"
+        if structured is None or structured.get("text") != expected:
+            raise AssertionError(f"the body runs as the signed-in user: {result}")
+
+    async def _signed_in(self, stand: ServiceStand) -> tuple[str, dict[str, Any]]:
+        """Клиент и ответ /token после входа формой."""
+        public = self._public(stand)
+        verifier, challenge = self._pkce()
+        async with httpx.AsyncClient() as http:
+            client_id = await self._registered(http, public)
+            txn = await self._login_page(http, stand, client_id, challenge)
+            signed = await http.post(
+                f"{public}/login",
+                data={"txn": txn, "login": LOCAL_LOGIN, "password": LOCAL_PASSWORD},
+            )
+            back = httpx.URL(signed.headers["location"])
+            issued = await http.post(
+                f"{public}/token",
+                data={
+                    "grant_type": "authorization_code",
+                    "code": back.params["code"],
+                    "client_id": client_id,
+                    "redirect_uri": self.REDIRECT,
+                    "code_verifier": verifier,
+                },
+            )
+
+        if issued.status_code != httpx.codes.OK:
+            raise AssertionError(f"the code is exchanged for a token: {issued.text}")
+
+        return client_id, issued.json()
+
+    async def test_refresh_token_renews_without_the_form(
+        self, stand: ServiceStand, url: str
+    ) -> None:
+        client_id, issued = await self._signed_in(stand)
+        async with httpx.AsyncClient() as http:
+            renewed = await http.post(
+                f"{self._public(stand)}/token",
+                data={
+                    "grant_type": "refresh_token",
+                    "refresh_token": issued["refresh_token"],
+                    "client_id": client_id,
+                },
+            )
+
+        if renewed.status_code != httpx.codes.OK:
+            raise AssertionError(
+                f"the refresh token renews the sign-in: {renewed.text}"
+            )
+
+        pair = renewed.json()
+        if pair["access_token"] == issued["access_token"]:
+            raise AssertionError("the renewal issues a new access token")
+
+        async with _client(url, pair["access_token"]) as client:
+            result = await client.call_tool_mcp("fake_whoami", {})
+
+        structured = result.structured_content
+        expected = f"{LOCAL_LOGIN}|dev|{PROFILE}"
+        if structured is None or structured.get("text") != expected:
+            raise AssertionError(f"the renewed token keeps the user: {result}")
+
+    async def test_access_token_does_not_renew(
+        self, stand: ServiceStand, url: str
+    ) -> None:
+        client_id, issued = await self._signed_in(stand)
+        async with httpx.AsyncClient() as http:
+            refused = await http.post(
+                f"{self._public(stand)}/token",
+                data={
+                    "grant_type": "refresh_token",
+                    "refresh_token": issued["access_token"],
+                    "client_id": client_id,
+                },
+            )
+
+        if refused.status_code != httpx.codes.UNAUTHORIZED:
+            raise AssertionError(f"an access token is not a refresh token: {refused}")
+
+    async def test_wrong_password_stays_on_the_page(
+        self, stand: ServiceStand, url: str
+    ) -> None:
+        public = self._public(stand)
+        _, challenge = self._pkce()
+        async with httpx.AsyncClient() as http:
+            client_id = await self._registered(http, public)
+            txn = await self._login_page(http, stand, client_id, challenge)
+            refused = await http.post(
+                f"{public}/login",
+                data={"txn": txn, "login": LOCAL_LOGIN, "password": "wrong"},
+            )
+
+        if refused.status_code != httpx.codes.UNAUTHORIZED:
+            raise AssertionError(f"a wrong password is 401: {refused.text}")
+
+        if "Invalid username or password" not in refused.text:
+            raise AssertionError(f"the page names the refusal: {refused.text}")
+
+    async def test_unknown_sign_in_is_refused(
+        self, stand: ServiceStand, url: str
+    ) -> None:
+        async with httpx.AsyncClient() as http:
+            reply = await http.get(
+                f"{self._public(stand)}/login", params={"txn": "not-started"}
+            )
+
+        if reply.status_code != httpx.codes.BAD_REQUEST:
+            raise AssertionError(f"a sign-in that was not started is 400: {reply}")
+
+
+class TestSessionGeneration:
+    """Поколение сессий: токены другого поколения сервис не принимает —
+    так рестарт процесса или смена generation снимает все входы разом."""
+
+    PUBLIC: str = "http://127.0.0.1:8650"
+    SECRET: str = "stand-session-secret"
+
+    def _tokens(self, generation: str, max_sec: int = 3600) -> ServiceTokens:
+        return ServiceTokens(self.PUBLIC, self.SECRET, 300, max_sec, generation)
+
+    def _holder(self, started: int) -> TokenHolder:
+        sign_in = SignInMetadata(
+            provider=SignInProvider.KERBEROS.value,
+            roles=frozenset({"dev"}),
+            profiles=frozenset({PROFILE}),
+            principal="ivanov@LOSHARA.COM",
+            sealed_ticket="sealed-ticket",
+        )
+
+        return TokenHolder(login="ivanov", sign_in=sign_in, started=started)
+
+    def test_token_carries_the_sign_in(self) -> None:
+        """Токен несёт то, что вход знает о себе: по нему вызов получает
+        делегированный билет входа kerberos."""
+        tokens = self._tokens("stand")
+        issued = tokens.session(self._holder(int(time.time())), "stand-client")
+
+        access = tokens.read(issued.access_token)
+        if access is None or access.scopes != [PROFILE]:
+            raise AssertionError(f"the token opens the granted endpoint: {access}")
+
+        metadata = SignInMetadata.parse((access.claims or {})["metadata"])
+        ticket = metadata.ticket()
+        if ticket is None or ticket.sealed != "sealed-ticket":
+            raise AssertionError(f"the token carries the sealed ticket: {metadata}")
+
+        refresh = tokens.refreshed(str(issued.refresh_token))
+        if refresh is None:
+            raise AssertionError("the refresh token is accepted")
+
+        renewed = tokens.renewed(refresh)
+        again = tokens.read(renewed.access_token)
+        kept = SignInMetadata.parse(((again and again.claims) or {})["metadata"])
+        if kept.ticket() != ticket:
+            raise AssertionError(f"the renewal keeps the sign-in: {kept}")
+
+    def test_tokens_of_another_generation_are_rejected(self) -> None:
+        before = self._tokens("before-restart")
+        after = self._tokens("after-restart")
+        issued = before.session(self._holder(int(time.time())), "stand-client")
+        refresh = str(issued.refresh_token)
+
+        if before.read(issued.access_token) is None:
+            raise AssertionError("the issuing generation accepts its access token")
+
+        if before.refreshed(refresh) is None:
+            raise AssertionError("the issuing generation accepts its refresh token")
+
+        if after.read(issued.access_token) is not None:
+            raise AssertionError("another generation rejects the access token")
+
+        if after.refreshed(refresh) is not None:
+            raise AssertionError("another generation rejects the refresh token")
+
+    def test_renewal_stops_at_the_session_limit(self) -> None:
+        tokens = self._tokens("stand", max_sec=600)
+        fresh = tokens.session(self._holder(int(time.time()) - 500), "stand-client")
+        left = fresh.expires_in
+        if left is None or left > 100:
+            raise AssertionError(f"the token ends with the session: {left}")
+
+        with pytest.raises(TokenError, match="over its limit"):
+            tokens.session(self._holder(int(time.time()) - 601), "stand-client")
+
+
+class TestAuthDiscovery:
+    """Клиент OAuth находит вход сам: отказ endpoint'а ведёт к метаданным
+    ресурса, те — к серверу авторизации."""
+
+    async def test_refusal_leads_to_the_authorization_server(
+        self, stand: ServiceStand, url: str
+    ) -> None:
+        public = f"http://127.0.0.1:{stand.port}"
+        async with httpx.AsyncClient() as http:
+            refused = await http.post(stand.url(PROFILE), json={})
+            if refused.status_code != httpx.codes.UNAUTHORIZED:
+                raise AssertionError(f"a call without a token is 401: {refused}")
+
+            challenge = refused.headers.get("www-authenticate", "")
+            marker = 'resource_metadata="'
+            if marker not in challenge:
+                raise AssertionError(
+                    f"the refusal names resource metadata: {challenge}"
+                )
+
+            address = challenge.split(marker, 1)[1].split('"', 1)[0]
+            resource = await http.get(address)
+            if resource.status_code != httpx.codes.OK:
+                raise AssertionError(f"resource metadata is served: {resource}")
+
+            servers = resource.json()["authorization_servers"]
+            if [str(item).rstrip("/") for item in servers] != [public]:
+                raise AssertionError(
+                    f"the resource names its sign-in server: {servers}"
+                )
+
+            metadata = await http.get(
+                f"{public}/.well-known/oauth-authorization-server"
+            )
+
+        if metadata.status_code != httpx.codes.OK:
+            raise AssertionError(f"server metadata is served: {metadata}")
+
+        described = metadata.json()
+        if described["token_endpoint"].rstrip("/") != f"{public}/token":
+            raise AssertionError(f"metadata names the token endpoint: {described}")
 
 
 class TestWorkspaceFiles:

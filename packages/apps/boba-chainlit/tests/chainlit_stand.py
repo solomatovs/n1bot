@@ -175,14 +175,10 @@ class ServiceProcess:
             "path": "/mcp/service",
             "auth": {
                 "auth": "proxy",
+                "issuer": {**location, "path": "/"},
+                "client_id": "stand-chat",
+                "client_secret": "stand-client-secret",
                 "secret": self.SECRET,
-                "sign_in": {**location, "path": "/auth/proxy"},
-                "headers": {
-                    "user": "X-Remote-User",
-                    "timestamp": "X-Boba-Timestamp",
-                    "signature": "X-Boba-Signature",
-                    "roles": "X-Remote-Roles",
-                },
             },
         }
         server = {

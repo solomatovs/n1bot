@@ -240,7 +240,11 @@ class ServiceStand(StandService):
     url_prefix: str = ""
 
     PROXY_SECRET: ClassVar[str] = "stand-proxy-secret"  # noqa: S105 — ключ стенда
-    """Ключ подписи входа proxy: его знают сервис и чат стенда."""
+    """Ключ утверждений входа proxy: его знают сервис и чат стенда."""
+
+    CLIENT_ID: ClassVar[str] = "stand-chat"
+    CLIENT_SECRET: ClassVar[str] = "stand-client-secret"  # noqa: S105 — ключ стенда
+    """Клиент OAuth чата стенда у сервера авторизации сервиса."""
 
     ENDPOINTS: ClassVar[Mapping[str, Sequence[str]]] = {
         "general": ("*",),
@@ -288,9 +292,10 @@ class ServiceStand(StandService):
                 "path": f"/mcp/{endpoint}",
                 "auth": {
                     "auth": "proxy",
+                    "issuer": {**location, "path": "/"},
+                    "client_id": self.CLIENT_ID,
+                    "client_secret": self.CLIENT_SECRET,
                     "secret": self.PROXY_SECRET,
-                    "sign_in": {**location, "path": "/auth/proxy"},
-                    "headers": {**self.HEADERS, "roles": self.ROLES_HEADER},
                 },
             },
         }
@@ -324,6 +329,8 @@ class ServiceStand(StandService):
 
         doc["mcp"]["endpoints"] = endpoints
         doc["mcp"]["tokens"] = {}
+        doc["mcp"]["public_url"] = f"http://127.0.0.1:{self.app_port}"
+        doc["mcp"]["clients"] = {self.CLIENT_ID: {"secret": self.CLIENT_SECRET}}
         doc["auth"]["proxy"] = {
             "type": "proxy",
             "path": "/auth/proxy",
