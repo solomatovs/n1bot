@@ -238,9 +238,18 @@ class ServiceStand(StandService):
     sandbox: bool
     app: StandApp = StandApp.MCP
     url_prefix: str = ""
+    generation: str = ""
+    """Поколение сессий: пустое — случайное на каждый старт процесса, и
+    рестарт снимает все входы; заданное — входы рестарт переживают."""
+    session_ttl_sec: int = 300
+    """Срок токена доступа: коротким стенд проверяет продление входа."""
 
     PROXY_SECRET: ClassVar[str] = "stand-proxy-secret"  # noqa: S105 — ключ стенда
     """Ключ утверждений входа proxy: его знают сервис и чат стенда."""
+
+    LOCAL_LOGIN: ClassVar[str] = "carol"
+    LOCAL_PASSWORD: ClassVar[str] = "carol-pw"  # noqa: S105 — учётка стенда
+    """Человек стенда для входа формой (local): роль ADM."""
 
     CLIENT_ID: ClassVar[str] = "stand-chat"
     CLIENT_SECRET: ClassVar[str] = "stand-client-secret"  # noqa: S105 — ключ стенда
@@ -341,7 +350,15 @@ class ServiceStand(StandService):
             "headers": dict(self.HEADERS),
             "roles": {"header": {"name": self.ROLES_HEADER}},
         }
-        doc["app"]["auth"] = ["${auth.proxy}"]
+        doc["auth"]["local"] = {
+            "type": "local",
+            "users": {self.LOCAL_LOGIN: self.LOCAL_PASSWORD},
+            "require_roles": True,
+            "roles": {"local": {"mapping": {self.LOCAL_LOGIN: ["ADM"]}}},
+        }
+        doc["app"]["auth"] = ["${auth.local}", "${auth.proxy}"]
+        doc["session"]["generation"] = self.generation
+        doc["session"]["session_ttl_sec"] = self.session_ttl_sec
 
         self.config_path.write_text(TomlText.dumps(doc), encoding="utf-8")
         StandPlugins(self.app, self.sandbox).copy_to(self.workdir / "plugins")

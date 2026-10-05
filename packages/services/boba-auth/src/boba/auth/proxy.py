@@ -7,8 +7,8 @@
 Ошибки:
 AuthenticationError — подпись не сходится, метка времени вне окна, заголовки
     пусты.
-AssertionRejectedError — утверждение JWT не принято: подпись, срок, издатель,
-    получатель либо повтор.
+AssertionRejectedError — утверждение JWT не принято: подпись, срок, издатель
+    либо получатель.
 AuthorizationError — адрес клиента вне allowed_clients, исключение по логину
     или ни одной роли при require_roles.
 ExternalServiceError — каталог ролей недоступен.
@@ -100,8 +100,8 @@ class ProxyAssertions:
     """Выпуск и проверка утверждения общим секретом [auth.proxy].secret.
 
     Выпускает клиент (чат) на каждый обмен, проверяет сервер авторизации
-    сервиса boba-mcp в exchange_identity_assertion. Повтор отсекается памятью
-    jti на срок жизни утверждения.
+    сервиса boba-mcp в exchange_identity_assertion. Памяти предъявленных
+    утверждений нет: живёт оно TTL_SEC и без секрета клиента бесполезно.
     """
 
     TTL_SEC: ClassVar[int] = 60
@@ -109,7 +109,6 @@ class ProxyAssertions:
     def __init__(self, secret: str, max_skew_sec: int) -> None:
         self._secret = secret
         self._max_skew_sec = max_skew_sec
-        self._seen: dict[str, int] = {}
 
     def issue(
         self, client_id: str, login: str, roles: str, audience: str, resource: str
@@ -177,23 +176,7 @@ class ProxyAssertions:
             )
             raise AssertionRejectedError(msg)
 
-        self._remember(claims)
-
         return claims
-
-    def _remember(self, claims: ProxyAssertion) -> None:
-        now = int(time.time())
-        for jti in [jti for jti, until in self._seen.items() if until < now]:
-            del self._seen[jti]
-
-        if claims.jti in self._seen:
-            msg = (
-                f"identity assertion of {claims.sub!r}: jti {claims.jti} is "
-                "presented again"
-            )
-            raise AssertionRejectedError(msg)
-
-        self._seen[claims.jti] = claims.exp + self._max_skew_sec
 
 
 class HmacProxySignIn(ProxySignIn):
