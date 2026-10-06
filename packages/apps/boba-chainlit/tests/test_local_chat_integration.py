@@ -17,31 +17,31 @@ from typing import Annotated, Any
 
 import pytest
 from chainlit_stand import RecordedTurn
-from langchain.agents import create_agent
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.runnables import RunnableConfig
-from langchain_core.tools import tool
 from langgraph.checkpoint.memory import InMemorySaver
 from pydantic import Field
 
 from boba.chainlit.agent.bridge import ChatModelBridge
-from boba.chainlit.chat.tracing import AgentTracer
-from boba.chainlit.chat.turn import TurnState
+from boba.chainlit.agent.flow import GraphSpec, PlainGraphBuilder
 from boba.chainlit.domain.fields import StepField
 from boba.chainlit.infra.config import AppConfig
+from boba.chainlit.infra.providers import build_history_view
 from boba.config import bind
-from boba.connection_broker.sealing import SentConnections
-from boba.identity.context import CallContexts
-from boba.identity.run import Runs
 from boba.llm.onnx import OnnxProvider
 from boba.llm.providers import ChatModelConfig, LlmProviders, LlmProviderTypes
 from boba.runtime.config import AppLayers
+from boba.stand.refs import StandRefs
 from boba.toolkit.calls import ToolIntent
 from boba.toolkit.chain import CallAmbient
+from boba.toolkit.facade import tool
+from boba.toolkit.ports import StreamSpecs
+from boba.toolkit.result import MarkdownResult
 from boba.toolrun.call_id import CallFields
+from boba.toolrun.hosted import ToolHosting
 from boba.toolrun.run_log import ToolRunLogger
+from boba.toolrun.stream_calls import LocalDagService
 from boba.toolrun.streams import CallJournals
-from boba.toolrun.wrapping import ToolAsyncBody
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
 
@@ -87,12 +87,14 @@ def _local_model_dir() -> str:
 @tool
 async def kb_probe(
     query: Annotated[str, Field(description="Search query.")],
-) -> str:
+) -> MarkdownResult:
     """Поиск по базе знаний: отдаёт найденную страницу."""
-    return (
+    text = (
         f"KB-42: Kerberos SSO в Confluence настраивается на странице 'Kerberos' "
         f"({query})"
     )
+
+    return MarkdownResult(text=text)
 
 
 def _chat(model_dir: str) -> ChatModelBridge:
@@ -117,39 +119,47 @@ class TestLocalChatTurn:
         model_dir = _local_model_dir()
 
         # обвязка как в load_tools: подпись вызова снимает ToolRunLogger
-        tools = [kb_probe]
-        CallFields().attach_all(tools)
-        contexts = CallContexts()
-        ToolRunLogger(
-            CallJournals(None, Runs(contexts)), contexts, CallAmbient()
-        ).guard_all(tools)
-        ToolAsyncBody().ensure_all(tools)
+        turn = RecordedTurn.recording(THREAD, TURN)
+        sink = turn.recording_sink
 
-        agent = create_agent(
-            model=_chat(model_dir),
-            tools=tools,
+        tools = list(ToolHosting().toolset([kb_probe]))
+        CallFields().attach_all(tools)
+        ambient = CallAmbient()
+        ToolRunLogger(CallJournals(None, turn.runs), turn.contexts, ambient).guard_all(
+            tools
+        )
+
+        spec = GraphSpec(
+            chat=_chat(model_dir),
+            service=LocalDagService(
+                tools,
+                StandRefs.STREAM_CONFIG,
+                (),
+                StreamSpecs({}),
+                ambient,
+                turn.calls,
+            ),
             system_prompt=(
                 "Ты поисковый ассистент. На вопросы о продуктах сначала ищи "
                 "инструментом kb_probe, потом отвечай по найденному."
             ),
             checkpointer=InMemorySaver(),
+            history=build_history_view(frozenset({"kb_probe"}), 30),
         )
+        agent = PlainGraphBuilder().build(spec)
 
-        turn = RecordedTurn.recording(THREAD, TURN)
-        sink = turn.recording_sink
-        tracer = AgentTracer(turn.feed, TurnState(), SentConnections())
-
-        config = RunnableConfig(
-            configurable={"thread_id": "local-turn"},
-            callbacks=[tracer],
-        )
         chunks = 0
-        async for _chunk, _meta in agent.astream(
-            {"messages": [HumanMessage("как настроить kerberos в confluence?")]},
-            config=config,
-            stream_mode="messages",
-        ):
-            chunks += 1
+        with turn.running() as port:
+            config = RunnableConfig(
+                configurable={"thread_id": "local-turn"},
+                callbacks=[port.tracer],
+            )
+            async for _chunk, _meta in agent.astream(
+                {"messages": [HumanMessage("как настроить kerberos в confluence?")]},
+                config=config,
+                stream_mode="messages",
+            ):
+                chunks += 1
 
         state = await agent.aget_state(config)
         messages: list[Any] = state.values["messages"]

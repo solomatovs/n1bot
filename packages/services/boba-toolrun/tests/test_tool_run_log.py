@@ -7,18 +7,19 @@ import logging
 from typing import Annotated, Any
 
 import pytest
-from langchain_core.tools import StructuredTool, tool
 from pydantic import BaseModel
 
 from boba.identity.context import CallContexts, LlmInitiator
 from boba.identity.run import Runs
 from boba.sandbox.runner import FailureLog
+from boba.stand.toolstand import ProbeTools
 from boba.stand_core.context import CallStand
 from boba.toolkit.chain import CallAmbient
-from boba.toolkit.facade import NotLogged
+from boba.toolkit.facade import NotLogged, ToolFacadeError, tool
 from boba.toolkit.launcher import RunResult
-from boba.toolkit.result import MarkdownResult, ToolArtifact
+from boba.toolkit.result import MarkdownResult
 from boba.toolrun.call_id import CallFields
+from boba.toolrun.hosted import HostedTool, ToolHosting
 from boba.toolrun.run_log import ToolRunLogger
 from boba.toolrun.streams import CallJournals
 
@@ -29,23 +30,29 @@ TAIL_CHARS = 2000
 """Хвост вывода в сообщении об ошибке; в проде значение из профиля."""
 
 
+class QueryArgs(BaseModel):
+    """Схема пробного инструмента: один аргумент модели."""
+
+    query: str
+
+
 class TestToolRunLogger:
     @staticmethod
-    def _tool(func, coroutine=None) -> StructuredTool:
-        return StructuredTool.from_function(
-            func=func, coroutine=coroutine, name="probe", description="probe"
-        )
-
-    def test_success_logs_start_and_ok(self, caplog: pytest.LogCaptureFixture) -> None:
-        tool = self._tool(lambda query: "done")
-        contexts = CallContexts()
+    def _logged(tool: HostedTool, contexts: CallContexts) -> HostedTool:
         ToolRunLogger(
             CallJournals(None, Runs(contexts)), contexts, CallAmbient()
         ).guard_all([tool])
+
+        return tool
+
+    def test_success_logs_start_and_ok(self, caplog: pytest.LogCaptureFixture) -> None:
+        async def done(query: str) -> MarkdownResult:
+            return MarkdownResult(text="done")
+
+        probes = ProbeTools()
+        tool = self._logged(probes.hosted("probe", QueryArgs, done), CallContexts())
         with caplog.at_level(logging.INFO, logger=LOGGER_NAME):
-            if tool.func is None:
-                raise AssertionError("tool.func is not None")
-            tool.func(query="звук")
+            asyncio.run(probes.call(tool, "c1", {"query": "звук"}))
         messages = [r.getMessage() for r in caplog.records]
         start_prefix = "tool[probe]: start args=query='звук'"
         if not (any(m.startswith(start_prefix) for m in messages)):
@@ -62,21 +69,15 @@ class TestToolRunLogger:
             connection: Annotated[str, NotLogged()]
             sql: str
 
-        tool = StructuredTool.from_function(
-            func=lambda connection, sql: "done",
-            name="probe",
-            description="probe",
-            args_schema=Args,
-        )
-        contexts = CallContexts()
-        ToolRunLogger(
-            CallJournals(None, Runs(contexts)), contexts, CallAmbient()
-        ).guard_all([tool])
+        async def done(connection: str, sql: str) -> MarkdownResult:
+            return MarkdownResult(text="done")
+
+        probes = ProbeTools()
+        tool = self._logged(probes.hosted("probe", Args, done), CallContexts())
 
         with caplog.at_level(logging.INFO, logger=LOGGER_NAME):
-            if tool.func is None:
-                raise AssertionError("tool.func is not None")
-            tool.func(connection="not_logged-value", sql="select 1")
+            sent = {"connection": "not_logged-value", "sql": "select 1"}
+            asyncio.run(probes.call(tool, "c1", sent))
 
         started = [r.getMessage() for r in caplog.records if "start args" in r.message]
         if "connection" in started[0]:
@@ -89,20 +90,17 @@ class TestToolRunLogger:
     def test_failure_logged_and_reraised(
         self, caplog: pytest.LogCaptureFixture
     ) -> None:
-        def boom(query: str) -> str:
+        async def boom(query: str) -> MarkdownResult:
             msg = "нет соединения"
             raise RuntimeError(msg)
 
-        tool = self._tool(boom)
-        contexts = CallContexts()
-        ToolRunLogger(
-            CallJournals(None, Runs(contexts)), contexts, CallAmbient()
-        ).guard_all([tool])
-        with caplog.at_level(logging.INFO, logger=LOGGER_NAME):
-            if tool.func is None:
-                raise AssertionError("tool.func is not None")
-            with pytest.raises(RuntimeError):
-                tool.func(query="q")
+        probes = ProbeTools()
+        tool = self._logged(probes.hosted("probe", QueryArgs, boom), CallContexts())
+        with (
+            caplog.at_level(logging.INFO, logger=LOGGER_NAME),
+            pytest.raises(RuntimeError),
+        ):
+            asyncio.run(probes.call(tool, "c1", {"query": "q"}))
         warning = [r for r in caplog.records if r.levelno == logging.WARNING]
         if len(warning) != 1:
             raise AssertionError("len(warning) == 1")
@@ -118,54 +116,44 @@ class TestToolRunLogger:
         contexts = call_stand.contexts
         inside: list[str] = []
 
-        def probe(query: str) -> str:
+        async def probe(query: str) -> MarkdownResult:
             initiator = contexts.current().initiator
             if isinstance(initiator, LlmInitiator):
                 inside.append(initiator.tool_call_id)
 
-            return "ok"
+            return MarkdownResult(text="ok")
 
-        tool = self._tool(probe)
-        ToolRunLogger(
-            CallJournals(None, Runs(contexts)), contexts, CallAmbient()
-        ).guard_all([tool])
-        if tool.func is None:
-            raise AssertionError("tool.func is not None")
+        probes = ProbeTools()
+        tool = probes.hosted("probe", QueryArgs, probe)
+        CallFields().attach_all([tool])
+        self._logged(tool, contexts)
 
         outer = call_stand.context("t1")
         with call_stand.applied(outer):
-            tool.func(query="q", boba_tool_call_id="call-1")
+            asyncio.run(probes.call(tool, "call-1", {"query": "q"}))
             if contexts.current() is not outer:
                 raise AssertionError(contexts.current())
 
         if inside != ["call-1"]:
             raise AssertionError(inside)
 
-    def test_async_tool_wrapped(self, caplog: pytest.LogCaptureFixture) -> None:
-        async def probe(query: str) -> str:
-            return "probe"
+    def test_result_passes_through(self, caplog: pytest.LogCaptureFixture) -> None:
+        async def probe(query: str) -> MarkdownResult:
+            return MarkdownResult(text="probe")
 
-        tool = self._tool(lambda query: "sync", probe)
-        contexts = CallContexts()
-        ToolRunLogger(
-            CallJournals(None, Runs(contexts)), contexts, CallAmbient()
-        ).guard_all([tool])
-
-        async def invoke() -> object:
-            if tool.coroutine is None:
-                raise AssertionError("tool.coroutine is not None")
-            return await tool.coroutine(query="q")
+        probes = ProbeTools()
+        tool = self._logged(probes.hosted("probe", QueryArgs, probe), CallContexts())
 
         with caplog.at_level(logging.INFO, logger=LOGGER_NAME):
-            result = asyncio.run(invoke())
-        if result != "probe":
-            raise AssertionError('result == "probe"')
+            outcome = asyncio.run(probes.call(tool, "c1", {"query": "q"}))
+        if outcome.content != "probe":
+            raise AssertionError(outcome.content)
         messages = [r.getMessage() for r in caplog.records]
         if not (any(m.startswith("tool[probe]: ok in ") for m in messages)):
             raise AssertionError('any(m.startswith("tool[probe]: ok in ") for m in me…')
 
     def test_args_render_truncated(self) -> None:
-        rendered = ToolRunLogger._render_args((), {"query": "x" * 1000}, frozenset())
+        rendered = ToolRunLogger._render_args({"query": "x" * 1000}, frozenset())
         if len(rendered) != ToolRunLogger.ARGS_LIMIT + 1:
             raise AssertionError("len(rendered) == ToolRunLogger.ARGS_LIMIT + 1")
         if not (rendered.endswith("…")):
@@ -218,29 +206,27 @@ class TestSandboxFailureLog:
 class TestElapsedInResult:
     """Обвязка запуска кладёт время вызова в артефакт, а не только в лог."""
 
-    @pytest.mark.anyio
-    async def test_elapsed_is_recorded(self) -> None:
-        @tool(response_format="content_and_artifact")
-        async def slow_probe(query: str) -> tuple[str, Any]:
-            """Инструмент, который заметно работает."""
-            await asyncio.sleep(0.05)
-            return MarkdownResult(text=f"found {query}").packed()
-
-        CallFields().attach_all([slow_probe])
+    @staticmethod
+    def _guarded(probe: HostedTool) -> HostedTool:
+        CallFields().attach_all([probe])
         contexts = CallContexts()
         ToolRunLogger(
             CallJournals(None, Runs(contexts)), contexts, CallAmbient()
-        ).guard_all([slow_probe])
+        ).guard_all([probe])
 
-        message = await slow_probe.ainvoke(
-            {
-                "name": "slow_probe",
-                "args": {"query": "x"},
-                "id": "c1",
-                "type": "tool_call",
-            }
-        )
-        result = ToolArtifact.revive(message.artifact)
+        return probe
+
+    @pytest.mark.anyio
+    async def test_elapsed_is_recorded(self) -> None:
+        async def slow_probe(query: str) -> MarkdownResult:
+            await asyncio.sleep(0.05)
+            return MarkdownResult(text=f"found {query}")
+
+        probes = ProbeTools()
+        probe = self._guarded(probes.hosted("slow_probe", QueryArgs, slow_probe))
+
+        outcome = await probes.call(probe, "c1", {"query": "x"})
+        result = outcome.artifact
 
         if not isinstance(result, MarkdownResult):
             raise AssertionError(f"артефакт разобран: {result}")
@@ -249,27 +235,22 @@ class TestElapsedInResult:
             raise AssertionError(f"время вызова не проставлено: {result.elapsed_ms}")
 
     @pytest.mark.anyio
-    async def test_foreign_return_is_untouched(self) -> None:
-        """Инструмент вернул не пару content/artifact — обвязка не вмешивается."""
+    async def test_foreign_return_is_refused(self) -> None:
+        """Тело автора вернуло не модель результата — вызов отвергнут с
+        именем инструмента, обвязка чужое значение не разбирает."""
 
         @tool
-        async def plain_probe(query: str) -> str:
-            """Инструмент со свободным ответом."""
-            return f"plain {query}"
+        async def plain_probe(query: str) -> MarkdownResult:
+            """Проба, чьё тело нарушает контракт результата."""
+            foreign: Any = f"plain {query}"
 
-        CallFields().attach_all([plain_probe])
-        contexts = CallContexts()
-        ToolRunLogger(
-            CallJournals(None, Runs(contexts)), contexts, CallAmbient()
-        ).guard_all([plain_probe])
+            return foreign
 
-        message = await plain_probe.ainvoke(
-            {
-                "name": "plain_probe",
-                "args": {"query": "x"},
-                "id": "c2",
-                "type": "tool_call",
-            }
-        )
-        if message.content != "plain x":
-            raise AssertionError(message.content)
+        probe = self._guarded(ToolHosting().hosted(plain_probe))
+
+        with pytest.raises(ToolFacadeError) as refused:
+            await probe.run("c2", {"query": "x"})
+
+        expected = "tool 'plain_probe' must return a ToolResultBase model, got str"
+        if str(refused.value) != expected:
+            raise AssertionError(str(refused.value))

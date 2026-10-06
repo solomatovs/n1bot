@@ -29,7 +29,6 @@ from boba.chainlit.chat.turn import (
 )
 from boba.chainlit.domain.fields import StepField
 from boba.chainlit.rendering.chat_view import ChatView, StepRole, StepStatus, StepText
-from boba.connection_broker.sealing import SentConnections
 from boba.identity.context import Scope
 from boba.identity.errors import FailureReport, UserInputError
 from boba.identity.locks import LockMode, LockPurpose, MemoryLiveLocks, RunLocking
@@ -143,7 +142,7 @@ class TestFailed:
         turn = _turn()
         state = TurnState()
         await turn.feed.tool_started("call-1", "web_search", {"query": "x"})
-        state.open_tool("run-1", "call-1")
+        state.open_tool("call-1")
 
         await _reporter(turn.feed, state, RememberedHistory()).failed(
             RuntimeError("boom")
@@ -227,7 +226,7 @@ class TestStopped:
         turn = _turn()
         state = TurnState()
         await turn.feed.tool_started("call-1", "bash", {"cmd": "sleep 60"})
-        state.open_tool("run-1", "call-1")
+        state.open_tool("call-1")
 
         await _reporter(turn.feed, state, RememberedHistory()).stopped(
             StopReason.USER_STOP
@@ -268,7 +267,6 @@ class TestFailedTurnKeepsHistory:
             history=cast(Any, history),
             question=Question(key=TURN_KEY, text="question"),
             locking=RunLocking(locks=MemoryLiveLocks("test:0", 20), heartbeat_sec=1.0),
-            sent=SentConnections(),
             contexts=call_stand.contexts,
             runs=runtime_stand.runs,
         )
@@ -294,7 +292,7 @@ class TestOk:
         turn = _turn()
         state = TurnState()
         await turn.feed.tool_started("call-1", "bash", {"cmd": "true"})
-        state.open_tool("run-1", "call-1")
+        state.open_tool("call-1")
 
         await _reporter(turn.feed, state, history := RememberedHistory()).ok()
 
@@ -346,7 +344,6 @@ class TestPulseOfTheTurn:
             history=cast(Any, RememberedHistory()),
             question=Question(key=TURN_KEY, text="question"),
             locking=RunLocking(locks=MemoryLiveLocks("test:0", 20), heartbeat_sec=1.0),
-            sent=SentConnections(),
             contexts=call_stand.contexts,
             runs=runtime_stand.runs,
         )
@@ -401,7 +398,6 @@ class TestBusyThread:
             history=cast(Any, history),
             question=Question(key=TURN_KEY, text="question"),
             locking=RunLocking(locks=locks, heartbeat_sec=1.0),
-            sent=SentConnections(),
             contexts=call_stand.contexts,
             runs=runtime_stand.runs,
         )

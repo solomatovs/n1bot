@@ -12,12 +12,10 @@
   барьер группы StreamGroup из схемы убирает.
 - WorkflowTool — инструмент workflow для модели: узел называет инструмент из
   списка сервера и его аргументы; схем инструментов в себе не несёт.
-- CallDag строит описание DAG (boba.toolkit.dag): одного вызова, вызова
-  workflow и потоковых вызовов одного ответа.
-- ToolServer — порт сервера инструментов для клиента (чата): инструменты
-  для модели, объявленные возможности и вызовы. LocalDagService — его
-  реализация исполнителем в своём процессе; ToolServers — несколько
-  серверов за одним портом с маршрутом по имени инструмента.
+- LocalDagService — реализация порта сервера инструментов ToolServer
+  (boba.toolkit.dag) исполнителем в своём процессе: описание DAG по вызовам
+  клиента строит CallDag. ToolServers — несколько серверов за одним портом
+  с маршрутом по имени инструмента.
 - NodeArgs — правило аргументов узла, которое исполнитель применяет до
   старта DAG.
 
@@ -32,17 +30,14 @@ from __future__ import annotations
 import asyncio
 import logging
 from abc import abstractmethod
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from enum import StrEnum
 from typing import Annotated, Any, ClassVar, Protocol
 
-from langchain_core.messages import ToolCall, ToolMessage
-from langchain_core.tools import BaseTool, StructuredTool
 from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
-    ValidationError,
     model_validator,
 )
 
@@ -53,33 +48,36 @@ from boba.toolkit.chain import (
     StreamTimings,
 )
 from boba.toolkit.dag import (
+    CallDag,
     DagNode,
     DagPlanner,
     DagSpec,
+    NodeCalls,
+    NodeOutcome,
+    NodeOutcomes,
+    ToolCard,
+    ToolServer,
+    WorkflowFeature,
     WorkflowNodeResult,
     WorkflowResult,
 )
 from boba.toolkit.entry import EntryErrorKind, ToolArgv
-from boba.toolkit.failure import ToolRefusalError, ValidationText
+from boba.toolkit.failure import ToolRefusalError
 from boba.toolkit.ports import PortDecl, PortDirection, StreamSpecs
 from boba.toolkit.result import (
     ErrorResult,
     FailureResult,
-    ToolResultBase,
 )
 from boba.toolrun.call_id import CallFields
-from boba.toolrun.dag_run import DagOutcome, DagRunError, DagRunner, NodeOutcome
-from boba.toolrun.wrapping import ToolSchema
+from boba.toolrun.dag_run import DagOutcome, DagRunError, DagRunner
+from boba.toolrun.hosted import HostedTool, ToolSchema
 
 __all__ = [
-    "CallDag",
-    "CallReply",
     "LocalDagService",
     "NodeArgs",
     "StreamChannelFields",
     "StreamGroupsConfig",
     "StreamGroupsConfigError",
-    "ToolServer",
     "ToolServers",
     "ToolServersError",
     "WorkflowTool",
@@ -204,16 +202,14 @@ class StreamChannelFields:
 
     def __init__(self, config: StreamGroupsConfig) -> None:
         self._config = config
+        self._schemas = ToolSchema()
 
-    def attach_all(self, tools: Sequence[BaseTool], specs: StreamSpecs) -> None:
+    def attach_all(self, tools: Sequence[HostedTool], specs: StreamSpecs) -> None:
         for tool in tools:
             self._attach(tool, specs)
 
-    def _attach(self, tool: BaseTool, specs: StreamSpecs) -> None:
-        schema = ToolSchema.of(tool)
-        if schema is None:
-            return
-
+    def _attach(self, tool: HostedTool, specs: StreamSpecs) -> None:
+        schema = tool.args_schema
         spec = specs.of(tool.name)
         groups = ToolArgv.group_fields(schema)
         if not spec.streaming() and not groups:
@@ -228,7 +224,7 @@ class StreamChannelFields:
         if spec.outbound():
             fields[DagPlanner.PIPE_FIELD] = self._pipe_field()
 
-        tool.args_schema = ToolSchema.rebuild(schema, fields, drop)
+        tool.args_schema = self._schemas.rebuild(schema, fields, drop)
 
     def _pipe_field(self) -> tuple[Any, Any]:
         declared = Annotated[
@@ -289,15 +285,11 @@ class WorkflowTool:
     связку узлами одного вызова workflow. Узел называет инструмент из
     списка сервера и его аргументы; схем инструментов workflow не несёт —
     они у самих инструментов. Создаёт его LocalDagService; исполняет вызов
-    не тело инструмента, а DAG — тело существует, чтобы инструмент был
-    обычным инструментом графа.
+    не тело инструмента, а DAG — инструмента хоста за ним нет, есть только
+    карточка, чтобы модель видела его среди инструментов сервера.
     """
 
-    NAME: ClassVar[str] = "workflow"
-
-    FEATURE: ClassVar[str] = "com.boba/workflow"
-    """Возможность сервера: каким инструментом связка описывается одним
-    вызовом; узлы этого вызова — вызовы других инструментов сервера."""
+    NAME: ClassVar[str] = CallDag.WORKFLOW
 
     DESCRIPTION: ClassVar[str] = (
         "Запустить несколько инструментов одной связкой:\n"
@@ -315,159 +307,21 @@ class WorkflowTool:
 
     def __init__(self) -> None:
         self._fields = CallFields()
+        self._schemas = ToolSchema()
 
-    def build(self) -> BaseTool:
-        """Инструмент для модели: узлы называют инструменты сервера по имени."""
-        built = StructuredTool.from_function(
-            coroutine=self._never_called,
-            name=self.NAME,
-            description=self.DESCRIPTION,
-            args_schema=WorkflowCall,
-        )
-        self._fields.attach_all([built])
-
-        return built
-
-    TOOL: ClassVar[str] = "tool"
-    """Ключ настроек возможности: имя инструмента-связки."""
-
-    LINKED: ClassVar[str] = "linked"
-    """Ключ настроек возможности: имена потоковых инструментов. Их вызовы
-    из одного ответа модели связывают имена каналов, поэтому клиент шлёт
-    такие вызовы одной связкой."""
-
-    def feature(self, linked: frozenset[str]) -> Mapping[str, object]:
-        return {self.TOOL: self.NAME, self.LINKED: sorted(linked)}
-
-    @classmethod
-    async def _never_called(cls, **kwargs: object) -> str:
-        msg = (
-            f"tool {cls.NAME!r} is executed by the dag runner through the agent "
-            "middleware; its body must not be called"
-        )
-        raise RuntimeError(msg)
-
-
-class CallDag:
-    """Описание DAG по вызовам модели.
-
-    Обычный вызов — DAG из одного узла с ключом tool_call_id. Потоковые
-    вызовы одного ответа модели — один DAG: узел на вызов, ключ узла —
-    tool_call_id вызова. Узлы вызова workflow — уже узлы описания DAG
-    (DagSpec); ключ узла заменяется на идентификатор вызова узла (под ним
-    идут журнал и шаг ленты узла): заданный клиентом call_id, иначе
-    tool_call_id вызова с номером узла. Имя, данное узлу моделью, едет в
-    title — им узел называется в текстах отказов.
-    """
-
-    NODES: ClassVar[str] = "nodes"
-
-    def of(self, call: ToolCall) -> DagSpec:
-        """DAG одного вызова.
-
-        Ошибки:
-        StreamPlanError — вызов без tool_call_id; вызов workflow не проходит
-            форму описания DAG.
-        """
-        call_id = self.id_of(call)
-
-        if call["name"] != WorkflowTool.NAME:
-            return DagSpec(name=call_id, version=1, nodes=[self._node(call)])
-
-        described = self._described(call_id, call)
-
-        return DagSpec(
-            name=call_id, version=1, nodes=list(self._nodes(call_id, described))
+    def card(self) -> ToolCard:
+        """Карточка для модели: узлы называют инструменты сервера по имени."""
+        return self._schemas.card(
+            self.NAME,
+            self.DESCRIPTION.strip(),
+            self._fields.extended(WorkflowCall),
+            None,
         )
 
-    def of_linked(self, calls: Sequence[ToolCall]) -> DagSpec:
-        """DAG потоковых вызовов одного ответа: их связывают имена каналов.
-
-        Ошибки:
-        StreamPlanError — у вызова нет tool_call_id.
-        """
-        nodes: list[DagNode] = []
-        for call in calls:
-            nodes.append(self._node(call))
-
-        return DagSpec(name=nodes[0].key, version=1, nodes=nodes)
-
-    def _node(self, call: ToolCall) -> DagNode:
-        return DagNode(key=self.id_of(call), tool=call["name"], args=dict(call["args"]))
-
-    def _described(self, call_id: str, call: ToolCall) -> DagSpec:
-        """Узлы вызова workflow, как их назвала модель."""
-        raw: dict[str, object] = {"name": call_id, "version": 1}
-        if self.NODES in call["args"]:
-            raw[self.NODES] = call["args"][self.NODES]
-
-        try:
-            return DagSpec.model_validate(raw)
-        except ValidationError as exc:
-            msg = (
-                f"workflow call {call_id!r} does not match its schema: "
-                f"{ValidationText.of(exc)}"
-            )
-            raise StreamPlanError(msg) from exc
-
-    def _nodes(self, call_id: str, described: DagSpec) -> Iterator[DagNode]:
-        for index, node in enumerate(described.nodes):
-            key = node.call_id
-            if not key:
-                key = f"{call_id}_{index}"
-
-            yield node.model_copy(update={"key": key, "title": node.key})
-
-    @staticmethod
-    def id_of(call: ToolCall) -> str:
-        key = call["id"]
-        if not key:
-            name = call["name"]
-            msg = f"dag plan: call of {name!r} has no tool call id"
-            raise StreamPlanError(msg)
-
-        return key
-
-
-class ToolServer(Protocol):
-    """Порт сервера инструментов для клиента.
-
-    Клиент (чат) знает исполнение только через него: берёт инструменты,
-    которые сервер отдаёт модели, читает объявленные сервером возможности и
-    шлёт вызовы. Что стоит за портом, клиенту неизвестно: исполнитель своего
-    процесса (LocalDagService), несколько серверов с маршрутом по имени
-    (ToolServers) либо обёртка клиента над другим портом.
-    """
-
-    @abstractmethod
-    def tools(self) -> Sequence[BaseTool]:
-        """Инструменты, которые сервер отдаёт модели."""
-        ...
-
-    @abstractmethod
-    def features(self) -> Mapping[str, Mapping[str, object]]:
-        """Возможности, которые сервер объявляет клиенту при подключении:
-        идентификатор возможности → её настройки."""
-        ...
-
-    @abstractmethod
-    async def submit(
-        self, calls: Sequence[ToolCall]
-    ) -> Sequence[asyncio.Future[ToolMessage]]:
-        """Принять вызовы одного ответа модели; итог каждого — своё ожидание.
-
-        Ожидания идут в порядке вызовов и кончаются независимо: быстрый
-        вызов отвечает, не дожидаясь медленного соседа. Вызовы пакета сервер
-        вправе связать между собой: потоковые вызовы одного ответа связывают
-        имена каналов. Отмена ожидания останавливает его вызов.
-        """
-        ...
-
-    async def call(self, call: ToolCall) -> ToolMessage:
-        """Исполнить один вызов и дождаться его итога."""
-        pending = await self.submit([call])
-
-        return await pending[0]
+    def feature(self, linked: frozenset[str]) -> WorkflowFeature:
+        """Объявление возможности: связку описывает этот инструмент, linked —
+        имена потоковых инструментов сервера."""
+        return WorkflowFeature(tool=self.NAME, linked=sorted(linked))
 
 
 class NodeArgs(Protocol):
@@ -501,50 +355,54 @@ class NodeArgs(Protocol):
 class LocalDagService(ToolServer):
     """Реализация порта ToolServer исполнителем в своём процессе.
 
-    Клиент получает отсюда инструменты для модели и шлёт вызовы. Модели
-    отдаются все инструменты как есть; если среди них есть потоковые, к ним
-    добавляется workflow. Каждый вызов исполняет DAG: обычный вызов и вызов
-    workflow — свой, потоковые вызовы одного пакета — общий, их связывают
-    имена каналов. Отказ плана и отказ правила аргументов (NodeArgs) —
-    итог-ошибка вызова до старта узлов; у общего DAG её получает каждый его
-    вызов. Выдуманное имя получает отказ со списком инструментов. Создаётся
-    из обёрнутых инструментов реестра, секции [stream_groups], правил
-    аргументов и потоковых деклараций инструментов.
+    Клиент получает отсюда карточки инструментов для модели и шлёт вызовы.
+    Модели отдаются все инструменты как есть; если среди них есть потоковые,
+    к ним добавляется workflow. Каждый вызов исполняет DAG: обычный вызов и
+    вызов workflow — свой, потоковые вызовы одного пакета — общий, их
+    связывают имена каналов. Отказ плана и отказ правила аргументов
+    (NodeArgs) — итог-ошибка вызова до старта узлов; у общего DAG её
+    получает каждый его вызов. Выдуманное имя получает отказ со списком
+    инструментов. Создаётся из обёрнутых инструментов реестра, секции
+    [stream_groups], правил аргументов, потоковых деклараций инструментов и
+    пути вызова узла к телу (NodeCalls).
     """
 
-    def __init__(
+    def __init__(  # noqa: PLR0913 — порт собирается всеми входами исполнителя
         self,
-        tools: Sequence[BaseTool],
+        tools: Sequence[HostedTool],
         config: StreamGroupsConfig,
         rules: Sequence[NodeArgs],
         specs: StreamSpecs,
         ambient: CallAmbient,
+        calls: NodeCalls,
     ) -> None:
         self._rules = tuple(rules)
+        self._schemas = ToolSchema()
 
-        by_name: dict[str, BaseTool] = {}
+        by_name: dict[str, HostedTool] = {}
         linked: list[str] = []
         for tool in tools:
             by_name[tool.name] = tool
             if specs.of(tool.name).streaming():
                 linked.append(tool.name)
 
-        offered = list(tools)
+        cards = self._schemas.cards_of(tools)
+        offered = list(cards.values())
+
         self._workflow: WorkflowTool | None = None
         if linked:
             self._workflow = WorkflowTool()
-            offered.append(self._workflow.build())
+            offered.append(self._workflow.card())
 
         self._offered = offered
-        self._offered_names = self._names_of(offered)
-        self._unknown = UnknownTool(self._offered_names)
+        self._outcomes = NodeOutcomes()
         self._linked_names = frozenset(linked)
         self._dags = CallDag()
         self._runner = DagRunner(
-            by_name, specs, ambient, config.timings(), config.pipe_bytes
+            by_name, cards, specs, ambient, config.timings(), config.pipe_bytes, calls
         )
 
-    def tools(self) -> Sequence[BaseTool]:
+    def tools(self) -> Sequence[ToolCard]:
         return self._offered
 
     def features(self) -> Mapping[str, Mapping[str, object]]:
@@ -553,23 +411,24 @@ class LocalDagService(ToolServer):
             declared.update(rule.features())
 
         if self._workflow is not None:
-            declared[WorkflowTool.FEATURE] = self._workflow.feature(self._linked_names)
+            feature = self._workflow.feature(self._linked_names)
+            declared[WorkflowFeature.ID] = feature.settings()
 
         return declared
 
     async def submit(
-        self, calls: Sequence[ToolCall]
-    ) -> Sequence[asyncio.Future[ToolMessage]]:
-        linked: list[ToolCall] = []
+        self, calls: Sequence[DagNode]
+    ) -> Sequence[asyncio.Future[NodeOutcome]]:
+        linked: list[DagNode] = []
         for call in calls:
-            if call["name"] in self._linked_names:
+            if call.tool in self._linked_names:
                 linked.append(call)
 
         shared = asyncio.ensure_future(self._linked_run(linked))
 
-        pending: list[asyncio.Future[ToolMessage]] = []
+        pending: list[asyncio.Future[NodeOutcome]] = []
         for call in calls:
-            if call["name"] in self._linked_names:
+            if call.tool in self._linked_names:
                 pending.append(asyncio.ensure_future(self._picked(shared, call)))
                 continue
 
@@ -577,12 +436,8 @@ class LocalDagService(ToolServer):
 
         return pending
 
-    async def _single(self, call: ToolCall) -> ToolMessage:
+    async def _single(self, call: DagNode) -> NodeOutcome:
         """Итог вызова, который идёт своим DAG: обычный инструмент или workflow."""
-        name = call["name"]
-        if name not in self._offered_names:
-            return self._refused(call, self._unknown.refusal(name))
-
         try:
             dag = self._dags.of(call)
         except StreamPlanError as exc:
@@ -592,8 +447,8 @@ class LocalDagService(ToolServer):
         if isinstance(outcome, FailureResult):
             return self._refused(call, outcome)
 
-        if name != WorkflowTool.NAME:
-            return outcome.nodes[0].message(dag.nodes[0].key)
+        if call.tool != WorkflowTool.NAME:
+            return outcome.nodes[0]
 
         nodes: list[WorkflowNodeResult] = []
         for node, ended in zip(dag.nodes, outcome.nodes, strict=True):
@@ -603,27 +458,22 @@ class LocalDagService(ToolServer):
 
         result = WorkflowResult(nodes=nodes, ok=not failed)
 
-        return CallReply(call).message(result, failed)
+        return self._outcomes.of(call, result, failed)
 
     async def _linked_run(
-        self, calls: Sequence[ToolCall]
+        self, calls: Sequence[DagNode]
     ) -> DagOutcome | FailureResult | None:
         """Общий DAG потоковых вызовов пакета: его итог либо отказ до старта."""
         if not calls:
             return None
 
-        try:
-            dag = self._dags.of_linked(calls)
-        except StreamPlanError as exc:
-            return self._plan_refusal(exc)
-
-        return await self._outcome(dag)
+        return await self._outcome(self._dags.of_linked(calls))
 
     async def _picked(
         self,
         shared: asyncio.Future[DagOutcome | FailureResult | None],
-        call: ToolCall,
-    ) -> ToolMessage:
+        call: DagNode,
+    ) -> NodeOutcome:
         """Итог одного потокового вызова из итога общего DAG; отмена вызова
         останавливает общий DAG — его группа живёт по правилу «все или никто»."""
         try:
@@ -633,12 +483,10 @@ class LocalDagService(ToolServer):
             raise
 
         if isinstance(outcome, DagOutcome):
-            key = self._dags.id_of(call)
-
-            return outcome.node(key).message(key)
+            return outcome.node(call.key)
 
         if outcome is None:
-            msg = f"linked call of {call['name']!r} has no dag outcome"
+            msg = f"linked call of {call.tool!r} has no dag outcome"
             raise DagRunError(msg)
 
         return self._refused(call, outcome)
@@ -701,16 +549,8 @@ class LocalDagService(ToolServer):
             result=outcome.artifact,
         )
 
-    def _refused(self, call: ToolCall, failure: FailureResult) -> ToolMessage:
-        return CallReply(call).message(failure, True)
-
-    @staticmethod
-    def _names_of(tools: Sequence[BaseTool]) -> frozenset[str]:
-        names: list[str] = []
-        for tool in tools:
-            names.append(tool.name)
-
-        return frozenset(names)
+    def _refused(self, call: DagNode, failure: FailureResult) -> NodeOutcome:
+        return self._outcomes.refused(call, failure)
 
 
 class UnknownTool:
@@ -728,34 +568,6 @@ class UnknownTool:
         return ErrorResult(message=msg, error_kind=EntryErrorKind.UNKNOWN_TOOL)
 
 
-class CallReply:
-    """Ответ на вызов, собранный самим сервером, а не узлом DAG: отказ до
-    старта и общий итог workflow. Сообщение то же, что у узла."""
-
-    def __init__(self, call: ToolCall) -> None:
-        self._call = call
-
-    def message(self, result: ToolResultBase, errored: bool) -> ToolMessage:
-        content, artifact = result.packed()
-        call_id = str(self._call["id"])
-        outcome = NodeOutcome(
-            key=call_id,
-            tool=self._call["name"],
-            content=content,
-            artifact=artifact,
-            errored=errored,
-        )
-
-        return outcome.message(call_id)
-
-    def refused(self, failure: FailureResult) -> asyncio.Future[ToolMessage]:
-        """Готовый отказ вызову, который до исполнения не дошёл."""
-        done: asyncio.Future[ToolMessage] = asyncio.get_running_loop().create_future()
-        done.set_result(self.message(failure, True))
-
-        return done
-
-
 class ToolServers(ToolServer):
     """Несколько серверов инструментов за одним портом.
 
@@ -770,13 +582,14 @@ class ToolServers(ToolServer):
         self._servers = tuple(servers)
         self._owner: dict[str, int] = {}
         for index, server in enumerate(self._servers):
-            for tool in server.tools():
-                self._claim(tool.name, index)
+            for card in server.tools():
+                self._claim(card.name, index)
 
         self._unknown = UnknownTool(frozenset(self._owner))
+        self._outcomes = NodeOutcomes()
 
-    def tools(self) -> Sequence[BaseTool]:
-        offered: list[BaseTool] = []
+    def tools(self) -> Sequence[ToolCard]:
+        offered: list[ToolCard] = []
         for server in self._servers:
             offered.extend(server.tools())
 
@@ -790,21 +603,22 @@ class ToolServers(ToolServer):
         return declared
 
     async def submit(
-        self, calls: Sequence[ToolCall]
-    ) -> Sequence[asyncio.Future[ToolMessage]]:
+        self, calls: Sequence[DagNode]
+    ) -> Sequence[asyncio.Future[NodeOutcome]]:
         routed: dict[int, list[int]] = {}
-        pending: dict[int, asyncio.Future[ToolMessage]] = {}
+        pending: dict[int, asyncio.Future[NodeOutcome]] = {}
         for position, call in enumerate(calls):
-            owner = self._owner.get(call["name"])
+            owner = self._owner.get(call.tool)
             if owner is None:
-                refusal = self._unknown.refusal(call["name"])
-                pending[position] = CallReply(call).refused(refusal)
+                refusal = self._unknown.refusal(call.tool)
+                refused = self._outcomes.refused(call, refusal)
+                pending[position] = self._outcomes.settled(refused)
                 continue
 
             routed.setdefault(owner, []).append(position)
 
         for owner, positions in routed.items():
-            batch: list[ToolCall] = []
+            batch: list[DagNode] = []
             for position in positions:
                 batch.append(calls[position])
 
@@ -812,7 +626,7 @@ class ToolServers(ToolServer):
             for position, future in zip(positions, accepted, strict=True):
                 pending[position] = future
 
-        ordered: list[asyncio.Future[ToolMessage]] = []
+        ordered: list[asyncio.Future[NodeOutcome]] = []
         for position in range(len(calls)):
             ordered.append(pending[position])
 

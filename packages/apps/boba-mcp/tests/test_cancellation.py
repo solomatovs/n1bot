@@ -13,7 +13,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
 import pytest
-from langchain_core.tools import tool
+from pydantic import BaseModel
 
 from boba.cancellation import (
     RunCancellation,
@@ -24,11 +24,14 @@ from boba.cancellation import (
 from boba.sandbox import SandboxProfile, SandboxToolConfig
 from boba.sandbox.zygote import ZygotePolicy, ZygoteToolCaller
 from boba.stand.shell import ShellRun
+from boba.stand.toolstand import ProbeTools
 from boba.stand.zygote import SandboxStand, ZygoteStand
 from boba.tool.shell.tools import BashToolConfig
 from boba.toolkit.chain import CallAmbient
-from boba.toolkit.result import ErrorResult
+from boba.toolkit.dag import DagNode, NodeOutcome
+from boba.toolkit.result import ErrorResult, MarkdownResult, ToolResultBase
 from boba.toolrun.cancellation import CancellableTools
+from boba.toolrun.hosted import HostedTool
 from boba.transport.http import (
     CancellableHttpTransport,
     HttpRequest,
@@ -181,7 +184,7 @@ class TestRunCancellation:
             raise AssertionError('called == ["x"]')
 
     def test_visible_from_worker_thread(self) -> None:
-        "инструменты исполняются в тред-пуле langchain — флаг обязан доезжать"
+        "sync-тела исполняются в тред-пуле — флаг обязан доезжать"
         with run_cancellation() as c:
             ctx = copy_context()
             c.cancel()
@@ -197,32 +200,43 @@ class TestRunCancellation:
             raise AssertionError("c.wait(5.0) is True")
 
 
+class _TextArgs(BaseModel):
+    """Аргументы пробных инструментов."""
+
+    text: str
+
+
 class TestToolGuard:
     @staticmethod
-    def _tools() -> list:
-        @tool
-        def echo(text: str) -> str:
-            """проба"""
-            return text
+    def _tools() -> list[HostedTool]:
+        async def echo(text: str) -> ToolResultBase:
+            return MarkdownResult(text=text)
 
-        @tool
-        def swallowing(text: str) -> ErrorResult:
-            """инструмент, переводящий любую ошибку в ErrorResult"""
+        async def swallowing(text: str) -> ToolResultBase:
             return ErrorResult(message=text, error_kind="whatever")
 
-        return CancellableTools().guard_all([echo, swallowing])
+        probes = ProbeTools()
+        tools: list[HostedTool] = []
+        for body in (echo, swallowing):
+            tools.append(probes.hosted(body.__name__, _TextArgs, body))
+
+        return CancellableTools().guard_all(tools)
+
+    @staticmethod
+    def _invoke(tool: HostedTool, text: str) -> NodeOutcome:
+        return asyncio.run(ProbeTools().call(tool, "c1", {"text": text}))
 
     def test_runs_normally_without_cancellation(self) -> None:
         echo, _ = self._tools()
-        if echo.invoke({"text": "hi"}) != "hi":
-            raise AssertionError('echo.invoke({"text": "hi"}) == "hi"')
+        if self._invoke(echo, "hi").content != "hi":
+            raise AssertionError('echo("hi") == "hi"')
 
     def test_refuses_to_start_after_cancel(self) -> None:
         echo, _ = self._tools()
         with run_cancellation() as c:
             c.cancel()
             with pytest.raises(ToolStopped):
-                echo.invoke({"text": "hi"})
+                self._invoke(echo, "hi")
 
     def test_result_after_cancel_is_stopped_not_error(self) -> None:
         "ErrorResult из-за оборванного транспорта не должен доехать до ленты"
@@ -231,7 +245,7 @@ class TestToolGuard:
 
             def _run() -> object:
                 c.cancel()
-                return swallowing.invoke({"text": "оборвано"})
+                return self._invoke(swallowing, "оборвано")
 
             with pytest.raises(ToolStopped):
                 _run()
@@ -353,7 +367,15 @@ class TestSubprocessAbort:
             with ThreadPoolExecutor(1) as pool:
                 future = pool.submit(
                     ctx.run,
-                    lambda: tool_.invoke({"command": f"sleep {self.DURATION}"}),
+                    lambda: asyncio.run(
+                        tool_.call(
+                            DagNode(
+                                key="c1",
+                                tool=tool_.name,
+                                args={"command": f"sleep {self.DURATION}"},
+                            )
+                        )
+                    ),
                 )
                 if c.wait(0.0) is not False:
                     raise AssertionError("c.wait(0.0) is False")

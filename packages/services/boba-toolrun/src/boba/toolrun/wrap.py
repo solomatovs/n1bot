@@ -1,8 +1,9 @@
 """Обёртка запуска: тело инструмента исполняется отдельным процессом.
 
-Ставится первой, на нетронутое тело: захватывает адрес модуля, оригинальную
-схему и само тело; вызов уезжает командой модуля инструментов через порт
-ToolLauncher накопительно (CollectedCall) — модели нужен итог, а не кадры.
+Из объявления фасада (PayloadTool) собирается инструмент хоста, чьё тело —
+перенос вызова: по адресу модуля и схеме объявления вызов уезжает командой
+модуля инструментов через порт ToolLauncher накопительно (CollectedCall) —
+модели нужен итог, а не кадры.
 
 Ошибки:
 PayloadFailureError — ошибка тела или контракта запуска из конверта, срыв
@@ -14,21 +15,21 @@ LauncherError — исполнитель не отдал конверт; под�
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Awaitable, Callable, Iterator, Mapping, Sequence
+from collections.abc import Iterator, Mapping
 from enum import StrEnum
-from functools import wraps
-from typing import Any
+from functools import partial
 
 from pydantic import BaseModel
 
+from boba.toolkit.calls import CallViews
 from boba.toolkit.chain import CallAmbient, NodeSlot
 from boba.toolkit.entry import (
     ArgumentTooLargeError,
     ReplyError,
     ToolAddress,
     ToolArgv,
-    ToolLike,
 )
+from boba.toolkit.facade import PayloadTool
 from boba.toolkit.launcher import (
     CollectedCall,
     PayloadFailureError,
@@ -36,9 +37,10 @@ from boba.toolkit.launcher import (
     ToolLauncher,
     ToolOutcome,
 )
-from boba.toolkit.ports import StreamSpec, StreamSpecs
+from boba.toolkit.ports import StreamSpec
 from boba.toolkit.protocol import CallGateMode, ToolCommand
-from boba.toolkit.result import ErrorResult
+from boba.toolkit.result import ErrorResult, ToolResultBase
+from boba.toolrun.hosted import HostedCall, HostedTool
 
 __all__ = ["ToolProcessWrap", "WrapErrorKind"]
 
@@ -50,75 +52,73 @@ class WrapErrorKind(StrEnum):
 
 
 class ToolProcessWrap:
-    """Подменяет тело инструмента обёрткой, которая исполняет вызов отдельным
+    """Собирает инструмент хоста, чьё тело исполняет вызов отдельным
     процессом через ToolLauncher.
 
-    LLM-агент зовёт tool-объект как обычную функцию; guard_all при сборке
-    инструментов заменяет func/coroutine на перенос вызова: аргументы
-    кодируются в ToolCommand (ToolArgv.render), вызов идёт накопительно
-    (CollectedCall), конверт разворачивается в возврат или
-    PayloadFailureError.
+    Создаётся цепочкой обвязок (ToolChain) с обстановкой вызова процесса.
+    hosted() берёт у объявления фасада адрес модуля тела и полную схему и
+    отдаёт HostedTool с телом-переносом: аргументы кодируются в ToolCommand
+    (ToolArgv.render), вызов идёт накопительно (CollectedCall), конверт
+    разворачивается в результат или PayloadFailureError. Перенос
+    блокирующий и уходит в рабочий поток.
 
     Внутри конвейера (оркестратор поставил ручку в CallAmbient) вызов
-    открывается потоково: каналы узла отдаются слоту дескрипторами, и данные текут
-    между узлами мимо хоста; конверт разворачивается так же. Попутно
-    guard_all отдаёт потоковые декларации инструментов (StreamSpecs) —
-    позже injected-поля снимаются из видимой схемы, и портов в ней уже не
-    найти.
+    открывается потоково: каналы узла отдаются слоту дескрипторами, и данные
+    текут между узлами мимо хоста; конверт разворачивается так же. spec_of()
+    отдаёт потоковую декларацию объявления — позже injected-поля снимаются
+    из видимой схемы, и портов в ней уже не найти.
     """
 
     def __init__(self, ambient: CallAmbient) -> None:
         self._ambient = ambient
+        self._views = CallViews()
 
-    def guard_all(
-        self, tools: Sequence[ToolLike], launcher: ToolLauncher
-    ) -> StreamSpecs:
-        declared: dict[str, StreamSpec] = {}
-        for tool in tools:
-            declared[tool.name] = StreamSpec.of_schema(ToolArgv.schema_of(tool))
-            self._guard(tool, launcher)
+    def hosted(self, payload: PayloadTool, launcher: ToolLauncher) -> HostedTool:
+        """Инструмент хоста с телом-переносом вызова исполнителю launcher."""
+        address = ToolAddress.of(payload)
+        schema = ToolArgv.schema_of(payload)
 
-        return StreamSpecs(declared)
+        return HostedTool(
+            name=payload.name,
+            description=payload.description,
+            args_schema=schema,
+            views=self._views.of(payload.args_schema),
+            body=partial(self._transfer, address, schema, launcher),
+        )
 
-    def _guard(self, tool: ToolLike, launcher: ToolLauncher) -> None:
-        address = ToolAddress.of(tool)
-        schema = ToolArgv.schema_of(tool)
+    def spec_of(self, payload: PayloadTool) -> StreamSpec:
+        """Потоковая декларация объявления: его порты каналов."""
+        return StreamSpec.of_schema(ToolArgv.schema_of(payload))
 
-        call = self._process_call(address, schema, launcher)
-
-        # wraps сохраняет исходное тело в __wrapped__: оттуда читается аннотация
-        # результата
-        if tool.func is not None:
-            self._set_func(tool, wraps(tool.func)(call))
-
-        if tool.coroutine is not None:
-
-            @wraps(tool.coroutine)
-            async def acall(**kwargs: object) -> object:
-                return await asyncio.to_thread(lambda: call(**kwargs))
-
-            self._set_coroutine(tool, acall)
+    async def _transfer(
+        self,
+        address: ToolAddress,
+        schema: type[BaseModel],
+        launcher: ToolLauncher,
+        call: HostedCall,
+    ) -> ToolResultBase:
+        return await asyncio.to_thread(
+            self._process_call, address, schema, launcher, call.kwargs
+        )
 
     def _process_call(
         self,
         address: ToolAddress,
         schema: type[BaseModel],
         launcher: ToolLauncher,
-    ) -> Callable[..., object]:
-        def call(**kwargs: object) -> object:
-            slot = self._ambient.slot()
-            if slot is not None:
-                outcome = self._group_call(address, schema, launcher, slot, kwargs)
-            else:
-                outcome = self._single_call(address, schema, launcher, kwargs)
+        kwargs: Mapping[str, object],
+    ) -> ToolResultBase:
+        slot = self._ambient.slot()
+        if slot is not None:
+            outcome = self._group_call(address, schema, launcher, slot, kwargs)
+        else:
+            outcome = self._single_call(address, schema, launcher, kwargs)
 
-            reply = outcome.reply
-            if isinstance(reply, ReplyError):
-                raise PayloadFailureError(reply.failure)
+        reply = outcome.reply
+        if isinstance(reply, ReplyError):
+            raise PayloadFailureError(reply.failure)
 
-            return reply.content, reply.artifact
-
-        return call
+        return reply.artifact
 
     def _single_call(
         self,
@@ -211,18 +211,3 @@ class ToolProcessWrap:
     def _input_fds(call: ToolCall) -> Iterator[int]:
         for entry in call.inputs():
             yield entry.take_fd()
-
-    @staticmethod
-    def _set_func(tool: ToolLike, body: Callable[..., Any]) -> None:
-        """Подмена тела; у StructuredTool это обычные mutable-поля.
-
-        Протокол ToolLike читающий (mutable-член инвариантен и отверг бы
-        StructuredTool), поэтому запись идёт duck-typing'ом через Any.
-        """
-        owner: Any = tool
-        owner.func = body
-
-    @staticmethod
-    def _set_coroutine(tool: ToolLike, body: Callable[..., Awaitable[Any]]) -> None:
-        owner: Any = tool
-        owner.coroutine = body

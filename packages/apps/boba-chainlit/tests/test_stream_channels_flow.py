@@ -26,36 +26,33 @@ from langgraph.graph.state import CompiledStateGraph
 from pydantic import SecretStr
 
 from boba.chainlit.agent.flow import GraphSpec, PlainGraphBuilder
+from boba.chainlit.agent.tools import LangchainPort
 from boba.chainlit.chat.history import CheckpointMessages, TranscriptFeed
 from boba.chainlit.domain.fields import StepField
 from boba.chainlit.infra.providers import build_history_view
 from boba.chainlit.rendering.chat_view import StepKind
-from boba.identity.context import CallContexts
+from boba.identity.run import Runs
 from boba.stand.refs import StandRefs
+from boba.stand.toolstand import ToolStand
 from boba.stand_core import fake_toolmod
+from boba.stand_core.context import CallStand, StandIdentity
 from boba.stand_core.fake_toolmod import FakeConfig
 from boba.toolkit.chain import CallAmbient, GroupFailureResult, StreamFailureKind
 from boba.toolkit.dag import WorkflowNodeResult, WorkflowResult
-from boba.toolkit.entry import EntryErrorKind, ToolMain
+from boba.toolkit.entry import EntryErrorKind
 from boba.toolkit.launcher import TappedCall, ToolCall, ToolLauncher
 from boba.toolkit.protocol import ToolCommand
 from boba.toolkit.result import (
     FailureResult,
     ToolArtifact,
 )
-from boba.toolkit.wrap import ToolProcessWrap
-from boba.toolrun.bridge import ToolBridge
-from boba.toolrun.call_id import CallFields
-from boba.toolrun.dev_null import DevNullTool
-from boba.toolrun.errors import ToolErrorGuard
+from boba.toolrun.hosted import DirectCalls
 from boba.toolrun.injected import InjectedConfig, StaticConfig
-from boba.toolrun.process import ProcessLauncherConfig, ProcessToolCaller
 from boba.toolrun.stream_calls import (
-    LocalDagService,
-    StreamChannelFields,
     StreamGroupsConfig,
     WorkflowTool,
 )
+from boba.toolrun.streams import CallJournals
 
 CFG = FakeConfig(token=SecretStr("t0ken"), limit=5)
 STREAM_CFG = StreamGroupsConfig(
@@ -105,63 +102,64 @@ class ChannelStand:
     """Инструменты стенда под той же цепочкой обвязок, что в загрузчике, и
     граф хода над ними."""
 
+    ROLE = "dev"
+
     def __init__(self, workdir: Path) -> None:
         self.workdir = workdir
-        ambient = CallAmbient()
-        drain_tool = DevNullTool(ambient)
-        cfg = ProcessLauncherConfig(
-            provider="process",
-            workdir=str(workdir),
-            timeout_sec=60.0,
-            channel_limit_bytes=4_000_000,
-            stderr_tail_bytes=8192,
-            kill_grace_sec=0.5,
+        self._calls = CallStand()
+        contexts = self._calls.contexts
+        stand = ToolStand(
+            STREAM_CFG,
+            contexts,
+            CallJournals(None, Runs(contexts)),
+            CallAmbient(),
+            (InjectedConfig(self._config_of, StaticConfig()),),
         )
         launcher = RecordingLauncher(
-            ProcessToolCaller("stream-channels", cfg, CallContexts(), ambient)
+            stand.process_launcher("stream-channels", workdir, 60.0)
         )
         self._launcher = launcher
-
-        payloads = (
-            fake_toolmod.fake_echo,
-            fake_toolmod.fake_emit,
-            fake_toolmod.fake_collect,
-            fake_toolmod.fake_stream,
-            fake_toolmod.fake_merge,
+        stand.launch(
+            (
+                fake_toolmod.fake_echo,
+                fake_toolmod.fake_emit,
+                fake_toolmod.fake_collect,
+                fake_toolmod.fake_stream,
+                fake_toolmod.fake_merge,
+            ),
+            launcher,
         )
-        tools: list[BaseTool] = []
-        for payload in payloads:
-            tools.append(ToolBridge.as_structured_tool(payload.model_copy()))
 
-        specs = ToolProcessWrap(ambient).guard_all(ToolMain.toolset(*tools), launcher)
-        specs = specs.declaring(DevNullTool.NAME, drain_tool.spec())
+        # как в реестре: исполнитель стоит за маршрутом по имени инструмента
+        self.streams = stand.server(
+            stand.access(self.ROLE, StandIdentity.PROFILE), (), DirectCalls()
+        )
+        # обвязка прав читает субъекта из контекста вызова: ход идёт от него
+        self._calls.use(self._calls.context(THREAD_ID, roles=(self.ROLE,)))
+        self.offered: dict[str, BaseTool] = {}
+        """Инструменты порта, как их получает модель."""
+        for offered in LangchainPort(self.streams).tools():
+            self.offered[offered.name] = offered
 
-        def resolve(name: str, annotation: Any) -> object:
-            return CFG
+    @staticmethod
+    def _config_of(name: str, annotation: object) -> object:
+        return CFG
 
-        InjectedConfig(resolve, StaticConfig()).bind_all(tools)
-        StreamChannelFields(STREAM_CFG).attach_all(tools, specs)
-        CallFields().attach_all(tools)
-        ToolErrorGuard().guard_all(tools)
-
-        # сток хоста идёт без поля id вызова: снимать его в стенде некому
-        drain = ToolBridge.as_structured_tool(drain_tool.build())
-        StreamChannelFields(STREAM_CFG).attach_all([drain], specs)
-        tools.append(drain)
-
-        self.streams = LocalDagService(tools, STREAM_CFG, (), specs, ambient)
-        self.tools = tools
+    def marker(self, name: str) -> Path:
+        """Файл фиксации приёмника: тело пишет его в каталог области вызова
+        — workdir лончера с идентификатором области контекста стенда."""
+        return self.workdir / THREAD_ID / name
 
     def started(self) -> list[tuple[str, ...]]:
         """Команды процессов инструментов, которые стенд запустил."""
         return list(self._launcher.started)
 
     def tool(self, name: str) -> BaseTool:
-        for tool in self.tools:
-            if tool.name == name:
-                return tool
+        offered = self.offered.get(name)
+        if offered is None:
+            raise AssertionError(f"no tool {name!r}")
 
-        raise AssertionError(f"no tool {name!r}")
+        return offered
 
     def graph(
         self, calls: Sequence[Mapping[str, Any]], saver: InMemorySaver
@@ -310,9 +308,7 @@ class TestChannelSchema:
         рядом с ними называет инструмент узла по имени и схем их не несёт."""
         stand = ChannelStand(tmp_path)
 
-        offered: dict[str, BaseTool] = {}
-        for tool in stand.streams.tools():
-            offered[tool.name] = tool
+        offered = stand.offered
 
         assert sorted(offered) == [
             "dev_null",
@@ -361,8 +357,8 @@ class TestSeparateCallsOfOneResponse:
         assert "emitted 48" in str(replies["call_0"].content)
         assert str(replies["call_1"].content).startswith(expected)
         assert str(replies["call_2"].content).startswith(expected)
-        assert (tmp_path / "left").read_text() == expected
-        assert (tmp_path / "right").read_text() == expected
+        assert stand.marker("left").read_text() == expected
+        assert stand.marker("right").read_text() == expected
 
     async def test_writer_without_a_reader_is_drained_by_dev_null(
         self, tmp_path: Path
@@ -424,8 +420,8 @@ class TestModelWiresStreams:
         assert _ok(nodes["right"]).startswith(expected)
         assert nodes["src"].call_id == "call_0_0"
         assert "[left] fake_collect:" in str(reply.content)
-        assert (tmp_path / "left").read_text() == expected
-        assert (tmp_path / "right").read_text() == expected
+        assert stand.marker("left").read_text() == expected
+        assert stand.marker("right").read_text() == expected
 
     async def test_one_workflow_builds_a_diamond(self, tmp_path: Path) -> None:
         stand = ChannelStand(tmp_path)
@@ -470,12 +466,12 @@ class TestModelWiresStreams:
         assert isinstance(
             _failed(_nodes(replies["call_0"])["sink"]), GroupFailureResult
         )
-        assert not (tmp_path / "cut").exists()
+        assert not stand.marker("cut").exists()
 
         assert replies["call_1"].status == "success"
         expected = _collected("m", 8, 1024)
         assert _ok(_nodes(replies["call_1"])["sink"]).startswith(expected)
-        assert (tmp_path / "whole").read_text() == expected
+        assert stand.marker("whole").read_text() == expected
 
     async def test_broken_plan_refuses_the_workflow(self, tmp_path: Path) -> None:
         """Два писателя одного канала: план отвергнут до запуска, вызов
@@ -495,7 +491,7 @@ class TestModelWiresStreams:
         error = _error(replies["call_0"])
         assert "channel 'rows' has two writers" in error.llm_view()
         assert error.error_kind == StreamFailureKind.PLAN_REFUSED
-        assert not (tmp_path / "never").exists()
+        assert not stand.marker("never").exists()
 
     async def test_malformed_workflow_is_refused_with_the_field(
         self, tmp_path: Path
@@ -538,7 +534,7 @@ class TestModelWiresStreams:
             assert "nothing was committed" in error.llm_view()
 
         assert replies["call_0"].status == "error"
-        assert not (tmp_path / "cut").exists()
+        assert not stand.marker("cut").exists()
 
     async def test_history_draws_the_workflow_as_steps_of_its_nodes(
         self, runtime_stand: StandRefs, tmp_path: Path
@@ -561,8 +557,9 @@ class TestModelWiresStreams:
             if step.get(StepField.TYPE) != StepKind.TOOL.value:
                 continue
 
+            # заголовок шага: значок статуса, имя инструмента и длительность
             title = str(step.get(StepField.NAME, ""))
-            names.append(title.rsplit(" ", maxsplit=1)[-1])
+            names.append(title.split(" ")[1])
 
         assert names == ["fake_emit", "fake_collect"]
 
@@ -608,12 +605,12 @@ class TestWorkflowGroups:
         assert isinstance(broken, GroupFailureResult), broken
         assert broken.origin is not None
         assert broken.origin.call_id == "call_0_0"
-        assert not (tmp_path / "cut").exists()
+        assert not stand.marker("cut").exists()
 
         expected = _collected("m", 8, 1024)
         assert _ok(nodes["b_sink"]).startswith(expected)
         assert "emitted 8" in _ok(nodes["b_src"])
-        assert (tmp_path / "whole").read_text() == expected
+        assert stand.marker("whole").read_text() == expected
 
     async def test_channel_names_live_inside_one_workflow_call(
         self, tmp_path: Path
@@ -631,8 +628,8 @@ class TestWorkflowGroups:
 
         assert replies["call_0"].status == "success"
         assert replies["call_1"].status == "success"
-        assert (tmp_path / "first").read_text() == _collected("m", 4, 16)
-        assert (tmp_path / "second").read_text() == _collected("m", 6, 16)
+        assert stand.marker("first").read_text() == _collected("m", 4, 16)
+        assert stand.marker("second").read_text() == _collected("m", 6, 16)
 
     async def test_workflow_and_a_plain_call_share_a_response(
         self, tmp_path: Path
@@ -648,7 +645,7 @@ class TestWorkflowGroups:
 
         assert str(replies["call_0"].content) == "hi|t0ken"
         assert replies["call_1"].status == "success"
-        assert (tmp_path / "kept").read_text() == _collected("m", 4, 16)
+        assert stand.marker("kept").read_text() == _collected("m", 4, 16)
 
     async def test_unread_output_is_drained_by_dev_null(self, tmp_path: Path) -> None:
         stand = ChannelStand(tmp_path)
@@ -677,10 +674,10 @@ class TestWorkflowGroups:
 
         replies = await stand.turn([call])
 
-        schema = _model_schema(stand.streams.tools()[-1])
+        schema = _model_schema(stand.tool(WorkflowTool.NAME))
         assert "intent" in schema["properties"]
         assert replies["call_0"].status == "success"
-        assert (tmp_path / "noted").read_text() == _collected("m", 4, 16)
+        assert stand.marker("noted").read_text() == _collected("m", 4, 16)
 
     async def test_broken_workflow_does_not_touch_its_neighbours(
         self, tmp_path: Path
@@ -698,10 +695,10 @@ class TestWorkflowGroups:
         )
 
         assert _error(replies["call_0"]).error_kind == StreamFailureKind.PLAN_REFUSED
-        assert not (tmp_path / "never").exists()
+        assert not stand.marker("never").exists()
 
         assert replies["call_1"].status == "success"
-        assert (tmp_path / "kept").read_text() == _collected("m", 4, 16)
+        assert stand.marker("kept").read_text() == _collected("m", 4, 16)
         assert str(replies["call_2"].content) == "still here|t0ken"
 
 
@@ -856,7 +853,7 @@ class TestWorkflowRefusals:
             assert fragment in text, text
 
         assert str(reply.content) == text
-        assert not (tmp_path / "never").exists()
+        assert not stand.marker("never").exists()
         assert stand.started() == []
 
     async def test_stream_tool_called_alone_is_refused_by_the_plan(
@@ -935,7 +932,7 @@ class TestWorkflowNodeFailures:
         assert sink.origin is not None
         assert sink.origin.tool == "fake_emit"
         assert "nothing was committed" in sink.llm_view()
-        assert not (tmp_path / "never").exists()
+        assert not stand.marker("never").exists()
 
     async def test_missing_argument_of_a_node_names_the_field(
         self, tmp_path: Path

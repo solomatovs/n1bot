@@ -10,12 +10,11 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 
-from langchain_core.tools import BaseTool
-
 from boba.connection_broker.tools import ConnectionTools
 from boba.connection_broker.user_connections import StoreRef
 from boba.identity.context import CallContexts
 from boba.runtime.plugins import ToolPlugin
+from boba.toolrun.hosted import HostedTool
 
 __all__ = ["ChatPlugins"]
 
@@ -30,7 +29,7 @@ class ChatPlugins:
     def __init__(self, contexts: CallContexts) -> None:
         self._contexts = contexts
 
-    def own_tools(self, store_ref: StoreRef) -> Sequence[BaseTool]:
+    def own_tools(self, store_ref: StoreRef) -> Sequence[HostedTool]:
         """Собственный сервер инструментов чата: каталог соединений."""
         return ConnectionTools(store_ref, self._contexts).build()
 

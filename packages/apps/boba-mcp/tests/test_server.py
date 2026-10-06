@@ -48,13 +48,15 @@ from boba.mcp_server.auth import (
     ServiceTokens,
     TokenHolder,
 )
-from boba.mcp_server.files import FileUploadTool
 from boba.mcp_server.server import (
-    RunLimitMiddleware,
+    FileUploadTool,
     RunLimits,
+    ServerRefusal,
     StreamReadTool,
 )
+from boba.toolkit.calls import CallViews
 from boba.toolkit.channels import ToolChannel
+from boba.toolkit.dag import WorkflowFeature
 from boba.toolkit.wire import (
     FilesFeature,
     JournalFeature,
@@ -62,7 +64,7 @@ from boba.toolkit.wire import (
     RequestMeta,
     WireMeta,
 )
-from boba.toolrun.call_id import CallFields
+from boba.toolrun.hosted import ToolSchema
 from boba.toolrun.stream_calls import WorkflowTool
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
@@ -121,14 +123,13 @@ class TestToolList:
 
         echo = next(tool for tool in listed if tool.name == "fake_echo")
         own = next(tool for tool in stand.registry.tools if tool.name == "fake_echo")
-        if echo.input_schema != stand.schemas.of(own):
+        card = ToolSchema().card_of(own)
+        if echo.input_schema != CallViews().marked(card.parameters, card.views):
             raise AssertionError(f"the schema is published as is: {echo.input_schema}")
 
         properties = echo.input_schema["properties"]
         if "cfg" in properties:
             raise AssertionError("the injected config is not shown to the client")
-        if CallFields.CALL_ID in properties:
-            raise AssertionError("the call id field is not shown to the client")
 
     async def test_weaker_role_sees_fewer_tools(
         self, stand: ServiceStand, url: str
@@ -259,7 +260,7 @@ class TestCall:
         if declared is None:
             raise AssertionError(f"the server declares extensions: {capabilities}")
 
-        for feature in (SealFeature.ID, WorkflowTool.FEATURE, JournalFeature.ID.value):
+        for feature in (SealFeature.ID, WorkflowFeature.ID, JournalFeature.ID):
             if feature not in declared:
                 raise AssertionError(f"{feature} is declared: {sorted(declared)}")
 
@@ -393,8 +394,10 @@ class TestJournal:
             raise AssertionError(f"a journal is read only by its caller: {foreign}")
 
         refusal = foreign.structured_content
-        if refusal is None or refusal.get("status") != StreamReadTool.FORBIDDEN:
-            raise AssertionError(f"a foreign journal is refused with 403: {foreign}")
+        if refusal is None or refusal.get("error_kind") != ServerRefusal.FORBIDDEN:
+            raise AssertionError(
+                f"a foreign journal is refused as forbidden: {foreign}"
+            )
 
 
 class TestFailures:
@@ -503,7 +506,7 @@ class TestRunLimit:
         structured = third.structured_content
         if structured is None:
             raise AssertionError("the refusal carries its model")
-        if structured.get("error_kind") != RunLimitMiddleware.REFUSED:
+        if structured.get("error_kind") != ServerRefusal.RUN_LIMIT:
             raise AssertionError(f"the refusal names the run limit: {structured}")
 
         waited = await second
@@ -1162,7 +1165,7 @@ class TestWorkspaceFiles:
         if declared is None or declared.extensions is None:
             raise AssertionError("the server declares extensions")
 
-        files = declared.extensions.get(FilesFeature.ID.value)
+        files = declared.extensions.get(FilesFeature.ID)
         expected_files = {
             "path": "/mcp/service/files",
             "upload": FileUploadTool.NAME,

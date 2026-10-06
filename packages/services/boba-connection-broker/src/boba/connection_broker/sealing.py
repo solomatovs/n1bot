@@ -18,9 +18,10 @@
 выходит: он возвращается итогом-ошибкой вызова с kind из ConnectionRefusal.
 
 Ошибки:
-TypeError — схема вызова инструмента не модель pydantic v2 и не JSON-схема.
 ConnectionStoreError — таблица соединений недоступна.
 KerberosError — билет к соединению не выпущен.
+StreamPlanError — сервер объявил возможность связки (WorkflowFeature)
+    настройками, которые не проходят её модель.
 """
 
 from __future__ import annotations
@@ -29,11 +30,8 @@ import asyncio
 import logging
 from collections.abc import Mapping, Sequence
 from datetime import timedelta
-from typing import Any, ClassVar
 
-from langchain_core.messages import ToolCall, ToolMessage
-from langchain_core.tools import BaseTool
-from pydantic import BaseModel, ValidationError
+from pydantic import JsonValue, ValidationError
 
 from boba.connection_broker.user_connections import ArmedConnections
 from boba.connections.marks import ConnectionRefusal
@@ -45,20 +43,20 @@ from boba.connections.sealed import (
     SealKey,
 )
 from boba.identity.errors import RefusalError
+from boba.toolkit.chain import StreamPlanError
+from boba.toolkit.dag import (
+    CallDag,
+    DagNode,
+    NodeOutcome,
+    NodeOutcomes,
+    ToolCard,
+    ToolServer,
+)
 from boba.toolkit.failure import ToolRefusalError, ValidationText
-from boba.toolrun.stream_calls import CallDag, CallReply, ToolServer, WorkflowTool
 
 __all__ = ["ConnectionParams", "SealingToolServer", "SentConnections"]
 
 logger = logging.getLogger(__name__)
-
-
-class WorkflowNode:
-    """Ключи узла вызова-связки: формат описания DAG (boba.toolkit.dag)."""
-
-    NODES: ClassVar[str] = CallDag.NODES
-    TOOL: ClassVar[str] = "tool"
-    ARGS: ClassVar[str] = "args"
 
 
 class SentConnections:
@@ -121,7 +119,7 @@ class SentForget:
         self._sent = sent
         self._args = args
 
-    def __call__(self, ended: asyncio.Future[ToolMessage]) -> None:
+    def __call__(self, ended: asyncio.Future[NodeOutcome]) -> None:
         self._sent.forget(self._args)
 
 
@@ -176,120 +174,87 @@ class SealingToolServer(ToolServer):
         self._sent = sent
         self._ttl = ttl
         self._refs = ConnectionRefs()
+        self._outcomes = NodeOutcomes()
+        self._dags = CallDag()
         self._params: dict[str, ConnectionParams] = {}
-        for tool in inner.tools():
-            self._params[tool.name] = self._params_of(tool)
+        for card in inner.tools():
+            self._params[card.name] = ConnectionParams(card.parameters)
 
-    def tools(self) -> Sequence[BaseTool]:
+    def tools(self) -> Sequence[ToolCard]:
         return self._inner.tools()
 
     def features(self) -> Mapping[str, Mapping[str, object]]:
         return self._inner.features()
 
     async def submit(
-        self, calls: Sequence[ToolCall]
-    ) -> Sequence[asyncio.Future[ToolMessage]]:
+        self, calls: Sequence[DagNode]
+    ) -> Sequence[asyncio.Future[NodeOutcome]]:
         """Запечатанные вызовы уходят серверу одним пакетом; вызов с отказом
         запечатывания серверу не уходит и получает готовый отказ."""
-        pending: dict[int, asyncio.Future[ToolMessage]] = {}
-        sent: list[ToolCall] = []
+        pending: dict[int, asyncio.Future[NodeOutcome]] = {}
+        sent: list[DagNode] = []
         positions: list[int] = []
         for position, call in enumerate(calls):
             try:
                 sent.append(await self._sealed(call))
             except ToolRefusalError as exc:
-                logger.warning(
-                    "sealing connections of %s refused: %s", call["name"], exc
-                )
-                pending[position] = CallReply(call).refused(exc.failure())
+                logger.warning("sealing connections of %s refused: %s", call.tool, exc)
+                refused = self._outcomes.refused(call, exc.failure())
+                pending[position] = self._outcomes.settled(refused)
                 continue
 
             positions.append(position)
 
         accepted = await self._inner.submit(sent)
         for position, call, future in zip(positions, sent, accepted, strict=True):
-            future.add_done_callback(SentForget(self._sent, call["args"]))
+            future.add_done_callback(SentForget(self._sent, call.args))
             pending[position] = future
 
-        ordered: list[asyncio.Future[ToolMessage]] = []
+        ordered: list[asyncio.Future[NodeOutcome]] = []
         for position in range(len(calls)):
             ordered.append(pending[position])
 
         return ordered
 
-    async def _sealed(self, call: ToolCall) -> ToolCall:
-        args = await self._sealed_args(call["name"], call["args"])
+    async def _sealed(self, call: DagNode) -> DagNode:
+        """Вызов с запечатанными соединениями.
 
-        return ToolCall(name=call["name"], args=args, id=call["id"], type="tool_call")
-
-    async def _sealed_args(
-        self, tool: str, args: Mapping[str, object]
-    ) -> dict[str, Any]:
-        """Аргументы вызова tool с запечатанными соединениями.
-
-        У инструмента-связки (возможность WorkflowTool.FEATURE) соединения
-        лежат в аргументах узлов: каждый узел — вызов своего инструмента.
+        У инструмента-связки (возможность WorkflowFeature) соединения лежат
+        в аргументах узлов: каждый узел — вызов своего инструмента. Связка,
+        которая не проходит форму описания, уходит серверу как есть — он и
+        ответит, что с ней не так.
         """
-        if tool == self._workflow_tool():
-            return await self._sealed_nodes(args)
+        workflow = self._dags.feature_of(self._inner.features())
+        if workflow is None:
+            return await self._sealed_call(call)
 
-        sent = dict(args)
+        if call.tool != workflow.tool:
+            return await self._sealed_call(call)
 
-        params = self._params.get(tool)
+        try:
+            described = self._dags.described(call)
+        except StreamPlanError:
+            return call
+
+        nodes: list[DagNode] = []
+        for node in described:
+            nodes.append(await self._sealed_call(node))
+
+        return self._dags.with_nodes(call, nodes)
+
+    async def _sealed_call(self, call: DagNode) -> DagNode:
+        """Вызов одного инструмента с запечатанными параметрами-соединениями."""
+        params = self._params.get(call.tool)
         if params is None:
-            return sent
+            return call
 
+        sent: dict[str, JsonValue] = dict(call.args)
         for param, kind in params.kinds().items():
             value = sent.get(param)
             if isinstance(value, str):
                 sent[param] = await self._seal(value, kind)
 
-        return sent
-
-    async def _sealed_nodes(self, args: Mapping[str, object]) -> dict[str, Any]:
-        nodes = args.get(WorkflowNode.NODES)
-        if not isinstance(nodes, list):
-            return dict(args)
-
-        sealed: list[object] = []
-        for node in nodes:
-            sealed.append(await self._sealed_node(node))
-
-        sent = dict(args)
-        sent[WorkflowNode.NODES] = sealed
-
-        return sent
-
-    async def _sealed_node(self, node: object) -> object:
-        """Узел связки с запечатанными аргументами; негодный узел уходит
-        серверу как есть — он и ответит, что с ним не так."""
-        if not isinstance(node, Mapping):
-            return node
-
-        tool = node.get(WorkflowNode.TOOL)
-        args = node.get(WorkflowNode.ARGS)
-        if not isinstance(tool, str):
-            return node
-
-        if not isinstance(args, Mapping):
-            return node
-
-        sent = dict(node)
-        sent[WorkflowNode.ARGS] = await self._sealed_args(tool, args)
-
-        return sent
-
-    def _workflow_tool(self) -> str | None:
-        """Имя инструмента-связки сервера; None — сервер такой не объявил."""
-        declared = self._inner.features().get(WorkflowTool.FEATURE)
-        if declared is None:
-            return None
-
-        name = declared.get("tool")
-        if isinstance(name, str):
-            return name
-
-        return None
+        return call.model_copy(update={"args": sent})
 
     async def _seal(self, value: str, kind: str) -> str:
         """Ссылка → запечатанный профиль; не ссылка уходит серверу как есть."""
@@ -333,18 +298,3 @@ class SealingToolServer(ToolServer):
                 f"encryption key: {ValidationText.of(exc)}"
             )
             raise RefusalError(ConnectionRefusal.SEAL_KEY_UNKNOWN, msg) from exc
-
-    @staticmethod
-    def _params_of(tool: BaseTool) -> ConnectionParams:
-        schema = tool.tool_call_schema
-        if isinstance(schema, dict):
-            return ConnectionParams(schema)
-
-        if issubclass(schema, BaseModel):
-            return ConnectionParams(schema.model_json_schema())
-
-        msg = (
-            f"tool {tool.name!r}: expected a pydantic v2 model or a JSON schema "
-            f"as its call schema, got {schema.__name__}"
-        )
-        raise TypeError(msg)

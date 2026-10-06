@@ -42,7 +42,8 @@ from boba.identity.run import Runs
 from boba.studio.api.auth import ApiAuth, CurrentUser
 from boba.studio.api.urls import ToolCallUrl
 from boba.toolkit.calls import ToolIntent
-from boba.toolrun.dag_run import NodeOutcome
+from boba.toolkit.dag import NodeOutcome
+from boba.toolrun.hosted import DirectCalls
 from boba.toolrun.invoke import (
     CallIdPrefix,
     ToolInvoker,
@@ -145,6 +146,7 @@ class ToolCalling:
         self._profiles = profiles
         self._job_lock = JobLock(locks, heartbeat_sec)
         self._runs = runs
+        self._calls = DirectCalls()
 
     def mount(self, router: APIRouter) -> None:
         router.add_api_route(
@@ -180,8 +182,9 @@ class ToolCalling:
 
     async def _invoker(self, subject: Subject) -> ToolInvoker:
         registry = await self._registry()
+        tools = registry.for_headless(subject.roles, subject.profile)
 
-        return ToolInvoker.for_subject(registry, subject)
+        return ToolInvoker(tools, registry.runner(tools, self._calls))
 
     async def _run(
         self, invoker: ToolInvoker, name: str, body: ToolCallBody, context: CallContext
@@ -192,7 +195,6 @@ class ToolCalling:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
 
         call = invoker.call(name, body.args, body.intent, CallIdPrefix.API)
-        call_id = str(call["id"])
 
         logger.info(
             "api tool call: %s by %s in thread %s",
@@ -204,4 +206,4 @@ class ToolCalling:
         with self._runs.open(context):
             reply = await invoker.invoke(call)
 
-        return ToolCallReply.of(reply, call_id)
+        return ToolCallReply.of(reply, call.key)

@@ -1,6 +1,7 @@
 """Один ход чата: состояние с однократным исходом (TurnState), отчёт об исходе в
 шину, историю и журнал (TurnReporter), стрим ответа под отменой запуска (Runs)
-(ChatTurn).
+(ChatTurn). Ход — владелец запуска: шаги вызовов инструментов ему сообщает
+путь вызова узла чата (ChatCalls).
 
 Ошибки:
 asyncio.CancelledError — ход снят; её ждёт chainlit как признак отмены задачи.
@@ -29,7 +30,6 @@ from boba.chainlit.chat.feed import QuestionBody, ShownElement, TurnFeed
 from boba.chainlit.chat.tracing import AgentTracer, TurnArtifacts
 from boba.chainlit.domain.keys import AttachmentLinks
 from boba.chainlit.rendering.chat_view import ChatView, StepRole, StepText
-from boba.connection_broker.sealing import SentConnections
 from boba.identity.context import CallContexts
 from boba.identity.errors import FailureReport, RefusalError
 from boba.identity.locks import (
@@ -41,6 +41,7 @@ from boba.identity.locks import (
 )
 from boba.identity.run import ElementTarget, RunPort, RunRefusal, Runs
 from boba.messaging import NoticeLevel, TurnOutcome
+from boba.toolkit.result import ToolResultBase
 
 __all__ = [
     "ChatTurn",
@@ -157,7 +158,9 @@ class TurnStateError(Exception):
 
 class TurnState(TurnArtifacts):
     """Состояние хода: исход, зафиксированный ровно один раз, незакрытые вызовы
-    инструментов, потоковые рассуждения и накопленный текст ответа.
+    инструментов, потоковые рассуждения и накопленный текст ответа. Создаёт
+    его ход (ChatTurn): вызовы открывает и закрывает он сам по событиям
+    порта запуска, рассуждения ведёт трасер прогона модели.
     """
 
     def __init__(self) -> None:
@@ -235,15 +238,14 @@ class TurnState(TurnArtifacts):
         self._outcome = outcome
         return True
 
-    def open_tool(self, run_key: str, call_id: str) -> None:
-        """Запоминает вызов запущенного инструмента по ключу прогона langchain."""
-        self._tool_calls[run_key] = call_id
+    def open_tool(self, call_id: str) -> None:
+        """Запоминает начатый вызов инструмента по его идентификатору."""
+        self._tool_calls[call_id] = call_id
 
-    def close_tool(self, run_key: str) -> str | None:
-        """Снимает с учёта вызов завершённого инструмента и возвращает его call_id;
-        None, если прогон неизвестен.
-        """
-        return self._tool_calls.pop(run_key, None)
+    def close_tool(self, call_id: str) -> bool:
+        """Снимает с учёта завершённый вызов; False — вызова среди начатых
+        нет: его уже закрыл исход хода."""
+        return self._tool_calls.pop(call_id, None) is not None
 
     def drain_tools(self) -> Iterator[str]:
         """Отдаёт и снимает с учёта все незавершённые вызовы инструментов."""
@@ -254,7 +256,7 @@ class TurnState(TurnArtifacts):
     @property
     def pending_tool_calls(self) -> list[str]:
         """Вызовы инструментов, которые ход ещё не завершил."""
-        return list(self._tool_calls.values())
+        return list(self._tool_calls)
 
     def add_answer(self, text: str) -> None:
         """Копит текст ответа из стрима, чтобы прерванный ответ попал в историю."""
@@ -394,7 +396,9 @@ class TurnReporter:
 
 class ChatTurn(RunPort):
     """Один ход чата: гонит стрим ответа под отменой запуска (Runs), публикует события
-    через TurnFeed и отчитывается ровно одним исходом.
+    через TurnFeed и отчитывается ровно одним исходом. Реализация RunPort:
+    путь вызова узла (ChatCalls) сообщает сюда начало и конец каждого вызова
+    инструмента — ход публикует шаг в ленту и ведёт учёт незакрытых вызовов.
     """
 
     _REPORTS: ClassVar[set[asyncio.Future[None]]] = set()
@@ -407,7 +411,6 @@ class ChatTurn(RunPort):
         history: TurnHistory,
         question: Question,
         locking: RunLocking,
-        sent: SentConnections,
         contexts: CallContexts,
         runs: Runs,
     ) -> None:
@@ -419,7 +422,7 @@ class ChatTurn(RunPort):
         self._heartbeat_sec = locking.heartbeat_sec
         self._state = TurnState()
         self._answered = False
-        self._tracer = AgentTracer(feed, self._state, sent)
+        self._tracer = AgentTracer(feed, self._state)
         self._contexts = contexts
         self._runs = runs
         self._reporter = TurnReporter(
@@ -433,6 +436,26 @@ class ChatTurn(RunPort):
     def tracer(self) -> AgentTracer:
         """Трасер хода; его отдают в callbacks прогона графа."""
         return self._tracer
+
+    async def tool_started(
+        self, tool_call_id: str, name: str, args: Mapping[str, Any]
+    ) -> None:
+        await self._feed.tool_started(tool_call_id, name, args)
+        self._state.open_tool(tool_call_id)
+
+    async def tool_finished(self, tool_call_id: str, result: ToolResultBase) -> None:
+        """Вызов, который исход хода уже закрыл как остановленный, второй
+        раз не рисуется."""
+        if not self._state.close_tool(tool_call_id):
+            return
+
+        await self._feed.tool_finished(tool_call_id, result)
+
+    async def tool_failed(self, tool_call_id: str, error: str) -> None:
+        if not self._state.close_tool(tool_call_id):
+            return
+
+        await self._feed.tool_failed(tool_call_id, error)
 
     def element_target(self, tool_call_id: str) -> ElementTarget:
         """Возвращает адрес элемента вызова инструмента: он крепится к шагу ответа."""

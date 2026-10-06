@@ -10,17 +10,15 @@ from __future__ import annotations
 
 from typing import ClassVar
 
-from langchain_core.tools import BaseTool
-
+from boba.identity.context import CallContexts
+from boba.stand.refs import StandRefs
 from boba.tool.shell.tools import TOOLS, BashToolConfig
-from boba.toolkit.chain import CallAmbient
-from boba.toolkit.entry import ToolAddress, ToolArgv, ToolMain
+from boba.toolkit.entry import ToolAddress, ToolArgv
 from boba.toolkit.facade import PayloadTool
 from boba.toolkit.launcher import CollectedCall, PayloadFailureError, ToolLauncher
 from boba.toolkit.protocol import ReplyError
 from boba.toolkit.result import ErrorResult, ShellResult
-from boba.toolkit.wrap import ToolProcessWrap
-from boba.toolrun.bridge import ToolBridge
+from boba.toolrun.hosted import HostedTool
 from boba.toolrun.injected import InjectedConfig, StaticConfig
 
 __all__ = ["ShellRun"]
@@ -40,18 +38,17 @@ class ShellRun:
     )
 
     @classmethod
-    def tool(cls, launcher: ToolLauncher, cfg: BashToolConfig = CONFIG) -> BaseTool:
-        """Langchain-тул bash поверх launcher'а: обёртка запуска и конфиг,
+    def tool(cls, launcher: ToolLauncher, cfg: BashToolConfig = CONFIG) -> HostedTool:
+        """Инструмент хоста bash поверх launcher'а: обёртка запуска и конфиг,
         как ставит загрузчик приложения."""
         payload = TOOLS[0]
         if not isinstance(payload, PayloadTool):
             msg = f"bash TOOLS[0] is {type(payload).__name__}, PayloadTool expected"
             raise PayloadFailureError(ErrorResult(message=msg, error_kind=cls.CONTRACT))
 
-        copy = payload.model_copy()
-        bridged = ToolBridge.as_structured_tool(copy)
-        ToolProcessWrap(CallAmbient()).guard_all(ToolMain.toolset(bridged), launcher)
-        InjectedConfig(lambda name, annotation: cfg, StaticConfig()).bind_all([bridged])
+        config = InjectedConfig(lambda name, annotation: cfg, StaticConfig())
+        stand = StandRefs(CallContexts()).tool_stand((config,))
+        (bridged,) = stand.launch([payload], launcher)
 
         return bridged
 

@@ -4,14 +4,13 @@
 ставит их сразу поверх обёртки запуска. InjectedConfig — источник значений
 конфига: partial кладёт статические значения в kwargs до того, как обёртка
 разложит их на argv и stdin, и снимает injected-поля с args_schema —
-langchain валидирует вход по схеме до тела; значение с keytab-секцией
+инструмент хоста проверяет вход по схеме до тела; значение с keytab-секцией
 довооружается на каждый вызов (ConfigArming). AsyncInjected — база обвязок,
 которым значение нужно дождаться на каждом вызове (билет, соединения
 субъекта, контекст вызова).
 
 Ошибки:
 ToolConfigError — у injected-параметра нет значения у загрузчика.
-InjectedAsyncOnlyError — тело с ожидаемым значением вызвано синхронно.
 """
 
 from __future__ import annotations
@@ -21,16 +20,14 @@ from abc import abstractmethod
 from collections.abc import Callable, Sequence
 from typing import Any, Protocol, TypeAlias
 
-from langchain_core.tools import BaseTool
-
 from boba.toolkit.entry import ToolArgv
-from boba.toolrun.wrapping import CallHooks, ToolBody, ToolSchema
+from boba.toolrun.hosted import HostedCall, HostedTool, ToolSchema
+from boba.toolrun.wrapping import CallHooks, ToolBody
 
 __all__ = [
     "AsyncInjected",
     "ConfigArming",
     "ConfigResolver",
-    "InjectedAsyncOnlyError",
     "InjectedConfig",
     "ParamSource",
     "StaticConfig",
@@ -47,10 +44,6 @@ class ToolConfigError(Exception):
     """Injected-параметру инструмента нечего подставить."""
 
 
-class InjectedAsyncOnlyError(Exception):
-    """Обвязка поставлена, но тело вызвано путём, где значение не дождаться."""
-
-
 class ParamSource(Protocol):
     """Источник значений служебных параметров инструмента.
 
@@ -61,7 +54,7 @@ class ParamSource(Protocol):
     """
 
     @abstractmethod
-    def bind_all(self, tools: Sequence[BaseTool]) -> None: ...
+    def bind_all(self, tools: Sequence[HostedTool]) -> None: ...
 
 
 class ConfigArming(Protocol):
@@ -105,26 +98,8 @@ class AsyncInjected(CallHooks[None]):
     async def value(self, name: str, kwargs: dict[str, object]) -> object:
         """Значение параметра для этого вызова."""
 
-    def before(
-        self,
-        name: str,
-        args: tuple[object, ...],
-        kwargs: dict[str, object],
-    ) -> None:
-        msg = (
-            f"tool {name!r}: injected {self._param!r} is built by "
-            f"{type(self).__name__} in the async body only, but the tool was "
-            "invoked synchronously"
-        )
-        raise InjectedAsyncOnlyError(msg)
-
-    async def before_async(
-        self,
-        name: str,
-        args: tuple[object, ...],
-        kwargs: dict[str, object],
-    ) -> None:
-        kwargs[self._param] = await self.value(name, kwargs)
+    async def before(self, call: HostedCall) -> None:
+        call.kwargs[self._param] = await self.value(call.tool, call.kwargs)
 
 
 class InjectedConfig(ParamSource):
@@ -141,14 +116,9 @@ class InjectedConfig(ParamSource):
         def __init__(self, values: dict[str, object]) -> None:
             self._values = values
 
-        def before(
-            self,
-            name: str,
-            args: tuple[object, ...],
-            kwargs: dict[str, object],
-        ) -> None:
+        async def before(self, call: HostedCall) -> None:
             for key, value in self._values.items():
-                kwargs.setdefault(key, value)
+                call.kwargs.setdefault(key, value)
 
     class _Armed(AsyncInjected):
         def __init__(self, arming: ConfigArming, param: str, base: object) -> None:
@@ -161,15 +131,15 @@ class InjectedConfig(ParamSource):
     def __init__(self, resolve: ConfigResolver, arming: ConfigArming) -> None:
         self._resolve = resolve
         self._arming = arming
+        self._bodies = ToolBody()
+        self._schemas = ToolSchema()
 
-    def bind_all(self, tools: Sequence[BaseTool]) -> None:
+    def bind_all(self, tools: Sequence[HostedTool]) -> None:
         for tool in tools:
             self._bind(tool)
 
-    def _bind(self, tool: BaseTool) -> None:
-        schema = ToolSchema.of(tool)
-        if schema is None:
-            return
+    def _bind(self, tool: HostedTool) -> None:
+        schema = tool.args_schema
 
         values: dict[str, object] = {}
         for param, annotation in ToolArgv.injected_fields(schema).items():
@@ -184,10 +154,10 @@ class InjectedConfig(ParamSource):
                 static[param] = value
                 continue
 
-            ToolBody.hook_all([tool], self._Armed(self._arming, param, value))
+            self._bodies.hook_all([tool], self._Armed(self._arming, param, value))
             logger.info("tool %s: config %s is armed per call", tool.name, param)
 
         if static:
-            ToolBody.hook_all([tool], self._Partial(static))
+            self._bodies.hook_all([tool], self._Partial(static))
 
-        tool.args_schema = ToolSchema.rebuild(schema, {}, values)
+        tool.args_schema = self._schemas.rebuild(schema, {}, values)

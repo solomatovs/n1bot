@@ -14,23 +14,23 @@ import logging
 from collections import OrderedDict
 from typing import ClassVar
 
-from langchain_core.messages import ToolCall, ToolMessage
+from langchain_core.messages import ToolMessage
 
 from boba.canvas.canvas import WatchProbe, WatchSource
 from boba.canvas.journal import StreamSlice
+from boba.chainlit.agent.bridge import LangchainMessages
 from boba.chainlit.chat.history import ThreadMessages
 from boba.chainlit.rendering.chat_view import StreamableTools
 from boba.identity.context import CallContexts
 from boba.mcp_client.client import (
     CallSignals,
-    JournalAddress,
-    JournalAddresses,
     JournalListener,
     McpCaller,
     McpClientError,
     McpServers,
 )
 from boba.toolkit.channels import JournalChannel, JournalChannels
+from boba.toolkit.dag import DagNode, JournalAddress
 from boba.toolkit.wire import JournalRead, JournalSignal
 
 __all__ = ["RemoteJournal", "RemoteJournals", "RemoteStreams"]
@@ -140,7 +140,7 @@ class RemoteJournals(CallSignals, StreamableTools):
     def __init__(self, contexts: CallContexts, history: ThreadMessages) -> None:
         self._contexts = contexts
         self._history = history
-        self._addresses = JournalAddresses()
+        self._messages = LangchainMessages()
         self._live: OrderedDict[tuple[str, str], RemoteJournal] = OrderedDict()
         self._streamable: frozenset[str] = frozenset()
 
@@ -152,7 +152,7 @@ class RemoteJournals(CallSignals, StreamableTools):
     def streamable(self, tool_name: str) -> bool:
         return tool_name in self._streamable
 
-    def listener(self, server: str, call: ToolCall) -> JournalListener:
+    def listener(self, server: str, call: DagNode) -> JournalListener:
         thread_id = self._contexts.current().scope.id
 
         return CallJournalListener(self, thread_id, server)
@@ -187,7 +187,7 @@ class RemoteJournals(CallSignals, StreamableTools):
             if message.tool_call_id != call_id:
                 continue
 
-            return self._addresses.of(message)
+            return self._messages.journal_of(message)
 
         return None
 

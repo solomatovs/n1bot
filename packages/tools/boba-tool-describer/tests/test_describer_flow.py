@@ -23,7 +23,6 @@ from typing import Any, ClassVar
 from uuid import UUID
 
 import pytest
-from langchain_core.messages import AIMessage, BaseMessage, ToolMessage
 from omegaconf import DictConfig, OmegaConf
 from psycopg import sql
 from pydantic import SecretStr
@@ -53,14 +52,14 @@ from boba.stand_core.context import CallStand
 from boba.tool.describer.address import Addresses, EntityAddress
 from boba.tool.describer.edges import EdgeKind, EdgeListColumn
 from boba.tool.describer.nodes import NodeListColumn
+from boba.toolkit.dag import DagNode, NodeOutcome, ToolServer
 from boba.toolkit.result import (
     ErrorResult,
     ExceptionResult,
     SqlResult,
     TableResult,
-    ToolArtifact,
 )
-from boba.toolrun.stream_calls import ToolServer
+from boba.toolrun.hosted import DirectCalls
 
 _REPO = Path(__file__).resolve().parents[4]
 _SANDBOX_STAGING = _REPO / "build" / "src" / "sandbox"
@@ -111,9 +110,6 @@ CH_REF = ConnectionRef(kind="clickhouse", name=CH_CONNECTION).render()
 DM = "dm"
 CH_DATABASE = "describer_e2e"
 
-
-FINAL_ANSWER = "the schema is described and linked"
-
 WINDOW: dict[str, int] = {"offset": 0, "limit": 50}
 """Окно выдачи каталожных инструментов: его задаёт вызов."""
 
@@ -157,21 +153,17 @@ class ScriptedTurn:
     """Ход по сценарию без модели: вызовы каждого шага уходят порту
     инструментов одной пачкой, ответы ложатся в историю следом за шагом.
 
-    Создаётся тестом из порта инструментов; run отдаёт историю хода — шаги
-    сценария и сообщения инструментов в порядке вызовов.
+    Создаётся тестом из порта инструментов; run отдаёт историю хода — итоги
+    вызовов в порядке шагов сценария.
     """
 
     def __init__(self, service: ToolServer) -> None:
         self._service = service
 
-    async def run(self, scripted: Sequence[AIMessage]) -> list[BaseMessage]:
-        history: list[BaseMessage] = []
+    async def run(self, scripted: Sequence[Sequence[DagNode]]) -> list[NodeOutcome]:
+        history: list[NodeOutcome] = []
         for step in scripted:
-            history.append(step)
-            if not step.tool_calls:
-                continue
-
-            pending = await self._service.submit(step.tool_calls)
+            pending = await self._service.submit(step)
             for reply in pending:
                 history.append(await reply)
 
@@ -239,9 +231,9 @@ def _key() -> SecretStr:
     return SecretStr(base64.b64encode(std_secrets.token_bytes(32)).decode())
 
 
-def _call(call_id: str, name: str, **args: Any) -> dict[str, Any]:
+def _call(call_id: str, name: str, **args: Any) -> DagNode:
     args["intent"] = f"scripted {name}"
-    return {"name": name, "args": args, "id": call_id, "type": "tool_call"}
+    return DagNode(key=call_id, tool=name, args=args)
 
 
 @pytest.fixture(scope="module")
@@ -266,7 +258,7 @@ def session_service(
     registry = runtime_stand.registry(flow_raw, refs, StandRefs.granted(PROFILE, ["*"]))
     tools = registry.for_session(frozenset(ROLES), PROFILE)
     return SealingToolServer(
-        registry.server(tools),
+        registry.server(tools, DirectCalls()),
         ArmedConnections(refs.connection_store, refs.credentials, refs.contexts),
         SentConnections(),
         StandUserConnections.TTL,
@@ -419,7 +411,7 @@ def turn_context(call_stand: CallStand) -> Iterator[None]:
         call_stand.clear()
 
 
-def _script(expected: Expected) -> list[AIMessage]:
+def _script(expected: Expected) -> list[list[DagNode]]:
     """Сценарий агента: разведка метаданных, адреса, узлы, рёбра, ошибки, список."""
     orders = expected.pg_table("orders")
     orders_customer = expected.pg_column("orders", "customer_id")
@@ -440,168 +432,141 @@ def _script(expected: Expected) -> list[AIMessage]:
     )
 
     return [
-        AIMessage(
-            content="", tool_calls=[_call(CallId.CONNECTIONS, "connection_list")]
-        ),
-        AIMessage(
-            content="",
-            tool_calls=[
-                _call(
-                    CallId.PG_DESCRIBE,
-                    "pg_describe_table",
-                    connection=PG_REF,
-                    table="orders",
-                    pg_schema=DM,
-                    **WINDOW,
-                ),
-                _call(
-                    CallId.PG_FK,
-                    "pg_query",
-                    connection=PG_REF,
-                    sql=fk_sql,
-                    **WINDOW,
-                ),
-                _call(
-                    CallId.CH_DESCRIBE,
-                    "ch_query",
-                    connection=CH_REF,
-                    sql=ch_columns_sql,
-                    **WINDOW,
-                ),
-            ],
-        ),
-        AIMessage(
-            content="",
-            tool_calls=[
-                _call(CallId.PG_ADDRESS, "pg_address", connection=PG_REF),
-                _call(CallId.CH_ADDRESS, "ch_address", connection=CH_REF),
-            ],
-        ),
-        AIMessage(
-            content="",
-            tool_calls=[
-                _call(
-                    CallId.NODE_ORDERS,
-                    "describe_node",
-                    kind="pg_table",
-                    address=orders,
-                    description="orders placed by customers",
-                ),
-                _call(
-                    CallId.NODE_ORDERS_CUSTOMER,
-                    "describe_node",
-                    kind="pg_column",
-                    address=orders_customer,
-                    description="customer who placed the order",
-                ),
-                _call(
-                    CallId.NODE_CUSTOMERS,
-                    "describe_node",
-                    kind="pg_table",
-                    address=customers,
-                    description="registered customers",
-                ),
-                _call(
-                    CallId.NODE_CUSTOMERS_ID,
-                    "describe_node",
-                    kind="pg_column",
-                    address=customers_id,
-                    description="customer surrogate key",
-                ),
-                _call(
-                    CallId.NODE_EVENTS_USER,
-                    "describe_node",
-                    kind="ch_column",
-                    address=events_user,
-                    description="customer id in the event stream",
-                ),
-                _call(
-                    CallId.NODE_ENTITY,
-                    "describe_node",
-                    kind="entity",
-                    address=customer,
-                    description="a person who buys",
-                ),
-            ],
-        ),
-        AIMessage(
-            content="",
-            tool_calls=[
-                _call(
-                    CallId.EDGE_FK,
-                    "describe_edge",
-                    source=orders_customer,
-                    target=customers_id,
-                    kind="foreign_key",
-                    description="orders_customer_id_fkey",
-                ),
-                _call(
-                    CallId.EDGE_IMPLICIT,
-                    "describe_edge",
-                    source=events_user,
-                    target=customers_id,
-                    kind="implicit_key",
-                    description="event user ids are customer ids",
-                ),
-                _call(
-                    CallId.EDGE_SIMILAR,
-                    "describe_edge",
-                    source=customers,
-                    target=customer,
-                    kind="similar",
-                    description="the table holds customers",
-                ),
-            ],
-        ),
-        AIMessage(
-            content="",
-            tool_calls=[
-                _call(
-                    CallId.BAD_ADDRESS,
-                    "describe_node",
-                    kind="pg_table",
-                    address=orders_customer,
-                    description="kind and address disagree",
-                ),
-                _call(
-                    CallId.BAD_EDGE,
-                    "describe_edge",
-                    source=expected.pg_table("payments"),
-                    target=customers,
-                    kind="similar",
-                    description="payments were never described",
-                ),
-                _call(
-                    CallId.BAD_ARGS,
-                    "describe_node",
-                    kind="pg_table",
-                    address=orders,
-                ),
-            ],
-        ),
-        AIMessage(
-            content="",
-            tool_calls=[
-                _call(CallId.LIST_NODES, "describe_list_nodes", **WINDOW),
-                _call(CallId.LIST_EDGES, "describe_list_edges", **WINDOW),
-            ],
-        ),
-        AIMessage(
-            content="",
-            tool_calls=[
-                _call(CallId.DELETE_EDGE, "describe_delete_edge", ids=[FIRST_EDGE_ID]),
-                _call(CallId.DELETE_NODE, "describe_delete_node", ids=[LAST_NODE_ID]),
-                _call(CallId.BAD_DELETE, "describe_delete_node", ids=[999_999]),
-            ],
-        ),
-        AIMessage(
-            content="",
-            tool_calls=[
-                _call(CallId.LIST_NODES_AFTER, "describe_list_nodes", **WINDOW),
-                _call(CallId.LIST_EDGES_AFTER, "describe_list_edges", **WINDOW),
-            ],
-        ),
-        AIMessage(content=FINAL_ANSWER),
+        [_call(CallId.CONNECTIONS, "connection_list")],
+        [
+            _call(
+                CallId.PG_DESCRIBE,
+                "pg_describe_table",
+                connection=PG_REF,
+                table="orders",
+                pg_schema=DM,
+                **WINDOW,
+            ),
+            _call(
+                CallId.PG_FK,
+                "pg_query",
+                connection=PG_REF,
+                sql=fk_sql,
+                **WINDOW,
+            ),
+            _call(
+                CallId.CH_DESCRIBE,
+                "ch_query",
+                connection=CH_REF,
+                sql=ch_columns_sql,
+                **WINDOW,
+            ),
+        ],
+        [
+            _call(CallId.PG_ADDRESS, "pg_address", connection=PG_REF),
+            _call(CallId.CH_ADDRESS, "ch_address", connection=CH_REF),
+        ],
+        [
+            _call(
+                CallId.NODE_ORDERS,
+                "describe_node",
+                kind="pg_table",
+                address=orders,
+                description="orders placed by customers",
+            ),
+            _call(
+                CallId.NODE_ORDERS_CUSTOMER,
+                "describe_node",
+                kind="pg_column",
+                address=orders_customer,
+                description="customer who placed the order",
+            ),
+            _call(
+                CallId.NODE_CUSTOMERS,
+                "describe_node",
+                kind="pg_table",
+                address=customers,
+                description="registered customers",
+            ),
+            _call(
+                CallId.NODE_CUSTOMERS_ID,
+                "describe_node",
+                kind="pg_column",
+                address=customers_id,
+                description="customer surrogate key",
+            ),
+            _call(
+                CallId.NODE_EVENTS_USER,
+                "describe_node",
+                kind="ch_column",
+                address=events_user,
+                description="customer id in the event stream",
+            ),
+            _call(
+                CallId.NODE_ENTITY,
+                "describe_node",
+                kind="entity",
+                address=customer,
+                description="a person who buys",
+            ),
+        ],
+        [
+            _call(
+                CallId.EDGE_FK,
+                "describe_edge",
+                source=orders_customer,
+                target=customers_id,
+                kind="foreign_key",
+                description="orders_customer_id_fkey",
+            ),
+            _call(
+                CallId.EDGE_IMPLICIT,
+                "describe_edge",
+                source=events_user,
+                target=customers_id,
+                kind="implicit_key",
+                description="event user ids are customer ids",
+            ),
+            _call(
+                CallId.EDGE_SIMILAR,
+                "describe_edge",
+                source=customers,
+                target=customer,
+                kind="similar",
+                description="the table holds customers",
+            ),
+        ],
+        [
+            _call(
+                CallId.BAD_ADDRESS,
+                "describe_node",
+                kind="pg_table",
+                address=orders_customer,
+                description="kind and address disagree",
+            ),
+            _call(
+                CallId.BAD_EDGE,
+                "describe_edge",
+                source=expected.pg_table("payments"),
+                target=customers,
+                kind="similar",
+                description="payments were never described",
+            ),
+            _call(
+                CallId.BAD_ARGS,
+                "describe_node",
+                kind="pg_table",
+                address=orders,
+            ),
+        ],
+        [
+            _call(CallId.LIST_NODES, "describe_list_nodes", **WINDOW),
+            _call(CallId.LIST_EDGES, "describe_list_edges", **WINDOW),
+        ],
+        [
+            _call(CallId.DELETE_EDGE, "describe_delete_edge", ids=[FIRST_EDGE_ID]),
+            _call(CallId.DELETE_NODE, "describe_delete_node", ids=[LAST_NODE_ID]),
+            _call(CallId.BAD_DELETE, "describe_delete_node", ids=[999_999]),
+        ],
+        [
+            _call(CallId.LIST_NODES_AFTER, "describe_list_nodes", **WINDOW),
+            _call(CallId.LIST_EDGES_AFTER, "describe_list_edges", **WINDOW),
+        ],
     ]
 
 
@@ -617,11 +582,10 @@ def node_calls_urls(expected: Expected) -> list[str]:
     ]
 
 
-def _replies(messages: Sequence[BaseMessage]) -> dict[str, ToolMessage]:
-    by_call: dict[str, ToolMessage] = {}
+def _replies(messages: Sequence[NodeOutcome]) -> dict[str, NodeOutcome]:
+    by_call: dict[str, NodeOutcome] = {}
     for message in messages:
-        if isinstance(message, ToolMessage):
-            by_call[message.tool_call_id] = message
+        by_call[message.key] = message
 
     return by_call
 
@@ -629,17 +593,15 @@ def _replies(messages: Sequence[BaseMessage]) -> dict[str, ToolMessage]:
 class Replies:
     """Ответы инструментов хода по id вызова."""
 
-    def __init__(self, messages: Sequence[BaseMessage]) -> None:
+    def __init__(self, messages: Sequence[NodeOutcome]) -> None:
         self._by_call = _replies(messages)
 
     def ok(self, call_id: str) -> Any:
         reply = self._reply(call_id)
-        if reply.status == "error":
+        if reply.errored:
             raise AssertionError(f"{call_id} failed: {reply.content}")
 
-        artifact = ToolArtifact.revive(reply.artifact)
-        if artifact is None:
-            raise AssertionError(f"{call_id}: artifact is not revived")
+        artifact = reply.artifact
 
         if isinstance(artifact, ErrorResult):
             raise AssertionError(f"{call_id} failed: {artifact.message}")
@@ -649,23 +611,23 @@ class Replies:
     def refused(self, call_id: str) -> ErrorResult | ExceptionResult:
         """Сбой тела: сообщение со статусом хода и артефактом-ошибкой."""
         reply = self._reply(call_id)
-        artifact = ToolArtifact.revive(reply.artifact)
+        artifact = reply.artifact
         if not isinstance(artifact, ErrorResult | ExceptionResult):
             raise AssertionError(f"{call_id} must fail, got {reply.content!r}")
 
         return artifact
 
-    def invalid(self, call_id: str) -> ToolMessage:
-        """Отказ валидации аргументов до тела: статус error у сообщения."""
+    def invalid(self, call_id: str) -> NodeOutcome:
+        """Отказ валидации аргументов до тела: итог помечен ошибкой вызова."""
         reply = self._reply(call_id)
-        if reply.status != "error":
+        if not reply.errored:
             raise AssertionError(
                 f"{call_id} must fail validation, got {reply.content!r}"
             )
 
         return reply
 
-    def _reply(self, call_id: str) -> ToolMessage:
+    def _reply(self, call_id: str) -> NodeOutcome:
         reply = self._by_call.get(call_id)
         if reply is None:
             raise AssertionError(f"history has no tool message for {call_id}")
@@ -841,10 +803,6 @@ async def test_agent_describes_schema_and_links(  # noqa: PLR0915 — один �
     assert len(nodes_after) == 5
     assert FIRST_EDGE_ID not in _column(edges_after, EdgeListColumn.ID.value)
 
-    last = messages[-1]
-    assert isinstance(last, AIMessage)
-    assert last.content == FINAL_ANSWER
-
     # таблицы до удаления проверялись ответами; после — строки области треда
     nodes = await _stored_nodes(pool)
     assert len(nodes) == 5
@@ -899,36 +857,28 @@ async def test_second_turn_updates_instead_of_duplicating(
     orders = expected.pg_table("orders")
 
     first = [
-        AIMessage(
-            content="",
-            tool_calls=[
-                _call(
-                    CallId.NODE_ORDERS,
-                    "describe_node",
-                    kind="pg_table",
-                    address=orders,
-                    description="first take",
-                )
-            ],
-        ),
-        AIMessage(content=FINAL_ANSWER),
+        [
+            _call(
+                CallId.NODE_ORDERS,
+                "describe_node",
+                kind="pg_table",
+                address=orders,
+                description="first take",
+            )
+        ],
     ]
     await ScriptedTurn(session_service).run(first)
 
     second = [
-        AIMessage(
-            content="",
-            tool_calls=[
-                _call(
-                    "call-node-orders-again",
-                    "describe_node",
-                    kind="pg_table",
-                    address=orders,
-                    description="second take",
-                )
-            ],
-        ),
-        AIMessage(content=FINAL_ANSWER),
+        [
+            _call(
+                "call-node-orders-again",
+                "describe_node",
+                kind="pg_table",
+                address=orders,
+                description="second take",
+            )
+        ],
     ]
     messages = await ScriptedTurn(session_service).run(second)
 

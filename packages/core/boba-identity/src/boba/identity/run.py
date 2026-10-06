@@ -31,6 +31,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from boba.cancellation import RunCancellation, StopReason
 from boba.identity.context import CallContext, CallContexts
 from boba.identity.errors import RefusalError
+from boba.toolkit.result import ToolResultBase
 
 __all__ = [
     "ElementTarget",
@@ -60,7 +61,29 @@ class ElementTarget(BaseModel):
 
 
 class RunPort(Protocol):
-    """Что инструменту нужно от владельца запуска: куда крепить его элемент."""
+    """Что исполнению нужно от владельца запуска с лентой: шаг вызова
+    инструмента и место его элемента.
+
+    О начале и конце вызова владельцу сообщает путь вызова узла приложения
+    (ChatCalls), элементы вызова показывает монтирование результата.
+    """
+
+    @abstractmethod
+    async def tool_started(
+        self, tool_call_id: str, name: str, args: Mapping[str, Any]
+    ) -> None:
+        """Вызов инструмента name начат: аргументы — какими их видит пользователь."""
+        ...
+
+    @abstractmethod
+    async def tool_finished(self, tool_call_id: str, result: ToolResultBase) -> None:
+        """Вызов дошёл до тела, и тело ответило результатом result."""
+        ...
+
+    @abstractmethod
+    async def tool_failed(self, tool_call_id: str, error: str) -> None:
+        """Вызов кончился ошибкой самого вызова; error — её текст для ленты."""
+        ...
 
     @abstractmethod
     def element_target(self, tool_call_id: str) -> ElementTarget:

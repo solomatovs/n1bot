@@ -27,7 +27,6 @@ from collections.abc import Callable, Sequence
 from datetime import UTC, datetime, timedelta
 from typing import Annotated, Any
 
-from langchain_core.tools import BaseTool
 from pydantic.fields import FieldInfo
 
 from boba.connection_broker.store import ConnectionStore
@@ -49,8 +48,9 @@ from boba.identity.errors import RefusalError
 from boba.kerberos import TicketAuth
 from boba.toolkit.entry import ToolArgv
 from boba.toolkit.types import SecretReveal
+from boba.toolrun.hosted import HostedTool, ToolSchema
 from boba.toolrun.injected import AsyncInjected, ToolConfigError
-from boba.toolrun.wrapping import ToolBody, ToolSchema
+from boba.toolrun.wrapping import ToolBody
 
 __all__ = [
     "ArmedConnections",
@@ -91,18 +91,17 @@ class ConnectionParamHooks:
     def __init__(self, types_ref: TypesRef, description: str) -> None:
         self._types_ref = types_ref
         self._description = description
+        self._bodies = ToolBody()
+        self._schemas = ToolSchema()
 
-    def bind_all(self, tools: Sequence[BaseTool], make: HookFactory) -> None:
+    def bind_all(self, tools: Sequence[HostedTool], make: HookFactory) -> None:
         """Зовётся до InjectedConfig: параметры читаются со схемы, пока она
         полная."""
         for tool in tools:
             self._bind_one(tool, make)
 
-    def _bind_one(self, tool: BaseTool, make: HookFactory) -> None:
-        schema = ToolSchema.of(tool)
-        if schema is None:
-            return
-
+    def _bind_one(self, tool: HostedTool, make: HookFactory) -> None:
+        schema = tool.args_schema
         fields = ToolArgv.connection_fields(schema)
         if not fields:
             return
@@ -111,14 +110,14 @@ class ConnectionParamHooks:
         for param, annotation in fields.items():
             kind = self._kind_of(tool.name, param, annotation)
 
-            ToolBody.hook_all([tool], make(tool.name, param, kind))
+            self._bodies.hook_all([tool], make(tool.name, param, kind))
             shown[param] = self._field(kind)
 
             logger.info(
                 "tool %s: %s is a %s connection of the caller", tool.name, param, kind
             )
 
-        tool.args_schema = ToolSchema.rebuild(schema, shown, ())
+        tool.args_schema = self._schemas.rebuild(schema, shown, ())
 
     def _field(self, kind: str) -> tuple[Any, FieldInfo]:
         marked = Annotated[str, ConnectionSchemaMark(kind)]

@@ -81,7 +81,7 @@ class SandboxToolProfiles:
 
     def networked(self) -> dict[str, SandboxProfile]:
         """Инструменты, которым конфиг разрешил сеть."""
-        installed = EntryPointPlugins.discover()
+        installed = EntryPointPlugins().discover()
 
         profiles: dict[str, SandboxProfile] = {}
         for name in self._tool_names():

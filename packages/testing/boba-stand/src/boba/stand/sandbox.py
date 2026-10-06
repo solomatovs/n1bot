@@ -222,7 +222,7 @@ def sandbox_profile(
 
 def plugin_launch_spec(section: str) -> LaunchSpec:
     """Спека запуска секции из установленных entry points — как у приложения."""
-    table = EntryPointPlugins.discover()
+    table = EntryPointPlugins().discover()
     plugin = table.get(section)
     if plugin is None:
         installed = sorted(table)

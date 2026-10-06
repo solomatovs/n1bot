@@ -1,5 +1,6 @@
-"""Колбэки langchain одного прогона: AgentTracer публикует события процесса ответа в
-шину через TurnFeed, LlmStateLog пишет смену состояний прогона в журнал.
+"""Колбэки langchain прогонов модели: AgentTracer публикует рассуждения и расход
+токенов в шину через TurnFeed, LlmStateLog пишет смену состояний прогона в
+журнал. Вызовы инструментов идут мимо langchain и сюда не приходят.
 
 Ошибки: своих не выпускает; сбой публикации показывается в чат и журнал одним
 разбором FailureReport, сбой журналирования уходит колбэк-менеджеру langchain.
@@ -18,7 +19,7 @@ from typing import Any, ClassVar, Final, Protocol, TypeVar
 from uuid import UUID
 
 from langchain_core.callbacks import AsyncCallbackHandler
-from langchain_core.messages import AIMessage, BaseMessage, ToolMessage
+from langchain_core.messages import AIMessage, BaseMessage
 from langchain_core.outputs import ChatGenerationChunk, GenerationChunk, LLMResult
 from langchain_core.runnables.config import ensure_config
 from langchain_core.tracers.base import AsyncBaseTracer
@@ -30,10 +31,8 @@ from boba.chainlit.agent.flow import PrefetchStage
 from boba.chainlit.chat.feed import TurnFeed
 from boba.chainlit.rendering.chat_view import StepText
 from boba.chainlit.rendering.errors import show_error
-from boba.connection_broker.sealing import SentConnections
 from boba.identity.errors import FailureReport
 from boba.identity.session import LogUserMark
-from boba.toolkit.failure import FailurePacker
 from chainlit.context import context_var
 
 __all__ = [
@@ -73,15 +72,9 @@ def _visible_failure(
 
 
 class TurnArtifacts(Protocol):
-    """Порт незавершённых артефактов хода, которые ведёт трасер: вызовы инструментов
-    и потоковые рассуждения.
+    """Порт незавершённых артефактов хода, которые ведёт трасер: потоковые
+    рассуждения прогонов модели.
     """
-
-    @abstractmethod
-    def open_tool(self, run_key: str, call_id: str) -> None: ...
-
-    @abstractmethod
-    def close_tool(self, run_key: str) -> str | None: ...
 
     @abstractmethod
     def add_reasoning(self, run_key: str, text: str) -> None: ...
@@ -91,22 +84,18 @@ class TurnArtifacts(Protocol):
 
 
 class AgentTracer(AsyncBaseTracer):
-    """Трасер одного агентского цикла: публикует рассуждения, вызовы инструментов и
-    их итоги в шину; учёт прогонов ведётся до публикации.
+    """Трасер прогонов модели одного хода: публикует в шину рассуждения и
+    расход токенов; учёт прогонов ведётся до публикации. Создаёт его ход
+    (ChatTurn) и отдаёт в callbacks прогона графа. Вызовы инструментов сюда
+    не приходят: их шаги ведёт путь вызова узла (ChatCalls).
     """
 
-    def __init__(
-        self, feed: TurnFeed, state: TurnArtifacts, sent: SentConnections
-    ) -> None:
-        """sent — что чат отправил серверу вместо ссылок на соединения: шаг
-        инструмента показывает ссылку, а не запечатанное значение."""
+    def __init__(self, feed: TurnFeed, state: TurnArtifacts) -> None:
         super().__init__()
-        self._sent = sent
         self._messages = LangchainMessages()
         self._context = context_var.get()
         self._feed = feed
         self._state = state
-        self._failures = FailurePacker()
 
     @property
     def feed(self) -> TurnFeed:
@@ -238,114 +227,6 @@ class AgentTracer(AsyncBaseTracer):
         return traced
 
     @override
-    @_visible_failure
-    async def on_tool_start(
-        self,
-        serialized: dict[str, Any],
-        input_str: str,
-        *,
-        run_id: UUID,
-        tags: list[str] | None = None,
-        parent_run_id: UUID | None = None,
-        metadata: dict[str, Any] | None = None,
-        name: str | None = None,
-        inputs: dict[str, Any] | None = None,
-        **kwargs: Any,
-    ) -> None:
-        self._set_context()
-        traced = await super().on_tool_start(
-            serialized,
-            input_str,
-            run_id=run_id,
-            parent_run_id=parent_run_id,
-            tags=tags,
-            metadata=metadata,
-            name=name,
-            inputs=inputs,
-            **kwargs,
-        )
-
-        tool_name = name
-        if not tool_name and serialized:
-            tool_name = serialized.get("name")
-
-        if not tool_name:
-            tool_name = "tool"
-
-        call_id = str(run_id)
-        if given := kwargs.get(CallField.TOOL_CALL_ID.value):
-            call_id = str(given)
-
-        args: Mapping[str, Any] = {}
-        if inputs:
-            args = self._sent.shown(inputs)
-
-        await self._feed.tool_started(call_id, tool_name, args)
-        self._state.open_tool(str(run_id), call_id)
-
-        return traced
-
-    @override
-    @_visible_failure
-    async def on_tool_end(
-        self,
-        output: Any,
-        *,
-        run_id: UUID,
-        **kwargs: Any,
-    ) -> None:
-        self._set_context()
-        traced = await super().on_tool_end(output, run_id=run_id, **kwargs)
-
-        call_id = self._state.close_tool(str(run_id))
-        if call_id is None:
-            return traced
-
-        # результат без конверта tool_call рисуется как есть: он и есть артефакт
-        if not isinstance(output, ToolMessage):
-            await self._feed.tool_finished(call_id, output)
-            return traced
-
-        if output.status == "error":
-            failure = self._messages.failure_of(output, str(output.content))
-            await self._feed.tool_failed(call_id, failure.chat_view().markdown)
-            return traced
-
-        artifact = output.artifact
-        if artifact is None:
-            artifact = output
-
-        await self._feed.tool_finished(call_id, artifact)
-
-        return traced
-
-    @override
-    @_visible_failure
-    async def on_tool_error(
-        self,
-        error: BaseException,
-        *,
-        run_id: UUID,
-        parent_run_id: UUID | None = None,
-        tags: list[str] | None = None,
-        **kwargs: Any,
-    ) -> None:
-        self._set_context()
-        traced = await super().on_tool_error(
-            error,
-            run_id=run_id,
-            parent_run_id=parent_run_id,
-            tags=tags,
-            **kwargs,
-        )
-
-        if call_id := self._state.close_tool(str(run_id)):
-            failure = self._failures.pack(error)
-            await self._feed.tool_failed(call_id, failure.chat_view().markdown)
-
-        return traced
-
-    @override
     async def _persist_run(self, run: Any) -> None:
         pass
 
@@ -399,14 +280,11 @@ class TracedStage(PrefetchStage):
 
 
 class LlmStage(StrEnum):
-    """Состояния, которые проходит один прогон модели: запрос, рассуждение, ответ,
-    инструмент.
-    """
+    """Состояния, которые проходит один прогон модели: запрос, рассуждение, ответ."""
 
     REQUEST = "request"
     THINKING = "thinking"
     ANSWER = "answer"
-    TOOL = "tool"
 
 
 class LlmStageEvent(StrEnum):
@@ -419,14 +297,6 @@ class LlmStageEvent(StrEnum):
     FAILED = "failed"
     COMPLETE = "complete"
     """Стадия пришла разом, без стрима: у неё нет начала и конца во времени."""
-
-
-class CallField(StrEnum):
-    """Ключи вызова инструмента в колбэках langchain."""
-
-    NAME = "name"
-    TOOL_CALL_ID = "tool_call_id"
-    INVOCATION_PARAMS = "invocation_params"
 
 
 class ToolCallField:
@@ -449,12 +319,15 @@ class InvocationParams(BaseModel):
 
     model_config = ConfigDict(extra="ignore")
 
+    KEY: ClassVar[str] = "invocation_params"
+    """Ключ колбэка старта прогона, под которым langchain кладёт параметры."""
+
     model: str = ""
     tools: Sequence[Mapping[str, Any]] = ()
 
     @classmethod
     def of(cls, kwargs: Mapping[str, Any]) -> InvocationParams:
-        raw = kwargs.get(CallField.INVOCATION_PARAMS.value)
+        raw = kwargs.get(cls.KEY)
         if not isinstance(raw, Mapping):
             return cls()
 
@@ -534,18 +407,6 @@ class RunProgress:
         return int((now - self.started) * 1000)
 
 
-@dataclass
-class ToolProgress:
-    """Идущий вызов инструмента: имя, идентификатор вызова и момент старта."""
-
-    name: str
-    call_id: str
-    started: float
-
-    def elapsed_ms(self, now: float) -> int:
-        return int((now - self.started) * 1000)
-
-
 class LlmStateLog(AsyncCallbackHandler):
     """Колбэк-обработчик, который пишет в журнал каждую смену состояния обмена с
     провайдером и длительность стадий.
@@ -556,7 +417,6 @@ class LlmStateLog(AsyncCallbackHandler):
         self._messages = LangchainMessages()
         self._mark = mark
         self._runs: dict[str, RunProgress] = {}
-        self._tools: dict[str, ToolProgress] = {}
 
     def _say(self, message: str, *args: Any) -> None:
         with self._mark.applied():
@@ -782,100 +642,5 @@ class LlmStateLog(AsyncCallbackHandler):
             LlmStageEvent.FAILED.value,
             run.label,
             run.elapsed_ms(now),
-            error,
-        )
-
-    @override
-    async def on_tool_start(
-        self,
-        serialized: dict[str, Any],
-        input_str: str,
-        *,
-        run_id: UUID,
-        parent_run_id: UUID | None = None,
-        tags: list[str] | None = None,
-        metadata: dict[str, Any] | None = None,
-        inputs: dict[str, Any] | None = None,
-        **kwargs: Any,
-    ) -> None:
-        call = ToolProgress(
-            name=self._tool_name_of(serialized, kwargs),
-            call_id=self._call_id_of(kwargs),
-            started=time.monotonic(),
-        )
-        self._tools[self._key(run_id)] = call
-
-        self._say(
-            "%s %s %s: call=%s args=%d chars",
-            LlmStage.TOOL.value,
-            call.name,
-            LlmStageEvent.STARTED.value,
-            call.call_id,
-            len(input_str),
-        )
-
-    @staticmethod
-    def _tool_name_of(serialized: Mapping[str, Any], kwargs: Mapping[str, Any]) -> str:
-        name = kwargs.get(CallField.NAME.value)
-        if not name and serialized:
-            name = serialized.get(CallField.NAME.value)
-        if not name:
-            return LlmStage.TOOL.value
-
-        return str(name)
-
-    @staticmethod
-    def _call_id_of(kwargs: Mapping[str, Any]) -> str:
-        call_id = kwargs.get(CallField.TOOL_CALL_ID.value)
-        if not call_id:
-            return "-"
-
-        return str(call_id)
-
-    @override
-    async def on_tool_end(
-        self,
-        output: Any,
-        *,
-        run_id: UUID,
-        parent_run_id: UUID | None = None,
-        tags: list[str] | None = None,
-        **kwargs: Any,
-    ) -> None:
-        call = self._tools.pop(self._key(run_id), None)
-        if call is None:
-            return
-
-        self._say(
-            "%s %s %s: call=%s output=%d chars in %dms",
-            LlmStage.TOOL.value,
-            call.name,
-            LlmStageEvent.FINISHED.value,
-            call.call_id,
-            len(self._content_of(output)),
-            call.elapsed_ms(time.monotonic()),
-        )
-
-    @override
-    async def on_tool_error(
-        self,
-        error: BaseException,
-        *,
-        run_id: UUID,
-        parent_run_id: UUID | None = None,
-        tags: list[str] | None = None,
-        **kwargs: Any,
-    ) -> None:
-        call = self._tools.pop(self._key(run_id), None)
-        if call is None:
-            return
-
-        self._say(
-            "%s %s %s: call=%s in %dms: %s",
-            LlmStage.TOOL.value,
-            call.name,
-            LlmStageEvent.FAILED.value,
-            call.call_id,
-            call.elapsed_ms(time.monotonic()),
             error,
         )

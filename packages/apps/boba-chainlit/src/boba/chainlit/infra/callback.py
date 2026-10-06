@@ -32,7 +32,6 @@ from boba.chainlit.infra.providers import (
     get_app_config,
     langchain_agent,
     mcp_servers,
-    sent_connections,
     session_profile,
 )
 from boba.chainlit.infra.session import (
@@ -55,7 +54,6 @@ from boba.chat.profiles import (
     UserLlmOverrides,
     UserMeta,
 )
-from boba.connection_broker.sealing import SentConnections
 from boba.identity.context import CallContexts, Scope
 from boba.identity.errors import InternalServiceError
 from boba.identity.locks import LiveLocks, RunLocking
@@ -107,7 +105,6 @@ async def on_message(  # noqa: PLR0913
     payloads: Annotated[PayloadStore, Depends(runtime.payload_store)],
     locks: Annotated[LiveLocks, Depends(runtime.live_locks)],
     app_config: Annotated[AppConfig, Depends(get_app_config)],
-    sent: Annotated[SentConnections, Depends(sent_connections)],
     contexts: Annotated[CallContexts, Depends(runtime.call_contexts)],
     runs: Annotated[Runs, Depends(runtime.runs)],
 ):
@@ -135,7 +132,6 @@ async def on_message(  # noqa: PLR0913
             msg, thread_id, AttachmentDataLayer.require().links
         ),
         locking=RunLocking(locks=locks, heartbeat_sec=app_config.cluster.heartbeat_sec),
-        sent=sent,
         contexts=contexts,
         runs=runs,
     )

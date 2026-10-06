@@ -40,7 +40,7 @@ from boba.tool.describer.nodes import (
     describe_node,
 )
 from boba.tool.describer.store import DescriberToolConfig, WriteAction
-from boba.toolkit.entry import ToolMain
+from boba.toolkit.facade import PayloadTool
 
 pytestmark = [pytest.mark.anyio, pytest.mark.integration]
 
@@ -54,8 +54,8 @@ ENTITY = "entity://customer"
 Body = Callable[..., Awaitable[Any]]
 
 
-def _body(tool: object) -> Body:
-    body = ToolMain.toolset(tool)[0].coroutine
+def _body(tool: PayloadTool) -> Body:
+    body = tool.coroutine
     if body is None:
         raise AssertionError("tool body is a coroutine")
 

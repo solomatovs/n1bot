@@ -11,7 +11,6 @@ from pathlib import Path
 from typing import Annotated, Any, ClassVar
 
 import pytest
-from langchain_core.tools import StructuredTool
 from pydantic import BaseModel, create_model
 
 from boba.auth.credentials import KerberosCredentialSource, NoRefresh
@@ -20,6 +19,7 @@ from boba.connections.credentials import ConnectionSections
 from boba.db.postgres.connection import PostgresConfig
 from boba.kerberos import KeytabAuth, TicketAuth
 from boba.stand.site import Stand
+from boba.stand.toolstand import ProbeTools
 from boba.toolkit.facade import Injected
 from boba.toolrun.injected import InjectedConfig
 
@@ -40,6 +40,22 @@ class ToolConfig(BaseModel):
 
     connection: PostgresConfig
     collection: str = "kb"
+
+
+class ProbeTool:
+    """Пробный инструмент: тело запоминает полученные аргументы; called()
+    исполняет вызов и отдаёт то, что тело получило."""
+
+    NAME: ClassVar[str] = "probe_query"
+
+    def __init__(self, schema: type[BaseModel]) -> None:
+        self._probes = ProbeTools()
+        self.hosted = self._probes.recorder(self.NAME, schema)
+
+    async def called(self, args: dict[str, Any]) -> dict[str, object]:
+        await self._probes.call(self.hosted, "probe", args)
+
+        return dict(self._probes.last(self.NAME))
 
 
 class Fixtures:
@@ -77,22 +93,15 @@ class Fixtures:
         )
 
     @staticmethod
-    def tool(config: BaseModel) -> StructuredTool:
+    def tool(config: BaseModel) -> ProbeTool:
         schema = create_model(
             "ProbeArgs",
             sql=(str, ...),
             cfg=(Annotated[type(config), Injected], ...),
         )
 
-        async def body(**kwargs: object) -> dict[str, object]:
-            return kwargs
-
-        tool = StructuredTool(
-            name="probe_query",
-            description="проба",
-            args_schema=schema,
-            coroutine=body,
-        )
+        probe = ProbeTool(schema)
+        tool = probe.hosted
 
         def resolve(name: str, annotation: Any) -> object:
             return config
@@ -101,7 +110,7 @@ class Fixtures:
             return KerberosCredentialSource(None, NoRefresh())
 
         InjectedConfig(resolve, ServiceTickets(credentials)).bind_all([tool])
-        return tool
+        return probe
 
 
 class TestArmingIsNeededWhereKeytabLives:
@@ -128,7 +137,7 @@ class TestTicketReplacesKeytab:
     async def test_body_receives_a_ticket(self, tmp_path: Path) -> None:
         config = ToolConfig(connection=Fixtures.connection(tmp_path / "cc"))
 
-        kwargs = await Fixtures.tool(config).ainvoke({"sql": "select 1"})
+        kwargs = await Fixtures.tool(config).called({"sql": "select 1"})
 
         shipped = kwargs["cfg"]
         if not isinstance(shipped, ToolConfig):
@@ -145,7 +154,7 @@ class TestTicketReplacesKeytab:
         config = ToolConfig(connection=Fixtures.connection(tmp_path / "cc"))
         tool = Fixtures.tool(config)
 
-        await tool.ainvoke({"sql": "select 1"})
+        await tool.called({"sql": "select 1"})
 
         if not isinstance(config.connection.auth, KeytabAuth):
             raise AssertionError("базовый конфиг переписан билетом")
@@ -155,7 +164,7 @@ class TestPlainConfigIsLeftAlone:
     async def test_body_receives_the_config_as_is(self) -> None:
         config = ToolConfig(connection=Fixtures.plain())
 
-        kwargs = await Fixtures.tool(config).ainvoke({"sql": "select 1"})
+        kwargs = await Fixtures.tool(config).called({"sql": "select 1"})
 
         if kwargs["cfg"] is not config:
             raise AssertionError("обвязка поставлена там, где kerberos не нужен")

@@ -670,7 +670,7 @@ class ToolResultBase(BaseModel, ABC):
         raise ResultKindError(msg)
 
     def packed(self) -> tuple[str, Self]:
-        """Пара (content, artifact) для langchain-инструмента."""
+        """Пара (content, artifact): текст для модели и сам результат."""
         return self.llm_view(), self
 
 

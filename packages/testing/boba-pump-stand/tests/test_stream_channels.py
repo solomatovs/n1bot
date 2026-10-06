@@ -24,30 +24,22 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from langchain_core.messages import ToolCall
 
-from boba.identity.context import CallContexts
+from boba.identity.run import Runs
 from boba.pump_stand import ClickHouseSide, PostgresSide, PumpStand
+from boba.stand.toolstand import ToolStand
+from boba.stand_core.context import CallStand, StandIdentity
 from boba.tool.ch import tools as ch
 from boba.tool.pg import tools as pg
 from boba.toolkit.chain import CallAmbient, GroupCall, GroupFailureResult
-from boba.toolkit.dag import WorkflowResult
-from boba.toolkit.entry import ToolMain
+from boba.toolkit.dag import DagNode, WorkflowResult
 from boba.toolkit.result import (
     FailureResult,
 )
 from boba.toolkit.types import SecretReveal
-from boba.toolkit.wrap import ToolProcessWrap
-from boba.toolrun.bridge import ToolBridge
-from boba.toolrun.call_id import CallFields
-from boba.toolrun.errors import ToolErrorGuard
-from boba.toolrun.process import ProcessLauncherConfig, ProcessToolCaller
-from boba.toolrun.stream_calls import (
-    LocalDagService,
-    StreamChannelFields,
-    StreamGroupsConfig,
-    WorkflowTool,
-)
+from boba.toolrun.hosted import DirectCalls
+from boba.toolrun.stream_calls import StreamGroupsConfig, WorkflowTool
+from boba.toolrun.streams import CallJournals
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
 
@@ -112,30 +104,25 @@ async def clickhouse() -> AsyncIterator[ClickHouseSide]:
 
 
 class ChannelTools:
-    """pg и ch насосы под обвязками чата: поля каналов, роль по tool_call_id,
-    обёртка запуска субпроцессом."""
+    """pg и ch насосы под цепочкой обвязок загрузчика (общий стенд
+    ToolStand) за портом инструментов; вызовы идут в контексте стенда."""
+
+    ROLE = "pump"
+    THREAD = "pump-channels"
 
     def __init__(self, workdir: Path) -> None:
-        cfg = ProcessLauncherConfig(
-            provider="process",
-            workdir=str(workdir),
-            timeout_sec=300.0,
-            channel_limit_bytes=8_000_000,
-            stderr_tail_bytes=16384,
-            kill_grace_sec=1.0,
+        self._calls = CallStand()
+        contexts = self._calls.contexts
+        stand = ToolStand(
+            STREAM_CFG, contexts, CallJournals(None, Runs(contexts)), CallAmbient(), ()
         )
-        ambient = CallAmbient()
-        launcher = ProcessToolCaller("pump-channels", cfg, CallContexts(), ambient)
-
-        tools: list[Any] = []
-        for payload in (pg.pg_stream_out, pg.pg_stream_in, ch.ch_stream_in):
-            tools.append(ToolBridge.as_structured_tool(payload.model_copy()))
-
-        specs = ToolProcessWrap(ambient).guard_all(ToolMain.toolset(*tools), launcher)
-        StreamChannelFields(STREAM_CFG).attach_all(tools, specs)
-        CallFields().attach_all(tools)
-        ToolErrorGuard().guard_all(tools)
-        self._streams = LocalDagService(tools, STREAM_CFG, (), specs, ambient)
+        stand.launch(
+            (pg.pg_stream_out, pg.pg_stream_in, ch.ch_stream_in),
+            stand.process_launcher(self.THREAD, workdir, 300.0),
+        )
+        self._streams = stand.server(
+            stand.access(self.ROLE, StandIdentity.PROFILE), (), DirectCalls()
+        )
 
     async def respond(self, calls: Sequence[Mapping[str, Any]]) -> list[Any]:
         """Узлы одного вызова workflow, как в чате: итоги узлов в порядке
@@ -147,10 +134,10 @@ class ChannelTools:
             )
 
         arguments: dict[str, Any] = {"nodes": nodes}
-        request = ToolCall(
-            name=WorkflowTool.NAME, args=arguments, id="call_0", type="tool_call"
-        )
-        reply = await self._streams.call(request)
+        request = DagNode(key="call_0", tool=WorkflowTool.NAME, args=arguments)
+        context = self._calls.context(self.THREAD, roles=(self.ROLE,))
+        with self._calls.applied(context):
+            reply = await self._streams.call(request)
 
         artifact = reply.artifact
         if not isinstance(artifact, WorkflowResult):

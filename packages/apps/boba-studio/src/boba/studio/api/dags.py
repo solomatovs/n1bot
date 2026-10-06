@@ -32,14 +32,14 @@ from boba.studio.api.tools import JobLock, LocksSource, RegistrySource
 from boba.studio.api.urls import DagUrl
 from boba.toolkit.calls import ToolIntent
 from boba.toolkit.chain import StreamPlanError
-from boba.toolkit.dag import DagNode, DagSpec
+from boba.toolkit.dag import DagNode, DagSpec, NodeOutcome
 from boba.toolrun.dag_run import (
     DagHandle,
     DagOutcome,
     DagRunError,
     DagRunner,
-    NodeOutcome,
 )
+from boba.toolrun.hosted import DirectCalls
 
 __all__ = ["DagNodeReply", "DagRunBody", "DagRunReply", "DagRunning"]
 
@@ -121,6 +121,7 @@ class DagRunning:
         self._profiles = profiles
         self._job_lock = JobLock(locks, heartbeat_sec)
         self._runs = runs
+        self._calls = DirectCalls()
 
     def mount(self, router: APIRouter) -> None:
         router.add_api_route(
@@ -135,7 +136,7 @@ class DagRunning:
 
         registry = await self._registry()
         tools = registry.for_headless(identity.subject.roles, identity.subject.profile)
-        runner = registry.runner(tools)
+        runner = registry.runner(tools, self._calls)
         dag = self._with_intent(body.dag, body.intent)
 
         logger.info(

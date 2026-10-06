@@ -19,6 +19,7 @@ from boba.identity.context import (
 )
 from boba.identity.errors import RefusalError
 from boba.identity.run import ElementTarget, RunPort, RunRefusal
+from boba.toolkit.result import ToolResultBase
 
 
 class StandIdentity(StrEnum):
@@ -113,13 +114,28 @@ class CallStand:
 
 class FakeTurn(RunPort):
     """Реализация RunPort для тестов: владелец запуска, который запоминает
-    показанные элементы и адресует элемент вызова. Реестру запусков его
-    достаточно, чтобы запуск считался ходом с лентой."""
+    шаги вызовов и показанные элементы и адресует элемент вызова. Реестру
+    запусков его достаточно, чтобы запуск считался ходом с лентой."""
 
     ANSWER_STEP: ClassVar[str] = "answer-step"
 
     def __init__(self) -> None:
         self.shown: list[tuple[str, Mapping[str, Any]]] = []
+        self.started: list[tuple[str, str, Mapping[str, Any]]] = []
+        """Начатые вызовы: идентификатор, имя инструмента, показанные аргументы."""
+        self.finished: list[tuple[str, ToolResultBase]] = []
+        self.failed: list[tuple[str, str]] = []
+
+    async def tool_started(
+        self, tool_call_id: str, name: str, args: Mapping[str, Any]
+    ) -> None:
+        self.started.append((tool_call_id, name, dict(args)))
+
+    async def tool_finished(self, tool_call_id: str, result: ToolResultBase) -> None:
+        self.finished.append((tool_call_id, result))
+
+    async def tool_failed(self, tool_call_id: str, error: str) -> None:
+        self.failed.append((tool_call_id, error))
 
     async def show_element(self, tool_call_id: str, element: Mapping[str, Any]) -> None:
         self.shown.append((tool_call_id, dict(element)))

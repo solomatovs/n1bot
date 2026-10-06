@@ -8,9 +8,8 @@ from collections.abc import Iterator, Sequence
 import pytest
 from pydantic import SecretStr
 
-from boba.stand_core.fake_toolmod import FakeConfig
+from boba.stand_core.fake_toolmod import FakeConfig, fake_echo
 from boba.toolkit.chain import CallAmbient
-from boba.toolkit.entry import ToolMain
 from boba.toolkit.frames import ToolFrame
 from boba.toolkit.launcher import (
     CallGate,
@@ -23,29 +22,22 @@ from boba.toolkit.launcher import (
     ToolOutcome,
 )
 from boba.toolkit.protocol import REPLY, ReplyError, ToolCommand
-from boba.toolkit.result import ErrorResult, MarkdownResult
-from boba.toolkit.wrap import ToolProcessWrap, WrapErrorKind
+from boba.toolkit.result import ErrorResult, MarkdownResult, ToolResultBase
+from boba.toolrun.hosted import HostedTool
+from boba.toolrun.wrap import ToolProcessWrap, WrapErrorKind
 
 CFG = FakeConfig(token=SecretStr("t0ken"), limit=5)
 
 
-def run_body(body, **kwargs):
-    """await coroutine-тела в тестах: Awaitable оборачивается корутиной."""
-
-    async def go():
-        return await body(**kwargs)
-
-    return asyncio.run(go())
+def called(tool: HostedTool, text: str) -> ToolResultBase:
+    """Один вызов инструмента под обёрткой запуска с аргументом text."""
+    return asyncio.run(tool.run("call-1", {"text": text, "repeat": 1, "cfg": CFG}))
 
 
-def fresh_tool():
-    """Свежий tool-объект: guard_all подменяет тела на месте."""
-    from importlib import reload
-
-    from boba.stand_core import fake_toolmod
-
-    reload(fake_toolmod)
-    return ToolMain.toolset(fake_toolmod.fake_echo)[0]
+def wrapped(launcher: ToolLauncher) -> HostedTool:
+    """Инструмент хоста из объявления fake_echo с переносом вызова
+    исполнителю launcher."""
+    return ToolProcessWrap(CallAmbient()).hosted(fake_echo, launcher)
 
 
 class RecordedCall(ToolCall):
@@ -105,18 +97,14 @@ class TestSandboxMode:
     )
 
     def test_call_is_rendered_and_reply_returned(self) -> None:
-        tool = fresh_tool()
         launcher = RecordingLauncher(self.OK_REPLY)
-        ToolProcessWrap(CallAmbient()).guard_all([tool], launcher)
 
-        if tool.coroutine is None:
-            raise AssertionError("tool.coroutine is not None")
-        content, artifact = run_body(tool.coroutine, text="hello", repeat=1, cfg=CFG)
+        artifact = called(wrapped(launcher), "hello")
 
-        if content != "done":
-            raise AssertionError('content == "done"')
         if not (isinstance(artifact, MarkdownResult)):
             raise AssertionError("isinstance(artifact, MarkdownResult)")
+        if artifact.text != "done":
+            raise AssertionError('artifact.text == "done"')
 
         command = launcher.commands[0]
         if "-m" not in command.argv:
@@ -131,15 +119,12 @@ class TestSandboxMode:
             raise AssertionError('b"t0ken" in command.config')
 
     def test_error_reply_raises_payload_failure(self) -> None:
-        tool = fresh_tool()
         failure = ErrorResult(message="down", error_kind="fake_unavailable")
         reply = ReplyError(failure=failure).model_dump_json()
-        ToolProcessWrap(CallAmbient()).guard_all([tool], RecordingLauncher(reply))
+        tool = wrapped(RecordingLauncher(reply))
 
-        if tool.coroutine is None:
-            raise AssertionError("tool.coroutine is not None")
         with pytest.raises(PayloadFailureError) as caught:
-            run_body(tool.coroutine, text="x", repeat=1, cfg=CFG)
+            called(tool, "x")
 
         if caught.value.failure() != failure:
             raise AssertionError(f"failure: {caught.value.failure()!r}")
@@ -147,15 +132,10 @@ class TestSandboxMode:
             raise AssertionError('"down" in str(caught.value)')
 
     def test_oversized_argument_is_expected_failure(self) -> None:
-        tool = fresh_tool()
-        ToolProcessWrap(CallAmbient()).guard_all(
-            [tool], RecordingLauncher(self.OK_REPLY)
-        )
+        tool = wrapped(RecordingLauncher(self.OK_REPLY))
 
-        if tool.coroutine is None:
-            raise AssertionError("tool.coroutine is not None")
         with pytest.raises(PayloadFailureError) as caught:
-            run_body(tool.coroutine, text="x" * 140_000, repeat=1, cfg=CFG)
+            called(tool, "x" * 140_000)
 
         error_kind = caught.value.failure().error_kind
         if error_kind != WrapErrorKind.ARGUMENT_TOO_LARGE:
@@ -163,17 +143,14 @@ class TestSandboxMode:
 
     def test_error_reply_never_reaches_return(self) -> None:
         """Отказ — исключение, а не «успешный» результат с ok=False."""
-        tool = fresh_tool()
         reply = ReplyError(
             failure=ErrorResult(message="m", error_kind="k")
         ).model_dump_json()
         launcher = RecordingLauncher(reply)
-        ToolProcessWrap(CallAmbient()).guard_all([tool], launcher)
+        tool = wrapped(launcher)
 
-        if tool.coroutine is None:
-            raise AssertionError("tool.coroutine is not None")
         with pytest.raises(PayloadFailureError):
-            run_body(tool.coroutine, text="x", repeat=1, cfg=CFG)
+            called(tool, "x")
 
         if not (isinstance(launcher.commands, list)):
             raise AssertionError("isinstance(launcher.commands, list)")

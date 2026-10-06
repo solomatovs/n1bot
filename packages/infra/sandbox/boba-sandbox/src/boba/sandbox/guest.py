@@ -35,8 +35,8 @@ from typing import Any, ClassVar, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from boba.toolkit.entry import EntryFlag, InputWire, OutputWire, ToolLike, ToolMain
-from boba.toolkit.facade import WarmupHooks
+from boba.toolkit.entry import EntryFlag, InputWire, OutputWire, ToolMain
+from boba.toolkit.facade import PayloadTool, WarmupHooks
 from boba.toolkit.payload import PayloadLogging
 from boba.toolkit.timing import Elapsed
 from boba.workspace.binaries import TrustedBinaries
@@ -708,7 +708,7 @@ class ZygoteMain:
     def __init__(
         self,
         sock: socket.socket,
-        tools: Sequence[ToolLike],
+        tools: Sequence[PayloadTool],
         modules: Mapping[str, ModuleType],
         reap_poll_sec: float,
     ) -> None:
@@ -740,7 +740,7 @@ class ZygoteMain:
         module_names = args.modules
 
         warmup = Elapsed()
-        tools: list[ToolLike] = []
+        tools: list[PayloadTool] = []
         modules: dict[str, ModuleType] = {}
         for name in module_names:
             module = importlib.import_module(name)
@@ -1216,7 +1216,7 @@ class ZygoteMain:
         _, status = os.waitpid(pid, 0)
         return WaitStatus.exit_code(status)
 
-    def _tools_for(self, request: CallRequest) -> Sequence[ToolLike]:
+    def _tools_for(self, request: CallRequest) -> Sequence[PayloadTool]:
         """Тулы вызова: прогретые зиготой плюс модуль запроса, если его не грели."""
         if not request.module or request.module in self._modules:
             return self._tools

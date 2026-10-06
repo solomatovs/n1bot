@@ -16,7 +16,6 @@ from __future__ import annotations
 
 from typing import Annotated, Any, ClassVar
 
-from langchain_core.tools import BaseTool
 from pydantic import Field
 
 from boba.access.grants import ConnectionFilter
@@ -24,7 +23,7 @@ from boba.connection_broker.user_connections import StoreRef
 from boba.identity.context import CallContexts, Subject
 from boba.toolkit.facade import PayloadTool, tool
 from boba.toolkit.result import TableResult
-from boba.toolrun.bridge import ToolBridge
+from boba.toolrun.hosted import HostedTool, ToolHosting
 
 __all__ = ["ConnectionTools", "GrantedConnections"]
 
@@ -75,12 +74,13 @@ class ConnectionTools:
     def __init__(self, store_ref: StoreRef, contexts: CallContexts) -> None:
         self._catalog = GrantedConnections(store_ref)
         self._contexts = contexts
+        self._hosting = ToolHosting()
 
-    def build(self) -> list[BaseTool]:
+    def build(self) -> list[HostedTool]:
         """Инструменты connection_list и connection_search."""
         return [
-            ToolBridge.as_structured_tool(self._list_tool()),
-            ToolBridge.as_structured_tool(self._search_tool()),
+            self._hosting.hosted(self._list_tool()),
+            self._hosting.hosted(self._search_tool()),
         ]
 
     def _list_tool(self) -> PayloadTool:

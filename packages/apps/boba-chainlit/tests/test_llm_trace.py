@@ -3,33 +3,49 @@
 Условия совпадают с боевыми: фабрика LogRecord подставляет поле `user`,
 сессии chainlit нет, колбэки идут через настоящий callback-менеджер langchain,
 который гасит сбои обработчика в WARNING — такие записи тест считает провалом.
+Строки о вызовах инструментов пишет путь вызова узла чата (ChatCalls).
 """
 
 from __future__ import annotations
 
 import logging
 from collections.abc import Iterator
+from typing import Annotated
 
 import pytest
 from chainlit_stand import fake_openai_chat, in_process_llm
-from langchain.agents import create_agent
 from langchain_core.messages import HumanMessage
-from langchain_core.tools import BaseTool, StructuredTool
+from langgraph.checkpoint.memory import InMemorySaver
+from pydantic import Field
 from uvicorn.logging import DefaultFormatter
 
 from boba.chainlit.agent.bridge import ChatModelBridge
+from boba.chainlit.agent.flow import GraphSpec, PlainGraphBuilder
 from boba.chainlit.chat.tracing import LlmStateLog
 from boba.chainlit.infra.config import LOGGING_CONFIG
 from boba.chainlit.infra.log_context import UserLogContext
+from boba.chainlit.infra.providers import build_history_view
+from boba.chainlit.rendering.mount import ChatCalls, ChatMount
+from boba.connection_broker.sealing import SentConnections
+from boba.identity.run import Runs
 from boba.identity.session import LogUserMark
+from boba.stand.refs import StandRefs
 from boba.stand.ui.fake_llm import FakeLlmApp, ScenarioBook, ScenarioName
+from boba.stand_core.context import CallStand, FakeTurn
+from boba.toolkit.chain import CallAmbient
+from boba.toolkit.facade import PayloadTool, tool
+from boba.toolkit.ports import StreamSpecs
+from boba.toolkit.result import MarkdownResult
+from boba.toolrun.hosted import ToolHosting
+from boba.toolrun.stream_calls import LocalDagService
 
 pytestmark = pytest.mark.anyio
 
 THREAD = "5c6e150c-5543-4fcc-9be9-bbc4c2523c38"
 USER = "solomatovs"
 MARK = f"{USER} {THREAD[:8]}"
-TRACE_LOGGER = "boba.chainlit.chat.tracing"
+TRACE_LOGGERS = ("boba.chainlit.chat.tracing", "boba.chainlit.rendering.mount")
+"""Кто пишет журнал хода: прогоны модели и вызовы инструментов."""
 
 
 @pytest.fixture(autouse=True)
@@ -61,25 +77,20 @@ class TestLlmStateLog:
         return LlmStateLog(LogUserMark(USER, THREAD))
 
     @staticmethod
-    def _stand_tools() -> list[BaseTool]:
-        def usage() -> str:
-            return "connections"
+    def _stand_tools() -> list[PayloadTool]:
+        @tool
+        def connection_list() -> MarkdownResult:
+            """Connections of the caller"""
+            return MarkdownResult(text="connections")
 
-        def cleanup(path: str) -> str:
+        @tool
+        def send_file(
+            path: Annotated[str, Field(description="Workspace file")],
+        ) -> MarkdownResult:
+            """Send a workspace file"""
             raise ValueError(f"file not found: {path}")
 
-        return [
-            StructuredTool.from_function(
-                func=usage,
-                name="connection_list",
-                description="Connections of the caller",
-            ),
-            StructuredTool.from_function(
-                func=cleanup,
-                name="send_file",
-                description="Send a workspace file",
-            ),
-        ]
+        return [connection_list, send_file]
 
     async def _stream_chat(self, provider: None, scenario: ScenarioName) -> None:
         chat = self._chat(provider)
@@ -88,25 +99,45 @@ class TestLlmStateLog:
             pass
 
     async def _stream_agent(self, provider: None, scenario: ScenarioName) -> None:
-        """Ход как в проде: langgraph поверх модели, стрим сообщениями."""
-        agent = create_agent(
-            model=self._chat(provider),
-            tools=self._stand_tools(),
+        """Ход как в проде: граф хода поверх модели и порта инструментов,
+        вызовы идут к телу путём ChatCalls под идущим ходом."""
+        calls = CallStand()
+        contexts = calls.contexts
+        runs = Runs(contexts)
+        service = LocalDagService(
+            ToolHosting().toolset(self._stand_tools()),
+            StandRefs.STREAM_CONFIG,
+            (),
+            StreamSpecs({}),
+            CallAmbient(),
+            ChatCalls(contexts, runs, SentConnections(), ChatMount(contexts, runs)),
+        )
+        spec = GraphSpec(
+            chat=self._chat(provider),
+            service=service,
             system_prompt="test agent",
+            checkpointer=InMemorySaver(),
+            history=build_history_view(service.names(), 30),
         )
-        stream = agent.astream(
-            {"messages": [HumanMessage(content=scenario.value)]},
-            stream_mode="messages",
-            config={"callbacks": [self._log()]},
-        )
-        async for _chunk in stream:
-            pass
+        agent = PlainGraphBuilder().build(spec)
+
+        with runs.open(calls.context(THREAD, login=USER), FakeTurn()):
+            stream = agent.astream(
+                {"messages": [HumanMessage(content=scenario.value)]},
+                stream_mode="messages",
+                config={
+                    "callbacks": [self._log()],
+                    "configurable": {"thread_id": THREAD},
+                },
+            )
+            async for _chunk in stream:
+                pass
 
     @staticmethod
     def _records(caplog: pytest.LogCaptureFixture) -> list[logging.LogRecord]:
         records: list[logging.LogRecord] = []
         for record in caplog.records:
-            if record.name != TRACE_LOGGER:
+            if record.name not in TRACE_LOGGERS:
                 continue
 
             records.append(record)
@@ -273,11 +304,16 @@ class TestLlmStateLog:
     async def test_failed_tool_is_logged_as_failed(
         self, provider: None, caplog: pytest.LogCaptureFixture
     ) -> None:
-        """Инструмент падает по-настоящему: ошибка уходит наверх, ход её покажет."""
-        with pytest.raises(ValueError, match="file not found"):
-            await self._stream_agent(provider, ScenarioName.TOOL_ERROR)
+        """Инструмент падает по-настоящему: его отказ едет модели итогом
+        вызова, а журнал называет вызов упавшим и причину."""
+        await self._stream_agent(provider, ScenarioName.TOOL_ERROR)
 
-        if self._complaints(caplog) != []:
-            raise AssertionError("self._complaints(caplog) == []")
-        if "tool send_file failed" not in self._heads(caplog):
-            raise AssertionError('"tool send_file failed" in self._heads(ca…')
+        failed = [
+            line
+            for line in self._lines(caplog)
+            if line.startswith("tool send_file failed")
+        ]
+        if len(failed) != 1:
+            raise AssertionError(f"одна строка об упавшем вызове: {failed}")
+        if "file not found" not in failed[0]:
+            raise AssertionError(f"строка называет причину: {failed[0]!r}")

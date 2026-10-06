@@ -71,15 +71,15 @@ class TestPendingArtifacts:
     async def test_tools_open_close_and_drain(self) -> None:
         state = TurnState()
 
-        state.open_tool("run-1", "call-1")
-        state.open_tool("run-2", "call-2")
+        state.open_tool("call-1")
+        state.open_tool("call-2")
         if state.pending_tool_calls != ["call-1", "call-2"]:
             raise AssertionError('state.pending_tool_calls == ["call-1", "call-2"]')
 
-        if state.close_tool("run-1") != "call-1":
-            raise AssertionError('state.close_tool("run-1") == "call-1"')
-        if state.close_tool("run-1") is not None:
-            raise AssertionError('state.close_tool("run-1") is None')
+        if not state.close_tool("call-1"):
+            raise AssertionError("начатый вызов закрывается")
+        if state.close_tool("call-1"):
+            raise AssertionError("закрытый вызов второй раз не закрывается")
 
         drained = list(state.drain_tools())
         if drained != ["call-2"]:

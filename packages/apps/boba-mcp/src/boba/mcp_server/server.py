@@ -4,11 +4,14 @@
 по ролям токена; вызов исполняет порт ToolServer — та же цепочка обвязок и
 тот же исполнитель DAG, что в процессе чата; контекст вызова ставит
 middleware из токена. Логики во входе нет: McpTool.run разбирает запрос в
-ToolCall и зовёт порт.
+вызов-узел DagNode и зовёт порт; итог порта (NodeOutcome) уходит клиенту
+ответом McpReplies — конвертом ResultWire. Тем же компонентом отвечают
+операции сервиса и middleware: отказ сервера — тоже итог с моделью отказа.
 
 Во время вызова сервер шлёт сигналы роста журнала уведомлениями
 notifications/progress (ProgressSignals); кусок журнала читает операция
-stream_read (StreamReadTool).
+stream_read (StreamReadTool), адрес загрузки файла отдаёт операция
+file_upload (FileUploadTool).
 
 Ошибки:
 наружу уходит только итог вызова — сбой любого вида возвращается
@@ -23,6 +26,7 @@ import asyncio
 import logging
 from collections.abc import AsyncIterator, Mapping, Sequence
 from contextlib import AsyncExitStack, asynccontextmanager
+from enum import StrEnum
 from typing import Any, ClassVar
 from uuid import uuid4
 
@@ -38,8 +42,6 @@ from fastmcp.tools import Tool
 from fastmcp.tools.base import ToolResult
 from fastmcp.utilities.components import FastMCPComponent
 from fastmcp.utilities.versions import VersionSpec
-from langchain_core.messages import ToolCall, ToolMessage
-from langchain_core.tools import BaseTool
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, ValidationError
 from starlette.applications import Starlette
 from starlette.requests import Request
@@ -51,6 +53,7 @@ from starlette.types import Scope as AsgiScope
 from boba.access import GrantCheck, ProfileGrant, ToolGrant, ToolGrants
 from boba.cancellation import RunCancellation, StopReason
 from boba.canvas.journal import StreamSlice
+from boba.canvas.keys import ObjectKey
 from boba.identity.context import (
     CallContext,
     HumanInitiator,
@@ -61,40 +64,35 @@ from boba.identity.signin import ProfileCatalog
 from boba.mcp_server.auth import (
     CallScopeError,
     CallScopes,
+    SentMeta,
     ServiceAuth,
     TokenSubjects,
 )
-from boba.mcp_server.files import (
-    FileRoutes,
-    FileUploadTool,
-    JournalRoutes,
-    RouteCallers,
-)
+from boba.mcp_server.files import FileRoutes, JournalRoutes, RouteCallers
 from boba.messaging import StreamAppended, StreamFeed
 from boba.runtime.storage import LocalStorageConfig, StorageFactory
 from boba.toolkit.calls import CallIdPrefix, CallViews
 from boba.toolkit.channels import JournalChannels
-from boba.toolkit.failure import FailurePacker
-from boba.toolkit.result import ErrorResult, MarkdownResult, ToolResultBase
+from boba.toolkit.dag import DagNode, NodeOutcome, NodeOutcomes, ToolCard, ToolServer
+from boba.toolkit.failure import FailurePacker, ValidationText
+from boba.toolkit.result import ErrorResult, FailureResult
 from boba.toolkit.wire import (
-    CallStatus,
     FilesFeature,
     JournalFeature,
     JournalRead,
     JournalSignal,
-    RequestMeta,
     ResultWire,
-    WireResult,
 )
+from boba.toolrun.hosted import DirectCalls
 from boba.toolrun.registry import ToolRegistry
-from boba.toolrun.stream_calls import ToolServer
 from boba.toolrun.streams import CallJournals, StreamPumps
 
 __all__ = [
     "CallContextMiddleware",
-    "CallSchemas",
     "EndpointCatalog",
+    "FileUploadTool",
     "McpEndpoints",
+    "McpReplies",
     "McpServer",
     "McpTool",
     "McpToolProvider",
@@ -102,6 +100,7 @@ __all__ = [
     "RoleToolServers",
     "RunLimitMiddleware",
     "RunLimits",
+    "ServerRefusal",
     "StreamReadTool",
 ]
 
@@ -118,6 +117,7 @@ class RoleToolServers:
 
     def __init__(self, registry: ToolRegistry) -> None:
         self._registry = registry
+        self._calls = DirectCalls()
         self._servers: dict[tuple[frozenset[str], str], ToolServer] = {}
 
     def of(self, subject: Subject) -> ToolServer:
@@ -127,115 +127,122 @@ class RoleToolServers:
             return server
 
         tools = self._registry.for_headless(subject.roles, subject.profile)
-        server = self._registry.server(tools.values())
+        server = self._registry.server(tools.values(), self._calls)
         self._servers[key] = server
 
         return server
 
 
-class CallSchemas:
-    """Схема вызова инструмента для клиента: та, что видит модель после
-    всех обвязок, с видом аргументов для ленты клиента (CallViews).
-    Создаётся провайдером инструментов."""
+class ServerRefusal(StrEnum):
+    """Виды отказов сервера вызову, который до исполнителя не дошёл."""
 
-    def __init__(self) -> None:
-        self._views = CallViews()
-
-    def of(self, tool: BaseTool) -> dict[str, Any]:
-        return self._views.marked(tool.name, self._schema(tool))
-
-    @staticmethod
-    def _schema(tool: BaseTool) -> dict[str, Any]:
-        schema = tool.tool_call_schema
-        if isinstance(schema, dict):
-            return schema
-
-        if isinstance(schema, type) and issubclass(schema, BaseModel):
-            return schema.model_json_schema()
-
-        msg = (
-            f"tool {tool.name!r}: the call schema is expected to be a pydantic "
-            f"model or a JSON schema, got {schema!r}"
-        )
-        raise TypeError(msg)
+    INVALID_REQUEST = "invalid_request"
+    FORBIDDEN = "forbidden"
+    NOT_FOUND = "not_found"
+    RUN_LIMIT = "run_limit"
 
 
-class McpTool(Tool):
-    """Инструмент реестра как инструмент fastmcp.
+class McpReplies:
+    """Ответы сервера клиенту в формате fastmcp — единственное место, где
+    итог вызова становится ToolResult.
 
-    Создаёт его McpToolProvider из инструмента порта: схема для клиента —
-    готовая схема вызова после всех обвязок, тело — вызов порта ToolServer.
-    fastmcp аргументы не проверяет: проверка одна, по схеме инструмента
-    внутри исполнителя.
+    Создаётся каждым, кто отвечает на tools/call: инструментом реестра
+    (McpTool), операциями сервиса (StreamReadTool, FileUploadTool) и
+    middleware контекста и пределов. Итог вызова (NodeOutcome) и отказ
+    сервера едут клиенту конвертом ResultWire: текст для модели, результат
+    семейства в structuredContent, статус и идентификатор вызова в _meta.
+    Ответ операции сервиса — её модель в structuredContent.
     """
 
-    _server: ToolServer = PrivateAttr()
-    _wire: ResultWire = PrivateAttr()
-    _failures: FailurePacker = PrivateAttr()
-
-    def __init__(
-        self, tool: BaseTool, server: ToolServer, parameters: dict[str, Any]
-    ) -> None:
-        super().__init__(
-            name=tool.name, description=tool.description, parameters=parameters
-        )
-        self._server = server
+    def __init__(self) -> None:
         self._wire = ResultWire()
-        self._failures = FailurePacker()
+        self._outcomes = NodeOutcomes()
 
-    async def run(self, arguments: dict[str, object]) -> ToolResult:
-        call_id = CallIdPrefix.API.new_id()
-        try:
-            call_id = self._call_id(call_id)
-            call = ToolCall(
-                name=self.name, args=arguments, id=call_id, type="tool_call"
-            )
-            message = await self._server.call(call)
-            packed = self._packed(message, call_id)
-        except Exception as exc:
-            logger.exception("tool[%s]: the call crashed outside its body", self.name)
-            failure = self._failures.pack(exc)
-            packed = self._wire.packed(
-                failure.llm_view(), failure, CallStatus.ERROR, call_id
-            )
+    def of(self, outcome: NodeOutcome) -> ToolResult:
+        """Итог вызова инструмента."""
+        packed = self._wire.packed(outcome)
 
-        return self._result(packed)
-
-    def _call_id(self, issued: str) -> str:
-        """Идентификатор вызова клиента из _meta запроса; без него — issued."""
-        request = get_context().request_context
-        if request is None:
-            return issued
-
-        meta = request.meta
-        if meta is None:
-            return issued
-
-        sent = meta.get(RequestMeta.CALL_ID)
-        if isinstance(sent, str) and sent:
-            return sent
-
-        return issued
-
-    def _packed(self, message: ToolMessage, call_id: str) -> WireResult:
-        content = message.content
-        if not isinstance(content, str):
-            content = message.text
-
-        artifact = message.artifact
-        if not isinstance(artifact, ToolResultBase):
-            artifact = MarkdownResult(text=content)
-
-        return self._wire.packed(content, artifact, CallStatus(message.status), call_id)
-
-    @staticmethod
-    def _result(packed: WireResult) -> ToolResult:
         return ToolResult(
             content=[mt.TextContent(type="text", text=packed.content)],
             structured_content=dict(packed.structured or {}),
             meta=dict(packed.meta),
             is_error=packed.is_error,
         )
+
+    def refused(self, tool: str, failure: FailureResult) -> ToolResult:
+        """Отказ сервера вызову tool, который до исполнителя не дошёл:
+        идентификатор вызова выдаётся здесь."""
+        call_id = CallIdPrefix.API.new_id()
+
+        return self.of(self._outcomes.unnamed(call_id, tool, failure))
+
+    def answered(self, text: str, answer: BaseModel) -> ToolResult:
+        """Ответ операции сервиса: текст и её модель ответа."""
+        return ToolResult(
+            content=[mt.TextContent(type="text", text=text)],
+            structured_content=answer.model_dump(mode="json"),
+        )
+
+    def stamped(self, result: ToolResult, run: str) -> ToolResult:
+        """Тот же ответ с идентификатором запуска в служебных полях."""
+        meta = result.meta
+        if meta is None:
+            meta = {}
+
+        return ToolResult(
+            content=result.content,
+            structured_content=result.structured_content,
+            meta=self._wire.stamped(meta, run),
+            is_error=result.is_error,
+        )
+
+
+class McpTool(Tool):
+    """Инструмент реестра как инструмент fastmcp.
+
+    Адаптер ядра запуска к fastmcp. Создаёт его McpToolProvider из карточки
+    инструмента порта: схема для клиента — готовая схема вызова после всех
+    обвязок с видом аргументов карточки для ленты клиента (CallViews),
+    тело — вызов порта ToolServer узлом DagNode; итог порта (NodeOutcome)
+    уходит клиенту ответом McpReplies.
+    fastmcp аргументы не проверяет: проверка одна, по схеме инструмента
+    внутри исполнителя.
+    """
+
+    _server: ToolServer = PrivateAttr()
+    _replies: McpReplies = PrivateAttr()
+    _meta: SentMeta = PrivateAttr()
+    _outcomes: NodeOutcomes = PrivateAttr()
+    _failures: FailurePacker = PrivateAttr()
+
+    def __init__(self, card: ToolCard, server: ToolServer) -> None:
+        super().__init__(
+            name=card.name,
+            description=card.description,
+            parameters=CallViews().marked(card.parameters, card.views),
+        )
+        self._server = server
+        self._replies = McpReplies()
+        self._meta = SentMeta()
+        self._outcomes = NodeOutcomes()
+        self._failures = FailurePacker()
+
+    async def run(self, arguments: dict[str, object]) -> ToolResult:
+        call_id = CallIdPrefix.API.new_id()
+        try:
+            if sent := self._meta.sent().call_id:
+                call_id = sent
+
+            call = DagNode.model_validate(
+                {"key": call_id, "tool": self.name, "args": arguments}
+            )
+            outcome = await self._server.call(call)
+        except Exception as exc:
+            logger.exception("tool[%s]: the call crashed outside its body", self.name)
+            failure = self._failures.pack(exc)
+            outcome = self._outcomes.unnamed(call_id, self.name, failure)
+
+        return self._replies.of(outcome)
 
 
 class McpToolProvider(Provider):
@@ -257,7 +264,6 @@ class McpToolProvider(Provider):
         self._servers = servers
         self._subjects = subjects
         self._operations = tuple(operations)
-        self._schemas = CallSchemas()
         self._tools: dict[ToolServer, dict[str, Tool]] = {}
 
     async def _list_tools(self) -> Sequence[Tool]:
@@ -279,8 +285,8 @@ class McpToolProvider(Provider):
             return offered
 
         offered = {}
-        for tool in server.tools():
-            offered[tool.name] = McpTool(tool, server, self._schemas.of(tool))
+        for card in server.tools():
+            offered[card.name] = McpTool(card, server)
 
         for operation in self._operations:
             offered[operation.name] = operation
@@ -349,16 +355,13 @@ class StreamReadTool(Tool):
 
     Создаётся сборкой сервера из журналов процесса. Журнал доступен только
     тому, кто вызывал инструмент: ключ журнала — пользователь токена, запуск
-    и узел; чужой запуск — отказ 403.
+    и узел; чужой запуск — отказ вида ServerRefusal.FORBIDDEN.
     Итог — текст окна и его координаты (StreamSlice) в structuredContent;
     по ним клиент стыкует следующее окно. Запуск области операция не
     открывает и в предел запусков не входит.
     """
 
     NAME: ClassVar[str] = "stream_read"
-
-    FORBIDDEN: ClassVar[int] = 403
-    """Статус отказа в structuredContent: журнал чужой."""
 
     DESCRIPTION: ClassVar[str] = (
         "Read a window of the output journal of a tool call:\n"
@@ -370,6 +373,7 @@ class StreamReadTool(Tool):
 
     _journals: CallJournals = PrivateAttr()
     _subjects: TokenSubjects = PrivateAttr()
+    _replies: McpReplies = PrivateAttr()
 
     def __init__(self, journals: CallJournals, subjects: TokenSubjects) -> None:
         super().__init__(
@@ -379,37 +383,41 @@ class StreamReadTool(Tool):
         )
         self._journals = journals
         self._subjects = subjects
-
-    def feature(self) -> dict[str, Any]:
-        return {JournalFeature.READ.value: self.NAME}
+        self._replies = McpReplies()
 
     async def run(self, arguments: dict[str, object]) -> ToolResult:
         try:
             request = JournalRead.model_validate(arguments)
         except ValidationError as exc:
-            return self._refused(f"stream_read: the arguments are invalid: {exc}")
+            return self._refused(
+                ServerRefusal.INVALID_REQUEST,
+                f"stream_read: the arguments are invalid: {exc}",
+            )
 
         if not JournalChannels.visible(request.channel):
             return self._refused(
-                f"stream_read: channel {request.channel.value!r} is not readable"
+                ServerRefusal.INVALID_REQUEST,
+                f"stream_read: channel {request.channel.value!r} is not readable",
             )
 
         user = self._subjects.current().user_key
         owner = self._journals.owner_of(request.run)
         if owner is not None and owner != user:
-            return self._forbidden(request)
+            return self._refused(
+                ServerRefusal.FORBIDDEN,
+                f"stream_read: the journal of run {request.run!r} belongs to "
+                "another user; expected a run of the caller",
+            )
 
         piece = self._slice(request, user)
         if piece is None:
             return self._refused(
+                ServerRefusal.NOT_FOUND,
                 f"stream_read: no journal of call {request.node!r} in run "
-                f"{request.run!r} on channel {request.channel.value!r}"
+                f"{request.run!r} on channel {request.channel.value!r}",
             )
 
-        return ToolResult(
-            content=[mt.TextContent(type="text", text=piece.text)],
-            structured_content=piece.model_dump(mode="json"),
-        )
+        return self._replies.answered(piece.text, piece)
 
     def _slice(self, request: JournalRead, user: str) -> StreamSlice | None:
         if request.before is not None:
@@ -425,23 +433,100 @@ class StreamReadTool(Tool):
             user, request.run, request.node, offset, request.channel
         )
 
-    @staticmethod
-    def _refused(message: str) -> ToolResult:
-        return ToolResult(
-            content=[mt.TextContent(type="text", text=message)], is_error=True
+    def _refused(self, kind: ServerRefusal, message: str) -> ToolResult:
+        failure = ErrorResult(message=message, error_kind=kind)
+
+        return self._replies.refused(self.NAME, failure)
+
+
+class FileUploadRequest(BaseModel):
+    """Аргументы file_upload: имя файла в каталоге вложений области."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    name: str = Field(
+        min_length=1,
+        description="File name as it should appear in the workspace upload dir.",
+    )
+
+
+class FileUploadAddress(BaseModel):
+    """Ответ file_upload: чем и куда клиент шлёт тело файла и где файл
+    увидят инструменты."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    method: str
+    path: str
+    workspace_path: str
+
+
+class FileUploadTool(Tool):
+    """Операция сервиса file_upload: адрес, по которому клиент загружает файл.
+
+    Создаётся сервером endpoint'а рядом с FileRoutes. Байты файла вызовом
+    MCP не передаются: модель получает адрес и способ отправки, а клиент
+    шлёт файл потоком на маршрут файлов тем же токеном входа. Запуска
+    области операция не открывает и в предел запусков не входит.
+    """
+
+    NAME: ClassVar[str] = "file_upload"
+
+    DESCRIPTION: ClassVar[str] = (
+        "Get the address to upload a file into the workspace:\n"
+        "   - name — file name in the upload dir of the workspace\n"
+        "The file body is sent by the client with HTTP PUT to the returned "
+        "path of this server using the same bearer token; tools then read the "
+        "file at the returned workspace path"
+    )
+
+    _routes: FileRoutes = PrivateAttr()
+    _subjects: TokenSubjects = PrivateAttr()
+    _scopes: CallScopes = PrivateAttr()
+    _replies: McpReplies = PrivateAttr()
+
+    def __init__(self, routes: FileRoutes, subjects: TokenSubjects) -> None:
+        super().__init__(
+            name=self.NAME,
+            description=self.DESCRIPTION,
+            parameters=FileUploadRequest.model_json_schema(),
+        )
+        self._routes = routes
+        self._subjects = subjects
+        self._scopes = CallScopes()
+        self._replies = McpReplies()
+
+    async def run(self, arguments: dict[str, object]) -> ToolResult:
+        try:
+            request = FileUploadRequest.model_validate(arguments)
+            subject = self._subjects.current()
+            scope = self._scopes.of(subject)
+            key = ObjectKey(
+                user_id=subject.user_key, thread_id=scope.id, name=request.name
+            )
+        except ValidationError as exc:
+            return self._refused(
+                f"file_upload: the arguments do not name a file: "
+                f"{ValidationText.of(exc)}"
+            )
+        except CallScopeError as exc:
+            return self._refused(f"file_upload: {exc}")
+
+        address = self._routes.address(key.thread_id, key.name)
+        text = (
+            f"upload the file body with HTTP PUT to {address} of this server "
+            f"(same bearer token); tools read it at {key.in_workspace()}"
+        )
+        answer = FileUploadAddress(
+            method="PUT", path=address, workspace_path=key.in_workspace()
         )
 
-    def _forbidden(self, request: JournalRead) -> ToolResult:
-        """Отказ 403: журнал запуска принадлежит другому пользователю."""
-        message = (
-            f"403 Forbidden: the journal of run {request.run!r} belongs to another user"
-        )
+        return self._replies.answered(text, answer)
 
-        return ToolResult(
-            content=[mt.TextContent(type="text", text=message)],
-            structured_content={"status": self.FORBIDDEN, "error": message},
-            is_error=True,
-        )
+    def _refused(self, message: str) -> ToolResult:
+        failure = ErrorResult(message=message, error_kind=ServerRefusal.INVALID_REQUEST)
+
+        return self._replies.refused(self.NAME, failure)
 
 
 class CallContextMiddleware(Middleware):
@@ -469,7 +554,7 @@ class CallContextMiddleware(Middleware):
         self._journals = journals
         self._subjects = subjects
         self._operations = operations
-        self._wire = ResultWire()
+        self._replies = McpReplies()
         self._scopes = CallScopes()
 
     async def on_call_tool(
@@ -484,9 +569,11 @@ class CallContextMiddleware(Middleware):
         try:
             scope = self._scopes.of(subject)
         except CallScopeError as exc:
-            return ToolResult(
-                content=[mt.TextContent(type="text", text=str(exc))], is_error=True
+            failure = ErrorResult(
+                message=str(exc), error_kind=ServerRefusal.INVALID_REQUEST
             )
+
+            return self._replies.refused(context.message.name, failure)
 
         cancellation = RunCancellation()
         run_id = uuid4().hex
@@ -517,16 +604,7 @@ class CallContextMiddleware(Middleware):
             await pumps.close()
             await signals.close()
 
-        meta = result.meta
-        if meta is None:
-            meta = {}
-
-        return ToolResult(
-            content=result.content,
-            structured_content=result.structured_content,
-            meta=self._wire.stamped(meta, run_id),
-            is_error=result.is_error,
-        )
+        return self._replies.stamped(result, run_id)
 
 
 class RunLimits(BaseModel):
@@ -551,15 +629,13 @@ class RunLimitMiddleware(Middleware):
     Операции сервиса (operations) запусками не считаются и не ждут.
     """
 
-    REFUSED: ClassVar[str] = "run_limit"
-
     def __init__(self, limits: RunLimits, operations: frozenset[str]) -> None:
         self._limits = limits
         self._operations = operations
         self._slots = asyncio.Semaphore(limits.max_runs)
         self._running = 0
         self._waiting = 0
-        self._wire = ResultWire()
+        self._replies = McpReplies()
 
     async def on_call_tool(
         self,
@@ -594,18 +670,10 @@ class RunLimitMiddleware(Middleware):
                 f"{limits.max_runs} calls and {limits.max_waiting} more wait "
                 "for a slot; repeat the call later"
             ),
-            error_kind=self.REFUSED,
-        )
-        packed = self._wire.packed(
-            failure.llm_view(), failure, CallStatus.ERROR, CallIdPrefix.API.new_id()
+            error_kind=ServerRefusal.RUN_LIMIT,
         )
 
-        return ToolResult(
-            content=[mt.TextContent(type="text", text=packed.content)],
-            structured_content=dict(packed.structured or {}),
-            meta=dict(packed.meta),
-            is_error=True,
-        )
+        return self._replies.refused(tool, failure)
 
 
 class FeatureExtension(ServerExtension):
@@ -660,15 +728,15 @@ class McpServer:
         upload = FileUploadTool(self._files, self._subjects)
         operations: list[Tool] = [upload]
         self._features = self._features_of(registry)
-        self._features[FilesFeature.ID.value] = self._files.settings(upload.name)
+        self._features[FilesFeature.ID] = self._files.feature(upload.name).settings()
         self._journaled = journals.active()
         if self._journaled:
             stream_read = StreamReadTool(journals, self._subjects)
             operations.append(stream_read)
-            self._features[JournalFeature.ID.value] = {
-                **stream_read.feature(),
-                JournalFeature.PATH.value: self._journal_files.path(),
-            }
+            journal = JournalFeature(
+                read=stream_read.name, path=self._journal_files.path()
+            )
+            self._features[JournalFeature.ID] = journal.settings()
 
         self._provider = McpToolProvider(
             RoleToolServers(registry), self._subjects, operations
@@ -683,7 +751,8 @@ class McpServer:
         что объявляет порт над всеми инструментами реестра (инструмент-связка,
         ключ запечатывания соединений)."""
         declared: dict[str, dict[str, Any]] = {}
-        for feature, settings in registry.server(registry.tools).features().items():
+        port = registry.server(registry.tools, DirectCalls())
+        for feature, settings in port.features().items():
             declared[feature] = dict(settings)
 
         return declared

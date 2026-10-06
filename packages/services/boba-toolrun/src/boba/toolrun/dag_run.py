@@ -1,22 +1,21 @@
 """Исполнитель DAG вызовов инструментов.
 
 DagRunner принимает описание DAG (boba.toolkit.dag) и обёрнутые инструменты
-реестра и сам запускает каждый узел — другого места исполнения инструментов
+хоста и сам запускает каждый узел — другого места исполнения инструментов
 нет. План делит узлы на группы исполнения: узлы, связанные каналами, — одна
 группа, узел инструмента без портов — группа из него одного. Каждая группа
 идёт по правилу «все или никто» (boba.toolkit.chain), каждый узел — под
 ручкой своей группы в CallAmbient; сбой группы другие группы не трогает.
-Вызов узла идёт через обвязки инструмента: права, журнал, отмена, упаковка
-ошибок. Узел, не дошедший до запуска (права, аргументы), срывает свою
-группу сразу. Итог — DagOutcome: результат каждого узла. Один исполнитель
-служит чату (узлы — вызовы ответа модели и подготовки хода) и запуску без
-модели.
+Вызов узла идёт к телу путём NodeCalls и через обвязки инструмента: права,
+журнал, отмена, упаковка ошибок. Узел, не дошедший до запуска (права,
+аргументы), срывает свою группу сразу. Итог — DagOutcome: результат каждого
+узла. Один исполнитель служит чату (узлы — вызовы ответа модели и
+подготовки хода) и запуску без модели.
 
 Ошибки:
 StreamPlanError — описание не переводится в план: поле порта, pipe_bytes,
     правила графа.
-DagRunError — узел зовёт инструмент, которого нет среди переданных, либо
-    инструмент ответил не сообщением с результатом семейства ToolResultBase.
+DagRunError — узел зовёт инструмент, которого нет среди переданных.
 """
 
 from __future__ import annotations
@@ -24,10 +23,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Iterator, Mapping, Sequence
-from typing import Literal
 
-from langchain_core.messages import ToolCall, ToolMessage
-from langchain_core.tools import BaseTool
 from pydantic import BaseModel, ConfigDict
 
 from boba.toolkit.chain import (
@@ -36,73 +32,27 @@ from boba.toolkit.chain import (
     StreamGroupRun,
     StreamTimings,
 )
-from boba.toolkit.dag import DagNode, DagPlanner, DagSpec
+from boba.toolkit.dag import (
+    DagNode,
+    DagPlanner,
+    DagSpec,
+    NodeCalls,
+    NodeOutcome,
+    NodeOutcomes,
+    ToolCard,
+)
 from boba.toolkit.failure import FailurePacker
 from boba.toolkit.ports import StreamSpecs
-from boba.toolkit.result import (
-    FailureResult,
-    ToolArtifact,
-    ToolResult,
-)
+from boba.toolkit.result import FailureResult
+from boba.toolrun.hosted import HostedTool
 
-__all__ = ["DagHandle", "DagOutcome", "DagRunError", "DagRunner", "NodeOutcome"]
+__all__ = ["DagHandle", "DagOutcome", "DagRunError", "DagRunner"]
 
 logger = logging.getLogger(__name__)
 
 
 class DagRunError(RuntimeError):
-    """Узел DAG нельзя исполнить: инструмента нет либо его ответ не результат."""
-
-
-class NodeOutcome(BaseModel):
-    """Итог узла: текст для модели и результат семейства; сбой — FailureResult.
-
-    errored — вызов кончился ошибкой самого вызова: инструмент поднял
-    исключение до тела (аргументы, права) либо ответил сообщением со
-    статусом error. Сообщение для модели несёт тот же статус.
-    """
-
-    model_config = ConfigDict(frozen=True)
-
-    key: str
-    tool: str
-    content: str
-    artifact: ToolResult
-    errored: bool = False
-
-    def failed(self) -> bool:
-        return isinstance(self.artifact, FailureResult)
-
-    def ok(self) -> bool:
-        """Вызов дошёл до тела, и тело вернуло удачный результат."""
-        if self.errored:
-            return False
-
-        return self.artifact.ok
-
-    def error_text(self) -> str:
-        """Текст отказа для журнала; пустой — вызов удался."""
-        if self.errored:
-            return self.content
-
-        if not self.artifact.ok:
-            return self.artifact.llm_view()
-
-        return ""
-
-    def message(self, tool_call_id: str) -> ToolMessage:
-        """Итог узла сообщением инструмента для модели."""
-        status: Literal["success", "error"] = "success"
-        if self.errored:
-            status = "error"
-
-        return ToolMessage(
-            content=self.content,
-            artifact=self.artifact,
-            name=self.tool,
-            tool_call_id=tool_call_id,
-            status=status,
-        )
+    """Узел DAG нельзя исполнить: инструмента нет среди переданных."""
 
 
 class DagOutcome(BaseModel):
@@ -182,28 +132,38 @@ class DagRunner:
     """Запуск DAG: план, группы и по задаче на каждый узел.
 
     Инструменты приходят по именам — обёрнутые инструменты реестра (чат:
-    набор хода, планировщик: for_headless). Узел зовётся как вызов модели
-    (ToolCall с id = ключ узла) под ручкой своей группы: обвязки получают
-    tool_call_id, лента — события вызова. Контекст вызова (CallContext,
-    callbacks) задачи наследуют от вызывающего.
+    набор хода, планировщик: for_headless) — вместе со своими карточками
+    (ToolSchema.cards_of): карточку узла получает путь вызова. Узел зовётся
+    под ручкой своей
+    группы путём calls (NodeCalls): сервис зовёт тело напрямую, чат проводит
+    вызов через свой компонент, и лента получает события вызова. Обвязки
+    получают идентификатор вызова — ключ узла. Контекст вызова задачи
+    наследуют от вызывающего.
     """
 
-    def __init__(
+    def __init__(  # noqa: PLR0913 — исполнитель собирается всеми входами запуска
         self,
-        tools: Mapping[str, BaseTool],
+        tools: Mapping[str, HostedTool],
+        cards: Mapping[str, ToolCard],
         specs: StreamSpecs,
         ambient: CallAmbient,
         timings: StreamTimings,
         pipe_bytes: int,
+        calls: NodeCalls,
     ) -> None:
-        """specs — потоковые декларации инструментов; ambient — обстановка
+        """cards — карточки инструментов tools по тем же именам; specs —
+        потоковые декларации инструментов; ambient — обстановка
         вызова, в которую ставится ручка узла; pipe_bytes — буфер
-        пайпов каналов узла, который его не назвал."""
+        пайпов каналов узла, который его не назвал; calls — путь вызова
+        узла к телу."""
         self._tools = dict(tools)
+        self._calls = calls
+        self._cards = dict(cards)
         self._ambient = ambient
         self._timings = timings
         self._planner = DagPlanner(specs.of, pipe_bytes)
         self._failures = FailurePacker()
+        self._outcomes = NodeOutcomes()
 
     async def run(self, dag: DagSpec) -> DagOutcome:
         """Исполнить DAG и дождаться всех узлов; обрыв ожидания гасит узлы."""
@@ -216,8 +176,8 @@ class DagRunner:
             raise
 
     def start(self, dag: DagSpec) -> DagHandle:
-        """План по описанию; узлы стартуют задачами сразу. Инструменты
-        зовутся с конфигом langchain из контекста вызывающего."""
+        """План по описанию; узлы стартуют задачами сразу в контексте
+        вызывающего."""
         for node in dag.nodes:
             self._tool_of(node)
 
@@ -239,7 +199,7 @@ class DagRunner:
 
         return DagHandle(dag, tasks)
 
-    def _tool_of(self, node: DagNode) -> BaseTool:
+    def _tool_of(self, node: DagNode) -> HostedTool:
         tool = self._tools.get(node.tool)
         if tool is None:
             msg = (
@@ -269,52 +229,16 @@ class DagRunner:
         return outcome
 
     async def _invoke(self, node: DagNode) -> NodeOutcome:
-        """Вызов инструмента узла; исключение вызова — итог-ошибка узла."""
+        """Вызов узла путём NodeCalls: тело узла — вызов его инструмента."""
+        card = self._cards[node.tool]
+
+        return await self._calls.conducted(card, node, self._called)
+
+    async def _called(self, node: DagNode) -> NodeOutcome:
+        """Тело узла: вызов инструмента; исключение вызова — итог-отказ узла."""
         tool = self._tool_of(node)
-        call = ToolCall(
-            name=node.tool, args=dict(node.args), id=node.key, type="tool_call"
-        )
 
         try:
-            message = await tool.ainvoke(call)
+            return await tool.call(node)
         except Exception as exc:
-            return self._failed(node, self._failures.pack(exc))
-
-        return self._outcome_of(node, message)
-
-    @staticmethod
-    def _failed(node: DagNode, failure: FailureResult) -> NodeOutcome:
-        content, artifact = failure.packed()
-
-        return NodeOutcome(
-            key=node.key,
-            tool=node.tool,
-            content=content,
-            artifact=artifact,
-            errored=True,
-        )
-
-    @staticmethod
-    def _outcome_of(node: DagNode, message: object) -> NodeOutcome:
-        if not isinstance(message, ToolMessage):
-            msg = (
-                f"dag node {node.label()}: expected a ToolMessage from the tool, "
-                f"got {type(message).__name__}"
-            )
-            raise DagRunError(msg)
-
-        artifact = ToolArtifact.revive(message.artifact)
-        if artifact is None:
-            msg = (
-                f"dag node {node.label()}: expected a ToolResultBase artifact, "
-                f"got {type(message.artifact).__name__}"
-            )
-            raise DagRunError(msg)
-
-        return NodeOutcome(
-            key=node.key,
-            tool=node.tool,
-            content=message.text,
-            artifact=artifact,
-            errored=message.status == "error",
-        )
+            return self._outcomes.refused(node, self._failures.pack(exc))

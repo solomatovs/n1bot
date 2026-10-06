@@ -1,22 +1,37 @@
-"""Сбой не должен быть тихим: фоновые таски chainlit и коллбэки langchain."""
+"""Сбой не должен быть тихим: коллбэки langchain, шаги вызовов инструментов и
+слой данных."""
 
 from __future__ import annotations
 
 import asyncio
-from typing import Any, cast
+from collections.abc import Mapping
+from typing import Annotated, Any, cast
 from uuid import uuid4
 
 import pytest
 from chainlit.context import ChainlitContext
 from langchain_core.outputs import LLMResult
 from langchain_core.tracers.base import AsyncBaseTracer
+from pydantic import Field
 
 from boba.chainlit.chat import tracing as tracer_module
 from boba.chainlit.chat.feed import TurnFeed
 from boba.chainlit.chat.tracing import AgentTracer
 from boba.chainlit.chat.turn import TurnState
 from boba.chainlit.data.data_layer import PostgresDataLayer
+from boba.chainlit.rendering.mount import ChatCalls, ChatMount
 from boba.chat.threads import DataLayerError
+from boba.connection_broker.sealing import SentConnections
+from boba.identity.run import Runs
+from boba.stand.refs import StandRefs
+from boba.stand_core.context import CallStand, FakeTurn
+from boba.toolkit.chain import CallAmbient
+from boba.toolkit.dag import DagNode, NodeOutcome
+from boba.toolkit.facade import tool
+from boba.toolkit.ports import StreamSpecs
+from boba.toolkit.result import MarkdownResult
+from boba.toolrun.hosted import ToolHosting
+from boba.toolrun.stream_calls import LocalDagService
 
 
 @pytest.fixture(autouse=True)
@@ -73,14 +88,6 @@ def _tracer() -> AgentTracer:
 class TestTracerFailuresVisible:
     """langchain гасит исключения коллбэков: трасер обязан показать их сам."""
 
-    def test_tool_start_failure_shown(self, shown: list[str]) -> None:
-        tracer = _tracer()
-        asyncio.run(tracer.on_tool_start({}, "", run_id=uuid4(), inputs={}))
-        if not (shown):
-            raise AssertionError("shown")
-        if "on_tool_start" not in shown[0]:
-            raise AssertionError('"on_tool_start" in shown[0]')
-
     def test_llm_end_failure_shown(self, shown: list[str]) -> None:
         tracer = _tracer()
         run_id = uuid4()
@@ -98,11 +105,72 @@ class TestTracerFailuresVisible:
 
     def test_failure_does_not_break_the_turn(self, shown: list[str]) -> None:
         tracer = _tracer()
-        result = asyncio.run(tracer.on_tool_start({}, "", run_id=uuid4(), inputs={}))
+        run_id = uuid4()
+
+        async def _run() -> None:
+            await tracer.on_llm_start({}, [""], run_id=run_id)
+
+            return await tracer.on_llm_error(RuntimeError("provider"), run_id=run_id)
+
+        result = asyncio.run(_run())
         if result is not None:
             raise AssertionError("result is None")
         if not (shown):
             raise AssertionError("shown")
+        if "on_llm_error" not in shown[0]:
+            raise AssertionError('"on_llm_error" in shown[0]')
+
+
+class BrokenTurn(FakeTurn):
+    """Владелец хода, у которого лента недоступна: начало вызова не рисуется."""
+
+    async def tool_started(
+        self, tool_call_id: str, name: str, args: Mapping[str, Any]
+    ) -> None:
+        msg = f"отрисовка шага {name} сломана"
+        raise RuntimeError(msg)
+
+
+class TestToolStepFailuresVisible:
+    """Шаг вызова инструмента рисует не langchain: сбой ленты гасить некому,
+    он уходит наверх ошибкой вызова, и ход показывает его своим отчётом."""
+
+    def test_step_failure_goes_up_and_the_body_is_not_run(
+        self, call_stand: CallStand
+    ) -> None:
+        ran: list[str] = []
+
+        @tool
+        async def step_probe(
+            text: Annotated[str, Field(min_length=1, description="Что вернуть")],
+        ) -> MarkdownResult:
+            """Запоминает, что тело исполнилось."""
+            ran.append(text)
+
+            return MarkdownResult(text=text)
+
+        contexts = call_stand.contexts
+        runs = Runs(contexts)
+        calls = ChatCalls(contexts, runs, SentConnections(), ChatMount(contexts, runs))
+        service = LocalDagService(
+            ToolHosting().toolset([step_probe]),
+            StandRefs.STREAM_CONFIG,
+            (),
+            StreamSpecs({}),
+            CallAmbient(),
+            calls,
+        )
+        node = DagNode(key="call-1", tool="step_probe", args={"text": "hi"})
+
+        async def called() -> NodeOutcome:
+            with runs.open(call_stand.context("broken-feed"), BrokenTurn()):
+                return await service.call(node)
+
+        with pytest.raises(RuntimeError, match="отрисовка шага step_probe сломана"):
+            asyncio.run(called())
+
+        if ran:
+            raise AssertionError(f"тело не исполняется без шага ленты: {ran}")
 
 
 class TestDataLayerErrorContract:

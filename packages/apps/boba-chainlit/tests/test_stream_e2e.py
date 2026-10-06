@@ -32,6 +32,9 @@ from test_canvas_e2e import (
     panel,
 )
 
+from boba.chainlit.agent.bridge import LangchainMessages
+from boba.toolkit.dag import JournalAddress
+
 __all__ = ["anyio_backend", "app_server", "panel"]
 
 from boba.canvas.journal import StreamKey
@@ -40,7 +43,6 @@ from boba.chainlit.rendering.chat_view import ChatView, StepRole
 from boba.config import bind
 from boba.db.postgres import AsyncPostgresPool
 from boba.identity.session import Login
-from boba.mcp_client.client import JournalAddress
 from boba.runtime.config import AppLayers
 from boba.runtime.journal import DirVault, StreamJournal
 from boba.toolkit.channels import ToolChannel
@@ -85,7 +87,10 @@ class ServiceJournal:
             content='{"exit_code": 0}', tool_call_id=call_id, id=f"tm-{call_id}"
         )
         server = config.profiles[FILES_PROFILE].mcp[0]
-        JournalAddress(server=server, run=thread_id).stamp(message)
+        address = JournalAddress(server=server, run=thread_id)
+        message.response_metadata[LangchainMessages.JOURNAL_KEY] = address.model_dump(
+            mode="json"
+        )
 
         return message
 

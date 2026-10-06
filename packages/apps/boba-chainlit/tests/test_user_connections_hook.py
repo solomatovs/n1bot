@@ -18,7 +18,6 @@ import pytest
 from chainlit.user import PersistedUser
 from chainlit.user import User as ChainlitUser
 from chainlit_stand import ChatSessionStand, SsoStand
-from langchain_core.tools import StructuredTool
 from omegaconf import OmegaConf
 from psycopg import sql
 from pydantic import SecretStr, create_model
@@ -47,8 +46,10 @@ from boba.messaging import MemoryMessageBus
 from boba.runtime.refresh import BusRefreshSignal
 from boba.stand.connections import StandUserConnections
 from boba.stand.site import Stand
+from boba.stand.toolstand import ProbeTools
 from boba.stand_core.context import CallStand
 from boba.toolkit.facade import UserConnection
+from boba.toolrun.hosted import HostedTool
 from boba.transport.http.connection import HttpConnection
 
 pytestmark = pytest.mark.anyio
@@ -171,53 +172,27 @@ class Capture:
     def __init__(self, calls: CallStand, store: ConnectionStore) -> None:
         self._calls = calls
         self._store = store
+        self._probes = ProbeTools()
 
-    def tool(self, tickets: SsoTickets | None):
+    def tool(self, tickets: SsoTickets | None) -> HostedTool:
         schema = create_model(
             "CaptureArgs",
             connection=(Annotated[PostgresConfig, UserConnection], ...),
         )
 
-        async def body(**kwargs: object) -> dict[str, object]:
-            return kwargs
+        return self._bound(self._probes.recorder("capture", schema), tickets)
 
-        tool = StructuredTool(
-            name="capture",
-            description="capture",
-            args_schema=schema,
-            coroutine=body,
-        )
-
-        StandUserConnections(
-            lambda: self._store,
-            lambda: KerberosCredentialSource(
-                tickets,
-                BusRefreshSignal(
-                    lambda: MemoryMessageBus("test"), self._calls.contexts
-                ),
-            ),
-            ConnectionTypes.discover,
-            self._calls.contexts,
-        ).bind_all([tool])
-        return tool
-
-    def web_tool(self, tickets: SsoTickets):
+    def web_tool(self, tickets: SsoTickets) -> HostedTool:
         schema = create_model(
             "CaptureWebArgs",
             url=(str, ...),
             connection=(Annotated[HttpConnection, UserConnection], ...),
         )
 
-        async def body(**kwargs: object) -> dict[str, object]:
-            return kwargs
+        return self._bound(self._probes.recorder("capture_web", schema), tickets)
 
-        tool = StructuredTool(
-            name="capture_web",
-            description="capture",
-            args_schema=schema,
-            coroutine=body,
-        )
-
+    def _bound(self, tool: HostedTool, tickets: SsoTickets | None) -> HostedTool:
+        """Инструмент под обвязкой соединений пользователя стенда."""
         StandUserConnections(
             lambda: self._store,
             lambda: KerberosCredentialSource(
@@ -229,13 +204,15 @@ class Capture:
             ConnectionTypes.discover,
             self._calls.contexts,
         ).bind_all([tool])
+
         return tool
 
-    @staticmethod
-    async def connection(tool: StructuredTool, connection_name: str) -> PostgresConfig:
+    async def connection(
+        self, tool: HostedTool, connection_name: str
+    ) -> PostgresConfig:
         """Профиль, который хост подставил бы телу этого вызова."""
-        kwargs = await tool.ainvoke({"connection": connection_name})
-        connection = kwargs["connection"]
+        await self._probes.call(tool, "capture", {"connection": connection_name})
+        connection = self._probes.last(tool.name)["connection"]
         if not isinstance(connection, PostgresConfig):
             raise AssertionError(
                 f"connection must be PostgresConfig: {type(connection)}"
@@ -308,13 +285,13 @@ async def test_only_requested_profile_is_shipped(
     await store.grant(second, GrantTarget.user(UUID(user.id)))
     chat_session.sign_in(user, dict(user.metadata), THREAD, PROFILE)
 
-    connection = await Capture.connection(capture.tool(None), "alpha")
+    connection = await capture.connection(capture.tool(None), "alpha")
 
     if connection.dbname != plain.dbname:
         raise AssertionError("the requested row must reach the body")
 
     with pytest.raises(RefusalError) as caught:
-        await Capture.connection(capture.tool(None), "gamma")
+        await capture.connection(capture.tool(None), "gamma")
 
     if caught.value.kind != ConnectionRefusal.NOT_VISIBLE:
         raise AssertionError(f"unknown name must be refused: {caught.value.kind}")
@@ -337,7 +314,7 @@ async def test_client_label_names_the_user_and_the_tool(
     await store.grant(await store.add("alpha", plain), GrantTarget.user(UUID(user.id)))
     chat_session.sign_in(user, dict(user.metadata), THREAD, PROFILE)
 
-    connection = await Capture.connection(capture.tool(None), "alpha")
+    connection = await capture.connection(capture.tool(None), "alpha")
 
     shipped = connection
     if not isinstance(shipped, PostgresConfig):
@@ -362,7 +339,7 @@ async def test_unrequested_call_ships_names_only(
     chat_session.sign_in(user, dict(user.metadata), THREAD, PROFILE)
 
     with pytest.raises(RefusalError) as caught:
-        await Capture.connection(capture.tool(None), "nothing")
+        await capture.connection(capture.tool(None), "nothing")
 
     if caught.value.kind != ConnectionRefusal.NOT_VISIBLE:
         raise AssertionError(f"unknown name must be refused: {caught.value.kind}")
@@ -383,7 +360,7 @@ async def test_keytab_row_ships_a_service_ticket_only(
     await store.grant(connection_id, GrantTarget.user(UUID(user.id)))
     chat_session.sign_in(user, dict(user.metadata), THREAD, PROFILE)
 
-    connection = await Capture.connection(capture.tool(None), "main")
+    connection = await capture.connection(capture.tool(None), "main")
 
     shipped = connection.auth
     if not isinstance(shipped, TicketAuth):
@@ -413,7 +390,7 @@ async def test_delegated_row_uses_the_session_principal(  # noqa: PLR0913 — ф
     await store.grant(connection_id, GrantTarget.user(UUID(user.id)))
     chat_session.sign_in(user, sso_meta, THREAD, PROFILE)
 
-    connection = await Capture.connection(capture.tool(sso[0]), "main")
+    connection = await capture.connection(capture.tool(sso[0]), "main")
 
     shipped = connection.auth
     if not isinstance(shipped, TicketAuth):
@@ -448,10 +425,10 @@ async def test_role_shared_delegated_row_gives_each_user_their_own_ticket(  # no
     second = await Session.user(layer, "hook-role-b", second_meta)
 
     chat_session.sign_in(first, first_meta, THREAD, PROFILE)
-    ticket_a = (await Capture.connection(tool, "shared")).auth
+    ticket_a = (await capture.connection(tool, "shared")).auth
 
     chat_session.sign_in(second, second_meta, THREAD, PROFILE)
-    ticket_b = (await Capture.connection(tool, "shared")).auth
+    ticket_b = (await capture.connection(tool, "shared")).auth
 
     if not isinstance(ticket_a, TicketAuth) or not isinstance(ticket_b, TicketAuth):
         raise AssertionError("both users must receive tickets")
@@ -480,7 +457,7 @@ async def test_delegated_row_refuses_session_without_sso(  # noqa: PLR0913 — �
     chat_session.sign_in(user, dict(user.metadata), THREAD, PROFILE)
 
     with pytest.raises(RefusalError) as caught:
-        await Capture.connection(capture.tool(sso[0]), "main")
+        await capture.connection(capture.tool(sso[0]), "main")
 
     if caught.value.kind != ConnectionRefusal.NO_DELEGATION:
         raise AssertionError(f"unexpected refusal: {caught.value.kind}")
@@ -504,7 +481,7 @@ async def test_delegated_row_refuses_unknown_principal(  # noqa: PLR0913 — ф�
     chat_session.sign_in(user, sso_meta, THREAD, PROFILE)
 
     with pytest.raises(RefusalError) as caught:
-        await Capture.connection(capture.tool(sso[0]), "main")
+        await capture.connection(capture.tool(sso[0]), "main")
 
     if caught.value.kind != ConnectionRefusal.NO_DELEGATION:
         raise AssertionError(f"unexpected refusal: {caught.value.kind}")
@@ -524,7 +501,7 @@ async def test_delegated_row_refuses_without_sso_configured(
     chat_session.sign_in(user, sso_meta, THREAD, PROFILE)
 
     with pytest.raises(RefusalError) as caught:
-        await Capture.connection(capture.tool(None), "main")
+        await capture.connection(capture.tool(None), "main")
 
     if caught.value.kind != ConnectionRefusal.NO_DELEGATION:
         raise AssertionError(f"unexpected refusal: {caught.value.kind}")
@@ -547,7 +524,7 @@ async def test_stale_users_row_does_not_grant_a_local_login(  # noqa: PLR0913 �
     chat_session.sign_in(user, Session.local_metadata(), THREAD, PROFILE)
 
     with pytest.raises(RefusalError) as caught:
-        await Capture.connection(capture.tool(sso[0]), "main")
+        await capture.connection(capture.tool(sso[0]), "main")
 
     if caught.value.kind != ConnectionRefusal.NO_DELEGATION:
         raise AssertionError(f"unexpected refusal: {caught.value.kind}")
@@ -570,7 +547,7 @@ async def test_login_label_must_match_its_principal(  # noqa: PLR0913 — фик
     chat_session.sign_in(user, forged, THREAD, PROFILE)
 
     with pytest.raises(RefusalError) as caught:
-        await Capture.connection(capture.tool(sso[0]), "main")
+        await capture.connection(capture.tool(sso[0]), "main")
 
     if caught.value.kind != ConnectionRefusal.NO_DELEGATION:
         raise AssertionError(f"unexpected refusal: {caught.value.kind}")

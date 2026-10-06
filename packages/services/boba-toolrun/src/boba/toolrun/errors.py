@@ -3,7 +3,7 @@
 Инструменты падают по разным причинам — отказ сервера, дефект кода, oom
 killer в песочнице. Без этой обёртки исключение доезжает до callback'а и
 прерывает всю цепочку действий. Обёртка упаковывает его FailurePacker'ом в
-наследника FailureResult: ToolMessage уходит в историю, чат рисует тот же
+наследника FailureResult: итог вызова уходит в историю, чат рисует тот же
 результат, LLM видит текст ошибки и решает, что делать дальше.
 
 Ошибки: не выпускает; ToolStopped и asyncio.CancelledError проходят насквозь.
@@ -13,10 +13,9 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
-from langchain_core.tools import BaseTool
-
 from boba.toolkit.failure import FailurePacker
 from boba.toolkit.result import FailureResult
+from boba.toolrun.hosted import HostedCall, HostedTool
 from boba.toolrun.wrapping import CallHooks, ToolBody
 
 __all__ = ["ToolErrorGuard"]
@@ -33,17 +32,13 @@ class ToolErrorGuard(CallHooks[str]):
 
     def __init__(self) -> None:
         self._failures = FailurePacker()
+        self._bodies = ToolBody()
 
-    def guard_all(self, tools: Sequence[BaseTool]) -> list[BaseTool]:
-        return ToolBody.hook_all(tools, self)
+    def guard_all(self, tools: Sequence[HostedTool]) -> list[HostedTool]:
+        return self._bodies.hook_all(tools, self)
 
-    def before(
-        self,
-        name: str,
-        args: tuple[object, ...],
-        kwargs: dict[str, object],
-    ) -> str:
-        return name
+    async def before(self, call: HostedCall) -> str:
+        return call.tool
 
-    def on_error(self, ctx: str, error: Exception) -> tuple[str, FailureResult]:
-        return self._failures.pack(error).packed()
+    async def on_error(self, ctx: str, error: Exception) -> FailureResult:
+        return self._failures.pack(error)

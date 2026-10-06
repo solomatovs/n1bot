@@ -1,12 +1,16 @@
-"""Монтирование элементов результата на поверхность чата.
+"""Вызов инструмента на поверхности чата: шаг ленты хода и монтирование
+элементов результата.
 
-Обвязка ChatMount ставится на инструменты чата после тела: проходит по
-items из chat_view() результата и исполняет то, что требует поверхности —
+ChatCalls — путь вызова узла чата (NodeCalls): сообщает владельцу идущего
+хода начало вызова и его итог — по ним лента рисует шаг.
+ChatMount получает от него итог вызова, когда
+тело ответило, а шаг вызова ещё открыт: проходит по items из chat_view()
+результата и исполняет то, что требует поверхности —
 открывает файл в панели канваса и кладёт ссылку на него в переписку
 (PanelOpen), прикрепляет файл workspace вложением (FileElement). Виджеты
 (VisualElement) рисует лента по концу шага. Если панель не смогла показать
-файл, результат подменяется на ErrorResult: так вердикт браузера доходит
-до модели тем же путём, что и любой отказ инструмента.
+файл, итог вызова подменяется отказом: так вердикт браузера доходит до
+модели тем же путём, что и любой отказ инструмента.
 
 Ошибки:
 RefusalError — вызов идёт вне хода чата или без живого запуска.
@@ -14,16 +18,13 @@ RefusalError — вызов идёт вне хода чата или без жи
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import mimetypes
-from collections.abc import Mapping, Sequence
+import time
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from typing import Any, ClassVar
 from uuid import uuid4
-
-from langchain_core.messages import ToolCall, ToolMessage
-from langchain_core.tools import BaseTool
 
 import chainlit as cl
 from boba.canvas.canvas import CanvasError, CanvasErrorKind
@@ -32,21 +33,29 @@ from boba.chainlit.canvas.panel import CanvasPanel
 from boba.chainlit.data.data_layer import AttachmentDataLayer, HeldContent
 from boba.chainlit.domain.context import ChatCallContext
 from boba.chainlit.rendering.tool import ChatElements
+from boba.connection_broker.sealing import SentConnections
 from boba.identity.context import CallContexts, ContextKind
 from boba.identity.errors import RefusalError
 from boba.identity.run import ElementTarget, Runs
 from boba.mcp_client.client import BlockFiles
 from boba.runtime.storage import StorageClient
+from boba.toolkit.calls import CallViews, ToolCallModels
+from boba.toolkit.dag import (
+    DagNode,
+    NodeBody,
+    NodeCalls,
+    NodeOutcome,
+    NodeOutcomes,
+    ToolCard,
+)
 from boba.toolkit.result import (
     ErrorResult,
     FileElement,
     PanelOpen,
     ToolResultBase,
 )
-from boba.toolrun.stream_calls import CallReply, ToolServer
-from boba.toolrun.wrapping import CallHooks, ToolBody
 
-__all__ = ["ChatAttachments", "ChatMount", "MountedCall", "WorkspaceFile"]
+__all__ = ["ChatAttachments", "ChatCalls", "ChatMount", "WorkspaceFile"]
 
 logger = logging.getLogger(__name__)
 
@@ -62,24 +71,24 @@ class WorkspaceFile(cl.File):
     props: dict[str, Any] = field(default_factory=dict)
 
 
-@dataclass(frozen=True, slots=True)
-class MountedCall:
-    """Вызов, за которым следит обвязка: имя инструмента."""
+class ChatMount:
+    """Монтирование результата вызова на поверхность чата.
 
-    tool: str
-
-
-class ChatMount(CallHooks[MountedCall]):
-    """Обвязка чата: элементы результата, требующие поверхности."""
+    Тело инструмента о чате не знает: исполняет его свой исполнитель либо
+    MCP-сервер. Когда тело ответило, путь вызова узла (ChatCalls) отдаёт итог
+    сюда, пока шаг вызова ещё открыт: панель канваса открывается, вложение
+    прикрепляется к шагу ответа. Отказ поверхности (диаграмма не
+    отрисовалась) подменяет итог вызова отказом, и модель видит его как
+    отказ инструмента. Создаётся сборкой чата из держателя контекста и
+    реестра запусков: владельца хода находит через Runs.
+    """
 
     RETRY_NOTE: ClassVar[str] = "fix the file and call the tool again"
 
     def __init__(self, contexts: CallContexts, runs: Runs) -> None:
         self._contexts = contexts
         self._runs = runs
-
-    def guard_all(self, tools: Sequence[BaseTool]) -> None:
-        ToolBody.hook_all(tools, self)
+        self._outcomes = NodeOutcomes()
 
     def chat_context(self) -> ChatCallContext:
         """Контекст хода чата; вызов вне чата — RefusalError(CHAT_ONLY)."""
@@ -91,32 +100,24 @@ class ChatMount(CallHooks[MountedCall]):
         msg = f"this tool works only inside a chat turn, called from {got}"
         raise RefusalError(ContextKind.CHAT_ONLY, msg)
 
-    def before(
-        self,
-        name: str,
-        args: tuple[object, ...],
-        kwargs: dict[str, object],
-    ) -> MountedCall:
-        return MountedCall(tool=name)
+    async def mounted(self, call: DagNode, outcome: NodeOutcome) -> NodeOutcome:
+        """Итог вызова call после монтирования элементов его результата;
+        отказ поверхности подменяет итог отказом вызова.
 
-    async def after_async(self, ctx: MountedCall, result: object) -> object:
-        """Результат тела — пара langchain (content, artifact): монтируются
-        элементы артефакта; отказ поверхности подменяет пару целиком."""
-        if not isinstance(result, tuple):
-            return result
-
-        artifact = result[1]
-        if not isinstance(artifact, ToolResultBase):
-            return result
-
+        Ошибки:
+        RefusalError — вызов идёт вне хода чата или без живого запуска.
+        """
+        artifact = outcome.artifact
         try:
             await self._mount(artifact)
         except CanvasError as e:
             message = f"{artifact.llm_view()}; but {e}; {self.RETRY_NOTE}"
-            logger.info("tool %s: canvas refused the result: %s", ctx.tool, e)
-            return ErrorResult(message=message, error_kind=e.kind).packed()
+            logger.info("tool %s: canvas refused the result: %s", call.tool, e)
+            refusal = ErrorResult(message=message, error_kind=e.kind)
 
-        return result
+            return self._outcomes.refused(call, refusal)
+
+        return outcome
 
     async def _mount(self, artifact: ToolResultBase) -> None:
         for item in artifact.chat_view().items:
@@ -181,65 +182,87 @@ class ChatMount(CallHooks[MountedCall]):
         return port.element_target(context.tool_call_id())
 
 
-class MountedToolServer(ToolServer):
-    """Порт ToolServer, монтирующий результат удалённого вызова на поверхность
-    чата.
+class ChatCalls(NodeCalls):
+    """Реализация NodeCalls чатом: вызов узла виден в ленте хода шагом.
 
-    Создаётся сборкой агента поверх порта MCP-сервера. Тело инструмента
-    исполнил сервер и о чате не знает; когда вызов вернулся, порт отдаёт его
-    результат обвязке ChatMount — та открывает файл в панели, прикрепляет
-    вложение. Отказ поверхности (диаграмма не отрисовалась) подменяет итог
-    вызова ошибкой, и модель видит его как отказ инструмента.
+    Создаётся сборкой чата один на процесс и отдаётся исполнителям узлов:
+    реестру своих инструментов (DagRunner) и портам MCP-серверов.
+    Исполнитель зовёт conducted() на каждый узел — вызов модели, узел
+    связки, вызов подготовки. Владельца идущего хода находит по контексту
+    вызова в реестре запусков (Runs) и сообщает ему начало вызова, ждёт тело
+    узла, монтирует результат на поверхность чата (ChatMount) и сообщает
+    итог: результат тела либо отказ вызова. Аргументы шаг получает такими,
+    какими их дала модель: запечатанное соединение заменяется ссылкой
+    (SentConnections). Запуск без владельца с лентой (вызов вне хода)
+    исполняет тело напрямую. Оборванный вызов шаг не закрывает: его закроет
+    исход хода. Сборка сессии называет карточки инструментов MCP-серверов
+    (shown): вход шага их вызова лента рисует по виду аргументов карточки.
     """
 
     def __init__(
-        self, inner: ToolServer, mount: ChatMount, contexts: CallContexts
+        self,
+        contexts: CallContexts,
+        runs: Runs,
+        sent: SentConnections,
+        mount: ChatMount,
     ) -> None:
-        self._inner = inner
-        self._mount = mount
         self._contexts = contexts
+        self._runs = runs
+        self._sent = sent
+        self._mount = mount
+        self._views = CallViews()
 
-    def tools(self) -> Sequence[BaseTool]:
-        return self._inner.tools()
+    def shown(self, cards: Iterable[ToolCard]) -> None:
+        """Лента живого хода и истории рисует аргументы вызовов инструментов
+        cards по виду из их карточек; карточка без вида — аргументы
+        json-текстом."""
+        for card in cards:
+            if card.views is None:
+                continue
 
-    def features(self) -> Mapping[str, Mapping[str, object]]:
-        return self._inner.features()
+            ToolCallModels.register(
+                card.name, self._views.model_of(card.name, card.views)
+            )
 
-    async def submit(
-        self, calls: Sequence[ToolCall]
-    ) -> Sequence[asyncio.Future[ToolMessage]]:
-        accepted = await self._inner.submit(calls)
-        mounted: list[asyncio.Future[ToolMessage]] = []
-        for call, future in zip(calls, accepted, strict=True):
-            mounted.append(asyncio.ensure_future(self._mounted(call, future)))
-
-        return mounted
-
-    async def _mounted(
-        self, call: ToolCall, future: asyncio.Future[ToolMessage]
-    ) -> ToolMessage:
-        message = await future
-        artifact = message.artifact
-        if not isinstance(artifact, ToolResultBase):
-            return message
-
-        call_id = str(call["id"])
-        pair = (message.content, artifact)
+    async def conducted(
+        self, card: ToolCard, node: DagNode, body: NodeBody
+    ) -> NodeOutcome:
         context = self._contexts.current()
-        with self._contexts.applied(context.as_tool_call(call_id)):
-            result = await self._mount.after_async(MountedCall(tool=call["name"]), pair)
+        port = self._runs.port_of(context.run_id)
+        if port is None:
+            return await body(node)
 
-        if result is pair:
-            return message
+        started = time.monotonic()
+        logger.info("tool %s started: call=%s", card.name, node.key)
+        await port.tool_started(node.key, card.name, self._sent.shown(node.args))
 
-        if not isinstance(result, tuple):
-            return message
+        outcome = await body(node)
+        with self._contexts.applied(context.as_tool_call(node.key)):
+            outcome = await self._mount.mounted(node, outcome)
 
-        refusal = result[1]
-        if not isinstance(refusal, ToolResultBase):
-            return message
+        elapsed_ms = int((time.monotonic() - started) * 1000)
+        if outcome.errored:
+            logger.info(
+                "tool %s failed: call=%s in %dms: %s",
+                card.name,
+                node.key,
+                elapsed_ms,
+                outcome.content,
+            )
+            await port.tool_failed(node.key, outcome.artifact.chat_view().markdown)
 
-        return CallReply(call).message(refusal, True)
+            return outcome
+
+        logger.info(
+            "tool %s finished: call=%s output=%d chars in %dms",
+            card.name,
+            node.key,
+            len(outcome.content),
+            elapsed_ms,
+        )
+        await port.tool_finished(node.key, outcome.artifact)
+
+        return outcome
 
 
 class ChatAttachments(BlockFiles):
@@ -247,7 +270,7 @@ class ChatAttachments(BlockFiles):
     workspace треда и показывается вложением.
 
     Создаётся сборкой чата из держателя контекста, хранилища вложений и
-    обвязки ChatMount. Файл пишется в каталог upload треда того хода, в
+    монтирования ChatMount. Файл пишется в каталог upload треда того хода, в
     котором идёт вызов, поэтому виден и пользователю, и инструментам
     песочницы. Размер ограничен самим workspace пользователя. Вложением
     показывается первый файл вызова: элемент вызова у шага один; остальные
@@ -261,8 +284,8 @@ class ChatAttachments(BlockFiles):
         self._storage = storage
         self._mount = mount
 
-    async def attached(self, call: ToolCall, index: int, mime: str, data: bytes) -> str:
-        call_id = str(call["id"])
+    async def attached(self, call: DagNode, index: int, mime: str, data: bytes) -> str:
+        call_id = call.key
         context = self._contexts.current()
         key = ObjectKey.build(
             context.subject.user_key,
@@ -283,9 +306,9 @@ class ChatAttachments(BlockFiles):
         return f"file saved to the workspace: {path} ({mime}, {len(data)} bytes)"
 
     @staticmethod
-    def _name(call: ToolCall, index: int, mime: str) -> str:
+    def _name(call: DagNode, index: int, mime: str) -> str:
         extension = mimetypes.guess_extension(mime)
         if extension is None:
             extension = ""
 
-        return f"{call['name']}-{uuid4().hex[:8]}-{index}{extension}"
+        return f"{call.tool}-{uuid4().hex[:8]}-{index}{extension}"

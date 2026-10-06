@@ -20,8 +20,6 @@ from collections.abc import Sequence
 from datetime import timedelta
 from typing import ClassVar
 
-from langchain_core.tools import BaseTool
-
 from boba.connection_broker.sealed import SealedConnectionParam
 from boba.connection_broker.tickets import CredentialsRef
 from boba.connection_broker.user_connections import (
@@ -37,6 +35,7 @@ from boba.connections.sealed import (
     SealKeys,
 )
 from boba.identity.context import CallContexts
+from boba.toolrun.hosted import HostedTool
 from boba.toolrun.injected import AsyncInjected
 
 __all__ = ["StandUserConnections"]
@@ -109,7 +108,7 @@ class StandUserConnections:
         self._connections = ArmedConnections(store_ref, credentials_ref, contexts)
         self._hooks = ConnectionParamHooks(types_ref, SealedConnectionParam.ARGUMENT)
 
-    def bind_all(self, tools: Sequence[BaseTool]) -> None:
+    def bind_all(self, tools: Sequence[HostedTool]) -> None:
         self._hooks.bind_all(tools, self._hook)
 
     def _hook(self, tool: str, param: str, kind: str) -> AsyncInjected:

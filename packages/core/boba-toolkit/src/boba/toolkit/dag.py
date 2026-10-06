@@ -11,19 +11,38 @@ DagSpec — сериализуемая модель графа: узлы — в�
 остаются в StreamPlan. WorkflowResult — итог вызова связки для клиента:
 результаты узлов одним конвертом.
 
+Здесь же контракт порта сервера инструментов — типы, которыми клиент порта
+(чат, сервис MCP, клиент MCP) и его исполнитель говорят друг с другом:
+карточка инструмента ToolCard, итог вызова NodeOutcome с фабрикой
+NodeOutcomes и адресом журнала JournalAddress, путь вызова узла к телу
+NodeCalls, сам порт ToolServer; CallDag строит описание DAG по вызовам
+клиента порта и разбирает объявленную сервером возможность связки
+(WorkflowFeature). Реализации порта живут в boba.toolrun и клиенте MCP.
+
 Ошибки:
 StreamPlanError — поле порта узла не имя канала, pipe_bytes не число либо
-    граф нарушен (правила StreamPlan).
+    граф нарушен (правила StreamPlan); вызов workflow не проходит форму
+    описания DAG; настройки возможности связки не проходят её модель.
 """
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterator, Mapping, Sequence
+import asyncio
+from abc import abstractmethod
+from collections.abc import Awaitable, Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any, ClassVar, Literal
+from typing import Any, ClassVar, Literal, Protocol, TypeAlias
 
-from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    JsonValue,
+    ValidationError,
+    model_validator,
+)
 
+from boba.toolkit.calls import FieldView
 from boba.toolkit.chain import (
     StreamInput,
     StreamNode,
@@ -31,13 +50,30 @@ from boba.toolkit.chain import (
     StreamPlan,
     StreamPlanError,
 )
+from boba.toolkit.failure import ValidationText
 from boba.toolkit.ports import PortDecl, StreamSpec
-from boba.toolkit.result import ChatView, Fact, FactsBlock, ToolResult, ToolResultBase
+from boba.toolkit.result import (
+    ChatView,
+    Fact,
+    FactsBlock,
+    FailureResult,
+    ToolResult,
+    ToolResultBase,
+)
 
 __all__ = [
+    "CallDag",
     "DagNode",
     "DagPlanner",
     "DagSpec",
+    "JournalAddress",
+    "NodeBody",
+    "NodeCalls",
+    "NodeOutcome",
+    "NodeOutcomes",
+    "ToolCard",
+    "ToolServer",
+    "WorkflowFeature",
     "WorkflowNodeResult",
     "WorkflowResult",
 ]
@@ -357,3 +393,311 @@ class WorkflowResult(ToolResultBase):
             facts.append(Fact(key=f"{node.key} ({node.tool})", value=status))
 
         return facts
+
+
+@dataclass(frozen=True)
+class ToolCard:
+    """Карточка инструмента для клиента порта: имя, описание, JSON-схема
+    вызова — та, что видит модель после всех обвязок, — и вид аргументов
+    вызова для ленты клиента; views None — вида у инструмента нет (чужой
+    сервер, встроенный узел), и лента покажет аргументы json-текстом."""
+
+    name: str
+    description: str
+    parameters: Mapping[str, Any]
+    views: Mapping[str, FieldView] | None
+
+
+class JournalAddress(BaseModel):
+    """Где лежит журнал вызова: сервер клиента и запуск на нём.
+
+    Адрес несёт итог вызова, который исполнил сервер с журналом; клиент
+    хранит его вместе с итогом в истории, и журнал читается после конца хода.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    server: str = Field(min_length=1)
+    run: str = Field(min_length=1)
+
+
+class NodeOutcome(BaseModel):
+    """Итог узла: текст для модели и результат семейства; сбой — FailureResult.
+
+    errored — вызов кончился ошибкой самого вызова: инструмент поднял
+    исключение до тела (аргументы, права) либо сервер отказал вызову до
+    старта. journal — адрес журнала вызова на сервере, который его исполнил;
+    None — вызов исполнен в своём процессе либо сервер журнала не ведёт.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    key: str
+    tool: str
+    content: str
+    artifact: ToolResult
+    errored: bool = False
+    journal: JournalAddress | None = None
+
+    def failed(self) -> bool:
+        return isinstance(self.artifact, FailureResult)
+
+    def ok(self) -> bool:
+        """Вызов дошёл до тела, и тело вернуло удачный результат."""
+        if self.errored:
+            return False
+
+        return self.artifact.ok
+
+    def error_text(self) -> str:
+        """Текст отказа для журнала; пустой — вызов удался."""
+        if self.errored:
+            return self.content
+
+        if not self.artifact.ok:
+            return self.artifact.llm_view()
+
+        return ""
+
+
+class NodeOutcomes:
+    """Фабрика итогов вызова: единственное место, где результат семейства
+    становится итогом NodeOutcome.
+
+    Создаётся каждым, кто отвечает на вызов узла: исполнителем узлов
+    (DagRunner), портами ToolServer (свой исполнитель, маршрут по серверам,
+    запечатывание, клиент MCP) и стыком приложения с графом. Текст для модели
+    берётся у самого результата.
+    """
+
+    def of(self, call: DagNode, result: ToolResultBase, errored: bool) -> NodeOutcome:
+        """Итог вызова call с результатом result; errored — вызов кончился
+        ошибкой самого вызова, а не ответом тела."""
+        return self._built(call.key, call.tool, result, errored)
+
+    def refused(self, call: DagNode, failure: FailureResult) -> NodeOutcome:
+        """Отказ вызову call: до тела он не дошёл либо тело сорвалось."""
+        return self._built(call.key, call.tool, failure, True)
+
+    def unnamed(self, key: str, tool: str, failure: FailureResult) -> NodeOutcome:
+        """Отказ вызову инструмента tool, который узлом не назвать: у него
+        нет идентификатора вызова; key — что клиент прислал на его месте."""
+        return self._built(key, tool, failure, True)
+
+    @staticmethod
+    def _built(
+        key: str, tool: str, result: ToolResultBase, errored: bool
+    ) -> NodeOutcome:
+        content, artifact = result.packed()
+
+        return NodeOutcome(
+            key=key, tool=tool, content=content, artifact=artifact, errored=errored
+        )
+
+    def settled(self, outcome: NodeOutcome) -> asyncio.Future[NodeOutcome]:
+        """Готовое ожидание итога, который известен без исполнения."""
+        done: asyncio.Future[NodeOutcome] = asyncio.get_running_loop().create_future()
+        done.set_result(outcome)
+
+        return done
+
+
+NodeBody: TypeAlias = Callable[[DagNode], Awaitable[NodeOutcome]]
+"""Тело узла: вызов инструмента узла и его итог. Тело не бросает: сбой
+вызова оно отдаёт итогом-отказом (errored); наверх идёт только отмена."""
+
+
+class NodeCalls(Protocol):
+    """Путь вызова узла к телу его инструмента.
+
+    Исполнитель (DagRunner, порт удалённого сервера) не зовёт тело узла
+    сам, а отдаёт вызов сюда. Сервис исполняет тело напрямую (DirectCalls);
+    приложение с лентой проводит вызов через свой компонент, который
+    сообщает ленте о начале и конце вызова. Тело узла не бросает: сбой
+    вызова приходит наблюдателю итогом-отказом, как и удача.
+    """
+
+    @abstractmethod
+    async def conducted(
+        self, card: ToolCard, node: DagNode, body: NodeBody
+    ) -> NodeOutcome:
+        """Итог вызова узла node инструмента card, исполненного телом body."""
+
+
+class WorkflowFeature(BaseModel):
+    """Настройки возможности сервера «связка одним вызовом».
+
+    Сервер с потоковыми инструментами объявляет её клиенту при подключении
+    (LocalDagService.features); клиент разбирает объявление один раз
+    (CallDag.feature_of) и дальше знает, какой инструмент описывает связку и
+    вызовы каких инструментов надо слать связкой. tool — имя
+    инструмента-связки: узлы его вызова — вызовы других инструментов сервера.
+    linked — имена потоковых инструментов: их вызовы из одного ответа модели
+    связывают имена каналов, поэтому клиент шлёт такие вызовы одной связкой.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    ID: ClassVar[str] = "com.boba/workflow"
+
+    tool: str = Field(min_length=1)
+    linked: Sequence[str] = ()
+
+    def settings(self) -> Mapping[str, object]:
+        """Настройки возможности, как они едут клиенту."""
+        return self.model_dump(mode="json")
+
+
+class CallDag:
+    """Описание DAG по вызовам клиента порта.
+
+    Вызов приходит узлом DagNode: ключ — идентификатор вызова. Обычный вызов
+    — DAG из одного этого узла. Потоковые вызовы одного пакета — один DAG:
+    узел на вызов. Узлы вызова workflow — уже узлы описания DAG (DagSpec);
+    ключ узла заменяется на идентификатор вызова узла (под ним идут журнал и
+    шаг ленты узла): заданный клиентом call_id, иначе идентификатор вызова
+    workflow с номером узла. Имя, данное узлу моделью, едет в title — им
+    узел называется в текстах отказов. Создаётся исполнителем порта
+    (LocalDagService) и клиентами, которым нужны узлы связки до отправки:
+    клиент MCP раскладывает связку на вызовы узлов, запечатывание меняет
+    аргументы узлов.
+    """
+
+    WORKFLOW: ClassVar[str] = "workflow"
+    """Имя инструмента-связки: узлы его вызова — вызовы других инструментов."""
+
+    NODES: ClassVar[str] = "nodes"
+
+    def of(self, call: DagNode) -> DagSpec:
+        """DAG одного вызова.
+
+        Ошибки:
+        StreamPlanError — вызов workflow не проходит форму описания DAG.
+        """
+        if call.tool != self.WORKFLOW:
+            return DagSpec(name=call.key, version=1, nodes=[call])
+
+        return DagSpec(name=call.key, version=1, nodes=self.nodes_of(call))
+
+    def of_linked(self, calls: Sequence[DagNode]) -> DagSpec:
+        """DAG потоковых вызовов одного пакета: их связывают имена каналов."""
+        return DagSpec(name=calls[0].key, version=1, nodes=list(calls))
+
+    def feature_of(
+        self, features: Mapping[str, Mapping[str, object]]
+    ) -> WorkflowFeature | None:
+        """Возможность связки среди объявленных сервером; None — сервер
+        связку не объявил.
+
+        Ошибки:
+        StreamPlanError — настройки возможности не проходят её модель.
+        """
+        settings = features.get(WorkflowFeature.ID)
+        if settings is None:
+            return None
+
+        try:
+            return WorkflowFeature.model_validate(settings)
+        except ValidationError as exc:
+            msg = (
+                f"tool server feature {WorkflowFeature.ID!r} expects the name of "
+                f"the workflow tool and the names of linked tools, got "
+                f"{dict(settings)!r}: {ValidationText.of(exc)}"
+            )
+            raise StreamPlanError(msg) from exc
+
+    def described(self, call: DagNode) -> Sequence[DagNode]:
+        """Узлы вызова workflow, как их назвала модель.
+
+        Ошибки:
+        StreamPlanError — вызов workflow не проходит форму описания DAG.
+        """
+        raw: dict[str, object] = {"name": call.key, "version": 1}
+        if self.NODES in call.args:
+            raw[self.NODES] = call.args[self.NODES]
+
+        try:
+            return DagSpec.model_validate(raw).nodes
+        except ValidationError as exc:
+            msg = (
+                f"workflow call {call.key!r} does not match its schema: "
+                f"{ValidationText.of(exc)}"
+            )
+            raise StreamPlanError(msg) from exc
+
+    def nodes_of(self, call: DagNode) -> list[DagNode]:
+        """Узлы вызова workflow вызовами своих инструментов: ключ узла —
+        идентификатор его вызова, имя от модели — в title.
+
+        Ошибки:
+        StreamPlanError — вызов workflow не проходит форму описания DAG.
+        """
+        return list(self._called(call.key, self.described(call)))
+
+    def with_nodes(self, call: DagNode, nodes: Sequence[DagNode]) -> DagNode:
+        """Тот же вызов workflow с узлами nodes на месте описанных."""
+        described: list[JsonValue] = []
+        for node in nodes:
+            described.append(node.model_dump(mode="json", exclude_defaults=True))
+
+        args = dict(call.args)
+        args[self.NODES] = described
+
+        return call.model_copy(update={"args": args})
+
+    @staticmethod
+    def _called(call_id: str, described: Sequence[DagNode]) -> Iterator[DagNode]:
+        for index, node in enumerate(described):
+            key = node.call_id
+            if not key:
+                key = f"{call_id}_{index}"
+
+            yield node.model_copy(update={"key": key, "title": node.key})
+
+
+class ToolServer(Protocol):
+    """Порт сервера инструментов для клиента.
+
+    Клиент (чат, сервис MCP) знает исполнение только через него: берёт
+    карточки инструментов, которые сервер отдаёт модели, читает объявленные
+    сервером возможности и шлёт вызовы. Вызов — узел DagNode: ключ узла —
+    идентификатор вызова; итог — NodeOutcome с тем же ключом. Что стоит за
+    портом, клиенту неизвестно: исполнитель своего процесса
+    (LocalDagService), несколько серверов с маршрутом по имени (ToolServers)
+    либо обёртка клиента над другим портом.
+    """
+
+    @abstractmethod
+    def tools(self) -> Sequence[ToolCard]:
+        """Карточки инструментов, которые сервер отдаёт модели."""
+
+    @abstractmethod
+    def features(self) -> Mapping[str, Mapping[str, object]]:
+        """Возможности, которые сервер объявляет клиенту при подключении:
+        идентификатор возможности → её настройки."""
+
+    @abstractmethod
+    async def submit(
+        self, calls: Sequence[DagNode]
+    ) -> Sequence[asyncio.Future[NodeOutcome]]:
+        """Принять вызовы одного ответа модели; итог каждого — своё ожидание.
+
+        Ожидания идут в порядке вызовов и кончаются независимо: быстрый
+        вызов отвечает, не дожидаясь медленного соседа. Вызовы пакета сервер
+        вправе связать между собой: потоковые вызовы одного ответа связывают
+        имена каналов. Отмена ожидания останавливает его вызов.
+        """
+
+    async def call(self, call: DagNode) -> NodeOutcome:
+        """Исполнить один вызов и дождаться его итога."""
+        pending = await self.submit([call])
+
+        return await pending[0]
+
+    def names(self) -> frozenset[str]:
+        """Имена инструментов, которые сервер отдаёт модели."""
+        names: list[str] = []
+        for card in self.tools():
+            names.append(card.name)
+
+        return frozenset(names)

@@ -9,22 +9,20 @@ from __future__ import annotations
 import logging
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any
-
-from langchain_core.tools import BaseTool
 
 from boba.access import ToolAccess
 from boba.identity.context import CallContexts
 from boba.toolkit.chain import CallAmbient
-from boba.toolkit.entry import ToolMain
+from boba.toolkit.dag import NodeCalls, ToolServer
+from boba.toolkit.facade import PayloadTool
 from boba.toolkit.launcher import ToolLauncher
-from boba.toolkit.ports import StreamSpecs
-from boba.toolkit.wrap import ToolProcessWrap
+from boba.toolkit.ports import StreamSpec, StreamSpecs
 from boba.toolrun.access import ToolAccessGuard
 from boba.toolrun.call_id import CallFields
 from boba.toolrun.cancellation import CancellableTools
 from boba.toolrun.dag_run import DagRunner
 from boba.toolrun.errors import ToolErrorGuard
+from boba.toolrun.hosted import HostedTool, ToolSchema
 from boba.toolrun.injected import ParamSource
 from boba.toolrun.run_log import ToolRunLogger
 from boba.toolrun.stream_calls import (
@@ -32,15 +30,24 @@ from boba.toolrun.stream_calls import (
     NodeArgs,
     StreamChannelFields,
     StreamGroupsConfig,
-    ToolServer,
     ToolServers,
 )
 from boba.toolrun.streams import CallJournals
-from boba.toolrun.wrapping import CallHooks, ToolAsyncBody, ToolBody
+from boba.toolrun.wrap import ToolProcessWrap
 
-__all__ = ["ToolChain", "ToolRegistry"]
+__all__ = ["LaunchedTools", "ToolChain", "ToolRegistry"]
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class LaunchedTools:
+    """Инструменты одной секции под обёрткой запуска и их потоковые
+    декларации, снятые до того, как порты ушли из видимой схемы. Отдаёт их
+    ToolChain.launch загрузчику инструментов и стендам."""
+
+    tools: list[HostedTool]
+    specs: StreamSpecs
 
 
 class ToolChain:
@@ -49,62 +56,60 @@ class ToolChain:
 
     Создаёт его загрузчик инструментов (ToolLoader) из секции
     [stream_groups], журналов вызовов и держателя контекста процесса; стенды
-    тестов создают такой же. launch() ставит на инструменты секции обёртку
-    запуска и источники служебных параметров тела; seal() ставит обвязки на
-    уже собранные инструменты, изнутри наружу: обвязки поверхности процесса,
-    поля каналов и служебные поля вызова в схеме, журнал, отмена, права,
-    упаковка ошибок; последним sync-телу даётся корутина.
+    тестов создают такой же. launch() собирает из объявлений секции
+    инструменты хоста под обёрткой запуска и ставит на них источники
+    служебных параметров тела; seal() ставит обвязки на уже собранные
+    инструменты, изнутри наружу: поля каналов и подпись вызова в схеме,
+    журнал, отмена, права, упаковка ошибок.
     """
 
-    def __init__(  # noqa: PLR0913 — цепочка собирается всеми входами процесса
+    def __init__(
         self,
         stream_config: StreamGroupsConfig,
         journals: CallJournals,
         contexts: CallContexts,
         ambient: CallAmbient,
         sources: Sequence[ParamSource],
-        surface_hooks: Sequence[CallHooks[Any]],
     ) -> None:
         self._wrap = ToolProcessWrap(ambient)
         self._sources = tuple(sources)
         """Источники служебных параметров тела в порядке постановки: контекст
         вызова, соединения, конфиг."""
-        self._surface_hooks = tuple(surface_hooks)
-        """Обвязки поверхности процесса (чат монтирует элементы результата):
-        ставятся сразу после тела, до журнала и разбора ошибок."""
         self._channels = StreamChannelFields(stream_config)
         self._fields = CallFields()
         self._run_log = ToolRunLogger(journals, contexts, ambient)
         self._cancellable = CancellableTools()
         self._access = ToolAccessGuard(contexts.subject)
         self._errors = ToolErrorGuard()
-        self._async_body = ToolAsyncBody()
 
-    def launch(self, tools: Sequence[BaseTool], launcher: ToolLauncher) -> StreamSpecs:
-        """Ставит обёртку запуска и источники служебных параметров на
-        инструменты одной секции; отдаёт их потоковые декларации, снятые,
-        пока порты ещё на схеме."""
-        specs = self._wrap.guard_all(ToolMain.toolset(*tools), launcher)
+    def launch(
+        self, payloads: Sequence[PayloadTool], launcher: ToolLauncher
+    ) -> LaunchedTools:
+        """Инструменты хоста одной секции: тело каждого — перенос вызова
+        исполнителю launcher, сверху — источники служебных параметров.
+        Потоковые декларации снимаются с объявлений, пока порты на схеме."""
+        tools: list[HostedTool] = []
+        declared: dict[str, StreamSpec] = {}
+        for payload in payloads:
+            tools.append(self._wrap.hosted(payload, launcher))
+            declared[payload.name] = self._wrap.spec_of(payload)
+
         for source in self._sources:
             source.bind_all(tools)
 
-        return specs
+        return LaunchedTools(tools=tools, specs=StreamSpecs(declared))
 
     def seal(
-        self, tools: Sequence[BaseTool], access: ToolAccess, specs: StreamSpecs
+        self, tools: Sequence[HostedTool], access: ToolAccess, specs: StreamSpecs
     ) -> None:
         """Ставит обвязки на инструменты; права access проверяются на вызове,
         specs — потоковые декларации этих инструментов."""
-        for hooks in self._surface_hooks:
-            ToolBody.hook_all(tools, hooks)
-
         self._channels.attach_all(tools, specs)
         self._fields.attach_all(tools)
         self._run_log.guard_all(tools)
         self._cancellable.guard_all(tools)
         self._access.guard_all(tools, access)
         self._errors.guard_all(tools)
-        self._async_body.ensure_all(tools)
 
 
 @dataclass(frozen=True)
@@ -120,7 +125,7 @@ class ToolRegistry:
     планировщик стыкует каналы. ambient — обстановка вызова процесса: в
     неё исполнитель DAG ставит ручку узла."""
 
-    tools: list[BaseTool]
+    tools: list[HostedTool]
     access: ToolAccess
     stream_config: StreamGroupsConfig
     own: frozenset[str]
@@ -128,14 +133,16 @@ class ToolRegistry:
     specs: StreamSpecs
     ambient: CallAmbient
 
-    def server(self, tools: Iterable[BaseTool]) -> ToolServer:
+    def server(self, tools: Iterable[HostedTool], calls: NodeCalls) -> ToolServer:
         """Порт инструментов для клиента по инструментам tools.
 
         За портом два сервера: собственные инструменты процесса и остальные;
         вызов уходит по имени инструмента. Клиент про деление не знает.
+        calls — путь вызова узла к телу: сервис зовёт тело напрямую, чат
+        проводит вызов через свой компонент.
         """
-        own: list[BaseTool] = []
-        hosted: list[BaseTool] = []
+        own: list[HostedTool] = []
+        hosted: list[HostedTool] = []
         for tool in tools:
             if tool.name in self.own:
                 own.append(tool)
@@ -151,20 +158,29 @@ class ToolRegistry:
                     self.node_args,
                     self.specs,
                     self.ambient,
+                    calls,
                 ),
-                LocalDagService(own, self.stream_config, (), self.specs, self.ambient),
+                LocalDagService(
+                    own, self.stream_config, (), self.specs, self.ambient, calls
+                ),
             ]
         )
 
-    def runner(self, tools: Mapping[str, BaseTool]) -> DagRunner:
+    def runner(self, tools: Mapping[str, HostedTool], calls: NodeCalls) -> DagRunner:
         """Исполнитель DAG над инструментами tools с декларациями реестра."""
         config = self.stream_config
 
         return DagRunner(
-            tools, self.specs, self.ambient, config.timings(), config.pipe_bytes
+            tools,
+            ToolSchema().cards_of(tools.values()),
+            self.specs,
+            self.ambient,
+            config.timings(),
+            config.pipe_bytes,
+            calls,
         )
 
-    def for_session(self, user_roles: Iterable[str], profile: str) -> list[BaseTool]:
+    def for_session(self, user_roles: Iterable[str], profile: str) -> list[HostedTool]:
         """Инструменты хода чата: всё, что решение допускает в чате."""
         roles = frozenset(user_roles)
         allowed = list(self._select(roles, profile, headless=False))
@@ -180,11 +196,11 @@ class ToolRegistry:
 
     def for_headless(
         self, user_roles: Iterable[str], profile: str
-    ) -> dict[str, BaseTool]:
+    ) -> dict[str, HostedTool]:
         """Инструменты вне чата (REST, планировщик) по именам."""
         roles = frozenset(user_roles)
 
-        by_name: dict[str, BaseTool] = {}
+        by_name: dict[str, HostedTool] = {}
         for tool in self._select(roles, profile, headless=True):
             by_name[tool.name] = tool
 
@@ -192,7 +208,7 @@ class ToolRegistry:
 
     def _select(
         self, roles: frozenset[str], profile: str, *, headless: bool
-    ) -> Iterator[BaseTool]:
+    ) -> Iterator[HostedTool]:
         for tool in self.tools:
             decision = self.access.decide(tool.name, roles, profile)
             if headless:
