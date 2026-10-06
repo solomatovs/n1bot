@@ -11,9 +11,9 @@ from uuid import uuid4
 import pytest
 from chainlit.context import ChainlitContext
 from langchain_core.outputs import LLMResult
-from langchain_core.tracers.base import AsyncBaseTracer
 from pydantic import Field
 
+from boba.chainlit.agent.events import TurnEvents
 from boba.chainlit.chat import tracing as tracer_module
 from boba.chainlit.chat.feed import TurnFeed
 from boba.chainlit.chat.tracing import AgentTracer
@@ -78,11 +78,15 @@ class _Element:
 
 def _tracer() -> AgentTracer:
     tracer = AgentTracer.__new__(AgentTracer)
-    AsyncBaseTracer.__init__(tracer)
     tracer._context = cast(ChainlitContext, None)
     tracer._feed = cast(TurnFeed, _BrokenView())
     tracer._state = TurnState()
     return tracer
+
+
+def _events(tracer: AgentTracer) -> TurnEvents:
+    """Колбэк-обработчик хода: события langchain приходят трасеру через него."""
+    return TurnEvents([tracer], tracer)
 
 
 class TestTracerFailuresVisible:
@@ -90,35 +94,36 @@ class TestTracerFailuresVisible:
 
     def test_llm_end_failure_shown(self, shown: list[str]) -> None:
         tracer = _tracer()
+        events = _events(tracer)
         run_id = uuid4()
         tracer._state.add_reasoning(str(run_id), "мысли")
 
         async def _run() -> None:
-            await tracer.on_llm_start({}, [""], run_id=run_id)
-            await tracer.on_llm_end(LLMResult(generations=[]), run_id=run_id)
+            await events.on_chat_model_start({}, [[]], run_id=run_id)
+            await events.on_llm_end(LLMResult(generations=[]), run_id=run_id)
 
         asyncio.run(_run())
         if not (shown):
             raise AssertionError("shown")
-        if "on_llm_end" not in shown[0]:
-            raise AssertionError('"on_llm_end" in shown[0]')
+        if "model_replied" not in shown[0]:
+            raise AssertionError('"model_replied" in shown[0]')
 
     def test_failure_does_not_break_the_turn(self, shown: list[str]) -> None:
-        tracer = _tracer()
+        events = _events(_tracer())
         run_id = uuid4()
 
         async def _run() -> None:
-            await tracer.on_llm_start({}, [""], run_id=run_id)
+            await events.on_chat_model_start({}, [[]], run_id=run_id)
 
-            return await tracer.on_llm_error(RuntimeError("provider"), run_id=run_id)
+            return await events.on_llm_error(RuntimeError("provider"), run_id=run_id)
 
         result = asyncio.run(_run())
         if result is not None:
             raise AssertionError("result is None")
         if not (shown):
             raise AssertionError("shown")
-        if "on_llm_error" not in shown[0]:
-            raise AssertionError('"on_llm_error" in shown[0]')
+        if "model_failed" not in shown[0]:
+            raise AssertionError('"model_failed" in shown[0]')
 
 
 class BrokenTurn(FakeTurn):

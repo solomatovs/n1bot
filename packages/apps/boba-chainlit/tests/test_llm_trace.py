@@ -13,18 +13,19 @@ from collections.abc import Iterator
 from typing import Annotated
 
 import pytest
-from chainlit_stand import fake_openai_chat, in_process_llm
-from langchain_core.messages import HumanMessage
+from chainlit_stand import SilentStage, fake_openai_chat, in_process_llm
 from langgraph.checkpoint.memory import InMemorySaver
 from pydantic import Field
 from uvicorn.logging import DefaultFormatter
 
 from boba.chainlit.agent.bridge import ChatModelBridge
-from boba.chainlit.agent.flow import GraphSpec, PlainGraphBuilder
+from boba.chainlit.agent.events import TurnEvents
+from boba.chainlit.agent.flow import GraphSpec, HistoryView, PlainGraphBuilder
+from boba.chainlit.agent.history import CheckpointMessages, GraphAgent
+from boba.chainlit.chat.dialog import UserMessage
 from boba.chainlit.chat.tracing import LlmStateLog
 from boba.chainlit.infra.config import LOGGING_CONFIG
 from boba.chainlit.infra.log_context import UserLogContext
-from boba.chainlit.infra.providers import build_history_view
 from boba.chainlit.rendering.mount import ChatCalls, ChatMount
 from boba.connection_broker.sealing import SentConnections
 from boba.identity.run import Runs
@@ -94,7 +95,8 @@ class TestLlmStateLog:
 
     async def _stream_chat(self, provider: None, scenario: ScenarioName) -> None:
         chat = self._chat(provider)
-        stream = chat.astream(scenario.value, config={"callbacks": [self._log()]})
+        events = TurnEvents([self._log()], SilentStage())
+        stream = chat.astream(scenario.value, config={"callbacks": [events]})
         async for _chunk in stream:
             pass
 
@@ -116,20 +118,14 @@ class TestLlmStateLog:
             chat=self._chat(provider),
             service=service,
             system_prompt="test agent",
-            checkpointer=InMemorySaver(),
-            history=build_history_view(service.names(), 30),
+            checkpoints=CheckpointMessages(InMemorySaver()),
+            history=HistoryView(service.names(), 30),
         )
-        agent = PlainGraphBuilder().build(spec)
+        agent = GraphAgent(PlainGraphBuilder().build(spec))
+        question = UserMessage(id=None, text=scenario.value)
 
         with runs.open(calls.context(THREAD, login=USER), FakeTurn()):
-            stream = agent.astream(
-                {"messages": [HumanMessage(content=scenario.value)]},
-                stream_mode="messages",
-                config={
-                    "callbacks": [self._log()],
-                    "configurable": {"thread_id": THREAD},
-                },
-            )
+            stream = agent.answer(THREAD, question, [self._log()], SilentStage())
             async for _chunk in stream:
                 pass
 
@@ -247,8 +243,9 @@ class TestLlmStateLog:
         self, provider: None, caplog: pytest.LogCaptureFixture
     ) -> None:
         chat = self._chat(provider)
+        events = TurnEvents([self._log()], SilentStage())
         await chat.ainvoke(
-            ScenarioName.THINKING_ANSWER.value, config={"callbacks": [self._log()]}
+            ScenarioName.THINKING_ANSWER.value, config={"callbacks": [events]}
         )
 
         if self._complaints(caplog) != []:

@@ -1,20 +1,25 @@
-"""Мост ChatModel -> langchain BaseChatModel и чтение сообщений langchain.
+"""Мост ChatModel -> langchain BaseChatModel и перевод сообщений langchain.
 
 Граф хода работает с BaseChatModel; мост конвертирует langchain-сообщения в
 конверт ChatRequest, события модели — в чанки и итоговое сообщение. Какой
-бэкенд за портом — мосту безразлично. LangchainMessages читает обратно то,
-что мост кладёт в additional_kwargs: рассуждения модели, — и переводит итог
-вызова инструмента в ToolMessage и обратно.
+бэкенд за портом — мосту безразлично. LangchainMessages — единственное
+место, где сообщения langchain становятся сообщениями диалога чата
+(boba.chainlit.chat.dialog) и типами ядра и обратно: всё, что лежит в
+additional_kwargs и response_metadata сообщений checkpoint'а, пишет и
+читает он.
 
-Ошибки: своих не выпускает; LlmError бэкенда уходит наверх как есть.
+Ошибки:
+pydantic.ValidationError — сообщение истории несёт результат известного
+    вида, вызов или адрес журнала, поля которых не проходят модель.
+LlmError — отказ бэкенда модели, уходит наверх как есть.
 """
 
 from __future__ import annotations
 
 import json
-from collections.abc import AsyncIterator, Mapping, Sequence
+from collections.abc import AsyncIterator, Iterator, Mapping, Sequence
 from enum import StrEnum
-from typing import Any, ClassVar, Literal
+from typing import Any, ClassVar, Final, Literal
 
 from langchain_core.callbacks import (
     AsyncCallbackManagerForLLMRun,
@@ -47,6 +52,16 @@ from langchain_core.utils.function_calling import convert_to_openai_tool
 from pydantic import ConfigDict, Field
 from typing_extensions import override
 
+from boba.chainlit.chat.dialog import (
+    AssistantMessage,
+    Attachment,
+    DialogMessage,
+    LlmUsage,
+    ToolReply,
+    TurnMark,
+    TurnRecord,
+    UserMessage,
+)
 from boba.llm.chat import (
     ChatDelta,
     ChatModel,
@@ -65,25 +80,176 @@ __all__ = ["ChatModelBridge", "LangchainMessages", "ResponseField"]
 
 
 class ResponseField(StrEnum):
-    """Ключи additional_kwargs сообщений langchain, которые кладёт мост."""
+    """Ключи additional_kwargs сообщений langchain, которые пишет и читает чат."""
 
     REASONING_CONTENT = "reasoning_content"
+    ATTACHMENTS = "attachments"
+    PREFETCH_ELAPSED = "prefetch_elapsed_ms"
+
+
+class AttachmentField(StrEnum):
+    """Ключи записи вложения в additional_kwargs вопроса пользователя."""
+
+    NAME = "name"
+    PATH = "path"
+
+
+class UsageField:
+    """Ключи langchain-UsageMetadata: у TypedDict pyright принимает только литерал."""
+
+    INPUT: Final = "input_tokens"
+    OUTPUT: Final = "output_tokens"
+    OUTPUT_DETAILS: Final = "output_token_details"
+    REASONING: Final = "reasoning"
 
 
 class LangchainMessages:
     """Перевод между сообщениями langchain и типами чата и ядра.
 
-    Создаётся каждым, кто стоит на стыке с langchain: трасером прогона,
-    стыком графа с портом инструментов (LangchainPort), подготовкой хода, сборкой
-    ленты из истории и реестром журналов вызовов. Читает сообщение из
-    результата генерации и рассуждения, которые мост нормализовал в
-    additional_kwargs; итог вызова инструмента переводит в сообщение
-    инструмента (tool_message) и обратно (outcome_of) — другого места, где
-    итог становится ToolMessage или читается из него, нет.
+    Создаётся каждым, кто стоит в каталоге agent на стыке с langchain:
+    чтением checkpoint'ов и агентом сессии, переводчиком событий модели,
+    стыком графа с портом инструментов (LangchainPort) и подготовкой хода.
+    Сообщение checkpoint'а переводит в сообщение диалога чата (dialog) и
+    обратно собирает то, что чат пишет в историю: вопрос пользователя
+    (human), запись оборванного хода (record), вызовы подготовки
+    (prefetch_request), итог вызова инструмента (tool_message). Другого
+    места, где читаются и пишутся additional_kwargs и response_metadata
+    сообщений истории, нет.
     """
 
     JOURNAL_KEY: ClassVar[str] = "boba_journal"
     """Ключ response_metadata сообщения инструмента с адресом журнала вызова."""
+
+    def dialog(self, messages: Sequence[object]) -> Iterator[DialogMessage]:
+        """Сообщения диалога из сообщений checkpoint'а; системные и
+        служебные записи графа к диалогу не относятся.
+
+        Ошибки:
+        pydantic.ValidationError — сообщение несёт результат известного
+            вида, вызов или адрес журнала, поля которых не проходят модель.
+        """
+        for message in messages:
+            match message:
+                case HumanMessage():
+                    yield self.user(message)
+                case ToolMessage():
+                    yield self.reply(message)
+                case AIMessage():
+                    yield self.assistant(message)
+                case _:
+                    continue
+
+    def user(self, message: HumanMessage) -> UserMessage:
+        """Вопрос пользователя из сообщения истории."""
+        return UserMessage(
+            id=message.id,
+            text=self._shown_text(message),
+            attachments=tuple(self._attachments(message)),
+        )
+
+    def assistant(self, message: AIMessage) -> AssistantMessage:
+        """Ответ ассистента из сообщения истории или ответа модели.
+
+        Ошибки:
+        pydantic.ValidationError — аргументы вызова инструмента не JSON.
+        """
+        extra = message.additional_kwargs
+
+        mark: TurnMark | None = None
+        if extra.get(TurnMark.STOPPED.value):
+            mark = TurnMark.STOPPED
+        if extra.get(TurnMark.ERROR.value):
+            mark = TurnMark.ERROR
+
+        elapsed = extra.get(ResponseField.PREFETCH_ELAPSED.value)
+        if not isinstance(elapsed, int):
+            elapsed = 0
+
+        return AssistantMessage(
+            id=message.id,
+            text=self._shown_text(message),
+            reasoning=self.reasoning_of(message),
+            calls=tuple(self._calls(message)),
+            usage=self._usage(message),
+            mark=mark,
+            prefetch_elapsed_ms=elapsed,
+        )
+
+    def reply(self, message: ToolMessage) -> ToolReply:
+        """Ответ инструмента из сообщения истории.
+
+        Ошибки:
+        pydantic.ValidationError — kind результата известен, а поля модели
+            либо адрес журнала не проходят.
+        """
+        text = self._shown_text(message)
+
+        raw = message.artifact
+        if raw is None:
+            raw = text
+
+        name = message.name
+        if not name:
+            name = ""
+
+        return ToolReply(
+            id=message.id,
+            call_id=message.tool_call_id,
+            name=name,
+            text=text,
+            outcome=self.outcome_of(message),
+            raw=raw,
+            journal=self.journal_of(message),
+        )
+
+    def human(self, question: UserMessage) -> HumanMessage:
+        """Вопрос пользователя сообщением для графа и истории; вложения
+        едут в additional_kwargs: в тексте вопроса их нет."""
+        extra: dict[str, Any] = {}
+        if question.attachments:
+            listed: list[dict[str, str]] = []
+            for attachment in question.attachments:
+                listed.append(
+                    {
+                        AttachmentField.NAME.value: attachment.name,
+                        AttachmentField.PATH.value: attachment.path,
+                    }
+                )
+
+            extra[ResponseField.ATTACHMENTS.value] = listed
+
+        return HumanMessage(
+            content=question.text, id=question.id, additional_kwargs=extra
+        )
+
+    def record(self, record: TurnRecord) -> AIMessage:
+        """Запись оборванного хода сообщением ассистента для истории: текст,
+        пометка исхода и рассуждения, если они были."""
+        extra: dict[str, Any] = {record.mark.value: True}
+        if record.reasoning:
+            extra[ResponseField.REASONING_CONTENT.value] = record.reasoning
+
+        return AIMessage(content=record.content, additional_kwargs=extra)
+
+    def prefetch_request(self, calls: Sequence[DagNode], elapsed_ms: int) -> AIMessage:
+        """Вызовы подготовки хода сообщением ассистента для истории.
+
+        Пустое поле рассуждений обязательно: провайдер в режиме размышления
+        отклоняет сообщение с вызовами, у которого его нет, а подготовка
+        ничего не обдумывала. Длительность подготовки едет пометкой: этап
+        ленты собственного сообщения не имеет, и сборка истории узнаёт время
+        только отсюда.
+        """
+        marks: dict[str, Any] = {
+            ResponseField.REASONING_CONTENT.value: "",
+            ResponseField.PREFETCH_ELAPSED.value: elapsed_ms,
+        }
+
+        tool_calls: list[LangchainToolCall] = []
+        for call in calls:
+            tool_calls.append(self.tool_call(call))
+
+        return AIMessage(content="", tool_calls=tool_calls, additional_kwargs=marks)
 
     def of_chunk(
         self, chunk: GenerationChunk | ChatGenerationChunk | None
@@ -94,7 +260,9 @@ class LangchainMessages:
 
         return chunk.message
 
-    def of_result(self, response: LLMResult) -> BaseMessage | None:
+    def of_result(self, response: LLMResult) -> AssistantMessage | None:
+        """Итоговое сообщение ответа модели; None — ответ без сообщения
+        ассистента."""
         if not response.generations:
             return None
 
@@ -106,7 +274,11 @@ class LangchainMessages:
         if not isinstance(generation, ChatGeneration):
             return None
 
-        return generation.message
+        message = generation.message
+        if not isinstance(message, AIMessage):
+            return None
+
+        return self.assistant(message)
 
     def reasoning_of(self, message: BaseMessage | None) -> str:
         if message is None:
@@ -193,12 +365,89 @@ class LangchainMessages:
 
     @staticmethod
     def text_of(message: BaseMessage) -> str:
-        """Содержимое сообщения текстом."""
+        """Содержимое сообщения текстом для модели."""
         content = message.content
         if isinstance(content, str):
             return content
 
         return str(content)
+
+    @staticmethod
+    def _shown_text(message: BaseMessage) -> str:
+        """Содержимое сообщения текстом для ленты: у сообщения из блоков
+        склеиваются текстовые."""
+        content = message.content
+        if isinstance(content, str):
+            return content
+
+        parts: list[str] = []
+        for block in content:
+            if isinstance(block, str):
+                parts.append(block)
+                continue
+
+            if block.get("type") != "text":
+                continue
+
+            parts.append(str(block.get("text", "")))
+
+        return "".join(parts)
+
+    @staticmethod
+    def _attachments(message: HumanMessage) -> Iterator[Attachment]:
+        raw = message.additional_kwargs.get(ResponseField.ATTACHMENTS.value)
+        if not isinstance(raw, list):
+            return
+
+        for item in raw:
+            if not isinstance(item, Mapping):
+                continue
+
+            name = item.get(AttachmentField.NAME.value)
+            if name is None:
+                continue
+
+            path = item.get(AttachmentField.PATH.value)
+            if path is None:
+                continue
+
+            yield Attachment(name=str(name), path=str(path))
+
+    @staticmethod
+    def _calls(message: AIMessage) -> Iterator[DagNode]:
+        """Вызовы инструментов сообщения узлами; вызов без идентификатора
+        или имени пропускается: шаг ленты и итог ему не адресовать."""
+        for call in message.tool_calls:
+            call_id = call.get("id")
+            if not call_id:
+                continue
+
+            name = call.get("name")
+            if not name:
+                continue
+
+            args = call.get("args")
+            if not isinstance(args, Mapping):
+                args = {}
+
+            yield DagNode(key=str(call_id), tool=str(name), args=args)
+
+    @staticmethod
+    def _usage(message: AIMessage) -> LlmUsage:
+        """Расход токенов из ответа модели; без учёта провайдера — нулевой."""
+        usage = message.usage_metadata
+        if usage is None:
+            return LlmUsage()
+
+        details = usage.get(UsageField.OUTPUT_DETAILS)
+        if details is None:
+            details = {}
+
+        return LlmUsage(
+            input_tokens=usage[UsageField.INPUT],
+            output_tokens=usage[UsageField.OUTPUT],
+            reasoning_tokens=details.get(UsageField.REASONING, 0),
+        )
 
 
 class ChatModelBridge(BaseChatModel):

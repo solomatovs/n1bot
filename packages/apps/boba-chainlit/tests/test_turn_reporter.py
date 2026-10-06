@@ -15,15 +15,13 @@ from uuid import UUID
 
 import pytest
 from chainlit_stand import RecordedTurn
-from langchain_core.messages import BaseMessage
 
 from boba.cancellation import StopReason
+from boba.chainlit.chat.dialog import AnswerChunk, TurnMark, TurnRecord
 from boba.chainlit.chat.feed import TurnFeed
 from boba.chainlit.chat.turn import (
     Question,
     TurnHistory,
-    TurnMark,
-    TurnRecord,
     TurnReporter,
     TurnState,
 )
@@ -255,7 +253,7 @@ class TestFailedTurnKeepsHistory:
     ) -> None:
         from boba.chainlit.chat.turn import ChatTurn
 
-        async def failing_stream() -> AsyncIterator[tuple[BaseMessage, dict[str, Any]]]:
+        async def failing_stream() -> AsyncIterator[AnswerChunk]:
             raise RuntimeError("inference is unreachable")
             yield
 
@@ -319,13 +317,13 @@ class TestPulseOfTheTurn:
     """Кружок ожидания снимается любым исходом хода, а не только удачным."""
 
     @staticmethod
-    async def _silent_stream() -> AsyncIterator[tuple[BaseMessage, dict[str, Any]]]:
+    async def _silent_stream() -> AsyncIterator[AnswerChunk]:
         """Ход без единого токена: кружок к финалу остаётся показанным."""
         return
         yield
 
     @staticmethod
-    async def _failing_stream() -> AsyncIterator[tuple[BaseMessage, dict[str, Any]]]:
+    async def _failing_stream() -> AsyncIterator[AnswerChunk]:
         raise RuntimeError("inference is unreachable")
         yield
 
@@ -333,7 +331,7 @@ class TestPulseOfTheTurn:
         self,
         runtime_stand: StandRefs,
         call_stand: CallStand,
-        stream: AsyncIterator[tuple[BaseMessage, dict[str, Any]]],
+        stream: AsyncIterator[AnswerChunk],
     ) -> ChatView:
         from boba.chainlit.chat.turn import ChatTurn
 
@@ -383,7 +381,7 @@ class TestBusyThread:
     ) -> None:
         from boba.chainlit.chat.turn import ChatTurn
 
-        async def silent_stream() -> AsyncIterator[tuple[BaseMessage, dict[str, Any]]]:
+        async def silent_stream() -> AsyncIterator[AnswerChunk]:
             return
             yield
 

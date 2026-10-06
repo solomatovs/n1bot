@@ -20,9 +20,9 @@ from langchain_core.runnables import RunnableConfig
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph.state import CompiledStateGraph
 
-from boba.chainlit.agent.flow import GraphSpec, PlainGraphBuilder
+from boba.chainlit.agent.flow import GraphSpec, HistoryView, PlainGraphBuilder
+from boba.chainlit.agent.history import CheckpointMessages
 from boba.chainlit.infra.config import AppConfig
-from boba.chainlit.infra.providers import build_history_view
 from boba.mcp_client.client import McpCaller
 from boba.stand.refs import StandRefs
 from boba.stand_core.context import CallStand
@@ -133,8 +133,8 @@ def _graph(
         chat=chat,
         service=session.service,
         system_prompt=settings.system_prompt,
-        checkpointer=InMemorySaver(),
-        history=build_history_view(frozenset(names), settings.history_messages),
+        checkpoints=CheckpointMessages(InMemorySaver()),
+        history=HistoryView(frozenset(names), settings.history_messages),
     )
 
     return PlainGraphBuilder().build(spec)

@@ -18,6 +18,8 @@ from chainlit_stand import RecordedTurn
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.outputs import ChatGeneration, LLMResult
 
+from boba.chainlit.agent.bridge import LangchainMessages
+from boba.chainlit.agent.events import TurnEvents
 from boba.chainlit.chat.history import ConversationTranscript
 from boba.chainlit.rendering.chat_view import ChatView, RecordingSink, StepRole
 from boba.stand.refs import StandRefs
@@ -49,14 +51,15 @@ class TestStepContract:
     REASONING = "думаю над ответом"
 
     async def _live(self) -> RecordingSink:
-        """Ход глазами ленты: рассуждения — от трасера прогона модели,
+        """Ход глазами ленты: рассуждения — от трасера прогона модели, которому
+        события приходят колбэками графа через TurnEvents,
         вызов инструмента — от владельца хода, как их сообщает ChatCalls."""
         turn = RecordedTurn.recording(THREAD, TURN_KEY)
         sink = turn.recording_sink
-        tracer = turn.port.tracer
+        tracer = TurnEvents([turn.port.tracer], turn.port.tracer)
 
         llm_run = uuid4()
-        await tracer.on_llm_start({}, [""], run_id=llm_run)
+        await tracer.on_chat_model_start({}, [[]], run_id=llm_run)
         result = LLMResult(
             generations=[
                 [
@@ -96,7 +99,8 @@ class TestStepContract:
             ),
             AIMessage(content="ответ", id=ANSWER_ID),
         ]
-        await ConversationTranscript(messages, view).replay()
+        dialog = list(LangchainMessages().dialog(messages))
+        await ConversationTranscript(dialog, view).replay()
         return sink
 
     @staticmethod
@@ -215,7 +219,8 @@ class TestSpendSurvivesReplay:
                 },
             ),
         ]
-        await ConversationTranscript(messages, view).replay()
+        dialog = list(LangchainMessages().dialog(messages))
+        await ConversationTranscript(dialog, view).replay()
         return sink
 
     def test_thinking_and_container_carry_the_spend(

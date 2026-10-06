@@ -14,12 +14,9 @@ import logging
 from collections import OrderedDict
 from typing import ClassVar
 
-from langchain_core.messages import ToolMessage
-
 from boba.canvas.canvas import WatchProbe, WatchSource
 from boba.canvas.journal import StreamSlice
-from boba.chainlit.agent.bridge import LangchainMessages
-from boba.chainlit.chat.history import ThreadMessages
+from boba.chainlit.chat.dialog import ThreadMessages, ToolReply
 from boba.chainlit.rendering.chat_view import StreamableTools
 from boba.identity.context import CallContexts
 from boba.mcp_client.client import (
@@ -130,8 +127,8 @@ class RemoteJournals(CallSignals, StreamableTools):
     Реализация CallSignals клиента MCP: объект один на процесс, его создаёт
     сборка чата и отдаёт клиенту. По сигналам роста ведёт живое состояние
     журналов (ключ — тред и узел вызова) для панели живого вывода. Адрес
-    журнала вызова, которого в памяти нет, берётся из истории треда: клиент
-    кладёт его в сообщение инструмента.
+    журнала вызова, которого в памяти нет, берётся из истории треда: его
+    несёт ответ инструмента.
     """
 
     KEEP: ClassVar[int] = 512
@@ -140,7 +137,6 @@ class RemoteJournals(CallSignals, StreamableTools):
     def __init__(self, contexts: CallContexts, history: ThreadMessages) -> None:
         self._contexts = contexts
         self._history = history
-        self._messages = LangchainMessages()
         self._live: OrderedDict[tuple[str, str], RemoteJournal] = OrderedDict()
         self._streamable: frozenset[str] = frozenset()
 
@@ -181,13 +177,13 @@ class RemoteJournals(CallSignals, StreamableTools):
             return journal.address
 
         for message in await self._history.load(thread_id):
-            if not isinstance(message, ToolMessage):
+            if not isinstance(message, ToolReply):
                 continue
 
-            if message.tool_call_id != call_id:
+            if message.call_id != call_id:
                 continue
 
-            return self._messages.journal_of(message)
+            return message.journal
 
         return None
 

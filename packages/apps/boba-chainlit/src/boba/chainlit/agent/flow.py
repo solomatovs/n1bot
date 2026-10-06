@@ -9,7 +9,7 @@ PlainGraphBuilder собирает обычный цикл модель-инст
 нейтрален, граф говорит типами langchain; между ними стоит LangchainPort:
 граф берёт у него заглушки инструментов для модели, ServerCallMiddleware
 отдаёт ему вызовы ответа модели. Подготовка зовёт порт напрямую узлами
-DagNode.
+DagNode. HistoryView решает, какую часть истории треда видит модель.
 
 Ошибки:
 PrefetchError — слой инструментов нарушил контракт ответа; сорванный вызов
@@ -22,29 +22,38 @@ from __future__ import annotations
 import asyncio
 import logging
 from abc import ABC, abstractmethod
-from collections.abc import Awaitable, Callable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, ClassVar, Protocol
 
 from langchain.agents import create_agent
-from langchain.agents.middleware import AgentMiddleware, AgentState, ToolCallRequest
+from langchain.agents.middleware import (
+    AgentMiddleware,
+    AgentState,
+    ModelRequest,
+    ModelResponse,
+    ToolCallRequest,
+)
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import (
     AIMessage,
+    AnyMessage,
     BaseMessage,
     HumanMessage,
-    ToolCall,
     ToolMessage,
 )
-from langgraph.checkpoint.base import BaseCheckpointSaver
+from langchain_core.runnables.config import ensure_config
 from langgraph.graph.state import CompiledStateGraph
 from langgraph.runtime import Runtime
 from langgraph.types import Command
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from typing_extensions import override
 
-from boba.chainlit.agent.bridge import LangchainMessages, ResponseField
+from boba.chainlit.agent.bridge import LangchainMessages
+from boba.chainlit.agent.events import TurnEvents
+from boba.chainlit.agent.history import CheckpointMessages
 from boba.chainlit.agent.tools import LangchainPort
+from boba.chainlit.chat.dialog import PrefetchStage
 from boba.llm.chat import LlmError, ToolSpec
 from boba.llm.schema import SchemaReply
 from boba.toolkit.calls import CallIdPrefix, ToolIntent
@@ -56,14 +65,13 @@ logger = logging.getLogger(__name__)
 __all__ = [
     "AgentGraphBuilder",
     "GraphSpec",
+    "HistoryView",
     "LlmRephraser",
     "PassthroughRephraser",
     "PlainGraphBuilder",
     "PrefetchError",
     "PrefetchGraphBuilder",
     "PrefetchMiddleware",
-    "PrefetchStage",
-    "PrefetchStamp",
     "Rephraser",
     "Rephrasings",
     "RephrasingsParser",
@@ -184,48 +192,11 @@ class RephrasingsParser:
         found.append(text)
 
 
-class PrefetchStamp:
-    """Длительность подготовки в сообщении её вызовов.
-
-    Этап ленты собственного сообщения не имеет: живой показ знает время по
-    часам хода, а сборка истории — только по сообщениям. Пометка на AIMessage
-    подготовки и даёт обеим лентам одну подпись.
-    """
-
-    KEY: ClassVar[str] = "prefetch_elapsed_ms"
-
-    @classmethod
-    def mark(cls, elapsed_ms: int) -> dict[str, Any]:
-        return {cls.KEY: elapsed_ms}
-
-    @classmethod
-    def of(cls, message: AIMessage) -> int:
-        """Длительность подготовки; 0 — сообщение её не несёт."""
-        value = message.additional_kwargs.get(cls.KEY)
-        if not isinstance(value, int):
-            return 0
-
-        return value
-
-
 class Rephraser(Protocol):
     """Порт переформулировки запроса пользователя в поисковые."""
 
     @abstractmethod
     async def rephrase(self, query: str) -> Sequence[str]: ...
-
-
-class PrefetchStage(Protocol):
-    """Порт показа этапа подготовки: лента о самой подготовке ничего не знает."""
-
-    @abstractmethod
-    async def begin(self) -> None: ...
-
-    @abstractmethod
-    async def searching(self, queries: Sequence[str]) -> None: ...
-
-    @abstractmethod
-    async def end(self, queries: Sequence[str], elapsed_ms: int) -> None: ...
 
 
 class PassthroughRephraser(Rephraser):
@@ -284,19 +255,19 @@ class PrefetchMiddleware(AgentMiddleware[AgentState[Any], Any, Any]):
     подготовки исполняет порт инструментов узлами DagNode: каждая
     переформулировка в каждый инструмент — свой вызов, все идут одновременно.
     В состояние графа вызовы и их итоги ложатся сообщениями langchain.
+    Этап подготовки показывает порт PrefetchStage хода: его несёт
+    колбэк-обработчик прогона (TurnEvents); прогон без него идёт без показа.
     """
 
     def __init__(
         self,
         rephraser: Rephraser,
         tools: Sequence[str],
-        stage: PrefetchStage,
         service: ToolServer,
     ) -> None:
         super().__init__()
         self._rephraser = rephraser
         self._tools = list(tools)
-        self._stage = stage
         self._service = service
         self._messages = LangchainMessages()
 
@@ -312,11 +283,15 @@ class PrefetchMiddleware(AgentMiddleware[AgentState[Any], Any, Any]):
 
         rephrased: Sequence[str] = ()
         elapsed = Elapsed()
+        stage = self._stage()
 
-        await self._stage.begin()
+        if stage is not None:
+            await stage.begin()
+
         try:
             rephrased = await self._rephraser.rephrase(query)
-            await self._stage.searching(rephrased)
+            if stage is not None:
+                await stage.searching(rephrased)
 
             calls = self._calls(rephrased)
             outcomes = await self._invoke(calls)
@@ -326,33 +301,34 @@ class PrefetchMiddleware(AgentMiddleware[AgentState[Any], Any, Any]):
             msg = f"prefetch for query {query[:200]!r} failed: {exc}"
             raise PrefetchError(msg) from exc
         finally:
-            await self._stage.end(rephrased, elapsed.ms())
+            if stage is not None:
+                await stage.end(rephrased, elapsed.ms())
 
-        results: list[BaseMessage] = [self._request(calls, elapsed.ms())]
+        results: list[BaseMessage] = [
+            self._messages.prefetch_request(calls, elapsed.ms())
+        ]
         for outcome in outcomes:
             results.append(self._messages.tool_message(outcome))
 
         return {"messages": results}
 
-    def _request(self, calls: Sequence[DagNode], elapsed_ms: int) -> AIMessage:
-        """Вызовы подготовки как сообщение ассистента.
-
-        Пустое поле рассуждений обязательно: провайдер в режиме размышления
-        отклоняет сообщение с вызовами, у которого его нет, а подготовка
-        ничего не обдумывала.
+    @staticmethod
+    def _stage() -> PrefetchStage | None:
+        """Порт этапа подготовки текущего прогона; None — ход идёт без
+        слушателей чата (прогон графа напрямую).
         """
-        marks: dict[str, Any] = {ResponseField.REASONING_CONTENT.value: ""}
-        marks.update(PrefetchStamp.mark(elapsed_ms))
+        config = ensure_config()
 
-        tool_calls: list[ToolCall] = []
-        for call in calls:
-            tool_calls.append(self._messages.tool_call(call))
+        callbacks = config.get("callbacks")
+        handlers = getattr(callbacks, "handlers", None)
+        if not handlers:
+            return None
 
-        return AIMessage(
-            content="",
-            tool_calls=tool_calls,
-            additional_kwargs=marks,
-        )
+        for handler in handlers:
+            if isinstance(handler, TurnEvents):
+                return handler.stage
+
+        return None
 
     @staticmethod
     def _turn_start(messages: Sequence[BaseMessage]) -> bool:
@@ -453,6 +429,131 @@ class ServerCallMiddleware(AgentMiddleware[AgentState[Any], Any, Any]):
         return await self._port.reply(request)
 
 
+class HistoryView(AgentMiddleware[AgentState[Any], Any, Any]):
+    """Что видит модель из истории треда: middleware вызова модели.
+
+    Создаётся сборкой чата на сессию и встаёт в граф хода (GraphSpec.history).
+    Перед каждым обращением к модели оставляет от прошлых ходов последние
+    вопросы и ответы без обмена с инструментами, а текущий ход отдаёт
+    целиком, убирая вызовы инструментов, которых у сессии нет. Пути
+    вложений вопроса дописывает в его текст: в истории они лежат отдельно,
+    чтобы не попадать в ленту.
+    """
+
+    ATTACHMENTS_NOTE: ClassVar[str] = (
+        "Прикреплённые файлы, доступны инструменту bash по этим путям:"
+    )
+
+    def __init__(
+        self, allowed_tools: frozenset[str] | None, history_messages: int
+    ) -> None:
+        """allowed_tools — инструменты сессии; None — чужих вызовов нет.
+        history_messages — сколько сообщений прошлых ходов видит модель."""
+        super().__init__()
+        self._allowed_tools = allowed_tools
+        self._history_messages = history_messages
+        self._messages = LangchainMessages()
+
+    @override
+    async def awrap_model_call(
+        self,
+        request: ModelRequest[Any],
+        handler: Callable[[ModelRequest[Any]], Awaitable[ModelResponse[Any]]],
+    ) -> ModelResponse[Any]:
+        view = self.of(request.state["messages"])
+
+        return await handler(request.override(messages=view))
+
+    def of(self, messages: Sequence[AnyMessage]) -> list[AnyMessage]:
+        """Сообщения, которые уйдут модели, из полной истории треда."""
+        start = self._last_question(messages)
+        replies = list(self._replies(messages[:start]))
+
+        view = replies[-self._history_messages :]
+        view.extend(self._own_calls(messages[start:]))
+
+        shown: list[AnyMessage] = []
+        for message in view:
+            shown.append(self._with_attachments(message))
+
+        return shown
+
+    @staticmethod
+    def _last_question(messages: Sequence[AnyMessage]) -> int:
+        """Позиция последнего вопроса пользователя: с него начинается
+        текущий ход; без вопроса текущий ход — вся история."""
+        for index in range(len(messages) - 1, -1, -1):
+            if isinstance(messages[index], HumanMessage):
+                return index
+
+        return 0
+
+    @staticmethod
+    def _replies(messages: Sequence[AnyMessage]) -> Iterator[AnyMessage]:
+        """Прошлые ходы без обмена с инструментами."""
+        for message in messages:
+            if isinstance(message, ToolMessage):
+                continue
+
+            if isinstance(message, AIMessage) and message.tool_calls:
+                continue
+
+            yield message
+
+    def _own_calls(self, messages: Sequence[AnyMessage]) -> Iterator[AnyMessage]:
+        """Текущий ход без вызовов инструментов, которых у сессии нет:
+        сообщение с чужим вызовом уходит целиком вместе с ответами на него."""
+        allowed = self._allowed_tools
+        if allowed is None:
+            yield from messages
+            return
+
+        dropped: set[str] = set()
+        for message in messages:
+            if isinstance(message, ToolMessage) and message.tool_call_id in dropped:
+                continue
+
+            if not isinstance(message, AIMessage):
+                yield message
+                continue
+
+            if not self._calls_foreign(message, allowed):
+                yield message
+                continue
+
+            for call in message.tool_calls:
+                if call_id := call["id"]:
+                    dropped.add(call_id)
+
+    @staticmethod
+    def _calls_foreign(message: AIMessage, allowed: frozenset[str]) -> bool:
+        for call in message.tool_calls:
+            if call["name"] in allowed:
+                continue
+
+            return True
+
+        return False
+
+    def _with_attachments(self, message: AnyMessage) -> AnyMessage:
+        """Дописывает пути вложений в текст вопроса: в ленте их быть не должно."""
+        if not isinstance(message, HumanMessage):
+            return message
+
+        attachments = self._messages.user(message).attachments
+        if not attachments:
+            return message
+
+        lines: list[str] = []
+        for attachment in attachments:
+            lines.append(f"- {attachment.name}: {attachment.path}")
+
+        listing = "\n".join(lines)
+        content = f"{message.content}\n\n{self.ATTACHMENTS_NOTE}\n{listing}"
+
+        return message.model_copy(update={"content": content})
+
+
 @dataclass(frozen=True)
 class GraphSpec:
     """Общие части графа хода: их собирает инфраструктура, билдер — компонует."""
@@ -461,8 +562,9 @@ class GraphSpec:
     service: ToolServer
     """Порт инструментов: его инструменты получает модель, ему уходят вызовы."""
     system_prompt: str
-    checkpointer: BaseCheckpointSaver
-    history: AgentMiddleware[Any, Any, Any]
+    checkpoints: CheckpointMessages
+    """История тредов: на её хранилище граф ведёт checkpoint'ы."""
+    history: HistoryView
     """Представление истории для модели: обрезка и чистка чужих tool-вызовов."""
 
 
@@ -484,7 +586,7 @@ class PlainGraphBuilder(AgentGraphBuilder):
             model=spec.chat,
             tools=port.tools(),
             system_prompt=spec.system_prompt,
-            checkpointer=spec.checkpointer,
+            checkpointer=spec.checkpoints.saver,
             middleware=[spec.history, ServerCallMiddleware(port)],
         )
 
@@ -497,30 +599,22 @@ class PrefetchGraphBuilder(AgentGraphBuilder):
     порта нет, — отказ сборки графа.
     """
 
-    def __init__(
-        self,
-        rephraser: Rephraser,
-        tools: Sequence[str],
-        stage: PrefetchStage,
-    ) -> None:
+    def __init__(self, rephraser: Rephraser, tools: Sequence[str]) -> None:
         """tools — имена инструментов порта, которые зовёт подготовка."""
         self._rephraser = rephraser
         self._tools = list(tools)
-        self._stage = stage
 
     @override
     def build(self, spec: GraphSpec) -> CompiledStateGraph:
         self._check_tools(spec.service)
         port = LangchainPort(spec.service)
-        prefetch = PrefetchMiddleware(
-            self._rephraser, self._tools, self._stage, spec.service
-        )
+        prefetch = PrefetchMiddleware(self._rephraser, self._tools, spec.service)
 
         return create_agent(
             model=spec.chat,
             tools=port.tools(),
             system_prompt=spec.system_prompt,
-            checkpointer=spec.checkpointer,
+            checkpointer=spec.checkpoints.saver,
             middleware=[prefetch, spec.history, ServerCallMiddleware(port)],
         )
 

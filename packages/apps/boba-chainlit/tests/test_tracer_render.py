@@ -9,7 +9,7 @@ import pytest
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from pydantic import ValidationError
 
-from boba.chainlit.agent.flow import PrefetchStamp
+from boba.chainlit.agent.bridge import LangchainMessages
 from boba.chainlit.chat.history import ConversationTranscript
 from boba.chainlit.domain.fields import StepField
 from boba.chainlit.rendering.chat_view import (
@@ -169,7 +169,8 @@ class TestToolFinished:
 class TestTranscript:
     def _replay(self, messages: list) -> RecordingSink:
         view, sink = make_view()
-        run(ConversationTranscript(messages, view).replay())
+        dialog = list(LangchainMessages().dialog(messages))
+        run(ConversationTranscript(dialog, view).replay())
         return sink
 
     def test_full_turn_layout(self) -> None:
@@ -369,7 +370,8 @@ class TestPrefetchStageReplay:
 
     def _replay(self, messages: list) -> RecordingSink:
         view, sink = make_view()
-        run(ConversationTranscript(messages, view).replay())
+        dialog = list(LangchainMessages().dialog(messages))
+        run(ConversationTranscript(dialog, view).replay())
         return sink
 
     @staticmethod
@@ -402,7 +404,7 @@ class TestPrefetchStageReplay:
                 content="",
                 id="m2",
                 tool_calls=calls,
-                additional_kwargs=PrefetchStamp.mark(6400),
+                additional_kwargs={"prefetch_elapsed_ms": 6400},
             ),
             *replies,
             AIMessage(content="вот ответ", id="m3"),
@@ -520,7 +522,8 @@ class TestDurationSurvivesHistory:
         ]
 
         view, sink = make_view()
-        run(ConversationTranscript(messages, view).replay())
+        dialog = list(LangchainMessages().dialog(messages))
+        run(ConversationTranscript(dialog, view).replay())
 
         names: list[str] = []
         for step in sink.steps:

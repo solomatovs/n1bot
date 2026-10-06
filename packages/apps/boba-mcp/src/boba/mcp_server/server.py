@@ -51,7 +51,7 @@ from starlette.types import ASGIApp, Receive, Send
 from starlette.types import Scope as AsgiScope
 
 from boba.access import GrantCheck, ProfileGrant, ToolGrant, ToolGrants
-from boba.cancellation import RunCancellation, StopReason
+from boba.cancellation import RunCancellation, StopReason, ToolStopped
 from boba.canvas.journal import StreamSlice
 from boba.canvas.keys import ObjectKey
 from boba.identity.context import (
@@ -134,12 +134,14 @@ class RoleToolServers:
 
 
 class ServerRefusal(StrEnum):
-    """Виды отказов сервера вызову, который до исполнителя не дошёл."""
+    """Виды отказов сервера вызову: не дошёл до исполнителя либо остановлен
+    вместе с запуском."""
 
     INVALID_REQUEST = "invalid_request"
     FORBIDDEN = "forbidden"
     NOT_FOUND = "not_found"
     RUN_LIMIT = "run_limit"
+    STOPPED = "stopped"
 
 
 class McpReplies:
@@ -599,6 +601,17 @@ class CallContextMiddleware(Middleware):
                 except asyncio.CancelledError:
                     cancellation.cancel(StopReason.ABORTED)
                     raise
+                except ToolStopped as exc:
+                    # запуск остановили при живом клиенте (остановка сервиса):
+                    # клиент получает отказ, а не обрыв ответа
+                    stopped = ErrorResult(
+                        message=(
+                            f"tool {context.message.name!r} call was stopped "
+                            f"before it finished, reason {cancellation.reason}: {exc}"
+                        ),
+                        error_kind=ServerRefusal.STOPPED,
+                    )
+                    result = self._replies.refused(context.message.name, stopped)
         finally:
             # журналы закрыты вместе с запуском: насосы досылают итог каналов
             await pumps.close()

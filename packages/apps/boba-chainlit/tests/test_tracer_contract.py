@@ -1,14 +1,14 @@
-"""Контракт трасера: сбой ленты не должен ломать учёт прогонов langchain.
+"""Контракт трасера: сбой ленты не должен ломать учёт прогонов модели.
 
 Ход идёт как в проде: langgraph поверх фейкового провайдера, стрим сообщениями,
 колбэки доставляет настоящий callback-менеджер langchain. Ленту роняет эмиттер
 chainlit, у которого умер сокет вкладки, — так же ведёт себя отправка шага при
 недоступном хранилище элементов.
 
-Инвариант один: run_map трасера ведётся независимо от отрисовки. Иначе сбой
-отрисовки старта инструмента отдаётся каскадом — on_tool_end падает с
-TracerException «No indexed run ID», и пользователь получает в чат вторую
-ошибку, за которой нет ни одной настоящей причины.
+Инвариант один: учёт прогонов не зависит от отрисовки. Иначе сбой отрисовки
+отдаётся каскадом — закрытие прогона не находит его старта («No indexed run
+ID»), и пользователь получает в чат вторую ошибку, за которой нет ни одной
+настоящей причины.
 """
 
 from __future__ import annotations
@@ -27,6 +27,7 @@ from langchain.agents import create_agent
 from langchain_core.messages import HumanMessage
 from langchain_core.tools import BaseTool, StructuredTool
 
+from boba.chainlit.agent.events import TurnEvents
 from boba.chainlit.chat.tracing import AgentTracer
 from boba.messaging import ListenerFailedError
 from boba.stand.ui.fake_llm import FakeLlmApp, ScenarioName
@@ -114,7 +115,7 @@ class TestTracerRunIndex:
         stream = agent.astream(
             {"messages": [HumanMessage(content=scenario.value)]},
             stream_mode="messages",
-            config={"callbacks": [tracer]},
+            config={"callbacks": [TurnEvents([tracer], tracer)]},
         )
 
         async for _chunk in stream:
