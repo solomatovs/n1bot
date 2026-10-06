@@ -398,10 +398,12 @@ async def langchain_agent(  # noqa: PLR0913
     ttl = timedelta(seconds=bind(raw, "connections", ConnectionsConfig).seal_ttl_sec)
 
     ports: list[ToolServer] = [
-        SealingToolServer(registry.server(tools, calls), connections, sent, ttl)
+        SealingToolServer(
+            registry.server(tools, calls), connections, sent, ttl, calls
+        )
     ]
     for port in remote:
-        ports.append(SealingToolServer(port, connections, sent, ttl))
+        ports.append(SealingToolServer(port, connections, sent, ttl, calls))
         calls.shown(port.tools())
 
     service = ToolServers(ports)

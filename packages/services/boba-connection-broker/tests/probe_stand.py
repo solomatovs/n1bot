@@ -213,6 +213,7 @@ class SealedStand:
             self.connections,
             self.sent,
             timedelta(minutes=10),
+            DirectCalls(),
         )
 
     @staticmethod

@@ -47,6 +47,7 @@ from boba.toolkit.chain import StreamPlanError
 from boba.toolkit.dag import (
     CallDag,
     DagNode,
+    NodeCalls,
     NodeOutcome,
     NodeOutcomes,
     ToolCard,
@@ -150,6 +151,19 @@ class ConnectionParams:
         return self._kinds
 
 
+class RefusedBody:
+    """Тело вызова, которому отказано до отправки серверу: отдаёт готовый
+    отказ. Создаётся портом SealingToolServer, чтобы отказанный вызов прошёл
+    путём вызова узла (NodeCalls) и хозяин клиента с лентой увидел его шагом.
+    """
+
+    def __init__(self, refused: NodeOutcome) -> None:
+        self._refused = refused
+
+    async def __call__(self, node: DagNode) -> NodeOutcome:
+        return self._refused
+
+
 class SealingToolServer(ToolServer):
     """Порт ToolServer, запечатывающий соединения перед отправкой вызова.
 
@@ -158,7 +172,8 @@ class SealingToolServer(ToolServer):
     сервера; остальное передаёт как есть. Ключ берёт из возможностей,
     которые сервер объявил при подключении (SealFeature), на каждый вызов —
     свежесть ключа держит порт сервера. Отказ запечатывания — итог-ошибка
-    вызова с подсказкой модели. В истории клиента остаётся исходный вызов со
+    вызова с подсказкой модели; такой вызов идёт путём вызова узла (conduct),
+    как и отправленный серверу. В истории клиента остаётся исходный вызов со
     ссылкой: аргументы меняются в копии.
     """
 
@@ -168,8 +183,10 @@ class SealingToolServer(ToolServer):
         connections: ArmedConnections,
         sent: SentConnections,
         ttl: timedelta,
+        conduct: NodeCalls,
     ) -> None:
         self._inner = inner
+        self._conduct = conduct
         self._connections = connections
         self._sent = sent
         self._ttl = ttl
@@ -177,8 +194,10 @@ class SealingToolServer(ToolServer):
         self._outcomes = NodeOutcomes()
         self._dags = CallDag()
         self._params: dict[str, ConnectionParams] = {}
+        self._cards: dict[str, ToolCard] = {}
         for card in inner.tools():
             self._params[card.name] = ConnectionParams(card.parameters)
+            self._cards[card.name] = card
 
     def tools(self) -> Sequence[ToolCard]:
         return self._inner.tools()
@@ -200,7 +219,7 @@ class SealingToolServer(ToolServer):
             except ToolRefusalError as exc:
                 logger.warning("sealing connections of %s refused: %s", call.tool, exc)
                 refused = self._outcomes.refused(call, exc.failure())
-                pending[position] = self._outcomes.settled(refused)
+                pending[position] = self._shown(call, refused)
                 continue
 
             positions.append(position)
@@ -215,6 +234,20 @@ class SealingToolServer(ToolServer):
             ordered.append(pending[position])
 
         return ordered
+
+    def _shown(
+        self, call: DagNode, refused: NodeOutcome
+    ) -> asyncio.Future[NodeOutcome]:
+        """Отказ вызову call путём вызова узла: хозяин клиента узнаёт о нём,
+        как о любом вызове. Инструмента с таким именем у сервера нет — пути
+        вызова нет, отказ отдаётся как есть."""
+        card = self._cards.get(call.tool)
+        if card is None:
+            return self._outcomes.settled(refused)
+
+        body = RefusedBody(refused)
+
+        return asyncio.ensure_future(self._conduct.conducted(card, call, body))
 
     async def _sealed(self, call: DagNode) -> DagNode:
         """Вызов с запечатанными соединениями.

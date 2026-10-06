@@ -262,6 +262,7 @@ def session_service(
         ArmedConnections(refs.connection_store, refs.credentials, refs.contexts),
         SentConnections(),
         StandUserConnections.TTL,
+        DirectCalls(),
     )
 
 
