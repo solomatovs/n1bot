@@ -21,12 +21,13 @@ from langgraph.graph.state import CompiledStateGraph
 from boba.chainlit.agent.bridge import ChatModelBridge
 from boba.chainlit.agent.flow import (
     GraphSpec,
+    HistoryView,
     LlmRephraser,
     PrefetchGraphBuilder,
 )
+from boba.chainlit.agent.history import CheckpointMessages
 from boba.chainlit.infra.config import AppConfig
 from boba.chainlit.infra.providers import (
-    build_history_view,
     llm_providers,
     session_graph_builder,
 )
@@ -166,8 +167,8 @@ def _graph(
         chat=chat,
         service=session.service,
         system_prompt=settings.system_prompt,
-        checkpointer=InMemorySaver(),
-        history=build_history_view(frozenset(names), settings.history_messages),
+        checkpoints=CheckpointMessages(InMemorySaver()),
+        history=HistoryView(frozenset(names), settings.history_messages),
     )
 
     builder = session_graph_builder(providers, selected)

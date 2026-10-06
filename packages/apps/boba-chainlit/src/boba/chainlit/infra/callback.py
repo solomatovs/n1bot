@@ -1,14 +1,11 @@
-"""Callback'и chainlit: мост между интерфейсом чата и агентом langgraph."""
+"""Callback'и chainlit: мост между интерфейсом чата и агентом сессии."""
 
 import logging
-from collections.abc import AsyncIterator, Mapping, Sequence
-from typing import Annotated, Any, cast
+from collections.abc import Sequence
+from typing import Annotated, Any
 from uuid import UUID
 
 from fastapi import Request, Response
-from langchain_core.messages import BaseMessage
-from langchain_core.runnables import RunnableConfig
-from langgraph.graph.state import CompiledStateGraph
 
 import chainlit as cl
 from boba.cancellation import StopReason
@@ -16,8 +13,9 @@ from boba.canvas.canvas import CanvasAction, RenderVerdicts
 from boba.chainlit.canvas.panel import StreamActions
 from boba.chainlit.canvas.remote import RemoteStreams
 from boba.chainlit.canvas.tools import CanvasActions, CanvasScope
+from boba.chainlit.chat.dialog import Attachment, SessionAgent
 from boba.chainlit.chat.feed import TurnFeed
-from boba.chainlit.chat.history import GraphTurnHistory, InterruptedTurn, ThreadRewind
+from boba.chainlit.chat.history import InterruptedTurn, ThreadRewind, ThreadTurnHistory
 from boba.chainlit.chat.panel_text import PanelText
 from boba.chainlit.chat.settings import SettingsPanel
 from boba.chainlit.chat.tracing import LlmStateLog
@@ -95,10 +93,7 @@ logger = logging.getLogger(__name__)
 @di_inject
 async def on_message(  # noqa: PLR0913
     msg: cl.Message,
-    graph: Annotated[
-        CompiledStateGraph,
-        Depends(langchain_agent, scope="session"),
-    ],
+    agent: Annotated[SessionAgent, Depends(langchain_agent, scope="session")],
     data_layer: Annotated[BaseDataLayer, Depends(chainlit_data_layer)],
     selected: Annotated[SelectedProfile, Depends(session_profile, scope="session")],
     bus: Annotated[MessageBus, Depends(runtime.message_bus)],
@@ -127,7 +122,7 @@ async def on_message(  # noqa: PLR0913
     turn = ChatTurn(
         thread_id=thread_id,
         feed=feed,
-        history=GraphTurnHistory(graph, thread_id),
+        history=ThreadTurnHistory(agent, thread_id),
         question=Question.of_message(
             msg, thread_id, AttachmentDataLayer.require().links
         ),
@@ -154,8 +149,8 @@ async def on_message(  # noqa: PLR0913
         DumpLabel.set(f"{who}-{thread_id}")
 
         try:
-            rewind = ThreadRewind(graph, data_layer, thread_id)
-            carried: Sequence[Mapping[str, str]] = ()
+            rewind = ThreadRewind(agent, data_layer, thread_id)
+            carried: Sequence[Attachment] = ()
             if await rewind.is_edit(msg.id):
                 plan = await rewind.apply(msg.id, msg.content)
                 carried = plan.attachments
@@ -163,19 +158,9 @@ async def on_message(  # noqa: PLR0913
                 await bus.publish(Scope.chat(thread_id), rewound, LockToken.local())
 
             state_log = LlmStateLog(context.log_mark())
-            run_config = RunnableConfig(
-                callbacks=[turn.tracer, state_log],
-                configurable={"thread_id": thread_id},
-            )
-
-            human = ChatTurn.human_message(msg, context.subject.user_key, carried)
-            stream = cast(
-                "AsyncIterator[tuple[BaseMessage, dict[str, Any]]]",
-                graph.astream(
-                    {"messages": [human]},
-                    stream_mode="messages",
-                    config=run_config,
-                ),
+            asked = ChatTurn.user_message(msg, context.subject.user_key, carried)
+            stream = agent.answer(
+                thread_id, asked, [turn.tracer, state_log], turn.tracer
             )
 
             await turn.run(stream)
@@ -692,7 +677,7 @@ async def on_chat_resume(
 @di_inject
 async def _resume_feed(
     thread_dict: ThreadDict,
-    graph: Annotated[CompiledStateGraph, Depends(langchain_agent, scope="session")],
+    agent: Annotated[SessionAgent, Depends(langchain_agent, scope="session")],
     app_config: Annotated[AppConfig, Depends(get_app_config)],
     registry: Annotated[ChatProfiles, Depends(chat_profiles_registry)],
     runs: Annotated[Runs, Depends(runtime.runs)],
@@ -743,7 +728,7 @@ async def _resume_feed(
     caught = await renderer.catch_up(_root_bus())
     logger.info("resume thread %s: foreign turn, caught up: %s", thread_id, caught)
     if caught.interrupted:
-        await InterruptedTurn(graph, thread_id).remember(caught.interrupted)
+        await InterruptedTurn(agent, thread_id).remember(caught.interrupted)
 
     if not caught.alive:
         return

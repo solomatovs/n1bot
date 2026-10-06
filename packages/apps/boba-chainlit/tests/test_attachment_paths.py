@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 import pytest
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import AnyMessage, HumanMessage
 
 from boba.canvas.keys import ObjectKey
-from boba.chainlit.infra.providers import build_llm_view
+from boba.chainlit.agent.flow import HistoryView
 
 MOUNT = "/workspace"
 """Точка workspace в песочнице: под ней лежат каталоги тредов."""
@@ -15,6 +15,11 @@ MOUNT = "/workspace"
 @pytest.fixture(autouse=True)
 def chainlit_context() -> None:
     """Пути вложений не зависят от сессии chainlit."""
+
+
+def _llm_view(messages: list[AnyMessage]) -> list[AnyMessage]:
+    """История глазами модели: чужих вызовов нет, окно больше истории."""
+    return HistoryView(None, 30).of(messages)
 
 
 class TestAttachmentPaths:
@@ -27,30 +32,30 @@ class TestAttachmentPaths:
 
     def test_llm_sees_sandbox_path(self) -> None:
         msg = self._message({"name": "data.csv", "path": "/workspace/upload/el-1"})
-        if "/workspace/upload/el-1" not in build_llm_view([msg])[0].content:
-            raise AssertionError('"/workspace/upload/el-1" in build_llm_view([msg])[0…')
+        if "/workspace/upload/el-1" not in _llm_view([msg])[0].content:
+            raise AssertionError('"/workspace/upload/el-1" in _llm_view([msg])[0…')
 
     def test_llm_sees_file_name(self) -> None:
         msg = self._message({"name": "data.csv", "path": "/workspace/upload/el-1"})
-        if "data.csv" not in build_llm_view([msg])[0].content:
-            raise AssertionError('"data.csv" in build_llm_view([msg])[0].content')
+        if "data.csv" not in _llm_view([msg])[0].content:
+            raise AssertionError('"data.csv" in _llm_view([msg])[0].content')
 
     def test_original_message_is_not_touched(self) -> None:
         msg = self._message({"name": "data.csv", "path": "/workspace/upload/el-1"})
-        build_llm_view([msg])
+        _llm_view([msg])
         if msg.content != "разбери файл":
             raise AssertionError('msg.content == "разбери файл"')
 
     def test_message_without_attachments_unchanged(self) -> None:
-        if build_llm_view([self._message()])[0].content != "разбери файл":
-            raise AssertionError('build_llm_view([self._message()])[0].content == "ра…')
+        if _llm_view([self._message()])[0].content != "разбери файл":
+            raise AssertionError('_llm_view([self._message()])[0].content == "ра…')
 
     def test_several_attachments_listed(self) -> None:
         msg = self._message(
             {"name": "a.csv", "path": "/workspace/upload/1"},
             {"name": "b.csv", "path": "/workspace/upload/2"},
         )
-        content = build_llm_view([msg])[0].content
+        content = _llm_view([msg])[0].content
         if "a.csv" not in content:
             raise AssertionError('"a.csv" in content')
         if "b.csv" not in content:

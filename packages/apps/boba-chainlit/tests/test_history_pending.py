@@ -12,14 +12,15 @@ from typing import Any
 import pytest
 from chainlit.step import StepDict
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
-from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.runnables import RunnableConfig
 from langgraph.checkpoint.memory import InMemorySaver
 
-from boba.chainlit.agent.flow import GraphSpec, PlainGraphBuilder
-from boba.chainlit.chat.history import CheckpointMessages, TranscriptFeed
+from boba.chainlit.agent.flow import GraphSpec, HistoryView, PlainGraphBuilder
+from boba.chainlit.agent.history import CheckpointMessages
+from boba.chainlit.chat.dialog import DialogMessage, ToolReply
+from boba.chainlit.chat.history import TranscriptFeed
 from boba.chainlit.domain.fields import StepField
-from boba.chainlit.infra.providers import build_history_view
 from boba.chainlit.rendering.chat_view import StepKind
 from boba.stand.refs import StandRefs
 from boba.toolkit.chain import CallAmbient
@@ -90,8 +91,8 @@ def _graph(saver: InMemorySaver):
             DirectCalls(),
         ),
         system_prompt="index everything",
-        checkpointer=saver,
-        history=build_history_view(frozenset({"fast_index", "slow_index"}), 30),
+        checkpoints=CheckpointMessages(saver),
+        history=HistoryView(frozenset({"fast_index", "slow_index"}), 30),
     )
     return PlainGraphBuilder().build(spec)
 
@@ -109,6 +110,16 @@ def _tool_steps(steps: Sequence[StepDict]) -> list[str]:
     return names
 
 
+def _replied(messages: Sequence[DialogMessage]) -> list[str]:
+    """Вызовы, на которые в истории уже лежит ответ инструмента."""
+    calls: list[str] = []
+    for message in messages:
+        if isinstance(message, ToolReply):
+            calls.append(message.call_id)
+
+    return calls
+
+
 async def test_finished_call_of_a_running_batch_is_in_the_history(
     runtime_stand: StandRefs,
 ) -> None:
@@ -122,8 +133,7 @@ async def test_finished_call_of_a_running_batch_is_in_the_history(
     await asyncio.sleep(0.2)
 
     messages = await CheckpointMessages(saver).load(THREAD)
-    replies = [m.tool_call_id for m in messages if isinstance(m, ToolMessage)]
-    assert replies == [FAST_CALL]
+    assert _replied(messages) == [FAST_CALL]
 
     steps = await feed.steps(THREAD, "user")
     assert _tool_steps(steps) == ["fast_index"]
@@ -132,8 +142,7 @@ async def test_finished_call_of_a_running_batch_is_in_the_history(
     await asyncio.wait_for(run, WAIT_SEC)
 
     settled = await CheckpointMessages(saver).load(THREAD)
-    replies = [m.tool_call_id for m in settled if isinstance(m, ToolMessage)]
-    assert sorted(replies) == [FAST_CALL, SLOW_CALL]
+    assert sorted(_replied(settled)) == [FAST_CALL, SLOW_CALL]
 
     steps = await feed.steps(THREAD, "user")
     assert sorted(_tool_steps(steps)) == ["fast_index", "slow_index"]

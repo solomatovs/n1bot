@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from abc import ABC, abstractmethod
 from collections.abc import Mapping, Sequence
@@ -22,7 +23,6 @@ from boba.toolkit.result import ToolArtifact, VisualElement
 from chainlit.config import config as chainlit_config
 from chainlit.context import context
 from chainlit.element import CustomElement
-from chainlit.langchain.callbacks import process_content
 from chainlit.message import Message
 from chainlit.step import Step, StepDict
 from chainlit.utils import utc_now
@@ -93,6 +93,13 @@ class StepKind(StrEnum):
     @property
     def step_type(self) -> TrueStepType:
         return cast("TrueStepType", self.value)
+
+
+class StepLanguage(StrEnum):
+    """Язык подсветки выхода шага, каким его знает фронт chainlit."""
+
+    TEXT = "text"
+    JSON = "json"
 
 
 class StepStatus(StrEnum):
@@ -1013,9 +1020,8 @@ class ChatView:
         step.end = ended
         result = ToolArtifact.revive(artifact)
         if result is None:
-            content, lang = process_content(artifact)
-            step.output = content
-            step.language = lang
+            step.output = self._raw_output(artifact)
+            step.language = self._raw_language(artifact)
             step.name = StepStatus.DONE.title(self._tool_names.get(step.id, step.name))
             await self._sink.put(step)
             return
@@ -1052,6 +1058,29 @@ class ChatView:
         step.start = ended
         step.end = ended
         await self._sink.put(step)
+
+    @staticmethod
+    def _raw_output(artifact: object) -> dict[str, str] | str:
+        """Выход шага для записи старой истории без результата семейства:
+        текст показывается как есть, остальное — своим JSON."""
+        if artifact is None:
+            return {}
+
+        if isinstance(artifact, str):
+            return {"content": artifact}
+
+        return json.dumps(artifact, default=str)
+
+    @staticmethod
+    def _raw_language(artifact: object) -> str | None:
+        """Язык подсветки выхода записи без результата семейства."""
+        if artifact is None:
+            return None
+
+        if isinstance(artifact, str):
+            return StepLanguage.TEXT.value
+
+        return StepLanguage.JSON.value
 
     async def tool_failed(self, step: Step, markdown: str) -> None:
         """Провал инструмента мимо результата: markdown результата-ошибки."""

@@ -13,19 +13,22 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from abc import abstractmethod
 from collections.abc import AsyncIterator, Iterator, Mapping, Sequence
-from dataclasses import dataclass
-from enum import StrEnum
-from typing import Any, ClassVar, Protocol
+from typing import Any, ClassVar
 
-from langchain_core.messages import AIMessage, AIMessageChunk, BaseMessage, HumanMessage
 from pydantic import BaseModel, ConfigDict, Field
 
 import chainlit as cl
 from boba.cancellation import StopReason, ToolStopped
 from boba.canvas.keys import ElementProps, ObjectKey
-from boba.chainlit.agent.bridge import ResponseField
+from boba.chainlit.chat.dialog import (
+    AnswerChunk,
+    Attachment,
+    TurnHistory,
+    TurnMark,
+    TurnRecord,
+    UserMessage,
+)
 from boba.chainlit.chat.feed import QuestionBody, ShownElement, TurnFeed
 from boba.chainlit.chat.tracing import AgentTracer, TurnArtifacts
 from boba.chainlit.domain.keys import AttachmentLinks
@@ -46,76 +49,13 @@ from boba.toolkit.result import ToolResultBase
 __all__ = [
     "ChatTurn",
     "Question",
-    "TurnHistory",
-    "TurnMark",
     "TurnOutcome",
-    "TurnRecord",
     "TurnReporter",
     "TurnState",
     "TurnStateError",
 ]
 
 logger = logging.getLogger(__name__)
-
-
-class TurnMark(StrEnum):
-    """Пометка исхода хода в additional_kwargs сообщения истории; по ней сборка ленты из
-    истории рисует остановленный или упавший ход.
-    """
-
-    STOPPED = "stopped"
-    ERROR = "error"
-
-
-@dataclass
-class TurnRecord:
-    """Запись оборванного хода для истории агента: текст ответа, пометка исхода и
-    незавершённые рассуждения, чтобы модель знала, чем ход кончился.
-    """
-
-    content: str
-    mark: TurnMark
-    reasoning: str = ""
-
-    def message(self) -> AIMessage:
-        """Собирает сообщение для состояния графа: текст, пометка исхода и рассуждения,
-        если они были.
-        """
-        extra: dict[str, Any] = {self.mark.value: True}
-        if self.reasoning:
-            extra[ResponseField.REASONING_CONTENT.value] = self.reasoning
-
-        return AIMessage(content=self.content, additional_kwargs=extra)
-
-
-class ChatTurnAttachments:
-    """Вложения вопроса в additional_kwargs сообщения: имя и путь, каким его видит
-    песочница.
-    """
-
-    KEY: ClassVar[str] = "attachments"
-
-    @classmethod
-    def of(cls, message: BaseMessage) -> list[dict[str, str]]:
-        raw = message.additional_kwargs.get(cls.KEY)
-        if not isinstance(raw, list):
-            return []
-
-        found: list[dict[str, str]] = []
-        for item in raw:
-            if not isinstance(item, Mapping):
-                continue
-
-            found.append({str(k): str(v) for k, v in item.items()})
-
-        return found
-
-    @classmethod
-    def extra(cls, attachments: Sequence[Mapping[str, str]]) -> dict[str, Any]:
-        if not attachments:
-            return {}
-
-        return {cls.KEY: [dict(item) for item in attachments]}
 
 
 class Question(BaseModel):
@@ -136,8 +76,12 @@ class Question(BaseModel):
         """Вопрос из сообщения chainlit: вложения получают ссылку треда вместо
         сессионной, чтобы открываться из любой вкладки и с любого инстанса.
         """
+        attached = msg.elements
+        if not attached:
+            attached = []
+
         elements: list[ShownElement] = []
-        for element in msg.elements or []:
+        for element in attached:
             data = dict(element.to_dict())
             props = ElementProps.of(data.get("props"))
             data["threadId"] = thread_id
@@ -285,15 +229,6 @@ class TurnState(TurnArtifacts):
         return "".join(parts)
 
 
-class TurnHistory(Protocol):
-    """Порт истории хода: записывает исход так, чтобы он пережил остановку и был виден
-    модели в следующем ходе.
-    """
-
-    @abstractmethod
-    async def remember(self, record: TurnRecord) -> None: ...
-
-
 class TurnReporter:
     """Отчёт об исходе хода в шину, историю агента и журнал из одного разбора
     FailureReport.
@@ -434,7 +369,8 @@ class ChatTurn(RunPort):
 
     @property
     def tracer(self) -> AgentTracer:
-        """Трасер хода; его отдают в callbacks прогона графа."""
+        """Трасер хода: слушатель обращений к модели и порт этапа подготовки;
+        его отдают агенту сессии вместе с вопросом."""
         return self._tracer
 
     async def tool_started(
@@ -481,32 +417,30 @@ class ChatTurn(RunPort):
         await self._feed.element_shown(tool_call_id, element)
 
     @staticmethod
-    def human_message(
-        msg: cl.Message, user_id: str, carried: Sequence[Mapping[str, str]] = ()
-    ) -> HumanMessage:
-        """Собирает сообщение пользователя для графа; пути вложений — такие, какими их
+    def user_message(
+        msg: cl.Message, user_id: str, carried: Sequence[Attachment] = ()
+    ) -> UserMessage:
+        """Собирает вопрос пользователя для агента; пути вложений — такие, какими их
         видит песочница. carried — вложения правленого вопроса: у правки своих
         элементов нет.
         """
-        attachments: list[dict[str, str]] = []
-        for item in carried:
-            attachments.append(dict(item))
+        attachments: list[Attachment] = list(carried)
 
-        for element in msg.elements or []:
+        elements = msg.elements
+        if not elements:
+            elements = []
+
+        for element in elements:
             key = ObjectKey.build(user_id, element.thread_id, element.name, element.id)
             name = element.name
             if not name:
                 name = element.id
 
-            attachments.append({"name": name, "path": key.in_workspace()})
+            attachments.append(Attachment(name=name, path=key.in_workspace()))
 
-        # extra здесь — сборка additional_kwargs, а не Django ORM
-        extra = ChatTurnAttachments.extra(attachments)  # nosec B610
-        return HumanMessage(content=msg.content, id=msg.id, additional_kwargs=extra)
+        return UserMessage(id=msg.id, text=msg.content, attachments=tuple(attachments))
 
-    async def run(
-        self, stream: AsyncIterator[tuple[BaseMessage, dict[str, Any]]]
-    ) -> None:
+    async def run(self, stream: AsyncIterator[AnswerChunk]) -> None:
         """Гонит стрим до конца либо до остановки и отчитывается исходом; отменённый ход
         не молчит.
         """
@@ -557,9 +491,7 @@ class ChatTurn(RunPort):
 
         raise error
 
-    async def _run(
-        self, stream: AsyncIterator[tuple[BaseMessage, dict[str, Any]]]
-    ) -> None:
+    async def _run(self, stream: AsyncIterator[AnswerChunk]) -> None:
         context = self._contexts.current()
         cancellation = context.cancellation
         with (
@@ -570,7 +502,7 @@ class ChatTurn(RunPort):
                 # ход объявляется до первого чанка: запрос в модель уходит с первой
                 # итерацией стрима, и до её ответа лента иначе пуста
                 await self._feed.started(self._key, self._question.body())
-                async for chunk, _metadata in stream:
+                async for chunk in stream:
                     cancellation.raise_if_cancelled()
                     await self._model_answered()
                     await self._on_chunk(chunk)
@@ -649,15 +581,9 @@ class ChatTurn(RunPort):
         report.add_done_callback(self._REPORTS.discard)
         await asyncio.shield(report)
 
-    async def _on_chunk(self, chunk: BaseMessage) -> None:
-        if not isinstance(chunk, AIMessageChunk):
+    async def _on_chunk(self, chunk: AnswerChunk) -> None:
+        if not chunk.text:
             return
 
-        if not isinstance(chunk.content, str):
-            return
-
-        if not chunk.content:
-            return
-
-        self._state.add_answer(chunk.content)
-        await self._feed.answer_token(self._key, chunk.content)
+        self._state.add_answer(chunk.text)
+        await self._feed.answer_token(self._key, chunk.text)

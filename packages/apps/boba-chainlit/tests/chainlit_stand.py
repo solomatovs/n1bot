@@ -39,14 +39,16 @@ from boba.canvas.journal import StreamSlice
 from boba.canvas.keys import WorkspaceMount
 from boba.chainlit.agent.bridge import ChatModelBridge, LangchainMessages
 from boba.chainlit.canvas.remote import RemoteJournals, RemoteStreams
-from boba.chainlit.chat.feed import TurnFeed
-from boba.chainlit.chat.history import ThreadMessages, TranscriptFeed
-from boba.chainlit.chat.turn import (
-    ChatTurn,
-    Question,
+from boba.chainlit.chat.dialog import (
+    DialogMessage,
+    PrefetchStage,
+    ThreadMessages,
     TurnHistory,
     TurnRecord,
 )
+from boba.chainlit.chat.feed import TurnFeed
+from boba.chainlit.chat.history import TranscriptFeed
+from boba.chainlit.chat.turn import ChatTurn, Question
 from boba.chainlit.data.data_layer import PostgresDataLayer
 from boba.chainlit.data.remote_storage import FileOwners, RemoteStorageClient
 from boba.chainlit.domain.keys import AppPrefix, AttachmentLinks, AttachmentUrl
@@ -137,13 +139,29 @@ AUTH_USER = "test-user"
 
 
 class FakeThreadMessages(ThreadMessages):
-    """Источник истории для тестов: сообщения задаются на тред вручную."""
+    """Источник истории для тестов: сообщения checkpoint'а задаются на тред
+    вручную, а чату отдаются сообщениями диалога — тем же переводом, что и
+    чтение checkpoint'ов (LangchainMessages)."""
 
     def __init__(self) -> None:
         self.by_thread: dict[str, list[BaseMessage]] = {}
+        self._messages = LangchainMessages()
 
-    async def load(self, thread_id: str) -> list[BaseMessage]:
-        return self.by_thread.get(thread_id, [])
+    async def load(self, thread_id: str) -> Sequence[DialogMessage]:
+        return list(self._messages.dialog(self.by_thread.get(thread_id, [])))
+
+
+class SilentStage(PrefetchStage):
+    """Порт этапа подготовки для прогонов без ленты: этап никому не показан."""
+
+    async def begin(self) -> None:
+        return None
+
+    async def searching(self, queries: Sequence[str]) -> None:
+        return None
+
+    async def end(self, queries: Sequence[str], elapsed_ms: int) -> None:
+        return None
 
 
 class ServiceProcess:

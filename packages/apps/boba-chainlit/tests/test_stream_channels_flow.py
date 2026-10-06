@@ -25,11 +25,11 @@ from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph.state import CompiledStateGraph
 from pydantic import SecretStr
 
-from boba.chainlit.agent.flow import GraphSpec, PlainGraphBuilder
+from boba.chainlit.agent.flow import GraphSpec, HistoryView, PlainGraphBuilder
+from boba.chainlit.agent.history import CheckpointMessages
 from boba.chainlit.agent.tools import LangchainPort
-from boba.chainlit.chat.history import CheckpointMessages, TranscriptFeed
+from boba.chainlit.chat.history import TranscriptFeed
 from boba.chainlit.domain.fields import StepField
-from boba.chainlit.infra.providers import build_history_view
 from boba.chainlit.rendering.chat_view import StepKind
 from boba.identity.run import Runs
 from boba.stand.refs import StandRefs
@@ -181,8 +181,8 @@ class ChannelStand:
             chat=ScriptedChat(messages=iter(script), disable_streaming=True),
             service=self.streams,
             system_prompt="wire the streams",
-            checkpointer=saver,
-            history=build_history_view(frozenset(names), 30),
+            checkpoints=CheckpointMessages(saver),
+            history=HistoryView(frozenset(names), 30),
         )
         return PlainGraphBuilder().build(spec)
 
@@ -337,11 +337,10 @@ def _call(node: Mapping[str, Any]) -> dict[str, Any]:
 @pytest.mark.anyio
 class TestSeparateCallsOfOneResponse:
     """Модель зовёт потоковые инструменты отдельными вызовами в одном ответе:
-    имена каналов связывают их в один запуск, как узлы workflow."""
+    каждый вызов идёт своим запуском, партнёра по каналу у него нет, и он
+    получает отказ плана с указанием на workflow."""
 
-    async def test_separate_calls_are_wired_by_channel_names(
-        self, tmp_path: Path
-    ) -> None:
+    async def test_separate_calls_are_not_wired_together(self, tmp_path: Path) -> None:
         stand = ChannelStand(tmp_path)
 
         replies = await stand.turn(
@@ -352,34 +351,41 @@ class TestSeparateCallsOfOneResponse:
             ]
         )
 
-        expected = _collected("m", 48, 65536)
-        assert replies["call_0"].status == "success", replies["call_0"].content
-        assert "emitted 48" in str(replies["call_0"].content)
-        assert str(replies["call_1"].content).startswith(expected)
-        assert str(replies["call_2"].content).startswith(expected)
-        assert stand.marker("left").read_text() == expected
-        assert stand.marker("right").read_text() == expected
+        for call_id in ("call_0", "call_1", "call_2"):
+            error = _error(replies[call_id])
+            assert error.error_kind == StreamFailureKind.PLAN_REFUSED, error.llm_view()
+            assert "'workflow'" in error.llm_view(), error.llm_view()
 
-    async def test_writer_without_a_reader_is_drained_by_dev_null(
+        assert not stand.marker("left").exists()
+        assert not stand.marker("right").exists()
+
+    async def test_lonely_writer_is_refused_for_its_unread_channel(
         self, tmp_path: Path
     ) -> None:
         stand = ChannelStand(tmp_path)
 
-        replies = await stand.turn(
-            [
-                _call(_emit("rows", 4, 0)),
-                {"name": "dev_null", "args": {"feeds": ["rows"]}},
-            ]
-        )
+        replies = await stand.turn([_call(_emit("rows", 4, 0))])
 
-        assert replies["call_0"].status == "success", replies["call_0"].content
-        assert "emitted 4" in str(replies["call_0"].content)
-        assert replies["call_1"].status == "success", replies["call_1"].content
+        error = _error(replies["call_0"])
+        assert error.error_kind == StreamFailureKind.PLAN_REFUSED, error.llm_view()
+        assert "channel 'rows'" in error.llm_view(), error.llm_view()
+        assert "has no readers" in error.llm_view(), error.llm_view()
 
-    async def test_plain_call_next_to_a_broken_stream_call_still_runs(
+    async def test_lonely_reader_is_refused_for_its_unwritten_channel(
         self, tmp_path: Path
     ) -> None:
-        """Отказ плана потоковых вызовов соседний обычный вызов не трогает."""
+        stand = ChannelStand(tmp_path)
+
+        replies = await stand.turn([_call(_collect("rows", "never"))])
+
+        error = _error(replies["call_0"])
+        assert error.error_kind == StreamFailureKind.PLAN_REFUSED, error.llm_view()
+        assert "which no node writes" in error.llm_view(), error.llm_view()
+        assert not stand.marker("never").exists()
+
+    async def test_plain_call_next_to_a_refused_stream_call_still_runs(
+        self, tmp_path: Path
+    ) -> None:
         stand = ChannelStand(tmp_path)
 
         replies = await stand.turn(

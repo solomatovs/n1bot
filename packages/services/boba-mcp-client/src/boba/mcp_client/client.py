@@ -886,15 +886,6 @@ class NamedBlocks(BlockFiles):
         return f"[{mime}, {len(data)} bytes]"
 
 
-@dataclass(frozen=True)
-class LinkedPlan:
-    """Что в пачке вызовов идёт связкой: имена инструментов её вызовов и
-    сама связка; group None — связки в пачке нет."""
-
-    names: frozenset[str]
-    group: LinkedCalls | None
-
-
 class LiveCall:
     """Вызов, чьё тело сейчас исполняется: сам вызов и связка, в которой
     он идёт. Создаётся портом на время вызова."""
@@ -962,13 +953,13 @@ LinkedSend = Callable[[Sequence[LinkedNode]], Awaitable[LinkedOutcome]]
 class LinkedCalls:
     """Вызовы инструментов, уходящие серверу одной связкой.
 
-    Создаётся портом McpToolServer: на потоковые вызовы одного ответа модели
-    и на узлы вызова инструмента-связки. Потоковым инструментам нужны
-    партнёры на другом конце канала; сервер связывает их только внутри
-    одного вызова инструмента-связки. Каждый вызов связки идёт путём вызова
-    узла (NodeCalls) до своего тела — у него свой шаг ленты и свой журнал, —
-    там присоединяется к связке и ждёт её итога; связка уходит серверу, когда
-    присоединились все, кто не выбыл раньше.
+    Создаётся портом McpToolServer на узлы вызова инструмента-связки.
+    Потоковым инструментам нужны партнёры на другом конце канала; сервер
+    связывает их только внутри одного вызова инструмента-связки. Каждый
+    вызов связки идёт путём вызова узла (NodeCalls) до своего тела — у него
+    свой шаг ленты и свой журнал, — там присоединяется к связке и ждёт её
+    итога; связка уходит серверу, когда присоединились все, кто не выбыл
+    раньше.
     """
 
     def __init__(self, size: int, send: LinkedSend) -> None:
@@ -1271,9 +1262,6 @@ class McpToolServer(ToolServer):
 
     FEATURE_PREFIX: ClassVar[str] = "com.boba/"
 
-    LINKED_MIN: ClassVar[int] = 2
-    """С какого числа потоковых вызовов в пачке они уходят связкой."""
-
     def __init__(  # noqa: PLR0913 — порт собирается всеми своими зависимостями
         self,
         name: str,
@@ -1476,20 +1464,13 @@ class McpToolServer(ToolServer):
     async def submit(
         self, calls: Sequence[DagNode]
     ) -> Sequence[asyncio.Future[NodeOutcome]]:
-        linked = self._linked(calls)
         pending: list[asyncio.Future[NodeOutcome]] = []
-        position = 0
         for call in calls:
             if self._nodes_of(call) is not None:
                 pending.append(asyncio.ensure_future(self._nodes_called(call)))
                 continue
 
-            seat: LinkedSeat | None = None
-            if linked.group is not None and call.tool in linked.names:
-                seat = LinkedSeat(linked.group, position, f"n{position}")
-                position += 1
-
-            pending.append(asyncio.ensure_future(self._called(call, seat)))
+            pending.append(asyncio.ensure_future(self._called(call, None)))
 
         return pending
 
@@ -1543,32 +1524,6 @@ class McpToolServer(ToolServer):
             return self._outcomes.refused(call, failure)
 
         return outcome.of(call)
-
-    def _linked(self, calls: Sequence[DagNode]) -> LinkedPlan:
-        """Связка потоковых вызовов пачки. Сервер называет потоковые
-        инструменты в возможности инструмента-связки; связка нужна, когда
-        таких вызовов в пачке больше одного."""
-        if self._workflow is None:
-            return LinkedPlan(frozenset(), None)
-
-        streaming = self._workflow.linked
-
-        names: set[str] = set()
-        count = 0
-        for call in calls:
-            if self._nodes_of(call) is not None:
-                continue
-
-            if self._stubs.remote_name(call.tool) not in streaming:
-                continue
-
-            names.add(call.tool)
-            count += 1
-
-        if count < self.LINKED_MIN:
-            return LinkedPlan(frozenset(), None)
-
-        return LinkedPlan(frozenset(names), LinkedCalls(count, self._send_linked))
 
     async def _send_linked(self, nodes: Sequence[LinkedNode]) -> LinkedOutcome:
         """Связка одним вызовом инструмента-связки сервера: узел на вызов,

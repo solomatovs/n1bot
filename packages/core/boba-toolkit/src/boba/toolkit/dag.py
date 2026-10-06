@@ -529,11 +529,9 @@ class WorkflowFeature(BaseModel):
 
     Сервер с потоковыми инструментами объявляет её клиенту при подключении
     (LocalDagService.features); клиент разбирает объявление один раз
-    (CallDag.feature_of) и дальше знает, какой инструмент описывает связку и
-    вызовы каких инструментов надо слать связкой. tool — имя
-    инструмента-связки: узлы его вызова — вызовы других инструментов сервера.
-    linked — имена потоковых инструментов: их вызовы из одного ответа модели
-    связывают имена каналов, поэтому клиент шлёт такие вызовы одной связкой.
+    (CallDag.feature_of) и дальше знает, какой инструмент описывает связку.
+    tool — имя инструмента-связки: узлы его вызова — вызовы других
+    инструментов сервера.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -541,7 +539,6 @@ class WorkflowFeature(BaseModel):
     ID: ClassVar[str] = "com.boba/workflow"
 
     tool: str = Field(min_length=1)
-    linked: Sequence[str] = ()
 
     def settings(self) -> Mapping[str, object]:
         """Настройки возможности, как они едут клиенту."""
@@ -552,8 +549,7 @@ class CallDag:
     """Описание DAG по вызовам клиента порта.
 
     Вызов приходит узлом DagNode: ключ — идентификатор вызова. Обычный вызов
-    — DAG из одного этого узла. Потоковые вызовы одного пакета — один DAG:
-    узел на вызов. Узлы вызова workflow — уже узлы описания DAG (DagSpec);
+    — DAG из одного этого узла. Узлы вызова workflow — уже узлы описания DAG (DagSpec);
     ключ узла заменяется на идентификатор вызова узла (под ним идут журнал и
     шаг ленты узла): заданный клиентом call_id, иначе идентификатор вызова
     workflow с номером узла. Имя, данное узлу моделью, едет в title — им
@@ -579,10 +575,6 @@ class CallDag:
 
         return DagSpec(name=call.key, version=1, nodes=self.nodes_of(call))
 
-    def of_linked(self, calls: Sequence[DagNode]) -> DagSpec:
-        """DAG потоковых вызовов одного пакета: их связывают имена каналов."""
-        return DagSpec(name=calls[0].key, version=1, nodes=list(calls))
-
     def feature_of(
         self, features: Mapping[str, Mapping[str, object]]
     ) -> WorkflowFeature | None:
@@ -601,7 +593,7 @@ class CallDag:
         except ValidationError as exc:
             msg = (
                 f"tool server feature {WorkflowFeature.ID!r} expects the name of "
-                f"the workflow tool and the names of linked tools, got "
+                f"the workflow tool, got "
                 f"{dict(settings)!r}: {ValidationText.of(exc)}"
             )
             raise StreamPlanError(msg) from exc
@@ -683,9 +675,9 @@ class ToolServer(Protocol):
         """Принять вызовы одного ответа модели; итог каждого — своё ожидание.
 
         Ожидания идут в порядке вызовов и кончаются независимо: быстрый
-        вызов отвечает, не дожидаясь медленного соседа. Вызовы пакета сервер
-        вправе связать между собой: потоковые вызовы одного ответа связывают
-        имена каналов. Отмена ожидания останавливает его вызов.
+        вызов отвечает, не дожидаясь медленного соседа. Между собой вызовы
+        пакета не связаны: каждый идёт своим запуском. Отмена ожидания
+        останавливает его вызов.
         """
 
     async def call(self, call: DagNode) -> NodeOutcome:

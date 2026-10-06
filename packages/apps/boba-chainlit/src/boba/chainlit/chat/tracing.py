@@ -1,9 +1,10 @@
-"""Колбэки langchain прогонов модели: AgentTracer публикует рассуждения и расход
-токенов в шину через TurnFeed, LlmStateLog пишет смену состояний прогона в
-журнал. Вызовы инструментов идут мимо langchain и сюда не приходят.
+"""Слушатели обращений к модели одного хода: AgentTracer публикует рассуждения,
+расход токенов и этап подготовки в шину через TurnFeed, LlmStateLog пишет
+смену состояний прогона в журнал. События приходят типами диалога чата от
+агента сессии; вызовы инструментов идут мимо модели и сюда не приходят.
 
 Ошибки: своих не выпускает; сбой публикации показывается в чат и журнал одним
-разбором FailureReport, сбой журналирования уходит колбэк-менеджеру langchain.
+разбором FailureReport, сбой журналирования уходит тому, кто раздаёт события.
 """
 
 from __future__ import annotations
@@ -12,22 +13,21 @@ import functools
 import logging
 import time
 from abc import abstractmethod
-from collections.abc import Callable, Coroutine, Mapping, Sequence
+from collections.abc import Callable, Coroutine, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Any, ClassVar, Final, Protocol, TypeVar
-from uuid import UUID
+from typing import Any, ClassVar, Protocol, TypeVar
 
-from langchain_core.callbacks import AsyncCallbackHandler
-from langchain_core.messages import AIMessage, BaseMessage
-from langchain_core.outputs import ChatGenerationChunk, GenerationChunk, LLMResult
-from langchain_core.runnables.config import ensure_config
-from langchain_core.tracers.base import AsyncBaseTracer
-from pydantic import BaseModel, ConfigDict
-from typing_extensions import ParamSpec, override
+from typing_extensions import ParamSpec
 
-from boba.chainlit.agent.bridge import LangchainMessages
-from boba.chainlit.agent.flow import PrefetchStage
+from boba.chainlit.chat.dialog import (
+    AssistantMessage,
+    ModelCallFinished,
+    ModelCallStarted,
+    ModelListener,
+    ModelToken,
+    PrefetchStage,
+)
 from boba.chainlit.chat.feed import TurnFeed
 from boba.chainlit.rendering.chat_view import StepText
 from boba.chainlit.rendering.errors import show_error
@@ -40,7 +40,6 @@ __all__ = [
     "LlmStage",
     "LlmStageEvent",
     "LlmStateLog",
-    "TracedStage",
     "TurnArtifacts",
 ]
 
@@ -54,7 +53,8 @@ _R = TypeVar("_R")
 def _visible_failure(
     fn: Callable[_P, Coroutine[Any, Any, _R]],
 ) -> Callable[_P, Coroutine[Any, Any, _R | None]]:
-    """Делает сбой колбэка видимым: langchain гасит его исключения в logger.warning."""
+    """Делает сбой слушателя видимым: колбэк-менеджер графа гасит исключения
+    колбэков в logger.warning."""
 
     @functools.wraps(fn)
     async def wrapper(*args: _P.args, **kwargs: _P.kwargs) -> _R | None:
@@ -83,200 +83,100 @@ class TurnArtifacts(Protocol):
     def take_reasoning(self, run_key: str) -> str: ...
 
 
-class AgentTracer(AsyncBaseTracer):
-    """Трасер прогонов модели одного хода: публикует в шину рассуждения и
-    расход токенов; учёт прогонов ведётся до публикации. Создаёт его ход
-    (ChatTurn) и отдаёт в callbacks прогона графа. Вызовы инструментов сюда
-    не приходят: их шаги ведёт путь вызова узла (ChatCalls).
+class AgentTracer(ModelListener, PrefetchStage):
+    """Трасер ленты одного хода: публикует в шину рассуждения модели, расход
+    токенов и этап подготовки хода.
+
+    Реализация ModelListener и PrefetchStage. Создаёт его ход (ChatTurn) и
+    отдаёт агенту сессии вместе с вопросом; события прогонов модели и этапа
+    подготовки приходят от графа хода. Вызовы инструментов сюда не
+    приходят: их шаги ведёт путь вызова узла (ChatCalls).
     """
 
     def __init__(self, feed: TurnFeed, state: TurnArtifacts) -> None:
-        super().__init__()
-        self._messages = LangchainMessages()
         self._context = context_var.get()
         self._feed = feed
         self._state = state
 
-    @property
-    def feed(self) -> TurnFeed:
-        """Производитель сообщений хода, в который трасер публикует события."""
-        return self._feed
-
     @staticmethod
-    def _key_of(message_id: str | None, run_id: UUID) -> str:
+    def _key_of(message_id: str | None, run: str) -> str:
         """Ключ шага рассуждений: id сообщения модели, а без него — id прогона."""
         if message_id:
             return message_id
 
-        return str(run_id)
+        return run
 
     def _set_context(self) -> None:
         context_var.set(self._context)
 
-    @override
+    async def model_called(self, call: ModelCallStarted) -> None:
+        return None
+
     @_visible_failure
-    async def on_llm_new_token(
-        self,
-        token: str,
-        *,
-        chunk: GenerationChunk | ChatGenerationChunk | None = None,
-        run_id: UUID,
-        parent_run_id: UUID | None = None,
-        **kwargs: Any,
-    ) -> None:
+    async def model_token(self, token: ModelToken) -> None:
         self._set_context()
-        traced = await super().on_llm_new_token(
-            token,
-            chunk=chunk,
-            run_id=run_id,
-            parent_run_id=parent_run_id,
-            **kwargs,
+
+        if not token.reasoning:
+            return
+
+        self._state.add_reasoning(token.run, token.reasoning)
+        await self._feed.thinking_token(
+            self._key_of(token.message_id, token.run), token.reasoning
         )
 
-        message = self._messages.of_chunk(chunk)
-        if message is None:
-            return traced
-
-        reasoning = self._messages.reasoning_of(message)
-        if not reasoning:
-            return traced
-
-        self._state.add_reasoning(str(run_id), reasoning)
-        await self._feed.thinking_token(self._key_of(message.id, run_id), reasoning)
-
-        return traced
-
-    @override
     @_visible_failure
-    async def on_llm_end(
-        self,
-        response: LLMResult,
-        *,
-        run_id: UUID,
-        parent_run_id: UUID | None = None,
-        **kwargs: Any,
-    ) -> None:
+    async def model_replied(self, finish: ModelCallFinished) -> None:
         self._set_context()
-        traced = await super().on_llm_end(
-            response,
-            run_id=run_id,
-            parent_run_id=parent_run_id,
-            **kwargs,
-        )
 
-        streamed = self._state.take_reasoning(str(run_id))
+        streamed = self._state.take_reasoning(finish.run)
         await self._feed.thinking_closed()
 
-        message = self._messages.of_result(response)
-        await self._spend_tokens(message, run_id)
+        reply = finish.reply
+        if reply is None:
+            return
+
+        await self._spend_tokens(reply, finish.run)
 
         # рассуждения без стрима приходят разом в итоговом сообщении
         if streamed:
-            return traced
+            return
 
-        if message is None:
-            return traced
+        if not reply.reasoning:
+            return
 
-        text = self._messages.reasoning_of(message)
-        if not text:
-            return traced
+        await self._feed.thinking_complete(
+            self._key_of(reply.id, finish.run), reply.reasoning
+        )
 
-        await self._feed.thinking_complete(self._key_of(message.id, run_id), text)
-
-        return traced
-
-    async def _spend_tokens(self, message: BaseMessage | None, run_id: UUID) -> None:
+    async def _spend_tokens(self, reply: AssistantMessage, run: str) -> None:
         """Публикует расход прогона; без учёта от провайдера публиковать нечего."""
-        usage = LlmUsage.of(message)
+        usage = reply.usage
         if not usage.counted:
             return
 
-        message_id = None
-        if message is not None:
-            message_id = message.id
-
         await self._feed.tokens_spent(
-            self._key_of(message_id, run_id),
+            self._key_of(reply.id, run),
             usage.input_tokens,
             usage.output_tokens,
             usage.reasoning_tokens,
         )
 
-    @override
     @_visible_failure
-    async def on_llm_error(
-        self,
-        error: BaseException,
-        *,
-        run_id: UUID,
-        parent_run_id: UUID | None = None,
-        tags: list[str] | None = None,
-        **kwargs: Any,
-    ) -> None:
+    async def model_failed(self, run: str, error: BaseException) -> None:
         self._set_context()
-        traced = await super().on_llm_error(
-            error,
-            run_id=run_id,
-            parent_run_id=parent_run_id,
-            tags=tags,
-            **kwargs,
-        )
 
         await self._feed.thinking_closed()
 
-        return traced
-
-    @override
-    async def _persist_run(self, run: Any) -> None:
-        pass
-
-
-class TracedStage(PrefetchStage):
-    """Стадия подготовки ответа, которая отчитывается в ленту через производитель
-    текущего прогона.
-    """
-
-    def __init__(self, name: str) -> None:
-        self._name = name
-
     async def begin(self) -> None:
-        feed = self._feed()
-        if feed is None:
-            return
-
-        await feed.stage_started(self._name, StepText.REPHRASING.value)
+        await self._feed.stage_started(
+            StepText.PREFETCH.value, StepText.REPHRASING.value
+        )
 
     async def searching(self, queries: Sequence[str]) -> None:
-        feed = self._feed()
-        if feed is None:
-            return
-
-        await feed.stage_queries(self._name, queries)
+        await self._feed.stage_queries(StepText.PREFETCH.value, queries)
 
     async def end(self, queries: Sequence[str], elapsed_ms: int) -> None:
-        feed = self._feed()
-        if feed is None:
-            return
-
-        await feed.stage_ended(self._name, queries, elapsed_ms)
-
-    @staticmethod
-    def _feed() -> TurnFeed | None:
-        """Производитель сообщений текущего прогона; None, если ход идёт без ленты (cli,
-        тесты).
-        """
-        config = ensure_config()
-
-        callbacks = config.get("callbacks")
-        handlers = getattr(callbacks, "handlers", None)
-        if not handlers:
-            return None
-
-        for handler in handlers:
-            if isinstance(handler, AgentTracer):
-                return handler.feed
-
-        return None
+        await self._feed.stage_ended(StepText.PREFETCH.value, queries, elapsed_ms)
 
 
 class LlmStage(StrEnum):
@@ -297,76 +197,6 @@ class LlmStageEvent(StrEnum):
     FAILED = "failed"
     COMPLETE = "complete"
     """Стадия пришла разом, без стрима: у неё нет начала и конца во времени."""
-
-
-class ToolCallField:
-    """Ключи langchain-ToolCall: у TypedDict pyright принимает только литерал."""
-
-    NAME: Final = "name"
-
-
-class UsageField:
-    """Ключи langchain-UsageMetadata: тот же контракт TypedDict."""
-
-    INPUT: Final = "input_tokens"
-    OUTPUT: Final = "output_tokens"
-    OUTPUT_DETAILS: Final = "output_token_details"
-    REASONING: Final = "reasoning"
-
-
-class InvocationParams(BaseModel):
-    """Параметры вызова, которые langchain кладёт в колбэк старта прогона."""
-
-    model_config = ConfigDict(extra="ignore")
-
-    KEY: ClassVar[str] = "invocation_params"
-    """Ключ колбэка старта прогона, под которым langchain кладёт параметры."""
-
-    model: str = ""
-    tools: Sequence[Mapping[str, Any]] = ()
-
-    @classmethod
-    def of(cls, kwargs: Mapping[str, Any]) -> InvocationParams:
-        raw = kwargs.get(cls.KEY)
-        if not isinstance(raw, Mapping):
-            return cls()
-
-        return cls.model_validate(raw)
-
-
-class LlmUsage(BaseModel):
-    """Расход токенов прогона по данным провайдера."""
-
-    model_config = ConfigDict(extra="ignore")
-
-    input_tokens: int = 0
-    output_tokens: int = 0
-    reasoning_tokens: int = 0
-
-    @property
-    def counted(self) -> bool:
-        """Провайдер прислал учёт: нулевой расход показывать нечего."""
-        return bool(self.input_tokens or self.output_tokens)
-
-    @classmethod
-    def of(cls, message: BaseMessage | None) -> LlmUsage:
-        """Расход токенов из ответа модели; у остальных сообщений его нет."""
-        if not isinstance(message, AIMessage):
-            return cls()
-
-        usage = message.usage_metadata
-        if usage is None:
-            return cls()
-
-        details = usage.get(UsageField.OUTPUT_DETAILS)
-        if details is None:
-            details = {}
-
-        return cls(
-            input_tokens=usage[UsageField.INPUT],
-            output_tokens=usage[UsageField.OUTPUT],
-            reasoning_tokens=details.get(UsageField.REASONING, 0),
-        )
 
 
 @dataclass
@@ -407,14 +237,15 @@ class RunProgress:
         return int((now - self.started) * 1000)
 
 
-class LlmStateLog(AsyncCallbackHandler):
-    """Колбэк-обработчик, который пишет в журнал каждую смену состояния обмена с
-    провайдером и длительность стадий.
+class LlmStateLog(ModelListener):
+    """Журнал состояний обмена с провайдером: пишет в лог каждую смену
+    состояния прогона модели и длительность стадий.
+
+    Реализация ModelListener. Создаётся обработчиком сообщения на ход с
+    меткой пользователя и отдаётся агенту сессии вместе с трасером ленты.
     """
 
     def __init__(self, mark: LogUserMark) -> None:
-        super().__init__()
-        self._messages = LangchainMessages()
         self._mark = mark
         self._runs: dict[str, RunProgress] = {}
 
@@ -422,53 +253,23 @@ class LlmStateLog(AsyncCallbackHandler):
         with self._mark.applied():
             logger.info(message, *args)
 
-    @staticmethod
-    def _key(run_id: UUID) -> str:
-        return str(run_id)
-
-    @override
-    async def on_chat_model_start(
-        self,
-        serialized: dict[str, Any],
-        messages: list[list[Any]],
-        *,
-        run_id: UUID,
-        parent_run_id: UUID | None = None,
-        tags: list[str] | None = None,
-        metadata: dict[str, Any] | None = None,
-        **kwargs: Any,
-    ) -> None:
+    async def model_called(self, call: ModelCallStarted) -> None:
         now = time.monotonic()
-        run = RunProgress(run_id=self._key(run_id), started=now)
+        run = RunProgress(run_id=call.run, started=now)
         self._runs[run.run_id] = run
 
-        sent = 0
-        for batch in messages:
-            sent += len(batch)
-
-        params = InvocationParams.of(kwargs)
         self._say(
             "llm %s %s: run=%s model=%s messages=%d tools=%d",
             LlmStage.REQUEST.value,
             LlmStageEvent.STARTED.value,
             run.label,
-            params.model,
-            sent,
-            len(params.tools),
+            call.model,
+            call.messages,
+            call.tools,
         )
 
-    @override
-    async def on_llm_new_token(
-        self,
-        token: str | list[str | dict[str, Any]],
-        *,
-        chunk: GenerationChunk | ChatGenerationChunk | None = None,
-        run_id: UUID,
-        parent_run_id: UUID | None = None,
-        tags: list[str] | None = None,
-        **kwargs: Any,
-    ) -> None:
-        run = self._runs.get(self._key(run_id))
+    async def model_token(self, token: ModelToken) -> None:
+        run = self._runs.get(token.run)
         if run is None:
             return
 
@@ -477,28 +278,14 @@ class LlmStateLog(AsyncCallbackHandler):
             run.first_token = now
             self._say("llm first token: run=%s in %dms", run.label, run.elapsed_ms(now))
 
-        message = self._messages.of_chunk(chunk)
-        if reasoning := self._messages.reasoning_of(message):
-            self._advance(run, LlmStage.THINKING, reasoning, now)
+        if token.reasoning:
+            self._advance(run, LlmStage.THINKING, token.reasoning, now)
             return
 
-        text = self._text_of(token)
-        if not text:
+        if not token.text:
             return
 
-        self._advance(run, LlmStage.ANSWER, text, now)
-
-    @staticmethod
-    def _text_of(token: str | list[str | dict[str, Any]]) -> str:
-        if isinstance(token, str):
-            return token
-
-        parts: list[str] = []
-        for part in token:
-            if isinstance(part, str):
-                parts.append(part)
-
-        return "".join(parts)
+        self._advance(run, LlmStage.ANSWER, token.text, now)
 
     def _advance(
         self, run: RunProgress, stage: LlmStage, text: str, now: float
@@ -532,17 +319,8 @@ class LlmStateLog(AsyncCallbackHandler):
         )
         run.stage = None
 
-    @override
-    async def on_llm_end(
-        self,
-        response: LLMResult,
-        *,
-        run_id: UUID,
-        parent_run_id: UUID | None = None,
-        tags: list[str] | None = None,
-        **kwargs: Any,
-    ) -> None:
-        run = self._runs.pop(self._key(run_id), None)
+    async def model_replied(self, finish: ModelCallFinished) -> None:
+        run = self._runs.pop(finish.run, None)
         if run is None:
             return
 
@@ -550,11 +328,18 @@ class LlmStateLog(AsyncCallbackHandler):
         if run.stage is not None:
             self._finish_stage(run, run.stage, now)
 
-        message = self._messages.of_result(response)
-        if not run.first_token:
-            self._complete_stages(run, message)
+        reply = finish.reply
+        if reply is None:
+            reply = AssistantMessage(id=None, text="")
 
-        usage = LlmUsage.of(message)
+        if not run.first_token:
+            self._complete_stages(run, reply)
+
+        names: list[str] = []
+        for call in reply.calls:
+            names.append(call.tool)
+
+        usage = reply.usage
         self._say(
             "llm %s %s: run=%s tokens in=%d out=%d (%d reasoning), "
             "tool_calls=[%s] in %dms",
@@ -564,25 +349,24 @@ class LlmStateLog(AsyncCallbackHandler):
             usage.input_tokens,
             usage.output_tokens,
             usage.reasoning_tokens,
-            ", ".join(self._tool_names_of(message)),
+            ", ".join(names),
             run.elapsed_ms(now),
         )
 
-    def _complete_stages(self, run: RunProgress, message: BaseMessage | None) -> None:
+    def _complete_stages(self, run: RunProgress, reply: AssistantMessage) -> None:
         """Журналирует стадии ответа без стрима: текст пришёл разом в итоговом
         сообщении.
         """
-        if reasoning := self._messages.reasoning_of(message):
+        if reply.reasoning:
             self._say(
                 "llm %s %s: run=%s %d chars",
                 LlmStage.THINKING.value,
                 LlmStageEvent.COMPLETE.value,
                 run.label,
-                len(reasoning),
+                len(reply.reasoning),
             )
 
-        text = self._content_of(message)
-        if not text:
+        if not reply.text:
             return
 
         self._say(
@@ -590,57 +374,23 @@ class LlmStateLog(AsyncCallbackHandler):
             LlmStage.ANSWER.value,
             LlmStageEvent.COMPLETE.value,
             run.label,
-            len(text),
+            len(reply.text),
         )
 
-    @staticmethod
-    def _content_of(message: BaseMessage | None) -> str:
-        if message is None:
-            return ""
-
-        content = message.content
-        if isinstance(content, str):
-            return content
-
-        return str(content)
-
-    @staticmethod
-    def _tool_names_of(message: BaseMessage | None) -> list[str]:
-        """Имена инструментов, которые зовёт ответ модели; у прочих сообщений вызовов
-        нет.
-        """
-        if not isinstance(message, AIMessage):
-            return []
-
-        names: list[str] = []
-        for call in message.tool_calls:
-            names.append(call[ToolCallField.NAME])
-
-        return names
-
-    @override
-    async def on_llm_error(
-        self,
-        error: BaseException,
-        *,
-        run_id: UUID,
-        parent_run_id: UUID | None = None,
-        tags: list[str] | None = None,
-        **kwargs: Any,
-    ) -> None:
-        run = self._runs.pop(self._key(run_id), None)
-        if run is None:
+    async def model_failed(self, run: str, error: BaseException) -> None:
+        progress = self._runs.pop(run, None)
+        if progress is None:
             return
 
         now = time.monotonic()
-        if run.stage is not None:
-            self._finish_stage(run, run.stage, now)
+        if progress.stage is not None:
+            self._finish_stage(progress, progress.stage, now)
 
         self._say(
             "llm %s %s: run=%s in %dms: %s",
             LlmStage.REQUEST.value,
             LlmStageEvent.FAILED.value,
-            run.label,
-            run.elapsed_ms(now),
+            progress.label,
+            progress.elapsed_ms(now),
             error,
         )

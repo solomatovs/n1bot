@@ -36,7 +36,7 @@ from contextlib import ExitStack, suppress
 from dataclasses import dataclass
 from typing import ClassVar, Generic, TypeVar
 
-from boba.cancellation import RunCancellation, current_cancellation
+from boba.cancellation import RunCancellation, StopReason, current_cancellation
 from boba.toolkit.channels import ToolChannel
 from boba.toolkit.frames import (
     CallInbox,
@@ -697,8 +697,8 @@ class OpenRun(Generic[RunEnd]):
         self._end: RunEnd | None = None
         self._failure: BaseException | None = None
 
-        outer = current_cancellation()
-        self._relay.enter_context(outer.abort_with(self._own.cancel))
+        self._outer = current_cancellation()
+        self._relay.enter_context(self._outer.abort_with(self._stop_with_outer))
 
         self._worker = threading.Thread(
             target=self._pump_call,
@@ -724,6 +724,14 @@ class OpenRun(Generic[RunEnd]):
             raise LauncherError(msg)
 
         return end
+
+    def _stop_with_outer(self) -> None:
+        """Остановка запуска гасит вызов с той же причиной."""
+        reason = self._outer.reason
+        if reason is None:
+            reason = StopReason.ABORTED
+
+        self._own.cancel(reason)
 
     def halt(self) -> None:
         """Добить прогон, не интересуясь итогом; повтор безвреден."""

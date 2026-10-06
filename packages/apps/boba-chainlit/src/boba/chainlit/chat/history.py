@@ -1,39 +1,33 @@
-"""История треда: чтение из checkpointer, replay в ленту, запись и откат.
+"""История треда: replay в ленту, запись исхода хода и откат к вопросу.
 
-Лента собирается из сообщений графа тем же ChatView, что и live: id шагов
-детерминированы, поэтому история и стрим дают одинаковую раскладку. Исходы
-хода пишет GraphTurnHistory; правка вопроса приходит обычным on_message,
-и ThreadRewind усекает историю и вложения до состояния «сразу после вопроса».
+Лента собирается из сообщений диалога тем же ChatView, что и live: id шагов
+детерминированы, поэтому история и стрим дают одинаковую раскладку. Сами
+сообщения читает и пишет агент сессии и чтение checkpoint'ов (каталог agent)
+за протоколами dialog. Исходы хода пишет ThreadTurnHistory; правка вопроса
+приходит обычным on_message, и ThreadRewind усекает историю и вложения до
+состояния «сразу после вопроса».
+
+Ошибки: своих не выпускает; ошибки агента сессии и слоя данных уходят наверх.
 """
 
 from __future__ import annotations
 
 import logging
-from collections.abc import Iterable, Iterator, Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
-from enum import StrEnum
-from typing import Any, Protocol, cast
+from typing import Any
 
-from langchain_core.messages import (
-    AIMessage,
-    BaseMessage,
-    HumanMessage,
-    RemoveMessage,
-    ToolMessage,
-)
-from langchain_core.runnables import RunnableConfig
-from langgraph.checkpoint.base import BaseCheckpointSaver, PendingWrite
-from langgraph.graph.message import REMOVE_ALL_MESSAGES
-from langgraph.graph.state import CompiledStateGraph
-
-from boba.chainlit.agent.bridge import LangchainMessages, ResponseField
-from boba.chainlit.agent.flow import PrefetchStamp
-from boba.chainlit.chat.tracing import LlmUsage
-from boba.chainlit.chat.turn import (
-    ChatTurnAttachments,
+from boba.chainlit.chat.dialog import (
+    AssistantMessage,
+    Attachment,
+    DialogMessage,
+    SessionAgent,
+    ThreadMessages,
+    ToolReply,
     TurnHistory,
     TurnMark,
     TurnRecord,
+    UserMessage,
 )
 from boba.chainlit.rendering.chat_view import (
     ChatView,
@@ -44,92 +38,71 @@ from boba.chainlit.rendering.chat_view import (
     TurnDraft,
 )
 from boba.toolkit.calls import CallIdPrefix
-from boba.toolkit.dag import WorkflowResult
+from boba.toolkit.dag import DagNode, WorkflowResult
 from chainlit.data.base import BaseDataLayer
 from chainlit.step import StepDict
 
 __all__ = [
-    "CheckpointMessages",
     "ConversationTranscript",
-    "GraphChannel",
-    "GraphTurnHistory",
-    "PendingCall",
+    "InterruptedTurn",
     "RewindPlan",
-    "ThreadMessages",
     "ThreadRewind",
+    "ThreadTurnHistory",
     "TranscriptFeed",
 ]
 
 logger = logging.getLogger(__name__)
 
 
-@dataclass
-class PendingCall:
-    """Вызов инструмента, ждущий своего ToolMessage при сборке ленты."""
+class ThreadTurnHistory(TurnHistory):
+    """Реализация TurnHistory записью в историю треда через агента сессии:
+    запись читает и лента, и сам агент в следующем ходе. Создаётся
+    обработчиком сообщения на ход и отдаётся ходу (ChatTurn).
+    """
 
-    name: str
-    args: Mapping[str, Any]
-
-    @classmethod
-    def of(cls, call: Mapping[str, Any]) -> PendingCall:
-        """Разбирает tool_call langchain: имя и аргументы могут не приехать."""
-        name = call.get("name")
-        if not name:
-            name = ""
-
-        args = call.get("args")
-        if not isinstance(args, Mapping):
-            args = {}
-
-        return cls(name=str(name), args=cast("Mapping[str, Any]", args))
-
-
-class GraphTurnHistory(TurnHistory):
-    """Пишет записи хода в состояние графа: их читает и лента, и сам агент."""
-
-    def __init__(self, graph: CompiledStateGraph, thread_id: str) -> None:
-        self._graph = graph
+    def __init__(self, agent: SessionAgent, thread_id: str) -> None:
+        self._agent = agent
         self._thread_id = thread_id
 
     async def remember(self, record: TurnRecord) -> None:
-        await self._graph.aupdate_state(
-            RunnableConfig(configurable={"thread_id": self._thread_id}),
-            {"messages": [record.message()]},
-        )
+        await self._agent.remember(self._thread_id, record)
         logger.info("history record written: %s", record.mark.value)
 
 
 class InterruptedTurn:
     """Дописывает в историю треда отметку STOPPED о ходе, который сторож закрыл за
-    умершего держателя; пишет тот инстанс, у которого есть граф треда, и не
+    умершего держателя; пишет тот инстанс, у которого есть агент сессии треда, и не
     дублирует уже существующую отметку.
     """
 
-    def __init__(self, graph: CompiledStateGraph, thread_id: str) -> None:
-        self._graph = graph
+    def __init__(self, agent: SessionAgent, thread_id: str) -> None:
+        self._agent = agent
         self._thread_id = thread_id
+        self._history = ThreadTurnHistory(agent, thread_id)
 
     async def remember(self, reason: str) -> bool:
         """Дописывает отметку STOPPED с причиной и возвращает True; False — отметка
         уже стоит.
         """
-        config = RunnableConfig(configurable={"thread_id": self._thread_id})
-        state = await self._graph.aget_state(config)
-        messages = list(state.values.get("messages", []))
-        if messages:
-            last = messages[-1]
-            if last.additional_kwargs.get(TurnMark.STOPPED.value):
-                return False
+        messages = await self._agent.load(self._thread_id)
+        if self._stopped(messages):
+            return False
 
         record = TurnRecord(content=f"_{reason}_", mark=TurnMark.STOPPED)
-        await GraphTurnHistory(self._graph, self._thread_id).remember(record)
+        await self._history.remember(record)
         return True
 
+    @staticmethod
+    def _stopped(messages: Sequence[DialogMessage]) -> bool:
+        """История уже кончается отметкой остановки."""
+        if not messages:
+            return False
 
-class ThreadMessages(Protocol):
-    """Источник сообщений треда, из которых собирается лента."""
+        last = messages[-1]
+        if not isinstance(last, AssistantMessage):
+            return False
 
-    async def load(self, thread_id: str) -> list[BaseMessage]: ...
+        return last.mark is TurnMark.STOPPED
 
 
 class TranscriptFeed:
@@ -154,87 +127,16 @@ class TranscriptFeed:
         return sink.steps
 
 
-class GraphChannel(StrEnum):
-    """Каналы состояния графа хода, которые читает история."""
-
-    MESSAGES = "messages"
-
-
-class CheckpointMessages(ThreadMessages):
-    """Читает сообщения треда из langgraph-checkpointer'а: канал последнего
-    checkpoint'а плюс ответы задач, доработавших раньше соседей по пачке.
+class ConversationTranscript:
+    """Разворачивает сообщения диалога в шаги ленты. Создаётся сборкой ленты
+    из истории (TranscriptFeed) на одно чтение треда и рисует тем же ChatView,
+    что и живой ход.
     """
 
-    def __init__(self, saver: BaseCheckpointSaver) -> None:
-        self._saver = saver
-
-    async def load(self, thread_id: str) -> list[BaseMessage]:
-        config = RunnableConfig(configurable={"thread_id": thread_id})
-        snapshot = await self._saver.aget_tuple(config)
-        if snapshot is None:
-            return []
-
-        values = snapshot.checkpoint.get("channel_values") or {}
-        stored = values.get(GraphChannel.MESSAGES.value) or []
-        messages = [m for m in stored if isinstance(m, BaseMessage)]
-
-        pending = snapshot.pending_writes
-        if pending is None:
-            return messages
-
-        messages.extend(self._pending(pending, messages))
-        return messages
-
-    @classmethod
-    def _pending(
-        cls, writes: Iterable[PendingWrite], known: Sequence[BaseMessage]
-    ) -> Iterator[BaseMessage]:
-        """Сообщения из pending writes последнего checkpoint'а: вызовы одной пачки
-        идут отдельными задачами, и ответ завершившейся задачи до конца узла лежит
-        только здесь.
-        """
-        seen: set[str] = set()
-        for message in known:
-            if message.id:
-                seen.add(message.id)
-
-        for _task_id, channel, value in writes:
-            if channel != GraphChannel.MESSAGES.value:
-                continue
-
-            for message in cls._written(value):
-                if message.id and message.id in seen:
-                    continue
-
-                yield message
-
-    @staticmethod
-    def _written(value: object) -> Iterator[BaseMessage]:
-        """Сообщения одной записи: узел отдаёт список или одно сообщение; команды
-        удаления к ленте не относятся.
-        """
-        items: Sequence[object] = [value]
-        if isinstance(value, list):
-            items = value
-
-        for item in items:
-            if not isinstance(item, BaseMessage):
-                continue
-
-            if isinstance(item, RemoveMessage):
-                continue
-
-            yield item
-
-
-class ConversationTranscript:
-    """Разворачивает список сообщений агента в шаги ленты."""
-
-    def __init__(self, messages: Sequence[BaseMessage], view: ChatView) -> None:
+    def __init__(self, messages: Sequence[DialogMessage], view: ChatView) -> None:
         self._messages = messages
         self._view = view
-        self._langchain = LangchainMessages()
-        self._pending: dict[str, PendingCall] = {}
+        self._pending: dict[str, DagNode] = {}
         self._turn = TurnDraft()
         self._stage_queries: list[str] = []
         self._stage_elapsed = 0
@@ -246,41 +148,41 @@ class ConversationTranscript:
                 key = f"#{index}"
 
             match message:
-                case HumanMessage():
+                case UserMessage():
                     await self._close_stage()
                     self._view.begin_turn(message.id)
                     self._pending.clear()
                     self._turn = TurnDraft(key=message.id)
-                    await self._view.question(self._text(message), message.id)
-                case ToolMessage():
+                    await self._view.question(message.text, message.id)
+                case ToolReply():
                     await self._open_stage(message)
                     await self._tool(message, key)
-                case AIMessage():
+                case AssistantMessage():
                     prepares = self._prepares(message)
                     if prepares:
-                        self._stage_elapsed = PrefetchStamp.of(message)
+                        self._stage_elapsed = message.prefetch_elapsed_ms
 
                     if not prepares:
                         await self._close_stage()
 
                     await self._assistant(message, key)
-                case _:
-                    continue
 
         await self._close_stage()
 
     @staticmethod
-    def _prepares(message: AIMessage) -> bool:
+    def _prepares(message: AssistantMessage) -> bool:
         """Сообщение подготовки: его вызовы рисуются этапом, а не ходом."""
-        for call in message.tool_calls:
-            if CallIdPrefix.PREFETCH.marks(call.get("id")):
-                return True
+        for call in message.calls:
+            if not CallIdPrefix.PREFETCH.marks(call.key):
+                continue
+
+            return True
 
         return False
 
-    async def _open_stage(self, message: ToolMessage) -> None:
+    async def _open_stage(self, message: ToolReply) -> None:
         """Первый ответ подготовки открывает этап, остальные копят запросы."""
-        if not CallIdPrefix.PREFETCH.marks(message.tool_call_id):
+        if not CallIdPrefix.PREFETCH.marks(message.call_id):
             return
 
         if self._view.stage_step is None:
@@ -288,7 +190,7 @@ class ConversationTranscript:
                 StepText.PREFETCH.value, StepText.REPHRASING.value
             )
 
-        call = self._pending.get(message.tool_call_id)
+        call = self._pending.get(message.call_id)
         if call is None:
             return
 
@@ -311,41 +213,37 @@ class ConversationTranscript:
         self._stage_queries = []
         self._stage_elapsed = 0
 
-    async def _assistant(self, message: AIMessage, key: str) -> None:
-        if self._is_error(message):
-            await self._view.error(self._text(message), self._answer_key(key))
+    async def _assistant(self, message: AssistantMessage, key: str) -> None:
+        if message.mark is TurnMark.ERROR:
+            await self._view.error(message.text, self._answer_key(key))
             return
 
-        if self._is_stopped(message):
+        if message.mark is TurnMark.STOPPED:
             await self._stopped(message, key)
             return
 
-        if reasoning := self._reasoning(message):
-            await self._view.thinking(reasoning, key)
+        if message.reasoning:
+            await self._view.thinking(message.reasoning, key)
 
         await self._spend(message, key)
 
-        for call in message.tool_calls:
-            call_id = call.get("id")
-            if not call_id:
-                continue
+        for call in message.calls:
+            self._pending[call.key] = call
 
-            self._pending[call_id] = PendingCall.of(call)
+        if message.text:
+            await self._view.answer(message.text, self._answer_key(key))
 
-        if text := self._text(message):
-            await self._view.answer(text, self._answer_key(key))
+    async def _tool(self, message: ToolReply, key: str) -> None:
+        call = self._pending.pop(message.call_id, None)
 
-    async def _tool(self, message: ToolMessage, key: str) -> None:
-        call = self._pending.pop(message.tool_call_id, None)
-
-        outcome = self._langchain.outcome_of(message)
+        outcome = message.outcome
         if outcome is not None and isinstance(outcome.artifact, WorkflowResult):
             await self._workflow(outcome.artifact)
             return
 
         name = message.name
         if not name and call is not None:
-            name = call.name
+            name = call.tool
         if not name:
             name = StepText.TOOL.value
 
@@ -353,7 +251,7 @@ class ConversationTranscript:
         if call is not None:
             args = call.args
 
-        call_key = message.tool_call_id
+        call_key = message.call_id
         if not call_key:
             call_key = key
 
@@ -361,18 +259,14 @@ class ConversationTranscript:
 
         # запись старой истории без результата семейства рисуется как есть
         if outcome is None:
-            raw = message.artifact
-            if raw is None:
-                raw = self._text(message)
-
-            await self._view.tool_finished(step, raw, message.tool_call_id)
+            await self._view.tool_finished(step, message.raw, message.call_id)
             return
 
         if outcome.errored:
             await self._view.tool_failed(step, outcome.artifact.chat_view().markdown)
             return
 
-        await self._view.tool_finished(step, outcome.artifact, message.tool_call_id)
+        await self._view.tool_finished(step, outcome.artifact, message.call_id)
 
     async def _workflow(self, result: WorkflowResult) -> None:
         """Итог вызова workflow шагами его узлов — как их рисует живой ход:
@@ -386,9 +280,9 @@ class ConversationTranscript:
 
             await self._view.tool_finished(step, node.result, node.call_id)
 
-    async def _spend(self, message: AIMessage, key: str) -> None:
+    async def _spend(self, message: AssistantMessage, key: str) -> None:
         """Расход прогона из записи истории: usage хранится в самом сообщении."""
-        usage = LlmUsage.of(message)
+        usage = message.usage
         if not usage.counted:
             return
 
@@ -407,177 +301,121 @@ class ConversationTranscript:
 
         return turn_key
 
-    async def _stopped(self, message: AIMessage, key: str) -> None:
+    async def _stopped(self, message: AssistantMessage, key: str) -> None:
         """Прерванный ход: пометка остановки уже вшита в текст записи."""
-        if reasoning := self._reasoning(message):
-            await self._view.thinking(reasoning, key)
+        if message.reasoning:
+            await self._view.thinking(message.reasoning, key)
 
         await self._spend(message, key)
 
-        if text := self._text(message):
-            await self._view.answer(text, self._answer_key(key))
-
-    @staticmethod
-    def _is_error(message: AIMessage) -> bool:
-        extra = message.additional_kwargs
-        if not extra:
-            return False
-
-        return bool(extra.get(TurnMark.ERROR.value))
-
-    @staticmethod
-    def _is_stopped(message: AIMessage) -> bool:
-        extra = message.additional_kwargs
-        if not extra:
-            return False
-
-        return bool(extra.get(TurnMark.STOPPED.value))
-
-    @staticmethod
-    def _reasoning(message: AIMessage) -> str:
-        extra = message.additional_kwargs
-        if not extra:
-            return ""
-
-        value = extra.get(ResponseField.REASONING_CONTENT.value)
-        if not value:
-            return ""
-
-        return str(value)
-
-    @staticmethod
-    def _text(message: BaseMessage) -> str:
-        content = message.content
-        if isinstance(content, str):
-            return content
-        if isinstance(content, list):
-            parts: list[str] = []
-            for block in content:
-                if isinstance(block, str):
-                    parts.append(block)
-                elif isinstance(block, Mapping) and block.get("type") == "text":
-                    parts.append(str(block.get("text", "")))
-            return "".join(parts)
-        return str(content)
+        if message.text:
+            await self._view.answer(message.text, self._answer_key(key))
 
 
+@dataclass(frozen=True)
 class RewindPlan:
     """Что убрать при откате — сообщения истории и вложения их шагов — и что
     сохранить: вложения самого правленого вопроса.
     """
 
-    def __init__(
-        self,
-        remove_ids: Sequence[str],
-        element_ids: Sequence[str],
-        attachments: Sequence[Mapping[str, str]] = (),
-    ) -> None:
-        self.remove_ids = list(remove_ids)
-        self.element_ids = list(element_ids)
-        self.attachments = list(attachments)
+    remove_ids: Sequence[str] = ()
+    element_ids: Sequence[str] = ()
+    attachments: Sequence[Attachment] = ()
 
     def __bool__(self) -> bool:
-        return bool(self.remove_ids or self.element_ids)
+        if self.remove_ids:
+            return True
+
+        return bool(self.element_ids)
 
 
 class ThreadRewind:
-    """Приводит историю треда к состоянию «сразу после этого вопроса»."""
+    """Приводит историю треда к состоянию «сразу после этого вопроса».
+
+    Создаётся обработчиком сообщения на ход: по истории агента сессии
+    узнаёт, что пришла правка вопроса, убирает из слоя данных вложения
+    шагов, шедших за вопросом, и просит агента переписать историю.
+    """
 
     def __init__(
         self,
-        graph: CompiledStateGraph,
+        agent: SessionAgent,
         data_layer: BaseDataLayer,
         thread_id: str,
     ) -> None:
-        self._graph = graph
+        self._agent = agent
         self._data_layer = data_layer
         self._thread_id = thread_id
 
-    @property
-    def _config(self) -> RunnableConfig:
-        return RunnableConfig(configurable={"thread_id": self._thread_id})
-
-    async def messages(self) -> list[BaseMessage]:
-        """Текущая история треда."""
-        state = await self._graph.aget_state(self._config)
-        return list(state.values.get("messages", []))
-
     async def is_edit(self, message_id: str) -> bool:
         """Вопрос с таким id уже в истории — значит пришла правка."""
-        return any(
-            isinstance(m, HumanMessage) and m.id == message_id
-            for m in await self.messages()
+        messages = await self._agent.load(self._thread_id)
+
+        return self._asked(messages, message_id) is not None
+
+    def plan(self, messages: Sequence[DialogMessage], message_id: str) -> RewindPlan:
+        """Хвост после вопроса: id сообщений и id их вложений."""
+        index = self._asked(messages, message_id)
+        if index is None:
+            return RewindPlan()
+
+        question = messages[index]
+        tail = messages[index + 1 :]
+
+        attachments: Sequence[Attachment] = ()
+        if isinstance(question, UserMessage):
+            attachments = question.attachments
+
+        return RewindPlan(
+            remove_ids=tuple(self._ids(tail)),
+            element_ids=tuple(self._element_ids(tail)),
+            attachments=attachments,
         )
 
-    @staticmethod
-    def plan(
-        messages: Sequence[BaseMessage],
-        message_id: str,
-        thread_id: str,
-    ) -> RewindPlan:
-        """Хвост после вопроса: id сообщений и id их вложений."""
-        index = None
-        for position, message in enumerate(messages):
-            if not isinstance(message, HumanMessage):
-                continue
-            if message.id != message_id:
-                continue
-            index = position
-            break
-        if index is None:
-            return RewindPlan([], [])
-
-        tail = messages[index + 1 :]
-        remove_ids = [m.id for m in tail if m.id]
-        attachments = ChatTurnAttachments.of(messages[index])
-
-        element_ids: list[str] = []
-        for message in tail:
-            if not isinstance(message, AIMessage):
-                continue
-            for call in message.tool_calls or ():
-                element_id = ChatView.derive_id(
-                    thread_id, call.get("id"), StepRole.ELEMENT
-                )
-                if element_id:
-                    element_ids.append(element_id)
-
-        return RewindPlan(remove_ids, element_ids, attachments)
-
-    @staticmethod
-    def prefix(messages: Sequence[BaseMessage], message_id: str) -> list[BaseMessage]:
-        """История до правленого вопроса; вопроса и хвоста в ней нет."""
-        kept: list[BaseMessage] = []
-        for message in messages:
-            if isinstance(message, HumanMessage) and message.id == message_id:
-                return kept
-            kept.append(message)
-
-        return []
-
     async def apply(self, message_id: str, content: str) -> RewindPlan:
-        """Удалить хвост и его вложения, поставить вопросу новый текст.
-
-        Канал переписывается целиком: точечный RemoveMessage падает, когда
-        прерванный ход оставил pending writes — aget_state их показывает,
-        но в канале чекпойнта их нет.
-        """
-        messages = await self.messages()
-        rewind = self.plan(messages, message_id, self._thread_id)
+        """Удалить хвост и его вложения, поставить вопросу новый текст."""
+        messages = await self._agent.load(self._thread_id)
+        rewind = self.plan(messages, message_id)
 
         for element_id in rewind.element_ids:
             await self._data_layer.delete_element(element_id, self._thread_id)
 
         # вложения правленого вопроса остаются с ним: правится текст, не файлы
-        updates: list[BaseMessage] = [RemoveMessage(id=REMOVE_ALL_MESSAGES)]
-        updates.extend(self.prefix(messages, message_id))
-        updates.append(
-            HumanMessage(
-                content=content,
-                id=message_id,
-                # extra здесь — сборка additional_kwargs, а не Django ORM
-                additional_kwargs=ChatTurnAttachments.extra(rewind.attachments),  # nosec B610
-            )
+        question = UserMessage(
+            id=message_id, text=content, attachments=rewind.attachments
         )
-        await self._graph.aupdate_state(self._config, {"messages": updates})
+        await self._agent.rewind(self._thread_id, question)
         return rewind
+
+    @staticmethod
+    def _asked(messages: Sequence[DialogMessage], message_id: str) -> int | None:
+        """Позиция вопроса с этим id в истории; None — такого вопроса нет."""
+        for position, message in enumerate(messages):
+            if not isinstance(message, UserMessage):
+                continue
+
+            if message.id != message_id:
+                continue
+
+            return position
+
+        return None
+
+    @staticmethod
+    def _ids(messages: Sequence[DialogMessage]) -> Iterator[str]:
+        for message in messages:
+            if message.id:
+                yield message.id
+
+    def _element_ids(self, messages: Sequence[DialogMessage]) -> Iterator[str]:
+        """Вложения шагов вызовов инструментов: их id выводится из вызова."""
+        for message in messages:
+            if not isinstance(message, AssistantMessage):
+                continue
+
+            for call in message.calls:
+                element_id = ChatView.derive_id(
+                    self._thread_id, call.key, StepRole.ELEMENT
+                )
+                if element_id:
+                    yield element_id

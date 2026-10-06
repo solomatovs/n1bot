@@ -20,22 +20,23 @@ from pydantic import Field, ValidationError
 from typing_extensions import override
 
 from boba.cancellation import StopReason, ToolStopped, run_cancellation
+from boba.chainlit.agent.events import TurnEvents
 from boba.chainlit.agent.flow import (
     GraphSpec,
+    HistoryView,
     LlmRephraser,
     PassthroughRephraser,
     PlainGraphBuilder,
     PrefetchError,
     PrefetchGraphBuilder,
-    PrefetchStage,
     Rephraser,
     RephrasingsParser,
 )
-from boba.chainlit.chat.tracing import TracedStage
+from boba.chainlit.agent.history import CheckpointMessages
+from boba.chainlit.chat.dialog import PrefetchStage
 from boba.chainlit.domain.fields import StepField
 from boba.chainlit.infra.config import AppConfig
 from boba.chainlit.infra.providers import (
-    build_history_view,
     llm_providers,
     session_graph_builder,
 )
@@ -95,6 +96,16 @@ REPHRASER: dict[str, Any] = {
 }
 
 THREAD = RunnableConfig(configurable={"thread_id": "flow-thread"})
+
+
+def _watched(stage: PrefetchStage) -> RunnableConfig:
+    """Прогон треда THREAD, за подготовкой которого следит stage: порт этапа
+    граф находит у колбэк-обработчика хода, как в чате."""
+    return RunnableConfig(
+        configurable={"thread_id": "flow-thread"},
+        callbacks=[TurnEvents((), stage)],
+    )
+
 
 QUESTION_FALLBACK = "исходный запрос"
 
@@ -289,8 +300,8 @@ def _watched_graph(
             calls,
         ),
         system_prompt="you are a search assistant",
-        checkpointer=InMemorySaver(),
-        history=build_history_view(frozenset({"fts_probe", "vector_probe"}), 30),
+        checkpoints=CheckpointMessages(InMemorySaver()),
+        history=HistoryView(frozenset({"fts_probe", "vector_probe"}), 30),
     )
     return builder.build(spec)
 
@@ -342,8 +353,8 @@ async def _replies(
         chat=ScriptedChat(messages=iter(scripted)),
         service=service,
         system_prompt="you are a search assistant",
-        checkpointer=InMemorySaver(),
-        history=build_history_view(frozenset(names), 30),
+        checkpoints=CheckpointMessages(InMemorySaver()),
+        history=HistoryView(frozenset(names), 30),
     )
     graph = PlainGraphBuilder().build(spec)
 
@@ -436,18 +447,14 @@ class TestPrefetchGraph:
     def test_flow_tool_missing_at_the_session_port_is_a_build_error(self) -> None:
         with pytest.raises(RuntimeError, match="not available"):
             _graph(
-                PrefetchGraphBuilder(
-                    FakeRephraser(["variant"]), ["kb_fts_search"], RecordingStage()
-                ),
+                PrefetchGraphBuilder(FakeRephraser(["variant"]), ["kb_fts_search"]),
                 answers=["never reached"],
             )
 
     async def test_turn_prefetches_search_results(self) -> None:
         rephraser = FakeRephraser(["variant one", "variant two"])
         graph = _graph(
-            PrefetchGraphBuilder(
-                rephraser, ["fts_probe", "vector_probe"], RecordingStage()
-            ),
+            PrefetchGraphBuilder(rephraser, ["fts_probe", "vector_probe"]),
             answers=["answered with context"],
         )
 
@@ -488,13 +495,13 @@ class TestPrefetchGraph:
         rephraser = FakeRephraser(["variant one", "variant two"])
         stage = RecordingStage()
         graph = _graph(
-            PrefetchGraphBuilder(rephraser, ["fts_probe"], stage),
+            PrefetchGraphBuilder(rephraser, ["fts_probe"]),
             answers=["answered"],
         )
 
         await graph.ainvoke(
             {"messages": [HumanMessage("question")]},
-            config=THREAD,
+            config=_watched(stage),
         )
 
         if stage.opened != 1:
@@ -510,14 +517,14 @@ class TestPrefetchGraph:
         """Переформулировщик сорвался — фаза поиска не наступила."""
         stage = RecordingStage()
         graph = _graph(
-            PrefetchGraphBuilder(BrokenRephraser(), ["fts_probe"], stage),
+            PrefetchGraphBuilder(BrokenRephraser(), ["fts_probe"]),
             answers=["never reached"],
         )
 
         with pytest.raises(PrefetchError):
             await graph.ainvoke(
                 {"messages": [HumanMessage("question")]},
-                config=THREAD,
+                config=_watched(stage),
             )
 
         if stage.searched:
@@ -527,7 +534,7 @@ class TestPrefetchGraph:
         """Подпись вызова подготовки — сам поисковый запрос: его покажет лента."""
         rephraser = FakeRephraser(["variant one"])
         graph = _graph(
-            PrefetchGraphBuilder(rephraser, ["fts_probe"], RecordingStage()),
+            PrefetchGraphBuilder(rephraser, ["fts_probe"]),
             answers=["answered"],
         )
 
@@ -548,14 +555,14 @@ class TestPrefetchGraph:
         """Сбой подготовки не оставляет этап открытым висеть в ленте."""
         stage = RecordingStage()
         graph = _graph(
-            PrefetchGraphBuilder(BrokenRephraser(), ["fts_probe"], stage),
+            PrefetchGraphBuilder(BrokenRephraser(), ["fts_probe"]),
             answers=["never reached"],
         )
 
         with pytest.raises(PrefetchError):
             await graph.ainvoke(
                 {"messages": [HumanMessage("question")]},
-                config=THREAD,
+                config=_watched(stage),
             )
 
         if stage.opened != 1:
@@ -567,15 +574,13 @@ class TestPrefetchGraph:
         """Профиль без модели-переформулировщика ищет по запросу пользователя."""
         stage = RecordingStage()
         graph = _graph(
-            PrefetchGraphBuilder(
-                PassthroughRephraser(), ["fts_probe", "vector_probe"], stage
-            ),
+            PrefetchGraphBuilder(PassthroughRephraser(), ["fts_probe", "vector_probe"]),
             answers=["answered"],
         )
 
         result = await graph.ainvoke(
             {"messages": [HumanMessage("как настроить kerberos?")]},
-            config=THREAD,
+            config=_watched(stage),
         )
 
         calls = _prefetch_calls(result["messages"])
@@ -594,7 +599,7 @@ class TestPrefetchGraph:
     async def test_every_turn_is_prefetched(self) -> None:
         rephraser = FakeRephraser(["variant"])
         graph = _graph(
-            PrefetchGraphBuilder(rephraser, ["fts_probe"], RecordingStage()),
+            PrefetchGraphBuilder(rephraser, ["fts_probe"]),
             answers=["first answer", "second answer"],
         )
 
@@ -623,7 +628,7 @@ class TestPrefetchGraph:
         """Отказ инструмента едет в контекст: модель отвечает, ход не рвётся."""
         rephraser = FakeRephraser(["variant"])
         graph = _graph(
-            PrefetchGraphBuilder(rephraser, ["failing_probe"], RecordingStage()),
+            PrefetchGraphBuilder(rephraser, ["failing_probe"]),
             answers=["answered anyway"],
             extra=_hosted([failing_probe]),
         )
@@ -649,7 +654,7 @@ class TestPrefetchGraph:
         """Упавшее тело инструмента ход не роняет: причина уходит модели."""
         rephraser = FakeRephraser(["variant"])
         graph = _graph(
-            PrefetchGraphBuilder(rephraser, ["crashing_probe"], RecordingStage()),
+            PrefetchGraphBuilder(rephraser, ["crashing_probe"]),
             answers=["answered anyway"],
             extra=_hosted([crashing_probe]),
         )
@@ -677,7 +682,7 @@ class TestPrefetchGraph:
         """Вызов с негодными аргументами: ошибка валидации уходит модели."""
         rephraser = FakeRephraser(["x"])
         graph = _graph(
-            PrefetchGraphBuilder(rephraser, ["strict_probe"], RecordingStage()),
+            PrefetchGraphBuilder(rephraser, ["strict_probe"]),
             answers=["answered anyway"],
             extra=_hosted([strict_probe]),
         )
@@ -700,7 +705,7 @@ class TestPrefetchGraph:
 
     async def test_rephraser_failure_fails_the_turn(self) -> None:
         graph = _graph(
-            PrefetchGraphBuilder(BrokenRephraser(), ["fts_probe"], RecordingStage()),
+            PrefetchGraphBuilder(BrokenRephraser(), ["fts_probe"]),
             answers=["never reached"],
         )
 
@@ -722,7 +727,7 @@ class TestPrefetchCancellation:
         stage = RecordingStage()
         guarded = CancellableTools().guard_all(_hosted([slow_probe]))
         graph = _graph(
-            PrefetchGraphBuilder(FakeRephraser(["variant"]), ["slow_probe"], stage),
+            PrefetchGraphBuilder(FakeRephraser(["variant"]), ["slow_probe"]),
             answers=["never reached"],
             extra=guarded,
         )
@@ -738,7 +743,7 @@ class TestPrefetchCancellation:
             with pytest.raises(ToolStopped):
                 await graph.ainvoke(
                     {"messages": [HumanMessage("question")]},
-                    config=THREAD,
+                    config=_watched(stage),
                 )
 
             await stopper
@@ -754,7 +759,7 @@ class TestPrefetchCancellation:
         stage = RecordingStage()
         guarded = CancellableTools().guard_all(_hosted([slow_probe]))
         graph = _graph(
-            PrefetchGraphBuilder(FakeRephraser(["variant"]), ["slow_probe"], stage),
+            PrefetchGraphBuilder(FakeRephraser(["variant"]), ["slow_probe"]),
             answers=["never reached"],
             extra=guarded,
         )
@@ -765,7 +770,7 @@ class TestPrefetchCancellation:
             with pytest.raises(ToolStopped):
                 await graph.ainvoke(
                     {"messages": [HumanMessage("question")]},
-                    config=THREAD,
+                    config=_watched(stage),
                 )
 
         if stage.closed != [["variant"]]:
@@ -787,11 +792,7 @@ class TestPrefetchFeed:
         sink = turn.recording_sink
 
         graph = _watched_graph(
-            PrefetchGraphBuilder(
-                FakeRephraser(["variant one"]),
-                ["fts_probe"],
-                TracedStage(StepText.PREFETCH.value),
-            ),
+            PrefetchGraphBuilder(FakeRephraser(["variant one"]), ["fts_probe"]),
             ["answered"],
             (),
             turn.calls,
@@ -800,7 +801,7 @@ class TestPrefetchFeed:
         with turn.running() as port:
             config = RunnableConfig(
                 configurable={"thread_id": "feed-thread"},
-                callbacks=[port.tracer],
+                callbacks=[TurnEvents([port.tracer], port.tracer)],
             )
             await graph.ainvoke({"messages": [HumanMessage("question")]}, config=config)
 

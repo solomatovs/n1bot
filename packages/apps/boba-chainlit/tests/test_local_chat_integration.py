@@ -23,10 +23,11 @@ from langgraph.checkpoint.memory import InMemorySaver
 from pydantic import Field
 
 from boba.chainlit.agent.bridge import ChatModelBridge
-from boba.chainlit.agent.flow import GraphSpec, PlainGraphBuilder
+from boba.chainlit.agent.events import TurnEvents
+from boba.chainlit.agent.flow import GraphSpec, HistoryView, PlainGraphBuilder
+from boba.chainlit.agent.history import CheckpointMessages
 from boba.chainlit.domain.fields import StepField
 from boba.chainlit.infra.config import AppConfig
-from boba.chainlit.infra.providers import build_history_view
 from boba.config import bind
 from boba.llm.onnx import OnnxProvider
 from boba.llm.providers import ChatModelConfig, LlmProviders, LlmProviderTypes
@@ -143,8 +144,8 @@ class TestLocalChatTurn:
                 "Ты поисковый ассистент. На вопросы о продуктах сначала ищи "
                 "инструментом kb_probe, потом отвечай по найденному."
             ),
-            checkpointer=InMemorySaver(),
-            history=build_history_view(frozenset({"kb_probe"}), 30),
+            checkpoints=CheckpointMessages(InMemorySaver()),
+            history=HistoryView(frozenset({"kb_probe"}), 30),
         )
         agent = PlainGraphBuilder().build(spec)
 
@@ -152,7 +153,7 @@ class TestLocalChatTurn:
         with turn.running() as port:
             config = RunnableConfig(
                 configurable={"thread_id": "local-turn"},
-                callbacks=[port.tracer],
+                callbacks=[TurnEvents([port.tracer], port.tracer)],
             )
             async for _chunk, _meta in agent.astream(
                 {"messages": [HumanMessage("как настроить kerberos в confluence?")]},

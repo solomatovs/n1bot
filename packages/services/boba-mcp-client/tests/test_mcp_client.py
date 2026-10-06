@@ -567,10 +567,10 @@ class StartedTools(NodeCalls):
 
 @pytest.mark.integration
 class TestLinkedCalls:
-    """Потоковые вызовы одного ответа модели уходят серверу одной связкой:
-    сервер связывает их каналами, а итог у каждого вызова свой."""
+    """Потоковые инструменты связывает только вызов инструмента-связки:
+    отдельные вызовы одного ответа идут порознь и получают отказ плана."""
 
-    async def test_stream_calls_of_one_response_meet_on_the_server(
+    async def test_stream_calls_of_one_response_stay_separate(
         self, dag: McpToolServer, tmp_path: Path
     ) -> None:
         marker = tmp_path / "collected"
@@ -603,20 +603,16 @@ class TestLinkedCalls:
         pending = await dag.submit([emit, collect])
         emitted, collected = await asyncio.gather(*pending)
 
-        if emitted.errored or collected.errored:
-            raise AssertionError(
-                f"both calls of the group succeed: {emitted} {collected}"
-            )
-        if emitted.key != "call-emit":
-            raise AssertionError(f"each call gets its own outcome: {emitted}")
-        if collected.key != "call-collect":
-            raise AssertionError(f"each call gets its own outcome: {collected}")
-        if isinstance(emitted.artifact, WorkflowResult):
-            raise AssertionError(
-                f"the outcome is the tool's, not the group's: {emitted}"
-            )
-        if not marker.exists():
-            raise AssertionError("the reader ran to its end on the writer's stream")
+        if not emitted.errored:
+            raise AssertionError(f"a writer without a reader is refused: {emitted}")
+        if not collected.errored:
+            raise AssertionError(f"a reader without a writer is refused: {collected}")
+        if "'workflow'" not in emitted.content:
+            raise AssertionError(f"the refusal names the workflow tool: {emitted}")
+        if "'workflow'" not in collected.content:
+            raise AssertionError(f"the refusal names the workflow tool: {collected}")
+        if marker.exists():
+            raise AssertionError("no body runs without its partner")
 
     async def test_workflow_call_runs_as_the_calls_of_its_nodes(
         self, boba_mcp_stand: BobaMcpStand, tmp_path: Path
@@ -709,6 +705,8 @@ class TestLinkedCalls:
 
         if not message.errored:
             raise AssertionError(f"a stream without a reader is refused: {message}")
+        if "has no readers" not in message.content:
+            raise AssertionError(f"the refusal names the unread channel: {message}")
 
 
 @pytest.mark.integration

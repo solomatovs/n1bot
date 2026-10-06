@@ -1,6 +1,6 @@
 """Группа связанных каналами вызовов: план, раздача потока, барьер, срыв.
 
-Модель в одном ответе связывает вызовы каналами: у канала один писатель
+Модель одним вызовом workflow связывает вызовы каналами: у канала один писатель
 (выходной порт вызова) и сколько угодно читателей (входы других вызовов).
 Здесь живёт весь механизм исполнения такого графа:
 
@@ -550,7 +550,7 @@ class ChannelRoute:
 class StreamPlan:
     """Граф каналов группы, проверенный до запуска.
 
-    Строится из вызовов одного ответа модели; порядок входов каждого вызова
+    Строится из узлов одного DAG; порядок входов каждого вызова
     приводится к порядку входных портов его подписи — ровно так обёртка
     запуска разложит их по ToolCommand.inputs. Нарушение любого правила —
     StreamPlanError с именами вызовов и каналов.
@@ -1210,7 +1210,12 @@ class StreamGroupRun:
 
             self._cond.notify_all()
 
-        logger.warning("stream group %s failed: %s", self.labels(), cause.log_view())
+        if stopped:
+            logger.info("stream group %s stopped: %s", self.labels(), cause.llm_view())
+        else:
+            logger.warning(
+                "stream group %s failed: %s", self.labels(), cause.log_view()
+            )
 
         for call in victims:
             call.gate().refuse()

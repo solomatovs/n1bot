@@ -1,4 +1,4 @@
-"""Провайдеры chainlit-процесса: конфиг чата, клиенты LLM, data layer и агент langgraph.
+"""Провайдеры chainlit-процесса: конфиг чата, клиенты LLM, data layer и агент сессии.
 
 Общие для процессов провайдеры (реестр, сторы) — boba.runtime.providers.
 """
@@ -7,12 +7,6 @@ from collections.abc import AsyncIterator
 from datetime import timedelta
 from typing import Annotated
 
-from langchain.agents.middleware import ModelRequest, wrap_model_call
-from langchain_core.language_models import BaseChatModel
-from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
-from langgraph.checkpoint.base import BaseCheckpointSaver
-from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
-from langgraph.graph.state import CompiledStateGraph
 from omegaconf import DictConfig
 
 from boba.auth import JwtTokens
@@ -20,15 +14,21 @@ from boba.chainlit.agent.bridge import ChatModelBridge
 from boba.chainlit.agent.flow import (
     AgentGraphBuilder,
     GraphSpec,
+    HistoryView,
     LlmRephraser,
     PassthroughRephraser,
     PlainGraphBuilder,
     PrefetchGraphBuilder,
     Rephraser,
 )
+from boba.chainlit.agent.history import (
+    CheckpointMessages,
+    GraphAgent,
+    PostgresCheckpoints,
+)
 from boba.chainlit.canvas.remote import RemoteJournals
-from boba.chainlit.chat.history import CheckpointMessages, TranscriptFeed
-from boba.chainlit.chat.tracing import TracedStage
+from boba.chainlit.chat.dialog import SessionAgent
+from boba.chainlit.chat.history import TranscriptFeed
 from boba.chainlit.data import PostgresDataLayer
 from boba.chainlit.data.remote_storage import FileOwners, RemoteStorageClient
 from boba.chainlit.domain.keys import AttachmentLinks
@@ -42,7 +42,6 @@ from boba.chainlit.infra.session import (
     current_session,
     session_source_ref,
 )
-from boba.chainlit.rendering.chat_view import StepText
 from boba.chainlit.rendering.mount import (
     ChatAttachments,
     ChatCalls,
@@ -220,8 +219,9 @@ async def llm_providers(
 
 async def langchain_checkpoint_saver(
     cp: Annotated[CheckpointerConfig, Depends(get_checkpointer_config)],
-) -> BaseCheckpointSaver:
-    """Савер langgraph на пуле со своим search_path: схему в имена он не ставит.
+) -> CheckpointMessages:
+    """История тредов процесса: checkpoint'ы langgraph на пуле со своим
+    search_path — схему в имена савер не ставит.
 
     Пул закрывает остановка приложения, а не провайдер: пул общий для всех, кто
     попросит его с той же схемой.
@@ -237,25 +237,25 @@ async def langchain_checkpoint_saver(
             user_detail="Failed to connect to the internal postgres",
         ) from e
 
-    saver = AsyncPostgresSaver(pool.raw)
-    await saver.setup()
+    checkpoints = PostgresCheckpoints(pool)
+    await checkpoints.setup()
 
-    return saver
+    return checkpoints
 
 
 def remote_journals(
     contexts: Annotated[CallContexts, Depends(runtime.call_contexts)],
-    saver: Annotated[BaseCheckpointSaver, Depends(langchain_checkpoint_saver)],
+    saver: Annotated[CheckpointMessages, Depends(langchain_checkpoint_saver)],
 ) -> RemoteJournals:
     """Реестр журналов вызовов, исполненных MCP-серверами, на процесс."""
-    return RemoteJournals(contexts, CheckpointMessages(saver))
+    return RemoteJournals(contexts, saver)
 
 
 async def chainlit_data_layer(  # noqa: PLR0913 — слой данных собирается всеми зависимостями сразу
     cfg: Annotated[DataLayerConfig, Depends(get_data_layer_config)],
     links: Annotated[AttachmentLinks, Depends(attachment_links)],
     storage: Annotated[StorageClient, Depends(storage_provider)],
-    saver: Annotated[BaseCheckpointSaver, Depends(langchain_checkpoint_saver)],
+    saver: Annotated[CheckpointMessages, Depends(langchain_checkpoint_saver)],
     bus: Annotated[MessageBus, Depends(runtime.message_bus)],
     users: Annotated[UsersTable, Depends(runtime.users_table)],
     sessions: Annotated[SessionSource, Depends(session_source)],
@@ -272,86 +272,11 @@ async def chainlit_data_layer(  # noqa: PLR0913 — слой данных соб
         elements=tables.elements,
         feedbacks=tables.feedbacks,
         storage=storage,
-        feed=TranscriptFeed(CheckpointMessages(saver), streamable),
+        feed=TranscriptFeed(saver, streamable),
         links=links,
         sessions=sessions,
         bus=bus,
     )
-
-
-def build_history_view(allowed_tools: frozenset[str], history_messages: int):
-    @wrap_model_call
-    async def history_view(request: ModelRequest, handler):
-        full = request.state["messages"]
-        view = build_llm_view(full, allowed_tools, history_messages)
-        return await handler(request.override(messages=view))
-
-    return history_view
-
-
-def build_llm_view(
-    msgs: list,
-    allowed_tools: frozenset[str] | None = None,
-    history_messages: int = AgentSettings.model_fields["history_messages"].default,
-) -> list:
-    start = _index_of_last_user_turn(msgs)
-    head, current = msgs[:start], msgs[start:]
-
-    replies: list = []
-    for message in head:
-        if isinstance(message, ToolMessage):
-            continue
-        if isinstance(message, AIMessage) and message.tool_calls:
-            continue
-        replies.append(message)
-
-    view = replies[-history_messages:] + _drop_foreign_tools(current, allowed_tools)
-    return [_with_attachments(m) for m in view]
-
-
-def _with_attachments(message: object) -> object:
-    """Дописывает пути вложений в текст: в ленте их быть не должно."""
-    if not isinstance(message, HumanMessage):
-        return message
-    attachments = message.additional_kwargs.get("attachments") or []
-    if not attachments:
-        return message
-    listing = "\n".join(f"- {a['name']}: {a['path']}" for a in attachments)
-    return message.model_copy(
-        update={
-            "content": (
-                f"{message.content}\n\n"
-                f"Прикреплённые файлы, доступны инструменту bash по этим путям:\n"
-                f"{listing}"
-            )
-        }
-    )
-
-
-def _drop_foreign_tools(msgs: list, allowed_tools: frozenset[str] | None) -> list:
-    if allowed_tools is None:
-        return msgs
-
-    dropped_ids: set[str] = set()
-    kept: list = []
-    for m in msgs:
-        if isinstance(m, AIMessage) and m.tool_calls:
-            foreign = [c for c in m.tool_calls if c["name"] not in allowed_tools]
-            if foreign:
-                dropped_ids.update(c["id"] for c in m.tool_calls if c["id"])
-                continue
-        if isinstance(m, ToolMessage) and m.tool_call_id in dropped_ids:
-            continue
-        kept.append(m)
-    return kept
-
-
-def _index_of_last_user_turn(msgs: list) -> int:
-    for i in range(len(msgs) - 1, -1, -1):
-        if isinstance(msgs[i], HumanMessage):
-            return i
-
-    return 0
 
 
 def session_graph_builder(
@@ -363,9 +288,7 @@ def session_graph_builder(
     if not isinstance(flow, PrefetchFlowConfig):
         return PlainGraphBuilder()
 
-    rephraser = _rephraser(providers, flow)
-    stage = TracedStage(StepText.PREFETCH.value)
-    return PrefetchGraphBuilder(rephraser, flow.tools, stage)
+    return PrefetchGraphBuilder(_rephraser(providers, flow), flow.tools)
 
 
 def _rephraser(providers: LlmProviders, flow: PrefetchFlowConfig) -> Rephraser:
@@ -384,7 +307,7 @@ def session_chat(
     settings: Annotated[
         AgentSettings, Depends(session_agent_settings, scope="session")
     ],
-) -> BaseChatModel:
+) -> ChatModelBridge:
     """Чат-модель хода: мост графа поверх модели профиля с сэмплингом сессии."""
     return ChatModelBridge(
         chat_model=providers.chat(settings),
@@ -441,11 +364,11 @@ async def mcp_servers(  # noqa: PLR0913 — клиент собирается в
 
 
 async def langchain_agent(  # noqa: PLR0913
-    chat: Annotated[BaseChatModel, Depends(session_chat, scope="session")],
+    chat: Annotated[ChatModelBridge, Depends(session_chat, scope="session")],
     builder: Annotated[
         AgentGraphBuilder, Depends(session_graph_builder, scope="session")
     ],
-    saver: Annotated[BaseCheckpointSaver, Depends(langchain_checkpoint_saver)],
+    saver: Annotated[CheckpointMessages, Depends(langchain_checkpoint_saver)],
     tools: Annotated[list[HostedTool], Depends(session_tools, scope="session")],
     settings: Annotated[
         AgentSettings, Depends(session_agent_settings, scope="session")
@@ -458,7 +381,8 @@ async def langchain_agent(  # noqa: PLR0913
     journals: Annotated[RemoteJournals, Depends(remote_journals)],
     selected: Annotated[SelectedProfile, Depends(session_profile, scope="session")],
     calls: Annotated[ChatCalls, Depends(node_calls)],
-) -> CompiledStateGraph:
+) -> SessionAgent:
+    """Агент сессии: граф хода по flow профиля над портом инструментов."""
     # один порт для графа: свои серверы и MCP-серверы профиля сессии.
     # На MCP-сервер чат входит от имени пользователя: его identifier — логин,
     # роли — те, с которыми он вошёл в чат. Соединения запечатываются на
@@ -486,8 +410,8 @@ async def langchain_agent(  # noqa: PLR0913
         chat=chat,
         service=service,
         system_prompt=settings.system_prompt,
-        checkpointer=saver,
-        history=build_history_view(service.names(), settings.history_messages),
+        checkpoints=saver,
+        history=HistoryView(service.names(), settings.history_messages),
     )
 
-    return builder.build(spec)
+    return GraphAgent(builder.build(spec))

@@ -5,11 +5,12 @@ from __future__ import annotations
 import asyncio
 
 import pytest
-from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, ToolMessage
 from pydantic import BaseModel
 
 from boba.access import ProfileGrant, RoleConfig, ToolAccess
-from boba.chainlit.infra.providers import build_llm_view
+from boba.chainlit.agent.flow import HistoryView
+from boba.chat.profiles import AgentSettings
 from boba.runtime.plugins import PluginMeta
 from boba.stand.refs import StandRefs
 from boba.stand.toolstand import ProbeTools
@@ -21,10 +22,22 @@ from boba.toolrun.access import ToolAccessDeniedError, ToolAccessGuard
 from boba.toolrun.hosted import HostedTool
 from boba.toolrun.registry import ToolRegistry
 
+HISTORY_MESSAGES: int = AgentSettings.model_fields["history_messages"].default
+"""Окно прошлых ходов по умолчанию из настроек агента."""
+
 
 @pytest.fixture(autouse=True)
 def chainlit_context() -> None:
     pass
+
+
+def _llm_view(
+    messages: list[AnyMessage],
+    allowed_tools: frozenset[str] | None,
+    history_messages: int = HISTORY_MESSAGES,
+) -> list[AnyMessage]:
+    """История глазами модели — то, что HistoryView отдаёт графу хода."""
+    return HistoryView(allowed_tools, history_messages).of(messages)
 
 
 class TestPluginMetaNotation:
@@ -163,18 +176,18 @@ class TestHistoryHidesForeignTools:
         ]
 
     def test_foreign_call_removed_from_current_turn(self) -> None:
-        view = build_llm_view(self._history(), frozenset({"list_targets"}))
+        view = _llm_view(self._history(), frozenset({"list_targets"}))
         if [type(m).__name__ for m in view] != ["HumanMessage"]:
             raise AssertionError('[type(m).__name__ for m in view] == ["HumanMessage"]')
 
     def test_allowed_call_kept(self) -> None:
-        view = build_llm_view(self._history(), frozenset({"query"}))
+        view = _llm_view(self._history(), frozenset({"query"}))
         if len(view) != 3:
             raise AssertionError("len(view) == 3")
 
     def test_no_filter_keeps_everything(self) -> None:
-        if len(build_llm_view(self._history(), None)) != 3:
-            raise AssertionError("len(build_llm_view(self._history(), None)) == 3")
+        if len(_llm_view(self._history(), None)) != 3:
+            raise AssertionError("len(_llm_view(self._history(), None)) == 3")
 
     @staticmethod
     def _long_history(turns: int) -> list:
@@ -186,7 +199,7 @@ class TestHistoryHidesForeignTools:
         return messages
 
     def test_history_window_limits_old_messages(self) -> None:
-        view = build_llm_view(self._long_history(20), None, history_messages=5)
+        view = _llm_view(self._long_history(20), None, history_messages=5)
         # 5 старых реплик + текущий ход
         if len(view) != 6:
             raise AssertionError("len(view) == 6")
@@ -194,26 +207,23 @@ class TestHistoryHidesForeignTools:
             raise AssertionError('view[-1].content == "текущий"')
 
     def test_history_window_keeps_the_newest(self) -> None:
-        view = build_llm_view(self._long_history(20), None, history_messages=2)
+        view = _llm_view(self._long_history(20), None, history_messages=2)
         if [m.content for m in view[:-1]] != ["вопрос 19", "ответ 19"]:
             raise AssertionError('[m.content for m in view[:-1]] == ["вопрос 19", "от…')
 
     def test_history_window_default_matches_config(self) -> None:
-        from boba.chat.profiles import AgentSettings
-
-        default = AgentSettings.model_fields["history_messages"].default
-        view = build_llm_view(self._long_history(100), None)
-        if len(view) != default + 1:
-            raise AssertionError("len(view) == default + 1")
+        view = _llm_view(self._long_history(100), None)
+        if len(view) != HISTORY_MESSAGES + 1:
+            raise AssertionError("len(view) == HISTORY_MESSAGES + 1")
 
     def test_short_history_is_not_padded(self) -> None:
-        view = build_llm_view(self._long_history(2), None, history_messages=50)
+        view = _llm_view(self._long_history(2), None, history_messages=50)
         if len(view) != 5:
             raise AssertionError("len(view) == 5")
 
     def test_old_turns_never_carry_tool_calls(self) -> None:
         history = [*self._history(), HumanMessage(content="ещё", id="u2")]
-        view = build_llm_view(history, frozenset({"query"}))
+        view = _llm_view(history, frozenset({"query"}))
         if any(isinstance(m, ToolMessage) for m in view):
             raise AssertionError("not any(isinstance(m, ToolMessage) for m in view)")
         if any(isinstance(m, AIMessage) and m.tool_calls for m in view):
