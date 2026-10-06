@@ -356,6 +356,7 @@ class ServiceTools:
         (ChatCalls), когда тесту нужны шаги вызова и монтирование."""
         self._service = service
         self._connections = connections
+        self._calls = calls
         self._servers = McpServers(
             service.servers(),
             NamedBlocks(),
@@ -396,7 +397,11 @@ class ServiceTools:
 
     async def submit(self, call: DagNode) -> NodeOutcome:
         port = SealingToolServer(
-            await self.port(), self._connections, self.sent, self.SEAL_TTL
+            await self.port(),
+            self._connections,
+            self.sent,
+            self.SEAL_TTL,
+            self._calls,
         )
         pending = await port.submit([call])
 

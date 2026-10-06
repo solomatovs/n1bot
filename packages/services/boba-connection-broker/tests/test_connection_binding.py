@@ -32,6 +32,8 @@ from boba.stand_core.context import CallStand
 from boba.toolkit.dag import (
     DagNode,
     DagSpec,
+    NodeBody,
+    NodeCalls,
     NodeOutcome,
     ToolCard,
     ToolServer,
@@ -39,6 +41,7 @@ from boba.toolkit.dag import (
 )
 from boba.toolkit.facade import UserConnection
 from boba.toolkit.result import ErrorResult, TableResult
+from boba.toolrun.hosted import DirectCalls
 from boba.toolrun.injected import ToolConfigError
 from boba.toolrun.stream_calls import WorkflowTool
 
@@ -108,6 +111,22 @@ def _refusal(message: NodeOutcome) -> ErrorResult:
         raise AssertionError(f"отказ помечен ошибкой: {message}")
 
     return result
+
+
+class _Conducted(NodeCalls):
+    """Реализация NodeCalls, запоминающая вызовы, о которых узнал хозяин
+    клиента: имя инструмента и кончился ли вызов отказом."""
+
+    def __init__(self) -> None:
+        self.seen: list[tuple[str, bool]] = []
+
+    async def conducted(
+        self, card: ToolCard, node: DagNode, body: NodeBody
+    ) -> NodeOutcome:
+        outcome = await body(node)
+        self.seen.append((card.name, outcome.errored))
+
+        return outcome
 
 
 class TestSchemaShownToTheModel:
@@ -186,6 +205,7 @@ class TestKeyComesFromTheServerFeature:
             stand.connections,
             stand.sent,
             timedelta(minutes=10),
+            DirectCalls(),
         )
 
         message = await stand.call_through(
@@ -206,6 +226,7 @@ class TestKeyComesFromTheServerFeature:
             stand.connections,
             stand.sent,
             timedelta(minutes=10),
+            DirectCalls(),
         )
 
         message = await stand.call_through(
@@ -231,7 +252,11 @@ class TestWorkflowNodes:
         }
         recorder = _Recorder(stand.executor, features)
         client = SealingToolServer(
-            recorder, stand.connections, stand.sent, timedelta(minutes=10)
+            recorder,
+            stand.connections,
+            stand.sent,
+            timedelta(minutes=10),
+            DirectCalls(),
         )
         nodes = [
             {
@@ -267,6 +292,27 @@ class TestRefusals:
             raise AssertionError(f"чужое имя отвергнуто: {refusal}")
         if "main" not in refusal.message:
             raise AssertionError(f"отказ называет доступные: {refusal.message}")
+
+    async def test_refused_call_goes_the_way_of_a_node_call(self) -> None:
+        """Отказ запечатывания серверу не уходит, но хозяин клиента узнаёт о
+        вызове тем же путём, что и об отправленном: лента рисует его шагом."""
+        stand = _stand()
+        conduct = _Conducted()
+        client = SealingToolServer(
+            stand.executor,
+            stand.connections,
+            stand.sent,
+            timedelta(minutes=10),
+            conduct,
+        )
+        args = {"connection": "conn://probe/нет-такого", "sql": "x"}
+
+        outcome = await stand.call_through(client, "probe_query", args)
+
+        if _refusal(outcome).error_kind != ConnectionRefusal.NOT_VISIBLE:
+            raise AssertionError(f"чужое имя отвергнуто: {outcome}")
+        if conduct.seen != [("probe_query", True)]:
+            raise AssertionError(f"отказ прошёл путём вызова узла: {conduct.seen}")
 
     async def test_duplicate_name_is_refused(self) -> None:
         rows = [
@@ -324,7 +370,11 @@ class TestShownToTheUser:
         stand = _stand()
         recorder = _Recorder(stand.executor, stand.params.features())
         client = SealingToolServer(
-            recorder, stand.connections, stand.sent, timedelta(minutes=10)
+            recorder,
+            stand.connections,
+            stand.sent,
+            timedelta(minutes=10),
+            DirectCalls(),
         )
         call = DagNode(
             key="call_shown",
