@@ -14,8 +14,6 @@ from datetime import timedelta
 from typing import Annotated, Literal
 
 import pytest
-from langchain_core.messages import ToolCall, ToolMessage
-from langchain_core.tools import BaseTool
 from probe_stand import (
     LOGIN,
     SECRET,
@@ -31,11 +29,18 @@ from boba.connections.base import ConnectionBase
 from boba.connections.marks import ConnectionRefusal
 from boba.connections.sealed import ConnectionRef, SealFeature, SealKeys
 from boba.stand_core.context import CallStand
+from boba.toolkit.dag import (
+    DagNode,
+    DagSpec,
+    NodeOutcome,
+    ToolCard,
+    ToolServer,
+    WorkflowFeature,
+)
 from boba.toolkit.facade import UserConnection
-from boba.toolkit.result import ErrorResult, TableResult, ToolArtifact
+from boba.toolkit.result import ErrorResult, TableResult
 from boba.toolrun.injected import ToolConfigError
-from boba.toolrun.stream_calls import ToolServer, WorkflowTool
-from boba.toolrun.wrapping import ToolSchema
+from boba.toolrun.stream_calls import WorkflowTool
 
 pytestmark = pytest.mark.anyio
 
@@ -53,15 +58,15 @@ class _DeclaringAnotherKey(ToolServer):
         self._inner = inner
         self._features = features
 
-    def tools(self) -> Sequence[BaseTool]:
+    def tools(self) -> Sequence[ToolCard]:
         return self._inner.tools()
 
     def features(self) -> Mapping[str, Mapping[str, object]]:
         return self._features
 
     async def submit(
-        self, calls: Sequence[ToolCall]
-    ) -> Sequence[asyncio.Future[ToolMessage]]:
+        self, calls: Sequence[DagNode]
+    ) -> Sequence[asyncio.Future[NodeOutcome]]:
         return await self._inner.submit(calls)
 
 
@@ -73,11 +78,11 @@ class _Recorder(_DeclaringAnotherKey):
         self, inner: ToolServer, features: Mapping[str, Mapping[str, object]]
     ) -> None:
         super().__init__(inner, features)
-        self.calls: list[ToolCall] = []
+        self.calls: list[DagNode] = []
 
     async def submit(
-        self, calls: Sequence[ToolCall]
-    ) -> Sequence[asyncio.Future[ToolMessage]]:
+        self, calls: Sequence[DagNode]
+    ) -> Sequence[asyncio.Future[NodeOutcome]]:
         self.calls.extend(calls)
 
         return await super().submit(calls)
@@ -87,20 +92,20 @@ def _stand() -> SealedStand:
     return SealedStand([SealedStand.probe_row("main", "db.local")])
 
 
-def _row(message: ToolMessage) -> dict[str, object]:
-    result = ToolArtifact.revive(message.artifact)
+def _row(message: NodeOutcome) -> dict[str, object]:
+    result = message.artifact
     if not isinstance(result, TableResult):
         raise AssertionError(f"ожидалась таблица, пришло: {message.content}")
 
     return dict(result.rows[0])
 
 
-def _refusal(message: ToolMessage) -> ErrorResult:
-    result = ToolArtifact.revive(message.artifact)
+def _refusal(message: NodeOutcome) -> ErrorResult:
+    result = message.artifact
     if not isinstance(result, ErrorResult):
         raise AssertionError(f"ожидался отказ, пришло: {message.content}")
-    if message.status != "error":
-        raise AssertionError(f"отказ помечен ошибкой: {message.status}")
+    if not message.errored:
+        raise AssertionError(f"отказ помечен ошибкой: {message}")
 
     return result
 
@@ -109,12 +114,10 @@ class TestSchemaShownToTheModel:
     def test_connection_parameter_is_a_marked_string(self) -> None:
         stand = _stand()
 
-        offered = {tool.name: tool for tool in stand.client.tools()}
-        shown = ToolSchema.of(offered["probe_query"])
-        if shown is None:
-            raise AssertionError("схема инструмента пропала")
+        offered = {card.name: card for card in stand.client.tools()}
+        shown = offered["probe_query"].parameters
 
-        declared = shown.model_json_schema()["properties"]["connection"]
+        declared = shown["properties"]["connection"]
 
         if declared["type"] != "string":
             raise AssertionError(f"модель видит строку: {declared}")
@@ -224,7 +227,7 @@ class TestWorkflowNodes:
         stand = _stand()
         features = {
             **stand.params.features(),
-            WorkflowTool.FEATURE: {"tool": WorkflowTool.NAME},
+            WorkflowFeature.ID: {"tool": WorkflowTool.NAME},
         }
         recorder = _Recorder(stand.executor, features)
         client = SealingToolServer(
@@ -240,8 +243,11 @@ class TestWorkflowNodes:
 
         await stand.call_through(client, WorkflowTool.NAME, {"nodes": nodes})
 
-        sent = recorder.calls[0]["args"]["nodes"][0]["args"]
-        opened = stand.keys.open(sent["connection"])
+        described = DagSpec.model_validate(
+            {"name": "sent", "version": 1, "nodes": recorder.calls[0].args["nodes"]}
+        )
+        sent = described.nodes[0].args
+        opened = stand.keys.open(str(sent["connection"]))
         if opened.profile["host"] != "db.local":
             raise AssertionError(f"узлу ушло запечатанное соединение: {opened}")
         if sent["sql"] != "x":
@@ -320,22 +326,21 @@ class TestShownToTheUser:
         client = SealingToolServer(
             recorder, stand.connections, stand.sent, timedelta(minutes=10)
         )
-        call = ToolCall(
-            name="probe_query",
+        call = DagNode(
+            key="call_shown",
+            tool="probe_query",
             args={"connection": MAIN, "sql": "x"},
-            id="call_shown",
-            type="tool_call",
         )
 
         with stand.as_caller():
             pending = await client.submit([call])
-            running = stand.sent.shown(recorder.calls[0]["args"])
+            running = stand.sent.shown(recorder.calls[0].args)
             await pending[0]
 
         if running["connection"] != MAIN:
             raise AssertionError(f"во время вызова показана ссылка: {running}")
 
-        after = stand.sent.shown(recorder.calls[0]["args"])
+        after = stand.sent.shown(recorder.calls[0].args)
         if after["connection"] == MAIN:
             raise AssertionError("после конца вызова пара забыта")
 

@@ -1,11 +1,8 @@
-"""Служебные поля вызова в схеме инструмента: идентификатор вызова и подпись.
+"""Подпись вызова в схеме инструмента.
 
-Идентификатор помечен InjectedToolCallId: langchain заполняет его из
-ToolCall-конверта вызова, LLM поля не видит. Подпись (ToolIntent) заполняет
-LLM: одна строка о том, что делает вызов; без неё шаг ленты называется
-именем инструмента. Тело инструмента про оба поля не знает — их снимает из
-kwargs обвязка ToolRunLogger. С полем идентификатора инструмент обязан
-вызываться полным ToolCall-конвертом — так его и зовёт ToolNode агента.
+Подпись (ToolIntent) заполняет LLM: одна строка о том, что делает вызов; без
+неё шаг ленты называется именем инструмента. Тело инструмента про поле не
+знает — его снимает из аргументов вызова обвязка ToolRunLogger.
 
 Ошибки: своих не выпускает.
 """
@@ -13,56 +10,40 @@ kwargs обвязка ToolRunLogger. С полем идентификатора 
 from __future__ import annotations
 
 from collections.abc import Sequence
-from typing import Annotated, Any, ClassVar
+from typing import Annotated
 
-from langchain_core.tools import BaseTool, InjectedToolCallId
-from pydantic import Field
+from pydantic import BaseModel, Field
 
 from boba.toolkit.calls import ToolIntent
-from boba.toolrun.wrapping import ToolSchema
+from boba.toolrun.hosted import HostedTool, ToolSchema
 
 __all__ = ["CallFields"]
 
 
 class CallFields:
-    """Ставит служебные поля вызова в схему инструмента и снимает id из вызова.
+    """Ставит поле подписи вызова в схему инструмента.
 
-    Создаётся цепочкой обвязок (ToolChain) и обвязкой журнала
-    (ToolRunLogger): первая добавляет поля в схему одним проходом, вторая
-    читает идентификатор из аргументов вызова.
+    Создаётся цепочкой обвязок (ToolChain) и инструментом-связкой
+    (WorkflowTool): первая добавляет поле в схемы инструментов одним
+    проходом, второй — в схему своего вызова.
     """
 
-    CALL_ID: ClassVar[str] = "boba_tool_call_id"
+    def __init__(self) -> None:
+        self._schemas = ToolSchema()
 
-    def attach_all(self, tools: Sequence[BaseTool]) -> None:
-        """Добавляет поля в args_schema каждого инструмента."""
+    def attach_all(self, tools: Sequence[HostedTool]) -> None:
+        """Добавляет поле в args_schema каждого инструмента."""
         for tool in tools:
-            self._attach(tool)
+            tool.args_schema = self.extended(tool.args_schema)
 
-    def call_id(self, kwargs: dict[str, object]) -> str:
-        """Снять идентификатор из kwargs вызова; не приехал — пустая строка."""
-        value = kwargs.pop(self.CALL_ID, None)
-        if value is None:
-            return ""
+    def extended(self, schema: type[BaseModel]) -> type[BaseModel]:
+        """Схема с полем подписи вызова; уже подписанная — как есть."""
+        if ToolIntent.NAME in schema.model_fields:
+            return schema
 
-        return str(value)
+        # необязательное: инструмент без своих аргументов модель зовёт с {},
+        # и обязательная подпись роняла бы вызов. Потолок длины держит показ
+        declared = Field(description=ToolIntent.DESCRIPTION)
+        fields = {ToolIntent.NAME: (Annotated[str, declared], "")}
 
-    def _attach(self, tool: BaseTool) -> None:
-        schema = ToolSchema.of(tool)
-        if schema is None:
-            return
-
-        fields: dict[str, tuple[Any, Any]] = {}
-        if self.CALL_ID not in schema.model_fields:
-            fields[self.CALL_ID] = (Annotated[str | None, InjectedToolCallId()], None)
-
-        if ToolIntent.NAME not in schema.model_fields:
-            # необязательное: инструмент без своих аргументов модель зовёт с {},
-            # и обязательная подпись роняла бы вызов. Потолок длины держит показ
-            declared = Field(description=ToolIntent.DESCRIPTION)
-            fields[ToolIntent.NAME] = (Annotated[str, declared], "")
-
-        if not fields:
-            return
-
-        tool.args_schema = ToolSchema.rebuild(schema, fields, ())
+        return self._schemas.rebuild(schema, fields, ())

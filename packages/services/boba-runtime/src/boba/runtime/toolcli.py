@@ -29,7 +29,8 @@ from omegaconf import DictConfig
 from boba.config import bind
 from boba.krb import KerberosWorkspaceConfig
 from boba.runtime.config import AppLayers
-from boba.toolkit.entry import EntryFlag, ToolArgv, ToolLike, ToolMain
+from boba.toolkit.entry import EntryFlag, ToolArgv, ToolMain
+from boba.toolkit.facade import PayloadTool
 from boba.toolrun.callvalues import CallContextValues
 
 __all__ = ["HostConfig", "ToolCli", "ToolCliError"]
@@ -164,7 +165,7 @@ class ToolCli:
         return path
 
     @classmethod
-    def _tools_of(cls, module_name: str) -> Sequence[ToolLike]:
+    def _tools_of(cls, module_name: str) -> Sequence[PayloadTool]:
         try:
             module = importlib.import_module(module_name)
         except ImportError as exc:
@@ -182,7 +183,7 @@ class ToolCli:
         return tools
 
     @staticmethod
-    def _lookup(tools: Sequence[ToolLike], name: str) -> ToolLike:
+    def _lookup(tools: Sequence[PayloadTool], name: str) -> PayloadTool:
         for tool in tools:
             if tool.name == name:
                 return tool

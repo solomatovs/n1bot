@@ -16,7 +16,7 @@ from __future__ import annotations
 import logging
 from collections.abc import AsyncIterator
 from typing import Any, ClassVar
-from uuid import UUID, uuid4
+from uuid import UUID
 
 import pytest
 from chainlit.context import ChainlitContext, context_var
@@ -24,12 +24,11 @@ from chainlit.emitter import BaseChainlitEmitter
 from chainlit.session import HTTPSession
 from chainlit_stand import RecordedTurn, fake_openai_chat, in_process_llm
 from langchain.agents import create_agent
-from langchain_core.messages import HumanMessage, ToolMessage
+from langchain_core.messages import HumanMessage
 from langchain_core.tools import BaseTool, StructuredTool
 
 from boba.chainlit.chat.tracing import AgentTracer
-from boba.chainlit.chat.turn import TurnState
-from boba.connection_broker.sealing import SentConnections
+from boba.messaging import ListenerFailedError
 from boba.stand.ui.fake_llm import FakeLlmApp, ScenarioName
 
 pytestmark = pytest.mark.anyio
@@ -101,9 +100,7 @@ class TestTracerRunIndex:
 
     @staticmethod
     def _tracer() -> AgentTracer:
-        turn = RecordedTurn.live(THREAD, "turn-1")
-
-        return AgentTracer(turn.feed, TurnState(), SentConnections())
+        return RecordedTurn.live(THREAD, "turn-1").port.tracer
 
     async def _turn(self, provider: None, scenario: ScenarioName) -> AgentTracer:
         """Ход как в проде: агент langgraph, стрим сообщениями, живой трасер."""
@@ -137,47 +134,13 @@ class TestTracerRunIndex:
 
         return found
 
-    async def test_tool_run_is_indexed_when_step_render_fails(
-        self, caplog: pytest.LogCaptureFixture
-    ) -> None:
-        """Прогон инструмента учтён, даже если шаг не удалось отправить в ленту."""
-        tracer = self._tracer()
-        run_id = uuid4()
+    async def test_failed_tool_step_render_goes_up_from_the_owner(self) -> None:
+        """Шаг вызова рисует владелец хода, а не колбэк langchain: сбой
+        отправки шага гасить некому, он уходит наверх ошибкой вызова."""
+        turn = RecordedTurn.live(THREAD, "turn-1")
 
-        with caplog.at_level(logging.DEBUG):
-            await tracer.on_tool_start(
-                {"name": TOOL_NAME},
-                "{}",
-                run_id=run_id,
-                inputs={},
-                tool_call_id=CALL_ID,
-            )
-
-        if str(run_id) not in tracer.run_map:
-            raise AssertionError("str(run_id) in tracer.run_map")
-
-    async def test_failed_step_render_does_not_break_tool_end(
-        self, caplog: pytest.LogCaptureFixture
-    ) -> None:
-        """Закрытие прогона не срывается вслед за упавшей отрисовкой старта."""
-        tracer = self._tracer()
-        run_id = uuid4()
-
-        with caplog.at_level(logging.DEBUG):
-            await tracer.on_tool_start(
-                {"name": TOOL_NAME},
-                "{}",
-                run_id=run_id,
-                inputs={},
-                tool_call_id=CALL_ID,
-            )
-            await tracer.on_tool_end(
-                ToolMessage(content="hi", tool_call_id=CALL_ID),
-                run_id=run_id,
-            )
-
-        if self._lost_runs(caplog) != []:
-            raise AssertionError("self._lost_runs(caplog) == []")
+        with pytest.raises(ListenerFailedError, match="socket is gone"):
+            await turn.port.tool_started(CALL_ID, TOOL_NAME, {})
 
     async def test_turn_with_tool_does_not_cascade(
         self, provider: None, caplog: pytest.LogCaptureFixture

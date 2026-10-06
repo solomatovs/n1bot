@@ -31,8 +31,6 @@ from boba.tool.confluence.ingest_base import ConfluenceIngestConfig
 from boba.tool.kb.search import ConfluenceCollection
 from boba.tool.shell.tools import BashToolConfig
 from boba.toolkit.calls import ToolCallModels
-from boba.toolkit.chain import CallAmbient
-from boba.toolkit.entry import ToolMain
 from boba.toolkit.launcher import PayloadFailureError
 from boba.toolkit.result import (
     ChatElement,
@@ -44,8 +42,6 @@ from boba.toolkit.result import (
     ToolResultBase,
     VisualResult,
 )
-from boba.toolkit.wrap import ToolProcessWrap
-from boba.toolrun.bridge import ToolBridge
 from boba.toolrun.injected import InjectedConfig, StaticConfig
 from boba.transport.http.connection import HttpConnection
 
@@ -131,15 +127,12 @@ def doc_tools(zygote_stand: ZygoteStand, raw_config):
 
     launcher = ToolSetup.caller(zygote_stand, raw_config, "doc", [module.__name__])
 
-    functions = [ToolBridge.as_structured_tool(tool) for tool in module.TOOLS]
-    ToolProcessWrap(CallAmbient()).guard_all(ToolMain.toolset(*functions), launcher)
-
     def resolve(name: str, annotation: Any) -> object:
         return bind(raw_config, path=annotation.SECTION, model=annotation)
 
-    InjectedConfig(resolve, StaticConfig()).bind_all(functions)
+    config = InjectedConfig(resolve, StaticConfig())
 
-    return ToolSetup.by_name(functions)
+    return ToolSetup.launched(module.TOOLS, launcher, (config,))
 
 
 @pytest.fixture(scope="module")
@@ -153,9 +146,7 @@ def chart_tool(zygote_stand: ZygoteStand, raw_config):
 
     launcher = ToolSetup.caller(zygote_stand, raw_config, "chart", [module.__name__])
 
-    visualize = ToolBridge.as_structured_tool(module.visualize)
-    ToolProcessWrap(CallAmbient()).guard_all(ToolMain.toolset(visualize), launcher)
-    return visualize
+    return ToolSetup.launched([module.visualize], launcher, ())[module.visualize.name]
 
 
 @pytest.fixture(scope="module")
@@ -169,15 +160,12 @@ def web_tools(zygote_stand: ZygoteStand, raw_config):
 
     launcher = ToolSetup.caller(zygote_stand, raw_config, "web", [module.__name__])
 
-    functions = [ToolBridge.as_structured_tool(tool) for tool in module.TOOLS]
-    ToolProcessWrap(CallAmbient()).guard_all(ToolMain.toolset(*functions), launcher)
-
     def resolve(name: str, annotation: Any) -> object:
         return ToolSetup.web_config(raw_config)
 
-    InjectedConfig(resolve, StaticConfig()).bind_all(functions)
+    config = InjectedConfig(resolve, StaticConfig())
 
-    return ToolSetup.by_name(functions)
+    return ToolSetup.launched(module.TOOLS, launcher, (config,))
 
 
 @pytest.fixture(scope="module")
@@ -206,15 +194,12 @@ def confluence_tools(zygote_stand: ZygoteStand, raw_config):
         zygote_stand, raw_config, "confluence", [module.__name__]
     )
 
-    functions = [ToolBridge.as_structured_tool(tool) for tool in module.TOOLS]
-    ToolProcessWrap(CallAmbient()).guard_all(ToolMain.toolset(*functions), launcher)
-
     def resolve(name: str, annotation: Any) -> object:
         return bind(raw_config, path=annotation.SECTION, model=annotation)
 
-    InjectedConfig(resolve, StaticConfig()).bind_all(functions)
+    config = InjectedConfig(resolve, StaticConfig())
 
-    return ToolSetup.by_name(functions)
+    return ToolSetup.launched(module.TOOLS, launcher, (config,))
 
 
 @pytest.fixture(scope="module")
@@ -234,15 +219,12 @@ def pg_tools(zygote_stand: ZygoteStand, raw_config):
 
     launcher = ToolSetup.caller(zygote_stand, raw_config, "pg", [module.__name__])
 
-    functions = [ToolBridge.as_structured_tool(tool) for tool in module.TOOLS]
-    ToolProcessWrap(CallAmbient()).guard_all(ToolMain.toolset(*functions), launcher)
-
     def resolve(name: str, annotation: Any) -> object:
         return ToolSetup.pg_config(raw_config)
 
-    InjectedConfig(resolve, StaticConfig()).bind_all(functions)
+    config = InjectedConfig(resolve, StaticConfig())
 
-    return ToolSetup.by_name(functions)
+    return ToolSetup.launched(module.TOOLS, launcher, (config,))
 
 
 @pytest.fixture(scope="module")
@@ -315,17 +297,14 @@ def ingest_tools(zygote_stand: ZygoteStand, raw_config, kb_collection: str):
 
     launcher = ToolSetup.caller(zygote_stand, raw_config, "ingest", [module.__name__])
 
-    functions = [ToolBridge.as_structured_tool(tool) for tool in module.TOOLS]
-    ToolProcessWrap(CallAmbient()).guard_all(ToolMain.toolset(*functions), launcher)
-
     def resolve(name: str, annotation: Any) -> object:
         sandboxed = ToolSetup.sandbox_raw(raw_config)
         cfg = bind(sandboxed, path=annotation.SECTION, model=annotation)
         return cfg.model_copy(update={"collection": kb_collection})
 
-    InjectedConfig(resolve, ServiceTickets(_credentials)).bind_all(functions)
+    config = InjectedConfig(resolve, ServiceTickets(_credentials))
 
-    return ToolSetup.by_name(functions)
+    return ToolSetup.launched(module.TOOLS, launcher, (config,))
 
 
 def _credentials() -> KerberosCredentialSource:
@@ -343,9 +322,6 @@ def kb_tools(zygote_stand: ZygoteStand, raw_config, kb_collection: str):
 
     launcher = ToolSetup.caller(zygote_stand, raw_config, "kb", [module.__name__])
 
-    functions = [ToolBridge.as_structured_tool(tool) for tool in module.TOOLS]
-    ToolProcessWrap(CallAmbient()).guard_all(ToolMain.toolset(*functions), launcher)
-
     def resolve(name: str, annotation: Any) -> object:
         sandboxed = ToolSetup.sandbox_raw(raw_config)
         cfg = bind(sandboxed, path=annotation.SECTION, model=annotation)
@@ -354,9 +330,9 @@ def kb_tools(zygote_stand: ZygoteStand, raw_config, kb_collection: str):
 
         return cfg.model_copy(update={"collection": kb_collection})
 
-    InjectedConfig(resolve, ServiceTickets(_credentials)).bind_all(functions)
+    config = InjectedConfig(resolve, ServiceTickets(_credentials))
 
-    return ToolSetup.by_name(functions)
+    return ToolSetup.launched(module.TOOLS, launcher, (config,))
 
 
 @pytest.fixture(scope="module")

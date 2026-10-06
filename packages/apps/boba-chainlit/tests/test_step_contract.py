@@ -19,11 +19,9 @@ from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.outputs import ChatGeneration, LLMResult
 
 from boba.chainlit.chat.history import ConversationTranscript
-from boba.chainlit.chat.tracing import AgentTracer
-from boba.chainlit.chat.turn import TurnState
 from boba.chainlit.rendering.chat_view import ChatView, RecordingSink, StepRole
-from boba.connection_broker.sealing import SentConnections
 from boba.stand.refs import StandRefs
+from boba.toolkit.result import MarkdownResult
 
 THREAD = "22222222-2222-2222-2222-222222222222"
 TURN_KEY = "human-msg-1"
@@ -51,10 +49,11 @@ class TestStepContract:
     REASONING = "думаю над ответом"
 
     async def _live(self) -> RecordingSink:
-        """Ход глазами трейсера: reasoning, инструмент, завершение."""
+        """Ход глазами ленты: рассуждения — от трасера прогона модели,
+        вызов инструмента — от владельца хода, как их сообщает ChatCalls."""
         turn = RecordedTurn.recording(THREAD, TURN_KEY)
         sink = turn.recording_sink
-        tracer = AgentTracer(turn.feed, TurnState(), SentConnections())
+        tracer = turn.port.tracer
 
         llm_run = uuid4()
         await tracer.on_llm_start({}, [""], run_id=llm_run)
@@ -73,23 +72,8 @@ class TestStepContract:
         )
         await tracer.on_llm_end(result, run_id=llm_run)
 
-        tool_run = uuid4()
-        await tracer.on_tool_start(
-            {"name": "demo"},
-            "{'x': 1}",
-            run_id=tool_run,
-            inputs={"x": 1},
-            tool_call_id=CALL_ID,
-        )
-        await tracer.on_tool_end(
-            ToolMessage(
-                content="hi",
-                tool_call_id=CALL_ID,
-                id=TOOL_MSG_ID,
-                artifact={"kind": "markdown", "text": "hi"},
-            ),
-            run_id=tool_run,
-        )
+        await turn.port.tool_started(CALL_ID, "demo", {"x": 1})
+        await turn.port.tool_finished(CALL_ID, MarkdownResult(text="hi"))
         return sink
 
     async def _replay(self, runtime_stand: StandRefs) -> RecordingSink:

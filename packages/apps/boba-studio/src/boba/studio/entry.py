@@ -52,7 +52,7 @@ class StudioHost:
     def build(cls, config: StudioAppConfig) -> FastAPI:
         container = Container(level="app")
         container.provide(providers.get_runtime_config, config)
-        container.provide(providers.plugin_table, EntryPointPlugins.discover)
+        container.provide(providers.plugin_table, EntryPointPlugins().discover)
         container.provide(providers.app_name, AppName.STUDIO)
         container.provide(providers.seal_keys, SealKeys())
         container.provide(providers.call_contexts, CallContexts())

@@ -3,8 +3,8 @@
 Граф хода работает с BaseChatModel; мост конвертирует langchain-сообщения в
 конверт ChatRequest, события модели — в чанки и итоговое сообщение. Какой
 бэкенд за портом — мосту безразлично. LangchainMessages читает обратно то,
-что мост кладёт в additional_kwargs: рассуждения модели, — и ошибку из
-ToolMessage со статусом error.
+что мост кладёт в additional_kwargs: рассуждения модели, — и переводит итог
+вызова инструмента в ToolMessage и обратно.
 
 Ошибки: своих не выпускает; LlmError бэкенда уходит наверх как есть.
 """
@@ -14,7 +14,7 @@ from __future__ import annotations
 import json
 from collections.abc import AsyncIterator, Mapping, Sequence
 from enum import StrEnum
-from typing import Any, ClassVar
+from typing import Any, ClassVar, Literal
 
 from langchain_core.callbacks import (
     AsyncCallbackManagerForLLMRun,
@@ -57,8 +57,9 @@ from boba.llm.chat import (
     ToolCall,
     ToolSpec,
 )
+from boba.toolkit.dag import DagNode, JournalAddress, NodeOutcome
 from boba.toolkit.failure import InvokeErrorKind
-from boba.toolkit.result import ErrorResult, FailureResult, ToolArtifact
+from boba.toolkit.result import ErrorResult, ToolArtifact
 
 __all__ = ["ChatModelBridge", "LangchainMessages", "ResponseField"]
 
@@ -70,8 +71,19 @@ class ResponseField(StrEnum):
 
 
 class LangchainMessages:
-    """Чтение сообщений langchain: сообщение из результата генерации и
-    рассуждения, которые мост нормализовал в additional_kwargs."""
+    """Перевод между сообщениями langchain и типами чата и ядра.
+
+    Создаётся каждым, кто стоит на стыке с langchain: трасером прогона,
+    стыком графа с портом инструментов (LangchainPort), подготовкой хода, сборкой
+    ленты из истории и реестром журналов вызовов. Читает сообщение из
+    результата генерации и рассуждения, которые мост нормализовал в
+    additional_kwargs; итог вызова инструмента переводит в сообщение
+    инструмента (tool_message) и обратно (outcome_of) — другого места, где
+    итог становится ToolMessage или читается из него, нет.
+    """
+
+    JOURNAL_KEY: ClassVar[str] = "boba_journal"
+    """Ключ response_metadata сообщения инструмента с адресом журнала вызова."""
 
     def of_chunk(
         self, chunk: GenerationChunk | ChatGenerationChunk | None
@@ -106,15 +118,87 @@ class LangchainMessages:
 
         return str(value)
 
-    def failure_of(self, message: ToolMessage, text: str) -> FailureResult:
-        """Ошибка ToolMessage со статусом error: результат-ошибка из артефакта,
-        а без него — текст отказа, собранный langchain (text — содержимое
-        сообщения текстом)."""
-        revived = ToolArtifact.revive(message.artifact)
-        if isinstance(revived, FailureResult):
-            return revived
+    def tool_call(self, node: DagNode) -> LangchainToolCall:
+        """Вызов-узел записью вызова в сообщении ассистента истории."""
+        return LangchainToolCall(
+            name=node.tool, args=dict(node.args), id=node.key, type="tool_call"
+        )
 
-        return ErrorResult(message=text, error_kind=InvokeErrorKind.TOOL_ERROR)
+    def tool_message(self, outcome: NodeOutcome) -> ToolMessage:
+        """Итог вызова сообщением инструмента для модели и истории. Адрес
+        журнала вызова едет в response_metadata: история хранит его вместе
+        с итогом, и журнал читается после конца хода."""
+        status: Literal["success", "error"] = "success"
+        if outcome.errored:
+            status = "error"
+
+        message = ToolMessage(
+            content=outcome.content,
+            artifact=outcome.artifact,
+            name=outcome.tool,
+            tool_call_id=outcome.key,
+            status=status,
+        )
+        if outcome.journal is not None:
+            stamped = outcome.journal.model_dump(mode="json")
+            message.response_metadata[self.JOURNAL_KEY] = stamped
+
+        return message
+
+    def outcome_of(self, message: ToolMessage) -> NodeOutcome | None:
+        """Итог вызова из сообщения инструмента истории — обратный перевод
+        tool_message. None — в сообщении нет результата семейства и статус
+        не ошибка: запись старой истории, её показывают сырым текстом.
+
+        Ошибки:
+        pydantic.ValidationError — kind результата известен, а поля модели
+            либо адрес журнала не проходят.
+        """
+        errored = message.status == "error"
+        artifact = ToolArtifact.revive(message.artifact)
+        if artifact is None and errored:
+            artifact = ErrorResult(
+                message=self.text_of(message), error_kind=InvokeErrorKind.TOOL_ERROR
+            )
+
+        if artifact is None:
+            return None
+
+        name = message.name
+        if not name:
+            name = ""
+
+        return NodeOutcome(
+            key=message.tool_call_id,
+            tool=name,
+            content=self.text_of(message),
+            artifact=artifact,
+            errored=errored,
+            journal=self.journal_of(message),
+        )
+
+    def journal_of(self, message: ToolMessage) -> JournalAddress | None:
+        """Адрес журнала вызова из сообщения инструмента истории; None —
+        вызов исполнял не сервер с журналом. От результата в сообщении не
+        зависит: адрес несёт и запись без результата семейства.
+
+        Ошибки:
+        pydantic.ValidationError — поля адреса журнала не проходят модель.
+        """
+        stamped = message.response_metadata.get(self.JOURNAL_KEY)
+        if not stamped:
+            return None
+
+        return JournalAddress.model_validate(stamped)
+
+    @staticmethod
+    def text_of(message: BaseMessage) -> str:
+        """Содержимое сообщения текстом."""
+        content = message.content
+        if isinstance(content, str):
+            return content
+
+        return str(content)
 
 
 class ChatModelBridge(BaseChatModel):

@@ -12,7 +12,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import ClassVar
 
-from boba.toolkit.entry import ToolLike
+from boba.toolkit.facade import PayloadTool
 
 __all__ = ["LaunchSpec", "ToolPluginManifest"]
 
@@ -29,7 +29,7 @@ class ToolPluginManifest:
     """Группа entry points, в которой пакеты публикуют манифесты."""
 
     section: str
-    tools: tuple[ToolLike, ...] = ()
+    tools: tuple[PayloadTool, ...] = ()
 
 
 @dataclass(frozen=True)

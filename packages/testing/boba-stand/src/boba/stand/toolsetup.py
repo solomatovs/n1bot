@@ -14,17 +14,20 @@ from omegaconf import OmegaConf
 
 from boba.config import bind
 from boba.db.postgres.connection import PostgresConfig
+from boba.identity.context import CallContexts
 from boba.kerberos import KeytabAuth
 from boba.krb import KeytabCredentials, ServiceTicketIssuer
 from boba.runtime.launchers import ZygoteLaunchers
 from boba.sandbox.zygote import ZygotePolicy, ZygoteToolCaller
+from boba.stand.refs import StandRefs
 from boba.stand.sandbox import section_profile
 from boba.stand.zygote import ZygoteStand
 from boba.tool.pg.tools import PgToolConfig
 from boba.tool.web.tools import WebToolsConfig
 from boba.toolkit.chain import CallAmbient
+from boba.toolkit.facade import PayloadTool
 from boba.toolkit.launcher import LauncherFactory, ToolLauncher
-from boba.toolkit.result import ToolArtifact
+from boba.toolrun.injected import ParamSource
 from boba.transport.http.connection import HttpConnection
 
 __all__ = ["ZYGOTE", "Call", "ToolSetup"]
@@ -126,6 +129,18 @@ class ToolSetup:
         return launcher
 
     @staticmethod
+    def launched(
+        payloads: Sequence[PayloadTool],
+        launcher: ToolLauncher,
+        sources: Sequence[ParamSource],
+    ) -> dict[str, Any]:
+        """Инструменты секции по именам под обёрткой запуска launcher и
+        источниками параметров sources — как их ставит загрузчик."""
+        stand = StandRefs(CallContexts()).tool_stand(sources)
+
+        return ToolSetup.by_name(stand.launch(payloads, launcher))
+
+    @staticmethod
     def by_name(built: list[Any]) -> dict[str, Any]:
         tools: dict[str, Any] = {}
         for tool in built:
@@ -138,13 +153,7 @@ class Call:
 
     @staticmethod
     async def result(tool: Any, **args: Any) -> Any:
-        message = await tool.ainvoke(
-            {"name": tool.name, "args": args, "id": "c1", "type": "tool_call"}
-        )
-        result = ToolArtifact.revive(message.artifact)
-        if result is None:
-            raise AssertionError(f"{tool.name}: artifact не разобран")
-        return result
+        return await tool.run("c1", args)
 
     @staticmethod
     async def ok(tool: Any, **args: Any) -> Any:

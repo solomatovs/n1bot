@@ -31,7 +31,6 @@ from boba.identity.errors import RefusalError
 from boba.stand_core.context import CallStand
 from boba.toolkit.entry import ToolArgv
 from boba.toolkit.types import SecretReveal
-from boba.toolrun.wrapping import ToolSchema
 
 pytestmark = pytest.mark.anyio
 
@@ -75,9 +74,7 @@ class TestSchemaShownToTheModel:
     def test_profile_parameter_becomes_a_reference(self, tools: ProbeTools) -> None:
         tool = tools.bound(tools.one_connection(), SealKeys())
 
-        schema = ToolSchema.of(tool)
-        if schema is None:
-            raise AssertionError("схема инструмента пропала")
+        schema = tool.args_schema
 
         field = schema.model_fields["connection"]
         if field.annotation is not str:

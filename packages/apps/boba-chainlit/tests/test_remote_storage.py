@@ -24,6 +24,7 @@ from boba.mcp_client.client import (
     McpServers,
     NamedBlocks,
 )
+from boba.toolrun.hosted import DirectCalls
 from boba.workspace.launcher import ReadWindow
 
 pytestmark = [pytest.mark.anyio, pytest.mark.integration]
@@ -46,7 +47,11 @@ def service(tmp_path_factory: pytest.TempPathFactory) -> Iterator[ServiceProcess
 @pytest.fixture
 async def servers(service: ServiceProcess) -> AsyncIterator[McpServers]:
     opened = McpServers(
-        service.servers(), NamedBlocks(), DroppedSignals(), CallContexts()
+        service.servers(),
+        NamedBlocks(),
+        DroppedSignals(),
+        CallContexts(),
+        DirectCalls(),
     )
     await opened.start()
     try:

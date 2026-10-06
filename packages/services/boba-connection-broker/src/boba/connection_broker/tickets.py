@@ -8,8 +8,6 @@
 Ошибки:
 KerberosError — билет к соединению не выпущен, вызов начинать нечем.
 ToolConfigError — секция требует делегирования, а источника кредов нет.
-InjectedAsyncOnlyError — тело инструмента вызвано синхронно: билет выпускается
-    только в async-теле.
 """
 
 from __future__ import annotations

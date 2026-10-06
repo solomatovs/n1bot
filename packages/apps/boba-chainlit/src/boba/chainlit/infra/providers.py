@@ -10,7 +10,6 @@ from typing import Annotated
 from langchain.agents.middleware import ModelRequest, wrap_model_call
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
-from langchain_core.tools import BaseTool
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from langgraph.graph.state import CompiledStateGraph
@@ -46,8 +45,8 @@ from boba.chainlit.infra.session import (
 from boba.chainlit.rendering.chat_view import StepText
 from boba.chainlit.rendering.mount import (
     ChatAttachments,
+    ChatCalls,
     ChatMount,
-    MountedToolServer,
 )
 from boba.chat.profiles import (
     AgentSettings,
@@ -76,8 +75,10 @@ from boba.runtime.di import Container, Depends
 from boba.runtime.elements import ChatTables
 from boba.runtime.storage import StorageClient
 from boba.runtime.users import UsersTable
+from boba.toolkit.dag import NodeCalls, ToolServer
+from boba.toolrun.hosted import HostedTool
 from boba.toolrun.registry import ToolRegistry
-from boba.toolrun.stream_calls import ToolServer, ToolServers
+from boba.toolrun.stream_calls import ToolServers
 
 
 def get_app_config() -> AppConfig:
@@ -189,7 +190,7 @@ def session_source(
 def session_tools(
     registry: Annotated[ToolRegistry, Depends(runtime.tool_registry)],
     selected: Annotated[SelectedProfile, Depends(session_profile, scope="session")],
-) -> list[BaseTool]:
+) -> list[HostedTool]:
     return registry.for_session(current_session().roles, selected.name)
 
 
@@ -398,18 +399,40 @@ def sent_connections() -> SentConnections:
     return SentConnections()
 
 
-async def mcp_servers(
+def chat_mount(
+    contexts: Annotated[CallContexts, Depends(runtime.call_contexts)],
+    runs: Annotated[Runs, Depends(runtime.runs)],
+) -> ChatMount:
+    """Монтирование результатов вызовов на поверхность чата: один объект на
+    процесс, общий для пути вызова узла и вложений MCP-серверов."""
+    return ChatMount(contexts, runs)
+
+
+def node_calls(
+    contexts: Annotated[CallContexts, Depends(runtime.call_contexts)],
+    runs: Annotated[Runs, Depends(runtime.runs)],
+    sent: Annotated[SentConnections, Depends(sent_connections)],
+    mount: Annotated[ChatMount, Depends(chat_mount)],
+) -> ChatCalls:
+    """Путь вызова узла к телу в чате: вызов виден ленте идущего хода шагом.
+    Один объект на процесс: его берут исполнитель своих инструментов и
+    порты MCP-серверов."""
+    return ChatCalls(contexts, runs, sent, mount)
+
+
+async def mcp_servers(  # noqa: PLR0913 — клиент собирается всеми входами чата
     c: Annotated[AppConfig, Depends(get_app_config)],
     storage: Annotated[StorageClient, Depends(storage_provider)],
     contexts: Annotated[CallContexts, Depends(runtime.call_contexts)],
-    runs: Annotated[Runs, Depends(runtime.runs)],
+    mount: Annotated[ChatMount, Depends(chat_mount)],
     journals: Annotated[RemoteJournals, Depends(remote_journals)],
+    calls: Annotated[NodeCalls, Depends(node_calls)],
 ) -> AsyncIterator[McpServers]:
     """MCP-серверы процесса: подключаются на старте, закрываются на остановке.
     Файлы из их результатов ложатся в workspace треда вложениями чата,
     сигналы роста журналов вызовов уходят реестру журналов."""
-    files = ChatAttachments(contexts, storage, ChatMount(contexts, runs))
-    servers = McpServers(c.mcp, files, journals, contexts)
+    files = ChatAttachments(contexts, storage, mount)
+    servers = McpServers(c.mcp, files, journals, contexts, calls)
     await servers.start()
     try:
         yield servers
@@ -423,7 +446,7 @@ async def langchain_agent(  # noqa: PLR0913
         AgentGraphBuilder, Depends(session_graph_builder, scope="session")
     ],
     saver: Annotated[BaseCheckpointSaver, Depends(langchain_checkpoint_saver)],
-    tools: Annotated[list[BaseTool], Depends(session_tools, scope="session")],
+    tools: Annotated[list[HostedTool], Depends(session_tools, scope="session")],
     settings: Annotated[
         AgentSettings, Depends(session_agent_settings, scope="session")
     ],
@@ -433,8 +456,8 @@ async def langchain_agent(  # noqa: PLR0913
     contexts: Annotated[CallContexts, Depends(runtime.call_contexts)],
     mcp: Annotated[McpServers, Depends(mcp_servers)],
     journals: Annotated[RemoteJournals, Depends(remote_journals)],
-    runs: Annotated[Runs, Depends(runtime.runs)],
     selected: Annotated[SelectedProfile, Depends(session_profile, scope="session")],
+    calls: Annotated[ChatCalls, Depends(node_calls)],
 ) -> CompiledStateGraph:
     # один порт для графа: свои серверы и MCP-серверы профиля сессии.
     # На MCP-сервер чат входит от имени пользователя: его identifier — логин,
@@ -450,28 +473,21 @@ async def langchain_agent(  # noqa: PLR0913
     )
     ttl = timedelta(seconds=bind(raw, "connections", ConnectionsConfig).seal_ttl_sec)
 
-    # тело удалённого инструмента о чате не знает: панель и вложения его
-    # результата монтирует порт-обёртка, как обвязка ChatMount у своих тел
-    mount = ChatMount(contexts, runs)
     ports: list[ToolServer] = [
-        SealingToolServer(registry.server(tools), connections, sent, ttl)
+        SealingToolServer(registry.server(tools, calls), connections, sent, ttl)
     ]
     for port in remote:
-        mounted = MountedToolServer(port, mount, contexts)
-        ports.append(SealingToolServer(mounted, connections, sent, ttl))
+        ports.append(SealingToolServer(port, connections, sent, ttl))
+        calls.shown(port.tools())
 
     service = ToolServers(ports)
-
-    names: list[str] = []
-    for offered in service.tools():
-        names.append(offered.name)
 
     spec = GraphSpec(
         chat=chat,
         service=service,
         system_prompt=settings.system_prompt,
         checkpointer=saver,
-        history=build_history_view(frozenset(names), settings.history_messages),
+        history=build_history_view(service.names(), settings.history_messages),
     )
 
     return builder.build(spec)

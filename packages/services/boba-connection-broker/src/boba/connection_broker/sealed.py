@@ -14,8 +14,6 @@ RefusalError — значение не запечатано, запечатан�
     просрочено, выдано другому пользователю либо несёт соединение другого
     вида; kind из ConnectionRefusal.
 ToolConfigError — параметр объявлен непригодной моделью соединения.
-InjectedAsyncOnlyError — тело инструмента вызвано синхронно: профиль
-    подставляется только в async-теле.
 """
 
 from __future__ import annotations
@@ -24,8 +22,6 @@ import logging
 from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from typing import ClassVar
-
-from langchain_core.tools import BaseTool
 
 from boba.connection_broker.user_connections import (
     ConnectionParamHooks,
@@ -37,6 +33,7 @@ from boba.connections.marks import ConnectionRefusal
 from boba.connections.sealed import SealedConnection, SealFeature, SealKeys
 from boba.identity.context import CallContexts
 from boba.identity.errors import RefusalError
+from boba.toolrun.hosted import HostedTool
 from boba.toolrun.injected import AsyncInjected, ParamSource
 from boba.toolrun.stream_calls import NodeArgs
 
@@ -179,7 +176,7 @@ class SealedConnectionParams(NodeArgs, ParamSource):
         self._hooks = ConnectionParamHooks(types_ref, SealedConnectionParam.ARGUMENT)
         self._params: dict[str, dict[str, SealedConnectionParam]] = {}
 
-    def bind_all(self, tools: Sequence[BaseTool]) -> None:
+    def bind_all(self, tools: Sequence[HostedTool]) -> None:
         self._hooks.bind_all(tools, self._hook)
 
     def features(self) -> Mapping[str, Mapping[str, object]]:

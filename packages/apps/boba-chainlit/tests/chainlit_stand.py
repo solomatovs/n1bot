@@ -8,10 +8,12 @@ import sys
 import time
 from collections.abc import (
     AsyncIterator,
+    Generator,
     Iterator,
     Mapping,
     Sequence,
 )
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import timedelta
 from pathlib import Path
@@ -26,10 +28,8 @@ from langchain_core.messages import (
     AIMessage,
     BaseMessage,
     HumanMessage,
-    ToolCall,
     ToolMessage,
 )
-from langchain_core.tools import BaseTool
 from omegaconf import DictConfig, OmegaConf
 from psycopg import sql
 
@@ -37,10 +37,16 @@ from boba.auth import JwtTokens
 from boba.auth.credentials import KerberosCredentialSource, NoRefresh
 from boba.canvas.journal import StreamSlice
 from boba.canvas.keys import WorkspaceMount
-from boba.chainlit.agent.bridge import ChatModelBridge
+from boba.chainlit.agent.bridge import ChatModelBridge, LangchainMessages
 from boba.chainlit.canvas.remote import RemoteJournals, RemoteStreams
 from boba.chainlit.chat.feed import TurnFeed
 from boba.chainlit.chat.history import ThreadMessages, TranscriptFeed
+from boba.chainlit.chat.turn import (
+    ChatTurn,
+    Question,
+    TurnHistory,
+    TurnRecord,
+)
 from boba.chainlit.data.data_layer import PostgresDataLayer
 from boba.chainlit.data.remote_storage import FileOwners, RemoteStorageClient
 from boba.chainlit.domain.keys import AppPrefix, AttachmentLinks, AttachmentUrl
@@ -58,6 +64,7 @@ from boba.chainlit.rendering.chat_view import (
     RecordingSink,
     StepRole,
 )
+from boba.chainlit.rendering.mount import ChatCalls, ChatMount
 from boba.chainlit.rendering.renderer import ChatRenderer, NoSurface
 from boba.chat.profiles import ChatProfileConfig, ChatProfiles
 from boba.config import bind
@@ -72,7 +79,7 @@ from boba.identity.context import (
     CallContexts,
     Scope,
 )
-from boba.identity.locks import MemoryLiveLocks
+from boba.identity.locks import MemoryLiveLocks, RunLocking
 from boba.identity.run import Runs
 from boba.identity.session import Login, UserMetadataField
 from boba.identity.signin import SignedIn, SignInMetadata
@@ -82,7 +89,6 @@ from boba.krb.seal import SsoTickets, TicketSealer
 from boba.llm.providers import ChatModelConfig, LlmProviders, LlmProviderTypes
 from boba.mcp_client.client import (
     DroppedSignals,
-    JournalAddress,
     McpCaller,
     McpServers,
     McpServersConfig,
@@ -111,8 +117,18 @@ from boba.stand_core.context import FakeTurn as FakeTurn
 from boba.stand_core.fakes import FakeSecret as FakeSecret
 from boba.stand_core.fakes import FakeUrl as FakeUrl
 from boba.toolkit.channels import JournalChannel
+from boba.toolkit.dag import (
+    DagNode,
+    JournalAddress,
+    NodeCalls,
+    NodeOutcome,
+    NodeOutcomes,
+    ToolCard,
+    ToolServer,
+)
+from boba.toolkit.result import MarkdownResult, ToolResultBase
 from boba.toolkit.wire import JournalSignal
-from boba.toolrun.stream_calls import ToolServer
+from boba.toolrun.hosted import DirectCalls
 from boba.toolrun.streams import CallJournals
 from boba.workspace.binaries import TrustedBinaries
 from boba.workspace.launcher import MountingConfig, ReadWindow
@@ -282,18 +298,21 @@ class ToolService:
 
 class ServiceTool:
     """Инструмент сервиса глазами теста: вызов уходит портом чата от имени
-    пользователя текущей сессии, ответ — ToolMessage, как у хода.
+    пользователя текущей сессии, ответ — итог вызова порта.
 
-    Создаётся ServiceTools по имени инструмента; интерфейс ainvoke тот же,
-    что у инструмента langchain, поэтому вызов разбирает boba.stand.toolsetup.Call.
+    Создаётся ServiceTools по имени инструмента; интерфейс run тот же,
+    что у инструмента хоста, поэтому вызов разбирает boba.stand.toolsetup.Call.
     """
 
     def __init__(self, name: str, tools: "ServiceTools") -> None:
         self.name = name
         self._tools = tools
 
-    async def ainvoke(self, call: ToolCall) -> ToolMessage:
-        return await self._tools.submit(call)
+    async def run(self, call_id: str, args: Mapping[str, Any]) -> ToolResultBase:
+        node = DagNode.model_validate({"key": call_id, "tool": self.name, "args": args})
+        outcome = await self._tools.submit(node)
+
+        return outcome.artifact
 
 
 class ServiceTools:
@@ -313,11 +332,18 @@ class ServiceTools:
         service: ToolService,
         connections: ArmedConnections,
         contexts: CallContexts,
+        calls: NodeCalls,
     ) -> None:
+        """calls — путь вызова узла к телу: DirectCalls либо путь чата
+        (ChatCalls), когда тесту нужны шаги вызова и монтирование."""
         self._service = service
         self._connections = connections
         self._servers = McpServers(
-            service.servers(), NamedBlocks(), DroppedSignals(), contexts
+            service.servers(),
+            NamedBlocks(),
+            DroppedSignals(),
+            contexts,
+            calls,
         )
         self.sent = SentConnections()
         """Что ушло сервису вместо ссылок на соединения в идущих вызовах."""
@@ -350,7 +376,7 @@ class ServiceTools:
 
         return ports[0]
 
-    async def submit(self, call: ToolCall) -> ToolMessage:
+    async def submit(self, call: DagNode) -> NodeOutcome:
         port = SealingToolServer(
             await self.port(), self._connections, self.sent, self.SEAL_TTL
         )
@@ -388,7 +414,7 @@ class NoConnectionStore:
 class SessionTools:
     """Инструменты сессии и порт инструментов над ними, как их видит граф хода."""
 
-    tools: list[BaseTool]
+    tools: list[ToolCard]
     service: ToolServer
 
 
@@ -414,7 +440,7 @@ async def service_tools(
     connections = ArmedConnections(
         NoConnectionStore(), lambda: credentials, call_stand.contexts
     )
-    opened = ServiceTools(tool_service, connections, call_stand.contexts)
+    opened = ServiceTools(tool_service, connections, call_stand.contexts, DirectCalls())
     await opened.start()
     try:
         yield opened
@@ -477,7 +503,13 @@ class PerCallStreams(RemoteStreams):
         self._config = config
 
     def _client(self) -> McpServers:
-        return McpServers(self._config, NamedBlocks(), DroppedSignals(), self._contexts)
+        return McpServers(
+            self._config,
+            NamedBlocks(),
+            DroppedSignals(),
+            self._contexts,
+            DirectCalls(),
+        )
 
     async def slice_at(
         self, thread_id: str, call_id: str, channel: JournalChannel, offset: int
@@ -522,9 +554,9 @@ class RemoteStand:
 
     def recorded(self, thread_id: str, call_id: str) -> None:
         """Вызов треда исполнил сервер стенда: запуск — сам тред."""
-        message = ToolMessage(content="", tool_call_id=call_id)
-        JournalAddress(server=self.SERVER, run=thread_id).stamp(message)
-        self.history.by_thread.setdefault(thread_id, []).append(message)
+        self.history.by_thread.setdefault(thread_id, []).append(
+            JournaledCall(self.SERVER, thread_id).message(call_id)
+        )
 
     def live(self, thread_id: str, call_id: str, channel: str, size: int) -> None:
         """Сигнал роста журнала идущего вызова: канал дорос до size байт."""
@@ -991,11 +1023,45 @@ class SsoStand:
         return tickets.sealer.seal(ticket)
 
 
+class JournaledCall:
+    """Сообщение инструмента истории о вызове, который исполнил сервер с
+    журналом: итог несёт адрес журнала — сервер и запуск на нём. Создаётся
+    стендами тестов панели живого вывода; сообщение собирает тот же перевод,
+    что и ход чата (LangchainMessages)."""
+
+    TOOL: ClassVar[str] = "bash"
+
+    def __init__(self, server: str, run: str) -> None:
+        self._address = JournalAddress(server=server, run=run)
+        self._outcomes = NodeOutcomes()
+        self._messages = LangchainMessages()
+
+    def message(self, call_id: str) -> ToolMessage:
+        call = DagNode(key=call_id, tool=self.TOOL)
+        outcome = self._outcomes.of(call, MarkdownResult(text=""), False)
+        addressed = outcome.model_copy(update={"journal": self._address})
+
+        return self._messages.tool_message(addressed)
+
+
+class StandTurnHistory(TurnHistory):
+    """Реализация TurnHistory стенда хода: записи исхода копятся в памяти."""
+
+    def __init__(self) -> None:
+        self.records: list[TurnRecord] = []
+
+    async def remember(self, record: TurnRecord) -> None:
+        self.records.append(record)
+
+
 class RecordedTurn:
-    """Стенд хода: шина в памяти, рендерер над ChatView и производитель хода.
+    """Стенд хода: шина в памяти, рендерер над ChatView, производитель хода,
+    сам ход (ChatTurn) и путь вызова узла чата (ChatCalls).
 
     Сообщения производителя доходят до ленты синхронно внутри publish, поэтому
-    после await любого метода feed лента (sink) уже обновлена.
+    после await любого метода feed лента (sink) уже обновлена. Шаги вызовов
+    инструментов рисует ход port по событиям порта запуска; calls отдаётся
+    исполнителю узлов, и под running() его вызовы видны ленте стенда.
     """
 
     def __init__(
@@ -1005,10 +1071,13 @@ class RecordedTurn:
         sink: ChatSink,
         user_name: str = "tester",
     ) -> None:
+        self._thread_id = thread_id
         self.bus = MemoryMessageBus("test-chainlit")
         self.payloads = MemoryPayloadStore()
         self.sink = sink
-        journals = CallJournals(None, Runs(CallContexts()))
+        self.contexts = CallContexts()
+        self.runs = Runs(self.contexts)
+        journals = CallJournals(None, self.runs)
         self.view = ChatView(thread_id, sink, journals, user_name=user_name)
         self.renderer = ChatRenderer(thread_id, self.view, self.payloads, NoSurface())
         self.leave = self.bus.subscribe(Scope.chat(thread_id), self.renderer.apply)
@@ -1016,6 +1085,43 @@ class RecordedTurn:
             self.bus, self.payloads, Scope.chat(thread_id), turn_id, LockToken.local()
         )
         self.renderer.begin_turn(turn_id)
+        self._turn_id = turn_id
+        self.history = StandTurnHistory()
+        self._ports: list[ChatTurn] = []
+        self.sent = SentConnections()
+        self.calls = ChatCalls(
+            self.contexts, self.runs, self.sent, ChatMount(self.contexts, self.runs)
+        )
+
+    @property
+    def port(self) -> ChatTurn:
+        """Ход стенда — владелец запуска. Создаётся при первом обращении:
+        его трасеру нужен контекст chainlit, которого у тестов одной ленты
+        нет."""
+        if not self._ports:
+            self._ports.append(
+                ChatTurn(
+                    thread_id=self._thread_id,
+                    feed=self.feed,
+                    history=self.history,
+                    question=Question(key=self._turn_id, text="question"),
+                    locking=RunLocking(
+                        locks=MemoryLiveLocks("test:0", 20), heartbeat_sec=1.0
+                    ),
+                    contexts=self.contexts,
+                    runs=self.runs,
+                )
+            )
+
+        return self._ports[0]
+
+    @contextmanager
+    def running(self) -> Generator[ChatTurn, None, None]:
+        """Идущий ход стенда: контекст вызова хода и запуск в реестре, чьим
+        владельцем стоит port."""
+        context = CallStand().context(self._thread_id)
+        with self.runs.open(context, self.port):
+            yield self.port
 
     @classmethod
     def recording(

@@ -122,7 +122,7 @@ class McpHost:
         self._config = config
         self._container = Container(level="app")
         self._container.provide(providers.get_process_config, config)
-        self._container.provide(providers.plugin_table, EntryPointPlugins.discover)
+        self._container.provide(providers.plugin_table, EntryPointPlugins().discover)
         self._container.provide(providers.seal_keys, SealKeys())
         self._container.provide(providers.call_contexts, CallContexts())
         # сигнал «обнови билет входа» слушает страница чата: у сервиса её нет

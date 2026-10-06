@@ -3,12 +3,17 @@
 Сервер инструментов отдаёт итог вызова по MCP тремя частями: текст для
 модели (content), результат семейства ToolResultBase словарём
 (structuredContent) и служебные поля в _meta. Клиент собирает из них тот же
-итог: класс результата выбирается по kind через реестр видов. Обе стороны
-пользуются одним ResultWire, поэтому формат описан в одном месте.
+итог NodeOutcome: класс результата выбирается по kind через реестр видов,
+статус и запуск — из _meta. Обе стороны пользуются одним ResultWire,
+поэтому формат описан в одном месте.
+
+Здесь же модели границы клиент—сервер: служебные поля запроса
+(RequestFields) и настройки расширений сервера (JournalFeature, FilesFeature).
 
 Ошибки:
 ValidationError — kind результата клиенту известен, а поля не проходят его
-    модель.
+    модель; служебные поля запроса либо настройки расширения не проходят
+    свою модель.
 """
 
 from __future__ import annotations
@@ -16,12 +21,13 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Any
+from typing import Any, ClassVar
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from boba.toolkit.channels import JournalChannel
-from boba.toolkit.result import FailureResult, ToolArtifact, ToolResultBase
+from boba.toolkit.dag import DagNode, JournalAddress, NodeOutcome, NodeOutcomes
+from boba.toolkit.result import ToolArtifact
 
 __all__ = [
     "CallStatus",
@@ -29,9 +35,9 @@ __all__ = [
     "JournalFeature",
     "JournalRead",
     "JournalSignal",
+    "RequestFields",
     "RequestMeta",
     "ResultWire",
-    "RevivedResult",
     "WireMeta",
     "WireResult",
 ]
@@ -62,32 +68,79 @@ class WireMeta(StrEnum):
     RUN = "run"
 
 
-class JournalFeature(StrEnum):
-    """Расширение сервера «журнал вызовов»: идентификатор и ключи настроек.
+class RequestFields(BaseModel):
+    """Служебные поля запроса tools/call в _meta, моделью.
 
-    READ — имя инструмента, читающего журнал окнами. PATH — путь маршрута,
-    по которому канал журнала скачивается целиком:
-    `{PATH}/{run}/{node}/{channel}` (GET, потоком, с Range)."""
+    Клиент (McpToolServer) собирает их и шлёт серверу словарём meta();
+    сервер разбирает _meta запроса этой же моделью (SentMeta). Пустое поле —
+    клиент его не прислал; остальные ключи _meta (токен прогресса) модель
+    пропускает.
+    """
 
-    ID = "com.boba/journal"
-    READ = "read"
-    PATH = "path"
+    model_config = ConfigDict(frozen=True, extra="ignore", populate_by_name=True)
+
+    call_id: str = Field(
+        default="",
+        validation_alias=RequestMeta.CALL_ID.value,
+        serialization_alias=RequestMeta.CALL_ID.value,
+    )
+    scope: str = Field(
+        default="",
+        validation_alias=RequestMeta.SCOPE.value,
+        serialization_alias=RequestMeta.SCOPE.value,
+    )
+
+    def meta(self) -> dict[str, str]:
+        """Поля, как они едут в _meta запроса: пустые не шлются."""
+        return self.model_dump(by_alias=True, exclude_defaults=True)
 
 
-class FilesFeature(StrEnum):
-    """Расширение сервера «файлы workspace»: идентификатор и ключи настроек.
+class JournalFeature(BaseModel):
+    """Настройки расширения сервера «журнал вызовов».
 
-    PATH — путь маршрута файлов на сервере: файл области лежит на
-    `{PATH}/{scope}/{dir}/{name}` (PUT — запись потоком, GET — чтение с
-    Range, HEAD — размер и версия, DELETE — удаление). UPLOAD — имя
-    инструмента, которым модель узнаёт адрес загрузки файла. WORKSPACE —
+    Сервер объявляет их клиенту при подключении словарём settings(); клиент
+    разбирает объявление этой же моделью один раз, в open(). read — имя
+    инструмента, читающего журнал окнами. path — путь маршрута, по которому
+    канал журнала скачивается целиком: `{path}/{run}/{node}/{channel}` (GET,
+    потоком, с Range).
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    ID: ClassVar[str] = "com.boba/journal"
+
+    read: str = Field(min_length=1)
+    path: str = Field(min_length=1)
+
+    def settings(self) -> dict[str, object]:
+        """Настройки расширения, как они едут клиенту."""
+        return self.model_dump(mode="json")
+
+
+class FilesFeature(BaseModel):
+    """Настройки расширения сервера «файлы workspace».
+
+    Сервер объявляет их клиенту при подключении словарём settings(); клиент
+    разбирает объявление этой же моделью один раз, в open(). path — путь
+    маршрута файлов на сервере: файл области лежит на
+    `{path}/{scope}/{dir}/{name}` (PUT — запись потоком, GET — чтение с
+    Range, HEAD — размер и версия, DELETE — удаление). upload — имя
+    инструмента, которым модель узнаёт адрес загрузки файла. workspace —
     каталог workspace глазами инструментов сервера: пути файлов в их
-    результатах начинаются с него."""
+    результатах начинаются с него.
+    """
 
-    ID = "com.boba/files"
-    PATH = "path"
-    UPLOAD = "upload"
-    WORKSPACE = "workspace"
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    ID: ClassVar[str] = "com.boba/files"
+
+    path: str = Field(min_length=1)
+    upload: str = Field(min_length=1)
+    workspace: str = Field(min_length=1)
+
+    def settings(self) -> dict[str, object]:
+        """Настройки расширения, как они едут клиенту."""
+        return self.model_dump(mode="json")
 
 
 class JournalRead(BaseModel):
@@ -149,47 +202,40 @@ class WireResult:
     meta: Mapping[str, Any]
 
 
-@dataclass(frozen=True)
-class RevivedResult:
-    """Итог вызова, собранный клиентом из частей MCP.
-
-    artifact — результат семейства; None, когда сервер прислал вид, которого
-    клиент не знает, либо не прислал structuredContent вовсе: тогда клиент
-    показывает текст content.
-    """
-
-    content: str
-    artifact: ToolResultBase | None
-    status: CallStatus
-    call_id: str
-
-
 class ResultWire:
     """Перевод итога вызова в части MCP (сервер) и обратно (клиент).
 
-    Сбой узнаётся двумя способами: статус вызова error — вызов не дошёл до
-    тела (аргументы, права, отказ плана) — либо результат семейства сбоев:
-    тело вернуло отказ упакованным результатом, и статус при этом success.
-    Точный статус едет в meta, чтобы клиент восстановил его как был.
+    Создаётся компонентом ответов сервера (McpReplies) и разбором ответов в
+    клиенте (McpResults). Сбой узнаётся двумя способами: статус вызова error
+    — вызов не дошёл до тела (аргументы, права, отказ плана) — либо
+    результат семейства сбоев: тело вернуло отказ упакованным результатом, и
+    статус при этом success. Точный статус едет в meta, и клиент
+    восстанавливает итог таким, каким его отдал порт сервера.
     """
 
-    def packed(
-        self, content: str, artifact: ToolResultBase, status: CallStatus, call_id: str
-    ) -> WireResult:
-        failed = status is CallStatus.ERROR
-        if isinstance(artifact, FailureResult):
+    def __init__(self) -> None:
+        self._outcomes = NodeOutcomes()
+
+    def packed(self, outcome: NodeOutcome) -> WireResult:
+        """Итог вызова частями MCP: идентификатор вызова и статус — в meta."""
+        status = CallStatus.SUCCESS
+        if outcome.errored:
+            status = CallStatus.ERROR
+
+        failed = outcome.errored
+        if outcome.failed():
             failed = True
 
         meta = {
             WireMeta.NAMESPACE.value: {
                 WireMeta.STATUS.value: status.value,
-                WireMeta.CALL_ID.value: call_id,
+                WireMeta.CALL_ID.value: outcome.key,
             }
         }
 
         return WireResult(
-            content=content,
-            structured=artifact.model_dump(mode="json"),
+            content=outcome.content,
+            structured=outcome.artifact.model_dump(mode="json"),
             is_error=failed,
             meta=meta,
         )
@@ -205,30 +251,33 @@ class ResultWire:
 
         return stamped
 
-    def run_of(self, meta: Mapping[str, Any]) -> str:
-        """Идентификатор запуска из служебных полей итога; пусто — его нет."""
-        own = meta.get(WireMeta.NAMESPACE.value)
-        if not isinstance(own, Mapping):
-            return ""
+    def revived(
+        self, wire: WireResult, call: DagNode, server: str
+    ) -> NodeOutcome | None:
+        """Итог вызова call из частей MCP — обратный перевод packed. server —
+        имя, под которым клиент знает сервер: с запуском из meta оно даёт
+        адрес журнала вызова. None — результата семейства в частях нет:
+        сервер прислал вид, которого клиент не знает, либо не прислал
+        structuredContent вовсе.
 
-        run = own.get(WireMeta.RUN.value)
-        if isinstance(run, str):
-            return run
-
-        return ""
-
-    def revived(self, wire: WireResult) -> RevivedResult:
-        """Ошибки:
+        Ошибки:
         ValidationError — kind известен, а поля модели не проходят.
         """
-        own = wire.meta.get(WireMeta.NAMESPACE.value)
+        artifact = ToolArtifact.revive(wire.structured)
+        if artifact is None:
+            return None
 
-        return RevivedResult(
-            content=wire.content,
-            artifact=ToolArtifact.revive(wire.structured),
-            status=self._status(wire, own),
-            call_id=self._call_id(own),
-        )
+        own = wire.meta.get(WireMeta.NAMESPACE.value)
+        errored = self._status(wire, own) is CallStatus.ERROR
+        outcome = self._outcomes.of(call, artifact, errored)
+
+        run = self._run(own)
+        if not run:
+            return outcome
+
+        address = JournalAddress(server=server, run=run)
+
+        return outcome.model_copy(update={"journal": address})
 
     @staticmethod
     def _status(wire: WireResult, own: object) -> CallStatus:
@@ -247,12 +296,13 @@ class ResultWire:
         return CallStatus.SUCCESS
 
     @staticmethod
-    def _call_id(own: object) -> str:
+    def _run(own: object) -> str:
+        """Идентификатор запуска из служебных полей итога; пусто — его нет."""
         if not isinstance(own, Mapping):
             return ""
 
-        call_id = own.get(WireMeta.CALL_ID.value)
-        if isinstance(call_id, str):
-            return call_id
+        run = own.get(WireMeta.RUN.value)
+        if isinstance(run, str):
+            return run
 
         return ""

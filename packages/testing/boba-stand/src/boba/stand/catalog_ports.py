@@ -15,12 +15,11 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from pathlib import Path
+from typing import ClassVar
 from uuid import UUID
 
-from langchain_core.tools import StructuredTool
 from pydantic import BaseModel, ConfigDict
 
-from boba.access import ProfileGrant, RoleConfig, ToolAccess
 from boba.auth.credentials import KerberosCredentialSource, NoRefresh
 from boba.catalog_service import (
     ConnectionDirectory,
@@ -37,15 +36,11 @@ from boba.identity.context import Subject
 from boba.stand.fake_sync import FakeConnection, fake_pg_snapshot
 from boba.stand.refs import StandRefs
 from boba.toolkit.chain import CallAmbient
-from boba.toolkit.entry import ToolMain
-from boba.toolkit.facade import PayloadTool
 from boba.toolkit.ports import StreamSpecs
-from boba.toolkit.wrap import ToolProcessWrap
-from boba.toolrun.call_id import CallFields
 from boba.toolrun.dag_run import DagRunner
+from boba.toolrun.hosted import DirectCalls
 from boba.toolrun.injected import InjectedConfig, ToolConfigError
 from boba.toolrun.invoke import ToolInvoker
-from boba.toolrun.process import ProcessLauncherConfig, ProcessToolCaller
 from boba.toolrun.registry import ToolRegistry
 
 
@@ -55,10 +50,12 @@ class NoSyncTools(SyncTools):
     async def invoker(self, subject: Subject) -> ToolInvoker:
         runner = DagRunner(
             {},
+            {},
             StreamSpecs({}),
             CallAmbient(),
             StandRefs.STREAM_CONFIG.timings(),
             StandRefs.STREAM_CONFIG.pipe_bytes,
+            DirectCalls(),
         )
 
         return ToolInvoker({}, runner)
@@ -95,10 +92,11 @@ class CatalogPorts:
     подключений.
     """
 
+    CALL_TIMEOUT_SEC: ClassVar[float] = 60.0
+
     def __init__(self, stand: StandRefs) -> None:
-        self._contexts = stand.contexts
+        self._stand = stand
         self._runs = stand.runs
-        self._ambient = stand.ambient
 
     def stub(self, connections: Iterable[ConnectionInfo]) -> SyncPorts:
         return self.over(KnownConnectionDirectory(connections, None))
@@ -124,35 +122,7 @@ class CatalogPorts:
         """Реестр инструментов с фейком снятия поверх субпроцессного лончера;
         домен каталога подставляется injected-конфигом, keytab его подключения
         едет билетом вызова."""
-        workdir = site.workdir
-        role = site.role
-        profile = site.profile
         catalog = site.catalog
-        launcher = ProcessToolCaller(
-            "pipe",
-            ProcessLauncherConfig.model_validate(
-                {
-                    "provider": "process",
-                    "workdir": str(workdir),
-                    "timeout_sec": 60.0,
-                    "channel_limit_bytes": 8_000_000,
-                    "stderr_tail_bytes": 4096,
-                    "kill_grace_sec": 0.5,
-                }
-            ),
-            self._contexts,
-            self._ambient,
-        )
-
-        copies: list[PayloadTool] = []
-        for tool in ToolMain.toolset(fake_pg_snapshot):
-            if not isinstance(tool, PayloadTool):
-                msg = f"fake sync tool {tool.name!r} is not a PayloadTool"
-                raise TypeError(msg)
-
-            copies.append(tool.model_copy())
-
-        specs = ToolProcessWrap(self._ambient).guard_all(copies, launcher)
 
         def resolve(param: str, annotation: object) -> object:
             if annotation is CatalogStoreConfig:
@@ -167,40 +137,14 @@ class CatalogPorts:
         def credentials() -> CredentialSource:
             return KerberosCredentialSource(None, NoRefresh())
 
-        bridged: list[StructuredTool] = []
-        for copy in copies:
-            bridged.append(
-                StructuredTool(
-                    name=copy.name,
-                    description=copy.description,
-                    args_schema=copy.args_schema,
-                    func=copy.func,
-                    coroutine=copy.coroutine,
-                    response_format=PayloadTool.RESPONSE_FORMAT,
-                )
-            )
-
-        InjectedConfig(resolve, ServiceTickets(credentials)).bind_all(bridged)
-        CallFields().attach_all(list(bridged))
-
-        names: list[str] = []
-        for tool in bridged:
-            names.append(tool.name)
-
-        access = ToolAccess(
-            tool_names=names,
-            roles={role: RoleConfig(tools=["*"])},
-            profiles={profile: ProfileGrant(tools=["*"], roles=["*"])},
+        config = InjectedConfig(resolve, ServiceTickets(credentials))
+        tools = self._stand.tool_stand((config,))
+        tools.launch(
+            [fake_pg_snapshot],
+            tools.process_launcher("pipe", site.workdir, self.CALL_TIMEOUT_SEC),
         )
-        return ToolRegistry(
-            tools=list(bridged),
-            access=access,
-            stream_config=StandRefs.STREAM_CONFIG,
-            own=frozenset(),
-            node_args=(),
-            specs=specs,
-            ambient=self._ambient,
-        )
+
+        return tools.registry(tools.access(site.role, site.profile), ())
 
 
 class KnownConnectionDirectory(ConnectionDirectory):

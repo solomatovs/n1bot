@@ -13,9 +13,7 @@ from chainlit.step import StepDict
 from chainlit_stand import RecordedTurn
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
-from langchain_core.messages import ToolCall as GraphToolCall
 from langchain_core.runnables import RunnableConfig
-from langchain_core.tools import BaseTool, tool
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph.state import CompiledStateGraph
 from pydantic import Field, ValidationError
@@ -33,8 +31,7 @@ from boba.chainlit.agent.flow import (
     Rephraser,
     RephrasingsParser,
 )
-from boba.chainlit.chat.tracing import AgentTracer, TracedStage
-from boba.chainlit.chat.turn import TurnState
+from boba.chainlit.chat.tracing import TracedStage
 from boba.chainlit.domain.fields import StepField
 from boba.chainlit.infra.config import AppConfig
 from boba.chainlit.infra.providers import (
@@ -49,7 +46,6 @@ from boba.chat.profiles import (
     PrefetchFlowConfig,
     SelectedProfile,
 )
-from boba.connection_broker.sealing import SentConnections
 from boba.identity.context import CallContexts
 from boba.llm.chat import (
     ChatEvent,
@@ -71,10 +67,13 @@ from boba.mcp_client.client import (
 from boba.stand.refs import StandRefs
 from boba.toolkit.calls import CallIdPrefix, ToolIntent
 from boba.toolkit.chain import CallAmbient
+from boba.toolkit.dag import DagNode, NodeCalls, NodeOutcome, ToolServer
+from boba.toolkit.facade import PayloadTool, tool
 from boba.toolkit.ports import StreamSpecs
 from boba.toolkit.result import ErrorResult, TableResult, ToolArtifact
 from boba.toolrun.cancellation import CancellableTools
-from boba.toolrun.stream_calls import LocalDagService, ToolServer, ToolServers
+from boba.toolrun.hosted import DirectCalls, HostedTool, ToolHosting
+from boba.toolrun.stream_calls import LocalDagService, ToolServers
 
 pytestmark = pytest.mark.anyio
 
@@ -199,77 +198,95 @@ def _rephraser(chat: ChatModel) -> LlmRephraser:
     return LlmRephraser(SchemaReply(chat, {}), "rephrase")
 
 
-@tool(response_format="content_and_artifact")
+@tool
 async def fts_probe(
     query: Annotated[str, Field(description="Search query.")],
-) -> tuple[str, Any]:
+) -> TableResult:
     """Полнотекстовый поиск-заглушка."""
-    return TableResult(rows=[{"hit": f"fts:{query}"}]).packed()
+    return TableResult(rows=[{"hit": f"fts:{query}"}])
 
 
-@tool(response_format="content_and_artifact")
+@tool
 async def vector_probe(
     query: Annotated[str, Field(description="Search query.")],
-) -> tuple[str, Any]:
+) -> TableResult:
     """Векторный поиск-заглушка."""
-    return TableResult(rows=[{"hit": f"vector:{query}"}]).packed()
+    return TableResult(rows=[{"hit": f"vector:{query}"}])
 
 
-@tool(response_format="content_and_artifact")
+@tool
 async def failing_probe(
     query: Annotated[str, Field(description="Search query.")],
-) -> tuple[str, Any]:
+) -> ErrorResult:
     """Поиск, отвечающий отказом инструмента."""
-    failure = ErrorResult(message="database is down", error_kind="database_unavailable")
-
-    return failure.packed()
+    return ErrorResult(message="database is down", error_kind="database_unavailable")
 
 
-@tool(response_format="content_and_artifact")
+@tool
 async def slow_probe(
     query: Annotated[str, Field(description="Search query.")],
-) -> tuple[str, Any]:
+) -> TableResult:
     """Поиск, не успевающий закончиться до остановки хода."""
     await asyncio.sleep(0.2)
 
-    return TableResult(rows=[{"hit": f"slow:{query}"}]).packed()
+    return TableResult(rows=[{"hit": f"slow:{query}"}])
 
 
-@tool(response_format="content_and_artifact")
+@tool
 async def strict_probe(
     query: Annotated[str, Field(min_length=5, description="Search query.")],
-) -> tuple[str, Any]:
+) -> TableResult:
     """Поиск, не принимающий короткий запрос."""
-    return TableResult(rows=[{"hit": f"strict:{query}"}]).packed()
+    return TableResult(rows=[{"hit": f"strict:{query}"}])
 
 
-@tool(response_format="content_and_artifact")
+@tool
 async def crashing_probe(
     query: Annotated[str, Field(description="Search query.")],
-) -> tuple[str, Any]:
+) -> TableResult:
     """Поиск, падающий исключением."""
     msg = "sandbox crashed"
     raise RuntimeError(msg)
 
 
+def _hosted(probes: Sequence[PayloadTool]) -> list[HostedTool]:
+    """Пробы фасада инструментами хоста, как их собирает загрузчик."""
+    return list(ToolHosting().toolset(probes))
+
+
 def _graph(
-    builder: Any, answers: Sequence[str], extra: Sequence[BaseTool] = ()
+    builder: Any, answers: Sequence[str], extra: Sequence[HostedTool] = ()
 ) -> CompiledStateGraph:
     """Граф на фейковой модели: реальные create_agent, checkpointer и history.
 
     extra — инструменты теста, которые сервис исполняет помимо поисковых."""
+    return _watched_graph(builder, answers, extra, DirectCalls())
+
+
+def _watched_graph(
+    builder: Any,
+    answers: Sequence[str],
+    extra: Sequence[HostedTool],
+    calls: NodeCalls,
+) -> CompiledStateGraph:
+    """Тот же граф, чьи вызовы инструментов идут к телу путём calls."""
     scripted: list[AIMessage | str] = []
     for answer in answers:
         scripted.append(AIMessage(content=answer))
 
     chat = ScriptedChat(messages=iter(scripted))
-    tools: list[BaseTool] = [fts_probe, vector_probe]
+    tools = _hosted([fts_probe, vector_probe])
     tools.extend(extra)
 
     spec = GraphSpec(
         chat=chat,
         service=LocalDagService(
-            tools, StandRefs.STREAM_CONFIG, (), StreamSpecs({}), CallAmbient()
+            tools,
+            StandRefs.STREAM_CONFIG,
+            (),
+            StreamSpecs({}),
+            CallAmbient(),
+            calls,
         ),
         system_prompt="you are a search assistant",
         checkpointer=InMemorySaver(),
@@ -608,7 +625,7 @@ class TestPrefetchGraph:
         graph = _graph(
             PrefetchGraphBuilder(rephraser, ["failing_probe"], RecordingStage()),
             answers=["answered anyway"],
-            extra=[failing_probe],
+            extra=_hosted([failing_probe]),
         )
 
         result = await graph.ainvoke(
@@ -634,7 +651,7 @@ class TestPrefetchGraph:
         graph = _graph(
             PrefetchGraphBuilder(rephraser, ["crashing_probe"], RecordingStage()),
             answers=["answered anyway"],
-            extra=[crashing_probe],
+            extra=_hosted([crashing_probe]),
         )
 
         result = await graph.ainvoke(
@@ -662,7 +679,7 @@ class TestPrefetchGraph:
         graph = _graph(
             PrefetchGraphBuilder(rephraser, ["strict_probe"], RecordingStage()),
             answers=["answered anyway"],
-            extra=[strict_probe],
+            extra=_hosted([strict_probe]),
         )
 
         result = await graph.ainvoke(
@@ -703,7 +720,7 @@ class TestPrefetchCancellation:
 
     async def test_stop_breaks_the_turn_instead_of_feeding_the_model(self) -> None:
         stage = RecordingStage()
-        guarded = CancellableTools().guard_all([slow_probe])
+        guarded = CancellableTools().guard_all(_hosted([slow_probe]))
         graph = _graph(
             PrefetchGraphBuilder(FakeRephraser(["variant"]), ["slow_probe"], stage),
             answers=["never reached"],
@@ -735,7 +752,7 @@ class TestPrefetchCancellation:
     async def test_stop_before_the_call_refuses_to_start_it(self) -> None:
         """Остановка до вызова: инструмент не стартует, ход обрывается."""
         stage = RecordingStage()
-        guarded = CancellableTools().guard_all([slow_probe])
+        guarded = CancellableTools().guard_all(_hosted([slow_probe]))
         graph = _graph(
             PrefetchGraphBuilder(FakeRephraser(["variant"]), ["slow_probe"], stage),
             answers=["never reached"],
@@ -758,8 +775,9 @@ class TestPrefetchCancellation:
 class TestPrefetchFeed:
     """Подготовка в ленте: этап с фазами и шаги инструментов с подписями.
 
-    Стенд повторяет прод: граф зовут с колбэком AgentTracer, шаги копит
-    RecordingSink — так лента и получает вызовы подготовки.
+    Стенд повторяет прод: граф зовут с колбэком трасера хода, вызовы идут
+    к телу путём ChatCalls под идущим ходом, шаги копит RecordingSink — так
+    лента и получает вызовы подготовки.
     """
 
     async def test_prefetch_calls_are_drawn_inside_the_stage(
@@ -768,20 +786,23 @@ class TestPrefetchFeed:
         turn = RecordedTurn.recording(FEED_THREAD, FEED_TURN, user_name="Пользователь")
         sink = turn.recording_sink
 
-        graph = _graph(
+        graph = _watched_graph(
             PrefetchGraphBuilder(
                 FakeRephraser(["variant one"]),
                 ["fts_probe"],
                 TracedStage(StepText.PREFETCH.value),
             ),
-            answers=["answered"],
+            ["answered"],
+            (),
+            turn.calls,
         )
 
-        config = RunnableConfig(
-            configurable={"thread_id": "feed-thread"},
-            callbacks=[AgentTracer(turn.feed, TurnState(), SentConnections())],
-        )
-        await graph.ainvoke({"messages": [HumanMessage("question")]}, config=config)
+        with turn.running() as port:
+            config = RunnableConfig(
+                configurable={"thread_id": "feed-thread"},
+                callbacks=[port.tracer],
+            )
+            await graph.ainvoke({"messages": [HumanMessage("question")]}, config=config)
 
         stage = _step_named(sink.steps, StepText.PREFETCH.value)
         if stage is None:
@@ -824,18 +845,23 @@ class TestPlainGraph:
 class RecordingService(LocalDagService):
     """Сервис исполнения, запоминающий, какие вызовы через него прошли."""
 
-    def __init__(self, tools: Sequence[BaseTool]) -> None:
+    def __init__(self, probes: Sequence[PayloadTool]) -> None:
         super().__init__(
-            tools, StandRefs.STREAM_CONFIG, (), StreamSpecs({}), CallAmbient()
+            _hosted(probes),
+            StandRefs.STREAM_CONFIG,
+            (),
+            StreamSpecs({}),
+            CallAmbient(),
+            DirectCalls(),
         )
         self.served: list[str] = []
 
     @override
     async def submit(
-        self, calls: Sequence[GraphToolCall]
-    ) -> Sequence[asyncio.Future[ToolMessage]]:
+        self, calls: Sequence[DagNode]
+    ) -> Sequence[asyncio.Future[NodeOutcome]]:
         for call in calls:
-            self.served.append(str(call["id"]))
+            self.served.append(call.key)
 
         return await super().submit(calls)
 
@@ -922,7 +948,13 @@ class TestCallsRouteByToolName:
             call_timeout_sec=60.0,
         )
         remote = McpToolServer(
-            "standard", config, NamedBlocks(), DroppedSignals(), CallContexts(), None
+            "standard",
+            config,
+            NamedBlocks(),
+            DroppedSignals(),
+            CallContexts(),
+            None,
+            DirectCalls(),
         )
         await remote.open()
         calls = [

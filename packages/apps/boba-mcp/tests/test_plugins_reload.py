@@ -15,7 +15,7 @@ from boba.stand.refs import StandRefs
 from boba.stand_core.context import CallStand
 from boba.tool.pg.tools import TOOLS as PG_TOOLS
 from boba.tool.pg.tools import pg_query
-from boba.toolrun.call_id import CallFields
+from boba.toolkit.calls import ToolIntent
 
 
 @pytest.fixture
@@ -51,8 +51,8 @@ def test_repeated_load_serves_wrapped_copies(
     by_name = {t.name: t for t in second.tools}
     loaded = by_name["pg_query"]
 
-    if CallFields.CALL_ID not in _schema_fields(loaded):
-        raise AssertionError("CallFields.CALL_ID in _schema_fields(loaded)")
+    if ToolIntent.NAME not in _schema_fields(loaded):
+        raise AssertionError("ToolIntent.NAME in _schema_fields(loaded)")
     if "cfg" in _schema_fields(loaded):
         raise AssertionError('"cfg" not in _schema_fields(loaded)')
 
@@ -68,10 +68,10 @@ def test_module_singletons_stay_pristine(
     )
 
     for tool in PG_TOOLS:
-        if CallFields.CALL_ID not in _schema_fields(tool):
+        if ToolIntent.NAME not in _schema_fields(tool):
             continue
 
-        raise AssertionError(f"{tool.name}: обвязка пришила call_id синглтону")
+        raise AssertionError(f"{tool.name}: обвязка пришила подпись синглтону")
 
     origin = ToolMainBody.of(pg_query)
     if origin.__module__ != "boba.tool.pg.tools":

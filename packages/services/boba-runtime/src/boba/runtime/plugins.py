@@ -1,4 +1,4 @@
-"""Загрузчик tool-плагинов: секция [tool.<name>] -> langchain-инструменты с обвязками.
+"""Загрузчик tool-плагинов: секция [tool.<name>] -> инструменты хоста с обвязками.
 
 Плагины обнаруживаются entry points группы boba.tools у установленных пакетов;
 конфиг каждого приходит файлом conf/plugins/<name>.toml (слой AppLayers).
@@ -11,8 +11,6 @@ RuntimeError — конфиг противоречит плагину: у уст
 ToolConfigError — injected-параметр инструмента не привязан к секции конфига.
 StreamGroupsConfigError — нет секции [stream_groups] со сроками групп
     потоковых вызовов.
-TypeError — TOOLS модуля содержит не PayloadTool и не BaseTool; тело
-    инструмента вернуло не модель результата.
 """
 
 from __future__ import annotations
@@ -23,7 +21,6 @@ from dataclasses import dataclass
 from importlib.metadata import entry_points
 from typing import Any
 
-from langchain_core.tools import BaseTool
 from omegaconf import DictConfig, OmegaConf
 from pydantic import BaseModel, ConfigDict
 
@@ -35,27 +32,26 @@ from boba.connection_broker.tickets import ServiceTickets
 from boba.runtime.launchers import SectionLaunchers
 from boba.runtime.refs import ExecRefs
 from boba.toolkit.entry import ToolArgv, ToolEntryError
+from boba.toolkit.facade import PayloadTool
 from boba.toolkit.launcher import ToolLauncher
 from boba.toolkit.manifest import LaunchSpec, ToolPluginManifest
 from boba.toolkit.ports import StreamSpecs
 from boba.toolkit.types import StringList
-from boba.toolrun.bridge import ToolBridge
 from boba.toolrun.callvalues import CallContextValues
 from boba.toolrun.dev_null import DevNullTool
+from boba.toolrun.hosted import HostedTool, ToolHosting
 from boba.toolrun.injected import InjectedConfig, ToolConfigError
-from boba.toolrun.registry import ToolChain, ToolRegistry
+from boba.toolrun.registry import LaunchedTools, ToolChain, ToolRegistry
 from boba.toolrun.stream_calls import (
     StreamGroupsConfig,
     StreamGroupsConfigError,
 )
-from boba.toolrun.wrapping import CallHooks
 
 __all__ = [
     "ConfigGrants",
     "EntryPointPlugins",
     "PluginMeta",
     "PluginTable",
-    "ToolBridge",
     "ToolLoader",
     "ToolPlugin",
 ]
@@ -73,8 +69,9 @@ class ToolPlugin:
     """
 
     section: str
-    module_tools: tuple[BaseTool, ...] = ()
-    """Функции уровня модуля: обёртка запуска ставится на них."""
+    module_tools: tuple[PayloadTool, ...] = ()
+    """Объявления инструментов модуля: из них обёртка запуска собирает
+    инструменты хоста."""
     modules: tuple[str, ...] = ()
     """Модули тел module_tools: их прогревает зигота секции."""
     package: str = ""
@@ -94,21 +91,12 @@ class PluginMeta(BaseModel):
     страница, REST и workflow (снятие снимка каталога и подобные задачи)."""
 
 
-@dataclass(frozen=True)
-class PluginTools:
-    """Инструменты одного плагина под обёрткой запуска и их потоковые
-    декларации, снятые до того, как порты ушли из видимой схемы."""
-
-    tools: list[BaseTool]
-    specs: StreamSpecs
-
-
 class ToolLoader:
     """Сборка реестра инструментов из включённых секций [tool.<name>].
 
-    Обвязки ставятся на копии модульных TOOLS: загрузка зовётся не один раз
-    (bootstrap, DI-провайдер), а TOOLS — синглтоны процесса, и повторная
-    обёртка поверх уже обёрнутого ломала бы адрес тела и схему.
+    Инструменты хоста собираются из объявлений TOOLS заново на каждую
+    загрузку (bootstrap, DI-провайдер): объявления — синглтоны процесса, и
+    обвязки на них не ложатся.
     """
 
     def __init__(  # noqa: PLR0913 — загрузчик собирается всеми входами процесса
@@ -118,8 +106,7 @@ class ToolLoader:
         refs: ExecRefs,
         launchers: SectionLaunchers,
         grants: ToolGrants,
-        surface_hooks: Sequence[CallHooks[Any]] = (),
-        own_tools: Sequence[BaseTool] = (),
+        own_tools: Sequence[HostedTool] = (),
     ) -> None:
         self._raw = raw_config
         self._launchers = launchers
@@ -134,6 +121,7 @@ class ToolLoader:
         self._stream_cfg = self._stream_config()
         self._ambient = refs.ambient
         self._drain = DevNullTool(refs.ambient)
+        self._hosting = ToolHosting()
         self._sealed = SealedConnectionParams(
             refs.seal_keys, refs.connection_types, refs.contexts
         )
@@ -151,13 +139,12 @@ class ToolLoader:
                     self._config_resolver(), ServiceTickets(refs.credentials)
                 ),
             ),
-            surface_hooks,
         )
         self._grants = grants
 
     def load(self) -> ToolRegistry:
 
-        tools: list[BaseTool] = []
+        tools: list[HostedTool] = []
         specs = StreamSpecs({})
         headless_only: set[str] = set()
         for name, plugin in self._plugins.items():
@@ -187,7 +174,7 @@ class ToolLoader:
             self._journals.mark_streamable(streamable)
 
         if next(self._stream_writers(tools, specs), None) is not None:
-            tools.append(ToolBridge.as_structured_tool(self._drain.build()))
+            tools.append(self._hosting.hosted(self._drain.build()))
             specs = specs.declaring(DevNullTool.NAME, self._drain.spec())
 
         own: list[str] = []
@@ -208,7 +195,9 @@ class ToolLoader:
         )
 
     @staticmethod
-    def _stream_writers(tools: Sequence[BaseTool], specs: StreamSpecs) -> Iterator[str]:
+    def _stream_writers(
+        tools: Sequence[HostedTool], specs: StreamSpecs
+    ) -> Iterator[str]:
         """Инструменты-писатели каналов: только при них слив dev_null имеет
         смысл, и модель его видит."""
         for tool in tools:
@@ -232,7 +221,7 @@ class ToolLoader:
         plugin: ToolPlugin,
         meta: PluginMeta,
         launchers: SectionLaunchers,
-    ) -> PluginTools:
+    ) -> LaunchedTools:
         """Инструменты плагина: функции модуля под launcher'ом секции."""
         spec = LaunchSpec(
             section=plugin.section,
@@ -248,21 +237,16 @@ class ToolLoader:
         plugin: ToolPlugin,
         meta: PluginMeta,
         launcher: ToolLauncher,
-    ) -> PluginTools:
+    ) -> LaunchedTools:
         """Функции модуля новой модели: обёртка запуска + partial конфига."""
-        functions: list[BaseTool] = []
+        enabled: list[PayloadTool] = []
         for tool in plugin.module_tools:
             if tool.name not in meta.tools:
                 continue
 
-            functions.append(tool.model_copy())
+            enabled.append(tool)
 
-        if not functions:
-            return PluginTools(tools=[], specs=StreamSpecs({}))
-
-        specs = self._chain.launch(functions, launcher)
-
-        return PluginTools(tools=functions, specs=specs)
+        return self._chain.launch(enabled, launcher)
 
     def _config_resolver(self) -> Callable[[str, Any], object]:
         """Значения injected-параметров: модель собирается из своей секции."""
@@ -284,7 +268,7 @@ class ToolLoader:
 
     @staticmethod
     def _headless_of(
-        name: str, meta: PluginMeta, built: Sequence[BaseTool]
+        name: str, meta: PluginMeta, built: Sequence[HostedTool]
     ) -> set[str]:
         """Инструменты плагина, помеченные headless: имя вне собранных — отказ."""
         known: set[str] = set()
@@ -303,7 +287,7 @@ class ToolLoader:
 
     def _access_of(
         self,
-        tools: Sequence[BaseTool],
+        tools: Sequence[HostedTool],
         headless_only: Iterable[str],
     ) -> ToolAccess:
         """Права по грантам процесса; опечатка в имени инструмента — отказ."""
@@ -343,8 +327,10 @@ class EntryPointPlugins:
     перечисления в коде, удалённый — исчезает из таблицы.
     """
 
-    @classmethod
-    def discover(cls) -> dict[str, ToolPlugin]:
+    def __init__(self) -> None:
+        self._hosting = ToolHosting()
+
+    def discover(self) -> dict[str, ToolPlugin]:
         """Таблица плагинов установленных пакетов; дубликат секции — отказ."""
         table: dict[str, ToolPlugin] = {}
 
@@ -367,8 +353,8 @@ class EntryPointPlugins:
                 )
                 raise RuntimeError(msg)
 
-            package = cls._package_of(entry)
-            table[manifest.section] = cls._plugin_of(manifest, package)
+            package = self._package_of(entry)
+            table[manifest.section] = self._plugin_of(manifest, package)
 
         return table
 
@@ -385,11 +371,10 @@ class EntryPointPlugins:
 
         return dist.name
 
-    @classmethod
-    def _plugin_of(cls, manifest: ToolPluginManifest, package: str) -> ToolPlugin:
+    def _plugin_of(self, manifest: ToolPluginManifest, package: str) -> ToolPlugin:
         return ToolPlugin(
             section=manifest.section,
-            module_tools=ToolBridge.toolset(manifest.tools),
-            modules=ToolBridge.modules_of(manifest.tools),
+            module_tools=manifest.tools,
+            modules=self._hosting.modules_of(manifest.tools),
             package=package,
         )

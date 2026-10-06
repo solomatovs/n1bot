@@ -6,12 +6,14 @@ import asyncio
 from collections.abc import Mapping
 
 import pytest
-from langchain_core.messages import ToolMessage
-from langchain_core.tools import BaseTool, tool
+from pydantic import BaseModel, JsonValue
 
 from boba.sandbox.zygote import ZygoteCallError
+from boba.stand.toolstand import ProbeTools
+from boba.toolkit.dag import NodeOutcome
 from boba.toolkit.result import ErrorResult, ExceptionResult, MarkdownResult
 from boba.toolrun.errors import ToolErrorGuard
+from boba.toolrun.hosted import HostedTool
 
 __all__: list[str] = []
 
@@ -20,28 +22,40 @@ class _BoomError(Exception):
     """исключение инструмента, которое должно превратиться в ErrorResult"""
 
 
-@tool(response_format="content_and_artifact")
-def good(text: str) -> tuple[str, MarkdownResult]:
+class TextArgs(BaseModel):
+    """Аргументы успешного инструмента."""
+
+    text: str
+
+
+class NoArgs(BaseModel):
+    """Инструмент без аргументов."""
+
+
+async def good(text: str) -> MarkdownResult:
     """успешный инструмент"""
-    return text, MarkdownResult(text=text)
+    return MarkdownResult(text=text)
 
 
-@tool(response_format="content_and_artifact")
-def boom() -> tuple[str, ErrorResult]:
+async def boom() -> ErrorResult:
     """инструмент, падающий аварийно (как oom killer песочницы)"""
     raise ZygoteCallError("doc:read_document: killed by OOM")
 
 
-def _guarded() -> list:
-    return ToolErrorGuard().guard_all([good, boom])
+def _guarded() -> list[HostedTool]:
+    probes = ProbeTools()
+    tools = [
+        probes.hosted("good", TextArgs, good),
+        probes.hosted("boom", NoArgs, boom),
+    ]
+
+    return ToolErrorGuard().guard_all(tools)
 
 
 class TestToolErrorGuard:
     @staticmethod
-    def _invoke(tool: BaseTool, args: Mapping[str, object]) -> ToolMessage:
-        return tool.invoke(
-            {"name": tool.name, "args": args, "id": "c1", "type": "tool_call"}
-        )
+    def _invoke(tool: HostedTool, args: Mapping[str, JsonValue]) -> NodeOutcome:
+        return asyncio.run(ProbeTools().call(tool, "c1", args))
 
     @staticmethod
     def test_ok_passes_through() -> None:
@@ -70,12 +84,7 @@ class TestToolErrorGuard:
     def test_async_raised_exception_becomes_error_result() -> None:
         _, b = _guarded()
 
-        async def _call() -> ToolMessage:
-            return await b.ainvoke(
-                {"name": b.name, "args": {}, "id": "c2", "type": "tool_call"}
-            )
-
-        message = asyncio.run(_call())
+        message = asyncio.run(ProbeTools().call(b, "c2", {}))
         artifact = message.artifact
         if not (isinstance(artifact, ExceptionResult)):
             raise AssertionError(f"artifact: {artifact!r}")
@@ -88,11 +97,10 @@ class TestToolErrorGuard:
     def test_base_exception_is_not_caught() -> None:
         """ToolStopped (отмена хода) должен прерывать, а не становиться ошибкой."""
 
-        @tool
-        def stopped() -> None:
-            """прерываемый инструмент"""
+        async def stopped() -> ErrorResult:
             raise KeyboardInterrupt
 
-        (g,) = ToolErrorGuard().guard_all([stopped])
+        probe = ProbeTools().hosted("stopped", NoArgs, stopped)
+        (g,) = ToolErrorGuard().guard_all([probe])
         with pytest.raises(KeyboardInterrupt):
             TestToolErrorGuard._invoke(g, {})

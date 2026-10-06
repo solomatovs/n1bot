@@ -18,7 +18,8 @@ EndpointTokens и требует свою область; 401 и 403 отвеч�
 
 Ошибки:
 TokenClaimsError — токен принят, но логина и ролей вызывающего в нём нет.
-CallScopeError — область вызова из _meta не годится сегментом пути.
+CallScopeError — служебные поля запроса в _meta не проходят модель либо
+    область вызова не годится сегментом пути.
 AuthorizeError — запрос авторизации не принят (по контракту OAuthProvider).
 TokenError — код авторизации или утверждение не приняты (по контракту
     OAuthProvider).
@@ -86,7 +87,7 @@ from boba.identity.errors import AuthenticationError, AuthorizationError
 from boba.identity.signin import ProxyRequest, SignedIn, SignInMetadata
 from boba.identity.sso import SsoChallenge
 from boba.runtime.http import SsoRequests, SsoResponses
-from boba.toolkit.wire import RequestMeta
+from boba.toolkit.wire import RequestFields, RequestMeta
 
 __all__ = [
     "AuthServer",
@@ -97,6 +98,7 @@ __all__ = [
     "McpClient",
     "RegisteredClients",
     "SealedValues",
+    "SentMeta",
     "ServiceAuth",
     "ServiceTokens",
     "TokenClaim",
@@ -203,7 +205,42 @@ class TokenSubjects:
 
 
 class CallScopeError(Exception):
-    """Клиент прислал область, которая не годится сегментом пути."""
+    """Клиент прислал служебные поля запроса, с которыми вызов не принять:
+    область не годится сегментом пути либо поля не проходят свою модель."""
+
+
+class SentMeta:
+    """Служебные поля текущего запроса tools/call — единственный читатель
+    _meta запроса.
+
+    Создаётся теми, кому нужны поля клиента: областью вызова (CallScopes) и
+    инструментом реестра (McpTool). Читает _meta запроса из контекста
+    fastmcp и разбирает его моделью RequestFields.
+    """
+
+    def sent(self) -> RequestFields:
+        """Поля запроса; запрос без _meta — пустые поля.
+
+        Ошибки:
+        CallScopeError — поля клиента не проходят модель RequestFields.
+        """
+        request = get_context().request_context
+        if request is None:
+            return RequestFields()
+
+        meta = request.meta
+        if meta is None:
+            return RequestFields()
+
+        try:
+            return RequestFields.model_validate(meta)
+        except ValidationError as exc:
+            msg = (
+                f"reading _meta of the call: expected "
+                f"{RequestMeta.CALL_ID.value!r} and {RequestMeta.SCOPE.value!r} "
+                f"as strings, got {dict(meta)!r}: {exc}"
+            )
+            raise CallScopeError(msg) from exc
 
 
 class CallScopes:
@@ -217,10 +254,13 @@ class CallScopes:
     у каждого пользователя.
     """
 
+    def __init__(self) -> None:
+        self._meta = SentMeta()
+
     def of(self, subject: Subject) -> Scope:
         """Область текущего запроса; негодный id области — CallScopeError."""
-        sent = self._sent()
-        if sent is None:
+        sent = self._meta.sent().scope
+        if not sent:
             return Scope.chat(str(subject.user_id))
 
         try:
@@ -231,25 +271,6 @@ class CallScopes:
                 f"expects one path segment, got {sent!r}: {exc}"
             )
             raise CallScopeError(msg) from exc
-
-    @staticmethod
-    def _sent() -> str | None:
-        request = get_context().request_context
-        if request is None:
-            return None
-
-        meta = request.meta
-        if meta is None:
-            return None
-
-        sent = meta.get(RequestMeta.SCOPE)
-        if not isinstance(sent, str):
-            return None
-
-        if not sent:
-            return None
-
-        return sent
 
 
 class McpClient(BaseModel):

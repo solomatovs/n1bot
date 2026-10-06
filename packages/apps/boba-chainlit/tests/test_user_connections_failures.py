@@ -18,7 +18,6 @@ import pytest
 from chainlit.user import PersistedUser
 from chainlit.user import User as ChainlitUser
 from chainlit_stand import ChatSessionStand, SsoStand
-from langchain_core.tools import StructuredTool
 from psycopg import sql
 from psycopg.types.json import Jsonb
 from pydantic import SecretStr, create_model
@@ -41,10 +40,17 @@ from boba.messaging import MemoryMessageBus
 from boba.runtime.refresh import BusRefreshSignal
 from boba.stand.connections import StandUserConnections
 from boba.stand.site import Stand
+from boba.stand.toolstand import ProbeTools
 from boba.stand_core.context import CallStand
 from boba.toolkit.facade import UserConnection
-from boba.toolkit.result import FailureResult, ToolArtifact
+from boba.toolkit.result import (
+    FailureResult,
+    MarkdownResult,
+    ToolArtifact,
+    ToolResultBase,
+)
 from boba.toolrun.errors import ToolErrorGuard
+from boba.toolrun.hosted import HostedTool
 from boba.transport.http.connection import HttpConnection
 
 pytestmark = pytest.mark.anyio
@@ -250,6 +256,8 @@ class Guarded:
     соединений теста.
     """
 
+    NAME = "guarded"
+
     def __init__(self, calls: CallStand, store: ConnectionStore) -> None:
         self._calls = calls
         self._store = store
@@ -260,7 +268,7 @@ class Guarded:
             connection=(Annotated[PostgresConfig, UserConnection], ...),
         )
 
-        return self._build(schema, tickets)
+        return self._build(ProbeTools().recorder(self.NAME, schema), tickets)
 
     def web(self):
         """Как web_fetch_page: соединение параметром, покрытие хоста URL
@@ -271,7 +279,7 @@ class Guarded:
             connection=(Annotated[HttpConnection, UserConnection], ...),
         )
 
-        async def body(**kwargs: object) -> tuple[str, dict[str, object]]:
+        async def body(**kwargs: object) -> ToolResultBase:
             connection = kwargs["connection"]
             url = kwargs["url"]
             if not isinstance(connection, HttpConnection):
@@ -281,25 +289,11 @@ class Guarded:
                 raise AssertionError(f"expected a url string, got {url!r}")
 
             connection.for_url(url)
-            return "ok", kwargs
+            return MarkdownResult(text="ok")
 
-        return self._build(schema, None, body)
+        return self._build(ProbeTools().hosted(self.NAME, schema, body), None)
 
-    def _build(self, schema, tickets, body=None) -> StructuredTool:
-        async def echo(**kwargs: object) -> tuple[str, dict[str, object]]:
-            return "ok", kwargs
-
-        if body is None:
-            body = echo
-
-        tool = StructuredTool(
-            name="guarded",
-            description="guarded",
-            args_schema=schema,
-            coroutine=body,
-            response_format="content_and_artifact",
-        )
-
+    def _build(self, tool: HostedTool, tickets: SsoTickets | None) -> HostedTool:
         StandUserConnections(
             lambda: self._store,
             lambda: KerberosCredentialSource(
@@ -315,14 +309,13 @@ class Guarded:
         return tool
 
     @staticmethod
-    async def call(tool: StructuredTool, **args: Any) -> Any:
-        message = await tool.ainvoke(
-            {"name": tool.name, "args": args, "id": "c1", "type": "tool_call"}
-        )
-        return message.artifact
+    async def call(tool: HostedTool, **args: Any) -> Any:
+        outcome = await ProbeTools().call(tool, "c1", args)
+
+        return outcome.artifact
 
     @staticmethod
-    async def failure(tool: StructuredTool, **args: Any) -> FailureResult:
+    async def failure(tool: HostedTool, **args: Any) -> FailureResult:
         artifact = await Guarded.call(tool, **args)
         result = ToolArtifact.revive(artifact)
         if not isinstance(result, FailureResult):

@@ -54,8 +54,9 @@ from boba.identity.context import (
 from boba.identity.run import Runs
 from boba.messaging import ChangeAction
 from boba.toolkit.calls import CallIdPrefix
+from boba.toolkit.dag import NodeOutcome
 from boba.toolkit.failure import ToolUnavailableError
-from boba.toolrun.dag_run import NodeOutcome
+from boba.toolrun.hosted import DirectCalls
 from boba.toolrun.invoke import ToolInvoker
 from boba.toolrun.registry import ToolRegistry
 
@@ -139,10 +140,13 @@ class RegistrySyncTools(SyncTools):
 
     def __init__(self, registry: RegistryRef) -> None:
         self._registry = registry
+        self._calls = DirectCalls()
 
     async def invoker(self, subject: Subject) -> ToolInvoker:
         registry = await self._registry()
-        return ToolInvoker.for_subject(registry, subject)
+        tools = registry.for_headless(subject.roles, subject.profile)
+
+        return ToolInvoker(tools, registry.runner(tools, self._calls))
 
 
 class ConnectionDirectory(Protocol):
@@ -337,7 +341,7 @@ class SyncDrive:
 
     async def _invoke(self) -> NodeOutcome:
         intent = f"catalog sync {self.sync_id}"
-        call = ToolInvoker.call(
+        call = self._invoker.call(
             self._job.tool_name, self._job.call_args(), intent, CallIdPrefix.API
         )
         with self._runs.open(self._job.context):

@@ -79,7 +79,7 @@ class Sections:
     @classmethod
     def of(cls, raw_config: DictConfig) -> list[SandboxSection]:
         sections: list[SandboxSection] = []
-        for name in EntryPointPlugins.discover():
+        for name in EntryPointPlugins().discover():
             profile = section_profile(raw_config, name)
             sections.append(SandboxSection(name=name, profile=profile))
 

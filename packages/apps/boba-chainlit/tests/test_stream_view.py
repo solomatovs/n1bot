@@ -22,7 +22,6 @@ import pytest
 from chainlit.context import ChainlitContext, context_var
 from chainlit.step import Step
 from chainlit_stand import FakeTurn, RemoteStand, ServiceProcess
-from langchain_core.tools import tool
 from pydantic import ValidationError
 
 from boba.canvas.canvas import (
@@ -53,7 +52,11 @@ from boba.stand.refs import StandRefs
 from boba.stand_core.context import CallStand
 from boba.toolkit.chain import CallAmbient
 from boba.toolkit.channels import CallOutcome, ToolChannel, WrapChannel
+from boba.toolkit.dag import DagNode
+from boba.toolkit.facade import PayloadTool, tool
+from boba.toolkit.result import MarkdownResult
 from boba.toolrun.call_id import CallFields
+from boba.toolrun.hosted import DirectCalls, HostedTool, ToolHosting
 from boba.toolrun.run_log import ToolRunLogger
 from boba.toolrun.streams import CallJournals, JournalWatchSource, ToolStream
 
@@ -189,31 +192,40 @@ def begin_stream(journals: CallJournals, call_id: str = CALL_ID) -> ToolStream:
 class TestJournalThroughWrapper:
     """Журнал вызова открывает обвязка и доводит тап до функции инструмента.
 
-    Инструмент вызывается как его зовёт ToolNode — ainvoke с ToolCall:
+    Инструмент вызывается как его зовёт исполнитель — call с узлом вызова:
     call_id приезжает синтетическим полем схемы, sync-функция едет в
     executor-поток, где тап обязан отдать приёмник именно этого вызова.
     """
 
-    @staticmethod
     def _tool_and_seen(
-        call_ambient: CallAmbient, journals: CallJournals, call_stand: CallStand
-    ) -> tuple[Any, list[object]]:
+        self, call_ambient: CallAmbient, journals: CallJournals, call_stand: CallStand
+    ) -> tuple[HostedTool, list[object]]:
         seen: list[object] = []
 
         @tool
-        def fake_bash(command: str) -> str:
+        def fake_bash(command: str) -> MarkdownResult:
             """Пишет в журнал то, что видит в тапе."""
             sinks = call_ambient.sinks()
             seen.append(sinks)
             if sinks is not None:
                 sinks.sink_of(STDOUT).feed(f"ran: {command}".encode())
-            return "done"
+            return MarkdownResult(text="done")
 
-        CallFields().attach_all([fake_bash])
-        ToolRunLogger(journals, call_stand.contexts, call_ambient).guard_all(
-            [fake_bash]
-        )
-        return fake_bash, seen
+        return self._logged(fake_bash, call_ambient, journals, call_stand), seen
+
+    @staticmethod
+    def _logged(
+        payload: PayloadTool,
+        call_ambient: CallAmbient,
+        journals: CallJournals,
+        call_stand: CallStand,
+    ) -> HostedTool:
+        """Инструмент хоста над телом payload под обвязкой журнала."""
+        hosted = ToolHosting().hosted(payload)
+        CallFields().attach_all([hosted])
+        ToolRunLogger(journals, call_stand.contexts, call_ambient).guard_all([hosted])
+
+        return hosted
 
     async def _invoke(
         self,
@@ -227,13 +239,8 @@ class TestJournalThroughWrapper:
             journals.mark_streamable([TOOL_NAME])
 
         fake_bash, seen = self._tool_and_seen(call_ambient, journals, call_stand)
-        await fake_bash.ainvoke(
-            {
-                "name": TOOL_NAME,
-                "args": {"command": "echo hi"},
-                "id": CALL_ID,
-                "type": "tool_call",
-            }
+        await fake_bash.call(
+            DagNode(key=CALL_ID, tool=TOOL_NAME, args={"command": "echo hi"})
         )
         return seen
 
@@ -287,7 +294,7 @@ class TestJournalThroughWrapper:
         journals.mark_streamable([TOOL_NAME])
 
         @tool
-        def fake_bash(command: str) -> str:
+        def fake_bash(command: str) -> MarkdownResult:
             """Падает после записи в журнал."""
             sinks = call_ambient.sinks()
             if sinks is None:
@@ -296,20 +303,12 @@ class TestJournalThroughWrapper:
             msg = "boom"
             raise RuntimeError(msg)
 
-        CallFields().attach_all([fake_bash])
-        ToolRunLogger(journals, call_stand.contexts, call_ambient).guard_all(
-            [fake_bash]
-        )
+        hosted = self._logged(fake_bash, call_ambient, journals, call_stand)
 
         async def scenario() -> None:
             with pytest.raises(RuntimeError):
-                await fake_bash.ainvoke(
-                    {
-                        "name": TOOL_NAME,
-                        "args": {"command": "x"},
-                        "id": CALL_ID,
-                        "type": "tool_call",
-                    }
+                await hosted.call(
+                    DagNode(key=CALL_ID, tool=TOOL_NAME, args={"command": "x"})
                 )
 
         run(scenario())
@@ -331,35 +330,22 @@ class TestJournalThroughWrapper:
         journals.mark_streamable([TOOL_NAME])
 
         @tool
-        def fake_bash(command: str) -> str:
+        def fake_bash(command: str) -> MarkdownResult:
             """Пишет свою команду в свой журнал."""
             sinks = call_ambient.sinks()
             if sinks is None:
                 raise AssertionError("sinks is not None")
             sinks.sink_of(STDOUT).feed(f"cmd: {command}".encode())
-            return "done"
+            return MarkdownResult(text="done")
 
-        CallFields().attach_all([fake_bash])
-        ToolRunLogger(journals, call_stand.contexts, call_ambient).guard_all(
-            [fake_bash]
-        )
+        hosted = self._logged(fake_bash, call_ambient, journals, call_stand)
 
         async def scenario() -> None:
-            first = fake_bash.ainvoke(
-                {
-                    "name": TOOL_NAME,
-                    "args": {"command": "alpha"},
-                    "id": "call-a",
-                    "type": "tool_call",
-                }
+            first = hosted.call(
+                DagNode(key="call-a", tool=TOOL_NAME, args={"command": "alpha"})
             )
-            second = fake_bash.ainvoke(
-                {
-                    "name": TOOL_NAME,
-                    "args": {"command": "beta"},
-                    "id": "call-b",
-                    "type": "tool_call",
-                }
+            second = hosted.call(
+                DagNode(key="call-b", tool=TOOL_NAME, args={"command": "beta"})
             )
             await asyncio.gather(first, second)
 
@@ -1207,6 +1193,7 @@ class TestStreamDownload:
                 NamedBlocks(),
                 DroppedSignals(),
                 CallContexts(),
+                DirectCalls(),
             )
             transport = ASGITransport(app=self._app(servers))
             try:

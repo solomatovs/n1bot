@@ -26,8 +26,14 @@ from boba.chainlit.rendering.chat_view import (
     TokenSpend,
     TurnPulse,
 )
+from boba.chainlit.rendering.mount import ChatCalls, ChatMount
+from boba.connection_broker.sealing import SentConnections
+from boba.identity.context import CallContexts
+from boba.identity.run import Runs
 from boba.stand.refs import StandRefs
-from boba.toolkit.result import MarkdownResult
+from boba.toolkit.calls import FieldPlacement, FieldView
+from boba.toolkit.dag import ToolCard
+from boba.toolkit.result import FieldLines, MarkdownResult
 
 THREAD = "11111111-1111-1111-1111-111111111111"
 TURN = "22222222-2222-2222-2222-222222222222"
@@ -721,3 +727,58 @@ class TestTokensInTheFeed:
             raise AssertionError(f"шага рассуждений быть не должно: {names}")
         if "process... · in: 900, out: 32" not in names:
             raise AssertionError(f"итог хода: {names}")
+
+
+class TestCallViewOfACard:
+    """Вход шага инструмента сервера лента рисует по виду аргументов из его
+    карточки: кода инструмента в процессе чата нет."""
+
+    ARGS: dict[str, object] = {"sql": "select 1", "cfg": "internal", "top_k": 7}
+
+    @staticmethod
+    def _calls() -> ChatCalls:
+        contexts = CallContexts()
+        runs = Runs(contexts)
+
+        return ChatCalls(contexts, runs, SentConnections(), ChatMount(contexts, runs))
+
+    @pytest.mark.anyio
+    async def test_step_input_follows_the_views_of_the_card(
+        self, runtime_stand: StandRefs, http_context: None
+    ) -> None:
+        views = {
+            "sql": FieldView(
+                placement=FieldPlacement.BODY,
+                display=MarkdownResult(language="sql").model_dump(mode="json"),
+            ),
+            "cfg": FieldView(placement=FieldPlacement.HIDDEN, display=None),
+        }
+        card = ToolCard(
+            name="card_viewed_probe", description="probe", parameters={}, views=views
+        )
+        self._calls().shown([card])
+        view = ChatView(THREAD, RecordingSink(), runtime_stand.journals)
+        view.begin_turn(TURN)
+
+        step = await view.tool_started(card.name, self.ARGS, "call-card-1")
+
+        if step.input != "```sql\nselect 1\n```\n\n" + FieldLines.line("top_k", 7):
+            raise AssertionError(f"the input follows the card views: {step.input!r}")
+
+    @pytest.mark.anyio
+    async def test_card_without_views_shows_the_arguments_as_json(
+        self, runtime_stand: StandRefs, http_context: None
+    ) -> None:
+        card = ToolCard(
+            name="card_plain_probe", description="probe", parameters={}, views=None
+        )
+        self._calls().shown([card])
+        view = ChatView(THREAD, RecordingSink(), runtime_stand.journals)
+        view.begin_turn(TURN)
+
+        step = await view.tool_started(card.name, self.ARGS, "call-card-2")
+
+        if not step.input.startswith("```json"):
+            raise AssertionError(f"a tool without views is shown raw: {step.input!r}")
+        if '"cfg": "internal"' not in step.input:
+            raise AssertionError(f"every argument is shown: {step.input!r}")

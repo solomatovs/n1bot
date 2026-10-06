@@ -14,7 +14,6 @@ from chainlit.step import StepDict
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.runnables import RunnableConfig
-from langchain_core.tools import tool
 from langgraph.checkpoint.memory import InMemorySaver
 
 from boba.chainlit.agent.flow import GraphSpec, PlainGraphBuilder
@@ -24,8 +23,10 @@ from boba.chainlit.infra.providers import build_history_view
 from boba.chainlit.rendering.chat_view import StepKind
 from boba.stand.refs import StandRefs
 from boba.toolkit.chain import CallAmbient
+from boba.toolkit.facade import tool
 from boba.toolkit.ports import StreamSpecs
 from boba.toolkit.result import MarkdownResult
+from boba.toolrun.hosted import DirectCalls, ToolHosting
 from boba.toolrun.stream_calls import LocalDagService
 
 pytestmark = pytest.mark.anyio
@@ -55,18 +56,18 @@ class Gate:
 GATE = Gate()
 
 
-@tool(response_format="content_and_artifact")
-async def fast_index(space: str) -> tuple[str, Any]:
+@tool
+async def fast_index(space: str) -> MarkdownResult:
     """Быстрая индексация."""
     GATE.fast_done.set()
-    return MarkdownResult(text=f"indexed {space}").packed()
+    return MarkdownResult(text=f"indexed {space}")
 
 
-@tool(response_format="content_and_artifact")
-async def slow_index(space: str) -> tuple[str, Any]:
+@tool
+async def slow_index(space: str) -> MarkdownResult:
     """Медленная индексация."""
     await GATE.release.wait()
-    return MarkdownResult(text=f"indexed {space}").packed()
+    return MarkdownResult(text=f"indexed {space}")
 
 
 def _graph(saver: InMemorySaver):
@@ -81,11 +82,12 @@ def _graph(saver: InMemorySaver):
     spec = GraphSpec(
         chat=chat,
         service=LocalDagService(
-            [fast_index, slow_index],
+            ToolHosting().toolset([fast_index, slow_index]),
             StandRefs.STREAM_CONFIG,
             (),
             StreamSpecs({}),
             CallAmbient(),
+            DirectCalls(),
         ),
         system_prompt="index everything",
         checkpointer=saver,

@@ -15,13 +15,12 @@ from boba.runtime.plugins import (
 from boba.stand.refs import StandRefs
 from boba.stand_core.context import CallStand
 from boba.toolkit.entry import ToolArgv
-from boba.toolrun.wrapping import ToolSchema
 
 EXPECTED = {"bash", "ch", "chart", "confluence", "doc", "ingest", "kb", "pg", "web"}
 
 
 def test_installed_packages_are_discovered() -> None:
-    table = EntryPointPlugins.discover()
+    table = EntryPointPlugins().discover()
 
     assert set(table) >= EXPECTED
 
@@ -31,7 +30,7 @@ def test_installed_packages_are_discovered() -> None:
 
 def test_connection_parameters_are_declared_by_the_tools() -> None:
     """Соединения объявляет подпись инструмента, а не манифест плагина."""
-    table = EntryPointPlugins.discover()
+    table = EntryPointPlugins().discover()
 
     for section in ("pg", "ch", "web"):
         assert _takes_connections(table[section])
@@ -42,18 +41,14 @@ def test_connection_parameters_are_declared_by_the_tools() -> None:
 
 def _takes_connections(plugin: ToolPlugin) -> bool:
     for tool in plugin.module_tools:
-        schema = ToolSchema.of(tool)
-        if schema is None:
-            continue
-
-        if ToolArgv.connection_fields(schema):
+        if ToolArgv.connection_fields(tool.args_schema):
             return True
 
     return False
 
 
 def test_bash_plugin_is_a_module_tool() -> None:
-    table = EntryPointPlugins.discover()
+    table = EntryPointPlugins().discover()
 
     bash = table["bash"]
     assert [tool.name for tool in bash.module_tools] == ["bash"]

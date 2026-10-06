@@ -17,11 +17,11 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from langchain_core import tools as langchain_tools
-from langchain_core.tools import BaseTool
-from pydantic import SecretStr
+from pydantic import BaseModel, SecretStr
 
 from boba.identity.context import CallContexts
+from boba.identity.run import Runs
+from boba.stand.toolstand import ProbeBody, ProbeTools, ToolStand
 from boba.stand_core.fake_toolmod import (
     FakeConfig,
     fake_collect,
@@ -47,7 +47,7 @@ from boba.toolkit.chain import (
     StreamPlanError,
     StreamTimings,
 )
-from boba.toolkit.dag import DagNode, DagPlanner, DagSpec
+from boba.toolkit.dag import DagNode, DagPlanner, DagSpec, NodeOutcome
 from boba.toolkit.launcher import (
     CallGate,
     CallInputPort,
@@ -62,14 +62,15 @@ from boba.toolkit.protocol import CallInputSpec, CallOutputSpec, ReplyOk, ToolCo
 from boba.toolkit.result import (
     ErrorResult,
     MarkdownResult,
+    ToolResultBase,
 )
-from boba.toolkit.wrap import ToolProcessWrap
-from boba.toolrun.bridge import ToolBridge
-from boba.toolrun.dag_run import DagOutcome, DagRunner, NodeOutcome
+from boba.toolrun.dag_run import DagOutcome, DagRunner
 from boba.toolrun.dev_null import DevNullTool
+from boba.toolrun.hosted import DirectCalls, HostedCall, HostedTool, ToolSchema
 from boba.toolrun.injected import InjectedConfig, StaticConfig
 from boba.toolrun.process import ProcessLauncherConfig, ProcessToolCaller
 from boba.toolrun.stream_calls import StreamChannelFields, StreamGroupsConfig
+from boba.toolrun.streams import CallJournals
 
 CFG = FakeConfig(token=SecretStr("t0ken"), limit=5)
 MODULE = "boba.stand_core.fake_toolmod"
@@ -117,30 +118,32 @@ class GroupStand:
     def __init__(self, workdir: Path) -> None:
         self._workdir = workdir
         self._ambient = CallAmbient()
-        self._drain = DevNullTool(self._ambient)
-        self._tools: dict[str, Any] = {}
-        for tool in (
-            fake_echo,
-            fake_emit,
-            fake_collect,
-            fake_head,
-            fake_stream,
-            fake_merge,
-            fake_deaf,
-            fake_split,
-            fake_shard,
-        ):
-            bridged = ToolBridge.as_structured_tool(tool.model_copy())
-            self._tools[bridged.name] = bridged
-
-        wrapped = list(self._tools.values())
-        launcher = _launcher(workdir, self._ambient)
-        specs = ToolProcessWrap(self._ambient).guard_all(wrapped, launcher)
-        self._specs = specs.declaring(DevNullTool.NAME, self._drain.spec())
-        InjectedConfig(self._config_of, StaticConfig()).bind_all(wrapped)
-
-        built = ToolBridge.as_structured_tool(self._drain.build())
-        self._tools[built.name] = built
+        contexts = CallContexts()
+        stand = ToolStand(
+            STREAM_CFG,
+            contexts,
+            CallJournals(None, Runs(contexts)),
+            self._ambient,
+            (InjectedConfig(self._config_of, StaticConfig()),),
+        )
+        stand.launch(
+            (
+                fake_echo,
+                fake_emit,
+                fake_collect,
+                fake_head,
+                fake_stream,
+                fake_merge,
+                fake_deaf,
+                fake_split,
+                fake_shard,
+            ),
+            stand.process_launcher("stream-group", workdir, 60.0),
+        )
+        self._specs = stand.specs()
+        self._tools: dict[str, HostedTool] = {}
+        for tool in stand.tools():
+            self._tools[tool.name] = tool
 
         StreamChannelFields(STREAM_CFG).attach_all(
             list(self._tools.values()), self._specs
@@ -150,7 +153,7 @@ class GroupStand:
     def _config_of(name: str, annotation: object) -> object:
         return CFG
 
-    def adopt(self, extra: BaseTool) -> None:
+    def adopt(self, extra: HostedTool) -> None:
         """Готовый инструмент хоста рядом с инструментами стенда."""
         self._tools[extra.name] = extra
 
@@ -203,7 +206,13 @@ class GroupStand:
     ) -> tuple[DagOutcome, dict[str, NodeOutcome]]:
         """Прогон DAG исполнителем: итог целиком и итоги по ключам узлов."""
         runner = DagRunner(
-            self._tools, self._specs, self._ambient, timings, STREAM_CFG.pipe_bytes
+            self._tools,
+            ToolSchema().cards_of(self._tools.values()),
+            self._specs,
+            self._ambient,
+            timings,
+            STREAM_CFG.pipe_bytes,
+            DirectCalls(),
         )
 
         outcome = await asyncio.wait_for(runner.run(self.dag(calls)), timeout=60)
@@ -218,12 +227,12 @@ class GroupStand:
         """Один вызов под ручкой группы мимо исполнителя: тесты, где часть
         вызовов группы намеренно не стартует."""
         tool = self._tools[call.tool]
-        coroutine = tool.coroutine
-        assert coroutine is not None
 
         with self._ambient.in_slot(group.slot(key)):
             try:
-                return await coroutine(**call.args)
+                sent = HostedCall(tool=tool.name, key=key, kwargs=dict(call.args))
+
+                return await tool.body(sent)
             except PayloadFailureError as exc:
                 return exc
 
@@ -262,17 +271,33 @@ def _failure(result: NodeOutcome) -> GroupFailureResult:
     return result
 
 
-@langchain_tools.tool(response_format="content_and_artifact")
-async def plain_echo(text: str) -> tuple[str, Any]:
-    """Инструмент без портов: отвечает своим аргументом."""
-    return MarkdownResult(text=f"echo {text}").packed()
+class PlainArgs(BaseModel):
+    """Аргументы инструментов без портов: один текст."""
+
+    text: str
 
 
-@langchain_tools.tool(response_format="content_and_artifact")
-async def plain_crash(text: str) -> tuple[str, Any]:
-    """Инструмент без портов, падающий исключением."""
-    msg = f"plain crashed on {text}"
-    raise RuntimeError(msg)
+class PlainTools:
+    """Инструменты хоста без портов и обёртки запуска: тело в процессе теста."""
+
+    def echo(self) -> HostedTool:
+        return self._hosted("plain_echo", self._echo)
+
+    def crash(self) -> HostedTool:
+        return self._hosted("plain_crash", self._crash)
+
+    @staticmethod
+    def _hosted(name: str, body: ProbeBody) -> HostedTool:
+        return ProbeTools().hosted(name, PlainArgs, body)
+
+    @staticmethod
+    async def _echo(text: str) -> ToolResultBase:
+        return MarkdownResult(text=f"echo {text}")
+
+    @staticmethod
+    async def _crash(text: str) -> ToolResultBase:
+        msg = f"plain crashed on {text}"
+        raise RuntimeError(msg)
 
 
 class TestIndependentGroups:
@@ -299,8 +324,8 @@ class TestIndependentGroups:
         аргументам не мешают соседу, их итог — ошибка вызова со статусом
         error."""
         stand = GroupStand(tmp_path)
-        stand.adopt(plain_echo)
-        stand.adopt(plain_crash)
+        stand.adopt(PlainTools().echo())
+        stand.adopt(PlainTools().crash())
         calls = {
             "ok": Call("plain_echo", {"text": "hi"}, None, ()),
             "crash": Call("plain_crash", {"text": "boom"}, None, ()),
@@ -311,7 +336,6 @@ class TestIndependentGroups:
 
         assert _content(results["ok"]) == "echo hi"
         assert not results["ok"].errored
-        assert results["ok"].message("ok").status == "success"
 
         assert results["crash"].failed()
         assert results["crash"].errored
@@ -320,7 +344,6 @@ class TestIndependentGroups:
 
         assert results["bad_args"].errored
         assert "text" in results["bad_args"].content
-        assert results["bad_args"].message("bad_args").status == "error"
 
         failed: list[str] = []
         for node in outcome.failures():
@@ -333,7 +356,7 @@ class TestIndependentGroups:
         self, tmp_path: Path
     ) -> None:
         stand = GroupStand(tmp_path)
-        stand.adopt(plain_crash)
+        stand.adopt(PlainTools().crash())
         calls = self._pipeline("g", "a", fail=False)
         calls["crash"] = Call("plain_crash", {"text": "boom"}, None, ())
 
@@ -369,7 +392,7 @@ class TestIndependentGroups:
         """Писатель одной группы упал: сорвана только она — вторая группа и
         вызов без портов того же DAG доработали."""
         stand = GroupStand(tmp_path)
-        stand.adopt(plain_echo)
+        stand.adopt(PlainTools().echo())
         calls = self._pipeline("bad", "a", fail=True)
         calls.update(self._pipeline("good", "b", fail=False))
         calls["single"] = Call("plain_echo", {"text": "alone"}, None, ())

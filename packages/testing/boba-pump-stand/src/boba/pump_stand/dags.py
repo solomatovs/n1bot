@@ -1,8 +1,9 @@
 """Запуск DAG насосов стенда без модели: описание toml → DagSpec → DagRunner.
 
 Насосы postgres, ClickHouse и Oracle и узел dev_null собираются как в
-приложении: мост в langchain, обёртка запуска субпроцессом, соединения по
-имени из справочника стенда, поля каналов, упаковка ошибок. Описание — текст
+приложении, общим стендом ToolStand: инструмент хоста, обёртка запуска
+субпроцессом, соединения по имени из справочника стенда и обвязки цепочки
+ToolChain. Описание — текст
 toml; имена схем и баз стенда подставляются в него string.Template
 ($pg_schema, $ch_database и что ещё назвал тест), разбирает текст tomllib.
 
@@ -14,30 +15,26 @@ DagRunError — узел зовёт инструмент, которого у с
 from __future__ import annotations
 
 import tomllib
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from string import Template
 from typing import ClassVar
 
-from langchain_core.tools import BaseTool, StructuredTool
-
 from boba.connection_broker.user_connections import ConnectionParamHooks
 from boba.connections.manifest import ConnectionTypes
-from boba.identity.context import CallContexts
+from boba.identity.run import Runs
+from boba.stand.toolstand import ToolStand
+from boba.stand_core.context import CallStand, StandIdentity
 from boba.tool.ch import tools as ch
 from boba.tool.ora import tools as ora
 from boba.tool.pg import tools as pg
 from boba.toolkit.chain import CallAmbient
 from boba.toolkit.dag import DagSpec
-from boba.toolkit.wrap import ToolProcessWrap
-from boba.toolrun.bridge import ToolBridge
-from boba.toolrun.call_id import CallFields
-from boba.toolrun.dag_run import DagOutcome, DagRunner
-from boba.toolrun.dev_null import DevNullTool
-from boba.toolrun.errors import ToolErrorGuard
-from boba.toolrun.injected import AsyncInjected
-from boba.toolrun.process import ProcessLauncherConfig, ProcessToolCaller
-from boba.toolrun.stream_calls import StreamChannelFields, StreamGroupsConfig
+from boba.toolrun.dag_run import DagOutcome
+from boba.toolrun.hosted import DirectCalls, HostedTool
+from boba.toolrun.injected import AsyncInjected, ParamSource
+from boba.toolrun.stream_calls import StreamGroupsConfig
+from boba.toolrun.streams import CallJournals
 
 __all__ = ["PumpDags", "StandConnections"]
 
@@ -71,12 +68,23 @@ class StandConnections(AsyncInjected):
         return config
 
 
-class PumpDags:
+class PumpDags(ParamSource):
     """Платформа запуска DAG на стенде: насосы под обвязками приложения и
     исполнитель. Тест пишет описание toml и получает DagOutcome; имена
-    стенда для описания — names, соединения по имени — connections."""
+    стенда для описания — names, соединения по имени — connections.
+
+    Инструменты собирает общий стенд ToolStand цепочкой обвязок ToolChain,
+    как боевой загрузчик; сам объект — источник параметров-соединений этой
+    цепочки (ParamSource): соединение узла берётся по имени из справочника
+    стенда. Узлы исполняются в контексте вызова стенда: права цепочки
+    проверяются по его роли и профилю.
+    """
 
     CONNECTION_TEXT: ClassVar[str] = "Имя соединения из справочника стенда."
+
+    ROLE: ClassVar[str] = "pump"
+    THREAD: ClassVar[str] = "pump-dags"
+    TIMEOUT_SEC: ClassVar[float] = 300.0
 
     STREAM_CONFIG: ClassVar[StreamGroupsConfig] = StreamGroupsConfig(
         open_sec=60.0,
@@ -93,62 +101,41 @@ class PumpDags:
         names: Mapping[str, str],
     ) -> None:
         self._names = dict(names)
-        ambient = CallAmbient()
-
-        launcher = ProcessToolCaller(
-            "pump-dags",
-            ProcessLauncherConfig(
-                provider="process",
-                workdir=str(workdir),
-                timeout_sec=300.0,
-                channel_limit_bytes=8_000_000,
-                stderr_tail_bytes=16384,
-                kill_grace_sec=1.0,
-            ),
-            CallContexts(),
-            ambient,
+        self._directory = dict(connections)
+        self._calls = CallStand()
+        self._hooks = ConnectionParamHooks(
+            ConnectionTypes.discover, self.CONNECTION_TEXT
         )
 
-        tools: list[StructuredTool] = []
-        for payload in (
-            pg.pg_stream_out,
-            pg.pg_stream_in,
-            ch.ch_stream_out,
-            ch.ch_stream_in,
-            ora.ora_stream_out,
-            ora.ora_stream_in,
-        ):
-            bridged = ToolBridge.as_structured_tool(payload.model_copy())
-            if not isinstance(bridged, StructuredTool):
-                msg = f"pump {payload.name!r} did not bridge to a StructuredTool"
-                raise TypeError(msg)
+        contexts = self._calls.contexts
+        stand = ToolStand(
+            self.STREAM_CONFIG,
+            contexts,
+            CallJournals(None, Runs(contexts)),
+            CallAmbient(),
+            (self,),
+        )
+        stand.launch(
+            (
+                pg.pg_stream_out,
+                pg.pg_stream_in,
+                ch.ch_stream_out,
+                ch.ch_stream_in,
+                ora.ora_stream_out,
+                ora.ora_stream_in,
+            ),
+            stand.process_launcher(self.THREAD, workdir, self.TIMEOUT_SEC),
+        )
 
-            tools.append(bridged)
-
-        drain_tool = DevNullTool(ambient)
-        specs = ToolProcessWrap(ambient).guard_all(tools, launcher)
-        specs = specs.declaring(DevNullTool.NAME, drain_tool.spec())
-        self._directory = dict(connections)
-        hooks = ConnectionParamHooks(ConnectionTypes.discover, self.CONNECTION_TEXT)
-        hooks.bind_all(tools, self._connection_hook)
-
-        drain = ToolBridge.as_structured_tool(drain_tool.build())
-        every: list[BaseTool] = [*tools, drain]
-        StreamChannelFields(self.STREAM_CONFIG).attach_all(every, specs)
-        CallFields().attach_all(every)
-        ToolErrorGuard().guard_all(every)
-
-        by_name: dict[str, BaseTool] = {}
-        for tool in every:
+        registry = stand.registry(stand.access(self.ROLE, StandIdentity.PROFILE), ())
+        by_name: dict[str, HostedTool] = {}
+        for tool in registry.tools:
             by_name[tool.name] = tool
 
-        self._runner = DagRunner(
-            by_name,
-            specs,
-            ambient,
-            self.STREAM_CONFIG.timings(),
-            self.STREAM_CONFIG.pipe_bytes,
-        )
+        self._runner = registry.runner(by_name, DirectCalls())
+
+    def bind_all(self, tools: Sequence[HostedTool]) -> None:
+        self._hooks.bind_all(tools, self._connection_hook)
 
     def _connection_hook(self, tool: str, param: str, kind: str) -> AsyncInjected:
         return StandConnections(param, self._directory)
@@ -160,4 +147,6 @@ class PumpDags:
         return DagSpec.model_validate(tomllib.loads(rendered))
 
     async def run(self, text: str) -> DagOutcome:
-        return await self._runner.run(self.spec(text))
+        context = self._calls.context(self.THREAD, roles=(self.ROLE,))
+        with self._calls.applied(context):
+            return await self._runner.run(self.spec(text))

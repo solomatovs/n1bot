@@ -29,7 +29,9 @@ from boba.messaging.bus import ListenerState, StaticBusWatch
 from boba.runtime.launchers import SectionLaunchers, ToolLaunchers
 from boba.runtime.plugins import EntryPointPlugins, ToolLoader
 from boba.runtime.refs import RuntimeRefs
+from boba.stand.toolstand import ToolStand
 from boba.toolkit.chain import CallAmbient
+from boba.toolrun.injected import ParamSource
 from boba.toolrun.registry import ToolRegistry
 from boba.toolrun.stream_calls import StreamGroupsConfig
 from boba.toolrun.streams import CallJournals
@@ -68,6 +70,14 @@ class StandRefs:
         self._locks = MemoryLiveLocks(self.NAME, self.LOCK_TTL_SEC)
         self._bus = MemoryMessageBus(self.NAME)
 
+    def tool_stand(self, sources: Sequence[ParamSource]) -> ToolStand:
+        """Общий стенд инструментов над держателем контекста, журналами и
+        обстановкой вызова этого стенда; sources — источники служебных
+        параметров тела, которые цепочка ставит на инструменты секции."""
+        return ToolStand(
+            self.STREAM_CONFIG, self.contexts, self.journals, self.ambient, sources
+        )
+
     def launchers(self, raw: DictConfig) -> SectionLaunchers:
         """Способ запуска инструментов по конфигу raw; стенд гасит его в stop()."""
         built = ToolLaunchers(raw).build()
@@ -85,11 +95,10 @@ class StandRefs:
         у чата — роли и профили."""
         loader = ToolLoader(
             raw,
-            EntryPointPlugins.discover(),
+            EntryPointPlugins().discover(),
             refs.execution(),
             self.launchers(raw),
             grants,
-            (),
             ConnectionTools(refs.connection_store, self.contexts).build(),
         )
 

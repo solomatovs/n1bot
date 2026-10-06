@@ -25,7 +25,7 @@ import json
 import logging
 import os
 import sys
-from collections.abc import Awaitable, Callable, Iterator, Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from contextlib import suppress
 from enum import IntEnum, StrEnum
 from pathlib import Path
@@ -33,7 +33,6 @@ from types import NoneType, UnionType
 from typing import (
     Any,
     ClassVar,
-    Protocol,
     Self,
     Union,
     get_args,
@@ -44,7 +43,7 @@ from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
 
 from boba.toolkit.calls import FieldMarks
 from boba.toolkit.closing import ProcessClosers
-from boba.toolkit.facade import PayloadTool
+from boba.toolkit.facade import PayloadTool, ToolFacadeError
 from boba.toolkit.failure import FailurePacker, ValidationText
 from boba.toolkit.frames import ToolIo
 from boba.toolkit.launcher import PayloadFailureError
@@ -78,7 +77,6 @@ __all__ = [
     "ToolAddress",
     "ToolArgv",
     "ToolEntryError",
-    "ToolLike",
     "ToolMain",
 ]
 
@@ -254,27 +252,6 @@ class CallWiring(BaseModel):
         return arguments.pop(index)
 
 
-class ToolLike(Protocol):
-    """Протокол tool-объекта (имя, схема, тело) — то, что toolkit'у нужно от
-    langchain-инструмента без зависимости от langchain.
-
-    Только read-only свойства: mutable-атрибут протокола инвариантен, и
-    StructuredTool с его `args_schema: ArgsSchema | None` его не проходит.
-    """
-
-    @property
-    def name(self) -> str: ...
-
-    @property
-    def args_schema(self) -> Any: ...
-
-    @property
-    def func(self) -> Callable[..., Any] | None: ...
-
-    @property
-    def coroutine(self) -> Callable[..., Awaitable[Any]] | None: ...
-
-
 class ToolAddress(BaseModel):
     """Адрес инструмента для командной строки: модуль тела и имя в TOOLS —
     из них собирается префикс команды `python -m <модуль> <имя>`.
@@ -289,7 +266,7 @@ class ToolAddress(BaseModel):
     name: str = Field(min_length=1)
 
     @classmethod
-    def of(cls, tool: ToolLike) -> ToolAddress:
+    def of(cls, tool: PayloadTool) -> ToolAddress:
         body = tool.coroutine or tool.func
         if body is None:
             msg = (
@@ -431,7 +408,7 @@ class ToolArgv:
     @classmethod
     def parse(
         cls,
-        tool: ToolLike,
+        tool: PayloadTool,
         argv: Sequence[str],
         config: bytes,
     ) -> dict[str, Any]:
@@ -469,7 +446,7 @@ class ToolArgv:
         return kwargs
 
     @classmethod
-    def schema_of(cls, tool: ToolLike) -> type[BaseModel]:
+    def schema_of(cls, tool: PayloadTool) -> type[BaseModel]:
         schema = tool.args_schema
         if not isinstance(schema, type) or not issubclass(schema, BaseModel):
             msg = (
@@ -688,39 +665,25 @@ class ToolMain:
 
     _FAILURES: ClassVar[FailurePacker] = FailurePacker()
 
-    REQUIRED_ATTRIBUTES: ClassVar[tuple[str, ...]] = (
-        "name",
-        "args_schema",
-        "func",
-        "coroutine",
-    )
-
     @classmethod
-    def toolset(cls, *tools: object) -> tuple[ToolLike, ...]:
-        """Кортеж TOOLS из tool-объектов с проверкой duck-полей.
-
-        Декоратор @tool статически отдаёт BaseTool без func/coroutine —
-        мост к ToolLike делается здесь, один раз на модуль.
-        """
-        checked: list[ToolLike] = []
+    def toolset(cls, *tools: PayloadTool) -> tuple[PayloadTool, ...]:
+        """Кортеж TOOLS модуля из инструментов фасада @tool."""
         for tool in tools:
-            for attribute in cls.REQUIRED_ATTRIBUTES:
-                if not hasattr(tool, attribute):
-                    msg = (
-                        f"{tool!r} is not a tool object: attribute {attribute!r} "
-                        f"is missing, a tool needs {cls.REQUIRED_ATTRIBUTES}"
-                    )
-                    raise ToolEntryError(EntryErrorKind.INTERNAL_ERROR, msg)
+            if not isinstance(tool, PayloadTool):
+                msg = (
+                    f"{tool!r} is not a tool object: expected a PayloadTool "
+                    f"built by the @tool facade, got {type(tool).__name__}"
+                )
+                raise ToolEntryError(EntryErrorKind.INTERNAL_ERROR, msg)
 
-            accepted: Any = tool
-            checked.append(accepted)
-
-        return tuple(checked)
+        return tuple(tools)
 
     LOG_FORMAT: ClassVar[str] = "%(asctime)s %(levelname)s %(name)s: %(message)s"
 
     @classmethod
-    def run(cls, tools: Sequence[ToolLike], argv: Sequence[str] | None = None) -> int:
+    def run(
+        cls, tools: Sequence[PayloadTool], argv: Sequence[str] | None = None
+    ) -> int:
         arguments = list(sys.argv[1:]) if argv is None else list(argv)
 
         cls._setup_logging()
@@ -763,7 +726,7 @@ class ToolMain:
 
     @classmethod
     def _run(
-        cls, tools: Sequence[ToolLike], arguments: list[str], wiring: CallWiring
+        cls, tools: Sequence[PayloadTool], arguments: list[str], wiring: CallWiring
     ) -> int:
         if not arguments or arguments == [EntryFlag.HELP]:
             print(cls._tools_help(tools))  # noqa: T201
@@ -799,7 +762,7 @@ class ToolMain:
         return cls._deliver(reply, wiring, want_artifact)
 
     @classmethod
-    def _lookup(cls, tools: Sequence[ToolLike], name: str) -> ToolLike:
+    def _lookup(cls, tools: Sequence[PayloadTool], name: str) -> PayloadTool:
         for tool in tools:
             if tool.name == name:
                 return tool
@@ -822,7 +785,7 @@ class ToolMain:
         return arguments.pop(index)
 
     @classmethod
-    def _build_ports(cls, tool: ToolLike, wiring: CallWiring) -> dict[str, Any]:
+    def _build_ports(cls, tool: PayloadTool, wiring: CallWiring) -> dict[str, Any]:
         """Порты вызова для объявивших их параметров подписи.
 
         Валидирует декларацию (StreamSpec) и строит порты поверх транспорта
@@ -858,7 +821,7 @@ class ToolMain:
         return ports
 
     @staticmethod
-    def _build_groups(tool: ToolLike, wiring: CallWiring) -> dict[str, StreamGroup]:
+    def _build_groups(tool: PayloadTool, wiring: CallWiring) -> dict[str, StreamGroup]:
         """Барьер группы на пайпах --fd-gate/--fd-verdict; у человека —
         отвязанный, ready() возвращается сразу."""
         names = ToolArgv.group_fields(ToolArgv.schema_of(tool))
@@ -874,7 +837,7 @@ class ToolMain:
         return groups
 
     @staticmethod
-    def _refuse_inputs(tool: ToolLike, wiring: CallWiring) -> None:
+    def _refuse_inputs(tool: PayloadTool, wiring: CallWiring) -> None:
         """Инструмент без портов: канал из argv некому отдать."""
         if wiring.inputs:
             msg = (
@@ -893,7 +856,7 @@ class ToolMain:
     @classmethod
     def _port_value(
         cls,
-        tool: ToolLike,
+        tool: PayloadTool,
         decl: PortDecl,
         element: Any,
         wires: Mapping[str, Sequence[PortWire]],
@@ -934,7 +897,7 @@ class ToolMain:
 
     @staticmethod
     def _wires_by_port(
-        tool: ToolLike, ports: Sequence[PortDecl], wires: Sequence[PortWire]
+        tool: PayloadTool, ports: Sequence[PortDecl], wires: Sequence[PortWire]
     ) -> dict[str, list[PortWire]]:
         """Каналы из argv по портам одной стороны; канал чужого порта — отказ."""
         owned: dict[str, list[PortWire]] = {}
@@ -957,7 +920,7 @@ class ToolMain:
 
     @classmethod
     def _config_source(
-        cls, tool: ToolLike, wiring: CallWiring, injected_path: str | None
+        cls, tool: PayloadTool, wiring: CallWiring, injected_path: str | None
     ) -> bytes:
         """Injected-конфиг: канал --injected-fd лончера либо файл --injected.
 
@@ -1015,24 +978,12 @@ class ToolMain:
             raise ToolEntryError(EntryErrorKind.INVALID_REQUEST, msg) from exc
 
     @classmethod
-    def _call(cls, tool: ToolLike, kwargs: dict[str, Any]) -> ReplyOk:
-        body = tool.coroutine or tool.func
-        if body is None:
-            msg = (
-                f"tool {tool.name!r} has no body to call: "
-                "both coroutine and func are None"
-            )
-            raise ToolEntryError(EntryErrorKind.INTERNAL_ERROR, msg)
-
-        if isinstance(tool, PayloadTool):
-            kwargs = tool.packed_kwargs(kwargs)
-
+    def _call(cls, tool: PayloadTool, kwargs: dict[str, Any]) -> ReplyOk:
         elapsed = Elapsed()
         try:
-            if tool.coroutine is not None:
-                result = asyncio.run(cls._acall(tool.coroutine, kwargs))
-            else:
-                result = body(**kwargs)
+            result = asyncio.run(cls._acall(tool, kwargs))
+        except ToolFacadeError as exc:
+            raise ToolEntryError(EntryErrorKind.INTERNAL_ERROR, str(exc)) from exc
         except Exception as exc:
             failure = cls._FAILURES.pack(exc)
             logger.error(
@@ -1045,27 +996,14 @@ class ToolMain:
 
         logger.info("tool[%s]: body finished in %dms", tool.name, elapsed.ms())
 
-        return cls._pack(tool, result)
+        return ReplyOk(content=result.llm_view(), artifact=result)
 
     @staticmethod
-    async def _acall(
-        coroutine: Callable[..., Awaitable[Any]], kwargs: dict[str, Any]
-    ) -> Any:
+    async def _acall(tool: PayloadTool, kwargs: dict[str, Any]) -> ToolResultBase:
         try:
-            return await coroutine(**kwargs)
+            return await tool.result(kwargs, False)
         finally:
             await ProcessClosers().close_all()
-
-    @classmethod
-    def _pack(cls, tool: ToolLike, result: object) -> ReplyOk:
-        if not isinstance(result, ToolResultBase):
-            msg = (
-                f"tool {tool.name!r} must return a ToolResultBase model, "
-                f"got {type(result).__name__}"
-            )
-            raise ToolEntryError(EntryErrorKind.INTERNAL_ERROR, msg)
-
-        return ReplyOk(content=result.llm_view(), artifact=result)
 
     @classmethod
     def _deliver(cls, reply: ReplyOk, wiring: CallWiring, want_artifact: bool) -> int:
@@ -1094,12 +1032,12 @@ class ToolMain:
             channel.write(reply.model_dump_json().encode("utf-8"))
 
     @classmethod
-    def _tools_help(cls, tools: Sequence[ToolLike]) -> str:
+    def _tools_help(cls, tools: Sequence[PayloadTool]) -> str:
         names = ", ".join(sorted(tool.name for tool in tools))
         return f"tools: {names}"
 
     @classmethod
-    def _tool_help(cls, tool: ToolLike) -> str:
+    def _tool_help(cls, tool: PayloadTool) -> str:
         schema = ToolArgv.schema_of(tool)
 
         lines: list[str] = []

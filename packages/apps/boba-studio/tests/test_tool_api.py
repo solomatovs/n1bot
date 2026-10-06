@@ -35,15 +35,14 @@ from boba.runtime.config import StudioRuntimeConfig
 from boba.runtime.http import RequestTokens
 from boba.runtime.users import UsersTable
 from boba.stand.refs import StandRefs
+from boba.stand.toolstand import ToolStand
 from boba.stand_core.auth import StubAuthenticator
 from boba.studio.api.auth import ApiAuth
 from boba.studio.api.tools import ToolCallBody, ToolCalling
 from boba.toolkit.chain import CallAmbient
-from boba.toolkit.facade import tool
-from boba.toolkit.ports import StreamSpecs
+from boba.toolkit.facade import PayloadTool, tool
 from boba.toolkit.result import MarkdownResult
-from boba.toolrun.bridge import ToolBridge
-from boba.toolrun.registry import ToolChain, ToolRegistry
+from boba.toolrun.registry import ToolRegistry
 from boba.toolrun.streams import CallJournals
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
@@ -59,7 +58,7 @@ class Probe:
         self.journals = CallJournals(None, self.runs)
         self.ambient = CallAmbient()
 
-    def tools(self) -> list[Any]:
+    def tools(self) -> list[PayloadTool]:
         seen = self.seen
         contexts = self.contexts
 
@@ -69,13 +68,16 @@ class Probe:
             seen.append(contexts.current())
             return MarkdownResult(text=f"seen {query}")
 
-        return list(ToolBridge.toolset([probe]))
+        return [probe]
 
 
 def _registry(probe: Probe, studio_config: StudioRuntimeConfig) -> ToolRegistry:
-    tools = probe.tools()
+    # та же цепочка обвязок, что ставит загрузчик
+    stand = ToolStand(
+        StandRefs.STREAM_CONFIG, probe.contexts, probe.journals, probe.ambient, ()
+    )
     names: list[str] = []
-    for tool_ in tools:
+    for tool_ in stand.host(probe.tools()):
         names.append(tool_.name)
 
     roles: dict[str, RoleConfig] = {}
@@ -89,19 +91,8 @@ def _registry(probe: Probe, studio_config: StudioRuntimeConfig) -> ToolRegistry:
             StandProfiles.profile(studio_config): ProfileGrant(tools=["*"], roles=["*"])
         },
     )
-    # та же цепочка обвязок, что ставит загрузчик
-    ToolChain(
-        StandRefs.STREAM_CONFIG, probe.journals, probe.contexts, probe.ambient, (), ()
-    ).seal(tools, access, StreamSpecs({}))
-    return ToolRegistry(
-        tools=tools,
-        access=access,
-        stream_config=StandRefs.STREAM_CONFIG,
-        own=frozenset(),
-        node_args=(),
-        specs=StreamSpecs({}),
-        ambient=probe.ambient,
-    )
+
+    return stand.registry(access, ())
 
 
 def _calling(probe: Probe, studio_config: StudioRuntimeConfig) -> ToolCalling:

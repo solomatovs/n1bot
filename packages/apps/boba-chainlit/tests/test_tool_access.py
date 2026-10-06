@@ -2,17 +2,23 @@
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
-from langchain_core.tools import tool
+from pydantic import BaseModel
 
 from boba.access import ProfileGrant, RoleConfig, ToolAccess
 from boba.chainlit.infra.providers import build_llm_view
 from boba.runtime.plugins import PluginMeta
 from boba.stand.refs import StandRefs
+from boba.stand.toolstand import ProbeTools
 from boba.toolkit.chain import CallAmbient
+from boba.toolkit.dag import NodeOutcome
 from boba.toolkit.ports import StreamSpecs
+from boba.toolkit.result import MarkdownResult, ToolResultBase
 from boba.toolrun.access import ToolAccessDeniedError, ToolAccessGuard
+from boba.toolrun.hosted import HostedTool
 from boba.toolrun.registry import ToolRegistry
 
 
@@ -37,18 +43,13 @@ class TestPluginMetaNotation:
 
 class TestRegistryFiltering:
     @staticmethod
-    def _tools() -> list:
-        @tool
-        def query(sql: str) -> str:
-            """только ADM"""
-            return sql
+    def _tools() -> list[HostedTool]:
+        probes = ProbeTools()
+        tools: list[HostedTool] = []
+        for name in ("query", "list_targets"):
+            tools.append(probes.recorder(name, _QueryArgs))
 
-        @tool
-        def list_targets() -> str:
-            """DEV и ADM"""
-            return "ok"
-
-        return [query, list_targets]
+        return tools
 
     def _registry(self) -> ToolRegistry:
         access = ToolAccess(
@@ -99,13 +100,19 @@ class _AccessFacts:
             self.profile = profile
 
 
+class _QueryArgs(BaseModel):
+    """Аргументы пробного инструмента."""
+
+    sql: str
+
+
 class TestAccessGuard:
     @staticmethod
-    def _guarded(roles: set[str], profile: str | None):
-        @tool
-        def query(sql: str) -> str:
-            """только ADM"""
-            return f"executed: {sql}"
+    def _guarded(roles: set[str], profile: str | None) -> HostedTool:
+        async def body(sql: str) -> ToolResultBase:
+            return MarkdownResult(text=f"executed: {sql}")
+
+        query = ProbeTools().hosted("query", _QueryArgs, body)
 
         access = ToolAccess(
             tool_names=["query"],
@@ -116,18 +123,22 @@ class TestAccessGuard:
         guarded = ToolAccessGuard(lambda: facts).guard_all([query], access)
         return guarded[0]
 
+    @staticmethod
+    def _called(tool: HostedTool) -> NodeOutcome:
+        return asyncio.run(ProbeTools().call(tool, "c1", {"sql": "select 1"}))
+
     def test_allowed_role_runs(self) -> None:
-        result = self._guarded({"ADM"}, "general").invoke({"sql": "select 1"})
+        result = self._called(self._guarded({"ADM"}, "general")).content
         if result != "executed: select 1":
             raise AssertionError('result == "executed: select 1"')
 
     def test_denied_role_raises(self) -> None:
         with pytest.raises(ToolAccessDeniedError, match="query"):
-            self._guarded({"DEV"}, "general").invoke({"sql": "select 1"})
+            self._called(self._guarded({"DEV"}, "general"))
 
     def test_missing_profile_raises(self) -> None:
         with pytest.raises(ToolAccessDeniedError, match="query"):
-            self._guarded({"ADM"}, None).invoke({"sql": "select 1"})
+            self._called(self._guarded({"ADM"}, None))
 
     def test_denied_is_ordinary_exception(self) -> None:
         if not (issubclass(ToolAccessDeniedError, Exception)):

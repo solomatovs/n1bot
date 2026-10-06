@@ -20,15 +20,12 @@ import logging
 import mimetypes
 from collections.abc import AsyncIterator
 from enum import StrEnum
-from typing import Any, ClassVar
+from typing import ClassVar
 
-import mcp_types as mt
 from fastmcp import FastMCP
 from fastmcp.server.auth import AccessToken
-from fastmcp.tools import Tool
-from fastmcp.tools.base import ToolResult
 from mcp.server.auth.middleware.bearer_auth import AuthenticatedUser
-from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from starlette.exceptions import HTTPException
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
@@ -38,7 +35,7 @@ from boba.canvas.keys import ObjectKey, ThreadDir, WorkspaceMount
 from boba.canvas.storage import StorageFullError, StorageNotFoundError
 from boba.canvas.transfer import FileHeader, UploadPolicy
 from boba.identity.context import Scope, Subject
-from boba.mcp_server.auth import CallScopeError, CallScopes, TokenSubjects
+from boba.mcp_server.auth import TokenSubjects
 from boba.runtime.served import StreamedFile
 from boba.runtime.storage import (
     LocalStorageClient,
@@ -50,7 +47,7 @@ from boba.toolkit.failure import ValidationText
 from boba.toolkit.wire import FilesFeature
 from boba.toolrun.streams import CallJournals
 
-__all__ = ["FileRoutes", "FileUploadTool", "JournalRoutes", "RouteCallers"]
+__all__ = ["FileRoutes", "JournalRoutes", "RouteCallers"]
 
 logger = logging.getLogger(__name__)
 
@@ -217,7 +214,7 @@ class FileRoutes:
 
     Создаётся сервером endpoint'а (McpServer) из хранилища workspace и
     разбора вошедшего (RouteCallers); install() ставит маршруты в сервер
-    fastmcp. settings() — настройки расширения FilesFeature, по которым
+    fastmcp. feature() — настройки расширения FilesFeature, по которым
     клиент узнаёт адрес маршрута: путь с префиксом публикации published,
     под которым сервис стоит за прокси (без прокси — пустым).
     """
@@ -236,12 +233,12 @@ class FileRoutes:
         self._policy = UploadPolicy()
         self._files = StreamedFile(storage, self._policy)
 
-    def settings(self, upload_tool: str) -> dict[str, Any]:
-        return {
-            FilesFeature.PATH.value: self._published,
-            FilesFeature.UPLOAD.value: upload_tool,
-            FilesFeature.WORKSPACE.value: WorkspaceMount.path(),
-        }
+    def feature(self, upload_tool: str) -> FilesFeature:
+        """Настройки расширения файлов: маршрут, инструмент адреса загрузки
+        upload_tool и каталог workspace глазами инструментов."""
+        return FilesFeature(
+            path=self._published, upload=upload_tool, workspace=WorkspaceMount.path()
+        )
 
     def address(self, scope: str, name: str) -> str:
         """Путь маршрута, куда клиент шлёт файл вложением области scope."""
@@ -368,85 +365,3 @@ class CountedBody:
 
             self.size += len(chunk)
             yield chunk
-
-
-class FileUploadRequest(BaseModel):
-    """Аргументы file_upload: имя файла в каталоге вложений области."""
-
-    model_config = ConfigDict(frozen=True, extra="forbid")
-
-    name: str = Field(
-        min_length=1,
-        description="File name as it should appear in the workspace upload dir.",
-    )
-
-
-class FileUploadTool(Tool):
-    """Операция сервиса file_upload: адрес, по которому клиент загружает файл.
-
-    Создаётся сервером endpoint'а рядом с FileRoutes. Байты файла вызовом
-    MCP не передаются: модель получает адрес и способ отправки, а клиент
-    шлёт файл потоком на маршрут файлов тем же токеном входа. Запуска
-    области операция не открывает и в предел запусков не входит.
-    """
-
-    NAME: ClassVar[str] = "file_upload"
-
-    DESCRIPTION: ClassVar[str] = (
-        "Get the address to upload a file into the workspace:\n"
-        "   - name — file name in the upload dir of the workspace\n"
-        "The file body is sent by the client with HTTP PUT to the returned "
-        "path of this server using the same bearer token; tools then read the "
-        "file at the returned workspace path"
-    )
-
-    _routes: FileRoutes = PrivateAttr()
-    _subjects: TokenSubjects = PrivateAttr()
-    _scopes: CallScopes = PrivateAttr()
-
-    def __init__(self, routes: FileRoutes, subjects: TokenSubjects) -> None:
-        super().__init__(
-            name=self.NAME,
-            description=self.DESCRIPTION,
-            parameters=FileUploadRequest.model_json_schema(),
-        )
-        self._routes = routes
-        self._subjects = subjects
-        self._scopes = CallScopes()
-
-    async def run(self, arguments: dict[str, object]) -> ToolResult:
-        try:
-            request = FileUploadRequest.model_validate(arguments)
-            subject = self._subjects.current()
-            scope = self._scopes.of(subject)
-            key = ObjectKey(
-                user_id=subject.user_key, thread_id=scope.id, name=request.name
-            )
-        except ValidationError as exc:
-            return self._refused(
-                f"file_upload: the arguments do not name a file: "
-                f"{ValidationText.of(exc)}"
-            )
-        except CallScopeError as exc:
-            return self._refused(f"file_upload: {exc}")
-
-        address = self._routes.address(key.thread_id, key.name)
-        text = (
-            f"upload the file body with HTTP PUT to {address} of this server "
-            f"(same bearer token); tools read it at {key.in_workspace()}"
-        )
-
-        return ToolResult(
-            content=[mt.TextContent(type="text", text=text)],
-            structured_content={
-                "method": "PUT",
-                "path": address,
-                "workspace_path": key.in_workspace(),
-            },
-        )
-
-    @staticmethod
-    def _refused(message: str) -> ToolResult:
-        return ToolResult(
-            content=[mt.TextContent(type="text", text=message)], is_error=True
-        )

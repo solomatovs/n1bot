@@ -1,10 +1,11 @@
 """ChatMount целиком: инструменты canvas сервиса через порт чата.
 
 Тело исполняет сервис boba-mcp: пишет и читает файлы workspace, результат
-несёт items. Порт чата (MountedToolServer) монтирует их на поверхность:
-вложение — строкой элемента и показом через порт хода, панель — содержимым
-вьювера плюс ссылкой в переписке, вердикт браузера по диаграмме —
-ErrorResult для модели.
+несёт items. Путь вызова узла чата (ChatCalls) открывает шаг вызова, отдаёт
+итог тела монтированию (ChatMount) и закрывает шаг: вложение — строкой
+элемента и показом через порт хода, панель — содержимым вьювера плюс
+ссылкой в переписке, вердикт браузера по диаграмме — отказ вызова для
+модели и для шага ленты.
 """
 
 from __future__ import annotations
@@ -21,29 +22,29 @@ from chainlit.user import PersistedUser
 from chainlit_stand import (
     ChatSessionStand,
     FakeTurn,
+    NoConnectionStore,
     ServiceTools,
     ToolService,
     get_bytes,
     put_bytes,
 )
-from langchain_core.messages import ToolCall
 
+from boba.auth.credentials import KerberosCredentialSource, NoRefresh
 from boba.canvas.canvas import CanvasErrorKind, RenderVerdicts
 from boba.canvas.keys import WorkspaceMount
 from boba.chainlit.canvas.panel import CanvasPanel
 from boba.chainlit.canvas.tools import CanvasViewers
 from boba.chainlit.data.data_layer import AttachmentDataLayer
 from boba.chainlit.domain.keys import AttachmentLinks
-from boba.chainlit.rendering.mount import (
-    ChatAttachments,
-    ChatMount,
-    MountedToolServer,
-)
+from boba.chainlit.rendering.mount import ChatAttachments, ChatCalls, ChatMount
+from boba.connection_broker.sealing import SentConnections
+from boba.connection_broker.user_connections import ArmedConnections
 from boba.identity.api import StoredUser
 from boba.identity.session import Login, UserMetadataField
 from boba.runtime.storage import StorageClient
 from boba.stand.refs import StandRefs
 from boba.stand_core.context import CallStand
+from boba.toolkit.dag import DagNode
 from boba.toolkit.result import CanvasResult, ErrorResult, FileResult
 
 pytestmark = [
@@ -73,7 +74,8 @@ class _StorageOnlyLayer:
 
 
 class Stand:
-    """Инструменты canvas сервиса за портом чата с обвязкой ChatMount.
+    """Инструменты canvas сервиса за портом чата, чьи вызовы идут путём
+    ChatCalls с монтированием ChatMount.
 
     Создаётся фикстурой stand. Пользователь стенда входит в чат, его файлы
     держит сервис: хранилище чата (RemoteStorageClient) пишет туда же,
@@ -106,7 +108,6 @@ class Stand:
         self.layer = _StorageOnlyLayer(self.storage)
         self.turn = FakeTurn()
         self.pushed: list[Any] = []
-        self.mount = ChatMount(call_stand.contexts, runtime_stand.runs)
 
         # запуск открывается контекстом сессии: обвязке нужен контекст чата с
         # поверхностью, реестру — запись о порте хода
@@ -147,13 +148,9 @@ class Stand:
         return message.artifact
 
     async def _submitted(self, name: str, args: dict[str, Any]) -> Any:
-        port = MountedToolServer(
-            await self._tools.port(), self.mount, self._calls.contexts
-        )
-        call = ToolCall(name=name, args=args, id="call-1", type="tool_call")
-        pending = await port.submit([call])
+        call = DagNode(key="call-1", tool=name, args=args)
 
-        return await pending[0]
+        return await self._tools.submit(call)
 
     async def _await_push(self) -> None:
         while not self.pushed:
@@ -165,6 +162,25 @@ class Stand:
     def key(self, directory: str, name: str) -> str:
         """Ключ файла треда в хранилище чата."""
         return f"{USER}/{THREAD}/{directory}/{name}"
+
+
+@pytest.fixture
+async def service_tools(
+    tool_service: ToolService, runtime_stand: StandRefs, call_stand: CallStand
+) -> AsyncIterator[ServiceTools]:
+    """Порт чата к сервису, чьи вызовы идут путём вызова узла чата: шаг
+    вызова у владельца хода и монтирование результата."""
+    contexts = call_stand.contexts
+    runs = runtime_stand.runs
+    credentials = KerberosCredentialSource(None, NoRefresh())
+    connections = ArmedConnections(NoConnectionStore(), lambda: credentials, contexts)
+    calls = ChatCalls(contexts, runs, SentConnections(), ChatMount(contexts, runs))
+    opened = ServiceTools(tool_service, connections, contexts, calls)
+    await opened.start()
+    try:
+        yield opened
+    finally:
+        await opened.stop()
 
 
 @pytest.fixture
@@ -206,6 +222,12 @@ class TestSendFile:
         shown_ids = [shown[0] for shown in stand.turn.shown]
         if shown_ids != ["call-1"]:
             raise AssertionError(stand.turn.shown)
+
+        started = [(call_id, name) for call_id, name, _args in stand.turn.started]
+        if started != [("call-1", "send_file")]:
+            raise AssertionError(f"шаг вызова открыт один раз: {stand.turn.started}")
+        if stand.turn.finished != [("call-1", result)] or stand.turn.failed:
+            raise AssertionError(f"шаг закрыт результатом тела: {stand.turn.finished}")
 
     @pytest.mark.anyio
     async def test_missing_file_is_an_error_without_elements(
@@ -259,6 +281,11 @@ class TestDiagramSave:
         if stand.layer.elements != []:
             raise AssertionError("a failed diagram leaves no card in the feed")
 
+        if stand.turn.finished:
+            raise AssertionError(f"шаг не закрыт удачей: {stand.turn.finished}")
+        if stand.turn.failed != [("call-1", result.chat_view().markdown)]:
+            raise AssertionError(f"отказ панели закрывает шаг: {stand.turn.failed}")
+
     @pytest.mark.anyio
     async def test_rendered_diagram_card_goes_to_the_feed(self, stand: Stand) -> None:
         result = await stand.call_with_verdict(
@@ -304,7 +331,7 @@ class TestMcpFileBlock:
             stand.storage,
             ChatMount(call_stand.contexts, runtime_stand.runs),
         )
-        call = ToolCall(name="std_picture", args={}, id="call-9", type="tool_call")
+        call = DagNode(key="call-9", tool="std_picture", args={})
 
         note = await files.attached(call, 0, "image/png", self.PNG)
 
@@ -336,7 +363,7 @@ class TestMcpFileBlock:
             stand.storage,
             ChatMount(call_stand.contexts, runtime_stand.runs),
         )
-        call = ToolCall(name="std_picture", args={}, id="call-9", type="tool_call")
+        call = DagNode(key="call-9", tool="std_picture", args={})
 
         first = await files.attached(call, 0, "image/png", self.PNG)
         second = await files.attached(call, 1, "image/png", self.PNG)

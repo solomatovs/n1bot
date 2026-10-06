@@ -5,9 +5,11 @@ PlainGraphBuilder собирает обычный цикл модель-инст
 поисковые (моделью-переформулировщиком либо как есть), инструменты flow
 вызываются сразу, их результаты ложатся в состояние обменом tool_calls —
 основная модель отвечает уже с готовым контекстом. Инструменты и в цикле, и
-в подготовке исполняет сервер инструментов за портом ToolServer: чат берёт у
-него инструменты для модели, ServerCallMiddleware отдаёт ему вызовы ответа
-модели, подготовка — свои.
+в подготовке исполняет сервер инструментов за портом ToolServer. Порт
+нейтрален, граф говорит типами langchain; между ними стоит LangchainPort:
+граф берёт у него заглушки инструментов для модели, ServerCallMiddleware
+отдаёт ему вызовы ответа модели. Подготовка зовёт порт напрямую узлами
+DagNode.
 
 Ошибки:
 PrefetchError — слой инструментов нарушил контракт ответа; сорванный вызов
@@ -41,13 +43,13 @@ from langgraph.types import Command
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from typing_extensions import override
 
-from boba.chainlit.agent.bridge import ResponseField
+from boba.chainlit.agent.bridge import LangchainMessages, ResponseField
+from boba.chainlit.agent.tools import LangchainPort
 from boba.llm.chat import LlmError, ToolSpec
 from boba.llm.schema import SchemaReply
 from boba.toolkit.calls import CallIdPrefix, ToolIntent
-from boba.toolkit.result import FailureResult
+from boba.toolkit.dag import DagNode, NodeOutcome, ToolServer
 from boba.toolkit.timing import Elapsed
-from boba.toolrun.stream_calls import ToolServer
 
 logger = logging.getLogger(__name__)
 
@@ -279,8 +281,9 @@ class PrefetchMiddleware(AgentMiddleware[AgentState[Any], Any, Any]):
     Срабатывает на каждый вопрос пользователя — в начале хода, когда последнее
     сообщение состояния пришло от него. Продолжения цикла, где модель уже
     ответила или сама зовёт инструменты, идут обычным графом. Вызовы
-    подготовки исполняет сервер инструментов: каждая переформулировка в
-    каждый инструмент — свой вызов, все идут одновременно.
+    подготовки исполняет порт инструментов узлами DagNode: каждая
+    переформулировка в каждый инструмент — свой вызов, все идут одновременно.
+    В состояние графа вызовы и их итоги ложатся сообщениями langchain.
     """
 
     def __init__(
@@ -295,6 +298,7 @@ class PrefetchMiddleware(AgentMiddleware[AgentState[Any], Any, Any]):
         self._tools = list(tools)
         self._stage = stage
         self._service = service
+        self._messages = LangchainMessages()
 
     @override
     async def abefore_model(
@@ -315,7 +319,7 @@ class PrefetchMiddleware(AgentMiddleware[AgentState[Any], Any, Any]):
             await self._stage.searching(rephrased)
 
             calls = self._calls(rephrased)
-            results = await self._invoke(calls)
+            outcomes = await self._invoke(calls)
         except PrefetchError:
             raise
         except Exception as exc:
@@ -324,10 +328,13 @@ class PrefetchMiddleware(AgentMiddleware[AgentState[Any], Any, Any]):
         finally:
             await self._stage.end(rephrased, elapsed.ms())
 
-        return {"messages": [self._request(calls, elapsed.ms()), *results]}
+        results: list[BaseMessage] = [self._request(calls, elapsed.ms())]
+        for outcome in outcomes:
+            results.append(self._messages.tool_message(outcome))
 
-    @staticmethod
-    def _request(calls: Sequence[ToolCall], elapsed_ms: int) -> AIMessage:
+        return {"messages": results}
+
+    def _request(self, calls: Sequence[DagNode], elapsed_ms: int) -> AIMessage:
         """Вызовы подготовки как сообщение ассистента.
 
         Пустое поле рассуждений обязательно: провайдер в режиме размышления
@@ -337,9 +344,13 @@ class PrefetchMiddleware(AgentMiddleware[AgentState[Any], Any, Any]):
         marks: dict[str, Any] = {ResponseField.REASONING_CONTENT.value: ""}
         marks.update(PrefetchStamp.mark(elapsed_ms))
 
+        tool_calls: list[ToolCall] = []
+        for call in calls:
+            tool_calls.append(self._messages.tool_call(call))
+
         return AIMessage(
             content="",
-            tool_calls=list(calls),
+            tool_calls=tool_calls,
             additional_kwargs=marks,
         )
 
@@ -351,29 +362,28 @@ class PrefetchMiddleware(AgentMiddleware[AgentState[Any], Any, Any]):
 
         return isinstance(messages[-1], HumanMessage)
 
-    def _calls(self, queries: Sequence[str]) -> list[ToolCall]:
-        """ToolCall-конверты: каждая переформулировка в каждый инструмент flow.
+    def _calls(self, queries: Sequence[str]) -> list[DagNode]:
+        """Узлы вызовов: каждая переформулировка в каждый инструмент flow.
 
         Подпись вызова заполняет подготовка, а не модель: шаг ленты называет
         запрос, с которым инструмент пошёл искать.
         """
-        calls: list[ToolCall] = []
+        calls: list[DagNode] = []
         for query in queries:
             for tool in self._tools:
-                call = ToolCall(
-                    name=tool,
+                call = DagNode(
+                    key=CallIdPrefix.PREFETCH.new_id(),
+                    tool=tool,
                     args={"query": query, ToolIntent.NAME: query},
-                    id=CallIdPrefix.PREFETCH.new_id(),
-                    type="tool_call",
                 )
                 calls.append(call)
 
         return calls
 
-    async def _invoke(self, calls: Sequence[ToolCall]) -> list[ToolMessage]:
-        """Вызовы подготовки идут серверу одновременно; обрыв любого гасит
+    async def _invoke(self, calls: Sequence[DagNode]) -> list[NodeOutcome]:
+        """Вызовы подготовки идут порту одновременно; обрыв любого гасит
         остальные и уходит наверх."""
-        pending: list[asyncio.Task[ToolMessage]] = []
+        pending: list[asyncio.Task[NodeOutcome]] = []
         for call in calls:
             pending.append(asyncio.create_task(self._service.call(call)))
 
@@ -385,137 +395,41 @@ class PrefetchMiddleware(AgentMiddleware[AgentState[Any], Any, Any]):
 
             raise
 
-        results: list[ToolMessage] = []
         for reply in replies:
-            results.append(self._checked(reply))
+            self._checked(reply)
 
-        return results
+        return replies
 
     @staticmethod
-    def _checked(output: ToolMessage) -> ToolMessage:
-        """Результат поиска: отказ инструмента едет в контекст, а не роняет ход.
+    def _checked(outcome: NodeOutcome) -> None:
+        """Итог поиска: отказ инструмента едет в контекст, а не роняет ход.
 
         Модель получает ошибку тем же конвертом tool_result, что и удачный
         ответ, и решает сама — переспросить, вызвать инструмент ещё раз или
         ответить без него; пользователь видит крест на шаге ленты. Так же
         приходит сорванный вызов — негодные аргументы, падение тела:
-        сервер упаковал его причину в результат-ошибку со статусом error.
-        Отмена хода и нарушение контракта слоя инструментов идут наверх
-        исключением.
+        порт упаковал его причину в итог-отказ. Отмена хода и нарушение
+        контракта слоя инструментов идут наверх исключением.
         """
-        if output.status == "error":
-            logger.warning("prefetch %s failed: %s", output.name, output.content)
-            return output
-
-        if isinstance(output.artifact, FailureResult):
-            logger.warning(
-                "prefetch %s failed: %s", output.name, output.artifact.log_view()
-            )
-
-        return output
-
-
-class ResponseCalls:
-    """Вызовы одного ответа модели уходят серверу инструментов одним пакетом.
-
-    ToolNode раздаёт вызовы ответа по одному и одновременно. Серверу они
-    нужны вместе: потоковые вызовы одного ответа связаны именами каналов и
-    идут одним запуском. Первый пришедший вызов ответа отправляет весь
-    пакет, остальные берут из того же пакета своё ожидание; каждый вызов
-    отвечает, как только готов сам, не дожидаясь соседей.
-    """
-
-    def __init__(self, service: ToolServer) -> None:
-        self._service = service
-        self._batches: dict[
-            str, asyncio.Future[Sequence[asyncio.Future[ToolMessage]]]
-        ] = {}
-        self._waiting: dict[str, set[str]] = {}
-
-    async def reply(self, request: ToolCallRequest) -> ToolMessage:
-        calls = self._response_calls(request)
-        call_id = str(request.tool_call["id"])
-        batch_id = str(calls[0]["id"])
-
-        batch = self._batches.get(batch_id)
-        if batch is None:
-            batch = asyncio.ensure_future(self._service.submit(calls))
-            self._batches[batch_id] = batch
-            self._waiting[batch_id] = self._ids_of(calls)
-
-        pending = await batch
-        own = self._own(calls, pending, call_id)
-
-        try:
-            return await own
-        except asyncio.CancelledError:
-            own.cancel()
-            raise
-        finally:
-            self._taken(batch_id, call_id)
-
-    def _taken(self, batch_id: str, call_id: str) -> None:
-        """Вызов забрал свой итог; пакет забывается, когда забрали все."""
-        waiting = self._waiting.get(batch_id)
-        if waiting is None:
+        if outcome.ok():
             return
 
-        waiting.discard(call_id)
-        if waiting:
-            return
-
-        self._batches.pop(batch_id, None)
-        self._waiting.pop(batch_id, None)
-
-    @staticmethod
-    def _own(
-        calls: Sequence[ToolCall],
-        pending: Sequence[asyncio.Future[ToolMessage]],
-        call_id: str,
-    ) -> asyncio.Future[ToolMessage]:
-        for call, future in zip(calls, pending, strict=True):
-            if str(call["id"]) == call_id:
-                return future
-
-        msg = f"tool server accepted no call with id {call_id!r}"
-        raise RuntimeError(msg)
-
-    @staticmethod
-    def _ids_of(calls: Sequence[ToolCall]) -> set[str]:
-        ids: set[str] = set()
-        for call in calls:
-            ids.add(str(call["id"]))
-
-        return ids
-
-    @staticmethod
-    def _response_calls(request: ToolCallRequest) -> Sequence[ToolCall]:
-        """Все вызовы ответа модели, которому принадлежит вызов request."""
-        own = request.tool_call
-        for message in reversed(request.state["messages"]):
-            if not isinstance(message, AIMessage):
-                continue
-
-            for call in message.tool_calls:
-                if call["id"] == own["id"]:
-                    return message.tool_calls
-
-        return [own]
+        logger.warning("prefetch %s failed: %s", outcome.tool, outcome.error_text())
 
 
 class ServerCallMiddleware(AgentMiddleware[AgentState[Any], Any, Any]):
-    """Вызовы инструментов исполняет сервер инструментов, а не ToolNode.
+    """Вызовы инструментов исполняет порт инструментов, а не ToolNode.
 
-    ToolNode раздаёт вызовы ответа по одному; middleware собирает их в пакет
-    ответа (ResponseCalls) и отдаёт порту ToolServer. Какой сервер стоит за
-    инструментом, граф не знает. Вызов с выдуманным именем тоже уходит в
-    порт: он отвечает, какие инструменты есть. Граф хода асинхронный;
-    синхронный путь инструменты сервера не исполняет.
+    ToolNode раздаёт вызовы ответа по одному; middleware отдаёт каждый
+    стыку графа с портом (LangchainPort) — тот собирает их в пакет ответа.
+    Какой сервер стоит за инструментом, граф не знает. Вызов с выдуманным
+    именем тоже уходит в порт: он отвечает, какие инструменты есть. Граф
+    хода асинхронный; синхронный путь инструменты порта не исполняет.
     """
 
-    def __init__(self, service: ToolServer) -> None:
+    def __init__(self, port: LangchainPort) -> None:
         super().__init__()
-        self._calls = ResponseCalls(service)
+        self._port = port
 
     @override
     def wrap_tool_call(
@@ -536,7 +450,7 @@ class ServerCallMiddleware(AgentMiddleware[AgentState[Any], Any, Any]):
         request: ToolCallRequest,
         handler: Callable[[ToolCallRequest], Awaitable[ToolMessage | Command[Any]]],
     ) -> ToolMessage | Command[Any]:
-        return await self._calls.reply(request)
+        return await self._port.reply(request)
 
 
 @dataclass(frozen=True)
@@ -552,14 +466,6 @@ class GraphSpec:
     """Представление истории для модели: обрезка и чистка чужих tool-вызовов."""
 
 
-class GraphTools:
-    """Инструменты графа хода и middleware их вызовов по порту инструментов."""
-
-    def __init__(self, spec: GraphSpec) -> None:
-        self.tools = list(spec.service.tools())
-        self.middleware = ServerCallMiddleware(spec.service)
-
-
 class AgentGraphBuilder(ABC):
     """Сборка графа хода; вид графа выбирает flow профиля."""
 
@@ -572,14 +478,14 @@ class PlainGraphBuilder(AgentGraphBuilder):
 
     @override
     def build(self, spec: GraphSpec) -> CompiledStateGraph:
-        graph = GraphTools(spec)
+        port = LangchainPort(spec.service)
 
         return create_agent(
             model=spec.chat,
-            tools=graph.tools,
+            tools=port.tools(),
             system_prompt=spec.system_prompt,
             checkpointer=spec.checkpointer,
-            middleware=[spec.history, graph.middleware],
+            middleware=[spec.history, ServerCallMiddleware(port)],
         )
 
 
@@ -597,7 +503,7 @@ class PrefetchGraphBuilder(AgentGraphBuilder):
         tools: Sequence[str],
         stage: PrefetchStage,
     ) -> None:
-        """tools — имена инструментов сервера, которые зовёт подготовка."""
+        """tools — имена инструментов порта, которые зовёт подготовка."""
         self._rephraser = rephraser
         self._tools = list(tools)
         self._stage = stage
@@ -605,23 +511,21 @@ class PrefetchGraphBuilder(AgentGraphBuilder):
     @override
     def build(self, spec: GraphSpec) -> CompiledStateGraph:
         self._check_tools(spec.service)
-        graph = GraphTools(spec)
+        port = LangchainPort(spec.service)
         prefetch = PrefetchMiddleware(
             self._rephraser, self._tools, self._stage, spec.service
         )
 
         return create_agent(
             model=spec.chat,
-            tools=graph.tools,
+            tools=port.tools(),
             system_prompt=spec.system_prompt,
             checkpointer=spec.checkpointer,
-            middleware=[prefetch, spec.history, graph.middleware],
+            middleware=[prefetch, spec.history, ServerCallMiddleware(port)],
         )
 
     def _check_tools(self, service: ToolServer) -> None:
-        known: set[str] = set()
-        for tool in service.tools():
-            known.add(tool.name)
+        known = service.names()
 
         for name in self._tools:
             if name in known:

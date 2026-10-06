@@ -13,11 +13,11 @@ import pytest
 from boba.sandbox import SandboxToolConfig
 from boba.sandbox.zygote import ZygotePolicy, ZygoteToolCaller
 from boba.stand.sandbox import needs_sandbox, needs_userns, sandbox_profile
+from boba.stand.toolsetup import ToolSetup
 from boba.stand.zygote import ZygoteStand
 from boba.toolkit.chain import CallAmbient
 from boba.toolkit.launcher import PayloadFailureError
 from boba.toolkit.result import VisualResult
-from boba.toolkit.wrap import ToolProcessWrap
 
 ZYGOTE = ZygotePolicy(
     start_timeout_sec=60.0,
@@ -44,8 +44,7 @@ def _tool(zygote_stand: ZygoteStand) -> Any:
     )
     launcher = ZygoteToolCaller("chart-test", supervisor, profile, CallAmbient())
 
-    ToolProcessWrap(CallAmbient()).guard_all(module.TOOLS, launcher)
-    return module.visualize
+    return ToolSetup.launched(module.TOOLS, launcher, ())[module.visualize.name]
 
 
 @dataclass(frozen=True)
@@ -57,18 +56,12 @@ class Rendered:
 
 
 def _invoke(zygote_stand: ZygoteStand, spec: str) -> Rendered:
-    """Вызов тела фасада: langchain в пакете инструмента не участвует."""
+    """Вызов инструмента хоста над телом фасада в песочнице."""
     tool = _tool(zygote_stand)
 
-    async def go() -> Any:
-        body = tool.coroutine
-        if body is None:
-            raise AssertionError("у visualize нет асинхронного тела")
+    artifact = asyncio.run(tool.run("c1", {"spec": spec}))
 
-        return await body(spec=spec)
-
-    content, artifact = asyncio.run(go())
-    return Rendered(content=content, artifact=artifact)
+    return Rendered(content=artifact.llm_view(), artifact=artifact)
 
 
 @needs_sandbox

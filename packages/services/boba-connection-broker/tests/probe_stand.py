@@ -13,8 +13,6 @@ from datetime import timedelta
 from typing import Annotated, Any, Literal
 from uuid import uuid4
 
-from langchain_core.messages import ToolCall, ToolMessage
-from langchain_core.tools import BaseTool, StructuredTool
 from pydantic import SecretStr, create_model
 
 from boba.connection_broker.sealed import SealedConnectionParams
@@ -25,21 +23,21 @@ from boba.connections.manifest import ConnectionTypeManifest, ConnectionTypes
 from boba.connections.sealed import SealKeys
 from boba.connections.stored import GrantedConnection, StoredConnection
 from boba.identity.context import CallContext, Subject
-from boba.stand_core.context import CallStand
+from boba.identity.run import Runs
+from boba.stand import toolstand
+from boba.stand_core.context import CallStand, StandIdentity
 from boba.toolkit.calls import ToolCallBase
 from boba.toolkit.chain import CallAmbient
-from boba.toolkit.facade import UserConnection, tool
-from boba.toolkit.ports import StreamSpecs
+from boba.toolkit.dag import DagNode, NodeOutcome, ToolServer
+from boba.toolkit.facade import PayloadTool, UserConnection, tool
 from boba.toolkit.result import TableResult
-from boba.toolrun.bridge import ToolBridge
-from boba.toolrun.stream_calls import (
-    LocalDagService,
-    StreamGroupsConfig,
-    ToolServer,
-)
+from boba.toolrun.hosted import DirectCalls, HostedTool
+from boba.toolrun.stream_calls import StreamGroupsConfig
+from boba.toolrun.streams import CallJournals
 
 SECRET = "probe-secret-value"
 LOGIN = "ivanov"
+ROLE = "read"
 
 
 class ProbeConnection(ConnectionBase):
@@ -92,26 +90,22 @@ class ProbeTools:
 
     def __init__(self) -> None:
         self._calls = CallStand()
+        self._probes = toolstand.ProbeTools()
 
-    def bound(self, tool: BaseTool, keys: SealKeys) -> BaseTool:
+    def bound(self, tool: HostedTool, keys: SealKeys) -> HostedTool:
         """Инструмент под обвязкой запечатанных соединений с ключами keys."""
         params = SealedConnectionParams(keys, lambda: TYPES, self._calls.contexts)
         params.bind_all([tool])
 
         return tool
 
-    def tool(self, name: str, fields: dict[str, Any]) -> BaseTool:
-        """Инструмент, чьё тело возвращает полученные аргументы как есть."""
+    def tool(self, name: str, fields: dict[str, Any]) -> HostedTool:
+        """Инструмент, чьё тело запоминает полученные аргументы как есть."""
         schema = create_model(f"{name}_args", __base__=ToolCallBase, **fields)
 
-        async def body(**kwargs: object) -> dict[str, object]:
-            return kwargs
+        return self._probes.recorder(name, schema)
 
-        return StructuredTool(
-            name=name, description=name, args_schema=schema, coroutine=body
-        )
-
-    def one_connection(self) -> BaseTool:
+    def one_connection(self) -> HostedTool:
         fields = {
             "connection": (Annotated[ProbeConnection, UserConnection], ...),
             "sql": (str, ...),
@@ -119,7 +113,7 @@ class ProbeTools:
 
         return self.tool("probe_query", fields)
 
-    def two_connections(self) -> BaseTool:
+    def two_connections(self) -> HostedTool:
         fields = {
             "source": (Annotated[ProbeConnection, UserConnection], ...),
             "target": (Annotated[ProbeConnection, UserConnection], ...),
@@ -127,10 +121,13 @@ class ProbeTools:
 
         return self.tool("probe_copy", fields)
 
-    async def call(self, tool: BaseTool, args: dict[str, Any]) -> dict[str, Any]:
-        context = self._calls.context("t1", login=LOGIN, roles=("read",))
+    async def call(self, tool: HostedTool, args: dict[str, Any]) -> dict[str, Any]:
+        """Вызов инструмента; итог — аргументы, которые получило его тело."""
+        context = self._calls.context("t1", login=LOGIN, roles=(ROLE,))
         with self._calls.applied(context):
-            return await tool.ainvoke(args)
+            await self._probes.call(tool, "probe", args)
+
+        return dict(self._probes.last(tool.name))
 
 
 class Rows:
@@ -192,8 +189,15 @@ class SealedStand:
         )
         self.sent = SentConnections()
 
-        tools = [self._query_tool(), self._copy_tool()]
-        self.params.bind_all(tools)
+        contexts = self._calls.contexts
+        stand = toolstand.ToolStand(
+            self.STREAM_CONFIG,
+            contexts,
+            CallJournals(None, Runs(contexts)),
+            CallAmbient(),
+            (),
+        )
+        self.params.bind_all(stand.host([self._query_tool(), self._copy_tool()]))
 
         store = Rows(rows)
         self.connections = ArmedConnections(
@@ -201,8 +205,8 @@ class SealedStand:
             Credentials,  # type: ignore[arg-type]
             self._calls.contexts,
         )
-        self.executor = LocalDagService(
-            tools, self.STREAM_CONFIG, (self.params,), StreamSpecs({}), CallAmbient()
+        self.executor = stand.server(
+            stand.access(ROLE, StandIdentity.PROFILE), (self.params,), DirectCalls()
         )
         self.client = SealingToolServer(
             self.executor,
@@ -219,29 +223,27 @@ class SealedStand:
     def probe_row(cls, name: str, host: str) -> StoredConnection:
         return cls.row(name, ProbeConnection(host=host, password=SecretStr(SECRET)))
 
-    async def call(self, name: str, args: dict[str, Any]) -> ToolMessage:
+    async def call(self, name: str, args: dict[str, Any]) -> NodeOutcome:
         """Вызов через порт клиента, как его шлёт модель."""
         return await self.call_through(self.client, name, args)
 
     @contextmanager
     def as_caller(self) -> Generator[CallContext, None, None]:
         """Блок в контексте LOGIN — вызывающего стенда."""
-        context = self._calls.context("t1", login=LOGIN, roles=("read",))
+        context = self._calls.context("t1", login=LOGIN, roles=(ROLE,))
         with self._calls.applied(context):
             yield context
 
     async def call_through(
         self, server: ToolServer, name: str, args: dict[str, Any]
-    ) -> ToolMessage:
+    ) -> NodeOutcome:
         """Вызов через порт server в контексте LOGIN."""
-        call = ToolCall(
-            name=name, args=args, id=f"call_{uuid4().hex}", type="tool_call"
-        )
+        call = DagNode(key=f"call_{uuid4().hex}", tool=name, args=args)
         with self.as_caller():
             return await server.call(call)
 
     @staticmethod
-    def _query_tool() -> BaseTool:
+    def _query_tool() -> PayloadTool:
         @tool
         async def probe_query(
             connection: Annotated[ProbeConnection, UserConnection], sql: str
@@ -255,10 +257,10 @@ class SealedStand:
 
             return TableResult(rows=[row])
 
-        return ToolBridge.as_structured_tool(probe_query)
+        return probe_query
 
     @staticmethod
-    def _copy_tool() -> BaseTool:
+    def _copy_tool() -> PayloadTool:
         @tool
         async def probe_copy(
             source: Annotated[ProbeConnection, UserConnection],
@@ -267,4 +269,4 @@ class SealedStand:
             """Пробная перекачка: возвращает хосты обоих профилей."""
             return TableResult(rows=[{"source": source.host, "target": target.host}])
 
-        return ToolBridge.as_structured_tool(probe_copy)
+        return probe_copy

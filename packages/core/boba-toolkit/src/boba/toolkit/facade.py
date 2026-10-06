@@ -1,10 +1,10 @@
-"""Фасад инструмента без langchain: декораторы @tool и @warmup.
+"""Фасад инструмента на одном pydantic: декораторы @tool и @warmup.
 
 Модуль инструментов объявляет тело этим декоратором и живёт в песочнице на
-одном pydantic: модель вызова (ToolCallBase) строится из Annotated-подписи
-так же, как схему строил langchain; тело с одним параметром-наследником
-ToolCallBase получает вызов этой моделью. Приложение заворачивает PayloadTool
-в StructuredTool на своей стороне — payload-процесс langchain не импортирует.
+одном pydantic: модель вызова (ToolCallBase) строится из Annotated-подписи;
+тело с одним параметром-наследником ToolCallBase получает вызов этой
+моделью. Хост заворачивает PayloadTool в свой исполняемый инструмент
+(boba.toolrun.hosted) — payload-процесс о хосте не знает.
 
 Прогрев зиготы пишет автор инструмента: @warmup объявляет корутину, которая
 исполняется в зиготе один раз до готовности, и её результат дети получают
@@ -21,13 +21,13 @@ ToolFacadeError — подпись тела не годится для моде�
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 from collections.abc import Awaitable, Callable, Coroutine, Iterator, Mapping, Sequence
 from typing import (
     Annotated,
     Any,
     ClassVar,
-    Literal,
     TypeAlias,
     get_args,
     get_origin,
@@ -40,7 +40,7 @@ from pydantic_core import PydanticUndefined
 
 from boba.toolkit.calls import FieldMarks, ToolCallBase, ToolCallModels
 from boba.toolkit.ports import StreamPorts
-from boba.toolkit.result import ResultKindError, ResultKinds
+from boba.toolkit.result import ResultKindError, ResultKinds, ToolResultBase
 
 __all__ = [
     "Injected",
@@ -95,16 +95,14 @@ class UserConnection:
 class PayloadTool(BaseModel):
     """Инструмент модуля: имя, описание для LLM, схема аргументов и тело.
 
-    Реализует ToolLike структурно: наследовать протокол нельзя, метакласс
-    pydantic с ним несовместим. func/coroutine — обычные поля, их подменяет
-    обёртка запуска (ToolProcessWrap). Тело возвращает модель результата
-    (ToolResultBase); пару (content, artifact) для langchain собирает мост
-    приложения, конверт ToolMain — в песочнице.
+    Создаёт его декоратор @tool из тела автора; модуль перечисляет свои
+    инструменты в TOOLS. Тело автора — func либо coroutine — исполняет один
+    метод result(): им пользуются и гость (ToolMain, отдельный процесс), и
+    хост (ToolHosting, свой процесс). Обёртка запуска (ToolProcessWrap)
+    читает отсюда адрес модуля тела и схему.
     """
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
-
-    RESPONSE_FORMAT: ClassVar[Literal["content_and_artifact"]] = "content_and_artifact"
 
     name: str
     description: str
@@ -136,6 +134,44 @@ class PayloadTool(BaseModel):
         rest[self.call_param] = self.call_class(**own)
 
         return rest
+
+    async def result(self, kwargs: Mapping[str, Any], threaded: bool) -> ToolResultBase:
+        """Исполнить тело автора с аргументами kwargs и отдать его результат.
+
+        Async-тело ждётся в цикле событий. Sync-тело при threaded уходит в
+        рабочий поток — так зовёт хост, чей цикл событий общий для вызовов;
+        иначе исполняется в потоке вызывающего — так зовёт гость, процесс
+        которого живёт одним вызовом.
+
+        Ошибки:
+        ToolFacadeError — у инструмента нет тела либо тело вернуло не модель
+            результата семейства ToolResultBase.
+        """
+        result = await self._ran(self.packed_kwargs(kwargs), threaded)
+        if not isinstance(result, ToolResultBase):
+            msg = (
+                f"tool {self.name!r} must return a ToolResultBase model, "
+                f"got {type(result).__name__}"
+            )
+            raise ToolFacadeError(msg)
+
+        return result
+
+    async def _ran(self, kwargs: dict[str, Any], threaded: bool) -> object:
+        if self.coroutine is not None:
+            return await self.coroutine(**kwargs)
+
+        if self.func is None:
+            msg = (
+                f"tool {self.name!r} has no body to call: "
+                "both coroutine and func are None"
+            )
+            raise ToolFacadeError(msg)
+
+        if not threaded:
+            return self.func(**kwargs)
+
+        return await asyncio.to_thread(self.func, **kwargs)
 
 
 class WarmupHook(BaseModel):

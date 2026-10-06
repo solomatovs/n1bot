@@ -45,7 +45,6 @@ from boba.chainlit.rendering.chat_view import (
 )
 from boba.toolkit.calls import CallIdPrefix
 from boba.toolkit.dag import WorkflowResult
-from boba.toolkit.result import ToolArtifact
 from chainlit.data.base import BaseDataLayer
 from chainlit.step import StepDict
 
@@ -339,9 +338,9 @@ class ConversationTranscript:
     async def _tool(self, message: ToolMessage, key: str) -> None:
         call = self._pending.pop(message.tool_call_id, None)
 
-        workflow = ToolArtifact.revive(message.artifact)
-        if isinstance(workflow, WorkflowResult):
-            await self._workflow(workflow)
+        outcome = self._langchain.outcome_of(message)
+        if outcome is not None and isinstance(outcome.artifact, WorkflowResult):
+            await self._workflow(outcome.artifact)
             return
 
         name = message.name
@@ -360,15 +359,20 @@ class ConversationTranscript:
 
         step = await self._view.tool_started(name, args, call_key)
 
-        if message.status == "error":
-            failure = self._langchain.failure_of(message, self._text(message))
-            await self._view.tool_failed(step, failure.chat_view().markdown)
+        # запись старой истории без результата семейства рисуется как есть
+        if outcome is None:
+            raw = message.artifact
+            if raw is None:
+                raw = self._text(message)
+
+            await self._view.tool_finished(step, raw, message.tool_call_id)
             return
 
-        artifact = message.artifact
-        if artifact is None:
-            artifact = self._text(message)
-        await self._view.tool_finished(step, artifact, message.tool_call_id)
+        if outcome.errored:
+            await self._view.tool_failed(step, outcome.artifact.chat_view().markdown)
+            return
+
+        await self._view.tool_finished(step, outcome.artifact, message.tool_call_id)
 
     async def _workflow(self, result: WorkflowResult) -> None:
         """Итог вызова workflow шагами его узлов — как их рисует живой ход:

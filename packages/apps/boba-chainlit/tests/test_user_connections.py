@@ -44,6 +44,7 @@ from boba.runtime.refresh import BusRefreshSignal
 from boba.stand.site import Stand
 from boba.stand.toolsetup import Call
 from boba.stand_core.context import CallStand
+from boba.toolrun.hosted import DirectCalls
 from boba.transport.http.connection import HttpConnection, NegotiateAuth, UrlScheme
 
 SCHEMA = "connections_e2e"
@@ -121,7 +122,7 @@ async def tools(
     connections = ArmedConnections(
         lambda: store, lambda: credentials, call_stand.contexts
     )
-    opened = ServiceTools(tool_service, connections, call_stand.contexts)
+    opened = ServiceTools(tool_service, connections, call_stand.contexts, DirectCalls())
     await opened.start()
     try:
         yield opened

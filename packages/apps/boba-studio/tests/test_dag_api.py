@@ -20,14 +20,13 @@ from boba.identity.locks import MemoryLiveLocks
 from boba.identity.run import Runs
 from boba.runtime.config import StudioRuntimeConfig
 from boba.stand.refs import StandRefs
+from boba.stand.toolstand import ToolStand
 from boba.stand_core import fake_toolmod
 from boba.stand_core.fake_toolmod import FakeConfig
 from boba.studio.api.dags import DagRunBody, DagRunning, DagRunReply
 from boba.toolkit.chain import CallAmbient, StreamFailureKind
-from boba.toolrun.bridge import ToolBridge
 from boba.toolrun.injected import InjectedConfig, StaticConfig
-from boba.toolrun.process import ProcessLauncherConfig, ProcessToolCaller
-from boba.toolrun.registry import ToolChain, ToolRegistry
+from boba.toolrun.registry import ToolRegistry
 from boba.toolrun.streams import CallJournals
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
@@ -45,34 +44,17 @@ class FakeStreamTools:
         self.runs = Runs(self.contexts)
         self.journals = CallJournals(None, self.runs)
         self.ambient = CallAmbient()
-        launcher = ProcessToolCaller(
-            "dag-api",
-            ProcessLauncherConfig(
-                provider="process",
-                workdir=str(workdir),
-                timeout_sec=60.0,
-                channel_limit_bytes=4_000_000,
-                stderr_tail_bytes=8192,
-                kill_grace_sec=0.5,
-            ),
-            self.contexts,
-            self.ambient,
-        )
-
-        tools: list[Any] = []
-        for payload in (fake_toolmod.fake_emit, fake_toolmod.fake_collect):
-            tools.append(ToolBridge.as_structured_tool(payload.model_copy()))
-
-        self.tools = tools
-        self._chain = ToolChain(
+        self._stand = ToolStand(
             StandRefs.STREAM_CONFIG,
-            self.journals,
             self.contexts,
+            self.journals,
             self.ambient,
             (InjectedConfig(self._config_of, StaticConfig()),),
-            (),
         )
-        self.specs = self._chain.launch(tools, launcher)
+        self._stand.launch(
+            (fake_toolmod.fake_emit, fake_toolmod.fake_collect),
+            self._stand.process_launcher("dag-api", workdir, 60.0),
+        )
 
     @staticmethod
     def _config_of(name: str, annotation: object) -> object:
@@ -80,7 +62,7 @@ class FakeStreamTools:
 
     def registry(self, config: StudioRuntimeConfig) -> ToolRegistry:
         names: list[str] = []
-        for tool in self.tools:
+        for tool in self._stand.tools():
             names.append(tool.name)
 
         roles: dict[str, RoleConfig] = {}
@@ -94,16 +76,8 @@ class FakeStreamTools:
                 StandProfiles.profile(config): ProfileGrant(tools=["*"], roles=["*"])
             },
         )
-        self._chain.seal(self.tools, access, self.specs)
-        return ToolRegistry(
-            tools=self.tools,
-            access=access,
-            stream_config=StandRefs.STREAM_CONFIG,
-            own=frozenset(),
-            node_args=(),
-            specs=self.specs,
-            ambient=self.ambient,
-        )
+
+        return self._stand.registry(access, ())
 
 
 def _running(stand: FakeStreamTools, config: StudioRuntimeConfig) -> DagRunning:

@@ -11,9 +11,8 @@ ServiceDisabledError — сервис выключаемой секции зап
 
 import logging
 from collections.abc import AsyncGenerator, Sequence
-from typing import Annotated, Any, TypeVar
+from typing import Annotated, TypeVar
 
-from langchain_core.tools import BaseTool
 from omegaconf import DictConfig
 
 from boba.access import GrantCheck, ToolGrants
@@ -66,9 +65,9 @@ from boba.runtime.threads import ThreadsTable
 from boba.runtime.turns import StaleTurnCloser
 from boba.runtime.users import UsersTable
 from boba.toolkit.chain import CallAmbient
+from boba.toolrun.hosted import HostedTool
 from boba.toolrun.registry import ToolRegistry
 from boba.toolrun.streams import CallJournals
-from boba.toolrun.wrapping import CallHooks
 
 logger = logging.getLogger(__name__)
 
@@ -205,12 +204,7 @@ def grant_check() -> GrantCheck:
     return GrantCheck.HOSTED
 
 
-def surface_hooks() -> Sequence[CallHooks[Any]]:
-    """Обвязки поверхности процесса поверх тел; у процесса без чата их нет."""
-    return ()
-
-
-def own_tools() -> Sequence[BaseTool]:
+def own_tools() -> Sequence[HostedTool]:
     """Собственные инструменты процесса — отдельный сервер за портом
     инструментов; у процесса без таких инструментов их нет."""
     return ()
@@ -343,15 +337,14 @@ def profile_catalog(
     return ChatProfiles(config.profiles)
 
 
-def tool_registry(  # noqa: PLR0913 — реестр собирается всеми входами процесса
+def tool_registry(
     raw: Annotated[DictConfig, Depends(get_raw_config)],
     table: Annotated[PluginTable, Depends(plugin_table)],
     grants: Annotated[ToolGrants, Depends(tool_grants)],
-    hooks: Annotated[Sequence[CallHooks[Any]], Depends(surface_hooks)],
-    own: Annotated[Sequence[BaseTool], Depends(own_tools)],
+    own: Annotated[Sequence[HostedTool], Depends(own_tools)],
     launchers: Annotated[SectionLaunchers, Depends(tool_launchers)],
 ) -> ToolRegistry:
-    loader = ToolLoader(raw, table(), exec_refs(), launchers, grants, hooks, own)
+    loader = ToolLoader(raw, table(), exec_refs(), launchers, grants, own)
 
     return loader.load()
 

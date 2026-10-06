@@ -141,11 +141,11 @@ class FieldPlacement(StrEnum):
 
 class FieldMarks:
     """Маркеры полей вызова по именам классов в metadata: сравнение типов
-    между процессами невозможно, langchain-маркеры toolkit не импортирует."""
+    между процессами невозможно."""
 
-    INJECTED: ClassVar[frozenset[str]] = frozenset({"Injected", "InjectedToolCallId"})
-    """Injected фасада и InjectedToolCallId langchain: последним обвязка
-    call_id помечает поле идентификатора вызова, дописанное в схему."""
+    INJECTED: ClassVar[frozenset[str]] = frozenset({"Injected"})
+    """Injected фасада: им же хост помечает поле идентификатора вызова,
+    дописанное в схему."""
     CONNECTION: ClassVar[frozenset[str]] = frozenset({"UserConnection"})
     NOT_LOGGED: ClassVar[frozenset[str]] = frozenset({"NotLogged"})
     """NotLogged фасада и его наследники: значение поля в лог не идёт."""
@@ -265,7 +265,9 @@ class ToolCallBase(BaseModel, ABC):
 
 
 class ToolCallModels:
-    """Модели вызова по имени инструмента: наполняет фасад @tool, читает лента.
+    """Модели вызова по имени инструмента: наполняют фасад @tool (свои
+    инструменты) и лента клиента (инструменты серверов, по виду из их
+    карточек), читает лента.
 
     Повторная регистрация имени перезаписывает запись: тулы собираются на
     каждую сессию, и это контракт загрузки.
@@ -315,8 +317,8 @@ class SchemaCall(ToolCallBase):
     """Вызов инструмента, вид аргументов которого пришёл вместе с его схемой.
 
     Инструмент исполняет сервер, и его кода в процессе клиента нет: вид
-    аргументов сервер кладёт в схему инструмента (CallViews), а клиент
-    строит из него наследника этого класса и регистрирует в ToolCallModels.
+    аргументов приходит в карточке инструмента (ToolCard.views), и лента
+    клиента строит из него наследника этого класса (CallViews.model_of).
     Показ тот же, что у вызова своего инструмента: скрытые поля не идут во
     вход шага, объявленный показ рисует значение своим результатом,
     остальные поля — строкой «имя: значение».
@@ -373,50 +375,24 @@ class SchemaCall(ToolCallBase):
 
 
 class CallViews:
-    """Вид аргументов вызова как часть схемы инструмента.
+    """Вид аргументов вызова: из модели вызова в карточку инструмента и в
+    его схему на проводе.
 
-    Сервер зовёт marked(): дописывает в схему инструмента вид его аргументов
-    из модели вызова, которую построил фасад @tool. Клиент зовёт
-    model_of(): по этой метке строит модель вызова для ленты. Схема без
-    метки — инструмент чужого сервера: модели у него нет, и лента покажет
-    его аргументы json-текстом.
+    Сборка инструмента хоста зовёт of(): вид аргументов из модели вызова,
+    которую построил фасад @tool. Сервер зовёт marked(): дописывает вид из
+    карточки в схему инструмента. Клиент зовёт read(): читает метку схемы
+    в карточку; схема без метки — инструмент чужого сервера, вида у него
+    нет. Лента клиента зовёт model_of(): по виду из карточки строит модель
+    вызова для показа входа шага.
     """
 
     MARK: ClassVar[str] = "x-boba-call-view"
     """Ключ схемы инструмента: вид аргументов по их именам."""
 
-    def marked(self, tool_name: str, schema: Mapping[str, Any]) -> dict[str, Any]:
-        """Схема с видом аргументов; у инструмента без модели вызова — как есть."""
-        marked = dict(schema)
-        model = ToolCallModels.model_of(tool_name)
-        if model is None:
-            return marked
-
-        views: dict[str, Any] = {}
-        for name, view in self._views(model):
-            views[name] = view.model_dump(mode="json")
-
-        marked[self.MARK] = views
-
-        return marked
-
-    def model_of(
-        self, tool_name: str, schema: Mapping[str, Any]
-    ) -> type[SchemaCall] | None:
-        """Модель вызова по метке схемы; None — метки нет."""
-        raw = schema.get(self.MARK)
-        if not isinstance(raw, Mapping):
-            return None
-
+    def of(self, model: type[ToolCallBase]) -> Mapping[str, FieldView]:
+        """Вид полей модели вызова, который отличается от обычной строки
+        «имя: значение»."""
         views: dict[str, FieldView] = {}
-        for name, view in raw.items():
-            views[str(name)] = FieldView.model_validate(view)
-
-        return type(f"{tool_name}_call", (SchemaCall,), {"VIEWS": views})
-
-    @staticmethod
-    def _views(model: type[ToolCallBase]) -> Iterator[tuple[str, FieldView]]:
-        """Вид полей, который отличается от обычной строки «имя: значение»."""
         for name, field in model.model_fields.items():
             placement = model.placement_of(field, name)
             display = FieldMarks.display(field)
@@ -427,7 +403,47 @@ class CallViews:
             if placement is FieldPlacement.BODY and dumped is None:
                 continue
 
-            yield name, FieldView(placement=placement, display=dumped)
+            views[name] = FieldView(placement=placement, display=dumped)
+
+        return views
+
+    def marked(
+        self, schema: Mapping[str, Any], views: Mapping[str, FieldView] | None
+    ) -> dict[str, Any]:
+        """Схема с видом аргументов views; None — вида нет, схема как есть."""
+        marked = dict(schema)
+        if views is None:
+            return marked
+
+        dumped: dict[str, Any] = {}
+        for name, view in views.items():
+            dumped[name] = view.model_dump(mode="json")
+
+        marked[self.MARK] = dumped
+
+        return marked
+
+    def read(self, schema: Mapping[str, Any]) -> Mapping[str, FieldView] | None:
+        """Вид аргументов по метке схемы; None — метки нет.
+
+        Ошибки:
+        pydantic.ValidationError — метка есть, но вид поля не проходит модель.
+        """
+        raw = schema.get(self.MARK)
+        if not isinstance(raw, Mapping):
+            return None
+
+        views: dict[str, FieldView] = {}
+        for name, view in raw.items():
+            views[str(name)] = FieldView.model_validate(view)
+
+        return views
+
+    def model_of(
+        self, tool_name: str, views: Mapping[str, FieldView]
+    ) -> type[SchemaCall]:
+        """Модель вызова инструмента tool_name с видом аргументов views."""
+        return type(f"{tool_name}_call", (SchemaCall,), {"VIEWS": dict(views)})
 
 
 class RawCall(ToolCallBase):

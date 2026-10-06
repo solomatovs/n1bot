@@ -3,13 +3,15 @@
 from __future__ import annotations
 
 from enum import StrEnum
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
 import pytest
-from pydantic import BaseModel, Field, SecretStr
+from pydantic import BaseModel, Field, SecretStr, ValidationError
 
 from boba.toolkit.calls import (
     CallViews,
+    FieldPlacement,
+    FieldView,
     ToolCallBase,
     ToolCallModels,
 )
@@ -128,15 +130,17 @@ class BashCall(ToolCallBase):
 class TestDeclaredCallClass:
     def test_body_receives_the_model(self) -> None:
         @tool
-        def bash(call: BashCall, *, cfg: Annotated[Limits, Injected]) -> MarkdownResult:
+        def bash1(
+            call: BashCall, *, cfg: Annotated[Limits, Injected]
+        ) -> MarkdownResult:
             """Bash."""
             return MarkdownResult(text=f"{call.command}|{cfg.rows}")
 
-        kwargs = bash.packed_kwargs({"command": "ls", "cfg": Limits(rows=3)})
+        kwargs = bash1.packed_kwargs({"command": "ls", "cfg": Limits(rows=3)})
         assert isinstance(kwargs["call"], BashCall)
-        assert bash.func is not None
-        assert bash.func(**kwargs).text == "ls|3"
-        assert list(bash.args_schema.model_fields) == ["command", "stdin", "cfg"]
+        assert bash1.func is not None
+        assert bash1.func(**kwargs).text == "ls|3"
+        assert list(bash1.args_schema.model_fields) == ["command", "stdin", "cfg"]
 
     def test_custom_chat_view_survives_registration(self) -> None:
         @tool
@@ -162,7 +166,7 @@ class TestViewsTravelWithTheSchema:
     """Вид аргументов едет со схемой инструмента: клиент без кода инструмента
     рисует вход шага так же, как процесс, где инструмент объявлен."""
 
-    ARGS: dict[str, object] = {
+    ARGS: dict[str, Any] = {
         "sql": "select 1",
         "connection_name": "main",
         "top_k": 7,
@@ -171,27 +175,48 @@ class TestViewsTravelWithTheSchema:
     }
 
     def test_remote_call_is_shown_like_the_local_one(self) -> None:
-        ToolCallModels.register("remote_probe", Args)
         views = CallViews()
-        schema = views.marked("remote_probe", Args.model_json_schema())
+        schema = views.marked(Args.model_json_schema(), views.of(Args))
 
-        model = views.model_of("remote_probe", schema)
-        if model is None:
+        read = views.read(schema)
+        if read is None:
             raise AssertionError(f"the schema carries the views: {schema}")
+        if read != views.of(Args):
+            raise AssertionError(f"the views survive the wire: {read}")
 
-        local = ToolCallModels.call_of("remote_probe", self.ARGS).chat_view().markdown
-        ToolCallModels.register("remote_probe", model)
-        remote = ToolCallModels.call_of("remote_probe", self.ARGS).chat_view().markdown
+        model = views.model_of("remote_probe", read)
+        local = Args.model_construct(**self.ARGS).chat_view().markdown
+        remote = model.model_construct(**self.ARGS).chat_view().markdown
         if remote != local:
             raise AssertionError(f"same step input:\n{remote}\n---\n{local}")
         if "```sql" not in remote:
             raise AssertionError(f"the declared display draws the value: {remote}")
 
-    def test_schema_without_the_mark_gives_no_model(self) -> None:
-        if CallViews().model_of("foreign", {"type": "object"}) is not None:
-            raise AssertionError("a foreign tool has no call model")
+    def test_views_name_only_what_differs_from_a_plain_line(self) -> None:
+        views = CallViews().of(Args)
 
-    def test_tool_without_a_call_model_is_left_unmarked(self) -> None:
-        schema = CallViews().marked("no_such_tool_here", {"type": "object"})
+        expected = {
+            "sql": FieldView(
+                placement=FieldPlacement.BODY,
+                display=MarkdownResult(language="sql").model_dump(mode="json"),
+            ),
+            "intent": FieldView(placement=FieldPlacement.HEADER, display=None),
+            "cfg": FieldView(placement=FieldPlacement.HIDDEN, display=None),
+        }
+        if dict(views) != expected:
+            raise AssertionError(f"the views of the call model: {views}")
+
+    def test_schema_without_the_mark_gives_no_views(self) -> None:
+        if CallViews().read({"type": "object"}) is not None:
+            raise AssertionError("a foreign tool has no call views")
+
+    def test_tool_without_views_is_left_unmarked(self) -> None:
+        schema = CallViews().marked({"type": "object"}, None)
         if CallViews.MARK in schema:
-            raise AssertionError(f"nothing to say about an unknown tool: {schema}")
+            raise AssertionError(f"nothing to say about such a tool: {schema}")
+
+    def test_broken_mark_is_refused(self) -> None:
+        schema = {"type": "object", CallViews.MARK: {"sql": {"placement": "above"}}}
+
+        with pytest.raises(ValidationError, match="placement"):
+            CallViews().read(schema)

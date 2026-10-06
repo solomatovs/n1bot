@@ -13,9 +13,11 @@ from pydantic import SecretStr
 from boba.cancellation import ToolStopped
 from boba.identity.context import CallContexts
 from boba.stand.shell import ShellRun
+from boba.stand.toolsetup import ToolSetup
 from boba.stand_core.fake_toolmod import (
     FakeChunkHead,
     FakeConfig,
+    fake_echo,
     fake_merge,
     fake_stream,
 )
@@ -36,7 +38,8 @@ from boba.toolkit.protocol import (
     ReplyOk,
     ToolCommand,
 )
-from boba.toolkit.wrap import ToolProcessWrap
+from boba.toolrun.hosted import HostedTool
+from boba.toolrun.injected import InjectedConfig, StaticConfig
 from boba.toolrun.process import (
     ProcessCallError,
     ProcessLauncherConfig,
@@ -67,45 +70,26 @@ def _launcher(workdir: Path, **overrides: object) -> ProcessToolCaller:
     )
 
 
-def _fresh_tool():
-    """Свежий tool-объект: guard_all подменяет тела на месте."""
-    from importlib import reload
+def _echo(workdir: Path) -> HostedTool:
+    """fake_echo под обёрткой запуска субпроцессом и конфигом стенда."""
+    config = InjectedConfig(lambda name, annotation: CFG, StaticConfig())
 
-    from boba.stand_core import fake_toolmod
-
-    reload(fake_toolmod)
-    return ToolMain.toolset(fake_toolmod.fake_echo)[0]
-
-
-def _call(tool, **kwargs: object) -> tuple[object, object]:
-    """await coroutine-тела: у фасадного тула тело асинхронное."""
-
-    async def go() -> object:
-        return await tool.coroutine(**kwargs)
-
-    result = asyncio.run(go())
-    assert isinstance(result, tuple)
-
-    content, artifact = result
-    return content, artifact
+    return ToolSetup.launched([fake_echo], _launcher(workdir), (config,))["fake_echo"]
 
 
 class TestRunTool:
     def test_envelope_round_trip(self, tmp_path: Path) -> None:
-        tool = _fresh_tool()
-        ToolProcessWrap(CallAmbient()).guard_all([tool], _launcher(tmp_path))
+        tool = _echo(tmp_path)
 
-        content, artifact = _call(tool, text="hi", repeat=2, cfg=CFG)
+        artifact = asyncio.run(tool.run("c1", {"text": "hi", "repeat": 2}))
 
-        assert "hi hi" in str(content)
-        assert artifact is not None
+        assert "hi hi" in artifact.llm_view()
 
     def test_expected_failure_becomes_payload_error(self, tmp_path: Path) -> None:
-        tool = _fresh_tool()
-        ToolProcessWrap(CallAmbient()).guard_all([tool], _launcher(tmp_path))
+        tool = _echo(tmp_path)
 
         with pytest.raises(PayloadFailureError) as err:
-            _call(tool, text="boom", repeat=1, cfg=CFG)
+            asyncio.run(tool.run("c1", {"text": "boom", "repeat": 1}))
 
         assert err.value.failure().error_kind == "FakeUnavailableError"
 

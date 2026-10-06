@@ -14,7 +14,6 @@ import sys
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any
 
 import uvicorn
 from fastmcp.server.auth import AccessToken
@@ -50,7 +49,6 @@ from boba.mcp_server.auth import (
     ServiceTokens,
 )
 from boba.mcp_server.server import (
-    CallSchemas,
     EndpointCatalog,
     McpEndpoints,
     RunLimits,
@@ -58,14 +56,12 @@ from boba.mcp_server.server import (
 from boba.runtime.journal import DirVault, StreamJournal
 from boba.runtime.storage import LocalStorageConfig
 from boba.stand import fake_connection
+from boba.stand.toolstand import ToolStand
 from boba.stand_core import fake_caller, fake_toolmod
 from boba.stand_core.fake_toolmod import FakeConfig
 from boba.toolkit.chain import CallAmbient
-from boba.toolrun.bridge import ToolBridge
 from boba.toolrun.callvalues import CallContextValues
 from boba.toolrun.injected import InjectedConfig, StaticConfig
-from boba.toolrun.process import ProcessLauncherConfig, ProcessToolCaller
-from boba.toolrun.registry import ToolChain, ToolRegistry
 from boba.toolrun.stream_calls import StreamGroupsConfig
 from boba.toolrun.streams import CallJournals
 from boba.workspace.binaries import TrustedBinaries
@@ -109,60 +105,39 @@ class ServiceStand:
 
     def __init__(self, workdir: Path, limits: RunLimits, port: int) -> None:
         self.port = port
-        self.schemas = CallSchemas()
         contexts = CallContexts()
         runs = Runs(contexts)
-        ambient = CallAmbient()
-        launcher = ProcessToolCaller(
-            "dag-service",
-            ProcessLauncherConfig(
-                provider="process",
-                workdir=str(workdir),
-                timeout_sec=60.0,
-                channel_limit_bytes=4_000_000,
-                stderr_tail_bytes=8192,
-                kill_grace_sec=0.5,
-            ),
-            contexts,
-            ambient,
-        )
-
         sealed = SealedConnectionParams(SealKeys(), ConnectionTypes.discover, contexts)
-
-        tools: list[Any] = []
-        for payload in (
-            fake_toolmod.fake_echo,
-            fake_toolmod.fake_emit,
-            fake_toolmod.fake_collect,
-            fake_caller.fake_whoami,
-            fake_caller.fake_scope,
-            fake_caller.fake_sleep,
-            fake_connection.fake_connection_host,
-        ):
-            tools.append(ToolBridge.as_structured_tool(payload.model_copy()))
-
-        names: list[str] = []
-        for tool in tools:
-            names.append(tool.name)
-
         journals = CallJournals(
             StreamJournal(DirVault(str(workdir / "journal")), 0), runs
         )
-        journals.mark_streamable(names)
-
-        chain = ToolChain(
+        stand = ToolStand(
             self.STREAM,
-            journals,
             contexts,
-            ambient,
+            journals,
+            CallAmbient(),
             (
                 CallContextValues(contexts),
                 sealed,
                 InjectedConfig(self._config_of, StaticConfig()),
             ),
-            (),
         )
-        specs = chain.launch(tools, launcher)
+        tools = stand.launch(
+            (
+                fake_toolmod.fake_echo,
+                fake_toolmod.fake_emit,
+                fake_toolmod.fake_collect,
+                fake_caller.fake_whoami,
+                fake_caller.fake_scope,
+                fake_caller.fake_sleep,
+                fake_connection.fake_connection_host,
+            ),
+            stand.process_launcher("dag-service", workdir, 60.0),
+        )
+
+        names: list[str] = []
+        for tool in tools:
+            names.append(tool.name)
 
         granted = {
             PROFILE: ProfileGrant(tools=["*"], roles=["*"]),
@@ -177,17 +152,7 @@ class ServiceStand:
             },
             profiles=granted,
         )
-        chain.seal(tools, access, specs)
-
-        self.registry = ToolRegistry(
-            tools=tools,
-            access=access,
-            stream_config=self.STREAM,
-            own=frozenset(),
-            node_args=(sealed,),
-            specs=specs,
-            ambient=ambient,
-        )
+        self.registry = stand.registry(access, (sealed,))
         proxy = ProxyAuthConfig(
             secret=SecretStr(PROXY_SECRET),
             roles=ProxyRoleProviders(header=HeaderRolesConfig()),

@@ -15,13 +15,10 @@ import sys
 from collections.abc import AsyncIterator, Iterator, Sequence
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import ClassVar
 
 import httpx
 import pytest
-from langchain_core.callbacks import AsyncCallbackHandler
-from langchain_core.messages import ToolCall, ToolMessage
-from langchain_core.runnables import RunnableConfig, RunnableLambda
 from pydantic import BaseModel, ConfigDict, SecretStr
 
 from boba.auth.config import ProxyAuthConfig
@@ -38,8 +35,6 @@ from boba.mcp_client.client import (
     DroppedSignals,
     HttpEndpoint,
     HttpLocation,
-    JournalAddress,
-    JournalAddresses,
     JournalListener,
     McpCaller,
     McpClientError,
@@ -54,8 +49,19 @@ from boba.mcp_client.client import (
 )
 from boba.runtime.config import EnvOverride
 from boba.stand_core.context import CallStand
+from boba.toolkit.calls import FieldPlacement, FieldView
 from boba.toolkit.channels import ToolChannel
-from boba.toolkit.dag import WorkflowResult
+from boba.toolkit.dag import (
+    CallDag,
+    DagNode,
+    JournalAddress,
+    NodeBody,
+    NodeCalls,
+    NodeOutcome,
+    ToolCard,
+    ToolServer,
+    WorkflowResult,
+)
 from boba.toolkit.result import (
     ErrorResult,
     FailureResult,
@@ -64,7 +70,7 @@ from boba.toolkit.result import (
 )
 from boba.toolkit.types import SecretReveal
 from boba.toolkit.wire import JournalFeature, JournalRead, JournalSignal
-from boba.toolrun.stream_calls import ToolServer
+from boba.toolrun.hosted import DirectCalls
 from boba.workspace.launcher import ReadWindow
 
 pytestmark = pytest.mark.anyio
@@ -84,8 +90,8 @@ def _config(endpoint: HttpEndpoint | StdioCommand, prefix: str = "") -> McpServe
 CALLER = McpCaller(login="alice", roles=frozenset({"dev"}))
 
 
-def _call(name: str, **args: object) -> ToolCall:
-    return ToolCall(name=name, args=args, id=f"call-{name}", type="tool_call")
+def _call(name: str, **args: object) -> DagNode:
+    return DagNode.model_validate({"key": f"call-{name}", "tool": name, "args": args})
 
 
 @pytest.fixture
@@ -98,6 +104,7 @@ async def stdio() -> AsyncIterator[McpToolServer]:
         DroppedSignals(),
         CallContexts(),
         None,
+        DirectCalls(),
     )
     await server.open()
     try:
@@ -134,6 +141,7 @@ async def http(http_port: int) -> AsyncIterator[McpToolServer]:
         DroppedSignals(),
         CallContexts(),
         None,
+        DirectCalls(),
     )
     for _ in range(100):
         try:
@@ -159,11 +167,13 @@ class TestStandardServerOverStdio:
             raise AssertionError(f"the server's tools under the prefix: {names}")
 
         add = next(tool for tool in stdio.tools() if tool.name == "std_add")
-        schema = add.args_schema
+        schema = add.parameters
         if not isinstance(schema, dict):
             raise AssertionError(f"the stub carries the server's JSON schema: {schema}")
         if sorted(schema["properties"]) != ["a", "b"]:
             raise AssertionError(f"the model sees the server's arguments: {schema}")
+        if add.views is not None:
+            raise AssertionError(f"a standard server sends no call view: {add}")
 
     async def test_standard_server_declares_no_boba_features(
         self, stdio: McpToolServer
@@ -178,13 +188,13 @@ class TestStandardServerOverStdio:
     ) -> None:
         message = await stdio.call(_call("std_add", a=2, b=3))
 
-        if message.status != "success" or message.content != "5":
+        if message.errored or message.content != "5":
             raise AssertionError(f"the text of the result is the content: {message}")
         if not isinstance(message.artifact, MarkdownResult):
             raise AssertionError(
                 f"a plain result is a text artifact: {message.artifact}"
             )
-        if message.tool_call_id != "call-std_add":
+        if message.key != "call-std_add":
             raise AssertionError(f"the message answers its call: {message}")
 
     async def test_tool_error_is_an_error_message_with_the_server_text(
@@ -192,7 +202,7 @@ class TestStandardServerOverStdio:
     ) -> None:
         message = await stdio.call(_call("std_broken"))
 
-        if message.status != "error":
+        if not message.errored:
             raise AssertionError(f"isError becomes the error status: {message}")
 
         failure = message.artifact
@@ -217,9 +227,9 @@ class TestStandardServerOverStdio:
 
         class Recording(BlockFiles):
             async def attached(
-                self, call: ToolCall, index: int, mime: str, data: bytes
+                self, call: DagNode, index: int, mime: str, data: bytes
             ) -> str:
-                received.append((str(call["id"]), index, mime, data))
+                received.append((call.key, index, mime, data))
                 return "saved as picture.png"
 
         endpoint = StdioCommand(command=sys.executable, args=(str(SERVER), "stdio"))
@@ -230,6 +240,7 @@ class TestStandardServerOverStdio:
             DroppedSignals(),
             CallContexts(),
             None,
+            DirectCalls(),
         )
         await server.open()
         try:
@@ -276,6 +287,7 @@ class TestUnreachableServer:
             DroppedSignals(),
             CallContexts(),
             None,
+            DirectCalls(),
         )
 
         with pytest.raises(McpClientError, match=r"ghost|nonexistent"):
@@ -290,6 +302,7 @@ class TestUnreachableServer:
             DroppedSignals(),
             CallContexts(),
             None,
+            DirectCalls(),
         )
 
         with pytest.raises(McpClientError, match="before open"):
@@ -330,6 +343,7 @@ class TestPublicServers:
             DroppedSignals(),
             CallContexts(),
             None,
+            DirectCalls(),
         )
         await server.open()
         try:
@@ -346,7 +360,7 @@ class TestPublicServers:
         finally:
             await server.close()
 
-        if message.status != "success" or not str(message.content).strip():
+        if message.errored or not str(message.content).strip():
             raise AssertionError(f"deepwiki answers with text: {message}")
 
     async def test_context7_lists_tools_and_answers_a_call(self) -> None:
@@ -358,6 +372,7 @@ class TestPublicServers:
             DroppedSignals(),
             CallContexts(),
             None,
+            DirectCalls(),
         )
         await server.open()
         try:
@@ -366,7 +381,7 @@ class TestPublicServers:
                 raise AssertionError(f"context7 offers its tools: {names}")
 
             tool = next(t for t in server.tools() if t.name == "resolve-library-id")
-            schema = tool.args_schema
+            schema = tool.parameters
             if not isinstance(schema, dict):
                 raise AssertionError(f"the stub carries a JSON schema: {schema}")
 
@@ -393,7 +408,9 @@ class TestServersOfASession:
             servers={"standard": _config(endpoint), "ghost": ghost}
         )
 
-        return McpServers(config, NamedBlocks(), DroppedSignals(), CallContexts())
+        return McpServers(
+            config, NamedBlocks(), DroppedSignals(), CallContexts(), DirectCalls()
+        )
 
     async def test_named_servers_give_ports_and_a_dead_server_is_skipped(
         self,
@@ -478,6 +495,7 @@ async def dag(boba_mcp_stand: BobaMcpStand) -> AsyncIterator[McpToolServer]:
         DroppedSignals(),
         CallContexts(),
         None,
+        DirectCalls(),
     )
     for _ in range(150):
         try:
@@ -511,6 +529,7 @@ class TestScopeOfTheCall:
             DroppedSignals(),
             stand.contexts,
             None,
+            DirectCalls(),
         )
         for _ in range(150):
             try:
@@ -531,16 +550,19 @@ class TestScopeOfTheCall:
             raise AssertionError(f"the body runs in the caller's scope: {message}")
 
 
-class StartedTools(AsyncCallbackHandler):
-    """Имена инструментов, чьи вызовы начались: так их видит лента клиента."""
+class StartedTools(NodeCalls):
+    """Реализация NodeCalls, запоминающая вызовы узлов, которые клиент провёл
+    к телу: по ним хозяин клиента с лентой рисует шаги."""
 
-    def __init__(self, started: list[str]) -> None:
-        self._started = started
+    def __init__(self) -> None:
+        self.started: list[tuple[str, str]] = []
 
-    async def on_tool_start(
-        self, serialized: dict[str, Any], input_str: str, **kwargs: Any
-    ) -> None:
-        self._started.append(str(serialized.get("name")))
+    async def conducted(
+        self, card: ToolCard, node: DagNode, body: NodeBody
+    ) -> NodeOutcome:
+        self.started.append((card.name, node.key))
+
+        return await body(node)
 
 
 @pytest.mark.integration
@@ -552,35 +574,42 @@ class TestLinkedCalls:
         self, dag: McpToolServer, tmp_path: Path
     ) -> None:
         marker = tmp_path / "collected"
-        emit = ToolCall(
-            name="fake_emit",
-            args={
-                "prefix": "a",
-                "count": 3,
-                "size": 0,
-                "fail_midway": False,
-                "out": "c1",
-            },
-            id="call-emit",
-            type="tool_call",
+        emit = DagNode.model_validate(
+            {
+                "key": "call-emit",
+                "tool": "fake_emit",
+                "args": {
+                    "prefix": "a",
+                    "count": 3,
+                    "size": 0,
+                    "fail_midway": False,
+                    "out": "c1",
+                },
+            }
         )
-        collect = ToolCall(
-            name="fake_collect",
-            args={"marker": str(marker), "fail": False, "gated": False, "feed": "c1"},
-            id="call-collect",
-            type="tool_call",
+        collect = DagNode.model_validate(
+            {
+                "key": "call-collect",
+                "tool": "fake_collect",
+                "args": {
+                    "marker": str(marker),
+                    "fail": False,
+                    "gated": False,
+                    "feed": "c1",
+                },
+            }
         )
 
         pending = await dag.submit([emit, collect])
         emitted, collected = await asyncio.gather(*pending)
 
-        if emitted.status != "success" or collected.status != "success":
+        if emitted.errored or collected.errored:
             raise AssertionError(
                 f"both calls of the group succeed: {emitted} {collected}"
             )
-        if emitted.tool_call_id != "call-emit":
+        if emitted.key != "call-emit":
             raise AssertionError(f"each call gets its own outcome: {emitted}")
-        if collected.tool_call_id != "call-collect":
+        if collected.key != "call-collect":
             raise AssertionError(f"each call gets its own outcome: {collected}")
         if isinstance(emitted.artifact, WorkflowResult):
             raise AssertionError(
@@ -590,12 +619,12 @@ class TestLinkedCalls:
             raise AssertionError("the reader ran to its end on the writer's stream")
 
     async def test_workflow_call_runs_as_the_calls_of_its_nodes(
-        self, dag: McpToolServer, tmp_path: Path
+        self, boba_mcp_stand: BobaMcpStand, tmp_path: Path
     ) -> None:
         """Вызов связки — несколько вызовов инструментов, запущенных вместе:
         у каждого узла свой вызов под идентификатором связки с номером узла,
         и те же идентификаторы несёт итог связки для истории."""
-        started: list[str] = []
+        conduct = StartedTools()
         nodes = [
             {
                 "key": "src",
@@ -619,15 +648,32 @@ class TestLinkedCalls:
                 },
             },
         ]
-        whole = ToolCall(
-            name="workflow", args={"nodes": nodes}, id="call-wf", type="tool_call"
+        whole = DagNode.model_validate(
+            {"key": "call-wf", "tool": "workflow", "args": {"nodes": nodes}}
         )
 
-        async def called(_: None) -> ToolMessage:
-            return await dag.call(whole)
+        dag = McpToolServer(
+            "boba",
+            _config(boba_mcp_stand.endpoint()),
+            NamedBlocks(),
+            DroppedSignals(),
+            CallContexts(),
+            None,
+            conduct,
+        )
+        for _ in range(150):
+            try:
+                await dag.open()
+            except McpClientError:
+                await asyncio.sleep(0.2)
+                continue
 
-        watched = RunnableConfig(callbacks=[StartedTools(started)])
-        message = await RunnableLambda(called).ainvoke(None, config=watched)
+            break
+
+        try:
+            message = await dag.call(whole)
+        finally:
+            await dag.close()
 
         artifact = message.artifact
         if not isinstance(artifact, WorkflowResult):
@@ -638,28 +684,30 @@ class TestLinkedCalls:
             raise AssertionError(f"nodes are numbered calls of the workflow: {ids}")
         if [node.key for node in artifact.nodes] != ["src", "dst"]:
             raise AssertionError(f"nodes keep the names of the model: {artifact}")
-        if sorted(started) != ["fake_collect", "fake_emit"]:
+        started = sorted(conduct.started)
+        if started != [("fake_collect", "call-wf_1"), ("fake_emit", "call-wf_0")]:
             raise AssertionError(f"each node is a tool call of its own: {started}")
 
     async def test_lonely_stream_call_goes_as_an_ordinary_call(
         self, dag: McpToolServer
     ) -> None:
-        emit = ToolCall(
-            name="fake_emit",
-            args={
-                "prefix": "a",
-                "count": 1,
-                "size": 0,
-                "fail_midway": False,
-                "out": "c1",
-            },
-            id="call-lonely",
-            type="tool_call",
+        emit = DagNode.model_validate(
+            {
+                "key": "call-lonely",
+                "tool": "fake_emit",
+                "args": {
+                    "prefix": "a",
+                    "count": 1,
+                    "size": 0,
+                    "fail_midway": False,
+                    "out": "c1",
+                },
+            }
         )
 
         message = await dag.call(emit)
 
-        if message.status != "error":
+        if not message.errored:
             raise AssertionError(f"a stream without a reader is refused: {message}")
 
 
@@ -733,8 +781,8 @@ class HeardSignals(CallSignals, JournalListener):
         self.calls: list[tuple[str, str]] = []
         self.signals: list[JournalSignal] = []
 
-    def listener(self, server: str, call: ToolCall) -> JournalListener:
-        self.calls.append((server, str(call["id"])))
+    def listener(self, server: str, call: DagNode) -> JournalListener:
+        self.calls.append((server, call.key))
         return self
 
     async def appended(self, signal: JournalSignal) -> None:
@@ -753,6 +801,7 @@ class TestBobaMcpJournal:
             heard,
             CallContexts(),
             None,
+            DirectCalls(),
         )
         for _ in range(150):
             try:
@@ -773,15 +822,15 @@ class TestBobaMcpJournal:
         try:
             call = _call("fake_echo", text="hi", repeat=2)
             message = await server.call(call)
-            if message.status != "success":
+            if message.errored:
                 raise AssertionError(f"the call succeeds: {message}")
 
-            if heard.calls != [("boba", str(call["id"]))]:
+            if heard.calls != [("boba", call.key)]:
                 raise AssertionError(f"the listener is asked per call: {heard.calls}")
 
             stdout: list[JournalSignal] = []
             for signal in heard.signals:
-                if signal.node != call["id"]:
+                if signal.node != call.key:
                     raise AssertionError(f"signals name the model's call: {signal}")
 
                 if signal.channel == ToolChannel.STDOUT.value:
@@ -797,7 +846,7 @@ class TestBobaMcpJournal:
         finally:
             await server.close()
 
-        address = JournalAddresses().of(message)
+        address = message.journal
         if address != JournalAddress(server="boba", run=stdout[-1].run):
             raise AssertionError(f"the message keeps the journal address: {address}")
 
@@ -813,12 +862,12 @@ class TestBobaMcpJournal:
         try:
             call = _call("fake_echo", text="hi", repeat=2)
             message = await server.call(call)
-            address = JournalAddresses().of(message)
+            address = message.journal
             files = server.journal_files()
             if address is None or files is None:
                 raise AssertionError(f"the journal is addressable: {message}")
 
-            rel = f"{address.run}/{call['id']}/{ToolChannel.STDOUT.value}"
+            rel = f"{address.run}/{call.key}/{ToolChannel.STDOUT.value}"
             whole = await files.relay(rel, "")
             body = b"".join([chunk async for chunk in whole.chunks])
             await whole.release()
@@ -842,7 +891,7 @@ class TestBobaMcpJournal:
     ) -> None:
         server = await self._opened(boba_mcp_stand, DroppedSignals())
         try:
-            if JournalFeature.ID.value not in server.features():
+            if JournalFeature.ID not in server.features():
                 raise AssertionError(f"the journal is declared: {server.features()}")
 
             request = JournalRead(run="nope", node="nope", channel=ToolChannel.STDOUT)
@@ -857,7 +906,13 @@ class TestBobaMcpJournal:
         endpoint = StdioCommand(command=sys.executable, args=(str(SERVER), "stdio"))
         heard = HeardSignals()
         server = McpToolServer(
-            "standard", _config(endpoint), NamedBlocks(), heard, CallContexts(), None
+            "standard",
+            _config(endpoint),
+            NamedBlocks(),
+            heard,
+            CallContexts(),
+            None,
+            DirectCalls(),
         )
         await server.open()
         try:
@@ -897,7 +952,9 @@ class TestSignInAsTheUser:
             servers={"boba": _config(wide), "narrow": _config(narrow)}
         )
 
-        return McpServers(config, NamedBlocks(), DroppedSignals(), CallContexts())
+        return McpServers(
+            config, NamedBlocks(), DroppedSignals(), CallContexts(), DirectCalls()
+        )
 
     async def _ports(
         self, servers: McpServers, caller: McpCaller, names: Sequence[str]
@@ -981,12 +1038,25 @@ class TestBobaMcpServer:
     async def test_result_revives_as_its_model(self, dag: McpToolServer) -> None:
         message = await dag.call(_call("fake_echo", text="hi", repeat=2))
 
-        if message.status != "success":
+        if message.errored:
             raise AssertionError(f"the call succeeds: {message}")
 
         artifact = message.artifact
         if not isinstance(artifact, MarkdownResult) or artifact.text != "hi hi|t0ken":
             raise AssertionError(f"the server's model is revived: {artifact}")
+
+    async def test_card_carries_the_call_view_of_the_server(
+        self, dag: McpToolServer
+    ) -> None:
+        echo = next(tool for tool in dag.tools() if tool.name == "fake_echo")
+
+        hidden = FieldView(placement=FieldPlacement.HIDDEN, display=None)
+        if echo.views != {"cfg": hidden}:
+            raise AssertionError(f"the view of the server's call model: {echo}")
+
+        workflow = next(tool for tool in dag.tools() if tool.name == CallDag.WORKFLOW)
+        if workflow.views is not None:
+            raise AssertionError(f"a built-in node has no call view: {workflow}")
 
     async def test_failure_keeps_the_server_failure_model(
         self, dag: McpToolServer
@@ -1062,7 +1132,7 @@ class TestBobaMcpServer:
 
         message = await dag.call(_call("fake_connection_host", connection=value))
 
-        if message.status != "success" or message.content != "db.local|orders":
+        if message.errored or message.content != "db.local|orders":
             raise AssertionError(f"the body got the sealed profile: {message}")
 
     async def test_plain_reference_is_refused_by_the_server(
@@ -1072,7 +1142,7 @@ class TestBobaMcpServer:
             _call("fake_connection_host", connection="conn://postgres/main")
         )
 
-        if message.status != "error":
+        if not message.errored:
             raise AssertionError(f"an unsealed reference is refused: {message}")
 
     async def test_wrong_token_is_a_client_error(
@@ -1088,6 +1158,7 @@ class TestBobaMcpServer:
             DroppedSignals(),
             CallContexts(),
             None,
+            DirectCalls(),
         )
 
         for _ in range(150):
@@ -1207,6 +1278,7 @@ class TestBobaMcpService:
             DroppedSignals(),
             call_stand.contexts,
             caller,
+            DirectCalls(),
         )
         try:
             for _ in range(600):

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 import shutil
 from collections.abc import Iterator
@@ -9,7 +10,6 @@ from pathlib import Path
 from typing import Any, ClassVar, cast
 
 import pytest
-from langchain_core.messages import ToolMessage
 from pydantic import BaseModel
 
 from boba.sandbox.argv import build_zygote_argv
@@ -23,6 +23,7 @@ from boba.stand.shell import ShellRun
 from boba.stand.zygote import SandboxStand, ZygoteStand
 from boba.tool.shell.tools import BashToolConfig
 from boba.toolkit.chain import CallAmbient
+from boba.toolkit.dag import DagNode
 from boba.toolkit.launcher import LauncherError
 from boba.toolkit.result import ShellResult
 
@@ -40,8 +41,8 @@ def _bin_dirs() -> list[str]:
     return dirs
 
 
-def _tool_call(name: str, args: dict) -> dict:
-    return {"args": args, "id": f"call-{name}", "name": name, "type": "tool_call"}
+def _tool_call(name: str, args: dict) -> DagNode:
+    return DagNode(key=f"call-{name}", tool=name, args=args)
 
 
 _WORKSPACE = "/workspace"
@@ -358,10 +359,10 @@ class TestBashTool:
 
     @staticmethod
     def _invoke(tool, **args) -> ShellResult:
-        msg: ToolMessage = tool.invoke(_tool_call("bash", args))
-        if not (isinstance(msg.artifact, ShellResult)):
-            raise AssertionError("isinstance(msg.artifact, ShellResult)")
-        return msg.artifact
+        outcome = asyncio.run(tool.call(_tool_call("bash", args)))
+        if not (isinstance(outcome.artifact, ShellResult)):
+            raise AssertionError("isinstance(outcome.artifact, ShellResult)")
+        return outcome.artifact
 
     def test_echo_inside_sandbox(
         self, zygote_stand: ZygoteStand, tmp_path: Path
@@ -447,7 +448,7 @@ class TestBashTool:
         tool = self._make_tool(zygote_stand, tmp_path, _profile(timeout_sec=1))
 
         with pytest.raises(LauncherError, match="timeout_sec=1"):
-            tool.invoke(_tool_call("bash", {"command": "sleep 10"}))
+            asyncio.run(tool.call(_tool_call("bash", {"command": "sleep 10"})))
 
     def test_llm_does_not_choose_profile(
         self, zygote_stand: ZygoteStand, tmp_path: Path

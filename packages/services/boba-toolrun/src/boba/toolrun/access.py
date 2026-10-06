@@ -5,9 +5,8 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable, Sequence
 
-from langchain_core.tools import BaseTool
-
 from boba.access import AccessSubject, ToolAccess
+from boba.toolrun.hosted import HostedCall, HostedTool
 from boba.toolrun.wrapping import CallHooks, ToolBody
 
 logger = logging.getLogger(__name__)
@@ -29,6 +28,7 @@ class ToolAccessGuard:
 
     def __init__(self, subject_source: Callable[[], AccessSubject]) -> None:
         self._subject_source = subject_source
+        self._bodies = ToolBody()
 
     class _Hooks(CallHooks[None]):
         def __init__(
@@ -39,12 +39,8 @@ class ToolAccessGuard:
             self._access = access
             self._subject_source = subject_source
 
-        def before(
-            self,
-            name: str,
-            args: tuple[object, ...],
-            kwargs: dict[str, object],
-        ) -> None:
+        async def before(self, call: HostedCall) -> None:
+            name = call.tool
             subject = self._subject_source()
             roles = frozenset(subject.roles)
             profile = subject.profile
@@ -72,8 +68,8 @@ class ToolAccessGuard:
             raise ToolAccessDeniedError(msg)
 
     def guard_all(
-        self, tools: Sequence[BaseTool], access: ToolAccess
-    ) -> list[BaseTool]:
+        self, tools: Sequence[HostedTool], access: ToolAccess
+    ) -> list[HostedTool]:
         """Права проверяются на вызове: субъект берётся источником, не полями."""
         hooks = self._Hooks(access, self._subject_source)
-        return ToolBody.hook_all(tools, hooks)
+        return self._bodies.hook_all(tools, hooks)
