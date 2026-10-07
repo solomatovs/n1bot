@@ -16,7 +16,6 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 import uvicorn
-from fastmcp.server.auth import AccessToken
 from pydantic import SecretStr
 
 from boba.access import ProfileGrant, RoleConfig, ToolAccess
@@ -56,6 +55,7 @@ from boba.mcp_server.server import (
 from boba.runtime.journal import DirVault, StreamJournal
 from boba.runtime.storage import LocalStorageConfig
 from boba.stand import fake_connection
+from boba.stand.service_signin import ServiceSignIn
 from boba.stand.toolstand import ToolStand
 from boba.stand_core import fake_caller, fake_toolmod
 from boba.stand_core.fake_toolmod import FakeConfig
@@ -68,8 +68,6 @@ from boba.workspace.binaries import TrustedBinaries
 from boba.workspace.launcher import MountingConfig
 
 PROFILE = "service"
-DEV_TOKEN = "dev-token"
-WEAK_TOKEN = "weak-token"
 
 NARROW = "narrow"
 """Второй endpoint стенда: один инструмент и только роли dev."""
@@ -91,9 +89,10 @@ class ServiceStand:
     """Сервер сервиса над фейками стенда: реестр собран цепочкой обвязок,
     как его собирает загрузчик; роли dev и ADM (роль пользователя стенда
     чата) видят всё, weak — один инструмент.
-    Вход — готовые токены dev и weak либо вход proxy сервиса входа: роли
-    вошедшего приходят заголовком доверенного клиента. port — порт, на
-    котором стенд слушает."""
+    Вход — proxy сервиса входа: роли вошедшего называет доверенный клиент;
+    dev_token() и weak_token() входят так пользователями стенда alice и
+    bob. Вход формой — пользователь local. port — порт, на котором стенд
+    слушает."""
 
     STREAM: StreamGroupsConfig = StreamGroupsConfig(
         open_sec=20.0,
@@ -200,9 +199,12 @@ class ServiceStand:
             server,
             tokens,
             {
-                DEV_TOKEN: self._static(DEV_TOKEN, "alice", "dev", catalog),
-                WEAK_TOKEN: self._static(WEAK_TOKEN, "bob", "weak", catalog),
+                PROFILE: f"{public_url}/mcp/{PROFILE}",
+                NARROW: f"{public_url}/mcp/{NARROW}",
             },
+        )
+        self._sign_in = ServiceSignIn(
+            public_url, CLIENT_ID, CLIENT_SECRET, PROXY_SECRET
         )
         self.endpoints = McpEndpoints(
             self.registry,
@@ -228,6 +230,18 @@ class ServiceStand:
     def url(self, profile: str) -> str:
         return f"http://127.0.0.1:{self.port}/mcp/{profile}"
 
+    async def dev_token(self, profile: str) -> str:
+        """Токен пользователя alice с ролью dev для endpoint'а profile."""
+        return await asyncio.to_thread(
+            self._sign_in.token, "alice", "dev", self.url(profile)
+        )
+
+    async def weak_token(self, profile: str) -> str:
+        """Токен пользователя bob с ролью weak для endpoint'а profile."""
+        return await asyncio.to_thread(
+            self._sign_in.token, "bob", "weak", self.url(profile)
+        )
+
     @asynccontextmanager
     async def serving(self) -> AsyncIterator[None]:
         """Слушает порт стенда на время блока, в текущем цикле событий."""
@@ -251,18 +265,6 @@ class ServiceStand:
         finally:
             server.should_exit = True
             await task
-
-    @staticmethod
-    def _static(
-        token: str, login: str, role: str, catalog: EndpointCatalog
-    ) -> AccessToken:
-        """Готовый токен стенда: области — endpoint'ы, выданные его роли."""
-        return AccessToken(
-            token=token,
-            client_id=login,
-            scopes=sorted(catalog.granted_by_roles(frozenset({role}))),
-            claims={"login": login, "roles": [role]},
-        )
 
     @staticmethod
     def _config_of(name: str, annotation: object) -> object:

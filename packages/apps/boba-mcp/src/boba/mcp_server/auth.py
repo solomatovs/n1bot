@@ -6,10 +6,12 @@
 наследник OAuthProvider fastmcp: local и ldap входят формой на шаге
 authorize, kerberos — обменом SPNEGO там же, proxy — обменом утверждения
 доверенного клиента на токен (grant jwt-bearer). Итог любого входа — токен
-доступа сервиса (ServiceTokens): JWT с логином, ролями и областями —
-endpoint'ами, выданными ролям вошедшего. Endpoint проверяет токен своим
-EndpointTokens и требует свою область; 401 и 403 отвечает fastmcp. Готовые
-токены секции [mcp.tokens] принимаются наравне. Вход человека продлевается
+доступа сервиса (ServiceTokens): JWT с логином, ролями, областями —
+endpoint'ами, выданными ролям вошедшего, — и ресурсом: адресом endpoint'а,
+для которого токен выпущен. Ресурс клиент называет при входе (RFC 8707), без
+него вход не начинается. Endpoint проверяет токен своим EndpointTokens:
+принимает только токен своего ресурса и требует свою область; 401 и 403
+отвечает fastmcp. Вход человека продлевается
 токеном обновления до потолка сессии; все входы разом снимает смена
 поколения сессий (рестарт либо generation в конфиге). Cookie сессии и строк
 пользователей у сервиса нет; начатые входы, коды авторизации и клиенты
@@ -42,7 +44,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any, ClassVar, TypeVar
 from urllib.parse import urlencode, urlsplit
-from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
+from uuid import NAMESPACE_URL, uuid4, uuid5
 
 from cryptography.fernet import Fernet, InvalidToken
 from fastmcp.server.auth import (
@@ -120,7 +122,7 @@ class TokenClaim(StrEnum):
 
     LOGIN = "login"
     ROLES = "roles"
-    USER_ID = "user_id"
+    RESOURCE = "resource"
     METADATA = "metadata"
 
 
@@ -131,19 +133,16 @@ class TokenClaimsError(Exception):
 class TokenClaims(BaseModel):
     """Клеймы вызывающего в токене доступа.
 
-    login и roles обязательны. user_id несёт готовый токен конфига, у
-    которого он задан; без него сервис выводит идентификатор из логина.
     metadata — то, что вход знает о себе (SignInMetadata, как в токене
     чата): провайдер, принципал и запечатанный билет kerberos, поколение
-    сессий; у готового токена конфига её нет.
+    сессий.
     """
 
     model_config = ConfigDict(frozen=True, extra="ignore")
 
     login: str = Field(min_length=1)
     roles: frozenset[str]
-    user_id: UUID | None = None
-    metadata: Mapping[str, object] = Field(default_factory=dict)
+    metadata: Mapping[str, object]
 
 
 class TokenSubjects:
@@ -186,12 +185,9 @@ class TokenSubjects:
 
     def of(self, token: AccessToken) -> Subject:
         claims = self._claims(token)
-        user_id = claims.user_id
-        if user_id is None:
-            user_id = uuid5(NAMESPACE_URL, f"boba-mcp:{claims.login}")
 
         return Subject(
-            user_id=user_id,
+            user_id=uuid5(NAMESPACE_URL, f"boba-mcp:{claims.login}"),
             login=claims.login,
             roles=claims.roles,
             profile=self._profile,
@@ -299,13 +295,15 @@ class McpClient(BaseModel):
 
 @dataclass(frozen=True)
 class TokenHolder:
-    """Кому выпускается токен сервиса: логин, то, что вход знает о себе
-    (провайдер, роли, выданные endpoint'ы, билет kerberos), и момент
-    первого входа, от которого считается потолок сессии."""
+    """Кому и для чего выпускается токен сервиса: логин, то, что вход знает
+    о себе (провайдер, роли, выданные endpoint'ы, билет kerberos), момент
+    первого входа, от которого считается потолок сессии, и ресурс — адрес
+    endpoint'а, на котором токен будет принят."""
 
     login: str
     sign_in: SignInMetadata
     started: int
+    resource: str
 
     def scopes(self) -> list[str]:
         """Области токена: endpoint'ы, выданные ролям вошедшего."""
@@ -313,13 +311,15 @@ class TokenHolder:
 
 
 class RefreshClaims(BaseModel):
-    """Клеймы токена обновления: держатель сессии и metadata его входа."""
+    """Клеймы токена обновления: держатель сессии, metadata его входа и
+    ресурс, для которого сессия открыта."""
 
     model_config = ConfigDict(frozen=True, extra="ignore")
 
     login: str = Field(min_length=1)
     metadata: Mapping[str, object]
     started: int
+    resource: str = Field(min_length=1)
 
 
 class ServiceTokens:
@@ -329,7 +329,9 @@ class ServiceTokens:
     [session]; выпускает сервер авторизации (AuthServer), читают проверяющие
     endpoint'ов (EndpointTokens). Токен — JWT fastmcp (JWTIssuer): издатель и
     получатель — сам сервис, области — endpoint'ы, выданные ролям вошедшего,
-    логин и роли — клеймами TokenClaim. Какой бы способ входа ни сработал,
+    логин, роли и ресурс — клеймами TokenClaim. Ресурс — адрес endpoint'а,
+    названный клиентом при входе: токен годен только на нём, на каждый
+    endpoint клиент входит отдельно. Какой бы способ входа ни сработал,
     токен один и тот же и несёт metadata входа, как токен чата: провайдер,
     принципал и запечатанный билет kerberos — им инструменты ходят от имени
     пользователя. Проверка локальная, по подписи.
@@ -353,10 +355,13 @@ class ServiceTokens:
         self._max_sec = max_sec
         self._generation = generation
 
-    def holder(self, signed: SignedIn) -> TokenHolder:
+    def holder(self, signed: SignedIn, resource: str) -> TokenHolder:
         """Держатель токена по итогу входа: сессия начинается сейчас."""
         return TokenHolder(
-            login=signed.identifier, sign_in=signed.sign_in, started=int(time.time())
+            login=signed.identifier,
+            sign_in=signed.sign_in,
+            started=int(time.time()),
+            resource=resource,
         )
 
     def access(self, holder: TokenHolder, client_id: str) -> OAuthToken:
@@ -388,6 +393,7 @@ class ServiceTokens:
                 login=holder.login,
                 metadata=self._metadata(holder),
                 started=holder.started,
+                resource=holder.resource,
             ).model_dump(mode="json"),
         )
 
@@ -409,6 +415,7 @@ class ServiceTokens:
             extra_claims={
                 TokenClaim.LOGIN.value: holder.login,
                 TokenClaim.ROLES.value: sorted(holder.sign_in.roles),
+                TokenClaim.RESOURCE.value: holder.resource,
                 TokenClaim.METADATA.value: self._metadata(holder),
             },
         )
@@ -436,11 +443,22 @@ class ServiceTokens:
             )
             return None
 
+        resource = claims.get(TokenClaim.RESOURCE.value)
+        if not isinstance(resource, str):
+            logger.info(
+                "access token of %r names no resource, expected the address of "
+                "an mcp endpoint in claim %r: sign in again",
+                claims.get(TokenClaim.LOGIN.value),
+                TokenClaim.RESOURCE.value,
+            )
+            return None
+
         return AccessToken(
             token=token,
             client_id=str(claims["client_id"]),
             scopes=str(claims["scope"]).split(),
             expires_at=int(claims["exp"]),
+            resource=resource,
             claims=dict(claims),
         )
 
@@ -473,6 +491,7 @@ class ServiceTokens:
             login=held.login,
             sign_in=SignInMetadata.parse(held.metadata),
             started=held.started,
+            resource=held.resource,
         )
 
         return self.session(holder, refresh.client_id)
@@ -507,29 +526,37 @@ class ServiceTokens:
 
 
 class EndpointTokens(TokenVerifier):
-    """Проверка токена на одном endpoint'е MCP: токен сервиса либо готовый
-    токен конфига; область endpoint'а обязательна.
+    """Проверка токена на одном endpoint'е MCP: токен сервиса, выпущенный
+    для этого endpoint'а; область endpoint'а обязательна.
 
-    Создаётся сборкой endpoint'ов на каждый endpoint и отдаётся в
-    FastMCP(auth=…) внутри RemoteAuthProvider: без токена fastmcp отвечает
-    401 со ссылкой на метаданные ресурса, без области endpoint'а — 403
-    insufficient_scope.
+    Создаётся входом сервиса (ServiceAuth) на каждый endpoint и отдаётся в
+    FastMCP(auth=…) внутри RemoteAuthProvider: без токена и с токеном
+    другого endpoint'а fastmcp отвечает 401 со ссылкой на метаданные
+    ресурса, без области endpoint'а — 403 insufficient_scope.
     """
 
-    def __init__(
-        self, tokens: ServiceTokens, static: Mapping[str, AccessToken], endpoint: str
-    ) -> None:
+    def __init__(self, tokens: ServiceTokens, endpoint: str, resource: str) -> None:
         super().__init__(required_scopes=[endpoint])
         self._tokens = tokens
-        self._static = dict(static)
+        self._resource = resource
 
     async def verify_token(self, token: str) -> AccessToken | None:
         """Вызывающий по токену; None — токен не принят (401)."""
-        static = self._static.get(token)
-        if static is not None:
-            return static
+        read = self._tokens.read(token)
+        if read is None:
+            return None
 
-        return self._tokens.read(token)
+        if read.resource != self._resource:
+            logger.info(
+                "access token of client %r is issued for %r, this mcp endpoint "
+                "accepts tokens for %r",
+                read.client_id,
+                read.resource,
+                self._resource,
+            )
+            return None
+
+        return read
 
 
 ValueT = TypeVar("ValueT", bound=BaseModel)
@@ -711,7 +738,7 @@ class AuthServer(OAuthProvider):
                 error_description="authorize: the client has no client_id",
             )
 
-        self._known_resource(params.resource, AuthorizeError)
+        self._resource(params.resource, AuthorizeError)
         txn = self._sealed.seal(PendingLogin(client_id=client.client_id, params=params))
 
         return self.login_url(txn)
@@ -777,8 +804,10 @@ class AuthServer(OAuthProvider):
                 "invalid_grant", "the authorization code is unknown or has expired"
             )
 
+        resource = self._resource(granted.params.resource, TokenError)
+
         return self._tokens.session(
-            self._tokens.holder(granted.signed), granted.client_id
+            self._tokens.holder(granted.signed, resource), granted.client_id
         )
 
     async def exchange_identity_assertion(
@@ -801,7 +830,7 @@ class AuthServer(OAuthProvider):
             logger.warning("%s", exc)
             raise TokenError("invalid_grant", str(exc)) from exc
 
-        self._known_resource(claims.resource, TokenError)
+        resource = self._resource(claims.resource, TokenError)
         request = ProxyRequest(login=claims.sub, roles=claims.roles, client=client_id)
         try:
             signed = await self._sign_ins.admit_proxy(request)
@@ -816,18 +845,25 @@ class AuthServer(OAuthProvider):
             ",".join(sorted(signed.sign_in.roles)),
         )
 
-        return self._tokens.access(self._tokens.holder(signed), client_id)
+        return self._tokens.access(self._tokens.holder(signed, resource), client_id)
 
-    def _known_resource(
+    def _resource(
         self, resource: str | None, refusal: type[AuthorizeError | TokenError]
-    ) -> None:
-        if resource is None:
-            return
-
-        if resource.rstrip("/") in self._resources:
-            return
-
+    ) -> str:
+        """Адрес endpoint'а, для которого просят токен, каким его знает
+        сервис; без ресурса и с чужим ресурсом — отказ refusal."""
         known = ", ".join(sorted(self._resources))
+        if resource is None:
+            raise refusal(
+                "invalid_target",
+                "the request names no resource: parameter resource expects the "
+                f"address of an mcp endpoint of this server; known: {known}",
+            )
+
+        named = resource.rstrip("/")
+        if named in self._resources:
+            return named
+
         raise refusal(
             "invalid_target",
             f"resource {resource!r} is not an mcp endpoint of this server; "
@@ -1185,13 +1221,13 @@ class ServiceAuth:
         public_url: str,
         server: AuthServer,
         tokens: ServiceTokens,
-        static: Mapping[str, AccessToken],
+        resources: Mapping[str, str],
     ) -> None:
         self._public_url = public_url
         self._server = server
         self._pages = LoginPages(server, public_url)
         self._tokens = tokens
-        self._static = dict(static)
+        self._resources = dict(resources)
 
     def published(self) -> str:
         """Префикс пути, под которым сервис виден клиентам: путь публичного
@@ -1202,7 +1238,7 @@ class ServiceAuth:
         """Провайдер авторизации одного endpoint'а: его отдают в
         FastMCP(auth=…); объявляет сервер авторизации в метаданных ресурса."""
         return RemoteAuthProvider(
-            token_verifier=EndpointTokens(self._tokens, self._static, name),
+            token_verifier=EndpointTokens(self._tokens, name, self._resources[name]),
             authorization_servers=[AnyHttpUrl(self._public_url)],
             base_url=self._public_url,
         )

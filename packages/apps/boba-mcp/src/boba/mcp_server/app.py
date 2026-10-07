@@ -17,12 +17,10 @@ import logging
 import logging.config
 import signal
 from pathlib import Path
-from uuid import UUID
 
 import uvicorn
-from fastmcp.server.auth import AccessToken
 from mcp.shared.auth import OAuthClientInformationFull
-from pydantic import BaseModel, ConfigDict, Field, SecretStr
+from pydantic import BaseModel, ConfigDict, Field
 
 from boba.access import ProfileGrant
 from boba.auth.credentials import NoRefresh
@@ -38,7 +36,6 @@ from boba.mcp_server.auth import (
     SealedValues,
     ServiceAuth,
     ServiceTokens,
-    TokenClaim,
 )
 from boba.mcp_server.server import (
     EndpointCatalog,
@@ -51,43 +48,15 @@ from boba.runtime.di import Container
 from boba.runtime.http import SignalledServer
 from boba.runtime.plugins import EntryPointPlugins
 from boba.runtime.storage import LocalStorageConfig
-from boba.toolkit.types import StringList
 
-__all__ = ["McpAppConfig", "McpEntry", "McpHost", "McpSection", "McpToken"]
+__all__ = ["McpAppConfig", "McpEntry", "McpHost", "McpSection"]
 
 logger = logging.getLogger(__name__)
 
 
-class McpToken(BaseModel):
-    """Готовый токен доступа из конфига и вызывающий, которого он означает.
-
-    Вход клиента без утверждений о пользователе (скрипт, сторонний клиент
-    MCP): он предъявляет токен, сервис узнаёт по нему логин и роли.
-    """
-
-    model_config = ConfigDict(frozen=True, extra="forbid")
-
-    token: SecretStr
-    login: str = Field(min_length=1)
-    roles: StringList
-    user_id: UUID | None = None
-
-    def claims(self) -> dict[str, object]:
-        claims: dict[str, object] = {
-            "client_id": self.login,
-            "scopes": [],
-            TokenClaim.LOGIN.value: self.login,
-            TokenClaim.ROLES.value: list(self.roles),
-        }
-        if self.user_id is not None:
-            claims[TokenClaim.USER_ID.value] = str(self.user_id)
-
-        return claims
-
-
 class McpSection(BaseModel):
     """Секция [mcp]: адрес сервиса, общий путь endpoint'ов MCP, пределы
-    запусков, endpoint'ы, готовые токены доступа и доверенные клиенты. Endpoint
+    запусков, endpoint'ы и доверенные клиенты. Endpoint
     [mcp.endpoints.<имя>] — набор инструментов (tools) и роли, которым он
     доступен (roles); отвечает на `{path}/{имя}`. Вход — секции [auth.*]."""
 
@@ -107,8 +76,6 @@ class McpSection(BaseModel):
     него строятся метаданные OAuth, адреса входа и издатель токена. Вне
     localhost — только https."""
     endpoints: dict[str, ProfileGrant] = Field(min_length=1)
-    tokens: dict[str, McpToken]
-    """Токены доступа по именам записей конфига."""
     clients: dict[str, McpClient]
     """Доверенные клиенты OAuth по client_id: им разрешён вход proxy."""
 
@@ -236,9 +203,9 @@ class McpHost:
             )
 
         sealed = SealedValues(session.auth_secret)
-        resources: list[str] = []
+        resources: dict[str, str] = {}
         for name in section.endpoints:
-            resources.append(f"{public_url}{section.path}/{name}")
+            resources[name] = f"{public_url}{section.path}/{name}"
 
         server = AuthServer(
             public_url,
@@ -247,10 +214,10 @@ class McpHost:
             assertions,
             self._clients(section, sealed),
             sealed,
-            resources,
+            list(resources.values()),
         )
 
-        return ServiceAuth(public_url, server, tokens, self._static(section))
+        return ServiceAuth(public_url, server, tokens, resources)
 
     def _clients(self, section: McpSection, sealed: SealedValues) -> RegisteredClients:
         """Клиенты OAuth: доверенные из [mcp.clients] и регистрирующиеся сами."""
@@ -259,22 +226,6 @@ class McpHost:
             declared[client_id] = client.registered(client_id)
 
         return RegisteredClients(sealed, declared)
-
-    def _static(self, section: McpSection) -> dict[str, AccessToken]:
-        """Готовые токены конфига как вошедшие: области — endpoint'ы,
-        выданные ролям токена."""
-        static: dict[str, AccessToken] = {}
-        for declared in section.tokens.values():
-            token = declared.token.get_secret_value()
-            granted = self._endpoints.granted_by_roles(frozenset(declared.roles))
-            static[token] = AccessToken(
-                token=token,
-                client_id=declared.login,
-                scopes=sorted(granted),
-                claims=declared.claims(),
-            )
-
-        return static
 
 
 class McpEntry:

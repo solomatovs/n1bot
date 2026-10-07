@@ -16,7 +16,7 @@ from typing import Any, ClassVar
 import pytest
 from fastmcp import Client
 from fastmcp.client.transports import StreamableHttpTransport
-from service_stand import DEV_TOKEN, PROFILE, ServiceStand
+from service_stand import PROFILE, ServiceStand
 
 from boba.mcp_server.server import RunLimits, StreamReadTool
 from boba.toolkit.channels import ToolChannel
@@ -40,7 +40,8 @@ def stand(tmp_path: Path, port: int) -> ServiceStand:
 @pytest.fixture
 async def client(stand: ServiceStand) -> AsyncIterator[Client[Any]]:
     async with stand.serving():
-        transport = StreamableHttpTransport(stand.url(PROFILE), auth=DEV_TOKEN)
+        token = await stand.dev_token(PROFILE)
+        transport = StreamableHttpTransport(stand.url(PROFILE), auth=token)
         async with Client(transport) as opened:
             yield opened
 

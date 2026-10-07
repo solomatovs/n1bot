@@ -25,18 +25,16 @@ import pytest
 from fastmcp import Client
 from fastmcp.client.transports import StreamableHttpTransport
 from mcp.server.auth.provider import TokenError
-from mcp.shared.auth import OAuthClientInformationFull
+from mcp.shared.auth import JWT_BEARER_GRANT_TYPE, OAuthClientInformationFull
 from pydantic import AnyUrl
 from service_stand import (
     CLIENT_ID,
     CLIENT_SECRET,
-    DEV_TOKEN,
     LOCAL_LOGIN,
     LOCAL_PASSWORD,
     NARROW,
     PROFILE,
     PROXY_SECRET,
-    WEAK_TOKEN,
     ServiceStand,
 )
 
@@ -90,15 +88,27 @@ async def url(stand: ServiceStand) -> AsyncIterator[str]:
         yield stand.url(PROFILE)
 
 
+@pytest.fixture
+async def dev_token(stand: ServiceStand, url: str) -> str:
+    """Токен пользователя alice с ролью dev для endpoint'а стенда."""
+    return await stand.dev_token(PROFILE)
+
+
+@pytest.fixture
+async def weak_token(stand: ServiceStand, url: str) -> str:
+    """Токен пользователя bob с ролью weak для endpoint'а стенда."""
+    return await stand.weak_token(PROFILE)
+
+
 def _client(url: str, token: str) -> Client[Any]:
     return Client(StreamableHttpTransport(url, auth=token))
 
 
 class TestToolList:
     async def test_caller_sees_the_tools_of_the_port(
-        self, stand: ServiceStand, url: str
+        self, stand: ServiceStand, url: str, dev_token: str
     ) -> None:
-        async with _client(url, DEV_TOKEN) as client:
+        async with _client(url, dev_token) as client:
             listed = await client.list_tools()
 
         names = sorted(tool.name for tool in listed)
@@ -118,9 +128,9 @@ class TestToolList:
             raise AssertionError(f"the list is the port's tools: {names}")
 
     async def test_schema_is_the_call_schema_without_service_fields(
-        self, stand: ServiceStand, url: str
+        self, stand: ServiceStand, url: str, dev_token: str
     ) -> None:
-        async with _client(url, DEV_TOKEN) as client:
+        async with _client(url, dev_token) as client:
             listed = await client.list_tools()
 
         echo = next(tool for tool in listed if tool.name == "fake_echo")
@@ -134,9 +144,9 @@ class TestToolList:
             raise AssertionError("the injected config is not shown to the client")
 
     async def test_weaker_role_sees_fewer_tools(
-        self, stand: ServiceStand, url: str
+        self, stand: ServiceStand, url: str, weak_token: str
     ) -> None:
-        async with _client(url, WEAK_TOKEN) as client:
+        async with _client(url, weak_token) as client:
             listed = await client.list_tools()
 
         names = [tool.name for tool in listed]
@@ -146,9 +156,9 @@ class TestToolList:
 
 class TestCall:
     async def test_result_carries_text_model_and_status(
-        self, stand: ServiceStand, url: str
+        self, stand: ServiceStand, url: str, dev_token: str
     ) -> None:
-        async with _client(url, DEV_TOKEN) as client:
+        async with _client(url, dev_token) as client:
             result = await client.call_tool_mcp(
                 "fake_echo", {"text": "hi", "repeat": 2}
             )
@@ -167,9 +177,9 @@ class TestCall:
             raise AssertionError(f"the status travels in _meta: {result.meta}")
 
     async def test_body_sees_the_caller_of_the_token(
-        self, stand: ServiceStand, url: str
+        self, stand: ServiceStand, url: str, dev_token: str
     ) -> None:
-        async with _client(url, DEV_TOKEN) as client:
+        async with _client(url, dev_token) as client:
             result = await client.call_tool_mcp("fake_whoami", {})
 
         structured = result.structured_content
@@ -177,9 +187,9 @@ class TestCall:
             raise AssertionError(f"the body is called as the token's caller: {result}")
 
     async def test_call_id_of_the_client_is_the_id_of_the_call(
-        self, stand: ServiceStand, url: str
+        self, stand: ServiceStand, url: str, dev_token: str
     ) -> None:
-        async with _client(url, DEV_TOKEN) as client:
+        async with _client(url, dev_token) as client:
             result = await client.call_tool_mcp(
                 "fake_echo",
                 {"text": "hi", "repeat": 1},
@@ -191,12 +201,12 @@ class TestCall:
             raise AssertionError(f"the client's call id is kept: {result.meta}")
 
     async def test_scope_of_the_client_is_the_scope_of_the_call(
-        self, stand: ServiceStand, url: str
+        self, stand: ServiceStand, url: str, dev_token: str
     ) -> None:
         """Область из _meta доходит до тела: вызовы одного разговора видят
         одни и те же файлы."""
         scope = "0b6f6f0e-51d4-4a4b-9f6c-1d6c5f1f7a10"
-        async with _client(url, DEV_TOKEN) as client:
+        async with _client(url, dev_token) as client:
             result = await client.call_tool_mcp(
                 "fake_scope", {}, meta={RequestMeta.SCOPE: scope}
             )
@@ -206,11 +216,11 @@ class TestCall:
             raise AssertionError(f"the body runs in the client's scope: {result}")
 
     async def test_call_without_a_scope_runs_in_the_own_scope_of_the_user(
-        self, stand: ServiceStand, url: str
+        self, stand: ServiceStand, url: str, dev_token: str
     ) -> None:
         """Клиент без области получает область своего пользователя: её id —
         id пользователя, поэтому у двух пользователей она разная."""
-        async with _client(url, DEV_TOKEN) as client:
+        async with _client(url, dev_token) as client:
             result = await client.call_tool_mcp("fake_scope", {})
 
         own = str(uuid5(NAMESPACE_URL, "boba-mcp:alice"))
@@ -219,9 +229,9 @@ class TestCall:
             raise AssertionError(f"the default scope is the user's own: {result}")
 
     async def test_scope_that_is_not_a_path_segment_is_refused(
-        self, stand: ServiceStand, url: str
+        self, stand: ServiceStand, url: str, dev_token: str
     ) -> None:
-        async with _client(url, DEV_TOKEN) as client:
+        async with _client(url, dev_token) as client:
             result = await client.call_tool_mcp(
                 "fake_scope", {}, meta={RequestMeta.SCOPE: "a/b"}
             )
@@ -230,14 +240,14 @@ class TestCall:
             raise AssertionError(f"a scope with a separator is refused: {result}")
 
     async def test_calls_of_one_scope_run_side_by_side(
-        self, stand: ServiceStand, url: str, tmp_path: Path
+        self, stand: ServiceStand, url: str, tmp_path: Path, dev_token: str
     ) -> None:
         """Вызовы одной области не вытесняют друг друга: у каждого свой запуск."""
         scope = "0b6f6f0e-51d4-4a4b-9f6c-1d6c5f1f7a11"
 
         async def slept(name: str) -> Any:
             arguments = {"seconds": 1.0, "marker": str(tmp_path / name)}
-            async with _client(url, DEV_TOKEN) as client:
+            async with _client(url, dev_token) as client:
                 return await client.call_tool_mcp(
                     "fake_sleep", arguments, meta={RequestMeta.SCOPE: scope}
                 )
@@ -247,12 +257,12 @@ class TestCall:
             raise AssertionError(f"both calls of the scope finish: {first} {second}")
 
     async def test_server_declares_its_features_on_connect(
-        self, stand: ServiceStand, url: str
+        self, stand: ServiceStand, url: str, dev_token: str
     ) -> None:
         """Возможности объявлены расширениями: клиент узнаёт ключ
         запечатывания, инструмент-связку и операцию журнала при согласовании
         протокола, не вызывая инструментов."""
-        async with _client(url, DEV_TOKEN) as client:
+        async with _client(url, dev_token) as client:
             capabilities = client.session.server_capabilities
 
         if capabilities is None:
@@ -267,7 +277,7 @@ class TestCall:
                 raise AssertionError(f"{feature} is declared: {sorted(declared)}")
 
     async def test_linked_nodes_run_as_one_workflow_call(
-        self, stand: ServiceStand, url: str, tmp_path: Path
+        self, stand: ServiceStand, url: str, tmp_path: Path, dev_token: str
     ) -> None:
         nodes = [
             {
@@ -292,7 +302,7 @@ class TestCall:
                 },
             },
         ]
-        async with _client(url, DEV_TOKEN) as client:
+        async with _client(url, dev_token) as client:
             result = await client.call_tool_mcp(WorkflowTool.NAME, {"nodes": nodes})
 
         if result.is_error:
@@ -326,9 +336,9 @@ class TestJournal:
         return result, signals
 
     async def test_call_signals_the_growth_of_its_journal(
-        self, stand: ServiceStand, url: str
+        self, stand: ServiceStand, url: str, dev_token: str
     ) -> None:
-        async with _client(url, DEV_TOKEN) as client:
+        async with _client(url, dev_token) as client:
             result, signals = await self._echoed(client)
 
         own = (result.meta or {}).get(WireMeta.NAMESPACE.value, {})
@@ -352,9 +362,9 @@ class TestJournal:
             raise AssertionError(f"the last signal arrives before the result: {last}")
 
     async def test_windows_of_the_journal_join_at_line_borders(
-        self, stand: ServiceStand, url: str
+        self, stand: ServiceStand, url: str, dev_token: str
     ) -> None:
-        async with _client(url, DEV_TOKEN) as client:
+        async with _client(url, dev_token) as client:
             _result, signals = await self._echoed(client)
             address = {
                 "run": signals[-1].run,
@@ -379,9 +389,9 @@ class TestJournal:
             raise AssertionError(f"a window from the middle starts at a line: {rest}")
 
     async def test_journal_of_another_caller_is_not_readable(
-        self, stand: ServiceStand, url: str
+        self, stand: ServiceStand, url: str, dev_token: str, weak_token: str
     ) -> None:
-        async with _client(url, DEV_TOKEN) as client:
+        async with _client(url, dev_token) as client:
             _result, signals = await self._echoed(client)
 
         address = {
@@ -389,7 +399,7 @@ class TestJournal:
             "node": signals[-1].node,
             "channel": ToolChannel.STDOUT.value,
         }
-        async with _client(url, WEAK_TOKEN) as client:
+        async with _client(url, weak_token) as client:
             foreign = await client.call_tool_mcp(StreamReadTool.NAME, address)
 
         if not foreign.is_error:
@@ -404,9 +414,9 @@ class TestJournal:
 
 class TestFailures:
     async def test_bad_arguments_are_an_error_result_with_a_model(
-        self, stand: ServiceStand, url: str
+        self, stand: ServiceStand, url: str, dev_token: str
     ) -> None:
-        async with _client(url, DEV_TOKEN) as client:
+        async with _client(url, dev_token) as client:
             result = await client.call_tool_mcp("fake_echo", {"text": "hi"})
 
         if not result.is_error:
@@ -415,9 +425,9 @@ class TestFailures:
             raise AssertionError("the refusal carries its model, not bare text")
 
     async def test_body_failure_is_an_error_result(
-        self, stand: ServiceStand, url: str
+        self, stand: ServiceStand, url: str, dev_token: str
     ) -> None:
-        async with _client(url, DEV_TOKEN) as client:
+        async with _client(url, dev_token) as client:
             result = await client.call_tool_mcp(
                 "fake_echo", {"text": "boom", "repeat": 1}
             )
@@ -430,7 +440,7 @@ class TestFailures:
             raise AssertionError(f"the failure model names the cause: {structured}")
 
     async def test_stream_tool_alone_is_refused_with_a_hint(
-        self, stand: ServiceStand, url: str
+        self, stand: ServiceStand, url: str, dev_token: str
     ) -> None:
         arguments = {
             "prefix": "a",
@@ -439,7 +449,7 @@ class TestFailures:
             "fail_midway": False,
             "out": "c1",
         }
-        async with _client(url, DEV_TOKEN) as client:
+        async with _client(url, dev_token) as client:
             result = await client.call_tool_mcp("fake_emit", arguments)
 
         if not result.is_error:
@@ -448,7 +458,7 @@ class TestFailures:
             raise AssertionError("the plan refusal carries its model")
 
     async def test_tool_outside_the_role_is_not_callable(
-        self, stand: ServiceStand, url: str
+        self, stand: ServiceStand, url: str, weak_token: str
     ) -> None:
         arguments = {
             "prefix": "a",
@@ -457,7 +467,7 @@ class TestFailures:
             "fail_midway": False,
             "out": "c1",
         }
-        async with _client(url, WEAK_TOKEN) as client:
+        async with _client(url, weak_token) as client:
             result = await client.call_tool_mcp("fake_emit", arguments)
 
         if not result.is_error:
@@ -489,11 +499,11 @@ class TestRunLimit:
         return ServiceStand(tmp_path, RunLimits(max_runs=1, max_waiting=1), port)
 
     async def test_calls_over_the_limit_wait_and_over_the_queue_are_refused(
-        self, stand: ServiceStand, url: str, tmp_path: Path
+        self, stand: ServiceStand, url: str, tmp_path: Path, dev_token: str
     ) -> None:
         async def slept(name: str) -> Any:
             arguments = {"seconds": 1.5, "marker": str(tmp_path / name)}
-            async with _client(url, DEV_TOKEN) as client:
+            async with _client(url, dev_token) as client:
                 return await client.call_tool_mcp("fake_sleep", arguments)
 
         first = asyncio.create_task(slept("first"))
@@ -528,13 +538,13 @@ class TestRunLimit:
 
 class TestCancellation:
     async def test_dropped_connection_kills_the_running_body(
-        self, stand: ServiceStand, url: str, tmp_path: Path
+        self, stand: ServiceStand, url: str, tmp_path: Path, dev_token: str
     ) -> None:
         marker = tmp_path / "pid"
         arguments = {"seconds": 60.0, "marker": str(marker)}
 
         async def hanging() -> Any:
-            async with _client(url, DEV_TOKEN) as client:
+            async with _client(url, dev_token) as client:
                 return await client.call_tool_mcp("fake_sleep", arguments)
 
         call = asyncio.create_task(hanging())
@@ -564,7 +574,8 @@ class TestEndpoints:
     async def test_endpoint_offers_the_tools_of_its_profile(
         self, stand: ServiceStand, url: str
     ) -> None:
-        async with _client(stand.url(NARROW), DEV_TOKEN) as client:
+        token = await stand.dev_token(NARROW)
+        async with _client(stand.url(NARROW), token) as client:
             listed = await client.list_tools()
 
         names = sorted(tool.name for tool in listed)
@@ -574,17 +585,37 @@ class TestEndpoints:
     async def test_endpoint_outside_the_roles_is_forbidden(
         self, stand: ServiceStand, url: str
     ) -> None:
-        headers = {"Authorization": f"Bearer {WEAK_TOKEN}"}
+        headers = {"Authorization": f"Bearer {await stand.weak_token(NARROW)}"}
         async with httpx.AsyncClient() as http:
             reply = await http.post(stand.url(NARROW), json={}, headers=headers)
 
         if reply.status_code != httpx.codes.FORBIDDEN:
             raise AssertionError(f"role weak has no endpoint narrow: {reply}")
 
-    async def test_unknown_endpoint_is_not_found(
-        self, stand: ServiceStand, url: str
+    async def test_token_of_another_endpoint_is_not_accepted(
+        self, stand: ServiceStand, url: str, dev_token: str
     ) -> None:
-        headers = {"Authorization": f"Bearer {DEV_TOKEN}"}
+        """Роль dev открывает оба endpoint'а, но токен выпущен для одного:
+        на втором он не принят, и отказ ведёт клиента ко входу."""
+        headers = {"Authorization": f"Bearer {dev_token}"}
+        async with httpx.AsyncClient() as http:
+            own = await http.post(stand.url(PROFILE), json={}, headers=headers)
+            other = await http.post(stand.url(NARROW), json={}, headers=headers)
+
+        if own.status_code == httpx.codes.UNAUTHORIZED:
+            raise AssertionError(f"the token is accepted on its endpoint: {own}")
+
+        if other.status_code != httpx.codes.UNAUTHORIZED:
+            raise AssertionError(f"a token of another endpoint is 401: {other}")
+
+        challenge = other.headers.get("www-authenticate", "")
+        if "resource_metadata=" not in challenge:
+            raise AssertionError(f"the refusal leads to the sign-in: {challenge}")
+
+    async def test_unknown_endpoint_is_not_found(
+        self, stand: ServiceStand, url: str, dev_token: str
+    ) -> None:
+        headers = {"Authorization": f"Bearer {dev_token}"}
         async with httpx.AsyncClient() as http:
             reply = await http.post(stand.url("nowhere"), json={}, headers=headers)
 
@@ -600,18 +631,23 @@ class TestProxySignIn:
         return f"http://127.0.0.1:{stand.port}"
 
     async def _exchanged(
-        self, stand: ServiceStand, login: str, roles: str, secret: str
+        self,
+        stand: ServiceStand,
+        login: str,
+        roles: str,
+        secret: str,
+        profile: str = PROFILE,
     ) -> httpx.Response:
         public = self._public(stand)
         assertion = ProxyAssertions(secret, 0).issue(
-            CLIENT_ID, login, roles, public, stand.url(PROFILE)
+            CLIENT_ID, login, roles, public, stand.url(profile)
         )
         form = {
             "grant_type": "urn:ietf:params:oauth:grant-type:jwt-bearer",
             "assertion": assertion,
             "client_id": CLIENT_ID,
             "client_secret": CLIENT_SECRET,
-            "resource": stand.url(PROFILE),
+            "resource": stand.url(profile),
         }
         async with httpx.AsyncClient() as http:
             return await http.post(f"{public}/token", data=form)
@@ -634,7 +670,7 @@ class TestProxySignIn:
     async def test_roles_of_the_sign_in_open_the_endpoints(
         self, stand: ServiceStand, url: str
     ) -> None:
-        reply = await self._exchanged(stand, "petrov", "weak", PROXY_SECRET)
+        reply = await self._exchanged(stand, "petrov", "weak", PROXY_SECRET, NARROW)
         headers = {"Authorization": f"Bearer {reply.json()['access_token']}"}
         async with httpx.AsyncClient() as http:
             narrow = await http.post(stand.url(NARROW), json={}, headers=headers)
@@ -970,6 +1006,37 @@ class TestHumanSignIn:
         if "location" in refused.headers:
             raise AssertionError(f"no code leaves the service: {refused.headers}")
 
+    async def test_sign_in_without_a_resource_does_not_start(
+        self, stand: ServiceStand, url: str
+    ) -> None:
+        """Клиент не назвал endpoint, для которого просит токен: вход не
+        начинается, отказ возвращается клиенту на его адрес возврата."""
+        public = self._public(stand)
+        _, challenge = self._pkce()
+        async with httpx.AsyncClient() as http:
+            client_id = await self._registered(http, public)
+            reply = await http.get(
+                f"{public}/authorize",
+                params={
+                    "response_type": "code",
+                    "client_id": client_id,
+                    "redirect_uri": self.REDIRECT,
+                    "code_challenge": challenge,
+                    "code_challenge_method": "S256",
+                    "state": "stand-state",
+                },
+            )
+
+        if reply.status_code != httpx.codes.FOUND:
+            raise AssertionError(f"the refusal returns to the client: {reply.text}")
+
+        back = httpx.URL(reply.headers["location"])
+        if back.path == "/login":
+            raise AssertionError(f"no sign-in page without a resource: {back}")
+
+        if back.params.get("error") != "invalid_target":
+            raise AssertionError(f"the refusal names the resource: {back}")
+
     async def test_unknown_sign_in_is_refused(
         self, stand: ServiceStand, url: str
     ) -> None:
@@ -1001,7 +1068,12 @@ class TestSessionGeneration:
             sealed_ticket="sealed-ticket",
         )
 
-        return TokenHolder(login="ivanov", sign_in=sign_in, started=started)
+        return TokenHolder(
+            login="ivanov",
+            sign_in=sign_in,
+            started=started,
+            resource=f"{self.PUBLIC}/mcp/{PROFILE}",
+        )
 
     def test_token_carries_the_sign_in(self) -> None:
         """Токен несёт то, что вход знает о себе: по нему вызов получает
@@ -1012,6 +1084,9 @@ class TestSessionGeneration:
         access = tokens.read(issued.access_token)
         if access is None or access.scopes != [PROFILE]:
             raise AssertionError(f"the token opens the granted endpoint: {access}")
+
+        if access.resource != f"{self.PUBLIC}/mcp/{PROFILE}":
+            raise AssertionError(f"the token names its endpoint: {access}")
 
         metadata = SignInMetadata.parse((access.claims or {})["metadata"])
         ticket = metadata.ticket()
@@ -1024,6 +1099,9 @@ class TestSessionGeneration:
 
         renewed = tokens.renewed(refresh)
         again = tokens.read(renewed.access_token)
+        if again is None or again.resource != access.resource:
+            raise AssertionError(f"the renewal keeps the endpoint: {again}")
+
         kept = SignInMetadata.parse(((again and again.claims) or {})["metadata"])
         if kept.ticket() != ticket:
             raise AssertionError(f"the renewal keeps the sign-in: {kept}")
@@ -1140,6 +1218,11 @@ class TestAuthDiscovery:
         if described["token_endpoint"].rstrip("/") != f"{public}/token":
             raise AssertionError(f"metadata names the token endpoint: {described}")
 
+        if JWT_BEARER_GRANT_TYPE not in described["grant_types_supported"]:
+            raise AssertionError(
+                f"metadata declares the exchange of an assertion: {described}"
+            )
+
 
 class TestWorkspaceFiles:
     """Файлы workspace по маршруту endpoint'а: потоком в обе стороны."""
@@ -1159,11 +1242,11 @@ class TestWorkspaceFiles:
             yield payload[start : start + size]
 
     async def test_stored_stream_is_read_back_whole_and_by_range(
-        self, stand: ServiceStand, url: str
+        self, stand: ServiceStand, url: str, dev_token: str
     ) -> None:
         payload = bytes(range(256)) * 4096
         address = self._address(url, "data.bin")
-        headers = self._headers(DEV_TOKEN)
+        headers = self._headers(dev_token)
         async with httpx.AsyncClient() as http:
             stored = await http.put(
                 address, content=self._chunks(payload, 65536), headers=headers
@@ -1199,18 +1282,18 @@ class TestWorkspaceFiles:
             raise AssertionError(f"no token, no file: {reply.status_code} {reply.text}")
 
     async def test_workspace_of_another_user_is_out_of_reach(
-        self, stand: ServiceStand, url: str
+        self, stand: ServiceStand, url: str, dev_token: str, weak_token: str
     ) -> None:
         """Адрес не называет пользователя: тот же путь у другого вошедшего
         ведёт в его собственный workspace."""
         address = self._address(url, "private.txt")
         async with httpx.AsyncClient() as http:
-            await http.put(address, content=b"secret", headers=self._headers(DEV_TOKEN))
+            await http.put(address, content=b"secret", headers=self._headers(dev_token))
             other = await http.get(
                 address.replace("/mcp/service/", "/mcp/narrow/"),
-                headers=self._headers(DEV_TOKEN),
+                headers=self._headers(await stand.dev_token(NARROW)),
             )
-            stranger = await http.get(address, headers=self._headers(WEAK_TOKEN))
+            stranger = await http.get(address, headers=self._headers(weak_token))
 
         if other.content != b"secret":
             raise AssertionError(f"endpoints share the user's workspace: {other.text}")
@@ -1220,21 +1303,21 @@ class TestWorkspaceFiles:
             )
 
     async def test_address_outside_the_scope_dirs_is_refused(
-        self, stand: ServiceStand, url: str
+        self, stand: ServiceStand, url: str, dev_token: str
     ) -> None:
         address = f"{url}/files/{self.SCOPE}/elsewhere/note.txt"
         async with httpx.AsyncClient() as http:
             reply = await http.put(
-                address, content=b"x", headers=self._headers(DEV_TOKEN)
+                address, content=b"x", headers=self._headers(dev_token)
             )
 
         if reply.status_code != 400:
             raise AssertionError(f"only scope dirs are addressed: {reply.status_code}")
 
     async def test_file_upload_names_the_address_for_the_client(
-        self, stand: ServiceStand, url: str
+        self, stand: ServiceStand, url: str, dev_token: str
     ) -> None:
-        async with _client(url, DEV_TOKEN) as client:
+        async with _client(url, dev_token) as client:
             result = await client.call_tool_mcp(
                 FileUploadTool.NAME,
                 {"name": "report.csv"},
@@ -1263,9 +1346,9 @@ class TestJournalFile:
     """Журнал вызова целым файлом по маршруту endpoint'а."""
 
     async def test_channel_is_served_to_the_caller_only(
-        self, stand: ServiceStand, url: str
+        self, stand: ServiceStand, url: str, dev_token: str, weak_token: str
     ) -> None:
-        async with _client(url, DEV_TOKEN) as client:
+        async with _client(url, dev_token) as client:
             result = await client.call_tool_mcp(
                 "fake_echo",
                 {"text": "hi", "repeat": 2},
@@ -1277,14 +1360,14 @@ class TestJournalFile:
         address = f"{url}/journals/{run}/call-journal-file/{ToolChannel.STDOUT.value}"
         async with httpx.AsyncClient() as http:
             mine = await http.get(
-                address, headers={"Authorization": f"Bearer {DEV_TOKEN}"}
+                address, headers={"Authorization": f"Bearer {dev_token}"}
             )
             part = await http.get(
                 address,
-                headers={"Authorization": f"Bearer {DEV_TOKEN}", "Range": "bytes=0-3"},
+                headers={"Authorization": f"Bearer {dev_token}", "Range": "bytes=0-3"},
             )
             foreign = await http.get(
-                address, headers={"Authorization": f"Bearer {WEAK_TOKEN}"}
+                address, headers={"Authorization": f"Bearer {weak_token}"}
             )
             anonymous = await http.get(address)
 

@@ -105,6 +105,7 @@ from boba.runtime.storage import (
     StorageClient,
 )
 from boba.stand.refs import StandRefs
+from boba.stand.service_signin import ServiceSignIn
 from boba.stand.signin import SignInStand
 from boba.stand.storage import StorageSeed
 from boba.stand.ui.stand import (
@@ -173,11 +174,9 @@ class ServiceProcess:
     )
     SECRET: ClassVar[str] = "stand-proxy-secret"
 
-    TOKEN: ClassVar[str] = "dev-token"
-    """Готовый токен стенда: пользователь alice с ролью dev."""
-
     OWNER: ClassVar[str] = str(uuid5(NAMESPACE_URL, "boba-mcp:alice"))
-    """Под этим id сервис держит журналы и файлы пользователя токена TOKEN."""
+    """Под этим id сервис держит журналы и файлы пользователя alice, чьим
+    токеном входит token_servers()."""
 
     def __init__(self, workdir: Path) -> None:
         self.journal_dir = workdir / "journal"
@@ -188,6 +187,10 @@ class ServiceProcess:
 
         self._process = subprocess.Popen(
             [sys.executable, str(self.STAND), str(self.port), str(workdir)]
+        )
+        self._public = f"http://127.0.0.1:{self.port}"
+        self._sign_in = ServiceSignIn(
+            self._public, "stand-chat", "stand-client-secret", self.SECRET
         )
 
     def await_listening(self) -> None:
@@ -224,15 +227,18 @@ class ServiceProcess:
         return McpServersConfig.model_validate({"servers": {"boba": server}})
 
     def token_servers(self, name: str) -> McpServersConfig:
-        """Секция [mcp.servers] с одним сервером name: вход готовым токеном."""
+        """Секция [mcp.servers] с одним сервером name: вход токеном
+        пользователя alice с ролью dev."""
+        path = "/mcp/service"
+        token = self._sign_in.token("alice", "dev", f"{self._public}{path}")
         server = {
             "endpoint": {
                 "transport": "streamable-http",
                 "scheme": "http",
                 "host": "127.0.0.1",
                 "port": self.port,
-                "path": "/mcp/service",
-                "auth": {"auth": "bearer", "token": self.TOKEN},
+                "path": path,
+                "auth": {"auth": "bearer", "token": token},
             },
             "connect_timeout_sec": 30.0,
             "call_timeout_sec": 60.0,
