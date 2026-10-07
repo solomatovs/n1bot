@@ -130,6 +130,7 @@ class ServiceStand:
                 fake_caller.fake_scope,
                 fake_caller.fake_progress,
                 fake_caller.fake_sleep,
+                fake_caller.fake_query,
                 fake_connection.fake_connection_host,
             ),
             stand.process_launcher("dag-service", workdir, 60.0),

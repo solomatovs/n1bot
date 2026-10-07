@@ -126,6 +126,20 @@ class TestToolSchema:
         if "out" not in emit.input_schema["required"]:
             raise AssertionError(f"the channel is required: {emit.input_schema}")
 
+    async def test_code_argument_names_its_content_type(
+        self, client: Client[Any]
+    ) -> None:
+        """Аргумент с кодом назван стандартным ключом JSON Schema
+        contentMediaType: что это за текст, а не как его показывать."""
+        listed = await client.list_tools()
+
+        query = next(tool for tool in listed if tool.name == "fake_query")
+        properties = query.input_schema["properties"]
+        if properties["sql"].get("contentMediaType") != "application/sql":
+            raise AssertionError(f"the query is typed as sql: {properties['sql']}")
+        if "contentMediaType" in properties["limit"]:
+            raise AssertionError(f"a number has no content type: {properties}")
+
     async def test_connection_parameter_is_a_plain_string(
         self, client: Client[Any]
     ) -> None:

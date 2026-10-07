@@ -32,6 +32,7 @@ from boba.pump_stand import (
 )
 from boba.pump_stand.oracle import PumpUser
 from boba.stand.names import StandNames
+from boba.stand_core.progress import HeardProgress
 from boba.toolkit.result import SqlFailureResult
 from boba.toolrun.dag_run import DagOutcome
 
@@ -503,6 +504,64 @@ class TestPostgres:
         assert "stop" in failure.llm_view()
         assert failure.statements[-1].status == "failed: RaiseException"
         assert await pg.rows("mirror") == []
+
+    async def _out_messages(self, pg: PgScripts, statement: str) -> list[str]:
+        """Отчёты выгрузки statement о ходе работы, по порядку."""
+        heard = HeardProgress()
+        try:
+            pumps = Pumps(postgres=pg.side.profile, progress=heard.progress)
+            await pumps.pg_out(statement)
+
+            return heard.messages()
+        finally:
+            heard.close()
+
+    async def test_out_reports_its_settings_and_the_connection(
+        self, pg: PgScripts
+    ) -> None:
+        """Выгрузка сообщает, с какими настройками идёт (и взятыми по
+        умолчанию), и о подключении до и после него."""
+        messages = await self._out_messages(
+            pg, f"select id, v from {pg.named('target')}"
+        )
+
+        settings = messages[0]
+        if not settings.startswith("postgres pump settings: "):
+            raise AssertionError(f"the settings come first: {messages}")
+        if f"chunk_bytes={Pumps.CHUNK_BYTES}" not in settings:
+            raise AssertionError(f"the chunk size in use is named: {settings}")
+        if "exact_floats=False" not in settings or "datestyle=" not in settings:
+            raise AssertionError(f"defaults are named too: {settings}")
+
+        if messages[1] != "connecting to postgres, waiting for the server":
+            raise AssertionError(f"the wait for the connection: {messages[1]}")
+        if not messages[2].startswith("connected to postgres in "):
+            raise AssertionError(f"the connection is confirmed: {messages[2]}")
+        if "server " not in messages[2] or "backend pid " not in messages[2]:
+            raise AssertionError(f"the server introduces itself: {messages[2]}")
+
+    async def test_out_reports_the_command_whole_and_its_outcome(
+        self, pg: PgScripts
+    ) -> None:
+        """Команда сервера названа целиком одной строкой до отправки, итог —
+        со статусом сервера; адреса и входа в отчётах нет."""
+        messages = await self._out_messages(
+            pg, f"select id,\n       v\n  from {pg.named('target')}"
+        )
+
+        flat = f"copy ( select id, v from {pg.named('target')}"
+        sent = [text for text in messages if text.startswith("running on postgres")]
+        if not sent or flat not in sent[-1]:
+            raise AssertionError(f"the command is named whole on one line: {sent}")
+
+        done = [text for text in messages if text.startswith("postgres answered in ")]
+        if not done or ": COPY " not in done[-1]:
+            raise AssertionError(f"the outcome of the command is named: {messages}")
+
+        profile = pg.side.profile
+        for text in messages:
+            if str(profile.host) in text or profile.trace() in text:
+                raise AssertionError(f"no address or login in a report: {text}")
 
     async def test_out_reads_temp_table_from_before(self, pg: PgScripts) -> None:
         """Выгрузка видит temp-таблицу, созданную в before той же сессии."""

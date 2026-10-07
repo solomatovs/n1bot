@@ -141,6 +141,7 @@ class TestToolList:
             "fake_echo",
             "fake_emit",
             "fake_progress",
+            "fake_query",
             "fake_scope",
             "fake_sleep",
             "fake_whoami",

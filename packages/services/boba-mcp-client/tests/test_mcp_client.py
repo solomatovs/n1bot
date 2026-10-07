@@ -901,6 +901,58 @@ class TestBobaMcpJournal:
         if right != ["step 1 of 2 (1 of 2)", "step 2 of 2 (2 of 2)"]:
             raise AssertionError(f"the right call hears only its own reports: {right}")
 
+    async def test_outcome_carries_the_content_types_of_the_arguments(
+        self, boba_mcp_stand: BobaMcpStand
+    ) -> None:
+        """Итог вызова несёт типы содержимого аргументов из схемы сервера по
+        идентификатору вызова: хозяин клиента хранит их с итогом и рисует
+        по ним вход шага после конца хода."""
+        server = await self._opened(boba_mcp_stand, HeardSignals())
+        try:
+            typed = _call("fake_query", sql="select 1", limit=5)
+            plain = _call("fake_echo", text="hi", repeat=1)
+            asked = await server.call(typed)
+            echoed = await server.call(plain)
+        finally:
+            await server.close()
+
+        if asked.errored or echoed.errored:
+            raise AssertionError(f"both calls succeed: {asked} {echoed}")
+
+        if asked.media != {typed.key: {"sql": "application/sql"}}:
+            raise AssertionError(f"the query argument is typed: {asked.media}")
+        if echoed.media != {plain.key: {}}:
+            raise AssertionError(f"plain arguments carry no types: {echoed.media}")
+
+    async def test_workflow_outcome_carries_the_types_of_every_node(
+        self, boba_mcp_stand: BobaMcpStand
+    ) -> None:
+        server = await self._opened(boba_mcp_stand, HeardSignals())
+        nodes = [
+            {"key": "q", "tool": "fake_query", "args": {"sql": "select 2", "limit": 1}},
+            {"key": "e", "tool": "fake_echo", "args": {"text": "hi", "repeat": 1}},
+        ]
+        try:
+            call = _call("workflow", nodes=nodes)
+            outcome = await server.call(call)
+        finally:
+            await server.close()
+
+        result = outcome.artifact
+        if not isinstance(result, WorkflowResult):
+            raise AssertionError(f"the workflow model is revived: {outcome}")
+
+        media = outcome.media
+        if media is None:
+            raise AssertionError(f"the outcome carries the types: {outcome}")
+
+        typed: dict[str, object] = {}
+        for node in result.nodes:
+            typed[node.key] = media.get(node.call_id)
+
+        if typed != {"q": {"sql": "application/sql"}, "e": {}}:
+            raise AssertionError(f"every node has its own types: {typed}")
+
     async def test_journal_is_read_by_the_address_of_the_result(
         self, boba_mcp_stand: BobaMcpStand
     ) -> None:
@@ -1217,6 +1269,52 @@ class TestBobaMcpServer:
 
         if message.errored or message.content != "db.local|orders":
             raise AssertionError(f"the body got the sealed profile: {message}")
+
+    async def test_workflow_result_shows_the_reference_of_the_connection(
+        self, dag: McpToolServer
+    ) -> None:
+        """В итоге workflow сервис перечисляет аргументы узлов: на месте
+        запечатанного соединения стоит ссылка, которой его назвал клиент,
+        а не само значение и не безымянная пометка."""
+        declared = dag.features().get(SealFeature.ID)
+        if declared is None:
+            raise AssertionError(f"the server declares the seal key: {dag.features()}")
+
+        profile = PostgresConfig.model_validate(
+            {
+                "host": "db.local",
+                "dbname": "orders",
+                "auth": {"method": "trust", "user": "u"},
+            }
+        )
+        sealed = SealedConnection(
+            ref="conn://postgres/orders",
+            login="alice",
+            expires_at=datetime.now(UTC) + timedelta(minutes=5),
+            profile=SecretReveal.dumped(profile),
+        )
+        value = ConnectionSeal(SealFeature.model_validate(declared).key).seal(sealed)
+        nodes = [
+            {
+                "key": "host",
+                "tool": "fake_connection_host",
+                "args": {"connection": value},
+            }
+        ]
+
+        message = await dag.call(_call("workflow", nodes=nodes))
+
+        outcome = message.artifact
+        if not isinstance(outcome, WorkflowResult):
+            raise AssertionError(f"the workflow model is revived: {message}")
+
+        node = outcome.nodes[0]
+        if node.errored or node.content != "db.local|orders":
+            raise AssertionError(f"the node got the sealed profile: {node}")
+        if node.args.get("connection") != "conn://postgres/orders":
+            raise AssertionError(f"the reference of the client is shown: {node.args}")
+        if value in outcome.llm_view() or value in message.content:
+            raise AssertionError("the sealed value is not echoed to the caller")
 
     async def test_plain_reference_is_refused_by_the_server(
         self, dag: McpToolServer

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from enum import StrEnum
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, ClassVar, Literal
 
 import pytest
 from pydantic import BaseModel, Field, SecretStr
@@ -227,3 +227,45 @@ class TestViewsTravelWithTheSchema:
         schema = {"type": "object", "properties": {"body": body}}
         if dict(CallViews().seen(schema)):
             raise AssertionError("an unknown content type has no special view")
+
+
+class TestContentTypes:
+    """Типы содержимого аргументов: из схемы сервера в запись истории и в
+    вид шага."""
+
+    SCHEMA: ClassVar[dict[str, Any]] = {
+        "type": "object",
+        "properties": {
+            "sql": {"type": "string", "contentMediaType": "application/sql"},
+            "note": {"type": "string", "contentMediaType": "text/x-unknown"},
+            "limit": {"type": "integer"},
+        },
+    }
+
+    def test_declared_types_are_taken_from_the_schema(self) -> None:
+        media = CallViews().media_of(self.SCHEMA)
+
+        if media != {"sql": "application/sql", "note": "text/x-unknown"}:
+            raise AssertionError(f"типы взяты как объявлены: {media}")
+
+    def test_known_type_becomes_a_code_block_and_the_rest_are_lines(self) -> None:
+        views = CallViews()
+        media = views.media_of(self.SCHEMA)
+
+        call = views.call_of(
+            "probe", media, {"sql": "select 1", "note": "n", "limit": 3}
+        )
+
+        shown = call.chat_view().markdown
+        if not shown.startswith("```sql\nselect 1\n```"):
+            raise AssertionError(f"известный тип показан блоком кода: {shown!r}")
+        if FieldLines.line("note", "n") not in shown:
+            raise AssertionError(f"неизвестный тип показан строкой: {shown!r}")
+        if FieldLines.line("limit", 3) not in shown:
+            raise AssertionError(f"аргумент без типа показан строкой: {shown!r}")
+
+    def test_view_from_the_schema_equals_the_view_from_the_stored_types(self) -> None:
+        views = CallViews()
+
+        if views.seen(self.SCHEMA) != views.by_media(views.media_of(self.SCHEMA)):
+            raise AssertionError("живой ход и история строят один и тот же вид")

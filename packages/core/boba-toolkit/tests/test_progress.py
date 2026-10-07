@@ -7,11 +7,16 @@
 from __future__ import annotations
 
 import os
-from collections.abc import Iterator
+from collections.abc import AsyncIterator, Iterator
 
 import pytest
 
-from boba.toolkit.ports import ProgressReport, StageProgress, ToolProgress
+from boba.toolkit.ports import (
+    DownloadProgress,
+    ProgressReport,
+    StageProgress,
+    ToolProgress,
+)
 from boba.toolkit.transfer import CommandJournal, CommandKind, TransferProgress
 
 
@@ -207,3 +212,81 @@ class TestTransferProgress:
 
         if len(pipe.reports()) > 2:
             raise AssertionError("поток кадров не заливает канал отчётами")
+
+
+class TestPumpSettings:
+    def test_settings_in_use_are_told_as_one_stage(self, pipe: ProgressPipe) -> None:
+        """Насос называет настройки, с которыми работает: и названные
+        вызывающим, и взятые по умолчанию — иначе их нигде не видно."""
+        meter = TransferProgress(ToolProgress(pipe.write), "postgres")
+
+        meter.configured({"chunk_bytes": 262144, "exact_floats": False})
+
+        messages = [report.message for report in pipe.reports()]
+        expected = ["postgres pump settings: chunk_bytes=262144, exact_floats=False"]
+        if messages != expected:
+            raise AssertionError(f"настройки названы одной строкой: {messages}")
+
+    def test_waiting_for_the_neighbours_is_told_before_and_after(
+        self, pipe: ProgressPipe
+    ) -> None:
+        meter = TransferProgress(ToolProgress(pipe.write), "clickhouse")
+
+        meter.awaiting("the schema of the incoming stream")
+        meter.received("the incoming stream: arrow from postgres")
+
+        messages = [report.message for report in pipe.reports()]
+        if messages[0] != "waiting for the schema of the incoming stream":
+            raise AssertionError(f"ожидание названо до него: {messages}")
+        if not messages[1].startswith(
+            "got the incoming stream: arrow from postgres in "
+        ):
+            raise AssertionError(f"полученное названо со временем: {messages}")
+
+    def test_long_command_is_cut_and_marked(self, pipe: ProgressPipe) -> None:
+        meter = TransferProgress(ToolProgress(pipe.write), "postgres")
+
+        columns = ", ".join(["column"] * 40)
+        meter.command(f"copy (\n  {columns}\n) to stdout")
+
+        message = pipe.reports()[0].message
+        head = "running on postgres, waiting for the server: copy ( column, column,"
+        if not message.startswith(head) or not message.endswith("…"):
+            raise AssertionError(
+                f"команда одной строкой и с пометкой обрыва: {message}"
+            )
+
+
+@pytest.mark.anyio
+class TestDownloadProgress:
+    async def test_request_answer_and_volume_are_told(self, pipe: ProgressPipe) -> None:
+        download = DownloadProgress(ToolProgress(pipe.write), "https://wiki/page")
+
+        async def chunks() -> AsyncIterator[bytes]:
+            yield b"x" * 600
+            yield b"y" * 400
+
+        download.requesting()
+        download.answered(200, "text/html", 1000)
+        got = [chunk async for chunk in download.counted(chunks())]
+
+        if b"".join(got) != b"x" * 600 + b"y" * 400:
+            raise AssertionError("порции потока отданы как пришли")
+
+        messages = [report.message for report in pipe.reports()]
+        if messages[0] != "requesting https://wiki/page, waiting for the server":
+            raise AssertionError(f"запрос назван до отправки: {messages}")
+        if "answered 200 in " not in messages[1] or "1000 bytes" not in messages[1]:
+            raise AssertionError(f"ответ называет код и размер: {messages[1]}")
+        if not messages[-1].startswith("downloaded 1000 bytes from https://wiki/page"):
+            raise AssertionError(f"итог называет объём: {messages[-1]}")
+
+    async def test_unknown_size_is_said_so(self, pipe: ProgressPipe) -> None:
+        download = DownloadProgress(ToolProgress(pipe.write), "https://wiki/file")
+
+        download.requesting()
+        download.answered(200, "application/pdf", None)
+
+        message = pipe.reports()[1].message
+        if "size is not announced" not in message:
+            raise AssertionError(f"неизвестный размер назван прямо: {message}")

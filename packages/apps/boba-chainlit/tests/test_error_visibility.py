@@ -132,7 +132,11 @@ class BrokenTurn(FakeTurn):
     """Владелец хода, у которого лента недоступна: начало вызова не рисуется."""
 
     async def tool_started(
-        self, tool_call_id: str, name: str, args: Mapping[str, Any]
+        self,
+        tool_call_id: str,
+        name: str,
+        args: Mapping[str, Any],
+        media: Mapping[str, str] | None,
     ) -> None:
         msg = f"отрисовка шага {name} сломана"
         raise RuntimeError(msg)

@@ -9,6 +9,7 @@ import pytest
 
 from boba.doc.config import OcrUnavailableError
 from boba.doc.document import BoxedHit, DocumentError
+from boba.stand_core.progress import HeardProgress
 from boba.stand_core.samples import SamplePdf
 from boba.tool.doc.tools import TOOLS, DocToolSection
 from boba.toolkit.entry import ToolArgv
@@ -50,6 +51,30 @@ def pdf(tmp_path: Path) -> str:
 
 
 class TestReadDocument:
+    async def test_every_page_read_is_reported(self, pdf: str) -> None:
+        """Чтение документа бывает долгим: пользователь видит, какой файл
+        открыт и какая страница уже прочитана."""
+        heard = HeardProgress()
+        try:
+            await _body("read_document")(
+                progress=heard.progress, path=pdf, pages="1-2", cfg=_cfg()
+            )
+            messages = heard.messages()
+        finally:
+            heard.close()
+
+        if messages[0] != f"opening {pdf} to read pages 1-2":
+            raise AssertionError(f"the file is named before it is opened: {messages}")
+
+        pages = [text for text in messages if text.startswith("read page ")]
+        if len(pages) != 2 or not pages[0].startswith(f"read page 1 of {pdf}: "):
+            raise AssertionError(f"every page read is reported: {messages}")
+        if " chars, reading the next page" not in pages[1]:
+            raise AssertionError(f"the size of the page is named: {pages[1]}")
+
+        if messages[-1] != f"read 2 pages of {pdf}":
+            raise AssertionError(f"the outcome is named: {messages[-1]}")
+
     async def test_returns_all_pages(self, pdf: str) -> None:
         artifact = await _body("read_document")(
             progress=ToolProgress(-1), path=pdf, pages="1-2", cfg=_cfg()

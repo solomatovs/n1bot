@@ -263,6 +263,44 @@ class TestOwnServerInTheFeed:
         if not step.get(StepField.IS_ERROR.value):
             raise AssertionError(f"the step is marked as failed: {step}")
 
+    def test_arguments_look_the_same_after_the_page_is_reopened(
+        self, mcp_stand: StandProcess, open_chat: OpenChat
+    ) -> None:
+        """Аргументы вызова после повторного захода на страницу выглядят как в
+        живой ленте: запрос блоком кода sql, а не сырым json. Шаги треда
+        страница запрашивает отдельно от сессии — так же, как здесь."""
+        chat = open_chat(mcp_stand, "")
+
+        live = _ask(chat, "boba_fake_query", {"sql": "select 42", "limit": 3})
+
+        shown = str(live.get(StepField.INPUT.value))
+        if not shown.startswith("```sql\nselect 42\n```"):
+            raise AssertionError(f"the live step shows the query as sql: {shown!r}")
+
+        thread_id = str(live.get(StepField.THREAD_ID.value))
+        chat.page.reload()
+        steps = chat.page.evaluate(
+            """async (url) => {
+                const response = await fetch(url, {credentials: "include"});
+                const thread = await response.json();
+                return thread.steps;
+            }""",
+            f"{mcp_stand.config.url_prefix}/project/thread/{thread_id}",
+        )
+
+        replayed: list[str] = []
+        for step in steps:
+            if step.get(StepField.TYPE.value) != StepKind.TOOL.value:
+                continue
+
+            replayed.append(str(step.get(StepField.INPUT.value)))
+
+        if replayed != [shown]:
+            raise AssertionError(
+                f"the reopened page shows the arguments as the live feed: "
+                f"{replayed!r} != {shown!r}"
+            )
+
     def test_journal_of_a_boba_mcp_call_opens_in_the_panel(
         self, mcp_stand: StandProcess, open_chat: OpenChat
     ) -> None:
