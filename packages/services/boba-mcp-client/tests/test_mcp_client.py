@@ -48,6 +48,7 @@ from boba.mcp_client.client import (
     StdioCommand,
 )
 from boba.runtime.config import EnvOverride
+from boba.stand.service_signin import ServiceSignIn
 from boba.stand_core.context import CallStand
 from boba.toolkit.calls import FieldPlacement, FieldView
 from boba.toolkit.channels import ToolChannel
@@ -452,7 +453,6 @@ class BobaMcpStand:
 
     REPO: Path = Path(__file__).resolve().parents[4]
     STAND: Path = REPO / "packages" / "apps" / "boba-mcp" / "tests" / "service_stand.py"
-    TOKEN: SecretStr = SecretStr("dev-token")
 
     def __init__(self, workdir: Path) -> None:
         with socket.socket() as probe:
@@ -462,14 +462,22 @@ class BobaMcpStand:
         self._process = subprocess.Popen(
             [sys.executable, str(self.STAND), str(self.port), str(workdir)]
         )
+        self._public = f"http://127.0.0.1:{self.port}"
+        self._sign_in = ServiceSignIn(
+            self._public, "stand-chat", "stand-client-secret", "stand-proxy-secret"
+        )
 
     def endpoint(self) -> HttpEndpoint:
+        """Endpoint стенда с токеном пользователя alice с ролью dev."""
+        path = "/mcp/service"
+        token = self._sign_in.token("alice", "dev", f"{self._public}{path}")
+
         return HttpEndpoint(
             scheme="http",
             host="127.0.0.1",
             port=self.port,
-            path="/mcp/service",
-            auth=BearerAuth(token=self.TOKEN),
+            path=path,
+            auth=BearerAuth(token=SecretStr(token)),
         )
 
     def stop(self) -> None:

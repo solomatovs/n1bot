@@ -337,7 +337,6 @@ class ServiceStand(StandService):
             endpoints[name] = {"roles": ["*"], "tools": list(tools)}
 
         doc["mcp"]["endpoints"] = endpoints
-        doc["mcp"]["tokens"] = {}
         doc["mcp"]["public_url"] = f"http://127.0.0.1:{self.app_port}"
         doc["mcp"]["clients"] = {self.CLIENT_ID: {"secret": self.CLIENT_SECRET}}
         doc["auth"]["proxy"] = {
