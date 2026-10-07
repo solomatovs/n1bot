@@ -180,6 +180,13 @@ class PayloadClickHouse:
     получает SESSION_IS_LOCKED; запросы одного соединения сервер читает только
     после выхода из обработчика предыдущего — сессия к тому времени свободна."""
 
+    QUERY_SIZE: ClassVar[str] = "max_query_size"
+    """Настройка сервера: сколько байт тела запроса он берёт в память, чтобы
+    разобрать текст стейтмента. У вставки с потоковым телом текст и данные
+    идут одним телом, и сервер копирует в память его начало длиной до этой
+    настройки — вместе с данными. Профиль с большим значением (гигабайт)
+    превращает потоковую вставку в загрузку гигабайта потока в память."""
+
     @staticmethod
     @asynccontextmanager
     async def opened_config(
@@ -411,6 +418,10 @@ class PayloadClickHouse:
         В качестве потока на вход может быть передан любой итератор
         возвращающий blocks: AsyncIterable[bytes | bytearray | memoryview]
         однако нужно что бы он был совместим с указанных в FORMAT аргументе
+
+        Запрос идёт с настройкой max_query_size ровно под свой текст: сервер
+        берёт в память для разбора только стейтмент, а данные потока читает
+        потоком, какой бы ни была эта настройка в профиле пользователя.
         """
         values = PayloadClickHouse._params(parameters)
         text, server_params = bind_query(query, values, client.server_tz)
@@ -434,9 +445,15 @@ class PayloadClickHouse:
         # он принимает AsyncIterator но не указывает это в аннотациях
         # поэтому приводим к Any типу
         body: Any = PayloadClickHouse._insert_body(text, blocks)
+        own: dict[str, Any] = {}
+        if settings is not None:
+            own.update(settings)
+
+        # текст и перевод строки, которым _insert_body отделяет его от данных
+        own[PayloadClickHouse.QUERY_SIZE] = len(text.encode()) + 1
         runtime = QueryRuntime(
             database=client.database,
-            settings=client._validate_settings(PayloadClickHouse._dict(settings)),
+            settings=client._validate_settings(own),
         )
         plan = plan_raw_insert_request(
             None, None, body, client._write_format, None, runtime, headers
