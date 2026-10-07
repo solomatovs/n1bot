@@ -644,6 +644,8 @@ class McpFiles:
         )
         auth = endpoint.auth.httpx_auth(caller, endpoint.url())
         self._http = create_mcp_http_client(auth=auth)
+        # сжатый прокси ответ идёт без Content-Length и не тем окном Range
+        self._http.headers["Accept-Encoding"] = "identity"
 
     async def close(self) -> None:
         await self._http.aclose()

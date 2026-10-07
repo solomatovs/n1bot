@@ -26,6 +26,7 @@ from psycopg import sql
 from psycopg.errors import LockNotAvailable, SerializationFailure
 from pydantic import BaseModel, ConfigDict
 
+from boba.cancellation import ProcessStop
 from boba.db.postgres import AsyncPostgresPool, PostgresError
 from boba.db.postgres.connection import PostgresConfig
 from boba.db.postgres.query import PgQueryBuilder
@@ -612,9 +613,15 @@ class PgSource(ScrapeSource):
         await conn.execute("set bytea_output to 'hex'")
 
 
-async def main() -> None:
+async def work() -> None:
     package_dir = Path(__file__).resolve().parent
     await run_cli(PROG, DESCRIPTION, SECTION, package_dir, ScraperConfig)
+
+
+async def main() -> None:
+    """Работа приложения под остановкой процесса: SIGTERM и SIGINT отменяют
+    её, незакрытое закрывается, процесс выходит сам."""
+    await ProcessStop().run(work())
 
 
 def cli() -> None:

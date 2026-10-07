@@ -36,6 +36,7 @@ from urllib.parse import parse_qs, urlparse
 import psycopg
 from pydantic import Field
 
+from boba.cancellation import ProcessStop
 from boba.config import ConfigError, bind_section
 from boba.db.postgres import AsyncPostgresPool, PostgresError
 from boba.ix_core.database import IxDatabase, enter_kerberos
@@ -304,7 +305,7 @@ def parse_args(argv: Sequence[str] | None = None) -> LabConfig:
     return bind_section(args.config, "ix.search_lab", LabConfig)
 
 
-async def main() -> None:
+async def work() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(message)s")
 
     try:
@@ -313,6 +314,12 @@ async def main() -> None:
         await LabServer(cfg, here).serve()
     except (ConfigError, SearchLabError, PostgresError) as exc:
         raise SystemExit(str(exc)) from exc
+
+
+async def main() -> None:
+    """Работа приложения под остановкой процесса: SIGTERM и SIGINT отменяют
+    её, незакрытое закрывается, процесс выходит сам."""
+    await ProcessStop().run(work())
 
 
 def cli() -> None:

@@ -8,6 +8,7 @@ version = "0.0.26.dev4"
 description = "Скрапер Confluence в граф ix: спейсы, страницы, блог-записи, вложения и комментарии; текст кладётся в общий полнотекст."
 requires-python = ">=3.11,<4"
 dependencies = [
+    "boba-cancellation==0.0.26.dev4",
     "boba-config==0.0.26.dev4",
     "boba-confluence[html]==0.0.26.dev4",
     "boba-db-postgres==0.0.26.dev4",

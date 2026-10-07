@@ -5,22 +5,31 @@
 запуска, которую владелец регистрирует как прерыватель. Реестр активных
 запусков живёт у владельца (Runs приложения), здесь — только примитивы.
 
-Ошибки: ToolStopped — работа прервана остановкой запуска.
+ProcessStop — остановка процесса по сигналу, общая для всех приложений.
+
+Ошибки:
+ToolStopped — работа прервана остановкой запуска.
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import signal
 import threading
-from collections.abc import Callable, Generator
+from collections.abc import Callable, Coroutine, Generator
 from contextlib import contextmanager
 from contextvars import ContextVar
 from enum import StrEnum
+from types import FrameType
+from typing import ClassVar, TypeAlias
 
 logger = logging.getLogger(__name__)
 
 __all__ = [
+    "ProcessStop",
     "RunCancellation",
+    "StopAction",
     "StopReason",
     "ToolStopped",
     "current_cancellation",
@@ -130,3 +139,80 @@ def run_cancellation() -> Generator[RunCancellation, None, None]:
     "открывает запуск: публикует свежую RunCancellation в контексте"
     with RunCancellation().published() as cancellation:
         yield cancellation
+
+
+StopAction: TypeAlias = Callable[[signal.Signals], None]
+"""Действие остановки процесса: получает пришедший сигнал."""
+
+
+class ProcessStop:
+    """Остановка процесса по SIGTERM и SIGINT, общая для всех приложений.
+
+    Обработчик сигнала по умолчанию убивает процесс на месте: незакрытые
+    пулы, брошенные дочерние процессы, код выхода 143. Этот объект принимает
+    сигнал сам и в цикле событий зовёт действия остановки, которые назвал
+    владелец (on_stop): погасить запуски, закрыть сервер, остановить пул.
+    Дальше процесс доходит до конца своего кода и выходит с кодом 0.
+    Создаётся входом процесса. Приложение-задание отдаёт свою работу в
+    run(): по сигналу она отменяется, её finally выполняются. Сервер uvicorn
+    берёт объект в конструктор (SignalledServer) и сообщает ему о сигнале,
+    пойманном самим uvicorn. Действия зовутся один раз, по первому сигналу.
+    """
+
+    HANDLED: ClassVar[tuple[signal.Signals, ...]] = (signal.SIGTERM, signal.SIGINT)
+
+    def __init__(self) -> None:
+        self._actions: list[StopAction] = []
+        self._loops: list[asyncio.AbstractEventLoop] = []
+        self._tasks: list[asyncio.Future[None]] = []
+        self._received: list[signal.Signals] = []
+
+    def on_stop(self, action: StopAction) -> None:
+        """Действие, которое выполнится в цикле событий по сигналу остановки."""
+        self._actions.append(action)
+
+    def install(self) -> None:
+        """Ставит обработчики сигналов; зовётся внутри цикла событий."""
+        self._loops.append(asyncio.get_running_loop())
+        for handled in self.HANDLED:
+            signal.signal(handled, self._taken)
+
+    def deliver(self, received: int) -> None:
+        """Сигнал остановки, пойманный чужим обработчиком в любом потоке."""
+        # обработчик сигнала прерывает главный поток в произвольном месте:
+        # действия исполняет цикл событий, а не сам обработчик
+        for loop in self._loops:
+            loop.call_soon_threadsafe(self._stop, signal.Signals(received))
+
+    async def run(self, work: Coroutine[object, object, None]) -> None:
+        """Исполняет работу приложения до конца либо до сигнала остановки."""
+        self.install()
+        task = asyncio.ensure_future(work)
+        self._tasks.append(task)
+        try:
+            await task
+        except asyncio.CancelledError:
+            if not self._received:
+                raise
+
+            logger.info("the work was stopped by %s", self._received[0].name)
+
+    def _taken(self, received: int, frame: FrameType | None) -> None:
+        self.deliver(received)
+
+    def _stop(self, received: signal.Signals) -> None:
+        if self._received:
+            return
+
+        self._received.append(received)
+        logger.info(
+            "stop signal %s: running %d stop action(s), stopping %d task(s)",
+            received.name,
+            len(self._actions),
+            len(self._tasks),
+        )
+        for action in self._actions:
+            action(received)
+
+        for task in self._tasks:
+            task.cancel()

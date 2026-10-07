@@ -17,7 +17,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 
 from boba.access import GrantCheck
 from boba.auth import AuthService
-from boba.cancellation import StopReason
+from boba.cancellation import ProcessStop, StopReason
 from boba.chainlit.auth.installer import ChainlitAuthInstaller
 from boba.chainlit.domain.keys import AppPrefix
 from boba.chainlit.infra import providers
@@ -40,7 +40,11 @@ from boba.identity.run import Runs
 from boba.runtime import providers as runtime
 from boba.runtime.config import AppName
 from boba.runtime.di import Container
-from boba.runtime.http import DomainErrorMiddleware, StaleSessionMiddleware
+from boba.runtime.http import (
+    DomainErrorMiddleware,
+    SignalledServer,
+    StaleSessionMiddleware,
+)
 from boba.runtime.storage import StorageClient
 
 
@@ -107,14 +111,10 @@ def run_app(config_path: Path):
             ssl_ca_certs=c.chainlit.ssl_ca_certs,
             timeout_graceful_shutdown=c.chainlit.shutdown_timeout_sec,
         )
-        server = uvicorn.Server(uv_config)
-        await server.serve()
+        server = SignalledServer(uv_config, ProcessStop())
+        await server.serve_until_stopped()
 
-    try:
-        asyncio.run(start())
-    except KeyboardInterrupt:
-        # uvicorn повторно кидает SIGINT после штатного shutdown — это не ошибка
-        logging.getLogger(__name__).info("stopped by the user")
+    asyncio.run(start())
 
 
 @asynccontextmanager

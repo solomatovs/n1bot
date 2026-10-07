@@ -1,18 +1,23 @@
 """HTTP-граница входа, общая для chainlit и studio: BaseError -> статус и тело,
 запрос SSO -> модель сервиса, токен входа из cookie или Authorization, cookie
 сессии в ответе и ответы SPNEGO-обмена (401 Negotiate со страницей-переходом).
+SignalledServer — сервер uvicorn, остановку которого по сигналу ведёт
+ProcessStop.
 """
 
 import html
 import logging
 from collections.abc import Mapping
 from http.cookies import SimpleCookie
+from types import FrameType
 from typing import Any, ClassVar
 
+import uvicorn
 from starlette.requests import HTTPConnection, Request
 from starlette.responses import JSONResponse, Response
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
+from boba.cancellation import ProcessStop
 from boba.identity.errors import BaseError, FailureReport, to_domain
 from boba.identity.session import LogLine
 from boba.identity.signin import ProxyHeaderNames, ProxyRequest
@@ -376,3 +381,31 @@ class SsoRequests:
             return request.client.host
 
         return SsoRequest.UNKNOWN_CLIENT
+
+
+class SignalledServer(uvicorn.Server):
+    """Сервер uvicorn, остановку которого по сигналу ведёт ProcessStop.
+
+    Создаётся входом процесса приложения (чат, сервис MCP, studio) из
+    настроек uvicorn и остановки процесса. На время работы uvicorn ставит
+    свои обработчики сигналов: пойманный сигнал сервер сразу сообщает
+    остановке процесса — та выполняет действия владельца, не дожидаясь
+    закрытия соединений. Закончив остановку, uvicorn посылает сигнал заново
+    прежнему обработчику; им стоит обработчик остановки процесса, поэтому
+    процесс не погибает с кодом 143, а доходит до кода после сервера.
+    """
+
+    def __init__(self, config: uvicorn.Config, stop: ProcessStop) -> None:
+        super().__init__(config)
+        self._stop = stop
+
+    async def serve_until_stopped(self) -> None:
+        """Слушает адрес до сигнала остановки и возвращается штатно."""
+        self._stop.install()
+
+        await self.serve()
+
+    def handle_exit(self, sig: int, frame: FrameType | None) -> None:
+        self._stop.deliver(sig)
+
+        super().handle_exit(sig, frame)

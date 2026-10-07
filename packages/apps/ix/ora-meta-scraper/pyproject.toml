@@ -8,6 +8,7 @@ version = "0.0.26.dev4"
 description = "Скрапер словаря Oracle в ядро ix: node, tree, edge и поверхности ora_meta_*."
 requires-python = ">=3.11,<4"
 dependencies = [
+    "boba-cancellation==0.0.26.dev4",
     "boba-db-oracle[payload]==0.0.26.dev4",
     "boba-ix-core==0.0.26.dev4",
 ]

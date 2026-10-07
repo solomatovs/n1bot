@@ -17,8 +17,6 @@ import logging
 import logging.config
 import signal
 from pathlib import Path
-from types import FrameType
-from typing import ClassVar
 from uuid import UUID
 
 import uvicorn
@@ -29,7 +27,7 @@ from pydantic import BaseModel, ConfigDict, Field, SecretStr
 from boba.access import ProfileGrant
 from boba.auth.credentials import NoRefresh
 from boba.auth.proxy import ProxyAssertions
-from boba.cancellation import StopReason
+from boba.cancellation import ProcessStop, StopReason
 from boba.connections.sealed import SealKeys
 from boba.identity.context import CallContexts
 from boba.identity.run import Runs
@@ -50,6 +48,7 @@ from boba.mcp_server.server import (
 from boba.runtime import providers
 from boba.runtime.config import ProcessConfig
 from boba.runtime.di import Container
+from boba.runtime.http import SignalledServer
 from boba.runtime.plugins import EntryPointPlugins
 from boba.runtime.storage import LocalStorageConfig
 from boba.toolkit.types import StringList
@@ -123,57 +122,26 @@ class McpAppConfig(ProcessConfig):
     инструменты."""
 
 
-class McpListener(uvicorn.Server):
-    """Сервер uvicorn сервиса, у которого остановка по сигналу гасит запуски.
+class StoppedRuns:
+    """Действие остановки процесса сервиса: гасит идущие запуски.
 
-    Создаётся сборкой процесса (McpHost) над приложением endpoint'ов и
-    реестром запусков. По SIGTERM или SIGINT первым делом останавливает
-    идущие запуски причиной SHUTDOWN: вызовы инструментов завершаются
-    отказом «остановлен», их запросы отвечают клиентам, и серверу остаётся
-    закрыть простаивающие соединения. Без этого uvicorn ждал бы идущие
-    вызовы весь срок остановки и обрывал их отменой задач.
-
-    Закончив остановку, uvicorn посылает пойманный сигнал заново прежнему
-    обработчику; с обработчиком по умолчанию процесс погибал бы в этот
-    момент, не остановив зиготы. Поэтому перед запуском ставится свой
-    обработчик, который сигнал принимает.
+    Создаётся сборкой процесса (McpHost) над реестром запусков и отдаётся
+    остановке процесса (ProcessStop.on_stop). Вызовы инструментов
+    завершаются отказом «остановлен» с причиной SHUTDOWN, их запросы
+    отвечают клиентам, и серверу остаётся закрыть простаивающие соединения.
+    Без этого uvicorn ждал бы идущие вызовы весь срок остановки и обрывал их
+    отменой задач.
     """
 
-    HANDLED: ClassVar[tuple[signal.Signals, ...]] = (signal.SIGTERM, signal.SIGINT)
-
-    def __init__(self, config: uvicorn.Config, runs: Runs) -> None:
-        super().__init__(config)
+    def __init__(self, runs: Runs) -> None:
         self._runs = runs
-        self._loops: list[asyncio.AbstractEventLoop] = []
 
-    async def serve_until_stopped(self) -> None:
-        """Слушает адрес до сигнала остановки и возвращается штатно."""
-        self._loops.append(asyncio.get_running_loop())
-        for handled in self.HANDLED:
-            signal.signal(handled, self._taken)
-
-        await self.serve()
-
-    def handle_exit(self, sig: int, frame: FrameType | None) -> None:
-        # обработчик сигнала прерывает главный поток в произвольном месте:
-        # запуски гасит цикл событий, а не сам обработчик
-        for loop in self._loops:
-            loop.call_soon_threadsafe(self._stop_runs, sig)
-
-        super().handle_exit(sig, frame)
-
-    def _stop_runs(self, sig: int) -> None:
+    def __call__(self, received: signal.Signals) -> None:
         stopped = self._runs.stop_all(StopReason.SHUTDOWN)
         logger.info(
             "stop signal %s: stopping %d running call(s), then the server",
-            signal.Signals(sig).name,
+            received.name,
             stopped,
-        )
-
-    def _taken(self, received: int, frame: FrameType | None) -> None:
-        logger.info(
-            "stop signal %s: the server is down, stopping tool launchers",
-            signal.Signals(received).name,
         )
 
 
@@ -222,7 +190,9 @@ class McpHost:
                 section.path,
                 self._config.storage,
             )
-            listener = McpListener(
+            stop = ProcessStop()
+            stop.on_stop(StoppedRuns(self._container.resolved(providers.runs)))
+            listener = SignalledServer(
                 uvicorn.Config(
                     endpoints.app(),
                     host=section.host,
@@ -230,7 +200,7 @@ class McpHost:
                     log_config=None,
                     timeout_graceful_shutdown=section.shutdown_timeout_sec,
                 ),
-                self._container.resolved(providers.runs),
+                stop,
             )
             logger.info(
                 "boba-mcp listens on %s:%d, mcp endpoints: %s",

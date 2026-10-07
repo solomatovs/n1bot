@@ -19,6 +19,7 @@ from pathlib import Path
 
 from oracledb import AsyncConnection
 
+from boba.cancellation import ProcessStop
 from boba.db.oracle import OracleError, OracleQueryError
 from boba.db.oracle.connection import OracleConfig
 from boba.db.oracle.payload import PayloadOracle
@@ -198,7 +199,7 @@ class OraSource(ScrapeSource):
             ) from exc
 
 
-async def main() -> None:
+async def work() -> None:
     package_dir = Path(__file__).resolve().parent
     await run_cli(
         "boba-ora-meta-scraper",
@@ -207,6 +208,12 @@ async def main() -> None:
         package_dir,
         ScraperConfig,
     )
+
+
+async def main() -> None:
+    """Работа приложения под остановкой процесса: SIGTERM и SIGINT отменяют
+    её, незакрытое закрывается, процесс выходит сам."""
+    await ProcessStop().run(work())
 
 
 def cli() -> None:
