@@ -9,6 +9,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 from probe_stand import (
     LOGIN,
+    REF,
     SECRET,
     TYPES,
     OtherConnection,
@@ -53,6 +54,7 @@ def _sealed(
 ) -> str:
     """Соединение, запечатанное клиентом ключом исполнителя."""
     sealed = SealedConnection(
+        ref=REF,
         login=login,
         expires_at=datetime.now(UTC) + ttl,
         profile=SecretReveal.dumped(profile),
@@ -83,8 +85,8 @@ class TestSchemaShownToTheModel:
             raise AssertionError("маркер соединения со схемы снят")
 
         description = str(field.description)
-        if "connection_list" not in description:
-            raise AssertionError(f"описание ведёт к connection_list: {description}")
+        if "conn://probe/" not in description:
+            raise AssertionError(f"описание называет вид и форму ссылки: {description}")
 
 
 class TestSealedValueReachesTheBody:
@@ -130,7 +132,7 @@ class TestRefusals:
 
         if refused.kind != ConnectionRefusal.NOT_SEALED:
             raise AssertionError(f"kind отказа: {refused.kind}")
-        if "connection_list" not in str(refused):
+        if "connection reference" not in str(refused):
             raise AssertionError(f"подсказка повторить со ссылкой: {refused}")
 
     async def test_value_for_an_old_key_asks_for_a_new_one(
@@ -179,6 +181,36 @@ class TestRefusals:
             raise AssertionError(f"kind отказа: {refused.kind}")
         if "'probe'" not in str(refused) or "'other'" not in str(refused):
             raise AssertionError(f"отказ называет оба вида: {refused}")
+
+
+class TestShownInTheResult:
+    def test_sealed_value_is_shown_as_the_reference_of_the_caller(
+        self, call_stand: CallStand
+    ) -> None:
+        """В итоге вызова на месте запечатанного значения стоит ссылка,
+        которой соединение назвал вызывающий: само значение не показывается."""
+        keys = SealKeys()
+        params = SealedConnectionParams(keys, lambda: TYPES, call_stand.contexts)
+        params.bind_all([ProbeTools().one_connection()])
+        sealed = _sealed(keys.public(), _probe("db.local"))
+
+        shown = params.shown("probe_query", {"connection": sealed, "sql": "x"})
+
+        if shown["connection"] != REF:
+            raise AssertionError(f"the reference of the caller is shown: {shown}")
+        if shown["sql"] != "x":
+            raise AssertionError(f"other arguments stay as they are: {shown}")
+
+    def test_value_that_does_not_open_is_shown_by_its_kind(
+        self, call_stand: CallStand
+    ) -> None:
+        params = SealedConnectionParams(SealKeys(), lambda: TYPES, call_stand.contexts)
+        params.bind_all([ProbeTools().one_connection()])
+
+        shown = params.shown("probe_query", {"connection": "eyJ.a.b.c.d", "sql": "x"})
+
+        if shown["connection"] != "<sealed probe connection>":
+            raise AssertionError(f"a damaged value carries no reference: {shown}")
 
 
 class TestDeclaredFeature:

@@ -250,7 +250,7 @@ class ConversationTranscript:
 
         outcome = message.outcome
         if outcome is not None and isinstance(outcome.artifact, WorkflowResult):
-            await self._workflow(outcome.artifact)
+            await self._workflow(outcome.artifact, message.media)
             return
 
         name = message.name
@@ -267,7 +267,11 @@ class ConversationTranscript:
         if not call_key:
             call_key = key
 
-        step = await self._view.tool_started(name, args, call_key)
+        media: Mapping[str, str] | None = None
+        if message.media is not None:
+            media = message.media.get(call_key)
+
+        step = await self._view.tool_started(name, args, call_key, media)
 
         # запись старой истории без результата семейства рисуется как есть
         if outcome is None:
@@ -280,11 +284,22 @@ class ConversationTranscript:
 
         await self._view.tool_finished(step, outcome.artifact, message.call_id)
 
-    async def _workflow(self, result: WorkflowResult) -> None:
+    async def _workflow(
+        self,
+        result: WorkflowResult,
+        stored: Mapping[str, Mapping[str, str]] | None,
+    ) -> None:
         """Итог вызова workflow шагами его узлов — как их рисует живой ход:
-        шаг на узел под идентификатором вызова узла."""
+        шаг на узел под идентификатором вызова узла; stored — типы
+        содержимого аргументов узлов из записи истории."""
         for node in result.nodes:
-            step = await self._view.tool_started(node.tool, node.args, node.call_id)
+            media: Mapping[str, str] | None = None
+            if stored is not None:
+                media = stored.get(node.call_id)
+
+            step = await self._view.tool_started(
+                node.tool, node.args, node.call_id, media
+            )
 
             if node.errored:
                 await self._view.tool_failed(step, node.result.chat_view().markdown)

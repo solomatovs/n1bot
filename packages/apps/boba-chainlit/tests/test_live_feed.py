@@ -160,7 +160,7 @@ async def test_turn_on_one_instance_is_rendered_on_another(
     try:
         await feed.started(TURN, QuestionBody(text="question"))
         await feed.model_answered()
-        await feed.tool_started(CALL, "kb_probe", {"query": "x"})
+        await feed.tool_started(CALL, "kb_probe", {"query": "x"}, None)
         await feed.tool_finished(CALL, MarkdownResult(text="hits", elapsed_ms=10))
         for token in ("hel", "lo"):
             await feed.answer_token(TURN, token)
@@ -454,7 +454,7 @@ async def test_rewind_and_elements_reach_the_viewer_instance(
     )
     try:
         await feed.started(TURN, QuestionBody(text="question", elements=(attachment,)))
-        await feed.tool_started(CALL, "send_file", {"path": "a.txt"})
+        await feed.tool_started(CALL, "send_file", {"path": "a.txt"}, None)
         await feed.element_shown(CALL, element)
         await _until(
             lambda: len(surface.elements) == 2, "viewer received both elements"

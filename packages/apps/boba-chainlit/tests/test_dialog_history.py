@@ -41,7 +41,11 @@ from boba.chainlit.chat.dialog import (
     TurnRecord,
     UserMessage,
 )
-from boba.chainlit.chat.history import InterruptedTurn, ThreadTurnHistory
+from boba.chainlit.chat.history import (
+    ConversationTranscript,
+    InterruptedTurn,
+    ThreadTurnHistory,
+)
 from boba.chainlit.rendering.chat_view import ChatView, RecordingSink
 from boba.stand.refs import StandRefs
 from boba.toolkit.chain import CallAmbient
@@ -361,6 +365,7 @@ class TestDialogReading:
             outcome=None,
             raw="rows: 3",
             journal=None,
+            media=None,
         )
         read = messages.reply(shaped)
         assert read.outcome is None
@@ -376,13 +381,92 @@ class TestDialogReading:
         assert read == [UserMessage(id="q1", text="q")]
 
 
+class TestCallInputFromTheHistory:
+    """Вход шага вызова инструмента сервера история рисует по сохранённым
+    вместе с итогом типам содержимого аргументов — так же, как живой ход, и
+    без сведений, которые есть только у собранной сессии."""
+
+    ARGS: ClassVar[dict[str, Any]] = {"sql": "select 1", "limit": 5}
+    MEDIA: ClassVar[dict[str, str]] = {"sql": "application/sql"}
+
+    @staticmethod
+    def _stored(media: dict[str, dict[str, str]] | None) -> list[Any]:
+        call = DagNode(key="call_1", tool="remote_query_of_a_server", args={})
+        outcome = NodeOutcomes().of(call, MarkdownResult(text="1 row"), False)
+        outcome = outcome.model_copy(update={"media": media})
+        asked = AIMessage(
+            content="",
+            id="a1",
+            tool_calls=[
+                {
+                    "name": "remote_query_of_a_server",
+                    "args": TestCallInputFromTheHistory.ARGS,
+                    "id": "call_1",
+                    "type": "tool_call",
+                }
+            ],
+        )
+
+        return [
+            HumanMessage(content="q", id="q1"),
+            asked,
+            LangchainMessages().tool_message(outcome),
+        ]
+
+    @staticmethod
+    async def _replayed(stored: list[Any], runtime_stand: StandRefs) -> str:
+        sink = RecordingSink()
+        view = ChatView(THREAD, sink, runtime_stand.journals)
+        dialog = list(LangchainMessages().dialog(stored))
+        await ConversationTranscript(dialog, view).replay()
+
+        inputs: list[str] = []
+        for step in sink.steps:
+            shown = step.get("input")
+            if shown:
+                inputs.append(str(shown))
+
+        if len(inputs) != 1:
+            raise AssertionError(f"one tool step with an input: {sink.steps}")
+
+        return inputs[0]
+
+    async def test_history_shows_the_arguments_as_the_live_turn_does(
+        self, runtime_stand: StandRefs
+    ) -> None:
+        live_view = ChatView(THREAD, RecordingSink(), runtime_stand.journals)
+        live_view.begin_turn("turn-live")
+        live = await live_view.tool_started(
+            "remote_query_of_a_server", self.ARGS, "call_1", self.MEDIA
+        )
+
+        replayed = await self._replayed(
+            self._stored({"call_1": self.MEDIA}), runtime_stand
+        )
+
+        if not replayed.startswith("```sql\nselect 1\n```"):
+            raise AssertionError(f"the query is a code block of sql: {replayed!r}")
+        if replayed != live.input:
+            raise AssertionError(
+                f"history differs from the live turn: {replayed!r} != {live.input!r}"
+            )
+
+    async def test_record_without_the_types_is_shown_as_json(
+        self, runtime_stand: StandRefs
+    ) -> None:
+        replayed = await self._replayed(self._stored(None), runtime_stand)
+
+        if not replayed.startswith("```json"):
+            raise AssertionError(f"nothing stored, nothing guessed: {replayed!r}")
+
+
 class TestOldRecordInTheFeed:
     """Запись старой истории без результата семейства рисуется как есть."""
 
     @staticmethod
     async def _finished(raw: object, runtime_stand: StandRefs) -> tuple[Any, Any]:
         view = ChatView(THREAD, RecordingSink(), runtime_stand.journals)
-        step = await view.tool_started("demo", {}, "call_1")
+        step = await view.tool_started("demo", {}, "call_1", None)
         await view.tool_finished(step, raw, "call_1")
 
         return step.output, step.language

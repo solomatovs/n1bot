@@ -31,10 +31,11 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+from abc import abstractmethod
 from collections.abc import AsyncIterator, Mapping, Sequence
 from contextlib import AsyncExitStack, asynccontextmanager
 from enum import StrEnum
-from typing import Any, ClassVar
+from typing import Any, ClassVar, Protocol
 from uuid import uuid4
 
 import mcp_types as mt
@@ -78,7 +79,15 @@ from boba.mcp_server.files import FileRoutes, JournalRoutes, RouteCallers
 from boba.runtime.storage import LocalStorageConfig, StorageFactory
 from boba.toolkit.calls import CallIdPrefix, CallViews
 from boba.toolkit.channels import JournalChannels, ToolChannel
-from boba.toolkit.dag import DagNode, NodeOutcome, NodeOutcomes, ToolCard, ToolServer
+from boba.toolkit.dag import (
+    CallDag,
+    DagNode,
+    NodeOutcome,
+    NodeOutcomes,
+    NodeReports,
+    ToolCard,
+    ToolServer,
+)
 from boba.toolkit.failure import FailurePacker, ValidationText
 from boba.toolkit.ports import ProgressReport
 from boba.toolkit.result import ErrorResult, FailureResult
@@ -209,7 +218,7 @@ class McpTool(Tool):
 
     Адаптер ядра запуска к fastmcp. Создаёт его McpToolProvider из карточки
     инструмента порта: схема для клиента — готовая схема вызова после всех
-    обвязок с видом аргументов карточки для ленты клиента (CallViews),
+    обвязок, где аргументы с кодом названы типом содержимого (CallViews),
     тело — вызов порта ToolServer узлом DagNode под идентификатором,
     который выдаёт сервер; итог порта (NodeOutcome) уходит клиенту ответом
     McpReplies.
@@ -226,7 +235,7 @@ class McpTool(Tool):
         super().__init__(
             name=card.name,
             description=card.description,
-            parameters=CallViews().marked(card.parameters, card.views),
+            parameters=CallViews().typed(card.parameters, card.views),
         )
         self._server = server
         self._replies = McpReplies()
@@ -303,6 +312,68 @@ class ProgressChannelError(Exception):
     """Тело инструмента написало в канал отчётов то, что отчётом не является."""
 
 
+class ProgressShape(Protocol):
+    """Как отчёт тела становится уведомлением прогресса запроса. Реализуют
+    OwnProgress (вызов одного инструмента) и NodeProgress (связка)."""
+
+    @abstractmethod
+    def shaped(self, call_id: str, report: ProgressReport) -> ProgressReport | None:
+        """Уведомление по отчёту вызова call_id; None — отчёт не уходит."""
+
+
+class OwnProgress(ProgressShape):
+    """Реализация ProgressShape вызовом одного инструмента: числа и текст
+    тела идут как есть. Значение прогресса запроса обязано расти, поэтому
+    отчёт, в котором оно не выросло, не уходит."""
+
+    def __init__(self) -> None:
+        self._sent = -1.0
+
+    def shaped(self, call_id: str, report: ProgressReport) -> ProgressReport | None:
+        if report.done <= self._sent:
+            return None
+
+        self._sent = report.done
+
+        return report
+
+
+class NodeProgress(ProgressShape):
+    """Реализация ProgressShape связкой: отчёты нескольких узлов идут одним
+    запросом. Каждый узел считает в своих единицах, поэтому значением
+    прогресса запроса служит номер отчёта связки, а итог неизвестен; чей
+    это отчёт, говорит текст — он подписан ключом узла, который узлу дал
+    автор связки (NodeReports), и числа узла, если тот назвал итог, стоят
+    в нём же. Создаётся с вызовом связки: по нему CallDag находит ключ
+    узла по идентификатору его журнала."""
+
+    def __init__(self, call: DagNode) -> None:
+        self._call = call
+        self._dags = CallDag()
+        self._reports = NodeReports()
+        self._count = 0
+
+    def shaped(self, call_id: str, report: ProgressReport) -> ProgressReport | None:
+        title = self._dags.title_of(self._call, call_id)
+        if title is None:
+            logger.warning(
+                "workflow progress: report of call %s matches no node of the "
+                "workflow, got %r",
+                call_id,
+                report.message,
+            )
+            return None
+
+        self._count += 1
+        text = report.message
+        if report.total is not None:
+            text = f"{text} ({report.done:g} of {report.total:g})"
+
+        return ProgressReport(
+            done=self._count, total=None, message=self._reports.labeled(title, text)
+        )
+
+
 class CallProgress:
     """Ход работы вызова уведомлениями notifications/progress.
 
@@ -313,9 +384,9 @@ class CallProgress:
     отчёта. Тело ничего не сообщило — уведомлений нет; клиент без токена
     прогресса их не получает. Отчёты ждут в очереди, а отправляет их задача,
     заведённая start() внутри запроса: уведомление привязано к запросу, и
-    из чужой задачи оно не уходит. Значение прогресса запроса обязано расти:
-    отчёт, в котором оно не выросло (узлы связки считают каждый в своих
-    единицах), не пересылается.
+    из чужой задачи оно не уходит. Каким отчёт уходит клиенту, решает
+    shape: у вызова одного инструмента — как есть, у связки — с подписью
+    узла.
     """
 
     POLL_SEC: ClassVar[float] = 1.0
@@ -325,13 +396,19 @@ class CallProgress:
     CLOSE_SEC: ClassVar[float] = 2.0
 
     def __init__(
-        self, context: Context, journals: CallJournals, user: str, run: str
+        self,
+        context: Context,
+        journals: CallJournals,
+        user: str,
+        run: str,
+        shape: ProgressShape,
     ) -> None:
         self._context = context
         self._journals = journals
         self._user = user
         self._run = run
-        self._queue: asyncio.Queue[ProgressReport | None] = asyncio.Queue()
+        self._shape = shape
+        self._queue: asyncio.Queue[tuple[str, ProgressReport] | None] = asyncio.Queue()
         self._sender: asyncio.Task[None] | None = None
         self._followers: set[asyncio.Task[None]] = set()
 
@@ -412,7 +489,7 @@ class CallProgress:
                 return offset
 
             for line in piece.text.splitlines():
-                self._queue.put_nowait(self._report_of(call_id, line))
+                self._queue.put_nowait((call_id, self._report_of(call_id, line)))
 
             offset = piece.end
 
@@ -436,18 +513,18 @@ class CallProgress:
         waker.clear()
 
     async def _send(self) -> None:
-        sent = -1.0
         while True:
-            report = await self._queue.get()
-            if report is None:
+            taken = await self._queue.get()
+            if taken is None:
                 return
 
-            if report.done <= sent:
+            call_id, report = taken
+            shaped = self._shape.shaped(call_id, report)
+            if shaped is None:
                 continue
 
-            sent = report.done
             await self._context.report_progress(
-                progress=report.done, total=report.total, message=report.message
+                progress=shaped.done, total=shaped.total, message=shaped.message
             )
 
 
@@ -688,7 +765,19 @@ class CallContextMiddleware(Middleware):
             cancellation=cancellation,
         )
 
-        progress = CallProgress(get_context(), self._journals, subject.user_key, run_id)
+        shape: ProgressShape = OwnProgress()
+        if context.message.name == CallDag.WORKFLOW:
+            described: dict[str, Any] = {}
+            if sent := context.message.arguments:
+                described = dict(sent)
+
+            shape = NodeProgress(
+                DagNode(key=run_id, tool=context.message.name, args=described)
+            )
+
+        progress = CallProgress(
+            get_context(), self._journals, subject.user_key, run_id, shape
+        )
         progress.start()
         try:
             with (

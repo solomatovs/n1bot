@@ -48,7 +48,7 @@ from boba.toolkit.ports import (
     ChunkBytes,
     Inbound,
     Outbound,
-    StageProgress,
+    QueryProgress,
     StreamGroup,
     ToolProgress,
 )
@@ -200,34 +200,39 @@ async def run_statement(
     connection: OracleConfig,
     text: str,
     window: RowWindow,
-    stages: StageProgress,
+    steps: QueryProgress,
 ) -> SqlResult:
     """Произвольная команда пользователя: выборка окном либо счётчик затронутых
     строк. Команда одна: Oracle не принимает несколько через `;` одним вызовом.
-    DML фиксируется сразу: соединение живёт только этот вызов. Стадии
-    (подключение, выполнение, выборка, фиксация) уходят отчётами о ходе
-    работы."""
+    DML фиксируется сразу: соединение живёт только этот вызов. Подключение,
+    отправка текста, ответ сервера, вычитка строк и фиксация уходят отчётами
+    о ходе работы."""
     from boba.db.oracle.payload import PayloadOracle  # noqa: PLC0415
 
     payload = PayloadOracle(connection)
-    stages.next("connecting")
+    steps.connecting()
     async with payload.opened() as conn:
-        stages.next("connected, executing the statement")
+        steps.connected(f"server {conn.version}")
+        steps.sending(text)
         async with payload.rows(conn, text) as stream:
             if stream.names:
-                stages.next("executed, fetching rows")
+                steps.answered(stream.names)
                 page = RowPage(window, skipped=0)
                 async for block in stream.blocks:
+                    steps.row()
                     if not page.add(dict(zip(stream.names, block, strict=True))):
                         break
 
+                steps.read(page.note())
                 statement = SqlStatement(rows=page.rows, note=page.note())
             else:
+                steps.executed(f"{stream.affected} rows affected")
                 statement = SqlStatement(affected_rows=stream.affected)
 
         if statement.rows is None:
-            stages.next("executed, committing")
+            steps.committing()
             await payload.commit(conn)
+            steps.committed()
 
     return SqlResult(engine=OraToolConfig.ENGINE, statements=[statement])
 
@@ -398,7 +403,7 @@ async def ora_query(
         connection,
         sql,
         RowWindow(offset=offset, limit=limit),
-        StageProgress(progress, None),
+        QueryProgress(progress, OraToolConfig.ENGINE),
     )
 
 
@@ -835,6 +840,7 @@ async def ora_stream_out(  # noqa: PLR0913
             ),
         ),
     ] = (),
+    chunk_bytes: ChunkBytes = 262144,
     before: BeforeSteps = (),
     after: AfterSteps = (),
     *,
@@ -854,17 +860,20 @@ async def ora_stream_out(  # noqa: PLR0913
     from boba.db.oracle.payload import PayloadOracle  # noqa: PLC0415
     from boba.db.oracle.trace import OraSessionTrace  # noqa: PLC0415
 
-    meter = TransferProgress(progress)
+    meter = TransferProgress(progress, OraToolConfig.ENGINE)
     journal = CommandJournal(OraPump.STREAM_OUT, meter)
     payload = PayloadOracle(connection)
     statement = OraQueryBuilder().raw_query(sql).build()
     outbound = TransferOutbound(out, meter)
     try:
+        meter.configured({"chunk_bytes": chunk_bytes})
+        meter.connecting()
         async with payload.opened() as conn:
+            meter.connected(f"server {conn.version}")
             trace = OraSessionTrace(conn)
             await run_steps(payload, conn, before, journal)
             specs = await OraArrowSource(conn, payload, trace, journal).stream(
-                statement.text, columns, outbound
+                statement.text, columns, chunk_bytes, outbound
             )
             await run_steps(payload, conn, after, journal)
             await payload.commit(conn)
@@ -998,7 +1007,7 @@ async def ora_stream_in(  # noqa: PLR0913
     from boba.db.oracle.trace import OraSessionTrace  # noqa: PLC0415
     from boba.toolkit.contract import Engine as NeutralEngine  # noqa: PLC0415
 
-    meter = TransferProgress(progress)
+    meter = TransferProgress(progress, OraToolConfig.ENGINE)
     journal = CommandJournal(OraPump.STREAM_IN, meter)
     template = CreateTemplate(create_table, OraTableRef.TEMPLATE_VARS)
     inbound = TransferInbound(feed, group, meter)
@@ -1013,7 +1022,10 @@ async def ora_stream_in(  # noqa: PLR0913
             )
 
         contract = ArrowContract.model_validate(head.contract)
+        meter.configured({"chunk_bytes": chunk_bytes})
+        meter.connecting()
         async with payload.opened() as conn:
+            meter.connected(f"server {conn.version}")
             trace = OraSessionTrace(conn)
             await run_steps(payload, conn, before, journal)
             loader = OraArrowLoader(

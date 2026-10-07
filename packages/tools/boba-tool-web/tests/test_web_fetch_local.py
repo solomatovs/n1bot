@@ -16,6 +16,7 @@ from PIL import Image
 from boba.doc.config import DisabledOcrConfig
 from boba.tool.web.tools import WebToolsConfig, web_fetch_page, web_grep_page
 from boba.toolkit.entry import ToolMain
+from boba.toolkit.ports import ToolProgress
 from boba.transport.http import HttpStatusError
 from boba.transport.http.connection import HttpConnection, UnknownHostError, UrlScheme
 
@@ -95,6 +96,7 @@ def _fetch():
 
 async def test_html_as_markdown(site: _Site, connection, cfg) -> None:
     result = await _fetch()(
+        progress=ToolProgress(-1),
         url=site.url("page.html"),
         connection=connection,
         as_markdown=True,
@@ -112,6 +114,7 @@ async def test_html_as_markdown(site: _Site, connection, cfg) -> None:
 
 async def test_html_as_is(site: _Site, connection, cfg) -> None:
     result = await _fetch()(
+        progress=ToolProgress(-1),
         url=site.url("page.html"),
         connection=connection,
         as_markdown=False,
@@ -126,6 +129,7 @@ async def test_html_as_is(site: _Site, connection, cfg) -> None:
 
 async def test_text_line_window(site: _Site, connection, cfg) -> None:
     result = await _fetch()(
+        progress=ToolProgress(-1),
         url=site.url("notes.txt"),
         connection=connection,
         as_markdown=True,
@@ -141,6 +145,7 @@ async def test_text_line_window(site: _Site, connection, cfg) -> None:
 
 async def test_image_without_ocr_is_empty(site: _Site, connection, cfg) -> None:
     result = await _fetch()(
+        progress=ToolProgress(-1),
         url=site.url("logo.png"),
         connection=connection,
         as_markdown=True,
@@ -159,6 +164,7 @@ async def test_grep_over_markdown(site: _Site, connection, cfg) -> None:
         raise AssertionError("tool body is a coroutine")
 
     result = await body(
+        progress=ToolProgress(-1),
         url=site.url("page.html"),
         connection=connection,
         pattern="second",
@@ -173,6 +179,7 @@ async def test_grep_over_markdown(site: _Site, connection, cfg) -> None:
 async def test_missing_page_is_a_status_error(site: _Site, connection, cfg) -> None:
     with pytest.raises(HttpStatusError) as caught:
         await _fetch()(
+            progress=ToolProgress(-1),
             url=site.url("missing.html"),
             connection=connection,
             as_markdown=True,
@@ -188,6 +195,7 @@ async def test_missing_page_is_a_status_error(site: _Site, connection, cfg) -> N
 async def test_foreign_host_is_refused(site: _Site, connection, cfg) -> None:
     with pytest.raises(UnknownHostError):
         await _fetch()(
+            progress=ToolProgress(-1),
             url="http://example.com/",
             connection=connection,
             as_markdown=True,

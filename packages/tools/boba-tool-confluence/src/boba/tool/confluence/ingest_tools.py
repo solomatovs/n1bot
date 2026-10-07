@@ -399,7 +399,10 @@ async def confluence_attachment(
 
         # ридеры синхронные и тяжёлые: тело льётся пипой в поток ридера
         reader = AttachmentText(run_cfg)
-        download = DownloadProgress(progress, None)
+        download = DownloadProgress(
+            progress, f"attachment {filename!r} of confluence page {page_id}"
+        )
+        download.requesting()
         async with http.fetch(CflUrlBuilder().raw_to_url(link)) as stream:
             text = await AsyncPipe.run(
                 download.counted(stream), reader.consumer(filename)

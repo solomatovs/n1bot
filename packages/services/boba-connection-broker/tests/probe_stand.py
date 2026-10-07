@@ -37,6 +37,7 @@ from boba.toolrun.streams import CallJournals
 
 SECRET = "probe-secret-value"
 LOGIN = "ivanov"
+REF = "conn://probe/main"
 ROLE = "read"
 
 

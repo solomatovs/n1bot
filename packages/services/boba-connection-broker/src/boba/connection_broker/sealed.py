@@ -53,18 +53,19 @@ class SealedConnectionParam(AsyncInjected):
     """
 
     ARGUMENT: ClassVar[str] = (
-        "Ссылка на соединение.\n"
-        "   - значение колонки connection из connection_list или "
-        "connection_search, как есть\n"
-        "   - kind строки должен подходить инструменту, описание — задаче "
-        "пользователя"
+        "Соединение пользователя вида {kind}.\n"
+        "   - ссылка на соединение в форме conn://{kind}/<имя>\n"
+        "   - клиент перед вызовом заменяет ссылку запечатанным профилем "
+        "соединения\n"
+        "   - соединение другого вида сервер не принимает"
     )
+    """Описание параметра-соединения для модели; {kind} — вид соединения."""
 
     APPLICATION: ClassVar[str] = "boba"
     """Имя приложения в подписи профиля: под ним ходят все инструменты."""
 
     RESEAL_HINT: ClassVar[str] = (
-        "repeat the call with the connection reference from connection_list"
+        "repeat the call with the connection reference instead of the sealed value"
     )
 
     def __init__(
@@ -97,9 +98,18 @@ class SealedConnectionParam(AsyncInjected):
 
         return labelled
 
-    def shown(self) -> str:
-        """Чем параметр показывается в итоге вызова вместо запечатанного значения."""
-        return f"<sealed {self._kind} connection>"
+    def shown(self, value: object) -> str:
+        """Чем параметр показывается в итоге вызова вместо запечатанного
+        значения value: ссылкой, которой соединение назвал вызывающий.
+        Значение, которое не открывается (не запечатано, повреждено),
+        ссылки не несёт и показывается пометкой вида соединения."""
+        if not isinstance(value, str):
+            return f"<sealed {self._kind} connection>"
+
+        try:
+            return self._keys.open(value).ref
+        except RefusalError:
+            return f"<sealed {self._kind} connection>"
 
     def verified(self, name: str, value: object) -> ConnectionBase:
         """Профиль из запечатанного значения, сверенный с вызовом."""
@@ -150,7 +160,7 @@ class SealedConnectionParam(AsyncInjected):
             msg = (
                 f"{tool_name}: {self._param!r} expects a connection of kind "
                 f"{self._kind!r}, got a connection of kind {connection.kind!r}; "
-                f"pick a connection of kind {self._kind!r} from connection_list"
+                f"pass a connection of kind {self._kind!r}"
             )
             raise RefusalError(ConnectionRefusal.ANOTHER_KIND, msg)
 
@@ -199,7 +209,7 @@ class SealedConnectionParams(NodeArgs, ParamSource):
         shown = dict(args)
         for param, hook in hooks.items():
             if param in shown:
-                shown[param] = hook.shown()
+                shown[param] = hook.shown(shown[param])
 
         return shown
 

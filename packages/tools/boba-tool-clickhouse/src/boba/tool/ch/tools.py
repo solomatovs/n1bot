@@ -36,7 +36,7 @@ from boba.toolkit.ports import (
     ChunkBytes,
     Inbound,
     Outbound,
-    StageProgress,
+    QueryProgress,
     StreamGroup,
     ToolProgress,
 )
@@ -180,6 +180,37 @@ async def run_and_collect(
     return SqlResult(engine=ChToolConfig.ENGINE, statements=[statement])
 
 
+async def run_query(
+    connection: ClickHouseConfig,
+    query: ChQuery,
+    window: RowWindow,
+    steps: QueryProgress,
+) -> SqlResult:
+    """Запрос пользователя страницей окна. Подключение, отправка текста,
+    ответ сервера и вычитка строк уходят отчётами о ходе работы."""
+    page = RowPage(window, skipped=0)
+
+    from boba.db.clickhouse.payload import PayloadClickHouse  # noqa: PLC0415
+
+    payload = PayloadClickHouse
+    steps.connecting()
+    async with payload.opened_config(connection) as client:
+        steps.connected(f"server {client.server_version}")
+        steps.sending(query.text)
+        async with payload.rows_stream_out(client, query.text, query.params) as stream:
+            steps.answered(stream.names)
+            async for block in stream.blocks:
+                steps.row()
+                if not page.add(dict(zip(stream.names, block, strict=True))):
+                    break
+
+            steps.read(f"query id {stream.query_id}, {page.note()}")
+
+    statement = SqlStatement(rows=page.rows, note=page.note())
+
+    return SqlResult(engine=ChToolConfig.ENGINE, statements=[statement])
+
+
 async def run_steps(client: Any, steps: Sequence[str], journal: CommandJournal) -> None:
     """Стейтменты before/after насоса по одному, по порядку, тем же клиентом:
     в сессии клиента они делят SET и временные таблицы с командой насоса.
@@ -220,16 +251,12 @@ async def ch_query(
     Выполнить SQL на выбранном соединении: строки окном offset/limit
     """
 
-    stages = StageProgress(progress, None)
-    stages.next("connecting and executing the query")
-    result = await run_and_collect(
+    return await run_query(
         connection,
         ChQuery(text=sql, params={}),
         RowWindow(offset=offset, limit=limit),
+        QueryProgress(progress, ChToolConfig.ENGINE),
     )
-    stages.next("the query is done")
-
-    return result
 
 
 '''
@@ -1066,14 +1093,17 @@ async def ch_stream_out(  # noqa: PLR0913
             "of clickhouse travel as they are"
         )
 
-    meter = TransferProgress(progress)
+    meter = TransferProgress(progress, ChToolConfig.ENGINE)
     journal = CommandJournal(ChPump.STREAM_OUT, meter)
     statement = ChQueryBuilder().raw_query(sql).build()
     outbound = TransferOutbound(out, meter)
     try:
+        meter.configured({"wire": wire.value, "chunk_bytes": chunk_bytes})
+        meter.connecting()
         async with PayloadClickHouse.opened_for_scripts(
             connection, before, after
         ) as client:
+            meter.connected(f"server {client.server_version}")
             await run_steps(client, before, journal)
             match wire:
                 case ChStreamWire.TSV:
@@ -1245,7 +1275,7 @@ async def ch_stream_in(  # noqa: PLR0913
     from boba.toolkit.contract import ArrowContract, StreamContract  # noqa: PLC0415
     from boba.toolkit.contract import Engine as NeutralEngine  # noqa: PLC0415
 
-    meter = TransferProgress(progress)
+    meter = TransferProgress(progress, ChToolConfig.ENGINE)
     journal = CommandJournal(ChPump.STREAM_IN, meter)
     payload = PayloadClickHouse
     template = CreateTemplate(create_table, ChTableRef.TEMPLATE_VARS)
@@ -1254,7 +1284,9 @@ async def ch_stream_in(  # noqa: PLR0913
     table = ChTableRef(database=database, name=table_name)
     try:
         head = await inbound.get_schema()
+        meter.connecting()
         async with payload.opened_for_scripts(connection, before, after) as client:
+            meter.connected(f"server {client.server_version}")
             await run_steps(client, before, journal)
             if head.wire is StreamWire.ARROW:
                 contract = ArrowContract.model_validate(head.contract)

@@ -39,6 +39,7 @@ from boba.chainlit.canvas.panel import CanvasPanel, StreamActions
 from boba.chainlit.rendering.chat_view import (
     ChatSink,
     ChatView,
+    ProgressText,
     RecordingSink,
     StepRole,
 )
@@ -1073,7 +1074,20 @@ class ElementSink(ChatSink):
 
 
 class TestStreamButton:
-    """Кнопка потока живёт на шаге потокового тула и адресуется по call_id."""
+    """Кнопка журнала встаёт на шаг потокового тула, когда вызов закончился,
+    и адресуется по call_id."""
+
+    async def _running_step(
+        self,
+        journals: CallJournals,
+        sink: ChatSink,
+        name: str,
+    ) -> tuple[ChatView, Step]:
+        view = ChatView(THREAD, sink, journals, user_name="tester")
+        view.begin_turn("turn-1")
+        step = await view.tool_started(name, {"command": "ls"}, CALL_ID, None)
+
+        return view, step
 
     async def _tool_step(
         self,
@@ -1081,9 +1095,45 @@ class TestStreamButton:
         sink: ChatSink,
         name: str,
     ) -> Step:
-        view = ChatView(THREAD, sink, journals, user_name="tester")
-        view.begin_turn("turn-1")
-        return await view.tool_started(name, {"command": "ls"}, CALL_ID)
+        view, step = await self._running_step(journals, sink, name)
+        await view.tool_finished(step, "done", CALL_ID)
+
+        return step
+
+    def test_running_call_has_no_button_yet(
+        self, journals: CallJournals, runtime_stand: StandRefs
+    ) -> None:
+        journals.mark_streamable([TOOL_NAME])
+
+        _, step = run(self._running_step(journals, ElementSink(), TOOL_NAME))
+
+        if step.elements:
+            raise AssertionError(f"the journal opens after the call: {step.elements}")
+
+    def test_progress_block_keeps_the_last_ten_messages(
+        self, journals: CallJournals, runtime_stand: StandRefs
+    ) -> None:
+        """Сообщения инструмента текут: блок шага показывает последние десять,
+        старые уходят, а с итогом вызова блок сменяется результатом."""
+
+        async def flowed() -> tuple[str, str]:
+            view, step = await self._running_step(journals, ElementSink(), TOOL_NAME)
+            for number in range(1, 26):
+                await view.tool_progressed(step, number, None, f"message {number}")
+
+            running = str(step.output)
+            await view.tool_finished(step, "done", CALL_ID)
+
+            return running, str(step.output)
+
+        running, finished = run(flowed())
+
+        lines = running.split(ProgressText.BREAK)
+        expected = [f"message {number}" for number in range(16, 26)]
+        if lines != expected:
+            raise AssertionError(f"the last ten messages in order: {lines}")
+        if "message 25" in finished:
+            raise AssertionError(f"the result replaces the progress: {finished}")
 
     def test_streamable_tool_gets_the_button(
         self, journals: CallJournals, runtime_stand: StandRefs

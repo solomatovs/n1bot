@@ -71,6 +71,7 @@ __all__ = [
     "NodeCalls",
     "NodeOutcome",
     "NodeOutcomes",
+    "NodeReports",
     "ToolCard",
     "ToolServer",
     "WorkflowNodeResult",
@@ -422,6 +423,30 @@ class JournalAddress(BaseModel):
     call: str = Field(min_length=1)
 
 
+class NodeReports:
+    """Подпись отчёта о ходе работы узлом связки и её разбор.
+
+    Связка идёт одним запросом, а уведомление прогресса несёт только число
+    и текст: чей это отчёт, говорит начало текста — ключ узла, который ему
+    дал автор связки. Сервер зовёт labeled(), клиент — split(): по ключу он
+    отдаёт отчёт шагу своего вызова. Обе стороны держат формат здесь.
+    """
+
+    SEPARATOR: ClassVar[str] = ": "
+
+    def labeled(self, key: str, text: str) -> str:
+        """Текст отчёта узла key."""
+        return f"{key}{self.SEPARATOR}{text}"
+
+    def split(self, text: str) -> tuple[str, str] | None:
+        """Ключ узла и его текст; None — отчёт узлом не подписан."""
+        key, separator, rest = text.partition(self.SEPARATOR)
+        if not separator:
+            return None
+
+        return key, rest
+
+
 class NodeOutcome(BaseModel):
     """Итог узла: текст для модели и результат семейства; сбой — FailureResult.
 
@@ -439,6 +464,11 @@ class NodeOutcome(BaseModel):
     artifact: ToolResult
     errored: bool = False
     journal: JournalAddress | None = None
+    media: Mapping[str, Mapping[str, str]] | None = None
+    """Типы содержимого аргументов по идентификаторам вызовов: самого
+    вызова, а у связки — каждого её узла. Их называет порт сервера, чьи
+    инструменты описаны схемой; None — вызов исполнен в своём процессе, и
+    его аргументы показывает модель вызова инструмента."""
 
     def failed(self) -> bool:
         return isinstance(self.artifact, FailureResult)
@@ -594,12 +624,35 @@ class CallDag:
 
         return call.model_copy(update={"args": args})
 
+    def title_of(self, call: DagNode, node_id: str) -> str | None:
+        """Имя, которое автор связки дал узлу с идентификатором вызова
+        node_id; None — такого узла в вызове workflow нет.
+
+        Ошибки:
+        StreamPlanError — вызов workflow не проходит форму описания DAG.
+        """
+        for index, node in enumerate(self.described(call)):
+            if node.call_id == node_id:
+                return node.key
+
+            if node.call_id:
+                continue
+
+            if node_id.endswith(self._suffix(index)):
+                return node.key
+
+        return None
+
     @staticmethod
-    def _called(call_id: str, described: Sequence[DagNode]) -> Iterator[DagNode]:
+    def _suffix(index: int) -> str:
+        """Хвост идентификатора вызова узла, которому автор его не назвал."""
+        return f"_{index}"
+
+    def _called(self, call_id: str, described: Sequence[DagNode]) -> Iterator[DagNode]:
         for index, node in enumerate(described):
             key = node.call_id
             if not key:
-                key = f"{call_id}_{index}"
+                key = f"{call_id}{self._suffix(index)}"
 
             yield node.model_copy(update={"key": key, "title": node.key})
 

@@ -83,6 +83,7 @@ from boba.toolkit.dag import (
     NodeCalls,
     NodeOutcome,
     NodeOutcomes,
+    NodeReports,
     ToolCard,
     ToolServer,
     WorkflowNodeResult,
@@ -817,8 +818,9 @@ class McpToolStubs:
 
     Создаётся портом McpToolServer. Карточка несёт имя инструмента у
     модели (с приставкой сервера), описание, схему аргументов сервера как
-    есть и вид аргументов из метки схемы (CallViews); вызов исполняет порт
-    запросом к серверу.
+    есть и вид аргументов, который клиент сам выводит из схемы (CallViews):
+    аргумент с типом содержимого — блок кода, прочие — строкой; вызов
+    исполняет порт запросом к серверу.
     """
 
     def __init__(self, prefix: str) -> None:
@@ -837,29 +839,15 @@ class McpToolStubs:
         return f"{self._prefix}{remote}"
 
     def card(self, tool: mt.Tool) -> ToolCard:
-        """Ошибки:
-        McpClientError — вид аргументов в схеме инструмента не проходит
-            модель FieldView.
-        """
         description = tool.description
         if not description:
             description = tool.name
-
-        try:
-            views = self._views.read(tool.input_schema)
-        except ValidationError as exc:
-            msg = (
-                f"mcp tool {self.name_of(tool)!r}: the call view in its schema "
-                f"(key {CallViews.MARK!r}) expects placement and display per "
-                f"argument: {exc}"
-            )
-            raise McpClientError(msg) from exc
 
         return ToolCard(
             name=self.name_of(tool),
             description=description,
             parameters=dict(tool.input_schema),
-            views=views,
+            views=self._views.seen(tool.input_schema),
         )
 
 
@@ -1034,12 +1022,19 @@ class LinkedCalls:
 
 
 class LinkedProgress:
-    """Уведомления прогресса связки её вызовам: связка идёт одним запросом,
-    и чей это отчёт, уведомление не называет — его получают приёмники всех
-    вызовов связки. Создаётся портом McpToolServer на отправку связки."""
+    """Уведомления прогресса связки — шагу того вызова, чей это отчёт.
 
-    def __init__(self, listeners: Sequence[ProgressListener]) -> None:
-        self._listeners = tuple(listeners)
+    Связка идёт одним запросом; сервер подписывает текст отчёта ключом узла
+    (NodeReports), и отчёт получает приёмник вызова с этим ключом. Создаётся
+    портом McpToolServer на отправку связки из приёмников по ключам узлов.
+    Отчёт без подписи либо с ключом, которого в связке нет, никому не
+    отдаётся и уходит в лог: показать его чужому шагу было бы неправдой.
+    """
+
+    def __init__(self, server: str, listeners: Mapping[str, ProgressListener]) -> None:
+        self._server = server
+        self._listeners = dict(listeners)
+        self._reports = NodeReports()
 
     async def __call__(
         self, progress: float, total: float | None, message: str | None
@@ -1048,8 +1043,28 @@ class LinkedProgress:
         if message is not None:
             text = message
 
-        for listener in self._listeners:
-            await listener.progressed(progress, total, text)
+        signed = self._reports.split(text)
+        if signed is None:
+            logger.warning(
+                "mcp server %s: progress of a linked call names no node, got %r",
+                self._server,
+                text,
+            )
+            return
+
+        key, said = signed
+        listener = self._listeners.get(key)
+        if listener is None:
+            logger.warning(
+                "mcp server %s: progress of a linked call names node %r, "
+                "expected one of %s",
+                self._server,
+                key,
+                sorted(self._listeners),
+            )
+            return
+
+        await listener.progressed(progress, total, said)
 
 
 class ProgressListener(Protocol):
@@ -1267,6 +1282,7 @@ class McpToolServer(ToolServer):
             config.endpoint, caller, config.connect_timeout_sec
         )
         self._stubs = McpToolStubs(config.prefix)
+        self._views = CallViews()
         self._outcomes = NodeOutcomes()
         self._by_name: dict[str, ToolCard] = {}
         """Имя инструмента у модели -> его карточка."""
@@ -1447,13 +1463,38 @@ class McpToolServer(ToolServer):
     ) -> Sequence[asyncio.Future[NodeOutcome]]:
         pending: list[asyncio.Future[NodeOutcome]] = []
         for call in calls:
-            if self._nodes_of(call) is not None:
-                pending.append(asyncio.ensure_future(self._nodes_called(call)))
-                continue
-
-            pending.append(asyncio.ensure_future(self._called(call, None)))
+            pending.append(asyncio.ensure_future(self._answered(call)))
 
         return pending
+
+    async def _answered(self, call: DagNode) -> NodeOutcome:
+        """Итог вызова с типами содержимого его аргументов: по ним хозяин
+        клиента показывает вход шага и после конца хода."""
+        if self._nodes_of(call) is not None:
+            outcome = await self._nodes_called(call)
+        else:
+            outcome = await self._called(call, None)
+
+        return outcome.model_copy(update={"media": self._media(call, outcome)})
+
+    def _media(
+        self, call: DagNode, outcome: NodeOutcome
+    ) -> Mapping[str, Mapping[str, str]]:
+        """Типы содержимого аргументов вызова call и узлов его связки по
+        идентификаторам вызовов — из схем инструментов сервера."""
+        media: dict[str, Mapping[str, str]] = {}
+        if card := self._by_name.get(call.tool):
+            media[call.key] = self._views.media_of(card.parameters)
+
+        artifact = outcome.artifact
+        if not isinstance(artifact, WorkflowResult):
+            return media
+
+        for node in artifact.nodes:
+            if card := self._by_name.get(self._stubs.local_name(node.tool)):
+                media[node.call_id] = self._views.media_of(card.parameters)
+
+        return media
 
     def _nodes_of(self, call: DagNode) -> Sequence[DagNode] | None:
         """Узлы вызова инструмента-связки вызовами своих инструментов; None —
@@ -1518,7 +1559,7 @@ class McpToolServer(ToolServer):
             raise McpClientError(msg)
 
         described: list[DagNode] = []
-        listeners: list[ProgressListener] = []
+        listeners: dict[str, ProgressListener] = {}
         for node in nodes:
             call_id = node.call.key
             described.append(
@@ -1529,7 +1570,7 @@ class McpToolServer(ToolServer):
                     call_id=call_id,
                 )
             )
-            listeners.append(node.listener)
+            listeners[node.key] = node.listener
 
         linked = DagNode(key=f"linked_{uuid4().hex}", tool=tool)
         whole = self._dags.with_nodes(linked, described)
@@ -1540,7 +1581,7 @@ class McpToolServer(ToolServer):
                 self._request(tool, whole, arguments),
                 mt.CallToolResult,
                 request_read_timeout_seconds=self._config.call_timeout_sec,
-                progress_callback=LinkedProgress(listeners),
+                progress_callback=LinkedProgress(self._name, listeners),
             )
         except asyncio.CancelledError:
             raise

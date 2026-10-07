@@ -375,19 +375,32 @@ class SchemaCall(ToolCallBase):
 
 
 class CallViews:
-    """Вид аргументов вызова: из модели вызова в карточку инструмента и в
-    его схему на проводе.
+    """Вид аргументов вызова: из модели вызова в карточку инструмента, в
+    его схему на проводе и обратно.
 
     Сборка инструмента хоста зовёт of(): вид аргументов из модели вызова,
-    которую построил фасад @tool. Сервер зовёт marked(): дописывает вид из
-    карточки в схему инструмента. Клиент зовёт read(): читает метку схемы
-    в карточку; схема без метки — инструмент чужого сервера, вида у него
-    нет. Лента клиента зовёт model_of(): по виду из карточки строит модель
-    вызова для показа входа шага.
+    которую построил фасад @tool. Сервер зовёт typed(): аргументу с кодом
+    дописывает в схему стандартный ключ JSON Schema contentMediaType —
+    что это за текст, а не как его показывать. Клиент зовёт seen(): по
+    этому ключу сам решает, каким блоком рисовать значение; остальные
+    аргументы идут строкой «имя: значение». Лента клиента зовёт
+    call_of(): по типам содержимого аргументов, которые клиент взял из
+    схемы (media_of) и хранит вместе с итогом вызова, строит вызов для
+    показа входа шага — одинаково в живом ходе и в истории.
     """
 
-    MARK: ClassVar[str] = "x-boba-call-view"
-    """Ключ схемы инструмента: вид аргументов по их именам."""
+    MEDIA_KEY: ClassVar[str] = "contentMediaType"
+    """Ключ JSON Schema: тип содержимого строки."""
+
+    PROPERTIES: ClassVar[str] = "properties"
+
+    MEDIA: ClassVar[Mapping[str, str]] = {
+        "sql": "application/sql",
+        "json": "application/json",
+        "bash": "text/x-shellscript",
+        "mermaid": "text/vnd.mermaid",
+    }
+    """Язык блока кода ленты → тип содержимого аргумента в схеме."""
 
     def of(self, model: type[ToolCallBase]) -> Mapping[str, FieldView]:
         """Вид полей модели вызова, который отличается от обычной строки
@@ -407,37 +420,96 @@ class CallViews:
 
         return views
 
-    def marked(
+    def typed(
         self, schema: Mapping[str, Any], views: Mapping[str, FieldView] | None
     ) -> dict[str, Any]:
-        """Схема с видом аргументов views; None — вида нет, схема как есть."""
-        marked = dict(schema)
+        """Схема, в которой аргументы с кодом названы типом содержимого;
+        None — вида нет, схема как есть."""
+        typed = dict(schema)
         if views is None:
-            return marked
+            return typed
 
-        dumped: dict[str, Any] = {}
+        declared = schema.get(self.PROPERTIES)
+        if not isinstance(declared, Mapping):
+            return typed
+
+        properties = dict(declared)
         for name, view in views.items():
-            dumped[name] = view.model_dump(mode="json")
+            media = self._media_of(view)
+            if media is None:
+                continue
 
-        marked[self.MARK] = dumped
+            if name not in properties:
+                continue
 
-        return marked
+            properties[name] = {**properties[name], self.MEDIA_KEY: media}
 
-    def read(self, schema: Mapping[str, Any]) -> Mapping[str, FieldView] | None:
-        """Вид аргументов по метке схемы; None — метки нет.
+        typed[self.PROPERTIES] = properties
 
-        Ошибки:
-        pydantic.ValidationError — метка есть, но вид поля не проходит модель.
-        """
-        raw = schema.get(self.MARK)
-        if not isinstance(raw, Mapping):
-            return None
+        return typed
 
+    def seen(self, schema: Mapping[str, Any]) -> Mapping[str, FieldView]:
+        """Вид аргументов по схеме инструмента сервера: аргумент с известным
+        типом содержимого показывается блоком кода его языка."""
+        return self.by_media(self.media_of(schema))
+
+    def media_of(self, schema: Mapping[str, Any]) -> Mapping[str, str]:
+        """Типы содержимого аргументов, объявленные схемой инструмента:
+        имя аргумента → значение contentMediaType. Это всё, что клиент
+        хранит о вызове, чтобы показать его аргументы после конца хода."""
+        media: dict[str, str] = {}
+        declared = schema.get(self.PROPERTIES)
+        if not isinstance(declared, Mapping):
+            return media
+
+        for name, described in declared.items():
+            if not isinstance(described, Mapping):
+                continue
+
+            value = described.get(self.MEDIA_KEY)
+            if not isinstance(value, str):
+                continue
+
+            media[str(name)] = value
+
+        return media
+
+    def by_media(self, media: Mapping[str, str]) -> Mapping[str, FieldView]:
+        """Вид аргументов по их типам содержимого: аргумент известного типа
+        показывается блоком кода его языка, остальные — строкой."""
         views: dict[str, FieldView] = {}
-        for name, view in raw.items():
-            views[str(name)] = FieldView.model_validate(view)
+        languages = {value: language for language, value in self.MEDIA.items()}
+        for name, value in media.items():
+            language = languages.get(value)
+            if language is None:
+                continue
+
+            display = MarkdownResult(text="", language=language)
+            views[name] = FieldView(
+                placement=FieldPlacement.BODY, display=display.model_dump(mode="json")
+            )
 
         return views
+
+    def call_of(
+        self, tool_name: str, media: Mapping[str, str], args: Mapping[str, Any]
+    ) -> ToolCallBase:
+        """Вызов инструмента сервера для показа: аргументы args без
+        валидации, вид — по типам содержимого media."""
+        model = self.model_of(tool_name, self.by_media(media))
+
+        return model.model_construct(**args)
+
+    def _media_of(self, view: FieldView) -> str | None:
+        """Тип содержимого аргумента; None — аргумент не код известного языка."""
+        if view.display is None:
+            return None
+
+        display = ToolArtifact.revive(view.display)
+        if not isinstance(display, MarkdownResult):
+            return None
+
+        return self.MEDIA.get(display.language)
 
     def model_of(
         self, tool_name: str, views: Mapping[str, FieldView]

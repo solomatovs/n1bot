@@ -222,11 +222,15 @@ class TurnFeed(StreamFeed):
         )
 
     async def tool_started(
-        self, call_id: str, name: str, args: Mapping[str, Any]
+        self,
+        call_id: str,
+        name: str,
+        args: Mapping[str, Any],
+        media: Mapping[str, str] | None,
     ) -> None:
         ref = await self._payloads.put(self._scope, dict(args))
         message = ToolStarted(
-            turn_id=self._turn_id, call_id=call_id, name=name, args=ref
+            turn_id=self._turn_id, call_id=call_id, name=name, args=ref, media=media
         )
         await self._publish(message)
 

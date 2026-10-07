@@ -117,6 +117,35 @@ class TestToolProgress:
 
 
 class TestStageProgress:
+    def test_stage_before_a_long_wait_leaves_at_once(self, pipe: ProgressPipe) -> None:
+        """Этап перед ожиданием сервера не придерживается частотой: иначе
+        пользователь видел бы прошлый этап, пока тело ждёт."""
+        stages = StageProgress(ToolProgress(pipe.write), None)
+
+        stages.next("connecting to the server")
+        stages.next("connected")
+        stages.next("sending the query and waiting for the answer")
+
+        seen = [report.message for report in pipe.reports()]
+        if seen[-1] != "sending the query and waiting for the answer":
+            raise AssertionError(f"the last stage is on the wire: {seen}")
+        if len(seen) != 3:
+            raise AssertionError(f"no stage is held back: {seen}")
+
+    def test_counter_inside_a_stage_is_held_by_the_rate(
+        self, pipe: ProgressPipe
+    ) -> None:
+        stages = StageProgress(ToolProgress(pipe.write), None)
+
+        stages.next("reading rows")
+        for row in range(1, 101):
+            stages.counted(f"{row} rows so far")
+        stages.next("read 100 rows")
+
+        seen = [report.message for report in pipe.reports()]
+        if seen != ["reading rows", "read 100 rows"]:
+            raise AssertionError(f"counters do not flood the channel: {seen}")
+
     def test_every_stage_is_the_next_report(
         self, pipe: ProgressPipe, unthrottled: None
     ) -> None:
@@ -137,7 +166,7 @@ class TestTransferProgress:
     def test_commands_and_volume_are_told_together(
         self, pipe: ProgressPipe, unthrottled: None
     ) -> None:
-        meter = TransferProgress(ToolProgress(pipe.write))
+        meter = TransferProgress(ToolProgress(pipe.write), "postgres")
         journal = CommandJournal("pg_stream_in", meter)
 
         with journal.command(
@@ -148,17 +177,29 @@ class TestTransferProgress:
             running.status = "COPY 1200"
 
         messages = [report.message for report in pipe.reports()]
-        expected = [
-            "copy t from stdin",
-            "copy t from stdin — 1.0 MiB in 1 frames",
-            "copy t from stdin — 2.0 MiB in 2 frames",
-            "copy t from stdin: COPY 1200 — 2.0 MiB in 2 frames",
-        ]
-        if messages != expected:
-            raise AssertionError(f"команда и объём в одном отчёте: {messages}")
+        if len(messages) != 4:
+            raise AssertionError(f"команда, объём и итог: {messages}")
+
+        command = "copy t from stdin with (format binary)"
+        sent = f"running on postgres, waiting for the server: {command}"
+        if messages[0] != sent:
+            raise AssertionError(f"команда названа целиком: {messages[0]}")
+
+        volumes = ("moving data — 1.0 MiB so far", "moving data — 2.0 MiB so far")
+        for message, volume in zip(messages[1:3], volumes, strict=True):
+            if not message.startswith(volume) or not message.endswith(f": {command}"):
+                raise AssertionError(f"объём растёт, команда названа: {message}")
+            if " MiB/s" not in message:
+                raise AssertionError(f"скорость потока названа: {message}")
+
+        done = messages[3]
+        if not done.startswith("postgres answered in ") or ": COPY 1200 — " not in done:
+            raise AssertionError(f"итог команды со временем и объёмом: {done}")
+        if not done.endswith(f": {command}"):
+            raise AssertionError(f"итог называет команду: {done}")
 
     def test_frequent_frames_do_not_flood_the_channel(self, pipe: ProgressPipe) -> None:
-        meter = TransferProgress(ToolProgress(pipe.write))
+        meter = TransferProgress(ToolProgress(pipe.write), "postgres")
         meter.command("copy t to stdout")
 
         for _ in range(10_000):

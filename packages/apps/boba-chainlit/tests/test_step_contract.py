@@ -75,7 +75,7 @@ class TestStepContract:
         )
         await tracer.on_llm_end(result, run_id=llm_run)
 
-        await turn.port.tool_started(CALL_ID, "demo", {"x": 1})
+        await turn.port.tool_started(CALL_ID, "demo", {"x": 1}, None)
         await turn.port.tool_finished(CALL_ID, MarkdownResult(text="hi"))
         return sink
 

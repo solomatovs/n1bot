@@ -15,6 +15,7 @@ from boba.db.oracle import OraIdentifier, OraQueryBuilder
 from boba.tool.ora import tools as ora
 from boba.toolkit.entry import ToolMain
 from boba.toolkit.facade import PayloadTool
+from boba.toolkit.ports import ToolProgress
 from boba.toolkit.result import SqlResult
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
@@ -174,8 +175,20 @@ class TestQuery:
             raise AssertionError("body is a coroutine")
 
         sql = _sql("select id, email from ", " order by id")
-        first = await body(connection=target.oracle, sql=sql, offset=0, limit=10)
-        second = await body(connection=target.oracle, sql=sql, offset=10, limit=10)
+        first = await body(
+            progress=ToolProgress(-1),
+            connection=target.oracle,
+            sql=sql,
+            offset=0,
+            limit=10,
+        )
+        second = await body(
+            progress=ToolProgress(-1),
+            connection=target.oracle,
+            sql=sql,
+            offset=10,
+            limit=10,
+        )
 
         ids = [row["id"] for row in first.statements[0].rows]
         assert [int(i) for i in ids] == list(range(1, 11))
@@ -188,13 +201,25 @@ class TestQuery:
             raise AssertionError("body is a coroutine")
 
         update = _sql("update ", " set note = 'x' where id <= 3")
-        result = await body(connection=target.demo_owner, sql=update, offset=0, limit=1)
+        result = await body(
+            progress=ToolProgress(-1),
+            connection=target.demo_owner,
+            sql=update,
+            offset=0,
+            limit=1,
+        )
 
         assert result.statements[0].rows is None
         assert result.statements[0].affected_rows == 3
 
         check = _sql("select count(*) as n from ", " where note = 'x'")
-        seen = await body(connection=target.oracle, sql=check, offset=0, limit=1)
+        seen = await body(
+            progress=ToolProgress(-1),
+            connection=target.oracle,
+            sql=check,
+            offset=0,
+            limit=1,
+        )
         assert int(seen.statements[0].rows[0]["n"]) == 3
 
     async def test_plsql_block_runs(self, target: Any) -> None:
@@ -203,7 +228,11 @@ class TestQuery:
             raise AssertionError("body is a coroutine")
 
         result = await body(
-            connection=target.oracle, sql="begin null; end;", offset=0, limit=1
+            progress=ToolProgress(-1),
+            connection=target.oracle,
+            sql="begin null; end;",
+            offset=0,
+            limit=1,
         )
 
         assert result.statements[0].rows is None

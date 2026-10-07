@@ -134,10 +134,11 @@ class OraArrowSource:
         self,
         text: str,
         declared: Sequence[ColumnDeclaration],
+        chunk_bytes: int,
         out: TransferOutbound,
     ) -> tuple[ColumnSpec, ...]:
-        """Контракт и тела потока в выходной порт; возвращает контракт для
-        отчёта."""
+        """Контракт и тела потока в выходной порт порциями chunk_bytes;
+        возвращает контракт для отчёта."""
         with self._journal.command(text, CommandKind.LOOKUP) as running:
             described = await self._payload.describe_specs(self._conn, text)
             running.status = f"{len(described)} columns described"
@@ -154,7 +155,9 @@ class OraArrowSource:
             )
         )
         with self._journal.command(text, CommandKind.ACTION) as running:
-            await self._payload.arrow_into(self._conn, text, out.writer(), self._trace)
+            await self._payload.arrow_into(
+                self._conn, text, out.writer(), chunk_bytes, self._trace
+            )
             running.status = "streamed out"
 
         return specs

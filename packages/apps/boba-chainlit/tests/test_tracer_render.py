@@ -78,7 +78,7 @@ class TestToolFinished:
         view, sink = make_view()
 
         async def scenario():
-            step = await view.tool_started("demo", {"x": 1}, "k1")
+            step = await view.tool_started("demo", {"x": 1}, "k1", None)
             await view.tool_finished(step, artifact, "call_1")
             return step
 
@@ -148,7 +148,7 @@ class TestToolFinished:
         view, sink = make_view()
 
         async def scenario():
-            step = await view.tool_started("visualize", {"x": 1}, "k1")
+            step = await view.tool_started("visualize", {"x": 1}, "k1", None)
             await view.tool_stopped(step, StepText.STOPPED)
             return step
 

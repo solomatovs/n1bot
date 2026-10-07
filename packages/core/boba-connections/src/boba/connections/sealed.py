@@ -33,21 +33,16 @@ from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
-    GetJsonSchemaHandler,
     ValidationError,
 )
-from pydantic.json_schema import JsonSchemaValue
-from pydantic_core import CoreSchema
 
 from boba.connections.marks import ConnectionRefusal
 from boba.identity.errors import RefusalError
-from boba.toolkit.facade import NotLogged
 from boba.toolkit.failure import ValidationText
 
 __all__ = [
     "ConnectionRef",
     "ConnectionRefs",
-    "ConnectionSchemaMark",
     "ConnectionSeal",
     "SealFeature",
     "SealKey",
@@ -80,36 +75,12 @@ class ConnectionRef:
 
     PREFIX: ClassVar[str] = "conn://"
     SEPARATOR: ClassVar[str] = "/"
-    SCHEMA_MARK: ClassVar[str] = "x-boba-connection"
-    """Ключ схемы параметра-соединения: его значение — вид соединения."""
 
     kind: str
     name: str
 
     def render(self) -> str:
         return f"{self.PREFIX}{self.kind}{self.SEPARATOR}{self.name}"
-
-
-@dataclass(frozen=True)
-class ConnectionSchemaMark(NotLogged):
-    """Метка параметра-соединения в JSON-схеме инструмента.
-
-    Кладётся в метаданные поля (Annotated) и дописывает в его схему ключ
-    ConnectionRef.SCHEMA_MARK с видом соединения. Она же запрещает писать
-    аргумент в лог приложения: там лежит запечатанное соединение.
-    Метаданные, в отличие от json_schema_extra, переживают пересборку схемы
-    вызова в карточку инструмента для клиента.
-    """
-
-    kind: str
-
-    def __get_pydantic_json_schema__(
-        self, core_schema: CoreSchema, handler: GetJsonSchemaHandler
-    ) -> JsonSchemaValue:
-        schema = handler(core_schema)
-        schema[ConnectionRef.SCHEMA_MARK] = self.kind
-
-        return schema
 
 
 class ConnectionRefs:
@@ -139,9 +110,8 @@ class ConnectionRefs:
     def _refused(raw: str) -> RefusalError:
         shape = ConnectionRef(kind="<kind>", name="<name>").render()
         msg = (
-            f"{raw!r} is not a connection reference: expected {shape}; take "
-            "the value of the connection column from connection_list or "
-            "connection_search as is"
+            f"{raw!r} is not a connection reference: expected {shape}, a "
+            "reference to one of the connections granted to the user, as is"
         )
 
         return RefusalError(ConnectionRefusal.NOT_VISIBLE, msg)
@@ -188,10 +158,13 @@ class SealedConnection(BaseModel):
     profile — дамп профиля соединения с раскрытыми секретами, вид соединения
     лежит в нём полем kind. login — пользователь, которому клиент выдал
     соединение: сервер сверяет его с вошедшим. expires_at — срок годности.
+    ref — ссылка, которой соединение назвал вызывающий (conn://вид/имя):
+    сервер показывает её в итоге вызова на месте запечатанного значения.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
+    ref: str = Field(min_length=1)
     login: str = Field(min_length=1)
     expires_at: AwareDatetime
     profile: Mapping[str, object]

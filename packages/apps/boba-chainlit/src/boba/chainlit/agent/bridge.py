@@ -49,7 +49,7 @@ from langchain_core.outputs import (
 from langchain_core.runnables import Runnable
 from langchain_core.tools import BaseTool
 from langchain_core.utils.function_calling import convert_to_openai_tool
-from pydantic import ConfigDict, Field, ValidationError
+from pydantic import ConfigDict, Field, TypeAdapter, ValidationError
 from typing_extensions import override
 
 from boba.chainlit.chat.dialog import (
@@ -119,6 +119,13 @@ class LangchainMessages:
 
     JOURNAL_KEY: ClassVar[str] = "boba_journal"
     """Ключ response_metadata сообщения инструмента с адресом журнала вызова."""
+
+    MEDIA_KEY: ClassVar[str] = "boba_call_media"
+    """Ключ response_metadata сообщения инструмента с типами содержимого
+    аргументов: идентификатор вызова → имя аргумента → contentMediaType."""
+
+    def __init__(self) -> None:
+        self._media = TypeAdapter(dict[str, dict[str, str]])
 
     def dialog(self, messages: Sequence[object]) -> Iterator[DialogMessage]:
         """Сообщения диалога из сообщений checkpoint'а; системные и
@@ -200,6 +207,7 @@ class LangchainMessages:
             outcome=self.outcome_of(message),
             raw=raw,
             journal=self.journal_of(message),
+            media=self.media_of(message),
         )
 
     def human(self, question: UserMessage) -> HumanMessage:
@@ -315,6 +323,13 @@ class LangchainMessages:
             stamped = outcome.journal.model_dump(mode="json")
             message.response_metadata[self.JOURNAL_KEY] = stamped
 
+        if outcome.media is not None:
+            media: dict[str, dict[str, str]] = {}
+            for call_id, declared in outcome.media.items():
+                media[call_id] = dict(declared)
+
+            message.response_metadata[self.MEDIA_KEY] = media
+
         return message
 
     def outcome_of(self, message: ToolMessage) -> NodeOutcome | None:
@@ -347,7 +362,22 @@ class LangchainMessages:
             artifact=artifact,
             errored=errored,
             journal=self.journal_of(message),
+            media=self.media_of(message),
         )
+
+    def media_of(self, message: ToolMessage) -> Mapping[str, Mapping[str, str]] | None:
+        """Типы содержимого аргументов по идентификаторам вызовов из
+        сообщения инструмента истории; None — запись их не несёт: вызов
+        своего инструмента либо запись сделана до того, как их стали хранить.
+
+        Ошибки:
+        pydantic.ValidationError — запись есть, но это не словарь словарей строк.
+        """
+        stamped = message.response_metadata.get(self.MEDIA_KEY)
+        if stamped is None:
+            return None
+
+        return self._media.validate_python(stamped)
 
     def journal_of(self, message: ToolMessage) -> JournalAddress | None:
         """Адрес журнала вызова из сообщения инструмента истории; None —

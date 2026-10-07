@@ -22,6 +22,7 @@ from boba.tool.doc.tools import (
     search_document,
 )
 from boba.toolkit.entry import ToolMain
+from boba.toolkit.ports import ToolProgress
 
 pytestmark = [pytest.mark.run, pytest.mark.anyio]
 
@@ -58,7 +59,11 @@ async def test_run_read_document(doc_cfg: DocToolSection, document: str) -> None
     if body is None:
         raise AssertionError("body is not None")
 
-    content = (await body(path=document, pages=RunArgs.PAGES, cfg=doc_cfg)).llm_view()
+    content = (
+        await body(
+            progress=ToolProgress(-1), path=document, pages=RunArgs.PAGES, cfg=doc_cfg
+        )
+    ).llm_view()
 
     print(content)
 

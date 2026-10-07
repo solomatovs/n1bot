@@ -139,10 +139,10 @@ class TestSchemaShownToTheModel:
 
         if declared["type"] != "string":
             raise AssertionError(f"модель видит строку: {declared}")
-        if declared[ConnectionRef.SCHEMA_MARK] != "probe":
-            raise AssertionError(f"параметр помечен видом соединения: {declared}")
-        if "connection_list" not in declared["description"]:
-            raise AssertionError(f"описание ведёт к каталогу: {declared}")
+        if "conn://probe/" not in declared["description"]:
+            raise AssertionError(f"описание называет вид и форму ссылки: {declared}")
+        if sorted(declared) != ["description", "minLength", "title", "type"]:
+            raise AssertionError(f"только стандартные ключи схемы: {declared}")
 
 
 class TestReferenceReachesTheBody:

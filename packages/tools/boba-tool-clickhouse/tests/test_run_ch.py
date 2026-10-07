@@ -14,6 +14,7 @@ from boba.config import bind
 from boba.db.clickhouse.connection import ClickHouseConfig
 from boba.tool.ch.tools import ChToolConfig, ch_query
 from boba.toolkit.entry import ToolMain
+from boba.toolkit.ports import ToolProgress
 
 pytestmark = [pytest.mark.run, pytest.mark.anyio]
 
@@ -41,7 +42,13 @@ async def test_run_ch_query(ch_cfg: ChToolConfig, connection: ClickHouseConfig) 
     if body is None:
         raise AssertionError("body is not None")
 
-    artifact = await body(sql=RunArgs.SQL, connection=connection, offset=0, limit=50)
+    artifact = await body(
+        progress=ToolProgress(-1),
+        sql=RunArgs.SQL,
+        connection=connection,
+        offset=0,
+        limit=50,
+    )
 
     print(artifact.llm_view())
     print(artifact)

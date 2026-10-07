@@ -72,9 +72,11 @@ from pydantic import (
     ConfigDict,
     Field,
     GetCoreSchemaHandler,
+    GetJsonSchemaHandler,
     TypeAdapter,
     ValidationError,
 )
+from pydantic.json_schema import JsonSchemaValue
 from pydantic_core import CoreSchema, core_schema
 
 from boba.toolkit.frames import FrameProtocolError, ToolIo
@@ -93,6 +95,7 @@ __all__ = [
     "PortDeclarationError",
     "PortDirection",
     "ProgressReport",
+    "QueryProgress",
     "RawInbound",
     "RawOutbound",
     "RawWriter",
@@ -424,10 +427,14 @@ class ToolProgress:
     происходит, пока инструмент работает. Строится в ToolMain из номера
     --fd-progress; при запуске человеком отвязан, и report() ничего не
     делает. done обязан расти: отчёт, в котором он не вырос, не уходит —
-    этого требует получатель (прогресс вызова только растёт). Отчёты чаще
-    INTERVAL_SEC не шлются: последний из пропущенных уходит следующим
-    вызовом report() либо в close(), который ToolMain зовёт после тела.
-    report() можно звать из любого потока.
+    этого требует получатель (прогресс вызова только растёт). Отчётов два
+    вида. announce() — этап: что началось или чем кончилось (подключение,
+    отправка запроса, ответ сервера); уходит сразу, потому что следом тело
+    надолго уходит в ожидание, и пользователь должен видеть, чего оно ждёт.
+    report() — счётчик внутри этапа (строки, байты): чаще INTERVAL_SEC не
+    шлётся, последний из пропущенных уходит следующим отчётом либо в
+    close(), который ToolMain зовёт после тела. Оба можно звать из любого
+    потока.
     """
 
     INTERVAL_SEC: ClassVar[float] = 0.5
@@ -442,9 +449,20 @@ class ToolProgress:
         self._sent_at = 0.0
         self._held: tuple[float, float | None, str] | None = None
 
+    def announce(self, done: float, total: float | None, message: str) -> None:
+        """Этап работы: message уходит сразу, частота его не держит."""
+        if self._fd < 0:
+            return
+
+        with self._lock:
+            if done <= self._sent_done:
+                return
+
+            self._send(done, total, message)
+
     def report(self, done: float, total: float | None, message: str) -> None:
-        """Сделано done из total (None — итог неизвестен); message — что
-        сейчас происходит."""
+        """Счётчик: сделано done из total (None — итог неизвестен); message —
+        что сейчас происходит."""
         if self._fd < 0:
             return
 
@@ -484,6 +502,13 @@ class ToolProgress:
     ) -> CoreSchema:
         return core_schema.is_instance_schema(cls)
 
+    @classmethod
+    def __get_pydantic_json_schema__(
+        cls, schema: CoreSchema, handler: GetJsonSchemaHandler
+    ) -> JsonSchemaValue:
+        """Параметр строит гость: в JSON-схеме вызова у него нет формы."""
+        return {}
+
 
 class StageProgress:
     """Ход работы стадиями: каждая стадия — следующий отчёт с её номером.
@@ -500,33 +525,158 @@ class StageProgress:
         self._done = 0
 
     def next(self, message: str) -> None:
-        """Началась следующая стадия."""
+        """Началась следующая стадия: отчёт уходит сразу."""
+        self._done += 1
+        self._progress.announce(self._done, self._total, message)
+
+    def counted(self, message: str) -> None:
+        """Счётчик внутри стадии: отчёт уходит не чаще частоты отчётов."""
         self._done += 1
         self._progress.report(self._done, self._total, message)
 
 
-class DownloadProgress:
-    """Ход скачивания отчётами тела инструмента: сколько байт тела получено.
+class QueryProgress:
+    """Ход запроса к базе отчётами тела инструмента: что сейчас происходит и
+    с чем именно.
 
-    Создаётся телом, которое качает страницу или файл. counted() отдаёт те
-    же порции потока, считая их; total — размер тела, каким его назвал
-    сервер в заголовке ответа, None — сервер размера не назвал.
+    Создаётся телом инструмента запроса (pg_query, ch_query, ora_query) из
+    его ToolProgress и названия движка. Отчёт стоит до и после каждого
+    обращения к серверу: перед ожиданием он называет, чего тело ждёт
+    (подключения, ответа на отправленный текст, фиксации), после — что
+    получено и за сколько (версия сервера, колонки выборки, число строк,
+    статус команды). Адрес и вход соединения в отчёты не идут: клиенту
+    сервера их знать незачем. Этапы уходят сразу, счётчик строк — с
+    частотой отчётов ToolProgress.
     """
 
-    MIB: ClassVar[int] = 1 << 20
+    TEXT_CHARS: ClassVar[int] = 120
+    NAMES_SHOWN: ClassVar[int] = 8
 
-    def __init__(self, progress: ToolProgress, total: int | None) -> None:
-        self._progress = progress
-        self._total = total
+    def __init__(self, progress: ToolProgress, engine: str) -> None:
+        self._steps = StageProgress(progress, None)
+        self._engine = engine
+        self._rows = 0
+        self._began = time.monotonic()
+
+    def _waited(self) -> str:
+        """Сколько шло обращение к серверу, начатое последним этапом."""
+        waited = time.monotonic() - self._began
+        self._began = time.monotonic()
+
+        return f"{waited:.1f} s"
+
+    def connecting(self) -> None:
+        """Тело уходит в подключение."""
+        self._began = time.monotonic()
+        self._steps.next(f"connecting to {self._engine}, waiting for the server")
+
+    def connected(self, server: str) -> None:
+        """Сервер принял вход; server — что он сообщил о себе."""
+        self._steps.next(f"connected to {self._engine} in {self._waited()}: {server}")
+
+    def sending(self, text: str) -> None:
+        """Тело отправляет текст запроса и уходит в ожидание ответа."""
+        head = " ".join(text.split())
+        shown = head[: self.TEXT_CHARS]
+        if len(head) > self.TEXT_CHARS:
+            shown = f"{shown}…"
+
+        self._began = time.monotonic()
+        self._steps.next(
+            f"sending {len(text)} chars to {self._engine} and waiting for "
+            f"the answer: {shown}"
+        )
+
+    def answered(self, columns: Sequence[str]) -> None:
+        """Сервер ответил выборкой с колонками columns; тело уходит в
+        чтение строк."""
+        self._rows = 0
+        names = ", ".join(columns[: self.NAMES_SHOWN])
+        if len(columns) > self.NAMES_SHOWN:
+            names = f"{names}, …"
+
+        self._steps.next(
+            f"{self._engine} answered in {self._waited()} with {len(columns)} "
+            f"columns ({names}), reading rows"
+        )
+
+    def row(self) -> None:
+        """Прочитана ещё одна строка выборки."""
+        self._rows += 1
+        self._steps.counted(f"reading rows from {self._engine}: {self._rows} so far")
+
+    def read(self, outcome: str) -> None:
+        """Чтение выборки кончилось; outcome — итог окна выдачи."""
+        self._steps.next(
+            f"read {self._rows} rows from {self._engine} in {self._waited()}: {outcome}"
+        )
+
+    def executed(self, outcome: str) -> None:
+        """Сервер выполнил команду без выборки; outcome — его статус."""
+        self._steps.next(f"{self._engine} answered in {self._waited()}: {outcome}")
+
+    def committing(self) -> None:
+        """Тело уходит в фиксацию транзакции."""
+        self._began = time.monotonic()
+        self._steps.next(f"committing on {self._engine}, waiting for the server")
+
+    def committed(self) -> None:
+        self._steps.next(f"committed on {self._engine} in {self._waited()}")
+
+    def said(self, message: str) -> None:
+        """Сервер прислал сообщение во время запроса."""
+        self._steps.next(f"{self._engine} says: {message}")
+
+
+class DownloadProgress:
+    """Ход скачивания отчётами тела инструмента: запрос, ответ сервера и
+    сколько байт тела получено.
+
+    Создаётся телом, которое качает страницу или файл, с адресом source.
+    requesting() стоит перед запросом, answered() — после заголовков
+    ответа: total — размер тела, каким его назвал сервер, None — сервер
+    размера не назвал. counted() отдаёт те же порции потока, считая их, и
+    по концу потока сообщает, сколько получено и за сколько. Этапы уходят
+    сразу, счётчик байт — с частотой отчётов ToolProgress.
+    """
+
+    def __init__(self, progress: ToolProgress, source: str) -> None:
+        self._steps = StageProgress(progress, None)
+        self._source = source
+        self._size = "size is not announced"
+        self._began = time.monotonic()
+
+    def requesting(self) -> None:
+        """Тело отправляет запрос и уходит в ожидание ответа."""
+        self._began = time.monotonic()
+        self._steps.next(f"requesting {self._source}, waiting for the server")
+
+    def answered(self, status: int, kind: str, total: int | None) -> None:
+        """Сервер ответил заголовками: код status, тип тела kind; тело
+        уходит в скачивание."""
+        if total is not None:
+            self._size = f"{total} bytes"
+
+        waited = time.monotonic() - self._began
+        self._steps.next(
+            f"{self._source} answered {status} in {waited:.1f} s: {kind}, "
+            f"{self._size}; downloading the body"
+        )
 
     async def counted(self, chunks: AsyncIterable[bytes]) -> AsyncIterator[bytes]:
         done = 0
         async for chunk in chunks:
             done += len(chunk)
-            self._progress.report(
-                done, self._total, f"downloaded {done / self.MIB:.1f} MiB"
+            self._steps.counted(
+                f"downloading {self._source}: {done} bytes so far ({self._size})"
             )
             yield chunk
+
+        waited = time.monotonic() - self._began
+        self._steps.next(
+            f"downloaded {done} bytes from {self._source} in {waited:.1f} s, "
+            "reading the document"
+        )
 
 
 class StreamPorts:

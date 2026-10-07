@@ -1912,7 +1912,7 @@ class TestDescribeCost:
             before = await cursor.fetchone()
             started = time.perf_counter()
             contract = await PgCopyOut(
-                conn, CommandJournal("test", TransferProgress(ToolProgress(-1)))
+                conn, CommandJournal("test", TransferProgress(ToolProgress(-1), "test"))
             ).contract(self.HEAVY, ())
             elapsed = time.perf_counter() - started
             cursor = await conn.execute(counters.text)
@@ -1986,7 +1986,7 @@ class TestCopyOutLoop:
         sink = Sink()
         async with await AsyncPostgresPool.dedicated(postgres.profile) as conn:
             copy_out = PgCopyOut(
-                conn, CommandJournal("test", TransferProgress(ToolProgress(-1)))
+                conn, CommandJournal("test", TransferProgress(ToolProgress(-1), "test"))
             )
             contract = await copy_out.contract(select, ())
             started = time.perf_counter()
@@ -1996,7 +1996,7 @@ class TestCopyOutLoop:
                 contract,
                 self.CHUNK,
                 TransferOutbound(
-                    SinkOutbound(sink), TransferProgress(ToolProgress(-1))
+                    SinkOutbound(sink), TransferProgress(ToolProgress(-1), "test")
                 ),
             )
             elapsed = time.perf_counter() - started
@@ -2020,7 +2020,7 @@ class TestCopyOutLoop:
         select = "select g, 1 / (g - 5000) as bad from generate_series(1, 10000) g"
         async with await AsyncPostgresPool.dedicated(postgres.profile) as conn:
             copy_out = PgCopyOut(
-                conn, CommandJournal("test", TransferProgress(ToolProgress(-1)))
+                conn, CommandJournal("test", TransferProgress(ToolProgress(-1), "test"))
             )
             contract = await copy_out.contract(select, ())
             with pytest.raises(psycopg.errors.DivisionByZero):
@@ -2030,7 +2030,7 @@ class TestCopyOutLoop:
                     contract,
                     4096,
                     TransferOutbound(
-                        SinkOutbound(Sink()), TransferProgress(ToolProgress(-1))
+                        SinkOutbound(Sink()), TransferProgress(ToolProgress(-1), "test")
                     ),
                 )
 
@@ -2046,7 +2046,7 @@ class TestCopyOutLoop:
         select = self.SELECT.format(rows=self.ROWS)
         async with await AsyncPostgresPool.dedicated(postgres.profile) as conn:
             copy_out = PgCopyOut(
-                conn, CommandJournal("test", TransferProgress(ToolProgress(-1)))
+                conn, CommandJournal("test", TransferProgress(ToolProgress(-1), "test"))
             )
             contract = await copy_out.contract(select, ())
             started = time.perf_counter()
@@ -2057,7 +2057,8 @@ class TestCopyOutLoop:
                     contract,
                     4096,
                     TransferOutbound(
-                        SinkOutbound(BrokenSink()), TransferProgress(ToolProgress(-1))
+                        SinkOutbound(BrokenSink()),
+                        TransferProgress(ToolProgress(-1), "test"),
                     ),
                 )
             elapsed = time.perf_counter() - started

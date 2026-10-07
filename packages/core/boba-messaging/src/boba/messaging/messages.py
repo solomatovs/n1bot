@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from enum import StrEnum
 from typing import Annotated, ClassVar, Literal, Self
 from uuid import UUID
@@ -313,7 +314,8 @@ class StageEnded(Message):
 
 class ToolStarted(Message):
     """Вызов инструмента name начался под call_id; аргументы лежат в PayloadStore по
-    ссылке args.
+    ссылке args. media — типы содержимого аргументов (имя → contentMediaType)
+    инструмента сервера; None — инструмент свой.
     """
 
     kind: Literal[MessageKind.TOOL_STARTED] = MessageKind.TOOL_STARTED
@@ -321,6 +323,7 @@ class ToolStarted(Message):
     call_id: str = Field(min_length=1)
     name: str = Field(min_length=1)
     args: PayloadRef
+    media: Mapping[str, str] | None
 
 
 class ToolProgressed(Message):

@@ -131,7 +131,9 @@ class TestCommandJournal:
     def test_actions_are_kept_and_lookups_only_logged(
         self, caplog: pytest.LogCaptureFixture
     ) -> None:
-        journal = CommandJournal("pg_stream_in", TransferProgress(ToolProgress(-1)))
+        journal = CommandJournal(
+            "pg_stream_in", TransferProgress(ToolProgress(-1), "test")
+        )
 
         with caplog.at_level(logging.INFO):
             with journal.command("select 1 from pg_class", CommandKind.LOOKUP) as run:
@@ -149,7 +151,9 @@ class TestCommandJournal:
         assert "pg_stream_in: action done in" in logged
 
     def test_failure_shows_columns_and_the_failed_command(self) -> None:
-        journal = CommandJournal("ch_stream_in", TransferProgress(ToolProgress(-1)))
+        journal = CommandJournal(
+            "ch_stream_in", TransferProgress(ToolProgress(-1), "test")
+        )
         journal.columns([{"column": "id", "type": "Nullable(Int32)"}])
 
         with journal.command("drop table if exists t__ex", CommandKind.ACTION) as run:

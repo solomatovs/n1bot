@@ -122,15 +122,21 @@ class FakeTurn(RunPort):
     def __init__(self) -> None:
         self.shown: list[tuple[str, Mapping[str, Any]]] = []
         self.started: list[tuple[str, str, Mapping[str, Any]]] = []
+        self.media: dict[str, Mapping[str, str] | None] = {}
         """Начатые вызовы: идентификатор, имя инструмента, показанные аргументы."""
         self.finished: list[tuple[str, ToolResultBase]] = []
         self.failed: list[tuple[str, str]] = []
         self.progressed: list[tuple[str, float, float | None, str]] = []
 
     async def tool_started(
-        self, tool_call_id: str, name: str, args: Mapping[str, Any]
+        self,
+        tool_call_id: str,
+        name: str,
+        args: Mapping[str, Any],
+        media: Mapping[str, str] | None,
     ) -> None:
         self.started.append((tool_call_id, name, dict(args)))
+        self.media[tool_call_id] = media
 
     async def tool_progressed(
         self, tool_call_id: str, done: float, total: float | None, text: str

@@ -82,7 +82,7 @@ class TestIngestOcrParams:
         schema = tools[name].args_schema.model_json_schema()
         props = schema["properties"]
 
-        optional = {"attachments", "ocr", "cfg"}
+        optional = {"attachments", "ocr", "cfg", "progress"}
         if set(props) - optional != {"page_id", "cql", "space_key"} & set(props):
             raise AssertionError(f"unexpected parameters: {sorted(props)}")
         if props["attachments"]["default"] is not False:
@@ -98,7 +98,7 @@ class TestIngestOcrParams:
         schema = tools["confluence_attachment"].args_schema.model_json_schema()
         props = schema["properties"]
 
-        if set(props) != {"page_id", "filename", "ocr", "cfg"}:
+        if set(props) != {"page_id", "filename", "ocr", "cfg", "progress"}:
             raise AssertionError(f"unexpected parameters: {sorted(props)}")
         if props["ocr"]["default"] is not False:
             raise AssertionError("ocr defaults to false")

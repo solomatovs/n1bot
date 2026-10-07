@@ -6,7 +6,7 @@ from enum import StrEnum
 from typing import Annotated, Any, Literal
 
 import pytest
-from pydantic import BaseModel, Field, SecretStr, ValidationError
+from pydantic import BaseModel, Field, SecretStr
 
 from boba.toolkit.calls import (
     CallViews,
@@ -163,8 +163,9 @@ class TestDeclaredCallClass:
 
 
 class TestViewsTravelWithTheSchema:
-    """Вид аргументов едет со схемой инструмента: клиент без кода инструмента
-    рисует вход шага так же, как процесс, где инструмент объявлен."""
+    """Сервер называет в схеме тип содержимого аргумента с кодом; клиент без
+    кода инструмента рисует вход шага так же, как процесс, где инструмент
+    объявлен."""
 
     ARGS: dict[str, Any] = {
         "sql": "select 1",
@@ -175,22 +176,28 @@ class TestViewsTravelWithTheSchema:
     }
 
     def test_remote_call_is_shown_like_the_local_one(self) -> None:
+        """Сервер называет в схеме только тип содержимого аргумента с кодом;
+        вид показа клиент выводит сам — и рисует вход шага так же, как свой
+        инструмент."""
         views = CallViews()
-        schema = views.marked(Args.model_json_schema(), views.of(Args))
+        own = views.of(Args)
+        schema = views.typed(Args.model_json_schema(), own)
 
-        read = views.read(schema)
-        if read is None:
-            raise AssertionError(f"the schema carries the views: {schema}")
-        if read != views.of(Args):
-            raise AssertionError(f"the views survive the wire: {read}")
+        media = schema["properties"]["sql"][CallViews.MEDIA_KEY]
+        if media != "application/sql":
+            raise AssertionError(f"the code argument names its content: {schema}")
 
-        model = views.model_of("remote_probe", read)
+        seen = views.seen(schema)
+        if dict(seen) != {"sql": own["sql"]}:
+            raise AssertionError(f"the client derives the view itself: {seen}")
+
+        model = views.model_of("remote_probe", seen)
         local = Args.model_construct(**self.ARGS).chat_view().markdown
         remote = model.model_construct(**self.ARGS).chat_view().markdown
         if remote != local:
             raise AssertionError(f"same step input:\n{remote}\n---\n{local}")
         if "```sql" not in remote:
-            raise AssertionError(f"the declared display draws the value: {remote}")
+            raise AssertionError(f"the client draws the code as a block: {remote}")
 
     def test_views_name_only_what_differs_from_a_plain_line(self) -> None:
         views = CallViews().of(Args)
@@ -206,17 +213,17 @@ class TestViewsTravelWithTheSchema:
         if dict(views) != expected:
             raise AssertionError(f"the views of the call model: {views}")
 
-    def test_schema_without_the_mark_gives_no_views(self) -> None:
-        if CallViews().read({"type": "object"}) is not None:
-            raise AssertionError("a foreign tool has no call views")
+    def test_schema_without_content_types_shows_plain_lines(self) -> None:
+        if dict(CallViews().seen({"type": "object", "properties": {"q": {}}})):
+            raise AssertionError("arguments without a content type are plain lines")
 
-    def test_tool_without_views_is_left_unmarked(self) -> None:
-        schema = CallViews().marked({"type": "object"}, None)
-        if CallViews.MARK in schema:
-            raise AssertionError(f"nothing to say about such a tool: {schema}")
+    def test_tool_without_views_keeps_its_schema(self) -> None:
+        schema = {"type": "object", "properties": {"sql": {"type": "string"}}}
+        if CallViews().typed(schema, None) != schema:
+            raise AssertionError("nothing to say about such a tool")
 
-    def test_broken_mark_is_refused(self) -> None:
-        schema = {"type": "object", CallViews.MARK: {"sql": {"placement": "above"}}}
-
-        with pytest.raises(ValidationError, match="placement"):
-            CallViews().read(schema)
+    def test_unknown_content_type_is_a_plain_line(self) -> None:
+        body = {"type": "string", "contentMediaType": "text/x-foo"}
+        schema = {"type": "object", "properties": {"body": body}}
+        if dict(CallViews().seen(schema)):
+            raise AssertionError("an unknown content type has no special view")

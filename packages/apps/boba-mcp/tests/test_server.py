@@ -160,7 +160,7 @@ class TestToolList:
         echo = next(tool for tool in listed if tool.name == "fake_echo")
         own = next(tool for tool in stand.registry.tools if tool.name == "fake_echo")
         card = ToolSchema().card_of(own)
-        if echo.input_schema != CallViews().marked(card.parameters, card.views):
+        if echo.input_schema != CallViews().typed(card.parameters, card.views):
             raise AssertionError(f"the schema is published as is: {echo.input_schema}")
 
         properties = echo.input_schema["properties"]
@@ -405,6 +405,55 @@ class TestProgress:
         values = [report[0] for report in heard.reports]
         if values != sorted(set(values)):
             raise AssertionError(f"the progress only grows: {values}")
+
+    async def test_reports_of_workflow_nodes_are_signed_by_their_node(
+        self, stand: ServiceStand, url: str, dev_token: str
+    ) -> None:
+        """Связка идёт одним запросом: отчёт каждого узла подписан его
+        ключом, отчёты узлов не теряются друг из-за друга, а значение
+        прогресса запроса только растёт."""
+        nodes = [
+            {
+                "key": "left",
+                "tool": "fake_progress",
+                "args": {"steps": 3, "pause": 0.6},
+            },
+            {
+                "key": "right",
+                "tool": "fake_progress",
+                "args": {"steps": 2, "pause": 0.6},
+            },
+        ]
+        heard = Heard()
+        async with _client(url, dev_token) as client:
+            result = await client.call_tool_mcp(
+                WorkflowTool.NAME, {"nodes": nodes}, progress_handler=heard
+            )
+
+        if result.is_error:
+            raise AssertionError(f"the workflow succeeds: {result}")
+
+        texts = [str(report[2]) for report in heard.reports]
+        left = [text for text in texts if text.startswith("left: ")]
+        right = [text for text in texts if text.startswith("right: ")]
+        if len(left) + len(right) != len(texts):
+            raise AssertionError(f"every report names its node: {texts}")
+
+        expected_left = [
+            "left: step 1 of 3 (1 of 3)",
+            "left: step 2 of 3 (2 of 3)",
+            "left: step 3 of 3 (3 of 3)",
+        ]
+        if left != expected_left:
+            raise AssertionError(f"the reports of the left node: {left}")
+
+        expected_right = ["right: step 1 of 2 (1 of 2)", "right: step 2 of 2 (2 of 2)"]
+        if right != expected_right:
+            raise AssertionError(f"the reports of the right node: {right}")
+
+        values = [report[0] for report in heard.reports]
+        if values != sorted(set(values)):
+            raise AssertionError(f"the progress of the request only grows: {values}")
 
     async def test_silent_tool_sends_no_progress(
         self, stand: ServiceStand, url: str, dev_token: str

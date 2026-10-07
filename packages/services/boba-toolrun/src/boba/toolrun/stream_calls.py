@@ -186,8 +186,7 @@ class StreamChannelFields:
     канал. Поле получает имя порта: одиночный порт — строка с именем канала,
     порт-список — список имён. Писатель каналов получает ещё поле
     pipe_bytes — буфер пайпов своих каналов, с дефолтом и потолком из
-    секции [stream_groups]. Барьер группы StreamGroup и отчёты о ходе работы
-    ToolProgress модели не видны.
+    секции [stream_groups]. Барьер группы StreamGroup модели не виден.
     Обёртка запуска поля каналов не сериализует: её схема захвачена до
     пересборки, и этих имён в ней нет.
     """
@@ -211,16 +210,13 @@ class StreamChannelFields:
     def _attach(self, tool: HostedTool, specs: StreamSpecs) -> None:
         schema = tool.args_schema
         spec = specs.of(tool.name)
-        # барьер группы и отчёты о ходе работы строит гость: модели они не видны
-        guest_built = [
-            *ToolArgv.group_fields(schema),
-            *ToolArgv.progress_fields(schema),
-        ]
-        if not spec.streaming() and not guest_built:
+        # барьер группы строит гость: модели он не виден
+        groups = ToolArgv.group_fields(schema)
+        if not spec.streaming() and not groups:
             return
 
         fields: dict[str, tuple[Any, Any]] = {}
-        drop: list[str] = list(guest_built)
+        drop: list[str] = list(groups)
         for port in spec.ports:
             drop.append(port.name)
             fields[port.name] = self._field(port)

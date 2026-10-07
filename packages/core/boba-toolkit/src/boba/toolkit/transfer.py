@@ -166,61 +166,122 @@ TransferFrame = SchemaHead | RowsHead
 class TransferProgress:
     """Ход работы насоса отчётами тела инструмента.
 
-    Создаётся телом потокового инструмента из его ToolProgress и отдаётся
-    журналу команд (CommandJournal) и концам потока (TransferOutbound,
-    TransferInbound): журнал называет идущую команду сервера и её итог,
-    концы потока считают прошедшие байты и кадры. Каждое изменение —
-    следующий отчёт: текст несёт команду и объём; сколько всего данных,
-    насос не знает. Счётчики зовут и из рабочих потоков (запись кадров,
-    COPY), поэтому состояние под замком; текст отчёта собирается не чаще
-    INTERVAL_SEC, а итог команды сообщается всегда.
+    Создаётся телом потокового инструмента из его ToolProgress и названия
+    движка и отдаётся журналу команд (CommandJournal) и концам потока
+    (TransferOutbound, TransferInbound). Тело сообщает о подключении до и
+    после него; журнал — о команде сервера перед её отправкой и об итоге
+    со временем; концы потока — об ожидании входящего потока, о его
+    заголовке, об объёме и скорости потока и об ожидании решения группы. Сколько
+    всего данных, насос не знает. Счётчики зовут и из рабочих потоков
+    (запись кадров, COPY), поэтому состояние под замком; этапы уходят
+    сразу, объём — не чаще INTERVAL_SEC.
     """
 
     COMMAND_CHARS: ClassVar[int] = 80
     INTERVAL_SEC: ClassVar[float] = 0.5
     MIB: ClassVar[int] = 1 << 20
 
-    def __init__(self, progress: ToolProgress) -> None:
+    def __init__(self, progress: ToolProgress, engine: str) -> None:
         self._steps = StageProgress(progress, None)
+        self._engine = engine
         self._lock = threading.Lock()
         self._command = ""
         self._bytes = 0
-        self._frames = 0
+        self._flow_began = 0.0
         self._said_at = 0.0
+        self._began = time.monotonic()
+
+    def _waited(self) -> str:
+        """Сколько шло ожидание, начатое последним этапом."""
+        waited = time.monotonic() - self._began
+        self._began = time.monotonic()
+
+        return f"{waited:.1f} s"
+
+    def connecting(self) -> None:
+        """Тело уходит в подключение."""
+        with self._lock:
+            self._began = time.monotonic()
+            self._steps.next(f"connecting to {self._engine}, waiting for the server")
+
+    def connected(self, server: str) -> None:
+        """Сервер принял вход; server — что он сообщил о себе."""
+        with self._lock:
+            self._steps.next(
+                f"connected to {self._engine} in {self._waited()}: {server}"
+            )
+
+    def configured(self, settings: Mapping[str, object]) -> None:
+        """Настройки, с которыми насос работает в этом вызове: и названные
+        вызывающим, и взятые по умолчанию."""
+        listed: list[str] = []
+        for name, value in settings.items():
+            listed.append(f"{name}={value}")
+
+        with self._lock:
+            self._steps.next(f"{self._engine} pump settings: {', '.join(listed)}")
+
+    def awaiting(self, what: str) -> None:
+        """Тело ждёт what от соседей по группе: входящий поток, решение."""
+        with self._lock:
+            self._began = time.monotonic()
+            self._steps.next(f"waiting for {what}")
+
+    def received(self, what: str) -> None:
+        """Ожидание кончилось: получено what."""
+        with self._lock:
+            self._steps.next(f"got {what} in {self._waited()}")
 
     def command(self, text: str) -> None:
-        """Началась команда сервера text."""
-        line, _, _ = text.strip().partition("\n")
+        """Команда text уходит серверу."""
+        flat = " ".join(text.split())
+        shown = flat[: self.COMMAND_CHARS]
+        if len(flat) > self.COMMAND_CHARS:
+            shown = f"{shown}…"
+
         with self._lock:
-            self._command = line[: self.COMMAND_CHARS]
-            self._say()
+            self._command = shown
+            self._began = time.monotonic()
+            self._steps.next(
+                f"running on {self._engine}, waiting for the server: {self._command}"
+            )
 
     def finished(self, status: str) -> None:
         """Идущая команда кончилась со статусом сервера status."""
         with self._lock:
+            outcome = "done"
             if status:
-                self._command = f"{self._command}: {status}"
+                outcome = status
 
-            self._say()
+            self._steps.next(
+                f"{self._engine} answered in {self._waited()}: {outcome}"
+                f"{self._volume()}: {self._command}"
+            )
 
     def moved(self, size: int) -> None:
         """Через порт прошёл кадр данных в size байт."""
         with self._lock:
+            if not self._bytes:
+                self._flow_began = time.monotonic()
+
             self._bytes += size
-            self._frames += 1
             if time.monotonic() - self._said_at < self.INTERVAL_SEC:
                 return
 
-            self._say()
+            self._said_at = time.monotonic()
+            self._steps.next(f"moving data{self._volume()}: {self._command}")
 
-    def _say(self) -> None:
-        self._said_at = time.monotonic()
-        text = self._command
-        if self._frames:
-            volume = f"{self._bytes / self.MIB:.1f} MiB in {self._frames} frames"
-            text = f"{text} — {volume}"
+    def _volume(self) -> str:
+        """Сколько данных прошло и с какой скоростью; пусто — ещё ничего."""
+        if not self._bytes:
+            return ""
 
-        self._steps.next(text)
+        moved = f" — {self._bytes / self.MIB:.1f} MiB so far"
+        spent = time.monotonic() - self._flow_began
+        if spent <= 0:
+            return moved
+
+        return f"{moved}, {self._bytes / self.MIB / spent:.1f} MiB/s"
 
 
 class TransferOutbound:
@@ -265,9 +326,12 @@ class TransferInbound:
 
     async def committing(self) -> None:
         """Дождаться решения группы; срыв — StreamGroupAbortedError."""
+        self._progress.awaiting("the verdict of the group before the commit")
         await self._group.ready()
+        self._progress.received("the verdict of the group: commit")
 
     async def get_schema(self) -> SchemaHead:
+        self._progress.awaiting("the schema of the incoming stream")
         first = await asyncio.to_thread(next, self._frames, None)
         if first is None:
             raise TransferError(
@@ -279,7 +343,12 @@ class TransferInbound:
                 "transfer stream starts with a rows frame, expected schema"
             )
 
-        return first.head
+        head = first.head
+        self._progress.received(
+            f"the incoming stream: {head.wire.value} from {head.source_engine.value}"
+        )
+
+        return head
 
     async def bodies(self) -> AsyncIterator[Chunk]:
         while True:
