@@ -38,6 +38,7 @@ from boba.db.clickhouse.transfer import (
     ChTwin,
     ChTypeResolver,
     ChTypes,
+    WholeBody,
 )
 from boba.db.postgres.describe import PgTypmod
 from boba.db.postgres.transfer import PgContract, PgSourceColumn
@@ -299,6 +300,7 @@ class PgToCh(ChTransfer):
             ChContractTypes(self._stream_types(matched.stream)),
             self._feed,
             self._journal,
+            WholeBody(),
             {**json.settings, **PgChTypes.READ_SETTINGS},
         )
         transfer = TransferRun(

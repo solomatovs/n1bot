@@ -31,6 +31,7 @@ from boba.db.clickhouse.transfer import (
     ChTwin,
     ChTypeResolver,
     ChTypes,
+    WholeBody,
 )
 from boba.toolkit.transfer import (
     ColumnRules,
@@ -122,6 +123,7 @@ class ChToCh(ChTransfer):
             ChContractTypes(self._stream_types(matched.stream)),
             self._feed,
             self._journal,
+            WholeBody(),
         )
         run = TransferRun(
             schema_strategy,
