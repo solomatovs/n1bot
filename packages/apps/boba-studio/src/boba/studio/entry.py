@@ -7,6 +7,7 @@ RuntimeError — конфиг не найден или обязательная 
 from __future__ import annotations
 
 import argparse
+import asyncio
 import logging.config
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
@@ -16,7 +17,7 @@ import uvicorn
 from fastapi import FastAPI
 
 from boba.auth import AuthService
-from boba.cancellation import StopReason
+from boba.cancellation import ProcessStop, StopReason
 from boba.chat.profiles import ChatProfiles
 from boba.connections.sealed import SealKeys
 from boba.db.postgres import AsyncPostgresPool
@@ -30,6 +31,7 @@ from boba.runtime.config import (
     StudioRuntimeConfig,
 )
 from boba.runtime.di import Container
+from boba.runtime.http import SignalledServer
 from boba.runtime.plugins import EntryPointPlugins
 from boba.runtime.spa import BuiltSpa, DevSpa, SpaPaths
 from boba.runtime.users import UsersTable
@@ -210,15 +212,19 @@ class StudioEntry:
         logging.config.dictConfig(config.logger)
 
         app = StudioHost.build(config)
-        uvicorn.run(
-            app,
-            host=config.studio.host,
-            port=config.studio.port,
-            ws=config.studio.ws_protocol,
-            log_config=None,
-            log_level=None,
-            access_log=True,
+        server = SignalledServer(
+            uvicorn.Config(
+                app,
+                host=config.studio.host,
+                port=config.studio.port,
+                ws=config.studio.ws_protocol,
+                log_config=None,
+                log_level=None,
+                access_log=True,
+            ),
+            ProcessStop(),
         )
+        asyncio.run(server.serve_until_stopped())
 
     @classmethod
     def config_argument(cls) -> Path:

@@ -29,6 +29,7 @@ import psycopg
 from psycopg import sql
 from pydantic import Field
 
+from boba.cancellation import ProcessStop
 from boba.config import ConfigError, bind_section
 from boba.db.postgres import AsyncPostgresPool, PostgresError
 from boba.db.postgres.query import PgQueryBuilder
@@ -243,7 +244,7 @@ def parse_args(argv: Sequence[str] | None = None) -> tuple[Command, Path]:
     return args.command, args.config
 
 
-async def main() -> None:
+async def work() -> None:
     section = "ix.vector"
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(message)s")
 
@@ -280,6 +281,12 @@ async def main() -> None:
         VectorWorkerError,
     ) as exc:
         raise SystemExit(str(exc)) from exc
+
+
+async def main() -> None:
+    """Работа приложения под остановкой процесса: SIGTERM и SIGINT отменяют
+    её, незакрытое закрывается, процесс выходит сам."""
+    await ProcessStop().run(work())
 
 
 def cli() -> None:

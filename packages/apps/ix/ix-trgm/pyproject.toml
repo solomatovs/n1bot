@@ -8,6 +8,7 @@ version = "0.0.26.dev4"
 description = "Триграммный индекс ix_trgm: аспекты объектов ix любого происхождения."
 requires-python = ">=3.11,<4"
 dependencies = [
+    "boba-cancellation==0.0.26.dev4",
     "boba-config==0.0.26.dev4",
     "boba-db-postgres==0.0.26.dev4",
     "boba-ix-core==0.0.26.dev4",

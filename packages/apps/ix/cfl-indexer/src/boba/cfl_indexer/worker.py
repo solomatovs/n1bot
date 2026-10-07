@@ -22,6 +22,7 @@ import hashlib
 import json
 import logging
 import multiprocessing
+import signal
 from collections.abc import Sequence
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass
@@ -32,6 +33,7 @@ from typing import ClassVar
 import psycopg
 from pydantic import BaseModel, ConfigDict, Field
 
+from boba.cancellation import ProcessStop
 from boba.cfl_indexer.confluence import (
     Attachment,
     AttachmentGoneError,
@@ -748,12 +750,41 @@ class IndexerCli:
             logger.info("done: %s", report.line())
 
 
-async def main() -> None:
+async def work() -> None:
     logging.basicConfig(level=logging.INFO, format=LOG_FORMAT)
     try:
         await IndexerCli().run()
     except Exception as exc:
         raise SystemExit(str(exc)) from exc
+
+
+class StoppedSpaces:
+    """Действие остановки процесса индексатора: завершает процессы спейсов.
+
+    Спейсы индексируются процессами пула, а их итогов ждёт поток рядом с
+    циклом событий: отмена работы до потока не доходит, и процесс висел бы
+    до конца индексации. Сигнал остановки завершает процессы спейсов —
+    ожидание в потоке кончается, процесс выходит. Отдаётся остановке
+    процесса (ProcessStop.on_stop) в main.
+    """
+
+    def __call__(self, received: signal.Signals) -> None:
+        children = multiprocessing.active_children()
+        logger.info(
+            "stop signal %s: terminating %d space process(es)",
+            received.name,
+            len(children),
+        )
+        for child in children:
+            child.terminate()
+
+
+async def main() -> None:
+    """Работа приложения под остановкой процесса: SIGTERM и SIGINT отменяют
+    её и завершают процессы спейсов, процесс выходит сам."""
+    stop = ProcessStop()
+    stop.on_stop(StoppedSpaces())
+    await stop.run(work())
 
 
 def cli() -> None:

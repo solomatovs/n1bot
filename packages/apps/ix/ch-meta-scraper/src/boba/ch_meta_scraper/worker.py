@@ -19,6 +19,7 @@ from typing import Any
 
 from clickhouse_connect.driver.asyncclient import AsyncClient
 
+from boba.cancellation import ProcessStop
 from boba.db.clickhouse import ClickHouseError, ClickHouseQueryError
 from boba.db.clickhouse.connection import ClickHouseConfig
 from boba.db.clickhouse.errors import ClickHouseFormatError
@@ -218,9 +219,15 @@ class ChSource(ScrapeSource):
             ) from exc
 
 
-async def main() -> None:
+async def work() -> None:
     package_dir = Path(__file__).resolve().parent
     await run_cli(PROG, DESCRIPTION, SECTION, package_dir, ScraperConfig)
+
+
+async def main() -> None:
+    """Работа приложения под остановкой процесса: SIGTERM и SIGINT отменяют
+    её, незакрытое закрывается, процесс выходит сам."""
+    await ProcessStop().run(work())
 
 
 def cli() -> None:
