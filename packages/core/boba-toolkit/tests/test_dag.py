@@ -10,7 +10,7 @@ import pytest
 from pydantic import BaseModel, ValidationError
 
 from boba.toolkit.chain import StreamInput, StreamOutput, StreamPlan, StreamPlanError
-from boba.toolkit.dag import DagNode, DagPlanner, DagSpec
+from boba.toolkit.dag import CallDag, DagNode, DagPlanner, DagSpec, NodeReports
 from boba.toolkit.ports import Inbound, Outbound, StreamSpec
 
 
@@ -296,3 +296,55 @@ class TestDagGroups:
                     _node("a", "source", out="x"),
                 )
             )
+
+
+class TestNodeReports:
+    """Подпись отчёта о ходе работы ключом узла связки и её разбор."""
+
+    def test_report_is_signed_and_read_back(self) -> None:
+        reports = NodeReports()
+
+        signed = reports.labeled("src", "copy t to stdout: 2.0 MiB")
+
+        if signed != "src: copy t to stdout: 2.0 MiB":
+            raise AssertionError(f"ключ узла стоит в начале текста: {signed}")
+        if reports.split(signed) != ("src", "copy t to stdout: 2.0 MiB"):
+            raise AssertionError("разбор отдаёт ключ и текст узла как были")
+
+    def test_text_without_a_key_is_not_a_node_report(self) -> None:
+        if NodeReports().split("connecting") is not None:
+            raise AssertionError("текст без подписи не приписывается узлу")
+
+
+class TestNodeTitle:
+    """Ключ узла по идентификатору его вызова в описании workflow."""
+
+    @staticmethod
+    def _call() -> DagNode:
+        nodes = [
+            {"key": "src", "tool": "a", "args": {}},
+            {"key": "dst", "tool": "b", "args": {}, "call_id": "call-7"},
+            {"key": "third", "tool": "c", "args": {}},
+        ]
+
+        return DagNode.model_validate(
+            {"key": "api-1", "tool": CallDag.WORKFLOW, "args": {"nodes": nodes}}
+        )
+
+    def test_named_call_is_found_by_its_id(self) -> None:
+        if CallDag().title_of(self._call(), "call-7") != "dst":
+            raise AssertionError("узел найден по идентификатору, названному клиентом")
+
+    def test_unnamed_call_is_found_by_its_place(self) -> None:
+        dags = CallDag()
+        call = self._call()
+        keys = [node.key for node in dags.nodes_of(call)]
+
+        titles = [dags.title_of(call, key) for key in keys]
+
+        if titles != ["src", "dst", "third"]:
+            raise AssertionError(f"каждый вызов узла отдаёт ключ своего узла: {titles}")
+
+    def test_unknown_call_has_no_title(self) -> None:
+        if CallDag().title_of(self._call(), "call-99") is not None:
+            raise AssertionError("чужой идентификатор узлом не называется")

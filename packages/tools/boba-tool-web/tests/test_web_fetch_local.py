@@ -14,6 +14,7 @@ import pytest
 from PIL import Image
 
 from boba.doc.config import DisabledOcrConfig
+from boba.stand_core.progress import HeardProgress
 from boba.tool.web.tools import WebToolsConfig, web_fetch_page, web_grep_page
 from boba.toolkit.entry import ToolMain
 from boba.toolkit.ports import ToolProgress
@@ -110,6 +111,42 @@ async def test_html_as_markdown(site: _Site, connection, cfg) -> None:
     assert "first **bold**" in result.text
     assert "var x" not in result.text
     assert result.metadata["kind"] == "html"
+
+
+async def test_download_is_reported_before_and_after_the_request(
+    site: _Site, connection, cfg
+) -> None:
+    """Пока страница качается, пользователь видит, что именно идёт: запрос
+    и его адрес, ответ сервера с кодом, типом и размером тела, итог
+    скачивания."""
+    heard = HeardProgress()
+    url = site.url("page.html")
+    try:
+        await _fetch()(
+            progress=heard.progress,
+            url=url,
+            connection=connection,
+            as_markdown=True,
+            line_offset=0,
+            line_count=50,
+            cfg=cfg,
+        )
+        messages = heard.messages()
+    finally:
+        heard.close()
+
+    if messages[0] != f"requesting {url}, waiting for the server":
+        raise AssertionError(f"the request is named before it is sent: {messages}")
+
+    answered = messages[1]
+    if not answered.startswith(f"{url} answered 200 in "):
+        raise AssertionError(f"the answer names the status: {answered}")
+    if "text/html" not in answered or not answered.endswith("downloading the body"):
+        raise AssertionError(f"the answer names the kind of the body: {answered}")
+
+    done = messages[-1]
+    if not done.startswith("downloaded ") or f" bytes from {url} in " not in done:
+        raise AssertionError(f"the size of the download is named: {done}")
 
 
 async def test_html_as_is(site: _Site, connection, cfg) -> None:

@@ -45,9 +45,16 @@ class Pumps:
         clickhouse: ClickHouseConfig | None = None,
         oracle: OracleConfig | None = None,
         postgres_target: PostgresConfig | None = None,
+        progress: ToolProgress | None = None,
     ) -> None:
         """postgres_target — второй сервер postgres для входных насосов;
-        без него вход и выход идут в один сервер."""
+        без него вход и выход идут в один сервер. progress — куда тела пишут
+        отчёты о ходе работы; None — отчёты никуда не уходят."""
+        heard = progress
+        if heard is None:
+            heard = ToolProgress(-1)
+
+        self._progress_heard = heard
         target = postgres_target
         if target is None:
             target = postgres
@@ -122,13 +129,13 @@ class Pumps:
     def _detached(self, name: str) -> dict[str, StreamGroup | ToolProgress]:
         """Служебные параметры тела вне группы и без слушателя, как у вызова
         человеком: барьер группы, чей ready() возвращается сразу, и отчёты
-        о ходе работы, которые никуда не уходят."""
+        о ходе работы приёмнику стенда."""
         built: dict[str, StreamGroup | ToolProgress] = {}
         for field in self._groups[name]:
             built[field] = StreamGroup(-1, -1)
 
         for field in self._progress[name]:
-            built[field] = ToolProgress(-1)
+            built[field] = self._progress_heard
 
         return built
 

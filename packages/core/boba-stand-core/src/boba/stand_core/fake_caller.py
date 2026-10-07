@@ -69,7 +69,22 @@ async def fake_sleep(
     return MarkdownResult(text=f"slept {seconds}")
 
 
-TOOLS: Final = ToolMain.toolset(fake_whoami, fake_scope, fake_progress, fake_sleep)
+@tool
+async def fake_query(
+    sql: Annotated[
+        str,
+        Field(min_length=1, description="Текст запроса"),
+        MarkdownResult(language="sql"),
+    ],
+    limit: Annotated[int, Field(ge=1, description="Сколько строк вернуть")],
+) -> MarkdownResult:
+    """Возвращает текст запроса: у аргумента sql объявлен показ кодом sql."""
+    return MarkdownResult(text=f"{sql} limit {limit}")
+
+
+TOOLS: Final = ToolMain.toolset(
+    fake_whoami, fake_scope, fake_progress, fake_sleep, fake_query
+)
 
 if __name__ == "__main__":
     sys.exit(ToolMain.run(TOOLS))

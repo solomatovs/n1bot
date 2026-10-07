@@ -2488,7 +2488,6 @@ class TestStreamTools:
             code="sql",
             language="sql",
             label="pg_stream_out into dev_null",
-            hidden=("out",),
         )
         drain = ToolCall(
             tool="dev_null",
@@ -2513,7 +2512,6 @@ class TestStreamTools:
             code="sql",
             language="sql",
             label=f"{tool} into {channel.value}",
-            hidden=("out",),
         )
 
     def _sink(
@@ -2535,7 +2533,6 @@ class TestStreamTools:
                 "feed": channel.value,
             },
             label=label,
-            hidden=("feed",),
         )
 
 

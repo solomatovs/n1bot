@@ -68,8 +68,10 @@ def _button_appears(chat: ChatPage, within_sec: float) -> bool:
     return False
 
 
-def test_button_is_visible_while_running(sandbox_chat: ChatPage) -> None:
-    sandbox_chat.ask(_bash_call("sleep 20; echo stream-probe"))
+def test_button_appears_when_the_call_is_over(sandbox_chat: ChatPage) -> None:
+    """Журнал вызова читается по адресу из его итога: пока вызов идёт, шаг
+    показывает ход работы без кнопки журнала, кнопка встаёт с итогом."""
+    sandbox_chat.ask(_bash_call("sleep 8; echo stream-probe"))
     sandbox_chat.await_step(StepKind.RUN, timeout_ms=TURN_TIMEOUT_SEC * 1000)
     sandbox_chat.expand_process()
     sandbox_chat.await_step(StepKind.TOOL, timeout_ms=TURN_TIMEOUT_SEC * 1000)
@@ -79,8 +81,14 @@ def test_button_is_visible_while_running(sandbox_chat: ChatPage) -> None:
 
     sandbox_chat.await_idle(timeout_sec=TURN_TIMEOUT_SEC)
 
-    if not seen_running:
+    if seen_running:
         raise AssertionError(
-            "stream button is absent on the running tool step\n"
+            "stream button is shown before the call has a journal address\n"
+            + sandbox_chat.log.describe()
+        )
+
+    if not _button_appears(sandbox_chat, POLL_SEC):
+        raise AssertionError(
+            "stream button is absent on the finished tool step\n"
             + sandbox_chat.log.describe()
         )
