@@ -19,9 +19,10 @@ import io
 import logging
 import mimetypes
 import time
+import unicodedata
 import uuid
 from collections.abc import AsyncIterator, Callable
-from typing import Annotated, Any, ClassVar
+from typing import Annotated, Any, ClassVar, Literal
 from uuid import UUID
 
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
@@ -82,6 +83,7 @@ class MultipartFile:
     DISPOSITION: ClassVar[bytes] = b"content-disposition"
     CONTENT_TYPE: ClassVar[bytes] = b"content-type"
     DEFAULT_MIME: ClassVar[str] = "application/octet-stream"
+    NAME_FORM: ClassVar[Literal["NFC"]] = "NFC"
 
     def __init__(self, request: Request) -> None:
         self.filename: str = ""
@@ -201,7 +203,10 @@ class MultipartFile:
         if not filename:
             return
 
-        self.filename = filename.decode("utf-8", errors="replace")
+        # браузер macOS шлёт имя разложенным (й = и + знак), модель пишет его
+        # составными буквами: путь к файлу обязан совпасть побайтно
+        raw = filename.decode("utf-8", errors="replace")
+        self.filename = unicodedata.normalize(self.NAME_FORM, raw)
         mime = self._headers.get(self.CONTENT_TYPE, b"").decode()
         self.content_type = mime or self.DEFAULT_MIME
         self._found = True
