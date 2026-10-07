@@ -43,6 +43,7 @@ class ChSummaryKey(StrEnum):
     RESULT_ROWS = "result_rows"
     RESULT_BYTES = "result_bytes"
     ELAPSED_NS = "elapsed_ns"
+    MEMORY_USAGE = "memory_usage"
 
 
 @dataclass(frozen=True)
@@ -126,6 +127,16 @@ class ChQueryTrace:
     @property
     def read_rows(self) -> int:
         return self._count(ChSummaryKey.READ_ROWS)
+
+    @property
+    def memory_usage(self) -> int | None:
+        """Пик памяти запроса на сервере, байт; None — сервер его в сводке
+        не отдаёт (до 25-й версии)."""
+        value = self._summary.get(ChSummaryKey.MEMORY_USAGE.value)
+        if value is None:
+            return None
+
+        return int(value)
 
     def report(
         self,
