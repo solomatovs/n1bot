@@ -10,7 +10,9 @@ pytest -m integration.
 from __future__ import annotations
 
 import base64
+import html
 import os
+import re
 from collections.abc import AsyncIterator, Iterator
 from pathlib import Path
 
@@ -131,6 +133,17 @@ async def _started(server: AuthServer) -> tuple[str, OAuthClientInformationFull]
     return address.params[AuthServer.TXN], client
 
 
+async def _sso_link(browser: httpx.AsyncClient, txn: str) -> httpx.URL:
+    """Ссылка входа kerberos со страницы входа: страница открыта этим
+    браузером, её cookie остаётся у него."""
+    page = await browser.get("/login", params={"txn": txn})
+    found = re.search(r'href="([^"]*/login/sso[^"]*)"', page.text)
+    if found is None:
+        raise AssertionError(f"the sign-in page links the kerberos sign-in: {page}")
+
+    return httpx.URL(html.unescape(found.group(1)))
+
+
 def _ticket(tmp_path: Path) -> str:
     """Билет браузера: TGT пользователя стенда по паролю и AP-REQ к SPN сервиса."""
     password = STAND.reader_password.get_secret_value()
@@ -177,7 +190,7 @@ async def test_request_without_a_ticket_is_challenged(
 ) -> None:
     txn, _ = await _started(server)
 
-    reply = await browser.get("/login/sso", params={"txn": txn})
+    reply = await browser.get(await _sso_link(browser, txn))
 
     if reply.status_code != httpx.codes.UNAUTHORIZED:
         raise AssertionError(f"a request without a ticket is 401: {reply}")
@@ -195,8 +208,7 @@ async def test_ticket_signs_in_and_issues_a_token(
     txn, client = await _started(server)
 
     reply = await browser.get(
-        "/login/sso",
-        params={"txn": txn},
+        await _sso_link(browser, txn),
         headers={"Authorization": f"Negotiate {_ticket(tmp_path)}"},
     )
     if reply.status_code != httpx.codes.FOUND:
@@ -220,3 +232,26 @@ async def test_ticket_signs_in_and_issues_a_token(
 
     if access.scopes != [ENDPOINT]:
         raise AssertionError(f"roles of the user open the endpoint: {access.scopes}")
+
+
+async def test_ticket_on_a_bare_link_does_not_sign_in(
+    server: AuthServer, browser: httpx.AsyncClient, tmp_path: Path
+) -> None:
+    """Ссылка /login/sso чужого начатого входа, открытая браузером домена
+    мимо страницы входа: билет есть, кода нет."""
+    txn, _ = await _started(server)
+
+    reply = await browser.get(
+        "/login/sso",
+        params={"txn": txn},
+        headers={"Authorization": f"Negotiate {_ticket(tmp_path)}"},
+    )
+
+    if reply.status_code != httpx.codes.FORBIDDEN:
+        raise AssertionError(f"a step past the sign-in page is 403: {reply}")
+
+    if "location" in reply.headers:
+        raise AssertionError(f"no code leaves the service: {reply.headers}")
+
+    if REDIRECT not in html.unescape(reply.text):
+        raise AssertionError(f"the refusal shows where the code would go: {reply.text}")

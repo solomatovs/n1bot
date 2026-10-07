@@ -11,10 +11,13 @@ endpoint'ами, выданными ролям вошедшего. Endpoint пр
 EndpointTokens и требует свою область; 401 и 403 отвечает fastmcp. Готовые
 токены секции [mcp.tokens] принимаются наравне. Вход человека продлевается
 токеном обновления до потолка сессии; все входы разом снимает смена
-поколения сессий (рестарт либо generation в конфиге). Cookie и строк
-пользователей у сервиса нет; коды авторизации и клиенты динамической
-регистрации живут без хранения: начатые входы и коды — в памяти процесса,
-запись зарегистрировавшегося клиента — в его же идентификаторе.
+поколения сессий (рестарт либо generation в конфиге). Cookie сессии и строк
+пользователей у сервиса нет; начатые входы, коды авторизации и клиенты
+динамической регистрации живут без хранения, запечатанными значениями:
+начатый вход — в адресе страницы входа, итог входа — в коде авторизации,
+запись зарегистрировавшегося клиента — в его же идентификаторе. Шаг входа
+принимается только со страницы входа, открытой в этом же браузере: её
+подтверждение лежит в cookie страницы и в самой странице.
 
 Ошибки:
 TokenClaimsError — токен принят, но логина и ролей вызывающего в нём нет.
@@ -24,13 +27,15 @@ AuthorizeError — запрос авторизации не принят (по �
 TokenError — код авторизации или утверждение не приняты (по контракту
     OAuthProvider).
 страницы входа отвечают по HTTP: 400 — вход не начат или истёк; 401 — логин
-    или пароль неверен либо нужен билет kerberos; 403 — вход запрещён.
+    или пароль неверен либо нужен билет kerberos; 403 — вход запрещён либо
+    шаг входа пришёл не со страницы входа этого браузера.
 """
 
 from __future__ import annotations
 
 import html
 import logging
+import secrets
 import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -909,7 +914,38 @@ class LoginField(StrEnum):
     TXN = "txn"
     LOGIN = "login"
     PASSWORD = "password"  # noqa: S105 — имя поля формы
+    PROOF = "proof"
+    COOKIE = "boba_mcp_login"
     SSO = "/login/sso"
+
+
+@dataclass(frozen=True)
+class LoginVisit:
+    """Заход браузера на страницу начатого входа: какой вход открыт и какое
+    подтверждение страницы браузер прислал в cookie (пусто — не прислал).
+
+    Создаётся страницами входа (LoginPages) на каждый запрос. Подтверждение
+    выдаётся странице входа и лежит в двух местах: в cookie браузера и в
+    самой странице (поле формы, ссылка kerberos). Шаг входа принимается,
+    только если оба совпали, — так вход нельзя завершить ссылкой или формой
+    с чужого сайта, минуя страницу с названием приложения и адресом возврата.
+    """
+
+    txn: str
+    held: PendingLogin
+    cookie: str
+
+    def confirmed(self, proof: str) -> bool:
+        if not self.cookie:
+            return False
+
+        if not proof:
+            return False
+
+        return secrets.compare_digest(
+            self.cookie.encode(SealedValues.ENCODING),
+            proof.encode(SealedValues.ENCODING),
+        )
 
 
 class LoginPages:
@@ -919,16 +955,25 @@ class LoginPages:
     Создаётся сборкой процесса над сервером авторизации; routes() ставятся
     в корень приложения рядом с его маршрутами. Удачный вход завершает
     начатый вход сервера и ведёт браузер на адрес возврата клиента с кодом.
+    Страница называет приложение, начавшее вход, и адрес возврата; шаг входа
+    без подтверждения этой страницы (LoginVisit) не принимается.
     """
 
     PAGE: ClassVar[str] = (
         '<!doctype html><html><head><meta charset="utf-8">'
         "<title>boba-mcp sign-in</title></head><body>"
-        "<h1>Sign in to boba-mcp</h1>{error}{form}{sso}</body></html>"
+        "<h1>Sign in to boba-mcp</h1>{error}{client}{form}{sso}</body></html>"
     )
+    CLIENT: ClassVar[str] = (
+        "<p>Application <b>{name}</b> asks to sign in to boba-mcp as you. "
+        "After the sign-in this browser is sent to <b>{redirect}</b>. "
+        "Continue only if you started this sign-in yourself.</p>"
+    )
+    UNNAMED: ClassVar[str] = "without a name"
     FORM: ClassVar[str] = (
         '<form method="post" action="{action}">'
         '<input type="hidden" name="txn" value="{txn}">'
+        '<input type="hidden" name="proof" value="{proof}">'
         '<p><label>Login <input name="login" autofocus></label></p>'
         '<p><label>Password <input name="password" type="password"></label></p>'
         '<p><button type="submit">Sign in</button></p></form>'
@@ -942,11 +987,23 @@ class LoginPages:
         "no sign-in method for people is configured: [auth] of the service "
         "has no local, ldap or kerberos entry"
     )
+    UNCONFIRMED: ClassVar[str] = (
+        "this sign-in step did not come from the sign-in page of this browser: "
+        "check the application below and sign in on this page"
+    )
+    HEADERS: ClassVar[Mapping[str, str]] = {
+        "Cache-Control": "no-store",
+        "Content-Security-Policy": "frame-ancestors 'none'",
+        "X-Frame-Options": "DENY",
+    }
 
     def __init__(self, server: AuthServer, public_url: str) -> None:
         self._server = server
         self._sign_ins = server.sign_ins()
         self._public_url = public_url.rstrip("/")
+        public = urlsplit(self._public_url)
+        self._cookie_path = f"{public.path}{AuthServer.LOGIN_PATH}"
+        self._cookie_secure = public.scheme == "https"
         self._requests = SsoRequests()
         self._responses = SsoResponses()
 
@@ -961,55 +1018,74 @@ class LoginPages:
         return routes
 
     async def form(self, request: Request) -> Response:
-        txn = request.query_params.get(LoginField.TXN.value, "")
-        if self._server.pending(txn) is None:
+        visit = self._visit(request, request.query_params.get(LoginField.TXN.value, ""))
+        if visit is None:
             return self._expired()
 
-        return self._page(txn, "", 200)
+        return await self._page(visit, "", 200)
 
     async def submit(self, request: Request) -> Response:
         fields = await request.form()
-        txn = str(fields.get(LoginField.TXN.value, ""))
-        held = self._server.pending(txn)
-        if held is None:
+        visit = self._visit(request, str(fields.get(LoginField.TXN.value, "")))
+        if visit is None:
             return self._expired()
+
+        if not visit.confirmed(str(fields.get(LoginField.PROOF.value, ""))):
+            return await self._page(visit, self.UNCONFIRMED, 403)
 
         login = str(fields.get(LoginField.LOGIN.value, ""))
         password = str(fields.get(LoginField.PASSWORD.value, ""))
         try:
             signed = await self._sign_ins.by_password(login, password)
         except AuthenticationError as exc:
-            return self._page(txn, str(exc), 401)
+            return await self._page(visit, str(exc), 401)
         except AuthorizationError as exc:
-            return self._page(txn, str(exc), 403)
+            return await self._page(visit, str(exc), 403)
 
-        return RedirectResponse(self._server.signed_in(held, signed), status_code=302)
+        return RedirectResponse(
+            self._server.signed_in(visit.held, signed), status_code=302
+        )
 
     async def sso(self, request: Request) -> Response:
-        txn = request.query_params.get(LoginField.TXN.value, "")
-        held = self._server.pending(txn)
-        if held is None:
+        query = request.query_params
+        visit = self._visit(request, query.get(LoginField.TXN.value, ""))
+        if visit is None:
             return self._expired()
+
+        if not visit.confirmed(query.get(LoginField.PROOF.value, "")):
+            return await self._page(visit, self.UNCONFIRMED, 403)
 
         try:
             outcome = await self._sign_ins.exchange().handshake(
                 self._requests.of(request)
             )
         except AuthorizationError as exc:
-            return self._page(txn, str(exc), 403)
+            return await self._page(visit, str(exc), 403)
 
         if isinstance(outcome, SsoChallenge):
             # браузер домена повторит запрос с билетом сам; остальным страница
             # входа остаётся с причиной и формой
-            return self._page(txn, self.NO_TICKET, 401, self._responses.headers())
+            return await self._page(
+                visit, self.NO_TICKET, 401, self._responses.headers()
+            )
 
         return RedirectResponse(
-            self._server.signed_in(held, outcome.signed), status_code=302
+            self._server.signed_in(visit.held, outcome.signed), status_code=302
         )
 
-    def _page(
+    def _visit(self, request: Request, txn: str) -> LoginVisit | None:
+        """Заход на страницу начатого входа; None — вход не начат или истёк."""
+        held = self._server.pending(txn)
+        if held is None:
+            return None
+
+        cookie = request.cookies.get(LoginField.COOKIE.value, "")
+
+        return LoginVisit(txn=txn, held=held, cookie=cookie)
+
+    async def _page(
         self,
-        txn: str,
+        visit: LoginVisit,
         error: str,
         status: int,
         headers: Mapping[str, str] | None = None,
@@ -1022,23 +1098,63 @@ class LoginPages:
         if error:
             shown = self.ERROR.format(text=html.escape(error))
 
+        proof = visit.cookie
+        if not proof:
+            proof = secrets.token_urlsafe(32)
+
         form = ""
         if providers.password:
             form = self.FORM.format(
                 action=html.escape(f"{self._public_url}{AuthServer.LOGIN_PATH}"),
-                txn=html.escape(txn),
+                txn=html.escape(visit.txn),
+                proof=html.escape(proof),
             )
 
         sso = ""
         if providers.sso:
-            query = urlencode({AuthServer.TXN: txn})
+            query = urlencode(
+                {AuthServer.TXN: visit.txn, LoginField.PROOF.value: proof}
+            )
             url = f"{self._public_url}{LoginField.SSO.value}?{query}"
             sso = self.SSO.format(url=html.escape(url))
 
-        return HTMLResponse(
-            self.PAGE.format(error=shown, form=form, sso=sso),
+        sent = dict(self.HEADERS)
+        if headers is not None:
+            sent.update(headers)
+
+        response = HTMLResponse(
+            self.PAGE.format(
+                error=shown, client=await self._client(visit.held), form=form, sso=sso
+            ),
             status_code=status,
-            headers=headers,
+            headers=sent,
+        )
+        response.set_cookie(
+            LoginField.COOKIE.value,
+            proof,
+            max_age=AuthServer.PENDING_SEC,
+            path=self._cookie_path,
+            secure=self._cookie_secure,
+            httponly=True,
+            samesite="strict",
+        )
+
+        return response
+
+    async def _client(self, held: PendingLogin) -> str:
+        """Кто просит вход и куда вернётся браузер: по этой строке человек
+        решает, его ли это вход."""
+        name: str | None = None
+        client = await self._server.get_client(held.client_id)
+        if client is not None:
+            name = client.client_name
+
+        if not name:
+            name = self.UNNAMED
+
+        return self.CLIENT.format(
+            name=html.escape(name),
+            redirect=html.escape(str(held.params.redirect_uri)),
         )
 
     def _expired(self) -> Response:
@@ -1047,8 +1163,11 @@ class LoginPages:
         )
 
         return HTMLResponse(
-            self.PAGE.format(error=self.ERROR.format(text=text), form="", sso=""),
+            self.PAGE.format(
+                error=self.ERROR.format(text=text), client="", form="", sso=""
+            ),
             status_code=400,
+            headers=self.HEADERS,
         )
 
 

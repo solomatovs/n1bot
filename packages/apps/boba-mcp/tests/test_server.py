@@ -10,6 +10,8 @@ from __future__ import annotations
 import asyncio
 import base64
 import hashlib
+import html
+import re
 import secrets
 import socket
 import time
@@ -735,6 +737,16 @@ class TestHumanSignIn:
 
         return location.params["txn"]
 
+    async def _proof(self, http: httpx.AsyncClient, public: str, txn: str) -> str:
+        """Подтверждение страницы входа: страница открыта этим браузером, её
+        cookie остаётся у него."""
+        page = await http.get(f"{public}/login", params={"txn": txn})
+        found = re.search(r'name="proof" value="([^"]+)"', page.text)
+        if found is None:
+            raise AssertionError(f"the sign-in page carries its proof: {page.text}")
+
+        return found.group(1)
+
     @staticmethod
     def _pkce() -> tuple[str, str]:
         verifier = secrets.token_urlsafe(48)
@@ -755,9 +767,20 @@ class TestHumanSignIn:
             if page.status_code != httpx.codes.OK or "password" not in page.text:
                 raise AssertionError(f"the sign-in page shows the form: {page.text}")
 
+            if "stand browser client" not in page.text:
+                raise AssertionError(f"the page names the application: {page.text}")
+
+            if html.escape(self.REDIRECT) not in page.text:
+                raise AssertionError(f"the page names the return: {page.text}")
+
             signed = await http.post(
                 f"{public}/login",
-                data={"txn": txn, "login": LOCAL_LOGIN, "password": LOCAL_PASSWORD},
+                data={
+                    "txn": txn,
+                    "proof": await self._proof(http, public, txn),
+                    "login": LOCAL_LOGIN,
+                    "password": LOCAL_PASSWORD,
+                },
             )
             if signed.status_code != httpx.codes.FOUND:
                 raise AssertionError(
@@ -800,7 +823,12 @@ class TestHumanSignIn:
             txn = await self._login_page(http, stand, client_id, challenge)
             signed = await http.post(
                 f"{public}/login",
-                data={"txn": txn, "login": LOCAL_LOGIN, "password": LOCAL_PASSWORD},
+                data={
+                    "txn": txn,
+                    "proof": await self._proof(http, public, txn),
+                    "login": LOCAL_LOGIN,
+                    "password": LOCAL_PASSWORD,
+                },
             )
             back = httpx.URL(signed.headers["location"])
             issued = await http.post(
@@ -877,7 +905,12 @@ class TestHumanSignIn:
             txn = await self._login_page(http, stand, client_id, challenge)
             refused = await http.post(
                 f"{public}/login",
-                data={"txn": txn, "login": LOCAL_LOGIN, "password": "wrong"},
+                data={
+                    "txn": txn,
+                    "proof": await self._proof(http, public, txn),
+                    "login": LOCAL_LOGIN,
+                    "password": "wrong",
+                },
             )
 
         if refused.status_code != httpx.codes.UNAUTHORIZED:
@@ -885,6 +918,57 @@ class TestHumanSignIn:
 
         if "Invalid username or password" not in refused.text:
             raise AssertionError(f"the page names the refusal: {refused.text}")
+
+    async def test_sign_in_from_another_browser_is_refused(
+        self, stand: ServiceStand, url: str
+    ) -> None:
+        """Начатый вход открыл один браузер, а форму шлёт другой: верный
+        пароль без cookie страницы входа кода не даёт."""
+        public = self._public(stand)
+        _, challenge = self._pkce()
+        async with httpx.AsyncClient() as opener:
+            client_id = await self._registered(opener, public)
+            txn = await self._login_page(opener, stand, client_id, challenge)
+            proof = await self._proof(opener, public, txn)
+
+        async with httpx.AsyncClient() as other:
+            refused = await other.post(
+                f"{public}/login",
+                data={
+                    "txn": txn,
+                    "proof": proof,
+                    "login": LOCAL_LOGIN,
+                    "password": LOCAL_PASSWORD,
+                },
+            )
+
+        if refused.status_code != httpx.codes.FORBIDDEN:
+            raise AssertionError(f"a step without the page cookie is 403: {refused}")
+
+        if "location" in refused.headers:
+            raise AssertionError(f"no code leaves the service: {refused.headers}")
+
+    async def test_sign_in_without_the_page_proof_is_refused(
+        self, stand: ServiceStand, url: str
+    ) -> None:
+        """Форма с чужого сайта: cookie у браузера есть, а подтверждения со
+        страницы входа в форме нет."""
+        public = self._public(stand)
+        _, challenge = self._pkce()
+        async with httpx.AsyncClient() as http:
+            client_id = await self._registered(http, public)
+            txn = await self._login_page(http, stand, client_id, challenge)
+            await self._proof(http, public, txn)
+            refused = await http.post(
+                f"{public}/login",
+                data={"txn": txn, "login": LOCAL_LOGIN, "password": LOCAL_PASSWORD},
+            )
+
+        if refused.status_code != httpx.codes.FORBIDDEN:
+            raise AssertionError(f"a step without the page proof is 403: {refused}")
+
+        if "location" in refused.headers:
+            raise AssertionError(f"no code leaves the service: {refused.headers}")
 
     async def test_unknown_sign_in_is_refused(
         self, stand: ServiceStand, url: str
