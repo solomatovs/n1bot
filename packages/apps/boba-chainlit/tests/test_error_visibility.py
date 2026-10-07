@@ -10,10 +10,12 @@ from uuid import uuid4
 
 import pytest
 from chainlit.context import ChainlitContext
+from chainlit_stand import FakeThreadMessages
 from langchain_core.outputs import LLMResult
 from pydantic import Field
 
 from boba.chainlit.agent.events import TurnEvents
+from boba.chainlit.canvas.remote import RemoteJournals
 from boba.chainlit.chat import tracing as tracer_module
 from boba.chainlit.chat.feed import TurnFeed
 from boba.chainlit.chat.tracing import AgentTracer
@@ -156,7 +158,13 @@ class TestToolStepFailuresVisible:
 
         contexts = call_stand.contexts
         runs = Runs(contexts)
-        calls = ChatCalls(contexts, runs, SentConnections(), ChatMount(contexts, runs))
+        calls = ChatCalls(
+            contexts,
+            runs,
+            SentConnections(),
+            ChatMount(contexts, runs),
+            RemoteJournals(FakeThreadMessages()),
+        )
         service = LocalDagService(
             ToolHosting().toolset([step_probe]),
             StandRefs.STREAM_CONFIG,

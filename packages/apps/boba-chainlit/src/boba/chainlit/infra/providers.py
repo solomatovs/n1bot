@@ -46,6 +46,7 @@ from boba.chainlit.rendering.mount import (
     ChatAttachments,
     ChatCalls,
     ChatMount,
+    ChatProgress,
 )
 from boba.chat.profiles import (
     AgentSettings,
@@ -244,11 +245,10 @@ async def langchain_checkpoint_saver(
 
 
 def remote_journals(
-    contexts: Annotated[CallContexts, Depends(runtime.call_contexts)],
     saver: Annotated[CheckpointMessages, Depends(langchain_checkpoint_saver)],
 ) -> RemoteJournals:
-    """Реестр журналов вызовов, исполненных MCP-серверами, на процесс."""
-    return RemoteJournals(contexts, saver)
+    """Адреса журналов вызовов, исполненных MCP-серверами, на процесс."""
+    return RemoteJournals(saver)
 
 
 async def chainlit_data_layer(  # noqa: PLR0913 — слой данных собирается всеми зависимостями сразу
@@ -336,11 +336,12 @@ def node_calls(
     runs: Annotated[Runs, Depends(runtime.runs)],
     sent: Annotated[SentConnections, Depends(sent_connections)],
     mount: Annotated[ChatMount, Depends(chat_mount)],
+    journals: Annotated[RemoteJournals, Depends(remote_journals)],
 ) -> ChatCalls:
     """Путь вызова узла к телу в чате: вызов виден ленте идущего хода шагом.
     Один объект на процесс: его берут исполнитель своих инструментов и
     порты MCP-серверов."""
-    return ChatCalls(contexts, runs, sent, mount)
+    return ChatCalls(contexts, runs, sent, mount, journals)
 
 
 async def mcp_servers(  # noqa: PLR0913 — клиент собирается всеми входами чата
@@ -348,14 +349,14 @@ async def mcp_servers(  # noqa: PLR0913 — клиент собирается в
     storage: Annotated[StorageClient, Depends(storage_provider)],
     contexts: Annotated[CallContexts, Depends(runtime.call_contexts)],
     mount: Annotated[ChatMount, Depends(chat_mount)],
-    journals: Annotated[RemoteJournals, Depends(remote_journals)],
+    runs: Annotated[Runs, Depends(runtime.runs)],
     calls: Annotated[NodeCalls, Depends(node_calls)],
 ) -> AsyncIterator[McpServers]:
     """MCP-серверы процесса: подключаются на старте, закрываются на остановке.
     Файлы из их результатов ложатся в workspace треда вложениями чата,
-    сигналы роста журналов вызовов уходят реестру журналов."""
+    отчёты серверов о ходе работы вызовов уходят шагам ленты."""
     files = ChatAttachments(contexts, storage, mount)
-    servers = McpServers(c.mcp, files, journals, contexts, calls)
+    servers = McpServers(c.mcp, files, ChatProgress(contexts, runs), contexts, calls)
     await servers.start()
     try:
         yield servers
@@ -398,9 +399,7 @@ async def langchain_agent(  # noqa: PLR0913
     ttl = timedelta(seconds=bind(raw, "connections", ConnectionsConfig).seal_ttl_sec)
 
     ports: list[ToolServer] = [
-        SealingToolServer(
-            registry.server(tools, calls), connections, sent, ttl, calls
-        )
+        SealingToolServer(registry.server(tools, calls), connections, sent, ttl, calls)
     ]
     for port in remote:
         ports.append(SealingToolServer(port, connections, sent, ttl, calls))

@@ -19,6 +19,7 @@ from uuid import UUID, uuid4
 import aiofiles
 import aiofiles.os
 
+from boba.canvas.canvas import CanvasAction, CanvasElement
 from boba.canvas.keys import ElementProps, ObjectKey
 from boba.chainlit.domain.fields import ElementField, StepField, ThreadField
 from boba.chainlit.domain.keys import AttachmentLinks
@@ -90,6 +91,10 @@ class ThreadFeed(Protocol):
     async def steps(
         self, thread_id: str, user_name: str | None
     ) -> Sequence[StepDict]: ...
+
+    async def journaled(self, thread_id: str) -> frozenset[str]:
+        """Идентификаторы вызовов треда, журнал которых можно прочитать."""
+        ...
 
 
 class HeldContent:
@@ -578,12 +583,32 @@ class PostgresDataLayer(AttachmentDataLayer, ThreadOwnership):
         for step in steps:
             step[StepField.FEEDBACK] = feedback_by_step.get(step.get(StepField.ID, ""))
 
-        elements: list[ElementDict] = [ElementDicts.dict_of(e) for e in element_rows]
+        journaled = await self._feed.journaled(thread_id)
+        elements: list[ElementDict] = []
+        for row in element_rows:
+            element = ElementDicts.dict_of(row)
+            if self._dead_journal_button(element, journaled):
+                continue
+
+            elements.append(element)
 
         thread = ThreadDicts.thread(stored, user_identifier, steps, elements)
         self._sign_element_urls(thread)
 
         return thread
+
+    @staticmethod
+    def _dead_journal_button(element: ElementDict, journaled: frozenset[str]) -> bool:
+        """Сохранённая кнопка журнала вызова, журнал которого не прочитать:
+        в истории у вызова нет адреса журнала."""
+        if element.get(ElementField.NAME) != CanvasElement.STREAM.value:
+            return False
+
+        props = element.get(ElementField.PROPS)
+        if not props:
+            return True
+
+        return props.get(CanvasAction.CALL_ID.value) not in journaled
 
     async def _identifier_of(self, user_id: UUID | None) -> str | None:
         """Логин владельца треда; None — тред без владельца или строки уже нет."""

@@ -16,11 +16,12 @@ from boba.toolkit.chain import GroupFailureResult
 from boba.toolkit.dag import DagNode, JournalAddress, NodeOutcomes, WorkflowResult
 from boba.toolkit.result import (
     ErrorResult,
+    ExceptionResult,
     FailureResult,
     TableResult,
     ToolArtifact,
 )
-from boba.toolkit.wire import CallStatus, ResultWire, WireMeta, WireResult
+from boba.toolkit.wire import CallStatus, CallWire, ResultWire, WirePart, WireResult
 
 SNAPSHOTS = HistorySnapshots(Path(__file__).parent / "history", "boba.toolkit")
 
@@ -58,54 +59,77 @@ class TestRoundTrip:
         wire = WIRE.packed(outcome)
         sent = json.loads(json.dumps(wire.structured))
         revived = WIRE.revived(
-            WireResult(
-                content=wire.content,
-                structured=sent,
-                is_error=wire.is_error,
-                meta=json.loads(json.dumps(wire.meta)),
-            ),
+            WireResult(content=wire.content, structured=sent, is_error=wire.is_error),
             CALL,
             SERVER,
         )
 
+        # клиенту уходит результат без того, чему место в журнале сервера
+        disclosed = artifact.disclosed()
         if revived is None:
             raise AssertionError(f"результат вида {path.stem} оживает итогом")
-        if revived.artifact != artifact:
+        if revived.artifact != disclosed:
             raise AssertionError(f"результат вида {path.stem} оживает тем же")
         if type(revived.artifact) is not type(artifact):
             raise AssertionError(f"класс результата тот же: {type(revived.artifact)}")
         if revived.content != artifact.llm_view():
             raise AssertionError("текст для модели доехал как есть")
-        if revived != outcome:
+        if revived != outcome.model_copy(update={"artifact": disclosed}):
             raise AssertionError(f"итог вызова доехал тем же: {revived!r}")
 
-    def test_call_id_and_status_ride_in_the_meta(self) -> None:
+    def test_call_id_and_status_ride_in_the_structured_content(self) -> None:
         table = TableResult(rows=[{"a": 1}])
 
         wire = WIRE.packed(OUTCOMES.of(CALL, table, False))
 
-        own = wire.meta[WireMeta.NAMESPACE.value]
-        if own[WireMeta.CALL_ID.value] != CALL.key:
-            raise AssertionError(f"идентификатор вызова доехал: {own!r}")
-        if own[WireMeta.STATUS.value] != CallStatus.SUCCESS.value:
-            raise AssertionError(f"статус вызова доехал: {own!r}")
+        structured = wire.structured
+        if structured is None:
+            raise AssertionError("итог несёт structuredContent")
 
-    def test_run_of_the_server_becomes_the_journal_address(self) -> None:
+        call = CallWire.model_validate(structured[WirePart.CALL.value])
+        if call != CallWire(id=CALL.key, status=CallStatus.SUCCESS):
+            raise AssertionError(f"сведения о вызове доехали: {call!r}")
+        if structured[WirePart.RESULT.value] != table.model_dump(mode="json"):
+            raise AssertionError(f"результат лежит своей частью: {structured!r}")
+
+    def test_run_and_call_of_the_server_become_the_journal_address(self) -> None:
+        """Журнал сервер ведёт под своим идентификатором вызова: он и запуск
+        дают адрес, а вызов клиента называется по-своему."""
         table = TableResult(rows=[{"a": 1}])
-        wire = WIRE.packed(OUTCOMES.of(CALL, table, False))
+        served = DagNode(key="api-served", tool="probe")
+        wire = WIRE.packed(OUTCOMES.of(served, table, False))
+        structured = wire.structured
+        if structured is None:
+            raise AssertionError("итог несёт structuredContent")
+
         stamped = WireResult(
             content=wire.content,
-            structured=wire.structured,
+            structured=WIRE.stamped(structured, "run-7"),
             is_error=wire.is_error,
-            meta=WIRE.stamped(wire.meta, "run-7"),
         )
 
         revived = WIRE.revived(stamped, CALL, SERVER)
 
         if revived is None:
             raise AssertionError("результат оживает итогом")
-        if revived.journal != JournalAddress(server=SERVER, run="run-7"):
+        if revived.key != CALL.key:
+            raise AssertionError(f"итог называется вызовом клиента: {revived.key}")
+
+        expected = JournalAddress(server=SERVER, run="run-7", call="api-served")
+        if revived.journal != expected:
             raise AssertionError(f"адрес журнала собран: {revived.journal!r}")
+
+    def test_traceback_stays_on_the_server(self) -> None:
+        crashed = ExceptionResult(
+            error_kind="ValueError",
+            message="boom",
+            traceback='Traceback (most recent call last):\n  File "/srv/x.py"',
+        )
+
+        wire = WIRE.packed(OUTCOMES.refused(CALL, crashed))
+
+        if "/srv/x.py" in json.dumps(wire.structured):
+            raise AssertionError(f"трасса сервера клиенту не уходит: {wire!r}")
 
     def test_result_without_a_run_has_no_journal(self) -> None:
         table = TableResult(rows=[{"a": 1}])
@@ -161,51 +185,36 @@ class TestErrorFlag:
 
 
 class TestForeignServer:
-    """Сервер без наших полей и с чужим содержимым: клиент показывает текст."""
+    """Сервер с чужим содержимым: клиент показывает текст."""
 
     def test_unknown_kind_falls_back_to_the_text(self) -> None:
+        call = CallWire(id="api-1", status=CallStatus.SUCCESS)
         wire = WireResult(
             content="plain text",
-            structured={"kind": "kind_of_a_newer_server", "x": 1},
+            structured={
+                WirePart.CALL.value: call.model_dump(mode="json"),
+                WirePart.RESULT.value: {"kind": "kind_of_a_newer_server", "x": 1},
+            },
             is_error=False,
-            meta={},
         )
 
         if WIRE.revived(wire, CALL, SERVER) is not None:
             raise AssertionError("неизвестный вид не оживает итогом")
 
     def test_result_without_structured_content_is_not_revived(self) -> None:
-        wire = WireResult(content="boom", structured=None, is_error=True, meta={})
+        wire = WireResult(content="boom", structured=None, is_error=True)
 
         if WIRE.revived(wire, CALL, SERVER) is not None:
             raise AssertionError("без structuredContent итога семейства нет")
 
-    def test_status_comes_from_the_mcp_flag_without_our_meta(self) -> None:
-        refusal = ErrorResult(message="boom", error_kind="probe")
-        wire = WireResult(
-            content="boom",
-            structured=refusal.model_dump(mode="json"),
-            is_error=True,
-            meta={},
-        )
-
-        revived = WIRE.revived(wire, CALL, SERVER)
-
-        if revived is None or not revived.errored:
-            raise AssertionError(f"сбой чужого сервера — статус error: {revived}")
-        if revived.journal is not None:
-            raise AssertionError(f"адреса журнала нет: {revived.journal!r}")
-
-    def test_meta_of_another_shape_is_ignored(self) -> None:
+    def test_structured_content_of_another_shape_is_not_revived(self) -> None:
+        """Чужой сервер прислал свои данные: частей итога в них нет."""
         table = TableResult(rows=[{"a": 1}])
         wire = WireResult(
             content=table.llm_view(),
             structured=table.model_dump(mode="json"),
             is_error=False,
-            meta={WireMeta.NAMESPACE.value: "not a mapping"},
         )
 
-        revived = WIRE.revived(wire, CALL, SERVER)
-
-        if revived is None or revived.errored:
-            raise AssertionError(f"чужая форма meta не мешает: {revived!r}")
+        if WIRE.revived(wire, CALL, SERVER) is not None:
+            raise AssertionError("данные без сведений о вызове не оживают итогом")

@@ -36,7 +36,9 @@ from boba.toolkit.ports import (
     ChunkBytes,
     Inbound,
     Outbound,
+    StageProgress,
     StreamGroup,
+    ToolProgress,
 )
 from boba.toolkit.result import MarkdownResult, SqlResult, SqlStatement, TableResult
 from boba.toolkit.sql import (
@@ -56,6 +58,7 @@ from boba.toolkit.transfer import (
     TransferFrame,
     TransferInbound,
     TransferOutbound,
+    TransferProgress,
     UnknownTypeStrategy,
 )
 from boba.toolkit.types import SecretRevealing
@@ -211,16 +214,22 @@ async def ch_query(
     *,
     offset: RowOffset,
     limit: RowLimit,
+    progress: Annotated[ToolProgress, Injected],
 ) -> SqlResult:
     """ADQM, ClickHouse, произвольный SQL.
     Выполнить SQL на выбранном соединении: строки окном offset/limit
     """
 
-    return await run_and_collect(
+    stages = StageProgress(progress, None)
+    stages.next("connecting and executing the query")
+    result = await run_and_collect(
         connection,
         ChQuery(text=sql, params={}),
         RowWindow(offset=offset, limit=limit),
     )
+    stages.next("the query is done")
+
+    return result
 
 
 '''
@@ -1035,6 +1044,7 @@ async def ch_stream_out(  # noqa: PLR0913
     after: AfterSteps = (),
     *,
     out: Annotated[Outbound[TransferFrame], Injected],
+    progress: Annotated[ToolProgress, Injected],
 ) -> SqlResult:
     """Источник sync-потока: строки запроса с контрактом колонок для приёмника.
 
@@ -1056,9 +1066,10 @@ async def ch_stream_out(  # noqa: PLR0913
             "of clickhouse travel as they are"
         )
 
-    journal = CommandJournal(ChPump.STREAM_OUT)
+    meter = TransferProgress(progress)
+    journal = CommandJournal(ChPump.STREAM_OUT, meter)
     statement = ChQueryBuilder().raw_query(sql).build()
-    outbound = TransferOutbound(out)
+    outbound = TransferOutbound(out, meter)
     try:
         async with PayloadClickHouse.opened_for_scripts(
             connection, before, after
@@ -1212,6 +1223,7 @@ async def ch_stream_in(  # noqa: PLR0913
     *,
     feed: Annotated[Inbound[TransferFrame], Injected],
     group: Annotated[StreamGroup, Injected],
+    progress: Annotated[ToolProgress, Injected],
 ) -> SqlResult:
     """Приёмник ClickHouse со стратегиями: поток любого источника в таблицу.
 
@@ -1233,11 +1245,12 @@ async def ch_stream_in(  # noqa: PLR0913
     from boba.toolkit.contract import ArrowContract, StreamContract  # noqa: PLC0415
     from boba.toolkit.contract import Engine as NeutralEngine  # noqa: PLC0415
 
-    journal = CommandJournal(ChPump.STREAM_IN)
+    meter = TransferProgress(progress)
+    journal = CommandJournal(ChPump.STREAM_IN, meter)
     payload = PayloadClickHouse
     template = CreateTemplate(create_table, ChTableRef.TEMPLATE_VARS)
     placement = ChPlacement(cluster=ChCluster(cluster), order_by=order_by)
-    inbound = TransferInbound(feed, group)
+    inbound = TransferInbound(feed, group, meter)
     table = ChTableRef(database=database, name=table_name)
     try:
         head = await inbound.get_schema()

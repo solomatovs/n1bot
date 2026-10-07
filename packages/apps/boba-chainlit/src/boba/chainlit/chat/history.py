@@ -126,6 +126,18 @@ class TranscriptFeed:
         await ConversationTranscript(messages, view).replay()
         return sink.steps
 
+    async def journaled(self, thread_id: str) -> frozenset[str]:
+        """Вызовы треда, журнал которых можно прочитать: их ответ в истории
+        несёт адрес журнала. У остальных шагов кнопки журнала нет."""
+        calls: set[str] = set()
+        for message in await self._messages.load(thread_id):
+            if not isinstance(message, ToolReply):
+                continue
+
+            calls.update(message.journals())
+
+        return frozenset(calls)
+
 
 class ConversationTranscript:
     """Разворачивает сообщения диалога в шаги ленты. Создаётся сборкой ленты

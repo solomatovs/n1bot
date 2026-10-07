@@ -12,7 +12,9 @@ import pytest
 from chainlit.config import config as chainlit_config
 from chainlit.context import ChainlitContext, context_var
 from chainlit.step import StepDict
+from chainlit_stand import FakeThreadMessages
 
+from boba.chainlit.canvas.remote import RemoteJournals
 from boba.chainlit.domain.fields import StepField
 from boba.chainlit.rendering.chat_view import (
     ChatView,
@@ -740,7 +742,13 @@ class TestCallViewOfACard:
         contexts = CallContexts()
         runs = Runs(contexts)
 
-        return ChatCalls(contexts, runs, SentConnections(), ChatMount(contexts, runs))
+        return ChatCalls(
+            contexts,
+            runs,
+            SentConnections(),
+            ChatMount(contexts, runs),
+            RemoteJournals(FakeThreadMessages()),
+        )
 
     @pytest.mark.anyio
     async def test_step_input_follows_the_views_of_the_card(

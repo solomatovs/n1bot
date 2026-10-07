@@ -16,8 +16,8 @@ DagSpec — сериализуемая модель графа: узлы — в�
 карточка инструмента ToolCard, итог вызова NodeOutcome с фабрикой
 NodeOutcomes и адресом журнала JournalAddress, путь вызова узла к телу
 NodeCalls, сам порт ToolServer; CallDag строит описание DAG по вызовам
-клиента порта и разбирает объявленную сервером возможность связки
-(WorkflowFeature). Реализации порта живут в boba.toolrun и клиенте MCP.
+клиента порта и называет инструмент-связку. Реализации порта живут в
+boba.toolrun и клиенте MCP.
 
 Ошибки:
 StreamPlanError — поле порта узла не имя канала, pipe_bytes не число либо
@@ -73,7 +73,6 @@ __all__ = [
     "NodeOutcomes",
     "ToolCard",
     "ToolServer",
-    "WorkflowFeature",
     "WorkflowNodeResult",
     "WorkflowResult",
 ]
@@ -409,7 +408,8 @@ class ToolCard:
 
 
 class JournalAddress(BaseModel):
-    """Где лежит журнал вызова: сервер клиента и запуск на нём.
+    """Где лежит журнал вызова: сервер клиента, запуск на нём и
+    идентификатор вызова, под которым сервер ведёт журнал.
 
     Адрес несёт итог вызова, который исполнил сервер с журналом; клиент
     хранит его вместе с итогом в истории, и журнал читается после конца хода.
@@ -419,6 +419,7 @@ class JournalAddress(BaseModel):
 
     server: str = Field(min_length=1)
     run: str = Field(min_length=1)
+    call: str = Field(min_length=1)
 
 
 class NodeOutcome(BaseModel):
@@ -524,27 +525,6 @@ class NodeCalls(Protocol):
         """Итог вызова узла node инструмента card, исполненного телом body."""
 
 
-class WorkflowFeature(BaseModel):
-    """Настройки возможности сервера «связка одним вызовом».
-
-    Сервер с потоковыми инструментами объявляет её клиенту при подключении
-    (LocalDagService.features); клиент разбирает объявление один раз
-    (CallDag.feature_of) и дальше знает, какой инструмент описывает связку.
-    tool — имя инструмента-связки: узлы его вызова — вызовы других
-    инструментов сервера.
-    """
-
-    model_config = ConfigDict(frozen=True, extra="forbid")
-
-    ID: ClassVar[str] = "com.boba/workflow"
-
-    tool: str = Field(min_length=1)
-
-    def settings(self) -> Mapping[str, object]:
-        """Настройки возможности, как они едут клиенту."""
-        return self.model_dump(mode="json")
-
-
 class CallDag:
     """Описание DAG по вызовам клиента порта.
 
@@ -574,29 +554,6 @@ class CallDag:
             return DagSpec(name=call.key, version=1, nodes=[call])
 
         return DagSpec(name=call.key, version=1, nodes=self.nodes_of(call))
-
-    def feature_of(
-        self, features: Mapping[str, Mapping[str, object]]
-    ) -> WorkflowFeature | None:
-        """Возможность связки среди объявленных сервером; None — сервер
-        связку не объявил.
-
-        Ошибки:
-        StreamPlanError — настройки возможности не проходят её модель.
-        """
-        settings = features.get(WorkflowFeature.ID)
-        if settings is None:
-            return None
-
-        try:
-            return WorkflowFeature.model_validate(settings)
-        except ValidationError as exc:
-            msg = (
-                f"tool server feature {WorkflowFeature.ID!r} expects the name of "
-                f"the workflow tool, got "
-                f"{dict(settings)!r}: {ValidationText.of(exc)}"
-            )
-            raise StreamPlanError(msg) from exc
 
     def described(self, call: DagNode) -> Sequence[DagNode]:
         """Узлы вызова workflow, как их назвала модель.

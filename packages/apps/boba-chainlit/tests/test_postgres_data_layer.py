@@ -10,7 +10,7 @@ from chainlit.types import Feedback as FeedbackPayload
 from chainlit.types import Pagination, ThreadFilter
 from chainlit.user import PersistedUser
 from chainlit.user import User as ChainlitUser
-from chainlit_stand import ChatSessionStand, Seed
+from chainlit_stand import ChatSessionStand, FakeThreadMessages, JournaledCall, Seed
 
 from boba.canvas.keys import ObjectKey
 from boba.chainlit.data.data_layer import PostgresDataLayer
@@ -317,6 +317,42 @@ async def test_custom_element_keeps_props_out_of_storage(
     ).render()
     if (files_dir / object_key).exists():
         raise AssertionError("not (files_dir / object_key).exists()")
+
+
+async def test_journal_button_is_kept_only_for_a_readable_journal(
+    chat_session: ChatSessionStand, seeded: Seed, thread_messages: FakeThreadMessages
+):
+    """Кнопка журнала сохранена у двух шагов, а адрес журнала в истории есть
+    только у одного вызова: у второго журнал не прочитать, и кнопки у него
+    в открытом треде нет."""
+    layer = seeded.layer
+    chat_session.use(user_id=seeded.user.id)
+    thread_messages.by_thread[seeded.thread_id].append(
+        JournaledCall("boba", "run-1").message("call-read")
+    )
+    for call_id in ("call-read", "call-gone"):
+        await layer.create_element(
+            CustomElement(
+                thread_id=seeded.thread_id,
+                for_id=seeded.answer_step_id,
+                name="CanvasStream",
+                props={"call_id": call_id, "label": "bash"},
+            )
+        )
+
+    thread = await layer.get_thread(seeded.thread_id)
+    if thread is None:
+        raise AssertionError("the thread is read")
+
+    shown: list[object] = []
+    for element in thread["elements"] or []:
+        if element.get("name") != "CanvasStream":
+            continue
+
+        shown.append((element.get("props") or {}).get("call_id"))
+
+    if shown != ["call-read"]:
+        raise AssertionError(f"only the readable journal keeps its button: {shown}")
 
 
 async def test_get_thread_builds_steps_from_history(seeded: Seed):

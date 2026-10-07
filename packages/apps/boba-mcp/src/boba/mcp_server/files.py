@@ -44,7 +44,7 @@ from boba.runtime.storage import (
 )
 from boba.toolkit.channels import JournalChannels
 from boba.toolkit.failure import ValidationText
-from boba.toolkit.wire import FilesFeature
+from boba.toolkit.wire import FilesFeature, RequestFields
 from boba.toolrun.streams import CallJournals
 
 __all__ = ["FileRoutes", "JournalRoutes", "RouteCallers"]
@@ -237,7 +237,10 @@ class FileRoutes:
         """Настройки расширения файлов: маршрут, инструмент адреса загрузки
         upload_tool и каталог workspace глазами инструментов."""
         return FilesFeature(
-            path=self._published, upload=upload_tool, workspace=WorkspaceMount.path()
+            path=self._published,
+            upload=upload_tool,
+            workspace=WorkspaceMount.path(),
+            scope=RequestFields.SCOPE,
         )
 
     def address(self, scope: str, name: str) -> str:

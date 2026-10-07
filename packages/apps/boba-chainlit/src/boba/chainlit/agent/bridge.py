@@ -49,7 +49,7 @@ from langchain_core.outputs import (
 from langchain_core.runnables import Runnable
 from langchain_core.tools import BaseTool
 from langchain_core.utils.function_calling import convert_to_openai_tool
-from pydantic import ConfigDict, Field
+from pydantic import ConfigDict, Field, ValidationError
 from typing_extensions import override
 
 from boba.chainlit.chat.dialog import (
@@ -351,17 +351,20 @@ class LangchainMessages:
 
     def journal_of(self, message: ToolMessage) -> JournalAddress | None:
         """Адрес журнала вызова из сообщения инструмента истории; None —
-        вызов исполнял не сервер с журналом. От результата в сообщении не
+        вызов исполнял не сервер с журналом либо запись сделана в формате,
+        по которому журнал уже не прочитать. От результата в сообщении не
         зависит: адрес несёт и запись без результата семейства.
-
-        Ошибки:
-        pydantic.ValidationError — поля адреса журнала не проходят модель.
         """
         stamped = message.response_metadata.get(self.JOURNAL_KEY)
         if not stamped:
             return None
 
-        return JournalAddress.model_validate(stamped)
+        try:
+            return JournalAddress.model_validate(stamped)
+        except ValidationError:
+            # запись старого формата: адрес не называет вызов на сервере,
+            # журнала у такого шага нет
+            return None
 
     @staticmethod
     def text_of(message: BaseMessage) -> str:

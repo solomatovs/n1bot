@@ -15,12 +15,12 @@ ToolReply), запись оборванного хода (TurnRecord), собы�
 from __future__ import annotations
 
 from abc import abstractmethod
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncIterator, Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Protocol
 
-from boba.toolkit.dag import DagNode, JournalAddress, NodeOutcome
+from boba.toolkit.dag import DagNode, JournalAddress, NodeOutcome, WorkflowResult
 
 __all__ = [
     "AnswerChunk",
@@ -129,6 +129,28 @@ class ToolReply:
     outcome: NodeOutcome | None
     raw: object
     journal: JournalAddress | None
+
+    def journals(self) -> Mapping[str, JournalAddress]:
+        """Адреса журналов по идентификаторам вызовов, какими их знает
+        лента: самого вызова, а у связки — и каждого её узла (запуск у них
+        общий, журнал сервер ведёт под идентификатором вызова узла)."""
+        address = self.journal
+        if address is None:
+            return {}
+
+        found = {self.call_id: address}
+        outcome = self.outcome
+        if outcome is None:
+            return found
+
+        artifact = outcome.artifact
+        if not isinstance(artifact, WorkflowResult):
+            return found
+
+        for node in artifact.nodes:
+            found[node.call_id] = address.model_copy(update={"call": node.call_id})
+
+        return found
 
 
 DialogMessage = UserMessage | AssistantMessage | ToolReply

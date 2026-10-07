@@ -130,7 +130,6 @@ from boba.toolkit.dag import (
     ToolServer,
 )
 from boba.toolkit.result import MarkdownResult, ToolResultBase
-from boba.toolkit.wire import JournalSignal
 from boba.toolrun.hosted import DirectCalls
 from boba.toolrun.streams import CallJournals
 from boba.workspace.binaries import TrustedBinaries
@@ -574,7 +573,7 @@ class RemoteStand:
     def __init__(self) -> None:
         contexts = CallContexts()
         self.history = FakeThreadMessages()
-        self.journals = RemoteJournals(contexts, self.history)
+        self.journals = RemoteJournals(self.history)
         caller = McpCaller(login=StandIdentity.LOGIN, roles=frozenset())
         self.streams = PerCallStreams(self.journals, contexts, caller)
 
@@ -587,22 +586,10 @@ class RemoteStand:
             JournaledCall(self.SERVER, thread_id).message(call_id)
         )
 
-    def live(self, thread_id: str, call_id: str, channel: str, size: int) -> None:
-        """Сигнал роста журнала идущего вызова: канал дорос до size байт."""
-        signal = JournalSignal(
-            run=thread_id,
-            node=call_id,
-            channel=channel,
-            size=size,
-            closed=False,
-            note="",
-        )
-        self.journals.take(thread_id, self.SERVER, signal)
-
     def forget(self) -> None:
-        """Сброс между тестами: ни истории, ни живых журналов."""
+        """Сброс между тестами: ни истории, ни запомненных адресов."""
         self.history.by_thread.clear()
-        self.journals = RemoteJournals(CallContexts(), self.history)
+        self.journals = RemoteJournals(self.history)
         self.streams = PerCallStreams(
             self.journals,
             CallContexts(),
@@ -1007,7 +994,7 @@ def di_root(app_config: AppConfig, runtime_stand: StandRefs) -> Iterator[None]:
     root.provide(runtime.call_journals, runtime_stand.journals)
     root.provide(
         remote_journals,
-        RemoteJournals(runtime_stand.contexts, FakeThreadMessages()),
+        RemoteJournals(FakeThreadMessages()),
     )
     Container.set_root(root)
     try:
@@ -1054,21 +1041,24 @@ class SsoStand:
 
 class JournaledCall:
     """Сообщение инструмента истории о вызове, который исполнил сервер с
-    журналом: итог несёт адрес журнала — сервер и запуск на нём. Создаётся
-    стендами тестов панели живого вывода; сообщение собирает тот же перевод,
-    что и ход чата (LangchainMessages)."""
+    журналом: итог несёт адрес журнала — сервер, запуск на нём и
+    идентификатор вызова на сервере (у стенда он совпадает с идентификатором
+    вызова модели). Создаётся стендами тестов панели живого вывода;
+    сообщение собирает тот же перевод, что и ход чата (LangchainMessages)."""
 
     TOOL: ClassVar[str] = "bash"
 
     def __init__(self, server: str, run: str) -> None:
-        self._address = JournalAddress(server=server, run=run)
+        self._server = server
+        self._run = run
         self._outcomes = NodeOutcomes()
         self._messages = LangchainMessages()
 
     def message(self, call_id: str) -> ToolMessage:
         call = DagNode(key=call_id, tool=self.TOOL)
         outcome = self._outcomes.of(call, MarkdownResult(text=""), False)
-        addressed = outcome.model_copy(update={"journal": self._address})
+        address = JournalAddress(server=self._server, run=self._run, call=call_id)
+        addressed = outcome.model_copy(update={"journal": address})
 
         return self._messages.tool_message(addressed)
 
@@ -1119,7 +1109,11 @@ class RecordedTurn:
         self._ports: list[ChatTurn] = []
         self.sent = SentConnections()
         self.calls = ChatCalls(
-            self.contexts, self.runs, self.sent, ChatMount(self.contexts, self.runs)
+            self.contexts,
+            self.runs,
+            self.sent,
+            ChatMount(self.contexts, self.runs),
+            RemoteJournals(FakeThreadMessages()),
         )
 
     @property

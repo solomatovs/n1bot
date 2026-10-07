@@ -70,6 +70,7 @@ from boba.indexing import (
     SourceSkippedUnchanged,
     TransportKeys,
 )
+from boba.toolkit.ports import ToolProgress
 from boba.toolkit.timing import Elapsed
 
 __all__ = [
@@ -139,11 +140,14 @@ class IngestProgress:
     """Счёт прогона: сколько space'ов, страниц, вложений и чанков уже сделано.
 
     Живёт в event loop прогона — страницы идут задачами одного loop'а, поэтому
-    счётчики обновляются без блокировок.
+    счётчики обновляются без блокировок. Тот же счёт уходит отчётами о ходе
+    работы инструмента (ToolProgress): сделано страниц и вложений из
+    найденных; пока обход спейса не закончен, итог неизвестен.
     """
 
-    def __init__(self, logger: logging.Logger) -> None:
+    def __init__(self, logger: logging.Logger, progress: ToolProgress) -> None:
         self._logger = logger
+        self._progress = progress
         self._spaces = DiscoveredCount()
         self._pages = DiscoveredCount()
         self._attachments = DiscoveredCount()
@@ -204,8 +208,11 @@ class IngestProgress:
         self._gone += 1
 
     def render(self) -> str:
+        return f"progress: {self._counts()}"
+
+    def _counts(self) -> str:
         return (
-            f"progress: spaces {self._spaces.render()}"
+            f"spaces {self._spaces.render()}"
             f" | pages {self._pages.render()}"
             f" | attachments {self._attachments.render()}"
             f" | chunks {self._chunks}"
@@ -216,6 +223,12 @@ class IngestProgress:
 
     def say(self) -> None:
         self._logger.info("%s", self.render())
+        done = self._pages.done + self._attachments.done
+        total: int | None = None
+        if self._pages.closed:
+            total = self._pages.found + self._attachments.found
+
+        self._progress.report(done, total, self._counts())
 
 
 @dataclass

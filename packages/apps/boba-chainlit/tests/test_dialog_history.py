@@ -45,7 +45,13 @@ from boba.chainlit.chat.history import InterruptedTurn, ThreadTurnHistory
 from boba.chainlit.rendering.chat_view import ChatView, RecordingSink
 from boba.stand.refs import StandRefs
 from boba.toolkit.chain import CallAmbient
-from boba.toolkit.dag import DagNode, JournalAddress, NodeOutcomes
+from boba.toolkit.dag import (
+    DagNode,
+    JournalAddress,
+    NodeOutcomes,
+    WorkflowNodeResult,
+    WorkflowResult,
+)
 from boba.toolkit.ports import StreamSpecs
 from boba.toolkit.result import MarkdownResult
 from boba.toolrun.hosted import DirectCalls, ToolHosting
@@ -223,7 +229,7 @@ class TestWrittenFormat:
     def test_tool_message_keeps_the_journal_address_in_metadata(self) -> None:
         call = DagNode(key="call_1", tool="bash")
         outcome = NodeOutcomes().of(call, MarkdownResult(text="done"), False)
-        address = JournalAddress(server="general", run="run-7")
+        address = JournalAddress(server="general", run="run-7", call="api-7")
         addressed = outcome.model_copy(update={"journal": address})
 
         message = LangchainMessages().tool_message(addressed)
@@ -232,7 +238,7 @@ class TestWrittenFormat:
         assert message.name == "bash"
         assert message.status == "success"
         assert message.response_metadata == {
-            "boba_journal": {"server": "general", "run": "run-7"}
+            "boba_journal": {"server": "general", "run": "run-7", "call": "api-7"}
         }
 
 
@@ -301,7 +307,7 @@ class TestDialogReading:
         messages = LangchainMessages()
         call = DagNode(key="call_1", tool="bash")
         outcome = NodeOutcomes().of(call, MarkdownResult(text="done"), False)
-        address = JournalAddress(server="general", run="run-7")
+        address = JournalAddress(server="general", run="run-7", call="api-7")
         addressed = outcome.model_copy(update={"journal": address})
 
         reply = messages.reply(messages.tool_message(addressed))
@@ -310,6 +316,31 @@ class TestDialogReading:
         assert reply.name == "bash"
         assert reply.journal == address
         assert reply.outcome == addressed
+
+    def test_workflow_reply_addresses_the_journal_of_every_node(self) -> None:
+        """Запуск у связки один, а журнал у каждого узла свой — под
+        идентификатором вызова узла."""
+        messages = LangchainMessages()
+        call = DagNode(key="call_1", tool="workflow")
+        node = WorkflowNodeResult(
+            key="load",
+            call_id="call_1_0",
+            tool="bash",
+            args={},
+            errored=False,
+            content="done",
+            result=MarkdownResult(text="done"),
+        )
+        outcome = NodeOutcomes().of(call, WorkflowResult(nodes=[node]), False)
+        address = JournalAddress(server="general", run="run-7", call="api-7")
+        addressed = outcome.model_copy(update={"journal": address})
+
+        reply = messages.reply(messages.tool_message(addressed))
+
+        assert reply.journals() == {
+            "call_1": address,
+            "call_1_0": JournalAddress(server="general", run="run-7", call="call_1_0"),
+        }
 
     def test_old_record_without_a_family_result_is_kept_raw(self) -> None:
         messages = LangchainMessages()
@@ -334,7 +365,8 @@ class TestDialogReading:
         read = messages.reply(shaped)
         assert read.outcome is None
         assert read.raw == {"rows": [1, 2, 3]}
-        assert read.journal == JournalAddress(server="general", run="r")
+        # адрес старого формата не называет вызов на сервере: журнала нет
+        assert read.journal is None
 
     def test_service_messages_are_not_a_part_of_the_dialog(self) -> None:
         stored = [SystemMessage(content="rules"), HumanMessage(content="q", id="q1")]

@@ -16,7 +16,7 @@ from literalai.observability.step import TrueStepType
 from pydantic import BaseModel, ConfigDict
 
 from boba.cancellation import StopReason
-from boba.canvas.canvas import CanvasAction
+from boba.canvas.canvas import CanvasAction, CanvasElement
 from boba.chainlit.rendering.tool import ChatElements
 from boba.toolkit.calls import ToolCallModels, ToolIntent
 from boba.toolkit.result import ToolArtifact, VisualElement
@@ -557,6 +557,42 @@ class TurnPulse:
         self._shown = False
 
 
+class ProgressText:
+    """Текст блока прогресса идущего вызова по отчёту инструмента.
+
+    Создаётся лентой (ChatView) на каждый отчёт. Итог известен — строка
+    несёт долю и «сделано из всего»; неизвестен — только слова инструмента,
+    а без слов — само число.
+    """
+
+    def shown(self, done: float, total: float | None, text: str) -> str:
+        if total is None:
+            return self._plain(done, text)
+
+        if total <= 0:
+            return self._plain(done, text)
+
+        percent = min(100, int(done * 100 / total))
+        measure = f"{percent}% ({self._number(done)} of {self._number(total)})"
+        if not text:
+            return measure
+
+        return f"{text}\n\n{measure}"
+
+    def _plain(self, done: float, text: str) -> str:
+        if text:
+            return text
+
+        return self._number(done)
+
+    @staticmethod
+    def _number(value: float) -> str:
+        if value == int(value):
+            return f"{int(value):,}".replace(",", " ")
+
+        return f"{value:,.2f}".replace(",", " ")
+
+
 class StreamableTools(Protocol):
     """Инструменты, у шага которых есть живой вывод: по нему лента решает,
     рисовать ли у шага кнопку журнала. Реализует RemoteJournals."""
@@ -604,6 +640,7 @@ class ChatView:
         self._assistant_name = chainlit_config.ui.name
         self._turn = TurnDraft()
         self._tool_names: dict[str, str] = {}
+        self._journal_buttons: dict[str, CustomElement] = {}
         self._pulse = self._new_pulse(None)
 
     @property
@@ -976,18 +1013,25 @@ class ChatView:
                 step.show_input = True
 
         # фронт chainlit рисует секцию output (с inline-элементами, в том числе
-        # кнопкой живого вывода) только при непустом output шага
+        # кнопкой журнала) только при непустом output шага
         step.output = StepText.RUNNING
         step.start = utc_now()
 
+        # журнал читается по адресу из итога вызова: кнопка встаёт в шаг,
+        # когда вызов закончился
         if button := self._stream_button(name, key):
-            step.elements = [button]
+            self._journal_buttons[step.id] = button
 
         await self._sink.put(step)
         return step
 
+    def _journaled(self, step: Step) -> None:
+        """Закончившемуся вызову — кнопка его журнала."""
+        if button := self._journal_buttons.pop(step.id, None):
+            step.elements = [button]
+
     def _stream_button(self, name: str, key: str | None) -> CustomElement | None:
-        """Кнопка живого вывода: только live-лента и только потоковые тулы."""
+        """Кнопка журнала вызова: только live-лента и только потоковые тулы."""
         if not self._sink.emits_elements:
             return None
 
@@ -998,7 +1042,7 @@ class ChatView:
             return None
 
         element = CustomElement(
-            name="CanvasStream",
+            name=CanvasElement.STREAM.value,
             props={str(CanvasAction.CALL_ID): key, "label": name},
             thread_id=self._thread_id,
         )
@@ -1007,6 +1051,14 @@ class ChatView:
             element.id = element_id
 
         return element
+
+    async def tool_progressed(
+        self, step: Step, done: float, total: float | None, text: str
+    ) -> None:
+        """Ход работы идущего вызова: блок шага показывает последний отчёт
+        инструмента вместо общей подписи «running»."""
+        step.output = ProgressText().shown(done, total, text)
+        await self._sink.put(step)
 
     async def tool_finished(
         self,
@@ -1018,6 +1070,7 @@ class ChatView:
         ended = utc_now()
         step.start = ended
         step.end = ended
+        self._journaled(step)
         result = ToolArtifact.revive(artifact)
         if result is None:
             step.output = self._raw_output(artifact)
@@ -1052,6 +1105,7 @@ class ChatView:
 
     async def tool_stopped(self, step: Step, note: str) -> None:
         """Инструмент не доработал: ход остановлен."""
+        self._journal_buttons.pop(step.id, None)
         step.name = StepStatus.FAILED.title(self._tool_names.get(step.id, step.name))
         step.output = note
         ended = utc_now()
@@ -1084,6 +1138,7 @@ class ChatView:
 
     async def tool_failed(self, step: Step, markdown: str) -> None:
         """Провал инструмента мимо результата: markdown результата-ошибки."""
+        self._journaled(step)
         step.is_error = True
         step.name = StepStatus.FAILED.title(self._tool_names.get(step.id, step.name))
         step.output = markdown

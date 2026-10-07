@@ -103,16 +103,16 @@ class ProcessLauncherConfig(BaseModel):
 
 
 class _CallPipes:
-    """Пайпы вызова модуля сверх stdio: конверт (result), выходы и
-    готовность барьера (gate) из тела, injected-конфиг, ответ барьера
-    (verdict) и входы после первого — в тело.
+    """Пайпы вызова модуля сверх stdio: конверт (result), отчёты о ходе
+    работы (progress), выходы и готовность барьера (gate) из тела,
+    injected-конфиг, ответ барьера (verdict) и входы после первого — в тело.
 
     Субпроцесс даёт из коробки только stdin/stdout/stderr — остальные
     каналы открываются здесь. Входы и выходы симметричны: у каждого канала
     свой пайп; stdin процесса порта не несёт. Дескрипторы тела наследуются
     с теми же номерами (pass_fds), и эти номера дописываются в команду
-    флагами --fd-result/--injected-fd/--fd-gate/--fd-verdict/--fd-in/--fd-out
-    (argv_flags). Записывающие концы входов забирает CallInputs вызова
+    флагами --fd-result/--injected-fd/--fd-gate/--fd-verdict/--fd-progress/
+    --fd-in/--fd-out (argv_flags). Записывающие концы входов забирает CallInputs вызова
     (take_inputs), концы барьера — HostGate (take_verdict), читающие концы
     выходов — перекачка (take_outputs) либо насос (claim_frames).
     """
@@ -134,6 +134,7 @@ class _CallPipes:
         self.injected_r, self.injected_w = os.pipe()
         self.gate_r, self.gate_w = os.pipe()
         self.verdict_r, self.verdict_w = os.pipe()
+        self.progress_r, self.progress_w = os.pipe()
 
         self._ins: list[tuple[int, int]] = []
         for spec in self._specs:
@@ -158,6 +159,8 @@ class _CallPipes:
             str(self.gate_w),
             EntryFlag.FD_VERDICT.value,
             str(self.verdict_r),
+            EntryFlag.FD_PROGRESS.value,
+            str(self.progress_w),
         ]
         for spec, (read_fd, _) in zip(self._specs, self._ins, strict=True):
             flags.extend(InputWire(port=spec.port, fd=read_fd).argv())
@@ -173,6 +176,7 @@ class _CallPipes:
             self.injected_r,
             self.gate_w,
             self.verdict_r,
+            self.progress_w,
         ]
         for read_fd, _ in self._ins:
             fds.append(read_fd)
@@ -281,7 +285,10 @@ class _CallPipes:
         return tuple(fds)
 
     def host_reads(self) -> tuple[tuple[ToolChannel, int], ...]:
-        reads: list[tuple[ToolChannel, int]] = [(ToolChannel.RESULT, self.result_r)]
+        reads: list[tuple[ToolChannel, int]] = [
+            (ToolChannel.RESULT, self.result_r),
+            (ToolChannel.PROGRESS, self.progress_r),
+        ]
 
         if self._claimed is not None:
             reads.append((ToolChannel.FRAMES, self._outs[self._claimed][0]))
@@ -304,6 +311,9 @@ class _CallPipes:
         self._host_open = False
         with suppress(OSError):
             os.close(self.result_r)
+
+        with suppress(OSError):
+            os.close(self.progress_r)
 
         if not self._outputs_taken:
             for read_fd, _ in self._outs:
@@ -397,6 +407,7 @@ class ProcessToolCaller(ToolLauncher):
         ToolChannel.STDERR,
         ToolChannel.RESULT,
         ToolChannel.FRAMES,
+        ToolChannel.PROGRESS,
     )
     """Каналы вызова модуля, попадающие в журнал при поставленном тапе."""
 

@@ -186,6 +186,10 @@ class TurnState(TurnArtifacts):
         """Запоминает начатый вызов инструмента по его идентификатору."""
         self._tool_calls[call_id] = call_id
 
+    def tool_open(self, call_id: str) -> bool:
+        """Идёт ли вызов: начат и ещё не завершён."""
+        return call_id in self._tool_calls
+
     def close_tool(self, call_id: str) -> bool:
         """Снимает с учёта завершённый вызов; False — вызова среди начатых
         нет: его уже закрыл исход хода."""
@@ -378,6 +382,16 @@ class ChatTurn(RunPort):
     ) -> None:
         await self._feed.tool_started(tool_call_id, name, args)
         self._state.open_tool(tool_call_id)
+
+    async def tool_progressed(
+        self, tool_call_id: str, done: float, total: float | None, text: str
+    ) -> None:
+        """Ход работы рисуется только у идущего вызова: отчёт, опоздавший к
+        его концу, шаг не трогает."""
+        if not self._state.tool_open(tool_call_id):
+            return
+
+        await self._feed.tool_progressed(tool_call_id, done, total, text)
 
     async def tool_finished(self, tool_call_id: str, result: ToolResultBase) -> None:
         """Вызов, который исход хода уже закрыл как остановленный, второй

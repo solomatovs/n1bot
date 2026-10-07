@@ -176,7 +176,9 @@ class CallFd(IntEnum):
     """Готовность барьера группы: тело пишет, хост читает."""
     VERDICT = 7
     """Ответ барьера группы: хост пишет, тело читает."""
-    CGROUP = 8
+    PROGRESS = 8
+    """Отчёты о ходе работы: тело пишет, хост читает."""
+    CGROUP = 9
     """Каталог cgroup-leaf'а; едет только когда у вызова есть групповые лимиты."""
 
     @classmethod
@@ -917,6 +919,7 @@ class ZygoteMain:
             CallFd.INJECTED,
             CallFd.GATE,
             CallFd.VERDICT,
+            CallFd.PROGRESS,
         ):
             os.close(fds[index])
 
@@ -1097,6 +1100,8 @@ class ZygoteMain:
         argv.append(str(fds[CallFd.GATE]))
         argv.append(EntryFlag.FD_VERDICT.value)
         argv.append(str(fds[CallFd.VERDICT]))
+        argv.append(EntryFlag.FD_PROGRESS.value)
+        argv.append(str(fds[CallFd.PROGRESS]))
 
         ins = fds[request.inputs_at() : request.outputs_at()]
         for port, fd in zip(request.inputs, ins, strict=True):

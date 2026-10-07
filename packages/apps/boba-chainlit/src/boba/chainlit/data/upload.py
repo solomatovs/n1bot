@@ -673,7 +673,7 @@ class StreamServing:
             )
             raise HTTPException(status_code=404, detail=msg)
 
-        rel = "/".join((address.run, call_id, log_channel.value))
+        rel = "/".join((address.run, address.call, log_channel.value))
         try:
             relayed = await files.relay(rel, request.headers.get(FileHeader.RANGE, ""))
         except StorageNotFoundError as e:

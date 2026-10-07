@@ -20,6 +20,8 @@ import asyncio
 import io
 import logging
 import string
+import threading
+import time
 from collections.abc import AsyncIterator, Generator, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -29,7 +31,14 @@ from typing import Annotated, Any, ClassVar, Literal, Protocol
 from pydantic import BaseModel, ConfigDict, Field, JsonValue
 
 from boba.toolkit.failure import FailurePacker, ReportedError
-from boba.toolkit.ports import Chunk, Inbound, Outbound, StreamGroup
+from boba.toolkit.ports import (
+    Chunk,
+    Inbound,
+    Outbound,
+    StageProgress,
+    StreamGroup,
+    ToolProgress,
+)
 from boba.toolkit.result import Fact, FailureResult, SqlFailureResult, SqlStatement
 from boba.toolkit.timing import Elapsed
 
@@ -87,6 +96,7 @@ __all__ = [
     "TransferFrame",
     "TransferInbound",
     "TransferOutbound",
+    "TransferProgress",
     "TransferReport",
     "TransferRun",
     "TransferSink",
@@ -153,22 +163,87 @@ TransferFrame = SchemaHead | RowsHead
 их по полю kind."""
 
 
+class TransferProgress:
+    """Ход работы насоса отчётами тела инструмента.
+
+    Создаётся телом потокового инструмента из его ToolProgress и отдаётся
+    журналу команд (CommandJournal) и концам потока (TransferOutbound,
+    TransferInbound): журнал называет идущую команду сервера и её итог,
+    концы потока считают прошедшие байты и кадры. Каждое изменение —
+    следующий отчёт: текст несёт команду и объём; сколько всего данных,
+    насос не знает. Счётчики зовут и из рабочих потоков (запись кадров,
+    COPY), поэтому состояние под замком; текст отчёта собирается не чаще
+    INTERVAL_SEC, а итог команды сообщается всегда.
+    """
+
+    COMMAND_CHARS: ClassVar[int] = 80
+    INTERVAL_SEC: ClassVar[float] = 0.5
+    MIB: ClassVar[int] = 1 << 20
+
+    def __init__(self, progress: ToolProgress) -> None:
+        self._steps = StageProgress(progress, None)
+        self._lock = threading.Lock()
+        self._command = ""
+        self._bytes = 0
+        self._frames = 0
+        self._said_at = 0.0
+
+    def command(self, text: str) -> None:
+        """Началась команда сервера text."""
+        line, _, _ = text.strip().partition("\n")
+        with self._lock:
+            self._command = line[: self.COMMAND_CHARS]
+            self._say()
+
+    def finished(self, status: str) -> None:
+        """Идущая команда кончилась со статусом сервера status."""
+        with self._lock:
+            if status:
+                self._command = f"{self._command}: {status}"
+
+            self._say()
+
+    def moved(self, size: int) -> None:
+        """Через порт прошёл кадр данных в size байт."""
+        with self._lock:
+            self._bytes += size
+            self._frames += 1
+            if time.monotonic() - self._said_at < self.INTERVAL_SEC:
+                return
+
+            self._say()
+
+    def _say(self) -> None:
+        self._said_at = time.monotonic()
+        text = self._command
+        if self._frames:
+            volume = f"{self._bytes / self.MIB:.1f} MiB in {self._frames} frames"
+            text = f"{text} — {volume}"
+
+        self._steps.next(text)
+
+
 class TransferOutbound:
     """Запись кадров потока из async-тела источника: schema — методом
     schema, блоки данных — методом rows или через файл writer. Сама запись
-    в порт идёт в рабочем потоке, чтобы не блокировать цикл событий."""
+    в порт идёт в рабочем потоке, чтобы не блокировать цикл событий.
+    Прошедшие кадры считает ход работы насоса (TransferProgress)."""
 
-    def __init__(self, out: Outbound[TransferFrame]) -> None:
+    def __init__(
+        self, out: Outbound[TransferFrame], progress: TransferProgress
+    ) -> None:
         self._out = out
+        self._progress = progress
 
     async def schema(self, head: SchemaHead) -> None:
         await asyncio.to_thread(self._out.emit, head)
 
     async def rows(self, body: Chunk) -> None:
         await asyncio.to_thread(self._out.emit, RowsHead(kind="rows"), body)
+        self._progress.moved(len(body))
 
     def writer(self) -> FrameWriter:
-        return FrameWriter(self._out)
+        return FrameWriter(self._out, self._progress)
 
 
 class TransferInbound:
@@ -178,9 +253,15 @@ class TransferInbound:
     вызовов перед фиксацией результата (коммит, exchange tables): приёмник
     зовёт его, дочитав поток, и фиксирует, только если он вернулся."""
 
-    def __init__(self, feed: Inbound[TransferFrame], group: StreamGroup) -> None:
+    def __init__(
+        self,
+        feed: Inbound[TransferFrame],
+        group: StreamGroup,
+        progress: TransferProgress,
+    ) -> None:
         self._frames = iter(feed)
         self._group = group
+        self._progress = progress
 
     async def committing(self) -> None:
         """Дождаться решения группы; срыв — StreamGroupAbortedError."""
@@ -206,6 +287,7 @@ class TransferInbound:
             if frame is None:
                 return
 
+            self._progress.moved(len(frame.body))
             yield frame.body
 
     def raw(self) -> FrameBodies:
@@ -213,6 +295,7 @@ class TransferInbound:
 
     def sync_bodies(self) -> Iterator[Chunk]:
         for frame in self._frames:
+            self._progress.moved(len(frame.body))
             yield frame.body
 
 
@@ -248,9 +331,12 @@ class FrameWriter(io.RawIOBase):
     кадр rows с этими байтами. Для писателей, работающих в рабочем потоке,
     например BufferedWriter или Arrow IPC."""
 
-    def __init__(self, out: Outbound[TransferFrame]) -> None:
+    def __init__(
+        self, out: Outbound[TransferFrame], progress: TransferProgress
+    ) -> None:
         super().__init__()
         self._out = out
+        self._progress = progress
 
     def writable(self) -> bool:
         return True
@@ -258,6 +344,7 @@ class FrameWriter(io.RawIOBase):
     def write(self, data: Any) -> int:
         view = memoryview(data)
         self._out.emit(RowsHead(kind="rows"), view)
+        self._progress.moved(len(view))
 
         return len(view)
 
@@ -778,14 +865,17 @@ class CommandJournal:
     получают его конструктором и оборачивают каждую команду в command():
     в журнал инструмента строка уходит до выполнения и после, со статусом и
     временем, а сама команда копится для чата. Сама загрузка — одна команда:
-    строк и пачек журнал не видит. По исключению тела failed() собирает
-    CommandsFailedError — в чате видны колонки и команды вплоть до упавшей.
+    строк и пачек журнал не видит. О начале и итоге каждой команды узнаёт
+    ход работы насоса (TransferProgress): пользователь видит, что сейчас
+    выполняется. По исключению тела failed() собирает CommandsFailedError —
+    в чате видны колонки и команды вплоть до упавшей.
     """
 
     FAILED: ClassVar[str] = "failed"
 
-    def __init__(self, tool: str) -> None:
+    def __init__(self, tool: str, progress: TransferProgress) -> None:
         self._tool = tool
+        self._progress = progress
         self._statements: list[SqlStatement] = []
         self._columns: list[dict[str, str]] = []
         self._logger = logging.getLogger(__name__)
@@ -796,6 +886,7 @@ class CommandJournal:
     ) -> Generator[JournalCommand, None, None]:
         running = JournalCommand(text=text, kind=kind)
         self._logger.info("%s: %s started:\n%s", self._tool, kind.value, text)
+        self._progress.command(text)
         elapsed = Elapsed()
         try:
             yield running
@@ -824,6 +915,7 @@ class CommandJournal:
             elapsed.ms(),
             running.status,
         )
+        self._progress.finished(running.status)
         self._keep(running, running.status)
 
     def columns(self, rows: Sequence[Mapping[str, str]]) -> None:

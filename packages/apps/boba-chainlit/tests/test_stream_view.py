@@ -970,8 +970,6 @@ class TestShowAction:
         stream = begin_stream(journals)
         stream.sink_of(STDOUT).feed(b"live")
         stream.sink_of(ToolChannel.STDERR).feed(b"live complaints")
-        REMOTE.live(THREAD, CALL_ID, STDOUT.value, 4)
-        REMOTE.live(THREAD, CALL_ID, ToolChannel.STDERR.value, 15)
         PanelProbe(monkeypatch)
 
         async def scenario() -> str | None:
@@ -1001,7 +999,6 @@ class TestShowAction:
         _speed_up_watch(monkeypatch)
         stream = begin_stream(journals)
         stream.sink_of(STDOUT).feed(b"live")
-        REMOTE.live(THREAD, CALL_ID, STDOUT.value, 4)
 
         probe = PanelProbe(monkeypatch)
 
@@ -1034,7 +1031,6 @@ class TestShowAction:
         _speed_up_watch(monkeypatch)
         stream = begin_stream(journals)
         stream.sink_of(STDOUT).feed(b"live")
-        REMOTE.live(THREAD, CALL_ID, STDOUT.value, 4)
 
         probe = PanelProbe(monkeypatch)
 

@@ -20,8 +20,6 @@
 Ошибки:
 ConnectionStoreError — таблица соединений недоступна.
 KerberosError — билет к соединению не выпущен.
-StreamPlanError — сервер объявил возможность связки (WorkflowFeature)
-    настройками, которые не проходят её модель.
 """
 
 from __future__ import annotations
@@ -252,16 +250,12 @@ class SealingToolServer(ToolServer):
     async def _sealed(self, call: DagNode) -> DagNode:
         """Вызов с запечатанными соединениями.
 
-        У инструмента-связки (возможность WorkflowFeature) соединения лежат
-        в аргументах узлов: каждый узел — вызов своего инструмента. Связка,
+        У инструмента-связки (CallDag.WORKFLOW) соединения лежат в
+        аргументах узлов: каждый узел — вызов своего инструмента. Связка,
         которая не проходит форму описания, уходит серверу как есть — он и
         ответит, что с ней не так.
         """
-        workflow = self._dags.feature_of(self._inner.features())
-        if workflow is None:
-            return await self._sealed_call(call)
-
-        if call.tool != workflow.tool:
+        if call.tool != self._dags.WORKFLOW:
             return await self._sealed_call(call)
 
         try:

@@ -35,8 +35,14 @@ from boba.pump_stand import Loaded, PostgresSide, PumpDags, PumpStand
 from boba.pump_stand.ports import Sink, SinkOutbound
 from boba.stand.names import StandNames
 from boba.stream.pg_to_pg.transfer import PgStreamColumn
+from boba.toolkit.ports import ToolProgress
 from boba.toolkit.result import SqlFailureResult
-from boba.toolkit.transfer import CommandJournal, TransferError, TransferOutbound
+from boba.toolkit.transfer import (
+    CommandJournal,
+    TransferError,
+    TransferOutbound,
+    TransferProgress,
+)
 from boba.toolrun.dag_run import DagOutcome
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
@@ -1905,9 +1911,9 @@ class TestDescribeCost:
             cursor = await conn.execute(counters.text)
             before = await cursor.fetchone()
             started = time.perf_counter()
-            contract = await PgCopyOut(conn, CommandJournal("test")).contract(
-                self.HEAVY, ()
-            )
+            contract = await PgCopyOut(
+                conn, CommandJournal("test", TransferProgress(ToolProgress(-1)))
+            ).contract(self.HEAVY, ())
             elapsed = time.perf_counter() - started
             cursor = await conn.execute(counters.text)
             after = await cursor.fetchone()
@@ -1979,7 +1985,9 @@ class TestCopyOutLoop:
         select = self.SELECT.format(rows=self.ROWS)
         sink = Sink()
         async with await AsyncPostgresPool.dedicated(postgres.profile) as conn:
-            copy_out = PgCopyOut(conn, CommandJournal("test"))
+            copy_out = PgCopyOut(
+                conn, CommandJournal("test", TransferProgress(ToolProgress(-1)))
+            )
             contract = await copy_out.contract(select, ())
             started = time.perf_counter()
             report = await copy_out.stream(
@@ -1987,7 +1995,9 @@ class TestCopyOutLoop:
                 PgCopyLayout.CSV,
                 contract,
                 self.CHUNK,
-                TransferOutbound(SinkOutbound(sink)),
+                TransferOutbound(
+                    SinkOutbound(sink), TransferProgress(ToolProgress(-1))
+                ),
             )
             elapsed = time.perf_counter() - started
 
@@ -2009,7 +2019,9 @@ class TestCopyOutLoop:
         only_newest(postgres)
         select = "select g, 1 / (g - 5000) as bad from generate_series(1, 10000) g"
         async with await AsyncPostgresPool.dedicated(postgres.profile) as conn:
-            copy_out = PgCopyOut(conn, CommandJournal("test"))
+            copy_out = PgCopyOut(
+                conn, CommandJournal("test", TransferProgress(ToolProgress(-1)))
+            )
             contract = await copy_out.contract(select, ())
             with pytest.raises(psycopg.errors.DivisionByZero):
                 await copy_out.stream(
@@ -2017,7 +2029,9 @@ class TestCopyOutLoop:
                     PgCopyLayout.CSV,
                     contract,
                     4096,
-                    TransferOutbound(SinkOutbound(Sink())),
+                    TransferOutbound(
+                        SinkOutbound(Sink()), TransferProgress(ToolProgress(-1))
+                    ),
                 )
 
             await conn.rollback()
@@ -2031,7 +2045,9 @@ class TestCopyOutLoop:
         only_newest(postgres)
         select = self.SELECT.format(rows=self.ROWS)
         async with await AsyncPostgresPool.dedicated(postgres.profile) as conn:
-            copy_out = PgCopyOut(conn, CommandJournal("test"))
+            copy_out = PgCopyOut(
+                conn, CommandJournal("test", TransferProgress(ToolProgress(-1)))
+            )
             contract = await copy_out.contract(select, ())
             started = time.perf_counter()
             with pytest.raises(BrokenPipeError):
@@ -2040,7 +2056,9 @@ class TestCopyOutLoop:
                     PgCopyLayout.CSV,
                     contract,
                     4096,
-                    TransferOutbound(SinkOutbound(BrokenSink())),
+                    TransferOutbound(
+                        SinkOutbound(BrokenSink()), TransferProgress(ToolProgress(-1))
+                    ),
                 )
             elapsed = time.perf_counter() - started
 
