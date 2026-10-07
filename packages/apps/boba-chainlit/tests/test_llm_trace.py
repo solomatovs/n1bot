@@ -13,7 +13,12 @@ from collections.abc import Iterator
 from typing import Annotated
 
 import pytest
-from chainlit_stand import SilentStage, fake_openai_chat, in_process_llm
+from chainlit_stand import (
+    FakeThreadMessages,
+    SilentStage,
+    fake_openai_chat,
+    in_process_llm,
+)
 from langgraph.checkpoint.memory import InMemorySaver
 from pydantic import Field
 from uvicorn.logging import DefaultFormatter
@@ -22,6 +27,7 @@ from boba.chainlit.agent.bridge import ChatModelBridge
 from boba.chainlit.agent.events import TurnEvents
 from boba.chainlit.agent.flow import GraphSpec, HistoryView, PlainGraphBuilder
 from boba.chainlit.agent.history import CheckpointMessages, GraphAgent
+from boba.chainlit.canvas.remote import RemoteJournals
 from boba.chainlit.chat.dialog import UserMessage
 from boba.chainlit.chat.tracing import LlmStateLog
 from boba.chainlit.infra.config import LOGGING_CONFIG
@@ -112,7 +118,13 @@ class TestLlmStateLog:
             (),
             StreamSpecs({}),
             CallAmbient(),
-            ChatCalls(contexts, runs, SentConnections(), ChatMount(contexts, runs)),
+            ChatCalls(
+                contexts,
+                runs,
+                SentConnections(),
+                ChatMount(contexts, runs),
+                RemoteJournals(FakeThreadMessages()),
+            ),
         )
         spec = GraphSpec(
             chat=self._chat(provider),

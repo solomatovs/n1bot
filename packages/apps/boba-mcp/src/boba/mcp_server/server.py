@@ -5,24 +5,31 @@
 тот же исполнитель DAG, что в процессе чата; контекст вызова ставит
 middleware из токена. Логики во входе нет: McpTool.run разбирает запрос в
 вызов-узел DagNode и зовёт порт; итог порта (NodeOutcome) уходит клиенту
-ответом McpReplies — конвертом ResultWire. Тем же компонентом отвечают
-операции сервиса и middleware: отказ сервера — тоже итог с моделью отказа.
+ответом McpReplies — стандартными полями результата MCP (ResultWire). Тем же
+компонентом отвечают операции сервиса и middleware: отказ сервера — тоже
+итог с моделью отказа.
 
-Во время вызова сервер шлёт сигналы роста журнала уведомлениями
-notifications/progress (ProgressSignals); кусок журнала читает операция
-stream_read (StreamReadTool), адрес загрузки файла отдаёт операция
-file_upload (FileUploadTool).
+Во время вызова сервер пересылает клиенту отчёты тела о ходе работы
+уведомлениями notifications/progress (CallProgress); журнал вызова читает
+операция stream_read (StreamReadTool) по адресу из итога вызова, адрес
+загрузки файла отдаёт операция file_upload (FileUploadTool).
 
 Ошибки:
 наружу уходит только итог вызова — сбой любого вида возвращается
     результатом с isError и моделью отказа (FailureResult) в structuredContent.
 TokenClaimsError — токен прошёл проверку подписи, но не несёт логина и ролей;
     вызов и список инструментов для него отказывают.
+ValidationError — structuredContent ответа несёт сведения о вызове, которые
+    не проходят свою модель (нарушение контракта McpReplies).
+ProgressChannelError — тело написало в канал отчётов о ходе работы строку,
+    которая не проходит модель ProgressReport; остаётся в логе сервиса,
+    вызов от неё не срывается.
 """
 
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 from collections.abc import AsyncIterator, Mapping, Sequence
 from contextlib import AsyncExitStack, asynccontextmanager
@@ -64,31 +71,30 @@ from boba.identity.signin import ProfileCatalog
 from boba.mcp_server.auth import (
     CallScopeError,
     CallScopes,
-    SentMeta,
     ServiceAuth,
     TokenSubjects,
 )
 from boba.mcp_server.files import FileRoutes, JournalRoutes, RouteCallers
-from boba.messaging import StreamAppended, StreamFeed
 from boba.runtime.storage import LocalStorageConfig, StorageFactory
 from boba.toolkit.calls import CallIdPrefix, CallViews
-from boba.toolkit.channels import JournalChannels
+from boba.toolkit.channels import JournalChannels, ToolChannel
 from boba.toolkit.dag import DagNode, NodeOutcome, NodeOutcomes, ToolCard, ToolServer
 from boba.toolkit.failure import FailurePacker, ValidationText
+from boba.toolkit.ports import ProgressReport
 from boba.toolkit.result import ErrorResult, FailureResult
 from boba.toolkit.wire import (
     FilesFeature,
     JournalFeature,
     JournalRead,
-    JournalSignal,
     ResultWire,
 )
 from boba.toolrun.hosted import DirectCalls
 from boba.toolrun.registry import ToolRegistry
-from boba.toolrun.streams import CallJournals, StreamPumps
+from boba.toolrun.streams import CallJournals, ToolStream
 
 __all__ = [
     "CallContextMiddleware",
+    "CallProgress",
     "EndpointCatalog",
     "FileUploadTool",
     "McpEndpoints",
@@ -96,7 +102,6 @@ __all__ = [
     "McpServer",
     "McpTool",
     "McpToolProvider",
-    "ProgressSignals",
     "RoleToolServers",
     "RunLimitMiddleware",
     "RunLimits",
@@ -151,9 +156,9 @@ class McpReplies:
     Создаётся каждым, кто отвечает на tools/call: инструментом реестра
     (McpTool), операциями сервиса (StreamReadTool, FileUploadTool) и
     middleware контекста и пределов. Итог вызова (NodeOutcome) и отказ
-    сервера едут клиенту конвертом ResultWire: текст для модели, результат
-    семейства в structuredContent, статус и идентификатор вызова в _meta.
-    Ответ операции сервиса — её модель в structuredContent.
+    сервера едут клиенту полями ResultWire: текст для модели в content,
+    сведения о вызове и результат семейства в structuredContent. Ответ
+    операции сервиса — её модель в structuredContent.
     """
 
     def __init__(self) -> None:
@@ -167,7 +172,6 @@ class McpReplies:
         return ToolResult(
             content=[mt.TextContent(type="text", text=packed.content)],
             structured_content=dict(packed.structured or {}),
-            meta=dict(packed.meta),
             is_error=packed.is_error,
         )
 
@@ -186,15 +190,16 @@ class McpReplies:
         )
 
     def stamped(self, result: ToolResult, run: str) -> ToolResult:
-        """Тот же ответ с идентификатором запуска в служебных полях."""
-        meta = result.meta
-        if meta is None:
-            meta = {}
+        """Тот же ответ с запуском run в сведениях о вызове: по запуску и
+        идентификатору вызова клиент читает журнал."""
+        structured = result.structured_content
+        if structured is None:
+            return result
 
         return ToolResult(
             content=result.content,
-            structured_content=result.structured_content,
-            meta=self._wire.stamped(meta, run),
+            structured_content=self._wire.stamped(structured, run),
+            meta=result.meta,
             is_error=result.is_error,
         )
 
@@ -205,15 +210,15 @@ class McpTool(Tool):
     Адаптер ядра запуска к fastmcp. Создаёт его McpToolProvider из карточки
     инструмента порта: схема для клиента — готовая схема вызова после всех
     обвязок с видом аргументов карточки для ленты клиента (CallViews),
-    тело — вызов порта ToolServer узлом DagNode; итог порта (NodeOutcome)
-    уходит клиенту ответом McpReplies.
+    тело — вызов порта ToolServer узлом DagNode под идентификатором,
+    который выдаёт сервер; итог порта (NodeOutcome) уходит клиенту ответом
+    McpReplies.
     fastmcp аргументы не проверяет: проверка одна, по схеме инструмента
     внутри исполнителя.
     """
 
     _server: ToolServer = PrivateAttr()
     _replies: McpReplies = PrivateAttr()
-    _meta: SentMeta = PrivateAttr()
     _outcomes: NodeOutcomes = PrivateAttr()
     _failures: FailurePacker = PrivateAttr()
 
@@ -225,16 +230,12 @@ class McpTool(Tool):
         )
         self._server = server
         self._replies = McpReplies()
-        self._meta = SentMeta()
         self._outcomes = NodeOutcomes()
         self._failures = FailurePacker()
 
     async def run(self, arguments: dict[str, object]) -> ToolResult:
         call_id = CallIdPrefix.API.new_id()
         try:
-            if sent := self._meta.sent().call_id:
-                call_id = sent
-
             call = DagNode.model_validate(
                 {"key": call_id, "tool": self.name, "args": arguments}
             )
@@ -298,32 +299,70 @@ class McpToolProvider(Provider):
         return offered
 
 
-class ProgressSignals(StreamFeed):
-    """Реализация StreamFeed уведомлениями notifications/progress вызова.
+class ProgressChannelError(Exception):
+    """Тело инструмента написало в канал отчётов то, что отчётом не является."""
 
-    Создаётся CallContextMiddleware на каждый вызов инструмента. Насосы
-    журнала (StreamPumps) сообщают сюда о росте каналов; сигналы ждут в
-    очереди, а отправляет их задача, заведённая start() внутри запроса:
-    уведомление привязано к запросу, и из чужой задачи оно не уходит.
-    progress — растущий счётчик сигналов, сам сигнал едет в message
-    моделью JournalSignal. Клиент без токена прогресса сигналов не получает.
+
+class CallProgress:
+    """Ход работы вызова уведомлениями notifications/progress.
+
+    Создаётся CallContextMiddleware на каждый вызов инструмента и следит за
+    журналами запуска (CallJournals.following зовёт opened). Тело пишет
+    отчёты о ходе работы в канал ToolChannel.PROGRESS; отсюда они уходят
+    клиенту стандартным прогрессом запроса: числа done и total и текст
+    отчёта. Тело ничего не сообщило — уведомлений нет; клиент без токена
+    прогресса их не получает. Отчёты ждут в очереди, а отправляет их задача,
+    заведённая start() внутри запроса: уведомление привязано к запросу, и
+    из чужой задачи оно не уходит. Значение прогресса запроса обязано расти:
+    отчёт, в котором оно не выросло (узлы связки считают каждый в своих
+    единицах), не пересылается.
     """
 
-    def __init__(self, context: Context, run: str) -> None:
+    POLL_SEC: ClassVar[float] = 1.0
+    """Предел ожидания будильника журнала: страховка от пропущенного
+    пробуждения."""
+
+    CLOSE_SEC: ClassVar[float] = 2.0
+
+    def __init__(
+        self, context: Context, journals: CallJournals, user: str, run: str
+    ) -> None:
         self._context = context
+        self._journals = journals
+        self._user = user
         self._run = run
-        self._queue: asyncio.Queue[StreamAppended | None] = asyncio.Queue()
+        self._queue: asyncio.Queue[ProgressReport | None] = asyncio.Queue()
         self._sender: asyncio.Task[None] | None = None
+        self._followers: set[asyncio.Task[None]] = set()
 
     def start(self) -> None:
         self._sender = asyncio.create_task(self._send(), name=f"progress:{self._run}")
 
-    async def stream_appended(self, message: StreamAppended) -> None:
-        self._queue.put_nowait(message)
+    def opened(self, call_id: str, stream: ToolStream) -> None:
+        """Наблюдатель CallJournals: журнал вызова открыт — за его каналом
+        отчётов следит своя задача."""
+        task = asyncio.create_task(
+            self._follow(call_id, stream), name=f"progress-follow:{call_id}"
+        )
+        self._followers.add(task)
+        task.add_done_callback(self._followers.discard)
 
     async def close(self) -> None:
-        """Дожидается отправки всех сигналов: после ответа на вызов
+        """Дожидается чтения и отправки всех отчётов: после ответа на вызов
         уведомления теряются без ошибки."""
+        followers = list(self._followers)
+        if followers:
+            done, pending = await asyncio.wait(followers, timeout=self.CLOSE_SEC)
+            for task in pending:
+                task.cancel()
+
+            for task in pending:
+                with contextlib.suppress(asyncio.CancelledError):
+                    await task
+
+            for task in done:
+                self._logged(task)
+
         sender = self._sender
         if sender is None:
             return
@@ -331,24 +370,84 @@ class ProgressSignals(StreamFeed):
         self._queue.put_nowait(None)
         await sender
 
-    async def _send(self) -> None:
-        sent = 0
+    @staticmethod
+    def _logged(task: asyncio.Task[None]) -> None:
+        """Сбой чтения отчётов — в лог сервиса: вызов от него не срывается."""
+        if task.cancelled():
+            return
+
+        error = task.exception()
+        if error is None:
+            return
+
+        logger.error(
+            "progress follower %s failed: %s", task.get_name(), error, exc_info=error
+        )
+
+    async def _follow(self, call_id: str, stream: ToolStream) -> None:
+        waker = stream.attach_waker()
+        offset = 0
+        try:
+            while True:
+                closed = stream.closed
+                offset = self._take(call_id, offset)
+                if closed:
+                    return
+
+                await self._pause(waker)
+        finally:
+            stream.detach_waker(waker)
+
+    def _take(self, call_id: str, offset: int) -> int:
+        """Отчёты канала с байта offset — в очередь; итог — байт, до
+        которого канал прочитан."""
         while True:
-            message = await self._queue.get()
-            if message is None:
+            piece = self._journals.recorded_slice(
+                self._user, self._run, call_id, offset, ToolChannel.PROGRESS
+            )
+            if piece is None:
+                return offset
+
+            if piece.end <= offset:
+                return offset
+
+            for line in piece.text.splitlines():
+                self._queue.put_nowait(self._report_of(call_id, line))
+
+            offset = piece.end
+
+    @staticmethod
+    def _report_of(call_id: str, line: str) -> ProgressReport:
+        try:
+            return ProgressReport.model_validate_json(line)
+        except ValidationError as exc:
+            msg = (
+                f"progress of call {call_id}: the body wrote a report that does "
+                f"not match ProgressReport, got {line!r}: {exc}"
+            )
+            raise ProgressChannelError(msg) from exc
+
+    async def _pause(self, waker: asyncio.Event) -> None:
+        try:
+            await asyncio.wait_for(waker.wait(), timeout=self.POLL_SEC)
+        except TimeoutError:
+            return
+
+        waker.clear()
+
+    async def _send(self) -> None:
+        sent = -1.0
+        while True:
+            report = await self._queue.get()
+            if report is None:
                 return
 
-            sent += 1
-            signal = JournalSignal(
-                run=self._run,
-                node=message.call_id,
-                channel=message.channel,
-                size=message.size,
-                closed=message.closed,
-                note=message.note,
-            )
+            if report.done <= sent:
+                continue
+
+            sent = report.done
             await self._context.report_progress(
-                progress=sent, message=signal.model_dump_json()
+                progress=report.done, total=report.total, message=report.message
             )
 
 
@@ -539,8 +638,9 @@ class CallContextMiddleware(Middleware):
     отмена) и
     держит запуск открытым на время вызова: задачи узлов DAG и тела в
     потоках наследуют контекст, обвязки прав и значений контекста читают его
-    как в чате. Рост журналов запуска уходит клиенту сигналами
-    (ProgressSignals), идентификатор запуска — в _meta итога. Клиент закрыл
+    как в чате. Отчёты тел о ходе работы уходят клиенту прогрессом запроса
+    (CallProgress), идентификатор запуска — в сведениях о вызове итога.
+    Клиент закрыл
     соединение — отмена помечается, DAG гаснет. Операции сервиса
     (operations) проходят мимо: запуска у них нет.
     """
@@ -588,13 +688,12 @@ class CallContextMiddleware(Middleware):
             cancellation=cancellation,
         )
 
-        signals = ProgressSignals(get_context(), run_id)
-        pumps = StreamPumps(signals)
-        signals.start()
+        progress = CallProgress(get_context(), self._journals, subject.user_key, run_id)
+        progress.start()
         try:
             with (
                 self._runs.open(call) as run,
-                self._journals.following(run, pumps.opened),
+                self._journals.following(run, progress.opened),
             ):
                 try:
                     result = await call_next(context)
@@ -613,9 +712,8 @@ class CallContextMiddleware(Middleware):
                     )
                     result = self._replies.refused(context.message.name, stopped)
         finally:
-            # журналы закрыты вместе с запуском: насосы досылают итог каналов
-            await pumps.close()
-            await signals.close()
+            # журналы закрыты вместе с запуском: досылаются последние отчёты
+            await progress.close()
 
         return self._replies.stamped(result, run_id)
 

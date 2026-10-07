@@ -47,6 +47,7 @@ from boba.messaging import (
     TokensSpent,
     ToolFailed,
     ToolFinished,
+    ToolProgressed,
     ToolStarted,
     ToolStopped,
     TurnFinished,
@@ -236,6 +237,7 @@ class ChatRenderer:
             MessageKind.STAGE_QUERIES: self._on_stage_queries,
             MessageKind.STAGE_ENDED: self._on_stage_ended,
             MessageKind.TOOL_STARTED: self._on_tool_started,
+            MessageKind.TOOL_PROGRESSED: self._on_tool_progressed,
             MessageKind.TOOL_FINISHED: self._on_tool_finished,
             MessageKind.TOOL_FAILED: self._on_tool_failed,
             MessageKind.TOOL_STOPPED: self._on_tool_stopped,
@@ -316,6 +318,15 @@ class ChatRenderer:
 
         step = await self._view.tool_started(message.name, args, message.call_id)
         self._tool_steps[message.call_id] = step
+
+    async def _on_tool_progressed(self, message: ToolProgressed) -> None:
+        step = self._tool_steps.get(message.call_id)
+        if step is None:
+            return
+
+        await self._view.tool_progressed(
+            step, message.done, message.total, message.text
+        )
 
     async def _on_tool_finished(self, message: ToolFinished) -> None:
         step = self._tool_steps.pop(message.call_id, None)

@@ -3,8 +3,9 @@
 Запускается настоящим subprocess'ом, как fake_toolmod. Тело получает
 субъекта вызова injected-параметром и возвращает, кого увидело: тесты
 проверяют, что контекст, поставленный входом (ход чата, запрос сервиса),
-доезжает до тела. fake_sleep называет свой pid файлом и спит — им тесты
-проверяют отмену вызова и предел одновременных запусков.
+доезжает до тела. fake_progress делает шаги и сообщает о ходе работы.
+fake_sleep называет свой pid файлом и спит — им тесты проверяют отмену
+вызова и предел одновременных запусков.
 """
 
 from __future__ import annotations
@@ -20,6 +21,7 @@ from pydantic import Field
 from boba.identity.context import Scope, Subject
 from boba.toolkit.entry import ToolMain
 from boba.toolkit.facade import Injected, tool
+from boba.toolkit.ports import ToolProgress
 from boba.toolkit.result import MarkdownResult
 
 
@@ -42,6 +44,20 @@ async def fake_scope(
 
 
 @tool
+async def fake_progress(
+    steps: Annotated[int, Field(ge=1, description="Сколько шагов сделать")],
+    pause: Annotated[float, Field(ge=0, description="Пауза между шагами, секунды")],
+    progress: Annotated[ToolProgress, Injected],
+) -> MarkdownResult:
+    """Делает шаги с паузой и сообщает о ходе работы после каждого."""
+    for step in range(1, steps + 1):
+        progress.report(step, steps, f"step {step} of {steps}")
+        await asyncio.sleep(pause)
+
+    return MarkdownResult(text=f"{steps} steps done")
+
+
+@tool
 async def fake_sleep(
     seconds: Annotated[float, Field(ge=0, description="Сколько секунд спать")],
     marker: Annotated[str, Field(min_length=1, description="Файл с pid тела")],
@@ -53,7 +69,7 @@ async def fake_sleep(
     return MarkdownResult(text=f"slept {seconds}")
 
 
-TOOLS: Final = ToolMain.toolset(fake_whoami, fake_scope, fake_sleep)
+TOOLS: Final = ToolMain.toolset(fake_whoami, fake_scope, fake_progress, fake_sleep)
 
 if __name__ == "__main__":
     sys.exit(ToolMain.run(TOOLS))

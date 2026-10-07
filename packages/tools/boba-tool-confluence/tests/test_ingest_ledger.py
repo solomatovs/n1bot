@@ -68,6 +68,7 @@ from boba.tool.confluence.ingest_base import (
     PageScope,
     SpaceScope,
 )
+from boba.toolkit.ports import ToolProgress
 from boba.transport.http.connection import HttpConnection, UrlScheme
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
@@ -170,7 +171,7 @@ class IngestStand:
         self.stub = stub
         self.cfg = cfg
         self.reader = CountingReader()
-        self.progress = IngestProgress(LOGGER)
+        self.progress = IngestProgress(LOGGER, ToolProgress(-1))
         self._port = port
         self.ledger = PostgresSourceLedger(cfg=cfg, collection=CollectionId(COLLECTION))
         self.chunks = PostgresChunkStore(cfg=cfg)
@@ -206,7 +207,7 @@ class IngestStand:
         self.stub.reset_calls()
         self.reader.reads.clear()
         # счёт ведётся на прогон, как в теле инструмента
-        self.progress = IngestProgress(LOGGER)
+        self.progress = IngestProgress(LOGGER, ToolProgress(-1))
         grade = ParseGrade.TEXT
         if ocr:
             grade = ParseGrade.OCR

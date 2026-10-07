@@ -42,9 +42,10 @@ class ToolChannel(StrEnum):
     STDOUT и STDERR — обычный вывод процесса (логи, печать), их видит
     пользователь. STDIN несёт кадры входных данных до EOF, FRAMES — кадры
     данных наружу, RESULT — конверт результата (см. boba.toolkit.frames и
-    boba.toolkit.protocol); эти три — служебные. Номера дескрипторов RESULT
-    и FRAMES лончер передаёт телу аргументами команды (флаги EntryFlag в
-    boba.toolkit.entry).
+    boba.toolkit.protocol), PROGRESS — отчёты тела о ходе работы
+    (ToolProgress в boba.toolkit.ports); эти четыре — служебные. Номера
+    дескрипторов RESULT, FRAMES и PROGRESS лончер передаёт телу аргументами
+    команды (флаги EntryFlag в boba.toolkit.entry).
     """
 
     STDIN = "tool_stdin"
@@ -52,6 +53,7 @@ class ToolChannel(StrEnum):
     STDERR = "tool_stderr"
     RESULT = "tool_result"
     FRAMES = "tool_frames"
+    PROGRESS = "tool_progress"
 
     @property
     def inbound(self) -> bool:

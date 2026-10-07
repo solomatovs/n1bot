@@ -35,7 +35,6 @@ from boba.mcp_client.client import (
     DroppedSignals,
     HttpEndpoint,
     HttpLocation,
-    JournalListener,
     McpCaller,
     McpClientError,
     McpFailure,
@@ -44,6 +43,7 @@ from boba.mcp_client.client import (
     McpServersConfig,
     McpToolServer,
     NamedBlocks,
+    ProgressListener,
     ProxyAuth,
     StdioCommand,
 )
@@ -55,7 +55,6 @@ from boba.toolkit.channels import ToolChannel
 from boba.toolkit.dag import (
     CallDag,
     DagNode,
-    JournalAddress,
     NodeBody,
     NodeCalls,
     NodeOutcome,
@@ -70,7 +69,7 @@ from boba.toolkit.result import (
     ShellResult,
 )
 from boba.toolkit.types import SecretReveal
-from boba.toolkit.wire import JournalFeature, JournalRead, JournalSignal
+from boba.toolkit.wire import JournalFeature, JournalRead
 from boba.toolrun.hosted import DirectCalls
 from boba.workspace.launcher import ReadWindow
 
@@ -780,24 +779,25 @@ class TestWorkspaceFiles:
             raise AssertionError(f"the client uploads files itself: {names}")
 
 
-class HeardSignals(CallSignals, JournalListener):
-    """Приёмник сигналов журнала теста: копит сигналы и вызовы, чьи они."""
+class HeardSignals(CallSignals, ProgressListener):
+    """Приёмник отчётов о ходе работы теста: копит отчёты и вызовы, чьи они."""
 
     def __init__(self) -> None:
         self.calls: list[tuple[str, str]] = []
-        self.signals: list[JournalSignal] = []
+        self.reports: list[tuple[float, float | None, str]] = []
 
-    def listener(self, server: str, call: DagNode) -> JournalListener:
+    def listener(self, server: str, call: DagNode) -> ProgressListener:
         self.calls.append((server, call.key))
         return self
 
-    async def appended(self, signal: JournalSignal) -> None:
-        self.signals.append(signal)
+    async def progressed(self, done: float, total: float | None, text: str) -> None:
+        self.reports.append((done, total, text))
 
 
 @pytest.mark.integration
 class TestBobaMcpJournal:
-    """Журнал вызова своего сервера: сигналы роста и чтение окнами."""
+    """Вызов своего сервера: отчёты о ходе работы и журнал по адресу из
+    итога."""
 
     async def _opened(self, process: BobaMcpStand, heard: CallSignals) -> McpToolServer:
         server = McpToolServer(
@@ -820,7 +820,27 @@ class TestBobaMcpJournal:
 
         raise AssertionError("the boba-mcp stand did not start")
 
-    async def test_call_delivers_journal_signals_and_windows(
+    async def test_reports_of_the_server_reach_the_listener_of_the_call(
+        self, boba_mcp_stand: BobaMcpStand
+    ) -> None:
+        heard = HeardSignals()
+        server = await self._opened(boba_mcp_stand, heard)
+        try:
+            call = _call("fake_progress", steps=2, pause=0.6)
+            message = await server.call(call)
+        finally:
+            await server.close()
+
+        if message.errored:
+            raise AssertionError(f"the call succeeds: {message}")
+
+        if heard.calls != [("boba", call.key)]:
+            raise AssertionError(f"the listener is asked per call: {heard.calls}")
+
+        if heard.reports != [(1.0, 2.0, "step 1 of 2"), (2.0, 2.0, "step 2 of 2")]:
+            raise AssertionError(f"the reports arrive as they were made: {heard}")
+
+    async def test_journal_is_read_by_the_address_of_the_result(
         self, boba_mcp_stand: BobaMcpStand
     ) -> None:
         heard = HeardSignals()
@@ -831,35 +851,27 @@ class TestBobaMcpJournal:
             if message.errored:
                 raise AssertionError(f"the call succeeds: {message}")
 
-            if heard.calls != [("boba", call.key)]:
-                raise AssertionError(f"the listener is asked per call: {heard.calls}")
+            address = message.journal
+            if address is None or address.server != "boba":
+                raise AssertionError(f"the result names its journal: {message}")
 
-            stdout: list[JournalSignal] = []
-            for signal in heard.signals:
-                if signal.node != call.key:
-                    raise AssertionError(f"signals name the model's call: {signal}")
-
-                if signal.channel == ToolChannel.STDOUT.value:
-                    stdout.append(signal)
-
-            if not stdout or not stdout[-1].closed:
-                raise AssertionError(f"the output channel is closed: {heard.signals}")
+            if address.call == call.key:
+                raise AssertionError(f"the server names the call itself: {address}")
 
             request = JournalRead(
-                run=stdout[-1].run, node=stdout[-1].node, channel=ToolChannel.STDOUT
+                run=address.run, node=address.call, channel=ToolChannel.STDOUT
             )
             window = await server.journal(request)
         finally:
             await server.close()
 
-        address = message.journal
-        if address != JournalAddress(server="boba", run=stdout[-1].run):
-            raise AssertionError(f"the message keeps the journal address: {address}")
+        if heard.reports:
+            raise AssertionError(f"a silent tool sends no progress: {heard.reports}")
 
         if window is None or "echo progress: hi" not in window.text:
             raise AssertionError(f"the journal is read from the server: {window}")
-        if window.size != stdout[-1].size or not window.closed:
-            raise AssertionError(f"the window agrees with the signal: {window}")
+        if not window.closed:
+            raise AssertionError(f"the journal of a finished call is closed: {window}")
 
     async def test_journal_channel_is_downloaded_whole_and_by_range(
         self, boba_mcp_stand: BobaMcpStand
@@ -873,7 +885,7 @@ class TestBobaMcpJournal:
             if address is None or files is None:
                 raise AssertionError(f"the journal is addressable: {message}")
 
-            rel = f"{address.run}/{call.key}/{ToolChannel.STDOUT.value}"
+            rel = f"{address.run}/{address.call}/{ToolChannel.STDOUT.value}"
             whole = await files.relay(rel, "")
             body = b"".join([chunk async for chunk in whole.chunks])
             await whole.release()
@@ -928,8 +940,11 @@ class TestBobaMcpJournal:
         finally:
             await server.close()
 
-        if heard.calls or window is not None:
-            raise AssertionError(f"a standard server is not asked: {heard.calls}")
+        if window is not None:
+            raise AssertionError(f"a standard server keeps no journal: {window}")
+
+        if heard.calls != [("standard", "call-add")]:
+            raise AssertionError(f"progress is asked of any server: {heard.calls}")
 
 
 @pytest.mark.integration

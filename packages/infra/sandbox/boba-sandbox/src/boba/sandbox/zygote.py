@@ -248,7 +248,8 @@ class ZygoteOutcome(BaseModel):
 class _CallChannels:
     """Все дескрипторы одного вызова, которые супервизор шлёт зиготе через
     SCM_RIGHTS: пайпы stdin/stdout/stderr/result/injected, control-сокет,
-    каталог cgroup-leaf'а и пайпы входов и выходов.
+    пайпы барьера и отчётов о ходе работы, каталог cgroup-leaf'а и пайпы
+    входов и выходов.
 
     Порядок в child_fds() жёсткий — гость раскладывает их по CallFd, за
     ними cgroup, затем входы и выходы, каждый своим пайпом. После отправки child-концы
@@ -272,6 +273,7 @@ class _CallChannels:
         self.injected_r, self.injected_w = os.pipe()
         self.gate_r, self.gate_w = os.pipe()
         self.verdict_r, self.verdict_w = os.pipe()
+        self.progress_r, self.progress_w = os.pipe()
         self.control_host, self.control_child = socket.socketpair(
             socket.AF_UNIX, socket.SOCK_SEQPACKET
         )
@@ -307,6 +309,7 @@ class _CallChannels:
             self.control_child.fileno(),
             self.gate_w,
             self.verdict_r,
+            self.progress_w,
         ]
         if self.cgroup_fd >= 0:
             listed.append(self.cgroup_fd)
@@ -328,6 +331,7 @@ class _CallChannels:
         self.control_child.close()
         os.close(self.gate_w)
         os.close(self.verdict_r)
+        os.close(self.progress_w)
         for read_fd, _ in self._ins:
             os.close(read_fd)
 
@@ -432,6 +436,7 @@ class _CallChannels:
             (ToolChannel.STDOUT, self.stdout_r),
             (ToolChannel.STDERR, self.stderr_r),
             (ToolChannel.RESULT, self.result_r),
+            (ToolChannel.PROGRESS, self.progress_r),
         ]
 
         if self._claimed is not None:
@@ -455,6 +460,7 @@ class _CallChannels:
         os.close(self.stdout_r)
         os.close(self.stderr_r)
         os.close(self.result_r)
+        os.close(self.progress_r)
         self.control_host.close()
 
     def _close_gate(self) -> None:
@@ -1424,6 +1430,7 @@ class ZygoteToolCaller(ToolLauncher):
         ToolChannel.STDOUT,
         ToolChannel.RESULT,
         ToolChannel.FRAMES,
+        ToolChannel.PROGRESS,
     )
     """Каналы вызова модуля для журнального тапа; stderr ведёт релей сам."""
 

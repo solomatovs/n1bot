@@ -21,6 +21,7 @@ from typing import Any
 from uuid import NAMESPACE_URL, uuid5
 
 import httpx
+import mcp_types as mt
 import pytest
 from fastmcp import Client
 from fastmcp.client.transports import StreamableHttpTransport
@@ -56,13 +57,13 @@ from boba.mcp_server.server import (
 )
 from boba.toolkit.calls import CallViews
 from boba.toolkit.channels import ToolChannel
-from boba.toolkit.dag import WorkflowFeature
 from boba.toolkit.wire import (
+    CallStatus,
+    CallWire,
     FilesFeature,
     JournalFeature,
-    JournalSignal,
-    RequestMeta,
-    WireMeta,
+    RequestFields,
+    WirePart,
 )
 from boba.toolrun.hosted import ToolSchema
 from boba.toolrun.stream_calls import WorkflowTool
@@ -104,6 +105,28 @@ def _client(url: str, token: str) -> Client[Any]:
     return Client(StreamableHttpTransport(url, auth=token))
 
 
+def _shown(result: mt.CallToolResult) -> dict[str, Any] | None:
+    """Данные ответа: у итога инструмента — его результат (часть
+    WirePart.RESULT), у ответа операции сервиса — её модель целиком."""
+    structured = result.structured_content
+    if structured is None:
+        return None
+
+    if WirePart.CALL.value not in structured:
+        return structured
+
+    return structured[WirePart.RESULT.value]
+
+
+def _served(result: mt.CallToolResult) -> CallWire:
+    """Сведения о вызове из итога инструмента."""
+    structured = result.structured_content
+    if structured is None:
+        raise AssertionError(f"the result carries structured content: {result}")
+
+    return CallWire.model_validate(structured[WirePart.CALL.value])
+
+
 class TestToolList:
     async def test_caller_sees_the_tools_of_the_port(
         self, stand: ServiceStand, url: str, dev_token: str
@@ -117,6 +140,7 @@ class TestToolList:
             "fake_connection_host",
             "fake_echo",
             "fake_emit",
+            "fake_progress",
             "fake_scope",
             "fake_sleep",
             "fake_whoami",
@@ -166,15 +190,18 @@ class TestCall:
         if result.is_error:
             raise AssertionError(f"the call succeeds: {result}")
 
-        structured = result.structured_content
+        structured = _shown(result)
         if structured is None or structured.get("kind") != "markdown":
             raise AssertionError(f"the artifact travels as its model: {structured}")
         if structured.get("text") != "hi hi|t0ken":
             raise AssertionError(f"the body got its config: {structured}")
 
-        meta = (result.meta or {}).get(WireMeta.NAMESPACE.value)
-        if meta is None or meta.get(WireMeta.STATUS.value) != "success":
-            raise AssertionError(f"the status travels in _meta: {result.meta}")
+        if _served(result).status is not CallStatus.SUCCESS:
+            raise AssertionError(f"the result names the status of the call: {result}")
+
+        own = [key for key in result.meta or {} if "boba" in key]
+        if own:
+            raise AssertionError(f"the service puts nothing in _meta: {result.meta}")
 
     async def test_body_sees_the_caller_of_the_token(
         self, stand: ServiceStand, url: str, dev_token: str
@@ -182,23 +209,26 @@ class TestCall:
         async with _client(url, dev_token) as client:
             result = await client.call_tool_mcp("fake_whoami", {})
 
-        structured = result.structured_content
+        structured = _shown(result)
         if structured is None or structured.get("text") != f"alice|dev|{PROFILE}":
             raise AssertionError(f"the body is called as the token's caller: {result}")
 
-    async def test_call_id_of_the_client_is_the_id_of_the_call(
+    async def test_server_names_the_call_itself(
         self, stand: ServiceStand, url: str, dev_token: str
     ) -> None:
+        """Идентификатор вызова выдаёт сервер и отдаёт его в итоге вместе с
+        запуском: по этой паре клиент читает журнал вызова."""
         async with _client(url, dev_token) as client:
-            result = await client.call_tool_mcp(
-                "fake_echo",
-                {"text": "hi", "repeat": 1},
-                meta={RequestMeta.CALL_ID: "call-of-the-model"},
-            )
+            first = await client.call_tool_mcp("fake_echo", {"text": "a", "repeat": 1})
+            second = await client.call_tool_mcp("fake_echo", {"text": "b", "repeat": 1})
 
-        own = (result.meta or {}).get(WireMeta.NAMESPACE.value, {})
-        if own.get(WireMeta.CALL_ID.value) != "call-of-the-model":
-            raise AssertionError(f"the client's call id is kept: {result.meta}")
+        one = _served(first)
+        two = _served(second)
+        if one.id == two.id:
+            raise AssertionError(f"every call gets its own id: {one} and {two}")
+
+        if not one.run or one.run == two.run:
+            raise AssertionError(f"every call gets its own run: {one} and {two}")
 
     async def test_scope_of_the_client_is_the_scope_of_the_call(
         self, stand: ServiceStand, url: str, dev_token: str
@@ -208,10 +238,10 @@ class TestCall:
         scope = "0b6f6f0e-51d4-4a4b-9f6c-1d6c5f1f7a10"
         async with _client(url, dev_token) as client:
             result = await client.call_tool_mcp(
-                "fake_scope", {}, meta={RequestMeta.SCOPE: scope}
+                "fake_scope", {}, meta={RequestFields.SCOPE: scope}
             )
 
-        structured = result.structured_content
+        structured = _shown(result)
         if structured is None or structured.get("text") != scope:
             raise AssertionError(f"the body runs in the client's scope: {result}")
 
@@ -224,7 +254,7 @@ class TestCall:
             result = await client.call_tool_mcp("fake_scope", {})
 
         own = str(uuid5(NAMESPACE_URL, "boba-mcp:alice"))
-        structured = result.structured_content
+        structured = _shown(result)
         if structured is None or structured.get("text") != own:
             raise AssertionError(f"the default scope is the user's own: {result}")
 
@@ -233,7 +263,7 @@ class TestCall:
     ) -> None:
         async with _client(url, dev_token) as client:
             result = await client.call_tool_mcp(
-                "fake_scope", {}, meta={RequestMeta.SCOPE: "a/b"}
+                "fake_scope", {}, meta={RequestFields.SCOPE: "a/b"}
             )
 
         if not result.is_error:
@@ -249,7 +279,7 @@ class TestCall:
             arguments = {"seconds": 1.0, "marker": str(tmp_path / name)}
             async with _client(url, dev_token) as client:
                 return await client.call_tool_mcp(
-                    "fake_sleep", arguments, meta={RequestMeta.SCOPE: scope}
+                    "fake_sleep", arguments, meta={RequestFields.SCOPE: scope}
                 )
 
         first, second = await asyncio.gather(slept("first"), slept("second"))
@@ -272,9 +302,13 @@ class TestCall:
         if declared is None:
             raise AssertionError(f"the server declares extensions: {capabilities}")
 
-        for feature in (SealFeature.ID, WorkflowFeature.ID, JournalFeature.ID):
+        for feature in (SealFeature.ID, FilesFeature.ID, JournalFeature.ID):
             if feature not in declared:
                 raise AssertionError(f"{feature} is declared: {sorted(declared)}")
+
+        files = FilesFeature.model_validate(declared[FilesFeature.ID])
+        if files.scope != RequestFields.SCOPE:
+            raise AssertionError(f"the files extension names the scope key: {files}")
 
     async def test_linked_nodes_run_as_one_workflow_call(
         self, stand: ServiceStand, url: str, tmp_path: Path, dev_token: str
@@ -308,75 +342,124 @@ class TestCall:
         if result.is_error:
             raise AssertionError(f"the group succeeds: {result}")
 
-        structured = result.structured_content
+        structured = _shown(result)
         if structured is None or structured.get("kind") != "workflow":
             raise AssertionError(f"the outcome is the workflow model: {structured}")
         if len(structured.get("nodes", [])) != len(nodes):
             raise AssertionError(f"every node reports its outcome: {structured}")
 
 
-class TestJournal:
-    """Журнал вызова: сигналы роста уведомлениями прогресса и чтение окнами."""
+class Heard:
+    """Уведомления прогресса одного вызова, какими их получил клиент."""
 
-    async def _echoed(self, client: Client[Any]) -> tuple[Any, list[JournalSignal]]:
-        signals: list[JournalSignal] = []
+    def __init__(self) -> None:
+        self.reports: list[tuple[float, float | None, str | None]] = []
 
-        async def on_progress(
-            progress: float, total: float | None, message: str | None
-        ) -> None:
-            if message is None:
-                raise AssertionError(f"a signal carries its model: {progress}")
+    async def __call__(
+        self, progress: float, total: float | None, message: str | None
+    ) -> None:
+        self.reports.append((progress, total, message))
 
-            signals.append(JournalSignal.model_validate_json(message))
 
-        result = await client.call_tool_mcp(
-            "fake_echo", {"text": "hi", "repeat": 2}, progress_handler=on_progress
-        )
+class TestProgress:
+    """Прогресс вызова — только то, что сообщил сам инструмент: стандартными
+    уведомлениями notifications/progress, числами и текстом."""
 
-        return result, signals
+    async def test_reports_of_the_body_reach_the_client(
+        self, stand: ServiceStand, url: str, dev_token: str
+    ) -> None:
+        heard = Heard()
+        async with _client(url, dev_token) as client:
+            result = await client.call_tool_mcp(
+                "fake_progress", {"steps": 3, "pause": 0.6}, progress_handler=heard
+            )
 
-    async def test_call_signals_the_growth_of_its_journal(
+        if result.is_error:
+            raise AssertionError(f"the call succeeds: {result}")
+
+        expected = [
+            (1.0, 3.0, "step 1 of 3"),
+            (2.0, 3.0, "step 2 of 3"),
+            (3.0, 3.0, "step 3 of 3"),
+        ]
+        if heard.reports != expected:
+            raise AssertionError(
+                f"every report arrives as it was made: {heard.reports}"
+            )
+
+    async def test_frequent_reports_are_thinned_and_the_last_one_arrives(
+        self, stand: ServiceStand, url: str, dev_token: str
+    ) -> None:
+        heard = Heard()
+        async with _client(url, dev_token) as client:
+            await client.call_tool_mcp(
+                "fake_progress", {"steps": 20, "pause": 0.01}, progress_handler=heard
+            )
+
+        if len(heard.reports) >= 20:
+            raise AssertionError(f"reports are rate limited: {len(heard.reports)}")
+
+        if heard.reports[-1] != (20.0, 20.0, "step 20 of 20"):
+            raise AssertionError(f"the final report is delivered: {heard.reports}")
+
+        values = [report[0] for report in heard.reports]
+        if values != sorted(set(values)):
+            raise AssertionError(f"the progress only grows: {values}")
+
+    async def test_silent_tool_sends_no_progress(
+        self, stand: ServiceStand, url: str, dev_token: str
+    ) -> None:
+        """Инструмент о ходе работы не сообщал: уведомлений нет, вывод
+        инструмента в прогресс не попадает."""
+        heard = Heard()
+        async with _client(url, dev_token) as client:
+            result = await client.call_tool_mcp(
+                "fake_echo", {"text": "hi", "repeat": 2}, progress_handler=heard
+            )
+
+        if result.is_error or heard.reports:
+            raise AssertionError(f"no progress without reports: {heard.reports}")
+
+    async def test_progress_parameter_is_hidden_from_the_model(
         self, stand: ServiceStand, url: str, dev_token: str
     ) -> None:
         async with _client(url, dev_token) as client:
-            result, signals = await self._echoed(client)
+            listed = await client.list_tools()
 
-        own = (result.meta or {}).get(WireMeta.NAMESPACE.value, {})
-        run = own.get(WireMeta.RUN.value)
-        if not run:
-            raise AssertionError(f"the result names its run: {result.meta}")
+        schema = next(tool for tool in listed if tool.name == "fake_progress")
+        properties = sorted(schema.input_schema["properties"])
+        if properties != ["intent", "pause", "steps"]:
+            raise AssertionError(f"the model sees its own arguments: {properties}")
 
-        stdout: list[JournalSignal] = []
-        for signal in signals:
-            if signal.run != run or signal.node != own.get(WireMeta.CALL_ID.value):
-                raise AssertionError(f"a signal names the run and the call: {signal}")
 
-            if signal.channel == ToolChannel.STDOUT.value:
-                stdout.append(signal)
+class TestJournal:
+    """Журнал вызова читается окнами по адресу из итога вызова: запуск и
+    идентификатор вызова на сервере."""
 
-        if not stdout:
-            raise AssertionError(f"the output channel is signalled: {signals}")
+    async def _echoed(self, client: Client[Any]) -> dict[str, str]:
+        """Адрес журнала закончившегося вызова."""
+        result = await client.call_tool_mcp("fake_echo", {"text": "hi", "repeat": 2})
+        served = _served(result)
+        if not served.run:
+            raise AssertionError(f"the result names its run: {result}")
 
-        last = stdout[-1]
-        if not last.closed or last.size == 0:
-            raise AssertionError(f"the last signal arrives before the result: {last}")
+        return {
+            "run": served.run,
+            "node": served.id,
+            "channel": ToolChannel.STDOUT.value,
+        }
 
     async def test_windows_of_the_journal_join_at_line_borders(
         self, stand: ServiceStand, url: str, dev_token: str
     ) -> None:
         async with _client(url, dev_token) as client:
-            _result, signals = await self._echoed(client)
-            address = {
-                "run": signals[-1].run,
-                "node": signals[-1].node,
-                "channel": ToolChannel.STDOUT.value,
-            }
+            address = await self._echoed(client)
             whole = await client.call_tool_mcp(StreamReadTool.NAME, address)
             tail = await client.call_tool_mcp(
                 StreamReadTool.NAME, {**address, "offset": 1}
             )
 
-        piece = whole.structured_content
+        piece = _shown(whole)
         if whole.is_error or piece is None:
             raise AssertionError(f"the journal is readable after the call: {whole}")
         if "echo progress: hi" not in piece["text"] or not piece["closed"]:
@@ -384,7 +467,7 @@ class TestJournal:
         if piece["offset"] != 0 or piece["end"] != piece["size"]:
             raise AssertionError(f"the window names its place in the file: {piece}")
 
-        rest = tail.structured_content
+        rest = _shown(tail)
         if rest is None or not piece["text"].endswith(rest["text"]):
             raise AssertionError(f"a window from the middle starts at a line: {rest}")
 
@@ -392,20 +475,15 @@ class TestJournal:
         self, stand: ServiceStand, url: str, dev_token: str, weak_token: str
     ) -> None:
         async with _client(url, dev_token) as client:
-            _result, signals = await self._echoed(client)
+            address = await self._echoed(client)
 
-        address = {
-            "run": signals[-1].run,
-            "node": signals[-1].node,
-            "channel": ToolChannel.STDOUT.value,
-        }
         async with _client(url, weak_token) as client:
             foreign = await client.call_tool_mcp(StreamReadTool.NAME, address)
 
         if not foreign.is_error:
             raise AssertionError(f"a journal is read only by its caller: {foreign}")
 
-        refusal = foreign.structured_content
+        refusal = _shown(foreign)
         if refusal is None or refusal.get("error_kind") != ServerRefusal.FORBIDDEN:
             raise AssertionError(
                 f"a foreign journal is refused as forbidden: {foreign}"
@@ -421,7 +499,7 @@ class TestFailures:
 
         if not result.is_error:
             raise AssertionError(f"a missing argument is an error: {result}")
-        if result.structured_content is None:
+        if _shown(result) is None:
             raise AssertionError("the refusal carries its model, not bare text")
 
     async def test_body_failure_is_an_error_result(
@@ -435,7 +513,7 @@ class TestFailures:
         if not result.is_error:
             raise AssertionError(f"a failed body is an error: {result}")
 
-        structured = result.structured_content
+        structured = _shown(result)
         if structured is None or "fake backend is down" not in str(structured):
             raise AssertionError(f"the failure model names the cause: {structured}")
 
@@ -454,7 +532,7 @@ class TestFailures:
 
         if not result.is_error:
             raise AssertionError(f"a pump without a partner is refused: {result}")
-        if result.structured_content is None:
+        if _shown(result) is None:
             raise AssertionError("the plan refusal carries its model")
 
     async def test_tool_outside_the_role_is_not_callable(
@@ -515,7 +593,7 @@ class TestRunLimit:
         if not third.is_error:
             raise AssertionError(f"a call over the queue is refused: {third}")
 
-        structured = third.structured_content
+        structured = _shown(third)
         if structured is None:
             raise AssertionError("the refusal carries its model")
         if structured.get("error_kind") != ServerRefusal.RUN_LIMIT:
@@ -663,7 +741,7 @@ class TestProxySignIn:
         async with _client(url, token) as client:
             result = await client.call_tool_mcp("fake_whoami", {})
 
-        structured = result.structured_content
+        structured = _shown(result)
         if structured is None or structured.get("text") != f"ivanov|dev|{PROFILE}":
             raise AssertionError(f"the body runs as the signed-in user: {result}")
 
@@ -845,7 +923,7 @@ class TestHumanSignIn:
         async with _client(url, issued.json()["access_token"]) as client:
             result = await client.call_tool_mcp("fake_whoami", {})
 
-        structured = result.structured_content
+        structured = _shown(result)
         expected = f"{LOCAL_LOGIN}|dev|{PROFILE}"
         if structured is None or structured.get("text") != expected:
             raise AssertionError(f"the body runs as the signed-in user: {result}")
@@ -909,7 +987,7 @@ class TestHumanSignIn:
         async with _client(url, pair["access_token"]) as client:
             result = await client.call_tool_mcp("fake_whoami", {})
 
-        structured = result.structured_content
+        structured = _shown(result)
         expected = f"{LOCAL_LOGIN}|dev|{PROFILE}"
         if structured is None or structured.get("text") != expected:
             raise AssertionError(f"the renewed token keeps the user: {result}")
@@ -1321,11 +1399,11 @@ class TestWorkspaceFiles:
             result = await client.call_tool_mcp(
                 FileUploadTool.NAME,
                 {"name": "report.csv"},
-                meta={RequestMeta.SCOPE: self.SCOPE},
+                meta={RequestFields.SCOPE: self.SCOPE},
             )
             declared = client.session.server_capabilities
 
-        structured = result.structured_content
+        structured = _shown(result)
         expected = f"/mcp/service/files/{self.SCOPE}/upload/report.csv"
         if structured is None or structured.get("path") != expected:
             raise AssertionError(f"the tool names the upload address: {result}")
@@ -1337,6 +1415,7 @@ class TestWorkspaceFiles:
             "path": "/mcp/service/files",
             "upload": FileUploadTool.NAME,
             "workspace": "/workspace",
+            "scope": RequestFields.SCOPE,
         }
         if files != expected_files:
             raise AssertionError(f"the files extension is declared: {files}")
@@ -1350,14 +1429,11 @@ class TestJournalFile:
     ) -> None:
         async with _client(url, dev_token) as client:
             result = await client.call_tool_mcp(
-                "fake_echo",
-                {"text": "hi", "repeat": 2},
-                meta={RequestMeta.CALL_ID: "call-journal-file"},
+                "fake_echo", {"text": "hi", "repeat": 2}
             )
 
-        own = (result.meta or {}).get(WireMeta.NAMESPACE.value, {})
-        run = own.get(WireMeta.RUN.value)
-        address = f"{url}/journals/{run}/call-journal-file/{ToolChannel.STDOUT.value}"
+        served = _served(result)
+        address = f"{url}/journals/{served.run}/{served.id}/{ToolChannel.STDOUT.value}"
         async with httpx.AsyncClient() as http:
             mine = await http.get(
                 address, headers={"Authorization": f"Bearer {dev_token}"}

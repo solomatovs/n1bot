@@ -33,6 +33,7 @@ from boba.llm.providers import LlmProviders, LlmProviderTypes
 from boba.tool.doc.config import DocToolsConfig
 from boba.toolkit.entry import ToolMain
 from boba.toolkit.facade import Injected, tool
+from boba.toolkit.ports import ToolProgress
 from boba.toolkit.result import MarkdownResult, TableResult
 from boba.toolkit.window import RowLimit, RowOffset, RowPage, RowWindow
 
@@ -110,7 +111,9 @@ class DocRun:
         with source, self._router.open(source, DocumentHint(filename=path)) as document:
             yield document
 
-    def read(self, path: str, pages: str) -> ReadResult:
+    def read(self, path: str, pages: str, progress: ToolProgress) -> ReadResult:
+        """Текст страниц pages; о каждой прочитанной странице — отчёт о ходе
+        работы: распознавание страницы бывает долгим."""
         windows = PageWindow.parse_many(pages)
         texts: list[str] = []
         numbers: list[int] = []
@@ -119,6 +122,7 @@ class DocRun:
                 for page in document.pages(window):
                     texts.append(page.text)
                     numbers.append(page.number)
+                    progress.report(len(numbers), None, f"page {page.number} is read")
 
         return ReadResult(text="\n\n".join(texts), numbers=numbers)
 
@@ -162,11 +166,12 @@ async def read_document(
     ocr_enabled: Annotated[bool, Field(description=_OCR_DESCRIPTION)] = False,
     *,
     cfg: Annotated[DocToolSection, Injected],
+    progress: Annotated[ToolProgress, Injected],
 ) -> MarkdownResult:
     """Прочитать текст страниц документа из workspace; основной способ чтения."""
     # ридеры синхронные и тяжёлые: разбор уходит в поток
     run = DocRun(cfg, ocr_enabled=ocr_enabled)
-    result = await asyncio.to_thread(run.read, path, pages)
+    result = await asyncio.to_thread(run.read, path, pages, progress)
 
     text, truncated = TextClip.clip(result.text, cfg.max_text_chars)
 

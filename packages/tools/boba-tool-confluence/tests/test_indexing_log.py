@@ -26,6 +26,7 @@ from boba.tool.confluence.indexing_log import (
     LoggingChunker,
     LoggingReader,
 )
+from boba.toolkit.ports import ToolProgress
 
 pytestmark = pytest.mark.anyio
 
@@ -95,7 +96,7 @@ class _CountingChunker(Chunker[str]):
 
 
 def _progress() -> IngestProgress:
-    return IngestProgress(logging.getLogger("test"))
+    return IngestProgress(logging.getLogger("test"), ToolProgress(-1))
 
 
 def _raw() -> RawDocument:

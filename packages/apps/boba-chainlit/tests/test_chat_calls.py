@@ -15,11 +15,12 @@ from pathlib import Path
 from typing import Annotated, Any
 
 import pytest
-from chainlit_stand import FakeTurn
+from chainlit_stand import FakeThreadMessages, FakeTurn
 from langchain_core.messages import ToolMessage
 from pydantic import Field
 
 from boba.chainlit.agent.bridge import LangchainMessages
+from boba.chainlit.canvas.remote import RemoteJournals
 from boba.chainlit.rendering.mount import ChatCalls, ChatMount
 from boba.connection_broker.sealing import SentConnections
 from boba.identity.run import Runs
@@ -147,7 +148,13 @@ class CallsStand:
             (),
             StreamSpecs({}),
             CallAmbient(),
-            ChatCalls(contexts, self.runs, self.sent, mount),
+            ChatCalls(
+                contexts,
+                self.runs,
+                self.sent,
+                mount,
+                RemoteJournals(FakeThreadMessages()),
+            ),
         )
 
     async def called(self, node: DagNode) -> NodeOutcome:
@@ -302,7 +309,7 @@ class TestToolMessages:
             raise AssertionError(f"ошибка вызова — статус error: {message!r}")
 
     def test_journal_address_travels_in_the_message(self) -> None:
-        address = JournalAddress(server="boba", run="run-1")
+        address = JournalAddress(server="boba", run="run-1", call="api-1")
         outcome = self._outcome(MarkdownResult(text="done"), False, address)
 
         message = LangchainMessages().tool_message(outcome)
@@ -310,11 +317,12 @@ class TestToolMessages:
         if message.response_metadata[LangchainMessages.JOURNAL_KEY] != {
             "server": "boba",
             "run": "run-1",
+            "call": "api-1",
         }:
             raise AssertionError(f"формат адреса в истории: {message!r}")
 
     def test_message_reads_back_as_the_same_outcome(self) -> None:
-        address = JournalAddress(server="boba", run="run-1")
+        address = JournalAddress(server="boba", run="run-1", call="api-1")
         failure = ErrorResult(message="no such table", error_kind="tool_error")
         for outcome in (
             self._outcome(MarkdownResult(text="done"), False, address),

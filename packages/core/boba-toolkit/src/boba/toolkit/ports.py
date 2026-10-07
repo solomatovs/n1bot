@@ -31,6 +31,10 @@ ToolCommand), а StreamSpec.of_schema отдаёт интроспекцию дл
 все связанные каналами вызовы дошли до своего барьера или успешно
 закончились.
 
+Тело, которому есть что сказать о ходе работы, объявляет
+`progress: Annotated[ToolProgress, Injected]` и зовёт `progress.report(...)`:
+отчёты идут хосту своим каналом, мимо stdout.
+
 Ошибки:
 StreamGroupAbortedError — группа сорвалась, пока тело ждало барьера:
     фиксировать результат нельзя.
@@ -45,7 +49,9 @@ from __future__ import annotations
 import asyncio
 import io
 import os
-from collections.abc import AsyncIterator, Iterator, Mapping, Sequence
+import threading
+import time
+from collections.abc import AsyncIterable, AsyncIterator, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from types import UnionType
@@ -78,6 +84,7 @@ __all__ = [
     "ArrowInbound",
     "ArrowOutbound",
     "ArrowStreamError",
+    "DownloadProgress",
     "Framed",
     "GateSignal",
     "Inbound",
@@ -85,14 +92,17 @@ __all__ = [
     "PortDecl",
     "PortDeclarationError",
     "PortDirection",
+    "ProgressReport",
     "RawInbound",
     "RawOutbound",
     "RawWriter",
+    "StageProgress",
     "StreamGroup",
     "StreamGroupAbortedError",
     "StreamPorts",
     "StreamSpec",
     "StreamSpecs",
+    "ToolProgress",
 ]
 
 HeadT = TypeVar("HeadT", bound=BaseModel)
@@ -390,6 +400,135 @@ class ArrowOutbound(RawOutbound):
     пишет ArrowIpc из boba.toolkit.arrow в файл порта (writer)."""
 
 
+class ProgressReport(BaseModel):
+    """Отчёт тела о ходе работы — строка канала ToolChannel.PROGRESS.
+
+    done — сколько сделано в единицах самого инструмента (строки, байты,
+    страницы, номер стадии); total — сколько всего, None — итог неизвестен;
+    message — короткий текст для человека. Тело пишет отчёт (ToolProgress),
+    хост читает его этой же моделью.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    done: float = Field(ge=0)
+    total: float | None
+    message: str
+
+
+class ToolProgress:
+    """Отчёты тела инструмента о ходе работы.
+
+    Тело объявляет объект в подписи и зовёт report(): хост превращает
+    отчёты в уведомления о прогрессе вызова, и пользователь видит, что
+    происходит, пока инструмент работает. Строится в ToolMain из номера
+    --fd-progress; при запуске человеком отвязан, и report() ничего не
+    делает. done обязан расти: отчёт, в котором он не вырос, не уходит —
+    этого требует получатель (прогресс вызова только растёт). Отчёты чаще
+    INTERVAL_SEC не шлются: последний из пропущенных уходит следующим
+    вызовом report() либо в close(), который ToolMain зовёт после тела.
+    report() можно звать из любого потока.
+    """
+
+    INTERVAL_SEC: ClassVar[float] = 0.5
+    MESSAGE_CHARS: ClassVar[int] = 1000
+    """Строка отчёта короче PIPE_BUF: запись в пайп атомарна."""
+    ENCODING: ClassVar[str] = "utf-8"
+
+    def __init__(self, fd: int) -> None:
+        self._fd = fd
+        self._lock = threading.Lock()
+        self._sent_done = -1.0
+        self._sent_at = 0.0
+        self._held: tuple[float, float | None, str] | None = None
+
+    def report(self, done: float, total: float | None, message: str) -> None:
+        """Сделано done из total (None — итог неизвестен); message — что
+        сейчас происходит."""
+        if self._fd < 0:
+            return
+
+        with self._lock:
+            if done <= self._sent_done:
+                return
+
+            if time.monotonic() - self._sent_at < self.INTERVAL_SEC:
+                self._held = (done, total, message)
+                return
+
+            self._send(done, total, message)
+
+    def close(self) -> None:
+        """Дослать отчёт, придержанный частотой: последний отчёт тела
+        обычно итоговый."""
+        with self._lock:
+            held = self._held
+            if held is None:
+                return
+
+            self._send(*held)
+
+    def _send(self, done: float, total: float | None, message: str) -> None:
+        report = ProgressReport(
+            done=done, total=total, message=message[: self.MESSAGE_CHARS]
+        )
+        self._held = None
+        self._sent_done = done
+        self._sent_at = time.monotonic()
+        line = f"{report.model_dump_json()}\n"
+        os.write(self._fd, line.encode(self.ENCODING))
+
+    @classmethod
+    def __get_pydantic_core_schema__(
+        cls, source: Any, handler: GetCoreSchemaHandler
+    ) -> CoreSchema:
+        return core_schema.is_instance_schema(cls)
+
+
+class StageProgress:
+    """Ход работы стадиями: каждая стадия — следующий отчёт с её номером.
+
+    Создаётся телом инструмента, у которого нет меры работы в строках или
+    байтах, но есть последовательность шагов (подключение, курсор,
+    выполнение запроса, уведомление сервера базы). total — сколько стадий
+    всего; None — заранее неизвестно.
+    """
+
+    def __init__(self, progress: ToolProgress, total: int | None) -> None:
+        self._progress = progress
+        self._total = total
+        self._done = 0
+
+    def next(self, message: str) -> None:
+        """Началась следующая стадия."""
+        self._done += 1
+        self._progress.report(self._done, self._total, message)
+
+
+class DownloadProgress:
+    """Ход скачивания отчётами тела инструмента: сколько байт тела получено.
+
+    Создаётся телом, которое качает страницу или файл. counted() отдаёт те
+    же порции потока, считая их; total — размер тела, каким его назвал
+    сервер в заголовке ответа, None — сервер размера не назвал.
+    """
+
+    MIB: ClassVar[int] = 1 << 20
+
+    def __init__(self, progress: ToolProgress, total: int | None) -> None:
+        self._progress = progress
+        self._total = total
+
+    async def counted(self, chunks: AsyncIterable[bytes]) -> AsyncIterator[bytes]:
+        done = 0
+        async for chunk in chunks:
+            done += len(chunk)
+            self._progress.report(
+                done, self._total, f"downloaded {done / self.MIB:.1f} MiB"
+            )
+            yield chunk
+
+
 class StreamPorts:
     """Разбор портов из подписи инструмента и постройка их для вызова.
 
@@ -404,6 +543,11 @@ class StreamPorts:
     def is_group(annotation: Any) -> bool:
         """Параметр — барьер группы StreamGroup: строит гость, как порт."""
         return annotation is StreamGroup
+
+    @staticmethod
+    def is_progress(annotation: Any) -> bool:
+        """Параметр — отчёты о ходе работы ToolProgress: строит гость."""
+        return annotation is ToolProgress
 
     @classmethod
     def is_port(cls, annotation: Any) -> bool:

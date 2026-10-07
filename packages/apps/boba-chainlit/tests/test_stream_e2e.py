@@ -87,7 +87,7 @@ class ServiceJournal:
             content='{"exit_code": 0}', tool_call_id=call_id, id=f"tm-{call_id}"
         )
         server = config.profiles[FILES_PROFILE].mcp[0]
-        address = JournalAddress(server=server, run=thread_id)
+        address = JournalAddress(server=server, run=thread_id, call=call_id)
         message.response_metadata[LangchainMessages.JOURNAL_KEY] = address.model_dump(
             mode="json"
         )

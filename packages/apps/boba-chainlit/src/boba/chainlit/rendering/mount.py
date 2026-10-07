@@ -30,14 +30,20 @@ import chainlit as cl
 from boba.canvas.canvas import CanvasError, CanvasErrorKind
 from boba.canvas.keys import ElementProps, ObjectKey
 from boba.chainlit.canvas.panel import CanvasPanel
+from boba.chainlit.canvas.remote import RemoteJournals
 from boba.chainlit.data.data_layer import AttachmentDataLayer, HeldContent
 from boba.chainlit.domain.context import ChatCallContext
 from boba.chainlit.rendering.tool import ChatElements
 from boba.connection_broker.sealing import SentConnections
 from boba.identity.context import CallContexts, ContextKind
 from boba.identity.errors import RefusalError
-from boba.identity.run import ElementTarget, Runs
-from boba.mcp_client.client import BlockFiles
+from boba.identity.run import ElementTarget, RunPort, Runs
+from boba.mcp_client.client import (
+    BlockFiles,
+    CallSignals,
+    DroppedSignals,
+    ProgressListener,
+)
 from boba.runtime.storage import StorageClient
 from boba.toolkit.calls import CallViews, ToolCallModels
 from boba.toolkit.dag import (
@@ -205,11 +211,13 @@ class ChatCalls(NodeCalls):
         runs: Runs,
         sent: SentConnections,
         mount: ChatMount,
+        journals: RemoteJournals,
     ) -> None:
         self._contexts = contexts
         self._runs = runs
         self._sent = sent
         self._mount = mount
+        self._journals = journals
         self._views = CallViews()
 
     def shown(self, cards: Iterable[ToolCard]) -> None:
@@ -237,6 +245,9 @@ class ChatCalls(NodeCalls):
         await port.tool_started(node.key, card.name, self._sent.shown(node.args))
 
         outcome = await body(node)
+        if address := outcome.journal:
+            self._journals.remember(context.scope.id, node.key, address)
+
         with self._contexts.applied(context.as_tool_call(node.key)):
             outcome = await self._mount.mounted(node, outcome)
 
@@ -263,6 +274,40 @@ class ChatCalls(NodeCalls):
         await port.tool_finished(node.key, outcome.artifact)
 
         return outcome
+
+
+class StepProgress(ProgressListener):
+    """Отчёты сервера о ходе работы одного вызова — шагу этого вызова в
+    ленте. Создаётся ChatProgress.listener() в контексте вызова; отчёты
+    приходят позже, из задачи сессии MCP."""
+
+    def __init__(self, port: RunPort, call_id: str) -> None:
+        self._port = port
+        self._call_id = call_id
+
+    async def progressed(self, done: float, total: float | None, text: str) -> None:
+        await self._port.tool_progressed(self._call_id, done, total, text)
+
+
+class ChatProgress(CallSignals):
+    """Реализация CallSignals клиента MCP в чате: отчёты серверов о ходе
+    работы вызовов уходят владельцу запуска (RunPort), и лента показывает
+    их в шаге вызова. Объект один на процесс: его создаёт сборка чата и
+    отдаёт клиенту MCP. Вызов вне хода с лентой отчётов не показывает.
+    """
+
+    def __init__(self, contexts: CallContexts, runs: Runs) -> None:
+        self._contexts = contexts
+        self._runs = runs
+        self._dropped = DroppedSignals()
+
+    def listener(self, server: str, call: DagNode) -> ProgressListener:
+        context = self._contexts.current()
+        port = self._runs.port_of(context.run_id)
+        if port is None:
+            return self._dropped
+
+        return StepProgress(port, call.key)
 
 
 class ChatAttachments(BlockFiles):

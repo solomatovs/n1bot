@@ -57,7 +57,6 @@ from boba.toolkit.dag import (
     NodeOutcomes,
     ToolCard,
     ToolServer,
-    WorkflowFeature,
     WorkflowNodeResult,
     WorkflowResult,
 )
@@ -187,7 +186,8 @@ class StreamChannelFields:
     канал. Поле получает имя порта: одиночный порт — строка с именем канала,
     порт-список — список имён. Писатель каналов получает ещё поле
     pipe_bytes — буфер пайпов своих каналов, с дефолтом и потолком из
-    секции [stream_groups]. Барьер группы StreamGroup модели не виден.
+    секции [stream_groups]. Барьер группы StreamGroup и отчёты о ходе работы
+    ToolProgress модели не видны.
     Обёртка запуска поля каналов не сериализует: её схема захвачена до
     пересборки, и этих имён в ней нет.
     """
@@ -211,12 +211,16 @@ class StreamChannelFields:
     def _attach(self, tool: HostedTool, specs: StreamSpecs) -> None:
         schema = tool.args_schema
         spec = specs.of(tool.name)
-        groups = ToolArgv.group_fields(schema)
-        if not spec.streaming() and not groups:
+        # барьер группы и отчёты о ходе работы строит гость: модели они не видны
+        guest_built = [
+            *ToolArgv.group_fields(schema),
+            *ToolArgv.progress_fields(schema),
+        ]
+        if not spec.streaming() and not guest_built:
             return
 
         fields: dict[str, tuple[Any, Any]] = {}
-        drop: list[str] = list(groups)
+        drop: list[str] = list(guest_built)
         for port in spec.ports:
             drop.append(port.name)
             fields[port.name] = self._field(port)
@@ -317,10 +321,6 @@ class WorkflowTool:
             None,
         )
 
-    def feature(self) -> WorkflowFeature:
-        """Объявление возможности: связку описывает этот инструмент."""
-        return WorkflowFeature(tool=self.NAME)
-
 
 class NodeArgs(Protocol):
     """Правило аргументов узла, которое исполнитель применяет вне тела.
@@ -413,10 +413,6 @@ class LocalDagService(ToolServer):
         for rule in self._rules:
             declared.update(rule.features())
 
-        if self._workflow is not None:
-            feature = self._workflow.feature()
-            declared[WorkflowFeature.ID] = feature.settings()
-
         return declared
 
     async def submit(
@@ -452,9 +448,7 @@ class LocalDagService(ToolServer):
 
         return self._outcomes.of(call, result, failed)
 
-    async def _outcome(
-        self, dag: DagSpec, call: DagNode
-    ) -> DagOutcome | FailureResult:
+    async def _outcome(self, dag: DagSpec, call: DagNode) -> DagOutcome | FailureResult:
         """Итог DAG вызова call; отказ плана или правила аргументов — отказ
         до старта."""
         try:

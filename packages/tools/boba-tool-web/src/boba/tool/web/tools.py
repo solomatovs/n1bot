@@ -34,6 +34,7 @@ from boba.llm.providers import LlmProviders, LlmProviderTypes
 from boba.text.grep import GrepLimits, TextGrep
 from boba.toolkit.entry import ToolMain
 from boba.toolkit.facade import Injected, UserConnection, tool
+from boba.toolkit.ports import DownloadProgress, ToolProgress
 from boba.toolkit.result import MarkdownResult, ResultTooLargeError, TableResult
 from boba.toolkit.types import SecretRevealing
 from boba.transport.http import (
@@ -162,14 +163,22 @@ class WebPage:
     """
 
     CONTENT_TYPE: ClassVar[str] = "content-type"
+    CONTENT_LENGTH: ClassVar[str] = "content-length"
+    CONTENT_ENCODING: ClassVar[str] = "content-encoding"
 
     def __init__(
-        self, connection: HttpConnection, cfg: WebToolsConfig, *, ocr_enabled: bool
+        self,
+        connection: HttpConnection,
+        cfg: WebToolsConfig,
+        progress: ToolProgress,
+        *,
+        ocr_enabled: bool,
     ) -> None:
         from boba.doc.ocr import OcrEngines  # noqa: PLC0415
         from boba.doc.router import DocumentRouter  # noqa: PLC0415
 
         self._cfg = cfg.for_call(ocr=ocr_enabled)
+        self._progress = progress
         self._router = DocumentRouter(self._cfg, OcrEngines(LLM).of(self._cfg.ocr))
         self._http = HttpTransport(connection, cfg.transport)
 
@@ -177,8 +186,10 @@ class WebPage:
         request = HttpRequest(url=url, follow_redirects=True)
         async with self._http, self._http.fetch(request) as response:
             hint = self._hint(url, response.headers)
+            download = DownloadProgress(self._progress, self._size(response.headers))
             loaded = await AsyncPipe.run(
-                response.stream, self._consumer(hint, as_markdown=as_markdown)
+                download.counted(response.stream),
+                self._consumer(hint, as_markdown=as_markdown),
             )
 
         limit = self._cfg.max_result_chars
@@ -186,6 +197,18 @@ class WebPage:
             raise ResultTooLargeError.chars_limit(limit)
 
         return loaded
+
+    def _size(self, headers: Mapping[str, str]) -> int | None:
+        """Размер тела из заголовков ответа; None — сервер его не назвал
+        либо тело сжато, и число байт на проводе с читаемым не совпадает."""
+        if headers.get(self.CONTENT_ENCODING):
+            return None
+
+        declared = headers.get(self.CONTENT_LENGTH, "")
+        if not declared.isdigit():
+            return None
+
+        return int(declared)
 
     def _hint(self, url: str, headers: Mapping[str, str]) -> DocumentHint:
         """Что известно о теле до байтов: media_type ответа и имя файла из
@@ -229,13 +252,14 @@ async def web_fetch_page(  # noqa: PLR0913
     ocr_enabled: Annotated[bool, Field(description=_OCR_DESCRIPTION)] = False,
     *,
     cfg: Annotated[WebToolsConfig, Injected],
+    progress: Annotated[ToolProgress, Injected],
 ) -> MarkdownResult:
     """Скачивает URL соединением connection (см. connection_list) и возвращает
     окно строк его текста; строка под текстом называет срез и общее число
     строк — по ней листай страницу дальше."""
     bound = connection.for_url(url)
 
-    page = await WebPage(bound, cfg, ocr_enabled=ocr_enabled).load(
+    page = await WebPage(bound, cfg, progress, ocr_enabled=ocr_enabled).load(
         url, as_markdown=as_markdown
     )
 
@@ -280,12 +304,13 @@ async def web_grep_page(  # noqa: PLR0913
     ocr_enabled: Annotated[bool, Field(description=_OCR_DESCRIPTION)] = False,
     *,
     cfg: Annotated[WebToolsConfig, Injected],
+    progress: Annotated[ToolProgress, Injected],
 ) -> MarkdownResult:
     """Найти совпадения pattern в тексте ссылки, скачанной соединением
     connection (см. connection_list)."""
     bound = connection.for_url(url)
 
-    page = await WebPage(bound, cfg, ocr_enabled=ocr_enabled).load(
+    page = await WebPage(bound, cfg, progress, ocr_enabled=ocr_enabled).load(
         url, as_markdown=as_markdown
     )
 

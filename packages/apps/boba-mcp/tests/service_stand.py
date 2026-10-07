@@ -128,6 +128,7 @@ class ServiceStand:
                 fake_toolmod.fake_collect,
                 fake_caller.fake_whoami,
                 fake_caller.fake_scope,
+                fake_caller.fake_progress,
                 fake_caller.fake_sleep,
                 fake_connection.fake_connection_host,
             ),

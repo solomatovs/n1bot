@@ -37,7 +37,6 @@ from boba.toolkit.dag import (
     NodeOutcome,
     ToolCard,
     ToolServer,
-    WorkflowFeature,
 )
 from boba.toolkit.facade import UserConnection
 from boba.toolkit.result import ErrorResult, TableResult
@@ -246,11 +245,7 @@ class TestWorkflowNodes:
         self,
     ) -> None:
         stand = _stand()
-        features = {
-            **stand.params.features(),
-            WorkflowFeature.ID: {"tool": WorkflowTool.NAME},
-        }
-        recorder = _Recorder(stand.executor, features)
+        recorder = _Recorder(stand.executor, stand.params.features())
         client = SealingToolServer(
             recorder,
             stand.connections,

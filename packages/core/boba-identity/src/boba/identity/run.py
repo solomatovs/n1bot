@@ -76,6 +76,14 @@ class RunPort(Protocol):
         ...
 
     @abstractmethod
+    async def tool_progressed(
+        self, tool_call_id: str, done: float, total: float | None, text: str
+    ) -> None:
+        """Идущий вызов сообщил о ходе работы: сделано done из total (None —
+        итог неизвестен), text — что сейчас происходит."""
+        ...
+
+    @abstractmethod
     async def tool_finished(self, tool_call_id: str, result: ToolResultBase) -> None:
         """Вызов дошёл до тела, и тело ответило результатом result."""
         ...

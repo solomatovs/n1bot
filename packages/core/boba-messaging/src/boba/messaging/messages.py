@@ -54,6 +54,7 @@ __all__ = [
     "TokensSpent",
     "ToolFailed",
     "ToolFinished",
+    "ToolProgressed",
     "ToolStarted",
     "ToolStopped",
     "TurnFinished",
@@ -85,6 +86,7 @@ class MessageKind(StrEnum):
     STAGE_QUERIES = "stage_queries"
     STAGE_ENDED = "stage_ended"
     TOOL_STARTED = "tool_started"
+    TOOL_PROGRESSED = "tool_progressed"
     TOOL_FINISHED = "tool_finished"
     TOOL_FAILED = "tool_failed"
     TOOL_STOPPED = "tool_stopped"
@@ -125,6 +127,7 @@ _HOLDER_ONLY: frozenset[MessageKind] = frozenset(
         MessageKind.STAGE_QUERIES,
         MessageKind.STAGE_ENDED,
         MessageKind.TOOL_STARTED,
+        MessageKind.TOOL_PROGRESSED,
         MessageKind.TOOL_FINISHED,
         MessageKind.TOOL_FAILED,
         MessageKind.TOOL_STOPPED,
@@ -318,6 +321,19 @@ class ToolStarted(Message):
     call_id: str = Field(min_length=1)
     name: str = Field(min_length=1)
     args: PayloadRef
+
+
+class ToolProgressed(Message):
+    """Вызов call_id сообщил о ходе работы: сделано done из total (None — итог
+    неизвестен), text — что сейчас происходит.
+    """
+
+    kind: Literal[MessageKind.TOOL_PROGRESSED] = MessageKind.TOOL_PROGRESSED
+    turn_id: str = Field(min_length=1)
+    call_id: str = Field(min_length=1)
+    done: float = Field(ge=0)
+    total: float | None
+    text: str
 
 
 class ToolFinished(Message):
@@ -623,6 +639,7 @@ AnyMessage = Annotated[
     | StageQueries
     | StageEnded
     | ToolStarted
+    | ToolProgressed
     | ToolFinished
     | ToolFailed
     | ToolStopped

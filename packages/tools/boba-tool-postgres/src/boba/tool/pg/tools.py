@@ -45,7 +45,9 @@ from boba.toolkit.facade import Injected, UserConnection, tool
 from boba.toolkit.ports import (
     Inbound,
     Outbound,
+    StageProgress,
     StreamGroup,
+    ToolProgress,
 )
 from boba.toolkit.result import (
     MarkdownResult,
@@ -69,6 +71,7 @@ from boba.toolkit.transfer import (
     TransferFrame,
     TransferInbound,
     TransferOutbound,
+    TransferProgress,
     UnknownTypeStrategy,
 )
 from boba.toolkit.types import SecretRevealing
@@ -156,10 +159,34 @@ async def run_and_collect(
     return SqlResult(engine=PgToolConfig.ENGINE, statements=[statement])
 
 
+class ServerMessages:
+    """Сообщения сервера postgres во время запроса — отчётами о ходе работы.
+
+    Создаётся run_script на соединение запроса и вешается на него
+    обработчиками psycopg: NOTICE и WARNING (их шлют RAISE и сами команды)
+    и уведомления NOTIFY каналов, которые слушает сессия. Пользователь
+    видит их, пока запрос идёт, а не только в итоге.
+    """
+
+    def __init__(self, stages: StageProgress) -> None:
+        self._stages = stages
+
+    def watch(self, conn: psycopg.AsyncConnection[Any]) -> None:
+        conn.add_notice_handler(self._noticed)
+        conn.add_notify_handler(self._notified)
+
+    def _noticed(self, diagnostic: psycopg.errors.Diagnostic) -> None:
+        self._stages.next(f"{diagnostic.severity}: {diagnostic.message_primary}")
+
+    def _notified(self, notify: psycopg.Notify) -> None:
+        self._stages.next(f"NOTIFY {notify.channel}: {notify.payload}")
+
+
 async def run_script(
     connection: PostgresConfig,
     script: str,
     window: RowWindow,
+    stages: StageProgress,
 ) -> SqlResult:
     """Произвольный текст пользователя: итог каждой его команды по порядку.
 
@@ -168,19 +195,26 @@ async def run_script(
     неявной транзакцией — падение любой команды откатывает всё. Выборка
     каждой команды режется тем же окном; команда без выборки отдаёт счётчик
     затронутых строк, где rowcount -1 у psycopg значит «счётчика нет».
+    Стадии (подключение, выполнение, итог каждой команды) и сообщения
+    сервера уходят отчётами о ходе работы.
     """
     statements: list[SqlStatement] = []
 
     query = PgQueryBuilder().raw_query(script).build()
 
+    stages.next("connecting")
     conn = await PayloadPostgres.connect_config(connection)
+    ServerMessages(stages).watch(conn)
     async with conn, conn.cursor(row_factory=dict_row) as cur:
+        stages.next("connected, executing the statement")
         await cur.execute(query.text, query.params)
 
         while True:
             status = cur.statusmessage
             if status is None:
                 status = ""
+
+            stages.next(f"statement {len(statements) + 1} done: {status}")
 
             if cur.description is None:
                 rowcount: int | None = cur.rowcount
@@ -386,10 +420,16 @@ async def pg_query(
     *,
     offset: RowOffset,
     limit: RowLimit,
+    progress: Annotated[ToolProgress, Injected],
 ) -> SqlResult:
     """Выполнить SQL на подключении: строки либо счётчик затронутых."""
 
-    return await run_script(connection, sql, RowWindow(offset=offset, limit=limit))
+    return await run_script(
+        connection,
+        sql,
+        RowWindow(offset=offset, limit=limit),
+        StageProgress(progress, None),
+    )
 
 
 @tool
@@ -447,6 +487,7 @@ async def pg_stream_out(  # noqa: PLR0913
     after: AfterSteps = (),
     *,
     out: Annotated[Outbound[TransferFrame], Injected],
+    progress: Annotated[ToolProgress, Injected],
 ) -> SqlResult:
     """Источник postgres: строки запроса с контрактом колонок для приёмника.
 
@@ -461,8 +502,9 @@ async def pg_stream_out(  # noqa: PLR0913
     """
     from boba.db.postgres.arrow_stream import PgArrowSource  # noqa: PLC0415
 
-    journal = CommandJournal(PgPump.STREAM_OUT)
-    outbound = TransferOutbound(out)
+    meter = TransferProgress(progress)
+    journal = CommandJournal(PgPump.STREAM_OUT, meter)
+    outbound = TransferOutbound(out, meter)
     try:
         conn = await PayloadPostgres.connect_config(
             connection.copy_session(copy_options)
@@ -603,6 +645,7 @@ async def pg_stream_in(  # noqa: PLR0913
     *,
     feed: Annotated[Inbound[TransferFrame], Injected],
     group: Annotated[StreamGroup, Injected],
+    progress: Annotated[ToolProgress, Injected],
 ) -> SqlResult:
     """Приёмник postgres со стратегиями: поток любого источника в таблицу.
 
@@ -621,9 +664,10 @@ async def pg_stream_in(  # noqa: PLR0913
     from boba.toolkit.contract import ArrowContract, StreamContract  # noqa: PLC0415
     from boba.toolkit.contract import Engine as NeutralEngine  # noqa: PLC0415
 
-    journal = CommandJournal(PgPump.STREAM_IN)
+    meter = TransferProgress(progress)
+    journal = CommandJournal(PgPump.STREAM_IN, meter)
     template = CreateTemplate(create_table, PgTransferTable.TEMPLATE_VARS)
-    inbound = TransferInbound(feed, group)
+    inbound = TransferInbound(feed, group, meter)
     table = PgTableRef(schema=schema_name, name=table_name)
     try:
         head = await inbound.get_schema()

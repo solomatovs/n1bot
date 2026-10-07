@@ -69,6 +69,7 @@ from boba.tool.confluence.ingest_base import (
 from boba.tool.confluence.tools import ConfluenceHttp, ConfluenceToolsConfig
 from boba.toolkit.entry import ToolMain
 from boba.toolkit.facade import Injected, tool, warmup
+from boba.toolkit.ports import DownloadProgress, ToolProgress
 from boba.toolkit.result import MarkdownResult, TableResult
 from boba.toolkit.timing import Elapsed
 from boba.toolkit.types import SecretRevealing
@@ -257,9 +258,11 @@ class IngestRun:
     """Прогон индексации под один вызов инструмента: секция с режимом OCR
     вызова, счётчики прогресса, ридеры по media-type и сборка конвейера."""
 
-    def __init__(self, cfg: IngestToolConfig, *, ocr: bool) -> None:
+    def __init__(
+        self, cfg: IngestToolConfig, progress: ToolProgress, *, ocr: bool
+    ) -> None:
         self._cfg = cfg.with_ocr(ocr=ocr)
-        self._progress = IngestProgress(logger)
+        self._progress = IngestProgress(logger, progress)
         self._assembly = IngestAssembly(self._cfg, self._progress, self._routes())
 
     def _routes(self) -> dict[str, Reader[str]]:
@@ -313,6 +316,7 @@ async def confluence_index_page(
     ocr: Annotated[bool, Field(description=_OCR_DESCRIPTION)] = False,
     *,
     cfg: Annotated[IngestToolConfig, Injected],
+    progress: Annotated[ToolProgress, Injected],
 ) -> TableResult:
     """Индексирует одну страницу Confluence по page_id.
 
@@ -321,7 +325,7 @@ async def confluence_index_page(
     менялось, skipped — отсечено правилами, failed — сорвалось, причина в
     колонке error. found без indexed это норма: содержимое не менялось.
     """
-    report = await IngestRun(cfg, ocr=ocr).run(
+    report = await IngestRun(cfg, progress, ocr=ocr).run(
         PageScope(page_id), attachments=attachments
     )
 
@@ -341,6 +345,7 @@ async def confluence_index_space(
     ocr: Annotated[bool, Field(description=_OCR_DESCRIPTION)] = False,
     *,
     cfg: Annotated[IngestToolConfig, Injected],
+    progress: Annotated[ToolProgress, Injected],
 ) -> TableResult:
     """Индексирует спейс Confluence целиком.
 
@@ -349,7 +354,7 @@ async def confluence_index_space(
     менялось, skipped — отсечено правилами, failed — сорвалось, причина в
     колонке error. found без indexed это норма: содержимое не менялось.
     """
-    report = await IngestRun(cfg, ocr=ocr).run(
+    report = await IngestRun(cfg, progress, ocr=ocr).run(
         SpaceScope(space_key), attachments=attachments
     )
 
@@ -371,6 +376,7 @@ async def confluence_attachment(
     ocr: Annotated[bool, Field(description=_OCR_DESCRIPTION)] = False,
     *,
     cfg: Annotated[IngestToolConfig, Injected],
+    progress: Annotated[ToolProgress, Injected],
 ) -> MarkdownResult:
     """Читает вложение страницы Confluence и возвращает его текст."""
     run_cfg = cfg.with_ocr(ocr=ocr)
@@ -393,8 +399,11 @@ async def confluence_attachment(
 
         # ридеры синхронные и тяжёлые: тело льётся пипой в поток ридера
         reader = AttachmentText(run_cfg)
+        download = DownloadProgress(progress, None)
         async with http.fetch(CflUrlBuilder().raw_to_url(link)) as stream:
-            text = await AsyncPipe.run(stream, reader.consumer(filename))
+            text = await AsyncPipe.run(
+                download.counted(stream), reader.consumer(filename)
+            )
 
     return MarkdownResult(text=text)
 

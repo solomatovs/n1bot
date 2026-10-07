@@ -125,11 +125,17 @@ class FakeTurn(RunPort):
         """Начатые вызовы: идентификатор, имя инструмента, показанные аргументы."""
         self.finished: list[tuple[str, ToolResultBase]] = []
         self.failed: list[tuple[str, str]] = []
+        self.progressed: list[tuple[str, float, float | None, str]] = []
 
     async def tool_started(
         self, tool_call_id: str, name: str, args: Mapping[str, Any]
     ) -> None:
         self.started.append((tool_call_id, name, dict(args)))
+
+    async def tool_progressed(
+        self, tool_call_id: str, done: float, total: float | None, text: str
+    ) -> None:
+        self.progressed.append((tool_call_id, done, total, text))
 
     async def tool_finished(self, tool_call_id: str, result: ToolResultBase) -> None:
         self.finished.append((tool_call_id, result))

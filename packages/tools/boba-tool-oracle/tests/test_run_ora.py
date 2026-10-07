@@ -14,6 +14,7 @@ from ora_tool_stand import IxStand
 from boba.db.oracle.connection import OracleConfig
 from boba.tool.ora.tools import ora_list_tables, ora_query
 from boba.toolkit.entry import ToolMain
+from boba.toolkit.ports import ToolProgress
 
 pytestmark = [pytest.mark.run, pytest.mark.anyio]
 
@@ -34,7 +35,13 @@ async def test_run_ora_query(connection: OracleConfig) -> None:
     if body is None:
         raise AssertionError("body is not None")
 
-    artifact = await body(connection=connection, sql=RunArgs.SQL, offset=0, limit=50)
+    artifact = await body(
+        connection=connection,
+        sql=RunArgs.SQL,
+        offset=0,
+        limit=50,
+        progress=ToolProgress(-1),
+    )
 
     print(artifact.llm_view())
 

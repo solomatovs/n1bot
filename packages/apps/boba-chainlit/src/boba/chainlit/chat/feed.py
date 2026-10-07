@@ -36,6 +36,7 @@ from boba.messaging import (
     TokensSpent,
     ToolFailed,
     ToolFinished,
+    ToolProgressed,
     ToolStarted,
     ToolStopped,
     TurnFinished,
@@ -226,6 +227,18 @@ class TurnFeed(StreamFeed):
         ref = await self._payloads.put(self._scope, dict(args))
         message = ToolStarted(
             turn_id=self._turn_id, call_id=call_id, name=name, args=ref
+        )
+        await self._publish(message)
+
+    async def tool_progressed(
+        self, call_id: str, done: float, total: float | None, text: str
+    ) -> None:
+        message = ToolProgressed(
+            turn_id=self._turn_id,
+            call_id=call_id,
+            done=done,
+            total=total,
+            text=TextClip.fit(text),
         )
         await self._publish(message)
 

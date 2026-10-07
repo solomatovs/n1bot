@@ -659,6 +659,11 @@ class ToolResultBase(BaseModel, ABC):
     def chat_view(self) -> ChatView:
         """Показ результата в ленте чата: markdown шага и элемент."""
 
+    def disclosed(self) -> Self:
+        """Результат, каким он уходит клиенту другого процесса: без того,
+        чему место только в журнале своего процесса."""
+        return self
+
     def bound(self, value: Any) -> Self:
         """Копия с значением аргумента вызова на месте данных: показ аргумента
         этим классом. Результат без такого места аргументом не объявляется.
@@ -1280,6 +1285,10 @@ class ExceptionResult(FailureResult):
 
     def trace(self) -> str:
         return self.traceback
+
+    def disclosed(self) -> Self:
+        """Без трассы: в ней пути и строки кода сервера."""
+        return self.model_copy(update={"traceback": ""})
 
     def _clipped(self, line: str) -> str:
         """Строка заголовка не длиннее потолка, обрезанная по слову."""

@@ -48,7 +48,9 @@ from boba.toolkit.ports import (
     ChunkBytes,
     Inbound,
     Outbound,
+    StageProgress,
     StreamGroup,
+    ToolProgress,
 )
 from boba.toolkit.result import (
     MarkdownResult,
@@ -70,6 +72,7 @@ from boba.toolkit.transfer import (
     TransferFrame,
     TransferInbound,
     TransferOutbound,
+    TransferProgress,
     UnknownTypeStrategy,
 )
 from boba.toolkit.types import SecretRevealing
@@ -197,16 +200,22 @@ async def run_statement(
     connection: OracleConfig,
     text: str,
     window: RowWindow,
+    stages: StageProgress,
 ) -> SqlResult:
     """Произвольная команда пользователя: выборка окном либо счётчик затронутых
     строк. Команда одна: Oracle не принимает несколько через `;` одним вызовом.
-    DML фиксируется сразу: соединение живёт только этот вызов."""
+    DML фиксируется сразу: соединение живёт только этот вызов. Стадии
+    (подключение, выполнение, выборка, фиксация) уходят отчётами о ходе
+    работы."""
     from boba.db.oracle.payload import PayloadOracle  # noqa: PLC0415
 
     payload = PayloadOracle(connection)
+    stages.next("connecting")
     async with payload.opened() as conn:
+        stages.next("connected, executing the statement")
         async with payload.rows(conn, text) as stream:
             if stream.names:
+                stages.next("executed, fetching rows")
                 page = RowPage(window, skipped=0)
                 async for block in stream.blocks:
                     if not page.add(dict(zip(stream.names, block, strict=True))):
@@ -217,6 +226,7 @@ async def run_statement(
                 statement = SqlStatement(affected_rows=stream.affected)
 
         if statement.rows is None:
+            stages.next("executed, committing")
             await payload.commit(conn)
 
     return SqlResult(engine=OraToolConfig.ENGINE, statements=[statement])
@@ -380,10 +390,16 @@ async def ora_query(
     *,
     offset: RowOffset,
     limit: RowLimit,
+    progress: Annotated[ToolProgress, Injected],
 ) -> SqlResult:
     """Выполнить SQL на подключении: строки либо счётчик затронутых."""
 
-    return await run_statement(connection, sql, RowWindow(offset=offset, limit=limit))
+    return await run_statement(
+        connection,
+        sql,
+        RowWindow(offset=offset, limit=limit),
+        StageProgress(progress, None),
+    )
 
 
 @tool
@@ -823,6 +839,7 @@ async def ora_stream_out(  # noqa: PLR0913
     after: AfterSteps = (),
     *,
     out: Annotated[Outbound[TransferFrame], Injected],
+    progress: Annotated[ToolProgress, Injected],
 ) -> SqlResult:
     """Источник sync-потока: строки запроса с контрактом колонок для приёмника.
 
@@ -837,10 +854,11 @@ async def ora_stream_out(  # noqa: PLR0913
     from boba.db.oracle.payload import PayloadOracle  # noqa: PLC0415
     from boba.db.oracle.trace import OraSessionTrace  # noqa: PLC0415
 
-    journal = CommandJournal(OraPump.STREAM_OUT)
+    meter = TransferProgress(progress)
+    journal = CommandJournal(OraPump.STREAM_OUT, meter)
     payload = PayloadOracle(connection)
     statement = OraQueryBuilder().raw_query(sql).build()
-    outbound = TransferOutbound(out)
+    outbound = TransferOutbound(out, meter)
     try:
         async with payload.opened() as conn:
             trace = OraSessionTrace(conn)
@@ -960,6 +978,7 @@ async def ora_stream_in(  # noqa: PLR0913
     *,
     feed: Annotated[Inbound[TransferFrame], Injected],
     group: Annotated[StreamGroup, Injected],
+    progress: Annotated[ToolProgress, Injected],
 ) -> SqlResult:
     """Приёмник Oracle со стратегиями: поток arrow любого источника в таблицу.
 
@@ -979,9 +998,10 @@ async def ora_stream_in(  # noqa: PLR0913
     from boba.db.oracle.trace import OraSessionTrace  # noqa: PLC0415
     from boba.toolkit.contract import Engine as NeutralEngine  # noqa: PLC0415
 
-    journal = CommandJournal(OraPump.STREAM_IN)
+    meter = TransferProgress(progress)
+    journal = CommandJournal(OraPump.STREAM_IN, meter)
     template = CreateTemplate(create_table, OraTableRef.TEMPLATE_VARS)
-    inbound = TransferInbound(feed, group)
+    inbound = TransferInbound(feed, group, meter)
     table = OraTableRef(schema=schema_name, name=table_name)
     payload = PayloadOracle(connection)
     try:

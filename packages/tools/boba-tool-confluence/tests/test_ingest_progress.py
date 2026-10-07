@@ -43,6 +43,7 @@ from boba.tool.confluence.indexing_log import (
 )
 from boba.tool.confluence.pipeline import ConfluenceSourceTransport
 from boba.tool.confluence.request_sources import ConfluenceDiscovery, SpaceListing
+from boba.toolkit.ports import ToolProgress
 from boba.transport.http.connection import HttpConnection, UrlScheme
 
 pytestmark = pytest.mark.anyio
@@ -91,7 +92,7 @@ class IngestStand:
     def __init__(self, port: int) -> None:
         self.store = MemoryChunkStore()
         self.ledger = MemorySourceLedger()
-        self.progress = IngestProgress(LOGGER)
+        self.progress = IngestProgress(LOGGER, ToolProgress(-1))
         connection = HttpConnection(
             scheme=UrlScheme.HTTP,
             host="127.0.0.1",
@@ -244,7 +245,7 @@ class TestProgress:
             raise AssertionError(f'"failed 0" in {summary}')
 
     async def test_open_discovery_is_marked(self) -> None:
-        progress = IngestProgress(LOGGER)
+        progress = IngestProgress(LOGGER, ToolProgress(-1))
         progress.pages_found(10)
         progress.page_done()
 
@@ -267,7 +268,7 @@ class TestProgress:
             raise AssertionError("progress line after every source")
 
     async def test_spaces_are_counted(self) -> None:
-        progress = IngestProgress(LOGGER)
+        progress = IngestProgress(LOGGER, ToolProgress(-1))
         progress.spaces_found(3)
         progress.space_done("DOCS")
 

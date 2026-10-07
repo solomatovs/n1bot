@@ -21,6 +21,7 @@ import pytest
 from chainlit.user import PersistedUser
 from chainlit_stand import (
     ChatSessionStand,
+    FakeThreadMessages,
     FakeTurn,
     NoConnectionStore,
     ServiceTools,
@@ -33,6 +34,7 @@ from boba.auth.credentials import KerberosCredentialSource, NoRefresh
 from boba.canvas.canvas import CanvasErrorKind, RenderVerdicts
 from boba.canvas.keys import WorkspaceMount
 from boba.chainlit.canvas.panel import CanvasPanel
+from boba.chainlit.canvas.remote import RemoteJournals
 from boba.chainlit.canvas.tools import CanvasViewers
 from boba.chainlit.data.data_layer import AttachmentDataLayer
 from boba.chainlit.domain.keys import AttachmentLinks
@@ -174,7 +176,13 @@ async def service_tools(
     runs = runtime_stand.runs
     credentials = KerberosCredentialSource(None, NoRefresh())
     connections = ArmedConnections(NoConnectionStore(), lambda: credentials, contexts)
-    calls = ChatCalls(contexts, runs, SentConnections(), ChatMount(contexts, runs))
+    calls = ChatCalls(
+        contexts,
+        runs,
+        SentConnections(),
+        ChatMount(contexts, runs),
+        RemoteJournals(FakeThreadMessages()),
+    )
     opened = ServiceTools(tool_service, connections, contexts, calls)
     await opened.start()
     try:

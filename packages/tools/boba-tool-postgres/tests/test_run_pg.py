@@ -14,6 +14,7 @@ from boba.config import bind
 from boba.db.postgres.connection import PostgresConfig
 from boba.tool.pg.tools import PgToolConfig, pg_list_tables, pg_query
 from boba.toolkit.entry import ToolMain
+from boba.toolkit.ports import ToolProgress
 
 pytestmark = [pytest.mark.run, pytest.mark.anyio]
 
@@ -41,7 +42,13 @@ async def test_run_pg_query(pg_cfg: PgToolConfig, connection: PostgresConfig) ->
     if body is None:
         raise AssertionError("body is not None")
 
-    artifact = await body(connection=connection, sql=RunArgs.SQL, offset=0, limit=50)
+    artifact = await body(
+        connection=connection,
+        sql=RunArgs.SQL,
+        offset=0,
+        limit=50,
+        progress=ToolProgress(-1),
+    )
 
     content = artifact.llm_view()
 

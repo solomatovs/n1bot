@@ -94,7 +94,7 @@ from boba.identity.errors import AuthenticationError, AuthorizationError
 from boba.identity.signin import ProxyRequest, SignedIn, SignInMetadata
 from boba.identity.sso import SsoChallenge
 from boba.runtime.http import SsoRequests, SsoResponses
-from boba.toolkit.wire import RequestFields, RequestMeta
+from boba.toolkit.wire import RequestFields
 
 __all__ = [
     "AuthServer",
@@ -214,9 +214,8 @@ class SentMeta:
     """Служебные поля текущего запроса tools/call — единственный читатель
     _meta запроса.
 
-    Создаётся теми, кому нужны поля клиента: областью вызова (CallScopes) и
-    инструментом реестра (McpTool). Читает _meta запроса из контекста
-    fastmcp и разбирает его моделью RequestFields.
+    Создаётся областью вызова (CallScopes). Читает _meta запроса из
+    контекста fastmcp и разбирает его моделью RequestFields.
     """
 
     def sent(self) -> RequestFields:
@@ -237,9 +236,8 @@ class SentMeta:
             return RequestFields.model_validate(meta)
         except ValidationError as exc:
             msg = (
-                f"reading _meta of the call: expected "
-                f"{RequestMeta.CALL_ID.value!r} and {RequestMeta.SCOPE.value!r} "
-                f"as strings, got {dict(meta)!r}: {exc}"
+                f"reading _meta of the call: expected {RequestFields.SCOPE!r} "
+                f"as a string, got {dict(meta)!r}: {exc}"
             )
             raise CallScopeError(msg) from exc
 
@@ -268,7 +266,7 @@ class CallScopes:
             return Scope.chat(sent)
         except ValidationError as exc:
             msg = (
-                f"resolving the scope of the call: _meta[{RequestMeta.SCOPE.value!r}] "
+                f"resolving the scope of the call: _meta[{RequestFields.SCOPE!r}] "
                 f"expects one path segment, got {sent!r}: {exc}"
             )
             raise CallScopeError(msg) from exc

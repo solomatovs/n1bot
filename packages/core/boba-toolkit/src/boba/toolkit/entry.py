@@ -54,6 +54,7 @@ from boba.toolkit.ports import (
     StreamGroup,
     StreamPorts,
     StreamSpec,
+    ToolProgress,
 )
 from boba.toolkit.protocol import (
     CallInputSpec,
@@ -125,6 +126,7 @@ class EntryFlag(StrEnum):
     FD_OUT = "--fd-out"
     FD_GATE = "--fd-gate"
     FD_VERDICT = "--fd-verdict"
+    FD_PROGRESS = "--fd-progress"
     ARTIFACT = "--artifact"
     HELP = "--help"
 
@@ -197,6 +199,7 @@ class CallWiring(BaseModel):
     result_fd: int = -1
     gate_fd: int = -1
     verdict_fd: int = -1
+    progress_fd: int = -1
     inputs: tuple[InputWire, ...] = ()
     outputs: tuple[OutputWire, ...] = ()
 
@@ -210,6 +213,7 @@ class CallWiring(BaseModel):
         EntryFlag.FD_RESULT.value: "result_fd",
         EntryFlag.FD_GATE.value: "gate_fd",
         EntryFlag.FD_VERDICT.value: "verdict_fd",
+        EntryFlag.FD_PROGRESS.value: "progress_fd",
     }
 
     @classmethod
@@ -495,11 +499,25 @@ class ToolArgv:
 
     @staticmethod
     def is_io(annotation: Any) -> bool:
-        """Параметр — порт или барьер группы: значение строит гость, а не хост."""
+        """Параметр — порт, барьер группы или отчёты о ходе работы:
+        значение строит гость, а не хост."""
         if StreamPorts.is_group(annotation):
             return True
 
+        if StreamPorts.is_progress(annotation):
+            return True
+
         return StreamPorts.is_port(annotation)
+
+    @classmethod
+    def progress_fields(cls, schema: type[BaseModel]) -> tuple[str, ...]:
+        """Параметры отчётов о ходе работы ToolProgress."""
+        names: list[str] = []
+        for name, field in schema.model_fields.items():
+            if StreamPorts.is_progress(field.annotation):
+                names.append(name)
+
+        return tuple(names)
 
     @classmethod
     def group_fields(cls, schema: type[BaseModel]) -> tuple[str, ...]:
@@ -750,6 +768,9 @@ class ToolMain:
         kwargs = ToolArgv.parse(tool, arguments, config)
         kwargs.update(cls._build_ports(tool, wiring))
         kwargs.update(cls._build_groups(tool, wiring))
+        progress = ToolProgress(wiring.progress_fd)
+        for name in ToolArgv.progress_fields(ToolArgv.schema_of(tool)):
+            kwargs[name] = progress
 
         logger.info(
             "tool[%s]: args ready in %dms (config %d bytes)",
@@ -758,7 +779,11 @@ class ToolMain:
             len(config),
         )
 
-        reply = cls._call(tool, kwargs)
+        try:
+            reply = cls._call(tool, kwargs)
+        finally:
+            progress.close()
+
         return cls._deliver(reply, wiring, want_artifact)
 
     @classmethod

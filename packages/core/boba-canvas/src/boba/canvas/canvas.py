@@ -30,6 +30,7 @@ from boba.toolkit.result import VisualResult
 __all__ = [
     "CanvasAction",
     "CanvasContent",
+    "CanvasElement",
     "CanvasError",
     "CanvasErrorKind",
     "CanvasKind",
@@ -84,6 +85,13 @@ class CanvasAction(StrEnum):
     NONCE = "nonce"
     CALL_ID = "call_id"
     OFFSET = "offset"
+
+
+class CanvasElement(StrEnum):
+    """Имена элементов ленты, которые рисует фронт канваса."""
+
+    STREAM = "CanvasStream"
+    """Кнопка журнала вызова; идентификатор вызова — в props (CALL_ID)."""
 
 
 class RenderStatus(StrEnum):
