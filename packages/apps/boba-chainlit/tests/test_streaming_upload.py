@@ -1,6 +1,7 @@
 """Загрузка вложения: тело идёт в хранилище потоком, а не через память или tmp."""
 
 import tempfile
+import unicodedata
 from collections.abc import AsyncIterator, Callable
 from pathlib import Path
 from typing import Any, ClassVar
@@ -159,6 +160,34 @@ async def test_upload_lands_in_storage_and_is_served_back(
         raise AssertionError('served.headers["content-length"] == str(len(payload))')
     if served.headers["accept-ranges"] != "bytes":
         raise AssertionError('served.headers["accept-ranges"] == "bytes"')
+
+
+async def test_decomposed_file_name_is_stored_composed(
+    client_app: FastAPI,
+    session: FakeSession,
+):
+    """Браузер macOS шлёт «й» как «и» со знаком; модель пишет путь составной
+    буквой, поэтому имя и ключ файла хранятся составными."""
+    decomposed = unicodedata.normalize("NFD", "Сергей.txt")
+    composed = unicodedata.normalize("NFC", "Сергей.txt")
+
+    async with transport(client_app) as client:
+        response = await client.post(
+            "/project/file",
+            params={"session_id": session.id},
+            files={"file": (decomposed, b"hello", "text/plain")},
+        )
+
+    if response.status_code != 200:
+        raise AssertionError(response.text)
+
+    body = response.json()
+    if body["name"] != composed:
+        raise AssertionError(f"the name is composed: {body['name']!r}")
+
+    key = str(session.files[body["id"]]["object_key"])
+    if not key.endswith(composed):
+        raise AssertionError(f"the storage key is composed: {key!r}")
 
 
 async def test_download_honors_range(
