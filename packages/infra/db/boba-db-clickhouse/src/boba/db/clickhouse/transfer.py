@@ -18,6 +18,7 @@ ClickHouseQueryError — сервер отклонил запрос приёмн
 
 from __future__ import annotations
 
+from abc import abstractmethod
 from collections.abc import (
     AsyncIterator,
     Callable,
@@ -55,6 +56,7 @@ from boba.db.clickhouse.query import (
 from boba.db.clickhouse.target import ChCluster, ChPlacement, ChTableRef, ChTableRole
 from boba.db.clickhouse.trace import ChCommandReport
 from boba.toolkit.contract import TypeFamily
+from boba.toolkit.stream import Chunk
 from boba.toolkit.transfer import (
     ColumnCheck,
     ColumnIssue,
@@ -112,6 +114,8 @@ __all__ = [
     "ChTypeResolver",
     "ChTypeRules",
     "ChTypes",
+    "StreamBody",
+    "WholeBody",
 ]
 
 
@@ -829,11 +833,30 @@ class ChContractTypes(ChInputTypes):
         return self._types
 
 
+class StreamBody(Protocol):
+    """Каким тела кадров потока уходят серверу телом запроса вставки.
+    Реализуют WholeBody (текстовые форматы и Native) и ArrowBodyWithoutEos
+    (boba.db.clickhouse.arrow_stream)."""
+
+    @abstractmethod
+    def shaped(self, blocks: AsyncIterator[Chunk]) -> AsyncIterator[Chunk]:
+        """Тело запроса вставки по телам кадров потока."""
+
+
+class WholeBody(StreamBody):
+    """Реализация StreamBody форматами, которые сервер читает до конца тела
+    запроса (TabSeparated, Native): тела кадров идут как есть."""
+
+    def shaped(self, blocks: AsyncIterator[Chunk]) -> AsyncIterator[Chunk]:
+        return blocks
+
+
 class ChInputSink(TransferSink):
     """Реализация TransferSink для ClickHouse: двойник готовится стратегией
     удаления, тела кадров вставляются в него как есть через input() в
-    формате потока, select переименовывает поля потока в колонки таблицы,
-    затем барьер группы и exchange tables. NULL потока в колонку без Nullable — ошибка
+    формате потока (каким телом запроса — решает body), select
+    переименовывает поля потока в колонки таблицы, затем барьер группы и
+    exchange tables. NULL потока в колонку без Nullable — ошибка
     сервера, а не значение по умолчанию: тихих подмен нет, как у not null
     postgres. discard без удаления таблицу не трогает, с удалением — готовит
     двойник и меняет местами."""
@@ -850,6 +873,7 @@ class ChInputSink(TransferSink):
         types: ChInputTypes,
         inbound: TransferInbound,
         journal: CommandJournal,
+        body: StreamBody,
         settings: Mapping[str, Any] = {},
     ) -> None:
         self._client = client
@@ -859,6 +883,7 @@ class ChInputSink(TransferSink):
         self._types = types
         self._inbound = inbound
         self._journal = journal
+        self._body = body
         self._settings = {**self.SETTINGS, **settings}
         self._facts = ChTableFacts(client, twin.target(), journal)
         self._statements = ChStatements(client, journal)
@@ -875,7 +900,7 @@ class ChInputSink(TransferSink):
                 query.text,
                 query.params,
                 settings=self._settings,
-                blocks=self._inbound.bodies(),
+                blocks=self._body.shaped(self._inbound.bodies()),
             )
             running.status = f"{trace.written_rows} rows written"
 

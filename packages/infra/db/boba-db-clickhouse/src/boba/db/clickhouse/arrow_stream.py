@@ -25,7 +25,7 @@ ArrowStreamError — ответ сервера не читается как по
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Mapping, Sequence
+from collections.abc import AsyncIterator, Mapping, Sequence
 from dataclasses import replace
 from typing import ClassVar
 
@@ -44,6 +44,7 @@ from boba.db.clickhouse.transfer import (
     ChTwin,
     ChTypeResolver,
     ChTypes,
+    StreamBody,
 )
 from boba.toolkit.arrow import ArrowColumns, ArrowIpc, BytePipe
 from boba.toolkit.contract import (
@@ -62,6 +63,7 @@ from boba.toolkit.contract import (
     TypeFamily,
 )
 from boba.toolkit.contract import Engine as NeutralEngine
+from boba.toolkit.stream import Chunk
 from boba.toolkit.transfer import (
     ColumnRules,
     CommandJournal,
@@ -386,6 +388,50 @@ class ChNeutralFacts:
         return tuple(specs)
 
 
+class ArrowBodyWithoutEos(StreamBody):
+    """Реализация StreamBody потоком Arrow IPC: тела кадров идут как есть,
+    кроме маркера конца потока в самом конце — он серверу не отправляется.
+
+    Маркер конца потока Arrow (EOS, восемь байт) необязателен: поток кончается
+    и концом тела запроса. С маркером читатель ClickHouse останавливается на
+    нём и остаток тела запроса — завершающий кусок chunked-кодирования — не
+    дочитывает. Сервер до 25-й версии не дочитывает его и сам: кусок остаётся
+    в сокете и разбирается началом следующего запроса того же соединения, и
+    тот получает 400 Bad Request. Без маркера читатель просит следующее
+    сообщение, сервер дочитывает тело до конца, и соединение остаётся
+    пригодным для следующего запроса.
+    """
+
+    EOS: ClassVar[bytes] = b"\xff\xff\xff\xff\x00\x00\x00\x00"
+    """Маркер конца потока Arrow IPC: признак продолжения и нулевая длина."""
+
+    async def shaped(self, blocks: AsyncIterator[Chunk]) -> AsyncIterator[Chunk]:
+        """Тела кадров без завершающего маркера: последние байты потока
+        придерживаются, пока не станет ясно, что они не конец."""
+        size = len(self.EOS)
+        held = b""
+        async for block in blocks:
+            if len(block) < size:
+                joined = held + bytes(block)
+                if len(joined) > size:
+                    yield joined[:-size]
+
+                held = joined[-size:]
+                continue
+
+            if held:
+                yield held
+
+            view = memoryview(block)
+            if len(view) > size:
+                yield view[:-size]
+
+            held = bytes(view[-size:])
+
+        if held != self.EOS:
+            yield held
+
+
 class ChArrowLoader:
     """Приёмник потока arrow в ClickHouse: база обязана быть Atomic;
     нейтральный контракт потока в представлении ClickHouse -> колонки
@@ -481,6 +527,7 @@ class ChArrowLoader:
             ChNullableTwinTypes(self._nullable(spec)),
             self._inbound,
             self._journal,
+            ArrowBodyWithoutEos(),
         )
         transfer = TransferRun(
             schema_strategy,
