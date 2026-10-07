@@ -28,6 +28,7 @@ def _connection() -> SealedConnection:
     )
 
     return SealedConnection(
+        ref="conn://http/wiki",
         login="ivanov",
         expires_at=NOW + timedelta(hours=1),
         profile=SecretReveal.dumped(profile),

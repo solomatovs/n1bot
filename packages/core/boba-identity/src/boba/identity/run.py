@@ -70,9 +70,16 @@ class RunPort(Protocol):
 
     @abstractmethod
     async def tool_started(
-        self, tool_call_id: str, name: str, args: Mapping[str, Any]
+        self,
+        tool_call_id: str,
+        name: str,
+        args: Mapping[str, Any],
+        media: Mapping[str, str] | None,
     ) -> None:
-        """Вызов инструмента name начат: аргументы — какими их видит пользователь."""
+        """Вызов инструмента name начат: аргументы — какими их видит
+        пользователь; media — типы содержимого аргументов (имя →
+        contentMediaType) инструмента сервера, None — инструмент свой, и
+        вход шага рисует его модель вызова."""
         ...
 
     @abstractmethod

@@ -46,6 +46,7 @@ from boba.db.postgres.describe import (
 from boba.db.postgres.errors import PgArrowError, PgDescribeError
 from boba.db.postgres.query import PgQuery, PgQueryBuilder
 from boba.db.postgres.trace import PgCommandReport, PgSessionTrace
+from boba.db.postgres.transfer import PgCopyProtocol
 from boba.toolkit.arrow import (
     ArrowColumns,
     ArrowIpc,
@@ -441,6 +442,7 @@ class PgArrowOut:
         self._describe = PgDescribe(conn)
         self._trace = PgSessionTrace(conn)
         self._ipc = ArrowIpc()
+        self._protocol = PgCopyProtocol(conn)
 
     async def get_column_description_from_libpq(
         self,
@@ -467,7 +469,7 @@ class PgArrowOut:
     ) -> PgCommandReport:
         """Выборка потоком Arrow по готовой схеме: читатель CSV собирает
         пачки типами схемы, значения вне типа — ошибка чтения."""
-        writer = await self._ipc.open_out(sink, schema)
+        writer = await self._ipc.open_out(sink, schema, chunk_bytes)
         pipe = BytePipe()
         reader = CsvBatches(schema, chunk_bytes)
         pgquery = (
@@ -480,52 +482,42 @@ class PgArrowOut:
 
         text = pgquery.text.as_string(self._conn)
         with self._journal.command(text, CommandKind.ACTION) as running:
-            async with self._conn.cursor() as cursor:
 
-                async def produce() -> None:
-                    try:
-                        await self._copy_out(cursor, pgquery.text, pipe, chunk_bytes)
-                    finally:
-                        pipe.close_write()
+            async def produce() -> str:
+                try:
+                    return await self._copy_out(pgquery.text, pipe, chunk_bytes)
+                finally:
+                    pipe.close_write()
 
-                async def consume() -> None:
-                    try:
-                        async for batch in reader.batches(pipe.source):
-                            await writer.write(batch)
-                    finally:
-                        pipe.close_read()
+            async def consume() -> None:
+                try:
+                    async for batch in reader.batches(pipe.source):
+                        await writer.write(batch)
+                finally:
+                    pipe.close_read()
 
-                await asyncio.gather(produce(), consume())
-                await writer.close()
-                report = self._trace.report(
-                    f"streamed out arrow ipc: {', '.join(schema.names)}", text, cursor
-                )
-
+            status, _ = await asyncio.gather(produce(), consume())
+            await writer.close()
+            report = self._trace.report_status(
+                f"streamed out arrow ipc: {', '.join(schema.names)}", text, status
+            )
             running.status = report.status
 
         return report
 
     async def _copy_out(
-        self,
-        cursor: psycopg.AsyncCursor[Any],
-        statement: sql.Composed,
-        pipe: BytePipe,
-        chunk_bytes: int,
-    ) -> None:
-        """COPY отдаёт по блоку на строку: блоки копятся до chunk_bytes и уходят
-        в трубу одной записью, иначе каждая строка стоила бы прыжка в поток."""
-        pending = bytearray()
-        async with cursor.copy(statement) as copy:
-            async for block in copy:
-                pending.extend(block)
-                if len(pending) < chunk_bytes:
-                    continue
-
-                await pipe.write(pending)
-                pending = bytearray()
-
-        if pending:
-            await pipe.write(pending)
+        self, statement: sql.Composed, pipe: BytePipe, chunk_bytes: int
+    ) -> str:
+        """COPY отдаёт по сообщению на строку: их читает цикл libpq в
+        рабочем потоке (PgCopyProtocol) и пишет в трубу через буфер
+        chunk_bytes; итог — статус команды сервера. Остаток буфера после
+        ошибки в трубу не досылается."""
+        sink = pipe.sink(chunk_bytes)
+        try:
+            return await self._protocol.run(statement.as_bytes(self._conn), sink)
+        except BaseException:
+            sink.raw.close()
+            raise
 
 
 class CsvBatches:

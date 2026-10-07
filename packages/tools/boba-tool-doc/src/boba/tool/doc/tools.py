@@ -33,7 +33,7 @@ from boba.llm.providers import LlmProviders, LlmProviderTypes
 from boba.tool.doc.config import DocToolsConfig
 from boba.toolkit.entry import ToolMain
 from boba.toolkit.facade import Injected, tool
-from boba.toolkit.ports import ToolProgress
+from boba.toolkit.ports import StageProgress, ToolProgress
 from boba.toolkit.result import MarkdownResult, TableResult
 from boba.toolkit.window import RowLimit, RowOffset, RowPage, RowWindow
 
@@ -117,12 +117,19 @@ class DocRun:
         windows = PageWindow.parse_many(pages)
         texts: list[str] = []
         numbers: list[int] = []
+        steps = StageProgress(progress, None)
+        steps.next(f"opening {path} to read pages {pages}")
         with self.open(path) as document:
             for window in windows:
                 for page in document.pages(window):
                     texts.append(page.text)
                     numbers.append(page.number)
-                    progress.report(len(numbers), None, f"page {page.number} is read")
+                    steps.next(
+                        f"read page {page.number} of {path}: {len(page.text)} "
+                        "chars, reading the next page"
+                    )
+
+        steps.next(f"read {len(numbers)} pages of {path}")
 
         return ReadResult(text="\n\n".join(texts), numbers=numbers)
 

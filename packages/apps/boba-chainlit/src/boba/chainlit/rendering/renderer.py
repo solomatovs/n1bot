@@ -316,7 +316,9 @@ class ChatRenderer:
         if not isinstance(args, Mapping):
             args = {}
 
-        step = await self._view.tool_started(message.name, args, message.call_id)
+        step = await self._view.tool_started(
+            message.name, args, message.call_id, message.media
+        )
         self._tool_steps[message.call_id] = step
 
     async def _on_tool_progressed(self, message: ToolProgressed) -> None:

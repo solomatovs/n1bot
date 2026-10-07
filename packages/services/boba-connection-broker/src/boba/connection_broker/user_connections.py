@@ -36,7 +36,6 @@ from boba.connections.manifest import ConnectionTypes, UnknownConnectionKindErro
 from boba.connections.marks import ConnectionRefusal
 from boba.connections.sealed import (
     ConnectionRef,
-    ConnectionSchemaMark,
     SealedConnection,
 )
 from boba.connections.whitelist import (
@@ -47,6 +46,7 @@ from boba.identity.context import CallContexts
 from boba.identity.errors import RefusalError
 from boba.kerberos import TicketAuth
 from boba.toolkit.entry import ToolArgv
+from boba.toolkit.facade import NotLogged
 from boba.toolkit.types import SecretReveal
 from boba.toolrun.hosted import HostedTool, ToolSchema
 from boba.toolrun.injected import AsyncInjected, ToolConfigError
@@ -81,10 +81,10 @@ class ConnectionParamHooks:
 
     Инструмент объявляет соединение параметром с моделью профиля. Здесь
     каждый такой параметр получает обвязку, которая отдаст телу профиль, а в
-    схеме для LLM становится строкой с описанием description и меткой вида
-    соединения (ConnectionRef.SCHEMA_MARK): по метке клиент узнаёт, куда
-    подставлять соединение. Вид берётся из типа параметра — реестр знает,
-    какому пакету принадлежит модель профиля. Откуда обвязка возьмёт
+    схеме для LLM становится строкой с описанием description, где назван
+    вид соединения ({kind}). Значение в лог не пишется: там запечатанное
+    соединение. Вид берётся из типа параметра — реестр знает, какому пакету
+    принадлежит модель профиля. Откуда обвязка возьмёт
     профиль, решает вызывающий фабрикой make (SealedConnectionParams).
     """
 
@@ -120,9 +120,11 @@ class ConnectionParamHooks:
         tool.args_schema = self._schemas.rebuild(schema, shown, ())
 
     def _field(self, kind: str) -> tuple[Any, FieldInfo]:
-        marked = Annotated[str, ConnectionSchemaMark(kind)]
+        marked = Annotated[str, NotLogged]
 
-        return marked, FieldInfo(min_length=1, description=self._description)
+        described = self._description.format(kind=kind)
+
+        return marked, FieldInfo(min_length=1, description=described)
 
     def _kind_of(self, tool: str, param: str, annotation: object) -> str:
         """Вид соединения по модели профиля параметра."""
@@ -172,7 +174,7 @@ class ArmedConnections:
 
     async def sealed(self, ref: ConnectionRef, ttl: timedelta) -> SealedConnection:
         """Соединение субъекта по ссылке ref, готовое к запечатыванию: профиль
-        с кредами этого вызова, логин субъекта и срок годности."""
+        с кредами этого вызова, сама ссылка, логин субъекта и срок годности."""
         context = self._contexts.current()
         rows = await self._store_ref().for_subject(context.subject, ref.kind)
 
@@ -186,6 +188,7 @@ class ArmedConnections:
         logger.info("connection %s armed: %s", ref.render(), armed.trace())
 
         return SealedConnection(
+            ref=ref.render(),
             login=context.subject.login,
             expires_at=datetime.now(UTC) + ttl,
             profile=SecretReveal.dumped(armed),

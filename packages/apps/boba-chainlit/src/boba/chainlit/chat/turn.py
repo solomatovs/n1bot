@@ -378,9 +378,13 @@ class ChatTurn(RunPort):
         return self._tracer
 
     async def tool_started(
-        self, tool_call_id: str, name: str, args: Mapping[str, Any]
+        self,
+        tool_call_id: str,
+        name: str,
+        args: Mapping[str, Any],
+        media: Mapping[str, str] | None,
     ) -> None:
-        await self._feed.tool_started(tool_call_id, name, args)
+        await self._feed.tool_started(tool_call_id, name, args, media)
         self._state.open_tool(tool_call_id)
 
     async def tool_progressed(

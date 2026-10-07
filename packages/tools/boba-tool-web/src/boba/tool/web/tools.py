@@ -184,9 +184,15 @@ class WebPage:
 
     async def load(self, url: str, *, as_markdown: bool) -> WebText:
         request = HttpRequest(url=url, follow_redirects=True)
+        download = DownloadProgress(self._progress, url)
+        download.requesting()
         async with self._http, self._http.fetch(request) as response:
             hint = self._hint(url, response.headers)
-            download = DownloadProgress(self._progress, self._size(response.headers))
+            download.answered(
+                response.status,
+                response.headers.get(self.CONTENT_TYPE, "unknown content type"),
+                self._size(response.headers),
+            )
             loaded = await AsyncPipe.run(
                 download.counted(response.stream),
                 self._consumer(hint, as_markdown=as_markdown),

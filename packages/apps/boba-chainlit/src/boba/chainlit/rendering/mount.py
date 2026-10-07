@@ -21,7 +21,7 @@ from __future__ import annotations
 import logging
 import mimetypes
 import time
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from typing import Any, ClassVar
 from uuid import uuid4
@@ -45,7 +45,7 @@ from boba.mcp_client.client import (
     ProgressListener,
 )
 from boba.runtime.storage import StorageClient
-from boba.toolkit.calls import CallViews, ToolCallModels
+from boba.toolkit.calls import CallViews
 from boba.toolkit.dag import (
     DagNode,
     NodeBody,
@@ -219,18 +219,22 @@ class ChatCalls(NodeCalls):
         self._mount = mount
         self._journals = journals
         self._views = CallViews()
+        self._served: set[str] = set()
 
     def shown(self, cards: Iterable[ToolCard]) -> None:
-        """Лента живого хода и истории рисует аргументы вызовов инструментов
-        cards по виду из их карточек; карточка без вида — аргументы
-        json-текстом."""
+        """Инструменты серверов cards: вход шага их вызова лента рисует по
+        типам содержимого аргументов из схемы карточки, а не моделью вызова
+        своего инструмента."""
         for card in cards:
-            if card.views is None:
-                continue
+            self._served.add(card.name)
 
-            ToolCallModels.register(
-                card.name, self._views.model_of(card.name, card.views)
-            )
+    def _media_of(self, card: ToolCard) -> Mapping[str, str] | None:
+        """Типы содержимого аргументов инструмента сервера; None —
+        инструмент свой."""
+        if card.name not in self._served:
+            return None
+
+        return self._views.media_of(card.parameters)
 
     async def conducted(
         self, card: ToolCard, node: DagNode, body: NodeBody
@@ -242,7 +246,9 @@ class ChatCalls(NodeCalls):
 
         started = time.monotonic()
         logger.info("tool %s started: call=%s", card.name, node.key)
-        await port.tool_started(node.key, card.name, self._sent.shown(node.args))
+        await port.tool_started(
+            node.key, card.name, self._sent.shown(node.args), self._media_of(card)
+        )
 
         outcome = await body(node)
         if address := outcome.journal:

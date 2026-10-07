@@ -15,6 +15,7 @@ from boba.db.postgres.connection import PostgresConfig
 from boba.tool.pg import tools as pg
 from boba.toolkit.entry import ToolMain
 from boba.toolkit.facade import PayloadTool
+from boba.toolkit.ports import ToolProgress
 from boba.toolkit.result import SqlResult
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
@@ -224,6 +225,7 @@ class TestDescribeTools:
             sql="select 1 as a; select 2 as b, 3 as c",
             offset=0,
             limit=10,
+            progress=ToolProgress(-1),
         )
 
         assert isinstance(result, SqlResult)

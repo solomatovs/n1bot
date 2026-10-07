@@ -11,6 +11,7 @@ import pytest
 from boba.config import bind
 from boba.tool.web.tools import WebToolsConfig, web_fetch_page, web_grep_page
 from boba.toolkit.entry import ToolMain
+from boba.toolkit.ports import ToolProgress
 from boba.transport.http.connection import HttpConnection
 
 pytestmark = [pytest.mark.run, pytest.mark.anyio]
@@ -42,6 +43,7 @@ async def test_run_web_fetch(
 
     content = (
         await body(
+            progress=ToolProgress(-1),
             url=covered_url,
             connection=connection,
             as_markdown=True,
@@ -63,6 +65,7 @@ async def test_run_web_grep(
 
     content = (
         await body(
+            progress=ToolProgress(-1),
             url=covered_url,
             connection=connection,
             pattern=".",

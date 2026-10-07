@@ -50,7 +50,6 @@ from boba.mcp_client.client import (
 from boba.runtime.config import EnvOverride
 from boba.stand.service_signin import ServiceSignIn
 from boba.stand_core.context import CallStand
-from boba.toolkit.calls import FieldPlacement, FieldView
 from boba.toolkit.channels import ToolChannel
 from boba.toolkit.dag import (
     CallDag,
@@ -172,8 +171,8 @@ class TestStandardServerOverStdio:
             raise AssertionError(f"the stub carries the server's JSON schema: {schema}")
         if sorted(schema["properties"]) != ["a", "b"]:
             raise AssertionError(f"the model sees the server's arguments: {schema}")
-        if add.views is not None:
-            raise AssertionError(f"a standard server sends no call view: {add}")
+        if add.views:
+            raise AssertionError(f"plain arguments have no special view: {add}")
 
     async def test_standard_server_declares_no_boba_features(
         self, stdio: McpToolServer
@@ -794,6 +793,29 @@ class HeardSignals(CallSignals, ProgressListener):
         self.reports.append((done, total, text))
 
 
+class HeardCall(ProgressListener):
+    """Приёмник отчётов одного вызова: копит только свои тексты."""
+
+    def __init__(self) -> None:
+        self.texts: list[str] = []
+
+    async def progressed(self, done: float, total: float | None, text: str) -> None:
+        self.texts.append(text)
+
+
+class HeardPerCall(CallSignals):
+    """Приёмники отчётов по инструментам вызовов: у каждого вызова свой."""
+
+    def __init__(self) -> None:
+        self.by_steps: dict[object, HeardCall] = {}
+
+    def listener(self, server: str, call: DagNode) -> ProgressListener:
+        heard = HeardCall()
+        self.by_steps[call.args.get("steps")] = heard
+
+        return heard
+
+
 @pytest.mark.integration
 class TestBobaMcpJournal:
     """Вызов своего сервера: отчёты о ходе работы и журнал по адресу из
@@ -839,6 +861,45 @@ class TestBobaMcpJournal:
 
         if heard.reports != [(1.0, 2.0, "step 1 of 2"), (2.0, 2.0, "step 2 of 2")]:
             raise AssertionError(f"the reports arrive as they were made: {heard}")
+
+    async def test_report_of_a_workflow_node_reaches_only_its_own_call(
+        self, boba_mcp_stand: BobaMcpStand
+    ) -> None:
+        """Связка из двух вызовов идёт серверу одним запросом: отчёт узла
+        получает шаг своего вызова, а шаг соседа его не видит."""
+        heard = HeardPerCall()
+        server = await self._opened(boba_mcp_stand, heard)
+        nodes = [
+            {
+                "key": "left",
+                "tool": "fake_progress",
+                "args": {"steps": 3, "pause": 0.6},
+            },
+            {
+                "key": "right",
+                "tool": "fake_progress",
+                "args": {"steps": 2, "pause": 0.6},
+            },
+        ]
+        try:
+            message = await server.call(_call("workflow", nodes=nodes))
+        finally:
+            await server.close()
+
+        if message.errored:
+            raise AssertionError(f"the workflow succeeds: {message}")
+
+        left = heard.by_steps[3].texts
+        if left != [
+            "step 1 of 3 (1 of 3)",
+            "step 2 of 3 (2 of 3)",
+            "step 3 of 3 (3 of 3)",
+        ]:
+            raise AssertionError(f"the left call hears only its own reports: {left}")
+
+        right = heard.by_steps[2].texts
+        if right != ["step 1 of 2 (1 of 2)", "step 2 of 2 (2 of 2)"]:
+            raise AssertionError(f"the right call hears only its own reports: {right}")
 
     async def test_journal_is_read_by_the_address_of_the_result(
         self, boba_mcp_stand: BobaMcpStand
@@ -1066,18 +1127,18 @@ class TestBobaMcpServer:
         if not isinstance(artifact, MarkdownResult) or artifact.text != "hi hi|t0ken":
             raise AssertionError(f"the server's model is revived: {artifact}")
 
-    async def test_card_carries_the_call_view_of_the_server(
+    async def test_card_view_comes_from_the_schema_alone(
         self, dag: McpToolServer
     ) -> None:
+        """Вид аргументов клиент выводит из схемы: у аргументов без типа
+        содержимого особого вида нет, служебные параметры сервер не шлёт."""
         echo = next(tool for tool in dag.tools() if tool.name == "fake_echo")
-
-        hidden = FieldView(placement=FieldPlacement.HIDDEN, display=None)
-        if echo.views != {"cfg": hidden}:
-            raise AssertionError(f"the view of the server's call model: {echo}")
+        if echo.views:
+            raise AssertionError(f"plain arguments have no special view: {echo}")
 
         workflow = next(tool for tool in dag.tools() if tool.name == CallDag.WORKFLOW)
-        if workflow.views is not None:
-            raise AssertionError(f"a built-in node has no call view: {workflow}")
+        if workflow.views:
+            raise AssertionError(f"a built-in node has no special view: {workflow}")
 
     async def test_failure_keeps_the_server_failure_model(
         self, dag: McpToolServer
@@ -1145,6 +1206,7 @@ class TestBobaMcpServer:
             }
         )
         sealed = SealedConnection(
+            ref="conn://postgres/orders",
             login="alice",
             expires_at=datetime.now(UTC) + timedelta(minutes=5),
             profile=SecretReveal.dumped(profile),

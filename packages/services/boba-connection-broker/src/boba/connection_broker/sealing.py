@@ -1,13 +1,12 @@
 """Запечатывание соединений на стороне клиента сервера инструментов.
 
 Модель ставит на место параметра-соединения ссылку из каталога
-(ConnectionRef). Клиент перед отправкой вызова находит такие места по
-метке схемы инструмента, берёт соединение пользователя, запечатывает его
-открытым ключом сервера и подставляет вместо ссылки. Ключ сервер объявляет
-среди своих возможностей при подключении клиента (SealFeature); модель про
-ключ не знает. Здесь три части:
+(ConnectionRef). Клиент перед отправкой вызова находит такие значения
+среди аргументов, берёт соединение пользователя, запечатывает его открытым
+ключом сервера и подставляет вместо ссылки. Ключ сервер объявляет среди
+своих возможностей при подключении клиента (SealFeature); модель про ключ
+не знает. Здесь две части:
 
-- ConnectionParams — параметры-соединения инструмента по его схеме.
 - SentConnections — что ушло серверу вместо ссылок в идущих вызовах: по нему
   клиент показывает пользователю ссылку, а не запечатанное значение.
 - SealingToolServer — порт ToolServer поверх другого порта: запечатывает
@@ -34,7 +33,6 @@ from pydantic import JsonValue, ValidationError
 from boba.connection_broker.user_connections import ArmedConnections
 from boba.connections.marks import ConnectionRefusal
 from boba.connections.sealed import (
-    ConnectionRef,
     ConnectionRefs,
     ConnectionSeal,
     SealFeature,
@@ -53,7 +51,7 @@ from boba.toolkit.dag import (
 )
 from boba.toolkit.failure import ToolRefusalError, ValidationText
 
-__all__ = ["ConnectionParams", "SealingToolServer", "SentConnections"]
+__all__ = ["SealingToolServer", "SentConnections"]
 
 logger = logging.getLogger(__name__)
 
@@ -122,33 +120,6 @@ class SentForget:
         self._sent.forget(self._args)
 
 
-class ConnectionParams:
-    """Параметры-соединения инструмента: имя параметра → вид соединения.
-
-    Параметр помечен в схеме инструмента ключом ConnectionRef.SCHEMA_MARK;
-    метку ставит сервер на параметрах верхнего уровня. Создаётся на один
-    инструмент из его схемы.
-    """
-
-    def __init__(self, schema: Mapping[str, object]) -> None:
-        self._kinds: dict[str, str] = {}
-
-        properties = schema.get("properties")
-        if not isinstance(properties, Mapping):
-            return
-
-        for name, declared in properties.items():
-            if not isinstance(declared, Mapping):
-                continue
-
-            kind = declared.get(ConnectionRef.SCHEMA_MARK)
-            if isinstance(kind, str):
-                self._kinds[name] = kind
-
-    def kinds(self) -> Mapping[str, str]:
-        return self._kinds
-
-
 class RefusedBody:
     """Тело вызова, которому отказано до отправки серверу: отдаёт готовый
     отказ. Создаётся портом SealingToolServer, чтобы отказанный вызов прошёл
@@ -191,10 +162,8 @@ class SealingToolServer(ToolServer):
         self._refs = ConnectionRefs()
         self._outcomes = NodeOutcomes()
         self._dags = CallDag()
-        self._params: dict[str, ConnectionParams] = {}
         self._cards: dict[str, ToolCard] = {}
         for card in inner.tools():
-            self._params[card.name] = ConnectionParams(card.parameters)
             self._cards[card.name] = card
 
     def tools(self) -> Sequence[ToolCard]:
@@ -270,33 +239,29 @@ class SealingToolServer(ToolServer):
         return self._dags.with_nodes(call, nodes)
 
     async def _sealed_call(self, call: DagNode) -> DagNode:
-        """Вызов одного инструмента с запечатанными параметрами-соединениями."""
-        params = self._params.get(call.tool)
-        if params is None:
+        """Вызов одного инструмента с запечатанными соединениями: каждый
+        аргумент верхнего уровня, чьё значение — ссылка на соединение
+        (ConnectionRef), заменяется запечатанным профилем."""
+        if call.tool not in self._cards:
             return call
 
         sent: dict[str, JsonValue] = dict(call.args)
-        for param, kind in params.kinds().items():
-            value = sent.get(param)
-            if isinstance(value, str):
-                sent[param] = await self._seal(value, kind)
+        for param, value in call.args.items():
+            if not isinstance(value, str):
+                continue
+
+            if not self._refs.is_ref(value):
+                continue
+
+            sent[param] = await self._seal(value)
 
         return call.model_copy(update={"args": sent})
 
-    async def _seal(self, value: str, kind: str) -> str:
-        """Ссылка → запечатанный профиль; не ссылка уходит серверу как есть."""
-        if not self._refs.is_ref(value):
-            return value
-
+    async def _seal(self, value: str) -> str:
+        """Ссылка на соединение → запечатанный профиль. Подходит ли вид
+        соединения параметру, решает сервер: он открывает профиль и сверяет
+        вид с тем, что ждёт инструмент."""
         ref = self._refs.parse(value)
-        if ref.kind != kind:
-            msg = (
-                f"connection {value!r} is of kind {ref.kind!r}, the parameter "
-                f"expects a connection of kind {kind!r}; pick a connection of "
-                f"kind {kind!r} from connection_list"
-            )
-            raise RefusalError(ConnectionRefusal.ANOTHER_KIND, msg)
-
         key = self._key(value)
         sealed = await self._connections.sealed(ref, self._ttl)
 

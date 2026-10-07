@@ -157,7 +157,9 @@ class ChArrowSource:
                             contract=contract.model_dump(mode="json"),
                         )
                     )
-                    writer = await self._ipc.open_out(out.writer(), reader.schema)
+                    writer = await self._ipc.open_out(
+                        out.writer(), reader.schema, chunk_bytes
+                    )
                     async for batch in reader.batches:
                         await writer.write(batch)
 

@@ -15,7 +15,7 @@ from boba.tool.ch import tools as ch
 from boba.tool.ora import tools as ora
 from boba.tool.pg import tools as pg
 from boba.toolkit.entry import ToolArgv, ToolMain
-from boba.toolkit.ports import StreamGroup
+from boba.toolkit.ports import StreamGroup, ToolProgress
 from boba.toolkit.result import FailureResult
 from boba.toolkit.transfer import (
     CommandsFailedError,
@@ -64,6 +64,7 @@ class Pumps:
         self._failed: dict[str, CommandsFailedError] = {}
         self._ports: dict[str, dict[str, Any]] = {}
         self._groups: dict[str, tuple[str, ...]] = {}
+        self._progress: dict[str, tuple[str, ...]] = {}
         listed = ToolMain.toolset(
             pg.pg_stream_out,
             pg.pg_stream_in,
@@ -81,6 +82,9 @@ class Pumps:
                 ToolArgv.schema_of(payload)
             )
             self._groups[payload.name] = ToolArgv.group_fields(
+                ToolArgv.schema_of(payload)
+            )
+            self._progress[payload.name] = ToolArgv.progress_fields(
                 ToolArgv.schema_of(payload)
             )
 
@@ -108,28 +112,36 @@ class Pumps:
             self._bodies["pg_stream_in"](
                 connection=self._required("pg_stream_in"),
                 feed=feed,
-                **self._detached_groups("pg_stream_in"),
+                **self._detached("pg_stream_in"),
                 **arguments,
             ),
         )
 
         return report.llm_view()
 
-    def _detached_groups(self, name: str) -> dict[str, StreamGroup]:
-        """Барьер группы вне группы: ready() возвращается сразу, как у
-        вызова человеком."""
-        groups: dict[str, StreamGroup] = {}
+    def _detached(self, name: str) -> dict[str, StreamGroup | ToolProgress]:
+        """Служебные параметры тела вне группы и без слушателя, как у вызова
+        человеком: барьер группы, чей ready() возвращается сразу, и отчёты
+        о ходе работы, которые никуда не уходят."""
+        built: dict[str, StreamGroup | ToolProgress] = {}
         for field in self._groups[name]:
-            groups[field] = StreamGroup(-1, -1)
+            built[field] = StreamGroup(-1, -1)
 
-        return groups
+        for field in self._progress[name]:
+            built[field] = ToolProgress(-1)
+
+        return built
 
     async def _out(self, name: str, statement: str, **extra: Any) -> bytes:
         sink = Sink()
         await self._invoked(
             name,
             self._bodies[name](
-                connection=self._required(name), sql=statement, out=sink, **extra
+                connection=self._required(name),
+                sql=statement,
+                out=sink,
+                **self._detached(name),
+                **extra,
             ),
         )
 

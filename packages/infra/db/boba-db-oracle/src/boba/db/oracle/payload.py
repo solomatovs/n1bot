@@ -690,14 +690,16 @@ class PayloadOracle:
         conn: AsyncConnection,
         text: str,
         sink: io.RawIOBase,
+        buffer_bytes: int,
         trace: OraSessionTrace,
     ) -> pyarrow.Schema:
-        """Ответ запроса потоком Arrow IPC в выходной порт: схема, затем пачки
+        """Ответ запроса потоком Arrow IPC в выходной порт порциями
+        buffer_bytes: схема, затем пачки
         драйвера по arraysize строк как есть, без перевода в текст. Схема та
         же, что у csv (OraArrowTypes); типы, которые драйвер в Arrow не отдаёт,
         отвергаются до выполнения. Прочитанные строки считает trace."""
         schema = await self._requested_schema(conn, text)
-        writer = await self._ipc.open_out(sink, schema)
+        writer = await self._ipc.open_out(sink, schema, buffer_bytes)
         async for table in self._tables(conn, text, schema):
             trace.took_rows(table.num_rows)
             try:

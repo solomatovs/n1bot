@@ -117,10 +117,14 @@ class LoopTurn(FakeTurn):
         self.loops: list[int] = []
 
     async def tool_started(
-        self, tool_call_id: str, name: str, args: Mapping[str, Any]
+        self,
+        tool_call_id: str,
+        name: str,
+        args: Mapping[str, Any],
+        media: Mapping[str, str] | None,
     ) -> None:
         self.loops.append(id(asyncio.get_running_loop()))
-        await super().tool_started(tool_call_id, name, args)
+        await super().tool_started(tool_call_id, name, args, media)
 
 
 class CallsStand:

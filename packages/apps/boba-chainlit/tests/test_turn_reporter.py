@@ -139,7 +139,7 @@ class TestFailed:
     async def test_pending_tool_steps_are_closed(self) -> None:
         turn = _turn()
         state = TurnState()
-        await turn.feed.tool_started("call-1", "web_search", {"query": "x"})
+        await turn.feed.tool_started("call-1", "web_search", {"query": "x"}, None)
         state.open_tool("call-1")
 
         await _reporter(turn.feed, state, RememberedHistory()).failed(
@@ -223,7 +223,7 @@ class TestStopped:
     async def test_pending_tool_steps_are_closed_with_the_note(self) -> None:
         turn = _turn()
         state = TurnState()
-        await turn.feed.tool_started("call-1", "bash", {"cmd": "sleep 60"})
+        await turn.feed.tool_started("call-1", "bash", {"cmd": "sleep 60"}, None)
         state.open_tool("call-1")
 
         await _reporter(turn.feed, state, RememberedHistory()).stopped(
@@ -289,7 +289,7 @@ class TestOk:
     async def test_leftover_steps_are_closed(self) -> None:
         turn = _turn()
         state = TurnState()
-        await turn.feed.tool_started("call-1", "bash", {"cmd": "true"})
+        await turn.feed.tool_started("call-1", "bash", {"cmd": "true"}, None)
         state.open_tool("call-1")
 
         await _reporter(turn.feed, state, history := RememberedHistory()).ok()

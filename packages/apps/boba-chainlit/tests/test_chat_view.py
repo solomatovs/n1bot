@@ -33,8 +33,6 @@ from boba.connection_broker.sealing import SentConnections
 from boba.identity.context import CallContexts
 from boba.identity.run import Runs
 from boba.stand.refs import StandRefs
-from boba.toolkit.calls import FieldPlacement, FieldView
-from boba.toolkit.dag import ToolCard
 from boba.toolkit.result import FieldLines, MarkdownResult
 
 THREAD = "11111111-1111-1111-1111-111111111111"
@@ -74,7 +72,7 @@ class TestAnswerOrder:
         if first is None:
             raise AssertionError("first is not None")
 
-        await view.tool_started("diagram_save", {"name": "a.mmd"}, "call-1")
+        await view.tool_started("diagram_save", {"name": "a.mmd"}, "call-1", None)
 
         if view.answer_message is not None:
             raise AssertionError("view.answer_message is None")
@@ -103,7 +101,7 @@ class TestAnswerOrder:
             if message is None:
                 raise AssertionError("message is not None")
             seen.append(message.id)
-            await view.tool_started("bash", {"cmd": "ls"}, f"call-{index}")
+            await view.tool_started("bash", {"cmd": "ls"}, f"call-{index}", None)
 
         if len(set(seen)) != len(seen):
             raise AssertionError("len(set(seen)) == len(seen)")
@@ -177,7 +175,7 @@ class TestTurnPulse:
 
         await view.await_model()
         await view.stream_answer("сейчас посмотрю", TURN)
-        await view.tool_started("bash", {"cmd": "ls"}, "call-1")
+        await view.tool_started("bash", {"cmd": "ls"}, "call-1", None)
 
         if self._pulse(sink.steps) is None:
             raise AssertionError("pulse is back while the tool runs")
@@ -194,7 +192,7 @@ class TestTurnPulse:
         view.begin_turn(TURN)
 
         await view.await_model()
-        await view.tool_started("bash", {"cmd": "ls"}, "call-1")
+        await view.tool_started("bash", {"cmd": "ls"}, "call-1", None)
         await view.finish_turn()
 
         if self._pulse(sink.steps) is not None:
@@ -317,7 +315,7 @@ class TestLivePulseFrames:
         async def scenario(view: ChatView) -> None:
             await view.await_model()
             await view.stream_answer("сейчас посмотрю", TURN)
-            step = await view.tool_started("bash", {"cmd": "ls"}, "call-1")
+            step = await view.tool_started("bash", {"cmd": "ls"}, "call-1", None)
             await view.tool_finished(step, MarkdownResult(text="ok"), "call-1")
             await view.close_answer(TURN)
             await view.finish_turn()
@@ -341,7 +339,7 @@ class TestLivePulseFrames:
         async def scenario(view: ChatView) -> None:
             await view.await_model()
             await view.stream_answer("сейчас посмотрю", TURN)
-            await view.tool_started("bash", {"cmd": "ls"}, "call-1")
+            await view.tool_started("bash", {"cmd": "ls"}, "call-1", None)
 
         emitter = self._play(runtime_stand, scenario)
 
@@ -377,9 +375,13 @@ class TestPrefetchStage:
         view.begin_turn(TURN)
 
         stage = await view.begin_stage("context lookup", "rephrasing the question")
-        inside = await view.tool_started("kb_fts_search", {"query": "kerberos"}, "c-1")
+        inside = await view.tool_started(
+            "kb_fts_search", {"query": "kerberos"}, "c-1", None
+        )
         await view.end_stage(["kerberos"], 1500)
-        outside = await view.tool_started("kb_fts_search", {"query": "later"}, "c-2")
+        outside = await view.tool_started(
+            "kb_fts_search", {"query": "later"}, "c-2", None
+        )
 
         container = view.container_step
         if container is None:
@@ -488,7 +490,7 @@ class TestToolStepDuration:
         )
         view.begin_turn(TURN)
 
-        step = await view.tool_started("kb_fts_search", {"query": "x"}, "call-1")
+        step = await view.tool_started("kb_fts_search", {"query": "x"}, "call-1", None)
         await view.tool_finished(
             step, MarkdownResult(text="hits", elapsed_ms=1500), "call-1"
         )
@@ -505,7 +507,7 @@ class TestToolStepDuration:
         )
         view.begin_turn(TURN)
 
-        step = await view.tool_started("kb_fts_search", {"query": "x"}, "call-2")
+        step = await view.tool_started("kb_fts_search", {"query": "x"}, "call-2", None)
         await view.tool_finished(step, MarkdownResult(text="hits"), "call-2")
 
         if step.name != "✔ kb_fts_search":
@@ -525,7 +527,7 @@ class TestToolIntent:
         view.begin_turn(TURN)
 
         args = {"command": "ls -la", "intent": "смотрю содержимое каталога"}
-        step = await view.tool_started("bash", args, "call-1")
+        step = await view.tool_started("bash", args, "call-1", None)
 
         if step.name != "○ bash · смотрю содержимое каталога":
             raise AssertionError(step.name)
@@ -543,7 +545,7 @@ class TestToolIntent:
         view.begin_turn(TURN)
 
         args = {"query": "kerberos", "intent": "ищу настройку kerberos"}
-        step = await view.tool_started("kb_fts_search", args, "call-2")
+        step = await view.tool_started("kb_fts_search", args, "call-2", None)
         await view.tool_finished(
             step, MarkdownResult(text="hits", elapsed_ms=240), "call-2"
         )
@@ -562,7 +564,7 @@ class TestToolIntent:
         view.begin_turn(TURN)
 
         args = {"query": "kerberos", "intent": "ищу настройку kerberos"}
-        step = await view.tool_started("kb_fts_search", args, "call-3")
+        step = await view.tool_started("kb_fts_search", args, "call-3", None)
 
         if step.input is None:
             raise AssertionError("вход шага показан")
@@ -578,7 +580,9 @@ class TestToolIntent:
         )
         view.begin_turn(TURN)
 
-        step = await view.tool_started("kb_fts_search", {"query": "kerberos"}, "call-4")
+        step = await view.tool_started(
+            "kb_fts_search", {"query": "kerberos"}, "call-4", None
+        )
 
         if step.name != "○ kb_fts_search":
             raise AssertionError(step.name)
@@ -751,40 +755,34 @@ class TestCallViewOfACard:
         )
 
     @pytest.mark.anyio
-    async def test_step_input_follows_the_views_of_the_card(
+    async def test_step_input_follows_the_content_types_of_the_arguments(
         self, runtime_stand: StandRefs, http_context: None
     ) -> None:
-        views = {
-            "sql": FieldView(
-                placement=FieldPlacement.BODY,
-                display=MarkdownResult(language="sql").model_dump(mode="json"),
-            ),
-            "cfg": FieldView(placement=FieldPlacement.HIDDEN, display=None),
-        }
-        card = ToolCard(
-            name="card_viewed_probe", description="probe", parameters={}, views=views
-        )
-        self._calls().shown([card])
         view = ChatView(THREAD, RecordingSink(), runtime_stand.journals)
         view.begin_turn(TURN)
 
-        step = await view.tool_started(card.name, self.ARGS, "call-card-1")
+        step = await view.tool_started(
+            "typed_probe", self.ARGS, "call-card-1", {"sql": "application/sql"}
+        )
 
-        if step.input != "```sql\nselect 1\n```\n\n" + FieldLines.line("top_k", 7):
-            raise AssertionError(f"the input follows the card views: {step.input!r}")
+        expected = "\n\n".join(
+            [
+                "```sql\nselect 1\n```",
+                FieldLines.line("cfg", "internal"),
+                FieldLines.line("top_k", 7),
+            ]
+        )
+        if step.input != expected:
+            raise AssertionError(f"the input follows the types: {step.input!r}")
 
     @pytest.mark.anyio
-    async def test_card_without_views_shows_the_arguments_as_json(
+    async def test_call_without_types_and_model_shows_the_arguments_as_json(
         self, runtime_stand: StandRefs, http_context: None
     ) -> None:
-        card = ToolCard(
-            name="card_plain_probe", description="probe", parameters={}, views=None
-        )
-        self._calls().shown([card])
         view = ChatView(THREAD, RecordingSink(), runtime_stand.journals)
         view.begin_turn(TURN)
 
-        step = await view.tool_started(card.name, self.ARGS, "call-card-2")
+        step = await view.tool_started("plain_probe", self.ARGS, "call-card-2", None)
 
         if not step.input.startswith("```json"):
             raise AssertionError(f"a tool without views is shown raw: {step.input!r}")

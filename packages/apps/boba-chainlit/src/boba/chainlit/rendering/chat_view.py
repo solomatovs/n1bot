@@ -6,6 +6,7 @@ import asyncio
 import json
 import logging
 from abc import ABC, abstractmethod
+from collections import deque
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
@@ -18,7 +19,7 @@ from pydantic import BaseModel, ConfigDict
 from boba.cancellation import StopReason
 from boba.canvas.canvas import CanvasAction, CanvasElement
 from boba.chainlit.rendering.tool import ChatElements
-from boba.toolkit.calls import ToolCallModels, ToolIntent
+from boba.toolkit.calls import CallViews, ToolCallBase, ToolCallModels, ToolIntent
 from boba.toolkit.result import ToolArtifact, VisualElement
 from chainlit.config import config as chainlit_config
 from chainlit.context import context
@@ -558,30 +559,52 @@ class TurnPulse:
 
 
 class ProgressText:
-    """Текст блока прогресса идущего вызова по отчёту инструмента.
+    """Текст блока прогресса идущего вызова по отчётам инструмента.
 
-    Создаётся лентой (ChatView) на каждый отчёт. Итог известен — строка
-    несёт долю и «сделано из всего»; неизвестен — только слова инструмента,
-    а без слов — само число.
+    Создаётся лентой (ChatView) на шаг вызова с его первым отчётом и живёт
+    до конца вызова. Блок показывает последние LINES сообщений инструмента:
+    новые приходят снизу, старые уходят сверху, поэтому сообщения текут, а
+    не копятся. Итог известен — под сообщениями стоит доля и «сделано из
+    всего»; отчёт без слов при неизвестном итоге показывается числом.
     """
 
+    LINES: ClassVar[int] = 10
+    BREAK: ClassVar[str] = "\n"
+    """Перенос строки: фронт рисует текст шага с сохранением переносов,
+    поэтому каждое сообщение встаёт своей строкой без промежутка."""
+
+    def __init__(self) -> None:
+        self._lines: deque[str] = deque(maxlen=self.LINES)
+
     def shown(self, done: float, total: float | None, text: str) -> str:
-        if total is None:
-            return self._plain(done, text)
+        """Блок после очередного отчёта."""
+        if text:
+            self._lines.append(text)
 
-        if total <= 0:
-            return self._plain(done, text)
+        flow = self.BREAK.join(self._lines)
+        measure = self._measure(done, total)
+        if not measure:
+            return self._plain(done, flow)
 
-        percent = min(100, int(done * 100 / total))
-        measure = f"{percent}% ({self._number(done)} of {self._number(total)})"
-        if not text:
+        if not flow:
             return measure
 
-        return f"{text}\n\n{measure}"
+        return f"{flow}\n\n{measure}"
 
-    def _plain(self, done: float, text: str) -> str:
-        if text:
-            return text
+    def _measure(self, done: float, total: float | None) -> str:
+        if total is None:
+            return ""
+
+        if total <= 0:
+            return ""
+
+        percent = min(100, int(done * 100 / total))
+
+        return f"{percent}% ({self._number(done)} of {self._number(total)})"
+
+    def _plain(self, done: float, flow: str) -> str:
+        if flow:
+            return flow
 
         return self._number(done)
 
@@ -641,6 +664,8 @@ class ChatView:
         self._turn = TurnDraft()
         self._tool_names: dict[str, str] = {}
         self._journal_buttons: dict[str, CustomElement] = {}
+        self._progress: dict[str, ProgressText] = {}
+        self._call_views = CallViews()
         self._pulse = self._new_pulse(None)
 
     @property
@@ -989,8 +1014,13 @@ class ChatView:
         self,
         name: str,
         args: Mapping[str, Any] | None,
-        key: str | None = None,
+        key: str | None,
+        media: Mapping[str, str] | None,
     ) -> Step:
+        """Шаг начатого вызова. media — типы содержимого аргументов
+        инструмента сервера (имя → contentMediaType): по ним рисуется вход
+        шага; None — инструмент свой либо запись истории их не несёт, и
+        вход рисует модель вызова инструмента, а без неё — json-текст."""
         await self._seal_answer()
 
         call_args: Mapping[str, Any] = {}
@@ -1007,7 +1037,7 @@ class ChatView:
         self._tool_names[step.id] = label
 
         if call_args:
-            view = ToolCallModels.call_of(name, call_args).chat_view()
+            view = self._call_of(name, call_args, media).chat_view()
             if view.markdown:
                 step.input = view.markdown
                 step.show_input = True
@@ -1024,6 +1054,14 @@ class ChatView:
 
         await self._sink.put(step)
         return step
+
+    def _call_of(
+        self, name: str, args: Mapping[str, Any], media: Mapping[str, str] | None
+    ) -> ToolCallBase:
+        if media is None:
+            return ToolCallModels.call_of(name, args)
+
+        return self._call_views.call_of(name, media, args)
 
     def _journaled(self, step: Step) -> None:
         """Закончившемуся вызову — кнопка его журнала."""
@@ -1057,7 +1095,12 @@ class ChatView:
     ) -> None:
         """Ход работы идущего вызова: блок шага показывает последний отчёт
         инструмента вместо общей подписи «running»."""
-        step.output = ProgressText().shown(done, total, text)
+        flow = self._progress.get(step.id)
+        if flow is None:
+            flow = ProgressText()
+            self._progress[step.id] = flow
+
+        step.output = flow.shown(done, total, text)
         await self._sink.put(step)
 
     async def tool_finished(
@@ -1070,6 +1113,7 @@ class ChatView:
         ended = utc_now()
         step.start = ended
         step.end = ended
+        self._progress.pop(step.id, None)
         self._journaled(step)
         result = ToolArtifact.revive(artifact)
         if result is None:
@@ -1106,6 +1150,7 @@ class ChatView:
     async def tool_stopped(self, step: Step, note: str) -> None:
         """Инструмент не доработал: ход остановлен."""
         self._journal_buttons.pop(step.id, None)
+        self._progress.pop(step.id, None)
         step.name = StepStatus.FAILED.title(self._tool_names.get(step.id, step.name))
         step.output = note
         ended = utc_now()

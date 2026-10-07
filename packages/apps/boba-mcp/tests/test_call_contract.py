@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+import json
 import socket
 from collections.abc import AsyncIterator
 from pathlib import Path
@@ -79,16 +80,6 @@ class TestToolSchema:
         "type": "object",
     }
 
-    VIEW_MARK: ClassVar[str] = "x-boba-call-view"
-    """Вид аргументов для ленты клиента: едет в схеме инструмента, но схемой
-    аргументов не является."""
-
-    ECHO_VIEW: ClassVar[dict[str, Any]] = {
-        "cfg": {"placement": "hidden", "display": None}
-    }
-    """Вид аргументов fake_echo по его модели вызова: подставляемый конфиг
-    скрыт, остальные аргументы — обычные строки."""
-
     EMIT_PROPERTIES: ClassVar[list[str]] = [
         "prefix",
         "count",
@@ -108,15 +99,12 @@ class TestToolSchema:
         if echo.description != self.ECHO["description"]:
             raise AssertionError(f"the description is the docstring: {echo}")
         published = dict(echo.input_schema)
-        if self.VIEW_MARK not in published:
-            raise AssertionError(f"the schema carries the call view: {published}")
-
-        if published[self.VIEW_MARK] != self.ECHO_VIEW:
-            raise AssertionError(f"the call view of fake_echo: {published}")
-
-        del published[self.VIEW_MARK]
         if published != self.ECHO:
             raise AssertionError(f"the schema of fake_echo: {echo.input_schema}")
+
+        own = [key for key in json.dumps(published).split('"') if "x-boba" in key]
+        if own:
+            raise AssertionError(f"the schema carries no marks of its own: {own}")
         if list(echo.input_schema["properties"]) != list(self.ECHO["properties"]):
             raise AssertionError(
                 f"the order of the arguments is kept: {echo.input_schema}"
@@ -138,23 +126,23 @@ class TestToolSchema:
         if "out" not in emit.input_schema["required"]:
             raise AssertionError(f"the channel is required: {emit.input_schema}")
 
-    async def test_connection_parameter_is_a_marked_string(
+    async def test_connection_parameter_is_a_plain_string(
         self, client: Client[Any]
     ) -> None:
+        """Параметр-соединение для модели — обычная строка: описание называет
+        вид соединения и форму ссылки, своих ключей в схеме нет."""
         listed = await client.list_tools()
 
         tool = next(tool for tool in listed if tool.name == "fake_connection_host")
-        marked: dict[str, Any] = {}
-        for name, declared in tool.input_schema["properties"].items():
-            if "x-boba-connection" in declared:
-                marked[name] = declared
-
-        if len(marked) != 1:
-            raise AssertionError(f"one parameter is a connection: {tool.input_schema}")
-
-        declared = next(iter(marked.values()))
+        declared = tool.input_schema["properties"]["connection"]
         if declared["type"] != "string" or declared["minLength"] != 1:
             raise AssertionError(f"the connection is sent as a string: {declared}")
+
+        if "conn://postgres/" not in declared["description"]:
+            raise AssertionError(f"the description names the reference: {declared}")
+
+        if sorted(declared) != ["description", "minLength", "title", "type"]:
+            raise AssertionError(f"only standard schema keys: {sorted(declared)}")
 
 
 class TestArguments:

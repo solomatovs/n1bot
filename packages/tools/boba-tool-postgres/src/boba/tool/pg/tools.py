@@ -45,7 +45,7 @@ from boba.toolkit.facade import Injected, UserConnection, tool
 from boba.toolkit.ports import (
     Inbound,
     Outbound,
-    StageProgress,
+    QueryProgress,
     StreamGroup,
     ToolProgress,
 )
@@ -168,25 +168,27 @@ class ServerMessages:
     видит их, пока запрос идёт, а не только в итоге.
     """
 
-    def __init__(self, stages: StageProgress) -> None:
-        self._stages = stages
+    def __init__(self, steps: QueryProgress) -> None:
+        self._steps = steps
 
     def watch(self, conn: psycopg.AsyncConnection[Any]) -> None:
         conn.add_notice_handler(self._noticed)
         conn.add_notify_handler(self._notified)
 
     def _noticed(self, diagnostic: psycopg.errors.Diagnostic) -> None:
-        self._stages.next(f"{diagnostic.severity}: {diagnostic.message_primary}")
+        self._steps.said(f"{diagnostic.severity}: {diagnostic.message_primary}")
 
     def _notified(self, notify: psycopg.Notify) -> None:
-        self._stages.next(f"NOTIFY {notify.channel}: {notify.payload}")
+        self._steps.said(
+            f"NOTIFY {notify.channel} from backend {notify.pid}: {notify.payload}"
+        )
 
 
 async def run_script(
     connection: PostgresConfig,
     script: str,
     window: RowWindow,
-    stages: StageProgress,
+    steps: QueryProgress,
 ) -> SqlResult:
     """Произвольный текст пользователя: итог каждой его команды по порядку.
 
@@ -195,18 +197,23 @@ async def run_script(
     неявной транзакцией — падение любой команды откатывает всё. Выборка
     каждой команды режется тем же окном; команда без выборки отдаёт счётчик
     затронутых строк, где rowcount -1 у psycopg значит «счётчика нет».
-    Стадии (подключение, выполнение, итог каждой команды) и сообщения
-    сервера уходят отчётами о ходе работы.
+    Подключение, отправка текста, ответ и вычитка каждой команды и
+    сообщения сервера уходят отчётами о ходе работы.
     """
     statements: list[SqlStatement] = []
 
     query = PgQueryBuilder().raw_query(script).build()
 
-    stages.next("connecting")
+    steps.connecting()
     conn = await PayloadPostgres.connect_config(connection)
-    ServerMessages(stages).watch(conn)
+    ServerMessages(steps).watch(conn)
     async with conn, conn.cursor(row_factory=dict_row) as cur:
-        stages.next("connected, executing the statement")
+        info = conn.info
+        steps.connected(
+            f"server {info.parameter_status('server_version')}, "
+            f"backend pid {info.backend_pid}"
+        )
+        steps.sending(script)
         await cur.execute(query.text, query.params)
 
         while True:
@@ -214,20 +221,28 @@ async def run_script(
             if status is None:
                 status = ""
 
-            stages.next(f"statement {len(statements) + 1} done: {status}")
+            number = len(statements) + 1
 
             if cur.description is None:
                 rowcount: int | None = cur.rowcount
                 if cur.rowcount < 0:
                     rowcount = None
 
+                steps.executed(f"statement {number}: {status}")
                 statements.append(SqlStatement(affected_rows=rowcount, status=status))
             else:
+                columns: list[str] = []
+                for column in cur.description:
+                    columns.append(column.name)
+
+                steps.answered(columns)
                 page = RowPage(window, skipped=0)
                 async for row in cur:
+                    steps.row()
                     if not page.add(row):
                         break
 
+                steps.read(f"statement {number}: {status}, {page.note()}")
                 statements.append(
                     SqlStatement(rows=page.rows, note=page.note(), status=status)
                 )
@@ -428,7 +443,7 @@ async def pg_query(
         connection,
         sql,
         RowWindow(offset=offset, limit=limit),
-        StageProgress(progress, None),
+        QueryProgress(progress, PgToolConfig.ENGINE),
     )
 
 
@@ -502,12 +517,18 @@ async def pg_stream_out(  # noqa: PLR0913
     """
     from boba.db.postgres.arrow_stream import PgArrowSource  # noqa: PLC0415
 
-    meter = TransferProgress(progress)
+    meter = TransferProgress(progress, PgToolConfig.ENGINE)
     journal = CommandJournal(PgPump.STREAM_OUT, meter)
     outbound = TransferOutbound(out, meter)
     try:
+        meter.configured(copy_options.model_dump(mode="json", exclude_none=True))
+        meter.connecting()
         conn = await PayloadPostgres.connect_config(
             connection.copy_session(copy_options)
+        )
+        meter.connected(
+            f"server {conn.info.parameter_status('server_version')}, "
+            f"backend pid {conn.info.backend_pid}"
         )
         async with conn, conn.transaction():
             await run_steps(conn, before, journal)
@@ -664,15 +685,21 @@ async def pg_stream_in(  # noqa: PLR0913
     from boba.toolkit.contract import ArrowContract, StreamContract  # noqa: PLC0415
     from boba.toolkit.contract import Engine as NeutralEngine  # noqa: PLC0415
 
-    meter = TransferProgress(progress)
+    meter = TransferProgress(progress, PgToolConfig.ENGINE)
     journal = CommandJournal(PgPump.STREAM_IN, meter)
     template = CreateTemplate(create_table, PgTransferTable.TEMPLATE_VARS)
     inbound = TransferInbound(feed, group, meter)
     table = PgTableRef(schema=schema_name, name=table_name)
     try:
         head = await inbound.get_schema()
+        meter.configured(copy_options.model_dump(mode="json", exclude_none=True))
+        meter.connecting()
         conn = await PayloadPostgres.connect_config(
             connection.copy_session(copy_options)
+        )
+        meter.connected(
+            f"server {conn.info.parameter_status('server_version')}, "
+            f"backend pid {conn.info.backend_pid}"
         )
         async with conn, conn.transaction():
             await run_steps(conn, before, journal)

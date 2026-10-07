@@ -141,7 +141,7 @@ class TestTracerRunIndex:
         turn = RecordedTurn.live(THREAD, "turn-1")
 
         with pytest.raises(ListenerFailedError, match="socket is gone"):
-            await turn.port.tool_started(CALL_ID, TOOL_NAME, {})
+            await turn.port.tool_started(CALL_ID, TOOL_NAME, {}, None)
 
     async def test_turn_with_tool_does_not_cascade(
         self, provider: None, caplog: pytest.LogCaptureFixture

@@ -14,6 +14,7 @@ from boba.access import ToolAccess
 from boba.identity.context import CallContexts
 from boba.toolkit.chain import CallAmbient
 from boba.toolkit.dag import NodeCalls, ToolServer
+from boba.toolkit.entry import ToolArgv
 from boba.toolkit.facade import PayloadTool
 from boba.toolkit.launcher import ToolLauncher
 from boba.toolkit.ports import StreamSpec, StreamSpecs
@@ -76,6 +77,7 @@ class ToolChain:
         """Источники служебных параметров тела в порядке постановки: контекст
         вызова, соединения, конфиг."""
         self._channels = StreamChannelFields(stream_config)
+        self._schemas = ToolSchema()
         self._fields = CallFields()
         self._run_log = ToolRunLogger(journals, contexts, ambient)
         self._cancellable = CancellableTools()
@@ -97,7 +99,20 @@ class ToolChain:
         for source in self._sources:
             source.bind_all(tools)
 
+        for tool in tools:
+            self._unreported(tool)
+
         return LaunchedTools(tools=tools, specs=StreamSpecs(declared))
+
+    def _unreported(self, tool: HostedTool) -> None:
+        """Снимает со схемы отчёты о ходе работы ToolProgress: их строит
+        гость, вызывающий такого аргумента не передаёт."""
+        schema = tool.args_schema
+        names = ToolArgv.progress_fields(schema)
+        if not names:
+            return
+
+        tool.args_schema = self._schemas.rebuild(schema, {}, names)
 
     def seal(
         self, tools: Sequence[HostedTool], access: ToolAccess, specs: StreamSpecs

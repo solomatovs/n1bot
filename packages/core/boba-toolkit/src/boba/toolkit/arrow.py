@@ -50,26 +50,50 @@ class ArrowReader:
 
 
 class ArrowWriter:
-    """Открытый выходной поток: пачки и таблицы уходят в порт по мере записи,
-    close пишет конец потока. Запись блокирующая и идёт в потоке."""
+    """Открытый выходной поток: пачки и таблицы уходят в порт по мере записи
+    порциями буфера, close пишет конец потока и досылает остаток буфера.
+    Запись блокирующая и идёт в потоке. Поток, не доведённый до close,
+    остаток буфера в порт не досылает: после ошибки в порт не должно уйти
+    ни байта."""
 
-    def __init__(self, writer: pyarrow.ipc.RecordBatchStreamWriter) -> None:
+    def __init__(
+        self,
+        writer: pyarrow.ipc.RecordBatchStreamWriter,
+        buffered: io.BufferedIOBase,
+        port: io.RawIOBase,
+    ) -> None:
         self._writer = writer
+        self._buffered = buffered
+        self._port = port
 
     async def write(self, batch: pyarrow.RecordBatch | pyarrow.Table) -> None:
         """Пачка записей или таблица той же схемы."""
-        await asyncio.to_thread(self._writer.write, batch)
+        try:
+            await asyncio.to_thread(self._writer.write, batch)
+        except BaseException:
+            self._port.close()
+            raise
 
     async def close(self) -> None:
-        await asyncio.to_thread(self._writer.close)
+        try:
+            await asyncio.to_thread(self._finish)
+        except BaseException:
+            self._port.close()
+            raise
+
+    def _finish(self) -> None:
+        self._writer.close()
+        self._buffered.flush()
 
 
 class ArrowIpc:
     """Открывает потоки IPC над портами. На входе поверх сырого порта стоит
     io.BufferedReader с одним переиспользуемым буфером buffer_bytes: читатель
     IPC ждёт от read(n) ровно n байт, а сырой порт отдаёт короткие чтения.
-    На выходе писатель IPC пишет в порт напрямую. Чтение и запись
-    блокирующие и идут в потоке."""
+    На выходе поверх порта стоит io.BufferedWriter того же размера:
+    писатель IPC делает по записи на каждый буфер колонки, и без него
+    каждая такая запись уходила бы в порт отдельным мелким кадром. Чтение
+    и запись блокирующие и идут в потоке."""
 
     async def open_in(self, port: io.RawIOBase, buffer_bytes: int) -> ArrowReader:
         buffered = io.BufferedReader(port, buffer_bytes)
@@ -83,10 +107,13 @@ class ArrowIpc:
 
         return ArrowReader(schema=reader.schema, batches=self._batches(reader))
 
-    async def open_out(self, port: io.RawIOBase, schema: pyarrow.Schema) -> ArrowWriter:
-        writer = await asyncio.to_thread(pyarrow.ipc.new_stream, port, schema)
+    async def open_out(
+        self, port: io.RawIOBase, schema: pyarrow.Schema, buffer_bytes: int
+    ) -> ArrowWriter:
+        buffered = io.BufferedWriter(port, buffer_size=buffer_bytes)
+        writer = await asyncio.to_thread(pyarrow.ipc.new_stream, buffered, schema)
 
-        return ArrowWriter(writer)
+        return ArrowWriter(writer, buffered, port)
 
     async def _batches(
         self, reader: pyarrow.ipc.RecordBatchStreamReader
@@ -115,10 +142,11 @@ class ArrowIpc:
 
 
 class BytePipe:
-    """Труба ОС между async-производителем байтов и синхронным читателем в
-    потоке (читатель Arrow IPC или CSV pyarrow ждёт файл): корутина пишет
-    блоки в конец записи, читатель читает конец чтения. Оба конца закрывает
-    владелец, когда его сторона завершилась."""
+    """Труба ОС между производителем байтов и синхронным читателем в потоке
+    (читатель Arrow IPC или CSV pyarrow ждёт файл): корутина пишет блоки в
+    конец записи через write, писатель рабочего потока — в файл sink;
+    читатель читает конец чтения. Оба конца закрывает владелец, когда его
+    сторона завершилась."""
 
     def __init__(self) -> None:
         self._read_fd, self._write_fd = os.pipe()
@@ -126,6 +154,14 @@ class BytePipe:
 
     async def write(self, block: bytes | bytearray | memoryview) -> None:
         await asyncio.to_thread(self._write_all, memoryview(block))
+
+    def sink(self, buffer_bytes: int) -> io.BufferedWriter:
+        """Конец записи файлом с буфером buffer_bytes: для писателя, который
+        работает в рабочем потоке сам (цикл libpq) и пишет мелкими порциями.
+        Конец записи остаётся за владельцем трубы: закрывает его close_write."""
+        raw = io.FileIO(self._write_fd, "wb", closefd=False)
+
+        return io.BufferedWriter(raw, buffer_size=buffer_bytes)
 
     def close_write(self) -> None:
         os.close(self._write_fd)
