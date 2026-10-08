@@ -156,7 +156,7 @@ connection = "pg"
 sql = "select id, i2, i4, n, f4, f8, b, t, vc, c5, by, d, ts, tz, tm, iv, u, j, jb, ip, net, mac, mo, bt, xm, tr from $pg_schema.src"
 wire = "tsv"
 columns = [{ name = "id", nullable = false }, { name = "vc", nullable = false }, { name = "jb", nullable = false }]
-copy_options = { chunk_bytes = 65536 }
+pipe_bytes = 65536
 out = "rows"
 
 [[nodes]]
@@ -190,7 +190,7 @@ connection = "pg"
 sql = "select id, i2, i4, n, f4, f8, b, t, vc, c5, by, d, ts, tz, tm, iv, u, j, jb, ip, net, mac, mo, bt, xm, tr from $pg_schema.src"
 wire = "tsv"
 columns = [{ name = "id", nullable = false }, { name = "vc", nullable = false }, { name = "jb", nullable = false }]
-copy_options = { chunk_bytes = 65536 }
+pipe_bytes = 65536
 out = "rows"
 
 [[nodes]]
@@ -224,7 +224,7 @@ connection = "pg"
 sql = "select id, i4, n, tz, vc from $pg_schema.src"
 wire = "tsv"
 columns = [{ name = "id", nullable = false }, { name = "vc", nullable = false }]
-copy_options = { chunk_bytes = 65536 }
+pipe_bytes = 65536
 out = "rows"
 
 [[nodes]]
@@ -258,7 +258,7 @@ connection = "pg"
 sql = "select id, nfree, nwide, ia, en from $pg_schema.src"
 wire = "tsv"
 columns = [{ name = "id", nullable = false }]
-copy_options = { chunk_bytes = 65536 }
+pipe_bytes = 65536
 out = "rows"
 
 [[nodes]]
@@ -292,7 +292,7 @@ connection = "pg"
 sql = "select id, nfree, nwide, ia, en from $pg_schema.src"
 wire = "tsv"
 columns = [{ name = "id", nullable = false }]
-copy_options = { chunk_bytes = 65536 }
+pipe_bytes = 65536
 out = "rows"
 
 [[nodes]]
@@ -326,7 +326,7 @@ connection = "pg"
 sql = "select id, nfree, en from $pg_schema.src"
 wire = "tsv"
 columns = [{ name = "id", nullable = false }]
-copy_options = { chunk_bytes = 65536 }
+pipe_bytes = 65536
 out = "rows"
 
 [[nodes]]
@@ -391,7 +391,7 @@ connection = "pg"
 sql = "select id, '10.0.0.0/8'::inet as ip from $pg_schema.src"
 wire = "tsv"
 columns = [{ name = "id", nullable = false }]
-copy_options = { chunk_bytes = 65536 }
+pipe_bytes = 65536
 out = "rows"
 
 [[nodes]]
@@ -425,7 +425,7 @@ connection = "pg"
 sql = "select id, '[1, 2]'::jsonb as jb from $pg_schema.src"
 wire = "tsv"
 columns = [{ name = "id", nullable = false }, { name = "jb", nullable = false }]
-copy_options = { chunk_bytes = 65536 }
+pipe_bytes = 65536
 out = "rows"
 
 [[nodes]]
@@ -459,7 +459,7 @@ connection = "pg"
 sql = "select id, date '1800-06-15' as d, timestamp '2500-01-01 00:00:00' as ts from $pg_schema.src limit 1"
 wire = "tsv"
 columns = [{ name = "id", nullable = false }]
-copy_options = { chunk_bytes = 65536 }
+pipe_bytes = 65536
 out = "rows"
 
 [[nodes]]
@@ -493,7 +493,7 @@ connection = "pg"
 sql = "select id, n, ip from $pg_schema.src"
 wire = "tsv"
 columns = [{ name = "id", nullable = false }]
-copy_options = { chunk_bytes = 65536 }
+pipe_bytes = 65536
 out = "rows"
 
 [[nodes]]

@@ -158,9 +158,6 @@ async def fake_garbage(
     return MarkdownResult(text=f"garbage sent|{cfg.token.get_secret_value()}")
 
 
-RELAY_CHUNK_BYTES = 65536
-
-
 @tool
 async def fake_relay(
     cfg: Annotated[FakeConfig, Injected],
@@ -169,7 +166,7 @@ async def fake_relay(
 ) -> MarkdownResult:
     """Passthrough: переливает сырой поток со входа на выход без разбора."""
     total = 0
-    async for chunk in feed.blocks(RELAY_CHUNK_BYTES):
+    async for chunk in feed.blocks():
         total += len(chunk)
         await out.send(chunk)
 

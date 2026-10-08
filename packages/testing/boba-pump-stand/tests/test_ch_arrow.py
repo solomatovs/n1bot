@@ -73,7 +73,7 @@ tool = "ch_stream_out"
 connection = "ch"
 sql = '''select $pg_sql from $ch_database.src order by id settings output_format_arrow_string_as_string = 1'''
 wire = "arrow"
-chunk_bytes = 4096
+pipe_bytes = 4096
 out = "rows"
 
 [[nodes]]
@@ -87,7 +87,6 @@ table_name = "$pg_table"
 schema_strategy = { kind = "create_if_not_exists" }
 delete_strategy = { kind = "nothing" }
 insert_strategy = { kind = "full" }
-copy_options = { chunk_bytes = 4096 }
 feed = "rows"
 """
 
@@ -103,7 +102,7 @@ tool = "ch_stream_out"
 connection = "ch"
 sql = '''select $ora_sql from $ch_database.src order by id settings output_format_arrow_string_as_string = 1'''
 wire = "arrow"
-chunk_bytes = 4096
+pipe_bytes = 4096
 out = "rows"
 
 [[nodes]]
@@ -117,7 +116,6 @@ table_name = "$ora_table"
 schema_strategy = { kind = "error_if_not_exists" }
 delete_strategy = { kind = "nothing" }
 insert_strategy = { kind = "full" }
-chunk_bytes = 4096
 feed = "rows"
 """
 

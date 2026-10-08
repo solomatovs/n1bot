@@ -140,6 +140,15 @@ class StreamWire(StrEnum):
     ARROW = "arrow"
 
 
+class ContractColumns(BaseModel):
+    """Общая часть контракта потока любого источника: список колонок. Остальные
+    поля контракта у каждого источника свои, их разбирает приёмник."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    columns: Sequence[JsonValue]
+
+
 class SchemaHead(BaseModel):
     """Первый кадр потока. Несёт движок источника, формат данных в кадрах
     rows и контракт колонок. Для форматов csv, tsv и binary контракт записан
@@ -150,6 +159,11 @@ class SchemaHead(BaseModel):
     source_engine: Engine
     wire: StreamWire
     contract: JsonValue
+
+    def width(self) -> int:
+        """Сколько колонок в потоке: контракт любого источника перечисляет
+        их списком columns."""
+        return len(ContractColumns.model_validate(self.contract).columns)
 
 
 class RowsHead(BaseModel):
@@ -306,6 +320,10 @@ class TransferOutbound:
     def writer(self) -> FrameWriter:
         return FrameWriter(self._out, self._progress)
 
+    def capacity(self) -> int:
+        """Ёмкость выходного канала: порция, которой источник пишет поток."""
+        return self._out.capacity()
+
 
 class TransferInbound:
     """Чтение кадров потока в async-теле приёмника: get_schema отдаёт
@@ -320,9 +338,14 @@ class TransferInbound:
         group: StreamGroup,
         progress: TransferProgress,
     ) -> None:
+        self._feed = feed
         self._frames = iter(feed)
         self._group = group
         self._progress = progress
+
+    def capacity(self) -> int:
+        """Ёмкость входного канала: порция, которой приёмник читает поток."""
+        return self._feed.capacity()
 
     async def committing(self) -> None:
         """Дождаться решения группы; срыв — StreamGroupAbortedError."""

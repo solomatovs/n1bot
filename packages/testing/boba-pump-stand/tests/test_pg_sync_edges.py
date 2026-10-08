@@ -62,7 +62,7 @@ connection = "pg"
 sql = "select * from $s.s_$case"
 wire = "arrow"
 columns = [{ name = "id", nullable = false }]
-copy_options = { chunk_bytes = 4096 }
+pipe_bytes = 4096
 out = "rows"
 
 [[nodes]]
@@ -78,7 +78,7 @@ delete_strategy = { kind = "nothing" }
 insert_strategy = { kind = "full" }
 rules = {}
 unknown_types = { kind = "fallback_as_varchar" }
-copy_options = { chunk_bytes = 4096, exact_floats = $exact_floats }
+copy_options = { exact_floats = $exact_floats }
 feed = "rows"
 """
 """Таблицы случая матрицы: s_<случай> -> t_<случай>."""
@@ -96,7 +96,7 @@ connection = "pg"
 sql = "select * from $s.s_nan"
 wire = "arrow"
 columns = [{ name = "id", nullable = false }]
-copy_options = { chunk_bytes = 4096 }
+pipe_bytes = 4096
 out = "rows"
 
 [[nodes]]
@@ -112,7 +112,7 @@ delete_strategy = { kind = "nothing" }
 insert_strategy = { kind = "full" }
 rules = {}
 unknown_types = { kind = "fail_on_unknown" }
-copy_options = { chunk_bytes = 4096, exact_floats = $exact_floats }
+copy_options = { exact_floats = $exact_floats }
 feed = "rows"
 """
 
@@ -129,7 +129,7 @@ connection = "pg"
 sql = "select id, v::float8 as v from $s.s_nan"
 wire = "arrow"
 columns = []
-copy_options = { chunk_bytes = 4096 }
+pipe_bytes = 4096
 out = "rows"
 
 [[nodes]]
@@ -145,7 +145,7 @@ delete_strategy = { kind = "nothing" }
 insert_strategy = { kind = "full" }
 rules = {}
 unknown_types = { kind = "fail_on_unknown" }
-copy_options = { chunk_bytes = 4096, exact_floats = $exact_floats }
+copy_options = { exact_floats = $exact_floats }
 feed = "rows"
 """
 
@@ -162,7 +162,7 @@ connection = "pg"
 sql = "select * from $s.s_inf"
 wire = "arrow"
 columns = [{ name = "id", nullable = false }]
-copy_options = { chunk_bytes = 4096 }
+pipe_bytes = 4096
 out = "rows"
 
 [[nodes]]
@@ -178,7 +178,7 @@ delete_strategy = { kind = "nothing" }
 insert_strategy = { kind = "full" }
 rules = {}
 unknown_types = { kind = "fail_on_unknown" }
-copy_options = { chunk_bytes = 4096, exact_floats = $exact_floats }
+copy_options = { exact_floats = $exact_floats }
 feed = "rows"
 """
 
@@ -195,7 +195,7 @@ connection = "pg"
 sql = "select id, v::text as v from $s.s_inf"
 wire = "arrow"
 columns = []
-copy_options = { chunk_bytes = 4096 }
+pipe_bytes = 4096
 out = "rows"
 
 [[nodes]]
@@ -211,7 +211,7 @@ delete_strategy = { kind = "nothing" }
 insert_strategy = { kind = "full" }
 rules = {}
 unknown_types = { kind = "fail_on_unknown" }
-copy_options = { chunk_bytes = 4096, exact_floats = $exact_floats }
+copy_options = { exact_floats = $exact_floats }
 feed = "rows"
 """
 
@@ -228,7 +228,7 @@ connection = "pg"
 sql = "select * from $s.s_free"
 wire = "arrow"
 columns = [{ name = "id", nullable = false }]
-copy_options = { chunk_bytes = 4096 }
+pipe_bytes = 4096
 out = "rows"
 
 [[nodes]]
@@ -244,7 +244,7 @@ delete_strategy = { kind = "nothing" }
 insert_strategy = { kind = "full" }
 rules = {}
 unknown_types = { kind = "fail_on_unknown" }
-copy_options = { chunk_bytes = 4096, exact_floats = $exact_floats }
+copy_options = { exact_floats = $exact_floats }
 feed = "rows"
 """
 
@@ -261,7 +261,7 @@ connection = "pg"
 sql = "select * from $s.s_wide"
 wire = "arrow"
 columns = [{ name = "id", nullable = false }]
-copy_options = { chunk_bytes = 4096 }
+pipe_bytes = 4096
 out = "rows"
 
 [[nodes]]
@@ -277,7 +277,7 @@ delete_strategy = { kind = "nothing" }
 insert_strategy = { kind = "full" }
 rules = {}
 unknown_types = { kind = "fail_on_unknown" }
-copy_options = { chunk_bytes = 4096, exact_floats = $exact_floats }
+copy_options = { exact_floats = $exact_floats }
 feed = "rows"
 """
 
@@ -294,7 +294,7 @@ connection = "pg"
 sql = "select * from $s.s_nul"
 wire = "arrow"
 columns = [{ name = "id", nullable = false }]
-copy_options = { chunk_bytes = 4096 }
+pipe_bytes = 4096
 out = "rows"
 
 [[nodes]]
@@ -310,7 +310,7 @@ delete_strategy = { kind = "nothing" }
 insert_strategy = { kind = "full" }
 rules = {}
 unknown_types = { kind = "fail_on_unknown" }
-copy_options = { chunk_bytes = 4096, exact_floats = $exact_floats }
+copy_options = { exact_floats = $exact_floats }
 feed = "rows"
 """
 
@@ -327,7 +327,7 @@ connection = "pg"
 sql = "select * from $s.s_strict"
 wire = "arrow"
 columns = [{ name = "id", nullable = false }, { name = "v", nullable = false }]
-copy_options = { chunk_bytes = 4096 }
+pipe_bytes = 4096
 out = "rows"
 
 [[nodes]]
@@ -343,7 +343,7 @@ delete_strategy = { kind = "nothing" }
 insert_strategy = { kind = "full" }
 rules = {}
 unknown_types = { kind = "fail_on_unknown" }
-copy_options = { chunk_bytes = 4096, exact_floats = $exact_floats }
+copy_options = { exact_floats = $exact_floats }
 feed = "rows"
 """
 
@@ -360,7 +360,7 @@ connection = "pg"
 sql = "select id, v from $s.s_strict"
 wire = "arrow"
 columns = []
-copy_options = { chunk_bytes = 4096 }
+pipe_bytes = 4096
 out = "rows"
 
 [[nodes]]
@@ -376,7 +376,7 @@ delete_strategy = { kind = "nothing" }
 insert_strategy = { kind = "full" }
 rules = {}
 unknown_types = { kind = "fail_on_unknown" }
-copy_options = { chunk_bytes = 4096, exact_floats = $exact_floats }
+copy_options = { exact_floats = $exact_floats }
 feed = "rows"
 """
 
@@ -393,7 +393,7 @@ connection = "pg"
 sql = "select g::bigint as id, case when g = 5 then null else g end as v from generate_series(1, 7) g"
 wire = "arrow"
 columns = []
-copy_options = { chunk_bytes = 4096 }
+pipe_bytes = 4096
 out = "rows"
 
 [[nodes]]
@@ -409,7 +409,7 @@ delete_strategy = { kind = "nothing" }
 insert_strategy = { kind = "full" }
 rules = {}
 unknown_types = { kind = "fail_on_unknown" }
-copy_options = { chunk_bytes = 4096, exact_floats = $exact_floats }
+copy_options = { exact_floats = $exact_floats }
 feed = "rows"
 """
 
@@ -426,7 +426,7 @@ connection = "pg"
 sql = "select * from $s.s_dec"
 wire = "arrow"
 columns = [{ name = "id", nullable = false }]
-copy_options = { chunk_bytes = 4096 }
+pipe_bytes = 4096
 out = "rows"
 
 [[nodes]]
@@ -442,7 +442,7 @@ delete_strategy = { kind = "nothing" }
 insert_strategy = { kind = "full" }
 rules = {}
 unknown_types = { kind = "fail_on_unknown" }
-copy_options = { chunk_bytes = 4096, exact_floats = $exact_floats }
+copy_options = { exact_floats = $exact_floats }
 feed = "rows"
 """
 
@@ -459,7 +459,7 @@ connection = "pg"
 sql = "select * from $s.s_dec_w"
 wire = "arrow"
 columns = [{ name = "id", nullable = false }]
-copy_options = { chunk_bytes = 4096 }
+pipe_bytes = 4096
 out = "rows"
 
 [[nodes]]
@@ -475,7 +475,7 @@ delete_strategy = { kind = "nothing" }
 insert_strategy = { kind = "full" }
 rules = { column_types = { v = "numeric(20,6)" } }
 unknown_types = { kind = "fail_on_unknown" }
-copy_options = { chunk_bytes = 4096, exact_floats = $exact_floats }
+copy_options = { exact_floats = $exact_floats }
 feed = "rows"
 """
 
@@ -492,7 +492,7 @@ connection = "pg"
 sql = "select * from $s.s_dec_n"
 wire = "arrow"
 columns = [{ name = "id", nullable = false }]
-copy_options = { chunk_bytes = 4096 }
+pipe_bytes = 4096
 out = "rows"
 
 [[nodes]]
@@ -508,7 +508,7 @@ delete_strategy = { kind = "nothing" }
 insert_strategy = { kind = "full" }
 rules = {}
 unknown_types = { kind = "fail_on_unknown" }
-copy_options = { chunk_bytes = 4096, exact_floats = $exact_floats }
+copy_options = { exact_floats = $exact_floats }
 feed = "rows"
 """
 
@@ -525,7 +525,7 @@ connection = "pg"
 sql = "select * from $s.s_dec_ok"
 wire = "arrow"
 columns = [{ name = "id", nullable = false }]
-copy_options = { chunk_bytes = 4096 }
+pipe_bytes = 4096
 out = "rows"
 
 [[nodes]]
@@ -541,7 +541,7 @@ delete_strategy = { kind = "nothing" }
 insert_strategy = { kind = "full" }
 rules = {}
 unknown_types = { kind = "fail_on_unknown" }
-copy_options = { chunk_bytes = 4096, exact_floats = $exact_floats }
+copy_options = { exact_floats = $exact_floats }
 feed = "rows"
 """
 
@@ -558,7 +558,7 @@ connection = "pg"
 sql = "select * from $s.s_uni"
 wire = "arrow"
 columns = [{ name = "id", nullable = false }]
-copy_options = { chunk_bytes = 4096 }
+pipe_bytes = 4096
 out = "rows"
 
 [[nodes]]
@@ -574,7 +574,7 @@ delete_strategy = { kind = "nothing" }
 insert_strategy = { kind = "full" }
 rules = {}
 unknown_types = { kind = "fail_on_unknown" }
-copy_options = { chunk_bytes = 4096, exact_floats = $exact_floats }
+copy_options = { exact_floats = $exact_floats }
 feed = "rows"
 """
 
@@ -591,7 +591,7 @@ connection = "pg"
 sql = "select * from $s.s_v100"
 wire = "arrow"
 columns = [{ name = "id", nullable = false }]
-copy_options = { chunk_bytes = 4096 }
+pipe_bytes = 4096
 out = "rows"
 
 [[nodes]]
@@ -607,7 +607,7 @@ delete_strategy = { kind = "nothing" }
 insert_strategy = { kind = "full" }
 rules = {}
 unknown_types = { kind = "fail_on_unknown" }
-copy_options = { chunk_bytes = 4096, exact_floats = $exact_floats }
+copy_options = { exact_floats = $exact_floats }
 feed = "rows"
 """
 
@@ -624,7 +624,7 @@ connection = "pg"
 sql = "select * from $s.s_v100"
 wire = "arrow"
 columns = [{ name = "id", nullable = false }]
-copy_options = { chunk_bytes = 4096 }
+pipe_bytes = 4096
 out = "rows"
 
 [[nodes]]
@@ -640,7 +640,7 @@ delete_strategy = { kind = "nothing" }
 insert_strategy = { kind = "full" }
 rules = {}
 unknown_types = { kind = "fail_on_unknown" }
-copy_options = { chunk_bytes = 4096, exact_floats = $exact_floats }
+copy_options = { exact_floats = $exact_floats }
 feed = "rows"
 """
 
@@ -657,7 +657,7 @@ connection = "pg"
 sql = "select * from $s.s_text"
 wire = "arrow"
 columns = [{ name = "id", nullable = false }]
-copy_options = { chunk_bytes = 4096 }
+pipe_bytes = 4096
 out = "rows"
 
 [[nodes]]
@@ -673,7 +673,7 @@ delete_strategy = { kind = "nothing" }
 insert_strategy = { kind = "full" }
 rules = {}
 unknown_types = { kind = "fail_on_unknown" }
-copy_options = { chunk_bytes = 4096, exact_floats = $exact_floats }
+copy_options = { exact_floats = $exact_floats }
 feed = "rows"
 """
 
@@ -690,7 +690,7 @@ connection = "pg"
 sql = "select * from $s.s_text_long"
 wire = "arrow"
 columns = [{ name = "id", nullable = false }]
-copy_options = { chunk_bytes = 4096 }
+pipe_bytes = 4096
 out = "rows"
 
 [[nodes]]
@@ -706,7 +706,7 @@ delete_strategy = { kind = "nothing" }
 insert_strategy = { kind = "full" }
 rules = {}
 unknown_types = { kind = "fail_on_unknown" }
-copy_options = { chunk_bytes = 4096, exact_floats = $exact_floats }
+copy_options = { exact_floats = $exact_floats }
 feed = "rows"
 """
 
@@ -723,7 +723,7 @@ connection = "pg"
 sql = "select * from $s.s_ch"
 wire = "arrow"
 columns = [{ name = "id", nullable = false }]
-copy_options = { chunk_bytes = 4096 }
+pipe_bytes = 4096
 out = "rows"
 
 [[nodes]]
@@ -739,7 +739,7 @@ delete_strategy = { kind = "nothing" }
 insert_strategy = { kind = "full" }
 rules = {}
 unknown_types = { kind = "fail_on_unknown" }
-copy_options = { chunk_bytes = 4096, exact_floats = $exact_floats }
+copy_options = { exact_floats = $exact_floats }
 feed = "rows"
 """
 
@@ -756,7 +756,7 @@ connection = "pg"
 sql = "select * from $s.s_ms"
 wire = "arrow"
 columns = [{ name = "id", nullable = false }]
-copy_options = { chunk_bytes = 4096 }
+pipe_bytes = 4096
 out = "rows"
 
 [[nodes]]
@@ -772,7 +772,7 @@ delete_strategy = { kind = "nothing" }
 insert_strategy = { kind = "full" }
 rules = {}
 unknown_types = { kind = "fail_on_unknown" }
-copy_options = { chunk_bytes = 4096, exact_floats = $exact_floats }
+copy_options = { exact_floats = $exact_floats }
 feed = "rows"
 """
 
@@ -789,7 +789,7 @@ connection = "pg"
 sql = "select * from $s.s_us"
 wire = "arrow"
 columns = [{ name = "id", nullable = false }]
-copy_options = { chunk_bytes = 4096 }
+pipe_bytes = 4096
 out = "rows"
 
 [[nodes]]
@@ -805,7 +805,7 @@ delete_strategy = { kind = "nothing" }
 insert_strategy = { kind = "full" }
 rules = {}
 unknown_types = { kind = "fail_on_unknown" }
-copy_options = { chunk_bytes = 4096, exact_floats = $exact_floats }
+copy_options = { exact_floats = $exact_floats }
 feed = "rows"
 """
 
@@ -822,7 +822,7 @@ connection = "pg"
 sql = "select * from $s.s_s0"
 wire = "arrow"
 columns = [{ name = "id", nullable = false }]
-copy_options = { chunk_bytes = 4096 }
+pipe_bytes = 4096
 out = "rows"
 
 [[nodes]]
@@ -838,7 +838,7 @@ delete_strategy = { kind = "nothing" }
 insert_strategy = { kind = "full" }
 rules = {}
 unknown_types = { kind = "fail_on_unknown" }
-copy_options = { chunk_bytes = 4096, exact_floats = $exact_floats }
+copy_options = { exact_floats = $exact_floats }
 feed = "rows"
 """
 
@@ -855,7 +855,7 @@ connection = "pg"
 sql = "select * from $s.s_tz"
 wire = "arrow"
 columns = [{ name = "id", nullable = false }]
-copy_options = { chunk_bytes = 4096 }
+pipe_bytes = 4096
 out = "rows"
 
 [[nodes]]
@@ -871,7 +871,7 @@ delete_strategy = { kind = "nothing" }
 insert_strategy = { kind = "full" }
 rules = {}
 unknown_types = { kind = "fail_on_unknown" }
-copy_options = { chunk_bytes = 4096, exact_floats = $exact_floats }
+copy_options = { exact_floats = $exact_floats }
 feed = "rows"
 """
 
@@ -888,7 +888,7 @@ connection = "pg"
 sql = "select * from $s.s_dst"
 wire = "arrow"
 columns = [{ name = "id", nullable = false }]
-copy_options = { chunk_bytes = 4096 }
+pipe_bytes = 4096
 out = "rows"
 
 [[nodes]]
@@ -904,7 +904,7 @@ delete_strategy = { kind = "nothing" }
 insert_strategy = { kind = "full" }
 rules = {}
 unknown_types = { kind = "fail_on_unknown" }
-copy_options = { chunk_bytes = 4096, exact_floats = $exact_floats }
+copy_options = { exact_floats = $exact_floats }
 feed = "rows"
 """
 
@@ -921,7 +921,7 @@ connection = "pg"
 sql = "select * from $s.s_date"
 wire = "arrow"
 columns = [{ name = "id", nullable = false }]
-copy_options = { chunk_bytes = 4096 }
+pipe_bytes = 4096
 out = "rows"
 
 [[nodes]]
@@ -937,7 +937,7 @@ delete_strategy = { kind = "nothing" }
 insert_strategy = { kind = "full" }
 rules = {}
 unknown_types = { kind = "fail_on_unknown" }
-copy_options = { chunk_bytes = 4096, exact_floats = $exact_floats }
+copy_options = { exact_floats = $exact_floats }
 feed = "rows"
 """
 
@@ -954,7 +954,7 @@ connection = "pg"
 sql = "select * from $s.s_bits"
 wire = "arrow"
 columns = [{ name = "id", nullable = false }]
-copy_options = { chunk_bytes = 4096 }
+pipe_bytes = 4096
 out = "rows"
 
 [[nodes]]
@@ -970,7 +970,7 @@ delete_strategy = { kind = "nothing" }
 insert_strategy = { kind = "full" }
 rules = {}
 unknown_types = { kind = "fail_on_unknown" }
-copy_options = { chunk_bytes = 4096, exact_floats = $exact_floats }
+copy_options = { exact_floats = $exact_floats }
 feed = "rows"
 """
 
@@ -987,7 +987,7 @@ connection = "ch"
 sql = "select * from $s.edges order by id settings output_format_arrow_string_as_string = 1"
 wire = "arrow"
 columns = []
-chunk_bytes = 4096
+pipe_bytes = 4096
 out = "rows"
 
 [[nodes]]
@@ -1001,7 +1001,6 @@ table_name = "from_ch"
 schema_strategy = { kind = "create_if_not_exists" }
 delete_strategy = { kind = "nothing" }
 insert_strategy = { kind = "full" }
-copy_options = { chunk_bytes = 4096 }
 feed = "rows"
 """
 
@@ -1018,7 +1017,7 @@ connection = "ch"
 sql = "select * from $s.u64only"
 wire = "arrow"
 columns = []
-chunk_bytes = 4096
+pipe_bytes = 4096
 out = "rows"
 
 [[nodes]]
@@ -1032,7 +1031,6 @@ table_name = "t_u64"
 schema_strategy = { kind = "error_if_schema_changed" }
 delete_strategy = { kind = "nothing" }
 insert_strategy = { kind = "full" }
-copy_options = { chunk_bytes = 4096 }
 feed = "rows"
 """
 
@@ -1061,7 +1059,6 @@ table_name = "from_ora"
 schema_strategy = { kind = "create_if_not_exists" }
 delete_strategy = { kind = "nothing" }
 insert_strategy = { kind = "full" }
-copy_options = { chunk_bytes = 4096 }
 feed = "rows"
 """
 
@@ -1078,7 +1075,7 @@ connection = "pg"
 sql = "select * from $s.s_$case"
 wire = "csv"
 columns = [{ name = "id", nullable = false }]
-copy_options = { chunk_bytes = 4096 }
+pipe_bytes = 4096
 out = "rows"
 
 [[nodes]]
@@ -1094,7 +1091,7 @@ delete_strategy = { kind = "nothing" }
 insert_strategy = { kind = "full" }
 rules = {}
 unknown_types = { kind = "fail_on_unknown" }
-copy_options = { chunk_bytes = 4096, exact_floats = $exact_floats }
+copy_options = { exact_floats = $exact_floats }
 feed = "rows"
 """
 """Таблицы случая матрицы: s_<случай> -> t_<случай>."""
@@ -1112,7 +1109,7 @@ connection = "pg"
 sql = "select * from $s.s_copy_en"
 wire = "csv"
 columns = [{ name = "id", nullable = false }]
-copy_options = { chunk_bytes = 4096 }
+pipe_bytes = 4096
 out = "rows"
 
 [[nodes]]
@@ -1128,7 +1125,7 @@ delete_strategy = { kind = "nothing" }
 insert_strategy = { kind = "full" }
 rules = {}
 unknown_types = { kind = "fallback_as_varchar" }
-copy_options = { chunk_bytes = 4096, exact_floats = $exact_floats }
+copy_options = { exact_floats = $exact_floats }
 feed = "rows"
 """
 
@@ -1145,7 +1142,7 @@ connection = "pg"
 sql = "select * from $s.s_copy_en"
 wire = "csv"
 columns = [{ name = "id", nullable = false }]
-copy_options = { chunk_bytes = 4096 }
+pipe_bytes = 4096
 out = "rows"
 
 [[nodes]]
@@ -1161,7 +1158,7 @@ delete_strategy = { kind = "nothing" }
 insert_strategy = { kind = "full" }
 rules = { column_types = { v = "$s.mood" } }
 unknown_types = { kind = "fail_on_unknown" }
-copy_options = { chunk_bytes = 4096, exact_floats = $exact_floats }
+copy_options = { exact_floats = $exact_floats }
 feed = "rows"
 """
 
@@ -1178,7 +1175,7 @@ connection = "pg"
 sql = "select * from $s.s_copy_bk"
 wire = "csv"
 columns = [{ name = "id", nullable = false }]
-copy_options = { chunk_bytes = 4096 }
+pipe_bytes = 4096
 out = "rows"
 
 [[nodes]]
@@ -1194,7 +1191,7 @@ delete_strategy = { kind = "nothing" }
 insert_strategy = { kind = "full" }
 rules = {}
 unknown_types = { kind = "fail_on_unknown" }
-copy_options = { chunk_bytes = 4096, exact_floats = $exact_floats }
+copy_options = { exact_floats = $exact_floats }
 feed = "rows"
 """
 
@@ -1211,7 +1208,7 @@ connection = "pg"
 sql = "select * from $s.s_copy_bk"
 wire = "csv"
 columns = [{ name = "id", nullable = false }]
-copy_options = { chunk_bytes = 4096 }
+pipe_bytes = 4096
 out = "rows"
 
 [[nodes]]
@@ -1227,7 +1224,7 @@ delete_strategy = { kind = "nothing" }
 insert_strategy = { kind = "full" }
 rules = {}
 unknown_types = { kind = "fail_on_unknown" }
-copy_options = { chunk_bytes = 4096, exact_floats = $exact_floats }
+copy_options = { exact_floats = $exact_floats }
 feed = "rows"
 """
 
@@ -1244,7 +1241,7 @@ connection = "pg"
 sql = "select * from $s.s_${case}_$wire"
 wire = "$wire"
 columns = [{ name = "id", nullable = false }]
-copy_options = { chunk_bytes = 4096 }
+pipe_bytes = 4096
 out = "rows"
 
 [[nodes]]
@@ -1260,7 +1257,7 @@ delete_strategy = { kind = "nothing" }
 insert_strategy = { kind = "full" }
 rules = {}
 unknown_types = { kind = "fallback_as_varchar" }
-copy_options = { chunk_bytes = 4096, exact_floats = $exact_floats }
+copy_options = { exact_floats = $exact_floats }
 feed = "rows"
 """
 """Таблицы случая и провода матрицы: s_<случай>_<провод>."""
@@ -1278,7 +1275,7 @@ connection = "pg"
 sql = "select * from $s.s_${case}_$wire"
 wire = "$wire"
 columns = [{ name = "id", nullable = false }]
-copy_options = { chunk_bytes = 4096 }
+pipe_bytes = 4096
 out = "rows"
 
 [[nodes]]
@@ -1294,7 +1291,7 @@ delete_strategy = { kind = "nothing" }
 insert_strategy = { kind = "full" }
 rules = { column_types = { v = "$ext.$case" } }
 unknown_types = { kind = "fail_on_unknown" }
-copy_options = { chunk_bytes = 4096, exact_floats = $exact_floats }
+copy_options = { exact_floats = $exact_floats }
 feed = "rows"
 """
 """Тип колонки — тип расширения случая: его имя совпадает с именем случая."""
@@ -1312,7 +1309,7 @@ connection = "pg"
 sql = "select * from $s.s_hs_asis"
 wire = "csv"
 columns = [{ name = "id", nullable = false }]
-copy_options = { chunk_bytes = 4096 }
+pipe_bytes = 4096
 out = "rows"
 
 [[nodes]]
@@ -1328,7 +1325,7 @@ delete_strategy = { kind = "nothing" }
 insert_strategy = { kind = "full" }
 rules = {}
 unknown_types = { kind = "fail_on_unknown" }
-copy_options = { chunk_bytes = 4096, exact_floats = $exact_floats }
+copy_options = { exact_floats = $exact_floats }
 feed = "rows"
 """
 
@@ -1345,7 +1342,7 @@ connection = "pg"
 sql = "select * from $s.s_hs_asis"
 wire = "csv"
 columns = [{ name = "id", nullable = false }, { name = "v", type_text = "$ext.hstore" }]
-copy_options = { chunk_bytes = 4096 }
+pipe_bytes = 4096
 out = "rows"
 
 [[nodes]]
@@ -1361,7 +1358,7 @@ delete_strategy = { kind = "nothing" }
 insert_strategy = { kind = "full" }
 rules = {}
 unknown_types = { kind = "fail_on_unknown" }
-copy_options = { chunk_bytes = 4096, exact_floats = $exact_floats }
+copy_options = { exact_floats = $exact_floats }
 feed = "rows"
 """
 
@@ -1378,7 +1375,7 @@ connection = "pg"
 sql = "select * from $s.s_ct_miss"
 wire = "arrow"
 columns = [{ name = "id", nullable = false }]
-copy_options = { chunk_bytes = 4096 }
+pipe_bytes = 4096
 out = "rows"
 
 [[nodes]]
@@ -1394,7 +1391,7 @@ delete_strategy = { kind = "nothing" }
 insert_strategy = { kind = "full" }
 rules = { column_types = { nope = "text" } }
 unknown_types = { kind = "fail_on_unknown" }
-copy_options = { chunk_bytes = 4096, exact_floats = $exact_floats }
+copy_options = { exact_floats = $exact_floats }
 feed = "rows"
 """
 
@@ -1411,7 +1408,7 @@ connection = "pg"
 sql = "select * from $s.s_vec_$wire"
 wire = "$wire"
 columns = [{ name = "id", nullable = false }]
-copy_options = { chunk_bytes = 4096 }
+pipe_bytes = 4096
 out = "rows"
 
 [[nodes]]
@@ -1427,7 +1424,7 @@ delete_strategy = { kind = "nothing" }
 insert_strategy = { kind = "full" }
 rules = { column_types = { v = "vector(3)", h = "halfvec(2)" } }
 unknown_types = { kind = "fail_on_unknown" }
-copy_options = { chunk_bytes = 4096, exact_floats = $exact_floats }
+copy_options = { exact_floats = $exact_floats }
 feed = "rows"
 """
 
@@ -1444,7 +1441,7 @@ connection = "pg"
 sql = "select * from $s.s_vec_ddl"
 wire = "arrow"
 columns = [{ name = "id", nullable = false }]
-copy_options = { chunk_bytes = 4096 }
+pipe_bytes = 4096
 out = "rows"
 
 [[nodes]]
@@ -1460,7 +1457,7 @@ delete_strategy = { kind = "nothing" }
 insert_strategy = { kind = "full" }
 rules = {}
 unknown_types = { kind = "fallback_as_varchar" }
-copy_options = { chunk_bytes = 4096, exact_floats = $exact_floats }
+copy_options = { exact_floats = $exact_floats }
 feed = "rows"
 """
 
@@ -1477,7 +1474,7 @@ connection = "pg"
 sql = "select * from $s.s_bk"
 wire = "arrow"
 columns = [{ name = "id", nullable = false }]
-copy_options = { chunk_bytes = 4096 }
+pipe_bytes = 4096
 out = "rows"
 
 [[nodes]]
@@ -1493,7 +1490,7 @@ delete_strategy = { kind = "nothing" }
 insert_strategy = { kind = "full" }
 rules = {}
 unknown_types = { kind = "fail_on_unknown" }
-copy_options = { chunk_bytes = 4096, exact_floats = $exact_floats }
+copy_options = { exact_floats = $exact_floats }
 feed = "rows"
 """
 

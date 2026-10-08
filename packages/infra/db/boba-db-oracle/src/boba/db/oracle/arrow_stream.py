@@ -134,11 +134,10 @@ class OraArrowSource:
         self,
         text: str,
         declared: Sequence[ColumnDeclaration],
-        chunk_bytes: int,
         out: TransferOutbound,
     ) -> tuple[ColumnSpec, ...]:
-        """Контракт и тела потока в выходной порт порциями chunk_bytes;
-        возвращает контракт для отчёта."""
+        """Контракт и тела потока в выходной порт порциями размером с ёмкость
+        его канала; возвращает контракт для отчёта."""
         with self._journal.command(text, CommandKind.LOOKUP) as running:
             described = await self._payload.describe_specs(self._conn, text)
             running.status = f"{len(described)} columns described"
@@ -156,7 +155,7 @@ class OraArrowSource:
         )
         with self._journal.command(text, CommandKind.ACTION) as running:
             await self._payload.arrow_into(
-                self._conn, text, out.writer(), chunk_bytes, self._trace
+                self._conn, text, out.writer(), out.capacity(), self._trace
             )
             running.status = "streamed out"
 
@@ -849,7 +848,6 @@ class OraArrowLoader:
         contract: Sequence[ColumnSpec],
         source_engine: Engine,
         inbound: TransferInbound,
-        chunk_bytes: int,
         payload: PayloadOracle,
         trace: OraSessionTrace,
         journal: CommandJournal,
@@ -864,7 +862,6 @@ class OraArrowLoader:
         self._source_engine = source_engine
         self._exact = source_engine is Engine.ORACLE
         self._inbound = inbound
-        self._chunk_bytes = chunk_bytes
         self._payload = payload
         self._trace = trace
         self._declared = OraDeclaredTypes(conn, payload, journal)
@@ -879,7 +876,7 @@ class OraArrowLoader:
         rules: ColumnRules,
         create_table: CreateTemplate,
     ) -> TransferReport:
-        reader = await self._ipc.open_in(self._inbound.raw(), self._chunk_bytes)
+        reader = await self._ipc.open_in(self._inbound.raw(), self._inbound.capacity())
         refused = self._binds.refusals(reader.schema)
         if refused:
             listed = "\n".join(refused)

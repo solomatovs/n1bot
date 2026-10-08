@@ -138,7 +138,7 @@ tool = "ch_stream_out"
 connection = "ch"
 sql = "select * from $ch_database.src order by id"
 wire = "tsv"
-chunk_bytes = 65536
+pipe_bytes = 65536
 out = "rows"
 
 [[nodes]]
@@ -154,7 +154,6 @@ delete_strategy = { kind = "nothing" }
 insert_strategy = { kind = "full" }
 rules = {}
 unknown_types = { kind = "fail_on_unknown" }
-copy_options = { chunk_bytes = 65536 }
 feed = "rows"
 """
 
@@ -170,7 +169,7 @@ tool = "ch_stream_out"
 connection = "ch"
 sql = "select * from $ch_database.src order by id"
 wire = "tsv"
-chunk_bytes = 65536
+pipe_bytes = 65536
 out = "rows"
 
 [[nodes]]
@@ -186,7 +185,6 @@ delete_strategy = { kind = "truncate" }
 insert_strategy = { kind = "full" }
 rules = {}
 unknown_types = { kind = "fail_on_unknown" }
-copy_options = { chunk_bytes = 65536 }
 feed = "rows"
 """
 
@@ -202,7 +200,7 @@ tool = "ch_stream_out"
 connection = "ch"
 sql = "select * from $ch_database.js order by id"
 wire = "tsv"
-chunk_bytes = 65536
+pipe_bytes = 65536
 out = "rows"
 
 [[nodes]]
@@ -218,7 +216,6 @@ delete_strategy = { kind = "nothing" }
 insert_strategy = { kind = "full" }
 rules = {}
 unknown_types = { kind = "fail_on_unknown" }
-copy_options = { chunk_bytes = 65536 }
 feed = "rows"
 """
 
@@ -234,7 +231,7 @@ tool = "ch_stream_out"
 connection = "ch"
 sql = "select id, [id, id + 1] as arr from $ch_database.src order by id"
 wire = "tsv"
-chunk_bytes = 65536
+pipe_bytes = 65536
 out = "rows"
 
 [[nodes]]
@@ -250,7 +247,6 @@ delete_strategy = { kind = "nothing" }
 insert_strategy = { kind = "full" }
 rules = {}
 unknown_types = { kind = "fail_on_unknown" }
-copy_options = { chunk_bytes = 65536 }
 feed = "rows"
 """
 
@@ -266,7 +262,7 @@ tool = "ch_stream_out"
 connection = "ch"
 sql = "select id, map('k', id) as m from $ch_database.src order by id"
 wire = "tsv"
-chunk_bytes = 65536
+pipe_bytes = 65536
 out = "rows"
 
 [[nodes]]
@@ -282,7 +278,6 @@ delete_strategy = { kind = "nothing" }
 insert_strategy = { kind = "full" }
 rules = {}
 unknown_types = { kind = "fail_on_unknown" }
-copy_options = { chunk_bytes = 65536 }
 feed = "rows"
 """
 
@@ -298,7 +293,7 @@ tool = "ch_stream_out"
 connection = "ch"
 sql = "select id, (id, 'x') as t from $ch_database.src order by id"
 wire = "tsv"
-chunk_bytes = 65536
+pipe_bytes = 65536
 out = "rows"
 
 [[nodes]]
@@ -314,7 +309,6 @@ delete_strategy = { kind = "nothing" }
 insert_strategy = { kind = "full" }
 rules = {}
 unknown_types = { kind = "fail_on_unknown" }
-copy_options = { chunk_bytes = 65536 }
 feed = "rows"
 """
 
@@ -330,7 +324,7 @@ tool = "ch_stream_out"
 connection = "ch"
 sql = "select id, toDateTime64(dt64, 3, 'Europe/Moscow') as local from $ch_database.src order by id"
 wire = "tsv"
-chunk_bytes = 65536
+pipe_bytes = 65536
 out = "rows"
 
 [[nodes]]
@@ -346,7 +340,6 @@ delete_strategy = { kind = "nothing" }
 insert_strategy = { kind = "full" }
 rules = {}
 unknown_types = { kind = "fail_on_unknown" }
-copy_options = { chunk_bytes = 65536 }
 feed = "rows"
 """
 
@@ -362,7 +355,7 @@ tool = "ch_stream_out"
 connection = "ch"
 sql = "select id, [id, id + 1] as arr, map('k', id) as m, (id, 'x') as t, toDateTime64(dt64, 3, 'Europe/Moscow') as local from $ch_database.src order by id"
 wire = "tsv"
-chunk_bytes = 65536
+pipe_bytes = 65536
 out = "rows"
 
 [[nodes]]
@@ -378,7 +371,6 @@ delete_strategy = { kind = "nothing" }
 insert_strategy = { kind = "full" }
 rules = {}
 unknown_types = { kind = "fallback_as_varchar" }
-copy_options = { chunk_bytes = 65536 }
 feed = "rows"
 """
 
@@ -394,7 +386,7 @@ tool = "ch_stream_out"
 connection = "ch"
 sql = "select id, u64, toDateTime64(dt64, 3, 'Europe/Moscow') as local from $ch_database.src order by id"
 wire = "tsv"
-chunk_bytes = 65536
+pipe_bytes = 65536
 out = "rows"
 
 [[nodes]]
@@ -410,7 +402,6 @@ delete_strategy = { kind = "nothing" }
 insert_strategy = { kind = "full" }
 rules = { column_types = { local = "timestamp(3)", u64 = "numeric(30, 2)" } }
 unknown_types = { kind = "fail_on_unknown" }
-copy_options = { chunk_bytes = 65536 }
 feed = "rows"
 """
 
@@ -426,7 +417,7 @@ tool = "ch_stream_out"
 connection = "ch"
 sql = "select id, i8, dec, s, dt64 from $ch_database.src order by id"
 wire = "tsv"
-chunk_bytes = 65536
+pipe_bytes = 65536
 out = "rows"
 
 [[nodes]]
@@ -442,7 +433,6 @@ delete_strategy = { kind = "nothing" }
 insert_strategy = { kind = "full" }
 rules = {}
 unknown_types = { kind = "fail_on_unknown" }
-copy_options = { chunk_bytes = 65536 }
 feed = "rows"
 """
 
@@ -458,7 +448,7 @@ tool = "ch_stream_out"
 connection = "ch"
 sql = "select id, i8, dec, s, dt64 from $ch_database.src order by id"
 wire = "tsv"
-chunk_bytes = 65536
+pipe_bytes = 65536
 out = "rows"
 
 [[nodes]]
@@ -474,7 +464,6 @@ delete_strategy = { kind = "nothing" }
 insert_strategy = { kind = "full" }
 rules = {}
 unknown_types = { kind = "fail_on_unknown" }
-copy_options = { chunk_bytes = 65536 }
 feed = "rows"
 """
 
@@ -490,7 +479,7 @@ tool = "ch_stream_out"
 connection = "ch"
 sql = "select id, toFixedString('ab', 4) as fs from $ch_database.src"
 wire = "tsv"
-chunk_bytes = 65536
+pipe_bytes = 65536
 out = "rows"
 
 [[nodes]]
@@ -506,7 +495,6 @@ delete_strategy = { kind = "nothing" }
 insert_strategy = { kind = "full" }
 rules = {}
 unknown_types = { kind = "fail_on_unknown" }
-copy_options = { chunk_bytes = 65536 }
 feed = "rows"
 """
 
@@ -522,7 +510,7 @@ tool = "ch_stream_out"
 connection = "ch"
 sql = '''select id, replaceAll(toString(toFixedString('ab', 4)), '\\\\0', '') as fs from $ch_database.src order by id'''
 wire = "tsv"
-chunk_bytes = 65536
+pipe_bytes = 65536
 out = "rows"
 
 [[nodes]]
@@ -538,7 +526,6 @@ delete_strategy = { kind = "nothing" }
 insert_strategy = { kind = "full" }
 rules = {}
 unknown_types = { kind = "fail_on_unknown" }
-copy_options = { chunk_bytes = 65536 }
 feed = "rows"
 """
 
@@ -554,7 +541,7 @@ tool = "ch_stream_out"
 connection = "ch"
 sql = "select id, dec, lc from $ch_database.src order by id"
 wire = "tsv"
-chunk_bytes = 65536
+pipe_bytes = 65536
 out = "rows"
 
 [[nodes]]
@@ -570,7 +557,6 @@ delete_strategy = { kind = "nothing" }
 insert_strategy = { kind = "full" }
 rules = { rename_columns = { key = "id", amount = "dec", label = "lc" }, column_types = { amount = "numeric(20, 2)", label = "varchar(10)" } }
 unknown_types = { kind = "fail_on_unknown" }
-copy_options = { chunk_bytes = 65536 }
 feed = "rows"
 """
 

@@ -64,7 +64,7 @@ connection = "pg"
 sql = "select * from $s.src"
 wire = "csv"
 columns = [{ name = "id", nullable = false }]
-copy_options = { chunk_bytes = 4096 }
+pipe_bytes = 4096
 out = "rows"
 
 [[nodes]]
@@ -80,7 +80,6 @@ delete_strategy = { kind = "nothing" }
 insert_strategy = { kind = "full" }
 rules = {}
 unknown_types = { kind = "fail_on_unknown" }
-copy_options = { chunk_bytes = 4096 }
 feed = "rows"
 """
 """Источник -> приёмник на одном сервере, id объявлен not null."""
@@ -98,7 +97,7 @@ connection = "pg"
 sql = "select * from $s.src"
 wire = "csv"
 columns = [{ name = "id", nullable = false }]
-copy_options = { chunk_bytes = 4096 }
+pipe_bytes = 4096
 out = "rows"
 
 [[nodes]]
@@ -114,7 +113,6 @@ delete_strategy = { kind = "nothing" }
 insert_strategy = { kind = "full" }
 rules = {}
 unknown_types = { kind = "fail_on_unknown" }
-copy_options = { chunk_bytes = 4096 }
 feed = "rows"
 """
 
@@ -131,7 +129,7 @@ connection = "pg"
 sql = "select * from $s.src"
 wire = "csv"
 columns = [{ name = "id", nullable = false }]
-copy_options = { chunk_bytes = 4096 }
+pipe_bytes = 4096
 out = "rows"
 
 [[nodes]]
@@ -147,7 +145,6 @@ delete_strategy = { kind = "truncate" }
 insert_strategy = { kind = "full" }
 rules = {}
 unknown_types = { kind = "fail_on_unknown" }
-copy_options = { chunk_bytes = 4096 }
 feed = "rows"
 """
 
@@ -164,7 +161,7 @@ connection = "pg"
 sql = "select * from $s.src"
 wire = "csv"
 columns = [{ name = "id", nullable = false }]
-copy_options = { chunk_bytes = 4096 }
+pipe_bytes = 4096
 out = "rows"
 
 [[nodes]]
@@ -180,7 +177,6 @@ delete_strategy = { kind = "nothing" }
 insert_strategy = { kind = "full" }
 rules = {}
 unknown_types = { kind = "fail_on_unknown" }
-copy_options = { chunk_bytes = 4096 }
 feed = "rows"
 """
 
@@ -197,7 +193,7 @@ connection = "pg"
 sql = "select * from $s.src"
 wire = "csv"
 columns = [{ name = "id", nullable = false }]
-copy_options = { chunk_bytes = 4096 }
+pipe_bytes = 4096
 out = "rows"
 
 [[nodes]]
@@ -213,7 +209,6 @@ delete_strategy = { kind = "nothing" }
 insert_strategy = { kind = "full" }
 rules = {}
 unknown_types = { kind = "fail_on_unknown" }
-copy_options = { chunk_bytes = 4096 }
 feed = "rows"
 """
 
@@ -230,7 +225,7 @@ connection = "pg"
 sql = "select * from $s.src"
 wire = "csv"
 columns = [{ name = "id", nullable = false }]
-copy_options = { chunk_bytes = 4096 }
+pipe_bytes = 4096
 out = "rows"
 
 [[nodes]]
@@ -246,7 +241,6 @@ delete_strategy = { kind = "nothing" }
 insert_strategy = { kind = "full" }
 rules = {}
 unknown_types = { kind = "fail_on_unknown" }
-copy_options = { chunk_bytes = 4096 }
 feed = "rows"
 """
 
@@ -263,7 +257,7 @@ connection = "pg"
 sql = "select * from $s.src"
 wire = "csv"
 columns = [{ name = "id", nullable = false }]
-copy_options = { chunk_bytes = 4096 }
+pipe_bytes = 4096
 out = "rows"
 
 [[nodes]]
@@ -279,7 +273,6 @@ delete_strategy = { kind = "nothing" }
 insert_strategy = { kind = "full" }
 rules = {}
 unknown_types = { kind = "fail_on_unknown" }
-copy_options = { chunk_bytes = 4096 }
 feed = "rows"
 """
 
@@ -296,7 +289,7 @@ connection = "pg"
 sql = "select * from $s.src"
 wire = "csv"
 columns = [{ name = "id", nullable = false }]
-copy_options = { chunk_bytes = 4096 }
+pipe_bytes = 4096
 out = "rows"
 
 [[nodes]]
@@ -312,7 +305,6 @@ delete_strategy = { kind = "nothing" }
 insert_strategy = { kind = "full" }
 rules = {}
 unknown_types = { kind = "fail_on_unknown" }
-copy_options = { chunk_bytes = 4096 }
 feed = "rows"
 """
 
@@ -329,7 +321,7 @@ connection = "pg"
 sql = "select * from $s.src"
 wire = "csv"
 columns = [{ name = "id", nullable = false }]
-copy_options = { chunk_bytes = 4096 }
+pipe_bytes = 4096
 out = "rows"
 
 [[nodes]]
@@ -345,7 +337,6 @@ delete_strategy = { kind = "delete_where", where = "id <= 20" }
 insert_strategy = { kind = "nothing" }
 rules = {}
 unknown_types = { kind = "fail_on_unknown" }
-copy_options = { chunk_bytes = 4096 }
 feed = "rows"
 """
 
@@ -362,7 +353,7 @@ connection = "pg"
 sql = "select * from $s.src"
 wire = "csv"
 columns = [{ name = "id", nullable = false }]
-copy_options = { chunk_bytes = 4096 }
+pipe_bytes = 4096
 out = "rows"
 
 [[nodes]]
@@ -378,7 +369,6 @@ delete_strategy = { kind = "delete_all" }
 insert_strategy = { kind = "full" }
 rules = {}
 unknown_types = { kind = "fail_on_unknown" }
-copy_options = { chunk_bytes = 4096 }
 feed = "rows"
 """
 
@@ -395,7 +385,7 @@ connection = "pg"
 sql = "select * from $s.src"
 wire = "csv"
 columns = [{ name = "id", nullable = false }]
-copy_options = { chunk_bytes = 4096 }
+pipe_bytes = 4096
 out = "rows"
 
 [[nodes]]
@@ -411,7 +401,6 @@ delete_strategy = { kind = "nothing" }
 insert_strategy = { kind = "full" }
 rules = { rename_columns = { title = "name" }, column_types = { amount = "numeric(20,6)" } }
 unknown_types = { kind = "fail_on_unknown" }
-copy_options = { chunk_bytes = 4096 }
 feed = "rows"
 """
 
@@ -428,7 +417,7 @@ connection = "pg"
 sql = "select id, amount as v, 1 as extra from $s.src"
 wire = "csv"
 columns = [{ name = "id", nullable = false }]
-copy_options = { chunk_bytes = 4096 }
+pipe_bytes = 4096
 out = "rows"
 
 [[nodes]]
@@ -444,7 +433,6 @@ delete_strategy = { kind = "nothing" }
 insert_strategy = { kind = "full" }
 rules = { column_types = { v = "numeric(20,6)" } }
 unknown_types = { kind = "fail_on_unknown" }
-copy_options = { chunk_bytes = 4096 }
 feed = "rows"
 """
 
@@ -461,7 +449,7 @@ connection = "pg"
 sql = "select * from $s.src"
 wire = "csv"
 columns = [{ name = "id", nullable = false }]
-copy_options = { chunk_bytes = 4096 }
+pipe_bytes = 4096
 out = "rows"
 
 [[nodes]]
@@ -477,7 +465,6 @@ delete_strategy = { kind = "nothing" }
 insert_strategy = { kind = "full" }
 rules = { column_types = { note = "no_such" } }
 unknown_types = { kind = "fail_on_unknown" }
-copy_options = { chunk_bytes = 4096 }
 feed = "rows"
 """
 
@@ -494,7 +481,7 @@ connection = "pg"
 sql = "select * from $s.src"
 wire = "csv"
 columns = [{ name = "id", nullable = false }]
-copy_options = { chunk_bytes = 4096 }
+pipe_bytes = 4096
 out = "rows"
 
 [[nodes]]
@@ -510,7 +497,6 @@ delete_strategy = { kind = "nothing" }
 insert_strategy = { kind = "full" }
 rules = { rename_columns = { x = "nope" } }
 unknown_types = { kind = "fail_on_unknown" }
-copy_options = { chunk_bytes = 4096 }
 feed = "rows"
 """
 
@@ -527,7 +513,7 @@ connection = "pg"
 sql = "select * from $s.src"
 wire = "csv"
 columns = [{ name = "id", nullable = false }]
-copy_options = { chunk_bytes = 4096 }
+pipe_bytes = 4096
 out = "rows"
 
 [[nodes]]
@@ -543,7 +529,6 @@ delete_strategy = { kind = "nothing" }
 insert_strategy = { kind = "full" }
 rules = { column_types = { x = "int" } }
 unknown_types = { kind = "fail_on_unknown" }
-copy_options = { chunk_bytes = 4096 }
 feed = "rows"
 """
 
@@ -560,7 +545,7 @@ connection = "pg"
 sql = "select * from $s.src"
 wire = "csv"
 columns = [{ name = "id", nullable = false }, { name = "nope", nullable = false }]
-copy_options = { chunk_bytes = 4096 }
+pipe_bytes = 4096
 out = "rows"
 
 [[nodes]]
@@ -576,7 +561,6 @@ delete_strategy = { kind = "nothing" }
 insert_strategy = { kind = "full" }
 rules = {}
 unknown_types = { kind = "fail_on_unknown" }
-copy_options = { chunk_bytes = 4096 }
 feed = "rows"
 """
 
@@ -593,7 +577,7 @@ connection = "pg"
 sql = "select * from $s.s_en"
 wire = "csv"
 columns = [{ name = "id", nullable = false }]
-copy_options = { chunk_bytes = 4096 }
+pipe_bytes = 4096
 out = "rows"
 
 [[nodes]]
@@ -609,7 +593,6 @@ delete_strategy = { kind = "nothing" }
 insert_strategy = { kind = "full" }
 rules = {}
 unknown_types = { kind = "fail_on_unknown" }
-copy_options = { chunk_bytes = 4096 }
 feed = "rows"
 """
 
@@ -626,7 +609,7 @@ connection = "pg"
 sql = "select * from $s.s_en2"
 wire = "csv"
 columns = [{ name = "id", nullable = false }]
-copy_options = { chunk_bytes = 4096 }
+pipe_bytes = 4096
 out = "rows"
 
 [[nodes]]
@@ -642,7 +625,6 @@ delete_strategy = { kind = "nothing" }
 insert_strategy = { kind = "full" }
 rules = {}
 unknown_types = { kind = "fallback_as_varchar" }
-copy_options = { chunk_bytes = 4096 }
 feed = "rows"
 """
 
@@ -659,7 +641,7 @@ connection = "pg"
 sql = "select * from $s.s_en2"
 wire = "csv"
 columns = [{ name = "id", nullable = false }]
-copy_options = { chunk_bytes = 4096 }
+pipe_bytes = 4096
 out = "rows"
 
 [[nodes]]
@@ -675,7 +657,6 @@ delete_strategy = { kind = "nothing" }
 insert_strategy = { kind = "full" }
 rules = { column_types = { v = "$s.mood" } }
 unknown_types = { kind = "fail_on_unknown" }
-copy_options = { chunk_bytes = 4096 }
 feed = "rows"
 """
 
@@ -692,7 +673,7 @@ connection = "pg"
 sql = "select * from $s.s_en2"
 wire = "csv"
 columns = [{ name = "id", nullable = false }, { name = "v", type_text = "$s.mood" }]
-copy_options = { chunk_bytes = 4096 }
+pipe_bytes = 4096
 out = "rows"
 
 [[nodes]]
@@ -708,7 +689,6 @@ delete_strategy = { kind = "nothing" }
 insert_strategy = { kind = "full" }
 rules = {}
 unknown_types = { kind = "fail_on_unknown" }
-copy_options = { chunk_bytes = 4096 }
 feed = "rows"
 """
 
@@ -725,7 +705,7 @@ connection = "pg"
 sql = "select * from $s.s_en3"
 wire = "csv"
 columns = [{ name = "id", nullable = false }]
-copy_options = { chunk_bytes = 4096 }
+pipe_bytes = 4096
 out = "rows"
 
 [[nodes]]
@@ -741,7 +721,6 @@ delete_strategy = { kind = "nothing" }
 insert_strategy = { kind = "full" }
 rules = {}
 unknown_types = { kind = "fail_on_unknown" }
-copy_options = { chunk_bytes = 4096 }
 feed = "rows"
 """
 
@@ -758,7 +737,7 @@ connection = "pg"
 sql = "select * from $s.s_en4"
 wire = "csv"
 columns = [{ name = "id", nullable = false }, { name = "v", type_text = "$s.mood" }]
-copy_options = { chunk_bytes = 4096 }
+pipe_bytes = 4096
 out = "rows"
 
 [[nodes]]
@@ -774,7 +753,6 @@ delete_strategy = { kind = "nothing" }
 insert_strategy = { kind = "full" }
 rules = {}
 unknown_types = { kind = "fail_on_unknown" }
-copy_options = { chunk_bytes = 4096 }
 feed = "rows"
 """
 
@@ -791,7 +769,7 @@ connection = "pg"
 sql = "select * from $s.s_en4"
 wire = "csv"
 columns = [{ name = "id", nullable = false }, { name = "v", type_text = "$s.mood" }]
-copy_options = { chunk_bytes = 4096 }
+pipe_bytes = 4096
 out = "rows"
 
 [[nodes]]
@@ -807,7 +785,6 @@ delete_strategy = { kind = "nothing" }
 insert_strategy = { kind = "full" }
 rules = {}
 unknown_types = { kind = "fail_on_unknown" }
-copy_options = { chunk_bytes = 4096 }
 feed = "rows"
 """
 
@@ -824,7 +801,7 @@ connection = "pg"
 sql = "select * from $s.s_exact"
 wire = "csv"
 columns = [{ name = "id", nullable = false }]
-copy_options = { chunk_bytes = 4096 }
+pipe_bytes = 4096
 out = "rows"
 
 [[nodes]]
@@ -840,7 +817,6 @@ delete_strategy = { kind = "nothing" }
 insert_strategy = { kind = "full" }
 rules = {}
 unknown_types = { kind = "fail_on_unknown" }
-copy_options = { chunk_bytes = 4096 }
 feed = "rows"
 """
 """Пара таблиц одна на все случаи матрицы: тест пересоздаёт обе."""
@@ -858,7 +834,7 @@ connection = "pg"
 sql = "select * from $s.s_wider"
 wire = "csv"
 columns = [{ name = "id", nullable = false }]
-copy_options = { chunk_bytes = 4096 }
+pipe_bytes = 4096
 out = "rows"
 
 [[nodes]]
@@ -874,7 +850,6 @@ delete_strategy = { kind = "nothing" }
 insert_strategy = { kind = "full" }
 rules = {}
 unknown_types = { kind = "fail_on_unknown" }
-copy_options = { chunk_bytes = 4096 }
 feed = "rows"
 """
 
@@ -891,7 +866,7 @@ connection = "pg"
 sql = "select * from $s.s_all"
 wire = "csv"
 columns = [{ name = "id", nullable = false }]
-copy_options = { chunk_bytes = 4096 }
+pipe_bytes = 4096
 out = "rows"
 
 [[nodes]]
@@ -907,7 +882,6 @@ delete_strategy = { kind = "nothing" }
 insert_strategy = { kind = "full" }
 rules = {}
 unknown_types = { kind = "fail_on_unknown" }
-copy_options = { chunk_bytes = 4096 }
 feed = "rows"
 """
 
@@ -924,7 +898,7 @@ connection = "pg"
 sql = "select * from $s.s_old"
 wire = "csv"
 columns = []
-copy_options = { chunk_bytes = 4096 }
+pipe_bytes = 4096
 out = "rows"
 
 [[nodes]]
@@ -940,7 +914,6 @@ delete_strategy = { kind = "nothing" }
 insert_strategy = { kind = "full" }
 rules = {}
 unknown_types = { kind = "fail_on_unknown" }
-copy_options = { chunk_bytes = 4096 }
 feed = "rows"
 """
 
@@ -957,7 +930,7 @@ connection = "pg"
 sql = "select * from $s.src"
 wire = "csv"
 columns = [{ name = "id", nullable = false }]
-copy_options = { chunk_bytes = 4096 }
+pipe_bytes = 4096
 out = "rows"
 
 [[nodes]]
@@ -974,7 +947,6 @@ insert_strategy = { kind = "full" }
 rules = {}
 unknown_types = { kind = "fail_on_unknown" }
 create_table = "create table {schema_name}.{table_name} ({columns}) with (fillfactor = 70)"
-copy_options = { chunk_bytes = 4096 }
 feed = "rows"
 """
 
@@ -991,7 +963,7 @@ connection = "pg"
 sql = "select * from $s.src"
 wire = "csv"
 columns = [{ name = "id", nullable = false }]
-copy_options = { chunk_bytes = 4096 }
+pipe_bytes = 4096
 out = "rows"
 
 [[nodes]]
@@ -1008,7 +980,6 @@ insert_strategy = { kind = "full" }
 rules = {}
 unknown_types = { kind = "fail_on_unknown" }
 create_table = "create table {schema_name}.{table_name} ({columns}) distributed by (id)"
-copy_options = { chunk_bytes = 4096 }
 feed = "rows"
 """
 
@@ -1025,7 +996,7 @@ connection = "pg"
 sql = "select * from $s.src"
 wire = "csv"
 columns = [{ name = "id", nullable = false }]
-copy_options = { chunk_bytes = 4096 }
+pipe_bytes = 4096
 out = "rows"
 
 [[nodes]]
@@ -1042,7 +1013,6 @@ insert_strategy = { kind = "full" }
 rules = {}
 unknown_types = { kind = "fail_on_unknown" }
 create_table = "create table {schema_name}.{table_name} ({columns}) -- {{not a variable}}"
-copy_options = { chunk_bytes = 4096 }
 feed = "rows"
 """
 
@@ -1059,7 +1029,7 @@ connection = "pg"
 sql = "select * from $s.src"
 wire = "csv"
 columns = [{ name = "id", nullable = false }]
-copy_options = { chunk_bytes = 4096 }
+pipe_bytes = 4096
 out = "rows"
 
 [[nodes]]
@@ -1076,7 +1046,6 @@ insert_strategy = { kind = "full" }
 rules = {}
 unknown_types = { kind = "fail_on_unknown" }
 create_table = "create table {schema_name}.{table_name} ({columns}) tablespace {tablespace}"
-copy_options = { chunk_bytes = 4096 }
 feed = "rows"
 """
 
@@ -1093,7 +1062,7 @@ connection = "pg"
 sql = "select * from $s.src"
 wire = "csv"
 columns = [{ name = "id", nullable = false }]
-copy_options = { chunk_bytes = 4096 }
+pipe_bytes = 4096
 out = "rows"
 
 [[nodes]]
@@ -1110,7 +1079,6 @@ insert_strategy = { kind = "full" }
 rules = {}
 unknown_types = { kind = "fail_on_unknown" }
 create_table = "create table {schema_name}.{table_name} ({columns}) tablespace {owner}"
-copy_options = { chunk_bytes = 4096 }
 feed = "rows"
 """
 
@@ -1127,7 +1095,7 @@ connection = "pg"
 sql = "select * from $s.src"
 wire = "csv"
 columns = [{ name = "id", nullable = false }]
-copy_options = { chunk_bytes = 4096 }
+pipe_bytes = 4096
 out = "rows"
 
 [[nodes]]
@@ -1144,7 +1112,6 @@ insert_strategy = { kind = "full" }
 rules = {}
 unknown_types = { kind = "fail_on_unknown" }
 create_table = "create table {schema_name}.{table_name} ({columns}) with (no_such_option = 1)"
-copy_options = { chunk_bytes = 4096 }
 feed = "rows"
 """
 
@@ -1161,7 +1128,7 @@ connection = "pg"
 sql = "select * from $s.s_tsv"
 wire = "tsv"
 columns = [{ name = "id", nullable = false }]
-copy_options = { chunk_bytes = 4096 }
+pipe_bytes = 4096
 out = "rows"
 
 [[nodes]]
@@ -1177,7 +1144,6 @@ delete_strategy = { kind = "nothing" }
 insert_strategy = { kind = "full" }
 rules = {}
 unknown_types = { kind = "fail_on_unknown" }
-copy_options = { chunk_bytes = 4096 }
 feed = "rows"
 """
 
@@ -1194,7 +1160,7 @@ connection = "pg"
 sql = "select * from $s.src"
 wire = "binary"
 columns = [{ name = "id", nullable = false }]
-copy_options = { chunk_bytes = 4096 }
+pipe_bytes = 4096
 out = "rows"
 
 [[nodes]]
@@ -1210,7 +1176,6 @@ delete_strategy = { kind = "nothing" }
 insert_strategy = { kind = "full" }
 rules = {}
 unknown_types = { kind = "fail_on_unknown" }
-copy_options = { chunk_bytes = 4096 }
 feed = "rows"
 """
 
@@ -1227,7 +1192,7 @@ connection = "pg"
 sql = "select * from $s.s_bin_en"
 wire = "binary"
 columns = [{ name = "id", nullable = false }]
-copy_options = { chunk_bytes = 4096 }
+pipe_bytes = 4096
 out = "rows"
 
 [[nodes]]
@@ -1243,7 +1208,6 @@ delete_strategy = { kind = "nothing" }
 insert_strategy = { kind = "full" }
 rules = {}
 unknown_types = { kind = "fail_on_unknown" }
-copy_options = { chunk_bytes = 4096 }
 feed = "rows"
 """
 
@@ -1260,7 +1224,7 @@ connection = "pg"
 sql = "select * from $s.src"
 wire = "binary"
 columns = []
-copy_options = { chunk_bytes = 4096 }
+pipe_bytes = 4096
 out = "rows"
 
 [[nodes]]
@@ -1276,7 +1240,6 @@ delete_strategy = { kind = "nothing" }
 insert_strategy = { kind = "full" }
 rules = {}
 unknown_types = { kind = "fail_on_unknown" }
-copy_options = { chunk_bytes = 4096 }
 feed = "rows"
 """
 
@@ -1936,6 +1899,12 @@ class BrokenSink(Sink):
             raise BrokenPipeError("receiver went away")
 
 
+class WideSink(Sink):
+    """Порт с каналом в 256 КиБ: выгрузка идёт крупными кадрами, как в бою."""
+
+    CAPACITY: ClassVar[int] = 262144
+
+
 class TestCopyOutLoop:
     """COPY TO STDOUT идёт циклом libpq в потоке: миллион строк не медленнее
     полутора psql, ошибка сервера посреди COPY доходит своим классом,
@@ -1946,7 +1915,6 @@ class TestCopyOutLoop:
         "select g as id, g * 7 as v, 'name_' || g as name, now() as ts, "
         "g::numeric / 3 as amount from generate_series(1, {rows}) g"
     )
-    CHUNK: ClassVar[int] = 262144
     PSQL_RATIO: ClassVar[float] = 1.5
 
     def _psql_seconds(self, postgres: PostgresSide, select: str) -> float:
@@ -1983,7 +1951,7 @@ class TestCopyOutLoop:
     async def test_million_rows_keep_up_with_psql(self, postgres: PostgresSide) -> None:
         only_newest(postgres)
         select = self.SELECT.format(rows=self.ROWS)
-        sink = Sink()
+        sink = WideSink()
         async with await AsyncPostgresPool.dedicated(postgres.profile) as conn:
             copy_out = PgCopyOut(
                 conn, CommandJournal("test", TransferProgress(ToolProgress(-1), "test"))
@@ -1994,7 +1962,6 @@ class TestCopyOutLoop:
                 select,
                 PgCopyLayout.CSV,
                 contract,
-                self.CHUNK,
                 TransferOutbound(
                     SinkOutbound(sink), TransferProgress(ToolProgress(-1), "test")
                 ),
@@ -2010,7 +1977,7 @@ class TestCopyOutLoop:
 
         assert report.status == f"COPY {self.ROWS}"
         assert sink.data().count(b"\n") == self.ROWS
-        assert len(sink.heads) - 1 <= len(sink.data()) // self.CHUNK + 1
+        assert len(sink.heads) - 1 <= len(sink.data()) // WideSink.CAPACITY + 1
         assert elapsed <= psql_elapsed * self.PSQL_RATIO
 
     async def test_server_error_mid_copy_keeps_its_class(
@@ -2028,7 +1995,6 @@ class TestCopyOutLoop:
                     select,
                     PgCopyLayout.CSV,
                     contract,
-                    4096,
                     TransferOutbound(
                         SinkOutbound(Sink()), TransferProgress(ToolProgress(-1), "test")
                     ),
@@ -2055,7 +2021,6 @@ class TestCopyOutLoop:
                     select,
                     PgCopyLayout.CSV,
                     contract,
-                    4096,
                     TransferOutbound(
                         SinkOutbound(BrokenSink()),
                         TransferProgress(ToolProgress(-1), "test"),

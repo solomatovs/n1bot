@@ -2447,7 +2447,6 @@ class TestStreamTools:
                 ).render(),
                 schema_name=stream_sinks.ora_schema,
                 table_name=StreamProbe.ORA_TABLE.value,
-                tail={"chunk_bytes": 65536},
             ),
         ]
 

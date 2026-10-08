@@ -104,7 +104,7 @@ tool = "pg_stream_out"
 connection = "pg"
 sql = "$select"
 wire = "arrow"
-copy_options = { chunk_bytes = 4096 }
+pipe_bytes = 4096
 out = "rows"
 
 [[nodes]]
@@ -118,7 +118,6 @@ table_name = "dst"
 schema_strategy = { kind = "create_if_not_exists" }
 delete_strategy = { kind = "nothing" }
 insert_strategy = { kind = "full" }
-copy_options = { chunk_bytes = 4096 }
 feed = "rows"
 """
 
@@ -134,7 +133,7 @@ tool = "pg_stream_out"
 connection = "pg"
 sql = "$select"
 wire = "arrow"
-copy_options = { chunk_bytes = 4096 }
+pipe_bytes = 4096
 out = "rows"
 
 [[nodes]]
@@ -163,7 +162,7 @@ tool = "pg_stream_out"
 connection = "pg"
 sql = "$select"
 wire = "arrow"
-copy_options = { chunk_bytes = 4096 }
+pipe_bytes = 4096
 out = "rows"
 
 [[nodes]]
@@ -177,7 +176,6 @@ table_name = "$table"
 schema_strategy = { kind = "error_if_not_exists" }
 delete_strategy = { kind = "nothing" }
 insert_strategy = { kind = "full" }
-chunk_bytes = 4096
 feed = "rows"
 """
 
@@ -193,7 +191,7 @@ tool = "pg_stream_out"
 connection = "pg"
 sql = "select pg_sleep(30), 1::numeric as n"
 wire = "arrow"
-copy_options = { chunk_bytes = 4096 }
+pipe_bytes = 4096
 out = "rows"
 
 [[nodes]]
@@ -207,7 +205,6 @@ table_name = "dst"
 schema_strategy = { kind = "create_if_not_exists" }
 delete_strategy = { kind = "nothing" }
 insert_strategy = { kind = "full" }
-copy_options = { chunk_bytes = 4096 }
 feed = "rows"
 """
 
@@ -223,7 +220,7 @@ tool = "pg_stream_out"
 connection = "pg"
 sql = "select pg_sleep(30), 1::numeric(50, 20) as n"
 wire = "arrow"
-copy_options = { chunk_bytes = 4096 }
+pipe_bytes = 4096
 out = "rows"
 
 [[nodes]]
@@ -237,7 +234,6 @@ table_name = "dst"
 schema_strategy = { kind = "create_if_not_exists" }
 delete_strategy = { kind = "nothing" }
 insert_strategy = { kind = "full" }
-copy_options = { chunk_bytes = 4096 }
 feed = "rows"
 """
 
@@ -253,7 +249,7 @@ tool = "pg_stream_out"
 connection = "pg"
 sql = "select nothing from nowhere"
 wire = "arrow"
-copy_options = { chunk_bytes = 4096 }
+pipe_bytes = 4096
 out = "rows"
 
 [[nodes]]
@@ -267,7 +263,6 @@ table_name = "dst"
 schema_strategy = { kind = "create_if_not_exists" }
 delete_strategy = { kind = "nothing" }
 insert_strategy = { kind = "full" }
-copy_options = { chunk_bytes = 4096 }
 feed = "rows"
 """
 
@@ -283,7 +278,7 @@ tool = "pg_stream_out"
 connection = "pg"
 sql = "select 1::bigint as id, array[array[1, 2], array[3, 4]] as a2"
 wire = "arrow"
-copy_options = { chunk_bytes = 4096 }
+pipe_bytes = 4096
 out = "rows"
 
 [[nodes]]
@@ -297,7 +292,6 @@ table_name = "dims"
 schema_strategy = { kind = "create_if_not_exists" }
 delete_strategy = { kind = "nothing" }
 insert_strategy = { kind = "full" }
-copy_options = { chunk_bytes = 4096 }
 feed = "rows"
 """
 
@@ -313,7 +307,7 @@ tool = "pg_stream_out"
 connection = "pg"
 sql = "select 1::bigint as id, repeat('x', 3 * 1024 * 1024) as t"
 wire = "arrow"
-copy_options = { chunk_bytes = 4096 }
+pipe_bytes = 4096
 out = "rows"
 
 [[nodes]]
@@ -327,7 +321,6 @@ table_name = "wide"
 schema_strategy = { kind = "create_if_not_exists" }
 delete_strategy = { kind = "nothing" }
 insert_strategy = { kind = "full" }
-copy_options = { chunk_bytes = 4096 }
 feed = "rows"
 """
 
@@ -343,7 +336,7 @@ tool = "pg_stream_out"
 connection = "pg"
 sql = "select 1::bigint as id, repeat('x', 3 * 1024 * 1024) as t"
 wire = "arrow"
-copy_options = { chunk_bytes = 4194304 }
+max_row_bytes = 4194304
 out = "rows"
 
 [[nodes]]
@@ -357,7 +350,6 @@ table_name = "wide"
 schema_strategy = { kind = "create_if_not_exists" }
 delete_strategy = { kind = "nothing" }
 insert_strategy = { kind = "full" }
-copy_options = { chunk_bytes = 4096 }
 feed = "rows"
 """
 
@@ -373,7 +365,7 @@ tool = "ch_stream_out"
 connection = "ch"
 sql = "select toInt64(1) as id, [toInt64(1), 2] as arr"
 wire = "arrow"
-chunk_bytes = 4096
+pipe_bytes = 4096
 out = "rows"
 
 [[nodes]]
@@ -387,7 +379,6 @@ table_name = "lists"
 schema_strategy = { kind = "create_if_not_exists" }
 delete_strategy = { kind = "nothing" }
 insert_strategy = { kind = "full" }
-copy_options = { chunk_bytes = 4096 }
 feed = "rows"
 """
 
@@ -403,7 +394,7 @@ tool = "pg_stream_out"
 connection = "pg"
 sql = '''$select'''
 wire = "arrow"
-copy_options = { chunk_bytes = 4096 }
+pipe_bytes = 4096
 out = "rows"
 
 [[nodes]]
@@ -417,7 +408,6 @@ table_name = "session"
 schema_strategy = { kind = "create_if_not_exists" }
 delete_strategy = { kind = "nothing" }
 insert_strategy = { kind = "full" }
-copy_options = { chunk_bytes = 4096 }
 feed = "rows"
 """
 
@@ -433,7 +423,7 @@ tool = "pg_stream_out"
 connection = "pg"
 sql = "select g::bigint as id, g::float8 / 7 as r8 from generate_series(1, 1000) g"
 wire = "arrow"
-copy_options = { chunk_bytes = 4096 }
+pipe_bytes = 4096
 out = "rows"
 
 [[nodes]]
@@ -447,7 +437,6 @@ table_name = "floats"
 schema_strategy = { kind = "create_if_not_exists" }
 delete_strategy = { kind = "nothing" }
 insert_strategy = { kind = "full" }
-copy_options = { chunk_bytes = 4096 }
 feed = "rows"
 """
 
@@ -1109,9 +1098,9 @@ class TestTraps:
     async def test_row_wider_than_the_parse_block_needs_bigger_chunks(
         self, tmp_path: Path, postgres: PostgresSide
     ) -> None:
-        """Строка CSV обязана уместиться в один блок читателя: при chunk_bytes
-        ниже пола блок — 1 MiB, строка в 3 MiB отвергается с подсказкой, а
-        chunk_bytes в 4 MiB её проносит."""
+        """Строка CSV обязана уместиться в один блок читателя: по умолчанию
+        блок — 1 MiB, строка в 3 MiB отвергается с подсказкой, а max_row_bytes
+        в 4 MiB её проносит."""
         if postgres.source.name != NEWEST:
             pytest.skip("one postgres is enough for this trap")
 
@@ -1121,7 +1110,7 @@ class TestTraps:
 
         failure = outcome.failure("src")
         assert failure.error_kind == "PgArrowError", failure.llm_view()
-        assert "raise chunk_bytes" in failure.llm_view()
+        assert "raise max_row_bytes" in failure.llm_view()
 
         await _landed(dags, WIDE_ROW_BIG_CHUNKS)
         landed = await postgres.select("wide", ["id", "length(t)"])
@@ -1171,9 +1160,7 @@ class TestTraps:
                 Feed(buffer.getvalue(), CHUNK_BYTES, head),
                 schema_name=PG_SCHEMA,
                 table_name="exact",
-                copy_options=CopyOptions(
-                    chunk_bytes=CHUNK_BYTES, exact_floats=exact_floats
-                ),
+                copy_options=CopyOptions(exact_floats=exact_floats),
             )
 
         await land(True)

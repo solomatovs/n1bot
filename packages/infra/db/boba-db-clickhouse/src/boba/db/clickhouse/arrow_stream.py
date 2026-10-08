@@ -112,13 +112,14 @@ class ChArrowSource:
         self,
         text: str,
         declared: Sequence[ColumnDeclaration],
-        chunk_bytes: int,
         out: TransferOutbound,
     ) -> ChCommandReport:
-        """Выгрузка целиком — одна команда журнала: пачки идут мимо него."""
+        """Выгрузка целиком — одна команда журнала: пачки идут мимо него.
+        Ответ сервера читается и пишется в порт порциями размером с ёмкость
+        выходного канала."""
         statement = f"{text}\nformat {self.FORMAT}"
         with self._journal.command(statement, CommandKind.ACTION) as running:
-            report = await self._streamed(text, declared, chunk_bytes, out)
+            report = await self._streamed(text, declared, out)
             running.status = f"read {report.read_rows} rows"
 
         return report
@@ -127,11 +128,11 @@ class ChArrowSource:
         self,
         text: str,
         declared: Sequence[ColumnDeclaration],
-        chunk_bytes: int,
         out: TransferOutbound,
     ) -> ChCommandReport:
         pipe = BytePipe()
-        tuning = ReadTuning(socket_read_size=chunk_bytes, read_buffer_size=chunk_bytes)
+        portion = out.capacity()
+        tuning = ReadTuning(socket_read_size=portion, read_buffer_size=portion)
         async with self._payload.byte_stream_out(
             self._client, text, self.FORMAT, tuning=tuning
         ) as stream:
@@ -145,7 +146,7 @@ class ChArrowSource:
 
             async def consume() -> tuple[ColumnSpec, ...]:
                 try:
-                    reader = await self._ipc.open_in(pipe.source, chunk_bytes)
+                    reader = await self._ipc.open_in(pipe.source, portion)
                     specs = self._declarations.merge(
                         self._columns.specs(reader.schema), declared
                     )
@@ -160,7 +161,7 @@ class ChArrowSource:
                         )
                     )
                     writer = await self._ipc.open_out(
-                        out.writer(), reader.schema, chunk_bytes
+                        out.writer(), reader.schema, portion
                     )
                     async for batch in reader.batches:
                         await writer.write(batch)

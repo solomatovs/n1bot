@@ -301,7 +301,6 @@ delete_strategy = { kind = "nothing" }
 insert_strategy = { kind = "full" }
 rules = {}
 create_table = "create table {schema_name}.{table_name} ({columns})"
-copy_options = { chunk_bytes = 65536 }
 feed = "rows"
 """
 
@@ -332,7 +331,6 @@ delete_strategy = { kind = "nothing" }
 insert_strategy = { kind = "full" }
 rules = {}
 create_table = "create table {schema_name}.{table_name} ({columns})"
-copy_options = { chunk_bytes = 65536 }
 feed = "rows"
 """
 
@@ -363,7 +361,6 @@ delete_strategy = { kind = "nothing" }
 insert_strategy = { kind = "full" }
 rules = { column_types = { signed_up = "timestamptz(0)" } }
 create_table = "create table {schema_name}.{table_name} ({columns})"
-copy_options = { chunk_bytes = 65536 }
 feed = "rows"
 """
 """Ключевые поля LLM объявляет not null: сервер считает выборку nullable.
@@ -396,7 +393,6 @@ delete_strategy = { kind = "truncate" }
 insert_strategy = { kind = "full" }
 rules = { column_types = { signed_up = "timestamptz(0)" } }
 create_table = "create table {schema_name}.{table_name} ({columns})"
-copy_options = { chunk_bytes = 65536 }
 feed = "rows"
 """
 
@@ -427,7 +423,6 @@ delete_strategy = { kind = "delete_where", where = "month = timestamp '$month'" 
 insert_strategy = { kind = "full" }
 rules = { column_types = { signed_up = "timestamptz(0)" } }
 create_table = "create table {schema_name}.{table_name} ({columns})"
-copy_options = { chunk_bytes = 65536 }
 feed = "rows"
 """
 
@@ -458,7 +453,6 @@ delete_strategy = { kind = "nothing" }
 insert_strategy = { kind = "full" }
 rules = { rename_columns = { order_uid = "order_id", client = "customer_name", client_tier = "tier", paid_amount = "paid" }, column_types = { client = "text", client_tier = "varchar(10)" } }
 create_table = "create table {schema_name}.{table_name} ({columns})"
-copy_options = { chunk_bytes = 65536 }
 feed = "rows"
 """
 
@@ -489,7 +483,6 @@ delete_strategy = { kind = "nothing" }
 insert_strategy = { kind = "full" }
 rules = { column_types = { signed_up = "timestamptz(0)" } }
 create_table = "create table {schema_name}.{table_name} ({columns})"
-copy_options = { chunk_bytes = 65536 }
 feed = "rows"
 """
 
@@ -520,7 +513,6 @@ delete_strategy = { kind = "truncate" }
 insert_strategy = { kind = "full" }
 rules = { column_types = { signed_up = "timestamptz(0)" } }
 create_table = "create table {schema_name}.{table_name} ({columns})"
-copy_options = { chunk_bytes = 65536 }
 feed = "rows"
 """
 
@@ -551,7 +543,6 @@ delete_strategy = { kind = "nothing" }
 insert_strategy = { kind = "full" }
 rules = { column_types = { signed_up = "timestamptz(0)" } }
 create_table = "create table {schema_name}.{table_name} ({columns})"
-copy_options = { chunk_bytes = 65536 }
 feed = "rows"
 """
 
@@ -582,7 +573,6 @@ delete_strategy = { kind = "nothing" }
 insert_strategy = { kind = "full" }
 rules = { column_types = { signed_up = "timestamptz(0)" } }
 create_table = "create table {schema_name}.{table_name} ({columns}) distributed by (order_id)"
-copy_options = { chunk_bytes = 65536 }
 feed = "rows"
 """
 
@@ -613,7 +603,6 @@ delete_strategy = { kind = "nothing" }
 insert_strategy = { kind = "full" }
 rules = { column_types = { signed_up = "timestamptz(0)" } }
 create_table = "create table {schema_name}.{table_name} ({columns}) with (fillfactor = 90)"
-copy_options = { chunk_bytes = 65536 }
 feed = "rows"
 """
 
@@ -644,7 +633,6 @@ delete_strategy = { kind = "nothing" }
 insert_strategy = { kind = "full" }
 rules = { column_types = { signed_up = "timestamptz(0)" } }
 create_table = "create table {schema_name}.{table_name} ({columns})"
-copy_options = { chunk_bytes = 65536 }
 after = [
     "alter table $dw.orders_report rename to orders_report_old",
     "alter table $dw.orders_report_stage rename to orders_report",
@@ -680,7 +668,6 @@ delete_strategy = { kind = "nothing" }
 insert_strategy = { kind = "full" }
 rules = { column_types = { signed_up = "timestamptz(0)" } }
 create_table = "create table {schema_name}.{table_name} ({columns})"
-copy_options = { chunk_bytes = 65536 }
 after = [
     "alter table $dw.orders_report rename to orders_report_old",
     "alter table $dw.orders_report_stage rename to orders_report",
@@ -716,7 +703,6 @@ delete_strategy = { kind = "nothing" }
 insert_strategy = { kind = "nothing" }
 rules = { column_types = { signed_up = "timestamptz(0)" } }
 create_table = "create table {schema_name}.{table_name} ({columns})"
-copy_options = { chunk_bytes = 65536 }
 feed = "rows"
 """
 
@@ -747,7 +733,6 @@ delete_strategy = { kind = "nothing" }
 insert_strategy = { kind = "full" }
 rules = { column_types = { maybe = "bytea" } }
 create_table = "create table {schema_name}.{table_name} ({columns})"
-copy_options = { chunk_bytes = 65536 }
 feed = "rows"
 """
 
@@ -764,7 +749,7 @@ connection = "pg"
 sql = "select city, month, count(*) as orders, sum(gross)::numeric(16,2) as gross, sum(balance)::numeric(16,2) as balance from $dw.orders_report group by city, month"
 wire = "arrow"
 columns = [{ name = "city", nullable = false }, { name = "month", nullable = false }]
-copy_options = { chunk_bytes = 65536 }
+pipe_bytes = 65536
 out = "rows"
 
 [[nodes]]
@@ -781,7 +766,6 @@ insert_strategy = { kind = "full" }
 rules = {}
 unknown_types = { kind = "fail_on_unknown" }
 create_table = "create table {schema_name}.{table_name} ({columns})"
-chunk_bytes = 65536
 feed = "rows"
 """
 

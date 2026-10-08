@@ -135,11 +135,11 @@ class ChTsvOut:
         self._header = TsvHeader()
         self._lines = Lines(self.FORMAT, self.HEADER_LINES)
 
-    async def stream(
-        self, text: str, chunk_bytes: int, out: TransferOutbound
-    ) -> ChCommandReport:
-        """Выгрузка целиком — одна команда журнала: тела идут мимо него."""
-        tuning = ReadTuning(socket_read_size=chunk_bytes, read_buffer_size=chunk_bytes)
+    async def stream(self, text: str, out: TransferOutbound) -> ChCommandReport:
+        """Выгрузка целиком — одна команда журнала: тела идут мимо него.
+        Ответ сервера читается порциями размером с ёмкость выходного канала."""
+        portion = out.capacity()
+        tuning = ReadTuning(socket_read_size=portion, read_buffer_size=portion)
         statement = f"{text}\nformat {self.FORMAT}"
         with self._journal.command(statement, CommandKind.ACTION) as running:
             async with self._payload.byte_stream_out(
