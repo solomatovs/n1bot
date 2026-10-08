@@ -24,6 +24,7 @@ OSError — дескриптор канала закрыт или недосту
 
 from __future__ import annotations
 
+import fcntl
 import logging
 import os
 import queue
@@ -375,6 +376,10 @@ class ToolIo:
 
     LEN_PREFIX: ClassVar[int] = FrameCodec.LEN_BYTES
 
+    DETACHED_BYTES: ClassVar[int] = 262144
+    """Порция обмена, когда канала нет (запуск человеком): спросить ёмкость
+    не у кого."""
+
     def __init__(self, inbound_fd: int, outbound_fd: int) -> None:
         self._inbound_fd = inbound_fd
         self._outbound_fd = outbound_fd
@@ -396,6 +401,30 @@ class ToolIo:
     def attached(self) -> bool:
         """Вызов пришёл от лончера: каналы кадров на месте."""
         return self._inbound_fd >= 0
+
+    def inbound_capacity(self) -> int:
+        """Ёмкость входного канала в байтах: её назначил тот, кто строил
+        канал (pipe_bytes пишущего вызова), и тело читает порциями этого
+        размера."""
+        return self._capacity(self._inbound_fd)
+
+    def outbound_capacity(self) -> int:
+        """Ёмкость выходного канала в байтах: тело пишет порциями этого
+        размера — порция крупнее не уходит в канал за одну запись, мельче —
+        лишние системные вызовы."""
+        return self._capacity(self._outbound_fd)
+
+    def _capacity(self, fd: int) -> int:
+        if fd < 0:
+            return self.DETACHED_BYTES
+
+        try:
+            return fcntl.fcntl(fd, fcntl.F_GETPIPE_SZ)
+        except OSError as exc:
+            msg = (
+                f"channel fd {fd}: expected a pipe to read its capacity from, got {exc}"
+            )
+            raise FrameProtocolError(msg) from exc
 
     @classmethod
     def __get_pydantic_core_schema__(

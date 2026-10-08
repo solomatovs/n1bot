@@ -423,8 +423,8 @@ class PgCopyProtocol:
 class PgCopyOut:
     """Источник: колонки выборки от PgDescribe (без выполнения), кадр schema
     с контрактом, затем COPY (<select>) TO STDOUT в формате PgCopyLayout
-    через PgCopyProtocol: строки копятся в буфере chunk_bytes и уходят в
-    порт кадрами как есть."""
+    через PgCopyProtocol: строки копятся в буфере размером с ёмкость
+    выходного канала и уходят в порт кадрами как есть."""
 
     INTEGER_DATETIMES: ClassVar[str] = "integer_datetimes"
     ON: ClassVar[str] = "on"
@@ -472,7 +472,6 @@ class PgCopyOut:
         query: str,
         layout: PgCopyLayout,
         contract: PgContract,
-        chunk_bytes: int,
         out: TransferOutbound,
     ) -> PgCommandReport:
         self._journal.columns(contract.rows())
@@ -492,7 +491,7 @@ class PgCopyOut:
             .build()
         )
         raw = out.writer()
-        writer = io.BufferedWriter(raw, buffer_size=chunk_bytes)
+        writer = io.BufferedWriter(raw, buffer_size=out.capacity())
         text = statement.text.as_string(self._conn)
         try:
             with self._journal.command(text, CommandKind.ACTION) as running:

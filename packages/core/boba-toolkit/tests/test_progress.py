@@ -220,10 +220,10 @@ class TestPumpSettings:
         вызывающим, и взятые по умолчанию — иначе их нигде не видно."""
         meter = TransferProgress(ToolProgress(pipe.write), "postgres")
 
-        meter.configured({"chunk_bytes": 262144, "exact_floats": False})
+        meter.configured({"channel_bytes": 262144, "exact_floats": False})
 
         messages = [report.message for report in pipe.reports()]
-        expected = ["postgres pump settings: chunk_bytes=262144, exact_floats=False"]
+        expected = ["postgres pump settings: channel_bytes=262144, exact_floats=False"]
         if messages != expected:
             raise AssertionError(f"настройки названы одной строкой: {messages}")
 

@@ -370,7 +370,7 @@ tool = "ch_stream_out"
 connection = "ch"
 sql = '''$report_body settings join_use_nulls = 1'''
 wire = "tsv"
-chunk_bytes = 65536
+pipe_bytes = 65536
 out = "rows"
 
 [[nodes]]
@@ -386,7 +386,6 @@ delete_strategy = { kind = "nothing" }
 insert_strategy = { kind = "full" }
 rules = { column_types = { tags = "$json_type", categories = "$json_type", lines_json = "$json_type" } }
 unknown_types = { kind = "fail_on_unknown" }
-copy_options = { chunk_bytes = 65536 }
 feed = "rows"
 """
 
@@ -402,7 +401,7 @@ tool = "ch_stream_out"
 connection = "ch"
 sql = '''$report_body settings join_use_nulls = 1'''
 wire = "tsv"
-chunk_bytes = 65536
+pipe_bytes = 65536
 out = "rows"
 
 [[nodes]]
@@ -418,7 +417,6 @@ delete_strategy = { kind = "truncate" }
 insert_strategy = { kind = "full" }
 rules = { column_types = { tags = "$json_type", categories = "$json_type", lines_json = "$json_type" } }
 unknown_types = { kind = "fail_on_unknown" }
-copy_options = { chunk_bytes = 65536 }
 feed = "rows"
 """
 
@@ -434,7 +432,7 @@ tool = "ch_stream_out"
 connection = "ch"
 sql = '''select * from ($report_body) r where r.month = toDate('$month') settings join_use_nulls = 1'''
 wire = "tsv"
-chunk_bytes = 65536
+pipe_bytes = 65536
 out = "rows"
 
 [[nodes]]
@@ -450,7 +448,6 @@ delete_strategy = { kind = "delete_where", where = "month = date '$month'" }
 insert_strategy = { kind = "full" }
 rules = { column_types = { tags = "$json_type", categories = "$json_type", lines_json = "$json_type" } }
 unknown_types = { kind = "fail_on_unknown" }
-copy_options = { chunk_bytes = 65536 }
 feed = "rows"
 """
 
@@ -466,7 +463,7 @@ tool = "ch_stream_out"
 connection = "ch"
 sql = '''select order_id, customer_name, tier, paid, gross, placed_at from ($report_body) r settings join_use_nulls = 1'''
 wire = "tsv"
-chunk_bytes = 65536
+pipe_bytes = 65536
 out = "rows"
 
 [[nodes]]
@@ -482,7 +479,6 @@ delete_strategy = { kind = "nothing" }
 insert_strategy = { kind = "full" }
 rules = { rename_columns = { order_uid = "order_id", client = "customer_name", client_tier = "tier", paid_amount = "paid" }, column_types = { order_uid = "bigint", client_tier = "varchar(10)" } }
 unknown_types = { kind = "fail_on_unknown" }
-copy_options = { chunk_bytes = 65536 }
 feed = "rows"
 """
 
@@ -498,7 +494,7 @@ tool = "ch_stream_out"
 connection = "ch"
 sql = '''$report_body settings join_use_nulls = 1'''
 wire = "tsv"
-chunk_bytes = 65536
+pipe_bytes = 65536
 out = "rows"
 
 [[nodes]]
@@ -514,7 +510,6 @@ delete_strategy = { kind = "nothing" }
 insert_strategy = { kind = "full" }
 rules = { column_types = { tags = "$json_type", categories = "$json_type", lines_json = "$json_type" } }
 unknown_types = { kind = "fail_on_unknown" }
-copy_options = { chunk_bytes = 65536 }
 feed = "rows"
 """
 
@@ -530,7 +525,7 @@ tool = "ch_stream_out"
 connection = "ch"
 sql = '''$report_body settings join_use_nulls = 1'''
 wire = "tsv"
-chunk_bytes = 65536
+pipe_bytes = 65536
 out = "rows"
 
 [[nodes]]
@@ -546,7 +541,6 @@ delete_strategy = { kind = "truncate" }
 insert_strategy = { kind = "full" }
 rules = { column_types = { tags = "$json_type", categories = "$json_type", lines_json = "$json_type" } }
 unknown_types = { kind = "fail_on_unknown" }
-copy_options = { chunk_bytes = 65536 }
 feed = "rows"
 """
 
@@ -562,7 +556,7 @@ tool = "ch_stream_out"
 connection = "ch"
 sql = '''$report_body settings join_use_nulls = 1'''
 wire = "tsv"
-chunk_bytes = 65536
+pipe_bytes = 65536
 out = "rows"
 
 [[nodes]]
@@ -578,7 +572,6 @@ delete_strategy = { kind = "nothing" }
 insert_strategy = { kind = "full" }
 rules = { column_types = { tags = "$json_type", categories = "$json_type", lines_json = "$json_type" } }
 unknown_types = { kind = "fail_on_unknown" }
-copy_options = { chunk_bytes = 65536 }
 feed = "rows"
 """
 
@@ -594,7 +587,7 @@ tool = "ch_stream_out"
 connection = "ch"
 sql = '''$report_body settings join_use_nulls = 1'''
 wire = "tsv"
-chunk_bytes = 65536
+pipe_bytes = 65536
 out = "rows"
 
 [[nodes]]
@@ -611,7 +604,6 @@ insert_strategy = { kind = "full" }
 rules = { column_types = { tags = "$json_type", categories = "$json_type", lines_json = "$json_type" } }
 unknown_types = { kind = "fail_on_unknown" }
 create_table = "create table {schema_name}.{table_name} ({columns}) distributed by (order_id)"
-copy_options = { chunk_bytes = 65536 }
 feed = "rows"
 """
 
@@ -627,7 +619,7 @@ tool = "ch_stream_out"
 connection = "ch"
 sql = '''$report_body settings join_use_nulls = 1'''
 wire = "tsv"
-chunk_bytes = 65536
+pipe_bytes = 65536
 out = "rows"
 
 [[nodes]]
@@ -644,7 +636,6 @@ insert_strategy = { kind = "full" }
 rules = { column_types = { tags = "$json_type", categories = "$json_type", lines_json = "$json_type" } }
 unknown_types = { kind = "fail_on_unknown" }
 create_table = "create table {schema_name}.{table_name} ({columns}) with (fillfactor = 90)"
-copy_options = { chunk_bytes = 65536 }
 feed = "rows"
 """
 
@@ -661,7 +652,7 @@ tool = "ch_stream_out"
 connection = "ch"
 sql = '''$report_body settings join_use_nulls = 1'''
 wire = "tsv"
-chunk_bytes = 65536
+pipe_bytes = 65536
 out = "rows"
 
 [[nodes]]
@@ -677,7 +668,6 @@ delete_strategy = { kind = "nothing" }
 insert_strategy = { kind = "full" }
 rules = { column_types = { tags = "$json_type", categories = "$json_type", lines_json = "$json_type" } }
 unknown_types = { kind = "fail_on_unknown" }
-copy_options = { chunk_bytes = 65536 }
 after = [
     "alter table $dw.orders_report rename to orders_report_old",
     "alter table $dw.orders_report_stage rename to orders_report",
@@ -698,7 +688,7 @@ tool = "ch_stream_out"
 connection = "ch"
 sql = '''$report_body settings join_use_nulls = 1'''
 wire = "tsv"
-chunk_bytes = 65536
+pipe_bytes = 65536
 out = "rows"
 
 [[nodes]]
@@ -714,7 +704,6 @@ delete_strategy = { kind = "nothing" }
 insert_strategy = { kind = "full" }
 rules = { column_types = { tags = "$json_type", categories = "$json_type", lines_json = "$json_type" } }
 unknown_types = { kind = "fail_on_unknown" }
-copy_options = { chunk_bytes = 65536 }
 after = [
     "alter table $dw.orders_report rename to orders_report_old",
     "alter table $dw.orders_report_stage rename to orders_report",
@@ -735,7 +724,7 @@ tool = "ch_stream_out"
 connection = "ch"
 sql = '''$report_body settings join_use_nulls = 1'''
 wire = "tsv"
-chunk_bytes = 65536
+pipe_bytes = 65536
 out = "rows"
 
 [[nodes]]
@@ -751,7 +740,6 @@ delete_strategy = { kind = "nothing" }
 insert_strategy = { kind = "nothing" }
 rules = { column_types = { tags = "$json_type", categories = "$json_type", lines_json = "$json_type" } }
 unknown_types = { kind = "fail_on_unknown" }
-copy_options = { chunk_bytes = 65536 }
 feed = "rows"
 """
 
@@ -767,7 +755,7 @@ tool = "ch_stream_out"
 connection = "ch"
 sql = '''$traffic_sql'''
 wire = "tsv"
-chunk_bytes = 65536
+pipe_bytes = 65536
 out = "rows"
 
 [[nodes]]
@@ -783,7 +771,6 @@ delete_strategy = { kind = "nothing" }
 insert_strategy = { kind = "full" }
 rules = {}
 unknown_types = { kind = "fail_on_unknown" }
-copy_options = { chunk_bytes = 65536 }
 feed = "rows"
 """
 
@@ -799,7 +786,7 @@ tool = "ch_stream_out"
 connection = "ch"
 sql = '''$traffic_json_sql'''
 wire = "tsv"
-chunk_bytes = 65536
+pipe_bytes = 65536
 out = "rows"
 
 [[nodes]]
@@ -815,7 +802,6 @@ delete_strategy = { kind = "nothing" }
 insert_strategy = { kind = "full" }
 rules = { column_types = { top_urls = "$json_type" } }
 unknown_types = { kind = "fail_on_unknown" }
-copy_options = { chunk_bytes = 65536 }
 feed = "rows"
 """
 
@@ -831,7 +817,7 @@ tool = "ch_stream_out"
 connection = "ch"
 sql = '''$traffic_sql'''
 wire = "tsv"
-chunk_bytes = 65536
+pipe_bytes = 65536
 out = "rows"
 
 [[nodes]]
@@ -847,7 +833,6 @@ delete_strategy = { kind = "nothing" }
 insert_strategy = { kind = "full" }
 rules = {}
 unknown_types = { kind = "fallback_as_varchar" }
-copy_options = { chunk_bytes = 65536 }
 feed = "rows"
 """
 
@@ -863,7 +848,7 @@ tool = "ch_stream_out"
 connection = "ch"
 sql = '''$traffic_json_sql'''
 wire = "tsv"
-chunk_bytes = 65536
+pipe_bytes = 65536
 out = "rows"
 
 [[nodes]]
@@ -879,7 +864,6 @@ delete_strategy = { kind = "nothing" }
 insert_strategy = { kind = "full" }
 rules = { column_types = { top_urls = "$json_type", last_seen_msk = "timestamp(3)" } }
 unknown_types = { kind = "fail_on_unknown" }
-copy_options = { chunk_bytes = 65536 }
 feed = "rows"
 """
 
@@ -895,7 +879,7 @@ tool = "ch_stream_out"
 connection = "ch"
 sql = '''select order_id, toString(status) as status, toString(customer_uid) as customer_uid, customer_name, toString(city) as city, gross, paid, placed_at from ($report_body) r settings join_use_nulls = 1, output_format_arrow_string_as_string = 1'''
 wire = "arrow"
-chunk_bytes = 65536
+pipe_bytes = 65536
 out = "rows"
 
 [[nodes]]
@@ -911,7 +895,6 @@ delete_strategy = { kind = "nothing" }
 insert_strategy = { kind = "full" }
 rules = { column_types = { customer_uid = "uuid" } }
 unknown_types = { kind = "fail_on_unknown" }
-copy_options = { chunk_bytes = 65536 }
 feed = "rows"
 """
 
@@ -928,7 +911,7 @@ connection = "pg"
 sql = "select city, month, count(*) as orders, sum(gross)::numeric(18,2) as gross, sum(balance)::numeric(18,2) as balance from $dw.orders_report group by city, month"
 wire = "tsv"
 columns = [{ name = "city", nullable = false }, { name = "month", nullable = false }]
-copy_options = { chunk_bytes = 65536 }
+pipe_bytes = 65536
 out = "rows"
 
 [[nodes]]

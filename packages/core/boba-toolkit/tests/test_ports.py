@@ -201,7 +201,7 @@ class TestRawPorts:
         port = StreamPorts.build(RawInbound, io)
 
         assert isinstance(port, RawInbound)
-        assert b"".join(port.chunks(7)) == b"csv,line,1\ncsv,line,2\n"
+        assert b"".join(port.chunks()) == b"csv,line,1\ncsv,line,2\n"
 
     @pytest.mark.anyio
     async def test_raw_outbound_writes_bytes_verbatim(self) -> None:

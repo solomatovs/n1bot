@@ -521,7 +521,7 @@ tool = "ch_stream_out"
 connection = "ch"
 sql = "select city, month, toInt64(count()) as orders, toDecimal64(sum(gross), 2) as gross, toDecimal64(sum(balance), 2) as balance from $dw.orders_report group by city, month settings output_format_arrow_string_as_string = 1"
 wire = "arrow"
-chunk_bytes = 65536
+pipe_bytes = 65536
 out = "rows"
 
 [[nodes]]
@@ -538,7 +538,6 @@ insert_strategy = { kind = "full" }
 rules = {}
 unknown_types = { kind = "fail_on_unknown" }
 create_table = "create table {schema_name}.{table_name} ({columns})"
-chunk_bytes = 65536
 feed = "rows"
 """
 

@@ -240,7 +240,7 @@ connection = "ch"
 sql = '''$raw_sql'''
 wire = "arrow"
 columns = [{ name = "order_id", nullable = false }]
-chunk_bytes = 65536
+pipe_bytes = 65536
 out = "rows"
 
 [[nodes]]
@@ -257,7 +257,6 @@ insert_strategy = { kind = "full" }
 rules = {}
 unknown_types = { kind = "fail_on_unknown" }
 create_table = "create table {schema_name}.{table_name} ({columns})"
-chunk_bytes = 65536
 feed = "rows"
 """
 
@@ -274,7 +273,7 @@ connection = "ch"
 sql = '''$report_sql'''
 wire = "arrow"
 columns = [{ name = "order_id", nullable = false }, { name = "placed_at", nullable = false }, { name = "month", nullable = false }]
-chunk_bytes = 65536
+pipe_bytes = 65536
 out = "rows"
 
 [[nodes]]
@@ -291,7 +290,6 @@ insert_strategy = { kind = "full" }
 rules = {}
 unknown_types = { kind = "fail_on_unknown" }
 create_table = "create table {schema_name}.{table_name} ({columns})"
-chunk_bytes = 65536
 feed = "rows"
 """
 
@@ -308,7 +306,7 @@ connection = "ch"
 sql = '''$report_sql'''
 wire = "arrow"
 columns = [{ name = "order_id", nullable = false }, { name = "placed_at", nullable = false }, { name = "month", nullable = false }]
-chunk_bytes = 65536
+pipe_bytes = 65536
 out = "rows"
 
 [[nodes]]
@@ -325,7 +323,6 @@ insert_strategy = { kind = "full" }
 rules = {}
 unknown_types = { kind = "fail_on_unknown" }
 create_table = "create table {schema_name}.{table_name} ({columns})"
-chunk_bytes = 65536
 feed = "rows"
 """
 
@@ -342,7 +339,7 @@ connection = "ch"
 sql = '''$month_sql'''
 wire = "arrow"
 columns = [{ name = "order_id", nullable = false }, { name = "placed_at", nullable = false }, { name = "month", nullable = false }]
-chunk_bytes = 65536
+pipe_bytes = 65536
 out = "rows"
 
 [[nodes]]
@@ -359,7 +356,6 @@ insert_strategy = { kind = "full" }
 rules = {}
 unknown_types = { kind = "fail_on_unknown" }
 create_table = "create table {schema_name}.{table_name} ({columns})"
-chunk_bytes = 65536
 feed = "rows"
 """
 
@@ -376,7 +372,7 @@ connection = "ch"
 sql = '''$mart_sql'''
 wire = "arrow"
 columns = [{ name = "order_id", nullable = false }, { name = "placed_at", nullable = false }]
-chunk_bytes = 65536
+pipe_bytes = 65536
 out = "rows"
 
 [[nodes]]
@@ -393,7 +389,6 @@ insert_strategy = { kind = "full" }
 rules = { rename_columns = { order_uid = "order_id", client = "customer_name", client_tier = "tier", paid_amount = "paid" }, column_types = { client = "VARCHAR2(60 CHAR)", client_tier = "VARCHAR2(10)" } }
 unknown_types = { kind = "fail_on_unknown" }
 create_table = "create table {schema_name}.{table_name} ({columns})"
-chunk_bytes = 65536
 feed = "rows"
 """
 
@@ -410,7 +405,7 @@ connection = "ch"
 sql = '''$report_sql'''
 wire = "arrow"
 columns = [{ name = "order_id", nullable = false }, { name = "placed_at", nullable = false }, { name = "month", nullable = false }]
-chunk_bytes = 65536
+pipe_bytes = 65536
 out = "rows"
 
 [[nodes]]
@@ -427,7 +422,6 @@ insert_strategy = { kind = "full" }
 rules = {}
 unknown_types = { kind = "fail_on_unknown" }
 create_table = "create table {schema_name}.{table_name} ({columns})"
-chunk_bytes = 65536
 feed = "rows"
 """
 
@@ -444,7 +438,7 @@ connection = "ch"
 sql = '''$report_sql'''
 wire = "arrow"
 columns = [{ name = "order_id", nullable = false }, { name = "placed_at", nullable = false }, { name = "month", nullable = false }]
-chunk_bytes = 65536
+pipe_bytes = 65536
 out = "rows"
 
 [[nodes]]
@@ -461,7 +455,6 @@ insert_strategy = { kind = "full" }
 rules = {}
 unknown_types = { kind = "fail_on_unknown" }
 create_table = "create table {schema_name}.{table_name} ({columns})"
-chunk_bytes = 65536
 feed = "rows"
 """
 
@@ -478,7 +471,7 @@ connection = "ch"
 sql = '''$report_sql'''
 wire = "arrow"
 columns = [{ name = "order_id", nullable = false }, { name = "placed_at", nullable = false }, { name = "month", nullable = false }]
-chunk_bytes = 65536
+pipe_bytes = 65536
 out = "rows"
 
 [[nodes]]
@@ -495,7 +488,6 @@ insert_strategy = { kind = "full" }
 rules = {}
 unknown_types = { kind = "fail_on_unknown" }
 create_table = "create table {schema_name}.{table_name} ({columns})"
-chunk_bytes = 65536
 feed = "rows"
 """
 
@@ -512,7 +504,7 @@ connection = "ch"
 sql = '''$report_sql'''
 wire = "arrow"
 columns = [{ name = "order_id", nullable = false }, { name = "placed_at", nullable = false }, { name = "month", nullable = false }]
-chunk_bytes = 65536
+pipe_bytes = 65536
 out = "rows"
 
 [[nodes]]
@@ -529,7 +521,6 @@ insert_strategy = { kind = "full" }
 rules = {}
 unknown_types = { kind = "fail_on_unknown" }
 create_table = "create table {schema_name}.{table_name} ({columns}) tablespace users nologging"
-chunk_bytes = 65536
 feed = "rows"
 """
 
@@ -546,7 +537,7 @@ connection = "ch"
 sql = '''$report_sql'''
 wire = "arrow"
 columns = [{ name = "order_id", nullable = false }, { name = "placed_at", nullable = false }, { name = "month", nullable = false }]
-chunk_bytes = 65536
+pipe_bytes = 65536
 out = "rows"
 
 [[nodes]]
@@ -563,7 +554,6 @@ insert_strategy = { kind = "full" }
 rules = {}
 unknown_types = { kind = "fail_on_unknown" }
 create_table = "create table {schema_name}.{table_name} ({columns})"
-chunk_bytes = 65536
 after = ["insert into no_such_table values (1)"]
 feed = "rows"
 """
@@ -581,7 +571,7 @@ connection = "ch"
 sql = '''$report_sql'''
 wire = "arrow"
 columns = [{ name = "order_id", nullable = false }, { name = "placed_at", nullable = false }, { name = "month", nullable = false }]
-chunk_bytes = 65536
+pipe_bytes = 65536
 out = "rows"
 
 [[nodes]]
@@ -598,7 +588,6 @@ insert_strategy = { kind = "full" }
 rules = {}
 unknown_types = { kind = "fail_on_unknown" }
 create_table = "create table {schema_name}.{table_name} ({columns})"
-chunk_bytes = 65536
 after = [
     "alter table $owner.orders_report rename to orders_report_old",
     "alter table $owner.orders_report_stage rename to orders_report",
@@ -620,7 +609,7 @@ connection = "ch"
 sql = '''$report_sql'''
 wire = "arrow"
 columns = [{ name = "order_id", nullable = false }, { name = "placed_at", nullable = false }, { name = "month", nullable = false }]
-chunk_bytes = 65536
+pipe_bytes = 65536
 out = "rows"
 
 [[nodes]]
@@ -637,7 +626,6 @@ insert_strategy = { kind = "nothing" }
 rules = {}
 unknown_types = { kind = "fail_on_unknown" }
 create_table = "create table {schema_name}.{table_name} ({columns})"
-chunk_bytes = 65536
 feed = "rows"
 """
 

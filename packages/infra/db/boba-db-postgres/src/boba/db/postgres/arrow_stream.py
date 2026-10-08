@@ -499,7 +499,7 @@ class PgArrowSource:
         self,
         text: str,
         specs: Sequence[ColumnSpec],
-        chunk_bytes: int,
+        row_bytes: int,
         out: TransferOutbound,
     ) -> PgCommandReport:
         self._journal.columns(self._contract_table.rows(specs))
@@ -513,7 +513,9 @@ class PgArrowSource:
             )
         )
         schema = self._types.schema_of(specs)
-        report = await self._out.stream_into(text, schema, chunk_bytes, out.writer())
+        report = await self._out.stream_into(
+            text, schema, out.capacity(), row_bytes, out.writer()
+        )
 
         return PgCommandReport(
             summary=self._contract_table.caption(StreamWire.ARROW.value, specs),
@@ -603,7 +605,6 @@ class PgArrowLoader:
         contract: Sequence[ColumnSpec],
         source_engine: Engine,
         inbound: TransferInbound,
-        chunk_bytes: int,
         exact_floats: bool,
         journal: CommandJournal,
     ) -> None:
@@ -614,7 +615,6 @@ class PgArrowLoader:
         self._source_engine = source_engine
         self._exact = source_engine is Engine.POSTGRES
         self._inbound = inbound
-        self._chunk_bytes = chunk_bytes
         self._exact_floats = exact_floats
         self._facts = PgNeutralFacts(conn, table, journal)
         self._declared = PgDeclaredTypes(conn, journal)
@@ -647,7 +647,9 @@ class PgArrowLoader:
                 create_table,
                 self._journal,
             )
-            reader = await self._ipc.open_in(self._inbound.raw(), self._chunk_bytes)
+            reader = await self._ipc.open_in(
+                self._inbound.raw(), self._inbound.capacity()
+            )
             sink = PgArrowSink(
                 self._conn,
                 self._table,

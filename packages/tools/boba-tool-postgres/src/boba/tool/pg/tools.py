@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import sys
 from collections.abc import Iterator, Sequence
-from enum import StrEnum
+from enum import IntEnum, StrEnum
 from typing import Annotated, Any, ClassVar, Final
 
 import psycopg
@@ -117,6 +117,15 @@ class PgPump(StrEnum):
 
     STREAM_OUT = "pg_stream_out"
     STREAM_IN = "pg_stream_in"
+
+
+class RowBytes(IntEnum):
+    """Предел ширины строки выгрузки в Arrow, байт: блок, которым читатель
+    разбирает CSV сервера; строка обязана в него уместиться."""
+
+    FLOOR = 1 << 20
+    DEFAULT = 1 << 20
+    CEIL = 1 << 26
 
 
 class AddressColumn(StrEnum):
@@ -494,10 +503,23 @@ async def pg_stream_out(  # noqa: PLR0913
             description=(
                 "Настройки COPY одним объектом: сессия (client_encoding, "
                 "datestyle, timezone, extra_float_digits, bytea_output, "
-                "lc_monetary), chunk_bytes — порция потока."
+                "lc_monetary)."
             ),
         ),
     ] = CopyOptions(),
+    max_row_bytes: Annotated[
+        int,
+        Field(
+            ge=RowBytes.FLOOR,
+            le=RowBytes.CEIL,
+            description=(
+                "Предел ширины одной строки выборки в байтах, только для "
+                "wire arrow:\n"
+                "   - строка обязана уместиться в блок разбора этого размера\n"
+                "   - поднять, когда выгрузка отказала на широкой строке\n"
+            ),
+        ),
+    ] = RowBytes.DEFAULT,
     before: BeforeSteps = (),
     after: AfterSteps = (),
     *,
@@ -521,7 +543,13 @@ async def pg_stream_out(  # noqa: PLR0913
     journal = CommandJournal(PgPump.STREAM_OUT, meter)
     outbound = TransferOutbound(out, meter)
     try:
-        meter.configured(copy_options.model_dump(mode="json", exclude_none=True))
+        meter.configured(
+            {
+                "channel_bytes": outbound.capacity(),
+                "max_row_bytes": max_row_bytes,
+                **copy_options.model_dump(mode="json", exclude_none=True),
+            }
+        )
         meter.connecting()
         conn = await PayloadPostgres.connect_config(
             connection.copy_session(copy_options)
@@ -539,15 +567,11 @@ async def pg_stream_out(  # noqa: PLR0913
                 case StreamWire.ARROW:
                     source = PgArrowSource(conn, journal)
                     specs = source.contract(described, columns)
-                    report = await source.stream(
-                        sql, specs, copy_options.chunk_bytes, outbound
-                    )
+                    report = await source.stream(sql, specs, max_row_bytes, outbound)
                 case StreamWire.CSV | StreamWire.TSV | StreamWire.BINARY as named:
                     layout = PgCopyLayout(named.value)
                     contract = copy_out.contract_of(described, columns)
-                    report = await copy_out.stream(
-                        sql, layout, contract, copy_options.chunk_bytes, outbound
-                    )
+                    report = await copy_out.stream(sql, layout, contract, outbound)
 
             await run_steps(conn, after, journal)
     except Exception as exc:
@@ -656,7 +680,6 @@ async def pg_stream_in(  # noqa: PLR0913
                 "Настройки COPY одним объектом:\n"
                 "   - сессия: client_encoding, datestyle, timezone, "
                 "extra_float_digits, bytea_output, lc_monetary\n"
-                "   - chunk_bytes — порция потока\n"
                 "   - exact_floats — hex-запись float, только у потока arrow\n"
             ),
         ),
@@ -692,7 +715,12 @@ async def pg_stream_in(  # noqa: PLR0913
     table = PgTableRef(schema=schema_name, name=table_name)
     try:
         head = await inbound.get_schema()
-        meter.configured(copy_options.model_dump(mode="json", exclude_none=True))
+        meter.configured(
+            {
+                "channel_bytes": inbound.capacity(),
+                **copy_options.model_dump(mode="json", exclude_none=True),
+            }
+        )
         meter.connecting()
         conn = await PayloadPostgres.connect_config(
             connection.copy_session(copy_options)
@@ -711,7 +739,6 @@ async def pg_stream_in(  # noqa: PLR0913
                     StreamContract().specs(contract.columns),
                     NeutralEngine(head.source_engine.value),
                     inbound,
-                    copy_options.chunk_bytes,
                     copy_options.exact_floats,
                     journal,
                 )

@@ -152,7 +152,7 @@ connection = "pg"
 sql = "select id, i2, i4, n, nw, f4, f8, b, t, vc, c5, by, d, ts, tz, iv, u, j, jb, ip, mo, bt, xm from $pg_schema.src"
 wire = "arrow"
 columns = [{ name = "id", nullable = false }, { name = "vc", nullable = false }]
-copy_options = { chunk_bytes = 65536 }
+pipe_bytes = 65536
 out = "rows"
 
 [[nodes]]
@@ -186,7 +186,7 @@ connection = "pg"
 sql = "select id, i2, i4, n, nw, f4, f8, b, t, vc, c5, by, d, ts, tz, iv, u, j, jb, ip, mo, bt, xm from $pg_schema.src where id <= $sixth"
 wire = "arrow"
 columns = [{ name = "id", nullable = false }, { name = "vc", nullable = false }]
-copy_options = { chunk_bytes = 65536 }
+pipe_bytes = 65536
 out = "rows"
 
 [[nodes]]
@@ -220,7 +220,7 @@ connection = "pg"
 sql = "select id, i2, i4, n, nw, f4, f8, b, t, vc, c5, by, d, ts, tz, iv, u, j, jb, ip, mo, bt, xm from $pg_schema.src"
 wire = "arrow"
 columns = [{ name = "id", nullable = false }, { name = "vc", nullable = false }]
-copy_options = { chunk_bytes = 65536 }
+pipe_bytes = 65536
 out = "rows"
 
 [[nodes]]
@@ -254,7 +254,7 @@ connection = "pg"
 sql = "select id, tm from $pg_schema.src"
 wire = "arrow"
 columns = [{ name = "id", nullable = false }]
-copy_options = { chunk_bytes = 65536 }
+pipe_bytes = 65536
 out = "rows"
 
 [[nodes]]
@@ -288,7 +288,7 @@ connection = "pg"
 sql = "select id, ia from $pg_schema.src"
 wire = "arrow"
 columns = [{ name = "id", nullable = false }]
-copy_options = { chunk_bytes = 65536 }
+pipe_bytes = 65536
 out = "rows"
 
 [[nodes]]
@@ -322,7 +322,7 @@ connection = "pg"
 sql = "select id, tr from $pg_schema.src"
 wire = "arrow"
 columns = [{ name = "id", nullable = false }]
-copy_options = { chunk_bytes = 65536 }
+pipe_bytes = 65536
 out = "rows"
 
 [[nodes]]
@@ -356,7 +356,7 @@ connection = "pg"
 sql = "select id, tm, ia, tr from $pg_schema.src"
 wire = "arrow"
 columns = [{ name = "id", nullable = false }]
-copy_options = { chunk_bytes = 65536 }
+pipe_bytes = 65536
 out = "rows"
 
 [[nodes]]
@@ -390,7 +390,7 @@ connection = "pg"
 sql = "select id, tm, n from $pg_schema.src"
 wire = "arrow"
 columns = [{ name = "id", nullable = false }]
-copy_options = { chunk_bytes = 65536 }
+pipe_bytes = 65536
 out = "rows"
 
 [[nodes]]
@@ -424,7 +424,7 @@ connection = "pg"
 sql = "select id, i4, n, f4, ts, vc from $pg_schema.src"
 wire = "arrow"
 columns = [{ name = "id", nullable = false }, { name = "vc", nullable = false }]
-copy_options = { chunk_bytes = 65536 }
+pipe_bytes = 65536
 out = "rows"
 
 [[nodes]]
@@ -458,7 +458,7 @@ connection = "pg"
 sql = "select id, i4, n, f4, ts, vc from $pg_schema.src"
 wire = "arrow"
 columns = [{ name = "id", nullable = false }, { name = "vc", nullable = false }]
-copy_options = { chunk_bytes = 65536 }
+pipe_bytes = 65536
 out = "rows"
 
 [[nodes]]
@@ -524,7 +524,7 @@ connection = "ch"
 sql = "select id, u8, u64, i8, f, dec, lc, toString(en) as en, s, toDate32(d) as d, d32, toDateTime64(dt, 0, 'UTC') as dt, dt64, b, toString(big) as big, toString(arr) as arr, toString(m) as m from $ch_database.typed settings output_format_arrow_string_as_string = 1"
 wire = "arrow"
 columns = [{ name = "id", nullable = false }]
-chunk_bytes = 65536
+pipe_bytes = 65536
 out = "rows"
 
 [[nodes]]
@@ -558,7 +558,7 @@ connection = "ch"
 sql = "select id, d, dt from $ch_database.typed settings output_format_arrow_string_as_string = 1"
 wire = "arrow"
 columns = [{ name = "id", nullable = false }]
-chunk_bytes = 65536
+pipe_bytes = 65536
 out = "rows"
 
 [[nodes]]

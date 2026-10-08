@@ -45,7 +45,7 @@ Python не разбираются.
   привести в `select`. Имена колонок — заглавные, как у Oracle; строчные — алиас
   в кавычках.
 - `ora_stream_in(schema_name, table_name, schema_strategy, delete_strategy,
-  insert_strategy, rules, unknown_types, create_table, chunk_bytes, before, after)`
+  insert_strategy, rules, unknown_types, create_table, before, after)`
   сверяет контракт потока с таблицей по `all_tab_columns`, создаёт или
   пересоздаёт её по шаблону `create_table` и кладёт пачки одной командой
   `executemany` на пачку. Целые ложатся `NUMBER(p)`, decimal — `NUMBER(p, s)`,

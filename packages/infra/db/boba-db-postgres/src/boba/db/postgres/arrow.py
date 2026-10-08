@@ -430,8 +430,9 @@ class PgArrowOut:
     """Выборка postgres потоком Arrow в выходной порт: описание стейтмента у
     libpq без выполнения даёт схему, затем сервер отдаёт COPY (стейтмент) TO
     STDOUT (FORMAT CSV), а читатель CSV pyarrow собирает пачки Arrow по этой
-    схеме блоками chunk_bytes. float печатается точно при extra_float_digits =
-    3 в опциях соединения. Notices и notify сессии попадают в итог."""
+    схеме блоками по пределу ширины строки. float печатается точно при
+    extra_float_digits = 3 в опциях соединения. Notices и notify сессии
+    попадают в итог."""
 
     def __init__(
         self, conn: psycopg.AsyncConnection[Any], journal: CommandJournal
@@ -464,14 +465,17 @@ class PgArrowOut:
         self,
         query: str,
         schema: pyarrow.Schema,
-        chunk_bytes: int,
+        buffer_bytes: int,
+        row_bytes: int,
         sink: io.RawIOBase,
     ) -> PgCommandReport:
         """Выборка потоком Arrow по готовой схеме: читатель CSV собирает
-        пачки типами схемы, значения вне типа — ошибка чтения."""
-        writer = await self._ipc.open_out(sink, schema, chunk_bytes)
+        пачки типами схемы, значения вне типа — ошибка чтения. buffer_bytes —
+        порция записи в sink и чтения ответа сервера, row_bytes — блок
+        разбора CSV: строка обязана в него уместиться."""
+        writer = await self._ipc.open_out(sink, schema, buffer_bytes)
         pipe = BytePipe()
-        reader = CsvBatches(schema, chunk_bytes)
+        reader = CsvBatches(schema, row_bytes)
         pgquery = (
             PgQueryBuilder()
             .add("copy (")
@@ -485,7 +489,7 @@ class PgArrowOut:
 
             async def produce() -> str:
                 try:
-                    return await self._copy_out(pgquery.text, pipe, chunk_bytes)
+                    return await self._copy_out(pgquery.text, pipe, buffer_bytes)
                 finally:
                     pipe.close_write()
 
@@ -506,13 +510,13 @@ class PgArrowOut:
         return report
 
     async def _copy_out(
-        self, statement: sql.Composed, pipe: BytePipe, chunk_bytes: int
+        self, statement: sql.Composed, pipe: BytePipe, buffer_bytes: int
     ) -> str:
         """COPY отдаёт по сообщению на строку: их читает цикл libpq в
         рабочем потоке (PgCopyProtocol) и пишет в трубу через буфер
-        chunk_bytes; итог — статус команды сервера. Остаток буфера после
+        buffer_bytes; итог — статус команды сервера. Остаток буфера после
         ошибки в трубу не досылается."""
-        sink = pipe.sink(chunk_bytes)
+        sink = pipe.sink(buffer_bytes)
         try:
             return await self._protocol.run(statement.as_bytes(self._conn), sink)
         except BaseException:
@@ -522,16 +526,15 @@ class PgArrowOut:
 
 class CsvBatches:
     """Пачки Arrow из CSV postgres по явной схеме: читатель pyarrow разбирает
-    поля в C, блок на пачку — chunk_bytes байт, но не меньше BLOCK_FLOOR:
-    строка CSV обязана уместиться в один блок, иначе читатель отказывает;
+    поля в C, блок на пачку — row_bytes байт: строка CSV обязана уместиться
+    в один блок, иначе читатель отказывает (предел ширины строки называет
+    вызывающий параметром max_row_bytes);
     `t`/`f` — boolean, пустое поле без кавычек — NULL, в кавычках — пустая
     строка, переводы строк внутри кавычек допустимы."""
 
-    BLOCK_SIZE: ClassVar[int] = 1 << 20
-
-    def __init__(self, schema: pyarrow.Schema, chunk_bytes: int) -> None:
+    def __init__(self, schema: pyarrow.Schema, row_bytes: int) -> None:
         self._schema = schema
-        self._block = max(chunk_bytes, self.BLOCK_SIZE)
+        self._block = row_bytes
         self._read = pyarrow.csv.ReadOptions(
             column_names=schema.names, block_size=self._block
         )
@@ -554,7 +557,7 @@ class CsvBatches:
                 f"{type(exc).__name__}: {exc}; a value the reader cannot parse "
                 f"(numeric NaN, timestamp infinity) needs ::text or ::float8 in "
                 f"the select; the parse block is {self._block} bytes and a row "
-                f"must fit into it (raise chunk_bytes for wider rows)"
+                f"must fit into it (raise max_row_bytes for wider rows)"
             ) from exc
 
         while True:
@@ -566,7 +569,7 @@ class CsvBatches:
                     f"{type(exc).__name__}: {exc}; a value the reader cannot "
                     f"parse (numeric NaN, timestamp infinity) needs ::text or "
                     f"::float8 in the select; the parse block is {self._block} "
-                    f"bytes and a row must fit into it (raise chunk_bytes for "
+                    f"bytes and a row must fit into it (raise max_row_bytes for "
                     f"wider rows)"
                 ) from exc
 

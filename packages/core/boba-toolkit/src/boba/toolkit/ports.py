@@ -220,6 +220,11 @@ class Inbound(Generic[HeadT]):
         for header, body in self._io.read_frames():
             yield Framed(head=self._head_of(header), body=body)
 
+    def capacity(self) -> int:
+        """Ёмкость канала этого порта в байтах: порция, которой тело читает
+        из него."""
+        return self._io.inbound_capacity()
+
     def _head_of(self, header: bytes) -> HeadT:
         try:
             return self._heads.validate_json(header)
@@ -252,27 +257,16 @@ class Outbound(Generic[HeadT]):
     def emit(self, head: HeadT, body: Chunk = b"") -> None:
         self._io.emit(head, body)
 
+    def capacity(self) -> int:
+        """Ёмкость канала этого порта в байтах: порция, которой тело пишет
+        в него."""
+        return self._io.outbound_capacity()
+
     @classmethod
     def __get_pydantic_core_schema__(
         cls, source: Any, handler: GetCoreSchemaHandler
     ) -> CoreSchema:
         return core_schema.is_instance_schema(cls)
-
-
-ChunkBytes = Annotated[
-    int,
-    Field(
-        default=262144,
-        ge=4096,
-        le=67108864,
-        description=(
-            "Размер порции байтов между узлом и трубой: крупнее — меньше "
-            "системных вызовов на больших выгрузках, мельче — раньше первые "
-            "данные у приёмника. По умолчанию 256 КиБ."
-        ),
-    ),
-]
-"""LLM-аргумент сырых насосов: размер порции потока."""
 
 
 class RawInbound(io.RawIOBase):
@@ -304,19 +298,24 @@ class RawInbound(io.RawIOBase):
     def readinto(self, buffer: Any) -> int:
         return self._io.read_into(memoryview(buffer).cast("B"))
 
-    def chunks(self, chunk_bytes: int) -> Iterator[memoryview]:
-        """Порции не длиннее chunk_bytes до EOF: каждая — свой буфер, заполненный
-        через readinto, без промежуточной копии."""
+    def capacity(self) -> int:
+        """Ёмкость канала этого порта в байтах."""
+        return self._io.inbound_capacity()
+
+    def chunks(self) -> Iterator[memoryview]:
+        """Порции не длиннее ёмкости канала до EOF: каждая — свой буфер,
+        заполненный через readinto, без промежуточной копии."""
+        size = self.capacity()
         while True:
-            buffer = bytearray(chunk_bytes)
+            buffer = bytearray(size)
             filled = self.readinto(buffer)
             if filled == 0:
                 return
 
             yield memoryview(buffer)[:filled]
 
-    async def blocks(self, chunk_bytes: int) -> AsyncIterator[memoryview]:
-        chunks = self.chunks(chunk_bytes)
+    async def blocks(self) -> AsyncIterator[memoryview]:
+        chunks = self.chunks()
         while True:
             chunk = await asyncio.to_thread(next, chunks, None)
             if chunk is None:

@@ -43,7 +43,7 @@ connection = "pg"
 sql = "select g::bigint as id, (g / 7.0)::numeric(18,4) as amount, ('name ' || g)::varchar(50) as name, timestamp '2024-02-29 13:14:15.123456' + g * interval '1 second' as ts, g % 2 = 0 as flag, g::float8 / 3 as d from generate_series(1, 60) g"
 wire = "$wire"
 columns = []
-copy_options = { chunk_bytes = 4096 }
+pipe_bytes = 4096
 out = "rows"
 
 [[nodes]]
@@ -58,7 +58,7 @@ schema_strategy = { kind = "create_if_not_exists" }
 delete_strategy = { kind = "nothing" }
 insert_strategy = { kind = "full" }
 rules = {}
-copy_options = { chunk_bytes = 4096, exact_floats = $exact_floats }
+copy_options = { exact_floats = $exact_floats }
 feed = "rows"
 """
 """Поток-источник у всех описаний круга postgres -> postgres один: шесть
@@ -77,7 +77,7 @@ connection = "pg"
 sql = "select g::bigint as id, (g / 7.0)::numeric(18,4) as amount, ('name ' || g)::varchar(50) as name, timestamp '2024-02-29 13:14:15.123456' + g * interval '1 second' as ts, g % 2 = 0 as flag, g::float8 / 3 as d from generate_series(1, 60) g"
 wire = "$wire"
 columns = []
-copy_options = { chunk_bytes = 4096 }
+pipe_bytes = 4096
 out = "rows"
 
 [[nodes]]
@@ -92,7 +92,7 @@ schema_strategy = { kind = "create_if_not_exists" }
 delete_strategy = { kind = "nothing" }
 insert_strategy = { kind = "full" }
 rules = {}
-copy_options = { chunk_bytes = 4096, exact_floats = $exact_floats }
+copy_options = { exact_floats = $exact_floats }
 feed = "rows"
 """
 
@@ -109,7 +109,7 @@ connection = "pg"
 sql = "select g::bigint as id, (g / 7.0)::numeric(18,4) as amount, ('name ' || g)::varchar(50) as name, timestamp '2024-02-29 13:14:15.123456' + g * interval '1 second' as ts, g % 2 = 0 as flag, g::float8 / 3 as d from generate_series(1, 60) g"
 wire = "$wire"
 columns = []
-copy_options = { chunk_bytes = 4096 }
+pipe_bytes = 4096
 out = "rows"
 
 [[nodes]]
@@ -124,7 +124,7 @@ schema_strategy = { kind = "error_if_schema_changed" }
 delete_strategy = { kind = "nothing" }
 insert_strategy = { kind = "full" }
 rules = {}
-copy_options = { chunk_bytes = 4096, exact_floats = $exact_floats }
+copy_options = { exact_floats = $exact_floats }
 feed = "rows"
 """
 
@@ -141,7 +141,7 @@ connection = "pg"
 sql = "select g::bigint as id, (g / 7.0)::numeric(18,4) as amount, ('name ' || g)::varchar(50) as name, timestamp '2024-02-29 13:14:15.123456' + g * interval '1 second' as ts, g % 2 = 0 as flag, g::float8 / 3 as d from generate_series(1, 60) g"
 wire = "$wire"
 columns = []
-copy_options = { chunk_bytes = 4096 }
+pipe_bytes = 4096
 out = "rows"
 
 [[nodes]]
@@ -156,7 +156,7 @@ schema_strategy = { kind = "error_if_not_exists" }
 delete_strategy = { kind = "nothing" }
 insert_strategy = { kind = "full" }
 rules = {}
-copy_options = { chunk_bytes = 4096, exact_floats = $exact_floats }
+copy_options = { exact_floats = $exact_floats }
 feed = "rows"
 """
 
@@ -173,7 +173,7 @@ connection = "pg"
 sql = "select g::bigint as id, (g / 7.0)::numeric(18,4) as amount, ('name ' || g)::varchar(50) as name, timestamp '2024-02-29 13:14:15.123456' + g * interval '1 second' as ts, g % 2 = 0 as flag, g::float8 / 3 as d from generate_series(1, 60) g"
 wire = "$wire"
 columns = []
-copy_options = { chunk_bytes = 4096 }
+pipe_bytes = 4096
 out = "rows"
 
 [[nodes]]
@@ -188,7 +188,7 @@ schema_strategy = { kind = "error_if_schema_changed" }
 delete_strategy = { kind = "nothing" }
 insert_strategy = { kind = "full" }
 rules = {}
-copy_options = { chunk_bytes = 4096, exact_floats = $exact_floats }
+copy_options = { exact_floats = $exact_floats }
 feed = "rows"
 """
 
@@ -205,7 +205,7 @@ connection = "pg"
 sql = "select g::bigint as id, (g / 7.0)::numeric(18,4) as amount, ('name ' || g)::varchar(50) as name, timestamp '2024-02-29 13:14:15.123456' + g * interval '1 second' as ts, g % 2 = 0 as flag, g::float8 / 3 as d from generate_series(1, 60) g"
 wire = "$wire"
 columns = []
-copy_options = { chunk_bytes = 4096 }
+pipe_bytes = 4096
 out = "rows"
 
 [[nodes]]
@@ -220,7 +220,7 @@ schema_strategy = { kind = "backup_and_create_if_schema_changed" }
 delete_strategy = { kind = "nothing" }
 insert_strategy = { kind = "full" }
 rules = {}
-copy_options = { chunk_bytes = 4096, exact_floats = $exact_floats }
+copy_options = { exact_floats = $exact_floats }
 feed = "rows"
 """
 
@@ -237,7 +237,7 @@ connection = "pg"
 sql = "select g::bigint as id, (g / 7.0)::numeric(18,4) as amount, ('name ' || g)::varchar(50) as name, timestamp '2024-02-29 13:14:15.123456' + g * interval '1 second' as ts, g % 2 = 0 as flag, g::float8 / 3 as d from generate_series(1, 60) g"
 wire = "$wire"
 columns = []
-copy_options = { chunk_bytes = 4096 }
+pipe_bytes = 4096
 out = "rows"
 
 [[nodes]]
@@ -252,7 +252,7 @@ schema_strategy = { kind = "drop_and_create_if_schema_changed" }
 delete_strategy = { kind = "nothing" }
 insert_strategy = { kind = "full" }
 rules = {}
-copy_options = { chunk_bytes = 4096, exact_floats = $exact_floats }
+copy_options = { exact_floats = $exact_floats }
 feed = "rows"
 """
 
@@ -269,7 +269,7 @@ connection = "pg"
 sql = "select g::bigint as id, (g / 7.0)::numeric(18,4) as amount, ('name ' || g)::varchar(50) as name, timestamp '2024-02-29 13:14:15.123456' + g * interval '1 second' as ts, g % 2 = 0 as flag, g::float8 / 3 as d from generate_series(1, 60) g"
 wire = "$wire"
 columns = []
-copy_options = { chunk_bytes = 4096 }
+pipe_bytes = 4096
 out = "rows"
 
 [[nodes]]
@@ -284,7 +284,7 @@ schema_strategy = { kind = "create_if_not_exists" }
 delete_strategy = { kind = "nothing" }
 insert_strategy = { kind = "full" }
 rules = {}
-copy_options = { chunk_bytes = 4096, exact_floats = $exact_floats }
+copy_options = { exact_floats = $exact_floats }
 feed = "rows"
 """
 
@@ -301,7 +301,7 @@ connection = "pg"
 sql = "select g::bigint as id, (g / 7.0)::numeric(18,4) as amount, ('name ' || g)::varchar(50) as name, timestamp '2024-02-29 13:14:15.123456' + g * interval '1 second' as ts, g % 2 = 0 as flag, g::float8 / 3 as d from generate_series(1, 60) g"
 wire = "$wire"
 columns = []
-copy_options = { chunk_bytes = 4096 }
+pipe_bytes = 4096
 out = "rows"
 
 [[nodes]]
@@ -316,7 +316,7 @@ schema_strategy = { kind = "create_if_not_exists" }
 delete_strategy = { kind = "truncate" }
 insert_strategy = { kind = "full" }
 rules = {}
-copy_options = { chunk_bytes = 4096, exact_floats = $exact_floats }
+copy_options = { exact_floats = $exact_floats }
 feed = "rows"
 """
 
@@ -333,7 +333,7 @@ connection = "pg"
 sql = "select g::bigint as id, (g / 7.0)::numeric(18,4) as amount, ('name ' || g)::varchar(50) as name, timestamp '2024-02-29 13:14:15.123456' + g * interval '1 second' as ts, g % 2 = 0 as flag, g::float8 / 3 as d from generate_series(1, 60) g"
 wire = "$wire"
 columns = []
-copy_options = { chunk_bytes = 4096 }
+pipe_bytes = 4096
 out = "rows"
 
 [[nodes]]
@@ -348,7 +348,7 @@ schema_strategy = { kind = "create_if_not_exists" }
 delete_strategy = { kind = "nothing" }
 insert_strategy = { kind = "full" }
 rules = {}
-copy_options = { chunk_bytes = 4096, exact_floats = $exact_floats }
+copy_options = { exact_floats = $exact_floats }
 feed = "rows"
 """
 
@@ -365,7 +365,7 @@ connection = "pg"
 sql = "select g::bigint as id, (g / 7.0)::numeric(18,4) as amount, ('name ' || g)::varchar(50) as name, timestamp '2024-02-29 13:14:15.123456' + g * interval '1 second' as ts, g % 2 = 0 as flag, g::float8 / 3 as d from generate_series(1, 60) g"
 wire = "$wire"
 columns = []
-copy_options = { chunk_bytes = 4096 }
+pipe_bytes = 4096
 out = "rows"
 
 [[nodes]]
@@ -380,7 +380,7 @@ schema_strategy = { kind = "create_if_not_exists" }
 delete_strategy = { kind = "delete_all" }
 insert_strategy = { kind = "full" }
 rules = {}
-copy_options = { chunk_bytes = 4096, exact_floats = $exact_floats }
+copy_options = { exact_floats = $exact_floats }
 feed = "rows"
 """
 
@@ -397,7 +397,7 @@ connection = "pg"
 sql = "select g::bigint as id, (g / 7.0)::numeric(18,4) as amount, ('name ' || g)::varchar(50) as name, timestamp '2024-02-29 13:14:15.123456' + g * interval '1 second' as ts, g % 2 = 0 as flag, g::float8 / 3 as d from generate_series(1, 60) g"
 wire = "$wire"
 columns = []
-copy_options = { chunk_bytes = 4096 }
+pipe_bytes = 4096
 out = "rows"
 
 [[nodes]]
@@ -412,7 +412,7 @@ schema_strategy = { kind = "create_if_not_exists" }
 delete_strategy = { kind = "nothing" }
 insert_strategy = { kind = "full" }
 rules = {}
-copy_options = { chunk_bytes = 4096, exact_floats = $exact_floats }
+copy_options = { exact_floats = $exact_floats }
 feed = "rows"
 """
 
@@ -429,7 +429,7 @@ connection = "pg"
 sql = "select g::bigint as id, (g / 7.0)::numeric(18,4) as amount, ('name ' || g)::varchar(50) as name, timestamp '2024-02-29 13:14:15.123456' + g * interval '1 second' as ts, g % 2 = 0 as flag, g::float8 / 3 as d from generate_series(1, 60) g"
 wire = "$wire"
 columns = []
-copy_options = { chunk_bytes = 4096 }
+pipe_bytes = 4096
 out = "rows"
 
 [[nodes]]
@@ -444,7 +444,7 @@ schema_strategy = { kind = "create_if_not_exists" }
 delete_strategy = { kind = "delete_where", where = "id <= 30" }
 insert_strategy = { kind = "full" }
 rules = {}
-copy_options = { chunk_bytes = 4096, exact_floats = $exact_floats }
+copy_options = { exact_floats = $exact_floats }
 feed = "rows"
 """
 
@@ -461,7 +461,7 @@ connection = "pg"
 sql = "select g::bigint as id, (g / 7.0)::numeric(18,4) as amount, ('name ' || g)::varchar(50) as name, timestamp '2024-02-29 13:14:15.123456' + g * interval '1 second' as ts, g % 2 = 0 as flag, g::float8 / 3 as d from generate_series(1, 60) g"
 wire = "$wire"
 columns = []
-copy_options = { chunk_bytes = 4096 }
+pipe_bytes = 4096
 out = "rows"
 
 [[nodes]]
@@ -476,7 +476,7 @@ schema_strategy = { kind = "create_if_not_exists" }
 delete_strategy = { kind = "delete_where", where = "id between 1 and 60" }
 insert_strategy = { kind = "nothing" }
 rules = {}
-copy_options = { chunk_bytes = 4096, exact_floats = $exact_floats }
+copy_options = { exact_floats = $exact_floats }
 feed = "rows"
 """
 
@@ -493,7 +493,7 @@ connection = "pg"
 sql = "select g::bigint as id, (g / 7.0)::numeric(18,4) as amount, ('name ' || g)::varchar(50) as name, timestamp '2024-02-29 13:14:15.123456' + g * interval '1 second' as ts, g % 2 = 0 as flag, g::float8 / 3 as d from generate_series(1, 60) g"
 wire = "$wire"
 columns = []
-copy_options = { chunk_bytes = 4096 }
+pipe_bytes = 4096
 out = "rows"
 
 [[nodes]]
@@ -508,7 +508,7 @@ schema_strategy = { kind = "create_if_not_exists" }
 delete_strategy = { kind = "nothing" }
 insert_strategy = { kind = "full" }
 rules = { rename_columns = { title = "name" }, column_types = { amount = "numeric(20,6)" } }
-copy_options = { chunk_bytes = 4096, exact_floats = $exact_floats }
+copy_options = { exact_floats = $exact_floats }
 feed = "rows"
 """
 
@@ -525,7 +525,7 @@ connection = "pg"
 sql = "select * from $pg_schema.strict_src where id <= 50"
 wire = "$wire"
 columns = [{ name = "id", nullable = false }, { name = "amount", nullable = false }]
-copy_options = { chunk_bytes = 4096 }
+pipe_bytes = 4096
 out = "rows"
 
 [[nodes]]
@@ -540,7 +540,7 @@ schema_strategy = { kind = "create_if_not_exists" }
 delete_strategy = { kind = "nothing" }
 insert_strategy = { kind = "full" }
 rules = {}
-copy_options = { chunk_bytes = 4096, exact_floats = $exact_floats }
+copy_options = { exact_floats = $exact_floats }
 feed = "rows"
 """
 
@@ -557,7 +557,7 @@ connection = "pg"
 sql = "select g::bigint as id, (g / 7.0)::numeric(18,4) as amount, ('name ' || g)::varchar(50) as name, timestamp '2024-02-29 13:14:15.123456' + g * interval '1 second' as ts, g % 2 = 0 as flag, g::float8 / 3 as d from generate_series(1, 60) g"
 wire = "$wire"
 columns = [{ name = "nope", nullable = false }]
-copy_options = { chunk_bytes = 4096 }
+pipe_bytes = 4096
 out = "rows"
 
 [[nodes]]
@@ -572,7 +572,7 @@ schema_strategy = { kind = "create_if_not_exists" }
 delete_strategy = { kind = "nothing" }
 insert_strategy = { kind = "full" }
 rules = {}
-copy_options = { chunk_bytes = 4096, exact_floats = $exact_floats }
+copy_options = { exact_floats = $exact_floats }
 feed = "rows"
 """
 
@@ -601,7 +601,6 @@ table_name = "strict_from_ora"
 schema_strategy = { kind = "create_if_not_exists" }
 delete_strategy = { kind = "nothing" }
 insert_strategy = { kind = "full" }
-copy_options = { chunk_bytes = 4096 }
 feed = "rows"
 """
 
@@ -630,7 +629,6 @@ table_name = "from_oracle"
 schema_strategy = { kind = "create_if_not_exists" }
 delete_strategy = { kind = "nothing" }
 insert_strategy = { kind = "full" }
-copy_options = { chunk_bytes = 4096 }
 feed = "rows"
 """
 

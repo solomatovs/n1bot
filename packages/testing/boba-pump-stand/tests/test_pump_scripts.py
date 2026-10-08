@@ -18,6 +18,7 @@ from typing import Any, ClassVar
 
 import pytest
 
+from boba.db.clickhouse.target import ChInsertTuning, InsertMemory
 from boba.db.oracle import OracleQueryError
 from boba.pump_stand import (
     ChSource,
@@ -29,11 +30,13 @@ from boba.pump_stand import (
     PumpDags,
     Pumps,
     PumpStand,
+    Sink,
 )
 from boba.pump_stand.oracle import PumpUser
 from boba.stand.names import StandNames
 from boba.stand_core.progress import HeardProgress
 from boba.toolkit.result import SqlFailureResult
+from boba.toolkit.transfer import StreamWire
 from boba.toolrun.dag_run import DagOutcome
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
@@ -55,7 +58,7 @@ tool = "pg_stream_out"
 connection = "pg"
 sql = "select id, v from $pg_schema.stage_src order by id"
 wire = "csv"
-copy_options = { chunk_bytes = 4096 }
+pipe_bytes = 4096
 out = "rows"
 
 [[nodes]]
@@ -69,7 +72,6 @@ table_name = "stage_tmp"
 schema_strategy = { kind = "create_if_not_exists" }
 delete_strategy = { kind = "nothing" }
 insert_strategy = { kind = "full" }
-copy_options = { chunk_bytes = 4096 }
 after = [
     "delete from $pg_schema.target t using $pg_schema.stage_tmp s where t.id = s.id",
     "insert into $pg_schema.target select id, v from $pg_schema.stage_tmp",
@@ -90,7 +92,7 @@ tool = "pg_stream_out"
 connection = "pg"
 sql = "select id, v from $pg_schema.target"
 wire = "csv"
-copy_options = { chunk_bytes = 4096 }
+pipe_bytes = 4096
 out = "rows"
 
 [[nodes]]
@@ -104,7 +106,6 @@ table_name = "mirror"
 schema_strategy = { kind = "error_if_not_exists" }
 delete_strategy = { kind = "nothing" }
 insert_strategy = { kind = "full" }
-copy_options = { chunk_bytes = 4096 }
 after = [
     "insert into $pg_schema.mirror values (9, 'nine')",
     "do $$$$ begin raise exception 'stop'; end $$$$",
@@ -125,7 +126,7 @@ tool = "pg_stream_out"
 connection = "pg"
 sql = "select id, v from $pg_schema.target order by id"
 wire = "arrow"
-copy_options = { chunk_bytes = 4096 }
+pipe_bytes = 4096
 out = "rows"
 
 [[nodes]]
@@ -139,7 +140,6 @@ table_name = "stage_arrow"
 schema_strategy = { kind = "create_if_not_exists" }
 delete_strategy = { kind = "nothing" }
 insert_strategy = { kind = "full" }
-copy_options = { chunk_bytes = 4096 }
 after = ["insert into $pg_schema.mirror select id, v from $pg_schema.stage_arrow"]
 feed = "rows"
 """
@@ -156,7 +156,7 @@ tool = "ch_stream_out"
 connection = "ch"
 sql = "select id, v from $ch_database.fresh order by id"
 wire = "tsv"
-chunk_bytes = 4096
+pipe_bytes = 4096
 out = "rows"
 
 [[nodes]]
@@ -195,7 +195,7 @@ tool = "ch_stream_out"
 connection = "ch"
 sql = "select id, v from snap"
 wire = "tsv"
-chunk_bytes = 4096
+pipe_bytes = 4096
 before = [
     "create temporary table snap (id UInt64, v String)",
     "insert into snap select id, v from $ch_database.target where id = 2",
@@ -230,7 +230,7 @@ tool = "ch_stream_out"
 connection = "ch"
 sql = "select d, id, v from $ch_database.fresh_part order by id"
 wire = "tsv"
-chunk_bytes = 4096
+pipe_bytes = 4096
 out = "rows"
 
 [[nodes]]
@@ -262,7 +262,7 @@ tool = "ch_stream_out"
 connection = "ch"
 sql = "select id, v from $ch_database.fresh"
 wire = "tsv"
-chunk_bytes = 4096
+pipe_bytes = 4096
 out = "rows"
 
 [[nodes]]
@@ -305,7 +305,6 @@ table_name = "stage_tmp"
 schema_strategy = { kind = "error_if_not_exists" }
 delete_strategy = { kind = "nothing" }
 insert_strategy = { kind = "full" }
-chunk_bytes = 4096
 before = ["delete from stage_tmp"]
 after = [
     "delete from target where id in (select id from stage_tmp)",
@@ -340,7 +339,6 @@ table_name = "snapshot"
 schema_strategy = { kind = "error_if_not_exists" }
 delete_strategy = { kind = "nothing" }
 insert_strategy = { kind = "full" }
-chunk_bytes = 4096
 feed = "rows"
 """
 
@@ -368,7 +366,6 @@ table_name = "mirror"
 schema_strategy = { kind = "error_if_not_exists" }
 delete_strategy = { kind = "nothing" }
 insert_strategy = { kind = "full" }
-chunk_bytes = 4096
 after = [
     "insert into mirror values (9, 'nine')",
     "begin raise_application_error(-20001, 'stop'); end;",
@@ -400,7 +397,6 @@ table_name = "stage_part"
 schema_strategy = { kind = "error_if_not_exists" }
 delete_strategy = { kind = "nothing" }
 insert_strategy = { kind = "full" }
-chunk_bytes = 4096
 before = ["truncate table stage_part"]
 after = ["alter table part_target exchange partition p_202409 with table stage_part"]
 feed = "rows"
@@ -528,8 +524,8 @@ class TestPostgres:
         settings = messages[0]
         if not settings.startswith("postgres pump settings: "):
             raise AssertionError(f"the settings come first: {messages}")
-        if f"chunk_bytes={Pumps.CHUNK_BYTES}" not in settings:
-            raise AssertionError(f"the chunk size in use is named: {settings}")
+        if f"channel_bytes={Sink.CAPACITY}" not in settings:
+            raise AssertionError(f"the channel size in use is named: {settings}")
         if "exact_floats=False" not in settings or "datestyle=" not in settings:
             raise AssertionError(f"defaults are named too: {settings}")
 
@@ -672,6 +668,33 @@ class TestClickHouse:
         ]
         assert "2\nstatement: select n from seen" in in_report
         assert "read 2 rows, written 2 rows\nstatement: insert into" in in_report
+
+    async def test_calculated_settings_go_before_the_steps_of_the_caller(
+        self, ch: ChScripts, ch_dags: PumpDags
+    ) -> None:
+        """Приёмник ставит посчитанные от памяти настройки вставки в начале
+        сессии, шаги before вызывающего идут после: его SET той же настройки
+        действует последним."""
+        outcome = await _run(ch_dags, CH_RECEIVER_SESSION)
+        report = outcome.node("dst").content
+
+        tuning = ChInsertTuning(int(InsertMemory.DEFAULT))
+        calculated: list[int] = []
+        for statement in tuning.statements(StreamWire.TSV, 2):
+            place = report.find(f"statement: {statement}")
+            if place < 0:
+                raise AssertionError(f"{statement!r} is not in the report:\n{report}")
+
+            calculated.append(place)
+
+        if calculated != sorted(calculated):
+            raise AssertionError(f"calculated settings keep their order:\n{report}")
+
+        own = report.find("statement: set max_insert_block_size = 1000")
+        if own < max(calculated):
+            raise AssertionError(
+                f"the statement of the caller comes after the calculated:\n{report}"
+            )
 
     async def test_source_reads_temp_table_from_before(
         self, ch: ChScripts, ch_dags: PumpDags

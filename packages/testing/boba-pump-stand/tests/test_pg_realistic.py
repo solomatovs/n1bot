@@ -295,7 +295,7 @@ connection = "shop"
 sql = \"\"\"$report_sql\"\"\"
 wire = "csv"
 columns = [{ name = "order_id", nullable = false }]
-copy_options = { chunk_bytes = 65536 }
+pipe_bytes = 65536
 out = "rows"
 
 [[nodes]]
@@ -310,7 +310,6 @@ schema_strategy = { kind = "create_if_not_exists" }
 delete_strategy = { kind = "nothing" }
 insert_strategy = { kind = "full" }
 rules = { column_types = { status = "text", tier = "text" } }
-copy_options = { chunk_bytes = 65536 }
 feed = "rows"
 """
 """order_id из join сервер считает nullable, LLM знает, что нет; enum
@@ -330,7 +329,7 @@ connection = "shop"
 sql = \"\"\"$report_sql\"\"\"
 wire = "csv"
 columns = [{ name = "order_id", nullable = false }]
-copy_options = { chunk_bytes = 65536 }
+pipe_bytes = 65536
 out = "rows"
 
 [[nodes]]
@@ -345,7 +344,6 @@ schema_strategy = { kind = "error_if_schema_changed" }
 delete_strategy = { kind = "truncate" }
 insert_strategy = { kind = "full" }
 rules = { column_types = { status = "text", tier = "text" } }
-copy_options = { chunk_bytes = 65536 }
 feed = "rows"
 """
 
@@ -362,7 +360,7 @@ connection = "shop"
 sql = \"\"\"$report_sql\"\"\"
 wire = "tsv"
 columns = [{ name = "order_id", nullable = false }]
-copy_options = { chunk_bytes = 65536 }
+pipe_bytes = 65536
 out = "rows"
 
 [[nodes]]
@@ -377,7 +375,6 @@ schema_strategy = { kind = "create_if_not_exists" }
 delete_strategy = { kind = "nothing" }
 insert_strategy = { kind = "full" }
 rules = { column_types = { status = "text", tier = "text" } }
-copy_options = { chunk_bytes = 65536 }
 feed = "rows"
 """
 
@@ -394,7 +391,7 @@ connection = "shop"
 sql = \"\"\"select * from ($report_sql) r where r.month = date '2024-03-01'\"\"\"
 wire = "csv"
 columns = [{ name = "order_id", nullable = false }]
-copy_options = { chunk_bytes = 65536 }
+pipe_bytes = 65536
 out = "rows"
 
 [[nodes]]
@@ -409,7 +406,6 @@ schema_strategy = { kind = "error_if_schema_changed" }
 delete_strategy = { kind = "delete_where", where = "month = date '2024-03-01'" }
 insert_strategy = { kind = "full" }
 rules = { column_types = { status = "text", tier = "text" } }
-copy_options = { chunk_bytes = 65536 }
 feed = "rows"
 """
 """Окна посчитаны по всему отчёту, как в представлении источника."""
@@ -427,7 +423,7 @@ connection = "shop"
 sql = \"\"\"select order_id, customer_name, tier, paid, gross, placed_at from ($report_sql) r\"\"\"
 wire = "csv"
 columns = [{ name = "order_id", nullable = false }]
-copy_options = { chunk_bytes = 65536 }
+pipe_bytes = 65536
 out = "rows"
 
 [[nodes]]
@@ -442,7 +438,6 @@ schema_strategy = { kind = "error_if_not_exists" }
 delete_strategy = { kind = "nothing" }
 insert_strategy = { kind = "full" }
 rules = { rename_columns = { order_uid = "order_id", client = "customer_name", client_tier = "tier", paid_amount = "paid" }, column_types = { client_tier = "varchar(10)" } }
-copy_options = { chunk_bytes = 65536 }
 feed = "rows"
 """
 
@@ -459,7 +454,7 @@ connection = "shop"
 sql = \"\"\"$report_sql\"\"\"
 wire = "csv"
 columns = [{ name = "order_id", nullable = false }]
-copy_options = { chunk_bytes = 65536 }
+pipe_bytes = 65536
 out = "rows"
 
 [[nodes]]
@@ -474,7 +469,6 @@ schema_strategy = { kind = "drop_and_create" }
 delete_strategy = { kind = "nothing" }
 insert_strategy = { kind = "full" }
 rules = { column_types = { status = "text", tier = "text" } }
-copy_options = { chunk_bytes = 65536 }
 feed = "rows"
 """
 
@@ -491,7 +485,7 @@ connection = "shop"
 sql = \"\"\"$report_sql\"\"\"
 wire = "csv"
 columns = [{ name = "order_id", nullable = false }]
-copy_options = { chunk_bytes = 65536 }
+pipe_bytes = 65536
 out = "rows"
 
 [[nodes]]
@@ -506,7 +500,6 @@ schema_strategy = { kind = "error_if_schema_changed" }
 delete_strategy = { kind = "truncate" }
 insert_strategy = { kind = "full" }
 rules = { column_types = { status = "text", tier = "text" } }
-copy_options = { chunk_bytes = 65536 }
 feed = "rows"
 """
 
@@ -523,7 +516,7 @@ connection = "shop"
 sql = \"\"\"$report_sql\"\"\"
 wire = "csv"
 columns = [{ name = "order_id", nullable = false }]
-copy_options = { chunk_bytes = 65536 }
+pipe_bytes = 65536
 out = "rows"
 
 [[nodes]]
@@ -538,7 +531,6 @@ schema_strategy = { kind = "backup_and_create_if_schema_changed" }
 delete_strategy = { kind = "nothing" }
 insert_strategy = { kind = "full" }
 rules = { column_types = { status = "text", tier = "text" } }
-copy_options = { chunk_bytes = 65536 }
 feed = "rows"
 """
 
@@ -555,7 +547,7 @@ connection = "shop"
 sql = \"\"\"$report_sql\"\"\"
 wire = "csv"
 columns = [{ name = "order_id", nullable = false }]
-copy_options = { chunk_bytes = 65536 }
+pipe_bytes = 65536
 out = "rows"
 
 [[nodes]]
@@ -571,7 +563,6 @@ delete_strategy = { kind = "nothing" }
 insert_strategy = { kind = "full" }
 rules = { column_types = { status = "text", tier = "text" } }
 create_table = "create table {schema_name}.{table_name} ({columns}) with (fillfactor = 90)"
-copy_options = { chunk_bytes = 65536 }
 feed = "rows"
 """
 
@@ -588,7 +579,7 @@ connection = "shop"
 sql = \"\"\"$report_sql\"\"\"
 wire = "csv"
 columns = [{ name = "order_id", nullable = false }]
-copy_options = { chunk_bytes = 65536 }
+pipe_bytes = 65536
 out = "rows"
 
 [[nodes]]
@@ -604,7 +595,6 @@ delete_strategy = { kind = "nothing" }
 insert_strategy = { kind = "full" }
 rules = { column_types = { status = "text", tier = "text" } }
 create_table = "create table {schema_name}.{table_name} ({columns}) distributed by (order_id)"
-copy_options = { chunk_bytes = 65536 }
 feed = "rows"
 """
 
@@ -621,7 +611,7 @@ connection = "shop"
 sql = \"\"\"$report_sql\"\"\"
 wire = "csv"
 columns = [{ name = "order_id", nullable = false }]
-copy_options = { chunk_bytes = 65536 }
+pipe_bytes = 65536
 out = "rows"
 
 [[nodes]]
@@ -636,7 +626,6 @@ schema_strategy = { kind = "drop_and_create" }
 delete_strategy = { kind = "nothing" }
 insert_strategy = { kind = "full" }
 rules = { column_types = { status = "text", tier = "text" } }
-copy_options = { chunk_bytes = 65536 }
 after = [
     "alter table $dw.orders_report rename to orders_report_old",
     "alter table $dw.orders_report_stage rename to orders_report",
@@ -659,7 +648,7 @@ connection = "shop"
 sql = \"\"\"$report_sql\"\"\"
 wire = "csv"
 columns = [{ name = "order_id", nullable = false }]
-copy_options = { chunk_bytes = 65536 }
+pipe_bytes = 65536
 out = "rows"
 
 [[nodes]]
@@ -674,7 +663,6 @@ schema_strategy = { kind = "drop_and_create" }
 delete_strategy = { kind = "nothing" }
 insert_strategy = { kind = "full" }
 rules = { column_types = { status = "text", tier = "text" } }
-copy_options = { chunk_bytes = 65536 }
 after = [
     "alter table $dw.orders_report rename to orders_report_old",
     "alter table $dw.orders_report_stage rename to orders_report",
@@ -697,7 +685,7 @@ connection = "shop"
 sql = \"\"\"$report_sql\"\"\"
 wire = "arrow"
 columns = [{ name = "order_id", nullable = false }]
-copy_options = { chunk_bytes = 65536 }
+pipe_bytes = 65536
 out = "rows"
 
 [[nodes]]
@@ -712,7 +700,6 @@ schema_strategy = { kind = "drop_and_create" }
 delete_strategy = { kind = "nothing" }
 insert_strategy = { kind = "full" }
 rules = { column_types = { status = "text", tier = "text" } }
-copy_options = { chunk_bytes = 65536 }
 feed = "rows"
 """
 
@@ -729,7 +716,7 @@ connection = "shop"
 sql = \"\"\"$report_sql\"\"\"
 wire = "csv"
 columns = [{ name = "order_id", nullable = false }]
-copy_options = { chunk_bytes = 65536 }
+pipe_bytes = 65536
 out = "rows"
 
 [[nodes]]
@@ -744,7 +731,6 @@ schema_strategy = { kind = "do_nothing" }
 delete_strategy = { kind = "nothing" }
 insert_strategy = { kind = "nothing" }
 rules = { column_types = { status = "text", tier = "text" } }
-copy_options = { chunk_bytes = 65536 }
 feed = "rows"
 """
 
@@ -761,7 +747,7 @@ connection = "dw"
 sql = "select city, month, count(*) as orders, sum(gross)::numeric(16,2) as gross, sum(balance)::numeric(16,2) as balance from $dw.orders_report group by city, month"
 wire = "csv"
 columns = []
-copy_options = { chunk_bytes = 65536 }
+pipe_bytes = 65536
 out = "rows"
 
 [[nodes]]
@@ -776,7 +762,6 @@ schema_strategy = { kind = "drop_and_create" }
 delete_strategy = { kind = "nothing" }
 insert_strategy = { kind = "full" }
 rules = {}
-copy_options = { chunk_bytes = 65536 }
 feed = "rows"
 """
 
@@ -793,7 +778,7 @@ connection = "dw"
 sql = "select city, month, count(*) as orders, sum(gross)::numeric(16,2) as gross, sum(balance)::numeric(16,2) as balance from $dw.orders_report group by city, month"
 wire = "binary"
 columns = []
-copy_options = { chunk_bytes = 65536 }
+pipe_bytes = 65536
 out = "rows"
 
 [[nodes]]
@@ -808,7 +793,6 @@ schema_strategy = { kind = "drop_and_create" }
 delete_strategy = { kind = "nothing" }
 insert_strategy = { kind = "full" }
 rules = {}
-copy_options = { chunk_bytes = 65536 }
 feed = "rows"
 """
 

@@ -5,11 +5,11 @@
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
-from typing import Any, ClassVar
+from typing import Any
 
 from boba.db.clickhouse.connection import ClickHouseConfig
 from boba.db.oracle.connection import OracleConfig
-from boba.db.postgres.connection import CopyOptions, PostgresConfig
+from boba.db.postgres.connection import PostgresConfig
 from boba.pump_stand.ports import Feed, Sink
 from boba.tool.ch import tools as ch
 from boba.tool.ora import tools as ora
@@ -35,9 +35,6 @@ class Pumps:
     возвращает тела кадров порта, sync_in принимает кадры из памяти и отдаёт
     текст отчёта; extra — остальные аргументы фасада (before, after,
     copy_options)."""
-
-    CHUNK_BYTES: ClassVar[int] = 4096
-    """Размер порции насосов с chunk_bytes: нижняя граница фасада."""
 
     def __init__(
         self,
@@ -101,7 +98,6 @@ class Pumps:
             "pg_stream_out",
             statement,
             wire=StreamWire.TSV,
-            copy_options=CopyOptions(chunk_bytes=self.CHUNK_BYTES),
             **extra,
         )
 

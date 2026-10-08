@@ -45,7 +45,6 @@ from boba.toolkit.contract import (
 from boba.toolkit.entry import ToolMain
 from boba.toolkit.facade import Injected, UserConnection, tool
 from boba.toolkit.ports import (
-    ChunkBytes,
     Inbound,
     Outbound,
     QueryProgress,
@@ -840,7 +839,6 @@ async def ora_stream_out(  # noqa: PLR0913
             ),
         ),
     ] = (),
-    chunk_bytes: ChunkBytes = 262144,
     before: BeforeSteps = (),
     after: AfterSteps = (),
     *,
@@ -866,14 +864,14 @@ async def ora_stream_out(  # noqa: PLR0913
     statement = OraQueryBuilder().raw_query(sql).build()
     outbound = TransferOutbound(out, meter)
     try:
-        meter.configured({"chunk_bytes": chunk_bytes})
+        meter.configured({"channel_bytes": outbound.capacity()})
         meter.connecting()
         async with payload.opened() as conn:
             meter.connected(f"server {conn.version}")
             trace = OraSessionTrace(conn)
             await run_steps(payload, conn, before, journal)
             specs = await OraArrowSource(conn, payload, trace, journal).stream(
-                statement.text, columns, chunk_bytes, outbound
+                statement.text, columns, outbound
             )
             await run_steps(payload, conn, after, journal)
             await payload.commit(conn)
@@ -942,7 +940,6 @@ async def ora_stream_in(  # noqa: PLR0913
             ),
         ),
     ],
-    chunk_bytes: ChunkBytes,
     rules: Annotated[
         ColumnRules,
         Field(
@@ -1022,7 +1019,7 @@ async def ora_stream_in(  # noqa: PLR0913
             )
 
         contract = ArrowContract.model_validate(head.contract)
-        meter.configured({"chunk_bytes": chunk_bytes})
+        meter.configured({"channel_bytes": inbound.capacity()})
         meter.connecting()
         async with payload.opened() as conn:
             meter.connected(f"server {conn.version}")
@@ -1034,7 +1031,6 @@ async def ora_stream_in(  # noqa: PLR0913
                 StreamContract().specs(contract.columns),
                 NeutralEngine(head.source_engine.value),
                 inbound,
-                chunk_bytes,
                 payload,
                 trace,
                 journal,

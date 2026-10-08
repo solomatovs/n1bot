@@ -25,8 +25,10 @@ import pytest
 
 from boba.db.clickhouse.arrow_stream import ArrowBodyWithoutEos
 from boba.db.clickhouse.payload import PayloadClickHouse
+from boba.db.clickhouse.target import ChInsertTuning, InsertMemory
 from boba.pump_stand import PumpStand
 from boba.toolkit.stream import Chunk
+from boba.toolkit.transfer import StreamWire
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
 
@@ -107,4 +109,65 @@ async def test_stream_is_not_held_in_memory_under_a_large_query_size(
         raise AssertionError(
             f"the stream is read in batches, got {used >> 20} MiB of query "
             f"memory for a stream of {stream.rows()} rows"
+        )
+
+
+async def test_insert_stays_within_the_memory_it_was_given(profile: Any) -> None:
+    """Настройки, посчитанные от разрешённой памяти, держат запрос вставки в
+    её пределах: без них сервер копит блоки по своим значениям по умолчанию и
+    занимает вдвое больше."""
+    stream = BigStream()
+    tuning = ChInsertTuning(int(InsertMemory.FLOOR))
+
+    async with PayloadClickHouse.opened_session(profile) as client:
+        for statement in tuning.statements(StreamWire.ARROW, 2):
+            await PayloadClickHouse.command(client, statement)
+
+        trace = await PayloadClickHouse.byte_stream_in(
+            client,
+            BigStream.INSERT,
+            blocks=ArrowBodyWithoutEos().shaped(stream.frames()),
+        )
+
+    if trace.written_rows != stream.rows():
+        raise AssertionError(f"every row of the stream is written: {trace}")
+
+    used = trace.memory_usage
+    if used is None:
+        pytest.skip("the server does not report the memory of a query in the summary")
+
+    if used > InsertMemory.FLOOR:
+        raise AssertionError(
+            f"the insert was given {InsertMemory.FLOOR >> 20} MiB, "
+            f"used {used >> 20} MiB"
+        )
+
+
+async def test_statement_of_the_caller_overrides_the_calculated_one(
+    profile: Any,
+) -> None:
+    """SET вызывающего идёт после посчитанных и перекрывает их: с мелким
+    блоком вставки запрос занимает заметно меньше расчётного."""
+    stream = BigStream()
+    tuning = ChInsertTuning(int(InsertMemory.DEFAULT))
+
+    async with PayloadClickHouse.opened_session(profile) as client:
+        for statement in tuning.statements(StreamWire.ARROW, 2):
+            await PayloadClickHouse.command(client, statement)
+
+        await PayloadClickHouse.command(client, "SET min_insert_block_size_bytes = 1")
+        await PayloadClickHouse.command(client, "SET min_insert_block_size_rows = 8192")
+        trace = await PayloadClickHouse.byte_stream_in(
+            client,
+            BigStream.INSERT,
+            blocks=ArrowBodyWithoutEos().shaped(stream.frames()),
+        )
+
+    used = trace.memory_usage
+    if used is None:
+        pytest.skip("the server does not report the memory of a query in the summary")
+
+    if used > InsertMemory.BLOCK_FLOOR * 3:
+        raise AssertionError(
+            f"the caller's small block is in force, used {used >> 20} MiB"
         )

@@ -25,15 +25,17 @@ from boba.db.clickhouse.connection import ClickHouseConfig
 from boba.db.clickhouse.query import ChQuery, ChQueryBuilder
 from boba.db.clickhouse.target import (
     ChCluster,
+    ChInsertTuning,
     ChPlacement,
     ChStreamWire,
     ChTableRef,
+    InsertMemory,
+    InsertMemoryBytes,
 )
 from boba.toolkit.contract import ColumnDeclaration
 from boba.toolkit.entry import ToolMain
 from boba.toolkit.facade import Injected, UserConnection, tool
 from boba.toolkit.ports import (
-    ChunkBytes,
     Inbound,
     Outbound,
     QueryProgress,
@@ -1066,7 +1068,6 @@ async def ch_stream_out(  # noqa: PLR0913
             ),
         ),
     ] = (),
-    chunk_bytes: ChunkBytes = 262144,
     before: BeforeSteps = (),
     after: AfterSteps = (),
     *,
@@ -1098,7 +1099,7 @@ async def ch_stream_out(  # noqa: PLR0913
     statement = ChQueryBuilder().raw_query(sql).build()
     outbound = TransferOutbound(out, meter)
     try:
-        meter.configured({"wire": wire.value, "chunk_bytes": chunk_bytes})
+        meter.configured({"wire": wire.value, "channel_bytes": outbound.capacity()})
         meter.connecting()
         async with PayloadClickHouse.opened_for_scripts(
             connection, before, after
@@ -1108,11 +1109,11 @@ async def ch_stream_out(  # noqa: PLR0913
             match wire:
                 case ChStreamWire.TSV:
                     report = await ChTsvOut(client, journal).stream(
-                        statement.text, chunk_bytes, outbound
+                        statement.text, outbound
                     )
                 case ChStreamWire.ARROW:
                     report = await ChArrowSource(client, journal).stream(
-                        statement.text, columns, chunk_bytes, outbound
+                        statement.text, columns, outbound
                     )
 
             await run_steps(client, after, journal)
@@ -1248,6 +1249,7 @@ async def ch_stream_in(  # noqa: PLR0913
             ),
         ),
     ] = ChTableRef.CREATE_TABLE,
+    max_insert_memory_bytes: InsertMemoryBytes = InsertMemory.DEFAULT,
     before: BeforeSteps = (),
     after: AfterSteps = (),
     *,
@@ -1265,9 +1267,10 @@ async def ch_stream_in(  # noqa: PLR0913
     «движок источника -> ClickHouse» из реестра. База обязана быть Atomic:
     загрузка идёт в двойник <table>__ex и заканчивается exchange tables
     после барьера группы связанных вызовов.
-    Стейтменты before и after идут в той же сессии сервера. В ответ — что
-    сделано со схемой и почему, сверка по колонкам, что удалено, сколько
-    вставлено.
+    Настройки вставки считаются от max_insert_memory_bytes и ставятся SET в
+    начале сессии; стейтменты before идут после них в той же сессии и
+    перекрывают любую, after — после загрузки. В ответ — что сделано со
+    схемой и почему, сверка по колонкам, что удалено, сколько вставлено.
     """
     from boba.db.clickhouse.arrow_stream import ChArrowLoader  # noqa: PLC0415
     from boba.db.clickhouse.payload import PayloadClickHouse  # noqa: PLC0415
@@ -1284,9 +1287,17 @@ async def ch_stream_in(  # noqa: PLR0913
     table = ChTableRef(database=database, name=table_name)
     try:
         head = await inbound.get_schema()
+        tuning = ChInsertTuning(max_insert_memory_bytes)
+        meter.configured(
+            {
+                "channel_bytes": inbound.capacity(),
+                **tuning.settings(head.wire, head.width()),
+            }
+        )
         meter.connecting()
-        async with payload.opened_for_scripts(connection, before, after) as client:
+        async with payload.opened_session(connection) as client:
             meter.connected(f"server {client.server_version}")
+            await run_steps(client, tuning.statements(head.wire, head.width()), journal)
             await run_steps(client, before, journal)
             if head.wire is StreamWire.ARROW:
                 contract = ArrowContract.model_validate(head.contract)

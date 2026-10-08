@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import os
 from collections.abc import Iterator
-from typing import Any
+from typing import Any, ClassVar
 
 from boba.toolkit.frames import ToolIo
 from boba.toolkit.ports import Chunk, Framed, Outbound, StreamPorts
@@ -22,6 +22,10 @@ class Sink:
     """Выходной порт кадров в память: копит тела кадров rows, кадр schema
     запоминает."""
 
+    CAPACITY: ClassVar[int] = 4096
+    """Ёмкость канала, которую порт называет насосу: мелкая, чтобы поток
+    шёл многими кадрами."""
+
     def __init__(self) -> None:
         self._buffer = bytearray()
         self.heads: list[Any] = []
@@ -29,6 +33,9 @@ class Sink:
     def emit(self, head: Any, body: Any = b"") -> None:
         self.heads.append(head)
         self._buffer.extend(memoryview(body))
+
+    def capacity(self) -> int:
+        return self.CAPACITY
 
     def data(self) -> bytes:
         return bytes(self._buffer)
@@ -43,6 +50,9 @@ class SinkOutbound(Outbound[TransferFrame]):
 
     def emit(self, head: TransferFrame, body: Chunk = b"") -> None:
         self._sink.emit(head, body)
+
+    def capacity(self) -> int:
+        return self._sink.capacity()
 
 
 class Feed:
@@ -62,6 +72,10 @@ class Feed:
             chunk = self._data[offset : offset + self._size]
             offset += self._size
             yield Framed(head=RowsHead(kind="rows"), body=chunk)
+
+    def capacity(self) -> int:
+        """Ёмкость канала — размер порций, которыми порт отдаёт поток."""
+        return self._size
 
 
 class Pipe:

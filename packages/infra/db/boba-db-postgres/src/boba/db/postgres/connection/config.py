@@ -23,7 +23,6 @@ from boba.db.postgres.connection.auth import (
     PostgresLibpq,
 )
 from boba.kerberos import KerberosAuthBase, KerberosDump, TicketAuth
-from boba.toolkit.ports import ChunkBytes
 
 __all__ = ["PostgresConfig", "PostgresOptionsConfig", "PostgresPoolConfig"]
 
@@ -143,13 +142,12 @@ class CopySession(BaseModel):
 
 
 class CopyOptions(CopySession):
-    """Как насос ведёт COPY: сессия (CopySession) плюс порция потока и запись
-    float при загрузке. Один аргумент `copy` у всех pg-насосов; у выгрузки
-    без потока на входе exact_floats не используется."""
+    """Как насос ведёт COPY: сессия (CopySession) плюс запись float при
+    загрузке. Один аргумент `copy` у всех pg-насосов; у выгрузки без потока
+    на входе exact_floats не используется."""
 
     model_config = ConfigDict(frozen=True)
 
-    chunk_bytes: ChunkBytes = 262144
     exact_floats: bool = Field(
         default=False,
         description=(

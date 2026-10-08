@@ -329,7 +329,7 @@ connection = "pg"
 sql = '''$raw_sql'''
 wire = "tsv"
 columns = [{ name = "order_id", nullable = false }]
-copy_options = { chunk_bytes = 65536 }
+pipe_bytes = 65536
 out = "rows"
 
 [[nodes]]
@@ -363,7 +363,7 @@ connection = "pg"
 sql = '''$raw_sql'''
 wire = "tsv"
 columns = [{ name = "order_id", nullable = false }]
-copy_options = { chunk_bytes = 65536 }
+pipe_bytes = 65536
 out = "rows"
 
 [[nodes]]
@@ -397,7 +397,7 @@ connection = "pg"
 sql = '''$report_sql'''
 wire = "tsv"
 columns = [{ name = "order_id", nullable = false }, { name = "placed_at", nullable = false }, { name = "month", nullable = false }]
-copy_options = { chunk_bytes = 65536 }
+pipe_bytes = 65536
 out = "rows"
 
 [[nodes]]
@@ -431,7 +431,7 @@ connection = "pg"
 sql = '''$report_sql'''
 wire = "tsv"
 columns = [{ name = "order_id", nullable = false }, { name = "placed_at", nullable = false }, { name = "month", nullable = false }]
-copy_options = { chunk_bytes = 65536 }
+pipe_bytes = 65536
 out = "rows"
 
 [[nodes]]
@@ -465,7 +465,7 @@ connection = "pg"
 sql = '''select * from ($report_sql) r where r.month = date '$month' '''
 wire = "tsv"
 columns = [{ name = "order_id", nullable = false }, { name = "placed_at", nullable = false }, { name = "month", nullable = false }]
-copy_options = { chunk_bytes = 65536 }
+pipe_bytes = 65536
 out = "rows"
 
 [[nodes]]
@@ -499,7 +499,7 @@ connection = "pg"
 sql = '''select order_id, customer_name, tier, paid, gross, placed_at from ($report_sql) r'''
 wire = "tsv"
 columns = [{ name = "order_id", nullable = false }, { name = "customer_name", nullable = false }, { name = "tier", nullable = false }, { name = "placed_at", nullable = false }]
-copy_options = { chunk_bytes = 65536 }
+pipe_bytes = 65536
 out = "rows"
 
 [[nodes]]
@@ -533,7 +533,7 @@ connection = "pg"
 sql = '''$report_sql'''
 wire = "tsv"
 columns = [{ name = "order_id", nullable = false }, { name = "placed_at", nullable = false }, { name = "month", nullable = false }]
-copy_options = { chunk_bytes = 65536 }
+pipe_bytes = 65536
 out = "rows"
 
 [[nodes]]
@@ -567,7 +567,7 @@ connection = "pg"
 sql = '''$report_sql'''
 wire = "tsv"
 columns = [{ name = "order_id", nullable = false }, { name = "placed_at", nullable = false }, { name = "month", nullable = false }]
-copy_options = { chunk_bytes = 65536 }
+pipe_bytes = 65536
 out = "rows"
 
 [[nodes]]
@@ -601,7 +601,7 @@ connection = "pg"
 sql = '''$report_sql'''
 wire = "tsv"
 columns = [{ name = "order_id", nullable = false }, { name = "placed_at", nullable = false }, { name = "month", nullable = false }]
-copy_options = { chunk_bytes = 65536 }
+pipe_bytes = 65536
 out = "rows"
 
 [[nodes]]
@@ -635,7 +635,7 @@ connection = "pg"
 sql = '''$report_sql'''
 wire = "tsv"
 columns = [{ name = "order_id", nullable = false }, { name = "placed_at", nullable = false }, { name = "month", nullable = false }]
-copy_options = { chunk_bytes = 65536 }
+pipe_bytes = 65536
 out = "rows"
 
 [[nodes]]
@@ -669,7 +669,7 @@ connection = "pg"
 sql = '''$report_sql'''
 wire = "tsv"
 columns = [{ name = "order_id", nullable = false }, { name = "placed_at", nullable = false }, { name = "month", nullable = false }]
-copy_options = { chunk_bytes = 65536 }
+pipe_bytes = 65536
 out = "rows"
 
 [[nodes]]
@@ -703,7 +703,7 @@ connection = "pg"
 sql = '''$report_sql'''
 wire = "tsv"
 columns = [{ name = "order_id", nullable = false }, { name = "placed_at", nullable = false }, { name = "month", nullable = false }]
-copy_options = { chunk_bytes = 65536 }
+pipe_bytes = 65536
 out = "rows"
 
 [[nodes]]
@@ -741,7 +741,7 @@ connection = "pg"
 sql = '''$report_sql'''
 wire = "tsv"
 columns = [{ name = "order_id", nullable = false }, { name = "placed_at", nullable = false }, { name = "month", nullable = false }]
-copy_options = { chunk_bytes = 65536 }
+pipe_bytes = 65536
 out = "rows"
 
 [[nodes]]
@@ -775,7 +775,7 @@ connection = "pg"
 sql = '''select c.id as customer_id, json_build_object('city', c.city, 'tier', c.tier::text, 'tags', array_to_json(c.tags))::jsonb as profile, case when c.last_ip is null then null else json_build_object('ip', host(c.last_ip)) end as net from $src.customers c'''
 wire = "tsv"
 columns = [{ name = "customer_id", nullable = false }, { name = "profile", nullable = false }]
-copy_options = { chunk_bytes = 65536 }
+pipe_bytes = 65536
 out = "rows"
 
 [[nodes]]
@@ -809,7 +809,7 @@ connection = "pg"
 sql = '''select order_id, status, customer_uid, customer_name, city, month, placed_at, gross, paid, is_active from ($report_sql) r'''
 wire = "arrow"
 columns = [{ name = "order_id", nullable = false }, { name = "placed_at", nullable = false }, { name = "month", nullable = false }]
-copy_options = { chunk_bytes = 65536 }
+pipe_bytes = 65536
 out = "rows"
 
 [[nodes]]
@@ -842,7 +842,7 @@ tool = "ch_stream_out"
 connection = "ch"
 sql = "select city, month, count() as orders, sum(gross) as gross, sum(balance) as balance from $dw.orders_report group by city, month"
 wire = "tsv"
-chunk_bytes = 65536
+pipe_bytes = 65536
 out = "rows"
 
 [[nodes]]
@@ -857,7 +857,6 @@ schema_strategy = { kind = "drop_and_create" }
 delete_strategy = { kind = "nothing" }
 insert_strategy = { kind = "full" }
 rules = {}
-copy_options = { chunk_bytes = 65536 }
 feed = "rows"
 """
 

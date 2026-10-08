@@ -205,7 +205,6 @@ insert_strategy = { kind = "full" }
 rules = {}
 unknown_types = { kind = "fail_on_unknown" }
 create_table = "create table {schema_name}.{table_name} ({columns})"
-chunk_bytes = 65536
 feed = "rows"
 """
 
@@ -237,7 +236,6 @@ insert_strategy = { kind = "full" }
 rules = {}
 unknown_types = { kind = "fail_on_unknown" }
 create_table = "create table {schema_name}.{table_name} ({columns})"
-chunk_bytes = 65536
 feed = "rows"
 """
 
@@ -266,7 +264,6 @@ table_name = "$from_table"
 schema_strategy = { kind = "drop_and_create" }
 delete_strategy = { kind = "nothing" }
 insert_strategy = { kind = "full" }
-copy_options = { chunk_bytes = 65536 }
 feed = "rows"
 """
 """Для postgres: двоичные колонки текстом hex — COPY из arrow bytes не берёт."""
@@ -314,7 +311,7 @@ connection = "pg"
 sql = "select id, b from $pg_schema.src"
 wire = "arrow"
 columns = [{ name = "id", nullable = false }]
-copy_options = { chunk_bytes = 65536 }
+pipe_bytes = 65536
 out = "rows"
 
 [[nodes]]
@@ -331,7 +328,6 @@ insert_strategy = { kind = "full" }
 rules = {}
 unknown_types = { kind = "fail_on_unknown" }
 create_table = "create table {schema_name}.{table_name} ({columns})"
-chunk_bytes = 65536
 feed = "rows"
 """
 
@@ -348,7 +344,7 @@ connection = "pg"
 sql = "select id, arr from $pg_schema.src"
 wire = "arrow"
 columns = [{ name = "id", nullable = false }]
-copy_options = { chunk_bytes = 65536 }
+pipe_bytes = 65536
 out = "rows"
 
 [[nodes]]
@@ -365,7 +361,6 @@ insert_strategy = { kind = "full" }
 rules = {}
 unknown_types = { kind = "fail_on_unknown" }
 create_table = "create table {schema_name}.{table_name} ({columns})"
-chunk_bytes = 65536
 feed = "rows"
 """
 
@@ -382,7 +377,7 @@ connection = "pg"
 sql = "select id, arr from $pg_schema.src"
 wire = "arrow"
 columns = [{ name = "id", nullable = false }]
-copy_options = { chunk_bytes = 65536 }
+pipe_bytes = 65536
 out = "rows"
 
 [[nodes]]
@@ -399,7 +394,6 @@ insert_strategy = { kind = "full" }
 rules = {}
 unknown_types = { kind = "fallback_as_varchar" }
 create_table = "create table {schema_name}.{table_name} ({columns})"
-chunk_bytes = 65536
 feed = "rows"
 """
 
@@ -416,7 +410,7 @@ connection = "pg"
 sql = "select id, i2, n, f8, $pg_bool, t, vc, bin, d, ts, tz, tm, u, j, ip, iv from $pg_schema.src"
 wire = "arrow"
 columns = [{ name = "id", nullable = false }]
-copy_options = { chunk_bytes = 65536 }
+pipe_bytes = 65536
 out = "rows"
 
 [[nodes]]
@@ -433,7 +427,6 @@ insert_strategy = { kind = "full" }
 rules = {}
 unknown_types = { kind = "fail_on_unknown" }
 create_table = "create table {schema_name}.{table_name} ({columns})"
-chunk_bytes = 65536
 feed = "rows"
 """
 
@@ -450,7 +443,7 @@ connection = "pg"
 sql = "select id, i2, n, f8, $pg_bool, t, vc, bin, d, ts, tz, tm, u, j, ip, iv from $pg_schema.src"
 wire = "arrow"
 columns = [{ name = "id", nullable = false }]
-copy_options = { chunk_bytes = 65536 }
+pipe_bytes = 65536
 out = "rows"
 
 [[nodes]]
@@ -467,7 +460,6 @@ insert_strategy = { kind = "full" }
 rules = {}
 unknown_types = { kind = "fail_on_unknown" }
 create_table = "create table {schema_name}.{table_name} ({columns})"
-chunk_bytes = 65536
 feed = "rows"
 """
 
@@ -484,7 +476,7 @@ connection = "pg"
 sql = "select id, ts from $pg_schema.src"
 wire = "arrow"
 columns = [{ name = "id", nullable = false }]
-copy_options = { chunk_bytes = 65536 }
+pipe_bytes = 65536
 out = "rows"
 
 [[nodes]]
@@ -501,7 +493,6 @@ insert_strategy = { kind = "full" }
 rules = {}
 unknown_types = { kind = "fail_on_unknown" }
 create_table = "create table {schema_name}.{table_name} ({columns})"
-chunk_bytes = 65536
 feed = "rows"
 """
 
@@ -518,7 +509,7 @@ connection = "pg"
 sql = "select id, tz as ts from $pg_schema.src"
 wire = "arrow"
 columns = [{ name = "id", nullable = false }]
-copy_options = { chunk_bytes = 65536 }
+pipe_bytes = 65536
 out = "rows"
 
 [[nodes]]
@@ -535,7 +526,6 @@ insert_strategy = { kind = "full" }
 rules = {}
 unknown_types = { kind = "fail_on_unknown" }
 create_table = "create table {schema_name}.{table_name} ({columns})"
-chunk_bytes = 65536
 feed = "rows"
 """
 
@@ -552,7 +542,7 @@ connection = "pg"
 sql = "select id, d, vc from $pg_schema.src"
 wire = "arrow"
 columns = [{ name = "id", nullable = false }]
-copy_options = { chunk_bytes = 65536 }
+pipe_bytes = 65536
 out = "rows"
 
 [[nodes]]
@@ -569,7 +559,6 @@ insert_strategy = { kind = "full" }
 rules = {}
 unknown_types = { kind = "fail_on_unknown" }
 create_table = "create table {schema_name}.{table_name} ({columns})"
-chunk_bytes = 65536
 feed = "rows"
 """
 
@@ -586,7 +575,7 @@ connection = "pg"
 sql = "select id, d, vc from $pg_schema.src where to_char(d, 'YYYY-MM') = '$month'"
 wire = "arrow"
 columns = [{ name = "id", nullable = false }]
-copy_options = { chunk_bytes = 65536 }
+pipe_bytes = 65536
 out = "rows"
 
 [[nodes]]
@@ -603,7 +592,6 @@ insert_strategy = { kind = "full" }
 rules = {}
 unknown_types = { kind = "fail_on_unknown" }
 create_table = "create table {schema_name}.{table_name} ({columns})"
-chunk_bytes = 65536
 feed = "rows"
 """
 
@@ -620,7 +608,7 @@ connection = "pg"
 sql = "select id, n, vc, ts from $pg_schema.src"
 wire = "arrow"
 columns = [{ name = "id", nullable = false }]
-copy_options = { chunk_bytes = 65536 }
+pipe_bytes = 65536
 out = "rows"
 
 [[nodes]]
@@ -637,7 +625,6 @@ insert_strategy = { kind = "full" }
 rules = { rename_columns = { key = "id", amount = "n", label = "vc" }, column_types = { amount = "NUMBER(14,3)", label = "VARCHAR2(10)" } }
 unknown_types = { kind = "fail_on_unknown" }
 create_table = "create table {schema_name}.{table_name} ({columns})"
-chunk_bytes = 65536
 feed = "rows"
 """
 
@@ -654,7 +641,7 @@ connection = "pg"
 sql = "select id, n, vc from $pg_schema.src"
 wire = "arrow"
 columns = [{ name = "id", nullable = false }]
-copy_options = { chunk_bytes = 65536 }
+pipe_bytes = 65536
 out = "rows"
 
 [[nodes]]
@@ -671,7 +658,6 @@ insert_strategy = { kind = "full" }
 rules = {}
 unknown_types = { kind = "fail_on_unknown" }
 create_table = "create table {schema_name}.{table_name} ({columns})"
-chunk_bytes = 65536
 feed = "rows"
 """
 
@@ -688,7 +674,7 @@ connection = "pg"
 sql = "select id, n, vc from $pg_schema.src"
 wire = "arrow"
 columns = [{ name = "id", nullable = false }]
-copy_options = { chunk_bytes = 65536 }
+pipe_bytes = 65536
 out = "rows"
 
 [[nodes]]
@@ -705,7 +691,6 @@ insert_strategy = { kind = "full" }
 rules = {}
 unknown_types = { kind = "fail_on_unknown" }
 create_table = "create table {schema_name}.{table_name} ({columns})"
-chunk_bytes = 65536
 feed = "rows"
 """
 
@@ -722,7 +707,7 @@ connection = "pg"
 sql = "select id, n, vc from $pg_schema.src"
 wire = "arrow"
 columns = [{ name = "id", nullable = false }]
-copy_options = { chunk_bytes = 65536 }
+pipe_bytes = 65536
 out = "rows"
 
 [[nodes]]
@@ -739,7 +724,6 @@ insert_strategy = { kind = "full" }
 rules = {}
 unknown_types = { kind = "fail_on_unknown" }
 create_table = "create table {schema_name}.{table_name} ({columns})"
-chunk_bytes = 65536
 feed = "rows"
 """
 
@@ -756,7 +740,7 @@ connection = "pg"
 sql = "select id, n, vc from $pg_schema.src"
 wire = "arrow"
 columns = [{ name = "id", nullable = false }]
-copy_options = { chunk_bytes = 65536 }
+pipe_bytes = 65536
 out = "rows"
 
 [[nodes]]
@@ -773,7 +757,6 @@ insert_strategy = { kind = "full" }
 rules = {}
 unknown_types = { kind = "fail_on_unknown" }
 create_table = "create table {schema_name}.{table_name} ({columns})"
-chunk_bytes = 65536
 feed = "rows"
 """
 
@@ -790,7 +773,7 @@ connection = "pg"
 sql = "select id, n from $pg_schema.src"
 wire = "arrow"
 columns = [{ name = "id", nullable = false }]
-copy_options = { chunk_bytes = 65536 }
+pipe_bytes = 65536
 out = "rows"
 
 [[nodes]]
@@ -807,7 +790,6 @@ insert_strategy = { kind = "full" }
 rules = {}
 unknown_types = { kind = "fail_on_unknown" }
 create_table = "create table {schema_name}.{table_name} ({columns}) tablespace users nologging"
-chunk_bytes = 65536
 after = ["update $ora_schema.templated set n = n * 2"]
 feed = "rows"
 """
@@ -825,7 +807,7 @@ connection = "pg"
 sql = "select id, n from $pg_schema.src"
 wire = "arrow"
 columns = [{ name = "id", nullable = false }]
-copy_options = { chunk_bytes = 65536 }
+pipe_bytes = 65536
 out = "rows"
 
 [[nodes]]
@@ -842,7 +824,6 @@ insert_strategy = { kind = "nothing" }
 rules = {}
 unknown_types = { kind = "fail_on_unknown" }
 create_table = "create table {schema_name}.{table_name} ({columns})"
-chunk_bytes = 65536
 feed = "rows"
 """
 
@@ -859,7 +840,7 @@ connection = "pg"
 sql = "select id, n from $pg_schema.src"
 wire = "arrow"
 columns = [{ name = "id", nullable = false }]
-copy_options = { chunk_bytes = 65536 }
+pipe_bytes = 65536
 out = "rows"
 
 [[nodes]]
@@ -876,7 +857,6 @@ insert_strategy = { kind = "full" }
 rules = {}
 unknown_types = { kind = "fail_on_unknown" }
 create_table = "create table {schema_name}.{table_name} ({columns})"
-chunk_bytes = 65536
 after = ["insert into no_such_table values (1)"]
 feed = "rows"
 """
@@ -893,7 +873,7 @@ tool = "ch_stream_out"
 connection = "ch"
 sql = "select id, u from $ch_database.src order by id settings output_format_arrow_string_as_string = 1"
 wire = "arrow"
-chunk_bytes = 65536
+pipe_bytes = 65536
 out = "rows"
 
 [[nodes]]
@@ -910,7 +890,6 @@ insert_strategy = { kind = "full" }
 rules = {}
 unknown_types = { kind = "fail_on_unknown" }
 create_table = "create table {schema_name}.{table_name} ({columns})"
-chunk_bytes = 65536
 feed = "rows"
 """
 
@@ -926,7 +905,7 @@ tool = "ch_stream_out"
 connection = "ch"
 sql = "select id, u8, dec, f32, s, lc, d, dt, $ch_bool, toString(u) as u from $ch_database.src order by id settings output_format_arrow_string_as_string = 1"
 wire = "arrow"
-chunk_bytes = 65536
+pipe_bytes = 65536
 out = "rows"
 
 [[nodes]]
@@ -943,7 +922,6 @@ insert_strategy = { kind = "full" }
 rules = {}
 unknown_types = { kind = "fail_on_unknown" }
 create_table = "create table {schema_name}.{table_name} ({columns})"
-chunk_bytes = 65536
 feed = "rows"
 """
 
@@ -975,7 +953,6 @@ insert_strategy = { kind = "full" }
 rules = {}
 unknown_types = { kind = "fail_on_unknown" }
 create_table = "create table {schema_name}.{table_name} ({columns})"
-chunk_bytes = 65536
 feed = "rows"
 """
 
@@ -1007,7 +984,6 @@ insert_strategy = { kind = "full" }
 rules = { column_types = { utc = "TIMESTAMP(6) WITH TIME ZONE" } }
 unknown_types = { kind = "fail_on_unknown" }
 create_table = "create table {schema_name}.{table_name} ({columns})"
-chunk_bytes = 65536
 feed = "rows"
 """
 
@@ -1039,7 +1015,6 @@ insert_strategy = { kind = "full" }
 rules = {}
 unknown_types = { kind = "fail_on_unknown" }
 create_table = "create table {schema_name}.{table_name} ({columns})"
-chunk_bytes = 65536
 feed = "rows"
 """
 
@@ -1071,7 +1046,6 @@ insert_strategy = { kind = "full" }
 rules = {}
 unknown_types = { kind = "fail_on_unknown" }
 create_table = "create table {schema_name}.{table_name} ({columns})"
-chunk_bytes = 65536
 feed = "rows"
 """
 
@@ -1103,7 +1077,6 @@ insert_strategy = { kind = "full" }
 rules = {}
 unknown_types = { kind = "fail_on_unknown" }
 create_table = "create table {schema_name}.{table_name} ({columns})"
-chunk_bytes = 65536
 feed = "rows"
 """
 
@@ -1135,7 +1108,6 @@ insert_strategy = { kind = "full" }
 rules = {}
 unknown_types = { kind = "fail_on_unknown" }
 create_table = "create table {schema_name}.{table_name} ({columns})"
-chunk_bytes = 65536
 feed = "rows"
 """
 
