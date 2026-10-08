@@ -40,7 +40,13 @@ from boba.sandbox.zygote import (
 )
 from boba.stand.shell import ShellRun
 from boba.stand.storage import StorageSeed
-from boba.stand.zygote import ROOTFS_IMAGE, ProfileFields, SandboxStand, ZygoteStand
+from boba.stand.zygote import (
+    ROOTFS_IMAGE,
+    ProfileFields,
+    SandboxCgroup,
+    SandboxStand,
+    ZygoteStand,
+)
 from boba.toolkit.chain import CallAmbient
 from boba.toolkit.launcher import LauncherError
 from boba.toolkit.result import ShellResult
@@ -85,44 +91,7 @@ class BrokenSinks:
         return BrokenSink()
 
 
-class CgroupZone:
-    """Делегированная cgroup v2 зона стенда: первая доступная на запись."""
-
-    _UID: ClassVar[int] = os.getuid()
-
-    CANDIDATES: ClassVar[tuple[str, ...]] = (
-        f"/sys/fs/cgroup/boba.slice/user-{_UID}.slice/user@{_UID}.service",
-        "/sys/fs/cgroup/boba.slice/boba-sandbox",
-    )
-    ENV: ClassVar[str] = "BOBA_CGROUP_BASE"
-
-    @classmethod
-    def find(cls) -> str:
-        """Пустая строка — делегированной зоны на машине нет."""
-        for path in cls._paths():
-            if not os.path.isdir(path):
-                continue
-
-            if not os.access(path, os.W_OK):
-                continue
-
-            return path
-
-        return ""
-
-    @classmethod
-    def _paths(cls) -> tuple[str, ...]:
-        configured = os.environ.get(cls.ENV, "")
-        if not configured:
-            return cls.CANDIDATES
-
-        return (configured, *cls.CANDIDATES)
-
-
-needs_delegation = pytest.mark.skipif(
-    not CgroupZone.find(),
-    reason="нет делегированной cgroup v2 зоны, куда можно мигрировать процесс",
-)
+needs_delegation = SandboxCgroup().required()
 
 
 class LoadScale:
@@ -1331,7 +1300,7 @@ class TestGroupLimitsUnderLoad:
 
     @pytest.fixture
     def cgroup_base(self) -> Iterator[str]:
-        path = os.path.join(CgroupZone.find(), f"boba-load-{uuid4().hex[:8]}")
+        path = SandboxCgroup().child(f"boba-load-{uuid4().hex[:8]}")
         yield path
 
         CgroupManager._prepared.pop(Path(path).resolve(), None)

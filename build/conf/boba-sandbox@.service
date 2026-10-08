@@ -1,0 +1,20 @@
+[Unit]
+Description=Delegated cgroup subtree for boba sandbox runs (%i)
+Before=docker.service
+
+[Service]
+Type=exec
+Slice=boba-%i.slice
+Delegate=cpu memory pids
+DelegateSubgroup=holder
+MemoryMax=24G
+MemorySwapMax=0
+TasksMax=4096
+Environment=BASE=/sys/fs/cgroup/user.slice/user-%U.slice/user@%U.service/boba.slice/boba-%i.slice
+Environment=SANDBOX_GID=1000
+ExecStart=/usr/bin/sleep infinity
+ExecStartPost=/bin/sh -euc 'cd "$BASE/%n"; echo "+cpu +memory +pids" > cgroup.subtree_control; mkdir -p sandbox; set -- sandbox sandbox/cgroup.procs sandbox/cgroup.subtree_control "$BASE/cgroup.procs"; /usr/bin/unshare --user --map-root-user --map-auto /usr/bin/chgrp "$SANDBOX_GID" "$@"; chmod g+w "$@"'
+Restart=always
+
+[Install]
+WantedBy=default.target

@@ -8,7 +8,8 @@ DOM: картинка загрузилась, диаграмма отрисов�
 Запуск: BOBA_CONFIG_PATH=... pytest -m integration
 packages/apps/boba-chainlit/tests/test_canvas_e2e.py
 Нужны: playwright + chromium, postgres, образ workspace и делегированный
-cgroup base (иначе песочница не стартует — boba-cgroup.service).
+cgroup base в BOBA_CGROUP_BASE (иначе песочница не стартует): каталог sandbox
+user-юнита boba-sandbox@debug.service, прогон — внутри его слайса.
 """
 
 from __future__ import annotations

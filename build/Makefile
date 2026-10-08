@@ -43,7 +43,6 @@ HEALTH_studio    := /api/openapi.json
 PORT_studio      := 8502
 PREFIX_studio    := /boba-studio
 SANDBOX_studio   := yes
-CGROUP_studio    := boba-sandbox-studio
 MODELS_studio    := fastembed rapidocr
 PARTS_studio     := app_root/public app_root/public/workflow app_root/public/vendor
 
@@ -58,7 +57,6 @@ PREFIX_mcp       :=
 SANDBOX_mcp      := yes
 # образы корней плагинов и шаблон workspace лежат внутри образа приложения
 EMBED_mcp        := yes
-CGROUP_mcp       := boba-sandbox-mcp
 MODELS_mcp       := fastembed rapidocr
 PARTS_mcp        :=
 
@@ -71,7 +69,6 @@ APP_PORT          = $(PORT_$(APP))
 APP_PREFIX        = $(PREFIX_$(APP))
 APP_SANDBOX       = $(SANDBOX_$(APP))
 APP_EMBED         = $(EMBED_$(APP))
-APP_CGROUP        = $(CGROUP_$(APP))
 APP_MODELS        = $(MODELS_$(APP))
 # юнит systemd: приложению с песочницей нужны устройства, namespaces и делегирование cgroup
 APP_UNIT          = $(CONF_DIR)/$(if $(APP_SANDBOX),boba-sandbox.service,boba.service)
@@ -767,14 +764,15 @@ release:
 	chmod go-w "$(OUT)"
 	chmod -R go-w "$(OUT)/third"
 	if [ -n "$(APP_SANDBOX)" ]; then
-	    install -m 0755 "$(CONF_DIR)/cgroup-init.sh" "$(OUT)/cgroup-init.sh"
+	    install -m 0644 "$(CONF_DIR)/boba-sandbox@.service" "$(OUT)/boba-sandbox@.service"
 	    chmod -R go-w "$(OUT)/sandbox"
 	fi
 	$(call check,$(addprefix $(OUT)/,$(RELEASE_PARTS)),собери заново: make build release APP=$(APP))
 	echo ">>> релиз готов: $(OUT) ($$(du -sh --apparent-size "$(OUT)" | cut -f1))"
 	echo "    conf/config.toml в дереве нет — положи его при установке"
 	if [ -n "$(APP_SANDBOX)" ]; then
-	    echo "    cgroup:    BOBA_CGROUP=$(APP_CGROUP) $(INSTALL_DIR)/cgroup-init.sh"
+	    echo "    cgroup:    $(INSTALL_DIR)/boba-sandbox@.service -> ~/.config/systemd/user/,"
+	    echo "               systemctl --user enable --now boba-sandbox@$(APP).service (docs/admin-guide.md, раздел 7)"
 	fi
 	echo "    установка: cp -a $(OUT)/. $(INSTALL_DIR)/"
 
@@ -801,7 +799,6 @@ dev: web-$(APP)
 	# монтирует ими workspace.ext4
 	if [ -n "$(APP_SANDBOX)" ]; then
 	    mkdir -p "$(OUT)/data/workspace" "$(OUT)/data/tool-logs"
-	    install -m 0755 "$(CONF_DIR)/cgroup-init.sh" "$(OUT)/cgroup-init.sh"
 	    cp -al "$(SANDBOX_DIR)/third/bin" "$(OUT)/third/bin"
 	fi
 	chmod -R go-w "$(OUT)/third"
@@ -812,7 +809,7 @@ dev: web-$(APP)
 	$(call check,$(OUT)/conf/config.toml,положи конфиг приложения $(APP))
 	echo ">>> дерево готово: $(OUT)"
 	if [ -n "$(APP_SANDBOX)" ]; then
-	    echo "    cgroup:  BOBA_CGROUP=$(APP_CGROUP) BOBA_USER=<пользователь> $(OUT)/cgroup-init.sh"
+	    echo "    cgroup:  systemctl --user start boba-sandbox@$(APP).service (docs/admin-guide.md, раздел 7)"
 	fi
 	echo "    debug:   python -m $(APP_MODULE) --config $(OUT)/conf/config.toml"
 	echo "    compose: cd $(OUT) && docker compose up -d"

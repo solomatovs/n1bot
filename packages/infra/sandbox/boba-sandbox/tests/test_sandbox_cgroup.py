@@ -1,5 +1,6 @@
-"""Групповые лимиты: cgroup v2 leaf на запуск; тесты идут в зоне user@<uid>.service.
-Миграция в leaf работает, только если pytest запущен внутри зоны (systemd-run)."""
+"""Групповые лимиты: cgroup v2 leaf на запуск; тесты идут в поддереве из
+BOBA_CGROUP_BASE. Миграция в leaf работает, только если pytest запущен внутри
+слайса делегирующего юнита (.vscode/python-debug-slice.sh)."""
 
 from __future__ import annotations
 
@@ -14,7 +15,7 @@ import pytest
 
 from boba.sandbox.cgroup import CgroupError, CgroupManager, GroupLimits
 from boba.sandbox.profile import SandboxProfile
-from boba.stand.zygote import ROOTFS_IMAGE, ProfileFields
+from boba.stand.zygote import ROOTFS_IMAGE, ProfileFields, SandboxCgroup
 from boba.workspace.launcher import ResourceLimits
 
 
@@ -153,18 +154,12 @@ class TestProfileValidation:
             self._profile(cgroup_base="/sys/fs/cgroup/x", group_cpu_percent=0)
 
 
-_UID = os.getuid()
-_DELEGATED_PARENT = f"/sys/fs/cgroup/boba.slice/user-{_UID}.slice/user@{_UID}.service"
-
-needs_delegation = pytest.mark.skipif(
-    not os.path.isdir(_DELEGATED_PARENT),
-    reason="нет делегированной systemd user-зоны (cgroup v2)",
-)
+needs_delegation = SandboxCgroup().required()
 
 
 @pytest.fixture
 def base():
-    path = os.path.join(_DELEGATED_PARENT, f"boba-pytest-{uuid4().hex[:8]}")
+    path = SandboxCgroup().child(f"boba-pytest-{uuid4().hex[:8]}")
     yield path
     CgroupManager._prepared.pop(Path(path), None)
     with contextlib.suppress(OSError):

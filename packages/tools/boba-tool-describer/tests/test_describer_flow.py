@@ -14,7 +14,6 @@ describe_list_edges → удаление по id → ответ. Строки
 from __future__ import annotations
 
 import base64
-import os
 import secrets as std_secrets
 import shutil
 from collections.abc import AsyncIterator, Iterator, Mapping, Sequence
@@ -48,6 +47,7 @@ from boba.db.postgres.connection import PostgresConfig
 from boba.stand.connections import StandUserConnections
 from boba.stand.refs import StandRefs
 from boba.stand.site import Stand
+from boba.stand.zygote import SandboxCgroup
 from boba.stand_core.context import CallStand
 from boba.tool.describer.address import Addresses, EntityAddress
 from boba.tool.describer.edges import EdgeKind, EdgeListColumn
@@ -65,15 +65,6 @@ _REPO = Path(__file__).resolve().parents[4]
 _SANDBOX_STAGING = _REPO / "build" / "src" / "sandbox"
 _ROOTFS_IMAGE = _SANDBOX_STAGING / "plugins" / "boba-tool-shell" / "rootfs.ext4"
 
-_CGROUP_BASE = os.environ.get("BOBA_CGROUP_BASE", "/sys/fs/cgroup/boba")
-
-
-def _cgroup_delegated() -> bool:
-    base_ok = os.access(os.path.join(_CGROUP_BASE, "cgroup.procs"), os.W_OK)
-    root_ok = os.access("/sys/fs/cgroup/cgroup.procs", os.W_OK)
-    return base_ok and root_ok
-
-
 pytestmark = [
     pytest.mark.integration,
     pytest.mark.anyio,
@@ -81,10 +72,7 @@ pytestmark = [
         shutil.which("bwrap") is None or not _ROOTFS_IMAGE.exists(),
         reason="нет bwrap или артефактов песочницы (собрать: make fetch sandbox)",
     ),
-    pytest.mark.skipif(
-        not _cgroup_delegated(),
-        reason=f"cgroup base {_CGROUP_BASE} не делегирован пользователю",
-    ),
+    SandboxCgroup().required(),
 ]
 
 STAND = Stand.required()

@@ -115,6 +115,7 @@ from boba.stand.ui.stand import (
     StandProcess,
     free_port,
 )
+from boba.stand.zygote import SandboxCgroup
 from boba.stand_core.context import CallStand, StandIdentity
 from boba.stand_core.context import FakeTurn as FakeTurn
 from boba.stand_core.fakes import FakeSecret as FakeSecret
@@ -263,7 +264,6 @@ class ToolService:
     ENDPOINT: ClassVar[str] = "general"
     BOOT_TIMEOUT_SEC: ClassVar[float] = 300.0
     ROOTFS: ClassVar[str] = "plugins/boba-tool-shell/rootfs.ext4"
-    CGROUP_PROCS: ClassVar[str] = "cgroup.procs"
 
     def __init__(self, workdir: Path, service_raw_config: DictConfig) -> None:
         db_name = OmegaConf.select(service_raw_config, "postgres.dbname")
@@ -293,11 +293,7 @@ class ToolService:
         if not rootfs.exists():
             return f"plugin rootfs {rootfs} is not built (make plugin-rootfs-all)"
 
-        procs = Path(app.cgroup_base) / cls.CGROUP_PROCS
-        if not os.access(procs, os.W_OK):
-            return f"cgroup {app.cgroup_base} is not delegated to the user"
-
-        return ""
+        return SandboxCgroup().missing()
 
     @property
     def server_name(self) -> str:

@@ -11,9 +11,13 @@ import os
 import shutil
 import subprocess
 from collections.abc import Callable, Mapping, Sequence
+from enum import StrEnum
 from pathlib import Path
 from typing import Any, ClassVar
 
+import pytest
+
+from boba.runtime.config import EnvOverride
 from boba.sandbox import BindSpec, SandboxProfile
 from boba.sandbox.guest import WarmupCall
 from boba.sandbox.zygote import (
@@ -29,6 +33,91 @@ SANDBOX = REPO / "build" / "src" / "sandbox"
 ROOTFS_IMAGE = SANDBOX / "plugins" / "boba-tool-shell" / "rootfs.ext4"
 DEPLOY_BIN = SANDBOX / "third" / "bin"
 """Бинарные артефакты сборки: bwrap и fuse2fs из make sandbox."""
+
+
+class CgroupFs(StrEnum):
+    """Адреса cgroup v2 на хосте, по которым стенд проверяет делегирование."""
+
+    ROOT = "/sys/fs/cgroup"
+    PROCS = "cgroup.procs"
+    OWN = "/proc/self/cgroup"
+    UNIFIED = "0::"
+    """Префикс строки cgroup v2 в /proc/self/cgroup: за ним путь от корня."""
+
+
+class SandboxCgroup:
+    """Делегированное поддерево cgroup v2, в котором тесты и стенды заводят
+    leaf'ы песочницы.
+
+    Базу называет окружение прогона переменной BOBA_CGROUP_BASE — той же,
+    которой приложение переопределяет [env].cgroup_base. На хосте разработки
+    это каталог sandbox user-юнита boba-sandbox@debug.service, а сам прогон
+    стартует внутри слайса юнита (.vscode/python-debug-slice.sh): ядро
+    переносит процесс в leaf только под общим предком, доступным на запись.
+    Создаётся тестом или стендом приложения; путей по умолчанию нет — без
+    переменной тесты с групповыми лимитами пропускаются.
+    """
+
+    def __init__(self) -> None:
+        self._var = EnvOverride.CGROUP_BASE.var
+        self._base = os.environ.get(self._var, "")
+
+    @property
+    def base(self) -> str:
+        """Каталог поддерева; пустая строка — окружение его не назвало."""
+        return self._base
+
+    def child(self, name: str) -> str:
+        """База отдельного теста внутри поддерева: leaf'ы тестов не смешиваются."""
+        return str(Path(self._base) / name)
+
+    def missing(self) -> str:
+        """Чего не хватает для переноса процесса в поддерево; пустая строка —
+        всё на месте."""
+        if not self._base:
+            return (
+                f"{self._var} is not set: expected the sandbox directory of a "
+                "delegated user unit (boba-sandbox@debug.service)"
+            )
+
+        procs = Path(self._base) / CgroupFs.PROCS
+        if not os.access(procs, os.W_OK):
+            return (
+                f"cgroup {self._base} is not delegated to the user: "
+                f"{procs} is not writable"
+            )
+
+        own = self._own()
+        if not own:
+            return f"{CgroupFs.OWN.value} has no cgroup v2 entry of the test process"
+
+        gate = Path(os.path.commonpath([own, self._base])) / CgroupFs.PROCS
+        if not os.access(gate, os.W_OK):
+            return (
+                f"the test process runs in {own}, outside the delegated subtree "
+                f"of {self._base}: {gate} is not writable; start the run through "
+                ".vscode/python-debug-slice.sh"
+            )
+
+        return ""
+
+    def required(self) -> pytest.MarkDecorator:
+        """Метка пропуска тестов, которым нужен перенос процесса в поддерево."""
+        reason = self.missing()
+
+        return pytest.mark.skipif(bool(reason), reason=reason)
+
+    def _own(self) -> str:
+        """Cgroup процесса прогона; пустая строка — cgroup v2 у процесса нет."""
+        for line in Path(CgroupFs.OWN).read_text().splitlines():
+            if not line.startswith(CgroupFs.UNIFIED):
+                continue
+
+            relative = line.removeprefix(CgroupFs.UNIFIED).lstrip("/")
+
+            return str(Path(CgroupFs.ROOT) / relative)
+
+        return ""
 
 
 class ProfileFields:
