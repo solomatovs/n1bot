@@ -104,12 +104,11 @@ class StandCredential:
 @dataclass(frozen=True)
 class StandAppTraits:
     """Чем приложения стенда отличаются друг от друга: модуль запуска, корень
-    рантайма, конфиг, cgroup, проба готовности и секция хранения."""
+    рантайма, конфиг, проба готовности и секция хранения."""
 
     module: str
     base: StandPaths
     base_config: StandPaths
-    cgroup_base: str
     ready_path: str
     data_layer_section: str
     tools_config: StandPaths
@@ -130,7 +129,6 @@ class StandApp(StrEnum):
                 module="boba.chainlit.main",
                 base=StandPaths.CHAINLIT_BASE,
                 base_config=StandPaths.BASE_CONFIG,
-                cgroup_base="/sys/fs/cgroup/boba.slice/boba-sandbox",
                 ready_path="/",
                 data_layer_section="data_layer",
                 tools_config=StandPaths.MCP_BASE_CONFIG,
@@ -139,7 +137,6 @@ class StandApp(StrEnum):
                 module="boba.studio",
                 base=StandPaths.STUDIO_BASE,
                 base_config=StandPaths.STUDIO_BASE_CONFIG,
-                cgroup_base="/sys/fs/cgroup/boba.slice/boba-sandbox-studio",
                 ready_path="/api/openapi.json",
                 data_layer_section="automation",
                 tools_config=StandPaths.STUDIO_BASE_CONFIG,
@@ -148,7 +145,6 @@ class StandApp(StrEnum):
                 module="boba.mcp_server",
                 base=StandPaths.MCP_BASE,
                 base_config=StandPaths.MCP_BASE_CONFIG,
-                cgroup_base="/sys/fs/cgroup/boba.slice/boba-sandbox-mcp",
                 ready_path="/health",
                 data_layer_section="data_layer",
                 tools_config=StandPaths.MCP_BASE_CONFIG,
@@ -173,10 +169,6 @@ class StandApp(StrEnum):
     def sandbox(self) -> StandPaths:
         """Артефакты песочницы из сборки: общие у всех приложений."""
         return StandPaths.SANDBOX
-
-    @property
-    def cgroup_base(self) -> str:
-        return self.traits().cgroup_base
 
     @property
     def ready_path(self) -> str:
@@ -372,7 +364,7 @@ class ServiceStand(StandService):
         env = dict(os.environ)
         env["BOBA_BASE"] = str(self.app.base.under(REPO_ROOT))
         env["BOBA_DATA"] = str(data_dir)
-        env["BOBA_CGROUP_BASE"] = self.app.cgroup_base
+        # BOBA_CGROUP_BASE наследуется от прогона: поддерево делегирует user-юнит
         env["BOBA_PORT"] = str(self.app_port)
         env["BOBA_INSTANCE_ID"] = f"stand{self.app_port}"
         env["PGGSSENCMODE"] = "disable"
@@ -584,7 +576,7 @@ class StandConfig(StandService):
         env = dict(os.environ)
         env["BOBA_BASE"] = str(self.app.base.under(REPO_ROOT))
         env["BOBA_DATA"] = str(data_dir)
-        env["BOBA_CGROUP_BASE"] = self.app.cgroup_base
+        # BOBA_CGROUP_BASE наследуется от прогона: поддерево делегирует user-юнит
         env["BOBA_PORT"] = str(self.app_port)
         env["BOBA_INSTANCE_ID"] = f"stand{self.app_port}"
         env["BOBA_URL_PREFIX"] = self.url_prefix

@@ -40,7 +40,7 @@ from boba.sandbox.zygote import (
     ZygoteToolCaller,
 )
 from boba.stand.shell import ShellRun
-from boba.stand.zygote import ProfileFields, SandboxStand, ZygoteStand
+from boba.stand.zygote import ProfileFields, SandboxCgroup, SandboxStand, ZygoteStand
 from boba.toolkit.chain import CallAmbient, ChannelFanOut, PipeTee
 from boba.toolkit.channels import JournalChannel, ToolChannel
 from boba.toolkit.entry import ToolAddress, ToolArgv, ToolMain
@@ -362,41 +362,13 @@ class TestSpawner:
             _profile(tmp=0)
 
 
-class CgroupZone:
-    """Делегированная cgroup v2 зона стенда: первая доступная на запись."""
-
-    _UID: ClassVar[int] = os.getuid()
-
-    CANDIDATES: ClassVar[tuple[str, ...]] = (
-        f"/sys/fs/cgroup/boba.slice/user-{_UID}.slice/user@{_UID}.service",
-        "/sys/fs/cgroup/boba.slice/boba-sandbox",
-    )
-
-    @classmethod
-    def find(cls) -> str:
-        configured = os.environ.get("BOBA_CGROUP_BASE", "")
-        candidates = (configured, *cls.CANDIDATES)
-
-        for path in candidates:
-            if not path:
-                continue
-
-            if os.path.isdir(path) and os.access(path, os.W_OK):
-                return path
-
-        return ""
-
-
-needs_delegation = pytest.mark.skipif(
-    not CgroupZone.find(),
-    reason="нет делегированной cgroup v2 зоны",
-)
+needs_delegation = SandboxCgroup().required()
 
 
 @needs_delegation
 class TestCgroup:
     def test_leaf_created_and_released(self, zygote: Any) -> None:
-        base = os.path.join(CgroupZone.find(), "zygote-test")
+        base = SandboxCgroup().child("zygote-test")
         caller = zygote(
             _profile(
                 cgroup_base=base,
@@ -410,9 +382,13 @@ class TestCgroup:
         if not isinstance(outcome.reply, ReplyOk):
             raise AssertionError(f"reply={outcome.reply}")
 
-        leftovers = []
+        leftovers: list[str] = []
         if os.path.isdir(base):
-            leftovers = [d for d in os.listdir(base) if d.startswith("run-")]
+            for entry in os.listdir(base):
+                if not entry.startswith("run-"):
+                    continue
+
+                leftovers.append(entry)
 
         if leftovers:
             raise AssertionError(f"leaf'ы не освобождены: {leftovers}")

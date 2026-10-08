@@ -17,8 +17,8 @@ Boba состоит из двух HTTP-приложений: chainlit (чат, �
 ## 2. Установка и запуск
 
 Заготовка: установка дерева релиза в `INSTALL_DIR`, systemd-юниты
-`boba-chainlit.service` и `boba-studio.service`, `cgroup-init.sh`, порядок
-первого старта.
+`boba-chainlit.service` и `boba-studio.service`, порядок первого старта.
+Подготовка cgroup для песочницы описана в разделе 7.
 
 ## 3. Конфигурация
 
@@ -585,7 +585,105 @@ curl -s -c cookies.txt -X POST "$B/auth/proxy" \
 ## 7. Песочница и лимиты
 
 Заготовка: `[tool_launcher]` (sandbox или process), образы `rootfs.ext4`
-плагинов, `workspace.ext4`, cgroup-лимиты, `/dev/fuse` и user namespace.
+плагинов, `workspace.ext4`, `/dev/fuse` и user namespace.
+
+### Cgroup песочницы
+
+Приложения, которые исполняют инструменты (studio и boba-mcp), на каждый
+вызов создают отдельный cgroup v2 и пишут в него групповые лимиты профиля
+плагина: память, cpu, число процессов. Каталог, в котором создаются эти
+cgroup, задаёт ключ `[env].cgroup_base` конфига; переменная окружения
+`BOBA_CGROUP_BASE` его переопределяет. На старте приложение проверяет каждый
+профиль пробным переносом процесса и пишет в лог строку
+`sandbox cgroup: profile '<имя>' ok in <каталог>`; при отказе старт
+прерывается ошибкой `CgroupError` с причиной.
+
+Чтобы это работало без root, нужны два условия. Первое — каталог
+`cgroup_base` доступен приложению на запись. Второе вытекает из правила ядра:
+процесс переносится в другой cgroup, только если у переносящего есть запись в
+`cgroup.procs` общего предка старого и нового cgroup. Поэтому приложение и
+каталог `cgroup_base` должны лежать под одним слайсом, принадлежащим
+пользователю, от которого работает приложение.
+
+Оба условия выполняет user-юнит systemd `boba-sandbox@<приложение>.service`.
+Его шаблон лежит в `build/conf/boba-sandbox@.service` и кладётся в дерево
+релиза приложений с песочницей. Экземпляр юнита живёт в слайсе
+`boba-<приложение>.slice`, получает от systemd делегированное поддерево с
+контроллерами cpu, memory и pids и создаёт в нём каталог `sandbox`. Полный
+путь каталога:
+
+```
+/sys/fs/cgroup/user.slice/user-<uid>.slice/user@<uid>.service/boba.slice/boba-<приложение>.slice/boba-sandbox@<приложение>.service/sandbox
+```
+
+Установка выполняется пользователем, от которого работает приложение
+(пример для boba-mcp):
+
+```
+mkdir -p ~/.config/systemd/user
+cp boba-sandbox@.service ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now boba-sandbox@mcp.service
+```
+
+Чтобы user-юниты стартовали при загрузке хоста без входа пользователя, root
+один раз включает ему linger: `loginctl enable-linger <пользователь>`.
+
+Приложение запускается в том же слайсе. В docker compose (rootless-демон
+пользователя, cgroup-драйвер systemd) это три настройки: контейнер помещается
+в слайс, каталог `sandbox` монтируется внутрь, а `cgroup_base` указывает на
+точку монтирования.
+
+```
+cgroup_parent: boba-mcp.slice
+volumes:
+  - ${BOBA_SANDBOX_CGROUP}:/cgroup/boba-sandbox-mcp:rw
+```
+
+Здесь `BOBA_SANDBOX_CGROUP` в `.env` рядом с `docker-compose.yml` — полный путь
+каталога `sandbox`, а в `config.toml` приложения стоит
+`cgroup_base = "/cgroup/boba-sandbox-mcp"`.
+
+Процесс в контейнере идёт от непривилегированного uid и gid (`user:` в
+compose), которые rootless-демон отображает на subuid и subgid пользователя.
+Юнит отдаёт каталог `sandbox` и нужные файлы `cgroup.procs` группе контейнера:
+её номер внутри контейнера задаёт `Environment=SANDBOX_GID=` шаблона (1000).
+Смена группы выполняется через `unshare --map-auto`, поэтому у пользователя
+должен быть диапазон в `/etc/subuid` и `/etc/subgid` — он есть у любого
+пользователя rootless docker.
+
+Контейнер живёт в собственном cgroup namespace, и ядро с опцией монтирования
+`nsdelegate` запрещает перенос процесса за его пределы (ошибка `ENOENT`).
+На хосте с приложением в контейнере cgroup2 должен быть смонтирован без этой
+опции; root перемонтирует его при загрузке командой
+`mount -t cgroup2 -o remount,rw,nosuid,nodev,noexec,relatime cgroup2 /sys/fs/cgroup`.
+Других действий от root схема не требует: каталоги в корне иерархии не
+создаются, права корневого `cgroup.procs` не меняются.
+
+При запуске приложения прямо на хосте (отладка, тесты) используется отдельный
+экземпляр, например `boba-sandbox@debug.service`, а процесс стартует внутри
+его слайса:
+
+```
+systemctl --user start boba-sandbox@debug.service
+systemd-run --user --scope --slice=boba-debug.slice -- python -m boba.mcp_server --config <conf>/config.toml
+```
+
+В окружении такого процесса `BOBA_CGROUP_BASE` равен пути каталога `sandbox`
+экземпляра `debug`. Процесс, запущенный из обычной SSH-сессии, остаётся в
+cgroup сессии, и перенос ему запрещён.
+
+Системный юнит `boba-<приложение>.service` из дерева релиза запускает
+приложение в `system.slice`, вне user-менеджера: общий предок с каталогом
+`sandbox` у него — корень cgroup, и проверка профилей на старте не пройдёт.
+Приложению с песочницей нужен запуск в слайсе пользователя — контейнером
+compose или user-юнитом с `Slice=boba-<приложение>.slice`.
+
+Экземпляр `boba-sandbox@<приложение>` нельзя перезапускать и останавливать,
+пока работает его приложение. Перезапуск удаляет каталог `sandbox` и создаёт
+новый, а у работающего приложения остаётся старый, уже удалённый: вызовы
+инструментов начнут падать с `CgroupError`. После перезапуска юнита
+приложение нужно запустить заново (контейнер — пересоздать).
 
 ## 8. Nginx перед boba
 

@@ -29,7 +29,7 @@ from boba.sandbox import SandboxProfile
 from boba.sandbox.guest import WarmupCall
 from boba.sandbox.zygote import ZygoteSpawner, ZygoteState
 from boba.stand.shell import ShellRun
-from boba.stand.zygote import ROOTFS_IMAGE, SandboxStand, ZygoteStand
+from boba.stand.zygote import ROOTFS_IMAGE, SandboxCgroup, SandboxStand, ZygoteStand
 from boba.toolkit.chain import CallAmbient
 from boba.toolkit.channels import JournalChannel, ToolChannel
 from boba.toolkit.entry import ToolAddress, ToolArgv, ToolMain
@@ -540,7 +540,7 @@ class TestCallFdsAreNotInherited:
     memory.max, снимал себе лимит записью и ходил по соседним группам.
     """
 
-    CGROUP_BASE: ClassVar[str] = "/sys/fs/cgroup/boba"
+    CGROUP: ClassVar[SandboxCgroup] = SandboxCgroup()
 
     PROBE: ClassVar[str] = """
 for fd in /proc/self/fd/*; do
@@ -553,10 +553,7 @@ done
     как лишние каналы вызова закрыты, он последний в глобе и ронял бы rc.
     """
 
-    needs_cgroup = pytest.mark.skipif(
-        not os.access(CGROUP_BASE, os.W_OK),
-        reason="нет делегированного /sys/fs/cgroup/boba (прогнать cgroup-init.sh)",
-    )
+    needs_cgroup = CGROUP.required()
 
     def test_shell_gets_only_stdio(
         self, zygote_stand: ZygoteStand, section: str
@@ -588,7 +585,7 @@ done
         self, zygote_stand: ZygoteStand, section: str
     ) -> None:
         profile = _profile(
-            cgroup_base=self.CGROUP_BASE,
+            cgroup_base=self.CGROUP.base,
             group_memory_bytes=512 * 1024 * 1024,
             group_swap_bytes=0,
             group_pids_max=64,
@@ -623,7 +620,7 @@ done
         """Через дескриптор leaf'а лимит снимался записью в memory.max."""
         limit = 512 * 1024 * 1024
         profile = _profile(
-            cgroup_base=self.CGROUP_BASE,
+            cgroup_base=self.CGROUP.base,
             group_memory_bytes=limit,
             group_swap_bytes=0,
             group_pids_max=64,

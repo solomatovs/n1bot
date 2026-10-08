@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import base64
 import json
-import os
 import re
 import shutil
 from collections.abc import Mapping, Sequence
@@ -26,7 +25,7 @@ from boba.db.postgres.connection import PostgresConfig
 from boba.stand.sandbox import section_profile
 from boba.stand.shell import ShellRun
 from boba.stand.toolsetup import Call, ToolSetup
-from boba.stand.zygote import ZygoteStand
+from boba.stand.zygote import SandboxCgroup, ZygoteStand
 from boba.tool.confluence.ingest_base import ConfluenceIngestConfig
 from boba.tool.kb.search import ConfluenceCollection
 from boba.tool.shell.tools import BashToolConfig
@@ -49,17 +48,6 @@ _REPO = Path(__file__).resolve().parents[4]
 _SANDBOX_STAGING = _REPO / "build" / "src" / "sandbox"
 _ROOTFS_IMAGE = _SANDBOX_STAGING / "plugins" / "boba-tool-shell" / "rootfs.ext4"
 
-_CGROUP_BASE = os.environ.get("BOBA_CGROUP_BASE", "/sys/fs/cgroup/boba")
-
-
-def _cgroup_delegated() -> bool:
-    """Миграция в cgroup_base из session-scope: нужна запись в саму базу и в
-    cgroup.procs общего предка (корня cgroup) — это готовит boba-cgroup.service."""
-    base_ok = os.access(os.path.join(_CGROUP_BASE, "cgroup.procs"), os.W_OK)
-    root_ok = os.access("/sys/fs/cgroup/cgroup.procs", os.W_OK)
-    return base_ok and root_ok
-
-
 pytestmark = [
     pytest.mark.integration,
     pytest.mark.anyio,
@@ -67,14 +55,7 @@ pytestmark = [
         shutil.which("bwrap") is None or not _ROOTFS_IMAGE.exists(),
         reason="нет bwrap или артефактов песочницы (собрать: make fetch sandbox)",
     ),
-    pytest.mark.skipif(
-        not _cgroup_delegated(),
-        reason=(
-            f"cgroup base {_CGROUP_BASE} не делегирован пользователю: "
-            "cgroup-лимиты профиля не применятся "
-            "(systemctl enable --now boba-cgroup.service)"
-        ),
-    ),
+    SandboxCgroup().required(),
 ]
 
 USER_ID = "integration"
