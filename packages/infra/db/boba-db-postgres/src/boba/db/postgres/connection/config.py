@@ -266,7 +266,7 @@ class PostgresConfig(ConnectionBase):
     host: str | None = Field(default=None, description="Хост(ы) или путь к сокету.")
     hostaddr: str | None = Field(default=None, description="IP хоста (без DNS).")
     port: int | None = Field(default=None, description="Порт (или сокет-суффикс).")
-    dbname: str | None = Field(default=None, description="Имя БД.")
+    dbname: str = Field(min_length=1, description="Имя БД.")
     channel_binding: str | None = Field(
         default=None, description="disable|prefer|require."
     )
@@ -431,13 +431,6 @@ class PostgresConfig(ConnectionBase):
     @model_validator(mode="after")
     def _validate(self) -> Self:
         # у делегированного соединения роль — принципал сессии, он известен на вызове
-        if not self.dbname:
-            msg = (
-                "postgres connection: dbname must be a non-empty database name, "
-                f"got {self.dbname!r}"
-            )
-            raise ValueError(msg)
-
         if not (self.host or self.hostaddr):
             msg = (
                 "postgres connection: host or hostaddr must be set, "

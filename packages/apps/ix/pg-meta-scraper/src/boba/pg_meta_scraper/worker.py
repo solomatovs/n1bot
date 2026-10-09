@@ -129,11 +129,6 @@ def source_address(postgres: PostgresConfig) -> SourceAddress:
             f"source {postgres.where()}: expected port in the profile"
         )
 
-    if postgres.dbname is None:
-        raise ScrapeSourceError(
-            f"source {postgres.where()}: expected dbname in the profile"
-        )
-
     return SourceAddress(host=host, port=postgres.port, database=postgres.dbname)
 
 

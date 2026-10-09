@@ -70,13 +70,17 @@ async def _probe(connection: ConnectionBase) -> str:
     return "ok"
 
 
+def _address(connection: ConnectionBase) -> str:
+    return f"{connection.kind}://{getattr(connection, 'host', '')}"
+
+
 TYPES = ConnectionTypes(
     {
         "probe": ConnectionTypeManifest(
-            kind="probe", model=ProbeConnection, probe=_probe
+            kind="probe", model=ProbeConnection, probe=_probe, address=_address
         ),
         "other": ConnectionTypeManifest(
-            kind="other", model=OtherConnection, probe=_probe
+            kind="other", model=OtherConnection, probe=_probe, address=_address
         ),
     }
 )

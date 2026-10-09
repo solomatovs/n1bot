@@ -37,7 +37,6 @@ from pydantic import (
     ValidationError,
 )
 
-from boba.connections.base import ConnectionBase
 from boba.connections.marks import ConnectionRefusal
 from boba.identity.errors import RefusalError
 from boba.toolkit.failure import ValidationText
@@ -68,29 +67,31 @@ class SealedParamSchema:
 
     Параметр — строка с запечатанным профилем, и схема говорит это
     стандартными ключами JSON Schema о содержимом строки: contentMediaType
-    — тип компактной JWE (application/jose), contentSchema — JSON-схема
-    модели профиля, которую сервер ждёт внутри; вид соединения — константа
-    её поля kind. Своих ключей в схеме нет: чужой клиент читает её обычным
-    разбором JSON Schema. Определения вложенных моделей лежат под самим
-    параметром, и их ссылки $ref считаются от корня схемы инструмента.
+    — тип компактной JWE (application/jose), contentSchema — схема
+    содержимого: объект, чьё поле kind — константа вида соединения. Полную
+    модель профиля сервер держит у себя и проверяет ею открытое значение;
+    в схему она не идёт: её ссылки $ref генератор схемы инструмента не
+    разрешает. Своих ключей в схеме нет: чужой клиент читает её обычным
+    разбором JSON Schema.
     """
 
     MEDIA_TYPE: ClassVar[str] = "application/jose"
     MEDIA_KEY: ClassVar[str] = "contentMediaType"
     CONTENT_KEY: ClassVar[str] = "contentSchema"
     PROPERTIES: ClassVar[str] = "properties"
-    DEFINITIONS: ClassVar[str] = "$defs"
     KIND_FIELD: ClassVar[str] = "kind"
     CONST_KEY: ClassVar[str] = "const"
 
-    def declared(self, param: str, model: type[ConnectionBase]) -> dict[str, Any]:
-        """Ключи схемы параметра param: тип содержимого и схема профиля model."""
-        under_param = "/".join((self.PROPERTIES, param, self.CONTENT_KEY))
-        template = f"#/{under_param}/{self.DEFINITIONS}/{{model}}"
-
+    def declared(self, kind: str) -> dict[str, Any]:
+        """Ключи схемы параметра: тип содержимого и схема содержимого с
+        константой вида kind."""
         return {
             self.MEDIA_KEY: self.MEDIA_TYPE,
-            self.CONTENT_KEY: model.model_json_schema(ref_template=template),
+            self.CONTENT_KEY: {
+                "type": "object",
+                self.PROPERTIES: {self.KIND_FIELD: {self.CONST_KEY: kind}},
+                "required": [self.KIND_FIELD],
+            },
         }
 
     def kind_of(self, declared: Mapping[str, Any]) -> str | None:

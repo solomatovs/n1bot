@@ -406,3 +406,8 @@ class OraAddresses(AddressFamily):
         return OraDatabaseAddress(
             host=connection.host, port=connection.port, database=connection.service
         )
+
+    @classmethod
+    def url_of(cls, connection: OracleConfig) -> str:
+        """URL соединения для показа: сервис всегда в профиле, это адрес базы."""
+        return cls.base_of(connection).render()

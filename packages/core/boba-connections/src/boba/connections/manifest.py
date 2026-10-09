@@ -2,7 +2,7 @@
 
 Пакет типа декларирует ConnectionTypeManifest в entry points группы
 "boba.connections"; реестр собирается один раз на старте и отвечает за разбор
-профилей из jsonb, схему форм и пробы.
+профилей из jsonb, схему форм, пробы и адрес соединения.
 
 Ошибки:
 ConnectionTypesError — манифест плагина не соответствует контракту.
@@ -23,6 +23,7 @@ from boba.connections.base import ConnectionBase
 from boba.toolkit.failure import ValidationText
 
 __all__ = [
+    "AddressHook",
     "ConnectionTypeManifest",
     "ConnectionTypes",
     "ConnectionTypesError",
@@ -61,6 +62,17 @@ class ProbeHook(Protocol):
     async def __call__(self, connection: ConnectionBase) -> str: ...
 
 
+class AddressHook(Protocol):
+    """URL соединения по профилю: сервер и база, без учётных данных.
+
+    Грамматику знает пакет системы (его семейство адресов), здесь только
+    контракт. Профиль, у которого адреса не собрать (нет хоста), реализация
+    отвергает AddressError из boba.connections.address.
+    """
+
+    def __call__(self, connection: ConnectionBase) -> str: ...
+
+
 @dataclass(frozen=True)
 class ConnectionTypeManifest:
     """Пакет-владелец описывает тип соединения целиком."""
@@ -68,6 +80,7 @@ class ConnectionTypeManifest:
     kind: str
     model: type[ConnectionBase]
     probe: ProbeHook
+    address: AddressHook
 
 
 class ConnectionTypes:

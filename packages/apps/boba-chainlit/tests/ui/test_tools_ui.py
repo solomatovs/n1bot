@@ -39,10 +39,13 @@ from boba.confluence.models import (
 )
 from boba.confluence.parsing import JsonNode
 from boba.confluence.rest import CflRestBuilder
+from boba.connections.base import ConnectionBase
+from boba.connections.manifest import ConnectionTypes
+from boba.db.clickhouse.connection import ClickHouseConfig
 from boba.doc.config import DocConfig
 from boba.doc.document import DisabledOcr, DocumentHint, PageWindow
 from boba.doc.router import DocumentRouter
-from boba.runtime.config import AppLayers
+from boba.runtime.config import AppLayers, DataLayerConfig
 from boba.stand.edm import Asset, EdmSources
 from boba.stand.ix_index import IxPage
 from boba.stand.site import Stand, StandLayers
@@ -73,7 +76,7 @@ from boba.toolkit.result import (
 )
 from boba.toolrun.stream_calls import WorkflowTool
 from boba.transport.http import HttpxAuth
-from boba.transport.http.connection import HttpConnection
+from boba.transport.http.connection import HttpConnection, UrlScheme
 
 pytestmark = pytest.mark.ui
 
@@ -1126,11 +1129,14 @@ def canvas_feed(sandbox_stand: StandProcess, module_chats: ChatOpener) -> ToolFe
 
 
 @pytest.fixture(scope="module")
-def saved_diagram(canvas_feed: ToolFeed) -> DiagramProbe:
+def saved_diagram(
+    canvas_feed: ToolFeed, stand_database: str, llm_port: int
+) -> DiagramProbe:
     """Диаграмма сохранена diagram_save; путь файла назван в ответе тула."""
     # вызов без аргументов даёт id треда вкладки: он нужен пути файла
     listing = ToolCall(tool="connection_list")
-    step = canvas_feed.call(listing, ToolExpect.of(_connection_catalog()))
+    catalog = _connection_catalog(stand_database, llm_port)
+    step = canvas_feed.call(listing, ToolExpect.of(catalog))
     probe = DiagramProbe(thread_id=step.thread_id)
 
     call = ToolCall(
@@ -1171,27 +1177,48 @@ class TablePattern:
         return "\\|" + "\\|".join(parts) + "\\|"
 
 
-def _connection_catalog() -> TableResult:
-    """Выдача connection_list: все строки стенда, по виду и имени."""
-    stand = Stand.required()
+def _connection_catalog(stand_database: str, llm_port: int) -> TableResult:
+    """Выдача connection_list: все строки стенда, по виду и имени; url каждой
+    строит пакет её типа по тому же профилю, что посеял стенд."""
     built = StandLayers.compose(StandApp.CHAINLIT.files())
+    layer = bind(
+        built, path=StandApp.CHAINLIT.data_layer_section, model=DataLayerConfig
+    )
+    postgres = layer.postgres.model_copy(update={"dbname": stand_database})
+    clickhouse = bind(built, path="clickhouse", model=ClickHouseConfig)
+    web = HttpConnection(
+        scheme=UrlScheme(StandUrl.SCHEME.value),
+        host=StandUrl.HOST.value,
+        port=llm_port,
+        ssl_verify=False,
+    )
     oracle = StandOracle(built)
     sources = bind(built, path="ix_stand", model=EdmSources)
     edm = sources.demo()[0]
     sinks = StreamSinks(bind(built, path="ix_stand", model=SinkSources))
-    listed = (
-        ("edm", "clickhouse", edm.clickhouse.host),
-        ("main", "clickhouse", stand.ch_host),
-        (StandDatabase.SINK_CH, "clickhouse", sinks.ch_connection.host),
-        ("main", "oracle", oracle.host),
-        (StandDatabase.SINK_ORA, "oracle", sinks.ora_connection.host),
-        ("main", "postgres", stand.pg_host),
-        ("stand", "web", StandUrl.HOST.value),
+    listed: tuple[tuple[str, ConnectionBase], ...] = (
+        ("edm", edm.clickhouse),
+        ("main", clickhouse),
+        (StandDatabase.SINK_CH, sinks.ch_connection),
+        ("main", oracle.connection()),
+        (StandDatabase.SINK_ORA, sinks.ora_connection),
+        ("main", postgres),
+        ("stand", web),
     )
 
+    types = ConnectionTypes.discover()
     rows: list[dict[str, Any]] = []
-    for name, kind, host in listed:
-        rows.append({"name": name, "kind": kind, "host": host, "description": ""})
+    for name, profile in listed:
+        host = getattr(profile, "host", "")
+        rows.append(
+            {
+                "name": name,
+                "kind": profile.kind,
+                "url": types.manifest_of(profile.kind).address(profile),
+                "host": host,
+                "description": "",
+            }
+        )
 
     return TableResult(rows=rows)
 
@@ -1338,10 +1365,13 @@ class TestDocTools:
 class TestWebTools:
     """web: страницы фейкового сервера по whitelist-соединению stand."""
 
-    def test_connection_list(self, feed: ToolFeed) -> None:
+    def test_connection_list(
+        self, feed: ToolFeed, stand_database: str, llm_port: int
+    ) -> None:
         """Общий каталог показывает web-строку stand рядом с остальными."""
         call = ToolCall(tool="connection_list")
-        feed.call(call, ToolExpect.of(_connection_catalog(), dom=CATALOG_DOM))
+        catalog = _connection_catalog(stand_database, llm_port)
+        feed.call(call, ToolExpect.of(catalog, dom=CATALOG_DOM))
 
     def test_fetch_raw_html(self, feed: ToolFeed, llm_port: int) -> None:
         url = StandUrl.of(llm_port, FakePage.HTML.route.value)
@@ -1676,10 +1706,13 @@ class TestKbIxTools:
 class TestPgTools:
     """pg: соединение main стенда, своя таблица, каждый инструмент по разу."""
 
-    def test_connection_list(self, feed: ToolFeed) -> None:
+    def test_connection_list(
+        self, feed: ToolFeed, stand_database: str, llm_port: int
+    ) -> None:
         """Общий каталог показывает postgres-строку main."""
         call = ToolCall(tool="connection_list")
-        feed.call(call, ToolExpect.of(_connection_catalog(), dom=CATALOG_DOM))
+        catalog = _connection_catalog(stand_database, llm_port)
+        feed.call(call, ToolExpect.of(catalog, dom=CATALOG_DOM))
 
     def test_query_creates_table(self, probe_table: str) -> None:
         """Сам вызов проверен фикстурой: набор команд одной транзакцией."""
@@ -1805,19 +1838,24 @@ class TestPgTools:
 class TestChTools:
     """ch: соединение main стенда под kerberos-учёткой приложения."""
 
-    def test_connection_list(self, feed: ToolFeed) -> None:
+    def test_connection_list(
+        self, feed: ToolFeed, stand_database: str, llm_port: int
+    ) -> None:
         """Общий каталог показывает clickhouse-строку main."""
         call = ToolCall(tool="connection_list")
-        feed.call(call, ToolExpect.of(_connection_catalog(), dom=CATALOG_DOM))
+        catalog = _connection_catalog(stand_database, llm_port)
+        feed.call(call, ToolExpect.of(catalog, dom=CATALOG_DOM))
 
-    def test_connection_search(self, feed: ToolFeed) -> None:
+    def test_connection_search(
+        self, feed: ToolFeed, stand_database: str, llm_port: int
+    ) -> None:
         """Поиск по виду отбирает из каталога только clickhouse-строку."""
         call = ToolCall(
             tool="connection_search",
             arguments={"kind": "clickhouse", "name": "", "host": "", "description": ""},
         )
         rows: list[dict[str, Any]] = []
-        for row in _connection_catalog().rows:
+        for row in _connection_catalog(stand_database, llm_port).rows:
             if row["kind"] == "clickhouse":
                 rows.append(dict(row))
 
@@ -2517,9 +2555,12 @@ class TestStreamTools:
 class TestCoverage:
     """Прогон вызвал каждый инструмент, который стенд отдаёт модели."""
 
-    def test_every_stand_tool_is_called(self, feed: ToolFeed, llm_port: int) -> None:
+    def test_every_stand_tool_is_called(
+        self, feed: ToolFeed, stand_database: str, llm_port: int
+    ) -> None:
         call = ToolCall(tool="connection_list")
-        feed.call(call, ToolExpect.of(_connection_catalog()))
+        catalog = _connection_catalog(stand_database, llm_port)
+        feed.call(call, ToolExpect.of(catalog))
 
         response = httpx.get(
             StandUrl.of(llm_port, FakeRoute.REQUESTS.value), timeout=5.0
