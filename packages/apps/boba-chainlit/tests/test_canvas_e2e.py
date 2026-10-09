@@ -59,6 +59,7 @@ class E2eStand:
     SERVICE_PORT: ClassVar[int] = free_port()
     SERVICE_HOST: ClassVar[str] = "localhost"
     INSTANCE: ClassVar[str] = "e2e"
+    SERVICE_LAUNCHER: ClassVar[str] = "sandbox"
     DATA_DIRS: ClassVar[tuple[str, ...]] = ("krb", "dump", "workspace", "tool-logs")
 
     def prepare(self) -> None:
@@ -73,6 +74,9 @@ class E2eStand:
             EnvOverride.PORT.var: str(self.SERVICE_PORT),
             EnvOverride.PUBLIC_URL.var: public,
             EnvOverride.DATA.var: str(self.SERVICE_DATA),
+            # тесты называют файлы путями тела инструмента (/workspace/...):
+            # так их видит только сервис с песочницей
+            EnvOverride.TOOL_LAUNCHER.var: self.SERVICE_LAUNCHER,
         }
 
     def app_env(self) -> dict[str, str]:
