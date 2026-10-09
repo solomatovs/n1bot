@@ -29,6 +29,7 @@ payload = [
 dev = [
     "boba-runtime==0.0.26.dev4",
     "boba-stand==0.0.26.dev4",
+    "boba-stand-core==0.0.26.dev4",
     "omegaconf>=2.3,<3",
     "boba-config==0.0.26.dev4",
     "pillow>=10",

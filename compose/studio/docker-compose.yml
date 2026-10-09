@@ -32,8 +32,8 @@ services:
       - ./conf/krb/krb5.conf:/etc/krb5.conf:ro
       - ./data:/app/boba/data:rw
       - ./app_root:/app/boba/app_root:rw
-      - ./models:/app/boba/models:ro
-      - ../../build/src/sandbox:/app/boba/sandbox:ro
+      - ../../runtime/models:/app/boba/models:ro
+      - ../../runtime/sandbox:/app/boba/sandbox:ro
       - ${BOBA_SANDBOX_CGROUP:?start boba-sandbox@studio.service and set BOBA_SANDBOX_CGROUP in .env}:/cgroup/boba-sandbox-studio:rw
     ports:
       - "8502"

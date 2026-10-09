@@ -77,6 +77,14 @@ class ChainlitExtendConfig(BaseModel):
     ssl_ca_certs: str | None = Field(default=None)
     url_prefix: str = Field(default="")
     root: str = Field(default="")
+    files_dir: str = Field(
+        default="",
+        description=(
+            "Каталог вложений сессий chainlit вместо <root>/.files: root — "
+            "статика, писать в него приложение не должно. Пустое значение "
+            "точка входа отвергает."
+        ),
+    )
 
     ping_interval: int = Field(
         default=300,

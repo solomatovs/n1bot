@@ -20,6 +20,9 @@ from boba.runtime.http import SessionCookie
 
 CHAINLIT_SIDE = """
 import json, sys
+from boba.chainlit.infra.entry import AppEntry
+from boba.runtime.config import ConfigLocator
+AppEntry.files(ConfigLocator.path()).install()
 from starlette.requests import Request
 from starlette.responses import Response
 from chainlit.auth.cookie import get_token_from_cookies, set_auth_cookie
@@ -80,13 +83,22 @@ class TestSharedSessionCookie:
 
     @staticmethod
     def chainlit_side(job: Mapping[str, object]) -> object:
-        AppEntry.export_env(ConfigLocator.path())
+        # export_env пишет в os.environ: окружение chainlit нужно подпроцессу,
+        # а в процессе pytest остаётся прежним
+        saved = dict(os.environ)
+        try:
+            AppEntry.export_env(ConfigLocator.path())
+            env = dict(os.environ)
+        finally:
+            os.environ.clear()
+            os.environ.update(saved)
+
         proc = subprocess.run(
             [sys.executable, "-c", CHAINLIT_SIDE],
             input=json.dumps(job),
             capture_output=True,
             text=True,
-            env=dict(os.environ),
+            env=env,
             check=False,
         )
         assert proc.returncode == 0, proc.stderr

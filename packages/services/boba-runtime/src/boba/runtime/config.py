@@ -103,6 +103,9 @@ class EnvOverride(StrEnum):
     MESSAGING = "messaging_provider"
     TOOL_LAUNCHER = "tool_launcher"
     MCP_HOST = "mcp_host"
+    MCP_PORT = "mcp_port"
+    MCP_SCHEME = "mcp_scheme"
+    MCP_PREFIX = "mcp_prefix"
     PUBLIC_URL = "public_url"
 
     @property

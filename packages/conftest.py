@@ -2,12 +2,39 @@
 
 from __future__ import annotations
 
+import atexit
+import os
+import shutil
+import tempfile
+from typing import ClassVar
+
 import pytest
 
 from boba.stand.names import StandSuite
 from boba.stand.site import Stand
 
 pytest_plugins = ["boba.stand.fixtures", "boba.stand.ui.fixtures"]
+
+
+class ChainlitTestRoot:
+    """Корень chainlit процесса pytest и его подпроцессов.
+
+    chainlit на импорте заводит под APP_ROOT каталоги .chainlit и .files, а без
+    переменной берёт рабочий каталог — тесты оставляли их там, откуда запущен
+    pytest. Корень прогона — временный каталог: его называет переменная до
+    первого импорта chainlit, а конец процесса каталог удаляет.
+    """
+
+    ENV: ClassVar[str] = "CHAINLIT_APP_ROOT"
+    PREFIX: ClassVar[str] = "boba-chainlit-root-"
+
+    def install(self) -> None:
+        root = tempfile.mkdtemp(prefix=self.PREFIX)
+        os.environ[self.ENV] = root
+        atexit.register(shutil.rmtree, root, ignore_errors=True)
+
+
+ChainlitTestRoot().install()
 
 
 @pytest.hookimpl(tryfirst=True)

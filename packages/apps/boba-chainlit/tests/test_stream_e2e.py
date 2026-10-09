@@ -26,6 +26,7 @@ from test_canvas_e2e import (
     BASE,
     FILES_PROFILE,
     LOGIN,
+    E2eStand,
     _user_id_of,
     anyio_backend,
     app_server,
@@ -65,12 +66,11 @@ class ServiceJournal:
     Вызовы исполняет сервис, и журнал их вывода лежит у него: под id,
     который сервис выводит из логина вошедшего, в каталоге запуска. Тест
     кладёт журнал туда же и называет его адрес в истории треда — так журнал
-    оставил бы настоящий вызов; запуском служит сам тред.
+    оставил бы настоящий вызов; запуском служит сам тред. Сервис стенда —
+    собственный процесс e2e, каталог его данных называет E2eStand.
     """
 
-    DIR: ClassVar[Path] = (
-        Path(__file__).resolve().parents[4] / "compose" / "mcp" / "data" / "tool-logs"
-    )
+    DIR: ClassVar[Path] = E2eStand.SERVICE_DATA / "tool-logs"
 
     def __init__(self) -> None:
         self._owner = str(uuid.uuid5(uuid.NAMESPACE_URL, f"boba-mcp:{Login(LOGIN[0])}"))

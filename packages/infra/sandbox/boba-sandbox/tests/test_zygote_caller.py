@@ -54,7 +54,7 @@ from boba.toolkit.stream import (
 )
 
 REPO = Path(__file__).resolve().parents[5]
-SANDBOX = REPO / "build" / "src" / "sandbox"
+SANDBOX = REPO / "runtime" / "sandbox"
 ROOTFS_IMAGE = SANDBOX / "plugins" / "boba-tool-shell" / "rootfs.ext4"
 
 needs_sandbox = pytest.mark.skipif(

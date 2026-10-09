@@ -1366,8 +1366,9 @@ class DeclaredClient(BaseModel):
 
 
 class BobaMcpService:
-    """Настоящий процесс сервиса на его собственном конфиге: `python -m
-    boba.mcp_server --config compose/mcp/conf/config.toml`. Порт и способ
+    """Настоящий процесс сервиса на его собственном конфиге в дереве отладки:
+    `python -m boba.mcp_server --config debug/mcp/conf/config.toml`, данные
+    процесса — в debug/mcp/data, а не у контейнера compose. Порт и способ
     запуска стенд задаёт переопределениями [env]; вход — proxy, ключ
     утверждений и клиент берутся из [auth.proxy] и [mcp.clients] того же
     конфига."""
@@ -1377,8 +1378,8 @@ class BobaMcpService:
     и адрес ресурса обязаны совпадать с тем, как клиент называет сервис."""
     PROFILE: str = "general"
     CLIENT: str = "boba-chat"
-    CONFIG: Path = BobaMcpStand.REPO / "compose" / "mcp" / "conf" / "config.toml"
-    THIRD: Path = BobaMcpStand.REPO / "build" / "src" / "sandbox" / "third"
+    CONFIG: Path = BobaMcpStand.REPO / "debug" / "mcp" / "conf" / "config.toml"
+    THIRD: Path = BobaMcpStand.REPO / "runtime" / "third"
 
     def __init__(self, log: Path) -> None:
         with socket.socket() as probe:

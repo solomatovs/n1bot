@@ -25,6 +25,7 @@ dev = [
     "omegaconf>=2.3,<3",
     "boba-db-oracle[payload]==0.0.26.dev4",
     "boba-stand==0.0.26.dev4",
+    "boba-stand-core==0.0.26.dev4",
     "pytest>=9.1,<10",
 ]
 

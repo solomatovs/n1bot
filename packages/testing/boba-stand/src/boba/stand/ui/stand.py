@@ -44,15 +44,18 @@ class StandError(Exception):
 
 
 class StandPaths(StrEnum):
-    """Пути репозитория, которые стенд подставляет вместо рантайма релиза."""
+    """Пути репозитория, которые стенд подставляет вместо рантайма релиза:
+    конфиги и базы приложений — деревья отладки debug/<приложение>, зависимости —
+    общий каталог runtime."""
 
-    BASE_CONFIG = "compose/chainlit/conf/config.toml"
-    STUDIO_BASE_CONFIG = "compose/studio/conf/config.toml"
-    MCP_BASE_CONFIG = "compose/mcp/conf/config.toml"
-    CHAINLIT_BASE = "compose/chainlit"
-    STUDIO_BASE = "compose/studio"
-    MCP_BASE = "compose/mcp"
-    SANDBOX = "build/src/sandbox"
+    BASE_CONFIG = "debug/chainlit/conf/config.toml"
+    STUDIO_BASE_CONFIG = "debug/studio/conf/config.toml"
+    MCP_BASE_CONFIG = "debug/mcp/conf/config.toml"
+    CHAINLIT_BASE = "debug/chainlit"
+    STUDIO_BASE = "debug/studio"
+    MCP_BASE = "debug/mcp"
+    SANDBOX = "runtime/sandbox"
+    MODELS = "runtime/models"
     PACKAGES = "packages"
 
     def under(self, root: Path) -> Path:

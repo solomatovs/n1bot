@@ -17,6 +17,8 @@ __pycache__
 CLAUDE.md
 
 /release/
+/debug/
+/runtime/
 /compose/*/*
 !/compose/*/docker-compose.yml
 !/compose/*/docker-compose-test.yml
@@ -30,7 +32,7 @@ packages/**/dist/
 .chainlit/
 .files/
 
-# ассеты — готовый app_root: debug-сессия читает их напрямую по BOBA_APP_ROOT
+# ассеты — готовый app_root: debug-сессия читает их напрямую ([env].app_root конфига отладки)
 !/packages/apps/boba-chainlit/assets/.chainlit/
 
 # сборка: артефакты make fetch и локальные настройки закрытого контура
