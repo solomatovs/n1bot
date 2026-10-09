@@ -148,7 +148,8 @@ async def test_basic_auth_logs_in_as_its_own_user() -> None:
 
 @needs_clickhouse
 async def test_basic_auth_with_a_wrong_password_is_refused() -> None:
-    """Неверный пароль — отказ сервера, а не анонимный доступ."""
+    """Неверный пароль — отказ сервера, а не анонимный доступ: clickhouse
+    отвечает 401 пользователю default и 403 любому другому."""
     connection = _clickhouse(
         BasicAuth(
             method="basic",
@@ -162,7 +163,7 @@ async def test_basic_auth_with_a_wrong_password_is_refused() -> None:
             connection, HttpRequest(url="/", params={"query": "select currentUser()"})
         )
 
-    if caught.value.status != 401:
+    if caught.value.status not in (401, 403):
         raise AssertionError(f"a wrong password must be refused: {caught.value}")
 
 

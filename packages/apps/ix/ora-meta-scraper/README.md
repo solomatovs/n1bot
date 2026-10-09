@@ -34,7 +34,7 @@ layout/   запросы к своей базе: raw_* -> stage_* -> ix
     db_schema = "ix"
     attempts  = 3
     sources = [
-        { name = "ora-prod", oracle = { host = "db01.example.com", port = 1521, service = "orclpdb1", connect_timeout = 10, call_timeout = 30000, program = "ora-meta-scraper", auth = { method = "password", user = "scraper", password = "..." } } },
+        { name = "ora-prod", oracle = { host = "db01.example.com", port = 1521, service = "orclpdb1", connect_timeout = 10, call_timeout = 30000, program = "ora-meta-scraper", auth = { method = "password", user = "BOBA_SVC", password = "..." } } },
     ]
 ```
 
@@ -55,29 +55,29 @@ layout/   запросы к своей базе: raw_* -> stage_* -> ix
 `create session` и `select` на 21 таблицу (`tests/stand/server/grants.sql`):
 
 ```sql
-create user scraper identified by "...";
-grant create session to scraper;
-grant select on sys.user$ to scraper;
-grant select on sys.obj$ to scraper;
-grant select on sys.tab$ to scraper;
-grant select on sys.col$ to scraper;
-grant select on sys.com$ to scraper;
-grant select on sys.con$ to scraper;
-grant select on sys.cdef$ to scraper;
-grant select on sys.ccol$ to scraper;
-grant select on sys.ind$ to scraper;
-grant select on sys.icol$ to scraper;
-grant select on sys.view$ to scraper;
-grant select on sys.snap$ to scraper;
-grant select on sys.seq$ to scraper;
-grant select on sys.syn$ to scraper;
-grant select on sys.trigger$ to scraper;
-grant select on sys.dependency$ to scraper;
-grant select on sys.partobj$ to scraper;
-grant select on sys.partcol$ to scraper;
-grant select on sys.ts$ to scraper;
-grant select on sys.registry$ to scraper;
-grant select on sys.props$ to scraper;
+create user boba_svc identified by "...";
+grant create session to boba_svc;
+grant select on sys.user$ to boba_svc;
+grant select on sys.obj$ to boba_svc;
+grant select on sys.tab$ to boba_svc;
+grant select on sys.col$ to boba_svc;
+grant select on sys.com$ to boba_svc;
+grant select on sys.con$ to boba_svc;
+grant select on sys.cdef$ to boba_svc;
+grant select on sys.ccol$ to boba_svc;
+grant select on sys.ind$ to boba_svc;
+grant select on sys.icol$ to boba_svc;
+grant select on sys.view$ to boba_svc;
+grant select on sys.snap$ to boba_svc;
+grant select on sys.seq$ to boba_svc;
+grant select on sys.syn$ to boba_svc;
+grant select on sys.trigger$ to boba_svc;
+grant select on sys.dependency$ to boba_svc;
+grant select on sys.partobj$ to boba_svc;
+grant select on sys.partcol$ to boba_svc;
+grant select on sys.ts$ to boba_svc;
+grant select on sys.registry$ to boba_svc;
+grant select on sys.props$ to boba_svc;
 ```
 
 `dba_*` такому пользователю недоступны (ORA-00942), к данным таблиц доступа нет.

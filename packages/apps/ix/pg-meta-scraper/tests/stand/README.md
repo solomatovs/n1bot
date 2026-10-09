@@ -11,7 +11,7 @@
     database = "ix_stand"
     sources  = [
         { name = "pg-18", dsn = "host=... port=5432 user=... password=..." },
-        { name = "gp-7",  dsn = "host=... port=5432 user=gpadmin" },
+        { name = "gp-7",  dsn = "host=... port=5432 user=boba-svc" },
     ]
 ```
 

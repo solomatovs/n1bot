@@ -19,7 +19,7 @@
 | `wallet` | `user`, `password`, `wallet_location` (каталог с `ewallet.pem`), `wallet_password`, `ssl_server_dn_match` | tcps |
 
 ```toml
-oracle = { host = "db1.example.com", port = 1521, service = "orclpdb1", connect_timeout = 10, call_timeout = 30000, arraysize = 2000, auth = { method = "password", user = "SCRAPER", password = "..." } }
+oracle = { host = "db1.example.com", port = 1521, service = "orclpdb1", connect_timeout = 10, call_timeout = 30000, arraysize = 2000, auth = { method = "password", user = "BOBA_SVC", password = "..." } }
 oracle = { host = "adb.example.com", port = 1522, service = "adb_high", connect_timeout = 10, call_timeout = 30000, arraysize = 2000, auth = { method = "wallet", user = "ADMIN", password = "...", wallet_location = "/etc/oracle/wallet", wallet_password = "...", ssl_server_dn_match = true } }
 ```
 
