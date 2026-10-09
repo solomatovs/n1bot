@@ -27,6 +27,7 @@ from boba.db.clickhouse.arrow_stream import ArrowBodyWithoutEos
 from boba.db.clickhouse.payload import PayloadClickHouse
 from boba.db.clickhouse.target import ChInsertTuning, InsertMemory
 from boba.pump_stand import PumpStand
+from boba.stand.collection import StandServers
 from boba.toolkit.stream import Chunk
 from boba.toolkit.transfer import StreamWire
 
@@ -84,7 +85,7 @@ def profile(request: pytest.FixtureRequest) -> Any:
 
 
 MEMORY_IN_SUMMARY_SINCE = 25
-WITH_MEMORY_IN_SUMMARY = STAND.only(
+WITH_MEMORY_IN_SUMMARY = StandServers().only(
     "profile", STAND.clickhouse_since(MEMORY_IN_SUMMARY_SINCE)
 )
 """Пик памяти запроса сервер отдаёт в сводке ответа с 25-й версии: замеры

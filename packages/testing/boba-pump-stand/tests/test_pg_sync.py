@@ -19,6 +19,7 @@ import pytest
 
 from boba.pump_stand import Loaded, OracleSide, PostgresSide, PumpDags, PumpStand
 from boba.pump_stand.oracle import PumpUser
+from boba.stand.collection import StandServers
 from boba.stand.names import StandNames
 from boba.toolkit.transfer import StreamWire
 from boba.toolrun.dag_run import DagOutcome
@@ -634,7 +635,7 @@ feed = "rows"
 
 
 NEWEST = STAND.newest_postgres()
-ON_NEWEST = STAND.only("postgres", [NEWEST])
+ON_NEWEST = StandServers().only("postgres", [NEWEST])
 """Случай не зависит от версии сервера: идёт на одном, самом новом postgres."""
 
 

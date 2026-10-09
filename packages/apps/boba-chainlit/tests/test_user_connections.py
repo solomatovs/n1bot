@@ -29,7 +29,6 @@ from boba.connection_broker.store import ConnectionsConfig, ConnectionStore
 from boba.connection_broker.user_connections import ArmedConnections
 from boba.connections.manifest import ConnectionTypes
 from boba.connections.marks import ConnectionRefusal
-from boba.connections.sealed import ConnectionRef, ConnectionRefs
 from boba.connections.stored import GrantTarget, StoredRole
 from boba.db.postgres import AsyncPostgresPool
 from boba.db.postgres.connection import PasswordAuth, PostgresConfig
@@ -130,10 +129,6 @@ async def tools(
         await opened.stop()
 
 
-def _pg(name: str) -> str:
-    return ConnectionRef(kind="postgres", name=name).render()
-
-
 class Session:
     """Сессия chainlit от пользователя из таблицы users с его ролями."""
 
@@ -175,13 +170,13 @@ async def test_granted_connection_is_visible_and_works(  # noqa: PLR0913 — ф�
     chat_session.sign_in(user, user.metadata, THREAD, PROFILE)
 
     targets = await Call.ok(catalog)
-    names = [ConnectionRefs().parse(row["connection"]).name for row in targets.rows]
+    names = [row["name"] for row in targets.rows]
     if names != ["main"]:
         raise AssertionError(f"whitelist must hold the granted row only: {names}")
 
     result = await Call.ok(
         tools["pg_query"],
-        connection=_pg("main"),
+        connection="main",
         sql="select 1 as answer",
         offset=0,
         limit=50,
@@ -205,7 +200,7 @@ async def test_role_grant_reaches_every_role_holder(  # noqa: PLR0913 — фик
     chat_session.sign_in(user, user.metadata, THREAD, PROFILE)
 
     targets = await Call.ok(catalog)
-    names = [ConnectionRefs().parse(row["connection"]).name for row in targets.rows]
+    names = [row["name"] for row in targets.rows]
     if names != ["shared"]:
         raise AssertionError(f"role grant must be visible: {names}")
 
@@ -229,7 +224,7 @@ async def test_stranger_sees_nothing(  # noqa: PLR0913 — фикстуры те
         raise AssertionError(f"stranger must see no connections: {targets.rows}")
 
     refused = await Call.result(
-        tools["pg_query"], connection=_pg("main"), sql="select 1", offset=0, limit=50
+        tools["pg_query"], connection="main", sql="select 1", offset=0, limit=50
     )
 
     if refused.error_kind != ConnectionRefusal.NOT_VISIBLE:
@@ -281,7 +276,7 @@ async def test_ambiguous_name_is_refused(  # noqa: PLR0913 — фикстуры 
         raise AssertionError(f"ambiguous name must not be listed: {targets.rows}")
 
     refused = await Call.result(
-        tools["pg_query"], connection=_pg("main"), sql="select 1", offset=0, limit=50
+        tools["pg_query"], connection="main", sql="select 1", offset=0, limit=50
     )
 
     if refused.error_kind != ConnectionRefusal.AMBIGUOUS:
@@ -309,7 +304,7 @@ async def test_delegated_connection_runs_as_the_session_principal(  # noqa: PLR0
 
     result = await Call.ok(
         tools["pg_query"],
-        connection=_pg("mine"),
+        connection="mine",
         sql="select current_user as who",
         offset=0,
         limit=50,
@@ -334,7 +329,7 @@ async def test_delegated_connection_refuses_local_login(
     chat_session.sign_in(user, user.metadata, THREAD, PROFILE)
 
     refused = await Call.result(
-        tools["pg_query"], connection=_pg("mine"), sql="select 1", offset=0, limit=50
+        tools["pg_query"], connection="mine", sql="select 1", offset=0, limit=50
     )
 
     if refused.error_kind != ConnectionRefusal.NO_DELEGATION:
@@ -365,7 +360,7 @@ async def test_unreachable_database_is_reported_by_the_body(
     chat_session.sign_in(user, user.metadata, THREAD, PROFILE)
 
     refused = await Call.result(
-        tools["pg_query"], connection=_pg("dead"), sql="select 1", offset=0, limit=50
+        tools["pg_query"], connection="dead", sql="select 1", offset=0, limit=50
     )
 
     if refused.error_kind != "PostgresError":
@@ -404,7 +399,7 @@ async def test_web_negotiate_connection_authenticates_as_the_principal(
     result = await Call.ok(
         tools["web_fetch_page"],
         url=f"{CH_URL}/?query=select%20currentUser()",
-        connection=ConnectionRef(kind="web", name="ch-http").render(),
+        connection="ch-http",
         as_markdown=False,
         line_offset=0,
         line_count=5,

@@ -40,6 +40,7 @@ dev = [
     "krb5>=0.7,<1",
     "boba-stand-core==0.0.26.dev4",
     "boba-config==0.0.26.dev4",
+    "boba-db-pgvector==0.0.26.dev4",
     "boba-db-postgres==0.0.26.dev4",
     "boba-tool-canvas==0.0.26.dev4",
     "boba-tool-chart==0.0.26.dev4",

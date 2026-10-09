@@ -32,6 +32,7 @@ from boba.pump_stand import (
     Sink,
 )
 from boba.pump_stand.oracle import PumpUser
+from boba.stand.collection import StandServers
 from boba.stand.names import StandNames
 from boba.stand_core.progress import HeardProgress
 from boba.toolkit.result import SqlFailureResult
@@ -806,7 +807,7 @@ def _partitioned() -> list[OraSource]:
     return chosen
 
 
-WITH_PARTITIONING = STAND.only("ora_source", _partitioned())
+WITH_PARTITIONING = StandServers().only("ora_source", _partitioned())
 
 
 @pytest.fixture(scope="module")

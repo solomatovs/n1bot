@@ -36,7 +36,6 @@ from boba.connections.manifest import (
     ConnectionTypesError,
     UnknownConnectionKindError,
 )
-from boba.connections.sealed import ConnectionRef
 from boba.connections.secrets import SecretCipher
 from boba.connections.stored import (
     ConnectionBase,
@@ -68,17 +67,17 @@ __all__ = [
 
 
 class CatalogEntry(BaseModel):
-    """Соединение субъекта для показа модели: ссылка, вид и открытые поля профиля.
+    """Соединение субъекта для показа модели: имя, вид и открытые поля профиля.
 
-    Поля — колонки выдачи connection_list и connection_search. connection —
-    ссылка ConnectionRef: её модель передаёт инструменту как есть. Строка
-    собирается из jsonb профиля: host и description берутся из него, а
-    остальное, включая секреты, не читается.
+    Поля — колонки выдачи connection_list и connection_search. name — имя
+    строки: его модель передаёт инструменту в параметр-соединение как есть.
+    Строка собирается из jsonb профиля: host и description берутся из него,
+    а остальное, включая секреты, не читается.
     """
 
     model_config = ConfigDict(frozen=True, extra="ignore")
 
-    connection: str
+    name: str
     kind: str
     host: str = ""
     description: str = ""
@@ -701,10 +700,8 @@ class ConnectionStore(PostgresTable, ConnectionRepository):
     def _catalog_entries(rows: Sequence[Mapping[str, Any]]) -> Iterator[CatalogEntry]:
         for row in rows:
             fields = dict(row[SubjectRowColumn.DATA])
-            kind = row[SubjectRowColumn.KIND]
-            ref = ConnectionRef(kind=kind, name=row[SubjectRowColumn.NAME])
-            fields["connection"] = ref.render()
-            fields["kind"] = kind
+            fields["name"] = row[SubjectRowColumn.NAME]
+            fields["kind"] = row[SubjectRowColumn.KIND]
 
             yield CatalogEntry.model_validate(fields)
 

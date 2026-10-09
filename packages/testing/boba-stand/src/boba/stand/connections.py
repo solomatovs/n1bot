@@ -1,10 +1,10 @@
 """Параметры-соединения на стенде: клиент и исполнитель в одной обвязке.
 
-В приложении соединение проходит два процесса: клиент по ссылке модели
-берёт соединение пользователя и запечатывает его, исполнитель открывает и
+В приложении соединение проходит два процесса: клиент по имени из вызова
+модели берёт соединение пользователя и запечатывает его, исполнитель открывает и
 отдаёт телу. Тест инструмента зовёт тело напрямую, без порта клиента,
-поэтому здесь оба шага стоят одной обвязкой параметра: вызов с именем или
-ссылкой проходит боевые ArmedConnections, ConnectionSeal и
+поэтому здесь оба шага стоят одной обвязкой параметра: вызов с именем
+соединения проходит боевые ArmedConnections, ConnectionSeal и
 SealedConnectionParam.
 
 Ошибки:
@@ -28,12 +28,7 @@ from boba.connection_broker.user_connections import (
     StoreRef,
     TypesRef,
 )
-from boba.connections.sealed import (
-    ConnectionRef,
-    ConnectionRefs,
-    ConnectionSeal,
-    SealKeys,
-)
+from boba.connections.sealed import ConnectionSeal, SealKeys
 from boba.identity.context import CallContexts
 from boba.toolrun.hosted import HostedTool
 from boba.toolrun.injected import AsyncInjected
@@ -44,8 +39,8 @@ __all__ = ["StandUserConnections"]
 class StandConnectionParam(AsyncInjected):
     """Обвязка параметра-соединения стенда: путь клиента и исполнителя подряд.
 
-    Значение параметра — ссылка ConnectionRef либо голое имя соединения вида
-    параметра. Обвязка берёт соединение субъекта вызова (ArmedConnections),
+    Значение параметра — имя соединения вида параметра. Обвязка берёт
+    соединение субъекта вызова (ArmedConnections),
     запечатывает его ключом стенда и отдаёт боевой обвязке исполнителя.
     Ставит её StandUserConnections.
     """
@@ -62,7 +57,6 @@ class StandConnectionParam(AsyncInjected):
         self._executor = executor
         self._seal = seal
         self._kind = kind
-        self._refs = ConnectionRefs()
 
     async def value(self, name: str, kwargs: dict[str, object]) -> object:
         requested = kwargs.get(self._param)
@@ -70,19 +64,13 @@ class StandConnectionParam(AsyncInjected):
             return await self._executor.value(name, kwargs)
 
         sealed = await self._connections.sealed(
-            self._ref(requested), StandUserConnections.TTL
+            self._kind, requested, StandUserConnections.TTL
         )
 
         sent = dict(kwargs)
         sent[self._param] = self._seal.seal(sealed)
 
         return await self._executor.value(name, sent)
-
-    def _ref(self, requested: str) -> ConnectionRef:
-        if self._refs.is_ref(requested):
-            return self._refs.parse(requested)
-
-        return ConnectionRef(kind=self._kind, name=requested)
 
 
 class StandUserConnections:

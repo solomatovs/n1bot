@@ -1259,7 +1259,7 @@ class TestBobaMcpServer:
             }
         )
         sealed = SealedConnection(
-            ref="conn://postgres/orders",
+            name="orders",
             login="alice",
             expires_at=datetime.now(UTC) + timedelta(minutes=5),
             profile=SecretReveal.dumped(profile),
@@ -1289,7 +1289,7 @@ class TestBobaMcpServer:
             }
         )
         sealed = SealedConnection(
-            ref="conn://postgres/orders",
+            name="orders",
             login="alice",
             expires_at=datetime.now(UTC) + timedelta(minutes=5),
             profile=SecretReveal.dumped(profile),
@@ -1312,20 +1312,18 @@ class TestBobaMcpServer:
         node = outcome.nodes[0]
         if node.errored or node.content != "db.local|orders":
             raise AssertionError(f"the node got the sealed profile: {node}")
-        if node.args.get("connection") != "conn://postgres/orders":
-            raise AssertionError(f"the reference of the client is shown: {node.args}")
+        if node.args.get("connection") != "orders":
+            raise AssertionError(f"the name of the client is shown: {node.args}")
         if value in outcome.llm_view() or value in message.content:
             raise AssertionError("the sealed value is not echoed to the caller")
 
-    async def test_plain_reference_is_refused_by_the_server(
+    async def test_plain_name_is_refused_by_the_server(
         self, dag: McpToolServer
     ) -> None:
-        message = await dag.call(
-            _call("fake_connection_host", connection="conn://postgres/main")
-        )
+        message = await dag.call(_call("fake_connection_host", connection="main"))
 
         if not message.errored:
-            raise AssertionError(f"an unsealed reference is refused: {message}")
+            raise AssertionError(f"an unsealed name is refused: {message}")
 
     async def test_wrong_token_is_a_client_error(
         self, boba_mcp_stand: BobaMcpStand

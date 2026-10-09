@@ -235,13 +235,20 @@ class ToolSchema:
 
     @staticmethod
     def _shown(info: FieldInfo) -> FieldInfo:
-        """Поле для схемы клиента: описание, дефолт и метадата ограничений."""
+        """Поле для схемы клиента: описание, дефолт, метадата ограничений и
+        ключи схемы, которые поле объявило само (json_schema_extra)."""
         if info.default_factory is not None:
             shown = FieldInfo(
-                description=info.description, default_factory=info.default_factory
+                description=info.description,
+                default_factory=info.default_factory,
+                json_schema_extra=info.json_schema_extra,
             )
         else:
-            shown = FieldInfo(description=info.description, default=info.default)
+            shown = FieldInfo(
+                description=info.description,
+                default=info.default,
+                json_schema_extra=info.json_schema_extra,
+            )
 
         if info.metadata:
             shown.metadata = info.metadata

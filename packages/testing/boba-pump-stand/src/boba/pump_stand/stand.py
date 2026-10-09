@@ -10,7 +10,6 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import ClassVar
 
-import pytest
 from pydantic import BaseModel, ConfigDict
 
 from boba.db.clickhouse.connection import ClickHouseConfig, ClickHouseSettingsConfig
@@ -126,18 +125,6 @@ class PumpStand(IxStand):
                 chosen.append(source)
 
         return chosen
-
-    def only(
-        self, fixture: str, sources: Sequence[PgSource | ChSource | OraSource]
-    ) -> pytest.MarkDecorator:
-        """Метка теста: фикстура сервера идёт только по данным источникам.
-        Серверы, к которым случай неприменим, не порождаются вовсе, поэтому
-        пропусков в отчёте нет."""
-        names: list[str] = []
-        for source in sources:
-            names.append(source.name)
-
-        return pytest.mark.parametrize(fixture, sources, indirect=True, ids=names)
 
     def since(self, kernel: int) -> list[PgSource]:
         """Источники с ядром не старше данного: случаи, которым нужна функция

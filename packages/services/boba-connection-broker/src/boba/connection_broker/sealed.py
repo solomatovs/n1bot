@@ -54,18 +54,17 @@ class SealedConnectionParam(AsyncInjected):
 
     ARGUMENT: ClassVar[str] = (
         "Соединение пользователя вида {kind}.\n"
-        "   - ссылка на соединение в форме conn://{kind}/<имя>\n"
-        "   - клиент перед вызовом заменяет ссылку запечатанным профилем "
-        "соединения\n"
+        "   - профиль соединения, запечатанный открытым ключом сервера: "
+        "компактная JWE, содержимое по contentSchema\n"
         "   - соединение другого вида сервер не принимает"
     )
-    """Описание параметра-соединения для модели; {kind} — вид соединения."""
+    """Описание параметра-соединения в схеме инструмента; {kind} — вид."""
 
     APPLICATION: ClassVar[str] = "boba"
     """Имя приложения в подписи профиля: под ним ходят все инструменты."""
 
     RESEAL_HINT: ClassVar[str] = (
-        "repeat the call with the connection reference instead of the sealed value"
+        "repeat the call with the connection name instead of the sealed value"
     )
 
     def __init__(
@@ -100,14 +99,14 @@ class SealedConnectionParam(AsyncInjected):
 
     def shown(self, value: object) -> str:
         """Чем параметр показывается в итоге вызова вместо запечатанного
-        значения value: ссылкой, которой соединение назвал вызывающий.
+        значения value: именем, которым соединение назвал вызывающий.
         Значение, которое не открывается (не запечатано, повреждено),
-        ссылки не несёт и показывается пометкой вида соединения."""
+        имени не несёт и показывается пометкой вида соединения."""
         if not isinstance(value, str):
             return f"<sealed {self._kind} connection>"
 
         try:
-            return self._keys.open(value).ref
+            return self._keys.open(value).name
         except RefusalError:
             return f"<sealed {self._kind} connection>"
 

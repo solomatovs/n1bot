@@ -48,6 +48,7 @@ from boba.pump_stand import (
     PumpDags,
     PumpStand,
 )
+from boba.stand.collection import StandServers
 from boba.stand.names import StandNames
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
@@ -861,7 +862,7 @@ feed = "rows"
 """
 
 
-WITH_JSON = STAND.only("source", STAND.since(PG_JSON_SINCE))
+WITH_JSON = StandServers().only("source", STAND.since(PG_JSON_SINCE))
 """json_build_object и jsonb появились в 9.4: источники старее случай не берёт."""
 
 
