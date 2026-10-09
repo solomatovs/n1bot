@@ -1,7 +1,7 @@
 """Тип соединения oracle: манифест для реестра boba.connections.
 
 Ошибки:
-ConnectionTypeError — probe-хук получил профиль чужого типа.
+ConnectionTypeError — хук получил профиль чужого типа.
 OracleError — пробное соединение не открылось.
 OracleQueryError — сервер отклонил пробный запрос.
 """
@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from boba.connections.base import ConnectionBase, ConnectionTypeError
 from boba.connections.manifest import ConnectionTypeManifest
+from boba.db.oracle.address import OraAddresses
 from boba.db.oracle.connection import OracleConfig
 
 __all__ = ["MANIFEST"]
@@ -40,8 +41,17 @@ async def _probe(connection: ConnectionBase) -> str:
     return banner
 
 
+def _address(connection: ConnectionBase) -> str:
+    if not isinstance(connection, OracleConfig):
+        msg = f"oracle address expects an OracleConfig, got kind {connection.kind!r}"
+        raise ConnectionTypeError(msg)
+
+    return OraAddresses.url_of(connection)
+
+
 MANIFEST = ConnectionTypeManifest(
     kind=OracleConfig.KIND,
     model=OracleConfig,
     probe=_probe,
+    address=_address,
 )

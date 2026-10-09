@@ -114,7 +114,7 @@ class ChAddress(Address):
 
         split = SplitResult(
             scheme=self.scheme,
-            netloc=self._netloc(),
+            netloc=self.netloc_of(self.host, self.port),
             path=PurePosixPath(
                 self.PATH_ROOT, quote(self.database, safe="")
             ).as_posix(),
@@ -124,12 +124,13 @@ class ChAddress(Address):
 
         return urlunsplit(split)
 
-    def _netloc(self) -> str:
+    @staticmethod
+    def netloc_of(host: str, port: int) -> str:
         """IPv6 — в скобках по RFC 3986 §3.2.2."""
-        if ":" in self.host:
-            return f"[{self.host}]:{self.port}"
+        if ":" in host:
+            return f"[{host}]:{port}"
 
-        return f"{self.host}:{self.port}"
+        return f"{host}:{port}"
 
     @classmethod
     def accepts(cls, text: str) -> bool:
@@ -331,15 +332,7 @@ class ChAddresses(AddressFamily):
     def base_of(cls, connection: ClickHouseConfig) -> ChDatabaseAddress:
         """Адрес базы по умолчанию соединения; без базы в профиле адреса нет:
         объект тогда называет базу сам."""
-        host = connection.host
-        if not host:
-            msg = "clickhouse connection: host is empty, address needs it"
-            raise AddressError(msg)
-
-        port = connection.port
-        if not port:
-            msg = f"clickhouse connection to {host}: port is empty, address needs it"
-            raise AddressError(msg)
+        host, port = cls._server_of(connection)
 
         database = connection.database
         if not database:
@@ -350,3 +343,35 @@ class ChAddresses(AddressFamily):
             raise AddressError(msg)
 
         return ChDatabaseAddress(host=host, port=port, database=database)
+
+    @classmethod
+    def url_of(cls, connection: ClickHouseConfig) -> str:
+        """URL соединения для показа: адрес базы по умолчанию, если она в
+        профиле есть, иначе корень сервера clickhouse://host:port/."""
+        if connection.database:
+            return cls.base_of(connection).render()
+
+        host, port = cls._server_of(connection)
+        split = SplitResult(
+            scheme=ChAddress.SCHEME,
+            netloc=ChAddress.netloc_of(host, port),
+            path=ChAddress.PATH_ROOT,
+            query="",
+            fragment="",
+        )
+
+        return urlunsplit(split)
+
+    @staticmethod
+    def _server_of(connection: ClickHouseConfig) -> tuple[str, int]:
+        host = connection.host
+        if not host:
+            msg = "clickhouse connection: host is empty, address needs it"
+            raise AddressError(msg)
+
+        port = connection.port
+        if not port:
+            msg = f"clickhouse connection to {host}: port is empty, address needs it"
+            raise AddressError(msg)
+
+        return host, port

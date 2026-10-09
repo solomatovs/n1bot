@@ -112,6 +112,9 @@ async def test_personal_and_role_grants_are_listed(
     if result.rows[0]["host"] != "db.example":
         raise AssertionError(f"host comes from the connection: {result.rows[0]}")
 
+    if result.rows[0]["url"] != "postgresql://db.example:5432/app":
+        raise AssertionError(f"url is built by the type package: {result.rows[0]}")
+
 
 async def test_role_grant_needs_the_role(
     store: ConnectionStore, catalog: GrantedConnections
@@ -229,6 +232,8 @@ async def test_search_filters_combine_and_skip_foreign_rows(
 
     if web.rows[0]["host"] != "wiki.corp":
         raise AssertionError(f"web host comes from the connection: {web.rows[0]}")
+    if web.rows[0]["url"] != "https://wiki.corp":
+        raise AssertionError(f"web url is the service root: {web.rows[0]}")
 
 
 async def test_search_without_filters_equals_list(

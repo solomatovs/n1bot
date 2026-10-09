@@ -144,8 +144,8 @@ class TestToolSchema:
         self, client: Client[Any]
     ) -> None:
         """Параметр-соединение — строка, чьё содержимое объявлено стандартными
-        ключами JSON Schema: JWE (contentMediaType) с профилем соединения
-        вида postgres внутри (contentSchema); своих ключей в схеме нет."""
+        ключами JSON Schema: JWE (contentMediaType) с содержимым вида postgres
+        внутри (contentSchema, константа kind); своих ключей в схеме нет."""
         listed = await client.list_tools()
 
         tool = next(tool for tool in listed if tool.name == "fake_connection_host")
@@ -158,9 +158,9 @@ class TestToolSchema:
 
         content = declared["contentSchema"]
         if content["properties"]["kind"]["const"] != "postgres":
-            raise AssertionError(f"the profile schema names the kind: {content}")
-        if "host" not in content["properties"]:
-            raise AssertionError(f"the profile schema is the full model: {content}")
+            raise AssertionError(f"the content schema names the kind: {content}")
+        if content["required"] != ["kind"]:
+            raise AssertionError(f"the kind is required: {content}")
 
         expected = [
             "contentMediaType",

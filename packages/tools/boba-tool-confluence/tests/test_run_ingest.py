@@ -30,7 +30,7 @@ pytestmark = [pytest.mark.run, pytest.mark.anyio]
 class RunArgs:
     """Аргументы прогона: правятся перед запуском."""
 
-    PAGE_ID: ClassVar[str] = "950276"
+    PAGE_ID: ClassVar[str] = "983136"
 
     ATTACHMENTS: ClassVar[bool] = False
 

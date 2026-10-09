@@ -80,7 +80,7 @@ class ConnectionParamHooks:
     каждый такой параметр получает обвязку, которая отдаст телу профиль, а в
     схеме инструмента становится строкой с описанием description, где назван
     вид соединения ({kind}), и ключами SealedParamSchema: тип содержимого и
-    схема профиля, по которым клиент узнаёт параметр и вид. Значение в лог
+    схема содержимого с видом, по которым клиент узнаёт параметр и вид. Значение в лог
     не пишется: там запечатанное соединение. Вид берётся из типа параметра —
     реестр знает, какому пакету принадлежит модель профиля. Откуда обвязка
     возьмёт профиль, решает вызывающий фабрикой make (SealedConnectionParams).
@@ -107,11 +107,10 @@ class ConnectionParamHooks:
 
         shown: dict[str, tuple[Any, FieldInfo]] = {}
         for param, annotation in fields.items():
-            model = self._model_of(tool.name, param, annotation)
-            kind = self._kind_of(tool.name, param, model)
+            kind = self._kind_of(tool.name, param, annotation)
 
             self._bodies.hook_all([tool], make(tool.name, param, kind))
-            shown[param] = self._field(param, kind, model)
+            shown[param] = self._field(kind)
 
             logger.info(
                 "tool %s: %s is a %s connection of the caller", tool.name, param, kind
@@ -119,21 +118,18 @@ class ConnectionParamHooks:
 
         tool.args_schema = self._schemas.rebuild(schema, shown, ())
 
-    def _field(
-        self, param: str, kind: str, model: type[ConnectionBase]
-    ) -> tuple[Any, FieldInfo]:
+    def _field(self, kind: str) -> tuple[Any, FieldInfo]:
         marked = Annotated[str, NotLogged]
 
         described = self._description.format(kind=kind)
-        declared = self._declared.declared(param, model)
+        declared = self._declared.declared(kind)
 
         return marked, FieldInfo(
             min_length=1, description=described, json_schema_extra=declared
         )
 
-    @staticmethod
-    def _model_of(tool: str, param: str, annotation: object) -> type[ConnectionBase]:
-        """Модель профиля параметра."""
+    def _kind_of(self, tool: str, param: str, annotation: object) -> str:
+        """Вид соединения по модели профиля параметра."""
         if not isinstance(annotation, type):
             msg = (
                 f"tool {tool!r}: {param} must be annotated with a connection "
@@ -148,16 +144,12 @@ class ConnectionParamHooks:
             )
             raise ToolConfigError(msg)
 
-        return annotation
-
-    def _kind_of(self, tool: str, param: str, model: type[ConnectionBase]) -> str:
-        """Вид соединения по модели профиля параметра."""
         try:
-            return self._types_ref().kind_of(model)
+            return self._types_ref().kind_of(annotation)
         except UnknownConnectionKindError as exc:
             msg = (
                 f"tool {tool!r}: {param} needs connection type "
-                f"{model.__name__}, whose package is not installed: {exc}"
+                f"{annotation.__name__}, whose package is not installed: {exc}"
             )
             raise ToolConfigError(msg) from exc
 

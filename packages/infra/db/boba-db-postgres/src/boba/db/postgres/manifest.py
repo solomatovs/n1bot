@@ -1,14 +1,16 @@
 """Тип соединения postgres: манифест для реестра boba.connections.
 
 Ошибки:
-ConnectionTypeError — probe-хук получил профиль чужого типа.
+ConnectionTypeError — хук получил профиль чужого типа.
 PostgresError — пробное соединение не открылось или запрос не прошёл.
+AddressError — у профиля нет ни host, ни hostaddr: адреса не собрать.
 """
 
 from __future__ import annotations
 
 from boba.connections.base import ConnectionBase, ConnectionTypeError
 from boba.connections.manifest import ConnectionTypeManifest
+from boba.db.postgres.address import PgAddresses
 from boba.db.postgres.connection import PostgresConfig
 from boba.db.postgres.payload import PayloadPostgres
 from boba.db.postgres.query import PgQueryBuilder
@@ -37,8 +39,17 @@ async def _probe(connection: ConnectionBase) -> str:
     return "connected"
 
 
+def _address(connection: ConnectionBase) -> str:
+    if not isinstance(connection, PostgresConfig):
+        msg = f"postgres address expects a PostgresConfig, got kind {connection.kind!r}"
+        raise ConnectionTypeError(msg)
+
+    return PgAddresses.url_of(connection)
+
+
 MANIFEST = ConnectionTypeManifest(
     kind=PgSourceKind.POSTGRES.value,
     model=PostgresConfig,
     probe=_probe,
+    address=_address,
 )

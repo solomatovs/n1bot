@@ -31,6 +31,7 @@ from pydantic import (
 )
 
 from boba.access.grants import ConnectionFilter, SubjectGrantsQuery, SubjectRowColumn
+from boba.connections.address import AddressError
 from boba.connections.manifest import (
     ConnectionTypes,
     ConnectionTypesError,
@@ -67,18 +68,21 @@ __all__ = [
 
 
 class CatalogEntry(BaseModel):
-    """Соединение субъекта для показа модели: имя, вид и открытые поля профиля.
+    """Соединение субъекта для показа модели: имя, вид, адрес и открытые поля.
 
     Поля — колонки выдачи connection_list и connection_search. name — имя
     строки: его модель передаёт инструменту в параметр-соединение как есть.
-    Строка собирается из jsonb профиля: host и description берутся из него,
-    а остальное, включая секреты, не читается.
+    url — адрес соединения без учётных данных, его строит пакет типа
+    (AddressHook манифеста); профиль, у которого адреса не собрать, несёт
+    здесь текст причины. host и description берутся из jsonb профиля, а
+    секреты не расшифровываются: профиль разбирается как лежит.
     """
 
     model_config = ConfigDict(frozen=True, extra="ignore")
 
     name: str
     kind: str
+    url: str
     host: str = ""
     description: str = ""
 
@@ -696,14 +700,54 @@ class ConnectionStore(PostgresTable, ConnectionRepository):
 
         return list(self._catalog_entries(rows))
 
-    @staticmethod
-    def _catalog_entries(rows: Sequence[Mapping[str, Any]]) -> Iterator[CatalogEntry]:
+    def _catalog_entries(
+        self, rows: Sequence[Mapping[str, Any]]
+    ) -> Iterator[CatalogEntry]:
+        """Записи каталога; строка типа без установленного пакета пропускается
+        так же, как в _stored_rows."""
         for row in rows:
+            try:
+                url = self._url_of(row)
+            except UnknownConnectionKindError as exc:
+                logger.warning(
+                    "connections: row #%s %r skipped: %s",
+                    row[SubjectRowColumn.ID],
+                    row[SubjectRowColumn.NAME],
+                    exc,
+                )
+                continue
+
             fields = dict(row[SubjectRowColumn.DATA])
             fields["name"] = row[SubjectRowColumn.NAME]
             fields["kind"] = row[SubjectRowColumn.KIND]
+            fields["url"] = url
 
             yield CatalogEntry.model_validate(fields)
+
+    def _url_of(self, row: Mapping[str, Any]) -> str:
+        """Адрес соединения строки хуком её типа; секреты профиля при этом
+        не расшифровываются. Профиль без адреса — текст причины на его месте.
+
+        Ошибки:
+        UnknownConnectionKindError — пакет типа строки не установлен.
+        ConnectionStoreError — jsonb строки не разбирается как профиль.
+        """
+        try:
+            connection = self._types.parse(row[SubjectRowColumn.DATA])
+        except UnknownConnectionKindError:
+            raise
+        except ConnectionTypesError as exc:
+            # from None: в разобранной строке лежат секреты, пусть и зашифрованные
+            msg = (
+                f"connections: row #{row[SubjectRowColumn.ID]} "
+                f"{row[SubjectRowColumn.NAME]!r} is not a valid connection: {exc}"
+            )
+            raise ConnectionStoreError(msg) from None
+
+        try:
+            return self._types.manifest_of(connection.kind).address(connection)
+        except AddressError as exc:
+            return f"no url: {exc}"
 
     async def _subject_rows(
         self, subject: Subject, flt: ConnectionFilter

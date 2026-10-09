@@ -395,12 +395,13 @@ class PgAddresses(AddressFamily):
         if port is None:
             port = PgAddress.LIBPQ_PORT
 
-        database = connection.dbname
-        if not database:
-            msg = f"postgres connection to {host}: dbname is empty, address needs it"
-            raise AddressError(msg)
+        return PgDatabaseAddress(host=host, port=port, database=connection.dbname)
 
-        return PgDatabaseAddress(host=host, port=port, database=database)
+    @classmethod
+    def url_of(cls, connection: PostgresConfig) -> str:
+        """URL соединения для показа: база в профиле обязательна, поэтому это
+        всегда адрес базы."""
+        return cls.base_of(connection).render()
 
     @classmethod
     def _host_of(cls, connection: PostgresConfig) -> str:
