@@ -9,7 +9,7 @@
 
 Профиль изображён настройкой клиента: она уходит с каждым запросом, как
 настройка профиля пользователя. Память запроса берётся из сводки ответа
-сервера; сервер, который её в сводке не отдаёт, пропускается.
+сервера: её отдают серверы с 25-й версии, замеры памяти идут на них.
 
 Ошибки: своих не выпускает; расхождение — падение теста.
 """
@@ -83,6 +83,32 @@ def profile(request: pytest.FixtureRequest) -> Any:
     return request.param.clickhouse
 
 
+MEMORY_IN_SUMMARY_SINCE = 25
+WITH_MEMORY_IN_SUMMARY = STAND.only(
+    "profile", STAND.clickhouse_since(MEMORY_IN_SUMMARY_SINCE)
+)
+"""Пик памяти запроса сервер отдаёт в сводке ответа с 25-й версии: замеры
+памяти идут на таких серверах, запись всех строк потока — на каждом."""
+
+
+async def test_every_row_of_the_stream_is_written(profile: Any) -> None:
+    """Потоковая вставка под профилем с max_query_size в гигабайт доносит
+    каждую строку на любой версии сервера."""
+    stream = BigStream()
+
+    async with PayloadClickHouse.opened_config(profile) as client:
+        client.set_client_setting("max_query_size", BigStream.PROFILE_QUERY_SIZE)
+        trace = await PayloadClickHouse.byte_stream_in(
+            client,
+            BigStream.INSERT,
+            blocks=ArrowBodyWithoutEos().shaped(stream.frames()),
+        )
+
+    if trace.written_rows != stream.rows():
+        raise AssertionError(f"every row of the stream is written: {trace}")
+
+
+@WITH_MEMORY_IN_SUMMARY
 async def test_stream_is_not_held_in_memory_under_a_large_query_size(
     profile: Any,
 ) -> None:
@@ -103,7 +129,7 @@ async def test_stream_is_not_held_in_memory_under_a_large_query_size(
 
     used = trace.memory_usage
     if used is None:
-        pytest.skip("the server does not report the memory of a query in the summary")
+        raise AssertionError(f"the summary of the server carries memory_usage: {trace}")
 
     if used > BigStream.LIMIT_BYTES:
         raise AssertionError(
@@ -112,6 +138,7 @@ async def test_stream_is_not_held_in_memory_under_a_large_query_size(
         )
 
 
+@WITH_MEMORY_IN_SUMMARY
 async def test_insert_stays_within_the_memory_it_was_given(profile: Any) -> None:
     """Настройки, посчитанные от разрешённой памяти, держат запрос вставки в
     её пределах: без них сервер копит блоки по своим значениям по умолчанию и
@@ -134,7 +161,7 @@ async def test_insert_stays_within_the_memory_it_was_given(profile: Any) -> None
 
     used = trace.memory_usage
     if used is None:
-        pytest.skip("the server does not report the memory of a query in the summary")
+        raise AssertionError(f"the summary of the server carries memory_usage: {trace}")
 
     if used > InsertMemory.FLOOR:
         raise AssertionError(
@@ -143,6 +170,7 @@ async def test_insert_stays_within_the_memory_it_was_given(profile: Any) -> None
         )
 
 
+@WITH_MEMORY_IN_SUMMARY
 async def test_statement_of_the_caller_overrides_the_calculated_one(
     profile: Any,
 ) -> None:
@@ -165,7 +193,7 @@ async def test_statement_of_the_caller_overrides_the_calculated_one(
 
     used = trace.memory_usage
     if used is None:
-        pytest.skip("the server does not report the memory of a query in the summary")
+        raise AssertionError(f"the summary of the server carries memory_usage: {trace}")
 
     if used > InsertMemory.BLOCK_FLOOR * 3:
         raise AssertionError(

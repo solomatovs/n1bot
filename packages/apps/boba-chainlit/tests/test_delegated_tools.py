@@ -79,7 +79,7 @@ PROFILE = "test"
 pytestmark = [
     pytest.mark.integration,
     pytest.mark.anyio,
-    pytest.mark.skipif(bool(ToolService.missing()), reason=ToolService.missing()),
+    pytest.mark.failif(bool(ToolService.missing()), reason=ToolService.missing()),
 ]
 
 

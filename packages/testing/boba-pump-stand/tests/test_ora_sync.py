@@ -55,6 +55,8 @@ ARRAYSIZE = 500
 PG_SCHEMA = StandNames().of("pump_ora_sync")
 CH_DATABASE = StandNames().of("pump_ora_sync")
 BOOLEAN_SINCE = 23
+WITHOUT_BOOLEAN = STAND.only("oracle", STAND.oracle_before(BOOLEAN_SINCE))
+"""Отказ сырому bool — поведение серверов без типа BOOLEAN."""
 SRC = StandNames().of("src")
 OWNER = PumpUser().name
 MONTH = "2024-03"
@@ -1390,11 +1392,11 @@ async def pg_source(postgres: PostgresSide) -> PostgresSide:
 
 
 class TestPostgresIntoOracle:
+    @WITHOUT_BOOLEAN
     async def test_raw_bool_is_refused_before_23(
         self, dags: PumpDags, oracle: OracleSide, pg_source: PostgresSide
     ) -> None:
-        if oracle.version >= BOOLEAN_SINCE:
-            pytest.skip("the server has BOOLEAN")
+        assert oracle.version < BOOLEAN_SINCE, oracle.source.name
 
         failure = await _refused(dags, oracle, PG_RAW_BOOL, "dst")
 

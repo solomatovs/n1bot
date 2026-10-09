@@ -41,7 +41,7 @@ SERVICE = STAND.pg_spn
 SERVER = f"{STAND.pg_krbsrvname}/{STAND.pg_host}@{STAND.krb_realm}"
 OTHER_PRINCIPAL = f"other@{STAND.krb_realm}"
 
-live_kdc = pytest.mark.skipif(
+live_kdc = pytest.mark.failif(
     not STAND.live(),
     reason="нет keytab/krb5.conf локального AD",
 )

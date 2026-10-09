@@ -20,7 +20,6 @@ from pathlib import Path
 from typing import Any, ClassVar, Self
 
 import psycopg
-import pytest
 from psycopg import sql
 from pydantic import BaseModel, ConfigDict, ValidationError
 
@@ -79,10 +78,8 @@ class IxStand(BaseModel):
 
     @classmethod
     def required(cls) -> Self:
-        try:
-            return cls.load()
-        except IxStandError as exc:
-            pytest.skip(str(exc), allow_module_level=True)
+        """Стенд для модуля тестов; без конфига сбор модуля падает с причиной."""
+        return cls.load()
 
     @property
     def ix_profile(self) -> PostgresConfig:

@@ -861,6 +861,10 @@ feed = "rows"
 """
 
 
+WITH_JSON = STAND.only("source", STAND.since(PG_JSON_SINCE))
+"""json_build_object и jsonb появились в 9.4: источники старее случай не берёт."""
+
+
 @pytest.fixture(scope="module", params=STAND.sources, ids=lambda s: s.name)
 async def source(request: Any) -> AsyncIterator[PostgresSide]:
     side = PostgresSide(request.param, SRC)
@@ -1141,8 +1145,13 @@ class TestCreateTemplate:
         self, dags: PumpDags, source: PostgresSide, target: ClickHouseSide
     ) -> None:
         landed = ChLoaded(target, "orders_replicated")
-        if KEEPER_CLUSTER not in await landed.clusters():
-            pytest.skip("the server has no Keeper cluster")
+        clusters = await landed.clusters()
+
+        assert KEEPER_CLUSTER in clusters, (
+            f"{target.source.name}: the stand server needs Keeper and the cluster "
+            f"{KEEPER_CLUSTER!r} (conf/keeper.xml of the clickhouse stand), "
+            f"got clusters {clusters}"
+        )
 
         report = await _landed(dags, source, target, REPLICATED)
 
@@ -1205,11 +1214,11 @@ class TestJson:
 
         return [("customer_id", "Int64"), ("profile", profile), ("net", net)]
 
+    @WITH_JSON
     async def test_profiles_land_as_json(
         self, dags: PumpDags, source: PostgresSide, target: ClickHouseSide
     ) -> None:
-        if source.version < PG_JSON_SINCE:
-            pytest.skip("json_build_object and jsonb appear in 9.4")
+        assert source.version >= PG_JSON_SINCE, source.source.name
 
         report = await _landed(dags, source, target, PROFILES)
         landed = ChLoaded(target, "profiles")

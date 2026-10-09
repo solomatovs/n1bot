@@ -24,7 +24,7 @@ STAND = Stand.required()
 pytestmark = [
     pytest.mark.integration,
     pytest.mark.anyio,
-    pytest.mark.skipif(not STAND.live(), reason="нет keytab/krb5.conf локального AD"),
+    pytest.mark.failif(not STAND.live(), reason="нет keytab/krb5.conf локального AD"),
 ]
 
 

@@ -55,7 +55,7 @@ PROFILE = "test"
 pytestmark = [
     pytest.mark.integration,
     pytest.mark.anyio,
-    pytest.mark.skipif(bool(ToolService.missing()), reason=ToolService.missing()),
+    pytest.mark.failif(bool(ToolService.missing()), reason=ToolService.missing()),
 ]
 
 
@@ -372,7 +372,7 @@ async def test_unreachable_database_is_reported_by_the_body(
         raise AssertionError(f"unexpected failure: {refused}")
 
 
-@pytest.mark.skipif(
+@pytest.mark.failif(
     not STAND.ch_addr, reason="в конфиге стенда нет clickhouse (ch_addr)"
 )
 async def test_web_negotiate_connection_authenticates_as_the_principal(

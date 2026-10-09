@@ -31,8 +31,8 @@ from boba.stand.shell import ShellRun
 from boba.stand.zygote import ZygoteStand
 from boba.toolkit.launcher import ChannelOverflowError
 
-needs_bwrap = pytest.mark.skipif(shutil.which("bwrap") is None, reason="нет bubblewrap")
-needs_userns = pytest.mark.skipif(
+needs_bwrap = pytest.mark.failif(shutil.which("bwrap") is None, reason="нет bubblewrap")
+needs_userns = pytest.mark.failif(
     os.geteuid() == 0, reason="под root user namespace ведёт себя иначе"
 )
 
@@ -90,7 +90,7 @@ class Sections:
 def sections(raw_config: DictConfig) -> list[SandboxSection]:
     found = Sections.of(raw_config)
     if not found:
-        pytest.skip("в конфиге нет секций с песочницей")
+        pytest.fail("в конфиге нет секций с песочницей")
 
     return found
 

@@ -68,7 +68,7 @@ async def page_title(kb_cfg: KbToolConfig) -> str:
         registry = await IxRegistry(kb_cfg.db_schema).read(conn)
         tables = registry.tables_of(IndexKind.FTS)
         if not tables:
-            pytest.skip("no fts table in the registry")
+            pytest.fail("no fts table in the registry")
 
         query = sql.SQL(
             "select f.content from {}.{} f "
@@ -79,7 +79,7 @@ async def page_title(kb_cfg: KbToolConfig) -> str:
         row = await cur.fetchone()
 
     if row is None:
-        pytest.skip("no indexed cfl_page title on the stand")
+        pytest.fail("no indexed cfl_page title on the stand")
 
     return str(row[0])
 

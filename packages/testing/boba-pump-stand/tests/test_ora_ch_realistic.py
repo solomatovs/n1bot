@@ -801,8 +801,13 @@ class TestCreateTemplate:
         self, dags: PumpDags, source: OracleSide, target: ClickHouseSide
     ) -> None:
         landed = ChLoaded(target, "orders_replicated")
-        if KEEPER_CLUSTER not in await landed.clusters():
-            pytest.skip("the server has no Keeper cluster")
+        clusters = await landed.clusters()
+
+        assert KEEPER_CLUSTER in clusters, (
+            f"{target.source.name}: the stand server needs Keeper and the cluster "
+            f"{KEEPER_CLUSTER!r} (conf/keeper.xml of the clickhouse stand), "
+            f"got clusters {clusters}"
+        )
 
         report = await _landed(dags, source, target, REPLICATED)
 

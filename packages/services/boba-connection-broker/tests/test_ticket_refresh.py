@@ -29,7 +29,7 @@ KRB5_CONF = Path(STAND.krb_config)
 
 pytestmark = pytest.mark.anyio
 
-live_kdc = pytest.mark.skipif(
+live_kdc = pytest.mark.failif(
     not KEYTAB.is_file() or not KRB5_CONF.is_file(),
     reason="нет keytab/krb5.conf локального AD",
 )

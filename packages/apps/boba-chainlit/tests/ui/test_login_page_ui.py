@@ -39,7 +39,8 @@ def _sso_stand(
     """Стенд с [auth.kerberos]: без keytab на хосте его не собрать."""
     keytab = Path(Stand.required().krb_http_keytab)
     if not keytab.is_file():
-        pytest.skip(f"no service keytab at {keytab}")
+        msg = f"sso stand: [auth.kerberos] expects the service keytab at {keytab}"
+        raise RuntimeError(msg)
 
     config = StandConfig(
         workdir=workdir,

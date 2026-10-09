@@ -258,7 +258,11 @@ class TestRoleIntersection:
             if "DEV" in roles and "ADM" not in roles:
                 return login
 
-        pytest.skip("no DEV-only login in [auth.local] of the base config")
+        msg = (
+            "role intersection: [auth.local] of the stand config expects a login "
+            f"with DEV and without ADM, got {stand.config.local_users()}"
+        )
+        raise AssertionError(msg)
 
     def test_dev_search_gets_the_endpoint_tools(
         self, open_chat: OpenChat, stand: StandProcess, llm_port: int

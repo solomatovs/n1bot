@@ -629,6 +629,10 @@ feed = "rows"
 """
 
 
+WITH_JSON = STAND.only("source", STAND.since(PG_JSON_SINCE))
+"""json_build_object и jsonb появились в 9.4: источники старее случай не берёт."""
+
+
 @pytest.fixture(scope="module", params=STAND.sources, ids=lambda s: s.name)
 async def source(request: Any) -> AsyncIterator[PostgresSide]:
     side = PostgresSide(request.param, SRC)
@@ -1038,11 +1042,11 @@ class TestJson:
     """Профиль клиента jsonb источника ложится CLOB и читается json-функциями
     Oracle. Источники до 9.4 json_build_object не умеют."""
 
+    @WITH_JSON
     async def test_profiles_land_as_clob(
         self, dags: PumpDags, source: PostgresSide, target: OracleSide
     ) -> None:
-        if source.version < PG_JSON_SINCE:
-            pytest.skip("json_build_object and jsonb appear in 9.4")
+        assert source.version >= PG_JSON_SINCE, source.source.name
 
         report = await _landed(dags, source, target, PROFILES)
         landed = OraLoaded(target, "profiles")

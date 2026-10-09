@@ -22,7 +22,6 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
-import psycopg
 import pytest
 
 from boba.pump_stand import (
@@ -1504,16 +1503,22 @@ def _chosen(sources: Sequence[Any]) -> list[Any]:
     return chosen
 
 
-def _newest(sources: Sequence[Any]) -> str:
-    plain: list[str] = []
-    for source in sources:
-        if source.name.startswith("pg-"):
-            plain.append(source.name)
+NEWEST = STAND.newest_postgres()
+ON_NEWEST = STAND.only("postgres", [NEWEST])
+"""Случай не зависит от версии сервера: идёт на одном, самом новом postgres."""
 
-    return plain[-1]
+EXTENSIONS_SINCE = 90100
+"""create extension появился в 9.1."""
 
 
-NEWEST = _newest(STAND.sources)
+def _since(kernel: int) -> pytest.MarkDecorator:
+    """Серверы набора с ядром не старше данного."""
+    chosen: list[PgSource] = []
+    for source in _chosen(STAND.sources):
+        if source.kernel >= kernel:
+            chosen.append(source)
+
+    return STAND.only("postgres", chosen)
 
 
 @pytest.fixture(scope="module", params=_chosen(STAND.sources), ids=lambda s: s.name)
@@ -1560,11 +1565,6 @@ async def vector_db() -> AsyncIterator[PostgresSide]:
     await side.recreate_schema()
     yield side
     await side.drop()
-
-
-def only_newest(postgres: PostgresSide) -> None:
-    if postgres.source.name != NEWEST:
-        pytest.skip("one postgres is enough here")
 
 
 def toml_bool(value: bool) -> str:
@@ -1689,6 +1689,20 @@ class Case:
     lands_as: str = ""
 
 
+def _applicable(cases: Sequence[Case]) -> pytest.MarkDecorator:
+    """Пары сервер — случай, где ядро сервера не старше минимальной версии
+    случая: неприменимые сочетания не порождаются."""
+    pairs: list[Any] = []
+    for source in _chosen(STAND.sources):
+        for case in cases:
+            if source.kernel < case.min_version:
+                continue
+
+            pairs.append(pytest.param(source, case, id=f"{source.name}-{case.name}"))
+
+    return pytest.mark.parametrize(("postgres", "case"), pairs, indirect=["postgres"])
+
+
 CASES = [
     Case("ts_bc", "timestamp", "timestamp '0001-01-01 00:00:00'"),
     Case(
@@ -1772,18 +1786,13 @@ class TestRoundTrip:
     pg_stream_in создаёт приёмник, значения текстом равны, тип приёмника
     ожидаемый."""
 
-    @pytest.mark.parametrize("case", CASES, ids=lambda c: c.name)
+    @_applicable(CASES)
     async def test_type_lands_as_itself(
         self, case_dags: PumpDags, postgres: PostgresSide, case: Case
     ) -> None:
-        if postgres.version < case.min_version:
-            pytest.skip(f"{case.kind} needs server {case.min_version}")
+        assert postgres.version >= case.min_version, postgres.source.name
 
-        try:
-            await fill(postgres, f"s_{case.name}", case.kind, case.expr)
-        except psycopg.errors.FeatureNotSupported as exc:
-            pytest.skip(f"{case.kind} on this server: {exc}")
-
+        await fill(postgres, f"s_{case.name}", case.kind, case.expr)
         report = landed(await case_dags.run(ROUND_TRIP))
         source = Loaded(postgres, S, f"s_{case.name}")
         target = Loaded(postgres, S, f"t_{case.name}")
@@ -1800,10 +1809,10 @@ class TestRoundTrip:
 class TestRefusedValues:
     """Значения, которых читатель CSV Arrow не собирает: отказ с причиной."""
 
+    @ON_NEWEST
     async def test_numeric_nan_needs_a_cast(
         self, dags: PumpDags, postgres: PostgresSide
     ) -> None:
-        only_newest(postgres)
         await fill(
             postgres,
             "s_nan",
@@ -1819,10 +1828,10 @@ class TestRefusedValues:
         assert report.startswith(f"{ROWS} rows loaded")
         assert (await Loaded(postgres, S, "t_nan_f8").texts("v"))[0] == "NaN"
 
+    @ON_NEWEST
     async def test_timestamp_infinity_needs_a_cast(
         self, dags: PumpDags, postgres: PostgresSide
     ) -> None:
-        only_newest(postgres)
         await fill(
             postgres,
             "s_inf",
@@ -1842,19 +1851,19 @@ class TestRefusedValues:
             "-infinity",
         ]
 
+    @ON_NEWEST
     async def test_numeric_without_precision_is_refused_before_execution(
         self, dags: PumpDags, postgres: PostgresSide
     ) -> None:
-        only_newest(postgres)
         await fill(postgres, "s_free", "numeric", "g / 7.0")
         outcome = await dags.run(NUMERIC_WITHOUT_PRECISION)
 
         assert "numeric without precision" in refused(outcome, "out", "PgArrowError")
 
+    @ON_NEWEST
     async def test_numeric_wider_than_decimal128_is_refused(
         self, dags: PumpDags, postgres: PostgresSide
     ) -> None:
-        only_newest(postgres)
         await fill(postgres, "s_wide", "numeric(40,2)", "g")
         outcome = await dags.run(NUMERIC_WIDER_THAN_DECIMAL128)
 
@@ -2185,10 +2194,10 @@ class TestFloats:
 
 
 class TestClickHouseSources:
+    @ON_NEWEST
     async def test_unsigned_and_nanoseconds_land(
         self, ch_dags: PumpDags, postgres: PostgresSide, clickhouse: ClickHouseSide
     ) -> None:
-        only_newest(postgres)
         await clickhouse.create(
             "edges",
             [
@@ -2222,10 +2231,10 @@ class TestClickHouseSources:
         assert (await loaded.texts("d"))[0] == "2024-02-29 13:14:15.123457+00"
         assert (await loaded.texts("s"))[2] is None
 
+    @ON_NEWEST
     async def test_unsigned_into_signed_column_is_refused(
         self, ch_dags: PumpDags, postgres: PostgresSide, clickhouse: ClickHouseSide
     ) -> None:
-        only_newest(postgres)
         await clickhouse.create("u64only", ["id Int64", "u64 UInt64"])
         await postgres.execute(
             [
@@ -2239,10 +2248,10 @@ class TestClickHouseSources:
 
 
 class TestOracleSources:
+    @ON_NEWEST
     async def test_number_without_precision_nan_doubles_and_a_big_clob(
         self, ora_dags: PumpDags, postgres: PostgresSide, oracle: OracleSide
     ) -> None:
-        only_newest(postgres)
         await oracle.create(
             "EDGES",
             [
@@ -2324,12 +2333,11 @@ COPY_EXPECTED = {
 class TestCopyMode:
     """pg -> postgres по COPY csv: то, чего Arrow не несёт, едет как есть."""
 
-    @pytest.mark.parametrize("case", COPY_CASES, ids=lambda c: c.name)
+    @_applicable(COPY_CASES)
     async def test_values_arrow_cannot_carry_travel_verbatim(
         self, case_dags: PumpDags, postgres: PostgresSide, case: Case
     ) -> None:
-        if postgres.version < case.min_version:
-            pytest.skip(f"{case.kind} needs server {case.min_version}")
+        assert postgres.version >= case.min_version, postgres.source.name
 
         await fill(postgres, f"s_{case.name}", case.kind, case.expr)
         report = landed(await case_dags.run(COPY_VERBATIM))
@@ -2394,6 +2402,7 @@ EXTENSION_CASES = [
 """Типы расширений: реестр psycopg их не знает, тип печатает сервер."""
 
 
+@_since(EXTENSIONS_SINCE)
 class TestUnknownTypes:
     """Тип вне встроенной таблицы psycopg (расширение, как vector у pgvector):
     протокол отдаёт только OID, контракт несёт семейство other без имени,
@@ -2403,9 +2412,6 @@ class TestUnknownTypes:
 
     @pytest.fixture(autouse=True)
     async def extensions(self, postgres: PostgresSide) -> None:
-        if postgres.version < 90100:
-            pytest.skip("extensions need 9.1")
-
         await postgres.ensure_extensions(["hstore", "ltree", "citext"])
 
     @pytest.mark.parametrize("case", EXTENSION_CASES, ids=lambda c: c.name)
@@ -2514,10 +2520,10 @@ class TestVectorTypes:
 
 
 class TestBackupNames:
+    @ON_NEWEST
     async def test_two_backups_in_a_row_get_distinct_names(
         self, dags: PumpDags, postgres: PostgresSide
     ) -> None:
-        only_newest(postgres)
         await fill(postgres, "s_bk", "int", "g")
         await postgres.execute(
             [

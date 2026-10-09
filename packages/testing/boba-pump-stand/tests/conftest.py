@@ -8,11 +8,13 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import ClassVar
 
 import pytest
 
 from boba.pump_stand.stand import ChSource, OraSource, PgSource
+from boba.stand.collection import SuiteItems
 from boba.stand.names import StandSuite
 
 
@@ -23,9 +25,10 @@ def pytest_configure(config: pytest.Config) -> None:
 
 @pytest.hookimpl(tryfirst=True)
 def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
-    """Группы ставятся раньше хука xdist: он читает их в том же событии."""
+    """Группы ставятся раньше хука xdist: он читает их в том же событии. Хук
+    получает тесты всего прогона, группы набора идут только его тестам."""
     groups = StandGroups()
-    for item in items:
+    for item in SuiteItems(Path(__file__)).own(items):
         item.add_marker(pytest.mark.xdist_group(groups.of(item)))
 
 

@@ -29,7 +29,7 @@ STAND = Stand.required()
 pytestmark = [
     pytest.mark.integration,
     pytest.mark.anyio,
-    pytest.mark.skipif(not STAND.live(), reason="нет keytab/krb5.conf локального AD"),
+    pytest.mark.failif(not STAND.live(), reason="нет keytab/krb5.conf локального AD"),
 ]
 
 
@@ -83,7 +83,7 @@ def _keytab() -> KeytabAuth:
 async def test_password_auth_logs_in_as_its_own_role() -> None:
     """method = password: user и пароль уезжают в libpq, сервер видит эту роль."""
     if not STAND.pg_probe_user:
-        pytest.skip("в конфиге стенда нет роли-пробника с паролем")
+        pytest.fail("в конфиге стенда нет роли-пробника с паролем")
 
     connection = _profile(
         PasswordAuth(
@@ -145,7 +145,7 @@ async def test_ticket_auth_logs_in_as_the_ticket_owner() -> None:
 async def test_wrong_password_is_reported() -> None:
     """Неверный пароль — ошибка соединения, а не молчаливый вход другим способом."""
     if not STAND.pg_probe_user:
-        pytest.skip("в конфиге стенда нет роли-пробника с паролем")
+        pytest.fail("в конфиге стенда нет роли-пробника с паролем")
 
     connection = _profile(
         PasswordAuth(

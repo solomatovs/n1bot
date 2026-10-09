@@ -2,13 +2,12 @@
 
 Сначала проверяется сервер клиентом, который Negotiate умеет заведомо, затем —
 браузером. Браузер здесь настоящий: chromium берёт TGT из ccache и проходит
-обмен сам, а домен стенда подменяется его резолвером, иначе SPN запроса не
-совпал бы с тем, на который выдан keytab приложения.
+обмен сам. К стенду он ходит через DomainProxy по доменному имени: SPN запроса
+браузер собирает из имени в адресе, и оно обязано совпасть с тем, на которое
+выдан keytab приложения.
 
-Сборка chromium у playwright собрана без внешней аутентификации и на вызов
-`Negotiate` отвечает ERR_UNSUPPORTED_AUTH_SCHEME, поэтому браузерная часть
-пропускается, когда браузер этой схемы не знает: проверка остаётся для машин
-с обычным chrome.
+Браузерной части нужна полная сборка chromium: headless-shell собран без
+сетевой аутентификации. Браузер без Negotiate — отказ теста, а не пропуск.
 """
 
 from __future__ import annotations
@@ -16,9 +15,12 @@ from __future__ import annotations
 import base64
 import http.server
 import json
+import selectors
+import socket
 import socketserver
 import threading
 from collections.abc import Iterator
+from enum import IntEnum
 from typing import ClassVar
 
 import httpx
@@ -26,7 +28,9 @@ import krb5
 import pytest
 from chat_ui import BOOT_TIMEOUT_SEC
 from playwright.sync_api import Browser, BrowserContext, Page, Playwright, expect
+from playwright.sync_api import Error as PlaywrightError
 
+from boba.identity.token import CookieJar, SessionClaims
 from boba.kerberos import KerberosPasswordAuth
 from boba.stand.site import Stand
 from boba.stand.ui.database import run_blocking
@@ -52,6 +56,7 @@ STAND = Stand.required()
 
 SSO_BUTTON = "#sso-login-btn"
 CHAT_INPUT = "#chat-input"
+SESSION_COOKIE = "access_token"
 
 CAPTURED = "captured delegated credentials"
 """Строка лога успешного захвата: по ней видно, что делегирование доехало."""
@@ -63,20 +68,181 @@ REJECTED = "delegated credentials of"
 """Строка лога, когда креды пришли, но не подошли режиму делегирования."""
 
 
-class NegotiateProbe:
-    """Проба браузера: отвечает 401 Negotiate и смотрит, вернётся ли токен.
+class SocksByte(IntEnum):
+    """Байты запроса SOCKS5 (RFC 1928), которые понимает DomainProxy."""
 
-    Без неё браузерный тест падал бы там, где браузер просто не знает схемы.
+    VERSION = 5
+    NO_AUTH = 0
+    CONNECT = 1
+    DOMAIN = 3
+
+
+class SocksReply(IntEnum):
+    """Коды ответа SOCKS5 на запрос соединения."""
+
+    GRANTED = 0
+    NOT_ALLOWED = 2
+    REFUSED = 5
+    COMMAND_UNSUPPORTED = 7
+    ADDRESS_UNSUPPORTED = 8
+
+    def frame(self) -> bytes:
+        """Ответ целиком: адрес привязки клиенту не нужен и идёт нулями."""
+        return bytes((SocksByte.VERSION, self, 0, 1)) + bytes(6)
+
+
+class TunnelServer(socketserver.ThreadingTCPServer):
+    """TCP-сервер стенда теста: соединение на поток, закрытие ждёт потоки.
+
+    На нём стоят DomainProxy и NegotiateProbe.
+    """
+
+    allow_reuse_address = True
+    daemon_threads = False
+    block_on_close = True
+
+
+class DomainProxy:
+    """SOCKS5-прокси между браузером и стендом: домен стенда ведёт на loopback.
+
+    SPN запроса chromium собирает из имени, в которое разрешился хост адреса,
+    а домен стенда на машине теста разрешается не в неё. Через прокси браузер
+    имя не разрешает вовсе: соединение с `<домен>:<порт>` прокси отдаёт на
+    тот же порт loopback, чужие имена отклоняет. Поднимает его фикстура
+    domain_proxy, адрес получает запуск браузера в kerberos_browser.
+    """
+
+    CHUNK: ClassVar[int] = 65536
+    POLL_SEC: ClassVar[float] = 0.2
+
+    def __init__(self, domain: str) -> None:
+        self._domain = domain
+        self._port = free_port()
+        self._stopped = threading.Event()
+        self._server = self._build()
+        self._thread = threading.Thread(target=self._server.serve_forever)
+
+    def _build(self) -> TunnelServer:
+        proxy = self
+
+        class Handler(socketserver.BaseRequestHandler):
+            def handle(self) -> None:
+                proxy.serve(self.request)
+
+        return TunnelServer((StandUrl.HOST.value, self._port), Handler)
+
+    def __enter__(self) -> DomainProxy:
+        self._thread.start()
+        return self
+
+    def __exit__(self, *error: object) -> None:
+        self._stopped.set()
+        self._server.shutdown()
+        self._thread.join()
+        self._server.server_close()
+
+    def address(self) -> str:
+        return f"socks5://{StandUrl.HOST.value}:{self._port}"
+
+    def serve(self, client: socket.socket) -> None:
+        """Одно соединение браузера: приветствие, запрос, затем туннель."""
+        methods = self._take(client, 2)[1]
+        self._take(client, methods)
+        client.sendall(bytes((SocksByte.VERSION, SocksByte.NO_AUTH)))
+
+        request = self._take(client, 4)
+        if request[1] != SocksByte.CONNECT:
+            client.sendall(SocksReply.COMMAND_UNSUPPORTED.frame())
+            return
+
+        if request[3] != SocksByte.DOMAIN:
+            client.sendall(SocksReply.ADDRESS_UNSUPPORTED.frame())
+            return
+
+        size = self._take(client, 1)[0]
+        host = self._take(client, size).decode("ascii")
+        port = int.from_bytes(self._take(client, 2), "big")
+        if host != self._domain:
+            client.sendall(SocksReply.NOT_ALLOWED.frame())
+            return
+
+        try:
+            upstream = socket.create_connection((StandUrl.HOST.value, port))
+        except ConnectionRefusedError:
+            client.sendall(SocksReply.REFUSED.frame())
+            return
+
+        with upstream:
+            client.sendall(SocksReply.GRANTED.frame())
+            self._pump(client, upstream)
+
+    def _take(self, client: socket.socket, size: int) -> bytes:
+        data = bytearray()
+        while len(data) < size:
+            chunk = client.recv(size - len(data))
+            if not chunk:
+                msg = (
+                    f"socks proxy for {self._domain}: the client closed the "
+                    f"connection after {len(data)} of {size} handshake bytes"
+                )
+                raise ConnectionError(msg)
+
+            data.extend(chunk)
+
+        return bytes(data)
+
+    def _pump(self, client: socket.socket, upstream: socket.socket) -> None:
+        """Гонит байты в обе стороны, пока одна не закроется или прокси не снят."""
+        with selectors.DefaultSelector() as selector:
+            selector.register(client, selectors.EVENT_READ, upstream)
+            selector.register(upstream, selectors.EVENT_READ, client)
+
+            while not self._stopped.is_set():
+                for key, _ in selector.select(timeout=self.POLL_SEC):
+                    if not self._forward(key):
+                        return
+
+    def _forward(self, key: selectors.SelectorKey) -> bool:
+        source = key.fileobj
+        target = key.data
+        if not isinstance(source, socket.socket):
+            raise TypeError(f"socks proxy: expected a socket, got {source!r}")
+
+        if not isinstance(target, socket.socket):
+            raise TypeError(f"socks proxy: expected a socket, got {target!r}")
+
+        # браузер рвёт соединение сбросом, когда закрывает вкладку
+        try:
+            data = source.recv(self.CHUNK)
+        except ConnectionResetError:
+            return False
+
+        if not data:
+            return False
+
+        target.sendall(data)
+        return True
+
+
+class NegotiateProbe:
+    """Пробный сервер Negotiate: будит схему в браузере и проверяет её.
+
+    Отвечает 401 Negotiate и запоминает пришедшие токены. Chromium на Linux
+    подключает GSSAPI только после первого вызова Negotiate в жизни процесса,
+    и на сам этот вызов токена не шлёт: без пробы первый вход теста остался
+    бы без билета. Пробу проходит фикстура kerberos_browser.
     """
 
     SCHEME: ClassVar[str] = "Negotiate "
+    VISITS: ClassVar[int] = 3
 
     def __init__(self) -> None:
         self.tokens: list[str] = []
         self.port = free_port()
         self._server = self._build()
+        self._thread = threading.Thread(target=self._server.serve_forever)
 
-    def _build(self) -> socketserver.TCPServer:
+    def _build(self) -> TunnelServer:
         probe = self
 
         class Handler(http.server.BaseHTTPRequestHandler):
@@ -94,25 +260,46 @@ class NegotiateProbe:
 
                 self.send_header("Content-Type", "text/html")
                 self.send_header("Content-Length", str(len(body)))
+                self.send_header("Connection", "close")
                 self.end_headers()
                 self.wfile.write(body)
 
             def log_message(self, *args: object) -> None:
                 return
 
-        return socketserver.TCPServer(("127.0.0.1", self.port), Handler)
+        return TunnelServer((StandUrl.HOST.value, self.port), Handler)
 
     def __enter__(self) -> NegotiateProbe:
-        threading.Thread(target=self._server.serve_forever, daemon=True).start()
+        self._thread.start()
         return self
 
     def __exit__(self, *error: object) -> None:
         self._server.shutdown()
+        self._thread.join()
         self._server.server_close()
 
     def url(self) -> str:
-        """Пробный адрес доменным именем: браузер резолвит его на себя."""
+        """Пробный адрес доменным именем: SPN токена совпадает с боевым."""
         return f"http://{STAND.krb_domain}:{self.port}/"
+
+    def awaken(self, browser: Browser) -> None:
+        """Ходит на пробу, пока браузер не пришлёт токен; без токена — отказ."""
+        context = browser.new_context()
+        try:
+            page = context.new_page()
+            for _ in range(self.VISITS):
+                page.goto(self.url(), wait_until="domcontentloaded")
+                if self.tokens:
+                    return
+        finally:
+            context.close()
+
+        msg = (
+            f"kerberos browser: chromium {browser.version} sent no Negotiate token "
+            f"in {self.VISITS} visits of {self.url()}; expected a ticket for "
+            f"HTTP/{STAND.krb_domain} from the ccache of {STAND.reader_principal}"
+        )
+        raise RuntimeError(msg)
 
 
 @pytest.fixture(scope="module")
@@ -164,14 +351,27 @@ def sso_stand(
 
 
 @pytest.fixture(scope="module")
-def kerberos_browser(user_ccache: str, playwright: Playwright) -> Iterator[Browser]:
+def domain_proxy() -> Iterator[DomainProxy]:
+    with DomainProxy(STAND.krb_domain) as proxy:
+        yield proxy
+
+
+@pytest.fixture(scope="module")
+def kerberos_browser(
+    user_ccache: str,
+    domain_proxy: DomainProxy,
+    sso_stand: StandProcess,
+    playwright: Playwright,
+) -> Iterator[Browser]:
     """Chromium, который умеет Negotiate: свой ccache и доверие домену стенда."""
     domain = STAND.krb_domain
+    origin = f"http://{domain}:{sso_stand.config.app_port}"
     args = [
         "--no-sandbox",
-        f"--host-resolver-rules=MAP {domain} 127.0.0.1",
         f"--auth-server-allowlist=*{domain}",
         f"--auth-negotiate-delegate-allowlist=*{domain}",
+        # cookie входа идёт с Secure, а стенд отвечает по http не с loopback
+        f"--unsafely-treat-insecure-origin-as-secure={origin}",
     ]
     env: dict[str, str | float | bool] = {
         "KRB5CCNAME": user_ccache,
@@ -179,34 +379,32 @@ def kerberos_browser(user_ccache: str, playwright: Playwright) -> Iterator[Brows
     }
 
     # channel: headless-shell собран вовсе без сетевой аутентификации
-    instance = playwright.chromium.launch(channel="chromium", args=args, env=env)
     try:
+        instance = playwright.chromium.launch(
+            channel="chromium",
+            args=args,
+            env=env,
+            proxy={"server": domain_proxy.address()},
+        )
+    except PlaywrightError as exc:
+        msg = (
+            "kerberos browser: launching the full chromium build (channel "
+            "'chromium') failed, the headless shell has no Negotiate; install "
+            f"it with 'playwright install chromium': {exc}"
+        )
+        raise RuntimeError(msg) from exc
+
+    try:
+        with NegotiateProbe() as probe:
+            probe.awaken(instance)
+
         yield instance
     finally:
         instance.close()
 
 
-@pytest.fixture(scope="module")
-def browser_speaks_negotiate(kerberos_browser: Browser) -> bool:
-    """Умеет ли эта сборка браузера схему Negotiate вообще."""
-    context = kerberos_browser.new_context()
-    try:
-        with NegotiateProbe() as probe:
-            page = context.new_page()
-            page.goto(probe.url(), wait_until="domcontentloaded")
-            page.wait_for_timeout(500)
-            return bool(probe.tokens)
-    finally:
-        context.close()
-
-
 @pytest.fixture
-def sso_context(
-    kerberos_browser: Browser, browser_speaks_negotiate: bool
-) -> Iterator[BrowserContext]:
-    if not browser_speaks_negotiate:
-        pytest.skip("сборка браузера не поддерживает Negotiate (нужен обычный chrome)")
-
+def sso_context(kerberos_browser: Browser) -> Iterator[BrowserContext]:
     context = kerberos_browser.new_context(viewport={"width": 1280, "height": 900})
     try:
         yield context
@@ -326,21 +524,22 @@ def test_signed_in_session_carries_the_sealed_ticket(
     page = sso_context.new_page()
     _sign_in(page, sso_stand)
 
-    token = ""
+    present: dict[str, str] = {}
     for cookie in sso_context.cookies():
-        name = str(cookie.get("name", ""))
-        if name.startswith("access_token"):
-            token = str(cookie.get("value", ""))
+        present[str(cookie.get("name", ""))] = str(cookie.get("value", ""))
 
-    if not token:
-        raise AssertionError("после входа нет cookie сессии")
+    # токен с билетом длиннее одной cookie и приходит чанками
+    token = CookieJar(SESSION_COOKIE).token_of(present)
+    if token is None:
+        raise AssertionError(f"после входа нет cookie сессии: {sorted(present)}")
 
     payload = token.split(".")[1]
     payload += "=" * (-len(payload) % 4)
-    claims = json.loads(base64.urlsafe_b64decode(payload))
-    metadata = claims.get("user", {}).get("metadata", {})
+    claims = SessionClaims.parse(json.loads(base64.urlsafe_b64decode(payload)))
+    sign_in = claims.sign_in()
 
-    if metadata.get("principal") != STAND.reader_principal:
-        raise AssertionError(f"в сессии не тот принципал: {metadata}")
-    if not metadata.get("sso_ticket"):
-        raise AssertionError(f"в сессии нет билета входа: {metadata}")
+    if sign_in.principal != STAND.reader_principal:
+        raise AssertionError(f"в сессии не тот принципал: {sign_in.principal!r}")
+
+    if not sign_in.sealed_ticket:
+        raise AssertionError(f"в сессии нет билета входа: {sorted(claims.metadata)}")

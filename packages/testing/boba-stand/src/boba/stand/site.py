@@ -15,7 +15,6 @@ import tomllib
 from pathlib import Path
 from typing import Any, ClassVar
 
-import pytest
 from omegaconf import OmegaConf
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, ValidationError
 
@@ -94,7 +93,7 @@ class Stand(BaseModel):
     krb_pg_keytab: str
     krb_ch_user: str = Field(
         default="",
-        description="Принципал clickhouse по keytab; пусто — тесты пропускаются.",
+        description="Принципал clickhouse по keytab; пусто — тесты падают.",
     )
     krb_ch_keytab: str = ""
 
@@ -104,7 +103,8 @@ class Stand(BaseModel):
     pg_database: str
     pg_krbsrvname: str
     pg_probe_user: str = Field(
-        default="", description="Роль postgres с паролем; пусто — тест пропускается."
+        default="",
+        description="Роль postgres с паролем; пусто — тест падает с причиной.",
     )
     pg_probe_password: SecretStr = SecretStr("")
     pg_probe_database: str = Field(
@@ -115,7 +115,7 @@ class Stand(BaseModel):
     ch_host: str
     ch_addr: str = Field(
         default="",
-        description="Адрес clickhouse; пусто — тесты пропускаются (ch живёт в базе).",
+        description="Адрес clickhouse; пусто — тесты падают (ch живёт в базе).",
     )
     ch_port: int
     ch_database: str = ""
@@ -152,11 +152,8 @@ class Stand(BaseModel):
 
     @classmethod
     def required(cls) -> Stand:
-        """Стенд для модуля тестов; без конфига модуль пропускается целиком."""
-        try:
-            return cls.load()
-        except StandError as exc:
-            pytest.skip(str(exc), allow_module_level=True)
+        """Стенд для модуля тестов; без конфига сбор модуля падает с причиной."""
+        return cls.load()
 
     @classmethod
     def _of(cls, values: dict[Any, Any]) -> Stand:

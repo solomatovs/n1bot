@@ -44,14 +44,14 @@ FUSE2FS = REPO / "runtime" / "third" / "bin" / "fuse2fs"
 
 TESTS_DIR = str(Path(__file__).resolve().parent)
 
-needs_bwrap = pytest.mark.skipif(
+needs_bwrap = pytest.mark.failif(
     shutil.which("bwrap") is None or not ROOTFS_IMAGE.exists() or not FUSE2FS.exists(),
     reason=(
         "нет bwrap или артефактов песочницы "
         "(собрать: make fetch sandbox plugin-rootfs-all)"
     ),
 )
-needs_userns = pytest.mark.skipif(
+needs_userns = pytest.mark.failif(
     os.geteuid() == 0, reason="под root user namespace ведёт себя иначе"
 )
 
@@ -415,7 +415,7 @@ class TestIsolated:
 
         bwrap = shutil.which("bwrap")
         if bwrap is None:
-            raise AssertionError("bwrap исчез после skipif")
+            raise AssertionError("bwrap исчез после проверки failif")
 
         argv = [
             bwrap,

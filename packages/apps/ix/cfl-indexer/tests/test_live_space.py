@@ -63,7 +63,7 @@ class TestLiveSpace:
         self, ix_stand: IxStand, ix_database: IxStandDatabase
     ) -> None:
         if not STAND.confluence_token.get_secret_value():
-            pytest.skip("в конфиге стенда нет токена confluence")
+            pytest.fail("в конфиге стенда нет токена confluence")
 
         cfg = _config(ix_stand)
 

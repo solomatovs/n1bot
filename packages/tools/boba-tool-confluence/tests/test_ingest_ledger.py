@@ -53,6 +53,7 @@ from boba.stand.confluence import (
     StubPage,
     StubRoute,
 )
+from boba.stand.database import TestDatabase
 from boba.tool.confluence.chunking import ChunkerParams, StructuralChunkerFactory
 from boba.tool.confluence.indexing_log import (
     IngestProgress,
@@ -115,15 +116,19 @@ class CountingReader(Reader[str]):
 
 @pytest.fixture(scope="module")
 async def store_cfg(raw_config: DictConfig) -> AsyncIterator[PostgresStoreConfig]:
-    """Схема стенда под боевыми миграциями; сносится после модуля."""
+    """Схема стенда под боевыми миграциями в тестовой базе набора; сносится
+    после модуля. База берётся здесь, а не сессионной фикстурой: цикл событий
+    у модуля свой."""
     app_cfg = bind(raw_config, "tool.ingest", ConfluenceIngestConfig)
+    database = await TestDatabase.ensure(app_cfg.connection)
+    connection = TestDatabase.config_of(app_cfg.connection, database)
     tables = PostgresStoreSchema(
         pg_schema=SCHEMA,
         chunks_table="kb_chunks",
         collections_table="kb_collections",
         sources_table="kb_sources",
     )
-    cfg = PostgresStoreConfig(connection=app_cfg.connection, tables=tables)
+    cfg = PostgresStoreConfig(connection=connection, tables=tables)
 
     pool = AsyncPostgresPool(cfg.connection)
     await pool.open()

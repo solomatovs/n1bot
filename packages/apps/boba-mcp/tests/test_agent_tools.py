@@ -300,7 +300,7 @@ class TestBwrapArgv:
             raise AssertionError('argv[sep + 1 :] == ["echo", "hi"]')
 
 
-@pytest.mark.skipif(
+@pytest.mark.failif(
     shutil.which("bwrap") is None,
     reason="требуется bubblewrap (`apt install bubblewrap`)",
 )

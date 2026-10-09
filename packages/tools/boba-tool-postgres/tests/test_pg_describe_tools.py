@@ -196,7 +196,7 @@ class TestDescribeTools:
         second = runner.rows(await runner.page(case, offset=1, limit=2))
 
         if len(first) < 2:
-            pytest.skip(f"{case.tool.name}: fewer than two rows for {case.args}")
+            pytest.fail(f"{case.tool.name}: fewer than two rows for {case.args}")
 
         assert second[0] == first[1], (
             f"{case.tool.name}: offset=1 must start at the second row"

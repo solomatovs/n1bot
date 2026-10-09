@@ -45,7 +45,7 @@ SERVICE_PRINCIPAL = STAND.service_principal
 USER_PRINCIPAL = STAND.reader_principal
 TARGET = STAND.pg_spn
 
-live_kdc = pytest.mark.skipif(
+live_kdc = pytest.mark.failif(
     not STAND.live(),
     reason="нет keytab/krb5.conf стенда",
 )

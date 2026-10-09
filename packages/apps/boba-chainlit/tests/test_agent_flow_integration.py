@@ -45,7 +45,7 @@ from boba.transport.http.connection import HttpConnection, UrlScheme
 pytestmark = [
     pytest.mark.integration,
     pytest.mark.anyio,
-    pytest.mark.skipif(bool(ToolService.missing()), reason=ToolService.missing()),
+    pytest.mark.failif(bool(ToolService.missing()), reason=ToolService.missing()),
 ]
 
 PROFILE = "search"
@@ -70,7 +70,7 @@ def flow_config(app_config: AppConfig) -> PrefetchFlowConfig:
 def rephraser_config(flow_config: PrefetchFlowConfig) -> ChatSettings:
     """Секция переформулировщика; её отсутствие проверяется отдельным тестом."""
     if flow_config.rephraser is None:
-        pytest.skip(f"[profiles.{PROFILE}.flow.rephraser] не задан")
+        pytest.fail(f"[profiles.{PROFILE}.flow.rephraser] не задан")
 
     return flow_config.rephraser
 
@@ -243,7 +243,7 @@ class TestRephraser:
     ) -> None:
         """Модели нет у провайдера: поиск идёт по исходному запросу, ход живёт."""
         if not isinstance(rephraser_config.provider, OpenAiProvider):
-            pytest.skip("подмена имени модели проверяется на удалённом провайдере")
+            pytest.fail("подмена имени модели проверяется на удалённом провайдере")
 
         rephraser = _rephraser(
             rephraser_config, providers, model="no/such-model-at-all"
@@ -394,7 +394,7 @@ class TestPrefetchGraph:
         """Переформулировщик недоступен: ход отвечает, поиск идёт по запросу."""
         provider = rephraser_config.provider
         if not isinstance(provider, OpenAiProvider):
-            pytest.skip("недоступный endpoint проверяется на удалённом провайдере")
+            pytest.fail("недоступный endpoint проверяется на удалённом провайдере")
 
         dead_end = HttpConnection(
             scheme=UrlScheme.HTTP,

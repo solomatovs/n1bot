@@ -45,6 +45,8 @@ CH_DATABASE = StandNames().of("pump_pg_ch")
 ROWS = 60
 NULLABLE_JSON_SINCE = 25
 IPV4_IN_IPV6_SINCE = 23
+WITH_IP_COLUMNS = STAND.only("clickhouse", STAND.clickhouse_since(IPV4_IN_IPV6_SINCE))
+"""До 23-й версии inet ложится String, и маску сервер не разбирает."""
 
 SOURCE_DDL = f"""
 create table {PG_SCHEMA}.src (
@@ -742,11 +744,11 @@ class TestServerTraps:
     postgres: маска в inet и массив на верхнем уровне json — ошибка загрузки,
     таблица не меняется; даты вне 1900–2299 прижимаются к границе."""
 
+    @WITH_IP_COLUMNS
     async def test_masked_inet_fails_at_load(
         self, dags: PumpDags, clickhouse: ClickHouseSide
     ) -> None:
-        if clickhouse.major < IPV4_IN_IPV6_SINCE:
-            pytest.skip("inet lands as String on this server")
+        assert clickhouse.major >= IPV4_IN_IPV6_SINCE, clickhouse.source.name
 
         outcome = await dags.run(MASKED_INET)
 

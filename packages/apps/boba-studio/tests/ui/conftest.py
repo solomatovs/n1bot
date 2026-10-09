@@ -9,9 +9,6 @@ from pathlib import Path
 
 import httpx
 import pytest
-
-pytest.importorskip("playwright.sync_api", reason="ui-тестам нужен playwright")
-
 from catalog_ui import Api, ConnectionSeed, Seed, api_client
 from playwright._impl._api_structures import SetCookieParam
 from studio_ui import BOOT_TIMEOUT_SEC, login_cookies

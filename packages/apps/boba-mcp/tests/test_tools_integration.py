@@ -20,8 +20,10 @@ from psycopg import sql
 from boba.auth.credentials import KerberosCredentialSource, NoRefresh
 from boba.config import bind
 from boba.connection_broker.tickets import ServiceTickets
+from boba.db.pgvector.migrations import Migrations
 from boba.db.postgres import AsyncPostgresPool
 from boba.db.postgres.connection import PostgresConfig
+from boba.stand.database import TestDatabase
 from boba.stand.sandbox import section_profile
 from boba.stand.shell import ShellRun
 from boba.stand.toolsetup import Call, ToolSetup
@@ -48,15 +50,7 @@ _REPO = Path(__file__).resolve().parents[4]
 _SANDBOX_STAGING = _REPO / "runtime" / "sandbox"
 _ROOTFS_IMAGE = _SANDBOX_STAGING / "plugins" / "boba-tool-shell" / "rootfs.ext4"
 
-pytestmark = [
-    pytest.mark.integration,
-    pytest.mark.anyio,
-    pytest.mark.skipif(
-        shutil.which("bwrap") is None or not _ROOTFS_IMAGE.exists(),
-        reason="нет bwrap или артефактов песочницы (собрать: make fetch sandbox)",
-    ),
-    SandboxCgroup().required(),
-]
+pytestmark = [pytest.mark.integration, pytest.mark.anyio]
 
 USER_ID = "integration"
 THREAD_ID = "t-integration"
@@ -80,6 +74,26 @@ trailer<</Root 1 0 R/Size 8>>
 %%EOF"""
 
 WORKSPACE_PDF = "/workspace/integration.pdf"
+
+
+@pytest.fixture(scope="module", autouse=True)
+def sandbox_ready() -> None:
+    """Окружение песочницы модулю обязательно: без него тесты падают с
+    причиной, а не пропускаются."""
+    if shutil.which("bwrap") is None:
+        raise AssertionError(
+            "bwrap is not on PATH: expected runtime/third/bin of the repository "
+            "in PATH (make fetch sandbox)"
+        )
+
+    if not _ROOTFS_IMAGE.exists():
+        raise AssertionError(
+            f"sandbox image {_ROOTFS_IMAGE} is missing (make fetch sandbox)"
+        )
+
+    missing = SandboxCgroup().missing()
+    if missing:
+        raise AssertionError(missing)
 
 
 @pytest.fixture(scope="module", autouse=True)
@@ -209,9 +223,36 @@ def pg_tools(zygote_stand: ZygoteStand, raw_config):
 
 
 @pytest.fixture(scope="module")
-async def kb_collection(raw_config):
-    """Своя коллекция на прогон: рабочая kb_confluence остаётся нетронутой."""
+async def kb_store(raw_config, test_database: str) -> ConfluenceIngestConfig:
+    """Конфиг ingest с хранилищем в тестовой базе набора: схема базы знаний
+    готовится там боевыми миграциями, рабочая база не затрагивается."""
     cfg = bind(raw_config, path="tool.ingest", model=ConfluenceIngestConfig)
+    store = cfg.model_copy(
+        update={"connection": TestDatabase.config_of(cfg.connection, test_database)}
+    )
+    schema = sql.SQL("create schema if not exists {}").format(
+        sql.Identifier(store.tables.pg_schema)
+    )
+
+    pool = AsyncPostgresPool(store.connection)
+    await pool.open()
+    try:
+        async with pool.connection() as conn:
+            await conn.execute(schema)
+            await Migrations(store.tables).apply(conn)
+            await Migrations(store.tables).ensure_vector_index(
+                conn, store.embedding.dim
+            )
+    finally:
+        await pool.close()
+
+    return store
+
+
+@pytest.fixture(scope="module")
+async def kb_collection(kb_store: ConfluenceIngestConfig):
+    """Своя коллекция на прогон в тестовой базе; после модуля убирается."""
+    cfg = kb_store
     name = f"kb_it_{uuid4().hex[:8]}"
     previous = ConfluenceCollection.COLLECTION
     ConfluenceCollection.COLLECTION = name
@@ -268,8 +309,14 @@ class KbCleanup:
 
 
 @pytest.fixture(scope="module")
-def ingest_tools(zygote_stand: ZygoteStand, raw_config, kb_collection: str):
-    """ingest-функции новой модели: обёртка запуска + конфиг прогона."""
+def ingest_tools(
+    zygote_stand: ZygoteStand,
+    raw_config,
+    kb_collection: str,
+    kb_store: ConfluenceIngestConfig,
+):
+    """ingest-функции новой модели: обёртка запуска + конфиг прогона с
+    хранилищем в тестовой базе."""
     from importlib import reload
 
     import boba.tool.confluence.ingest_tools as ingest_module
@@ -281,7 +328,9 @@ def ingest_tools(zygote_stand: ZygoteStand, raw_config, kb_collection: str):
     def resolve(name: str, annotation: Any) -> object:
         sandboxed = ToolSetup.sandbox_raw(raw_config)
         cfg = bind(sandboxed, path=annotation.SECTION, model=annotation)
-        return cfg.model_copy(update={"collection": kb_collection})
+        return cfg.model_copy(
+            update={"collection": kb_collection, "connection": kb_store.connection}
+        )
 
     config = InjectedConfig(resolve, ServiceTickets(_credentials))
 
@@ -293,8 +342,15 @@ def _credentials() -> KerberosCredentialSource:
 
 
 @pytest.fixture(scope="module")
-def kb_tools(zygote_stand: ZygoteStand, raw_config, kb_collection: str):
-    """kb-функции новой модели: обёртка запуска + конфиг, как в загрузчике."""
+def kb_tools(
+    zygote_stand: ZygoteStand,
+    raw_config,
+    kb_collection: str,
+    kb_store: ConfluenceIngestConfig,
+):
+    """kb-функции новой модели: обёртка запуска + конфиг, как в загрузчике;
+    поиск по чанкам ходит в тестовую базу, куда пишет ingest, поиск по схеме
+    ix — в индексы dev-стенда."""
     from importlib import reload
 
     import boba.tool.kb.tools as kb_module
@@ -309,7 +365,9 @@ def kb_tools(zygote_stand: ZygoteStand, raw_config, kb_collection: str):
         if "collection" not in type(cfg).model_fields:
             return cfg
 
-        return cfg.model_copy(update={"collection": kb_collection})
+        return cfg.model_copy(
+            update={"collection": kb_collection, "connection": kb_store.connection}
+        )
 
     config = InjectedConfig(resolve, ServiceTickets(_credentials))
 
@@ -368,7 +426,10 @@ async def confluence_page(confluence_tools) -> dict[str, str]:
                 "title": row["title"],
                 "space_key": row["space_key"],
             }
-    pytest.skip("поиск не вернул ни одной страницы (только вложения)")
+    raise AssertionError(
+        "confluence_search by 'данные' returned no page (attachments only): "
+        f"{[row['title'] for row in found.rows]}"
+    )
 
 
 @pytest.fixture(scope="module")
@@ -388,7 +449,10 @@ async def confluence_attachment_ref(confluence_tools) -> dict[str, str]:
         if match is None:
             continue
         return {"page_id": match.group(1), "filename": row["title"]}
-    pytest.skip("на стенде не нашлось .docx-вложения")
+    raise AssertionError(
+        "confluence_search by 'docx' returned no .docx attachment with a pageId "
+        f"link: {[row['title'] for row in found.rows]}"
+    )
 
 
 class TestBashTool:

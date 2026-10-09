@@ -321,7 +321,7 @@ class TestUnreachableServer:
 
 @pytest.mark.integration
 class TestPublicServers:
-    """Чужие реализации MCP в сети; без сети тесты пропускаются."""
+    """Чужие реализации MCP в сети; без сети тесты падают с причиной."""
 
     DEEPWIKI = HttpEndpoint(scheme="https", host="mcp.deepwiki.com", path="/mcp")
     CONTEXT7 = HttpEndpoint(scheme="https", host="mcp.context7.com", path="/mcp")
@@ -332,7 +332,7 @@ class TestPublicServers:
             async with httpx.AsyncClient(timeout=10.0) as http:
                 await http.get(endpoint.url())
         except httpx.HTTPError as exc:
-            pytest.skip(f"{endpoint.url()} is unreachable: {exc}")
+            pytest.fail(f"{endpoint.url()} is unreachable: {exc}")
 
     async def test_deepwiki_lists_tools_and_answers_a_call(self) -> None:
         await self._reachable(self.DEEPWIKI)
@@ -1453,7 +1453,7 @@ class TestBobaMcpService:
         try:
             StandApp.MCP.files()
         except ConfigLayoutError as exc:
-            pytest.skip(f"the service config files are not placed: {exc}")
+            pytest.fail(f"the service config files are not placed: {exc}")
 
         process = BobaMcpService(tmp_path / "mcp.log")
         caller = McpCaller(login="tester", roles=frozenset({"wrt"}))

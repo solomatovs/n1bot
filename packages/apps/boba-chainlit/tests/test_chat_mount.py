@@ -51,7 +51,7 @@ from boba.toolkit.result import CanvasResult, ErrorResult, FileResult
 
 pytestmark = [
     pytest.mark.integration,
-    pytest.mark.skipif(bool(ToolService.missing()), reason=ToolService.missing()),
+    pytest.mark.failif(bool(ToolService.missing()), reason=ToolService.missing()),
 ]
 
 THREAD = "11111111-1111-1111-1111-111111111111"

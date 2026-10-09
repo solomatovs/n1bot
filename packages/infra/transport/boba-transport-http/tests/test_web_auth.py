@@ -47,11 +47,11 @@ CH_ME = "select currentUser()"
 pytestmark = [
     pytest.mark.integration,
     pytest.mark.anyio,
-    pytest.mark.skipif(not STAND.live(), reason="нет keytab/krb5.conf локального AD"),
+    pytest.mark.failif(not STAND.live(), reason="нет keytab/krb5.conf локального AD"),
 ]
 
 
-needs_clickhouse = pytest.mark.skipif(
+needs_clickhouse = pytest.mark.failif(
     not STAND.ch_addr, reason="в конфиге стенда нет clickhouse (ch_addr)"
 )
 
@@ -169,7 +169,7 @@ async def test_basic_auth_with_a_wrong_password_is_refused() -> None:
 async def test_bearer_auth_names_the_token_owner() -> None:
     """method = bearer: токен уходит заголовком, confluence называет владельца."""
     if not STAND.confluence_token.get_secret_value():
-        pytest.skip("в конфиге стенда нет токена confluence")
+        pytest.fail("в конфиге стенда нет токена confluence")
 
     connection = _confluence(BearerAuth(method="bearer", token=STAND.confluence_token))
 

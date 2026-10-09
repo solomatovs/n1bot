@@ -57,11 +57,11 @@ REPO = Path(__file__).resolve().parents[5]
 SANDBOX = REPO / "runtime" / "sandbox"
 ROOTFS_IMAGE = SANDBOX / "plugins" / "boba-tool-shell" / "rootfs.ext4"
 
-needs_sandbox = pytest.mark.skipif(
+needs_sandbox = pytest.mark.failif(
     shutil.which("bwrap") is None or not ROOTFS_IMAGE.exists(),
     reason="нет bwrap или артефактов песочницы (собрать: make fetch sandbox)",
 )
-needs_userns = pytest.mark.skipif(
+needs_userns = pytest.mark.failif(
     os.geteuid() == 0, reason="под root user namespace ведёт себя иначе"
 )
 
@@ -498,7 +498,7 @@ def _mkfs_template(tmp_path: Path) -> str:
     """Шаблон workspace-образа: пустой ext4 на 8 МБ."""
     mkfs = shutil.which("mkfs.ext4")
     if mkfs is None:
-        pytest.skip("mkfs.ext4 недоступен")
+        pytest.fail("mkfs.ext4 недоступен")
 
     template = tmp_path / "workspace.ext4"
     subprocess.run(
@@ -526,7 +526,7 @@ def _image_profile(tmp_path: Path, **overrides: Any) -> SandboxProfile:
     return _profile(**raw)
 
 
-needs_mkfs = pytest.mark.skipif(
+needs_mkfs = pytest.mark.failif(
     shutil.which("mkfs.ext4") is None or shutil.which("fuse2fs") is None,
     reason="нет mkfs.ext4/fuse2fs для образа workspace",
 )
@@ -614,7 +614,7 @@ class TestWorkspaceImages:
                 raise AssertionError(f"параллельный вызов сорвался: {listing}")
 
 
-needs_rootfs_image = pytest.mark.skipif(
+needs_rootfs_image = pytest.mark.failif(
     not ROOTFS_IMAGE.exists() or shutil.which("fuse2fs") is None,
     reason="нет rootfs.ext4 или fuse2fs (собрать: make sandbox)",
 )

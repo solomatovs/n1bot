@@ -42,11 +42,11 @@ from boba.toolkit.stream import (
 )
 from boba.workspace.images import PartialCopy
 
-needs_sandbox = pytest.mark.skipif(
+needs_sandbox = pytest.mark.failif(
     shutil.which("bwrap") is None or not ROOTFS_IMAGE.exists(),
     reason="нет bwrap или артефактов песочницы (собрать: make fetch sandbox)",
 )
-needs_userns = pytest.mark.skipif(
+needs_userns = pytest.mark.failif(
     os.geteuid() == 0, reason="под root user namespace ведёт себя иначе"
 )
 
@@ -457,7 +457,7 @@ class TestRootMountRecovery:
     журнал, что именно восстанавливалось.
     """
 
-    needs_image = pytest.mark.skipif(
+    needs_image = pytest.mark.failif(
         not ROOTFS_IMAGE.exists(),
         reason="нет rootfs.ext4 (собрать: make sandbox)",
     )
@@ -654,7 +654,7 @@ class TestPartialCopyCleanup:
 
     USER: ClassVar[str] = "7"
 
-    needs_mkfs = pytest.mark.skipif(
+    needs_mkfs = pytest.mark.failif(
         shutil.which("mkfs.ext4") is None, reason="нет mkfs.ext4 для шаблона образа"
     )
 

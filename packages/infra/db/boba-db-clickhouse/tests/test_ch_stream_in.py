@@ -108,7 +108,7 @@ def source(request: Any, raw_config: Any) -> StandSource:
     sources = bind(raw_config, path="ix_stand", model=StandSources)
     listed = [item for item in sources.ch_sources if item.demo]
     if not listed:
-        pytest.skip("ix_stand.ch_sources has no source with demo = true")
+        pytest.fail("ix_stand.ch_sources has no source with demo = true")
 
     if request.param == "first":
         return listed[0]
