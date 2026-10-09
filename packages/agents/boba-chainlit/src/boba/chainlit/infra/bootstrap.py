@@ -104,6 +104,15 @@ def run_app(config_path: Path):
         server = uvicorn.Server(uv_config)
         await server.serve()
 
+        # сорванный старт uvicorn только пишет в лог и выходит из serve() штатно
+        if not server.started:
+            msg = (
+                f"chainlit on {c.chainlit.host}:{c.chainlit.port}: the application "
+                "startup failed, the cause is logged above by the lifespan; "
+                "expected a started server, exiting with a failure"
+            )
+            raise SystemExit(msg)
+
     try:
         asyncio.run(start())
     except KeyboardInterrupt:
@@ -114,13 +123,17 @@ def run_app(config_path: Path):
 @asynccontextmanager
 async def _run_container(app: FastAPI) -> AsyncGenerator[None, None]:
     container = app.state.container
-    await container.start()
-    # роуты и колбэк входа ставятся до первого запроса: сервис входа живёт в контейнере
-    _use_auth(container)
 
     try:
+        await container.start()
+        # роуты и колбэк входа ставятся до первого запроса: сервис входа живёт
+        # в контейнере
+        _use_auth(container)
+
         yield
     finally:
+        # сорванный старт идёт сюда же: открытый пул не даёт asyncio.run
+        # закрыть цикл событий, и процесс не завершается
         RunRegistry.stop_all(StopReason.SHUTDOWN)
         ZygoteRegistry.stop_all()
         Container.set_session_hook(None)

@@ -8,7 +8,6 @@
 
 from __future__ import annotations
 
-import os
 import tomllib
 from dataclasses import dataclass
 from enum import StrEnum
@@ -40,11 +39,8 @@ def _app_language() -> str:
     Подписи панели тест ищет на этом языке; иначе он ждёт английские названия
     вкладок, а панель нарисована на языке развёртывания.
     """
-    root = os.environ.get("BOBA_APP_ROOT")
-    if not root:
-        root = f"{os.environ.get('BOBA_BASE', '')}/app_root"
-
-    config = FilePath(root) / ".chainlit" / "config.toml"
+    assets = FilePath(__file__).resolve().parents[2] / "assets"
+    config = assets / ".chainlit" / "config.toml"
     if not config.is_file():
         return PanelText.DEFAULT_LANGUAGE
 

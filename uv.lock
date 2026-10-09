@@ -973,7 +973,7 @@ requires-dist = [
     { name = "boba-stand", marker = "extra == 'dev'", editable = "packages/testing/boba-stand" },
     { name = "boba-toolkit", editable = "packages/core/boba-toolkit" },
     { name = "boba-toolkit", extras = ["arrow"], marker = "extra == 'payload'", editable = "packages/core/boba-toolkit" },
-    { name = "oracledb", marker = "extra == 'payload'", specifier = "==26.0.0+boba.1", index = "file:///app/docker/compose/boba/build/chainlit/src/oracledb" },
+    { name = "oracledb", marker = "extra == 'payload'", specifier = "==26.0.0+boba.1" },
     { name = "pyarrow", marker = "extra == 'payload'", specifier = ">=25,<26" },
     { name = "pydantic", specifier = ">=2.10,<2.11" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8" },
@@ -2471,7 +2471,7 @@ requires-dist = [
     { name = "boba-stand", marker = "extra == 'dev'", editable = "packages/testing/boba-stand" },
     { name = "boba-toolkit", editable = "packages/core/boba-toolkit" },
     { name = "boba-toolkit", extras = ["arrow"], marker = "extra == 'payload'", editable = "packages/core/boba-toolkit" },
-    { name = "oracledb", marker = "extra == 'dev'", specifier = "==26.0.0+boba.1", index = "file:///app/docker/compose/boba/build/chainlit/src/oracledb" },
+    { name = "oracledb", marker = "extra == 'dev'", specifier = "==26.0.0+boba.1" },
     { name = "pydantic", specifier = ">=2.10,<2.11" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8" },
 ]

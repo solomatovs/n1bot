@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 from typing import Any
 from uuid import UUID
@@ -26,7 +25,7 @@ from boba.stand.signin import SignInStand
 
 pytestmark = pytest.mark.anyio
 
-APP_ROOT = Path(os.environ["BOBA_BASE"]) / "app_root"
+APP_ROOT = Path(__file__).resolve().parents[1] / "assets"
 COOKIE = "access_token"
 
 

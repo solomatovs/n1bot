@@ -1,4 +1,4 @@
-"""Фикстуры тестов studio: конфиг studio из дерева compose, пользователь стенда и
+"""Фикстуры тестов studio: конфиг studio из дерева отладки, пользователь стенда и
 метка набора в именах стенда."""
 
 from pathlib import Path
@@ -13,7 +13,7 @@ from boba.stand.names import StandSuite
 from boba.studio.config import StudioAppConfig
 
 REPO = Path(__file__).resolve().parents[4]
-STUDIO_CONFIG = REPO / "compose" / "studio" / "conf" / "config.toml"
+STUDIO_CONFIG = REPO / "debug" / "studio" / "conf" / "config.toml"
 
 
 def pytest_configure(config: pytest.Config) -> None:

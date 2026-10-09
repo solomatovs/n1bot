@@ -59,6 +59,10 @@ COPY --from=site-conf /certs/        /
 COPY --from=site-conf /index/        /
 COPY build/chainlit/src/uv/uv        /usr/local/bin/uv
 
+# число заданий компилирующих шагов: наследуют все сборочные стадии, uv читает сам
+ARG JOBS=4
+ENV JOBS=${JOBS} UV_CONCURRENT_BUILDS=${JOBS} UV_CONCURRENT_INSTALLS=${JOBS}
+
 RUN ldconfig && gcc --version | head -n1 && python3 --version && pip3 --version
 
 # у каждой программы свой способ узнать CA bundle
@@ -121,7 +125,7 @@ WORKDIR /tmp/bwrap-src
 RUN tar -xJf /tmp/bwrap.tar.xz --strip-components=1
 RUN meson setup _build --buildtype=release --prefix=/usr -Dselinux=disabled -Dman=disabled \
     && sed -i 's|/usr/lib/x86_64-linux-gnu/libcap\.so|/usr/lib/x86_64-linux-gnu/libcap.a|g' _build/build.ninja \
-    && ninja -C _build bwrap
+    && ninja -j "${JOBS}" -C _build bwrap
 RUN strip _build/bwrap && install -D -m 0755 _build/bwrap /out/bwrap
 
 RUN ! ldd /out/bwrap | grep libcap && /out/bwrap --version
@@ -144,12 +148,12 @@ WORKDIR /tmp/fuse-src
 RUN tar -xJf /tmp/fuse.tar.xz --strip-components=1
 RUN meson setup _build --buildtype=release --prefix=/usr/local \
         -Ddefault_library=static -Dexamples=false -Dtests=false -Dutils=false \
-    && ninja -C _build install
+    && ninja -j "${JOBS}" -C _build install
 
 WORKDIR /tmp/e2fs-src
 ENV PKG_CONFIG_PATH=/usr/local/lib/pkgconfig:/usr/local/lib/x86_64-linux-gnu/pkgconfig
 RUN tar -xJf /tmp/e2fsprogs.tar.xz --strip-components=1
-RUN LIBS="-lpthread -ldl" ./configure --enable-fuse2fs --disable-nls && make -j"$(nproc)"
+RUN LIBS="-lpthread -ldl" ./configure --enable-fuse2fs --disable-nls && make -j"${JOBS}"
 RUN strip misc/fuse2fs && install -D -m 0755 misc/fuse2fs /out/fuse2fs
 
 RUN ! ldd /out/fuse2fs | grep fuse && /out/fuse2fs -V
@@ -181,6 +185,9 @@ COPY uv.lock         /tmp/boba/uv.lock
 COPY packages/       /tmp/boba/packages/
 
 COPY --from=oracledb-wheel /out/  /tmp/wheels/
+# find-links корневого pyproject ведёт сюда: колесо с патчем лежит там же, где
+# на хосте его держит build/chainlit/src
+COPY --from=oracledb-wheel /out/  /tmp/boba/build/chainlit/src/oracledb/
 
 WORKDIR /tmp/boba
 RUN uv build --all-packages --wheel --no-sources -o /tmp/wheels
@@ -311,7 +318,7 @@ RUN rm -rf /tmp/plugin-setup.d /tmp/plugin-apt.txt \
 RUN for path in $(cat /tmp/plugin-data.txt); do mkdir -p "$path"; done \
     && for path in $(cat /tmp/plugin-data.txt); do test -d "$path"; done \
     && rm -f /tmp/plugin-data.txt
-RUN mkdir -p "${BOBA_DIR}/conf/krb" "${SANDBOX_DEV_KRB}"
+RUN mkdir -p "${BOBA_DIR}/conf/krb" ${SANDBOX_DEV_KRB}
 
 
 # --- фронт: стадии node, на хосте node не нужен -----------------------------------
@@ -319,6 +326,10 @@ RUN mkdir -p "${BOBA_DIR}/conf/krb" "${SANDBOX_DEV_KRB}"
 # UI chainlit (фронт + copilot) из исходников тега с overlay web/chainlit-ui поверх;
 # зависимости pnpm берёт из реестра npm образа nodejs
 FROM ${NODE_IMAGE} AS chainlit-ui-build
+
+# число потоков esbuild в vite
+ARG JOBS=4
+ENV GOMAXPROCS=${JOBS}
 
 ARG CHAINLIT_VERSION
 
@@ -334,6 +345,10 @@ RUN sh /tmp/chainlit_ui.sh /tmp/chainlit.tar.gz /tmp/overlay /out/ui \
 
 # скрипт страницы chainlit (web/page, TypeScript)
 FROM ${NODE_IMAGE} AS web-build
+
+# число потоков esbuild в vite
+ARG JOBS=4
+ENV GOMAXPROCS=${JOBS}
 
 COPY packages/agents/boba-chainlit/web/page/  /src/web/page/
 
@@ -408,7 +423,8 @@ ENTRYPOINT ["python3"]
 
 
 # образ чата: ассеты chainlit, vendor-шрифты и стили формул вместо CDN, локальная
-# модель переформулировщика. .files создаётся заранее: chainlit делает mkdir на импорте
+# модель переформулировщика. Вложения сессий chainlit пишет в [chainlit].files_dir
+# (каталог данных), app_root остаётся статикой
 FROM runtime-base AS runtime-chainlit
 
 ARG BOBA_DIR=/app/boba
@@ -424,8 +440,7 @@ COPY --chown=${BOBA_UID}:${BOBA_GID} --from=chainlit-ui-build /out/ui/          
 COPY --chown=${BOBA_UID}:${BOBA_GID} build/chainlit/src/webassets/                                ${BOBA_DIR}/app_root/public/vendor/
 
 # файлы уже принадлежат пользователю, каталогам владелец ставится без рекурсии
-RUN mkdir -p ${BOBA_DIR}/app_root/.files \
-    && chown ${BOBA_UID}:${BOBA_GID} ${BOBA_DIR}/app_root ${BOBA_DIR}/app_root/.files \
+RUN chown ${BOBA_UID}:${BOBA_GID} ${BOBA_DIR}/app_root \
        ${BOBA_DIR}/app_root/.chainlit ${BOBA_DIR}/app_root/public
 
 EXPOSE 8501

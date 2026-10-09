@@ -1,6 +1,6 @@
 #!/bin/sh
 # Шаблон workspace песочницы: пустой ext4-файл $1 размером $2 через mke2fs
-# из src/sandbox/tools; итог отдаётся владельцу хоста $3.
+# из runtime/sandbox/tools; итог отдаётся владельцу хоста $3.
 set -eu
 
 out=$1

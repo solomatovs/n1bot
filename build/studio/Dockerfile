@@ -59,6 +59,10 @@ COPY --from=site-conf /certs/        /
 COPY --from=site-conf /index/        /
 COPY build/studio/src/uv/uv        /usr/local/bin/uv
 
+# число заданий компилирующих шагов: наследуют все сборочные стадии, uv читает сам
+ARG JOBS=4
+ENV JOBS=${JOBS} UV_CONCURRENT_BUILDS=${JOBS} UV_CONCURRENT_INSTALLS=${JOBS}
+
 RUN ldconfig && gcc --version | head -n1 && python3 --version && pip3 --version
 
 # у каждой программы свой способ узнать CA bundle
@@ -121,7 +125,7 @@ WORKDIR /tmp/bwrap-src
 RUN tar -xJf /tmp/bwrap.tar.xz --strip-components=1
 RUN meson setup _build --buildtype=release --prefix=/usr -Dselinux=disabled -Dman=disabled \
     && sed -i 's|/usr/lib/x86_64-linux-gnu/libcap\.so|/usr/lib/x86_64-linux-gnu/libcap.a|g' _build/build.ninja \
-    && ninja -C _build bwrap
+    && ninja -j "${JOBS}" -C _build bwrap
 RUN strip _build/bwrap && install -D -m 0755 _build/bwrap /out/bwrap
 
 RUN ! ldd /out/bwrap | grep libcap && /out/bwrap --version
@@ -144,12 +148,12 @@ WORKDIR /tmp/fuse-src
 RUN tar -xJf /tmp/fuse.tar.xz --strip-components=1
 RUN meson setup _build --buildtype=release --prefix=/usr/local \
         -Ddefault_library=static -Dexamples=false -Dtests=false -Dutils=false \
-    && ninja -C _build install
+    && ninja -j "${JOBS}" -C _build install
 
 WORKDIR /tmp/e2fs-src
 ENV PKG_CONFIG_PATH=/usr/local/lib/pkgconfig:/usr/local/lib/x86_64-linux-gnu/pkgconfig
 RUN tar -xJf /tmp/e2fsprogs.tar.xz --strip-components=1
-RUN LIBS="-lpthread -ldl" ./configure --enable-fuse2fs --disable-nls && make -j"$(nproc)"
+RUN LIBS="-lpthread -ldl" ./configure --enable-fuse2fs --disable-nls && make -j"${JOBS}"
 RUN strip misc/fuse2fs && install -D -m 0755 misc/fuse2fs /out/fuse2fs
 
 RUN ! ldd /out/fuse2fs | grep fuse && /out/fuse2fs -V
@@ -181,6 +185,9 @@ COPY uv.lock         /tmp/boba/uv.lock
 COPY packages/       /tmp/boba/packages/
 
 COPY --from=oracledb-wheel /out/  /tmp/wheels/
+# find-links корневого pyproject ведёт сюда: колесо с патчем лежит там же, где
+# на хосте его держит build/chainlit/src
+COPY --from=oracledb-wheel /out/  /tmp/boba/build/chainlit/src/oracledb/
 
 WORKDIR /tmp/boba
 RUN uv build --all-packages --wheel --no-sources -o /tmp/wheels
@@ -311,7 +318,7 @@ RUN rm -rf /tmp/plugin-setup.d /tmp/plugin-apt.txt \
 RUN for path in $(cat /tmp/plugin-data.txt); do mkdir -p "$path"; done \
     && for path in $(cat /tmp/plugin-data.txt); do test -d "$path"; done \
     && rm -f /tmp/plugin-data.txt
-RUN mkdir -p "${BOBA_DIR}/conf/krb" "${SANDBOX_DEV_KRB}"
+RUN mkdir -p "${BOBA_DIR}/conf/krb" ${SANDBOX_DEV_KRB}
 
 
 # --- фронт: стадии node, на хосте node не нужен -----------------------------------
@@ -344,6 +351,10 @@ RUN python3 -m boba.studio.api.schema > /tmp/openapi.json
 
 # страница workflow: типы из openapi.json стадии выше
 FROM ${NODE_IMAGE} AS web-build
+
+# число потоков esbuild в vite
+ARG JOBS=4
+ENV GOMAXPROCS=${JOBS}
 
 COPY packages/agents/boba-studio/web/workflow/  /src/web/workflow/
 COPY --from=openapi /tmp/openapi.json           /src/web/workflow/openapi.json

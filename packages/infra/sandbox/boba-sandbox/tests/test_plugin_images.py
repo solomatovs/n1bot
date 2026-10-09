@@ -19,7 +19,7 @@ import pytest
 from boba.stand.sandbox import SandboxLayout, plugin_rootfs
 
 REPO = Path(__file__).resolve().parents[5]
-FUSE2FS = REPO / "build" / "chainlit" / "src" / "sandbox" / "third" / "bin" / "fuse2fs"
+FUSE2FS = REPO / "runtime" / "third" / "bin" / "fuse2fs"
 
 PACKAGES = sorted(SandboxLayout.DATA_BINDS)
 

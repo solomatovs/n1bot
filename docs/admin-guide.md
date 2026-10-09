@@ -16,9 +16,9 @@ Boba состоит из двух HTTP-приложений: chainlit (чат, �
 
 ## 2. Установка и запуск
 
-Заготовка: установка дерева релиза в `INSTALL_DIR`, systemd-юниты
-`boba-chainlit.service` и `boba-studio.service`, `cgroup-init.sh`, порядок
-первого старта.
+Заготовка: установка дерева релиза в `INSTALL_DIR`, порядок первого старта.
+Приложения запускаются контейнерами docker compose; cgroup песочницы даёт
+user-юнит `boba-sandbox@<приложение>.service`.
 
 ## 3. Конфигурация
 
