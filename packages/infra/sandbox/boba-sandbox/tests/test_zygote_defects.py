@@ -524,7 +524,9 @@ class TestCallFdsAreNotInherited:
     memory.max, снимал себе лимит записью и ходил по соседним группам.
     """
 
-    CGROUP_BASE: ClassVar[str] = "/sys/fs/cgroup/boba"
+    CGROUP_BASE: ClassVar[str] = os.environ.get(
+        "BOBA_CGROUP_BASE", "/sys/fs/cgroup/boba"
+    )
 
     PROBE: ClassVar[str] = """
 for fd in /proc/self/fd/*; do
@@ -539,7 +541,10 @@ done
 
     needs_cgroup = pytest.mark.skipif(
         not os.access(CGROUP_BASE, os.W_OK),
-        reason="нет делегированного /sys/fs/cgroup/boba (прогнать cgroup-init.sh)",
+        reason=(
+            f"cgroup base {CGROUP_BASE} не делегирован пользователю: нужен юнит "
+            "boba-sandbox@.service и BOBA_CGROUP_BASE (docs/admin-guide.md)"
+        ),
     )
 
     def test_shell_gets_only_stdio(self, section: str) -> None:

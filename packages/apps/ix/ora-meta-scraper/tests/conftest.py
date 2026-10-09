@@ -8,6 +8,7 @@ from enum import StrEnum
 import pytest
 from ora_scraper_stand import LAYOUT, IxStand
 
+from boba.stand.ix import IxStandError
 from boba.stand.names import StandSuite
 from boba.stand.scraper import Golden, ScraperStandDatabase, StandFile
 
@@ -20,7 +21,14 @@ def pytest_configure(config: pytest.Config) -> None:
 @pytest.hookimpl(tryfirst=True)
 def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
     """Группы ставятся раньше хука xdist: он читает их в том же событии."""
-    groups = ScraperGroups(IxStand.required())
+    try:
+        stand = IxStand.load()
+    except IxStandError:
+        # хук получает тесты всего прогона: пропуск отсюда обрывал бы сбор целиком.
+        # Без стенда группы не нужны — тесты пакета пропускает фикстура ix_stand
+        return
+
+    groups = ScraperGroups(stand)
     for item in items:
         item.add_marker(pytest.mark.xdist_group(groups.of(item)))
 
