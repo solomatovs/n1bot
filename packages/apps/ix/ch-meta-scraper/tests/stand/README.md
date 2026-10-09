@@ -10,7 +10,7 @@
     db_schema = "ix"
     database  = "ix_stand"
     ch_scrape_sources = [
-        { name = "ch-25.12", clickhouse = { host = "...", port = 8123, interface = "http", connect_timeout = 10, auth = { method = "password", user = "scraper", password = "scraper" }, settings = { readonly = 2, max_execution_time = 30 } } },
+        { name = "ch-25.12", clickhouse = { host = "...", port = 8123, interface = "http", connect_timeout = 10, auth = { method = "password", user = "boba-svc", password = "..." }, settings = { readonly = 2, max_execution_time = 30 } } },
         { name = "ch-dev-krb", demo = false, clickhouse = { host = "...", port = 443, interface = "https", server_host_name = "ch01...", connect_timeout = 10, auth = { method = "kerberos_keytab", principal = "...", keytab = "..." } } },
     ]
 ```
@@ -18,8 +18,9 @@
 `server/run.sh edge-chs` поднимает контейнеры `edge-chs-<ver>` только для скрапера: он обходит
 сервер целиком, и DDL насосов и инструментов на `edge-ch-<ver>` (`run.sh edge-ch`) сбил бы
 обход. Контейнеры поднимаются с `config.xml` и `users.xml` из
-того же каталога: пользователь `scraper` с паролем `scraper` и `default` без пароля,
-оба с правом управлять доступом. Образы без конфига не стартуют, поэтому каталог
+того же каталога: пользователь `boba-svc` (хеш пароля приходит переменной окружения
+`BOBA_SVC_PASSWORD_SHA256`, доступом не управляет) и `default` без пароля с правом
+управлять доступом. Образы без конфига не стартуют, поэтому каталог
 монтируется в `/etc/clickhouse-server`.
 
 `edge-ch-26.7` дополнительно получает `server/keeper.xml` в `config.d`:

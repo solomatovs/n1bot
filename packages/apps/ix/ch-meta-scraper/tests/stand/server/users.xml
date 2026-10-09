@@ -15,14 +15,14 @@
             <quota>default</quota>
             <access_management>1</access_management>
         </default>
-        <scraper>
-            <password>scraper</password>
+        <boba-svc>
+            <password_sha256_hex from_env="BOBA_SVC_PASSWORD_SHA256"/>
             <networks>
                 <ip>::/0</ip>
             </networks>
             <profile>default</profile>
             <quota>default</quota>
-            <access_management>1</access_management>
-        </scraper>
+            <access_management>0</access_management>
+        </boba-svc>
     </users>
 </clickhouse>

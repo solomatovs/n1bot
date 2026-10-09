@@ -17,7 +17,7 @@ RAW = {
     "connect_timeout": 10,
     "call_timeout": 30000,
     "arraysize": 2000,
-    "auth": {"method": "password", "user": "scraper", "password": "secret"},
+    "auth": {"method": "password", "user": "boba_svc", "password": "secret"},
 }
 
 
@@ -28,13 +28,13 @@ class TestOracleConfig:
         assert profile.kind == "oracle"
         assert isinstance(profile.auth, PasswordAuth)
         assert profile.address_prefix() == "oracle.example.com:1521/orclpdb1"
-        assert profile.trace() == "auth=password user=scraper"
+        assert profile.trace() == "auth=password user=boba_svc"
         assert profile.connect_settings() == {
             "host": "oracle.example.com",
             "port": 1521,
             "service_name": "orclpdb1",
             "tcp_connect_timeout": 10,
-            "user": "scraper",
+            "user": "boba_svc",
             "password": "secret",
             "protocol": "tcp",
         }

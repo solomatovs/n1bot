@@ -630,7 +630,7 @@ class TestNoConnections:
         _expect(
             result,
             ConnectionRefusal.NOT_VISIBLE,
-            "connection 'main' of kind 'postgres' is not available to you",
+            "is not among the connections of kind 'postgres' available to you",
             "yours are: none",
         )
 
