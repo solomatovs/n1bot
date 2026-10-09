@@ -23,11 +23,14 @@ class TestToolCli:
         )
 
     @staticmethod
-    def write_toml(tmp_path: Path) -> Path:
+    def write_toml(tmp_path: Path) -> list[str]:
+        """Аргументы файлов конфигурации: общий конфиг и site-файл без ключей."""
         config = tmp_path / "config.toml"
         config.write_text('[tool.fake]\ntoken = "s3cret-token"\nlimit = 5\n')
+        site = tmp_path / "site.toml"
+        site.write_text("")
 
-        return config
+        return ["--config", str(config), "--site", str(site)]
 
     def test_injected_is_built_from_toml_sections(self, tmp_path: Path) -> None:
         config = self.write_toml(tmp_path)
@@ -40,8 +43,7 @@ class TestToolCli:
                 "ping",
                 "--repeat",
                 "2",
-                "--config",
-                str(config),
+                *config,
             ]
         )
 
@@ -61,8 +63,7 @@ class TestToolCli:
                 "pong",
                 "--repeat",
                 "1",
-                "--config",
-                str(config),
+                *config,
                 "--injected",
                 str(injected),
                 "--artifact",
@@ -81,7 +82,7 @@ class TestToolCli:
     def test_unknown_module_is_entry_error(self, tmp_path: Path) -> None:
         config = self.write_toml(tmp_path)
 
-        proc = self.run_cli(["boba.no_such", "x", "--config", str(config)])
+        proc = self.run_cli(["boba.no_such", "x", *config])
 
         assert proc.returncode == ToolMain.Exit.ENTRY_ERROR
         assert b"not importable" in proc.stderr

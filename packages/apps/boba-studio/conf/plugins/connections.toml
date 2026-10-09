@@ -1,0 +1,12 @@
+enable     = true
+connection = "${postgres}"
+db_schema  = "automation"
+tools      = ["connection_list", "connection_search"]
+
+[sandbox]
+    network = true
+    binds   = [
+        "/etc/resolv.conf:/etc/resolv.conf",
+        "/etc/hosts:/etc/hosts",
+        "${env.krb}/krb5.conf:/etc/krb5.conf"
+    ]

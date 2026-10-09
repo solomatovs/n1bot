@@ -1,14 +1,19 @@
 """Общие секции конфига приложений: каталоги kerberos, профили, роли, вход, данные, api.
 
 Ошибки:
+ConfigLayoutError — файлы конфигурации названы или разложены не так: нет файла,
+    не заданы переменные стенда, в общем конфиге есть секция [env] или [site],
+    в site-файле есть секция сверх этих двух.
 RuntimeError — конфиг ещё не загружен (RawConfig.get до RawConfig.load).
 """
 
 from __future__ import annotations
 
+import argparse
 import os
 import secrets
 import tomllib
+from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 from typing import Annotated, Any, ClassVar, Literal, Self
@@ -35,6 +40,9 @@ __all__ = [
     "AppName",
     "BuiltPage",
     "ClusterConfig",
+    "ConfigArguments",
+    "ConfigFiles",
+    "ConfigLayoutError",
     "ConfigLocator",
     "DataLayerConfig",
     "DevPage",
@@ -56,32 +64,93 @@ __all__ = [
 ]
 
 
-class ConfigLocator:
-    """Путь конфига тестового стенда: BOBA_CONFIG_PATH либо BOBA_BASE/conf/config.toml.
+class ConfigLayoutError(Exception):
+    """Файлы конфигурации названы или разложены не так, как ждёт загрузчик."""
 
-    Приложения получают конфиг обязательным аргументом запуска; локатор остаётся
-    только фикстурам и стендам, которые аргументов не имеют.
+
+@dataclass(frozen=True)
+class ConfigFiles:
+    """Два файла конфигурации процесса.
+
+    config — общий конфиг приложения: устройство приложения, одинаковое на любой
+    машине, лежит в пакете и в git. site — специфика случая запуска: пути, адреса,
+    секреты; свой у compose, отладки и установки, в git не входит. Каталог над
+    conf/, в котором лежит site, становится env.base: данные случая лежат рядом
+    со спецификой.
+    """
+
+    config: Path
+    site: Path
+
+    def __post_init__(self) -> None:
+        for role, path in (("config", self.config), ("site", self.site)):
+            if not path.is_file():
+                msg = f"config files: {role} expects an existing toml file, got {path}"
+                raise ConfigLayoutError(msg)
+
+    def base(self) -> Path:
+        """Корень раскладки случая: каталог над conf/ с site-файлом."""
+        return self.site.resolve().parent.parent
+
+    def plugins_dir(self) -> Path:
+        """Файлы плагинов лежат рядом с общим конфигом."""
+        return self.config.parent / "plugins"
+
+
+class ConfigArguments:
+    """Аргументы запуска приложения: --config <общий конфиг> и --site <специфика>.
+
+    Оба обязательны, значений по умолчанию и поиска «рядом» нет: какой файл
+    читается, видно из командной строки.
+    """
+
+    CONFIG: ClassVar[str] = "--config"
+    SITE: ClassVar[str] = "--site"
+
+    def __init__(self, parser: argparse.ArgumentParser) -> None:
+        self._parser = parser
+
+    def files(self) -> ConfigFiles:
+        self._parser.add_argument(
+            self.CONFIG,
+            required=True,
+            type=Path,
+            help="path to the application config.toml (common, from the package)",
+        )
+        self._parser.add_argument(
+            self.SITE,
+            required=True,
+            type=Path,
+            help="path to site.toml (paths, addresses and secrets of this run)",
+        )
+        arguments = self._parser.parse_args()
+
+        return ConfigFiles(config=arguments.config, site=arguments.site)
+
+
+class ConfigLocator:
+    """Файлы конфигурации тестового стенда: BOBA_CONFIG_PATH и BOBA_SITE_PATH.
+
+    Приложения получают оба пути обязательными аргументами запуска; локатор
+    остаётся только фикстурам и стендам, которые аргументов не имеют.
     """
 
     CONFIG_ENV: ClassVar[str] = "BOBA_CONFIG_PATH"
-    BASE_ENV: ClassVar[str] = "BOBA_BASE"
-    CONFIG_RELATIVE: ClassVar[str] = "conf/config.toml"
+    SITE_ENV: ClassVar[str] = "BOBA_SITE_PATH"
 
     @classmethod
-    def path(cls) -> Path:
-        if config_path := os.environ.get(cls.CONFIG_ENV):
-            return Path(config_path)
-
-        base = os.environ.get(cls.BASE_ENV)
-        if not base:
+    def files(cls) -> ConfigFiles:
+        config = os.environ.get(cls.CONFIG_ENV)
+        site = os.environ.get(cls.SITE_ENV)
+        if not config or not site:
             msg = (
-                f"config path: neither {cls.CONFIG_ENV} nor {cls.BASE_ENV} is set "
-                f"in the environment; expected {cls.CONFIG_ENV}=<path to toml> "
-                f"or {cls.BASE_ENV}=<dir with {cls.CONFIG_RELATIVE}>"
+                f"config files: {cls.CONFIG_ENV} and {cls.SITE_ENV} are both "
+                f"required in the environment, got {cls.CONFIG_ENV}={config!r}, "
+                f"{cls.SITE_ENV}={site!r}"
             )
-            raise RuntimeError(msg)
+            raise ConfigLayoutError(msg)
 
-        return Path(base) / cls.CONFIG_RELATIVE
+        return ConfigFiles(config=Path(config), site=Path(site))
 
 
 class EnvOverride(StrEnum):
@@ -114,39 +183,69 @@ class EnvOverride(StrEnum):
 
 
 class AppLayers:
-    """Слои конфига процесса: вычисленный base -> toml -> плагины -> BOBA_-оверрайды.
+    """Слои конфига процесса: вычисленный base -> общий конфиг -> плагины ->
+    site-файл -> BOBA_-оверрайды.
 
-    Конфиг самодостаточен: значения секции [env] описаны в toml, base выводится
-    из раскладки (config.toml лежит в ${base}/conf), файлы conf/plugins/<id>.toml
-    ложатся секциями tool.<id>, а окружение лишь переопределяет ключи из
-    реестра EnvOverride.
+    Общий конфиг описывает устройство приложения и на [env] и [site] только
+    ссылается; сами секции лежат в site-файле, и другой секции в нём быть не
+    может — иначе устройство приложения описывалось бы в двух местах. base
+    выводится из раскладки случая (site.toml лежит в ${base}/conf), файлы
+    plugins/<id>.toml рядом с общим конфигом ложатся секциями tool.<id>, а
+    окружение лишь переопределяет ключи [env] из реестра EnvOverride.
     """
 
     HOST_FALLBACK: ClassVar[str] = "HOSTNAME"
-    PLUGINS_DIR: ClassVar[str] = "plugins"
     PLUGIN_SUFFIX: ClassVar[str] = ".toml"
+    SITE_SECTIONS: ClassVar[frozenset[str]] = frozenset({"env", "site"})
 
     @classmethod
-    def compose(cls, config_path: Path) -> DictConfig:
+    def compose(cls, files: ConfigFiles) -> DictConfig:
         builder = ConfigBuilder()
-        builder.add_dict(cls._computed(config_path))
-        builder.add_toml(config_path)
-        builder.add_dict(cls._plugins(config_path))
+        builder.add_dict({"env": {"base": str(files.base())}})
+        builder.add_dict(cls._common(files.config))
+        builder.add_dict(cls._plugins(files.plugins_dir()))
+        builder.add_dict(cls._site(files.site))
         builder.add_dict(cls._overrides())
 
         return builder.build()
 
     @classmethod
-    def _computed(cls, config_path: Path) -> dict[str, Any]:
-        base = config_path.resolve().parent.parent
-        return {"env": {"base": str(base)}}
+    def _common(cls, path: Path) -> dict[str, Any]:
+        with path.open("rb") as body:
+            sections = tomllib.load(body)
+
+        misplaced = sorted(cls.SITE_SECTIONS & set(sections))
+        if misplaced:
+            msg = (
+                f"common config {path}: sections {misplaced} belong to the site "
+                "file; the common config only refers to them as ${env.*} and "
+                "${site.*}"
+            )
+            raise ConfigLayoutError(msg)
+
+        return sections
 
     @classmethod
-    def _plugins(cls, config_path: Path) -> dict[str, Any]:
-        """Файлы conf/plugins/<id>.toml -> секции tool.<id>; интерполяции файлов
+    def _site(cls, path: Path) -> dict[str, Any]:
+        with path.open("rb") as body:
+            sections = tomllib.load(body)
+
+        foreign = sorted(set(sections) - cls.SITE_SECTIONS)
+        if foreign:
+            msg = (
+                f"site file {path}: expected only sections "
+                f"{sorted(cls.SITE_SECTIONS)}, got also {foreign}; the structure "
+                "of the application is described in the common config alone"
+            )
+            raise ConfigLayoutError(msg)
+
+        return sections
+
+    @classmethod
+    def _plugins(cls, plugins_dir: Path) -> dict[str, Any]:
+        """Файлы plugins/<id>.toml -> секции tool.<id>; интерполяции файлов
         резолвятся от корня собранного конфига.
         """
-        plugins_dir = config_path.parent / cls.PLUGINS_DIR
         if not plugins_dir.is_dir():
             return {}
 
@@ -195,8 +294,8 @@ class RawConfig:
     _raw: ClassVar[DictConfig | None] = None
 
     @classmethod
-    def load(cls, config_path: Path) -> DictConfig:
-        cls._raw = AppLayers.compose(config_path)
+    def load(cls, files: ConfigFiles) -> DictConfig:
+        cls._raw = AppLayers.compose(files)
 
         return cls._raw
 
@@ -205,7 +304,7 @@ class RawConfig:
         if cls._raw is None:
             msg = (
                 "RawConfig.get: raw config is not loaded yet, "
-                "RawConfig.load(config_path) must run first"
+                "RawConfig.load(files) must run first"
             )
             raise RuntimeError(msg)
 
@@ -587,11 +686,11 @@ class ProcessConfig(BaseModel):
     session: TokenConfig
 
     @classmethod
-    def load(cls, config_path: Path) -> Self:
-        """Читает toml, проверяет способ запуска инструментов и раскладывает кэши
-        kerberos.
+    def load(cls, files: ConfigFiles) -> Self:
+        """Читает файлы конфигурации, проверяет способ запуска инструментов и
+        раскладывает кэши kerberos.
         """
-        raw = RawConfig.load(config_path)
+        raw = RawConfig.load(files)
         config = bind(raw, path=cls.SECTION, model=cls)
         # предпосылки способа запуска проверяются на старте: отказ виден сразу
         ToolLaunchers(raw).build().probe()

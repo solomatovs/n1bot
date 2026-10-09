@@ -13,7 +13,7 @@ TasksMax=4096
 Environment=BASE=/sys/fs/cgroup/user.slice/user-%U.slice/user@%U.service/boba.slice/boba-%i.slice
 Environment=SANDBOX_GID=1000
 ExecStart=/usr/bin/sleep infinity
-ExecStartPost=/bin/sh -euc 'cd "$BASE/%n"; echo "+cpu +memory +pids" > cgroup.subtree_control; mkdir -p sandbox; set -- sandbox sandbox/cgroup.procs sandbox/cgroup.subtree_control "$BASE/cgroup.procs"; /usr/bin/unshare --user --map-root-user --map-auto /usr/bin/chgrp "$SANDBOX_GID" "$@"; chmod g+w "$@"'
+ExecStartPost=/bin/sh -euc 'cd "$BASE/%n"; echo "+cpu +memory +pids" > cgroup.subtree_control; mkdir -p sandbox; if grep -q "^$$(id -un):" /etc/subgid; then set -- sandbox sandbox/cgroup.procs sandbox/cgroup.subtree_control "$BASE/cgroup.procs"; /usr/bin/unshare --user --map-root-user --map-auto /usr/bin/chgrp "$SANDBOX_GID" "$@"; chmod g+w "$@"; fi'
 Restart=always
 
 [Install]

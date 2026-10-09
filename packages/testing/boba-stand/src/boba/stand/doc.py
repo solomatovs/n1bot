@@ -36,12 +36,12 @@ class DocStand(BaseModel):
 
     @classmethod
     def load(cls) -> Self:
-        path = ConfigLocator.path()
-        stand_path = path.parent / StandLayers.FILE
+        files = ConfigLocator.files()
+        stand_path = StandLayers.path(files)
         if not stand_path.is_file():
             raise DocStandError(f"doc stand: {stand_path} not found")
 
-        raw = StandLayers.compose(path)
+        raw = StandLayers.compose(files)
 
         try:
             return bind(raw, path=cls.SECTION, model=cls)

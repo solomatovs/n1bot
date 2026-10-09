@@ -1,7 +1,7 @@
 """Процесс сервиса исполнения: сборка объектов и запуск MCP-сервера.
 
-`boba-mcp --config <toml>` читает конфиг, поднимает контейнер общих сервисов
-(журналы вызовов, реестр запусков, способ запуска, реестр инструментов,
+`boba-mcp --config <toml> --site <toml>` читает конфиг, поднимает контейнер общих
+сервисов (журналы вызовов, реестр запусков, способ запуска, реестр инструментов,
 способы входа), строит endpoint'ы MCP над реестром — по одному на профиль
 конфига — и слушает адрес секции [mcp].
 
@@ -16,7 +16,6 @@ import asyncio
 import logging
 import logging.config
 import signal
-from pathlib import Path
 
 import uvicorn
 from mcp.shared.auth import OAuthClientInformationFull
@@ -43,7 +42,7 @@ from boba.mcp_server.server import (
     RunLimits,
 )
 from boba.runtime import providers
-from boba.runtime.config import ProcessConfig
+from boba.runtime.config import ConfigArguments, ConfigFiles, ProcessConfig
 from boba.runtime.di import Container
 from boba.runtime.http import SignalledServer
 from boba.runtime.plugins import EntryPointPlugins
@@ -228,24 +227,18 @@ class McpHost:
 
 
 class McpEntry:
-    """Вход процесса: `boba-mcp --config <toml>`."""
+    """Вход процесса: `boba-mcp --config <toml> --site <toml>`."""
 
-    def config_argument(self) -> Path:
-        """Путь конфига — обязательный аргумент запуска; дефолта и env нет."""
+    def config_files(self) -> ConfigFiles:
+        """Пути общего конфига и site-файла — обязательные аргументы запуска."""
         parser = argparse.ArgumentParser(
             prog="boba-mcp", description="Tool execution service of boba"
         )
-        parser.add_argument(
-            "--config",
-            required=True,
-            type=Path,
-            help="path to the service config.toml",
-        )
 
-        return parser.parse_args().config
+        return ConfigArguments(parser).files()
 
     async def run(self) -> None:
-        config = McpAppConfig.load(self.config_argument())
+        config = McpAppConfig.load(self.config_files())
         logging.config.dictConfig(config.logger)
 
         await McpHost(config).serve()

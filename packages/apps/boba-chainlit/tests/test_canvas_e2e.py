@@ -5,10 +5,10 @@ workspace открытого треда и просит панель показ�
 DOM: картинка загрузилась, диаграмма отрисована в svg, текст виден,
 неподдерживаемый формат объяснён.
 
-Запуск: BOBA_CONFIG_PATH=... pytest -m integration
+Запуск: BOBA_CONFIG_PATH=... BOBA_SITE_PATH=... pytest -m integration
 packages/apps/boba-chainlit/tests/test_canvas_e2e.py
-Стенд — два собственных процесса на конфигах отладки: сервис boba-mcp
-(debug/mcp) и чат (BOBA_CONFIG_PATH), который ходит к этому сервису. Порты и
+Стенд — два собственных процесса на site.toml деревьев отладки: сервис boba-mcp
+(debug/mcp) и чат (файлы стенда), который ходит к этому сервису. Порты и
 каталоги данных у стенда свои (E2eStand): прогон не занимает адреса отладки
 из конфигов и не трогает её данные; контейнеры compose не участвуют.
 Нужны: playwright + chromium, postgres, образ workspace из runtime/sandbox.
@@ -32,16 +32,14 @@ import pytest
 from chainlit_stand import FakeUrl
 from playwright.async_api import TimeoutError as PlaywrightTimeout
 
-from boba.runtime.config import EnvOverride
-from boba.stand.ui.stand import free_port
+from boba.runtime.config import ConfigLayoutError, ConfigLocator, EnvOverride
+from boba.stand.ui.stand import StandApp, free_port
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
 
 REPO = Path(__file__).resolve().parents[4]
 LAUNCHER = REPO / ".venv/bin/python"
 ENTRY = REPO / "packages/apps/boba-chainlit/src/boba/chainlit/main.py"
-MCP_CONFIG = REPO / "debug/mcp/conf/config.toml"
-"""Конфиг отладки сервиса boba-mcp: на его адрес смотрит конфиг отладки чата."""
 MCP_MODULE = "boba.mcp_server"
 
 
@@ -218,12 +216,11 @@ class E2eApp:
 
 @pytest.fixture(scope="module")
 def app_server(tmp_path_factory: pytest.TempPathFactory) -> Iterator[None]:
-    config = os.environ.get("BOBA_CONFIG_PATH")
-    if not config:
-        pytest.skip("BOBA_CONFIG_PATH не задан")
-
-    if not MCP_CONFIG.is_file():
-        pytest.skip(f"нет конфига отладки сервиса: {MCP_CONFIG} (make -C build debug)")
+    try:
+        chat = ConfigLocator.files()
+        service_files = StandApp.MCP.files()
+    except ConfigLayoutError as exc:
+        pytest.skip(f"файлы конфигурации стенда недоступны: {exc}")
 
     stand = E2eStand()
     stand.prepare()
@@ -242,13 +239,20 @@ def app_server(tmp_path_factory: pytest.TempPathFactory) -> Iterator[None]:
     # логи — в каталоге прогона pytest: общий путь в /tmp делят пользователи
     logs = tmp_path_factory.mktemp("boba-e2e")
     service = E2eApp(
-        ["-m", MCP_MODULE, "--config", str(MCP_CONFIG)],
+        [
+            "-m",
+            MCP_MODULE,
+            "--config",
+            str(service_files.config),
+            "--site",
+            str(service_files.site),
+        ],
         stand.service_env(),
         FakeUrl.loopback(stand.SERVICE_PORT, "/health"),
         logs / f"mcp-{stand.SERVICE_PORT}.log",
     )
     app = E2eApp(
-        [str(ENTRY), "--config", config],
+        [str(ENTRY), "--config", str(chat.config), "--site", str(chat.site)],
         stand.app_env(),
         BASE + "/login",
         logs / f"app-{PORT}.log",
@@ -286,7 +290,7 @@ def _app_config() -> Any:
     from boba.config import bind
     from boba.runtime.config import AppLayers
 
-    raw = AppLayers.compose(Path(os.environ["BOBA_CONFIG_PATH"]))
+    raw = AppLayers.compose(ConfigLocator.files())
     return bind(raw, path="app", model=AppConfig)
 
 

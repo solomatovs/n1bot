@@ -1,0 +1,25 @@
+enable              = true
+max_text_chars      = 2000
+text_encodings      = ["utf-8", "cp1251"]
+tools               = ["web_fetch_page", "web_grep_page", "web_address"]
+
+transport = "${http}"
+
+[ocr]
+    provider   = "rapidocr"
+    models_dir = "/var/cache/rapidocr"
+    language   = "eslav"
+    text_score = 0.5
+    threads    = 2
+
+[sandbox]
+    network = true
+    binds   = [
+        "${env.models}/rapidocr:/var/cache/rapidocr",
+        "/etc/resolv.conf:/etc/resolv.conf",
+        "/etc/hosts:/etc/hosts",
+        "${env.krb}/krb5.conf:/etc/krb5.conf"
+    ]
+    [sandbox.limits]
+        process_memory_bytes = 4294967296
+        group_memory_bytes   = 2147483648

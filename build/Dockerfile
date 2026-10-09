@@ -443,8 +443,8 @@ RUN chmod -R go-w ${BOBA_DIR}/third/bin ${BOBA_DIR}/sandbox \
     && ${BOBA_DIR}/third/bin/fuse2fs -V
 
 
-# образ чата: ассеты chainlit, vendor-шрифты и стили формул вместо CDN, локальная
-# модель переформулировщика. .files создаётся заранее: chainlit делает mkdir на импорте
+# образ чата: общий конфиг, ассеты chainlit, vendor-шрифты и стили формул вместо CDN.
+# Вложения сессий приложение держит в данных ([chainlit].files_dir), app_root не пишется
 FROM runtime-base AS runtime-chainlit
 
 ARG BOBA_DIR=/app/boba
@@ -459,14 +459,15 @@ COPY --chown=${BOBA_UID}:${BOBA_GID} --from=chainlit-page-build /src/assets/publ
 COPY --chown=${BOBA_UID}:${BOBA_GID} --from=chainlit-ui-build /out/ui/                            ${BOBA_DIR}/app_root/ui/
 COPY --chown=${BOBA_UID}:${BOBA_GID} build/src/webassets/                                ${BOBA_DIR}/app_root/public/vendor/
 
+COPY packages/apps/boba-chainlit/conf/  ${BOBA_DIR}/conf/
+
 # файлы уже принадлежат пользователю, каталогам владелец ставится без рекурсии
-RUN mkdir -p ${BOBA_DIR}/app_root/.files \
-    && chown ${BOBA_UID}:${BOBA_GID} ${BOBA_DIR}/app_root ${BOBA_DIR}/app_root/.files \
+RUN chown ${BOBA_UID}:${BOBA_GID} ${BOBA_DIR}/app_root \
        ${BOBA_DIR}/app_root/.chainlit ${BOBA_DIR}/app_root/public
 
 EXPOSE 8501
 USER ${BOBA_UID}:${BOBA_GID}
-CMD ["-m", "boba.chainlit.main", "--config", "/app/boba/conf/config.toml"]
+CMD ["-m", "boba.chainlit.main", "--config", "/app/boba/conf/config.toml", "--site", "/app/boba/conf/site.toml"]
 
 
 # --- boba-studio ---------------------------------------------------------------------
@@ -497,11 +498,13 @@ ARG BOBA_GID=1000
 COPY --chown=${BOBA_UID}:${BOBA_GID} --from=studio-web-build /src/assets/workflow/  ${BOBA_DIR}/app_root/public/workflow/
 COPY --chown=${BOBA_UID}:${BOBA_GID} build/src/webassets/                           ${BOBA_DIR}/app_root/public/vendor/
 
+COPY packages/apps/boba-studio/conf/  ${BOBA_DIR}/conf/
+
 RUN chown ${BOBA_UID}:${BOBA_GID} ${BOBA_DIR}/app_root ${BOBA_DIR}/app_root/public
 
 EXPOSE 8502
 USER ${BOBA_UID}:${BOBA_GID}
-CMD ["-m", "boba.studio", "--config", "/app/boba/conf/config.toml"]
+CMD ["-m", "boba.studio", "--config", "/app/boba/conf/config.toml", "--site", "/app/boba/conf/site.toml"]
 
 
 # --- boba-mcp: MCP-сервер с инструментами boba -------------------------------------
@@ -517,12 +520,15 @@ COPY --chown=root:root --chmod=0644 runtime/sandbox/workspace.ext4  ${BOBA_DIR}/
 COPY --chown=root:root runtime/sandbox/plugins/                     ${BOBA_DIR}/sandbox/plugins/
 
 
-# образ сервиса: снаружи приходят конфиг и данные деревом compose/mcp
+# образ сервиса: общий конфиг внутри, снаружи приходят site.toml и данные деревом compose/mcp
 FROM runtime-plugins AS runtime-mcp
 
+ARG BOBA_DIR=/app/boba
 ARG BOBA_UID=1000
 ARG BOBA_GID=1000
 
+COPY packages/apps/boba-mcp/conf/  ${BOBA_DIR}/conf/
+
 EXPOSE 8650
 USER ${BOBA_UID}:${BOBA_GID}
-CMD ["-m", "boba.mcp_server", "--config", "/app/boba/conf/config.toml"]
+CMD ["-m", "boba.mcp_server", "--config", "/app/boba/conf/config.toml", "--site", "/app/boba/conf/site.toml"]

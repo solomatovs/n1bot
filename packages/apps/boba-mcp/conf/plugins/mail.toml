@@ -1,0 +1,9 @@
+enable    = false
+tools     = ["mail"]
+server    = "${site.mail.server}"
+port      = "${site.mail.port}"
+use_tls   = "${site.mail.use_tls}"
+user      = "${site.mail.user}"
+password  = "${site.mail.password}"
+sender    = "${site.mail.sender}"
+recipient = "${site.mail.recipient}"

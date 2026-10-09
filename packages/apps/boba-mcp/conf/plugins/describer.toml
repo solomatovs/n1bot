@@ -1,0 +1,19 @@
+enable     = true
+connection = "${postgres}"
+db_schema  = "describer"
+tools      = [
+    "describe_node",
+    "describe_edge",
+    "describe_list_nodes",
+    "describe_list_edges",
+    "describe_delete_node",
+    "describe_delete_edge"
+]
+
+[sandbox]
+    network = true
+    binds   = [
+        "/etc/resolv.conf:/etc/resolv.conf",
+        "/etc/hosts:/etc/hosts",
+        "${env.krb}/krb5.conf:/etc/krb5.conf"
+    ]

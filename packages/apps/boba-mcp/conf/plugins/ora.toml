@@ -1,0 +1,27 @@
+enable     = true
+max_rows   = 500
+tools      = [
+    "ora_list_tables",
+    "ora_describe_table",
+    "ora_query",
+    "ora_address",
+    "ora_stream_out",
+    "ora_stream_in",
+    "ora_database_describe",
+    "ora_schema_describe",
+    "ora_table_describe",
+    "ora_column_describe",
+    "ora_constraints_describe",
+    "ora_indexes_describe",
+    "ora_routines_describe",
+    "ora_sequences_describe",
+    "ora_types_describe"
+]
+max_bytes  = 1000000
+
+[sandbox]
+    network = true
+    binds   = [
+        "/etc/resolv.conf:/etc/resolv.conf",
+        "/etc/hosts:/etc/hosts"
+    ]

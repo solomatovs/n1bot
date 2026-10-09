@@ -1,7 +1,7 @@
 """Стенд интеграционных тестов: адреса, принципалы и учётки берутся из конфига.
 
 В коде тестов остаются имена ключей, реальные хосты и учётки живут в
-config.toml, которого нет в репозитории. Значения, которым не нужен живой
+site.toml и stand.toml, которых нет в репозитории. Значения, которым не нужен живой
 сервис (примеры доменов, разбор шаблонов), в конфиг не ходят.
 
 Ошибки:
@@ -21,6 +21,7 @@ from pydantic import BaseModel, ConfigDict, Field, SecretStr, ValidationError
 
 from boba.runtime.config import (
     AppLayers,
+    ConfigFiles,
     ConfigLocator,
     DataLayerConfig,
     ProcessConfig,
@@ -44,10 +45,15 @@ class StandLayers:
     FILE: ClassVar[str] = "stand.toml"
 
     @classmethod
-    def compose(cls, config_path: Path) -> Any:
-        raw = AppLayers.compose(config_path)
+    def path(cls, files: ConfigFiles) -> Path:
+        """Стендовый файл лежит рядом с site-файлом: оба — про машину."""
+        return files.site.parent / cls.FILE
 
-        stand_path = config_path.parent / cls.FILE
+    @classmethod
+    def compose(cls, files: ConfigFiles) -> Any:
+        raw = AppLayers.compose(files)
+
+        stand_path = cls.path(files)
         if not stand_path.is_file():
             return raw
 
@@ -101,6 +107,10 @@ class Stand(BaseModel):
         default="", description="Роль postgres с паролем; пусто — тест пропускается."
     )
     pg_probe_password: SecretStr = SecretStr("")
+    pg_probe_database: str = Field(
+        default="",
+        description="Тестовая база роли-пробника: в другие базы pg_hba её не пускает.",
+    )
 
     ch_host: str
     ch_addr: str = Field(
@@ -120,22 +130,22 @@ class Stand(BaseModel):
     @classmethod
     def load(cls) -> Stand:
         """Стенд из конфига приложения; путь берётся так же, как приложением."""
-        path = ConfigLocator.path()
+        files = ConfigLocator.files()
         try:
-            raw = StandLayers.compose(path)
+            raw = StandLayers.compose(files)
         except Exception as exc:
-            msg = f"stand: composing application config {path}: {exc}"
+            msg = f"stand: composing application config {files}: {exc}"
             raise StandError(msg) from exc
 
         section = OmegaConf.select(raw, cls.SECTION, throw_on_missing=True)
         if section is None:
-            msg = f"stand: config {path} has no [{cls.SECTION}] section"
+            msg = f"stand: config {files} has no [{cls.SECTION}] section"
             raise StandError(msg)
 
         values = OmegaConf.to_container(section, resolve=True)
         if not isinstance(values, dict):
             got = type(values).__name__
-            msg = f"stand: [{cls.SECTION}] in {path} expects a table, got {got}"
+            msg = f"stand: [{cls.SECTION}] in {files} expects a table, got {got}"
             raise StandError(msg)
 
         return cls._of(values)

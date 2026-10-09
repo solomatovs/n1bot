@@ -26,7 +26,7 @@ class TestSharedAuthSecret:
     ) -> None:
         monkeypatch.delenv(ChainlitEnv.AUTH_SECRET, raising=False)
 
-        AppEntry.export_env(ConfigLocator.path())
+        AppEntry.export_env(ConfigLocator.files())
 
         assert os.environ[ChainlitEnv.AUTH_SECRET] == runtime_config.session.auth_secret
 
@@ -34,7 +34,7 @@ class TestSharedAuthSecret:
         self, runtime_config: RuntimeConfig, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.delenv(ChainlitEnv.AUTH_SECRET, raising=False)
-        AppEntry.export_env(ConfigLocator.path())
+        AppEntry.export_env(ConfigLocator.files())
 
         tickets = runtime_config.sso_tickets()
         assert tickets is not None, "[auth] kerberos is not configured on the stand"

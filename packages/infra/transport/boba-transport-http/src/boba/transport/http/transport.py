@@ -403,32 +403,41 @@ class HttpTransport:
                 resp.raise_for_status()
                 return resp
             except httpx.HTTPError as e:
+                body = ""
                 if resp is not None:
-                    await self._drain(resp)
+                    body = await self._drain(resp)
 
                 limit = self._retry.attempts_for(e)
                 if attempt >= limit:
-                    raise self._failed(request, e) from e
+                    raise self._failed(request, e, body) from e
 
                 self._retry.log(attempt, limit, request, e)
                 await asyncio.sleep(self._retry.delay(attempt, e))
 
     @staticmethod
-    async def _drain(resp: httpx.Response) -> None:
+    async def _drain(resp: httpx.Response) -> str:
         """Тело ответа с ошибкой дочитывается до закрытия: оно уходит в
-        HttpStatusError.body."""
+        HttpStatusError.body. Тело, которое не читается (обрыв, байты не в
+        заявленном сжатии), статус не заслоняет: вместо него идёт причина,
+        а повторы и ошибку слоя решает сам статус."""
         try:
             await resp.aread()
+        except httpx.HTTPError as exc:
+            return f"<unreadable body: {type(exc).__name__}: {exc}>"
         finally:
             await resp.aclose()
 
-    def _failed(self, request: HttpRequest, exc: httpx.HTTPError) -> TransportError:
-        """Ошибка httpx в ошибке слоя: метод, адрес, статус или причина."""
+        return resp.text
+
+    def _failed(
+        self, request: HttpRequest, exc: httpx.HTTPError, body: str
+    ) -> TransportError:
+        """Ошибка httpx в ошибке слоя: метод, адрес, статус с телом ответа
+        или причина."""
         where = f"{request.method} {self.resolve_url(request)}"
         if isinstance(exc, httpx.HTTPStatusError):
             status = exc.response.status_code
             reason = exc.response.reason_phrase
-            body = exc.response.text
             msg = (
                 f"{where}: expected 2xx, got {status} {reason}: "
                 f"{body[: self.BODY_PREVIEW]!r}"

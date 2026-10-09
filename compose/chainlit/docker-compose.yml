@@ -1,53 +1,74 @@
-x-runtime: &runtime
-  init: true
-  user: "${BOBA_UID:-1000}:${BOBA_GID:-1000}"
-  security_opt:
-    - no-new-privileges:true
-  cap_drop:
-    - ALL
-  mem_limit: 4g
-  cpus: 4
-  pids_limit: 512
-  restart: unless-stopped
-
 services:
   chainlit:
-    <<: *runtime
+    init: true
+    user: "${BOBA_USER}"
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    mem_limit: 4g
+    cpus: 4
+    pids_limit: 512
+    restart: unless-stopped
     image: boba-chainlit:0.0.26.dev4
     hostname: chainlit
     container_name: chainlit
     networks:
       default:
-        ipv4_address: 10.118.0.6
+        ipv4_address: ${BOBA_ADDRESS}
     env_file: ./conf/boba.env
+    command:
+      - -m
+      - boba.chainlit.main
+      - --config
+      - /app/boba/conf/config.toml
+      - --site
+      - /app/boba/conf/site.toml
     volumes:
-      - ./conf:/app/boba/conf:ro
+      - ./conf/site.toml:/app/boba/conf/site.toml:ro
+      - ./conf/krb:/app/boba/conf/krb:ro
       - ./conf/krb/krb5.conf:/etc/krb5.conf:ro
       - ./data:/app/boba/data:rw
       - ../../runtime/models:/app/boba/models:ro
     ports:
       - "8501"
   chainlit2:
-    <<: *runtime
+    init: true
+    user: "${BOBA_USER}"
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    mem_limit: 4g
+    cpus: 4
+    pids_limit: 512
+    restart: unless-stopped
     image: boba-chainlit:0.0.26.dev4
     hostname: chainlit2
     container_name: chainlit2
     networks:
       default:
-        ipv4_address: 10.118.0.36
-    env_file: ./conf2/boba.env
+        ipv4_address: ${BOBA_ADDRESS_2}
+    env_file: ./conf/boba.env
+    command:
+      - -m
+      - boba.chainlit.main
+      - --config
+      - /app/boba/conf/config.toml
+      - --site
+      - /app/boba/conf/site.toml
     environment:
       BOBA_INSTANCE_ID: node2
     volumes:
-      - ./conf2:/app/boba/conf:ro
+      - ./conf2/site.toml:/app/boba/conf/site.toml:ro
+      - ./conf2/krb:/app/boba/conf/krb:ro
       - ./conf2/krb/krb5.conf:/etc/krb5.conf:ro
       - ./data:/app/boba/data:rw
       - ../../runtime/models:/app/boba/models:ro
     ports:
       - "8501"
 
-
 networks:
   default:
-    name: ss
-    external: true
+    name: ${BOBA_NETWORK}
+    external: ${BOBA_NETWORK_EXTERNAL}

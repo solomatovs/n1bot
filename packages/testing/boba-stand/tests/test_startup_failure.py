@@ -56,16 +56,15 @@ class SilentDatabaseStand(StandConfig):
 
     postgres: SilentPostgres
 
-    def write(self) -> Path:
-        path = super().write()
-        with path.open("rb") as handle:
+    def write(self) -> None:
+        super().write()
+        site = self.files.site
+        with site.open("rb") as handle:
             doc: dict[str, Any] = tomllib.load(handle)
 
         doc["site"]["pg_addr"] = self.postgres.HOST
         doc["site"]["pg_port"] = self.postgres.port
-        path.write_text(TomlText.dumps(doc), encoding="utf-8")
-
-        return path
+        site.write_text(TomlText.dumps(doc), encoding="utf-8")
 
 
 @pytest.fixture
@@ -91,7 +90,15 @@ def test_startup_without_postgres_exits_with_a_failure(
     )
     config.write()
     log_path = tmp_path / "app.log"
-    command = [sys.executable, "-m", app.module, "--config", str(config.config_path)]
+    command = [
+        sys.executable,
+        "-m",
+        app.module,
+        "--config",
+        str(config.files.config),
+        "--site",
+        str(config.files.site),
+    ]
 
     with log_path.open("wb") as log:
         process = subprocess.Popen(

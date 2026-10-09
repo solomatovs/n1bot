@@ -4,7 +4,8 @@
 (`current_user`), поэтому тест ловит и неверные libpq-аргументы, и неверные
 креды. Учётки и адреса приходят из конфига стенда.
 
-Пароль роли-пробника лежит в секции стенда: без него парольные варианты
+Роль-пробник с паролем непривилегированная и ходит только в свою тестовую
+базу; её имя, пароль и база лежат в секции стенда: без них парольные варианты
 пропускаются, kerberos-варианты — при отсутствии keytab.
 """
 
@@ -90,7 +91,7 @@ async def test_password_auth_logs_in_as_its_own_role() -> None:
             user=STAND.pg_probe_user,
             password=STAND.pg_probe_password,
         )
-    )
+    ).model_copy(update={"dbname": STAND.pg_probe_database})
 
     if await _current_user(connection) != STAND.pg_probe_user:
         raise AssertionError("password auth must log in as its own role")
@@ -152,7 +153,7 @@ async def test_wrong_password_is_reported() -> None:
             user=STAND.pg_probe_user,
             password=SecretStr("not-the-password"),
         )
-    )
+    ).model_copy(update={"dbname": STAND.pg_probe_database})
 
-    with pytest.raises(Exception, match="password"):
+    with pytest.raises(Exception, match="password authentication failed"):
         await _current_user(connection)

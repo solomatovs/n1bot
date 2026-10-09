@@ -11,7 +11,6 @@ import asyncio
 import logging.config
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
-from pathlib import Path
 
 import uvicorn
 from fastapi import FastAPI
@@ -25,6 +24,8 @@ from boba.identity.context import CallContexts
 from boba.runtime import providers
 from boba.runtime.config import (
     AppName,
+    ConfigArguments,
+    ConfigFiles,
     DevPage,
     StudioConfig,
     StudioPath,
@@ -203,11 +204,12 @@ class StudioHost:
 
 
 class StudioEntry:
-    """python -m boba.studio --config <toml>: uvicorn на [studio] host/port."""
+    """python -m boba.studio --config <toml> --site <toml>: uvicorn на [studio]
+    host/port."""
 
     @classmethod
     def run(cls) -> None:
-        config = StudioAppConfig.load(cls.config_argument())
+        config = StudioAppConfig.load(cls.config_files())
         logging.config.dictConfig(config.logger)
 
         app = StudioHost.build(config)
@@ -226,18 +228,11 @@ class StudioEntry:
         asyncio.run(server.serve_until_stopped())
 
     @classmethod
-    def config_argument(cls) -> Path:
-        """Путь конфига — обязательный аргумент запуска; дефолта и env нет."""
+    def config_files(cls) -> ConfigFiles:
+        """Пути общего конфига и site-файла — обязательные аргументы запуска."""
         parser = argparse.ArgumentParser(
             prog="boba.studio",
             description="Studio application of boba",
         )
-        parser.add_argument(
-            "--config",
-            required=True,
-            type=Path,
-            help="path to the application config.toml",
-        )
-        arguments = parser.parse_args()
 
-        return arguments.config
+        return ConfigArguments(parser).files()

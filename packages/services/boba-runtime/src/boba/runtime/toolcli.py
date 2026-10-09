@@ -1,14 +1,14 @@
 """Запуск тела инструмента на хосте по toml приложения.
 
 `python -m boba.runtime.toolcli <модуль> <имя> --флаги --config <toml>
-[--injected <json>]` импортирует модуль инструментов, поднимает рабочий каталог
-kerberos из [krb],
+--site <toml> [--injected <json>]` импортирует модуль инструментов, поднимает
+рабочий каталог kerberos из [krb],
 собирает injected-конфиг из секций toml (если не дан файлом --injected) и
 in-process зовёт ToolMain.run модуля — тело исполняется под отладчиком без
 песочницы.
 
 Ошибки:
-ToolCliError — argv не разобран: нет модуля, имени или пути --config, модуль
+ToolCliError — argv не разобран: нет модуля, имени, пути --config или --site, модуль
     не импортируется или не объявляет TOOLS.
 Код возврата тела — ToolMain.Exit, как у команды модуля.
 """
@@ -28,7 +28,7 @@ from omegaconf import DictConfig
 
 from boba.config import bind
 from boba.krb import KerberosWorkspaceConfig
-from boba.runtime.config import AppLayers
+from boba.runtime.config import AppLayers, ConfigFiles
 from boba.toolkit.entry import EntryFlag, ToolArgv, ToolMain
 from boba.toolkit.facade import PayloadTool
 from boba.toolrun.callvalues import CallContextValues
@@ -44,6 +44,7 @@ class CliFlag(StrEnum):
     """Флаги CLI поверх флагов модуля инструментов."""
 
     CONFIG = "--config"
+    SITE = "--site"
 
 
 class HostConfig:
@@ -51,8 +52,8 @@ class HostConfig:
 
     KERBEROS_SECTION: ClassVar[str] = "krb"
 
-    def __init__(self, path: Path) -> None:
-        self._raw: DictConfig = AppLayers.compose(path)
+    def __init__(self, files: ConfigFiles) -> None:
+        self._raw: DictConfig = AppLayers.compose(files)
 
     def enter_kerberos(self) -> None:
         """Рабочий каталог kerberos из [krb]; без секции keytab-профили телу закрыты."""
@@ -92,7 +93,7 @@ class ToolCli:
     INJECTED_FILE: ClassVar[str] = "injected.json"
     USAGE: ClassVar[str] = (
         "usage: python -m boba.runtime.toolcli <module> <tool> [--flags] "
-        f"{CliFlag.CONFIG} <toml> [{EntryFlag.INJECTED} <json>]"
+        f"{CliFlag.CONFIG} <toml> {CliFlag.SITE} <toml> [{EntryFlag.INJECTED} <json>]"
     )
 
     @classmethod
@@ -115,10 +116,11 @@ class ToolCli:
         module_name = arguments.pop(0)
         tool_name = arguments[0]
 
-        config_path = cls._pop_config(arguments)
+        config = cls._pop_path(arguments, CliFlag.CONFIG)
+        site = cls._pop_path(arguments, CliFlag.SITE)
         tools = cls._tools_of(module_name)
 
-        host = HostConfig(config_path)
+        host = HostConfig(ConfigFiles(config=config, site=site))
         host.enter_kerberos()
 
         if EntryFlag.INJECTED in arguments:
@@ -138,20 +140,17 @@ class ToolCli:
             return ToolMain.run(tools, arguments)
 
     @classmethod
-    def _pop_config(cls, arguments: list[str]) -> Path:
-        if CliFlag.CONFIG not in arguments:
+    def _pop_path(cls, arguments: list[str], flag: CliFlag) -> Path:
+        if flag not in arguments:
             msg = (
-                f"toolcli: {CliFlag.CONFIG} <toml> is required but missing "
+                f"toolcli: {flag} <toml> is required but missing "
                 f"from the arguments {arguments!r}"
             )
             raise ToolCliError(msg)
 
-        index = arguments.index(CliFlag.CONFIG)
+        index = arguments.index(flag)
         if index + 1 >= len(arguments):
-            msg = (
-                f"toolcli: {CliFlag.CONFIG} is the last argument, expected a "
-                "path after it"
-            )
+            msg = f"toolcli: {flag} is the last argument, expected a path after it"
             raise ToolCliError(msg)
 
         arguments.pop(index)
@@ -159,7 +158,7 @@ class ToolCli:
 
         path = Path(raw)
         if not path.is_file():
-            msg = f"toolcli: {CliFlag.CONFIG} expects an existing toml file, got {path}"
+            msg = f"toolcli: {flag} expects an existing toml file, got {path}"
             raise ToolCliError(msg)
 
         return path

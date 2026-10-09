@@ -43,7 +43,7 @@ from boba.mcp_server.auth import (
 from boba.mcp_server.server import EndpointCatalog
 from boba.runtime.signin import SignInAssembly
 from boba.stand.site import Stand, StandLayers
-from boba.stand.ui.stand import REPO_ROOT, StandPaths
+from boba.stand.ui.stand import StandApp
 
 STAND = Stand.required()
 SERVICE_SPN = f"HTTP/{STAND.krb_domain}@{STAND.krb_realm}"
@@ -75,7 +75,7 @@ def krb5_env() -> Iterator[None]:
 @pytest.fixture
 def chat_config() -> DictConfig:
     """Конфиг чата со стендовым слоем: в нём живёт секция [auth.kerberos]."""
-    raw = StandLayers.compose(StandPaths.BASE_CONFIG.under(REPO_ROOT))
+    raw = StandLayers.compose(StandApp.CHAINLIT.files())
     if not isinstance(raw, DictConfig):
         got = type(raw).__name__
         msg = f"chat config: expected to compose into a table, got {got}"

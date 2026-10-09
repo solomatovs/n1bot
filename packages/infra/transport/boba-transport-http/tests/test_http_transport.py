@@ -141,6 +141,37 @@ async def test_retry_exhausted_raises_last_5xx(monkeypatch):
     await transport.close()
 
 
+async def test_unreadable_error_body_does_not_hide_the_status(monkeypatch):
+    """Тело 5xx заявлено сжатым, а байты не сжаты: статус ретраится как
+    обычно, а после исчерпания попыток уходит ошибкой слоя с причиной."""
+    calls = {"n": 0}
+
+    def handler(_req):
+        calls["n"] += 1
+        return httpx.Response(
+            500,
+            headers={"content-encoding": "gzip"},
+            stream=_ChunkedStream([b"not gzip at all"]),
+        )
+
+    _patch(monkeypatch, handler)
+
+    transport = HttpTransport(
+        HttpConnection(host="x.test", port=443, retry_attempts=2, retry_backoff_sec=0),
+        HttpTransportConfig(),
+    )
+    with pytest.raises(HttpStatusError) as exc:
+        async with transport.fetch(HttpRequest(url="https://x.test/y")):
+            pass
+    if exc.value.status != 500:
+        raise AssertionError("exc.value.status == 500")
+    if "unreadable body: DecodingError" not in exc.value.body:
+        raise AssertionError(f"the body names why it is unreadable: {exc.value.body!r}")
+    if calls["n"] != 2:
+        raise AssertionError('calls["n"] == 2')
+    await transport.close()
+
+
 async def test_4xx_not_retried(monkeypatch):
     """4xx — клиентская ошибка, ретраев нет."""
     calls = {"n": 0}

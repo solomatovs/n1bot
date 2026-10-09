@@ -25,6 +25,7 @@ from typing import Any, ClassVar, Generic, Protocol
 import httpx
 from typing_extensions import TypeVar
 
+from boba.runtime.config import ConfigFiles
 from boba.stand.ui.toml_text import TomlText
 
 __all__ = [
@@ -45,12 +46,12 @@ class StandError(Exception):
 
 class StandPaths(StrEnum):
     """Пути репозитория, которые стенд подставляет вместо рантайма релиза:
-    конфиги и базы приложений — деревья отладки debug/<приложение>, зависимости —
-    общий каталог runtime."""
+    общие конфиги приложений — в их пакетах, базы и site.toml — деревья отладки
+    debug/<приложение>, зависимости — общий каталог runtime."""
 
-    BASE_CONFIG = "debug/chainlit/conf/config.toml"
-    STUDIO_BASE_CONFIG = "debug/studio/conf/config.toml"
-    MCP_BASE_CONFIG = "debug/mcp/conf/config.toml"
+    CHAINLIT_CONF = "packages/apps/boba-chainlit/conf"
+    STUDIO_CONF = "packages/apps/boba-studio/conf"
+    MCP_CONF = "packages/apps/boba-mcp/conf"
     CHAINLIT_BASE = "debug/chainlit"
     STUDIO_BASE = "debug/studio"
     MCP_BASE = "debug/mcp"
@@ -111,12 +112,10 @@ class StandAppTraits:
 
     module: str
     base: StandPaths
-    base_config: StandPaths
+    conf: StandPaths
+    """Каталог общего конфига приложения и его плагинов в пакете."""
     ready_path: str
     data_layer_section: str
-    tools_config: StandPaths
-    """Конфиг процесса, который исполняет инструменты приложения: у чата —
-    конфиг сервиса boba-mcp, у остальных — собственный."""
 
 
 class StandApp(StrEnum):
@@ -131,26 +130,23 @@ class StandApp(StrEnum):
             StandApp.CHAINLIT: StandAppTraits(
                 module="boba.chainlit.main",
                 base=StandPaths.CHAINLIT_BASE,
-                base_config=StandPaths.BASE_CONFIG,
+                conf=StandPaths.CHAINLIT_CONF,
                 ready_path="/",
                 data_layer_section="data_layer",
-                tools_config=StandPaths.MCP_BASE_CONFIG,
             ),
             StandApp.STUDIO: StandAppTraits(
                 module="boba.studio",
                 base=StandPaths.STUDIO_BASE,
-                base_config=StandPaths.STUDIO_BASE_CONFIG,
+                conf=StandPaths.STUDIO_CONF,
                 ready_path="/api/openapi.json",
                 data_layer_section="automation",
-                tools_config=StandPaths.STUDIO_BASE_CONFIG,
             ),
             StandApp.MCP: StandAppTraits(
                 module="boba.mcp_server",
                 base=StandPaths.MCP_BASE,
-                base_config=StandPaths.MCP_BASE_CONFIG,
+                conf=StandPaths.MCP_CONF,
                 ready_path="/health",
                 data_layer_section="data_layer",
-                tools_config=StandPaths.MCP_BASE_CONFIG,
             ),
         }
 
@@ -164,9 +160,35 @@ class StandApp(StrEnum):
     def base(self) -> StandPaths:
         return self.traits().base
 
-    @property
-    def base_config(self) -> StandPaths:
-        return self.traits().base_config
+    def files(self) -> ConfigFiles:
+        """Файлы конфигурации приложения на стенде: общий конфиг пакета и
+        site.toml дерева отладки."""
+        conf = self.traits().conf.under(REPO_ROOT)
+        base = self.traits().base.under(REPO_ROOT)
+
+        return ConfigFiles(
+            config=conf / "config.toml", site=base / "conf" / "site.toml"
+        )
+
+    def tools_app(self) -> StandApp:
+        """Приложение, которое исполняет инструменты этого: у чата — сервис
+        boba-mcp, у остальных — оно само."""
+        if self is StandApp.CHAINLIT:
+            return StandApp.MCP
+
+        return self
+
+    def document(self) -> dict[str, Any]:
+        """Общий конфиг и site.toml приложения одной таблицей: стенд правит её
+        и раскладывает обратно на два файла (StandFiles.write)."""
+        files = self.files()
+        with files.config.open("rb") as handle:
+            doc: dict[str, Any] = tomllib.load(handle)
+
+        with files.site.open("rb") as handle:
+            doc.update(tomllib.load(handle))
+
+        return doc
 
     @property
     def sandbox(self) -> StandPaths:
@@ -177,11 +199,6 @@ class StandApp(StrEnum):
     def ready_path(self) -> str:
         """Путь готовности под префиксом приложения."""
         return self.traits().ready_path
-
-    @property
-    def tools_config(self) -> StandPaths:
-        """Конфиг с секциями инструментов приложения."""
-        return self.traits().tools_config
 
     @property
     def data_layer_section(self) -> str:
@@ -199,12 +216,13 @@ class StandService(Protocol):
 
     @property
     @abstractmethod
-    def config_path(self) -> Path:
-        """Файл конфига, который уходит приложению аргументом --config."""
+    def files(self) -> StandFiles:
+        """Файлы конфигурации стенда: уходят приложению аргументами --config и
+        --site."""
 
     @abstractmethod
-    def write(self) -> Path:
-        """Кладёт конфиг приложения в рабочий каталог стенда."""
+    def write(self) -> None:
+        """Кладёт файлы конфигурации приложения в рабочий каталог стенда."""
 
     @abstractmethod
     def env(self) -> dict[str, str]:
@@ -213,6 +231,45 @@ class StandService(Protocol):
     @abstractmethod
     def companion(self) -> StandService | None:
         """Приложение, которое поднимается раньше этого; None — его нет."""
+
+
+@dataclass(frozen=True)
+class StandFiles:
+    """Файлы конфигурации приложения стенда в его рабочем каталоге: общий конфиг
+    с правками стенда, плагины рядом с ним и site-файл.
+
+    Правки стенда делаются над одной таблицей (StandApp.document); на запись
+    секции [env] и [site] уходят в site-файл, остальные — в общий конфиг: так
+    их и ждёт загрузчик.
+    """
+
+    workdir: Path
+
+    SITE_SECTIONS: ClassVar[tuple[str, ...]] = ("env", "site")
+
+    @property
+    def config(self) -> Path:
+        return self.workdir / "config.toml"
+
+    @property
+    def site(self) -> Path:
+        return self.workdir / "site.toml"
+
+    @property
+    def plugins(self) -> Path:
+        return self.workdir / "plugins"
+
+    def write(self, doc: Mapping[str, Any]) -> None:
+        site: dict[str, Any] = {}
+        common: dict[str, Any] = {}
+        for section, body in doc.items():
+            if section in self.SITE_SECTIONS:
+                site[section] = body
+            else:
+                common[section] = body
+
+        self.config.write_text(TomlText.dumps(common), encoding="utf-8")
+        self.site.write_text(TomlText.dumps(site), encoding="utf-8")
 
 
 @dataclass
@@ -265,8 +322,8 @@ class ServiceStand(StandService):
     ROLES_HEADER: ClassVar[str] = "X-Remote-Roles"
 
     @property
-    def config_path(self) -> Path:
-        return self.workdir / "config.toml"
+    def files(self) -> StandFiles:
+        return StandFiles(self.workdir)
 
     @property
     def data_dir(self) -> Path:
@@ -304,11 +361,9 @@ class ServiceStand(StandService):
             },
         }
 
-    def write(self) -> Path:
+    def write(self) -> None:
         self.workdir.mkdir(parents=True, exist_ok=True)
-        base = self.app.base_config.under(REPO_ROOT)
-        with base.open("rb") as handle:
-            doc: dict[str, Any] = tomllib.load(handle)
+        doc = self.app.document()
 
         doc["postgres"]["dbname"] = self.db_name
         pool = doc["postgres"]["pool"]
@@ -354,10 +409,8 @@ class ServiceStand(StandService):
         doc["session"]["generation"] = self.generation
         doc["session"]["session_ttl_sec"] = self.session_ttl_sec
 
-        self.config_path.write_text(TomlText.dumps(doc), encoding="utf-8")
-        StandPlugins(self.app, self.sandbox).copy_to(self.workdir / "plugins")
-
-        return self.config_path
+        self.files.write(doc)
+        StandPlugins(self.app, self.sandbox).copy_to(self.files.plugins)
 
     def env(self) -> dict[str, str]:
         data_dir = self.data_dir
@@ -418,7 +471,7 @@ class StandPlugins:
         self._sandbox = sandbox
 
     def copy_to(self, target: Path) -> None:
-        source = self._app.base_config.under(REPO_ROOT).parent / "plugins"
+        source = self._app.files().plugins_dir()
         target.mkdir(parents=True, exist_ok=True)
         for path in sorted(source.glob("*.toml")):
             with path.open("rb") as handle:
@@ -489,8 +542,8 @@ class StandConfig(StandService):
         )
 
     @property
-    def config_path(self) -> Path:
-        return self.workdir / "config.toml"
+    def files(self) -> StandFiles:
+        return StandFiles(self.workdir)
 
     @property
     def data_dir(self) -> Path:
@@ -536,12 +589,11 @@ class StandConfig(StandService):
 
         return found
 
-    def write(self) -> Path:
-        """Кладёт конфиг приложения с правками стенда в рабочий каталог."""
+    def write(self) -> None:
+        """Кладёт файлы конфигурации приложения с правками стенда в рабочий
+        каталог."""
         self.workdir.mkdir(parents=True, exist_ok=True)
-        base = self.app.base_config.under(REPO_ROOT)
-        with base.open("rb") as handle:
-            doc: dict[str, Any] = tomllib.load(handle)
+        doc = self.app.document()
 
         self._use_fake_llm(doc)
         self._use_test_profiles(doc)
@@ -554,9 +606,8 @@ class StandConfig(StandService):
         self._use_sandbox_artifacts(doc)
         self._shrink_pools(doc)
 
-        self.config_path.write_text(TomlText.dumps(doc), encoding="utf-8")
-        StandPlugins(self.app, self.sandbox).copy_to(self.workdir / "plugins")
-        return self.config_path
+        self.files.write(doc)
+        StandPlugins(self.app, self.sandbox).copy_to(self.files.plugins)
 
     @staticmethod
     def _shrink_pools(doc: MutableMapping[str, Any]) -> None:
@@ -566,11 +617,11 @@ class StandConfig(StandService):
         pool["max_size"] = 6
 
     def env(self) -> dict[str, str]:
-        """Окружение процесса приложения: BOBA_-переопределения поверх конфига,
-        который уходит аргументом --config.
+        """Окружение процесса приложения: BOBA_-переопределения поверх файлов
+        конфигурации, которые уходят аргументами --config и --site.
 
-        BOBA_BASE обязателен: конфиг стенда пишется в рабочий каталог, и base,
-        вычисленный из его расположения, указывал бы мимо развёртывания.
+        BOBA_BASE обязателен: site-файл стенда пишется в рабочий каталог, и base,
+        вычисленный из его расположения, указывал бы мимо дерева отладки.
         """
         data_dir = self.data_dir
         for name in ("workspace", "tool-logs", "dump", "krb"):
@@ -842,7 +893,9 @@ class StandProcess(Generic[ConfigT]):
                 "-m",
                 self.config.app.module,
                 "--config",
-                str(self.config.config_path),
+                str(self.config.files.config),
+                "--site",
+                str(self.config.files.site),
             ],
             env=self.config.env(),
             cwd=str(REPO_ROOT),

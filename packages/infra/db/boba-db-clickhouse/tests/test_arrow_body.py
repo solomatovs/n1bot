@@ -13,6 +13,7 @@ import pyarrow
 import pytest
 
 from boba.db.clickhouse.arrow_stream import ArrowBodyWithoutEos
+from boba.db.clickhouse.formats.arrow import ArrowEos
 from boba.toolkit.stream import Chunk
 
 pytestmark = pytest.mark.anyio
@@ -49,12 +50,12 @@ def _cut(stream: bytes, size: int) -> list[bytes]:
 @pytest.mark.parametrize("size", [1, 3, 7, 8, 9, 64, 4096, 1 << 20])
 async def test_marker_is_dropped_however_the_stream_is_cut(size: int) -> None:
     stream = _stream(1000)
-    if not stream.endswith(ArrowBodyWithoutEos.EOS):
+    if not stream.endswith(ArrowEos.MARKER):
         raise AssertionError("pyarrow ends a stream with the marker")
 
     sent = await _shaped(_cut(stream, size))
 
-    if sent != stream[: -len(ArrowBodyWithoutEos.EOS)]:
+    if sent != stream[: -len(ArrowEos.MARKER)]:
         raise AssertionError(
             f"frames of {size} bytes: the body is the stream less the marker"
         )

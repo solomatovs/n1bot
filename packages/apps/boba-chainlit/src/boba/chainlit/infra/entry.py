@@ -7,7 +7,7 @@ ValueError — в конфиге нет секции [chainlit] либо пус�
 import argparse
 import os
 import pathlib
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import contextmanager
 from enum import StrEnum
 from pathlib import Path
@@ -16,7 +16,12 @@ from typing import ClassVar
 from omegaconf import OmegaConf
 
 from boba.config import bind
-from boba.runtime.config import AppLayers, SessionConfig
+from boba.runtime.config import (
+    AppLayers,
+    ConfigArguments,
+    ConfigFiles,
+    SessionConfig,
+)
 
 __all__ = ["AppEntry", "ChainlitEnv", "ChainlitFiles"]
 
@@ -57,8 +62,8 @@ class ChainlitFiles:
         chainlit.config.FILES_DIRECTORY = self._files_dir
 
     @contextmanager
-    def _without_root_files(self) -> Iterator[None]:
-        """На время импорта Path.mkdir пропускает <APP_ROOT>/.files, остальное создаёт."""
+    def _without_root_files(self) -> Generator[None, None, None]:
+        """На время импорта Path.mkdir пропускает <APP_ROOT>/.files."""
         skipped = self._inside_root
         mkdir = pathlib.Path.mkdir
 
@@ -91,45 +96,38 @@ class AppEntry:
 
     @classmethod
     def run(cls) -> None:
-        config_path = cls.config_argument()
-        cls.export_env(config_path)
-        cls.files(config_path).install()
+        files = cls.config_files()
+        cls.export_env(files)
+        cls.attachments(files).install()
 
         # импорт здесь: chainlit фиксирует пути из env на импорте своих модулей
         from boba.chainlit.infra.bootstrap import run_app  # noqa: PLC0415
 
-        run_app(config_path)
+        run_app(files)
 
     @classmethod
-    def config_argument(cls) -> Path:
-        """Путь конфига — обязательный аргумент запуска; дефолта и env нет."""
+    def config_files(cls) -> ConfigFiles:
+        """Пути общего конфига и site-файла — обязательные аргументы запуска."""
         parser = argparse.ArgumentParser(
             prog="boba.chainlit",
             description="Chainlit application of boba",
         )
-        parser.add_argument(
-            "--config",
-            required=True,
-            type=Path,
-            help="path to the application config.toml",
-        )
-        arguments = parser.parse_args()
 
-        return arguments.config
+        return ConfigArguments(parser).files()
 
     @classmethod
-    def files(cls, config_path: Path) -> ChainlitFiles:
+    def attachments(cls, files: ConfigFiles) -> ChainlitFiles:
         """Каталог вложений из [chainlit].files_dir; пустое значение отвергается."""
-        raw = AppLayers.compose(config_path)
+        raw = AppLayers.compose(files)
         section = OmegaConf.select(raw, cls.SECTION)
         if section is None:
-            msg = f"{config_path}: section [{cls.SECTION}] is missing"
+            msg = f"{files.config}: section [{cls.SECTION}] is missing"
             raise ValueError(msg)
 
         files_dir = section.get("files_dir")
         if not files_dir:
             msg = (
-                f"{config_path}: section [{cls.SECTION}] expects files_dir as a "
+                f"{files.config}: section [{cls.SECTION}] expects files_dir as a "
                 f"non-empty path (chainlit attachments outside app root), "
                 f"got {files_dir!r}"
             )
@@ -140,18 +138,18 @@ class AppEntry:
         return ChainlitFiles(root, Path(files_dir).resolve())
 
     @classmethod
-    def export_env(cls, config_path: Path) -> None:
+    def export_env(cls, files: ConfigFiles) -> None:
         """Секции [chainlit] и [session] -> переменные окружения chainlit."""
-        raw = AppLayers.compose(config_path)
+        raw = AppLayers.compose(files)
         section = OmegaConf.select(raw, cls.SECTION)
         if section is None:
-            msg = f"{config_path}: section [{cls.SECTION}] is missing"
+            msg = f"{files.config}: section [{cls.SECTION}] is missing"
             raise ValueError(msg)
 
         root = section.get("root")
         if not root:
             msg = (
-                f"{config_path}: section [{cls.SECTION}] expects root as a "
+                f"{files.config}: section [{cls.SECTION}] expects root as a "
                 f"non-empty path (chainlit app root), got {root!r}"
             )
             raise ValueError(msg)

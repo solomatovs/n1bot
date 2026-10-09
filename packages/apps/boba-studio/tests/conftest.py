@@ -1,7 +1,5 @@
-"""Фикстуры тестов studio: конфиг studio из дерева отладки, пользователь стенда и
-метка набора в именах стенда."""
-
-from pathlib import Path
+"""Фикстуры тестов studio: общий конфиг studio и site.toml его дерева отладки,
+пользователь стенда и метка набора в именах стенда."""
 
 import pytest
 from studio_stand import StandProfiles
@@ -10,10 +8,8 @@ from boba.config import bind
 from boba.identity.api import AuthenticatedUser
 from boba.runtime.config import RawConfig
 from boba.stand.names import StandSuite
+from boba.stand.ui.stand import StandApp
 from boba.studio.config import StudioAppConfig
-
-REPO = Path(__file__).resolve().parents[4]
-STUDIO_CONFIG = REPO / "debug" / "studio" / "conf" / "config.toml"
 
 
 def pytest_configure(config: pytest.Config) -> None:
@@ -24,7 +20,7 @@ def pytest_configure(config: pytest.Config) -> None:
 @pytest.fixture(scope="session")
 def studio_config() -> StudioAppConfig:
     """Конфиг studio без побочных действий загрузчика."""
-    raw = RawConfig.load(STUDIO_CONFIG)
+    raw = RawConfig.load(StandApp.STUDIO.files())
     return bind(raw, path=StudioAppConfig.SECTION, model=StudioAppConfig)
 
 

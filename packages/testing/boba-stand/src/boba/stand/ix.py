@@ -59,12 +59,12 @@ class IxStand(BaseModel):
     @classmethod
     def load(cls) -> Self:
         section = "ix_stand"
-        path = ConfigLocator.path()
-        stand_path = path.parent / StandLayers.FILE
+        files = ConfigLocator.files()
+        stand_path = StandLayers.path(files)
         if not stand_path.is_file():
             raise IxStandError(f"ix stand: {stand_path} not found")
 
-        raw = StandLayers.compose(path)
+        raw = StandLayers.compose(files)
 
         try:
             stand = bind(raw, path=section, model=cls)

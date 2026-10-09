@@ -1,0 +1,25 @@
+enable     = true
+max_rows   = 100
+tools      = [
+    "ch_query",
+    "ch_address",
+    "ch_database_describe",
+    "ch_table_describe",
+    "ch_column_describe",
+    "ch_indexes_describe",
+    "ch_function_describe",
+    "ch_types_describe",
+    "ch_edm_structure",
+    "ch_edm_descriptions",
+    "ch_stream_out",
+    "ch_stream_in"
+]
+max_bytes  = 1000000
+
+[sandbox]
+    network = true
+    binds   = [
+        "/etc/resolv.conf:/etc/resolv.conf",
+        "/etc/hosts:/etc/hosts",
+        "${env.krb}/krb5.conf:/etc/krb5.conf"
+    ]

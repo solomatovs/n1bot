@@ -1,0 +1,100 @@
+enable                 = true
+connection             = "${postgres}"
+tools                  = [
+    "confluence_index_page",
+    "confluence_index_space",
+    "confluence_attachment"
+]
+body_format            = "view"
+collection             = "kb_confluence"
+chunk_size             = 4000
+chunk_overlap          = 0
+attachments            = [
+    "application/pdf",
+    "application/msword",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "application/vnd.ms-excel",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    "application/vnd.ms-powerpoint",
+    "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    "application/vnd.oasis.opendocument.text",
+    "application/vnd.oasis.opendocument.spreadsheet",
+    "application/vnd.oasis.opendocument.presentation",
+    "application/rtf",
+    "text/rtf",
+    "text/plain",
+    "text/markdown",
+    "text/x-markdown",
+    "text/csv",
+    "text/tab-separated-values",
+    "image/png",
+    "image/jpeg",
+    "image/gif",
+    "image/bmp",
+    "image/webp",
+    "image/tiff"
+]
+text_encodings         = [
+    "utf-8",
+    "cp1251"
+]
+page_workers           = 4
+
+transport              = "${http}"
+
+[table_shape]
+    row_layout_max_columns = 4
+    row_layout_min_rows    = 3
+
+[confluence]
+    host              = "${site.confluence.host}"
+    port              = "${site.confluence.port}"
+    path              = "${site.confluence.path}"
+    timeout_sec       = 30.0
+    ssl_verify        = false
+    retry_attempts    = 3
+    retry_backoff_sec = 1.0
+    retry_after_max_sec = 60.0
+    retry_statuses    = { 429 = 5, 401 = 3 }
+
+[tables]
+    pg_schema         = "kb"
+    chunks_table      = "kb_chunks"
+    collections_table = "kb_collections"
+    sources_table     = "kb_sources"
+
+[fastembed_cache]
+    sandbox = "/var/cache/fastembed"
+    process = "${env.models}/fastembed"
+
+[fastembed]
+    kind      = "fastembed"
+    cache_dir = "${tool.ingest.fastembed_cache.${env.tool_launcher}}"
+
+[embedding]
+    provider       = "${tool.ingest.fastembed}"
+    model          = "${site.models.embedding}"
+    dim            = 1024
+    batch_size     = 8
+    progress_every = 1
+
+[ocr]
+    provider   = "rapidocr"
+    models_dir = "/var/cache/rapidocr"
+    language   = "eslav"
+    text_score = 0.5
+    threads    = 2
+
+[sandbox]
+    network = true
+    binds   = [
+        "${env.models}/fastembed:/var/cache/fastembed",
+        "${env.models}/rapidocr:/var/cache/rapidocr",
+        "/etc/resolv.conf:/etc/resolv.conf",
+        "/etc/hosts:/etc/hosts",
+        "${env.krb}/krb5.conf:/etc/krb5.conf"
+    ]
+    [sandbox.limits]
+        process_memory_bytes = 17179869184
+        group_memory_bytes   = 8589934592
+        group_cpu_percent    = 400

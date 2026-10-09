@@ -14,6 +14,8 @@ from typing import ClassVar
 import httpx
 import pytest
 
+from boba.stand.ui.stand import StandApp
+
 pytestmark = pytest.mark.integration
 
 INDEX = """<!doctype html>
@@ -27,17 +29,13 @@ class StudioProcess:
 
     PORT: ClassVar[int] = 8613
     PREFIX: ClassVar[str] = "/boba-studio-host"
-    REPO: ClassVar[Path] = Path(__file__).resolve().parents[4]
     STARTUP_SEC: ClassVar[float] = 120.0
     STOP_SEC: ClassVar[float] = 30.0
 
     def __init__(self, app_root: Path) -> None:
-        # дерево отладки: свой конфиг и свои data (make -C build debug)
-        base = self.REPO / "debug" / "studio"
+        # общий конфиг пакета и site.toml дерева отладки с его data
+        files = StandApp.STUDIO.files()
         env = dict(os.environ)
-        env["BOBA_BASE"] = str(base)
-        env["BOBA_DATA"] = str(base / "data")
-        env["BOBA_CONFIG_PATH"] = str(base / "conf" / "config.toml")
         env["BOBA_PORT"] = str(self.PORT)
         env["BOBA_INSTANCE_ID"] = "testhost"
         env["BOBA_APP_ROOT"] = str(app_root)
@@ -53,7 +51,9 @@ class StudioProcess:
                 "-m",
                 "boba.studio",
                 "--config",
-                str(base / "conf" / "config.toml"),
+                str(files.config),
+                "--site",
+                str(files.site),
             ],
             env=env,
             stdout=subprocess.PIPE,

@@ -6,12 +6,12 @@
 ведёт ход с инструментом до ответа и что лента получает тот же поток событий,
 что и от удалённого провайдера.
 
-Запуск: BOBA_CONFIG_PATH=... pytest -m integration tests/test_local_chat_integration.py
+Запуск: BOBA_CONFIG_PATH=... BOBA_SITE_PATH=... pytest -m integration
+tests/test_local_chat_integration.py
 """
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 from typing import Annotated, Any
 
@@ -31,7 +31,7 @@ from boba.chainlit.infra.config import AppConfig
 from boba.config import bind
 from boba.llm.onnx import OnnxProvider
 from boba.llm.providers import ChatModelConfig, LlmProviders, LlmProviderTypes
-from boba.runtime.config import AppLayers
+from boba.runtime.config import AppLayers, ConfigLocator
 from boba.stand.refs import StandRefs
 from boba.toolkit.calls import ToolIntent
 from boba.toolkit.chain import CallAmbient
@@ -67,11 +67,7 @@ async def http_context() -> None:
 
 def _local_model_dir() -> str:
     """Каталог модели из первого профиля с локальным бэкендом рабочего конфига."""
-    config_path = os.environ.get("BOBA_CONFIG_PATH")
-    if not config_path:
-        pytest.skip("BOBA_CONFIG_PATH не задан")
-
-    built = AppLayers.compose(Path(config_path))
+    built = AppLayers.compose(ConfigLocator.files())
     app_config = bind(built, path="app", model=AppConfig)
 
     for profile in app_config.profiles.values():

@@ -1,0 +1,283 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Chainlit: agent",
+            "type": "debugpy",
+            "request": "launch",
+            "preLaunchTask": "chainlit: debug tree",
+            "program": "${workspaceFolder}/packages/apps/boba-chainlit/src/boba/chainlit/main.py",
+            "console": "integratedTerminal",
+            "jinja": true,
+            "cwd": "${workspaceFolder}/debug/chainlit",
+            "python": "${workspaceFolder}/.venv/bin/python",
+            "args": [
+                "--config",
+                "${workspaceFolder}/packages/apps/boba-chainlit/conf/config.toml",
+                "--site",
+                "${workspaceFolder}/debug/chainlit/conf/site.toml"
+            ],
+            "env": {
+                "PATH": "${workspaceFolder}/.venv/bin:${workspaceFolder}/runtime/third/bin:${env:PATH}",
+                "LD_LIBRARY_PATH": "${workspaceFolder}/runtime/third/lib"
+            },
+            "justMyCode": false,
+            "stopOnEntry": false,
+            "subProcess": true
+        },
+        {
+            "name": "Studio: api + workflow & catalog page",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "boba.studio",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}/debug/studio",
+            "python": "${workspaceFolder}/.vscode/python-debug-slice.sh",
+            "args": [
+                "--config",
+                "${workspaceFolder}/packages/apps/boba-studio/conf/config.toml",
+                "--site",
+                "${workspaceFolder}/debug/studio/conf/site.toml"
+            ],
+            "env": {
+                "PATH": "${workspaceFolder}/.venv/bin:${workspaceFolder}/runtime/third/bin:${env:PATH}",
+                "LD_LIBRARY_PATH": "${workspaceFolder}/runtime/third/lib"
+            },
+            "preLaunchTask": "web: dev server",
+            "justMyCode": false,
+            "stopOnEntry": false,
+            "subProcess": true
+        },
+        {
+            "name": "MCP: tools service",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "boba.mcp_server",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}/debug/mcp",
+            "python": "${workspaceFolder}/.vscode/python-debug-slice.sh",
+            "args": [
+                "--config",
+                "${workspaceFolder}/packages/apps/boba-mcp/conf/config.toml",
+                "--site",
+                "${workspaceFolder}/debug/mcp/conf/site.toml"
+            ],
+            "env": {
+                "PATH": "${workspaceFolder}/.venv/bin:${workspaceFolder}/runtime/third/bin:${env:PATH}",
+                "LD_LIBRARY_PATH": "${workspaceFolder}/runtime/third/lib"
+            },
+            "justMyCode": false,
+            "stopOnEntry": false,
+            "subProcess": true
+        },
+        {
+            "name": "tool",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "boba.runtime.toolcli",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}/debug/chainlit",
+            "python": "${workspaceFolder}/.venv/bin/python",
+            "env": {
+                "PATH": "${workspaceFolder}/.venv/bin:${workspaceFolder}/runtime/third/bin:${env:PATH}",
+                "LD_LIBRARY_PATH": "${workspaceFolder}/runtime/third/lib",
+                "BOBA_LOG_LEVEL": "DEBUG"
+            },
+            "justMyCode": false,
+            "args": [
+                "boba.tool.connections.tools",
+                "connection_list",
+                "--config",
+                "${workspaceFolder}/packages/apps/boba-chainlit/conf/config.toml",
+                "--site",
+                "${workspaceFolder}/debug/chainlit/conf/site.toml",
+                "--injected",
+                "${workspaceFolder}/.vscode/injected/pg.json"
+            ]
+        },
+        {
+            "name": "ix-fts",
+            "type": "debugpy",
+            "request": "launch",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}/compose/ix-fts",
+            "python": "${workspaceFolder}/.venv/bin/python",
+            "program": "${workspaceFolder}/packages/apps/ix/ix-fts/src/boba/ix_fts/worker.py",
+            "justMyCode": false,
+            "stopOnEntry": false,
+            "subProcess": true,
+            "args": [
+                "run",
+                "--config",
+                "${workspaceFolder}/compose/ix-fts/conf.toml",
+            ]
+        },
+        {
+            "name": "pg-meta-scraper",
+            "type": "debugpy",
+            "request": "launch",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}/compose/pg-meta-scraper",
+            "python": "${workspaceFolder}/.venv/bin/python",
+            "program": "${workspaceFolder}/packages/apps/ix/pg-meta-scraper/src/boba/pg_meta_scraper/worker.py",
+            "justMyCode": false,
+            "stopOnEntry": false,
+            "subProcess": true,
+            "args": [
+                "run",
+                "--config",
+                "${workspaceFolder}/compose/pg-meta-scraper/conf.toml",
+            ]
+        },
+        {
+            "name": "ch-meta-scraper",
+            "type": "debugpy",
+            "request": "launch",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}/compose/ch-meta-scraper",
+            "python": "${workspaceFolder}/.venv/bin/python",
+            "program": "${workspaceFolder}/packages/apps/ix/ch-meta-scraper/src/boba/ch_meta_scraper/worker.py",
+            "justMyCode": false,
+            "stopOnEntry": false,
+            "subProcess": true,
+            "args": [
+                "run",
+                "--config",
+                "${workspaceFolder}/compose/ch-meta-scraper/conf.toml",
+            ]
+        },
+        {
+            "name": "cfl-indexer",
+            "type": "debugpy",
+            "request": "launch",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}/compose/cfl-indexer",
+            "python": "${workspaceFolder}/.venv/bin/python",
+            "program": "${workspaceFolder}/packages/apps/ix/cfl-indexer/src/boba/cfl_indexer/worker.py",
+            "justMyCode": false,
+            "stopOnEntry": false,
+            "subProcess": true,
+            "args": [
+                "run",
+                "--config",
+                "${workspaceFolder}/compose/cfl-indexer/conf.toml",
+            ]
+        },
+        {
+            "name": "ix-search-lab",
+            "type": "debugpy",
+            "request": "launch",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}/compose/ix-search-lab",
+            "python": "${workspaceFolder}/.venv/bin/python",
+            "program": "${workspaceFolder}/packages/apps/ix/ix-search-lab/src/boba/ix_search_lab/server.py",
+            "justMyCode": false,
+            "stopOnEntry": false,
+            "subProcess": true,
+            "args": [
+                "--config",
+                "${workspaceFolder}/compose/ix-search-lab/conf.toml",
+            ]
+        },
+        {
+            "name": "pytest: текущий файл",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "pytest",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}/debug/chainlit",
+            "python": "${workspaceFolder}/.vscode/python-debug-slice.sh",
+            "env": {
+                "PATH": "${workspaceFolder}/.venv/bin:${workspaceFolder}/runtime/third/bin:${env:PATH}",
+                "LD_LIBRARY_PATH": "${workspaceFolder}/runtime/third/lib",
+                "BOBA_CONFIG_PATH": "${workspaceFolder}/packages/apps/boba-chainlit/conf/config.toml",
+                "BOBA_SITE_PATH": "${workspaceFolder}/debug/chainlit/conf/site.toml",
+                "BOBA_CGROUP_BASE": "@DEBUG_CGROUP@"
+            },
+            "justMyCode": false,
+            "args": [
+                "${file}",
+                "-m",
+                "integration or not integration",
+                "-v"
+            ]
+        },
+        {
+            "name": "pytest: выделенное (-k) в текущем файле",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "pytest",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}/debug/chainlit",
+            "python": "${workspaceFolder}/.vscode/python-debug-slice.sh",
+            "env": {
+                "PATH": "${workspaceFolder}/.venv/bin:${workspaceFolder}/runtime/third/bin:${env:PATH}",
+                "LD_LIBRARY_PATH": "${workspaceFolder}/runtime/third/lib",
+                "BOBA_CONFIG_PATH": "${workspaceFolder}/packages/apps/boba-chainlit/conf/config.toml",
+                "BOBA_SITE_PATH": "${workspaceFolder}/debug/chainlit/conf/site.toml",
+                "BOBA_CGROUP_BASE": "@DEBUG_CGROUP@"
+            },
+            "justMyCode": false,
+            "args": [
+                "${file}",
+                "-m",
+                "integration or not integration",
+                "-v",
+                "-s",
+                "-k",
+                "${selectedText}"
+            ]
+        },
+        {
+            "name": "pytest: все тесты",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "pytest",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}/debug/chainlit",
+            "python": "${workspaceFolder}/.vscode/python-debug-slice.sh",
+            "env": {
+                "PATH": "${workspaceFolder}/.venv/bin:${workspaceFolder}/runtime/third/bin:${env:PATH}",
+                "LD_LIBRARY_PATH": "${workspaceFolder}/runtime/third/lib",
+                "BOBA_CONFIG_PATH": "${workspaceFolder}/packages/apps/boba-chainlit/conf/config.toml",
+                "BOBA_SITE_PATH": "${workspaceFolder}/debug/chainlit/conf/site.toml",
+                "BOBA_CGROUP_BASE": "@DEBUG_CGROUP@"
+            },
+            "justMyCode": false,
+            "args": [
+                "${workspaceFolder}/packages",
+                "-q"
+            ]
+        },
+        {
+            "name": "pytest: интеграционные (живые сервисы, стенд + браузер)",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "pytest",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}/debug/chainlit",
+            "python": "${workspaceFolder}/.vscode/python-debug-slice.sh",
+            "env": {
+                "PATH": "${workspaceFolder}/.venv/bin:${workspaceFolder}/runtime/third/bin:${env:PATH}",
+                "LD_LIBRARY_PATH": "${workspaceFolder}/runtime/third/lib",
+                "BOBA_CONFIG_PATH": "${workspaceFolder}/packages/apps/boba-chainlit/conf/config.toml",
+                "BOBA_SITE_PATH": "${workspaceFolder}/debug/chainlit/conf/site.toml",
+                "BOBA_CGROUP_BASE": "@DEBUG_CGROUP@"
+            },
+            "justMyCode": false,
+            "args": [
+                "${workspaceFolder}/packages",
+                "-m",
+                "integration or ui",
+                "-v"
+            ]
+        }
+    ],
+    "compounds": [
+        {
+            "name": "Boba: chainlit + studio",
+            "configurations": ["Chainlit: agent", "Studio: api + workflow & catalog page"],
+            "stopAll": true
+        }
+    ]
+}

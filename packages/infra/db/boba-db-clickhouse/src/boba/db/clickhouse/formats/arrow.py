@@ -14,7 +14,7 @@ ClickHouseFormatError — поток оборвался до конца схем
 from __future__ import annotations
 
 import struct
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import AsyncIterable, AsyncIterator, Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any, ClassVar
@@ -26,7 +26,7 @@ from boba.db.clickhouse.errors import ClickHouseFormatError
 from boba.db.clickhouse.formats.base import Blocks, StreamFormat
 from boba.db.clickhouse.formats.lines import Lines, Settings
 
-__all__ = ["ArrowColumns", "ArrowFile", "ArrowStream"]
+__all__ = ["ArrowColumns", "ArrowEos", "ArrowFile", "ArrowStream"]
 
 
 @dataclass(frozen=True)
@@ -134,17 +134,62 @@ class SchemaHead:
         )
 
 
+class ArrowEos:
+    """Маркер конца потока Arrow IPC (EOS, восемь байт) и поток без него.
+
+    Маркер необязателен: поток кончается и концом тела запроса. С маркером
+    читатель ClickHouse останавливается на нём и остаток тела запроса —
+    завершающий кусок chunked-кодирования — не дочитывает. Если кусок пришёл
+    отдельным сегментом, он остаётся в сокете и разбирается началом
+    следующего запроса того же соединения, и тот получает 400 Bad Request.
+    Без маркера читатель просит следующее сообщение, сервер дочитывает тело
+    до конца, и соединение остаётся пригодным для следующего запроса.
+    """
+
+    MARKER: ClassVar[bytes] = b"\xff\xff\xff\xff\x00\x00\x00\x00"
+    """Признак продолжения и нулевая длина."""
+
+    async def dropped(
+        self, blocks: AsyncIterable[bytes | memoryview]
+    ) -> AsyncIterator[memoryview]:
+        """Поток без завершающего маркера: последние байты придерживаются,
+        пока не станет ясно, что они не конец."""
+        size = len(self.MARKER)
+        held = b""
+        async for block in blocks:
+            if len(block) < size:
+                joined = held + bytes(block)
+                if len(joined) > size:
+                    yield memoryview(joined[:-size])
+
+                held = joined[-size:]
+                continue
+
+            if held:
+                yield memoryview(held)
+
+            view = memoryview(block)
+            if len(view) > size:
+                yield view[:-size]
+
+            held = bytes(view[-size:])
+
+        if held != self.MARKER:
+            yield memoryview(held)
+
+
 class ArrowStream(StreamFormat[ArrowColumns]):
     """Реализация StreamFormat для ArrowStream: read снимает сообщение схемы
-    и отдаёт блоки записей как есть, write ставит её обратно. Типы, которых
-    Arrow не знает (Enum, UUID у старых серверов), сервер выводить
-    отказывается."""
+    и отдаёт блоки записей как есть, write ставит её обратно и снимает
+    маркер конца потока (ArrowEos). Типы, которых Arrow не знает (Enum, UUID
+    у старых серверов), сервер выводить отказывается."""
 
     FORMAT: ClassVar[str] = "ArrowStream"
     MAGIC: ClassVar[bytes] = b""
 
     def __init__(self) -> None:
         self._head = SchemaHead(self.FORMAT, self.MAGIC)
+        self._eos = ArrowEos()
         self._output = Settings(ArrowOutput.exact())
         self._input = Settings({})
 
@@ -161,7 +206,7 @@ class ArrowStream(StreamFormat[ArrowColumns]):
         return await self._head.take(Lines.views(blocks))
 
     def write(self, stream: ArrowColumns) -> AsyncIterator[memoryview]:
-        return Lines.all(stream.head, stream.blocks)
+        return self._eos.dropped(Lines.all(stream.head, stream.blocks))
 
 
 class ArrowFile(StreamFormat[ArrowColumns]):

@@ -6,12 +6,12 @@ checkpointer, кнопка потока — в data layer, журнал вызо
 заголовка шага, клик открывает журнал с начала, «в конец»/«в начало»
 перематывают, набор кнопок панели и полноэкранного режима совпадает.
 
-Запуск: BOBA_CONFIG_PATH=... pytest -m integration tests/test_stream_e2e.py
+Запуск: BOBA_CONFIG_PATH=... BOBA_SITE_PATH=... pytest -m integration
+tests/test_stream_e2e.py
 """
 
 from __future__ import annotations
 
-import os
 import uuid
 from pathlib import Path
 from typing import Any, ClassVar
@@ -44,7 +44,7 @@ from boba.chainlit.rendering.chat_view import ChatView, StepRole
 from boba.config import bind
 from boba.db.postgres import AsyncPostgresPool
 from boba.identity.session import Login
-from boba.runtime.config import AppLayers
+from boba.runtime.config import AppLayers, ConfigLocator
 from boba.runtime.journal import DirVault, StreamJournal
 from boba.toolkit.channels import ToolChannel
 
@@ -96,7 +96,7 @@ class ServiceJournal:
 
 
 def _config() -> AppConfig:
-    raw = AppLayers.compose(Path(os.environ["BOBA_CONFIG_PATH"]))
+    raw = AppLayers.compose(ConfigLocator.files())
     return bind(raw, path="app", model=AppConfig)
 
 

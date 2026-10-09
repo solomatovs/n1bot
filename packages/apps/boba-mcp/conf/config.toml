@@ -1,0 +1,199 @@
+[krb]
+    config     = "${site.krb_config}"
+    ccache_dir = "${env.data}/krb/cache"
+
+[app]
+    krb             = "${krb}"
+    session         = "${session}"
+    stream_journal  = "${stream_journal}"
+    mcp             = "${mcp}"
+    storage         = "${storage}"
+    auth            = [
+        "${auth.kerberos}",
+        "${auth.ldap}",
+        "${auth.local}",
+        "${auth.proxy}"
+    ]
+
+[mcp]
+    host = "${env.listen_host}"
+    port = "${env.port}"
+    path = "/mcp"
+    shutdown_timeout_sec = 5
+    public_url = "${env.public_url}"
+    [mcp.limits]
+        max_runs    = 8
+        max_waiting = 32
+    [mcp.endpoints.base]
+        roles = ["*"]
+        tools = ["canvas_open", "send_file", "diagram_save"]
+    [mcp.endpoints.general]
+        roles = ["*"]
+        tools = ["*"]
+    [mcp.endpoints.search]
+        roles = ["*"]
+        tools = [
+            "confluence_search",
+            "confluence_spaces",
+            "confluence_fetch",
+            "confluence_grep",
+            "kb_vector_search",
+            "kb_fts_search",
+            "kb_catalog2",
+            "kb_fts_search2",
+            "kb_trgm_search2",
+            "kb_vector_search2",
+            "kb_node2",
+            "web_fetch_page",
+            "web_grep_page",
+        ]
+
+    [mcp.clients.boba-chat]
+        secret = "${site.mcp_client.secret}"
+
+[http]
+    dump                      = { enable = false, path = "" }
+    trust_env                 = true
+    proxy                     = ""
+    http2                     = false
+    stream_stall_sec          = 600
+    connect_timeout           = 5
+    write_timeout             = 100
+    pool_timeout              = 5
+    retries                   = 3
+    max_connections           = 50
+    max_keepalive_connections = 10
+    keepalive_expiry          = 5
+    tcp_keepalive             = true
+    tcp_keepidle              = 60
+    tcp_keepintvl             = 10
+    tcp_keepcnt               = 10
+    tcp_user_timeout          = 0
+
+[postgres]
+    host              = "${site.pg_host}"
+    hostaddr          = "${site.pg_addr}"
+    port              = "${site.pg_port}"
+    dbname            = "${site.pg_database}"
+    sslmode           = "${site.pg_sslmode}"
+    application_name  = "boba-mcp"
+    connect_timeout   = 10
+    autocommit        = true
+    auth              = "${site.pg_auth.${site.pg_auth_method}}"
+    [postgres.pool]
+        timeout           = 5.0
+        min_size          = 1
+        max_size          = 8
+        max_waiting       = 0
+        max_lifetime      = 12000
+        max_idle          = 600
+        reconnect_timeout = 300
+        num_workers       = 3
+
+[storage]
+    kind           = "image"
+    op_timeout_sec = 60
+    mount_dir      = "/tmp"
+    [storage.workspace]
+        template = "${env.sandbox}/workspace.ext4"
+        mount    = "${env.data}/workspace/{user_id}.ext4:/workspace"
+    [storage.binaries]
+        dirs = ["${env.third}/bin", "/usr/bin", "/usr/sbin", "/bin", "/sbin"]
+    [storage.mounting]
+        mount_wait_sec    = 10.0
+        mount_poll_sec    = 0.002
+        shutdown_wait_sec = 5.0
+        lock_wait_sec     = 10.0
+        copy_chunk_bytes  = 1048576
+
+[stream_journal]
+    enable = true
+    dir    = "${env.data}/tool-logs"
+
+[role.ldap]
+    memberof = "${site.ldap_roles.memberof}"
+    dn       = "${site.ldap_roles.dn}"
+
+[auth.kerberos]
+    type                = "kerberos"
+    principal_format    = "{username}@${site.krb_realm}"
+    [auth.kerberos.accept]
+        service_name    = "HTTP/${site.krb_domain}@${site.krb_realm}"
+        keytab          = "${site.krb_http_keytab}"
+    [auth.kerberos.delegation]
+        mode            = "constrained"
+        service_ccache  = "FILE:${site.krb_ccache_http}"
+        krb5_config     = "${site.krb_config}"
+    [auth.kerberos.roles.ldap]
+        server          = "${site.ldap_url}"
+        base_dn         = "${site.ldap_base_dn}"
+        bind_dn         = "${site.ldap_bind_user}"
+        bind_password   = "${site.ldap_bind_password}"
+        [auth.kerberos.roles.ldap.mapping]
+            member_of   = "${role.ldap.memberof}"
+            dn          = "${role.ldap.dn}"
+
+[auth.ldap]
+    type                = "ldap"
+    server              = "${site.ldap_url}"
+    base_dn             = "${site.ldap_base_dn}"
+    user_filter         = "(sAMAccountName={username})"
+    bind_dn_template    = '${site.ldap_netbios}\{username}'
+    [auth.ldap.roles.directory]
+        member_of       = "${role.ldap.memberof}"
+        dn              = "${role.ldap.dn}"
+
+[auth.local]
+    type          = "local"
+    users         = "${site.local_auth.users}"
+    require_roles = true
+    [auth.local.roles.local]
+        mapping = "${site.local_auth.roles}"
+
+[auth.proxy]
+    type            = "proxy"
+    path            = "/auth/proxy"
+    secret          = "${site.proxy_secret}"
+    max_skew_sec    = 60
+    allowed_clients = "${site.proxy.allowed_clients}"
+    require_roles   = true
+    [auth.proxy.headers]
+        user      = "X-Remote-User"
+        timestamp = "X-Boba-Timestamp"
+        signature = "X-Boba-Signature"
+    [auth.proxy.roles.local]
+        mapping = "${site.proxy.local_roles}"
+    [auth.proxy.roles.ldap]
+        server        = "${site.ldap_url}"
+        base_dn       = "${site.ldap_base_dn}"
+        bind_dn       = "${site.ldap_bind_user}"
+        bind_password = "${site.ldap_bind_password}"
+        [auth.proxy.roles.ldap.mapping]
+            member_of = "${role.ldap.memberof}"
+            dn        = "${role.ldap.dn}"
+    [auth.proxy.roles.header]
+        name = "X-Remote-Roles"
+    [auth.proxy.profiles.header]
+        name     = "X-Remote-Profiles"
+        selected = "X-Remote-Profile"
+
+[stream_groups]
+    open_sec       = 60
+    stall_sec      = 300
+    poll_sec       = 0.5
+    pipe_bytes     = 65536
+    pipe_bytes_max = 1048576
+
+[tool_launcher]
+    provider            = "${env.tool_launcher}"
+    workdir             = "${env.data}/workspace"
+    timeout_sec         = 86400
+    channel_limit_bytes = 67108864
+    stderr_tail_bytes   = 4096
+    kill_grace_sec      = 5
+
+[session]
+    auth_secret     = "${site.auth_secret}"
+    session_ttl_sec = 3600
+    session_max_sec = 28800
+    generation      = ""

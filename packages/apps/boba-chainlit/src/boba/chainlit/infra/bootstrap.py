@@ -38,7 +38,7 @@ from boba.db.postgres import AsyncPostgresPool
 from boba.identity.context import CallContexts
 from boba.identity.run import Runs
 from boba.runtime import providers as runtime
-from boba.runtime.config import AppName
+from boba.runtime.config import AppName, ConfigFiles
 from boba.runtime.di import Container
 from boba.runtime.http import (
     DomainErrorMiddleware,
@@ -48,9 +48,9 @@ from boba.runtime.http import (
 from boba.runtime.storage import StorageClient
 
 
-def run_app(config_path: Path):
+def run_app(files: ConfigFiles):
     """Запуск приложения; env chainlit к этому моменту выставлен AppEntry."""
-    c = AppConfig.load(config_path)
+    c = AppConfig.load(files)
 
     UserLogContext.install()
     logging.config.dictConfig(c.logger)
