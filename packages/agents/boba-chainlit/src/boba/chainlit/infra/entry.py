@@ -1,7 +1,14 @@
-"""Точка входа: env chainlit выставляется до первого импорта его модулей."""
+"""Точка входа: env chainlit выставляется до первого импорта его модулей.
+
+Ошибки:
+ValueError — в конфиге нет секции [chainlit] либо пусты root или files_dir.
+"""
 
 import argparse
 import os
+import pathlib
+from collections.abc import Iterator
+from contextlib import contextmanager
 from enum import StrEnum
 from pathlib import Path
 from typing import ClassVar
@@ -11,7 +18,7 @@ from omegaconf import OmegaConf
 from boba.config import bind
 from boba.runtime.config import AppLayers, SessionConfig
 
-__all__ = ["AppEntry", "ChainlitEnv"]
+__all__ = ["AppEntry", "ChainlitEnv", "ChainlitFiles"]
 
 
 class ChainlitEnv(StrEnum):
@@ -24,8 +31,59 @@ class ChainlitEnv(StrEnum):
     ROOT_PATH = "CHAINLIT_ROOT_PATH"
 
 
+class ChainlitFiles:
+    """Каталог вложений chainlit вне app_root.
+
+    chainlit держит вложения сессий в <APP_ROOT>/.files: путь собирает и каталог
+    создаёт на импорте chainlit.config, настройки для него нет. app_root — статика
+    приложения (в отладке — ассеты пакета, в образе — слой только для чтения), и
+    писать в него нельзя. Поэтому первый импорт chainlit.config идёт здесь: создание
+    <APP_ROOT>/.files пропускается, а FILES_DIRECTORY подменяется каталогом из
+    [chainlit].files_dir раньше, чем его прочтут сессии и chainlit.server.
+    """
+
+    NAME: ClassVar[str] = ".files"
+
+    def __init__(self, app_root: Path, files_dir: Path) -> None:
+        self._inside_root = app_root / self.NAME
+        self._files_dir = files_dir
+
+    def install(self) -> None:
+        self._files_dir.mkdir(parents=True, exist_ok=True)
+
+        with self._without_root_files():
+            import chainlit.config  # noqa: PLC0415 — пути chainlit фиксирует на импорте
+
+        chainlit.config.FILES_DIRECTORY = self._files_dir
+
+    @contextmanager
+    def _without_root_files(self) -> Iterator[None]:
+        """На время импорта Path.mkdir пропускает <APP_ROOT>/.files, прочее создаёт."""
+        skipped = self._inside_root
+        mkdir = pathlib.Path.mkdir
+
+        def guarded(
+            path: Path,
+            mode: int = 0o777,
+            parents: bool = False,
+            exist_ok: bool = False,
+        ) -> None:
+            if path == skipped:
+                return
+
+            mkdir(path, mode, parents, exist_ok)
+
+        # setattr: подмена метода класса на время импорта, присваивание атрибуту
+        # типизация справедливо не пропускает
+        setattr(pathlib.Path, "mkdir", guarded)  # noqa: B010
+        try:
+            yield
+        finally:
+            setattr(pathlib.Path, "mkdir", mkdir)  # noqa: B010
+
+
 class AppEntry:
-    """Конфиг -> env chainlit -> запуск приложения."""
+    """Конфиг -> env chainlit -> каталог вложений -> запуск приложения."""
 
     SECTION: ClassVar[str] = "app.chainlit"
 
@@ -35,6 +93,7 @@ class AppEntry:
     def run(cls) -> None:
         config_path = cls.config_argument()
         cls.export_env(config_path)
+        cls.files(config_path).install()
 
         # импорт здесь: chainlit фиксирует пути из env на импорте своих модулей
         from boba.chainlit.infra.bootstrap import run_app  # noqa: PLC0415
@@ -57,6 +116,28 @@ class AppEntry:
         arguments = parser.parse_args()
 
         return arguments.config
+
+    @classmethod
+    def files(cls, config_path: Path) -> ChainlitFiles:
+        """Каталог вложений из [chainlit].files_dir; пустое значение отвергается."""
+        raw = AppLayers.compose(config_path)
+        section = OmegaConf.select(raw, cls.SECTION)
+        if section is None:
+            msg = f"{config_path}: section [{cls.SECTION}] is missing"
+            raise ValueError(msg)
+
+        files_dir = section.get("files_dir")
+        if not files_dir:
+            msg = (
+                f"{config_path}: section [{cls.SECTION}] expects files_dir as a "
+                f"non-empty path (chainlit attachments outside app root), "
+                f"got {files_dir!r}"
+            )
+            raise ValueError(msg)
+
+        root = Path(os.environ[ChainlitEnv.APP_ROOT])
+
+        return ChainlitFiles(root, Path(files_dir).resolve())
 
     @classmethod
     def export_env(cls, config_path: Path) -> None:

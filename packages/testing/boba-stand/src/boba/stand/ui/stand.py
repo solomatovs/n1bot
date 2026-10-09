@@ -42,14 +42,16 @@ class StandError(Exception):
 
 
 class StandPaths(StrEnum):
-    """Пути репозитория, которые стенд подставляет вместо рантайма релиза."""
+    """Пути репозитория, которые стенд подставляет вместо рантайма релиза:
+    конфиги и базы приложений — деревья отладки debug/<приложение>, зависимости —
+    общий каталог runtime."""
 
-    BASE_CONFIG = "compose/chainlit/conf/config.toml"
-    STUDIO_BASE_CONFIG = "compose/studio/conf/config.toml"
-    CHAINLIT_BASE = "compose/chainlit"
-    STUDIO_BASE = "compose/studio"
-    CHAINLIT_SANDBOX = "build/chainlit/src/sandbox"
-    STUDIO_SANDBOX = "build/studio/src/sandbox"
+    BASE_CONFIG = "debug/chainlit/conf/config.toml"
+    STUDIO_BASE_CONFIG = "debug/studio/conf/config.toml"
+    CHAINLIT_BASE = "debug/chainlit"
+    STUDIO_BASE = "debug/studio"
+    SANDBOX = "runtime/sandbox"
+    MODELS = "runtime/models"
     PACKAGES = "packages"
 
     def under(self, root: Path) -> Path:
@@ -124,14 +126,6 @@ class StandApp(StrEnum):
             return StandPaths.BASE_CONFIG
 
         return StandPaths.STUDIO_BASE_CONFIG
-
-    @property
-    def sandbox(self) -> StandPaths:
-        """Артефакты песочницы из сборки этого приложения."""
-        if self is StandApp.CHAINLIT:
-            return StandPaths.CHAINLIT_SANDBOX
-
-        return StandPaths.STUDIO_SANDBOX
 
     @property
     def cgroup_base(self) -> str:
@@ -480,7 +474,7 @@ class StandConfig:
             return
 
         env = doc["env"]
-        env["sandbox"] = str(self.app.sandbox.under(REPO_ROOT))
+        env["sandbox"] = str(StandPaths.SANDBOX.under(REPO_ROOT))
 
 
 @dataclass

@@ -26,12 +26,14 @@ class StudioProcess:
     """Дочерний процесс студии на порту стенда с временным каталогом сборки."""
 
     PORT: ClassVar[int] = 8613
+    PREFIX: ClassVar[str] = "/boba-studio-host"
     REPO: ClassVar[Path] = Path(__file__).resolve().parents[4]
     STARTUP_SEC: ClassVar[float] = 120.0
     STOP_SEC: ClassVar[float] = 30.0
 
     def __init__(self, app_root: Path) -> None:
-        base = self.REPO / "compose" / "studio"
+        # дерево отладки: свой конфиг и свои data (make -C build/studio debug)
+        base = self.REPO / "debug" / "studio"
         env = dict(os.environ)
         env["BOBA_BASE"] = str(base)
         env["BOBA_DATA"] = str(base / "data")
@@ -40,7 +42,8 @@ class StudioProcess:
         env["BOBA_INSTANCE_ID"] = "testhost"
         env["BOBA_APP_ROOT"] = str(app_root)
         env["BOBA_WORKFLOW_PAGE"] = "built"
-        self.prefix = env["BOBA_URL_PREFIX"]
+        env["BOBA_URL_PREFIX"] = self.PREFIX
+        self.prefix = self.PREFIX
         self.root = f"http://127.0.0.1:{self.PORT}{self.prefix}"
         self.api = f"{self.root}/api"
         self.page = f"{self.root}/workflow"
@@ -106,7 +109,8 @@ class StudioProcess:
 @pytest.fixture(scope="module")
 def studio(tmp_path_factory: pytest.TempPathFactory) -> Iterator[StudioProcess]:
     app_root = tmp_path_factory.mktemp("app_root")
-    dist = app_root / "public" / "workflow"
+    # сборка страницы лежит в app_root как в ассетах пакета: <app_root>/workflow
+    dist = app_root / "workflow"
     (dist / "assets").mkdir(parents=True)
     (dist / "index.html").write_text(INDEX)
     (dist / "assets" / "app-1.js").write_text("export const built = true;")

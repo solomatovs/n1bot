@@ -183,12 +183,14 @@ class StudioHost:
             msg = f"app.state.config: expected StudioAppConfig, got {got}"
             raise RuntimeError(msg)
 
-        await container.start()
-        await cls._mount_api(app, config)
-
         try:
+            await container.start()
+            await cls._mount_api(app, config)
+
             yield
         finally:
+            # сорванный старт идёт сюда же: открытый пул не даёт циклу событий
+            # закрыться, и процесс не завершается
             RunRegistry.stop_all(StopReason.SHUTDOWN)
             ZygoteRegistry.stop_all()
             Container.set_root(None)

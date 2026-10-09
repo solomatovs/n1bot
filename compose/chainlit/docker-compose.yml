@@ -1,14 +1,24 @@
 x-runtime: &runtime
   init: true
+  # контейнер ложится в срез рядом с поддеревом песочницы: перенос процесса
+  # инструмента в leaf идёт через общего предка boba-chainlit.slice
+  cgroup_parent: boba-chainlit.slice
   # без переменных берётся USER образа (1000:1000): песочница монтирует
   # образы в user namespace, и от root файлы владельца данных недоступны
   user: "${BOBA_UID:-1000}:${BOBA_GID:-1000}"
   devices:
     - /dev/fuse
   security_opt:
-    - seccomp=unconfined
+    - seccomp=./conf/seccomp-sandbox.json
     - systempaths=unconfined
+    - no-new-privileges:true
+  cap_drop:
+    - ALL
+  mem_limit: 16g
+  cpus: 8
+  pids_limit: 2048
   restart: unless-stopped
+  stop_grace_period: 30s
 
 services:
   chainlit:
@@ -16,34 +26,42 @@ services:
     image: boba-chainlit:0.0.26.dev4
     hostname: chainlit
     container_name: chainlit
+    networks:
+      default:
+        ipv4_address: 10.120.0.6
     env_file: ./conf/boba.env
     volumes:
       - ./conf:/app/boba/conf:ro
       - ./conf/krb/krb5.conf:/etc/krb5.conf:ro
       - ./data:/app/boba/data:rw
-      - ./models:/app/boba/models:ro
-      - ../../build/chainlit/src/sandbox:/app/boba/sandbox:ro
-      - /sys/fs/cgroup/boba.slice:/cgroup:rw
+      - ../../runtime/models:/app/boba/models:ro
+      - ../../runtime/sandbox:/app/boba/sandbox:ro
+      - ${BOBA_SANDBOX_CGROUP:?start boba-sandbox@chainlit.service and set BOBA_SANDBOX_CGROUP in .env}:/cgroup/boba-sandbox-chainlit:rw
     ports:
-      - 127.0.0.1:8501:8501
+      - "8501"
   chainlit2:
     <<: *runtime
     image: boba-chainlit:0.0.26.dev4
     hostname: chainlit2
     container_name: chainlit2
+    networks:
+      default:
+        ipv4_address: 10.120.0.36
     env_file: ./conf/boba.env
+    environment:
+      BOBA_INSTANCE_ID: node2
     volumes:
       - ./conf:/app/boba/conf:ro
       - ./conf/krb/krb5.conf:/etc/krb5.conf:ro
       - ./data:/app/boba/data:rw
-      - ./models:/app/boba/models:ro
-      - ../../build/chainlit/src/sandbox:/app/boba/sandbox:ro
-      - /sys/fs/cgroup/boba.slice:/cgroup:rw
+      - ../../runtime/models:/app/boba/models:ro
+      - ../../runtime/sandbox:/app/boba/sandbox:ro
+      - ${BOBA_SANDBOX_CGROUP:?start boba-sandbox@chainlit.service and set BOBA_SANDBOX_CGROUP in .env}:/cgroup/boba-sandbox-chainlit:rw
     ports:
-      - 127.0.0.1:8503:8501
+      - "8501"
 
 
 networks:
   default:
-    name: docker
+    name: alexeyk500
     external: true

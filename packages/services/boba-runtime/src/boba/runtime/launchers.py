@@ -82,6 +82,7 @@ class EnvPaths(BaseModel):
     base: str
     data: str
     sandbox: str
+    third: str
     models: str
     krb: str
     cgroup_base: str
@@ -197,7 +198,7 @@ class SandboxDefaults:
                 "cgroup_base": env.cgroup_base,
                 "binaries": {
                     "dirs": [
-                        f"{env.base}/third/bin",
+                        f"{env.third}/bin",
                         "/usr/bin",
                         "/usr/sbin",
                         "/bin",

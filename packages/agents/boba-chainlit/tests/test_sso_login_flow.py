@@ -49,8 +49,8 @@ SERVICE_SPN = f"HTTP/{STAND.krb_domain}@{STAND.krb_realm}"
 USER_PRINCIPAL = STAND.reader_principal
 TARGET = STAND.pg_spn
 
-APP_ROOT = Path(os.environ["BOBA_BASE"]) / "app_root"
-"""Каталог chainlit стенда: там лежит собранный скрипт страницы."""
+APP_ROOT = Path(__file__).resolve().parents[1] / "assets"
+"""Каталог chainlit стенда — ассеты пакета: там лежит собранный скрипт страницы."""
 
 pytestmark = [
     pytest.mark.integration,

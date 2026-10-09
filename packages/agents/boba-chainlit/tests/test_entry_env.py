@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 import sys
 from collections.abc import Iterator
@@ -48,8 +49,34 @@ CONFIG = """
 
 [chainlit]
     root        = "<root>"
+    files_dir   = "<files_dir>"
     url_prefix  = "/boba"
 """
+
+ASSETS = Path(__file__).resolve().parents[1] / "assets"
+"""Ассеты пакета: готовый app_root, который отладка отдаёт chainlit напрямую."""
+
+FILES_PROBE = """
+import sys
+from pathlib import Path
+from types import SimpleNamespace
+
+from boba.chainlit.infra.entry import AppEntry
+
+config = Path(sys.argv[1])
+AppEntry.export_env(config)
+AppEntry.files(config).install()
+
+import chainlit.config
+import chainlit.server
+from chainlit.session import BaseSession
+
+print(chainlit.config.FILES_DIRECTORY)
+print(chainlit.server.FILES_DIRECTORY)
+print(BaseSession.files_dir.fget(SimpleNamespace(id="s1")))
+"""
+"""Что видит chainlit после точки входа: каталог вложений модуля config, его
+копия в chainlit.server и каталог сессии."""
 
 
 class TestExportEnv:
@@ -57,6 +84,7 @@ class TestExportEnv:
     def _config(tmp_path: Path, root: str) -> Path:
         path = tmp_path / "config.toml"
         body = CONFIG.replace("<root>", root)
+        body = body.replace("<files_dir>", str(tmp_path / "files"))
         body = body.replace("<auth_secret>", FakeSecret.AUTH)
         path.write_text(body, encoding="utf-8")
         return path
@@ -123,3 +151,72 @@ class TestEntryPointsFreeOfChainlit:
             raise AssertionError('not (tmp_path / ".chainlit").exists()')
         if (tmp_path / ".files").exists():
             raise AssertionError('not (tmp_path / ".files").exists()')
+
+
+class TestChainlitFilesOutsideAppRoot:
+    """chainlit пишет вложения в [chainlit].files_dir, а app_root не трогает.
+
+    Проверка идёт в подпроцессе: путь chainlit фиксирует на импорте. Упадёт,
+    если после обновления chainlit запись снова пойдёт в APP_ROOT.
+    """
+
+    @staticmethod
+    def _tree(root: Path) -> list[tuple[str, int, int]]:
+        entries: list[tuple[str, int, int]] = []
+        for path in sorted(root.rglob("*")):
+            stat = path.stat()
+            entries.append(
+                (str(path.relative_to(root)), stat.st_mtime_ns, stat.st_size)
+            )
+
+        root_stat = root.stat()
+        entries.append((".", root_stat.st_mtime_ns, 0))
+
+        return entries
+
+    @staticmethod
+    def _config(tmp_path: Path, root: Path, files_dir: str) -> Path:
+        path = tmp_path / "config.toml"
+        body = CONFIG.replace("<root>", str(root))
+        body = body.replace("<files_dir>", files_dir)
+        body = body.replace("<auth_secret>", FakeSecret.AUTH)
+        path.write_text(body, encoding="utf-8")
+        return path
+
+    def test_app_root_stays_untouched(self, tmp_path: Path) -> None:
+        root = tmp_path / "root"
+        shutil.copytree(ASSETS / ".chainlit", root / ".chainlit")
+        files_dir = tmp_path / "data" / "files"
+        cwd = tmp_path / "cwd"
+        cwd.mkdir()
+        config = self._config(tmp_path, root, str(files_dir))
+        before = self._tree(root)
+
+        result = subprocess.run(
+            [sys.executable, "-c", FILES_PROBE, str(config)],
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        if result.returncode != 0:
+            raise AssertionError(f"probe failed:\n{result.stderr}")
+        if self._tree(root) != before:
+            raise AssertionError(f"app_root changed: {self._tree(root)} != {before}")
+        if list(cwd.iterdir()):
+            raise AssertionError(f"cwd is not empty: {list(cwd.iterdir())}")
+        if not files_dir.is_dir():
+            raise AssertionError(f"files_dir is not created: {files_dir}")
+
+        expected = [str(files_dir), str(files_dir), str(files_dir / "s1")]
+        if result.stdout.split() != expected:
+            raise AssertionError(f"{result.stdout.split()} != {expected}")
+
+    def test_empty_files_dir_rejected(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv(ChainlitEnv.APP_ROOT, str(tmp_path))
+
+        with pytest.raises(ValueError, match="files_dir"):
+            AppEntry.files(self._config(tmp_path, tmp_path, ""))

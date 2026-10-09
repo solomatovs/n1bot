@@ -41,7 +41,7 @@ worker.py оркестратор
 стоит плейсхолдером `{schema}`, имя берётся из конфига, а квотирует его psycopg.
 
 Провайдер выбирается ключом `provider` секции: `openai` (`base_url`, `api_key`, `model`) или
-`local` (`model_dir`, например `compose/chainlit/models/onnx-genai/qwen3-4b-int4`). Остальные
+`local` (`model_dir`, например `runtime/models/onnx-genai/qwen3-4b-int4`). Остальные
 поля секции: `max_tokens`, `temperature`, `tool_choice` (auto по умолчанию: deepseek в
 thinking mode через роутер проекта другого не принимает), `batch` и обязательный
 `max_input_chars`. Воркер всегда идёт до пустой очереди и заканчивает prune.
