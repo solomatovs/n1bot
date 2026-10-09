@@ -38,9 +38,9 @@ from boba.toolkit.protocol import REPLY, ReplyOk
 from boba.toolkit.stream import Chunk
 
 REPO = Path(__file__).resolve().parents[5]
-SANDBOX = REPO / "build" / "src" / "sandbox"
+SANDBOX = REPO / "runtime" / "sandbox"
 ROOTFS_IMAGE = SANDBOX / "plugins" / "boba-tool-shell" / "rootfs.ext4"
-FUSE2FS = SANDBOX / "third" / "bin" / "fuse2fs"
+FUSE2FS = REPO / "runtime" / "third" / "bin" / "fuse2fs"
 
 TESTS_DIR = str(Path(__file__).resolve().parent)
 

@@ -24,7 +24,7 @@ services:
       - ./conf:/app/boba/conf:ro
       - ./conf/krb/krb5.conf:/etc/krb5.conf:ro
       - ./data:/app/boba/data:rw
-      - ./models:/app/boba/models:ro
+      - ../../runtime/models:/app/boba/models:ro
     ports:
       - "8501"
   chainlit2:
@@ -42,7 +42,7 @@ services:
       - ./conf2:/app/boba/conf:ro
       - ./conf2/krb/krb5.conf:/etc/krb5.conf:ro
       - ./data:/app/boba/data:rw
-      - ./models:/app/boba/models:ro
+      - ../../runtime/models:/app/boba/models:ro
     ports:
       - "8501"
 

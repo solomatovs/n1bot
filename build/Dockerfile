@@ -513,8 +513,8 @@ FROM runtime-sandbox AS runtime-plugins
 
 ARG BOBA_DIR=/app/boba
 
-COPY --chown=root:root --chmod=0644 build/src/sandbox/workspace.ext4  ${BOBA_DIR}/sandbox/workspace.ext4
-COPY --chown=root:root build/src/sandbox/plugins/                     ${BOBA_DIR}/sandbox/plugins/
+COPY --chown=root:root --chmod=0644 runtime/sandbox/workspace.ext4  ${BOBA_DIR}/sandbox/workspace.ext4
+COPY --chown=root:root runtime/sandbox/plugins/                     ${BOBA_DIR}/sandbox/plugins/
 
 
 # образ сервиса: снаружи приходят конфиг и данные деревом compose/mcp

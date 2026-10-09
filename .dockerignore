@@ -7,10 +7,12 @@
 
 build/src/*
 !build/src/uv
-!build/src/sandbox
-build/src/sandbox/*
-!build/src/sandbox/plugins
-!build/src/sandbox/workspace.ext4
+!runtime
+runtime/*
+!runtime/sandbox
+runtime/sandbox/*
+!runtime/sandbox/plugins
+!runtime/sandbox/workspace.ext4
 !build/src/webassets
 !build/src/*.tar.xz
 !build/src/chainlit-[0-9]*.tar.gz

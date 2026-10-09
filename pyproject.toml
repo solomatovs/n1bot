@@ -1,6 +1,6 @@
 [tool.pytest.ini_options]
 testpaths = ["packages"]
-cache_dir = "compose/.pytest_cache"
+cache_dir = "debug/.pytest_cache"
 python_files = ["test_*.py"]
 pythonpath = [
     "packages/infra/format/boba-confluence/src",
@@ -172,6 +172,7 @@ line-length = 88
 force-exclude = true
 extend-exclude = [
     "compose",
+    "debug",
     "build/*/src",
     "packages/*/*/build",
 ]

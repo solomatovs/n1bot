@@ -29,6 +29,7 @@ dev = [
     "boba-config==0.0.26.dev4",
     "boba-stand==0.0.26.dev4",
     "boba-db-clickhouse[payload]==0.0.26.dev4",
+    "boba-stand-core==0.0.26.dev4",
     "pytest>=9.1,<10",
 ]
 

@@ -53,7 +53,7 @@ def _bin_dirs() -> list[str]:
     return dirs
 
 
-_SANDBOX = Path(__file__).resolve().parents[4] / "build" / "src" / "sandbox"
+_SANDBOX = Path(__file__).resolve().parents[4] / "runtime" / "sandbox"
 _ROOTFS_IMAGE = _SANDBOX / "plugins" / "boba-tool-shell" / "rootfs.ext4"
 _SITE_PACKAGES = "/usr/local/lib/python3.11/site-packages"
 _PACKAGES = Path(__file__).resolve().parents[3]

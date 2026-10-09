@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any, ClassVar
 
 import pytest
-from omegaconf import DictConfig, OmegaConf
+from omegaconf import DictConfig
 
 from boba.runtime.launchers import ZygoteLaunchers
 from boba.runtime.plugins import EntryPointPlugins
@@ -21,7 +21,7 @@ from boba.stand.ui.stand import StandPaths
 from boba.toolkit.manifest import LaunchSpec
 
 REPO = Path(__file__).resolve().parents[6]
-SANDBOX = REPO / "build" / "src" / "sandbox"
+SANDBOX = REPO / "runtime" / "sandbox"
 PLUGIN_IMAGES = SANDBOX / "plugins"
 ROOTFS_IMAGE = PLUGIN_IMAGES / "boba-tool-shell" / "rootfs.ext4"
 """Базовый корень стендов: образ shell-плагина, bash и python без payload'ов."""
@@ -110,8 +110,8 @@ class SandboxLayout:
 
     @staticmethod
     def models_dir() -> Path:
-        """Модели плагинов лежат в дереве сервиса boba-mcp: он их исполняет."""
-        return StandPaths.MCP_BASE.under(REPO) / "models"
+        """Модели плагинов — общие runtime-зависимости репозитория."""
+        return StandPaths.MODELS.under(REPO)
 
     @staticmethod
     def python_path() -> str:
@@ -236,37 +236,10 @@ def plugin_launch_spec(section: str) -> LaunchSpec:
     )
 
 
-def _staged(value: Any, deploy_sandbox: str, deploy_third: str) -> Any:
-    """Пути развёртывания в значении профиля -> артефакты сборки."""
-    if isinstance(value, str):
-        replaced = value.replace(deploy_sandbox, str(SANDBOX))
-        return replaced.replace(deploy_third, str(SANDBOX / "third"))
-
-    if isinstance(value, dict):
-        result: dict[str, Any] = {}
-        for key, entry in value.items():
-            result[key] = _staged(entry, deploy_sandbox, deploy_third)
-        return result
-
-    if isinstance(value, (list, tuple)):
-        items: list[Any] = []
-        for entry in value:
-            items.append(_staged(entry, deploy_sandbox, deploy_third))
-        return items
-
-    return value
-
-
 def section_profile(raw: DictConfig, section: str) -> SandboxProfile:
     """Профиль секции той же сборкой, что у приложения: base + манифест.
 
-    Пути развёртывания (rootfs, workspace, third/bin) подменяются артефактами
-    сборки: dev-хост работает process-режимом и их не раскладывает.
+    Пути rootfs, workspace и third/bin называет конфиг отладки сервиса: они
+    указывают на общий каталог runtime.
     """
-    profile = ZygoteLaunchers(raw).profile_of(plugin_launch_spec(section))
-
-    deploy_sandbox = str(OmegaConf.select(raw, "env.sandbox"))
-    deploy_third = str(OmegaConf.select(raw, "env.base")) + "/third"
-    data = _staged(profile.model_dump(), deploy_sandbox, deploy_third)
-
-    return SandboxProfile.model_validate(data)
+    return ZygoteLaunchers(raw).profile_of(plugin_launch_spec(section))

@@ -71,6 +71,10 @@ dev = [
 [project.scripts]
 boba-chainlit = "boba.chainlit.infra.entry:AppEntry.run"
 
+[tool.boba.unimported]
+boba-db-clickhouse = "entry points boba.addresses и boba.catalog: адреса и каталог clickhouse в соединениях пользователей"
+boba-db-oracle = "entry points boba.connections и boba.addresses: тип соединения oracle"
+
 [tool.setuptools.package-data]
 "boba.chainlit.chat" = ["translations/*.json"]
 

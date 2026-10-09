@@ -7,9 +7,11 @@ DOM: картинка загрузилась, диаграмма отрисов�
 
 Запуск: BOBA_CONFIG_PATH=... pytest -m integration
 packages/apps/boba-chainlit/tests/test_canvas_e2e.py
-Нужны: playwright + chromium, postgres, образ workspace и делегированный
-cgroup base в BOBA_CGROUP_BASE (иначе песочница не стартует): каталог sandbox
-user-юнита boba-sandbox@debug.service, прогон — внутри его слайса.
+Стенд — два собственных процесса на конфигах отладки: сервис boba-mcp
+(debug/mcp) и чат (BOBA_CONFIG_PATH), который ходит к этому сервису. Порты и
+каталоги данных у стенда свои (E2eStand): прогон не занимает адреса отладки
+из конфигов и не трогает её данные; контейнеры compose не участвуют.
+Нужны: playwright + chromium, postgres, образ workspace из runtime/sandbox.
 """
 
 from __future__ import annotations
@@ -20,9 +22,8 @@ import os
 import re
 import socket
 import subprocess
-import tempfile
 import time
-from collections.abc import AsyncIterator, Iterator, Mapping
+from collections.abc import AsyncIterator, Iterator, Mapping, Sequence
 from pathlib import Path
 from typing import Any, ClassVar
 
@@ -31,12 +32,62 @@ import pytest
 from chainlit_stand import FakeUrl
 from playwright.async_api import TimeoutError as PlaywrightTimeout
 
+from boba.runtime.config import EnvOverride
+from boba.stand.ui.stand import free_port
+
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
 
 REPO = Path(__file__).resolve().parents[4]
 LAUNCHER = REPO / ".venv/bin/python"
 ENTRY = REPO / "packages/apps/boba-chainlit/src/boba/chainlit/main.py"
-PORT = int(os.environ.get("BOBA_E2E_PORT", "8601"))
+MCP_CONFIG = REPO / "debug/mcp/conf/config.toml"
+"""Конфиг отладки сервиса boba-mcp: на его адрес смотрит конфиг отладки чата."""
+MCP_MODULE = "boba.mcp_server"
+
+
+class E2eStand:
+    """Адреса и каталоги стенда e2e поверх конфигов отладки.
+
+    Конфиги отладки называют порты и данные интерактивной отладки; стенд
+    переопределяет их окружением, чтобы прогон шёл рядом с запущенной отладкой:
+    свои порты чата и сервиса и свои каталоги данных в debug/e2e.
+    """
+
+    ROOT: ClassVar[Path] = REPO / "debug" / "e2e"
+    APP_DATA: ClassVar[Path] = ROOT / "chainlit" / "data"
+    SERVICE_DATA: ClassVar[Path] = ROOT / "mcp" / "data"
+    SERVICE_PORT: ClassVar[int] = free_port()
+    SERVICE_HOST: ClassVar[str] = "localhost"
+    INSTANCE: ClassVar[str] = "e2e"
+    DATA_DIRS: ClassVar[tuple[str, ...]] = ("krb", "dump", "workspace", "tool-logs")
+
+    def prepare(self) -> None:
+        for data in (self.APP_DATA, self.SERVICE_DATA):
+            for name in self.DATA_DIRS:
+                (data / name).mkdir(parents=True, exist_ok=True)
+
+    def service_env(self) -> dict[str, str]:
+        public = f"http://{self.SERVICE_HOST}:{self.SERVICE_PORT}"
+
+        return {
+            EnvOverride.PORT.var: str(self.SERVICE_PORT),
+            EnvOverride.PUBLIC_URL.var: public,
+            EnvOverride.DATA.var: str(self.SERVICE_DATA),
+        }
+
+    def app_env(self) -> dict[str, str]:
+        return {
+            EnvOverride.PORT.var: str(PORT),
+            EnvOverride.INSTANCE_ID.var: self.INSTANCE,
+            EnvOverride.DATA.var: str(self.APP_DATA),
+            EnvOverride.MCP_HOST.var: self.SERVICE_HOST,
+            EnvOverride.MCP_PORT.var: str(self.SERVICE_PORT),
+        }
+
+
+PORT = int(os.environ.get("BOBA_E2E_PORT") or free_port())
+"""Порт чата стенда: свободный на момент прогона, если его не назвали явно —
+порты конфигов отладки заняты интерактивной отладкой, своей и соседей."""
 BASE = FakeUrl.loopback(PORT, "/boba-debug")
 FILES_PROFILE = "general"
 """Профиль, в котором работает стенд: файлы лежат на его первом MCP-сервере."""
@@ -76,8 +127,8 @@ def anyio_backend() -> str:
 
 
 class E2eApp:
-    """Процесс приложения e2e: старт своим лончером на конфиге стенда,
-    ожидание ответа страницы входа и остановка с добиванием.
+    """Процесс стенда e2e — чат или сервис boba-mcp: старт своим лончером на
+    конфиге отладки, ожидание ответа адреса готовности и остановка с добиванием.
 
     Под нагрузкой параллельного прогона прогрев зигот растягивает старт, поэтому
     ожидание ограничено сроком, а не числом попыток, и обрывается сразу, если
@@ -88,16 +139,25 @@ class E2eApp:
     POLL_SEC: ClassVar[float] = 0.5
     TAIL_LINES: ClassVar[int] = 40
 
-    def __init__(self, config: str) -> None:
-        self._config = config
-        self._log = Path(tempfile.gettempdir()) / f"boba-e2e-{PORT}.log"
+    def __init__(
+        self,
+        command: Sequence[str],
+        overrides: Mapping[str, str],
+        ready_url: str,
+        log: Path,
+    ) -> None:
+        self._command = command
+        self._overrides = overrides
+        self._ready_url = ready_url
+        self._log = log
         self._process: subprocess.Popen[bytes] | None = None
 
     def start(self) -> None:
         self._process = subprocess.Popen(
             # тест запускает собственный лончер конфигом стенда
             # nosemgrep: dangerous-subprocess-use-tainted-env-args
-            [str(LAUNCHER), str(ENTRY), "--config", self._config],
+            [str(LAUNCHER), *self._command],
+            env={**os.environ, **self._overrides},
             stdout=self._log.open("wb"),
             stderr=subprocess.STDOUT,
         )
@@ -115,7 +175,7 @@ class E2eApp:
             self._process.wait()
 
     def _await_ready(self, process: subprocess.Popen[bytes]) -> None:
-        url = BASE + "/login"
+        url = self._ready_url
         deadline = time.monotonic() + self.BOOT_SEC
         last_error = "no reply yet"
 
@@ -153,27 +213,54 @@ class E2eApp:
 
 
 @pytest.fixture(scope="module")
-def app_server() -> Iterator[None]:
+def app_server(tmp_path_factory: pytest.TempPathFactory) -> Iterator[None]:
     config = os.environ.get("BOBA_CONFIG_PATH")
     if not config:
         pytest.skip("BOBA_CONFIG_PATH не задан")
 
+    if not MCP_CONFIG.is_file():
+        pytest.skip(f"нет конфига отладки сервиса: {MCP_CONFIG} (make -C build debug)")
+
+    stand = E2eStand()
+    stand.prepare()
+
     # чужой процесс на порту молча увёл бы тесты на другой код
-    probe = socket.socket()
-    try:
-        taken = probe.connect_ex(("127.0.0.1", PORT)) == 0
-    finally:
-        probe.close()
+    for port in (PORT, stand.SERVICE_PORT):
+        probe = socket.socket()
+        try:
+            taken = probe.connect_ex(("127.0.0.1", port)) == 0
+        finally:
+            probe.close()
 
-    if taken:
-        pytest.fail(f"порт {PORT} уже занят: остановите запущенное приложение")
+        if taken:
+            pytest.fail(f"порт {port} уже занят: остановите запущенное приложение")
 
-    app = E2eApp(config)
-    try:
-        app.start()
-        yield
-    finally:
-        app.stop()
+    # логи — в каталоге прогона pytest: общий путь в /tmp делят пользователи
+    logs = tmp_path_factory.mktemp("boba-e2e")
+    service = E2eApp(
+        ["-m", MCP_MODULE, "--config", str(MCP_CONFIG)],
+        stand.service_env(),
+        FakeUrl.loopback(stand.SERVICE_PORT, "/health"),
+        logs / f"mcp-{stand.SERVICE_PORT}.log",
+    )
+    app = E2eApp(
+        [str(ENTRY), "--config", config],
+        stand.app_env(),
+        BASE + "/login",
+        logs / f"app-{PORT}.log",
+    )
+    # тест ходит к сервису тем же конфигом, что и чат: переопределения — и ему
+    with pytest.MonkeyPatch.context() as environ:
+        for name, value in stand.app_env().items():
+            environ.setenv(name, value)
+
+        try:
+            service.start()
+            app.start()
+            yield
+        finally:
+            app.stop()
+            service.stop()
 
 
 async def _cookie_header(context: Any) -> str:

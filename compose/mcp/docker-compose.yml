@@ -30,7 +30,7 @@ services:
       - ./conf:/app/boba/conf:ro
       - ./conf/krb/krb5.conf:/etc/krb5.conf:ro
       - ./data:/app/boba/data:rw
-      - ./models:/app/boba/models:ro
+      - ../../runtime/models:/app/boba/models:ro
       - ${BOBA_SANDBOX_CGROUP:?start boba-sandbox@mcp.service and set BOBA_SANDBOX_CGROUP in .env}:/cgroup/boba-sandbox-mcp:rw
     ports:
       - "8650"
@@ -47,7 +47,7 @@ services:
       - ./conf2:/app/boba/conf:ro
       - ./conf2/krb/krb5.conf:/etc/krb5.conf:ro
       - ./data:/app/boba/data:rw
-      - ./models:/app/boba/models:ro
+      - ../../runtime/models:/app/boba/models:ro
       - ${BOBA_SANDBOX_CGROUP:?start boba-sandbox@mcp.service and set BOBA_SANDBOX_CGROUP in .env}:/cgroup/boba-sandbox-mcp:rw
     ports:
       - "8650"

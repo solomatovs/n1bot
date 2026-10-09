@@ -13,8 +13,14 @@ BUILD_CONTEXT   ?= $(SRC_DIR)
 TEST_DIR        := $(BASE_DIR)/test
 SCRIPTS_DIR     := $(BASE_DIR)/scripts
 CONF_DIR        := $(BASE_DIR)/conf
-# артефакты для сборки: tarball'ы, uv, модели OCR и эмбеддера, webassets, sandbox
+# артефакты для сборки: tarball'ы, uv, webassets, колесо oracledb
 DEPS_DIR        ?= $(BASE_DIR)/src
+# runtime-зависимости приложений: модели, бинарники и библиотеки песочницы, её образы.
+# Экземпляр один на репозиторий: его монтирует compose, читает отладка и берёт в
+# контекст сборка образа
+RUNTIME_DIR     := $(SRC_DIR)/runtime
+MODELS_DIR      := $(RUNTIME_DIR)/models
+THIRD_DIR       := $(RUNTIME_DIR)/third
 RELEASE_DIR     := $(SRC_DIR)/release
 
 # приложения сборки; цели build, test, dev и release работают по одному приложению
@@ -112,7 +118,7 @@ PYTHON_IMAGE    ?= dmp/python:$(PYTHON_VERSION)-dist
 NODE_IMAGE      ?= dmp/nodejs:20
 STUDIO_NODE_IMAGE ?= dmp/nodejs:22
 BASE_IMAGE      := boba-base:$(PYTHON_VERSION)
-SANDBOX_DIR     := $(DEPS_DIR)/sandbox
+SANDBOX_DIR     := $(RUNTIME_DIR)/sandbox
 # сколько build cache оставляет prune
 empty           :=
 space           := $(empty) $(empty)
@@ -140,16 +146,16 @@ SANDBOX_WS_SIZE ?= 1G
 RAPIDOCR_VERSION ?= 3.9.2
 RAPIDOCR_LANGS  ?= eslav
 RAPIDOCR_REPO   ?= https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v$(RAPIDOCR_VERSION)/onnx
-RAPIDOCR_FILES  := $(DEPS_DIR)/rapidocr/ch_PP-OCRv5_det_mobile.onnx \
-                   $(DEPS_DIR)/rapidocr/ch_ppocr_mobile_v2.0_cls_mobile.onnx \
-                   $(RAPIDOCR_LANGS:%=$(DEPS_DIR)/rapidocr/%_PP-OCRv5_rec_mobile.onnx)
+RAPIDOCR_FILES  := $(MODELS_DIR)/rapidocr/ch_PP-OCRv5_det_mobile.onnx \
+                   $(MODELS_DIR)/rapidocr/ch_ppocr_mobile_v2.0_cls_mobile.onnx \
+                   $(RAPIDOCR_LANGS:%=$(MODELS_DIR)/rapidocr/%_PP-OCRv5_rec_mobile.onnx)
 
 # версии качалок моделей (fastembed, huggingface_hub) и их зависимостей — из uv.lock,
 # теми же constraints, что у образов (стадия boba-wheels): свежий huggingface_hub
 # раскладывает кэш так, что onnxruntime из uv.lock модель не открывает
 FETCH_CONSTRAINTS := $(DEPS_DIR)/constraints.txt
 EMBED_MODELS    ?= intfloat/multilingual-e5-large
-FASTEMBED_STAMPS := $(foreach m,$(EMBED_MODELS),$(DEPS_DIR)/fastembed/.$(subst /,--,$(m)))
+FASTEMBED_STAMPS := $(foreach m,$(EMBED_MODELS),$(MODELS_DIR)/fastembed/.$(subst /,--,$(m)))
 
 # модели переформулировщика: onnxruntime-genai держит каждую каталогом
 # genai_config.json + веса + токенайзер; какую берёт профиль, решает config.toml
@@ -161,7 +167,7 @@ ONNX_REPO_qwen3-1.7b-int4   := Hug0007/qwen3-1.7b-int4-onnx-genai
 ONNX_SUBDIR_qwen3-1.7b-int4 :=
 ONNX_REPO_qwen3-4b-int4     := robinsmits/qwen3-4b-instruct-2507-onnx-int4
 ONNX_SUBDIR_qwen3-4b-int4   :=
-ONNX_DIRS       := $(ONNX_MODELS:%=$(DEPS_DIR)/onnx-genai/%)
+ONNX_DIRS       := $(ONNX_MODELS:%=$(MODELS_DIR)/onnx-genai/%)
 
 # статика фронта: KaTeX (формулы), Inter (шрифт UI), mermaid (диаграммы) вместо CDN
 WEBASSETS_DIR   := $(DEPS_DIR)/webassets
@@ -226,11 +232,11 @@ WEB_DEV_WAIT    ?= 180
 
 # --- что кладут sandbox и release ------------------------------------------------
 
-SANDBOX_PARTS   := $(SANDBOX_DIR)/third/bin/bwrap $(SANDBOX_DIR)/third/bin/fuse2fs \
-                   $(SANDBOX_DIR)/third/lib/libstdc++.so.6 $(SANDBOX_DIR)/third/lib/libgcc_s.so.1 \
+SANDBOX_PARTS   := $(THIRD_DIR)/bin/bwrap $(THIRD_DIR)/bin/fuse2fs \
+                   $(THIRD_DIR)/lib/libstdc++.so.6 $(THIRD_DIR)/lib/libgcc_s.so.1 \
                    $(SANDBOX_DIR)/workspace.ext4
 # библиотеки времени исполнения колёс: нужны любому приложению
-RUNTIME_LIBS    := $(SANDBOX_DIR)/third/lib/libstdc++.so.6 $(SANDBOX_DIR)/third/lib/libgcc_s.so.1
+RUNTIME_LIBS    := $(THIRD_DIR)/lib/libstdc++.so.6 $(THIRD_DIR)/lib/libgcc_s.so.1
 # образы корней всех плагинов репозитория
 PLUGIN_IMAGES    = $(PLUGIN_PACKAGES:%=$(SANDBOX_DIR)/plugins/%/rootfs.ext4)
 # приложения, которые исполняют инструменты в песочнице
@@ -320,7 +326,7 @@ docker build -f $(BASE_DIR)/Dockerfile $(NO_CACHE_OPT) $(DOCKER_ARGS) $(PROXY_AR
     --target $(1) --iidfile "$(2)" $(PROGRESS) $(BUILD_CONTEXT) >&2
 endef
 
-# mke2fs из src/sandbox/tools в контейнере glibc: $(1) — скрипт, $(2) — каталог результата,
+# mke2fs из runtime/sandbox/tools в контейнере glibc: $(1) — скрипт, $(2) — каталог результата,
 # $(3) — аргументы скрипта. root в контейнере нужен, чтобы сохранить владельцев из tar
 define mke2fs-run
 docker run --rm -i -e MKE2FS_CONFIG=/tools/mke2fs.conf -e PATH=/tools:/usr/sbin:/usr/bin:/sbin:/bin \
@@ -378,14 +384,15 @@ endef
 define HELP
 Сборка boba $(VERSION): приложения $(APPS) и образы корней плагинов
 
-Сеть (артефакты -> $(DEPS_DIR)):
+Сеть (артефакты сборки -> $(DEPS_DIR), модели -> $(MODELS_DIR)):
   fetch                 tarball'ы bwrap/fuse/e2fsprogs, uv, модели rapidocr, веса fastembed,
                         модели onnx-genai, katex/Inter/mermaid, исходники chainlit $(CHAINLIT_VERSION),
                         колесо python-oracledb $(ORACLEDB_VERSION)+$(ORACLEDB_LOCAL) с патчем
   oracledb-wheel        только колесо python-oracledb (стадия oracledb-wheel -> src/oracledb)
 
 Общее для приложений (сеть — только реестры pypi/npm, результат файлами в src/):
-  sandbox               bwrap, fuse2fs, шаблон workspace.ext4 и библиотеки колёс -> src/sandbox;
+  sandbox               bwrap, fuse2fs и библиотеки колёс -> runtime/third, шаблон workspace.ext4
+                        -> runtime/sandbox;
                         песочница нужна приложениям, исполняющим инструменты: $(SANDBOX_APPS)
   plugin-rootfs         rootfs.ext4 одного плагина: PLUGIN=<пакет>
   plugin-rootfs-all     rootfs.ext4 всех плагинов с entry points boba.tools
@@ -396,9 +403,12 @@ define HELP
 
 По приложению: APP=<$(APPS)> либо <цель>-<приложение>; без APP — все приложения
   build                 образ boba-<приложение>:$(BOBA_TAG); в образ mcp уезжают образы корней
-                        плагинов и шаблон workspace из src/sandbox
+                        плагинов и шаблон workspace из runtime/sandbox
   test                  проверка релиза внутри образа
-  dev                   рантайм в $(SRC_DIR)/compose/<приложение> из src/ для отладки и compose
+  dev                   дерево compose в $(SRC_DIR)/compose/<приложение>: conf, data, app_root
+  debug                 дерево отладки и тестов в $(SRC_DIR)/debug/<приложение>: свой конфиг (копия
+                        конфига compose с отладочными значениями) и свои data; готовый конфиг
+                        не перезаписывается
   release               дерево установки из образа -> $(RELEASE_DIR)/$(VERSION)/<приложение>;
                         ставится в /app/boba-<приложение>
 
@@ -443,7 +453,7 @@ fetch: $(INPUTS)
 	@rm -rf "$(ASSETS_VENDOR)"
 	mkdir -p "$(dir $(ASSETS_VENDOR))"
 	cp -a "$(WEBASSETS_DIR)" "$(ASSETS_VENDOR)"
-	du -sh $(DEPS_DIR)/*
+	du -sh $(DEPS_DIR)/* $(MODELS_DIR)/*
 
 $(BWRAP_TARBALL):
 	@$(call fetch,$(BWRAP_URL),$@)
@@ -479,13 +489,13 @@ $(UV_BIN):
 	"$@" --version
 
 # модели OCR: детектор и классификатор общие, распознаватель — на язык (boba.doc OcrModel)
-$(DEPS_DIR)/rapidocr/ch_PP-OCRv5_det_mobile.onnx:
+$(MODELS_DIR)/rapidocr/ch_PP-OCRv5_det_mobile.onnx:
 	@$(call fetch,$(RAPIDOCR_REPO)/PP-OCRv5/det/$(notdir $@),$@)
 
-$(DEPS_DIR)/rapidocr/ch_ppocr_mobile_v2.0_cls_mobile.onnx:
+$(MODELS_DIR)/rapidocr/ch_ppocr_mobile_v2.0_cls_mobile.onnx:
 	@$(call fetch,$(RAPIDOCR_REPO)/PP-OCRv4/cls/$(notdir $@),$@)
 
-$(DEPS_DIR)/rapidocr/%_PP-OCRv5_rec_mobile.onnx:
+$(MODELS_DIR)/rapidocr/%_PP-OCRv5_rec_mobile.onnx:
 	@$(call fetch,$(RAPIDOCR_REPO)/PP-OCRv5/rec/$(notdir $@),$@)
 
 # order-only: смена uv.lock не перекачивает гигабайты уже лежащих моделей
@@ -494,12 +504,12 @@ $(FETCH_CONSTRAINTS): $(SRC_DIR)/uv.lock | $(UV_BIN)
 	"$(UV_BIN)" export --directory "$(SRC_DIR)" --frozen --all-packages --all-extras \
 	    --no-emit-workspace --no-hashes -o "$@" > /dev/null
 
-$(DEPS_DIR)/fastembed/.%: | base $(FETCH_CONSTRAINTS)
-	@$(call fetch-model,fastembed,$(DEPS_DIR)/fastembed,fastembed "$(subst --,/,$*)" /out)
+$(MODELS_DIR)/fastembed/.%: | base $(FETCH_CONSTRAINTS)
+	@$(call fetch-model,fastembed,$(MODELS_DIR)/fastembed,fastembed "$(subst --,/,$*)" /out)
 	touch "$@"
 
-$(DEPS_DIR)/onnx-genai/%: | base $(FETCH_CONSTRAINTS)
-	@$(call fetch-model,huggingface_hub,$(DEPS_DIR)/onnx-genai,onnx "$(ONNX_REPO_$*)" "$(ONNX_SUBDIR_$*)" /out/$*)
+$(MODELS_DIR)/onnx-genai/%: | base $(FETCH_CONSTRAINTS)
+	@$(call fetch-model,huggingface_hub,$(MODELS_DIR)/onnx-genai,onnx "$(ONNX_REPO_$*)" "$(ONNX_SUBDIR_$*)" /out/$*)
 
 $(WEBASSETS_DIR)/katex/katex.min.css:
 	@tmp=$$(mktemp -d)
@@ -548,13 +558,14 @@ sandbox: version-check
 	tmp=$$(mktemp -d)
 	trap 'rm -rf "$$tmp"' EXIT
 	$(call docker-image,sandbox-out,$$tmp/sandbox.iid)
-	$(call image-copy,$$(cat "$$tmp/sandbox.iid"),/third,$(SANDBOX_DIR))
+	$(call image-copy,$$(cat "$$tmp/sandbox.iid"),/third,$(RUNTIME_DIR))
 	$(call image-copy,$$(cat "$$tmp/sandbox.iid"),/tools,$(SANDBOX_DIR))
-	chmod 0755 "$(SANDBOX_DIR)/third/bin/bwrap" "$(SANDBOX_DIR)/third/bin/fuse2fs" "$(SANDBOX_DIR)/tools/mke2fs"
+	chmod 0755 "$(THIRD_DIR)/bin/bwrap" "$(THIRD_DIR)/bin/fuse2fs" "$(SANDBOX_DIR)/tools/mke2fs"
 	$(call mke2fs-run,mkworkspace.sh,$(SANDBOX_DIR),/out/workspace.ext4 $(SANDBOX_WS_SIZE)) < /dev/null
 	# TrustedBinaries отвергает каталог, открытый группе на запись
-	chmod -R go-w "$(SANDBOX_DIR)/third"
-	ls -lh $(SANDBOX_DIR)/third/bin $(SANDBOX_DIR)/workspace.ext4
+	chmod -R go-w "$(THIRD_DIR)"
+	chmod go-w "$(RUNTIME_DIR)"
+	ls -lh $(THIRD_DIR)/bin $(SANDBOX_DIR)/workspace.ext4
 
 # образ корня одного плагина: цель читает декларации [tool.boba.sandbox] пакета
 PLUGIN_ROOTFS    = $(SANDBOX_DIR)/plugins/$(PLUGIN)/rootfs.ext4
@@ -679,16 +690,17 @@ endif
 # --- по приложению: образ, проверка, деревья ---------------------------------------
 
 # <цель>-<приложение> — то же, что <цель> APP=<приложение>
-build-% test-% dev-% release-%:
+build-% test-% dev-% debug-% release-%:
 	@$(MAKE) -f "$(MAKEFILE)" $(firstword $(subst -, ,$@)) APP=$*
 
-.PHONY: build test dev release
+.PHONY: build test dev debug release
 
 ifeq ($(APP),)
 
 build: $(APPS:%=build-%)
 test: $(APPS:%=test-%)
 dev: $(APPS:%=dev-%)
+debug: $(APPS:%=debug-%)
 release: $(APPS:%=release-%)
 
 else
@@ -710,6 +722,36 @@ endef
 
 define DEV_ROOT_mcp
 endef
+
+# конфиг отладки: sed-выражения поверх конфига compose. debug-env правит ключ только
+# внутри секции [env]; пути зависимостей заданы от base (каталог debug/<приложение>)
+debug-env = -e '/^\[env\]/,/^\[site\]/s|^\( *$(1) *= *\).*|\1$(2)|'
+DEBUG_CGROUP    := /sys/fs/cgroup/user.slice/user-$(shell id -u).slice/user@$(shell id -u).service/boba.slice/boba-debug.slice/boba-sandbox@debug.service/sandbox
+DEBUG_ENV_COMMON = $(call debug-env,instance_id,"dev")                               \
+    $(call debug-env,messaging_provider,"local")                                     \
+    $(call debug-env,tool_launcher,"process")                                        \
+    $(call debug-env,cgroup_base,"$(DEBUG_CGROUP)")                                  \
+    $(call debug-env,models,"$${env.base}/../../runtime/models")                     \
+    $(call debug-env,sandbox,"$${env.base}/../../runtime/sandbox")                   \
+    $(call debug-env,third,"$${env.base}/../../runtime/third")                       \
+    $(call debug-env,krb,"$${env.base}/../../compose/$(APP)/conf/krb")               \
+    -e 's|$${env.base}/third/|$${env.third}/|g'
+DEBUG_ENV_chainlit = $(call debug-env,port,8601)                                     \
+    $(call debug-env,url_prefix,"/boba-debug")                                       \
+    $(call debug-env,mcp_scheme,"http")                                              \
+    $(call debug-env,mcp_host,"localhost")                                           \
+    $(call debug-env,mcp_port,8651)                                                  \
+    $(call debug-env,mcp_prefix,"")                                                  \
+    $(call debug-env,mcp_issuer_path,"/")                                            \
+    $(call debug-env,app_root,"$${env.base}/../../packages/apps/boba-chainlit/assets")
+# сборка страницы workflow лежит в ассетах пакета без public/
+DEBUG_ENV_studio = $(call debug-env,port,8602)                                       \
+    $(call debug-env,url_prefix,"/boba-studio-debug")                                \
+    $(call debug-env,workflow_page,"http://127.0.0.1:$(WEB_DEV_PORT)")               \
+    $(call debug-env,app_root,"$${env.base}/../../packages/apps/boba-studio/assets") \
+    -e 's|$${env.app_root}/public/workflow|$${env.app_root}/workflow|'
+DEBUG_ENV_mcp    = $(call debug-env,port,8651)                                       \
+    $(call debug-env,public_url,"http://localhost:8651")
 
 # конфиг окружения приложения из шаблона conf/boba.env: $(1) — корень установки,
 # $(2) — каталог данных
@@ -755,7 +797,7 @@ test: build
 	# модели в образе не лежат, песочница — только у приложения с плагинами внутри;
 	# в релизе они рядом: подставляем их биндами
 	docker run --rm -i --env-file "$$env_file" --entrypoint sh                              \
-	    $(foreach model,$(APP_MODELS),-v "$(DEPS_DIR)/$(model):$(DEST_DIR)/models/$(model):ro") \
+	    $(foreach model,$(APP_MODELS),-v "$(MODELS_DIR)/$(model):$(DEST_DIR)/models/$(model):ro") \
 	    $(if $(APP_SANDBOX),$(TEST_SANDBOX_BINDS))                                            \
 	    $(IMAGE)                                                                              \
 	    -c '"$$PYTHONHOME/bin/python3" - --app $(APP) $(if $(APP_SANDBOX),--sandbox) --names "$(DEST_DIR)/app/packages.txt"' < "$(TEST_DIR)/bobacheck.py"
@@ -778,7 +820,7 @@ release:
 	    cp -a "$(SANDBOX_DIR)/workspace.ext4" "$(OUT)/sandbox/workspace.ext4"
 	fi
 	for model in $(APP_MODELS); do
-	    cp -al "$(DEPS_DIR)/$$model" "$(OUT)/models/$$model"
+	    cp -a "$(MODELS_DIR)/$$model" "$(OUT)/models/$$model"
 	done
 	sed -i "1s|^#!.*python3.*|#!$(INSTALL_DIR)/third/bin/python3|" "$(OUT)/app/bin"/*
 	$(call app-env,$(INSTALL_DIR),$(DATA_DIR)) > "$(OUT)/conf/boba.env"
@@ -797,32 +839,20 @@ release:
 	fi
 	echo "    установка: cp -a $(OUT)/. $(INSTALL_DIR)/"
 
-# рабочее дерево приложения для отладки и docker compose: раскладка релиза, но из
-# src/, без образа; docker-compose*.yml лежат в нём же и трекаются git'ом
+# рабочее дерево приложения для docker compose: conf, data и app_root; docker-compose*.yml
+# лежат в нём же и трекаются git'ом. Модели и образы песочницы compose монтирует из
+# runtime/ — в дерево они не копируются
 dev: OUT = $(SRC_DIR)/compose/$(APP)
 dev: web-$(APP)
 	@$(call check,$(INPUTS),запусти: make fetch)
-	$(call check,$(RUNTIME_LIBS),запусти: make sandbox)
 	if [ -n "$(APP_SANDBOX)" ]; then
 	    $(call check,$(SANDBOX_PARTS),запусти: make sandbox)
 	fi
 	echo "== рантайм $(APP) в $(OUT) =="
 	mkdir -p "$(OUT)/conf" "$(OUT)/data/dump" "$(OUT)/data/krb"
-	$(call refill,$(OUT)/models)
-	for model in $(APP_MODELS); do
-	    cp -al "$(DEPS_DIR)/$$model" "$(OUT)/models/$$model"
-	done
-	rm -rf "$(OUT)/sandbox"
-	$(call refill,$(OUT)/third)
-	cp -al "$(SANDBOX_DIR)/third/lib" "$(OUT)/third/lib"
-	# образы песочницы лежат в образе приложения либо монтируются compose из
-	# src/sandbox; bwrap и fuse2fs нужны и process-режиму отладки: хранилище файлов
-	# монтирует ими workspace.ext4
 	if [ -n "$(APP_SANDBOX)" ]; then
 	    mkdir -p "$(OUT)/data/workspace" "$(OUT)/data/tool-logs"
-	    cp -al "$(SANDBOX_DIR)/third/bin" "$(OUT)/third/bin"
 	fi
-	chmod -R go-w "$(OUT)/third"
 	$(call refill,$(OUT)/app_root)
 	$(DEV_ROOT_$(APP))
 	$(call app-env,$(DEST_DIR),$(DEST_DIR)/data) > "$(OUT)/conf/boba.env"
@@ -832,8 +862,45 @@ dev: web-$(APP)
 	if [ -n "$(APP_SANDBOX)" ]; then
 	    echo "    cgroup:  systemctl --user start boba-sandbox@$(APP).service (docs/admin-guide.md, раздел 7)"
 	fi
-	echo "    debug:   python -m $(APP_MODULE) --config $(OUT)/conf/config.toml"
 	echo "    compose: cd $(OUT) && docker compose up -d"
+	echo "    debug:   make debug APP=$(APP)"
+
+# дерево отладки и тестов на хосте: свои конфиги и свои данные, чтобы процесс на
+# хосте и контейнер compose не писали в одни каталоги. Конфиг — копия конфига compose
+# с отладочными значениями, прописанными в файле; готовый конфиг цель не
+# перезаписывает. Модели, third и образы песочницы читаются из runtime/, статика — из
+# ассетов пакета, keytab и krb5.conf — из conf/krb дерева compose
+debug: OUT = $(SRC_DIR)/debug/$(APP)
+debug: DEV_OUT = $(SRC_DIR)/compose/$(APP)
+debug: web-$(APP)
+	@$(call check,$(DEV_OUT)/conf/config.toml,положи конфиг приложения $(APP))
+	$(call check,$(RUNTIME_LIBS),запусти: make sandbox)
+	if [ -n "$(APP_SANDBOX)" ]; then
+	    $(call check,$(SANDBOX_PARTS),запусти: make sandbox)
+	fi
+	echo "== дерево отладки $(APP) в $(OUT) =="
+	umask 077
+	mkdir -p "$(OUT)/conf" "$(OUT)/data/dump" "$(OUT)/data/krb"
+	if [ -n "$(APP_SANDBOX)" ]; then
+	    mkdir -p "$(OUT)/data/workspace" "$(OUT)/data/tool-logs"
+	fi
+	if [ -e "$(OUT)/conf/config.toml" ]; then
+	    echo "    конфиг уже есть, не трогаю: $(OUT)/conf/config.toml"
+	else
+	    sed $(DEBUG_ENV_COMMON) $(DEBUG_ENV_$(APP)) "$(DEV_OUT)/conf/config.toml" > "$(OUT)/conf/config.toml"
+	    if [ -d "$(DEV_OUT)/conf/plugins" ]; then
+	        cp -r "$(DEV_OUT)/conf/plugins" "$(OUT)/conf/plugins"
+	    fi
+	    if [ -e "$(DEV_OUT)/conf/stand.toml" ]; then
+	        cp "$(DEV_OUT)/conf/stand.toml" "$(OUT)/conf/stand.toml"
+	    fi
+	    echo "    конфиг отладки: $(OUT)/conf/config.toml (из $(DEV_OUT)/conf, значения отладочные)"
+	fi
+	echo ">>> дерево отладки готово: $(OUT)"
+	if [ -n "$(APP_SANDBOX)" ]; then
+	    echo "    cgroup:  systemctl --user start boba-sandbox@debug.service (docs/admin-guide.md, раздел 7)"
+	fi
+	echo "    debug:   python -m $(APP_MODULE) --config $(OUT)/conf/config.toml"
 
 endif
 
@@ -868,6 +935,6 @@ prune:
 # модели не трогаем: качаются долго
 .PHONY: clean
 clean:
-	rm -rf $(RELEASE_DIR) $(DEPS_DIR)/uv $(DEPS_DIR)/rapidocr $(WEBASSETS_DIR) $(SANDBOX_DIR) $(ORACLEDB_DIR) \
+	rm -rf $(RELEASE_DIR) $(DEPS_DIR)/uv $(MODELS_DIR)/rapidocr $(WEBASSETS_DIR) $(SANDBOX_DIR) $(ORACLEDB_DIR) \
 	       $(FETCH_CONSTRAINTS) \
 	       $(DEPS_DIR)/*.tar.xz $(DEPS_DIR)/*.tar.gz $(PAGE_JS) $(ASSETS_VENDOR) $(UI_DIST) $(STUDIO_DIST)

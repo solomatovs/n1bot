@@ -45,7 +45,7 @@ from boba.toolrun.injected import InjectedConfig, StaticConfig
 from boba.transport.http.connection import HttpConnection
 
 _REPO = Path(__file__).resolve().parents[4]
-_SANDBOX_STAGING = _REPO / "build" / "src" / "sandbox"
+_SANDBOX_STAGING = _REPO / "runtime" / "sandbox"
 _ROOTFS_IMAGE = _SANDBOX_STAGING / "plugins" / "boba-tool-shell" / "rootfs.ext4"
 
 pytestmark = [
