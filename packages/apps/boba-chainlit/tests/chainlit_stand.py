@@ -513,6 +513,9 @@ class PerCallStreams(RemoteStreams):
     Тесты зовут действия панели отдельными asyncio.run, а подключение
     клиента живёт в цикле событий, где открыто: общий клиент второй вызов
     не пережил бы. Реестр журналов при этом один на стенд.
+
+    Клиент чтения не хранится в объекте: показ и сторож слежения читают
+    одновременно, и общий клиент один из них закрыл бы под чтением другого.
     """
 
     def __init__(
@@ -538,22 +541,24 @@ class PerCallStreams(RemoteStreams):
     async def slice_at(
         self, thread_id: str, call_id: str, channel: JournalChannel, offset: int
     ) -> StreamSlice | None:
-        self._servers = self._client()
-        await self._servers.start()
+        servers = self._client()
+        await servers.start()
         try:
-            return await super().slice_at(thread_id, call_id, channel, offset)
+            reading = RemoteStreams(self._journals, servers, self._caller)
+            return await reading.slice_at(thread_id, call_id, channel, offset)
         finally:
-            await self._servers.stop()
+            await servers.stop()
 
     async def slice_before(
         self, thread_id: str, call_id: str, channel: JournalChannel, end: int
     ) -> StreamSlice | None:
-        self._servers = self._client()
-        await self._servers.start()
+        servers = self._client()
+        await servers.start()
         try:
-            return await super().slice_before(thread_id, call_id, channel, end)
+            reading = RemoteStreams(self._journals, servers, self._caller)
+            return await reading.slice_before(thread_id, call_id, channel, end)
         finally:
-            await self._servers.stop()
+            await servers.stop()
 
 
 class RemoteStand:
