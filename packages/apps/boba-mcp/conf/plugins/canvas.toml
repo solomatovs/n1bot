@@ -1,0 +1,6 @@
+enable    = true
+max_chars = 32000
+tools     = ["canvas_open", "send_file", "diagram_save"]
+
+[sandbox]
+    workspace = true

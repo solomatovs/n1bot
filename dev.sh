@@ -80,5 +80,5 @@ else
   echo "dev: ошибка подготовки окружения (.venv не активировано)" >&2
 fi
 
-# BOBA_* сюда не тянем: их подключает launch.json через envFile.
-# в терминале при нужде: set -a; source .vscode/boba-debug.env; set +a
+# BOBA_* сюда не тянем: цели launch.json называют файлы конфигурации аргументами
+# --config и --site, тесты — переменными BOBA_CONFIG_PATH и BOBA_SITE_PATH

@@ -1,0 +1,19 @@
+enable                  = true
+text_encodings          = ["utf-8", "cp1251"]
+max_text_chars          = 200000
+search_context_chars    = 80
+tools                   = ["read_document", "document_outline", "search_document"]
+
+[ocr]
+    provider   = "rapidocr"
+    models_dir = "/var/cache/rapidocr"
+    language   = "eslav"
+    text_score = 0.5
+    threads    = 2
+
+[sandbox]
+    workspace = true
+    binds     = ["${env.models}/rapidocr:/var/cache/rapidocr"]
+    [sandbox.limits]
+        process_memory_bytes = 17179869184
+        group_memory_bytes   = 4294967296

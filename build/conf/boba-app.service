@@ -1,0 +1,29 @@
+[Unit]
+Description=boba @APP@ (@INSTANCE@)
+After=network-online.target @SANDBOX_UNIT@
+@REQUIRES@
+
+[Service]
+Type=exec
+Slice=boba-@INSTANCE@.slice
+WorkingDirectory=@INSTALL_DIR@
+EnvironmentFile=@INSTALL_DIR@/conf/boba.env
+Environment=BOBA_CGROUP_BASE=/sys/fs/cgroup/user.slice/user-%U.slice/user@%U.service/boba.slice/boba-@INSTANCE@.slice/boba-sandbox@@INSTANCE@.service/sandbox
+ExecStart=@INSTALL_DIR@/third/bin/python3 -m @MODULE@ --config @INSTALL_DIR@/conf/config.toml --site @INSTALL_DIR@/conf/site.toml
+Restart=always
+RestartSec=5
+TimeoutStopSec=30
+KillMode=mixed
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=@INSTALL_DIR@/data
+ProtectHome=read-only
+PrivateTmp=yes
+LimitNOFILE=65536
+MemoryMax=@MEMORY_MAX@
+MemorySwapMax=0
+CPUQuota=@CPU_QUOTA@
+TasksMax=@TASKS_MAX@
+
+[Install]
+WantedBy=default.target

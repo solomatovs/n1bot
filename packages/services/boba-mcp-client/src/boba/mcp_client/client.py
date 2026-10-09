@@ -376,7 +376,7 @@ class HttpEndpoint(HttpAddress):
         return self.url()
 
     @asynccontextmanager
-    async def opened(self, caller: McpCaller | None) -> AsyncIterator[Streams]:
+    async def opened(self, caller: McpCaller | None) -> AsyncGenerator[Streams, None]:
         auth = self.auth.httpx_auth(caller, self.url())
         refusals = HttpRefusals()
         async with create_mcp_http_client(auth=auth) as http:
@@ -402,7 +402,7 @@ class SseEndpoint(HttpAddress):
         return self.url()
 
     @asynccontextmanager
-    async def opened(self, caller: McpCaller | None) -> AsyncIterator[Streams]:
+    async def opened(self, caller: McpCaller | None) -> AsyncGenerator[Streams, None]:
         auth = self.auth.httpx_auth(caller, self.url())
         async with sse_client(self.url(), auth=auth) as streams:
             yield streams
@@ -427,7 +427,7 @@ class StdioCommand(BaseModel):
         return False
 
     @asynccontextmanager
-    async def opened(self, caller: McpCaller | None) -> AsyncIterator[Streams]:
+    async def opened(self, caller: McpCaller | None) -> AsyncGenerator[Streams, None]:
         env: dict[str, str] | None = None
         if self.env:
             env = dict(self.env)

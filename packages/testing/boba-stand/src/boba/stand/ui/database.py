@@ -41,7 +41,7 @@ from boba.stand.edm import EdmDataset, EdmSource, EdmSources
 from boba.stand.ix_index import IxPage, IxPages, SharedIndexers, StandIxStack
 from boba.stand.site import StandLayers
 from boba.stand.stream_sinks import SinkSources, StreamSinks
-from boba.stand.ui.stand import REPO_ROOT, StandApp, StandConfig, StandError, StandUrl
+from boba.stand.ui.stand import StandApp, StandConfig, StandError, StandUrl
 from boba.transport.http.connection import HttpConnection, UrlScheme
 
 
@@ -144,8 +144,8 @@ class StandDatabase:
     def __init__(self, app: StandApp, name: str) -> None:
         self._app = app
         self._name = name
-        self._built = StandLayers.compose(app.base_config.under(REPO_ROOT))
-        self._tools = StandLayers.compose(app.tools_config.under(REPO_ROOT))
+        self._built = StandLayers.compose(app.files())
+        self._tools = StandLayers.compose(app.tools_app().files())
         """Конфиг процесса, исполняющего инструменты: секции [tool.*]."""
         layer = bind(self._built, path=app.data_layer_section, model=DataLayerConfig)
         pool = layer.postgres.pool.model_copy(update=self.POOL_OVERRIDE)

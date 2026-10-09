@@ -5,7 +5,9 @@
 
 # от каталога Makefile, а не от cwd: make -f build/Makefile из корня искал бы
 # test/ и conf/ рядом с собой
-BASE_DIR        ?= $(patsubst %/,%,$(dir $(abspath $(lastword $(MAKEFILE_LIST)))))
+# путь запоминается сразу: после include последним в MAKEFILE_LIST стоит уже не Makefile
+THIS_MAKEFILE   := $(abspath $(lastword $(MAKEFILE_LIST)))
+BASE_DIR        ?= $(patsubst %/,%,$(dir $(THIS_MAKEFILE)))
 SRC_DIR         ?= $(abspath $(BASE_DIR)/..)
 # вложенные вызовы: make -f build/Makefile не подставляет его в $(MAKE)
 MAKEFILE        := $(BASE_DIR)/Makefile
@@ -13,6 +15,9 @@ BUILD_CONTEXT   ?= $(SRC_DIR)
 TEST_DIR        := $(BASE_DIR)/test
 SCRIPTS_DIR     := $(BASE_DIR)/scripts
 CONF_DIR        := $(BASE_DIR)/conf
+# значения переменных сборки для этого хоста (в git не попадает): например
+# WEB_DEV_NETWORK и WEB_DEV_HOST для демона без проброса портов
+-include $(CONF_DIR)/local.mk
 # артефакты для сборки: tarball'ы, uv, webassets, колесо oracledb
 DEPS_DIR        ?= $(BASE_DIR)/src
 # runtime-зависимости приложений: модели, бинарники и библиотеки песочницы, её образы.
@@ -66,6 +71,11 @@ EMBED_mcp        := yes
 MODELS_mcp       := fastembed rapidocr
 PARTS_mcp        :=
 
+# лимиты пользовательского юнита установки без Docker: те же, что у контейнера compose
+UNIT_LIMITS_chainlit := 4G 400% 512
+UNIT_LIMITS_studio   := 16G 800% 2048
+UNIT_LIMITS_mcp      := 16G 800% 2048
+
 APP_PACKAGES      = $(PACKAGES_$(APP))
 APP_IMPORTS       = $(IMPORTS_$(APP))
 APP_MODULE        = $(MODULE_$(APP))
@@ -76,6 +86,8 @@ APP_PREFIX        = $(PREFIX_$(APP))
 APP_SANDBOX       = $(SANDBOX_$(APP))
 APP_EMBED         = $(EMBED_$(APP))
 APP_MODELS        = $(MODELS_$(APP))
+# общий конфиг приложения и его плагины: в пакете приложения, в git
+APP_CONF          = $(SRC_DIR)/packages/apps/boba-$(APP)/conf
 
 ifneq ($(APP),)
 ifeq ($(filter $(APP),$(APPS)),)
@@ -100,13 +112,25 @@ PLUGIN_PACKAGES := $(shell $(PYTHON) $(SCRIPTS_DIR)/plugin_rootfs.py list $(SRC_
 BOBA_TAG        ?= $(VERSION)
 
 # корень установки на сервере и данные, переживающие релизы; тот же корень в образе
-INSTALL_DIR      = /app/boba-$(APP)
+# экземпляр установки: имя каталога, юнитов и среза. По умолчанию — имя приложения;
+# второй узел того же приложения на одной машине получает своё имя
+INSTANCE        ?= $(APP)
+INSTALL_ROOT    ?= /app
+# 1 — release кладёт в third/lib системные библиотеки образа: дерево запускается на
+# системе, отличной от системы образа (нужна только glibc не старше, чем в образе)
+BUNDLE_OS_LIBS  ?=
+INSTALL_DIR      = $(INSTALL_ROOT)/boba-$(INSTANCE)
+# дефис в имени среза systemd означает вложенность (boba-a-b.slice лежит в boba-a.slice),
+# и каталог cgroup экземпляра оказался бы не там, где его ищут юниты
+ifneq ($(findstring -,$(INSTANCE)),)
+$(error INSTANCE=$(INSTANCE): expected a name without "-", for example $(APP)2)
+endif
 DATA_DIR         = $(INSTALL_DIR)/data
 DEST_DIR        ?= /app/boba
 
 IMAGE            = boba-$(APP):$(BOBA_TAG)
 RELEASE_IMAGE    = $(IMAGE)
-OUT              = $(RELEASE_DIR)/$(VERSION)/$(APP)
+OUT              = $(RELEASE_DIR)/$(VERSION)/$(INSTANCE)
 
 # режим sec.sh: all, sast, sca или rules
 MODE            ?= all
@@ -227,7 +251,14 @@ OPENAPI_JSON    := $(STUDIO_PROJECT)/openapi.json
 WEB_DEV_NAME    ?= boba-web-dev
 WEB_DEV_PORT    ?= 5173
 BOBA_URL_PREFIX ?= /boba-studio-debug
-WEB_DEV_URL      = http://127.0.0.1:$(WEB_DEV_PORT)$(BOBA_URL_PREFIX)/workflow-dev/
+# где vite слышен с хоста. По умолчанию порт контейнера публикуется на 127.0.0.1.
+# Демон без проброса портов (rootless с port driver none) так не умеет: там контейнер
+# подключают к сети, маршрутизируемой с хоста (WEB_DEV_NETWORK), и называют его адрес
+# или имя (WEB_DEV_HOST)
+WEB_DEV_HOST    ?= 127.0.0.1
+WEB_DEV_NETWORK ?=
+WEB_DEV_LISTEN   = $(if $(WEB_DEV_NETWORK),--network $(WEB_DEV_NETWORK),-p 127.0.0.1:$(WEB_DEV_PORT):5173)
+WEB_DEV_URL      = http://$(WEB_DEV_HOST):$(WEB_DEV_PORT)$(BOBA_URL_PREFIX)/workflow-dev/
 WEB_DEV_WAIT    ?= 180
 
 # --- что кладут sandbox и release ------------------------------------------------
@@ -399,18 +430,21 @@ define HELP
   web                   фронт для dev-деревьев: web-chainlit и web-studio
   web-chainlit          page.js и UI chainlit (фронт + copilot); chainlit-ui — UI заново
   web-studio            страница workflow -> assets/workflow
-  web-dev               vite dev-сервер страницы workflow на 127.0.0.1:$(WEB_DEV_PORT); STOP=1 — остановить
+  web-dev               vite dev-сервер страницы workflow на $(WEB_DEV_HOST):$(WEB_DEV_PORT); STOP=1 — остановить;
+                        без проброса портов у демона: WEB_DEV_NETWORK=<сеть> WEB_DEV_HOST=<имя или адрес>
 
 По приложению: APP=<$(APPS)> либо <цель>-<приложение>; без APP — все приложения
   build                 образ boba-<приложение>:$(BOBA_TAG); в образ mcp уезжают образы корней
                         плагинов и шаблон workspace из runtime/sandbox
   test                  проверка релиза внутри образа
   dev                   дерево compose в $(SRC_DIR)/compose/<приложение>: conf, data, app_root
-  debug                 дерево отладки и тестов в $(SRC_DIR)/debug/<приложение>: свой конфиг (копия
-                        конфига compose с отладочными значениями) и свои data; готовый конфиг
-                        не перезаписывается
-  release               дерево установки из образа -> $(RELEASE_DIR)/$(VERSION)/<приложение>;
-                        ставится в /app/boba-<приложение>
+  debug                 дерево отладки и тестов в $(SRC_DIR)/debug/<приложение>: свой site.toml
+                        (пишет администратор) и свои data
+  site-keys             перечень ключей site.toml приложения по ссылкам общего конфига
+  release               дерево установки из образа -> $(RELEASE_DIR)/$(VERSION)/<экземпляр>, рассчитано на
+                        $(INSTALL_ROOT)/boba-<экземпляр>; INSTANCE=<имя> (по умолчанию имя приложения),
+                        INSTALL_ROOT=<каталог>
+  install               установка дерева релиза и пользовательских юнитов systemd (запуск без Docker)
 
 Прочее:
   all                   fetch sandbox plugin-rootfs-all web build dev
@@ -650,7 +684,7 @@ $(STUDIO_DIST)/index.html: $(STUDIO_SRCS) $(OPENAPI_JSON)
 	touch "$@"
 	du -sh "$(STUDIO_DIST)"
 
-# vite с HMR в контейнере; studio с BOBA_WORKFLOW_PAGE=http://127.0.0.1:$(WEB_DEV_PORT)
+# vite с HMR в контейнере; studio с workflow_page = http://$(WEB_DEV_HOST):$(WEB_DEV_PORT)
 # проксирует его под {BOBA_URL_PREFIX}/workflow-dev. Живой контейнер не трогается
 .PHONY: web-dev
 ifeq ($(STOP),1)
@@ -667,7 +701,8 @@ web-dev: $(OPENAPI_JSON)
 	docker run -d --name $(WEB_DEV_NAME) --entrypoint /bin/sh \
 	    --label boba.url_prefix=$(BOBA_URL_PREFIX) \
 	    -u "$(RUN_OWNER)" -e HOME=/tmp -e BOBA_URL_PREFIX=$(BOBA_URL_PREFIX) \
-	    -p 127.0.0.1:$(WEB_DEV_PORT):5173 \
+	    -e __VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS=$(WEB_DEV_HOST) \
+	    $(WEB_DEV_LISTEN) \
 	    -v "$(STUDIO_DIR):/pkg" -w /pkg/web/workflow $(STUDIO_NODE_IMAGE) \
 	    -c '[ -d node_modules ] || npm ci --no-audit --no-fund; npm run generate; exec npm run dev -- --host 0.0.0.0 --port 5173 --strictPort --base $(BOBA_URL_PREFIX)/workflow-dev/'
 	for i in $$(seq $(WEB_DEV_WAIT)); do
@@ -690,7 +725,7 @@ endif
 # --- по приложению: образ, проверка, деревья ---------------------------------------
 
 # <цель>-<приложение> — то же, что <цель> APP=<приложение>
-build-% test-% dev-% debug-% release-%:
+build-% test-% dev-% debug-% release-% install-%:
 	@$(MAKE) -f "$(MAKEFILE)" $(firstword $(subst -, ,$@)) APP=$*
 
 .PHONY: build test dev debug release
@@ -706,15 +741,13 @@ release: $(APPS:%=release-%)
 else
 
 # содержимое app_root dev-дерева: у каждого приложения своё
+# app_root дерева compose: том нужен только studio — страница workflow меняется чаще
+# образа. У chainlit и mcp статика лежит в образе
 define DEV_ROOT_chainlit
-mkdir -p "$(OUT)/app_root/public" "$(OUT)/app_root/.chainlit" "$(OUT)/app_root/.files"
-cp -a "$(ASSETS_DIR)/.chainlit/config.toml" "$(ASSETS_DIR)/.chainlit/translations" "$(OUT)/app_root/.chainlit/"
-cp -a "$(ASSETS_DIR)/chainlit.md" "$(OUT)/app_root/"
-cp -a "$(ASSETS_DIR)/public/." "$(OUT)/app_root/public/"
-cp -a "$(UI_DIST)" "$(OUT)/app_root/ui"
 endef
 
 define DEV_ROOT_studio
+$(call refill,$(OUT)/app_root)
 mkdir -p "$(OUT)/app_root/public"
 cp -a "$(STUDIO_DIST)" "$(OUT)/app_root/public/workflow"
 cp -a "$(WEBASSETS_DIR)" "$(OUT)/app_root/public/vendor"
@@ -723,35 +756,81 @@ endef
 define DEV_ROOT_mcp
 endef
 
-# конфиг отладки: sed-выражения поверх конфига compose. debug-env правит ключ только
-# внутри секции [env]; пути зависимостей заданы от base (каталог debug/<приложение>)
-debug-env = -e '/^\[env\]/,/^\[site\]/s|^\( *$(1) *= *\).*|\1$(2)|'
-DEBUG_CGROUP    := /sys/fs/cgroup/user.slice/user-$(shell id -u).slice/user@$(shell id -u).service/boba.slice/boba-debug.slice/boba-sandbox@debug.service/sandbox
-DEBUG_ENV_COMMON = $(call debug-env,instance_id,"dev")                               \
-    $(call debug-env,messaging_provider,"local")                                     \
-    $(call debug-env,tool_launcher,"process")                                        \
-    $(call debug-env,cgroup_base,"$(DEBUG_CGROUP)")                                  \
-    $(call debug-env,models,"$${env.base}/../../runtime/models")                     \
-    $(call debug-env,sandbox,"$${env.base}/../../runtime/sandbox")                   \
-    $(call debug-env,third,"$${env.base}/../../runtime/third")                       \
-    $(call debug-env,krb,"$${env.base}/../../compose/$(APP)/conf/krb")               \
-    -e 's|$${env.base}/third/|$${env.third}/|g'
-DEBUG_ENV_chainlit = $(call debug-env,port,8601)                                     \
-    $(call debug-env,url_prefix,"/boba-debug")                                       \
-    $(call debug-env,mcp_scheme,"http")                                              \
-    $(call debug-env,mcp_host,"localhost")                                           \
-    $(call debug-env,mcp_port,8651)                                                  \
-    $(call debug-env,mcp_prefix,"")                                                  \
-    $(call debug-env,mcp_issuer_path,"/")                                            \
-    $(call debug-env,app_root,"$${env.base}/../../packages/apps/boba-chainlit/assets")
-# сборка страницы workflow лежит в ассетах пакета без public/
-DEBUG_ENV_studio = $(call debug-env,port,8602)                                       \
-    $(call debug-env,url_prefix,"/boba-studio-debug")                                \
-    $(call debug-env,workflow_page,"http://127.0.0.1:$(WEB_DEV_PORT)")               \
-    $(call debug-env,app_root,"$${env.base}/../../packages/apps/boba-studio/assets") \
-    -e 's|$${env.app_root}/public/workflow|$${env.app_root}/workflow|'
-DEBUG_ENV_mcp    = $(call debug-env,port,8651)                                       \
-    $(call debug-env,public_url,"http://localhost:8651")
+# каталог cgroup песочницы экземпляра $(1) у текущего пользователя: подкаталог sandbox
+# юнита boba-sandbox@$(1).service
+HOST_UID        := $(shell id -u)
+sandbox-cgroup   = /sys/fs/cgroup/user.slice/user-$(HOST_UID).slice/user@$(HOST_UID).service/boba.slice/boba-$(1).slice/boba-sandbox@$(1).service/sandbox
+USER_UNITS      := $(HOME)/.config/systemd/user
+
+# шаблон юнита песочницы -> каталог юнитов пользователя и запуск экземпляра $(1).
+# Работающий экземпляр не перезапускается: перезапуск пересоздаёт каталог sandbox, а у
+# приложения остался бы старый. Обновлённый шаблон применится при следующем старте
+define sandbox-unit
+export XDG_RUNTIME_DIR="$${XDG_RUNTIME_DIR:-/run/user/$(HOST_UID)}"
+export DBUS_SESSION_BUS_ADDRESS="$${DBUS_SESSION_BUS_ADDRESS:-unix:path=$$XDG_RUNTIME_DIR/bus}"
+mkdir -p "$(USER_UNITS)"
+if ! cmp -s "$(CONF_DIR)/boba-sandbox@.service" "$(USER_UNITS)/boba-sandbox@.service"; then
+    install -m 0644 "$(CONF_DIR)/boba-sandbox@.service" "$(USER_UNITS)/boba-sandbox@.service"
+    systemctl --user daemon-reload
+    echo "    юнит песочницы: $(USER_UNITS)/boba-sandbox@.service обновлён из $(CONF_DIR)"
+fi
+systemctl --user enable --quiet "boba-sandbox@$(1).service"
+if systemctl --user --quiet is-active "boba-sandbox@$(1).service"; then
+    echo "    cgroup песочницы: boba-sandbox@$(1).service уже работает, не трогаю"
+else
+    systemctl --user start "boba-sandbox@$(1).service"
+    echo "    cgroup песочницы: boba-sandbox@$(1).service запущен"
+fi
+endef
+
+# .env дерева compose называет каждую переменную docker-compose.yml: значений по
+# умолчанию в compose-файлах нет, и пропущенная переменная молча стала бы пустой строкой
+COMPOSE_VARS     = BOBA_USER BOBA_NETWORK BOBA_NETWORK_EXTERNAL BOBA_ADDRESS \
+                   $(if $(filter-out studio,$(APP)),BOBA_ADDRESS_2) $(if $(APP_SANDBOX),BOBA_SANDBOX_CGROUP)
+COMPOSE_REQUIRED = BOBA_USER BOBA_NETWORK BOBA_NETWORK_EXTERNAL $(if $(APP_SANDBOX),BOBA_SANDBOX_CGROUP)
+define compose-env-check
+for name in $(COMPOSE_VARS); do
+    if ! grep -q "^$$name=" "$(OUT)/.env"; then
+        echo "$(OUT)/.env: нет строки $$name= — добавь её по образцу $(CONF_DIR)/compose.env.example" >&2
+        exit 1
+    fi
+done
+for name in $(COMPOSE_REQUIRED); do
+    if grep -q "^$$name=$$" "$(OUT)/.env"; then
+        echo "$(OUT)/.env: $$name пуста — значение обязательно, см. $(CONF_DIR)/compose.env.example" >&2
+        exit 1
+    fi
+done
+if [ -n "$(APP_SANDBOX)" ]; then
+    cgroup=$$(sed -n 's|^BOBA_SANDBOX_CGROUP=||p' "$(OUT)/.env")
+    if [ ! -d "$$cgroup" ]; then
+        echo "$(OUT)/.env: каталога BOBA_SANDBOX_CGROUP нет: $$cgroup — запусти юнит: systemctl --user start boba-sandbox@$(APP).service" >&2
+        exit 1
+    fi
+fi
+network=$$(sed -n 's|^BOBA_NETWORK=||p' "$(OUT)/.env")
+if grep -q "^BOBA_NETWORK_EXTERNAL=true$$" "$(OUT)/.env" && ! docker network inspect "$$network" > /dev/null 2>&1; then
+    echo "$(OUT)/.env: сети $$network нет, а BOBA_NETWORK_EXTERNAL=true — создай её: docker network create $$network" >&2
+    exit 1
+fi
+echo "    .env проверен: $(OUT)/.env"
+endef
+
+# site.toml случая запуска пишет администратор: в нём адреса и секреты машины. Цель
+# его не порождает, а говорит, откуда взять перечень ключей. $(1) — каталог conf
+define site-hint
+if [ -e "$(1)/site.toml" ]; then
+    echo "    site.toml на месте: $(1)/site.toml"
+else
+    echo "    нет $(1)/site.toml — напиши его по перечню ключей: make site-keys APP=$(APP)"
+    echo "    (docs/admin-guide.md, раздел «Конфигурация»)"
+fi
+endef
+
+# проверка машины: $(1) — compose, debug или systemd
+define host-check
+"$(SCRIPTS_DIR)/hostcheck.sh" $(1) $(if $(APP_SANDBOX),sandbox,plain)
+endef
 
 # конфиг окружения приложения из шаблона conf/boba.env: $(1) — корень установки,
 # $(2) — каталог данных
@@ -822,6 +901,13 @@ release:
 	for model in $(APP_MODELS); do
 	    cp -a "$(MODELS_DIR)/$$model" "$(OUT)/models/$$model"
 	done
+	# системные библиотеки образа (libssl1.1, libffi6, krb5 ...) в third/lib: нужны там,
+	# где система не та, на которой собран образ, и этих версий в ней нет
+	if [ -n "$(BUNDLE_OS_LIBS)" ]; then
+	    docker run --rm --network none -v "$(SCRIPTS_DIR):/scripts:ro" --entrypoint sh "$(RELEASE_IMAGE)" \
+	        /scripts/oslibs.sh "$(DEST_DIR)" | tar -C "$(OUT)/third/lib" -xf -
+	    echo "    системные библиотеки образа добавлены в $(OUT)/third/lib"
+	fi
 	sed -i "1s|^#!.*python3.*|#!$(INSTALL_DIR)/third/bin/python3|" "$(OUT)/app/bin"/*
 	$(call app-env,$(INSTALL_DIR),$(DATA_DIR)) > "$(OUT)/conf/boba.env"
 	chmod go-w "$(OUT)"
@@ -830,79 +916,168 @@ release:
 	    install -m 0644 "$(CONF_DIR)/boba-sandbox@.service" "$(OUT)/boba-sandbox@.service"
 	    chmod -R go-w "$(OUT)/sandbox"
 	fi
+	sed -e 's|@APP@|$(APP)|g' -e 's|@INSTANCE@|$(INSTANCE)|g' -e 's|@INSTALL_DIR@|$(INSTALL_DIR)|g' \
+	    -e 's|@MODULE@|$(APP_MODULE)|g'                                                              \
+	    -e 's|@SANDBOX_UNIT@|$(if $(APP_SANDBOX),boba-sandbox@$(INSTANCE).service)|'                 \
+	    -e 's|@REQUIRES@|$(if $(APP_SANDBOX),Requires=boba-sandbox@$(INSTANCE).service)|'            \
+	    -e 's|@MEMORY_MAX@|$(word 1,$(UNIT_LIMITS_$(APP)))|' -e 's|@CPU_QUOTA@|$(word 2,$(UNIT_LIMITS_$(APP)))|' \
+	    -e 's|@TASKS_MAX@|$(word 3,$(UNIT_LIMITS_$(APP)))|'                                          \
+	    "$(CONF_DIR)/boba-app.service" > "$(OUT)/boba-$(INSTANCE).service"
 	$(call check,$(addprefix $(OUT)/,$(RELEASE_PARTS)),собери заново: make build release APP=$(APP))
 	echo ">>> релиз готов: $(OUT) ($$(du -sh --apparent-size "$(OUT)" | cut -f1))"
-	echo "    conf/config.toml в дереве нет — положи его при установке"
-	if [ -n "$(APP_SANDBOX)" ]; then
-	    echo "    cgroup:    $(INSTALL_DIR)/boba-sandbox@.service -> ~/.config/systemd/user/,"
-	    echo "               systemctl --user enable --now boba-sandbox@$(APP).service (docs/admin-guide.md, раздел 7)"
-	fi
-	echo "    установка: cp -a $(OUT)/. $(INSTALL_DIR)/"
+	echo "    установка без Docker: make install APP=$(APP)$(if $(filter-out $(APP),$(INSTANCE)), INSTANCE=$(INSTANCE))$(if $(filter-out /app,$(INSTALL_ROOT)), INSTALL_ROOT=$(INSTALL_ROOT))"
 
-# рабочее дерево приложения для docker compose: conf, data и app_root; docker-compose*.yml
-# лежат в нём же и трекаются git'ом. Модели и образы песочницы compose монтирует из
-# runtime/ — в дерево они не копируются
+# установка дерева релиза в INSTALL_DIR и пользовательских юнитов systemd: приложение
+# работает без Docker от того пользователя, который запустил цель. Код, интерпретатор,
+# статика, модели, образы песочницы и общий конфиг с плагинами заменяются целиком;
+# conf/site.toml, conf/boba.env, conf/krb и data остаются. Работающий экземпляр цель
+# не трогает — его сначала останавливают
+.PHONY: install
+install:
+	@$(call check,$(OUT)/app $(OUT)/third $(OUT)/boba-$(INSTANCE).service,запусти: make release APP=$(APP))
+	export XDG_RUNTIME_DIR="$${XDG_RUNTIME_DIR:-/run/user/$(HOST_UID)}"
+	export DBUS_SESSION_BUS_ADDRESS="$${DBUS_SESSION_BUS_ADDRESS:-unix:path=$$XDG_RUNTIME_DIR/bus}"
+	echo "== установка $(APP) ($(INSTANCE)) в $(INSTALL_DIR) =="
+	$(call host-check,systemd)
+	if [ ! -d "$(INSTALL_DIR)" ] || [ ! -w "$(INSTALL_DIR)" ]; then
+	    echo "нет каталога $(INSTALL_DIR) либо он закрыт на запись — попросить root: install -d -o $$(id -un) -g $$(id -gn) -m 0755 $(INSTALL_DIR)" >&2
+	    exit 1
+	fi
+	if systemctl --user --quiet is-active "boba-$(INSTANCE).service"; then
+	    echo "boba-$(INSTANCE).service работает — останови его: systemctl --user stop boba-$(INSTANCE).service" >&2
+	    exit 1
+	fi
+	for part in app third app_root models sandbox; do
+	    if [ ! -e "$(OUT)/$$part" ]; then
+	        continue
+	    fi
+	    rm -rf "$(INSTALL_DIR)/$$part"
+	    cp -a "$(OUT)/$$part" "$(INSTALL_DIR)/$$part"
+	done
+	mkdir -p "$(INSTALL_DIR)/conf/krb" "$(INSTALL_DIR)/data/dump" "$(INSTALL_DIR)/data/krb"
+	if [ -n "$(APP_SANDBOX)" ]; then
+	    mkdir -p "$(INSTALL_DIR)/data/workspace" "$(INSTALL_DIR)/data/tool-logs"
+	fi
+	if [ -e "$(INSTALL_DIR)/conf/boba.env" ]; then
+	    echo "    окружение уже есть, не трогаю: $(INSTALL_DIR)/conf/boba.env"
+	else
+	    install -m 0644 "$(OUT)/conf/boba.env" "$(INSTALL_DIR)/conf/boba.env"
+	fi
+	rm -rf "$(INSTALL_DIR)/conf/plugins"
+	cp -a "$(OUT)/conf/config.toml" "$(INSTALL_DIR)/conf/config.toml"
+	if [ -d "$(OUT)/conf/plugins" ]; then
+	    cp -a "$(OUT)/conf/plugins" "$(INSTALL_DIR)/conf/plugins"
+	fi
+	$(call site-hint,$(INSTALL_DIR)/conf)
+	mkdir -p "$(USER_UNITS)"
+	install -m 0644 "$(OUT)/boba-$(INSTANCE).service" "$(USER_UNITS)/boba-$(INSTANCE).service"
+	systemctl --user daemon-reload
+	if [ -n "$(APP_SANDBOX)" ]; then
+	    $(call sandbox-unit,$(INSTANCE))
+	fi
+	systemctl --user enable --quiet "boba-$(INSTANCE).service"
+	echo ">>> установлено: $(INSTALL_DIR)"
+	echo "    запуск:  systemctl --user start boba-$(INSTANCE).service"
+	echo "    журнал:  journalctl --user -u boba-$(INSTANCE).service -f"
+
+# рабочее дерево приложения для docker compose: conf, data, .env и у studio app_root;
+# docker-compose*.yml лежат в нём же и трекаются git'ом. Модели и образы песочницы
+# compose монтирует из runtime/, общий конфиг лежит в образе. В conf дерева — только
+# специфика машины: site.toml (пишет администратор), keytab и krb5.conf. Готовые
+# .env и site.toml цель не трогает
 dev: OUT = $(SRC_DIR)/compose/$(APP)
 dev: web-$(APP)
 	@$(call check,$(INPUTS),запусти: make fetch)
 	if [ -n "$(APP_SANDBOX)" ]; then
 	    $(call check,$(SANDBOX_PARTS),запусти: make sandbox)
 	fi
-	echo "== рантайм $(APP) в $(OUT) =="
-	mkdir -p "$(OUT)/conf" "$(OUT)/data/dump" "$(OUT)/data/krb"
+	echo "== дерево compose $(APP) в $(OUT) =="
+	$(call host-check,compose)
+	mkdir -p "$(OUT)/data/dump" "$(OUT)/data/krb"
 	if [ -n "$(APP_SANDBOX)" ]; then
 	    mkdir -p "$(OUT)/data/workspace" "$(OUT)/data/tool-logs"
+	    $(call sandbox-unit,$(APP))
 	fi
-	$(call refill,$(OUT)/app_root)
 	$(DEV_ROOT_$(APP))
+	( umask 027; mkdir -p "$(OUT)/conf/krb" )
 	$(call app-env,$(DEST_DIR),$(DEST_DIR)/data) > "$(OUT)/conf/boba.env"
-	chmod go-w "$(OUT)"
-	$(call check,$(OUT)/conf/config.toml,положи конфиг приложения $(APP))
-	echo ">>> дерево готово: $(OUT)"
-	if [ -n "$(APP_SANDBOX)" ]; then
-	    echo "    cgroup:  systemctl --user start boba-sandbox@$(APP).service (docs/admin-guide.md, раздел 7)"
+	$(call site-hint,$(OUT)/conf)
+	if [ -e "$(OUT)/.env" ]; then
+	    echo "    .env уже есть, не трогаю: $(OUT)/.env"
+	else
+	    {
+	        echo "BOBA_USER=1000:1000"
+	        if [ -n "$(APP_SANDBOX)" ]; then
+	            echo "BOBA_SANDBOX_CGROUP=$(call sandbox-cgroup,$(APP))"
+	        fi
+	        echo "BOBA_NETWORK=boba"
+	        echo "BOBA_NETWORK_EXTERNAL=true"
+	        echo "BOBA_ADDRESS="
+	        if [ "$(APP)" != studio ]; then
+	            echo "BOBA_ADDRESS_2="
+	        fi
+	    } > "$(OUT)/.env"
+	    echo "    .env создан: $(OUT)/.env (сеть и адреса — по образцу $(CONF_DIR)/compose.env.example)"
 	fi
-	echo "    compose: cd $(OUT) && docker compose up -d"
+	chmod go-w "$(OUT)"
+	$(compose-env-check)
+	"$(SCRIPTS_DIR)/composeown.sh" "$(OUT)" "$$(sed -n 's|^BOBA_USER=||p' "$(OUT)/.env")"
+	echo ">>> дерево готово: $(OUT)"
+	echo "    compose: cd $(OUT) && docker compose up -d $(APP)"
 	echo "    debug:   make debug APP=$(APP)"
 
-# дерево отладки и тестов на хосте: свои конфиги и свои данные, чтобы процесс на
-# хосте и контейнер compose не писали в одни каталоги. Конфиг — копия конфига compose
-# с отладочными значениями, прописанными в файле; готовый конфиг цель не
-# перезаписывает. Модели, third и образы песочницы читаются из runtime/, статика — из
-# ассетов пакета, keytab и krb5.conf — из conf/krb дерева compose
+# дерево отладки и тестов на хосте: свои данные и свой site.toml, чтобы процесс на хосте
+# и контейнер compose не писали в одни каталоги. Общий конфиг отладка читает прямо из
+# пакета приложения, модели, third и образы песочницы — из runtime/, статику — из
+# ассетов пакета. site.toml отладки пишет администратор; цель его не порождает
 debug: OUT = $(SRC_DIR)/debug/$(APP)
-debug: DEV_OUT = $(SRC_DIR)/compose/$(APP)
-debug: web-$(APP)
-	@$(call check,$(DEV_OUT)/conf/config.toml,положи конфиг приложения $(APP))
-	$(call check,$(RUNTIME_LIBS),запусти: make sandbox)
+debug: web-$(APP) vscode
+	@$(call check,$(RUNTIME_LIBS),запусти: make sandbox)
 	if [ -n "$(APP_SANDBOX)" ]; then
 	    $(call check,$(SANDBOX_PARTS),запусти: make sandbox)
 	fi
 	echo "== дерево отладки $(APP) в $(OUT) =="
-	umask 077
-	mkdir -p "$(OUT)/conf" "$(OUT)/data/dump" "$(OUT)/data/krb"
+	$(call host-check,debug)
+	if [ -n "$(APP_SANDBOX)" ]; then
+	    $(call sandbox-unit,debug)
+	fi
+	( umask 077; mkdir -p "$(OUT)/conf" )
+	mkdir -p "$(OUT)/data/dump" "$(OUT)/data/krb"
 	if [ -n "$(APP_SANDBOX)" ]; then
 	    mkdir -p "$(OUT)/data/workspace" "$(OUT)/data/tool-logs"
 	fi
-	if [ -e "$(OUT)/conf/config.toml" ]; then
-	    echo "    конфиг уже есть, не трогаю: $(OUT)/conf/config.toml"
-	else
-	    sed $(DEBUG_ENV_COMMON) $(DEBUG_ENV_$(APP)) "$(DEV_OUT)/conf/config.toml" > "$(OUT)/conf/config.toml"
-	    if [ -d "$(DEV_OUT)/conf/plugins" ]; then
-	        cp -r "$(DEV_OUT)/conf/plugins" "$(OUT)/conf/plugins"
-	    fi
-	    if [ -e "$(DEV_OUT)/conf/stand.toml" ]; then
-	        cp "$(DEV_OUT)/conf/stand.toml" "$(OUT)/conf/stand.toml"
-	    fi
-	    echo "    конфиг отладки: $(OUT)/conf/config.toml (из $(DEV_OUT)/conf, значения отладочные)"
-	fi
+	$(call site-hint,$(OUT)/conf)
 	echo ">>> дерево отладки готово: $(OUT)"
-	if [ -n "$(APP_SANDBOX)" ]; then
-	    echo "    cgroup:  systemctl --user start boba-sandbox@debug.service (docs/admin-guide.md, раздел 7)"
-	fi
-	echo "    debug:   python -m $(APP_MODULE) --config $(OUT)/conf/config.toml"
+	echo "    debug:   python -m $(APP_MODULE) --config $(APP_CONF)/config.toml --site $(OUT)/conf/site.toml"
+	echo "    cgroup песочницы отладки для site.toml: $(call sandbox-cgroup,debug)"
+
+# перечень ключей site.toml приложения: всё, на что общий конфиг и плагины ссылаются
+# как ${env.*} и ${site.*}
+.PHONY: site-keys
+site-keys:
+	@$(PYTHON) "$(SCRIPTS_DIR)/site_keys.py" "$(APP_CONF)"
 
 endif
+
+# --- VS Code ---------------------------------------------------------------------
+
+# цели запуска и задачи VS Code из образцов conf/vscode: .vscode/ в git не входит (кроме
+# settings.json), а в launch.json стоит путь cgroup с номером пользователя. Готовые
+# файлы цель не перезаписывает
+VSCODE_DIR      := $(SRC_DIR)/.vscode
+VSCODE_FILES    := launch.json tasks.json python-debug-slice.sh
+
+.PHONY: vscode
+vscode:
+	@mkdir -p "$(VSCODE_DIR)"
+	for name in $(VSCODE_FILES); do
+	    if [ -e "$(VSCODE_DIR)/$$name" ]; then
+	        continue
+	    fi
+	    sed 's|@DEBUG_CGROUP@|$(call sandbox-cgroup,debug)|g' "$(CONF_DIR)/vscode/$$name" > "$(VSCODE_DIR)/$$name"
+	    echo "    vscode: $(VSCODE_DIR)/$$name создан из образца"
+	done
+	chmod 0755 "$(VSCODE_DIR)/python-debug-slice.sh"
 
 # --- прочее ---------------------------------------------------------------------
 

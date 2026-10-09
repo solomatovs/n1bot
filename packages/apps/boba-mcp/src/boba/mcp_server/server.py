@@ -32,7 +32,7 @@ import asyncio
 import contextlib
 import logging
 from abc import abstractmethod
-from collections.abc import AsyncIterator, Mapping, Sequence
+from collections.abc import AsyncGenerator, Mapping, Sequence
 from contextlib import AsyncExitStack, asynccontextmanager
 from enum import StrEnum
 from typing import Any, ClassVar, Protocol
@@ -1113,7 +1113,7 @@ class McpEndpoints:
         await JSONResponse({"error": message}, status_code=404)(scope, receive, send)
 
     @asynccontextmanager
-    async def _lifespan(self, app: Starlette) -> AsyncIterator[None]:
+    async def _lifespan(self, app: Starlette) -> AsyncGenerator[None, None]:
         """Жизненный цикл endpoint'ов: у каждого свой менеджер сессий MCP."""
         async with AsyncExitStack() as stack:
             for endpoint in self._endpoints:

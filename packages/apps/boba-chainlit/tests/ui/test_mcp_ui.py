@@ -144,7 +144,8 @@ def mcp_stand(
         },
     }
     config = StandConfig(
-        workdir=stand_workdir / "mcp",
+        # не "mcp": это каталог сервиса boba-mcp общего стенда (StandConfig.service)
+        workdir=stand_workdir / "chat-mcp",
         app=StandApp.CHAINLIT,
         app_port=free_port(),
         llm_port=llm_port,

@@ -1,9 +1,10 @@
 """Плагин pytest общего стенда: конфиг приложения, тестовая база и пул, kerberos.
 
-Конфиг берётся как приложением: BOBA_CONFIG_PATH либо conf/config.toml в BOBA_BASE.
+Файлы конфигурации называет окружение: BOBA_CONFIG_PATH и BOBA_SITE_PATH.
 """
 
 from collections.abc import AsyncIterator, Iterator
+from copy import deepcopy
 from enum import StrEnum
 
 import pytest
@@ -15,6 +16,7 @@ from boba.db.postgres.connection import PostgresConfig
 from boba.runtime.config import (
     ConfigLocator,
     DataLayerConfig,
+    EnvOverride,
     ProcessConfig,
     RawConfig,
     RuntimeConfig,
@@ -22,7 +24,7 @@ from boba.runtime.config import (
 from boba.stand.database import TestDatabase
 from boba.stand.refs import StandRefs
 from boba.stand.site import ServiceRuntime, StandLayers
-from boba.stand.ui.stand import REPO_ROOT, StandPaths
+from boba.stand.ui.stand import REPO_ROOT, StandApp, StandPaths
 from boba.stand.zygote import ZygoteStand
 from boba.stand_core.context import CallStand, call_stand
 from boba.toolkit.chain import CallAmbient
@@ -75,13 +77,13 @@ class ServiceData(StrEnum):
 @pytest.fixture(scope="session")
 def raw_config() -> DictConfig:
     """Конфиг приложения со стендовым слоем conf/stand.toml поверх."""
-    RawConfig.load(ConfigLocator.path())
+    files = ConfigLocator.files()
+    RawConfig.load(files)
 
-    path = ConfigLocator.path()
-    raw = StandLayers.compose(path)
+    raw = StandLayers.compose(files)
     if not isinstance(raw, DictConfig):
         got = type(raw).__name__
-        msg = f"stand config {path}: expected to compose into a table, got {got}"
+        msg = f"stand config {files}: expected to compose into a table, got {got}"
         raise TypeError(msg)
 
     return raw
@@ -96,11 +98,11 @@ def service_raw_config(tmp_path_factory: pytest.TempPathFactory) -> DictConfig:
     модели плагинов лежат там. Каталог данных — временный: образы workspace,
     журналы и выгрузки тестов не должны ложиться в данные развёрнутого
     приложения."""
-    path = StandPaths.MCP_BASE_CONFIG.under(REPO_ROOT)
-    raw = StandLayers.compose(path)
+    files = StandApp.MCP.files()
+    raw = StandLayers.compose(files)
     if not isinstance(raw, DictConfig):
         got = type(raw).__name__
-        msg = f"service config {path}: expected to compose into a table, got {got}"
+        msg = f"service config {files}: expected to compose into a table, got {got}"
         raise TypeError(msg)
 
     data = tmp_path_factory.mktemp("service-data")
@@ -117,6 +119,17 @@ def service_raw_config(tmp_path_factory: pytest.TempPathFactory) -> DictConfig:
 def runtime_config(raw_config: DictConfig) -> RuntimeConfig:
     """Конфиг рантайма без побочных действий загрузчика: кэши kerberos ставит стенд."""
     return bind(raw_config, path=RuntimeConfig.SECTION, model=RuntimeConfig)
+
+
+@pytest.fixture(scope="session")
+def bus_config(raw_config: DictConfig) -> RuntimeConfig:
+    """Конфиг рантайма с шиной на Postgres для тестов самой шины: отладка
+    выбирает в site.toml provider = local, а шину на Postgres тесты поднимают
+    сами в тестовой базе."""
+    raw = deepcopy(raw_config)
+    OmegaConf.update(raw, f"env.{EnvOverride.MESSAGING.value}", "postgres")
+
+    return bind(raw, path=RuntimeConfig.SECTION, model=RuntimeConfig)
 
 
 @pytest.fixture(scope="session")

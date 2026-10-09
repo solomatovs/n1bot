@@ -1,0 +1,29 @@
+enable     = true
+max_rows   = 500
+tools      = [
+    "pg_list_tables",
+    "pg_describe_table",
+    "pg_query",
+    "pg_stream_out",
+    "pg_stream_in",
+    "pg_address",
+    "pg_database_describe",
+    "pg_schema_describe",
+    "pg_table_describe",
+    "pg_column_describe",
+    "pg_constraints_describe",
+    "pg_indexes_describe",
+    "pg_routines_describe",
+    "pg_routine_arg_describe",
+    "pg_sequences_describe",
+    "pg_types_describe"
+]
+max_bytes  = 1000000
+
+[sandbox]
+    network = true
+    binds   = [
+        "/etc/resolv.conf:/etc/resolv.conf",
+        "/etc/hosts:/etc/hosts",
+        "${env.krb}/krb5.conf:/etc/krb5.conf"
+    ]

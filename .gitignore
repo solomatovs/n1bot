@@ -20,6 +20,9 @@ CLAUDE.md
 /debug/
 /runtime/
 /compose/*/*
+
+# специфика машины и секреты: site-файл случая запуска в git не входит нигде
+site.toml
 !/compose/*/docker-compose.yml
 !/compose/*/docker-compose-test.yml
 
@@ -41,6 +44,7 @@ packages/**/dist/
 /build/conf/pip.conf
 /build/conf/uv.toml
 /build/conf/ca-chain.crt
+/build/conf/local.mk
 /sec/semgrep/
 
 # статика фронта: кладёт make fetch, в образ идёт из build/src/webassets

@@ -1,0 +1,37 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "chainlit: debug tree",
+            "type": "shell",
+            "command": "make",
+            "args": [
+                "-C",
+                "${workspaceFolder}/build",
+                "debug",
+                "APP=chainlit"
+            ],
+            "presentation": {
+                "reveal": "silent",
+                "panel": "shared"
+            },
+            "problemMatcher": []
+        },
+        {
+            "label": "web: dev server",
+            "type": "shell",
+            "command": "make",
+            "args": [
+                "-C",
+                "${workspaceFolder}/build",
+                "web-dev",
+                "BOBA_URL_PREFIX=/boba-studio-debug"
+            ],
+            "presentation": {
+                "reveal": "silent",
+                "panel": "shared"
+            },
+            "problemMatcher": []
+        }
+    ]
+}

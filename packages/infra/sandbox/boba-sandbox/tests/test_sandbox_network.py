@@ -11,16 +11,14 @@
 
 from __future__ import annotations
 
-import os
 import socket
 from enum import StrEnum
-from pathlib import Path
 from typing import ClassVar
 
 import pytest
 from omegaconf import DictConfig, OmegaConf
 
-from boba.runtime.config import AppLayers
+from boba.runtime.config import AppLayers, ConfigLayoutError, ConfigLocator
 from boba.runtime.plugins import EntryPointPlugins
 from boba.sandbox.profile import SandboxProfile
 from boba.sandbox.runner import has_bwrap
@@ -49,35 +47,18 @@ class ProbeCommand(StrEnum):
 class SandboxToolProfiles:
     """Профили инструментов из боевого конфига: имя инструмента -> профиль."""
 
-    CONFIG_ENV: ClassVar[str] = "BOBA_CONFIG_PATH"
-    BASE_ENV: ClassVar[str] = "BOBA_BASE"
-    CONFIG_IN_BASE: ClassVar[str] = "conf/config.toml"
-
     def __init__(self, raw: DictConfig) -> None:
         self._raw = raw
 
     @classmethod
-    def config_path(cls) -> Path | None:
-        """Тот же путь, что берёт приложение; None — конфига в среде нет."""
-        if config_path := os.environ.get(cls.CONFIG_ENV):
-            return Path(config_path)
-
-        base = os.environ.get(cls.BASE_ENV)
-        if not base:
-            return None
-
-        return Path(base) / cls.CONFIG_IN_BASE
-
-    @classmethod
     def load(cls) -> SandboxToolProfiles | None:
-        path = cls.config_path()
-        if path is None:
+        """Те же файлы, что берёт стенд; None — в среде они не названы."""
+        try:
+            files = ConfigLocator.files()
+        except ConfigLayoutError:
             return None
 
-        if not path.is_file():
-            return None
-
-        return cls(AppLayers.compose(path))
+        return cls(AppLayers.compose(files))
 
     def networked(self) -> dict[str, SandboxProfile]:
         """Инструменты, которым конфиг разрешил сеть."""
@@ -124,7 +105,7 @@ class SandboxToolProfiles:
 def _profiles() -> SandboxToolProfiles:
     loaded = SandboxToolProfiles.load()
     if loaded is None:
-        pytest.skip("конфиг приложения недоступен: нет BOBA_CONFIG_PATH/BOBA_BASE")
+        pytest.skip("конфиг недоступен: нет BOBA_CONFIG_PATH и BOBA_SITE_PATH")
 
     return loaded
 

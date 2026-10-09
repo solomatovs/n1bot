@@ -24,7 +24,7 @@ from pydantic import BaseModel, ConfigDict, SecretStr
 from boba.auth.config import ProxyAuthConfig
 from boba.canvas.keys import ObjectKey
 from boba.canvas.storage import StorageNotFoundError
-from boba.config.section import bind_section
+from boba.config import bind
 from boba.connections.sealed import ConnectionSeal, SealedConnection, SealFeature
 from boba.db.postgres.connection import PostgresConfig
 from boba.identity.context import CallContexts
@@ -47,8 +47,9 @@ from boba.mcp_client.client import (
     ProxyAuth,
     StdioCommand,
 )
-from boba.runtime.config import EnvOverride
+from boba.runtime.config import AppLayers, ConfigLayoutError, EnvOverride
 from boba.stand.service_signin import ServiceSignIn
+from boba.stand.ui.stand import StandApp
 from boba.stand_core.context import CallStand
 from boba.toolkit.channels import ToolChannel
 from boba.toolkit.dag import (
@@ -1366,9 +1367,9 @@ class DeclaredClient(BaseModel):
 
 
 class BobaMcpService:
-    """Настоящий процесс сервиса на его собственном конфиге в дереве отладки:
-    `python -m boba.mcp_server --config debug/mcp/conf/config.toml`, данные
-    процесса — в debug/mcp/data, а не у контейнера compose. Порт и способ
+    """Настоящий процесс сервиса на его общем конфиге и site.toml дерева отладки:
+    `python -m boba.mcp_server --config <пакет>/conf/config.toml --site
+    debug/mcp/conf/site.toml`, данные процесса — в debug/mcp/data. Порт и способ
     запуска стенд задаёт переопределениями [env]; вход — proxy, ключ
     утверждений и клиент берутся из [auth.proxy] и [mcp.clients] того же
     конфига."""
@@ -1378,7 +1379,6 @@ class BobaMcpService:
     и адрес ресурса обязаны совпадать с тем, как клиент называет сервис."""
     PROFILE: str = "general"
     CLIENT: str = "boba-chat"
-    CONFIG: Path = BobaMcpStand.REPO / "debug" / "mcp" / "conf" / "config.toml"
     THIRD: Path = BobaMcpStand.REPO / "runtime" / "third"
 
     def __init__(self, log: Path) -> None:
@@ -1386,10 +1386,10 @@ class BobaMcpService:
             probe.bind((self.HOST, 0))
             self.port = int(probe.getsockname()[1])
 
-        self._proxy = bind_section(self.CONFIG, "auth.proxy", ProxyAuthConfig)
-        self._client = bind_section(
-            self.CONFIG, f"mcp.clients.{self.CLIENT}", DeclaredClient
-        )
+        files = StandApp.MCP.files()
+        raw = AppLayers.compose(files)
+        self._proxy = bind(raw, "auth.proxy", ProxyAuthConfig)
+        self._client = bind(raw, f"mcp.clients.{self.CLIENT}", DeclaredClient)
         self._log = log.open("wb")
         self._process = subprocess.Popen(
             [
@@ -1397,7 +1397,9 @@ class BobaMcpService:
                 "-m",
                 "boba.mcp_server",
                 "--config",
-                str(self.CONFIG),
+                str(files.config),
+                "--site",
+                str(files.site),
             ],
             env={
                 EnvOverride.PORT.var: str(self.port),
@@ -1448,8 +1450,10 @@ class TestBobaMcpService:
     async def service(
         self, tmp_path: Path, call_stand: CallStand
     ) -> AsyncIterator[McpToolServer]:
-        if not BobaMcpService.CONFIG.exists():
-            pytest.skip(f"the service config is not placed: {BobaMcpService.CONFIG}")
+        try:
+            StandApp.MCP.files()
+        except ConfigLayoutError as exc:
+            pytest.skip(f"the service config files are not placed: {exc}")
 
         process = BobaMcpService(tmp_path / "mcp.log")
         caller = McpCaller(login="tester", roles=frozenset({"wrt"}))

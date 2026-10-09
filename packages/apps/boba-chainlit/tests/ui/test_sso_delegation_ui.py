@@ -35,6 +35,7 @@ from boba.stand.ui.stand import (
     StandAuth,
     StandConfig,
     StandProcess,
+    StandUrl,
     free_port,
 )
 from boba.transport.http import (
@@ -269,9 +270,11 @@ def test_server_accepts_negotiate_and_keeps_the_delegated_ticket(
     Проверка идёт до браузера: если она зелёная, а браузерная — нет, дело в
     браузере, а не в приложении.
     """
+    # адрес — сам стенд, SPN — доменный (service_host): имя домена резолвится
+    # не на машину теста
     connection = HttpConnection(
         scheme=UrlScheme.HTTP,
-        host=STAND.krb_domain,
+        host=StandUrl.HOST.value,
         port=sso_stand.config.app_port,
         path=sso_stand.config.url_prefix,
         auth=NegotiateAuth(

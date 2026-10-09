@@ -1,59 +1,86 @@
-x-runtime: &runtime
-  init: true
-  cgroup_parent: boba-mcp.slice
-  user: "${BOBA_UID:-1000}:${BOBA_GID:-1000}"
-  devices:
-    - /dev/fuse
-  security_opt:
-    - seccomp=./conf/seccomp-sandbox.json
-    - systempaths=unconfined
-    - no-new-privileges:true
-  cap_drop:
-    - ALL
-  mem_limit: 16g
-  cpus: 8
-  pids_limit: 2048
-  restart: unless-stopped
-  stop_grace_period: 30s
-
 services:
   mcp:
-    <<: *runtime
+    init: true
+    cgroup_parent: boba-mcp.slice
+    user: "${BOBA_USER}"
+    devices:
+      - /dev/fuse
+    security_opt:
+      - seccomp=../../build/conf/seccomp-sandbox.json
+      - systempaths=unconfined
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    mem_limit: 16g
+    cpus: 8
+    pids_limit: 2048
+    restart: unless-stopped
+    stop_grace_period: 30s
     image: boba-mcp:0.0.26.dev4
     hostname: boba-mcp
     container_name: boba-mcp
     networks:
       default:
-        ipv4_address: 10.118.0.30
+        ipv4_address: ${BOBA_ADDRESS}
     env_file: ./conf/boba.env
+    command:
+      - -m
+      - boba.mcp_server
+      - --config
+      - /app/boba/conf/config.toml
+      - --site
+      - /app/boba/conf/site.toml
     volumes:
-      - ./conf:/app/boba/conf:ro
+      - ./conf/site.toml:/app/boba/conf/site.toml:ro
+      - ./conf/krb:/app/boba/conf/krb:ro
       - ./conf/krb/krb5.conf:/etc/krb5.conf:ro
       - ./data:/app/boba/data:rw
       - ../../runtime/models:/app/boba/models:ro
-      - ${BOBA_SANDBOX_CGROUP:?start boba-sandbox@mcp.service and set BOBA_SANDBOX_CGROUP in .env}:/cgroup/boba-sandbox-mcp:rw
+      - ${BOBA_SANDBOX_CGROUP}:/cgroup/boba-sandbox-mcp:rw
     ports:
       - "8650"
   mcp2:
-    <<: *runtime
+    init: true
+    cgroup_parent: boba-mcp.slice
+    user: "${BOBA_USER}"
+    devices:
+      - /dev/fuse
+    security_opt:
+      - seccomp=../../build/conf/seccomp-sandbox.json
+      - systempaths=unconfined
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    mem_limit: 16g
+    cpus: 8
+    pids_limit: 2048
+    restart: unless-stopped
+    stop_grace_period: 30s
     image: boba-mcp:0.0.26.dev4
     hostname: boba-mcp2
     container_name: boba-mcp2
     networks:
       default:
-        ipv4_address: 10.118.0.31
-    env_file: ./conf2/boba.env
+        ipv4_address: ${BOBA_ADDRESS_2}
+    env_file: ./conf/boba.env
+    command:
+      - -m
+      - boba.mcp_server
+      - --config
+      - /app/boba/conf/config.toml
+      - --site
+      - /app/boba/conf/site.toml
     volumes:
-      - ./conf2:/app/boba/conf:ro
+      - ./conf2/site.toml:/app/boba/conf/site.toml:ro
+      - ./conf2/krb:/app/boba/conf/krb:ro
       - ./conf2/krb/krb5.conf:/etc/krb5.conf:ro
       - ./data:/app/boba/data:rw
       - ../../runtime/models:/app/boba/models:ro
-      - ${BOBA_SANDBOX_CGROUP:?start boba-sandbox@mcp.service and set BOBA_SANDBOX_CGROUP in .env}:/cgroup/boba-sandbox-mcp:rw
+      - ${BOBA_SANDBOX_CGROUP}:/cgroup/boba-sandbox-mcp:rw
     ports:
       - "8650"
 
-
 networks:
   default:
-    name: ss
-    external: true
+    name: ${BOBA_NETWORK}
+    external: ${BOBA_NETWORK_EXTERNAL}

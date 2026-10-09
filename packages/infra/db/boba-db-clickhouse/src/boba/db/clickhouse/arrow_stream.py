@@ -31,6 +31,7 @@ from typing import ClassVar
 
 from clickhouse_connect.driver.asyncclient import AsyncClient
 
+from boba.db.clickhouse.formats.arrow import ArrowEos
 from boba.db.clickhouse.payload import PayloadClickHouse, ReadTuning
 from boba.db.clickhouse.target import ChCluster, ChPlacement, ChTableRef
 from boba.db.clickhouse.trace import ChCommandReport
@@ -391,46 +392,14 @@ class ChNeutralFacts:
 
 class ArrowBodyWithoutEos(StreamBody):
     """Реализация StreamBody потоком Arrow IPC: тела кадров идут как есть,
-    кроме маркера конца потока в самом конце — он серверу не отправляется.
+    кроме маркера конца потока в самом конце — он серверу не отправляется
+    (почему — ArrowEos)."""
 
-    Маркер конца потока Arrow (EOS, восемь байт) необязателен: поток кончается
-    и концом тела запроса. С маркером читатель ClickHouse останавливается на
-    нём и остаток тела запроса — завершающий кусок chunked-кодирования — не
-    дочитывает. Сервер до 25-й версии не дочитывает его и сам: кусок остаётся
-    в сокете и разбирается началом следующего запроса того же соединения, и
-    тот получает 400 Bad Request. Без маркера читатель просит следующее
-    сообщение, сервер дочитывает тело до конца, и соединение остаётся
-    пригодным для следующего запроса.
-    """
+    def __init__(self) -> None:
+        self._eos = ArrowEos()
 
-    EOS: ClassVar[bytes] = b"\xff\xff\xff\xff\x00\x00\x00\x00"
-    """Маркер конца потока Arrow IPC: признак продолжения и нулевая длина."""
-
-    async def shaped(self, blocks: AsyncIterator[Chunk]) -> AsyncIterator[Chunk]:
-        """Тела кадров без завершающего маркера: последние байты потока
-        придерживаются, пока не станет ясно, что они не конец."""
-        size = len(self.EOS)
-        held = b""
-        async for block in blocks:
-            if len(block) < size:
-                joined = held + bytes(block)
-                if len(joined) > size:
-                    yield joined[:-size]
-
-                held = joined[-size:]
-                continue
-
-            if held:
-                yield held
-
-            view = memoryview(block)
-            if len(view) > size:
-                yield view[:-size]
-
-            held = bytes(view[-size:])
-
-        if held != self.EOS:
-            yield held
+    def shaped(self, blocks: AsyncIterator[Chunk]) -> AsyncIterator[Chunk]:
+        return self._eos.dropped(blocks)
 
 
 class ChArrowLoader:

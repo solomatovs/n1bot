@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import sys
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -245,7 +245,7 @@ class ServiceStand:
         )
 
     @asynccontextmanager
-    async def serving(self) -> AsyncIterator[None]:
+    async def serving(self) -> AsyncGenerator[None, None]:
         """Слушает порт стенда на время блока, в текущем цикле событий."""
         server = uvicorn.Server(
             uvicorn.Config(

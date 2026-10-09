@@ -13,6 +13,7 @@ import pytest
 from chainlit_stand import FakeSecret
 
 from boba.chainlit.infra.entry import AppEntry, ChainlitEnv
+from boba.runtime.config import ConfigFiles
 
 
 @pytest.fixture(autouse=True)
@@ -62,10 +63,11 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from boba.chainlit.infra.entry import AppEntry
+from boba.runtime.config import ConfigFiles
 
-config = Path(sys.argv[1])
-AppEntry.export_env(config)
-AppEntry.files(config).install()
+files = ConfigFiles(config=Path(sys.argv[1]), site=Path(sys.argv[2]))
+AppEntry.export_env(files)
+AppEntry.attachments(files).install()
 
 import chainlit.config
 import chainlit.server
@@ -81,13 +83,16 @@ print(BaseSession.files_dir.fget(SimpleNamespace(id="s1")))
 
 class TestExportEnv:
     @staticmethod
-    def _config(tmp_path: Path, root: str) -> Path:
+    def _config(tmp_path: Path, root: str) -> ConfigFiles:
         path = tmp_path / "config.toml"
         body = CONFIG.replace("<root>", root)
         body = body.replace("<files_dir>", str(tmp_path / "files"))
         body = body.replace("<auth_secret>", FakeSecret.AUTH)
         path.write_text(body, encoding="utf-8")
-        return path
+        site = tmp_path / "site.toml"
+        site.write_text("", encoding="utf-8")
+
+        return ConfigFiles(config=path, site=site)
 
     def test_env_taken_from_config(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -175,13 +180,16 @@ class TestChainlitFilesOutsideAppRoot:
         return entries
 
     @staticmethod
-    def _config(tmp_path: Path, root: Path, files_dir: str) -> Path:
+    def _config(tmp_path: Path, root: Path, files_dir: str) -> ConfigFiles:
         path = tmp_path / "config.toml"
         body = CONFIG.replace("<root>", str(root))
         body = body.replace("<files_dir>", files_dir)
         body = body.replace("<auth_secret>", FakeSecret.AUTH)
         path.write_text(body, encoding="utf-8")
-        return path
+        site = tmp_path / "site.toml"
+        site.write_text("", encoding="utf-8")
+
+        return ConfigFiles(config=path, site=site)
 
     def test_app_root_stays_untouched(self, tmp_path: Path) -> None:
         root = tmp_path / "root"
@@ -189,11 +197,11 @@ class TestChainlitFilesOutsideAppRoot:
         files_dir = tmp_path / "data" / "files"
         cwd = tmp_path / "cwd"
         cwd.mkdir()
-        config = self._config(tmp_path, root, str(files_dir))
+        files = self._config(tmp_path, root, str(files_dir))
         before = self._tree(root)
 
         result = subprocess.run(
-            [sys.executable, "-c", FILES_PROBE, str(config)],
+            [sys.executable, "-c", FILES_PROBE, str(files.config), str(files.site)],
             cwd=cwd,
             capture_output=True,
             text=True,
@@ -219,4 +227,4 @@ class TestChainlitFilesOutsideAppRoot:
         monkeypatch.setenv(ChainlitEnv.APP_ROOT, str(tmp_path))
 
         with pytest.raises(ValueError, match="files_dir"):
-            AppEntry.files(self._config(tmp_path, tmp_path, ""))
+            AppEntry.attachments(self._config(tmp_path, tmp_path, ""))

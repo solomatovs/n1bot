@@ -38,7 +38,7 @@ from playwright.sync_api import Browser, Page, expect
 from boba.stand.ui.stand import (
     REPO_ROOT,
     ServiceStand,
-    StandPaths,
+    StandApp,
     StandProcess,
     free_port,
 )
@@ -545,12 +545,13 @@ class TestDeployedService:
     """Тот же вход против развёрнутого сервиса через nginx: публичный адрес
     с префиксом, HTTPS, метаданные от корня хоста."""
 
-    CONFIG: Path = StandPaths.MCP_BASE_CONFIG.under(REPO_ROOT)
+    SITE: Path = REPO_ROOT / "compose" / "mcp" / "conf" / "site.toml"
+    """Специфика развёрнутого сервиса: тест ходит к контейнеру compose."""
 
     def test_sign_in_through_nginx(
         self, opened: OpenedLinks, login_page: LoginPage
     ) -> None:
-        with self.CONFIG.open("rb") as handle:
+        with self.SITE.open("rb") as handle:
             deployed = tomllib.load(handle)
 
         public = str(deployed["env"]["public_url"]).rstrip("/")
@@ -575,7 +576,10 @@ class TestDeployedService:
         if not login:
             pytest.skip("the deployed config has no local user with roles")
 
-        url = f"{public}{deployed['mcp']['path']}/{ENDPOINT}"
+        with StandApp.MCP.files().config.open("rb") as handle:
+            common = tomllib.load(handle)
+
+        url = f"{public}{common['mcp']['path']}/{ENDPOINT}"
         session = SignInSession(url, MemoryStore(), free_port())
         session.start()
         address = opened.next()

@@ -1,0 +1,321 @@
+# рабочий каталог kerberos: krb5.conf и кэши билетов приложения
+[krb]
+    config     = "${site.krb_config}"
+    ccache_dir = "${env.data}/krb/cache"
+
+[app]
+    krb             = "${krb}"
+    studio          = "${studio}"
+    session         = "${session}"
+    cluster         = "${cluster}"
+    messaging       = "${messaging}"
+    profiles        = "${profiles}"
+    roles           = "${roles}"
+    data_layer      = "${automation}"
+    catalog         = "${catalog}"
+    stream_journal  = "${stream_journal}"
+    auth            = [
+        "${auth.kerberos}",
+        "${auth.ldap}",
+        "${auth.local}",
+        "${auth.proxy}"
+    ]
+
+[roles]
+    [roles.wrt]
+        tools = ["*"]
+    [roles.read]
+        tools = ["*"]
+
+[llm.main]
+    kind      = "openai"
+    transport = "${http}"
+    [llm.main.connection]
+        scheme            = "${site.llm_scheme}"
+        host              = "${site.llm_host}"
+        port              = "${site.llm_port}"
+        path              = "${site.llm_path}"
+        ssl_verify        = "${site.llm_ssl_verify}"
+        timeout_sec       = 600
+        retry_attempts    = 3
+        retry_backoff_sec = 1.0
+        retry_statuses    = { 429 = 5 }
+        auth              = { method = "bearer", token = "${site.llm_token}" }
+
+[llm.ollama]
+    kind      = "ollama"
+    transport = "${http}"
+    [llm.ollama.connection]
+        scheme         = "${site.ollama.scheme}"
+        host           = "${site.ollama_host}"
+        port           = "${site.ollama_port}"
+        timeout_sec    = 600
+        retry_attempts = 3
+
+[llm.qwen]
+    kind      = "onnx"
+    model_dir = "${site.local_model_dir}"
+
+[llm.e5]
+    kind      = "fastembed"
+    cache_dir = "${env.models}/fastembed"
+
+[profiles.general]
+    display_name          = "General"
+    description           = "Профиль общего назначения: доступны все инструменты"
+    default               = true
+    roles                 = ["*"]
+    tools                 = ["*"]
+    provider              = "${llm.main}"
+    model                 = "${site.llm_model}"
+    settings              = ["*"]
+    system_prompt         = "${site.llm_prompt}"
+    history_messages      = 30
+    [profiles.general.sampling]
+        temperature = 0
+
+[profiles.ollama]
+    display_name          = "Ollama"
+    description           = "Профиль на локальном ollama: qwen3.8 нативным /api/chat"
+    default               = false
+    roles                 = ["*"]
+    tools                 = ["*"]
+    provider              = "${llm.ollama}"
+    model                 = "${site.models.ollama}"
+    settings              = ["*"]
+    system_prompt         = "${site.llm_prompt}"
+    history_messages      = 30
+    [profiles.ollama.sampling]
+        think = "low"
+        [profiles.ollama.sampling.options]
+            temperature      = 1.0
+            top_p            = 0.95
+            top_k            = 20
+            min_p            = 0.0
+            presence_penalty = 0.0
+            repeat_penalty   = 1.0
+            num_predict      = 4096
+            num_ctx          = 16384
+
+[profiles.search]
+    display_name          = "Confluence search"
+    description           = "Поиск по Confluence и базе знаний"
+    default               = false
+    roles                 = ["*"]
+    tools                 = [
+        "confluence_search",
+        "confluence_spaces",
+        "confluence_fetch",
+        "confluence_grep",
+        "kb_vector_search",
+        "kb_fts_search",
+        "kb_catalog2",
+        "kb_fts_search2",
+        "kb_trgm_search2",
+        "kb_vector_search2",
+        "kb_node2",
+        "web_fetch_page",
+        "web_grep_page"
+    ]
+    model                 = "${site.llm_model}"
+    settings              = ["history_messages", "user_prompt"]
+    system_prompt         = "Ты поисковый ассистент BOBA: ищешь ответы в Confluence и базе знаний и отвечаешь со ссылками на источники"
+    history_messages      = 30
+    provider              = "${llm.main}"
+    [profiles.search.sampling]
+        temperature = 0
+    [profiles.search.flow]
+        kind          = "prefetch"
+        tools         = ["kb_vector_search", "kb_fts_search"]
+        [profiles.search.flow.rephraser]
+            provider      = "${llm.main}"
+            model         = "${site.llm_rephraser_model}"
+            system_prompt = '''Ты готовишь запросы для поиска по базе знаний:
+            keywords — ключевые слова и точные термины без вопросительных слов,
+            expanded — развёрнутая формулировка с синонимами,
+            english — тот же запрос по-английски;
+            имена продуктов и технические термины сохраняй как есть'''
+            [profiles.search.flow.rephraser.sampling]
+                temperature = 0
+                max_tokens  = 512
+
+[http]
+    dump                      = { enable = true, path = "${env.data}/dump" }
+    trust_env                 = true
+    proxy                     = ""
+    http2                     = false
+    stream_stall_sec          = 600
+    connect_timeout           = 5
+    write_timeout             = 100
+    pool_timeout              = 5
+    retries                   = 3
+    max_connections           = 50
+    max_keepalive_connections = 10
+    keepalive_expiry          = 5
+    tcp_keepalive             = true
+    tcp_keepidle              = 60
+    tcp_keepintvl             = 10
+    tcp_keepcnt               = 10
+    tcp_user_timeout          = 0
+
+[postgres]
+    host              = "${site.pg_host}"
+    hostaddr          = "${site.pg_addr}"
+    port              = "${site.pg_port}"
+    dbname            = "${site.pg_database}"
+    sslmode           = "${site.pg_sslmode}"
+    application_name  = "boba-studio"
+    connect_timeout   = 10
+    autocommit        = true
+    auth              = "${site.pg_auth.${site.pg_auth_method}}"
+    [postgres.pool]
+        timeout           = 5.0
+        min_size          = 2
+        max_size          = 16
+        max_waiting       = 0
+        max_lifetime      = 12000
+        max_idle          = 600
+        reconnect_timeout = 300
+        num_workers       = 3
+
+[automation]
+    postgres = "${postgres}"
+    schema   = "automation"
+
+# конфигурация studio
+## соединения в базе: профили postgres/web со скрытыми секретами
+[connections]
+    enable         = true
+    connection     = "${postgres}"
+    db_schema      = "automation"
+    ## 32 байта в base64; смена ключа делает сохранённые секреты нечитаемыми
+    encryption_key = "${site.database_encryption_key}"
+
+[catalog]
+    enable     = true
+    connection = "${postgres}"
+    db_schema  = "catalog"
+    app_schema = "automation"
+    view_roles = ["read"]
+    edit_roles = ["wrt"]
+
+# хранилище вложений (upload файлов)
+[stream_journal]
+    enable = true
+    dir    = "${env.data}/tool-logs"
+
+# источники ролей пользователя: memberOf и DN — значения в [site]
+[role.ldap]
+    memberof = "${site.ldap_roles.memberof}"
+    dn       = "${site.ldap_roles.dn}"
+
+[auth.kerberos]
+    type                = "kerberos"
+    principal_format    = "{username}@${site.krb_realm}"
+    [auth.kerberos.accept]
+        service_name    = "HTTP/${site.krb_domain}@${site.krb_realm}"
+        keytab          = "${site.krb_http_keytab}"
+    [auth.kerberos.delegation]
+        mode            = "constrained"
+        service_ccache  = "FILE:${site.krb_ccache_http}"
+        krb5_config     = "${site.krb_config}"
+    [auth.kerberos.roles.ldap]
+        server          = "${site.ldap_url}"
+        base_dn         = "${site.ldap_base_dn}"
+        bind_dn         = "${site.ldap_bind_user}"
+        bind_password   = "${site.ldap_bind_password}"
+        [auth.kerberos.roles.ldap.mapping]
+            member_of   = "${role.ldap.memberof}"
+            dn          = "${role.ldap.dn}"
+
+# ldap авторизация
+[auth.ldap]
+    type                = "ldap"
+    server              = "${site.ldap_url}"
+    base_dn             = "${site.ldap_base_dn}"
+    user_filter         = "(sAMAccountName={username})"
+    bind_dn_template    = '${site.ldap_netbios}\{username}'
+    [auth.ldap.roles.directory]
+        member_of       = "${role.ldap.memberof}"
+        dn              = "${role.ldap.dn}"
+
+# local авторизация: учётки и роли — в [site.local_auth]
+[auth.local]
+    type          = "local"
+    users         = "${site.local_auth.users}"
+    require_roles = true
+    [auth.local.roles.local]
+        mapping = "${site.local_auth.roles}"
+
+[auth.proxy]
+    type            = "proxy"
+    path            = "/auth/proxy"
+    secret          = "${site.proxy_secret}"
+    max_skew_sec    = 60
+    allowed_clients = "${site.proxy.allowed_clients}"
+    require_roles   = true
+    [auth.proxy.headers]
+        user      = "X-Remote-User"
+        timestamp = "X-Boba-Timestamp"
+        signature = "X-Boba-Signature"
+    [auth.proxy.roles.local]
+        mapping = "${site.proxy.local_roles}"
+    [auth.proxy.roles.ldap]
+        server        = "${site.ldap_url}"
+        base_dn       = "${site.ldap_base_dn}"
+        bind_dn       = "${site.ldap_bind_user}"
+        bind_password = "${site.ldap_bind_password}"
+        [auth.proxy.roles.ldap.mapping]
+            member_of = "${role.ldap.memberof}"
+            dn        = "${role.ldap.dn}"
+    [auth.proxy.roles.header]
+        name = "X-Remote-Roles"
+    [auth.proxy.profiles.header]
+        name     = "X-Remote-Profiles"
+        selected = "X-Remote-Profile"
+
+[messaging]
+    provider = "${env.messaging_provider}"
+    postgres = "${postgres}"
+    schema   = "live"
+
+[stream_groups]
+    open_sec       = 60
+    stall_sec      = 300
+    poll_sec       = 0.5
+    pipe_bytes     = 65536
+    pipe_bytes_max = 1048576
+
+[tool_launcher]
+    provider            = "${env.tool_launcher}"
+    workdir             = "${env.data}/workspace"
+    timeout_sec         = 86400
+    channel_limit_bytes = 67108864
+    stderr_tail_bytes   = 4096
+    kill_grace_sec      = 5
+
+# настройки webserver studio
+[cluster]
+    node_id           = "${env.instance_id}"
+    host              = "${env.host}"
+    lock_ttl_sec      = 20
+    heartbeat_sec     = 6
+    reaper_period_sec = 10
+    queue_usage_limit = 0.5
+    retention_sec     = 3600
+
+[session]
+    auth_secret     = "${site.auth_secret}"
+    cookie          = "access_token"
+    cookie_samesite = "lax"
+    session_ttl_sec = 86400
+    session_max_sec = 604800
+    generation      = ""
+
+[studio]
+    host        = "${env.listen_host}"
+    port        = "${env.port}"
+    url_prefix  = "${env.url_prefix}"
+    ws_protocol = "wsproto"
+    page        = "${env.workflow_page}"
+    dist        = "${env.workflow_dist}"

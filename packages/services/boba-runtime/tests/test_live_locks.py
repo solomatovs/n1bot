@@ -30,8 +30,8 @@ pytestmark = [pytest.mark.integration, pytest.mark.anyio]
 TTL_SEC = 2
 
 
-def _cluster(runtime_config: RuntimeConfig) -> ClusterConfig:
-    return runtime_config.cluster.model_copy(
+def _cluster(bus_config: RuntimeConfig) -> ClusterConfig:
+    return bus_config.cluster.model_copy(
         update={"lock_ttl_sec": TTL_SEC, "heartbeat_sec": 1, "reaper_period_sec": 1}
     )
 
@@ -45,23 +45,21 @@ class Stand:
 
 
 async def _stand(
-    runtime_config: RuntimeConfig,
+    bus_config: RuntimeConfig,
     test_database: str,
     pool: AsyncPostgresPool,
     name: str,
 ) -> Stand:
-    cfg = runtime_config.data_layer.postgres.model_copy(
-        update={"dbname": test_database}
-    )
-    cluster = _cluster(runtime_config)
+    cfg = bus_config.data_layer.postgres.model_copy(update={"dbname": test_database})
+    cluster = _cluster(bus_config)
     bus = PgMessageBus(
-        cfg, runtime_config.pg_messaging().db_schema, name, AppName.STUDIO, cluster
+        cfg, bus_config.pg_messaging().db_schema, name, AppName.STUDIO, cluster
     )
     bus._pool_ref = pool
     await bus.setup()
     await bus.start()
     locks = PgLiveLocks(
-        cfg, runtime_config.pg_messaging().db_schema, name, AppName.STUDIO, cluster
+        cfg, bus_config.pg_messaging().db_schema, name, AppName.STUDIO, cluster
     )
     locks._pool_ref = pool
     await locks.setup()
@@ -71,10 +69,10 @@ async def _stand(
 
 @pytest.fixture
 async def stands(
-    runtime_config: RuntimeConfig, test_database: str, pool: AsyncPostgresPool
+    bus_config: RuntimeConfig, test_database: str, pool: AsyncPostgresPool
 ) -> AsyncIterator[tuple[Stand, Stand]]:
-    first = await _stand(runtime_config, test_database, pool, "node1-studio")
-    second = await _stand(runtime_config, test_database, pool, "node2-studio")
+    first = await _stand(bus_config, test_database, pool, "node1-studio")
+    second = await _stand(bus_config, test_database, pool, "node2-studio")
     try:
         yield first, second
     finally:

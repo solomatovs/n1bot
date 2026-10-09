@@ -97,7 +97,7 @@ from boba.mcp_client.client import (
     NamedBlocks,
 )
 from boba.messaging import LockToken, MemoryMessageBus, MemoryPayloadStore
-from boba.runtime.config import AppLayers
+from boba.runtime.config import AppLayers, ConfigLocator
 from boba.runtime.elements import ChatTables
 from boba.runtime.storage import (
     LocalStorageClient,
@@ -645,13 +645,7 @@ def workspace_mount() -> None:
 
 @pytest.fixture(scope="session")
 def app_config() -> AppConfig:
-    config_path = os.environ.get("BOBA_CONFIG_PATH")
-    if not config_path:
-        raise RuntimeError(
-            "the stand expects the app config path in BOBA_CONFIG_PATH, "
-            "the variable is not set (launch.json 'pytest: current file' passes it)"
-        )
-    built = AppLayers.compose(Path(config_path))
+    built = AppLayers.compose(ConfigLocator.files())
     return bind(built, path="app", model=AppConfig)
 
 

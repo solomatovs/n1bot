@@ -74,20 +74,18 @@ class Inbox:
 
 
 async def _bus(
-    runtime_config: RuntimeConfig,
+    bus_config: RuntimeConfig,
     test_database: str,
     pool: AsyncPostgresPool,
     name: str,
 ) -> PgMessageBus:
-    cfg = runtime_config.data_layer.postgres.model_copy(
-        update={"dbname": test_database}
-    )
+    cfg = bus_config.data_layer.postgres.model_copy(update={"dbname": test_database})
     bus = PgMessageBus(
         cfg,
-        runtime_config.pg_messaging().db_schema,
+        bus_config.pg_messaging().db_schema,
         name,
         AppName.STUDIO,
-        runtime_config.cluster,
+        bus_config.cluster,
     )
     bus._pool_ref = pool
     await bus.setup()
@@ -97,10 +95,10 @@ async def _bus(
 
 @pytest.fixture
 async def buses(
-    runtime_config: RuntimeConfig, test_database: str, pool: AsyncPostgresPool
+    bus_config: RuntimeConfig, test_database: str, pool: AsyncPostgresPool
 ) -> AsyncIterator[tuple[PgMessageBus, PgMessageBus]]:
-    first = await _bus(runtime_config, test_database, pool, "node1-studio")
-    second = await _bus(runtime_config, test_database, pool, "node2-studio")
+    first = await _bus(bus_config, test_database, pool, "node1-studio")
+    second = await _bus(bus_config, test_database, pool, "node2-studio")
     try:
         yield first, second
     finally:
@@ -271,9 +269,9 @@ async def test_listener_reconnects_and_catches_up(
 
 
 async def test_failing_subscriber_stops_the_listener_and_the_bus_refuses(
-    runtime_config: RuntimeConfig, test_database: str, pool: AsyncPostgresPool
+    bus_config: RuntimeConfig, test_database: str, pool: AsyncPostgresPool
 ) -> None:
-    bus = await _bus(runtime_config, test_database, pool, "node3-studio")
+    bus = await _bus(bus_config, test_database, pool, "node3-studio")
     try:
         scope = Scope.chat(str(uuid4()))
         seen: list[int] = []
@@ -322,15 +320,13 @@ async def test_user_scope_events_cross_instances(
 
 
 async def test_listener_retries_when_the_catch_up_fails(
-    runtime_config: RuntimeConfig,
+    bus_config: RuntimeConfig,
     test_database: str,
     pool: AsyncPostgresPool,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Ошибка базы при догоне после реконнекта — повтор, а не остановка слушателя."""
-    cfg = runtime_config.data_layer.postgres.model_copy(
-        update={"dbname": test_database}
-    )
+    cfg = bus_config.data_layer.postgres.model_copy(update={"dbname": test_database})
     calls: list[int] = []
 
     async def handler(pointer: Pointer) -> None:
@@ -364,13 +360,13 @@ async def test_listener_retries_when_the_catch_up_fails(
 
 
 async def test_user_scopes_of_two_applications_do_not_cross(
-    runtime_config: RuntimeConfig, test_database: str, pool: AsyncPostgresPool
+    bus_config: RuntimeConfig, test_database: str, pool: AsyncPostgresPool
 ) -> None:
     """Одна шина на два приложения: область пользователя — его users.id, у каждой схемы
     свои uuid, поэтому события одного приложения не приходят в область другого.
     """
-    chat = await _bus(runtime_config, test_database, pool, "node1-chainlit")
-    studio = await _bus(runtime_config, test_database, pool, "node1-studio")
+    chat = await _bus(bus_config, test_database, pool, "node1-chainlit")
+    studio = await _bus(bus_config, test_database, pool, "node1-studio")
     try:
         chat_user = Scope.user(UUID(int=1))
         studio_user = Scope.user(UUID(int=2))
@@ -392,7 +388,7 @@ async def test_user_scopes_of_two_applications_do_not_cross(
 
 
 async def test_neighbour_setup_does_not_deadlock_with_purge(
-    runtime_config: RuntimeConfig, test_database: str, pool: AsyncPostgresPool
+    bus_config: RuntimeConfig, test_database: str, pool: AsyncPostgresPool
 ) -> None:
     """Старт узла (setup с ALTER'ами) во время чистки соседа.
 
@@ -400,8 +396,8 @@ async def test_neighbour_setup_does_not_deadlock_with_purge(
     захватывать таблицы в том же порядке — при инверсии одна из сторон
     падала с DeadlockDetected.
     """
-    first = await _bus(runtime_config, test_database, pool, "node1-studio")
-    schema = runtime_config.pg_messaging().db_schema
+    first = await _bus(bus_config, test_database, pool, "node1-studio")
+    schema = bus_config.pg_messaging().db_schema
     scope = Scope.chat(str(uuid4()))
     token = LockToken.local()
 
@@ -420,7 +416,7 @@ async def test_neighbour_setup_does_not_deadlock_with_purge(
             await sweeper.execute(clear_events.text, clear_events.params)
 
             second_task = asyncio.create_task(
-                _bus(runtime_config, test_database, pool, "node2-studio")
+                _bus(bus_config, test_database, pool, "node2-studio")
             )
 
             deadline = asyncio.get_running_loop().time() + WAIT_SEC

@@ -53,7 +53,6 @@ from boba.stand.ui.database import StandDatabase, StandOracle
 from boba.stand.ui.fake_llm import FakePage, FakeRoute, ScenarioName
 from boba.stand.ui.socket_log import ChatEvent, StepField
 from boba.stand.ui.stand import (
-    REPO_ROOT,
     StandApp,
     StandConfig,
     StandProcess,
@@ -763,7 +762,7 @@ class ConfluenceSite:
 
     @classmethod
     def load(cls) -> ConfluenceSite:
-        built = AppLayers.compose(StandApp.CHAINLIT.tools_config.under(REPO_ROOT))
+        built = AppLayers.compose(StandApp.CHAINLIT.tools_app().files())
         config = bind(built, path=ConfluenceSection.SECTION, model=ConfluenceSection)
         ingest = bind(built, path=IngestSection.SECTION, model=IngestSection)
         return cls(config, ingest.table_shape)
@@ -1180,8 +1179,7 @@ class TablePattern:
 def _connection_catalog() -> TableResult:
     """Выдача connection_list: все строки стенда, по виду и имени."""
     stand = Stand.required()
-    config_path = StandApp.CHAINLIT.base_config.under(REPO_ROOT)
-    built = StandLayers.compose(config_path)
+    built = StandLayers.compose(StandApp.CHAINLIT.files())
     oracle = StandOracle(built)
     sources = bind(built, path="ix_stand", model=EdmSources)
     edm = sources.demo()[0]
@@ -2156,8 +2154,7 @@ class TestAddressTools:
         feed.call(call, expect)
 
     def test_ora_address(self, feed: ToolFeed) -> None:
-        config_path = StandApp.CHAINLIT.base_config.under(REPO_ROOT)
-        oracle = StandOracle(StandLayers.compose(config_path))
+        oracle = StandOracle(StandLayers.compose(StandApp.CHAINLIT.files()))
         url = re.escape(f"oracle://{oracle.host}:{oracle.port}/{oracle.service}")
         call = ToolCall(
             tool="ora_address", arguments={"connection": "conn://oracle/main"}

@@ -1,0 +1,35 @@
+enable          = true
+tools           = [
+    "confluence_search",
+    "confluence_spaces",
+    "confluence_fetch",
+    "confluence_grep",
+    "confluence_address"
+]
+body_format     = "view"
+max_text_chars  = 6000
+
+transport       = "${http}"
+
+[confluence]
+    host              = "${site.confluence.host}"
+    port              = "${site.confluence.port}"
+    path              = "${site.confluence.path}"
+    timeout_sec       = 30.0
+    ssl_verify        = false
+    retry_attempts    = 3
+    retry_backoff_sec = 1.0
+    retry_after_max_sec = 60.0
+    retry_statuses    = { 429 = 5, 401 = 3 }
+
+[sandbox]
+    network = true
+    binds   = [
+        "${env.models}/rapidocr:/var/cache/rapidocr",
+        "/etc/resolv.conf:/etc/resolv.conf",
+        "/etc/hosts:/etc/hosts",
+        "${env.krb}/krb5.conf:/etc/krb5.conf"
+    ]
+    [sandbox.limits]
+        process_memory_bytes = 4294967296
+        group_memory_bytes   = 2147483648
