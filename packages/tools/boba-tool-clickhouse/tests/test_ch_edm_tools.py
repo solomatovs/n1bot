@@ -62,7 +62,7 @@ class Runner:
 def sources(raw_config: Any) -> list[EdmSource]:
     listed = bind(raw_config, path="ix_stand", model=EdmSources).demo()
     if not listed:
-        pytest.skip("ix_stand.ch_sources has no source with demo = true")
+        pytest.fail("ix_stand.ch_sources has no source with demo = true")
 
     return listed
 

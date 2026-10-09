@@ -1200,8 +1200,10 @@ class TestBackToSource:
     async def test_binary_across_major_versions_is_refused(
         self, back_dags: PumpDags, target: PostgresSide, back: PostgresSide
     ) -> None:
-        if target.version // 10000 == back.version // 10000:
-            pytest.skip("the same major version accepts binary")
+        assert target.version // 10000 != back.version // 10000, (
+            f"{target.source.name} and {back.source.name} share the major version: "
+            "the case needs targets older than the newest postgres"
+        )
 
         outcome = await transfer(back_dags, CITY_MONTH_BINARY)
 

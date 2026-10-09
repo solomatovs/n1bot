@@ -10,6 +10,7 @@ from typing import ClassVar
 
 import pytest
 
+from boba.stand.collection import ModuleGroups, Requirements
 from boba.stand.names import StandSuite
 from boba.stand.site import Stand
 
@@ -44,6 +45,18 @@ def pytest_configure(config: pytest.Config) -> None:
     StandSuite(config).configure_package(config.args)
 
 
+@pytest.hookimpl(tryfirst=True)
+def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
+    """Тест без группы набора получает группу своего модуля; раньше хука
+    xdist: он читает группы в том же событии."""
+    ModuleGroups().assign(items)
+
+
+def pytest_runtest_setup(item: pytest.Item) -> None:
+    """Метка failif: без обязательного окружения тест падает с причиной."""
+    Requirements().check(item)
+
+
 @pytest.fixture(scope="session")
 def stand() -> Stand:
     """Адреса, принципалы и учётки стенда: в коде тестов их быть не должно."""
@@ -52,8 +65,8 @@ def stand() -> Stand:
 
 @pytest.fixture(scope="session")
 def live_kdc(stand: Stand) -> None:
-    """Пропуск теста, когда локального AD на машине нет."""
+    """Локальный AD обязателен: без keytab и krb5.conf тест падает с причиной."""
     if stand.live():
         return
 
-    pytest.skip("нет keytab/krb5.conf локального AD")
+    pytest.fail("нет keytab/krb5.conf локального AD")

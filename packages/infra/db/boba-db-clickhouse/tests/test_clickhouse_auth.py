@@ -27,13 +27,13 @@ STAND = Stand.required()
 pytestmark = [
     pytest.mark.integration,
     pytest.mark.anyio,
-    pytest.mark.skipif(not STAND.live(), reason="нет keytab/krb5.conf локального AD"),
-    pytest.mark.skipif(
+    pytest.mark.failif(not STAND.live(), reason="нет keytab/krb5.conf локального AD"),
+    pytest.mark.failif(
         not STAND.ch_addr, reason="в конфиге стенда нет clickhouse (ch_addr)"
     ),
 ]
 
-needs_ch_keytab = pytest.mark.skipif(
+needs_ch_keytab = pytest.mark.failif(
     not STAND.krb_ch_keytab, reason="в конфиге стенда нет keytab clickhouse"
 )
 
@@ -84,7 +84,7 @@ def _keytab() -> KeytabAuth:
 async def test_password_auth_logs_in_as_its_own_user() -> None:
     """method = password: имя и пароль уезжают клиенту, сервер видит их."""
     if not STAND.ch_user:
-        pytest.skip("в конфиге стенда нет пользователя clickhouse с паролем")
+        pytest.fail("в конфиге стенда нет пользователя clickhouse с паролем")
 
     connection = _profile(
         PasswordAuth(method="password", user=STAND.ch_user, password=STAND.ch_password)
@@ -140,7 +140,7 @@ async def test_ticket_auth_logs_in_as_the_ticket_owner() -> None:
 async def test_wrong_password_is_reported() -> None:
     """Неверный пароль — ошибка, а не тихий вход пользователем по умолчанию."""
     if not STAND.ch_user:
-        pytest.skip("в конфиге стенда нет пользователя clickhouse с паролем")
+        pytest.fail("в конфиге стенда нет пользователя clickhouse с паролем")
 
     connection = _profile(
         PasswordAuth(

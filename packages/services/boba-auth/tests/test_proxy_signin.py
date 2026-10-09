@@ -191,7 +191,7 @@ def test_config_rejects_blank_secret() -> None:
 
 
 @pytest.mark.integration
-@pytest.mark.skipif(not STAND.live(), reason="нет keytab/krb5.conf локального AD")
+@pytest.mark.failif(not STAND.live(), reason="нет keytab/krb5.conf локального AD")
 async def test_directory_roles_by_sam_account_name(raw_config: Any) -> None:
     """Роли из каталога: поиск по sAMAccountName под служебным bind'ом."""
     ldap = bind(raw_config, path="auth.kerberos.roles.ldap", model=LdapRolesConfig)
@@ -205,7 +205,7 @@ async def test_directory_roles_by_sam_account_name(raw_config: Any) -> None:
 
 
 @pytest.mark.integration
-@pytest.mark.skipif(not STAND.live(), reason="нет keytab/krb5.conf локального AD")
+@pytest.mark.failif(not STAND.live(), reason="нет keytab/krb5.conf локального AD")
 async def test_login_unknown_to_the_directory_keeps_other_roles(
     raw_config: DictConfig,
 ) -> None:

@@ -40,7 +40,6 @@ from boba.db.postgres.connection import CopyOptions
 from boba.pump_stand import (
     ClickHouseSide,
     OracleSide,
-    PgSource,
     PostgresSide,
     PumpDags,
     Pumps,
@@ -74,17 +73,9 @@ pytestmark = [pytest.mark.integration, pytest.mark.anyio]
 STAND = PumpStand.required()
 
 
-def _newest_postgres(sources: Sequence[PgSource]) -> str:
-    """Имя новейшего PostgreSQL стенда (Greenplum не в счёт)."""
-    plain: list[str] = []
-    for source in sources:
-        if source.name.startswith("pg-"):
-            plain.append(source.name)
-
-    return plain[-1]
-
-
-NEWEST = _newest_postgres(STAND.sources)
+NEWEST = STAND.newest_postgres()
+ON_NEWEST = STAND.only("postgres", [NEWEST])
+"""Случай не зависит от версии сервера: идёт на одном, самом новом postgres."""
 ROWS = 60
 ARRAYSIZE = 97
 CHUNK_BYTES = 4096
@@ -1033,14 +1024,12 @@ class TestPostgresToOracle:
 class TestTraps:
     """Ловушки Arrow-пути postgres на новейшем сервере."""
 
+    @ON_NEWEST
     async def test_unbounded_numeric_is_refused_before_execution(
         self, tmp_path: Path, postgres: PostgresSide
     ) -> None:
         """numeric без точности отвергается по описанию стейтмента: запрос с
         pg_sleep(30) не выполняется, ответ приходит сразу."""
-        if postgres.source.name != NEWEST:
-            pytest.skip("one postgres is enough for this trap")
-
         dags = _dags(tmp_path, {"pg": postgres.profile}, {})
         started = time.monotonic()
         outcome = await dags.run(UNBOUNDED_NUMERIC)
@@ -1051,14 +1040,12 @@ class TestTraps:
         assert failure.error_kind == "PgArrowError", failure.llm_view()
         assert "numeric without precision" in failure.llm_view()
 
+    @ON_NEWEST
     async def test_wide_numeric_needs_text(
         self, tmp_path: Path, postgres: PostgresSide
     ) -> None:
         """numeric шире 38 знаков читатель CSV Arrow не собирает: отказ до
         выполнения с подсказкой ::text."""
-        if postgres.source.name != NEWEST:
-            pytest.skip("one postgres is enough for this trap")
-
         dags = _dags(tmp_path, {"pg": postgres.profile}, {})
         outcome = await dags.run(WIDE_NUMERIC)
 
@@ -1066,12 +1053,10 @@ class TestTraps:
         assert failure.error_kind == "PgArrowError", failure.llm_view()
         assert "up to 38 digits" in failure.llm_view()
 
+    @ON_NEWEST
     async def test_broken_statement_is_refused_by_describe(
         self, tmp_path: Path, postgres: PostgresSide
     ) -> None:
-        if postgres.source.name != NEWEST:
-            pytest.skip("one postgres is enough for this trap")
-
         dags = _dags(tmp_path, {"pg": postgres.profile}, {})
         outcome = await dags.run(BROKEN_STATEMENT)
 
@@ -1079,14 +1064,12 @@ class TestTraps:
         assert failure.error_kind == "PgDescribeError", failure.llm_view()
         assert "the statement on postgres failed" in failure.llm_view()
 
+    @ON_NEWEST
     async def test_arrays_travel_as_text(
         self, tmp_path: Path, postgres: PostgresSide
     ) -> None:
         """Массив любой размерности едет текстом postgres и ложится в колонку
         массива как есть."""
-        if postgres.source.name != NEWEST:
-            pytest.skip("one postgres is enough for this trap")
-
         await postgres.create("dims", ["id bigint", "a2 int[][]"])
         dags = _dags(tmp_path, {"pg": postgres.profile}, {})
 
@@ -1095,15 +1078,13 @@ class TestTraps:
 
         assert landed == [(1, [[1, 2], [3, 4]])]
 
+    @ON_NEWEST
     async def test_row_wider_than_the_parse_block_needs_bigger_chunks(
         self, tmp_path: Path, postgres: PostgresSide
     ) -> None:
         """Строка CSV обязана уместиться в один блок читателя: по умолчанию
         блок — 1 MiB, строка в 3 MiB отвергается с подсказкой, а max_row_bytes
         в 4 MiB её проносит."""
-        if postgres.source.name != NEWEST:
-            pytest.skip("one postgres is enough for this trap")
-
         await postgres.create("wide", ["id bigint", "t text"])
         dags = _dags(tmp_path, {"pg": postgres.profile}, {})
         outcome = await dags.run(WIDE_ROW_SMALL_CHUNKS)
@@ -1177,14 +1158,12 @@ class TestTraps:
 
         assert bytes(landed[0][1]) != packed[0]
 
+    @ON_NEWEST
     async def test_list_in_the_stream_is_refused_before_loading(
         self, tmp_path: Path, postgres: PostgresSide, clickhouse: ClickHouseSide
     ) -> None:
         """Список Arrow (Array ClickHouse) CSV не несёт: pg_stream_in отвергает
         его по схеме, источник обязан отдать текст postgres."""
-        if postgres.source.name != NEWEST:
-            pytest.skip("one postgres is enough for this trap")
-
         await postgres.create("lists", ["id bigint", "arr bigint[]"])
         dags = _dags(tmp_path, {"pg": postgres.profile, "ch": clickhouse.profile}, {})
         outcome = await dags.run(LIST_IN_THE_STREAM)
@@ -1193,15 +1172,13 @@ class TestTraps:
         assert failure.error_kind == "PgArrowError", failure.llm_view()
         assert "cannot be written as csv" in failure.llm_view()
 
+    @ON_NEWEST
     async def test_copy_session_is_fixed_regardless_of_profile_options(
         self, tmp_path: Path, postgres: PostgresSide
     ) -> None:
         """Текст COPY не зависит от настроек сессии профиля: даты ISO, UTC, bytea
         hex, интервал в записи postgres, money без локали, float точно — у
         pg_stream_out с любым wire, в том числе arrow."""
-        if postgres.source.name != NEWEST:
-            pytest.skip("one postgres is enough for this trap")
-
         odd = postgres.profile.options.model_copy(
             update={
                 "datestyle": "Postgres, DMY",

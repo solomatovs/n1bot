@@ -10,7 +10,6 @@ from __future__ import annotations
 from pathlib import Path
 from typing import ClassVar, Self
 
-import pytest
 from pydantic import BaseModel, ConfigDict, ValidationError
 
 from boba.config import bind
@@ -52,7 +51,5 @@ class DocStand(BaseModel):
 
     @classmethod
     def required(cls) -> Self:
-        try:
-            return cls.load()
-        except DocStandError as exc:
-            pytest.skip(str(exc), allow_module_level=True)
+        """Стенд для модуля тестов; без конфига сбор модуля падает с причиной."""
+        return cls.load()

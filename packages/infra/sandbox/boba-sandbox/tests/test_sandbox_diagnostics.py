@@ -21,7 +21,7 @@ from boba.workspace.launcher import FUSE_DEVICE
 
 OUTPUT_LIMITS = BashToolConfig(max_output_bytes=4 * 1024 * 1024, timeout_sec=60.0)
 
-needs_sandbox = pytest.mark.skipif(
+needs_sandbox = pytest.mark.failif(
     shutil.which("bwrap") is None
     or shutil.which("fuse2fs") is None
     or shutil.which("mkfs.ext4") is None

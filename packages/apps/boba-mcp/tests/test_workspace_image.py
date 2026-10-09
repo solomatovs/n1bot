@@ -87,7 +87,7 @@ def _storage_cfg(**kw: Any) -> LocalStorageConfig:
     return LocalStorageConfig.model_validate(fields)
 
 
-needs_fuse = pytest.mark.skipif(
+needs_fuse = pytest.mark.failif(
     shutil.which("bwrap") is None
     or shutil.which("fuse2fs") is None
     or shutil.which("mkfs.ext4") is None

@@ -1598,13 +1598,10 @@ class TestOrdinaryDatabase:
         self, dags: PumpDags, clickhouse: ClickHouseSide
     ) -> None:
         ordinary = f"{CH_DATABASE}_ordinary"
-        try:
-            await clickhouse.command(
-                f"create database if not exists {ordinary} engine = Ordinary",
-                settings={"allow_deprecated_database_ordinary": 1},
-            )
-        except Exception as exc:
-            pytest.skip(f"the server does not create Ordinary databases: {exc}")
+        await clickhouse.command(
+            f"create database if not exists {ordinary} engine = Ordinary",
+            settings={"allow_deprecated_database_ordinary": 1},
+        )
 
         try:
             outcome = await dags.run(ORDINARY)
@@ -1625,8 +1622,12 @@ class TestReplicated:
     @pytest.fixture(autouse=True)
     async def keeper(self, clickhouse: ClickHouseSide) -> None:
         clusters = await ChLoaded(clickhouse, "").clusters()
-        if STAND_CLUSTER not in clusters:
-            pytest.skip(f"{clickhouse.source.name} has no cluster {STAND_CLUSTER}")
+
+        assert STAND_CLUSTER in clusters, (
+            f"{clickhouse.source.name}: the stand server needs Keeper and the "
+            f"cluster {STAND_CLUSTER!r} (conf/keeper.xml of the clickhouse stand), "
+            f"got clusters {clusters}"
+        )
 
     async def test_default_template_needs_a_cluster(self, dags: PumpDags) -> None:
         outcome = await dags.run(REPLICATED_NO_CLUSTER)

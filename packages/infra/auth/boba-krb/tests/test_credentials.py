@@ -26,7 +26,7 @@ KRB5_CONF = Path(STAND.krb_config)
 PRINCIPAL = STAND.service_principal
 OTHER_PRINCIPAL = f"other@{STAND.krb_realm}"
 
-live_kdc = pytest.mark.skipif(
+live_kdc = pytest.mark.failif(
     not STAND.live(),
     reason="нет keytab/krb5.conf локального AD",
 )

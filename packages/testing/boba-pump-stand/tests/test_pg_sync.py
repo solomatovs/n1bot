@@ -11,7 +11,7 @@ Arrow из postgres (круг), из Oracle и из ClickHouse на новейш
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
 
@@ -633,17 +633,9 @@ feed = "rows"
 """
 
 
-def _newest(sources: Sequence[Any]) -> str:
-    """Имя новейшего PostgreSQL стенда (Greenplum не в счёт)."""
-    plain: list[str] = []
-    for source in sources:
-        if source.name.startswith("pg-"):
-            plain.append(source.name)
-
-    return plain[-1]
-
-
-NEWEST = _newest(STAND.sources)
+NEWEST = STAND.newest_postgres()
+ON_NEWEST = STAND.only("postgres", [NEWEST])
+"""Случай не зависит от версии сервера: идёт на одном, самом новом postgres."""
 
 
 @pytest.fixture(
@@ -808,12 +800,8 @@ class TestSchemaStrategies:
         assert not [t for t in await loaded.tables() if t.startswith("replaced_bak_")]
 
 
+@ON_NEWEST
 class TestDeleteAndInsert:
-    @pytest.fixture(autouse=True)
-    def only_newest(self, postgres: PostgresSide) -> None:
-        if postgres.source.name != NEWEST:
-            pytest.skip("delete and insert strategies on the newest postgres")
-
     async def test_truncate_then_full(
         self, dags: PumpDags, postgres: PostgresSide
     ) -> None:
@@ -860,14 +848,10 @@ class TestDeleteAndInsert:
         assert await Loaded(postgres, PG_SCHEMA, "shaped").count() == ROWS
 
 
+@ON_NEWEST
 class TestDeclarations:
     """Декларации columns у источника несут not null и тип в контракт:
     приёмник создаёт таблицу с теми же ограничениями."""
-
-    @pytest.fixture(autouse=True)
-    def only_newest(self, postgres: PostgresSide) -> None:
-        if postgres.source.name != NEWEST:
-            pytest.skip("declarations on the newest postgres")
 
     async def test_pg_declarations_carry_not_null(
         self, dags: PumpDags, postgres: PostgresSide
@@ -928,12 +912,8 @@ class TestDeclarations:
         ]
 
 
+@ON_NEWEST
 class TestOtherSources:
-    @pytest.fixture(autouse=True)
-    def only_newest(self, postgres: PostgresSide) -> None:
-        if postgres.source.name != NEWEST:
-            pytest.skip("other sources on the newest postgres")
-
     async def test_oracle_stream_creates_exact_types(
         self, ora_dags: PumpDags, postgres: PostgresSide, oracle: OracleSide
     ) -> None:

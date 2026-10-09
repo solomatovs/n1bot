@@ -21,6 +21,7 @@ from boba.config import bind
 from boba.db.pgvector.migrations import Migrations
 from boba.db.pgvector.store import PostgresStoreSchema
 from boba.db.postgres import AsyncPostgresPool
+from boba.stand.database import TestDatabase
 from boba.tool.kb.kb import PostgresKnowledgeBaseConfig
 from boba.tool.kb.search import KbSearch
 
@@ -51,10 +52,13 @@ def schema_cfg() -> PostgresStoreSchema:
 async def bench(
     raw_config: DictConfig, schema_cfg: PostgresStoreSchema
 ) -> AsyncIterator[AsyncPostgresPool]:
-    """Схема стенда: боевые миграции + данные, на которых видно выбор плана."""
+    """Схема стенда в тестовой базе набора: боевые миграции + данные, на
+    которых видно выбор плана. База берётся здесь, а не сессионной фикстурой:
+    цикл событий у модуля свой."""
     cfg = bind(raw_config, "tool.kb", PostgresKnowledgeBaseConfig)
+    database = await TestDatabase.ensure(cfg.connection)
 
-    pool = AsyncPostgresPool(cfg.connection)
+    pool = AsyncPostgresPool(TestDatabase.config_of(cfg.connection, database))
     await pool.open()
     try:
         async with pool.connection() as conn:

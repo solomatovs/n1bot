@@ -55,7 +55,7 @@ APP_ROOT = Path(__file__).resolve().parents[1] / "assets"
 pytestmark = [
     pytest.mark.integration,
     pytest.mark.anyio,
-    pytest.mark.skipif(
+    pytest.mark.failif(
         not STAND.live(),
         reason="нет keytab/krb5.conf локального AD",
     ),

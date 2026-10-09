@@ -19,7 +19,6 @@ from typing import Any, ClassVar
 import pytest
 
 from boba.db.clickhouse.target import ChInsertTuning, InsertMemory
-from boba.db.oracle import OracleQueryError
 from boba.pump_stand import (
     ChSource,
     ClickHouseSide,
@@ -793,6 +792,23 @@ def ora_source(request: Any) -> OraSource:
     return request.param
 
 
+NO_PARTITIONING = frozenset({"ora-12.2"})
+"""Серверы стенда без опции Partitioning: slim-образ 12.2 её не несёт
+(ORA-00439), exchange partition на нём неприменим."""
+
+
+def _partitioned() -> list[OraSource]:
+    chosen: list[OraSource] = []
+    for source in STAND.ora_sources:
+        if source.name not in NO_PARTITIONING:
+            chosen.append(source)
+
+    return chosen
+
+
+WITH_PARTITIONING = STAND.only("ora_source", _partitioned())
+
+
 @pytest.fixture(scope="module")
 async def ora(ora_source: OraSource) -> AsyncIterator[OraScripts]:
     made = OraScripts(ora_source)
@@ -846,19 +862,13 @@ class TestOracle:
         assert failure.statements[-1].status == "failed: OracleQueryError"
         assert await ora.rows("mirror", "id", "v") == []
 
+    @WITH_PARTITIONING
     async def test_exchange_partition_from_stage(
         self, ora: OraScripts, ora_dags: PumpDags
     ) -> None:
         """Загрузка в stage_part и exchange partition в after: партиция месяца
-        подменена целиком, соседняя не тронута. Без опции Partitioning
-        (ORA-00439) тест пропускается."""
-        try:
-            await ora.recreate_partitioned()
-        except OracleQueryError as exc:
-            if "ORA-00439" not in str(exc):
-                raise
-
-            pytest.skip(f"partitioning is not available: {exc}")
+        подменена целиком, соседняя не тронута."""
+        await ora.recreate_partitioned()
 
         outcome = await _run(ora_dags, ORA_EXCHANGE_PARTITION)
         in_report = outcome.node("dst").content

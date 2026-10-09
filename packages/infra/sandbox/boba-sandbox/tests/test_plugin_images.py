@@ -23,7 +23,7 @@ FUSE2FS = REPO / "runtime" / "third" / "bin" / "fuse2fs"
 
 PACKAGES = sorted(SandboxLayout.DATA_BINDS)
 
-needs_images = pytest.mark.skipif(
+needs_images = pytest.mark.failif(
     not FUSE2FS.exists()
     or not all(plugin_rootfs(package).exists() for package in PACKAGES),
     reason=(

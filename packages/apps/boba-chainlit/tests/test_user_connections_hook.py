@@ -66,11 +66,11 @@ CH_URL = f"http://{STAND.ch_addr}:{STAND.ch_port}"
 CH_WILDCARD_URL = f"http://*.{STAND.krb_domain}:{STAND.ch_port}"
 CH_HOST_URL = f"http://{STAND.ch_host}:{STAND.ch_port}"
 
-needs_ch = pytest.mark.skipif(
+needs_ch = pytest.mark.failif(
     not STAND.ch_addr, reason="в конфиге стенда нет clickhouse (ch_addr)"
 )
 
-live_kdc = pytest.mark.skipif(
+live_kdc = pytest.mark.failif(
     not STAND.live(),
     reason="нет keytab/krb5.conf локального AD",
 )

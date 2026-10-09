@@ -63,7 +63,7 @@ _IMAGES_MOUNT = SandboxMount.SETUP_IMAGES.value
 """Каталог образов внутри песочницы: его несёт в cmdline fuse2fs вызова."""
 
 
-needs_fuse = pytest.mark.skipif(
+needs_fuse = pytest.mark.failif(
     shutil.which("bwrap") is None
     or shutil.which("fuse2fs") is None
     or shutil.which("mkfs.ext4") is None

@@ -31,6 +31,7 @@ import httpx
 import pytest
 from chainlit_stand import FakeUrl
 from playwright.async_api import TimeoutError as PlaywrightTimeout
+from playwright.async_api import async_playwright
 
 from boba.runtime.config import ConfigLayoutError, ConfigLocator, EnvOverride
 from boba.stand.ui.stand import StandApp, free_port
@@ -220,7 +221,7 @@ def app_server(tmp_path_factory: pytest.TempPathFactory) -> Iterator[None]:
         chat = ConfigLocator.files()
         service_files = StandApp.MCP.files()
     except ConfigLayoutError as exc:
-        pytest.skip(f"файлы конфигурации стенда недоступны: {exc}")
+        pytest.fail(f"файлы конфигурации стенда недоступны: {exc}")
 
     stand = E2eStand()
     stand.prepare()
@@ -421,9 +422,7 @@ class _SessionProbe:
 @pytest.fixture(scope="module")
 async def panel(app_server: None) -> AsyncIterator[Any]:
     """Логин, живой тред и файлы в нём; отдаёт функцию показа файла в панели."""
-    playwright = pytest.importorskip("playwright.async_api")
-
-    async with playwright.async_playwright() as pw:
+    async with async_playwright() as pw:
         browser = await pw.chromium.launch()
         context = await browser.new_context(viewport={"width": 1600, "height": 900})
         page = await context.new_page()

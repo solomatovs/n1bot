@@ -59,8 +59,8 @@ class Windows(ChannelSinks):
         self.wake_sizes.append(len(self.text_of(channel)))
 
 
-@pytest.mark.skipif(shutil.which("bwrap") is None, reason="bwrap не установлен")
-@pytest.mark.skipif(os.geteuid() == 0, reason="под root userns ведёт себя иначе")
+@pytest.mark.failif(shutil.which("bwrap") is None, reason="bwrap не установлен")
+@pytest.mark.failif(os.geteuid() == 0, reason="под root userns ведёт себя иначе")
 class TestCallTextTap:
     """Текстовый запуск: stdout и stderr тела ложатся в свои каналы журнала."""
 

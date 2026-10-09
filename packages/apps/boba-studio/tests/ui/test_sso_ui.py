@@ -197,7 +197,7 @@ def sso_context(
     kerberos_browser: Browser, browser_speaks_negotiate: bool
 ) -> Iterator[BrowserContext]:
     if not browser_speaks_negotiate:
-        pytest.skip("сборка браузера не поддерживает Negotiate (нужен обычный chrome)")
+        pytest.fail("сборка браузера не поддерживает Negotiate (нужен обычный chrome)")
 
     context = kerberos_browser.new_context(viewport={"width": 1280, "height": 900})
     try:

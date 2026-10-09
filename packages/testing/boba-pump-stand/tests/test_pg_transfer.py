@@ -15,7 +15,7 @@ import re
 import shutil
 import subprocess
 import time
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncIterator
 from decimal import Decimal
 from pathlib import Path
 from typing import Any, ClassVar
@@ -33,6 +33,8 @@ from boba.db.postgres.transfer import (
 )
 from boba.pump_stand import Loaded, PostgresSide, PumpDags, PumpStand
 from boba.pump_stand.ports import Sink, SinkOutbound
+from boba.pump_stand.stand import PgSource
+from boba.stand.ix import IxStandError
 from boba.stand.names import StandNames
 from boba.stream.pg_to_pg.transfer import PgStreamColumn
 from boba.toolkit.ports import ToolProgress
@@ -1244,31 +1246,26 @@ feed = "rows"
 """
 
 
-def _newest(sources: Sequence[Any]) -> str:
-    plain: list[str] = []
-    for source in sources:
-        if source.name.startswith("pg-"):
-            plain.append(source.name)
+NEWEST = STAND.newest_postgres()
+ON_NEWEST = STAND.only("postgres", [NEWEST])
+"""Случай не зависит от версии сервера: идёт на одном, самом новом postgres."""
 
-    return plain[-1]
+ON_GREENPLUM = STAND.only("postgres", STAND.greenplum())
 
 
-NEWEST = _newest(STAND.sources)
+def _older_than(version: int) -> PgSource:
+    """Самый новый postgres стенда с ядром ниже данной версии."""
+    older: list[PgSource] = []
+    for source in STAND.postgres_family(PgSource.PLAIN):
+        if source.kernel < version:
+            older.append(source)
 
+    if not older:
+        raise IxStandError(
+            f"ix stand: [ix_stand].sources has no postgres older than {version}"
+        )
 
-def _older_than(version: int) -> Any:
-    """Самый новый postgres стенда ниже данной версии сервера (по имени
-    pg-<major>), None — такого нет."""
-    chosen: Any = None
-    for source in STAND.sources:
-        if not source.name.startswith("pg-"):
-            continue
-
-        major = source.name.removeprefix("pg-")
-        if float(major) * 10000 < version:
-            chosen = source
-
-    return chosen
+    return older[-1]
 
 
 @pytest.fixture(scope="module", params=STAND.sources, ids=lambda s: s.name)
@@ -1306,11 +1303,6 @@ async def postgres(request: Any) -> AsyncIterator[PostgresSide]:
 def dags(tmp_path: Path, postgres: PostgresSide) -> PumpDags:
     """Запуск описаний источник -> приёмник на одном сервере."""
     return PumpDags(tmp_path, {"pg": postgres.profile}, {"s": S})
-
-
-def only_newest(postgres: PostgresSide) -> None:
-    if postgres.source.name != NEWEST:
-        pytest.skip("one postgres is enough here")
 
 
 def landed(outcome: DagOutcome) -> str:
@@ -1577,13 +1569,10 @@ class TestUnknownTypes:
         )
 
 
+@ON_NEWEST
 class TestExactTypes:
     """Сверка по OID и typmod: другой тип — ошибка, уже typmod — ошибка,
     шире — предупреждение."""
-
-    @pytest.fixture(autouse=True)
-    def newest(self, postgres: PostgresSide) -> None:
-        only_newest(postgres)
 
     @pytest.mark.parametrize(
         ("source_kind", "expr", "target_kind", "expected"),
@@ -1681,17 +1670,13 @@ class TestOlderTarget:
     одинаковы на всех версиях, но самого типа на старом сервере нет — отказ
     с подсказкой от приёмника до загрузки."""
 
+    @ON_NEWEST
     async def test_missing_type_on_the_target_is_a_clear_error(
         self, tmp_path: Path, postgres: PostgresSide
     ) -> None:
-        only_newest(postgres)
-        if postgres.version < 140000:
-            pytest.skip("multirange needs 14")
+        assert postgres.version >= 140000, "multirange needs 14 on the source"
 
         older = _older_than(140000)
-        if older is None:
-            pytest.skip("no postgres older than 14 on the stand")
-
         target = PostgresSide(older, S)
         await target.connect()
         await target.recreate_schema()
@@ -1729,11 +1714,11 @@ class TestCreateTemplate:
         )
         assert options == "{fillfactor=70}"
 
+    @ON_GREENPLUM
     async def test_distributed_by_on_greenplum(
         self, dags: PumpDags, postgres: PostgresSide
     ) -> None:
-        if not postgres.greenplum:
-            pytest.skip("distributed by is Greenplum only")
+        assert postgres.greenplum, f"{postgres.source.name} is not Greenplum"
 
         report = landed(await dags.run(TEMPLATE_DISTRIBUTED))
         landed_table = Loaded(postgres, S, "t_tpl_dist")
@@ -1825,14 +1810,11 @@ class TestBinaryWire:
             outcome, "in", "TransferError"
         )
 
+    @ON_NEWEST
     async def test_other_major_version_is_refused(
         self, tmp_path: Path, postgres: PostgresSide
     ) -> None:
-        only_newest(postgres)
         older = _older_than(postgres.version // 10000 * 10000)
-        if older is None:
-            pytest.skip("no older postgres on the stand")
-
         target = PostgresSide(older, S)
         await target.connect()
         await target.recreate_schema()
@@ -1865,10 +1847,10 @@ class TestDescribeCost:
     )
     BUDGET_SECONDS: ClassVar[float] = 0.5
 
+    @ON_NEWEST
     async def test_describe_neither_plans_nor_reads(
         self, postgres: PostgresSide
     ) -> None:
-        only_newest(postgres)
         async with await AsyncPostgresPool.dedicated(postgres.profile) as conn:
             counters = PgQueryBuilder().add(self.COUNTERS).build()
             cursor = await conn.execute(counters.text)
@@ -1920,7 +1902,7 @@ class TestCopyOutLoop:
     def _psql_seconds(self, postgres: PostgresSide, select: str) -> float:
         psql = shutil.which("psql")
         if psql is None:
-            pytest.skip("psql is not installed on the host")
+            pytest.fail("psql is not installed on the host: the test compares with it")
 
         settings = postgres.profile.conn_settings()
         env = {"PGPASSWORD": str(settings.get("password", "")), "PATH": "/usr/bin:/bin"}
@@ -1948,8 +1930,8 @@ class TestCopyOutLoop:
 
         return elapsed
 
+    @ON_NEWEST
     async def test_million_rows_keep_up_with_psql(self, postgres: PostgresSide) -> None:
-        only_newest(postgres)
         select = self.SELECT.format(rows=self.ROWS)
         sink = WideSink()
         async with await AsyncPostgresPool.dedicated(postgres.profile) as conn:
@@ -1980,10 +1962,10 @@ class TestCopyOutLoop:
         assert len(sink.heads) - 1 <= len(sink.data()) // WideSink.CAPACITY + 1
         assert elapsed <= psql_elapsed * self.PSQL_RATIO
 
+    @ON_NEWEST
     async def test_server_error_mid_copy_keeps_its_class(
         self, postgres: PostgresSide
     ) -> None:
-        only_newest(postgres)
         select = "select g, 1 / (g - 5000) as bad from generate_series(1, 10000) g"
         async with await AsyncPostgresPool.dedicated(postgres.profile) as conn:
             copy_out = PgCopyOut(
@@ -2005,10 +1987,10 @@ class TestCopyOutLoop:
 
             assert await cursor.fetchone() == (1,)
 
+    @ON_NEWEST
     async def test_broken_pipe_cancels_and_frees_the_connection(
         self, postgres: PostgresSide
     ) -> None:
-        only_newest(postgres)
         select = self.SELECT.format(rows=self.ROWS)
         async with await AsyncPostgresPool.dedicated(postgres.profile) as conn:
             copy_out = PgCopyOut(

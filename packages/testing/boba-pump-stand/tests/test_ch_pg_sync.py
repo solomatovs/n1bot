@@ -49,6 +49,8 @@ CH_DATABASE = StandNames().of("pump_ch_pg")
 ROWS = 60
 TARGET_NAMES = ("pg-16", "gp-7")
 JSON_SINCE = 24
+WITH_JSON = STAND.only("clickhouse", STAND.clickhouse_since(JSON_SINCE))
+"""До 24-й версии JSON сервера — Object('json') и печатается кортежем."""
 JSON_SETTINGS = {
     "allow_experimental_object_type": 1,
     "allow_experimental_json_type": 1,
@@ -685,11 +687,11 @@ class TestNativeTypes:
         assert f"{ROWS} rows loaded" in report
         assert await Loaded(postgres, PG_SCHEMA, "types").count() == ROWS
 
+    @WITH_JSON
     async def test_json_lands_as_jsonb(
         self, dags: PumpDags, clickhouse: ClickHouseSide, postgres: PostgresSide
     ) -> None:
-        if clickhouse.major < JSON_SINCE:
-            pytest.skip("JSON of this server is Object('json') and prints a tuple")
+        assert clickhouse.major >= JSON_SINCE, clickhouse.source.name
 
         await clickhouse.command(f"drop table if exists {CH_DATABASE}.js")
         await clickhouse.command(

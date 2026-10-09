@@ -28,7 +28,7 @@ STAND = Stand.required()
 
 pytestmark = [
     pytest.mark.integration,
-    pytest.mark.skipif(not STAND.live(), reason="нет keytab/krb5.conf локального AD"),
+    pytest.mark.failif(not STAND.live(), reason="нет keytab/krb5.conf локального AD"),
 ]
 
 TRUSTED_FOR_DELEGATION = 0x80000

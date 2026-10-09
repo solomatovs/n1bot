@@ -61,7 +61,7 @@ SERVICE_KEYTAB = Path(STAND.krb_http_keytab)
 SERVICE_PRINCIPAL = STAND.service_principal
 UNKNOWN_HOST = f"nowhere.{STAND.krb_domain}"
 
-live_kdc = pytest.mark.skipif(
+live_kdc = pytest.mark.failif(
     not STAND.live(),
     reason="нет keytab/krb5.conf локального AD",
 )

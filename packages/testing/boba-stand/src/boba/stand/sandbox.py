@@ -37,7 +37,7 @@ def plugin_rootfs(package: str) -> Path:
 ADDRESS_SPACE = 16 * 1024 * 1024 * 1024
 """RLIMIT_AS профиля парсера: pdfium резервирует ~2.3G независимо от документа."""
 
-needs_sandbox = pytest.mark.skipif(
+needs_sandbox = pytest.mark.failif(
     shutil.which("bwrap") is None  # noqa: TID251 — стенд ищет по PATH сознательно
     or not ROOTFS_IMAGE.exists(),
     reason=(
@@ -45,7 +45,7 @@ needs_sandbox = pytest.mark.skipif(
         "(собрать: make -C build fetch plugin-rootfs-all)"
     ),
 )
-needs_userns = pytest.mark.skipif(
+needs_userns = pytest.mark.failif(
     os.geteuid() == 0, reason="под root user namespace ведёт себя иначе"
 )
 

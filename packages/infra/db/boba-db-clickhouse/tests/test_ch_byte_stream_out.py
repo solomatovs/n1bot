@@ -44,7 +44,7 @@ def source(request: Any, raw_config: Any) -> StandSource:
     sources = bind(raw_config, path="ix_stand", model=StandSources)
     listed = [item for item in sources.ch_sources if item.demo]
     if not listed:
-        pytest.skip("ix_stand.ch_sources has no source with demo = true")
+        pytest.fail("ix_stand.ch_sources has no source with demo = true")
 
     if request.param == "first":
         return listed[0]
@@ -154,7 +154,7 @@ class TestReadTuning:
         граница read_buffer_size."""
         connection = bind(raw_config, path="clickhouse", model=ClickHouseConfig)
         if connection.interface != "https":
-            pytest.skip("[clickhouse] of the stand is not https")
+            pytest.fail("[clickhouse] of the stand is not https")
 
         tuning = ReadTuning(socket_read_size=4096, read_buffer_size=64 * 1024)
         sizes = await _sizes(connection, tuning, 0.005)

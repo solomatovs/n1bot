@@ -830,7 +830,11 @@ class ConfluenceSite:
 
         candidates = list(self._pages_of(data))
         if not candidates:
-            pytest.skip(f"Confluence search {query!r} returned no global pages")
+            msg = (
+                f"confluence search {cql!r} at {path}: expected a page "
+                "of a global space with a body, found none"
+            )
+            raise AssertionError(msg)
 
         candidates.sort(key=lambda page: len(page.html))
         return candidates[0]
@@ -888,7 +892,11 @@ class ConfluenceSite:
             text = OcrArgs.text_of(content, title)
             return ConfluenceAttachment(page_id=page_id, filename=title, text=text)
 
-        pytest.skip("Confluence search returned no .docx attachment")
+        msg = (
+            f"confluence search {cql!r} at {path}: expected a .docx "
+            "attachment with a download link, found none"
+        )
+        raise AssertionError(msg)
 
     def _attachment_link(self, page_id: str, filename: str) -> str:
         path = self._rest.page_fetch_path(page_id, body_format=self._config.body_format)

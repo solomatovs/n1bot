@@ -68,7 +68,7 @@ _ROOTFS_IMAGE = _SANDBOX_STAGING / "plugins" / "boba-tool-shell" / "rootfs.ext4"
 pytestmark = [
     pytest.mark.integration,
     pytest.mark.anyio,
-    pytest.mark.skipif(
+    pytest.mark.failif(
         shutil.which("bwrap") is None or not _ROOTFS_IMAGE.exists(),
         reason="нет bwrap или артефактов песочницы (собрать: make fetch sandbox)",
     ),
@@ -265,7 +265,7 @@ def pg_profile(flow_raw: DictConfig) -> PostgresConfig:
 def ch_profile() -> ClickHouseConfig:
     """Соединение пользователя в ClickHouse стенда парольным пользователем."""
     if not STAND.ch_user:
-        pytest.skip("стенд без парольного пользователя clickhouse")
+        pytest.fail("стенд без парольного пользователя clickhouse")
 
     return ClickHouseConfig.model_validate(
         {

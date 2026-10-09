@@ -1,7 +1,8 @@
 """Сеть песочницы: профиль с network=true обязан резолвить имена.
 
-Профили берутся из боевого конфига приложения тем же вызовом, что и загрузчик
-плагинов, — проверяется ровно то окружение, в котором инструмент ходит в сеть.
+Профили берутся из конфига сервиса boba-mcp (фикстура raw_config набора) тем
+же вызовом, что и загрузчик плагинов, — проверяется ровно то окружение, в
+котором инструмент ходит в сеть.
 
 Ошибка, ради которой написан тест: rootfs несёт собственный пустой
 /etc/resolv.conf, и если host-файл не примонтирован поверх, getaddrinfo внутри
@@ -18,7 +19,6 @@ from typing import ClassVar
 import pytest
 from omegaconf import DictConfig, OmegaConf
 
-from boba.runtime.config import AppLayers, ConfigLayoutError, ConfigLocator
 from boba.runtime.plugins import EntryPointPlugins
 from boba.sandbox.profile import SandboxProfile
 from boba.sandbox.runner import has_bwrap
@@ -45,20 +45,10 @@ class ProbeCommand(StrEnum):
 
 
 class SandboxToolProfiles:
-    """Профили инструментов из боевого конфига: имя инструмента -> профиль."""
+    """Профили инструментов из конфига сервиса: имя инструмента -> профиль."""
 
     def __init__(self, raw: DictConfig) -> None:
         self._raw = raw
-
-    @classmethod
-    def load(cls) -> SandboxToolProfiles | None:
-        """Те же файлы, что берёт стенд; None — в среде они не названы."""
-        try:
-            files = ConfigLocator.files()
-        except ConfigLayoutError:
-            return None
-
-        return cls(AppLayers.compose(files))
 
     def networked(self) -> dict[str, SandboxProfile]:
         """Инструменты, которым конфиг разрешил сеть."""
@@ -102,28 +92,20 @@ class SandboxToolProfiles:
         return names
 
 
-def _profiles() -> SandboxToolProfiles:
-    loaded = SandboxToolProfiles.load()
-    if loaded is None:
-        pytest.skip("конфиг недоступен: нет BOBA_CONFIG_PATH и BOBA_SITE_PATH")
-
-    return loaded
-
-
-def _networked() -> list[tuple[str, SandboxProfile]]:
+def _networked(raw_config: DictConfig) -> list[tuple[str, SandboxProfile]]:
     items: list[tuple[str, SandboxProfile]] = []
-    for name, profile in _profiles().networked().items():
+    for name, profile in SandboxToolProfiles(raw_config).networked().items():
         items.append((name, profile))
 
     if not items:
-        pytest.skip("в конфиге нет ни одного инструмента с network=true")
+        pytest.fail("в конфиге нет ни одного инструмента с network=true")
 
     return items
 
 
-def _resolvable_host() -> str:
-    """Хост из конфига, который резолвится снаружи; иначе проверять нечего."""
-    for host in _profiles().http_hosts():
+def _resolvable_host(raw_config: DictConfig) -> str:
+    """Хост из конфига, который резолвится снаружи; без него тест падает."""
+    for host in SandboxToolProfiles(raw_config).http_hosts():
         try:
             socket.getaddrinfo(host, None)
         except socket.gaierror:
@@ -131,7 +113,7 @@ def _resolvable_host() -> str:
 
         return host
 
-    pytest.skip("ни один сервисный хост конфига не резолвится на самой машине")
+    pytest.fail("ни один сервисный хост конфига не резолвится на самой машине")
 
 
 class TestNetworkProfiles:
@@ -146,7 +128,7 @@ class TestNetworkProfiles:
     ) -> str:
         """Команда тем же путём, что в проде: зигота секции и её исполнитель."""
         if not has_bwrap(profile):
-            pytest.skip("bwrap недоступен в доверенных каталогах профиля")
+            pytest.fail("bwrap недоступен в доверенных каталогах профиля")
 
         caller = zygote_stand.caller(
             cls.LABEL, profile, path_vars=lambda: cls.PATH_VARS
@@ -163,10 +145,10 @@ class TestNetworkProfiles:
             )
         return outcome.stdout
 
-    def test_network_profile_mounts_resolver(self) -> None:
+    def test_network_profile_mounts_resolver(self, raw_config: DictConfig) -> None:
         """resolv.conf и hosts обязаны быть в ro_binds сетевого профиля."""
         missing: list[str] = []
-        for name, profile in _networked():
+        for name, profile in _networked(raw_config):
             targets: set[str] = set()
             for spec in profile.mounts.ro:
                 targets.add(spec.target)
@@ -180,9 +162,11 @@ class TestNetworkProfiles:
         if missing != []:
             raise AssertionError("missing == []")
 
-    def test_resolver_is_visible_inside(self, zygote_stand: ZygoteStand) -> None:
+    def test_resolver_is_visible_inside(
+        self, zygote_stand: ZygoteStand, raw_config: DictConfig
+    ) -> None:
         """Внутри песочницы виден host-резолвер, а не пустой файл из rootfs."""
-        for _name, profile in _networked():
+        for _name, profile in _networked(raw_config):
             resolver = self._run(
                 zygote_stand, profile, ProbeCommand.RESOLVER.render("")
             )
@@ -190,11 +174,13 @@ class TestNetworkProfiles:
             if "nameserver" not in resolver:
                 raise AssertionError('"nameserver" in resolver')
 
-    def test_configured_host_resolves_inside(self, zygote_stand: ZygoteStand) -> None:
+    def test_configured_host_resolves_inside(
+        self, zygote_stand: ZygoteStand, raw_config: DictConfig
+    ) -> None:
         """Имя, которое резолвится на машине, обязано резолвиться и в песочнице."""
-        host = _resolvable_host()
+        host = _resolvable_host(raw_config)
 
-        for _name, profile in _networked():
+        for _name, profile in _networked(raw_config):
             resolved = self._run(
                 zygote_stand, profile, ProbeCommand.LOOKUP.render(host)
             )

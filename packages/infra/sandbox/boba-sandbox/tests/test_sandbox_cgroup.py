@@ -239,7 +239,7 @@ class TestCgroupManager:
             )
         except subprocess.SubprocessError:
             manager.release(leaf)
-            pytest.skip("pytest запущен вне делегированного scope: миграция запрещена")
+            pytest.fail("pytest запущен вне делегированного scope: миграция запрещена")
         try:
             with open(procs) as f:
                 if str(proc.pid) not in f.read().split():

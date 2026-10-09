@@ -55,7 +55,7 @@ class SandboxCgroup:
     стартует внутри слайса юнита (.vscode/python-debug-slice.sh): ядро
     переносит процесс в leaf только под общим предком, доступным на запись.
     Создаётся тестом или стендом приложения; путей по умолчанию нет — без
-    переменной тесты с групповыми лимитами пропускаются.
+    переменной тесты с групповыми лимитами падают с причиной.
     """
 
     def __init__(self) -> None:
@@ -102,10 +102,11 @@ class SandboxCgroup:
         return ""
 
     def required(self) -> pytest.MarkDecorator:
-        """Метка пропуска тестов, которым нужен перенос процесса в поддерево."""
+        """Метка обязательного окружения тестов, которым нужен перенос процесса в
+        поддерево: без него тест падает с причиной."""
         reason = self.missing()
 
-        return pytest.mark.skipif(bool(reason), reason=reason)
+        return pytest.mark.failif(bool(reason), reason=reason)
 
     def _own(self) -> str:
         """Cgroup процесса прогона; пустая строка — cgroup v2 у процесса нет."""
