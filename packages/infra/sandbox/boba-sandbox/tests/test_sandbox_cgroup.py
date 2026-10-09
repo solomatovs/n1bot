@@ -159,7 +159,12 @@ class TestProfileValidation:
 
 
 _UID = os.getuid()
-_DELEGATED_PARENT = f"/sys/fs/cgroup/boba.slice/user-{_UID}.slice/user@{_UID}.service"
+# зона стенда: делегированное поддерево из BOBA_CGROUP_BASE (юнит boba-sandbox@.service),
+# без переменной — user-зона среза boba.slice
+_DELEGATED_PARENT = os.environ.get(
+    "BOBA_CGROUP_BASE",
+    f"/sys/fs/cgroup/boba.slice/user-{_UID}.slice/user@{_UID}.service",
+)
 
 needs_delegation = pytest.mark.skipif(
     not os.path.isdir(_DELEGATED_PARENT),

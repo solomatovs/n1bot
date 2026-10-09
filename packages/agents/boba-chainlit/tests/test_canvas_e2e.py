@@ -19,7 +19,6 @@ import os
 import re
 import socket
 import subprocess
-import tempfile
 import time
 from collections.abc import AsyncIterator, Iterator
 from pathlib import Path
@@ -85,9 +84,9 @@ class E2eApp:
     POLL_SEC: ClassVar[float] = 0.5
     TAIL_LINES: ClassVar[int] = 40
 
-    def __init__(self, config: str) -> None:
+    def __init__(self, config: str, log: Path) -> None:
         self._config = config
-        self._log = Path(tempfile.gettempdir()) / f"boba-e2e-{PORT}.log"
+        self._log = log
         self._process: subprocess.Popen[bytes] | None = None
 
     def start(self) -> None:
@@ -150,7 +149,7 @@ class E2eApp:
 
 
 @pytest.fixture(scope="module")
-def app_server() -> Iterator[None]:
+def app_server(tmp_path_factory: pytest.TempPathFactory) -> Iterator[None]:
     config = os.environ.get("BOBA_CONFIG_PATH")
     if not config:
         pytest.skip("BOBA_CONFIG_PATH не задан")
@@ -165,7 +164,9 @@ def app_server() -> Iterator[None]:
     if taken:
         pytest.fail(f"порт {PORT} уже занят: остановите запущенное приложение")
 
-    app = E2eApp(config)
+    # лог — в каталоге прогона pytest: общий путь в /tmp делят пользователи
+    log = tmp_path_factory.mktemp("boba-e2e") / f"app-{PORT}.log"
+    app = E2eApp(config, log)
     try:
         app.start()
         yield

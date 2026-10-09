@@ -37,7 +37,7 @@ from boba.toolkit.result import ErrorResult, ToolArtifact
 from boba.toolrun.stream_calls import StreamRuns
 
 _REPO = Path(__file__).resolve().parents[4]
-_SANDBOX_STAGING = _REPO / "build" / "chainlit" / "src" / "sandbox"
+_SANDBOX_STAGING = _REPO / "runtime" / "sandbox"
 _ROOTFS_IMAGE = _SANDBOX_STAGING / "plugins" / "boba-tool-shell" / "rootfs.ext4"
 
 _CGROUP_BASE = os.environ.get("BOBA_CGROUP_BASE", "/sys/fs/cgroup/boba")

@@ -54,7 +54,7 @@ _ROOT = "/tmp/boba-rootfs"  # noqa: S108
 """Точка, куда цепочка лаунчера смонтировала корень: её получает билдер argv."""
 
 _SANDBOX = (
-    Path(__file__).resolve().parents[4] / "build" / "chainlit" / "src" / "sandbox"
+    Path(__file__).resolve().parents[4] / "runtime" / "sandbox"
 )
 _ROOTFS_IMAGE = _SANDBOX / "plugins" / "boba-tool-shell" / "rootfs.ext4"
 

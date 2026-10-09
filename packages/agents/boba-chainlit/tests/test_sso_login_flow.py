@@ -204,7 +204,9 @@ class Refresh:
         """Статус ответа и JWT из его Set-Cookie (пустой — cookie не выдана)."""
         import base64
 
-        from chainlit.auth.cookie import _auth_cookie_name
+        # имя cookie — из [session] площадки, а не константа chainlit: у установок
+        # на одном домене имена разные
+        cookie_name = auth.auth.cookie().name
 
         headers: list[tuple[bytes, bytes]] = [
             (b"authorization", b"Negotiate " + base64.b64encode(token))
@@ -212,7 +214,7 @@ class Refresh:
         if own_header:
             headers.append((OwnRequest.HEADER.encode(), OwnRequest.VALUE.encode()))
         if jwt_cookie is not None:
-            cookie = f"{_auth_cookie_name}={jwt_cookie}".encode()
+            cookie = f"{cookie_name}={jwt_cookie}".encode()
             headers.append((b"cookie", cookie))
         scope = {
             "type": "http",
@@ -227,7 +229,7 @@ class Refresh:
         response = await refresh.refresh(Request(scope))
         raw = [(key, value) for key, value in response.raw_headers]
 
-        return response.status_code, Refresh._token_of(raw, _auth_cookie_name)
+        return response.status_code, Refresh._token_of(raw, cookie_name)
 
     @staticmethod
     async def status(
