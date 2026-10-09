@@ -10,7 +10,7 @@ ServiceDisabledError — сервис выключаемой секции зап
 """
 
 import logging
-from collections.abc import AsyncGenerator, Sequence
+from collections.abc import AsyncGenerator, Generator, Sequence
 from typing import Annotated, TypeVar
 
 from omegaconf import DictConfig
@@ -315,9 +315,15 @@ def runtime_refs() -> RuntimeRefs:
 
 def tool_launchers(
     raw: Annotated[DictConfig, Depends(get_raw_config)],
-) -> SectionLaunchers:
-    """Способ запуска инструментов процесса: один на все сборки реестра."""
-    return ToolLaunchers(raw).build()
+) -> Generator[SectionLaunchers, None, None]:
+    """Способ запуска инструментов процесса: один на все сборки реестра;
+    зиготы гасятся при закрытии контейнера, в том числе после сорванного старта."""
+    launchers = ToolLaunchers(raw).build()
+
+    try:
+        yield launchers
+    finally:
+        launchers.stop()
 
 
 def tool_grants(

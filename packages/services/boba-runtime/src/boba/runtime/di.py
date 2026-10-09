@@ -116,8 +116,14 @@ class Container:
         self._eager.extend(Depends(p, scope=scope) for p in providers)
 
     async def start(self) -> None:
-        for dep in self._eager:
-            await self.resolve(dep)
+        """Поднимает eager-провайдеры по порядку; сорвавшийся старт закрывает
+        уже поднятое и отдаёт ошибку провайдера наверх."""
+        try:
+            for dep in self._eager:
+                await self.resolve(dep)
+        except BaseException:
+            await self.aclose()
+            raise
 
     async def resolve(self, dep: "Depends", _outer: "Container | None" = None) -> Any:
         owner = self._owner(dep.scope)

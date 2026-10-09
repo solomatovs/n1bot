@@ -70,8 +70,6 @@ APP_PREFIX        = $(PREFIX_$(APP))
 APP_SANDBOX       = $(SANDBOX_$(APP))
 APP_EMBED         = $(EMBED_$(APP))
 APP_MODELS        = $(MODELS_$(APP))
-# юнит systemd: приложению с песочницей нужны устройства, namespaces и делегирование cgroup
-APP_UNIT          = $(CONF_DIR)/$(if $(APP_SANDBOX),boba-sandbox.service,boba.service)
 
 ifneq ($(APP),)
 ifeq ($(filter $(APP),$(APPS)),)
@@ -146,8 +144,10 @@ RAPIDOCR_FILES  := $(DEPS_DIR)/rapidocr/ch_PP-OCRv5_det_mobile.onnx \
                    $(DEPS_DIR)/rapidocr/ch_ppocr_mobile_v2.0_cls_mobile.onnx \
                    $(RAPIDOCR_LANGS:%=$(DEPS_DIR)/rapidocr/%_PP-OCRv5_rec_mobile.onnx)
 
-# веса эмбеддера: версия качалки фиксируется, иначе приедет произвольный набор моделей
-FASTEMBED_VERSION ?= 0.8.0
+# версии качалок моделей (fastembed, huggingface_hub) и их зависимостей — из uv.lock,
+# теми же constraints, что у образов (стадия boba-wheels): свежий huggingface_hub
+# раскладывает кэш так, что onnxruntime из uv.lock модель не открывает
+FETCH_CONSTRAINTS := $(DEPS_DIR)/constraints.txt
 EMBED_MODELS    ?= intfloat/multilingual-e5-large
 FASTEMBED_STAMPS := $(foreach m,$(EMBED_MODELS),$(DEPS_DIR)/fastembed/.$(subst /,--,$(m)))
 
@@ -248,6 +248,20 @@ SANDBOX_DEV_KRB := $(foreach app,$(SANDBOX_APPS),$(SRC_DIR)/compose/$(app)/conf/
 
 # --- docker ---------------------------------------------------------------------
 
+# число заданий одного компилирующего шага сборки (ninja, make, compileall, сборки и
+# установки uv). BuildKit ведёт несколько стадий сразу, поэтому суммарно заданий
+# бывает в два-три раза больше
+JOBS            ?= 4
+
+# от кого идёт docker run с томами хоста и кому отдаются его результаты. Rootless-демон
+# отображает root контейнера на пользователя демона, а его же uid внутри контейнера —
+# на чужой subuid, которому каталоги хоста закрыты: там контейнер идёт от root.
+# Обычному демону называется пользователь хоста, иначе результаты достались бы root
+RUN_OWNER       := $(shell id -u):$(shell id -g)
+ifneq ($(findstring name=rootless,$(shell docker info --format '{{.SecurityOptions}}' 2>/dev/null)),)
+RUN_OWNER       := 0:0
+endif
+
 NO_CACHE        ?= 0
 NO_CACHE_OPT    :=
 ifeq ($(NO_CACHE),1)
@@ -279,7 +293,8 @@ DOCKER_ARGS      = --build-arg GLIBC_IMAGE=$(GLIBC_IMAGE)              \
     --build-arg ORACLEDB_VERSION=$(ORACLEDB_VERSION)                   \
     --build-arg ORACLEDB_SHA256=$(ORACLEDB_SHA256)                     \
     --build-arg ORACLEDB_LOCAL=$(ORACLEDB_LOCAL)                       \
-    --build-arg CYTHON_VERSION=$(CYTHON_VERSION)
+    --build-arg CYTHON_VERSION=$(CYTHON_VERSION)                       \
+    --build-arg JOBS=$(JOBS)
 
 # аргументы стадий одного приложения
 APP_ARGS         = --build-arg APP=$(APP)                           \
@@ -310,7 +325,7 @@ endef
 define mke2fs-run
 docker run --rm -i -e MKE2FS_CONFIG=/tools/mke2fs.conf -e PATH=/tools:/usr/sbin:/usr/bin:/sbin:/bin \
     -v "$(SANDBOX_DIR)/tools:/tools:ro" -v "$(SCRIPTS_DIR):/scripts:ro" -v "$(2):/out" \
-    --entrypoint sh $(GLIBC_IMAGE) /scripts/$(1) $(3) "$$(id -u):$$(id -g)"
+    --entrypoint sh $(GLIBC_IMAGE) /scripts/$(1) $(3) "$(RUN_OWNER)"
 endef
 
 # загрузка: $(1) — url, $(2) — файл
@@ -320,16 +335,18 @@ curl -fSL $(CURL_OPTS) -o "$(2)" "$(1)"
 endef
 
 # скрипт загрузки моделей в образе base: $(1) — pip-пакет качалки, $(2) — каталог назначения,
-# $(3) — аргументы fetch_models.py. Файлы отдаются владельцу хоста
+# $(3) — аргументы fetch_models.py. Версии пакетов держит $(FETCH_CONSTRAINTS), файлы
+# отдаются владельцу хоста
 define fetch-model
 mkdir -p "$(2)"
 docker run --rm $(PROXY_ENV) -e HF_ENDPOINT="$(ONNX_HUB_URL)"       \
     -v "$(2)":/out -v "$(SCRIPTS_DIR)":/scripts:ro                  \
+    -v "$(FETCH_CONSTRAINTS)":/constraints.txt:ro                   \
     --entrypoint sh $(BASE_IMAGE) -c '
         set -e
-        pip3 install --no-cache-dir "$(1)"
+        pip3 install --no-cache-dir --constraint /constraints.txt "$(1)"
         python3 /scripts/fetch_models.py $(3)
-        chown -R $(shell id -u):$(shell id -g) /out'
+        chown -R $(RUN_OWNER) /out'
 endef
 
 # дерево релиза из образа: $(1) — образ, $(2) — путь внутри, $(3) — куда
@@ -399,7 +416,7 @@ conf/ca-chain.crt — CA; прокси из env уходит в docker. Зерк
 BWRAP_URL, LIBFUSE_URL, E2FSPROGS_URL, RAPIDOCR_REPO, KATEX_URL, INTER_URL, MERMAID_URL,
 ONNX_HUB_URL, CHAINLIT_SRC_URL.
 
-Переменные: BOBA_TAG, NO_CACHE=1, PYTHON_VERSION=$(PYTHON_VERSION), GLIBC_IMAGE, GCC_IMAGE,
+Переменные: BOBA_TAG, NO_CACHE=1, JOBS=$(JOBS) (заданий на шаг сборки), PYTHON_VERSION=$(PYTHON_VERSION), GLIBC_IMAGE, GCC_IMAGE,
 PYTHON_IMAGE, NODE_IMAGE, STUDIO_NODE_IMAGE, DEST_DIR; хосту нужен python >= 3.11.
 endef
 
@@ -471,11 +488,17 @@ $(DEPS_DIR)/rapidocr/ch_ppocr_mobile_v2.0_cls_mobile.onnx:
 $(DEPS_DIR)/rapidocr/%_PP-OCRv5_rec_mobile.onnx:
 	@$(call fetch,$(RAPIDOCR_REPO)/PP-OCRv5/rec/$(notdir $@),$@)
 
-$(DEPS_DIR)/fastembed/.%: | base
-	@$(call fetch-model,fastembed==$(FASTEMBED_VERSION),$(DEPS_DIR)/fastembed,fastembed "$(subst --,/,$*)" /out)
+# order-only: смена uv.lock не перекачивает гигабайты уже лежащих моделей
+$(FETCH_CONSTRAINTS): $(SRC_DIR)/uv.lock | $(UV_BIN)
+	@mkdir -p "$(@D)"
+	"$(UV_BIN)" export --directory "$(SRC_DIR)" --frozen --all-packages --all-extras \
+	    --no-emit-workspace --no-hashes -o "$@" > /dev/null
+
+$(DEPS_DIR)/fastembed/.%: | base $(FETCH_CONSTRAINTS)
+	@$(call fetch-model,fastembed,$(DEPS_DIR)/fastembed,fastembed "$(subst --,/,$*)" /out)
 	touch "$@"
 
-$(DEPS_DIR)/onnx-genai/%: | base
+$(DEPS_DIR)/onnx-genai/%: | base $(FETCH_CONSTRAINTS)
 	@$(call fetch-model,huggingface_hub,$(DEPS_DIR)/onnx-genai,onnx "$(ONNX_REPO_$*)" "$(ONNX_SUBDIR_$*)" /out/$*)
 
 $(WEBASSETS_DIR)/katex/katex.min.css:
@@ -556,7 +579,7 @@ plugin-rootfs: version-check
 	{
 	docker cp "$$root_cid:/." -
 	docker cp "$$site_cid:/usr" -
-	} | $(call mke2fs-run,mkrootfs.sh,$(dir $(PLUGIN_ROOTFS)),/out/rootfs.ext4 $(PYTHON_VERSION) 16)
+	} | $(call mke2fs-run,mkrootfs.sh,$(dir $(PLUGIN_ROOTFS)),/out/rootfs.ext4 $(PYTHON_VERSION) 16 $(JOBS))
 
 # образы всех плагинов с entry points группы boba.tools
 .PHONY: plugin-rootfs-all
@@ -580,7 +603,7 @@ web-mcp:
 # скрипт страницы node'ом образа: на хосте node не нужен
 $(PAGE_JS): $(PAGE_SRCS)
 	@echo "== page script: $(NODE_IMAGE) =="
-	docker run --rm --entrypoint /bin/sh -u "$$(id -u):$$(id -g)" -e HOME=/tmp \
+	docker run --rm --entrypoint /bin/sh -u "$(RUN_OWNER)" -e HOME=/tmp \
 	    -v "$(WEB_DIR):/pkg" -w /pkg/web/page $(NODE_IMAGE) \
 	    -c 'npm ci --no-audit --no-fund && npm run check && npm run build'
 	ls -la "$@"
@@ -590,7 +613,7 @@ $(PAGE_JS): $(PAGE_SRCS)
 $(UI_DIST)/index.html: $(UI_SRCS) $(CHAINLIT_TARBALL)
 	@echo "== UI chainlit $(CHAINLIT_VERSION) (фронт + copilot) + overlay: $(NODE_IMAGE) -> $(UI_DIST) =="
 	mkdir -p "$(UI_DIST)"
-	docker run --rm --entrypoint /bin/sh -u "$$(id -u):$$(id -g)" \
+	docker run --rm --entrypoint /bin/sh -u "$(RUN_OWNER)" \
 	    -v "$(DEPS_DIR):/deps:ro" -v "$(SCRIPTS_DIR):/scripts:ro" -v "$(UI_DIR):/ui:ro" \
 	    -v "$(UI_DIST):/out" $(NODE_IMAGE) \
 	    /scripts/chainlit_ui.sh "/deps/$(notdir $(CHAINLIT_TARBALL))" /ui/overlay /out
@@ -610,7 +633,7 @@ $(OPENAPI_JSON): $(shell find $(STUDIO_DIR)/src -name "*.py")
 # страница workflow node'ом образа: на хосте node не нужен
 $(STUDIO_DIST)/index.html: $(STUDIO_SRCS) $(OPENAPI_JSON)
 	@echo "== workflow page: $(STUDIO_NODE_IMAGE) =="
-	docker run --rm --entrypoint /bin/sh -u "$$(id -u):$$(id -g)" -e HOME=/tmp \
+	docker run --rm --entrypoint /bin/sh -u "$(RUN_OWNER)" -e HOME=/tmp \
 	    -v "$(STUDIO_DIR):/pkg" -w /pkg/web/workflow $(STUDIO_NODE_IMAGE) \
 	    -c 'npm ci --no-audit --no-fund && npm run generate && npm run check && npm run build'
 	touch "$@"
@@ -632,7 +655,7 @@ web-dev: $(OPENAPI_JSON)
 	docker rm -f $(WEB_DEV_NAME) > /dev/null 2>&1 || true
 	docker run -d --name $(WEB_DEV_NAME) --entrypoint /bin/sh \
 	    --label boba.url_prefix=$(BOBA_URL_PREFIX) \
-	    -u "$$(id -u):$$(id -g)" -e HOME=/tmp -e BOBA_URL_PREFIX=$(BOBA_URL_PREFIX) \
+	    -u "$(RUN_OWNER)" -e HOME=/tmp -e BOBA_URL_PREFIX=$(BOBA_URL_PREFIX) \
 	    -p 127.0.0.1:$(WEB_DEV_PORT):5173 \
 	    -v "$(STUDIO_DIR):/pkg" -w /pkg/web/workflow $(STUDIO_NODE_IMAGE) \
 	    -c '[ -d node_modules ] || npm ci --no-audit --no-fund; npm run generate; exec npm run dev -- --host 0.0.0.0 --port 5173 --strictPort --base $(BOBA_URL_PREFIX)/workflow-dev/'
@@ -688,7 +711,7 @@ endef
 define DEV_ROOT_mcp
 endef
 
-# конфиг окружения и юнит приложения из шаблонов conf/: $(1) — корень установки,
+# конфиг окружения приложения из шаблона conf/boba.env: $(1) — корень установки,
 # $(2) — каталог данных
 define app-env
 export BOBA_BASE="$(1)" BOBA_VERSION="$(VERSION)" BOBA_DATA="$(2)" \
@@ -758,9 +781,7 @@ release:
 	    cp -al "$(DEPS_DIR)/$$model" "$(OUT)/models/$$model"
 	done
 	sed -i "1s|^#!.*python3.*|#!$(INSTALL_DIR)/third/bin/python3|" "$(OUT)/app/bin"/*
-	export INSTALL_DIR="$(INSTALL_DIR)" BOBA_APP="$(APP)" BOBA_MODULE="$(APP_MODULE)"
 	$(call app-env,$(INSTALL_DIR),$(DATA_DIR)) > "$(OUT)/conf/boba.env"
-	envsubst '$${INSTALL_DIR} $${BOBA_DATA} $${BOBA_APP} $${BOBA_MODULE}' < "$(APP_UNIT)" > "$(OUT)/boba-$(APP).service"
 	chmod go-w "$(OUT)"
 	chmod -R go-w "$(OUT)/third"
 	if [ -n "$(APP_SANDBOX)" ]; then
@@ -848,4 +869,5 @@ prune:
 .PHONY: clean
 clean:
 	rm -rf $(RELEASE_DIR) $(DEPS_DIR)/uv $(DEPS_DIR)/rapidocr $(WEBASSETS_DIR) $(SANDBOX_DIR) $(ORACLEDB_DIR) \
+	       $(FETCH_CONSTRAINTS) \
 	       $(DEPS_DIR)/*.tar.xz $(DEPS_DIR)/*.tar.gz $(PAGE_JS) $(ASSETS_VENDOR) $(UI_DIST) $(STUDIO_DIST)
