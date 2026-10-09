@@ -60,6 +60,10 @@ COPY --from=site-conf /certs/        /
 COPY --from=site-conf /index/        /
 COPY build/src/uv/uv        /usr/local/bin/uv
 
+# число заданий компилирующих шагов: наследуют все сборочные стадии, uv читает сам
+ARG JOBS=4
+ENV JOBS=${JOBS} UV_CONCURRENT_BUILDS=${JOBS} UV_CONCURRENT_INSTALLS=${JOBS}
+
 RUN ldconfig && gcc --version | head -n1 && python3 --version && pip3 --version
 
 # у каждой программы свой способ узнать CA bundle
@@ -122,7 +126,7 @@ WORKDIR /tmp/bwrap-src
 RUN tar -xJf /tmp/bwrap.tar.xz --strip-components=1
 RUN meson setup _build --buildtype=release --prefix=/usr -Dselinux=disabled -Dman=disabled \
     && sed -i 's|/usr/lib/x86_64-linux-gnu/libcap\.so|/usr/lib/x86_64-linux-gnu/libcap.a|g' _build/build.ninja \
-    && ninja -C _build bwrap
+    && ninja -j "${JOBS}" -C _build bwrap
 RUN strip _build/bwrap && install -D -m 0755 _build/bwrap /out/bwrap
 
 RUN ! ldd /out/bwrap | grep libcap && /out/bwrap --version
@@ -145,12 +149,12 @@ WORKDIR /tmp/fuse-src
 RUN tar -xJf /tmp/fuse.tar.xz --strip-components=1
 RUN meson setup _build --buildtype=release --prefix=/usr/local \
         -Ddefault_library=static -Dexamples=false -Dtests=false -Dutils=false \
-    && ninja -C _build install
+    && ninja -j "${JOBS}" -C _build install
 
 WORKDIR /tmp/e2fs-src
 ENV PKG_CONFIG_PATH=/usr/local/lib/pkgconfig:/usr/local/lib/x86_64-linux-gnu/pkgconfig
 RUN tar -xJf /tmp/e2fsprogs.tar.xz --strip-components=1
-RUN LIBS="-lpthread -ldl" ./configure --enable-fuse2fs --disable-nls && make -j"$(nproc)"
+RUN LIBS="-lpthread -ldl" ./configure --enable-fuse2fs --disable-nls && make -j"${JOBS}"
 RUN strip misc/fuse2fs && install -D -m 0755 misc/fuse2fs /out/fuse2fs
 
 RUN ! ldd /out/fuse2fs | grep fuse && /out/fuse2fs -V

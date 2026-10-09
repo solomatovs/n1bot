@@ -1,15 +1,17 @@
 #!/bin/sh
 # Образ корня песочницы: дерево tar'ами со stdin (несколько архивов подряд) ->
 # ext4-файл $1 через mke2fs из src/sandbox/tools. Запускается root'ом в контейнере
-# glibc, чтобы владельцы файлов из tar сохранились; итог отдаётся владельцу хоста $4.
+# glibc, чтобы владельцы файлов из tar сохранились; итог отдаётся владельцу хоста $5.
 # Байткод компилируется python'ом дерева: образ монтируется read-only, .pyc на
-# лету не появятся. Размер — занятое место с запасом в 5% и reserve_mb $3.
+# лету не появятся; компиляция идёт в $4 заданий. Размер — занятое место с запасом
+# в 5% и reserve_mb $3.
 set -eu
 
 out=$1
 python_version=$2
 reserve_mb=$3
-owner=$4
+jobs=$4
+owner=$5
 tree=/tree
 
 mkdir -p "$tree"
@@ -18,7 +20,7 @@ tar -x -i -f - -C "$tree"
 rm -f "$tree/.dockerenv"
 
 PYTHONHOME="$tree/usr/local" LD_LIBRARY_PATH="$tree/usr/local/lib" "$tree/usr/local/bin/python3" \
-    -m compileall -q -j 0 -s "$tree" -p / -x '/(test|tests|lib2to3|idle_test)/' \
+    -m compileall -q -j "$jobs" -s "$tree" -p / -x '/(test|tests|lib2to3|idle_test)/' \
     "$tree/usr/local/lib/python$python_version" "$tree/usr/src"
 
 used_mb=$(du -sm "$tree" | cut -f1)

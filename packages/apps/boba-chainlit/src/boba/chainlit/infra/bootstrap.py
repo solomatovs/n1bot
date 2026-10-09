@@ -128,7 +128,6 @@ async def _run_container(app: FastAPI) -> AsyncGenerator[None, None]:
         yield
     finally:
         container.resolved(runtime.runs).stop_all(StopReason.SHUTDOWN)
-        container.resolved(runtime.tool_launchers).stop()
         Container.set_session_hook(None)
         await SessionContainers.close_all()
         Container.set_root(None)

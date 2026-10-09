@@ -178,7 +178,6 @@ class McpHost:
             await listener.serve_until_stopped()
         finally:
             self._container.resolved(providers.runs).stop_all(StopReason.SHUTDOWN)
-            self._container.resolved(providers.tool_launchers).stop()
             Container.set_root(None)
             await self._container.aclose()
 

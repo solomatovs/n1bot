@@ -197,7 +197,6 @@ class StudioHost:
             yield
         finally:
             container.resolved(providers.runs).stop_all(StopReason.SHUTDOWN)
-            container.resolved(providers.tool_launchers).stop()
             Container.set_root(None)
             await container.aclose()
             await AsyncPostgresPool.close_all()

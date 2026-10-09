@@ -3,6 +3,10 @@
 сессии в ответе и ответы SPNEGO-обмена (401 Negotiate со страницей-переходом).
 SignalledServer — сервер uvicorn, остановку которого по сигналу ведёт
 ProcessStop.
+
+Ошибки:
+ServerStartError — приложение сервера не поднялось, процессу пора выйти
+    с ненулевым кодом.
 """
 
 import html
@@ -29,12 +33,15 @@ from boba.identity.token import (
     TokenRejectedError,
     TokenRejection,
 )
+from boba.toolkit.closing import ProcessClosers
 
 __all__ = [
     "DomainErrorMiddleware",
     "ProxyRequests",
     "RequestTokens",
+    "ServerStartError",
     "SessionCookie",
+    "SignalledServer",
     "SsoRequests",
     "SsoResponses",
     "StaleSessionMiddleware",
@@ -383,6 +390,10 @@ class SsoRequests:
         return SsoRequest.UNKNOWN_CLIENT
 
 
+class ServerStartError(Exception):
+    """Приложение сервера не поднялось: его lifespan сорвался на старте."""
+
+
 class SignalledServer(uvicorn.Server):
     """Сервер uvicorn, остановку которого по сигналу ведёт ProcessStop.
 
@@ -393,17 +404,39 @@ class SignalledServer(uvicorn.Server):
     закрытия соединений. Закончив остановку, uvicorn посылает сигнал заново
     прежнему обработчику; им стоит обработчик остановки процесса, поэтому
     процесс не погибает с кодом 143, а доходит до кода после сервера.
+
+    Сорванный старт приложения uvicorn только пишет в лог и возвращается из
+    serve() штатно; сервер превращает его в ServerStartError, чтобы процесс
+    вышел с ненулевым кодом. Перед выходом закрываются процессные ресурсы
+    (ProcessClosers): пул, оставшийся открытым после сорванного старта, не
+    даёт asyncio.run закрыть цикл событий, и процесс не завершается.
     """
 
     def __init__(self, config: uvicorn.Config, stop: ProcessStop) -> None:
         super().__init__(config)
         self._stop = stop
+        self._closers = ProcessClosers()
 
     async def serve_until_stopped(self) -> None:
-        """Слушает адрес до сигнала остановки и возвращается штатно."""
+        """Слушает адрес до сигнала остановки и возвращается штатно.
+
+        Ошибки:
+        ServerStartError — приложение не поднялось.
+        """
         self._stop.install()
 
-        await self.serve()
+        try:
+            await self.serve()
+        finally:
+            await self._closers.close_all()
+
+        if not self.started:
+            msg = (
+                f"server on {self.config.host}:{self.config.port}: the application "
+                "startup failed, the cause is logged above by the lifespan; "
+                "expected a started server, exiting with a failure"
+            )
+            raise ServerStartError(msg)
 
     def handle_exit(self, sig: int, frame: FrameType | None) -> None:
         self._stop.deliver(sig)
