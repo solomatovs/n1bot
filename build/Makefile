@@ -403,6 +403,20 @@ for path in $(1); do
 done
 endef
 
+# установка в runtime/ без окна: результат готовится во временном каталоге внутри
+# runtime/ (та же файловая система) и ставится на место переименованием. У работающих
+# приложения и тестов всегда есть либо прежний файл, либо новый; открытый образ
+# процесс дочитывает прежним
+STAGE_TEMPLATE  := $(RUNTIME_DIR)/.stage.XXXXXX
+
+# файлы дерева $(1) — на те же места в каталоге $(2), каждый переименованием
+define install-tree
+find "$(1)" ! -type d -printf '%P\n' | while IFS= read -r name; do
+    mkdir -p "$(2)/$$(dirname "$$name")"
+    mv -f "$(1)/$$name" "$(2)/$$name"
+done
+endef
+
 # опустошить каталог, не пересоздавая: compose держит его bind-mount'ом по inode,
 # после rm -rf контейнер до перезапуска видел бы пустоту
 define refill
@@ -588,14 +602,19 @@ sandbox: version-check
 	@$(call check,$(INPUTS),запусти: make fetch)
 	echo "== песочница =="
 	mkdir -p "$(SANDBOX_DIR)"
-	rm -f $(SANDBOX_PARTS) $(SANDBOX_TOOLS)
+	tmp= stage=
+	trap 'rm -rf "$$tmp" "$$stage"' EXIT
 	tmp=$$(mktemp -d)
-	trap 'rm -rf "$$tmp"' EXIT
+	stage=$$(mktemp -d "$(STAGE_TEMPLATE)")
 	$(call docker-image,sandbox-out,$$tmp/sandbox.iid)
-	$(call image-copy,$$(cat "$$tmp/sandbox.iid"),/third,$(RUNTIME_DIR))
-	$(call image-copy,$$(cat "$$tmp/sandbox.iid"),/tools,$(SANDBOX_DIR))
-	chmod 0755 "$(THIRD_DIR)/bin/bwrap" "$(THIRD_DIR)/bin/fuse2fs" "$(SANDBOX_DIR)/tools/mke2fs"
-	$(call mke2fs-run,mkworkspace.sh,$(SANDBOX_DIR),/out/workspace.ext4 $(SANDBOX_WS_SIZE)) < /dev/null
+	$(call image-copy,$$(cat "$$tmp/sandbox.iid"),/third,$$stage)
+	$(call image-copy,$$(cat "$$tmp/sandbox.iid"),/tools,$$stage)
+	chmod 0755 "$$stage/third/bin/bwrap" "$$stage/third/bin/fuse2fs" "$$stage/tools/mke2fs"
+	# mke2fs-run берёт mke2fs из runtime/sandbox/tools: инструменты ставятся первыми
+	$(call install-tree,$$stage/tools,$(SANDBOX_DIR)/tools)
+	$(call mke2fs-run,mkworkspace.sh,$$stage,/out/workspace.ext4 $(SANDBOX_WS_SIZE)) < /dev/null
+	$(call install-tree,$$stage/third,$(THIRD_DIR))
+	mv -f "$$stage/workspace.ext4" "$(SANDBOX_DIR)/workspace.ext4"
 	# TrustedBinaries отвергает каталог, открытый группе на запись
 	chmod -R go-w "$(THIRD_DIR)"
 	chmod go-w "$(RUNTIME_DIR)"
@@ -610,13 +629,13 @@ plugin-rootfs: version-check
 	$(call check,$(INPUTS),запусти: make fetch)
 	$(call check,$(SANDBOX_TOOLS),запусти: make sandbox)
 	echo "== образ корня плагина $(PLUGIN) =="
-	mkdir -p "$(dir $(PLUGIN_ROOTFS))"
 	# корень и site-packages стримятся в mke2fs двумя tar'ами через docker cp в stdout:
 	# ext4 не оседает ни в образах, ни на диске хоста. Пути site и кода раскладывает
 	# стадия plugin-site-out, переписывать tar на хосте не нужно
+	tmp= stage= root_cid= site_cid=
+	trap 'docker rm -f $$root_cid $$site_cid > /dev/null 2>&1 || true; rm -rf "$$tmp" "$$stage"' EXIT
 	tmp=$$(mktemp -d)
-	root_cid= site_cid=
-	trap 'docker rm -f $$root_cid $$site_cid > /dev/null 2>&1 || true; rm -rf "$$tmp"' EXIT
+	stage=$$(mktemp -d "$(STAGE_TEMPLATE)")
 	$(call docker-image,plugin-root,$$tmp/root.iid,$(PLUGIN_ARGS) --build-arg PLUGIN=$(PLUGIN))
 	$(call docker-image,plugin-site-out,$$tmp/site.iid,$(PLUGIN_ARGS) --build-arg PLUGIN=$(PLUGIN))
 	root_cid=$$(docker create "$$(cat "$$tmp/root.iid")" /bin/true)
@@ -624,7 +643,9 @@ plugin-rootfs: version-check
 	{
 	docker cp "$$root_cid:/." -
 	docker cp "$$site_cid:/usr" -
-	} | $(call mke2fs-run,mkrootfs.sh,$(dir $(PLUGIN_ROOTFS)),/out/rootfs.ext4 $(PYTHON_VERSION) 16 $(JOBS))
+	} | $(call mke2fs-run,mkrootfs.sh,$$stage,/out/rootfs.ext4 $(PYTHON_VERSION) 16 $(JOBS))
+	mkdir -p "$(dir $(PLUGIN_ROOTFS))"
+	mv -f "$$stage/rootfs.ext4" "$(PLUGIN_ROOTFS)"
 
 # образы всех плагинов с entry points группы boba.tools
 .PHONY: plugin-rootfs-all
