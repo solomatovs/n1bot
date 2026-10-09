@@ -11,21 +11,118 @@ Boba состоит из двух HTTP-приложений: chainlit (чат, �
 
 ## 1. Состав и раскладка
 
-Заготовка: дерево установки (`app`, `third`, `app_root`, `conf`, `data`,
-`sandbox`, `models`), что переживает релиз, что заменяется.
+Приложений три: chainlit (чат), studio (API и страницы) и boba-mcp (сервис
+инструментов, порт 8650). Каждое собирается в свой образ `boba-<приложение>`,
+внутри образа дерево лежит в `/app/boba`:
+
+| Каталог | Что в нём | Откуда берётся |
+|---|---|---|
+| `app/` | код приложения и его зависимости python | образ |
+| `third/` | интерпретатор python и библиотеки; у приложений с песочницей — `bin/bwrap`, `bin/fuse2fs` | образ |
+| `app_root/` | статика интерфейса (chainlit, studio) | образ; у studio в compose — том `./app_root` |
+| `sandbox/` | шаблон `workspace.ext4` и образы корней плагинов `plugins/<пакет>/rootfs.ext4` | у boba-mcp — образ; у studio — том `runtime/sandbox` |
+| `models/` | модели `fastembed`, `rapidocr`, `onnx-genai` | том `runtime/models`, в образ не кладутся |
+| `conf/` | `config.toml`, `plugins/*.toml`, `boba.env`, `krb/` (keytab, krb5.conf) | том `./conf`, только чтение |
+| `data/` | всё, что приложение пишет: кэши билетов `krb/`, образы пользователей `workspace/*.ext4`, журналы `tool-logs/`, `dump/`, вложения чата `files/` | том `./data` |
+
+Релиз заменяет образ (то есть `app`, `third`, `app_root` и у boba-mcp `sandbox`).
+Переживают релиз `conf/` и `data/`, а также общий каталог `runtime/`.
+
+На хосте, где приложения собираются и запускаются из репозитория, рядом лежат
+три каталога, и ни один из них не попадает в git:
+
+- `runtime/` — зависимости, которые подкладываются для работы, один экземпляр
+  на репозиторий: `models/` (кладёт `make -C build fetch`), `third/` и
+  `sandbox/` (кладут `make -C build sandbox` и `plugin-rootfs-all`). Каталог
+  принадлежит пользователю, от которого идёт сборка; остальным — только
+  чтение. В `third/bin` запись группе и прочим запрещена обязательно: песочница
+  не запускает `bwrap` и `fuse2fs` из каталога, куда может писать кто-то ещё.
+- `compose/<приложение>/` — `docker-compose.yml`, `conf/`, `data/` и у studio
+  `app_root/`; готовит `make -C build dev APP=<приложение>`.
+- `debug/<приложение>/` — дерево отладки и тестов на хосте: свой
+  `conf/config.toml` и свой `data/`; готовит `make -C build debug`.
 
 ## 2. Установка и запуск
 
-Заготовка: установка дерева релиза в `INSTALL_DIR`, порядок первого старта.
-Приложения запускаются контейнерами docker compose; приложениям с песочницей
-(studio, boba-mcp) дополнительно нужен user-юнит `boba-sandbox@.service` —
-подготовка cgroup для них описана в разделе 7.
+Порядок сборки из репозитория (`make -C build help` перечисляет цели):
+
+```
+make -C build base                 # образ сборки
+make -C build fetch                # артефакты из сети: tarball'ы, модели -> runtime/models
+make -C build sandbox              # bwrap, fuse2fs -> runtime/third, workspace.ext4 -> runtime/sandbox
+make -C build plugin-rootfs-all    # образы корней плагинов -> runtime/sandbox/plugins
+make -C build web                  # фронт
+make -C build build APP=<приложение>     # образ boba-<приложение>:<версия>
+make -C build test APP=<приложение>      # проверка релиза внутри образа
+make -C build dev APP=<приложение>       # дерево compose/<приложение>
+```
+
+Число заданий на шаг сборки ограничивает `JOBS=<n>`. Сборки идут по одной:
+параллельный запуск целей делит одни и те же каталоги `runtime/` и `build/src`.
+
+Запуск контейнером: в `compose/<приложение>` лежит `docker-compose.yml`,
+рядом кладётся `conf/config.toml` (и `conf/plugins/`, `conf/krb/`), затем
+
+```
+cd compose/<приложение>
+docker compose up -d <сервис>
+```
+
+Контейнер работает от пользователя `1000:1000` без capabilities
+(`cap_drop: [ALL]`, `no-new-privileges`). Приложениям с песочницей (studio,
+boba-mcp) дополнительно нужен user-юнит `boba-sandbox@.service` — подготовка
+cgroup для них описана в разделе 7. Модели и образы песочницы контейнер
+получает томами из `runtime/`.
+
+Запуск без контейнера: `make -C build release APP=<приложение>` раскладывает
+из готового образа дерево установки в `release/<версия>/<приложение>`. Оно
+рассчитано на каталог `/app/boba-<приложение>` — этот путь прописан в шебангах
+`app/bin/*` и в `conf/boba.env`. В дереве лежат `app`, `third`, `app_root`,
+`models`, у приложений с песочницей `sandbox` и шаблон юнита
+`boba-sandbox@.service`; `conf/config.toml` в дерево не входит, его кладут при
+установке. Запуск из установленного дерева — с окружением `conf/boba.env`:
+
+```
+cd /app/boba-<приложение>
+env -i $(grep -v '^#' conf/boba.env | xargs) third/bin/python3 -m <модуль> --config conf/config.toml
+```
+
+Модули: `boba.chainlit.main`, `boba.studio`, `boba.mcp_server`. Сорванный
+старт (недоступна база, не найден keytab, не прошла проверка cgroup)
+завершает процесс с ненулевым кодом: причина — в последних строках лога.
 
 ## 3. Конфигурация
 
-Заготовка: слои конфига (`[env]` в toml, `conf/plugins/*.toml`,
-переопределения `BOBA_*` из окружения), назначение секций `config.toml`
-chainlit и studio, что должно совпадать между приложениями.
+Конфиг приложения собирается слоями: вычисленный `env.base` (каталог, в
+котором лежит `conf/`), `conf/config.toml`, файлы `conf/plugins/<id>.toml`
+(секции `tool.<id>`) и переопределения ключей `[env]` переменными окружения
+`BOBA_<КЛЮЧ>`.
+
+Пути развёртывания называет секция `[env]`, остальные секции ссылаются на них
+интерполяцией `${env.<ключ>}`:
+
+| Ключ `[env]` | Назначение | Переменная |
+|---|---|---|
+| `base` | корень раскладки; вычисляется по расположению конфига | `BOBA_BASE` |
+| `data` | каталог записи приложения | `BOBA_DATA` |
+| `models` | каталог моделей | — |
+| `third` | каталог `bin`/`lib` песочницы (studio, boba-mcp) | — |
+| `sandbox` | шаблон workspace и образы корней плагинов (studio, boba-mcp) | — |
+| `app_root` | статика интерфейса (chainlit, studio) | `BOBA_APP_ROOT` |
+| `krb` | keytab и krb5.conf | — |
+| `cgroup_base` | каталог cgroup песочницы | `BOBA_CGROUP_BASE` |
+| `port`, `url_prefix`, `host`, `instance_id` | адрес и имя узла | `BOBA_PORT`, `BOBA_URL_PREFIX`, `BOBA_HOST`, `BOBA_INSTANCE_ID` |
+| `messaging_provider`, `tool_launcher`, `workflow_page`, `public_url` | режимы работы | `BOBA_MESSAGING`, `BOBA_TOOL_LAUNCHER`, `BOBA_WORKFLOW_PAGE`, `BOBA_PUBLIC_URL` |
+| `mcp_scheme`, `mcp_host`, `mcp_port`, `mcp_prefix` (chainlit) | адрес сервиса boba-mcp | `BOBA_MCP_SCHEME`, `BOBA_MCP_HOST`, `BOBA_MCP_PORT`, `BOBA_MCP_PREFIX` |
+| `mcp_issuer_path` (chainlit) | путь издателя токенов сервиса: префикс сервиса либо `/`, когда префикса нет | — |
+
+Ключ `[chainlit].files_dir` обязателен: это каталог вложений сессий чата
+(в конфигах `"${env.data}/files"`). Сам chainlit держит их в `<app_root>/.files`;
+приложение переносит каталог в данные, чтобы статика оставалась только для
+чтения.
+
+Заготовка: назначение остальных секций `config.toml` chainlit и studio, что
+должно совпадать между приложениями.
 
 ## 4. Секреты
 
