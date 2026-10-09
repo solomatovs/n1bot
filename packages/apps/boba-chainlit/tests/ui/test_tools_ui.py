@@ -39,7 +39,6 @@ from boba.confluence.models import (
 )
 from boba.confluence.parsing import JsonNode
 from boba.confluence.rest import CflRestBuilder
-from boba.connections.sealed import ConnectionRef
 from boba.doc.config import DocConfig
 from boba.doc.document import DisabledOcr, DocumentHint, PageWindow
 from boba.doc.router import DocumentRouter
@@ -354,20 +353,8 @@ class ToolCall:
         return "\n\n".join(blocks)
 
 
-class MainConnection:
-    """Ссылка на соединение main стенда того вида, что берёт инструмент:
-    вид называет префикс имени инструмента."""
-
-    def __init__(self) -> None:
-        self._kinds = {"pg": "postgres", "ch": "clickhouse", "ora": "oracle"}
-
-    def of(self, tool: str) -> str:
-        prefix = tool.split("_", 1)[0]
-
-        return ConnectionRef(kind=self._kinds[prefix], name="main").render()
-
-
-MAIN_CONNECTION = MainConnection()
+MAIN_CONNECTION = "main"
+"""Имя соединения main стенда: вид параметра задаёт схема инструмента."""
 
 
 @dataclass(frozen=True)
@@ -1112,7 +1099,7 @@ def probe_table(module_feed: ToolFeed) -> str:
     call = ToolCall(
         tool="pg_query",
         arguments={
-            "connection": "conn://postgres/main",
+            "connection": "main",
             "sql": ProbeSql.CREATE.value,
             **RowWindowArgs.of(),
         },
@@ -1204,8 +1191,7 @@ def _connection_catalog() -> TableResult:
 
     rows: list[dict[str, Any]] = []
     for name, kind, host in listed:
-        ref = ConnectionRef(kind=kind, name=name).render()
-        rows.append({"connection": ref, "kind": kind, "host": host, "description": ""})
+        rows.append({"name": name, "kind": kind, "host": host, "description": ""})
 
     return TableResult(rows=rows)
 
@@ -1363,7 +1349,7 @@ class TestWebTools:
             tool="web_fetch_page",
             arguments={
                 "url": url,
-                "connection": "conn://web/stand",
+                "connection": "stand",
                 "as_markdown": False,
                 "line_offset": 0,
                 "line_count": 50,
@@ -1380,7 +1366,7 @@ class TestWebTools:
             tool="web_fetch_page",
             arguments={
                 "url": url,
-                "connection": "conn://web/stand",
+                "connection": "stand",
                 "as_markdown": False,
                 "line_offset": 1,
                 "line_count": 1,
@@ -1404,7 +1390,7 @@ class TestWebTools:
             tool="web_grep_page",
             arguments={
                 "url": url,
-                "connection": "conn://web/stand",
+                "connection": "stand",
                 **grep.arguments(as_markdown=False),
             },
         )
@@ -1424,7 +1410,7 @@ class TestWebTools:
             tool="web_grep_page",
             arguments={
                 "url": url,
-                "connection": "conn://web/stand",
+                "connection": "stand",
                 **grep.arguments(as_markdown=False),
             },
         )
@@ -1704,7 +1690,7 @@ class TestPgTools:
         call = ToolCall(
             tool="pg_query",
             arguments={
-                "connection": "conn://postgres/main",
+                "connection": "main",
                 "sql": ProbeSql.UPDATE.value,
                 **RowWindowArgs.of(),
             },
@@ -1721,7 +1707,7 @@ class TestPgTools:
         call = ToolCall(
             tool="pg_query",
             arguments={
-                "connection": "conn://postgres/main",
+                "connection": "main",
                 "sql": ProbeSql.SELECT.value,
                 **RowWindowArgs.of(),
             },
@@ -1743,7 +1729,7 @@ class TestPgTools:
         call = ToolCall(
             tool="pg_list_tables",
             arguments={
-                "connection": "conn://postgres/main",
+                "connection": "main",
                 "pg_schema": ProbeSql.SCHEMA.value,
                 "table_pattern": probe_table,
                 **RowWindowArgs.of(),
@@ -1779,7 +1765,7 @@ class TestPgTools:
         call = ToolCall(
             tool="pg_describe_table",
             arguments={
-                "connection": "conn://postgres/main",
+                "connection": "main",
                 "table": probe_table,
                 "pg_schema": ProbeSql.SCHEMA.value,
                 **RowWindowArgs.of(),
@@ -1843,7 +1829,7 @@ class TestChTools:
             tool="ch_query",
             arguments={
                 "sql": ProbeSql.CH_SELECT.value,
-                "connection": "conn://clickhouse/main",
+                "connection": "main",
                 **RowWindowArgs.of(),
             },
             code="sql",
@@ -1862,7 +1848,7 @@ class TestChEdmTools:
         return ToolCall(
             tool=tool,
             arguments={
-                "connection": "conn://clickhouse/edm",
+                "connection": "edm",
                 "database": StandDatabase.EDM_DATABASE,
                 **arguments,
                 **RowWindowArgs.of(),
@@ -1924,7 +1910,7 @@ class TestOraTools:
             tool="ora_query",
             arguments={
                 "sql": ProbeSql.ORA_SELECT.value,
-                "connection": "conn://oracle/main",
+                "connection": "main",
                 **RowWindowArgs.of(),
             },
             code="sql",
@@ -1944,7 +1930,7 @@ class TestOraTools:
         call = ToolCall(
             tool="ora_list_tables",
             arguments={
-                "connection": "conn://oracle/main",
+                "connection": "main",
                 "schema_name": ProbeSql.ORA_SYSTEM.value,
                 **RowWindowArgs.of(limit=2),
             },
@@ -1963,7 +1949,7 @@ class TestOraTools:
         call = ToolCall(
             tool="ora_describe_table",
             arguments={
-                "connection": "conn://oracle/main",
+                "connection": "main",
                 "table": ProbeSql.ORA_DUAL.value,
                 "schema_name": ProbeSql.ORA_SYSTEM.value,
                 **RowWindowArgs.of(),
@@ -2009,7 +1995,7 @@ class DescribeCase:
         return ToolExpect(patterns=[TablePattern.cells("address", self.column)])
 
     def call(self) -> ToolCall:
-        arguments = {"connection": MAIN_CONNECTION.of(self.tool), **self.arguments}
+        arguments = {"connection": MAIN_CONNECTION, **self.arguments}
         if self.windowed:
             arguments.update(RowWindowArgs.of(limit=2))
 
@@ -2143,16 +2129,12 @@ class TestAddressTools:
     def test_pg_address(self, feed: ToolFeed) -> None:
         stand = Stand.required()
         url = re.escape(f"postgresql://{stand.pg_host}:") + r"\d+/\S+"
-        call = ToolCall(
-            tool="pg_address", arguments={"connection": "conn://postgres/main"}
-        )
+        call = ToolCall(tool="pg_address", arguments={"connection": "main"})
         feed.call(call, self._expect("main", url))
 
     def test_ch_address_needs_a_database(self, feed: ToolFeed) -> None:
         """У ClickHouse стенда в профиле нет базы: отказ приходит текстом тела."""
-        call = ToolCall(
-            tool="ch_address", arguments={"connection": "conn://clickhouse/main"}
-        )
+        call = ToolCall(tool="ch_address", arguments={"connection": "main"})
         expect = ToolExpect(
             mark=StepMark.FAILED,
             patterns=[re.escape("no default database in the connection")],
@@ -2164,16 +2146,12 @@ class TestAddressTools:
     def test_ora_address(self, feed: ToolFeed) -> None:
         oracle = StandOracle(StandLayers.compose(StandApp.CHAINLIT.files()))
         url = re.escape(f"oracle://{oracle.host}:{oracle.port}/{oracle.service}")
-        call = ToolCall(
-            tool="ora_address", arguments={"connection": "conn://oracle/main"}
-        )
+        call = ToolCall(tool="ora_address", arguments={"connection": "main"})
         feed.call(call, self._expect("main", url))
 
     def test_web_address(self, feed: ToolFeed, llm_port: int) -> None:
         root = f"{StandUrl.SCHEME.value}://{StandUrl.HOST.value}:{llm_port}"
-        call = ToolCall(
-            tool="web_address", arguments={"connection": "conn://web/stand"}
-        )
+        call = ToolCall(tool="web_address", arguments={"connection": "stand"})
         feed.call(call, self._expect("stand", re.escape(root) + "/?"))
 
     def test_confluence_address(
@@ -2420,7 +2398,7 @@ class TestStreamTools:
                 "pg_stream_in",
                 StreamProbe.CH_CHANNEL,
                 "pg from ch",
-                connection=MAIN_CONNECTION.of("pg_stream_in"),
+                connection=MAIN_CONNECTION,
                 schema_name=ProbeSql.SCHEMA.value,
                 table_name=StreamProbe.PG_FROM_CH.value,
             ),
@@ -2428,7 +2406,7 @@ class TestStreamTools:
                 "pg_stream_in",
                 StreamProbe.ORA_CHANNEL,
                 "pg from ora",
-                connection=MAIN_CONNECTION.of("pg_stream_in"),
+                connection=MAIN_CONNECTION,
                 schema_name=ProbeSql.SCHEMA.value,
                 table_name=StreamProbe.PG_FROM_ORA.value,
             ),
@@ -2436,9 +2414,7 @@ class TestStreamTools:
                 "ch_stream_in",
                 StreamProbe.PG_CHANNEL,
                 "ch from pg",
-                connection=ConnectionRef(
-                    kind="clickhouse", name=StandDatabase.SINK_CH
-                ).render(),
+                connection=StandDatabase.SINK_CH,
                 database=stream_sinks.ch_database,
                 table_name=StreamProbe.CH_TABLE.value,
                 tail={"order_by": "id", "create_table": StreamProbe.MERGE_TREE.value},
@@ -2447,9 +2423,7 @@ class TestStreamTools:
                 "ora_stream_in",
                 StreamProbe.PG_CHANNEL,
                 "ora from pg",
-                connection=ConnectionRef(
-                    kind="oracle", name=StandDatabase.SINK_ORA
-                ).render(),
+                connection=StandDatabase.SINK_ORA,
                 schema_name=stream_sinks.ora_schema,
                 table_name=StreamProbe.ORA_TABLE.value,
             ),
@@ -2484,7 +2458,7 @@ class TestStreamTools:
         source = ToolCall(
             tool="pg_stream_out",
             arguments={
-                "connection": "conn://postgres/main",
+                "connection": "main",
                 "sql": StreamProbe.PG_SQL.value,
                 "wire": "tsv",
                 "out": "ui_drain",
@@ -2509,7 +2483,7 @@ class TestStreamTools:
         return ToolCall(
             tool=tool,
             arguments={
-                "connection": MAIN_CONNECTION.of(tool),
+                "connection": MAIN_CONNECTION,
                 **arguments,
                 "out": channel.value,
             },

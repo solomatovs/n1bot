@@ -53,6 +53,7 @@ from boba.pump_stand import (
     PumpStand,
 )
 from boba.pump_stand.oracle import PumpUser
+from boba.stand.collection import StandServers
 from boba.toolkit.result import FailureResult, SqlFailureResult
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
@@ -629,7 +630,7 @@ feed = "rows"
 """
 
 
-WITH_JSON = STAND.only("source", STAND.since(PG_JSON_SINCE))
+WITH_JSON = StandServers().only("source", STAND.since(PG_JSON_SINCE))
 """json_build_object и jsonb появились в 9.4: источники старее случай не берёт."""
 
 

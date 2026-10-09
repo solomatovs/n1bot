@@ -221,7 +221,9 @@ async def test_payload_store_keeps_bodies_and_purges_idle(
     assert await viewer.payloads.get(text_ref) == "plain"
     assert await viewer.payloads.get(args_ref) == {"query": "x", "n": 2}
 
-    assert await viewer.payloads.purge_idle(3600) == 0
+    # база набора общая: старые тела других тестов чистка вправе унести,
+    # свежие тела этой области обязаны её пережить
+    await viewer.payloads.purge_idle(3600)
     assert await viewer.payloads.purge(scope) == 3
     assert await viewer.bus.purge_idle(3600) >= 0
 

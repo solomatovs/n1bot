@@ -63,6 +63,7 @@ from boba.pump_stand.matrix import (
 )
 from boba.pump_stand.oracle import PumpUser
 from boba.pump_stand.ports import Feed
+from boba.stand.collection import StandServers
 from boba.stand.names import StandNames
 from boba.toolkit.arrow import ArrowColumns
 from boba.toolkit.contract import ArrowContract, StreamContract
@@ -74,7 +75,7 @@ STAND = PumpStand.required()
 
 
 NEWEST = STAND.newest_postgres()
-ON_NEWEST = STAND.only("postgres", [NEWEST])
+ON_NEWEST = StandServers().only("postgres", [NEWEST])
 """Случай не зависит от версии сервера: идёт на одном, самом новом postgres."""
 ROWS = 60
 ARRAYSIZE = 97

@@ -34,6 +34,7 @@ from boba.pump_stand import (
     PumpDags,
     PumpStand,
 )
+from boba.stand.collection import StandServers
 from boba.stand.names import StandNames
 from boba.toolkit.result import SqlFailureResult
 
@@ -45,7 +46,9 @@ CH_DATABASE = StandNames().of("pump_pg_ch")
 ROWS = 60
 NULLABLE_JSON_SINCE = 25
 IPV4_IN_IPV6_SINCE = 23
-WITH_IP_COLUMNS = STAND.only("clickhouse", STAND.clickhouse_since(IPV4_IN_IPV6_SINCE))
+WITH_IP_COLUMNS = StandServers().only(
+    "clickhouse", STAND.clickhouse_since(IPV4_IN_IPV6_SINCE)
+)
 """До 23-й версии inet ложится String, и маску сервер не разбирает."""
 
 SOURCE_DDL = f"""

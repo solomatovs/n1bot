@@ -34,6 +34,7 @@ from boba.db.postgres.transfer import (
 from boba.pump_stand import Loaded, PostgresSide, PumpDags, PumpStand
 from boba.pump_stand.ports import Sink, SinkOutbound
 from boba.pump_stand.stand import PgSource
+from boba.stand.collection import StandServers
 from boba.stand.ix import IxStandError
 from boba.stand.names import StandNames
 from boba.stream.pg_to_pg.transfer import PgStreamColumn
@@ -1247,10 +1248,10 @@ feed = "rows"
 
 
 NEWEST = STAND.newest_postgres()
-ON_NEWEST = STAND.only("postgres", [NEWEST])
+ON_NEWEST = StandServers().only("postgres", [NEWEST])
 """Случай не зависит от версии сервера: идёт на одном, самом новом postgres."""
 
-ON_GREENPLUM = STAND.only("postgres", STAND.greenplum())
+ON_GREENPLUM = StandServers().only("postgres", STAND.greenplum())
 
 
 def _older_than(version: int) -> PgSource:

@@ -39,6 +39,7 @@ from boba.pump_stand import (
     PumpDags,
     PumpStand,
 )
+from boba.stand.collection import StandServers
 from boba.stand.names import StandNames
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
@@ -49,7 +50,7 @@ CH_DATABASE = StandNames().of("pump_ch_pg")
 ROWS = 60
 TARGET_NAMES = ("pg-16", "gp-7")
 JSON_SINCE = 24
-WITH_JSON = STAND.only("clickhouse", STAND.clickhouse_since(JSON_SINCE))
+WITH_JSON = StandServers().only("clickhouse", STAND.clickhouse_since(JSON_SINCE))
 """До 24-й версии JSON сервера — Object('json') и печатается кортежем."""
 JSON_SETTINGS = {
     "allow_experimental_object_type": 1,

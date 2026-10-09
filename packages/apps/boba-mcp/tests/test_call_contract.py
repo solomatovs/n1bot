@@ -140,11 +140,12 @@ class TestToolSchema:
         if "contentMediaType" in properties["limit"]:
             raise AssertionError(f"a number has no content type: {properties}")
 
-    async def test_connection_parameter_is_a_plain_string(
+    async def test_connection_parameter_declares_a_sealed_profile(
         self, client: Client[Any]
     ) -> None:
-        """Параметр-соединение для модели — обычная строка: описание называет
-        вид соединения и форму ссылки, своих ключей в схеме нет."""
+        """Параметр-соединение — строка, чьё содержимое объявлено стандартными
+        ключами JSON Schema: JWE (contentMediaType) с профилем соединения
+        вида postgres внутри (contentSchema); своих ключей в схеме нет."""
         listed = await client.list_tools()
 
         tool = next(tool for tool in listed if tool.name == "fake_connection_host")
@@ -152,10 +153,24 @@ class TestToolSchema:
         if declared["type"] != "string" or declared["minLength"] != 1:
             raise AssertionError(f"the connection is sent as a string: {declared}")
 
-        if "conn://postgres/" not in declared["description"]:
-            raise AssertionError(f"the description names the reference: {declared}")
+        if declared["contentMediaType"] != "application/jose":
+            raise AssertionError(f"the content is a compact JWE: {declared}")
 
-        if sorted(declared) != ["description", "minLength", "title", "type"]:
+        content = declared["contentSchema"]
+        if content["properties"]["kind"]["const"] != "postgres":
+            raise AssertionError(f"the profile schema names the kind: {content}")
+        if "host" not in content["properties"]:
+            raise AssertionError(f"the profile schema is the full model: {content}")
+
+        expected = [
+            "contentMediaType",
+            "contentSchema",
+            "description",
+            "minLength",
+            "title",
+            "type",
+        ]
+        if sorted(declared) != expected:
             raise AssertionError(f"only standard schema keys: {sorted(declared)}")
 
 

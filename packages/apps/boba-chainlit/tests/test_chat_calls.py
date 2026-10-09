@@ -243,13 +243,13 @@ class TestChatCalls:
             raise AssertionError(f"отказ называет аргумент: {stand.turn.failed}")
 
     @pytest.mark.anyio
-    async def test_sealed_argument_is_shown_as_its_reference(
+    async def test_sealed_argument_is_shown_as_its_name(
         self, call_stand: CallStand
     ) -> None:
-        """Шаг показывает ссылку на соединение, а не запечатанное значение,
+        """Шаг показывает имя соединения, а не запечатанное значение,
         с которым вызов ушёл исполнителю."""
         stand = CallsStand(call_stand, FakeTurn())
-        stand.sent.remember("sealed-blob", "conn://pg/main")
+        stand.sent.remember("sealed-blob", "main")
         node = DagNode(
             key="call-seal-1", tool="sync_echo", args={"text": "sealed-blob"}
         )
@@ -259,8 +259,8 @@ class TestChatCalls:
         if outcome.content != "sealed-blob":
             raise AssertionError(f"тело получило запечатанное: {outcome.content!r}")
         shown = stand.turn.started[0][2]
-        if shown != {"text": "conn://pg/main"}:
-            raise AssertionError(f"шаг показывает ссылку: {shown}")
+        if shown != {"text": "main"}:
+            raise AssertionError(f"шаг показывает имя: {shown}")
 
     @pytest.mark.anyio
     async def test_call_outside_a_turn_runs_without_steps(

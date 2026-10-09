@@ -89,8 +89,8 @@ class ConnectionTools:
 
         @tool
         async def connection_list() -> TableResult:
-            """Все соединения, доступные пользователю: ссылка, вид (postgres,
-            clickhouse, web, ...), хост и описание. Ссылка из колонки connection
+            """Все соединения, доступные пользователю: имя, вид (postgres,
+            clickhouse, web, ...), хост и описание. Имя из колонки name
             передаётся инструментам в параметр соединения как есть; вид говорит,
             какому инструменту соединение подходит."""
             return await catalog.rows(contexts.subject())
@@ -142,9 +142,9 @@ class ConnectionTools:
         ) -> TableResult:
             """Найти соединения, доступные пользователю, фильтрами по колонкам:
             фильтры складываются по И, пустой фильтр не применяется. Возвращает
-            connection, kind, host, description; ссылка из колонки connection
-            передаётся инструментам в параметр соединения как есть, вид говорит,
-            какому инструменту соединение подходит."""
+            name, kind, host, description; имя из колонки name передаётся
+            инструментам в параметр соединения как есть, вид говорит, какому
+            инструменту соединение подходит."""
             flt = ConnectionFilter(
                 kind=kind, name=name, host=host, description=description
             )

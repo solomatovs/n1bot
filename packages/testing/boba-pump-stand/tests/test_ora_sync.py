@@ -44,6 +44,7 @@ from boba.pump_stand import (
     PumpStand,
 )
 from boba.pump_stand.oracle import PumpUser
+from boba.stand.collection import StandServers
 from boba.stand.names import StandNames
 from boba.toolkit.result import FailureResult, SqlFailureResult
 
@@ -55,7 +56,7 @@ ARRAYSIZE = 500
 PG_SCHEMA = StandNames().of("pump_ora_sync")
 CH_DATABASE = StandNames().of("pump_ora_sync")
 BOOLEAN_SINCE = 23
-WITHOUT_BOOLEAN = STAND.only("oracle", STAND.oracle_before(BOOLEAN_SINCE))
+WITHOUT_BOOLEAN = StandServers().only("oracle", STAND.oracle_before(BOOLEAN_SINCE))
 """Отказ сырому bool — поведение серверов без типа BOOLEAN."""
 SRC = StandNames().of("src")
 OWNER = PumpUser().name

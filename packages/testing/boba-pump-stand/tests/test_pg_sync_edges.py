@@ -34,6 +34,7 @@ from boba.pump_stand import (
 )
 from boba.pump_stand.oracle import PumpUser
 from boba.pump_stand.stand import PgSource
+from boba.stand.collection import StandServers
 from boba.stand.ix import IxStand
 from boba.stand.names import StandNames
 from boba.toolkit.transfer import StreamWire
@@ -1504,7 +1505,7 @@ def _chosen(sources: Sequence[Any]) -> list[Any]:
 
 
 NEWEST = STAND.newest_postgres()
-ON_NEWEST = STAND.only("postgres", [NEWEST])
+ON_NEWEST = StandServers().only("postgres", [NEWEST])
 """Случай не зависит от версии сервера: идёт на одном, самом новом postgres."""
 
 EXTENSIONS_SINCE = 90100
@@ -1518,7 +1519,7 @@ def _since(kernel: int) -> pytest.MarkDecorator:
         if source.kernel >= kernel:
             chosen.append(source)
 
-    return STAND.only("postgres", chosen)
+    return StandServers().only("postgres", chosen)
 
 
 @pytest.fixture(scope="module", params=_chosen(STAND.sources), ids=lambda s: s.name)

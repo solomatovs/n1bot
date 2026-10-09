@@ -1,7 +1,8 @@
-"""Путь соединения от ссылки модели до тела инструмента.
+"""Путь соединения от имени в вызове модели до тела инструмента.
 
 Клиент и исполнитель стоят в одном процессе (SealedStand): модель называет
-соединение ссылкой, клиент запечатывает профиль ключом исполнителя,
+соединение именем, клиент по схеме инструмента узнаёт параметр и вид,
+запечатывает профиль ключом исполнителя,
 исполнитель открывает его и отдаёт телу. Таблица соединений подменена
 хранилищем в памяти.
 """
@@ -27,7 +28,7 @@ from boba.connection_broker.sealed import SealedConnectionParams
 from boba.connection_broker.sealing import SealingToolServer
 from boba.connections.base import ConnectionBase
 from boba.connections.marks import ConnectionRefusal
-from boba.connections.sealed import ConnectionRef, SealFeature, SealKeys
+from boba.connections.sealed import SealedParamSchema, SealFeature, SealKeys
 from boba.stand_core.context import CallStand
 from boba.toolkit.dag import (
     DagNode,
@@ -46,7 +47,7 @@ from boba.toolrun.stream_calls import WorkflowTool
 
 pytestmark = pytest.mark.anyio
 
-MAIN = ConnectionRef(kind="probe", name="main").render()
+MAIN = "main"
 
 
 class _DeclaringAnotherKey(ToolServer):
@@ -129,7 +130,22 @@ class _Conducted(NodeCalls):
 
 
 class TestSchemaShownToTheModel:
-    def test_connection_parameter_is_a_marked_string(self) -> None:
+    def test_server_declares_a_sealed_profile(self) -> None:
+        stand = _stand()
+
+        served = {card.name: card for card in stand.executor.tools()}
+        declared = served["probe_query"].parameters["properties"]["connection"]
+
+        if declared["type"] != "string":
+            raise AssertionError(f"сервер ждёт строку: {declared}")
+        if declared["contentMediaType"] != "application/jose":
+            raise AssertionError(f"содержимое строки — JWE: {declared}")
+        if SealedParamSchema().kind_of(declared) != "probe":
+            raise AssertionError(f"схема профиля называет вид: {declared}")
+        if "probe" not in declared["description"]:
+            raise AssertionError(f"описание называет вид: {declared}")
+
+    def test_model_sees_a_plain_string_for_the_name(self) -> None:
         stand = _stand()
 
         offered = {card.name: card for card in stand.client.tools()}
@@ -139,10 +155,15 @@ class TestSchemaShownToTheModel:
 
         if declared["type"] != "string":
             raise AssertionError(f"модель видит строку: {declared}")
-        if "conn://probe/" not in declared["description"]:
-            raise AssertionError(f"описание называет вид и форму ссылки: {declared}")
+        if "probe" not in declared["description"]:
+            raise AssertionError(f"описание называет вид: {declared}")
         if sorted(declared) != ["description", "minLength", "title", "type"]:
             raise AssertionError(f"только стандартные ключи схемы: {declared}")
+        if (
+            shown["properties"]["sql"]
+            != offered["probe_query"].parameters["properties"]["sql"]
+        ):
+            raise AssertionError("остальные параметры как у сервера")
 
 
 class TestReferenceReachesTheBody:
@@ -171,7 +192,7 @@ class TestReferenceReachesTheBody:
             SealedStand.probe_row("right", "b.local"),
         ]
         stand = SealedStand(rows)
-        args = {"source": "conn://probe/left", "target": "conn://probe/right"}
+        args = {"source": "left", "target": "right"}
 
         row = _row(await stand.call("probe_copy", args))
 
@@ -279,7 +300,7 @@ class TestWorkflowNodes:
 class TestRefusals:
     async def test_unknown_name_is_refused_with_the_available_ones(self) -> None:
         stand = _stand()
-        args = {"connection": "conn://probe/нет-такого", "sql": "x"}
+        args = {"connection": "нет-такого", "sql": "x"}
 
         refusal = _refusal(await stand.call("probe_query", args))
 
@@ -300,7 +321,7 @@ class TestRefusals:
             timedelta(minutes=10),
             conduct,
         )
-        args = {"connection": "conn://probe/нет-такого", "sql": "x"}
+        args = {"connection": "нет-такого", "sql": "x"}
 
         outcome = await stand.call_through(client, "probe_query", args)
 
@@ -315,33 +336,27 @@ class TestRefusals:
             SealedStand.probe_row("dup", "b.local"),
         ]
         stand = SealedStand(rows)
-        args = {"connection": "conn://probe/dup", "sql": "x"}
+        args = {"connection": "dup", "sql": "x"}
 
         refusal = _refusal(await stand.call("probe_query", args))
 
         if refusal.error_kind != ConnectionRefusal.AMBIGUOUS:
             raise AssertionError(f"дубль имени отвергнут: {refusal}")
 
-    async def test_reference_of_another_kind_is_refused_before_arming(self) -> None:
+    async def test_name_of_another_kind_is_not_visible(self) -> None:
+        """Вид параметра берётся из схемы инструмента: строка другого вида с
+        таким именем параметру не видна."""
         stand = SealedStand([SealedStand.row("web", OtherConnection(host="h"))])
-        args = {"connection": "conn://other/web", "sql": "x"}
+        args = {"connection": "web", "sql": "x"}
 
         refusal = _refusal(await stand.call("probe_query", args))
 
-        if refusal.error_kind != ConnectionRefusal.ANOTHER_KIND:
-            raise AssertionError(f"вид сверен по метке схемы: {refusal}")
-
-    async def test_broken_reference_is_refused(self) -> None:
-        stand = _stand()
-
-        refusal = _refusal(
-            await stand.call("probe_query", {"connection": "conn://main", "sql": "x"})
-        )
-
         if refusal.error_kind != ConnectionRefusal.NOT_VISIBLE:
-            raise AssertionError(f"ссылка без вида отвергнута: {refusal}")
+            raise AssertionError(f"строка другого вида не видна: {refusal}")
 
-    async def test_plain_value_is_refused_by_the_server_without_echo(self) -> None:
+    async def test_plain_value_is_refused_by_the_client_without_echo(self) -> None:
+        """Вместо имени модель написала строку подключения с паролем: клиент
+        отвергает её как неизвестное имя, не цитируя, и серверу не шлёт."""
         stand = _stand()
         dsn = f"postgres://user:{SECRET}@db.local/x"
 
@@ -349,17 +364,19 @@ class TestRefusals:
             await stand.call("probe_query", {"connection": dsn, "sql": "x"})
         )
 
-        if refusal.error_kind != ConnectionRefusal.NOT_SEALED:
-            raise AssertionError(f"незапечатанное значение отвергнуто: {refusal}")
+        if refusal.error_kind != ConnectionRefusal.NOT_VISIBLE:
+            raise AssertionError(f"неизвестное имя отвергнуто: {refusal}")
         if SECRET in refusal.message:
             raise AssertionError(f"значение не цитируется: {refusal.message}")
+        if "main" not in refusal.message:
+            raise AssertionError(f"отказ называет доступные: {refusal.message}")
 
 
 class TestShownToTheUser:
     """Лента клиента рисует шаг по аргументам, с которыми тело вызвано; на
-    месте запечатанного значения она показывает ссылку модели."""
+    месте запечатанного значения она показывает имя из вызова модели."""
 
-    async def test_sealed_value_is_shown_as_the_reference_while_the_call_runs(
+    async def test_sealed_value_is_shown_as_the_name_while_the_call_runs(
         self,
     ) -> None:
         stand = _stand()
@@ -383,7 +400,7 @@ class TestShownToTheUser:
             await pending[0]
 
         if running["connection"] != MAIN:
-            raise AssertionError(f"во время вызова показана ссылка: {running}")
+            raise AssertionError(f"во время вызова показано имя: {running}")
 
         after = stand.sent.shown(recorder.calls[0].args)
         if after["connection"] == MAIN:

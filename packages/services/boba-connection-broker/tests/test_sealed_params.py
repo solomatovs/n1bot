@@ -1,6 +1,7 @@
-"""Приём запечатанных соединений исполнителем: модель видит ссылку, тело
-получает профиль из значения, запечатанного ключом исполнителя; незапечатанное,
-чужое, просроченное и соединение другого вида отвергаются с подсказкой."""
+"""Приём запечатанных соединений исполнителем: схема параметра объявляет
+запечатанный профиль вида, тело получает профиль из значения, запечатанного
+ключом исполнителя; незапечатанное, чужое, просроченное и соединение другого
+вида отвергаются с подсказкой."""
 
 from __future__ import annotations
 
@@ -9,7 +10,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 from probe_stand import (
     LOGIN,
-    REF,
+    NAME,
     SECRET,
     TYPES,
     OtherConnection,
@@ -24,6 +25,7 @@ from boba.connections.marks import ConnectionRefusal
 from boba.connections.sealed import (
     ConnectionSeal,
     SealedConnection,
+    SealedParamSchema,
     SealFeature,
     SealKey,
     SealKeys,
@@ -54,7 +56,7 @@ def _sealed(
 ) -> str:
     """Соединение, запечатанное клиентом ключом исполнителя."""
     sealed = SealedConnection(
-        ref=REF,
+        name=NAME,
         login=login,
         expires_at=datetime.now(UTC) + ttl,
         profile=SecretReveal.dumped(profile),
@@ -72,21 +74,27 @@ async def _refusal(tools: ProbeTools, keys: SealKeys, connection: str) -> Refusa
     return refused.value
 
 
-class TestSchemaShownToTheModel:
-    def test_profile_parameter_becomes_a_reference(self, tools: ProbeTools) -> None:
+class TestSchemaDeclaredToTheClient:
+    def test_profile_parameter_becomes_a_sealed_string(self, tools: ProbeTools) -> None:
         tool = tools.bound(tools.one_connection(), SealKeys())
 
         schema = tool.args_schema
 
         field = schema.model_fields["connection"]
         if field.annotation is not str:
-            raise AssertionError(f"модель видит строку: {field.annotation}")
+            raise AssertionError(f"параметр стал строкой: {field.annotation}")
         if ToolArgv.connection_fields(schema):
             raise AssertionError("маркер соединения со схемы снят")
 
         description = str(field.description)
-        if "conn://probe/" not in description:
-            raise AssertionError(f"описание называет вид и форму ссылки: {description}")
+        if "probe" not in description:
+            raise AssertionError(f"описание называет вид: {description}")
+
+        declared = field.json_schema_extra
+        if not isinstance(declared, dict):
+            raise AssertionError(f"ключи содержимого объявлены: {declared!r}")
+        if SealedParamSchema().kind_of(declared) != "probe":
+            raise AssertionError(f"схема называет тип содержимого и вид: {declared}")
 
 
 class TestSealedValueReachesTheBody:
@@ -127,13 +135,13 @@ class TestSealedValueReachesTheBody:
 
 
 class TestRefusals:
-    async def test_plain_reference_asks_to_seal(self, tools: ProbeTools) -> None:
-        refused = await _refusal(tools, SealKeys(), "conn://probe/main")
+    async def test_plain_name_asks_to_seal(self, tools: ProbeTools) -> None:
+        refused = await _refusal(tools, SealKeys(), NAME)
 
         if refused.kind != ConnectionRefusal.NOT_SEALED:
             raise AssertionError(f"kind отказа: {refused.kind}")
-        if "connection reference" not in str(refused):
-            raise AssertionError(f"подсказка повторить со ссылкой: {refused}")
+        if "connection name" not in str(refused):
+            raise AssertionError(f"подсказка повторить с именем: {refused}")
 
     async def test_value_for_an_old_key_asks_for_a_new_one(
         self, tools: ProbeTools
@@ -187,8 +195,8 @@ class TestShownInTheResult:
     def test_sealed_value_is_shown_as_the_reference_of_the_caller(
         self, call_stand: CallStand
     ) -> None:
-        """В итоге вызова на месте запечатанного значения стоит ссылка,
-        которой соединение назвал вызывающий: само значение не показывается."""
+        """В итоге вызова на месте запечатанного значения стоит имя,
+        которым соединение назвал вызывающий: само значение не показывается."""
         keys = SealKeys()
         params = SealedConnectionParams(keys, lambda: TYPES, call_stand.contexts)
         params.bind_all([ProbeTools().one_connection()])
@@ -196,8 +204,8 @@ class TestShownInTheResult:
 
         shown = params.shown("probe_query", {"connection": sealed, "sql": "x"})
 
-        if shown["connection"] != REF:
-            raise AssertionError(f"the reference of the caller is shown: {shown}")
+        if shown["connection"] != NAME:
+            raise AssertionError(f"the name of the caller is shown: {shown}")
         if shown["sql"] != "x":
             raise AssertionError(f"other arguments stay as they are: {shown}")
 

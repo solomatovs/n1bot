@@ -31,7 +31,6 @@ from boba.connection_broker.sealing import SealingToolServer, SentConnections
 from boba.connection_broker.store import ConnectionsConfig, ConnectionStore
 from boba.connection_broker.user_connections import ArmedConnections
 from boba.connections.manifest import ConnectionTypes
-from boba.connections.sealed import ConnectionRef
 from boba.connections.stored import GrantTarget
 from boba.db.clickhouse.address import ChAddresses, ChTableColumnAddress
 from boba.db.clickhouse.connection import ClickHouseConfig
@@ -92,8 +91,6 @@ DESCRIBER_SCHEMA = "describer_e2e"
 
 PG_CONNECTION = "dwh"
 CH_CONNECTION = "logs"
-PG_REF = ConnectionRef(kind="postgres", name=PG_CONNECTION).render()
-CH_REF = ConnectionRef(kind="clickhouse", name=CH_CONNECTION).render()
 
 DM = "dm"
 CH_DATABASE = "describer_e2e"
@@ -426,7 +423,7 @@ def _script(expected: Expected) -> list[list[DagNode]]:
             _call(
                 CallId.PG_DESCRIBE,
                 "pg_describe_table",
-                connection=PG_REF,
+                connection=PG_CONNECTION,
                 table="orders",
                 pg_schema=DM,
                 **WINDOW,
@@ -434,21 +431,21 @@ def _script(expected: Expected) -> list[list[DagNode]]:
             _call(
                 CallId.PG_FK,
                 "pg_query",
-                connection=PG_REF,
+                connection=PG_CONNECTION,
                 sql=fk_sql,
                 **WINDOW,
             ),
             _call(
                 CallId.CH_DESCRIBE,
                 "ch_query",
-                connection=CH_REF,
+                connection=CH_CONNECTION,
                 sql=ch_columns_sql,
                 **WINDOW,
             ),
         ],
         [
-            _call(CallId.PG_ADDRESS, "pg_address", connection=PG_REF),
-            _call(CallId.CH_ADDRESS, "ch_address", connection=CH_REF),
+            _call(CallId.PG_ADDRESS, "pg_address", connection=PG_CONNECTION),
+            _call(CallId.CH_ADDRESS, "ch_address", connection=CH_CONNECTION),
         ],
         [
             _call(
@@ -713,8 +710,8 @@ async def test_agent_describes_schema_and_links(  # noqa: PLR0915 — один �
     replies = Replies(messages)
 
     # разведка: оба соединения видны, метаданные приходят из настоящих баз
-    names = _column(_rows(replies.ok(CallId.CONNECTIONS)), "connection")
-    assert sorted(names) == sorted([PG_REF, CH_REF])
+    names = _column(_rows(replies.ok(CallId.CONNECTIONS)), "name")
+    assert sorted(names) == sorted([PG_CONNECTION, CH_CONNECTION])
 
     columns = _column(_rows(replies.ok(CallId.PG_DESCRIBE)), "column_name")
     assert columns == ["id", "customer_id", "amount"]

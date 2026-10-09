@@ -1593,6 +1593,7 @@ dependencies = [
 dev = [
     { name = "boba-config", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "boba-connection-broker", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "boba-db-pgvector", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "boba-db-postgres", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "boba-krb", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "boba-ldap", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
@@ -1629,6 +1630,7 @@ requires-dist = [
     { name = "boba-config", marker = "extra == 'dev'", editable = "packages/infra/config/boba-config" },
     { name = "boba-connection-broker", marker = "extra == 'dev'", editable = "packages/services/boba-connection-broker" },
     { name = "boba-connections", editable = "packages/core/boba-connections" },
+    { name = "boba-db-pgvector", marker = "extra == 'dev'", editable = "packages/infra/db/boba-db-pgvector" },
     { name = "boba-db-postgres", marker = "extra == 'dev'", editable = "packages/infra/db/boba-db-postgres" },
     { name = "boba-identity", editable = "packages/core/boba-identity" },
     { name = "boba-krb", marker = "extra == 'dev'", editable = "packages/infra/auth/boba-krb" },

@@ -37,7 +37,6 @@ from boba.connection_broker.store import ConnectionsConfig, ConnectionStore
 from boba.connection_broker.user_connections import ArmedConnections
 from boba.connections.manifest import ConnectionTypes
 from boba.connections.marks import ConnectionRefusal
-from boba.connections.sealed import ConnectionRef, ConnectionRefs
 from boba.connections.stored import ConnectionBase, GrantTarget
 from boba.db.clickhouse.connection import ClickHouseConfig
 from boba.db.postgres import AsyncPostgresPool
@@ -206,10 +205,6 @@ async def tools(
         await opened.stop()
 
 
-def _ref(kind: str, name: str) -> str:
-    return ConnectionRef(kind=kind, name=name).render()
-
-
 def _delegated() -> DelegatedAuth:
     """Строка «идёт сам пользователь»: креды даёт его вход в приложение."""
     return DelegatedAuth(method="kerberos_delegated")
@@ -276,7 +271,7 @@ async def test_postgres_query_runs_as_the_signed_in_principal(
 
     result = await Call.ok(
         tools["pg_query"],
-        connection=_ref("postgres", "pg-me"),
+        connection="pg-me",
         sql="select current_user as who",
         offset=0,
         limit=50,
@@ -297,7 +292,7 @@ async def test_clickhouse_query_runs_as_the_signed_in_principal(
 
     result = await Call.ok(
         tools["ch_query"],
-        connection=_ref("clickhouse", "ch-me"),
+        connection="ch-me",
         sql="select currentUser() as who",
         offset=0,
         limit=50,
@@ -320,7 +315,7 @@ async def test_web_page_is_fetched_as_the_signed_in_principal(
     result = await Call.ok(
         tools["web_fetch_page"],
         url=str(url),
-        connection=_ref("web", "ch-http"),
+        connection="ch-http",
         as_markdown=False,
         line_offset=0,
         line_count=5,
@@ -347,7 +342,7 @@ async def test_targets_list_only_granted_connections(  # noqa: PLR0913 — тр�
     listed = await Call.ok(catalog)
     by_kind: dict[str, list[str]] = {}
     for row in listed.rows:
-        name = ConnectionRefs().parse(str(row["connection"])).name
+        name = str(row["name"])
         by_kind.setdefault(str(row["kind"]), []).append(name)
 
     if by_kind.get("postgres") != ["pg-me"]:
@@ -370,7 +365,7 @@ async def test_revoked_connection_stops_working_at_once(
 
     await Call.ok(
         tools["pg_query"],
-        connection=_ref("postgres", "pg-me"),
+        connection="pg-me",
         sql="select 1 as one",
         offset=0,
         limit=50,
@@ -380,7 +375,7 @@ async def test_revoked_connection_stops_working_at_once(
 
     refused = await Call.result(
         tools["pg_query"],
-        connection=_ref("postgres", "pg-me"),
+        connection="pg-me",
         sql="select 1 as one",
         offset=0,
         limit=50,

@@ -8,22 +8,23 @@
 под A256GCM. Ключевая пара живёт у сервера (SealKeys), клиент получает
 открытую половину (SealKey) и запечатывает ею (ConnectionSeal); о приёме
 запечатанных соединений и о ключе сервер объявляет возможностью SealFeature
-при подключении клиента. Модель до
-запечатывания видит соединение короткой ссылкой (ConnectionRef).
+при подключении клиента. Какой параметр
+инструмента — соединение и какого вида, сервер пишет в схему параметра
+стандартными ключами JSON Schema, а клиент по ним же читает
+(SealedParamSchema); модели клиент показывает на этом месте имя соединения.
 
 Ошибки:
 RefusalError — значение не открывается: оно не запечатано, запечатано другим
-    ключом, повреждено либо несёт содержимое не той формы; строка не ссылка
-    на соединение; kind из ConnectionRefusal.
+    ключом, повреждено либо несёт содержимое не той формы; kind из
+    ConnectionRefusal.
 """
 
 from __future__ import annotations
 
-from collections.abc import Mapping
-from dataclasses import dataclass
+from collections.abc import Iterator, Mapping
 from datetime import datetime
 from enum import StrEnum
-from typing import ClassVar
+from typing import Any, ClassVar
 
 from joserfc import jwe
 from joserfc.errors import JoseError
@@ -36,18 +37,18 @@ from pydantic import (
     ValidationError,
 )
 
+from boba.connections.base import ConnectionBase
 from boba.connections.marks import ConnectionRefusal
 from boba.identity.errors import RefusalError
 from boba.toolkit.failure import ValidationText
 
 __all__ = [
-    "ConnectionRef",
-    "ConnectionRefs",
     "ConnectionSeal",
     "SealFeature",
     "SealKey",
     "SealKeys",
     "SealedConnection",
+    "SealedParamSchema",
 ]
 
 
@@ -62,59 +63,77 @@ class SealAlgorithm(StrEnum):
     HEADER_KID = "kid"
 
 
-@dataclass(frozen=True)
-class ConnectionRef:
-    """Ссылка на соединение пользователя: вид и имя, без кредов.
+class SealedParamSchema:
+    """Схема параметра-соединения на проводе: сервер пишет, клиент читает.
 
-    Её видит модель в каталоге соединений и ставит на место
-    параметра-соединения; клиент перед отправкой вызова заменяет ссылку
-    запечатанным профилем. Вид входит в ссылку, потому что имена в разных
-    видах могут совпадать. Запись — `conn://<вид>/<имя>`: двоеточие перед
-    словом markdown ленты чата принял бы за директиву и вырезал.
+    Параметр — строка с запечатанным профилем, и схема говорит это
+    стандартными ключами JSON Schema о содержимом строки: contentMediaType
+    — тип компактной JWE (application/jose), contentSchema — JSON-схема
+    модели профиля, которую сервер ждёт внутри; вид соединения — константа
+    её поля kind. Своих ключей в схеме нет: чужой клиент читает её обычным
+    разбором JSON Schema. Определения вложенных моделей лежат под самим
+    параметром, и их ссылки $ref считаются от корня схемы инструмента.
     """
 
-    PREFIX: ClassVar[str] = "conn://"
-    SEPARATOR: ClassVar[str] = "/"
+    MEDIA_TYPE: ClassVar[str] = "application/jose"
+    MEDIA_KEY: ClassVar[str] = "contentMediaType"
+    CONTENT_KEY: ClassVar[str] = "contentSchema"
+    PROPERTIES: ClassVar[str] = "properties"
+    DEFINITIONS: ClassVar[str] = "$defs"
+    KIND_FIELD: ClassVar[str] = "kind"
+    CONST_KEY: ClassVar[str] = "const"
 
-    kind: str
-    name: str
+    def declared(self, param: str, model: type[ConnectionBase]) -> dict[str, Any]:
+        """Ключи схемы параметра param: тип содержимого и схема профиля model."""
+        under_param = "/".join((self.PROPERTIES, param, self.CONTENT_KEY))
+        template = f"#/{under_param}/{self.DEFINITIONS}/{{model}}"
 
-    def render(self) -> str:
-        return f"{self.PREFIX}{self.kind}{self.SEPARATOR}{self.name}"
+        return {
+            self.MEDIA_KEY: self.MEDIA_TYPE,
+            self.CONTENT_KEY: model.model_json_schema(ref_template=template),
+        }
 
+    def kind_of(self, declared: Mapping[str, Any]) -> str | None:
+        """Вид соединения параметра по его схеме; None — параметр не соединение."""
+        if declared.get(self.MEDIA_KEY) != self.MEDIA_TYPE:
+            return None
 
-class ConnectionRefs:
-    """Разбор строк-ссылок на соединения; запись — у самой ConnectionRef."""
+        content = declared.get(self.CONTENT_KEY)
+        if not isinstance(content, Mapping):
+            return None
 
-    def is_ref(self, raw: str) -> bool:
-        return raw.startswith(ConnectionRef.PREFIX)
+        properties = content.get(self.PROPERTIES)
+        if not isinstance(properties, Mapping):
+            return None
 
-    def parse(self, raw: str) -> ConnectionRef:
-        if not self.is_ref(raw):
-            raise self._refused(raw)
+        kind = properties.get(self.KIND_FIELD)
+        if not isinstance(kind, Mapping):
+            return None
 
-        address = raw.removeprefix(ConnectionRef.PREFIX)
-        kind, found, name = address.partition(ConnectionRef.SEPARATOR)
-        if not found:
-            raise self._refused(raw)
+        const = kind.get(self.CONST_KEY)
+        if not isinstance(const, str):
+            return None
 
-        if not kind:
-            raise self._refused(raw)
+        return const
 
-        if not name:
-            raise self._refused(raw)
+    def kinds_of(self, schema: Mapping[str, Any]) -> dict[str, str]:
+        """Параметры-соединения инструмента по его схеме: имя → вид."""
+        return dict(self._kinds_of(schema))
 
-        return ConnectionRef(kind=kind, name=name)
+    def _kinds_of(self, schema: Mapping[str, Any]) -> Iterator[tuple[str, str]]:
+        properties = schema.get(self.PROPERTIES)
+        if not isinstance(properties, Mapping):
+            return
 
-    @staticmethod
-    def _refused(raw: str) -> RefusalError:
-        shape = ConnectionRef(kind="<kind>", name="<name>").render()
-        msg = (
-            f"{raw!r} is not a connection reference: expected {shape}, a "
-            "reference to one of the connections granted to the user, as is"
-        )
+        for param, declared in properties.items():
+            if not isinstance(declared, Mapping):
+                continue
 
-        return RefusalError(ConnectionRefusal.NOT_VISIBLE, msg)
+            kind = self.kind_of(declared)
+            if kind is None:
+                continue
+
+            yield param, kind
 
 
 class SealKey(BaseModel):
@@ -158,13 +177,13 @@ class SealedConnection(BaseModel):
     profile — дамп профиля соединения с раскрытыми секретами, вид соединения
     лежит в нём полем kind. login — пользователь, которому клиент выдал
     соединение: сервер сверяет его с вошедшим. expires_at — срок годности.
-    ref — ссылка, которой соединение назвал вызывающий (conn://вид/имя):
-    сервер показывает её в итоге вызова на месте запечатанного значения.
+    name — имя, которым соединение назвал вызывающий: сервер показывает его
+    в итоге вызова на месте запечатанного значения.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    ref: str = Field(min_length=1)
+    name: str = Field(min_length=1)
     login: str = Field(min_length=1)
     expires_at: AwareDatetime
     profile: Mapping[str, object]

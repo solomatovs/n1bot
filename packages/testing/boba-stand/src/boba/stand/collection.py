@@ -11,6 +11,10 @@
 skipif: при истинном условии тест не пропускается, а падает с причиной —
 прогон без нужного окружения обязан быть красным (Requirements).
 
+Случай, неприменимый к части серверов стенда, получает явный список серверов
+(StandServers): неприменимые сочетания не порождаются и в отчёт пропусками не
+попадают.
+
 Ошибок наружу нет: невыполненное требование — падение теста.
 """
 
@@ -18,11 +22,33 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from pathlib import Path
-from typing import ClassVar
+from typing import ClassVar, Protocol
 
 import pytest
 
-__all__ = ["ModuleGroups", "Requirements", "SuiteItems"]
+__all__ = ["ModuleGroups", "Requirements", "StandServers", "SuiteItems"]
+
+
+class NamedSource(Protocol):
+    """Источник стенда: сервер с именем, которым подписан параметр теста."""
+
+    @property
+    def name(self) -> str: ...
+
+
+class StandServers:
+    """Явный список серверов теста вместо всех серверов фикстуры."""
+
+    def only(
+        self, fixture: str, sources: Sequence[NamedSource]
+    ) -> pytest.MarkDecorator:
+        """Метка теста: фикстура сервера идёт только по данным источникам.
+        Серверы, к которым случай неприменим, не порождаются вовсе."""
+        names: list[str] = []
+        for source in sources:
+            names.append(source.name)
+
+        return pytest.mark.parametrize(fixture, sources, indirect=True, ids=names)
 
 
 class SuiteItems:
