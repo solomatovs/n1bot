@@ -536,29 +536,41 @@ CMD ["-m", "boba.mcp_server", "--config", "/app/boba/conf/config.toml", "--site"
 
 # --- boba: агент одним файлом -------------------------------------------------------
 # make boba-bin: boba-cli из колёс репозитория, Nuitka и patchelf из индекса pypi образа;
-# бинарник самодостаточен — gssapi (через транспорт http) и данные пакетов входят целиком,
-# локальные модели внутрь не попадают (каталог models/ релиза)
+# бинарник самодостаточен — gssapi (через транспорт http), данные пакетов и, по флагу
+# BIN_ONNX, рантайм onnxruntime-genai входят целиком; libpython линкуется статически.
+# onnxruntime_genai находит onnxruntime через find_spec, не импортом, поэтому пакет
+# onnxruntime с его библиотеками включается явно
+# Локальные модели внутрь не попадают: веса лежат в каталоге models/ релиза
 FROM base AS boba-bin
 
 ARG NUITKA_VERSION
 ARG PATCHELF_VERSION
 ARG ZSTANDARD_VERSION
 ARG ORDERED_SET_VERSION
+ARG BIN_ONNX
 
 COPY --from=boba-wheels /tmp/wheels/  /tmp/wheels/
+COPY build/conf/nuitka-boba.yml       /tmp/nuitka-boba.yml
 
 RUN uv pip install --python "$(command -v python3)" --target /opt/bin-site \
         --constraint /tmp/wheels/constraints.txt --find-links=/tmp/wheels \
         --override /tmp/wheels/overrides.txt \
-        boba-cli
+        boba-cli $( [ -n "${BIN_ONNX}" ] && echo "boba-llm-onnx[generation]" )
 RUN uv pip install --python "$(command -v python3)" --target /opt/bin-tools \
         "nuitka==${NUITKA_VERSION}" "patchelf==${PATCHELF_VERSION}" \
         "zstandard==${ZSTANDARD_VERSION}" "ordered-set==${ORDERED_SET_VERSION}"
 
 ENV PYTHONPATH=/opt/bin-site:/opt/bin-tools PATH=/opt/bin-tools/bin:${PATH}
-RUN python3 -m nuitka --onefile --output-filename=boba --output-dir=/out --jobs=${JOBS} \
+RUN onnx=""; \
+    if [ -n "${BIN_ONNX}" ]; then \
+        onnx="--include-package=onnxruntime_genai --include-package-data=onnxruntime_genai \
+              --include-package=onnxruntime"; \
+    fi; \
+    python3 -m nuitka --onefile --static-libpython=yes --output-filename=boba \
+        --output-dir=/out --jobs=${JOBS} \
+        --user-package-configuration-file=/tmp/nuitka-boba.yml \
         --include-package=gssapi --include-distribution-metadata=boba-cli \
-        --include-package-data=boba.agent \
+        --include-package-data=boba.agent ${onnx} \
         /opt/bin-site/boba/cli/app.py \
     && /out/boba --help > /dev/null
 

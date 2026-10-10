@@ -12,7 +12,8 @@
 
 Ошибки:
 SystemExit — настройки или журнал не годятся для запуска, сервер MCP не
-    поднялся; текст называет причину, код выхода 1.
+    поднялся, провайдер модели не собрался (нет рантайма onnx); текст называет
+    причину, код выхода 1.
 """
 
 from __future__ import annotations
@@ -34,7 +35,7 @@ from boba.agent.agent import Agent, AgentParts
 from boba.agent.attachments import EnvironmentSnapshot
 from boba.agent.history import HistoryError, HistoryStore, SessionId
 from boba.agent.permissions import PermissionModeError
-from boba.agent.profile import ProfileError
+from boba.agent.profile import ModelProfile, ProfileError
 from boba.agent.records import PermissionMode, RecordCodec
 from boba.agent.skills import Skill, SkillsDir, SkillsError
 from boba.agent.tools import ToolsError
@@ -61,10 +62,11 @@ from boba.cli.settings import (
 from boba.history.jsonl import JsonlHistoryStore
 from boba.history.postgres import PostgresHistoryStore
 from boba.identity.context import CallContexts
+from boba.llm.chat import ChatModel, LlmError
 from boba.llm.http.ollama import MANIFEST as OLLAMA
 from boba.llm.http.openai import MANIFEST as OPENAI
 from boba.llm.onnx.chat import MANIFEST as ONNX
-from boba.llm.providers import LlmProviders, LlmProviderTypes
+from boba.llm.providers import LlmProviders, LlmProvidersError, LlmProviderTypes
 from boba.mcp_client.client import (
     DroppedSignals,
     McpClientError,
@@ -390,6 +392,8 @@ class AgentProcess:
             ToolsError,
             SkillsError,
             McpClientError,
+            LlmError,
+            LlmProvidersError,
         ) as exc:
             if self._servers is not None:
                 await self._servers.close()
@@ -428,7 +432,7 @@ class AgentProcess:
             compaction=settings.compaction,
             system_prompt=settings.system_prompt,
             store=self._store(settings),
-            model=self._providers.chat(profile.chat),
+            model=self._chat_model(settings, profile),
             sink=writer,
             version=self._version,
             tools=servers,
@@ -441,6 +445,24 @@ class AgentProcess:
             denied_tools=settings.permissions.deny,
             record_requests=settings.record_requests,
         )
+
+    def _chat_model(
+        self, settings: EffectiveSettings, profile: ModelProfile
+    ) -> ChatModel:
+        """Ошибки:
+        SettingsError — провайдер профиля не собрался: в этой сборке нет его
+            рантайма либо веса модели не загрузились.
+        """
+        try:
+            return self._providers.chat(profile.chat)
+        except (LlmError, LlmProvidersError) as exc:
+            kind = settings.selected_model().provider.kind.value
+            msg = (
+                f"The model profile '{settings.model}' (provider kind '{kind}') cannot "
+                f"be used: {exc}. If this build was made without the runtime of that "
+                "provider, pick another profile or use a build that includes it."
+            )
+            raise SettingsError(msg) from exc
 
     def _store(self, settings: EffectiveSettings) -> HistoryStore:
         """Ошибки:

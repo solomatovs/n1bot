@@ -32,6 +32,7 @@ boba = "boba.cli.app:cli"
 dev = [
     "boba-stand==0.0.26.dev4",
     "uvicorn>=0.35,<1",
+    "omegaconf>=2.3,<3",
     "pytest>=9.1,<10",
 ]
 
