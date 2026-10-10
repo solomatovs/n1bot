@@ -11,17 +11,6 @@ from collections.abc import AsyncIterator, Sequence
 from pathlib import Path
 
 import pytest
-from agent_stand import (
-    ENVIRONMENT,
-    Collected,
-    FakeServer,
-    Protocol,
-    Served,
-    StandAgents,
-    StandClock,
-    StandToolName,
-    StandTools,
-)
 
 from boba.agent.attachments import (
     EnvironmentSnapshot,
@@ -37,6 +26,17 @@ from boba.agent.queue import QueueEntry, QueueKind
 from boba.agent.records import AttachmentRecord, Record, RecordCodec, UserRecord
 from boba.agent.skills import Skill, SkillsDir, SkillsError, SkillTool
 from boba.agent.tools import ToolsError
+from boba.stand.agent import (
+    ENVIRONMENT,
+    Collected,
+    FakeServer,
+    Protocol,
+    Served,
+    StandAgents,
+    StandClock,
+    StandToolName,
+    StandTools,
+)
 from boba.stand.ui.fake_llm import ScenarioName
 from boba.toolkit.dag import DagNode, NodeOutcome, NodeOutcomes, ToolCard, ToolHints
 from boba.toolkit.result import MarkdownResult

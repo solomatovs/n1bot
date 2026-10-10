@@ -27,6 +27,8 @@ from pathlib import Path
 from typing import Annotated, Any, ClassVar, Literal
 
 import httpx
+import psycopg
+from psycopg.conninfo import conninfo_to_dict
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, ValidationError
 from pydantic.alias_generators import to_camel
 
@@ -37,6 +39,7 @@ from boba.agent.profile import (
     TurnLimits,
 )
 from boba.agent.records import PermissionMode
+from boba.db.postgres.connection import PostgresConfig
 from boba.llm.providers import ChatModelConfig, LlmProvidersError
 from boba.mcp_client.client import (
     BearerAuth,
@@ -55,6 +58,7 @@ __all__ = [
     "McpServerJson",
     "ModelSettings",
     "PermissionSettings",
+    "PostgresBuilder",
     "PostgresHistorySettings",
     "ProviderKind",
     "ProviderSettings",
@@ -172,8 +176,14 @@ class JsonlHistorySettings(SettingsModel):
 
 
 class PostgresHistorySettings(SettingsModel):
+    """Журнал в Postgres: строка подключения libpq из переменной окружения,
+    таблица — в названной схеме."""
+
+    DEFAULT_SCHEMA: ClassVar[str] = "agent_history"
+
     kind: Literal[HistoryKind.POSTGRES]
     dsn_env: str = Field(min_length=1)
+    db_schema: str = Field(default=DEFAULT_SCHEMA, min_length=1)
 
 
 HistorySettings = Annotated[
@@ -533,6 +543,59 @@ class ProfileBuilder:
             raise SettingsError(msg)
 
         return url
+
+
+class PostgresBuilder:
+    """PostgresConfig из строки подключения libpq, названной переменной
+    окружения: пароль остаётся в окружении и в настройки не попадает."""
+
+    APPLICATION: ClassVar[str] = "boba"
+
+    def __init__(self, env: Mapping[str, str]) -> None:
+        self._env = env
+
+    def config(self, settings: PostgresHistorySettings) -> PostgresConfig:
+        dsn = self._env.get(settings.dsn_env)
+        if not dsn:
+            msg = (
+                f"The history store takes its Postgres connection string from the "
+                f"environment variable {settings.dsn_env}, but it is not set."
+            )
+            raise SettingsError(msg)
+
+        try:
+            parts = conninfo_to_dict(dsn)
+        except psycopg.ProgrammingError as exc:
+            msg = f"{settings.dsn_env} is not a valid libpq connection string: {exc}"
+            raise SettingsError(msg) from exc
+
+        user = parts.pop("user", None)
+        password = parts.pop("password", None)
+        if not user:
+            msg = (
+                f"{settings.dsn_env} names no user; the agent connects to Postgres as "
+                "a role with a password or trusted by pg_hba."
+            )
+            raise SettingsError(msg)
+
+        auth: dict[str, Any] = {"method": "trust", "user": str(user)}
+        if password:
+            auth = {
+                "method": "password",
+                "user": str(user),
+                "password": SecretStr(str(password)),
+            }
+
+        document: dict[str, Any] = {
+            **parts,
+            "application_name": self.APPLICATION,
+            "auth": auth,
+        }
+        try:
+            return PostgresConfig.model_validate(document)
+        except ValidationError as exc:
+            msg = f"{settings.dsn_env} does not describe a usable connection: {exc}"
+            raise SettingsError(msg) from exc
 
 
 class McpServerBuilder:

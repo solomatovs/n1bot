@@ -50,14 +50,16 @@ from boba.cli.settings import (
     Arguments,
     EffectiveSettings,
     EnvName,
-    HistoryKind,
     McpServerBuilder,
+    PostgresBuilder,
+    PostgresHistorySettings,
     ProfileBuilder,
     Settings,
     SettingsError,
     SettingsSource,
 )
 from boba.history.jsonl import JsonlHistoryStore
+from boba.history.postgres import PostgresHistoryStore
 from boba.identity.context import CallContexts
 from boba.llm.http.ollama import MANIFEST as OLLAMA
 from boba.llm.http.openai import MANIFEST as OPENAI
@@ -440,15 +442,14 @@ class AgentProcess:
             record_requests=settings.record_requests,
         )
 
-    @staticmethod
-    def _store(settings: EffectiveSettings) -> HistoryStore:
+    def _store(self, settings: EffectiveSettings) -> HistoryStore:
+        """Ошибки:
+        SettingsError — строка подключения Postgres не задана или не годится.
+        """
         history = settings.history
-        if history.kind is HistoryKind.POSTGRES:
-            msg = (
-                "The history store 'postgres' is not available in this version; "
-                'use {"kind": "jsonl", "root": ...}.'
-            )
-            raise SettingsError(msg)
+        if isinstance(history, PostgresHistorySettings):
+            postgres = PostgresBuilder(self._env).config(history)
+            return PostgresHistoryStore(postgres, history.db_schema)
 
         return JsonlHistoryStore(Path(history.root))
 

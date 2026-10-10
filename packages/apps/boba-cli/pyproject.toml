@@ -11,6 +11,8 @@ dependencies = [
     "boba-agent==0.0.26.dev4",
     "boba-cancellation==0.0.26.dev4",
     "boba-history-jsonl==0.0.26.dev4",
+    "boba-history-postgres==0.0.26.dev4",
+    "boba-db-postgres==0.0.26.dev4",
     "boba-identity==0.0.26.dev4",
     "boba-llm==0.0.26.dev4",
     "boba-llm-http==0.0.26.dev4",
@@ -19,6 +21,7 @@ dependencies = [
     "boba-toolkit==0.0.26.dev4",
     "boba-toolrun==0.0.26.dev4",
     "httpx>=0.28,<1",
+    "psycopg>=3.3,<4",
     "pydantic>=2.12,<3",
 ]
 
