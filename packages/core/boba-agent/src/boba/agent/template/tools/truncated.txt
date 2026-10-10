@@ -1,1 +1,1 @@
-<truncated-output>Output truncated: {shown} of {total} characters shown.</truncated-output>
+Output truncated: {shown} of {total} characters shown.

@@ -53,6 +53,7 @@ from boba.agent.records import (
     ToolUseBlock,
 )
 from boba.agent.session import SessionState
+from boba.agent.tags import AgentTag
 from boba.agent.template import AgentTemplate, AgentTemplateFile
 from boba.agent.writer import RecordKeeper
 from boba.cancellation import RunCancellation, StopReason, ToolStopped
@@ -380,11 +381,11 @@ class ToolTexts:
         if self._limit <= 0 or len(text) <= self._limit:
             return text
 
-        mark = self._templates.read(AgentTemplateFile.TRUNCATED).format(
+        note = self._templates.read(AgentTemplateFile.TRUNCATED).format(
             shown=self._limit, total=len(text)
         )
 
-        return text[: self._limit] + mark
+        return text[: self._limit] + AgentTag.TRUNCATED_OUTPUT.wrap(note)
 
     def unknown(self, call: PlannedCall) -> CallResult:
         text = self._templates.read(AgentTemplateFile.NO_SUCH_TOOL).format(

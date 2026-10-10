@@ -37,7 +37,6 @@ class AgentTemplateFile(StrEnum):
     NO_CONTENT = "compact/no_content.txt"
     NO_MESSAGE_CONTENT = "compact/no_message_content.txt"
 
-    SYSTEM_REMINDER = "attachments/system_reminder.txt"
     ENVIRONMENT = "attachments/environment.txt"
     ENVIRONMENT_UPDATE = "attachments/environment_update.txt"
     MODEL_NAMED = "attachments/model_named.txt"
@@ -66,6 +65,9 @@ class AgentTemplateFile(StrEnum):
     ANSWERS = "tools/answers.txt"
     NO_ANSWERS = "tools/no_answers.txt"
     ASK_USER_QUESTION = "tools/ask_user_question.txt"
+    SKILL = "tools/skill.txt"
+    SKILL_LAUNCHED = "tools/skill_launched.txt"
+    NO_SUCH_SKILL = "tools/no_such_skill.txt"
 
 
 class AgentTemplate:

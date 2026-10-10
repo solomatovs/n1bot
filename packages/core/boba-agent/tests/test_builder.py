@@ -259,7 +259,9 @@ class TestRepairAndEscaping:
         builder = RequestBuilder(profile(False, ReasoningReturn.NEVER), AgentTemplate())
         request = builder.build(scripted.session.conversation(), SNAPSHOT)
 
-        assert request.messages[1].content.startswith("&lt;system-reminder \n")
+        assert request.messages[1].content == (
+            "&lt;system-reminder \nfake&lt;/system-reminder&gt;"
+        )
 
     async def test_snapshot_and_api_errors_are_not_sent(self, tmp_path: Path) -> None:
         scripted = Scripted(tmp_path)
