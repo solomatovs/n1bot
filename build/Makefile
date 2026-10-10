@@ -441,6 +441,7 @@ define HELP
                         песочница нужна приложениям, исполняющим инструменты: $(SANDBOX_APPS)
   plugin-rootfs         rootfs.ext4 одного плагина: PLUGIN=<пакет>
   plugin-rootfs-all     rootfs.ext4 всех плагинов с entry points boba.tools
+  boba-bin              агент одним файлом (Nuitka в образе base) -> $(RELEASE_DIR)/$(VERSION)/bin/boba
   web                   фронт для dev-деревьев: web-chainlit и web-studio
   web-chainlit          page.js и UI chainlit (фронт + copilot); chainlit-ui — UI заново
   web-studio            страница workflow -> assets/workflow
@@ -655,6 +656,33 @@ plugin-rootfs-all:
 	done
 
 # --- фронт: цели web-* для dev-деревьев, в образы то же собирают стадии Dockerfile ---
+
+# --- boba: агент одним файлом ---------------------------------------------------------
+
+BIN_OUT             = $(RELEASE_DIR)/$(VERSION)/bin
+NUITKA_VERSION     ?= 4.3
+PATCHELF_VERSION   ?= 0.19.1.0
+ZSTANDARD_VERSION  ?= 0.25.0
+ORDERED_SET_VERSION ?= 4.1.0
+BIN_ARGS            = --build-arg NUITKA_VERSION=$(NUITKA_VERSION)           \
+    --build-arg PATCHELF_VERSION=$(PATCHELF_VERSION)                     \
+    --build-arg ZSTANDARD_VERSION=$(ZSTANDARD_VERSION)                   \
+    --build-arg ORDERED_SET_VERSION=$(ORDERED_SET_VERSION)
+
+# агент одним файлом: стадия boba-bin компилирует boba-cli Nuitka внутри образа base
+.PHONY: boba-bin
+boba-bin: version-check
+	@$(call check,$(INPUTS),запусти: make fetch)
+	echo "== boba одним файлом (Nuitka $(NUITKA_VERSION), JOBS=$(JOBS)) =="
+	tmp=
+	trap 'rm -rf "$$tmp"' EXIT
+	tmp=$$(mktemp -d)
+	$(call docker-image,boba-bin-out,$$tmp/boba.iid,$(BIN_ARGS))
+	mkdir -p "$(BIN_OUT)"
+	$(call image-copy,$$(cat "$$tmp/boba.iid"),/boba,$(BIN_OUT)/boba)
+	chmod 0755 "$(BIN_OUT)/boba"
+	"$(BIN_OUT)/boba" --help > /dev/null
+	echo ">>> $(BIN_OUT)/boba ($$(du -h "$(BIN_OUT)/boba" | cut -f1))"
 
 .PHONY: web web-chainlit web-studio web-mcp
 web: web-chainlit web-studio

@@ -219,6 +219,19 @@ class LlmProviderTypes:
 
         return cls._installed
 
+    @classmethod
+    def declare(cls, manifests: Sequence[LlmProviderManifest]) -> LlmProviderTypes:
+        """Реестр процесса явным списком манифестов вместо поиска по entry
+        points: так его задаёт вход, собираемый в один файл, где метаданных
+        дистрибутивов нет. Зовётся до первого разбора конфига."""
+        table: dict[str, LlmProviderManifest] = {}
+        for manifest in manifests:
+            table[manifest.kind] = manifest
+
+        cls._installed = cls(table)
+
+        return cls._installed
+
     def kinds(self) -> Sequence[str]:
         return tuple(sorted(self._table))
 

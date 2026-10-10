@@ -43,6 +43,7 @@ from boba.agent.permissions import (
     Denied,
     PermissionPolicy,
     PermissionState,
+    StaticRules,
 )
 from boba.agent.records import (
     PermissionBehavior,
@@ -462,7 +463,9 @@ class ToolRunner:
         keeper: RecordKeeper,
         clock: Clock,
         agent_name: str,
+        static: StaticRules,
     ) -> None:
+        self._static = static
         self._tools = tools
         self._texts = texts
         self._templates = templates
@@ -549,7 +552,7 @@ class ToolRunner:
     def _policy(self) -> PermissionPolicy:
         state = PermissionState(self._keeper.session.service())
 
-        return PermissionPolicy(state, self._templates, self._agent)
+        return PermissionPolicy(state, self._templates, self._agent, self._static)
 
     def _request(self, call: PlannedCall) -> CanUseToolRequest:
         suggestion = PermissionRule(tool=call.name, behavior=PermissionBehavior.ALLOW)

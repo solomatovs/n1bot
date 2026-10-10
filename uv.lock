@@ -11,6 +11,7 @@ supported-markers = [
 [manifest]
 members = [
     "boba-access",
+    "boba-agent",
     "boba-auth",
     "boba-cancellation",
     "boba-canvas",
@@ -20,6 +21,7 @@ members = [
     "boba-ch-meta-scraper",
     "boba-chainlit",
     "boba-chat",
+    "boba-cli",
     "boba-config",
     "boba-confluence",
     "boba-connection-broker",
@@ -29,6 +31,8 @@ members = [
     "boba-db-pgvector",
     "boba-db-postgres",
     "boba-doc",
+    "boba-history-jsonl",
+    "boba-history-postgres",
     "boba-identity",
     "boba-indexing",
     "boba-ix-core",
@@ -50,6 +54,7 @@ members = [
     "boba-messaging",
     "boba-ora-meta-scraper",
     "boba-pg-meta-scraper",
+    "boba-prompt-assembly",
     "boba-pump-stand",
     "boba-runtime",
     "boba-sandbox",
@@ -411,6 +416,56 @@ requires-dist = [
     { name = "boba-toolkit", editable = "packages/core/boba-toolkit" },
     { name = "pydantic", specifier = ">=2.12,<3" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=9.1,<10" },
+]
+provides-extras = ["dev"]
+
+[[package]]
+name = "boba-agent"
+version = "0.0.26.dev4"
+source = { editable = "packages/core/boba-agent" }
+dependencies = [
+    { name = "boba-cancellation", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "boba-llm", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "boba-toolkit", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "pydantic", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+]
+
+[package.optional-dependencies]
+dev = [
+    { name = "boba-config", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "boba-history-jsonl", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "boba-identity", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "boba-llm-http", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "boba-llm-onnx", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "boba-mcp-client", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "boba-prompt-assembly", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "boba-stand", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "boba-toolrun", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "boba-transport-http", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "omegaconf", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "pytest", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "uvicorn", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "boba-cancellation", editable = "packages/core/boba-cancellation" },
+    { name = "boba-config", marker = "extra == 'dev'", editable = "packages/infra/config/boba-config" },
+    { name = "boba-history-jsonl", marker = "extra == 'dev'", editable = "packages/infra/history/boba-history-jsonl" },
+    { name = "boba-identity", marker = "extra == 'dev'", editable = "packages/core/boba-identity" },
+    { name = "boba-llm", editable = "packages/core/boba-llm" },
+    { name = "boba-llm-http", marker = "extra == 'dev'", editable = "packages/infra/llm/boba-llm-http" },
+    { name = "boba-llm-onnx", marker = "extra == 'dev'", editable = "packages/infra/llm/boba-llm-onnx" },
+    { name = "boba-mcp-client", marker = "extra == 'dev'", editable = "packages/services/boba-mcp-client" },
+    { name = "boba-prompt-assembly", marker = "extra == 'dev'", editable = "packages/testing/boba-prompt-assembly" },
+    { name = "boba-stand", marker = "extra == 'dev'", editable = "packages/testing/boba-stand" },
+    { name = "boba-toolkit", editable = "packages/core/boba-toolkit" },
+    { name = "boba-toolrun", marker = "extra == 'dev'", editable = "packages/services/boba-toolrun" },
+    { name = "boba-transport-http", marker = "extra == 'dev'", editable = "packages/infra/transport/boba-transport-http" },
+    { name = "omegaconf", marker = "extra == 'dev'", specifier = ">=2.3,<3" },
+    { name = "pydantic", specifier = ">=2.12,<3" },
+    { name = "pytest", marker = "extra == 'dev'", specifier = ">=9.1,<10" },
+    { name = "uvicorn", marker = "extra == 'dev'", specifier = ">=0.35,<1" },
 ]
 provides-extras = ["dev"]
 
@@ -799,6 +854,52 @@ requires-dist = [
 provides-extras = ["dev"]
 
 [[package]]
+name = "boba-cli"
+version = "0.0.26.dev4"
+source = { editable = "packages/apps/boba-cli" }
+dependencies = [
+    { name = "boba-agent", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "boba-cancellation", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "boba-history-jsonl", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "boba-identity", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "boba-llm", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "boba-llm-http", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "boba-llm-onnx", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "boba-mcp-client", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "boba-toolkit", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "boba-toolrun", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "httpx", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "pydantic", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+]
+
+[package.optional-dependencies]
+dev = [
+    { name = "boba-stand", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "pytest", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "uvicorn", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "boba-agent", editable = "packages/core/boba-agent" },
+    { name = "boba-cancellation", editable = "packages/core/boba-cancellation" },
+    { name = "boba-history-jsonl", editable = "packages/infra/history/boba-history-jsonl" },
+    { name = "boba-identity", editable = "packages/core/boba-identity" },
+    { name = "boba-llm", editable = "packages/core/boba-llm" },
+    { name = "boba-llm-http", editable = "packages/infra/llm/boba-llm-http" },
+    { name = "boba-llm-onnx", editable = "packages/infra/llm/boba-llm-onnx" },
+    { name = "boba-mcp-client", editable = "packages/services/boba-mcp-client" },
+    { name = "boba-stand", marker = "extra == 'dev'", editable = "packages/testing/boba-stand" },
+    { name = "boba-toolkit", editable = "packages/core/boba-toolkit" },
+    { name = "boba-toolrun", editable = "packages/services/boba-toolrun" },
+    { name = "httpx", specifier = ">=0.28,<1" },
+    { name = "pydantic", specifier = ">=2.12,<3" },
+    { name = "pytest", marker = "extra == 'dev'", specifier = ">=9.1,<10" },
+    { name = "uvicorn", marker = "extra == 'dev'", specifier = ">=0.35,<1" },
+]
+provides-extras = ["dev"]
+
+[[package]]
 name = "boba-config"
 version = "0.0.26.dev4"
 source = { editable = "packages/infra/config/boba-config" }
@@ -1160,6 +1261,46 @@ requires-dist = [
     { name = "xlwt", marker = "extra == 'dev'", specifier = ">=1.3,<2" },
 ]
 provides-extras = ["readers", "ocr", "dev"]
+
+[[package]]
+name = "boba-history-jsonl"
+version = "0.0.26.dev4"
+source = { editable = "packages/infra/history/boba-history-jsonl" }
+dependencies = [
+    { name = "boba-agent", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+]
+
+[package.optional-dependencies]
+dev = [
+    { name = "boba-stand", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "pytest", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "boba-agent", editable = "packages/core/boba-agent" },
+    { name = "boba-stand", marker = "extra == 'dev'", editable = "packages/testing/boba-stand" },
+    { name = "pytest", marker = "extra == 'dev'", specifier = ">=9.1,<10" },
+]
+provides-extras = ["dev"]
+
+[[package]]
+name = "boba-history-postgres"
+version = "0.0.26.dev4"
+source = { editable = "packages/infra/history/boba-history-postgres" }
+
+[package.optional-dependencies]
+dev = [
+    { name = "boba-stand", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "pytest", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "boba-stand", marker = "extra == 'dev'", editable = "packages/testing/boba-stand" },
+    { name = "pytest", marker = "extra == 'dev'", specifier = ">=9.1,<10" },
+]
+provides-extras = ["dev"]
 
 [[package]]
 name = "boba-identity"
@@ -1805,6 +1946,24 @@ requires-dist = [
     { name = "boba-stand", marker = "extra == 'dev'", editable = "packages/testing/boba-stand" },
     { name = "psycopg", specifier = ">=3.3,<4" },
     { name = "pydantic", specifier = ">=2.12,<3" },
+    { name = "pytest", marker = "extra == 'dev'", specifier = ">=9.1,<10" },
+]
+provides-extras = ["dev"]
+
+[[package]]
+name = "boba-prompt-assembly"
+version = "0.0.26.dev4"
+source = { editable = "packages/testing/boba-prompt-assembly" }
+
+[package.optional-dependencies]
+dev = [
+    { name = "boba-stand", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "pytest", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "boba-stand", marker = "extra == 'dev'", editable = "packages/testing/boba-stand" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=9.1,<10" },
 ]
 provides-extras = ["dev"]

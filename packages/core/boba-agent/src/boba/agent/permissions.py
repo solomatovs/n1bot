@@ -51,6 +51,7 @@ __all__ = [
     "PermissionModeError",
     "PermissionPolicy",
     "PermissionState",
+    "StaticRules",
 ]
 
 
@@ -174,21 +175,40 @@ class ModeCeiling:
         return mode
 
 
+@dataclass(frozen=True)
+class StaticRules:
+    """Правила из настроек запуска: действуют всю сессию и в журнал не
+    пишутся. Запрет побеждает всё, включая режим `bypassPermissions`."""
+
+    allowed: frozenset[str] = frozenset()
+    denied: frozenset[str] = frozenset()
+
+
 class PermissionPolicy:
-    """Решение по вызову из режима, пометок инструмента и правил сессии."""
+    """Решение по вызову из режима, пометок инструмента, правил настроек и
+    правил сессии."""
 
     def __init__(
-        self, state: PermissionState, templates: AgentTemplate, agent_name: str
+        self,
+        state: PermissionState,
+        templates: AgentTemplate,
+        agent_name: str,
+        static: StaticRules,
     ) -> None:
         self._state = state
         self._templates = templates
         self._agent = agent_name
+        self._static = static
 
     @property
     def mode(self) -> PermissionMode:
         return self._state.mode
 
     def decide(self, tool: str, hints: ToolHints) -> Decision:
+        if tool in self._static.denied:
+            text = self._templates.read(AgentTemplateFile.DENIED_BY_SETTINGS)
+            return Denied(text.format(tool=tool))
+
         mode = self._state.mode
         if mode is PermissionMode.BYPASS_PERMISSIONS:
             return Allowed()
@@ -200,10 +220,17 @@ class PermissionPolicy:
             text = self._templates.read(AgentTemplateFile.PLAN_MODE)
             return Denied(text.format(tool=tool))
 
-        if self._state.allows(tool):
+        if self._granted(tool):
             return Allowed()
 
         return self._unruled(tool, hints, mode)
+
+    def _granted(self, tool: str) -> bool:
+        """Разрешён правилом настроек или правилом сессии."""
+        if tool in self._static.allowed:
+            return True
+
+        return self._state.allows(tool)
 
     def _unruled(self, tool: str, hints: ToolHints, mode: PermissionMode) -> Decision:
         """Меняющий вызов без правила: решение зависит только от режима."""

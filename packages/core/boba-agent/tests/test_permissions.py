@@ -15,6 +15,7 @@ from boba.agent.permissions import (
     PermissionModeError,
     PermissionPolicy,
     PermissionState,
+    StaticRules,
 )
 from boba.agent.records import (
     PermissionBehavior,
@@ -52,8 +53,13 @@ def rule(tool: str, operation: PermissionRuleOperation) -> PermissionRuleRecord:
     )
 
 
-def policy(records: list[ServiceRecord]) -> PermissionPolicy:
-    return PermissionPolicy(PermissionState(records), AgentTemplate(), AGENT)
+def policy(
+    records: list[ServiceRecord], static: StaticRules | None = None
+) -> PermissionPolicy:
+    if static is None:
+        static = StaticRules()
+
+    return PermissionPolicy(PermissionState(records), AgentTemplate(), AGENT, static)
 
 
 def shape(decision: Decision) -> str:
@@ -154,3 +160,23 @@ class TestCeiling:
         assert ModeCeiling(False, True).capped(PermissionMode.AUTO) is (
             PermissionMode.AUTO
         )
+
+
+class TestStaticRules:
+    """Правила настроек запуска: запрет побеждает любой режим, разрешение
+    равносильно правилу сессии."""
+
+    def test_denied_tool_is_refused_even_in_bypass(self) -> None:
+        static = StaticRules(denied=frozenset({"drop"}))
+        decided = policy([mode(PermissionMode.BYPASS_PERMISSIONS)], static).decide(
+            "drop", ToolHints()
+        )
+
+        assert isinstance(decided, Denied)
+        assert "denied by the permission settings" in decided.text
+
+    def test_allowed_tool_runs_without_a_question(self) -> None:
+        static = StaticRules(allowed=frozenset({"drop"}))
+
+        assert shape(policy([], static).decide("drop", ToolHints())) == "Allowed"
+        assert shape(policy([]).decide("drop", ToolHints())) == "Asked"

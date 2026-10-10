@@ -83,7 +83,7 @@ from boba.agent.records import (
 from boba.agent.session import Session, SessionState
 from boba.agent.template import AgentTemplate, AgentTemplateFile
 from boba.agent.tools import BatchOutcome, CallResult, PlannedCall, ToolRunner
-from boba.agent.writer import HistoryWriter, RecordKeeper
+from boba.agent.writer import HistoryWriter, RecordKeeper, RequestRecorder
 from boba.cancellation import RunCancellation, StopReason
 from boba.llm.chat import ChatModel, ChatReply, ChatRequest, ChatUsage
 
@@ -149,7 +149,10 @@ class TurnLoop:
         skills: Sequence[SnapshotSkill],
         environment: EnvironmentSnapshot | None,
         agent_name: str,
+        recorder: RequestRecorder,
     ) -> None:
+        self._recorder = recorder
+        self._request_id = ""
         self._keeper = keeper
         self._session: Session = keeper.session
         self._queue = queue
@@ -174,7 +177,7 @@ class TurnLoop:
         estimator = TokenEstimator(profile)
         self._gate = CompactGate(ContextMeter(estimator), compaction, profile)
         self._summarizer = Summarizer(
-            self._asking, builder, templates, estimator, ids, clock, version
+            self._asking, builder, templates, estimator, ids, clock, version, recorder
         )
         self._compactor = Compactor(
             attachments,
@@ -190,6 +193,15 @@ class TurnLoop:
         )
         self._last_failure = ""
         self._failures = 0
+
+    def set_system_prompt(self, sections: Sequence[str]) -> None:
+        """Системный промпт запуска; действует с первого снимка, который ещё
+        не записан (новая сессия, следующее сжатие)."""
+        self._system_prompt = list(sections)
+
+    @property
+    def system_prompt(self) -> Sequence[str]:
+        return self._system_prompt
 
     async def run(self, taken: Taken, cancellation: RunCancellation) -> TurnOutcome:
         started = time.monotonic()
@@ -448,6 +460,7 @@ class TurnLoop:
         self, request: ChatRequest, cancellation: RunCancellation
     ) -> Settled:
         """Запрос с повторами: три попытки на ошибку порта, пауза между ними."""
+        self._request_id = await self._recorder.record(request)
         attempt = 0
         while True:
             asked = await self._attempt(request, cancellation)
@@ -656,7 +669,10 @@ class TurnLoop:
             blocks.append((block, call.id))
 
         message_id = self._ids.message_id()
-        request_id = self._ids.request_id()
+        request_id = self._request_id
+        if not request_id:
+            request_id = self._ids.request_id()
+
         usage = Usage(
             input_tokens=reply.usage.input_tokens,
             output_tokens=reply.usage.output_tokens,

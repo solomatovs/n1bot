@@ -60,6 +60,7 @@ from boba.agent.records import (
 from boba.agent.session import Session
 from boba.agent.tags import ReplyTag
 from boba.agent.template import AgentTemplate, AgentTemplateFile
+from boba.agent.writer import RequestRecorder
 from boba.cancellation import RunCancellation, StopReason
 from boba.llm.chat import ChatReply
 
@@ -497,7 +498,9 @@ class Summarizer:
         ids: IdMint,
         clock: Clock,
         version: str,
+        recorder: RequestRecorder,
     ) -> None:
+        self._recorder = recorder
         self._ask = ask
         self._builder = builder
         self._templates = templates
@@ -554,6 +557,7 @@ class Summarizer:
     ) -> SummaryOutcome | Overflowed:
         """Один запрос пересказа; Overflowed — ступень лестницы."""
         request = self._builder.build([*head, self._instruction(session)], snapshot)
+        await self._recorder.record(request)
         asked = await self._ask.attempt(request, cancellation, show=False)
         if isinstance(asked, Aborted):
             return SummaryAborted(asked.reason)
