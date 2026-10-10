@@ -39,6 +39,7 @@ from pydantic.fields import FieldInfo
 from pydantic_core import PydanticUndefined
 
 from boba.toolkit.calls import FieldMarks, ToolCallBase, ToolCallModels
+from boba.toolkit.dag import ToolHints
 from boba.toolkit.ports import StreamPorts
 from boba.toolkit.result import ResultKindError, ResultKinds, ToolResultBase
 
@@ -117,6 +118,14 @@ class PayloadTool(BaseModel):
     """Виды результата по аннотации возврата тела; пусто — тело объявило базу."""
     func: Callable[..., Any] | None
     coroutine: Callable[..., Awaitable[Any]] | None
+    hints: ToolHints = ToolHints()
+    """Пометки для клиента: читает ли инструмент только и разрушает ли данные."""
+
+    def hinted(self, read_only: bool = False, destructive: bool = True) -> PayloadTool:
+        """Тот же инструмент с пометками: `tool(fn).hinted(read_only=True)`."""
+        return self.model_copy(
+            update={"hints": ToolHints(read_only=read_only, destructive=destructive)}
+        )
 
     def packed_kwargs(self, kwargs: Mapping[str, Any]) -> dict[str, Any]:
         """kwargs вызова для тела: поля класса вызова собираются в его экземпляр."""

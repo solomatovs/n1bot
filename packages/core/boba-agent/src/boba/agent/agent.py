@@ -1,15 +1,20 @@
-"""Агент: связывает сессию, очередь, писатель, загрузчик и цикл хода.
+"""Агент: связывает сессию, очередь, писатель, загрузчик, инструменты и цикл хода.
 
 Один объект на процесс и на сессию. `open` захватывает сессию в хранилище,
-при возобновлении восстанавливает её загрузчиком, проверяет профиль и
-запускает писатель; `serve` ждёт очередь и ведёт ходы один за другим;
-`interrupt` останавливает текущий ход; `close` гасит ход, сбрасывает журнал
-и отпускает сессию. Переходы состояний — план, раздел 5.18.
+при возобновлении восстанавливает её загрузчиком, сворачивает режим
+разрешений под потолок параметров запуска, проверяет профиль и запускает
+писатель; `serve` ждёт очередь и ведёт ходы один за другим, элемент `now`
+посреди хода прерывает его; `answer` отдаёт ответ на вопрос наружу;
+`set_permission_mode` меняет режим записью; `interrupt` останавливает
+текущий ход; `close` гасит ход, сбрасывает журнал и отпускает сессию.
+Переходы состояний — план, раздел 5.18.
 
 Ошибки:
 HistoryError — хранилище недоступно, сессия занята или журнал для
     возобновления пуст.
 ProfileError — профиль модели не годится для запуска.
+PermissionModeError — режим разрешений недоступен при параметрах запуска.
+ToolsError — собственный инструмент одноимён с инструментом сервера.
 """
 
 from __future__ import annotations
@@ -19,12 +24,14 @@ import logging
 from collections.abc import Sequence
 from typing import ClassVar
 
-from boba.agent.attachments import ContextAttachments, SnapshotTool
+from boba.agent.attachments import ContextAttachments
 from boba.agent.builder import RequestBuilder
+from boba.agent.control import ControlQuestions, PermissionAnswer
 from boba.agent.events import EventSink, InitEvent, TurnOutcome
 from boba.agent.history import HistoryError, HistoryStore, SessionId, SessionLease
 from boba.agent.ids import Clock, IdMint, SystemClock
 from boba.agent.loader import HistoryLoader, LoadReport
+from boba.agent.permissions import AutoClassifier, ModeCeiling, PermissionState
 from boba.agent.profile import (
     CompactionSettings,
     ModelProfile,
@@ -35,10 +42,12 @@ from boba.agent.queue import InputQueue, QueueRemoveReason
 from boba.agent.records import PermissionMode, PermissionModeRecord
 from boba.agent.session import Session, SessionState
 from boba.agent.template import AgentTemplate
+from boba.agent.tools import AgentTools, AskUserQuestionTool, ToolRunner, ToolTexts
 from boba.agent.turn import TurnLoop
-from boba.agent.writer import HistoryWriter
+from boba.agent.writer import HistoryWriter, RecordKeeper
 from boba.cancellation import RunCancellation, StopReason
 from boba.llm.chat import ChatModel
+from boba.toolkit.dag import ToolServer
 
 logger = logging.getLogger(__name__)
 
@@ -48,18 +57,24 @@ __all__ = ["Agent", "AgentParts"]
 class AgentParts:
     """Зависимости агента, не привязанные к сессии."""
 
+    DEFAULT_NAME: ClassVar[str] = "Boba"
+
     def __init__(  # noqa: PLR0913 — зависимости агента перечислены все разом
         self,
         profile: ModelProfile,
         limits: TurnLimits,
         compaction: CompactionSettings,
         system_prompt: Sequence[str],
-        tools: Sequence[SnapshotTool],
         store: HistoryStore,
         model: ChatModel,
         sink: EventSink,
         version: str,
+        tools: ToolServer | None = None,
         initial_mode: PermissionMode = PermissionMode.DEFAULT,
+        allow_bypass: bool = False,
+        classifier: ChatModel | None = None,
+        classifier_instruction: str = "",
+        agent_name: str = DEFAULT_NAME,
         templates: AgentTemplate | None = None,
         ids: IdMint | None = None,
         clock: Clock | None = None,
@@ -68,15 +83,48 @@ class AgentParts:
         self.limits = limits
         self.compaction = compaction
         self.system_prompt = list(system_prompt)
-        self.tools = list(tools)
         self.store = store
         self.model = model
         self.sink = sink
         self.version = version
+        self.tools = tools
         self.initial_mode = initial_mode
+        self.allow_bypass = allow_bypass
+        self.classifier = classifier
+        self.classifier_instruction = classifier_instruction
+        self.agent_name = agent_name
         self.templates = templates
         self.ids = ids
         self.clock = clock
+
+
+class Wiring:
+    """Части, которые агент собирает один раз на процесс: тексты, часы,
+    чеканка, потолок режима, классификатор."""
+
+    def __init__(self, parts: AgentParts) -> None:
+        templates = parts.templates
+        if templates is None:
+            templates = AgentTemplate()
+
+        ids = parts.ids
+        if ids is None:
+            ids = IdMint()
+
+        clock = parts.clock
+        if clock is None:
+            clock = SystemClock()
+
+        self.templates: AgentTemplate = templates
+        self.ids: IdMint = ids
+        self.clock: Clock = clock
+        self.classifier: AutoClassifier | None = None
+        if parts.classifier is not None:
+            self.classifier = AutoClassifier(
+                parts.classifier, parts.classifier_instruction, self.templates
+            )
+
+        self.ceiling = ModeCeiling(parts.allow_bypass, self.classifier is not None)
 
 
 class Agent:
@@ -88,23 +136,13 @@ class Agent:
 
     def __init__(self, parts: AgentParts) -> None:
         self._parts = parts
-        self._templates = parts.templates
-        if self._templates is None:
-            self._templates = AgentTemplate()
-
-        self._ids = parts.ids
-        if self._ids is None:
-            self._ids = IdMint()
-
-        self._clock = parts.clock
-        if self._clock is None:
-            self._clock = SystemClock()
-
+        self._wiring = Wiring(parts)
         self._session: Session | None = None
         self._lease: SessionLease | None = None
         self._writer: HistoryWriter | None = None
         self._queue: InputQueue | None = None
         self._turns: TurnLoop | None = None
+        self._questions: ControlQuestions | None = None
         self._current: RunCancellation | None = None
         self._stopping = False
         self._idle = asyncio.Event()
@@ -139,47 +177,27 @@ class Agent:
     def outcomes(self) -> Sequence[TurnOutcome]:
         return self._outcomes
 
+    @property
+    def permission_mode(self) -> PermissionMode:
+        """Действующий режим — свёртка записей сессии."""
+        return PermissionState(self.session.service()).mode
+
     async def open(self, session_id: SessionId, resume: bool) -> Session:
         parts = self._parts
-        templates = self._templates
-        ids = self._ids
-        clock = self._clock
-        if templates is None or ids is None or clock is None:
-            msg = "The agent has no templates, id mint or clock. This is a wiring bug."
-            raise HistoryError(msg)
-
+        wiring = self._wiring
         lease = await parts.store.acquire(session_id)
         session = Session(session_id)
-        report = LoadReport()
         try:
-            if resume:
-                loader = HistoryLoader(
-                    parts.store, templates, ids, clock, parts.version
-                )
-                report = await loader.load(session)
-                if session.last_seq == 0:
-                    msg = (
-                        f"Cannot resume session '{session_id.value}': there is no "
-                        "journal to resume. Start a new session, or check that the "
-                        "history root points to the right place."
-                    )
-                    raise HistoryError(msg)
-
-                logger.info(
-                    self.LOADER_LOG,
-                    session_id.value,
-                    report.stored_seq,
-                    len(report.repaired),
-                    report.skipped_lines + report.skipped_records,
-                )
-
+            report = await self._restored(session, resume)
+            tools = AgentTools(parts.tools, [self._ask_tool()])
             tool_texts: list[str] = []
-            for tool in parts.tools:
+            for tool in tools.snapshot():
                 tool_texts.append(tool.text())
 
             ProfileCheck(parts.profile, parts.compaction).run(
                 parts.system_prompt, tool_texts
             )
+            mode = self._effective_mode(session, resume)
         except Exception:
             await parts.store.release(lease)
             raise
@@ -189,39 +207,51 @@ class Agent:
         writer = HistoryWriter(session, parts.store, lease, report.stored_seq)
         writer.start()
         self._writer = writer
-        self._queue = InputQueue(session, clock, ids)
+        self._queue = InputQueue(session, wiring.clock, wiring.ids)
+        self._questions = ControlQuestions(wiring.ids)
+        if mode is not None:
+            self._record_mode(mode)
 
-        if not resume:
-            session.add(
-                PermissionModeRecord(
-                    timestamp=clock.now(),
-                    session_id=session_id.value,
-                    permission_mode=parts.initial_mode,
-                )
-            )
-            writer.notify()
-
-        attachments = ContextAttachments(templates, ids, clock, parts.version)
+        keeper = RecordKeeper(session, writer, parts.sink)
+        texts = ToolTexts(
+            wiring.templates, parts.limits.tool_result_max_chars, parts.agent_name
+        )
+        runner = ToolRunner(
+            tools,
+            texts,
+            wiring.templates,
+            self._questions,
+            wiring.classifier,
+            keeper,
+            wiring.clock,
+            parts.agent_name,
+        )
+        attachments = ContextAttachments(
+            wiring.templates, wiring.ids, wiring.clock, parts.version
+        )
         self._turns = TurnLoop(
-            session,
+            keeper,
+            self._queue,
             parts.profile,
             parts.limits,
             parts.model,
-            RequestBuilder(parts.profile, templates),
+            RequestBuilder(parts.profile, wiring.templates),
             attachments,
-            templates,
-            ids,
-            clock,
+            runner,
+            wiring.templates,
+            wiring.ids,
+            wiring.clock,
             parts.version,
             parts.sink,
             writer,
             parts.system_prompt,
-            parts.tools,
+            tools.snapshot(),
+            parts.agent_name,
         )
 
         tool_names: list[str] = []
-        for tool in parts.tools:
-            tool_names.append(tool.name)
+        for card in tools.snapshot():
+            tool_names.append(card.name)
 
         await parts.sink.emit(
             InitEvent(
@@ -229,12 +259,100 @@ class Agent:
                 resumed=resume,
                 model=parts.profile.model_id,
                 tools=tool_names,
-                permission_mode=parts.initial_mode,
+                permission_mode=self.permission_mode,
                 version=parts.version,
             )
         )
 
         return session
+
+    def _ask_tool(self) -> AskUserQuestionTool:
+        wiring = self._wiring
+        texts = ToolTexts(
+            wiring.templates,
+            self._parts.limits.tool_result_max_chars,
+            self._parts.agent_name,
+        )
+
+        return AskUserQuestionTool(wiring.templates, texts)
+
+    async def _restored(self, session: Session, resume: bool) -> LoadReport:
+        """Ошибки:
+        HistoryError — возобновляемая сессия без журнала.
+        """
+        if not resume:
+            return LoadReport()
+
+        parts = self._parts
+        wiring = self._wiring
+        loader = HistoryLoader(
+            parts.store, wiring.templates, wiring.ids, wiring.clock, parts.version
+        )
+        report = await loader.load(session)
+        if session.last_seq == 0:
+            msg = (
+                f"Cannot resume session '{session.id.value}': there is no journal to "
+                "resume. Start a new session, or check that the history root points "
+                "to the right place."
+            )
+            raise HistoryError(msg)
+
+        logger.info(
+            self.LOADER_LOG,
+            session.id.value,
+            report.stored_seq,
+            len(report.repaired),
+            report.skipped_lines + report.skipped_records,
+        )
+
+        return report
+
+    def _effective_mode(self, session: Session, resume: bool) -> PermissionMode | None:
+        """Режим, который надо записать при открытии; None — журнал уже несёт
+        действующий режим и потолок его не трогает.
+
+        Ошибки:
+        PermissionModeError — режим `auto` без классификатора.
+        """
+        ceiling = self._wiring.ceiling
+        if not resume:
+            return ceiling.capped(self._parts.initial_mode)
+
+        recorded = PermissionState(session.service()).mode
+        capped = ceiling.capped(recorded)
+        if capped is recorded:
+            return None
+
+        return capped
+
+    def _record_mode(self, mode: PermissionMode) -> None:
+        self.session.add(
+            PermissionModeRecord(
+                timestamp=self._wiring.clock.now(),
+                session_id=self.session.id.value,
+                permission_mode=mode,
+            )
+        )
+        self.writer.notify()
+
+    def set_permission_mode(self, mode: PermissionMode) -> PermissionMode:
+        """Меняет режим записью; действует со следующей проверки разрешения.
+
+        Ошибки:
+        PermissionModeError — режим недоступен при параметрах запуска.
+        """
+        self._wiring.ceiling.check(mode)
+        self._record_mode(mode)
+
+        return mode
+
+    def answer(self, request_id: str, answer: PermissionAnswer) -> bool:
+        """Ответ на вопрос наружу; False — вопрос неизвестен или уже отвечен."""
+        if self._questions is None:
+            msg = "The agent session is not open yet. Call open() before answering."
+            raise HistoryError(msg)
+
+        return self._questions.answer(request_id, answer)
 
     async def serve(self) -> None:
         """Обслуживает очередь до `close()`: ход за ходом, между ними — ожидание."""
@@ -256,9 +374,11 @@ class Agent:
             cancellation = RunCancellation()
             self._current = cancellation
             session.enter(SessionState.TURN)
+            watcher = asyncio.create_task(self._superseder(queue, cancellation))
             try:
                 outcome = await turns.run(taken, cancellation)
             finally:
+                watcher.cancel()
                 self._current = None
                 session.enter(SessionState.IDLE)
 
@@ -272,6 +392,13 @@ class Agent:
                 raise HistoryError(msg) from failure
 
         self._idle.set()
+
+    async def _superseder(
+        self, queue: InputQueue, cancellation: RunCancellation
+    ) -> None:
+        """Элемент `now` посреди хода прерывает ход причиной SUPERSEDED."""
+        await queue.now_arrived.wait()
+        cancellation.cancel(StopReason.SUPERSEDED)
 
     async def settled(self) -> None:
         """Ждёт, пока очередь опустеет и ход закончится."""

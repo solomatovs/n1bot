@@ -1,9 +1,9 @@
 """Порт наружу: события хода, которые агент отдаёт запускающей программе.
 
 Виды событий повторяют протокол `stream-json` из плана, раздел 5.18: первое
-событие сеанса, кусок ответа, записанная запись разговора, итог хода и
-ошибка вне хода. Как события уходят на провод — дело реализации порта
-(вход процесса); ядро только зовёт `emit`.
+событие сеанса, кусок ответа, записанная запись разговора, итог хода,
+ошибка вне хода, вопрос наружу и его снятие. Как события уходят на провод —
+дело реализации порта (вход процесса); ядро только зовёт `emit`.
 """
 
 from __future__ import annotations
@@ -15,10 +15,13 @@ from typing import Protocol, TypeAlias
 
 from pydantic import BaseModel, ConfigDict
 
+from boba.agent.control import CanUseToolRequest
 from boba.agent.records import PermissionMode, Record, Usage
 
 __all__ = [
     "AgentEvent",
+    "ControlCancelEvent",
+    "ControlRequestEvent",
     "ErrorEvent",
     "EventSink",
     "InitEvent",
@@ -88,7 +91,30 @@ class ErrorEvent(EventModel):
     unflushed: int = 0
 
 
-AgentEvent: TypeAlias = InitEvent | StreamEvent | RecordEvent | ResultEvent | ErrorEvent
+class ControlRequestEvent(EventModel):
+    """Вопрос агента наружу: `control_request` с `can_use_tool`. Ответ
+    приходит через `Agent.answer` с тем же `request_id`."""
+
+    request_id: str
+    request: CanUseToolRequest
+
+
+class ControlCancelEvent(EventModel):
+    """Вопрос снят отменой хода: `control_cancel_request`; поздний ответ
+    отбрасывается."""
+
+    request_id: str
+
+
+AgentEvent: TypeAlias = (
+    InitEvent
+    | StreamEvent
+    | RecordEvent
+    | ResultEvent
+    | ErrorEvent
+    | ControlRequestEvent
+    | ControlCancelEvent
+)
 
 
 class EventSink(Protocol):

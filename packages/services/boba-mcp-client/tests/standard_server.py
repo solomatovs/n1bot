@@ -13,6 +13,7 @@ from typing import ClassVar
 
 from mcp.server.mcpserver import Context, Image, MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
+from mcp.types import ToolAnnotations
 
 
 class StandardServer:
@@ -26,8 +27,10 @@ class StandardServer:
         self._mcp = MCPServer("standard")
         self._port = port
         self._extra_on = False
-        self._mcp.tool()(self.add)
-        self._mcp.tool()(self.shout)
+        self._mcp.tool(annotations=ToolAnnotations(read_only_hint=True))(self.add)
+        self._mcp.tool(
+            annotations=ToolAnnotations(read_only_hint=False, destructive_hint=False)
+        )(self.shout)
         self._mcp.tool()(self.broken)
         self._mcp.tool()(self.picture)
         self._mcp.tool()(self.sleep_for)

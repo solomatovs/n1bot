@@ -6,23 +6,32 @@
 остаются несброшенными, следующий тик пробует снова; ход не останавливается.
 Принудительный сброс с ожиданием — в конце хода и при завершении процесса.
 
+RecordKeeper — единственная дверь, через которую ход и исполнитель
+инструментов добавляют записи: запись уходит в сессию, писатель просыпается,
+записи разговора показываются наружу событием.
+
 Ошибки:
 HistoryError — поднимает только `flush(strict=True)` при завершении, когда
     журнал так и не удалось сбросить; фоновая задача ошибки не выпускает.
+SessionError — нарушен порядок записей сессии (ошибка ядра).
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
-from typing import ClassVar
+from typing import ClassVar, TypeVar
 
+from boba.agent.events import AgentEvent, EventSink, RecordEvent
 from boba.agent.history import HistoryError, HistoryStore, SessionLease
+from boba.agent.records import AssistantRecord, Record, UserRecord
 from boba.agent.session import Session
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["HistoryWriter"]
+__all__ = ["HistoryWriter", "RecordKeeper"]
+
+R = TypeVar("R", bound=Record)
 
 
 class HistoryWriter:
@@ -132,3 +141,36 @@ class HistoryWriter:
 
             await self._store.append(self._lease, pending)
             self._flushed = pending[-1].seq
+
+
+class RecordKeeper:
+    """Добавляет записи в сессию, будит писателя и показывает наружу записи
+    разговора. Создаёт агент на сессию; им пользуются цикл хода и
+    исполнитель инструментов."""
+
+    def __init__(
+        self, session: Session, writer: HistoryWriter, sink: EventSink
+    ) -> None:
+        self._session = session
+        self._writer = writer
+        self._sink = sink
+
+    @property
+    def session(self) -> Session:
+        return self._session
+
+    async def add(self, record: R) -> R:
+        """Запись без seq: сессия выдаёт seq, писатель и порт узнают о ней."""
+        sequenced = self._session.add(record)
+        await self.added(sequenced)
+
+        return sequenced
+
+    async def added(self, record: Record) -> None:
+        """Запись, уже добавленная в сессию кем-то другим."""
+        self._writer.notify()
+        if isinstance(record, UserRecord | AssistantRecord):
+            await self._sink.emit(RecordEvent(record=record))
+
+    async def emit(self, event: AgentEvent) -> None:
+        await self._sink.emit(event)

@@ -18,11 +18,13 @@ from pydantic.alias_generators import to_camel
 
 from boba.agent.ids import Clock, IdMint
 from boba.agent.profile import ModelProfile
+from boba.agent.queue import QueueItem, QueueKind
 from boba.agent.records import (
     AttachmentPayload,
     AttachmentRecord,
     AttachmentRole,
     ChainRecord,
+    OriginKind,
     RenderedMessage,
 )
 from boba.agent.session import Session
@@ -33,9 +35,11 @@ __all__ = [
     "AttachmentKind",
     "ContextAttachments",
     "DateAttachment",
+    "MaxTurnsAttachment",
     "ModelAttachment",
     "ModelIdentity",
     "PromptSnapshot",
+    "QueuedCommandAttachment",
     "SnapshotSkill",
     "SnapshotTool",
 ]
@@ -108,6 +112,24 @@ class DateAttachment(PayloadModel):
     type: str = AttachmentKind.DATE.value
     date: str
     changed: bool
+
+
+class QueuedCommandAttachment(PayloadModel):
+    """Сообщение, подмешанное посреди хода из очереди (раздел 5.7, путь 2)."""
+
+    type: str = AttachmentKind.QUEUED_COMMAND.value
+    prompt: str
+    source_uuid: str
+    origin: OriginKind
+    is_meta: bool
+
+
+class MaxTurnsAttachment(PayloadModel):
+    """Предел шагов хода достигнут; модели не отправляется."""
+
+    type: str = AttachmentKind.MAX_TURNS_REACHED.value
+    max_turns: int
+    turn_count: int
 
 
 class Announced:
@@ -198,6 +220,72 @@ class ContextAttachments:
         attachment = DateAttachment(date=today, changed=changed)
 
         return self._system(session, attachment.payload(), text)
+
+    def queued(
+        self, session: Session, items: Sequence[QueueItem], agent_name: str
+    ) -> Sequence[AttachmentRecord]:
+        """Подмешанные элементы очереди — по вложению на элемент, роль `user`.
+        Уведомление рядом с сообщением человека получает обёртку, которая
+        называет это сообщение настоящим вводом."""
+        with_user = False
+        for item in items:
+            if item.kind is QueueKind.PROMPT:
+                with_user = True
+
+        records: list[AttachmentRecord] = []
+        for item in items:
+            records.append(self._queued_one(session, item, agent_name, with_user))
+
+        return records
+
+    def max_turns(
+        self, session: Session, max_turns: int, turn_count: int
+    ) -> AttachmentRecord:
+        """Вложение без `rendered`: модели оно не уходит."""
+        attachment = MaxTurnsAttachment(max_turns=max_turns, turn_count=turn_count)
+
+        return session.add(
+            AttachmentRecord(
+                uuid=self._ids.uuid(),
+                parent_uuid=session.last_chain_uuid(),
+                timestamp=self._clock.now(),
+                session_id=session.id.value,
+                version=self._version,
+                attachment=attachment.payload(),
+            )
+        )
+
+    def _queued_one(
+        self, session: Session, item: QueueItem, agent_name: str, with_user: bool
+    ) -> AttachmentRecord:
+        origin = OriginKind.HUMAN
+        template = AgentTemplateFile.QUEUED_HUMAN
+        if item.kind is QueueKind.TASK_NOTIFICATION:
+            origin = OriginKind.TASK_NOTIFICATION
+            template = AgentTemplateFile.QUEUED_NOTIFICATION
+            if with_user:
+                template = AgentTemplateFile.QUEUED_NOTIFICATION_WITH_USER
+
+        text = self._templates.read(template).format(text=item.text, agent=agent_name)
+        attachment = QueuedCommandAttachment(
+            prompt=item.text,
+            source_uuid=item.id,
+            origin=origin,
+            is_meta=item.is_meta,
+        )
+
+        return session.add(
+            AttachmentRecord(
+                uuid=self._ids.uuid(),
+                parent_uuid=session.last_chain_uuid(),
+                timestamp=self._clock.now(),
+                session_id=session.id.value,
+                version=self._version,
+                attachment=attachment.payload(),
+                rendered=[RenderedMessage(content=text)],
+                rendered_role=AttachmentRole.USER,
+            )
+        )
 
     def _system(
         self, session: Session, payload: AttachmentPayload, text: str

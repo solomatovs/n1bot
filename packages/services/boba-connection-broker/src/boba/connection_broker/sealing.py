@@ -203,6 +203,7 @@ class SealingToolServer(ToolServer):
             description=card.description,
             parameters=parameters,
             views=card.views,
+            hints=card.hints,
         )
 
     def _named(self, declared: Mapping[str, Any], kind: str) -> dict[str, Any]:

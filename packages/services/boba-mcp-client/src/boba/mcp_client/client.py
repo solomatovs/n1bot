@@ -85,6 +85,7 @@ from boba.toolkit.dag import (
     NodeOutcomes,
     NodeReports,
     ToolCard,
+    ToolHints,
     ToolServer,
     WorkflowNodeResult,
     WorkflowResult,
@@ -848,7 +849,24 @@ class McpToolStubs:
             description=description,
             parameters=dict(tool.input_schema),
             views=self._views.seen(tool.input_schema),
+            hints=self.hints_of(tool),
         )
+
+    def hints_of(self, tool: mt.Tool) -> ToolHints:
+        """Пометки по annotations сервера; без них — меняющий и разрушающий."""
+        annotations = tool.annotations
+        if annotations is None:
+            return ToolHints()
+
+        read_only = False
+        if annotations.read_only_hint is not None:
+            read_only = annotations.read_only_hint
+
+        destructive = True
+        if annotations.destructive_hint is not None:
+            destructive = annotations.destructive_hint
+
+        return ToolHints(read_only=read_only, destructive=destructive)
 
 
 class BlockFiles(Protocol):

@@ -264,8 +264,12 @@ class RequestBuilder:
         for message in rendered:
             texts.append(self._escaped(message.content))
 
-        system_role = record.rendered_role is not AttachmentRole.USER
-        if self._profile.system_turns and system_role:
+        if record.rendered_role is AttachmentRole.USER:
+            # вложение с ролью user — слова пользователя, не напоминание
+            feed.last_user().texts.extend(texts)
+            return
+
+        if self._profile.system_turns:
             for text in texts:
                 feed.pending_system.append(self._unwrapped(text))
 

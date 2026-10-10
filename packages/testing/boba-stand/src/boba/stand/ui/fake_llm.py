@@ -15,7 +15,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
-from collections.abc import AsyncIterator, Callable, Iterator, Mapping, Sequence, Set
+from collections.abc import AsyncIterator, Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any, ClassVar, TypeAlias
@@ -83,6 +83,10 @@ class ScenarioName(StrEnum):
     THINKING_ANSWER = "scenario:thinking-answer"
     CALL = "scenario:call"
     """Вызов любого инструмента: аргументы приходят в самом сообщении."""
+
+    LOOP = "scenario:loop"
+    """Вызов инструмента, который модель повторяет после каждого результата:
+    ход без предела шагов не кончится."""
 
     TOOL = "scenario:tool"
     TOOL_ERROR = "scenario:tool-error"
@@ -307,20 +311,25 @@ class Scenario:
 
         return self.turns[-1]
 
-    def answered(self, called: Set[str]) -> int:
+    def answered(self, called: Sequence[str]) -> int:
         """Сколько начальных ходов уже сыграно: их вызовы есть в разговоре.
 
         Номер ответа выводится из самого запроса, а не из счётчика: повтор
         запроса приложением (тайм-аут под нагрузкой) получает тот же ответ.
+        Вызовы узнаются по именам инструментов с кратностью, не по
+        идентификаторам: клиент вправе выдавать вызовам свои идентификаторы.
         """
+        remaining = list(called)
         done = 0
         for script in self.turns:
             if not script.tool_calls:
                 return done
 
             for call in script.tool_calls:
-                if call.call_id not in called:
+                if call.name not in remaining:
                     return done
+
+                remaining.remove(call.name)
 
             done += 1
 
@@ -369,6 +378,9 @@ class ScenarioBook:
     def of(cls, name: ScenarioName, text: str = "") -> Scenario:
         if name is ScenarioName.CALL:
             return cls._call(text)
+
+        if name is ScenarioName.LOOP:
+            return cls._loop(text)
 
         if name is ScenarioName.LONG:
             return cls._long(text)
@@ -433,6 +445,31 @@ class ScenarioBook:
                     reasoning=f"I will call {', '.join(names)}", tool_calls=calls
                 ),
                 TurnScript(content=cls.CALL_ANSWER),
+            ]
+        )
+
+    @classmethod
+    def _loop(cls, text: str) -> Scenario:
+        """Вызов по JSON как у `scenario:call`, но без завершающего ответа:
+        последний ход сценария повторяется, пока клиент шлёт результаты."""
+        _, _, tail = text.partition(ScenarioName.LOOP.value)
+        try:
+            request = json.loads(tail.strip())
+        except json.JSONDecodeError as exc:
+            msg = (
+                f"scenario:loop expects a JSON object after the marker, "
+                f"got {tail[:120]!r}: {exc}"
+            )
+            raise ScenarioError(msg) from exc
+
+        digest = hashlib.sha256(tail.encode("utf-8")).hexdigest()[:8]
+        call = cls._scripted_call(request, digest, 0, tail)
+
+        return Scenario(
+            turns=[
+                TurnScript(
+                    reasoning=f"I will call {call.name} again", tool_calls=[call]
+                )
             ]
         )
 
@@ -989,29 +1026,33 @@ class FakeLlmApp:
             name = ScenarioName.ANSWER
 
         scenario = ScenarioBook.of(name, text)
-        script = scenario.turn(scenario.answered(self._called_ids(payload)))
+        script = scenario.turn(scenario.answered(self._called_names(payload)))
 
         return self._failures.apply(script, failure)
 
     @staticmethod
-    def _called_ids(payload: Mapping[str, Any]) -> set[str]:
-        """Id вызовов, которые ассистент уже сделал после последнего сообщения
-        пользователя: по ним сценарий узнаёт, какой ход отвечать."""
-        called: set[str] = set()
+    def _called_names(payload: Mapping[str, Any]) -> list[str]:
+        """Имена инструментов, которые ассистент уже вызвал после последнего
+        сообщения пользователя с текстом: по ним сценарий узнаёт, какой ход
+        отвечать. Сообщение пользователя из одних результатов инструментов
+        (ollama не различает роли tool и user по месту) разговор не режет."""
+        called: list[str] = []
         messages = payload.get("messages")
         if not messages:
             return called
 
         for message in reversed(messages):
-            if message.get("role") == "user":
+            role = message.get("role")
+            if role == "user" and isinstance(message.get("content"), str):
                 return called
 
-            if message.get("role") != "assistant":
+            if role != "assistant":
                 continue
 
             if calls := message.get("tool_calls"):
                 for call in calls:
-                    called.add(str(call.get("id")))
+                    function = call.get("function") or {}
+                    called.append(str(function.get("name")))
 
         return called
 
