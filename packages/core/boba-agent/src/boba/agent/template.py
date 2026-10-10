@@ -36,6 +36,8 @@ class AgentTemplateFile(StrEnum):
     TOOL_RESULT_MISSING = "compact/tool_result_missing.txt"
     NO_CONTENT = "compact/no_content.txt"
     NO_MESSAGE_CONTENT = "compact/no_message_content.txt"
+    THRASHING = "compact/thrashing.txt"
+    COMPACTION_FAILED = "compact/compaction_failed.txt"
 
     ENVIRONMENT = "attachments/environment.txt"
     ENVIRONMENT_UPDATE = "attachments/environment_update.txt"

@@ -5,6 +5,10 @@
 по шаблонам пакета. Снимок `prompt_snapshot` модели не отправляется: по нему
 сборщик берёт системный промпт, инструменты и режим подачи вложений. Свёртка
 Announced считает по разговору, что модели уже объявлено.
+
+ContextAttachments строит записи, но в сессию их не кладёт: родителя
+называет вызывающий. Так сжатие собирает всю пачку — границу, дату,
+пересказ, вложения — до того, как первая из них попадёт в сессию.
 """
 
 from __future__ import annotations
@@ -27,7 +31,6 @@ from boba.agent.records import (
     OriginKind,
     RenderedMessage,
 )
-from boba.agent.session import Session
 from boba.agent.tags import AgentTag
 from boba.agent.template import AgentTemplate, AgentTemplateFile
 
@@ -344,35 +347,34 @@ class SkillBudget:
 
 
 class ContextAttachments:
-    """Создаёт записи вложений контекста и кладёт их в сессию."""
+    """Строит записи вложений контекста одной сессии; добавляет их вызывающий."""
 
     DATE_LENGTH: ClassVar[int] = 10
 
     def __init__(
-        self, templates: AgentTemplate, ids: IdMint, clock: Clock, version: str
+        self,
+        templates: AgentTemplate,
+        ids: IdMint,
+        clock: Clock,
+        version: str,
+        session_id: str,
     ) -> None:
         self._templates = templates
         self._ids = ids
         self._clock = clock
         self._version = version
+        self._session_id = session_id
 
     def today(self) -> str:
         return self._clock.now()[: self.DATE_LENGTH]
 
-    def snapshot(self, session: Session, snapshot: PromptSnapshot) -> AttachmentRecord:
+    def snapshot(
+        self, parent: str | None, snapshot: PromptSnapshot
+    ) -> AttachmentRecord:
         """Снимок без `rendered`: модели он не отправляется."""
-        return session.add(
-            AttachmentRecord(
-                uuid=self._ids.uuid(),
-                parent_uuid=session.last_chain_uuid(),
-                timestamp=self._clock.now(),
-                session_id=session.id.value,
-                version=self._version,
-                attachment=snapshot.payload(),
-            )
-        )
+        return self._silent(parent, snapshot.payload())
 
-    def model(self, session: Session, profile: ModelProfile) -> AttachmentRecord:
+    def model(self, parent: str | None, profile: ModelProfile) -> AttachmentRecord:
         text = self._templates.read(AgentTemplateFile.MODEL_PLAIN).format(
             model_id=profile.model_id
         )
@@ -380,9 +382,9 @@ class ContextAttachments:
             identity=ModelIdentity(model_id=profile.model_id), text=text
         )
 
-        return self._system(session, attachment.payload(), text)
+        return self._system(parent, attachment.payload(), text)
 
-    def date(self, session: Session, today: str, changed: bool) -> AttachmentRecord:
+    def date(self, parent: str | None, today: str, changed: bool) -> AttachmentRecord:
         template = AgentTemplateFile.DATE
         if changed:
             template = AgentTemplateFile.DATE_CHANGED
@@ -390,22 +392,21 @@ class ContextAttachments:
         text = self._templates.read(template).format(date=today)
         attachment = DateAttachment(date=today, changed=changed)
 
-        return self._system(session, attachment.payload(), text)
+        return self._system(parent, attachment.payload(), text)
 
     def environment(
         self,
-        session: Session,
+        parent: str | None,
         current: EnvironmentSnapshot,
         announced: EnvironmentSnapshot | None,
     ) -> AttachmentRecord | None:
         """Окружение: полный блок, если его ещё не было или сменился хост;
         разница полей, если сменился рабочий каталог; None — без изменений."""
-        if announced is None or not announced.same_host(current):
-            text = self._templates.read(AgentTemplateFile.ENVIRONMENT).format(
-                lines=self._environment_lines(current)
-            )
-            attachment = EnvironmentAttachment(snapshot=current)
-            return self._system(session, attachment.payload(), text)
+        if announced is None:
+            return self.environment_block(parent, current)
+
+        if not announced.same_host(current):
+            return self.environment_block(parent, current)
 
         if announced.working_directory == current.working_directory:
             return None
@@ -423,11 +424,22 @@ class ContextAttachments:
         )
         attachment = EnvironmentAttachment(snapshot=current, changes=[change])
 
-        return self._system(session, attachment.payload(), text)
+        return self._system(parent, attachment.payload(), text)
+
+    def environment_block(
+        self, parent: str | None, current: EnvironmentSnapshot
+    ) -> AttachmentRecord:
+        """Окружение полным блоком: первое объявление и после сжатия."""
+        text = self._templates.read(AgentTemplateFile.ENVIRONMENT).format(
+            lines=self._environment_lines(current)
+        )
+        attachment = EnvironmentAttachment(snapshot=current)
+
+        return self._system(parent, attachment.payload(), text)
 
     def tools_delta(
         self,
-        session: Session,
+        parent: str | None,
         added: Sequence[SnapshotTool],
         removed: Sequence[str],
     ) -> AttachmentRecord:
@@ -460,11 +472,11 @@ class ContextAttachments:
             added_names=added_names, removed_names=list(removed), added_lines=lines
         )
 
-        return self._system(session, attachment.payload(), "\n\n".join(sections))
+        return self._system(parent, attachment.payload(), "\n\n".join(sections))
 
     def skill_listing(
         self,
-        session: Session,
+        parent: str | None,
         skills: Sequence[SnapshotSkill],
         budget: SkillBudget,
         initial: bool,
@@ -481,7 +493,7 @@ class ContextAttachments:
             content=content, skill_count=len(skills), is_initial=initial, names=names
         )
 
-        return self._system(session, attachment.payload(), text)
+        return self._system(parent, attachment.payload(), text)
 
     def _environment_lines(self, snapshot: EnvironmentSnapshot) -> str:
         lines = [
@@ -494,11 +506,11 @@ class ContextAttachments:
         return "\n".join(lines)
 
     def queued(
-        self, session: Session, items: Sequence[QueueItem], agent_name: str
+        self, parent: str | None, items: Sequence[QueueItem], agent_name: str
     ) -> Sequence[AttachmentRecord]:
-        """Подмешанные элементы очереди — по вложению на элемент, роль `user`.
-        Уведомление рядом с сообщением человека получает обёртку, которая
-        называет это сообщение настоящим вводом."""
+        """Подмешанные элементы очереди — по вложению на элемент цепочкой,
+        роль `user`. Уведомление рядом с сообщением человека получает обёртку,
+        которая называет это сообщение настоящим вводом."""
         with_user = False
         for item in items:
             if item.kind is QueueKind.PROMPT:
@@ -506,29 +518,22 @@ class ContextAttachments:
 
         records: list[AttachmentRecord] = []
         for item in items:
-            records.append(self._queued_one(session, item, agent_name, with_user))
+            record = self._queued_one(parent, item, agent_name, with_user)
+            records.append(record)
+            parent = record.uuid
 
         return records
 
     def max_turns(
-        self, session: Session, max_turns: int, turn_count: int
+        self, parent: str | None, max_turns: int, turn_count: int
     ) -> AttachmentRecord:
         """Вложение без `rendered`: модели оно не уходит."""
         attachment = MaxTurnsAttachment(max_turns=max_turns, turn_count=turn_count)
 
-        return session.add(
-            AttachmentRecord(
-                uuid=self._ids.uuid(),
-                parent_uuid=session.last_chain_uuid(),
-                timestamp=self._clock.now(),
-                session_id=session.id.value,
-                version=self._version,
-                attachment=attachment.payload(),
-            )
-        )
+        return self._silent(parent, attachment.payload())
 
     def _queued_one(
-        self, session: Session, item: QueueItem, agent_name: str, with_user: bool
+        self, parent: str | None, item: QueueItem, agent_name: str, with_user: bool
     ) -> AttachmentRecord:
         origin = OriginKind.HUMAN
         template = AgentTemplateFile.QUEUED_HUMAN
@@ -546,33 +551,42 @@ class ContextAttachments:
             is_meta=item.is_meta,
         )
 
-        return session.add(
-            AttachmentRecord(
-                uuid=self._ids.uuid(),
-                parent_uuid=session.last_chain_uuid(),
-                timestamp=self._clock.now(),
-                session_id=session.id.value,
-                version=self._version,
-                attachment=attachment.payload(),
-                rendered=[RenderedMessage(content=text)],
-                rendered_role=AttachmentRole.USER,
-            )
+        return AttachmentRecord(
+            uuid=self._ids.uuid(),
+            parent_uuid=parent,
+            timestamp=self._clock.now(),
+            session_id=self._session_id,
+            version=self._version,
+            attachment=attachment.payload(),
+            rendered=[RenderedMessage(content=text)],
+            rendered_role=AttachmentRole.USER,
         )
 
     def _system(
-        self, session: Session, payload: AttachmentPayload, text: str
+        self, parent: str | None, payload: AttachmentPayload, text: str
     ) -> AttachmentRecord:
         wrapped = AgentTag.SYSTEM_REMINDER.wrap_block(text)
 
-        return session.add(
-            AttachmentRecord(
-                uuid=self._ids.uuid(),
-                parent_uuid=session.last_chain_uuid(),
-                timestamp=self._clock.now(),
-                session_id=session.id.value,
-                version=self._version,
-                attachment=payload,
-                rendered=[RenderedMessage(content=wrapped)],
-                rendered_role=AttachmentRole.SYSTEM,
-            )
+        return AttachmentRecord(
+            uuid=self._ids.uuid(),
+            parent_uuid=parent,
+            timestamp=self._clock.now(),
+            session_id=self._session_id,
+            version=self._version,
+            attachment=payload,
+            rendered=[RenderedMessage(content=wrapped)],
+            rendered_role=AttachmentRole.SYSTEM,
+        )
+
+    def _silent(
+        self, parent: str | None, payload: AttachmentPayload
+    ) -> AttachmentRecord:
+        """Запись без `rendered`: только для журнала и сборщика."""
+        return AttachmentRecord(
+            uuid=self._ids.uuid(),
+            parent_uuid=parent,
+            timestamp=self._clock.now(),
+            session_id=self._session_id,
+            version=self._version,
+            attachment=payload,
         )

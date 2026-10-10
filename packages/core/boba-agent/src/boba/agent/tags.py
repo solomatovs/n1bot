@@ -9,6 +9,11 @@ AgentTag знает своё имя и собирает скобки, обора
 содержимом собственных обёрток: теги находит токенизатор стандартной
 библиотеки `html.parser.HTMLParser`, найденное экранирует `html.escape`,
 и модель не принимает чужой текст за разметку агента.
+
+ReplyTag — теги, которыми модель по инструкции агента размечает свой ответ
+(блок пересказа при сжатии, раздел 5.16); их содержимое агент извлекает
+тем же токенизатором. Защита их не экранирует: `<summary>` — обычный
+элемент HTML, который бывает в тексте пользователя и результатах.
 """
 
 from __future__ import annotations
@@ -19,7 +24,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from html.parser import HTMLParser
 
-__all__ = ["AgentTag", "TagShield"]
+__all__ = ["AgentTag", "ReplyTag", "TagShield"]
 
 
 class AgentTag(StrEnum):
@@ -60,21 +65,46 @@ class AgentTag(StrEnum):
         return text
 
 
+class ReplyTag(StrEnum):
+    """Имена тегов в ответе модели и извлечение их содержимого."""
+
+    SUMMARY = "summary"
+
+    def extract(self, text: str) -> str | None:
+        """Содержимое первого закрытого блока `<tag>…</tag>`; None — блока
+        нет либо открытый тег не закрыт."""
+        spans = TagScanner(frozenset({self.value})).scan(text)
+        opened: TagSpan | None = None
+        for span in spans:
+            if not span.closing:
+                if opened is None:
+                    opened = span
+
+                continue
+
+            if opened is not None:
+                return text[opened.end : span.start]
+
+        return None
+
+
 @dataclass(frozen=True)
 class TagSpan:
-    """Где в тексте стоит тег агента: границы в знаках."""
+    """Где в тексте стоит тег: границы в знаках и закрывающий ли он."""
 
     start: int
     end: int
+    closing: bool
 
 
 class TagScanner(HTMLParser):
-    """Токенизатор тегов поверх HTMLParser: отдаёт границы тегов агента.
+    """Токенизатор тегов поверх HTMLParser: отдаёт границы названных тегов.
 
     Разбор делает стандартная библиотека: регистр имени, атрибуты,
     пробелы и самозакрывающаяся форма — её забота. Режим CDATA для
     `script` и `style` отключён, иначе `<script>` в чужом тексте спрятал бы
-    следующий за ним тег агента. Создаёт TagShield на каждый разбор.
+    следующий за ним тег агента. Создают TagShield и ReplyTag на каждый
+    разбор.
     """
 
     def __init__(self, names: frozenset[str]) -> None:
@@ -117,7 +147,7 @@ class TagScanner(HTMLParser):
         if end < 0:
             end = len(self._text) - 1
 
-        self.spans.append(TagSpan(start=start, end=end + 1))
+        self.spans.append(TagSpan(start=start, end=end + 1, closing=True))
 
     def _take_start(self, tag: str) -> None:
         if tag not in self._names:
@@ -128,7 +158,7 @@ class TagScanner(HTMLParser):
             return
 
         start = self._index()
-        self.spans.append(TagSpan(start=start, end=start + len(raw)))
+        self.spans.append(TagSpan(start=start, end=start + len(raw), closing=False))
 
     def _index(self) -> int:
         """Позиция текущего тега в тексте по строке и смещению парсера."""
