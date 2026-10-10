@@ -78,8 +78,9 @@ class Session:
         for record in records:
             if record.seq <= self.last_seq:
                 msg = (
-                    f"session {self._id.value}: restored record seq {record.seq} "
-                    f"does not follow the previous seq {self.last_seq}"
+                    f"Cannot restore session '{self._id.value}': record seq "
+                    f"{record.seq} comes after seq {self.last_seq}, but records must "
+                    "arrive in increasing order. The journal is out of order."
                 )
                 raise SessionError(msg)
 
@@ -89,8 +90,9 @@ class Session:
         """Выдаёт записи следующий seq и добавляет её; возвращает копию с seq."""
         if record.seq != 0:
             msg = (
-                f"session {self._id.value}: record of type {record.type.value} "
-                f"already carries seq {record.seq}, a new record expects 0"
+                f"Cannot add a '{record.type.value}' record to session "
+                f"'{self._id.value}': it already carries seq {record.seq}. New "
+                "records come without a seq; the session assigns it."
             )
             raise SessionError(msg)
 

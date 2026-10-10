@@ -6,9 +6,12 @@ stop; форма ответа (reply_schema) уходит полем format. С�
 поверх HttpTransport.
 
 Ошибки:
+LlmOutputLimitError — генерацию срезал лимит токенов (done_reason length).
+LlmContextOverflowError — чанк-ошибка или 4xx с текстом о длине контекста.
 LlmError — endpoint недоступен, ответил статусом, мусором или чанком-ошибкой,
-    оборвал поток, либо генерация завершилась не по-хорошему (done_reason
-    кроме stop: length — лимит токенов, load/unload — прогон без генерации).
+    оборвал поток или закончил его без done, либо генерация завершилась
+    не по-хорошему (done_reason кроме stop и length: load/unload — прогон
+    без генерации).
 LlmProvidersError — секция не того провайдера или у провайдера нет
     эмбеддингов.
 """
@@ -32,7 +35,10 @@ from boba.llm.chat import (
     ChatRole,
     ChatTurn,
     ChatUsage,
+    ContextOverflowSigns,
+    LlmContextOverflowError,
     LlmError,
+    LlmOutputLimitError,
     ToolCall,
 )
 from boba.llm.embedding import EmbeddingModel
@@ -149,11 +155,15 @@ class OllamaAssembly(ChunkAssembly[OllamaWireChunk]):
         self._input_tokens = 0
         self._output_tokens = 0
         self._done_reason = ""
+        self._overflow = ContextOverflowSigns()
 
     def take(self, chunk: OllamaWireChunk) -> ChatDelta | None:
         """Учитывает чанк; наружу — прирост текста или рассуждений."""
         if chunk.error:
             msg = f"{self._where}: server reported an error in the reply: {chunk.error}"
+            if self._overflow.matches(chunk.error):
+                raise LlmContextOverflowError(msg)
+
             raise LlmError(msg)
 
         if chunk.done:
@@ -176,8 +186,8 @@ class OllamaAssembly(ChunkAssembly[OllamaWireChunk]):
 
         return ChatDelta(content=message.content, reasoning=message.thinking)
 
-    def reply(self) -> ChatReply:
-        self._check_complete()
+    def reply(self, streamed: bool) -> ChatReply:
+        self._check_complete(streamed)
 
         return ChatReply(
             content="".join(self._content),
@@ -189,10 +199,17 @@ class OllamaAssembly(ChunkAssembly[OllamaWireChunk]):
             ),
         )
 
-    def _check_complete(self) -> None:
+    def _check_complete(self, streamed: bool) -> None:
         """Обрыв генерации сервером — честная ошибка, а не тихо неполный ответ."""
         if not self._done_reason:
-            return
+            if not streamed:
+                return
+
+            msg = (
+                f"{self._where}: the stream ended without a done chunk: the reply "
+                "is cut off or the server closed the connection early"
+            )
+            raise LlmError(msg)
 
         if self._done_reason == OllamaDoneReason.STOP:
             return
@@ -203,7 +220,7 @@ class OllamaAssembly(ChunkAssembly[OllamaWireChunk]):
                 f"{self._output_tokens} eval tokens spent; "
                 "raise the num_predict sampling option"
             )
-            raise LlmError(msg)
+            raise LlmOutputLimitError(msg)
 
         msg = (
             f"{self._where}: generation ended abnormally, expected done_reason=stop, "

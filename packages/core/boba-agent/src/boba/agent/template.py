@@ -31,6 +31,11 @@ class AgentTemplateFile(StrEnum):
     NO_RESPONSE_REQUESTED = "compact/no_response_requested.txt"
     OUTPUT_LIMIT_HIT = "compact/output_limit_hit.txt"
     PROMPT_TOO_LONG = "compact/prompt_too_long.txt"
+    REQUEST_INTERRUPTED = "compact/request_interrupted.txt"
+    REQUEST_INTERRUPTED_TOOL_USE = "compact/request_interrupted_tool_use.txt"
+    TOOL_RESULT_MISSING = "compact/tool_result_missing.txt"
+    NO_CONTENT = "compact/no_content.txt"
+    NO_MESSAGE_CONTENT = "compact/no_message_content.txt"
 
     SYSTEM_REMINDER = "attachments/system_reminder.txt"
     ENVIRONMENT = "attachments/environment.txt"
@@ -65,12 +70,18 @@ class AgentTemplate:
 
         source = self._root / tpl.value
         if not source.is_file():
-            msg = f"agent text {tpl.value}: file is missing under {self._root}"
+            msg = (
+                f"The agent template '{tpl.value}' is missing from the package data "
+                f"under {self._root}. The boba-agent package is installed incompletely."
+            )
             raise AgentTextError(msg)
 
         body = source.read_text(encoding=self.ENCODING)
         if not body:
-            msg = f"agent text {tpl.value}: file under {self._root} is empty"
+            msg = (
+                f"The agent template '{tpl.value}' under {self._root} is empty, "
+                "so the agent has no text to send. Restore the file from the package."
+            )
             raise AgentTextError(msg)
 
         self._cache[tpl] = body

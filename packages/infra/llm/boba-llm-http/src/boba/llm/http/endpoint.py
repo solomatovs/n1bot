@@ -8,6 +8,7 @@ API, обмен json-телами через HttpTransport проекта и к�
 реализация даёт тело запроса, разбор строки и тела и склейку чанков.
 
 Ошибки:
+LlmContextOverflowError — 4xx с текстом о длине контекста: запрос не поместился в окно.
 LlmError — endpoint недоступен, ответил статусом после ретраев, оборвал
     или задержал поток, либо ответил не по wire-контракту.
 """
@@ -18,6 +19,7 @@ import logging
 from abc import abstractmethod
 from collections.abc import AsyncIterator, Mapping, Sequence
 from enum import StrEnum
+from http import HTTPStatus
 from typing import Any, ClassVar, Generic, Protocol, TypeVar
 
 from pydantic import Field
@@ -28,6 +30,8 @@ from boba.llm.chat import (
     ChatModel,
     ChatReply,
     ChatRequest,
+    ContextOverflowSigns,
+    LlmContextOverflowError,
     LlmError,
     ToolSpec,
 )
@@ -35,6 +39,7 @@ from boba.llm.providers import LlmProvider
 from boba.toolkit.timing import Elapsed
 from boba.transport.http import (
     HttpRequest,
+    HttpStatusError,
     HttpTransport,
     HttpTransportConfig,
     TransportError,
@@ -104,6 +109,7 @@ class LlmEndpoint:
         self._route = route
         self._label = label
         self._where = f"{label}: {self.METHOD} {connection.url_of(route.value)}"
+        self._overflow = ContextOverflowSigns()
 
     @property
     def where(self) -> str:
@@ -115,6 +121,8 @@ class LlmEndpoint:
         try:
             async with self._transport.fetch(self._request(payload)) as response:
                 return await response.stream.read()
+        except HttpStatusError as exc:
+            raise self._status_error(exc, f"{self._label}: {exc}") from exc
         except TransportError as exc:
             raise LlmError(f"{self._label}: {exc}") from exc
 
@@ -124,8 +132,24 @@ class LlmEndpoint:
             async with self._transport.fetch(self._request(payload)) as response:
                 async for line in response.stream.lines():
                     yield line
+        except HttpStatusError as exc:
+            message = f"{self._label}: stream failed: {exc}"
+            raise self._status_error(exc, message) from exc
         except TransportError as exc:
             raise LlmError(f"{self._label}: stream failed: {exc}") from exc
+
+    def _status_error(self, exc: HttpStatusError, message: str) -> LlmError:
+        """4xx с текстом о длине контекста — переполнение окна, остальное — LlmError."""
+        lowest = HTTPStatus.BAD_REQUEST
+        highest = HTTPStatus.INTERNAL_SERVER_ERROR
+        client_error = lowest <= exc.status < highest
+        if not client_error:
+            return LlmError(message)
+
+        if self._overflow.matches(exc.body):
+            return LlmContextOverflowError(message)
+
+        return LlmError(message)
 
     def _request(self, payload: Mapping[str, Any]) -> HttpRequest:
         return HttpRequest(url=self._route.value, method=self.METHOD, json=payload)
@@ -161,7 +185,9 @@ class ChunkAssembly(Protocol[C_contra]):
     def take(self, chunk: C_contra) -> ChatDelta | None: ...
 
     @abstractmethod
-    def reply(self) -> ChatReply: ...
+    def reply(self, streamed: bool) -> ChatReply:
+        """Финал; у потока без финального чанка — LlmError, тело целиком
+        финала не требует."""
 
 
 class HttpChatModel(ChatModel, Generic[C]):
@@ -202,7 +228,7 @@ class HttpChatModel(ChatModel, Generic[C]):
             body = await self._endpoint.post(payload)
             assembly.take(self._parse_body(body))
 
-        reply = assembly.reply()
+        reply = assembly.reply(streamed=request.stream)
         logger.info(
             "%s: %s replied in %dms (%d call(s))",
             self._endpoint.where,

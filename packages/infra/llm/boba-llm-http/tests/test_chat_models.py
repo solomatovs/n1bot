@@ -18,7 +18,9 @@ from boba.llm.chat import (
     ChatRequest,
     ChatRole,
     ChatTurn,
+    LlmContextOverflowError,
     LlmError,
+    LlmOutputLimitError,
     ToolSpec,
 )
 from boba.llm.http.ollama import OllamaBackend, OllamaProvider
@@ -32,6 +34,8 @@ pytestmark = pytest.mark.anyio
 Handler = Callable[[httpx.Request], httpx.Response]
 
 REQUEST = ChatRequest(messages=[ChatTurn(role=ChatRole.USER, content="hi")])
+
+FINISH = '{"choices": [{"delta": {}, "finish_reason": "stop"}]}'
 
 SCHEMA = ToolSpec(
     name="Answer",
@@ -124,6 +128,7 @@ class TestSseGrammar:
             ": keepalive\n\n"
             f"data:{first}\n\n"
             f"event: chunk\ndata: {head}\ndata: {tail}\n\n"
+            f"data: {FINISH}\n\n"
             "id: 7\ndata: [DONE]\n\n"
         ).encode()
 
@@ -137,7 +142,8 @@ class TestSseGrammar:
     async def test_event_without_trailing_blank_line_is_delivered(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        body = f"data: {json.dumps(_delta_chunk({'content': 'x'}))}\n".encode()
+        chunk = json.dumps(_delta_chunk({"content": "x"}))
+        body = f"data: {FINISH}\n\ndata: {chunk}\n".encode()
 
         def handler(request: httpx.Request) -> httpx.Response:
             return httpx.Response(200, content=body)
@@ -179,7 +185,7 @@ class TestOpenAiChatModel:
                     {"tool_calls": [{"index": 0, "function": {"arguments": ' "x"}'}}]}
                 ),
                 {
-                    "choices": [{"delta": {}}],
+                    "choices": [{"delta": {}, "finish_reason": "stop"}],
                     "usage": {"prompt_tokens": 11, "completion_tokens": 7},
                 },
             )
@@ -250,6 +256,7 @@ class TestOpenAiChatModel:
                         ]
                     }
                 ),
+                {"choices": [{"delta": {}, "finish_reason": "tool_calls"}]},
             )
             return httpx.Response(200, content=body)
 
@@ -423,7 +430,13 @@ class TestOpenAiChatModel:
             if len(calls) == 1:
                 return httpx.Response(503)
 
-            return httpx.Response(200, content=_sse(_delta_chunk({"content": "ok"})))
+            return httpx.Response(
+                200,
+                content=_sse(
+                    _delta_chunk({"content": "ok"}),
+                    {"choices": [{"delta": {}, "finish_reason": "stop"}]},
+                ),
+            )
 
         reply = _reply_of(await _events(_openai(monkeypatch, handler), REQUEST))
 
@@ -528,5 +541,122 @@ class TestOllamaChatModel:
             )
             return httpx.Response(200, content=body)
 
-        with pytest.raises(LlmError, match="token ceiling"):
+        with pytest.raises(LlmOutputLimitError, match="token ceiling"):
+            await _events(_ollama(monkeypatch, handler), REQUEST)
+
+
+OVERFLOW_BODY = {
+    "error": {
+        "message": "This model's maximum context length is 4096 tokens.",
+        "type": "invalid_request_error",
+        "code": "context_length_exceeded",
+    }
+}
+
+
+class TestErrorKinds:
+    """Три вида ошибок порта: предел длины, переполнение окна, всё остальное."""
+
+    async def test_openai_length_is_the_output_limit(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            body = _sse(
+                _delta_chunk({"content": "нач"}),
+                {"choices": [{"delta": {}, "finish_reason": "length"}]},
+            )
+            return httpx.Response(200, content=body)
+
+        with pytest.raises(LlmOutputLimitError, match="token ceiling"):
+            await _events(_openai(monkeypatch, handler), REQUEST)
+
+    async def test_openai_context_overflow_is_recognised_by_the_body(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(400, json=OVERFLOW_BODY)
+
+        with pytest.raises(LlmContextOverflowError, match="400"):
+            await _events(_openai(monkeypatch, handler), REQUEST)
+
+    async def test_openai_other_400_stays_a_plain_error(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(400, json={"error": {"message": "bad tool schema"}})
+
+        with pytest.raises(LlmError) as caught:
+            await _events(_openai(monkeypatch, handler), REQUEST)
+
+        assert type(caught.value) is LlmError
+
+    async def test_openai_stream_without_finish_is_an_error(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            body = _sse(_delta_chunk({"content": "нач"}))
+            return httpx.Response(200, content=body)
+
+        with pytest.raises(LlmError, match="without a finish_reason"):
+            await _events(_openai(monkeypatch, handler), REQUEST)
+
+    async def test_openai_stream_asks_for_usage(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        seen: list[dict[str, Any]] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen.append(json.loads(request.content))
+            body = _sse(
+                _delta_chunk({"content": "ok"}),
+                {"choices": [{"delta": {}, "finish_reason": "stop"}]},
+            )
+            return httpx.Response(200, content=body)
+
+        await _events(_openai(monkeypatch, handler), REQUEST)
+
+        assert seen[0]["stream_options"] == {"include_usage": True}
+
+    async def test_openai_whole_body_has_no_stream_options(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        seen: list[dict[str, Any]] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen.append(json.loads(request.content))
+            body = {"choices": [{"message": {"role": "assistant", "content": "ok"}}]}
+            return httpx.Response(200, json=body)
+
+        plain = REQUEST.model_copy(update={"stream": False})
+        await _events(_openai(monkeypatch, handler), plain)
+
+        assert "stream_options" not in seen[0]
+
+    async def test_ollama_context_overflow_in_the_error_chunk(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            body = _ndjson({"error": "the request exceeds the available context size"})
+            return httpx.Response(200, content=body)
+
+        with pytest.raises(LlmContextOverflowError, match="context size"):
+            await _events(_ollama(monkeypatch, handler), REQUEST)
+
+    async def test_ollama_context_overflow_by_status(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(400, json={"error": "input exceeds context length"})
+
+        with pytest.raises(LlmContextOverflowError, match="400"):
+            await _events(_ollama(monkeypatch, handler), REQUEST)
+
+    async def test_ollama_stream_without_done_is_an_error(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            body = _ndjson({"message": {"role": "assistant", "content": "нач"}})
+            return httpx.Response(200, content=body)
+
+        with pytest.raises(LlmError, match="without a done chunk"):
             await _events(_ollama(monkeypatch, handler), REQUEST)

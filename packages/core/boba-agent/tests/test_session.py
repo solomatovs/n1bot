@@ -123,7 +123,7 @@ class TestSeq:
         first = user("u1", None, "a").model_copy(update={"seq": 3})
         second = user("u2", "u1", "b").model_copy(update={"seq": 3})
 
-        with pytest.raises(SessionError, match="seq 3 does not follow"):
+        with pytest.raises(SessionError, match="seq 3 comes after seq 3"):
             session.restore([first, second])
 
     def test_projections_split_chain_and_service(self) -> None:
