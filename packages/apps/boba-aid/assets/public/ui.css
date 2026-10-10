@@ -35,3 +35,13 @@
 button[id^='step-'] {
   text-align: left;
 }
+
+/* Скрыть правую панель страницы входа */
+div.relative.bg-muted.overflow-hidden:has(> img[alt="Image"][src$="/favicon"]) {
+  display: none !important;
+}
+
+/* Родительский контейнер: одна колонка вместо двух */
+div:has(> div.relative.bg-muted.overflow-hidden > img[alt="Image"][src$="/favicon"]) {
+  grid-template-columns: minmax(0, 1fr) !important;
+}

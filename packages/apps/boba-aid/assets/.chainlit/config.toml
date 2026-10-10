@@ -95,9 +95,9 @@ reaction_on_message_received = false
 
 [UI]
 # Name of the assistant.
-name = "AID"
+name = "Помощник BOBA"
 
-# default_theme = "dark"
+default_theme = "light"
 
 # Force a specific language for all users (e.g., "en-US", "he-IL", "fr-FR")
 # If not set, the browser's language will be used
@@ -156,10 +156,10 @@ alert_style = "classic"
 logo_file_url = ""
 
 # Load assistant avatar image directly from URL.
-default_avatar_file_url = ""
+default_avatar_file_url = "public/n1-avatar.svg"
 
 # Avatar size in pixels (default: 20).
-# avatar_size = 20
+ avatar_size = 32
 
 # Specify a custom build directory for the frontend.
 # This can be used to customize the frontend code.
