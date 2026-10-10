@@ -236,6 +236,10 @@ class McpTool(Tool):
             name=card.name,
             description=card.description,
             parameters=CallViews().typed(card.parameters, card.views),
+            annotations=mt.ToolAnnotations(
+                read_only_hint=card.hints.read_only,
+                destructive_hint=card.hints.destructive,
+            ),
         )
         self._server = server
         self._replies = McpReplies()

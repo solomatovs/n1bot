@@ -1,0 +1,1 @@
+{agent} requested permissions to use {tool}, but you haven't granted it yet.

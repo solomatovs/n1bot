@@ -37,6 +37,7 @@ from boba.toolkit.dag import (
     NodeOutcome,
     NodeOutcomes,
     ToolCard,
+    ToolHints,
 )
 from boba.toolkit.entry import ToolAddress
 from boba.toolkit.facade import PayloadTool
@@ -102,6 +103,7 @@ class HostedTool:
     args_schema: type[BaseModel]
     views: Mapping[str, FieldView] | None
     body: AsyncCall
+    hints: ToolHints = field(default_factory=ToolHints)
     _outcomes: NodeOutcomes = field(
         default_factory=NodeOutcomes, init=False, repr=False, compare=False
     )
@@ -191,7 +193,9 @@ class ToolSchema:
 
     def card_of(self, tool: HostedTool) -> ToolCard:
         """Карточка инструмента хоста tool."""
-        return self.card(tool.name, tool.description, tool.args_schema, tool.views)
+        return self.card(
+            tool.name, tool.description, tool.args_schema, tool.views, tool.hints
+        )
 
     def card(
         self,
@@ -199,14 +203,20 @@ class ToolSchema:
         description: str,
         schema: type[BaseModel],
         views: Mapping[str, FieldView] | None,
+        hints: ToolHints | None = None,
     ) -> ToolCard:
         """Карточка инструмента: JSON-схема вызова названа именем инструмента
-        и описана его описанием; views — вид аргументов для ленты клиента."""
+        и описана его описанием; views — вид аргументов для ленты клиента,
+        hints — пометки для решения о подтверждении, None — без пометок."""
+        if hints is None:
+            hints = ToolHints()
+
         return ToolCard(
             name=name,
             description=description,
             parameters=self._call_schema(name, description, schema),
             views=views,
+            hints=hints,
         )
 
     def cards_of(self, tools: Iterable[HostedTool]) -> dict[str, ToolCard]:
@@ -276,6 +286,7 @@ class ToolHosting:
             args_schema=tool.args_schema,
             views=self._views.of(tool.args_schema),
             body=partial(self._authored, tool),
+            hints=tool.hints,
         )
 
     def toolset(self, tools: Sequence[PayloadTool]) -> tuple[HostedTool, ...]:

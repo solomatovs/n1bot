@@ -30,7 +30,7 @@ from __future__ import annotations
 import asyncio
 from abc import abstractmethod
 from collections.abc import Awaitable, Callable, Iterator, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, ClassVar, Literal, Protocol, TypeAlias
 
 from pydantic import (
@@ -73,6 +73,7 @@ __all__ = [
     "NodeOutcomes",
     "NodeReports",
     "ToolCard",
+    "ToolHints",
     "ToolServer",
     "WorkflowNodeResult",
     "WorkflowResult",
@@ -396,16 +397,32 @@ class WorkflowResult(ToolResultBase):
 
 
 @dataclass(frozen=True)
+class ToolHints:
+    """Пометки инструмента по стандартным annotations MCP: читает ли он
+    только (readOnlyHint) и может ли разрушить данные (destructiveHint).
+
+    По ним клиент решает, спрашивать ли подтверждение перед вызовом.
+    Инструмент без пометок считается меняющим и разрушающим — так же
+    трактует отсутствие annotations стандарт MCP.
+    """
+
+    read_only: bool = False
+    destructive: bool = True
+
+
+@dataclass(frozen=True)
 class ToolCard:
     """Карточка инструмента для клиента порта: имя, описание, JSON-схема
-    вызова — та, что видит модель после всех обвязок, — и вид аргументов
-    вызова для ленты клиента; views None — вида у инструмента нет (чужой
-    сервер, встроенный узел), и лента покажет аргументы json-текстом."""
+    вызова — та, что видит модель после всех обвязок, — вид аргументов
+    вызова для ленты клиента и пометки; views None — вида у инструмента
+    нет (чужой сервер, встроенный узел), и лента покажет аргументы
+    json-текстом."""
 
     name: str
     description: str
     parameters: Mapping[str, Any]
     views: Mapping[str, FieldView] | None
+    hints: ToolHints = field(default_factory=ToolHints)
 
 
 class JournalAddress(BaseModel):

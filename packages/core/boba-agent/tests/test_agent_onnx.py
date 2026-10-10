@@ -87,7 +87,6 @@ def agent(stand: AgentStand, root: Path, max_tokens: int, sink: Collected) -> Ag
         limits=TurnLimits(retry_delays_sec=(0.0, 0.0, 0.0)),
         compaction=CompactionSettings(),
         system_prompt=SYSTEM_PROMPT,
-        tools=(),
         store=JsonlHistoryStore(root),
         model=providers.chat(model_profile.chat),
         sink=sink,
@@ -161,7 +160,8 @@ class TestLocalModel:
         ]
         metas = [r for r in chain if isinstance(r, UserRecord) and r.is_meta]
         assert len(metas) == 3
-        assert len(partials) <= 4
+        # четыре попытки, в каждой не больше двух блоков: рассуждение и текст
+        assert 1 <= len(partials) <= 8
         final = chain[-1]
         assert isinstance(final, AssistantRecord)
         assert final.is_api_error_message

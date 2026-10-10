@@ -8,7 +8,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from enum import StrEnum
 from pathlib import Path
 from typing import ClassVar
@@ -16,7 +16,7 @@ from typing import ClassVar
 import uvicorn
 
 from boba.agent.agent import Agent, AgentParts
-from boba.agent.events import AgentEvent, EventSink
+from boba.agent.events import AgentEvent, ControlRequestEvent, EventSink
 from boba.agent.history import SessionId
 from boba.agent.profile import (
     CompactionSettings,
@@ -24,6 +24,7 @@ from boba.agent.profile import (
     ReasoningReturn,
     TurnLimits,
 )
+from boba.agent.records import PermissionMode
 from boba.agent.session import Session
 from boba.history.jsonl import JsonlHistoryStore
 from boba.llm.chat import ChatModel
@@ -37,11 +38,21 @@ from boba.llm.providers import (
 )
 from boba.stand.ui.fake_llm import FakeLlmApp
 from boba.stand.ui.stand import free_port
+from boba.toolkit.dag import (
+    DagNode,
+    NodeOutcome,
+    NodeOutcomes,
+    ToolCard,
+    ToolHints,
+    ToolServer,
+)
+from boba.toolkit.result import ErrorResult, MarkdownResult
 from boba.transport.http import HttpTransportConfig
 from boba.transport.http.connection import HttpConnection, NoneAuth, UrlScheme
 
 VERSION = "0.0.26.dev4"
 SYSTEM_PROMPT = ("You are the stand agent.", "Answer briefly.")
+CLASSIFIER_INSTRUCTION = "Decide whether the tool call may run."
 
 
 class Protocol(StrEnum):
@@ -57,13 +68,16 @@ class Protocol(StrEnum):
 
 
 class Collected(EventSink):
-    """Реализация EventSink: копит события в списке."""
+    """Реализация EventSink: копит события в списке; вопросы наружу можно
+    дождаться, как их ждёт запускающая программа."""
 
     def __init__(self) -> None:
         self.events: list[AgentEvent] = []
+        self._changed = asyncio.Event()
 
     async def emit(self, event: AgentEvent) -> None:
         self.events.append(event)
+        self._changed.set()
 
     def of(self, kind: type[AgentEvent]) -> list[AgentEvent]:
         found: list[AgentEvent] = []
@@ -72,6 +86,150 @@ class Collected(EventSink):
                 found.append(event)
 
         return found
+
+    def questions(self) -> list[ControlRequestEvent]:
+        asked: list[ControlRequestEvent] = []
+        for event in self.events:
+            if isinstance(event, ControlRequestEvent):
+                asked.append(event)
+
+        return asked
+
+    async def next_question(self, seen: int) -> ControlRequestEvent:
+        """Ждёт вопрос с номером seen (с нуля)."""
+        while len(self.questions()) <= seen:
+            self._changed.clear()
+            await asyncio.wait_for(self._changed.wait(), timeout=5.0)
+
+        return self.questions()[seen]
+
+
+class StandToolName(StrEnum):
+    """Инструменты сервера стенда: имя говорит о пометках и поведении."""
+
+    LOOKUP = "lookup"
+    """Читает: read_only."""
+
+    NOTE = "note"
+    """Меняет, но не разрушает."""
+
+    DROP = "drop"
+    """Разрушает."""
+
+    SLEEP = "sleep"
+    """Читает; спит `seconds`."""
+
+    LARGE = "large"
+    """Читает; отдаёт `size` знаков."""
+
+    BROKEN = "broken"
+    """Читает; всегда ошибка тела."""
+
+    EMPTY = "empty"
+    """Читает; пустой результат."""
+
+
+class StandTools(ToolServer):
+    """Реализация ToolServer в процессе теста: инструменты с пометками,
+    задержкой, большим и пустым результатом; вызовы считаются."""
+
+    def __init__(self) -> None:
+        self._outcomes = NodeOutcomes()
+        self.calls: list[DagNode] = []
+        self._cards = [
+            self._card(StandToolName.LOOKUP, ToolHints(read_only=True)),
+            self._card(StandToolName.NOTE, ToolHints(destructive=False)),
+            self._card(StandToolName.DROP, ToolHints()),
+            self._card(StandToolName.SLEEP, ToolHints(read_only=True)),
+            self._card(StandToolName.LARGE, ToolHints(read_only=True)),
+            self._card(StandToolName.BROKEN, ToolHints(read_only=True)),
+            self._card(StandToolName.EMPTY, ToolHints(read_only=True)),
+        ]
+
+    def _card(self, name: StandToolName, hints: ToolHints) -> ToolCard:
+        return ToolCard(
+            name=name.value,
+            description=f"stand tool {name.value}",
+            parameters={"type": "object", "properties": {}},
+            views=None,
+            hints=hints,
+        )
+
+    def tools(self) -> Sequence[ToolCard]:
+        return self._cards
+
+    def features(self) -> Mapping[str, Mapping[str, object]]:
+        return {}
+
+    async def submit(
+        self, calls: Sequence[DagNode]
+    ) -> Sequence[asyncio.Future[NodeOutcome]]:
+        pending: list[asyncio.Future[NodeOutcome]] = []
+        for call in calls:
+            self.calls.append(call)
+            pending.append(asyncio.ensure_future(self._run(call)))
+
+        return pending
+
+    async def _run(self, call: DagNode) -> NodeOutcome:
+        name = StandToolName(call.tool)
+        if name is StandToolName.SLEEP:
+            await asyncio.sleep(self._number(call, "seconds"))
+            return self._outcomes.of(call, MarkdownResult(text="slept"), False)
+
+        if name is StandToolName.LARGE:
+            size = int(self._number(call, "size"))
+            return self._outcomes.of(call, MarkdownResult(text="x" * size), False)
+
+        if name is StandToolName.BROKEN:
+            failure = ErrorResult(message="stand tool failed", error_kind="stand")
+            return self._outcomes.refused(call, failure)
+
+        if name is StandToolName.EMPTY:
+            return self._outcomes.of(call, MarkdownResult(text=""), False)
+
+        return self._outcomes.of(call, MarkdownResult(text=f"{name.value} done"), False)
+
+    @staticmethod
+    def _number(call: DagNode, key: str) -> float:
+        value = call.args.get(key, 0)
+        if isinstance(value, int | float):
+            return float(value)
+
+        msg = f"stand tool {call.tool}: argument {key} must be a number, got {value!r}"
+        raise TypeError(msg)
+
+
+class RoutedServers(ToolServer):
+    """Несколько портов за одним: вызов уходит тому, чей инструмент."""
+
+    def __init__(self, servers: Sequence[ToolServer]) -> None:
+        self._servers = list(servers)
+        self._owner: dict[str, ToolServer] = {}
+        for server in self._servers:
+            for card in server.tools():
+                self._owner[card.name] = server
+
+    def tools(self) -> Sequence[ToolCard]:
+        cards: list[ToolCard] = []
+        for server in self._servers:
+            cards.extend(server.tools())
+
+        return cards
+
+    def features(self) -> Mapping[str, Mapping[str, object]]:
+        return {}
+
+    async def submit(
+        self, calls: Sequence[DagNode]
+    ) -> Sequence[asyncio.Future[NodeOutcome]]:
+        pending: list[asyncio.Future[NodeOutcome]] = []
+        for call in calls:
+            owner = self._owner[call.tool]
+            submitted = await owner.submit([call])
+            pending.append(submitted[0])
+
+        return pending
 
 
 class FakeServer:
@@ -151,12 +309,16 @@ class StandAgents:
     def model(self, profile: ModelProfile) -> ChatModel:
         return self._providers.chat(profile.chat)
 
-    def agent(
+    def agent(  # noqa: PLR0913 — стенд собирает агента по частям, как вход процесса
         self,
         profile: ModelProfile,
         sink: Collected,
         limits: TurnLimits | None = None,
         system_prompt: Sequence[str] = SYSTEM_PROMPT,
+        tools: ToolServer | None = None,
+        initial_mode: PermissionMode = PermissionMode.DEFAULT,
+        allow_bypass: bool = False,
+        classifier: ChatModel | None = None,
     ) -> Agent:
         if limits is None:
             limits = TurnLimits(retry_delays_sec=(0.0, 0.0, 0.0))
@@ -166,11 +328,15 @@ class StandAgents:
             limits=limits,
             compaction=CompactionSettings(),
             system_prompt=system_prompt,
-            tools=(),
             store=JsonlHistoryStore(self._root),
             model=self.model(profile),
             sink=sink,
             version=VERSION,
+            tools=tools,
+            initial_mode=initial_mode,
+            allow_bypass=allow_bypass,
+            classifier=classifier,
+            classifier_instruction=CLASSIFIER_INSTRUCTION,
         )
 
         return Agent(parts)

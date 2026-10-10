@@ -84,6 +84,7 @@ class ToolProcessWrap:
             args_schema=schema,
             views=self._views.of(payload.args_schema),
             body=partial(self._transfer, address, schema, launcher),
+            hints=payload.hints,
         )
 
     def spec_of(self, payload: PayloadTool) -> StreamSpec:

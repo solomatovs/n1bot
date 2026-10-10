@@ -1,0 +1,1 @@
+The session is in plan mode, so {tool} was not run: plan mode executes only read-only tools. Describe the step in your plan instead, and ask the user to leave plan mode before calling it.

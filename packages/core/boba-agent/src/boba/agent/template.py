@@ -52,6 +52,21 @@ class AgentTemplateFile(StrEnum):
     QUEUED_NOTIFICATION = "attachments/queued_notification.txt"
     QUEUED_NOTIFICATION_WITH_USER = "attachments/queued_notification_with_user.txt"
 
+    USER_REJECTED = "tools/user_rejected.txt"
+    USER_REJECTED_SAID = "tools/user_rejected_said.txt"
+    USER_REJECTED_RESULT = "tools/user_rejected_result.txt"
+    TURN_ABORTED = "tools/turn_aborted.txt"
+    NOT_GRANTED = "tools/not_granted.txt"
+    PLAN_MODE = "tools/plan_mode.txt"
+    CLASSIFIER_DENIED = "tools/classifier_denied.txt"
+    CLASSIFIER_FAILED = "tools/classifier_failed.txt"
+    NO_SUCH_TOOL = "tools/no_such_tool.txt"
+    NO_OUTPUT = "tools/no_output.txt"
+    TRUNCATED = "tools/truncated.txt"
+    ANSWERS = "tools/answers.txt"
+    NO_ANSWERS = "tools/no_answers.txt"
+    ASK_USER_QUESTION = "tools/ask_user_question.txt"
+
 
 class AgentTemplate:
     """Чтение текстов из данных пакета boba.agent с кэшем на процесс."""

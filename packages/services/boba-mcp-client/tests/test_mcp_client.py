@@ -59,6 +59,7 @@ from boba.toolkit.dag import (
     NodeCalls,
     NodeOutcome,
     ToolCard,
+    ToolHints,
     ToolServer,
     WorkflowResult,
 )
@@ -174,6 +175,15 @@ class TestStandardServerOverStdio:
             raise AssertionError(f"the model sees the server's arguments: {schema}")
         if add.views:
             raise AssertionError(f"plain arguments have no special view: {add}")
+
+    async def test_annotations_become_hints(self, stdio: McpToolServer) -> None:
+        by_name = {tool.name: tool for tool in stdio.tools()}
+
+        assert by_name["std_add"].hints == ToolHints(read_only=True, destructive=True)
+        assert by_name["std_shout"].hints == ToolHints(
+            read_only=False, destructive=False
+        )
+        assert by_name["std_broken"].hints == ToolHints()
 
     async def test_standard_server_declares_no_boba_features(
         self, stdio: McpToolServer
