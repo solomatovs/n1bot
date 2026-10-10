@@ -16,7 +16,6 @@ from pathlib import Path
 from typing import ClassVar, Self
 
 import pytest
-from agent_stand import Collected, Served
 from omegaconf import DictConfig
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -37,6 +36,7 @@ from boba.config import bind
 from boba.history.jsonl import JsonlHistoryStore
 from boba.llm.onnx.chat import OnnxProvider
 from boba.llm.providers import ChatModelConfig, LlmProviders, LlmProviderTypes
+from boba.stand.agent import Collected, Served
 
 pytestmark = [pytest.mark.anyio, pytest.mark.integration]
 

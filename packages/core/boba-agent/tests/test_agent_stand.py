@@ -10,13 +10,6 @@ from itertools import pairwise
 from pathlib import Path
 
 import pytest
-from agent_stand import (
-    Collected,
-    FakeServer,
-    Protocol,
-    Served,
-    StandAgents,
-)
 
 from boba.agent.events import (
     RecordEvent,
@@ -42,6 +35,13 @@ from boba.agent.session import Session
 from boba.agent.template import AgentTemplate
 from boba.cancellation import StopReason
 from boba.history.jsonl import JsonlHistoryStore
+from boba.stand.agent import (
+    Collected,
+    FakeServer,
+    Protocol,
+    Served,
+    StandAgents,
+)
 from boba.stand.ui.fake_llm import FailureName, ScenarioName
 
 pytestmark = pytest.mark.anyio

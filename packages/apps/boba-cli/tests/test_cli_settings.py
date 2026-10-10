@@ -13,8 +13,11 @@ from boba.agent.records import PermissionMode
 from boba.cli.settings import (
     Arguments,
     EnvName,
+    HistoryKind,
     JsonlHistorySettings,
     McpServerBuilder,
+    PostgresBuilder,
+    PostgresHistorySettings,
     ProfileBuilder,
     Settings,
     SettingsError,
@@ -268,3 +271,31 @@ class TestMcpJson:
             McpServerBuilder(effective.mcp, effective.env).config(
                 "old", effective.mcp_servers["old"]
             )
+
+
+class TestPostgresHistory:
+    def test_dsn_from_the_named_variable_becomes_a_config(self) -> None:
+        history = PostgresHistorySettings(kind=HistoryKind.POSTGRES, dsn_env="PG")
+        env = {
+            "PG": "postgresql://agent:s3cret@db.example.org:5433/boba?sslmode=require"
+        }
+
+        config = PostgresBuilder(env).config(history)
+
+        assert config.host == "db.example.org"
+        assert config.port == 5433
+        assert config.dbname == "boba"
+        assert config.sslmode == "require"
+        assert config.auth.method == "password"
+        assert config.auth.user == "agent"
+        assert "s3cret" not in config.model_dump_json()
+        assert history.db_schema == "agent_history"
+
+    def test_missing_variable_and_missing_user_are_errors(self) -> None:
+        history = PostgresHistorySettings(kind=HistoryKind.POSTGRES, dsn_env="PG")
+
+        with pytest.raises(SettingsError, match="PG"):
+            PostgresBuilder({}).config(history)
+
+        with pytest.raises(SettingsError, match="names no user"):
+            PostgresBuilder({"PG": "postgresql://db/boba"}).config(history)

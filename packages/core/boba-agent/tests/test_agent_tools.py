@@ -12,16 +12,6 @@ from pathlib import Path
 from typing import ClassVar
 
 import pytest
-from agent_stand import (
-    Collected,
-    FakeServer,
-    Protocol,
-    RoutedServers,
-    Served,
-    StandAgents,
-    StandToolName,
-    StandTools,
-)
 
 from boba.agent.control import AllowAnswer, DenyAnswer
 from boba.agent.events import ControlCancelEvent, ResultEvent, TurnOutcome
@@ -66,6 +56,16 @@ from boba.mcp_client.client import (
     McpToolServer,
     NamedBlocks,
     StdioCommand,
+)
+from boba.stand.agent import (
+    Collected,
+    FakeServer,
+    Protocol,
+    RoutedServers,
+    Served,
+    StandAgents,
+    StandToolName,
+    StandTools,
 )
 from boba.stand.ui.fake_llm import FailureName, ScenarioName
 from boba.toolrun.hosted import DirectCalls

@@ -8,11 +8,17 @@ version = "0.0.26.dev4"
 description = "Boba history postgres: порт истории агента над Postgres — таблица записей сессии и advisory-lock захвата."
 requires-python = ">=3.11,<4"
 dependencies = [
+    "boba-agent==0.0.26.dev4",
+    "boba-db-postgres==0.0.26.dev4",
+    "psycopg>=3.3,<4",
 ]
 
 [project.optional-dependencies]
 dev = [
     "boba-stand==0.0.26.dev4",
+    "boba-history-jsonl==0.0.26.dev4",
+    "boba-config==0.0.26.dev4",
+    "omegaconf>=2.3,<3",
     "pytest>=9.1,<10",
 ]
 

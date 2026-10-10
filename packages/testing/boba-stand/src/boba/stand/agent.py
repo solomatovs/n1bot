@@ -1,8 +1,10 @@
 """Стенд агента для тестов: фейковый провайдер в процессе и сборка агента.
 
 Поднимает FakeLlmApp сервером uvicorn внутри цикла событий, строит профиль
-модели на один из двух протоколов и собирает Agent на хранилище JSONL
-во временном каталоге. События агента копятся в списке.
+модели на один из двух протоколов и собирает Agent на хранилище истории:
+JSONL во временном каталоге по умолчанию либо переданное (Postgres).
+События агента копятся в списке. Им пользуются тесты boba-agent, boba-cli и
+реализаций порта истории.
 """
 
 from __future__ import annotations
@@ -19,7 +21,7 @@ from pydantic import SecretStr
 from boba.agent.agent import Agent, AgentParts
 from boba.agent.attachments import EnvironmentSnapshot
 from boba.agent.events import AgentEvent, ControlRequestEvent, EventSink
-from boba.agent.history import SessionId
+from boba.agent.history import HistoryStore, SessionId
 from boba.agent.ids import Clock, SystemClock
 from boba.agent.profile import (
     CompactionSettings,
@@ -388,6 +390,7 @@ class StandAgents:
         environment: EnvironmentSnapshot | None = None,
         clock: Clock | None = None,
         compaction: CompactionSettings | None = None,
+        store: HistoryStore | None = None,
     ) -> Agent:
         if limits is None:
             limits = TurnLimits(retry_delays_sec=(0.0, 0.0, 0.0))
@@ -395,12 +398,15 @@ class StandAgents:
         if compaction is None:
             compaction = CompactionSettings()
 
+        if store is None:
+            store = JsonlHistoryStore(self._root)
+
         parts = AgentParts(
             profile=profile,
             limits=limits,
             compaction=compaction,
             system_prompt=system_prompt,
-            store=JsonlHistoryStore(self._root),
+            store=store,
             model=self.model(profile),
             sink=sink,
             version=VERSION,

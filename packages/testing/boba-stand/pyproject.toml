@@ -43,6 +43,8 @@ dependencies = [
     "boba-confluence==0.0.26.dev4",
     "boba-llm==0.0.26.dev4",
     "boba-llm-fastembed==0.0.26.dev4",
+    "boba-agent==0.0.26.dev4",
+    "boba-history-jsonl==0.0.26.dev4",
     "fastapi>=0.116,<1",
     "httpx>=0.28,<1",
     "typing-extensions>=4.12,<5",

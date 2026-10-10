@@ -24,7 +24,6 @@ dev = [
     "boba-prompt-assembly==0.0.26.dev4",
     "boba-llm-http==0.0.26.dev4",
     "boba-transport-http==0.0.26.dev4",
-    "uvicorn>=0.35,<1",
     "boba-llm-onnx==0.0.26.dev4",
     "boba-config==0.0.26.dev4",
     "omegaconf>=2.3,<3",

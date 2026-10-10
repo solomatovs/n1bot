@@ -14,15 +14,6 @@ from collections.abc import AsyncIterator, Sequence
 from pathlib import Path
 
 import pytest
-from agent_stand import (
-    Collected,
-    FakeServer,
-    Protocol,
-    Served,
-    StandAgents,
-    StandToolName,
-    StandTools,
-)
 
 from boba.agent.control import AllowAnswer
 from boba.agent.events import RecordEvent, TurnOutcome
@@ -46,6 +37,15 @@ from boba.agent.records import (
 from boba.agent.session import Session, SessionState
 from boba.agent.template import AgentTemplate
 from boba.history.jsonl import JsonlHistoryStore
+from boba.stand.agent import (
+    Collected,
+    FakeServer,
+    Protocol,
+    Served,
+    StandAgents,
+    StandToolName,
+    StandTools,
+)
 from boba.stand.ui.fake_llm import FailureName, ScenarioName, SummaryName
 
 pytestmark = pytest.mark.anyio
