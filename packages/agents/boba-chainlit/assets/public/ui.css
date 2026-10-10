@@ -1,12 +1,160 @@
-/* Панель канваса.
+/* =========================================================
+   Базовая типографика
+   Inter подключается через custom_fonts в theme.json.
+   ========================================================= */
 
-   В canvas-режиме chainlit сам кладёт кнопку закрытия поверх содержимого и
-   красит её в primary (variant="default") — синий круг накрывает диаграмму.
-   Возвращаем ей вид ghost-кнопки, как у close в диалоге shadcn: прозрачный
-   фон и opacity 0.7.
+body {
+  font-family: "Inter", -apple-system, BlinkMacSystemFont,
+  "Segoe UI", sans-serif;
+  font-size: 16px;
+  line-height: 1.5;
+}
 
-   Раскладку не трогаем: chainlit даёт шапке px-6 py-4, а кнопке -ml-2, то
-   есть те же 16px от краёв, на которых стоят остальные плавающие кнопки. */
+button,
+input,
+textarea,
+select {
+  font-family: inherit;
+}
+
+/* =========================================================
+   Контролы: геометрия Consta
+   Только элементы со стандартным классом rounded-md.
+   ========================================================= */
+
+:is(button, input, textarea, select, [role="combobox"]).rounded-md {
+  border-radius: 4px;
+}
+
+/* Основные кнопки, включая вход и SSO.
+   Размеры кнопок-иконок здесь не меняем. */
+
+button.bg-primary {
+  font-weight: 400;
+  transition:
+          background-color 150ms ease,
+          color 150ms ease,
+          box-shadow 150ms ease;
+}
+
+/* Цвета светлой темы Consta.
+   Тёмная тема сохраняет свои значения. */
+
+html:not(.dark) button.bg-primary {
+  background-color: #0078d2;
+  color: #fff;
+}
+
+html:not(.dark) button.bg-primary:hover:not(:disabled) {
+  background-color: #0091ff;
+}
+
+/* Текстовые поля */
+
+:is(
+  input[type="text"],
+  input[type="email"],
+  input[type="password"],
+  input:not([type]),
+  textarea
+).border-input {
+  transition:
+          border-color 150ms ease,
+          box-shadow 150ms ease;
+}
+
+html:not(.dark) :is(
+  input[type="text"],
+  input[type="email"],
+  input[type="password"],
+  input:not([type]),
+  textarea
+).border-input {
+  border-color: rgba(0, 66, 105, 0.28);
+}
+
+html:not(.dark) :is(
+  input[type="text"],
+  input[type="email"],
+  input[type="password"],
+  input:not([type]),
+  textarea
+).border-input:hover:not(:disabled) {
+  border-color: rgba(0, 66, 105, 0.52);
+}
+
+html:not(.dark) :is(input, textarea).border-input::placeholder {
+  color: rgba(0, 32, 51, 0.35);
+  opacity: 1;
+}
+
+/* =========================================================
+   Страница входа
+   Привязка к форме пароля — не затрагивает страницу чата.
+   ========================================================= */
+
+/* Одна колонка вместо двух */
+
+#root > .grid:has(form input#password) {
+  grid-template-columns: minmax(0, 1fr) !important;
+}
+
+/* Убираем правую панель независимо от URL картинки */
+
+#root > .grid:has(form input#password) > .bg-muted {
+  display: none !important;
+}
+
+/* Логотип по центру */
+
+#root > .grid:has(form input#password) > .flex > div:has(> img.logo) {
+  justify-content: center !important;
+}
+
+/* Сохраняем компактную ширину формы */
+
+#root > .grid:has(form input#password) .max-w-xs {
+  width: 100%;
+  max-width: 360px;
+}
+
+/* Заголовок */
+
+form:has(input#password) h1 {
+  font-size: 24px;
+  font-weight: 600;
+  line-height: 1.4;
+}
+
+/* Подписи */
+
+form:has(input#password) label {
+  font-size: 14px;
+  font-weight: 400;
+  line-height: 1.4;
+}
+
+/* Контролы размера M: 40 px, текст 16 px */
+
+form:has(input#password) :is(input#email, input#password) {
+  height: 40px;
+  font-size: 16px;
+  border-radius: 4px;
+}
+
+form:has(input#password) :is(button[type="submit"], #sso-login-btn) {
+  min-height: 40px;
+  padding: 8px 16px;
+  font-size: 16px;
+  font-weight: 400;
+  border-radius: 4px;
+}
+
+/* =========================================================
+   Панель канваса — сохраняем ghost-кнопку закрытия.
+   Цветовые переменные Chainlit содержат компоненты HSL.
+   ========================================================= */
+
 #side-view-title {
   pointer-events: none;
 }
@@ -14,34 +162,43 @@
 #side-view-title button {
   pointer-events: auto;
   background-color: transparent;
-  color: var(--muted-foreground);
+  color: hsl(var(--muted-foreground));
   box-shadow: none;
   opacity: 0.7;
 }
 
 #side-view-title button:hover {
-  background-color: var(--accent);
-  color: var(--accent-foreground);
+  background-color: hsl(var(--accent));
+  color: hsl(var(--accent-foreground));
   opacity: 1;
 }
 
-/* Заголовок шага ленты.
+/* Заголовки шагов: многострочный текст выравниваем влево */
 
-   chainlit рисует его кнопкой, а у <button> в user-agent stylesheet стоит
-   text-align: center; класс AccordionTrigger его не перекрывает — justify-start
-   разносит flex-элементы, но не выравнивает строки внутри текста. Пока имя
-   умещается в строку, разницы не видно; длинное имя переносится, и обе строки
-   встают по центру — шаг выглядит съехавшим вправо. */
-button[id^='step-'] {
+button[id^="step-"] {
   text-align: left;
 }
 
-/* Скрыть правую панель страницы входа */
-div.relative.bg-muted.overflow-hidden:has(> img[alt="Image"][src$="/favicon"]) {
-  display: none !important;
+/* =========================================================
+   Убираем всю обводку фокуса
+   Должно стоять в конце файла.
+   ========================================================= */
+
+*,
+*::before,
+*::after {
+  --tw-ring-shadow: 0 0 #0000 !important;
+  --tw-ring-offset-shadow: 0 0 #0000 !important;
 }
 
-/* Родительский контейнер: одна колонка вместо двух */
-div:has(> div.relative.bg-muted.overflow-hidden > img[alt="Image"][src$="/favicon"]) {
-  grid-template-columns: minmax(0, 1fr) !important;
+*:focus,
+*:focus-visible,
+*:focus-within {
+  outline: none !important;
+  outline-offset: 0 !important;
+}
+
+:is(button, input, textarea, select, a, [role="combobox"], [tabindex]):is(:focus, :focus-visible) {
+  outline: none !important;
+  box-shadow: none !important;
 }
