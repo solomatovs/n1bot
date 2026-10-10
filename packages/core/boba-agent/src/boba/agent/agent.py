@@ -14,7 +14,8 @@ HistoryError — хранилище недоступно, сессия заня�
     возобновления пуст.
 ProfileError — профиль модели не годится для запуска.
 PermissionModeError — режим разрешений недоступен при параметрах запуска.
-ToolsError — собственный инструмент одноимён с инструментом сервера.
+ToolsError — собственный инструмент одноимён с инструментом сервера, либо при
+    возобновлении сервер не отдал ни одного инструмента из объявленных.
 """
 
 from __future__ import annotations
@@ -24,7 +25,12 @@ import logging
 from collections.abc import Sequence
 from typing import ClassVar
 
-from boba.agent.attachments import ContextAttachments
+from boba.agent.attachments import (
+    Announced,
+    ContextAttachments,
+    EnvironmentSnapshot,
+    SnapshotSkill,
+)
 from boba.agent.builder import RequestBuilder
 from boba.agent.control import ControlQuestions, PermissionAnswer
 from boba.agent.events import EventSink, InitEvent, TurnOutcome
@@ -41,8 +47,16 @@ from boba.agent.profile import (
 from boba.agent.queue import InputQueue, QueueRemoveReason
 from boba.agent.records import PermissionMode, PermissionModeRecord
 from boba.agent.session import Session, SessionState
+from boba.agent.skills import Skill, SkillTool
 from boba.agent.template import AgentTemplate
-from boba.agent.tools import AgentTools, AskUserQuestionTool, ToolRunner, ToolTexts
+from boba.agent.tools import (
+    AgentTools,
+    AskUserQuestionTool,
+    OwnTool,
+    ToolRunner,
+    ToolsError,
+    ToolTexts,
+)
 from boba.agent.turn import TurnLoop
 from boba.agent.writer import HistoryWriter, RecordKeeper
 from boba.cancellation import RunCancellation, StopReason
@@ -75,6 +89,8 @@ class AgentParts:
         classifier: ChatModel | None = None,
         classifier_instruction: str = "",
         agent_name: str = DEFAULT_NAME,
+        skills: Sequence[Skill] = (),
+        environment: EnvironmentSnapshot | None = None,
         templates: AgentTemplate | None = None,
         ids: IdMint | None = None,
         clock: Clock | None = None,
@@ -93,6 +109,8 @@ class AgentParts:
         self.classifier = classifier
         self.classifier_instruction = classifier_instruction
         self.agent_name = agent_name
+        self.skills = list(skills)
+        self.environment = environment
         self.templates = templates
         self.ids = ids
         self.clock = clock
@@ -189,7 +207,8 @@ class Agent:
         session = Session(session_id)
         try:
             report = await self._restored(session, resume)
-            tools = AgentTools(parts.tools, [self._ask_tool()])
+            tools = AgentTools(parts.tools, self._own_tools())
+            self._check_tools_survived(session, tools, resume)
             tool_texts: list[str] = []
             for tool in tools.snapshot():
                 tool_texts.append(tool.text())
@@ -246,6 +265,8 @@ class Agent:
             writer,
             parts.system_prompt,
             tools.snapshot(),
+            self._skill_cards(),
+            parts.environment,
             parts.agent_name,
         )
 
@@ -266,15 +287,61 @@ class Agent:
 
         return session
 
-    def _ask_tool(self) -> AskUserQuestionTool:
+    def _own_tools(self) -> Sequence[OwnTool]:
+        """Собственные инструменты: вопрос пользователю всегда, Skill — при скиллах."""
         wiring = self._wiring
         texts = ToolTexts(
             wiring.templates,
             self._parts.limits.tool_result_max_chars,
             self._parts.agent_name,
         )
+        own: list[OwnTool] = [AskUserQuestionTool(wiring.templates, texts)]
+        if self._parts.skills:
+            own.append(SkillTool(self._parts.skills, wiring.templates))
 
-        return AskUserQuestionTool(wiring.templates, texts)
+        return own
+
+    def _skill_cards(self) -> Sequence[SnapshotSkill]:
+        cards: list[SnapshotSkill] = []
+        for skill in self._parts.skills:
+            cards.append(skill.card())
+
+        return cards
+
+    def _check_tools_survived(
+        self, session: Session, tools: AgentTools, resume: bool
+    ) -> None:
+        """Возобновление без единого инструмента сервера, когда история их
+        объявляла, — сервер недоступен, а не список опустел: ошибка старта.
+
+        Ошибки:
+        ToolsError — сервер инструментов не отдал ничего при возобновлении.
+        """
+        if not resume:
+            return
+
+        known = Announced(session.conversation()).tool_names()
+        if not known:
+            return
+
+        own: set[str] = set()
+        for tool in self._own_tools():
+            own.add(tool.name)
+
+        offered = frozenset(card.name for card in tools.snapshot()) - own
+        if offered:
+            return
+
+        if not (known - own):
+            return
+
+        msg = (
+            f"Cannot resume session '{session.id.value}': the history announced "
+            f"{len(known - own)} server tool(s), but the tool server offers none now. "
+            "The server is probably unreachable; the agent will not record the tools "
+            "as removed. Check the MCP server and start again."
+        )
+        raise ToolsError(msg)
 
     async def _restored(self, session: Session, resume: bool) -> LoadReport:
         """Ошибки:

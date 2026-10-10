@@ -23,7 +23,10 @@ from typing import ClassVar
 from boba.agent.attachments import (
     Announced,
     ContextAttachments,
+    EnvironmentSnapshot,
     PromptSnapshot,
+    SkillBudget,
+    SnapshotSkill,
     SnapshotTool,
 )
 from boba.agent.builder import RequestBuilder
@@ -159,6 +162,8 @@ class TurnLoop:
         writer: HistoryWriter,
         system_prompt: Sequence[str],
         snapshot_tools: Sequence[SnapshotTool],
+        skills: Sequence[SnapshotSkill],
+        environment: EnvironmentSnapshot | None,
         agent_name: str,
     ) -> None:
         self._keeper = keeper
@@ -178,6 +183,9 @@ class TurnLoop:
         self._writer = writer
         self._system_prompt = list(system_prompt)
         self._snapshot_tools = list(snapshot_tools)
+        self._skills = list(skills)
+        self._environment = environment
+        self._budget = SkillBudget(profile.context_window, profile.chars_per_token)
         self._agent = agent_name
         self._last_failure = ""
         self._failures = 0
@@ -189,7 +197,7 @@ class TurnLoop:
 
         await self._write_prompt(taken)
         await self._absorb()
-        await self._announce_model()
+        await self._announce_input()
 
         while True:
             progress.steps += 1
@@ -395,13 +403,77 @@ class TurnLoop:
             output_tokens=total.output_tokens + usage.output_tokens,
         )
 
-    async def _announce_model(self) -> None:
+    async def _announce_input(self) -> None:
+        """Вложения точки «ввод» (раздел 5.17): окружение, модель, разница
+        инструментов, список скиллов — каждое, только если есть что сообщить."""
         announced = Announced(self._session.conversation())
-        if announced.model_id() == self._profile.model_id:
+        if self._environment is not None:
+            record = self._attachments.environment(
+                self._session, self._environment, announced.environment()
+            )
+            if record is not None:
+                await self._keeper.added(record)
+
+        if announced.model_id() != self._profile.model_id:
+            record = self._attachments.model(self._session, self._profile)
+            await self._keeper.added(record)
+
+        await self._announce_tools(announced)
+        await self._announce_skills(announced)
+
+    async def _announce_tools(self, announced: Announced) -> None:
+        """Список инструментов изменился относительно объявленного: разница
+        вложением и новый снимок; без снимка в разговоре объявляет сам снимок."""
+        known = announced.tool_names()
+        if known is None:
             return
 
-        record = self._attachments.model(self._session, self._profile)
+        current: dict[str, SnapshotTool] = {}
+        for tool in self._snapshot_tools:
+            current[tool.name] = tool
+
+        added: list[SnapshotTool] = []
+        for name, tool in current.items():
+            if name not in known:
+                added.append(tool)
+
+        removed: list[str] = []
+        for name in sorted(known):
+            if name not in current:
+                removed.append(name)
+
+        if not added and not removed:
+            return
+
+        record = self._attachments.tools_delta(self._session, added, removed)
         await self._keeper.added(record)
+        await self._keeper.added(
+            self._attachments.snapshot(self._session, self._fresh_snapshot())
+        )
+
+    async def _announce_skills(self, announced: Announced) -> None:
+        known = announced.skill_names()
+        fresh: list[SnapshotSkill] = []
+        for skill in self._skills:
+            if skill.name not in known:
+                fresh.append(skill)
+
+        if not fresh:
+            return
+
+        record = self._attachments.skill_listing(
+            self._session, fresh, self._budget, not known
+        )
+        await self._keeper.added(record)
+
+    def _fresh_snapshot(self) -> PromptSnapshot:
+        return PromptSnapshot(
+            system_prompt=self._system_prompt,
+            tools=self._snapshot_tools,
+            skills=self._skills,
+            model=self._profile.model_id,
+            system_turns=self._profile.system_turns,
+        )
 
     async def _announce_context(self) -> PromptSnapshot:
         """Дата, если сменилась; снимок, если его нет в доступной истории."""
@@ -414,12 +486,7 @@ class TurnLoop:
 
         snapshot = announced.snapshot()
         if snapshot is None:
-            snapshot = PromptSnapshot(
-                system_prompt=self._system_prompt,
-                tools=self._snapshot_tools,
-                model=self._profile.model_id,
-                system_turns=self._profile.system_turns,
-            )
+            snapshot = self._fresh_snapshot()
             record = self._attachments.snapshot(self._session, snapshot)
             await self._keeper.added(record)
             return snapshot

@@ -4,8 +4,9 @@
 формы `ChatTurn` (план, раздел 5.12): отбор записей, склейка ответа по
 `message.id`, перестановка вложений перед текстом пользователя, слияние
 соседних сообщений пользователя, два режима подачи системных вложений,
-починка пар вызов — результат, чистка и экранирование подделки служебного
-блока. Инструменты — из снимка, по имени.
+починка пар вызов — результат, чистка и защита от подделки служебного
+блока (TagShield у текстов пользователя и результатов).
+Инструменты — из снимка, по имени.
 """
 
 from __future__ import annotations
@@ -27,6 +28,7 @@ from boba.agent.records import (
     ToolUseBlock,
     UserRecord,
 )
+from boba.agent.tags import AgentTag, TagShield
 from boba.agent.template import AgentTemplate, AgentTemplateFile
 from boba.llm.chat import ChatRequest, ChatRole, ChatTurn, ToolCall, ToolSpec
 
@@ -133,16 +135,11 @@ class RequestBuilder:
 
     SECTION_JOIN: ClassVar[str] = "\n\n"
     TEXT_JOIN: ClassVar[str] = "\n"
-    FORGED_PREFIX: ClassVar[str] = "<system-reminder"
-    ESCAPED_PREFIX: ClassVar[str] = "&lt;system-reminder"
-    REMINDER_OPEN: ClassVar[str] = "<system-reminder>\n"
-    REMINDER_CLOSE: ClassVar[str] = "\n</system-reminder>"
-    ERROR_OPEN: ClassVar[str] = "<tool_use_error>"
-    ERROR_CLOSE: ClassVar[str] = "</tool_use_error>"
 
     def __init__(self, profile: ModelProfile, templates: AgentTemplate) -> None:
         self._profile = profile
         self._templates = templates
+        self._shield = TagShield([AgentTag.SYSTEM_REMINDER, AgentTag.TOOL_USE_ERROR])
 
     def build(
         self, conversation: Sequence[ChainRecord], snapshot: PromptSnapshot
@@ -241,7 +238,7 @@ class RequestBuilder:
             if content == "":
                 return
 
-            feed.last_user().texts.append(self._escaped(content))
+            feed.last_user().texts.append(self._shield.shield(content))
             return
 
         if not content:
@@ -253,7 +250,7 @@ class RequestBuilder:
                 turn.results.append(block)
                 continue
 
-            turn.texts.append(self._escaped(block.text))
+            turn.texts.append(self._shield.shield(block.text))
 
     def _take_attachment(self, record: AttachmentRecord, feed: Feed) -> None:
         rendered = record.rendered
@@ -262,7 +259,7 @@ class RequestBuilder:
 
         texts: list[str] = []
         for message in rendered:
-            texts.append(self._escaped(message.content))
+            texts.append(message.content)
 
         if record.rendered_role is AttachmentRole.USER:
             # вложение с ролью user — слова пользователя, не напоминание
@@ -271,7 +268,7 @@ class RequestBuilder:
 
         if self._profile.system_turns:
             for text in texts:
-                feed.pending_system.append(self._unwrapped(text))
+                feed.pending_system.append(AgentTag.SYSTEM_REMINDER.unwrap_block(text))
 
             return
 
@@ -470,26 +467,9 @@ class RequestBuilder:
             yield ChatTurn(role=ChatRole.USER, content=self.TEXT_JOIN.join(texts))
 
     def _result_text(self, result: ToolResultBlock) -> str:
-        text = self._escaped(result.text())
+        text = self._shield.shield(result.text())
         if result.is_error:
-            return f"{self.ERROR_OPEN}{text}{self.ERROR_CLOSE}"
-
-        return text
-
-    def _escaped(self, text: str) -> str:
-        """Подделка служебного блока: `<system-reminder` с пробелом после — `&lt;`."""
-        if not text.startswith(self.FORGED_PREFIX):
-            return text
-
-        tail = text[len(self.FORGED_PREFIX) :]
-        if tail and tail[0].isspace():
-            return self.ESCAPED_PREFIX + tail
-
-        return text
-
-    def _unwrapped(self, text: str) -> str:
-        if text.startswith(self.REMINDER_OPEN) and text.endswith(self.REMINDER_CLOSE):
-            return text[len(self.REMINDER_OPEN) : -len(self.REMINDER_CLOSE)]
+            return AgentTag.TOOL_USE_ERROR.wrap(text)
 
         return text
 

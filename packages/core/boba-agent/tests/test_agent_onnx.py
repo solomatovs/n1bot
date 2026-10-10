@@ -67,7 +67,9 @@ def agent_stand(raw_config: DictConfig) -> AgentStand:
     return bind(raw_config, path="agent_stand", model=AgentStand)
 
 
-def profile(stand: AgentStand, max_tokens: int) -> ModelProfile:
+def profile(
+    stand: AgentStand, max_tokens: int, system_turns: bool = False
+) -> ModelProfile:
     provider = OnnxProvider(kind="onnx", model_dir=str(stand.model_dir))
 
     return ModelProfile(
@@ -76,11 +78,18 @@ def profile(stand: AgentStand, max_tokens: int) -> ModelProfile:
         ),
         context_window=8000,
         max_output_tokens=max_tokens,
+        system_turns=system_turns,
     )
 
 
-def agent(stand: AgentStand, root: Path, max_tokens: int, sink: Collected) -> Agent:
-    model_profile = profile(stand, max_tokens)
+def agent(
+    stand: AgentStand,
+    root: Path,
+    max_tokens: int,
+    sink: Collected,
+    system_turns: bool = False,
+) -> Agent:
+    model_profile = profile(stand, max_tokens, system_turns)
     providers = LlmProviders(LlmProviderTypes.installed())
     parts = AgentParts(
         profile=model_profile,
@@ -101,11 +110,14 @@ def prompt(text: str) -> QueueEntry:
 
 
 class TestLocalModel:
+    @pytest.mark.parametrize("system_turns", [False, True])
     async def test_two_turns_keep_the_invariants(
-        self, agent_stand: AgentStand, tmp_path: Path
+        self, agent_stand: AgentStand, tmp_path: Path, system_turns: bool
     ) -> None:
         sink = Collected()
-        served = Served(agent(agent_stand, tmp_path / "history", 256, sink))
+        served = Served(
+            agent(agent_stand, tmp_path / "history", 256, sink, system_turns)
+        )
         session = await served.open(SESSION, resume=False)
 
         served.agent.queue.enqueue(prompt("Say hello in one word."))
