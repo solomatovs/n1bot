@@ -163,7 +163,7 @@ class TestStandardServerOverStdio:
         self, stdio: McpToolServer
     ) -> None:
         names = sorted(tool.name for tool in stdio.tools())
-        if names != ["std_add", "std_broken", "std_picture", "std_shout"]:
+        if names != TestFailureStand.STANDARD_TOOLS:
             raise AssertionError(f"the server's tools under the prefix: {names}")
 
         add = next(tool for tool in stdio.tools() if tool.name == "std_add")
@@ -423,7 +423,9 @@ class TestServersOfASession:
         finally:
             await servers.stop()
 
-        if names != ["add", "broken", "picture", "shout"]:
+        offered = TestFailureStand.STANDARD_TOOLS
+        expected = [name.removeprefix("std_") for name in offered]
+        if names != expected:
             raise AssertionError(f"only the live server gives tools: {names}")
 
     async def test_session_without_named_servers_gets_nothing(self) -> None:
@@ -1516,3 +1518,88 @@ class TestBobaMcpService:
         missed = apart.artifact
         if not isinstance(missed, ShellResult) or missed.stdout.strip() == "kept":
             raise AssertionError(f"another scope does not see the file: {apart}")
+
+
+class TestFailureStand:
+    """Стенд воспроизводит отказы сервера, нужные тестам агента: задержка
+    дольше таймаута вызова, большой результат, обрыв посреди вызова, смена
+    списка инструментов."""
+
+    STANDARD_TOOLS: ClassVar[list[str]] = [
+        "std_add",
+        "std_broken",
+        "std_die",
+        "std_large",
+        "std_picture",
+        "std_shout",
+        "std_sleep_for",
+        "std_toggle_extra",
+    ]
+
+    async def _open(self, call_timeout_sec: float) -> McpToolServer:
+        endpoint = StdioCommand(command=sys.executable, args=(str(SERVER), "stdio"))
+        config = McpServerConfig(
+            endpoint=endpoint,
+            prefix="std_",
+            connect_timeout_sec=20.0,
+            call_timeout_sec=call_timeout_sec,
+        )
+        server = McpToolServer(
+            "standard",
+            config,
+            NamedBlocks(),
+            DroppedSignals(),
+            CallContexts(),
+            None,
+            DirectCalls(),
+        )
+        await server.open()
+
+        return server
+
+    async def test_large_result_arrives_whole(self, stdio: McpToolServer) -> None:
+        message = await stdio.call(_call("std_large", size=200_000))
+
+        assert not message.errored, message
+        assert len(str(message.content)) == 200_000
+
+    async def test_delay_beyond_the_call_timeout_is_a_transport_failure(
+        self,
+    ) -> None:
+        server = await self._open(call_timeout_sec=1.0)
+        try:
+            message = await server.call(_call("std_sleep_for", seconds=5.0))
+        finally:
+            await server.close()
+
+        assert message.errored, message
+        failure = message.artifact
+        assert isinstance(failure, ErrorResult), failure
+        assert failure.error_kind == McpFailure.TRANSPORT, failure
+
+    async def test_server_dying_mid_call_is_a_transport_failure(self) -> None:
+        server = await self._open(call_timeout_sec=10.0)
+        try:
+            message = await server.call(_call("std_die"))
+        finally:
+            await server.close()
+
+        assert message.errored, message
+        failure = message.artifact
+        assert isinstance(failure, ErrorResult), failure
+        assert failure.error_kind == McpFailure.TRANSPORT, failure
+
+    async def test_tool_list_changes_on_the_server(self, stdio: McpToolServer) -> None:
+        """Список читается при открытии: сервер меняет его, уведомление
+        клиент пока не слушает — это работа этапа 3 плана агента."""
+        before = sorted(tool.name for tool in stdio.tools())
+        toggled = await stdio.call(_call("std_toggle_extra"))
+
+        assert before == self.STANDARD_TOOLS
+        assert not toggled.errored, toggled
+        assert toggled.content == "extra on: True"
+        assert sorted(tool.name for tool in stdio.tools()) == before
+
+        answered = await stdio.call(_call("std_extra"))
+
+        assert answered.errored, answered

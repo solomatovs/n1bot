@@ -1,0 +1,1 @@
+You are powered by the model named {marketing_name}. The exact model ID is {model_id}.

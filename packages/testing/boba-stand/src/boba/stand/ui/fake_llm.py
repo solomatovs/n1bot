@@ -1,10 +1,13 @@
-"""Фейковый OpenAI-совместимый провайдер: отдаёт SSE по токену с задержкой.
+"""Фейковый провайдер модели: OpenAI-совместимый `/v1/chat/completions` и
+нативный `/api/chat` ollama, с задержкой по токену и сценариями отказов.
 
-Нужен интеграционным тестам ленты: сценарий выбирается по тексту последнего
-сообщения пользователя, поэтому тест диктует, какие шаги нарисует ход, и знает
-тайминг каждого токена.
+Нужен интеграционным тестам ленты и агента: сценарий выбирается по тексту
+последнего сообщения пользователя, поэтому тест диктует, какие шаги нарисует
+ход, знает тайминг каждого токена и может заказать отказ сервера: обрыв
+потока, статус, зависание, обрыв по длине, битые вызовы, ответ без учёта.
 
-Ошибки: ScenarioError — в запросе нет сценария с таким именем.
+Ошибки: ScenarioError — в запросе нет сценария с таким именем или сценарий
+собран неверно.
 """
 
 from __future__ import annotations
@@ -12,19 +15,21 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
-from collections.abc import AsyncIterator, Iterator, Mapping, Sequence, Set
+from collections.abc import AsyncIterator, Callable, Iterator, Mapping, Sequence, Set
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import Any, ClassVar
+from typing import Any, ClassVar, TypeAlias
 
 import uvicorn
 from fastapi import FastAPI, Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
 
 __all__ = [
+    "FailureName",
     "FakeLlmApp",
     "FakePage",
     "FakeRoute",
+    "Played",
     "Scenario",
     "ScenarioError",
     "ScenarioName",
@@ -34,11 +39,11 @@ __all__ = [
 
 
 class ScenarioError(Exception):
-    """Запрошен сценарий, которого нет."""
+    """Запрошен сценарий, которого нет, либо сценарий собран неверно."""
 
 
 class FakeRoute(StrEnum):
-    """Маршруты фейкового сервера: провайдер модели и страницы для web-тулов."""
+    """Маршруты фейкового сервера: провайдеры модели и страницы для web-тулов."""
 
     HEALTH = "/health"
     PAGE = "/page"
@@ -46,6 +51,7 @@ class FakeRoute(StrEnum):
     RESET = "/reset"
     REQUESTS = "/requests"
     COMPLETIONS = "/v1/chat/completions"
+    OLLAMA_CHAT = "/api/chat"
 
 
 class FakePage(StrEnum):
@@ -85,8 +91,8 @@ class ScenarioName(StrEnum):
     """Длинный ход для замеров: рассуждения, вызов инструмента и много токенов."""
 
     @classmethod
-    def of(cls, text: str) -> ScenarioName:
-        """Ищет маркер сценария в сообщении пользователя.
+    def find(cls, text: str) -> ScenarioName | None:
+        """Маркер сценария в сообщении; None — маркера нет.
 
         Маркеры вложены друг в друга ('scenario:tool' — префикс
         'scenario:tool-error'), поэтому побеждает самый длинный.
@@ -96,11 +102,106 @@ class ScenarioName(StrEnum):
             if name.value in text:
                 return name
 
-        markers = [name.value for name in ordered]
+        return None
+
+    @classmethod
+    def of(cls, text: str) -> ScenarioName:
+        """Маркер сценария в сообщении; без маркера — ошибка."""
+        found = cls.find(text)
+        if found is not None:
+            return found
+
+        markers = [name.value for name in cls]
         msg = (
             f"fake llm: none of the scenario markers {markers} in message {text[:80]!r}"
         )
         raise ScenarioError(msg)
+
+
+class FailureName(StrEnum):
+    """Отказы сервера, которые стенд разыгрывает поверх сценария.
+
+    Маркер отказа стоит в том же сообщении пользователя, что и маркер
+    сценария; без сценария отказ накладывается на `scenario:answer`.
+    """
+
+    CUT = "failure:cut"
+    """Поток обрывается посреди текста: без финального чанка и без [DONE];
+    ответ без потока приходит половиной тела."""
+
+    STATUS_500 = "failure:status-500"
+    STATUS_429 = "failure:status-429"
+    OVERFLOW = "failure:overflow"
+    """400 с текстом о переполнении окна контекста."""
+
+    HANG = "failure:hang"
+    """Сервер молчит hang_sec секунд, затем отвечает по сценарию."""
+
+    LENGTH = "failure:length"
+    """Текст приходит целиком, но finish_reason/done_reason = length."""
+
+    LENGTH_ARGUMENTS = "failure:length-arguments"
+    """Вызов инструмента оборван посреди JSON аргументов, причина — length."""
+
+    BROKEN_ARGUMENTS = "failure:broken-arguments"
+    """Аргументы вызова — не JSON, причина — tool_calls."""
+
+    UNKNOWN_TOOL = "failure:unknown-tool"
+    EMPTY_ID = "failure:empty-id"
+    DUPLICATE_ID = "failure:duplicate-id"
+    NO_USAGE = "failure:no-usage"
+    EMPTY = "failure:empty"
+    """Ответ без текста, без рассуждений и без вызовов."""
+
+    THINK_TAGS = "failure:think-tags"
+    """Рассуждения внутри текста тегами <think>, отдельного поля нет."""
+
+    @classmethod
+    def find(cls, text: str) -> FailureName | None:
+        """Маркер отказа в сообщении; None — отказа не заказано. Длинный
+        маркер побеждает: 'failure:length' — префикс 'failure:length-arguments'."""
+        ordered = sorted(cls, key=lambda name: len(name.value), reverse=True)
+        for name in ordered:
+            if name.value in text:
+                return name
+
+        return None
+
+    @property
+    def answers_with_status(self) -> bool:
+        return self in (
+            FailureName.STATUS_500,
+            FailureName.STATUS_429,
+            FailureName.OVERFLOW,
+        )
+
+    @property
+    def http_status(self) -> int:
+        if self is FailureName.STATUS_500:
+            return 500
+
+        if self is FailureName.STATUS_429:
+            return 429
+
+        if self is FailureName.OVERFLOW:
+            return 400
+
+        msg = f"fake llm: failure {self.value} is not answered with a status"
+        raise ScenarioError(msg)
+
+    @property
+    def error_text(self) -> str:
+        if self is FailureName.OVERFLOW:
+            return (
+                "This model's maximum context length is 4096 tokens. However, your "
+                "messages resulted in 5000 tokens. Please reduce the length of the "
+                "messages."
+            )
+
+        if self is FailureName.STATUS_429:
+            return "fake llm: rate limit exceeded, retry later"
+
+        return "fake llm: internal server error"
 
 
 @dataclass
@@ -109,16 +210,21 @@ class ToolCallSpec:
 
     Подпись вызова intent обязательна у каждого инструмента приложения, и
     настоящая модель её заполняет; фейк ведёт себя так же — дописывает
-    подпись, если сценарий её не задал.
+    подпись, если сценарий её не задал. Вызов с literal=True уходит на
+    провод как есть: так стенд отдаёт битые и оборванные аргументы.
     """
 
     call_id: str
     name: str
     arguments: str
+    literal: bool = False
 
     INTENT_FIELD: ClassVar[str] = "intent"
 
     def __post_init__(self) -> None:
+        if self.literal:
+            return
+
         parsed = json.loads(self.arguments)
         if not isinstance(parsed, dict):
             got = type(parsed).__name__
@@ -132,6 +238,19 @@ class ToolCallSpec:
             parsed[self.INTENT_FIELD] = f"stand call of {self.name}"
 
         self.arguments = json.dumps(parsed, ensure_ascii=False)
+
+    def arguments_wire(self) -> Any:
+        """Аргументы для нативного формата ollama: объект, если они JSON-объект,
+        иначе строка как есть — пусть клиент сам споткнётся о неё."""
+        if self.literal:
+            try:
+                parsed = json.loads(self.arguments)
+            except json.JSONDecodeError:
+                return self.arguments
+
+            return parsed
+
+        return json.loads(self.arguments)
 
 
 @dataclass
@@ -147,6 +266,33 @@ class TurnScript:
             return "tool_calls"
 
         return "stop"
+
+
+class FinishReason(StrEnum):
+    """Причины конца ответа на проводе обоих протоколов."""
+
+    STOP = "stop"
+    TOOL_CALLS = "tool_calls"
+    LENGTH = "length"
+
+    def ollama(self) -> str:
+        """done_reason ollama: вызовы инструментов приходят с причиной stop."""
+        if self is FinishReason.TOOL_CALLS:
+            return FinishReason.STOP.value
+
+        return self.value
+
+
+@dataclass(frozen=True)
+class Played:
+    """Что уходит на провод: ответ сценария, причина конца и заказанный отказ."""
+
+    script: TurnScript
+    finish: FinishReason
+    failure: FailureName | None
+
+    def has(self, failure: FailureName) -> bool:
+        return self.failure is failure
 
 
 @dataclass
@@ -420,13 +566,358 @@ class ScenarioBook:
         )
 
 
+FailureBuilder: TypeAlias = Callable[[TurnScript, FailureName], Played]
+"""Сборка ответа с отказом содержания из ответа сценария."""
+
+
+class FailureBook:
+    """Накладывает заказанный отказ на ответ сценария.
+
+    Отказы содержания (битые вызовы, пустой ответ, теги) подменяют сам ответ;
+    отказы провода (обрыв, статус, зависание, без учёта) ответ не трогают — их
+    разыгрывает протокол.
+    """
+
+    TOOL: ClassVar[str] = "connection_list"
+    UNKNOWN_TOOL: ClassVar[str] = "no_such_tool"
+    DUPLICATE_ID: ClassVar[str] = "call_dup"
+    CUT_ARGUMENTS: ClassVar[str] = '{"query": "unfini'
+    BROKEN_ARGUMENTS: ClassVar[str] = "not json {"
+    THINK_CONTENT: ClassVar[str] = (
+        "<think>I reason inside the text</think>the answer after thinking"
+    )
+
+    def apply(self, script: TurnScript, failure: FailureName | None) -> Played:
+        if failure is None:
+            return Played(script, FinishReason(script.finish_reason()), None)
+
+        builder = self._content_failures().get(failure)
+        if builder is None:
+            return Played(script, FinishReason(script.finish_reason()), failure)
+
+        return builder(script, failure)
+
+    def _content_failures(self) -> dict[FailureName, FailureBuilder]:
+        return {
+            FailureName.LENGTH: self._length,
+            FailureName.LENGTH_ARGUMENTS: self._length_arguments,
+            FailureName.BROKEN_ARGUMENTS: self._broken_arguments,
+            FailureName.UNKNOWN_TOOL: self._unknown_tool,
+            FailureName.EMPTY_ID: self._empty_id,
+            FailureName.DUPLICATE_ID: self._duplicate_id,
+            FailureName.EMPTY: self._empty,
+            FailureName.THINK_TAGS: self._think_tags,
+        }
+
+    def _length(self, script: TurnScript, failure: FailureName) -> Played:
+        return Played(script, FinishReason.LENGTH, failure)
+
+    def _length_arguments(self, script: TurnScript, failure: FailureName) -> Played:
+        call = ToolCallSpec("call_cut", self.TOOL, self.CUT_ARGUMENTS, literal=True)
+        cut = TurnScript(reasoning="I will call a tool", tool_calls=[call])
+
+        return Played(cut, FinishReason.LENGTH, failure)
+
+    def _broken_arguments(self, script: TurnScript, failure: FailureName) -> Played:
+        call = ToolCallSpec(
+            "call_broken_args", self.TOOL, self.BROKEN_ARGUMENTS, literal=True
+        )
+
+        return Played(TurnScript(tool_calls=[call]), FinishReason.TOOL_CALLS, failure)
+
+    def _unknown_tool(self, script: TurnScript, failure: FailureName) -> Played:
+        call = ToolCallSpec("call_unknown", self.UNKNOWN_TOOL, "{}")
+
+        return Played(TurnScript(tool_calls=[call]), FinishReason.TOOL_CALLS, failure)
+
+    def _empty_id(self, script: TurnScript, failure: FailureName) -> Played:
+        call = ToolCallSpec("", self.TOOL, "{}")
+
+        return Played(TurnScript(tool_calls=[call]), FinishReason.TOOL_CALLS, failure)
+
+    def _duplicate_id(self, script: TurnScript, failure: FailureName) -> Played:
+        first = ToolCallSpec(self.DUPLICATE_ID, self.TOOL, "{}")
+        second = ToolCallSpec(self.DUPLICATE_ID, self.TOOL, '{"query": "second"}')
+        twice = TurnScript(tool_calls=[first, second])
+
+        return Played(twice, FinishReason.TOOL_CALLS, failure)
+
+    def _empty(self, script: TurnScript, failure: FailureName) -> Played:
+        return Played(TurnScript(), FinishReason.STOP, failure)
+
+    def _think_tags(self, script: TurnScript, failure: FailureName) -> Played:
+        tagged = TurnScript(content=self.THINK_CONTENT)
+
+        return Played(tagged, FinishReason.STOP, failure)
+
+
+class TokenSplit:
+    """Делит текст на токены-слова с ведущим пробелом, как их шлёт поток."""
+
+    def tokens(self, text: str) -> Iterator[str]:
+        if not text:
+            return
+
+        for index, word in enumerate(text.split(" ")):
+            if index:
+                yield f" {word}"
+                continue
+
+            yield word
+
+    def half(self, text: str) -> Iterator[str]:
+        """Первая половина токенов: столько уходит до обрыва потока."""
+        tokens = list(self.tokens(text))
+        keep = max(1, len(tokens) // 2)
+
+        yield from tokens[:keep]
+
+
+class OpenAiWire:
+    """Ответы протокола /v1/chat/completions: тело целиком и SSE-поток."""
+
+    MEDIA_STREAM: ClassVar[str] = "text/event-stream"
+    MEDIA_JSON: ClassVar[str] = "application/json"
+    PROMPT_TOKENS: ClassVar[int] = 11
+    COMPLETION_TOKENS: ClassVar[int] = 7
+
+    def __init__(self, model: str, token_delay_sec: float) -> None:
+        self._model = model
+        self._delay = token_delay_sec
+        self._split = TokenSplit()
+
+    def error(self, failure: FailureName) -> Response:
+        body = {
+            "error": {
+                "message": failure.error_text,
+                "type": "invalid_request_error",
+                "code": failure.value,
+            }
+        }
+
+        return JSONResponse(body, status_code=failure.http_status)
+
+    def completion(self, played: Played) -> Response:
+        """Ответ без стрима: текст, рассуждения и вызовы приходят разом."""
+        body = json.dumps(self._completion(played), ensure_ascii=False).encode()
+        if played.has(FailureName.CUT):
+            body = body[: len(body) // 2]
+
+        return Response(body, media_type=self.MEDIA_JSON)
+
+    def stream(self, played: Played) -> Response:
+        return StreamingResponse(self._stream(played), media_type=self.MEDIA_STREAM)
+
+    def _completion(self, played: Played) -> dict[str, Any]:
+        script = played.script
+        message: dict[str, Any] = {"role": "assistant", "content": script.content}
+        if script.reasoning:
+            message["reasoning"] = script.reasoning
+
+        calls: list[dict[str, Any]] = []
+        for index, call in enumerate(script.tool_calls):
+            calls.append(self._call(index, call))
+        if calls:
+            message["tool_calls"] = calls
+
+        body: dict[str, Any] = {
+            "id": "chatcmpl-fake",
+            "object": "chat.completion",
+            "created": 1,
+            "model": self._model,
+            "choices": [
+                {"index": 0, "message": message, "finish_reason": played.finish.value}
+            ],
+        }
+        if not played.has(FailureName.NO_USAGE):
+            body["usage"] = self._usage()
+
+        return body
+
+    async def _stream(self, played: Played) -> AsyncIterator[bytes]:
+        for chunk in self._chunks(played):
+            yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n".encode()
+            await asyncio.sleep(self._delay)
+
+        if played.has(FailureName.CUT):
+            return
+
+        yield b"data: [DONE]\n\n"
+
+    def _chunks(self, played: Played) -> Iterator[dict[str, Any]]:
+        script = played.script
+        for token in self._split.tokens(script.reasoning):
+            yield self._delta({"role": "assistant", "content": "", "reasoning": token})
+
+        if played.has(FailureName.CUT):
+            for token in self._split.half(script.content):
+                yield self._delta({"role": "assistant", "content": token})
+
+            return
+
+        for token in self._split.tokens(script.content):
+            yield self._delta({"role": "assistant", "content": token})
+
+        for index, call in enumerate(script.tool_calls):
+            delta = {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [self._call(index, call)],
+            }
+            yield self._delta(delta)
+
+        final = self._delta({"role": "assistant", "content": ""}, played.finish.value)
+        if not played.has(FailureName.NO_USAGE):
+            final["usage"] = self._usage()
+
+        yield final
+
+    def _call(self, index: int, call: ToolCallSpec) -> dict[str, Any]:
+        return {
+            "index": index,
+            "id": call.call_id,
+            "type": "function",
+            "function": {"name": call.name, "arguments": call.arguments},
+        }
+
+    def _usage(self) -> dict[str, int]:
+        return {
+            "prompt_tokens": self.PROMPT_TOKENS,
+            "completion_tokens": self.COMPLETION_TOKENS,
+            "total_tokens": self.PROMPT_TOKENS + self.COMPLETION_TOKENS,
+        }
+
+    def _delta(
+        self, delta: dict[str, Any], finish_reason: str | None = None
+    ) -> dict[str, Any]:
+        return {
+            "id": "chatcmpl-fake",
+            "object": "chat.completion.chunk",
+            "created": 1,
+            "model": self._model,
+            "choices": [
+                {"index": 0, "delta": delta, "finish_reason": finish_reason},
+            ],
+        }
+
+
+class OllamaWire:
+    """Ответы нативного протокола /api/chat: тело целиком и NDJSON-поток."""
+
+    MEDIA_STREAM: ClassVar[str] = "application/x-ndjson"
+    MEDIA_JSON: ClassVar[str] = "application/json"
+    CREATED_AT: ClassVar[str] = "2026-01-01T00:00:00Z"
+    PROMPT_EVAL: ClassVar[int] = 11
+    EVAL: ClassVar[int] = 7
+
+    def __init__(self, model: str, token_delay_sec: float) -> None:
+        self._model = model
+        self._delay = token_delay_sec
+        self._split = TokenSplit()
+
+    def error(self, failure: FailureName) -> Response:
+        return JSONResponse(
+            {"error": failure.error_text}, status_code=failure.http_status
+        )
+
+    def completion(self, played: Played) -> Response:
+        script = played.script
+        message = self._message(script.content, script.reasoning, script.tool_calls)
+        chunk = self._chunk(message, done=True)
+        chunk["done_reason"] = played.finish.ollama()
+        if not played.has(FailureName.NO_USAGE):
+            chunk.update(self._counts())
+
+        body = json.dumps(chunk, ensure_ascii=False).encode()
+        if played.has(FailureName.CUT):
+            body = body[: len(body) // 2]
+
+        return Response(body, media_type=self.MEDIA_JSON)
+
+    def stream(self, played: Played) -> Response:
+        return StreamingResponse(self._stream(played), media_type=self.MEDIA_STREAM)
+
+    async def _stream(self, played: Played) -> AsyncIterator[bytes]:
+        for chunk in self._chunks(played):
+            yield (json.dumps(chunk, ensure_ascii=False) + "\n").encode()
+            await asyncio.sleep(self._delay)
+
+    def _chunks(self, played: Played) -> Iterator[dict[str, Any]]:
+        script = played.script
+        for token in self._split.tokens(script.reasoning):
+            yield self._chunk(self._message("", token, ()), done=False)
+
+        if played.has(FailureName.CUT):
+            for token in self._split.half(script.content):
+                yield self._chunk(self._message(token, "", ()), done=False)
+
+            return
+
+        for token in self._split.tokens(script.content):
+            yield self._chunk(self._message(token, "", ()), done=False)
+
+        if script.tool_calls:
+            yield self._chunk(self._message("", "", script.tool_calls), done=False)
+
+        final = self._chunk(self._message("", "", ()), done=True)
+        final["done_reason"] = played.finish.ollama()
+        if not played.has(FailureName.NO_USAGE):
+            final.update(self._counts())
+
+        yield final
+
+    def _message(
+        self, content: str, thinking: str, calls: Sequence[ToolCallSpec]
+    ) -> dict[str, Any]:
+        message: dict[str, Any] = {"role": "assistant", "content": content}
+        if thinking:
+            message["thinking"] = thinking
+
+        wired: list[dict[str, Any]] = []
+        for call in calls:
+            wired.append(
+                {
+                    "id": call.call_id,
+                    "function": {
+                        "name": call.name,
+                        "arguments": call.arguments_wire(),
+                    },
+                }
+            )
+        if wired:
+            message["tool_calls"] = wired
+
+        return message
+
+    def _chunk(self, message: dict[str, Any], done: bool) -> dict[str, Any]:
+        return {
+            "model": self._model,
+            "created_at": self.CREATED_AT,
+            "message": message,
+            "done": done,
+        }
+
+    def _counts(self) -> dict[str, int]:
+        return {"prompt_eval_count": self.PROMPT_EVAL, "eval_count": self.EVAL}
+
+
 @dataclass
 class FakeLlmApp:
-    """ASGI-приложение провайдера: счётчик ходов на сценарий и журнал запросов."""
+    """ASGI-приложение провайдера: сценарии по маркеру, отказы по маркеру,
+    журнал принятых запросов обоих протоколов."""
 
     token_delay_sec: float = 0.02
     model: str = "fake-model"
+    hang_sec: float = 3600.0
     requests: list[dict[str, Any]] = field(default_factory=list)
+    _openai: OpenAiWire = field(init=False, repr=False)
+    _ollama: OllamaWire = field(init=False, repr=False)
+    _failures: FailureBook = field(init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        self._openai = OpenAiWire(self.model, self.token_delay_sec)
+        self._ollama = OllamaWire(self.model, self.token_delay_sec)
+        self._failures = FailureBook()
 
     def asgi(self) -> FastAPI:
         app = FastAPI()
@@ -458,21 +949,49 @@ class FakeLlmApp:
 
         @app.post(FakeRoute.COMPLETIONS.value)
         async def completions(request: Request) -> Response:
-            payload = await request.json()
-            self.requests.append(payload)
-            text = self._last_user_text(payload)
-            scenario = ScenarioBook.of(ScenarioName.of(text), text)
-            script = scenario.turn(scenario.answered(self._called_ids(payload)))
+            return await self._play(request, self._openai)
 
-            if not payload.get("stream"):
-                return JSONResponse(self._completion(script))
-
-            return StreamingResponse(
-                self._stream(script),
-                media_type="text/event-stream",
-            )
+        @app.post(FakeRoute.OLLAMA_CHAT.value)
+        async def ollama_chat(request: Request) -> Response:
+            return await self._play(request, self._ollama)
 
         return app
+
+    async def _play(self, request: Request, wire: OpenAiWire | OllamaWire) -> Response:
+        """Общий ход обоих протоколов: сценарий и отказ по последнему
+        сообщению пользователя, ответ — в формате протокола."""
+        payload = await request.json()
+        self.requests.append(payload)
+
+        text = self._last_user_text(payload)
+        failure = FailureName.find(text)
+        played = self._played(payload, text, failure)
+
+        if failure is not None and failure.answers_with_status:
+            return wire.error(failure)
+
+        if failure is FailureName.HANG:
+            await asyncio.sleep(self.hang_sec)
+
+        if not payload.get("stream"):
+            return wire.completion(played)
+
+        return wire.stream(played)
+
+    def _played(
+        self, payload: Mapping[str, Any], text: str, failure: FailureName | None
+    ) -> Played:
+        name = ScenarioName.find(text)
+        if name is None and failure is None:
+            name = ScenarioName.of(text)
+
+        if name is None:
+            name = ScenarioName.ANSWER
+
+        scenario = ScenarioBook.of(name, text)
+        script = scenario.turn(scenario.answered(self._called_ids(payload)))
+
+        return self._failures.apply(script, failure)
 
     @staticmethod
     def _called_ids(payload: Mapping[str, Any]) -> set[str]:
@@ -497,7 +1016,7 @@ class FakeLlmApp:
         return called
 
     @staticmethod
-    def _last_user_text(payload: dict[str, Any]) -> str:
+    def _last_user_text(payload: Mapping[str, Any]) -> str:
         messages = payload.get("messages")
         if not messages:
             keys = sorted(payload)
@@ -520,100 +1039,6 @@ class FakeLlmApp:
             f"fake llm request: no user message with string content among roles {roles}"
         )
         raise ScenarioError(msg)
-
-    def _completion(self, script: TurnScript) -> dict[str, Any]:
-        """Ответ без стрима: текст, рассуждения и вызовы приходят разом."""
-        message: dict[str, Any] = {"role": "assistant", "content": script.content}
-        if script.reasoning:
-            message["reasoning"] = script.reasoning
-
-        calls: list[dict[str, Any]] = []
-        for index, call in enumerate(script.tool_calls):
-            calls.append(
-                {
-                    "index": index,
-                    "id": call.call_id,
-                    "type": "function",
-                    "function": {"name": call.name, "arguments": call.arguments},
-                }
-            )
-        if calls:
-            message["tool_calls"] = calls
-
-        return {
-            "id": "chatcmpl-fake",
-            "object": "chat.completion",
-            "created": 1,
-            "model": self.model,
-            "choices": [
-                {
-                    "index": 0,
-                    "message": message,
-                    "finish_reason": script.finish_reason(),
-                }
-            ],
-            "usage": {
-                "prompt_tokens": 11,
-                "completion_tokens": 7,
-                "total_tokens": 18,
-            },
-        }
-
-    async def _stream(self, script: TurnScript) -> AsyncIterator[bytes]:
-        for chunk in self._chunks(script):
-            yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n".encode()
-            await asyncio.sleep(self.token_delay_sec)
-
-        yield b"data: [DONE]\n\n"
-
-    def _chunks(self, script: TurnScript) -> Iterator[dict[str, Any]]:
-        for token in self._tokens(script.reasoning):
-            yield self._delta({"role": "assistant", "content": "", "reasoning": token})
-
-        for token in self._tokens(script.content):
-            yield self._delta({"role": "assistant", "content": token})
-
-        for index, call in enumerate(script.tool_calls):
-            delta = {
-                "role": "assistant",
-                "content": "",
-                "tool_calls": [
-                    {
-                        "index": index,
-                        "id": call.call_id,
-                        "type": "function",
-                        "function": {"name": call.name, "arguments": call.arguments},
-                    }
-                ],
-            }
-            yield self._delta(delta)
-
-        yield self._delta({"role": "assistant", "content": ""}, script.finish_reason())
-
-    @staticmethod
-    def _tokens(text: str) -> Iterator[str]:
-        if not text:
-            return
-
-        for index, word in enumerate(text.split(" ")):
-            if index:
-                yield f" {word}"
-                continue
-
-            yield word
-
-    def _delta(
-        self, delta: dict[str, Any], finish_reason: str | None = None
-    ) -> dict[str, Any]:
-        return {
-            "id": "chatcmpl-fake",
-            "object": "chat.completion.chunk",
-            "created": 1,
-            "model": self.model,
-            "choices": [
-                {"index": 0, "delta": delta, "finish_reason": finish_reason},
-            ],
-        }
 
 
 def serve(host: str, port: int, token_delay_sec: float) -> None:

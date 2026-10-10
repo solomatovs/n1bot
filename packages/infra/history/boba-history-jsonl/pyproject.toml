@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "boba-history-jsonl"
+version = "0.0.26.dev4"
+description = "Boba history jsonl: порт истории агента над файлом JSONL — захват сессии, атомарная дозапись, чтение по порядку."
+requires-python = ">=3.11,<4"
+dependencies = [
+]
+
+[project.optional-dependencies]
+dev = [
+    "boba-stand==0.0.26.dev4",
+    "pytest>=9.1,<10",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["boba*"]
+namespaces = true
