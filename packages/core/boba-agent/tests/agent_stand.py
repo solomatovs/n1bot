@@ -151,7 +151,7 @@ class StandToolName(StrEnum):
     """Читает; спит `seconds`."""
 
     LARGE = "large"
-    """Читает; отдаёт `size` знаков."""
+    """Читает; отдаёт `size` знаков `fill` (по умолчанию x)."""
 
     BROKEN = "broken"
     """Читает; всегда ошибка тела."""
@@ -214,7 +214,8 @@ class StandTools(ToolServer):
 
         if name is StandToolName.LARGE:
             size = int(self._number(call, "size"))
-            return self._outcomes.of(call, MarkdownResult(text="x" * size), False)
+            fill = self._text(call, "fill", "x")
+            return self._outcomes.of(call, MarkdownResult(text=fill * size), False)
 
         if name is StandToolName.BROKEN:
             failure = ErrorResult(message="stand tool failed", error_kind="stand")
@@ -228,6 +229,15 @@ class StandTools(ToolServer):
             return self._outcomes.of(call, MarkdownResult(text=forged), False)
 
         return self._outcomes.of(call, MarkdownResult(text=f"{name.value} done"), False)
+
+    @staticmethod
+    def _text(call: DagNode, key: str, default: str) -> str:
+        value = call.args.get(key, default)
+        if isinstance(value, str):
+            return value
+
+        msg = f"stand tool {call.tool}: argument {key} must be a string, got {value!r}"
+        raise TypeError(msg)
 
     @staticmethod
     def _number(call: DagNode, key: str) -> float:
@@ -274,8 +284,17 @@ class RoutedServers(ToolServer):
 class FakeServer:
     """FakeLlmApp под uvicorn в текущем цикле событий."""
 
-    def __init__(self, token_delay_sec: float = 0.0, hang_sec: float = 3.0) -> None:
-        self.app = FakeLlmApp(token_delay_sec=token_delay_sec, hang_sec=hang_sec)
+    def __init__(
+        self,
+        token_delay_sec: float = 0.0,
+        hang_sec: float = 3.0,
+        estimate_usage: bool = False,
+    ) -> None:
+        self.app = FakeLlmApp(
+            token_delay_sec=token_delay_sec,
+            hang_sec=hang_sec,
+            estimate_usage=estimate_usage,
+        )
         self.port = free_port()
         self._server = uvicorn.Server(
             uvicorn.Config(
@@ -318,6 +337,7 @@ class StandAgents:
         system_turns: bool = False,
         reasoning: ReasoningReturn = ReasoningReturn.NEVER,
         token: str | None = None,
+        chars_per_token: int = 3,
     ) -> ModelProfile:
         auth: NoneAuth | BearerAuth = NoneAuth(method="none")
         if token is not None:
@@ -346,6 +366,7 @@ class StandAgents:
             chat=ChatModelConfig(provider=provider, model="fake-model"),
             context_window=8000,
             max_output_tokens=512,
+            chars_per_token=chars_per_token,
             system_turns=system_turns,
             reasoning_return=reasoning,
         )
@@ -366,14 +387,18 @@ class StandAgents:
         skills: Sequence[Skill] = (),
         environment: EnvironmentSnapshot | None = None,
         clock: Clock | None = None,
+        compaction: CompactionSettings | None = None,
     ) -> Agent:
         if limits is None:
             limits = TurnLimits(retry_delays_sec=(0.0, 0.0, 0.0))
 
+        if compaction is None:
+            compaction = CompactionSettings()
+
         parts = AgentParts(
             profile=profile,
             limits=limits,
-            compaction=CompactionSettings(),
+            compaction=compaction,
             system_prompt=system_prompt,
             store=JsonlHistoryStore(self._root),
             model=self.model(profile),

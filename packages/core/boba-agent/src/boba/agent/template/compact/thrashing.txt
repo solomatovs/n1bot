@@ -1,0 +1,1 @@
+Autocompact is thrashing: the context refilled past the compaction threshold within 3 steps of the previous compaction, 3 times in a row. The conversation cannot continue in this session; start a new one or reduce the size of the tool results.

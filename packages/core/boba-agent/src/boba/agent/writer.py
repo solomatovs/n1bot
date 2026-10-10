@@ -8,7 +8,7 @@
 
 RecordKeeper — единственная дверь, через которую ход и исполнитель
 инструментов добавляют записи: запись уходит в сессию, писатель просыпается,
-записи разговора показываются наружу событием.
+записи разговора и граница сжатия показываются наружу событием.
 
 Ошибки:
 HistoryError — поднимает только `flush(strict=True)` при завершении, когда
@@ -24,7 +24,12 @@ from typing import ClassVar, TypeVar
 
 from boba.agent.events import AgentEvent, EventSink, RecordEvent
 from boba.agent.history import HistoryError, HistoryStore, SessionLease
-from boba.agent.records import AssistantRecord, Record, UserRecord
+from boba.agent.records import (
+    AssistantRecord,
+    CompactBoundaryRecord,
+    Record,
+    UserRecord,
+)
 from boba.agent.session import Session
 
 logger = logging.getLogger(__name__)
@@ -169,7 +174,7 @@ class RecordKeeper:
     async def added(self, record: Record) -> None:
         """Запись, уже добавленная в сессию кем-то другим."""
         self._writer.notify()
-        if isinstance(record, UserRecord | AssistantRecord):
+        if isinstance(record, UserRecord | AssistantRecord | CompactBoundaryRecord):
             await self._sink.emit(RecordEvent(record=record))
 
     async def emit(self, event: AgentEvent) -> None:

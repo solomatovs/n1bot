@@ -1,11 +1,12 @@
 """Цикл хода: от взятого элемента очереди до ответа модели без вызовов.
 
 Порядок шага — docs/prompt_assembly/specs/03_request_pipeline.md, B.1, и
-план, раздел 5.13: подмешивание очереди, объявления контекста, запрос,
-записи ответа, исполнение вызовов с разрешениями (ToolRunner), записи
-результатов в порядке вызовов, повторы при ошибках модели, обрыв по
-пределу длины, предел шагов, отмена на обеих стадиях (раздел 5.14).
-Сжатие подключается следующим этапом.
+план, раздел 5.13: подмешивание очереди, объявления контекста, проверка
+заполненности со сжатием и предохранителями (раздел 5.16), запрос, записи
+ответа, исполнение вызовов с разрешениями (ToolRunner), записи результатов
+в порядке вызовов, повторы при ошибках модели, обрыв по пределу длины,
+сжатие по переполнению окна с одним повтором, предел шагов, отмена на всех
+стадиях (раздел 5.14).
 
 Ошибки:
 SessionError — нарушен порядок записей сессии (ошибка ядра).
@@ -16,10 +17,20 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import ClassVar
 
+from boba.agent.asking import (
+    Aborted,
+    Answered,
+    Asked,
+    Errored,
+    ModelAsk,
+    OutputLimited,
+    Overflowed,
+    Partial,
+)
 from boba.agent.attachments import (
     Announced,
     ContextAttachments,
@@ -30,14 +41,26 @@ from boba.agent.attachments import (
     SnapshotTool,
 )
 from boba.agent.builder import RequestBuilder
+from boba.agent.compaction import (
+    CompactGate,
+    Compactor,
+    CompactTracking,
+    ContextMeter,
+    Fill,
+    FillLevel,
+    GateDecision,
+    NotSummarized,
+    Summarizer,
+    SummaryAborted,
+    TokenEstimator,
+)
 from boba.agent.events import (
     EventSink,
     ResultEvent,
-    StreamEvent,
     TurnOutcome,
 )
 from boba.agent.ids import Clock, IdMint
-from boba.agent.profile import ModelProfile, TurnLimits
+from boba.agent.profile import CompactionSettings, ModelProfile, TurnLimits
 from boba.agent.queue import InputQueue, QueueKind, Taken
 from boba.agent.records import (
     ApiErrorRecord,
@@ -46,6 +69,7 @@ from boba.agent.records import (
     AssistantRecord,
     MessageOrigin,
     OriginKind,
+    Record,
     ReplyStopReason,
     Synthetic,
     TextBlock,
@@ -56,91 +80,50 @@ from boba.agent.records import (
     UserMessage,
     UserRecord,
 )
-from boba.agent.session import Session
+from boba.agent.session import Session, SessionState
 from boba.agent.template import AgentTemplate, AgentTemplateFile
 from boba.agent.tools import BatchOutcome, CallResult, PlannedCall, ToolRunner
 from boba.agent.writer import HistoryWriter, RecordKeeper
-from boba.cancellation import RunCancellation, StopReason, ToolStopped
-from boba.llm.chat import (
-    ChatDelta,
-    ChatModel,
-    ChatReply,
-    ChatRequest,
-    ChatUsage,
-    LlmContextOverflowError,
-    LlmError,
-    LlmOutputLimitError,
-)
+from boba.cancellation import RunCancellation, StopReason
+from boba.llm.chat import ChatModel, ChatReply, ChatRequest, ChatUsage
 
 logger = logging.getLogger(__name__)
 
 __all__ = ["TurnLoop"]
 
 
-@dataclass
-class Partial:
-    """Текст и рассуждения, пришедшие кусками до обрыва или конца потока."""
-
-    content: list[str] = field(default_factory=list)
-    reasoning: list[str] = field(default_factory=list)
-
-    def take(self, delta: ChatDelta) -> None:
-        if delta.content:
-            self.content.append(delta.content)
-
-        if delta.reasoning:
-            self.reasoning.append(delta.reasoning)
-
-    def is_empty(self) -> bool:
-        return not self.content and not self.reasoning
-
-    def as_reply(self) -> ChatReply:
-        return ChatReply(
-            content="".join(self.content), reasoning="".join(self.reasoning)
-        )
-
-
-@dataclass(frozen=True)
-class Answered:
-    reply: ChatReply
-
-
-@dataclass(frozen=True)
-class OutputLimited:
-    partial: Partial
-    error: str
-
-
-@dataclass(frozen=True)
-class Overflowed:
-    error: str
-
-
 @dataclass(frozen=True)
 class Failed:
+    """Повторы запроса исчерпаны."""
+
     error: str
 
 
+Settled = Asked | Failed
+
+
 @dataclass(frozen=True)
-class Aborted:
-    partial: Partial
-    reason: StopReason
+class Compacted:
+    """Сжатие состоялось: записи пачки уже в сессии."""
+
+    records: Sequence[Record]
 
 
-Asked = Answered | OutputLimited | Overflowed | Failed | Aborted
+CompactResult = Compacted | NotSummarized | SummaryAborted
 
 
 @dataclass
 class Progress:
-    """Счётчики хода: шаги, обрывы по длине, суммарный учёт."""
+    """Счётчики хода: шаги, обрывы по длине, суммарный учёт, предохранители сжатия."""
 
     steps: int = 0
     limit_hits: int = 0
     usage: Usage = field(default_factory=Usage)
+    tracking: CompactTracking = field(default_factory=CompactTracking)
 
 
 class TurnLoop:
-    """Ведёт ход: записи, запросы, повторы, исход."""
+    """Ведёт ход: записи, запросы, повторы, сжатие, исход."""
 
     MILLIS: ClassVar[int] = 1000
 
@@ -150,6 +133,7 @@ class TurnLoop:
         queue: InputQueue,
         profile: ModelProfile,
         limits: TurnLimits,
+        compaction: CompactionSettings,
         model: ChatModel,
         builder: RequestBuilder,
         attachments: ContextAttachments,
@@ -171,7 +155,6 @@ class TurnLoop:
         self._queue = queue
         self._profile = profile
         self._limits = limits
-        self._model = model
         self._builder = builder
         self._attachments = attachments
         self._tools = tools
@@ -187,6 +170,24 @@ class TurnLoop:
         self._environment = environment
         self._budget = SkillBudget(profile.context_window, profile.chars_per_token)
         self._agent = agent_name
+        self._asking = ModelAsk(model, sink)
+        estimator = TokenEstimator(profile)
+        self._gate = CompactGate(ContextMeter(estimator), compaction, profile)
+        self._summarizer = Summarizer(
+            self._asking, builder, templates, estimator, ids, clock, version
+        )
+        self._compactor = Compactor(
+            attachments,
+            estimator,
+            templates,
+            ids,
+            clock,
+            version,
+            profile,
+            environment,
+            self._skills,
+            self._budget,
+        )
         self._last_failure = ""
         self._failures = 0
 
@@ -222,18 +223,36 @@ class TurnLoop:
     async def _step(
         self, progress: Progress, cancellation: RunCancellation
     ) -> TurnOutcome | None:
-        """Один шаг хода: запрос и его разбор; None — ход продолжается."""
+        """Один шаг хода: заполненность, запрос и его разбор; None — ход
+        продолжается."""
         if progress.steps > self._limits.max_turns:
             record = self._attachments.max_turns(
-                self._session, self._limits.max_turns, progress.steps - 1
+                self._session.last_chain_uuid(),
+                self._limits.max_turns,
+                progress.steps - 1,
             )
-            await self._keeper.added(record)
+            await self._keeper.add(record)
             return TurnOutcome.MAX_TURNS
+
+        guarded = await self._guard_context(progress, cancellation)
+        if guarded is not None:
+            return guarded
 
         snapshot = await self._announce_context()
         request = self._builder.build(self._session.conversation(), snapshot)
         asked = await self._ask(request, cancellation)
+        if isinstance(asked, Overflowed):
+            recovered = await self._recover_overflow(asked, progress, cancellation)
+            if isinstance(recovered, TurnOutcome):
+                return recovered
 
+            asked = recovered
+
+        return await self._settle(asked, progress, cancellation)
+
+    async def _settle(
+        self, asked: Settled, progress: Progress, cancellation: RunCancellation
+    ) -> TurnOutcome | None:
         if isinstance(asked, Answered):
             return await self._answered(asked, progress, cancellation)
 
@@ -251,7 +270,147 @@ class TurnLoop:
             await self._write_api_failure(asked.error)
             return TurnOutcome.API_ERROR
 
+        if isinstance(asked, Errored):
+            msg = "An attempt-level model error reached the settlement. This is a bug."
+            raise RuntimeError(msg)
+
         return await self._write_abort(asked)
+
+    async def _guard_context(
+        self, progress: Progress, cancellation: RunCancellation
+    ) -> TurnOutcome | None:
+        """Заполненность перед запросом: сжатие, предохранители, блокирующий
+        предел (план, раздел 5.16); None — запрос можно отправлять."""
+        tracking = progress.tracking
+        snapshot = self._snapshot_in_use()
+        fill = self._gate.measure(self._session.conversation(), snapshot)
+        decision = self._gate.decide(fill, tracking)
+        if decision is GateDecision.RAPID_REFILL:
+            await self._write_api_failure(
+                self._templates.read(AgentTemplateFile.THRASHING)
+            )
+            return TurnOutcome.RAPID_REFILL_BREAKER
+
+        if decision is GateDecision.COMPACT:
+            compacted = await self._compact(fill, snapshot, cancellation)
+            if isinstance(compacted, SummaryAborted):
+                return self._abort_outcome(compacted.reason)
+
+            if isinstance(compacted, Compacted):
+                tracking.succeeded()
+                return None
+
+            tracking.failed(compacted.describe())
+
+        return await self._blocked(fill, tracking)
+
+    async def _blocked(
+        self, fill: Fill, tracking: CompactTracking
+    ) -> TurnOutcome | None:
+        """Блокирующий предел: записи и исход, если сжатие не помогло."""
+        if fill.level is not FillLevel.BLOCKED:
+            return None
+
+        if tracking.compacted:
+            return None
+
+        text = self._templates.read(AgentTemplateFile.PROMPT_TOO_LONG)
+        if tracking.last_failure:
+            text = self._templates.read(AgentTemplateFile.COMPACTION_FAILED).format(
+                detail=tracking.last_failure
+            )
+
+        await self._write_api_error(text, 0, 0)
+        await self._write_api_failure(text)
+        if tracking.breaker_open:
+            return TurnOutcome.COMPACT_FAILURE_BREAKER
+
+        return TurnOutcome.BLOCKING_LIMIT
+
+    async def _recover_overflow(
+        self, asked: Overflowed, progress: Progress, cancellation: RunCancellation
+    ) -> Settled | TurnOutcome:
+        """Запрос не поместился в окно: сжатие и один повтор запроса; без
+        сжатия исход решает обычный разбор переполнения."""
+        snapshot = self._snapshot_in_use()
+        fill = self._gate.measure(self._session.conversation(), snapshot)
+        compacted = await self._compact(fill, snapshot, cancellation)
+        if isinstance(compacted, SummaryAborted):
+            return self._abort_outcome(compacted.reason)
+
+        if isinstance(compacted, NotSummarized):
+            progress.tracking.failed(compacted.describe())
+            return asked
+
+        progress.tracking.succeeded()
+        snapshot = await self._announce_context()
+        request = self._builder.build(self._session.conversation(), snapshot)
+
+        return await self._ask(request, cancellation)
+
+    async def _compact(
+        self, fill: Fill, snapshot: PromptSnapshot, cancellation: RunCancellation
+    ) -> CompactResult:
+        """Пересказ и пачка записей; остановка во время пересказа записей не
+        оставляет."""
+        started = time.monotonic()
+        conversation = self._session.conversation()
+        self._session.enter(SessionState.COMPACTING)
+        try:
+            summarized = await self._summarizer.summarize(
+                self._session, conversation, snapshot, cancellation
+            )
+        finally:
+            self._session.enter(SessionState.TURN)
+
+        if isinstance(summarized, NotSummarized):
+            logger.warning("compaction failed: %s", summarized.describe())
+            return summarized
+
+        if isinstance(summarized, SummaryAborted):
+            return summarized
+
+        if cancellation.cancelled:
+            return SummaryAborted(self._stop_reason_of(cancellation))
+
+        duration = int((time.monotonic() - started) * self.MILLIS)
+        records = self._compactor.records(
+            self._session, summarized, fill.tokens, duration, self._attachments.today()
+        )
+        for record in records:
+            await self._keeper.added(record)
+
+        logger.info(
+            "compaction: %d record(s) summarized, %d kept, %d tokens before",
+            len(summarized.summarized),
+            len(summarized.kept),
+            fill.tokens,
+        )
+
+        return Compacted(records)
+
+    def _snapshot_in_use(self) -> PromptSnapshot:
+        """Снимок, по которому пойдёт запрос: из истории либо свежий."""
+        snapshot = Announced(self._session.conversation()).snapshot()
+        if snapshot is None:
+            return self._fresh_snapshot()
+
+        return snapshot
+
+    @staticmethod
+    def _stop_reason_of(cancellation: RunCancellation) -> StopReason:
+        reason = cancellation.reason
+        if reason is None:
+            return StopReason.USER_STOP
+
+        return reason
+
+    @staticmethod
+    def _abort_outcome(reason: StopReason) -> TurnOutcome:
+        if reason is StopReason.SHUTDOWN:
+            return TurnOutcome.SHUTDOWN
+
+        return TurnOutcome.ABORTED_STREAMING
 
     async def _answered(
         self, asked: Answered, progress: Progress, cancellation: RunCancellation
@@ -268,6 +427,7 @@ class TurnLoop:
             return await self._write_tool_abort(batch)
 
         await self._absorb()
+        progress.tracking.tools_ran()
 
         return None
 
@@ -284,8 +444,10 @@ class TurnLoop:
 
         return None
 
-    async def _ask(self, request: ChatRequest, cancellation: RunCancellation) -> Asked:
-        """Запрос с повторами: три попытки на `LlmError`, пауза между ними."""
+    async def _ask(
+        self, request: ChatRequest, cancellation: RunCancellation
+    ) -> Settled:
+        """Запрос с повторами: три попытки на ошибку порта, пауза между ними."""
         attempt = 0
         while True:
             asked = await self._attempt(request, cancellation)
@@ -302,88 +464,21 @@ class TurnLoop:
         self, request: ChatRequest, cancellation: RunCancellation
     ) -> Asked | None:
         """Одна попытка; None — ошибка, которую стоит повторить."""
-        partial = Partial()
-        try:
-            reply = await self._stream(request, partial, cancellation)
-        except (ToolStopped, asyncio.CancelledError) as exc:
-            return self._aborted(exc, partial, cancellation)
-        except LlmContextOverflowError as exc:
-            return Overflowed(str(exc))
-        except LlmOutputLimitError as exc:
-            return OutputLimited(partial, str(exc))
-        except LlmError as exc:
-            self._last_failure = str(exc)
+        asked = await self._asking.attempt(request, cancellation, show=True)
+        if isinstance(asked, Errored):
+            self._last_failure = asked.error
             self._failures += 1
             await self._write_api_error(
                 self._last_failure, self._failures, self._limits.api_retries
             )
             return None
 
-        if self._is_empty(reply):
+        if isinstance(asked, Answered) and self._is_empty(asked.reply):
             self._last_failure = "the model returned an empty reply"
             logger.warning("turn: the model replied with nothing to record, retrying")
             return None
 
-        return Answered(reply)
-
-    async def _stream(
-        self, request: ChatRequest, partial: Partial, cancellation: RunCancellation
-    ) -> ChatReply:
-        task = asyncio.current_task()
-        if task is None:
-            msg = "The turn loop was called outside an asyncio task. This is a bug."
-            raise RuntimeError(msg)
-
-        reply: ChatReply | None = None
-        with cancellation.abort_with(self._canceller(task)):
-            async for event in self._model.chat(request):
-                if isinstance(event, ChatReply):
-                    reply = event
-                    continue
-
-                partial.take(event)
-                await self._sink.emit(
-                    StreamEvent(content=event.content, reasoning=event.reasoning)
-                )
-
-        if reply is None:
-            msg = (
-                "The model stream ended without a final reply: the provider closed "
-                "the connection before the answer was complete."
-            )
-            raise LlmError(msg)
-
-        return reply
-
-    def _aborted(
-        self, exc: BaseException, partial: Partial, cancellation: RunCancellation
-    ) -> Aborted:
-        """Отмена хода; чужая отмена задачи идёт дальше."""
-        if isinstance(exc, asyncio.CancelledError):
-            if not cancellation.cancelled:
-                raise exc
-
-            self._uncancel()
-
-        return Aborted(partial, self._reason(cancellation))
-
-    def _canceller(self, task: asyncio.Task[object]) -> Callable[[], None]:
-        def cancel() -> None:
-            task.cancel()
-
-        return cancel
-
-    def _uncancel(self) -> None:
-        task = asyncio.current_task()
-        if task is not None:
-            task.uncancel()
-
-    def _reason(self, cancellation: RunCancellation) -> StopReason:
-        reason = cancellation.reason
-        if reason is None:
-            return StopReason.USER_STOP
-
-        return reason
+        return asked
 
     def _is_empty(self, reply: ChatReply) -> bool:
         if reply.tool_calls:
@@ -409,14 +504,18 @@ class TurnLoop:
         announced = Announced(self._session.conversation())
         if self._environment is not None:
             record = self._attachments.environment(
-                self._session, self._environment, announced.environment()
+                self._session.last_chain_uuid(),
+                self._environment,
+                announced.environment(),
             )
             if record is not None:
-                await self._keeper.added(record)
+                await self._keeper.add(record)
 
         if announced.model_id() != self._profile.model_id:
-            record = self._attachments.model(self._session, self._profile)
-            await self._keeper.added(record)
+            record = self._attachments.model(
+                self._session.last_chain_uuid(), self._profile
+            )
+            await self._keeper.add(record)
 
         await self._announce_tools(announced)
         await self._announce_skills(announced)
@@ -445,10 +544,14 @@ class TurnLoop:
         if not added and not removed:
             return
 
-        record = self._attachments.tools_delta(self._session, added, removed)
-        await self._keeper.added(record)
-        await self._keeper.added(
-            self._attachments.snapshot(self._session, self._fresh_snapshot())
+        record = self._attachments.tools_delta(
+            self._session.last_chain_uuid(), added, removed
+        )
+        await self._keeper.add(record)
+        await self._keeper.add(
+            self._attachments.snapshot(
+                self._session.last_chain_uuid(), self._fresh_snapshot()
+            )
         )
 
     async def _announce_skills(self, announced: Announced) -> None:
@@ -462,9 +565,9 @@ class TurnLoop:
             return
 
         record = self._attachments.skill_listing(
-            self._session, fresh, self._budget, not known
+            self._session.last_chain_uuid(), fresh, self._budget, not known
         )
-        await self._keeper.added(record)
+        await self._keeper.add(record)
 
     def _fresh_snapshot(self) -> PromptSnapshot:
         return PromptSnapshot(
@@ -481,14 +584,18 @@ class TurnLoop:
         today = self._attachments.today()
         known = announced.date()
         if known != today:
-            record = self._attachments.date(self._session, today, known is not None)
-            await self._keeper.added(record)
+            record = self._attachments.date(
+                self._session.last_chain_uuid(), today, known is not None
+            )
+            await self._keeper.add(record)
 
         snapshot = announced.snapshot()
         if snapshot is None:
             snapshot = self._fresh_snapshot()
-            record = self._attachments.snapshot(self._session, snapshot)
-            await self._keeper.added(record)
+            record = self._attachments.snapshot(
+                self._session.last_chain_uuid(), snapshot
+            )
+            await self._keeper.add(record)
             return snapshot
 
         if snapshot.system_prompt != self._system_prompt:
@@ -615,8 +722,11 @@ class TurnLoop:
         if not items:
             return
 
-        for record in self._attachments.queued(self._session, items, self._agent):
-            await self._keeper.added(record)
+        records = self._attachments.queued(
+            self._session.last_chain_uuid(), items, self._agent
+        )
+        for record in records:
+            await self._keeper.add(record)
 
     async def _write_partial(
         self, partial: Partial, stop_reason: ReplyStopReason, aborted: bool

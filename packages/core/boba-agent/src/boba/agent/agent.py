@@ -246,13 +246,14 @@ class Agent:
             parts.agent_name,
         )
         attachments = ContextAttachments(
-            wiring.templates, wiring.ids, wiring.clock, parts.version
+            wiring.templates, wiring.ids, wiring.clock, parts.version, session_id.value
         )
         self._turns = TurnLoop(
             keeper,
             self._queue,
             parts.profile,
             parts.limits,
+            parts.compaction,
             parts.model,
             RequestBuilder(parts.profile, wiring.templates),
             attachments,

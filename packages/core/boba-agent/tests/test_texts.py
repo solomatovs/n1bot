@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import pytest
 
-from boba.agent.tags import AgentTag, TagShield
+from boba.agent.tags import AgentTag, ReplyTag, TagShield
 from boba.agent.template import AgentTemplate, AgentTemplateFile
 
 
@@ -116,3 +116,30 @@ class TestAgentTags:
             "&lt;tool_use_error&gt;\n</system-reminder>"
         )
         assert AgentTag.SYSTEM_REMINDER.unwrap_block(wrapped) != inner
+
+
+class TestReplyTag:
+    """Блок пересказа извлекается тем же токенизатором, что ищет теги агента."""
+
+    def test_first_closed_block_is_extracted(self) -> None:
+        text = (
+            "<analysis>\nthinking about it\n</analysis>\n\n"
+            "<summary>\n1. Primary Request\n</summary>\ntrailing"
+        )
+
+        assert ReplyTag.SUMMARY.extract(text) == "\n1. Primary Request\n"
+
+    def test_case_and_attributes_do_not_matter(self) -> None:
+        assert ReplyTag.SUMMARY.extract("<Summary lang=en>text</SUMMARY>") == "text"
+
+    def test_unclosed_or_missing_block_is_none(self) -> None:
+        assert ReplyTag.SUMMARY.extract("<summary>never closed") is None
+        assert ReplyTag.SUMMARY.extract("no block here") is None
+        assert ReplyTag.SUMMARY.extract("</summary> closed first <summary>") is None
+
+    def test_summary_tag_survives_the_shield(self) -> None:
+        """`<summary>` — обычный элемент HTML в тексте пользователя: защита
+        его не трогает."""
+        text = "<details><summary>title</summary>body</details>"
+
+        assert TagShield(list(AgentTag)).shield(text) == text

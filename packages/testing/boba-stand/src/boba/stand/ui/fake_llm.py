@@ -5,6 +5,9 @@
 последнего сообщения пользователя, поэтому тест диктует, какие шаги нарисует
 ход, знает тайминг каждого токена и может заказать отказ сервера: обрыв
 потока, статус, зависание, обрыв по длине, битые вызовы, ответ без учёта.
+Запрос пересказа агента (сжатие истории) стенд узнаёт по инструкции в
+последнем сообщении и отвечает по маркеру `summary:*`; учёт токенов либо
+постоянный, либо считается по размеру запроса и ответа.
 
 Ошибки: ScenarioError — в запросе нет сценария с таким именем или сценарий
 собран неверно.
@@ -33,8 +36,10 @@ __all__ = [
     "Scenario",
     "ScenarioError",
     "ScenarioName",
+    "SummaryName",
     "ToolCallSpec",
     "TurnScript",
+    "UsageCounts",
 ]
 
 
@@ -208,6 +213,53 @@ class FailureName(StrEnum):
         return "fake llm: internal server error"
 
 
+class SummaryName(StrEnum):
+    """Как стенд отвечает на запрос пересказа агента.
+
+    Маркер лежит в любом сообщении пользователя запроса; побеждает ближайший
+    к концу. Без маркера — OK: пересказ с блоком <summary>, в котором
+    повторены строки с маркерами стенда, чтобы следующие запросы шли по тем же
+    сценариям.
+    """
+
+    OK = "summary:ok"
+    TOOL_CALL = "summary:tool-call"
+    """Вместо текста — вызов инструмента."""
+
+    NO_BLOCK = "summary:no-block"
+    """Текст без блока <summary>."""
+
+    EMPTY = "summary:empty"
+    LONG = "summary:long"
+    """Пересказ длиннее любого разумного отрезка разговора."""
+
+    LENGTH = "summary:length"
+    """Пересказ оборван по длине: finish_reason = length."""
+
+    OVERFLOW = "summary:overflow"
+    """400 с текстом о переполнении окна, пока маркер виден в запросе."""
+
+    HANG = "summary:hang"
+    """Сервер молчит hang_sec секунд, затем отвечает OK."""
+
+    @classmethod
+    def find(cls, text: str) -> SummaryName | None:
+        ordered = sorted(cls, key=lambda name: len(name.value), reverse=True)
+        for name in ordered:
+            if name.value in text:
+                return name
+
+        return None
+
+
+@dataclass(frozen=True)
+class UsageCounts:
+    """Учёт токенов ответа на проводе."""
+
+    prompt: int
+    completion: int
+
+
 @dataclass
 class ToolCallSpec:
     """Вызов инструмента, который провайдер попросит выполнить.
@@ -334,6 +386,132 @@ class Scenario:
             done += 1
 
         return done
+
+
+class SummaryBook:
+    """Ответы на запрос пересказа агента."""
+
+    INSTRUCTION_MARK: ClassVar[str] = (
+        "an <analysis> block followed by a <summary> block"
+    )
+    """Фраза инструкции пересказа, по которой стенд узнаёт запрос."""
+
+    LONG_CHARS: ClassVar[int] = 60_000
+    TOOL: ClassVar[str] = "lookup"
+
+    def is_summary_request(self, payload: Mapping[str, Any]) -> bool:
+        messages = payload.get("messages")
+        if not messages:
+            return False
+
+        for message in reversed(messages):
+            if message.get("role") != "user":
+                continue
+
+            content = message.get("content")
+            if not isinstance(content, str):
+                continue
+
+            return self.INSTRUCTION_MARK in content
+
+        return False
+
+    def name(self, payload: Mapping[str, Any]) -> SummaryName:
+        for text in reversed(self._user_texts(payload)):
+            found = SummaryName.find(text)
+            if found is not None:
+                return found
+
+        return SummaryName.OK
+
+    def played(self, payload: Mapping[str, Any], name: SummaryName) -> Played:
+        if name is SummaryName.TOOL_CALL:
+            call = ToolCallSpec("call_summary_tool", self.TOOL, "{}")
+            return Played(TurnScript(tool_calls=[call]), FinishReason.TOOL_CALLS, None)
+
+        if name is SummaryName.NO_BLOCK:
+            script = TurnScript(
+                content="<analysis>only analysis</analysis> and no summary block"
+            )
+            return Played(script, FinishReason.STOP, None)
+
+        if name is SummaryName.EMPTY:
+            return Played(TurnScript(), FinishReason.STOP, None)
+
+        if name is SummaryName.LONG:
+            script = TurnScript(content=f"<summary>{'x' * self.LONG_CHARS}</summary>")
+            return Played(script, FinishReason.STOP, None)
+
+        finish = FinishReason.STOP
+        if name is SummaryName.LENGTH:
+            finish = FinishReason.LENGTH
+
+        return Played(TurnScript(content=self._ok_text(payload)), finish, None)
+
+    def _ok_text(self, payload: Mapping[str, Any]) -> str:
+        lines: list[str] = []
+        for text in self._user_texts(payload):
+            for line in text.splitlines():
+                if ScenarioName.find(line) is None and FailureName.find(line) is None:
+                    if SummaryName.find(line) is None:
+                        continue
+
+                lines.append(f"    - {line.strip()}")
+
+        listed = "\n".join(lines)
+
+        return (
+            "<analysis>\nThe stand model read the conversation and lists what the "
+            "user asked for.\n</analysis>\n\n<summary>\n1. Primary Request and "
+            "Intent:\n   The user drove the stand through the scenario markers "
+            f"listed below.\n\n6. All user messages:\n{listed}\n</summary>"
+        )
+
+    @staticmethod
+    def _user_texts(payload: Mapping[str, Any]) -> list[str]:
+        texts: list[str] = []
+        messages = payload.get("messages")
+        if not messages:
+            return texts
+
+        for message in messages:
+            if message.get("role") != "user":
+                continue
+
+            content = message.get("content")
+            if isinstance(content, str):
+                texts.append(content)
+
+        return texts
+
+
+class UsageBook:
+    """Учёт токенов ответа: постоянные числа либо оценка по знакам запроса
+    и ответа, как у настоящего провайдера."""
+
+    PROMPT: ClassVar[int] = 11
+    COMPLETION: ClassVar[int] = 7
+    CHARS_PER_TOKEN: ClassVar[int] = 4
+
+    def __init__(self, estimate: bool) -> None:
+        self._estimate = estimate
+
+    def of(self, payload: Mapping[str, Any], script: TurnScript) -> UsageCounts:
+        if not self._estimate:
+            return UsageCounts(prompt=self.PROMPT, completion=self.COMPLETION)
+
+        prompt_chars = 0
+        for message in payload.get("messages") or []:
+            prompt_chars += len(json.dumps(message, ensure_ascii=False))
+
+        completion_chars = len(script.reasoning) + len(script.content)
+        for call in script.tool_calls:
+            completion_chars += len(call.name) + len(call.arguments)
+
+        return UsageCounts(
+            prompt=-(-prompt_chars // self.CHARS_PER_TOKEN),
+            completion=-(-completion_chars // self.CHARS_PER_TOKEN),
+        )
 
 
 class ScenarioBook:
@@ -715,8 +893,6 @@ class OpenAiWire:
 
     MEDIA_STREAM: ClassVar[str] = "text/event-stream"
     MEDIA_JSON: ClassVar[str] = "application/json"
-    PROMPT_TOKENS: ClassVar[int] = 11
-    COMPLETION_TOKENS: ClassVar[int] = 7
 
     def __init__(self, model: str, token_delay_sec: float) -> None:
         self._model = model
@@ -734,18 +910,20 @@ class OpenAiWire:
 
         return JSONResponse(body, status_code=failure.http_status)
 
-    def completion(self, played: Played) -> Response:
+    def completion(self, played: Played, usage: UsageCounts) -> Response:
         """Ответ без стрима: текст, рассуждения и вызовы приходят разом."""
-        body = json.dumps(self._completion(played), ensure_ascii=False).encode()
+        body = json.dumps(self._completion(played, usage), ensure_ascii=False).encode()
         if played.has(FailureName.CUT):
             body = body[: len(body) // 2]
 
         return Response(body, media_type=self.MEDIA_JSON)
 
-    def stream(self, played: Played) -> Response:
-        return StreamingResponse(self._stream(played), media_type=self.MEDIA_STREAM)
+    def stream(self, played: Played, usage: UsageCounts) -> Response:
+        return StreamingResponse(
+            self._stream(played, usage), media_type=self.MEDIA_STREAM
+        )
 
-    def _completion(self, played: Played) -> dict[str, Any]:
+    def _completion(self, played: Played, usage: UsageCounts) -> dict[str, Any]:
         script = played.script
         message: dict[str, Any] = {"role": "assistant", "content": script.content}
         if script.reasoning:
@@ -767,12 +945,12 @@ class OpenAiWire:
             ],
         }
         if not played.has(FailureName.NO_USAGE):
-            body["usage"] = self._usage()
+            body["usage"] = self._usage(usage)
 
         return body
 
-    async def _stream(self, played: Played) -> AsyncIterator[bytes]:
-        for chunk in self._chunks(played):
+    async def _stream(self, played: Played, usage: UsageCounts) -> AsyncIterator[bytes]:
+        for chunk in self._chunks(played, usage):
             yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n".encode()
             await asyncio.sleep(self._delay)
 
@@ -781,7 +959,7 @@ class OpenAiWire:
 
         yield b"data: [DONE]\n\n"
 
-    def _chunks(self, played: Played) -> Iterator[dict[str, Any]]:
+    def _chunks(self, played: Played, usage: UsageCounts) -> Iterator[dict[str, Any]]:
         script = played.script
         for token in self._split.tokens(script.reasoning):
             yield self._delta({"role": "assistant", "content": "", "reasoning": token})
@@ -805,7 +983,7 @@ class OpenAiWire:
 
         final = self._delta({"role": "assistant", "content": ""}, played.finish.value)
         if not played.has(FailureName.NO_USAGE):
-            final["usage"] = self._usage()
+            final["usage"] = self._usage(usage)
 
         yield final
 
@@ -817,11 +995,12 @@ class OpenAiWire:
             "function": {"name": call.name, "arguments": call.arguments},
         }
 
-    def _usage(self) -> dict[str, int]:
+    @staticmethod
+    def _usage(usage: UsageCounts) -> dict[str, int]:
         return {
-            "prompt_tokens": self.PROMPT_TOKENS,
-            "completion_tokens": self.COMPLETION_TOKENS,
-            "total_tokens": self.PROMPT_TOKENS + self.COMPLETION_TOKENS,
+            "prompt_tokens": usage.prompt,
+            "completion_tokens": usage.completion,
+            "total_tokens": usage.prompt + usage.completion,
         }
 
     def _delta(
@@ -844,8 +1023,6 @@ class OllamaWire:
     MEDIA_STREAM: ClassVar[str] = "application/x-ndjson"
     MEDIA_JSON: ClassVar[str] = "application/json"
     CREATED_AT: ClassVar[str] = "2026-01-01T00:00:00Z"
-    PROMPT_EVAL: ClassVar[int] = 11
-    EVAL: ClassVar[int] = 7
 
     def __init__(self, model: str, token_delay_sec: float) -> None:
         self._model = model
@@ -857,13 +1034,13 @@ class OllamaWire:
             {"error": failure.error_text}, status_code=failure.http_status
         )
 
-    def completion(self, played: Played) -> Response:
+    def completion(self, played: Played, usage: UsageCounts) -> Response:
         script = played.script
         message = self._message(script.content, script.reasoning, script.tool_calls)
         chunk = self._chunk(message, done=True)
         chunk["done_reason"] = played.finish.ollama()
         if not played.has(FailureName.NO_USAGE):
-            chunk.update(self._counts())
+            chunk.update(self._counts(usage))
 
         body = json.dumps(chunk, ensure_ascii=False).encode()
         if played.has(FailureName.CUT):
@@ -871,15 +1048,17 @@ class OllamaWire:
 
         return Response(body, media_type=self.MEDIA_JSON)
 
-    def stream(self, played: Played) -> Response:
-        return StreamingResponse(self._stream(played), media_type=self.MEDIA_STREAM)
+    def stream(self, played: Played, usage: UsageCounts) -> Response:
+        return StreamingResponse(
+            self._stream(played, usage), media_type=self.MEDIA_STREAM
+        )
 
-    async def _stream(self, played: Played) -> AsyncIterator[bytes]:
-        for chunk in self._chunks(played):
+    async def _stream(self, played: Played, usage: UsageCounts) -> AsyncIterator[bytes]:
+        for chunk in self._chunks(played, usage):
             yield (json.dumps(chunk, ensure_ascii=False) + "\n").encode()
             await asyncio.sleep(self._delay)
 
-    def _chunks(self, played: Played) -> Iterator[dict[str, Any]]:
+    def _chunks(self, played: Played, usage: UsageCounts) -> Iterator[dict[str, Any]]:
         script = played.script
         for token in self._split.tokens(script.reasoning):
             yield self._chunk(self._message("", token, ()), done=False)
@@ -899,7 +1078,7 @@ class OllamaWire:
         final = self._chunk(self._message("", "", ()), done=True)
         final["done_reason"] = played.finish.ollama()
         if not played.has(FailureName.NO_USAGE):
-            final.update(self._counts())
+            final.update(self._counts(usage))
 
         yield final
 
@@ -934,8 +1113,9 @@ class OllamaWire:
             "done": done,
         }
 
-    def _counts(self) -> dict[str, int]:
-        return {"prompt_eval_count": self.PROMPT_EVAL, "eval_count": self.EVAL}
+    @staticmethod
+    def _counts(usage: UsageCounts) -> dict[str, int]:
+        return {"prompt_eval_count": usage.prompt, "eval_count": usage.completion}
 
 
 @dataclass
@@ -946,15 +1126,22 @@ class FakeLlmApp:
     token_delay_sec: float = 0.02
     model: str = "fake-model"
     hang_sec: float = 3600.0
+    estimate_usage: bool = False
+    """Учёт токенов по знакам запроса и ответа вместо постоянных чисел."""
+
     requests: list[dict[str, Any]] = field(default_factory=list)
     _openai: OpenAiWire = field(init=False, repr=False)
     _ollama: OllamaWire = field(init=False, repr=False)
     _failures: FailureBook = field(init=False, repr=False)
+    _summaries: SummaryBook = field(init=False, repr=False)
+    _usage: UsageBook = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
         self._openai = OpenAiWire(self.model, self.token_delay_sec)
         self._ollama = OllamaWire(self.model, self.token_delay_sec)
         self._failures = FailureBook()
+        self._summaries = SummaryBook()
+        self._usage = UsageBook(self.estimate_usage)
 
     def asgi(self) -> FastAPI:
         app = FastAPI()
@@ -1000,6 +1187,9 @@ class FakeLlmApp:
         payload = await request.json()
         self.requests.append(payload)
 
+        if self._summaries.is_summary_request(payload):
+            return await self._play_summary(payload, wire)
+
         text = self._last_user_text(payload)
         failure = FailureName.find(text)
         played = self._played(payload, text, failure)
@@ -1010,10 +1200,29 @@ class FakeLlmApp:
         if failure is FailureName.HANG:
             await asyncio.sleep(self.hang_sec)
 
-        if not payload.get("stream"):
-            return wire.completion(played)
+        return self._answer(wire, payload, played)
 
-        return wire.stream(played)
+    async def _play_summary(
+        self, payload: Mapping[str, Any], wire: OpenAiWire | OllamaWire
+    ) -> Response:
+        """Запрос пересказа агента: ответ по маркеру `summary:*`."""
+        name = self._summaries.name(payload)
+        if name is SummaryName.OVERFLOW:
+            return wire.error(FailureName.OVERFLOW)
+
+        if name is SummaryName.HANG:
+            await asyncio.sleep(self.hang_sec)
+
+        return self._answer(wire, payload, self._summaries.played(payload, name))
+
+    def _answer(
+        self, wire: OpenAiWire | OllamaWire, payload: Mapping[str, Any], played: Played
+    ) -> Response:
+        usage = self._usage.of(payload, played.script)
+        if not payload.get("stream"):
+            return wire.completion(played, usage)
+
+        return wire.stream(played, usage)
 
     def _played(
         self, payload: Mapping[str, Any], text: str, failure: FailureName | None
