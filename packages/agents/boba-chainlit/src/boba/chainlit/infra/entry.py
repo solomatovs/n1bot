@@ -7,7 +7,7 @@ ValueError — в конфиге нет секции [chainlit] либо пус�
 import argparse
 import os
 import pathlib
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import contextmanager
 from enum import StrEnum
 from pathlib import Path
@@ -57,7 +57,7 @@ class ChainlitFiles:
         chainlit.config.FILES_DIRECTORY = self._files_dir
 
     @contextmanager
-    def _without_root_files(self) -> Iterator[None]:
+    def _without_root_files(self) -> Generator[None, None, None]:
         """На время импорта Path.mkdir пропускает <APP_ROOT>/.files, прочее создаёт."""
         skipped = self._inside_root
         mkdir = pathlib.Path.mkdir
