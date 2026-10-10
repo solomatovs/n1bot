@@ -95,7 +95,7 @@ reaction_on_message_received = false
 
 [UI]
 # Name of the assistant.
-name = "Помощник BOBA"
+name = "Aссистент BOBA"
 
 default_theme = "light"
 
