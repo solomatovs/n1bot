@@ -102,6 +102,9 @@ class QueueEntry(BaseModel):
     source: QueueSource = QueueSource.HUMAN
     is_meta: bool = False
     unrecorded: bool = False
+    id: str | None = None
+    """Идентификатор от отправителя: по нему он отзывает элемент; без него
+    идентификатор чеканит очередь."""
 
 
 class QueueItem(BaseModel):
@@ -190,8 +193,12 @@ class InputQueue:
         if priority is None:
             priority = kind.default_priority
 
+        item_id = entry.id
+        if item_id is None:
+            item_id = self._ids.uuid()
+
         item = QueueItem(
-            id=self._ids.uuid(),
+            id=item_id,
             kind=kind,
             text=self._bounded(kind, entry.text),
             priority=priority,

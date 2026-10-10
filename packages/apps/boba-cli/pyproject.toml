@@ -8,11 +8,27 @@ version = "0.0.26.dev4"
 description = "Boba cli: процесс агента — команда boba, разбор параметров запуска, обмен строками JSON через стандартные потоки."
 requires-python = ">=3.11,<4"
 dependencies = [
+    "boba-agent==0.0.26.dev4",
+    "boba-cancellation==0.0.26.dev4",
+    "boba-history-jsonl==0.0.26.dev4",
+    "boba-identity==0.0.26.dev4",
+    "boba-llm==0.0.26.dev4",
+    "boba-llm-http==0.0.26.dev4",
+    "boba-llm-onnx==0.0.26.dev4",
+    "boba-mcp-client==0.0.26.dev4",
+    "boba-toolkit==0.0.26.dev4",
+    "boba-toolrun==0.0.26.dev4",
+    "httpx>=0.28,<1",
+    "pydantic>=2.12,<3",
 ]
+
+[project.scripts]
+boba = "boba.cli.app:cli"
 
 [project.optional-dependencies]
 dev = [
     "boba-stand==0.0.26.dev4",
+    "uvicorn>=0.35,<1",
     "pytest>=9.1,<10",
 ]
 

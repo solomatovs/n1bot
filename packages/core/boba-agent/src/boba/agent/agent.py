@@ -16,6 +16,7 @@ ProfileError — профиль модели не годится для запу
 PermissionModeError — режим разрешений недоступен при параметрах запуска.
 ToolsError — собственный инструмент одноимён с инструментом сервера, либо при
     возобновлении сервер не отдал ни одного инструмента из объявленных.
+SessionError — системный промпт меняют посреди хода.
 """
 
 from __future__ import annotations
@@ -37,7 +38,12 @@ from boba.agent.events import EventSink, InitEvent, TurnOutcome
 from boba.agent.history import HistoryError, HistoryStore, SessionId, SessionLease
 from boba.agent.ids import Clock, IdMint, SystemClock
 from boba.agent.loader import HistoryLoader, LoadReport
-from boba.agent.permissions import AutoClassifier, ModeCeiling, PermissionState
+from boba.agent.permissions import (
+    AutoClassifier,
+    ModeCeiling,
+    PermissionState,
+    StaticRules,
+)
 from boba.agent.profile import (
     CompactionSettings,
     ModelProfile,
@@ -46,7 +52,7 @@ from boba.agent.profile import (
 )
 from boba.agent.queue import InputQueue, QueueRemoveReason
 from boba.agent.records import PermissionMode, PermissionModeRecord
-from boba.agent.session import Session, SessionState
+from boba.agent.session import Session, SessionError, SessionState
 from boba.agent.skills import Skill, SkillTool
 from boba.agent.template import AgentTemplate
 from boba.agent.tools import (
@@ -58,7 +64,7 @@ from boba.agent.tools import (
     ToolTexts,
 )
 from boba.agent.turn import TurnLoop
-from boba.agent.writer import HistoryWriter, RecordKeeper
+from boba.agent.writer import HistoryWriter, RecordKeeper, RequestRecorder
 from boba.cancellation import RunCancellation, StopReason
 from boba.llm.chat import ChatModel
 from boba.toolkit.dag import ToolServer
@@ -94,6 +100,9 @@ class AgentParts:
         templates: AgentTemplate | None = None,
         ids: IdMint | None = None,
         clock: Clock | None = None,
+        allowed_tools: Sequence[str] = (),
+        denied_tools: Sequence[str] = (),
+        record_requests: bool = False,
     ) -> None:
         self.profile = profile
         self.limits = limits
@@ -114,6 +123,10 @@ class AgentParts:
         self.templates = templates
         self.ids = ids
         self.clock = clock
+        self.static_rules = StaticRules(
+            allowed=frozenset(allowed_tools), denied=frozenset(denied_tools)
+        )
+        self.record_requests = record_requests
 
 
 class Wiring:
@@ -244,6 +257,10 @@ class Agent:
             keeper,
             wiring.clock,
             parts.agent_name,
+            parts.static_rules,
+        )
+        recorder = RequestRecorder(
+            keeper, wiring.ids, wiring.clock, parts.record_requests
         )
         attachments = ContextAttachments(
             wiring.templates, wiring.ids, wiring.clock, parts.version, session_id.value
@@ -269,6 +286,7 @@ class Agent:
             self._skill_cards(),
             parts.environment,
             parts.agent_name,
+            recorder,
         )
 
         tool_names: list[str] = []
@@ -402,6 +420,35 @@ class Agent:
             )
         )
         self.writer.notify()
+
+    def set_system_prompt(self, sections: Sequence[str]) -> None:
+        """Системный промпт от запускающей программы (`initialize`): принимается,
+        пока агент свободен; снимок в истории он не меняет.
+
+        Ошибки:
+        SessionError — ход идёт, промпт менять поздно.
+        """
+        turns = self._turns
+        if turns is None:
+            msg = "The agent session is not open yet. Call open() before the prompt."
+            raise HistoryError(msg)
+
+        if self.session.state is not SessionState.IDLE:
+            msg = (
+                "The system prompt can be set only while the agent is idle; a turn "
+                f"is in progress (state {self.session.state.value})."
+            )
+            raise SessionError(msg)
+
+        turns.set_system_prompt(sections)
+
+    @property
+    def system_prompt(self) -> Sequence[str]:
+        turns = self._turns
+        if turns is None:
+            return ()
+
+        return turns.system_prompt
 
     def set_permission_mode(self, mode: PermissionMode) -> PermissionMode:
         """Меняет режим записью; действует со следующей проверки разрешения.

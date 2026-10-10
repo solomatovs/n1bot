@@ -70,6 +70,7 @@ class AgentTemplateFile(StrEnum):
     SKILL = "tools/skill.txt"
     SKILL_LAUNCHED = "tools/skill_launched.txt"
     NO_SUCH_SKILL = "tools/no_such_skill.txt"
+    DENIED_BY_SETTINGS = "tools/denied_by_settings.txt"
 
 
 class AgentTemplate:

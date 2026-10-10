@@ -532,3 +532,38 @@ COPY packages/apps/boba-mcp/conf/  ${BOBA_DIR}/conf/
 EXPOSE 8650
 USER ${BOBA_UID}:${BOBA_GID}
 CMD ["-m", "boba.mcp_server", "--config", "/app/boba/conf/config.toml", "--site", "/app/boba/conf/site.toml"]
+
+
+# --- boba: агент одним файлом -------------------------------------------------------
+# make boba-bin: boba-cli из колёс репозитория, Nuitka и patchelf из индекса pypi образа;
+# бинарник самодостаточен — gssapi (через транспорт http) и данные пакетов входят целиком,
+# локальные модели внутрь не попадают (каталог models/ релиза)
+FROM base AS boba-bin
+
+ARG NUITKA_VERSION
+ARG PATCHELF_VERSION
+ARG ZSTANDARD_VERSION
+ARG ORDERED_SET_VERSION
+
+COPY --from=boba-wheels /tmp/wheels/  /tmp/wheels/
+
+RUN uv pip install --python "$(command -v python3)" --target /opt/bin-site \
+        --constraint /tmp/wheels/constraints.txt --find-links=/tmp/wheels \
+        --override /tmp/wheels/overrides.txt \
+        boba-cli
+RUN uv pip install --python "$(command -v python3)" --target /opt/bin-tools \
+        "nuitka==${NUITKA_VERSION}" "patchelf==${PATCHELF_VERSION}" \
+        "zstandard==${ZSTANDARD_VERSION}" "ordered-set==${ORDERED_SET_VERSION}"
+
+ENV PYTHONPATH=/opt/bin-site:/opt/bin-tools PATH=/opt/bin-tools/bin:${PATH}
+RUN python3 -m nuitka --onefile --output-filename=boba --output-dir=/out --jobs=${JOBS} \
+        --include-package=gssapi --include-distribution-metadata=boba-cli \
+        --include-package-data=boba.agent \
+        /opt/bin-site/boba/cli/app.py \
+    && /out/boba --help > /dev/null
+
+
+# бинарник для make boba-bin: make забирает /boba через docker cp
+FROM scratch AS boba-bin-out
+
+COPY --from=boba-bin /out/boba /boba

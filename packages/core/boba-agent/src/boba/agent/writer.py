@@ -9,6 +9,9 @@
 RecordKeeper — единственная дверь, через которую ход и исполнитель
 инструментов добавляют записи: запись уходит в сессию, писатель просыпается,
 записи разговора и граница сжатия показываются наружу событием.
+RequestRecorder чеканит идентификатор каждого запроса к модели и, если запись
+запросов включена, кладёт служебную запись `api-request` с телом запроса и
+его дайджестом (план, раздел 5.18).
 
 Ошибки:
 HistoryError — поднимает только `flush(strict=True)` при завершении, когда
@@ -19,22 +22,27 @@ SessionError — нарушен порядок записей сессии (ош
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 import logging
 from typing import ClassVar, TypeVar
 
 from boba.agent.events import AgentEvent, EventSink, RecordEvent
 from boba.agent.history import HistoryError, HistoryStore, SessionLease
+from boba.agent.ids import Clock, IdMint
 from boba.agent.records import (
+    ApiRequestRecord,
     AssistantRecord,
     CompactBoundaryRecord,
     Record,
     UserRecord,
 )
 from boba.agent.session import Session
+from boba.llm.chat import ChatRequest
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["HistoryWriter", "RecordKeeper"]
+__all__ = ["HistoryWriter", "RecordKeeper", "RequestRecorder"]
 
 R = TypeVar("R", bound=Record)
 
@@ -179,3 +187,37 @@ class RecordKeeper:
 
     async def emit(self, event: AgentEvent) -> None:
         await self._sink.emit(event)
+
+
+class RequestRecorder:
+    """Идентификатор запроса к модели и его запись в журнал по флагу."""
+
+    def __init__(
+        self, keeper: RecordKeeper, ids: IdMint, clock: Clock, enabled: bool
+    ) -> None:
+        self._keeper = keeper
+        self._ids = ids
+        self._clock = clock
+        self._enabled = enabled
+
+    async def record(self, request: ChatRequest) -> str:
+        """Возвращает идентификатор запроса; запись — только когда включена."""
+        request_id = self._ids.request_id()
+        if not self._enabled:
+            return request_id
+
+        params = request.model_dump(mode="json", exclude_none=True)
+        canonical = json.dumps(params, ensure_ascii=False, sort_keys=True)
+        session = self._keeper.session
+        await self._keeper.add(
+            ApiRequestRecord(
+                timestamp=self._clock.now(),
+                session_id=session.id.value,
+                id=self._ids.uuid(),
+                request_id=request_id,
+                params=params,
+                digest=hashlib.sha256(canonical.encode("utf-8")).hexdigest(),
+            )
+        )
+
+        return request_id
