@@ -1,0 +1,9 @@
+# Конфигурация пакетов Nuitka для сборки boba одним файлом (стадия boba-bin).
+# onnxruntime_genai ищет каталог пакета onnxruntime через find_spec, а у пакета,
+# скомпилированного Nuitka, submodule_search_locations пуст; каталог onnxruntime
+# с его библиотеками лежит рядом с пакетом genai в распакованном дереве.
+- module-name: 'onnxruntime_genai._dll_directory'
+  anti-bloat:
+    - description: 'onnxruntime directory next to this package instead of find_spec locations'
+      replacements_plain:
+        'ort_package_path = ort_package.submodule_search_locations[0]': 'ort_package_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "onnxruntime")'

@@ -134,11 +134,18 @@ class FakeModel:
 
 
 class BobaProcess:
-    """Запущенный `boba`: строки туда, события оттуда, stderr в список."""
+    """Запущенный `boba`: строки туда, события оттуда, stderr в список.
+    Команда по умолчанию — модуль из venv; бинарник передаётся явно."""
 
     MODULE: ClassVar[str] = "boba.cli.app"
 
-    def __init__(self, root: Path, model: FakeModel) -> None:
+    def __init__(
+        self, root: Path, model: FakeModel, command: Sequence[str] | None = None
+    ) -> None:
+        if command is None:
+            command = (sys.executable, "-m", self.MODULE)
+
+        self._command = list(command)
         self._root = root
         self._model = model
         self._process: asyncio.subprocess.Process | None = None
@@ -173,9 +180,7 @@ class BobaProcess:
             environment.update(env)
 
         self._process = await asyncio.create_subprocess_exec(
-            sys.executable,
-            "-m",
-            self.MODULE,
+            *self._command,
             "--setting-sources",
             "user",
             *extra,
