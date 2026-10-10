@@ -69,6 +69,11 @@ pythonpath = [
     "packages/apps/ix/ch-meta-scraper/src",
     "packages/tools/boba-tool-describer/src",
     "packages/tools/boba-tool-mail/src",
+    "packages/core/boba-agent/src",
+    "packages/infra/history/boba-history-jsonl/src",
+    "packages/infra/history/boba-history-postgres/src",
+    "packages/apps/boba-cli/src",
+    "packages/testing/boba-prompt-assembly/src",
 ]
 addopts = ["--strict-markers", "-m", "not integration and not ui and not load and not run"]
 markers = [
@@ -157,6 +162,11 @@ extraPaths = [
     "packages/apps/ix/cfl-indexer/src",
     "packages/apps/ix/ch-meta-scraper/src",
     "packages/tools/boba-tool-describer/src",
+    "packages/core/boba-agent/src",
+    "packages/infra/history/boba-history-jsonl/src",
+    "packages/infra/history/boba-history-postgres/src",
+    "packages/apps/boba-cli/src",
+    "packages/testing/boba-prompt-assembly/src",
 ]
 venvPath = "."
 venv = ".venv"
@@ -214,6 +224,10 @@ extend-immutable-calls = [
 ]
 "build/test/**" = ["T201", "E402", "TID251", "S603", "PLW1510", "S108"]
 "build/scripts/**" = ["T201", "PLR2004", "PLC0415"]
+"packages/testing/boba-prompt-assembly/**" = [
+    "E501", "SIM110", "C901", "PLW0108", "UP035", "I001", "PLR0911", "PLR2004",
+    "PLR0913", "B905", "PLR0912", "UP037", "PLW2901", "S105", "PLR0915", "PLR1714",
+]
 
 [tool.uv]
 find-links = ["build/src/oracledb"]
@@ -228,6 +242,7 @@ members = [
     "packages/apps/boba-chainlit",
     "packages/apps/boba-studio",
     "packages/apps/boba-mcp",
+    "packages/apps/boba-cli",
     "packages/apps/ix/*",
     "packages/tools/*",
     "packages/infra/*/*",
@@ -300,6 +315,11 @@ boba-llm-http       = { workspace = true }
 boba-llm-onnx       = { workspace = true }
 boba-llm-fastembed  = { workspace = true }
 boba-chainlit       = { workspace = true }
+boba-agent          = { workspace = true }
+boba-history-jsonl  = { workspace = true }
+boba-history-postgres = { workspace = true }
+boba-cli            = { workspace = true }
+boba-prompt-assembly = { workspace = true }
 
 [dependency-groups]
 dev = [

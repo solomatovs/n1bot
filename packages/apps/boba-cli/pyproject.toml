@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "boba-cli"
+version = "0.0.26.dev4"
+description = "Boba cli: процесс агента — команда boba, разбор параметров запуска, обмен строками JSON через стандартные потоки."
+requires-python = ">=3.11,<4"
+dependencies = [
+]
+
+[project.optional-dependencies]
+dev = [
+    "boba-stand==0.0.26.dev4",
+    "pytest>=9.1,<10",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["boba*"]
+namespaces = true

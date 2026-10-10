@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "boba-prompt-assembly"
+version = "0.0.26.dev4"
+description = "Boba prompt assembly: проверенная модель журнала Claude Code 2.1.289 — чтение сессии, сборка запросов, сжатие; независимая сверка истории агента."
+requires-python = ">=3.11,<4"
+dependencies = []
+
+[project.scripts]
+prompt-assembly = "boba.prompt_assembly.cli:main"
+
+[project.optional-dependencies]
+dev = [
+    "boba-stand==0.0.26.dev4",
+    "pytest>=9.1,<10",
+]
+
+[tool.setuptools.package-data]
+"boba.prompt_assembly" = ["texts/*.txt"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["boba*"]
+namespaces = true

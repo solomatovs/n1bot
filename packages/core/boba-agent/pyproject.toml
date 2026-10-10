@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "boba-agent"
+version = "0.0.26.dev4"
+description = "Boba agent: ядро агента — записи истории, очередь ввода, сборка запроса, ход, сжатие; знает только порты."
+requires-python = ">=3.11,<4"
+dependencies = [
+]
+
+[project.optional-dependencies]
+dev = [
+    "boba-stand==0.0.26.dev4",
+    "pytest>=9.1,<10",
+]
+
+[tool.setuptools.package-data]
+"boba.agent" = ["template/*/*.txt"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["boba*"]
+namespaces = true
