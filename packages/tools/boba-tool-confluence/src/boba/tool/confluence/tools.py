@@ -280,7 +280,7 @@ class CqlSearch:
         }
 
 
-@tool
+@tool(read_only=True, destructive=False)
 async def confluence_fetch(
     page_id: Annotated[
         str,
@@ -312,7 +312,7 @@ async def confluence_fetch(
     return MarkdownResult(text=text)
 
 
-@tool
+@tool(read_only=True, destructive=False)
 async def confluence_grep(  # noqa: PLR0913 — независимые флаги grep'а
     page_id: Annotated[
         str,
@@ -373,7 +373,7 @@ async def confluence_grep(  # noqa: PLR0913 — независимые флаг�
     )
 
 
-@tool
+@tool(read_only=True, destructive=False)
 async def confluence_search(  # noqa: PLR0913 — окно выдачи задаёт вызов
     query: Annotated[
         str,
@@ -420,7 +420,7 @@ async def confluence_search(  # noqa: PLR0913 — окно выдачи зада
     return search.result(page, node)
 
 
-@tool
+@tool(read_only=True, destructive=False)
 async def confluence_spaces(
     pattern: Annotated[
         str | None,
@@ -464,7 +464,7 @@ async def confluence_spaces(
     return TableResult(rows=rows)
 
 
-@tool
+@tool(read_only=True, destructive=False)
 async def confluence_address(
     cfg: Annotated[ConfluenceToolsConfig, Injected],
 ) -> TableResult:

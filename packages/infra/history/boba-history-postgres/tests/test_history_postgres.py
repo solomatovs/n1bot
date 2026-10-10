@@ -16,6 +16,7 @@ import pytest
 from omegaconf import DictConfig
 from psycopg import sql
 
+from boba.agent.control import AllowAnswer
 from boba.agent.history import HistoryError, HistoryStore, SessionId, StoredLine
 from boba.agent.ids import IdMint, SystemClock
 from boba.agent.loader import HistoryLoader, LoadReport
@@ -25,6 +26,10 @@ from boba.agent.records import (
     AssistantRecord,
     AttachmentRecord,
     ChainRecord,
+    CompactBoundaryRecord,
+    PermissionBehavior,
+    PermissionMode,
+    PermissionRule,
     Record,
     RecordCodec,
     ReplyStopReason,
@@ -40,7 +45,15 @@ from boba.db.postgres import AsyncPostgresPool
 from boba.db.postgres.connection import PostgresConfig
 from boba.history.jsonl import JsonlHistoryStore
 from boba.history.postgres import PostgresHistoryStore
-from boba.stand.agent import Collected, FakeServer, Protocol, Served, StandAgents
+from boba.stand.agent import (
+    Collected,
+    FakeServer,
+    Protocol,
+    Served,
+    StandAgents,
+    StandToolName,
+    StandTools,
+)
 from boba.stand.database import TestDatabase
 from boba.stand.ui.fake_llm import ScenarioName
 
@@ -417,3 +430,116 @@ class TestLargeJournal:
             f"\nresume of {megabytes:.1f} MB ({len(records)} records): {elapsed:.1f} s"
         )
         assert elapsed < 60.0
+
+
+def call(spec: dict[str, object]) -> str:
+    return f"{ScenarioName.CALL.value} {json.dumps(spec)}"
+
+
+@pytest.fixture
+async def metered_server() -> AsyncIterator[FakeServer]:
+    """Стенд с учётом токенов по размеру запроса: порог сжатия достигается."""
+    fake = FakeServer(estimate_usage=True)
+    await fake.start()
+    try:
+        yield fake
+    finally:
+        await fake.stop()
+
+
+class TestStagesOnPostgres:
+    """Проверки этапов 3 и 5 на этом хранилище: правило и режим живут после
+    возобновления, сжатие пишет границу и пересказ, возобновление после сжатия
+    даёт тот же запрос."""
+
+    async def test_rule_and_mode_survive_resume(
+        self, server: FakeServer, agents: StandAgents, stores: Stores
+    ) -> None:
+        tools = StandTools()
+        sink = Collected()
+        served = Served(
+            agents.agent(
+                agents.profile(Protocol.OPENAI), sink, tools=tools, store=stores.new()
+            )
+        )
+        await served.open(SESSION, resume=False)
+        served.agent.queue.enqueue(prompt(call({"name": StandToolName.DROP.value})))
+        question = await sink.next_question(0)
+        rule = PermissionRule(tool="drop", behavior=PermissionBehavior.ALLOW)
+        assert served.agent.answer(
+            question.request_id, AllowAnswer(updated_permissions=[rule])
+        )
+        await served.agent.settled()
+        served.agent.set_permission_mode(PermissionMode.ACCEPT_EDITS)
+        await served.close()
+
+        again = Collected()
+        resumed = Served(
+            agents.agent(
+                agents.profile(Protocol.OPENAI), again, tools=tools, store=stores.new()
+            )
+        )
+        await resumed.open(SESSION, resume=True)
+        assert resumed.agent.permission_mode is PermissionMode.ACCEPT_EDITS
+        resumed.agent.queue.enqueue(prompt(call({"name": StandToolName.DROP.value})))
+        await resumed.agent.settled()
+        resumed.agent.queue.enqueue(prompt(call({"name": StandToolName.NOTE.value})))
+        await resumed.agent.settled()
+        await resumed.close()
+
+        assert not again.questions()
+        assert [c.tool for c in tools.calls] == ["drop", "drop", "note"]
+
+    async def test_compaction_and_resume_after_it(
+        self,
+        metered_server: FakeServer,
+        tmp_path: Path,
+        stores: Stores,
+    ) -> None:
+        agents = StandAgents(metered_server, tmp_path / "history")
+        try:
+            profile = agents.profile(Protocol.OPENAI, chars_per_token=4)
+            served = Served(
+                agents.agent(
+                    profile, Collected(), tools=StandTools(), store=stores.new()
+                )
+            )
+            session = await served.open(SESSION, resume=False)
+            served.agent.queue.enqueue(
+                prompt(
+                    call(
+                        {
+                            "name": StandToolName.LARGE.value,
+                            "arguments": {"size": 24_000},
+                        }
+                    )
+                )
+            )
+            await served.agent.settled()
+            served.agent.queue.enqueue(prompt(ScenarioName.ANSWER.value))
+            await served.agent.settled()
+            await served.close()
+
+            boundaries = [
+                r for r in session.records() if isinstance(r, CompactBoundaryRecord)
+            ]
+            assert len(boundaries) == 1
+            after = metered_server.requests()[-1]["messages"]
+
+            resumed = Served(
+                agents.agent(
+                    profile, Collected(), tools=StandTools(), store=stores.new()
+                )
+            )
+            session_again = await resumed.open(SESSION, resume=True)
+            assert isinstance(session_again.conversation()[0], CompactBoundaryRecord)
+            resumed.agent.queue.enqueue(prompt(ScenarioName.ANSWER.value))
+            await resumed.agent.settled()
+            await resumed.close()
+
+            assert isinstance(after, list)
+            prefix = metered_server.requests()[-1]["messages"]
+            assert isinstance(prefix, list)
+            assert prefix[: len(after)] == after
+        finally:
+            await agents.aclose()

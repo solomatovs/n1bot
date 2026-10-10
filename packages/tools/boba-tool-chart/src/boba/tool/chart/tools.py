@@ -67,7 +67,7 @@ class FigureSpec:
         return str(raw)
 
 
-@tool
+@tool(destructive=False)
 async def visualize(
     spec: Annotated[
         str,

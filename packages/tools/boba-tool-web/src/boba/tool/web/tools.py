@@ -242,7 +242,7 @@ class WebPage:
         return read
 
 
-@tool
+@tool(read_only=True, destructive=False)
 async def web_fetch_page(  # noqa: PLR0913
     url: Annotated[str, Field(min_length=1, description="URL для скачивания")],
     connection: WebTarget,
@@ -279,7 +279,7 @@ async def web_fetch_page(  # noqa: PLR0913
     )
 
 
-@tool
+@tool(read_only=True, destructive=False)
 async def web_grep_page(  # noqa: PLR0913
     url: Annotated[
         str,
@@ -335,7 +335,7 @@ async def web_grep_page(  # noqa: PLR0913
     )
 
 
-@tool
+@tool(read_only=True, destructive=False)
 async def web_address(connection: WebTarget) -> TableResult:
     """Корневой url web-соединения без учётных данных: схема, хост, порт, путь.
 

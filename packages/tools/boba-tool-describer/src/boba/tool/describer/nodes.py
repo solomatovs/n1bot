@@ -351,7 +351,7 @@ class NodeDeleteListing:
         return TableResult(rows=rows, note=note)
 
 
-@tool
+@tool(destructive=False)
 async def describe_node(
     kind: Annotated[str, Field(min_length=1, description=NodePrompt.kind())],
     address: Annotated[str, Field(min_length=1, description=NodePrompt.address())],
@@ -376,7 +376,7 @@ async def describe_node(
     return TableResult(rows=[written.model_dump(mode="json")])
 
 
-@tool
+@tool(read_only=True, destructive=False)
 async def describe_list_nodes(
     offset: RowOffset,
     limit: RowLimit,

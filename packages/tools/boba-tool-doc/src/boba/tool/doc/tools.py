@@ -156,7 +156,7 @@ class DocRun:
             yield asdict(hit)
 
 
-@tool
+@tool(read_only=True, destructive=False)
 async def read_document(
     path: Annotated[str, Field(min_length=1, description=_PATH_DESCRIPTION)],
     pages: Annotated[
@@ -196,7 +196,7 @@ async def read_document(
     )
 
 
-@tool
+@tool(read_only=True, destructive=False)
 async def document_outline(
     path: Annotated[str, Field(min_length=1, description=_PATH_DESCRIPTION)],
     ocr_enabled: Annotated[bool, Field(description=_OCR_DESCRIPTION)] = False,
@@ -218,7 +218,7 @@ async def document_outline(
     )
 
 
-@tool
+@tool(read_only=True, destructive=False)
 async def search_document(  # noqa: PLR0913 — окно выдачи задаёт вызов
     path: Annotated[str, Field(min_length=1, description=_PATH_DESCRIPTION)],
     query: Annotated[

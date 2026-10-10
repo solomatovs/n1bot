@@ -188,7 +188,7 @@ class KbChunkSearch:
         return TableResult(rows=rows, note=note)
 
 
-@tool
+@tool(read_only=True, destructive=False)
 async def kb_vector_search(
     query: Annotated[
         str,
@@ -206,7 +206,7 @@ async def kb_vector_search(
     return await KbChunkSearch(cfg).vector(ConfluenceCollection, query, top_k)
 
 
-@tool
+@tool(read_only=True, destructive=False)
 async def kb_fts_search(
     query: Annotated[
         str,

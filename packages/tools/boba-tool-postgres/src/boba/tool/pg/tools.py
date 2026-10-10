@@ -294,7 +294,7 @@ def step_statuses(cur: psycopg.AsyncCursor[Any]) -> Iterator[str]:
             return
 
 
-@tool
+@tool(read_only=True, destructive=False)
 async def pg_list_tables(
     connection: PgConnection,
     pg_schema: Annotated[
@@ -360,7 +360,7 @@ async def pg_list_tables(
     )
 
 
-@tool
+@tool(read_only=True, destructive=False)
 async def pg_describe_table(
     connection: PgConnection,
     table: Annotated[
@@ -456,7 +456,7 @@ async def pg_query(
     )
 
 
-@tool
+@tool(read_only=True, destructive=False)
 async def pg_stream_out(  # noqa: PLR0913
     connection: PgConnection,
     sql: Annotated[
@@ -582,7 +582,7 @@ async def pg_stream_out(  # noqa: PLR0913
     return SqlResult(engine=PgToolConfig.ENGINE, statements=statements)
 
 
-@tool
+@tool(destructive=False)
 async def pg_stream_in(  # noqa: PLR0913
     connection: PgConnection,
     schema_name: Annotated[
@@ -771,7 +771,7 @@ async def pg_stream_in(  # noqa: PLR0913
     return SqlResult(engine=PgToolConfig.ENGINE, statements=statements)
 
 
-@tool
+@tool(read_only=True, destructive=False)
 async def pg_database_describe(
     connection: PgConnection,
     db_name: Annotated[
@@ -819,7 +819,7 @@ async def pg_database_describe(
     )
 
 
-@tool
+@tool(read_only=True, destructive=False)
 async def pg_schema_describe(
     connection: PgConnection,
     schema_name: Annotated[
@@ -870,7 +870,7 @@ async def pg_schema_describe(
     )
 
 
-@tool
+@tool(read_only=True, destructive=False)
 async def pg_table_describe(
     connection: PgConnection,
     schema_name: SchemaFilter,
@@ -972,7 +972,7 @@ async def pg_table_describe(
     )
 
 
-@tool
+@tool(read_only=True, destructive=False)
 async def pg_column_describe(
     connection: PgConnection,
     schema_name: SchemaFilter,
@@ -1051,7 +1051,7 @@ async def pg_column_describe(
     )
 
 
-@tool
+@tool(read_only=True, destructive=False)
 async def pg_constraints_describe(
     connection: PgConnection,
     schema_name: SchemaFilter,
@@ -1150,7 +1150,7 @@ async def pg_constraints_describe(
     )
 
 
-@tool
+@tool(read_only=True, destructive=False)
 async def pg_indexes_describe(
     connection: PgConnection,
     schema_name: SchemaFilter,
@@ -1218,7 +1218,7 @@ async def pg_indexes_describe(
     )
 
 
-@tool
+@tool(read_only=True, destructive=False)
 async def pg_routines_describe(
     connection: PgConnection,
     schema_name: Annotated[
@@ -1309,7 +1309,7 @@ async def pg_routines_describe(
     )
 
 
-@tool
+@tool(read_only=True, destructive=False)
 async def pg_routine_arg_describe(
     connection: PgConnection,
     schema_name: SchemaFilter,
@@ -1375,7 +1375,7 @@ async def pg_routine_arg_describe(
     )
 
 
-@tool
+@tool(read_only=True, destructive=False)
 async def pg_sequences_describe(
     connection: PgConnection,
     schema_name: SchemaFilter,
@@ -1447,7 +1447,7 @@ async def pg_sequences_describe(
     )
 
 
-@tool
+@tool(read_only=True, destructive=False)
 async def pg_types_describe(
     connection: PgConnection,
     schema_name: SchemaFilter,
@@ -1531,7 +1531,7 @@ async def pg_types_describe(
     )
 
 
-@tool
+@tool(read_only=True, destructive=False)
 async def pg_address(connection: PgConnection) -> TableResult:
     """Базовый url соединения PostgreSQL: postgresql://host:port/database.
 

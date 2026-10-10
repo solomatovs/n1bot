@@ -135,9 +135,14 @@ class FakeModel:
 
 class BobaProcess:
     """Запущенный `boba`: строки туда, события оттуда, stderr в список.
-    Команда по умолчанию — модуль из venv; бинарник передаётся явно."""
+    Команда по умолчанию — модуль из venv; бинарник передаётся явно.
+
+    Обычно stdout читает цикл событий сразу в буфер StreamReader. С
+    `hold_output` stdout — голый канал, который никто не читает до
+    `resume_output()`: так проверяется поведение при вставшем читателе."""
 
     MODULE: ClassVar[str] = "boba.cli.app"
+    LINE_LIMIT: ClassVar[int] = 16 * 1024 * 1024
 
     def __init__(
         self, root: Path, model: FakeModel, command: Sequence[str] | None = None
@@ -153,6 +158,9 @@ class BobaProcess:
         self.stray: list[str] = []
         self.stderr: list[str] = []
         self._stderr_task: asyncio.Task[None] | None = None
+        self._stdout: asyncio.StreamReader | None = None
+        self._held_read: int | None = None
+        self._held_transport: asyncio.ReadTransport | None = None
 
     def mcp_config(self) -> str:
         return json.dumps(
@@ -167,7 +175,12 @@ class BobaProcess:
             }
         )
 
-    async def start(self, *extra: str, env: Mapping[str, str] | None = None) -> None:
+    async def start(
+        self,
+        *extra: str,
+        env: Mapping[str, str] | None = None,
+        hold_output: bool = False,
+    ) -> None:
         environment = {
             **os.environ,
             "BOBA_LLM_KIND": "openai",
@@ -179,18 +192,42 @@ class BobaProcess:
         if env is not None:
             environment.update(env)
 
+        stdout = asyncio.subprocess.PIPE
+        held_write: int | None = None
+        if hold_output:
+            self._held_read, held_write = os.pipe()
+            stdout = held_write
+
         self._process = await asyncio.create_subprocess_exec(
             *self._command,
             "--setting-sources",
             "user",
             *extra,
             stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE,
+            stdout=stdout,
             stderr=asyncio.subprocess.PIPE,
+            limit=self.LINE_LIMIT,
             env=environment,
             cwd=str(self._root),
         )
+        if held_write is not None:
+            os.close(held_write)
+
+        self._stdout = self._process.stdout
         self._stderr_task = asyncio.create_task(self._drain_stderr())
+
+    async def resume_output(self) -> None:
+        """Подключает чтение удержанного stdout."""
+        assert self._held_read is not None, "stdout is not held"
+        reader = asyncio.StreamReader(limit=self.LINE_LIMIT)
+        loop = asyncio.get_running_loop()
+        transport, _ = await loop.connect_read_pipe(
+            lambda: asyncio.StreamReaderProtocol(reader),
+            os.fdopen(self._held_read, "rb", buffering=0),
+        )
+        self._held_transport = transport
+        self._held_read = None
+        self._stdout = reader
 
     @property
     def process(self) -> asyncio.subprocess.Process:
@@ -207,8 +244,8 @@ class BobaProcess:
         await stdin.drain()
 
     async def read(self) -> Line:
-        stdout = self.process.stdout
-        assert stdout is not None
+        stdout = self._stdout
+        assert stdout is not None, "stdout is held; call resume_output() first"
         while True:
             try:
                 raw = await asyncio.wait_for(stdout.readline(), READ_TIMEOUT_SEC)
@@ -250,12 +287,33 @@ class BobaProcess:
         if self._stderr_task is not None:
             await self._stderr_task
 
+        self._release_held()
+
         return code
 
     async def kill(self) -> None:
-        if self._process is not None and self._process.returncode is None:
-            self._process.kill()
-            await self._process.wait()
+        """Ожидание после kill ограничено: при непрочитанном хвосте stdout
+        asyncio не замечает закрытия канала и wait() не вернётся никогда."""
+        if self._process is None or self._process.returncode is not None:
+            return
+
+        self._process.kill()
+        try:
+            await asyncio.wait_for(self._process.wait(), READ_TIMEOUT_SEC)
+        except TimeoutError as exc:
+            msg = f"killed boba did not get reaped in {READ_TIMEOUT_SEC} s"
+            raise AssertionError(msg) from exc
+        finally:
+            self._release_held()
+
+    def _release_held(self) -> None:
+        if self._held_transport is not None:
+            self._held_transport.close()
+            self._held_transport = None
+
+        if self._held_read is not None:
+            os.close(self._held_read)
+            self._held_read = None
 
     async def _drain_stderr(self) -> None:
         stderr = self.process.stderr
@@ -459,6 +517,68 @@ class TestRobustness:
         await boba.send(command("c-end", "end_session"))
         await boba.read_until(is_response("c-end"))
         assert await boba.wait() == 0
+
+    async def test_stalled_output_reader_pauses_the_agent_instead_of_buffering(
+        self, boba: BobaProcess, tmp_path: Path
+    ) -> None:
+        """Никто не читает stdout: строки копятся в канале и ограниченной
+        очереди, затем ход ждёт на записи и журнал перестаёт расти; после
+        подключения читателя ход доходит до конца. Один ход из сотен вызовов
+        даёт по две строки на вызов — больше, чем вмещают канал и очередь."""
+        calls = 300
+        await boba.start(
+            "--session",
+            "cli-5",
+            "--mcp-config",
+            boba.mcp_config(),
+            "--permission-mode",
+            "bypassPermissions",
+            "--allow-bypass",
+            hold_output=True,
+        )
+        specs: list[dict[str, object]] = []
+        for _ in range(calls):
+            specs.append({"name": "large", "arguments": {"size": 40}})
+
+        await boba.send(user(call(*specs)))
+        await asyncio.sleep(3.0)
+        stalled = len(journal_lines(tmp_path, "cli-5"))
+
+        await boba.resume_output()
+        result = await boba.read_until(is_result)
+        assert result["subtype"] == "completed"
+        await boba.close_stdin()
+        assert await boba.wait() == 0
+
+        records = journal_lines(tmp_path, "cli-5")
+        assert stalled < len(records), (stalled, len(records))
+        results = [
+            r
+            for r in records
+            if r["type"] == "user" and not isinstance(r["message"]["content"], str)
+        ]
+        assert len(results) == calls
+
+    async def test_secrets_stay_out_of_the_journal_and_the_events(
+        self, boba: BobaProcess, tmp_path: Path
+    ) -> None:
+        secret = "s3cret-api-key-value"
+        await boba.start(
+            "--session", "cli-6", "--record-requests", env={"BOBA_LLM_API_KEY": secret}
+        )
+        init = await boba.read()
+        assert init["settings"]["models"]["default"]["provider"]["apiKeyEnv"] == (
+            "BOBA_LLM_API_KEY"
+        )
+        await boba.send(user(ScenarioName.ANSWER.value))
+        await boba.read_until(is_result)
+        await boba.close_stdin()
+        assert await boba.wait() == 0
+
+        journal = (tmp_path / "history" / "cli-6.jsonl").read_text(encoding="utf-8")
+        assert "api-request" in journal
+        assert secret not in journal
+        assert secret not in json.dumps(boba.lines)
 
     async def test_sigterm_exits_zero_with_a_flushed_journal(
         self, boba: BobaProcess, tmp_path: Path

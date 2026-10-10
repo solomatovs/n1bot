@@ -268,7 +268,7 @@ def step_status(stream: Any) -> str:
     return f"{status}; warning: {stream.warning}"
 
 
-@tool
+@tool(read_only=True, destructive=False)
 async def ora_list_tables(
     connection: OraConnection,
     schema_name: Annotated[
@@ -317,7 +317,7 @@ async def ora_list_tables(
     )
 
 
-@tool
+@tool(read_only=True, destructive=False)
 async def ora_describe_table(
     connection: OraConnection,
     table: Annotated[
@@ -406,7 +406,7 @@ async def ora_query(
     )
 
 
-@tool
+@tool(read_only=True, destructive=False)
 async def ora_database_describe(
     connection: OraConnection,
 ) -> SqlResult:
@@ -431,7 +431,7 @@ async def ora_database_describe(
     )
 
 
-@tool
+@tool(read_only=True, destructive=False)
 async def ora_schema_describe(
     connection: OraConnection,
     schema_name: SchemaFilter,
@@ -466,7 +466,7 @@ async def ora_schema_describe(
     )
 
 
-@tool
+@tool(read_only=True, destructive=False)
 async def ora_table_describe(
     connection: OraConnection,
     schema_name: SchemaFilter,
@@ -513,7 +513,7 @@ async def ora_table_describe(
     )
 
 
-@tool
+@tool(read_only=True, destructive=False)
 async def ora_column_describe(
     connection: OraConnection,
     schema_name: SchemaFilter,
@@ -564,7 +564,7 @@ async def ora_column_describe(
     )
 
 
-@tool
+@tool(read_only=True, destructive=False)
 async def ora_constraints_describe(
     connection: OraConnection,
     schema_name: SchemaFilter,
@@ -615,7 +615,7 @@ async def ora_constraints_describe(
     )
 
 
-@tool
+@tool(read_only=True, destructive=False)
 async def ora_indexes_describe(
     connection: OraConnection,
     schema_name: SchemaFilter,
@@ -666,7 +666,7 @@ async def ora_indexes_describe(
     )
 
 
-@tool
+@tool(read_only=True, destructive=False)
 async def ora_routines_describe(
     connection: OraConnection,
     schema_name: SchemaFilter,
@@ -719,7 +719,7 @@ async def ora_routines_describe(
     )
 
 
-@tool
+@tool(read_only=True, destructive=False)
 async def ora_sequences_describe(
     connection: OraConnection,
     schema_name: SchemaFilter = "*",
@@ -760,7 +760,7 @@ async def ora_sequences_describe(
     )
 
 
-@tool
+@tool(read_only=True, destructive=False)
 async def ora_types_describe(
     connection: OraConnection,
     schema_name: SchemaFilter = "*",
@@ -799,7 +799,7 @@ async def ora_types_describe(
     )
 
 
-@tool
+@tool(read_only=True, destructive=False)
 async def ora_address(connection: OraConnection) -> TableResult:
     """Базовый url соединения Oracle: oracle://host:port/service.
 
@@ -815,7 +815,7 @@ async def ora_address(connection: OraConnection) -> TableResult:
     return TableResult(rows=[row])
 
 
-@tool
+@tool(read_only=True, destructive=False)
 async def ora_stream_out(  # noqa: PLR0913
     connection: OraConnection,
     sql: Annotated[
@@ -889,7 +889,7 @@ async def ora_stream_out(  # noqa: PLR0913
     return SqlResult(engine=OraToolConfig.ENGINE, statements=statements)
 
 
-@tool
+@tool(destructive=False)
 async def ora_stream_in(  # noqa: PLR0913
     connection: OraConnection,
     schema_name: Annotated[
