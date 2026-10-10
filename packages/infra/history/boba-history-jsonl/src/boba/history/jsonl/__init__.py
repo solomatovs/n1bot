@@ -3,3 +3,7 @@
 Одна сессия — один файл `<root>/<session>.jsonl`; захват сессии flock'ом,
 дозапись пачкой записей, чтение по порядку с пропуском рваной строки.
 """
+
+from boba.history.jsonl.store import JsonlHistoryStore
+
+__all__ = ["JsonlHistoryStore"]
