@@ -21,7 +21,7 @@ import json
 import os
 import uuid
 from collections.abc import AsyncIterator, Iterator, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
 from typing import ClassVar
@@ -59,6 +59,7 @@ class HeldSession:
     path: Path
     last_seq: int
     sealed: bool = False
+    lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
 
 class JsonlHistoryStore(HistoryStore):
@@ -84,17 +85,18 @@ class JsonlHistoryStore(HistoryStore):
 
     async def append(self, lease: SessionLease, records: Sequence[Record]) -> None:
         held = self._held_of(lease)
-        fresh = list(self._fresh(held, records))
-        if not fresh:
-            return
+        async with held.lock:
+            fresh = list(self._fresh(held, records))
+            if not fresh:
+                return
 
-        lines: list[str] = []
-        for record in fresh:
-            lines.append(self._codec.line(record))
+            lines: list[str] = []
+            for record in fresh:
+                lines.append(self._codec.line(record))
 
-        data = ("\n".join(lines) + "\n").encode(JsonlLayout.ENCODING.value)
-        await asyncio.to_thread(self._write, held, data)
-        held.last_seq = fresh[-1].seq
+            data = ("\n".join(lines) + "\n").encode(JsonlLayout.ENCODING.value)
+            await asyncio.to_thread(self._write, held, data)
+            held.last_seq = fresh[-1].seq
 
     async def read(self, session: SessionId) -> AsyncIterator[HistoryLine]:
         path = self._layout.file_of(self._root, session)
@@ -111,15 +113,16 @@ class JsonlHistoryStore(HistoryStore):
             fcntl.flock(held.fd, fcntl.LOCK_UN)
             os.close(held.fd)
         except OSError as exc:
-            msg = f"history {held.path}: releasing the session lock failed: {exc}"
+            msg = f"Could not release the lock on the journal {held.path}: {exc}"
             raise HistoryError(msg) from exc
 
     def _held_of(self, lease: SessionLease) -> HeldSession:
         held = self._held.get(lease.key)
         if held is None:
             msg = (
-                f"history {lease.session.value}: the lease is unknown to this store, "
-                "acquire the session first"
+                f"Session '{lease.session.value}' was not acquired through this "
+                "history store, so its lease is unknown here. Acquire the session "
+                "first."
             )
             raise HistoryError(msg)
 
@@ -134,8 +137,8 @@ class JsonlHistoryStore(HistoryStore):
 
             if record.seq <= last:
                 msg = (
-                    f"history {held.path}: batch is out of order, seq {record.seq} "
-                    f"after seq {last}"
+                    f"Cannot append to the journal {held.path}: the batch is out of "
+                    f"order, record seq {record.seq} comes after seq {last}."
                 )
                 raise HistoryError(msg)
 
@@ -147,7 +150,7 @@ class JsonlHistoryStore(HistoryStore):
             self._root.mkdir(mode=self.DIR_MODE, parents=True, exist_ok=True)
             fd = os.open(path, os.O_RDONLY | os.O_CREAT, self.FILE_MODE)
         except OSError as exc:
-            msg = f"history {path}: opening the journal failed: {exc}"
+            msg = f"Could not open the journal {path}: {exc}"
             raise HistoryError(msg) from exc
 
         try:
@@ -155,13 +158,13 @@ class JsonlHistoryStore(HistoryStore):
         except BlockingIOError as exc:
             os.close(fd)
             msg = (
-                f"history {path}: session {session.value} is already held by another "
-                "process"
+                f"Session '{session.value}' is already in use by another process: the "
+                f"journal {path} is locked. Stop that process or use another session."
             )
             raise HistoryError(msg) from exc
         except OSError as exc:
             os.close(fd)
-            msg = f"history {path}: locking the journal failed: {exc}"
+            msg = f"Could not lock the journal {path}: {exc}"
             raise HistoryError(msg) from exc
 
         return HeldSession(fd=fd, path=path, last_seq=self._last_seq(path))
@@ -182,7 +185,7 @@ class JsonlHistoryStore(HistoryStore):
         try:
             fd = os.open(held.path, os.O_WRONLY | os.O_APPEND)
         except OSError as exc:
-            msg = f"history {held.path}: opening the journal for append failed: {exc}"
+            msg = f"Could not open the journal {held.path} for appending: {exc}"
             raise HistoryError(msg) from exc
 
         try:
@@ -191,7 +194,7 @@ class JsonlHistoryStore(HistoryStore):
 
             os.write(fd, data)
         except OSError as exc:
-            msg = f"history {held.path}: appending {len(data)} bytes failed: {exc}"
+            msg = f"Could not append {len(data)} bytes to {held.path}: {exc}"
             raise HistoryError(msg) from exc
         finally:
             os.close(fd)
@@ -214,7 +217,7 @@ class JsonlHistoryStore(HistoryStore):
         try:
             return path.read_bytes()
         except OSError as exc:
-            msg = f"history {path}: reading the journal failed: {exc}"
+            msg = f"Could not read the journal {path}: {exc}"
             raise HistoryError(msg) from exc
 
     def _lines(self, data: bytes) -> Iterator[HistoryLine]:

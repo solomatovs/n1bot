@@ -4,9 +4,8 @@
 и нативный ollama, в потоке и без. Проверяется, что отказ доходит до клиента
 в ожидаемом виде: ошибкой LlmError либо ответом, который агенту предстоит
 распознать самому (неизвестный инструмент, пустой id, повтор id, без учёта,
-пустой ответ, теги <think>). Оборванный поток оба клиента сегодня считают
-полным ответом — это зафиксировано здесь как факт, который правится на
-этапе 2 плана агента.
+пустой ответ, теги <think>). Оборванный поток без финального чанка оба
+клиента считают ошибкой.
 """
 
 from __future__ import annotations
@@ -298,19 +297,16 @@ class TestFailuresReachTheClient:
         assert outcome.failed_with("response body is not")
 
     @pytest.mark.parametrize("protocol", list(Protocol))
-    async def test_cut_stream_passes_as_a_complete_reply_today(
+    async def test_cut_stream_is_an_error(
         self, clients: StandClients, protocol: Protocol
     ) -> None:
-        """Факт, не желание: поток без финального чанка клиент принимает за
-        полный ответ с половиной текста и нулевым учётом. Правка — этап 2."""
-        intact = await clients.ask(protocol, ScenarioName.ANSWER.value, True)
+        """Поток без финального чанка — ошибка, а не полный ответ с половиной
+        текста; дельты до обрыва клиент успевает отдать."""
         outcome = await clients.ask(protocol, marker(FailureName.CUT), True)
 
-        assert intact.reply is not None, intact.error
-        assert outcome.reply is not None, outcome.error
-        assert intact.reply.content.startswith(outcome.reply.content)
-        assert len(outcome.reply.content) < len(intact.reply.content)
-        assert outcome.reply.usage.input_tokens == 0
+        assert outcome.reply is None
+        assert outcome.failed_with("the stream ended without")
+        assert outcome.deltas > 0
 
 
 class TestRepliesTheAgentMustJudge:

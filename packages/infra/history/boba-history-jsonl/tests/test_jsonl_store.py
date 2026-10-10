@@ -65,7 +65,7 @@ class TestAcquire:
 
         lease = await store.acquire(SESSION)
         try:
-            with pytest.raises(HistoryError, match="already held by another process"):
+            with pytest.raises(HistoryError, match="already in use by another process"):
                 await other.acquire(SESSION)
         finally:
             await store.release(lease)
@@ -80,7 +80,7 @@ class TestAcquire:
         root.mkdir(mode=0o500)
         store = JsonlHistoryStore(root)
         try:
-            with pytest.raises(HistoryError, match="opening the journal failed"):
+            with pytest.raises(HistoryError, match="Could not open the journal"):
                 await store.acquire(SESSION)
         finally:
             root.chmod(0o700)
@@ -191,7 +191,7 @@ class TestAppend:
         try:
             await store.append(lease, [user(1, "a")])
             path.chmod(0o400)
-            with pytest.raises(HistoryError, match="for append failed"):
+            with pytest.raises(HistoryError, match="for appending"):
                 await store.append(lease, [user(2, "b")])
         finally:
             path.chmod(0o600)
@@ -230,7 +230,7 @@ class TestRead:
             if os.geteuid() == 0:
                 pytest.skip("root reads any file")
 
-            with pytest.raises(HistoryError, match="reading the journal failed"):
+            with pytest.raises(HistoryError, match="Could not read the journal"):
                 _ = [line async for line in store.read(SESSION)]
         finally:
             path.chmod(0o600)

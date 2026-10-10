@@ -1017,6 +1017,13 @@ class FakeLlmApp:
 
     @staticmethod
     def _last_user_text(payload: Mapping[str, Any]) -> str:
+        """Строка с маркером: сообщения пользователя с конца, строки каждого
+        с конца; первая строка с маркером сценария или отказа решает.
+
+        Так служебные сообщения агента без маркеров (подсказка после обрыва по
+        длине) и слитые сообщения пользователя (неотвеченный промпт прошлого
+        хода перед новым) не меняют сценарий текущего запроса.
+        """
         messages = payload.get("messages")
         if not messages:
             keys = sorted(payload)
@@ -1026,13 +1033,24 @@ class FakeLlmApp:
             )
             raise ScenarioError(msg)
 
+        texts: list[str] = []
         for message in reversed(messages):
             if message.get("role") != "user":
                 continue
 
             content = message.get("content")
-            if isinstance(content, str):
-                return content
+            if not isinstance(content, str):
+                continue
+
+            texts.append(content)
+            for line in reversed(content.splitlines()):
+                marked = ScenarioName.find(line) is not None
+                failed = FailureName.find(line) is not None
+                if marked or failed:
+                    return line
+
+        if texts:
+            return texts[0]
 
         roles = [message.get("role") for message in messages]
         msg = (

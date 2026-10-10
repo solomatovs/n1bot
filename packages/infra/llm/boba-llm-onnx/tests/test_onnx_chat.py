@@ -14,6 +14,7 @@ from boba.llm.chat import (
     ChatRole,
     ChatTurn,
     LlmError,
+    LlmOutputLimitError,
     ToolCall,
     ToolSpec,
 )
@@ -216,7 +217,7 @@ class TestLocalTokenCeiling:
         runtime = OnnxChatRuntime("fake-model", _FakeGenai())
         pieces: list[str] = []
 
-        with pytest.raises(LlmError, match="hit the token ceiling"):
+        with pytest.raises(LlmOutputLimitError, match="hit the token ceiling"):
             runtime.run(
                 "prompt",
                 RunSpec(max_tokens=5),
@@ -231,10 +232,14 @@ class TestLocalTokenCeiling:
         runtime = OnnxChatRuntime("fake-model", _FakeGenai(eos_after=2))
         pieces: list[str] = []
 
-        runtime.run("prompt", RunSpec(max_tokens=5), pieces.append, lambda: False)
+        usage = runtime.run(
+            "prompt", RunSpec(max_tokens=5), pieces.append, lambda: False
+        )
 
         if len(pieces) != 2:
             raise AssertionError(pieces)
+        if (usage.prompt_tokens, usage.output_tokens) != (3, 2):
+            raise AssertionError(usage)
 
 
 class TestQwenDialogRender:
@@ -330,4 +335,26 @@ class TestOnnxChatModel:
         request = ChatRequest(messages=[ChatTurn(role=ChatRole.USER, content="hi")])
 
         with pytest.raises(LlmError, match="max_tokens"):
+            await model.reply(request)
+
+    async def test_usage_counts_prompt_and_produced_tokens(self) -> None:
+        model = OnnxChatModel(OnnxChatRuntime("fake-model", _FakeGenai(eos_after=2)))
+        request = ChatRequest(
+            messages=[ChatTurn(role=ChatRole.USER, content="hi")],
+            sampling={"max_tokens": 8},
+        )
+
+        reply = await model.reply(request)
+
+        if (reply.usage.input_tokens, reply.usage.output_tokens) != (3, 2):
+            raise AssertionError(reply.usage)
+
+    async def test_ceiling_is_the_output_limit_error(self) -> None:
+        model = OnnxChatModel(OnnxChatRuntime("fake-model", _FakeGenai()))
+        request = ChatRequest(
+            messages=[ChatTurn(role=ChatRole.USER, content="hi")],
+            sampling={"max_tokens": 3},
+        )
+
+        with pytest.raises(LlmOutputLimitError, match="token ceiling"):
             await model.reply(request)

@@ -8,8 +8,11 @@ tool_choice на неё: response_format роутеры отклоняют. Се
 поверх HttpTransport.
 
 Ошибки:
-LlmError — endpoint недоступен, ответил статусом или мусором, оборвал поток,
-    либо генерация завершилась не по-хорошему (finish_reason вне списка
+LlmOutputLimitError — генерацию срезал лимит токенов (finish_reason length).
+LlmContextOverflowError — запрос не поместился в окно (4xx о длине контекста).
+LlmError — endpoint недоступен, ответил статусом или мусором, оборвал поток
+    или закончил его без finish_reason, либо генерация завершилась
+    не по-хорошему (finish_reason вне списка
     полных: лимит токенов, контент-фильтр, авария провайдера).
 LlmProvidersError — секция не того провайдера.
 """
@@ -40,6 +43,7 @@ from boba.llm.chat import (
     ChatTurn,
     ChatUsage,
     LlmError,
+    LlmOutputLimitError,
     ToolCall,
     ToolSpec,
 )
@@ -98,6 +102,8 @@ class WireField(StrEnum):
     ARGUMENTS = "arguments"
     ID = "id"
     STREAM = "stream"
+    STREAM_OPTIONS = "stream_options"
+    INCLUDE_USAGE = "include_usage"
     TEXT = "text"
     IMAGE_URL = "image_url"
     URL = "url"
@@ -289,8 +295,8 @@ class StreamAssembly(ChunkAssembly[WireChunk]):
             if call.function.arguments:
                 growing.arguments += call.function.arguments
 
-    def reply(self) -> ChatReply:
-        self._check_complete()
+    def reply(self, streamed: bool) -> ChatReply:
+        self._check_complete(streamed)
 
         calls: list[ToolCall] = []
         for index in sorted(self._calls):
@@ -314,11 +320,18 @@ class StreamAssembly(ChunkAssembly[WireChunk]):
             ),
         )
 
-    def _check_complete(self) -> None:
+    def _check_complete(self, streamed: bool) -> None:
         """Обрыв генерации провайдером — честная ошибка, а не тихо неполный
         ответ или битый JSON недописанного вызова инструмента."""
         if not self._finish_reason:
-            return
+            if not streamed:
+                return
+
+            msg = (
+                f"{self._where}: the stream ended without a finish_reason: the reply "
+                "is cut off or the server closed the connection early"
+            )
+            raise LlmError(msg)
 
         if FinishReason.is_complete(self._finish_reason):
             return
@@ -339,7 +352,7 @@ class StreamAssembly(ChunkAssembly[WireChunk]):
         )
         raise LlmError(msg)
 
-    def _ceiling_error(self) -> LlmError:
+    def _ceiling_error(self) -> LlmOutputLimitError:
         """Ошибка обрыва по потолку токенов: расход, недописанный вызов, совет."""
         spent = self._usage.completion_tokens
         reasoning = self._usage.completion_tokens_details.reasoning_tokens
@@ -353,7 +366,7 @@ class StreamAssembly(ChunkAssembly[WireChunk]):
 
         msg = f"{msg}; raise sampling max_tokens or lower the reasoning effort"
 
-        return LlmError(msg)
+        return LlmOutputLimitError(msg)
 
     def _cut_call(self) -> str:
         """Имя вызова, который резался последним; пусто, если все вызовы целы."""
@@ -458,6 +471,11 @@ class OpenAiChatModel(HttpChatModel[WireChunk]):
             WireField.MESSAGES.value: self._messages(request.messages),
             WireField.STREAM.value: request.stream,
         }
+        if request.stream:
+            # без этого поля совместимые серверы учёт в потоке не присылают
+            payload[WireField.STREAM_OPTIONS.value] = {
+                WireField.INCLUDE_USAGE.value: True
+            }
 
         tools: list[ToolSpec] = list(request.tools)
         if request.reply_schema is not None:

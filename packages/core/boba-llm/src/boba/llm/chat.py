@@ -7,16 +7,20 @@
 
 Ошибки:
 LlmError — модель не загрузилась, провайдер недоступен, ответил не по
-    контракту или оборвал генерацию (лимит токенов, фильтр); поток событий
+    контракту или оборвал генерацию (фильтр, поток без финала); поток событий
     обрывается этой ошибкой.
+LlmOutputLimitError — подкласс LlmError: ответ срезан пределом длины (finish_reason
+    length, done_reason length, расход потолка локального прогона).
+LlmContextOverflowError — подкласс LlmError: запрос не поместился в окно модели
+    (ответ 4xx или ошибка сервера с текстом о длине контекста).
 """
 
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from collections.abc import AsyncIterator, Mapping, Sequence
+from collections.abc import AsyncIterator, Iterator, Mapping, Sequence
 from enum import StrEnum
-from typing import Any, TypeAlias
+from typing import Any, ClassVar, TypeAlias
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -30,7 +34,10 @@ __all__ = [
     "ChatRole",
     "ChatTurn",
     "ChatUsage",
+    "ContextOverflowSigns",
+    "LlmContextOverflowError",
     "LlmError",
+    "LlmOutputLimitError",
     "ToolCall",
     "ToolSpec",
 ]
@@ -38,6 +45,42 @@ __all__ = [
 
 class LlmError(Exception):
     """Обращение к модели не состоялось: загрузка, сеть, статус, мусорный ответ."""
+
+
+class LlmOutputLimitError(LlmError):
+    """Ответ оборван пределом длины: модель замолчала на полуслове."""
+
+
+class LlmContextOverflowError(LlmError):
+    """Запрос не поместился в окно модели."""
+
+
+class ContextOverflowSigns:
+    """Распознаёт по тексту ошибки сервера, что запрос не поместился в окно.
+
+    Единого кода у совместимых серверов нет: OpenAI отвечает
+    `context_length_exceeded`, vLLM и llama.cpp — своим текстом про длину
+    контекста. Реализации портов зовут этот класс для 4xx и для ошибок в теле.
+    """
+
+    PHRASES: ClassVar[tuple[str, ...]] = (
+        "context_length_exceeded",
+        "context length",
+        "context window",
+        "context size",
+        "maximum context",
+        "prompt is too long",
+        "input is too long",
+        "too many tokens",
+        "exceeds the limit",
+    )
+
+    def matches(self, text: str) -> bool:
+        return any(self._hits(text.lower()))
+
+    def _hits(self, lowered: str) -> Iterator[bool]:
+        for phrase in self.PHRASES:
+            yield phrase in lowered
 
 
 class ChatRole(StrEnum):

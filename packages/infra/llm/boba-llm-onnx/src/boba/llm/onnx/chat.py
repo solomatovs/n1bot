@@ -9,6 +9,7 @@ llguidance, и ответ по построению — json по схеме.
 рантайм пересобирает схемы и теряет required и вложенные свойства.
 
 Ошибки:
+LlmOutputLimitError — прогон израсходовал потолок max_tokens: ответ срезан.
 LlmError — модель не загрузилась, прогон сорвался, сообщение с картинками
     либо генерация упёрлась в потолок max_tokens (ответ неполон).
 LlmProvidersError — секция не того провайдера или у провайдера нет
@@ -39,7 +40,9 @@ from boba.llm.chat import (
     ChatRequest,
     ChatRole,
     ChatTurn,
+    ChatUsage,
     LlmError,
+    LlmOutputLimitError,
     ToolCall,
     ToolSpec,
 )
@@ -199,6 +202,15 @@ class RunSpec(BaseModel):
     guidance_data: str = ""
 
 
+class RunUsage(BaseModel):
+    """Учёт прогона: токены промпта и порождённые токены."""
+
+    model_config = ConfigDict(frozen=True)
+
+    prompt_tokens: int
+    output_tokens: int
+
+
 class OnnxChatRuntime:
     """Прогон одной загруженной модели: лок, пошаговая генерация.
 
@@ -245,14 +257,14 @@ class OnnxChatRuntime:
         spec: RunSpec,
         on_piece: Callable[[str], None],
         stopped: Callable[[], bool],
-    ) -> None:
+    ) -> RunUsage:
         """Прогон под локом: каждый декодированный кусок уходит в on_piece.
 
         stopped проверяется на каждом токене: True — прогон обрывается без
-        ошибки, надо остановиться и освободить модель.
+        ошибки, надо остановиться и освободить модель. Возвращает учёт токенов.
         """
         with self._lock:
-            self._generate(prompt, spec, on_piece, stopped)
+            return self._generate(prompt, spec, on_piece, stopped)
 
     def _generate(
         self,
@@ -260,7 +272,7 @@ class OnnxChatRuntime:
         spec: RunSpec,
         on_piece: Callable[[str], None],
         stopped: Callable[[], bool],
-    ) -> None:
+    ) -> RunUsage:
         encoded = self._tokenizer.encode(prompt)
 
         params = self._runtime.params(self._model)
@@ -278,7 +290,7 @@ class OnnxChatRuntime:
             stream = self._tokenizer.create_stream()
             while not generator.is_done():
                 if stopped():
-                    return
+                    return RunUsage(prompt_tokens=len(encoded), output_tokens=produced)
 
                 generator.generate_next_token()
                 token = generator.get_next_tokens()[0]
@@ -307,7 +319,9 @@ class OnnxChatRuntime:
                 f"onnx chat: generation with {self._model_dir} hit the token "
                 f"ceiling ({spec.max_tokens} tokens); raise max_tokens in sampling"
             )
-            raise LlmError(msg)
+            raise LlmOutputLimitError(msg)
+
+        return RunUsage(prompt_tokens=len(encoded), output_tokens=produced)
 
     @staticmethod
     def _search_options(prompt_tokens: int, spec: RunSpec) -> dict[str, object]:
@@ -658,7 +672,7 @@ class OnnxChatModel(ChatModel):
         prompt = self._prompt(request)
 
         parser = LocalReplyParser()
-        queue: asyncio.Queue[str | None | BaseException] = asyncio.Queue(
+        queue: asyncio.Queue[str | RunUsage | BaseException] = asyncio.Queue(
             maxsize=self.QUEUE_SIZE
         )
         loop = asyncio.get_running_loop()
@@ -670,18 +684,20 @@ class OnnxChatModel(ChatModel):
 
         def run() -> None:
             try:
-                self._runtime.run(prompt, spec, on_piece, stop.is_set)
+                usage = self._runtime.run(prompt, spec, on_piece, stop.is_set)
             except BaseException as exc:
                 asyncio.run_coroutine_threadsafe(queue.put(exc), loop).result()
                 return
 
-            asyncio.run_coroutine_threadsafe(queue.put(None), loop).result()
+            asyncio.run_coroutine_threadsafe(queue.put(usage), loop).result()
 
         worker = loop.run_in_executor(None, run)
         try:
+            usage = RunUsage(prompt_tokens=0, output_tokens=0)
             while True:
                 arrived = await queue.get()
-                if arrived is None:
+                if isinstance(arrived, RunUsage):
+                    usage = arrived
                     break
 
                 if isinstance(arrived, BaseException):
@@ -691,7 +707,12 @@ class OnnxChatModel(ChatModel):
                 if delta is not None:
                     yield delta
 
-            yield parser.finish()
+            reply = parser.finish()
+            counted = ChatUsage(
+                input_tokens=usage.prompt_tokens, output_tokens=usage.output_tokens
+            )
+
+            yield reply.model_copy(update={"usage": counted})
         finally:
             stop.set()
             await worker

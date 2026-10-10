@@ -50,8 +50,8 @@ class SessionId(BaseModel):
     def _well_formed(cls, value: str) -> str:
         if not cls.SHAPE.match(value):
             msg = (
-                f"session id {value!r}: expected 1..128 characters of [A-Za-z0-9_-], "
-                "as the id names a journal file"
+                f"'{value}' is not a valid session id. The id names the journal file, "
+                "so it must be 1 to 128 characters: letters, digits, '-' or '_'."
             )
             raise ValueError(msg)
 

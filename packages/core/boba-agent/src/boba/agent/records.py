@@ -537,7 +537,7 @@ class RecordCodec:
             return model.model_validate(raw)
         except ValidationError as exc:
             msg = (
-                f"record of type {raw.get(self.TYPE)!r} does not fit "
+                f"This '{raw.get(self.TYPE)}' record does not have the shape of "
                 f"{model.__name__}: {exc}"
             )
             raise RecordError(msg) from exc
@@ -578,7 +578,10 @@ class RecordCodec:
             record_type = RecordType(kind)
         except ValueError as exc:
             known = [member.value for member in RecordType]
-            msg = f"record type {kind!r} is unknown, expected one of {known}"
+            msg = (
+                f"This record has type '{kind}', which this agent does not know. "
+                f"Known types are {known}."
+            )
             raise RecordError(msg) from exc
 
         if record_type is not RecordType.SYSTEM:
@@ -588,9 +591,10 @@ class RecordCodec:
         try:
             system_subtype = SystemSubtype(subtype)
         except ValueError as exc:
+            known_subtypes = [member.value for member in SystemSubtype]
             msg = (
-                f"system record subtype {subtype!r} is unknown, "
-                f"expected one of {[s.value for s in SystemSubtype]}"
+                f"This system record has subtype '{subtype}', which this agent does "
+                f"not know. Known subtypes are {known_subtypes}."
             )
             raise RecordError(msg) from exc
 
