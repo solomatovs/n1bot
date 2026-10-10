@@ -32,6 +32,7 @@ from typing import (
     get_args,
     get_origin,
     get_type_hints,
+    overload,
 )
 
 from pydantic import BaseModel, ConfigDict, create_model
@@ -269,8 +270,41 @@ def _warmup_config_model(fn: WarmupBody) -> type[BaseModel]:
     return annotation
 
 
-def tool(fn: Callable[..., Any]) -> PayloadTool:
-    """Тело инструмента -> PayloadTool: схема из подписи, описание из докстринга."""
+@overload
+def tool(fn: Callable[..., Any], /) -> PayloadTool: ...
+
+
+@overload
+def tool(
+    *, read_only: bool = ..., destructive: bool = ...
+) -> Callable[[Callable[..., Any]], PayloadTool]: ...
+
+
+def tool(
+    fn: Callable[..., Any] | None = None,
+    /,
+    *,
+    read_only: bool = False,
+    destructive: bool = True,
+) -> PayloadTool | Callable[[Callable[..., Any]], PayloadTool]:
+    """Тело инструмента -> PayloadTool: схема из подписи, описание из докстринга.
+
+    Голый `@tool` — инструмент без пометок: клиент считает его меняющим и
+    разрушающим и спрашивает разрешение. `@tool(read_only=True,
+    destructive=False)` размечает чтение, `@tool(destructive=False)` —
+    изменение без разрушения.
+    """
+    if fn is None:
+
+        def mark(body: Callable[..., Any]) -> PayloadTool:
+            return _tool(body).hinted(read_only=read_only, destructive=destructive)
+
+        return mark
+
+    return _tool(fn).hinted(read_only=read_only, destructive=destructive)
+
+
+def _tool(fn: Callable[..., Any]) -> PayloadTool:
     description = inspect.getdoc(fn)
     if not description:
         msg = f"tool {fn.__name__!r} has no docstring: LLM needs a description"

@@ -164,7 +164,7 @@ class DiagramSpec:
             raise CanvasRefusedError(DiagramErrorKind.INVALID_SPEC, str(e)) from e
 
 
-@tool
+@tool(destructive=False)
 async def canvas_open(
     path: Annotated[str, Field(min_length=1, description=CanvasPrompt.PATH)],
     subject: Annotated[Subject, Injected],
@@ -183,7 +183,7 @@ async def canvas_open(
     )
 
 
-@tool
+@tool(destructive=False)
 async def send_file(
     path: Annotated[str, Field(min_length=1, description=CanvasPrompt.FILE_PATH)],
     subject: Annotated[Subject, Injected],
@@ -201,7 +201,7 @@ async def send_file(
     )
 
 
-@tool
+@tool(destructive=False)
 async def diagram_save(  # noqa: PLR0913 — контекст вызова и конфиг едут отдельными параметрами
     name: Annotated[str, Field(min_length=1, description=DiagramPrompt.NAME)],
     spec: Annotated[

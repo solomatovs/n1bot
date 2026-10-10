@@ -464,7 +464,7 @@ class EdgeDeleteListing:
         return TableResult(rows=rows)
 
 
-@tool
+@tool(destructive=False)
 async def describe_edge(  # noqa: PLR0913 — оба конца, вид и текст называет вызов
     source: Annotated[str, Field(min_length=1, description=EdgePrompt.SOURCE)],
     target: Annotated[str, Field(min_length=1, description=EdgePrompt.TARGET)],
@@ -496,7 +496,7 @@ async def describe_edge(  # noqa: PLR0913 — оба конца, вид и те�
     return TableResult(rows=[written.model_dump(mode="json")])
 
 
-@tool
+@tool(read_only=True, destructive=False)
 async def describe_list_edges(
     offset: RowOffset,
     limit: RowLimit,

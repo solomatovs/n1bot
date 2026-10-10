@@ -403,7 +403,7 @@ async def run_and_collect(
     return TableResult(rows=page.rows, note=note)
 
 
-@tool
+@tool(read_only=True, destructive=False)
 async def kb_catalog2(
     *,
     cfg: Annotated[KbToolConfig, Injected],
@@ -429,7 +429,7 @@ async def kb_catalog2(
     return TableResult(rows=rows, note=note)
 
 
-@tool
+@tool(read_only=True, destructive=False)
 async def kb_fts_search2(  # noqa: PLR0913 — окно выдачи задаёт вызов
     query: Annotated[str, Field(min_length=1, description=Prompt.QUERY_FTS)],
     surfaces: Annotated[LLMStringList, Field(default=[], description=Prompt.SURFACES)],
@@ -457,7 +457,7 @@ async def kb_fts_search2(  # noqa: PLR0913 — окно выдачи задаё�
     return await run_and_collect(cfg, request, window)
 
 
-@tool
+@tool(read_only=True, destructive=False)
 async def kb_trgm_search2(  # noqa: PLR0913 — окно выдачи задаёт вызов
     query: Annotated[str, Field(min_length=1, description=Prompt.QUERY_TRGM)],
     surfaces: Annotated[LLMStringList, Field(default=[], description=Prompt.SURFACES)],
@@ -486,7 +486,7 @@ async def kb_trgm_search2(  # noqa: PLR0913 — окно выдачи задаё
     return await run_and_collect(cfg, request, window)
 
 
-@tool
+@tool(read_only=True, destructive=False)
 async def kb_vector_search2(  # noqa: PLR0913 — окно выдачи задаёт вызов
     query: Annotated[str, Field(min_length=1, description=Prompt.QUERY_VECTOR)],
     surfaces: Annotated[LLMStringList, Field(default=[], description=Prompt.SURFACES)],
@@ -516,7 +516,7 @@ async def kb_vector_search2(  # noqa: PLR0913 — окно выдачи зада
     return await run_and_collect(cfg, request, window)
 
 
-@tool
+@tool(read_only=True, destructive=False)
 async def kb_node2(
     node_id: Annotated[int, Field(ge=1, description=Prompt.NODE_ID)],
     aspects: Annotated[

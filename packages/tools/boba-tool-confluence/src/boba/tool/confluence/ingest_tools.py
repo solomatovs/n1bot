@@ -300,7 +300,7 @@ class IngestRun:
         return report
 
 
-@tool
+@tool(destructive=False)
 async def confluence_index_page(
     page_id: Annotated[
         str,
@@ -332,7 +332,7 @@ async def confluence_index_page(
     return TableResult(rows=report.rows(), note=f"{report.note()}; page_id: {page_id}")
 
 
-@tool
+@tool(destructive=False)
 async def confluence_index_space(
     space_key: Annotated[
         str,
@@ -363,7 +363,7 @@ async def confluence_index_space(
     )
 
 
-@tool
+@tool(destructive=False)
 async def confluence_attachment(
     page_id: Annotated[
         str,

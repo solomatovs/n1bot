@@ -262,7 +262,7 @@ async def ch_query(
 
 
 '''
-@tool
+@tool(read_only=True, destructive=False)
 async def ch_describe_table(
     connection: ChConnection,
     table: Annotated[
@@ -331,7 +331,7 @@ async def ch_describe_table(
 '''
 
 
-@tool
+@tool(read_only=True, destructive=False)
 async def ch_database_describe(
     connection: ChConnection,
     database: Annotated[
@@ -385,7 +385,7 @@ async def ch_database_describe(
     )
 
 
-@tool
+@tool(read_only=True, destructive=False)
 async def ch_table_describe(
     connection: ChConnection,
     database: DatabaseFilter,
@@ -441,7 +441,7 @@ async def ch_table_describe(
     )
 
 
-@tool
+@tool(read_only=True, destructive=False)
 async def ch_column_describe(
     connection: ChConnection,
     database: DatabaseFilter,
@@ -500,7 +500,7 @@ async def ch_column_describe(
     )
 
 
-@tool
+@tool(read_only=True, destructive=False)
 async def ch_constraints_describe(
     connection: ChConnection,
     database: DatabaseFilter,
@@ -548,7 +548,7 @@ async def ch_constraints_describe(
     )
 
 
-@tool
+@tool(read_only=True, destructive=False)
 async def ch_indexes_describe(
     connection: ChConnection,
     database: DatabaseFilter,
@@ -599,7 +599,7 @@ async def ch_indexes_describe(
     )
 
 
-@tool
+@tool(read_only=True, destructive=False)
 async def ch_function_describe(
     connection: ChConnection,
     function: Annotated[
@@ -659,7 +659,7 @@ async def ch_function_describe(
     )
 
 
-@tool
+@tool(read_only=True, destructive=False)
 async def ch_sequences_describe(
     connection: ChConnection,
     database: DatabaseFilter = "*",
@@ -714,7 +714,7 @@ async def ch_sequences_describe(
     )
 
 
-@tool
+@tool(read_only=True, destructive=False)
 async def ch_types_describe(
     connection: ChConnection,
     name: Annotated[
@@ -814,7 +814,7 @@ class Edm(StrEnum):
         return [cls.TABLE_COLUMN.value, cls.VIEW_COLUMN.value]
 
 
-@tool
+@tool(read_only=True, destructive=False)
 async def ch_edm_structure(  # noqa: PLR0913
     connection: ChConnection,
     database: Annotated[
@@ -909,7 +909,7 @@ async def ch_edm_structure(  # noqa: PLR0913
     )
 
 
-@tool
+@tool(read_only=True, destructive=False)
 async def ch_edm_descriptions(  # noqa: PLR0913
     connection: ChConnection,
     database: Annotated[
@@ -1030,7 +1030,7 @@ async def ch_edm_descriptions(  # noqa: PLR0913
     )
 
 
-@tool
+@tool(read_only=True, destructive=False)
 async def ch_stream_out(  # noqa: PLR0913
     connection: ChConnection,
     sql: Annotated[
@@ -1125,7 +1125,7 @@ async def ch_stream_out(  # noqa: PLR0913
     return SqlResult(engine=ChToolConfig.ENGINE, statements=statements)
 
 
-@tool
+@tool(destructive=False)
 async def ch_stream_in(  # noqa: PLR0913
     connection: ChConnection,
     database: Annotated[str, Field(min_length=1, description="База таблицы-приёмника")],
@@ -1340,7 +1340,7 @@ async def ch_stream_in(  # noqa: PLR0913
     return SqlResult(engine=ChToolConfig.ENGINE, statements=statements)
 
 
-@tool
+@tool(read_only=True, destructive=False)
 async def ch_address(connection: ChConnection) -> TableResult:
     """Базовый url соединения ClickHouse: clickhouse://host:port/database.
 
@@ -1357,7 +1357,7 @@ async def ch_address(connection: ChConnection) -> TableResult:
     return TableResult(rows=[row])
 
 
-@tool
+@tool(read_only=True, destructive=False)
 async def ch_edm_general_describe(  # noqa: PLR0913 — ширина подписи задана контрактом
     connection: ChConnection,
     database: DatabaseFilter,
@@ -1502,7 +1502,7 @@ or column_ed_name is not null )
     )
 
 
-@tool
+@tool(read_only=True, destructive=False)
 async def ch_edm_table_describe(  # noqa: PLR0913 — ширина подписи задана контрактом
     connection: ChConnection,
     database: DatabaseFilter,
