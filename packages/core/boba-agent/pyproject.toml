@@ -8,13 +8,19 @@ version = "0.0.26.dev4"
 description = "Boba agent: ядро агента — записи истории, очередь ввода, сборка запроса, ход, сжатие; знает только порты."
 requires-python = ">=3.11,<4"
 dependencies = [
+    "pydantic>=2.12,<3",
 ]
 
 [project.optional-dependencies]
 dev = [
     "boba-stand==0.0.26.dev4",
+    "boba-history-jsonl==0.0.26.dev4",
+    "boba-prompt-assembly==0.0.26.dev4",
     "pytest>=9.1,<10",
 ]
+
+[tool.boba.unimported]
+boba-prompt-assembly = "сверка загрузчика с эталонной моделью журнала: тесты зовут python -m boba.prompt_assembly субпроцессом"
 
 [tool.setuptools.package-data]
 "boba.agent" = ["template/*/*.txt"]
