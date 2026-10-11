@@ -89,7 +89,7 @@ from boba.llm.chat import ChatModel, ChatReply, ChatRequest, ChatUsage
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["TurnLoop"]
+__all__ = ["ContextUsage", "TurnLoop"]
 
 
 @dataclass(frozen=True)
@@ -110,6 +110,15 @@ class Compacted:
 
 
 CompactResult = Compacted | NotSummarized | SummaryAborted
+
+
+@dataclass(frozen=True)
+class ContextUsage:
+    """Заполненность контекста: оценка разговора в токенах и действующее
+    окно модели без запаса под ответ."""
+
+    used: int
+    size: int
 
 
 @dataclass
@@ -153,6 +162,7 @@ class TurnLoop:
     ) -> None:
         self._recorder = recorder
         self._request_id = ""
+        self._message_id = ""
         self._keeper = keeper
         self._session: Session = keeper.session
         self._queue = queue
@@ -203,6 +213,12 @@ class TurnLoop:
     def system_prompt(self) -> Sequence[str]:
         return self._system_prompt
 
+    def context_usage(self) -> ContextUsage:
+        """Текущая оценка заполненности: как её видит проверка перед запросом."""
+        fill = self._gate.measure(self._session.conversation(), self._snapshot_in_use())
+
+        return ContextUsage(used=fill.tokens, size=self._profile.effective_window())
+
     async def run(self, taken: Taken, cancellation: RunCancellation) -> TurnOutcome:
         started = time.monotonic()
         self._failures = 0
@@ -219,6 +235,14 @@ class TurnLoop:
                 break
 
         duration = int((time.monotonic() - started) * self.MILLIS)
+        prompt_ids: list[str] = []
+        for item in taken.items:
+            prompt_ids.append(item.id)
+
+        error = ""
+        if outcome.is_failure:
+            error = self._last_failure
+
         await self._sink.emit(
             ResultEvent(
                 outcome=outcome,
@@ -226,6 +250,8 @@ class TurnLoop:
                 usage=progress.usage,
                 num_turns=progress.steps,
                 duration_ms=duration,
+                prompt_ids=prompt_ids,
+                error=error,
             )
         )
         await self._writer.flush()
@@ -449,8 +475,9 @@ class TurnLoop:
         progress.limit_hits += 1
         await self._write_partial(asked.partial, ReplyStopReason.MAX_TOKENS, False)
         if progress.limit_hits > self._limits.output_limit_retries:
+            self._last_failure = asked.error
             await self._write_api_failure(asked.error)
-            return TurnOutcome.API_ERROR
+            return TurnOutcome.OUTPUT_LIMIT
 
         await self._write_meta(self._templates.read(AgentTemplateFile.OUTPUT_LIMIT_HIT))
 
@@ -476,8 +503,12 @@ class TurnLoop:
     async def _attempt(
         self, request: ChatRequest, cancellation: RunCancellation
     ) -> Asked | None:
-        """Одна попытка; None — ошибка, которую стоит повторить."""
-        asked = await self._asking.attempt(request, cancellation, show=True)
+        """Одна попытка; None — ошибка, которую стоит повторить. Идентификатор
+        сообщения ответа выдаётся здесь, до первого куска наружу."""
+        self._message_id = self._ids.message_id()
+        asked = await self._asking.attempt(
+            request, cancellation, show=True, message_id=self._message_id
+        )
         if isinstance(asked, Errored):
             self._last_failure = asked.error
             self._failures += 1
@@ -668,7 +699,10 @@ class TurnLoop:
             )
             blocks.append((block, call.id))
 
-        message_id = self._ids.message_id()
+        message_id = self._message_id
+        if not message_id:
+            message_id = self._ids.message_id()
+
         request_id = self._request_id
         if not request_id:
             request_id = self._ids.request_id()
