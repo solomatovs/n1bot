@@ -15,6 +15,7 @@ from pydantic import (
 
 from boba.access import RoleConfig
 from boba.auth.config import AuthConfig
+from boba.chainlit.acp.config import AgentConfig
 from boba.chat.profiles import (
     ChatProfileConfig,
     SettingsBounds,
@@ -265,4 +266,9 @@ class AppConfig(RuntimeConfig):
     data_layer: Annotated[
         DataLayerConfig,
         Field(description="Сервис chainlit data layer: подключение + схема."),
+    ]
+
+    agent: Annotated[
+        AgentConfig,
+        Field(description="Секция [agent]: процесс-агент ACP на вкладку треда."),
     ]
