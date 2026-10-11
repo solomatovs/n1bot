@@ -2207,7 +2207,7 @@ class AcpAgent(AcpAgentProtocol):
             wanted = self._directory(cwd)
 
         try:
-            page = await self._assembly.sessions(cursor)
+            page = await self._listed(wanted, cursor)
         except HistoryError as exc:
             raise RequestError.internal_error(
                 {ErrorDataKey.DETAILS.value: str(exc)}
@@ -2215,9 +2215,6 @@ class AcpAgent(AcpAgentProtocol):
 
         sessions: list[SessionInfo] = []
         for summary in page.sessions:
-            if wanted is not None and Path(summary.cwd) != wanted:
-                continue
-
             sessions.append(
                 SessionInfo(
                     session_id=summary.session_id,
@@ -2228,6 +2225,36 @@ class AcpAgent(AcpAgentProtocol):
             )
 
         return ListSessionsResponse(sessions=sessions, next_cursor=page.next_cursor)
+
+    async def _listed(self, wanted: Path | None, cursor: str | None) -> SessionPage:
+        """Страница сессий: без каталога — страница хранилища как есть; с
+        каталогом страницы хранилища читаются подряд, пока не наберётся
+        полная страница сессий этого каталога или сессии не кончатся.
+        Курсор ответа — идентификатор последней отданной сессии, так что
+        следующая страница продолжает с него.
+
+        Ошибки:
+        HistoryError — хранилище отказало.
+        """
+        page = await self._assembly.sessions(cursor)
+        if wanted is None:
+            return page
+
+        picked: list[SessionSummary] = []
+        while True:
+            for summary in page.sessions:
+                if Path(summary.cwd) == wanted:
+                    picked.append(summary)
+
+            if page.next_cursor is None:
+                return SessionPage(sessions=picked, next_cursor=None)
+
+            size = len(page.sessions)
+            if len(picked) >= size:
+                full = picked[:size]
+                return SessionPage(sessions=full, next_cursor=full[-1].session_id)
+
+            page = await self._assembly.sessions(page.next_cursor)
 
     async def delete_session(self, params: Any) -> DeleteSessionResponse:
         """Маршрут `session/delete`: сессия, которую ведёт этот процесс,
