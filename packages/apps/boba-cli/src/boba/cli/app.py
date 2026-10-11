@@ -31,6 +31,8 @@ from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from typing import BinaryIO, ClassVar
 
+import httpx
+
 from boba.agent.agent import Agent, AgentParts
 from boba.agent.attachments import EnvironmentSnapshot
 from boba.agent.history import (
@@ -39,12 +41,14 @@ from boba.agent.history import (
     MemoryHistoryStore,
     SessionId,
 )
+from boba.agent.hooks import McpToolOrigin, ToolOrigins
 from boba.agent.permissions import PermissionModeError
 from boba.agent.profile import ModelProfile, ProfileError
 from boba.agent.records import PermissionMode, RecordCodec
 from boba.agent.skills import Skill, SkillsDir, SkillsError
 from boba.agent.tools import ToolsError
 from boba.cancellation import ProcessStop, StopAction, StopReason
+from boba.cli.hooks import HookWiring, HttpHookTransport
 from boba.cli.protocol import (
     EndOfInput,
     EventLines,
@@ -268,6 +272,19 @@ class ManyServers(ToolServer):
     def features(self) -> Mapping[str, Mapping[str, object]]:
         return {}
 
+    def origins(self) -> ToolOrigins:
+        """Откуда у модели каждый инструмент: сервер, имя на нём, возможности."""
+        found: dict[str, McpToolOrigin] = {}
+        for name, server in self._servers.items():
+            for card in server.tools():
+                found[card.name] = McpToolOrigin(
+                    server=name,
+                    tool=server.remote_name(card.name),
+                    features=server.features(),
+                )
+
+        return ToolOrigins(found)
+
     async def submit(
         self, calls: Sequence[DagNode]
     ) -> Sequence[asyncio.Future[NodeOutcome]]:
@@ -328,6 +345,8 @@ class AgentProcess:
         # метаданных дистрибутивов и их entry points нет
         self._providers = LlmProviders(LlmProviderTypes.declare([OPENAI, OLLAMA, ONNX]))
         self._servers: ManyServers | None = None
+        self._hook_transport = HttpHookTransport(httpx.AsyncClient(trust_env=False))
+        self._hook_wiring = HookWiring(self._hook_transport, cwd)
 
     async def run(self) -> None:
         """Всё поднимается до чтения ввода: настройки, журнал, серверы MCP;
@@ -366,6 +385,7 @@ class AgentProcess:
             if self._servers is not None:
                 await self._servers.close()
 
+            await self._hook_transport.aclose()
             await self._providers.aclose()
 
     @staticmethod
@@ -431,6 +451,9 @@ class AgentProcess:
         model = settings.selected_model()
         profile = ProfileBuilder(self._env).profile(settings.model, model)
         servers = await self._tool_servers(settings)
+        origins = ToolOrigins({})
+        if servers is not None:
+            origins = servers.origins()
 
         return AgentParts(
             profile=profile,
@@ -450,6 +473,7 @@ class AgentProcess:
             allowed_tools=settings.permissions.allow,
             denied_tools=settings.permissions.deny,
             record_requests=settings.record_requests,
+            hooks=self._hook_wiring.hooks(settings, origins),
         )
 
     def _chat_model(
