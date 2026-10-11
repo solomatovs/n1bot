@@ -5,7 +5,8 @@
 сервера и зовутся по имени (план, раздел 5.12). ToolRunner ведёт пачку
 вызовов по разделу 5.13, шаг 8: каждый вызов проходит разрешения (раздел
 5.6), вопросы наружу идут по очереди, затем хук `PreToolUse` (boba.agent.hooks)
-может заменить аргументы, снять вызов или потребовать вопрос наружу;
+может заменить аргументы, снять вызов или потребовать вопрос наружу; у вызова
+workflow хук проходит и каждый узел — вызов своего инструмента;
 разрешённые вызовы уходят серверу одним `submit` с аргументами после хука,
 а запись `tool_use` хранит аргументы модели; результаты собираются в
 порядке вызовов; отмена посреди пачки даёт результаты-отказы по таблице
@@ -74,7 +75,8 @@ from boba.agent.tags import AgentTag
 from boba.agent.template import AgentTemplate, AgentTemplateFile
 from boba.agent.writer import RecordKeeper
 from boba.cancellation import RunCancellation, StopReason, ToolStopped
-from boba.toolkit.dag import DagNode, NodeOutcome, ToolHints, ToolServer
+from boba.toolkit.chain import StreamPlanError
+from boba.toolkit.dag import CallDag, DagNode, NodeOutcome, ToolHints, ToolServer
 
 logger = logging.getLogger(__name__)
 
@@ -523,6 +525,7 @@ class ToolRunner:
     ) -> None:
         self._static = static
         self._hooks = hooks
+        self._dags = CallDag()
         self._tools = tools
         self._texts = texts
         self._templates = templates
@@ -618,20 +621,83 @@ class ToolRunner:
         arguments: Mapping[str, Any],
         cancellation: RunCancellation,
     ) -> HookVerdict:
-        if self._hooks is None:
+        hooks = self._hooks
+        if hooks is None:
             return HookAllowed(arguments=arguments)
 
+        verdict = await hooks.before_call(
+            self._hooked_call(call.name, call.block.id, arguments), cancellation
+        )
+        if isinstance(verdict, HookDenied):
+            return verdict
+
+        if isinstance(verdict, HookBlocked):
+            return verdict
+
+        if call.name != self._dags.WORKFLOW:
+            return verdict
+
+        return await self._nodes_hooked(hooks, call, verdict, cancellation)
+
+    async def _nodes_hooked(
+        self,
+        hooks: PreToolUseHooks,
+        call: PlannedCall,
+        verdict: HookAllowed | HookAsked,
+        cancellation: RunCancellation,
+    ) -> HookVerdict:
+        """Хук над узлами вызова workflow. Узел — вызов своего инструмента:
+        обработчик видит его под именем, схемой и идентификатором вызова
+        этого инструмента, а замены аргументов узлов возвращаются в вызов
+        workflow. Отказ по любому узлу снимает вызов целиком. Вызов,
+        который не проходит форму описания, уходит серверу как есть — он и
+        ответит, что с ним не так."""
+        whole = DagNode(key=call.block.id, tool=call.name, args=dict(verdict.arguments))
+        try:
+            described = self._dags.described(whole)
+        except StreamPlanError:
+            return verdict
+
+        asked: HookAsked | None = None
+        if isinstance(verdict, HookAsked):
+            asked = verdict
+
+        nodes: list[DagNode] = []
+        for node, called in zip(described, self._dags.nodes_of(whole), strict=True):
+            hooked = await hooks.before_call(
+                self._hooked_call(node.tool, called.key, node.args), cancellation
+            )
+            if isinstance(hooked, HookDenied):
+                return hooked
+
+            if isinstance(hooked, HookBlocked):
+                return hooked
+
+            if isinstance(hooked, HookAsked) and asked is None:
+                asked = hooked
+
+            nodes.append(node.model_copy(update={"args": dict(hooked.arguments)}))
+
+        arguments = self._dags.with_nodes(whole, nodes).args
+        if asked is not None:
+            return HookAsked(arguments=arguments, reason=asked.reason)
+
+        return HookAllowed(arguments=arguments)
+
+    def _hooked_call(
+        self, name: str, tool_use_id: str, arguments: Mapping[str, Any]
+    ) -> HookedCall:
+        """Вызов инструмента name глазами хука в текущей сессии."""
         session = self._keeper.session
-        hooked = HookedCall(
+
+        return HookedCall(
             session_id=session.id.value,
             permission_mode=PermissionState(session.service()).mode,
-            tool_name=call.name,
-            tool_use_id=call.block.id,
+            tool_name=name,
+            tool_use_id=tool_use_id,
             arguments=arguments,
-            schema=self._tools.schema_of(call.name),
+            schema=self._tools.schema_of(name),
         )
-
-        return await self._hooks.before_call(hooked, cancellation)
 
     async def _after_hook(
         self, call: PlannedCall, hooked: HookVerdict, questioner: Questioner
