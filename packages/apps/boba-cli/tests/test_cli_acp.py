@@ -12,7 +12,11 @@ FakeLlmApp, инструменты — standard_server.py по streamable HTTP. 
 (один рендерер FeedView на оба), и всё до ответа; `session/resume` без
 воспроизведения; `session/close`; `session/list` страницами с курсором и
 фильтром `cwd`; `session/delete` повторно — успех; неизвестная сессия —
--32002."""
+-32002. Настройки сессии: `modes` и `configOptions` в ответах
+`session/new|load|resume`, `set_mode`/`set_config_option` с уведомлениями,
+смена профиля модели между ходами и отказ при идущем ходе. Служебные
+уведомления: `usage_update` после хода и после сжатия, `session_info_update`
+с заголовком после первого хода и при `load`."""
 
 from __future__ import annotations
 
@@ -25,7 +29,7 @@ import stat
 import sys
 from collections.abc import AsyncIterator, Mapping, Sequence
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import Any, ClassVar, TypeVar
 
 import pytest
 import uvicorn
@@ -39,8 +43,10 @@ from acp.schema import (
     AgentThoughtChunk,
     AllowedOutcome,
     ClientCapabilities,
+    ConfigOptionUpdate,
     CreateElicitationResponse,
     CreateTerminalResponse,
+    CurrentModeUpdate,
     DeniedOutcome,
     ElicitationMode,
     EnvVariable,
@@ -53,19 +59,29 @@ from acp.schema import (
     ReadTextFileResponse,
     ReleaseTerminalResponse,
     RequestPermissionResponse,
+    SessionConfigOptionSelect,
+    SessionConfigSelectGroup,
+    SessionInfoUpdate,
     SseMcpServer,
     TerminalOutputResponse,
     TextContentBlock,
     ToolCallProgress,
     ToolCallStart,
     ToolCallUpdate,
+    UsageUpdate,
     UserMessageChunk,
     WaitForTerminalExitResponse,
     WriteTextFileResponse,
 )
 from acp.schema import ContentChunk as AcpContentChunk
 
-from boba.cli.acp import MetaKey, PermissionChoice, StopReasonName, ToolKindName
+from boba.cli.acp import (
+    ConfigOptionId,
+    MetaKey,
+    PermissionChoice,
+    StopReasonName,
+    ToolKindName,
+)
 from boba.stand.ui.fake_llm import FailureName, FakeLlmApp, ScenarioName
 from boba.stand.ui.stand import free_port
 
@@ -86,6 +102,7 @@ RESOURCE_NOT_FOUND = -32002
 INTERNAL_ERROR = -32603
 METHOD_NOT_FOUND = -32601
 Document = dict[str, Any]
+U = TypeVar("U")
 
 
 def call(*specs: dict[str, object]) -> str:
@@ -96,10 +113,11 @@ def call(*specs: dict[str, object]) -> str:
 
 
 class FakeModel:
-    """FakeLlmApp под uvicorn в цикле теста."""
+    """FakeLlmApp под uvicorn в цикле теста; `estimate_usage` — учёт токенов
+    по знакам, как у настоящего провайдера, нужен сценариям сжатия."""
 
-    def __init__(self) -> None:
-        self.app = FakeLlmApp(token_delay_sec=0.0)
+    def __init__(self, estimate_usage: bool = False) -> None:
+        self.app = FakeLlmApp(token_delay_sec=0.0, estimate_usage=estimate_usage)
         self.port = free_port()
         self._server = uvicorn.Server(
             uvicorn.Config(
@@ -330,6 +348,14 @@ class RecordingClient(FeaturelessClient):
 
         return found
 
+    def of(self, kind: type[U]) -> list[U]:
+        found: list[U] = []
+        for _, update in self.updates:
+            if isinstance(update, kind):
+                found.append(update)
+
+        return found
+
 
 class FeedView:
     """Лента по уведомлениям сессии — один рендерер для живого хода и для
@@ -541,20 +567,34 @@ class AcpProcess:
     ) -> Document:
         return {
             "model": "fake",
-            "models": {
-                "fake": {
-                    "provider": {
-                        "kind": "openai",
-                        "baseUrl": self._model.base_url(),
-                        "apiKey": API_KEY,
-                    },
-                    "model": "fake-model",
-                    "contextWindow": 32000,
-                    "maxOutputTokens": 4096,
-                }
-            },
+            "models": {"fake": self.profile_document("fake-model")},
             "history": {"kind": "jsonl", "root": str(self._root / "history")},
             "permissions": {"defaultMode": mode, "allowBypass": allow_bypass},
+        }
+
+    def profile_document(
+        self,
+        model: str,
+        sampling: Mapping[str, Any] | None = None,
+        context_window: int = 32000,
+        max_output_tokens: int = 4096,
+        chars_per_token: int = 3,
+    ) -> Document:
+        """Профиль `models.<имя>` над фейковой моделью."""
+        if sampling is None:
+            sampling = {}
+
+        return {
+            "provider": {
+                "kind": "openai",
+                "baseUrl": self._model.base_url(),
+                "apiKey": API_KEY,
+            },
+            "model": model,
+            "sampling": dict(sampling),
+            "contextWindow": context_window,
+            "maxOutputTokens": max_output_tokens,
+            "charsPerToken": chars_per_token,
         }
 
     def write_settings(self, document: Document) -> Path:
@@ -1598,3 +1638,449 @@ class TestListAndDelete:
             await boba.close_stdin()
 
         assert await boba.wait() == 0
+
+
+def update_kinds(frames: Frames, request_method: str) -> list[str]:
+    """Виды `session/update`, пришедших до ответа на последний запрос метода."""
+    request_id = frames.request_id(request_method, -1)
+    answered_at = frames.position_of_response(request_id)
+    kinds: list[str] = []
+    for message in frames.incoming_notifications(answered_at):
+        if message["method"] != "session/update":
+            continue
+
+        kinds.append(message["params"]["update"]["sessionUpdate"])
+
+    assert all(
+        m["method"] != "session/update" for m in frames.incoming_after(answered_at)
+    )
+
+    return kinds
+
+
+def option_of(response: Any, option_id: ConfigOptionId) -> SessionConfigOptionSelect:
+    """Настройка `select` из ответа или уведомления с полным состоянием."""
+    assert response.config_options is not None
+    for option in response.config_options:
+        if option.id == option_id.value:
+            assert isinstance(option, SessionConfigOptionSelect)
+            return option
+
+    msg = f"configOption {option_id.value!r} is missing"
+    raise AssertionError(msg)
+
+
+def option_values(option: SessionConfigOptionSelect) -> list[str]:
+    values: list[str] = []
+    for item in option.options:
+        assert not isinstance(item, SessionConfigSelectGroup)
+        values.append(item.value)
+
+    return values
+
+
+class TestSessionSettings:
+    """Режимы и настройки сессии: ответы `session/new|load|resume`,
+    `set_mode` и `set_config_option` с уведомлениями, режим `plan` в деле,
+    смена модели между ходами и отказ при идущем ходе."""
+
+    MODES: ClassVar[list[str]] = ["default", "acceptEdits", "plan", "dontAsk"]
+
+    async def test_new_load_and_resume_report_modes_and_config_options(
+        self, boba: AcpProcess, tmp_path: Path
+    ) -> None:
+        client = RecordingClient()
+        conn = await boba.start(client)
+        try:
+            await handshake(conn)
+            session = await conn.new_session(cwd=str(tmp_path), mcp_servers=[])
+            session_id = session.session_id
+            self.check_state(session, "default", "fake")
+            assert session.modes is not None
+            assert all(m.name and m.description for m in session.modes.available_modes)
+
+            await conn.prompt(
+                session_id=session_id, prompt=[text_block(ScenarioName.ANSWER.value)]
+            )
+            await conn.close_session(session_id=session_id)
+            loaded = await conn.load_session(
+                cwd=str(tmp_path), session_id=session_id, mcp_servers=[]
+            )
+            self.check_state(loaded, "default", "fake")
+
+            await conn.close_session(session_id=session_id)
+            client.updates.clear()
+            resumed = await conn.resume_session(
+                cwd=str(tmp_path), session_id=session_id, mcp_servers=[]
+            )
+            self.check_state(resumed, "default", "fake")
+            assert client.updates == []
+        finally:
+            await conn.close()
+            await boba.close_stdin()
+
+        assert await boba.wait() == 0
+
+    async def test_bypass_is_offered_only_with_the_right(
+        self, boba: AcpProcess, tmp_path: Path
+    ) -> None:
+        client = RecordingClient()
+        document = boba.settings_document(mode="bypassPermissions", allow_bypass=True)
+        conn = await boba.start(client, document)
+        try:
+            await handshake(conn)
+            session = await conn.new_session(cwd=str(tmp_path), mcp_servers=[])
+            assert session.modes is not None
+            assert session.modes.current_mode_id == "bypassPermissions"
+            assert [m.id for m in session.modes.available_modes] == [
+                *self.MODES,
+                "bypassPermissions",
+            ]
+            mode = option_of(session, ConfigOptionId.MODE)
+            assert mode.current_value == "bypassPermissions"
+            assert option_values(mode) == [*self.MODES, "bypassPermissions"]
+        finally:
+            await conn.close()
+            await boba.close_stdin()
+
+        assert await boba.wait() == 0
+
+    async def test_set_mode_changes_permissions_and_notifies(
+        self, boba: AcpProcess, mcp: McpStand, tmp_path: Path
+    ) -> None:
+        client = RecordingClient()
+        conn = await boba.start(client)
+        try:
+            await handshake(conn)
+            session = await conn.new_session(
+                cwd=str(tmp_path), mcp_servers=[mcp.server()]
+            )
+            session_id = session.session_id
+            await conn.set_session_mode(session_id=session_id, mode_id="plan")
+            assert [m.current_mode_id for m in client.of(CurrentModeUpdate)] == ["plan"]
+            announced = client.of(ConfigOptionUpdate)
+            assert len(announced) == 1
+            assert option_of(announced[0], ConfigOptionId.MODE).current_value == "plan"
+
+            response = await conn.prompt(
+                session_id=session_id,
+                prompt=[
+                    text_block(call({"name": "shout", "arguments": {"text": "x"}}))
+                ],
+            )
+            assert response.stop_reason == StopReasonName.END_TURN.value
+            assert client.permissions == []
+            progress = client.progress_of(client.starts()[0].tool_call_id)
+            assert [p.status for p in progress] == ["failed"]
+            assert "plan" in result_text(progress[0]).lower()
+
+            with pytest.raises(RequestError) as bypass:
+                await conn.set_config_option(
+                    session_id=session_id,
+                    config_id=ConfigOptionId.MODE.value,
+                    value="bypassPermissions",
+                )
+
+            assert bypass.value.code == INVALID_PARAMS
+            with pytest.raises(RequestError) as unknown:
+                await conn.set_session_mode(session_id=session_id, mode_id="turbo")
+
+            assert unknown.value.code == INVALID_PARAMS
+
+            changed = await conn.set_config_option(
+                session_id=session_id,
+                config_id=ConfigOptionId.MODE.value,
+                value="default",
+            )
+            assert option_of(changed, ConfigOptionId.MODE).current_value == "default"
+            assert option_of(changed, ConfigOptionId.MODEL).current_value == "fake"
+            assert [m.current_mode_id for m in client.of(CurrentModeUpdate)] == [
+                "plan",
+                "default",
+            ]
+            assert len(client.of(ConfigOptionUpdate)) == 2
+
+            response = await conn.prompt(
+                session_id=session_id,
+                prompt=[
+                    text_block(call({"name": "shout", "arguments": {"text": "y"}}))
+                ],
+            )
+            assert response.stop_reason == StopReasonName.END_TURN.value
+            assert len(client.permissions) == 1
+        finally:
+            await conn.close()
+            await boba.close_stdin()
+
+        assert await boba.wait() == 0
+        modes = [
+            r["permissionMode"]
+            for r in boba.journal(session_id)
+            if r["type"] == "permission-mode"
+        ]
+        assert modes == ["default", "plan", "default"]
+
+    async def test_model_switch_changes_the_profile_of_the_next_request(
+        self, boba: AcpProcess, model: FakeModel, tmp_path: Path
+    ) -> None:
+        client = RecordingClient()
+        document = boba.settings_document()
+        document["models"]["fake"]["sampling"] = {"temperature": 0.1}
+        document["models"]["second"] = boba.profile_document(
+            "second-model", sampling={"temperature": 0.9}
+        )
+        conn = await boba.start(client, document, "--record-requests")
+        try:
+            await handshake(conn)
+            session = await conn.new_session(cwd=str(tmp_path), mcp_servers=[])
+            session_id = session.session_id
+            assert option_values(option_of(session, ConfigOptionId.MODEL)) == [
+                "fake",
+                "second",
+            ]
+            await conn.prompt(
+                session_id=session_id, prompt=[text_block(ScenarioName.ANSWER.value)]
+            )
+
+            changed = await conn.set_config_option(
+                session_id=session_id,
+                config_id=ConfigOptionId.MODEL.value,
+                value="second",
+            )
+            assert option_of(changed, ConfigOptionId.MODEL).current_value == "second"
+            announced = client.of(ConfigOptionUpdate)
+            assert len(announced) == 1
+            assert option_of(announced[0], ConfigOptionId.MODEL).current_value == (
+                "second"
+            )
+            assert client.of(CurrentModeUpdate) == []
+
+            response = await conn.prompt(
+                session_id=session_id, prompt=[text_block(ScenarioName.ANSWER.value)]
+            )
+            assert response.stop_reason == StopReasonName.END_TURN.value
+            assert [r["model"] for r in model.app.requests] == [
+                "fake-model",
+                "second-model",
+            ]
+
+            for config_id, value in (
+                (ConfigOptionId.MODEL.value, "third"),
+                ("temperature", "0.5"),
+                (ConfigOptionId.MODEL.value, True),
+            ):
+                with pytest.raises(RequestError) as refused:
+                    await conn.set_config_option(
+                        session_id=session_id, config_id=config_id, value=value
+                    )
+
+                assert refused.value.code == INVALID_PARAMS
+        finally:
+            await conn.close()
+            await boba.close_stdin()
+
+        assert await boba.wait() == 0
+        records = boba.journal(session_id)
+        temperatures = [
+            r["params"]["sampling"]["temperature"]
+            for r in records
+            if r["type"] == "api-request"
+        ]
+        assert temperatures == [0.1, 0.9]
+        announced_models = [
+            r["attachment"]["identity"]["modelId"]
+            for r in records
+            if r["type"] == "attachment" and r["attachment"]["type"] == "model"
+        ]
+        assert announced_models == ["fake-model", "second-model"]
+
+    async def test_model_switch_waits_for_an_idle_session(
+        self, boba: AcpProcess, mcp: McpStand, tmp_path: Path
+    ) -> None:
+        client = RecordingClient()
+        document = boba.settings_document(mode="bypassPermissions", allow_bypass=True)
+        document["models"]["second"] = boba.profile_document("second-model")
+        conn = await boba.start(client, document)
+        try:
+            await handshake(conn)
+            session = await conn.new_session(
+                cwd=str(tmp_path), mcp_servers=[mcp.server()]
+            )
+            session_id = session.session_id
+            prompting = asyncio.create_task(
+                conn.prompt(
+                    session_id=session_id,
+                    prompt=[
+                        text_block(
+                            call({"name": "sleep_for", "arguments": {"seconds": 2.0}})
+                        )
+                    ],
+                )
+            )
+            while not client.starts():
+                await asyncio.sleep(0.05)
+
+            with pytest.raises(RequestError) as busy:
+                await conn.set_config_option(
+                    session_id=session_id,
+                    config_id=ConfigOptionId.MODEL.value,
+                    value="second",
+                )
+
+            assert busy.value.code == INTERNAL_ERROR
+            assert isinstance(busy.value.data, dict)
+            assert "busy" in busy.value.data["details"]
+
+            await conn.set_session_mode(session_id=session_id, mode_id="default")
+            assert [m.current_mode_id for m in client.of(CurrentModeUpdate)] == [
+                "default"
+            ]
+
+            response = await asyncio.wait_for(prompting, READ_TIMEOUT_SEC)
+            assert response.stop_reason == StopReasonName.END_TURN.value
+            changed = await conn.set_config_option(
+                session_id=session_id,
+                config_id=ConfigOptionId.MODEL.value,
+                value="second",
+            )
+            assert option_of(changed, ConfigOptionId.MODEL).current_value == "second"
+            assert option_of(changed, ConfigOptionId.MODE).current_value == "default"
+        finally:
+            await conn.close()
+            await boba.close_stdin()
+
+        assert await boba.wait() == 0
+
+    def check_state(self, response: Any, mode: str, model: str) -> None:
+        assert response.modes is not None
+        assert response.modes.current_mode_id == mode
+        assert [m.id for m in response.modes.available_modes] == self.MODES
+        assert response.config_options is not None
+        assert [o.id for o in response.config_options] == ["mode", "model"]
+        mode_option = option_of(response, ConfigOptionId.MODE)
+        assert mode_option.category == "mode"
+        assert mode_option.current_value == mode
+        assert option_values(mode_option) == self.MODES
+        model_option = option_of(response, ConfigOptionId.MODEL)
+        assert model_option.category == "model"
+        assert model_option.current_value == model
+        assert option_values(model_option) == [model]
+
+
+class TestServiceUpdates:
+    """`usage_update` после каждого хода и после сжатия, `session_info_update`
+    с заголовком после первого хода и при `load`; все — до ответа на запрос."""
+
+    SIZE: ClassVar[int] = 32000 - 4096
+    TITLE: ClassVar[str] = f"{ScenarioName.ANSWER.value} what is the plan"
+
+    async def test_usage_and_title_follow_the_turn_and_the_load(
+        self, boba: AcpProcess, model: FakeModel, tmp_path: Path
+    ) -> None:
+        client = RecordingClient()
+        conn = await boba.start(client)
+        try:
+            await handshake(conn)
+            session = await conn.new_session(cwd=str(tmp_path), mcp_servers=[])
+            session_id = session.session_id
+            await conn.prompt(
+                session_id=session_id,
+                prompt=[text_block(f"{self.TITLE}\nsecond line")],
+            )
+            usage = client.of(UsageUpdate)
+            assert len(usage) == 1
+            assert usage[0].size == self.SIZE
+            assert 0 < usage[0].used < self.SIZE
+            assert [t.title for t in client.of(SessionInfoUpdate)] == [self.TITLE]
+            kinds = update_kinds(boba.frames, "session/prompt")
+            assert kinds[-2:] == ["usage_update", "session_info_update"]
+
+            await conn.prompt(
+                session_id=session_id, prompt=[text_block(ScenarioName.ANSWER.value)]
+            )
+            assert len(client.of(UsageUpdate)) == 2
+            assert len(client.of(SessionInfoUpdate)) == 1
+            assert update_kinds(boba.frames, "session/prompt")[-1] == "usage_update"
+        finally:
+            await conn.close()
+            await boba.close_stdin()
+
+        assert await boba.wait() == 0
+
+        second = AcpProcess(tmp_path, model)
+        loader = RecordingClient()
+        conn = await second.start(loader)
+        try:
+            await handshake(conn)
+            await conn.load_session(
+                cwd=str(tmp_path), session_id=session_id, mcp_servers=[]
+            )
+            assert [t.title for t in loader.of(SessionInfoUpdate)] == [self.TITLE]
+            assert len(loader.of(UsageUpdate)) == 1
+            kinds = update_kinds(second.frames, "session/load")
+            assert kinds[-2:] == ["usage_update", "session_info_update"]
+            assert kinds[0] == "user_message_chunk"
+        finally:
+            await conn.close()
+            await second.close_stdin()
+            await second.kill()
+
+    async def test_compaction_reports_usage_only(
+        self, mcp: McpStand, tmp_path: Path
+    ) -> None:
+        counting = FakeModel(estimate_usage=True)
+        await counting.start()
+        boba = AcpProcess(tmp_path, counting)
+        client = RecordingClient()
+        document = boba.settings_document(mode="bypassPermissions", allow_bypass=True)
+        document["models"]["fake"] = boba.profile_document(
+            "fake-model", context_window=8000, max_output_tokens=512, chars_per_token=4
+        )
+        try:
+            conn = await boba.start(client, document)
+            try:
+                await handshake(conn)
+                session = await conn.new_session(
+                    cwd=str(tmp_path), mcp_servers=[mcp.server()]
+                )
+                session_id = session.session_id
+                first = await conn.prompt(
+                    session_id=session_id,
+                    prompt=[
+                        text_block(
+                            call({"name": "large", "arguments": {"size": 24000}})
+                        )
+                    ],
+                )
+                assert first.stop_reason == StopReasonName.END_TURN.value
+                assert len(client.of(UsageUpdate)) == 1
+
+                second = await conn.prompt(
+                    session_id=session_id,
+                    prompt=[text_block(ScenarioName.ANSWER.value)],
+                )
+                assert second.stop_reason == StopReasonName.END_TURN.value
+                usage = client.of(UsageUpdate)
+                assert len(usage) == 3
+                assert usage[1].used < usage[0].used
+                assert all(u.size == 8000 - 512 for u in usage)
+                kinds = update_kinds(boba.frames, "session/prompt")
+                assert kinds.count("usage_update") == 3
+                assert kinds[-1] == "usage_update"
+            finally:
+                await conn.close()
+                await boba.close_stdin()
+
+            assert await boba.wait() == 0
+        finally:
+            await boba.kill()
+            await counting.stop()
+
+        records = boba.journal(session_id)
+        boundaries = [
+            r
+            for r in records
+            if r["type"] == "system" and r.get("subtype") == "compact_boundary"
+        ]
+        assert len(boundaries) == 1
+        assert any(r["type"] == "user" and r.get("isCompactSummary") for r in records)
