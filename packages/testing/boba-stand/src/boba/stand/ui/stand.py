@@ -295,6 +295,9 @@ class ServiceStand(StandService):
     рестарт снимает все входы; заданное — входы рестарт переживают."""
     session_ttl_sec: int = 300
     """Срок токена доступа: коротким стенд проверяет продление входа."""
+    plugins: tuple[str, ...] = ()
+    """Плагины сверх набора стенда без песочницы: тест с соединениями
+    пользователя включает pg, его тела идут процессами хоста."""
 
     PROXY_SECRET: ClassVar[str] = "stand-proxy-secret"  # noqa: S105 — ключ стенда
     """Ключ утверждений входа proxy: его знают сервис и чат стенда."""
@@ -410,7 +413,7 @@ class ServiceStand(StandService):
         doc["session"]["session_ttl_sec"] = self.session_ttl_sec
 
         self.files.write(doc)
-        StandPlugins(self.app, self.sandbox).copy_to(self.files.plugins)
+        StandPlugins(self.app, self.sandbox, self.plugins).copy_to(self.files.plugins)
 
     def env(self) -> dict[str, str]:
         data_dir = self.data_dir
@@ -466,9 +469,10 @@ class StandPlugins:
     CHAT_OWN: ClassVar[tuple[str, ...]] = ("connections",)
     """Плагины, которые чат исполняет сам."""
 
-    def __init__(self, app: StandApp, sandbox: bool) -> None:
+    def __init__(self, app: StandApp, sandbox: bool, extra: Sequence[str] = ()) -> None:
         self._app = app
         self._sandbox = sandbox
+        self._extra = frozenset(extra)
 
     def copy_to(self, target: Path) -> None:
         source = self._app.files().plugins_dir()
@@ -485,6 +489,9 @@ class StandPlugins:
     def _enabled(self, plugin: str) -> bool:
         if self._app is StandApp.CHAINLIT:
             return plugin in self.CHAT_OWN
+
+        if plugin in self._extra:
+            return True
 
         if self._sandbox:
             return True
@@ -534,6 +541,9 @@ class StandConfig(StandService):
     agent_hook: bool = False
     """Класть ли хук PreToolUse в файл настроек агента: обработчик появляется позже."""
 
+    service_plugins: tuple[str, ...] = ()
+    """Плагины сервиса boba-mcp стенда сверх набора без песочницы."""
+
     CHAT_TOOLS: ClassVar[tuple[str, ...]] = ("connection_list", "connection_search")
     AGENT_MODULE: ClassVar[str] = "boba.cli.app"
     """Модуль агента ACP: стенд запускает его интерпретатором прогона."""
@@ -552,6 +562,7 @@ class StandConfig(StandService):
             app_port=self.service_port,
             db_name=self.db_name,
             sandbox=self.sandbox,
+            plugins=self.service_plugins,
         )
 
     @property
