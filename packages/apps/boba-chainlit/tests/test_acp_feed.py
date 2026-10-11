@@ -50,8 +50,14 @@ from boba.chat.profiles import ChatProfileConfig
 from boba.identity.context import Scope
 from boba.messaging import LockToken, MemoryMessageBus, MemoryPayloadStore, TurnOutcome
 from boba.stand.refs import StandRefs
-from boba.toolkit.dag import JournalAddress, ToolUseResult, ToolUseResults
-from boba.toolkit.result import MarkdownResult
+from boba.toolkit.dag import (
+    JournalAddress,
+    ToolUseResult,
+    ToolUseResults,
+    WorkflowNodeResult,
+    WorkflowResult,
+)
+from boba.toolkit.result import ErrorResult, MarkdownResult
 
 THREAD = "11111111-1111-1111-1111-111111111111"
 QUESTION = "22222222-2222-2222-2222-222222222222"
@@ -305,6 +311,98 @@ class TestUpdateViewIds:
         assert step.get(StepField.IS_ERROR) is True
         assert step.get(StepField.OUTPUT) == "unknown tool"
         assert str(step.get(StepField.NAME)).startswith("✖ nope")
+
+    @pytest.mark.anyio
+    async def test_workflow_call_is_drawn_as_steps_of_its_nodes(
+        self, runtime_stand: StandRefs, recorded: FakeEmitter
+    ) -> None:
+        """Вызов workflow — шаги его узлов под идентификаторами вызовов узлов:
+        каждый кончается своим результатом и получает свой адрес журнала."""
+        journals = RemoteJournals()
+        updates = _view(runtime_stand, journals)
+        updates.begin_turn(QUESTION)
+
+        nodes = [
+            {"key": "src", "tool": "pg_stream_out", "args": {"out": "rows"}},
+            {"key": "dst", "tool": "ch_stream_in", "args": {"feed": "rows"}},
+        ]
+        await updates.apply(_call(CALL, "workflow", {"nodes": nodes}))
+
+        source = _id(f"{CALL}_0", StepRole.TOOL)
+        sink = _id(f"{CALL}_1", StepRole.TOOL)
+        started = recorded.last()
+        assert str(started[source].get(StepField.NAME)).endswith("pg_stream_out")
+        assert str(started[sink].get(StepField.NAME)).endswith("ch_stream_in")
+        assert _id(CALL, StepRole.TOOL) not in started
+
+        progress = update_tool_call(f"{CALL}_0", status="in_progress")
+        progress.field_meta = {
+            MetaKey.PROGRESS.value: {"message": "rows sent", "progress": 3}
+        }
+        await updates.apply(progress)
+        assert "rows sent" in str(recorded.last()[source].get(StepField.OUTPUT))
+
+        result = WorkflowResult(
+            nodes=[
+                WorkflowNodeResult(
+                    key="src",
+                    call_id=f"{CALL}_0",
+                    tool="pg_stream_out",
+                    args={"out": "rows"},
+                    errored=False,
+                    content="3 rows",
+                    result=MarkdownResult(text="3 rows sent"),
+                ),
+                WorkflowNodeResult(
+                    key="dst",
+                    call_id=f"{CALL}_1",
+                    tool="ch_stream_in",
+                    args={"feed": "rows"},
+                    errored=True,
+                    content="no such table",
+                    result=ErrorResult(message="no such table", error_kind="tool"),
+                ),
+            ]
+        )
+        address = JournalAddress(server="boba", run="run-7", call="linked")
+        raw = ToolUseResult(
+            artifact=result.model_dump(mode="json", exclude_none=True),
+            journal=address,
+        ).model_dump(mode="json", exclude_none=True)
+        await updates.apply(_done(CALL, "done", raw))
+
+        steps = recorded.last()
+        assert str(steps[source].get(StepField.NAME)).startswith("✔ pg_stream_out")
+        assert "3 rows sent" in str(steps[source].get(StepField.OUTPUT))
+        assert str(steps[sink].get(StepField.NAME)).startswith("✖ ch_stream_in")
+        assert steps[sink].get(StepField.IS_ERROR) is True
+        assert "no such table" in str(steps[sink].get(StepField.OUTPUT))
+        assert updates.open_steps() == []
+
+        first = await journals.address(THREAD, f"{CALL}_0")
+        assert first == address.model_copy(update={"call": f"{CALL}_0"})
+
+    @pytest.mark.anyio
+    async def test_refused_workflow_call_fails_every_node_step(
+        self, runtime_stand: StandRefs, recorded: FakeEmitter
+    ) -> None:
+        """Отказ вызова workflow целиком — итог каждого его узла."""
+        updates = _view(runtime_stand, RemoteJournals())
+        updates.begin_turn(QUESTION)
+
+        nodes = [{"key": "src", "tool": "pg_stream_out", "args": {"out": "rows"}}]
+        await updates.apply(_call(CALL, "workflow", {"nodes": nodes}))
+        refused = update_tool_call(
+            CALL,
+            status="failed",
+            content=[tool_content(text_block("the hook denied the call"))],
+            raw_output="the hook denied the call",
+        )
+        await updates.apply(refused)
+
+        step = recorded.last()[_id(f"{CALL}_0", StepRole.TOOL)]
+        assert step.get(StepField.IS_ERROR) is True
+        assert step.get(StepField.OUTPUT) == "the hook denied the call"
 
     @pytest.mark.anyio
     async def test_progress_meta_is_shown_in_the_running_step(
