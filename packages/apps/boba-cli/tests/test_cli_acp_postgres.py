@@ -3,7 +3,9 @@
 уведомлениями, его `prompt` отвергается, пока замок у держателя, а после
 закрытия сессии держателем проходит; `session/list` видит сессию с
 заголовком и каталогом; `session/delete` при занятом замке отвергается, без
-замка удаляет записи, повтор — успех. Процесс входит в Postgres билетом
+замка удаляет записи, повтор — успех; `session/fork` сессии, которую держит
+другой процесс, даёт наблюдателю свою сессию с той же беседой, и ход в ней
+идёт при занятом замке исходной. Процесс входит в Postgres билетом
 Kerberos из кэша тестового стенда: пути к кэшу и krb5.conf едут окружением,
 секретов в окружении нет."""
 
@@ -34,7 +36,7 @@ from test_cli_acp import (
 )
 
 from boba.agent.history import SessionId, StoredLine
-from boba.cli.acp import StopReasonName
+from boba.cli.acp import MetaKey, StopReasonName
 from boba.config import bind
 from boba.db.postgres import AsyncPostgresPool
 from boba.db.postgres.connection import PostgresConfig
@@ -281,3 +283,82 @@ class TestTwoProcesses:
             found.append(str(raw["message"]["content"]))
 
         return found
+
+
+class TestForkOfAHeldSession:
+    PROMPT = call({"name": "add", "arguments": {"a": 1, "b": 1}})
+
+    async def test_observer_forks_the_held_session_and_prompts_the_branch(
+        self,
+        stand: PostgresStand,
+        pool: AsyncPostgresPool,
+        model: FakeModel,
+        mcp: McpStand,
+        tmp_path: Path,
+    ) -> None:
+        pair = Pair(stand, model, tmp_path)
+        await pair.start()
+        try:
+            session = await pair.holder_conn.new_session(
+                cwd=str(tmp_path), mcp_servers=[mcp.server()]
+            )
+            session_id = session.session_id
+            for prompt in (self.PROMPT, ScenarioName.ANSWER.value):
+                response = await pair.holder_conn.prompt(
+                    session_id=session_id, prompt=[text_block(prompt)]
+                )
+                assert response.stop_reason == StopReasonName.END_TURN.value
+
+            await pair.observer_conn.load_session(
+                cwd=str(tmp_path), session_id=session_id, mcp_servers=[mcp.server()]
+            )
+            view = FeedView()
+            original = view.render(pair.observer_client.updates_of(session_id))
+            second_question = [item for item in original if item[0] == "user"][1]
+
+            forked = await pair.observer_conn.fork_session(
+                session_id=session_id,
+                cwd=str(tmp_path),
+                mcp_servers=[mcp.server()],
+                **{MetaKey.UP_TO_UUID.value: second_question[1]},
+            )
+            branch_id = forked.session_id
+            await pair.observer_conn.load_session(
+                cwd=str(tmp_path), session_id=branch_id, mcp_servers=[mcp.server()]
+            )
+            branch = view.render(pair.observer_client.updates_of(branch_id))
+            assert branch == original[: original.index(second_question)]
+
+            taken = await pair.observer_conn.prompt(
+                session_id=branch_id, prompt=[text_block(ScenarioName.ANSWER.value)]
+            )
+            assert taken.stop_reason == StopReasonName.END_TURN.value
+
+            with pytest.raises(RequestError) as held:
+                await pair.observer_conn.prompt(
+                    session_id=session_id, prompt=[text_block("x")]
+                )
+
+            assert held.value.code == INTERNAL_ERROR
+
+            store = stand.store(pool)
+            human = TestTwoProcesses.human_prompts
+            assert await human(store, session_id) == [
+                self.PROMPT,
+                ScenarioName.ANSWER.value,
+            ]
+            assert await human(store, branch_id) == [
+                self.PROMPT,
+                ScenarioName.ANSWER.value,
+            ]
+            listed = await pair.holder_conn.list_sessions()
+            assert sorted(s.session_id for s in listed.sessions) == sorted(
+                [session_id, branch_id]
+            )
+            await pair.holder_conn.close_session(session_id=session_id)
+            await pair.observer_conn.close_session(session_id=branch_id)
+            await pair.observer_conn.close_session(session_id=session_id)
+            assert await pair.delete(session_id) == {}
+            assert await pair.delete(branch_id) == {}
+        finally:
+            await pair.stop()
