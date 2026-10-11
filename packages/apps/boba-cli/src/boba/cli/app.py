@@ -2,8 +2,10 @@
 
 Разбирает аргументы, собирает действующие настройки (Settings), на старте
 проверяет профиль модели, хранилище истории и скиллы и отдаёт ACP-серверу
-(boba.cli.acp) сборку сессий: на каждую `session/new` — агент ядра с
-серверами MCP из запроса и из `.mcp.json` проекта. Стандартный вывод с
+(boba.cli.acp) сборку сессий: на каждую `session/new|load|resume` — агент
+ядра с серверами MCP из запроса и из `.mcp.json` проекта, на занятую другим
+процессом сессию — наблюдатель над теми же серверами; список и удаление
+сессий идут в хранилище истории. Стандартный вывод с
 самого начала отдан протоколу: дескриптор 1 перенаправлен в стандартный
 поток ошибок, и всё, что пишет туда кто-то ещё (лог, чужие библиотеки),
 уходит в stderr. Конец ввода закрывает сессии и сбрасывает журналы;
@@ -38,20 +40,30 @@ from boba.agent.history import (
     HistoryError,
     HistoryStore,
     MemoryHistoryStore,
+    SessionHeldError,
     SessionId,
+    SessionNotFoundError,
 )
+from boba.agent.ids import IdMint, SystemClock
+from boba.agent.loader import HistoryLoader, SessionDigests
 from boba.agent.permissions import PermissionModeError
 from boba.agent.profile import ModelProfile, ProfileError
+from boba.agent.records import ChainRecord
+from boba.agent.session import Session
 from boba.agent.skills import Skill, SkillsDir, SkillsError
+from boba.agent.template import AgentTemplate
 from boba.agent.tools import ToolsError
 from boba.cancellation import ProcessStop, StopAction, StopReason
 from boba.cli.acp import (
     AcpAgent,
     AcpServer,
+    ObservedSession,
     OpenedSession,
     SessionAssembly,
     SessionOpenError,
+    SessionPage,
     SessionRefusedError,
+    SessionSummary,
 )
 from boba.cli.settings import (
     Arguments,
@@ -82,7 +94,7 @@ from boba.mcp_client.client import (
     NamedBlocks,
     ProgressListener,
 )
-from boba.toolkit.dag import DagNode, NodeOutcome, ToolCard, ToolServer
+from boba.toolkit.dag import DagNode, NodeOutcome, ToolCard, ToolHints, ToolServer
 from boba.toolrun.hosted import DirectCalls
 
 logger = logging.getLogger(__name__)
@@ -241,6 +253,14 @@ class ManyServers(ToolServer):
     def tools(self) -> Sequence[ToolCard]:
         return self._cards
 
+    def hints_of(self, name: str) -> ToolHints | None:
+        """Пометки инструмента по имени; None — такого инструмента нет."""
+        for card in self._cards:
+            if card.name == name:
+                return card.hints
+
+        return None
+
     def features(self) -> Mapping[str, Mapping[str, object]]:
         return {}
 
@@ -326,6 +346,47 @@ class AssembledSession(OpenedSession):
             await self._servers.close()
 
 
+class AssembledObserver(ObservedSession):
+    """Реализация ObservedSession: беседа, прочитанная без замка, и серверы
+    MCP, над которыми `claim` поднимает агента, когда замок свободен."""
+
+    def __init__(  # noqa: PLR0913 — наблюдатель хранит всё для позднего открытия
+        self,
+        assembly: AgentAssembly,
+        session_id: SessionId,
+        cwd: Path,
+        servers: ManyServers | None,
+        sink: EventSink,
+        conversation: Sequence[ChainRecord],
+    ) -> None:
+        self._assembly = assembly
+        self._session_id = session_id
+        self._cwd = cwd
+        self._servers = servers
+        self._sink = sink
+        self._conversation = list(conversation)
+
+    def conversation(self) -> Sequence[ChainRecord]:
+        return self._conversation
+
+    def tool_hints(self, name: str) -> ToolHints | None:
+        if self._servers is None:
+            return None
+
+        return self._servers.hints_of(name)
+
+    async def claim(self) -> OpenedSession:
+        agent = await self._assembly.attach_agent(
+            self._session_id, self._cwd, self._servers, self._sink, resume=True
+        )
+
+        return AssembledSession(agent, self._servers)
+
+    async def close(self) -> None:
+        if self._servers is not None:
+            await self._servers.close()
+
+
 class AgentAssembly(SessionAssembly):
     """Реализация SessionAssembly из действующих настроек процесса.
 
@@ -333,8 +394,14 @@ class AgentAssembly(SessionAssembly):
     всех сессий; на сессию собираются серверы MCP (из `.mcp.json` проекта и
     из запроса, запрос побеждает по имени), снимок окружения с `cwd`
     сессии и агент ядра. Собственный инструмент «вопрос пользователю» в
-    ACP не предлагается: формы вопроса у клиента нет.
+    ACP не предлагается: формы вопроса у клиента нет. С хранилищем `memory`
+    загрузка сессии даёт пустую историю: возобновлять нечего, сессия
+    открывается заново под тем же идентификатором. В списке сессий рабочий
+    каталог берётся из снимка окружения в записях, а у сессии без него —
+    каталог самого процесса.
     """
+
+    PAGE_SIZE: ClassVar[int] = 50
 
     def __init__(  # noqa: PLR0913 — сборка получает все проверенные части разом
         self,
@@ -344,6 +411,7 @@ class AgentAssembly(SessionAssembly):
         store: HistoryStore,
         skills: Sequence[Skill],
         environment: Environment,
+        cwd: Path,
         version: str,
     ) -> None:
         self._settings = settings
@@ -352,8 +420,14 @@ class AgentAssembly(SessionAssembly):
         self._store = store
         self._skills = list(skills)
         self._environment = environment
+        self._cwd = cwd
         self._version = version
         self._builder = McpServerBuilder(settings.mcp, settings.env)
+        self._stateless = isinstance(settings.history, MemoryHistorySettings)
+        self._loader = HistoryLoader(
+            store, AgentTemplate(), IdMint(), SystemClock(), version
+        )
+        self._digests = SessionDigests(store)
 
     async def open(
         self,
@@ -361,13 +435,85 @@ class AgentAssembly(SessionAssembly):
         cwd: Path,
         servers: Mapping[str, McpServerJson],
         sink: EventSink,
+        resume: bool,
     ) -> OpenedSession:
-        merged: dict[str, McpServerJson] = dict(self._settings.mcp_servers)
-        merged.update(servers)
-        tools = await self._tool_servers(merged, sink)
+        tools = await self._tool_servers(self._merged(servers), sink)
+        try:
+            agent = await self.attach_agent(session_id, cwd, tools, sink, resume)
+        except BaseException:
+            if tools is not None:
+                await tools.close()
+
+            raise
+
+        return AssembledSession(agent, tools)
+
+    async def observe(
+        self,
+        session_id: SessionId,
+        cwd: Path,
+        servers: Mapping[str, McpServerJson],
+        sink: EventSink,
+    ) -> ObservedSession:
+        tools = await self._tool_servers(self._merged(servers), sink)
+        try:
+            conversation = await self._conversation(session_id)
+        except BaseException:
+            if tools is not None:
+                await tools.close()
+
+            raise
+
+        return AssembledObserver(self, session_id, cwd, tools, sink, conversation)
+
+    async def sessions(self, cursor: str | None) -> SessionPage:
+        page = await self._store.list(cursor, self.PAGE_SIZE)
+        summaries: list[SessionSummary] = []
+        for stored in page.sessions:
+            digest = await self._digests.digest(stored.session)
+            cwd = digest.cwd
+            if cwd is None:
+                cwd = str(self._cwd)
+
+            summaries.append(
+                SessionSummary(
+                    session_id=stored.session.value,
+                    cwd=cwd,
+                    first_prompt=digest.first_prompt,
+                    updated_at=stored.updated_at,
+                )
+            )
+
+        return SessionPage(sessions=summaries, next_cursor=page.next_cursor)
+
+    async def delete(self, session_id: SessionId) -> None:
+        await self._store.delete(session_id)
+
+    async def attach_agent(
+        self,
+        session_id: SessionId,
+        cwd: Path,
+        tools: ManyServers | None,
+        sink: EventSink,
+        resume: bool,
+    ) -> Agent:
+        """Агент ядра над подключёнными серверами; с хранилищем `memory`
+        возобновление становится открытием заново.
+
+        Ошибки:
+        SessionHeldError — сессию держит другой процесс.
+        SessionNotFoundError — возобновляемой сессии нет в хранилище.
+        SessionOpenError — профиль, режим, инструменты, хранилище или
+            модель не дали открыть сессию.
+        """
+        if self._stateless:
+            resume = False
+
         agent = Agent(self._parts(cwd, tools, sink))
         try:
-            await agent.open(session_id, resume=False)
+            await agent.open(session_id, resume=resume)
+        except (SessionHeldError, SessionNotFoundError):
+            raise
         except (
             HistoryError,
             ProfileError,
@@ -376,13 +522,34 @@ class AgentAssembly(SessionAssembly):
             SettingsError,
             LlmError,
         ) as exc:
-            if tools is not None:
-                await tools.close()
-
             msg = f"session {session_id.value} cannot be opened: {exc}"
             raise SessionOpenError(msg) from exc
 
-        return AssembledSession(agent, tools)
+        return agent
+
+    async def _conversation(self, session_id: SessionId) -> Sequence[ChainRecord]:
+        """Беседа сессии из хранилища как есть, без замка и починки.
+
+        Ошибки:
+        SessionNotFoundError — записей сессии нет.
+        HistoryError — хранилище отказало.
+        """
+        session = Session(session_id)
+        await self._loader.restore(session)
+        if session.last_seq == 0:
+            msg = (
+                f"Session '{session_id.value}' has no records in the history store, "
+                "there is nothing to observe."
+            )
+            raise SessionNotFoundError(msg)
+
+        return session.conversation()
+
+    def _merged(self, servers: Mapping[str, McpServerJson]) -> dict[str, McpServerJson]:
+        merged: dict[str, McpServerJson] = dict(self._settings.mcp_servers)
+        merged.update(servers)
+
+        return merged
 
     def _parts(
         self, cwd: Path, tools: ManyServers | None, sink: EventSink
@@ -559,6 +726,7 @@ class AgentProcess:
             self._store(settings),
             skills,
             self._environment,
+            self._cwd,
             self._version,
         )
 
