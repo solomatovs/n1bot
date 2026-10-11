@@ -123,6 +123,7 @@ async def _run_container(app: FastAPI) -> AsyncGenerator[None, None]:
     await container.start()
     # роуты и колбэк входа ставятся до первого запроса: сервис входа живёт в контейнере
     _use_auth(container)
+    _use_thread_deletion(container)
 
     try:
         yield
@@ -133,6 +134,21 @@ async def _run_container(app: FastAPI) -> AsyncGenerator[None, None]:
         Container.set_root(None)
         await container.aclose()
         await AsyncPostgresPool.close_all()
+
+
+def _use_thread_deletion(container: Container) -> None:
+    """Удаление треда снимает и сессию агента: слушатель слоя данных."""
+    from boba.chainlit.data.data_layer import PostgresDataLayer  # noqa: PLC0415
+
+    layer = container.resolved(providers.chainlit_data_layer)
+    if not isinstance(layer, PostgresDataLayer):
+        msg = (
+            "thread deletion setup expects a PostgresDataLayer data layer, "
+            f"got {type(layer).__name__}"
+        )
+        raise RuntimeError(msg)
+
+    layer.on_thread_deleted(container.resolved(providers.thread_deleter))
 
 
 def _use_domain_error(app: FastAPI):
@@ -337,6 +353,12 @@ def _use_di_container(app: FastAPI, c: AppConfig) -> Container:
     container.eager(providers.chat_profiles_registry)
     container.eager(providers.chainlit_data_layer)
     container.eager(providers.langchain_checkpoint_saver)
+    # слои настроек агента и клиент токенов boba-mcp поднимаются на старте:
+    # первая вкладка не ждёт DDL и http-клиента
+    container.eager(providers.agent_settings_table)
+    container.eager(providers.mcp_access_tokens)
+    container.eager(providers.agent_launcher)
+    container.eager(providers.thread_deleter)
     container.eager(runtime.message_bus)
     container.eager(runtime.payload_store)
     container.eager(runtime.call_ambient)

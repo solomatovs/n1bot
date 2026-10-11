@@ -1,0 +1,663 @@
+"""Стенд chainlit ведёт разговор через `boba acp`: приложение и его сервис
+boba-mcp отдельными процессами, фейковая модель, вкладка — headless-клиент
+socket.io тем же протоколом, что и браузер. Проверяется ход с потоком токенов
+в ленту, остановка кнопкой Stop, sessionId агента в threads.meta, процесс
+агента без секретов в argv и окружении и его уход вместе с вкладкой; возврат к
+треду воспроизводит историю через `session/load`, второй инстанс видит её как
+наблюдатель и получает отказ держателя в ленту, правка вопроса ветвит сессию,
+удаление треда удаляет сессию агента. История агента — Postgres стенда билетом
+Kerberos, как у самого чата."""
+
+from __future__ import annotations
+
+import asyncio
+import multiprocessing
+import time
+from collections.abc import AsyncIterator, Iterator
+from pathlib import Path
+from typing import Any, ClassVar
+from uuid import uuid4
+
+import httpx
+import pytest
+import socketio
+from acp_stand import ProcFiles
+from psycopg import sql
+
+from boba.chainlit.acp.settings import WorkdirFile
+from boba.chainlit.domain.fields import ThreadMetaField
+from boba.db.postgres import AsyncPostgresPool
+from boba.runtime.config import DataLayerConfig
+from boba.stand.database import TestDatabase
+from boba.stand.names import StandNames
+from boba.stand.site import Stand
+from boba.stand.ui.database import StandDatabase
+from boba.stand.ui.fake_llm import ScenarioName, serve
+from boba.stand.ui.stand import (
+    StandApp,
+    StandConfig,
+    StandProcess,
+    StandUrl,
+    free_port,
+)
+
+pytestmark = pytest.mark.anyio
+
+DB_NAME = "boba_acp_chat"
+BOOT_TIMEOUT_SEC = 180.0
+TURN_TIMEOUT_SEC = 120.0
+TOKEN_DELAY_SEC = 0.03
+PROFILE = "general"
+HISTORY_SCHEMA = "agent_history"
+HELD_TEXT = "held by another process"
+GENERATION = "acp-chat-stand"
+
+
+@pytest.fixture(autouse=True)
+def chainlit_context() -> None:
+    """Стенд живёт отдельным процессом: сессия chainlit в тесте не нужна."""
+
+
+@pytest.fixture(scope="module")
+def stand_database() -> str:
+    return StandDatabase(StandApp.CHAINLIT, StandNames().of(DB_NAME)).prepare()
+
+
+@pytest.fixture(scope="module")
+def llm_port() -> int:
+    return free_port()
+
+
+@pytest.fixture(scope="module")
+def fake_llm(llm_port: int) -> Iterator[None]:
+    process = multiprocessing.Process(
+        target=serve, args=(StandUrl.HOST.value, llm_port, TOKEN_DELAY_SEC), daemon=True
+    )
+    process.start()
+    try:
+        _await_llm(llm_port)
+        yield
+    finally:
+        process.terminate()
+        process.join(timeout=10)
+
+
+def _await_llm(port: int) -> None:
+    deadline = time.monotonic() + 30
+    while time.monotonic() < deadline:
+        try:
+            if (
+                httpx.get(StandUrl.of(port, "/v1/models"), timeout=1.0).status_code
+                < 500
+            ):
+                return
+        except httpx.HTTPError:
+            time.sleep(0.2)
+
+    msg = f"fake llm did not answer GET {StandUrl.of(port, '/v1/models')} in 30s"
+    raise RuntimeError(msg)
+
+
+@pytest.fixture(scope="module")
+def app(
+    tmp_path_factory: pytest.TempPathFactory,
+    llm_port: int,
+    fake_llm: None,
+    stand_database: str,
+) -> Iterator[StandProcess]:
+    workdir = tmp_path_factory.mktemp("acp-chat-stand")
+    config = StandConfig(
+        workdir=workdir,
+        app=StandApp.CHAINLIT,
+        app_port=free_port(),
+        llm_port=llm_port,
+        db_name=stand_database,
+        generation=GENERATION,
+    )
+    process = StandProcess(config=config, log_path=workdir / "app.log")
+    process.start(boot_timeout_sec=BOOT_TIMEOUT_SEC)
+    try:
+        yield process
+    finally:
+        process.stop()
+
+
+@pytest.fixture(scope="module")
+def cookie(app: StandProcess) -> str:
+    credential = app.config.credential()
+    response = httpx.post(
+        f"{app.config.base_url}/login",
+        data={"username": credential.login, "password": credential.password},
+        timeout=30.0,
+    )
+    assert response.status_code == 200, response.text[:200]
+    parts: list[str] = []
+    for name, value in response.cookies.items():
+        parts.append(f"{name}={value}")
+
+    assert parts, "login returned no cookies"
+
+    return "; ".join(parts)
+
+
+class ChatSocket:
+    """Вкладка чата без браузера: socket.io chainlit с cookie входа; копит
+    события ленты и ждёт конца задачи."""
+
+    SOCKET_PATH: ClassVar[str] = "/ws/socket.io"
+    CLIENT_TYPE: ClassVar[str] = "webapp"
+    CHAT_START_STEP: ClassVar[str] = "on_chat_start"
+
+    def __init__(self, app: StandProcess, cookie: str, thread_id: str) -> None:
+        self._app = app
+        self._cookie = cookie
+        self.thread_id = thread_id
+        self.session_id = uuid4().hex
+        self.events: list[tuple[str, Any]] = []
+        self._task_ends = asyncio.Queue[None]()
+        self._sio = socketio.AsyncClient(reconnection=False)
+        self._sio.on("*", self._on_any)
+
+    async def open(self, resumed: bool = False) -> None:
+        """Подключение вкладки; resumed — тред уже есть, chainlit зовёт
+        on_chat_resume и завершает его событием resume_thread."""
+        base = StandUrl.of(self._app.config.app_port)
+        await self._sio.connect(
+            base,
+            socketio_path=f"{self._app.config.url_prefix}{self.SOCKET_PATH}",
+            headers={"Cookie": self._cookie},
+            auth={
+                "sessionId": self.session_id,
+                "clientType": self.CLIENT_TYPE,
+                "threadId": self.thread_id,
+                "chatProfile": PROFILE,
+                "userEnv": "{}",
+            },
+            transports=["websocket"],
+            wait_timeout=30,
+        )
+        await self._sio.emit("connection_successful")
+        # task_end на connection_successful приходит сразу; on_chat_start идёт
+        # задачей со своим task_start/task_end вокруг шага run с его именем,
+        # on_chat_resume заканчивается событием resume_thread
+        await self.wait_task_end()
+        if resumed:
+            await self.wait_event("resume_thread")
+            # on_chat_resume тоже обёрнут task_start/task_end: его конец не
+            # должен сойти за конец следующего хода
+            while not self._task_ends.empty():
+                self._task_ends.get_nowait()
+
+            return
+
+        await self.wait_step_done(self.CHAT_START_STEP)
+        await self.wait_task_end()
+
+    async def send(self, text: str) -> str:
+        """Вопрос пользователя; итог — id его сообщения."""
+        message = self._message(str(uuid4()), text)
+        await self._sio.emit("client_message", {"message": message})
+
+        return str(message["id"])
+
+    async def edit(self, message_id: str, text: str) -> None:
+        """Правка вопроса: тот же id, новый текст — как делает интерфейс."""
+        await self._sio.emit(
+            "edit_message", {"message": self._message(message_id, text)}
+        )
+
+    @staticmethod
+    def _message(message_id: str, text: str) -> dict[str, Any]:
+        return {
+            "id": message_id,
+            "name": "user",
+            "type": "user_message",
+            "output": text,
+            "createdAt": time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime()),
+            "metadata": {},
+        }
+
+    async def stop(self) -> None:
+        await self._sio.emit("stop")
+
+    async def wait_task_end(self, timeout_sec: float = TURN_TIMEOUT_SEC) -> None:
+        await asyncio.wait_for(self._task_ends.get(), timeout_sec)
+
+    async def wait_event(self, name: str, timeout_sec: float = TURN_TIMEOUT_SEC) -> Any:
+        deadline = time.monotonic() + timeout_sec
+        seen = 0
+        while time.monotonic() < deadline:
+            for event, payload in self.events[seen:]:
+                seen += 1
+                if event == name:
+                    return payload
+
+            await asyncio.sleep(0.05)
+
+        msg = f"event {name!r} did not arrive in {timeout_sec}s: {self.names()}"
+        raise AssertionError(msg)
+
+    async def wait_step_done(
+        self, name: str, timeout_sec: float = TURN_TIMEOUT_SEC
+    ) -> None:
+        """update_message шага run с этим именем: обработчик chainlit закончился."""
+        deadline = time.monotonic() + timeout_sec
+        seen = 0
+        while time.monotonic() < deadline:
+            for event, payload in self.events[seen:]:
+                seen += 1
+                if event != "update_message":
+                    continue
+
+                if isinstance(payload, dict) and payload.get("name") == name:
+                    return
+
+            await asyncio.sleep(0.05)
+
+        msg = f"step {name!r} did not finish in {timeout_sec}s: {self.names()}"
+        raise AssertionError(msg)
+
+    async def close(self) -> None:
+        await self._sio.disconnect()
+
+    async def end_session(self) -> None:
+        """Конец сессии chainlit, как при новом чате: без clear_session сессия
+        и её процесс живут до session_timeout ради реконнекта вкладки."""
+        await self._sio.emit("clear_session")
+        await asyncio.sleep(0.2)
+        await self._sio.disconnect()
+
+    def names(self) -> list[str]:
+        return [event for event, _ in self.events]
+
+    def trace(self) -> list[str]:
+        """События с началом полезной нагрузки: для текста падения."""
+        found: list[str] = []
+        for event, payload in self.events:
+            found.append(f"{event}: {str(payload)[:160]}")
+
+        return found
+
+    def tokens(self) -> str:
+        found: list[str] = []
+        for event, payload in self.events:
+            if event == "stream_token":
+                found.append(str(payload.get("token", "")))
+
+        return "".join(found)
+
+    def messages(self, kind: str = "assistant_message") -> list[dict[str, Any]]:
+        found: list[dict[str, Any]] = []
+        for event, payload in self.events:
+            if event not in ("new_message", "update_message", "stream_start"):
+                continue
+
+            if payload.get("type") == kind:
+                found.append(payload)
+
+        return found
+
+    def errors(self) -> list[str]:
+        found: list[str] = []
+        for payload in self.messages("assistant_message"):
+            if payload.get("isError"):
+                found.append(str(payload.get("output")))
+
+        return found
+
+    async def _on_any(self, event: str, *args: Any) -> None:
+        payload: Any = None
+        if args:
+            payload = args[0]
+
+        self.events.append((event, payload))
+        if event == "task_end":
+            self._task_ends.put_nowait(None)
+
+
+@pytest.fixture
+async def tab(app: StandProcess, cookie: str) -> AsyncIterator[ChatSocket]:
+    socket = ChatSocket(app, cookie, str(uuid4()))
+    await socket.open()
+    try:
+        yield socket
+    finally:
+        await socket.close()
+
+
+class AgentProcesses:
+    """Процессы `boba acp`, запущенные стендом: по каталогу настроек в argv."""
+
+    def __init__(self, app: StandProcess) -> None:
+        self._agents_dir = app.config.workdir / "agents"
+
+    def pids(self) -> list[int]:
+        found: list[int] = []
+        for entry in Path("/proc").iterdir():
+            if not entry.name.isdigit():
+                continue
+
+            try:
+                argv = ProcFiles(int(entry.name)).cmdline()
+            except OSError:
+                continue
+
+            if any(part.startswith(str(self._agents_dir)) for part in argv):
+                found.append(int(entry.name))
+
+        return found
+
+    async def await_new(self, before: set[int], timeout_sec: float = 60.0) -> int:
+        """Pid агента, появившегося после отметки: on_chat_start идёт задачей
+        после task_end, процесс поднимается не мгновенно."""
+        deadline = time.monotonic() + timeout_sec
+        while time.monotonic() < deadline:
+            started = set(self.pids()) - before
+            if len(started) == 1:
+                return next(iter(started))
+
+            await asyncio.sleep(0.3)
+
+        msg = f"no agent process appeared in {timeout_sec}s, known pids {before}"
+        raise AssertionError(msg)
+
+    def settings_dirs(self) -> list[Path]:
+        if not self._agents_dir.is_dir():
+            return []
+
+        return sorted(self._agents_dir.iterdir())
+
+
+class ChatRows:
+    """Строки базы стенда: metadata треда."""
+
+    def __init__(self, stand_data_layer: DataLayerConfig, database: str) -> None:
+        self._postgres = TestDatabase.config_of(stand_data_layer.postgres, database)
+        self._schema = stand_data_layer.db_schema
+
+    async def thread_meta(self, thread_id: str) -> dict[str, Any] | None:
+        pool = AsyncPostgresPool(self._postgres)
+        await pool.open()
+        try:
+            async with pool.connection() as conn:
+                cursor = await conn.execute(
+                    sql.SQL("select meta from {}.threads where id = %s").format(
+                        sql.Identifier(self._schema)
+                    ),
+                    (thread_id,),
+                )
+                row = await cursor.fetchone()
+        finally:
+            await pool.close()
+
+        if row is None:
+            return None
+
+        return row[0]
+
+    async def history_rows(self, session_id: str) -> int:
+        """Записи сессии в истории агента (схема agent_history базы стенда)."""
+        pool = AsyncPostgresPool(self._postgres)
+        await pool.open()
+        try:
+            async with pool.connection() as conn:
+                cursor = await conn.execute(
+                    sql.SQL(
+                        "select count(*) from {}.history_records where session_id = %s"
+                    ).format(sql.Identifier(HISTORY_SCHEMA)),
+                    (session_id,),
+                )
+                row = await cursor.fetchone()
+        finally:
+            await pool.close()
+
+        assert row is not None
+
+        return int(row[0])
+
+    async def chat_settings_rows(self, thread_id: str) -> int:
+        pool = AsyncPostgresPool(self._postgres)
+        await pool.open()
+        try:
+            async with pool.connection() as conn:
+                cursor = await conn.execute(
+                    sql.SQL(
+                        "select count(*) from {}.agent_chat_settings "
+                        "where thread_id = %s"
+                    ).format(sql.Identifier(self._schema)),
+                    (thread_id,),
+                )
+                row = await cursor.fetchone()
+        finally:
+            await pool.close()
+
+        assert row is not None
+
+        return int(row[0])
+
+
+@pytest.fixture
+def rows(stand_data_layer: DataLayerConfig, stand_database: str) -> ChatRows:
+    return ChatRows(stand_data_layer, stand_database)
+
+
+class TestConversation:
+    """Вкладка стенда ведёт разговор через процесс агента."""
+
+    async def test_turn_streams_the_answer_into_the_feed(
+        self, app: StandProcess, tab: ChatSocket, rows: ChatRows, stand: Stand
+    ) -> None:
+        agents = AgentProcesses(app)
+        pid = await agents.await_new(set())
+
+        files = ProcFiles(pid)
+        joined = " ".join(files.cmdline())
+        assert "--settings" in joined
+        assert stand.pg_probe_password.get_secret_value() not in joined
+        environ = files.environ()
+        assert "BOBA_CONFIG_PATH" not in environ
+        assert stand.pg_probe_password.get_secret_value() not in " ".join(
+            environ.values()
+        )
+        assert "PGPASSWORD" not in environ
+
+        since = app.log_lines()
+        await tab.send(f"hello {ScenarioName.THINKING_ANSWER.value}")
+        await tab.wait_task_end()
+
+        assert not tab.errors(), (tab.errors(), app.tail(80))
+        assert "answer the question" in tab.tokens(), (tab.trace(), app.tail(40))
+        answers = tab.messages()
+        assert answers, tab.trace()
+        assert any("answer the question" in str(m.get("output")) for m in answers)
+
+        meta = await rows.thread_meta(tab.thread_id)
+        assert meta is not None
+        assert meta.get(ThreadMetaField.AGENT_SESSION), meta
+        assert await rows.chat_settings_rows(tab.thread_id) == 1
+
+        complaints = app.complaints(since)
+        assert not complaints, complaints
+
+    async def test_stop_cancels_the_turn(
+        self, app: StandProcess, tab: ChatSocket
+    ) -> None:
+        await tab.send(f"go {ScenarioName.LONG.value}")
+        await tab.wait_event("stream_token")
+        await tab.stop()
+        await tab.wait_task_end()
+
+        assert not tab.errors(), (tab.errors(), app.tail(80))
+        notes = [
+            m for m in tab.messages() if "stopped by the user" in str(m.get("output"))
+        ]
+        assert notes, tab.names()
+
+    async def test_closing_the_tab_ends_the_agent_and_removes_its_settings(
+        self, app: StandProcess, cookie: str
+    ) -> None:
+        agents = AgentProcesses(app)
+        before = set(agents.pids())
+        tab = ChatSocket(app, cookie, str(uuid4()))
+        await tab.open()
+        pid = await agents.await_new(before)
+        settings_dirs = [
+            path
+            for path in agents.settings_dirs()
+            if (path / WorkdirFile.SETTINGS.value).is_file()
+        ]
+        assert settings_dirs
+
+        await tab.end_session()
+        deadline = time.monotonic() + 60
+        while time.monotonic() < deadline and pid in agents.pids():
+            await asyncio.sleep(0.5)
+
+        assert pid not in agents.pids(), app.tail(60)
+        left = [
+            path for path in agents.settings_dirs() if path.name.startswith("thread-")
+        ]
+        assert all((path / WorkdirFile.SETTINGS.value).is_file() for path in left)
+        assert not any(str(pid) in str(path) for path in left)
+
+
+class TestHistory:
+    """Возврат к треду, второй инстанс, правка вопроса, удаление треда."""
+
+    async def test_resumed_tab_replays_the_history(
+        self, app: StandProcess, cookie: str, rows: ChatRows
+    ) -> None:
+        tab = ChatSocket(app, cookie, str(uuid4()))
+        await tab.open()
+        await tab.send(f"remember {ScenarioName.ANSWER.value}")
+        await tab.wait_task_end()
+        assert not tab.errors(), tab.errors()
+        meta = await rows.thread_meta(tab.thread_id)
+        assert meta is not None
+        session_id = meta[ThreadMetaField.AGENT_SESSION]
+        assert await rows.history_rows(session_id) > 0
+        await tab.end_session()
+
+        again = ChatSocket(app, cookie, tab.thread_id)
+        await again.open(resumed=True)
+        try:
+            assert not again.errors(), (again.errors(), app.tail(60))
+            replayed = again.messages("user_message")
+            assert [m.get("output") for m in replayed] == [
+                f"remember {ScenarioName.ANSWER.value}"
+            ]
+            assert any(
+                "plain streamed answer" in str(m.get("output"))
+                for m in again.messages()
+            ), again.trace()
+
+            await again.send(f"more {ScenarioName.THINKING.value}")
+            await again.wait_task_end()
+            assert not again.errors(), again.errors()
+        finally:
+            await again.end_session()
+
+    async def test_second_instance_observes_and_is_refused_a_turn(
+        self,
+        app: StandProcess,
+        cookie: str,
+        llm_port: int,
+        stand_database: str,
+        tmp_path: Path,
+    ) -> None:
+        first = ChatSocket(app, cookie, str(uuid4()))
+        await first.open()
+        await first.send(f"start {ScenarioName.ANSWER.value}")
+        await first.wait_task_end()
+        assert not first.errors(), first.errors()
+
+        config = StandConfig(
+            workdir=tmp_path / "second",
+            app=StandApp.CHAINLIT,
+            app_port=free_port(),
+            llm_port=llm_port,
+            db_name=stand_database,
+            generation=GENERATION,
+        )
+        second = StandProcess(config=config, log_path=tmp_path / "second.log")
+        second.start(boot_timeout_sec=BOOT_TIMEOUT_SEC)
+        try:
+            observer = ChatSocket(second, cookie, first.thread_id)
+            await observer.open(resumed=True)
+            try:
+                assert not observer.errors(), (observer.errors(), second.tail(60))
+                assert [m.get("output") for m in observer.messages("user_message")] == [
+                    f"start {ScenarioName.ANSWER.value}"
+                ]
+
+                await observer.send(f"mine {ScenarioName.ANSWER.value}")
+                await observer.wait_task_end()
+                refusals = observer.errors()
+                assert refusals, observer.trace()
+                assert HELD_TEXT in refusals[0], refusals
+            finally:
+                await observer.end_session()
+        finally:
+            second.stop()
+            await first.end_session()
+
+    async def test_editing_a_question_forks_the_session(
+        self, app: StandProcess, cookie: str, rows: ChatRows
+    ) -> None:
+        tab = ChatSocket(app, cookie, str(uuid4()))
+        await tab.open()
+        question = await tab.send(f"first {ScenarioName.ANSWER.value}")
+        await tab.wait_task_end()
+        assert not tab.errors(), tab.errors()
+        before = await rows.thread_meta(tab.thread_id)
+        assert before is not None
+        original = before[ThreadMetaField.AGENT_SESSION]
+
+        await tab.edit(question, f"edited {ScenarioName.THINKING_ANSWER.value}")
+        await tab.wait_task_end()
+        assert not tab.errors(), (tab.errors(), app.tail(60))
+        after = await rows.thread_meta(tab.thread_id)
+        assert after is not None
+        branch = after[ThreadMetaField.AGENT_SESSION]
+        assert branch != original
+        await tab.end_session()
+
+        again = ChatSocket(app, cookie, tab.thread_id)
+        await again.open(resumed=True)
+        try:
+            assert not again.errors(), again.errors()
+            assert [m.get("output") for m in again.messages("user_message")] == [
+                f"edited {ScenarioName.THINKING_ANSWER.value}"
+            ]
+            answers = " ".join(str(m.get("output")) for m in again.messages())
+            assert "answer the question" in answers, again.trace()
+            assert "plain streamed answer" not in answers, again.trace()
+        finally:
+            await again.end_session()
+
+    async def test_deleting_the_thread_deletes_the_agent_session(
+        self, app: StandProcess, cookie: str, rows: ChatRows
+    ) -> None:
+        tab = ChatSocket(app, cookie, str(uuid4()))
+        await tab.open()
+        await tab.send(f"bye {ScenarioName.ANSWER.value}")
+        await tab.wait_task_end()
+        assert not tab.errors(), tab.errors()
+        meta = await rows.thread_meta(tab.thread_id)
+        assert meta is not None
+        session_id = meta[ThreadMetaField.AGENT_SESSION]
+        assert await rows.history_rows(session_id) > 0
+
+        response = httpx.request(
+            "DELETE",
+            f"{app.config.base_url}/project/thread",
+            json={"threadId": tab.thread_id},
+            headers={"Cookie": cookie},
+            timeout=120.0,
+        )
+        assert response.status_code == 200, (response.text[:300], app.tail(60))
+
+        assert await rows.thread_meta(tab.thread_id) is None
+        assert await rows.chat_settings_rows(tab.thread_id) == 0
+        assert await rows.history_rows(session_id) == 0
+        await tab.close()

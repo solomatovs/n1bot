@@ -13,6 +13,7 @@
     roles           = "${roles}"
     checkpointer    = "${checkpointer}"
     data_layer      = "${data_layer}"
+    agent           = "${agent}"
     stream_journal  = "${stream_journal}"
     mcp             = "${mcp}"
     auth            = [
@@ -152,6 +153,31 @@
 [data_layer]
     postgres = "${postgres}"
     schema   = "chainlit"
+
+[agent]
+    public_url = "http://127.0.0.1:${env.port}${env.url_prefix}"
+    [agent.process]
+        command           = "boba"
+        args              = ["acp", "--setting-sources", ""]
+        env               = {}
+        private_dir       = "${env.data}/agents"
+        start_timeout_sec = 30
+        stop_timeout_sec  = 10
+    [agent.history]
+        kind     = "postgres"
+        postgres = "${postgres}"
+        schema   = "agent_history"
+    [agent.chat_mcp]
+        enable = true
+        name   = "chat"
+        path   = "/chat/mcp"
+    [agent.hook]
+        enable      = true
+        path        = "/chat/hooks/pre-tool-use"
+        timeout_sec = 10
+    [agent.limits]
+        context_window    = 32000
+        max_output_tokens = 16000
 
 # конфигурация для chainlit
 ## соединения в базе: профили postgres/web со скрытыми секретами

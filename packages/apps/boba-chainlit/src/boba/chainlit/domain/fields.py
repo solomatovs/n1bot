@@ -24,6 +24,7 @@ class ThreadMetaField:
     """Ключи metadata треда: их пишет persist сессии chainlit."""
 
     CHAT_PROFILE: Final = "chat_profile"
+    AGENT_SESSION: Final = "agent_session"
 
 
 class StepField:
