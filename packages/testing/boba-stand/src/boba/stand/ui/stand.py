@@ -523,7 +523,20 @@ class StandConfig(StandService):
     service_port: int = field(default_factory=free_port)
     """Порт сервиса boba-mcp стенда чата."""
 
+    agent_history: dict[str, Any] = field(default_factory=lambda: {"kind": "memory"})
+    """Секция [agent.history] чата: по умолчанию память процесса агента; тест с
+    Postgres передаёт подключение ролью с паролем."""
+
+    agent_chat_mcp: bool = False
+    """Записывать ли сервер инструментов чата в mcpServers агента: сам сервер
+    /chat/mcp появляется позже, стенд без него не держит."""
+
+    agent_hook: bool = False
+    """Класть ли хук PreToolUse в файл настроек агента: обработчик появляется позже."""
+
     CHAT_TOOLS: ClassVar[tuple[str, ...]] = ("connection_list", "connection_search")
+    AGENT_MODULE: ClassVar[str] = "boba.cli.app"
+    """Модуль агента ACP: стенд запускает его интерпретатором прогона."""
     """Инструменты, которые чат исполняет сам; остальные — у сервиса boba-mcp."""
 
     def companion(self) -> StandService | None:
@@ -604,10 +617,43 @@ class StandConfig(StandService):
         self._use_local_auth(doc)
         self._use_studio(doc)
         self._use_sandbox_artifacts(doc)
+        self._use_agent(doc)
         self._shrink_pools(doc)
 
         self.files.write(doc)
         StandPlugins(self.app, self.sandbox).copy_to(self.files.plugins)
+
+    def _use_agent(self, doc: MutableMapping[str, Any]) -> None:
+        """Агент ACP стенда чата: модуль boba.cli.app интерпретатором прогона,
+        приватные каталоги в рабочем каталоге стенда, история по полю стенда."""
+        if "agent" not in doc:
+            return
+
+        private_dir = self.workdir / "agents"
+        private_dir.mkdir(parents=True, exist_ok=True)
+        doc["agent"] = {
+            "public_url": self.base_url,
+            "process": {
+                "command": sys.executable,
+                "args": ["-m", self.AGENT_MODULE, "acp", "--setting-sources", ""],
+                "env": {},
+                "private_dir": str(private_dir),
+                "start_timeout_sec": 60,
+                "stop_timeout_sec": 10,
+            },
+            "history": dict(self.agent_history),
+            "chat_mcp": {
+                "enable": self.agent_chat_mcp,
+                "name": "chat",
+                "path": "/chat/mcp",
+            },
+            "hook": {
+                "enable": self.agent_hook,
+                "path": "/chat/hooks/pre-tool-use",
+                "timeout_sec": 10,
+            },
+            "limits": {"context_window": 32000, "max_output_tokens": 4096},
+        }
 
     @staticmethod
     def _shrink_pools(doc: MutableMapping[str, Any]) -> None:

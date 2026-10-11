@@ -119,6 +119,15 @@ class HeldContent:
         yield content
 
 
+class ThreadDeletionListener(Protocol):
+    """Кому сообщать об удалённом треде: слой данных зовёт после снятия строк,
+    с metadata треда, каким он был. Реализует ThreadDeleter клиента агента."""
+
+    @abstractmethod
+    async def thread_deleted(self, thread_id: str, meta: Mapping[str, Any]) -> None:
+        """Тред удалён вместе с элементами и оценками."""
+
+
 class AttachmentDataLayer(BaseDataLayer, ABC):
     """Data layer, умеющий адресовать вложения публичными ссылками."""
 
@@ -352,6 +361,11 @@ class PostgresDataLayer(AttachmentDataLayer, ThreadOwnership):
         self._links = links
         self._sessions = sessions
         self._bus = bus
+        self._deletion_listeners: list[ThreadDeletionListener] = []
+
+    def on_thread_deleted(self, listener: ThreadDeletionListener) -> None:
+        """Подписывает слушателя на удаление тредов."""
+        self._deletion_listeners.append(listener)
 
     @property
     def links(self) -> AttachmentLinks:
@@ -662,12 +676,19 @@ class PostgresDataLayer(AttachmentDataLayer, ThreadOwnership):
     @data_boundary
     async def delete_thread(self, thread_id: str) -> None:
         tid = UUID(thread_id)
+        stored = await self._threads.get(tid)
         await self._feedbacks.delete_of_thread(tid)
         await self._elements.delete_of_thread(tid)
         owner = await self._threads.delete(tid)
 
         if owner is not None:
             await self._thread_changed(owner, thread_id, "", ChangeAction.DELETED)
+
+        if stored is None:
+            return
+
+        for listener in self._deletion_listeners:
+            await listener.thread_deleted(thread_id, stored.meta)
 
     async def _chat_changed(self, thread_id: UUID | None, message: AnyMessage) -> None:
         """Сообщает вкладкам треда на всех инстансах об изменении в его ленте;
