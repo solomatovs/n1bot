@@ -1,10 +1,13 @@
 """Вход процесса агента: команда `boba acp --settings <файл>`.
 
 Разбирает аргументы, собирает действующие настройки (Settings), на старте
-проверяет профиль модели, хранилище истории и скиллы и отдаёт ACP-серверу
-(boba.cli.acp) сборку сессий: на каждую `session/new` — агент ядра с
-серверами MCP из запроса и из `.mcp.json` проекта и с хуком `PreToolUse`
-из секции `hooks` настроек (boba.cli.hooks). Стандартный вывод с
+проверяет профили моделей (ModelCatalog), хранилище истории и скиллы и отдаёт
+ACP-серверу (boba.cli.acp) сборку сессий: на каждую `session/new|load|resume`
+— агент ядра с серверами MCP из запроса и из `.mcp.json` проекта и с хуком
+`PreToolUse` из секции `hooks` настроек (boba.cli.hooks); на занятую другим
+процессом сессию — наблюдатель над теми же серверами; список, удаление и
+копия сессий (ветвление) идут в хранилище истории; смена профиля модели в
+сессии берёт модель из каталога. Стандартный вывод с
 самого начала отдан протоколу: дескриптор 1 перенаправлен в стандартный
 поток ошибок, и всё, что пишет туда кто-то ещё (лог, чужие библиотеки),
 уходит в stderr. Конец ввода закрывает сессии и сбрасывает журналы;
@@ -41,21 +44,32 @@ from boba.agent.history import (
     HistoryError,
     HistoryStore,
     MemoryHistoryStore,
+    SessionHeldError,
     SessionId,
+    SessionNotFoundError,
 )
 from boba.agent.hooks import McpToolOrigin, ToolOrigins
+from boba.agent.ids import IdMint, SystemClock
+from boba.agent.loader import HistoryLoader, SessionDigests
 from boba.agent.permissions import PermissionModeError
 from boba.agent.profile import ModelProfile, ProfileError
+from boba.agent.records import ChainRecord
+from boba.agent.session import Session, SessionError
 from boba.agent.skills import Skill, SkillsDir, SkillsError
+from boba.agent.template import AgentTemplate
 from boba.agent.tools import ToolsError
 from boba.cancellation import ProcessStop, StopAction, StopReason
 from boba.cli.acp import (
     AcpAgent,
     AcpServer,
+    ObservedSession,
     OpenedSession,
     SessionAssembly,
+    SessionBusyError,
     SessionOpenError,
+    SessionPage,
     SessionRefusedError,
+    SessionSummary,
 )
 from boba.cli.hooks import HookWiring, HttpHookTransport
 from boba.cli.settings import (
@@ -87,7 +101,7 @@ from boba.mcp_client.client import (
     NamedBlocks,
     ProgressListener,
 )
-from boba.toolkit.dag import DagNode, NodeOutcome, ToolCard, ToolServer
+from boba.toolkit.dag import DagNode, NodeOutcome, ToolCard, ToolHints, ToolServer
 from boba.toolrun.hosted import DirectCalls
 
 logger = logging.getLogger(__name__)
@@ -98,6 +112,7 @@ __all__ = [
     "ArgumentParser",
     "Command",
     "Installed",
+    "ModelCatalog",
     "cli",
     "main",
 ]
@@ -246,6 +261,14 @@ class ManyServers(ToolServer):
     def tools(self) -> Sequence[ToolCard]:
         return self._cards
 
+    def hints_of(self, name: str) -> ToolHints | None:
+        """Пометки инструмента по имени; None — такого инструмента нет."""
+        for card in self._cards:
+            if card.name == name:
+                return card.hints
+
+        return None
+
     def features(self) -> Mapping[str, Mapping[str, object]]:
         return {}
 
@@ -327,16 +350,119 @@ class Environment:
         )
 
 
-class AssembledSession(OpenedSession):
-    """Реализация OpenedSession: агент и серверы MCP его сессии."""
+class ModelCatalog:
+    """Профили `models.<имя>` файла настроек: профиль ядра для каждого
+    собирается на старте, модель провайдера — при первом обращении и
+    хранится, потому что провайдер может грузить веса. Создаёт вход
+    процесса; сборка берёт отсюда модель сессии и модель при переключении.
+    """
 
-    def __init__(self, agent: Agent, servers: ManyServers | None) -> None:
+    def __init__(
+        self,
+        settings: EffectiveSettings,
+        env: Mapping[str, str],
+        providers: LlmProviders,
+    ) -> None:
+        """Ошибки:
+        SettingsError — профиль не описывает годного провайдера.
+        """
+        self._settings = settings
+        self._providers = providers
+        builder = ProfileBuilder(env)
+        self._profiles: dict[str, ModelProfile] = {}
+        for name, model in settings.models.items():
+            self._profiles[name] = builder.profile(name, model)
+
+        self._models: dict[str, ChatModel] = {}
+
+    def names(self) -> Sequence[str]:
+        return list(self._profiles)
+
+    def has(self, name: str) -> bool:
+        return name in self._profiles
+
+    def profile(self, name: str) -> ModelProfile:
+        """Ошибки:
+        SettingsError — профиля с таким именем нет.
+        """
+        found = self._profiles.get(name)
+        if found is None:
+            known = sorted(self._profiles)
+            msg = (
+                f"The model profile '{name}' is not defined. Known profiles: {known}. "
+                "Add it under 'models' in settings.json or pick another."
+            )
+            raise SettingsError(msg)
+
+        return found
+
+    def model(self, name: str) -> ChatModel:
+        """Ошибки:
+        SettingsError — профиля нет, либо его провайдер не собрался: в этой
+            сборке нет его рантайма или веса модели не загрузились.
+        """
+        ready = self._models.get(name)
+        if ready is not None:
+            return ready
+
+        profile = self.profile(name)
+        try:
+            model = self._providers.chat(profile.chat)
+        except (LlmError, LlmProvidersError) as exc:
+            kind = self._settings.models[name].provider.kind.value
+            msg = (
+                f"The model profile '{name}' (provider kind '{kind}') cannot be "
+                f"used: {exc}. If this build was made without the runtime of that "
+                "provider, pick another profile or use a build that includes it."
+            )
+            raise SettingsError(msg) from exc
+
+        self._models[name] = model
+
+        return model
+
+
+class AssembledSession(OpenedSession):
+    """Реализация OpenedSession: агент, серверы MCP его сессии и действующий
+    профиль модели из каталога."""
+
+    def __init__(
+        self,
+        agent: Agent,
+        servers: ManyServers | None,
+        catalog: ModelCatalog,
+        model: str,
+    ) -> None:
         self._agent = agent
         self._servers = servers
+        self._catalog = catalog
+        self._model = model
 
     @property
     def agent(self) -> Agent:
         return self._agent
+
+    @property
+    def model(self) -> str:
+        return self._model
+
+    async def set_model(self, name: str) -> None:
+        if not self._catalog.has(name):
+            known = list(self._catalog.names())
+            msg = f"the model profile '{name}' is not defined; known: {known}"
+            raise SessionRefusedError(msg)
+
+        try:
+            profile = self._catalog.profile(name)
+            model = self._catalog.model(name)
+            self._agent.set_model(profile, model)
+        except SessionError as exc:
+            raise SessionBusyError(str(exc)) from exc
+        except (SettingsError, ProfileError, HistoryError) as exc:
+            msg = f"the model profile '{name}' cannot be used in this session: {exc}"
+            raise SessionOpenError(msg) from exc
+
+        self._model = name
 
     async def close(self) -> None:
         await self._agent.close()
@@ -344,37 +470,91 @@ class AssembledSession(OpenedSession):
             await self._servers.close()
 
 
+class AssembledObserver(ObservedSession):
+    """Реализация ObservedSession: беседа, прочитанная без замка, и серверы
+    MCP, над которыми `claim` поднимает агента, когда замок свободен."""
+
+    def __init__(  # noqa: PLR0913 — наблюдатель хранит всё для позднего открытия
+        self,
+        assembly: AgentAssembly,
+        session_id: SessionId,
+        cwd: Path,
+        servers: ManyServers | None,
+        sink: EventSink,
+        conversation: Sequence[ChainRecord],
+    ) -> None:
+        self._assembly = assembly
+        self._session_id = session_id
+        self._cwd = cwd
+        self._servers = servers
+        self._sink = sink
+        self._conversation = list(conversation)
+
+    def conversation(self) -> Sequence[ChainRecord]:
+        return self._conversation
+
+    def tool_hints(self, name: str) -> ToolHints | None:
+        if self._servers is None:
+            return None
+
+        return self._servers.hints_of(name)
+
+    async def claim(self) -> OpenedSession:
+        agent = await self._assembly.attach_agent(
+            self._session_id, self._cwd, self._servers, self._sink, resume=True
+        )
+
+        return self._assembly.assembled(agent, self._servers)
+
+    async def close(self) -> None:
+        if self._servers is not None:
+            await self._servers.close()
+
+
 class AgentAssembly(SessionAssembly):
     """Реализация SessionAssembly из действующих настроек процесса.
 
-    Профиль, модель, хранилище и скиллы проверены на старте и общие для
-    всех сессий; на сессию собираются серверы MCP (из `.mcp.json` проекта и
-    из запроса, запрос побеждает по имени), снимок окружения с `cwd`
-    сессии, хук `PreToolUse` над происхождением инструментов этих серверов
-    и агент ядра. Собственный инструмент «вопрос пользователю» в ACP не
-    предлагается: формы вопроса у клиента нет.
+    Каталог профилей, хранилище и скиллы проверены на старте и общие для
+    всех сессий; сессия открывается на профиле `model` настроек и может
+    переключиться на любой другой из каталога. На сессию собираются серверы
+    MCP (из `.mcp.json` проекта и из запроса, запрос побеждает по имени),
+    снимок окружения с `cwd` сессии, хук `PreToolUse` над происхождением
+    инструментов этих серверов и агент ядра. Собственный инструмент «вопрос
+    пользователю» в ACP не предлагается: формы вопроса у клиента нет. С
+    хранилищем `memory` загрузка сессии даёт пустую историю: возобновлять
+    нечего, сессия открывается заново под тем же идентификатором, а ветвить
+    нечего. В списке
+    сессий рабочий каталог берётся из снимка окружения в записях, а у
+    сессии без него — каталог самого процесса.
     """
+
+    PAGE_SIZE: ClassVar[int] = 50
 
     def __init__(  # noqa: PLR0913 — сборка получает все проверенные части разом
         self,
         settings: EffectiveSettings,
-        profile: ModelProfile,
-        model: ChatModel,
+        catalog: ModelCatalog,
         store: HistoryStore,
         skills: Sequence[Skill],
         environment: Environment,
         hooks: HookWiring,
+        cwd: Path,
         version: str,
     ) -> None:
         self._settings = settings
-        self._profile = profile
-        self._model = model
+        self._catalog = catalog
         self._store = store
         self._skills = list(skills)
         self._environment = environment
         self._hooks = hooks
+        self._cwd = cwd
         self._version = version
         self._builder = McpServerBuilder(settings.mcp, settings.env)
+        self._stateless = isinstance(settings.history, MemoryHistorySettings)
+        self._loader = HistoryLoader(
+            store, AgentTemplate(), IdMint(), SystemClock(), version
+        )
+        self._digests = SessionDigests(store)
 
     async def open(
         self,
@@ -382,13 +562,97 @@ class AgentAssembly(SessionAssembly):
         cwd: Path,
         servers: Mapping[str, McpServerJson],
         sink: EventSink,
+        resume: bool,
     ) -> OpenedSession:
-        merged: dict[str, McpServerJson] = dict(self._settings.mcp_servers)
-        merged.update(servers)
-        tools = await self._tool_servers(merged, sink)
+        tools = await self._tool_servers(self._merged(servers), sink)
+        try:
+            agent = await self.attach_agent(session_id, cwd, tools, sink, resume)
+        except BaseException:
+            if tools is not None:
+                await tools.close()
+
+            raise
+
+        return self.assembled(agent, tools)
+
+    def assembled(self, agent: Agent, tools: ManyServers | None) -> AssembledSession:
+        """Открытая сессия над агентом: действующий профиль — `model` настроек."""
+        return AssembledSession(agent, tools, self._catalog, self._settings.model)
+
+    def models(self) -> Sequence[str]:
+        return self._catalog.names()
+
+    async def observe(
+        self,
+        session_id: SessionId,
+        cwd: Path,
+        servers: Mapping[str, McpServerJson],
+        sink: EventSink,
+    ) -> ObservedSession:
+        tools = await self._tool_servers(self._merged(servers), sink)
+        try:
+            conversation = await self._conversation(session_id)
+        except BaseException:
+            if tools is not None:
+                await tools.close()
+
+            raise
+
+        return AssembledObserver(self, session_id, cwd, tools, sink, conversation)
+
+    async def sessions(self, cursor: str | None) -> SessionPage:
+        page = await self._store.list(cursor, self.PAGE_SIZE)
+        summaries: list[SessionSummary] = []
+        for stored in page.sessions:
+            digest = await self._digests.digest(stored.session)
+            cwd = digest.cwd
+            if cwd is None:
+                cwd = str(self._cwd)
+
+            summaries.append(
+                SessionSummary(
+                    session_id=stored.session.value,
+                    cwd=cwd,
+                    first_prompt=digest.first_prompt,
+                    updated_at=stored.updated_at,
+                )
+            )
+
+        return SessionPage(sessions=summaries, next_cursor=page.next_cursor)
+
+    async def delete(self, session_id: SessionId) -> None:
+        await self._store.delete(session_id)
+
+    async def copy(
+        self, source: SessionId, target: SessionId, up_to: str | None
+    ) -> int:
+        return await self._store.copy(source, target, up_to)
+
+    async def attach_agent(
+        self,
+        session_id: SessionId,
+        cwd: Path,
+        tools: ManyServers | None,
+        sink: EventSink,
+        resume: bool,
+    ) -> Agent:
+        """Агент ядра над подключёнными серверами; с хранилищем `memory`
+        возобновление становится открытием заново.
+
+        Ошибки:
+        SessionHeldError — сессию держит другой процесс.
+        SessionNotFoundError — возобновляемой сессии нет в хранилище.
+        SessionOpenError — профиль, режим, инструменты, хранилище или
+            модель не дали открыть сессию.
+        """
+        if self._stateless:
+            resume = False
+
         agent = Agent(self._parts(cwd, tools, sink))
         try:
-            await agent.open(session_id, resume=False)
+            await agent.open(session_id, resume=resume)
+        except (SessionHeldError, SessionNotFoundError):
+            raise
         except (
             HistoryError,
             ProfileError,
@@ -397,13 +661,34 @@ class AgentAssembly(SessionAssembly):
             SettingsError,
             LlmError,
         ) as exc:
-            if tools is not None:
-                await tools.close()
-
             msg = f"session {session_id.value} cannot be opened: {exc}"
             raise SessionOpenError(msg) from exc
 
-        return AssembledSession(agent, tools)
+        return agent
+
+    async def _conversation(self, session_id: SessionId) -> Sequence[ChainRecord]:
+        """Беседа сессии из хранилища как есть, без замка и починки.
+
+        Ошибки:
+        SessionNotFoundError — записей сессии нет.
+        HistoryError — хранилище отказало.
+        """
+        session = Session(session_id)
+        await self._loader.restore(session)
+        if session.last_seq == 0:
+            msg = (
+                f"Session '{session_id.value}' has no records in the history store, "
+                "there is nothing to observe."
+            )
+            raise SessionNotFoundError(msg)
+
+        return session.conversation()
+
+    def _merged(self, servers: Mapping[str, McpServerJson]) -> dict[str, McpServerJson]:
+        merged: dict[str, McpServerJson] = dict(self._settings.mcp_servers)
+        merged.update(servers)
+
+        return merged
 
     def _parts(
         self, cwd: Path, tools: ManyServers | None, sink: EventSink
@@ -414,12 +699,12 @@ class AgentAssembly(SessionAssembly):
             origins = tools.origins()
 
         return AgentParts(
-            profile=self._profile,
+            profile=self._catalog.profile(settings.model),
             limits=settings.limits,
             compaction=settings.compaction,
             system_prompt=settings.system_prompt,
             store=self._store,
-            model=self._model,
+            model=self._catalog.model(settings.model),
             sink=sink,
             version=self._version,
             tools=tools,
@@ -569,11 +854,15 @@ class AgentProcess:
         return stop
 
     def _assembly(self, settings: EffectiveSettings) -> AgentAssembly:
-        """Ошибки:
+        """Профили каталога собираются все, модель — только выбранная: она
+        нужна первой сессии, остальные поднимаются при переключении.
+
+        Ошибки:
         SettingsError — профиль, модель, хранилище или скиллы не собрались.
         """
-        model = settings.selected_model()
-        profile = ProfileBuilder(self._env).profile(settings.model, model)
+        settings.selected_model()
+        catalog = ModelCatalog(settings, self._env, self._providers)
+        catalog.model(settings.model)
         try:
             skills = self._skills(settings)
         except SkillsError as exc:
@@ -581,32 +870,14 @@ class AgentProcess:
 
         return AgentAssembly(
             settings,
-            profile,
-            self._chat_model(settings, profile),
+            catalog,
             self._store(settings),
             skills,
             self._environment,
             HookWiring(self._hook_transport),
+            self._cwd,
             self._version,
         )
-
-    def _chat_model(
-        self, settings: EffectiveSettings, profile: ModelProfile
-    ) -> ChatModel:
-        """Ошибки:
-        SettingsError — провайдер профиля не собрался: в этой сборке нет его
-            рантайма либо веса модели не загрузились.
-        """
-        try:
-            return self._providers.chat(profile.chat)
-        except (LlmError, LlmProvidersError) as exc:
-            kind = settings.selected_model().provider.kind.value
-            msg = (
-                f"The model profile '{settings.model}' (provider kind '{kind}') cannot "
-                f"be used: {exc}. If this build was made without the runtime of that "
-                "provider, pick another profile or use a build that includes it."
-            )
-            raise SettingsError(msg) from exc
 
     def _store(self, settings: EffectiveSettings) -> HistoryStore:
         """Ошибки:

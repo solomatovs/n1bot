@@ -1,5 +1,6 @@
 """Хранилище JSONL на настоящих файлах: захват, права, запечатывание хвоста,
-повтор пачки, чтение рваной строки, отказы файловой системы."""
+повтор пачки, чтение рваной строки, отказы файловой системы, список сессий
+страницами, удаление журнала и копия записей до среза в новый журнал."""
 
 from __future__ import annotations
 
@@ -9,7 +10,15 @@ from pathlib import Path
 
 import pytest
 
-from boba.agent.history import BrokenLine, HistoryError, SessionId, StoredLine
+from boba.agent.history import (
+    BrokenLine,
+    HistoryError,
+    RecordNotFoundError,
+    SessionHeldError,
+    SessionId,
+    SessionNotFoundError,
+    StoredLine,
+)
 from boba.agent.records import (
     PermissionMode,
     PermissionModeRecord,
@@ -65,7 +74,9 @@ class TestAcquire:
 
         lease = await store.acquire(SESSION)
         try:
-            with pytest.raises(HistoryError, match="already in use by another process"):
+            with pytest.raises(
+                SessionHeldError, match="already in use by another process"
+            ):
                 await other.acquire(SESSION)
         finally:
             await store.release(lease)
@@ -85,9 +96,7 @@ class TestAcquire:
         finally:
             root.chmod(0o700)
 
-    async def test_append_with_a_foreign_lease_is_refused(
-        self, tmp_path: Path
-    ) -> None:
+    async def test_append_with_a_foreign_lease_is_refused(self, tmp_path: Path) -> None:
         store = JsonlHistoryStore(tmp_path)
         other = JsonlHistoryStore(tmp_path / "other")
         lease = await other.acquire(SESSION)
@@ -234,3 +243,217 @@ class TestRead:
                 _ = [line async for line in store.read(SESSION)]
         finally:
             path.chmod(0o600)
+
+
+def stamped(session: SessionId, seq: int, stamp: str) -> UserRecord:
+    return UserRecord(
+        uuid=f"{session.value}-{seq}",
+        parent_uuid=None,
+        timestamp=stamp,
+        session_id=session.value,
+        version="0.0.26.dev4",
+        seq=seq,
+        message=UserMessage(content=f"text {seq}"),
+    )
+
+
+async def fill(store: JsonlHistoryStore, session: SessionId, *stamps: str) -> None:
+    lease = await store.acquire(session)
+    try:
+        records = [stamped(session, n, stamp) for n, stamp in enumerate(stamps, 1)]
+        await store.append(lease, records)
+    finally:
+        await store.release(lease)
+
+
+class TestListAndDelete:
+    async def test_pages_follow_the_cursor_with_the_last_record_time(
+        self, tmp_path: Path
+    ) -> None:
+        store = JsonlHistoryStore(tmp_path)
+        await fill(store, SessionId(value="s-b"), "2026-10-10T10:00:00.000Z")
+        await fill(
+            store,
+            SessionId(value="s-a"),
+            "2026-10-10T09:00:00.000Z",
+            "2026-10-10T11:00:00.000Z",
+        )
+        await fill(store, SessionId(value="s-c"), "2026-10-09T10:00:00.000Z")
+        (tmp_path / "notes.txt").write_text("not a journal", encoding="utf-8")
+        (tmp_path / "bad name.jsonl").write_text("{}\n", encoding="utf-8")
+
+        first = await store.list(None, 2)
+        second = await store.list(first.next_cursor, 2)
+
+        assert [s.session.value for s in first.sessions] == ["s-a", "s-b"]
+        assert first.next_cursor == "s-b"
+        assert first.sessions[0].updated_at == "2026-10-10T11:00:00.000Z"
+        assert [s.session.value for s in second.sessions] == ["s-c"]
+        assert second.next_cursor is None
+
+    async def test_empty_journal_and_missing_root_are_not_listed(
+        self, tmp_path: Path
+    ) -> None:
+        store = JsonlHistoryStore(tmp_path / "history")
+        assert (await store.list(None, 10)).sessions == []
+
+        lease = await store.acquire(SESSION)
+        await store.release(lease)
+
+        assert (await store.list(None, 10)).sessions == []
+
+    async def test_delete_removes_the_journal_and_repeats_silently(
+        self, tmp_path: Path
+    ) -> None:
+        store = JsonlHistoryStore(tmp_path)
+        await fill(store, SESSION, STAMP)
+        path = tmp_path / "abc-123.jsonl"
+        assert path.exists()
+
+        await store.delete(SESSION)
+        await store.delete(SESSION)
+        await store.delete(SessionId(value="never-existed"))
+
+        assert not path.exists()
+        assert (await store.list(None, 10)).sessions == []
+
+    async def test_delete_of_a_held_session_is_refused(self, tmp_path: Path) -> None:
+        store = JsonlHistoryStore(tmp_path)
+        other = JsonlHistoryStore(tmp_path)
+        await fill(store, SESSION, STAMP)
+        lease = await store.acquire(SESSION)
+        try:
+            with pytest.raises(SessionHeldError, match="cannot be deleted"):
+                await other.delete(SESSION)
+        finally:
+            await store.release(lease)
+
+        await other.delete(SESSION)
+        assert not (tmp_path / "abc-123.jsonl").exists()
+
+
+async def stored(store: JsonlHistoryStore, session: SessionId) -> list[StoredLine]:
+    lines: list[StoredLine] = []
+    async for line in store.read(session):
+        assert isinstance(line, StoredLine), line
+        lines.append(line)
+
+    return lines
+
+
+class TestCopy:
+    BRANCH = SessionId(value="branch-1")
+
+    async def test_branch_stops_before_the_cut_and_leaves_the_source_as_is(
+        self, tmp_path: Path
+    ) -> None:
+        store = JsonlHistoryStore(tmp_path)
+        await fill(store, SESSION, STAMP, STAMP, STAMP, STAMP)
+        source_path = tmp_path / "abc-123.jsonl"
+        source_before = source_path.read_bytes()
+        source = await stored(store, SESSION)
+
+        copied = await store.copy(SESSION, self.BRANCH, "abc-123-3")
+
+        assert copied == 2
+        branch = await stored(store, self.BRANCH)
+        assert [line.raw["seq"] for line in branch] == [1, 2]
+        assert [line.raw["uuid"] for line in branch] == ["abc-123-1", "abc-123-2"]
+        assert all(line.raw["sessionId"] == "branch-1" for line in branch)
+        expected = [{**line.raw, "sessionId": "branch-1"} for line in source[:2]]
+        assert [line.raw for line in branch] == expected
+        assert source_path.read_bytes() == source_before
+        assert stat.S_IMODE((tmp_path / "branch-1.jsonl").stat().st_mode) == 0o600
+
+        lease = await store.acquire(self.BRANCH)
+        try:
+            await store.append(lease, [stamped(self.BRANCH, 3, STAMP)])
+        finally:
+            await store.release(lease)
+
+        assert [line.raw["seq"] for line in await stored(store, self.BRANCH)] == [
+            1,
+            2,
+            3,
+        ]
+
+    async def test_whole_copy_and_empty_branch(self, tmp_path: Path) -> None:
+        store = JsonlHistoryStore(tmp_path)
+        await fill(store, SESSION, STAMP, STAMP, STAMP)
+
+        whole = await store.copy(SESSION, SessionId(value="whole"), None)
+        empty = await store.copy(SESSION, SessionId(value="empty"), "abc-123-1")
+
+        assert whole == 3
+        assert [
+            line.raw["seq"] for line in await stored(store, SessionId(value="whole"))
+        ] == [
+            1,
+            2,
+            3,
+        ]
+        assert empty == 0
+        assert (tmp_path / "empty.jsonl").read_bytes() == b""
+        listed = [s.session.value for s in (await store.list(None, 10)).sessions]
+        assert listed == ["abc-123", "whole"]
+
+    async def test_broken_lines_travel_as_is(self, tmp_path: Path) -> None:
+        store = JsonlHistoryStore(tmp_path)
+        await fill(store, SESSION, STAMP, STAMP)
+        path = tmp_path / "abc-123.jsonl"
+        first, second = path.read_text(encoding="utf-8").splitlines()
+        path.write_text(f"{first}\nnot json\n{second}\n", encoding="utf-8")
+
+        copied = await store.copy(SESSION, self.BRANCH, "abc-123-2")
+
+        assert copied == 1
+        lines = [line async for line in store.read(self.BRANCH)]
+        assert [type(line) for line in lines] == [StoredLine, BrokenLine]
+        assert (tmp_path / "branch-1.jsonl").read_text(encoding="utf-8").splitlines()[
+            1
+        ] == "not json"
+
+    async def test_missing_cut_and_empty_source_are_refused(
+        self, tmp_path: Path
+    ) -> None:
+        store = JsonlHistoryStore(tmp_path)
+        await fill(store, SESSION, STAMP)
+        lease = await store.acquire(SessionId(value="blank"))
+        await store.release(lease)
+
+        with pytest.raises(RecordNotFoundError, match="no record with that uuid"):
+            await store.copy(SESSION, self.BRANCH, "nope")
+
+        with pytest.raises(SessionNotFoundError, match="nothing to branch"):
+            await store.copy(SessionId(value="nobody"), self.BRANCH, None)
+
+        with pytest.raises(SessionNotFoundError, match="nothing to branch"):
+            await store.copy(SessionId(value="blank"), self.BRANCH, None)
+
+        assert not (tmp_path / "branch-1.jsonl").exists()
+
+    async def test_held_source_is_copied_but_held_or_filled_target_is_refused(
+        self, tmp_path: Path
+    ) -> None:
+        store = JsonlHistoryStore(tmp_path)
+        other = JsonlHistoryStore(tmp_path)
+        await fill(store, SESSION, STAMP, STAMP)
+        await fill(store, SessionId(value="filled"), STAMP)
+
+        lease = await other.acquire(SESSION)
+        try:
+            assert await store.copy(SESSION, self.BRANCH, None) == 2
+        finally:
+            await other.release(lease)
+
+        held = await other.acquire(SessionId(value="taken"))
+        try:
+            with pytest.raises(SessionHeldError, match="already in use"):
+                await store.copy(SESSION, SessionId(value="taken"), None)
+        finally:
+            await other.release(held)
+
+        with pytest.raises(HistoryError, match="already has records"):
+            await store.copy(SESSION, SessionId(value="filled"), None)
+
+        assert len(await stored(store, SessionId(value="filled"))) == 1

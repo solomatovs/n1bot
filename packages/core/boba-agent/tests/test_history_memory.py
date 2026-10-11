@@ -1,11 +1,11 @@
 """Хранилище истории без хранилища: захват без замка, дозапись в никуда,
-пустое чтение."""
+пустое чтение, пустой список, удаление без ошибки, копировать нечего."""
 
 from __future__ import annotations
 
 import pytest
 
-from boba.agent.history import MemoryHistoryStore, SessionId
+from boba.agent.history import MemoryHistoryStore, SessionId, SessionNotFoundError
 from boba.agent.records import UserMessage, UserRecord
 
 pytestmark = pytest.mark.anyio
@@ -51,3 +51,25 @@ class TestMemoryHistoryStore:
 
         assert lines == []
         assert again == []
+
+    async def test_list_is_empty_and_delete_is_silent(self) -> None:
+        store = MemoryHistoryStore()
+        lease = await store.acquire(SESSION)
+        await store.append(lease, [user(1, "a")])
+
+        page = await store.list(None, 50)
+        await store.delete(SESSION)
+        await store.release(lease)
+
+        assert page.sessions == ()
+        assert page.next_cursor is None
+
+    async def test_copy_has_nothing_to_branch(self) -> None:
+        store = MemoryHistoryStore()
+        lease = await store.acquire(SESSION)
+        await store.append(lease, [user(1, "a")])
+
+        with pytest.raises(SessionNotFoundError, match="nothing to branch"):
+            await store.copy(SESSION, SessionId(value="memory-2"), None)
+
+        await store.release(lease)

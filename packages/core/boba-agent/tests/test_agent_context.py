@@ -1,14 +1,18 @@
 """Вложения контекста на стенде: окружение и дата приходят в конец, начало
 запроса не меняется; разница инструментов и новый снимок после возобновления;
 скиллы из каталога и инструмент Skill; экранирование подделки в обоих режимах
-подачи; секреты профиля не попадают в журнал и события."""
+подачи; секреты профиля не попадают в журнал и события; смена профиля модели
+между ходами идёт в следующий запрос и объявляется вложением `model`, посреди
+хода отвергается."""
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from collections.abc import AsyncIterator, Sequence
 from pathlib import Path
+from typing import ClassVar
 
 import pytest
 
@@ -24,6 +28,7 @@ from boba.agent.history import SessionId
 from boba.agent.profile import ModelProfile
 from boba.agent.queue import QueueEntry, QueueKind
 from boba.agent.records import AttachmentRecord, Record, RecordCodec, UserRecord
+from boba.agent.session import SessionError, SessionState
 from boba.agent.skills import Skill, SkillsDir, SkillsError, SkillTool
 from boba.agent.tools import ToolsError
 from boba.stand.agent import (
@@ -522,3 +527,67 @@ class TestSecrets:
                 continue
 
             assert token not in event.model_dump_json()
+
+
+class TestModelSwitch:
+    """Смена профиля модели между ходами: следующий запрос идёт новой модели
+    и объявлен вложением `model`; посреди хода смена отвергается."""
+
+    OTHER: ClassVar[str] = "other-model"
+
+    def other_profile(self, profile: ModelProfile) -> ModelProfile:
+        chat = profile.chat.model_copy(update={"model": self.OTHER})
+
+        return profile.model_copy(update={"chat": chat})
+
+    async def test_switch_between_turns_changes_the_next_request(
+        self, server: FakeServer, agents: StandAgents
+    ) -> None:
+        first = agents.profile(Protocol.OPENAI)
+        served = Served(agents.agent(first, Collected(), tools=StandTools()))
+        session = await served.open(SESSION, resume=False)
+        served.agent.queue.enqueue(prompt(ScenarioName.ANSWER.value))
+        await served.agent.settled()
+
+        second = self.other_profile(first)
+        served.agent.set_model(second, agents.model(second))
+        assert served.agent.profile is second
+        served.agent.queue.enqueue(prompt(ScenarioName.ANSWER.value))
+        await served.agent.settled()
+        await served.close()
+
+        assert [r["model"] for r in server.requests()] == ["fake-model", self.OTHER]
+        announced: list[str] = []
+        for record in attachments(session.records(), "model"):
+            announced.append(record.attachment.model_dump()["identity"]["modelId"])
+
+        assert announced == ["fake-model", self.OTHER]
+
+    async def test_switch_during_a_turn_is_refused(
+        self, server: FakeServer, agents: StandAgents
+    ) -> None:
+        first = agents.profile(Protocol.OPENAI)
+        served = Served(agents.agent(first, Collected(), tools=StandTools()))
+        session = await served.open(SESSION, resume=False)
+        served.agent.queue.enqueue(
+            prompt(
+                call(
+                    {
+                        "name": StandToolName.SLEEP.value,
+                        "arguments": {"seconds": 0.5},
+                    }
+                )
+            )
+        )
+        while session.state is SessionState.IDLE:
+            await asyncio.sleep(0.005)
+
+        second = self.other_profile(first)
+        with pytest.raises(SessionError, match="idle"):
+            served.agent.set_model(second, agents.model(second))
+
+        await served.agent.settled()
+        await served.close()
+
+        assert served.agent.profile is first
+        assert all(r["model"] == "fake-model" for r in server.requests())

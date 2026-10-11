@@ -161,6 +161,22 @@ class TestCeiling:
             PermissionMode.AUTO
         )
 
+    def test_available_modes_follow_the_ceiling(self) -> None:
+        plain = ModeCeiling(allow_bypass=False, has_classifier=False)
+        assert list(plain.available()) == [
+            PermissionMode.DEFAULT,
+            PermissionMode.ACCEPT_EDITS,
+            PermissionMode.PLAN,
+            PermissionMode.DONT_ASK,
+        ]
+
+        bypassing = ModeCeiling(allow_bypass=True, has_classifier=False)
+        assert PermissionMode.BYPASS_PERMISSIONS in bypassing.available()
+        assert PermissionMode.AUTO not in bypassing.available()
+
+        everything = ModeCeiling(allow_bypass=True, has_classifier=True)
+        assert list(everything.available()) == list(PermissionMode)
+
 
 class TestStaticRules:
     """Правила настроек запуска: запрет побеждает любой режим, разрешение
