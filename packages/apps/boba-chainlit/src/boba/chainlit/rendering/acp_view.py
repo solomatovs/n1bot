@@ -7,6 +7,9 @@
 теми же правилами ChatView.derive_id, что и у сохранённой истории:
 вопрос и его ответы — id вопроса (`"{id}#{n}"` у n-го ответа хода),
 рассуждения — id сообщения ассистента, вызов, график и элемент — id вызова.
+Вызов workflow рисуется шагами его узлов — вызовов других инструментов: шаг
+узла идёт под идентификатором вызова узла, под ним же сервер ведёт его
+журнал и отчёты о ходе работы.
 
 Ошибки:
 ValidationError — тело уведомления из шины не по схеме ACP либо запись
@@ -35,7 +38,17 @@ from pydantic import BaseModel, ConfigDict, TypeAdapter
 from boba.chainlit.acp.client import SessionUpdate
 from boba.chainlit.rendering.chat_view import ChatView, StepText
 from boba.toolkit.calls import CallViews
-from boba.toolkit.dag import JournalAddress, ToolCard, ToolUseResults
+from boba.toolkit.chain import StreamPlanError
+from boba.toolkit.dag import (
+    CallDag,
+    DagNode,
+    JournalAddress,
+    ToolCard,
+    ToolUseResult,
+    ToolUseResults,
+    WorkflowNodeResult,
+    WorkflowResult,
+)
 from boba.toolkit.result import ToolArtifact
 from chainlit.step import Step
 
@@ -173,10 +186,13 @@ class UpdateView:
         self._journals = journals
         self._media = media
         self._results = ToolUseResults()
+        self._dags = CallDag()
         self._turn_key: str | None = None
         self._thought_id: str | None = None
         self._answer_id: str | None = None
         self._steps: dict[str, Step] = {}
+        self._groups: dict[str, Sequence[str]] = {}
+        """Идущий вызов workflow → идентификаторы вызовов его узлов."""
 
     @property
     def view(self) -> ChatView:
@@ -197,6 +213,7 @@ class UpdateView:
         self._thought_id = None
         self._answer_id = None
         self._steps.clear()
+        self._groups.clear()
         self._view.begin_turn(key)
 
     async def question(self, text: str, key: str, author: str | None = None) -> None:
@@ -241,6 +258,7 @@ class UpdateView:
             await self._view.tool_stopped(step, StepText.FINISHED.value)
 
         self._steps.clear()
+        self._groups.clear()
         await self._view.finish_turn()
         self._turn_key = None
 
@@ -297,15 +315,47 @@ class UpdateView:
         await self._close_thinking()
         self._answer_id = None
         name = self._tool_name(update.field_meta, update.title)
+        args = self._args(update.raw_input)
+        nodes = self._nodes_of(name, update.tool_call_id, args)
+        if nodes:
+            await self._nodes_started(update.tool_call_id, nodes)
+            return
+
         step = await self._view.tool_started(
-            name,
-            self._args(update.raw_input),
-            update.tool_call_id,
-            self._media.of(name),
+            name, args, update.tool_call_id, self._media.of(name)
         )
         self._steps[update.tool_call_id] = step
 
+    def _nodes_of(
+        self, name: str, call_id: str, args: Mapping[str, Any]
+    ) -> Sequence[DagNode]:
+        """Узлы вызова workflow вызовами своих инструментов; пусто — вызов
+        не workflow либо не проходит форму описания, и рисуется одним шагом."""
+        if name != self._dags.WORKFLOW:
+            return ()
+
+        try:
+            return self._dags.nodes_of(DagNode(key=call_id, tool=name, args=dict(args)))
+        except StreamPlanError:
+            return ()
+
+    async def _nodes_started(self, call_id: str, nodes: Sequence[DagNode]) -> None:
+        """Шаг на узел вызова workflow под идентификатором вызова узла."""
+        keys: list[str] = []
+        for node in nodes:
+            step = await self._view.tool_started(
+                node.tool, node.args, node.key, self._media.of(node.tool)
+            )
+            self._steps[node.key] = step
+            keys.append(node.key)
+
+        self._groups[call_id] = keys
+
     async def _tool_update(self, update: ToolCallProgress) -> None:
+        if update.tool_call_id in self._groups:
+            await self._group_update(update)
+            return
+
         step = await self._step_of(update)
         if update.field_meta:
             await self._progress(step, update.field_meta)
@@ -318,7 +368,54 @@ class UpdateView:
             return
 
         self._steps.pop(update.tool_call_id, None)
-        await self._tool_result(step, update, status)
+        result = self._results.of(update.raw_output)
+        await self._tool_result(step, update.tool_call_id, result, update, status)
+
+    async def _group_update(self, update: ToolCallProgress) -> None:
+        """Итог вызова workflow шагам его узлов: узел с результатом в итоге
+        кончается им, остальные — общим итогом вызова. Отчёты о ходе работы
+        приходят узлам под их идентификаторами, у самого вызова шага нет."""
+        if update.status is None:
+            return
+
+        status = ToolStatusName(update.status)
+        if not status.terminal:
+            return
+
+        result = self._results.of(update.raw_output)
+        done: dict[str, WorkflowNodeResult] = {}
+        artifact = ToolArtifact.revive(result.artifact)
+        if isinstance(artifact, WorkflowResult):
+            for node in artifact.nodes:
+                done[node.call_id] = node
+
+        for key in self._groups.pop(update.tool_call_id):
+            step = self._steps.pop(key)
+            own = done.get(key)
+            if own is None:
+                await self._tool_result(step, key, result, update, status)
+                continue
+
+            await self._node_result(step, own, result.journal)
+
+    async def _node_result(
+        self, step: Step, node: WorkflowNodeResult, journal: JournalAddress | None
+    ) -> None:
+        """Итог узла workflow: запуск у узлов общий, журнал у каждого свой."""
+        if journal is None:
+            self._view.drop_journal(step)
+        else:
+            self._journals.remember(
+                self._thread_id,
+                node.call_id,
+                journal.model_copy(update={"call": node.call_id}),
+            )
+
+        if node.errored:
+            await self._view.tool_failed(step, node.result.chat_view().markdown)
+            return
+
+        await self._view.tool_finished(step, node.result, node.call_id)
 
     async def _step_of(self, update: ToolCallProgress) -> Step:
         """Шаг вызова; итог вызова без начала рисуется по полям итога."""
@@ -348,19 +445,22 @@ class UpdateView:
         )
 
     async def _tool_result(
-        self, step: Step, update: ToolCallProgress, status: ToolStatusName
+        self,
+        step: Step,
+        call_id: str,
+        result: ToolUseResult,
+        update: ToolCallProgress,
+        status: ToolStatusName,
     ) -> None:
-        result = self._results.of(update.raw_output)
+        """Итог вызова шагу step, идущему под идентификатором call_id."""
         if result.journal is None:
             self._view.drop_journal(step)
         else:
-            self._journals.remember(
-                self._thread_id, update.tool_call_id, result.journal
-            )
+            self._journals.remember(self._thread_id, call_id, result.journal)
 
         artifact = ToolArtifact.revive(result.artifact)
         if artifact is not None:
-            await self._view.tool_finished(step, artifact, update.tool_call_id)
+            await self._view.tool_finished(step, artifact, call_id)
             return
 
         if status is ToolStatusName.FAILED:
@@ -371,7 +471,7 @@ class UpdateView:
         if raw is None:
             raw = self._content_text(update)
 
-        await self._view.tool_finished(step, raw, update.tool_call_id)
+        await self._view.tool_finished(step, raw, call_id)
 
     async def _close_thinking(self) -> None:
         if self._thought_id is None:
