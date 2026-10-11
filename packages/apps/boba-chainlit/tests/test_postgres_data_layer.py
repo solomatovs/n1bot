@@ -10,7 +10,7 @@ from chainlit.types import Feedback as FeedbackPayload
 from chainlit.types import Pagination, ThreadFilter
 from chainlit.user import PersistedUser
 from chainlit.user import User as ChainlitUser
-from chainlit_stand import ChatSessionStand, FakeThreadMessages, JournaledCall, Seed
+from chainlit_stand import ChatSessionStand, Seed
 
 from boba.canvas.keys import ObjectKey
 from boba.chainlit.data.data_layer import PostgresDataLayer
@@ -198,11 +198,9 @@ async def test_upsert_and_delete_feedback(seeded: Seed):
     if not (feedback_id):
         raise AssertionError("feedback_id")
 
-    thread = await layer.get_thread(seeded.thread_id)
-    if thread is None:
-        raise AssertionError("thread is not None")
-    step = next(s for s in thread["steps"] if s.get("id") == seeded.answer_step_id)
-    feedback_dict = step.get("feedback")
+    # шагов у треда нет: оценки лента получает по id шага после воспроизведения
+    rated = await layer.feedbacks_of(seeded.thread_id)
+    feedback_dict = rated.get(seeded.answer_step_id)
     if feedback_dict is None:
         raise AssertionError("feedback_dict is not None")
     if feedback_dict["value"] != 1:
@@ -210,6 +208,9 @@ async def test_upsert_and_delete_feedback(seeded: Seed):
 
     if await layer.delete_feedback(feedback_id) is not True:
         raise AssertionError("await layer.delete_feedback(feedback_id) is True")
+
+    if await layer.feedbacks_of(seeded.thread_id) != {}:
+        raise AssertionError("the deleted feedback is gone")
 
 
 async def test_create_get_delete_element(
@@ -319,17 +320,14 @@ async def test_custom_element_keeps_props_out_of_storage(
         raise AssertionError("not (files_dir / object_key).exists()")
 
 
-async def test_journal_button_is_kept_only_for_a_readable_journal(
-    chat_session: ChatSessionStand, seeded: Seed, thread_messages: FakeThreadMessages
+async def test_journal_buttons_are_not_served_with_the_thread(
+    chat_session: ChatSessionStand, seeded: Seed
 ):
-    """Кнопка журнала сохранена у двух шагов, а адрес журнала в истории есть
-    только у одного вызова: у второго журнал не прочитать, и кнопки у него
-    в открытом треде нет."""
+    """Кнопки журнала сохранены у шагов, но с тредом не отдаются: лента ставит
+    их заново по итогам вызовов при воспроизведении истории, сохранённая
+    была бы второй."""
     layer = seeded.layer
     chat_session.use(user_id=seeded.user.id)
-    thread_messages.by_thread[seeded.thread_id].append(
-        JournaledCall("boba", "run-1").message("call-read")
-    )
     for call_id in ("call-read", "call-gone"):
         await layer.create_element(
             CustomElement(
@@ -351,11 +349,14 @@ async def test_journal_button_is_kept_only_for_a_readable_journal(
 
         shown.append((element.get("props") or {}).get("call_id"))
 
-    if shown != ["call-read"]:
-        raise AssertionError(f"only the readable journal keeps its button: {shown}")
+    if shown != []:
+        raise AssertionError(
+            f"journal buttons are drawn by the feed, not served: {shown}"
+        )
 
 
-async def test_get_thread_builds_steps_from_history(seeded: Seed):
+async def test_get_thread_serves_no_steps(seeded: Seed):
+    """История живёт у агента: тред отдаётся без шагов, их воспроизводит лента."""
     layer = seeded.layer
     thread = await layer.get_thread(seeded.thread_id)
     if thread is None:
@@ -365,14 +366,8 @@ async def test_get_thread_builds_steps_from_history(seeded: Seed):
     if thread["tags"] != ["a"]:
         raise AssertionError('thread["tags"] == ["a"]')
 
-    outputs = [(s.get("type"), s.get("output")) for s in thread["steps"]]
-    if outputs != [("user_message", "hi"), ("assistant_message", "hello")]:
-        raise AssertionError('outputs == [("user_message", "hi"), ("assistant_message…')
-    answer = thread["steps"][1]
-    if answer.get("id") != seeded.answer_step_id:
-        raise AssertionError('answer.get("id") == seeded.answer_step_id')
-    if answer.get("feedback") is not None:
-        raise AssertionError('answer.get("feedback") is None')
+    if thread["steps"] != []:
+        raise AssertionError('thread["steps"] == []')
     if thread["elements"] != []:
         raise AssertionError('thread["elements"] == []')
 

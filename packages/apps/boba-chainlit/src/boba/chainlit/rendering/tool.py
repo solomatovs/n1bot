@@ -9,11 +9,25 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
+from typing import Any
+
 import chainlit as cl
 from boba.toolkit.result import ChatElement, VisualElement, VisualResult
 from chainlit.element import ElementDisplay
 
-__all__ = ["ChatElements"]
+__all__ = ["ChatElements", "WorkspaceFile"]
+
+
+@dataclass
+class WorkspaceFile(cl.File):
+    """Файл workspace: помимо штатных полей несёт каталог в props.
+
+    Ссылка на вложение вычисляется при чтении треда, поэтому каталог обязан
+    храниться рядом с элементом — иначе отдача ищет файл только в upload/.
+    """
+
+    props: dict[str, Any] = field(default_factory=dict)
 
 
 class ChatElements:

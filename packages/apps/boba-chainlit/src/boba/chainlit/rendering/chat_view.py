@@ -723,9 +723,16 @@ class ChatView:
         step.output = TurnPulse.CONTENT
         return TurnPulse(self._sink, step)
 
-    async def question(self, text: str, step_id: str | None = None) -> Step:
+    async def question(
+        self, text: str, step_id: str | None = None, name: str | None = None
+    ) -> Step:
+        """Шаг вопроса; name — автор, если он известен точнее имени ленты."""
+        author = name
+        if not author:
+            author = self._user_name
+
         step = self._step(
-            self._user_name,
+            author,
             StepKind.USER,
             parent_id=None,
             step_id=step_id,
@@ -803,8 +810,8 @@ class ChatView:
 
         await self.rewrite_answer(f"{partial}\n\n{marker}", key)
 
-    async def _seal_answer(self) -> None:
-        """Закрывает текущий ответ перед инструментом.
+    async def seal_answer(self) -> None:
+        """Закрывает текущий ответ перед инструментом или новым сообщением модели.
 
         Иначе текст после инструмента дописывался бы в сообщение, открытое до
         него, и результат тула вставал бы в ленте ниже всего ответа — а при
@@ -964,7 +971,7 @@ class ChatView:
 
     async def begin_stage(self, name: str, phase: str) -> Step:
         """Открывает этап хода: шаги до его закрытия вкладываются внутрь."""
-        await self._seal_answer()
+        await self.seal_answer()
 
         step = await self._child(
             StepStatus.IDLE.title(name), StepKind.RUN, self._turn.key, StepRole.STAGE
@@ -1021,7 +1028,7 @@ class ChatView:
         инструмента сервера (имя → contentMediaType): по ним рисуется вход
         шага; None — инструмент свой либо запись истории их не несёт, и
         вход рисует модель вызова инструмента, а без неё — json-текст."""
-        await self._seal_answer()
+        await self.seal_answer()
 
         call_args: Mapping[str, Any] = {}
         intent = ""
@@ -1067,6 +1074,10 @@ class ChatView:
         """Закончившемуся вызову — кнопка его журнала."""
         if button := self._journal_buttons.pop(step.id, None):
             step.elements = [button]
+
+    def drop_journal(self, step: Step) -> None:
+        """У итога вызова нет адреса журнала: кнопка журнала шагу не ставится."""
+        self._journal_buttons.pop(step.id, None)
 
     def _stream_button(self, name: str, key: str | None) -> CustomElement | None:
         """Кнопка журнала вызова: только live-лента и только потоковые тулы."""

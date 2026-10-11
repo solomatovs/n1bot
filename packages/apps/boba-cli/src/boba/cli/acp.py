@@ -287,6 +287,7 @@ class MetaKey(StrEnum):
     PROGRESS = "boba/progress"
     UP_TO_UUID = "boba/upToUuid"
     MESSAGE_ID = "boba/messageId"
+    TOOL_NAME = "boba/toolName"
 
 
 class SessionUpdateName(StrEnum):
@@ -786,13 +787,18 @@ class AcpMapping:
         return updates
 
     def tool_call(self, block: ToolUseBlock, hints: ToolHints | None) -> ToolCallStart:
-        return start_tool_call(
+        """Имя инструмента отдельно от заголовка: в схеме SDK поля `name`
+        нет, клиент берёт его из `_meta` (расширение)."""
+        start = start_tool_call(
             block.id,
             self._titles.title(block.name, block.input),
             kind=self._wire.kind(self.tool_kind(hints)),
             status=self._wire.status(ToolStatusName.PENDING),
             raw_input=dict(block.input),
         )
+        start.field_meta = {MetaKey.TOOL_NAME.value: block.name}
+
+        return start
 
     def tool_results(self, record: UserRecord) -> Sequence[ToolCallProgress]:
         updates: list[ToolCallProgress] = []

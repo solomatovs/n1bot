@@ -21,6 +21,7 @@ from boba.messaging.bus import (
 )
 from boba.messaging.memory import MemoryMessageBus
 from boba.messaging.messages import (
+    AgentUpdate,
     AnswerClosed,
     AnswerInterrupted,
     AnswerToken,
@@ -77,6 +78,7 @@ from boba.messaging.payloads import (
 )
 
 __all__ = [
+    "AgentUpdate",
     "AnswerClosed",
     "AnswerInterrupted",
     "AnswerToken",

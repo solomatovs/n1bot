@@ -553,6 +553,9 @@ class StandConfig(StandService):
 
     service_plugins: tuple[str, ...] = ()
     """Плагины сервиса boba-mcp стенда сверх набора без песочницы."""
+    messaging: str = ""
+    """Провайдер шины [messaging]: пусто — как в конфиге отладки (память
+    процесса); postgres — шина в базе стенда, общая у двух инстансов."""
 
     CHAT_TOOLS: ClassVar[tuple[str, ...]] = ("connection_list", "connection_search")
     AGENT_MODULE: ClassVar[str] = "boba.cli.app"
@@ -702,6 +705,8 @@ class StandConfig(StandService):
         env["BOBA_PORT"] = str(self.app_port)
         env["BOBA_INSTANCE_ID"] = f"stand{self.app_port}"
         env["BOBA_URL_PREFIX"] = self.url_prefix
+        if self.messaging:
+            env["BOBA_MESSAGING"] = self.messaging
         env["PGGSSENCMODE"] = "disable"
         # способ запуска tools фиксируется стендом, а не окружением прогона
         if self.sandbox:
