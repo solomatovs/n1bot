@@ -142,6 +142,7 @@ class ChatSocket:
 
     SOCKET_PATH: ClassVar[str] = "/ws/socket.io"
     CLIENT_TYPE: ClassVar[str] = "webapp"
+    CHAT_START_STEP: ClassVar[str] = "on_chat_start"
 
     def __init__(self, app: StandProcess, cookie: str, thread_id: str) -> None:
         self._app = app
@@ -170,7 +171,10 @@ class ChatSocket:
             wait_timeout=30,
         )
         await self._sio.emit("connection_successful")
-        # on_chat_start выполнен: обёртка chainlit шлёт task_end на этот запрос
+        # task_end на connection_successful приходит сразу; on_chat_start идёт
+        # задачей со своим task_start/task_end вокруг шага run с его именем
+        await self.wait_task_end()
+        await self.wait_step_done(self.CHAT_START_STEP)
         await self.wait_task_end()
 
     async def send(self, text: str) -> None:
@@ -204,11 +208,46 @@ class ChatSocket:
         msg = f"event {name!r} did not arrive in {timeout_sec}s: {self.names()}"
         raise AssertionError(msg)
 
+    async def wait_step_done(
+        self, name: str, timeout_sec: float = TURN_TIMEOUT_SEC
+    ) -> None:
+        """update_message шага run с этим именем: обработчик chainlit закончился."""
+        deadline = time.monotonic() + timeout_sec
+        seen = 0
+        while time.monotonic() < deadline:
+            for event, payload in self.events[seen:]:
+                seen += 1
+                if event != "update_message":
+                    continue
+
+                if isinstance(payload, dict) and payload.get("name") == name:
+                    return
+
+            await asyncio.sleep(0.05)
+
+        msg = f"step {name!r} did not finish in {timeout_sec}s: {self.names()}"
+        raise AssertionError(msg)
+
     async def close(self) -> None:
+        await self._sio.disconnect()
+
+    async def end_session(self) -> None:
+        """Конец сессии chainlit, как при новом чате: без clear_session сессия
+        и её процесс живут до session_timeout ради реконнекта вкладки."""
+        await self._sio.emit("clear_session")
+        await asyncio.sleep(0.2)
         await self._sio.disconnect()
 
     def names(self) -> list[str]:
         return [event for event, _ in self.events]
+
+    def trace(self) -> list[str]:
+        """События с началом полезной нагрузки: для текста падения."""
+        found: list[str] = []
+        for event, payload in self.events:
+            found.append(f"{event}: {str(payload)[:160]}")
+
+        return found
 
     def tokens(self) -> str:
         found: list[str] = []
@@ -279,6 +318,20 @@ class AgentProcesses:
 
         return found
 
+    async def await_new(self, before: set[int], timeout_sec: float = 60.0) -> int:
+        """Pid агента, появившегося после отметки: on_chat_start идёт задачей
+        после task_end, процесс поднимается не мгновенно."""
+        deadline = time.monotonic() + timeout_sec
+        while time.monotonic() < deadline:
+            started = set(self.pids()) - before
+            if len(started) == 1:
+                return next(iter(started))
+
+            await asyncio.sleep(0.3)
+
+        msg = f"no agent process appeared in {timeout_sec}s, known pids {before}"
+        raise AssertionError(msg)
+
     def settings_dirs(self) -> list[Path]:
         if not self._agents_dir.is_dir():
             return []
@@ -346,10 +399,9 @@ class TestConversation:
         self, app: StandProcess, tab: ChatSocket, rows: ChatRows, stand: Stand
     ) -> None:
         agents = AgentProcesses(app)
-        pids = agents.pids()
-        assert len(pids) == 1, f"one agent per tab expected, got {pids}: {app.tail(60)}"
+        pid = await agents.await_new(set())
 
-        files = ProcFiles(pids[0])
+        files = ProcFiles(pid)
         joined = " ".join(files.cmdline())
         assert "--settings" in joined
         assert stand.pg_probe_password.get_secret_value() not in joined
@@ -365,9 +417,9 @@ class TestConversation:
         await tab.wait_task_end()
 
         assert not tab.errors(), (tab.errors(), app.tail(80))
-        assert "answer the question" in tab.tokens(), tab.names()
+        assert "answer the question" in tab.tokens(), (tab.trace(), app.tail(40))
         answers = tab.messages()
-        assert answers, tab.names()
+        assert answers, tab.trace()
         assert any("answer the question" in str(m.get("output")) for m in answers)
 
         meta = await rows.thread_meta(tab.thread_id)
@@ -399,9 +451,7 @@ class TestConversation:
         before = set(agents.pids())
         tab = ChatSocket(app, cookie, str(uuid4()))
         await tab.open()
-        started = set(agents.pids()) - before
-        assert len(started) == 1, (started, app.tail(60))
-        pid = next(iter(started))
+        pid = await agents.await_new(before)
         settings_dirs = [
             path
             for path in agents.settings_dirs()
@@ -409,8 +459,7 @@ class TestConversation:
         ]
         assert settings_dirs
 
-        await tab.close()
-        # сессия chainlit удаляется позже обрыва сокета: ждём ухода процесса
+        await tab.end_session()
         deadline = time.monotonic() + 60
         while time.monotonic() < deadline and pid in agents.pids():
             await asyncio.sleep(0.5)

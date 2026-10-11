@@ -10,6 +10,7 @@ DataUnavailableError — таблицы чата недоступны.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from collections.abc import Mapping, Sequence
@@ -26,6 +27,7 @@ from acp.schema import (
     AllowedOutcome,
     DeniedOutcome,
     PermissionOption,
+    PromptResponse,
     RequestPermissionResponse,
     TextContentBlock,
     ToolCallProgress,
@@ -569,7 +571,8 @@ class ThreadAgent:
 
     async def ask(self, question: Question) -> str:
         """Ход по вопросу: новая сессия на первом, ветвь на правке; итог —
-        stopReason ответа.
+        stopReason ответа. Кнопка Stop снимает задачу обработчика chainlit:
+        ход всё равно дожидается ответа агента на отмену и отмечает его в ленте.
 
         Ошибки:
         AgentRequestError — агент отказал в методе сессии.
@@ -578,14 +581,44 @@ class ThreadAgent:
         session_id = await self._session_for(question)
         self._asked.append(question.key)
         self._active = session_id
+        logger.info(
+            "thread %s: turn %s starts in session %s",
+            self.thread_id,
+            question.key,
+            session_id,
+        )
+        turn = asyncio.create_task(
+            self.process.prompt(session_id, self._blocks(question))
+        )
         try:
-            response = await self.process.prompt(session_id, self._blocks(question))
+            response = await asyncio.shield(turn)
+        except asyncio.CancelledError:
+            response = await self._cancelled_turn(session_id, turn)
+            await self._finish(session_id, question, response)
+            raise
         except Exception:
+            self._active = None
             await self._renderer.abandon(session_id)
             raise
-        finally:
-            self._active = None
 
+        await self._finish(session_id, question, response)
+
+        return response.stop_reason
+
+    async def _cancelled_turn(
+        self, session_id: str, turn: asyncio.Task[PromptResponse]
+    ) -> PromptResponse:
+        """Задача обработчика снята: агент получает отмену, ход ждёт его ответа."""
+        if not turn.done():
+            self._renderer.stopping(session_id)
+            await self.process.cancel(session_id)
+
+        return await turn
+
+    async def _finish(
+        self, session_id: str, question: Question, response: PromptResponse
+    ) -> None:
+        self._active = None
         await self._renderer.turn_finished(session_id, response.stop_reason)
         logger.info(
             "thread %s: turn %s finished with %s",
@@ -593,8 +626,6 @@ class ThreadAgent:
             question.key,
             response.stop_reason,
         )
-
-        return response.stop_reason
 
     async def stop(self) -> bool:
         """Отмена идущего хода; False — хода нет."""
@@ -691,18 +722,21 @@ class ThreadAgents:
         self._launcher = launcher
         self._meta = meta
         self._agents: dict[str, ThreadAgent] = {}
+        self._starting = asyncio.Lock()
 
     async def of(self, identity: ThreadIdentity) -> ThreadAgent:
-        """Агент треда; при первом обращении процесс запускается."""
-        known = self._agents.get(identity.thread_id)
-        if known is not None:
-            return known
+        """Агент треда; при первом обращении процесс запускается. Старт вкладки
+        и первый вопрос приходят почти разом — второй ждёт первого под замком."""
+        async with self._starting:
+            known = self._agents.get(identity.thread_id)
+            if known is not None:
+                return known
 
-        agent = ThreadAgent(identity, self._launcher, self._meta, FeedRenderer())
-        await agent.start()
-        self._agents[identity.thread_id] = agent
+            agent = ThreadAgent(identity, self._launcher, self._meta, FeedRenderer())
+            await agent.start()
+            self._agents[identity.thread_id] = agent
 
-        return agent
+            return agent
 
     def active(self, thread_id: str) -> ThreadAgent | None:
         """Агент треда с идущим ходом; None — хода в этой вкладке нет."""
