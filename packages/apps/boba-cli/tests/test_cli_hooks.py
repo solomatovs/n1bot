@@ -3,7 +3,8 @@
 Обработчик подменяет аргумент — подмену получает сервер, журнал хранит
 исходное; `deny` снимает вызов; молчание, ошибка и не-JSON решаются
 `onFailure`; `ask` ведёт к вопросу наружу; матчер отсеивает чужие
-инструменты; отмена хода обрывает ожидание обработчика."""
+инструменты; отмена хода обрывает ожидание обработчика; узел вызова
+workflow проходит обработчик как вызов своего инструмента."""
 
 from __future__ import annotations
 
@@ -62,6 +63,8 @@ from boba.stand.agent import (
 )
 from boba.stand.hooks import HookStandRules, HookStandServer
 from boba.stand.ui.fake_llm import ScenarioName, ToolCallSpec
+from boba.toolkit.dag import CallDag, DagNode, NodeOutcome, ToolCard, ToolHints
+from boba.toolkit.result import MarkdownResult
 from boba.toolrun.hosted import DirectCalls
 
 pytestmark = pytest.mark.anyio
@@ -246,6 +249,125 @@ class Stand:
         )
 
         return Served(agent)
+
+
+class LinkingTools(StandTools):
+    """Стенд инструментов с инструментом workflow: вызов записывается таким,
+    каким пришёл серверу, узлы не исполняются."""
+
+    def __init__(self) -> None:
+        super().__init__(FEATURES)
+        self._cards.append(
+            ToolCard(
+                name=CallDag.WORKFLOW,
+                description="stand tool workflow",
+                parameters={
+                    "type": "object",
+                    "properties": {CallDag.NODES: {"type": "array"}},
+                },
+                views=None,
+                hints=ToolHints(),
+            )
+        )
+
+    async def submit(
+        self, calls: Sequence[DagNode]
+    ) -> Sequence[asyncio.Future[NodeOutcome]]:
+        pending: list[asyncio.Future[NodeOutcome]] = []
+        for call in calls:
+            if call.tool != CallDag.WORKFLOW:
+                pending.extend(await super().submit([call]))
+                continue
+
+            self.calls.append(call)
+            linked = self._outcomes.of(call, MarkdownResult(text="linked"), False)
+            pending.append(self._outcomes.settled(linked))
+
+        return pending
+
+
+class TestWorkflowNodes:
+    """Узел вызова workflow — вызов своего инструмента: обработчик получает
+    событие узла с именем, схемой и идентификатором вызова этого инструмента."""
+
+    NODES: list[dict[str, object]] = [
+        {"key": "src", "tool": StandToolName.QUERY.value, "args": QUERY_ARGUMENTS},
+        {"key": "dst", "tool": StandToolName.LOOKUP.value},
+    ]
+
+    async def test_connections_of_nodes_are_sealed_and_the_journal_keeps_the_names(
+        self,
+        agents: StandAgents,
+        transport: HttpHookTransport,
+        handlers: Handlers,
+    ) -> None:
+        handler = await handlers.start(HookStandRules())
+        stand = Stand(agents, LinkingTools())
+        hooks = hooks_for([handler], transport, stand.tools.origins())
+        served = stand.served(hooks)
+        session = await served.open(SESSION, resume=False)
+
+        served.agent.queue.enqueue(
+            prompt(call({"name": CallDag.WORKFLOW, "arguments": {"nodes": self.NODES}}))
+        )
+        await served.agent.settled()
+        await served.close()
+
+        sent = stand.tools.calls
+        assert [c.tool for c in sent] == [CallDag.WORKFLOW]
+        assert sent[0].args[CallDag.NODES] == [
+            {
+                "key": "src",
+                "tool": StandToolName.QUERY.value,
+                "args": {**QUERY_ARGUMENTS, StandArg.CONNECTION.value: "sealed:dwh"},
+            },
+            {"key": "dst", "tool": StandToolName.LOOKUP.value},
+        ]
+
+        uses = tool_uses(session.records())
+        assert uses[0].input[CallDag.NODES] == self.NODES
+        assert results(session.records())[0].text() == "linked"
+
+        events = [received.event for received in handler.app.received]
+        assert [e.tool_name for e in events] == [
+            "mcp__stand__workflow",
+            "mcp__stand__query",
+            "mcp__stand__lookup",
+        ]
+        assert [e.tool_use_id for e in events] == [
+            uses[0].id,
+            f"{uses[0].id}_0",
+            f"{uses[0].id}_1",
+        ]
+        assert events[1].tool_input == QUERY_ARGUMENTS
+        assert events[1].tool_schema == StandTools.QUERY_SCHEMA
+
+    async def test_denied_node_keeps_the_whole_call_from_the_server(
+        self,
+        agents: StandAgents,
+        transport: HttpHookTransport,
+        handlers: Handlers,
+    ) -> None:
+        handler = await handlers.start(
+            HookStandRules(denied={"mcp__stand__query": "no grant for dwh"})
+        )
+        stand = Stand(agents, LinkingTools())
+        hooks = hooks_for([handler], transport, stand.tools.origins())
+        served = stand.served(hooks)
+        session = await served.open(SESSION, resume=False)
+
+        served.agent.queue.enqueue(
+            prompt(call({"name": CallDag.WORKFLOW, "arguments": {"nodes": self.NODES}}))
+        )
+        await served.agent.settled()
+        await served.close()
+
+        assert stand.tools.calls == []
+        found = results(session.records())
+        assert found[0].is_error is True
+        assert found[0].text() == (
+            "The PreToolUse hook denied the call of workflow: no grant for dwh"
+        )
 
 
 class TestSealing:
