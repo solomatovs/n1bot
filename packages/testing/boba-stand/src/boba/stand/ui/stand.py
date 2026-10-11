@@ -540,12 +540,12 @@ class StandConfig(StandService):
     """Секция [agent.history] чата: по умолчанию Postgres стенда тем же
     подключением, что у чата (kerberos), схема agent_history в базе стенда."""
 
-    agent_chat_mcp: bool = False
-    """Записывать ли сервер инструментов чата в mcpServers агента: сам сервер
-    /chat/mcp появляется позже, стенд без него не держит."""
+    agent_chat_mcp: bool = True
+    """Записывать ли сервер инструментов чата /chat/mcp в mcpServers агента."""
 
-    agent_hook: bool = False
-    """Класть ли хук PreToolUse в файл настроек агента: обработчик появляется позже."""
+    agent_hook: bool = True
+    """Класть ли хук PreToolUse в файл настроек агента: без него соединения
+    уходят серверу инструментов именами, а не запечатанными."""
 
     generation: str = ""
     """Поколение сессий: пустое — случайное на каждый старт процесса; общее у
@@ -677,7 +677,7 @@ class StandConfig(StandService):
                 "path": "/chat/hooks/pre-tool-use",
                 "timeout_sec": 10,
             },
-            "limits": {"context_window": 32000, "max_output_tokens": 4096},
+            "limits": {"context_window": 200000, "max_output_tokens": 4096},
         }
 
     @staticmethod
