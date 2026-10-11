@@ -5,9 +5,10 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "boba-cli"
 version = "0.0.26.dev4"
-description = "Boba cli: процесс агента — команда boba, разбор параметров запуска, обмен строками JSON через стандартные потоки."
+description = "Boba cli: процесс агента — команда boba acp, разбор параметров запуска, Agent Client Protocol через стандартные потоки."
 requires-python = ">=3.11,<4"
 dependencies = [
+    "agent-client-protocol==0.12.1",
     "boba-agent==0.0.26.dev4",
     "boba-cancellation==0.0.26.dev4",
     "boba-history-jsonl==0.0.26.dev4",
