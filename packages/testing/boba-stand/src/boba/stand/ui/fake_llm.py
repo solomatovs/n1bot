@@ -1129,6 +1129,9 @@ class FakeLlmApp:
     estimate_usage: bool = False
     """Учёт токенов по знакам запроса и ответа вместо постоянных чисел."""
 
+    unmarked: ScenarioName | None = None
+    """Сценарий для сообщения без маркера; None — такое сообщение отвергается."""
+
     requests: list[dict[str, Any]] = field(default_factory=list)
     _openai: OpenAiWire = field(init=False, repr=False)
     _ollama: OllamaWire = field(init=False, repr=False)
@@ -1228,16 +1231,26 @@ class FakeLlmApp:
         self, payload: Mapping[str, Any], text: str, failure: FailureName | None
     ) -> Played:
         name = ScenarioName.find(text)
-        if name is None and failure is None:
-            name = ScenarioName.of(text)
-
         if name is None:
-            name = ScenarioName.ANSWER
+            name = self._unmarked_scenario(text, failure)
 
         scenario = ScenarioBook.of(name, text)
         script = scenario.turn(scenario.answered(self._called_names(payload)))
 
         return self._failures.apply(script, failure)
+
+    def _unmarked_scenario(
+        self, text: str, failure: FailureName | None
+    ) -> ScenarioName:
+        """Сценарий сообщения без маркера: назначенный `unmarked`, при одном
+        маркере отказа — ответ; без того и другого — ошибка стенда."""
+        if self.unmarked is not None:
+            return self.unmarked
+
+        if failure is not None:
+            return ScenarioName.ANSWER
+
+        return ScenarioName.of(text)
 
     @staticmethod
     def _called_names(payload: Mapping[str, Any]) -> list[str]:
