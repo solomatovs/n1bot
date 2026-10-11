@@ -13,11 +13,12 @@ RefusalError — вызов идёт вне контекста (ContextKind.NO_C
 
 from __future__ import annotations
 
+from abc import abstractmethod
 from collections.abc import Generator, Iterable
 from contextlib import contextmanager
 from contextvars import ContextVar
 from enum import StrEnum
-from typing import Annotated, ClassVar, Literal
+from typing import Annotated, ClassVar, Literal, Protocol
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -29,6 +30,7 @@ from boba.identity.session import LogUserMark
 __all__ = [
     "CallContext",
     "CallContexts",
+    "CallScopeSource",
     "ChatInitiator",
     "ContextKind",
     "Credential",
@@ -275,7 +277,21 @@ class CallContext(BaseModel):
         )
 
 
-class CallContexts:
+class CallScopeSource(Protocol):
+    """Источник области текущего вызова для клиента сервера инструментов.
+
+    Клиент MCP называет серверу с расширением файлов область вызова: по ней
+    сервер держит файлы одного разговора вместе. Реализуют CallContexts
+    (область контекста вызова приложения) и вход процесса агента (область из
+    его настроек).
+    """
+
+    @abstractmethod
+    def scope_id(self) -> str | None:
+        """Id области текущего вызова; None — область выбирает сервер."""
+
+
+class CallContexts(CallScopeSource):
     """Текущий контекст вызова процесса: кто сейчас вызывает и в какой области.
 
     Контекст ставит вход вызова (ход чата, запрос API, задание) на время его
@@ -310,6 +326,13 @@ class CallContexts:
     def subject(self) -> Subject:
         """Субъект текущего вызова."""
         return self.current().subject
+
+    def scope_id(self) -> str | None:
+        context = self.peek()
+        if context is None:
+            return None
+
+        return context.scope.id
 
     @contextmanager
     def applied(self, context: CallContext) -> Generator[CallContext, None, None]:

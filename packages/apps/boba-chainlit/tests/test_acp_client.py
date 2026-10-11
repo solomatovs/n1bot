@@ -63,7 +63,7 @@ class Agents:
     async def start(self, updates: RecordingUpdates, thread: str = "t") -> AgentProcess:
         chat = self._model.chat_settings()
         workdir = AgentWorkdirs(self._root).create(thread)
-        workdir.write(self._builder.build(chat, "jwt", []), chat.system_prompt)
+        workdir.write(self._builder.build(thread, chat, "jwt", []), chat.system_prompt)
         process = AgentProcess(
             self._stand.command(), workdir, AgentClient(updates), "0.0"
         )

@@ -213,6 +213,14 @@ class HookGroupFile(SettingsFileModel):
     hooks: Sequence[HttpHookFile] = Field(min_length=1)
 
 
+class McpClientFile(SettingsFileModel):
+    """Секция mcp файла: область вызовов инструментов. Агент называет её
+    серверу с расширением файлов, и вызовы треда видят его workspace —
+    файлы, загруженные пользователем, и то, что открывает панель канваса."""
+
+    scope: str = Field(min_length=1)
+
+
 class AgentSettingsFile(SettingsFileModel):
     """Файл настроек агента целиком: то, что уходит в `--settings`."""
 
@@ -222,6 +230,7 @@ class AgentSettingsFile(SettingsFileModel):
     history: HistoryFile
     hooks: Mapping[HookEventName, Sequence[HookGroupFile]]
     system_prompt_file: str = Field(min_length=1)
+    mcp: McpClientFile
 
     def render(self) -> str:
         """JSON файла с раскрытыми секретами."""
@@ -561,14 +570,19 @@ class HookMatchers:
 
 class SettingsFileBuilder:
     """Файл настроек агента из слоя чата и конфига [agent]: история, режим
-    разрешений и хук добавляются к профилю модели чата."""
+    разрешений, хук и область вызовов (id треда) добавляются к профилю
+    модели чата."""
 
     def __init__(self, config: AgentConfig) -> None:
         self._config = config
         self._matchers = HookMatchers()
 
     def build(
-        self, chat: ChatAgentSettings, user_jwt: str, hooked_servers: Sequence[str]
+        self,
+        thread_id: str,
+        chat: ChatAgentSettings,
+        user_jwt: str,
+        hooked_servers: Sequence[str],
     ) -> AgentSettingsFile:
         return AgentSettingsFile(
             model=chat.model_name,
@@ -579,6 +593,7 @@ class SettingsFileBuilder:
             history=self._history(),
             hooks=self._hooks(user_jwt, hooked_servers),
             system_prompt_file=WorkdirFile.SYSTEM_PROMPT.value,
+            mcp=McpClientFile(scope=thread_id),
         )
 
     def _history(self) -> HistoryFile:
