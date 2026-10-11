@@ -1,8 +1,8 @@
-"""Тесты слоя пользовательских настроек LLM: границы, наложение, хранение.
+"""Тесты слоя пользовательских настроек LLM: права профиля, наложение, хранение.
 
 Сэмплинг пользователю недоступен: его задаёт администратор таблицей sampling
 профиля, и она уходит в провайдер как написана; модель тоже фиксирована
-профилем. Пользователю остаются глубина истории и личная добавка к промпту.
+профилем. Пользователю остаётся личная добавка к промпту.
 """
 
 from __future__ import annotations
@@ -12,7 +12,7 @@ from typing import Any
 from uuid import UUID, uuid4
 
 import pytest
-from chainlit.input_widget import InputWidget, Slider, Tab
+from chainlit.input_widget import InputWidget, Tab
 from chainlit.user import User as ChainlitUser
 from psycopg import sql
 from psycopg.rows import dict_row
@@ -24,7 +24,6 @@ from boba.chainlit.infra.config import AppConfig
 from boba.chainlit.infra.session import current_session
 from boba.chat.profiles import (
     ChatProfileConfig,
-    SettingsBounds,
     SettingsView,
     UserLlmOverrides,
     UserMeta,
@@ -53,11 +52,8 @@ def chainlit_context() -> None:
     """Заглушка сессионной фикстуры: тесты слоя не ходят в контекст chainlit."""
 
 
-BOUNDS = SettingsBounds()
-
-
 def _panel(profile: ChatProfileConfig, saved: UserLlmOverrides) -> SettingsPanel:
-    view = SettingsView.of(BOUNDS, profile, saved)
+    view = SettingsView.of(profile, saved)
     return SettingsPanel(view, PanelText(NO_OVERRIDES, PanelText.DEFAULT_LANGUAGE))
 
 
@@ -69,7 +65,6 @@ def _profile(**kw) -> ChatProfileConfig:
         "model": "base-model",
         "settings": ["*"],
         "system_prompt": "You are the profile assistant",
-        "history_messages": 25,
         "sampling": {"temperature": 0.1, "top_k": 40},
     }
     base.update(kw)
@@ -77,53 +72,37 @@ def _profile(**kw) -> ChatProfileConfig:
 
 
 class TestClamped:
-    def test_history_is_clamped_into_bounds(self) -> None:
-        overrides = UserLlmOverrides(history_messages=900)
-
-        bounded = overrides.clamped(BOUNDS, _profile())
-
-        if bounded.history_messages != 100:
-            raise AssertionError(f"history: {bounded.history_messages}")
-
     def test_none_fields_stay_none(self) -> None:
-        bounded = UserLlmOverrides().clamped(BOUNDS, _profile())
+        bounded = UserLlmOverrides().clamped(_profile())
 
         if bounded.stored() != {}:
             raise AssertionError(f"stored: {bounded.stored()}")
 
-    def test_disallowed_setting_is_dropped(self) -> None:
-        profile = _profile(settings=["history_messages"])
-        overrides = UserLlmOverrides(history_messages=10, user_prompt="sneak")
+    def test_allowed_setting_survives(self) -> None:
+        profile = _profile(settings=["user_prompt"])
+        overrides = UserLlmOverrides(user_prompt="be terse")
 
-        bounded = overrides.clamped(BOUNDS, profile)
+        bounded = overrides.clamped(profile)
 
-        if bounded.stored() != {"history_messages": 10}:
+        if bounded.stored() != {"user_prompt": "be terse"}:
             raise AssertionError(f"stored: {bounded.stored()}")
 
     def test_empty_settings_disallow_everything(self) -> None:
         profile = _profile(settings=[])
-        overrides = UserLlmOverrides(history_messages=10, user_prompt="sneak")
+        overrides = UserLlmOverrides(user_prompt="sneak")
 
-        bounded = overrides.clamped(BOUNDS, profile)
+        bounded = overrides.clamped(profile)
 
         if bounded.stored() != {}:
             raise AssertionError(f"stored: {bounded.stored()}")
 
 
 class TestApplyTo:
-    def test_override_wins_over_profile(self) -> None:
-        overrides = UserLlmOverrides(history_messages=5)
-
-        settings = overrides.apply_to(_profile())
-
-        if settings.history_messages != 5:
-            raise AssertionError(f"history: {settings.history_messages}")
-
     def test_none_keeps_profile_value(self) -> None:
         settings = UserLlmOverrides().apply_to(_profile())
 
-        if settings.history_messages != 25:
-            raise AssertionError(f"history: {settings.history_messages}")
+        if settings.system_prompt != "You are the profile assistant":
+            raise AssertionError(f"system_prompt: {settings.system_prompt!r}")
         if settings.model != "base-model":
             raise AssertionError(f"model: {settings.model}")
 
@@ -137,7 +116,7 @@ class TestApplyTo:
             raise AssertionError(f"system_prompt: {settings.system_prompt!r}")
 
     def test_transport_is_never_overridden(self) -> None:
-        settings = UserLlmOverrides(history_messages=1).apply_to(_profile())
+        settings = UserLlmOverrides(user_prompt="hi").apply_to(_profile())
 
         backend = settings.provider
         if backend != _profile().provider:
@@ -145,7 +124,7 @@ class TestApplyTo:
 
     def test_admin_sampling_survives_overrides_verbatim(self) -> None:
         """Таблица sampling профиля не трогается пользователем и уходит как есть."""
-        overrides = UserLlmOverrides(history_messages=3)
+        overrides = UserLlmOverrides(user_prompt="hi")
 
         sampling = overrides.apply_to(_profile()).sampling
 
@@ -170,36 +149,12 @@ class TestEdited:
             raise AssertionError(f"stored: {parsed.stored()}")
 
     def test_untouched_form_keeps_saved_override(self) -> None:
-        saved = UserLlmOverrides(history_messages=7)
+        saved = UserLlmOverrides(user_prompt="keep me")
         panel = self._panel(saved)
 
         parsed = panel.parse(panel.shown_values()).overrides
 
-        if parsed.stored() != {"history_messages": 7}:
-            raise AssertionError(f"stored: {parsed.stored()}")
-
-    def test_changed_value_is_stored(self) -> None:
-        saved = UserLlmOverrides()
-        panel = self._panel(saved)
-
-        form = panel.shown_values()
-        form[UserSetting.HISTORY_MESSAGES.value] = 7
-
-        parsed = panel.parse(form).overrides
-
-        if parsed.stored() != {"history_messages": 7}:
-            raise AssertionError(f"stored: {parsed.stored()}")
-
-    def test_profile_value_back_clears_override(self) -> None:
-        saved = UserLlmOverrides(history_messages=7)
-        panel = self._panel(saved)
-
-        form = panel.shown_values()
-        form[UserSetting.HISTORY_MESSAGES.value] = 25
-
-        parsed = panel.parse(form).overrides
-
-        if parsed.stored() != {}:
+        if parsed.stored() != {"user_prompt": "keep me"}:
             raise AssertionError(f"stored: {parsed.stored()}")
 
     def test_empty_prompt_clears_the_instruction(self) -> None:
@@ -263,12 +218,12 @@ class TestSettingsPanel:
                 raise AssertionError(f"{name} has no description")
 
     def test_only_allowed_widgets_are_drawn(self) -> None:
-        profile = _profile(settings=["history_messages", "user_prompt"])
+        profile = _profile(settings=["user_prompt"])
         panel = _panel(profile, UserLlmOverrides())
 
         ids = set(self._widgets(panel.tabs()))
 
-        if ids != {"history_messages", "user_prompt"}:
+        if ids != {"user_prompt"}:
             raise AssertionError(f"ids: {sorted(ids)}")
 
     def test_no_tabs_for_empty_settings(self) -> None:
@@ -276,31 +231,6 @@ class TestSettingsPanel:
 
         if panel.tabs() != []:
             raise AssertionError("tabs drawn for a closed profile")
-
-    def _slider(self, panel: SettingsPanel, setting: UserSetting) -> Slider:
-        widget = self._widgets(panel.tabs())[setting.value]
-        if not isinstance(widget, Slider):
-            raise AssertionError(f"{setting.value} is {type(widget).__name__}")
-
-        return widget
-
-    def test_history_slider_starts_at_profile_value(self) -> None:
-        panel = _panel(_profile(), UserLlmOverrides())
-
-        slider = self._slider(panel, UserSetting.HISTORY_MESSAGES)
-
-        if (slider.min, slider.max, slider.step) != (1.0, 100.0, 1.0):
-            raise AssertionError(f"bounds: {slider.min}, {slider.max}, {slider.step}")
-        if slider.initial != 25:
-            raise AssertionError(f"initial: {slider.initial}")
-
-    def test_history_slider_starts_at_saved_override(self) -> None:
-        panel = _panel(_profile(), UserLlmOverrides(history_messages=7))
-
-        slider = self._slider(panel, UserSetting.HISTORY_MESSAGES)
-
-        if slider.initial != 7:
-            raise AssertionError(f"initial: {slider.initial}")
 
     def test_unknown_setting_name_is_config_error(self) -> None:
         with pytest.raises(ValueError, match="unknown settings"):
@@ -312,31 +242,6 @@ class TestSettingsPanel:
         if enum_names != field_names:
             raise AssertionError(f"mismatch: {enum_names ^ field_names}")
 
-    def test_parse_drops_disallowed_fields(self) -> None:
-        profile = _profile(settings=["history_messages"])
-        saved = UserLlmOverrides()
-        panel = _panel(profile, saved)
-
-        form = panel.shown_values()
-        form[UserSetting.HISTORY_MESSAGES.value] = 7
-        form[UserSetting.USER_PROMPT.value] = "smuggled"
-
-        parsed = panel.parse(form).overrides
-
-        if parsed.stored() != {"history_messages": 7}:
-            raise AssertionError(f"stored: {parsed.stored()}")
-
-    def test_parse_clamps_out_of_bounds(self) -> None:
-        panel = _panel(_profile(), UserLlmOverrides())
-
-        form = panel.shown_values()
-        form[UserSetting.HISTORY_MESSAGES.value] = 900
-
-        parsed = panel.parse(form).overrides
-
-        if parsed.stored() != {"history_messages": 100}:
-            raise AssertionError(f"stored: {parsed.stored()}")
-
 
 class TestPanelText:
     """Подписи панели: свой язык, откат на язык по умолчанию, полнота ключей."""
@@ -344,18 +249,18 @@ class TestPanelText:
     def test_russian_strings_are_translated(self) -> None:
         text = PanelText(NO_OVERRIDES, "ru-RU")
 
-        history = UserSetting.HISTORY_MESSAGES
-        if text.label(history) != "Сообщений истории":
-            raise AssertionError(f"label: {text.label(history)!r}")
-        if text.tab(PanelTab.HISTORY.value) != "История":
-            raise AssertionError(f"tab: {text.tab(PanelTab.HISTORY.value)!r}")
+        prompt = UserSetting.USER_PROMPT
+        if text.label(prompt) != "Свои инструкции":
+            raise AssertionError(f"label: {text.label(prompt)!r}")
+        if text.tab(PanelTab.PROMPT.value) != "Промпт":
+            raise AssertionError(f"tab: {text.tab(PanelTab.PROMPT.value)!r}")
 
     def test_unknown_language_falls_back_to_default(self) -> None:
         text = PanelText(NO_OVERRIDES, "de-DE")
 
-        history = UserSetting.HISTORY_MESSAGES
-        if text.label(history) != "History messages":
-            raise AssertionError(f"label: {text.label(history)!r}")
+        prompt = UserSetting.USER_PROMPT
+        if text.label(prompt) != "Custom instructions":
+            raise AssertionError(f"label: {text.label(prompt)!r}")
 
     def test_every_setting_is_translated(self) -> None:
         for language in ("en-US", "ru-RU"):
@@ -403,27 +308,36 @@ class TestPanelLanguage:
 
 class TestUserMeta:
     def test_malformed_meta_degrades_to_empty(self) -> None:
-        meta = UserMeta.of({"llm": {"general": {"history_messages": "abc"}}})
+        meta = UserMeta.of({"llm": {"general": {"user_prompt": ["abc"]}}})
 
         if meta.llm != {}:
             raise AssertionError(f"llm: {meta.llm}")
 
     def test_missing_profile_gives_empty_overrides(self) -> None:
-        meta = UserMeta.of({"llm": {"general": {"history_messages": 5}}})
+        meta = UserMeta.of({"llm": {"general": {"user_prompt": "hi"}}})
 
         if meta.overrides_for("search").stored() != {}:
             raise AssertionError("search overrides are not empty")
-        if meta.overrides_for("general").history_messages != 5:
+        if meta.overrides_for("general").user_prompt != "hi":
             raise AssertionError("general override lost")
 
-    def test_stale_sampling_keys_are_ignored(self) -> None:
-        """users.meta прошлых версий с сэмплингом: лишние ключи отбрасываются."""
+    def test_stale_keys_are_ignored(self) -> None:
+        """users.meta прошлых версий с сэмплингом и окном истории: лишние
+        ключи отбрасываются."""
         meta = UserMeta.of(
-            {"llm": {"general": {"temperature": 0.9, "history_messages": 5}}}
+            {
+                "llm": {
+                    "general": {
+                        "temperature": 0.9,
+                        "history_messages": 5,
+                        "user_prompt": "hi",
+                    }
+                }
+            }
         )
 
         overrides = meta.overrides_for("general")
-        if overrides.stored() != {"history_messages": 5}:
+        if overrides.stored() != {"user_prompt": "hi"}:
             raise AssertionError(f"stored: {overrides.stored()}")
 
 
@@ -463,7 +377,7 @@ class TestUserSettingsStorage:
             raise AssertionError("user is not created")
 
         await layer.update_user_llm_settings(
-            UUID(created.id), "general", {"history_messages": 5}
+            UUID(created.id), "general", {"user_prompt": "be brief"}
         )
 
         # повторный логин: провайдер приносит новую мету
@@ -476,7 +390,7 @@ class TestUserSettingsStorage:
         meta = await self._meta_of(pool, app_config.data_layer.db_schema, identifier)
         if meta.get("roles") != ["ADM"]:
             raise AssertionError(f"roles: {meta.get('roles')}")
-        if meta.get("llm") != {"general": {"history_messages": 5}}:
+        if meta.get("llm") != {"general": {"user_prompt": "be brief"}}:
             raise AssertionError(f"llm: {meta.get('llm')}")
 
     async def test_empty_values_remove_the_profile_key(
@@ -491,7 +405,7 @@ class TestUserSettingsStorage:
             raise AssertionError("user is not created")
 
         await layer.update_user_llm_settings(
-            UUID(created.id), "general", {"history_messages": 5}
+            UUID(created.id), "general", {"user_prompt": "be brief"}
         )
         await layer.update_user_llm_settings(UUID(created.id), "general", {})
 
@@ -511,7 +425,7 @@ class TestUserSettingsStorage:
             raise AssertionError("user is not created")
 
         await layer.update_user_llm_settings(
-            UUID(created.id), "general", {"history_messages": 5}
+            UUID(created.id), "general", {"user_prompt": "be brief"}
         )
         await layer.update_user_llm_settings(
             UUID(created.id), "search", {"user_prompt": "be terse"}
@@ -519,7 +433,7 @@ class TestUserSettingsStorage:
 
         meta = await self._meta_of(pool, app_config.data_layer.db_schema, identifier)
         expected = {
-            "general": {"history_messages": 5},
+            "general": {"user_prompt": "be brief"},
             "search": {"user_prompt": "be terse"},
         }
         if meta.get("llm") != expected:

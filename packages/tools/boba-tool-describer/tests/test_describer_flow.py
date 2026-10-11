@@ -27,7 +27,6 @@ from psycopg import sql
 from pydantic import SecretStr
 
 from boba.config import bind
-from boba.connection_broker.sealing import SealingToolServer, SentConnections
 from boba.connection_broker.store import ConnectionsConfig, ConnectionStore
 from boba.connection_broker.user_connections import ArmedConnections
 from boba.connections.manifest import ConnectionTypes
@@ -45,6 +44,7 @@ from boba.db.postgres.address import (
 from boba.db.postgres.connection import PostgresConfig
 from boba.stand.connections import StandUserConnections
 from boba.stand.refs import StandRefs
+from boba.stand.sealing import SealingStand
 from boba.stand.site import Stand
 from boba.stand.zygote import SandboxCgroup
 from boba.stand_core.context import CallStand
@@ -238,16 +238,14 @@ def session_service(
     flow_raw: DictConfig,
 ) -> ToolServer:
     """Порт инструментов профиля: боевой загрузчик над хранилищем стенда,
-    исполнитель и клиент, запечатывающий ссылки на соединения."""
+    исполнитель и порт стенда, запечатывающий имена соединений."""
     refs = runtime_stand.of(StoreHolder.current, lambda: None)
     registry = runtime_stand.registry(flow_raw, refs, StandRefs.granted(PROFILE, ["*"]))
     tools = registry.for_session(frozenset(ROLES), PROFILE)
-    return SealingToolServer(
+    return SealingStand(
         registry.server(tools, DirectCalls()),
         ArmedConnections(refs.connection_store, refs.credentials, refs.contexts),
-        SentConnections(),
         StandUserConnections.TTL,
-        DirectCalls(),
     )
 
 

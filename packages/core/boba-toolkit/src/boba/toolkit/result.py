@@ -1402,7 +1402,7 @@ class SqlFailureResult(FailureResult):
 
 
 class ToolArtifact:
-    """Поднимает artifact в модель: langgraph сериализует его в обычный dict.
+    """Поднимает artifact в модель: история хранит его обычным dict.
 
     Чужое значение — строка старой истории, словарь без известного kind —
     даёт None: лента показывает его сырым текстом. Словарь известного kind

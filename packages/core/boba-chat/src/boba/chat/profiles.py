@@ -10,7 +10,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Mapping
 from enum import StrEnum
-from typing import Annotated, Any, Literal, Self
+from typing import Annotated, Any, Self
 
 from pydantic import (
     BaseModel,
@@ -28,19 +28,13 @@ from boba.llm.providers import ChatModelConfig
 from boba.toolkit.types import StringList
 
 __all__ = [
-    "AgentSettings",
     "ChatProfileConfig",
     "ChatProfiles",
     "ChatSettings",
-    "FlowKind",
-    "NumberBounds",
-    "PlainFlowConfig",
-    "PrefetchFlowConfig",
     "ProfileRefusal",
     "ProfilesSection",
     "RolesSection",
     "SelectedProfile",
-    "SettingsBounds",
     "SettingsView",
     "UserLlmOverrides",
     "UserMeta",
@@ -52,65 +46,11 @@ logger = logging.getLogger(__name__)
 
 class ChatSettings(ChatModelConfig):
     """Обращение к чат-модели с системным промптом: провайдер, модель, сэмплинг
-    и промпт. Так описаны профиль чата и переформулировщик поиска."""
+    и промпт. Так описан профиль чата."""
 
     system_prompt: str = Field(
         default="",
         description="Системный промпт по умолчанию",
-    )
-
-
-class AgentSettings(ChatSettings):
-    """Настройки хода агента: параметры LLM плюс окно истории."""
-
-    history_messages: int = Field(
-        default=30,
-        ge=1,
-        description=(
-            "Сколько последних сообщений истории уходит в LLM. Считаются "
-            "только реплики: вызовы инструментов и их результаты из прошлых "
-            "ходов вырезаются, текущий ход передаётся целиком."
-        ),
-    )
-
-
-class FlowKind(StrEnum):
-    """Виды агентского flow профиля чата."""
-
-    PLAIN = "plain"
-    PREFETCH = "prefetch"
-
-
-class PlainFlowConfig(BaseModel):
-    """Flow без подготовки: обычный цикл модель-инструменты."""
-
-    model_config = ConfigDict(extra="ignore")
-
-    kind: Literal[FlowKind.PLAIN] = FlowKind.PLAIN
-
-
-class PrefetchFlowConfig(BaseModel):
-    """Flow с подготовкой контекста: поиск идёт до обращения к основной модели."""
-
-    model_config = ConfigDict(extra="ignore")
-
-    kind: Literal[FlowKind.PREFETCH]
-
-    tools: Annotated[
-        StringList,
-        Field(
-            min_length=1,
-            description="Инструменты, вызываемые с каждым поисковым запросом.",
-        ),
-    ]
-
-    rephraser: ChatSettings | None = Field(
-        default=None,
-        description=(
-            "Модель, переписывающая запрос пользователя в поисковые: провайдер, "
-            "модель, промпт и сэмплинг; секция не задана — в инструменты уходит "
-            "исходный запрос."
-        ),
     )
 
 
@@ -121,11 +61,10 @@ class UserSetting(StrEnum):
     подписи и описания живут в переводах chainlit (chat.settings.llm).
     """
 
-    HISTORY_MESSAGES = "history_messages"
     USER_PROMPT = "user_prompt"
 
 
-class ChatProfileConfig(AgentSettings, ProfileGrant):
+class ChatProfileConfig(ChatSettings, ProfileGrant):
     """Секция [profiles.<name>]: режим работы бота, выбираемый пользователем."""
 
     display_name: Annotated[
@@ -166,15 +105,6 @@ class ChatProfileConfig(AgentSettings, ProfileGrant):
         ),
     )
 
-    flow: Annotated[
-        PlainFlowConfig | PrefetchFlowConfig,
-        Field(
-            discriminator="kind",
-            default_factory=PlainFlowConfig,
-            description="Агентский flow профиля; секция не задана — обычный цикл.",
-        ),
-    ]
-
     def setting_allowed(self, name: str) -> bool:
         if ToolGrant.WILDCARD in self.settings:
             return True
@@ -199,38 +129,6 @@ class ChatProfileConfig(AgentSettings, ProfileGrant):
             msg = (
                 f"chat profile: unknown settings {unknown}, "
                 f"expected names from {sorted(known)} or '*'"
-            )
-            raise ValueError(msg)
-
-        return self
-
-    @model_validator(mode="after")
-    def _validate_flow(self) -> Self:
-        """Инструменты flow обязаны входить в набор инструментов профиля.
-
-        Профиль с MCP-серверами здесь не проверяется: имена их инструментов
-        до подключения неизвестны, сверка идёт при сборке графа сессии."""
-        flow = self.flow
-        if not isinstance(flow, PrefetchFlowConfig):
-            return self
-
-        if ToolGrant.WILDCARD in self.tools:
-            return self
-
-        if self.mcp:
-            return self
-
-        missing: list[str] = []
-        for name in flow.tools:
-            if name in self.tools:
-                continue
-
-            missing.append(name)
-
-        if missing:
-            msg = (
-                f"chat profile: flow tools {missing} are not in the profile "
-                f"tools {list(self.tools)}"
             )
             raise ValueError(msg)
 
@@ -390,75 +288,20 @@ class ChatProfiles(ProfileCatalog):
         return None
 
 
-class NumberBounds(BaseModel):
-    """Границы, шаг и стартовое значение числовой настройки пользователя."""
-
-    model_config = ConfigDict(extra="ignore", populate_by_name=True)
-
-    low: Annotated[float, Field(alias="min")]
-    high: Annotated[float, Field(alias="max")]
-    step: Annotated[float, Field(gt=0)]
-    default: float
-    """Значение виджета, когда параметр не задан ни профилем, ни пользователем."""
-
-    @model_validator(mode="after")
-    def _validate_order(self) -> Self:
-        if self.low > self.high:
-            msg = f"settings: min {self.low} is above max {self.high}"
-            raise ValueError(msg)
-
-        if not self.low <= self.default <= self.high:
-            msg = (
-                f"settings: default {self.default} is out of [{self.low}, {self.high}]"
-            )
-            raise ValueError(msg)
-
-        return self
-
-    def clamp(self, value: float) -> float:
-        if value < self.low:
-            return self.low
-
-        if value > self.high:
-            return self.high
-
-        return value
-
-
-class SettingsBounds(BaseModel):
-    """Пределы пользовательских настроек панели; конфиг их не задаёт."""
-
-    model_config = ConfigDict(extra="ignore")
-
-    history_messages: NumberBounds = Field(
-        default_factory=lambda: NumberBounds(low=1, high=100, step=1, default=30)
-    )
-
-
 class UserLlmOverrides(BaseModel):
     """Настройки пользователя поверх профиля; None — поле не переопределено."""
 
     model_config = ConfigDict(extra="ignore")
 
-    history_messages: int | None = None
     user_prompt: str | None = None
 
-    def clamped(
-        self,
-        bounds: SettingsBounds,
-        profile: ChatProfileConfig,
-    ) -> UserLlmOverrides:
-        """Копия в пределах границ и разрешений профиля.
+    def clamped(self, profile: ChatProfileConfig) -> UserLlmOverrides:
+        """Копия в пределах разрешений профиля.
 
         Поле, не разрешённое профилем, отбрасывается — даже если пришло в
         обход панели.
         """
         update: dict[str, Any] = {}
-
-        if self.history_messages is not None:
-            update[UserSetting.HISTORY_MESSAGES.value] = int(
-                bounds.history_messages.clamp(self.history_messages)
-            )
 
         # запрет профиля сильнее любого пришедшего значения — даже мимо панели
         for setting in UserSetting:
@@ -469,24 +312,15 @@ class UserLlmOverrides(BaseModel):
 
         return self.model_copy(update=update)
 
-    def apply_to(self, profile: ChatProfileConfig) -> AgentSettings:
-        """Настройки хода: профиль, поверх которого легли поля пользователя."""
-        update: dict[str, Any] = {}
+    def apply_to(self, profile: ChatProfileConfig) -> ChatSettings:
+        """Настройки хода: профиль, к промпту которого дописаны инструкции
+        пользователя."""
+        if not self.user_prompt:
+            return profile
 
-        for setting in UserSetting:
-            if setting is UserSetting.USER_PROMPT:
-                continue
+        system_prompt = f"{profile.system_prompt}\n\n{self.user_prompt}"
 
-            value = getattr(self, setting.value)
-            if value is None:
-                continue
-
-            update[setting.value] = value
-
-        if self.user_prompt:
-            update["system_prompt"] = f"{profile.system_prompt}\n\n{self.user_prompt}"
-
-        return profile.model_copy(update=update)
+        return profile.model_copy(update={"system_prompt": system_prompt})
 
     @classmethod
     def edited(
@@ -511,13 +345,6 @@ class UserLlmOverrides(BaseModel):
 
             if value == shown.get(name):
                 update[name] = getattr(saved, name)
-                continue
-
-            if setting is UserSetting.USER_PROMPT:
-                continue
-
-            if value == getattr(profile, name, None):
-                update[name] = None
 
         return parsed.model_copy(update=update)
 
@@ -549,34 +376,23 @@ class SettingsView(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    bounds: SettingsBounds
     profile: ChatProfileConfig
     overrides: UserLlmOverrides
 
     @classmethod
     def of(
-        cls,
-        bounds: SettingsBounds,
-        profile: ChatProfileConfig,
-        overrides: UserLlmOverrides,
+        cls, profile: ChatProfileConfig, overrides: UserLlmOverrides
     ) -> SettingsView:
-        """Представление с личными настройками в границах и правах профиля."""
-        return cls(
-            bounds=bounds,
-            profile=profile,
-            overrides=overrides.clamped(bounds, profile),
-        )
+        """Представление с личными настройками в правах профиля."""
+        return cls(profile=profile, overrides=overrides.clamped(profile))
 
-    def agent(self) -> AgentSettings:
+    def agent(self) -> ChatSettings:
         """Настройки, с которыми идёт ход."""
         return self.overrides.apply_to(self.profile)
 
     def value_of(self, setting: UserSetting) -> Any:
         """Значение настройки как его видит пользователь."""
-        if setting is UserSetting.USER_PROMPT:
-            return self.overrides.user_prompt
-
-        return getattr(self.agent(), setting.value)
+        return getattr(self.overrides, setting.value)
 
     def edited(
         self,
@@ -585,7 +401,7 @@ class SettingsView(BaseModel):
     ) -> SettingsView:
         """Представление после правки формы: изменённое стало личным."""
         edited = UserLlmOverrides.edited(form, shown, self.profile, self.overrides)
-        return self.of(self.bounds, self.profile, edited)
+        return self.of(self.profile, edited)
 
 
 class UserMeta(BaseModel):

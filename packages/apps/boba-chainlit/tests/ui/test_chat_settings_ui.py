@@ -19,6 +19,7 @@ import pytest
 from chat_ui import LlmMetaReader
 from playwright.sync_api import expect
 
+from boba.chainlit.acp.panel import AgentPanelTab
 from boba.chainlit.chat.panel_text import PanelText
 from boba.chainlit.chat.settings import PanelTab
 from boba.chat.profiles import UserSetting
@@ -114,12 +115,6 @@ class FieldCase:
 
 
 CASES = (
-    FieldCase(
-        setting=UserSetting.HISTORY_MESSAGES,
-        tab=PanelTab.HISTORY,
-        action=Action.SLIDER,
-        integer=True,
-    ),
     FieldCase(
         setting=UserSetting.USER_PROMPT,
         tab=PanelTab.PROMPT,
@@ -301,36 +296,7 @@ class TestEveryFieldClickable:
 
 
 class TestProfileValueBack:
-    """Возврат значения к профильному снимает переопределение."""
-
-    def test_history_back_to_profile_clears_override(
-        self, chat: ChatPage, llm_meta: LlmMetaReader
-    ) -> None:
-        _open_settings(chat)
-        _open_tab(chat, PanelTab.HISTORY)
-
-        slider = chat.page.locator(
-            PanelSelector.slider_of(UserSetting.HISTORY_MESSAGES.value)
-        ).first
-        slider.click()
-        slider.press("ArrowRight")
-        _confirm_settings(chat)
-
-        stored = llm_meta(ADMIN_LOGIN).get("general")
-        if stored is None or "history_messages" not in stored:
-            raise AssertionError(f"history override is not saved: {stored}")
-
-        _open_settings(chat)
-        _open_tab(chat, PanelTab.HISTORY)
-        slider = chat.page.locator(
-            PanelSelector.slider_of(UserSetting.HISTORY_MESSAGES.value)
-        ).first
-        slider.click()
-        slider.press("ArrowLeft")
-        _confirm_settings(chat)
-
-        if llm_meta(ADMIN_LOGIN).get("general") is not None:
-            raise AssertionError(f"history stayed stored: {llm_meta(ADMIN_LOGIN)}")
+    """Нетронутая панель ничего не сохраняет."""
 
     def test_untouched_panel_stores_nothing(
         self, chat: ChatPage, llm_port: int, llm_meta: LlmMetaReader
@@ -389,7 +355,9 @@ class TestAllowedSettingsVisibility:
         for index in range(tabs.count()):
             labels.add(tabs.nth(index).inner_text().strip())
 
+        # вкладка сессии появляется после первого хода: до него настроек сессии нет
         expected = {TEXT.tab(tab.value) for tab in PanelTab}
+        expected.add(TEXT.tab(AgentPanelTab.AGENT.value))
         if labels != expected:
             raise AssertionError(f"tabs: {sorted(labels)}")
 
@@ -423,7 +391,7 @@ class TestAllowedSettingsVisibility:
         for index in range(tabs.count()):
             labels.add(tabs.nth(index).inner_text().strip())
 
-        # search разрешает только user_prompt: вкладка истории не рисуется
+        # search разрешает только user_prompt: других вкладок LLM не рисуется
         expected = {TEXT.tab(PanelTab.PROMPT.value)}
         if labels != expected:
             raise AssertionError(f"tabs: {sorted(labels)}")
@@ -432,10 +400,6 @@ class TestAllowedSettingsVisibility:
         allowed = PanelSelector.textarea_of(UserSetting.USER_PROMPT.value)
         if not chat.page.locator(allowed).count():
             raise AssertionError("user prompt input is not drawn")
-
-        forbidden = PanelSelector.slider_of(UserSetting.HISTORY_MESSAGES.value)
-        if chat.page.locator(forbidden).count():
-            raise AssertionError("history slider is drawn for a closed setting")
 
 
 class TestSettingsLifecycle:

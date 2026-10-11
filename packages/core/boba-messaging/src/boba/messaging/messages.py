@@ -6,7 +6,6 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
 from enum import StrEnum
 from typing import Annotated, ClassVar, Literal, Self
 from uuid import UUID
@@ -16,9 +15,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from boba.messaging.payloads import PayloadRef
 
 __all__ = [
-    "AnswerClosed",
     "AnswerInterrupted",
-    "AnswerToken",
     "AnyCommand",
     "AnyMessage",
     "CanvasChanged",
@@ -34,30 +31,17 @@ __all__ = [
     "LockLost",
     "Message",
     "MessageKind",
-    "ModelAnswered",
     "Notice",
     "NoticeLevel",
     "RunFinished",
     "RunListChanged",
     "RunStateChanged",
     "SignInRefreshRequested",
-    "StageEnded",
-    "StageQueries",
-    "StageStarted",
     "StopRequested",
     "StreamAppended",
     "StudioProfileChanged",
-    "ThinkingClosed",
-    "ThinkingComplete",
-    "ThinkingToken",
     "ThreadChanged",
     "ThreadRewound",
-    "TokensSpent",
-    "ToolFailed",
-    "ToolFinished",
-    "ToolProgressed",
-    "ToolStarted",
-    "ToolStopped",
     "TurnFinished",
     "TurnOutcome",
     "TurnStarted",
@@ -75,22 +59,7 @@ class MessageKind(StrEnum):
         return self in _HOLDER_ONLY
 
     TURN_STARTED = "turn_started"
-    MODEL_ANSWERED = "model_answered"
-    ANSWER_TOKEN = "answer_token"  # noqa: S105
-    ANSWER_CLOSED = "answer_closed"
     ANSWER_INTERRUPTED = "answer_interrupted"
-    THINKING_TOKEN = "thinking_token"  # noqa: S105
-    THINKING_COMPLETE = "thinking_complete"
-    THINKING_CLOSED = "thinking_closed"
-    TOKENS_SPENT = "tokens_spent"
-    STAGE_STARTED = "stage_started"
-    STAGE_QUERIES = "stage_queries"
-    STAGE_ENDED = "stage_ended"
-    TOOL_STARTED = "tool_started"
-    TOOL_PROGRESSED = "tool_progressed"
-    TOOL_FINISHED = "tool_finished"
-    TOOL_FAILED = "tool_failed"
-    TOOL_STOPPED = "tool_stopped"
     TURN_FINISHED = "turn_finished"
     AGENT_UPDATE = "agent_update"
     RUN_STATE_CHANGED = "run_state_changed"
@@ -117,22 +86,7 @@ class MessageKind(StrEnum):
 _HOLDER_ONLY: frozenset[MessageKind] = frozenset(
     {
         MessageKind.TURN_STARTED,
-        MessageKind.MODEL_ANSWERED,
-        MessageKind.ANSWER_TOKEN,
-        MessageKind.ANSWER_CLOSED,
         MessageKind.ANSWER_INTERRUPTED,
-        MessageKind.THINKING_TOKEN,
-        MessageKind.THINKING_COMPLETE,
-        MessageKind.THINKING_CLOSED,
-        MessageKind.TOKENS_SPENT,
-        MessageKind.STAGE_STARTED,
-        MessageKind.STAGE_QUERIES,
-        MessageKind.STAGE_ENDED,
-        MessageKind.TOOL_STARTED,
-        MessageKind.TOOL_PROGRESSED,
-        MessageKind.TOOL_FINISHED,
-        MessageKind.TOOL_FAILED,
-        MessageKind.TOOL_STOPPED,
         MessageKind.TURN_FINISHED,
         MessageKind.AGENT_UPDATE,
         MessageKind.RUN_STATE_CHANGED,
@@ -202,30 +156,6 @@ class TurnStarted(Message):
     question: PayloadRef
 
 
-class ModelAnswered(Message):
-    """Модель прислала первый кусок ответа на ход turn_id: ожидание закончилось."""
-
-    kind: Literal[MessageKind.MODEL_ANSWERED] = MessageKind.MODEL_ANSWERED
-    turn_id: str = Field(min_length=1)
-
-
-class AnswerToken(Message):
-    """Кусок текста ответа для шага key; получатель дописывает его в конец шага."""
-
-    kind: Literal[MessageKind.ANSWER_TOKEN] = MessageKind.ANSWER_TOKEN
-    turn_id: str = Field(min_length=1)
-    key: str = Field(min_length=1)
-    token: str
-
-
-class AnswerClosed(Message):
-    """Ответ шага key закончен; накопленный текст фиксируется как есть."""
-
-    kind: Literal[MessageKind.ANSWER_CLOSED] = MessageKind.ANSWER_CLOSED
-    turn_id: str = Field(min_length=1)
-    key: str = Field(min_length=1)
-
-
 class AnswerInterrupted(Message):
     """Ответ шага key оборван остановкой; note — пометка, которую получатель дописывает
     к тексту.
@@ -234,141 +164,6 @@ class AnswerInterrupted(Message):
     kind: Literal[MessageKind.ANSWER_INTERRUPTED] = MessageKind.ANSWER_INTERRUPTED
     turn_id: str = Field(min_length=1)
     key: str = Field(min_length=1)
-    note: str = Field(min_length=1)
-
-
-class ThinkingToken(Message):
-    """Кусок рассуждения модели для шага key."""
-
-    kind: Literal[MessageKind.THINKING_TOKEN] = MessageKind.THINKING_TOKEN
-    turn_id: str = Field(min_length=1)
-    key: str = Field(min_length=1)
-    token: str
-
-
-class ThinkingComplete(Message):
-    """Рассуждение шага key пришло целиком без стрима; текст лежит в PayloadStore по
-    ссылке text.
-    """
-
-    kind: Literal[MessageKind.THINKING_COMPLETE] = MessageKind.THINKING_COMPLETE
-    turn_id: str = Field(min_length=1)
-    key: str = Field(min_length=1)
-    text: PayloadRef
-
-
-class ThinkingClosed(Message):
-    """Открытое рассуждение хода turn_id закончено."""
-
-    kind: Literal[MessageKind.THINKING_CLOSED] = MessageKind.THINKING_CLOSED
-    turn_id: str = Field(min_length=1)
-
-
-class TokensSpent(Message):
-    """Прогон модели закончился: сколько токенов он стоил. key адресует шаг
-    рассуждений этого прогона; шага может не быть, тогда расход виден только в
-    итоге хода.
-    """
-
-    kind: Literal[MessageKind.TOKENS_SPENT] = MessageKind.TOKENS_SPENT
-    turn_id: str = Field(min_length=1)
-    key: str = ""
-    input_tokens: int = Field(default=0, ge=0)
-    output_tokens: int = Field(default=0, ge=0)
-    reasoning_tokens: int = Field(
-        default=0,
-        ge=0,
-        description="Часть output_tokens, ушедшая в рассуждения; 0 — не сообщено.",
-    )
-
-
-class StageStarted(Message):
-    """Началась стадия хода (поиск, переформулировка): name — её имя, phase — подпись
-    текущей фазы.
-    """
-
-    kind: Literal[MessageKind.STAGE_STARTED] = MessageKind.STAGE_STARTED
-    turn_id: str = Field(min_length=1)
-    name: str = Field(min_length=1)
-    phase: str
-
-
-class StageQueries(Message):
-    """Стадия name сообщила запросы, которые она выполняет."""
-
-    kind: Literal[MessageKind.STAGE_QUERIES] = MessageKind.STAGE_QUERIES
-    turn_id: str = Field(min_length=1)
-    name: str = Field(min_length=1)
-    queries: tuple[str, ...]
-
-
-class StageEnded(Message):
-    """Стадия name закончилась за elapsed_ms миллисекунд; queries — запросы, с которыми
-    она работала.
-    """
-
-    kind: Literal[MessageKind.STAGE_ENDED] = MessageKind.STAGE_ENDED
-    turn_id: str = Field(min_length=1)
-    name: str = Field(min_length=1)
-    queries: tuple[str, ...]
-    elapsed_ms: int = Field(ge=0)
-
-
-class ToolStarted(Message):
-    """Вызов инструмента name начался под call_id; аргументы лежат в PayloadStore по
-    ссылке args. media — типы содержимого аргументов (имя → contentMediaType)
-    инструмента сервера; None — инструмент свой.
-    """
-
-    kind: Literal[MessageKind.TOOL_STARTED] = MessageKind.TOOL_STARTED
-    turn_id: str = Field(min_length=1)
-    call_id: str = Field(min_length=1)
-    name: str = Field(min_length=1)
-    args: PayloadRef
-    media: Mapping[str, str] | None
-
-
-class ToolProgressed(Message):
-    """Вызов call_id сообщил о ходе работы: сделано done из total (None — итог
-    неизвестен), text — что сейчас происходит.
-    """
-
-    kind: Literal[MessageKind.TOOL_PROGRESSED] = MessageKind.TOOL_PROGRESSED
-    turn_id: str = Field(min_length=1)
-    call_id: str = Field(min_length=1)
-    done: float = Field(ge=0)
-    total: float | None
-    text: str
-
-
-class ToolFinished(Message):
-    """Вызов call_id закончился; результат (артефакт или сырой вывод) лежит в
-    PayloadStore по ссылке result.
-    """
-
-    kind: Literal[MessageKind.TOOL_FINISHED] = MessageKind.TOOL_FINISHED
-    turn_id: str = Field(min_length=1)
-    call_id: str = Field(min_length=1)
-    result: PayloadRef
-
-
-class ToolFailed(Message):
-    """Вызов call_id провалился; error — markdown результата-ошибки для ленты."""
-
-    kind: Literal[MessageKind.TOOL_FAILED] = MessageKind.TOOL_FAILED
-    turn_id: str = Field(min_length=1)
-    call_id: str = Field(min_length=1)
-    error: str
-
-
-class ToolStopped(Message):
-    """Вызов call_id не доработал, потому что ход остановлен или завершён; note —
-    подпись для шага.
-    """
-
-    kind: Literal[MessageKind.TOOL_STOPPED] = MessageKind.TOOL_STOPPED
-    turn_id: str = Field(min_length=1)
-    call_id: str = Field(min_length=1)
     note: str = Field(min_length=1)
 
 
@@ -656,22 +451,7 @@ class StopRequested(Command):
 
 AnyMessage = Annotated[
     TurnStarted
-    | ModelAnswered
-    | AnswerToken
-    | AnswerClosed
     | AnswerInterrupted
-    | ThinkingToken
-    | ThinkingComplete
-    | ThinkingClosed
-    | TokensSpent
-    | StageStarted
-    | StageQueries
-    | StageEnded
-    | ToolStarted
-    | ToolProgressed
-    | ToolFinished
-    | ToolFailed
-    | ToolStopped
     | TurnFinished
     | AgentUpdate
     | RunStateChanged
