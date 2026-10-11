@@ -153,8 +153,8 @@
         path        = "/chat/hooks/pre-tool-use"
         timeout_sec = 10
     [agent.limits]
-        context_window    = 32000
-        max_output_tokens = 16000
+        context_window    = 128000
+        max_output_tokens = 8192
 
 # конфигурация для chainlit
 ## соединения в базе: профили postgres/web со скрытыми секретами
