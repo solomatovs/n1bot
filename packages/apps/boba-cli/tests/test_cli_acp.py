@@ -118,10 +118,16 @@ def call(*specs: dict[str, object]) -> str:
 
 class FakeModel:
     """FakeLlmApp под uvicorn в цикле теста; `estimate_usage` — учёт токенов
-    по знакам, как у настоящего провайдера, нужен сценариям сжатия."""
+    по знакам, как у настоящего провайдера, нужен сценариям сжатия;
+    `unmarked` — сценарий для вопроса без маркера (чужие клиенты и TCK шлют
+    обычный текст)."""
 
-    def __init__(self, estimate_usage: bool = False) -> None:
-        self.app = FakeLlmApp(token_delay_sec=0.0, estimate_usage=estimate_usage)
+    def __init__(
+        self, estimate_usage: bool = False, unmarked: ScenarioName | None = None
+    ) -> None:
+        self.app = FakeLlmApp(
+            token_delay_sec=0.0, estimate_usage=estimate_usage, unmarked=unmarked
+        )
         self.port = free_port()
         self._server = uvicorn.Server(
             uvicorn.Config(
