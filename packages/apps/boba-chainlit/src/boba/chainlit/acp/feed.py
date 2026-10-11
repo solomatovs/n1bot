@@ -49,6 +49,7 @@ from boba.canvas.keys import ElementProps, ObjectKey
 from boba.chainlit.acp.chat import (
     PermissionKind,
     PermissionOutcome,
+    Question,
     SessionOptions,
     ThreadIdentity,
     TurnRenderer,
@@ -58,7 +59,6 @@ from boba.chainlit.acp.client import SessionUpdate
 from boba.chainlit.canvas.panel import CanvasPanel
 from boba.chainlit.canvas.remote import RemoteJournals
 from boba.chainlit.chat.feed import TurnFeed
-from boba.chainlit.chat.turn import Question
 from boba.chainlit.data.data_layer import AttachmentDataLayer, FeedbackRows
 from boba.chainlit.domain.fields import StepField
 from boba.chainlit.rendering.acp_view import (

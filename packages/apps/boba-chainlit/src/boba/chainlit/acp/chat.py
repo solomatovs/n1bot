@@ -32,7 +32,10 @@ from acp.schema import (
     ToolCallUpdate,
     UserMessageChunk,
 )
+from pydantic import BaseModel, ConfigDict, Field
 
+import chainlit as cl
+from boba.canvas.keys import ElementProps
 from boba.chainlit.acp.client import (
     AgentClient,
     AgentCommand,
@@ -53,9 +56,10 @@ from boba.chainlit.acp.settings import (
     SettingsFileBuilder,
 )
 from boba.chainlit.acp.tokens import SessionServer, SessionServers
-from boba.chainlit.chat.turn import Question
+from boba.chainlit.chat.feed import QuestionBody, ShownElement
 from boba.chainlit.data.data_layer import ThreadDeletionListener
 from boba.chainlit.domain.fields import ThreadMetaField
+from boba.chainlit.domain.keys import AttachmentLinks
 from boba.chainlit.infra.session import ChainlitSession
 from boba.chat.profiles import SelectedProfile
 from boba.chat.threads import ThreadUpsert
@@ -70,6 +74,7 @@ __all__ = [
     "MuteUpdates",
     "PermissionKind",
     "PermissionOutcome",
+    "Question",
     "SessionOptions",
     "ThreadAgent",
     "ThreadAgents",
@@ -83,6 +88,45 @@ __all__ = [
 logger = logging.getLogger(__name__)
 
 ConfigOption: TypeAlias = SessionConfigOptionSelect | SessionConfigOptionBoolean
+
+
+class Question(BaseModel):
+    """Вопрос пользователя, с которого начинается ход: id его шага, текст и
+    вложения к сообщению.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    key: str = Field(min_length=1)
+    text: str
+    elements: tuple[ShownElement, ...] = ()
+
+    @classmethod
+    def of_message(
+        cls, msg: cl.Message, thread_id: str, links: AttachmentLinks
+    ) -> Question:
+        """Вопрос из сообщения chainlit: вложения получают ссылку треда вместо
+        сессионной, чтобы открываться из любой вкладки и с любого инстанса.
+        """
+        attached = msg.elements
+        if not attached:
+            attached = []
+
+        elements: list[ShownElement] = []
+        for element in attached:
+            data = dict(element.to_dict())
+            props = ElementProps.of(data.get("props"))
+            data["threadId"] = thread_id
+            data["forId"] = msg.id
+            data["chainlitKey"] = None
+            data["url"] = links.url(thread_id, element.id, props.dir)
+            elements.append(ShownElement.model_validate(data))
+
+        return cls(key=msg.id, text=msg.content, elements=tuple(elements))
+
+    def body(self, author: str = "") -> QuestionBody:
+        """Тело вопроса для шины; author — имя шага вопроса во всех вкладках."""
+        return QuestionBody(text=self.text, elements=self.elements, author=author)
 
 
 class PermissionKind(StrEnum):

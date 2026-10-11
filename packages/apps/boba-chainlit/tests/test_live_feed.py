@@ -278,7 +278,6 @@ async def test_reaper_closes_the_turn_of_a_dead_holder_and_resume_marks_it(
         )
         feed = TurnFeed(holder.bus, holder.payloads, scope, TURN, lock.token)
         await feed.started(TURN, QuestionBody(text="question"))
-        await feed.answer_token(TURN, "partial")
 
         await asyncio.sleep(2.5)
         stale = await viewer.locks.reap()
@@ -483,7 +482,6 @@ async def test_rewind_and_elements_reach_the_viewer_instance(
     )
     try:
         await feed.started(TURN, QuestionBody(text="question", elements=(attachment,)))
-        await feed.tool_started(CALL, "send_file", {"path": "a.txt"}, None)
         await feed.element_shown(CALL, element)
         await _until(
             lambda: len(surface.elements) == 2, "viewer received both elements"

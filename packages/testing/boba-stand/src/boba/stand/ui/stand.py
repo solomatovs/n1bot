@@ -777,7 +777,6 @@ class StandConfig(StandService):
                 "model": "fake-model-general",
                 "settings": ["*"],
                 "system_prompt": "You are the general stand assistant",
-                "history_messages": 30,
                 "sampling": {
                     "temperature": 0.1,
                     "max_completion_tokens": 1111,
@@ -794,7 +793,6 @@ class StandConfig(StandService):
                 "model": "fake-model-search",
                 "settings": ["user_prompt"],
                 "system_prompt": "You are the search stand assistant",
-                "history_messages": 30,
                 "sampling": {
                     "temperature": 0.7,
                     "max_completion_tokens": 2222,

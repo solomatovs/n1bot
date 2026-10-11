@@ -127,7 +127,7 @@ class TestArtifactRendering:
             raise AssertionError('"hi|p1p3" in revived.chat_view().markdown')
 
     def test_serialized_artifact_revives_from_history(self) -> None:
-        """История хранит артефакт сериализованным dict'ом (langgraph)."""
+        """История хранит артефакт сериализованным dict'ом."""
         pipe_echo = build_pipeline()
 
         message = asyncio.run(pipe_echo.call(call_envelope("hi")))

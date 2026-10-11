@@ -13,7 +13,6 @@ from chainlit.config import config as chainlit_config
 from chainlit.context import ChainlitContext, context_var
 from chainlit.step import StepDict
 
-from boba.chainlit.canvas.remote import RemoteJournals
 from boba.chainlit.domain.fields import StepField
 from boba.chainlit.rendering.chat_view import (
     ChatView,
@@ -23,14 +22,8 @@ from boba.chainlit.rendering.chat_view import (
     StepRole,
     StepStatus,
     StepText,
-    TokenCount,
-    TokenSpend,
     TurnPulse,
 )
-from boba.chainlit.rendering.mount import ChatCalls, ChatMount
-from boba.connection_broker.sealing import SentConnections
-from boba.identity.context import CallContexts
-from boba.identity.run import Runs
 from boba.stand.refs import StandRefs
 from boba.toolkit.result import FieldLines, MarkdownResult
 
@@ -54,7 +47,7 @@ async def http_context() -> None:
 
 
 class TestAnswerOrder:
-    """Live обязан давать тот же порядок, что сборка истории из checkpointer."""
+    """Live обязан давать тот же порядок, что воспроизведение истории."""
 
     @pytest.mark.anyio
     async def test_tool_seals_the_current_answer(
@@ -361,94 +354,6 @@ class TestLivePulseFrames:
             raise AssertionError("pulse follows the answer it waits under")
 
 
-class TestPrefetchStage:
-    """Этап подготовки: шаги поиска вкладываются в него, а не в контейнер."""
-
-    @pytest.mark.anyio
-    async def test_tools_nest_into_the_open_stage(
-        self, runtime_stand: StandRefs, http_context: None
-    ) -> None:
-        view = ChatView(
-            THREAD, RecordingSink(), runtime_stand.journals, user_name="Пользователь"
-        )
-        view.begin_turn(TURN)
-
-        stage = await view.begin_stage("context lookup", "rephrasing the question")
-        inside = await view.tool_started(
-            "kb_fts_search", {"query": "kerberos"}, "c-1", None
-        )
-        await view.end_stage(["kerberos"], 1500)
-        outside = await view.tool_started(
-            "kb_fts_search", {"query": "later"}, "c-2", None
-        )
-
-        container = view.container_step
-        if container is None:
-            raise AssertionError("контейнер хода открыт")
-
-        if stage.parent_id != container.id:
-            raise AssertionError("этап лежит в контейнере хода")
-        if inside.parent_id != stage.id:
-            raise AssertionError("шаг подготовки лежит в этапе")
-        if outside.parent_id != container.id:
-            raise AssertionError("после этапа шаги снова идут в контейнер")
-
-    @pytest.mark.anyio
-    async def test_stage_output_lists_the_queries(
-        self, runtime_stand: StandRefs, http_context: None
-    ) -> None:
-        view = ChatView(
-            THREAD, RecordingSink(), runtime_stand.journals, user_name="Пользователь"
-        )
-        view.begin_turn(TURN)
-
-        stage = await view.begin_stage("context lookup", "rephrasing the question")
-        await view.end_stage(["первый запрос", "второй запрос"], 6400)
-
-        if view.stage_step is not None:
-            raise AssertionError("закрытый этап больше не принимает шаги")
-
-        output = ChatView.stage_output(["первый запрос", "второй запрос"])
-        if output != "- первый запрос\n- второй запрос":
-            raise AssertionError(f"подпись этапа: {output!r}")
-
-        if stage.name != "✔ context lookup · 6.4 s":
-            raise AssertionError(f"этап подписан длительностью: {stage.name!r}")
-
-    @pytest.mark.anyio
-    async def test_stage_id_is_derived_from_the_turn(
-        self, runtime_stand: StandRefs, http_context: None
-    ) -> None:
-        """Live и сборка истории обязаны дать этапу один id."""
-        view = ChatView(
-            THREAD, RecordingSink(), runtime_stand.journals, user_name="Пользователь"
-        )
-        view.begin_turn(TURN)
-
-        stage = await view.begin_stage("context lookup", "rephrasing the question")
-
-        if stage.id != ChatView.derive_id(THREAD, TURN, StepRole.STAGE):
-            raise AssertionError("id этапа выводится из ключа хода")
-
-    @pytest.mark.anyio
-    async def test_phase_changes_from_rephrasing_to_queries(
-        self, runtime_stand: StandRefs, http_context: None
-    ) -> None:
-        """Пока запросов нет — этап называет фазу, потом показывает сами запросы."""
-        view = ChatView(
-            THREAD, RecordingSink(), runtime_stand.journals, user_name="Пользователь"
-        )
-        view.begin_turn(TURN)
-
-        stage = await view.begin_stage("context lookup", "rephrasing the question")
-        if stage.output != "rephrasing the question":
-            raise AssertionError(f"первая фаза этапа: {stage.output!r}")
-
-        await view.stage_queries(["первый запрос", "второй запрос"])
-        if stage.output != "- первый запрос\n- второй запрос":
-            raise AssertionError(f"фаза поиска подписана запросами: {stage.output!r}")
-
-
 class TestStepElapsed:
     """Подпись длительности вызова в названии шага."""
 
@@ -598,31 +503,6 @@ def _names(steps: list[StepDict]) -> list[str]:
     return found
 
 
-class TestTokenSpendLabel:
-    """Расход токенов в подписи: формат числа, reasoning и отсутствие учёта."""
-
-    def test_thousands_are_short(self) -> None:
-        if TokenCount.of(400) != "400":
-            raise AssertionError(TokenCount.of(400))
-        if TokenCount.of(10856) != "10.9k":
-            raise AssertionError(TokenCount.of(10856))
-
-    def test_reasoning_is_shown_apart(self) -> None:
-        spend = TokenSpend(input_tokens=10856, output_tokens=400, reasoning_tokens=305)
-        if spend.label() != "in: 10.9k, out: 400 (305 reasoning)":
-            raise AssertionError(spend.label())
-
-    def test_without_reasoning_brackets_are_dropped(self) -> None:
-        spend = TokenSpend(input_tokens=1200, output_tokens=64)
-        if spend.label() != "in: 1.2k, out: 64":
-            raise AssertionError(spend.label())
-
-    def test_uncounted_spend_leaves_the_name_alone(self) -> None:
-        spend = TokenSpend()
-        if spend.append_to("○ thinking") != "○ thinking":
-            raise AssertionError(spend.append_to("○ thinking"))
-
-
 class TestContainerAvatar:
     """Фронт грузит аватар корневого шага по имени, а имя контейнера меняется со
     счётчиком: контейнер несёт имя ассистента в metadata, и запрос аватара один."""
@@ -636,7 +516,6 @@ class TestContainerAvatar:
         view.begin_turn(TURN)
 
         await view.container()
-        await view.tokens_spent(TURN, 10856, 400, 305)
 
         containers = [
             step
@@ -654,104 +533,11 @@ class TestContainerAvatar:
             raise AssertionError(f"аватар контейнера: {avatars}")
 
 
-class TestTokensInTheFeed:
-    """Расход приходит шиной и подписывает шаг рассуждений и контейнер хода."""
-
-    @pytest.mark.anyio
-    async def test_step_and_container_get_the_spend(
-        self, runtime_stand: StandRefs, http_context: None
-    ) -> None:
-        sink = RecordingSink()
-        view = ChatView(THREAD, sink, runtime_stand.journals, user_name="Пользователь")
-        view.begin_turn(TURN)
-
-        await view.container()
-        await view.stream_thinking("обдумываю", TURN)
-        await view.close_thinking()
-        await view.tokens_spent(TURN, 10856, 400, 305)
-
-        names = {str(step.get(StepField.NAME, "")) for step in sink.steps}
-        thinking = [n for n in names if StepText.THINKING in n]
-        if thinking != ["○ thinking · in: 10.9k, out: 400 (305 reasoning)"]:
-            raise AssertionError(f"шаг рассуждений: {thinking}")
-
-        container = [n for n in names if n.startswith(StepText.CONTAINER)]
-        if container != ["process... · in: 10.9k, out: 400 (305 reasoning)"]:
-            raise AssertionError(f"контейнер: {container}")
-
-    @pytest.mark.anyio
-    async def test_container_sums_up_the_runs(
-        self, runtime_stand: StandRefs, http_context: None
-    ) -> None:
-        """Ход из нескольких прогонов: на контейнере их сумма."""
-        sink = RecordingSink()
-        view = ChatView(THREAD, sink, runtime_stand.journals, user_name="Пользователь")
-        view.begin_turn(TURN)
-
-        await view.container()
-        await view.tokens_spent("run-1", 10856, 400, 305)
-        await view.tokens_spent("run-2", 15926, 218, 113)
-
-        names = _names(sink.steps)
-        container = [n for n in names if n.startswith(StepText.CONTAINER)]
-        if container != ["process... · in: 26.8k, out: 618 (418 reasoning)"]:
-            raise AssertionError(f"сумма хода: {container}")
-
-    @pytest.mark.anyio
-    async def test_spend_survives_the_awaiting_label(
-        self, runtime_stand: StandRefs, http_context: None
-    ) -> None:
-        """Смена подписи ожидания не затирает уже показанный расход."""
-        sink = RecordingSink()
-        view = ChatView(THREAD, sink, runtime_stand.journals, user_name="Пользователь")
-        view.begin_turn(TURN)
-
-        await view.await_model()
-        await view.tokens_spent(TURN, 1200, 64, 0)
-        await view.model_answered()
-
-        names = _names(sink.steps)
-        container = [n for n in names if n.startswith(StepText.CONTAINER)]
-        if container != ["process... · in: 1.2k, out: 64"]:
-            raise AssertionError(f"контейнер после ответа: {container}")
-
-    @pytest.mark.anyio
-    async def test_run_without_thinking_only_sums_up(
-        self, runtime_stand: StandRefs, http_context: None
-    ) -> None:
-        """Прогон без рассуждений: шага нет, расход виден только в итоге хода."""
-        sink = RecordingSink()
-        view = ChatView(THREAD, sink, runtime_stand.journals, user_name="Пользователь")
-        view.begin_turn(TURN)
-
-        await view.container()
-        await view.tokens_spent("run-without-a-step", 900, 32, 0)
-
-        names = _names(sink.steps)
-        if any(StepText.THINKING in name for name in names):
-            raise AssertionError(f"шага рассуждений быть не должно: {names}")
-        if "process... · in: 900, out: 32" not in names:
-            raise AssertionError(f"итог хода: {names}")
-
-
 class TestCallViewOfACard:
     """Вход шага инструмента сервера лента рисует по виду аргументов из его
     карточки: кода инструмента в процессе чата нет."""
 
     ARGS: dict[str, object] = {"sql": "select 1", "cfg": "internal", "top_k": 7}
-
-    @staticmethod
-    def _calls() -> ChatCalls:
-        contexts = CallContexts()
-        runs = Runs(contexts)
-
-        return ChatCalls(
-            contexts,
-            runs,
-            SentConnections(),
-            ChatMount(contexts, runs),
-            RemoteJournals(),
-        )
 
     @pytest.mark.anyio
     async def test_step_input_follows_the_content_types_of_the_arguments(

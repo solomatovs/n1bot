@@ -20,7 +20,7 @@ class TestRenderForLlm:
 
 
 class TestRevive:
-    """langgraph сериализует artifact в dict — revive обязан поднять модель."""
+    """История хранит artifact сериализованным dict — revive обязан поднять модель."""
 
     def test_round_trip(self) -> None:
         result = VisualResult(

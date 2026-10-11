@@ -11,12 +11,13 @@ import pytest
 from boba.identity.context import Scope
 from boba.identity.locks import MemoryLiveLocks
 from boba.messaging import (
-    AnswerToken,
     Envelope,
     ListenerState,
     LockToken,
     MemoryMessageBus,
     MemoryPayloadStore,
+    Notice,
+    NoticeLevel,
 )
 from boba.runtime import providers
 from boba.runtime.config import AppName, LocalMessagingConfig, RuntimeConfig
@@ -84,7 +85,7 @@ async def test_local_bus_delivers_between_container_consumers(
             received.append(envelope)
 
         leave = bus.subscribe(scope, take)
-        message = AnswerToken(turn_id="t1", key="m1", token="hello")
+        message = Notice(level=NoticeLevel.INFO, text="hello")
         seq = await bus.publish(scope, message, LockToken.local())
 
         assert seq == 1

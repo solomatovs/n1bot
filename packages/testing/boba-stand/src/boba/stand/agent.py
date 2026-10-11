@@ -33,6 +33,7 @@ from boba.agent.profile import (
 from boba.agent.records import PermissionMode
 from boba.agent.session import Session
 from boba.agent.skills import Skill
+from boba.connections.sealed import SealedParamSchema
 from boba.history.jsonl import JsonlHistoryStore
 from boba.llm.chat import ChatModel
 from boba.llm.http.ollama import OllamaProvider
@@ -170,12 +171,10 @@ class StandToolName(StrEnum):
     `statement` — текст; результат повторяет оба."""
 
 
-class StandMedia(StrEnum):
-    """Типы содержимого аргументов стенда: по приставке обработчик хука
-    узнаёт аргумент-соединение, который надо запечатать."""
+class StandKind(StrEnum):
+    """Виды соединений, которые объявляют инструменты стенда."""
 
-    CONNECTION_PREFIX = "application/vnd.boba.connection"
-    POSTGRES_CONNECTION = "application/vnd.boba.connection.postgres"
+    POSTGRES = "postgres"
 
 
 class StandArg(StrEnum):
@@ -197,7 +196,7 @@ class StandTools(ToolServer):
         "properties": {
             StandArg.CONNECTION.value: {
                 "type": "string",
-                "contentMediaType": StandMedia.POSTGRES_CONNECTION.value,
+                **SealedParamSchema().declared(StandKind.POSTGRES.value),
             },
             StandArg.STATEMENT.value: {"type": "string"},
         },

@@ -291,7 +291,8 @@ class AsyncPostgresPool(PostgresPool):
 
     @property
     def raw(self) -> Any:
-        """Внутренний psycopg_pool.AsyncConnectionPool (для langgraph-саверов)."""
+        """Внутренний psycopg_pool.AsyncConnectionPool: его берёт сейвер
+        чекпойнтов миграции истории (boba-history-migrate)."""
         return self._pool
 
     @asynccontextmanager
