@@ -429,7 +429,7 @@ class Events:
     def _text(message: BaseMessage) -> str:
         content = message.content
         if isinstance(content, str):
-            return content
+            return content.replace("\x00", "\ufffd")
 
         parts: list[str] = []
         for block in content:
@@ -438,7 +438,7 @@ class Events:
             elif block.get("type") == "text":
                 parts.append(str(block.get("text", "")))
 
-        return "".join(parts)
+        return "".join(parts).replace("\x00", "\ufffd")
 
     def of_records(self, records: Sequence[ChainRecord]) -> list[tuple[Any, ...]]:
         events: list[tuple[Any, ...]] = []
@@ -645,7 +645,11 @@ class SyntheticThread:
         result_ok.response_metadata["boba_journal"] = self.journal
         result_ok.response_metadata["boba_call_media"] = self.media
         result_err = ToolMessage(
-            content="ls: boom", tool_call_id="call_def", name="shell", status="error"
+            content="ls: boom \x00 binary",
+            tool_call_id="call_def",
+            name="shell",
+            status="error",
+            artifact={"kind": "error", "message": "boom \x00"},
         )
         final = AIMessage(
             content="Done: 1 row.",
@@ -712,7 +716,8 @@ class TestSyntheticThread:
         assert outcome.outcome is ThreadOutcome.MIGRATED, outcome
         assert outcome.skipped == 0
         assert outcome.notes == [
-            "tool result call_late answers a call this thread does not record"
+            "tool result call_late answers a call this thread does not record",
+            "replaced 2 NUL character(s) with U+FFFD: Postgres jsonb cannot store them",
         ]
 
         session, load = await stand.loaded(thread.thread_id)
@@ -781,7 +786,12 @@ class TestSyntheticThread:
             ToolUseResultKey.MEDIA.value: thread.media,
         }
         assert results["call_def"].message.tool_results()[0].is_error is True
-        assert results["call_def"].tool_use_result is None
+        assert results["call_def"].message.tool_results()[0].text() == (
+            "ls: boom \ufffd binary"
+        )
+        assert results["call_def"].tool_use_result == {
+            ToolUseResultKey.ARTIFACT.value: {"kind": "error", "message": "boom \ufffd"}
+        }
         assert results["call_late"].source_tool_assistant_uuid is None
         stamps = {r.timestamp for r in records}
         assert len(stamps) == 1
