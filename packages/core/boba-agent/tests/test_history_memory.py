@@ -1,5 +1,5 @@
 """Хранилище истории без хранилища: захват без замка, дозапись в никуда,
-пустое чтение."""
+пустое чтение, пустой список, удаление без ошибки."""
 
 from __future__ import annotations
 
@@ -51,3 +51,15 @@ class TestMemoryHistoryStore:
 
         assert lines == []
         assert again == []
+
+    async def test_list_is_empty_and_delete_is_silent(self) -> None:
+        store = MemoryHistoryStore()
+        lease = await store.acquire(SESSION)
+        await store.append(lease, [user(1, "a")])
+
+        page = await store.list(None, 50)
+        await store.delete(SESSION)
+        await store.release(lease)
+
+        assert page.sessions == ()
+        assert page.next_cursor is None

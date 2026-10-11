@@ -1,4 +1,5 @@
-"""Загрузчик истории: восстановление сессии из порта и починка оборванного хода.
+"""Загрузчик истории: восстановление сессии из порта, починка оборванного
+хода и сводка сессии для списка.
 
 Журнал агента — прямая линия без веток, поэтому из алгоритма загрузки
 (docs/prompt_assembly/specs/10_loader.md) берётся только то, что нужно
@@ -7,7 +8,10 @@
 ответа без результата дописывается результат-заглушка, разговору без ответа
 на последнее сообщение — ответ-заглушка «No response requested.». Дописанные
 записи остаются в сессии несброшенными: писатель положит их в журнал перед
-первой записью следующего хода.
+первой записью следующего хода. `restore` восстанавливает без починки — так
+читает сессию процесс, который её не ведёт. SessionDigests собирает по
+записям сводку сессии: рабочий каталог из снимка окружения и первый вопрос
+человека.
 
 Ошибки:
 HistoryError — порт истории отказал при чтении.
@@ -20,7 +24,8 @@ import logging
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass, field
 
-from boba.agent.history import BrokenLine, HistoryStore, StoredLine
+from boba.agent.attachments import AttachmentKind, EnvironmentAttachment
+from boba.agent.history import BrokenLine, HistoryStore, SessionId, StoredLine
 from boba.agent.ids import Clock, IdMint
 from boba.agent.records import (
     AssistantMessage,
@@ -45,7 +50,7 @@ from boba.agent.template import AgentTemplate, AgentTemplateFile
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["HistoryLoader", "LoadReport"]
+__all__ = ["HistoryLoader", "LoadReport", "SessionDigest", "SessionDigests"]
 
 
 @dataclass
@@ -86,6 +91,22 @@ class HistoryLoader:
         self._version = version
 
     async def load(self, session: Session) -> LoadReport:
+        """Восстановление с починкой оборванного хода: так открывает сессию
+        процесс, который будет её вести."""
+        report = await self.restore(session)
+        report.repaired.extend(self._repair(session))
+        for repaired in report.repaired:
+            logger.info(
+                "history %s: appended %s %s on resume",
+                session.id.value,
+                repaired.type.value,
+                repaired.uuid,
+            )
+
+        return report
+
+    async def restore(self, session: Session) -> LoadReport:
+        """Восстановление как есть, без дописанных записей."""
         report = LoadReport()
         records: list[Record] = []
         async for line in self._store.read(session.id):
@@ -106,14 +127,6 @@ class HistoryLoader:
 
         session.restore(records)
         report.stored_seq = session.last_seq
-        report.repaired.extend(self._repair(session))
-        for repaired in report.repaired:
-            logger.info(
-                "history %s: appended %s %s on resume",
-                session.id.value,
-                repaired.type.value,
-                repaired.uuid,
-            )
 
         return report
 
@@ -233,3 +246,71 @@ class HistoryLoader:
             message=message,
             request_id=self._ids.request_id(),
         )
+
+
+@dataclass(frozen=True)
+class SessionDigest:
+    """Сводка сессии по её записям: рабочий каталог из снимка окружения и
+    первый вопрос человека; None — в записях этого нет."""
+
+    cwd: str | None
+    first_prompt: str | None
+
+    def complete(self) -> bool:
+        return self.cwd is not None and self.first_prompt is not None
+
+
+class SessionDigests:
+    """Сводки сессий из порта истории для списка сессий.
+
+    Читает записи сессии по порядку и останавливает разбор, как только
+    найдены и каталог, и первый вопрос; испорченные строки пропускает.
+    Создаёт вход процесса рядом с хранилищем.
+    """
+
+    def __init__(self, store: HistoryStore) -> None:
+        self._store = store
+        self._codec = RecordCodec()
+
+    async def digest(self, session: SessionId) -> SessionDigest:
+        """Ошибки:
+        HistoryError — порт истории отказал при чтении.
+        """
+        digest = SessionDigest(cwd=None, first_prompt=None)
+        async for line in self._store.read(session):
+            if not isinstance(line, StoredLine):
+                continue
+
+            try:
+                record = self._codec.parse(line.raw)
+            except RecordError:
+                continue
+
+            digest = self._absorb(digest, record)
+            if digest.complete():
+                break
+
+        return digest
+
+    def _absorb(self, digest: SessionDigest, record: Record) -> SessionDigest:
+        if isinstance(record, UserRecord) and digest.first_prompt is None:
+            text = record.human_text()
+            if text is not None:
+                return SessionDigest(cwd=digest.cwd, first_prompt=text)
+
+        if isinstance(record, AttachmentRecord) and digest.cwd is None:
+            cwd = self._working_directory(record)
+            if cwd is not None:
+                return SessionDigest(cwd=cwd, first_prompt=digest.first_prompt)
+
+        return digest
+
+    def _working_directory(self, record: AttachmentRecord) -> str | None:
+        if record.attachment.type != AttachmentKind.ENVIRONMENT.value:
+            return None
+
+        attachment = EnvironmentAttachment.model_validate(
+            record.attachment.model_dump()
+        )
+
+        return attachment.snapshot.working_directory
