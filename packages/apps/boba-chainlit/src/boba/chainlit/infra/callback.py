@@ -415,7 +415,7 @@ def _tab_agent(session: ChainlitSession) -> ThreadAgent | None:
         return None
 
     container = SessionContainers.of(session.id)
-    agents = container.resolved(thread_agents)
+    agents = container.resolved(thread_agents, scope="session")
 
     return agents.of_thread(thread_id)
 
