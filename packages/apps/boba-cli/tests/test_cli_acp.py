@@ -12,7 +12,10 @@ FakeLlmApp, инструменты — standard_server.py по streamable HTTP. 
 (один рендерер FeedView на оба), и всё до ответа; `session/resume` без
 воспроизведения; `session/close`; `session/list` страницами с курсором и
 фильтром `cwd`; `session/delete` повторно — успех; неизвестная сессия —
--32002."""
+-32002. Ветвление: `session/fork` с `boba/upToUuid` даёт сессию с беседой до
+этого вопроса, без ключа — копию всей сессии, срез на первом вопросе —
+пустую сессию; исходный журнал не меняется; отказы на неизвестную сессию,
+неизвестный uuid среза и негодную `_meta`."""
 
 from __future__ import annotations
 
@@ -795,7 +798,7 @@ class TestHandshake:
             assert response.auth_methods == []
 
             with pytest.raises(RequestError) as refused:
-                await conn.fork_session(cwd=str(boba.process.pid), session_id="x")
+                await conn.authenticate(method_id="none")
 
             assert refused.value.code == METHOD_NOT_FOUND
         finally:
@@ -1598,3 +1601,249 @@ class TestListAndDelete:
             await boba.close_stdin()
 
         assert await boba.wait() == 0
+
+
+class TestFork:
+    """Ветвление сессии хранилища: срез по uuid вопроса, копия целиком,
+    пустая ветка, отказы."""
+
+    PROMPTS: ClassVar[tuple[str, ...]] = TestHistory.PROMPTS
+
+    @staticmethod
+    def questions(rendered: Sequence[tuple[Any, ...]]) -> list[tuple[Any, ...]]:
+        return [item for item in rendered if item[0] == "user"]
+
+    @staticmethod
+    def human(journal: Sequence[Document]) -> list[str]:
+        found: list[str] = []
+        for record in journal:
+            if record["type"] != "user":
+                continue
+
+            if record.get("origin", {}).get("kind") != "human":
+                continue
+
+            found.append(record["message"]["content"])
+
+        return found
+
+    async def test_fork_before_the_second_question_keeps_only_the_first_turn(
+        self, boba: AcpProcess, model: FakeModel, mcp: McpStand, tmp_path: Path
+    ) -> None:
+        session_id, _ = await TestHistory().conversation(boba, mcp, tmp_path)
+        source_before = boba.journal(session_id)
+
+        second = AcpProcess(tmp_path, model)
+        client = RecordingClient()
+        document = second.settings_document(mode="bypassPermissions", allow_bypass=True)
+        conn = await second.start(client, document)
+        try:
+            await handshake(conn)
+            await conn.load_session(
+                cwd=str(tmp_path), session_id=session_id, mcp_servers=[mcp.server()]
+            )
+            view = FeedView()
+            original = view.render(client.updates_of(session_id))
+            questions = self.questions(original)
+            assert [q[2] for q in questions] == list(self.PROMPTS)
+            second_question = questions[1]
+
+            forked = await conn.fork_session(
+                session_id=session_id,
+                cwd=str(tmp_path),
+                mcp_servers=[mcp.server()],
+                **{MetaKey.UP_TO_UUID.value: second_question[1]},
+            )
+            branch_id = forked.session_id
+            assert branch_id != session_id
+            assert client.updates_of(branch_id) == []
+
+            await conn.load_session(
+                cwd=str(tmp_path), session_id=branch_id, mcp_servers=[mcp.server()]
+            )
+            branch = view.render(client.updates_of(branch_id))
+            assert branch == original[: original.index(second_question)]
+            assert view.user_texts(branch) == [self.PROMPTS[0]]
+            assert len(view.without_user(branch)) >= 3
+
+            response = await conn.prompt(
+                session_id=branch_id, prompt=[text_block(ScenarioName.ANSWER.value)]
+            )
+            assert response.stop_reason == StopReasonName.END_TURN.value
+
+            again = await conn.prompt(
+                session_id=session_id, prompt=[text_block(ScenarioName.ANSWER.value)]
+            )
+            assert again.stop_reason == StopReasonName.END_TURN.value
+        finally:
+            await conn.close()
+            await second.close_stdin()
+            assert await second.wait() == 0
+
+        cut = [r.get("uuid") for r in source_before].index(second_question[1])
+        prefix = [{**r, "sessionId": branch_id} for r in source_before[:cut]]
+        branch_journal = second.journal(branch_id)
+        assert branch_journal[:cut] == prefix
+        assert [r["seq"] for r in branch_journal[:cut]] == list(range(1, cut + 1))
+        assert branch_journal[cut]["seq"] == cut + 1
+        assert self.human(branch_journal) == [
+            self.PROMPTS[0],
+            ScenarioName.ANSWER.value,
+        ]
+
+        source_after = second.journal(session_id)
+        assert source_after[: len(source_before)] == source_before
+        assert self.human(source_after) == [*self.PROMPTS, ScenarioName.ANSWER.value]
+
+    async def test_fork_without_a_cut_copies_everything_after_a_flush(
+        self, boba: AcpProcess, model: FakeModel, mcp: McpStand, tmp_path: Path
+    ) -> None:
+        session_id, _ = await TestHistory().conversation(boba, mcp, tmp_path)
+
+        second = AcpProcess(tmp_path, model)
+        client = RecordingClient()
+        document = second.settings_document(mode="bypassPermissions", allow_bypass=True)
+        conn = await second.start(client, document)
+        try:
+            await handshake(conn)
+            await conn.resume_session(
+                cwd=str(tmp_path), session_id=session_id, mcp_servers=[mcp.server()]
+            )
+            response = await conn.prompt(
+                session_id=session_id, prompt=[text_block(ScenarioName.ANSWER.value)]
+            )
+            assert response.stop_reason == StopReasonName.END_TURN.value
+
+            forked = await conn.fork_session(
+                session_id=session_id, cwd=str(tmp_path), mcp_servers=[mcp.server()]
+            )
+            branch_id = forked.session_id
+            await conn.load_session(
+                cwd=str(tmp_path), session_id=branch_id, mcp_servers=[mcp.server()]
+            )
+            branch = FeedView().render(client.updates_of(branch_id))
+            assert FeedView().user_texts(branch) == [
+                *self.PROMPTS,
+                ScenarioName.ANSWER.value,
+            ]
+            await conn.close_session(session_id=session_id)
+            await conn.close_session(session_id=branch_id)
+        finally:
+            await conn.close()
+            await second.close_stdin()
+            assert await second.wait() == 0
+
+        source = second.journal(session_id)
+        branch_journal = second.journal(branch_id)
+        assert branch_journal == [{**r, "sessionId": branch_id} for r in source]
+
+    async def test_fork_at_the_first_question_is_an_empty_session(
+        self, boba: AcpProcess, model: FakeModel, mcp: McpStand, tmp_path: Path
+    ) -> None:
+        session_id, _ = await TestHistory().conversation(boba, mcp, tmp_path)
+
+        second = AcpProcess(tmp_path, model)
+        client = RecordingClient()
+        document = second.settings_document(mode="bypassPermissions", allow_bypass=True)
+        conn = await second.start(client, document)
+        try:
+            await handshake(conn)
+            await conn.load_session(
+                cwd=str(tmp_path), session_id=session_id, mcp_servers=[mcp.server()]
+            )
+            first_question = self.questions(
+                FeedView().render(client.updates_of(session_id))
+            )[0]
+
+            forked = await conn.fork_session(
+                session_id=session_id,
+                cwd=str(tmp_path),
+                mcp_servers=[],
+                **{MetaKey.UP_TO_UUID.value: first_question[1]},
+            )
+            branch_id = forked.session_id
+            await conn.load_session(
+                cwd=str(tmp_path), session_id=branch_id, mcp_servers=[]
+            )
+            assert client.updates_of(branch_id) == []
+
+            response = await conn.prompt(
+                session_id=branch_id, prompt=[text_block(ScenarioName.ANSWER.value)]
+            )
+            assert response.stop_reason == StopReasonName.END_TURN.value
+        finally:
+            await conn.close()
+            await second.close_stdin()
+            assert await second.wait() == 0
+
+        branch_journal = second.journal(branch_id)
+        assert branch_journal[0]["seq"] == 1
+        assert self.human(branch_journal) == [ScenarioName.ANSWER.value]
+
+    async def test_refusals(
+        self, boba: AcpProcess, model: FakeModel, mcp: McpStand, tmp_path: Path
+    ) -> None:
+        session_id, _ = await TestHistory().conversation(boba, mcp, tmp_path)
+        journals = sorted((tmp_path / "history").glob("*.jsonl"))
+
+        second = AcpProcess(tmp_path, model)
+        client = RecordingClient()
+        conn = await second.start(client)
+        try:
+            await handshake(conn)
+            for session in ("no-such", "bad/id"):
+                with pytest.raises(RequestError) as unknown:
+                    await conn.fork_session(
+                        session_id=session, cwd=str(tmp_path), mcp_servers=[]
+                    )
+
+                assert unknown.value.code == RESOURCE_NOT_FOUND
+
+            with pytest.raises(RequestError) as no_record:
+                await conn.fork_session(
+                    session_id=session_id,
+                    cwd=str(tmp_path),
+                    mcp_servers=[],
+                    **{MetaKey.UP_TO_UUID.value: "nope"},
+                )
+
+            assert no_record.value.code == INVALID_PARAMS
+            assert isinstance(no_record.value.data, dict)
+            assert no_record.value.data["upToUuid"] == "nope"
+            assert no_record.value.data["sessionId"] == session_id
+
+            with pytest.raises(RequestError) as blank:
+                await conn.fork_session(
+                    session_id=session_id,
+                    cwd=str(tmp_path),
+                    mcp_servers=[],
+                    **{MetaKey.UP_TO_UUID.value: ""},
+                )
+
+            assert blank.value.code == INVALID_PARAMS
+
+            with pytest.raises(RequestError) as relative:
+                await conn.fork_session(
+                    session_id=session_id, cwd="relative", mcp_servers=[]
+                )
+
+            assert relative.value.code == INVALID_PARAMS
+
+            dead = HttpMcpServer(
+                type="http",
+                name="dead",
+                url=f"http://127.0.0.1:{free_port()}/mcp",
+                headers=[],
+            )
+            with pytest.raises(RequestError) as unreachable:
+                await conn.fork_session(
+                    session_id=session_id, cwd=str(tmp_path), mcp_servers=[dead]
+                )
+
+            assert unreachable.value.code == INTERNAL_ERROR
+        finally:
+            await conn.close()
+            await second.close_stdin()
+            assert await second.wait() == 0
+
+        assert sorted((tmp_path / "history").glob("*.jsonl")) == journals

@@ -1,5 +1,6 @@
 """Порт истории агента: захват сессии, атомарная дозапись пачки, чтение по
-порядку, список сессий страницами и удаление сессии.
+порядку, список сессий страницами, удаление сессии и копия записей сессии
+в новую (ветвление).
 
 Реализации — пакеты boba-history-jsonl и boba-history-postgres; ядро знает
 только этот протокол. Здесь же живёт MemoryHistoryStore — реализация без
@@ -12,8 +13,10 @@ HistoryError — хранилище недоступно или отказало
     тексте и в `from exc`.
 SessionHeldError — сессию держит другой процесс: её замок занят; подвид
     HistoryError.
-SessionNotFoundError — у сессии нет ни одной записи, возобновлять нечего;
-    подвид HistoryError.
+SessionNotFoundError — у сессии нет ни одной записи, возобновлять или
+    копировать нечего; подвид HistoryError.
+RecordNotFoundError — записи с таким uuid в сессии нет: точка среза копии
+    не найдена; подвид HistoryError.
 """
 
 from __future__ import annotations
@@ -37,6 +40,7 @@ __all__ = [
     "HistoryStore",
     "LineKey",
     "MemoryHistoryStore",
+    "RecordNotFoundError",
     "SessionHeldError",
     "SessionId",
     "SessionLease",
@@ -56,15 +60,22 @@ class SessionHeldError(HistoryError):
 
 
 class SessionNotFoundError(HistoryError):
-    """У сессии нет записей в хранилище: возобновлять нечего."""
+    """У сессии нет записей в хранилище: возобновлять или копировать нечего."""
+
+
+class RecordNotFoundError(HistoryError):
+    """Записи с таким uuid в сессии нет: точка среза копии не найдена."""
 
 
 class LineKey(StrEnum):
-    """Ключи документа записи, которые хранилище читает само, не разбирая
-    запись в модель: порядковый номер и время записи."""
+    """Ключи документа записи, которые хранилище читает и переписывает само,
+    не разбирая запись в модель: порядковый номер, время, uuid записи и
+    идентификатор сессии."""
 
     SEQ = "seq"
     TIMESTAMP = "timestamp"
+    UUID = "uuid"
+    SESSION_ID = "sessionId"
 
 
 class SessionId(BaseModel):
@@ -168,6 +179,25 @@ class HistoryStore(Protocol):
         SessionHeldError — сессию держит работающий процесс.
         """
 
+    @abstractmethod
+    async def copy(
+        self, source: SessionId, target: SessionId, up_to: str | None
+    ) -> int:
+        """Копирует записи сессии `source` под идентификатор `target`:
+        в порядке seq, с теми же seq и uuid, с `sessionId` новой сессии в
+        документе. `up_to` — uuid записи цепочки, на которой ветка кончается:
+        копируются записи строго до неё, сама она и всё после неё — нет;
+        None — копируются все записи. Срез на первой записи даёт пустую
+        ветку — это не ошибка. Замок источника не нужен: читается то, что
+        уже сохранено; исходная сессия не меняется. Возвращает число
+        скопированных записей.
+
+        Ошибки:
+        SessionNotFoundError — у источника нет записей.
+        RecordNotFoundError — записи с uuid `up_to` в источнике нет.
+        HistoryError — у `target` уже есть записи или хранилище отказало.
+        """
+
 
 class MemoryHistoryStore(HistoryStore):
     """Реализация HistoryStore без хранилища.
@@ -175,8 +205,9 @@ class MemoryHistoryStore(HistoryStore):
     Нужна процессу, у которого история живёт только в Session в памяти:
     хранилище снаружи ему не положено, но порт обязателен. Захват сессии
     замка не ставит, дозапись ничего не пишет, чтение всегда пусто, список
-    сессий пуст, удалять нечего — после перезапуска процесса истории нет,
-    возобновить сессию нельзя.
+    сессий пуст, удалять нечего, копировать нечего (SessionNotFoundError) —
+    после перезапуска процесса истории нет, возобновить или ветвить сессию
+    нельзя.
     """
 
     async def acquire(self, session: SessionId) -> SessionLease:
@@ -198,3 +229,12 @@ class MemoryHistoryStore(HistoryStore):
 
     async def delete(self, session: SessionId) -> None:
         return
+
+    async def copy(
+        self, source: SessionId, target: SessionId, up_to: str | None
+    ) -> int:
+        msg = (
+            f"Session '{source.value}' cannot be copied to '{target.value}': the "
+            "memory history store keeps no records, so there is nothing to branch."
+        )
+        raise SessionNotFoundError(msg)
