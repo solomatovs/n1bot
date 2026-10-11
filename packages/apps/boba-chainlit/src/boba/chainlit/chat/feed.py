@@ -1,5 +1,7 @@
 """Производитель сообщений хода: единственное место, откуда ход публикует в шину;
-большие тела уходят в PayloadStore, сообщение несёт ссылку.
+большие тела уходят в PayloadStore, сообщение несёт ссылку. Ход агента ACP
+публикует вопрос, уведомления `session/update` как есть (AgentUpdate), пометки
+остановки и итог; остальные сообщения — наследие хода langchain.
 
 Ошибки:
 MessageBusError — шина не приняла сообщение; вызывающий показывает сбой сам.
@@ -10,10 +12,14 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import Any, ClassVar
 
+from acp.schema import ToolCallProgress, ToolCallStart
 from pydantic import BaseModel, ConfigDict, Field
 
+from boba.chainlit.acp.client import SessionUpdate
+from boba.chainlit.rendering.acp_view import SessionUpdateCodec
 from boba.identity.context import Scope
 from boba.messaging import (
+    AgentUpdate,
     AnswerClosed,
     AnswerInterrupted,
     AnswerToken,
@@ -33,6 +39,7 @@ from boba.messaging import (
     ThinkingClosed,
     ThinkingComplete,
     ThinkingToken,
+    ThreadRewound,
     TokensSpent,
     ToolFailed,
     ToolFinished,
@@ -112,14 +119,15 @@ class ShownElement(BaseModel):
 
 
 class QuestionBody(BaseModel):
-    """Тело вопроса хода в шине: текст и вложения, которые пользователь приложил к
-    сообщению.
+    """Тело вопроса хода в шине: текст, вложения, которые пользователь приложил к
+    сообщению, и автор — имя шага вопроса во всех вкладках.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     text: str
     elements: tuple[ShownElement, ...] = ()
+    author: str = ""
 
 
 class TurnFeed(StreamFeed):
@@ -138,6 +146,7 @@ class TurnFeed(StreamFeed):
         self._scope = scope
         self._turn_id = turn_id
         self._token = token
+        self._codec = SessionUpdateCodec()
 
     @property
     def scope(self) -> Scope:
@@ -153,6 +162,22 @@ class TurnFeed(StreamFeed):
 
     async def _publish(self, message: AnyMessage) -> None:
         await self._bus.publish(self._scope, message, self._token)
+
+    async def rewound(self) -> None:
+        """Правка вопроса: вкладки забывают отправленные шаги хода с этим ключом."""
+        await self._publish(ThreadRewound(turn_id=self._turn_id))
+
+    async def agent_update(self, update: SessionUpdate) -> None:
+        """Уведомление агента как есть: вызовы с аргументами и итогом — по
+        ссылке (ключи аргументов обязаны сохранить порядок, jsonb шины его
+        не хранит), куски текста — в самом сообщении."""
+        body = self._codec.encode(update)
+        if isinstance(update, ToolCallStart | ToolCallProgress):
+            ref = await self._payloads.put(self._scope, body)
+            await self._publish(AgentUpdate(turn_id=self._turn_id, stored=ref))
+            return
+
+        await self._publish(AgentUpdate(turn_id=self._turn_id, inline=body))
 
     async def started(self, key: str, question: QuestionBody) -> None:
         ref = await self._payloads.put(

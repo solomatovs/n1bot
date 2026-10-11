@@ -22,8 +22,7 @@ import logging
 import mimetypes
 import time
 from collections.abc import Iterable, Mapping
-from dataclasses import dataclass, field
-from typing import Any, ClassVar
+from typing import ClassVar
 from uuid import uuid4
 
 import chainlit as cl
@@ -33,7 +32,7 @@ from boba.chainlit.canvas.panel import CanvasPanel
 from boba.chainlit.canvas.remote import RemoteJournals
 from boba.chainlit.data.data_layer import AttachmentDataLayer, HeldContent
 from boba.chainlit.domain.context import ChatCallContext
-from boba.chainlit.rendering.tool import ChatElements
+from boba.chainlit.rendering.tool import ChatElements, WorkspaceFile
 from boba.connection_broker.sealing import SentConnections
 from boba.identity.context import CallContexts, ContextKind
 from boba.identity.errors import RefusalError
@@ -64,17 +63,6 @@ from boba.toolkit.result import (
 __all__ = ["ChatAttachments", "ChatCalls", "ChatMount", "WorkspaceFile"]
 
 logger = logging.getLogger(__name__)
-
-
-@dataclass
-class WorkspaceFile(cl.File):
-    """Файл workspace: помимо штатных полей несёт каталог в props.
-
-    Ссылка на вложение вычисляется при чтении треда, поэтому каталог обязан
-    храниться рядом с элементом — иначе отдача ищет файл только в upload/.
-    """
-
-    props: dict[str, Any] = field(default_factory=dict)
 
 
 class ChatMount:

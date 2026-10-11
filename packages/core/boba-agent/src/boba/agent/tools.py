@@ -487,8 +487,8 @@ class ToolTexts:
 
     def of_outcome(self, call: PlannedCall, outcome: NodeOutcome) -> CallResult:
         text = self.bounded(outcome.content, call.name)
-        # журнал не хранит null, поэтому и в памяти артефакт лежит без них
-        artifact = outcome.artifact.model_dump(mode="json", exclude_none=True)
+        # журнал не хранит null, поэтому и в памяти итог лежит без них
+        artifact = outcome.use_result().model_dump(mode="json", exclude_none=True)
 
         return CallResult(
             call=call, text=text, is_error=not outcome.ok(), artifact=artifact

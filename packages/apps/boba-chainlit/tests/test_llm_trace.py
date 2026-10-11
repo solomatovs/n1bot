@@ -14,7 +14,6 @@ from typing import Annotated
 
 import pytest
 from chainlit_stand import (
-    FakeThreadMessages,
     SilentStage,
     fake_openai_chat,
     in_process_llm,
@@ -123,7 +122,7 @@ class TestLlmStateLog:
                 runs,
                 SentConnections(),
                 ChatMount(contexts, runs),
-                RemoteJournals(FakeThreadMessages()),
+                RemoteJournals(),
             ),
         )
         spec = GraphSpec(

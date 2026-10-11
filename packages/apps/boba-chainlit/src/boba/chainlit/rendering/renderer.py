@@ -1,5 +1,8 @@
 """Отрисовка ленты chainlit по сообщениям шины: ChatRenderer подписан на область
-треда, владеет ChatView и превращает каждое сообщение в шаг ленты.
+треда, владеет переводчиком уведомлений агента (UpdateView над ChatView) и
+превращает каждое сообщение в шаг ленты: вопрос и итог хода — по TurnStarted и
+TurnFinished держателя, сами шаги — по уведомлениям `session/update`, которые
+держатель пересылает как есть (AgentUpdate).
 
 Ошибки:
 Сбой отрисовки одного сообщения показывается в чат и журналируется; когда показать
@@ -18,14 +21,14 @@ from pydantic import BaseModel, ConfigDict
 from boba.canvas.canvas import CanvasSignal
 from boba.chainlit.chat.feed import QuestionBody, ShownElement
 from boba.chainlit.domain.fields import StepField, ThreadField
-from boba.chainlit.rendering.chat_view import ChatView, StepText
+from boba.chainlit.rendering.acp_view import SessionUpdateCodec, UpdateView
+from boba.chainlit.rendering.chat_view import ChatView
 from boba.chainlit.rendering.errors import show_error
 from boba.identity.context import Scope
 from boba.identity.errors import FailureReport
 from boba.messaging import (
-    AnswerClosed,
+    AgentUpdate,
     AnswerInterrupted,
-    AnswerToken,
     CanvasChanged,
     ElementRemoved,
     ElementShown,
@@ -33,30 +36,17 @@ from boba.messaging import (
     FeedbackChanged,
     MessageBus,
     MessageKind,
-    ModelAnswered,
     Notice,
     NoticeLevel,
     PayloadStore,
-    StageEnded,
-    StageQueries,
-    StageStarted,
-    ThinkingClosed,
-    ThinkingComplete,
-    ThinkingToken,
     ThreadRewound,
-    TokensSpent,
-    ToolFailed,
-    ToolFinished,
-    ToolProgressed,
-    ToolStarted,
-    ToolStopped,
     TurnFinished,
     TurnStarted,
     Unsubscribe,
 )
 from chainlit.context import ChainlitContext, context_var
 from chainlit.element import ElementDict
-from chainlit.step import Step, StepDict
+from chainlit.step import StepDict
 from chainlit.types import ThreadDict
 
 __all__ = ["CatchUp", "ChatRenderer", "ChatRenderers", "NoSurface", "RenderSurface"]
@@ -154,23 +144,25 @@ class CatchUp(BaseModel):
 
 
 class ChatRenderer:
-    """Получает сообщения одного треда из шины и превращает их в шаги ленты chainlit;
-    карта шагов инструментов по call_id связывает начало вызова с его итогом.
+    """Получает сообщения одного треда из шины и превращает их в шаги ленты
+    chainlit; уведомления агента переводит в шаги UpdateView — тот же
+    переводчик, что рисует историю при `session/load`.
     """
 
     def __init__(
         self,
         thread_id: str,
-        view: ChatView,
+        updates: UpdateView,
         payloads: PayloadStore,
         surface: RenderSurface,
     ) -> None:
         self._thread_id = thread_id
-        self._view = view
+        self._updates = updates
+        self._view = updates.view
         self._payloads = payloads
         self._surface = surface
         self._scope = Scope.chat(thread_id)
-        self._tool_steps: dict[str, Step] = {}
+        self._codec = SessionUpdateCodec()
         self._turn_key: str | None = None
         self._handlers = self._handler_table()
 
@@ -225,22 +217,8 @@ class ChatRenderer:
     def _handler_table(self) -> Mapping[MessageKind, Handler]:
         return {
             MessageKind.TURN_STARTED: self._on_turn_started,
-            MessageKind.MODEL_ANSWERED: self._on_model_answered,
-            MessageKind.ANSWER_TOKEN: self._on_answer_token,
-            MessageKind.ANSWER_CLOSED: self._on_answer_closed,
+            MessageKind.AGENT_UPDATE: self._on_agent_update,
             MessageKind.ANSWER_INTERRUPTED: self._on_answer_interrupted,
-            MessageKind.THINKING_TOKEN: self._on_thinking_token,
-            MessageKind.THINKING_COMPLETE: self._on_thinking_complete,
-            MessageKind.THINKING_CLOSED: self._on_thinking_closed,
-            MessageKind.TOKENS_SPENT: self._on_tokens_spent,
-            MessageKind.STAGE_STARTED: self._on_stage_started,
-            MessageKind.STAGE_QUERIES: self._on_stage_queries,
-            MessageKind.STAGE_ENDED: self._on_stage_ended,
-            MessageKind.TOOL_STARTED: self._on_tool_started,
-            MessageKind.TOOL_PROGRESSED: self._on_tool_progressed,
-            MessageKind.TOOL_FINISHED: self._on_tool_finished,
-            MessageKind.TOOL_FAILED: self._on_tool_failed,
-            MessageKind.TOOL_STOPPED: self._on_tool_stopped,
             MessageKind.TURN_FINISHED: self._on_turn_finished,
             MessageKind.NOTICE: self._on_notice,
             MessageKind.CANVAS_CHANGED: self._on_canvas_changed,
@@ -253,7 +231,7 @@ class ChatRenderer:
     def begin_turn(self, key: str) -> None:
         """Открывает ход в ленте: ключ хода адресует контейнер, ответ и шаг ошибки."""
         self._turn_key = key
-        self._view.begin_turn(key)
+        self._updates.begin_turn(key)
 
     async def _on_turn_started(self, message: TurnStarted) -> None:
         logger.info(
@@ -265,92 +243,22 @@ class ChatRenderer:
         question = QuestionBody.model_validate(
             await self._payloads.get(message.question)
         )
-        await self._view.question(question.text, message.key)
+        await self._updates.question(question.text, message.key, question.author)
         for element in question.elements:
             await self._surface.send_element(element.to_element())
 
         await self._surface.task_start()
         await self._view.await_model()
 
-    async def _on_model_answered(self, message: ModelAnswered) -> None:
-        await self._view.model_answered()
+    async def _on_agent_update(self, message: AgentUpdate) -> None:
+        body: object = message.inline
+        if message.stored is not None:
+            body = await self._payloads.get(message.stored)
 
-    async def _on_answer_token(self, message: AnswerToken) -> None:
-        await self._view.stream_answer(message.token, message.key)
-
-    async def _on_answer_closed(self, message: AnswerClosed) -> None:
-        await self._view.close_answer(message.key)
+        await self._updates.apply(self._codec.decode(body))
 
     async def _on_answer_interrupted(self, message: AnswerInterrupted) -> None:
         await self._interrupt_answer(message.key, message.note)
-
-    async def _on_thinking_token(self, message: ThinkingToken) -> None:
-        await self._view.stream_thinking(message.token, message.key)
-
-    async def _on_thinking_complete(self, message: ThinkingComplete) -> None:
-        text = await self._payloads.get(message.text)
-        await self._view.thinking(str(text), message.key)
-
-    async def _on_thinking_closed(self, message: ThinkingClosed) -> None:
-        await self._view.close_thinking()
-
-    async def _on_tokens_spent(self, message: TokensSpent) -> None:
-        await self._view.tokens_spent(
-            message.key,
-            message.input_tokens,
-            message.output_tokens,
-            message.reasoning_tokens,
-        )
-
-    async def _on_stage_started(self, message: StageStarted) -> None:
-        await self._view.begin_stage(message.name, message.phase)
-
-    async def _on_stage_queries(self, message: StageQueries) -> None:
-        await self._view.stage_queries(message.queries)
-
-    async def _on_stage_ended(self, message: StageEnded) -> None:
-        await self._view.end_stage(message.queries, message.elapsed_ms)
-
-    async def _on_tool_started(self, message: ToolStarted) -> None:
-        args = await self._payloads.get(message.args)
-        if not isinstance(args, Mapping):
-            args = {}
-
-        step = await self._view.tool_started(
-            message.name, args, message.call_id, message.media
-        )
-        self._tool_steps[message.call_id] = step
-
-    async def _on_tool_progressed(self, message: ToolProgressed) -> None:
-        step = self._tool_steps.get(message.call_id)
-        if step is None:
-            return
-
-        await self._view.tool_progressed(
-            step, message.done, message.total, message.text
-        )
-
-    async def _on_tool_finished(self, message: ToolFinished) -> None:
-        step = self._tool_steps.pop(message.call_id, None)
-        if step is None:
-            return
-
-        result = await self._payloads.get(message.result)
-        await self._view.tool_finished(step, result, message.call_id)
-
-    async def _on_tool_failed(self, message: ToolFailed) -> None:
-        step = self._tool_steps.pop(message.call_id, None)
-        if step is None:
-            return
-
-        await self._view.tool_failed(step, message.error)
-
-    async def _on_tool_stopped(self, message: ToolStopped) -> None:
-        step = self._tool_steps.pop(message.call_id, None)
-        if step is None:
-            return
-
-        await self._view.tool_stopped(step, message.note)
 
     async def _on_turn_finished(self, message: TurnFinished) -> None:
         await self._finish_turn()
@@ -370,10 +278,9 @@ class ChatRenderer:
         await self._surface.window_message(signal.payload())
 
     async def _on_thread_rewound(self, message: ThreadRewound) -> None:
-        """Правка вопроса: вкладки перечитывают историю до этого вопроса, и шаги
+        """Правка вопроса: правившая вкладка сама убрала хвост ленты, а шаги
         нового хода — контейнер, ответ — получают те же id, что у прежнего.
         Лента обязана забыть, что уже отправляла их."""
-        await self._surface.resume_thread()
         self._view.rebuilt()
 
     async def _on_element_shown(self, message: ElementShown) -> None:
@@ -391,12 +298,8 @@ class ChatRenderer:
         await self._view.interrupt_answer(note, key)
 
     async def _finish_turn(self) -> None:
-        for step in list(self._tool_steps.values()):
-            await self._view.tool_stopped(step, StepText.FINISHED.value)
-
-        self._tool_steps.clear()
         self._turn_key = None
-        await self._view.finish_turn()
+        await self._updates.finish_turn()
         await self._surface.task_end()
         await self._payloads.purge(self._scope)
 
@@ -465,7 +368,7 @@ class ChatRenderer:
         if thinking := self._view.thinking_step:
             steps.append(thinking.to_dict())
 
-        for step in self._tool_steps.values():
+        for step in self._updates.open_steps():
             steps.append(step.to_dict())
 
         if answer := self._view.answer_message:
@@ -517,7 +420,7 @@ class ChatRenderers:
         cls,
         thread_id: str,
         bus: MessageBus,
-        view: ChatView,
+        updates: UpdateView,
         payloads: PayloadStore,
         surface: RenderSurface,
     ) -> ChatRenderer:
@@ -528,7 +431,7 @@ class ChatRenderers:
         if renderer is not None:
             return renderer
 
-        renderer = ChatRenderer(thread_id, view, payloads, surface)
+        renderer = ChatRenderer(thread_id, updates, payloads, surface)
         cls._RENDERERS[thread_id] = renderer
         cls._LEAVES[thread_id] = bus.subscribe(Scope.chat(thread_id), renderer.apply)
         return renderer
