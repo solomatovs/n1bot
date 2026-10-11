@@ -274,6 +274,14 @@ class TestMcpJson:
 
         assert sorted(effective.mcp_servers) == ["other"]
 
+    def test_scope_of_tool_calls_is_read_and_absent_by_default(
+        self, tmp_path: Path
+    ) -> None:
+        arguments = Arguments(settings=(json.dumps({"mcp": {"scope": "thread-7"}}),))
+
+        assert settings(tmp_path, arguments).effective().mcp.scope == "thread-7"
+        assert settings(tmp_path).effective().mcp.scope is None
+
     def test_sse_server_is_refused(self, tmp_path: Path) -> None:
         write(
             tmp_path / "project" / ".mcp.json",

@@ -74,7 +74,7 @@ from boba.canvas.storage import (
     StorageFullError,
     StorageNotFoundError,
 )
-from boba.identity.context import CallContexts
+from boba.identity.context import CallContexts, CallScopeSource
 from boba.toolkit.calls import CallViews
 from boba.toolkit.chain import StreamPlanError
 from boba.toolkit.dag import (
@@ -1277,6 +1277,8 @@ class McpToolServer(ToolServer):
     объявленных сервером при инициализации: у стороннего сервера их нет.
     Оборванная сессия открывается заново следующим вызовом. caller — чьим
     именем идёт подключение; None — оно общее для всех сессий клиента.
+    scopes — откуда берётся область вызова: серверу с расширением файлов
+    она уходит в _meta каждого запроса tools/call.
     """
 
     FEATURE_PREFIX: ClassVar[str] = "com.boba/"
@@ -1287,14 +1289,14 @@ class McpToolServer(ToolServer):
         config: McpServerConfig,
         files: BlockFiles,
         signals: CallSignals,
-        contexts: CallContexts,
+        scopes: CallScopeSource,
         caller: McpCaller | None,
         conduct: NodeCalls,
     ) -> None:
         self._name = name
         self._conduct = conduct
         self._signals = signals
-        self._contexts = contexts
+        self._scopes = scopes
         self._config = config
         self._connection = McpConnection(
             config.endpoint, caller, config.connect_timeout_sec
@@ -1767,11 +1769,11 @@ class McpToolServer(ToolServer):
         if files is None:
             return meta
 
-        context = self._contexts.peek()
-        if context is None:
+        scope = self._scopes.scope_id()
+        if scope is None:
             return meta
 
-        meta[files.scope] = context.scope.id
+        meta[files.scope] = scope
 
         return meta
 

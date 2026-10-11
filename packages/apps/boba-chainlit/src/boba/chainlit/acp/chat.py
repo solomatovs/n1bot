@@ -458,7 +458,7 @@ class AgentLauncher:
         AgentProcessError — процесс не запустился.
         KerberosError — билет истории по keytab не получен.
         """
-        document = self._files.build(chat, user_jwt, hooked)
+        document = self._files.build(thread_id, chat, user_jwt, hooked)
         workdir = self._workdirs.create(thread_id)
         workdir.write(document, chat.system_prompt)
         command = self._command.with_env(await self._environment.prepare())

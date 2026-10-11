@@ -397,12 +397,16 @@ class LimitsJson(SettingsModel):
 
 
 class McpClientJson(SettingsModel):
-    """Ключ `mcp`: сроки клиента и выбор серверов из `.mcp.json`."""
+    """Ключ `mcp`: сроки клиента, выбор серверов из `.mcp.json` и область
+    вызовов. scope — id разговора, который клиент называет серверу с
+    расширением файлов в каждом вызове: вызовы одной области видят файлы
+    друг друга; None — область выбирает сервер."""
 
     connect_timeout_sec: float = Field(default=30.0, gt=0)
     call_timeout_sec: float = Field(default=600.0, gt=0)
     enabled_servers: Sequence[str] | None = None
     disabled_servers: Sequence[str] = ()
+    scope: str | None = Field(default=None, min_length=1)
 
 
 class McpServerJson(SettingsModel):

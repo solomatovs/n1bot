@@ -228,7 +228,9 @@ class TestSettingsFile:
         builder = SettingsFileBuilder(config)
         chat = model.chat_settings("Answer briefly")
 
-        document = builder.build(chat, "user-jwt", ["boba_general", "boba_base"])
+        document = builder.build(
+            "thread-1", chat, "user-jwt", ["boba_general", "boba_base"]
+        )
         workdir = AgentWorkdirs(tmp_path / "agents").create("thread-1")
         workdir.write(document, chat.system_prompt)
 
@@ -254,6 +256,7 @@ class TestSettingsFile:
         assert body["history"]["schema"] == history.db_schema
         assert body["history"]["dsn"] == history.dsn().get_secret_value()
         assert body["systemPromptFile"] == "system_prompt.txt"
+        assert body["mcp"] == {"scope": "thread-1"}
 
         groups = body["hooks"]["PreToolUse"]
         assert len(groups) == 1
@@ -275,7 +278,7 @@ class TestSettingsFile:
     ) -> None:
         config = AgentStand(tmp_path, AgentHistoryStand(stand).history()).config()
         document = SettingsFileBuilder(config).build(
-            FakeModel().chat_settings(), "jwt", []
+            "thread-1", FakeModel().chat_settings(), "jwt", []
         )
         body = json.loads(document.render())
         assert "hooks" not in body or body["hooks"] == {}
@@ -292,7 +295,9 @@ class TestAgentHandshake:
         history = AgentHistoryStand(stand).history()
         agent_stand = AgentStand(tmp_path / "agents", history)
         chat = model.chat_settings()
-        document = SettingsFileBuilder(agent_stand.config()).build(chat, "jwt", [])
+        document = SettingsFileBuilder(agent_stand.config()).build(
+            "thread-2", chat, "jwt", []
+        )
         workdir = AgentWorkdirs(tmp_path / "agents").create("thread-2")
         workdir.write(document, chat.system_prompt)
 

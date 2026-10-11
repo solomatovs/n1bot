@@ -88,7 +88,7 @@ from boba.cli.settings import (
 )
 from boba.history.jsonl import JsonlHistoryStore
 from boba.history.postgres import PostgresHistoryStore
-from boba.identity.context import CallContexts
+from boba.identity.context import CallScopeSource
 from boba.llm.chat import ChatModel, LlmError
 from boba.llm.http.ollama import MANIFEST as OLLAMA
 from boba.llm.http.openai import MANIFEST as OPENAI
@@ -233,6 +233,19 @@ class ArgumentParser:
             action="store_true",
             help="write an api-request record for every model request",
         )
+
+
+class SettingsScope(CallScopeSource):
+    """Реализация CallScopeSource процесса агента: область вызовов из ключа
+    `mcp.scope` настроек — одна на все сессии процесса. Приложение, которое
+    запускает агента под один разговор, называет в ней id этого разговора.
+    Создаёт сборка сессий, читают клиенты серверов MCP."""
+
+    def __init__(self, scope: str | None) -> None:
+        self._scope = scope
+
+    def scope_id(self) -> str | None:
+        return self._scope
 
 
 class ManyServers(ToolServer):
@@ -550,6 +563,7 @@ class AgentAssembly(SessionAssembly):
         self._cwd = cwd
         self._version = version
         self._builder = McpServerBuilder(settings.mcp, settings.env)
+        self._scope = SettingsScope(settings.mcp.scope)
         self._stateless = isinstance(settings.history, MemoryHistorySettings)
         self._loader = HistoryLoader(
             store, AgentTemplate(), IdMint(), SystemClock(), version
@@ -743,7 +757,7 @@ class AgentAssembly(SessionAssembly):
                 config,
                 NamedBlocks(),
                 ProgressSignals(sink),
-                CallContexts(),
+                self._scope,
                 None,
                 DirectCalls(),
             )
