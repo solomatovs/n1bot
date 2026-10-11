@@ -33,7 +33,12 @@ from typing import BinaryIO, ClassVar
 
 from boba.agent.agent import Agent, AgentParts
 from boba.agent.attachments import EnvironmentSnapshot
-from boba.agent.history import HistoryError, HistoryStore, SessionId
+from boba.agent.history import (
+    HistoryError,
+    HistoryStore,
+    MemoryHistoryStore,
+    SessionId,
+)
 from boba.agent.permissions import PermissionModeError
 from boba.agent.profile import ModelProfile, ProfileError
 from boba.agent.records import PermissionMode, RecordCodec
@@ -52,6 +57,7 @@ from boba.cli.settings import (
     EffectiveSettings,
     EnvName,
     McpServerBuilder,
+    MemoryHistorySettings,
     PostgresBuilder,
     PostgresHistorySettings,
     ProfileBuilder,
@@ -472,6 +478,9 @@ class AgentProcess:
         if isinstance(history, PostgresHistorySettings):
             postgres = PostgresBuilder(self._env).config(history)
             return PostgresHistoryStore(postgres, history.db_schema)
+
+        if isinstance(history, MemoryHistorySettings):
+            return MemoryHistoryStore()
 
         return JsonlHistoryStore(Path(history.root))
 

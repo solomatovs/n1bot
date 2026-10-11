@@ -1,8 +1,10 @@
 """Порт истории агента: захват сессии, атомарная дозапись пачки, чтение по порядку.
 
 Реализации — пакеты boba-history-jsonl и boba-history-postgres; ядро знает
-только этот протокол. Строка, которую хранилище не может разобрать как JSON,
-отдаётся читателю как BrokenLine: решение о ней принимает загрузчик.
+только этот протокол. Здесь же живёт MemoryHistoryStore — реализация без
+хранилища: записи хода остаются только в Session процесса. Строка, которую
+хранилище не может разобрать как JSON, отдаётся читателю как BrokenLine:
+решение о ней принимает загрузчик.
 
 Ошибки:
 HistoryError — сессия занята другим процессом, хранилище недоступно или
@@ -12,6 +14,7 @@ HistoryError — сессия занята другим процессом, хр
 from __future__ import annotations
 
 import re
+import uuid
 from abc import abstractmethod
 from collections.abc import AsyncIterator, Mapping, Sequence
 from dataclasses import dataclass
@@ -26,6 +29,7 @@ __all__ = [
     "HistoryError",
     "HistoryLine",
     "HistoryStore",
+    "MemoryHistoryStore",
     "SessionId",
     "SessionLease",
     "StoredLine",
@@ -105,3 +109,27 @@ class HistoryStore(Protocol):
     @abstractmethod
     async def release(self, lease: SessionLease) -> None:
         """Отпускает сессию."""
+
+
+class MemoryHistoryStore(HistoryStore):
+    """Реализация HistoryStore без хранилища.
+
+    Нужна процессу, у которого история живёт только в Session в памяти:
+    хранилище снаружи ему не положено, но порт обязателен. Захват сессии
+    замка не ставит, дозапись ничего не пишет, чтение всегда пусто — после
+    перезапуска процесса истории нет, возобновить сессию нельзя.
+    """
+
+    async def acquire(self, session: SessionId) -> SessionLease:
+        return SessionLease(session=session, key=uuid.uuid4().hex)
+
+    async def append(self, lease: SessionLease, records: Sequence[Record]) -> None:
+        return
+
+    async def read(self, session: SessionId) -> AsyncIterator[HistoryLine]:
+        nothing: Sequence[HistoryLine] = ()
+        for line in nothing:
+            yield line
+
+    async def release(self, lease: SessionLease) -> None:
+        return
