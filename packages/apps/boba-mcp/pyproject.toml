@@ -13,6 +13,7 @@ dependencies = [
     "mcp>=2.3,<3",
     "joserfc>=1.0,<2",
     "boba-runtime==0.0.26.dev4",
+    "boba-mcp-adapter==0.0.26.dev4",
     "boba-auth==0.0.26.dev4",
     "boba-access==0.0.26.dev4",
     "boba-cancellation==0.0.26.dev4",

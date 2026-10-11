@@ -436,11 +436,19 @@ class StandDatabase:
         return run_blocking(self._add_connection(name, kind))
 
     async def _add_connection(self, name: str, kind: str) -> UUID:
-        connections = bind(self._built, path="connections", model=ConnectionsConfig)
         connection: ConnectionBase = self._postgres
         if kind == ChSourceKind.CLICKHOUSE:
             connection = bind(self._built, path="clickhouse", model=ClickHouseConfig)
 
+        return await self._add_stored(name, connection)
+
+    def add_stored_connection(self, name: str, connection: ConnectionBase) -> UUID:
+        """Готовый профиль под именем name, выданный всем ролям стенда: тест
+        с соединениями пользователя заводит подключение к своей базе."""
+        return run_blocking(self._add_stored(name, connection))
+
+    async def _add_stored(self, name: str, connection: ConnectionBase) -> UUID:
+        connections = bind(self._built, path="connections", model=ConnectionsConfig)
         async with self._pool() as pool:
             store = ConnectionStore(connections, ConnectionTypes.discover(), pool)
             connection_id = await store.add(name, connection)
