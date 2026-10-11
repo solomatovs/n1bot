@@ -93,11 +93,11 @@ async def test_chainlit_components_share_one_pool(
         if not isinstance(layer, PostgresDataLayer):
             raise AssertionError(f"data layer provider gives a layer: {layer!r}")
 
+        # история диалога живёт у агента: своего пула checkpointer у чата больше нет
         schemas = sorted(pool.search_path for pool in AsyncPostgresPool.opened())
-        if schemas != ["", stand_config.checkpointer.db_schema]:
+        if schemas != [""]:
             raise AssertionError(
-                "chainlit opens one shared pool plus the checkpointer one, "
-                f"got pools on schemas {schemas}"
+                f"chainlit opens one shared pool, got pools on schemas {schemas}"
             )
     finally:
         Container.set_root(None)
