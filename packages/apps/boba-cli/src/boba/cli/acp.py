@@ -30,9 +30,12 @@
 контекста; после первого хода и при `load` — `session_info_update` с
 заголовком из первого вопроса. Уведомлений `compaction_update`,
 `compaction_summary_chunk` и `notice` в SDK 0.12.1 нет: ошибки вне хода
-остаются в логе. Ветвление и аутентификация (`session/fork`, `authenticate`)
-отвечают «метод не найден» — точки расширения. Всё своё в протоколе лежит
-в `_meta` под ключами с префиксом `boba/`.
+остаются в логе. `session/fork` (черновик RFD) копирует записи сессии из
+хранилища под новый идентификатор и открывает новую сессию как обычную, с
+теми же `modes` и `configOptions` в ответе; точка среза — расширение
+`_meta["boba/upToUuid"]`. `authenticate` объявлен и отвечает «метод не
+найден» — точка расширения. Всё своё в протоколе лежит в `_meta` под
+ключами с префиксом `boba/`.
 
 Ошибки:
 RequestError — ошибка JSON-RPC клиенту: параметры запроса (-32602),
@@ -163,6 +166,7 @@ from boba.agent.events import (
 )
 from boba.agent.history import (
     HistoryError,
+    RecordNotFoundError,
     SessionHeldError,
     SessionId,
     SessionNotFoundError,
@@ -197,6 +201,7 @@ __all__ = [
     "AcpServer",
     "ClientLink",
     "ConfigOptionId",
+    "ForkMeta",
     "McpServerSpecs",
     "MetaKey",
     "ObservedSession",
@@ -276,6 +281,7 @@ class MetaKey(StrEnum):
     расширяемости ACP."""
 
     PROGRESS = "boba/progress"
+    UP_TO_UUID = "boba/upToUuid"
 
 
 class SessionUpdateName(StrEnum):
@@ -348,6 +354,20 @@ class ErrorDataKey(StrEnum):
     MESSAGE = "message"
     DETAILS = "details"
     SESSION_ID = "sessionId"
+    UP_TO_UUID = "upToUuid"
+
+
+class ForkMeta(BaseModel):
+    """Расширение `boba/upToUuid` в `_meta` запроса `session/fork`: uuid
+    записи цепочки, на которой ветка кончается — в ветку идут записи до
+    неё, сама она и всё после неё — нет. Без ключа ветка — копия всей
+    сессии. Чужие ключи `_meta` не разбираются."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    up_to_uuid: str | None = Field(
+        default=None, alias=MetaKey.UP_TO_UUID.value, min_length=1
+    )
 
 
 class ProgressMeta(BaseModel):
@@ -1435,6 +1455,19 @@ class SessionAssembly(Protocol):
         HistoryError — хранилище отказало.
         """
 
+    @abstractmethod
+    async def copy(
+        self, source: SessionId, target: SessionId, up_to: str | None
+    ) -> int:
+        """Записи `source` до записи `up_to` (не включая; None — все) под
+        идентификатором `target`; возвращает число скопированных записей.
+
+        Ошибки:
+        SessionNotFoundError — у источника нет записей.
+        RecordNotFoundError — записи `up_to` в источнике нет.
+        HistoryError — хранилище отказало.
+        """
+
 
 class AcpSession:
     """Одна сессия ACP: открытый агент, его обслуживание очереди, приёмник и
@@ -1564,6 +1597,14 @@ class AcpSession:
             ) from exc
 
         return await self._waiters.register(item.id)
+
+    async def flush(self) -> None:
+        """Сбрасывает несброшенные записи сессии в хранилище.
+
+        Ошибки:
+        HistoryError — хранилище отказало.
+        """
+        await self._opened.agent.writer.flush(strict=True)
 
     def cancel(self, reason: CoreStopReason) -> None:
         """Прерывает ход и очищает очередь; ожидающие получают `cancelled`."""
@@ -2281,7 +2322,152 @@ class AcpAgent(AcpAgentProtocol):
         mcp_servers: list[McpServerBlock] | None = None,
         **kwargs: Any,
     ) -> ForkSessionResponse:
-        raise RequestError.method_not_found(AcpMethod.SESSION_FORK.value)
+        """Ветвит сессию хранилища: её записи копируются под новый
+        идентификатор (его чеканит агент), и новая сессия открывается как
+        обычная — с замком, серверами MCP запроса и починкой оборванного
+        хода загрузчиком. Исходная сессия не меняется, её замок не нужен;
+        сессию, которую ведёт этот процесс, перед копией сбрасывает в
+        хранилище. Точка среза — расширение `_meta["boba/upToUuid"]`
+        (ForkMeta): ветка от uuid вопроса — беседа до этого вопроса, и
+        правка вопроса — новый `prompt` в новой сессии; срез на первой
+        записи даёт пустую сессию. Ответ — `sessionId` новой сессии с её
+        режимами и настройками, как у `session/new`.
+
+        Ошибки:
+        RequestError — сессия неизвестна (-32002); `cwd`, серверы или
+            `_meta` не годятся, записи `upToUuid` в сессии нет (-32602);
+            хранилище или сборка отказали (-32603).
+        """
+        directory = self._directory(cwd)
+        specs = self._specs.specs(self._blocks(mcp_servers))
+        meta = self._fork_meta(kwargs)
+        source = self._stored_id(session_id)
+
+        await self._flushed(session_id)
+        target = SessionId(value=self._ids.uuid())
+        copied = await self._copied(session_id, source, target, meta.up_to_uuid)
+        session = await self._opened_fork(target, directory, specs, copied > 0)
+        self._sessions[target.value] = session
+        logger.info(
+            "session %s: forked from %s, %d record(s) copied, cut at %s",
+            target.value,
+            session_id,
+            copied,
+            meta.up_to_uuid,
+        )
+        settings = self._settings(session)
+
+        return ForkSessionResponse(
+            session_id=target.value,
+            modes=self._options.modes(settings),
+            config_options=self._options.config_options(settings),
+        )
+
+    @staticmethod
+    def _fork_meta(meta: Mapping[str, Any]) -> ForkMeta:
+        """Ошибки:
+        RequestError — `boba/upToUuid` не непустая строка (-32602).
+        """
+        try:
+            return ForkMeta.model_validate(meta)
+        except ValidationError as exc:
+            details = f"_meta of session/fork is not valid: {exc}"
+            raise RequestError.invalid_params(
+                {ErrorDataKey.DETAILS.value: details}
+            ) from exc
+
+    async def _flushed(self, session_id: str) -> None:
+        """Сессия, которую ведёт этот процесс, сбрасывается в хранилище,
+        чтобы копия видела все её записи.
+
+        Ошибки:
+        RequestError — хранилище отказало (-32603).
+        """
+        held = self._sessions.get(session_id)
+        if not isinstance(held, AcpSession):
+            return
+
+        try:
+            await held.flush()
+        except HistoryError as exc:
+            raise RequestError.internal_error(
+                {ErrorDataKey.DETAILS.value: str(exc)}
+            ) from exc
+
+    async def _copied(
+        self, session_id: str, source: SessionId, target: SessionId, up_to: str | None
+    ) -> int:
+        """Ошибки:
+        RequestError — сессия неизвестна (-32002), записи `up_to` нет
+            (-32602), хранилище отказало (-32603).
+        """
+        try:
+            return await self._assembly.copy(source, target, up_to)
+        except SessionNotFoundError as exc:
+            raise self._unknown(session_id) from exc
+        except RecordNotFoundError as exc:
+            raise RequestError.invalid_params(
+                {
+                    ErrorDataKey.SESSION_ID.value: session_id,
+                    ErrorDataKey.UP_TO_UUID.value: up_to,
+                    ErrorDataKey.DETAILS.value: str(exc),
+                }
+            ) from exc
+        except HistoryError as exc:
+            raise RequestError.internal_error(
+                {ErrorDataKey.DETAILS.value: str(exc)}
+            ) from exc
+
+    async def _opened_fork(
+        self,
+        target: SessionId,
+        directory: Path,
+        specs: Mapping[str, McpServerJson],
+        resume: bool,
+    ) -> AcpSession:
+        """Новая сессия над скопированными записями; если открыть её не
+        удалось, копия удаляется из хранилища, чтобы ветка не осталась
+        сиротой.
+
+        Ошибки:
+        RequestError — серверы не годятся (-32602), сессию открыть не
+            удалось (-32603).
+        """
+        waiters = PromptWaiters(self._mapping)
+        relay = SessionRelay(target.value, self._linked(), self._mapping, waiters)
+        try:
+            opened = await self._assembly.open(
+                target, directory, specs, relay, resume=resume
+            )
+        except SessionRefusedError as exc:
+            await self._dropped_fork(target, exc)
+            raise RequestError.invalid_params(
+                {ErrorDataKey.DETAILS.value: str(exc)}
+            ) from exc
+        except (SessionOpenError, HistoryError) as exc:
+            await self._dropped_fork(target, exc)
+            raise RequestError.internal_error(
+                {ErrorDataKey.DETAILS.value: str(exc)}
+            ) from exc
+
+        relay.attach(opened.agent)
+
+        return AcpSession(target.value, opened, relay, waiters)
+
+    async def _dropped_fork(self, target: SessionId, cause: Exception) -> None:
+        """Ошибки:
+        RequestError — копию не удалось ни открыть, ни удалить (-32603).
+        """
+        try:
+            await self._assembly.delete(target)
+        except HistoryError as exc:
+            details = (
+                f"the forked session {target.value} could not be opened ({cause}) "
+                f"and its copy could not be removed: {exc}"
+            )
+            raise RequestError.internal_error(
+                {ErrorDataKey.DETAILS.value: details}
+            ) from exc
 
     async def close_session(
         self, session_id: str, **kwargs: Any

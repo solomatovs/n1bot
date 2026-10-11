@@ -1,6 +1,7 @@
 """Хранилище истории в Postgres на настоящей базе стенда: контракт порта
 (повтор пачки без дублей, занятая сессия, откат пачки целиком, порядок
-чтения, список сессий страницами, удаление под замком), агент на стенде
+чтения, список сессий страницами, удаление под замком, копия до среза под
+новой сессией), агент на стенде
 модели с этим хранилищем и возобновление, обрыв на каждой записи даёт тот
 же восстановленный список, что JSONL; возобновление журнала в десятки
 мегабайт — под меткой integration."""
@@ -21,8 +22,10 @@ from boba.agent.control import AllowAnswer
 from boba.agent.history import (
     HistoryError,
     HistoryStore,
+    RecordNotFoundError,
     SessionHeldError,
     SessionId,
+    SessionNotFoundError,
     StoredLine,
 )
 from boba.agent.ids import IdMint, SystemClock
@@ -319,6 +322,71 @@ class TestContract:
 
         assert await read_all(store, SESSION) == []
         assert (await store.list(None, 10)).sessions == []
+
+    async def test_copy_branches_before_the_cut_and_the_branch_loads(
+        self, store: PostgresHistoryStore, stores: Stores
+    ) -> None:
+        journal = Journal(SESSION)
+        first = journal.user("one")
+        reply = journal.assistant("two")
+        second = journal.user("three")
+        journal.assistant("four")
+        records = list(journal.records())
+        lease = await store.acquire(SESSION)
+        try:
+            await store.append(lease, records)
+        finally:
+            await store.release(lease)
+        source_before = await read_all(store, SESSION)
+        branch = SessionId(value="history-pg-branch")
+
+        copied = await store.copy(SESSION, branch, second.uuid)
+
+        assert copied == 2
+        documents = await read_all(store, branch)
+        assert [d["seq"] for d in documents] == [1, 2]
+        assert [d["uuid"] for d in documents] == [first.uuid, reply.uuid]
+        assert documents == [
+            {**d, "sessionId": branch.value} for d in source_before[:2]
+        ]
+        assert await read_all(store, SESSION) == source_before
+
+        session, report = await loaded(stores.new(), branch)
+        assert report.repaired == []
+        assert report.stored_seq == 2
+        expected = [
+            r.model_copy(update={"session_id": branch.value}) for r in records[:2]
+        ]
+        assert list(session.records()) == expected
+
+        held = await stores.new().acquire(SESSION)
+        try:
+            whole = await store.copy(SESSION, SessionId(value="history-pg-whole"), None)
+        finally:
+            await stores.new().release(held)
+
+        assert whole == 4
+        assert len(await read_all(store, SessionId(value="history-pg-whole"))) == 4
+        assert (
+            await store.copy(SESSION, SessionId(value="history-pg-empty"), first.uuid)
+            == 0
+        )
+        assert await read_all(store, SessionId(value="history-pg-empty")) == []
+
+        with pytest.raises(RecordNotFoundError, match="no record with that uuid"):
+            await store.copy(SESSION, SessionId(value="history-pg-x"), "nope")
+
+        with pytest.raises(SessionNotFoundError, match="nothing to branch"):
+            await store.copy(
+                SessionId(value="never"), SessionId(value="history-pg-y"), None
+            )
+
+        with pytest.raises(HistoryError, match="already has records"):
+            await store.copy(SESSION, branch, None)
+
+        assert len(await read_all(store, branch)) == 2
+        listed = [s.session.value for s in (await store.list(None, 10)).sessions]
+        assert listed == ["history-pg-1", "history-pg-branch", "history-pg-whole"]
 
     async def test_failed_batch_leaves_no_record(
         self, store: PostgresHistoryStore

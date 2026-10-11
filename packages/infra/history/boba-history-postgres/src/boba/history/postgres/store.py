@@ -8,13 +8,20 @@ release: второй процесс на ту же сессию получае�
 отказ посреди пачки не оставляет ни одной записи. Список сессий — группировка
 записей по идентификатору с временем последней записи; удаление сессии —
 одна транзакция под транзакционным advisory lock того же ключа, так что
-сессию работающего процесса удалить нельзя. Схема и таблица создаются на
-месте под замком DDL, раскладка таблицы сверяется с ожидаемой.
+сессию работающего процесса удалить нельзя. Копия (ветвление) — одна
+транзакция `insert … select` строк источника до записи среза под новым
+идентификатором с `sessionId` цели в документе; замок источника не
+берётся. Схема и таблица создаются на месте под замком DDL, раскладка
+таблицы сверяется с ожидаемой.
 
 Ошибки:
-HistoryError — база недоступна или отказала, пачка не по порядку seq;
-    причина нижнего слоя — в тексте и в `from exc`.
+HistoryError — база недоступна или отказала, пачка не по порядку seq, у
+    цели копии уже есть записи; причина нижнего слоя — в тексте и в
+    `from exc`.
 SessionHeldError — сессию держит другой процесс (подвид HistoryError).
+SessionNotFoundError — у источника копии нет записей (подвид HistoryError).
+RecordNotFoundError — записи среза копии в источнике нет (подвид
+    HistoryError).
 """
 
 from __future__ import annotations
@@ -34,15 +41,23 @@ from boba.agent.history import (
     HistoryLine,
     HistoryStore,
     LineKey,
+    RecordNotFoundError,
     SessionHeldError,
     SessionId,
     SessionLease,
+    SessionNotFoundError,
     StoredLine,
     StoredPage,
     StoredSession,
 )
 from boba.agent.records import Record, RecordCodec
-from boba.db.postgres import AsyncPostgresPool, PgQuery, PostgresPool, PostgresTable
+from boba.db.postgres import (
+    AsyncPostgresPool,
+    Cursor,
+    PgQuery,
+    PostgresPool,
+    PostgresTable,
+)
 from boba.db.postgres.connection import PostgresConfig
 
 __all__ = ["HistoryColumn", "HistoryTable", "PostgresHistoryStore"]
@@ -76,6 +91,13 @@ class LockColumn(StrEnum):
     """Колонка пробы замка при удалении."""
 
     ACQUIRED = "acquired"
+
+
+class CopyColumn(StrEnum):
+    """Колонки выборок копии сессии."""
+
+    LAST_SEQ = "last_seq"
+    CUT_SEQ = "cut_seq"
 
 
 @dataclass
@@ -280,6 +302,116 @@ class PostgresHistoryStore(PostgresTable, HistoryStore):
                 raise SessionHeldError(msg)
 
             await cur.execute(query.text, query.params)
+
+    async def copy(
+        self, source: SessionId, target: SessionId, up_to: str | None
+    ) -> int:
+        await self._prepare()
+        action = f"copying session '{source.value}' to '{target.value}'"
+        async with self._transaction(action) as cur:
+            source_last = await self._max_seq(cur, source)
+            if source_last == 0:
+                msg = (
+                    f"Session '{source.value}' cannot be copied: it has no records "
+                    "in Postgres, there is nothing to branch."
+                )
+                raise SessionNotFoundError(msg)
+
+            end: int | None = None
+            if up_to is not None:
+                end = await self._seq_of(cur, source, up_to)
+
+            target_last = await self._max_seq(cur, target)
+            if target_last != 0:
+                msg = (
+                    f"Session '{target.value}' cannot receive the copy of "
+                    f"'{source.value}': it already has records up to seq "
+                    f"{target_last} in Postgres."
+                )
+                raise HistoryError(msg)
+
+            query = (
+                self._query()
+                .add(
+                    """
+                    insert into {schema}.history_records (session_id, seq, type, record)
+                    select
+                        %(target)s,
+                        seq,
+                        type,
+                        jsonb_set(record, %(path)s, to_jsonb(%(target)s::text))
+                    from
+                        {schema}.history_records
+                    where
+                        session_id = %(source)s
+                    """,
+                    target=target.value,
+                    path=[LineKey.SESSION_ID.value],
+                    source=source.value,
+                )
+                .when(end is not None, "and seq < %(end)s", end=end)
+                .add("order by seq")
+                .build()
+            )
+            await cur.execute(query.text, query.params)
+
+            return cur.rowcount
+
+    async def _max_seq(self, cur: Cursor, session: SessionId) -> int:
+        query = (
+            self._query()
+            .add(
+                """
+                select
+                    coalesce(max(seq), 0) as last_seq
+                from
+                    {schema}.history_records
+                where
+                    session_id = %(session_id)s
+                """,
+                session_id=session.value,
+            )
+            .build()
+        )
+        await cur.execute(query.text, query.params)
+        row = await cur.fetchone()
+        if row is None:
+            return 0
+
+        return int(row[CopyColumn.LAST_SEQ.value])
+
+    async def _seq_of(self, cur: Cursor, session: SessionId, uuid: str) -> int:
+        """Ошибки:
+        RecordNotFoundError — записи с таким uuid в сессии нет.
+        """
+        query = (
+            self._query()
+            .add(
+                """
+                select
+                    seq as cut_seq
+                from
+                    {schema}.history_records
+                where
+                    session_id = %(session_id)s
+                    and record ->> %(key)s = %(uuid)s
+                """,
+                session_id=session.value,
+                key=LineKey.UUID.value,
+                uuid=uuid,
+            )
+            .build()
+        )
+        await cur.execute(query.text, query.params)
+        row = await cur.fetchone()
+        if row is None:
+            msg = (
+                f"Session '{session.value}' cannot be branched at record '{uuid}': "
+                "it has no record with that uuid in Postgres."
+            )
+            raise RecordNotFoundError(msg)
+
+        return int(row[CopyColumn.CUT_SEQ.value])
 
     def _failure(self, action: str, exc: Exception) -> Exception:
         return HistoryError(self._detail(action, exc))
