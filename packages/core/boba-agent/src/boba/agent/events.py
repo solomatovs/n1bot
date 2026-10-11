@@ -1,9 +1,10 @@
 """Порт наружу: события хода, которые агент отдаёт запускающей программе.
 
-Виды событий повторяют протокол `stream-json` из плана, раздел 5.18: первое
-событие сеанса, кусок ответа, записанная запись разговора, итог хода,
-ошибка вне хода, вопрос наружу и его снятие. Как события уходят на провод —
-дело реализации порта (вход процесса); ядро только зовёт `emit`.
+Виды событий: первое событие сеанса, кусок ответа с идентификатором
+сообщения, записанная запись разговора, начало исполнения инструмента,
+отчёт сервера о ходе вызова, итог хода с элементами очереди, которые он
+обслужил, ошибка вне хода, вопрос наружу и его снятие. Как события уходят
+на провод — дело реализации порта (вход процесса); ядро только зовёт `emit`.
 """
 
 from __future__ import annotations
@@ -28,6 +29,8 @@ __all__ = [
     "RecordEvent",
     "ResultEvent",
     "StreamEvent",
+    "ToolProgressEvent",
+    "ToolStartedEvent",
     "TurnOutcome",
 ]
 
@@ -43,7 +46,13 @@ class TurnOutcome(StrEnum):
     RAPID_REFILL_BREAKER = "rapid_refill_breaker"
     COMPACT_FAILURE_BREAKER = "compact_failure_breaker"
     MAX_TURNS = "max_turns"
+    OUTPUT_LIMIT = "output_limit"
     SHUTDOWN = "shutdown"
+
+    @property
+    def is_failure(self) -> bool:
+        """Ход кончился отказом модели: ответа нет, текст причины — в итоге."""
+        return self in (TurnOutcome.API_ERROR, TurnOutcome.OUTPUT_LIMIT)
 
 
 class EventModel(BaseModel):
@@ -62,10 +71,32 @@ class InitEvent(EventModel):
 
 
 class StreamEvent(EventModel):
-    """Кусок ответа модели по мере прихода."""
+    """Кусок ответа модели по мере прихода; `message_id` — идентификатор
+    сообщения ассистента, под которым ответ будет записан: он выдан до
+    первого куска, чтобы приёмник группировал куски по сообщению."""
 
     content: str = ""
     reasoning: str = ""
+    message_id: str = ""
+
+
+class ToolStartedEvent(EventModel):
+    """Вызов инструмента ушёл на исполнение: разрешение получено, сервер
+    или собственный инструмент начал работу."""
+
+    tool_use_id: str
+
+
+class ToolProgressEvent(EventModel):
+    """Отчёт сервера о ходе вызова: сделано `progress` из `total` (None —
+    итог неизвестен), `message` — что происходит, `elapsed_sec` — время с
+    начала вызова."""
+
+    tool_use_id: str
+    message: str = ""
+    progress: float
+    total: float | None = None
+    elapsed_sec: float
 
 
 class RecordEvent(EventModel):
@@ -75,13 +106,16 @@ class RecordEvent(EventModel):
 
 
 class ResultEvent(EventModel):
-    """Конец хода."""
+    """Конец хода: исход, учёт и идентификаторы элементов очереди, которые
+    ход обслужил; `error` — текст отказа модели при исходе-ошибке."""
 
     outcome: TurnOutcome
     session_id: str
     usage: Usage
     num_turns: int
     duration_ms: int
+    prompt_ids: Sequence[str] = ()
+    error: str = ""
 
 
 class ErrorEvent(EventModel):
@@ -110,6 +144,8 @@ AgentEvent: TypeAlias = (
     InitEvent
     | StreamEvent
     | RecordEvent
+    | ToolStartedEvent
+    | ToolProgressEvent
     | ResultEvent
     | ErrorEvent
     | ControlRequestEvent

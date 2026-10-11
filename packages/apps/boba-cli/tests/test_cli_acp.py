@@ -1,0 +1,1187 @@
+"""Процесс `boba acp` на стенде клиентом SDK agent-client-protocol: модель —
+FakeLlmApp, инструменты — standard_server.py по streamable HTTP. Сценарии:
+рукопожатие и возможности; ход с инструментом и порядок «все уведомления
+до ответа»; разрешение с запоминанием правила и отказ; отмена хода
+`session/cancel` и `$/cancel_request`, в том числе с висящим вопросом;
+второй `prompt` в очереди; отказы на чужие блоки, неизвестную сессию,
+относительный `cwd` и сервер sse; отчёт о ходе вызова в `_meta`; секреты
+только в файле 0600 — не в argv, окружении, журнале и кадрах; stdout
+содержит только кадры JSON-RPC, логи — в stderr; SIGTERM и конец ввода
+завершают процесс с кодом 0 и сброшенным журналом."""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import os
+import signal
+import socket
+import stat
+import sys
+from collections.abc import AsyncIterator, Sequence
+from pathlib import Path
+from typing import Any, ClassVar
+
+import pytest
+import uvicorn
+from acp import Client, connect_to_agent, resource_link_block, text_block
+from acp.client.router import build_client_router
+from acp.connection import Connection, StreamDirection
+from acp.connection import StreamEvent as FrameEvent
+from acp.exceptions import RequestError
+from acp.schema import (
+    AllowedOutcome,
+    ClientCapabilities,
+    CreateElicitationResponse,
+    CreateTerminalResponse,
+    DeniedOutcome,
+    ElicitationMode,
+    EnvVariable,
+    HttpHeader,
+    HttpMcpServer,
+    ImageContentBlock,
+    Implementation,
+    KillTerminalResponse,
+    PermissionOption,
+    ReadTextFileResponse,
+    ReleaseTerminalResponse,
+    RequestPermissionResponse,
+    SseMcpServer,
+    TerminalOutputResponse,
+    TextContentBlock,
+    ToolCallProgress,
+    ToolCallStart,
+    ToolCallUpdate,
+    WaitForTerminalExitResponse,
+    WriteTextFileResponse,
+)
+from acp.schema import ContentChunk as AcpContentChunk
+
+from boba.cli.acp import MetaKey, PermissionChoice, StopReasonName, ToolKindName
+from boba.stand.ui.fake_llm import FailureName, FakeLlmApp, ScenarioName
+from boba.stand.ui.stand import free_port
+
+pytestmark = pytest.mark.anyio
+
+MCP_SERVER = (
+    Path(__file__).resolve().parents[3]
+    / "services"
+    / "boba-mcp-client"
+    / "tests"
+    / "standard_server.py"
+)
+READ_TIMEOUT_SEC = 30.0
+API_KEY = "sk-acp-test-secret-key"
+OWNER_ONLY = 0o600
+INVALID_PARAMS = -32602
+RESOURCE_NOT_FOUND = -32002
+INTERNAL_ERROR = -32603
+METHOD_NOT_FOUND = -32601
+Document = dict[str, Any]
+
+
+def call(*specs: dict[str, object]) -> str:
+    if len(specs) == 1:
+        return f"{ScenarioName.CALL.value} {json.dumps(specs[0])}"
+
+    return f"{ScenarioName.CALL.value} {json.dumps(list(specs))}"
+
+
+class FakeModel:
+    """FakeLlmApp под uvicorn в цикле теста."""
+
+    def __init__(self) -> None:
+        self.app = FakeLlmApp(token_delay_sec=0.0)
+        self.port = free_port()
+        self._server = uvicorn.Server(
+            uvicorn.Config(
+                self.app.asgi(),
+                host="127.0.0.1",
+                port=self.port,
+                log_level="warning",
+                timeout_graceful_shutdown=1,
+            )
+        )
+        self._task: asyncio.Task[None] | None = None
+
+    async def start(self) -> None:
+        self._task = asyncio.create_task(self._server.serve())
+        while not self._server.started:
+            await asyncio.sleep(0.02)
+
+    async def stop(self) -> None:
+        self._server.should_exit = True
+        if self._task is not None:
+            await self._task
+
+    def base_url(self) -> str:
+        return f"http://127.0.0.1:{self.port}/v1"
+
+
+class McpStand:
+    """standard_server.py по streamable HTTP в субпроцессе."""
+
+    PATH: ClassVar[str] = "/mcp"
+
+    def __init__(self) -> None:
+        self.port = free_port()
+        self._process: asyncio.subprocess.Process | None = None
+
+    async def start(self) -> None:
+        self._process = await asyncio.create_subprocess_exec(
+            sys.executable,
+            str(MCP_SERVER),
+            "streamable-http",
+            str(self.port),
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        for _ in range(200):
+            if self._accepts():
+                return
+
+            await asyncio.sleep(0.05)
+
+        msg = f"the MCP stand did not open port {self.port}"
+        raise AssertionError(msg)
+
+    def _accepts(self) -> bool:
+        with socket.socket() as sock:
+            sock.settimeout(0.1)
+            try:
+                sock.connect(("127.0.0.1", self.port))
+            except OSError:
+                return False
+
+            return True
+
+    async def stop(self) -> None:
+        if self._process is None or self._process.returncode is not None:
+            return
+
+        self._process.terminate()
+        await asyncio.wait_for(self._process.wait(), READ_TIMEOUT_SEC)
+
+    def url(self) -> str:
+        return f"http://127.0.0.1:{self.port}{self.PATH}"
+
+    def server(self, name: str = "stand") -> HttpMcpServer:
+        return HttpMcpServer(
+            type="http",
+            name=name,
+            url=self.url(),
+            headers=[HttpHeader(name="Authorization", value="Bearer stand-token")],
+        )
+
+
+class FeaturelessClient(Client):
+    """Реализация Client SDK без файловой системы, терминала и форм: эти
+    запросы клиент не обслуживает и отвечает «метод не найден». Базовый
+    класс клиентов стенда."""
+
+    async def write_text_file(
+        self, session_id: str, path: str, content: str, **kwargs: Any
+    ) -> WriteTextFileResponse | None:
+        raise RequestError.method_not_found("fs/write_text_file")
+
+    async def read_text_file(
+        self,
+        session_id: str,
+        path: str,
+        line: int | None = None,
+        limit: int | None = None,
+        **kwargs: Any,
+    ) -> ReadTextFileResponse:
+        raise RequestError.method_not_found("fs/read_text_file")
+
+    async def create_terminal(  # noqa: PLR0913 — сигнатура протокола SDK
+        self,
+        session_id: str,
+        command: str,
+        args: list[str] | None = None,
+        env: list[EnvVariable] | None = None,
+        cwd: str | None = None,
+        output_byte_limit: int | None = None,
+        **kwargs: Any,
+    ) -> CreateTerminalResponse:
+        raise RequestError.method_not_found("terminal/create")
+
+    async def terminal_output(
+        self, session_id: str, terminal_id: str, **kwargs: Any
+    ) -> TerminalOutputResponse:
+        raise RequestError.method_not_found("terminal/output")
+
+    async def release_terminal(
+        self, session_id: str, terminal_id: str, **kwargs: Any
+    ) -> ReleaseTerminalResponse | None:
+        raise RequestError.method_not_found("terminal/release")
+
+    async def wait_for_terminal_exit(
+        self, session_id: str, terminal_id: str, **kwargs: Any
+    ) -> WaitForTerminalExitResponse:
+        raise RequestError.method_not_found("terminal/wait_for_exit")
+
+    async def kill_terminal(
+        self, session_id: str, terminal_id: str, **kwargs: Any
+    ) -> KillTerminalResponse | None:
+        raise RequestError.method_not_found("terminal/kill")
+
+    async def create_elicitation(
+        self, message: str, mode: ElicitationMode, **kwargs: Any
+    ) -> CreateElicitationResponse:
+        raise RequestError.method_not_found("elicitation/create")
+
+    async def complete_elicitation(self, elicitation_id: str, **kwargs: Any) -> None:
+        return
+
+    async def ext_method(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
+        raise RequestError.method_not_found(f"_{method}")
+
+    async def ext_notification(self, method: str, params: dict[str, Any]) -> None:
+        return
+
+    def on_connect(self, conn: Any) -> None:
+        return
+
+
+class RecordingClient(FeaturelessClient):
+    """Копит уведомления, отвечает на запросы разрешения выбранным
+    вариантом либо отменой; `hold` задерживает ответ."""
+
+    def __init__(self) -> None:
+        self.updates: list[tuple[str, Any]] = []
+        self.permissions: list[ToolCallUpdate] = []
+        self.options: list[Sequence[PermissionOption]] = []
+        self.choice: PermissionChoice | None = PermissionChoice.ALLOW_ONCE
+        self.hold: asyncio.Event | None = None
+        self._changed = asyncio.Event()
+
+    async def session_update(self, session_id: str, update: Any, **kwargs: Any) -> None:
+        self.updates.append((session_id, update))
+        self._changed.set()
+
+    async def request_permission(
+        self,
+        session_id: str,
+        tool_call: ToolCallUpdate,
+        options: list[PermissionOption],
+        **kwargs: Any,
+    ) -> RequestPermissionResponse:
+        self.permissions.append(tool_call)
+        self.options.append(options)
+        self._changed.set()
+        if self.hold is not None:
+            await self.hold.wait()
+
+        if self.choice is None:
+            return RequestPermissionResponse(outcome=DeniedOutcome(outcome="cancelled"))
+
+        return RequestPermissionResponse(
+            outcome=AllowedOutcome(outcome="selected", option_id=self.choice.value)
+        )
+
+    async def next_permission(self, seen: int) -> ToolCallUpdate:
+        while len(self.permissions) <= seen:
+            self._changed.clear()
+            await asyncio.wait_for(self._changed.wait(), READ_TIMEOUT_SEC)
+
+        return self.permissions[seen]
+
+    def starts(self) -> list[ToolCallStart]:
+        found: list[ToolCallStart] = []
+        for _, update in self.updates:
+            if isinstance(update, ToolCallStart):
+                found.append(update)
+
+        return found
+
+    def progress_of(self, tool_call_id: str) -> list[ToolCallProgress]:
+        found: list[ToolCallProgress] = []
+        for _, update in self.updates:
+            if not isinstance(update, ToolCallProgress):
+                continue
+
+            if update.tool_call_id == tool_call_id:
+                found.append(update)
+
+        return found
+
+    def chunks(self) -> list[AcpContentChunk]:
+        found: list[AcpContentChunk] = []
+        for _, update in self.updates:
+            if isinstance(update, AcpContentChunk):
+                found.append(update)
+
+        return found
+
+
+def result_text(update: ToolCallProgress) -> str:
+    """Текст первого блока содержимого обновления вызова."""
+    assert update.content is not None
+    content = update.content[0]
+    assert content.type == "content"
+    block = content.content
+    assert isinstance(block, TextContentBlock)
+
+    return block.text
+
+
+class Frames:
+    """Наблюдатель кадров соединения: порядок входящих и исходящих."""
+
+    def __init__(self) -> None:
+        self.events: list[FrameEvent] = []
+
+    def __call__(self, event: FrameEvent) -> None:
+        self.events.append(event)
+
+    def request_id(self, method: str, index: int = 0) -> int:
+        found: list[int] = []
+        for event in self.events:
+            if event.direction is not StreamDirection.OUTGOING:
+                continue
+
+            message = event.message
+            if message.get("method") == method and "id" in message:
+                found.append(int(message["id"]))
+
+        return found[index]
+
+    def position_of_response(self, request_id: int) -> int:
+        for position, event in enumerate(self.events):
+            if event.direction is not StreamDirection.INCOMING:
+                continue
+
+            message = event.message
+            if "method" in message:
+                continue
+
+            if message.get("id") == request_id:
+                return position
+
+        msg = f"no response to request {request_id} seen"
+        raise AssertionError(msg)
+
+    def incoming_notifications(self, before: int) -> list[dict[str, Any]]:
+        found: list[dict[str, Any]] = []
+        for event in self.events[:before]:
+            if event.direction is not StreamDirection.INCOMING:
+                continue
+
+            if "method" in event.message and "id" not in event.message:
+                found.append(event.message)
+
+        return found
+
+    def incoming_after(self, position: int) -> list[dict[str, Any]]:
+        found: list[dict[str, Any]] = []
+        for event in self.events[position + 1 :]:
+            if event.direction is StreamDirection.INCOMING:
+                found.append(event.message)
+
+        return found
+
+
+class AcpProcess:
+    """Запущенный `boba acp`: соединение клиента SDK поверх его stdio, сырые
+    строки stdout и stderr в списках. Команда по умолчанию — модуль из venv;
+    бинарник передаётся явно."""
+
+    MODULE: ClassVar[str] = "boba.cli.app"
+    LINE_LIMIT: ClassVar[int] = 16 * 1024 * 1024
+
+    def __init__(
+        self, root: Path, model: FakeModel, command: Sequence[str] | None = None
+    ) -> None:
+        if command is None:
+            command = (sys.executable, "-m", self.MODULE)
+
+        self._command = list(command)
+        self._root = root
+        self._model = model
+        self._process: asyncio.subprocess.Process | None = None
+        self.raw_stdout: list[str] = []
+        self.stderr: list[str] = []
+        self.frames = Frames()
+        self._tasks: list[asyncio.Task[None]] = []
+        self._reader = asyncio.StreamReader(limit=self.LINE_LIMIT)
+
+    @property
+    def process(self) -> asyncio.subprocess.Process:
+        assert self._process is not None
+        return self._process
+
+    def settings_path(self) -> Path:
+        return self._root / "settings.json"
+
+    def journal(self, session_id: str) -> list[Document]:
+        path = self._root / "history" / f"{session_id}.jsonl"
+        found: list[Document] = []
+        for raw in path.read_text(encoding="utf-8").splitlines():
+            found.append(json.loads(raw))
+
+        return found
+
+    def settings_document(
+        self, mode: str = "default", allow_bypass: bool = False
+    ) -> Document:
+        return {
+            "model": "fake",
+            "models": {
+                "fake": {
+                    "provider": {
+                        "kind": "openai",
+                        "baseUrl": self._model.base_url(),
+                        "apiKey": API_KEY,
+                    },
+                    "model": "fake-model",
+                    "contextWindow": 32000,
+                    "maxOutputTokens": 4096,
+                }
+            },
+            "history": {"kind": "jsonl", "root": str(self._root / "history")},
+            "permissions": {"defaultMode": mode, "allowBypass": allow_bypass},
+        }
+
+    def write_settings(self, document: Document) -> Path:
+        path = self.settings_path()
+        path.write_text(json.dumps(document), encoding="utf-8")
+        path.chmod(OWNER_ONLY)
+
+        return path
+
+    async def spawn(self, *extra: str) -> None:
+        """Запускает процесс по уже записанному файлу настроек."""
+        environment = {
+            "HOME": str(self._root / "home"),
+            "PATH": os.environ["PATH"],
+        }
+        self._process = await asyncio.create_subprocess_exec(
+            *self._command,
+            "acp",
+            "--settings",
+            str(self.settings_path()),
+            "--setting-sources",
+            "user",
+            *extra,
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            limit=self.LINE_LIMIT,
+            env=environment,
+            cwd=str(self._root),
+        )
+        self._tasks.append(asyncio.create_task(self._tee_stdout()))
+        self._tasks.append(asyncio.create_task(self._drain_stderr()))
+
+    async def start(
+        self, client: Client, document: Document | None = None, *extra: str
+    ) -> Any:
+        """Файл настроек, процесс и соединение клиента SDK."""
+        if document is None:
+            document = self.settings_document()
+
+        self.write_settings(document)
+        await self.spawn(*extra)
+
+        return self.connect(client)
+
+    def connect(self, client: Client) -> Any:
+        stdin = self.process.stdin
+        assert stdin is not None
+
+        return connect_to_agent(
+            client,
+            stdin,
+            self._reader,
+            use_unstable_protocol=True,
+            observers=[self.frames],
+        )
+
+    def raw_connection(self, client: Client) -> Connection:
+        """Соединение SDK без обёртки: кадры собираются вручную."""
+        stdin = self.process.stdin
+        assert stdin is not None
+
+        return Connection(
+            build_client_router(client, use_unstable_protocol=True),
+            stdin,
+            self._reader,
+            observers=[self.frames],
+        )
+
+    async def close_stdin(self) -> None:
+        stdin = self.process.stdin
+        assert stdin is not None
+        stdin.close()
+        await stdin.wait_closed()
+
+    async def wait(self) -> int:
+        code = await asyncio.wait_for(self.process.wait(), READ_TIMEOUT_SEC)
+        for task in self._tasks:
+            await task
+
+        return code
+
+    async def kill(self) -> None:
+        if self._process is None or self._process.returncode is not None:
+            return
+
+        self._process.kill()
+        await asyncio.wait_for(self._process.wait(), READ_TIMEOUT_SEC)
+
+    def assert_stdout_is_frames_only(self) -> None:
+        assert self.raw_stdout, self.stderr[-10:]
+        for line in self.raw_stdout:
+            frame = json.loads(line)
+            assert frame["jsonrpc"] == "2.0", line
+
+    async def _tee_stdout(self) -> None:
+        stdout = self.process.stdout
+        assert stdout is not None
+        while True:
+            raw = await stdout.readline()
+            if not raw:
+                self._reader.feed_eof()
+                return
+
+            self.raw_stdout.append(raw.decode("utf-8").rstrip("\n"))
+            self._reader.feed_data(raw)
+
+    async def _drain_stderr(self) -> None:
+        stderr = self.process.stderr
+        assert stderr is not None
+        while True:
+            raw = await stderr.readline()
+            if not raw:
+                return
+
+            self.stderr.append(raw.decode("utf-8", errors="replace").rstrip("\n"))
+
+
+@pytest.fixture
+async def model() -> AsyncIterator[FakeModel]:
+    fake = FakeModel()
+    await fake.start()
+    try:
+        yield fake
+    finally:
+        await fake.stop()
+
+
+@pytest.fixture
+async def mcp() -> AsyncIterator[McpStand]:
+    stand = McpStand()
+    await stand.start()
+    try:
+        yield stand
+    finally:
+        await stand.stop()
+
+
+@pytest.fixture
+async def boba(model: FakeModel, tmp_path: Path) -> AsyncIterator[AcpProcess]:
+    process = AcpProcess(tmp_path, model)
+    try:
+        yield process
+    finally:
+        await process.kill()
+
+
+async def handshake(conn: Any) -> Any:
+    return await conn.initialize(
+        protocol_version=1,
+        client_capabilities=ClientCapabilities(),
+        client_info=Implementation(name="boba-tests", version="0"),
+    )
+
+
+class Steps:
+    """Шаги сценария, общие для команды и бинарника."""
+
+    @staticmethod
+    async def tool_turn_streams_updates(
+        conn: Any, client: RecordingClient, session_id: str, frames: Frames
+    ) -> None:
+        response = await conn.prompt(
+            session_id=session_id,
+            prompt=[text_block(call({"name": "add", "arguments": {"a": 1, "b": 2}}))],
+        )
+        assert response.stop_reason == StopReasonName.END_TURN.value
+
+        starts = client.starts()
+        assert len(starts) == 1
+        start = starts[0]
+        assert start.title.startswith("add ")
+        assert start.kind == ToolKindName.READ.value
+        assert start.status == "pending"
+        assert isinstance(start.raw_input, dict)
+        assert start.raw_input["a"] == 1
+        assert start.raw_input["b"] == 2
+        assert client.permissions == []
+
+        progress = client.progress_of(start.tool_call_id)
+        assert [p.status for p in progress] == ["in_progress", "completed"]
+        done = progress[-1]
+        assert result_text(done) == "3"
+        assert isinstance(done.raw_output, dict)
+
+        chunks = client.chunks()
+        assert chunks
+        assert all(chunk.message_id for chunk in chunks)
+
+        request_id = frames.request_id("session/prompt", -1)
+        answered_at = frames.position_of_response(request_id)
+        before = frames.incoming_notifications(answered_at)
+        assert [m["method"] for m in before].count("session/update") >= 4
+        assert all(
+            m["method"] != "session/update" for m in frames.incoming_after(answered_at)
+        )
+
+    @staticmethod
+    async def permission_is_asked_and_remembered(
+        conn: Any, client: RecordingClient, session_id: str
+    ) -> None:
+        client.choice = PermissionChoice.ALLOW_ALWAYS
+        response = await conn.prompt(
+            session_id=session_id,
+            prompt=[text_block(call({"name": "shout", "arguments": {"text": "hi"}}))],
+        )
+        assert response.stop_reason == StopReasonName.END_TURN.value
+        assert len(client.permissions) == 1
+        asked = client.permissions[0]
+        assert asked.title is not None
+        assert asked.title.startswith("shout ")
+        assert asked.kind == ToolKindName.EDIT.value
+        assert asked.status == "pending"
+        assert [o.kind for o in client.options[0]] == [
+            "allow_once",
+            "allow_always",
+            "reject_once",
+        ]
+        done = client.progress_of(asked.tool_call_id)[-1]
+        assert done.status == "completed"
+        assert done.content is not None
+        assert done.content[0].content.text == "HI"
+
+        response = await conn.prompt(
+            session_id=session_id,
+            prompt=[
+                text_block(call({"name": "shout", "arguments": {"text": "again"}}))
+            ],
+        )
+        assert response.stop_reason == StopReasonName.END_TURN.value
+        assert len(client.permissions) == 1
+
+
+class TestHandshake:
+    async def test_initialize_reports_the_agent_and_its_capabilities(
+        self, boba: AcpProcess
+    ) -> None:
+        client = RecordingClient()
+        conn = await boba.start(client)
+        try:
+            response = await handshake(conn)
+
+            assert response.protocol_version == 1
+            assert response.agent_info is not None
+            assert response.agent_info.name == "boba"
+            assert response.agent_info.version
+            capabilities = response.agent_capabilities
+            assert capabilities is not None
+            assert capabilities.load_session is True
+            assert capabilities.mcp_capabilities is not None
+            assert capabilities.mcp_capabilities.http is True
+            assert capabilities.mcp_capabilities.sse is False
+            assert capabilities.prompt_capabilities is not None
+            assert capabilities.prompt_capabilities.image is False
+            assert capabilities.session_capabilities is not None
+            assert capabilities.session_capabilities.fork is not None
+            assert response.auth_methods == []
+
+            with pytest.raises(RequestError) as refused:
+                await conn.load_session(cwd=str(boba.process.pid), session_id="x")
+
+            assert refused.value.code == METHOD_NOT_FOUND
+        finally:
+            await conn.close()
+            await boba.close_stdin()
+
+        assert await boba.wait() == 0
+        boba.assert_stdout_is_frames_only()
+
+
+class TestConversation:
+    async def test_tool_turn_permission_and_stdout_discipline(
+        self, boba: AcpProcess, mcp: McpStand, tmp_path: Path
+    ) -> None:
+        client = RecordingClient()
+        conn = await boba.start(client, None, "--record-requests")
+        try:
+            await handshake(conn)
+            session = await conn.new_session(
+                cwd=str(tmp_path), mcp_servers=[mcp.server()]
+            )
+            session_id = session.session_id
+            assert session_id
+
+            await Steps.tool_turn_streams_updates(conn, client, session_id, boba.frames)
+            await Steps.permission_is_asked_and_remembered(conn, client, session_id)
+        finally:
+            await conn.close()
+            await boba.close_stdin()
+
+        assert await boba.wait() == 0
+        boba.assert_stdout_is_frames_only()
+        assert any("INFO" in line for line in boba.stderr)
+
+        records = boba.journal(session_id)
+        types = [r["type"] for r in records]
+        assert "api-request" in types
+        assert "permission-rule" in types
+        journal = json.dumps(records)
+        assert API_KEY not in journal
+        assert API_KEY not in "\n".join(boba.raw_stdout)
+        assert API_KEY not in "\n".join(boba.stderr)
+
+    async def test_secrets_stay_in_the_settings_file(
+        self, boba: AcpProcess, tmp_path: Path
+    ) -> None:
+        client = RecordingClient()
+        conn = await boba.start(client)
+        try:
+            await handshake(conn)
+            pid = boba.process.pid
+            cmdline = Path(f"/proc/{pid}/cmdline").read_bytes()
+            environ = Path(f"/proc/{pid}/environ").read_bytes()
+
+            assert API_KEY.encode() not in cmdline
+            assert API_KEY.encode() not in environ
+            assert str(boba.settings_path()).encode() in cmdline
+            assert stat.S_IMODE(boba.settings_path().stat().st_mode) == OWNER_ONLY
+        finally:
+            await conn.close()
+            await boba.close_stdin()
+
+        assert await boba.wait() == 0
+
+    async def test_rejected_permission_fails_the_call(
+        self, boba: AcpProcess, mcp: McpStand, tmp_path: Path
+    ) -> None:
+        client = RecordingClient()
+        client.choice = PermissionChoice.REJECT_ONCE
+        conn = await boba.start(client)
+        try:
+            await handshake(conn)
+            session = await conn.new_session(
+                cwd=str(tmp_path), mcp_servers=[mcp.server()]
+            )
+            response = await conn.prompt(
+                session_id=session.session_id,
+                prompt=[
+                    text_block(call({"name": "shout", "arguments": {"text": "no"}}))
+                ],
+            )
+
+            assert response.stop_reason == StopReasonName.END_TURN.value
+            assert len(client.permissions) == 1
+            progress = client.progress_of(client.permissions[0].tool_call_id)
+            assert [p.status for p in progress] == ["failed"]
+            assert "reject" in result_text(progress[0]).lower()
+        finally:
+            await conn.close()
+            await boba.close_stdin()
+
+        assert await boba.wait() == 0
+
+    async def test_progress_of_a_call_travels_in_meta(
+        self, boba: AcpProcess, mcp: McpStand, tmp_path: Path
+    ) -> None:
+        client = RecordingClient()
+        conn = await boba.start(client)
+        try:
+            await handshake(conn)
+            session = await conn.new_session(
+                cwd=str(tmp_path), mcp_servers=[mcp.server()]
+            )
+            response = await conn.prompt(
+                session_id=session.session_id,
+                prompt=[
+                    text_block(call({"name": "progress", "arguments": {"steps": 3}}))
+                ],
+            )
+
+            assert response.stop_reason == StopReasonName.END_TURN.value
+            start = client.starts()[0]
+            reports: list[dict[str, Any]] = []
+            for update in client.progress_of(start.tool_call_id):
+                if update.field_meta is None:
+                    continue
+
+                reports.append(update.field_meta[MetaKey.PROGRESS.value])
+
+            assert [r["progress"] for r in reports] == [1, 2, 3]
+            assert reports[-1]["total"] == 3
+            assert reports[-1]["message"] == "step 3 of 3"
+            assert reports[-1]["elapsed_sec"] >= 0
+        finally:
+            await conn.close()
+            await boba.close_stdin()
+
+        assert await boba.wait() == 0
+
+    async def test_resource_link_reaches_the_model_as_a_markdown_link(
+        self, boba: AcpProcess, model: FakeModel, tmp_path: Path
+    ) -> None:
+        client = RecordingClient()
+        conn = await boba.start(client)
+        try:
+            await handshake(conn)
+            session = await conn.new_session(cwd=str(tmp_path), mcp_servers=[])
+            response = await conn.prompt(
+                session_id=session.session_id,
+                prompt=[
+                    text_block(f"{ScenarioName.ANSWER.value} look at "),
+                    resource_link_block("main.py", "file:///work/main.py"),
+                ],
+            )
+
+            assert response.stop_reason == StopReasonName.END_TURN.value
+            sent = model.app.requests[0]["messages"][-1]["content"]
+            assert "[@main.py](file:///work/main.py)" in sent
+        finally:
+            await conn.close()
+            await boba.close_stdin()
+
+        assert await boba.wait() == 0
+
+
+class TestQueueAndCancel:
+    async def test_second_prompt_waits_for_its_own_turn(
+        self, boba: AcpProcess, mcp: McpStand, tmp_path: Path
+    ) -> None:
+        client = RecordingClient()
+        document = boba.settings_document(mode="bypassPermissions", allow_bypass=True)
+        conn = await boba.start(client, document)
+        try:
+            await handshake(conn)
+            session = await conn.new_session(
+                cwd=str(tmp_path), mcp_servers=[mcp.server()]
+            )
+            session_id = session.session_id
+            first, second = await asyncio.gather(
+                conn.prompt(
+                    session_id=session_id,
+                    prompt=[
+                        text_block(
+                            call({"name": "sleep_for", "arguments": {"seconds": 1.0}})
+                        )
+                    ],
+                ),
+                conn.prompt(
+                    session_id=session_id,
+                    prompt=[text_block(ScenarioName.ANSWER.value)],
+                ),
+            )
+
+            assert first.stop_reason == StopReasonName.END_TURN.value
+            assert second.stop_reason == StopReasonName.END_TURN.value
+            first_id = boba.frames.request_id("session/prompt", 0)
+            second_id = boba.frames.request_id("session/prompt", 1)
+            assert boba.frames.position_of_response(
+                first_id
+            ) < boba.frames.position_of_response(second_id)
+        finally:
+            await conn.close()
+            await boba.close_stdin()
+
+        assert await boba.wait() == 0
+        records = boba.journal(session_id)
+        spoken = [
+            r["message"]["content"]
+            for r in records
+            if r["type"] == "user" and isinstance(r["message"]["content"], str)
+        ]
+        assert len(spoken) == 2
+        assert ScenarioName.ANSWER.value in spoken[1]
+
+    async def test_cancel_stops_the_running_tool(
+        self, boba: AcpProcess, mcp: McpStand, tmp_path: Path
+    ) -> None:
+        client = RecordingClient()
+        document = boba.settings_document(mode="bypassPermissions", allow_bypass=True)
+        conn = await boba.start(client, document)
+        try:
+            await handshake(conn)
+            session = await conn.new_session(
+                cwd=str(tmp_path), mcp_servers=[mcp.server()]
+            )
+            prompting = asyncio.create_task(
+                conn.prompt(
+                    session_id=session.session_id,
+                    prompt=[
+                        text_block(
+                            call({"name": "sleep_for", "arguments": {"seconds": 30}})
+                        )
+                    ],
+                )
+            )
+            while not client.starts():
+                await asyncio.sleep(0.05)
+
+            await conn.cancel(session_id=session.session_id)
+            response = await asyncio.wait_for(prompting, READ_TIMEOUT_SEC)
+
+            assert response.stop_reason == StopReasonName.CANCELLED.value
+            start = client.starts()[0]
+            assert client.progress_of(start.tool_call_id)[-1].status == "failed"
+            request_id = boba.frames.request_id("session/prompt", -1)
+            answered_at = boba.frames.position_of_response(request_id)
+            assert all(
+                m["method"] != "session/update"
+                for m in boba.frames.incoming_after(answered_at)
+            )
+        finally:
+            await conn.close()
+            await boba.close_stdin()
+
+        assert await boba.wait() == 0
+
+    async def test_cancel_withdraws_a_pending_permission_question(
+        self, boba: AcpProcess, mcp: McpStand, tmp_path: Path
+    ) -> None:
+        client = RecordingClient()
+        client.hold = asyncio.Event()
+        conn = await boba.start(client)
+        try:
+            await handshake(conn)
+            session = await conn.new_session(
+                cwd=str(tmp_path), mcp_servers=[mcp.server()]
+            )
+            prompting = asyncio.create_task(
+                conn.prompt(
+                    session_id=session.session_id,
+                    prompt=[
+                        text_block(call({"name": "shout", "arguments": {"text": "x"}}))
+                    ],
+                )
+            )
+            asked = await client.next_permission(0)
+            await conn.cancel(session_id=session.session_id)
+            response = await asyncio.wait_for(prompting, READ_TIMEOUT_SEC)
+
+            assert response.stop_reason == StopReasonName.CANCELLED.value
+            assert client.progress_of(asked.tool_call_id)[-1].status == "failed"
+
+            client.hold.set()
+            await asyncio.sleep(0.2)
+            again = await conn.prompt(
+                session_id=session.session_id,
+                prompt=[text_block(ScenarioName.ANSWER.value)],
+            )
+            assert again.stop_reason == StopReasonName.END_TURN.value
+        finally:
+            await conn.close()
+            await boba.close_stdin()
+
+        assert await boba.wait() == 0
+
+    async def test_cancel_request_notification_cancels_the_prompt(
+        self, boba: AcpProcess, mcp: McpStand, tmp_path: Path
+    ) -> None:
+        client = RecordingClient()
+        document = boba.settings_document(mode="bypassPermissions", allow_bypass=True)
+        boba.write_settings(document)
+        await boba.spawn()
+        conn = boba.raw_connection(client)
+        try:
+            await conn.send_request(
+                "initialize", {"protocolVersion": 1, "clientCapabilities": {}}
+            )
+            session = await conn.send_request(
+                "session/new",
+                {
+                    "cwd": str(tmp_path),
+                    "mcpServers": [mcp.server().model_dump(mode="json", by_alias=True)],
+                },
+            )
+            session_id = session["sessionId"]
+            prompting = asyncio.create_task(
+                conn.send_request(
+                    "session/prompt",
+                    {
+                        "sessionId": session_id,
+                        "prompt": [
+                            {
+                                "type": "text",
+                                "text": call(
+                                    {"name": "sleep_for", "arguments": {"seconds": 30}}
+                                ),
+                            }
+                        ],
+                    },
+                )
+            )
+            while not client.starts():
+                await asyncio.sleep(0.05)
+
+            request_id = boba.frames.request_id("session/prompt", -1)
+            await conn.send_notification("$/cancel_request", {"requestId": request_id})
+            response = await asyncio.wait_for(prompting, READ_TIMEOUT_SEC)
+
+            assert response["stopReason"] == StopReasonName.CANCELLED.value
+        finally:
+            await conn.close()
+            await boba.close_stdin()
+
+        assert await boba.wait() == 0
+
+
+class TestRefusals:
+    async def test_foreign_blocks_sessions_and_servers_are_refused(
+        self, boba: AcpProcess, tmp_path: Path
+    ) -> None:
+        client = RecordingClient()
+        conn = await boba.start(client)
+        try:
+            await handshake(conn)
+            with pytest.raises(RequestError) as relative:
+                await conn.new_session(cwd="relative/dir", mcp_servers=[])
+
+            assert relative.value.code == INVALID_PARAMS
+
+            with pytest.raises(RequestError) as sse:
+                await conn.new_session(
+                    cwd=str(tmp_path),
+                    mcp_servers=[
+                        SseMcpServer(
+                            type="sse",
+                            name="old",
+                            url="http://127.0.0.1:9/sse",
+                            headers=[],
+                        )
+                    ],
+                )
+
+            assert sse.value.code == INVALID_PARAMS
+
+            session = await conn.new_session(cwd=str(tmp_path), mcp_servers=[])
+            with pytest.raises(RequestError) as image:
+                await conn.prompt(
+                    session_id=session.session_id,
+                    prompt=[
+                        ImageContentBlock(
+                            type="image", data="AAAA", mime_type="image/png"
+                        )
+                    ],
+                )
+
+            assert image.value.code == INVALID_PARAMS
+
+            with pytest.raises(RequestError) as unknown:
+                await conn.prompt(
+                    session_id="no-such-session", prompt=[text_block("hello")]
+                )
+
+            assert unknown.value.code == RESOURCE_NOT_FOUND
+        finally:
+            await conn.close()
+            await boba.close_stdin()
+
+        assert await boba.wait() == 0
+
+    async def test_unreachable_mcp_server_fails_the_session(
+        self, boba: AcpProcess, tmp_path: Path
+    ) -> None:
+        client = RecordingClient()
+        conn = await boba.start(client)
+        try:
+            await handshake(conn)
+            dead = HttpMcpServer(
+                type="http",
+                name="dead",
+                url=f"http://127.0.0.1:{free_port()}/mcp",
+                headers=[],
+            )
+            with pytest.raises(RequestError) as failed:
+                await conn.new_session(cwd=str(tmp_path), mcp_servers=[dead])
+
+            assert failed.value.code == INTERNAL_ERROR
+        finally:
+            await conn.close()
+            await boba.close_stdin()
+
+        assert await boba.wait() == 0
+
+    async def test_model_failure_is_a_json_rpc_error(
+        self, boba: AcpProcess, model: FakeModel, tmp_path: Path
+    ) -> None:
+        client = RecordingClient()
+        document = boba.settings_document()
+        document["limits"] = {"apiRetries": 0}
+        conn = await boba.start(client, document)
+        try:
+            await handshake(conn)
+            session = await conn.new_session(cwd=str(tmp_path), mcp_servers=[])
+            broken = f"{ScenarioName.ANSWER.value} {FailureName.STATUS_500.value}"
+            with pytest.raises(RequestError) as failed:
+                await conn.prompt(
+                    session_id=session.session_id, prompt=[text_block(broken)]
+                )
+
+            assert failed.value.code == INTERNAL_ERROR
+            assert isinstance(failed.value.data, dict)
+            assert failed.value.data["kind"] == "api_error"
+        finally:
+            await conn.close()
+            await boba.close_stdin()
+
+        assert await boba.wait() == 0
+
+
+class TestLifecycle:
+    async def test_sigterm_exits_zero_with_a_flushed_journal(
+        self, boba: AcpProcess, tmp_path: Path
+    ) -> None:
+        client = RecordingClient()
+        conn = await boba.start(client)
+        await handshake(conn)
+        session = await conn.new_session(cwd=str(tmp_path), mcp_servers=[])
+        response = await conn.prompt(
+            session_id=session.session_id,
+            prompt=[text_block(ScenarioName.ANSWER.value)],
+        )
+        assert response.stop_reason == StopReasonName.END_TURN.value
+
+        boba.process.send_signal(signal.SIGTERM)
+        assert await boba.wait() == 0
+        await conn.close()
+
+        records = boba.journal(session.session_id)
+        assert [r["type"] for r in records][-1] == "assistant"
+
+    async def test_end_of_input_closes_the_sessions(
+        self, boba: AcpProcess, tmp_path: Path
+    ) -> None:
+        client = RecordingClient()
+        conn = await boba.start(client)
+        await handshake(conn)
+        session = await conn.new_session(cwd=str(tmp_path), mcp_servers=[])
+        await conn.close()
+        await boba.close_stdin()
+
+        assert await boba.wait() == 0
+        assert (tmp_path / "history" / f"{session.session_id}.jsonl").exists()
+        boba.assert_stdout_is_frames_only()
+
+    async def test_bad_settings_fail_before_the_protocol(
+        self, boba: AcpProcess, tmp_path: Path
+    ) -> None:
+        document = boba.settings_document()
+        boba.write_settings(document)
+        boba.settings_path().chmod(0o644)
+        await boba.spawn()
+
+        assert await boba.wait() == 1
+        assert boba.raw_stdout == []
+        assert any("chmod 600" in line for line in boba.stderr)

@@ -65,24 +65,25 @@ class HttpHookTransport(HookTransport):
 
 
 class HookWiring:
-    """Собирает исполнитель хука `PreToolUse` из действующих настроек:
-    группы матчеров и обработчиков — в модель ядра, транспорт и
-    происхождение инструментов — свои. Создаёт вход процесса."""
+    """Собирает исполнитель хука `PreToolUse` на сессию из действующих
+    настроек: группы матчеров и обработчиков — в модель ядра, транспорт
+    общий на процесс, происхождение инструментов и рабочий каталог — у
+    сессии. Создаёт вход процесса, зовёт сборка сессии."""
 
-    def __init__(self, transport: HookTransport, cwd: Path) -> None:
+    def __init__(self, transport: HookTransport) -> None:
         self._transport = transport
-        self._cwd = cwd
 
     def hooks(
-        self, settings: EffectiveSettings, origins: ToolOrigins
+        self, settings: EffectiveSettings, origins: ToolOrigins, cwd: Path
     ) -> PreToolUseHooks | None:
-        """Исполнитель хука; None — в настройках нет групп `PreToolUse`."""
+        """Исполнитель хука для сессии с рабочим каталогом cwd; None — в
+        настройках нет групп `PreToolUse`."""
         groups = settings.hooks.get(HookEvent.PRE_TOOL_USE)
         if not groups:
             return None
 
         return PreToolUseHooks(
-            list(self._groups(groups)), self._transport, origins, str(self._cwd)
+            list(self._groups(groups)), self._transport, origins, str(cwd)
         )
 
     def _groups(self, groups: Sequence[HookMatcherGroup]) -> Iterator[HookGroup]:

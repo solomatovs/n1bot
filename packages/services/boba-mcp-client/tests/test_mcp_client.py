@@ -1541,6 +1541,7 @@ class TestFailureStand:
         "std_die",
         "std_large",
         "std_picture",
+        "std_progress",
         "std_shout",
         "std_sleep_for",
         "std_toggle_extra",

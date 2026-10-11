@@ -36,7 +36,11 @@ from boba.agent.control import (
     PermissionAnswer,
     QuestionWithdrawnError,
 )
-from boba.agent.events import ControlCancelEvent, ControlRequestEvent
+from boba.agent.events import (
+    ControlCancelEvent,
+    ControlRequestEvent,
+    ToolStartedEvent,
+)
 from boba.agent.hooks import (
     HookAllowed,
     HookAsked,
@@ -603,6 +607,7 @@ class ToolRunner:
 
         own = self._tools.own(call.name)
         if own is not None:
+            await self._started(call)
             return await own.run(call, settled.arguments, questioner)
 
         return settled
@@ -710,6 +715,7 @@ class ToolRunner:
             nodes.append(
                 DagNode(key=call.block.id, tool=call.name, args=dict(arguments))
             )
+            await self._started(call)
 
         running.at_server = True
         try:
@@ -736,6 +742,10 @@ class ToolRunner:
             if isinstance(outcome, BaseException):
                 error = f"The call of {call.name} crashed in the tool server: {outcome}"
                 running.results[index] = self._texts.failed(call, error)
+
+    async def _started(self, call: PlannedCall) -> None:
+        """Вызов прошёл разрешения и уходит на исполнение."""
+        await self._keeper.emit(ToolStartedEvent(tool_use_id=call.block.id))
 
     def _canceller(
         self, futures: Sequence[asyncio.Future[NodeOutcome]]

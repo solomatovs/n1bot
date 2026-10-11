@@ -107,9 +107,12 @@ class TestLayers:
             {"agentName": "Local", "limits": {"maxTurns": 7}},
         )
         arguments = Arguments(
-            settings=(json.dumps({"agentName": "Flag"}),),
+            settings=(
+                json.dumps(
+                    {"agentName": "Flag", "permissions": {"defaultMode": "plan"}}
+                ),
+            ),
             max_turns=9,
-            permission_mode=PermissionMode.PLAN,
             policy=str(tmp_path / "policy.json"),
         )
         write(tmp_path / "policy.json", {"permissions": {"allowBypass": False}})
@@ -220,9 +223,7 @@ class TestProfile:
 
 
 class TestMcpJson:
-    def test_project_file_and_argument_become_server_configs(
-        self, tmp_path: Path
-    ) -> None:
+    def test_project_file_becomes_server_configs(self, tmp_path: Path) -> None:
         write(
             tmp_path / "project" / ".mcp.json",
             {
@@ -232,24 +233,16 @@ class TestMcpJson:
                         "args": ["server.py"],
                         "env": {"A": "1"},
                     },
+                    "web": {
+                        "type": "http",
+                        "url": "https://mcp.example.org:8443/mcp",
+                        "headers": {"Authorization": "Bearer t0k"},
+                    },
                     "off": {"command": "python"},
                 }
             },
         )
         arguments = Arguments(
-            mcp_config=(
-                json.dumps(
-                    {
-                        "mcpServers": {
-                            "web": {
-                                "type": "http",
-                                "url": "https://mcp.example.org:8443/mcp",
-                                "headers": {"Authorization": "Bearer t0k"},
-                            }
-                        }
-                    }
-                ),
-            ),
             settings=(
                 json.dumps({"mcp": {"disabledServers": ["off"]}, "env": {"B": "2"}}),
             ),
@@ -268,15 +261,18 @@ class TestMcpJson:
         assert isinstance(web.auth, BearerAuth)
         assert web.auth.token.get_secret_value() == "t0k"
 
-    def test_strict_flag_ignores_the_project_file(self, tmp_path: Path) -> None:
+    def test_only_enabled_servers_are_kept(self, tmp_path: Path) -> None:
         write(
             tmp_path / "project" / ".mcp.json",
-            {"mcpServers": {"std": {"command": "x"}}},
+            {"mcpServers": {"std": {"command": "x"}, "other": {"command": "y"}}},
+        )
+        arguments = Arguments(
+            settings=(json.dumps({"mcp": {"enabledServers": ["other"]}}),)
         )
 
-        effective = settings(tmp_path, Arguments(strict_mcp_config=True)).effective()
+        effective = settings(tmp_path, arguments).effective()
 
-        assert effective.mcp_servers == {}
+        assert sorted(effective.mcp_servers) == ["other"]
 
     def test_sse_server_is_refused(self, tmp_path: Path) -> None:
         write(

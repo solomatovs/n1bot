@@ -1,19 +1,18 @@
-"""Вход процесса агента: команда `boba`.
+"""Вход процесса агента: команда `boba acp --settings <файл>`.
 
-Разбирает аргументы, собирает действующие настройки (Settings), строит
-ядро с реализациями портов — модель через реестр провайдеров, журнал JSONL,
-серверы MCP клиентом, скиллы из каталога — и ведёт обмен строками JSON
-через стандартные потоки (план, разделы 5.18, 5.21). Дескриптор 1 с самого
-начала отдан протоколу: всё, что пишет в него кто-то ещё (лог, чужие
-библиотеки), уходит в стандартный поток ошибок. Задачи цикла событий:
-обслуживание очереди (Agent.serve), читатель ввода, писатель вывода.
-Конец ввода доводит ход и очередь до конца; `SIGTERM`, `SIGINT` и
-`end_session` прерывают ход причиной SHUTDOWN; журнал сбрасывается, выход 0.
+Разбирает аргументы, собирает действующие настройки (Settings), на старте
+проверяет профиль модели, хранилище истории и скиллы и отдаёт ACP-серверу
+(boba.cli.acp) сборку сессий: на каждую `session/new` — агент ядра с
+серверами MCP из запроса и из `.mcp.json` проекта и с хуком `PreToolUse`
+из секции `hooks` настроек (boba.cli.hooks). Стандартный вывод с
+самого начала отдан протоколу: дескриптор 1 перенаправлен в стандартный
+поток ошибок, и всё, что пишет туда кто-то ещё (лог, чужие библиотеки),
+уходит в stderr. Конец ввода закрывает сессии и сбрасывает журналы;
+`SIGTERM` и `SIGINT` прерывают ходы причиной SHUTDOWN, выход 0.
 
 Ошибки:
-SystemExit — настройки или журнал не годятся для запуска, сервер MCP не
-    поднялся, провайдер модели не собрался (нет рантайма onnx); текст называет
-    причину, код выхода 1.
+SystemExit — настройки, профиль модели, хранилище или скиллы не годятся
+    для запуска; текст называет причину, код выхода 1.
 """
 
 from __future__ import annotations
@@ -25,8 +24,10 @@ import os
 import platform
 import signal
 import sys
-import uuid
+import time
+from asyncio.streams import FlowControlMixin
 from collections.abc import Mapping, Sequence
+from enum import StrEnum
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from typing import BinaryIO, ClassVar
@@ -35,6 +36,7 @@ import httpx
 
 from boba.agent.agent import Agent, AgentParts
 from boba.agent.attachments import EnvironmentSnapshot
+from boba.agent.events import EventSink, ToolProgressEvent
 from boba.agent.history import (
     HistoryError,
     HistoryStore,
@@ -44,23 +46,24 @@ from boba.agent.history import (
 from boba.agent.hooks import McpToolOrigin, ToolOrigins
 from boba.agent.permissions import PermissionModeError
 from boba.agent.profile import ModelProfile, ProfileError
-from boba.agent.records import PermissionMode, RecordCodec
 from boba.agent.skills import Skill, SkillsDir, SkillsError
 from boba.agent.tools import ToolsError
 from boba.cancellation import ProcessStop, StopAction, StopReason
-from boba.cli.hooks import HookWiring, HttpHookTransport
-from boba.cli.protocol import (
-    EndOfInput,
-    EventLines,
-    InputReader,
-    LineDispatcher,
-    OutputWriter,
+from boba.cli.acp import (
+    AcpAgent,
+    AcpServer,
+    OpenedSession,
+    SessionAssembly,
+    SessionOpenError,
+    SessionRefusedError,
 )
+from boba.cli.hooks import HookWiring, HttpHookTransport
 from boba.cli.settings import (
     Arguments,
     EffectiveSettings,
     EnvName,
     McpServerBuilder,
+    McpServerJson,
     MemoryHistorySettings,
     PostgresBuilder,
     PostgresHistorySettings,
@@ -78,19 +81,34 @@ from boba.llm.http.openai import MANIFEST as OPENAI
 from boba.llm.onnx.chat import MANIFEST as ONNX
 from boba.llm.providers import LlmProviders, LlmProvidersError, LlmProviderTypes
 from boba.mcp_client.client import (
-    DroppedSignals,
+    CallSignals,
     McpClientError,
     McpToolServer,
     NamedBlocks,
+    ProgressListener,
 )
 from boba.toolkit.dag import DagNode, NodeOutcome, ToolCard, ToolServer
 from boba.toolrun.hosted import DirectCalls
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["AgentProcess", "ArgumentParser", "Installed", "cli", "main"]
+__all__ = [
+    "AgentAssembly",
+    "AgentProcess",
+    "ArgumentParser",
+    "Command",
+    "Installed",
+    "cli",
+    "main",
+]
 
 LOG_FORMAT = "%(asctime)s %(levelname)s %(name)s: %(message)s"
+
+
+class Command(StrEnum):
+    """Команды `boba`."""
+
+    ACP = "acp"
 
 
 class Installed:
@@ -115,20 +133,27 @@ class Installed:
 
 
 class ArgumentParser:
-    """Командная строка `boba` → Arguments (план, раздел 5.21)."""
+    """Командная строка `boba acp …` → Arguments (план, раздел 5.21). Секретов
+    в аргументах нет: ключи и строки подключения живут в файле `--settings`."""
 
     PROG: ClassVar[str] = "boba"
 
     def __init__(self) -> None:
         self._parser = argparse.ArgumentParser(
             prog=self.PROG,
+            description="Boba agent process: an Agent Client Protocol server on stdio.",
+        )
+        commands = self._parser.add_subparsers(dest="command", required=True)
+        acp = commands.add_parser(
+            Command.ACP.value,
+            help="serve the Agent Client Protocol over stdin/stdout",
             description=(
-                "Boba agent process: reads JSON lines from stdin, writes JSON lines "
-                "to stdout. Settings come from settings.json layers, .mcp.json and "
-                "the arguments below."
+                "Serve the Agent Client Protocol: JSON-RPC frames on stdin and "
+                "stdout, logs on stderr. Settings come from settings.json layers "
+                "and the arguments below."
             ),
         )
-        self._define(self._parser)
+        self._define(acp)
 
     def parse(self, argv: Sequence[str]) -> Arguments:
         space = self._parser.parse_args(list(argv))
@@ -146,81 +171,41 @@ class ArgumentParser:
                     f"--setting-sources: unknown source {cleaned!r}, expected {known}"
                 )
 
-        mode: PermissionMode | None = None
-        if space.permission_mode is not None:
-            mode = PermissionMode(space.permission_mode)
-
-        env: dict[str, str] = {}
-        for pair in space.env:
-            key, separator, value = str(pair).partition("=")
-            if not separator or not key:
-                self._parser.error(f"-e expects KEY=value, got {pair!r}")
-
-            env[key] = value
-
         return Arguments(
-            session=space.session,
-            resume=bool(space.resume),
             model=space.model,
-            permission_mode=mode,
-            allow_bypass=bool(space.allow_bypass),
             system_prompt=space.system_prompt,
             system_prompt_file=space.system_prompt_file,
             append_system_prompt=space.append_system_prompt,
             append_system_prompt_file=space.append_system_prompt_file,
             skills_dir=space.skills_dir,
             max_turns=space.max_turns,
-            mcp_config=tuple(space.mcp_config),
-            strict_mcp_config=bool(space.strict_mcp_config),
             settings=tuple(space.settings),
             setting_sources=tuple(sources),
             policy=space.policy,
             history_root=space.history_root,
             record_requests=bool(space.record_requests),
-            env=env,
         )
 
     @staticmethod
     def _define(parser: argparse.ArgumentParser) -> None:
         add = parser.add_argument
-        add("--session", help="session id; a new one is minted when omitted")
-        add("--resume", action="store_true", help="resume the session from its journal")
+        add(
+            "--settings",
+            action="append",
+            default=[],
+            metavar="FILE_OR_JSON",
+            help=(
+                "settings.json file (mode 0600 when it holds secrets) or inline "
+                "JSON layer without secrets; repeatable"
+            ),
+        )
         add("--model", help="name of the model profile from settings 'models'")
-        add(
-            "--permission-mode",
-            choices=[m.value for m in PermissionMode],
-            help="initial permission mode of a new session",
-        )
-        add(
-            "--allow-bypass",
-            action="store_true",
-            help="allow the mode bypassPermissions in this process",
-        )
         add("--system-prompt", help="system prompt text")
         add("--system-prompt-file", help="file with the system prompt")
         add("--append-system-prompt", help="text appended to the system prompt")
         add("--append-system-prompt-file", help="file appended to the system prompt")
         add("--skills-dir", help="directory with <skill>/SKILL.md")
         add("--max-turns", type=int, help="model requests per turn")
-        add(
-            "--mcp-config",
-            action="append",
-            default=[],
-            metavar="FILE_OR_JSON",
-            help=".mcp.json file or inline JSON; repeatable",
-        )
-        add(
-            "--strict-mcp-config",
-            action="store_true",
-            help="ignore the project .mcp.json, use only --mcp-config",
-        )
-        add(
-            "--settings",
-            action="append",
-            default=[],
-            metavar="FILE_OR_JSON",
-            help="settings.json file or inline JSON layer; repeatable",
-        )
         add(
             "--setting-sources",
             default=",".join(s.value for s in SettingsSource),
@@ -233,19 +218,11 @@ class ArgumentParser:
             action="store_true",
             help="write an api-request record for every model request",
         )
-        add(
-            "-e",
-            action="append",
-            default=[],
-            dest="env",
-            metavar="KEY=value",
-            help="environment for stdio MCP servers; repeatable",
-        )
 
 
 class ManyServers(ToolServer):
     """Реализация ToolServer над несколькими серверами MCP: карточки всех,
-    вызов уходит тому, чей инструмент. Создаёт вход процесса."""
+    вызов уходит тому, чей инструмент. Создаёт сборка сессии."""
 
     def __init__(self, servers: Mapping[str, McpToolServer]) -> None:
         self._servers = dict(servers)
@@ -301,24 +278,237 @@ class ManyServers(ToolServer):
             await server.close()
 
 
+class CallProgressRelay(ProgressListener):
+    """Реализация ProgressListener одного вызова: отчёт сервера → событие
+    ToolProgressEvent ядра в приёмник сессии."""
+
+    def __init__(self, sink: EventSink, tool_use_id: str) -> None:
+        self._sink = sink
+        self._tool_use_id = tool_use_id
+        self._started = time.monotonic()
+
+    async def progressed(self, done: float, total: float | None, text: str) -> None:
+        await self._sink.emit(
+            ToolProgressEvent(
+                tool_use_id=self._tool_use_id,
+                message=text,
+                progress=done,
+                total=total,
+                elapsed_sec=time.monotonic() - self._started,
+            )
+        )
+
+
+class ProgressSignals(CallSignals):
+    """Реализация CallSignals сессии: приёмник отчётов на каждый вызов.
+    Ключ узла вызова — идентификатор блока `tool_use`, под ним клиент ведёт
+    вызов в ленте."""
+
+    def __init__(self, sink: EventSink) -> None:
+        self._sink = sink
+
+    def listener(self, server: str, call: DagNode) -> ProgressListener:
+        return CallProgressRelay(self._sink, call.key)
+
+
 class Environment:
-    """Снимок окружения для модели и переменные процесса, прочитанные один раз."""
+    """Снимок окружения для модели: переменные процесса, прочитанные один
+    раз, и рабочий каталог сессии."""
 
-    def __init__(self, env: Mapping[str, str], cwd: Path) -> None:
+    def __init__(self, env: Mapping[str, str]) -> None:
         self._env = env
-        self._cwd = cwd
 
-    def snapshot(self) -> EnvironmentSnapshot:
+    def snapshot(self, cwd: Path) -> EnvironmentSnapshot:
         return EnvironmentSnapshot(
-            working_directory=str(self._cwd),
+            working_directory=str(cwd),
             platform=sys.platform,
             shell=self._env.get(EnvName.SHELL.value, ""),
             os_version=platform.platform(),
         )
 
 
+class AssembledSession(OpenedSession):
+    """Реализация OpenedSession: агент и серверы MCP его сессии."""
+
+    def __init__(self, agent: Agent, servers: ManyServers | None) -> None:
+        self._agent = agent
+        self._servers = servers
+
+    @property
+    def agent(self) -> Agent:
+        return self._agent
+
+    async def close(self) -> None:
+        await self._agent.close()
+        if self._servers is not None:
+            await self._servers.close()
+
+
+class AgentAssembly(SessionAssembly):
+    """Реализация SessionAssembly из действующих настроек процесса.
+
+    Профиль, модель, хранилище и скиллы проверены на старте и общие для
+    всех сессий; на сессию собираются серверы MCP (из `.mcp.json` проекта и
+    из запроса, запрос побеждает по имени), снимок окружения с `cwd`
+    сессии, хук `PreToolUse` над происхождением инструментов этих серверов
+    и агент ядра. Собственный инструмент «вопрос пользователю» в ACP не
+    предлагается: формы вопроса у клиента нет.
+    """
+
+    def __init__(  # noqa: PLR0913 — сборка получает все проверенные части разом
+        self,
+        settings: EffectiveSettings,
+        profile: ModelProfile,
+        model: ChatModel,
+        store: HistoryStore,
+        skills: Sequence[Skill],
+        environment: Environment,
+        hooks: HookWiring,
+        version: str,
+    ) -> None:
+        self._settings = settings
+        self._profile = profile
+        self._model = model
+        self._store = store
+        self._skills = list(skills)
+        self._environment = environment
+        self._hooks = hooks
+        self._version = version
+        self._builder = McpServerBuilder(settings.mcp, settings.env)
+
+    async def open(
+        self,
+        session_id: SessionId,
+        cwd: Path,
+        servers: Mapping[str, McpServerJson],
+        sink: EventSink,
+    ) -> OpenedSession:
+        merged: dict[str, McpServerJson] = dict(self._settings.mcp_servers)
+        merged.update(servers)
+        tools = await self._tool_servers(merged, sink)
+        agent = Agent(self._parts(cwd, tools, sink))
+        try:
+            await agent.open(session_id, resume=False)
+        except (
+            HistoryError,
+            ProfileError,
+            PermissionModeError,
+            ToolsError,
+            SettingsError,
+            LlmError,
+        ) as exc:
+            if tools is not None:
+                await tools.close()
+
+            msg = f"session {session_id.value} cannot be opened: {exc}"
+            raise SessionOpenError(msg) from exc
+
+        return AssembledSession(agent, tools)
+
+    def _parts(
+        self, cwd: Path, tools: ManyServers | None, sink: EventSink
+    ) -> AgentParts:
+        settings = self._settings
+        origins = ToolOrigins({})
+        if tools is not None:
+            origins = tools.origins()
+
+        return AgentParts(
+            profile=self._profile,
+            limits=settings.limits,
+            compaction=settings.compaction,
+            system_prompt=settings.system_prompt,
+            store=self._store,
+            model=self._model,
+            sink=sink,
+            version=self._version,
+            tools=tools,
+            initial_mode=settings.permission_mode,
+            allow_bypass=settings.allow_bypass,
+            agent_name=settings.agent_name,
+            skills=self._skills,
+            environment=self._environment.snapshot(cwd),
+            allowed_tools=settings.permissions.allow,
+            denied_tools=settings.permissions.deny,
+            record_requests=settings.record_requests,
+            question_tool=False,
+            hooks=self._hooks.hooks(settings, origins, cwd),
+        )
+
+    async def _tool_servers(
+        self, servers: Mapping[str, McpServerJson], sink: EventSink
+    ) -> ManyServers | None:
+        """Ошибки:
+        SessionRefusedError — запись сервера не годится (заголовки, вид).
+        SessionOpenError — сервер не поднялся или инструменты совпали по имени.
+        """
+        if not servers:
+            return None
+
+        opened: dict[str, McpToolServer] = {}
+        for name, server in servers.items():
+            try:
+                config = self._builder.config(name, server)
+            except SettingsError as exc:
+                await self._close_all(opened)
+                raise SessionRefusedError(str(exc)) from exc
+
+            tool_server = McpToolServer(
+                name,
+                config,
+                NamedBlocks(),
+                ProgressSignals(sink),
+                CallContexts(),
+                None,
+                DirectCalls(),
+            )
+            try:
+                await tool_server.open()
+            except McpClientError as exc:
+                await self._close_all(opened)
+                raise SessionOpenError(str(exc)) from exc
+
+            opened[name] = tool_server
+
+        try:
+            return ManyServers(opened)
+        except SettingsError as exc:
+            await self._close_all(opened)
+            raise SessionOpenError(str(exc)) from exc
+
+    @staticmethod
+    async def _close_all(opened: Mapping[str, McpToolServer]) -> None:
+        for ready in opened.values():
+            await ready.close()
+
+
+class StdioStreams:
+    """Потоки asyncio над стандартным вводом и отданным протоколу дескриптором
+    вывода: ввод читается каналом, вывод пишется с учётом противодавления."""
+
+    LINE_LIMIT: ClassVar[int] = 50 * 1024 * 1024
+
+    def __init__(self, stdin: BinaryIO, output_fd: int) -> None:
+        self._stdin = stdin
+        self._output_fd = output_fd
+
+    async def open(self) -> tuple[asyncio.StreamReader, asyncio.StreamWriter]:
+        loop = asyncio.get_running_loop()
+        reader = asyncio.StreamReader(limit=self.LINE_LIMIT)
+        await loop.connect_read_pipe(
+            lambda: asyncio.StreamReaderProtocol(reader), self._stdin
+        )
+        output = os.fdopen(self._output_fd, "wb", buffering=0)
+        transport, protocol = await loop.connect_write_pipe(
+            lambda: FlowControlMixin(loop), output
+        )
+        writer = asyncio.StreamWriter(transport, protocol, None, loop)
+
+        return reader, writer
+
+
 class AgentProcess:
-    """Один запуск `boba`: настройки, сборка, обмен по потокам, остановка."""
+    """Один запуск `boba acp`: настройки, проверка частей, сервер ACP, остановка."""
 
     def __init__(  # noqa: PLR0913 — вход процесса получает все границы разом
         self,
@@ -332,148 +522,72 @@ class AgentProcess:
         version: str,
     ) -> None:
         self._version = version
-        self._arguments = arguments
         self._env = env
         self._cwd = cwd
         self._settings = Settings(arguments, env, home, cwd)
-        self._reader = InputReader(stdin)
-        self._output_fd = output_fd
+        self._streams = StdioStreams(stdin, output_fd)
         self._stop = stop
-        self._codec = RecordCodec()
-        self._environment = Environment(env, cwd)
+        self._environment = Environment(env)
         # состав провайдеров объявлен явно (план, раздел 5.20): в одном файле
         # метаданных дистрибутивов и их entry points нет
         self._providers = LlmProviders(LlmProviderTypes.declare([OPENAI, OLLAMA, ONNX]))
-        self._servers: ManyServers | None = None
         self._hook_transport = HttpHookTransport(httpx.AsyncClient(trust_env=False))
-        self._hook_wiring = HookWiring(self._hook_transport, cwd)
 
     async def run(self) -> None:
-        """Всё поднимается до чтения ввода: настройки, журнал, серверы MCP;
-        событие `init` уходит сразу, затем читаются строки.
+        """Всё проверяется до чтения ввода: настройки, профиль, хранилище,
+        скиллы; затем сервер обслуживает соединение до конца ввода или сигнала.
 
         Ошибки:
         SystemExit — запуск не состоялся; текст называет причину.
         """
         try:
             settings = self._settings.effective()
+            assembly = self._assembly(settings)
         except SettingsError as exc:
             raise SystemExit(str(exc)) from exc
 
-        writer = OutputWriter(
-            self._output_fd, EventLines(self._codec, settings.public())
-        )
-        writer.start()
+        agent = AcpAgent(assembly, self._version)
+        reader, writer = await self._streams.open()
+        server = AcpServer(agent, reader, writer)
+        self._stop.on_stop(self._stopper(agent, server))
         try:
-            await self._serve(settings, writer)
+            await server.serve()
         finally:
-            await writer.stop()
-
-    async def _serve(self, settings: EffectiveSettings, writer: OutputWriter) -> None:
-        agent = await self._opened(settings, writer)
-        dispatcher = LineDispatcher(agent, writer, sorted(settings.models))
-        serving = asyncio.create_task(agent.serve(), name="agent-serve")
-        self._stop.on_stop(self._stopper(agent, dispatcher))
-        try:
-            await self._reader.open()
-            await self._reader.run(dispatcher)
-            if dispatcher.ended is EndOfInput.EOF:
-                await agent.settled()
-        finally:
-            await agent.close()
-            await serving
-            if self._servers is not None:
-                await self._servers.close()
-
             await self._hook_transport.aclose()
             await self._providers.aclose()
 
     @staticmethod
-    def _stopper(agent: Agent, dispatcher: LineDispatcher) -> StopAction:
-        """Действие остановки по сигналу: ход прерывается причиной SHUTDOWN,
-        чтение ввода считается законченным."""
+    def _stopper(agent: AcpAgent, server: AcpServer) -> StopAction:
+        """Действие остановки по сигналу: ходы прерываются причиной SHUTDOWN,
+        сервер закрывает сессии."""
 
         def stop(received: signal.Signals) -> None:
             logger.info("process: stopping on %s", received.name)
-            dispatcher.end(EndOfInput.END_SESSION)
-            agent.interrupt(StopReason.SHUTDOWN)
-            agent.queue.wake()
+            agent.shutdown(StopReason.SHUTDOWN)
+            server.stop()
 
         return stop
 
-    async def _opened(self, settings: EffectiveSettings, writer: OutputWriter) -> Agent:
+    def _assembly(self, settings: EffectiveSettings) -> AgentAssembly:
         """Ошибки:
-        SystemExit — профиль, журнал, скиллы или серверы MCP не годятся.
-        """
-        session_id = self._session_id()
-        try:
-            parts = await self._parts(settings, writer)
-            agent = Agent(parts)
-            await agent.open(session_id, self._arguments.resume)
-        except (
-            SettingsError,
-            HistoryError,
-            ProfileError,
-            PermissionModeError,
-            ToolsError,
-            SkillsError,
-            McpClientError,
-            LlmError,
-            LlmProvidersError,
-        ) as exc:
-            if self._servers is not None:
-                await self._servers.close()
-
-            raise SystemExit(str(exc)) from exc
-
-        return agent
-
-    def _session_id(self) -> SessionId:
-        value = self._arguments.session
-        if value is None:
-            if self._arguments.resume:
-                msg = "--resume needs --session <id> of the session to resume."
-                raise SystemExit(msg)
-
-            value = str(uuid.uuid4())
-
-        try:
-            return SessionId(value=value)
-        except ValueError as exc:
-            raise SystemExit(str(exc)) from exc
-
-    async def _parts(
-        self, settings: EffectiveSettings, writer: OutputWriter
-    ) -> AgentParts:
-        """Ошибки:
-        SettingsError, SkillsError, McpClientError — часть не собралась.
+        SettingsError — профиль, модель, хранилище или скиллы не собрались.
         """
         model = settings.selected_model()
         profile = ProfileBuilder(self._env).profile(settings.model, model)
-        servers = await self._tool_servers(settings)
-        origins = ToolOrigins({})
-        if servers is not None:
-            origins = servers.origins()
+        try:
+            skills = self._skills(settings)
+        except SkillsError as exc:
+            raise SettingsError(str(exc)) from exc
 
-        return AgentParts(
-            profile=profile,
-            limits=settings.limits,
-            compaction=settings.compaction,
-            system_prompt=settings.system_prompt,
-            store=self._store(settings),
-            model=self._chat_model(settings, profile),
-            sink=writer,
-            version=self._version,
-            tools=servers,
-            initial_mode=settings.permission_mode,
-            allow_bypass=settings.allow_bypass,
-            agent_name=settings.agent_name,
-            skills=self._skills(settings),
-            environment=self._environment.snapshot(),
-            allowed_tools=settings.permissions.allow,
-            denied_tools=settings.permissions.deny,
-            record_requests=settings.record_requests,
-            hooks=self._hook_wiring.hooks(settings, origins),
+        return AgentAssembly(
+            settings,
+            profile,
+            self._chat_model(settings, profile),
+            self._store(settings),
+            skills,
+            self._environment,
+            HookWiring(self._hook_transport),
+            self._version,
         )
 
     def _chat_model(
@@ -509,40 +623,13 @@ class AgentProcess:
         return JsonlHistoryStore(Path(history.root))
 
     def _skills(self, settings: EffectiveSettings) -> Sequence[Skill]:
+        """Ошибки:
+        SkillsError — каталог скиллов не читается.
+        """
         if settings.skills_dir is None:
             return ()
 
         return SkillsDir(self._cwd / settings.skills_dir).read()
-
-    async def _tool_servers(self, settings: EffectiveSettings) -> ManyServers | None:
-        if not settings.mcp_servers:
-            return None
-
-        builder = McpServerBuilder(settings.mcp, settings.env)
-        opened: dict[str, McpToolServer] = {}
-        for name, server in settings.mcp_servers.items():
-            tool_server = McpToolServer(
-                name,
-                builder.config(name, server),
-                NamedBlocks(),
-                DroppedSignals(),
-                CallContexts(),
-                None,
-                DirectCalls(),
-            )
-            try:
-                await tool_server.open()
-            except McpClientError:
-                for ready in opened.values():
-                    await ready.close()
-
-                raise
-
-            opened[name] = tool_server
-
-        self._servers = ManyServers(opened)
-
-        return self._servers
 
 
 async def main(argv: Sequence[str] | None = None) -> None:
