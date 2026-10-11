@@ -35,6 +35,7 @@ from boba.agent.hooks import (
     PreToolUseEvent,
 )
 from boba.agent.records import PermissionMode
+from boba.chainlit.rendering.chat_view import StepStatus
 from boba.connections.sealed import SealedParamSchema, SealFeature, SealKeys
 from boba.db.postgres.connection import PostgresConfig
 from boba.identity.token import ClaimKey
@@ -321,7 +322,9 @@ async def tab(
 
 
 class ToolSteps:
-    """Шаги инструментов ленты по событиям сокета."""
+    """Шаги инструментов ленты по событиям сокета: имя шага — статусный кружок,
+    имя инструмента и подпись вызова (ToolStepLabel), вход шага — markdown
+    аргументов по виду вызова."""
 
     def __init__(self, socket: ChatSocket) -> None:
         self._socket = socket
@@ -338,10 +341,20 @@ class ToolSteps:
             if payload.get("type") != "tool":
                 continue
 
-            if str(payload.get("name", "")).startswith(tool):
+            if self._tool_of(str(payload.get("name", ""))).startswith(tool):
                 found.append(payload)
 
         return found
+
+    @staticmethod
+    def _tool_of(name: str) -> str:
+        """Имя инструмента без статусного кружка слева."""
+        for status in StepStatus:
+            prefix = status.title("")
+            if name.startswith(prefix):
+                return name[len(prefix) :]
+
+        return name
 
     def last(self, tool: str) -> dict[str, Any]:
         steps = self.named(tool)
@@ -383,9 +396,11 @@ class TestAgentTurn:
         assert CONNECTION in str(listed.get("output")), (listed, app.tail(60))
         assert not listed.get("isError"), listed
 
+        # вход шага — markdown аргументов: имя соединения как есть, не JWE
         queried = steps.last("pg_query")
-        shown = json.loads(str(queried.get("input")))
-        assert shown["connection"] == CONNECTION, queried
+        shown = str(queried.get("input"))
+        assert CONNECTION in shown, queried
+        assert "eyJ" not in shown, queried
         assert not queried.get("isError"), (queried, companion.tail(80))
         assert "one" in str(queried.get("output")), queried
 
