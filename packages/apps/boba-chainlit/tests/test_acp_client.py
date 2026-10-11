@@ -1,8 +1,8 @@
 """Транспорт и жизненный цикл клиента ACP против настоящего `boba acp` с
 FakeLlmApp и историей в Postgres стенда: новая сессия и ход с потоком кусков,
-отмена идущего хода, разрешение по умолчанию, закрытие процесса; методы W3 и
-W5 (`session/load`, `session/close`, `session/delete`, `session/fork`)
-помечены ожидающими слияния."""
+отмена идущего хода, разрешение по умолчанию, закрытие процесса; история —
+`session/load` с воспроизведением под id вопросов клиента, `session/close`,
+`session/delete`, ветка `session/fork` по id вопроса."""
 
 from __future__ import annotations
 
@@ -10,10 +10,12 @@ import asyncio
 import json
 from collections.abc import AsyncIterator
 from pathlib import Path
+from uuid import uuid4
 
 import pytest
 from acp import text_block
 from acp.schema import (
+    TextContentBlock,
     ToolCallProgress,
     ToolCallStart,
     UserMessageChunk,
@@ -31,9 +33,6 @@ from boba.stand.site import Stand
 from boba.stand.ui.fake_llm import ScenarioName
 
 pytestmark = pytest.mark.anyio
-
-W3_REASON = "session/load, session/close and session/delete arrive with W3"
-W5_REASON = "session/fork arrives with W5"
 
 
 @pytest.fixture(autouse=True)
@@ -105,7 +104,7 @@ class TestTurn:
         assert session_id
 
         response = await process.prompt(
-            session_id, [_text(prompt_text(ScenarioName.THINKING_ANSWER))]
+            session_id, [_text(prompt_text(ScenarioName.THINKING_ANSWER))], _id()
         )
         assert response.stop_reason == "end_turn"
 
@@ -125,7 +124,7 @@ class TestTurn:
         spec = {"name": "no_such_tool", "arguments": {"x": 1}}
         text = f"{ScenarioName.CALL.value} {json.dumps(spec)}"
 
-        response = await process.prompt(session_id, [_text(text)])
+        response = await process.prompt(session_id, [_text(text)], _id())
         assert response.stop_reason == "end_turn"
 
         starts = [u for _, u in updates.updates if isinstance(u, ToolCallStart)]
@@ -142,7 +141,7 @@ class TestTurn:
 
         spec = {"name": "no_such_tool", "arguments": {}}
         text = f"{ScenarioName.LOOP.value} {json.dumps(spec)}"
-        turn = asyncio.create_task(process.prompt(session_id, [_text(text)]))
+        turn = asyncio.create_task(process.prompt(session_id, [_text(text)], _id()))
         await asyncio.wait_for(updates.first_update.wait(), 30)
         await process.cancel(session_id)
 
@@ -152,7 +151,7 @@ class TestTurn:
     async def test_unknown_session_is_refused(self, agents: Agents) -> None:
         process = await agents.start(RecordingUpdates())
         with pytest.raises(AgentRequestError) as refused:
-            await process.prompt("no-such-session", [_text("hi")])
+            await process.prompt("no-such-session", [_text("hi")], _id())
 
         assert refused.value.code == JsonRpcCode.RESOURCE_NOT_FOUND
 
@@ -173,15 +172,20 @@ class TestLifecycle:
         assert not workdir.exists()
 
 
-class TestPendingW3:
-    """Методы сессий, которые агент получает в W3: тесты зелёные после слияния."""
+class TestHistory:
+    """История в Postgres: загрузка с воспроизведением под id вопросов
+    клиента, закрытие и удаление сессии, ветка по id вопроса."""
 
-    @pytest.mark.xfail(strict=True, reason=W3_REASON)
-    async def test_load_replays_the_conversation(self, agents: Agents) -> None:
+    async def test_load_replays_the_conversation_under_client_ids(
+        self, agents: Agents
+    ) -> None:
         first = RecordingUpdates()
         process = await agents.start(first, "holder")
         session_id = await process.new_session([])
-        await process.prompt(session_id, [_text(prompt_text(ScenarioName.ANSWER))])
+        question = _id()
+        await process.prompt(
+            session_id, [_text(prompt_text(ScenarioName.ANSWER))], question
+        )
         await process.close()
 
         second = RecordingUpdates()
@@ -189,30 +193,79 @@ class TestPendingW3:
         await observer.load_session(session_id, [])
 
         user_chunks = [u for _, u in second.updates if isinstance(u, UserMessageChunk)]
-        assert user_chunks, "session/load replayed no user message"
+        assert [u.message_id for u in user_chunks] == [question]
         assert "plain streamed answer" in "".join(second.texts())
 
-    @pytest.mark.xfail(strict=True, reason=W3_REASON)
-    async def test_close_session_is_accepted(self, agents: Agents) -> None:
-        process = await agents.start(RecordingUpdates())
-        session_id = await process.new_session([])
-        await process.close_session(session_id)
+        again = await observer.prompt(
+            session_id, [_text(prompt_text(ScenarioName.THINKING))], _id()
+        )
+        assert again.stop_reason == "end_turn"
 
-    @pytest.mark.xfail(strict=True, reason=W3_REASON)
-    async def test_delete_session_is_accepted(self, agents: Agents) -> None:
+    async def test_close_releases_the_session_for_another_process(
+        self, agents: Agents
+    ) -> None:
+        holder = await agents.start(RecordingUpdates(), "holder")
+        session_id = await holder.new_session([])
+        await holder.prompt(
+            session_id, [_text(prompt_text(ScenarioName.ANSWER))], _id()
+        )
+
+        observer = await agents.start(RecordingUpdates(), "observer")
+        await observer.load_session(session_id, [])
+        with pytest.raises(AgentRequestError, match="held by another process"):
+            await observer.prompt(
+                session_id, [_text(prompt_text(ScenarioName.ANSWER))], _id()
+            )
+
+        await holder.close_session(session_id)
+        response = await observer.prompt(
+            session_id, [_text(prompt_text(ScenarioName.ANSWER))], _id()
+        )
+        assert response.stop_reason == "end_turn"
+
+    async def test_delete_removes_the_session(self, agents: Agents) -> None:
         process = await agents.start(RecordingUpdates())
         session_id = await process.new_session([])
+        await process.prompt(
+            session_id, [_text(prompt_text(ScenarioName.ANSWER))], _id()
+        )
+        await process.close_session(session_id)
         await process.delete_session(session_id)
 
-    @pytest.mark.xfail(strict=True, reason=W5_REASON)
-    async def test_fork_gives_a_new_session(self, agents: Agents) -> None:
-        process = await agents.start(RecordingUpdates())
+        with pytest.raises(AgentRequestError) as refused:
+            await process.load_session(session_id, [])
+
+        assert refused.value.code == JsonRpcCode.RESOURCE_NOT_FOUND
+
+    async def test_fork_by_the_question_id_drops_the_question_and_its_answer(
+        self, agents: Agents
+    ) -> None:
+        updates = RecordingUpdates()
+        process = await agents.start(updates)
         session_id = await process.new_session([])
-        await process.prompt(session_id, [_text(prompt_text(ScenarioName.ANSWER))])
-        forked = await process.fork_session(session_id, [], "question-uuid")
+        first = _id()
+        second = _id()
+        await process.prompt(
+            session_id, [_text(prompt_text(ScenarioName.ANSWER))], first
+        )
+        await process.prompt(
+            session_id, [_text(prompt_text(ScenarioName.THINKING_ANSWER))], second
+        )
+
+        forked = await process.fork_session(session_id, [], second)
         assert forked != session_id
 
+        replay = RecordingUpdates()
+        reader = await agents.start(replay, "reader")
+        await reader.load_session(forked, [])
+        user_chunks = [u for _, u in replay.updates if isinstance(u, UserMessageChunk)]
+        assert [u.message_id for u in user_chunks] == [first]
+        assert "answer the question" not in "".join(replay.texts())
 
-def _text(text: str):
 
+def _id() -> str:
+    return str(uuid4())
+
+
+def _text(text: str) -> TextContentBlock:
     return text_block(text)

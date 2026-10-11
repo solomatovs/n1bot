@@ -164,7 +164,9 @@
         start_timeout_sec = 30
         stop_timeout_sec  = 10
     [agent.history]
-        kind = "memory"
+        kind     = "postgres"
+        postgres = "${postgres}"
+        schema   = "agent_history"
     [agent.chat_mcp]
         enable = true
         name   = "chat"

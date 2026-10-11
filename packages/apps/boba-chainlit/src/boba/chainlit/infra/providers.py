@@ -16,6 +16,7 @@ from boba.chainlit.acp.chat import (
     AgentLauncher,
     AgentSessionMeta,
     ThreadAgents,
+    ThreadAgentsIndex,
     ThreadDeleter,
 )
 from boba.chainlit.acp.config import AgentConfig
@@ -492,20 +493,27 @@ def agent_session_meta(
     return AgentSessionMeta(threads)
 
 
+def thread_agents_index() -> ThreadAgentsIndex:
+    """Агенты всех вкладок инстанса по тредам: один реестр на процесс."""
+    return ThreadAgentsIndex()
+
+
 def thread_deleter(
     launcher: Annotated[AgentLauncher, Depends(agent_launcher)],
     table: Annotated[AgentSettingsTable, Depends(agent_settings_table)],
+    index: Annotated[ThreadAgentsIndex, Depends(thread_agents_index)],
 ) -> ThreadDeleter:
-    return ThreadDeleter(launcher, table)
+    return ThreadDeleter(launcher, table, index)
 
 
 async def thread_agents(
     launcher: Annotated[AgentLauncher, Depends(agent_launcher)],
     meta: Annotated[AgentSessionMeta, Depends(agent_session_meta)],
+    index: Annotated[ThreadAgentsIndex, Depends(thread_agents_index)],
 ) -> AsyncIterator[ThreadAgents]:
     """Агенты вкладки: процессы живут с DI-контейнером сессии chainlit и
     закрываются вместе с ним."""
-    agents = ThreadAgents(launcher, meta)
+    agents = ThreadAgents(launcher, meta, index)
     try:
         yield agents
     finally:

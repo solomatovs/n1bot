@@ -33,9 +33,11 @@
 остаются в логе. `session/fork` (черновик RFD) копирует записи сессии из
 хранилища под новый идентификатор и открывает новую сессию как обычную, с
 теми же `modes` и `configOptions` в ответе; точка среза — расширение
-`_meta["boba/upToUuid"]`. `authenticate` объявлен и отвечает «метод не
-найден» — точка расширения. Всё своё в протоколе лежит в `_meta` под
-ключами с префиксом `boba/`.
+`_meta["boba/upToUuid"]`. Клиент вправе дать вопросу uuid записи `user`
+расширением `_meta["boba/messageId"]` запроса `session/prompt`: по нему
+воспроизведение и ветвление называют вопрос так же, как клиент. `authenticate`
+объявлен и отвечает «метод не найден» — точка расширения. Всё своё в протоколе
+лежит в `_meta` под ключами с префиксом `boba/`.
 
 Ошибки:
 RequestError — ошибка JSON-RPC клиенту: параметры запроса (-32602),
@@ -60,6 +62,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 from typing import Any, ClassVar, Protocol, TypeAlias
+from uuid import UUID
 
 from acp import Agent as AcpAgentProtocol
 from acp import Client as AcpClientProtocol
@@ -207,6 +210,7 @@ __all__ = [
     "ObservedSession",
     "OpenedSession",
     "PermissionChoice",
+    "PromptMeta",
     "PromptText",
     "SessionAssembly",
     "SessionBusyError",
@@ -282,6 +286,7 @@ class MetaKey(StrEnum):
 
     PROGRESS = "boba/progress"
     UP_TO_UUID = "boba/upToUuid"
+    MESSAGE_ID = "boba/messageId"
 
 
 class SessionUpdateName(StrEnum):
@@ -355,6 +360,24 @@ class ErrorDataKey(StrEnum):
     DETAILS = "details"
     SESSION_ID = "sessionId"
     UP_TO_UUID = "upToUuid"
+
+
+class PromptMeta(BaseModel):
+    """Расширение `boba/messageId` в `_meta` запроса `session/prompt`: UUID,
+    который клиент даёт вопросу; он становится uuid записи `user` этого
+    вопроса, поэтому `session/load` воспроизводит вопрос с тем же `messageId`,
+    а `session/fork` принимает его точкой среза. Без ключа uuid чеканит
+    агент. Чужие ключи `_meta` не разбираются."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    message_id: UUID | None = Field(default=None, alias=MetaKey.MESSAGE_ID.value)
+
+    def record_uuid(self) -> str | None:
+        if self.message_id is None:
+            return None
+
+        return str(self.message_id)
 
 
 class ForkMeta(BaseModel):
@@ -1566,12 +1589,14 @@ class AcpSession:
         }
         self._waiters.fail(RequestError.internal_error(data))
 
-    async def prompt(self, text: str) -> PromptResponse:
-        """Ставит вопрос в очередь ядра и ждёт итога хода, который его обслужит.
+    async def prompt(self, text: str, message_id: str | None = None) -> PromptResponse:
+        """Ставит вопрос в очередь ядра и ждёт итога хода, который его обслужит;
+        message_id — uuid записи `user` вопроса от клиента (`boba/messageId`).
 
         Ошибки:
-        RequestError — очередь не приняла элемент (-32602), обслуживание
-            сессии остановилось (-32603), модель отказала (-32603).
+        RequestError — очередь не приняла элемент или uuid вопроса уже есть в
+            сессии (-32602), обслуживание сессии остановилось (-32603),
+            модель отказала (-32603).
         """
         if self._serving.done():
             details = (
@@ -1588,7 +1613,16 @@ class AcpSession:
         if len(agent.queue) > 0:
             priority = QueuePriority.LATER
 
-        entry = QueueEntry(kind=QueueKind.PROMPT, text=text, priority=priority)
+        if message_id is not None and agent.session.find(message_id) is not None:
+            details = (
+                f"{MetaKey.MESSAGE_ID.value} {message_id} already names a record of "
+                f"session {self._session_id}; every question needs its own UUID"
+            )
+            raise RequestError.invalid_params({ErrorDataKey.DETAILS.value: details})
+
+        entry = QueueEntry(
+            kind=QueueKind.PROMPT, text=text, priority=priority, id=message_id
+        )
         try:
             item = agent.queue.enqueue(entry)
         except QueueRefusedError as exc:
@@ -1862,15 +1896,30 @@ class AcpAgent(AcpAgentProtocol):
         self, session_id: str, prompt: list[PromptBlock], **kwargs: Any
     ) -> PromptResponse:
         """Ошибки:
-        RequestError — сессия неизвестна (-32002), блоки не годятся (-32602),
-            сессию держит другой процесс или модель отказала (-32603).
+        RequestError — сессия неизвестна (-32002), блоки или `boba/messageId`
+            не годятся (-32602), сессию держит другой процесс или модель
+            отказала (-32603).
         """
         held = self._session(session_id)
         text = self._prompts.render(prompt)
+        meta = self._prompt_meta(kwargs)
         if isinstance(held, ObserverSession):
             held = await self._claim(session_id, held)
 
-        return await held.prompt(text)
+        return await held.prompt(text, meta.record_uuid())
+
+    @staticmethod
+    def _prompt_meta(meta: Mapping[str, Any]) -> PromptMeta:
+        """Ошибки:
+        RequestError — `boba/messageId` не UUID (-32602).
+        """
+        try:
+            return PromptMeta.model_validate(meta)
+        except ValidationError as exc:
+            details = f"_meta of session/prompt is not valid: {exc}"
+            raise RequestError.invalid_params(
+                {ErrorDataKey.DETAILS.value: details}
+            ) from exc
 
     async def _claim(self, session_id: str, observer: ObserverSession) -> AcpSession:
         """Наблюдатель берёт замок: сессия открывается по-настоящему и
