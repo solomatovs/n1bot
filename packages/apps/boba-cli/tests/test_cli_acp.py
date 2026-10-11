@@ -2347,3 +2347,143 @@ class TestFork:
             assert await second.wait() == 0
 
         assert sorted((tmp_path / "history").glob("*.jsonl")) == journals
+
+
+class TestMessageId:
+    """Расширение `boba/messageId`: клиент называет uuid записи вопроса сам."""
+
+    FIRST: ClassVar[str] = "0f4b5f8e-1b1e-4c4a-9f0e-000000000001"
+    SECOND: ClassVar[str] = "0f4b5f8e-1b1e-4c4a-9f0e-000000000002"
+
+    async def test_load_and_fork_see_the_question_under_the_client_id(
+        self, boba: AcpProcess, model: FakeModel, mcp: McpStand, tmp_path: Path
+    ) -> None:
+        client = RecordingClient()
+        document = boba.settings_document(mode="bypassPermissions", allow_bypass=True)
+        conn = await boba.start(client, document)
+        try:
+            await handshake(conn)
+            session = await conn.new_session(
+                cwd=str(tmp_path), mcp_servers=[mcp.server()]
+            )
+            session_id = session.session_id
+            first = await conn.prompt(
+                session_id=session_id,
+                prompt=[text_block(ScenarioName.ANSWER.value)],
+                **{MetaKey.MESSAGE_ID.value: self.FIRST},
+            )
+            assert first.stop_reason == StopReasonName.END_TURN.value
+            second = await conn.prompt(
+                session_id=session_id,
+                prompt=[text_block(ScenarioName.THINKING_ANSWER.value)],
+                **{MetaKey.MESSAGE_ID.value: self.SECOND},
+            )
+            assert second.stop_reason == StopReasonName.END_TURN.value
+        finally:
+            await conn.close()
+            await boba.close_stdin()
+
+        assert await boba.wait() == 0
+        human = [
+            r["uuid"]
+            for r in boba.journal(session_id)
+            if r["type"] == "user" and r.get("origin", {}).get("kind") == "human"
+        ]
+        assert human == [self.FIRST, self.SECOND]
+
+        again = AcpProcess(tmp_path, model)
+        replay = RecordingClient()
+        conn = await again.start(replay, document)
+        try:
+            await handshake(conn)
+            await conn.load_session(
+                cwd=str(tmp_path), session_id=session_id, mcp_servers=[mcp.server()]
+            )
+            view = FeedView()
+            rendered = view.render(replay.updates_of(session_id))
+            questions = [item for item in rendered if item[0] == "user"]
+            assert [q[1] for q in questions] == [self.FIRST, self.SECOND]
+
+            forked = await conn.fork_session(
+                session_id=session_id,
+                cwd=str(tmp_path),
+                mcp_servers=[mcp.server()],
+                **{MetaKey.UP_TO_UUID.value: self.SECOND},
+            )
+            await conn.load_session(
+                cwd=str(tmp_path),
+                session_id=forked.session_id,
+                mcp_servers=[mcp.server()],
+            )
+            branch = view.render(replay.updates_of(forked.session_id))
+            assert view.user_texts(branch) == [ScenarioName.ANSWER.value]
+            assert [q[1] for q in branch if q[0] == "user"] == [self.FIRST]
+
+            edited = await conn.prompt(
+                session_id=forked.session_id,
+                prompt=[text_block(ScenarioName.THINKING.value)],
+                **{MetaKey.MESSAGE_ID.value: self.SECOND},
+            )
+            assert edited.stop_reason == StopReasonName.END_TURN.value
+        finally:
+            await conn.close()
+            await again.close_stdin()
+
+        assert await again.wait() == 0
+        branch_human = [
+            (r["uuid"], r["message"]["content"])
+            for r in again.journal(forked.session_id)
+            if r["type"] == "user" and r.get("origin", {}).get("kind") == "human"
+        ]
+        assert branch_human == [
+            (self.FIRST, ScenarioName.ANSWER.value),
+            (self.SECOND, ScenarioName.THINKING.value),
+        ]
+
+    async def test_bad_or_repeated_message_id_is_refused(
+        self, boba: AcpProcess, mcp: McpStand, tmp_path: Path
+    ) -> None:
+        client = RecordingClient()
+        document = boba.settings_document(mode="bypassPermissions", allow_bypass=True)
+        conn = await boba.start(client, document)
+        try:
+            await handshake(conn)
+            session = await conn.new_session(
+                cwd=str(tmp_path), mcp_servers=[mcp.server()]
+            )
+            with pytest.raises(RequestError) as refused:
+                await conn.prompt(
+                    session_id=session.session_id,
+                    prompt=[text_block(ScenarioName.ANSWER.value)],
+                    **{MetaKey.MESSAGE_ID.value: "not-a-uuid"},
+                )
+
+            assert refused.value.code == INVALID_PARAMS
+
+            response = await conn.prompt(
+                session_id=session.session_id,
+                prompt=[text_block(ScenarioName.ANSWER.value)],
+                **{MetaKey.MESSAGE_ID.value: self.FIRST},
+            )
+            assert response.stop_reason == StopReasonName.END_TURN.value
+
+            with pytest.raises(RequestError) as repeated:
+                await conn.prompt(
+                    session_id=session.session_id,
+                    prompt=[text_block(ScenarioName.ANSWER.value)],
+                    **{MetaKey.MESSAGE_ID.value: self.FIRST},
+                )
+
+            assert repeated.value.code == INVALID_PARAMS
+            assert self.FIRST in str(repeated.value.data)
+
+            plain = await conn.prompt(
+                session_id=session.session_id,
+                prompt=[text_block(ScenarioName.ANSWER.value)],
+            )
+            assert plain.stop_reason == StopReasonName.END_TURN.value
+        finally:
+            await conn.close()
+            await boba.close_stdin()
+
+        assert await boba.wait() == 0

@@ -5,11 +5,27 @@
 
 from collections.abc import AsyncIterator
 from datetime import timedelta
+from importlib.metadata import version
 from typing import Annotated
 
+import httpx
 from omegaconf import DictConfig
 
 from boba.auth import JwtTokens
+from boba.chainlit.acp.chat import (
+    AgentLauncher,
+    AgentSessionMeta,
+    ThreadAgents,
+    ThreadAgentsIndex,
+    ThreadDeleter,
+)
+from boba.chainlit.acp.config import AgentConfig
+from boba.chainlit.acp.settings import (
+    AgentSettingsLayers,
+    AgentSettingsTable,
+    ProfileModelSpecs,
+)
+from boba.chainlit.acp.tokens import McpAccessTokens, SessionServers
 from boba.chainlit.agent.bridge import ChatModelBridge
 from boba.chainlit.agent.flow import (
     AgentGraphBuilder,
@@ -60,6 +76,7 @@ from boba.config import bind
 from boba.connection_broker.sealing import SealingToolServer, SentConnections
 from boba.connection_broker.store import ConnectionsConfig
 from boba.connection_broker.user_connections import ArmedConnections
+from boba.connections.secrets import SecretCipher
 from boba.db.postgres import AsyncPostgresPool, PostgresError, PostgresSchema
 from boba.identity.api import UserRows
 from boba.identity.context import CallContexts
@@ -74,6 +91,7 @@ from boba.runtime import providers as runtime
 from boba.runtime.di import Container, Depends
 from boba.runtime.elements import ChatTables
 from boba.runtime.storage import StorageClient
+from boba.runtime.threads import ThreadsTable
 from boba.runtime.users import UsersTable
 from boba.toolkit.dag import NodeCalls, ToolServer
 from boba.toolrun.hosted import HostedTool
@@ -416,3 +434,87 @@ async def langchain_agent(  # noqa: PLR0913
     )
 
     return GraphAgent(builder.build(spec))
+
+
+def agent_config(
+    app_config: Annotated[AppConfig, Depends(get_app_config)],
+) -> AgentConfig:
+    return app_config.agent
+
+
+async def agent_settings_table(
+    cfg: Annotated[DataLayerConfig, Depends(get_data_layer_config)],
+    raw: Annotated[DictConfig, Depends(runtime.get_raw_config)],
+) -> AgentSettingsTable:
+    """Слои настроек агента в схеме чата; секреты строк — под ключом
+    [connections].encryption_key."""
+    cipher = SecretCipher(bind(raw, "connections", ConnectionsConfig).key_bytes())
+    table = AgentSettingsTable(cfg.postgres, cfg.db_schema, cipher)
+    await table.setup()
+
+    return table
+
+
+def agent_settings_layers(
+    table: Annotated[AgentSettingsTable, Depends(agent_settings_table)],
+    config: Annotated[AgentConfig, Depends(agent_config)],
+) -> AgentSettingsLayers:
+    specs = ProfileModelSpecs(
+        config.limits.context_window, config.limits.max_output_tokens
+    )
+
+    return AgentSettingsLayers(table, specs)
+
+
+async def mcp_access_tokens() -> AsyncIterator[McpAccessTokens]:
+    """Клиент обмена утверждений на токены boba-mcp: один http-клиент на процесс."""
+    http = httpx.AsyncClient(trust_env=False)
+    try:
+        yield McpAccessTokens(http)
+    finally:
+        await http.aclose()
+
+
+def agent_launcher(
+    config: Annotated[AgentConfig, Depends(agent_config)],
+    app_config: Annotated[AppConfig, Depends(get_app_config)],
+    layers: Annotated[AgentSettingsLayers, Depends(agent_settings_layers)],
+    tokens: Annotated[McpAccessTokens, Depends(mcp_access_tokens)],
+) -> AgentLauncher:
+    """Запуск процессов агента: файл настроек, серверы MCP сессии, рукопожатие."""
+    servers = SessionServers(app_config.mcp, tokens, config.chat_mcp, config.public_url)
+
+    return AgentLauncher(config, layers, servers, version("boba-chainlit"))
+
+
+def agent_session_meta(
+    threads: Annotated[ThreadsTable, Depends(runtime.threads_table)],
+) -> AgentSessionMeta:
+    return AgentSessionMeta(threads)
+
+
+def thread_agents_index() -> ThreadAgentsIndex:
+    """Агенты всех вкладок инстанса по тредам: один реестр на процесс."""
+    return ThreadAgentsIndex()
+
+
+def thread_deleter(
+    launcher: Annotated[AgentLauncher, Depends(agent_launcher)],
+    table: Annotated[AgentSettingsTable, Depends(agent_settings_table)],
+    index: Annotated[ThreadAgentsIndex, Depends(thread_agents_index)],
+) -> ThreadDeleter:
+    return ThreadDeleter(launcher, table, index)
+
+
+async def thread_agents(
+    launcher: Annotated[AgentLauncher, Depends(agent_launcher)],
+    meta: Annotated[AgentSessionMeta, Depends(agent_session_meta)],
+    index: Annotated[ThreadAgentsIndex, Depends(thread_agents_index)],
+) -> AsyncIterator[ThreadAgents]:
+    """Агенты вкладки: процессы живут с DI-контейнером сессии chainlit и
+    закрываются вместе с ним."""
+    agents = ThreadAgents(launcher, meta, index)
+    try:
+        yield agents
+    finally:
+        await agents.close_all()

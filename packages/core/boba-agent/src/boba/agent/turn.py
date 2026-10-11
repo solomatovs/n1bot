@@ -685,8 +685,10 @@ class TurnLoop:
             origin = MessageOrigin(kind=OriginKind.TASK_NOTIFICATION)
             is_meta = True
 
+        # uuid записи — идентификатор головного элемента очереди: его либо дал
+        # отправитель (и потом ссылается на запись по нему), либо отчеканила очередь
         record = UserRecord(
-            uuid=self._ids.uuid(),
+            uuid=taken.head.id,
             parent_uuid=self._session.last_chain_uuid(),
             timestamp=self._clock.now(),
             session_id=self._session.id.value,
