@@ -618,13 +618,6 @@ class JsonText:
     """Чтение JSON из файла или из строки аргумента: строка, начинающаяся
     с `{`, — сам документ, иначе — путь к файлу."""
 
-    def read(self, source: str, what: str) -> Mapping[str, Any]:
-        text = source
-        if not self.is_inline(source):
-            text = self.read_file(Path(source), what)
-
-        return self.parse(text, what, source)
-
     @staticmethod
     def is_inline(source: str) -> bool:
         return source.lstrip().startswith("{")
