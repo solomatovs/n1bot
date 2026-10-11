@@ -10,10 +10,12 @@ from typing import Any, ClassVar, cast
 from uuid import UUID
 
 from boba.canvas.canvas import CanvasSignal, SignalTransport
+from boba.chainlit.acp.feed import TabSurfaces
 from boba.chainlit.chat.feed import TextClip
 from boba.chainlit.domain.fields import StepField, ThreadField
 from boba.chainlit.infra import providers
 from boba.chainlit.infra.session import current_session, session_source_ref
+from boba.chainlit.rendering.acp_view import UpdateView
 from boba.chainlit.rendering.chat_view import ChatView, LiveSink
 from boba.chainlit.rendering.renderer import ChatRenderers, RenderSurface, SignalType
 from boba.identity.context import Scope
@@ -48,6 +50,7 @@ __all__ = [
     "ThreadEmitter",
     "ThreadLive",
     "ThreadRoom",
+    "ThreadSurfaces",
 ]
 
 logger = logging.getLogger(__name__)
@@ -156,6 +159,17 @@ class ThreadRoom:
         return session
 
 
+class ThreadSurfaces(TabSurfaces):
+    """Реализация TabSurfaces: сокет текущего обработчика и поверхность
+    рассылки треда (ChatRoomSurface) для приёмников потока агента."""
+
+    def anchor(self) -> WebsocketSession:
+        return ThreadRoom.websocket()
+
+    def thread(self, anchor: WebsocketSession, thread_id: str) -> RenderSurface:
+        return ChatRoomSurface(anchor, thread_id)
+
+
 class ChatRoomSurface(RenderSurface):
     """Поверхность рендерера: строит контекст chainlit с якорной сессией и шлёт ленту
     и сигналы всем живым вкладкам треда.
@@ -259,10 +273,13 @@ class ChatRoomSurface(RenderSurface):
                 user_detail=None,
             )
 
+        journals = root.resolved(providers.remote_journals)
+        view = ChatView(thread_id, LiveSink(), journals)
+
         return ChatRenderers.ensure(
             thread_id,
             root.resolved(runtime.message_bus),
-            ChatView(thread_id, LiveSink(), root.resolved(providers.remote_journals)),
+            UpdateView(view, thread_id, journals, root.resolved(providers.tool_media)),
             root.resolved(runtime.payload_store),
             cls(anchor, thread_id),
         )

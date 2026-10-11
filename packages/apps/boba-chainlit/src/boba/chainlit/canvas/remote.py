@@ -1,7 +1,9 @@
 """Журналы вызовов, исполненных MCP-серверами: адреса и окна.
 
 Вызов исполняет сервер, журнал лежит у него. Адрес журнала чат узнаёт из
-итога вызова, а текст читает окнами через клиента MCP.
+итога вызова (`rawOutput.journal` уведомления агента), который лента
+запоминает здесь и при живом ходе, и при воспроизведении истории; текст
+читает окнами через клиента MCP.
 
 Ошибки:
 McpClientError — сервер недоступен или ответил не окном журнала.
@@ -16,7 +18,7 @@ from typing import ClassVar
 
 from boba.canvas.canvas import WatchProbe, WatchSource
 from boba.canvas.journal import StreamSlice
-from boba.chainlit.chat.dialog import ThreadMessages, ToolReply
+from boba.chainlit.rendering.acp_view import JournalRegistry
 from boba.chainlit.rendering.chat_view import StreamableTools
 from boba.mcp_client.client import McpCaller, McpClientError, McpServers
 from boba.toolkit.channels import JournalChannel, JournalChannels
@@ -29,23 +31,22 @@ __all__ = ["RemoteJournals", "RemoteStreams"]
 logger = logging.getLogger(__name__)
 
 
-class RemoteJournals(StreamableTools):
+class RemoteJournals(StreamableTools, JournalRegistry):
     """Адреса журналов вызовов, исполненных MCP-серверами.
 
     Объект один на процесс: его создаёт сборка чата. Журнал вызова лежит на
     сервере, который вызов исполнил; его адрес — сервер, запуск и
-    идентификатор вызова на сервере — приходит в итоге вызова. Путь вызова
-    узла (ChatCalls) запоминает адрес здесь, как только вызов закончился;
-    адрес вызова, которого в памяти нет, берётся из истории треда: итог
-    хранится там вместе с адресом. Пока вызов идёт, адреса нет и журнал не
-    читается.
+    идентификатор вызова на сервере — приходит в итоге вызова. Лента
+    (UpdateView) запоминает адрес здесь по итогу вызова: у живого хода — как
+    только вызов закончился, у истории — при её воспроизведении, поэтому
+    адреса треда известны, пока открыта его вкладка. Пока вызов идёт, адреса
+    нет и журнал не читается.
     """
 
-    KEEP: ClassVar[int] = 512
-    """Сколько адресов помнить в памяти; остальные находятся по истории."""
+    KEEP: ClassVar[int] = 4096
+    """Сколько адресов помнить в памяти; старые забываются первыми."""
 
-    def __init__(self, history: ThreadMessages) -> None:
-        self._history = history
+    def __init__(self) -> None:
         self._known: OrderedDict[tuple[str, str], JournalAddress] = OrderedDict()
         self._streamable: frozenset[str] = frozenset()
 
@@ -66,21 +67,9 @@ class RemoteJournals(StreamableTools):
             self._known.popitem(last=False)
 
     async def address(self, thread_id: str, call_id: str) -> JournalAddress | None:
-        """Адрес журнала вызова: из памяти, иначе из истории треда; None —
-        вызов ещё идёт, его исполнял не сервер с журналом либо запись
-        истории сделана в формате, по которому журнал не прочитать."""
-        known = self._known.get((thread_id, call_id))
-        if known is not None:
-            return known
-
-        for message in await self._history.load(thread_id):
-            if not isinstance(message, ToolReply):
-                continue
-
-            if address := message.journals().get(call_id):
-                return address
-
-        return None
+        """Адрес журнала вызова; None — вызов ещё идёт, его исполнял не сервер
+        с журналом либо лента треда в этом процессе не рисовалась."""
+        return self._known.get((thread_id, call_id))
 
 
 class RemoteStreams:

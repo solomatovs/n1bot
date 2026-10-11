@@ -10,7 +10,6 @@ from uuid import uuid4
 
 import pytest
 from chainlit.context import ChainlitContext
-from chainlit_stand import FakeThreadMessages
 from langchain_core.outputs import LLMResult
 from pydantic import Field
 
@@ -167,7 +166,7 @@ class TestToolStepFailuresVisible:
             runs,
             SentConnections(),
             ChatMount(contexts, runs),
-            RemoteJournals(FakeThreadMessages()),
+            RemoteJournals(),
         )
         service = LocalDagService(
             ToolHosting().toolset([step_probe]),

@@ -92,6 +92,7 @@ class MessageKind(StrEnum):
     TOOL_FAILED = "tool_failed"
     TOOL_STOPPED = "tool_stopped"
     TURN_FINISHED = "turn_finished"
+    AGENT_UPDATE = "agent_update"
     RUN_STATE_CHANGED = "run_state_changed"
     RUN_FINISHED = "run_finished"
     STREAM_APPENDED = "stream_appended"
@@ -133,6 +134,7 @@ _HOLDER_ONLY: frozenset[MessageKind] = frozenset(
         MessageKind.TOOL_FAILED,
         MessageKind.TOOL_STOPPED,
         MessageKind.TURN_FINISHED,
+        MessageKind.AGENT_UPDATE,
         MessageKind.RUN_STATE_CHANGED,
         MessageKind.RUN_FINISHED,
         MessageKind.STREAM_APPENDED,
@@ -380,6 +382,30 @@ class TurnFinished(Message):
     turn_id: str = Field(min_length=1)
     outcome: TurnOutcome
     reason: str = ""
+
+
+class AgentUpdate(Message):
+    """Уведомление `session/update` агента, которое держатель хода turn_id
+    пересылает вкладкам и инстансам треда. Тело — JSON уведомления: мелкое
+    (куски текста) едет в самом сообщении (inline), крупное (вызов с его
+    аргументами и итогом) — по ссылке (stored); заполнено ровно одно из них.
+    """
+
+    kind: Literal[MessageKind.AGENT_UPDATE] = MessageKind.AGENT_UPDATE
+    turn_id: str = Field(min_length=1)
+    inline: dict[str, object] | None = None
+    stored: PayloadRef | None = None
+
+    @model_validator(mode="after")
+    def _exactly_one_body(self) -> Self:
+        if (self.inline is None) == (self.stored is None):
+            msg = (
+                "agent_update: exactly one of inline or stored expected, got "
+                f"inline={self.inline is not None}, stored={self.stored is not None}"
+            )
+            raise ValueError(msg)
+
+        return self
 
 
 class RunStateChanged(Message):
@@ -647,6 +673,7 @@ AnyMessage = Annotated[
     | ToolFailed
     | ToolStopped
     | TurnFinished
+    | AgentUpdate
     | RunStateChanged
     | RunFinished
     | StreamAppended

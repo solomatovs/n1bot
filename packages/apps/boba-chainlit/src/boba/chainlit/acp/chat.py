@@ -1,5 +1,6 @@
 """Агент треда в chainlit: процесс на вкладку, id сессии в threads.meta, ход
-и его остановка, удаление сессии с тредом и минимальный вывод потока в ленту.
+и его остановка, настройки сессии, удаление сессии с тредом; поток сессии
+уходит приёмнику TurnRenderer, который создаёт фабрика TurnRenderers (feed.py).
 
 Ошибки:
 AcpClientError и наследники — процесс или ответ агента (client.py).
@@ -11,33 +12,27 @@ DataUnavailableError — таблицы чата недоступны.
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
+from abc import abstractmethod
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol, TypeAlias
 from uuid import UUID
 
 from acp import resource_link_block, text_block
 from acp.schema import (
-    AgentMessageChunk,
-    AgentThoughtChunk,
-    AllowedOutcome,
     DeniedOutcome,
     PermissionOption,
     PromptResponse,
     RequestPermissionResponse,
-    TextContentBlock,
-    ToolCallProgress,
-    ToolCallStart,
+    SessionConfigOptionBoolean,
+    SessionConfigOptionSelect,
     ToolCallUpdate,
     UserMessageChunk,
 )
-from acp.schema import ContentChunk as AcpContentChunk
 
-import chainlit as cl
 from boba.chainlit.acp.client import (
     AgentClient,
     AgentCommand,
@@ -70,15 +65,24 @@ from boba.runtime.threads import ThreadsTable
 __all__ = [
     "AgentLauncher",
     "AgentSessionMeta",
-    "FeedRenderer",
+    "ConfigCategory",
+    "ConfigOption",
+    "MuteUpdates",
+    "PermissionKind",
+    "PermissionOutcome",
+    "SessionOptions",
     "ThreadAgent",
     "ThreadAgents",
     "ThreadAgentsIndex",
     "ThreadDeleter",
     "ThreadIdentity",
+    "TurnRenderer",
+    "TurnRenderers",
 ]
 
 logger = logging.getLogger(__name__)
+
+ConfigOption: TypeAlias = SessionConfigOptionSelect | SessionConfigOptionBoolean
 
 
 class PermissionKind(StrEnum):
@@ -94,28 +98,6 @@ class PermissionOutcome(StrEnum):
     """Исходы ответа на вопрос разрешения."""
 
     SELECTED = "selected"
-    CANCELLED = "cancelled"
-
-
-class StepName(StrEnum):
-    """Имена и виды шагов ленты минимального рендерера."""
-
-    THINKING = "thinking"
-    TOOL_TYPE = "tool"
-    THOUGHT_TYPE = "undefined"
-    USER_TYPE = "user_message"
-
-
-class ToolStatus(StrEnum):
-    """Статусы вызова инструмента в уведомлениях."""
-
-    FAILED = "failed"
-
-
-class StopReasonName(StrEnum):
-    """Исходы хода, которые рендерер различает в ленте."""
-
-    END_TURN = "end_turn"
     CANCELLED = "cancelled"
 
 
@@ -209,58 +191,112 @@ class AgentSessionMeta:
         await self._threads.upsert(change)
 
 
-@dataclass
-class LiveFeed:
-    """Открытые узлы ленты одной сессии: ответ, рассуждение, шаги инструментов."""
-
-    answer: cl.Message | None = None
-    answer_id: str | None = None
-    thought: cl.Step | None = None
-    thought_id: str | None = None
-    steps: dict[str, cl.Step] = field(default_factory=dict)
-
-
-class FeedRenderer(SessionUpdates):
-    """Минимальный вывод потока сессии в ленту chainlit: куски ответа — в
-    сообщение, рассуждения — в шаг, вызовы инструментов — шагами с title,
-    вопросы разрешения — первым вариантом allow либо отменой при остановке.
-
-    Реализация SessionUpdates; рендерер ленты W11 встаёт на её место.
-    """
+class SessionOptions:
+    """Текущие настройки сессии агента (`configOptions`): их отдают ответы
+    `session/new|load|fork` и `set_config_option`, присылает уведомление
+    `config_option_update`; читает панель настроек чата. Один объект на
+    агента треда, общий у него и у приёмника потока."""
 
     def __init__(self) -> None:
-        self._feeds: dict[str, LiveFeed] = {}
-        self._stopping: set[str] = set()
+        self._options: list[ConfigOption] = []
 
+    @property
+    def options(self) -> Sequence[ConfigOption]:
+        return list(self._options)
+
+    def replace(self, options: Sequence[ConfigOption] | None) -> None:
+        """Полное состояние настроек; None — ответ без них (наблюдатель)."""
+        if options is None:
+            return
+
+        self._options = list(options)
+
+    def selects(self) -> Sequence[SessionConfigOptionSelect]:
+        """Настройки-списки: режим и модель."""
+        found: list[SessionConfigOptionSelect] = []
+        for option in self._options:
+            if isinstance(option, SessionConfigOptionSelect):
+                found.append(option)
+
+        return found
+
+    def current(self, config_id: str) -> str | None:
+        """Текущее значение настройки-списка; None — такой настройки нет."""
+        for option in self.selects():
+            if option.id == config_id:
+                return option.current_value
+
+        return None
+
+    def mode_changed(self, mode_id: str) -> None:
+        """Уведомление `current_mode_update`: режим сменился без полного состояния."""
+        replaced: list[ConfigOption] = []
+        for option in self._options:
+            replaced.append(self._with_mode(option, mode_id))
+
+        self._options = replaced
+
+    @staticmethod
+    def _with_mode(option: ConfigOption, mode_id: str) -> ConfigOption:
+        if not isinstance(option, SessionConfigOptionSelect):
+            return option
+
+        if option.category != ConfigCategory.MODE:
+            return option
+
+        return option.model_copy(update={"current_value": mode_id})
+
+
+class ConfigCategory(StrEnum):
+    """Категории настроек сессии, которые различает панель."""
+
+    MODE = "mode"
+    MODEL = "model"
+
+
+class TurnRenderer(SessionUpdates, Protocol):
+    """Приёмник потока сессии, который знает и о ходе вкладки: его начало,
+    остановку и конец воспроизведения истории. Реализует AgentFeed (feed.py).
+    """
+
+    @abstractmethod
     def stopping(self, session_id: str) -> None:
         """Ход останавливается: висящие вопросы разрешения получат отмену."""
-        self._stopping.add(session_id)
+
+    @abstractmethod
+    async def turn_started(
+        self, session_id: str, question: Question, edited: bool
+    ) -> None:
+        """Ход по вопросу начинается; edited — вопрос правленый, сессия ветвь.
+
+        Ошибки:
+        LockBusyError — тред уже ведёт другой держатель.
+        """
+
+    @abstractmethod
+    async def loaded(self, session_id: str) -> None:
+        """`session/load` ответил: воспроизведение истории закончено."""
+
+
+class TurnRenderers(Protocol):
+    """Фабрика приёмников потока для агентов вкладки; реализует AgentFeeds."""
+
+    @abstractmethod
+    async def create(
+        self, identity: ThreadIdentity, options: SessionOptions
+    ) -> TurnRenderer:
+        """Приёмник для агента треда identity с общим состоянием настроек.
+
+        Ошибки:
+        McpClientError — серверы MCP профиля не открылись.
+        """
+
+
+class MuteUpdates(SessionUpdates):
+    """Приёмник без ленты: короткоживущий процесс удаления сессии."""
 
     async def update(self, session_id: str, update: SessionUpdate) -> None:
-        feed = self._feeds.setdefault(session_id, LiveFeed())
-        if isinstance(update, AgentMessageChunk):
-            await self._answer_chunk(feed, update)
-            return
-
-        if isinstance(update, AgentThoughtChunk):
-            await self._thought_chunk(feed, update)
-            return
-
-        if isinstance(update, ToolCallStart):
-            await self._tool_call(feed, update)
-            return
-
-        if isinstance(update, ToolCallProgress):
-            await self._tool_update(feed, update)
-            return
-
-        if isinstance(update, UserMessageChunk):
-            await self._user_chunk(update)
-            return
-
-        logger.debug(
-            "session %s: update %s is not rendered", session_id, type(update).__name__
-        )
+        return
 
     async def permission(
         self,
@@ -268,162 +304,15 @@ class FeedRenderer(SessionUpdates):
         tool_call: ToolCallUpdate,
         options: Sequence[PermissionOption],
     ) -> RequestPermissionResponse:
-        if session_id in self._stopping:
-            return RequestPermissionResponse(
-                outcome=DeniedOutcome(outcome=PermissionOutcome.CANCELLED.value)
-            )
-
-        chosen = self._allowing(options)
-        logger.info(
-            "session %s: permission for %s answered with %s",
-            session_id,
-            tool_call.tool_call_id,
-            chosen.option_id,
-        )
-
         return RequestPermissionResponse(
-            outcome=AllowedOutcome(
-                outcome=PermissionOutcome.SELECTED.value, option_id=chosen.option_id
-            )
+            outcome=DeniedOutcome(outcome=PermissionOutcome.CANCELLED.value)
         )
 
     async def turn_finished(self, session_id: str, stop_reason: str) -> None:
-        self._stopping.discard(session_id)
-        feed = self._feeds.pop(session_id, None)
-        if feed is None:
-            feed = LiveFeed()
-
-        await self._close_feed(feed)
-
-        if stop_reason == StopReasonName.END_TURN:
-            return
-
-        note = f"_the turn ended early: {stop_reason}_"
-        if stop_reason == StopReasonName.CANCELLED:
-            note = "_stopped by the user_"
-
-        await cl.Message(content=note).send()
+        return
 
     async def abandon(self, session_id: str) -> None:
-        """Ход сорвался: открытые узлы закрываются, пометки не ставится."""
-        self._stopping.discard(session_id)
-        feed = self._feeds.pop(session_id, None)
-        if feed is None:
-            return
-
-        await self._close_feed(feed)
-
-    @staticmethod
-    def _allowing(options: Sequence[PermissionOption]) -> PermissionOption:
-        """Первый вариант «разрешить»; без него — первый из предложенных."""
-        for option in options:
-            if option.kind == PermissionKind.ALLOW_ONCE:
-                return option
-
-        for option in options:
-            if option.kind == PermissionKind.ALLOW_ALWAYS:
-                return option
-
-        return options[0]
-
-    async def _close_feed(self, feed: LiveFeed) -> None:
-        if feed.thought is not None:
-            await feed.thought.send()
-
-        if feed.answer is not None:
-            await feed.answer.send()
-
-    async def _answer_chunk(self, feed: LiveFeed, update: AgentMessageChunk) -> None:
-        text = self._text(update)
-        if text is None:
-            return
-
-        if feed.answer is not None and feed.answer_id != update.message_id:
-            await feed.answer.send()
-            feed.answer = None
-
-        if feed.answer is None:
-            feed.answer = cl.Message(content="")
-            feed.answer_id = update.message_id
-
-        await feed.answer.stream_token(text)
-
-    async def _thought_chunk(self, feed: LiveFeed, update: AgentThoughtChunk) -> None:
-        text = self._text(update)
-        if text is None:
-            return
-
-        if feed.thought is not None and feed.thought_id != update.message_id:
-            await feed.thought.send()
-            feed.thought = None
-
-        if feed.thought is None:
-            feed.thought = cl.Step(
-                name=StepName.THINKING.value, type=StepName.THOUGHT_TYPE.value
-            )
-            feed.thought_id = update.message_id
-
-        await feed.thought.stream_token(text)
-
-    async def _tool_call(self, feed: LiveFeed, update: ToolCallStart) -> None:
-        step = cl.Step(name=update.title, type=StepName.TOOL_TYPE.value)
-        if update.raw_input is not None:
-            step.input = json.dumps(update.raw_input, ensure_ascii=False)
-
-        feed.steps[update.tool_call_id] = step
-        await step.send()
-
-    async def _tool_update(self, feed: LiveFeed, update: ToolCallProgress) -> None:
-        step = feed.steps.get(update.tool_call_id)
-        if step is None:
-            title = update.title
-            if title is None:
-                title = update.tool_call_id
-
-            step = cl.Step(name=title, type=StepName.TOOL_TYPE.value)
-            feed.steps[update.tool_call_id] = step
-            await step.send()
-
-        texts = list(self._tool_texts(update))
-        if texts:
-            step.output = "\n".join(texts)
-
-        if update.status == ToolStatus.FAILED:
-            step.is_error = True
-
-        await step.update()
-
-    async def _user_chunk(self, update: UserMessageChunk) -> None:
-        text = self._text(update)
-        if text is None:
-            return
-
-        await cl.Message(content=text, type=StepName.USER_TYPE.value).send()
-
-    @staticmethod
-    def _text(update: AcpContentChunk) -> str | None:
-        """Текст блока куска; картинки и ресурсы минимальный рендерер не показывает."""
-        content = update.content
-        if isinstance(content, TextContentBlock):
-            return content.text
-
-        return None
-
-    @staticmethod
-    def _tool_texts(update: ToolCallProgress) -> Sequence[str]:
-        found: list[str] = []
-        if update.content is None:
-            return found
-
-        for item in update.content:
-            if item.type != "content":
-                continue
-
-            block = item.content
-            if isinstance(block, TextContentBlock):
-                found.append(block.text)
-
-        return found
+        return
 
 
 class AskedQuestions(SessionUpdates):
@@ -558,12 +447,14 @@ class ThreadAgent:
         identity: ThreadIdentity,
         launcher: AgentLauncher,
         meta: AgentSessionMeta,
-        renderer: FeedRenderer,
+        renderer: TurnRenderer,
+        options: SessionOptions,
     ) -> None:
         self._identity = identity
         self._launcher = launcher
         self._meta = meta
         self._renderer = renderer
+        self._options = options
         self._questions = AskedQuestions(renderer)
         self._process: AgentProcess | None = None
         self._servers: list[SessionServer] = []
@@ -579,6 +470,11 @@ class ThreadAgent:
     def session_id(self) -> str | None:
         """Id сессии агента; None — сессия ещё не открыта."""
         return self._session_id
+
+    @property
+    def options(self) -> SessionOptions:
+        """Настройки открытой сессии; у закрытой — пустые."""
+        return self._options
 
     @property
     def process(self) -> AgentProcess:
@@ -608,7 +504,7 @@ class ThreadAgent:
         """
         known = await self._meta.session_of(self.thread_id)
         try:
-            await self.process.load_session(known, self._servers)
+            response = await self.process.load_session(known, self._servers)
         except AgentRequestError as exc:
             if exc.code != JsonRpcCode.RESOURCE_NOT_FOUND:
                 raise
@@ -621,7 +517,9 @@ class ThreadAgent:
 
         self._session_id = known
         self._asked = list(self._questions.ids)
+        self._options.replace(response.config_options)
         await self._meta.remember(self.thread_id, known)
+        await self._renderer.loaded(known)
         logger.info(
             "thread %s: agent session %s loaded, %d question(s) replayed",
             self.thread_id,
@@ -639,8 +537,11 @@ class ThreadAgent:
         Ошибки:
         AgentRequestError — агент отказал в методе сессии.
         AgentProcessError — процесс умер по ходу.
+        LockBusyError — тред уже ведёт другой держатель.
         """
+        edited = question.key in self._asked
         session_id = await self._session_for(question)
+        await self._renderer.turn_started(session_id, question, edited)
         self._asked.append(question.key)
         self._active = session_id
         logger.info(
@@ -689,6 +590,30 @@ class ThreadAgent:
             response.stop_reason,
         )
 
+    async def set_option(self, config_id: str, value: str) -> bool:
+        """Настройка открытой сессии (`session/set_config_option`); False —
+        сессии ещё нет, настройка подождёт её открытия.
+
+        Ошибки:
+        AgentRequestError — агент отказал: ход идёт (-32603) или значение
+            неизвестно (-32602).
+        """
+        session_id = self._session_id
+        if session_id is None:
+            return False
+
+        response = await self.process.set_config_option(session_id, config_id, value)
+        self._options.replace(response.config_options)
+        logger.info(
+            "thread %s: session %s option %s set to %s",
+            self.thread_id,
+            session_id,
+            config_id,
+            value,
+        )
+
+        return True
+
     async def stop(self) -> bool:
         """Отмена идущего хода; False — хода нет."""
         active = self._active
@@ -727,7 +652,9 @@ class ThreadAgent:
         """Сессия хода: открытая, ветвь при правке вопроса, иначе новая."""
         current = self._session_id
         if current is None:
-            created = await self.process.new_session(self._servers)
+            opened = await self.process.open_session(self._servers)
+            created = opened.session_id
+            self._options.replace(opened.config_options)
             await self._meta.remember(self.thread_id, created)
             self._session_id = created
             logger.info("thread %s: agent session %s created", self.thread_id, created)
@@ -737,7 +664,9 @@ class ThreadAgent:
         if question.key not in self._asked:
             return current
 
-        forked = await self.process.fork_session(current, self._servers, question.key)
+        branch = await self.process.fork(current, self._servers, question.key)
+        forked = branch.session_id
+        self._options.replace(branch.config_options)
         await self._meta.remember(self.thread_id, forked)
         self._session_id = forked
         logger.info(
@@ -790,6 +719,14 @@ class ThreadAgentsIndex:
     def of_thread(self, thread_id: str) -> Sequence[ThreadAgent]:
         return list(self._agents.get(thread_id, ()))
 
+    def active(self, thread_id: str) -> ThreadAgent | None:
+        """Агент треда с идущим ходом в любой вкладке инстанса; None — хода нет."""
+        for agent in self.of_thread(thread_id):
+            if agent.turn_active():
+                return agent
+
+        return None
+
     async def close_thread(self, thread_id: str) -> int:
         """Закрывает агентов треда во всех вкладках инстанса; итог — сколько."""
         agents = self.of_thread(thread_id)
@@ -805,13 +742,22 @@ class ThreadAgents:
     закрывается с DI-контейнером сессии."""
 
     def __init__(
-        self, launcher: AgentLauncher, meta: AgentSessionMeta, index: ThreadAgentsIndex
+        self,
+        launcher: AgentLauncher,
+        meta: AgentSessionMeta,
+        index: ThreadAgentsIndex,
+        renderers: TurnRenderers,
     ) -> None:
         self._launcher = launcher
         self._meta = meta
         self._index = index
+        self._renderers = renderers
         self._agents: dict[str, ThreadAgent] = {}
         self._starting = asyncio.Lock()
+
+    def of_thread(self, thread_id: str) -> ThreadAgent | None:
+        """Агент треда этой вкладки; None — тред во вкладке не открывался."""
+        return self._agents.get(thread_id)
 
     async def of(self, identity: ThreadIdentity) -> ThreadAgent:
         """Агент треда; при первом обращении процесс запускается. Старт вкладки
@@ -821,7 +767,9 @@ class ThreadAgents:
             if known is not None:
                 return known
 
-            agent = ThreadAgent(identity, self._launcher, self._meta, FeedRenderer())
+            options = SessionOptions()
+            renderer = await self._renderers.create(identity, options)
+            agent = ThreadAgent(identity, self._launcher, self._meta, renderer, options)
             await agent.start()
             self._agents[identity.thread_id] = agent
             self._index.register(agent)
@@ -896,7 +844,7 @@ class ThreadDeleter(ThreadDeletionListener):
         self, thread_id: str, chat: ChatAgentSettings, session_id: str
     ) -> None:
         process = await self._launcher.launch_settings(
-            thread_id, chat, "", (), AgentClient(FeedRenderer())
+            thread_id, chat, "", (), AgentClient(MuteUpdates())
         )
         try:
             await process.delete_session(session_id)

@@ -92,8 +92,9 @@ class Question(BaseModel):
 
         return cls(key=msg.id, text=msg.content, elements=tuple(elements))
 
-    def body(self) -> QuestionBody:
-        return QuestionBody(text=self.text, elements=self.elements)
+    def body(self, author: str = "") -> QuestionBody:
+        """Тело вопроса для шины; author — имя шага вопроса во всех вкладках."""
+        return QuestionBody(text=self.text, elements=self.elements, author=author)
 
 
 class TurnStateError(Exception):

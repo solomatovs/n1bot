@@ -1,10 +1,11 @@
-"""Провайдеры chainlit-процесса: конфиг чата, клиенты LLM, data layer и агент сессии.
+"""Провайдеры chainlit-процесса: конфиг чата, data layer, клиент MCP чата
+(файлы, журналы, карточки инструментов), процессы агента ACP и приёмники
+его потока. Клиенты LLM (llm_providers) остаются до вычистки langchain.
 
 Общие для процессов провайдеры (реестр, сторы) — boba.runtime.providers.
 """
 
 from collections.abc import AsyncIterator
-from datetime import timedelta
 from importlib.metadata import version
 from typing import Annotated
 
@@ -20,37 +21,19 @@ from boba.chainlit.acp.chat import (
     ThreadDeleter,
 )
 from boba.chainlit.acp.config import AgentConfig
+from boba.chainlit.acp.feed import AgentFeeds, BusParts, TabSurfaces
 from boba.chainlit.acp.settings import (
     AgentSettingsLayers,
     AgentSettingsTable,
     ProfileModelSpecs,
 )
 from boba.chainlit.acp.tokens import McpAccessTokens, SessionServers
-from boba.chainlit.agent.bridge import ChatModelBridge
-from boba.chainlit.agent.flow import (
-    AgentGraphBuilder,
-    GraphSpec,
-    HistoryView,
-    LlmRephraser,
-    PassthroughRephraser,
-    PlainGraphBuilder,
-    PrefetchGraphBuilder,
-    Rephraser,
-)
-from boba.chainlit.agent.history import (
-    CheckpointMessages,
-    GraphAgent,
-    PostgresCheckpoints,
-)
 from boba.chainlit.canvas.remote import RemoteJournals
-from boba.chainlit.chat.dialog import SessionAgent
-from boba.chainlit.chat.history import TranscriptFeed
 from boba.chainlit.data import PostgresDataLayer
 from boba.chainlit.data.remote_storage import FileOwners, RemoteStorageClient
 from boba.chainlit.domain.keys import AttachmentLinks
 from boba.chainlit.infra.config import (
     AppConfig,
-    CheckpointerConfig,
     DataLayerConfig,
 )
 from boba.chainlit.infra.session import (
@@ -58,12 +41,7 @@ from boba.chainlit.infra.session import (
     current_session,
     session_source_ref,
 )
-from boba.chainlit.rendering.mount import (
-    ChatAttachments,
-    ChatCalls,
-    ChatMount,
-    ChatProgress,
-)
+from boba.chainlit.rendering.acp_view import ToolMedia
 from boba.chat.profiles import (
     AgentSettings,
     ChatProfiles,
@@ -73,30 +51,25 @@ from boba.chat.profiles import (
     UserMeta,
 )
 from boba.config import bind
-from boba.connection_broker.sealing import SealingToolServer, SentConnections
 from boba.connection_broker.store import ConnectionsConfig
-from boba.connection_broker.user_connections import ArmedConnections
 from boba.connections.secrets import SecretCipher
-from boba.db.postgres import AsyncPostgresPool, PostgresError, PostgresSchema
+from boba.db.postgres import AsyncPostgresPool
 from boba.identity.api import UserRows
 from boba.identity.context import CallContexts
-from boba.identity.errors import InternalServiceError
-from boba.identity.run import Runs
+from boba.identity.locks import LiveLocks
 from boba.identity.session import SessionSource
 from boba.llm.providers import LlmProviders, LlmProviderTypes
-from boba.llm.schema import SchemaReply
-from boba.mcp_client.client import McpCaller, McpServers
-from boba.messaging import MessageBus
+from boba.mcp_client.client import DroppedSignals, McpServers, NamedBlocks
+from boba.messaging import MessageBus, PayloadStore
 from boba.runtime import providers as runtime
+from boba.runtime.config import RuntimeConfig
 from boba.runtime.di import Container, Depends
 from boba.runtime.elements import ChatTables
 from boba.runtime.storage import StorageClient
 from boba.runtime.threads import ThreadsTable
 from boba.runtime.users import UsersTable
-from boba.toolkit.dag import NodeCalls, ToolServer
-from boba.toolrun.hosted import HostedTool
+from boba.toolrun.hosted import DirectCalls, HostedTool
 from boba.toolrun.registry import ToolRegistry
-from boba.toolrun.stream_calls import ToolServers
 
 
 def get_app_config() -> AppConfig:
@@ -106,12 +79,6 @@ def get_app_config() -> AppConfig:
         "override, the provider itself produces nothing"
     )
     raise RuntimeError(msg)
-
-
-def get_checkpointer_config(
-    app_config: Annotated[AppConfig, Depends(get_app_config)],
-) -> CheckpointerConfig:
-    return app_config.checkpointer
 
 
 def get_data_layer_config(
@@ -236,48 +203,35 @@ async def llm_providers(
         await providers.aclose()
 
 
-async def langchain_checkpoint_saver(
-    cp: Annotated[CheckpointerConfig, Depends(get_checkpointer_config)],
-) -> CheckpointMessages:
-    """История тредов процесса: checkpoint'ы langgraph на пуле со своим
-    search_path — схему в имена савер не ставит.
-
-    Пул закрывает остановка приложения, а не провайдер: пул общий для всех, кто
-    попросит его с той же схемой.
-    """
-    pool = await AsyncPostgresPool.get(cp.postgres.with_schema(cp.db_schema))
-    try:
-        await PostgresSchema(cp.db_schema).ensure_with(pool)
-    except PostgresError as e:
-        raise InternalServiceError(
-            internal_detail=(
-                f"checkpointer: ensuring postgres schema {cp.db_schema!r} failed: {e}"
-            ),
-            user_detail="Failed to connect to the internal postgres",
-        ) from e
-
-    checkpoints = PostgresCheckpoints(pool)
-    await checkpoints.setup()
-
-    return checkpoints
+def thread_surfaces() -> TabSurfaces:
+    """Поверхности вкладок для приёмников потока; значение кладёт bootstrap
+    (реализация живёт в infra.thread_room, который сам читает провайдеры)."""
+    msg = (
+        "thread_surfaces: the surfaces are set by bootstrap as a container "
+        "override, the provider itself produces nothing"
+    )
+    raise RuntimeError(msg)
 
 
-def remote_journals(
-    saver: Annotated[CheckpointMessages, Depends(langchain_checkpoint_saver)],
-) -> RemoteJournals:
-    """Адреса журналов вызовов, исполненных MCP-серверами, на процесс."""
-    return RemoteJournals(saver)
+def remote_journals() -> RemoteJournals:
+    """Адреса журналов вызовов, исполненных MCP-серверами, на процесс:
+    лента кладёт их по итогам вызовов агента."""
+    return RemoteJournals()
+
+
+def tool_media() -> ToolMedia:
+    """Типы содержимого аргументов инструментов серверов MCP: по ним лента
+    рисует вход шага вызова; наполняется приёмниками потока по профилю."""
+    return ToolMedia()
 
 
 async def chainlit_data_layer(  # noqa: PLR0913 — слой данных собирается всеми зависимостями сразу
     cfg: Annotated[DataLayerConfig, Depends(get_data_layer_config)],
     links: Annotated[AttachmentLinks, Depends(attachment_links)],
     storage: Annotated[StorageClient, Depends(storage_provider)],
-    saver: Annotated[CheckpointMessages, Depends(langchain_checkpoint_saver)],
     bus: Annotated[MessageBus, Depends(runtime.message_bus)],
     users: Annotated[UsersTable, Depends(runtime.users_table)],
     sessions: Annotated[SessionSource, Depends(session_source)],
-    streamable: Annotated[RemoteJournals, Depends(remote_journals)],
 ) -> PostgresDataLayer:
     """Слой данных чата на общем пуле процесса: схему таблицы ставят в запрос."""
     pool = await AsyncPostgresPool.get(cfg.postgres)
@@ -290,150 +244,28 @@ async def chainlit_data_layer(  # noqa: PLR0913 — слой данных соб
         elements=tables.elements,
         feedbacks=tables.feedbacks,
         storage=storage,
-        feed=TranscriptFeed(saver, streamable),
         links=links,
         sessions=sessions,
         bus=bus,
     )
 
 
-def session_graph_builder(
-    providers: Annotated[LlmProviders, Depends(llm_providers)],
-    selected: Annotated[SelectedProfile, Depends(session_profile, scope="session")],
-) -> AgentGraphBuilder:
-    """Билдер графа хода по flow профиля."""
-    flow = selected.config.flow
-    if not isinstance(flow, PrefetchFlowConfig):
-        return PlainGraphBuilder()
-
-    return PrefetchGraphBuilder(_rephraser(providers, flow), flow.tools)
-
-
-def _rephraser(providers: LlmProviders, flow: PrefetchFlowConfig) -> Rephraser:
-    """Модель, готовящая поисковые запросы; без секции — запрос идёт как есть."""
-    cfg = flow.rephraser
-    if cfg is None:
-        return PassthroughRephraser()
-
-    reply = SchemaReply(providers.chat(cfg), cfg.sampling)
-
-    return LlmRephraser(reply, cfg.system_prompt)
-
-
-def session_chat(
-    providers: Annotated[LlmProviders, Depends(llm_providers)],
-    settings: Annotated[
-        AgentSettings, Depends(session_agent_settings, scope="session")
-    ],
-) -> ChatModelBridge:
-    """Чат-модель хода: мост графа поверх модели профиля с сэмплингом сессии."""
-    return ChatModelBridge(
-        chat_model=providers.chat(settings),
-        sampling=dict(settings.sampling),
-        model_name=settings.model,
-    )
-
-
-def sent_connections() -> SentConnections:
-    """Что чат отправил серверу инструментов вместо ссылок на соединения:
-    один объект на процесс, общий для порта инструментов и ленты."""
-    return SentConnections()
-
-
-def chat_mount(
-    contexts: Annotated[CallContexts, Depends(runtime.call_contexts)],
-    runs: Annotated[Runs, Depends(runtime.runs)],
-) -> ChatMount:
-    """Монтирование результатов вызовов на поверхность чата: один объект на
-    процесс, общий для пути вызова узла и вложений MCP-серверов."""
-    return ChatMount(contexts, runs)
-
-
-def node_calls(
-    contexts: Annotated[CallContexts, Depends(runtime.call_contexts)],
-    runs: Annotated[Runs, Depends(runtime.runs)],
-    sent: Annotated[SentConnections, Depends(sent_connections)],
-    mount: Annotated[ChatMount, Depends(chat_mount)],
-    journals: Annotated[RemoteJournals, Depends(remote_journals)],
-) -> ChatCalls:
-    """Путь вызова узла к телу в чате: вызов виден ленте идущего хода шагом.
-    Один объект на процесс: его берут исполнитель своих инструментов и
-    порты MCP-серверов."""
-    return ChatCalls(contexts, runs, sent, mount, journals)
-
-
-async def mcp_servers(  # noqa: PLR0913 — клиент собирается всеми входами чата
+async def mcp_servers(
     c: Annotated[AppConfig, Depends(get_app_config)],
-    storage: Annotated[StorageClient, Depends(storage_provider)],
     contexts: Annotated[CallContexts, Depends(runtime.call_contexts)],
-    mount: Annotated[ChatMount, Depends(chat_mount)],
-    runs: Annotated[Runs, Depends(runtime.runs)],
-    calls: Annotated[NodeCalls, Depends(node_calls)],
 ) -> AsyncIterator[McpServers]:
     """MCP-серверы процесса: подключаются на старте, закрываются на остановке.
-    Файлы из их результатов ложатся в workspace треда вложениями чата,
-    отчёты серверов о ходе работы вызовов уходят шагам ленты."""
-    files = ChatAttachments(contexts, storage, mount)
-    servers = McpServers(c.mcp, files, ChatProgress(contexts, runs), contexts, calls)
+    Инструменты через них зовёт агент, а не чат: чату нужны файлы серверов,
+    журналы вызовов и карточки инструментов, поэтому блоки-файлы и отчёты о
+    ходе вызовов приёмников не имеют, вызовы идут напрямую."""
+    servers = McpServers(
+        c.mcp, NamedBlocks(), DroppedSignals(), contexts, DirectCalls()
+    )
     await servers.start()
     try:
         yield servers
     finally:
         await servers.stop()
-
-
-async def langchain_agent(  # noqa: PLR0913
-    chat: Annotated[ChatModelBridge, Depends(session_chat, scope="session")],
-    builder: Annotated[
-        AgentGraphBuilder, Depends(session_graph_builder, scope="session")
-    ],
-    saver: Annotated[CheckpointMessages, Depends(langchain_checkpoint_saver)],
-    tools: Annotated[list[HostedTool], Depends(session_tools, scope="session")],
-    settings: Annotated[
-        AgentSettings, Depends(session_agent_settings, scope="session")
-    ],
-    registry: Annotated[ToolRegistry, Depends(runtime.tool_registry)],
-    raw: Annotated[DictConfig, Depends(runtime.get_raw_config)],
-    sent: Annotated[SentConnections, Depends(sent_connections)],
-    contexts: Annotated[CallContexts, Depends(runtime.call_contexts)],
-    mcp: Annotated[McpServers, Depends(mcp_servers)],
-    journals: Annotated[RemoteJournals, Depends(remote_journals)],
-    selected: Annotated[SelectedProfile, Depends(session_profile, scope="session")],
-    calls: Annotated[ChatCalls, Depends(node_calls)],
-) -> SessionAgent:
-    """Агент сессии: граф хода по flow профиля над портом инструментов."""
-    # один порт для графа: свои серверы и MCP-серверы профиля сессии.
-    # На MCP-сервер чат входит от имени пользователя: его identifier — логин,
-    # роли — те, с которыми он вошёл в чат. Соединения запечатываются на
-    # каждом сервере его собственным ключом
-    caller = McpCaller(
-        login=current_session().identifier, roles=current_session().roles
-    )
-    remote = await mcp.for_session(caller, selected.config.mcp)
-    journals.mark_streamable(mcp.journaled())
-    connections = ArmedConnections(
-        runtime.connection_store_ref, runtime.credential_source_ref, contexts
-    )
-    ttl = timedelta(seconds=bind(raw, "connections", ConnectionsConfig).seal_ttl_sec)
-
-    ports: list[ToolServer] = [
-        SealingToolServer(registry.server(tools, calls), connections, sent, ttl, calls)
-    ]
-    for port in remote:
-        ports.append(SealingToolServer(port, connections, sent, ttl, calls))
-        calls.shown(port.tools())
-
-    service = ToolServers(ports)
-
-    spec = GraphSpec(
-        chat=chat,
-        service=service,
-        system_prompt=settings.system_prompt,
-        checkpoints=saver,
-        history=HistoryView(service.names(), settings.history_messages),
-    )
-
-    return GraphAgent(builder.build(spec))
 
 
 def agent_config(
@@ -506,14 +338,38 @@ def thread_deleter(
     return ThreadDeleter(launcher, table, index)
 
 
+def agent_feeds(  # noqa: PLR0913 — фабрика собирается всеми входами процесса
+    config: Annotated[RuntimeConfig, Depends(runtime.get_runtime_config)],
+    bus: Annotated[MessageBus, Depends(runtime.message_bus)],
+    payloads: Annotated[PayloadStore, Depends(runtime.payload_store)],
+    locks: Annotated[LiveLocks, Depends(runtime.live_locks)],
+    journals: Annotated[RemoteJournals, Depends(remote_journals)],
+    media: Annotated[ToolMedia, Depends(tool_media)],
+    servers: Annotated[McpServers, Depends(mcp_servers)],
+    data_layer: Annotated[PostgresDataLayer, Depends(chainlit_data_layer)],
+    surfaces: Annotated[TabSurfaces, Depends(thread_surfaces)],
+) -> AgentFeeds:
+    """Приёмники потока агентов: ход в шину под замком треда, история — в
+    вкладку, оценки шагов — из слоя данных."""
+    parts = BusParts(
+        bus=bus,
+        payloads=payloads,
+        locks=locks,
+        heartbeat_sec=float(config.cluster.heartbeat_sec),
+    )
+
+    return AgentFeeds(parts, journals, media, servers, data_layer, surfaces)
+
+
 async def thread_agents(
     launcher: Annotated[AgentLauncher, Depends(agent_launcher)],
     meta: Annotated[AgentSessionMeta, Depends(agent_session_meta)],
     index: Annotated[ThreadAgentsIndex, Depends(thread_agents_index)],
+    feeds: Annotated[AgentFeeds, Depends(agent_feeds)],
 ) -> AsyncIterator[ThreadAgents]:
     """Агенты вкладки: процессы живут с DI-контейнером сессии chainlit и
     закрываются вместе с ним."""
-    agents = ThreadAgents(launcher, meta, index)
+    agents = ThreadAgents(launcher, meta, index, feeds)
     try:
         yield agents
     finally:

@@ -11,11 +11,20 @@ from pathlib import Path
 from uuid import UUID, uuid4
 
 import pytest
+from acp import (
+    start_tool_call,
+    text_block,
+    tool_content,
+    update_agent_message,
+    update_tool_call,
+)
 from chainlit.element import ElementDict
 
+from boba.chainlit.canvas.remote import RemoteJournals
 from boba.chainlit.chat.feed import QuestionBody, ShownElement, TurnFeed
 from boba.chainlit.domain.fields import StepField
 from boba.chainlit.infra.config import AppConfig
+from boba.chainlit.rendering.acp_view import ToolMedia, UpdateView
 from boba.chainlit.rendering.chat_view import ChatView, RecordingSink, StepRole
 from boba.chainlit.rendering.renderer import ChatRenderer, NoSurface
 from boba.db.postgres import AsyncPostgresPool
@@ -42,6 +51,7 @@ from boba.runtime.turns import StaleTurnCloser
 from boba.stand.refs import StandRefs
 from boba.stand_core.context import CallStand
 from boba.toolkit.channels import CallOutcome, ToolChannel
+from boba.toolkit.dag import ToolUseResult
 from boba.toolkit.result import MarkdownResult
 from boba.toolrun.streams import CallJournals, StreamPump, StreamPumps, ToolStream
 
@@ -118,7 +128,8 @@ def _renderer(
 ) -> tuple[ChatRenderer, RecordingSink]:
     sink = RecordingSink()
     view = ChatView(thread_id, sink, runtime_stand.journals, user_name="tester")
-    return ChatRenderer(thread_id, view, node.payloads, NoSurface()), sink
+    updates = UpdateView(view, thread_id, RemoteJournals(), ToolMedia())
+    return ChatRenderer(thread_id, updates, node.payloads, NoSurface()), sink
 
 
 async def _until(condition, what: str) -> None:
@@ -159,13 +170,26 @@ async def test_turn_on_one_instance_is_rendered_on_another(
     feed = TurnFeed(holder.bus, holder.payloads, scope, TURN, lock.token)
     try:
         await feed.started(TURN, QuestionBody(text="question"))
-        await feed.model_answered()
-        await feed.tool_started(CALL, "kb_probe", {"query": "x"}, None)
-        await feed.tool_finished(CALL, MarkdownResult(text="hits", elapsed_ms=10))
+        await feed.agent_update(
+            start_tool_call(CALL, "kb_probe", raw_input={"query": "x"})
+        )
+        hits = ToolUseResult(
+            artifact=MarkdownResult(text="hits", elapsed_ms=10).model_dump(
+                mode="json", exclude_none=True
+            )
+        )
+        await feed.agent_update(
+            update_tool_call(
+                CALL,
+                status="completed",
+                content=[tool_content(text_block("hits"))],
+                raw_output=hits.model_dump(mode="json", exclude_none=True),
+            )
+        )
         for token in ("hel", "lo"):
-            await feed.answer_token(TURN, token)
-
-        await feed.answer_closed(TURN)
+            chunk = update_agent_message(text_block(token))
+            chunk.message_id = "m-1"
+            await feed.agent_update(chunk)
 
         tool_id = ChatView.derive_id(thread_id, CALL, StepRole.TOOL)
 
@@ -186,19 +210,21 @@ async def test_turn_on_one_instance_is_rendered_on_another(
         assert (await late.catch_up(viewer.bus)).alive is True
         assert "hits" in _outputs(late_sink)
         assert late.turn_alive
-        late_answer = late.view.answer_message
-        assert late_answer is not None
-        assert late_answer.content == "hello"
+
+        def late_answered() -> bool:
+            # токены ответа уходят пачкой по таймеру склейки
+            answer = late.view.answer_message
+            if answer is None:
+                return False
+
+            return answer.content == "hello"
+
+        await _until(late_answered, "the late renderer streamed the answer")
 
         await feed.finished(TurnOutcome.OK, "")
         await _until(lambda: not renderer.turn_alive, "viewer saw TurnFinished")
 
-        after = ChatRenderer(
-            thread_id,
-            ChatView(thread_id, RecordingSink(), runtime_stand.journals),
-            viewer.payloads,
-            NoSurface(),
-        )
+        after, _ = _renderer(runtime_stand, thread_id, viewer)
         assert (await after.catch_up(viewer.bus)).alive is False
     finally:
         leave()
@@ -433,11 +459,12 @@ async def test_rewind_and_elements_reach_the_viewer_instance(
     view = ChatView(
         thread_id, RecordingSink(), runtime_stand.journals, user_name="tester"
     )
-    renderer = ChatRenderer(thread_id, view, viewer.payloads, surface)
+    updates = UpdateView(view, thread_id, RemoteJournals(), ToolMedia())
+    renderer = ChatRenderer(thread_id, updates, viewer.payloads, surface)
     leave = viewer.bus.subscribe(scope, renderer.apply)
 
+    # правка вопроса: лента забывает отправленное, тред заново не читается
     await holder.bus.publish(scope, ThreadRewound(turn_id=TURN), LockToken.local())
-    await _until(lambda: surface.resumed == 1, "viewer re-read the thread")
 
     removed = ElementRemoved(element_id="el-old")
     await holder.bus.publish(scope, removed, LockToken.local())
@@ -472,11 +499,12 @@ async def test_rewind_and_elements_reach_the_viewer_instance(
         assert shown.get("threadId") == thread_id
 
         late_surface = RecordingSurface()
+        late_view = ChatView(
+            thread_id, RecordingSink(), runtime_stand.journals, user_name="tester"
+        )
         late = ChatRenderer(
             thread_id,
-            ChatView(
-                thread_id, RecordingSink(), runtime_stand.journals, user_name="tester"
-            ),
+            UpdateView(late_view, thread_id, RemoteJournals(), ToolMedia()),
             viewer.payloads,
             late_surface,
         )

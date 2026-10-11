@@ -544,6 +544,10 @@ class StandConfig(StandService):
     """Поколение сессий: пустое — случайное на каждый старт процесса; общее у
     двух инстансов стенда даёт им принимать одну и ту же cookie входа."""
 
+    messaging: str = ""
+    """Провайдер шины [messaging]: пусто — как в конфиге отладки (память
+    процесса); postgres — шина в базе стенда, общая у двух инстансов."""
+
     CHAT_TOOLS: ClassVar[tuple[str, ...]] = ("connection_list", "connection_search")
     AGENT_MODULE: ClassVar[str] = "boba.cli.app"
     """Модуль агента ACP: стенд запускает его интерпретатором прогона."""
@@ -691,6 +695,8 @@ class StandConfig(StandService):
         env["BOBA_PORT"] = str(self.app_port)
         env["BOBA_INSTANCE_ID"] = f"stand{self.app_port}"
         env["BOBA_URL_PREFIX"] = self.url_prefix
+        if self.messaging:
+            env["BOBA_MESSAGING"] = self.messaging
         env["PGGSSENCMODE"] = "disable"
         # способ запуска tools фиксируется стендом, а не окружением прогона
         if self.sandbox:

@@ -5,8 +5,9 @@ socket.io тем же протоколом, что и браузер. Прове
 агента без секретов в argv и окружении и его уход вместе с вкладкой; возврат к
 треду воспроизводит историю через `session/load`, второй инстанс видит её как
 наблюдатель и получает отказ держателя в ленту, правка вопроса ветвит сессию,
-удаление треда удаляет сессию агента. История агента — Postgres стенда билетом
-Kerberos, как у самого чата."""
+удаление треда удаляет сессию агента; второй инстанс получает токены чужого хода
+по шине Postgres, оценки возвращаются к шагам, настройки сессии уходят агенту.
+История агента — Postgres стенда билетом Kerberos, как у самого чата."""
 
 from __future__ import annotations
 
@@ -51,6 +52,10 @@ PROFILE = "general"
 HISTORY_SCHEMA = "agent_history"
 HELD_TEXT = "held by another process"
 GENERATION = "acp-chat-stand"
+MESSAGING = "postgres"
+"""Шина в базе стенда: второй инстанс видит ход первого."""
+PULSE = "\u200b"
+STEP_TYPES = ("user_message", "run", "llm", "tool", "assistant_message")
 
 
 @pytest.fixture(autouse=True)
@@ -113,8 +118,36 @@ def app(
         llm_port=llm_port,
         db_name=stand_database,
         generation=GENERATION,
+        messaging=MESSAGING,
     )
     process = StandProcess(config=config, log_path=workdir / "app.log")
+    process.start(boot_timeout_sec=BOOT_TIMEOUT_SEC)
+    try:
+        yield process
+    finally:
+        process.stop()
+
+
+@pytest.fixture(scope="module")
+def second(
+    tmp_path_factory: pytest.TempPathFactory,
+    llm_port: int,
+    fake_llm: None,
+    stand_database: str,
+    app: StandProcess,
+) -> Iterator[StandProcess]:
+    """Второй инстанс chainlit над той же базой: наблюдатель чужих ходов."""
+    workdir = tmp_path_factory.mktemp("acp-chat-second")
+    config = StandConfig(
+        workdir=workdir,
+        app=StandApp.CHAINLIT,
+        app_port=free_port(),
+        llm_port=llm_port,
+        db_name=stand_database,
+        generation=GENERATION,
+        messaging=MESSAGING,
+    )
+    process = StandProcess(config=config, log_path=workdir / "second.log")
     process.start(boot_timeout_sec=BOOT_TIMEOUT_SEC)
     try:
         yield process
@@ -147,6 +180,9 @@ class ChatSocket:
     SOCKET_PATH: ClassVar[str] = "/ws/socket.io"
     CLIENT_TYPE: ClassVar[str] = "webapp"
     CHAT_START_STEP: ClassVar[str] = "on_chat_start"
+    OWN_STEPS: ClassVar[tuple[str, ...]] = ("on_chat_start", "on_chat_resume")
+    """Шаги самого chainlit вокруг обработчиков: в ленте треда их нет."""
+    TASK_END_GRACE_SEC: ClassVar[float] = 0.5
 
     def __init__(self, app: StandProcess, cookie: str, thread_id: str) -> None:
         self._app = app
@@ -182,7 +218,10 @@ class ChatSocket:
         # on_chat_resume заканчивается событием resume_thread
         await self.wait_task_end()
         if resumed:
-            await self.wait_event("resume_thread")
+            # история воспроизводится после отправки треда вкладке и
+            # заканчивается панелью настроек с настройками сессии
+            resumed_at = await self.wait_event_index("resume_thread")
+            await self.wait_event_index("chat_settings", since=resumed_at + 1)
             # on_chat_resume тоже обёрнут task_start/task_end: его конец не
             # должен сойти за конец следующего хода
             while not self._task_ends.empty():
@@ -221,16 +260,31 @@ class ChatSocket:
         await self._sio.emit("stop")
 
     async def wait_task_end(self, timeout_sec: float = TURN_TIMEOUT_SEC) -> None:
+        """Конец хода: task_end шлют и обёртка chainlit своей вкладке, и лента
+        всем вкладкам треда — второй, пришедший сразу за первым, не должен
+        сойти за конец следующего хода."""
         await asyncio.wait_for(self._task_ends.get(), timeout_sec)
+        await asyncio.sleep(self.TASK_END_GRACE_SEC)
+        while not self._task_ends.empty():
+            self._task_ends.get_nowait()
 
     async def wait_event(self, name: str, timeout_sec: float = TURN_TIMEOUT_SEC) -> Any:
+        index = await self.wait_event_index(name, timeout_sec)
+
+        return self.events[index][1]
+
+    async def wait_event_index(
+        self, name: str, timeout_sec: float = TURN_TIMEOUT_SEC, since: int = 0
+    ) -> int:
+        """Позиция первого события name начиная с since."""
         deadline = time.monotonic() + timeout_sec
-        seen = 0
+        seen = since
         while time.monotonic() < deadline:
-            for event, payload in self.events[seen:]:
-                seen += 1
+            for event, _ in self.events[seen:]:
                 if event == name:
-                    return payload
+                    return seen
+
+                seen += 1
 
             await asyncio.sleep(0.05)
 
@@ -278,6 +332,20 @@ class ChatSocket:
 
         return found
 
+    def frames(self) -> str:
+        """Кадры ленты коротко: событие, тип и начало id шага."""
+        lines: list[str] = []
+        for event, payload in self.events:
+            if not isinstance(payload, dict):
+                lines.append(event)
+                continue
+
+            lines.append(
+                f"{event} {payload.get('type', '')} {str(payload.get('id', ''))[:8]}"
+            )
+
+        return "\n".join(lines)
+
     def tokens(self) -> str:
         found: list[str] = []
         for event, payload in self.events:
@@ -304,6 +372,50 @@ class ChatSocket:
                 found.append(str(payload.get("output")))
 
         return found
+
+    def steps(self) -> dict[str, dict[str, Any]]:
+        """Последняя нагрузка каждого шага ленты по id, кроме кружка ожидания."""
+        found: dict[str, dict[str, Any]] = {}
+        for event, payload in self.events:
+            if event not in ("new_message", "update_message", "stream_start"):
+                continue
+
+            if not isinstance(payload, dict):
+                continue
+
+            if payload.get("output") == PULSE:
+                continue
+
+            if payload.get("name") in self.OWN_STEPS:
+                continue
+
+            found[str(payload.get("id"))] = payload
+
+        return found
+
+    def step_ids(self) -> dict[str, set[str]]:
+        """Id шагов по типам: что лента нарисовала этой вкладке."""
+        found: dict[str, set[str]] = {}
+        for step_id, payload in self.steps().items():
+            found.setdefault(str(payload.get("type")), set()).add(step_id)
+
+        return found
+
+    def elements(self) -> list[dict[str, Any]]:
+        """Элементы, присланные вкладке: отдельно и вместе с тредом."""
+        found: list[dict[str, Any]] = []
+        for event, payload in self.events:
+            if event == "element" and isinstance(payload, dict):
+                found.append(payload)
+
+            if event == "resume_thread" and isinstance(payload, dict):
+                found.extend(payload.get("elements") or [])
+
+        return found
+
+    async def settings(self, form: dict[str, Any]) -> None:
+        """Форма панели настроек, как её шлёт кнопка Confirm."""
+        await self._sio.emit("chat_settings_change", form)
 
     async def _on_any(self, event: str, *args: Any) -> None:
         payload: Any = None
@@ -558,12 +670,7 @@ class TestHistory:
             await again.end_session()
 
     async def test_second_instance_observes_and_is_refused_a_turn(
-        self,
-        app: StandProcess,
-        cookie: str,
-        llm_port: int,
-        stand_database: str,
-        tmp_path: Path,
+        self, app: StandProcess, second: StandProcess, cookie: str
     ) -> None:
         first = ChatSocket(app, cookie, str(uuid4()))
         await first.open()
@@ -571,16 +678,6 @@ class TestHistory:
         await first.wait_task_end()
         assert not first.errors(), first.errors()
 
-        config = StandConfig(
-            workdir=tmp_path / "second",
-            app=StandApp.CHAINLIT,
-            app_port=free_port(),
-            llm_port=llm_port,
-            db_name=stand_database,
-            generation=GENERATION,
-        )
-        second = StandProcess(config=config, log_path=tmp_path / "second.log")
-        second.start(boot_timeout_sec=BOOT_TIMEOUT_SEC)
         try:
             observer = ChatSocket(second, cookie, first.thread_id)
             await observer.open(resumed=True)
@@ -598,7 +695,6 @@ class TestHistory:
             finally:
                 await observer.end_session()
         finally:
-            second.stop()
             await first.end_session()
 
     async def test_editing_a_question_forks_the_session(
@@ -661,3 +757,176 @@ class TestHistory:
         assert await rows.chat_settings_rows(tab.thread_id) == 0
         assert await rows.history_rows(session_id) == 0
         await tab.close()
+
+
+class TestFeed:
+    """Лента из уведомлений агента: история и живой ход — одни шаги; второй
+    инстанс видит токены чужого хода; элементы и оценки привязаны к шагам;
+    настройки сессии уходят агенту."""
+
+    @staticmethod
+    def _answer_id(tab: ChatSocket) -> str:
+        """Id первого ответа хода: ответ вопроса без номера."""
+        answers = [
+            step_id
+            for step_id, payload in tab.steps().items()
+            if payload.get("type") == "assistant_message"
+            and not payload.get("isError")
+            and payload.get("output")
+        ]
+        assert answers, tab.trace()
+
+        return answers[0]
+
+    async def test_resumed_tab_draws_the_same_steps_as_the_live_turn(
+        self, app: StandProcess, cookie: str
+    ) -> None:
+        tab = ChatSocket(app, cookie, str(uuid4()))
+        await tab.open()
+        await tab.send(f"same {ScenarioName.THINKING_ANSWER.value}")
+        await tab.wait_task_end()
+        assert not tab.errors(), (tab.errors(), app.tail(60))
+        live = tab.step_ids()
+        live_steps = tab.steps()
+        await tab.end_session()
+
+        again = ChatSocket(app, cookie, tab.thread_id)
+        await again.open(resumed=True)
+        try:
+            assert not again.errors(), (again.errors(), app.tail(60))
+            replayed = again.step_ids()
+            for kind in ("user_message", "run", "llm", "assistant_message"):
+                assert live.get(kind) == replayed.get(kind), (kind, live, replayed)
+
+            replayed_steps = again.steps()
+            final = {
+                str(p.get("id"))
+                for e, p in again.events
+                if e in ("new_message", "update_message") and isinstance(p, dict)
+            }
+            assert live["llm"] <= final, again.frames()
+            assert live["assistant_message"] <= final, again.frames()
+            for step_id in live["assistant_message"] | live["llm"]:
+                assert live_steps[step_id].get("output") == replayed_steps[step_id].get(
+                    "output"
+                ), step_id
+                assert live_steps[step_id].get("parentId") == replayed_steps[
+                    step_id
+                ].get("parentId"), step_id
+        finally:
+            await again.end_session()
+
+    async def test_second_instance_follows_a_live_turn(
+        self, app: StandProcess, second: StandProcess, cookie: str
+    ) -> None:
+        holder = ChatSocket(app, cookie, str(uuid4()))
+        await holder.open()
+        await holder.send(f"follow {ScenarioName.LONG.value}")
+        await holder.wait_event("stream_token")
+
+        observer = ChatSocket(second, cookie, holder.thread_id)
+        try:
+            await observer.open(resumed=True)
+            await observer.wait_event("stream_token", timeout_sec=60.0)
+            await observer.wait_task_end()
+            await holder.wait_task_end()
+
+            assert not observer.errors(), (observer.errors(), second.tail(60))
+            assert "Result." in observer.tokens() + "".join(
+                str(m.get("output")) for m in observer.messages()
+            ), observer.trace()
+            assert (
+                holder.step_ids()["assistant_message"]
+                <= (observer.step_ids()["assistant_message"])
+            ), (holder.step_ids(), observer.step_ids())
+        finally:
+            await observer.end_session()
+            await holder.end_session()
+
+    async def test_feedback_is_restored_on_resume(
+        self, app: StandProcess, cookie: str
+    ) -> None:
+        tab = ChatSocket(app, cookie, str(uuid4()))
+        await tab.open()
+        await tab.send(f"rate {ScenarioName.ANSWER.value}")
+        await tab.wait_task_end()
+        assert not tab.errors(), tab.errors()
+        answer_id = self._answer_id(tab)
+
+        response = httpx.put(
+            f"{app.config.base_url}/feedback",
+            json={
+                "feedback": {
+                    "forId": answer_id,
+                    "value": 1,
+                    "comment": "good",
+                    "threadId": tab.thread_id,
+                },
+                "sessionId": tab.session_id,
+            },
+            headers={"Cookie": cookie},
+            timeout=30.0,
+        )
+        assert response.status_code == 200, response.text[:300]
+        await tab.end_session()
+
+        again = ChatSocket(app, cookie, tab.thread_id)
+        await again.open(resumed=True)
+        try:
+            await again.wait_event("resume_thread")
+            rated = [
+                payload
+                for event, payload in again.events
+                if event == "update_message"
+                and isinstance(payload, dict)
+                and payload.get("id") == answer_id
+                and payload.get("feedback")
+            ]
+            if not rated:
+                await asyncio.sleep(1.0)
+                rated = [
+                    payload
+                    for event, payload in again.events
+                    if event == "update_message"
+                    and isinstance(payload, dict)
+                    and payload.get("id") == answer_id
+                    and payload.get("feedback")
+                ]
+
+            assert rated, again.trace()
+            assert rated[-1]["feedback"]["value"] == 1
+        finally:
+            await again.end_session()
+
+    async def test_session_options_reach_the_agent(
+        self, app: StandProcess, cookie: str
+    ) -> None:
+        tab = ChatSocket(app, cookie, str(uuid4()))
+        await tab.open()
+        await tab.send(f"options {ScenarioName.ANSWER.value}")
+        await tab.wait_task_end()
+        assert not tab.errors(), tab.errors()
+
+        panels = [p for e, p in tab.events if e == "chat_settings"]
+        assert panels, tab.names()
+        widgets: dict[str, dict[str, Any]] = {}
+        for panel_tab in panels[-1]:
+            for widget in panel_tab.get("inputs") or []:
+                widgets[str(widget.get("id"))] = widget
+
+        assert "session_mode" in widgets, widgets
+        assert widgets["session_mode"].get("initial") == "bypassPermissions"
+        try:
+            await tab.settings({"session_mode": "default"})
+            await asyncio.sleep(1.0)
+            assert not tab.errors(), tab.errors()
+
+            await tab.settings({"session_mode": "no-such-mode"})
+            deadline = time.monotonic() + 10
+            while time.monotonic() < deadline and not tab.errors():
+                await asyncio.sleep(0.2)
+
+            assert tab.errors(), tab.trace()
+            assert "no-such-mode" in tab.errors()[-1]
+        finally:
+            await tab.end_session()

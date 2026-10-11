@@ -2,7 +2,9 @@
 
 Строки users/threads/elements/feedbacks — у сервиса (порты UserRows, ChatThreads,
 ElementStore, FeedbackStore); здесь только перевод в словари chainlit, тела вложений
-в хранилище файлов и оповещение шины. Сообщения диалога хранит checkpointer.
+в хранилище файлов и оповещение шины. Шагов ленты слой не хранит и не строит:
+историю диалога держит агент, лента воспроизводится из его `session/load`, а
+оценки шагов отдаются ленте по id шага (feedbacks_of).
 
 Ошибки:
 DataLayerError — контракт слоя данных: чужое пакуется data_boundary.
@@ -11,7 +13,7 @@ DataLayerError — контракт слоя данных: чужое пакуе
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from collections.abc import AsyncGenerator, Mapping, Sequence
+from collections.abc import AsyncGenerator, Coroutine, Mapping
 from datetime import UTC, datetime
 from typing import Any, ClassVar, Protocol, TypeVar
 from uuid import UUID, uuid4
@@ -19,9 +21,9 @@ from uuid import UUID, uuid4
 import aiofiles
 import aiofiles.os
 
-from boba.canvas.canvas import CanvasAction, CanvasElement
+from boba.canvas.canvas import CanvasElement
 from boba.canvas.keys import ElementProps, ObjectKey
-from boba.chainlit.domain.fields import ElementField, StepField, ThreadField
+from boba.chainlit.domain.fields import ElementField, ThreadField
 from boba.chainlit.domain.keys import AttachmentLinks
 from boba.chat.threads import (
     ChatThreads,
@@ -74,27 +76,13 @@ from chainlit.user import User as ChainlitUser
 
 __all__ = [
     "AttachmentDataLayer",
+    "FeedbackRows",
     "HeldContent",
     "PostgresDataLayer",
+    "ThreadDeletionListener",
 ]
 
 _T = TypeVar("_T")
-
-
-class ThreadFeed(Protocol):
-    """Сборщик ленты треда: слой данных знает контракт, но не реализацию.
-
-    Историю разворачивает в шаги слой чата — иначе хранилище зависело бы от
-    отрисовки.
-    """
-
-    async def steps(
-        self, thread_id: str, user_name: str | None
-    ) -> Sequence[StepDict]: ...
-
-    async def journaled(self, thread_id: str) -> frozenset[str]:
-        """Идентификаторы вызовов треда, журнал которых можно прочитать."""
-        ...
 
 
 class HeldContent:
@@ -117,6 +105,17 @@ class HeldContent:
             content = content.encode(self.ENCODING)
 
         yield content
+
+
+class FeedbackRows(Protocol):
+    """Оценки шагов треда по id шага: их ставит шагам лента после
+    воспроизведения истории. Реализует PostgresDataLayer."""
+
+    @abstractmethod
+    def feedbacks_of(
+        self, thread_id: str
+    ) -> Coroutine[Any, Any, Mapping[str, FeedbackDict]]:
+        """Оценки треда: id шага → оценка."""
 
 
 class ThreadDeletionListener(Protocol):
@@ -338,7 +337,7 @@ class FeedbackDicts:
         return value
 
 
-class PostgresDataLayer(AttachmentDataLayer, ThreadOwnership):
+class PostgresDataLayer(AttachmentDataLayer, ThreadOwnership, FeedbackRows):
     """Хранилище chainlit над портами сервиса: словари, тела вложений, оповещения."""
 
     def __init__(  # noqa: PLR0913 — зависимости слоя вносятся сборкой
@@ -348,7 +347,6 @@ class PostgresDataLayer(AttachmentDataLayer, ThreadOwnership):
         elements: ElementStore,
         feedbacks: FeedbackStore,
         storage: StorageClient,
-        feed: ThreadFeed,
         links: AttachmentLinks,
         sessions: SessionSource,
         bus: MessageBus,
@@ -358,7 +356,6 @@ class PostgresDataLayer(AttachmentDataLayer, ThreadOwnership):
         self._elements = elements
         self._feedbacks = feedbacks
         self._storage = storage
-        self._feed = feed
         self._links = links
         self._sessions = sessions
         self._bus = bus
@@ -588,42 +585,37 @@ class PostgresDataLayer(AttachmentDataLayer, ThreadOwnership):
             return None
 
         user_identifier = await self._identifier_of(stored.user_id)
-        feedback_rows = await self._feedbacks.list_of_thread(tid)
         element_rows = await self._elements.list_of_thread(tid)
 
-        steps = list(await self._feed.steps(thread_id, user_identifier))
-        feedback_by_step = {
-            Codec.uuid_str(f.for_id): FeedbackDicts.dict_of(f) for f in feedback_rows
-        }
-        for step in steps:
-            step[StepField.FEEDBACK] = feedback_by_step.get(step.get(StepField.ID, ""))
-
-        journaled = await self._feed.journaled(thread_id)
+        # шагов у треда здесь нет: их воспроизводит агент при открытии треда;
+        # кнопки журнала лента ставит заново по итогам вызовов
         elements: list[ElementDict] = []
         for row in element_rows:
             element = ElementDicts.dict_of(row)
-            if self._dead_journal_button(element, journaled):
+            if self._journal_button(element):
                 continue
 
             elements.append(element)
 
-        thread = ThreadDicts.thread(stored, user_identifier, steps, elements)
+        thread = ThreadDicts.thread(stored, user_identifier, [], elements)
         self._sign_element_urls(thread)
 
         return thread
 
+    @data_boundary
+    async def feedbacks_of(self, thread_id: str) -> Mapping[str, FeedbackDict]:
+        """Оценки треда по id шага: лента ставит их шагам после воспроизведения."""
+        found: dict[str, FeedbackDict] = {}
+        for row in await self._feedbacks.list_of_thread(UUID(thread_id)):
+            found[Codec.uuid_str(row.for_id)] = FeedbackDicts.dict_of(row)
+
+        return found
+
     @staticmethod
-    def _dead_journal_button(element: ElementDict, journaled: frozenset[str]) -> bool:
-        """Сохранённая кнопка журнала вызова, журнал которого не прочитать:
-        в истории у вызова нет адреса журнала."""
-        if element.get(ElementField.NAME) != CanvasElement.STREAM.value:
-            return False
-
-        props = element.get(ElementField.PROPS)
-        if not props:
-            return True
-
-        return props.get(CanvasAction.CALL_ID.value) not in journaled
+    def _journal_button(element: ElementDict) -> bool:
+        """Сохранённая кнопка журнала вызова: лента ставит её заново по итогу
+        вызова, сохранённая была бы второй."""
+        return element.get(ElementField.NAME) == CanvasElement.STREAM.value
 
     async def _identifier_of(self, user_id: UUID | None) -> str | None:
         """Логин владельца треда; None — тред без владельца или строки уже нет."""
