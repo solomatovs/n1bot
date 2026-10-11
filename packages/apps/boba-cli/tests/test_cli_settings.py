@@ -1,21 +1,28 @@
 """Слои настроек: порядок приоритета, слияние таблиц и списков, профиль из
-переменных окружения, `.mcp.json` формата Claude Code, понятные отказы."""
+переменных окружения, `.mcp.json` формата Claude Code, секреты значениями в
+файле с правами 0600, секция `hooks`, история `memory`, понятные отказы."""
 
 from __future__ import annotations
 
 import json
+from collections.abc import AsyncIterator
 from pathlib import Path
 
 import pytest
 from pydantic import SecretStr
 
-from boba.agent.records import PermissionMode
+from boba.agent.history import HistoryError, MemoryHistoryStore, SessionId
+from boba.agent.queue import QueueEntry, QueueKind
+from boba.agent.records import PermissionMode, UserRecord
 from boba.cli.settings import (
     Arguments,
     EnvName,
     HistoryKind,
+    HookEvent,
+    HookFailure,
     JsonlHistorySettings,
     McpServerBuilder,
+    MemoryHistorySettings,
     PostgresBuilder,
     PostgresHistorySettings,
     ProfileBuilder,
@@ -24,6 +31,17 @@ from boba.cli.settings import (
     SettingsSource,
 )
 from boba.mcp_client.client import BearerAuth, HttpEndpoint, StdioCommand
+from boba.stand.agent import Collected, FakeServer, Protocol, Served, StandAgents
+from boba.stand.ui.fake_llm import ScenarioName
+
+pytestmark = pytest.mark.anyio
+
+OWNER_ONLY = 0o600
+WORLD_READABLE = 0o644
+API_KEY = "sk-file-secret"
+DSN = "postgresql://agent:pg-file-secret@db.example.org:5432/boba"
+HOOK_URL = "http://127.0.0.1:8000/chat/hooks/pre-tool-use"
+SESSION = SessionId(value="settings-memory-1")
 
 ENV = {
     EnvName.LLM_KIND.value: "openai",
@@ -299,3 +317,311 @@ class TestPostgresHistory:
 
         with pytest.raises(SettingsError, match="names no user"):
             PostgresBuilder({"PG": "postgresql://db/boba"}).config(history)
+
+
+def write_private(path: Path, document: dict[str, object]) -> None:
+    write(path, document)
+    path.chmod(OWNER_ONLY)
+
+
+def secret_document() -> dict[str, object]:
+    return {
+        "model": "user-main",
+        "models": {
+            "user-main": {
+                "provider": {
+                    "kind": "openai",
+                    "baseUrl": "https://llm.local/v1",
+                    "apiKey": API_KEY,
+                },
+                "model": "qwen3",
+                "contextWindow": 32000,
+                "maxOutputTokens": 4096,
+            }
+        },
+        "history": {"kind": "postgres", "dsn": DSN, "schema": "agent"},
+    }
+
+
+def hooks_document() -> dict[str, object]:
+    return {
+        "hooks": {
+            "PreToolUse": [
+                {
+                    "matcher": "mcp__boba_base__.*",
+                    "hooks": [
+                        {
+                            "type": "http",
+                            "url": HOOK_URL,
+                            "headers": {"Authorization": "Bearer jwt-1"},
+                            "timeout": 10,
+                            "onFailure": "block",
+                        }
+                    ],
+                }
+            ]
+        }
+    }
+
+
+class TestSecretsInFile:
+    def test_private_file_with_secrets_is_parsed(self, tmp_path: Path) -> None:
+        path = tmp_path / "settings.json"
+        write_private(path, secret_document())
+
+        effective = settings(tmp_path, Arguments(settings=(str(path),))).effective()
+
+        profile = ProfileBuilder({}).profile("user-main", effective.selected_model())
+        token = profile.chat.model_dump()["provider"]["connection"]["auth"]["token"]
+        assert isinstance(token, SecretStr)
+        assert token.get_secret_value() == API_KEY
+        assert isinstance(effective.history, PostgresHistorySettings)
+        config = PostgresBuilder({}).config(effective.history)
+        assert config.host == "db.example.org"
+        assert config.auth.method == "password"
+        assert effective.history.db_schema == "agent"
+        public = json.dumps(effective.public())
+        assert API_KEY not in public
+        assert "pg-file-secret" not in public
+
+    def test_world_readable_file_with_secrets_is_refused(self, tmp_path: Path) -> None:
+        path = tmp_path / "settings.json"
+        write(path, secret_document())
+        path.chmod(WORLD_READABLE)
+
+        with pytest.raises(SettingsError) as failure:
+            settings(tmp_path, Arguments(settings=(str(path),))).effective()
+
+        text = str(failure.value)
+        assert str(path) in text
+        assert "0644" in text
+        assert "chmod 600" in text
+        assert "history.dsn" in text
+        assert "models.user-main.provider.apiKey" in text
+
+    def test_user_file_with_secrets_is_checked_too(self, tmp_path: Path) -> None:
+        path = tmp_path / "home" / ".boba" / "settings.json"
+        write(path, secret_document())
+        path.chmod(WORLD_READABLE)
+
+        with pytest.raises(SettingsError, match="user settings"):
+            settings(tmp_path).effective()
+
+        path.chmod(OWNER_ONLY)
+        effective = settings(tmp_path).effective()
+        assert effective.model == "user-main"
+
+    def test_world_readable_file_without_secrets_is_fine(self, tmp_path: Path) -> None:
+        path = tmp_path / "settings.json"
+        write(path, {"agentName": "Open"})
+        path.chmod(WORLD_READABLE)
+
+        effective = settings(tmp_path, Arguments(settings=(str(path),))).effective()
+
+        assert effective.agent_name == "Open"
+
+    def test_secrets_on_the_command_line_are_refused(self, tmp_path: Path) -> None:
+        arguments = Arguments(settings=(json.dumps(secret_document()),))
+
+        with pytest.raises(SettingsError, match="command line"):
+            settings(tmp_path, arguments).effective()
+
+    def test_key_value_and_key_variable_exclude_each_other(
+        self, tmp_path: Path
+    ) -> None:
+        document = secret_document()
+        models = document["models"]
+        assert isinstance(models, dict)
+        models["user-main"]["provider"]["apiKeyEnv"] = "KEY"
+        path = tmp_path / "settings.json"
+        write_private(path, document)
+
+        with pytest.raises(SettingsError, match="'apiKey' and 'apiKeyEnv'"):
+            settings(tmp_path, Arguments(settings=(str(path),))).effective()
+
+    def test_postgres_history_needs_dsn_or_dsn_env(self, tmp_path: Path) -> None:
+        path = tmp_path / "settings.json"
+        write_private(path, {"history": {"kind": "postgres"}})
+
+        with pytest.raises(SettingsError, match="'dsn'"):
+            settings(tmp_path, Arguments(settings=(str(path),))).effective()
+
+    def test_secret_survives_the_merge_of_layers(self, tmp_path: Path) -> None:
+        write_private(tmp_path / "home" / ".boba" / "settings.json", secret_document())
+        write(
+            tmp_path / "project" / ".boba" / "settings.json",
+            {"agentName": "Project", "limits": {"maxTurns": 3}},
+        )
+
+        effective = settings(tmp_path).effective()
+
+        assert isinstance(effective.history, PostgresHistorySettings)
+        assert effective.history.dsn is not None
+        assert effective.history.dsn.get_secret_value() == DSN
+        assert effective.agent_name == "Project"
+
+
+class TestHooks:
+    def test_section_is_parsed_into_events_matchers_and_handlers(
+        self, tmp_path: Path
+    ) -> None:
+        write(tmp_path / "home" / ".boba" / "settings.json", hooks_document())
+
+        effective = settings(tmp_path).effective()
+
+        groups = effective.hooks[HookEvent.PRE_TOOL_USE]
+        assert len(groups) == 1
+        assert groups[0].matcher == "mcp__boba_base__.*"
+        hook = groups[0].hooks[0]
+        assert hook.url == HOOK_URL
+        assert hook.headers == {"Authorization": "Bearer jwt-1"}
+        assert hook.timeout == 10
+        assert hook.on_failure is HookFailure.BLOCK
+        public = effective.public()["hooks"]["PreToolUse"][0]["hooks"][0]
+        assert public["onFailure"] == "block"
+
+    def test_defaults_match_the_documented_form(self, tmp_path: Path) -> None:
+        write(
+            tmp_path / "home" / ".boba" / "settings.json",
+            {"hooks": {"PreToolUse": [{"hooks": [{"type": "http", "url": HOOK_URL}]}]}},
+        )
+
+        effective = settings(tmp_path).effective()
+
+        group = effective.hooks[HookEvent.PRE_TOOL_USE][0]
+        assert group.matcher == ""
+        assert group.hooks[0].timeout == 600
+        assert group.hooks[0].on_failure is HookFailure.CONTINUE
+        assert group.hooks[0].headers == {}
+
+    def test_groups_of_layers_are_joined(self, tmp_path: Path) -> None:
+        write(tmp_path / "home" / ".boba" / "settings.json", hooks_document())
+        write(
+            tmp_path / "project" / ".boba" / "settings.json",
+            {
+                "hooks": {
+                    "PreToolUse": [
+                        {
+                            "matcher": "mcp__other__.*",
+                            "hooks": [{"type": "http", "url": "http://127.0.0.1:1/h"}],
+                        }
+                    ],
+                    "SessionEnd": [{"hooks": [{"type": "http", "url": HOOK_URL}]}],
+                }
+            },
+        )
+
+        effective = settings(tmp_path).effective()
+
+        matchers = [g.matcher for g in effective.hooks[HookEvent.PRE_TOOL_USE]]
+        assert matchers == ["mcp__boba_base__.*", "mcp__other__.*"]
+        assert HookEvent.SESSION_END in effective.hooks
+
+    @pytest.mark.parametrize(
+        ("handler", "complaint"),
+        [
+            ({"type": "command", "command": "true"}, "type"),
+            ({"type": "http"}, "url"),
+            ({"type": "http", "url": "/relative"}, "absolute http"),
+            ({"type": "http", "url": HOOK_URL, "onFailure": "retry"}, "onFailure"),
+            ({"type": "http", "url": HOOK_URL, "timeout": 0}, "timeout"),
+            ({"type": "http", "url": HOOK_URL, "colour": "red"}, "colour"),
+        ],
+    )
+    def test_malformed_handler_is_refused(
+        self, tmp_path: Path, handler: dict[str, object], complaint: str
+    ) -> None:
+        write(
+            tmp_path / "home" / ".boba" / "settings.json",
+            {"hooks": {"PreToolUse": [{"hooks": [handler]}]}},
+        )
+
+        with pytest.raises(SettingsError, match=complaint):
+            settings(tmp_path).effective()
+
+    def test_unknown_event_and_empty_group_are_refused(self, tmp_path: Path) -> None:
+        write(
+            tmp_path / "home" / ".boba" / "settings.json",
+            {"hooks": {"OnCoffee": [{"hooks": [{"type": "http", "url": HOOK_URL}]}]}},
+        )
+        with pytest.raises(SettingsError, match="OnCoffee"):
+            settings(tmp_path).effective()
+
+        write(
+            tmp_path / "home" / ".boba" / "settings.json",
+            {"hooks": {"PreToolUse": [{"matcher": "x", "hooks": []}]}},
+        )
+        with pytest.raises(SettingsError, match="hooks"):
+            settings(tmp_path).effective()
+
+    def test_broken_matcher_is_refused(self, tmp_path: Path) -> None:
+        write(
+            tmp_path / "home" / ".boba" / "settings.json",
+            {
+                "hooks": {
+                    "PreToolUse": [
+                        {
+                            "matcher": "mcp__(",
+                            "hooks": [{"type": "http", "url": HOOK_URL}],
+                        }
+                    ]
+                }
+            },
+        )
+
+        with pytest.raises(SettingsError, match="regular expression"):
+            settings(tmp_path).effective()
+
+
+@pytest.fixture
+async def server() -> AsyncIterator[FakeServer]:
+    fake = FakeServer()
+    await fake.start()
+    try:
+        yield fake
+    finally:
+        await fake.stop()
+
+
+class TestMemoryHistory:
+    def test_kind_memory_is_a_history_without_secrets(self, tmp_path: Path) -> None:
+        path = tmp_path / "settings.json"
+        write(path, {"history": {"kind": "memory"}})
+        path.chmod(WORLD_READABLE)
+
+        effective = settings(tmp_path, Arguments(settings=(str(path),))).effective()
+
+        assert isinstance(effective.history, MemoryHistorySettings)
+        assert effective.history.kind is HistoryKind.MEMORY
+        assert effective.public()["history"] == {"kind": "memory"}
+
+    async def test_reopened_session_has_no_history(
+        self, server: FakeServer, tmp_path: Path
+    ) -> None:
+        agents = StandAgents(server, tmp_path / "unused")
+        store = MemoryHistoryStore()
+        profile = agents.profile(Protocol.OPENAI)
+        try:
+            served = Served(agents.agent(profile, Collected(), store=store))
+            session = await served.open(SESSION, resume=False)
+            served.agent.queue.enqueue(
+                QueueEntry(kind=QueueKind.PROMPT, text=ScenarioName.ANSWER.value)
+            )
+            await served.agent.settled()
+            await served.close()
+
+            spoken = [r for r in session.records() if isinstance(r, UserRecord)]
+            assert len(spoken) == 1
+            assert [line async for line in store.read(SESSION)] == []
+            assert not (tmp_path / "unused").exists()
+
+            again = agents.agent(profile, Collected(), store=store)
+            with pytest.raises(HistoryError, match="no journal to resume"):
+                await again.open(SESSION, resume=True)
+
+            fresh = Served(agents.agent(profile, Collected(), store=store))
+            reopened = await fresh.open(SESSION, resume=False)
+            await fresh.close()
+            assert [r for r in reopened.records() if isinstance(r, UserRecord)] == []
+        finally:
+            await agents.aclose()

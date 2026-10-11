@@ -5,31 +5,47 @@
 файл проекта, файлы и строки `--settings`, аргументы запуска,
 административный слой `--policy`. Системный промпт может прийти и командой
 `initialize` после старта — это дело протокола, не настроек.
-Поле побеждает полем, таблицы (`models`, `env`, серверы MCP) сливаются по
-именам, списки правил объединяются. Итог — одна модель EffectiveSettings,
-из которой строятся профиль модели, пределы, режим и серверы MCP для ядра.
-Окружение процесса читается только здесь: ключ провайдера берётся по имени
-переменной из профиля, минимальный профиль без файлов — из `BOBA_LLM_*`.
+Поле побеждает полем, таблицы (`models`, `env`, `hooks`, серверы MCP)
+сливаются по именам, списки правил объединяются. Итог — одна модель
+EffectiveSettings, из которой строятся профиль модели, пределы, режим,
+хуки и серверы MCP для ядра.
+Секреты — ключ провайдера `apiKey` и строка подключения `dsn` — лежат
+значениями в файле настроек; такой файл принимается только с правами не
+шире 0600, а в строке аргумента секреты запрещены. Чтение секрета по имени
+переменной (`apiKeyEnv`, `dsnEnv`) остаётся для ручного запуска; окружение
+процесса читается только здесь, минимальный профиль без файлов —
+из `BOBA_LLM_*`.
 
 Ошибки:
 SettingsError — файл не прочитан или не разобран, слой не проходит модель,
-    действующих настроек не хватает для запуска: нет профиля модели, нет
-    переменной с ключом, сервер MCP неподдерживаемого вида.
+    файл с секретами доступен не только владельцу, действующих настроек не
+    хватает для запуска: нет профиля модели, нет переменной с ключом, сервер
+    MCP неподдерживаемого вида.
 """
 
 from __future__ import annotations
 
 import json
+import re
+import stat
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
-from typing import Annotated, Any, ClassVar, Literal
+from typing import Annotated, Any, ClassVar, Literal, TypeGuard
 
 import httpx
 import psycopg
 from psycopg.conninfo import conninfo_to_dict
-from pydantic import BaseModel, ConfigDict, Field, SecretStr, ValidationError
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    SecretStr,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
 from pydantic.alias_generators import to_camel
 
 from boba.agent.profile import (
@@ -54,14 +70,21 @@ __all__ = [
     "EffectiveSettings",
     "EnvName",
     "HistoryKind",
+    "HookEvent",
+    "HookFailure",
+    "HookMatcherGroup",
+    "HookType",
+    "HttpHook",
     "JsonlHistorySettings",
     "McpServerJson",
+    "MemoryHistorySettings",
     "ModelSettings",
     "PermissionSettings",
     "PostgresBuilder",
     "PostgresHistorySettings",
     "ProviderKind",
     "ProviderSettings",
+    "SecretsGuard",
     "Settings",
     "SettingsError",
     "SettingsLayer",
@@ -115,8 +138,46 @@ class ProviderKind(StrEnum):
 
 
 class HistoryKind(StrEnum):
+    """Виды хранилища истории: файлы, Postgres, только память процесса."""
+
     JSONL = "jsonl"
     POSTGRES = "postgres"
+    MEMORY = "memory"
+
+
+class SecretKey(StrEnum):
+    """Ключи файла настроек, под которыми лежат секреты."""
+
+    PROVIDER = "provider"
+    API_KEY = "apiKey"
+    DSN = "dsn"
+
+
+class HookEvent(StrEnum):
+    """События, на которые в настройках навешиваются хуки."""
+
+    PRE_TOOL_USE = "PreToolUse"
+    POST_TOOL_USE = "PostToolUse"
+    POST_TOOL_USE_FAILURE = "PostToolUseFailure"
+    USER_PROMPT_SUBMIT = "UserPromptSubmit"
+    SESSION_START = "SessionStart"
+    SESSION_END = "SessionEnd"
+    STOP = "Stop"
+    PRE_COMPACT = "PreCompact"
+    POST_COMPACT = "PostCompact"
+
+
+class HookType(StrEnum):
+    """Виды обработчиков хука, которые умеет исполнять агент."""
+
+    HTTP = "http"
+
+
+class HookFailure(StrEnum):
+    """Что делать, если обработчик не ответил: пропустить или заблокировать."""
+
+    CONTINUE = "continue"
+    BLOCK = "block"
 
 
 class McpTransportJson(StrEnum):
@@ -125,6 +186,46 @@ class McpTransportJson(StrEnum):
     STDIO = "stdio"
     HTTP = "http"
     SSE = "sse"
+
+
+WebScheme = Literal["http", "https"]
+
+
+@dataclass(frozen=True)
+class WebAddress:
+    """Разобранный абсолютный http(s) адрес из настроек."""
+
+    scheme: WebScheme
+    host: str
+    port: int | None
+    path: str
+
+
+class HttpUrls:
+    """Разбор адреса из настроек: принимается только абсолютный http(s) URL."""
+
+    SCHEMES: ClassVar[frozenset[WebScheme]] = frozenset({"http", "https"})
+
+    def absolute(self, value: str, what: str) -> WebAddress:
+        """Ошибки:
+        ValueError — строка не URL, схема не http(s) или нет хоста.
+        """
+        try:
+            url = httpx.URL(value)
+        except (httpx.InvalidURL, TypeError) as exc:
+            msg = f"{what} '{value}' is not a valid URL: {exc}"
+            raise ValueError(msg) from exc
+
+        scheme = url.scheme
+        if scheme not in self.SCHEMES:
+            msg = f"{what} '{value}' must be an absolute http or https URL."
+            raise ValueError(msg)
+
+        if not url.host:
+            msg = f"{what} '{value}' names no host; expected an absolute URL."
+            raise ValueError(msg)
+
+        return WebAddress(scheme=scheme, host=url.host, port=url.port, path=url.path)
 
 
 class SettingsModel(BaseModel):
@@ -136,14 +237,29 @@ class SettingsModel(BaseModel):
 
 
 class ProviderSettings(SettingsModel):
-    """Провайдер модели: вид, адрес и имя переменной с ключом либо каталог весов."""
+    """Провайдер модели: вид, адрес, ключ значением либо именем переменной,
+    для локальной модели — каталог весов."""
 
     kind: ProviderKind
     base_url: str | None = None
-    api_key_env: str | None = None
+    api_key: SecretStr | None = None
+    api_key_env: str | None = Field(default=None, min_length=1)
     model_dir: str | None = None
     timeout_sec: float = Field(default=120.0, gt=0)
     retry_attempts: int = Field(default=1, ge=0)
+
+    @model_validator(mode="after")
+    def _one_key_source(self) -> ProviderSettings:
+        by_value = self.api_key is not None
+        by_variable = self.api_key_env is not None
+        if by_value and by_variable:
+            msg = (
+                "'apiKey' and 'apiKeyEnv' are both set; keep one: the key itself "
+                "in a file with mode 0600, or the name of the variable that holds it."
+            )
+            raise ValueError(msg)
+
+        return self
 
 
 class ModelSettings(SettingsModel):
@@ -176,19 +292,89 @@ class JsonlHistorySettings(SettingsModel):
 
 
 class PostgresHistorySettings(SettingsModel):
-    """Журнал в Postgres: строка подключения libpq из переменной окружения,
-    таблица — в названной схеме."""
+    """Журнал в Postgres: строка подключения libpq значением либо именем
+    переменной окружения, таблица — в схеме из ключа `schema`."""
 
     DEFAULT_SCHEMA: ClassVar[str] = "agent_history"
 
     kind: Literal[HistoryKind.POSTGRES]
-    dsn_env: str = Field(min_length=1)
-    db_schema: str = Field(default=DEFAULT_SCHEMA, min_length=1)
+    dsn: SecretStr | None = None
+    dsn_env: str | None = Field(default=None, min_length=1)
+    db_schema: str = Field(default=DEFAULT_SCHEMA, min_length=1, alias="schema")
+
+    @model_validator(mode="after")
+    def _one_dsn_source(self) -> PostgresHistorySettings:
+        by_value = self.dsn is not None
+        by_variable = self.dsn_env is not None
+        if not by_value and not by_variable:
+            msg = (
+                "history of kind 'postgres' needs 'dsn' with the libpq connection "
+                "string or 'dsnEnv' with the name of the variable that holds it."
+            )
+            raise ValueError(msg)
+
+        if by_value and by_variable:
+            msg = (
+                "'dsn' and 'dsnEnv' are both set; keep one: the connection string "
+                "itself in a file with mode 0600, or the name of the variable."
+            )
+            raise ValueError(msg)
+
+        return self
+
+
+class MemoryHistorySettings(SettingsModel):
+    """Журнал только в памяти процесса: после перезапуска истории нет."""
+
+    kind: Literal[HistoryKind.MEMORY]
 
 
 HistorySettings = Annotated[
-    JsonlHistorySettings | PostgresHistorySettings, Field(discriminator="kind")
+    JsonlHistorySettings | PostgresHistorySettings | MemoryHistorySettings,
+    Field(discriminator="kind"),
 ]
+
+
+class HttpHook(SettingsModel):
+    """Обработчик хука: `POST` JSON события на `url` с заголовками; срок в
+    секундах; `onFailure` решает, блокирует ли молчание обработчика действие."""
+
+    DEFAULT_TIMEOUT_SEC: ClassVar[float] = 600.0
+
+    type: Literal[HookType.HTTP]
+    url: str = Field(min_length=1)
+    headers: Mapping[str, str] = Field(default_factory=dict)
+    timeout: float = Field(default=DEFAULT_TIMEOUT_SEC, gt=0)
+    on_failure: HookFailure = HookFailure.CONTINUE
+
+    @field_validator("url")
+    @classmethod
+    def _absolute_http(cls, value: str) -> str:
+        HttpUrls().absolute(value, "hook url")
+
+        return value
+
+
+class HookMatcherGroup(SettingsModel):
+    """Группа обработчиков под одним матчером имени инструмента: пустой
+    матчер или `*` подходит ко всему, иначе это регулярное выражение."""
+
+    matcher: str = ""
+    hooks: Sequence[HttpHook] = Field(min_length=1)
+
+    @field_validator("matcher")
+    @classmethod
+    def _compiles(cls, value: str) -> str:
+        try:
+            re.compile(value)
+        except re.error as exc:
+            msg = f"hook matcher '{value}' is not a valid regular expression: {exc}"
+            raise ValueError(msg) from exc
+
+        return value
+
+
+HooksSettings = Mapping[HookEvent, Sequence[HookMatcherGroup]]
 
 
 class CompactionJson(SettingsModel):
@@ -253,10 +439,76 @@ class SettingsLayer(SettingsModel):
     compaction: CompactionJson | None = None
     limits: LimitsJson | None = None
     mcp: McpClientJson | None = None
+    hooks: HooksSettings = Field(default_factory=dict)
     env: Mapping[str, str] = Field(default_factory=dict)
     system_prompt_file: str | None = None
     skills_dir: str | None = None
     agent_name: str | None = None
+
+    def secrets(self) -> Iterator[str]:
+        """Ключи слоя, под которыми лежат секреты значениями: по ним решается,
+        откуда слой разрешено читать."""
+        history = self.history
+        in_postgres = isinstance(history, PostgresHistorySettings)
+        if in_postgres and history.dsn is not None:
+            yield f"history.{SecretKey.DSN.value}"
+
+        for name, raw in self.models.items():
+            provider = raw.get(SecretKey.PROVIDER.value)
+            if not isinstance(provider, Mapping):
+                continue
+
+            if provider.get(SecretKey.API_KEY.value) is None:
+                continue
+
+            yield f"models.{name}.{SecretKey.PROVIDER.value}.{SecretKey.API_KEY.value}"
+
+
+class SecretsGuard:
+    """Правила чтения слоя с секретами: только из файла, доступного одному
+    владельцу; строка аргумента секретов не несёт."""
+
+    GROUP_AND_OTHERS: ClassVar[int] = 0o077
+    OWNER_ONLY: ClassVar[int] = 0o600
+
+    def file(self, layer: SettingsLayer, path: Path, what: str) -> None:
+        """Ошибки:
+        SettingsError — файл с секретами читается не только владельцем или
+            его права не узнать.
+        """
+        found = list(layer.secrets())
+        if not found:
+            return
+
+        try:
+            mode = stat.S_IMODE(path.stat().st_mode)
+        except OSError as exc:
+            msg = f"Cannot check the permissions of {what} at {path}: {exc}"
+            raise SettingsError(msg) from exc
+
+        if mode & self.GROUP_AND_OTHERS:
+            msg = (
+                f"{what} at {path} holds secrets ({', '.join(found)}) but has mode "
+                f"{mode:04o}, readable beyond its owner. A file with secrets must "
+                f"have mode {self.OWNER_ONLY:04o}: run "
+                f"chmod {self.OWNER_ONLY:o} {path}."
+            )
+            raise SettingsError(msg)
+
+    def inline(self, layer: SettingsLayer, what: str) -> None:
+        """Ошибки:
+        SettingsError — секрет пришёл строкой аргумента.
+        """
+        found = list(layer.secrets())
+        if not found:
+            return
+
+        msg = (
+            f"{what} passes secrets ({', '.join(found)}) on the command line, where "
+            "other processes can read them. Put the layer in a file with mode "
+            f"{self.OWNER_ONLY:04o} and pass its path."
+        )
+        raise SettingsError(msg)
 
 
 @dataclass(frozen=True)
@@ -318,11 +570,15 @@ class Arguments:
 
 class LayerMerge:
     """Слияние слоёв: поле побеждает полем, таблицы — по ключам, списки
-    объединяются без повторов."""
+    объединяются без повторов. Секция с дискриминатором `kind` (история)
+    при смене вида заменяется целиком: поля разных видов не смешиваются."""
+
+    KIND: ClassVar[str] = "kind"
 
     def merged(self, lower: SettingsLayer, upper: SettingsLayer) -> SettingsLayer:
-        low = lower.model_dump(exclude_none=True, by_alias=True, mode="json")
-        up = upper.model_dump(exclude_none=True, by_alias=True, mode="json")
+        # режим python: секреты остаются SecretStr, а не маской из режима json
+        low = lower.model_dump(exclude_none=True, by_alias=True, mode="python")
+        up = upper.model_dump(exclude_none=True, by_alias=True, mode="python")
 
         return SettingsLayer.model_validate(self._merge(low, up))
 
@@ -331,16 +587,37 @@ class LayerMerge:
         for key, value in up.items():
             below = result.get(key)
             if isinstance(below, Mapping) and isinstance(value, Mapping):
+                if self._kind_changed(below, value):
+                    result[key] = dict(value)
+                    continue
+
                 result[key] = self._merge(below, value)
                 continue
 
-            if isinstance(below, list) and isinstance(value, list):
+            if self._is_list(below) and self._is_list(value):
                 result[key] = self._union(below, value)
                 continue
 
             result[key] = value
 
         return result
+
+    def _kind_changed(self, below: Mapping[str, Any], above: Mapping[str, Any]) -> bool:
+        kind_below = below.get(self.KIND)
+        if kind_below is None:
+            return False
+
+        kind_above = above.get(self.KIND)
+        if kind_above is None:
+            return False
+
+        return kind_below != kind_above
+
+    @staticmethod
+    def _is_list(value: Any) -> TypeGuard[Sequence[Any]]:
+        """Список слоя: в режиме python последовательности приходят и списками,
+        и кортежами."""
+        return isinstance(value, (list, tuple))
 
     @staticmethod
     def _union(below: Sequence[Any], above: Sequence[Any]) -> list[Any]:
@@ -358,10 +635,14 @@ class JsonText:
 
     def read(self, source: str, what: str) -> Mapping[str, Any]:
         text = source
-        if not source.lstrip().startswith("{"):
+        if not self.is_inline(source):
             text = self.read_file(Path(source), what)
 
         return self.parse(text, what, source)
+
+    @staticmethod
+    def is_inline(source: str) -> bool:
+        return source.lstrip().startswith("{")
 
     def read_file(self, path: Path, what: str) -> str:
         try:
@@ -396,11 +677,12 @@ class EffectiveSettings(BaseModel):
     model: str
     models: Mapping[str, ModelSettings]
     permissions: PermissionSettings
-    history: JsonlHistorySettings | PostgresHistorySettings
+    history: JsonlHistorySettings | PostgresHistorySettings | MemoryHistorySettings
     compaction: CompactionSettings
     limits: TurnLimits
     mcp: McpClientJson
     mcp_servers: Mapping[str, McpServerJson]
+    hooks: HooksSettings
     env: Mapping[str, str]
     system_prompt: Sequence[str]
     skills_dir: str | None
@@ -433,7 +715,8 @@ class EffectiveSettings(BaseModel):
         return found
 
     def public(self) -> dict[str, Any]:
-        """Настройки для события `init`: без значений окружения серверов."""
+        """Настройки для события `init`: без значений окружения серверов;
+        секреты выходят маской SecretStr."""
         document = self.model_dump(mode="json", by_alias=True)
         document["env"] = sorted(self.env)
 
@@ -441,11 +724,12 @@ class EffectiveSettings(BaseModel):
 
 
 class ProfileBuilder:
-    """ModelProfile из настроек профиля: ключ провайдера — из окружения по
-    имени переменной, адрес — частями через httpx.URL."""
+    """ModelProfile из настроек профиля: ключ провайдера — значением из файла
+    или из окружения по имени переменной, адрес — частями через httpx.URL."""
 
     def __init__(self, env: Mapping[str, str]) -> None:
         self._env = env
+        self._urls = HttpUrls()
 
     def profile(self, name: str, settings: ModelSettings) -> ModelProfile:
         provider = self._provider(name, settings.provider)
@@ -502,17 +786,8 @@ class ProfileBuilder:
     def _connection(self, name: str, provider: ProviderSettings) -> dict[str, Any]:
         url = self._url(name, provider)
         auth: dict[str, Any] = {"method": "none"}
-        if provider.api_key_env is not None:
-            token = self._env.get(provider.api_key_env)
-            if not token:
-                msg = (
-                    f"The model profile '{name}' takes its API key from the "
-                    f"environment variable {provider.api_key_env}, but it is not set. "
-                    "Export it before starting the agent."
-                )
-                raise SettingsError(msg)
-
-            auth = {"method": "bearer", "token": SecretStr(token)}
+        if token := self._token(name, provider):
+            auth = {"method": "bearer", "token": token}
 
         connection: dict[str, Any] = {
             "scheme": url.scheme,
@@ -527,27 +802,41 @@ class ProfileBuilder:
 
         return connection
 
-    @staticmethod
-    def _url(name: str, provider: ProviderSettings) -> httpx.URL:
-        try:
-            url = httpx.URL(provider.base_url or "")
-        except (httpx.InvalidURL, TypeError) as exc:
-            msg = f"The model profile '{name}' has an invalid baseUrl: {exc}"
-            raise SettingsError(msg) from exc
+    def _token(self, name: str, provider: ProviderSettings) -> SecretStr | None:
+        """Ключ провайдера: значение из файла, иначе из названной переменной;
+        профиль без того и другого ходит без ключа."""
+        if provider.api_key is not None:
+            return provider.api_key
 
-        if url.scheme not in ("http", "https") or not url.host:
+        if provider.api_key_env is None:
+            return None
+
+        token = self._env.get(provider.api_key_env)
+        if not token:
             msg = (
-                f"The model profile '{name}' has baseUrl '{provider.base_url}', but "
-                "it must be an absolute http or https URL."
+                f"The model profile '{name}' takes its API key from the "
+                f"environment variable {provider.api_key_env}, but it is not set. "
+                "Export it before starting the agent."
             )
             raise SettingsError(msg)
 
-        return url
+        return SecretStr(token)
+
+    def _url(self, name: str, provider: ProviderSettings) -> WebAddress:
+        base_url = provider.base_url
+        if base_url is None:
+            base_url = ""
+
+        try:
+            return self._urls.absolute(base_url, f"the model profile '{name}' baseUrl")
+        except ValueError as exc:
+            raise SettingsError(str(exc)) from exc
 
 
 class PostgresBuilder:
-    """PostgresConfig из строки подключения libpq, названной переменной
-    окружения: пароль остаётся в окружении и в настройки не попадает."""
+    """PostgresConfig из строки подключения libpq — значения `dsn` из файла
+    настроек или переменной окружения, названной `dsnEnv`; пароль живёт
+    в SecretStr и в публичные настройки не попадает."""
 
     APPLICATION: ClassVar[str] = "boba"
 
@@ -555,25 +844,19 @@ class PostgresBuilder:
         self._env = env
 
     def config(self, settings: PostgresHistorySettings) -> PostgresConfig:
-        dsn = self._env.get(settings.dsn_env)
-        if not dsn:
-            msg = (
-                f"The history store takes its Postgres connection string from the "
-                f"environment variable {settings.dsn_env}, but it is not set."
-            )
-            raise SettingsError(msg)
-
+        origin = self._origin(settings)
+        dsn = self._dsn(settings, origin)
         try:
             parts = conninfo_to_dict(dsn)
         except psycopg.ProgrammingError as exc:
-            msg = f"{settings.dsn_env} is not a valid libpq connection string: {exc}"
+            msg = f"{origin} is not a valid libpq connection string: {exc}"
             raise SettingsError(msg) from exc
 
         user = parts.pop("user", None)
         password = parts.pop("password", None)
         if not user:
             msg = (
-                f"{settings.dsn_env} names no user; the agent connects to Postgres as "
+                f"{origin} names no user; the agent connects to Postgres as "
                 "a role with a password or trusted by pg_hba."
             )
             raise SettingsError(msg)
@@ -594,8 +877,34 @@ class PostgresBuilder:
         try:
             return PostgresConfig.model_validate(document)
         except ValidationError as exc:
-            msg = f"{settings.dsn_env} does not describe a usable connection: {exc}"
+            msg = f"{origin} does not describe a usable connection: {exc}"
             raise SettingsError(msg) from exc
+
+    @staticmethod
+    def _origin(settings: PostgresHistorySettings) -> str:
+        """Откуда взята строка подключения — для текста ошибок."""
+        if settings.dsn is not None:
+            return f"history.{SecretKey.DSN.value} in the settings file"
+
+        return f"the environment variable {settings.dsn_env}"
+
+    def _dsn(self, settings: PostgresHistorySettings, origin: str) -> str:
+        if settings.dsn is not None:
+            return settings.dsn.get_secret_value()
+
+        if settings.dsn_env is None:
+            msg = "history of kind 'postgres' has neither 'dsn' nor 'dsnEnv'."
+            raise SettingsError(msg)
+
+        dsn = self._env.get(settings.dsn_env)
+        if not dsn:
+            msg = (
+                f"The history store takes its Postgres connection string from "
+                f"{origin}, but it is not set."
+            )
+            raise SettingsError(msg)
+
+        return dsn
 
 
 class McpServerBuilder:
@@ -607,6 +916,7 @@ class McpServerBuilder:
     def __init__(self, client: McpClientJson, env: Mapping[str, str]) -> None:
         self._client = client
         self._env = env
+        self._urls = HttpUrls()
 
     def config(self, name: str, server: McpServerJson) -> McpServerConfig:
         return McpServerConfig(
@@ -647,14 +957,9 @@ class McpServerBuilder:
             raise SettingsError(msg)
 
         try:
-            url = httpx.URL(server.url)
-        except (httpx.InvalidURL, TypeError) as exc:
-            msg = f"MCP server '{name}' has an invalid url: {exc}"
-            raise SettingsError(msg) from exc
-
-        if url.scheme not in ("http", "https") or not url.host:
-            msg = f"MCP server '{name}' has url '{server.url}', expected http or https."
-            raise SettingsError(msg)
+            url = self._urls.absolute(server.url, f"MCP server '{name}' url")
+        except ValueError as exc:
+            raise SettingsError(str(exc)) from exc
 
         path = url.path
         if not path:
@@ -707,6 +1012,7 @@ class Settings:
         self._cwd = cwd
         self._json = JsonText()
         self._merge = LayerMerge()
+        self._guard = SecretsGuard()
 
     def effective(self) -> EffectiveSettings:
         """Слияние всех слоёв по приоритету."""
@@ -737,15 +1043,31 @@ class Settings:
             yield from self._file_layer(self._cwd / SettingsFile.LOCAL.value, "local")
 
         for source in self._arguments.settings:
-            yield self.layer_of(
-                self._json.read(source, "--settings"), f"--settings {source}"
-            )
+            yield self._argument_layer(source)
 
         yield self._arguments.layer()
         if self._arguments.policy is not None:
-            document = self._json.read_file(Path(self._arguments.policy), "--policy")
-            parsed = self._json.parse(document, "--policy", self._arguments.policy)
-            yield self.layer_of(parsed, f"--policy {self._arguments.policy}")
+            yield self._named_file_layer(Path(self._arguments.policy), "--policy")
+
+    def _argument_layer(self, source: str) -> SettingsLayer:
+        """Слой `--settings`: путь к файлу, проверяемому на права, либо
+        строка JSON, в которой секретов быть не должно."""
+        if self._json.is_inline(source):
+            document = self._json.parse(source, "--settings", source)
+            layer = self.layer_of(document, f"--settings {source}")
+            self._guard.inline(layer, "--settings")
+
+            return layer
+
+        return self._named_file_layer(Path(source), "--settings")
+
+    def _named_file_layer(self, path: Path, what: str) -> SettingsLayer:
+        text = self._json.read_file(path, what)
+        document = self._json.parse(text, what, str(path))
+        layer = self.layer_of(document, f"{what} {path}")
+        self._guard.file(layer, path, what)
+
+        return layer
 
     def _file_layer(self, path: Path, what: str) -> Iterator[SettingsLayer]:
         if not path.is_file():
@@ -753,7 +1075,10 @@ class Settings:
 
         text = self._json.read_file(path, f"{what} settings")
         document = self._json.parse(text, f"{what} settings", str(path))
-        yield self.layer_of(document, f"{what} settings at {path}")
+        layer = self.layer_of(document, f"{what} settings at {path}")
+        self._guard.file(layer, path, f"{what} settings")
+
+        yield layer
 
     def _defaults(self) -> SettingsLayer:
         """Нижний слой: журнал в доме, профиль из `BOBA_LLM_*`, если задан."""
@@ -849,6 +1174,7 @@ class Settings:
             limits=limits,
             mcp=mcp,
             mcp_servers=self._servers(mcp),
+            hooks=layer.hooks,
             env=layer.env,
             system_prompt=list(self._system_prompt(layer)),
             skills_dir=layer.skills_dir,
