@@ -350,9 +350,11 @@ def _use_auth(container: Container) -> None:
 
 def _use_di_container(app: FastAPI, c: AppConfig) -> Container:
     from boba.chainlit.infra.plugins import ChatPlugins  # noqa: PLC0415
+    from boba.chainlit.infra.thread_room import ThreadSurfaces  # noqa: PLC0415
 
     container = Container(level="app")
     container.provide(providers.get_app_config, c)
+    container.provide(providers.thread_surfaces, ThreadSurfaces())
     container.provide(runtime.get_runtime_config, c)
     contexts = CallContexts()
     runs = Runs(contexts)
@@ -382,13 +384,7 @@ def _use_di_container(app: FastAPI, c: AppConfig) -> Container:
     container.eager(runtime.session_keeper)
     container.eager(providers.chat_profiles_registry)
     container.eager(providers.chainlit_data_layer)
-    container.eager(providers.langchain_checkpoint_saver)
-    # слои настроек агента и клиент токенов boba-mcp поднимаются на старте:
-    # первая вкладка не ждёт DDL и http-клиента
-    container.eager(providers.agent_settings_table)
-    container.eager(providers.mcp_access_tokens)
-    container.eager(providers.agent_launcher)
-    container.eager(providers.thread_deleter)
+    _eager_agent(container)
     container.eager(runtime.message_bus)
     container.eager(runtime.payload_store)
     container.eager(runtime.call_ambient)
@@ -404,6 +400,7 @@ def _use_di_container(app: FastAPI, c: AppConfig) -> Container:
     # MCP-серверы подключаются на старте: первая сессия не ждёт инициализации
     container.eager(providers.remote_journals)
     container.eager(providers.mcp_servers)
+    container.eager(providers.agent_feeds)
     # локальные модели грузятся на старте: первая сессия не ждёт веса
     container.eager(providers.llm_providers)
     # инстанс регистрируется после блокирующего старта зигот и моделей: иначе
@@ -424,6 +421,16 @@ def _eager_agent_tools(container: Container, c: AppConfig) -> None:
 
     if c.agent.hook.enable:
         container.eager(providers.pre_tool_use_hook)
+
+
+def _eager_agent(container: Container) -> None:
+    """Слои настроек агента, клиент токенов boba-mcp и запуск процессов
+    поднимаются на старте: первая вкладка не ждёт DDL и http-клиента."""
+    container.eager(providers.agent_settings_table)
+    container.eager(providers.mcp_access_tokens)
+    container.eager(providers.agent_launcher)
+    container.eager(providers.thread_deleter)
+    container.eager(providers.tool_media)
 
 
 def _session_container() -> Container | None:

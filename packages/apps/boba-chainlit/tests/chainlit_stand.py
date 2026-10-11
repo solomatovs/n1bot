@@ -47,7 +47,6 @@ from boba.chainlit.chat.dialog import (
     TurnRecord,
 )
 from boba.chainlit.chat.feed import TurnFeed
-from boba.chainlit.chat.history import TranscriptFeed
 from boba.chainlit.chat.turn import ChatTurn, Question
 from boba.chainlit.data.data_layer import PostgresDataLayer
 from boba.chainlit.data.remote_storage import FileOwners, RemoteStorageClient
@@ -59,6 +58,7 @@ from boba.chainlit.infra.session import (
     OwnerSessions,
     current_session,
 )
+from boba.chainlit.rendering.acp_view import ToolMedia, UpdateView
 from boba.chainlit.rendering.chat_view import (
     ChatSink,
     ChatView,
@@ -573,8 +573,7 @@ class RemoteStand:
 
     def __init__(self) -> None:
         contexts = CallContexts()
-        self.history = FakeThreadMessages()
-        self.journals = RemoteJournals(self.history)
+        self.journals = RemoteJournals()
         caller = McpCaller(login=StandIdentity.LOGIN, roles=frozenset())
         self.streams = PerCallStreams(self.journals, contexts, caller)
 
@@ -582,15 +581,17 @@ class RemoteStand:
         self.streams.serve(service.token_servers(self.SERVER))
 
     def recorded(self, thread_id: str, call_id: str) -> None:
-        """Вызов треда исполнил сервер стенда: запуск — сам тред."""
-        self.history.by_thread.setdefault(thread_id, []).append(
-            JournaledCall(self.SERVER, thread_id).message(call_id)
+        """Вызов треда исполнил сервер стенда: запуск — сам тред; адрес
+        журнала лента запомнила бы по итогу вызова."""
+        self.journals.remember(
+            thread_id,
+            call_id,
+            JournalAddress(server=self.SERVER, run=thread_id, call=call_id),
         )
 
     def forget(self) -> None:
-        """Сброс между тестами: ни истории, ни запомненных адресов."""
-        self.history.by_thread.clear()
-        self.journals = RemoteJournals(self.history)
+        """Сброс между тестами: запомненных адресов нет."""
+        self.journals = RemoteJournals()
         self.streams = PerCallStreams(
             self.journals,
             CallContexts(),
@@ -718,7 +719,6 @@ async def layer(  # noqa: PLR0913 — фикстуры теста
         elements=tables.elements,
         feedbacks=tables.feedbacks,
         storage=storage,
-        feed=TranscriptFeed(thread_messages, runtime_stand.journals),
         links=AttachmentLinks(app_config.chainlit.url_prefix),
         sessions=ChainlitSessions(StandTokens()),
         bus=data_bus,
@@ -971,7 +971,11 @@ def di_root(app_config: AppConfig, runtime_stand: StandRefs) -> Iterator[None]:
     Без него ref-функции падают: отсутствие контейнера — ошибка сборки, а
     не режим работы.
     """
-    from boba.chainlit.infra.providers import remote_journals, session_source
+    from boba.chainlit.infra.providers import (
+        remote_journals,
+        session_source,
+        tool_media,
+    )
     from boba.runtime import providers as runtime
     from boba.runtime.di import Container
 
@@ -987,10 +991,8 @@ def di_root(app_config: AppConfig, runtime_stand: StandRefs) -> Iterator[None]:
     root.provide(runtime.call_contexts, runtime_stand.contexts)
     root.provide(runtime.runs, runtime_stand.runs)
     root.provide(runtime.call_journals, runtime_stand.journals)
-    root.provide(
-        remote_journals,
-        RemoteJournals(FakeThreadMessages()),
-    )
+    root.provide(remote_journals, RemoteJournals())
+    root.provide(tool_media, ToolMedia())
     Container.set_root(root)
     try:
         yield
@@ -1093,7 +1095,8 @@ class RecordedTurn:
         self.runs = Runs(self.contexts)
         journals = CallJournals(None, self.runs)
         self.view = ChatView(thread_id, sink, journals, user_name=user_name)
-        self.renderer = ChatRenderer(thread_id, self.view, self.payloads, NoSurface())
+        updates = UpdateView(self.view, thread_id, RemoteJournals(), ToolMedia())
+        self.renderer = ChatRenderer(thread_id, updates, self.payloads, NoSurface())
         self.leave = self.bus.subscribe(Scope.chat(thread_id), self.renderer.apply)
         self.feed = TurnFeed(
             self.bus, self.payloads, Scope.chat(thread_id), turn_id, LockToken.local()
@@ -1108,7 +1111,7 @@ class RecordedTurn:
             self.runs,
             self.sent,
             ChatMount(self.contexts, self.runs),
-            RemoteJournals(FakeThreadMessages()),
+            RemoteJournals(),
         )
 
     @property

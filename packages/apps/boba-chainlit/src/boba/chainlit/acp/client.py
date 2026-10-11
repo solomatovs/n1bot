@@ -63,6 +63,8 @@ from acp.schema import (
     RequestPermissionResponse,
     ResourceContentBlock,
     SessionInfoUpdate,
+    SetSessionConfigOptionResponse,
+    SetSessionConfigOptionSelectRequest,
     TerminalOutputResponse,
     TextContentBlock,
     ToolCallProgress,
@@ -125,14 +127,33 @@ class AgentProcessError(AcpClientError):
     """Процесс агента не запустился, не ответил или умер."""
 
 
+class ErrorDataKey(StrEnum):
+    """Ключи `data` ошибки JSON-RPC агента, которые клиент показывает."""
+
+    DETAILS = "details"
+
+
 class AgentRequestError(AcpClientError):
-    """Агент ответил ошибкой JSON-RPC."""
+    """Агент ответил ошибкой JSON-RPC; текст — метод, код, сообщение и
+    подробности из `data.details`, когда агент их прислал."""
 
     def __init__(self, method: str, code: int, message: str, data: Any) -> None:
-        super().__init__(f"{method}: agent answered error {code}: {message}")
+        super().__init__(self._text(method, code, message, data))
         self.method = method
         self.code = code
         self.data = data
+
+    @staticmethod
+    def _text(method: str, code: int, message: str, data: Any) -> str:
+        text = f"{method}: agent answered error {code}: {message}"
+        if not isinstance(data, Mapping):
+            return text
+
+        details = data.get(ErrorDataKey.DETAILS.value)
+        if not details:
+            return text
+
+        return f"{text}: {details}"
 
     @property
     def method_missing(self) -> bool:
@@ -164,7 +185,7 @@ class ClientName(StrEnum):
 
 class SessionUpdates(Protocol):
     """Приёмник потока сессии: уведомления, вопросы разрешений и итог хода.
-    Реализует FeedRenderer чата; рендерер ленты W11 встаёт на его место."""
+    Реализуют приёмник ленты (AgentFeed) и приёмник без ленты (MuteUpdates)."""
 
     @abstractmethod
     async def update(self, session_id: str, update: SessionUpdate) -> None:
@@ -421,14 +442,40 @@ class AgentProcess:
 
     async def new_session(self, servers: Sequence[SessionServer]) -> str:
         """Новая сессия в приватном каталоге; id выдаёт агент."""
+        opened = await self.open_session(servers)
+
+        return opened.session_id
+
+    async def open_session(
+        self, servers: Sequence[SessionServer]
+    ) -> NewSessionResponse:
+        """Новая сессия с её режимами и настройками (`modes`, `configOptions`)."""
         request = NewSessionRequest(
             cwd=str(self._workdir.path), mcp_servers=list(servers)
         )
-        response = await self._request(
+
+        return await self._request(
             AGENT_METHODS["session_new"], request, NewSessionResponse
         )
 
-        return response.session_id
+    async def set_config_option(
+        self, session_id: str, config_id: str, value: str
+    ) -> SetSessionConfigOptionResponse:
+        """Настройка сессии (режим, модель); ответ — полное состояние настроек.
+
+        Ошибки:
+        AgentRequestError — ход идёт (-32603) или значение неизвестно (-32602).
+        """
+        request = SetSessionConfigOptionSelectRequest(
+            session_id=session_id, config_id=config_id, value=value
+        )
+
+        return await self._request(
+            AGENT_METHODS["session_set_config_option"],
+            request,
+            SetSessionConfigOptionResponse,
+            lenient=True,
+        )
 
     async def load_session(
         self, session_id: str, servers: Sequence[SessionServer]
@@ -490,18 +537,26 @@ class AgentProcess:
     async def fork_session(
         self, session_id: str, servers: Sequence[SessionServer], up_to_uuid: str
     ) -> str:
-        """Ветвь сессии до записи включительно; id новой сессии выдаёт агент."""
+        """Ветвь сессии до записи up_to_uuid (сама запись и всё после неё в
+        ветку не идут); id новой сессии выдаёт агент."""
+        branch = await self.fork(session_id, servers, up_to_uuid)
+
+        return branch.session_id
+
+    async def fork(
+        self, session_id: str, servers: Sequence[SessionServer], up_to_uuid: str
+    ) -> ForkSessionResponse:
+        """Ветвь сессии с её режимами и настройками в ответе."""
         request = ForkSessionRequest(
             session_id=session_id,
             cwd=str(self._workdir.path),
             mcp_servers=list(servers),
             field_meta={MetaKey.UP_TO_UUID.value: up_to_uuid},
         )
-        response = await self._request(
+
+        return await self._request(
             AGENT_METHODS["session_fork"], request, ForkSessionResponse
         )
-
-        return response.session_id
 
     async def close(self) -> None:
         """Конец ввода, ожидание выхода, при нужде terminate и kill; каталог

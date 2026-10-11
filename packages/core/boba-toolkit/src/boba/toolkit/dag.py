@@ -31,6 +31,7 @@ import asyncio
 from abc import abstractmethod
 from collections.abc import Awaitable, Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
+from enum import StrEnum
 from typing import Any, ClassVar, Literal, Protocol, TypeAlias
 
 from pydantic import (
@@ -75,6 +76,9 @@ __all__ = [
     "ToolCard",
     "ToolHints",
     "ToolServer",
+    "ToolUseResult",
+    "ToolUseResultKey",
+    "ToolUseResults",
     "WorkflowNodeResult",
     "WorkflowResult",
 ]
@@ -506,6 +510,57 @@ class NodeOutcome(BaseModel):
             return self.artifact.llm_view()
 
         return ""
+
+    def use_result(self) -> ToolUseResult:
+        """Итог в форме записи истории: результат семейства, адрес журнала
+        и типы содержимого аргументов."""
+        return ToolUseResult(
+            artifact=self.artifact.model_dump(mode="json", exclude_none=True),
+            journal=self.journal,
+            media=self.media,
+        )
+
+
+class ToolUseResultKey(StrEnum):
+    """Ключи записи `toolUseResult` итога вызова в истории агента."""
+
+    ARTIFACT = "artifact"
+    JOURNAL = "journal"
+    MEDIA = "media"
+
+
+class ToolUseResult(BaseModel):
+    """Итог вызова, каким его хранит история агента и несёт `rawOutput`
+    уведомления `tool_call_update`: результат семейства словарём (artifact),
+    адрес журнала вызова на сервере (journal) и типы содержимого аргументов
+    по идентификаторам вызовов (media). Пишет агент по NodeOutcome.use_result
+    и скрипт миграции истории; читает лента чата (ToolUseResults)."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    artifact: Any = None
+    journal: JournalAddress | None = None
+    media: Mapping[str, Mapping[str, str]] | None = None
+
+
+class ToolUseResults:
+    """Разбор `rawOutput` в ToolUseResult: запись с ключами ToolUseResultKey
+    проверяется моделью, любое другое значение (текст отказа, результат
+    стороннего инструмента) становится артефактом как есть.
+
+    Ошибки:
+    ValidationError — запись с ключами итога не проходит модель.
+    """
+
+    def of(self, raw: Any) -> ToolUseResult:
+        if not isinstance(raw, Mapping):
+            return ToolUseResult(artifact=raw)
+
+        known = {key.value for key in ToolUseResultKey}
+        if not set(raw) <= known:
+            return ToolUseResult(artifact=raw)
+
+        return ToolUseResult.model_validate(raw)
 
 
 class NodeOutcomes:

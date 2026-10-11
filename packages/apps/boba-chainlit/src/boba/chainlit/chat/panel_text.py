@@ -112,10 +112,17 @@ class PanelText:
         return self._string(TextKey.TABS, tab_id, TextKey.LABEL)
 
     def label(self, setting: UserSetting) -> str:
-        return self._string(TextKey.FIELDS, setting.value, TextKey.LABEL)
+        return self.field_label(setting.value)
 
     def description(self, setting: UserSetting) -> str:
-        return self._string(TextKey.FIELDS, setting.value, TextKey.DESCRIPTION)
+        return self.field_description(setting.value)
+
+    def field_label(self, name: str) -> str:
+        """Подпись поля панели по его имени (id виджета)."""
+        return self._string(TextKey.FIELDS, name, TextKey.LABEL)
+
+    def field_description(self, name: str) -> str:
+        return self._string(TextKey.FIELDS, name, TextKey.DESCRIPTION)
 
     def _string(self, group: TextKey, name: str, field: TextKey) -> str:
         found = self._lookup(self._texts, group, name, field)
