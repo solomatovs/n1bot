@@ -523,9 +523,15 @@ class StandConfig(StandService):
     service_port: int = field(default_factory=free_port)
     """Порт сервиса boba-mcp стенда чата."""
 
-    agent_history: dict[str, Any] = field(default_factory=lambda: {"kind": "memory"})
-    """Секция [agent.history] чата: по умолчанию память процесса агента; тест с
-    Postgres передаёт подключение ролью с паролем."""
+    agent_history: dict[str, Any] = field(
+        default_factory=lambda: {
+            "kind": "postgres",
+            "postgres": "${postgres}",
+            "schema": "agent_history",
+        }
+    )
+    """Секция [agent.history] чата: по умолчанию Postgres стенда тем же
+    подключением, что у чата (kerberos), схема agent_history в базе стенда."""
 
     agent_chat_mcp: bool = False
     """Записывать ли сервер инструментов чата в mcpServers агента: сам сервер
@@ -533,6 +539,10 @@ class StandConfig(StandService):
 
     agent_hook: bool = False
     """Класть ли хук PreToolUse в файл настроек агента: обработчик появляется позже."""
+
+    generation: str = ""
+    """Поколение сессий: пустое — случайное на каждый старт процесса; общее у
+    двух инстансов стенда даёт им принимать одну и ту же cookie входа."""
 
     CHAT_TOOLS: ClassVar[tuple[str, ...]] = ("connection_list", "connection_search")
     AGENT_MODULE: ClassVar[str] = "boba.cli.app"
@@ -619,6 +629,7 @@ class StandConfig(StandService):
         self._use_sandbox_artifacts(doc)
         self._use_agent(doc)
         self._shrink_pools(doc)
+        doc["session"]["generation"] = self.generation
 
         self.files.write(doc)
         StandPlugins(self.app, self.sandbox).copy_to(self.files.plugins)

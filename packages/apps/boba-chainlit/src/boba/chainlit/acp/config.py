@@ -14,7 +14,8 @@ from psycopg.conninfo import make_conninfo
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, model_validator
 
 from boba.db.postgres.connection import PostgresConfig
-from boba.db.postgres.connection.auth import PasswordAuth, TrustAuth
+from boba.db.postgres.connection.auth import PasswordAuth, PostgresKerberos, TrustAuth
+from boba.kerberos import KerberosPasswordAuth, KeytabAuth
 
 __all__ = [
     "AgentCommandConfig",
@@ -89,10 +90,12 @@ class DsnAuthKey(StrEnum):
 
 
 class PostgresAgentHistory(BaseModel):
-    """История агента в Postgres: подключение ролью с паролем, схема по A0.
+    """История агента в Postgres: подключение ролью с паролем, доверием pg_hba
+    либо билетом Kerberos; схема по A0.
 
-    Агент принимает строку libpq, поэтому авторизация подключения — только
-    пароль или доверие pg_hba; kerberos-варианты отвергаются при загрузке.
+    Агент принимает строку libpq: пароль идёт в ней, kerberos-роль входит
+    билетом из кэша, путь к которому процесс получает переменными libkrb5
+    (KRB5CCNAME, KRB5_CONFIG) — их собирает HistoryEnvironment.
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True, populate_by_name=True)
@@ -107,25 +110,40 @@ class PostgresAgentHistory(BaseModel):
 
         return self
 
-    def libpq_auth(self) -> PasswordAuth | TrustAuth:
-        """Авторизация, выразимая строкой libpq.
+    def libpq_auth(
+        self,
+    ) -> PasswordAuth | TrustAuth | KeytabAuth | KerberosPasswordAuth:
+        """Авторизация, выразимая строкой libpq и окружением libkrb5.
 
         Ошибки:
-        ValueError — у подключения kerberos- или сертификатная авторизация.
+        ValueError — у подключения сертификатная, делегированная или билетная
+            авторизация.
         """
         auth = self.postgres.auth
         if isinstance(auth, PasswordAuth | TrustAuth):
             return auth
 
+        if isinstance(auth, KeytabAuth | KerberosPasswordAuth):
+            return auth
+
         msg = (
-            f"[agent.history] postgres auth {auth.method!r} cannot be rendered "
-            "into a libpq connection string for the agent; expected method "
-            "'password' or 'trust'"
+            f"[agent.history] postgres auth {auth.method!r} cannot be handed to the "
+            "agent as a libpq connection string; expected method 'password', "
+            "'trust', 'kerberos_keytab' or 'kerberos_password'"
         )
         raise ValueError(msg)
 
+    def kerberos_auth(self) -> KeytabAuth | KerberosPasswordAuth | None:
+        """Kerberos-вариант авторизации; None — роль входит паролем или доверием."""
+        auth = self.libpq_auth()
+        if isinstance(auth, KeytabAuth | KerberosPasswordAuth):
+            return auth
+
+        return None
+
     def dsn(self) -> SecretStr:
-        """Строка подключения libpq с паролем: уходит в файл настроек 0600."""
+        """Строка подключения libpq: с паролем у парольной роли, без пароля у
+        kerberos-роли (её имя — короткое имя принципала); уходит в файл 0600."""
         parts: dict[str, Any] = {}
         for key in DsnKey:
             value = getattr(self.postgres, key.value)
@@ -135,9 +153,14 @@ class PostgresAgentHistory(BaseModel):
             parts[key.value] = value
 
         auth = self.libpq_auth()
-        parts[DsnAuthKey.USER.value] = auth.user
+        if isinstance(auth, PasswordAuth | TrustAuth):
+            parts[DsnAuthKey.USER.value] = auth.user
+
         if isinstance(auth, PasswordAuth):
             parts[DsnAuthKey.PASSWORD.value] = auth.password.get_secret_value()
+
+        if isinstance(auth, KeytabAuth | KerberosPasswordAuth):
+            parts[DsnAuthKey.USER.value] = PostgresKerberos.role_of(auth.principal)
 
         return SecretStr(make_conninfo(**parts))
 

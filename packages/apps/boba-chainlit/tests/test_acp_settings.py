@@ -31,6 +31,7 @@ from boba.chainlit.acp.settings import (
     AgentSettingsLayers,
     AgentSettingsTable,
     AgentWorkdirs,
+    HistoryEnvironment,
     ProfileModelSpecs,
     SettingsFileBuilder,
     UserAgentSettings,
@@ -39,6 +40,9 @@ from boba.chat.profiles import ChatProfileConfig
 from boba.connections.secrets import SecretCipher
 from boba.db.postgres import AsyncPostgresPool
 from boba.db.postgres.connection import PostgresConfig
+from boba.db.postgres.connection.auth import CertificateAuth
+from boba.kerberos import KeytabAuth
+from boba.krb.credentials import KerberosEnv
 from boba.llm.onnx import OnnxProvider
 from boba.stand.names import StandNames
 from boba.stand.signin import SignInStand
@@ -171,16 +175,43 @@ class TestHistoryDsn:
         assert f"dbname={stand.pg_probe_database}" in dsn
         assert "gssencmode" not in dsn
 
-    def test_kerberos_auth_is_refused(self, test_postgres: PostgresConfig) -> None:
-        if test_postgres.auth.method == "password":
-            pytest.skip("the stand postgres already uses a password role")
-
-        with pytest.raises(
-            ValidationError, match="expected method 'password' or 'trust'"
-        ):
+    def test_certificate_auth_is_refused(self, test_postgres: PostgresConfig) -> None:
+        certificate = test_postgres.model_copy(
+            update={
+                "auth": CertificateAuth(
+                    method="certificate", user="boba", sslcert="/c.pem", sslkey="/k.pem"
+                )
+            }
+        )
+        with pytest.raises(ValidationError, match="cannot be handed to the agent"):
             PostgresAgentHistory.model_validate(
-                {"kind": "postgres", "postgres": test_postgres, "schema": "agent"}
+                {"kind": "postgres", "postgres": certificate, "schema": "agent"}
             )
+
+    async def test_kerberos_role_renders_a_dsn_without_password_and_libkrb5_env(
+        self, test_postgres: PostgresConfig
+    ) -> None:
+        auth = test_postgres.auth
+        if not isinstance(auth, KeytabAuth):
+            pytest.skip("the stand postgres is not entered with a keytab")
+
+        history = PostgresAgentHistory.model_validate(
+            {"kind": "postgres", "postgres": test_postgres, "schema": "agent"}
+        )
+        dsn = history.dsn().get_secret_value()
+        assert f"user={auth.principal.partition('@')[0]}" in dsn
+        assert "password" not in dsn
+        assert f"dbname={test_postgres.dbname}" in dsn
+
+        environment = await HistoryEnvironment(history).prepare()
+        assert set(environment) == {KerberosEnv.CCACHE, KerberosEnv.CONFIG}
+        assert Path(environment[KerberosEnv.CONFIG]).is_file()
+        ccache = environment[KerberosEnv.CCACHE]
+        assert Path(ccache.partition(":")[2]).is_file(), ccache
+
+    async def test_password_role_needs_no_environment(self, stand: Stand) -> None:
+        history = AgentHistoryStand(stand).history()
+        assert await HistoryEnvironment(history).prepare() == {}
 
 
 class TestSettingsFile:

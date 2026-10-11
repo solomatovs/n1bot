@@ -3,7 +3,10 @@ boba-mcp отдельными процессами, фейковая модел�
 socket.io тем же протоколом, что и браузер. Проверяется ход с потоком токенов
 в ленту, остановка кнопкой Stop, sessionId агента в threads.meta, процесс
 агента без секретов в argv и окружении и его уход вместе с вкладкой; возврат к
-треду и второй инстанс (`session/load`) ждут W3."""
+треду воспроизводит историю через `session/load`, второй инстанс видит её как
+наблюдатель и получает отказ держателя в ленту, правка вопроса ветвит сессию,
+удаление треда удаляет сессию агента. История агента — Postgres стенда билетом
+Kerberos, как у самого чата."""
 
 from __future__ import annotations
 
@@ -18,7 +21,7 @@ from uuid import uuid4
 import httpx
 import pytest
 import socketio
-from acp_stand import AgentHistoryStand, ProcFiles
+from acp_stand import ProcFiles
 from psycopg import sql
 
 from boba.chainlit.acp.settings import WorkdirFile
@@ -45,7 +48,9 @@ BOOT_TIMEOUT_SEC = 180.0
 TURN_TIMEOUT_SEC = 120.0
 TOKEN_DELAY_SEC = 0.03
 PROFILE = "general"
-W3_REASON = "session/load and the observer process arrive with W3"
+HISTORY_SCHEMA = "agent_history"
+HELD_TEXT = "held by another process"
+GENERATION = "acp-chat-stand"
 
 
 @pytest.fixture(autouse=True)
@@ -99,7 +104,6 @@ def app(
     llm_port: int,
     fake_llm: None,
     stand_database: str,
-    stand: Stand,
 ) -> Iterator[StandProcess]:
     workdir = tmp_path_factory.mktemp("acp-chat-stand")
     config = StandConfig(
@@ -108,7 +112,7 @@ def app(
         app_port=free_port(),
         llm_port=llm_port,
         db_name=stand_database,
-        agent_history=AgentHistoryStand(stand).document(),
+        generation=GENERATION,
     )
     process = StandProcess(config=config, log_path=workdir / "app.log")
     process.start(boot_timeout_sec=BOOT_TIMEOUT_SEC)
@@ -154,7 +158,9 @@ class ChatSocket:
         self._sio = socketio.AsyncClient(reconnection=False)
         self._sio.on("*", self._on_any)
 
-    async def open(self) -> None:
+    async def open(self, resumed: bool = False) -> None:
+        """Подключение вкладки; resumed — тред уже есть, chainlit зовёт
+        on_chat_resume и завершает его событием resume_thread."""
         base = StandUrl.of(self._app.config.app_port)
         await self._sio.connect(
             base,
@@ -172,21 +178,44 @@ class ChatSocket:
         )
         await self._sio.emit("connection_successful")
         # task_end на connection_successful приходит сразу; on_chat_start идёт
-        # задачей со своим task_start/task_end вокруг шага run с его именем
+        # задачей со своим task_start/task_end вокруг шага run с его именем,
+        # on_chat_resume заканчивается событием resume_thread
         await self.wait_task_end()
+        if resumed:
+            await self.wait_event("resume_thread")
+            # on_chat_resume тоже обёрнут task_start/task_end: его конец не
+            # должен сойти за конец следующего хода
+            while not self._task_ends.empty():
+                self._task_ends.get_nowait()
+
+            return
+
         await self.wait_step_done(self.CHAT_START_STEP)
         await self.wait_task_end()
 
-    async def send(self, text: str) -> None:
-        message = {
-            "id": str(uuid4()),
+    async def send(self, text: str) -> str:
+        """Вопрос пользователя; итог — id его сообщения."""
+        message = self._message(str(uuid4()), text)
+        await self._sio.emit("client_message", {"message": message})
+
+        return str(message["id"])
+
+    async def edit(self, message_id: str, text: str) -> None:
+        """Правка вопроса: тот же id, новый текст — как делает интерфейс."""
+        await self._sio.emit(
+            "edit_message", {"message": self._message(message_id, text)}
+        )
+
+    @staticmethod
+    def _message(message_id: str, text: str) -> dict[str, Any]:
+        return {
+            "id": message_id,
             "name": "user",
             "type": "user_message",
             "output": text,
             "createdAt": time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime()),
             "metadata": {},
         }
-        await self._sio.emit("client_message", {"message": message})
 
     async def stop(self) -> None:
         await self._sio.emit("stop")
@@ -366,6 +395,26 @@ class ChatRows:
 
         return row[0]
 
+    async def history_rows(self, session_id: str) -> int:
+        """Записи сессии в истории агента (схема agent_history базы стенда)."""
+        pool = AsyncPostgresPool(self._postgres)
+        await pool.open()
+        try:
+            async with pool.connection() as conn:
+                cursor = await conn.execute(
+                    sql.SQL(
+                        "select count(*) from {}.history_records where session_id = %s"
+                    ).format(sql.Identifier(HISTORY_SCHEMA)),
+                    (session_id,),
+                )
+                row = await cursor.fetchone()
+        finally:
+            await pool.close()
+
+        assert row is not None
+
+        return int(row[0])
+
     async def chat_settings_rows(self, thread_id: str) -> int:
         pool = AsyncPostgresPool(self._postgres)
         await pool.open()
@@ -472,41 +521,55 @@ class TestConversation:
         assert not any(str(pid) in str(path) for path in left)
 
 
-class TestPendingW3:
-    """Возврат к треду и второй инстанс: история и живой ход через `session/load`."""
+class TestHistory:
+    """Возврат к треду, второй инстанс, правка вопроса, удаление треда."""
 
-    @pytest.mark.xfail(strict=True, reason=W3_REASON)
-    async def test_resumed_tab_shows_the_history(
-        self, app: StandProcess, cookie: str
+    async def test_resumed_tab_replays_the_history(
+        self, app: StandProcess, cookie: str, rows: ChatRows
     ) -> None:
         tab = ChatSocket(app, cookie, str(uuid4()))
         await tab.open()
         await tab.send(f"remember {ScenarioName.ANSWER.value}")
         await tab.wait_task_end()
-        await tab.close()
+        assert not tab.errors(), tab.errors()
+        meta = await rows.thread_meta(tab.thread_id)
+        assert meta is not None
+        session_id = meta[ThreadMetaField.AGENT_SESSION]
+        assert await rows.history_rows(session_id) > 0
+        await tab.end_session()
 
         again = ChatSocket(app, cookie, tab.thread_id)
-        await again.open()
+        await again.open(resumed=True)
         try:
-            assert not again.errors(), again.errors()
-            assert again.messages("user_message"), again.names()
-        finally:
-            await again.close()
+            assert not again.errors(), (again.errors(), app.tail(60))
+            replayed = again.messages("user_message")
+            assert [m.get("output") for m in replayed] == [
+                f"remember {ScenarioName.ANSWER.value}"
+            ]
+            assert any(
+                "plain streamed answer" in str(m.get("output"))
+                for m in again.messages()
+            ), again.trace()
 
-    @pytest.mark.xfail(strict=True, reason=W3_REASON)
-    async def test_second_instance_follows_a_live_turn(  # noqa: PLR0913 — фикстуры
+            await again.send(f"more {ScenarioName.THINKING.value}")
+            await again.wait_task_end()
+            assert not again.errors(), again.errors()
+        finally:
+            await again.end_session()
+
+    async def test_second_instance_observes_and_is_refused_a_turn(
         self,
         app: StandProcess,
         cookie: str,
         llm_port: int,
         stand_database: str,
-        stand: Stand,
         tmp_path: Path,
     ) -> None:
         first = ChatSocket(app, cookie, str(uuid4()))
         await first.open()
         await first.send(f"start {ScenarioName.ANSWER.value}")
         await first.wait_task_end()
+        assert not first.errors(), first.errors()
 
         config = StandConfig(
             workdir=tmp_path / "second",
@@ -514,18 +577,87 @@ class TestPendingW3:
             app_port=free_port(),
             llm_port=llm_port,
             db_name=stand_database,
-            agent_history=AgentHistoryStand(stand).document(),
+            generation=GENERATION,
         )
         second = StandProcess(config=config, log_path=tmp_path / "second.log")
         second.start(boot_timeout_sec=BOOT_TIMEOUT_SEC)
         try:
             observer = ChatSocket(second, cookie, first.thread_id)
-            await observer.open()
+            await observer.open(resumed=True)
             try:
-                assert not observer.errors(), observer.errors()
-                assert observer.messages("user_message"), observer.names()
+                assert not observer.errors(), (observer.errors(), second.tail(60))
+                assert [m.get("output") for m in observer.messages("user_message")] == [
+                    f"start {ScenarioName.ANSWER.value}"
+                ]
+
+                await observer.send(f"mine {ScenarioName.ANSWER.value}")
+                await observer.wait_task_end()
+                refusals = observer.errors()
+                assert refusals, observer.trace()
+                assert HELD_TEXT in refusals[0], refusals
             finally:
-                await observer.close()
+                await observer.end_session()
         finally:
             second.stop()
-            await first.close()
+            await first.end_session()
+
+    async def test_editing_a_question_forks_the_session(
+        self, app: StandProcess, cookie: str, rows: ChatRows
+    ) -> None:
+        tab = ChatSocket(app, cookie, str(uuid4()))
+        await tab.open()
+        question = await tab.send(f"first {ScenarioName.ANSWER.value}")
+        await tab.wait_task_end()
+        assert not tab.errors(), tab.errors()
+        before = await rows.thread_meta(tab.thread_id)
+        assert before is not None
+        original = before[ThreadMetaField.AGENT_SESSION]
+
+        await tab.edit(question, f"edited {ScenarioName.THINKING_ANSWER.value}")
+        await tab.wait_task_end()
+        assert not tab.errors(), (tab.errors(), app.tail(60))
+        after = await rows.thread_meta(tab.thread_id)
+        assert after is not None
+        branch = after[ThreadMetaField.AGENT_SESSION]
+        assert branch != original
+        await tab.end_session()
+
+        again = ChatSocket(app, cookie, tab.thread_id)
+        await again.open(resumed=True)
+        try:
+            assert not again.errors(), again.errors()
+            assert [m.get("output") for m in again.messages("user_message")] == [
+                f"edited {ScenarioName.THINKING_ANSWER.value}"
+            ]
+            answers = " ".join(str(m.get("output")) for m in again.messages())
+            assert "answer the question" in answers, again.trace()
+            assert "plain streamed answer" not in answers, again.trace()
+        finally:
+            await again.end_session()
+
+    async def test_deleting_the_thread_deletes_the_agent_session(
+        self, app: StandProcess, cookie: str, rows: ChatRows
+    ) -> None:
+        tab = ChatSocket(app, cookie, str(uuid4()))
+        await tab.open()
+        await tab.send(f"bye {ScenarioName.ANSWER.value}")
+        await tab.wait_task_end()
+        assert not tab.errors(), tab.errors()
+        meta = await rows.thread_meta(tab.thread_id)
+        assert meta is not None
+        session_id = meta[ThreadMetaField.AGENT_SESSION]
+        assert await rows.history_rows(session_id) > 0
+
+        response = httpx.request(
+            "DELETE",
+            f"{app.config.base_url}/project/thread",
+            json={"threadId": tab.thread_id},
+            headers={"Cookie": cookie},
+            timeout=120.0,
+        )
+        assert response.status_code == 200, (response.text[:300], app.tail(60))
+
+        assert await rows.thread_meta(tab.thread_id) is None
+        assert await rows.chat_settings_rows(tab.thread_id) == 0
+        assert await rows.history_rows(session_id) == 0
+        await tab.close()

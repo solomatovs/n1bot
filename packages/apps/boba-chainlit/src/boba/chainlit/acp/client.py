@@ -87,8 +87,8 @@ __all__ = [
     "AgentProcess",
     "AgentProcessError",
     "AgentRequestError",
-    "ForkMeta",
     "JsonRpcCode",
+    "MetaKey",
     "PromptBlock",
     "SessionUpdate",
     "SessionUpdates",
@@ -148,10 +148,12 @@ class JsonRpcCode(IntEnum):
     RESOURCE_NOT_FOUND = -32002
 
 
-class ForkMeta(StrEnum):
-    """Расширение агента в `_meta` запроса `session/fork`."""
+class MetaKey(StrEnum):
+    """Расширения агента в `_meta` запросов: точка среза ветки у
+    `session/fork` и uuid записи вопроса у `session/prompt`."""
 
     UP_TO_UUID = "boba/upToUuid"
+    MESSAGE_ID = "boba/messageId"
 
 
 class ClientName(StrEnum):
@@ -294,6 +296,19 @@ class AgentCommand:
 
         return merged
 
+    def with_env(self, extra: Mapping[str, str]) -> AgentCommand:
+        """Команда с добавленными переменными запуска (пути libkrb5 истории)."""
+        merged = dict(self.env)
+        merged.update(extra)
+
+        return AgentCommand(
+            executable=self.executable,
+            args=self.args,
+            env=merged,
+            start_timeout_sec=self.start_timeout_sec,
+            stop_timeout_sec=self.stop_timeout_sec,
+        )
+
 
 class AgentProcess:
     """Процесс агента ACP одной сессии: запуск из приватного каталога, кадры
@@ -430,9 +445,15 @@ class AgentProcess:
         )
 
     async def prompt(
-        self, session_id: str, blocks: Sequence[PromptBlock]
+        self, session_id: str, blocks: Sequence[PromptBlock], message_id: str
     ) -> PromptResponse:
-        request = PromptRequest(session_id=session_id, prompt=list(blocks))
+        """Ход по вопросу; message_id — id сообщения chainlit, он становится
+        uuid записи вопроса у агента (`boba/messageId`)."""
+        request = PromptRequest(
+            session_id=session_id,
+            prompt=list(blocks),
+            field_meta={MetaKey.MESSAGE_ID.value: message_id},
+        )
 
         return await self._request(
             AGENT_METHODS["session_prompt"], request, PromptResponse
@@ -474,7 +495,7 @@ class AgentProcess:
             session_id=session_id,
             cwd=str(self._workdir.path),
             mcp_servers=list(servers),
-            field_meta={ForkMeta.UP_TO_UUID.value: up_to_uuid},
+            field_meta={MetaKey.UP_TO_UUID.value: up_to_uuid},
         )
         response = await self._request(
             AGENT_METHODS["session_fork"], request, ForkSessionResponse

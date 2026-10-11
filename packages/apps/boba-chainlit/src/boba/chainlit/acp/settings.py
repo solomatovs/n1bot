@@ -38,6 +38,7 @@ from pydantic.alias_generators import to_camel
 
 from boba.chainlit.acp.config import (
     AgentConfig,
+    AgentHistoryConfig,
     AgentHistoryKind,
     MemoryAgentHistory,
     PostgresAgentHistory,
@@ -46,6 +47,8 @@ from boba.chat.profiles import ChatProfileConfig
 from boba.connections.secrets import SecretCipher
 from boba.db.postgres import PostgresPool
 from boba.db.postgres.connection import PostgresConfig
+from boba.krb import KerberosWorkspace
+from boba.krb.credentials import ClientCredentials, KerberosEnv
 from boba.runtime.table import PgTable
 from boba.transport.http.connection import BearerAuth, HttpConnection
 
@@ -60,6 +63,7 @@ __all__ = [
     "AgentWorkdirs",
     "AuthHeader",
     "ChatAgentSettings",
+    "HistoryEnvironment",
     "HookMatchers",
     "ProfileModelSpecs",
     "ProviderKindName",
@@ -616,6 +620,38 @@ class SettingsFileBuilder:
         )
 
         return {HookEventName.PRE_TOOL_USE: [group]}
+
+
+class HistoryEnvironment:
+    """Окружение libkrb5 для процесса агента с kerberos-ролью истории: путь к
+    кэшу билета и к krb5.conf рабочего каталога chainlit; билет в кэше
+    обновляется по keytab до запуска. У парольной роли окружение пустое.
+
+    Исключение §17: libpq читает KRB5CCNAME/KRB5_CONFIG из окружения сам;
+    это пути к файлам того же пользователя, не секреты.
+    """
+
+    def __init__(self, history: AgentHistoryConfig) -> None:
+        self._history = history
+
+    async def prepare(self) -> dict[str, str]:
+        """Ошибки:
+        KerberosError — билет по keytab не получен.
+        """
+        if not isinstance(self._history, PostgresAgentHistory):
+            return {}
+
+        auth = self._history.kerberos_auth()
+        if auth is None:
+            return {}
+
+        credentials = ClientCredentials.of(auth)
+        await credentials.ensure_async()
+
+        return {
+            KerberosEnv.CCACHE: KerberosWorkspace.ccache_for(auth),
+            KerberosEnv.CONFIG: KerberosWorkspace.krb5_config(),
+        }
 
 
 class AgentWorkdir:

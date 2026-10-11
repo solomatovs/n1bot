@@ -43,6 +43,7 @@ from boba.chainlit.acp.client import (
     AgentCommand,
     AgentProcess,
     AgentRequestError,
+    JsonRpcCode,
     PromptBlock,
     SessionUpdate,
     SessionUpdates,
@@ -53,6 +54,7 @@ from boba.chainlit.acp.settings import (
     AgentSettingsTable,
     AgentWorkdirs,
     ChatAgentSettings,
+    HistoryEnvironment,
     SettingsFileBuilder,
 )
 from boba.chainlit.acp.tokens import SessionServer, SessionServers
@@ -71,6 +73,7 @@ __all__ = [
     "FeedRenderer",
     "ThreadAgent",
     "ThreadAgents",
+    "ThreadAgentsIndex",
     "ThreadDeleter",
     "ThreadIdentity",
 ]
@@ -170,13 +173,19 @@ class AgentSessionMeta:
     def __init__(self, threads: ThreadsTable) -> None:
         self._threads = threads
 
-    async def session_of(self, thread_id: str) -> str | None:
-        """Id сессии агента; None — у треда ещё не было хода."""
+    async def session_of(self, thread_id: str) -> str:
+        """Id сессии агента для загрузки: из metadata треда, а без записи —
+        id самого треда: так названы сессии мигрированных тредов, и так
+        их находит `session/load`; неизвестную сессию агент отвергнет сам."""
         stored = await self._threads.get(UUID(thread_id))
         if stored is None:
-            return None
+            return thread_id
 
-        return self.in_meta(stored.meta)
+        known = self.in_meta(stored.meta)
+        if known is None:
+            return thread_id
+
+        return known
 
     @staticmethod
     def in_meta(meta: Any) -> str | None:
@@ -417,6 +426,37 @@ class FeedRenderer(SessionUpdates):
         return found
 
 
+class AskedQuestions(SessionUpdates):
+    """Приёмник-обёртка: запоминает id вопросов, воспроизведённых агентом
+    (`user_message_chunk.messageId`), и передаёт поток дальше рендереру. По
+    этим id агент треда узнаёт правку вопроса после возврата к треду."""
+
+    def __init__(self, inner: SessionUpdates) -> None:
+        self._inner = inner
+        self.ids: list[str] = []
+
+    async def update(self, session_id: str, update: SessionUpdate) -> None:
+        if isinstance(update, UserMessageChunk) and update.message_id is not None:
+            if update.message_id not in self.ids:
+                self.ids.append(update.message_id)
+
+        await self._inner.update(session_id, update)
+
+    async def permission(
+        self,
+        session_id: str,
+        tool_call: ToolCallUpdate,
+        options: Sequence[PermissionOption],
+    ) -> RequestPermissionResponse:
+        return await self._inner.permission(session_id, tool_call, options)
+
+    async def turn_finished(self, session_id: str, stop_reason: str) -> None:
+        await self._inner.turn_finished(session_id, stop_reason)
+
+    async def abandon(self, session_id: str) -> None:
+        await self._inner.abandon(session_id)
+
+
 class AgentLauncher:
     """Запуск процесса агента под тред: слой чата из Postgres → файл настроек
     в приватном каталоге → процесс → рукопожатие; серверы MCP сессии с
@@ -437,6 +477,7 @@ class AgentLauncher:
         self._servers = servers
         self._files = SettingsFileBuilder(config)
         self._workdirs = AgentWorkdirs(Path(config.process.private_dir))
+        self._environment = HistoryEnvironment(config.history)
         self._command = AgentCommand(
             executable=config.process.command,
             args=tuple(config.process.args),
@@ -477,16 +518,19 @@ class AgentLauncher:
         hooked: Sequence[str],
         client: AgentClient,
     ) -> AgentProcess:
-        """Процесс по готовому слою чата; без hooked секция hooks пуста.
+        """Процесс по готовому слою чата; без hooked секция hooks пуста;
+        kerberos-роль истории получает окружение libkrb5.
 
         Ошибки:
         AgentProcessError — процесс не запустился.
+        KerberosError — билет истории по keytab не получен.
         """
         document = self._files.build(chat, user_jwt, hooked)
         workdir = self._workdirs.create(thread_id)
         workdir.write(document, chat.system_prompt)
+        command = self._command.with_env(await self._environment.prepare())
 
-        process = AgentProcess(self._command, workdir, client, self._version)
+        process = AgentProcess(command, workdir, client, self._version)
         await process.start()
 
         return process
@@ -520,6 +564,7 @@ class ThreadAgent:
         self._launcher = launcher
         self._meta = meta
         self._renderer = renderer
+        self._questions = AskedQuestions(renderer)
         self._process: AgentProcess | None = None
         self._servers: list[SessionServer] = []
         self._session_id: str | None = None
@@ -549,23 +594,40 @@ class ThreadAgent:
     async def start(self) -> None:
         """Процесс и серверы сессии; сессия открывается позже."""
         self._process = await self._launcher.launch(
-            self._identity, AgentClient(self._renderer)
+            self._identity, AgentClient(self._questions)
         )
         self._servers = await self._launcher.servers(self._identity)
 
     async def resume(self) -> bool:
-        """Загрузка сохранённой сессии треда; False — у треда её ещё нет.
+        """Загрузка сохранённой сессии треда с воспроизведением беседы;
+        False — у агента нет такой сессии, первый вопрос откроет новую.
 
         Ошибки:
-        AgentRequestError — агент отказал в `session/load`.
+        AgentRequestError — агент отказал в `session/load` не по причине
+            неизвестной сессии.
         """
         known = await self._meta.session_of(self.thread_id)
-        if known is None:
+        try:
+            await self.process.load_session(known, self._servers)
+        except AgentRequestError as exc:
+            if exc.code != JsonRpcCode.RESOURCE_NOT_FOUND:
+                raise
+
+            logger.info(
+                "thread %s: no agent session %s yet: %s", self.thread_id, known, exc
+            )
+
             return False
 
-        await self.process.load_session(known, self._servers)
         self._session_id = known
-        logger.info("thread %s: agent session %s loaded", self.thread_id, known)
+        self._asked = list(self._questions.ids)
+        await self._meta.remember(self.thread_id, known)
+        logger.info(
+            "thread %s: agent session %s loaded, %d question(s) replayed",
+            self.thread_id,
+            known,
+            len(self._asked),
+        )
 
         return True
 
@@ -588,7 +650,7 @@ class ThreadAgent:
             session_id,
         )
         turn = asyncio.create_task(
-            self.process.prompt(session_id, self._blocks(question))
+            self.process.prompt(session_id, self._blocks(question), question.key)
         )
         try:
             response = await asyncio.shield(turn)
@@ -640,8 +702,7 @@ class ThreadAgent:
         return True
 
     async def close(self) -> None:
-        """Закрытие сессии у агента и остановка процесса; агент без
-        `session/close` (до W3) закрывается концом ввода."""
+        """Закрытие сессии у агента (замок отпущен) и остановка процесса."""
         process = self._process
         if process is None:
             return
@@ -659,17 +720,8 @@ class ThreadAgent:
         if not process.alive():
             return
 
-        try:
-            await process.close_session(session_id)
-        except AgentRequestError as exc:
-            if not exc.method_missing:
-                raise
-
-            logger.warning(
-                "thread %s: the agent has no session/close yet, closing by EOF: %s",
-                self.thread_id,
-                exc,
-            )
+        await process.close_session(session_id)
+        logger.info("thread %s: agent session %s closed", self.thread_id, session_id)
 
     async def _session_for(self, question: Question) -> str:
         """Сессия хода: открытая, ветвь при правке вопроса, иначе новая."""
@@ -714,13 +766,50 @@ class ThreadAgent:
         return blocks
 
 
+class ThreadAgentsIndex:
+    """Агенты всех вкладок инстанса по тредам: удаление треда закрывает их
+    первыми, чтобы сессия агента не осталась под замком этого процесса."""
+
+    def __init__(self) -> None:
+        self._agents: dict[str, list[ThreadAgent]] = {}
+
+    def register(self, agent: ThreadAgent) -> None:
+        self._agents.setdefault(agent.thread_id, []).append(agent)
+
+    def forget(self, agent: ThreadAgent) -> None:
+        agents = self._agents.get(agent.thread_id)
+        if agents is None:
+            return
+
+        if agent in agents:
+            agents.remove(agent)
+
+        if not agents:
+            self._agents.pop(agent.thread_id, None)
+
+    def of_thread(self, thread_id: str) -> Sequence[ThreadAgent]:
+        return list(self._agents.get(thread_id, ()))
+
+    async def close_thread(self, thread_id: str) -> int:
+        """Закрывает агентов треда во всех вкладках инстанса; итог — сколько."""
+        agents = self.of_thread(thread_id)
+        for agent in agents:
+            self.forget(agent)
+            await agent.close()
+
+        return len(agents)
+
+
 class ThreadAgents:
     """Агенты вкладки chainlit по тредам: один процесс на открытый тред;
     закрывается с DI-контейнером сессии."""
 
-    def __init__(self, launcher: AgentLauncher, meta: AgentSessionMeta) -> None:
+    def __init__(
+        self, launcher: AgentLauncher, meta: AgentSessionMeta, index: ThreadAgentsIndex
+    ) -> None:
         self._launcher = launcher
         self._meta = meta
+        self._index = index
         self._agents: dict[str, ThreadAgent] = {}
         self._starting = asyncio.Lock()
 
@@ -735,6 +824,7 @@ class ThreadAgents:
             agent = ThreadAgent(identity, self._launcher, self._meta, FeedRenderer())
             await agent.start()
             self._agents[identity.thread_id] = agent
+            self._index.register(agent)
 
             return agent
 
@@ -753,6 +843,7 @@ class ThreadAgents:
         agents = list(self._agents.values())
         self._agents.clear()
         for agent in agents:
+            self._index.forget(agent)
             try:
                 await agent.close()
             except Exception:
@@ -760,17 +851,24 @@ class ThreadAgents:
 
 
 class ThreadDeleter(ThreadDeletionListener):
-    """Удаление сессии агента вместе с тредом: короткоживущий процесс под
-    слоем чата делает `session/delete`, затем слой чата стирается.
+    """Удаление сессии агента вместе с тредом: агенты вкладок этого инстанса
+    закрываются (отпускают замок), короткоживущий процесс под слоем чата
+    делает `session/delete`, затем слой чата стирается.
 
     Реализация ThreadDeletionListener слоя данных; создаётся провайдером
-    процесса и ставится на PostgresDataLayer в bootstrap. Агент без
-    `session/delete` (до W3) оставляет записи, тред всё равно удаляется.
+    процесса и ставится на PostgresDataLayer в bootstrap. Сессию, которую
+    держит другой инстанс, агент удалить не даст — тред остаётся.
     """
 
-    def __init__(self, launcher: AgentLauncher, table: AgentSettingsTable) -> None:
+    def __init__(
+        self,
+        launcher: AgentLauncher,
+        table: AgentSettingsTable,
+        index: ThreadAgentsIndex,
+    ) -> None:
         self._launcher = launcher
         self._table = table
+        self._index = index
 
     async def thread_deleted(self, thread_id: str, meta: Mapping[str, Any]) -> None:
         """Ошибки:
@@ -778,9 +876,18 @@ class ThreadDeleter(ThreadDeletionListener):
         AgentProcessError — процесс не запустился.
         DataUnavailableError — слой настроек недоступен.
         """
+        closed = await self._index.close_thread(thread_id)
+        if closed:
+            logger.info(
+                "thread %s: %d tab agent(s) closed before deletion", thread_id, closed
+            )
+
         session_id = AgentSessionMeta.in_meta(meta)
+        if session_id is None:
+            session_id = thread_id
+
         chat = await self._table.chat_layer(UUID(thread_id))
-        if session_id is not None and chat is not None:
+        if chat is not None:
             await self._delete_session(thread_id, chat, session_id)
 
         await self._table.delete_chat_layer(UUID(thread_id))
@@ -794,16 +901,5 @@ class ThreadDeleter(ThreadDeletionListener):
         try:
             await process.delete_session(session_id)
             logger.info("thread %s: agent session %s deleted", thread_id, session_id)
-        except AgentRequestError as exc:
-            if not exc.method_missing:
-                raise
-
-            logger.warning(
-                "thread %s: the agent has no session/delete yet, records of "
-                "session %s stay in its history: %s",
-                thread_id,
-                session_id,
-                exc,
-            )
         finally:
             await process.close()
