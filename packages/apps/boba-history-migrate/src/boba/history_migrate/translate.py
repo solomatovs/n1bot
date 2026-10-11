@@ -16,7 +16,9 @@ ToolMessage → `user` с блоком `tool_result`; артефакт, адре
 оценки chainlit: id вопроса — uuid записи `user`, id ответа — `message.id`
 записей `assistant`, id вызова — id блока `tool_use` и `tool_use_id` итога.
 Время записей — время последнего checkpoint'а треда: своего времени у
-сообщений источника нет.
+сообщений источника нет. Символ U+0000 в строках заменяется U+FFFD: jsonb
+Postgres его не хранит, а msgpack источника хранил; замены считаются и
+попадают заметкой в итог треда.
 
 Ошибки:
 TranslateError — идентификатор треда не годится в идентификатор сессии.
@@ -64,6 +66,7 @@ __all__ = [
     "CheckpointClock",
     "MigratedAttachment",
     "MigratedModel",
+    "NulScrub",
     "RecordTranslator",
     "ToolUseResultKey",
     "TranslateError",
@@ -177,6 +180,50 @@ class CheckpointClock(Clock):
         return f"{moment.strftime(self.FORMAT)}.{millis:03d}Z"
 
 
+class NulScrub:
+    """Замена U+0000 в строках документа записи и подсчёт замен.
+
+    Создаётся на тред сборкой записей (ThreadRecords); через него проходят
+    тексты сообщений, аргументы вызовов, вложения и toolUseResult.
+    """
+
+    NUL: ClassVar[str] = "\x00"
+    REPLACEMENT: ClassVar[str] = "\ufffd"
+
+    def __init__(self) -> None:
+        self.count = 0
+
+    def text(self, value: str) -> str:
+        found = value.count(self.NUL)
+        if not found:
+            return value
+
+        self.count += found
+
+        return value.replace(self.NUL, self.REPLACEMENT)
+
+    def value(self, value: Any) -> Any:
+        """Строки на всех уровнях словарей и списков; остальное как есть."""
+        if isinstance(value, str):
+            return self.text(value)
+
+        if isinstance(value, Mapping):
+            cleaned: dict[Any, Any] = {}
+            for key, item in value.items():
+                cleaned[self.value(key)] = self.value(item)
+
+            return cleaned
+
+        if isinstance(value, list | tuple):
+            items: list[Any] = []
+            for item in value:
+                items.append(self.value(item))
+
+            return items
+
+        return value
+
+
 @dataclass(frozen=True)
 class Reply:
     """Ответ модели, который ложится записями `assistant`: по записи на блок."""
@@ -271,11 +318,18 @@ class ThreadRecords:
         self._model: str = MigratedModel.UNKNOWN.value
         self._notes: list[str] = []
         self._skipped = 0
+        self._scrub = NulScrub()
 
     def note(self, text: str) -> None:
         self._notes.append(text)
 
     def result(self) -> Translation:
+        if self._scrub.count:
+            self._notes.append(
+                f"replaced {self._scrub.count} NUL character(s) with U+FFFD: "
+                "Postgres jsonb cannot store them"
+            )
+
         return Translation(
             session=self._session, notes=self._notes, skipped=self._skipped
         )
@@ -367,8 +421,8 @@ class ThreadRecords:
                 continue
 
             yield {
-                AttachmentField.NAME.value: str(name),
-                AttachmentField.PATH.value: str(path),
+                AttachmentField.NAME.value: self._scrub.text(str(name)),
+                AttachmentField.PATH.value: self._scrub.text(str(path)),
             }
 
     def _assistant(self, message: AIMessage) -> None:
@@ -513,7 +567,9 @@ class ThreadRecords:
             if not isinstance(args, Mapping):
                 args = {}
 
-            yield ToolUseBlock(id=str(call_id), name=str(name), input=dict(args))
+            yield ToolUseBlock(
+                id=str(call_id), name=str(name), input=self._scrub.value(dict(args))
+            )
 
     @staticmethod
     def _usage(message: AIMessage) -> Usage:
@@ -554,8 +610,7 @@ class ThreadRecords:
         )
         self._session.add(record)
 
-    @staticmethod
-    def _tool_use_result(message: ToolMessage) -> dict[str, Any] | None:
+    def _tool_use_result(self, message: ToolMessage) -> dict[str, Any] | None:
         result: dict[str, Any] = {}
         if message.artifact is not None:
             result[ToolUseResultKey.ARTIFACT.value] = message.artifact
@@ -571,14 +626,13 @@ class ThreadRecords:
         if not result:
             return None
 
-        return result
+        return self._scrub.value(result)
 
-    @staticmethod
-    def _text(message: BaseMessage) -> str:
+    def _text(self, message: BaseMessage) -> str:
         """Текст сообщения: строка как есть, у списка блоков — склейка текстовых."""
         content = message.content
         if isinstance(content, str):
-            return content
+            return self._scrub.text(content)
 
         parts: list[str] = []
         for block in content:
@@ -591,4 +645,4 @@ class ThreadRecords:
 
             parts.append(str(block.get(ContentBlockKey.TEXT.value, "")))
 
-        return "".join(parts)
+        return self._scrub.text("".join(parts))
