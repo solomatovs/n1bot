@@ -127,7 +127,9 @@ class ModeCeiling:
 
     `bypassPermissions` без `allow_bypass` понижается до `default` с
     предупреждением; `auto` без классификатора — ошибка, понижать его
-    молча нельзя: пользователь ждал автоматических ответов.
+    молча нельзя: пользователь ждал автоматических ответов. `available`
+    перечисляет режимы, доступные под этим потолком, — их агент предлагает
+    запускающей программе на выбор.
     """
 
     def __init__(self, allow_bypass: bool, has_classifier: bool) -> None:
@@ -155,6 +157,20 @@ class ModeCeiling:
                 "classifier, or pick another mode."
             )
             raise PermissionModeError(msg)
+
+    def available(self) -> Sequence[PermissionMode]:
+        """Режимы, которые потолок пропускает, в порядке объявления."""
+        modes: list[PermissionMode] = []
+        for mode in PermissionMode:
+            if mode is PermissionMode.BYPASS_PERMISSIONS and not self._allow_bypass:
+                continue
+
+            if mode is PermissionMode.AUTO and not self._has_classifier:
+                continue
+
+            modes.append(mode)
+
+        return modes
 
     def capped(self, mode: PermissionMode) -> PermissionMode:
         """Режим из журнала или начальный: `bypassPermissions` без права на

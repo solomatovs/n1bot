@@ -166,9 +166,8 @@ class TurnLoop:
         self._keeper = keeper
         self._session: Session = keeper.session
         self._queue = queue
-        self._profile = profile
         self._limits = limits
-        self._builder = builder
+        self._compaction = compaction
         self._attachments = attachments
         self._tools = tools
         self._templates = templates
@@ -181,28 +180,57 @@ class TurnLoop:
         self._snapshot_tools = list(snapshot_tools)
         self._skills = list(skills)
         self._environment = environment
-        self._budget = SkillBudget(profile.context_window, profile.chars_per_token)
         self._agent = agent_name
-        self._asking = ModelAsk(model, sink)
+        self._last_failure = ""
+        self._failures = 0
+        self._bind_model(profile, model, builder)
+
+    def _bind_model(
+        self, profile: ModelProfile, model: ChatModel, builder: RequestBuilder
+    ) -> None:
+        """Части, которые зависят от профиля модели: сборщик запроса, бюджет
+        скиллов, обращение к модели, оценка заполненности, пересказ и пачка
+        сжатия. Собираются на старте и заново при смене модели."""
+        self._profile = profile
+        self._builder = builder
+        self._budget = SkillBudget(profile.context_window, profile.chars_per_token)
+        self._asking = ModelAsk(model, self._sink)
         estimator = TokenEstimator(profile)
-        self._gate = CompactGate(ContextMeter(estimator), compaction, profile)
+        self._gate = CompactGate(ContextMeter(estimator), self._compaction, profile)
         self._summarizer = Summarizer(
-            self._asking, builder, templates, estimator, ids, clock, version, recorder
+            self._asking,
+            builder,
+            self._templates,
+            estimator,
+            self._ids,
+            self._clock,
+            self._version,
+            self._recorder,
         )
         self._compactor = Compactor(
-            attachments,
+            self._attachments,
             estimator,
-            templates,
-            ids,
-            clock,
-            version,
+            self._templates,
+            self._ids,
+            self._clock,
+            self._version,
             profile,
-            environment,
+            self._environment,
             self._skills,
             self._budget,
         )
-        self._last_failure = ""
-        self._failures = 0
+
+    def set_model(
+        self, profile: ModelProfile, model: ChatModel, builder: RequestBuilder
+    ) -> None:
+        """Смена профиля модели между ходами: следующий запрос идёт новой
+        модели с её окном и сэмплингом; вложение `model` объявит смену в
+        начале следующего хода. Вызывающий проверяет, что ход не идёт."""
+        self._bind_model(profile, model, builder)
+
+    @property
+    def profile(self) -> ModelProfile:
+        return self._profile
 
     def set_system_prompt(self, sections: Sequence[str]) -> None:
         """Системный промпт запуска; действует с первого снимка, который ещё
