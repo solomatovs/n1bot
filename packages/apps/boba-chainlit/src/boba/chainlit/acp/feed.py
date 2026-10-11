@@ -501,13 +501,18 @@ class AgentFeed(TurnRenderer):
 
     async def loaded(self, session_id: str) -> None:
         """Воспроизведение закончено: последний ход закрывается, к шагам
-        возвращаются сохранённые оценки."""
+        возвращаются сохранённые оценки. Отправленное переводчик забывает:
+        вкладка, вернувшаяся к треду ещё раз (обрыв сокета, смена профиля),
+        получает пустую ленту, и следующее воспроизведение обязано отправить
+        шаги заново, а не обновлениями к шагам, которых у неё уже нет."""
         async with self._ordered:
             with self._tab.entered():
                 if self._replay.turn_key is not None:
                     await self._replay.finish_turn()
 
                 await self._restore_feedback()
+
+            self._replay.view.rebuilt()
 
     async def _restore_feedback(self) -> None:
         rows = await self._feedbacks.feedbacks_of(self.thread_id)
