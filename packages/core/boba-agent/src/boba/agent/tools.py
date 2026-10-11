@@ -4,10 +4,13 @@
 инструменты агента (вопрос пользователю) живут рядом с инструментами
 сервера и зовутся по имени (план, раздел 5.12). ToolRunner ведёт пачку
 вызовов по разделу 5.13, шаг 8: каждый вызов проходит разрешения (раздел
-5.6), вопросы наружу идут по очереди, разрешённые вызовы уходят серверу
-одним `submit`, результаты собираются в порядке вызовов; отмена посреди
-пачки даёт результаты-отказы по таблице раздела 5.14. Результат длиннее
-предела обрезается, пустой заменяется заглушкой.
+5.6), вопросы наружу идут по очереди, затем хук `PreToolUse` (boba.agent.hooks)
+может заменить аргументы, снять вызов или потребовать вопрос наружу;
+разрешённые вызовы уходят серверу одним `submit` с аргументами после хука,
+а запись `tool_use` хранит аргументы модели; результаты собираются в
+порядке вызовов; отмена посреди пачки даёт результаты-отказы по таблице
+раздела 5.14. Результат длиннее предела обрезается, пустой заменяется
+заглушкой.
 
 Ошибки:
 ToolsError — имя собственного инструмента совпало с именем инструмента
@@ -34,6 +37,15 @@ from boba.agent.control import (
     QuestionWithdrawnError,
 )
 from boba.agent.events import ControlCancelEvent, ControlRequestEvent
+from boba.agent.hooks import (
+    HookAllowed,
+    HookAsked,
+    HookBlocked,
+    HookDenied,
+    HookedCall,
+    HookVerdict,
+    PreToolUseHooks,
+)
 from boba.agent.ids import Clock
 from boba.agent.permissions import (
     Allowed,
@@ -64,6 +76,7 @@ logger = logging.getLogger(__name__)
 
 __all__ = [
     "AgentTools",
+    "Approved",
     "AskUserQuestionTool",
     "BatchOutcome",
     "CallResult",
@@ -110,6 +123,13 @@ class BatchOutcome:
 
     results: Sequence[CallResult]
     aborted: StopReason | None
+
+
+@dataclass(frozen=True)
+class Approved:
+    """Вызов прошёл разрешения и хук: эти аргументы уходят серверу."""
+
+    arguments: Mapping[str, Any]
 
 
 class Questioner:
@@ -322,7 +342,7 @@ class AgentTools:
             self._own[tool.name] = tool
 
         self._server_hints: dict[str, ToolHints] = {}
-        self._server_cards: list[SnapshotTool] = []
+        self._server_cards: dict[str, SnapshotTool] = {}
         if server is not None:
             for card in server.tools():
                 if card.name in self._own:
@@ -334,12 +354,10 @@ class AgentTools:
                     raise ToolsError(msg)
 
                 self._server_hints[card.name] = card.hints
-                self._server_cards.append(
-                    SnapshotTool(
-                        name=card.name,
-                        description=card.description,
-                        schema=dict(card.parameters),
-                    )
+                self._server_cards[card.name] = SnapshotTool(
+                    name=card.name,
+                    description=card.description,
+                    schema=dict(card.parameters),
                 )
 
     @property
@@ -348,7 +366,7 @@ class AgentTools:
 
     def snapshot(self) -> Sequence[SnapshotTool]:
         """Карточки для снимка промпта: сервера, затем собственные."""
-        cards = list(self._server_cards)
+        cards = list(self._server_cards.values())
         for tool in self._own.values():
             cards.append(tool.card())
 
@@ -361,6 +379,18 @@ class AgentTools:
             return own.hints
 
         return self._server_hints.get(name)
+
+    def schema_of(self, name: str) -> Mapping[str, Any]:
+        """Входная JSON-схема инструмента; у неизвестного — пустая."""
+        own = self._own.get(name)
+        if own is not None:
+            return own.card().schema_
+
+        card = self._server_cards.get(name)
+        if card is None:
+            return {}
+
+        return card.schema_
 
     def own(self, name: str) -> OwnTool | None:
         return self._own.get(name)
@@ -415,6 +445,27 @@ class ToolTexts:
             denial=ToolDenialKind.USER_REJECTED,
         )
 
+    def hook_denied(self, call: PlannedCall, reason: str) -> CallResult:
+        """Обработчик хука снял вызов: с причиной или без неё."""
+        if reason.strip():
+            text = self._templates.read(AgentTemplateFile.HOOK_DENIED).format(
+                tool=call.name, reason=reason
+            )
+        else:
+            text = self._templates.read(AgentTemplateFile.HOOK_DENIED_SILENT).format(
+                tool=call.name
+            )
+
+        return CallResult(call=call, text=text, is_error=True, artifact=text)
+
+    def hook_blocked(self, call: PlannedCall, url: str, error: str) -> CallResult:
+        """Обработчик хука не ответил, а его отказ блокирует вызов."""
+        text = self._templates.read(AgentTemplateFile.HOOK_BLOCKED).format(
+            tool=call.name, url=url, error=error
+        )
+
+        return CallResult(call=call, text=text, is_error=True, artifact=text)
+
     def interrupted(self, call: PlannedCall) -> CallResult:
         """Ход закончен ради элемента `now`: вызов не доработал."""
         text = self._templates.read(AgentTemplateFile.TURN_ABORTED)
@@ -464,8 +515,10 @@ class ToolRunner:
         clock: Clock,
         agent_name: str,
         static: StaticRules,
+        hooks: PreToolUseHooks | None,
     ) -> None:
         self._static = static
+        self._hooks = hooks
         self._tools = tools
         self._texts = texts
         self._templates = templates
@@ -509,34 +562,90 @@ class ToolRunner:
     ) -> None:
         for index, call in enumerate(calls):
             cancellation.raise_if_cancelled()
-            hints = self._tools.hints_of(call.name)
-            if hints is None:
-                running.results[index] = self._texts.unknown(call)
+            decided = await self._decide(call, questioner, cancellation)
+            if isinstance(decided, CallResult):
+                running.results[index] = decided
                 continue
 
-            decision = self._policy().decide(call.name, hints)
-            if isinstance(decision, Classified):
-                decision = await self._classified(call, hints)
+            running.submitted.append((index, call, decided.arguments))
 
-            if isinstance(decision, Denied):
-                running.results[index] = self._texts.denied(call, decision.text)
-                continue
+    async def _decide(
+        self,
+        call: PlannedCall,
+        questioner: Questioner,
+        cancellation: RunCancellation,
+    ) -> CallResult | Approved:
+        """Разрешения, вопрос наружу, хук, собственный инструмент: результат
+        сразу либо аргументы для сервера."""
+        hints = self._tools.hints_of(call.name)
+        if hints is None:
+            return self._texts.unknown(call)
 
-            arguments: Mapping[str, Any] = call.block.input
-            if isinstance(decision, Asked):
-                answer = await questioner.ask(self._request(call))
-                if isinstance(answer, DenyAnswer):
-                    running.results[index] = self._texts.rejected(call, answer.message)
-                    continue
+        decision = self._policy().decide(call.name, hints)
+        if isinstance(decision, Classified):
+            decision = await self._classified(call, hints)
 
-                arguments = await self._granted(call, answer)
+        if isinstance(decision, Denied):
+            return self._texts.denied(call, decision.text)
 
-            own = self._tools.own(call.name)
-            if own is not None:
-                running.results[index] = await own.run(call, arguments, questioner)
-                continue
+        arguments: Mapping[str, Any] = call.block.input
+        if isinstance(decision, Asked):
+            answer = await questioner.ask(self._request(call, arguments))
+            if isinstance(answer, DenyAnswer):
+                return self._texts.rejected(call, answer.message)
 
-            running.submitted.append((index, call, arguments))
+            arguments = await self._granted(answer, arguments)
+
+        hooked = await self._hooked(call, arguments, cancellation)
+        settled = await self._after_hook(call, hooked, questioner)
+        if isinstance(settled, CallResult):
+            return settled
+
+        own = self._tools.own(call.name)
+        if own is not None:
+            return await own.run(call, settled.arguments, questioner)
+
+        return settled
+
+    async def _hooked(
+        self,
+        call: PlannedCall,
+        arguments: Mapping[str, Any],
+        cancellation: RunCancellation,
+    ) -> HookVerdict:
+        if self._hooks is None:
+            return HookAllowed(arguments=arguments)
+
+        session = self._keeper.session
+        hooked = HookedCall(
+            session_id=session.id.value,
+            permission_mode=PermissionState(session.service()).mode,
+            tool_name=call.name,
+            tool_use_id=call.block.id,
+            arguments=arguments,
+            schema=self._tools.schema_of(call.name),
+        )
+
+        return await self._hooks.before_call(hooked, cancellation)
+
+    async def _after_hook(
+        self, call: PlannedCall, hooked: HookVerdict, questioner: Questioner
+    ) -> CallResult | Approved:
+        """Вердикт хука → отказ сразу, вопрос наружу или аргументы вызова."""
+        if isinstance(hooked, HookDenied):
+            return self._texts.hook_denied(call, hooked.reason)
+
+        if isinstance(hooked, HookBlocked):
+            return self._texts.hook_blocked(call, hooked.url, hooked.error)
+
+        if isinstance(hooked, HookAsked):
+            answer = await questioner.ask(self._request(call, hooked.arguments))
+            if isinstance(answer, DenyAnswer):
+                return self._texts.rejected(call, answer.message)
+
+            return Approved(await self._granted(answer, hooked.arguments))
+
+        return Approved(hooked.arguments)
 
     async def _classified(
         self, call: PlannedCall, hints: ToolHints
@@ -554,21 +663,23 @@ class ToolRunner:
 
         return PermissionPolicy(state, self._templates, self._agent, self._static)
 
-    def _request(self, call: PlannedCall) -> CanUseToolRequest:
+    def _request(
+        self, call: PlannedCall, arguments: Mapping[str, Any]
+    ) -> CanUseToolRequest:
         suggestion = PermissionRule(tool=call.name, behavior=PermissionBehavior.ALLOW)
 
         return CanUseToolRequest(
             tool_name=call.name,
-            input=call.block.input,
+            input=arguments,
             tool_use_id=call.block.id,
             permission_suggestions=[suggestion],
         )
 
     async def _granted(
-        self, call: PlannedCall, answer: AllowAnswer
+        self, answer: AllowAnswer, arguments: Mapping[str, Any]
     ) -> Mapping[str, Any]:
         """Правила «до конца сессии» — записями; аргументы — из ответа, если
-        запускающая программа их заменила."""
+        запускающая программа их заменила, иначе те, о которых спрашивали."""
         for rule in answer.updated_permissions:
             await self._keeper.add(
                 PermissionRuleRecord(
@@ -580,7 +691,7 @@ class ToolRunner:
             )
 
         if answer.updated_input is None:
-            return call.block.input
+            return arguments
 
         return answer.updated_input
 

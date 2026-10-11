@@ -71,6 +71,9 @@ class AgentTemplateFile(StrEnum):
     SKILL_LAUNCHED = "tools/skill_launched.txt"
     NO_SUCH_SKILL = "tools/no_such_skill.txt"
     DENIED_BY_SETTINGS = "tools/denied_by_settings.txt"
+    HOOK_DENIED = "tools/hook_denied.txt"
+    HOOK_DENIED_SILENT = "tools/hook_denied_silent.txt"
+    HOOK_BLOCKED = "tools/hook_blocked.txt"
 
 
 class AgentTemplate:

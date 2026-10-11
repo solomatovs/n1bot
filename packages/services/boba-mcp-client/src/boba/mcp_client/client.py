@@ -1476,6 +1476,10 @@ class McpToolServer(ToolServer):
     def features(self) -> Mapping[str, Mapping[str, object]]:
         return self._features
 
+    def remote_name(self, name: str) -> str:
+        """Имя инструмента на сервере по его имени у модели (без приставки)."""
+        return self._stubs.remote_name(name)
+
     async def submit(
         self, calls: Sequence[DagNode]
     ) -> Sequence[asyncio.Future[NodeOutcome]]:
