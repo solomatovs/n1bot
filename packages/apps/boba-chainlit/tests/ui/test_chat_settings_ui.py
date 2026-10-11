@@ -19,6 +19,7 @@ import pytest
 from chat_ui import LlmMetaReader
 from playwright.sync_api import expect
 
+from boba.chainlit.acp.panel import AgentPanelTab
 from boba.chainlit.chat.panel_text import PanelText
 from boba.chainlit.chat.settings import PanelTab
 from boba.chat.profiles import UserSetting
@@ -354,7 +355,9 @@ class TestAllowedSettingsVisibility:
         for index in range(tabs.count()):
             labels.add(tabs.nth(index).inner_text().strip())
 
+        # вкладка сессии появляется после первого хода: до него настроек сессии нет
         expected = {TEXT.tab(tab.value) for tab in PanelTab}
+        expected.add(TEXT.tab(AgentPanelTab.AGENT.value))
         if labels != expected:
             raise AssertionError(f"tabs: {sorted(labels)}")
 
