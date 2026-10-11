@@ -1,6 +1,6 @@
 """Провайдеры chainlit-процесса: конфиг чата, data layer, клиент MCP чата
 (файлы, журналы, карточки инструментов), процессы агента ACP и приёмники
-его потока. Клиенты LLM (llm_providers) остаются до вычистки langchain.
+его потока.
 
 Общие для процессов провайдеры (реестр, сторы) — boba.runtime.providers.
 """
@@ -52,16 +52,8 @@ from boba.chainlit.infra.session import (
     session_source_ref,
 )
 from boba.chainlit.rendering.acp_view import ToolMedia
-from boba.chat.profiles import (
-    AgentSettings,
-    ChatProfiles,
-    PrefetchFlowConfig,
-    SelectedProfile,
-    SettingsView,
-    UserMeta,
-)
+from boba.chat.profiles import ChatProfiles, SelectedProfile
 from boba.config import bind
-from boba.connection_broker.sealing import SentConnections
 from boba.connection_broker.store import ConnectionsConfig
 from boba.connection_broker.user_connections import ArmedConnections
 from boba.connections.secrets import SecretCipher
@@ -71,7 +63,6 @@ from boba.identity.context import CallContexts
 from boba.identity.locks import LiveLocks
 from boba.identity.run import Runs
 from boba.identity.session import SessionSource
-from boba.llm.providers import LlmProviders, LlmProviderTypes
 from boba.mcp_client.client import DroppedSignals, McpServers, NamedBlocks
 from boba.messaging import MessageBus, PayloadStore
 from boba.runtime import providers as runtime
@@ -82,7 +73,7 @@ from boba.runtime.http import RequestTokens
 from boba.runtime.storage import StorageClient
 from boba.runtime.threads import ThreadsTable
 from boba.runtime.users import UsersTable
-from boba.toolrun.hosted import DirectCalls, HostedTool
+from boba.toolrun.hosted import DirectCalls
 from boba.toolrun.registry import ToolRegistry
 
 
@@ -159,62 +150,11 @@ def session_profile(
     return registry.resolve(session.chat_profile, session.sign_in)
 
 
-def session_settings_view(
-    app_config: Annotated[AppConfig, Depends(get_app_config)],
-    selected: Annotated[SelectedProfile, Depends(session_profile, scope="session")],
-) -> SettingsView:
-    """Профиль сессии, поверх которого легли личные настройки пользователя."""
-    meta = UserMeta.of(current_session().metadata)
-    return SettingsView.of(
-        app_config.settings,
-        selected.config,
-        meta.overrides_for(selected.name),
-    )
-
-
-def session_agent_settings(
-    view: Annotated[SettingsView, Depends(session_settings_view, scope="session")],
-) -> AgentSettings:
-    """Настройки, с которыми идёт ход."""
-    return view.agent()
-
-
 def session_source(
     tokens: Annotated[JwtTokens, Depends(runtime.session_tokens)],
 ) -> SessionSource:
     """Источник сессий приложения; реализация знает про chainlit."""
     return ChainlitSessions(tokens)
-
-
-def session_tools(
-    registry: Annotated[ToolRegistry, Depends(runtime.tool_registry)],
-    selected: Annotated[SelectedProfile, Depends(session_profile, scope="session")],
-) -> list[HostedTool]:
-    return registry.for_session(current_session().roles, selected.name)
-
-
-async def llm_providers(
-    c: Annotated[AppConfig, Depends(get_app_config)],
-) -> AsyncIterator[LlmProviders]:
-    """Модели процесса: бэкенды всех профилей собираются на старте, чтобы
-    первая сессия не ждала весов локальной модели; закрываются на остановке."""
-    providers = LlmProviders(LlmProviderTypes.installed())
-    for profile in c.profiles.values():
-        providers.chat(profile)
-
-        flow = profile.flow
-        if not isinstance(flow, PrefetchFlowConfig):
-            continue
-
-        if flow.rephraser is None:
-            continue
-
-        providers.chat(flow.rephraser)
-
-    try:
-        yield providers
-    finally:
-        await providers.aclose()
 
 
 def thread_surfaces() -> TabSurfaces:
@@ -415,18 +355,11 @@ def chat_mcp_server(
     )
 
 
-def sent_connections() -> SentConnections:
-    """Что обработчик хука отправил серверу инструментов вместо имён
-    соединений: один объект на процесс."""
-    return SentConnections()
-
-
 def pre_tool_use_hook(
     app_config: Annotated[AppConfig, Depends(get_app_config)],
     raw: Annotated[DictConfig, Depends(runtime.get_raw_config)],
     callers: Annotated[ChatCallers, Depends(chat_callers)],
     contexts: Annotated[CallContexts, Depends(runtime.call_contexts)],
-    sent: Annotated[SentConnections, Depends(sent_connections)],
 ) -> PreToolUseHandler:
     """Обработчик хука PreToolUse агента под [agent.hook].path: запечатывает
     соединения пользователя ключом сервера MCP из события."""
@@ -434,7 +367,7 @@ def pre_tool_use_hook(
         runtime.connection_store_ref, runtime.credential_source_ref, contexts
     )
     ttl = timedelta(seconds=bind(raw, "connections", ConnectionsConfig).seal_ttl_sec)
-    sealing = HookSealing(callers, connections, sent, contexts, ttl)
+    sealing = HookSealing(callers, connections, contexts, ttl)
 
     return PreToolUseHandler(
         app_config.agent.hook,

@@ -70,7 +70,6 @@
     model                 = "${site.llm_model}"
     settings              = ["*"]
     system_prompt         = "${site.llm_prompt}"
-    history_messages      = 30
     [profiles.general.sampling]
         temperature = 0
 
@@ -84,7 +83,6 @@
     model                 = "${site.models.ollama}"
     settings              = ["*"]
     system_prompt         = "${site.llm_prompt}"
-    history_messages      = 30
     [profiles.ollama.sampling]
         think = "low"
         [profiles.ollama.sampling.options]
@@ -118,26 +116,11 @@
         "web_grep_page"
     ]
     model                 = "${site.llm_model}"
-    settings              = ["history_messages", "user_prompt"]
+    settings              = ["user_prompt"]
     system_prompt         = "Ты поисковый ассистент BOBA: ищешь ответы в Confluence и базе знаний и отвечаешь со ссылками на источники"
-    history_messages      = 30
     provider              = "${llm.main}"
     [profiles.search.sampling]
         temperature = 0
-    [profiles.search.flow]
-        kind          = "prefetch"
-        tools         = ["kb_vector_search", "kb_fts_search"]
-        [profiles.search.flow.rephraser]
-            provider      = "${llm.main}"
-            model         = "${site.llm_rephraser_model}"
-            system_prompt = '''Ты готовишь запросы для поиска по базе знаний:
-            keywords — ключевые слова и точные термины без вопросительных слов,
-            expanded — развёрнутая формулировка с синонимами,
-            english — тот же запрос по-английски;
-            имена продуктов и технические термины сохраняй как есть'''
-            [profiles.search.flow.rephraser.sampling]
-                temperature = 0
-                max_tokens  = 512
 
 [http]
     dump                      = { enable = true, path = "${env.data}/dump" }

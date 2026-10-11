@@ -16,11 +16,7 @@ from pydantic import (
 from boba.access import RoleConfig
 from boba.auth.config import AuthConfig
 from boba.chainlit.acp.config import AgentConfig
-from boba.chat.profiles import (
-    ChatProfileConfig,
-    SettingsBounds,
-)
-from boba.db.postgres.connection import PostgresConfig
+from boba.chat.profiles import ChatProfileConfig
 from boba.krb import KerberosWorkspaceConfig
 from boba.mcp_client.client import McpServersConfig
 from boba.runtime.config import DataLayerConfig, RuntimeConfig
@@ -158,32 +154,8 @@ class ChainlitExtendConfig(BaseModel):
     )
 
 
-class CheckpointerConfig(BaseModel):
-    """Конфиг langgraph-checkpointer: postgres-подключение + схема БД."""
-
-    model_config = ConfigDict(extra="ignore", populate_by_name=True)
-
-    postgres: Annotated[
-        PostgresConfig,
-        Field(
-            description=(
-                "Подключение и пул; в конфиге подключается ссылкой ${postgres}."
-            ),
-        ),
-    ]
-
-    db_schema: str = Field(
-        default="public",
-        alias="schema",
-        description=(
-            "Схема для таблиц checkpointer. Задаётся в search_path соединения, "
-            "т.к. AsyncPostgresSaver пишет имена таблиц без схемы."
-        ),
-    )
-
-
 class AppConfig(RuntimeConfig):
-    """Секции chainlit-процесса поверх общих: server, checkpointer, storage, журнал."""
+    """Секции chainlit-процесса поверх общих: server, профили, data layer, агент."""
 
     model_config = ConfigDict(extra="ignore")
 
@@ -240,11 +212,6 @@ class AppConfig(RuntimeConfig):
 
         return self
 
-    settings: SettingsBounds = Field(
-        default_factory=SettingsBounds,
-        description="Пределы пользовательских настроек панели; заданы кодом.",
-    )
-
     auth: Annotated[
         list[AuthConfig],
         Field(
@@ -257,11 +224,6 @@ class AppConfig(RuntimeConfig):
         default=LOGGING_CONFIG,
         description="Конфигурация логера: с полем user из сессии chainlit.",
     )
-
-    checkpointer: Annotated[
-        CheckpointerConfig,
-        Field(description="Сервис langgraph-checkpointer: подключение + схема."),
-    ]
 
     data_layer: Annotated[
         DataLayerConfig,

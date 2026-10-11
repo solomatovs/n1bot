@@ -9,7 +9,6 @@ import pytest
 
 from boba.identity.context import Scope
 from boba.messaging import (
-    AnswerToken,
     BusLimit,
     CommandEnvelope,
     Envelope,
@@ -30,8 +29,8 @@ def _scope() -> Scope:
     return Scope.chat(str(uuid4()))
 
 
-def _token(text: str) -> AnswerToken:
-    return AnswerToken(turn_id="t1", key="m1", token=text)
+def _token(text: str) -> Notice:
+    return Notice(level=NoticeLevel.INFO, text=text)
 
 
 async def test_messages_arrive_in_seq_order_to_every_subscriber() -> None:
@@ -54,7 +53,7 @@ async def test_messages_arrive_in_seq_order_to_every_subscriber() -> None:
 
     assert seqs == [1, 2, 3]
     assert [e.seq for e in first] == [1, 2, 3]
-    assert [e.message.model_dump()["token"] for e in second] == ["a", "b", "c"]
+    assert [e.message.model_dump()["text"] for e in second] == ["a", "b", "c"]
     assert first[0].origin == "node1-chainlit"
     assert first[0].scope == scope
 

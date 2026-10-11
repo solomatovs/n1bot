@@ -1,10 +1,10 @@
 """Путь соединения от имени в вызове модели до тела инструмента.
 
 Клиент и исполнитель стоят в одном процессе (SealedStand): модель называет
-соединение именем, клиент по схеме инструмента узнаёт параметр и вид,
-запечатывает профиль ключом исполнителя,
-исполнитель открывает его и отдаёт телу. Таблица соединений подменена
-хранилищем в памяти.
+соединение именем, клиент (SealingStand — то, что в бою делает хук
+PreToolUse) по схеме инструмента узнаёт параметр и вид, запечатывает профиль
+ключом исполнителя, исполнитель открывает его и отдаёт телу. Таблица
+соединений подменена хранилищем в памяти.
 """
 
 from __future__ import annotations
@@ -25,25 +25,16 @@ from probe_stand import (
 )
 
 from boba.connection_broker.sealed import SealedConnectionParams
-from boba.connection_broker.sealing import SealingToolServer
 from boba.connections.base import ConnectionBase
 from boba.connections.marks import ConnectionRefusal
 from boba.connections.sealed import SealedParamSchema, SealFeature, SealKeys
+from boba.identity.errors import RefusalError
+from boba.stand.sealing import SealingStand
 from boba.stand_core.context import CallStand
-from boba.toolkit.dag import (
-    DagNode,
-    DagSpec,
-    NodeBody,
-    NodeCalls,
-    NodeOutcome,
-    ToolCard,
-    ToolServer,
-)
+from boba.toolkit.dag import DagNode, NodeOutcome, ToolCard, ToolServer
 from boba.toolkit.facade import UserConnection
 from boba.toolkit.result import ErrorResult, TableResult
-from boba.toolrun.hosted import DirectCalls
 from boba.toolrun.injected import ToolConfigError
-from boba.toolrun.stream_calls import WorkflowTool
 
 pytestmark = pytest.mark.anyio
 
@@ -73,24 +64,6 @@ class _DeclaringAnotherKey(ToolServer):
         return await self._inner.submit(calls)
 
 
-class _Recorder(_DeclaringAnotherKey):
-    """Порт с заданными возможностями, запоминающий вызовы, которые до него
-    дошли."""
-
-    def __init__(
-        self, inner: ToolServer, features: Mapping[str, Mapping[str, object]]
-    ) -> None:
-        super().__init__(inner, features)
-        self.calls: list[DagNode] = []
-
-    async def submit(
-        self, calls: Sequence[DagNode]
-    ) -> Sequence[asyncio.Future[NodeOutcome]]:
-        self.calls.extend(calls)
-
-        return await super().submit(calls)
-
-
 def _stand() -> SealedStand:
     return SealedStand([SealedStand.probe_row("main", "db.local")])
 
@@ -113,22 +86,6 @@ def _refusal(message: NodeOutcome) -> ErrorResult:
     return result
 
 
-class _Conducted(NodeCalls):
-    """Реализация NodeCalls, запоминающая вызовы, о которых узнал хозяин
-    клиента: имя инструмента и кончился ли вызов отказом."""
-
-    def __init__(self) -> None:
-        self.seen: list[tuple[str, bool]] = []
-
-    async def conducted(
-        self, card: ToolCard, node: DagNode, body: NodeBody
-    ) -> NodeOutcome:
-        outcome = await body(node)
-        self.seen.append((card.name, outcome.errored))
-
-        return outcome
-
-
 class TestSchemaShownToTheModel:
     def test_server_declares_a_sealed_profile(self) -> None:
         stand = _stand()
@@ -144,26 +101,6 @@ class TestSchemaShownToTheModel:
             raise AssertionError(f"схема профиля называет вид: {declared}")
         if "probe" not in declared["description"]:
             raise AssertionError(f"описание называет вид: {declared}")
-
-    def test_model_sees_a_plain_string_for_the_name(self) -> None:
-        stand = _stand()
-
-        offered = {card.name: card for card in stand.client.tools()}
-        shown = offered["probe_query"].parameters
-
-        declared = shown["properties"]["connection"]
-
-        if declared["type"] != "string":
-            raise AssertionError(f"модель видит строку: {declared}")
-        if "probe" not in declared["description"]:
-            raise AssertionError(f"описание называет вид: {declared}")
-        if sorted(declared) != ["description", "minLength", "title", "type"]:
-            raise AssertionError(f"только стандартные ключи схемы: {declared}")
-        if (
-            shown["properties"]["sql"]
-            != offered["probe_query"].parameters["properties"]["sql"]
-        ):
-            raise AssertionError("остальные параметры как у сервера")
 
 
 class TestReferenceReachesTheBody:
@@ -220,33 +157,29 @@ class TestKeyComesFromTheServerFeature:
 
     async def test_server_without_the_feature_gets_no_connections(self) -> None:
         stand = _stand()
-        silent = SealingToolServer(
+        silent = SealingStand(
             _DeclaringAnotherKey(stand.executor, {}),
             stand.connections,
-            stand.sent,
             timedelta(minutes=10),
-            DirectCalls(),
         )
 
-        message = await stand.call_through(
-            silent, "probe_query", {"connection": MAIN, "sql": "x"}
-        )
+        with pytest.raises(RefusalError) as caught:
+            await stand.call_through(
+                silent, "probe_query", {"connection": MAIN, "sql": "x"}
+            )
 
-        refusal = _refusal(message)
-        if refusal.error_kind != ConnectionRefusal.SEAL_KEY_UNKNOWN:
-            raise AssertionError(f"соединение не отправлено: {refusal}")
-        if SealFeature.ID not in refusal.message:
-            raise AssertionError(f"отказ называет возможность: {refusal.message}")
+        if caught.value.kind != ConnectionRefusal.SEAL_KEY_UNKNOWN:
+            raise AssertionError(f"соединение не отправлено: {caught.value}")
+        if SealFeature.ID not in str(caught.value):
+            raise AssertionError(f"отказ называет возможность: {caught.value}")
 
     async def test_value_sealed_for_a_restarted_server_is_refused(self) -> None:
         stand = _stand()
         restarted = SealedStand([])
-        stale = SealingToolServer(
+        stale = SealingStand(
             _DeclaringAnotherKey(stand.executor, restarted.params.features()),
             stand.connections,
-            stand.sent,
             timedelta(minutes=10),
-            DirectCalls(),
         )
 
         message = await stand.call_through(
@@ -258,77 +191,21 @@ class TestKeyComesFromTheServerFeature:
             raise AssertionError(f"чужой ключ отвергнут сервером: {refusal}")
 
 
-class TestWorkflowNodes:
-    """Связка одним вызовом: соединения лежат в аргументах узлов, каждый узел —
-    вызов своего инструмента."""
-
-    async def test_references_inside_nodes_are_sealed_by_the_tool_of_the_node(
-        self,
-    ) -> None:
-        stand = _stand()
-        recorder = _Recorder(stand.executor, stand.params.features())
-        client = SealingToolServer(
-            recorder,
-            stand.connections,
-            stand.sent,
-            timedelta(minutes=10),
-            DirectCalls(),
-        )
-        nodes = [
-            {
-                "key": "q",
-                "tool": "probe_query",
-                "args": {"connection": MAIN, "sql": "x"},
-            }
-        ]
-
-        await stand.call_through(client, WorkflowTool.NAME, {"nodes": nodes})
-
-        described = DagSpec.model_validate(
-            {"name": "sent", "version": 1, "nodes": recorder.calls[0].args["nodes"]}
-        )
-        sent = described.nodes[0].args
-        opened = stand.keys.open(str(sent["connection"]))
-        if opened.profile["host"] != "db.local":
-            raise AssertionError(f"узлу ушло запечатанное соединение: {opened}")
-        if sent["sql"] != "x":
-            raise AssertionError(f"остальные аргументы узла как есть: {sent}")
-        if nodes[0]["args"]["connection"] != MAIN:
-            raise AssertionError(f"вызов модели не тронут: {nodes}")
-
-
 class TestRefusals:
+    """Отказ запечатывания — отказ клиента до отправки серверу: в бою его
+    возвращает хук, здесь он выходит ошибкой из порта стенда."""
+
     async def test_unknown_name_is_refused_with_the_available_ones(self) -> None:
         stand = _stand()
         args = {"connection": "нет-такого", "sql": "x"}
 
-        refusal = _refusal(await stand.call("probe_query", args))
+        with pytest.raises(RefusalError) as caught:
+            await stand.call("probe_query", args)
 
-        if refusal.error_kind != ConnectionRefusal.NOT_VISIBLE:
-            raise AssertionError(f"чужое имя отвергнуто: {refusal}")
-        if "main" not in refusal.message:
-            raise AssertionError(f"отказ называет доступные: {refusal.message}")
-
-    async def test_refused_call_goes_the_way_of_a_node_call(self) -> None:
-        """Отказ запечатывания серверу не уходит, но хозяин клиента узнаёт о
-        вызове тем же путём, что и об отправленном: лента рисует его шагом."""
-        stand = _stand()
-        conduct = _Conducted()
-        client = SealingToolServer(
-            stand.executor,
-            stand.connections,
-            stand.sent,
-            timedelta(minutes=10),
-            conduct,
-        )
-        args = {"connection": "нет-такого", "sql": "x"}
-
-        outcome = await stand.call_through(client, "probe_query", args)
-
-        if _refusal(outcome).error_kind != ConnectionRefusal.NOT_VISIBLE:
-            raise AssertionError(f"чужое имя отвергнуто: {outcome}")
-        if conduct.seen != [("probe_query", True)]:
-            raise AssertionError(f"отказ прошёл путём вызова узла: {conduct.seen}")
+        if caught.value.kind != ConnectionRefusal.NOT_VISIBLE:
+            raise AssertionError(f"чужое имя отвергнуто: {caught.value}")
+        if "main" not in str(caught.value):
+            raise AssertionError(f"отказ называет доступные: {caught.value}")
 
     async def test_duplicate_name_is_refused(self) -> None:
         rows = [
@@ -338,10 +215,11 @@ class TestRefusals:
         stand = SealedStand(rows)
         args = {"connection": "dup", "sql": "x"}
 
-        refusal = _refusal(await stand.call("probe_query", args))
+        with pytest.raises(RefusalError) as caught:
+            await stand.call("probe_query", args)
 
-        if refusal.error_kind != ConnectionRefusal.AMBIGUOUS:
-            raise AssertionError(f"дубль имени отвергнут: {refusal}")
+        if caught.value.kind != ConnectionRefusal.AMBIGUOUS:
+            raise AssertionError(f"дубль имени отвергнут: {caught.value}")
 
     async def test_name_of_another_kind_is_not_visible(self) -> None:
         """Вид параметра берётся из схемы инструмента: строка другого вида с
@@ -349,10 +227,11 @@ class TestRefusals:
         stand = SealedStand([SealedStand.row("web", OtherConnection(host="h"))])
         args = {"connection": "web", "sql": "x"}
 
-        refusal = _refusal(await stand.call("probe_query", args))
+        with pytest.raises(RefusalError) as caught:
+            await stand.call("probe_query", args)
 
-        if refusal.error_kind != ConnectionRefusal.NOT_VISIBLE:
-            raise AssertionError(f"строка другого вида не видна: {refusal}")
+        if caught.value.kind != ConnectionRefusal.NOT_VISIBLE:
+            raise AssertionError(f"строка другого вида не видна: {caught.value}")
 
     async def test_plain_value_is_refused_by_the_client_without_echo(self) -> None:
         """Вместо имени модель написала строку подключения с паролем: клиент
@@ -360,51 +239,15 @@ class TestRefusals:
         stand = _stand()
         dsn = f"postgres://user:{SECRET}@db.local/x"
 
-        refusal = _refusal(
+        with pytest.raises(RefusalError) as caught:
             await stand.call("probe_query", {"connection": dsn, "sql": "x"})
-        )
 
-        if refusal.error_kind != ConnectionRefusal.NOT_VISIBLE:
-            raise AssertionError(f"неизвестное имя отвергнуто: {refusal}")
-        if SECRET in refusal.message:
-            raise AssertionError(f"значение не цитируется: {refusal.message}")
-        if "main" not in refusal.message:
-            raise AssertionError(f"отказ называет доступные: {refusal.message}")
-
-
-class TestShownToTheUser:
-    """Лента клиента рисует шаг по аргументам, с которыми тело вызвано; на
-    месте запечатанного значения она показывает имя из вызова модели."""
-
-    async def test_sealed_value_is_shown_as_the_name_while_the_call_runs(
-        self,
-    ) -> None:
-        stand = _stand()
-        recorder = _Recorder(stand.executor, stand.params.features())
-        client = SealingToolServer(
-            recorder,
-            stand.connections,
-            stand.sent,
-            timedelta(minutes=10),
-            DirectCalls(),
-        )
-        call = DagNode(
-            key="call_shown",
-            tool="probe_query",
-            args={"connection": MAIN, "sql": "x"},
-        )
-
-        with stand.as_caller():
-            pending = await client.submit([call])
-            running = stand.sent.shown(recorder.calls[0].args)
-            await pending[0]
-
-        if running["connection"] != MAIN:
-            raise AssertionError(f"во время вызова показано имя: {running}")
-
-        after = stand.sent.shown(recorder.calls[0].args)
-        if after["connection"] == MAIN:
-            raise AssertionError("после конца вызова пара забыта")
+        if caught.value.kind != ConnectionRefusal.NOT_VISIBLE:
+            raise AssertionError(f"неизвестное имя отвергнуто: {caught.value}")
+        if SECRET in str(caught.value):
+            raise AssertionError(f"значение не цитируется: {caught.value}")
+        if "main" not in str(caught.value):
+            raise AssertionError(f"отказ называет доступные: {caught.value}")
 
 
 class TestExecutorRule:

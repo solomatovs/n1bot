@@ -56,7 +56,7 @@ class ProfileSpec:
     system_prompt: str
     temperature: float
     max_tokens: int
-    """Уходит провайдеру как max_completion_tokens: так его шлёт langchain-openai."""
+    """Уходит провайдеру как max_completion_tokens: так его шлёт клиент openai."""
 
     top_p: float | None
     admin_tools: frozenset[str]

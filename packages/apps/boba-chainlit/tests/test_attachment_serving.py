@@ -17,7 +17,7 @@ from boba.canvas.transfer import UploadPolicy
 from boba.chainlit.data.upload import AttachmentServing
 from boba.chainlit.domain.keys import AttachmentUrl
 from boba.chainlit.rendering.chat_view import ChatView, StepRole
-from boba.chainlit.rendering.mount import WorkspaceFile
+from boba.chainlit.rendering.tool import WorkspaceFile
 from boba.runtime.storage import LocalStorageClient
 
 pytestmark = pytest.mark.anyio

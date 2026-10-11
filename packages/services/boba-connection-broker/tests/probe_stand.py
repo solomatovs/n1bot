@@ -16,7 +16,6 @@ from uuid import uuid4
 from pydantic import SecretStr, create_model
 
 from boba.connection_broker.sealed import SealedConnectionParams
-from boba.connection_broker.sealing import SealingToolServer, SentConnections
 from boba.connection_broker.user_connections import ArmedConnections
 from boba.connections.base import ClientIdentity, ConnectionBase
 from boba.connections.manifest import ConnectionTypeManifest, ConnectionTypes
@@ -25,6 +24,7 @@ from boba.connections.stored import GrantedConnection, StoredConnection
 from boba.identity.context import CallContext, Subject
 from boba.identity.run import Runs
 from boba.stand import toolstand
+from boba.stand.sealing import SealingStand
 from boba.stand_core.context import CallStand, StandIdentity
 from boba.toolkit.calls import ToolCallBase
 from boba.toolkit.chain import CallAmbient
@@ -174,8 +174,8 @@ class SealedStand:
 
     Исполнитель — LocalDagService с пробными инструментами под обвязкой
     запечатанных соединений, объявляющий возможность с ключом; клиент —
-    SealingToolServer поверх него с таблицей соединений в памяти. Вызовы
-    идут через порт клиента в контексте LOGIN.
+    SealingStand поверх него с таблицей соединений в памяти, как хук
+    PreToolUse в бою. Вызовы идут через порт клиента в контексте LOGIN.
     """
 
     STREAM_CONFIG = StreamGroupsConfig(
@@ -192,7 +192,6 @@ class SealedStand:
         self.params = SealedConnectionParams(
             self.keys, lambda: TYPES, self._calls.contexts
         )
-        self.sent = SentConnections()
 
         contexts = self._calls.contexts
         stand = toolstand.ToolStand(
@@ -213,12 +212,8 @@ class SealedStand:
         self.executor = stand.server(
             stand.access(ROLE, StandIdentity.PROFILE), (self.params,), DirectCalls()
         )
-        self.client = SealingToolServer(
-            self.executor,
-            self.connections,
-            self.sent,
-            timedelta(minutes=10),
-            DirectCalls(),
+        self.client = SealingStand(
+            self.executor, self.connections, timedelta(minutes=10)
         )
 
     @staticmethod

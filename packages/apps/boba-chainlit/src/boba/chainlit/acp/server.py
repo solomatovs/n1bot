@@ -13,7 +13,7 @@ boba.mcp_adapter; инструменты — собственные инстру
 соединения (SealedParamSchema), заменяет имя соединения профилем,
 запечатанным ключом сервера MCP из `mcp_server.features` (SealFeature), и
 отвечает `updatedInput`; неизвестное или невыданное соединение — `deny` с
-причиной. Что ушло вместо имени, запоминает SentConnections.
+причиной.
 
 Ошибки:
 AuthenticationError — токена нет, он не принят либо у входа нет строки
@@ -30,7 +30,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections import deque
 from collections.abc import Mapping
 from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass
@@ -62,7 +61,6 @@ from boba.agent.hooks import (
 from boba.cancellation import RunCancellation, StopReason
 from boba.chainlit.acp.config import ChatMcpConfig, HookConfig
 from boba.chat.profiles import ChatProfiles
-from boba.connection_broker.sealing import SentConnections
 from boba.connection_broker.user_connections import ArmedConnections
 from boba.connections.marks import ConnectionRefusal
 from boba.connections.sealed import (
@@ -371,28 +369,21 @@ class HookSealing:
     Создаётся обработчиком. Какие аргументы — соединения и какого вида,
     читает из схемы инструмента события (SealedParamSchema); ключ сервера —
     из его возможностей в событии (SealFeature); соединение пользователя по
-    виду и имени берёт ArmedConnections в контексте вызывающего. Пары
-    «запечатано → имя» уходят в SentConnections; последние RECENT пар
-    держатся, старшие забываются.
+    виду и имени берёт ArmedConnections в контексте вызывающего.
     """
-
-    RECENT: ClassVar[int] = 1024
 
     def __init__(
         self,
         callers: ChatCallers,
         connections: ArmedConnections,
-        sent: SentConnections,
         contexts: CallContexts,
         ttl: timedelta,
     ) -> None:
         self._callers = callers
         self._connections = connections
-        self._sent = sent
         self._contexts = contexts
         self._ttl = ttl
         self._declared = SealedParamSchema()
-        self._recent: deque[str] = deque(maxlen=self.RECENT)
 
     async def reply(self, event: PreToolUseEvent, caller: ChatCaller) -> HookReplyBody:
         """Ошибки:
@@ -430,9 +421,7 @@ class HookSealing:
                     continue
 
                 sealed = await self._connections.sealed(kind, name, self._ttl)
-                sent = seal.seal(sealed)
-                self._remember(sent, name)
-                updated[param] = sent
+                updated[param] = seal.seal(sealed)
 
                 logger.info(
                     "hook: connection %s of kind %s sealed in %s of %s for %s",
@@ -475,13 +464,6 @@ class HookSealing:
                 f"not carry an encryption key: {ValidationText.of(exc)}"
             )
             raise RefusalError(ConnectionRefusal.SEAL_KEY_UNKNOWN, msg) from exc
-
-    def _remember(self, sealed: str, name: str) -> None:
-        if len(self._recent) == self._recent.maxlen:
-            self._sent.forget(self._recent.popleft())
-
-        self._recent.append(sealed)
-        self._sent.remember(sealed, name)
 
     @staticmethod
     def _decided(
