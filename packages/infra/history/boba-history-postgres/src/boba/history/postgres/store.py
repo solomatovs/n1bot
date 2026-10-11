@@ -5,12 +5,16 @@
 из идентификатора сессии на выделенном соединении, которое живёт до
 release: второй процесс на ту же сессию получает отказ. Дозапись пачки —
 одна транзакция с `on conflict do nothing`: повтор пачки дублей не создаёт,
-отказ посреди пачки не оставляет ни одной записи. Схема и таблица создаются
-на месте под замком DDL, раскладка таблицы сверяется с ожидаемой.
+отказ посреди пачки не оставляет ни одной записи. Список сессий — группировка
+записей по идентификатору с временем последней записи; удаление сессии —
+одна транзакция под транзакционным advisory lock того же ключа, так что
+сессию работающего процесса удалить нельзя. Схема и таблица создаются на
+месте под замком DDL, раскладка таблицы сверяется с ожидаемой.
 
 Ошибки:
-HistoryError — сессия занята другим процессом, база недоступна или отказала,
-    пачка не по порядку seq; причина нижнего слоя — в тексте и в `from exc`.
+HistoryError — база недоступна или отказала, пачка не по порядку seq;
+    причина нижнего слоя — в тексте и в `from exc`.
+SessionHeldError — сессию держит другой процесс (подвид HistoryError).
 """
 
 from __future__ import annotations
@@ -29,9 +33,13 @@ from boba.agent.history import (
     HistoryError,
     HistoryLine,
     HistoryStore,
+    LineKey,
+    SessionHeldError,
     SessionId,
     SessionLease,
     StoredLine,
+    StoredPage,
+    StoredSession,
 )
 from boba.agent.records import Record, RecordCodec
 from boba.db.postgres import AsyncPostgresPool, PgQuery, PostgresPool, PostgresTable
@@ -55,6 +63,19 @@ class HistoryColumn(StrEnum):
     TYPE = "type"
     RECORD = "record"
     CREATED_AT = "created_at"
+
+
+class ListColumn(StrEnum):
+    """Колонки выборки списка сессий."""
+
+    SESSION_ID = "session_id"
+    UPDATED_AT = "updated_at"
+
+
+class LockColumn(StrEnum):
+    """Колонка пробы замка при удалении."""
+
+    ACQUIRED = "acquired"
 
 
 @dataclass
@@ -180,6 +201,86 @@ class PostgresHistoryStore(PostgresTable, HistoryStore):
         finally:
             await held.conn.close()
 
+    async def list(self, cursor: str | None, limit: int) -> StoredPage:
+        await self._prepare()
+        query = (
+            self._query()
+            .add(
+                """
+                select
+                    session_id,
+                    max(record ->> %(stamp)s) as updated_at
+                from
+                    {schema}.history_records
+                """,
+                stamp=LineKey.TIMESTAMP.value,
+            )
+            .when(cursor is not None, "where session_id > %(cursor)s", cursor=cursor)
+            .add(
+                """
+                group by
+                    session_id
+                order by
+                    session_id
+                limit %(limit)s
+                """,
+                limit=limit + 1,
+            )
+            .build()
+        )
+        rows = await self._rows(query, f"listing sessions after {cursor!r}")
+        sessions: list[StoredSession] = []
+        for row in rows[:limit]:
+            sessions.append(
+                StoredSession(
+                    session=SessionId(value=str(row[ListColumn.SESSION_ID.value])),
+                    updated_at=str(row[ListColumn.UPDATED_AT.value]),
+                )
+            )
+
+        next_cursor: str | None = None
+        if len(rows) > limit and sessions:
+            next_cursor = sessions[-1].session.value
+
+        return StoredPage(sessions=sessions, next_cursor=next_cursor)
+
+    async def delete(self, session: SessionId) -> None:
+        await self._prepare()
+        probe = (
+            self._query()
+            .add(
+                "select pg_try_advisory_xact_lock(hashtextextended(%(key)s, 0)) "
+                "as acquired",
+                key=self._lock_key(session),
+            )
+            .build()
+        )
+        query = (
+            self._query()
+            .add(
+                """
+                delete from
+                    {schema}.history_records
+                where
+                    session_id = %(session_id)s
+                """,
+                session_id=session.value,
+            )
+            .build()
+        )
+        action = f"deleting session '{session.value}'"
+        async with self._transaction(action) as cur:
+            await cur.execute(probe.text, probe.params)
+            row = await cur.fetchone()
+            if row is None or not row[LockColumn.ACQUIRED.value]:
+                msg = (
+                    f"Session '{session.value}' cannot be deleted: a running agent "
+                    "process holds its lock in Postgres. Close that session first."
+                )
+                raise SessionHeldError(msg)
+
+            await cur.execute(query.text, query.params)
+
     def _failure(self, action: str, exc: Exception) -> Exception:
         return HistoryError(self._detail(action, exc))
 
@@ -247,7 +348,7 @@ class PostgresHistoryStore(PostgresTable, HistoryStore):
         self, conn: psycopg.AsyncConnection[Any], session: SessionId
     ) -> None:
         """Ошибки:
-        HistoryError — сессию держит другой процесс.
+        SessionHeldError — сессию держит другой процесс.
         """
         query = (
             self._query()
@@ -264,7 +365,7 @@ class PostgresHistoryStore(PostgresTable, HistoryStore):
                 f"Session '{session.value}' is already in use by another process: its "
                 "lock in Postgres is held. Stop that process or use another session."
             )
-            raise HistoryError(msg)
+            raise SessionHeldError(msg)
 
     async def _unlock(
         self, conn: psycopg.AsyncConnection[Any], session: SessionId

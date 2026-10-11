@@ -20,8 +20,6 @@ from test_cli_acp import (
     boba,
     call,
     handshake,
-    mcp,
-    model,
     result_text,
 )
 
@@ -30,7 +28,7 @@ from boba.stand.hooks import HookStandRules, HookStandServer
 
 pytestmark = pytest.mark.anyio
 
-__all__ = ["boba", "mcp", "model"]
+__all__ = ["boba"]
 
 SERVER = "stand"
 SHOUT = f"mcp__{SERVER}__shout"
