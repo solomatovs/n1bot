@@ -31,25 +31,19 @@ dependencies = [
     "boba-db-oracle==0.0.26.dev4",
     "boba-sandbox==0.0.26.dev4",
     "boba-krb==0.0.26.dev4",
-    "boba-llm==0.0.26.dev4",
+    "boba-kerberos==0.0.26.dev4",
     "boba-transport-http==0.0.26.dev4",
     "agent-client-protocol==0.12.1",
     "mcp>=2.3,<3",
     "httpx>=0.28,<1",
     "psycopg>=3.3,<4",
     "python-multipart>=0.0.18,<1",
-    "typing-extensions>=4.12,<5",
     "omegaconf>=2.3,<3",
     "plotly>=5.24,<6",
     "chainlit==2.11.1",
     "fastapi>=0.116,<1",
     "uvicorn[standard]>=0.35,<1",
     "pydantic>=2.12,<3",
-    "langchain>=1.3,<2",
-    "langchain-core>=1.4,<1.5",
-    "langgraph>=1.2,<1.3",
-    "langgraph-checkpoint>=4.1,<5",
-    "langgraph-checkpoint-postgres>=3.1,<4",
     "starlette>=1.0,<2",
     "aiofiles>=24.1,<26",
     "python-engineio>=4.13,<5",
@@ -58,7 +52,6 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
-    "boba-llm-http==0.0.26.dev4",
     "boba-llm-onnx==0.0.26.dev4",
     "boba-doc[readers]==0.0.26.dev4",
     "boba-krb[seal]==0.0.26.dev4",
@@ -73,6 +66,7 @@ dev = [
     "pytest>=9.1,<10",
     "pyjwt>=2.8,<3",
     "httpx2>=2.10,<3",
+    "python-socketio>=5.11,<6",
 ]
 
 [project.scripts]

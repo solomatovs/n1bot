@@ -802,9 +802,16 @@ class DepsAudit:
             directory = directory.parent
 
     def _used(self, project: PackageProject, directory: Path) -> dict[str, set[str]]:
+        """Дистрибутивы, которые импортируют файлы каталога. Плоские модули
+        тестов зовут соседей голым именем, поэтому у них локальный корень — и
+        сам каталог, и каталог файла; у src-раскладки — только src: соседний
+        модуль пакета голым именем не импортируется."""
         used: dict[str, set[str]] = {}
         for path, modules in self._scan.modules_by_file(directory):
-            local_roots = (directory, path.parent)
+            local_roots: tuple[Path, ...] = (directory,)
+            if directory == project.tests:
+                local_roots = (directory, path.parent)
+
             for dist in self._owners.dists_of(modules, local_roots):
                 if dist == project.name:
                     continue
