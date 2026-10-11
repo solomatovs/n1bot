@@ -5,21 +5,22 @@
 разрешений под потолок параметров запуска, проверяет профиль и запускает
 писатель; `serve` ждёт очередь и ведёт ходы один за другим, элемент `now`
 посреди хода прерывает его; `answer` отдаёт ответ на вопрос наружу;
-`set_permission_mode` меняет режим записью; `interrupt` останавливает
-текущий ход; `close` гасит ход, сбрасывает журнал и отпускает сессию;
-`tool_hints` и `context_usage` отдают приёмнику событий пометки
-инструмента и заполненность контекста. Переходы состояний — план,
-раздел 5.18.
+`set_permission_mode` меняет режим записью, `available_modes` перечисляет
+режимы под потолком запуска; `set_model` переключает профиль модели между
+ходами; `interrupt` останавливает текущий ход; `close` гасит ход,
+сбрасывает журнал и отпускает сессию; `tool_hints` и `context_usage`
+отдают приёмнику событий пометки инструмента и заполненность контекста.
+Переходы состояний — план, раздел 5.18.
 
 Ошибки:
 HistoryError — хранилище недоступно или отказало.
 SessionHeldError — сессию держит другой процесс (подвид HistoryError).
 SessionNotFoundError — журнал для возобновления пуст (подвид HistoryError).
-ProfileError — профиль модели не годится для запуска.
+ProfileError — профиль модели не годится для запуска или для переключения.
 PermissionModeError — режим разрешений недоступен при параметрах запуска.
 ToolsError — собственный инструмент одноимён с инструментом сервера, либо при
     возобновлении сервер не отдал ни одного инструмента из объявленных.
-SessionError — системный промпт меняют посреди хода.
+SessionError — системный промпт или модель меняют посреди хода.
 """
 
 from __future__ import annotations
@@ -239,13 +240,7 @@ class Agent:
             report = await self._restored(session, resume)
             tools = AgentTools(parts.tools, self._own_tools())
             self._check_tools_survived(session, tools, resume)
-            tool_texts: list[str] = []
-            for tool in tools.snapshot():
-                tool_texts.append(tool.text())
-
-            ProfileCheck(parts.profile, parts.compaction).run(
-                parts.system_prompt, tool_texts
-            )
+            self._check_profile(parts.profile, parts.system_prompt, tools)
             mode = self._effective_mode(session, resume)
         except Exception:
             await parts.store.release(lease)
@@ -291,7 +286,7 @@ class Agent:
             parts.limits,
             parts.compaction,
             parts.model,
-            RequestBuilder(parts.profile, wiring.templates),
+            self._request_builder(parts.profile),
             attachments,
             runner,
             wiring.templates,
@@ -483,6 +478,60 @@ class Agent:
         self._record_mode(mode)
 
         return mode
+
+    def available_modes(self) -> Sequence[PermissionMode]:
+        """Режимы, которые можно включить при параметрах запуска."""
+        return self._wiring.ceiling.available()
+
+    @property
+    def profile(self) -> ModelProfile:
+        """Действующий профиль модели: после смены — новый."""
+        turns = self._turns
+        if turns is None:
+            return self._parts.profile
+
+        return turns.profile
+
+    def set_model(self, profile: ModelProfile, model: ChatModel) -> None:
+        """Переключает профиль модели для следующих ходов; принимается,
+        пока агент свободен. Снимок в истории не меняется: смену модели
+        объявит вложение `model` в начале следующего хода.
+
+        Ошибки:
+        SessionError — ход идёт, модель менять поздно.
+        ProfileError — профиль не годится: без инструментов или промпт с
+            описаниями инструментов не помещается в его окно.
+        """
+        turns = self._turns
+        tools = self._tools
+        if turns is None or tools is None:
+            msg = "The agent session is not open yet. Call open() before the model."
+            raise HistoryError(msg)
+
+        if self.session.state is not SessionState.IDLE:
+            msg = (
+                "The model can be switched only while the agent is idle; a turn "
+                f"is in progress (state {self.session.state.value})."
+            )
+            raise SessionError(msg)
+
+        self._check_profile(profile, turns.system_prompt, tools)
+        turns.set_model(profile, model, self._request_builder(profile))
+
+    def _request_builder(self, profile: ModelProfile) -> RequestBuilder:
+        return RequestBuilder(profile, self._wiring.templates)
+
+    def _check_profile(
+        self, profile: ModelProfile, system_prompt: Sequence[str], tools: AgentTools
+    ) -> None:
+        """Ошибки:
+        ProfileError — профиль не годится для этого промпта и инструментов.
+        """
+        tool_texts: list[str] = []
+        for tool in tools.snapshot():
+            tool_texts.append(tool.text())
+
+        ProfileCheck(profile, self._parts.compaction).run(system_prompt, tool_texts)
 
     def tool_hints(self, name: str) -> ToolHints | None:
         """Пометки инструмента по имени; None — такого инструмента нет."""
