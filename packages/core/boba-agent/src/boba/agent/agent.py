@@ -6,8 +6,10 @@
 писатель; `serve` ждёт очередь и ведёт ходы один за другим, элемент `now`
 посреди хода прерывает его; `answer` отдаёт ответ на вопрос наружу;
 `set_permission_mode` меняет режим записью; `interrupt` останавливает
-текущий ход; `close` гасит ход, сбрасывает журнал и отпускает сессию.
-Переходы состояний — план, раздел 5.18.
+текущий ход; `close` гасит ход, сбрасывает журнал и отпускает сессию;
+`tool_hints` и `context_usage` отдают приёмнику событий пометки
+инструмента и заполненность контекста. Переходы состояний — план,
+раздел 5.18.
 
 Ошибки:
 HistoryError — хранилище недоступно, сессия занята или журнал для
@@ -64,11 +66,11 @@ from boba.agent.tools import (
     ToolsError,
     ToolTexts,
 )
-from boba.agent.turn import TurnLoop
+from boba.agent.turn import ContextUsage, TurnLoop
 from boba.agent.writer import HistoryWriter, RecordKeeper, RequestRecorder
 from boba.cancellation import RunCancellation, StopReason
 from boba.llm.chat import ChatModel
-from boba.toolkit.dag import ToolServer
+from boba.toolkit.dag import ToolHints, ToolServer
 
 logger = logging.getLogger(__name__)
 
@@ -105,6 +107,7 @@ class AgentParts:
         denied_tools: Sequence[str] = (),
         record_requests: bool = False,
         hooks: PreToolUseHooks | None = None,
+        question_tool: bool = True,
     ) -> None:
         self.profile = profile
         self.limits = limits
@@ -130,6 +133,9 @@ class AgentParts:
         )
         self.record_requests = record_requests
         self.hooks = hooks
+        self.question_tool = question_tool
+        """Предлагать ли модели собственный инструмент «вопрос пользователю»:
+        запускающая программа без формы для вопросов его не показывает."""
 
 
 class Wiring:
@@ -176,6 +182,7 @@ class Agent:
         self._writer: HistoryWriter | None = None
         self._queue: InputQueue | None = None
         self._turns: TurnLoop | None = None
+        self._tools: AgentTools | None = None
         self._questions: ControlQuestions | None = None
         self._current: RunCancellation | None = None
         self._stopping = False
@@ -239,6 +246,7 @@ class Agent:
 
         self._session = session
         self._lease = lease
+        self._tools = tools
         writer = HistoryWriter(session, parts.store, lease, report.stored_seq)
         writer.start()
         self._writer = writer
@@ -311,14 +319,18 @@ class Agent:
         return session
 
     def _own_tools(self) -> Sequence[OwnTool]:
-        """Собственные инструменты: вопрос пользователю всегда, Skill — при скиллах."""
+        """Собственные инструменты: вопрос пользователю, если он разрешён
+        параметрами, Skill — при скиллах."""
         wiring = self._wiring
         texts = ToolTexts(
             wiring.templates,
             self._parts.limits.tool_result_max_chars,
             self._parts.agent_name,
         )
-        own: list[OwnTool] = [AskUserQuestionTool(wiring.templates, texts)]
+        own: list[OwnTool] = []
+        if self._parts.question_tool:
+            own.append(AskUserQuestionTool(wiring.templates, texts))
+
         if self._parts.skills:
             own.append(SkillTool(self._parts.skills, wiring.templates))
 
@@ -464,6 +476,23 @@ class Agent:
         self._record_mode(mode)
 
         return mode
+
+    def tool_hints(self, name: str) -> ToolHints | None:
+        """Пометки инструмента по имени; None — такого инструмента нет."""
+        if self._tools is None:
+            msg = "The agent session is not open yet. Call open() before the tools."
+            raise HistoryError(msg)
+
+        return self._tools.hints_of(name)
+
+    def context_usage(self) -> ContextUsage:
+        """Оценка заполненности контекста и окно модели."""
+        turns = self._turns
+        if turns is None:
+            msg = "The agent session is not open yet. Call open() before the usage."
+            raise HistoryError(msg)
+
+        return turns.context_usage()
 
     def answer(self, request_id: str, answer: PermissionAnswer) -> bool:
         """Ответ на вопрос наружу; False — вопрос неизвестен или уже отвечен."""

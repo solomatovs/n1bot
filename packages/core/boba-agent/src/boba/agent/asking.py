@@ -115,11 +115,17 @@ class ModelAsk:
         self._sink = sink
 
     async def attempt(
-        self, request: ChatRequest, cancellation: RunCancellation, show: bool
+        self,
+        request: ChatRequest,
+        cancellation: RunCancellation,
+        show: bool,
+        message_id: str,
     ) -> Asked:
+        """Одна попытка; `message_id` — идентификатор сообщения, под которым
+        куски уходят наружу при `show`."""
         partial = Partial()
         try:
-            reply = await self._stream(request, partial, cancellation, show)
+            reply = await self._stream(request, partial, cancellation, show, message_id)
         except (ToolStopped, asyncio.CancelledError) as exc:
             return self._aborted(exc, partial, cancellation)
         except LlmContextOverflowError as exc:
@@ -137,6 +143,7 @@ class ModelAsk:
         partial: Partial,
         cancellation: RunCancellation,
         show: bool,
+        message_id: str,
     ) -> ChatReply:
         task = asyncio.current_task()
         if task is None:
@@ -153,7 +160,11 @@ class ModelAsk:
                 partial.take(event)
                 if show:
                     await self._sink.emit(
-                        StreamEvent(content=event.content, reasoning=event.reasoning)
+                        StreamEvent(
+                            content=event.content,
+                            reasoning=event.reasoning,
+                            message_id=message_id,
+                        )
                     )
 
         if reply is None:
