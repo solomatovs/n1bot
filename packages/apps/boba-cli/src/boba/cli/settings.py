@@ -48,6 +48,7 @@ from pydantic import (
 )
 from pydantic.alias_generators import to_camel
 
+from boba.agent.hooks import HookFailure
 from boba.agent.profile import (
     CompactionSettings,
     ModelProfile,
@@ -171,13 +172,6 @@ class HookType(StrEnum):
     """Виды обработчиков хука, которые умеет исполнять агент."""
 
     HTTP = "http"
-
-
-class HookFailure(StrEnum):
-    """Что делать, если обработчик не ответил: пропустить или заблокировать."""
-
-    CONTINUE = "continue"
-    BLOCK = "block"
 
 
 class McpTransportJson(StrEnum):

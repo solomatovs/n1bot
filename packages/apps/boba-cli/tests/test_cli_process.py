@@ -5,7 +5,8 @@
 кодом 0 и сброшенным журналом; возобновление несуществующей сессии — ошибка
 и ненулевой код; `initialize` первой строкой — ещё один слой настроек;
 `--record-requests` пишет api-request; в стандартный вывод не попадает
-ничего, кроме строк протокола."""
+ничего, кроме строк протокола; хук PreToolUse из файла настроек подменяет
+аргумент перед сервером MCP."""
 
 from __future__ import annotations
 
@@ -21,6 +22,7 @@ from typing import Any, ClassVar
 import pytest
 import uvicorn
 
+from boba.stand.hooks import HookStandRules, HookStandServer
 from boba.stand.ui.fake_llm import FakeLlmApp, ScenarioName
 from boba.stand.ui.stand import free_port
 
@@ -635,3 +637,96 @@ class TestRobustness:
 
         await boba.close_stdin()
         assert await boba.wait() == 0
+
+
+class TestHooks:
+    async def test_settings_hook_replaces_the_argument_before_the_server(
+        self, boba: BobaProcess, tmp_path: Path
+    ) -> None:
+        """Секция hooks файла настроек: обработчик стенда получает событие с
+        полным именем и заголовком, сервер MCP — подменённый аргумент,
+        журнал и события — исходный."""
+        handler = HookStandServer(
+            HookStandRules(replacements={"mcp__stand__shout": {"text": "sealed hi"}})
+        )
+        await handler.start()
+        try:
+            await self._run(boba, tmp_path, handler)
+        finally:
+            await handler.stop()
+
+    @staticmethod
+    async def _run(boba: BobaProcess, tmp_path: Path, handler: HookStandServer) -> None:
+        settings = {
+            "hooks": {
+                "PreToolUse": [
+                    {
+                        "matcher": "mcp__stand__.*",
+                        "hooks": [
+                            {
+                                "type": "http",
+                                "url": handler.url,
+                                "headers": {"Authorization": "Bearer jwt-1"},
+                                "timeout": 5,
+                                "onFailure": "block",
+                            }
+                        ],
+                    }
+                ]
+            }
+        }
+        home = tmp_path / "home" / ".boba"
+        home.mkdir(parents=True)
+        (home / "settings.json").write_text(json.dumps(settings), encoding="utf-8")
+
+        await boba.start(
+            "--session",
+            "cli-hooks",
+            "--mcp-config",
+            boba.mcp_config(),
+            "--permission-mode",
+            "bypassPermissions",
+            "--allow-bypass",
+        )
+        init = await boba.read()
+        assert init["subtype"] == "init"
+        assert init["settings"]["hooks"]["PreToolUse"][0]["matcher"] == "mcp__stand__.*"
+
+        await boba.send(user(call({"name": "shout", "arguments": {"text": "hi"}})))
+        result = await boba.read_until(is_result)
+        assert result["subtype"] == "completed"
+        tool_results = [
+            line
+            for line in boba.lines
+            if line["type"] == "user" and isinstance(line["message"]["content"], list)
+        ]
+        assert tool_results[-1]["message"]["content"][0]["content"] == "SEALED HI"
+        uses = [
+            block
+            for line in boba.lines
+            if line["type"] == "assistant"
+            for block in line["message"]["content"]
+            if block["type"] == "tool_use"
+        ]
+        sent = {"text": "hi", "intent": "stand call of shout"}
+        assert [u["input"] for u in uses] == [sent]
+
+        received = handler.app.received
+        assert len(received) == 1
+        assert received[0].event.tool_name == "mcp__stand__shout"
+        assert received[0].event.tool_input == sent
+        assert received[0].event.session_id == "cli-hooks"
+        assert received[0].event.cwd == str(tmp_path)
+        assert received[0].headers["authorization"] == "Bearer jwt-1"
+
+        await boba.close_stdin()
+        assert await boba.wait() == 0
+        journal = journal_lines(tmp_path, "cli-hooks")
+        stored = [
+            block
+            for record in journal
+            if record["type"] == "assistant"
+            for block in record["message"]["content"]
+            if block["type"] == "tool_use"
+        ]
+        assert [u["input"] for u in stored] == [sent]
