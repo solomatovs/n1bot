@@ -1,4 +1,4 @@
-"""Общие фикстуры для тестов PostgresDataLayer."""
+"""Общие фикстуры тестов chainlit: слой данных, сессии, стенды сервиса инструментов."""
 
 import os
 import shutil
@@ -8,12 +8,10 @@ import sys
 import time
 from collections.abc import (
     AsyncIterator,
-    Generator,
     Iterator,
     Mapping,
     Sequence,
 )
-from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import timedelta
 from pathlib import Path
@@ -21,15 +19,8 @@ from typing import Any, ClassVar
 from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
 import pytest
-from chainlit.step import StepDict
 from chainlit.user import PersistedUser
 from chainlit.user import User as ChainlitUser
-from langchain_core.messages import (
-    AIMessage,
-    BaseMessage,
-    HumanMessage,
-    ToolMessage,
-)
 from omegaconf import DictConfig, OmegaConf
 from psycopg import sql
 
@@ -37,17 +28,7 @@ from boba.auth import JwtTokens
 from boba.auth.credentials import KerberosCredentialSource, NoRefresh
 from boba.canvas.journal import StreamSlice
 from boba.canvas.keys import WorkspaceMount
-from boba.chainlit.agent.bridge import ChatModelBridge, LangchainMessages
 from boba.chainlit.canvas.remote import RemoteJournals, RemoteStreams
-from boba.chainlit.chat.dialog import (
-    DialogMessage,
-    PrefetchStage,
-    ThreadMessages,
-    TurnHistory,
-    TurnRecord,
-)
-from boba.chainlit.chat.feed import TurnFeed
-from boba.chainlit.chat.turn import ChatTurn, Question
 from boba.chainlit.data.data_layer import PostgresDataLayer
 from boba.chainlit.data.remote_storage import FileOwners, RemoteStorageClient
 from boba.chainlit.domain.keys import AppPrefix, AttachmentLinks, AttachmentUrl
@@ -58,19 +39,10 @@ from boba.chainlit.infra.session import (
     OwnerSessions,
     current_session,
 )
-from boba.chainlit.rendering.acp_view import ToolMedia, UpdateView
-from boba.chainlit.rendering.chat_view import (
-    ChatSink,
-    ChatView,
-    LiveSink,
-    RecordingSink,
-    StepRole,
-)
-from boba.chainlit.rendering.mount import ChatCalls, ChatMount
-from boba.chainlit.rendering.renderer import ChatRenderer, NoSurface
+from boba.chainlit.rendering.acp_view import ToolMedia
+from boba.chainlit.rendering.chat_view import ChatView, StepRole
 from boba.chat.profiles import ChatProfileConfig, ChatProfiles
 from boba.config import bind
-from boba.connection_broker.sealing import SealingToolServer, SentConnections
 from boba.connection_broker.store import ConnectionStore
 from boba.connection_broker.tools import ConnectionTools
 from boba.connection_broker.user_connections import ArmedConnections
@@ -79,16 +51,13 @@ from boba.identity.api import StoredUser, UserRows
 from boba.identity.context import (
     CallContext,
     CallContexts,
-    Scope,
 )
-from boba.identity.locks import MemoryLiveLocks, RunLocking
-from boba.identity.run import Runs
+from boba.identity.locks import MemoryLiveLocks
 from boba.identity.session import Login, UserMetadataField
 from boba.identity.signin import SignedIn, SignInMetadata
 from boba.identity.token import SessionClaims, TokenReader
 from boba.kerberos import DelegationMode, SignInTicket
 from boba.krb.seal import SsoTickets, TicketSealer
-from boba.llm.providers import ChatModelConfig, LlmProviders, LlmProviderTypes
 from boba.mcp_client.client import (
     DroppedSignals,
     McpCaller,
@@ -96,7 +65,7 @@ from boba.mcp_client.client import (
     McpServersConfig,
     NamedBlocks,
 )
-from boba.messaging import LockToken, MemoryMessageBus, MemoryPayloadStore
+from boba.messaging import MemoryMessageBus, MemoryPayloadStore
 from boba.runtime.config import AppLayers, ConfigLocator
 from boba.runtime.elements import ChatTables
 from boba.runtime.storage import (
@@ -105,8 +74,8 @@ from boba.runtime.storage import (
     StorageClient,
 )
 from boba.stand.refs import StandRefs
+from boba.stand.sealing import SealingStand
 from boba.stand.service_signin import ServiceSignIn
-from boba.stand.signin import SignInStand
 from boba.stand.storage import StorageSeed
 from boba.stand.ui.stand import (
     REPO_ROOT,
@@ -126,43 +95,14 @@ from boba.toolkit.dag import (
     JournalAddress,
     NodeCalls,
     NodeOutcome,
-    NodeOutcomes,
-    ToolCard,
     ToolServer,
 )
-from boba.toolkit.result import MarkdownResult, ToolResultBase
+from boba.toolkit.result import ToolResultBase
 from boba.toolrun.hosted import DirectCalls
-from boba.toolrun.streams import CallJournals
 from boba.workspace.binaries import TrustedBinaries
 from boba.workspace.launcher import MountingConfig, ReadWindow
 
 AUTH_USER = "test-user"
-
-
-class FakeThreadMessages(ThreadMessages):
-    """Источник истории для тестов: сообщения checkpoint'а задаются на тред
-    вручную, а чату отдаются сообщениями диалога — тем же переводом, что и
-    чтение checkpoint'ов (LangchainMessages)."""
-
-    def __init__(self) -> None:
-        self.by_thread: dict[str, list[BaseMessage]] = {}
-        self._messages = LangchainMessages()
-
-    async def load(self, thread_id: str) -> Sequence[DialogMessage]:
-        return list(self._messages.dialog(self.by_thread.get(thread_id, [])))
-
-
-class SilentStage(PrefetchStage):
-    """Порт этапа подготовки для прогонов без ленты: этап никому не показан."""
-
-    async def begin(self) -> None:
-        return None
-
-    async def searching(self, queries: Sequence[str]) -> None:
-        return None
-
-    async def end(self, queries: Sequence[str], elapsed_ms: int) -> None:
-        return None
 
 
 class ServiceProcess:
@@ -335,8 +275,8 @@ class ServiceTool:
 
 
 class ServiceTools:
-    """Порт чата к сервису инструментов стенда: тот же состав, что у хода —
-    SealingToolServer над MCP-портом сессии.
+    """Порт чата к сервису инструментов стенда: запечатывание соединений
+    (SealingStand, в бою — хук PreToolUse) над MCP-портом сессии.
 
     Создаётся фикстурой теста из сервиса (ToolService), хранилища соединений
     и источника кредов теста. Вызывающий — пользователь текущей сессии
@@ -353,11 +293,9 @@ class ServiceTools:
         contexts: CallContexts,
         calls: NodeCalls,
     ) -> None:
-        """calls — путь вызова узла к телу: DirectCalls либо путь чата
-        (ChatCalls), когда тесту нужны шаги вызова и монтирование."""
+        """calls — путь вызова узла к телу у клиента MCP (DirectCalls)."""
         self._service = service
         self._connections = connections
-        self._calls = calls
         self._servers = McpServers(
             service.servers(),
             NamedBlocks(),
@@ -365,8 +303,6 @@ class ServiceTools:
             contexts,
             calls,
         )
-        self.sent = SentConnections()
-        """Что ушло сервису вместо ссылок на соединения в идущих вызовах."""
 
     async def start(self) -> None:
         await self._servers.start()
@@ -397,16 +333,9 @@ class ServiceTools:
         return ports[0]
 
     async def submit(self, call: DagNode) -> NodeOutcome:
-        port = SealingToolServer(
-            await self.port(),
-            self._connections,
-            self.sent,
-            self.SEAL_TTL,
-            self._calls,
-        )
-        pending = await port.submit([call])
+        port = SealingStand(await self.port(), self._connections, self.SEAL_TTL)
 
-        return await pending[0]
+        return await port.call(call)
 
     def storage(self, owner: StoredUser, profile: str) -> RemoteStorageClient:
         """Хранилище чата поверх файлов сервиса: владельца ключа оно находит
@@ -432,14 +361,6 @@ class NoConnectionStore:
     def __call__(self) -> ConnectionStore:
         msg = "the stand of this test holds no user connections"
         raise AssertionError(msg)
-
-
-@dataclass(frozen=True)
-class SessionTools:
-    """Инструменты сессии и порт инструментов над ними, как их видит граф хода."""
-
-    tools: list[ToolCard]
-    service: ToolServer
 
 
 @pytest.fixture(scope="module")
@@ -601,46 +522,13 @@ class RemoteStand:
 
 @dataclass
 class Seed:
-    """Базовые данные под тест: слой, пользователь, тред и его история."""
+    """Базовые данные под тест: слой, пользователь и тред."""
 
     layer: PostgresDataLayer
     user: PersistedUser
     thread_id: str
-    messages: list[BaseMessage]
     answer_step_id: str
     """id шага итогового ответа — он же цель для feedback и вложений."""
-
-
-def in_process_llm(monkeypatch: pytest.MonkeyPatch, app: Any) -> None:
-    """Все httpx-клиенты транспорта проекта ходят в ASGI-приложение fake llm
-    прямо в процессе теста: сети нет, SSE идёт через ASGITransport."""
-    import httpx
-
-    real_client = httpx.AsyncClient
-
-    def client(**kwargs: Any) -> httpx.AsyncClient:
-        kwargs["transport"] = httpx.ASGITransport(app=app)  # pyright: ignore[reportArgumentType]
-        return real_client(**kwargs)
-
-    monkeypatch.setattr("boba.transport.http.transport.httpx.AsyncClient", client)
-
-
-def fake_openai_chat(
-    model: str = "fake-model",
-    sampling: dict[str, Any] | None = None,
-) -> ChatModelBridge:
-    """Чат-модель прод-стека на провайдере стенда; сеть подменяет in_process_llm."""
-    if sampling is None:
-        sampling = {}
-
-    cfg = ChatModelConfig(
-        provider=SignInStand.provider(), model=model, sampling=sampling
-    )
-    providers = LlmProviders(LlmProviderTypes.installed())
-
-    return ChatModelBridge(
-        chat_model=providers.chat(cfg), sampling=sampling, model_name=model
-    )
 
 
 @pytest.fixture(autouse=True)
@@ -687,22 +575,16 @@ def storage(files_dir: Path) -> LocalStorageClient:
 
 
 @pytest.fixture
-def thread_messages() -> FakeThreadMessages:
-    return FakeThreadMessages()
-
-
-@pytest.fixture
 def data_bus() -> MemoryMessageBus:
     """Шина слоя данных в тестах: изменения тредов уходят в область пользователя."""
     return MemoryMessageBus("test-chainlit")
 
 
 @pytest.fixture
-async def layer(  # noqa: PLR0913 — фикстуры теста
+async def layer(
     app_config: AppConfig,
     pool: AsyncPostgresPool,
     storage: LocalStorageClient,
-    thread_messages: FakeThreadMessages,
     data_bus: MemoryMessageBus,
     runtime_stand: StandRefs,
 ) -> PostgresDataLayer:
@@ -752,10 +634,7 @@ async def chainlit_context(auth_token: str) -> AsyncIterator[None]:
 
 
 @pytest.fixture
-async def seeded(
-    layer: PostgresDataLayer,
-    thread_messages: FakeThreadMessages,
-) -> Seed:
+async def seeded(layer: PostgresDataLayer) -> Seed:
     user = await layer.create_user(
         ChainlitUser(identifier="user-1", metadata={"role": "tester"})
     )
@@ -771,12 +650,6 @@ async def seeded(
         tags=["a"],
     )
 
-    messages: list[BaseMessage] = [
-        HumanMessage(content="hi", id="m1"),
-        AIMessage(content="hello", id="m2"),
-    ]
-    thread_messages.by_thread[thread_id] = messages
-
     answer_step_id = ChatView.derive_id(thread_id, "m1", StepRole.ANSWER)
     if answer_step_id is None:
         raise AssertionError("answer_step_id is not None")
@@ -785,7 +658,6 @@ async def seeded(
         layer=layer,
         user=user,
         thread_id=thread_id,
-        messages=messages,
         answer_step_id=answer_step_id,
     )
 
@@ -1034,143 +906,6 @@ class SsoStand:
         )
 
         return tickets.sealer.seal(ticket)
-
-
-class JournaledCall:
-    """Сообщение инструмента истории о вызове, который исполнил сервер с
-    журналом: итог несёт адрес журнала — сервер, запуск на нём и
-    идентификатор вызова на сервере (у стенда он совпадает с идентификатором
-    вызова модели). Создаётся стендами тестов панели живого вывода;
-    сообщение собирает тот же перевод, что и ход чата (LangchainMessages)."""
-
-    TOOL: ClassVar[str] = "bash"
-
-    def __init__(self, server: str, run: str) -> None:
-        self._server = server
-        self._run = run
-        self._outcomes = NodeOutcomes()
-        self._messages = LangchainMessages()
-
-    def message(self, call_id: str) -> ToolMessage:
-        call = DagNode(key=call_id, tool=self.TOOL)
-        outcome = self._outcomes.of(call, MarkdownResult(text=""), False)
-        address = JournalAddress(server=self._server, run=self._run, call=call_id)
-        addressed = outcome.model_copy(update={"journal": address})
-
-        return self._messages.tool_message(addressed)
-
-
-class StandTurnHistory(TurnHistory):
-    """Реализация TurnHistory стенда хода: записи исхода копятся в памяти."""
-
-    def __init__(self) -> None:
-        self.records: list[TurnRecord] = []
-
-    async def remember(self, record: TurnRecord) -> None:
-        self.records.append(record)
-
-
-class RecordedTurn:
-    """Стенд хода: шина в памяти, рендерер над ChatView, производитель хода,
-    сам ход (ChatTurn) и путь вызова узла чата (ChatCalls).
-
-    Сообщения производителя доходят до ленты синхронно внутри publish, поэтому
-    после await любого метода feed лента (sink) уже обновлена. Шаги вызовов
-    инструментов рисует ход port по событиям порта запуска; calls отдаётся
-    исполнителю узлов, и под running() его вызовы видны ленте стенда.
-    """
-
-    def __init__(
-        self,
-        thread_id: str,
-        turn_id: str,
-        sink: ChatSink,
-        user_name: str = "tester",
-    ) -> None:
-        self._thread_id = thread_id
-        self.bus = MemoryMessageBus("test-chainlit")
-        self.payloads = MemoryPayloadStore()
-        self.sink = sink
-        self.contexts = CallContexts()
-        self.runs = Runs(self.contexts)
-        journals = CallJournals(None, self.runs)
-        self.view = ChatView(thread_id, sink, journals, user_name=user_name)
-        updates = UpdateView(self.view, thread_id, RemoteJournals(), ToolMedia())
-        self.renderer = ChatRenderer(thread_id, updates, self.payloads, NoSurface())
-        self.leave = self.bus.subscribe(Scope.chat(thread_id), self.renderer.apply)
-        self.feed = TurnFeed(
-            self.bus, self.payloads, Scope.chat(thread_id), turn_id, LockToken.local()
-        )
-        self.renderer.begin_turn(turn_id)
-        self._turn_id = turn_id
-        self.history = StandTurnHistory()
-        self._ports: list[ChatTurn] = []
-        self.sent = SentConnections()
-        self.calls = ChatCalls(
-            self.contexts,
-            self.runs,
-            self.sent,
-            ChatMount(self.contexts, self.runs),
-            RemoteJournals(),
-        )
-
-    @property
-    def port(self) -> ChatTurn:
-        """Ход стенда — владелец запуска. Создаётся при первом обращении:
-        его трасеру нужен контекст chainlit, которого у тестов одной ленты
-        нет."""
-        if not self._ports:
-            self._ports.append(
-                ChatTurn(
-                    thread_id=self._thread_id,
-                    feed=self.feed,
-                    history=self.history,
-                    question=Question(key=self._turn_id, text="question"),
-                    locking=RunLocking(
-                        locks=MemoryLiveLocks("test:0", 20), heartbeat_sec=1.0
-                    ),
-                    contexts=self.contexts,
-                    runs=self.runs,
-                )
-            )
-
-        return self._ports[0]
-
-    @contextmanager
-    def running(self) -> Generator[ChatTurn, None, None]:
-        """Идущий ход стенда: контекст вызова хода и запуск в реестре, чьим
-        владельцем стоит port."""
-        context = CallStand().context(self._thread_id)
-        with self.runs.open(context, self.port):
-            yield self.port
-
-    @classmethod
-    def recording(
-        cls, thread_id: str, turn_id: str, user_name: str = "tester"
-    ) -> "RecordedTurn":
-        return cls(thread_id, turn_id, RecordingSink(), user_name)
-
-    @classmethod
-    def live(
-        cls, thread_id: str, turn_id: str, user_name: str = "tester"
-    ) -> "RecordedTurn":
-        return cls(thread_id, turn_id, LiveSink(), user_name)
-
-    @property
-    def recording_sink(self) -> RecordingSink:
-        sink = self.sink
-        if not isinstance(sink, RecordingSink):
-            msg = (
-                "steps are recorded only by RecordingSink, the stand sink is "
-                f"{type(sink).__name__}"
-            )
-            raise TypeError(msg)
-
-        return sink
-
-    @property
-    def steps(self) -> list[StepDict]:
-        return self.recording_sink.steps
 
 
 async def put_bytes(storage: StorageClient, object_key: str, data: bytes | str) -> None:

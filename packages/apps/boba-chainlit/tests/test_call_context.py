@@ -14,7 +14,6 @@ from chainlit_stand import (
 from pydantic import ValidationError
 
 from boba.chainlit.domain.context import ChatCallContext, ChatSurface
-from boba.chainlit.rendering.mount import ChatMount
 from boba.identity.context import (
     ContextKind,
     HumanInitiator,
@@ -24,7 +23,6 @@ from boba.identity.context import (
 )
 from boba.identity.errors import AuthenticationError, RefusalError
 from boba.identity.session import LoginTemplate, LogUserMark
-from boba.stand.refs import StandRefs
 from boba.stand_core.context import CallStand, StandIdentity
 
 THREAD = "55555555-5555-5555-5555-555555555555"
@@ -79,19 +77,6 @@ class TestCurrent:
 
 
 class TestChatContext:
-    def test_plain_context_is_not_a_chat(
-        self,
-        runtime_stand: StandRefs,
-        call_stand: CallStand,
-    ) -> None:
-        call_stand.use(call_stand.context(thread_id=THREAD))
-
-        with pytest.raises(RefusalError) as caught:
-            ChatMount(runtime_stand.contexts, runtime_stand.runs).chat_context()
-
-        if caught.value.kind != ContextKind.CHAT_ONLY:
-            raise AssertionError(caught.value.kind)
-
     def test_session_context_is_a_chat_with_a_surface(
         self,
         chat_session: ChatSessionStand,

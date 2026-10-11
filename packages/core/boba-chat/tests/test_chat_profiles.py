@@ -7,9 +7,9 @@ from typing import Any
 import pytest
 
 from boba.chat.profiles import (
-    AgentSettings,
     ChatProfileConfig,
     ChatProfiles,
+    ChatSettings,
     ProfileRefusal,
 )
 from boba.identity.errors import RefusalError
@@ -164,7 +164,7 @@ class TestVisibilityByWildcard:
 
 class TestChatSampling:
     def test_empty_sampling_sends_nothing(self) -> None:
-        settings = AgentSettings.model_validate(
+        settings = ChatSettings.model_validate(
             {"provider": BACKEND, "model": "test-model"}
         )
         if settings.sampling != {}:
@@ -172,7 +172,7 @@ class TestChatSampling:
 
     def test_admin_params_pass_through_verbatim(self) -> None:
         """Таблица sampling уходит как написана: без проверок и переименований."""
-        settings = AgentSettings.model_validate(
+        settings = ChatSettings.model_validate(
             {
                 "provider": BACKEND,
                 "model": "test-model",
@@ -197,7 +197,7 @@ class TestChatSampling:
             raise AssertionError(f"sampling: {sampling}")
 
     def test_openai_transport_binds(self) -> None:
-        settings = AgentSettings.model_validate(
+        settings = ChatSettings.model_validate(
             {"provider": BACKEND, "model": "test-model"}
         )
         if settings.provider.kind != "openai":

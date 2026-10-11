@@ -1,7 +1,7 @@
 """Производитель сообщений хода: единственное место, откуда ход публикует в шину;
 большие тела уходят в PayloadStore, сообщение несёт ссылку. Ход агента ACP
-публикует вопрос, уведомления `session/update` как есть (AgentUpdate), пометки
-остановки и итог; остальные сообщения — наследие хода langchain.
+публикует вопрос, уведомления `session/update` как есть (AgentUpdate), правку
+вопроса, элементы итогов, пометки остановки и итог.
 
 Ошибки:
 MessageBusError — шина не приняла сообщение; вызывающий показывает сбой сам.
@@ -9,7 +9,7 @@ MessageBusError — шина не приняла сообщение; вызыв�
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping
 from typing import Any, ClassVar
 
 from acp.schema import ToolCallProgress, ToolCallStart
@@ -20,32 +20,17 @@ from boba.chainlit.rendering.acp_view import SessionUpdateCodec
 from boba.identity.context import Scope
 from boba.messaging import (
     AgentUpdate,
-    AnswerClosed,
     AnswerInterrupted,
-    AnswerToken,
     AnyMessage,
     ElementShown,
     LockToken,
     MessageBus,
-    ModelAnswered,
     Notice,
     NoticeLevel,
     PayloadStore,
-    StageEnded,
-    StageQueries,
-    StageStarted,
     StreamAppended,
     StreamFeed,
-    ThinkingClosed,
-    ThinkingComplete,
-    ThinkingToken,
     ThreadRewound,
-    TokensSpent,
-    ToolFailed,
-    ToolFinished,
-    ToolProgressed,
-    ToolStarted,
-    ToolStopped,
     TurnFinished,
     TurnOutcome,
     TurnStarted,
@@ -156,10 +141,6 @@ class TurnFeed(StreamFeed):
     def turn_id(self) -> str:
         return self._turn_id
 
-    def adopt(self, token: LockToken) -> None:
-        """Принимает token захваченной блокировки: дальше публикации идут с ним."""
-        self._token = token
-
     async def _publish(self, message: AnyMessage) -> None:
         await self._bus.publish(self._scope, message, self._token)
 
@@ -185,106 +166,10 @@ class TurnFeed(StreamFeed):
         )
         await self._publish(TurnStarted(turn_id=self._turn_id, key=key, question=ref))
 
-    async def model_answered(self) -> None:
-        await self._publish(ModelAnswered(turn_id=self._turn_id))
-
-    async def answer_token(self, key: str, token: str) -> None:
-        await self._publish(AnswerToken(turn_id=self._turn_id, key=key, token=token))
-
-    async def answer_closed(self, key: str) -> None:
-        await self._publish(AnswerClosed(turn_id=self._turn_id, key=key))
-
     async def answer_interrupted(self, key: str, note: str) -> None:
         await self._publish(
             AnswerInterrupted(turn_id=self._turn_id, key=key, note=note)
         )
-
-    async def thinking_token(self, key: str, token: str) -> None:
-        await self._publish(ThinkingToken(turn_id=self._turn_id, key=key, token=token))
-
-    async def thinking_complete(self, key: str, text: str) -> None:
-        ref = await self._payloads.put(self._scope, text)
-        await self._publish(ThinkingComplete(turn_id=self._turn_id, key=key, text=ref))
-
-    async def thinking_closed(self) -> None:
-        await self._publish(ThinkingClosed(turn_id=self._turn_id))
-
-    async def tokens_spent(
-        self,
-        key: str,
-        input_tokens: int,
-        output_tokens: int,
-        reasoning_tokens: int,
-    ) -> None:
-        """Расход прогона модели; key — шаг рассуждений, пусто — шага не было."""
-        message = TokensSpent(
-            turn_id=self._turn_id,
-            key=key,
-            input_tokens=input_tokens,
-            output_tokens=output_tokens,
-            reasoning_tokens=reasoning_tokens,
-        )
-        await self._publish(message)
-
-    async def stage_started(self, name: str, phase: str) -> None:
-        await self._publish(StageStarted(turn_id=self._turn_id, name=name, phase=phase))
-
-    async def stage_queries(self, name: str, queries: Sequence[str]) -> None:
-        await self._publish(
-            StageQueries(turn_id=self._turn_id, name=name, queries=tuple(queries))
-        )
-
-    async def stage_ended(
-        self, name: str, queries: Sequence[str], elapsed_ms: int
-    ) -> None:
-        await self._publish(
-            StageEnded(
-                turn_id=self._turn_id,
-                name=name,
-                queries=tuple(queries),
-                elapsed_ms=elapsed_ms,
-            )
-        )
-
-    async def tool_started(
-        self,
-        call_id: str,
-        name: str,
-        args: Mapping[str, Any],
-        media: Mapping[str, str] | None,
-    ) -> None:
-        ref = await self._payloads.put(self._scope, dict(args))
-        message = ToolStarted(
-            turn_id=self._turn_id, call_id=call_id, name=name, args=ref, media=media
-        )
-        await self._publish(message)
-
-    async def tool_progressed(
-        self, call_id: str, done: float, total: float | None, text: str
-    ) -> None:
-        message = ToolProgressed(
-            turn_id=self._turn_id,
-            call_id=call_id,
-            done=done,
-            total=total,
-            text=TextClip.fit(text),
-        )
-        await self._publish(message)
-
-    async def tool_finished(self, call_id: str, result: object) -> None:
-        ref = await self._payloads.put(self._scope, result)
-        message = ToolFinished(turn_id=self._turn_id, call_id=call_id, result=ref)
-        await self._publish(message)
-
-    async def tool_failed(self, call_id: str, error: str) -> None:
-        message = ToolFailed(
-            turn_id=self._turn_id, call_id=call_id, error=TextClip.fit(error)
-        )
-        await self._publish(message)
-
-    async def tool_stopped(self, call_id: str, note: str) -> None:
-        message = ToolStopped(turn_id=self._turn_id, call_id=call_id, note=note)
-        await self._publish(message)
 
     async def stream_appended(self, message: StreamAppended) -> None:
         await self._publish(message)

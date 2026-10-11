@@ -3,16 +3,11 @@
         "settings": {
             "llm": {
                 "tabs": {
-                    "history_tab": "History",
                     "prompt_tab": "Prompt",
                     "agent_tab": "Agent",
                     "session_tab": "Session"
                 },
                 "fields": {
-                    "history_messages": {
-                        "label": "History messages",
-                        "description": "How many previous messages of the thread are sent to the model."
-                    },
                     "user_prompt": {
                         "label": "Custom instructions",
                         "description": "Your own instructions; they are appended to the profile system prompt and apply to every answer."

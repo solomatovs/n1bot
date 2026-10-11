@@ -4,8 +4,8 @@
 Нужен тестам исполнителя хука в агенте и служит образцом для обработчика
 чата: событие читается моделью PreToolUseEvent ядра, ответ строится
 моделью HookReplyBody. Поведение задают правила HookStandRules по полному
-имени инструмента: запечатать аргументы-соединения по `contentMediaType`
-из `tool_schema`, заменить названные аргументы, отказать с причиной,
+имени инструмента: запечатать аргументы-соединения по схеме параметров
+(SealedParamSchema) из `tool_schema`, заменить названные аргументы, отказать с причиной,
 попросить вопрос наружу, промолчать дольше срока, ответить ошибкой или
 не-JSON. Принятые события и заголовки лежат в `received`.
 """
@@ -29,7 +29,7 @@ from boba.agent.hooks import (
     HookSpecificOutput,
     PreToolUseEvent,
 )
-from boba.stand.agent import StandMedia
+from boba.connections.sealed import SealedParamSchema
 from boba.stand.ui.stand import free_port
 
 __all__ = [
@@ -46,13 +46,6 @@ class HookStandRoute(StrEnum):
 
     PRE_TOOL_USE = "/hooks/pre-tool-use"
     HEALTH = "/health"
-
-
-class SchemaKey(StrEnum):
-    """Ключи JSON-схемы, по которым стенд находит аргументы-соединения."""
-
-    PROPERTIES = "properties"
-    CONTENT_MEDIA_TYPE = "contentMediaType"
 
 
 @dataclass(frozen=True)
@@ -101,6 +94,7 @@ class HookStandApp:
 
     def __init__(self, rules: HookStandRules) -> None:
         self._rules = rules
+        self._declared = SealedParamSchema()
         self.received: list[ReceivedHook] = []
 
     def asgi(self) -> FastAPI:
@@ -169,7 +163,7 @@ class HookStandApp:
     def _updated(self, event: PreToolUseEvent) -> Mapping[str, Any] | None:
         """Аргументы после запечатывания и подмен; None — менять нечего."""
         updated = dict(event.tool_input)
-        for key in self._connection_keys(event.tool_schema):
+        for key in self._declared.kinds_of(event.tool_schema):
             value = updated.get(key)
             if not isinstance(value, str):
                 continue
@@ -184,27 +178,6 @@ class HookStandApp:
             return None
 
         return updated
-
-    @staticmethod
-    def _connection_keys(schema: Mapping[str, Any]) -> list[str]:
-        """Аргументы, чей `contentMediaType` называет соединение."""
-        keys: list[str] = []
-        properties = schema.get(SchemaKey.PROPERTIES.value)
-        if not isinstance(properties, Mapping):
-            return keys
-
-        for key, spec in properties.items():
-            if not isinstance(spec, Mapping):
-                continue
-
-            media = spec.get(SchemaKey.CONTENT_MEDIA_TYPE.value)
-            if not isinstance(media, str):
-                continue
-
-            if media.startswith(StandMedia.CONNECTION_PREFIX.value):
-                keys.append(str(key))
-
-        return keys
 
 
 class HookStandServer:

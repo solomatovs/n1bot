@@ -426,7 +426,7 @@ class TestBreakers:
         )
         session = await served.open(SESSION, resume=False)
 
-        text = f"{failure.value} {FailureName.NO_USAGE.value} {loop(3_000)}"
+        text = f"{failure.value} {FailureName.NO_USAGE.value} {loop(2_700)}"
         served.agent.queue.enqueue(prompt(text))
         await served.agent.settled()
         await served.close()

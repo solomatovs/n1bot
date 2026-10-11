@@ -17,6 +17,7 @@ import chainlit as cl
 from boba.cancellation import StopReason
 from boba.canvas.canvas import CanvasAction, RenderVerdicts
 from boba.chainlit.acp.chat import (
+    Question,
     SessionOptions,
     ThreadAgent,
     ThreadAgents,
@@ -32,7 +33,6 @@ from boba.chainlit.canvas.remote import RemoteStreams
 from boba.chainlit.canvas.tools import CanvasActions, CanvasScope
 from boba.chainlit.chat.panel_text import PanelText
 from boba.chainlit.chat.settings import SettingsPanel
-from boba.chainlit.chat.turn import Question
 from boba.chainlit.data.data_layer import AttachmentDataLayer, PostgresDataLayer
 from boba.chainlit.domain.fields import ThreadField, ThreadMetaField
 from boba.chainlit.infra import providers
@@ -277,7 +277,7 @@ def _session_view(config: AppConfig, registry: ChatProfiles) -> SettingsView:
     selected = _session_selected_profile(registry)
 
     saved = UserMeta.of(current_session().metadata).overrides_for(selected.name)
-    return SettingsView.of(config.settings, selected.config, saved)
+    return SettingsView.of(selected.config, saved)
 
 
 def _refresh_session_user_meta(profile: str, overrides: UserLlmOverrides) -> None:

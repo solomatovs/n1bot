@@ -32,6 +32,9 @@ boba = "boba.cli.app:cli"
 [project.optional-dependencies]
 dev = [
     "boba-stand==0.0.26.dev4",
+    "boba-config==0.0.26.dev4",
+    "boba-krb==0.0.26.dev4",
+    "jsonschema>=4.23,<5",
     "uvicorn>=0.35,<1",
     "omegaconf>=2.3,<3",
     "pytest>=9.1,<10",

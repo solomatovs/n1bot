@@ -401,8 +401,6 @@ def _use_di_container(app: FastAPI, c: AppConfig) -> Container:
     container.eager(providers.remote_journals)
     container.eager(providers.mcp_servers)
     container.eager(providers.agent_feeds)
-    # локальные модели грузятся на старте: первая сессия не ждёт веса
-    container.eager(providers.llm_providers)
     # инстанс регистрируется после блокирующего старта зигот и моделей: иначе
     # его пульс молчит дольше lock_ttl, и соседи снимают его как мёртвый
     container.eager(runtime.live_locks)
