@@ -12,8 +12,9 @@
 раздел 5.18.
 
 Ошибки:
-HistoryError — хранилище недоступно, сессия занята или журнал для
-    возобновления пуст.
+HistoryError — хранилище недоступно или отказало.
+SessionHeldError — сессию держит другой процесс (подвид HistoryError).
+SessionNotFoundError — журнал для возобновления пуст (подвид HistoryError).
 ProfileError — профиль модели не годится для запуска.
 PermissionModeError — режим разрешений недоступен при параметрах запуска.
 ToolsError — собственный инструмент одноимён с инструментом сервера, либо при
@@ -37,7 +38,13 @@ from boba.agent.attachments import (
 from boba.agent.builder import RequestBuilder
 from boba.agent.control import ControlQuestions, PermissionAnswer
 from boba.agent.events import EventSink, InitEvent, TurnOutcome
-from boba.agent.history import HistoryError, HistoryStore, SessionId, SessionLease
+from boba.agent.history import (
+    HistoryError,
+    HistoryStore,
+    SessionId,
+    SessionLease,
+    SessionNotFoundError,
+)
 from boba.agent.hooks import PreToolUseHooks
 from boba.agent.ids import Clock, IdMint, SystemClock
 from boba.agent.loader import HistoryLoader, LoadReport
@@ -380,7 +387,7 @@ class Agent:
 
     async def _restored(self, session: Session, resume: bool) -> LoadReport:
         """Ошибки:
-        HistoryError — возобновляемая сессия без журнала.
+        SessionNotFoundError — возобновляемая сессия без журнала.
         """
         if not resume:
             return LoadReport()
@@ -397,7 +404,7 @@ class Agent:
                 "resume. Start a new session, or check that the history root points "
                 "to the right place."
             )
-            raise HistoryError(msg)
+            raise SessionNotFoundError(msg)
 
         logger.info(
             self.LOADER_LOG,

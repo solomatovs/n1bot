@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import subprocess
 import time
-from collections.abc import AsyncIterator
 from importlib.metadata import version
 from pathlib import Path
 
@@ -43,26 +42,6 @@ def binary() -> Path:
         pytest.skip(f"no binary at {BINARY}; run: make -C build boba-bin")
 
     return BINARY
-
-
-@pytest.fixture
-async def model() -> AsyncIterator[FakeModel]:
-    fake = FakeModel()
-    await fake.start()
-    try:
-        yield fake
-    finally:
-        await fake.stop()
-
-
-@pytest.fixture
-async def mcp() -> AsyncIterator[McpStand]:
-    stand = McpStand()
-    await stand.start()
-    try:
-        yield stand
-    finally:
-        await stand.stop()
 
 
 class TestBinary:

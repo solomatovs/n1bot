@@ -7,7 +7,12 @@ FakeLlmApp, инструменты — standard_server.py по streamable HTTP. 
 относительный `cwd` и сервер sse; отчёт о ходе вызова в `_meta`; секреты
 только в файле 0600 — не в argv, окружении, журнале и кадрах; stdout
 содержит только кадры JSON-RPC, логи — в stderr; SIGTERM и конец ввода
-завершают процесс с кодом 0 и сброшенным журналом."""
+завершают процесс с кодом 0 и сброшенным журналом. История: `session/load`
+второго процесса воспроизводит беседу теми же уведомлениями, что живой ход
+(один рендерер FeedView на оба), и всё до ответа; `session/resume` без
+воспроизведения; `session/close`; `session/list` страницами с курсором и
+фильтром `cwd`; `session/delete` повторно — успех; неизвестная сессия —
+-32002."""
 
 from __future__ import annotations
 
@@ -18,7 +23,7 @@ import signal
 import socket
 import stat
 import sys
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncIterator, Mapping, Sequence
 from pathlib import Path
 from typing import Any, ClassVar
 
@@ -30,6 +35,8 @@ from acp.connection import Connection, StreamDirection
 from acp.connection import StreamEvent as FrameEvent
 from acp.exceptions import RequestError
 from acp.schema import (
+    AgentMessageChunk,
+    AgentThoughtChunk,
     AllowedOutcome,
     ClientCapabilities,
     CreateElicitationResponse,
@@ -52,6 +59,7 @@ from acp.schema import (
     ToolCallProgress,
     ToolCallStart,
     ToolCallUpdate,
+    UserMessageChunk,
     WaitForTerminalExitResponse,
     WriteTextFileResponse,
 )
@@ -314,6 +322,104 @@ class RecordingClient(FeaturelessClient):
 
         return found
 
+    def updates_of(self, session_id: str) -> list[Any]:
+        found: list[Any] = []
+        for seen, update in self.updates:
+            if seen == session_id:
+                found.append(update)
+
+        return found
+
+
+class FeedView:
+    """Лента по уведомлениям сессии — один рендерер для живого хода и для
+    воспроизведения: куски одного сообщения склеиваются, у вызова остаются
+    заголовок, вид, аргументы, конечный статус, текст и `rawOutput`."""
+
+    def render(self, updates: Sequence[Any]) -> list[tuple[Any, ...]]:
+        items: list[tuple[Any, ...]] = []
+        calls: dict[str, dict[str, Any]] = {}
+        for update in updates:
+            if isinstance(update, UserMessageChunk):
+                items.append(("user", update.message_id, self._text_of(update)))
+                continue
+
+            if isinstance(update, AgentThoughtChunk):
+                self._glue(items, "thought", update)
+                continue
+
+            if isinstance(update, AgentMessageChunk):
+                self._glue(items, "agent", update)
+                continue
+
+            if isinstance(update, ToolCallStart):
+                state = {
+                    "id": update.tool_call_id,
+                    "title": update.title,
+                    "kind": update.kind,
+                    "raw_input": update.raw_input,
+                    "status": update.status,
+                    "text": None,
+                    "raw_output": None,
+                }
+                calls[update.tool_call_id] = state
+                items.append(("tool", state))
+                continue
+
+            if isinstance(update, ToolCallProgress):
+                state = calls[update.tool_call_id]
+                state["status"] = update.status
+                if update.content:
+                    state["text"] = result_text(update)
+
+                if update.raw_output is not None:
+                    state["raw_output"] = update.raw_output
+
+        return [self._frozen(item) for item in items]
+
+    def without_user(
+        self, rendered: Sequence[tuple[Any, ...]]
+    ) -> list[tuple[Any, ...]]:
+        return [item for item in rendered if item[0] != "user"]
+
+    def user_texts(self, rendered: Sequence[tuple[Any, ...]]) -> list[str]:
+        return [item[2] for item in rendered if item[0] == "user"]
+
+    @staticmethod
+    def _text_of(update: AcpContentChunk) -> str:
+        block = update.content
+        assert isinstance(block, TextContentBlock)
+
+        return block.text
+
+    def _glue(
+        self, items: list[tuple[Any, ...]], kind: str, update: AcpContentChunk
+    ) -> None:
+        text = self._text_of(update)
+        if items and items[-1][0] == kind and items[-1][1] == update.message_id:
+            items[-1] = (kind, update.message_id, items[-1][2] + text)
+            return
+
+        items.append((kind, update.message_id, text))
+
+    @staticmethod
+    def _frozen(item: tuple[Any, ...]) -> tuple[Any, ...]:
+        if item[0] != "tool":
+            return item
+
+        state = item[1]
+
+        return (
+            "tool",
+            state["id"],
+            state["title"],
+            state["kind"],
+            json.dumps(state["raw_input"], sort_keys=True),
+            state["status"],
+            state["text"],
+            json.dumps(state["raw_output"], sort_keys=True),
+        )
+
 
 def result_text(update: ToolCallProgress) -> str:
     """Текст первого блока содержимого обновления вызова."""
@@ -391,14 +497,22 @@ class AcpProcess:
     LINE_LIMIT: ClassVar[int] = 16 * 1024 * 1024
 
     def __init__(
-        self, root: Path, model: FakeModel, command: Sequence[str] | None = None
+        self,
+        root: Path,
+        model: FakeModel,
+        command: Sequence[str] | None = None,
+        environment: Mapping[str, str] | None = None,
     ) -> None:
         if command is None:
             command = (sys.executable, "-m", self.MODULE)
 
+        if environment is None:
+            environment = {}
+
         self._command = list(command)
         self._root = root
         self._model = model
+        self._environment = dict(environment)
         self._process: asyncio.subprocess.Process | None = None
         self.raw_stdout: list[str] = []
         self.stderr: list[str] = []
@@ -455,6 +569,7 @@ class AcpProcess:
         environment = {
             "HOME": str(self._root / "home"),
             "PATH": os.environ["PATH"],
+            **self._environment,
         }
         self._process = await asyncio.create_subprocess_exec(
             *self._command,
@@ -557,26 +672,6 @@ class AcpProcess:
                 return
 
             self.stderr.append(raw.decode("utf-8", errors="replace").rstrip("\n"))
-
-
-@pytest.fixture
-async def model() -> AsyncIterator[FakeModel]:
-    fake = FakeModel()
-    await fake.start()
-    try:
-        yield fake
-    finally:
-        await fake.stop()
-
-
-@pytest.fixture
-async def mcp() -> AsyncIterator[McpStand]:
-    stand = McpStand()
-    await stand.start()
-    try:
-        yield stand
-    finally:
-        await stand.stop()
 
 
 @pytest.fixture
@@ -700,7 +795,7 @@ class TestHandshake:
             assert response.auth_methods == []
 
             with pytest.raises(RequestError) as refused:
-                await conn.load_session(cwd=str(boba.process.pid), session_id="x")
+                await conn.fork_session(cwd=str(boba.process.pid), session_id="x")
 
             assert refused.value.code == METHOD_NOT_FOUND
         finally:
@@ -1185,3 +1280,321 @@ class TestLifecycle:
         assert await boba.wait() == 1
         assert boba.raw_stdout == []
         assert any("chmod 600" in line for line in boba.stderr)
+
+
+class TestHistory:
+    """Сессии и история: второй процесс над тем же журналом."""
+
+    PROMPTS: ClassVar[tuple[str, ...]] = (
+        call({"name": "add", "arguments": {"a": 2, "b": 3}}),
+        ScenarioName.THINKING_ANSWER.value,
+    )
+
+    async def conversation(
+        self, boba: AcpProcess, mcp: McpStand, cwd: Path
+    ) -> tuple[str, list[Any]]:
+        """Первый процесс: сессия с двумя ходами; возвращает её id и живые
+        уведомления; процесс завершён."""
+        client = RecordingClient()
+        document = boba.settings_document(mode="bypassPermissions", allow_bypass=True)
+        conn = await boba.start(client, document)
+        try:
+            await handshake(conn)
+            session = await conn.new_session(cwd=str(cwd), mcp_servers=[mcp.server()])
+            for prompt in self.PROMPTS:
+                response = await conn.prompt(
+                    session_id=session.session_id, prompt=[text_block(prompt)]
+                )
+                assert response.stop_reason == StopReasonName.END_TURN.value
+        finally:
+            await conn.close()
+            await boba.close_stdin()
+
+        assert await boba.wait() == 0
+
+        return session.session_id, client.updates_of(session.session_id)
+
+    async def test_load_replays_the_conversation_like_the_live_turn(
+        self, boba: AcpProcess, model: FakeModel, mcp: McpStand, tmp_path: Path
+    ) -> None:
+        session_id, live = await self.conversation(boba, mcp, tmp_path)
+
+        second = AcpProcess(tmp_path, model)
+        client = RecordingClient()
+        document = second.settings_document(mode="bypassPermissions", allow_bypass=True)
+        conn = await second.start(client, document)
+        try:
+            await handshake(conn)
+            await conn.load_session(
+                cwd=str(tmp_path), session_id=session_id, mcp_servers=[mcp.server()]
+            )
+            replayed = client.updates_of(session_id)
+
+            view = FeedView()
+            live_view = view.render(live)
+            replay_view = view.render(replayed)
+            assert view.user_texts(live_view) == []
+            assert view.user_texts(replay_view) == list(self.PROMPTS)
+            assert view.without_user(replay_view) == view.without_user(live_view)
+            assert len(view.without_user(replay_view)) >= 4
+
+            request_id = second.frames.request_id("session/load")
+            answered_at = second.frames.position_of_response(request_id)
+            before = second.frames.incoming_notifications(answered_at)
+            assert len(before) == len(replayed)
+            assert all(
+                m["method"] != "session/update"
+                for m in second.frames.incoming_after(answered_at)
+            )
+
+            response = await conn.prompt(
+                session_id=session_id, prompt=[text_block(ScenarioName.ANSWER.value)]
+            )
+            assert response.stop_reason == StopReasonName.END_TURN.value
+        finally:
+            await conn.close()
+            await second.close_stdin()
+            await second.kill()
+
+        human = [
+            r["message"]["content"]
+            for r in second.journal(session_id)
+            if r["type"] == "user" and r.get("origin", {}).get("kind") == "human"
+        ]
+        assert human == [*self.PROMPTS, ScenarioName.ANSWER.value]
+
+    async def test_resume_restores_without_replay(
+        self, boba: AcpProcess, model: FakeModel, mcp: McpStand, tmp_path: Path
+    ) -> None:
+        session_id, _ = await self.conversation(boba, mcp, tmp_path)
+
+        second = AcpProcess(tmp_path, model)
+        client = RecordingClient()
+        conn = await second.start(client)
+        try:
+            await handshake(conn)
+            await conn.resume_session(
+                cwd=str(tmp_path), session_id=session_id, mcp_servers=[mcp.server()]
+            )
+            assert client.updates == []
+
+            response = await conn.prompt(
+                session_id=session_id, prompt=[text_block(ScenarioName.ANSWER.value)]
+            )
+            assert response.stop_reason == StopReasonName.END_TURN.value
+            assert client.chunks()
+        finally:
+            await conn.close()
+            await second.close_stdin()
+            await second.kill()
+
+    async def test_unknown_session_is_resource_not_found(
+        self, boba: AcpProcess, tmp_path: Path
+    ) -> None:
+        client = RecordingClient()
+        conn = await boba.start(client)
+        try:
+            await handshake(conn)
+            for request in (
+                conn.load_session(
+                    cwd=str(tmp_path), session_id="no-such", mcp_servers=[]
+                ),
+                conn.resume_session(
+                    cwd=str(tmp_path), session_id="no-such", mcp_servers=[]
+                ),
+                conn.close_session(session_id="no-such"),
+                conn.load_session(
+                    cwd=str(tmp_path), session_id="bad/id", mcp_servers=[]
+                ),
+            ):
+                with pytest.raises(RequestError) as unknown:
+                    await request
+
+                assert unknown.value.code == RESOURCE_NOT_FOUND
+
+            with pytest.raises(RequestError) as relative:
+                await conn.load_session(cwd="relative", session_id="x", mcp_servers=[])
+
+            assert relative.value.code == INVALID_PARAMS
+        finally:
+            await conn.close()
+            await boba.close_stdin()
+
+        assert await boba.wait() == 0
+
+    async def test_close_frees_the_session_and_load_reopens_it(
+        self, boba: AcpProcess, tmp_path: Path
+    ) -> None:
+        client = RecordingClient()
+        conn = await boba.start(client)
+        try:
+            await handshake(conn)
+            session = await conn.new_session(cwd=str(tmp_path), mcp_servers=[])
+            session_id = session.session_id
+            response = await conn.prompt(
+                session_id=session_id, prompt=[text_block(ScenarioName.ANSWER.value)]
+            )
+            assert response.stop_reason == StopReasonName.END_TURN.value
+
+            await conn.close_session(session_id=session_id)
+            with pytest.raises(RequestError) as gone:
+                await conn.prompt(session_id=session_id, prompt=[text_block("hi")])
+
+            assert gone.value.code == RESOURCE_NOT_FOUND
+            with pytest.raises(RequestError) as twice:
+                await conn.close_session(session_id=session_id)
+
+            assert twice.value.code == RESOURCE_NOT_FOUND
+
+            client.updates.clear()
+            await conn.load_session(
+                cwd=str(tmp_path), session_id=session_id, mcp_servers=[]
+            )
+            view = FeedView().render(client.updates_of(session_id))
+            assert [item[0] for item in view] == ["user", "agent"]
+            assert view[0][2] == ScenarioName.ANSWER.value
+
+            again = await conn.prompt(
+                session_id=session_id, prompt=[text_block(ScenarioName.ANSWER.value)]
+            )
+            assert again.stop_reason == StopReasonName.END_TURN.value
+        finally:
+            await conn.close()
+            await boba.close_stdin()
+
+        assert await boba.wait() == 0
+
+
+class TestListAndDelete:
+    PAGE: ClassVar[int] = 50
+
+    @staticmethod
+    async def all_pages(conn: Any, cwd: str) -> list[Any]:
+        """Все страницы списка с фильтром по каталогу: фильтр отбирает из
+        страницы, поэтому страница может быть короче предела."""
+        found: list[Any] = []
+        cursor: str | None = None
+        while True:
+            page = await conn.list_sessions(cwd=cwd, cursor=cursor)
+            found.extend(page.sessions)
+            cursor = page.next_cursor
+            if cursor is None:
+                return found
+
+    async def test_list_pages_with_a_cursor_and_filters_by_cwd(
+        self, boba: AcpProcess, tmp_path: Path
+    ) -> None:
+        client = RecordingClient()
+        conn = await boba.start(client)
+        quiet_cwd = tmp_path / "quiet"
+        spoken_cwd = tmp_path / "spoken"
+        try:
+            await handshake(conn)
+            created: list[str] = []
+            for _ in range(self.PAGE + 2):
+                session = await conn.new_session(cwd=str(quiet_cwd), mcp_servers=[])
+                created.append(session.session_id)
+
+            spoken = await conn.new_session(cwd=str(spoken_cwd), mcp_servers=[])
+            question = f"{ScenarioName.ANSWER.value} what is the plan\nsecond line"
+            await conn.prompt(
+                session_id=spoken.session_id, prompt=[text_block(question)]
+            )
+            for session_id in [*created, spoken.session_id]:
+                await conn.close_session(session_id=session_id)
+
+            first = await conn.list_sessions()
+            assert len(first.sessions) == self.PAGE
+            assert first.next_cursor == first.sessions[-1].session_id
+            second = await conn.list_sessions(cursor=first.next_cursor)
+            assert len(second.sessions) == 3
+            assert second.next_cursor is None
+
+            listed = [s.session_id for s in [*first.sessions, *second.sessions]]
+            assert listed == sorted(listed)
+            assert set(listed) == {*created, spoken.session_id}
+            assert all(s.updated_at for s in first.sessions)
+
+            by_spoken = await conn.list_sessions(cwd=str(spoken_cwd))
+            assert [s.session_id for s in by_spoken.sessions] == [spoken.session_id]
+            assert (
+                by_spoken.sessions[0].title
+                == f"{ScenarioName.ANSWER.value} what is the plan"
+            )
+            assert by_spoken.sessions[0].cwd == str(spoken_cwd)
+
+            by_process = await self.all_pages(conn, str(tmp_path))
+            assert {s.session_id for s in by_process} == set(created)
+            assert all(s.title is None for s in by_process)
+
+            empty = await conn.list_sessions(cwd=str(tmp_path / "nowhere"))
+            assert empty.sessions == []
+
+            with pytest.raises(RequestError) as relative:
+                await conn.list_sessions(cwd="relative")
+
+            assert relative.value.code == INVALID_PARAMS
+        finally:
+            await conn.close()
+            await boba.close_stdin()
+
+        assert await boba.wait() == 0
+
+    async def test_delete_removes_the_session_and_repeats_silently(
+        self, boba: AcpProcess, tmp_path: Path
+    ) -> None:
+        client = RecordingClient()
+        boba.write_settings(boba.settings_document())
+        await boba.spawn()
+        conn = boba.raw_connection(client)
+        try:
+            await conn.send_request(
+                "initialize", {"protocolVersion": 1, "clientCapabilities": {}}
+            )
+            session = await conn.send_request(
+                "session/new", {"cwd": str(tmp_path), "mcpServers": []}
+            )
+            session_id = session["sessionId"]
+            await conn.send_request(
+                "session/prompt",
+                {
+                    "sessionId": session_id,
+                    "prompt": [{"type": "text", "text": ScenarioName.ANSWER.value}],
+                },
+            )
+            journal = tmp_path / "history" / f"{session_id}.jsonl"
+            assert journal.exists()
+
+            assert (
+                await conn.send_request("session/delete", {"sessionId": session_id})
+                == {}
+            )
+            assert not journal.exists()
+            listed = await conn.send_request("session/list", {})
+            assert listed["sessions"] == []
+            with pytest.raises(RequestError) as gone:
+                await conn.send_request(
+                    "session/prompt",
+                    {
+                        "sessionId": session_id,
+                        "prompt": [{"type": "text", "text": "x"}],
+                    },
+                )
+
+            assert gone.value.code == RESOURCE_NOT_FOUND
+
+            assert (
+                await conn.send_request("session/delete", {"sessionId": session_id})
+                == {}
+            )
+            assert (
+                await conn.send_request("session/delete", {"sessionId": "never"}) == {}
+            )
+            assert (
+                await conn.send_request("session/delete", {"sessionId": "bad/id"}) == {}
+            )
+        finally:
+            await conn.close()
+            await boba.close_stdin()
+
+        assert await boba.wait() == 0

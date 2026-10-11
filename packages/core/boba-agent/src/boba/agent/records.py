@@ -365,6 +365,27 @@ class UserRecord(ChainRecord):
     interrupted_by_shutdown: bool | None = None
     origin: MessageOrigin | None = None
 
+    def human_text(self) -> str | None:
+        """Текст вопроса, пришедшего от человека; None — запись не вопрос:
+        результат инструмента, служебное сообщение, маркер прерывания или
+        пересказ сжатия (у них источника нет)."""
+        if self.origin is None:
+            return None
+
+        if self.origin.kind is not OriginKind.HUMAN:
+            return None
+
+        content = self.message.content
+        if isinstance(content, str):
+            return content
+
+        parts: list[str] = []
+        for block in content:
+            if isinstance(block, TextBlock):
+                parts.append(block.text)
+
+        return "".join(parts)
+
 
 class AssistantRecord(ChainRecord):
     type: Literal[RecordType.ASSISTANT] = RecordType.ASSISTANT

@@ -3,14 +3,17 @@
 Файл `<root>/<session>.jsonl`, права 0600, каталог 0700
 (docs/prompt_assembly/specs/01_journal_write.md).
 Захват сессии — flock на файл на всё время работы процесса; второй процесс
-получает HistoryError. Перед первой дозаписью запечатывается хвост: файл без
-перевода строки в конце получает его, иначе новая запись склеилась бы с
+получает SessionHeldError. Перед первой дозаписью запечатывается хвост: файл
+без перевода строки в конце получает его, иначе новая запись склеилась бы с
 оборванной. Пачка пишется одним write без fsync. Чтение — весь файл
-построчно: строка не-JSON или не объект отдаётся BrokenLine.
+построчно: строка не-JSON или не объект отдаётся BrokenLine. Список сессий —
+файлы каталога по имени, время — из последней записи файла; удаление —
+unlink под тем же flock, так что журнал работающего процесса не удалить.
 
 Ошибки:
-HistoryError — сессия занята, каталог или файл недоступны, запись отказала;
-    причина ОС — в тексте и в `from exc`.
+HistoryError — каталог или файл недоступны, запись отказала; причина ОС —
+    в тексте и в `from exc`.
+SessionHeldError — сессию держит другой процесс (подвид HistoryError).
 """
 
 from __future__ import annotations
@@ -18,6 +21,7 @@ from __future__ import annotations
 import asyncio
 import fcntl
 import json
+import logging
 import os
 import uuid
 from collections.abc import AsyncIterator, Iterator, Sequence
@@ -26,16 +30,24 @@ from enum import StrEnum
 from pathlib import Path
 from typing import ClassVar
 
+from pydantic import ValidationError
+
 from boba.agent.history import (
     BrokenLine,
     HistoryError,
     HistoryLine,
     HistoryStore,
+    LineKey,
+    SessionHeldError,
     SessionId,
     SessionLease,
     StoredLine,
+    StoredPage,
+    StoredSession,
 )
 from boba.agent.records import Record, RecordCodec
+
+logger = logging.getLogger(__name__)
 
 __all__ = ["JsonlHistoryStore"]
 
@@ -45,7 +57,7 @@ class JsonlLayout(StrEnum):
 
     SUFFIX = ".jsonl"
     ENCODING = "utf-8"
-    SEQ = "seq"
+    PATTERN = "*.jsonl"
 
     def file_of(self, root: Path, session: SessionId) -> Path:
         return root / f"{session.value}{JsonlLayout.SUFFIX.value}"
@@ -116,6 +128,100 @@ class JsonlHistoryStore(HistoryStore):
             msg = f"Could not release the lock on the journal {held.path}: {exc}"
             raise HistoryError(msg) from exc
 
+    async def list(self, cursor: str | None, limit: int) -> StoredPage:
+        return await asyncio.to_thread(self._list, cursor, limit)
+
+    async def delete(self, session: SessionId) -> None:
+        path = self._layout.file_of(self._root, session)
+        await asyncio.to_thread(self._unlink, session, path)
+
+    def _list(self, cursor: str | None, limit: int) -> StoredPage:
+        sessions: list[StoredSession] = []
+        for path in self._journals(cursor):
+            if len(sessions) > limit:
+                break
+
+            stored = self._stored_session(path)
+            if stored is not None:
+                sessions.append(stored)
+
+        next_cursor: str | None = None
+        if len(sessions) > limit:
+            sessions = sessions[:limit]
+            next_cursor = sessions[-1].session.value
+
+        return StoredPage(sessions=sessions, next_cursor=next_cursor)
+
+    def _journals(self, cursor: str | None) -> Iterator[Path]:
+        """Файлы журналов по возрастанию имени сессии после курсора."""
+        if not self._root.is_dir():
+            return
+
+        for path in sorted(self._root.glob(JsonlLayout.PATTERN.value)):
+            if cursor is not None and path.stem <= cursor:
+                continue
+
+            yield path
+
+    def _stored_session(self, path: Path) -> StoredSession | None:
+        """Сессия файла с временем последней записи; None — имя файла не
+        идентификатор сессии или записей в файле нет."""
+        try:
+            session = SessionId(value=path.stem)
+        except ValidationError:
+            logger.warning("history: %s is not a session journal, skipped", path)
+            return None
+
+        updated_at: str | None = None
+        for line in self._lines(self._read_bytes(path)):
+            if not isinstance(line, StoredLine):
+                continue
+
+            stamp = line.raw.get(LineKey.TIMESTAMP.value)
+            if isinstance(stamp, str):
+                updated_at = stamp
+
+        if updated_at is None:
+            return None
+
+        return StoredSession(session=session, updated_at=updated_at)
+
+    def _unlink(self, session: SessionId, path: Path) -> None:
+        """Ошибки:
+        SessionHeldError — журнал под замком работающего процесса.
+        HistoryError — файл не открыть или не удалить.
+        """
+        try:
+            fd = os.open(path, os.O_RDONLY)
+        except FileNotFoundError:
+            return
+        except OSError as exc:
+            msg = f"Could not open the journal {path} for deletion: {exc}"
+            raise HistoryError(msg) from exc
+
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            os.close(fd)
+            msg = (
+                f"Session '{session.value}' cannot be deleted: a running agent "
+                f"process holds the lock on the journal {path}. Close that session "
+                "first."
+            )
+            raise SessionHeldError(msg) from exc
+        except OSError as exc:
+            os.close(fd)
+            msg = f"Could not lock the journal {path} for deletion: {exc}"
+            raise HistoryError(msg) from exc
+
+        try:
+            path.unlink(missing_ok=True)
+        except OSError as exc:
+            msg = f"Could not delete the journal {path}: {exc}"
+            raise HistoryError(msg) from exc
+        finally:
+            os.close(fd)
+
     def _held_of(self, lease: SessionLease) -> HeldSession:
         held = self._held.get(lease.key)
         if held is None:
@@ -161,7 +267,7 @@ class JsonlHistoryStore(HistoryStore):
                 f"Session '{session.value}' is already in use by another process: the "
                 f"journal {path} is locked. Stop that process or use another session."
             )
-            raise HistoryError(msg) from exc
+            raise SessionHeldError(msg) from exc
         except OSError as exc:
             os.close(fd)
             msg = f"Could not lock the journal {path}: {exc}"
@@ -175,7 +281,7 @@ class JsonlHistoryStore(HistoryStore):
             if not isinstance(line, StoredLine):
                 continue
 
-            seq = line.raw.get(JsonlLayout.SEQ.value)
+            seq = line.raw.get(LineKey.SEQ.value)
             if isinstance(seq, int) and seq > last:
                 last = seq
 

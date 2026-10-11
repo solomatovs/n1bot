@@ -1,5 +1,6 @@
 """Хранилище JSONL на настоящих файлах: захват, права, запечатывание хвоста,
-повтор пачки, чтение рваной строки, отказы файловой системы."""
+повтор пачки, чтение рваной строки, отказы файловой системы, список сессий
+страницами и удаление журнала."""
 
 from __future__ import annotations
 
@@ -9,7 +10,13 @@ from pathlib import Path
 
 import pytest
 
-from boba.agent.history import BrokenLine, HistoryError, SessionId, StoredLine
+from boba.agent.history import (
+    BrokenLine,
+    HistoryError,
+    SessionHeldError,
+    SessionId,
+    StoredLine,
+)
 from boba.agent.records import (
     PermissionMode,
     PermissionModeRecord,
@@ -65,7 +72,9 @@ class TestAcquire:
 
         lease = await store.acquire(SESSION)
         try:
-            with pytest.raises(HistoryError, match="already in use by another process"):
+            with pytest.raises(
+                SessionHeldError, match="already in use by another process"
+            ):
                 await other.acquire(SESSION)
         finally:
             await store.release(lease)
@@ -85,9 +94,7 @@ class TestAcquire:
         finally:
             root.chmod(0o700)
 
-    async def test_append_with_a_foreign_lease_is_refused(
-        self, tmp_path: Path
-    ) -> None:
+    async def test_append_with_a_foreign_lease_is_refused(self, tmp_path: Path) -> None:
         store = JsonlHistoryStore(tmp_path)
         other = JsonlHistoryStore(tmp_path / "other")
         lease = await other.acquire(SESSION)
@@ -234,3 +241,90 @@ class TestRead:
                 _ = [line async for line in store.read(SESSION)]
         finally:
             path.chmod(0o600)
+
+
+def stamped(session: SessionId, seq: int, stamp: str) -> UserRecord:
+    return UserRecord(
+        uuid=f"{session.value}-{seq}",
+        parent_uuid=None,
+        timestamp=stamp,
+        session_id=session.value,
+        version="0.0.26.dev4",
+        seq=seq,
+        message=UserMessage(content=f"text {seq}"),
+    )
+
+
+async def fill(store: JsonlHistoryStore, session: SessionId, *stamps: str) -> None:
+    lease = await store.acquire(session)
+    try:
+        records = [stamped(session, n, stamp) for n, stamp in enumerate(stamps, 1)]
+        await store.append(lease, records)
+    finally:
+        await store.release(lease)
+
+
+class TestListAndDelete:
+    async def test_pages_follow_the_cursor_with_the_last_record_time(
+        self, tmp_path: Path
+    ) -> None:
+        store = JsonlHistoryStore(tmp_path)
+        await fill(store, SessionId(value="s-b"), "2026-10-10T10:00:00.000Z")
+        await fill(
+            store,
+            SessionId(value="s-a"),
+            "2026-10-10T09:00:00.000Z",
+            "2026-10-10T11:00:00.000Z",
+        )
+        await fill(store, SessionId(value="s-c"), "2026-10-09T10:00:00.000Z")
+        (tmp_path / "notes.txt").write_text("not a journal", encoding="utf-8")
+        (tmp_path / "bad name.jsonl").write_text("{}\n", encoding="utf-8")
+
+        first = await store.list(None, 2)
+        second = await store.list(first.next_cursor, 2)
+
+        assert [s.session.value for s in first.sessions] == ["s-a", "s-b"]
+        assert first.next_cursor == "s-b"
+        assert first.sessions[0].updated_at == "2026-10-10T11:00:00.000Z"
+        assert [s.session.value for s in second.sessions] == ["s-c"]
+        assert second.next_cursor is None
+
+    async def test_empty_journal_and_missing_root_are_not_listed(
+        self, tmp_path: Path
+    ) -> None:
+        store = JsonlHistoryStore(tmp_path / "history")
+        assert (await store.list(None, 10)).sessions == []
+
+        lease = await store.acquire(SESSION)
+        await store.release(lease)
+
+        assert (await store.list(None, 10)).sessions == []
+
+    async def test_delete_removes_the_journal_and_repeats_silently(
+        self, tmp_path: Path
+    ) -> None:
+        store = JsonlHistoryStore(tmp_path)
+        await fill(store, SESSION, STAMP)
+        path = tmp_path / "abc-123.jsonl"
+        assert path.exists()
+
+        await store.delete(SESSION)
+        await store.delete(SESSION)
+        await store.delete(SessionId(value="never-existed"))
+
+        assert not path.exists()
+        assert (await store.list(None, 10)).sessions == []
+
+    async def test_delete_of_a_held_session_is_refused(self, tmp_path: Path) -> None:
+        store = JsonlHistoryStore(tmp_path)
+        other = JsonlHistoryStore(tmp_path)
+        await fill(store, SESSION, STAMP)
+        lease = await store.acquire(SESSION)
+        try:
+            with pytest.raises(SessionHeldError, match="cannot be deleted"):
+                await other.delete(SESSION)
+        finally:
+            await store.release(lease)
+
+        await other.delete(SESSION)
+        assert not (tmp_path / "abc-123.jsonl").exists()
