@@ -558,7 +558,9 @@ class Summarizer:
         """Один запрос пересказа; Overflowed — ступень лестницы."""
         request = self._builder.build([*head, self._instruction(session)], snapshot)
         await self._recorder.record(request)
-        asked = await self._ask.attempt(request, cancellation, show=False)
+        asked = await self._ask.attempt(
+            request, cancellation, show=False, message_id=""
+        )
         if isinstance(asked, Aborted):
             return SummaryAborted(asked.reason)
 

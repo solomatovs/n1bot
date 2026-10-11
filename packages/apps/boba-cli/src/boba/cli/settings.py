@@ -3,18 +3,21 @@
 Устройство — план, раздел 5.21. Источники сливаются по приоритету снизу
 вверх: значения по умолчанию, файл пользователя, файл проекта, локальный
 файл проекта, файлы и строки `--settings`, аргументы запуска,
-административный слой `--policy`. Системный промпт может прийти и командой
-`initialize` после старта — это дело протокола, не настроек.
-Поле побеждает полем, таблицы (`models`, `env`, `hooks`, серверы MCP)
-сливаются по именам, списки правил объединяются. Итог — одна модель
-EffectiveSettings, из которой строятся профиль модели, пределы, режим,
-хуки и серверы MCP для ядра.
+административный слой `--policy`. Поле побеждает полем, таблицы (`models`,
+`env`, `hooks`, серверы MCP) сливаются по именам, списки правил
+объединяются. Итог — одна модель EffectiveSettings, из которой строятся
+профиль модели, пределы, режим, хуки и серверы MCP для ядра. Серверы MCP
+из `.mcp.json` проекта подключаются к каждой сессии; серверы с секретами
+сессия получает по протоколу (`session/new`), и их модель — тот же
+McpServerJson.
 Секреты — ключ провайдера `apiKey` и строка подключения `dsn` — лежат
 значениями в файле настроек; такой файл принимается только с правами не
 шире 0600, а в строке аргумента секреты запрещены. Чтение секрета по имени
 переменной (`apiKeyEnv`, `dsnEnv`) остаётся для ручного запуска; окружение
 процесса читается только здесь, минимальный профиль без файлов —
-из `BOBA_LLM_*`.
+из `BOBA_LLM_*`. Режим разрешений, право на обход и серверы сессии в
+аргументах не передаются: режим — ключ `permissions` файла, серверы —
+протокол.
 
 Ошибки:
 SettingsError — файл не прочитан или не разобран, слой не проходит модель,
@@ -29,7 +32,7 @@ import json
 import re
 import stat
 from collections.abc import Iterator, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 from typing import Annotated, Any, ClassVar, Literal, TypeGuard
@@ -513,40 +516,24 @@ class SecretsGuard:
 
 @dataclass(frozen=True)
 class Arguments:
-    """Параметры запуска после разбора командной строки (план, раздел 5.21)."""
+    """Параметры запуска после разбора командной строки (план, раздел 5.21):
+    то, что меняется от запуска к запуску и секретов не несёт."""
 
-    session: str | None = None
-    resume: bool = False
     model: str | None = None
-    permission_mode: PermissionMode | None = None
-    allow_bypass: bool = False
     system_prompt: str | None = None
     system_prompt_file: str | None = None
     append_system_prompt: str | None = None
     append_system_prompt_file: str | None = None
     skills_dir: str | None = None
     max_turns: int | None = None
-    mcp_config: Sequence[str] = ()
-    strict_mcp_config: bool = False
     settings: Sequence[str] = ()
     setting_sources: Sequence[SettingsSource] = tuple(SettingsSource)
     policy: str | None = None
     history_root: str | None = None
     record_requests: bool = False
-    env: Mapping[str, str] = field(default_factory=dict)
 
     def layer(self) -> SettingsLayer:
         """Аргументы как слой настроек: то, что в них перекрывает файлы."""
-        permissions: PermissionSettings | None = None
-        if self.permission_mode is not None or self.allow_bypass:
-            allow_bypass: bool | None = None
-            if self.allow_bypass:
-                allow_bypass = True
-
-            permissions = PermissionSettings(
-                default_mode=self.permission_mode, allow_bypass=allow_bypass
-            )
-
         history: JsonlHistorySettings | None = None
         if self.history_root is not None:
             history = JsonlHistorySettings(
@@ -559,10 +546,8 @@ class Arguments:
 
         return SettingsLayer(
             model=self.model,
-            permissions=permissions,
             history=history,
             limits=limits,
-            env=dict(self.env),
             system_prompt_file=self.system_prompt_file,
             skills_dir=self.skills_dir,
         )
@@ -1216,16 +1201,12 @@ class Settings:
             ).strip()
 
     def _servers(self, client: McpClientJson) -> dict[str, McpServerJson]:
+        """Серверы `.mcp.json` проекта, прошедшие выбор `mcp` настроек."""
         servers: dict[str, McpServerJson] = {}
-        if not self._arguments.strict_mcp_config:
-            project = self._cwd / SettingsFile.MCP.value
-            if project.is_file():
-                text = self._json.read_file(project, ".mcp.json")
-                servers.update(self._mcp_json(text, str(project)).mcp_servers)
-
-        for source in self._arguments.mcp_config:
-            document = self._json.read(source, "--mcp-config")
-            servers.update(self._mcp_json(json.dumps(document), source).mcp_servers)
+        project = self._cwd / SettingsFile.MCP.value
+        if project.is_file():
+            text = self._json.read_file(project, ".mcp.json")
+            servers.update(self._mcp_json(text, str(project)).mcp_servers)
 
         chosen: dict[str, McpServerJson] = {}
         for name, server in servers.items():

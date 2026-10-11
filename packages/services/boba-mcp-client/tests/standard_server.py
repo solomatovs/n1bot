@@ -3,7 +3,8 @@
 Запускается субпроцессом из тестов клиента: `python standard_server.py stdio`
 либо `python standard_server.py streamable-http <port>`. Кроме четырёх
 обычных инструментов держит отказы стенда: задержку, большой результат,
-обрыв посреди вызова и смену списка инструментов с уведомлением.
+обрыв посреди вызова, смену списка инструментов с уведомлением и отчёты о
+ходе вызова.
 """
 
 import asyncio
@@ -37,6 +38,7 @@ class StandardServer:
         self._mcp.tool()(self.large)
         self._mcp.tool()(self.die)
         self._mcp.tool()(self.toggle_extra)
+        self._mcp.tool(annotations=ToolAnnotations(read_only_hint=True))(self.progress)
 
     def add(self, a: int, b: int) -> int:
         """Adds two numbers."""
@@ -84,6 +86,14 @@ class StandardServer:
     def extra(self) -> str:
         """Appears only after toggle_extra."""
         return "extra answered"
+
+    async def progress(self, ctx: Context, steps: int) -> str:
+        """Reports progress once per step, then answers."""
+        for step in range(1, steps + 1):
+            await ctx.report_progress(step, steps, f"step {step} of {steps}")
+            await asyncio.sleep(0.01)
+
+        return f"did {steps} steps"
 
     def run(self, transport: str) -> None:
         if transport == "stdio":
