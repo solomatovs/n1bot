@@ -63,8 +63,8 @@ from boba.stand.database import TestDatabase
 pytestmark = pytest.mark.anyio
 
 VERSION = "0.0.26.dev4"
-CHECKPOINTER_POSTGRES = "checkpointer.postgres"
-CHECKPOINTER_SCHEMA = "checkpointer.schema"
+SOURCE_POSTGRES = "data_layer.postgres"
+SOURCE_SCHEMA = "checkpoints"
 DATA_LAYER_SCHEMA = "data_layer.schema"
 KRB_CONFIG = "krb.config"
 MESSAGES = "messages"
@@ -100,13 +100,14 @@ async def postgres(raw_config: DictConfig) -> PostgresConfig:
 
 @pytest.fixture
 def source_postgres(raw_config: DictConfig) -> PostgresConfig:
-    """База чата стенда: источник, который только читается."""
-    return bind(raw_config, path=CHECKPOINTER_POSTGRES, model=PostgresConfig)
+    """База чата стенда: источник, который только читается. Чекпойнты лежат
+    в той же базе, что и слой данных чата."""
+    return bind(raw_config, path=SOURCE_POSTGRES, model=PostgresConfig)
 
 
 @pytest.fixture
-def source_schema(raw_config: DictConfig) -> str:
-    return str(OmegaConf.select(raw_config, CHECKPOINTER_SCHEMA))
+def source_schema() -> str:
+    return SOURCE_SCHEMA
 
 
 @pytest.fixture
