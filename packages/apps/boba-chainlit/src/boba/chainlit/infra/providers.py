@@ -19,6 +19,15 @@ from boba.chainlit.acp.chat import (
     ThreadDeleter,
 )
 from boba.chainlit.acp.config import AgentConfig
+from boba.chainlit.acp.server import (
+    ChatCallers,
+    ChatCallMiddleware,
+    ChatMcpServer,
+    ChatTokenVerifier,
+    ChatToolServers,
+    HookSealing,
+    PreToolUseHandler,
+)
 from boba.chainlit.acp.settings import (
     AgentSettingsLayers,
     AgentSettingsTable,
@@ -89,6 +98,7 @@ from boba.messaging import MessageBus
 from boba.runtime import providers as runtime
 from boba.runtime.di import Container, Depends
 from boba.runtime.elements import ChatTables
+from boba.runtime.http import RequestTokens
 from boba.runtime.storage import StorageClient
 from boba.runtime.threads import ThreadsTable
 from boba.runtime.users import UsersTable
@@ -510,3 +520,51 @@ async def thread_agents(
         yield agents
     finally:
         await agents.close_all()
+
+
+def chat_callers(
+    tokens: Annotated[JwtTokens, Depends(runtime.session_tokens)],
+    users: Annotated[UsersTable, Depends(runtime.users_table)],
+    profiles: Annotated[ChatProfiles, Depends(chat_profiles_registry)],
+) -> ChatCallers:
+    """Вызывающий по Bearer JWT входа: для сервера инструментов чата и хука."""
+    return ChatCallers(tokens, users, profiles)
+
+
+def chat_mcp_server(
+    config: Annotated[AgentConfig, Depends(agent_config)],
+    tokens: Annotated[JwtTokens, Depends(runtime.session_tokens)],
+    registry: Annotated[ToolRegistry, Depends(runtime.tool_registry)],
+    callers: Annotated[ChatCallers, Depends(chat_callers)],
+    runs: Annotated[Runs, Depends(runtime.runs)],
+) -> ChatMcpServer:
+    """MCP-сервер инструментов чата для агента под [agent.chat_mcp].path."""
+    return ChatMcpServer(
+        config.chat_mcp,
+        ChatTokenVerifier(tokens),
+        ChatToolServers(registry, callers),
+        ChatCallMiddleware(callers, runs),
+    )
+
+
+def pre_tool_use_hook(
+    app_config: Annotated[AppConfig, Depends(get_app_config)],
+    raw: Annotated[DictConfig, Depends(runtime.get_raw_config)],
+    callers: Annotated[ChatCallers, Depends(chat_callers)],
+    contexts: Annotated[CallContexts, Depends(runtime.call_contexts)],
+    sent: Annotated[SentConnections, Depends(sent_connections)],
+) -> PreToolUseHandler:
+    """Обработчик хука PreToolUse агента под [agent.hook].path: запечатывает
+    соединения пользователя ключом сервера MCP из события."""
+    connections = ArmedConnections(
+        runtime.connection_store_ref, runtime.credential_source_ref, contexts
+    )
+    ttl = timedelta(seconds=bind(raw, "connections", ConnectionsConfig).seal_ttl_sec)
+    sealing = HookSealing(callers, connections, sent, contexts, ttl)
+
+    return PreToolUseHandler(
+        app_config.agent.hook,
+        RequestTokens(app_config.session.cookie),
+        callers,
+        sealing,
+    )

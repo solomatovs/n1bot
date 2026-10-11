@@ -18,6 +18,10 @@ dependencies = [
     "boba-config==0.0.26.dev4",
     "boba-connection-broker==0.0.26.dev4",
     "boba-mcp-client==0.0.26.dev4",
+    "boba-mcp-adapter==0.0.26.dev4",
+    "boba-agent==0.0.26.dev4",
+    "fastmcp-slim[server]>=4.0,<5",
+    "mcp-types>=2.3,<3",
     "boba-connections==0.0.26.dev4",
     "boba-toolkit==0.0.26.dev4",
     "boba-cancellation==0.0.26.dev4",
@@ -68,6 +72,7 @@ dev = [
     "playwright>=1.47,<2",
     "pytest>=9.1,<10",
     "pyjwt>=2.8,<3",
+    "httpx2>=2.10,<3",
 ]
 
 [project.scripts]
