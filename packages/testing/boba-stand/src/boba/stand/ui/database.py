@@ -280,13 +280,22 @@ class StandDatabase:
                 raise
 
     def wipe_llm_settings(self) -> None:
-        """Снимает сохранённые настройки LLM у всех пользователей базы."""
-        query = (
+        """Снимает сохранённые настройки LLM у всех пользователей базы: ключ
+        llm в users.meta и слой пользователя настроек агента, из которого
+        копируется слой нового чата."""
+        meta = (
             PgQueryBuilder(schema=sql.Identifier(self._schema))
             .add("update {schema}.users set meta = meta - 'llm'")
             .build()
         )
-        run_blocking(self._execute(query))
+        run_blocking(self._execute(meta))
+
+        layers = (
+            PgQueryBuilder(schema=sql.Identifier(self._schema))
+            .add("delete from {schema}.agent_user_settings")
+            .build()
+        )
+        run_blocking(self._execute(layers))
 
     def elements_named(self, name: str) -> int:
         """Сколько элементов с таким именем записал data layer стенда."""

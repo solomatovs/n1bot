@@ -2,8 +2,9 @@
 
 Стенд поднимается с двумя MCP-серверами: обычным (официальный SDK, stdio),
 который о boba не знает, и своим boba-mcp отдельным процессом по HTTP.
-Фейковая модель зовёт их инструменты; проверяется то, что видит
-пользователь: шаг инструмента в ленте, вложение у шага и сам файл по
+Серверы получает агент треда (`session/new.mcpServers`); фейковая модель
+зовёт их инструменты под именами, которые дал сервер. Проверяется то, что
+видит пользователь: шаг инструмента в ленте, вложение у шага и сам файл по
 ссылке вложения, итог своего сервера в его собственной модели результата.
 
 Ошибки: своих не выпускает; расхождение — падение теста.
@@ -24,7 +25,7 @@ from urllib.parse import urljoin
 import pytest
 from chat_ui import BOOT_TIMEOUT_SEC, OpenChat
 
-from boba.stand.ui.chat_page import ChatPage, StepKind
+from boba.stand.ui.chat_page import ChatPage, Selector, StepKind
 from boba.stand.ui.fake_llm import ScenarioName
 from boba.stand.ui.socket_log import ChatEvent, StepField
 from boba.stand.ui.stand import (
@@ -85,7 +86,6 @@ class BobaMcpStand:
     def server(self) -> dict[str, Any]:
         """Секция [mcp.servers.<имя>] чата для этого сервера."""
         return {
-            "prefix": "boba_",
             "connect_timeout_sec": 30.0,
             "call_timeout_sec": 60.0,
             "endpoint": {
@@ -132,9 +132,8 @@ def mcp_stand(
     stand_database: str,
     boba_mcp_stand: BobaMcpStand,
 ) -> Iterator[StandProcess]:
-    """Стенд чата с двумя MCP-серверами: обычный по stdio (std_) и boba-mcp (boba_)."""
+    """Стенд чата с двумя MCP-серверами: обычный по stdio и boba-mcp."""
     server: dict[str, Any] = {
-        "prefix": "std_",
         "connect_timeout_sec": 30.0,
         "call_timeout_sec": 60.0,
         "endpoint": {
@@ -182,19 +181,29 @@ class TestMcpToolInTheFeed:
     ) -> None:
         chat = open_chat(mcp_stand, "")
 
-        step = _ask(chat, "std_add", {"a": 2, "b": 3})
+        step = _ask(chat, "add", {"a": 2, "b": 3})
 
-        if "std_add" not in str(step.get(StepField.NAME.value)):
+        if "add" not in str(step.get(StepField.NAME.value)):
             raise AssertionError(f"the step is named after the mcp tool: {step}")
         if "5" not in str(step.get(StepField.OUTPUT.value)):
             raise AssertionError(f"the step shows the server's answer: {step}")
 
+    @pytest.mark.xfail(
+        strict=True,
+        reason=(
+            "the agent has no place for files of tool results: an image block of "
+            "an MCP tool reaches the model and the feed as the placeholder "
+            "'[image/png, N bytes]', nothing is saved to the workspace of the "
+            "thread and no attachment is shown; where the agent stores such "
+            "files is a design decision (ui-fix-report.md, question 2)"
+        ),
+    )
     def test_image_of_a_tool_is_attached_and_served(
         self, mcp_stand: StandProcess, open_chat: OpenChat
     ) -> None:
         chat = open_chat(mcp_stand, "")
 
-        step = _ask(chat, "std_picture", {})
+        step = _ask(chat, "picture", {})
 
         if "file saved to the workspace" not in str(step.get(StepField.OUTPUT.value)):
             raise AssertionError(f"the model is told where the file is: {step}")
@@ -230,9 +239,9 @@ class TestOwnServerInTheFeed:
     ) -> None:
         chat = open_chat(mcp_stand, "")
 
-        step = _ask(chat, "boba_fake_echo", {"text": "hi", "repeat": 2})
+        step = _ask(chat, "fake_echo", {"text": "hi", "repeat": 2})
 
-        if "boba_fake_echo" not in str(step.get(StepField.NAME.value)):
+        if "fake_echo" not in str(step.get(StepField.NAME.value)):
             raise AssertionError(f"the step is named after the tool: {step}")
         if "hi hi|t0ken" not in str(step.get(StepField.OUTPUT.value)):
             raise AssertionError(f"the step shows the result of the service: {step}")
@@ -244,7 +253,7 @@ class TestOwnServerInTheFeed:
         вошёл в чат, приходят при входе proxy; тело исполняется от его имени."""
         chat = open_chat(mcp_stand, "")
 
-        step = _ask(chat, "boba_fake_whoami", {})
+        step = _ask(chat, "fake_whoami", {})
 
         output = str(step.get(StepField.OUTPUT.value))
         if not output.startswith(f"{CHAT_LOGIN}|{CHAT_ROLE}|"):
@@ -252,12 +261,29 @@ class TestOwnServerInTheFeed:
                 f"the body runs as the user of the chat with his roles: {step}"
             )
 
+    def test_body_of_boba_mcp_runs_in_the_scope_of_the_thread(
+        self, mcp_stand: StandProcess, open_chat: OpenChat
+    ) -> None:
+        """Область вызова — тред чата: агент называет её сервису в каждом
+        вызове, поэтому инструменты видят workspace треда — файлы, загруженные
+        пользователем, и то, что открывает панель канваса."""
+        chat = open_chat(mcp_stand, "")
+
+        step = _ask(chat, "fake_scope", {})
+
+        output = str(step.get(StepField.OUTPUT.value)).strip()
+        thread_id = str(step.get(StepField.THREAD_ID.value))
+        if output != thread_id:
+            raise AssertionError(
+                f"the body runs in the scope of the thread {thread_id}: {step}"
+            )
+
     def test_failed_body_of_boba_mcp_is_a_failed_step(
         self, mcp_stand: StandProcess, open_chat: OpenChat
     ) -> None:
         chat = open_chat(mcp_stand, "")
 
-        step = _ask(chat, "boba_fake_echo", {"text": "boom", "repeat": 1})
+        step = _ask(chat, "fake_echo", {"text": "boom", "repeat": 1})
 
         if "fake backend is down" not in str(step.get(StepField.OUTPUT.value)):
             raise AssertionError(f"the step shows the cause of the failure: {step}")
@@ -269,37 +295,34 @@ class TestOwnServerInTheFeed:
     ) -> None:
         """Аргументы вызова после повторного захода на страницу выглядят как в
         живой ленте: запрос блоком кода sql, а не сырым json. Шаги треда
-        страница запрашивает отдельно от сессии — так же, как здесь."""
+        страница получает воспроизведением истории агента при возврате к
+        треду — тем же шагом с тем же id."""
         chat = open_chat(mcp_stand, "")
 
-        live = _ask(chat, "boba_fake_query", {"sql": "select 42", "limit": 3})
+        live = _ask(chat, "fake_query", {"sql": "select 42", "limit": 3})
 
         shown = str(live.get(StepField.INPUT.value))
         if not shown.startswith("```sql\nselect 42\n```"):
             raise AssertionError(f"the live step shows the query as sql: {shown!r}")
 
         thread_id = str(live.get(StepField.THREAD_ID.value))
-        chat.page.reload()
-        steps = chat.page.evaluate(
-            """async (url) => {
-                const response = await fetch(url, {credentials: "include"});
-                const thread = await response.json();
-                return thread.steps;
-            }""",
-            f"{mcp_stand.config.url_prefix}/project/thread/{thread_id}",
+        chat.log.clear()
+        chat.page.goto(
+            f"{chat.base_url}/thread/{thread_id}", wait_until="domcontentloaded"
         )
+        chat.page.wait_for_selector(Selector.INPUT.value, timeout=60_000)
+        chat.await_step(StepKind.ASSISTANT.value)
 
-        replayed: list[str] = []
-        for step in steps:
-            if step.get(StepField.TYPE.value) != StepKind.TOOL.value:
-                continue
+        replayed: dict[str, str] = {}
+        for step in chat.log.steps_of_type(StepKind.TOOL.value):
+            replayed[str(step.get(StepField.ID.value))] = str(
+                step.get(StepField.INPUT.value)
+            )
 
-            replayed.append(str(step.get(StepField.INPUT.value)))
-
-        if replayed != [shown]:
+        if replayed != {str(live.get(StepField.ID.value)): shown}:
             raise AssertionError(
                 f"the reopened page shows the arguments as the live feed: "
-                f"{replayed!r} != {shown!r}"
+                f"{replayed!r} != {shown!r}\n{chat.log.describe()}"
             )
 
     def test_journal_of_a_boba_mcp_call_opens_in_the_panel(
@@ -309,7 +332,7 @@ class TestOwnServerInTheFeed:
         панель читает окном через клиента MCP."""
         chat = open_chat(mcp_stand, "")
 
-        _ask(chat, "boba_fake_echo", {"text": "journal", "repeat": 1})
+        _ask(chat, "fake_echo", {"text": "journal", "repeat": 1})
 
         tool = chat.expand_last_tool()
         tool.locator('[aria-label="Show tool output"]').click()

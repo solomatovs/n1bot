@@ -2,8 +2,10 @@
 
 На каждую настройку — свой прогон: состояние виджета до и после ввода, Confirm,
 содержимое users.meta.llm и переопределение профильного значения в теле запроса
-к fake llm. Ожидаемые значения профилей заданы стендом
-(StandConfig._use_test_profiles).
+к fake llm. Сохранённое — слой пользователя настроек агента: с него копируется
+слой нового чата, а уже открытый чат живёт со своим, поэтому запрос к LLM
+сверяется в чате, открытом после сохранения. Ожидаемые значения профилей
+заданы стендом (StandConfig._use_test_profiles).
 """
 
 from __future__ import annotations
@@ -57,7 +59,7 @@ TEXT = PanelText("", _app_language())
 """Подписи панели на языке приложения."""
 
 SAVE_GRACE_MS = 1500
-"""Пауза после Confirm: сохранение и сброс DI-контейнера идут по сокету."""
+"""Пауза после Confirm: сохранение идёт по сокету."""
 
 
 class PanelSelector(StrEnum):
@@ -177,6 +179,12 @@ def _ask_and_wait(page: ChatPage) -> None:
     page.await_idle()
 
 
+def _new_chat(page: ChatPage) -> None:
+    """Новый чат во вкладке: его слой настроек копируется из слоя пользователя."""
+    page.log.clear()
+    page.open()
+
+
 def _widget_state(page: ChatPage, case: FieldCase) -> str:
     """Снимок состояния виджета: тест сверяет его до и после ввода."""
     field = case.setting.value
@@ -277,6 +285,7 @@ class TestEveryFieldClickable:
         if stored != expected:
             raise AssertionError(f"meta.llm.general: {stored} != {expected}")
 
+        _new_chat(chat)
         _ask_and_wait(chat)
         payload = _last_request(llm_port)
 
@@ -488,8 +497,8 @@ class TestSettingsIsolation:
 
 
 class TestOtherTabs:
-    """Настройки общие на пользователя: другая вкладка того же профиля подхватывает их
-    без перезагрузки.
+    """Настройки общие на пользователя: другая вкладка того же профиля видит их в
+    панели без перезагрузки, а её новый чат идёт уже с ними.
     """
 
     def test_other_tab_agent_uses_settings_saved_elsewhere(
@@ -513,14 +522,15 @@ class TestOtherTabs:
             "user_prompt": "Sign every answer"
         }
 
-        # вторая вкладка пересобрала агента по сообщению шины: промпт с добавкой
-        other.page.wait_for_timeout(1000)
-        _ask_and_wait(other)
-        prompt = _system_prompt(_last_request(llm_port))
-        assert prompt == f"{GENERAL_PROMPT}\n\nSign every answer"
-
+        # панель второй вкладки обновилась по сообщению шины
         _open_settings(other)
         _open_tab(other, PanelTab.PROMPT)
         expect(
             other.page.locator(PanelSelector.textarea_of(UserSetting.USER_PROMPT.value))
         ).to_have_value("Sign every answer")
+
+        # новый чат второй вкладки берёт слой пользователя: промпт с добавкой
+        _new_chat(other)
+        _ask_and_wait(other)
+        prompt = _system_prompt(_last_request(llm_port))
+        assert prompt == f"{GENERAL_PROMPT}\n\nSign every answer"
