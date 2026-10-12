@@ -769,7 +769,6 @@ class AgentAssembly(SessionAssembly):
                 NamedBlocks(),
                 ProgressSignals(sink),
                 self._scope,
-                None,
                 DirectCalls(),
             )
             try:
