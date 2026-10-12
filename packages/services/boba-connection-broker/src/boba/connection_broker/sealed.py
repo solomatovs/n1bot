@@ -4,15 +4,15 @@
 параметра-соединения запечатанным открытым ключом исполнителя
 (boba.connections.sealed); ключ клиент узнаёт из возможностей сервера при
 подключении. SealedConnectionParams ставит на параметры-соединения обвязку
-SealedConnectionParam: она открывает значение, сверяет его с вызовом и отдаёт
+SealedConnectionParam: она открывает значение, проверяет срок и вид и отдаёт
 телу готовый профиль. Он же — правило аргументов узла (NodeArgs): исполнитель
 проверяет печати всех узлов до старта DAG и не возвращает запечатанные
 значения в итоге вызова; и он же объявляет возможность сервера с ключом.
 
 Ошибки:
 RefusalError — значение не запечатано, запечатано другим ключом, повреждено,
-    просрочено, выдано другому пользователю либо несёт соединение другого
-    вида; kind из ConnectionRefusal.
+    просрочено либо несёт соединение другого вида; kind из
+    ConnectionRefusal.
 ToolConfigError — параметр объявлен непригодной моделью соединения.
 """
 
@@ -46,8 +46,8 @@ class SealedConnectionParam(AsyncInjected):
     """Обвязка одного параметра-соединения на стороне исполнителя.
 
     Клиент прислал на месте параметра запечатанный профиль; обвязка
-    открывает его ключом исполнителя, сверяет с вызовом (пользователь, срок,
-    вид соединения), собирает профиль по реестру типов и подписывает его
+    открывает его ключом исполнителя, проверяет срок годности и вид
+    соединения, собирает профиль по реестру типов и подписывает его
     клиентом вызова. Тело получает готовый профиль. Ставит её
     SealedConnectionParams.
     """
@@ -111,16 +111,8 @@ class SealedConnectionParam(AsyncInjected):
             return f"<sealed {self._kind} connection>"
 
     def verified(self, name: str, value: object) -> ConnectionBase:
-        """Профиль из запечатанного значения, сверенный с вызовом."""
+        """Профиль из запечатанного значения: срок не вышел, вид тот."""
         sealed = self._opened(name, value)
-        login = self._contexts.subject().login
-
-        if sealed.login != login:
-            msg = (
-                f"{name}: the connection in {self._param!r} is sealed for user "
-                f"{sealed.login!r}, the call is made by {login!r}"
-            )
-            raise RefusalError(ConnectionRefusal.SEALED_FOR_ANOTHER_USER, msg)
 
         if sealed.expired(datetime.now(UTC)):
             msg = (

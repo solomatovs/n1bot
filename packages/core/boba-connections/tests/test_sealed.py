@@ -29,7 +29,6 @@ def _connection() -> SealedConnection:
 
     return SealedConnection(
         name="wiki",
-        login="ivanov",
         expires_at=NOW + timedelta(hours=1),
         profile=SecretReveal.dumped(profile),
     )
@@ -55,7 +54,7 @@ class TestSealAndOpen:
         keys = SealKeys()
         sealed = ConnectionSeal(keys.public()).seal(_connection())
 
-        for plain in ("p4ss-secret", "wiki.example.com", "ivanov"):
+        for plain in ("p4ss-secret", "wiki.example.com", "wiki"):
             if plain in sealed:
                 raise AssertionError(f"в запечатанном значении читается {plain!r}")
 

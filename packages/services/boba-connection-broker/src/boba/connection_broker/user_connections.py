@@ -176,8 +176,7 @@ class ArmedConnections:
 
     async def sealed(self, kind: str, name: str, ttl: timedelta) -> SealedConnection:
         """Соединение субъекта вида kind с именем name, готовое к
-        запечатыванию: профиль с кредами этого вызова, имя, логин субъекта и
-        срок годности."""
+        запечатыванию: профиль с кредами этого вызова, имя и срок годности."""
         context = self._contexts.current()
         rows = await self._store_ref().for_subject(context.subject, kind)
 
@@ -192,7 +191,6 @@ class ArmedConnections:
 
         return SealedConnection(
             name=name,
-            login=context.subject.login,
             expires_at=datetime.now(UTC) + ttl,
             profile=SecretReveal.dumped(armed),
         )
