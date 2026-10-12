@@ -10,7 +10,7 @@ from typing import Any, ClassVar, cast
 from uuid import UUID
 
 from boba.canvas.canvas import CanvasSignal, SignalTransport
-from boba.chainlit.acp.feed import TabSurfaces
+from boba.chainlit.agent.feed import TabSurfaces
 from boba.chainlit.chat.feed import TextClip
 from boba.chainlit.domain.fields import StepField, ThreadField
 from boba.chainlit.infra import providers

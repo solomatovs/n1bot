@@ -2,9 +2,9 @@
 
 Тесты сервиса поднимают его в своём процессе; тесты клиента чата запускают
 этот файл субпроцессом в окружении сервиса: `python service_stand.py <port>
-<workdir>` — клиент живёт на других версиях библиотек и видит сервер только
-по сети. Endpoint'ы стенда: `/mcp/service` (все инструменты, всем ролям) и
-`/mcp/narrow` (один инструмент, только роли dev).
+<workdir> [<срок токена, с>]` — клиент живёт на других версиях библиотек и
+видит сервер только по сети. Endpoint'ы стенда: `/mcp/service` (все
+инструменты, всем ролям) и `/mcp/narrow` (один инструмент, только роли dev).
 """
 
 from __future__ import annotations
@@ -84,6 +84,13 @@ LOCAL_LOGIN = "carol"
 LOCAL_PASSWORD = "carol-pw"
 """Пользователь входа local стенда: роль dev по таблице конфига."""
 
+ROLELESS_LOGIN = "ghost"
+ROLELESS_PASSWORD = "ghost-pw"
+"""Учётка входа local без единой роли: вход ей запрещён."""
+
+TOKEN_TTL_SEC = 300
+"""Срок токена доступа стенда, пока тест не назвал свой."""
+
 
 class ServiceStand:
     """Сервер сервиса над фейками стенда: реестр собран цепочкой обвязок,
@@ -102,7 +109,13 @@ class ServiceStand:
         pipe_bytes_max=1 << 30,
     )
 
-    def __init__(self, workdir: Path, limits: RunLimits, port: int) -> None:
+    def __init__(
+        self,
+        workdir: Path,
+        limits: RunLimits,
+        port: int,
+        token_ttl_sec: int = TOKEN_TTL_SEC,
+    ) -> None:
         self.port = port
         contexts = CallContexts()
         runs = Runs(contexts)
@@ -164,7 +177,10 @@ class ServiceStand:
             mapping=RoleMappingConfig(root={LOCAL_LOGIN: ["dev"]})
         )
         local = LocalAuthConfig(
-            users={LOCAL_LOGIN: LOCAL_PASSWORD},
+            users={
+                LOCAL_LOGIN: LOCAL_PASSWORD,
+                ROLELESS_LOGIN: ROLELESS_PASSWORD,
+            },
             roles=LocalRoleProviders(local=local_roles),
         )
         password = CompositeSignIn(
@@ -184,7 +200,9 @@ class ServiceStand:
         # в сервисе точку workspace ставит загрузчик плагинов из профиля песочницы
         WorkspaceMount.configure("/workspace")
         public_url = f"http://127.0.0.1:{port}"
-        tokens = ServiceTokens(public_url, "stand-session-secret", 300, 3600, "stand")
+        tokens = ServiceTokens(
+            public_url, "stand-session-secret", token_ttl_sec, 3600, "stand"
+        )
         sealed = SealedValues("stand-session-secret")
         declared = McpClient(secret=SecretStr(CLIENT_SECRET)).registered(CLIENT_ID)
         server = AuthServer(
@@ -274,8 +292,15 @@ class ServiceStand:
 
 
 if __name__ == "__main__":
+    ttl_sec = TOKEN_TTL_SEC
+    if len(sys.argv) > 3:
+        ttl_sec = int(sys.argv[3])
+
     served = ServiceStand(
-        Path(sys.argv[2]), RunLimits(max_runs=4, max_waiting=4), int(sys.argv[1])
+        Path(sys.argv[2]),
+        RunLimits(max_runs=4, max_waiting=4),
+        int(sys.argv[1]),
+        ttl_sec,
     )
     uvicorn.run(
         served.endpoints.app(), host="127.0.0.1", port=served.port, log_level="warning"

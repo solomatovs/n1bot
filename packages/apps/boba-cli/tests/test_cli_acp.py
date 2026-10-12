@@ -79,7 +79,7 @@ from acp.schema import (
 )
 from acp.schema import ContentChunk as AcpContentChunk
 
-from boba.cli.acp import (
+from boba.cli.acp_server import (
     ConfigOptionId,
     MetaKey,
     PermissionChoice,

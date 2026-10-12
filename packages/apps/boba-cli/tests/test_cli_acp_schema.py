@@ -62,7 +62,7 @@ from test_cli_acp import (
     call,
 )
 
-from boba.cli.acp import AcpMethod, ConfigOptionId
+from boba.cli.acp_server import AcpMethod, ConfigOptionId
 from boba.stand.ui.fake_llm import ScenarioName
 
 pytestmark = pytest.mark.anyio

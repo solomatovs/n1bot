@@ -10,11 +10,10 @@ from datetime import timedelta
 from importlib.metadata import version
 from typing import Annotated
 
-import httpx
 from omegaconf import DictConfig
 
 from boba.auth import JwtTokens
-from boba.chainlit.acp.chat import (
+from boba.chainlit.agent.chat import (
     AgentLauncher,
     AgentSessionMeta,
     AgentSettingsChanges,
@@ -22,9 +21,9 @@ from boba.chainlit.acp.chat import (
     ThreadAgentsIndex,
     ThreadDeleter,
 )
-from boba.chainlit.acp.config import AgentConfig
-from boba.chainlit.acp.feed import AgentFeeds, BusParts, TabSurfaces
-from boba.chainlit.acp.server import (
+from boba.chainlit.agent.config import AgentConfig
+from boba.chainlit.agent.feed import AgentFeeds, BusParts, TabSurfaces
+from boba.chainlit.agent.server import (
     ChatCallers,
     ChatCallMiddleware,
     ChatMcpServer,
@@ -32,13 +31,14 @@ from boba.chainlit.acp.server import (
     ChatToolServers,
     HookSealing,
     PreToolUseHandler,
+    ProcessKeys,
 )
-from boba.chainlit.acp.settings import (
+from boba.chainlit.agent.settings import (
     AgentSettingsLayers,
     AgentSettingsTable,
     ProfileModelSpecs,
+    SessionServers,
 )
-from boba.chainlit.acp.tokens import McpAccessTokens, SessionServers
 from boba.chainlit.canvas.remote import RemoteJournals
 from boba.chainlit.data import PostgresDataLayer
 from boba.chainlit.data.remote_storage import FileOwners, RemoteStorageClient
@@ -253,25 +253,22 @@ def agent_settings_layers(
     return AgentSettingsLayers(table, specs)
 
 
-async def mcp_access_tokens() -> AsyncIterator[McpAccessTokens]:
-    """Клиент обмена утверждений на токены boba-mcp: один http-клиент на процесс."""
-    http = httpx.AsyncClient(trust_env=False)
-    try:
-        yield McpAccessTokens(http)
-    finally:
-        await http.aclose()
+def process_keys() -> ProcessKeys:
+    """Ключи процессов агента: один реестр на инстанс чата."""
+    return ProcessKeys()
 
 
 def agent_launcher(
     config: Annotated[AgentConfig, Depends(agent_config)],
     app_config: Annotated[AppConfig, Depends(get_app_config)],
     layers: Annotated[AgentSettingsLayers, Depends(agent_settings_layers)],
-    tokens: Annotated[McpAccessTokens, Depends(mcp_access_tokens)],
+    keys: Annotated[ProcessKeys, Depends(process_keys)],
 ) -> AgentLauncher:
-    """Запуск процессов агента: файл настроек, серверы MCP сессии, рукопожатие."""
-    servers = SessionServers(app_config.mcp, tokens, config.chat_mcp, config.public_url)
+    """Запуск процессов агента: ключ процесса, файл настроек с серверами MCP
+    профиля, рукопожатие."""
+    servers = SessionServers(app_config.mcp, config.chat_mcp, config.public_url)
 
-    return AgentLauncher(config, layers, servers, version("boba-chainlit"))
+    return AgentLauncher(config, layers, servers, keys, version("boba-chainlit"))
 
 
 def agent_session_meta(
@@ -339,17 +336,16 @@ async def thread_agents(
 
 
 def chat_callers(
-    tokens: Annotated[JwtTokens, Depends(runtime.session_tokens)],
-    users: Annotated[UsersTable, Depends(runtime.users_table)],
-    profiles: Annotated[ChatProfiles, Depends(chat_profiles_registry)],
+    keys: Annotated[ProcessKeys, Depends(process_keys)],
 ) -> ChatCallers:
-    """Вызывающий по Bearer JWT входа: для сервера инструментов чата и хука."""
-    return ChatCallers(tokens, users, profiles)
+    """Вызывающий по ключу процесса агента: для сервера инструментов чата и
+    хука."""
+    return ChatCallers(keys)
 
 
 def chat_mcp_server(
     config: Annotated[AgentConfig, Depends(agent_config)],
-    tokens: Annotated[JwtTokens, Depends(runtime.session_tokens)],
+    keys: Annotated[ProcessKeys, Depends(process_keys)],
     registry: Annotated[ToolRegistry, Depends(runtime.tool_registry)],
     callers: Annotated[ChatCallers, Depends(chat_callers)],
     runs: Annotated[Runs, Depends(runtime.runs)],
@@ -357,7 +353,7 @@ def chat_mcp_server(
     """MCP-сервер инструментов чата для агента под [agent.chat_mcp].path."""
     return ChatMcpServer(
         config.chat_mcp,
-        ChatTokenVerifier(tokens),
+        ChatTokenVerifier(keys),
         ChatToolServers(registry, callers),
         ChatCallMiddleware(callers, runs),
     )

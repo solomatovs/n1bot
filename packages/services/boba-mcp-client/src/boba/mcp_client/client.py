@@ -5,13 +5,15 @@
 исполняет вызовы (tools/call). Транспорт — streamable HTTP, SSE или stdio. Итог вызова
 сервера, который не знает о семействе результатов boba, — текст его content;
 сервер boba-mcp присылает ещё и модель результата, и она оживает как есть.
-Сервер с авторизацией proxy (сервис boba) подключается от имени пользователя
-сессии: клиент называет его логин и роли заголовками под подписью и получает
-токен сервера.
+Способ входа — свойство записи сервера (McpAuth): без входа, готовый
+токен, вход local учёткой с паролем и вход proxy утверждением о пользователе.
+Токен сервера для local и proxy получают и обновляют штатные провайдеры
+OAuth библиотеки mcp; своё здесь — только проход страницы входа без человека
+(UnattendedLogin).
 
 Ошибки:
 McpClientError — сервер недоступен, не прошёл инициализацию, не отдал список
-    инструментов либо порт позвали до open().
+    инструментов, отказал во входе либо порт позвали до open().
 Сбой самого вызова наружу не выходит: он возвращается итогом-ошибкой вызова.
 """
 
@@ -36,14 +38,14 @@ from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import dataclass
 from enum import StrEnum
 from functools import partial
-from typing import Annotated, Any, ClassVar, Literal, Protocol, TypeVar
+from typing import Annotated, Any, ClassVar, Literal, Protocol, Self, TypeVar
 from urllib.parse import quote
 from uuid import uuid4
 
 import httpx2
 import mcp.types as mt
 from mcp import Client, ClientSession, StdioServerParameters
-from mcp.client.auth import TokenStorage
+from mcp.client.auth import OAuthClientProvider, TokenStorage
 from mcp.client.auth.extensions.identity_assertion import (
     IdentityAssertionOAuthProvider,
 )
@@ -53,9 +55,15 @@ from mcp.client.stdio import stdio_client
 from mcp.client.streamable_http import streamable_http_client
 from mcp.shared._httpx_utils import create_mcp_http_client
 from mcp.shared._stream_protocols import ReadStream, WriteStream
-from mcp.shared.auth import OAuthClientInformationFull, OAuthToken
+from mcp.shared.auth import (
+    AuthorizationCodeResult,
+    OAuthClientInformationFull,
+    OAuthClientMetadata,
+    OAuthToken,
+)
 from mcp.shared.message import SessionMessage
 from pydantic import (
+    AnyUrl,
     BaseModel,
     ConfigDict,
     Field,
@@ -64,8 +72,10 @@ from pydantic import (
     ValidationError,
     field_validator,
 )
+from pydantic.alias_generators import to_camel
 
 from boba.auth.proxy import ProxyAssertions
+from boba.auth.signin import LoginField
 from boba.canvas.journal import StreamSlice
 from boba.canvas.keys import ObjectKey, WorkspaceMount
 from boba.canvas.storage import (
@@ -112,6 +122,9 @@ __all__ = [
     "DroppedSignals",
     "HttpEndpoint",
     "HttpLocation",
+    "LocalAuth",
+    "McpAuth",
+    "McpAuthEntry",
     "McpCaller",
     "McpClientError",
     "McpServerConfig",
@@ -149,10 +162,14 @@ class McpFailure(StrEnum):
 
 @dataclass(frozen=True)
 class McpCaller:
-    """От чьего имени сессия клиента ходит на сервер: логин пользователя
-    (его identifier в клиенте) и роли, с которыми он вошёл в клиент. Сервер
-    с авторизацией proxy получает их при входе и по ним решает, какие его
-    endpoint'ы пользователю доступны."""
+    """Пользователь клиента, от чьего имени тот ходит на сервер: логин (его
+    identifier в клиенте) и роли, с которыми он вошёл в клиент.
+
+    Создаётся хозяином клиента на сессию пользователя. Запись сервера
+    подставляет его в свой способ входа (McpAuthEntry.on_behalf_of): вход
+    proxy утверждает серверу именно этого пользователя. McpServers по нему
+    же различает подключения разных пользователей.
+    """
 
     login: str
     roles: frozenset[str]
@@ -181,17 +198,82 @@ class HttpLocation(BaseModel):
         )
 
 
-class NoAuth(BaseModel):
-    """Сервер без авторизации."""
+class McpAuthEntry(BaseModel):
+    """Базовый класс способов входа на MCP-сервер; его наследуют NoAuth,
+    BearerAuth, LocalAuth и ProxyAuth.
 
-    model_config = ConfigDict(frozen=True, extra="forbid")
+    Способ входа — секция auth записи сервера: в конфиге хозяина клиента
+    ([mcp.servers.<имя>.endpoint]) и в файле настроек агента (mcpServers).
+    Ключи файла настроек — camelCase, конфиг пишет те же поля как есть.
+    Наследник отдаёт транспорту авторизацию запросов (httpx_auth) и, если
+    входит от имени пользователя, подставляет его в себя (on_behalf_of).
+    Общее здесь: запись для файла настроек с открытыми секретами и перечень
+    ключей, под которыми секреты лежат.
+    """
+
+    model_config = ConfigDict(
+        frozen=True, extra="forbid", alias_generator=to_camel, populate_by_name=True
+    )
 
     PERSONAL: ClassVar[bool] = False
+    """Подключение своё у каждого пользователя клиента."""
+
+    BOBA_SERVICE: ClassVar[bool] = False
+    """Вход сервиса boba: сервер с таким входом принимает соединения
+    пользователя запечатанными, и хозяин клиента ставит на его вызовы хук
+    запечатывания."""
+
+    def httpx_auth(self, resource: str) -> httpx2.Auth | None:
+        """Авторизация запросов к серверу по адресу resource; None — запросы
+        идут без неё.
+
+        Ошибки:
+        McpClientError — записи не хватает того, без чего вход невозможен.
+        """
+        return None
+
+    def on_behalf_of(self, caller: McpCaller) -> Self:
+        """Тот же способ входа от имени пользователя клиента: общий для всех
+        пользователей вход остаётся собой."""
+        return self
+
+    def secret_keys(self) -> list[str]:
+        """Ключи записи, под которыми лежат секреты: по ним хозяин файла
+        решает, откуда запись разрешено читать."""
+        keys: list[str] = []
+        for name, field in type(self).model_fields.items():
+            if not isinstance(getattr(self, name), SecretStr):
+                continue
+
+            keys.append(self._key(name, field.alias))
+
+        return keys
+
+    def revealed(self) -> dict[str, JsonValue]:
+        """Запись для файла настроек: ключи файла, секреты открыты. Файл с
+        такой записью хозяин держит доступным одному владельцу."""
+        document: dict[str, JsonValue] = self.model_dump(mode="json", by_alias=True)
+        for name, field in type(self).model_fields.items():
+            value = getattr(self, name)
+            if not isinstance(value, SecretStr):
+                continue
+
+            document[self._key(name, field.alias)] = value.get_secret_value()
+
+        return document
+
+    @staticmethod
+    def _key(name: str, alias: str | None) -> str:
+        if alias is None:
+            return name
+
+        return alias
+
+
+class NoAuth(McpAuthEntry):
+    """Сервер без авторизации."""
 
     auth: Literal["none"] = "none"
-
-    def httpx_auth(self, caller: McpCaller | None, resource: str) -> httpx2.Auth | None:
-        return None
 
 
 class BearerToken(httpx2.Auth):
@@ -205,91 +287,21 @@ class BearerToken(httpx2.Auth):
         yield request
 
 
-class BearerAuth(BaseModel):
+class BearerAuth(McpAuthEntry):
     """Готовый токен доступа из конфига: один на всех пользователей клиента."""
-
-    model_config = ConfigDict(frozen=True, extra="forbid")
-
-    PERSONAL: ClassVar[bool] = False
 
     auth: Literal["bearer"] = "bearer"
     token: SecretStr
 
-    def httpx_auth(self, caller: McpCaller | None, resource: str) -> httpx2.Auth | None:
+    def httpx_auth(self, resource: str) -> httpx2.Auth | None:
         return BearerToken(self.token)
 
 
-class ProxyAuth(BaseModel):
-    """Вход proxy сервиса boba от имени пользователя сессии.
-
-    Клиент — доверенный бэкенд: он уже проверил пользователя и утверждает
-    серверу авторизации issuer его логин (identifier пользователя в клиенте)
-    и роли, с которыми тот вошёл в клиент, — подписанным JWT под общим
-    ключом secret ([auth.proxy].secret сервера). Утверждение меняется на
-    токен доступа штатным обменом OAuth (grant jwt-bearer); клиента сервер
-    узнаёт по client_id и client_secret ([mcp.clients] сервера). Токен свой
-    у каждого пользователя, поэтому и подключение к серверу у каждого своё.
-    """
-
-    model_config = ConfigDict(frozen=True, extra="forbid")
-
-    PERSONAL: ClassVar[bool] = True
-
-    auth: Literal["proxy"] = "proxy"
-    issuer: HttpLocation
-    client_id: str = Field(min_length=1)
-    client_secret: SecretStr
-    secret: SecretStr
-
-    def httpx_auth(self, caller: McpCaller | None, resource: str) -> httpx2.Auth | None:
-        if caller is None:
-            msg = (
-                f"mcp auth proxy for {resource}: the connection is opened "
-                "without a caller, expected the login and roles of the session user"
-            )
-            raise McpClientError(msg)
-
-        assertions = CallerAssertions(
-            ProxyAssertions(self.secret.get_secret_value(), 0), self.client_id, caller
-        )
-
-        return IdentityAssertionOAuthProvider(
-            server_url=resource,
-            storage=HeldTokens(),
-            client_id=self.client_id,
-            client_secret=self.client_secret.get_secret_value(),
-            issuer=self.issuer.url(),
-            assertion_provider=assertions.issue,
-        )
-
-
-class CallerAssertions:
-    """Утверждения о пользователе сессии для обмена на токен сервера.
-
-    Создаётся ProxyAuth на подключение пользователя; штатный клиент обмена
-    (IdentityAssertionOAuthProvider) зовёт issue() перед каждым обменом и
-    получает свежее утверждение.
-    """
-
-    def __init__(
-        self, assertions: ProxyAssertions, client_id: str, caller: McpCaller
-    ) -> None:
-        self._assertions = assertions
-        self._client_id = client_id
-        self._caller = caller
-
-    async def issue(self, audience: str, resource: str) -> str:
-        roles = ",".join(sorted(self._caller.roles))
-
-        return self._assertions.issue(
-            self._client_id, self._caller.login, roles, audience, resource
-        )
-
-
 class HeldTokens(TokenStorage):
-    """Токен сервера одного подключения в памяти: реализация TokenStorage
-    клиента mcp. Подключение своё у каждого пользователя, переживать процесс
-    токену незачем — обмен утверждения повторяется сам."""
+    """Токены сервера и запись клиента OAuth одного подключения в памяти:
+    реализация TokenStorage клиента mcp. Переживать процесс им незачем —
+    вход повторяется сам: local проходит страницу входа, proxy меняет новое
+    утверждение."""
 
     def __init__(self) -> None:
         self._tokens: OAuthToken | None = None
@@ -308,16 +320,280 @@ class HeldTokens(TokenStorage):
         self._client = client_info
 
 
-McpAuth = Annotated[NoAuth | BearerAuth | ProxyAuth, Field(discriminator="auth")]
+class UnattendedLogin:
+    """Вход на страницу входа сервиса boba без человека: два обработчика
+    штатного провайдера OAuth (OAuthClientProvider) вместо браузера.
+
+    Создаётся способом входа LocalAuth на подключение. Провайдер сам находит
+    сервер авторизации, регистрирует клиента (client()), строит адрес
+    authorize и после возврата кода меняет его на токены; между этими шагами
+    он зовёт redirect() с адресом authorize и callback() за кодом. redirect()
+    проходит маршруты сервера как браузер: authorize отвечает адресом
+    страницы входа, страница ставит cookie-подтверждение, форма с логином,
+    паролем и тем же подтверждением отвечает адресом возврата с кодом.
+    Содержимое страницы не читается: всё нужное лежит в заголовке Location,
+    cookie и параметрах адресов. По адресу возврата никто не ходит.
+    """
+
+    REDIRECT_URI: ClassVar[str] = "http://127.0.0.1/boba-unattended-login"
+    CLIENT_NAME: ClassVar[str] = "boba unattended sign-in"
+    LOCATION: ClassVar[str] = "location"
+    BODY_SHOWN: ClassVar[int] = 600
+    """Сколько знаков ответа сервера входит в текст ошибки."""
+
+    def __init__(self, login: str, password: SecretStr, resource: str) -> None:
+        self._login = login
+        self._password = password
+        self._resource = resource
+        self._granted: AuthorizationCodeResult | None = None
+
+    def client(self) -> OAuthClientMetadata:
+        """Запись клиента OAuth для регистрации у сервера авторизации:
+        публичный клиент с кодом авторизации и обновлением токена."""
+        return OAuthClientMetadata(
+            client_name=self.CLIENT_NAME,
+            redirect_uris=[AnyUrl(self.REDIRECT_URI)],
+            grant_types=["authorization_code", "refresh_token"],
+            response_types=["code"],
+            token_endpoint_auth_method="none",  # noqa: S106 — имя метода
+        )
+
+    async def redirect(self, authorization_url: str) -> None:
+        """Проходит вход по адресу authorize и запоминает код авторизации.
+
+        Ошибки:
+        McpClientError — сервер недоступен, вход не начат, страница входа не
+            выдала подтверждения либо отказала логину и паролю.
+        """
+        self._granted = None
+        try:
+            async with create_mcp_http_client() as http:
+                self._granted = await self._signed_in(http, authorization_url)
+        except httpx2.HTTPError as exc:
+            authorize = httpx2.URL(authorization_url).copy_with(query=None)
+            msg = (
+                f"mcp auth local for {self._resource}: signing in as "
+                f"{self._login!r} at {authorize} failed: "
+                f"{type(exc).__name__}: {exc}"
+            )
+            raise McpClientError(msg) from exc
+
+    async def callback(self) -> AuthorizationCodeResult:
+        """Код авторизации, полученный redirect().
+
+        Ошибки:
+        McpClientError — кода нет: redirect() не вызывался.
+        """
+        granted = self._granted
+        if granted is None:
+            msg = (
+                f"mcp auth local for {self._resource}: the authorization code of "
+                f"{self._login!r} was asked before the sign-in page was passed"
+            )
+            raise McpClientError(msg)
+
+        return granted
+
+    async def _signed_in(
+        self, http: httpx2.AsyncClient, authorization_url: str
+    ) -> AuthorizationCodeResult:
+        page_url = self._next(await http.get(authorization_url), "the sign-in page")
+        txn = page_url.params.get(LoginField.TXN.value)
+        login_url = page_url.copy_with(query=None)
+        if txn is None:
+            msg = (
+                f"mcp auth local for {self._resource}: {login_url} is not the "
+                f"sign-in page of a started sign-in, expected parameter "
+                f"{LoginField.TXN.value!r}, got parameters {dict(page_url.params)!r}"
+            )
+            raise McpClientError(msg)
+
+        page = await http.get(page_url)
+        proof = page.cookies.get(LoginField.COOKIE.value)
+        if proof is None:
+            msg = (
+                f"mcp auth local for {self._resource}: GET "
+                f"{login_url} expected cookie "
+                f"{LoginField.COOKIE.value!r} of the sign-in page, got "
+                f"{self._reply(page)}"
+            )
+            raise McpClientError(msg)
+
+        form = {
+            LoginField.TXN.value: txn,
+            LoginField.PROOF.value: proof,
+            LoginField.LOGIN.value: self._login,
+            LoginField.PASSWORD.value: self._password.get_secret_value(),
+        }
+        returned = self._next(
+            await http.post(login_url, data=form),
+            f"the authorization code of {self._login!r}",
+        )
+        code = returned.params.get("code")
+        if code is None:
+            msg = (
+                f"mcp auth local for {self._resource}: the sign-in of "
+                f"{self._login!r} returned without an authorization code, got "
+                f"parameters {dict(returned.params)!r}"
+            )
+            raise McpClientError(msg)
+
+        return AuthorizationCodeResult(
+            code=code,
+            state=returned.params.get("state"),
+            iss=returned.params.get("iss"),
+        )
+
+    def _next(self, reply: httpx2.Response, expected: str) -> httpx2.URL:
+        """Адрес из Location ответа-редиректа.
+
+        Ошибки:
+        McpClientError — сервер ответил не редиректом.
+        """
+        location = reply.headers.get(self.LOCATION)
+        if reply.is_redirect and location is not None:
+            return reply.url.join(location)
+
+        request = reply.request
+        msg = (
+            f"mcp auth local for {self._resource}: {request.method} "
+            f"{request.url.copy_with(query=None)} expected a redirect to {expected}, "
+            f"got {self._reply(reply)}"
+        )
+        raise McpClientError(msg)
+
+    def _reply(self, reply: httpx2.Response) -> str:
+        return (
+            f"HTTP {reply.status_code} {reply.reason_phrase}: "
+            f"{reply.text[: self.BODY_SHOWN]}"
+        )
+
+
+class LocalAuth(McpAuthEntry):
+    """Вход local сервиса boba: одна учётка с паролем из таблицы [auth.local]
+    сервера на всех пользователей клиента.
+
+    Токен получает штатный провайдер OAuth (код авторизации с PKCE): клиента
+    он регистрирует сам, страницу входа вместо браузера проходит
+    UnattendedLogin. Токен обновляется по токену обновления; когда сервер
+    в обновлении отказал, вход повторяется целиком.
+    """
+
+    BOBA_SERVICE: ClassVar[bool] = True
+
+    auth: Literal["local"] = "local"
+    login: str = Field(min_length=1)
+    password: SecretStr
+
+    def httpx_auth(self, resource: str) -> httpx2.Auth | None:
+        login = UnattendedLogin(self.login, self.password, resource)
+
+        return OAuthClientProvider(
+            server_url=resource,
+            client_metadata=login.client(),
+            storage=HeldTokens(),
+            redirect_handler=login.redirect,
+            callback_handler=login.callback,
+        )
+
+
+class ProxyAuth(McpAuthEntry):
+    """Вход proxy сервиса boba: клиент утверждает серверу пользователя.
+
+    Клиент — доверенный бэкенд: он утверждает серверу авторизации issuer
+    логин login и роли roles подписанным JWT под общим ключом secret
+    ([auth.proxy].secret сервера). Утверждение меняется на токен доступа
+    штатным обменом OAuth (grant jwt-bearer); клиента сервер узнаёт по
+    client_id и client_secret ([mcp.clients] сервера). Токена обновления
+    нет: по истечении провайдер меняет новое утверждение. Хозяин клиента со
+    своими пользователями оставляет login пустым и подставляет пользователя
+    сессии (on_behalf_of): сервер тогда видит разных пользователей.
+    """
+
+    PERSONAL: ClassVar[bool] = True
+    BOBA_SERVICE: ClassVar[bool] = True
+
+    auth: Literal["proxy"] = "proxy"
+    issuer: HttpLocation
+    client_id: str = Field(min_length=1)
+    client_secret: SecretStr
+    secret: SecretStr
+    login: str = ""
+    roles: tuple[str, ...] = ()
+
+    def on_behalf_of(self, caller: McpCaller) -> Self:
+        return self.model_copy(
+            update={"login": caller.login, "roles": tuple(sorted(caller.roles))}
+        )
+
+    def httpx_auth(self, resource: str) -> httpx2.Auth | None:
+        if not self.login:
+            msg = (
+                f"mcp auth proxy for {resource}: the entry names no login, "
+                "expected the login and roles the server is told about"
+            )
+            raise McpClientError(msg)
+
+        assertions = StatedAssertions(
+            ProxyAssertions(self.secret.get_secret_value(), 0),
+            self.client_id,
+            self.login,
+            self.roles,
+        )
+
+        return IdentityAssertionOAuthProvider(
+            server_url=resource,
+            storage=HeldTokens(),
+            client_id=self.client_id,
+            client_secret=self.client_secret.get_secret_value(),
+            issuer=self.issuer.url(),
+            assertion_provider=assertions.issue,
+        )
+
+
+class StatedAssertions:
+    """Утверждения о пользователе для обмена на токен сервера.
+
+    Создаётся ProxyAuth на подключение; штатный клиент обмена
+    (IdentityAssertionOAuthProvider) зовёт issue() перед каждым обменом и
+    получает свежее утверждение о логине и ролях записи.
+    """
+
+    ROLES_SEPARATOR: ClassVar[str] = ","
+
+    def __init__(
+        self,
+        assertions: ProxyAssertions,
+        client_id: str,
+        login: str,
+        roles: Sequence[str],
+    ) -> None:
+        self._assertions = assertions
+        self._client_id = client_id
+        self._login = login
+        self._roles = self.ROLES_SEPARATOR.join(sorted(roles))
+
+    async def issue(self, audience: str, resource: str) -> str:
+        return self._assertions.issue(
+            self._client_id, self._login, self._roles, audience, resource
+        )
+
+
+McpAuth = Annotated[
+    NoAuth | BearerAuth | LocalAuth | ProxyAuth, Field(discriminator="auth")
+]
 
 
 class Transport(Protocol):
     """Транспорт MCP-сервера: открывает потоки сообщений сессии."""
 
     @abstractmethod
-    def opened(self, caller: McpCaller | None) -> AbstractAsyncContextManager[Streams]:
-        """Потоки сессии; caller — пользователь, от чьего имени она идёт
-        (None — подключение общее для всех сессий)."""
+    def opened(self) -> AbstractAsyncContextManager[Streams]:
+        """Потоки сессии; открыты, пока открыт контекст."""
+
+    @abstractmethod
+    def on_behalf_of(self, caller: McpCaller) -> Transport:
+        """Тот же транспорт со входом от имени пользователя клиента."""
 
     @abstractmethod
     def label(self) -> str:
@@ -368,6 +644,9 @@ class HttpAddress(HttpLocation):
         """Подключение своё у каждого пользователя: токен выдаётся ему."""
         return self.auth.PERSONAL
 
+    def on_behalf_of(self, caller: McpCaller) -> Self:
+        return self.model_copy(update={"auth": self.auth.on_behalf_of(caller)})
+
 
 class HttpEndpoint(HttpAddress):
     """Сервер по streamable HTTP. Модель конфига; транспорт — она же
@@ -379,8 +658,8 @@ class HttpEndpoint(HttpAddress):
         return self.url()
 
     @asynccontextmanager
-    async def opened(self, caller: McpCaller | None) -> AsyncGenerator[Streams, None]:
-        auth = self.auth.httpx_auth(caller, self.url())
+    async def opened(self) -> AsyncGenerator[Streams, None]:
+        auth = self.auth.httpx_auth(self.url())
         refusals = HttpRefusals()
         async with create_mcp_http_client(auth=auth) as http:
             http.event_hooks["response"].append(refusals.seen)
@@ -405,8 +684,8 @@ class SseEndpoint(HttpAddress):
         return self.url()
 
     @asynccontextmanager
-    async def opened(self, caller: McpCaller | None) -> AsyncGenerator[Streams, None]:
-        auth = self.auth.httpx_auth(caller, self.url())
+    async def opened(self) -> AsyncGenerator[Streams, None]:
+        auth = self.auth.httpx_auth(self.url())
         async with sse_client(self.url(), auth=auth) as streams:
             yield streams
 
@@ -429,8 +708,11 @@ class StdioCommand(BaseModel):
     def personal(self) -> bool:
         return False
 
+    def on_behalf_of(self, caller: McpCaller) -> Self:
+        return self
+
     @asynccontextmanager
-    async def opened(self, caller: McpCaller | None) -> AsyncGenerator[Streams, None]:
+    async def opened(self) -> AsyncGenerator[Streams, None]:
         env: dict[str, str] | None = None
         if self.env:
             env = dict(self.env)
@@ -460,6 +742,11 @@ class McpServerConfig(BaseModel):
     endpoint: McpEndpoint
     connect_timeout_sec: float = Field(gt=0)
     call_timeout_sec: float = Field(gt=0)
+
+    def on_behalf_of(self, caller: McpCaller) -> McpServerConfig:
+        """Та же запись со входом от имени пользователя клиента: способ
+        входа сам решает, подставлять ли его."""
+        return self.model_copy(update={"endpoint": self.endpoint.on_behalf_of(caller)})
 
 
 class McpServersConfig(BaseModel):
@@ -520,11 +807,9 @@ class McpConnection:
     def __init__(
         self,
         transport: Transport,
-        caller: McpCaller | None,
         connect_timeout_sec: float,
     ) -> None:
         self._transport = transport
-        self._caller = caller
         self._connect_timeout_sec = connect_timeout_sec
         self._causes = ErrorCauses()
         self._task: asyncio.Task[None] | None = None
@@ -582,7 +867,7 @@ class McpConnection:
         stop = self._stop
         try:
             client = Client(
-                self._transport.opened(self._caller),
+                self._transport.opened(),
                 client_info=self.CLIENT,
                 extensions=self.EXTENSIONS,
                 cache=None,
@@ -644,14 +929,12 @@ class McpFiles:
     FIRST_REFUSAL: ClassVar[int] = 400
     CHUNK_BYTES: ClassVar[int] = 1024 * 1024
 
-    def __init__(
-        self, server: str, endpoint: HttpAddress, caller: McpCaller | None, path: str
-    ) -> None:
+    def __init__(self, server: str, endpoint: HttpAddress, path: str) -> None:
         self._server = server
         self._root = HttpLocation(
             scheme=endpoint.scheme, host=endpoint.host, port=endpoint.port, path=path
         )
-        auth = endpoint.auth.httpx_auth(caller, endpoint.url())
+        auth = endpoint.auth.httpx_auth(endpoint.url())
         self._http = create_mcp_http_client(auth=auth)
         # сжатый прокси ответ идёт без Content-Length и не тем окном Range
         self._http.headers["Accept-Encoding"] = "identity"
@@ -1282,8 +1565,8 @@ class McpToolServer(ToolServer):
     клиента с лентой узнаёт так о начале и конце вызова.
     Возможности boba (features) берутся из экспериментальных возможностей,
     объявленных сервером при инициализации: у стороннего сервера их нет.
-    Оборванная сессия открывается заново следующим вызовом. caller — чьим
-    именем идёт подключение; None — оно общее для всех сессий клиента.
+    Оборванная сессия открывается заново следующим вызовом. От чьего имени
+    идёт подключение, решает способ входа записи сервера.
     scopes — откуда берётся область вызова: серверу с расширением файлов
     она уходит в _meta каждого запроса tools/call.
     """
@@ -1297,7 +1580,6 @@ class McpToolServer(ToolServer):
         files: BlockFiles,
         signals: CallSignals,
         scopes: CallScopeSource,
-        caller: McpCaller | None,
         conduct: NodeCalls,
     ) -> None:
         self._name = name
@@ -1305,9 +1587,7 @@ class McpToolServer(ToolServer):
         self._signals = signals
         self._scopes = scopes
         self._config = config
-        self._connection = McpConnection(
-            config.endpoint, caller, config.connect_timeout_sec
-        )
+        self._connection = McpConnection(config.endpoint, config.connect_timeout_sec)
         self._names = McpToolNames()
         self._stubs = McpToolStubs(name, self._names)
         self._views = CallViews()
@@ -1324,7 +1604,6 @@ class McpToolServer(ToolServer):
         """Расширение журнала вызовов, объявленное сервером; None — его нет."""
         self._files_feature: FilesFeature | None = None
         """Расширение файлов workspace, объявленное сервером; None — его нет."""
-        self._caller = caller
         self._files: McpFiles | None = None
         self._journal_files: McpFiles | None = None
 
@@ -1435,9 +1714,7 @@ class McpToolServer(ToolServer):
         if not isinstance(endpoint, HttpAddress):
             return
 
-        self._journal_files = McpFiles(
-            self._name, endpoint, self._caller, declared.path
-        )
+        self._journal_files = McpFiles(self._name, endpoint, declared.path)
 
     async def _open_files(self) -> None:
         """Клиент файлов по расширению FilesFeature; прежний закрывается."""
@@ -1456,7 +1733,7 @@ class McpToolServer(ToolServer):
         # пути файлов в результатах инструментов сервера начинаются с его
         # каталога workspace: по нему клиент разбирает их в ключи файлов
         WorkspaceMount.configure(declared.workspace)
-        self._files = McpFiles(self._name, endpoint, self._caller, declared.path)
+        self._files = McpFiles(self._name, endpoint, declared.path)
 
     def _client_side(self) -> frozenset[str]:
         """Операции сервера, которые исполняет сам клиент, а не модель: файл
@@ -1887,7 +2164,7 @@ class McpServers:
                 continue
 
             self._shared[name] = McpToolServer(
-                name, server, files, signals, contexts, None, conduct
+                name, server, files, signals, contexts, conduct
             )
 
     async def start(self) -> None:
@@ -1999,11 +2276,10 @@ class McpServers:
         if server is None:
             server = McpToolServer(
                 name,
-                self._configs[name],
+                self._configs[name].on_behalf_of(caller),
                 self._files,
                 self._signals,
                 self._contexts,
-                caller,
                 self._conduct,
             )
             self._personal[key] = server

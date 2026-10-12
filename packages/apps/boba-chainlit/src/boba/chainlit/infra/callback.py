@@ -16,7 +16,7 @@ from fastapi import Request, Response
 import chainlit as cl
 from boba.cancellation import StopReason
 from boba.canvas.canvas import CanvasAction, RenderVerdicts
-from boba.chainlit.acp.chat import (
+from boba.chainlit.agent.chat import (
     AgentSettingsChanges,
     Question,
     SessionOptions,
@@ -26,14 +26,14 @@ from boba.chainlit.acp.chat import (
     ThreadAgentsIndex,
     ThreadIdentity,
 )
-from boba.chainlit.acp.client import AcpClientError
-from boba.chainlit.acp.panel import AgentPanel
-from boba.chainlit.acp.settings import (
+from boba.chainlit.agent.client import AcpClientError
+from boba.chainlit.agent.panel import AgentPanel
+from boba.chainlit.agent.settings import (
     AgentSettingsError,
     AgentSettingsTable,
     ChatAgentSettings,
+    SessionServersError,
 )
-from boba.chainlit.acp.tokens import McpTokenError, SessionServersError
 from boba.chainlit.canvas.panel import StreamActions
 from boba.chainlit.canvas.remote import RemoteStreams
 from boba.chainlit.canvas.tools import CanvasActions, CanvasScope
@@ -117,7 +117,6 @@ class SettingsNotice:
 AGENT_FAILURES = (
     AcpClientError,
     AgentSettingsError,
-    McpTokenError,
     McpClientError,
     SessionServersError,
     LockBusyError,

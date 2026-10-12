@@ -10,7 +10,9 @@ from __future__ import annotations
 import json
 import os
 import stat
+from collections.abc import Mapping
 from pathlib import Path
+from typing import ClassVar
 from uuid import uuid4
 
 import pytest
@@ -26,9 +28,13 @@ from psycopg import sql
 from psycopg.types.json import Jsonb
 from pydantic import SecretStr, ValidationError
 
-from boba.chainlit.acp.client import AgentClient, AgentProcess
-from boba.chainlit.acp.config import PostgresAgentHistory
-from boba.chainlit.acp.settings import (
+from boba.chainlit.agent.client import AgentClient, AgentProcess
+from boba.chainlit.agent.config import (
+    AgentConfig,
+    ChatMcpConfig,
+    PostgresAgentHistory,
+)
+from boba.chainlit.agent.settings import (
     AgentSettingsChange,
     AgentSettingsError,
     AgentSettingsLayers,
@@ -38,6 +44,8 @@ from boba.chainlit.acp.settings import (
     HookMatchers,
     PermissionModeName,
     ProfileModelSpecs,
+    SessionServers,
+    SessionServersError,
     SettingsFileBuilder,
     UserAgentSettings,
 )
@@ -49,6 +57,7 @@ from boba.db.postgres.connection.auth import CertificateAuth
 from boba.kerberos import KeytabAuth
 from boba.krb.credentials import KerberosEnv
 from boba.llm.onnx import OnnxProvider
+from boba.mcp_client.client import McpCaller, McpServersConfig
 from boba.stand.names import StandNames
 from boba.stand.signin import SignInStand
 from boba.stand.site import Stand
@@ -324,8 +333,17 @@ class TestSettingsFile:
         builder = SettingsFileBuilder(config)
         chat = model.chat_settings("Answer briefly")
 
+        servers = (
+            SessionServersStand()
+            .servers(config)
+            .of(
+                ["boba_general", "boba_base", "tools"],
+                McpCaller(login="ivanov", roles=frozenset({"DEV", "ADM"})),
+                "process-key-1",
+            )
+        )
         document = builder.build(
-            "thread-1", chat, "user-jwt", ["boba_general", "boba_base"]
+            "thread-1", chat, servers, "process-key-1", ["boba_general", "boba_base"]
         )
         workdir = AgentWorkdirs(tmp_path / "agents").create("thread-1")
         workdir.write(document, chat.system_prompt)
@@ -361,10 +379,44 @@ class TestSettingsFile:
         assert hook == {
             "type": "http",
             "url": "http://127.0.0.1:8000/boba/chat/hooks/pre-tool-use",
-            "headers": {"Authorization": "Bearer user-jwt"},
+            "headers": {"Authorization": "Bearer process-key-1"},
             "timeout": 5.0,
             "onFailure": "block",
         }
+
+        # proxy несёт логин и роли пользователя вкладки, local — учётку конфига
+        assert body["mcpServers"]["boba_general"] == {
+            "type": "http",
+            "args": [],
+            "env": {},
+            "url": "http://127.0.0.1:8001/mcp/general",
+            "auth": {
+                "auth": "proxy",
+                "issuer": {
+                    "scheme": "http",
+                    "host": "127.0.0.1",
+                    "port": 8001,
+                    "path": "/",
+                },
+                "clientId": "boba-chat",
+                "clientSecret": "client-secret-1",
+                "secret": "proxy-secret-1",
+                "login": "ivanov",
+                "roles": ["ADM", "DEV"],
+            },
+        }
+        assert body["mcpServers"]["boba_base"]["auth"] == {
+            "auth": "local",
+            "login": "agent",
+            "password": "agent-password-1",
+        }
+        assert body["mcpServers"]["tools"] == {
+            "type": "stdio",
+            "command": "tools-server",
+            "args": ["--fast"],
+            "env": {"MODE": "stand"},
+        }
+        assert "chat" not in body["mcpServers"]
 
         workdir.remove()
         assert not workdir.exists()
@@ -374,7 +426,7 @@ class TestSettingsFile:
     ) -> None:
         config = AgentStand(tmp_path, AgentHistoryStand(stand).history()).config()
         document = SettingsFileBuilder(config).build(
-            "thread-1", FakeModel().chat_settings(), "jwt", []
+            "thread-1", FakeModel().chat_settings(), {}, "", []
         )
         body = json.loads(document.render())
         assert "hooks" not in body or body["hooks"] == {}
@@ -386,10 +438,155 @@ class TestSettingsFile:
         chat = FakeModel().chat_settings().with_session(PermissionModeName.PLAN, None)
 
         body = json.loads(
-            SettingsFileBuilder(config).build("thread-1", chat, "jwt", []).render()
+            SettingsFileBuilder(config).build("thread-1", chat, {}, "", []).render()
         )
 
         assert body["permissions"] == {"defaultMode": "plan", "allowBypass": True}
+
+
+class SessionServersStand:
+    """Секция [mcp.servers] чата под тест записей агента: сервис со входом
+    proxy, сервис со входом local, сторонний сервер с готовым токеном и
+    сервер-субпроцесс."""
+
+    def config(self) -> McpServersConfig:
+        location: dict[str, object] = {
+            "scheme": "http",
+            "host": "127.0.0.1",
+            "port": 8001,
+        }
+        proxy = {
+            "auth": "proxy",
+            "issuer": {**location, "path": "/"},
+            "client_id": "boba-chat",
+            "client_secret": "client-secret-1",
+            "secret": "proxy-secret-1",
+        }
+        local = {"auth": "local", "login": "agent", "password": "agent-password-1"}
+        bearer = {"auth": "bearer", "token": "ready-token-1"}
+
+        return McpServersConfig.model_validate(
+            {
+                "servers": {
+                    "boba_general": self._http(location, "/mcp/general", proxy),
+                    "boba_base": self._http(location, "/mcp/base", local),
+                    "wiki": self._http(location, "/wiki", bearer),
+                    "open": self._http(location, "/open", {"auth": "none"}),
+                    "tools": {
+                        "connect_timeout_sec": 5.0,
+                        "call_timeout_sec": 5.0,
+                        "endpoint": {
+                            "transport": "stdio",
+                            "command": "tools-server",
+                            "args": ["--fast"],
+                            "env": {"MODE": "stand"},
+                        },
+                    },
+                    "legacy": {
+                        "connect_timeout_sec": 5.0,
+                        "call_timeout_sec": 5.0,
+                        "endpoint": {
+                            "transport": "sse",
+                            **location,
+                            "path": "/sse",
+                        },
+                    },
+                }
+            }
+        )
+
+    def servers(self, agent: AgentConfig) -> SessionServers:
+        return SessionServers(self.config(), agent.chat_mcp, agent.public_url)
+
+    @staticmethod
+    def _http(
+        location: Mapping[str, object], path: str, auth: Mapping[str, object]
+    ) -> dict[str, object]:
+        return {
+            "connect_timeout_sec": 5.0,
+            "call_timeout_sec": 5.0,
+            "endpoint": {
+                "transport": "streamable-http",
+                **location,
+                "path": path,
+                "auth": auth,
+            },
+        }
+
+
+class TestSessionServers:
+    """Серверы профиля записями файла агента: способ входа из конфига чата,
+    пользователь вкладки — только у входа proxy."""
+
+    CALLER: ClassVar[McpCaller] = McpCaller(login="ivanov", roles=frozenset({"DEV"}))
+
+    def _agent(self, tmp_path: Path, stand: Stand, chat_mcp: bool) -> AgentConfig:
+        config = AgentStand(tmp_path, AgentHistoryStand(stand).history()).config(
+            "http://127.0.0.1:8000/boba"
+        )
+
+        return config.model_copy(
+            update={
+                "chat_mcp": ChatMcpConfig(
+                    enable=chat_mcp, name="chat", path="/chat/mcp"
+                )
+            }
+        )
+
+    def test_ready_token_and_open_server_go_as_declared(
+        self, tmp_path: Path, stand: Stand
+    ) -> None:
+        servers = SessionServersStand().servers(self._agent(tmp_path, stand, False))
+
+        found = servers.of(["wiki", "open"], self.CALLER, "key")
+
+        wiki = json.loads(found["wiki"].model_dump_json(by_alias=True))
+        assert wiki["auth"] == {"auth": "bearer", "token": "ready-token-1"}
+        opened = json.loads(found["open"].model_dump_json(by_alias=True))
+        assert opened["auth"] == {"auth": "none"}
+
+    def test_chat_server_carries_the_process_key(
+        self, tmp_path: Path, stand: Stand
+    ) -> None:
+        servers = SessionServersStand().servers(self._agent(tmp_path, stand, True))
+
+        found = servers.of([], self.CALLER, "process-key-7")
+
+        chat = json.loads(found["chat"].model_dump_json(by_alias=True))
+        assert chat["url"] == "http://127.0.0.1:8000/boba/chat/mcp"
+        assert chat["auth"] == {"auth": "bearer", "token": "process-key-7"}
+
+    def test_servers_with_the_service_sign_in_are_hooked(
+        self, tmp_path: Path, stand: Stand
+    ) -> None:
+        servers = SessionServersStand().servers(self._agent(tmp_path, stand, False))
+
+        hooked = servers.hooked(["boba_general", "boba_base", "wiki", "open", "tools"])
+
+        assert hooked == ["boba_general", "boba_base"]
+
+    def test_undeclared_and_sse_servers_are_refused(
+        self, tmp_path: Path, stand: Stand
+    ) -> None:
+        servers = SessionServersStand().servers(self._agent(tmp_path, stand, False))
+
+        with pytest.raises(SessionServersError, match="not declared"):
+            servers.of(["absent"], self.CALLER, "key")
+
+        with pytest.raises(SessionServersError, match="'sse'"):
+            servers.of(["legacy"], self.CALLER, "key")
+
+    def test_secrets_of_the_entry_stay_masked_outside_the_file(
+        self, tmp_path: Path, stand: Stand
+    ) -> None:
+        servers = SessionServersStand().servers(self._agent(tmp_path, stand, False))
+
+        found = servers.of(["boba_general", "boba_base"], self.CALLER, "key")
+
+        shown = repr(found)
+        assert "client-secret-1" not in shown
+        assert "proxy-secret-1" not in shown
+        assert "agent-password-1" not in shown
 
 
 class TestHookMatchers:
@@ -415,7 +612,7 @@ class TestAgentHandshake:
         agent_stand = AgentStand(tmp_path / "agents", history)
         chat = model.chat_settings()
         document = SettingsFileBuilder(agent_stand.config()).build(
-            "thread-2", chat, "jwt", []
+            "thread-2", chat, {}, "", []
         )
         workdir = AgentWorkdirs(tmp_path / "agents").create("thread-2")
         workdir.write(document, chat.system_prompt)

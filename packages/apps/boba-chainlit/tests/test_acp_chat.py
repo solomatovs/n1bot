@@ -29,7 +29,7 @@ import socketio
 from acp_stand import ProcFiles
 from psycopg import sql
 
-from boba.chainlit.acp.settings import WorkdirFile
+from boba.chainlit.agent.settings import WorkdirFile
 from boba.chainlit.domain.fields import ThreadMetaField
 from boba.db.postgres import AsyncPostgresPool
 from boba.runtime.config import DataLayerConfig

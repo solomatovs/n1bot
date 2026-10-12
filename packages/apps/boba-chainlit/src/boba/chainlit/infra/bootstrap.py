@@ -422,10 +422,9 @@ def _eager_agent_tools(container: Container, c: AppConfig) -> None:
 
 
 def _eager_agent(container: Container) -> None:
-    """Слои настроек агента, клиент токенов boba-mcp и запуск процессов
-    поднимаются на старте: первая вкладка не ждёт DDL и http-клиента."""
+    """Слои настроек агента и запуск процессов поднимаются на старте:
+    первая вкладка не ждёт DDL."""
     container.eager(providers.agent_settings_table)
-    container.eager(providers.mcp_access_tokens)
     container.eager(providers.agent_launcher)
     container.eager(providers.thread_deleter)
     container.eager(providers.tool_media)
