@@ -48,7 +48,7 @@ from boba.agent.history import (
     SessionId,
     SessionNotFoundError,
 )
-from boba.agent.hooks import McpToolOrigin, ToolOrigins
+from boba.agent.hooks import McpServerInfo
 from boba.agent.ids import IdMint, SystemClock
 from boba.agent.loader import HistoryLoader, SessionDigests
 from boba.agent.permissions import PermissionModeError
@@ -102,6 +102,7 @@ from boba.mcp_client.client import (
     ProgressListener,
 )
 from boba.toolkit.dag import DagNode, NodeOutcome, ToolCard, ToolHints, ToolServer
+from boba.toolkit.mcp_names import McpToolNames
 from boba.toolrun.hosted import DirectCalls
 
 logger = logging.getLogger(__name__)
@@ -250,25 +251,17 @@ class SettingsScope(CallScopeSource):
 
 class ManyServers(ToolServer):
     """Реализация ToolServer над несколькими серверами MCP: карточки всех,
-    вызов уходит тому, чей инструмент. Создаёт сборка сессии."""
+    вызов уходит тому, чей инструмент. Карточки идут под полными именами
+    (McpToolNames), поэтому одноимённые инструменты разных серверов не
+    сталкиваются, а владелец вызова находится разбором имени. Создаёт
+    сборка сессии."""
 
     def __init__(self, servers: Mapping[str, McpToolServer]) -> None:
         self._servers = dict(servers)
-        self._owner: dict[str, McpToolServer] = {}
+        self._names = McpToolNames()
         self._cards: list[ToolCard] = []
         for name, server in self._servers.items():
-            for card in server.tools():
-                taken = self._owner.get(card.name)
-                if taken is not None:
-                    msg = (
-                        f"MCP servers offer the same tool name '{card.name}'. Give one "
-                        "of them a different prefix or disable it in settings."
-                    )
-                    raise SettingsError(msg)
-
-                self._owner[card.name] = server
-                self._cards.append(card)
-
+            self._cards.extend(server.tools())
             logger.info("mcp: server %s offers %d tool(s)", name, len(server.tools()))
 
     def tools(self) -> Sequence[ToolCard]:
@@ -285,29 +278,47 @@ class ManyServers(ToolServer):
     def features(self) -> Mapping[str, Mapping[str, object]]:
         return {}
 
-    def origins(self) -> ToolOrigins:
-        """Откуда у модели каждый инструмент: сервер, имя на нём, возможности."""
-        found: dict[str, McpToolOrigin] = {}
+    def described(self) -> Mapping[str, McpServerInfo]:
+        """Серверы сессии для события хука: имя и объявленные возможности."""
+        found: dict[str, McpServerInfo] = {}
         for name, server in self._servers.items():
-            for card in server.tools():
-                found[card.name] = McpToolOrigin(
-                    server=name,
-                    tool=server.remote_name(card.name),
-                    features=server.features(),
-                )
+            found[name] = McpServerInfo(name=name, features=server.features())
 
-        return ToolOrigins(found)
+        return found
 
     async def submit(
         self, calls: Sequence[DagNode]
     ) -> Sequence[asyncio.Future[NodeOutcome]]:
+        """Ошибки:
+        ToolsError — вызов назван не полным именем инструмента сервера MCP
+            либо называет сервер, которого у сессии нет.
+        """
         pending: list[asyncio.Future[NodeOutcome]] = []
         for call in calls:
-            owner = self._owner[call.tool]
-            submitted = await owner.submit([call])
+            submitted = await self._owner_of(call).submit([call])
             pending.append(submitted[0])
 
         return pending
+
+    def _owner_of(self, call: DagNode) -> McpToolServer:
+        parsed = self._names.parse(call.tool)
+        if parsed is None:
+            msg = (
+                f"Routing the call {call.key} of '{call.tool}' to an MCP server "
+                "failed: expected a tool name of the form mcp__<server>__<tool>."
+            )
+            raise ToolsError(msg)
+
+        owner = self._servers.get(parsed.server)
+        if owner is None:
+            msg = (
+                f"Routing the call {call.key} of '{call.tool}' failed: the session "
+                f"has no MCP server '{parsed.server}', its servers are "
+                f"{sorted(self._servers)}."
+            )
+            raise ToolsError(msg)
+
+        return owner
 
     async def close(self) -> None:
         for server in self._servers.values():
@@ -708,9 +719,9 @@ class AgentAssembly(SessionAssembly):
         self, cwd: Path, tools: ManyServers | None, sink: EventSink
     ) -> AgentParts:
         settings = self._settings
-        origins = ToolOrigins({})
+        servers: Mapping[str, McpServerInfo] = {}
         if tools is not None:
-            origins = tools.origins()
+            servers = tools.described()
 
         return AgentParts(
             profile=self._catalog.profile(settings.model),
@@ -731,7 +742,7 @@ class AgentAssembly(SessionAssembly):
             denied_tools=settings.permissions.deny,
             record_requests=settings.record_requests,
             question_tool=False,
-            hooks=self._hooks.hooks(settings, origins, cwd),
+            hooks=self._hooks.hooks(settings, servers, cwd),
         )
 
     async def _tool_servers(
@@ -739,7 +750,7 @@ class AgentAssembly(SessionAssembly):
     ) -> ManyServers | None:
         """Ошибки:
         SessionRefusedError — запись сервера не годится (заголовки, вид).
-        SessionOpenError — сервер не поднялся или инструменты совпали по имени.
+        SessionOpenError — сервер не поднялся.
         """
         if not servers:
             return None
@@ -769,11 +780,7 @@ class AgentAssembly(SessionAssembly):
 
             opened[name] = tool_server
 
-        try:
-            return ManyServers(opened)
-        except SettingsError as exc:
-            await self._close_all(opened)
-            raise SessionOpenError(str(exc)) from exc
+        return ManyServers(opened)
 
     @staticmethod
     async def _close_all(opened: Mapping[str, McpToolServer]) -> None:

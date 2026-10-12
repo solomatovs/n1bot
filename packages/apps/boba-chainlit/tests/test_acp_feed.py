@@ -60,6 +60,8 @@ from boba.messaging import LockToken, MemoryMessageBus, MemoryPayloadStore, Turn
 from boba.stand.refs import StandRefs
 from boba.toolkit.dag import (
     JournalAddress,
+    ToolCard,
+    ToolHints,
     ToolUseResult,
     ToolUseResults,
     WorkflowNodeResult,
@@ -234,7 +236,7 @@ def _turn_updates() -> list[SessionUpdate]:
         _thought("let me ", MESSAGE),
         _thought("think", MESSAGE),
         _chunk("First ", MESSAGE),
-        _call(CALL, "pg_query", {"sql": "select 1"}),
+        _call(CALL, "mcp__boba__pg_query", {"sql": "select 1"}),
         update_tool_call(CALL, status="in_progress"),
         _done(CALL, "1", _result("one row")),
         _chunk("and then ", SECOND_MESSAGE),
@@ -334,7 +336,7 @@ class TestUpdateViewIds:
             {"key": "src", "tool": "pg_stream_out", "args": {"out": "rows"}},
             {"key": "dst", "tool": "ch_stream_in", "args": {"feed": "rows"}},
         ]
-        await updates.apply(_call(CALL, "workflow", {"nodes": nodes}))
+        await updates.apply(_call(CALL, "mcp__boba__workflow", {"nodes": nodes}))
 
         source = _id(f"{CALL}_0", StepRole.TOOL)
         sink = _id(f"{CALL}_1", StepRole.TOOL)
@@ -399,7 +401,7 @@ class TestUpdateViewIds:
         updates.begin_turn(QUESTION)
 
         nodes = [{"key": "src", "tool": "pg_stream_out", "args": {"out": "rows"}}]
-        await updates.apply(_call(CALL, "workflow", {"nodes": nodes}))
+        await updates.apply(_call(CALL, "mcp__boba__workflow", {"nodes": nodes}))
         refused = update_tool_call(
             CALL,
             status="failed",
@@ -411,6 +413,41 @@ class TestUpdateViewIds:
         step = recorded.last()[_id(f"{CALL}_0", StepRole.TOOL)]
         assert step.get(StepField.IS_ERROR) is True
         assert step.get(StepField.OUTPUT) == "the hook denied the call"
+
+    @pytest.mark.anyio
+    async def test_step_is_named_without_the_server_and_drawn_by_the_card(
+        self, runtime_stand: StandRefs, recorded: FakeEmitter
+    ) -> None:
+        """Агент называет инструмент полным именем: шаг подписан именем без
+        сервера, а вид аргументов найден по карточке полного имени."""
+        schema = {
+            "type": "object",
+            "properties": {
+                "sql": {"type": "string", "contentMediaType": "application/sql"}
+            },
+        }
+        media = ToolMedia()
+        media.shown(
+            [
+                ToolCard(
+                    name="mcp__boba__pg_query",
+                    description="query",
+                    parameters=schema,
+                    views=None,
+                    hints=ToolHints(),
+                )
+            ]
+        )
+        view = ChatView(THREAD, LiveSink(), runtime_stand.journals, user_name="alice")
+        updates = UpdateView(view, THREAD, RemoteJournals(), media)
+        updates.begin_turn(QUESTION)
+
+        await updates.apply(_call(CALL, "mcp__boba__pg_query", {"sql": "select 1"}))
+
+        step = recorded.last()[_id(CALL, StepRole.TOOL)]
+        assert str(step.get(StepField.NAME)).endswith("pg_query")
+        assert "mcp__" not in str(step.get(StepField.NAME))
+        assert str(step.get("input")).startswith("```sql\nselect 1\n```")
 
     @pytest.mark.anyio
     async def test_progress_meta_is_shown_in_the_running_step(
@@ -488,10 +525,10 @@ class TestLiveEqualsReplay:
 class TestCodecAndResults:
     def test_codec_round_trip_keeps_meta_and_order(self) -> None:
         codec = SessionUpdateCodec()
-        start = _call(CALL, "pg_query", {"b": 1, "a": 2})
+        start = _call(CALL, "mcp__boba__pg_query", {"b": 1, "a": 2})
 
         body = codec.encode(start)
-        assert body["_meta"] == {MetaKey.TOOL_NAME.value: "pg_query"}
+        assert body["_meta"] == {MetaKey.TOOL_NAME.value: "mcp__boba__pg_query"}
         assert list(body["rawInput"]) == ["b", "a"]
 
         decoded = codec.decode(body)

@@ -103,7 +103,9 @@ class TestHooks:
             response = await conn.prompt(
                 session_id=session_id,
                 prompt=[
-                    text_block(call({"name": "shout", "arguments": {"text": "hi"}}))
+                    text_block(
+                        call({"name": "mcp__stand__shout", "arguments": {"text": "hi"}})
+                    )
                 ],
             )
             assert response.stop_reason == StopReasonName.END_TURN.value
@@ -130,7 +132,9 @@ class TestHooks:
             response = await conn.prompt(
                 session_id=session_id,
                 prompt=[
-                    text_block(call({"name": "add", "arguments": {"a": 1, "b": 2}}))
+                    text_block(
+                        call({"name": "mcp__stand__add", "arguments": {"a": 1, "b": 2}})
+                    )
                 ],
             )
             assert response.stop_reason == StopReasonName.END_TURN.value
@@ -138,7 +142,8 @@ class TestHooks:
             failed = client.progress_of(denied.tool_call_id)[-1]
             assert failed.status == "failed"
             assert result_text(failed) == (
-                "The PreToolUse hook denied the call of add: no grant for add"
+                "The PreToolUse hook denied the call of mcp__stand__add: "
+                "no grant for add"
             )
             assert handler.app.received[1].event.tool_name == ADD
         finally:

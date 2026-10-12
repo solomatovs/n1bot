@@ -193,9 +193,9 @@ class TestEditedQuestion:
     инструментом внутри, ответ.
     """
 
-    CALL: ClassVar[str] = '{"name": "connection_list", "arguments": {}}'
+    CALL: ClassVar[str] = '{"name": "mcp__chat__connection_list", "arguments": {}}'
     EDITED_CALL: ClassVar[str] = (
-        '{"name": "connection_list", "arguments": {}, "edit": 1}'
+        '{"name": "mcp__chat__connection_list", "arguments": {}, "edit": 1}'
     )
 
     @staticmethod

@@ -5,6 +5,10 @@
 последнего сообщения пользователя, поэтому тест диктует, какие шаги нарисует
 ход, знает тайминг каждого токена и может заказать отказ сервера: обрыв
 потока, статус, зависание, обрыв по длине, битые вызовы, ответ без учёта.
+Инструмент готового сценария назван именем на сервере; на провод уходит
+полное имя инструмента из списка `tools` запроса (OfferedTools) — как
+модель, стенд зовёт то, что ему предложили. В `scenario:call` имя диктует
+тест, и оно уходит как есть.
 Запрос пересказа агента (сжатие истории) стенд узнаёт по инструкции в
 последнем сообщении и отвечает по маркеру `summary:*`; учёт токенов либо
 постоянный, либо считается по размеру запроса и ответа.
@@ -19,13 +23,15 @@ import asyncio
 import hashlib
 import json
 from collections.abc import AsyncIterator, Callable, Iterator, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from typing import Any, ClassVar, TypeAlias
 
 import uvicorn
 from fastapi import FastAPI, Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
+
+from boba.toolkit.mcp_names import McpToolNames
 
 __all__ = [
     "FailureName",
@@ -267,13 +273,18 @@ class ToolCallSpec:
     Подпись вызова intent обязательна у каждого инструмента приложения, и
     настоящая модель её заполняет; фейк ведёт себя так же — дописывает
     подпись, если сценарий её не задал. Вызов с literal=True уходит на
-    провод как есть: так стенд отдаёт битые и оборванные аргументы.
+    провод как есть: так стенд отдаёт битые и оборванные аргументы. Вызов
+    с dictated=True назван тестом (`scenario:call`): имя уходит как есть,
+    стенд не ищет его среди предложенных инструментов. Подпись называет
+    инструмент без сервера — так же, как его подписывает шаг ленты.
     """
 
     call_id: str
     name: str
     arguments: str
     literal: bool = False
+    dictated: bool = False
+    names: McpToolNames = field(default_factory=McpToolNames, repr=False, compare=False)
 
     INTENT_FIELD: ClassVar[str] = "intent"
 
@@ -291,7 +302,8 @@ class ToolCallSpec:
             raise ScenarioError(msg)
 
         if self.INTENT_FIELD not in parsed:
-            parsed[self.INTENT_FIELD] = f"stand call of {self.name}"
+            tool = self.names.tool_of(self.name)
+            parsed[self.INTENT_FIELD] = f"stand call of {tool}"
 
         self.arguments = json.dumps(parsed, ensure_ascii=False)
 
@@ -349,6 +361,76 @@ class Played:
 
     def has(self, failure: FailureName) -> bool:
         return self.failure is failure
+
+
+class OfferedTools:
+    """Инструменты, которые запрос предлагает модели: по ним стенд называет
+    вызовы сценария так, как их видит агент.
+
+    Готовый сценарий знает инструмент по имени на сервере
+    (`connection_list`), а агент предлагает его под полным именем сервера
+    MCP. Имя, предложенное как есть, остаётся собой; иначе берётся
+    единственный предложенный инструмент с таким именем на сервере; не
+    найден или найден у нескольких серверов — имя уходит как есть, и агент
+    ответит, что такого инструмента нет. Вызов, названный тестом
+    (`scenario:call`), не трогается: тест диктует имя целиком. Создаётся
+    приложением стенда на каждый запрос.
+    """
+
+    def __init__(self, payload: Mapping[str, Any], names: McpToolNames) -> None:
+        self._names = names
+        self._offered = list(self._listed(payload))
+
+    def named(self, tool: str) -> str:
+        if tool in self._offered:
+            return tool
+
+        found: list[str] = []
+        for offered in self._offered:
+            if self._names.tool_of(offered) == tool:
+                found.append(offered)
+
+        if len(found) != 1:
+            return tool
+
+        return found[0]
+
+    def script(self, script: TurnScript) -> TurnScript:
+        """Тот же ответ с вызовами под предложенными именами."""
+        calls: list[ToolCallSpec] = []
+        for call in script.tool_calls:
+            if call.dictated:
+                calls.append(call)
+                continue
+
+            calls.append(replace(call, name=self.named(call.name)))
+
+        return replace(script, tool_calls=calls)
+
+    def scenario(self, scenario: Scenario) -> Scenario:
+        turns: list[TurnScript] = []
+        for turn in scenario.turns:
+            turns.append(self.script(turn))
+
+        return Scenario(turns=turns)
+
+    def played(self, played: Played) -> Played:
+        return replace(played, script=self.script(played.script))
+
+    @staticmethod
+    def _listed(payload: Mapping[str, Any]) -> Iterator[str]:
+        tools = payload.get("tools")
+        if not tools:
+            return
+
+        for tool in tools:
+            function = tool.get("function")
+            if not function:
+                continue
+
+            name = function.get("name")
+            if isinstance(name, str):
+                yield name
 
 
 @dataclass
@@ -673,6 +755,7 @@ class ScenarioBook:
             call_id=call_id,
             name=str(name),
             arguments=json.dumps(item.get("arguments", {})),
+            dictated=True,
         )
 
     @classmethod
@@ -1138,8 +1221,10 @@ class FakeLlmApp:
     _failures: FailureBook = field(init=False, repr=False)
     _summaries: SummaryBook = field(init=False, repr=False)
     _usage: UsageBook = field(init=False, repr=False)
+    _names: McpToolNames = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
+        self._names = McpToolNames()
         self._openai = OpenAiWire(self.model, self.token_delay_sec)
         self._ollama = OllamaWire(self.model, self.token_delay_sec)
         self._failures = FailureBook()
@@ -1216,7 +1301,10 @@ class FakeLlmApp:
         if name is SummaryName.HANG:
             await asyncio.sleep(self.hang_sec)
 
-        return self._answer(wire, payload, self._summaries.played(payload, name))
+        played = self._summaries.played(payload, name)
+        offered = OfferedTools(payload, self._names)
+
+        return self._answer(wire, payload, offered.played(played))
 
     def _answer(
         self, wire: OpenAiWire | OllamaWire, payload: Mapping[str, Any], played: Played
@@ -1234,10 +1322,11 @@ class FakeLlmApp:
         if name is None:
             name = self._unmarked_scenario(text, failure)
 
-        scenario = ScenarioBook.of(name, text)
+        offered = OfferedTools(payload, self._names)
+        scenario = offered.scenario(ScenarioBook.of(name, text))
         script = scenario.turn(scenario.answered(self._called_names(payload)))
 
-        return self._failures.apply(script, failure)
+        return offered.played(self._failures.apply(script, failure))
 
     def _unmarked_scenario(
         self, text: str, failure: FailureName | None

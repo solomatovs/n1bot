@@ -29,15 +29,24 @@ ADMIN_LOGIN = "admin"
 """Логин с ролью ADM: видит все инструменты, tools=['*']."""
 
 STAND_TOOLS = frozenset(
-    {"send_file", "diagram_save", "canvas_open", "connection_list", "connection_search"}
+    {
+        "mcp__boba_general__send_file",
+        "mcp__boba_general__diagram_save",
+        "mcp__boba_general__canvas_open",
+        "mcp__chat__connection_list",
+        "mcp__chat__connection_search",
+    }
 )
-"""Инструменты профиля general стенда: каталог соединений исполняет сам чат,
-остальные отдаёт endpoint general сервиса boba-mcp (песочные секции выключены)."""
+"""Инструменты профиля general стенда под полными именами, как их видит
+модель: каталог соединений исполняет сам чат (сервер chat), остальные отдаёт
+endpoint general сервиса boba-mcp (песочные секции выключены)."""
 
-DEV_OWN_TOOLS = frozenset({"connection_list"})
+DEV_OWN_TOOLS = frozenset({"mcp__chat__connection_list"})
 """Собственные инструменты чата, выданные роли DEV: без connection_search."""
 
-SEARCH_PROFILE_TOOLS = frozenset({"diagram_save", "canvas_open"})
+SEARCH_PROFILE_TOOLS = frozenset(
+    {"mcp__boba_search__diagram_save", "mcp__boba_search__canvas_open"}
+)
 """Набор endpoint'а search сервиса: его называет профиль search стенда."""
 
 
@@ -305,7 +314,7 @@ class TestRoleIntersection:
         _ask_and_wait(page)
 
         tools = _tool_names(_last_request(llm_port))
-        expected = (STAND_TOOLS - {"connection_search"}) | DEV_OWN_TOOLS
+        expected = (STAND_TOOLS - {"mcp__chat__connection_search"}) | DEV_OWN_TOOLS
         if tools != expected:
             raise AssertionError(f"tools {sorted(tools)} != {sorted(expected)}")
 

@@ -16,7 +16,13 @@ import pytest
 
 from boba.stand.ui.chat_page import ChatPage, StepKind
 from boba.stand.ui.fake_llm import ScenarioName
-from boba.stand.ui.stand import StandApp, StandConfig, StandProcess, free_port
+from boba.stand.ui.stand import (
+    StandApp,
+    StandConfig,
+    StandProcess,
+    StandToolNames,
+    free_port,
+)
 
 pytestmark = pytest.mark.ui
 
@@ -53,7 +59,8 @@ def sandbox_chat(sandbox_stand: StandProcess, open_chat: Any) -> ChatPage:
 
 
 def _bash_call(command: str) -> str:
-    request = {"name": "bash", "arguments": {"command": command}}
+    name = StandToolNames().full("bash")
+    request = {"name": name, "arguments": {"command": command}}
     return f"{ScenarioName.CALL.value} {json.dumps(request, ensure_ascii=False)}"
 
 

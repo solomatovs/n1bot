@@ -1,8 +1,9 @@
 """Хук `PreToolUse`: внешний обработчик решает судьбу вызова инструмента.
 
 Перед вызовом инструмента агент берёт группы обработчиков из настроек,
-чей матчер подходит к полному имени инструмента (`mcp__<сервер>__<имя>`
-для инструмента сервера MCP, собственное имя — для своего инструмента),
+чей матчер подходит к имени инструмента у модели (полное имя
+`mcp__<сервер>__<имя>` для инструмента сервера MCP, собственное имя — для
+своего инструмента; форму держит McpToolNames),
 шлёт каждому `POST` с JSON события и применяет ответ: `allow` пропускает
 вызов, `updatedInput` заменяет его аргументы целиком, `deny` снимает вызов
 с причиной для модели, `ask` переводит вызов в вопрос наружу. Молчание,
@@ -45,6 +46,7 @@ from pydantic.alias_generators import to_camel
 
 from boba.agent.records import PermissionMode
 from boba.cancellation import RunCancellation, ToolStopped
+from boba.toolkit.mcp_names import McpToolNames
 
 logger = logging.getLogger(__name__)
 
@@ -71,11 +73,8 @@ __all__ = [
     "HookedCall",
     "HttpHookSpec",
     "McpServerInfo",
-    "McpToolOrigin",
     "PreToolUseEvent",
     "PreToolUseHooks",
-    "ToolNameForm",
-    "ToolOrigins",
 ]
 
 
@@ -107,16 +106,6 @@ class HookDecision(StrEnum):
     ALLOW = "allow"
     DENY = "deny"
     ASK = "ask"
-
-
-class ToolNameForm(StrEnum):
-    """Полное имя инструмента в событии хука: инструмент сервера MCP несёт
-    имя сервера, собственный инструмент агента остаётся под своим именем."""
-
-    MCP = "mcp__{server}__{tool}"
-
-    def render(self, server: str, tool: str) -> str:
-        return self.value.format(server=server, tool=tool)
 
 
 class MatchEverything(StrEnum):
@@ -202,38 +191,6 @@ class HookGroup:
 
     matcher: HookMatcher
     hooks: Sequence[HttpHookSpec]
-
-
-@dataclass(frozen=True)
-class McpToolOrigin:
-    """Откуда у модели инструмент: сервер MCP, имя на нём, возможности сервера."""
-
-    server: str
-    tool: str
-    features: Mapping[str, Mapping[str, object]]
-
-
-class ToolOrigins:
-    """Происхождение инструментов сервера: имя у модели → сервер MCP.
-
-    По нему хук получает полное имя `mcp__<сервер>__<имя>` и возможности
-    сервера для события. Инструмент, о котором порт ничего не сказал
-    (собственный инструмент агента), остаётся под своим именем и без
-    сервера. Собирает вход процесса из открытых серверов MCP.
-    """
-
-    def __init__(self, origins: Mapping[str, McpToolOrigin]) -> None:
-        self._origins = dict(origins)
-
-    def of(self, name: str) -> McpToolOrigin | None:
-        return self._origins.get(name)
-
-    def full_name(self, name: str) -> str:
-        origin = self._origins.get(name)
-        if origin is None:
-            return name
-
-        return ToolNameForm.MCP.render(origin.server, origin.tool)
 
 
 class HookWire(BaseModel):
@@ -377,8 +334,9 @@ class HookReplies:
 
 @dataclass(frozen=True)
 class HookedCall:
-    """Вызов глазами хука: сессия, режим, имя у модели, идентификатор,
-    текущие аргументы и входная схема инструмента."""
+    """Вызов глазами хука: сессия, режим, имя у модели (у инструмента
+    сервера MCP — полное), идентификатор, текущие аргументы и входная схема
+    инструмента."""
 
     session_id: str
     permission_mode: PermissionMode
@@ -452,25 +410,27 @@ class Posting:
 class PreToolUseHooks:
     """Исполнитель хука `PreToolUse` на вызов инструмента.
 
-    Создаёт вход процесса из групп настроек, транспорта и происхождения
-    инструментов; зовёт ToolRunner после решения о разрешении и до отправки
-    вызова серверу. Обработчики подходящих групп идут по порядку: каждый
-    видит аргументы с заменами предыдущих; `deny` и блокирующий отказ
-    обрывают цепочку.
+    Создаёт вход процесса из групп настроек, транспорта и серверов MCP
+    сессии по именам; зовёт ToolRunner после решения о разрешении и до
+    отправки вызова серверу. Сервер инструмента для события находится
+    разбором полного имени (McpToolNames). Обработчики подходящих групп идут
+    по порядку: каждый видит аргументы с заменами предыдущих; `deny` и
+    блокирующий отказ обрывают цепочку.
     """
 
     def __init__(
         self,
         groups: Sequence[HookGroup],
         transport: HookTransport,
-        origins: ToolOrigins,
+        servers: Mapping[str, McpServerInfo],
         cwd: str,
     ) -> None:
         self._groups = list(groups)
         self._transport = transport
-        self._origins = origins
+        self._servers = dict(servers)
         self._cwd = cwd
         self._replies = HookReplies()
+        self._names = McpToolNames()
 
     def matching(self, full_name: str) -> Iterator[HttpHookSpec]:
         """Обработчики групп, чей матчер подходит к полному имени."""
@@ -486,7 +446,7 @@ class PreToolUseHooks:
         """Ошибки:
         ToolStopped — ход отменён, пока обработчик отвечал.
         """
-        full_name = self._origins.full_name(call.tool_name)
+        full_name = call.tool_name
         arguments = call.arguments
         asked = False
         reason = ""
@@ -539,9 +499,8 @@ class PreToolUseHooks:
         self, call: HookedCall, full_name: str, arguments: Mapping[str, Any]
     ) -> PreToolUseEvent:
         server: McpServerInfo | None = None
-        origin = self._origins.of(call.tool_name)
-        if origin is not None:
-            server = McpServerInfo(name=origin.server, features=origin.features)
+        if parsed := self._names.parse(full_name):
+            server = self._servers.get(parsed.server)
 
         return PreToolUseEvent(
             session_id=call.session_id,

@@ -49,6 +49,7 @@ from boba.toolkit.dag import (
     WorkflowNodeResult,
     WorkflowResult,
 )
+from boba.toolkit.mcp_names import McpToolNames
 from boba.toolkit.result import ToolArtifact
 from chainlit.step import Step
 
@@ -136,9 +137,9 @@ class SessionUpdateCodec:
 
 
 class ToolMedia:
-    """Типы содержимого аргументов инструментов серверов MCP по именам: по
-    ним лента рисует вход шага (sql, bash, json). Один объект на процесс;
-    карточки называет сборка приёмника по портам серверов профиля."""
+    """Типы содержимого аргументов инструментов серверов MCP по полным
+    именам: по ним лента рисует вход шага (sql, bash, json). Один объект на
+    процесс; карточки называет сборка приёмника по портам серверов профиля."""
 
     def __init__(self) -> None:
         self._views = CallViews()
@@ -187,6 +188,7 @@ class UpdateView:
         self._media = media
         self._results = ToolUseResults()
         self._dags = CallDag()
+        self._names = McpToolNames()
         self._turn_key: str | None = None
         self._thought_id: str | None = None
         self._answer_id: str | None = None
@@ -329,15 +331,29 @@ class UpdateView:
     def _nodes_of(
         self, name: str, call_id: str, args: Mapping[str, Any]
     ) -> Sequence[DagNode]:
-        """Узлы вызова workflow вызовами своих инструментов; пусто — вызов
-        не workflow либо не проходит форму описания, и рисуется одним шагом."""
-        if name != self._dags.WORKFLOW:
+        """Узлы вызова workflow вызовами инструментов того же сервера под
+        полными именами; пусто — вызов не workflow сервера MCP либо не
+        проходит форму описания, и рисуется одним шагом."""
+        owner = self._names.parse(name)
+        if owner is None:
+            return ()
+
+        if owner.tool != self._dags.WORKFLOW:
             return ()
 
         try:
-            return self._dags.nodes_of(DagNode(key=call_id, tool=name, args=dict(args)))
+            described = self._dags.nodes_of(
+                DagNode(key=call_id, tool=name, args=dict(args))
+            )
         except StreamPlanError:
             return ()
+
+        nodes: list[DagNode] = []
+        for node in described:
+            full = self._names.in_server(owner.server, node.tool)
+            nodes.append(node.model_copy(update={"tool": full}))
+
+        return nodes
 
     async def _nodes_started(self, call_id: str, nodes: Sequence[DagNode]) -> None:
         """Шаг на узел вызова workflow под идентификатором вызова узла."""

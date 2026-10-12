@@ -750,14 +750,18 @@ class Steps:
     ) -> None:
         response = await conn.prompt(
             session_id=session_id,
-            prompt=[text_block(call({"name": "add", "arguments": {"a": 1, "b": 2}}))],
+            prompt=[
+                text_block(
+                    call({"name": "mcp__stand__add", "arguments": {"a": 1, "b": 2}})
+                )
+            ],
         )
         assert response.stop_reason == StopReasonName.END_TURN.value
 
         starts = client.starts()
         assert len(starts) == 1
         start = starts[0]
-        assert start.title.startswith("add ")
+        assert start.title.startswith("mcp__stand__add ")
         assert start.kind == ToolKindName.READ.value
         assert start.status == "pending"
         assert isinstance(start.raw_input, dict)
@@ -790,13 +794,17 @@ class Steps:
         client.choice = PermissionChoice.ALLOW_ALWAYS
         response = await conn.prompt(
             session_id=session_id,
-            prompt=[text_block(call({"name": "shout", "arguments": {"text": "hi"}}))],
+            prompt=[
+                text_block(
+                    call({"name": "mcp__stand__shout", "arguments": {"text": "hi"}})
+                )
+            ],
         )
         assert response.stop_reason == StopReasonName.END_TURN.value
         assert len(client.permissions) == 1
         asked = client.permissions[0]
         assert asked.title is not None
-        assert asked.title.startswith("shout ")
+        assert asked.title.startswith("mcp__stand__shout ")
         assert asked.kind == ToolKindName.EDIT.value
         assert asked.status == "pending"
         assert [o.kind for o in client.options[0]] == [
@@ -812,7 +820,9 @@ class Steps:
         response = await conn.prompt(
             session_id=session_id,
             prompt=[
-                text_block(call({"name": "shout", "arguments": {"text": "again"}}))
+                text_block(
+                    call({"name": "mcp__stand__shout", "arguments": {"text": "again"}})
+                )
             ],
         )
         assert response.stop_reason == StopReasonName.END_TURN.value
@@ -924,7 +934,9 @@ class TestConversation:
             response = await conn.prompt(
                 session_id=session.session_id,
                 prompt=[
-                    text_block(call({"name": "shout", "arguments": {"text": "no"}}))
+                    text_block(
+                        call({"name": "mcp__stand__shout", "arguments": {"text": "no"}})
+                    )
                 ],
             )
 
@@ -952,7 +964,11 @@ class TestConversation:
             response = await conn.prompt(
                 session_id=session.session_id,
                 prompt=[
-                    text_block(call({"name": "progress", "arguments": {"steps": 3}}))
+                    text_block(
+                        call(
+                            {"name": "mcp__stand__progress", "arguments": {"steps": 3}}
+                        )
+                    )
                 ],
             )
 
@@ -1019,7 +1035,12 @@ class TestQueueAndCancel:
                     session_id=session_id,
                     prompt=[
                         text_block(
-                            call({"name": "sleep_for", "arguments": {"seconds": 1.0}})
+                            call(
+                                {
+                                    "name": "mcp__stand__sleep_for",
+                                    "arguments": {"seconds": 1.0},
+                                }
+                            )
                         )
                     ],
                 ),
@@ -1066,7 +1087,12 @@ class TestQueueAndCancel:
                     session_id=session.session_id,
                     prompt=[
                         text_block(
-                            call({"name": "sleep_for", "arguments": {"seconds": 30}})
+                            call(
+                                {
+                                    "name": "mcp__stand__sleep_for",
+                                    "arguments": {"seconds": 30},
+                                }
+                            )
                         )
                     ],
                 )
@@ -1107,7 +1133,14 @@ class TestQueueAndCancel:
                 conn.prompt(
                     session_id=session.session_id,
                     prompt=[
-                        text_block(call({"name": "shout", "arguments": {"text": "x"}}))
+                        text_block(
+                            call(
+                                {
+                                    "name": "mcp__stand__shout",
+                                    "arguments": {"text": "x"},
+                                }
+                            )
+                        )
                     ],
                 )
             )
@@ -1160,7 +1193,10 @@ class TestQueueAndCancel:
                             {
                                 "type": "text",
                                 "text": call(
-                                    {"name": "sleep_for", "arguments": {"seconds": 30}}
+                                    {
+                                        "name": "mcp__stand__sleep_for",
+                                        "arguments": {"seconds": 30},
+                                    }
                                 ),
                             }
                         ],
@@ -1258,6 +1294,65 @@ class TestRefusals:
 
         assert await boba.wait() == 0
 
+    async def test_same_tool_of_two_servers_is_called_on_each(
+        self, boba: AcpProcess, mcp: McpStand, tmp_path: Path
+    ) -> None:
+        """Одноимённые инструменты двух серверов не сталкиваются: модель
+        видит оба под полными именами и вызов уходит названному серверу."""
+        client = RecordingClient()
+        conn = await boba.start(client)
+        try:
+            await handshake(conn)
+            session = await conn.new_session(
+                cwd=str(tmp_path),
+                mcp_servers=[mcp.server("first"), mcp.server("second")],
+            )
+            both = call(
+                {"name": "mcp__first__add", "arguments": {"a": 1, "b": 2}},
+                {"name": "mcp__second__add", "arguments": {"a": 10, "b": 20}},
+            )
+            response = await conn.prompt(
+                session_id=session.session_id, prompt=[text_block(both)]
+            )
+
+            assert response.stop_reason == StopReasonName.END_TURN.value
+            starts = client.starts()
+            assert [start.title.partition(" ")[0] for start in starts] == [
+                "mcp__first__add",
+                "mcp__second__add",
+            ]
+            answers: list[str] = []
+            for start in starts:
+                answers.append(result_text(client.progress_of(start.tool_call_id)[-1]))
+
+            assert answers == ["3", "30"]
+        finally:
+            await conn.close()
+            await boba.close_stdin()
+
+        assert await boba.wait() == 0
+
+    async def test_server_name_that_breaks_tool_names_is_refused(
+        self, boba: AcpProcess, mcp: McpStand, tmp_path: Path
+    ) -> None:
+        client = RecordingClient()
+        conn = await boba.start(client)
+        try:
+            await handshake(conn)
+            with pytest.raises(RequestError) as refused:
+                await conn.new_session(
+                    cwd=str(tmp_path), mcp_servers=[mcp.server("my__srv")]
+                )
+
+            assert refused.value.code == INVALID_PARAMS
+            assert "'my__srv'" in str(refused.value.data)
+            assert "contains '__'" in str(refused.value.data)
+        finally:
+            await conn.close()
+            await boba.close_stdin()
+
+        assert await boba.wait() == 0
+
     async def test_model_failure_is_a_json_rpc_error(
         self, boba: AcpProcess, model: FakeModel, tmp_path: Path
     ) -> None:
@@ -1336,7 +1431,7 @@ class TestHistory:
     """Сессии и история: второй процесс над тем же журналом."""
 
     PROMPTS: ClassVar[tuple[str, ...]] = (
-        call({"name": "add", "arguments": {"a": 2, "b": 3}}),
+        call({"name": "mcp__stand__add", "arguments": {"a": 2, "b": 3}}),
         ScenarioName.THINKING_ANSWER.value,
     )
 
@@ -1775,7 +1870,9 @@ class TestSessionSettings:
             response = await conn.prompt(
                 session_id=session_id,
                 prompt=[
-                    text_block(call({"name": "shout", "arguments": {"text": "x"}}))
+                    text_block(
+                        call({"name": "mcp__stand__shout", "arguments": {"text": "x"}})
+                    )
                 ],
             )
             assert response.stop_reason == StopReasonName.END_TURN.value
@@ -1813,7 +1910,9 @@ class TestSessionSettings:
             response = await conn.prompt(
                 session_id=session_id,
                 prompt=[
-                    text_block(call({"name": "shout", "arguments": {"text": "y"}}))
+                    text_block(
+                        call({"name": "mcp__stand__shout", "arguments": {"text": "y"}})
+                    )
                 ],
             )
             assert response.stop_reason == StopReasonName.END_TURN.value
@@ -1922,7 +2021,12 @@ class TestSessionSettings:
                     session_id=session_id,
                     prompt=[
                         text_block(
-                            call({"name": "sleep_for", "arguments": {"seconds": 2.0}})
+                            call(
+                                {
+                                    "name": "mcp__stand__sleep_for",
+                                    "arguments": {"seconds": 2.0},
+                                }
+                            )
                         )
                     ],
                 )
@@ -2058,7 +2162,12 @@ class TestServiceUpdates:
                     session_id=session_id,
                     prompt=[
                         text_block(
-                            call({"name": "large", "arguments": {"size": 24000}})
+                            call(
+                                {
+                                    "name": "mcp__stand__large",
+                                    "arguments": {"size": 24000},
+                                }
+                            )
                         )
                     ],
                 )

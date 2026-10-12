@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import tempfile
 from collections.abc import Mapping, Sequence
@@ -52,6 +53,7 @@ from boba.db.postgres.connection import PostgresConfig
 from boba.krb import KerberosWorkspace
 from boba.krb.credentials import ClientCredentials, KerberosEnv
 from boba.runtime.table import PgTable
+from boba.toolkit.mcp_names import McpToolNames
 from boba.transport.http.connection import BearerAuth, HttpConnection
 
 __all__ = [
@@ -615,18 +617,32 @@ class AgentSettingsLayers:
         return chat
 
 
-class HookMatchers:
-    """Матчер хука по именам серверов MCP: `mcp__<server>__<tool>` без разбора
-    имён инструментов."""
+class MatcherPart(StrEnum):
+    """Части регулярного выражения матчера хука."""
 
-    TEMPLATE: ClassVar[str] = "^mcp__{server}__"
+    ANCHOR = "^"
+    ALTERNATIVE = "|"
+
+
+class HookMatchers:
+    """Матчер хука по именам серверов MCP: регулярное выражение формы хуков,
+    которое подходит ко всем инструментам названных серверов. Начало полных
+    имён инструментов сервера даёт McpToolNames; создаёт SettingsFileBuilder.
+    """
+
+    def __init__(self) -> None:
+        self._names = McpToolNames()
 
     def of(self, servers: Sequence[str]) -> str:
+        """Ошибки:
+        McpToolNameError — имя сервера не годится для полных имён инструментов.
+        """
         parts: list[str] = []
         for name in servers:
-            parts.append(self.TEMPLATE.format(server=name))
+            prefix = re.escape(self._names.server_prefix(name))
+            parts.append(f"{MatcherPart.ANCHOR.value}{prefix}")
 
-        return "|".join(parts)
+        return MatcherPart.ALTERNATIVE.value.join(parts)
 
 
 class SettingsFileBuilder:
