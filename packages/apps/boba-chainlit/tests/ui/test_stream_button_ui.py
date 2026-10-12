@@ -87,6 +87,8 @@ def test_button_appears_when_the_call_is_over(sandbox_chat: ChatPage) -> None:
             + sandbox_chat.log.describe()
         )
 
+    # конец хода сворачивает контейнер процесса: шаг раскрывается заново
+    sandbox_chat.expand_last_tool()
     if not _button_appears(sandbox_chat, POLL_SEC):
         raise AssertionError(
             "stream button is absent on the finished tool step\n"
