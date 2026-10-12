@@ -36,7 +36,7 @@ from test_cli_acp import (
 )
 
 from boba.agent.history import SessionId, StoredLine
-from boba.cli.acp import MetaKey, StopReasonName
+from boba.cli.acp_server import MetaKey, StopReasonName
 from boba.config import bind
 from boba.db.postgres import AsyncPostgresPool
 from boba.db.postgres.connection import PostgresConfig

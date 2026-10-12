@@ -79,8 +79,7 @@ from acp.transports import default_environment
 from acp.utils import notify_model, request_model, request_model_from_dict
 from pydantic import BaseModel, ValidationError
 
-from boba.chainlit.acp.settings import AgentWorkdir, WorkdirFile
-from boba.chainlit.acp.tokens import SessionServer
+from boba.chainlit.agent.settings import AgentWorkdir, WorkdirFile
 
 __all__ = [
     "AcpClientError",
@@ -440,47 +439,41 @@ class AgentProcess:
 
         return self._capabilities
 
-    async def new_session(self, servers: Sequence[SessionServer]) -> str:
+    async def new_session(self) -> str:
         """Новая сессия в приватном каталоге; id выдаёт агент."""
-        opened = await self.open_session(servers)
+        opened = await self.open_session()
 
         return opened.session_id
 
-    async def open_session(
-        self, servers: Sequence[SessionServer]
-    ) -> NewSessionResponse:
-        """Новая сессия с её режимами и настройками (`modes`, `configOptions`)."""
-        request = NewSessionRequest(
-            cwd=str(self._workdir.path), mcp_servers=list(servers)
-        )
+    async def open_session(self) -> NewSessionResponse:
+        """Новая сессия с её режимами и настройками (`modes`, `configOptions`).
+        Серверы MCP сессии агент берёт из своего файла настроек: по
+        протоколу их список пуст."""
+        request = NewSessionRequest(cwd=str(self._workdir.path), mcp_servers=[])
 
         return await self._request(
             AGENT_METHODS["session_new"], request, NewSessionResponse
         )
 
-    async def load_session(
-        self, session_id: str, servers: Sequence[SessionServer]
-    ) -> LoadSessionResponse:
+    async def load_session(self, session_id: str) -> LoadSessionResponse:
         """Загрузка сессии с воспроизведением беседы приёмнику до ответа."""
         request = LoadSessionRequest(
             cwd=str(self._workdir.path),
             session_id=session_id,
-            mcp_servers=list(servers),
+            mcp_servers=[],
         )
 
         return await self._request(
             AGENT_METHODS["session_load"], request, LoadSessionResponse, lenient=True
         )
 
-    async def resume_session(
-        self, session_id: str, servers: Sequence[SessionServer]
-    ) -> ResumeSessionResponse:
+    async def resume_session(self, session_id: str) -> ResumeSessionResponse:
         """Открытие сохранённой сессии без воспроизведения беседы: приёмник
         уведомлений о прошлых ходах не получает."""
         request = ResumeSessionRequest(
             cwd=str(self._workdir.path),
             session_id=session_id,
-            mcp_servers=list(servers),
+            mcp_servers=[],
         )
 
         return await self._request(
@@ -530,23 +523,19 @@ class AgentProcess:
             lenient=True,
         )
 
-    async def fork_session(
-        self, session_id: str, servers: Sequence[SessionServer], up_to_uuid: str
-    ) -> str:
+    async def fork_session(self, session_id: str, up_to_uuid: str) -> str:
         """Ветвь сессии до записи up_to_uuid (сама запись и всё после неё в
         ветку не идут); id новой сессии выдаёт агент."""
-        branch = await self.fork(session_id, servers, up_to_uuid)
+        branch = await self.fork(session_id, up_to_uuid)
 
         return branch.session_id
 
-    async def fork(
-        self, session_id: str, servers: Sequence[SessionServer], up_to_uuid: str
-    ) -> ForkSessionResponse:
+    async def fork(self, session_id: str, up_to_uuid: str) -> ForkSessionResponse:
         """Ветвь сессии с её режимами и настройками в ответе."""
         request = ForkSessionRequest(
             session_id=session_id,
             cwd=str(self._workdir.path),
-            mcp_servers=list(servers),
+            mcp_servers=[],
             field_meta={MetaKey.UP_TO_UUID.value: up_to_uuid},
         )
 

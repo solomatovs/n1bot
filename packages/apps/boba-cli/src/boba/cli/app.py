@@ -2,7 +2,7 @@
 
 Разбирает аргументы, собирает действующие настройки (Settings), на старте
 проверяет профили моделей (ModelCatalog), хранилище истории и скиллы и отдаёт
-ACP-серверу (boba.cli.acp) сборку сессий: на каждую `session/new|load|resume`
+ACP-серверу (boba.cli.acp_server) сборку сессий: на каждую `session/new|load|resume`
 — агент ядра с серверами MCP из запроса и из `.mcp.json` проекта и с хуком
 `PreToolUse` из секции `hooks` настроек (boba.cli.hooks); на занятую другим
 процессом сессию — наблюдатель над теми же серверами; список, удаление и
@@ -59,7 +59,7 @@ from boba.agent.skills import Skill, SkillsDir, SkillsError
 from boba.agent.template import AgentTemplate
 from boba.agent.tools import ToolsError
 from boba.cancellation import ProcessStop, StopAction, StopReason
-from boba.cli.acp import (
+from boba.cli.acp_server import (
     AcpAgent,
     AcpServer,
     ObservedSession,
@@ -769,7 +769,6 @@ class AgentAssembly(SessionAssembly):
                 NamedBlocks(),
                 ProgressSignals(sink),
                 self._scope,
-                None,
                 DirectCalls(),
             )
             try:

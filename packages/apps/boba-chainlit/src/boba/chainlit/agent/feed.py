@@ -46,7 +46,7 @@ import chainlit as cl
 from boba.cancellation import RunCancellation
 from boba.canvas.canvas import CanvasError, CanvasErrorKind
 from boba.canvas.keys import ElementProps, ObjectKey
-from boba.chainlit.acp.chat import (
+from boba.chainlit.agent.chat import (
     PermissionKind,
     PermissionOutcome,
     Question,
@@ -55,7 +55,7 @@ from boba.chainlit.acp.chat import (
     TurnRenderer,
     TurnRenderers,
 )
-from boba.chainlit.acp.client import SessionUpdate
+from boba.chainlit.agent.client import SessionUpdate
 from boba.chainlit.canvas.panel import CanvasPanel
 from boba.chainlit.canvas.remote import RemoteJournals
 from boba.chainlit.chat.feed import TurnFeed

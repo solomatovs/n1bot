@@ -15,7 +15,7 @@ from typing import Any, ClassVar
 from acp.schema import ToolCallProgress, ToolCallStart
 from pydantic import BaseModel, ConfigDict, Field
 
-from boba.chainlit.acp.client import SessionUpdate
+from boba.chainlit.agent.client import SessionUpdate
 from boba.chainlit.rendering.acp_view import SessionUpdateCodec
 from boba.identity.context import Scope
 from boba.messaging import (

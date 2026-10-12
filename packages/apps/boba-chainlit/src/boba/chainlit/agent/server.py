@@ -1,35 +1,36 @@
 """Чат как сервер инструментов своего агента: MCP-сервер инструментов
-соединений под `[agent.chat_mcp].path` и обработчик хука PreToolUse под
-`[agent.hook].path`.
+соединений под `[agent.chat_mcp].path`, обработчик хука PreToolUse под
+`[agent.hook].path` и ключи процессов агента, по которым оба входа узнают
+вызывающего.
 
-Оба входа живут в FastAPI chainlit и принимают на каждом запросе Bearer JWT
-входа chainlit — тот, что `SessionServers` и `SettingsFileBuilder` отдают
-агенту в `mcpServers` и в заголовках хука. По токену чат узнаёт вызывающего
-(ChatCallers): логин, роли и профиль из клеймов, строку users — из таблицы.
-Сессий MCP нет: сервер stateless streamable HTTP, собран из общего адаптера
-boba.mcp_adapter; инструменты — собственные инструменты чата из реестра
-(connection_list, connection_search) по ролям и профилю входа. Обработчик
-хука читает событие PreToolUse, находит по схеме инструмента параметры-
-соединения (SealedParamSchema), заменяет имя соединения профилем,
-запечатанным ключом сервера MCP из `mcp_server.features` (SealFeature), и
-отвечает `updatedInput`; неизвестное или невыданное соединение — `deny` с
-причиной.
+Оба входа живут в FastAPI chainlit и принимают на каждом запросе Bearer ключ
+процесса агента — случайную строку, которую запуск агента (AgentLauncher)
+выдаёт процессу и пишет в его файл настроек: в запись сервера чата и в
+заголовок хука. Токен входа пользователя агенту не передаётся. По ключу чат
+находит запись его держателя (ProcessKeys): пользователя, тред и профиль
+треда; роли и секреты входа читаются из живой сессии пользователя в момент
+вызова. Сессий MCP нет: сервер stateless streamable HTTP, собран из общего
+адаптера boba.mcp_adapter; инструменты — собственные инструменты чата из
+реестра (connection_list, connection_search) по ролям пользователя и профилю
+треда. Обработчик хука читает событие PreToolUse, находит по схеме
+инструмента параметры-соединения (SealedParamSchema), заменяет имя
+соединения профилем, запечатанным ключом сервера MCP из
+`mcp_server.features` (SealFeature), и отвечает `updatedInput`; неизвестное
+или невыданное соединение — `deny` с причиной.
 
 Ошибки:
-AuthenticationError — токена нет, он не принят либо у входа нет строки
-    users: вход отвечает 401.
-RefusalError — входу не выдан ни один профиль чата: 403 через
-    DomainErrorMiddleware.
+AuthenticationError — ключа нет, он неизвестен или снят либо сессия его
+    держателя больше не несёт годного входа: вход отвечает 401.
 ConnectionStoreError — таблица соединений недоступна: обработчик отвечает
     500, агент блокирует вызов по onFailure.
 KerberosError — билет к соединению не выпущен: то же.
-DataUnavailableError — таблица users недоступна.
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
+import secrets
 from collections.abc import Mapping
 from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass
@@ -37,7 +38,7 @@ from datetime import timedelta
 from enum import StrEnum
 from http import HTTPStatus
 from typing import Any, ClassVar
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import mcp_types as mt
 from fastmcp import FastMCP
@@ -59,8 +60,8 @@ from boba.agent.hooks import (
     PreToolUseEvent,
 )
 from boba.cancellation import RunCancellation, StopReason
-from boba.chainlit.acp.config import ChatMcpConfig, HookConfig
-from boba.chat.profiles import ChatProfiles
+from boba.chainlit.agent.config import ChatMcpConfig, HookConfig
+from boba.chainlit.infra.session import LiveSignIn
 from boba.connection_broker.user_connections import ArmedConnections
 from boba.connections.marks import ConnectionRefusal
 from boba.connections.sealed import (
@@ -69,7 +70,6 @@ from boba.connections.sealed import (
     SealFeature,
     SealKey,
 )
-from boba.identity.api import PersistedUsers
 from boba.identity.context import (
     CallContext,
     CallContexts,
@@ -80,7 +80,6 @@ from boba.identity.context import (
 )
 from boba.identity.errors import AuthenticationError, RefusalError
 from boba.identity.run import Runs
-from boba.identity.token import TokenReader, TokenRejectedError
 from boba.mcp_adapter import CallerServers, McpReplies, McpToolProvider
 from boba.runtime.http import RequestTokens
 from boba.toolkit.dag import ToolServer
@@ -97,7 +96,9 @@ __all__ = [
     "ChatTokenVerifier",
     "ChatToolServers",
     "HookSealing",
+    "KeyHolder",
     "PreToolUseHandler",
+    "ProcessKeys",
 ]
 
 logger = logging.getLogger(__name__)
@@ -131,53 +132,90 @@ class DetailKey(StrEnum):
 
 
 @dataclass(frozen=True)
+class KeyHolder:
+    """Держатель ключа процесса агента: чей это агент и какого треда.
+
+    Создаётся запуском агента (AgentLauncher) вместе с ключом. profile —
+    профиль треда: по нему сервер инструментов чата выбирает набор
+    инструментов. session — живой вход пользователя вкладки.
+    """
+
+    user_id: UUID
+    login: str
+    thread_id: str
+    profile: str
+    session: LiveSignIn
+
+
+class ProcessKeys:
+    """Ключи процессов агента этого инстанса чата: ключ → его держатель.
+
+    Создаётся провайдером процесса, один на инстанс. Запуск агента выдаёт
+    ключ процессу (issue) и снимает его при остановке и перезапуске
+    (revoke); сервер инструментов чата и обработчик хука находят по ключу
+    держателя (holder). Реестр живёт в памяти: процесс агента — потомок
+    этого же инстанса и с его рестартом не остаётся.
+    """
+
+    KEY_BYTES: ClassVar[int] = 32
+
+    def __init__(self) -> None:
+        self._holders: dict[str, KeyHolder] = {}
+
+    def issue(self, holder: KeyHolder) -> str:
+        """Новый случайный ключ держателя."""
+        key = secrets.token_urlsafe(self.KEY_BYTES)
+        self._holders[key] = holder
+
+        return key
+
+    def revoke(self, key: str) -> None:
+        """Снимает ключ; неизвестный ключ — ничего."""
+        self._holders.pop(key, None)
+
+    def holder(self, key: str) -> KeyHolder | None:
+        """Держатель ключа; None — ключ не выдан этим инстансом или снят."""
+        return self._holders.get(key)
+
+
+@dataclass(frozen=True)
 class ChatCaller:
-    """Вызывающий по токену: субъект (строка users, роли, профиль) и секреты
-    его входа для билетов к соединениям."""
+    """Вызывающий по ключу процесса: субъект (пользователь, его роли, профиль
+    треда) и секреты его входа для билетов к соединениям."""
 
     subject: Subject
     credential: Credential
 
 
 class ChatCallers:
-    """Вызывающий по Bearer JWT входа chainlit.
+    """Вызывающий по Bearer ключу процесса агента.
 
     Создаётся провайдером процесса; им пользуются сервер инструментов (порт
     по ролям и профилю) и обработчик хука (субъект и креды для соединений).
-    Токен читает читатель сессий процесса, строку users — таблица users,
-    профиль инструментов — выбор входа из клеймов по правилам ChatProfiles.
+    Держателя ключа отдаёт реестр ProcessKeys; роли и секреты входа читаются
+    из живой сессии держателя.
     """
 
-    def __init__(
-        self, tokens: TokenReader, users: PersistedUsers, profiles: ChatProfiles
-    ) -> None:
-        self._tokens = tokens
-        self._users = users
-        self._profiles = profiles
+    def __init__(self, keys: ProcessKeys) -> None:
+        self._keys = keys
 
-    async def of_token(self, token: str) -> ChatCaller:
+    def of_key(self, key: str) -> ChatCaller:
         """Ошибки:
-        AuthenticationError — токен не принят либо у входа нет строки users.
-        RefusalError — входу не выдан ни один профиль чата.
+        AuthenticationError — ключ неизвестен или снят либо сессия держателя
+            не несёт годного входа.
         """
-        try:
-            claims = self._tokens.read(token)
-        except TokenRejectedError as exc:
-            msg = f"sign-in token rejected ({exc.reason.value}): {exc}"
-            raise AuthenticationError(msg) from exc
-
-        user = await self._users.get_user(claims.identifier)
-        if user is None:
+        holder = self._keys.holder(key)
+        if holder is None:
             msg = (
-                f"sign-in {claims.identifier!r} has no users row: the chat tools "
-                "serve only users who signed in to the chat"
+                "the bearer token is not a key of a running agent process of "
+                "this chat instance: expected the key from the settings file "
+                "of the agent, got an unknown or revoked one"
             )
             raise AuthenticationError(msg)
 
-        sign_in = claims.sign_in()
-        profile = self._profiles.resolve(None, sign_in)
+        sign_in = holder.session.signed_in().sign_in()
         subject = Subject.of_user(
-            user.id, claims.identifier, sign_in.roles, profile.name
+            holder.user_id, holder.login, sign_in.roles, holder.profile
         )
 
         return ChatCaller(subject=subject, credential=sign_in.credential())
@@ -196,30 +234,24 @@ class ChatCallers:
 
 
 class ChatTokenVerifier(TokenVerifier):
-    """Проверка Bearer JWT входа chainlit на сервере инструментов чата.
+    """Проверка Bearer ключа процесса агента на сервере инструментов чата.
 
-    Отдаётся в FastMCP(auth=…): без токена, с чужим или просроченным токеном
-    fastmcp отвечает 401. Клеймы токена едут в AccessToken: по ним
-    ChatCallers узнаёт вызывающего без второго чтения подписи.
+    Отдаётся в FastMCP(auth=…): без ключа, с неизвестным или снятым ключом
+    fastmcp отвечает 401. Токен входа пользователя ключом не является.
     """
 
-    def __init__(self, tokens: TokenReader) -> None:
+    def __init__(self, keys: ProcessKeys) -> None:
         super().__init__()
-        self._tokens = tokens
+        self._keys = keys
 
     async def verify_token(self, token: str) -> AccessToken | None:
-        try:
-            claims = self._tokens.read(token)
-        except TokenRejectedError as exc:
-            logger.info("chat mcp: sign-in token rejected (%s)", exc.reason.value)
+        holder = self._keys.holder(token)
+        if holder is None:
+            logger.info("chat mcp: the bearer token is not a key of an agent process")
             return None
 
         return AccessToken(
-            token=token,
-            client_id=claims.identifier,
-            scopes=[],
-            expires_at=claims.exp,
-            claims=claims.model_dump(mode="json"),
+            token=token, client_id=holder.login, scopes=[], expires_at=None, claims={}
         )
 
 
@@ -240,18 +272,18 @@ class ChatToolServers(CallerServers):
 
     async def current(self) -> ToolServer:
         """Ошибки:
-        AuthenticationError — запрос без принятого токена или вход без строки users.
-        RefusalError — входу не выдан ни один профиль чата.
+        AuthenticationError — запрос без принятого ключа процесса либо
+            сессия его держателя не несёт годного входа.
         """
         token = get_access_token()
         if token is None:
             msg = (
                 "chat mcp: the request carries no accepted bearer token, "
-                "expected the sign-in JWT of the chat"
+                "expected the key of the agent process"
             )
             raise AuthenticationError(msg)
 
-        caller = await self._callers.of_token(token.token)
+        caller = self._callers.of_key(token.token)
 
         return self.of(caller.subject)
 
@@ -271,7 +303,7 @@ class ChatToolServers(CallerServers):
 class ChatCallMiddleware(Middleware):
     """Контекст вызова вокруг инструмента чата, вызванного агентом.
 
-    По токену запроса собирает контекст вызова (субъект, область
+    По ключу запроса собирает контекст вызова (субъект, область
     пользователя, креды входа) и держит запуск открытым на время вызова:
     тела инструментов читают субъекта из контекста, как в ходе чата.
     Клиент закрыл соединение — отмена помечается.
@@ -295,7 +327,7 @@ class ChatCallMiddleware(Middleware):
             )
 
         try:
-            caller = await self._callers.of_token(token.token)
+            caller = self._callers.of_key(token.token)
         except AuthenticationError as exc:
             return self._refused(context.message.name, str(exc))
 
@@ -483,7 +515,7 @@ class PreToolUseHandler:
     """HTTP-обработчик хука PreToolUse агента под `[agent.hook].path`.
 
     Создаётся провайдером процесса, маршрут ставит bootstrap. Запрос: Bearer
-    JWT входа и JSON события по форме хуков (PreToolUseEvent); ответ — JSON
+    ключ процесса агента и JSON события по форме хуков (PreToolUseEvent); ответ — JSON
     по форме ответа (HookReplyBody): `allow` с `updatedInput`, где имена
     соединений заменены запечатанными профилями, либо `deny` с причиной.
     """
@@ -508,11 +540,11 @@ class PreToolUseHandler:
         if token is None:
             return self._unauthorized(
                 "the hook request carries no bearer token, expected the "
-                "sign-in JWT of the chat"
+                "key of the agent process"
             )
 
         try:
-            caller = await self._callers.of_token(token)
+            caller = self._callers.of_key(token)
         except AuthenticationError as exc:
             return self._unauthorized(str(exc))
 

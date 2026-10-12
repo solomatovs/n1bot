@@ -23,7 +23,7 @@ from test_cli_acp import (
     result_text,
 )
 
-from boba.cli.acp import StopReasonName
+from boba.cli.acp_server import StopReasonName
 from boba.stand.hooks import HookStandRules, HookStandServer
 
 pytestmark = pytest.mark.anyio

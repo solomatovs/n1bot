@@ -95,19 +95,6 @@ PROFILES = (
 )
 
 
-CHAT_TOOLS_BY_SIGN_IN = pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "the chat tool server /chat/mcp grants the tools of the sign-in profile, "
-        "not of the thread profile: a thread of the profile search still gets "
-        "connection_list and connection_search; which profile the server serves "
-        "is decision 7 of docs/chat-agent-migration.md, section 11, waiting for "
-        "the user (ui-fix-report.md, question 3)"
-    ),
-)
-"""Набор собственных инструментов чата у треда не своего профиля входа."""
-
-
 def _llm_requests(llm_port: int) -> list[dict[str, Any]]:
     """Запросы, дошедшие до фейкового провайдера, в порядке прихода."""
     response = httpx.get(StandUrl.of(llm_port, "/requests"), timeout=5.0)
@@ -259,7 +246,7 @@ class TestProfileSettingsApplied:
         "spec",
         [
             pytest.param(PROFILES[0], id="general"),
-            pytest.param(PROFILES[1], id="search", marks=CHAT_TOOLS_BY_SIGN_IN),
+            pytest.param(PROFILES[1], id="search"),
         ],
     )
     def test_admin_tools_follow_the_profile(
@@ -292,7 +279,6 @@ class TestRoleIntersection:
         )
         raise AssertionError(msg)
 
-    @CHAT_TOOLS_BY_SIGN_IN
     def test_dev_search_gets_the_endpoint_tools(
         self, open_chat: OpenChat, stand: StandProcess, llm_port: int
     ) -> None:

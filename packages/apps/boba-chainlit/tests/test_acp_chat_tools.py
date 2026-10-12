@@ -5,17 +5,23 @@ pg процессами хоста, настоящий `boba acp` с фейко�
 Проверяется ход «connection_list на /chat/mcp → pg_query на boba-mcp с именем
 соединения»: обработчик хука подменяет имя запечатанным профилем, сервис
 открывает его и исполняет запрос, в ленте остаётся имя; сам сервер `/chat/mcp`
-отдаёт инструменты соединений клиенту MCP с JWT входа и отвечает 401 чужому
-и просроченному токену; обработчик хука отвечает `allow` с `updatedInput`,
-`deny` на неизвестное соединение и 401 без годного JWT."""
+отдаёт инструменты соединений клиенту MCP с ключом процесса агента и отвечает
+401 всему остальному, включая JWT входа пользователя; обработчик хука отвечает
+`allow` с `updatedInput`, `deny` на неизвестное соединение и 401 без годного
+ключа. Ключ живёт с процессом: перезапуск агента и закрытие вкладки его
+снимают. Серверы профиля агент получает файлом настроек со способом входа
+из конфига чата: proxy — от имени пользователя вкладки, local — учёткой
+агента."""
 
 from __future__ import annotations
 
+import asyncio
 import json
 import multiprocessing
 import time
 from collections.abc import AsyncIterator, Iterator, Mapping
 from http import HTTPStatus
+from pathlib import Path
 from typing import Any, ClassVar
 from uuid import uuid4
 
@@ -26,8 +32,9 @@ import pytest
 from acp_stand import AgentHistoryStand
 from mcp.client.session import ClientSession
 from mcp.client.streamable_http import streamable_http_client
-from test_acp_chat import BOOT_TIMEOUT_SEC, ChatSocket
+from test_acp_chat import BOOT_TIMEOUT_SEC, AgentProcesses, ChatSocket
 
+import boba.chainlit.agent
 from boba.agent.hooks import (
     HookDecision,
     HookReplyBody,
@@ -46,6 +53,8 @@ from boba.stand.site import Stand
 from boba.stand.ui.database import StandDatabase
 from boba.stand.ui.fake_llm import ScenarioName, serve
 from boba.stand.ui.stand import (
+    ServiceStand,
+    StandAgentAuth,
     StandApp,
     StandConfig,
     StandProcess,
@@ -62,6 +71,8 @@ SERVICE_PLUGINS = ("pg",)
 MCP_SERVER = "boba_general"
 ADMIN = "admin"
 JSON_RPC = "2.0"
+SHORT_TOKEN_SEC = 4
+"""Срок токена сервиса на стенде входа local: агент успевает его пережить."""
 
 
 @pytest.fixture(autouse=True)
@@ -195,7 +206,8 @@ def cookie(login: httpx.Response) -> str:
 
 @pytest.fixture(scope="module")
 def session_jwt(login: httpx.Response, runtime_config: RuntimeConfig) -> str:
-    """JWT входа из cookie: тот же токен агент несёт заголовком Authorization."""
+    """JWT входа пользователя из cookie: агенту он не передаётся, и входы
+    чата для агента его не принимают."""
     token = RequestTokens(runtime_config.session.cookie).of_cookies(dict(login.cookies))
     assert token, "login cookies carry no sign-in token"
 
@@ -220,6 +232,43 @@ def addresses(app: StandProcess) -> Addresses:
     return Addresses(app)
 
 
+class AgentFiles:
+    """Файл настроек процесса агента вкладки: то, что чат отдал агенту."""
+
+    def __init__(self, app: StandProcess) -> None:
+        self._agents = AgentProcesses(app)
+
+    async def pid(self, thread_id: str, other_than: int = 0) -> int:
+        return await self._agents.await_thread(thread_id, other_than)
+
+    def pids(self) -> list[int]:
+        return self._agents.pids()
+
+    async def text(self, thread_id: str, other_than: int = 0) -> str:
+        pid = await self.pid(thread_id, other_than)
+        path = self._agents.of_thread(thread_id)[pid]
+
+        return path.read_text(encoding="utf-8")
+
+    async def document(self, thread_id: str, other_than: int = 0) -> dict[str, Any]:
+        return json.loads(await self.text(thread_id, other_than))
+
+    async def key(self, thread_id: str, other_than: int = 0) -> str:
+        """Ключ процесса агента треда из записи сервера чата его файла."""
+        document = await self.document(thread_id, other_than)
+        key = document["mcpServers"]["chat"]["auth"]["token"]
+        assert isinstance(key, str)
+        assert key
+
+        return key
+
+
+@pytest.fixture
+async def process_key(app: StandProcess, tab: ChatSocket) -> str:
+    """Ключ процесса агента открытой вкладки."""
+    return await AgentFiles(app).key(tab.thread_id)
+
+
 class Bearer:
     """Заголовок Authorization с токеном носителя."""
 
@@ -241,6 +290,21 @@ class ForgedTokens:
 
     def expired(self) -> str:
         return self._encoded(self._secret, int(time.time()) - 60)
+
+    def headers(self, kind: str, sign_in: str) -> dict[str, str]:
+        """Заголовки запроса с токеном вида kind, который ключом процесса не
+        является: чужой подписи, просроченный, JWT входа пользователя,
+        случайная строка; none — без заголовка."""
+        tokens = {
+            "foreign": self.foreign(),
+            "expired": self.expired(),
+            "sign_in": sign_in,
+            "random": uuid4().hex,
+        }
+        if kind not in tokens:
+            return {}
+
+        return Bearer.headers(tokens[kind])
 
     def _encoded(self, secret: str, exp: int) -> str:
         claims = {
@@ -428,10 +492,10 @@ def _lines_since(process: StandProcess[Any], since: int) -> list[str]:
 class TestChatMcp:
     """Сервер инструментов чата глазами клиента MCP."""
 
-    async def test_lists_and_calls_connection_tools_with_the_jwt(
-        self, addresses: Addresses, session_jwt: str, probe: PostgresConfig
+    async def test_lists_and_calls_connection_tools_with_the_process_key(
+        self, addresses: Addresses, process_key: str, probe: PostgresConfig
     ) -> None:
-        client = McpTab(addresses.mcp(), session_jwt)
+        client = McpTab(addresses.mcp(), process_key)
 
         names = await client.tool_names()
         assert names == ["connection_list", "connection_search"]
@@ -443,17 +507,19 @@ class TestChatMcp:
         found = await client.call_text("connection_search", {"kind": "postgres"})
         assert CONNECTION in found
 
-    @pytest.mark.parametrize("token", ["foreign", "expired", "none"])
-    async def test_rejects_tokens_that_are_not_the_sign_in(
-        self, addresses: Addresses, runtime_config: RuntimeConfig, token: str
+    @pytest.mark.parametrize(
+        "token", ["foreign", "expired", "none", "sign_in", "random"]
+    )
+    async def test_rejects_everything_that_is_not_a_process_key(
+        self,
+        addresses: Addresses,
+        runtime_config: RuntimeConfig,
+        session_jwt: str,
+        process_key: str,
+        token: str,
     ) -> None:
         forged = ForgedTokens(runtime_config.session.auth_secret)
-        headers: dict[str, str] = {}
-        if token == "foreign":
-            headers = Bearer.headers(forged.foreign())
-
-        if token == "expired":
-            headers = Bearer.headers(forged.expired())
+        headers = forged.headers(token, session_jwt)
 
         response = httpx.post(
             addresses.mcp(),
@@ -535,17 +601,17 @@ class HookEvents:
 
 
 class TestHookHandler:
-    """Обработчик хука PreToolUse по прямому запросу с JWT входа."""
+    """Обработчик хука PreToolUse по прямому запросу с ключом процесса."""
 
     async def test_seals_a_granted_connection(
-        self, addresses: Addresses, session_jwt: str, probe: PostgresConfig
+        self, addresses: Addresses, process_key: str, probe: PostgresConfig
     ) -> None:
         keys = SealKeys()
         events = HookEvents(keys)
         response = httpx.post(
             addresses.hook(),
             json=events.pg_query(CONNECTION, events.server()),
-            headers=Bearer.headers(session_jwt),
+            headers=Bearer.headers(process_key),
             timeout=30.0,
         )
         assert response.status_code == HTTPStatus.OK, response.text[:300]
@@ -564,13 +630,13 @@ class TestHookHandler:
         assert opened.profile["dbname"] == probe.dbname
 
     async def test_denies_an_unknown_connection(
-        self, addresses: Addresses, session_jwt: str, probe: PostgresConfig
+        self, addresses: Addresses, process_key: str, probe: PostgresConfig
     ) -> None:
         events = HookEvents(SealKeys())
         response = httpx.post(
             addresses.hook(),
             json=events.pg_query("nobody-granted-this", events.server()),
-            headers=Bearer.headers(session_jwt),
+            headers=Bearer.headers(process_key),
             timeout=30.0,
         )
         assert response.status_code == HTTPStatus.OK, response.text[:300]
@@ -583,13 +649,13 @@ class TestHookHandler:
         assert output.updated_input is None
 
     async def test_denies_when_the_server_declares_no_seal_key(
-        self, addresses: Addresses, session_jwt: str, probe: PostgresConfig
+        self, addresses: Addresses, process_key: str, probe: PostgresConfig
     ) -> None:
         events = HookEvents(SealKeys())
         response = httpx.post(
             addresses.hook(),
             json=events.pg_query(CONNECTION, events.featureless()),
-            headers=Bearer.headers(session_jwt),
+            headers=Bearer.headers(process_key),
             timeout=30.0,
         )
         assert response.status_code == HTTPStatus.OK, response.text[:300]
@@ -600,13 +666,13 @@ class TestHookHandler:
         assert SealFeature.ID in output.permission_decision_reason
 
     async def test_allows_tools_without_connections_unchanged(
-        self, addresses: Addresses, session_jwt: str
+        self, addresses: Addresses, process_key: str
     ) -> None:
         events = HookEvents(SealKeys())
         response = httpx.post(
             addresses.hook(),
             json=events.plain(),
-            headers=Bearer.headers(session_jwt),
+            headers=Bearer.headers(process_key),
             timeout=30.0,
         )
         assert response.status_code == HTTPStatus.OK, response.text[:300]
@@ -617,17 +683,19 @@ class TestHookHandler:
         assert output.permission_decision is HookDecision.ALLOW
         assert "updatedInput" not in body["hookSpecificOutput"]
 
-    @pytest.mark.parametrize("token", ["foreign", "expired", "none"])
-    async def test_rejects_tokens_that_are_not_the_sign_in(
-        self, addresses: Addresses, runtime_config: RuntimeConfig, token: str
+    @pytest.mark.parametrize(
+        "token", ["foreign", "expired", "none", "sign_in", "random"]
+    )
+    async def test_rejects_everything_that_is_not_a_process_key(
+        self,
+        addresses: Addresses,
+        runtime_config: RuntimeConfig,
+        session_jwt: str,
+        process_key: str,
+        token: str,
     ) -> None:
         forged = ForgedTokens(runtime_config.session.auth_secret)
-        headers: dict[str, str] = {}
-        if token == "foreign":
-            headers = Bearer.headers(forged.foreign())
-
-        if token == "expired":
-            headers = Bearer.headers(forged.expired())
+        headers = forged.headers(token, session_jwt)
 
         events = HookEvents(SealKeys())
         response = httpx.post(
@@ -638,3 +706,294 @@ class TestHookHandler:
         )
         assert response.status_code == HTTPStatus.UNAUTHORIZED, response.text[:300]
         assert response.headers.get("WWW-Authenticate") == "Bearer"
+
+
+class ProcessKeyProbe:
+    """Запросы к входам чата для агента с названным ключом: по статусу видно,
+    принят ли ключ."""
+
+    def __init__(self, addresses: Addresses) -> None:
+        self._addresses = addresses
+        self._events = HookEvents(SealKeys())
+
+    def hook(self, key: str) -> int:
+        response = httpx.post(
+            self._addresses.hook(),
+            json=self._events.plain(),
+            headers=Bearer.headers(key),
+            timeout=30.0,
+        )
+
+        return response.status_code
+
+    def mcp(self, key: str) -> int:
+        response = httpx.post(
+            self._addresses.mcp(),
+            json={"jsonrpc": JSON_RPC, "id": 1, "method": "tools/list", "params": {}},
+            headers={
+                **Bearer.headers(key),
+                "Accept": "application/json, text/event-stream",
+                "Content-Type": "application/json",
+            },
+            timeout=30.0,
+        )
+
+        return response.status_code
+
+
+class TestProcessKey:
+    """Ключ процесса агента: выдан запуском, живёт с процессом."""
+
+    FORM: ClassVar[dict[str, Any]] = {
+        "agent_base_url": "",
+        "agent_api_key": "",
+        "agent_model": "fake-model-rekeyed",
+        "session_mode": "bypassPermissions",
+        "session_model": "general",
+    }
+    """Форма панели настроек: её правка перезапускает агента вкладки."""
+
+    async def test_settings_file_carries_the_key_and_no_sign_in_token(
+        self, app: StandProcess, tab: ChatSocket, session_jwt: str, process_key: str
+    ) -> None:
+        files = AgentFiles(app)
+
+        text = await files.text(tab.thread_id)
+        document = json.loads(text)
+
+        assert session_jwt not in text
+        hook = document["hooks"]["PreToolUse"][0]["hooks"][0]
+        assert hook["headers"] == Bearer.headers(process_key)
+        assert document["mcpServers"]["chat"]["auth"] == {
+            "auth": "bearer",
+            "token": process_key,
+        }
+
+    async def test_proxy_server_of_the_file_names_the_user_of_the_tab(
+        self, app: StandProcess, tab: ChatSocket
+    ) -> None:
+        document = await AgentFiles(app).document(tab.thread_id)
+
+        auth = document["mcpServers"][MCP_SERVER]["auth"]
+        assert auth["auth"] == "proxy"
+        assert auth["login"] == ADMIN
+        assert auth["roles"] == ["ADM"]
+        assert auth["clientId"] == ServiceStand.CLIENT_ID
+        assert "headers" not in document["mcpServers"][MCP_SERVER]
+
+    async def test_each_tab_gets_its_own_key(
+        self, app: StandProcess, cookie: str, addresses: Addresses, tab: ChatSocket
+    ) -> None:
+        files = AgentFiles(app)
+        other = ChatSocket(app, cookie, str(uuid4()))
+        await other.open()
+        try:
+            first = await files.key(tab.thread_id)
+            second = await files.key(other.thread_id)
+        finally:
+            await other.end_session()
+
+        probe = ProcessKeyProbe(addresses)
+        assert first != second
+        assert probe.hook(first) == HTTPStatus.OK
+
+    async def test_key_of_a_restarted_agent_is_refused(
+        self, app: StandProcess, tab: ChatSocket, addresses: Addresses
+    ) -> None:
+        files = AgentFiles(app)
+        probe = ProcessKeyProbe(addresses)
+        old_pid = await files.pid(tab.thread_id)
+        old_key = await files.key(tab.thread_id)
+        assert probe.hook(old_key) == HTTPStatus.OK
+        assert probe.mcp(old_key) == HTTPStatus.OK
+
+        await tab.settings(dict(self.FORM))
+        new_key = await files.key(tab.thread_id, other_than=old_pid)
+
+        assert new_key != old_key
+        assert probe.hook(old_key) == HTTPStatus.UNAUTHORIZED
+        assert probe.mcp(old_key) == HTTPStatus.UNAUTHORIZED
+        assert probe.hook(new_key) == HTTPStatus.OK
+        assert probe.mcp(new_key) == HTTPStatus.OK
+
+    async def test_key_of_a_closed_tab_is_refused(
+        self,
+        app: StandProcess,
+        cookie: str,
+        addresses: Addresses,
+        probe: PostgresConfig,
+    ) -> None:
+        files = AgentFiles(app)
+        keys = ProcessKeyProbe(addresses)
+        closing = ChatSocket(app, cookie, str(uuid4()))
+        await closing.open()
+        pid = await files.pid(closing.thread_id)
+        key = await files.key(closing.thread_id)
+        assert keys.hook(key) == HTTPStatus.OK
+
+        await closing.end_session()
+        deadline = time.monotonic() + 60.0
+        while pid in files.pids() and time.monotonic() < deadline:
+            time.sleep(0.3)
+
+        assert pid not in files.pids(), app.tail(40)
+        assert keys.hook(key) == HTTPStatus.UNAUTHORIZED
+        assert keys.mcp(key) == HTTPStatus.UNAUTHORIZED
+
+
+class TestNoTokenExchangeInTheChat:
+    """Чат формирует файл и не получает токенов сервиса для агента."""
+
+    async def test_agent_package_has_no_token_exchange(self) -> None:
+        root = Path(boba.chainlit.agent.__path__[0])
+        modules: list[str] = []
+        sources: list[str] = []
+        for path in sorted(root.glob("*.py")):
+            modules.append(path.name)
+            sources.append(path.read_text(encoding="utf-8"))
+
+        assert "tokens.py" not in modules, modules
+        for gone in ("McpAccessToken", "McpTokenError", "jwt-bearer", "token_endpoint"):
+            assert gone not in "\n".join(sources), gone
+
+    async def test_sessions_are_opened_without_servers_and_tokens(
+        self, app: StandProcess, tab: ChatSocket, probe: PostgresConfig
+    ) -> None:
+        since = app.log_lines()
+        await tab.send(f"answer-{uuid4().hex} {ScenarioName.ANSWER.value}")
+        await tab.wait_task_end()
+        assert not tab.errors(), (tab.errors(), app.tail(60))
+
+        log = "\n".join(_lines_since(app, since))
+        assert "mcp token issued" not in log, log[-2000:]
+
+
+@pytest.fixture(scope="module")
+def local_app(
+    tmp_path_factory: pytest.TempPathFactory,
+    llm_port: int,
+    fake_llm: None,
+    db_name: str,
+    stand: Stand,
+) -> Iterator[StandProcess]:
+    """Второй стенд чата над той же базой: на сервис он и его агент входят
+    учёткой агента (local), а токен сервиса живёт несколько секунд."""
+    workdir = tmp_path_factory.mktemp("acp-tools-local")
+    config = StandConfig(
+        workdir=workdir,
+        app=StandApp.CHAINLIT,
+        app_port=free_port(),
+        llm_port=llm_port,
+        db_name=db_name,
+        agent_history=AgentHistoryStand(stand).document(),
+        agent_chat_mcp=True,
+        agent_hook=True,
+        service_plugins=SERVICE_PLUGINS,
+        agent_auth=StandAgentAuth.LOCAL,
+        service_token_ttl_sec=SHORT_TOKEN_SEC,
+    )
+    process = StandProcess(config=config, log_path=workdir / "app.log")
+    process.start(boot_timeout_sec=BOOT_TIMEOUT_SEC)
+    try:
+        yield process
+    finally:
+        process.stop()
+
+
+@pytest.fixture
+async def local_tab(
+    local_app: StandProcess, probe: PostgresConfig
+) -> AsyncIterator[ChatSocket]:
+    credential = local_app.config.credential(ADMIN)
+    response = httpx.post(
+        f"{local_app.config.base_url}/login",
+        data={"username": credential.login, "password": credential.password},
+        timeout=30.0,
+    )
+    assert response.status_code == HTTPStatus.OK, response.text[:200]
+    parts: list[str] = []
+    for name, value in response.cookies.items():
+        parts.append(f"{name}={value}")
+
+    socket = ChatSocket(local_app, "; ".join(parts), str(uuid4()))
+    await socket.open()
+    try:
+        yield socket
+    finally:
+        await socket.close()
+
+
+class SealedQueryTurn:
+    """Ход «pg_query с именем соединения» и его шаг в ленте."""
+
+    def __init__(self, tab: ChatSocket) -> None:
+        self._tab = tab
+
+    async def run(self) -> dict[str, Any]:
+        call = {
+            "name": "mcp__boba_general__pg_query",
+            "arguments": {
+                "connection": CONNECTION,
+                "sql": "select 1 as one",
+                "offset": 0,
+                "limit": 10,
+            },
+        }
+        await self._tab.send(f"{ScenarioName.CALL.value} {json.dumps([call])}")
+        await self._tab.wait_task_end()
+        assert not self._tab.errors(), self._tab.errors()
+
+        return ToolSteps(self._tab).named("pg_query")[-1]
+
+
+class TestSignInOfTheAgent:
+    """Каким входом агент пришёл на сервис, решает конфиг чата."""
+
+    async def test_proxy_signs_in_the_user_of_the_tab(
+        self, app: StandProcess, tab: ChatSocket, probe: PostgresConfig
+    ) -> None:
+        companion = app.companion
+        assert companion is not None
+
+        step = await SealedQueryTurn(tab).run()
+
+        assert not step.get("isError"), (step, companion.tail(60))
+        assert "one" in str(step.get("output")), step
+        log = companion.log_path.read_text(encoding="utf-8", errors="replace")
+        assert f"proxy sign-in [user={ADMIN}]" in log, log[-2000:]
+        assert f"[user={ServiceStand.AGENT_LOGIN}]" not in log
+
+    async def test_local_signs_in_the_account_of_the_agent(
+        self, local_app: StandProcess, local_tab: ChatSocket
+    ) -> None:
+        companion = local_app.companion
+        assert companion is not None
+        document = await AgentFiles(local_app).document(local_tab.thread_id)
+
+        step = await SealedQueryTurn(local_tab).run()
+
+        assert document["mcpServers"][MCP_SERVER]["auth"] == {
+            "auth": "local",
+            "login": ServiceStand.AGENT_LOGIN,
+            "password": ServiceStand.AGENT_PASSWORD,
+        }
+        assert not step.get("isError"), (step, companion.tail(60))
+        assert "one" in str(step.get("output")), step
+        log = companion.log_path.read_text(encoding="utf-8", errors="replace")
+        assert f"sign-in [user={ServiceStand.AGENT_LOGIN}] [provider=" in log
+        assert "proxy sign-in" not in log, log[-2000:]
+
+    async def test_agent_renews_the_expired_token_of_the_service_itself(
+        self, local_app: StandProcess, local_tab: ChatSocket
+    ) -> None:
+        companion = local_app.companion
+        assert companion is not None
+        turn = SealedQueryTurn(local_tab)
+        first = await turn.run()
+
+        await asyncio.sleep(SHORT_TOKEN_SEC + 2)
+        second = await turn.run()
+
+        assert not first.get("isError"), (first, companion.tail(60))
+        assert not second.get("isError"), (second, companion.tail(60))
+        assert "one" in str(second.get("output")), second

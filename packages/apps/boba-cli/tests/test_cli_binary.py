@@ -23,7 +23,7 @@ from test_cli_acp import (
     handshake,
 )
 
-from boba.cli.acp import StopReasonName
+from boba.cli.acp_server import StopReasonName
 
 pytestmark = [pytest.mark.anyio, pytest.mark.integration]
 
