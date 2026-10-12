@@ -28,7 +28,6 @@ from boba.connection_broker.sealed import SealedConnectionParams
 from boba.connections.base import ConnectionBase
 from boba.connections.marks import ConnectionRefusal
 from boba.connections.sealed import SealedParamSchema, SealFeature, SealKeys
-from boba.identity.errors import RefusalError
 from boba.stand.sealing import SealingStand
 from boba.stand_core.context import CallStand
 from boba.toolkit.dag import DagNode, NodeOutcome, ToolCard, ToolServer
@@ -163,15 +162,16 @@ class TestKeyComesFromTheServerFeature:
             timedelta(minutes=10),
         )
 
-        with pytest.raises(RefusalError) as caught:
+        refusal = _refusal(
             await stand.call_through(
                 silent, "probe_query", {"connection": MAIN, "sql": "x"}
             )
+        )
 
-        if caught.value.kind != ConnectionRefusal.SEAL_KEY_UNKNOWN:
-            raise AssertionError(f"соединение не отправлено: {caught.value}")
-        if SealFeature.ID not in str(caught.value):
-            raise AssertionError(f"отказ называет возможность: {caught.value}")
+        if refusal.error_kind != ConnectionRefusal.SEAL_KEY_UNKNOWN:
+            raise AssertionError(f"соединение не отправлено: {refusal.message}")
+        if SealFeature.ID not in refusal.message:
+            raise AssertionError(f"отказ называет возможность: {refusal.message}")
 
     async def test_value_sealed_for_a_restarted_server_is_refused(self) -> None:
         stand = _stand()
@@ -193,19 +193,18 @@ class TestKeyComesFromTheServerFeature:
 
 class TestRefusals:
     """Отказ запечатывания — отказ клиента до отправки серверу: в бою его
-    возвращает хук, здесь он выходит ошибкой из порта стенда."""
+    возвращает хук, порт стенда отдаёт его итогом-отказом вызова."""
 
     async def test_unknown_name_is_refused_with_the_available_ones(self) -> None:
         stand = _stand()
         args = {"connection": "нет-такого", "sql": "x"}
 
-        with pytest.raises(RefusalError) as caught:
-            await stand.call("probe_query", args)
+        refusal = _refusal(await stand.call("probe_query", args))
 
-        if caught.value.kind != ConnectionRefusal.NOT_VISIBLE:
-            raise AssertionError(f"чужое имя отвергнуто: {caught.value}")
-        if "main" not in str(caught.value):
-            raise AssertionError(f"отказ называет доступные: {caught.value}")
+        if refusal.error_kind != ConnectionRefusal.NOT_VISIBLE:
+            raise AssertionError(f"чужое имя отвергнуто: {refusal.message}")
+        if "main" not in refusal.message:
+            raise AssertionError(f"отказ называет доступные: {refusal.message}")
 
     async def test_duplicate_name_is_refused(self) -> None:
         rows = [
@@ -215,11 +214,10 @@ class TestRefusals:
         stand = SealedStand(rows)
         args = {"connection": "dup", "sql": "x"}
 
-        with pytest.raises(RefusalError) as caught:
-            await stand.call("probe_query", args)
+        refusal = _refusal(await stand.call("probe_query", args))
 
-        if caught.value.kind != ConnectionRefusal.AMBIGUOUS:
-            raise AssertionError(f"дубль имени отвергнут: {caught.value}")
+        if refusal.error_kind != ConnectionRefusal.AMBIGUOUS:
+            raise AssertionError(f"дубль имени отвергнут: {refusal.message}")
 
     async def test_name_of_another_kind_is_not_visible(self) -> None:
         """Вид параметра берётся из схемы инструмента: строка другого вида с
@@ -227,11 +225,10 @@ class TestRefusals:
         stand = SealedStand([SealedStand.row("web", OtherConnection(host="h"))])
         args = {"connection": "web", "sql": "x"}
 
-        with pytest.raises(RefusalError) as caught:
-            await stand.call("probe_query", args)
+        refusal = _refusal(await stand.call("probe_query", args))
 
-        if caught.value.kind != ConnectionRefusal.NOT_VISIBLE:
-            raise AssertionError(f"строка другого вида не видна: {caught.value}")
+        if refusal.error_kind != ConnectionRefusal.NOT_VISIBLE:
+            raise AssertionError(f"строка другого вида не видна: {refusal.message}")
 
     async def test_plain_value_is_refused_by_the_client_without_echo(self) -> None:
         """Вместо имени модель написала строку подключения с паролем: клиент
@@ -239,15 +236,16 @@ class TestRefusals:
         stand = _stand()
         dsn = f"postgres://user:{SECRET}@db.local/x"
 
-        with pytest.raises(RefusalError) as caught:
+        refusal = _refusal(
             await stand.call("probe_query", {"connection": dsn, "sql": "x"})
+        )
 
-        if caught.value.kind != ConnectionRefusal.NOT_VISIBLE:
-            raise AssertionError(f"неизвестное имя отвергнуто: {caught.value}")
-        if SECRET in str(caught.value):
-            raise AssertionError(f"значение не цитируется: {caught.value}")
-        if "main" not in str(caught.value):
-            raise AssertionError(f"отказ называет доступные: {caught.value}")
+        if refusal.error_kind != ConnectionRefusal.NOT_VISIBLE:
+            raise AssertionError(f"неизвестное имя отвергнуто: {refusal.message}")
+        if SECRET in refusal.message:
+            raise AssertionError(f"значение не цитируется: {refusal.message}")
+        if "main" not in refusal.message:
+            raise AssertionError(f"отказ называет доступные: {refusal.message}")
 
 
 class TestExecutorRule:
