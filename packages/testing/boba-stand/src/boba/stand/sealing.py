@@ -8,8 +8,10 @@
 (SealFeature) и передаёт вызов дальше. Создаётся тестом поверх порта
 сервера; остальные аргументы вызова идут как есть.
 
+Отказ в соединении (RefusalError) наружу не выходит: вызов кончается
+итогом-отказом.
+
 Ошибки:
-RefusalError — сервер не принимает соединений либо имя не выдано вызывающему.
 ConnectionStoreError — таблица соединений недоступна.
 KerberosError — билет к соединению не выпущен.
 """
@@ -31,8 +33,14 @@ from boba.connections.sealed import (
     SealKey,
 )
 from boba.identity.errors import RefusalError
-from boba.toolkit.dag import DagNode, NodeOutcome, ToolCard, ToolServer
-from boba.toolkit.failure import ValidationText
+from boba.toolkit.dag import (
+    DagNode,
+    NodeOutcome,
+    NodeOutcomes,
+    ToolCard,
+    ToolServer,
+)
+from boba.toolkit.failure import FailurePacker, ValidationText
 
 __all__ = ["SealingStand"]
 
@@ -48,6 +56,8 @@ class SealingStand(ToolServer):
         self._connections = connections
         self._ttl = ttl
         self._declared = SealedParamSchema()
+        self._failures = FailurePacker()
+        self._outcomes = NodeOutcomes()
 
     def tools(self) -> Sequence[ToolCard]:
         return self._inner.tools()
@@ -58,15 +68,29 @@ class SealingStand(ToolServer):
     async def submit(
         self, calls: Sequence[DagNode]
     ) -> Sequence[asyncio.Future[NodeOutcome]]:
-        sealed: list[DagNode] = []
+        """Вызов, которому отказано в соединении, до сервера не доходит и
+        кончается итогом-отказом — как отказ хука в бою."""
+        pending: list[asyncio.Future[NodeOutcome]] = []
         for call in calls:
-            sealed.append(await self.sealed(call))
+            try:
+                sealed = await self.sealed(call)
+            except RefusalError as exc:
+                refused = self._outcomes.refused(call, self._failures.pack(exc))
+                pending.append(self._outcomes.settled(refused))
+                continue
 
-        return await self._inner.submit(sealed)
+            pending.extend(await self._inner.submit([sealed]))
+
+        return pending
 
     async def sealed(self, call: DagNode) -> DagNode:
         """Вызов с запечатанными соединениями на месте имён; инструмент без
-        параметров-соединений уходит как есть."""
+        параметров-соединений уходит как есть.
+
+        Ошибки:
+        RefusalError — сервер не принимает соединений либо имя не выдано
+            вызывающему.
+        """
         card = self._card_of(call.tool)
         if card is None:
             return call

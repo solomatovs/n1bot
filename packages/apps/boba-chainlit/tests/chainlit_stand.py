@@ -97,6 +97,7 @@ from boba.toolkit.dag import (
     NodeOutcome,
     ToolServer,
 )
+from boba.toolkit.mcp_names import McpToolNames
 from boba.toolkit.result import ToolResultBase
 from boba.toolrun.hosted import DirectCalls
 from boba.workspace.binaries import TrustedBinaries
@@ -259,7 +260,7 @@ class ServiceTool:
     """Инструмент сервиса глазами теста: вызов уходит портом чата от имени
     пользователя текущей сессии, ответ — итог вызова порта.
 
-    Создаётся ServiceTools по имени инструмента; интерфейс run тот же,
+    Создаётся ServiceTools под полным именем инструмента; интерфейс run тот же,
     что у инструмента хоста, поэтому вызов разбирает boba.stand.toolsetup.Call.
     """
 
@@ -296,6 +297,7 @@ class ServiceTools:
         """calls — путь вызова узла к телу у клиента MCP (DirectCalls)."""
         self._service = service
         self._connections = connections
+        self._names = McpToolNames()
         self._servers = McpServers(
             service.servers(),
             NamedBlocks(),
@@ -311,7 +313,10 @@ class ServiceTools:
         await self._servers.stop()
 
     def __getitem__(self, name: str) -> ServiceTool:
-        return ServiceTool(name, self)
+        """Инструмент сервиса по имени на сервере; вызов идёт под полным."""
+        full = self._names.full(self._service.server_name, name)
+
+        return ServiceTool(full, self)
 
     async def port(self) -> ToolServer:
         """MCP-порт сервиса для пользователя текущей сессии chainlit."""
