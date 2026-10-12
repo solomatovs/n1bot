@@ -1301,7 +1301,6 @@ class TestBobaMcpServer:
         )
         sealed = SealedConnection(
             name="orders",
-            login="alice",
             expires_at=datetime.now(UTC) + timedelta(minutes=5),
             profile=SecretReveal.dumped(profile),
         )
@@ -1333,7 +1332,6 @@ class TestBobaMcpServer:
         )
         sealed = SealedConnection(
             name="orders",
-            login="alice",
             expires_at=datetime.now(UTC) + timedelta(minutes=5),
             profile=SecretReveal.dumped(profile),
         )

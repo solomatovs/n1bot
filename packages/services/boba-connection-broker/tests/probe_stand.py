@@ -127,8 +127,16 @@ class ProbeTools:
         return self.tool("probe_copy", fields)
 
     async def call(self, tool: HostedTool, args: dict[str, Any]) -> dict[str, Any]:
-        """Вызов инструмента; итог — аргументы, которые получило его тело."""
-        context = self._calls.context("t1", login=LOGIN, roles=(ROLE,))
+        """Вызов инструмента от LOGIN; итог — аргументы, которые получило его
+        тело."""
+        return await self.call_as(LOGIN, tool, args)
+
+    async def call_as(
+        self, login: str, tool: HostedTool, args: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Вызов инструмента от пользователя login; итог — аргументы, которые
+        получило его тело."""
+        context = self._calls.context("t1", login=login, roles=(ROLE,))
         with self._calls.applied(context):
             await self._probes.call(tool, "probe", args)
 

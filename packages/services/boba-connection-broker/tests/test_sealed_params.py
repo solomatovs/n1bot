@@ -1,7 +1,7 @@
 """Приём запечатанных соединений исполнителем: схема параметра объявляет
 запечатанный профиль вида, тело получает профиль из значения, запечатанного
-ключом исполнителя; незапечатанное, чужое, просроченное и соединение другого
-вида отвергаются с подсказкой."""
+ключом исполнителя, кто бы ни был вызывающим; незапечатанное, запечатанное
+чужим ключом, просроченное и соединение другого вида отвергаются с подсказкой."""
 
 from __future__ import annotations
 
@@ -51,13 +51,11 @@ def _sealed(
     key: SealKey,
     profile: ConnectionBase,
     *,
-    login: str = LOGIN,
     ttl: timedelta = timedelta(hours=1),
 ) -> str:
     """Соединение, запечатанное клиентом ключом исполнителя."""
     sealed = SealedConnection(
         name=NAME,
-        login=login,
         expires_at=datetime.now(UTC) + ttl,
         profile=SecretReveal.dumped(profile),
     )
@@ -117,6 +115,30 @@ class TestSealedValueReachesTheBody:
         if connection.client != LOGIN:
             raise AssertionError(f"профиль подписан вызывающим: {connection.client!r}")
 
+    async def test_one_sealed_value_opens_for_any_caller(
+        self, tools: ProbeTools
+    ) -> None:
+        """Исполнитель не знает, кому клиент выдал соединение: значение,
+        запечатанное один раз, открывается в вызове любого пользователя, а
+        профиль подписывается тем, кто вызвал."""
+        keys = SealKeys()
+        tool = tools.bound(tools.one_connection(), keys)
+        sealed = _sealed(keys.public(), _probe("db.local"))
+
+        for login in (LOGIN, "petrov"):
+            got = await tools.call_as(login, tool, {"connection": sealed, "sql": "x"})
+
+            connection = got["connection"]
+            if not isinstance(connection, ProbeConnection):
+                raise AssertionError(f"{login}: the body got the profile: {got}")
+            if connection.host != "db.local":
+                raise AssertionError(f"{login}: the sealed profile: {connection}")
+            if connection.client != login:
+                raise AssertionError(
+                    f"{login}: the profile is labelled with the caller: "
+                    f"{connection.client!r}"
+                )
+
     async def test_two_parameters_are_opened_independently(
         self, tools: ProbeTools
     ) -> None:
@@ -156,17 +178,6 @@ class TestRefusals:
             raise AssertionError(f"kind отказа: {refused.kind}")
         if "current key of the server" not in str(refused):
             raise AssertionError(f"отказ велит клиенту взять новый ключ: {refused}")
-
-    async def test_value_of_another_user_is_refused(self, tools: ProbeTools) -> None:
-        keys = SealKeys()
-        sealed = _sealed(keys.public(), _probe("db.local"), login="petrov")
-
-        refused = await _refusal(tools, keys, sealed)
-
-        if refused.kind != ConnectionRefusal.SEALED_FOR_ANOTHER_USER:
-            raise AssertionError(f"kind отказа: {refused.kind}")
-        if "petrov" not in str(refused) or LOGIN not in str(refused):
-            raise AssertionError(f"отказ называет обоих: {refused}")
 
     async def test_expired_value_is_refused(self, tools: ProbeTools) -> None:
         keys = SealKeys()
@@ -235,7 +246,7 @@ class TestDeclaredFeature:
             raise AssertionError("возможность несёт открытый ключ исполнителя")
 
         opened = keys.open(_sealed(declared.key, _probe("db.local")))
-        if opened.login != LOGIN:
+        if opened.name != NAME:
             raise AssertionError(f"запечатанное ключом возможности открылось: {opened}")
 
     def test_server_without_connection_tools_declares_nothing(

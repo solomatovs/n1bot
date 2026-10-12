@@ -27,5 +27,4 @@ class ConnectionRefusal(StrEnum):
     SEAL_KEY_UNKNOWN = "connection_seal_key_unknown"
     SEAL_DAMAGED = "connection_seal_damaged"
     SEAL_EXPIRED = "connection_seal_expired"
-    SEALED_FOR_ANOTHER_USER = "connection_sealed_for_another_user"
     ANOTHER_KIND = "connection_of_another_kind"

@@ -561,7 +561,6 @@ class TestHookHandler:
         assert sealed != CONNECTION
         opened = keys.open(sealed)
         assert opened.name == CONNECTION
-        assert opened.login == ADMIN
         assert opened.profile["dbname"] == probe.dbname
 
     async def test_denies_an_unknown_connection(
