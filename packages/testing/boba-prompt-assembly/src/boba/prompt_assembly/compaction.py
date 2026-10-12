@@ -26,14 +26,7 @@ from typing import Iterator, Mapping, Sequence
 
 from boba.prompt_assembly.entries import AssembleError, Entry, MarkPath, UserEntry
 from boba.prompt_assembly.loader import LoaderError, SessionMemory
-from boba.prompt_assembly.records import (
-    BlockType,
-    Encoding,
-    Json,
-    RecordType,
-    Row,
-    Synthetic,
-)
+from boba.prompt_assembly.records import BlockType, Encoding, Json, RecordType, Row, Synthetic
 from boba.prompt_assembly.request import (
     Composition,
     ContextEdits,
@@ -43,6 +36,7 @@ from boba.prompt_assembly.request import (
 )
 
 Fields = Mapping[str, Json]
+
 
 
 class CompactionError(Exception):
@@ -418,13 +412,7 @@ class CompactionLog:
         for row in window.rows:
             if not self._kept(row):
                 continue
-            result.append(
-                Message(
-                    line=row.line,
-                    raw=row.raw,
-                    usage_zeroed=row.uuid in window.preserved,
-                )
-            )
+            result.append(Message(line=row.line, raw=row.raw, usage_zeroed=row.uuid in window.preserved))
 
         return result
 
@@ -446,9 +434,7 @@ class TokenEstimator:
 
     def __init__(self, chars_per_token: int) -> None:
         if chars_per_token <= 0:
-            raise CompactionError(
-                f"token estimator expects a positive divisor, got {chars_per_token}"
-            )
+            raise CompactionError(f"token estimator expects a positive divisor, got {chars_per_token}")
 
         self._divisor = chars_per_token
 
@@ -580,9 +566,7 @@ class ContextMeter:
 
             usage = message.usage
             if usage is not None:
-                return UsageAnchor(
-                    tokens=usage.total, index=self._first_fragment(messages, index)
-                )
+                return UsageAnchor(tokens=usage.total, index=self._first_fragment(messages, index))
 
             index -= 1
 
@@ -591,11 +575,7 @@ class ContextMeter:
     def fill(self, messages: Sequence[Message]) -> Fill:
         anchor = self.anchor(messages)
         if anchor is None:
-            return Fill(
-                anchor_tokens=0,
-                tail_tokens=self._estimator.messages(self._counted(messages, False)),
-                server_cleared=0,
-            )
+            return Fill(anchor_tokens=0, tail_tokens=self._estimator.messages(self._counted(messages, False)), server_cleared=0)
 
         tail = messages[anchor.index + 1 :]
         after_boundary = messages[anchor.index].is_boundary
@@ -705,9 +685,7 @@ class ThresholdPolicy:
 
     def __post_init__(self) -> None:
         if self.context_window <= 0:
-            raise CompactionError(
-                f"threshold policy expects a positive context window, got {self.context_window}"
-            )
+            raise CompactionError(f"threshold policy expects a positive context window, got {self.context_window}")
 
     @property
     def source(self) -> WindowSource:
@@ -765,9 +743,7 @@ class ThresholdPolicy:
         if override is not None and override > 0:
             return override
 
-        raw = self.context_window - min(
-            self.max_output_tokens, int(Limit.OUTPUT_RESERVE)
-        )
+        raw = self.context_window - min(self.max_output_tokens, int(Limit.OUTPUT_RESERVE))
         return raw - int(Limit.BLOCKING_MARGIN)
 
     @property
@@ -824,12 +800,7 @@ class CompactTracking:
         return self.consecutive_rapid_refills + 1
 
     def after_success(self, rapid_refills: int) -> "CompactTracking":
-        return CompactTracking(
-            compacted=True,
-            turn_counter=0,
-            consecutive_failures=0,
-            consecutive_rapid_refills=rapid_refills,
-        )
+        return CompactTracking(compacted=True, turn_counter=0, consecutive_failures=0, consecutive_rapid_refills=rapid_refills)
 
     def after_failure(self) -> "CompactTracking":
         return replace(self, consecutive_failures=self.consecutive_failures + 1)
@@ -864,30 +835,16 @@ class AutoCompactGate:
     remote — признак CLAUDE_CODE_REMOTE без флага реактивного пути.
     """
 
-    def __init__(
-        self,
-        policy: ThresholdPolicy,
-        meter: ContextMeter,
-        disabled_by_env: bool = False,
-        reactive: bool = True,
-    ) -> None:
+    def __init__(self, policy: ThresholdPolicy, meter: ContextMeter, disabled_by_env: bool = False, reactive: bool = True) -> None:
         self._policy = policy
         self._meter = meter
         self._disabled = disabled_by_env
         self._reactive = reactive
         self._silent_sources = frozenset(
-            (
-                QuerySource.COMPACT,
-                QuerySource.PROMPT_SUGGESTION,
-                QuerySource.AWAY_SUMMARY,
-                QuerySource.AGENT_SUMMARY,
-                QuerySource.HOOK_PROMPT,
-            )
+            (QuerySource.COMPACT, QuerySource.PROMPT_SUGGESTION, QuerySource.AWAY_SUMMARY, QuerySource.AGENT_SUMMARY, QuerySource.HOOK_PROMPT)
         )
 
-    def decide(
-        self, messages: Sequence[Message], tracking: CompactTracking, query_source: str
-    ) -> Decision:
+    def decide(self, messages: Sequence[Message], tracking: CompactTracking, query_source: str) -> Decision:
         tokens = self._meter.fill(messages).total
         level = self._policy.level(tokens)
 
@@ -895,37 +852,22 @@ class AutoCompactGate:
             return Decision(kind=DecisionKind.NOT_NEEDED, level=level, tokens=tokens)
 
         if tracking.consecutive_failures >= Limit.MAX_FAILURES:
-            return Decision(
-                kind=DecisionKind.FAILURE_BREAKER_OPEN, level=level, tokens=tokens
-            )
+            return Decision(kind=DecisionKind.FAILURE_BREAKER_OPEN, level=level, tokens=tokens)
 
         if not self._should_compact(level, query_source):
             return Decision(kind=DecisionKind.NOT_NEEDED, level=level, tokens=tokens)
 
         rapid = tracking.rapid_refills()
         if rapid >= Limit.RAPID_REFILLS:
-            return Decision(
-                kind=DecisionKind.RAPID_REFILL_TRIPPED,
-                level=level,
-                tokens=tokens,
-                rapid_refills=rapid,
-            )
+            return Decision(kind=DecisionKind.RAPID_REFILL_TRIPPED, level=level, tokens=tokens, rapid_refills=rapid)
 
         kind = DecisionKind.CLASSIC
         if self._reactive and self._policy.source is not WindowSource.AUTO:
             kind = DecisionKind.REACTIVE
 
-        return Decision(
-            kind=kind,
-            level=level,
-            tokens=tokens,
-            rapid_refills=rapid,
-            allow_last_resort=level is Level.BLOCKED,
-        )
+        return Decision(kind=kind, level=level, tokens=tokens, rapid_refills=rapid, allow_last_resort=level is Level.BLOCKED)
 
-    def blocks(
-        self, messages: Sequence[Message], compacted: bool, query_source: str
-    ) -> bool:
+    def blocks(self, messages: Sequence[Message], compacted: bool, query_source: str) -> bool:
         """Блокирующий предел (@215819447): ход кончается ошибкой «Prompt is too long»."""
         if compacted:
             return False
@@ -933,11 +875,7 @@ class AutoCompactGate:
         if query_source == QuerySource.COMPACT:
             return False
 
-        if (
-            self._policy.enabled
-            and self._reactive
-            and self._policy.source is WindowSource.AUTO
-        ):
+        if self._policy.enabled and self._reactive and self._policy.source is WindowSource.AUTO:
             return False
 
         return self._policy.level(self._meter.tokens(messages)) is Level.BLOCKED
@@ -1039,12 +977,7 @@ class SummarizeLadder:
     голову. Ветка «первый раунд отдельно» (ZHt) не моделируется.
     """
 
-    def __init__(
-        self,
-        messages: Sequence[Message],
-        allow_last_resort: bool,
-        initial_gap: int | None = None,
-    ) -> None:
+    def __init__(self, messages: Sequence[Message], allow_last_resort: bool, initial_gap: int | None = None) -> None:
         self._grouper = RoundGrouper()
         self._sizer = TokenEstimator(int(Limit.REPORT_DIVISOR))
         self._groups = self._grouper.groups(self._without_progress(messages))
@@ -1060,11 +993,7 @@ class SummarizeLadder:
 
     def first(self) -> Attempt | LadderStop:
         if len(self._groups) < 2:
-            return LadderStop(
-                reason=LadderEnd.TOO_FEW_GROUPS,
-                attempts=0,
-                total_groups=len(self._groups),
-            )
+            return LadderStop(reason=LadderEnd.TOO_FEW_GROUPS, attempts=0, total_groups=len(self._groups))
 
         return self._current(None)
 
@@ -1095,9 +1024,7 @@ class SummarizeLadder:
             )
 
         if not self._allow_last_resort:
-            return LadderStop(
-                reason=self._end(), attempts=self._attempts, total_groups=total
-            )
+            return LadderStop(reason=self._end(), attempts=self._attempts, total_groups=total)
 
         return self._enter_last_resort(gap)
 
@@ -1112,20 +1039,12 @@ class SummarizeLadder:
         if gap is not None:
             shortened = self._drop_head(to_summarize, gap)
             if shortened is None:
-                return LadderStop(
-                    reason=self._end(),
-                    attempts=self._attempts,
-                    total_groups=len(self._groups),
-                )
+                return LadderStop(reason=self._end(), attempts=self._attempts, total_groups=len(self._groups))
             to_summarize = shortened
             truncations = 1
 
         if not self._substantive([*to_summarize, *to_keep]):
-            return LadderStop(
-                reason=self._end(),
-                attempts=self._attempts,
-                total_groups=len(self._groups),
-            )
+            return LadderStop(reason=self._end(), attempts=self._attempts, total_groups=len(self._groups))
 
         self._attempts += 1
         attempt = Attempt(
@@ -1139,43 +1058,23 @@ class SummarizeLadder:
         self._last_resort = attempt
         return attempt
 
-    def _truncate_head(
-        self, previous: Attempt, gap: int | None
-    ) -> Attempt | LadderStop:
+    def _truncate_head(self, previous: Attempt, gap: int | None) -> Attempt | LadderStop:
         if previous.head_truncations >= Limit.HEAD_TRUNCATIONS:
-            return LadderStop(
-                reason=LadderEnd.EXHAUSTED,
-                attempts=self._attempts,
-                total_groups=len(self._groups),
-            )
+            return LadderStop(reason=LadderEnd.EXHAUSTED, attempts=self._attempts, total_groups=len(self._groups))
 
         shortened = self._drop_head(list(previous.to_summarize), gap)
         if shortened is None:
-            return LadderStop(
-                reason=LadderEnd.EXHAUSTED,
-                attempts=self._attempts,
-                total_groups=len(self._groups),
-            )
+            return LadderStop(reason=LadderEnd.EXHAUSTED, attempts=self._attempts, total_groups=len(self._groups))
 
         if not self._substantive([*shortened, *previous.to_keep]):
-            return LadderStop(
-                reason=LadderEnd.EXHAUSTED,
-                attempts=self._attempts,
-                total_groups=len(self._groups),
-            )
+            return LadderStop(reason=LadderEnd.EXHAUSTED, attempts=self._attempts, total_groups=len(self._groups))
 
         self._attempts += 1
-        attempt = replace(
-            previous,
-            to_summarize=tuple(shortened),
-            head_truncations=previous.head_truncations + 1,
-        )
+        attempt = replace(previous, to_summarize=tuple(shortened), head_truncations=previous.head_truncations + 1)
         self._last_resort = attempt
         return attempt
 
-    def _drop_head(
-        self, messages: Sequence[Message], gap: int | None
-    ) -> list[Message] | None:
+    def _drop_head(self, messages: Sequence[Message], gap: int | None) -> list[Message] | None:
         """wle @209403000: отбросить с головы раунды, покрывающие разрыв, либо 20 % раундов."""
         groups = self._grouper.groups(messages)
         if len(groups) < 2:
@@ -1326,15 +1225,11 @@ class SummaryPrompt:
         try:
             self._base = base_path.read_text(encoding=Encoding.UTF8)
         except OSError as exc:
-            raise CompactionError(
-                f"reading summarization prompt {base_path} failed: {exc}"
-            ) from exc
+            raise CompactionError(f"reading summarization prompt {base_path} failed: {exc}") from exc
 
         self._split = self._base.rfind(self.REMINDER)
         if self._split < 0:
-            raise CompactionError(
-                f"{base_path}: expected the closing 'REMINDER:' paragraph in the summarization prompt, found none"
-            )
+            raise CompactionError(f"{base_path}: expected the closing 'REMINDER:' paragraph in the summarization prompt, found none")
 
         self._arguments = re.compile(CompactMark.COMMAND_ARGS, re.DOTALL)
         self._analysis = re.compile(CompactMark.ANALYSIS)
@@ -1345,12 +1240,7 @@ class SummaryPrompt:
         if not custom.strip():
             return self._base
 
-        return (
-            self._base[: self._split]
-            + self.ADDITIONAL
-            + custom
-            + self._base[self._split :]
-        )
+        return self._base[: self._split] + self.ADDITIONAL + custom + self._base[self._split :]
 
     def custom_of(self, command: str) -> str:
         """Аргумент команды /compact из её записи в журнале."""
@@ -1376,12 +1266,7 @@ class SummaryPrompt:
         match = self._summary.search(text)
 
         if match is not None:
-            text = (
-                text[: match.start()]
-                + "Summary:\n"
-                + match.group(1).strip()
-                + text[match.end() :]
-            )
+            text = text[: match.start()] + "Summary:\n" + match.group(1).strip() + text[match.end() :]
 
         return self._blank_run.sub("\n\n", text).strip()
 
@@ -1408,13 +1293,7 @@ class SummaryWrapper:
         '"I\'ll continue" or similar. Pick up the last task as if the break never happened.'
     )
 
-    def wrap(
-        self,
-        summary: str,
-        transcript_path: str,
-        head_truncated: bool,
-        suppress_follow_up: bool,
-    ) -> str:
+    def wrap(self, summary: str, transcript_path: str, head_truncated: bool, suppress_follow_up: bool) -> str:
         text = self.HEAD + summary
 
         if transcript_path:
@@ -1462,16 +1341,12 @@ class SummaryRequestBuilder:
     журнала сверкой и командой compaction.
     """
 
-    def __init__(
-        self, builder: RequestBuilder, launch: LaunchParams, prompt: SummaryPrompt
-    ) -> None:
+    def __init__(self, builder: RequestBuilder, launch: LaunchParams, prompt: SummaryPrompt) -> None:
         self._builder = builder
         self._launch = launch
         self._prompt = prompt
 
-    def build(
-        self, cut: int, at: int, custom: str, trigger: Trigger, threads: bool
-    ) -> SummaryRequest:
+    def build(self, cut: int, at: int, custom: str, trigger: Trigger, threads: bool) -> SummaryRequest:
         """Запрос суммаризации истории до строки cut, отправленный в момент строки at.
 
         cut — первая строка сохранённого хвоста; at — строка, перед которой
@@ -1486,16 +1361,8 @@ class SummaryRequestBuilder:
 
         try:
             history: list[Entry] = list(assembler.history_before(cut))
-            history.append(
-                UserEntry(
-                    uuid=CompactMark.INSTRUCTION_UUID,
-                    content=self._prompt.render(custom),
-                )
-            )
-            moment = replace(
-                assembler.moment_at(cut, 0),
-                effort=self._builder.parts.params.turn_effort(cut),
-            )
+            history.append(UserEntry(uuid=CompactMark.INSTRUCTION_UUID, content=self._prompt.render(custom)))
+            moment = replace(assembler.moment_at(cut, 0), effort=self._builder.parts.params.turn_effort(cut))
             entries = assembler.entries(history, moment, notes)
             messages, marks = assembler.serialize(entries, True)
             body = self._builder.parts.compose(
@@ -1513,30 +1380,21 @@ class SummaryRequestBuilder:
                 notes,
             )
         except (AssembleError, RequestError) as exc:
-            raise CompactionError(
-                f"building the summary request for history before line {cut} failed: {exc}"
-            ) from exc
+            raise CompactionError(f"building the summary request for history before line {cut} failed: {exc}") from exc
 
         headers = {
             str(Header.COMPACTION_REQUEST): str(trigger),
             str(Header.COMPACTION): str(trigger),
             str(Header.REQUEST_CLASS): str(Header.CLASS_COMPACTION),
         }
-        return SummaryRequest(
-            body=body,
-            headers=headers,
-            mark_index=self._mark_index(marks, entries),
-            notes=tuple(notes),
-        )
+        return SummaryRequest(body=body, headers=headers, mark_index=self._mark_index(marks, entries), notes=tuple(notes))
 
     def recorded(self, boundary_line: int, threads: bool) -> SummaryRequest:
         """Запрос, приведший к записи границы: хвост и аргумент /compact берутся из журнала."""
         try:
             boundary = self._builder.facts.boundary_at(boundary_line)
         except RequestError as exc:
-            raise CompactionError(
-                f"locating the compact boundary for the summary request failed: {exc}"
-            ) from exc
+            raise CompactionError(f"locating the compact boundary for the summary request failed: {exc}") from exc
 
         cut = boundary.line
         for uuid in boundary.preserved:
@@ -1550,9 +1408,7 @@ class SummaryRequestBuilder:
                 custom = self._prompt.custom_of(command.names[0])
                 break
 
-        return self.build(
-            cut, boundary.line, custom, Trigger(boundary.trigger), threads
-        )
+        return self.build(cut, boundary.line, custom, Trigger(boundary.trigger), threads)
 
     def _mark_index(self, marks: Sequence[MarkPath], entries: Sequence[Entry]) -> int:
         """Номер сообщения провода с меткой; -1 — метки нет."""
@@ -1593,18 +1449,10 @@ class BoundaryForecaster:
         self._estimator = TokenEstimator(int(Limit.REPORT_DIVISOR))
         self._meter = ContextMeter(self._estimator)
 
-    def forecast(
-        self,
-        messages: Sequence[Message],
-        attempt: Attempt,
-        trigger: Trigger,
-        surfaced: frozenset[str],
-    ) -> BoundaryForecast:
+    def forecast(self, messages: Sequence[Message], attempt: Attempt, trigger: Trigger, surfaced: frozenset[str]) -> BoundaryForecast:
         """surfaced — имена отложенных инструментов, уже ушедших на провод в этом процессе."""
         if not messages:
-            raise CompactionError(
-                "boundary forecast expects a non-empty message list, got 0 messages"
-            )
+            raise CompactionError("boundary forecast expects a non-empty message list, got 0 messages")
 
         kept: list[str] = []
         for message in attempt.to_keep:
@@ -1619,9 +1467,7 @@ class BoundaryForecaster:
             previous_dropped=self._previous_dropped(messages),
         )
 
-    def post_tokens(
-        self, summary: Message, kept: Sequence[Message], attachments: Sequence[Message]
-    ) -> int:
+    def post_tokens(self, summary: Message, kept: Sequence[Message], attachments: Sequence[Message]) -> int:
         """qm(mD(result)): сводка, хвост, вложения и результаты хуков; граница даёт 0."""
         return self._estimator.messages([summary, *kept, *attachments])
 
@@ -1664,14 +1510,10 @@ class BoundaryForecaster:
 
         return frozenset(names)
 
-    def _discovered(
-        self, messages: Sequence[Message], surfaced: frozenset[str]
-    ) -> Iterator[str]:
+    def _discovered(self, messages: Sequence[Message], surfaced: frozenset[str]) -> Iterator[str]:
         for message in messages:
             if message.is_boundary:
-                yield from self._strings(
-                    message.metadata.get("preCompactDiscoveredTools")
-                )
+                yield from self._strings(message.metadata.get("preCompactDiscoveredTools"))
                 continue
 
             if message.attachment_kind == "deferred_tools_delta":
@@ -1724,13 +1566,7 @@ class CompactedRecords:
 
     def in_memory(self) -> list[Message]:
         """On(mD(result)): граница, контекст хода, сводка, хвост, вложения и результаты хуков."""
-        return [
-            self.boundary,
-            *self.context,
-            self.summary,
-            *self.kept,
-            *self.attachments,
-        ]
+        return [self.boundary, *self.context, self.summary, *self.kept, *self.attachments]
 
     def journaled(self) -> list[Message]:
         """m0r: то же без хвоста — он уже лежит в журнале до границы."""
@@ -1765,14 +1601,10 @@ class PostCompactLayout:
 
         return AttachmentRank.DELTA
 
-    def split(
-        self, after_boundary: Sequence[Message], kept: Sequence[Message]
-    ) -> CompactedRecords:
+    def split(self, after_boundary: Sequence[Message], kept: Sequence[Message]) -> CompactedRecords:
         """Разложить записи журнала после границы по ролям; вложения стадии запроса отбрасываются."""
         if not after_boundary or not after_boundary[0].is_boundary:
-            raise CompactionError(
-                "post-compact layout expects the boundary record first, got another record"
-            )
+            raise CompactionError("post-compact layout expects the boundary record first, got another record")
 
         boundary = after_boundary[0]
         context: list[Message] = []
@@ -1797,17 +1629,9 @@ class PostCompactLayout:
             attachments.append(message)
 
         if summary is None:
-            raise CompactionError(
-                f"boundary at line {boundary.line}: expected a summary record after it, found none"
-            )
+            raise CompactionError(f"boundary at line {boundary.line}: expected a summary record after it, found none")
 
-        return CompactedRecords(
-            boundary=boundary,
-            context=tuple(context),
-            summary=summary,
-            kept=tuple(kept),
-            attachments=tuple(attachments),
-        )
+        return CompactedRecords(boundary=boundary, context=tuple(context), summary=summary, kept=tuple(kept), attachments=tuple(attachments))
 
     def ordered(self, attachments: Sequence[Message]) -> bool:
         previous = AttachmentRank.FILE
@@ -1838,9 +1662,7 @@ class FileRestorePlanner:
     ссылкой compact_file_reference.
     """
 
-    def select(
-        self, states: Sequence[ReadState], excluded: Sequence[str]
-    ) -> list[ReadState]:
+    def select(self, states: Sequence[ReadState], excluded: Sequence[str]) -> list[ReadState]:
         skip = frozenset(excluded)
         candidates: list[ReadState] = []
 
@@ -2050,15 +1872,9 @@ class IdleClearingPlanner:
             excluded.append(str(name))
         return {
             "type": str(IdleEdit.TYPE),
-            "trigger": {
-                "type": str(IdleEdit.TOOL_USES),
-                "value": found.trigger_tool_uses,
-            },
+            "trigger": {"type": str(IdleEdit.TOOL_USES), "value": found.trigger_tool_uses},
             "keep": {"type": str(IdleEdit.TOOL_USES), "value": int(Limit.IDLE_KEEP)},
-            "clear_at_least": {
-                "type": str(IdleEdit.INPUT_TOKENS),
-                "value": int(Limit.IDLE_CLEAR_AT_LEAST),
-            },
+            "clear_at_least": {"type": str(IdleEdit.INPUT_TOKENS), "value": int(Limit.IDLE_CLEAR_AT_LEAST)},
             "exclude_tools": excluded,
         }
 
@@ -2109,12 +1925,7 @@ class IdleClearingPlanner:
             if stamp is None:
                 continue
 
-            if (
-                after_reply
-                and latest is not None
-                and stamp - latest > limit_ms
-                and self._is_prompt(message)
-            ):
+            if after_reply and latest is not None and stamp - latest > limit_ms and self._is_prompt(message):
                 found = (position, stamp - latest)
 
             if message.kind == RecordType.ASSISTANT:
@@ -2133,34 +1944,21 @@ class IdleClearingPlanner:
         clearable_names = frozenset(Clearable)
 
         for position, message in enumerate(messages):
-            if (
-                message.kind == RecordType.ASSISTANT
-                and position >= idle_index
-                and message.usage is not None
-            ):
+            if message.kind == RecordType.ASSISTANT and position >= idle_index and message.usage is not None:
                 scan.replies.add(message.reply_id)
 
             for block in message.blocks:
                 kind = block.get("type")
 
                 if kind == BlockType.TOOL_USE:
-                    self._note_use(
-                        block, position < idle_index, clearable_names, scan, pending
-                    )
+                    self._note_use(block, position < idle_index, clearable_names, scan, pending)
 
                 if kind == BlockType.TOOL_RESULT and position < idle_index:
                     self._note_result(block, scan, pending)
 
         return scan
 
-    def _note_use(
-        self,
-        block: Fields,
-        before_idle: bool,
-        clearable: frozenset[Clearable],
-        scan: _ToolScan,
-        pending: set[str],
-    ) -> None:
+    def _note_use(self, block: Fields, before_idle: bool, clearable: frozenset[Clearable], scan: _ToolScan, pending: set[str]) -> None:
         name = block.get("name")
         identifier = block.get("id")
 
@@ -2268,11 +2066,7 @@ class IdleClearingPlanner:
             if message.model == Synthetic.MODEL or message.is_api_error:
                 return None
         elif message.kind == RecordType.USER:
-            if (
-                message.is_meta
-                or message.is_summary
-                or message.raw.get("isVisibleInTranscriptOnly") is True
-            ):
+            if message.is_meta or message.is_summary or message.raw.get("isVisibleInTranscriptOnly") is True:
                 return None
         else:
             return None
@@ -2282,9 +2076,7 @@ class IdleClearingPlanner:
             return None
 
         try:
-            return (
-                datetime.fromisoformat(text.replace("Z", "+00:00")).timestamp() * 1000
-            )
+            return datetime.fromisoformat(text.replace("Z", "+00:00")).timestamp() * 1000
         except ValueError:
             return None
 
@@ -2309,9 +2101,7 @@ class IdleClearing(ContextEdits):
         try:
             planned = self._planner.plan(self._log.window_before(line))
         except CompactionError as exc:
-            raise RequestError(
-                f"planning the tool clearing edit for the request at line {line} failed: {exc}"
-            ) from exc
+            raise RequestError(f"planning the tool clearing edit for the request at line {line} failed: {exc}") from exc
 
         self._known[line] = planned
         return planned
@@ -2332,14 +2122,10 @@ class CompactionModel:
         self.forecaster = BoundaryForecaster()
         self.layout = PostCompactLayout()
 
-    def decide(
-        self, messages: Sequence[Message], tracking: CompactTracking, query_source: str
-    ) -> Decision:
+    def decide(self, messages: Sequence[Message], tracking: CompactTracking, query_source: str) -> Decision:
         return self.gate.decide(messages, tracking, query_source)
 
-    def first_attempt(
-        self, messages: Sequence[Message], allow_last_resort: bool
-    ) -> Attempt | LadderStop:
+    def first_attempt(self, messages: Sequence[Message], allow_last_resort: bool) -> Attempt | LadderStop:
         return SummarizeLadder(messages, allow_last_resort).first()
 
     def manual_attempt(self, messages: Sequence[Message]) -> Attempt | LadderStop:
@@ -2449,9 +2235,7 @@ class CompactionReplay:
     команда compaction и сверка.
     """
 
-    def __init__(
-        self, model: CompactionModel, timeline: CheckTimeline, query_source: str
-    ) -> None:
+    def __init__(self, model: CompactionModel, timeline: CheckTimeline, query_source: str) -> None:
         self._model = model
         self._timeline = timeline
         self._source = query_source
@@ -2472,9 +2256,7 @@ class CompactionReplay:
             decision = self._model.decide(check.state, tracking, self._source)
             attempt: Attempt | LadderStop | None = None
             if decision.compacts:
-                attempt = SummarizeLadder(
-                    check.state, decision.allow_last_resort
-                ).first()
+                attempt = SummarizeLadder(check.state, decision.allow_last_resort).first()
 
             result.append(
                 CheckOutcome(
@@ -2494,9 +2276,7 @@ class CompactionReplay:
 
         return result
 
-    def _outcome(
-        self, check: Check, decision: Decision, attempt: Attempt | LadderStop | None
-    ) -> str:
+    def _outcome(self, check: Check, decision: Decision, attempt: Attempt | LadderStop | None) -> str:
         if decision.kind is DecisionKind.RAPID_REFILL_TRIPPED:
             return "turn ends: autocompact_thrashing"
 

@@ -40,6 +40,7 @@ from boba.prompt_assembly.records import (
 )
 
 
+
 class RequestError(Exception):
     """Единственная ошибка модуля, выходящая наружу."""
 
@@ -167,27 +168,16 @@ class LaunchProfiles:
         base = self.subscription_print()
         return (
             (LaunchProfile.SUBSCRIPTION_PRINT, base),
-            (
-                LaunchProfile.SUBAGENT_CACHE_EVICT,
-                replace(base, subagent_cache_evict=True),
-            ),
+            (LaunchProfile.SUBAGENT_CACHE_EVICT, replace(base, subagent_cache_evict=True)),
             (LaunchProfile.STREAM_JSON, self.stream_json()),
         )
 
     def subscription_print(self) -> LaunchParams:
         """Подписка (OAuth), firstParty, `-p --output-format json`."""
-        common = frozenset(
-            (
-                Beta.INTERLEAVED_THINKING,
-                Beta.THINKING_TOKEN_COUNT,
-                Beta.CONTEXT_MANAGEMENT,
-            )
-        )
+        common = frozenset((Beta.INTERLEAVED_THINKING, Beta.THINKING_TOKEN_COUNT, Beta.CONTEXT_MANAGEMENT))
         return LaunchParams(
             models={
-                "claude-opus-5-5": ModelFacts(
-                    max_tokens=128000, betas=common | {Beta.PER_TURN_CONTROL}
-                ),
+                "claude-opus-5-5": ModelFacts(max_tokens=128000, betas=common | {Beta.PER_TURN_CONTROL}),
                 "claude-sonnet-4-6": ModelFacts(max_tokens=32000, betas=common),
             },
             thinking=ThinkingParam(kind=Wire.ADAPTIVE, display=Wire.DISPLAY_OMITTED),
@@ -220,10 +210,7 @@ class LaunchProfiles:
     def stream_json(self) -> LaunchParams:
         """Режим расширения VS Code: `--input-format stream-json`, мышление показывается обновлениями."""
         base = self.subscription_print()
-        return replace(
-            base,
-            thinking=ThinkingParam(kind=Wire.ADAPTIVE, display=Wire.DISPLAY_UPDATES),
-        )
+        return replace(base, thinking=ThinkingParam(kind=Wire.ADAPTIVE, display=Wire.DISPLAY_UPDATES))
 
     def server_classifier(self, safeguards: Sequence[Json]) -> LaunchParams:
         """Серверный классификатор действий: параметр safeguards и его беты; контекст — извне."""
@@ -410,19 +397,12 @@ class HistoryFacts:
             if boundary.line == line:
                 return boundary
 
-        raise RequestError(
-            f"{self._path}:{line}: expected a system/compact_boundary record at this line, found none"
-        )
+        raise RequestError(f"{self._path}:{line}: expected a system/compact_boundary record at this line, found none")
 
     def _note(self, number: int, raw: Mapping[str, Json]) -> None:
         kind = raw.get(Key.TYPE)
 
-        if kind not in (
-            RecordType.USER,
-            RecordType.ASSISTANT,
-            RecordType.ATTACHMENT,
-            RecordType.SYSTEM,
-        ):
+        if kind not in (RecordType.USER, RecordType.ASSISTANT, RecordType.ATTACHMENT, RecordType.SYSTEM):
             return
 
         if uuid := self._json.text(raw, Key.UUID):
@@ -454,9 +434,7 @@ class HistoryFacts:
         if raw.get(Key.SUBTYPE) == Subtype.COMPACT_BOUNDARY:
             self._note_boundary(number, self._json.mapping(raw, Key.COMPACT_METADATA))
 
-    def _note_attachment(
-        self, number: int, uuid: str, attachment: Mapping[str, Json]
-    ) -> None:
+    def _note_attachment(self, number: int, uuid: str, attachment: Mapping[str, Json]) -> None:
         kind = attachment.get(Key.TYPE)
 
         if kind == AttachmentKind.PROMPT_SNAPSHOT:
@@ -470,9 +448,7 @@ class HistoryFacts:
         if kind == AttachmentKind.DEFERRED_TOOLS_RECORD:
             entries = self._json.objects(attachment.get(Key.ENTRIES))
             name_only = self._json.strings(attachment, Key.NAME_ONLY)
-            self.deferred.append(
-                DeferredRecord(line=number, entries=entries, name_only=name_only)
-            )
+            self.deferred.append(DeferredRecord(line=number, entries=entries, name_only=name_only))
             return
 
         if kind != AttachmentKind.MODEL:
@@ -510,12 +486,8 @@ class HistoryFacts:
             kept_reminders=self._json.flag(attachment, Key.KEPT_REMINDERS),
         )
 
-    def _delta(
-        self, number: int, uuid: str, attachment: Mapping[str, Json]
-    ) -> ToolsDelta:
-        added = self._json.strings(attachment, Key.ADDED_NAMES) + self._json.strings(
-            attachment, Key.READDED_NAMES
-        )
+    def _delta(self, number: int, uuid: str, attachment: Mapping[str, Json]) -> ToolsDelta:
+        added = self._json.strings(attachment, Key.ADDED_NAMES) + self._json.strings(attachment, Key.READDED_NAMES)
         return ToolsDelta(
             line=number,
             uuid=uuid,
@@ -675,9 +647,7 @@ class ToolsBuilder:
 
         return Wire.TOOL_SEARCH in self._names(snapshot.tools)
 
-    def build(
-        self, line: int, snapshot: Snapshot, advisor_model: str, notes: list[str]
-    ) -> list[Json]:
+    def build(self, line: int, snapshot: Snapshot, advisor_model: str, notes: list[str]) -> list[Json]:
         """Параметр tools: инлайн-записи снимка, отложенные записи пула и ушедшие из него."""
         inline: dict[str, Mapping[str, Json]] = {}
         for entry in snapshot.tools:
@@ -743,11 +713,7 @@ class ToolsBuilder:
 
     def _advisor(self, model: str, snapshot: Snapshot, tools: Sequence[Json]) -> Json:
         """Запись советника; defer_loading — при advisorDeferred, бете tool-changes и неотложенной схеме."""
-        entry: dict[str, Json] = {
-            Key.TYPE: Wire.ADVISOR_TYPE,
-            Key.NAME: Wire.ADVISOR,
-            Key.MODEL: model,
-        }
+        entry: dict[str, Json] = {Key.TYPE: Wire.ADVISOR_TYPE, Key.NAME: Wire.ADVISOR, Key.MODEL: model}
 
         if not self._launch.advisor_deferred:
             return entry
@@ -888,10 +854,7 @@ class SystemBuilder:
 
         if Wire.BOUNDARY not in sections:
             body = Wire.SECTION_JOIN.join(sections)
-            return [
-                self._block(prefix, self._stamp.mark(ttl, "")),
-                self._block(body, self._stamp.mark(ttl, "")),
-            ]
+            return [self._block(prefix, self._stamp.mark(ttl, "")), self._block(body, self._stamp.mark(ttl, ""))]
 
         cut = sections.index(Wire.BOUNDARY)
         static = Wire.SECTION_JOIN.join(sections[:cut])
@@ -958,10 +921,7 @@ class BetaPlan:
             (Beta.EFFORT, facts.effort),
             (Beta.SERVER_SIDE_FALLBACK, facts.fallback),
             (Beta.FALLBACK_CREDIT, facts.fallback),
-            (
-                Beta.THINKING_DISPLAY_UPDATES,
-                self._launch.thinking.display == Wire.DISPLAY_UPDATES,
-            ),
+            (Beta.THINKING_DISPLAY_UPDATES, self._launch.thinking.display == Wire.DISPLAY_UPDATES),
             (Beta.EXTENDED_CACHE_TTL, facts.ttl == CacheKind.TTL_1H),
             (Beta.CACHE_EVICT, facts.evict),
         )
@@ -999,9 +959,7 @@ class ParamFacts:
             return chosen
 
         if answer := self._answer(line):
-            notes.append(
-                f"model: assistant record line {answer.line} (written after the request)"
-            )
+            notes.append(f"model: assistant record line {answer.line} (written after the request)")
             return answer.model
 
         raise RequestError(
@@ -1011,26 +969,18 @@ class ParamFacts:
 
     def effort(self, line: int, notes: list[str]) -> str:
         if (answer := self._answer(line)) and answer.effort:
-            notes.append(
-                f"output_config.effort: assistant record line {answer.line} (written after the request)"
-            )
+            notes.append(f"output_config.effort: assistant record line {answer.line} (written after the request)")
             return answer.effort
 
         if self._launch.default_effort:
-            notes.append(
-                "output_config.effort: launch parameters (the request has no answer in the journal yet)"
-            )
+            notes.append("output_config.effort: launch parameters (the request has no answer in the journal yet)")
             return self._launch.default_effort
 
         if (previous := self._previous(line)) and previous.effort:
-            notes.append(
-                f"output_config.effort: assistant record line {previous.line} (the previous answer)"
-            )
+            notes.append(f"output_config.effort: assistant record line {previous.line} (the previous answer)")
             return previous.effort
 
-        notes.append(
-            "output_config.effort: none (no assistant record carries effort, launch parameters give none)"
-        )
+        notes.append("output_config.effort: none (no assistant record carries effort, launch parameters give none)")
         return ""
 
     def turn_effort(self, line: int) -> str | None:
@@ -1042,9 +992,7 @@ class ParamFacts:
 
     def advisor_model(self, line: int, notes: list[str]) -> str:
         if (answer := self._answer(line)) and answer.advisor_model:
-            notes.append(
-                f"advisor: assistant record line {answer.line} (written after the request)"
-            )
+            notes.append(f"advisor: assistant record line {answer.line} (written after the request)")
             return answer.advisor_model
 
         if (previous := self._previous(line)) and previous.advisor_model:
@@ -1087,12 +1035,7 @@ class BodyAssembly:
         self._stamp = CacheStamp()
         self._json = JsonView()
 
-    def messages(
-        self,
-        messages: Sequence[Mapping[str, Json]],
-        marks: Sequence[MarkPath],
-        ttl: str,
-    ) -> list[Json]:
+    def messages(self, messages: Sequence[Mapping[str, Json]], marks: Sequence[MarkPath], ttl: str) -> list[Json]:
         copied: list[Json] = []
         for message in messages:
             copied.append(self._json.copy(dict(message)))
@@ -1102,9 +1045,7 @@ class BodyAssembly:
             for step in path:
                 target = self._step(target, step)
             if not isinstance(target, dict):
-                raise RequestError(
-                    f"cache mark path {list(path)} expects a content block object, got {target!r}"
-                )
+                raise RequestError(f"cache mark path {list(path)} expects a content block object, got {target!r}")
             target[Key.CACHE_CONTROL] = self._stamp.mark(ttl, "")
 
         return copied
@@ -1132,9 +1073,7 @@ class BodyAssembly:
         }
 
         if self._launch.thinking.active and Beta.CONTEXT_MANAGEMENT in betas:
-            planned: list[Json] = [
-                {Key.TYPE: Wire.CLEAR_THINKING, Key.KEEP: Wire.KEEP_ALL}
-            ]
+            planned: list[Json] = [{Key.TYPE: Wire.CLEAR_THINKING, Key.KEEP: Wire.KEEP_ALL}]
             for edit in edits:
                 planned.append(self._json.copy(dict(edit)))
             body[Key.CONTEXT_MANAGEMENT] = {Key.EDITS: planned}
@@ -1202,9 +1141,7 @@ class RequestParts:
     def compose(self, request: Composition, notes: list[str]) -> dict[str, Json]:
         line = request.line
         snapshot = self._snapshots.at(line)
-        notes.append(
-            f"system: prompt_snapshot line {snapshot.line}{self._lookahead(snapshot.line, line)}"
-        )
+        notes.append(f"system: prompt_snapshot line {snapshot.line}{self._lookahead(snapshot.line, line)}")
 
         model = self.params.model(line, notes)
         if model not in self._launch.models:
@@ -1248,9 +1185,7 @@ class RequestParts:
             model=model,
             system=self._system.build(snapshot, request.ttl, line, self._facts.path),
             tools=self._tools.build(line, snapshot, advisor, notes),
-            messages=self._assembly.messages(
-                request.messages, request.marks, request.ttl
-            ),
+            messages=self._assembly.messages(request.messages, request.marks, request.ttl),
             betas=betas,
             max_tokens=catalog.max_tokens,
             effort=effort,
@@ -1258,12 +1193,7 @@ class RequestParts:
             edits=request.edits,
         )
 
-    def marked(
-        self,
-        messages: Sequence[Mapping[str, Json]],
-        marks: Sequence[MarkPath],
-        ttl: str,
-    ) -> list[Json]:
+    def marked(self, messages: Sequence[Mapping[str, Json]], marks: Sequence[MarkPath], ttl: str) -> list[Json]:
         """Сообщения провода с расставленными метками кэша."""
         return self._assembly.messages(messages, marks, ttl)
 
@@ -1296,11 +1226,7 @@ class RequestBuilder:
     """
 
     def __init__(
-        self,
-        memory: SessionMemory,
-        launch: LaunchParams,
-        edits: ContextEdits,
-        echo_api_block_order: bool,
+        self, memory: SessionMemory, launch: LaunchParams, edits: ContextEdits, echo_api_block_order: bool
     ) -> None:
         self._memory = memory
         self._launch = launch
@@ -1330,9 +1256,7 @@ class RequestBuilder:
                 f"(message-threads beta latched earlier in the process: {threads})"
             )
 
-        assembled = self.messages(
-            line, clearing is not None and self._launch.fork_cache_pin
-        )
+        assembled = self.messages(line, clearing is not None and self._launch.fork_cache_pin)
 
         ttl = self._launch.main_cache_ttl
         if self.facts.sidechain:
@@ -1363,9 +1287,7 @@ class RequestBuilder:
         try:
             return self.assembler.assemble(self.assembler.moment_at(line, 0), fork_pin)
         except AssembleError as exc:
-            raise RequestError(
-                f"assembling messages of {self._memory.journal.path} before line {line} failed: {exc}"
-            ) from exc
+            raise RequestError(f"assembling messages of {self._memory.journal.path} before line {line} failed: {exc}") from exc
 
     def _threaded_before(self, line: int) -> bool:
         """Слал ли этот процесс раньше запрос с нитью: бета message-threads защёлкивается (SM @209634522)."""

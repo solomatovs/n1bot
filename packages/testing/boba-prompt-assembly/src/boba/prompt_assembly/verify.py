@@ -19,31 +19,12 @@ from enum import StrEnum
 from typing import Iterator, Mapping, Sequence
 
 from boba.prompt_assembly.compaction_checks import CompactionVerifier, Report
-from boba.prompt_assembly.corpus import (
-    CorpusEntry,
-    CorpusManifest,
-    ManifestReader,
-    VerifyError,
-)
+from boba.prompt_assembly.corpus import CorpusEntry, CorpusManifest, ManifestReader, VerifyError
 from boba.prompt_assembly.loader import LoaderError, LoadResult
-from boba.prompt_assembly.oracle import (
-    BodyLayers,
-    JsonDiff,
-    Layer,
-    ReplayError,
-    ReplayHasher,
-    RequestRebuilder,
-    RequestRecord,
-    SessionLog,
-)
+from boba.prompt_assembly.oracle import BodyLayers, JsonDiff, Layer, ReplayError, ReplayHasher, RequestRebuilder, RequestRecord, SessionLog
 from boba.prompt_assembly.records import Json, Key, RecordType, Row, Subtype
 from boba.prompt_assembly.request import LaunchParams, RequestError
-from boba.prompt_assembly.session import (
-    OptionsReader,
-    PromptSession,
-    SessionError,
-    Sessions,
-)
+from boba.prompt_assembly.session import OptionsReader, PromptSession, SessionError, Sessions
 
 
 class Tally(StrEnum):
@@ -196,9 +177,7 @@ class AppendCheck:
         try:
             return self._memory.loaded(cut)
         except LoaderError as exc:
-            raise VerifyError(
-                f"{self._path}: loading the journal state before line {cut} failed: {exc}"
-            ) from exc
+            raise VerifyError(f"{self._path}: loading the journal state before line {cut} failed: {exc}") from exc
 
     def _check(self, cut: int) -> AppendVerdict:
         result = self._loaded(cut)
@@ -207,9 +186,7 @@ class AppendCheck:
         problems: list[str] = []
 
         if len(actual) != len(expected):
-            problems.append(
-                f"model appends {len(expected)} row(s), binary appended {len(actual)}"
-            )
+            problems.append(f"model appends {len(expected)} row(s), binary appended {len(actual)}")
 
         renamed: dict[str, str] = {}
         for model, record in zip(expected, actual):
@@ -218,16 +195,10 @@ class AppendCheck:
 
         problems.extend(self._prompt_parent(cut, result, renamed))
         return AppendVerdict(
-            cut=cut,
-            expected=len(expected),
-            actual=len(actual),
-            ok=not problems,
-            detail="; ".join(problems),
+            cut=cut, expected=len(expected), actual=len(actual), ok=not problems, detail="; ".join(problems)
         )
 
-    def _differences(
-        self, model: Row, record: Row, renamed: Mapping[str, str]
-    ) -> Iterator[str]:
+    def _differences(self, model: Row, record: Row, renamed: Mapping[str, str]) -> Iterator[str]:
         if model.kind != record.kind:
             yield f"line {record.line}: model row is {model.kind}, binary wrote {record.kind}"
 
@@ -238,19 +209,14 @@ class AppendCheck:
         if renamed.get(parent, parent) != self._parent(record):
             yield f"line {record.line}: model parent {parent}, binary parent {self._parent(record)}"
 
-    def _prompt_parent(
-        self, cut: int, result: LoadResult, renamed: Mapping[str, str]
-    ) -> Iterator[str]:
+    def _prompt_parent(self, cut: int, result: LoadResult, renamed: Mapping[str, str]) -> Iterator[str]:
         prompt = self._memory.first_own(cut)
         if prompt is None or not result.history:
             return
 
         expected = result.next_parent
         actual = self._parent(prompt)
-        if (
-            prompt.kind == RecordType.SYSTEM
-            and prompt.subtype == Subtype.COMPACT_BOUNDARY
-        ):
+        if prompt.kind == RecordType.SYSTEM and prompt.subtype == Subtype.COMPACT_BOUNDARY:
             actual = str(prompt.raw.get(Link.LOGICAL_PARENT))
 
         if renamed.get(expected, expected) != actual:
@@ -280,10 +246,7 @@ class ProcessCheck:
         self._boundaries: list[int] = []
 
         for row in session.memory.rows:
-            if (
-                row.kind == RecordType.SYSTEM
-                and row.subtype == Subtype.COMPACT_BOUNDARY
-            ):
+            if row.kind == RecordType.SYSTEM and row.subtype == Subtype.COMPACT_BOUNDARY:
                 self._boundaries.append(row.line)
 
     def run(self, since: int) -> list[ProcessVerdict]:
@@ -303,17 +266,11 @@ class ProcessCheck:
         restarted = request.keep == 0 and not request.base
 
         if not restarted and started:
-            return ProcessVerdict(
-                request.line,
-                False,
-                f"the model starts a process at line {started[-1]} inside one api-request chain",
-            )
+            return ProcessVerdict(request.line, False, f"the model starts a process at line {started[-1]} inside one api-request chain")
 
         if restarted and previous and not started and not compacted:
             return ProcessVerdict(
-                request.line,
-                False,
-                f"the api-request chain restarts after line {previous}, the model finds neither a process start nor a boundary",
+                request.line, False, f"the api-request chain restarts after line {previous}, the model finds neither a process start nor a boundary"
             )
 
         return ProcessVerdict(request.line, True, "")
@@ -337,12 +294,7 @@ class RequestCheck:
     """
 
     def __init__(
-        self,
-        session: PromptSession,
-        entry: CorpusEntry,
-        variants: Mapping[int, LaunchParams],
-        oracle: SessionLog,
-        hasher: ReplayHasher,
+        self, session: PromptSession, entry: CorpusEntry, variants: Mapping[int, LaunchParams], oracle: SessionLog, hasher: ReplayHasher
     ) -> None:
         self._session = session
         self._entry = entry
@@ -357,9 +309,7 @@ class RequestCheck:
         try:
             self._bare = self._sessions.without_oracle(session)
         except SessionError as exc:
-            raise VerifyError(
-                f"{session.journal.path}: opening a session without the oracle records failed: {exc}"
-            ) from exc
+            raise VerifyError(f"{session.journal.path}: opening a session without the oracle records failed: {exc}") from exc
 
     def verdicts(self) -> list[RequestVerdict]:
         verdicts: list[RequestVerdict] = []
@@ -393,15 +343,11 @@ class RequestCheck:
 
         return unmatched
 
-    def _verdict(
-        self, ordinal: int, request: RequestRecord, following: int
-    ) -> RequestVerdict:
+    def _verdict(self, ordinal: int, request: RequestRecord, following: int) -> RequestVerdict:
         try:
             rebuilt = self._rebuilder.rebuild(request)
         except ReplayError as exc:
-            raise VerifyError(
-                f"{self._session.journal.path}: rebuilding the oracle request at line {request.line} failed: {exc}"
-            ) from exc
+            raise VerifyError(f"{self._session.journal.path}: rebuilding the oracle request at line {request.line} failed: {exc}") from exc
 
         reference = rebuilt.body
         profile, launch = self._launch_for(request.line, reference)
@@ -415,18 +361,8 @@ class RequestCheck:
             built = session.requests.build(request.line)
         except RequestError as exc:
             return RequestVerdict(
-                ordinal,
-                request.line,
-                request.query_source,
-                profile,
-                False,
-                rebuilt.ok,
-                failed,
-                moment_line,
-                False,
-                f"build failed: {exc}",
-                "",
-                (),
+                ordinal, request.line, request.query_source, profile, False, rebuilt.ok, failed, moment_line, False,
+                f"build failed: {exc}", "", (),
             )
 
         layers: dict[Layer, bool] = {}
@@ -436,33 +372,15 @@ class RequestCheck:
         digest_ok = self._hasher.request(built.body) == request.digest
         detail = ""
         if not digest_ok:
-            detail = self._diff.first(
-                self._layers.normalized(reference),
-                self._layers.normalized(built.body),
-                "",
-            )
+            detail = self._diff.first(self._layers.normalized(reference), self._layers.normalized(built.body), "")
 
         moment_detail = "the request got no response, history does not show it"
         if moment_line:
-            moment_detail = self._moment(
-                self._variant(self._bare, launch, request.line),
-                moment_line,
-                request.digest,
-            )
+            moment_detail = self._moment(self._variant(self._bare, launch, request.line), moment_line, request.digest)
 
         return RequestVerdict(
-            ordinal,
-            request.line,
-            request.query_source,
-            profile,
-            digest_ok,
-            rebuilt.ok,
-            layers,
-            moment_line,
-            moment_line > 0 and moment_detail == "",
-            detail,
-            moment_detail,
-            built.notes,
+            ordinal, request.line, request.query_source, profile, digest_ok, rebuilt.ok, layers, moment_line,
+            moment_line > 0 and moment_detail == "", detail, moment_detail, built.notes,
         )
 
     def _moment(self, session: PromptSession, line: int, digest: str) -> str:
@@ -488,17 +406,13 @@ class RequestCheck:
 
         return moment.line
 
-    def _launch_for(
-        self, line: int, reference: Mapping[str, Json]
-    ) -> tuple[str, LaunchParams]:
+    def _launch_for(self, line: int, reference: Mapping[str, Json]) -> tuple[str, LaunchParams]:
         """Имя набора и параметры запуска запроса: общие для журнала либо свои для этой строки."""
         launch = self._session.options.launch
         profile = self._entry.launch.profile
 
         if line in self._variants:
-            launch = replace(
-                self._variants[line], tool_clearing_mode=launch.tool_clearing_mode
-            )
+            launch = replace(self._variants[line], tool_clearing_mode=launch.tool_clearing_mode)
             profile = self._entry.launch.request_profiles[line]
 
         safeguards = reference.get(Key.SAFEGUARDS)
@@ -508,18 +422,14 @@ class RequestCheck:
 
         return profile, launch
 
-    def _variant(
-        self, session: PromptSession, launch: LaunchParams, line: int
-    ) -> PromptSession:
+    def _variant(self, session: PromptSession, launch: LaunchParams, line: int) -> PromptSession:
         if launch is session.options.launch:
             return session
 
         try:
             return self._sessions.variant(session, launch)
         except SessionError as exc:
-            raise VerifyError(
-                f"{self._session.journal.path}: opening a session for the request at line {line} failed: {exc}"
-            ) from exc
+            raise VerifyError(f"{self._session.journal.path}: opening a session for the request at line {line} failed: {exc}") from exc
 
 
 class JournalVerifier:
@@ -534,20 +444,13 @@ class JournalVerifier:
 
     def verify(self, entry: CorpusEntry) -> JournalReport:
         try:
-            session = self._sessions.open(
-                entry.path,
-                self._reader.options(self._manifest, entry, entry.launch.profile),
-            )
+            session = self._sessions.open(entry.path, self._reader.options(self._manifest, entry, entry.launch.profile))
             oracle = SessionLog(session.journal, self._hasher)
             oracle.load()
         except (SessionError, ReplayError) as exc:
-            raise VerifyError(
-                f"opening corpus journal {entry.address.label} failed: {exc}"
-            ) from exc
+            raise VerifyError(f"opening corpus journal {entry.address.label} failed: {exc}") from exc
 
-        check = RequestCheck(
-            session, entry, self._variants(entry), oracle, self._hasher
-        )
+        check = RequestCheck(session, entry, self._variants(entry), oracle, self._hasher)
         appends = AppendCheck(session)
         compaction: Report | None = None
         summaries: Report | None = None
@@ -558,12 +461,7 @@ class JournalVerifier:
                 if request.line > entry.valid_after:
                     valid.append(request.line)
             verifier = CompactionVerifier(
-                session,
-                entry.compaction,
-                oracle,
-                self._hasher,
-                valid,
-                entry.launch.safeguards_from_oracle,
+                session, entry.compaction, oracle, self._hasher, valid, entry.launch.safeguards_from_oracle
             )
             compaction, summaries = verifier.run()
 
@@ -585,9 +483,7 @@ class JournalVerifier:
             try:
                 variants[line] = self._options.profile(profile).launch
             except SessionError as exc:
-                raise VerifyError(
-                    f"{self._manifest.path}: journal {entry.address.label}, request at line {line}: {exc}"
-                ) from exc
+                raise VerifyError(f"{self._manifest.path}: journal {entry.address.label}, request at line {line}: {exc}") from exc
 
         return variants
 
@@ -621,9 +517,7 @@ class CorpusVerifier:
             Tally.PARAMS: Layer.PARAMS,
             Tally.MARKS: Layer.MARKS,
         }
-        scores: dict[Tally, Score] = {
-            Tally.DIGEST: self._score(self._flags_ok(verdicts))
-        }
+        scores: dict[Tally, Score] = {Tally.DIGEST: self._score(self._flags_ok(verdicts))}
         for tally, layer in layers.items():
             scores[tally] = self._score(self._flags_layer(verdicts, layer))
 
@@ -648,9 +542,7 @@ class CorpusVerifier:
         for verdict in verdicts:
             yield verdict.ok
 
-    def _flags_layer(
-        self, verdicts: Sequence[RequestVerdict], layer: Layer
-    ) -> Iterator[bool]:
+    def _flags_layer(self, verdicts: Sequence[RequestVerdict], layer: Layer) -> Iterator[bool]:
         for verdict in verdicts:
             yield verdict.layers[layer]
 
@@ -670,9 +562,7 @@ class CorpusVerifier:
             for append in report.appends:
                 yield append.ok
 
-    def _flags_findings(
-        self, reports: Sequence[JournalReport], summaries: bool
-    ) -> Iterator[bool]:
+    def _flags_findings(self, reports: Sequence[JournalReport], summaries: bool) -> Iterator[bool]:
         for report in reports:
             chosen = report.compaction
             if summaries:

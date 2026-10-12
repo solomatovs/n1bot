@@ -18,6 +18,7 @@ from boba.prompt_assembly.entries import Block, BlockKit, Content, Marker
 from boba.prompt_assembly.records import BlockType, JsText, Json
 
 
+
 class Reminders:
     """Обёртка <system-reminder>: наложение (fl), снятие (C7), распознавание."""
 
@@ -137,14 +138,7 @@ class QueuedCommandRenderer:
         if attachment.get("commandMode") != "prompt":
             return None
 
-        for key in (
-            "origin",
-            "isMeta",
-            "reminderId",
-            "batchedRelayPrompts",
-            "forwardedIntent",
-            "inlinedImagePaths",
-        ):
+        for key in ("origin", "isMeta", "reminderId", "batchedRelayPrompts", "forwardedIntent", "inlinedImagePaths"):
             if attachment.get(key):
                 return None
 
@@ -168,9 +162,7 @@ class QueuedCommandRenderer:
             if self._blocks.kind(block) == BlockType.IMAGE:
                 images.append(block)
 
-        head = self._blocks.text_block(
-            self._reminders.wrap(self._mid_turn("\n".join(texts)))
-        )
+        head = self._blocks.text_block(self._reminders.wrap(self._mid_turn("\n".join(texts))))
         return [[head, *images]]
 
     def _mid_turn(self, text: str) -> str:
@@ -196,16 +188,10 @@ class DeferredToolsText:
 
     def recorded_names(self, attachment: Mapping[str, Json]) -> list[str]:
         """v_n: имена, с которыми текст записан в журнал."""
-        return [
-            *self._names(attachment, "surfacedNames"),
-            *self._names(attachment, "replacedNames"),
-        ]
+        return [*self._names(attachment, "surfacedNames"), *self._names(attachment, "replacedNames")]
 
     def rerender(
-        self,
-        attachment: Mapping[str, Json],
-        rendered: Sequence[Content],
-        surfaced: Sequence[str],
+        self, attachment: Mapping[str, Json], rendered: Sequence[Content], surfaced: Sequence[str]
     ) -> list[Content] | None:
         if len(rendered) != 1:
             return None
@@ -218,9 +204,7 @@ class DeferredToolsText:
         if body == recorded:
             return None
 
-        old_lead = self._SEPARATOR.join(
-            self._lead(attachment, self.recorded_names(attachment))
-        )
+        old_lead = self._SEPARATOR.join(self._lead(attachment, self.recorded_names(attachment)))
         if not body.startswith(old_lead):
             return None
 
@@ -237,9 +221,7 @@ class DeferredToolsText:
 
         return [self._reminders.wrap(self._SEPARATOR.join(sections))]
 
-    def _lead(
-        self, attachment: Mapping[str, Json], surfaced: Sequence[str]
-    ) -> list[str]:
+    def _lead(self, attachment: Mapping[str, Json], surfaced: Sequence[str]) -> list[str]:
         """Ведущие разделы ветки deferred_tools_delta в i6e: всплывшие, обновлённые, отложенные."""
         chosen = set(surfaced)
         replaced = set(self._names(attachment, "replacedNames"))
