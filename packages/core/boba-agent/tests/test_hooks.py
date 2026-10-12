@@ -1,5 +1,5 @@
-"""Хук PreToolUse без сети: матчер по форме хуков, полное имя инструмента,
-чтение ответа обработчика, проверки настроек обработчика."""
+"""Хук PreToolUse без сети: матчер по форме хуков, чтение ответа
+обработчика, проверки настроек обработчика."""
 
 from __future__ import annotations
 
@@ -15,8 +15,6 @@ from boba.agent.hooks import (
     HookReply,
     HookReplyError,
     HttpHookSpec,
-    McpToolOrigin,
-    ToolOrigins,
 )
 
 URL = "http://127.0.0.1:1/hooks/pre-tool-use"
@@ -50,28 +48,6 @@ class TestMatcher:
     def test_broken_regular_expression_is_refused(self) -> None:
         with pytest.raises(ValueError, match="not a valid regular expression"):
             HookMatcher("(")
-
-
-class TestToolNames:
-    def test_server_tool_gets_the_mcp_form_and_own_tool_keeps_its_name(self) -> None:
-        origins = ToolOrigins(
-            {
-                "pg_query": McpToolOrigin(
-                    server="boba_base", tool="pg_query", features={}
-                )
-            }
-        )
-
-        assert origins.full_name("pg_query") == "mcp__boba_base__pg_query"
-        assert origins.full_name("AskUserQuestion") == "AskUserQuestion"
-        assert origins.of("AskUserQuestion") is None
-
-    def test_prefixed_tool_is_named_by_its_remote_name(self) -> None:
-        origins = ToolOrigins(
-            {"a_add": McpToolOrigin(server="a", tool="add", features={})}
-        )
-
-        assert origins.full_name("a_add") == "mcp__a__add"
 
 
 class TestReplies:

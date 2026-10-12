@@ -166,7 +166,12 @@ class TckStand:
 
     def busy_prompt(self) -> str:
         """Вопрос, который держит ход: вызов `sleep_for` сервера стенда."""
-        return call({"name": "sleep_for", "arguments": {"seconds": self.BUSY_SECONDS}})
+        return call(
+            {
+                "name": "mcp__stand__sleep_for",
+                "arguments": {"seconds": self.BUSY_SECONDS},
+            }
+        )
 
     def tck_command(self, executable: Path) -> list[str]:
         return [

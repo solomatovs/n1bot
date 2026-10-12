@@ -171,7 +171,6 @@
 
 # хранилище вложений (upload файлов)
 [mcp.servers.deepwiki]
-    prefix               = "deepwiki_"
     connect_timeout_sec  = 20.0
     call_timeout_sec     = 120.0
     [mcp.servers.deepwiki.endpoint]

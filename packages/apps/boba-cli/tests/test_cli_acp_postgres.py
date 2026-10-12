@@ -173,7 +173,7 @@ class Pair:
 
 
 class TestTwoProcesses:
-    PROMPT = call({"name": "add", "arguments": {"a": 4, "b": 5}})
+    PROMPT = call({"name": "mcp__stand__add", "arguments": {"a": 4, "b": 5}})
 
     async def test_observer_replays_and_takes_over_after_the_holder_leaves(
         self,
@@ -286,7 +286,7 @@ class TestTwoProcesses:
 
 
 class TestForkOfAHeldSession:
-    PROMPT = call({"name": "add", "arguments": {"a": 1, "b": 1}})
+    PROMPT = call({"name": "mcp__stand__add", "arguments": {"a": 1, "b": 1}})
 
     async def test_observer_forks_the_held_session_and_prompts_the_branch(
         self,

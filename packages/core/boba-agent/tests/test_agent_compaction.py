@@ -72,7 +72,7 @@ def call(*specs: dict[str, object]) -> str:
 
 def large(size: int = LARGE_CHARS, fill: str = "x") -> dict[str, object]:
     return {
-        "name": StandToolName.LARGE.value,
+        "name": StandToolName.LARGE.full,
         "arguments": {"size": size, "fill": fill},
     }
 
@@ -384,7 +384,7 @@ class TestThreshold:
         )
         session = await served.open(SESSION, resume=False)
 
-        first = f"{FailureName.NO_USAGE.value} {call(large(17_500, 'ы'))}"
+        first = f"{FailureName.NO_USAGE.value} {call(large(17_300, 'ы'))}"
         served.agent.queue.enqueue(prompt(first))
         await served.agent.settled()
         served.agent.queue.enqueue(prompt(ScenarioName.ANSWER.value))
@@ -647,9 +647,11 @@ class TestResume:
         served = Served(agents.agent(profile, sink, tools=tools))
         session = await served.open(SESSION, resume=False)
 
-        served.agent.queue.enqueue(prompt(call({"name": StandToolName.DROP.value})))
+        served.agent.queue.enqueue(prompt(call({"name": StandToolName.DROP.full})))
         question = await sink.next_question(0)
-        rule = PermissionRule(tool="drop", behavior=PermissionBehavior.ALLOW)
+        rule = PermissionRule(
+            tool="mcp__stand__drop", behavior=PermissionBehavior.ALLOW
+        )
         assert served.agent.answer(
             question.request_id, AllowAnswer(updated_permissions=[rule])
         )
@@ -660,7 +662,7 @@ class TestResume:
         served.agent.queue.enqueue(prompt(call(large())))
         await served.agent.settled()
         both = call(
-            {"name": StandToolName.DROP.value}, {"name": StandToolName.NOTE.value}
+            {"name": StandToolName.DROP.full}, {"name": StandToolName.NOTE.full}
         )
         served.agent.queue.enqueue(prompt(both))
         await served.agent.settled()
@@ -669,11 +671,11 @@ class TestResume:
         assert len(boundaries(session.records())) >= 2
         assert len(sink.questions()) == 1
         assert [c.tool for c in tools.calls] == [
-            "drop",
-            "large",
-            "large",
-            "drop",
-            "note",
+            "mcp__stand__drop",
+            "mcp__stand__large",
+            "mcp__stand__large",
+            "mcp__stand__drop",
+            "mcp__stand__note",
         ]
 
         again = Collected()
@@ -685,7 +687,10 @@ class TestResume:
         await resumed.close()
 
         assert not again.questions()
-        assert [c.tool for c in tools.calls][-2:] == ["drop", "note"]
+        assert [c.tool for c in tools.calls][-2:] == [
+            "mcp__stand__drop",
+            "mcp__stand__note",
+        ]
         assert list(resumed.agent.outcomes) == [TurnOutcome.COMPLETED]
 
 

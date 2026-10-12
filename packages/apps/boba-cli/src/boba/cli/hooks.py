@@ -12,7 +12,7 @@ HookTransportError — обработчик недоступен, срок вы�
 
 from __future__ import annotations
 
-from collections.abc import Iterator, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from pathlib import Path
 
 import httpx
@@ -25,8 +25,8 @@ from boba.agent.hooks import (
     HookTransport,
     HookTransportError,
     HttpHookSpec,
+    McpServerInfo,
     PreToolUseHooks,
-    ToolOrigins,
 )
 from boba.cli.settings import EffectiveSettings, HookEvent, HookMatcherGroup
 
@@ -67,14 +67,17 @@ class HttpHookTransport(HookTransport):
 class HookWiring:
     """Собирает исполнитель хука `PreToolUse` на сессию из действующих
     настроек: группы матчеров и обработчиков — в модель ядра, транспорт
-    общий на процесс, происхождение инструментов и рабочий каталог — у
-    сессии. Создаёт вход процесса, зовёт сборка сессии."""
+    общий на процесс, серверы MCP и рабочий каталог — у сессии. Создаёт вход
+    процесса, зовёт сборка сессии."""
 
     def __init__(self, transport: HookTransport) -> None:
         self._transport = transport
 
     def hooks(
-        self, settings: EffectiveSettings, origins: ToolOrigins, cwd: Path
+        self,
+        settings: EffectiveSettings,
+        servers: Mapping[str, McpServerInfo],
+        cwd: Path,
     ) -> PreToolUseHooks | None:
         """Исполнитель хука для сессии с рабочим каталогом cwd; None — в
         настройках нет групп `PreToolUse`."""
@@ -83,7 +86,7 @@ class HookWiring:
             return None
 
         return PreToolUseHooks(
-            list(self._groups(groups)), self._transport, origins, str(cwd)
+            list(self._groups(groups)), self._transport, servers, str(cwd)
         )
 
     def _groups(self, groups: Sequence[HookMatcherGroup]) -> Iterator[HookGroup]:

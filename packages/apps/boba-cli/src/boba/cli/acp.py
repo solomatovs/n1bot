@@ -194,6 +194,7 @@ from boba.agent.turn import ContextUsage
 from boba.cancellation import StopReason as CoreStopReason
 from boba.cli.settings import McpServerJson, McpTransportJson
 from boba.toolkit.dag import ToolHints
+from boba.toolkit.mcp_names import McpToolNameError, McpToolNames
 
 logger = logging.getLogger(__name__)
 
@@ -1010,14 +1011,27 @@ class PromptText:
 
 class McpServerSpecs:
     """Серверы MCP из `session/new` → записи формата `.mcp.json` настроек,
-    из которых сборка делает конфиги клиента."""
+    из которых сборка делает конфиги клиента. Имя сервера входит в полные
+    имена его инструментов и проверяется их формой (McpToolNames)."""
+
+    def __init__(self) -> None:
+        self._names = McpToolNames()
 
     def specs(self, servers: Sequence[McpServerBlock]) -> dict[str, McpServerJson]:
         """Ошибки:
-        RequestError — сервер неподдержанного вида или повтор имени (-32602).
+        RequestError — сервер неподдержанного вида, повтор имени либо имя,
+            которое не годится для полных имён инструментов (-32602).
         """
         specs: dict[str, McpServerJson] = {}
         for server in servers:
+            try:
+                self._names.checked_server(server.name)
+            except McpToolNameError as exc:
+                details = f"mcpServers entry '{server.name}' is refused: {exc}"
+                raise RequestError.invalid_params(
+                    {ErrorDataKey.DETAILS.value: details}
+                ) from exc
+
             if server.name in specs:
                 details = (
                     f"mcpServers names '{server.name}' twice; names must be unique"

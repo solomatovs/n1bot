@@ -77,6 +77,7 @@ from boba.agent.writer import RecordKeeper
 from boba.cancellation import RunCancellation, StopReason, ToolStopped
 from boba.toolkit.chain import StreamPlanError
 from boba.toolkit.dag import CallDag, DagNode, NodeOutcome, ToolHints, ToolServer
+from boba.toolkit.mcp_names import McpToolName, McpToolNames
 
 logger = logging.getLogger(__name__)
 
@@ -526,6 +527,7 @@ class ToolRunner:
         self._static = static
         self._hooks = hooks
         self._dags = CallDag()
+        self._names = McpToolNames()
         self._tools = tools
         self._texts = texts
         self._templates = templates
@@ -634,24 +636,29 @@ class ToolRunner:
         if isinstance(verdict, HookBlocked):
             return verdict
 
-        if call.name != self._dags.WORKFLOW:
+        owner = self._names.parse(call.name)
+        if owner is None:
             return verdict
 
-        return await self._nodes_hooked(hooks, call, verdict, cancellation)
+        if owner.tool != self._dags.WORKFLOW:
+            return verdict
+
+        return await self._nodes_hooked(hooks, call, owner, verdict, cancellation)
 
     async def _nodes_hooked(
         self,
         hooks: PreToolUseHooks,
         call: PlannedCall,
+        owner: McpToolName,
         verdict: HookAllowed | HookAsked,
         cancellation: RunCancellation,
     ) -> HookVerdict:
-        """Хук над узлами вызова workflow. Узел — вызов своего инструмента:
-        обработчик видит его под именем, схемой и идентификатором вызова
-        этого инструмента, а замены аргументов узлов возвращаются в вызов
-        workflow. Отказ по любому узлу снимает вызов целиком. Вызов,
-        который не проходит форму описания, уходит серверу как есть — он и
-        ответит, что с ним не так."""
+        """Хук над узлами вызова workflow сервера owner. Узел — вызов
+        инструмента того же сервера: обработчик видит его под полным именем,
+        схемой и идентификатором вызова этого инструмента, а замены
+        аргументов узлов возвращаются в вызов workflow. Отказ по любому узлу
+        снимает вызов целиком. Вызов, который не проходит форму описания,
+        уходит серверу как есть — он и ответит, что с ним не так."""
         whole = DagNode(key=call.block.id, tool=call.name, args=dict(verdict.arguments))
         try:
             described = self._dags.described(whole)
@@ -664,8 +671,9 @@ class ToolRunner:
 
         nodes: list[DagNode] = []
         for node, called in zip(described, self._dags.nodes_of(whole), strict=True):
+            node_tool = self._names.in_server(owner.server, node.tool)
             hooked = await hooks.before_call(
-                self._hooked_call(node.tool, called.key, node.args), cancellation
+                self._hooked_call(node_tool, called.key, node.args), cancellation
             )
             if isinstance(hooked, HookDenied):
                 return hooked

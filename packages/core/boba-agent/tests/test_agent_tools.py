@@ -222,10 +222,10 @@ class TestCalls:
         served.agent.queue.enqueue(
             prompt(
                 call(
-                    {"name": StandToolName.SLEEP.value, "arguments": {"seconds": 0.05}},
-                    {"name": StandToolName.LOOKUP.value},
-                    {"name": StandToolName.EMPTY.value},
-                    {"name": StandToolName.BROKEN.value},
+                    {"name": StandToolName.SLEEP.full, "arguments": {"seconds": 0.05}},
+                    {"name": StandToolName.LOOKUP.full},
+                    {"name": StandToolName.EMPTY.full},
+                    {"name": StandToolName.BROKEN.full},
                 )
             )
         )
@@ -256,7 +256,7 @@ class TestCalls:
         assert [r.text() for r in found] == [
             "slept",
             "lookup done",
-            "(empty completed with no output)",
+            "(mcp__stand__empty completed with no output)",
             found[3].text(),
         ]
         assert "stand tool failed" in found[3].text()
@@ -267,10 +267,10 @@ class TestCalls:
         sources = [r.source_tool_assistant_uuid for r in result_records(chain)]
         assert sources == [r.uuid for r in chain if isinstance(r, AssistantRecord)][1:5]
         assert [c.tool for c in tools.calls] == [
-            "sleep",
-            "lookup",
-            "empty",
-            "broken",
+            "mcp__stand__sleep",
+            "mcp__stand__lookup",
+            "mcp__stand__empty",
+            "mcp__stand__broken",
         ]
         assert sink.questions() == []
 
@@ -313,9 +313,7 @@ class TestCalls:
         session = await served.open(SESSION, resume=False)
 
         served.agent.queue.enqueue(
-            prompt(
-                call({"name": StandToolName.LARGE.value, "arguments": {"size": 500}})
-            )
+            prompt(call({"name": StandToolName.LARGE.full, "arguments": {"size": 500}}))
         )
         await served.agent.settled()
         await served.close()
@@ -376,7 +374,7 @@ class TestCalls:
         served.agent.queue.enqueue(
             prompt(
                 f"{ScenarioName.LOOP.value} "
-                + json.dumps({"name": StandToolName.LOOKUP.value})
+                + json.dumps({"name": StandToolName.LOOKUP.full})
             )
         )
         await served.agent.settled()
@@ -404,11 +402,11 @@ class TestPermissions:
         )
         session = await served.open(SESSION, resume=False)
 
-        served.agent.queue.enqueue(prompt(call({"name": StandToolName.DROP.value})))
+        served.agent.queue.enqueue(prompt(call({"name": StandToolName.DROP.full})))
         question = await sink.next_question(0)
-        assert question.request.tool_name == "drop"
+        assert question.request.tool_name == "mcp__stand__drop"
         assert question.request.permission_suggestions == [
-            PermissionRule(tool="drop", behavior=PermissionBehavior.ALLOW)
+            PermissionRule(tool="mcp__stand__drop", behavior=PermissionBehavior.ALLOW)
         ]
         assert session.state.value == "waiting"
         assert served.agent.answer(question.request_id, DenyAnswer(message="not now"))
@@ -434,19 +432,21 @@ class TestPermissions:
         )
         session = await served.open(SESSION, resume=False)
 
-        served.agent.queue.enqueue(prompt(call({"name": StandToolName.DROP.value})))
+        served.agent.queue.enqueue(prompt(call({"name": StandToolName.DROP.full})))
         question = await sink.next_question(0)
-        rule = PermissionRule(tool="drop", behavior=PermissionBehavior.ALLOW)
+        rule = PermissionRule(
+            tool="mcp__stand__drop", behavior=PermissionBehavior.ALLOW
+        )
         assert served.agent.answer(
             question.request_id, AllowAnswer(updated_permissions=[rule])
         )
         await served.agent.settled()
-        served.agent.queue.enqueue(prompt(call({"name": StandToolName.DROP.value})))
+        served.agent.queue.enqueue(prompt(call({"name": StandToolName.DROP.full})))
         await served.agent.settled()
         await served.close()
 
         assert len(sink.questions()) == 1
-        assert [c.tool for c in tools.calls] == ["drop", "drop"]
+        assert [c.tool for c in tools.calls] == ["mcp__stand__drop", "mcp__stand__drop"]
         rules = [r for r in session.service() if isinstance(r, PermissionRuleRecord)]
         assert len(rules) == 1
         assert rules[0].rule == rule
@@ -455,11 +455,15 @@ class TestPermissions:
             agents.agent(agents.profile(Protocol.OPENAI), Collected(), tools=tools)
         )
         await resumed.open(SESSION, resume=True)
-        resumed.agent.queue.enqueue(prompt(call({"name": StandToolName.DROP.value})))
+        resumed.agent.queue.enqueue(prompt(call({"name": StandToolName.DROP.full})))
         await resumed.agent.settled()
         await resumed.close()
 
-        assert [c.tool for c in tools.calls] == ["drop", "drop", "drop"]
+        assert [c.tool for c in tools.calls] == [
+            "mcp__stand__drop",
+            "mcp__stand__drop",
+            "mcp__stand__drop",
+        ]
 
     async def test_mode_change_mid_session_survives_resume(
         self, agents: StandAgents
@@ -471,12 +475,12 @@ class TestPermissions:
         )
         await served.open(SESSION, resume=False)
         served.agent.set_permission_mode(PermissionMode.ACCEPT_EDITS)
-        served.agent.queue.enqueue(prompt(call({"name": StandToolName.NOTE.value})))
+        served.agent.queue.enqueue(prompt(call({"name": StandToolName.NOTE.full})))
         await served.agent.settled()
         await served.close()
 
         assert sink.questions() == []
-        assert [c.tool for c in tools.calls] == ["note"]
+        assert [c.tool for c in tools.calls] == ["mcp__stand__note"]
 
         again = Collected()
         resumed = Served(
@@ -487,18 +491,18 @@ class TestPermissions:
         resumed.agent.queue.enqueue(
             prompt(
                 call(
-                    {"name": StandToolName.NOTE.value},
-                    {"name": StandToolName.DROP.value},
+                    {"name": StandToolName.NOTE.full},
+                    {"name": StandToolName.DROP.full},
                 )
             )
         )
         question = await again.next_question(0)
-        assert question.request.tool_name == "drop"
+        assert question.request.tool_name == "mcp__stand__drop"
         resumed.agent.answer(question.request_id, DenyAnswer())
         await resumed.agent.settled()
         await resumed.close()
 
-        assert [c.tool for c in tools.calls] == ["note", "note"]
+        assert [c.tool for c in tools.calls] == ["mcp__stand__note", "mcp__stand__note"]
 
     async def test_bypass_is_lowered_on_resume_without_the_right(
         self, agents: StandAgents
@@ -538,7 +542,9 @@ class TestPermissions:
         self, agents: StandAgents
     ) -> None:
         tools = StandTools()
-        classifier = StandClassifier({"note": "allow", "drop": "deny"})
+        classifier = StandClassifier(
+            {"mcp__stand__note": "allow", "mcp__stand__drop": "deny"}
+        )
         sink = Collected()
         served = Served(
             agents.agent(
@@ -554,9 +560,9 @@ class TestPermissions:
         served.agent.queue.enqueue(
             prompt(
                 call(
-                    {"name": StandToolName.NOTE.value},
-                    {"name": StandToolName.DROP.value},
-                    {"name": StandToolName.LOOKUP.value},
+                    {"name": StandToolName.NOTE.full},
+                    {"name": StandToolName.DROP.full},
+                    {"name": StandToolName.LOOKUP.full},
                 )
             )
         )
@@ -566,11 +572,15 @@ class TestPermissions:
         await served.close()
 
         assert sink.questions() == []
-        assert [c.tool for c in tools.calls] == ["note", "lookup"]
+        assert [c.tool for c in tools.calls] == [
+            "mcp__stand__note",
+            "mcp__stand__lookup",
+        ]
         found = results(session.records())
         assert found[1].is_error is True
         assert found[1].text() == (
-            "The permission classifier denied the call of drop: scripted for drop"
+            "The permission classifier denied the call of mcp__stand__drop: "
+            "scripted for mcp__stand__drop"
         )
         assert len(classifier.questions) == 2
         del classifier_fails
@@ -586,15 +596,18 @@ class TestPermissions:
             )
         )
         other_session = await other.open(SessionId(value="agent-tools-2"), resume=False)
-        other.agent.queue.enqueue(prompt(call({"name": StandToolName.NOTE.value})))
+        other.agent.queue.enqueue(prompt(call({"name": StandToolName.NOTE.full})))
         await other.agent.settled()
         await other.close()
 
         text = results(other_session.records())[0].text()
         assert text.startswith(
-            "The permission classifier could not decide on the call of note"
+            "The permission classifier could not decide on the call of mcp__stand__note"
         )
-        assert [c.tool for c in tools.calls] == ["note", "lookup"]
+        assert [c.tool for c in tools.calls] == [
+            "mcp__stand__note",
+            "mcp__stand__lookup",
+        ]
 
 
 class TestAskUserQuestion:
@@ -665,7 +678,7 @@ class TestAskUserQuestion:
         served.agent.queue.enqueue(
             prompt(
                 call(
-                    {"name": StandToolName.DROP.value},
+                    {"name": StandToolName.DROP.full},
                     {"name": AskUserQuestionTool.NAME, "arguments": self.QUESTION},
                 )
             )
@@ -693,7 +706,7 @@ class TestQueueMidTurn:
 
         served.agent.queue.enqueue(
             prompt(
-                call({"name": StandToolName.SLEEP.value, "arguments": {"seconds": 0.4}})
+                call({"name": StandToolName.SLEEP.full, "arguments": {"seconds": 0.4}})
             )
         )
         while not tools.calls:
@@ -750,7 +763,7 @@ class TestQueueMidTurn:
 
         served.agent.queue.enqueue(
             prompt(
-                call({"name": StandToolName.SLEEP.value, "arguments": {"seconds": 5}})
+                call({"name": StandToolName.SLEEP.full, "arguments": {"seconds": 5}})
             )
         )
         while not tools.calls:
@@ -820,8 +833,8 @@ class TestCancellation:
         served.agent.queue.enqueue(
             prompt(
                 call(
-                    {"name": StandToolName.DROP.value},
-                    {"name": StandToolName.NOTE.value},
+                    {"name": StandToolName.DROP.full},
+                    {"name": StandToolName.NOTE.full},
                 )
             )
         )
@@ -855,7 +868,7 @@ class TestCancellation:
         )
         await served.open(SESSION, resume=False)
 
-        served.agent.queue.enqueue(prompt(call({"name": StandToolName.DROP.value})))
+        served.agent.queue.enqueue(prompt(call({"name": StandToolName.DROP.full})))
         question = await sink.next_question(0)
         first = served.agent.answer(question.request_id, DenyAnswer())
         second = served.agent.answer(question.request_id, AllowAnswer())
@@ -875,7 +888,7 @@ class TestCancellation:
 
         served.agent.queue.enqueue(
             prompt(
-                call({"name": StandToolName.SLEEP.value, "arguments": {"seconds": 5}})
+                call({"name": StandToolName.SLEEP.full, "arguments": {"seconds": 5}})
             )
         )
         while not tools.calls:
@@ -905,7 +918,7 @@ class TestResume:
             agents.agent(agents.profile(Protocol.OPENAI), Collected(), tools=tools)
         )
         await served.open(SESSION, resume=False)
-        served.agent.queue.enqueue(prompt(call({"name": StandToolName.LOOKUP.value})))
+        served.agent.queue.enqueue(prompt(call({"name": StandToolName.LOOKUP.full})))
         await served.agent.settled()
         await served.close()
 
@@ -944,17 +957,16 @@ class TestResume:
 
 
 class TestMcp:
-    def _server(self, prefix: str) -> McpToolServer:
+    def _server(self, name: str) -> McpToolServer:
         endpoint = StdioCommand(command=sys.executable, args=(str(MCP_SERVER), "stdio"))
         config = McpServerConfig(
             endpoint=endpoint,
-            prefix=prefix,
             connect_timeout_sec=20.0,
             call_timeout_sec=20.0,
         )
 
         return McpToolServer(
-            prefix.rstrip("_"),
+            name,
             config,
             NamedBlocks(),
             DroppedSignals(),
@@ -966,8 +978,8 @@ class TestMcp:
     async def test_crash_of_one_server_fails_only_its_call(
         self, agents: StandAgents
     ) -> None:
-        first = self._server("a_")
-        second = self._server("b_")
+        first = self._server("a")
+        second = self._server("b")
         await first.open()
         await second.open()
         routed = RoutedServers([first, second])
@@ -986,8 +998,8 @@ class TestMcp:
             served.agent.queue.enqueue(
                 prompt(
                     call(
-                        {"name": "a_add", "arguments": {"a": 1, "b": 2}},
-                        {"name": "b_die"},
+                        {"name": "mcp__a__add", "arguments": {"a": 1, "b": 2}},
+                        {"name": "mcp__b__die"},
                     )
                 )
             )
@@ -1001,6 +1013,6 @@ class TestMcp:
         assert found[0].text() == "3"
         assert found[0].is_error is None
         assert found[1].is_error is True
-        assert "b_die" in found[1].text() or "die" in found[1].text()
+        assert "mcp__b__die" in found[1].text() or "die" in found[1].text()
         assert served.agent.outcomes == [TurnOutcome.COMPLETED]
         assert sink.questions() == []

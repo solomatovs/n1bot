@@ -120,7 +120,12 @@ class BobaAgent:
             "--setting-sources",
             "user",
         )
-        busy = call({"name": "sleep_for", "arguments": {"seconds": self.BUSY_SECONDS}})
+        busy = call(
+            {
+                "name": "mcp__stand__sleep_for",
+                "arguments": {"seconds": self.BUSY_SECONDS},
+            }
+        )
         environment = {"HOME": str(self._root / "home"), "PATH": os.environ["PATH"]}
 
         return AgentUnderTest(AgentName.BOBA, command, busy, environment)

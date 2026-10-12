@@ -261,6 +261,19 @@ class TestMcpJson:
         assert isinstance(web.auth, BearerAuth)
         assert web.auth.token.get_secret_value() == "t0k"
 
+    def test_server_name_that_breaks_tool_names_is_refused(
+        self, tmp_path: Path
+    ) -> None:
+        write(
+            tmp_path / "project" / ".mcp.json",
+            {"mcpServers": {"my__srv": {"command": "x"}}},
+        )
+
+        with pytest.raises(
+            SettingsError, match=r"\.mcp\.json.*'my__srv'.*contains '__'"
+        ):
+            settings(tmp_path, Arguments()).effective()
+
     def test_only_enabled_servers_are_kept(self, tmp_path: Path) -> None:
         write(
             tmp_path / "project" / ".mcp.json",
