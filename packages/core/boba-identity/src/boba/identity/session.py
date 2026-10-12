@@ -46,7 +46,6 @@ class UserMetadataField:
     PROFILES: Final = "profiles"
     PROFILE: Final = "profile"
     GENERATION: Final = "generation"
-    LLM: Final = "llm"
     STUDIO_PROFILE: Final = "studio_profile"
 
 

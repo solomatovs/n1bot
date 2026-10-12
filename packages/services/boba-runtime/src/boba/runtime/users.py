@@ -1,7 +1,7 @@
 """Таблица users приложения: единственный владелец строки пользователя.
 
 Одна схема и один набор запросов для chainlit и studio: строка входа, чтение по
-логину и id, настройки LLM и выбранный профиль studio в jsonb meta.
+логину и id, выбранный профиль studio в jsonb meta.
 
 Ошибки:
 DataUnavailableError — postgres недоступен или ответил не тем.
@@ -181,56 +181,3 @@ class UsersTable(PgTable, UserRows, UserSettingsStore, UsersUpsert):
         )
 
         await self._execute(query, "set_studio_profile")
-
-    async def set_llm_settings(
-        self, user_id: UUID, profile: str, values: Mapping[str, Any]
-    ) -> None:
-        path = [UserMetadataField.LLM, profile]
-
-        if not values:
-            query = (
-                self._query()
-                .add(
-                    """
-                    update {schema}.users
-                    set
-                        meta = coalesce(meta, '{{}}'::jsonb) #- %(path)s
-                    where
-                        id = %(user_id)s
-                    """,
-                    user_id=user_id,
-                    path=path,
-                )
-                .build()
-            )
-            await self._execute(query, "set_llm_settings")
-            return
-
-        query = (
-            self._query()
-            .add(
-                """
-                update {schema}.users
-                set
-                    meta = jsonb_set(
-                        jsonb_set(
-                            coalesce(meta, '{{}}'::jsonb),
-                            %(llm)s,
-                            coalesce(meta -> %(llm_key)s, '{{}}'::jsonb)
-                        ),
-                        %(path)s,
-                        %(values)s
-                    )
-                where
-                    id = %(user_id)s
-                """,
-                user_id=user_id,
-                llm=[UserMetadataField.LLM],
-                llm_key=UserMetadataField.LLM,
-                path=path,
-                values=Jsonb(dict(values)),
-            )
-            .build()
-        )
-
-        await self._execute(query, "set_llm_settings")

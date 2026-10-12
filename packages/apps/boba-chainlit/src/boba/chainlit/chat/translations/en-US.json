@@ -3,26 +3,21 @@
         "settings": {
             "llm": {
                 "tabs": {
-                    "prompt_tab": "Prompt",
                     "agent_tab": "Agent",
                     "session_tab": "Session"
                 },
                 "fields": {
-                    "user_prompt": {
-                        "label": "Custom instructions",
-                        "description": "Your own instructions; they are appended to the profile system prompt and apply to every answer."
-                    },
                     "agent_base_url": {
                         "label": "Provider URL",
-                        "description": "Base URL of the model provider for new chats; empty keeps the profile provider."
+                        "description": "Base URL of the model provider for this chat and new chats; empty keeps the profile provider."
                     },
                     "agent_api_key": {
                         "label": "Provider API key",
-                        "description": "API key of the model provider for new chats; the saved key is never shown, an empty field keeps it."
+                        "description": "API key of the model provider for this chat and new chats; the saved key is never shown, an empty field keeps it."
                     },
                     "agent_model": {
                         "label": "Model",
-                        "description": "Model name at the provider for new chats; empty keeps the profile model."
+                        "description": "Model name at the provider for this chat and new chats; empty keeps the profile model."
                     },
                     "session_mode": {
                         "label": "Permission mode",

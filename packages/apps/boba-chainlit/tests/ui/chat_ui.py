@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import ClassVar
+from typing import Any, ClassVar
 
 import httpx
 from playwright._impl._api_structures import SetCookieParam
@@ -16,7 +16,7 @@ from boba.stand.ui.socket_log import SocketLog
 from boba.stand.ui.stand import StandProcess, StandUrl
 
 BOOT_TIMEOUT_SEC = 300.0
-LlmMetaReader = Callable[[str], dict]
+UserLayerReader = Callable[[str, str], dict[str, Any]]
 OpenChat = Callable[[StandProcess, str], ChatPage]
 
 

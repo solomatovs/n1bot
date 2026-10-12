@@ -87,7 +87,7 @@ async def test_author_of_missing_thread_is_rejected(
         await threads.get_thread_author(str(uuid4()))
 
 
-async def test_user_rows_and_llm_settings(
+async def test_user_rows(
     tables: tuple[UsersTable, ThreadsTable],
 ) -> None:
     users, _ = tables
@@ -95,13 +95,3 @@ async def test_user_rows_and_llm_settings(
 
     assert (await users.stored_by_id(stored.id)) == stored
     assert (await users.stored(Login("reader"))) == stored
-
-    await users.set_llm_settings(stored.id, "general", {"temperature": 0.2})
-    again = await users.stored(Login("reader"))
-    assert again is not None
-    assert again.meta["llm"] == {"general": {"temperature": 0.2}}
-
-    await users.set_llm_settings(stored.id, "general", {})
-    cleared = await users.stored(Login("reader"))
-    assert cleared is not None
-    assert cleared.meta["llm"] == {}

@@ -1,5 +1,6 @@
 """Настройки агента: слои пользователь → чат в Postgres стенда с шифрованием
-секретов, файл настроек по форме агента в приватном каталоге 0700/0600,
+секретов, правка панели в оба слоя, файл настроек по форме агента в приватном
+каталоге 0700/0600,
 строка подключения истории, и рукопожатие настоящего `boba acp` по этому
 файлу — секреты не попадают в argv и окружение ребёнка, каталог удаляется
 с процессом."""
@@ -22,16 +23,19 @@ from acp_stand import (
     RecordingUpdates,
 )
 from psycopg import sql
+from psycopg.types.json import Jsonb
 from pydantic import SecretStr, ValidationError
 
 from boba.chainlit.acp.client import AgentClient, AgentProcess
 from boba.chainlit.acp.config import PostgresAgentHistory
 from boba.chainlit.acp.settings import (
+    AgentSettingsChange,
     AgentSettingsError,
     AgentSettingsLayers,
     AgentSettingsTable,
     AgentWorkdirs,
     HistoryEnvironment,
+    PermissionModeName,
     ProfileModelSpecs,
     SettingsFileBuilder,
     UserAgentSettings,
@@ -148,6 +152,96 @@ class TestLayers:
         thread_id = uuid4()
         await table.delete_chat_layer(thread_id)
         assert await table.chat_layer(thread_id) is None
+
+    async def test_retired_keys_of_a_stored_user_layer_are_ignored(
+        self, table: AgentSettingsTable, pool: AsyncPostgresPool
+    ) -> None:
+        """Строка прошлой версии с дополнением системного промпта читается:
+        снятый ключ отбрасывается, остальные поля на месте."""
+        user_id = uuid4()
+        async with pool.connection() as conn:
+            await conn.execute(
+                sql.SQL(
+                    "insert into {}.agent_user_settings (user_id, profile, settings) "
+                    "values (%s, %s, %s)"
+                ).format(sql.Identifier(SCHEMA)),
+                (
+                    user_id,
+                    "general",
+                    Jsonb({"model": "kept", "system_prompt": "be terse"}),
+                ),
+            )
+
+        loaded = await table.user_layer(user_id, "general")
+        assert loaded == UserAgentSettings(model="kept")
+
+    async def test_change_writes_the_user_layer_and_the_chat_layer(
+        self, table: AgentSettingsTable, specs: ProfileModelSpecs
+    ) -> None:
+        layers = AgentSettingsLayers(table, specs)
+        user_id = uuid4()
+        thread_id = uuid4()
+        other_thread = uuid4()
+        profile = SignInStand.profile()
+        opened = await layers.chat_layer(
+            thread_id, user_id, SignInStand.PROFILE, profile
+        )
+        untouched = await layers.chat_layer(
+            other_thread, user_id, SignInStand.PROFILE, profile
+        )
+        assert opened.mode is PermissionModeName.BYPASS
+
+        edited = UserAgentSettings(model="picked", api_key=SecretStr("user-key"))
+        changed = await layers.change(
+            thread_id,
+            user_id,
+            SignInStand.PROFILE,
+            profile,
+            AgentSettingsChange(
+                user=edited, mode=PermissionModeName.DEFAULT, model_name=None
+            ),
+        )
+
+        assert changed.model.model == "picked"
+        assert changed.model.provider.api_key == SecretStr("user-key")
+        assert changed.model.provider.base_url == opened.model.provider.base_url
+        assert changed.mode is PermissionModeName.DEFAULT
+        assert changed.system_prompt == "stand"
+        assert await table.chat_layer(thread_id) == changed
+        assert await table.user_layer(user_id, SignInStand.PROFILE) == edited
+        # чужой открытый тред живёт со своим слоем, новый берёт слой пользователя
+        assert await table.chat_layer(other_thread) == untouched
+        fresh = await layers.chat_layer(uuid4(), user_id, SignInStand.PROFILE, profile)
+        assert fresh.model.model == "picked"
+        assert fresh.mode is PermissionModeName.BYPASS
+
+    async def test_session_choice_alone_keeps_the_provider_of_the_chat(
+        self, table: AgentSettingsTable, specs: ProfileModelSpecs
+    ) -> None:
+        """Слой пользователя сменился в другом чате; правка одного режима в
+        этом чате его провайдера не трогает."""
+        layers = AgentSettingsLayers(table, specs)
+        user_id = uuid4()
+        thread_id = uuid4()
+        profile = SignInStand.profile()
+        opened = await layers.chat_layer(
+            thread_id, user_id, SignInStand.PROFILE, profile
+        )
+        elsewhere = UserAgentSettings(model="changed-elsewhere")
+        await table.save_user_layer(user_id, SignInStand.PROFILE, elsewhere)
+
+        changed = await layers.change(
+            thread_id,
+            user_id,
+            SignInStand.PROFILE,
+            profile,
+            AgentSettingsChange(
+                user=elsewhere, mode=PermissionModeName.PLAN, model_name=None
+            ),
+        )
+
+        assert changed.model == opened.model
+        assert changed.mode is PermissionModeName.PLAN
 
     def test_local_provider_is_refused(self, specs: ProfileModelSpecs) -> None:
         profile = ChatProfileConfig.model_validate(
@@ -282,6 +376,18 @@ class TestSettingsFile:
         )
         body = json.loads(document.render())
         assert "hooks" not in body or body["hooks"] == {}
+
+    def test_permission_mode_of_the_chat_layer_is_the_default_mode(
+        self, tmp_path: Path, stand: Stand
+    ) -> None:
+        config = AgentStand(tmp_path, AgentHistoryStand(stand).history()).config()
+        chat = FakeModel().chat_settings().with_session(PermissionModeName.PLAN, None)
+
+        body = json.loads(
+            SettingsFileBuilder(config).build("thread-1", chat, "jwt", []).render()
+        )
+
+        assert body["permissions"] == {"defaultMode": "plan", "allowBypass": True}
 
 
 class TestAgentHandshake:

@@ -279,17 +279,9 @@ class StandDatabase:
             if "does not exist" not in str(exc):
                 raise
 
-    def wipe_llm_settings(self) -> None:
-        """Снимает сохранённые настройки LLM у всех пользователей базы: ключ
-        llm в users.meta и слой пользователя настроек агента, из которого
-        копируется слой нового чата."""
-        meta = (
-            PgQueryBuilder(schema=sql.Identifier(self._schema))
-            .add("update {schema}.users set meta = meta - 'llm'")
-            .build()
-        )
-        run_blocking(self._execute(meta))
-
+    def wipe_agent_user_layers(self) -> None:
+        """Снимает слой пользователя настроек агента у всех пользователей
+        базы: с него копируется слой нового чата."""
         layers = (
             PgQueryBuilder(schema=sql.Identifier(self._schema))
             .add("delete from {schema}.agent_user_settings")
@@ -382,27 +374,31 @@ class StandDatabase:
         )
         run_blocking(self._execute(query))
 
-    def llm_settings_of(self, identifier: str) -> dict[str, Any]:
-        """Ключ llm из users.meta: тест сверяет, что именно сохранилось."""
+    def agent_user_layer_of(self, identifier: str, profile: str) -> dict[str, Any]:
+        """Сохранённый слой пользователя настроек агента для профиля как он
+        лежит в строке (секреты зашифрованы); пусто — строки нет."""
         query = (
             PgQueryBuilder(schema=sql.Identifier(self._schema))
             .add(
                 """
                 select
-                    coalesce(meta -> 'llm', '{{}}'::jsonb)
+                    layers.settings
                 from
-                    {schema}.users
+                    {schema}.agent_user_settings as layers
+                join
+                    {schema}.users as users on users.id = layers.user_id
                 where
-                    identifier = %(identifier)s
+                    users.identifier = %(identifier)s
+                    and layers.profile = %(profile)s
                 """,
                 identifier=identifier,
+                profile=profile,
             )
             .build()
         )
         row = run_blocking(self._execute(query))
         if row is None:
-            msg = f"user {identifier!r} has no row in {self._schema}.users"
-            raise RuntimeError(msg)
+            return {}
 
         return dict(row[0])
 

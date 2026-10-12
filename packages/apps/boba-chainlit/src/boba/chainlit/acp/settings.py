@@ -4,8 +4,9 @@
 Файл настроек — способ передачи: главная копия слоя чата лежит в таблице
 `agent_chat_settings` схемы чата, слой пользователя — в `agent_user_settings`;
 при первом открытии чата его слой копируется из пользовательского и дальше живёт
-своей жизнью. Секреты в таблицах шифруются SecretCipher, в файле лежат открыто
-под правами 0600.
+своей жизнью. Правку панели в оба слоя пишет AgentSettingsLayers.change, зовёт
+его AgentSettingsChanges (chat.py). Секреты в таблицах шифруются SecretCipher,
+в файле лежат открыто под правами 0600.
 
 Ошибки:
 AgentSettingsError — профиль чата нельзя превратить в профиль модели агента.
@@ -19,6 +20,7 @@ import os
 import shutil
 import tempfile
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from enum import IntEnum, StrEnum
 from pathlib import Path
 from typing import Any, ClassVar, Literal
@@ -55,6 +57,7 @@ from boba.transport.http.connection import BearerAuth, HttpConnection
 __all__ = [
     "AgentModel",
     "AgentProvider",
+    "AgentSettingsChange",
     "AgentSettingsError",
     "AgentSettingsFile",
     "AgentSettingsLayers",
@@ -65,6 +68,7 @@ __all__ = [
     "ChatAgentSettings",
     "HistoryEnvironment",
     "HookMatchers",
+    "PermissionModeName",
     "ProfileModelSpecs",
     "ProviderKindName",
     "SettingsFileBuilder",
@@ -85,9 +89,14 @@ class ProviderKindName(StrEnum):
 
 
 class PermissionModeName(StrEnum):
-    """Режимы разрешений агента, которые выставляет чат."""
+    """Режимы разрешений агента: значение `permissions.defaultMode` файла."""
 
+    DEFAULT = "default"
+    ACCEPT_EDITS = "acceptEdits"
+    PLAN = "plan"
+    DONT_ASK = "dontAsk"
     BYPASS = "bypassPermissions"
+    AUTO = "auto"
 
 
 class HookEventName(StrEnum):
@@ -173,7 +182,7 @@ class AgentModel(SettingsFileModel):
 
 
 class AgentPermissions(SettingsFileModel):
-    """Режим разрешений: чат пока пропускает все действия без вопросов."""
+    """Режим разрешений сессий процесса и право на режим без вопросов."""
 
     default_mode: PermissionModeName
     allow_bypass: bool
@@ -241,24 +250,38 @@ class AgentSettingsFile(SettingsFileModel):
 
 class UserAgentSettings(BaseModel):
     """Слой пользователя: что он сохранил сам поверх профиля чата; None —
-    поле не переопределено. Ввод в панели — W11, здесь модель и хранение."""
+    поле не переопределено. Ключи строк прошлых версий (`system_prompt`)
+    при чтении отбрасываются."""
 
-    model_config = ConfigDict(frozen=True, extra="forbid")
+    model_config = ConfigDict(frozen=True, extra="ignore")
 
     base_url: str | None = None
     api_key: SecretStr | None = None
     model: str | None = None
-    system_prompt: str | None = None
+
+
+@dataclass(frozen=True)
+class AgentSettingsChange:
+    """Правка настроек агента из панели чата: слой пользователя целиком и
+    выбор вкладки «Сессия». None у режима и модели — вкладки в форме не было,
+    значение слоя чата остаётся прежним. Собирает AgentPanel.parse, применяет
+    AgentSettingsLayers.change."""
+
+    user: UserAgentSettings
+    mode: PermissionModeName | None
+    model_name: str | None
 
 
 class ChatAgentSettings(BaseModel):
-    """Слой чата: профиль модели агента и системный промпт одного треда."""
+    """Слой чата: профиль модели агента, системный промпт профиля и режим
+    разрешений одного треда. Из него собирается файл настроек процесса."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     model_name: str = Field(min_length=1)
     model: AgentModel
     system_prompt: str
+    mode: PermissionModeName = PermissionModeName.BYPASS
 
     def with_user(self, user: UserAgentSettings) -> ChatAgentSettings:
         """Слой чата с полями, которые пользователь переопределил."""
@@ -273,13 +296,21 @@ class ChatAgentSettings(BaseModel):
         if user.model is not None:
             model = model.model_copy(update={"model": user.model})
 
-        system_prompt = self.system_prompt
-        if user.system_prompt is not None:
-            system_prompt = user.system_prompt
+        return self.model_copy(update={"model": model})
 
-        return ChatAgentSettings(
-            model_name=self.model_name, model=model, system_prompt=system_prompt
-        )
+    def with_session(
+        self, mode: PermissionModeName | None, model_name: str | None
+    ) -> ChatAgentSettings:
+        """Слой чата с выбором вкладки «Сессия»: режим разрешений и имя
+        профиля модели по умолчанию; None — значение остаётся прежним."""
+        update: dict[str, Any] = {}
+        if mode is not None:
+            update["mode"] = mode
+
+        if model_name is not None:
+            update["model_name"] = model_name
+
+        return self.model_copy(update=update)
 
 
 class RemoteProviderView(BaseModel):
@@ -515,8 +546,10 @@ class AgentSettingsTable(PgTable):
 class AgentSettingsLayers:
     """Слои настроек агента для треда: вход пользователя → профиль чата и
     сохранённые им поля → слой чата, скопированный при первом открытии.
+    Единственный, кто пишет слои в таблицу: копия при открытии и правка панели.
 
-    Создаётся провайдером процесса; зовут объекты треда перед запуском агента.
+    Создаётся провайдером процесса; читает запуск агента (AgentLauncher),
+    правку приносит AgentSettingsChanges.
     """
 
     def __init__(self, table: AgentSettingsTable, specs: ProfileModelSpecs) -> None:
@@ -553,6 +586,34 @@ class AgentSettingsLayers:
 
         return copied
 
+    async def change(
+        self,
+        thread_id: UUID,
+        user_id: UUID,
+        name: str,
+        profile: ChatProfileConfig,
+        change: AgentSettingsChange,
+    ) -> ChatAgentSettings:
+        """Правка панели в оба слоя; итог — новый слой чата. Слой пользователя
+        заменяется целиком; в слой чата поля провайдера ложатся, только если
+        слой пользователя изменился, иначе чат остаётся при своих; выбор
+        вкладки «Сессия» пишется только в слой чата.
+
+        Ошибки:
+        AgentSettingsError — провайдер профиля не годится агенту.
+        """
+        saved = await self._table.user_layer(user_id, name)
+        chat = await self.chat_layer(thread_id, user_id, name, profile)
+        if change.user != saved:
+            await self._table.save_user_layer(user_id, name, change.user)
+            based = self._specs.chat_settings(name, profile).with_user(change.user)
+            chat = chat.model_copy(update={"model": based.model})
+
+        chat = chat.with_session(change.mode, change.model_name)
+        await self._table.save_chat_layer(thread_id, user_id, name, chat)
+
+        return chat
+
 
 class HookMatchers:
     """Матчер хука по именам серверов MCP: `mcp__<server>__<tool>` без разбора
@@ -587,9 +648,7 @@ class SettingsFileBuilder:
         return AgentSettingsFile(
             model=chat.model_name,
             models={chat.model_name: chat.model},
-            permissions=AgentPermissions(
-                default_mode=PermissionModeName.BYPASS, allow_bypass=True
-            ),
+            permissions=AgentPermissions(default_mode=chat.mode, allow_bypass=True),
             history=self._history(),
             hooks=self._hooks(user_jwt, hooked_servers),
             system_prompt_file=WorkdirFile.SYSTEM_PROMPT.value,

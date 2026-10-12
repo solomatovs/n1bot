@@ -422,11 +422,6 @@ class OwnerRows(UserRows):
     async def upsert(self, identifier: Login, meta: Mapping[str, Any]) -> StoredUser:
         raise NotImplementedError
 
-    async def set_llm_settings(
-        self, user_id: UUID, profile: str, values: Mapping[str, Any]
-    ) -> None:
-        raise NotImplementedError
-
 
 class PerCallStreams(RemoteStreams):
     """RemoteStreams тестов панели: на каждое чтение свой клиент MCP.

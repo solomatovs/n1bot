@@ -17,6 +17,7 @@ from boba.auth import JwtTokens
 from boba.chainlit.acp.chat import (
     AgentLauncher,
     AgentSessionMeta,
+    AgentSettingsChanges,
     ThreadAgents,
     ThreadAgentsIndex,
     ThreadDeleter,
@@ -277,6 +278,13 @@ def agent_session_meta(
     threads: Annotated[ThreadsTable, Depends(runtime.threads_table)],
 ) -> AgentSessionMeta:
     return AgentSessionMeta(threads)
+
+
+def agent_settings_changes(
+    layers: Annotated[AgentSettingsLayers, Depends(agent_settings_layers)],
+) -> AgentSettingsChanges:
+    """Единый путь правки настроек агента: слои и перезапуск процесса вкладки."""
+    return AgentSettingsChanges(layers)
 
 
 def thread_agents_index() -> ThreadAgentsIndex:

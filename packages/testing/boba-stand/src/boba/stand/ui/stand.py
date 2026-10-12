@@ -791,7 +791,7 @@ class StandConfig(StandService):
                 "tools": self._search_tools(),
                 "provider": "${llm.fake}",
                 "model": "fake-model-search",
-                "settings": ["user_prompt"],
+                "settings": [],
                 "system_prompt": "You are the search stand assistant",
                 "sampling": {
                     "temperature": 0.7,

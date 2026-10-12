@@ -116,7 +116,7 @@
         "web_grep_page"
     ]
     model                 = "${site.llm_model}"
-    settings              = ["user_prompt"]
+    settings              = []
     system_prompt         = "Ты поисковый ассистент BOBA: ищешь ответы в Confluence и базе знаний и отвечаешь со ссылками на источники"
     provider              = "${llm.main}"
     [profiles.search.sampling]

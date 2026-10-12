@@ -2,12 +2,12 @@
 
 Ход — `session/prompt` агента вкладки, лента рисуется из его уведомлений через
 шину; возврат к треду — `session/load` после того, как chainlit отдал вкладке
-сам тред; панель настроек — настройки LLM пользователя, слой пользователя для
-агента и настройки открытой сессии.
+сам тред; панель настроек — слой пользователя и слой чата агента, её правка
+идёт единым путём AgentSettingsChanges с перезапуском процесса агента.
 """
 
 import logging
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable
 from typing import Annotated, Any, ClassVar
 from uuid import UUID
 
@@ -17,27 +17,33 @@ import chainlit as cl
 from boba.cancellation import StopReason
 from boba.canvas.canvas import CanvasAction, RenderVerdicts
 from boba.chainlit.acp.chat import (
+    AgentSettingsChanges,
     Question,
     SessionOptions,
+    SettingsOutcome,
     ThreadAgent,
     ThreadAgents,
     ThreadAgentsIndex,
     ThreadIdentity,
 )
-from boba.chainlit.acp.client import AcpClientError, AgentRequestError
+from boba.chainlit.acp.client import AcpClientError
 from boba.chainlit.acp.panel import AgentPanel
-from boba.chainlit.acp.settings import AgentSettingsError, AgentSettingsTable
+from boba.chainlit.acp.settings import (
+    AgentSettingsError,
+    AgentSettingsTable,
+    ChatAgentSettings,
+)
 from boba.chainlit.acp.tokens import McpTokenError, SessionServersError
 from boba.chainlit.canvas.panel import StreamActions
 from boba.chainlit.canvas.remote import RemoteStreams
 from boba.chainlit.canvas.tools import CanvasActions, CanvasScope
 from boba.chainlit.chat.panel_text import PanelText
-from boba.chainlit.chat.settings import SettingsPanel
-from boba.chainlit.data.data_layer import AttachmentDataLayer, PostgresDataLayer
+from boba.chainlit.data.data_layer import AttachmentDataLayer
 from boba.chainlit.domain.fields import ThreadField, ThreadMetaField
 from boba.chainlit.infra import providers
 from boba.chainlit.infra.config import AppConfig
 from boba.chainlit.infra.providers import (
+    agent_settings_changes,
     agent_settings_table,
     chainlit_data_layer,
     chat_profiles_registry,
@@ -59,19 +65,12 @@ from boba.chainlit.infra.thread_room import (
     UserRoom,
 )
 from boba.chainlit.rendering.errors import chainlit_error_ctx_handler
-from boba.chat.profiles import (
-    ChatProfileConfig,
-    ChatProfiles,
-    SelectedProfile,
-    SettingsView,
-    UserLlmOverrides,
-    UserMeta,
-)
+from boba.chat.profiles import ChatProfileConfig, ChatProfiles, SelectedProfile
 from boba.identity.context import Scope
 from boba.identity.errors import InternalServiceError, RefusalError
 from boba.identity.locks import LockBusyError
 from boba.identity.run import Runs
-from boba.identity.session import Login, UserMetadataField
+from boba.identity.session import Login
 from boba.identity.token import CookieSpec
 from boba.mcp_client.client import McpCaller, McpClientError, McpServers
 from boba.messaging import (
@@ -102,9 +101,17 @@ logger = logging.getLogger(__name__)
 
 
 class AgentAuthor:
-    """Подпись сообщений об отказе агента в ленте."""
+    """Подпись сообщений об агенте в ленте: отказы и пометки о настройках."""
 
     NAME: ClassVar[str] = "Agent"
+
+
+class SettingsNotice:
+    """Пометка в ленте о сохранённых настройках, которые ждут конца хода."""
+
+    DEFERRED: ClassVar[str] = (
+        "Settings are saved and will apply after the current answer."
+    )
 
 
 AGENT_FAILURES = (
@@ -131,7 +138,8 @@ async def on_message(  # noqa: PLR0913 — зависимости обработ
     """Ход по вопросу: агент вкладки получает `session/prompt`, лента рисуется
     из его уведомлений через шину; отказ агента или занятый тред уходят в
     ленту сообщением об ошибке. Первая сессия треда открывает настройки
-    сессии — панель присылается заново."""
+    сессии, а конец хода исполняет отложенный перезапуск агента — в обоих
+    случаях панель присылается заново."""
     session = current_session()
     identity = ThreadIdentity.of(session, selected)
     thread_id = identity.thread_id
@@ -145,13 +153,22 @@ async def on_message(  # noqa: PLR0913 — зависимости обработ
     try:
         agent = await agents.of(identity)
         had_options = bool(agent.options.options)
+        restarts = agent.restarts
         await agent.ask(question)
     except AGENT_FAILURES as exc:
         logger.error("thread %s: turn %s failed: %s", thread_id, msg.id, exc)
         await cl.ErrorMessage(content=str(exc), author=AgentAuthor.NAME).send()
         return
 
-    if not had_options and agent.options.options:
+    opened = False
+    if not had_options:
+        opened = bool(agent.options.options)
+
+    if opened:
+        await _send_settings(app_config, registry, table, agent)
+        return
+
+    if agent.restarts != restarts:
         await _send_settings(app_config, registry, table, agent)
 
 
@@ -272,37 +289,10 @@ def _session_selected_profile(registry: ChatProfiles) -> SelectedProfile:
     return registry.resolve(session.chat_profile, session.sign_in)
 
 
-def _session_view(config: AppConfig, registry: ChatProfiles) -> SettingsView:
-    """Итоговые настройки сессии: профиль плюс личные настройки пользователя."""
-    selected = _session_selected_profile(registry)
-
-    saved = UserMeta.of(current_session().metadata).overrides_for(selected.name)
-    return SettingsView.of(selected.config, saved)
-
-
-def _refresh_session_user_meta(profile: str, overrides: UserLlmOverrides) -> None:
-    """Свежие настройки — в metadata пользователя сессии, без перелогина."""
-    user = current_session().user
-    if user is None:
-        return
-
-    metadata = dict(user.metadata or {})
-    llm = dict(metadata.get(UserMetadataField.LLM) or {})
-
-    stored = overrides.stored()
-    if stored:
-        llm[profile] = stored
-    else:
-        llm.pop(profile, None)
-
-    metadata[UserMetadataField.LLM] = llm
-    user.metadata = metadata
-
-
 class SettingsRefresh:
     """Чужая вкладка пользователя после сохранения настроек: если она на том же
-    профиле — свежие metadata в сессию и панель заново. Агент открытого треда
-    не трогается: слой пользователя действует на новые треды.
+    профиле — панель заново, со свежим слоем пользователя. Агент её треда не
+    перезапускается: слой чата у каждого треда свой.
     """
 
     @staticmethod
@@ -327,33 +317,13 @@ class SettingsRefresh:
             if selected.name != profile:
                 return
 
-            await SettingsRefresh._adopt_metadata(
-                session, root.resolved(chainlit_data_layer)
-            )
             agent = _tab_agent(session)
             await _send_settings(app_config, registry, table, agent)
         finally:
             context_var.reset(token)
 
-    @staticmethod
-    async def _adopt_metadata(session: ChainlitSession, layer: BaseDataLayer) -> None:
-        fresh = await layer.get_user(session.identifier)
-        user = session.user
-        if fresh is None or user is None:
-            return
-
-        user.metadata = dict(fresh.metadata or {})
-
 
 UserRoom.on_settings(SettingsRefresh.apply)
-
-
-def _llm_panel(app_config: AppConfig, registry: ChatProfiles) -> SettingsPanel:
-    """Панель настроек LLM пользователя для текущей сессии."""
-    return SettingsPanel(
-        _session_view(app_config, registry),
-        PanelText(app_config.chainlit.root, current_session().language),
-    )
 
 
 async def _agent_panel(
@@ -362,7 +332,9 @@ async def _agent_panel(
     table: AgentSettingsTable,
     agent: ThreadAgent | None,
 ) -> AgentPanel | None:
-    """Вкладки про агента для текущей сессии; None — сессия без пользователя."""
+    """Вкладки про агента для текущей сессии: слой пользователя, слой чата
+    треда и варианты выбора сессии у агента вкладки; None — сессия без
+    пользователя."""
     session = current_session()
     user_id = session.user_id
     if user_id is None:
@@ -370,6 +342,10 @@ async def _agent_panel(
 
     selected = _session_selected_profile(registry)
     user = await table.user_layer(UUID(user_id), selected.name)
+    chat: ChatAgentSettings | None = None
+    if thread_id := session.thread_id:
+        chat = await table.chat_layer(UUID(thread_id))
+
     options = SessionOptions()
     if agent is not None:
         options = agent.options
@@ -377,6 +353,7 @@ async def _agent_panel(
     return AgentPanel(
         selected.config,
         user,
+        chat,
         options,
         PanelText(app_config.chainlit.root, session.language),
     )
@@ -389,12 +366,11 @@ async def _session_tabs(
     agent: ThreadAgent | None,
 ) -> list[Tab]:
     """Вкладки панели настроек сессии; пусто — профиль ничего не открывает."""
-    tabs = _llm_panel(app_config, registry).tabs()
     panel = await _agent_panel(app_config, registry, table, agent)
-    if panel is not None:
-        tabs.extend(panel.tabs())
+    if panel is None:
+        return []
 
-    return tabs
+    return panel.tabs()
 
 
 async def _send_settings(
@@ -475,25 +451,21 @@ async def _start_agent(
         return None
 
 
-@cl.on_settings_update
 @chainlit_error_ctx_handler
 @di_inject
 async def on_settings_update(  # noqa: PLR0913 — зависимости обработчика
     settings: dict[str, Any],
     app_config: Annotated[AppConfig, Depends(get_app_config)],
     registry: Annotated[ChatProfiles, Depends(chat_profiles_registry)],
-    data_layer: Annotated[BaseDataLayer, Depends(chainlit_data_layer)],
     table: Annotated[AgentSettingsTable, Depends(agent_settings_table)],
     agents: Annotated[ThreadAgents, Depends(thread_agents, scope="session")],
+    changes: Annotated[AgentSettingsChanges, Depends(agent_settings_changes)],
 ):
-    """Сохраняет настройки LLM пользователя (users.meta) и слой пользователя
-    агента; настройки открытой сессии уходят агенту треда
-    (`session/set_config_option`), его отказ — в ленту."""
-    selected = _session_selected_profile(registry)
+    """Форма панели разбирается в правку настроек и уходит единому пути
+    AgentSettingsChanges: слои записаны, процесс агента вкладки перезапущен
+    либо ждёт конца идущего хода — тогда об этом пометка в ленте. Отказ
+    разбора или перезапуска уходит в ленту сообщением об ошибке."""
     session = current_session()
-    view = _llm_panel(app_config, registry).parse(settings)
-    overrides = view.overrides
-
     user_id = session.user_id
     if user_id is None:
         logger.warning(
@@ -501,73 +473,47 @@ async def on_settings_update(  # noqa: PLR0913 — зависимости обр
         )
         return
 
-    if not isinstance(data_layer, PostgresDataLayer):
-        msg = (
-            "settings update expects a PostgresDataLayer data layer, "
-            f"got {type(data_layer).__name__}"
-        )
-        raise RuntimeError(msg)
-
-    await data_layer.update_user_llm_settings(
-        UUID(user_id), selected.name, overrides.stored()
-    )
-    _refresh_session_user_meta(selected.name, overrides)
-
-    agent: ThreadAgent | None = None
-    if thread_id := session.thread_id:
-        agent = agents.of_thread(thread_id)
-
+    selected = _session_selected_profile(registry)
+    identity = ThreadIdentity.of(session, selected)
+    agent = agents.of_thread(identity.thread_id)
     panel = await _agent_panel(app_config, registry, table, agent)
-    if panel is not None:
-        edit = panel.parse(settings)
-        system_prompt = None
-        if overrides.user_prompt:
-            system_prompt = view.agent().system_prompt
+    if panel is None:
+        return
 
-        user = edit.user.model_copy(update={"system_prompt": system_prompt})
-        await table.save_user_layer(UUID(user_id), selected.name, user)
-        await _apply_session_options(agent, edit.session)
+    try:
+        outcome = await changes.apply(identity, panel.parse(settings), agent)
+    except AGENT_FAILURES as exc:
+        logger.error(
+            "thread %s: settings of profile %s are not applied: %s",
+            identity.thread_id,
+            selected.name,
+            exc,
+        )
+        await cl.ErrorMessage(content=str(exc), author=AgentAuthor.NAME).send()
+        return
+
+    if outcome is SettingsOutcome.DEFERRED:
+        await cl.Message(
+            content=SettingsNotice.DEFERRED, author=AgentAuthor.NAME
+        ).send()
+
+    # панель показывает сохранённое; после перезапуска — с настройками сессии
+    await _send_settings(app_config, registry, table, agent)
 
     # остальные вкладки пользователя узнают о настройках из его области
     changed = ChatSettingsChanged(profile=selected.name, by_session=session.id)
     await _root_bus().publish(Scope.user(UUID(user_id)), changed, LockToken.local())
 
     logger.info(
-        "settings saved: profile=%s, overrides=%s",
+        "settings saved: thread=%s, profile=%s, outcome=%s",
+        identity.thread_id,
         selected.name,
-        sorted(overrides.stored()),
+        outcome.value,
     )
 
 
-async def _apply_session_options(
-    agent: ThreadAgent | None, changed: Mapping[str, str]
-) -> None:
-    """Изменённые настройки сессии — агенту треда; без агента или сессии
-    настройки ждут её открытия, отказ агента (идёт ход) показывается в чат."""
-    if agent is None:
-        return
-
-    for config_id, value in changed.items():
-        try:
-            applied = await agent.set_option(config_id, value)
-        except AgentRequestError as exc:
-            logger.warning(
-                "thread %s: option %s=%s refused: %s",
-                agent.thread_id,
-                config_id,
-                value,
-                exc,
-            )
-            await cl.ErrorMessage(content=str(exc), author=AgentAuthor.NAME).send()
-            continue
-
-        if not applied:
-            logger.info(
-                "thread %s: option %s=%s waits for the session",
-                agent.thread_id,
-                config_id,
-                value,
-            )
+# без task-обёртки chainlit: её task_end погасил бы индикатор идущего хода
+chainlit_config.code.on_settings_update = wrap_user_function(on_settings_update)
 
 
 @cl.on_logout

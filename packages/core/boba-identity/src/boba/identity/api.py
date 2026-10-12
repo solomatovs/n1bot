@@ -49,7 +49,7 @@ class AuthenticatedUser(BaseModel):
     identifier: Login
     sign_in: SignInMetadata
     settings: Mapping[str, object] = {}
-    """Строка users как есть: настройки LLM по профилям, выбранный профиль studio."""
+    """Строка users как есть: metadata входа и выбранный профиль studio."""
 
     @property
     def roles(self) -> frozenset[str]:
@@ -120,7 +120,7 @@ class StoredUser(BaseModel):
 
 
 class UserRows(Protocol):
-    """Строки users целиком: чтение по логину и id, upsert, настройки LLM профиля."""
+    """Строки users целиком: чтение по логину и id, upsert."""
 
     @abstractmethod
     async def stored(self, identifier: Login) -> StoredUser | None:
@@ -133,12 +133,6 @@ class UserRows(Protocol):
     @abstractmethod
     async def upsert(self, identifier: Login, meta: Mapping[str, Any]) -> StoredUser:
         """Новая строка либо metadata поверх прежней."""
-
-    @abstractmethod
-    async def set_llm_settings(
-        self, user_id: UUID, profile: str, values: Mapping[str, Any]
-    ) -> None:
-        """Настройки LLM профиля в metadata; пустые значения снимают ключ профиля."""
 
 
 class Authenticator(Protocol):

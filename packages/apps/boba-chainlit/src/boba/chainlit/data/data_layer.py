@@ -393,16 +393,6 @@ class PostgresDataLayer(AttachmentDataLayer, ThreadOwnership, FeedbackRows):
         return ThreadDicts.user(stored)
 
     @data_boundary
-    async def update_user_llm_settings(
-        self,
-        user_id: UUID,
-        profile: str,
-        values: Mapping[str, Any],
-    ) -> None:
-        """Настройки LLM пользователя для профиля; пустые значения снимают ключ."""
-        await self._users.set_llm_settings(user_id, profile, values)
-
-    @data_boundary
     async def upsert_feedback(self, feedback: FeedbackPayload) -> str:
         stored = FeedbackDicts.stored(feedback)
         await self._feedbacks.upsert(stored)

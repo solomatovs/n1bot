@@ -55,7 +55,7 @@ class SignInMetadata(BaseModel):
 
     @classmethod
     def parse(cls, raw: Mapping[str, object]) -> SignInMetadata:
-        """Разбор словаря входа: чужие ключи (llm, studio_profile) не читает."""
+        """Разбор словаря входа: чужие ключи (studio_profile) не читает."""
         return cls(
             provider=cls._text(raw.get(UserMetadataField.PROVIDER)),
             roles=cls._names_in(raw.get(UserMetadataField.ROLES)),
