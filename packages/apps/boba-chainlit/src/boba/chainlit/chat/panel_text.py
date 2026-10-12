@@ -15,8 +15,6 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any, ClassVar
 
-from boba.chat.profiles import UserSetting
-
 __all__ = ["PanelText", "PanelTextError"]
 
 
@@ -110,12 +108,6 @@ class PanelText:
 
     def tab(self, tab_id: str) -> str:
         return self._string(TextKey.TABS, tab_id, TextKey.LABEL)
-
-    def label(self, setting: UserSetting) -> str:
-        return self.field_label(setting.value)
-
-    def description(self, setting: UserSetting) -> str:
-        return self.field_description(setting.value)
 
     def field_label(self, name: str) -> str:
         """Подпись поля панели по его имени (id виджета)."""

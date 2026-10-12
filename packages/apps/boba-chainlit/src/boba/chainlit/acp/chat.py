@@ -1,6 +1,7 @@
 """Агент треда в chainlit: процесс на вкладку, id сессии в threads.meta, ход
-и его остановка, настройки сессии, удаление сессии с тредом; поток сессии
-уходит приёмнику TurnRenderer, который создаёт фабрика TurnRenderers (feed.py).
+и его остановка, перезапуск процесса после правки настроек, удаление сессии с
+тредом; поток сессии уходит приёмнику TurnRenderer, который создаёт фабрика
+TurnRenderers (feed.py).
 
 Ошибки:
 AcpClientError и наследники — процесс или ответ агента (client.py).
@@ -48,6 +49,7 @@ from boba.chainlit.acp.client import (
 )
 from boba.chainlit.acp.config import AgentConfig
 from boba.chainlit.acp.settings import (
+    AgentSettingsChange,
     AgentSettingsLayers,
     AgentSettingsTable,
     AgentWorkdirs,
@@ -67,8 +69,10 @@ from boba.identity.errors import InternalServiceError
 from boba.runtime.threads import ThreadsTable
 
 __all__ = [
+    "AgentLaunch",
     "AgentLauncher",
     "AgentSessionMeta",
+    "AgentSettingsChanges",
     "ConfigCategory",
     "ConfigOption",
     "MuteUpdates",
@@ -76,6 +80,7 @@ __all__ = [
     "PermissionOutcome",
     "Question",
     "SessionOptions",
+    "SettingsOutcome",
     "ThreadAgent",
     "ThreadAgents",
     "ThreadAgentsIndex",
@@ -237,7 +242,7 @@ class AgentSessionMeta:
 
 class SessionOptions:
     """Текущие настройки сессии агента (`configOptions`): их отдают ответы
-    `session/new|load|fork` и `set_config_option`, присылает уведомление
+    `session/new|load|resume|fork`, присылает уведомление
     `config_option_update`; читает панель настроек чата. Один объект на
     агента треда, общий у него и у приёмника потока."""
 
@@ -390,6 +395,16 @@ class AskedQuestions(SessionUpdates):
         await self._inner.abandon(session_id)
 
 
+@dataclass(frozen=True)
+class AgentLaunch:
+    """Заготовка запуска агента вкладки: слой чата, из которого соберётся файл
+    настроек, и серверы MCP сессии с токенами. Собирает AgentLauncher.prepare
+    до остановки прежнего процесса."""
+
+    chat: ChatAgentSettings
+    servers: Sequence[SessionServer]
+
+
 class AgentLauncher:
     """Запуск процесса агента под тред: слой чата из Postgres → файл настроек
     в приватном каталоге → процесс → рукопожатие; серверы MCP сессии с
@@ -420,16 +435,15 @@ class AgentLauncher:
         )
         self._version = version
 
-    async def launch(
-        self, identity: ThreadIdentity, client: AgentClient
-    ) -> AgentProcess:
-        """Процесс под вкладку треда: слой чата, хук запечатывания с JWT входа.
+    async def prepare(self, identity: ThreadIdentity) -> AgentLaunch:
+        """Слой чата треда (у нового треда копируется из слоя пользователя) и
+        серверы MCP сессии: всё, что может отказать до запуска процесса.
 
         Ошибки:
         AgentSettingsError — профиль не годится агенту.
-        SessionServersError — сервер профиля не объявлен или не того транспорта.
-        AgentProcessError — процесс не запустился.
         DataUnavailableError — слой настроек недоступен.
+        McpTokenError — токен boba-mcp не получен.
+        SessionServersError — сервер профиля не годится агенту.
         """
         chat = await self._layers.chat_layer(
             UUID(identity.thread_id),
@@ -437,6 +451,22 @@ class AgentLauncher:
             identity.profile.name,
             identity.profile.config,
         )
+        servers = await self._servers.of(
+            identity.profile.config.mcp, identity.login, identity.roles, identity.jwt
+        )
+
+        return AgentLaunch(chat=chat, servers=tuple(servers))
+
+    async def launch(
+        self, identity: ThreadIdentity, chat: ChatAgentSettings, client: AgentClient
+    ) -> AgentProcess:
+        """Процесс под вкладку треда по слою чата, с хуком запечатывания и JWT
+        входа.
+
+        Ошибки:
+        SessionServersError — сервер профиля не объявлен или не того транспорта.
+        AgentProcessError — процесс не запустился.
+        """
         hooked = self._servers.hooked(identity.profile.config.mcp)
 
         return await self.launch_settings(
@@ -468,14 +498,21 @@ class AgentLauncher:
 
         return process
 
-    async def servers(self, identity: ThreadIdentity) -> list[SessionServer]:
-        """Ошибки:
-        McpTokenError — токен boba-mcp не получен.
-        SessionServersError — сервер профиля не годится агенту.
-        """
-        return await self._servers.of(
-            identity.profile.config.mcp, identity.login, identity.roles, identity.jwt
-        )
+
+@dataclass(frozen=True)
+class StartedTurn:
+    """Начатый ход вкладки: сессия агента и задача запроса `session/prompt`."""
+
+    session_id: str
+    response: asyncio.Task[PromptResponse]
+
+
+class SettingsOutcome(StrEnum):
+    """Что стало с процессом агента вкладки после правки настроек."""
+
+    RESTARTED = "restarted"
+    DEFERRED = "deferred"
+    SAVED = "saved"
 
 
 class ThreadAgent:
@@ -483,7 +520,10 @@ class ThreadAgent:
 
     Создаётся реестром ThreadAgents; живёт пока открыта вкладка. Сессия
     открывается `session/new` на первом вопросе или `session/load` при
-    возврате к треду; правка вопроса ветвит сессию `session/fork`.
+    возврате к треду; правка вопроса ветвит сессию `session/fork`. Процесс
+    заменяется новым только через restart(): запуск, смена процесса и начало
+    хода идут под одним замком вкладки, а перезапуск, пришедший во время хода,
+    ждёт его конца флагом.
     """
 
     def __init__(
@@ -501,10 +541,13 @@ class ThreadAgent:
         self._options = options
         self._questions = AskedQuestions(renderer)
         self._process: AgentProcess | None = None
-        self._servers: list[SessionServer] = []
+        self._servers: Sequence[SessionServer] = ()
         self._session_id: str | None = None
         self._asked: list[str] = []
         self._active: str | None = None
+        self._gate = asyncio.Lock()
+        self._restart_pending = False
+        self._restarts = 0
 
     @property
     def thread_id(self) -> str:
@@ -521,6 +564,12 @@ class ThreadAgent:
         return self._options
 
     @property
+    def restarts(self) -> int:
+        """Сколько раз процесс заменён новым: по счётчику обработчик хода
+        узнаёт, что отложенный перезапуск состоялся."""
+        return self._restarts
+
+    @property
     def process(self) -> AgentProcess:
         if self._process is None:
             msg = f"agent of thread {self.thread_id}: the process is not started"
@@ -533,10 +582,68 @@ class ThreadAgent:
 
     async def start(self) -> None:
         """Процесс и серверы сессии; сессия открывается позже."""
-        self._process = await self._launcher.launch(
-            self._identity, AgentClient(self._questions)
+        async with self._gate:
+            await self._launch(await self._launcher.prepare(self._identity))
+
+    async def restart(self) -> bool:
+        """Единая точка перезапуска процесса агента вкладки: файл настроек
+        собирается заново из слоя чата, прежний процесс закрывается, новый
+        запускается и открывает сессию треда без воспроизведения ленты
+        (`session/resume`). False — идёт ход: перезапуск отложен и состоится
+        сразу после его конца. Повторный вызов до отложенного перезапуска
+        ничего не добавляет.
+
+        Ошибки:
+        AgentSettingsError, DataUnavailableError — слой чата не собран.
+        McpTokenError, SessionServersError — серверы MCP сессии.
+        AgentProcessError, AgentRequestError — процесс не запустился или
+            отказал в сессии; перезапуск повторится перед следующим ходом.
+        """
+        async with self._gate:
+            return await self._restart_idle()
+
+    async def _restart_idle(self) -> bool:
+        """Перезапуск под замком вкладки; при идущем ходе только ставит флаг."""
+        self._restart_pending = True
+        if self._active is not None:
+            logger.info(
+                "thread %s: restart waits for the end of the turn", self.thread_id
+            )
+
+            return False
+
+        launch = await self._launcher.prepare(self._identity)
+        await self._close_process()
+        await self._launch(launch)
+        await self._reopen()
+        self._restart_pending = False
+        self._restarts += 1
+        logger.info(
+            "thread %s: agent restarted, pid=%s, session=%s",
+            self.thread_id,
+            self.process.pid,
+            self._session_id,
         )
-        self._servers = await self._launcher.servers(self._identity)
+
+        return True
+
+    async def _launch(self, launch: AgentLaunch) -> None:
+        """Новый процесс по заготовке: файл настроек из слоя чата в свежем
+        приватном каталоге, рукопожатие."""
+        self._process = await self._launcher.launch(
+            self._identity, launch.chat, AgentClient(self._questions)
+        )
+        self._servers = launch.servers
+
+    async def _reopen(self) -> None:
+        """Сессия треда в новом процессе без воспроизведения беседы; ответ
+        наблюдателя настроек не несёт — прежние остаются."""
+        session_id = self._session_id
+        if session_id is None:
+            return
+
+        response = await self.process.resume_session(session_id, self._servers)
+        self._options.replace(response.config_options)
 
     async def resume(self) -> bool:
         """Загрузка сохранённой сессии треда с воспроизведением беседы;
@@ -546,6 +653,10 @@ class ThreadAgent:
         AgentRequestError — агент отказал в `session/load` не по причине
             неизвестной сессии.
         """
+        async with self._gate:
+            return await self._load()
+
+    async def _load(self) -> bool:
         known = await self._meta.session_of(self.thread_id)
         try:
             response = await self.process.load_session(known, self._servers)
@@ -577,12 +688,38 @@ class ThreadAgent:
         """Ход по вопросу: новая сессия на первом, ветвь на правке; итог —
         stopReason ответа. Кнопка Stop снимает задачу обработчика chainlit:
         ход всё равно дожидается ответа агента на отмену и отмечает его в ленте.
+        Отложенный перезапуск исполняется сразу после конца хода, а не
+        состоявшийся из-за отказа — перед началом следующего.
 
         Ошибки:
         AgentRequestError — агент отказал в методе сессии.
         AgentProcessError — процесс умер по ходу.
         LockBusyError — тред уже ведёт другой держатель.
         """
+        async with self._gate:
+            turn = await self._begin(question)
+
+        session_id = turn.session_id
+        try:
+            response = await asyncio.shield(turn.response)
+        except asyncio.CancelledError:
+            response = await self._cancelled_turn(session_id, turn.response)
+            await self._finish(session_id, question, response)
+            raise
+        except Exception:
+            self._active = None
+            await self._renderer.abandon(session_id)
+            raise
+
+        await self._finish(session_id, question, response)
+
+        return response.stop_reason
+
+    async def _begin(self, question: Question) -> StartedTurn:
+        """Начало хода под замком вкладки: сессия, лента и запрос агенту."""
+        if self._restart_pending:
+            await self._restart_idle()
+
         edited = question.key in self._asked
         session_id = await self._session_for(question)
         await self._renderer.turn_started(session_id, question, edited)
@@ -594,23 +731,11 @@ class ThreadAgent:
             question.key,
             session_id,
         )
-        turn = asyncio.create_task(
+        response = asyncio.create_task(
             self.process.prompt(session_id, self._blocks(question), question.key)
         )
-        try:
-            response = await asyncio.shield(turn)
-        except asyncio.CancelledError:
-            response = await self._cancelled_turn(session_id, turn)
-            await self._finish(session_id, question, response)
-            raise
-        except Exception:
-            self._active = None
-            await self._renderer.abandon(session_id)
-            raise
 
-        await self._finish(session_id, question, response)
-
-        return response.stop_reason
+        return StartedTurn(session_id=session_id, response=response)
 
     async def _cancelled_turn(
         self, session_id: str, turn: asyncio.Task[PromptResponse]
@@ -633,30 +758,15 @@ class ThreadAgent:
             question.key,
             response.stop_reason,
         )
+        await self._restart_deferred()
 
-    async def set_option(self, config_id: str, value: str) -> bool:
-        """Настройка открытой сессии (`session/set_config_option`); False —
-        сессии ещё нет, настройка подождёт её открытия.
+    async def _restart_deferred(self) -> None:
+        """Перезапуск, отложенный на время хода; без флага — ничего."""
+        async with self._gate:
+            if not self._restart_pending:
+                return
 
-        Ошибки:
-        AgentRequestError — агент отказал: ход идёт (-32603) или значение
-            неизвестно (-32602).
-        """
-        session_id = self._session_id
-        if session_id is None:
-            return False
-
-        response = await self.process.set_config_option(session_id, config_id, value)
-        self._options.replace(response.config_options)
-        logger.info(
-            "thread %s: session %s option %s set to %s",
-            self.thread_id,
-            session_id,
-            config_id,
-            value,
-        )
-
-        return True
+            await self._restart_idle()
 
     async def stop(self) -> bool:
         """Отмена идущего хода; False — хода нет."""
@@ -672,10 +782,17 @@ class ThreadAgent:
 
     async def close(self) -> None:
         """Закрытие сессии у агента (замок отпущен) и остановка процесса."""
+        async with self._gate:
+            await self._close_process()
+
+    async def _close_process(self) -> None:
+        """Прежний процесс: сессия закрыта у агента, процесс остановлен, его
+        каталог с файлом настроек удалён."""
         process = self._process
         if process is None:
             return
 
+        self._process = None
         try:
             await self._close_session(process)
         finally:
@@ -840,6 +957,48 @@ class ThreadAgents:
                 await agent.close()
             except Exception:
                 logger.exception("thread %s: closing the agent failed", agent.thread_id)
+
+
+class AgentSettingsChanges:
+    """Единый путь правки настроек агента в чате: правка панели пишется в слой
+    пользователя и в слой чата треда, после записи процесс агента вкладки
+    всегда перезапускается, чтобы работать уже из нового слоя.
+
+    Создаётся провайдером процесса; зовёт обработчик панели настроек. Слои
+    пишет AgentSettingsLayers, процесс меняет ThreadAgent.restart.
+    """
+
+    def __init__(self, layers: AgentSettingsLayers) -> None:
+        self._layers = layers
+
+    async def apply(
+        self,
+        identity: ThreadIdentity,
+        change: AgentSettingsChange,
+        agent: ThreadAgent | None,
+    ) -> SettingsOutcome:
+        """Запись правки и перезапуск агента вкладки; agent None — во вкладке
+        процесса нет, он запустится уже из нового слоя чата.
+
+        Ошибки:
+        AgentSettingsError, DataUnavailableError — слои не записаны.
+        AgentProcessError, AgentRequestError, McpTokenError,
+        SessionServersError — настройки записаны, перезапуск не состоялся.
+        """
+        await self._layers.change(
+            UUID(identity.thread_id),
+            identity.user_id,
+            identity.profile.name,
+            identity.profile.config,
+            change,
+        )
+        if agent is None:
+            return SettingsOutcome.SAVED
+
+        if await agent.restart():
+            return SettingsOutcome.RESTARTED
+
+        return SettingsOutcome.DEFERRED
 
 
 class ThreadDeleter(ThreadDeletionListener):

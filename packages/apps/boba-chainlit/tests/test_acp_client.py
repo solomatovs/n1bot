@@ -201,6 +201,29 @@ class TestHistory:
         )
         assert again.stop_reason == "end_turn"
 
+    async def test_resume_opens_the_session_without_replay(
+        self, agents: Agents
+    ) -> None:
+        process = await agents.start(RecordingUpdates(), "holder")
+        session_id = await process.new_session([])
+        await process.prompt(
+            session_id, [_text(prompt_text(ScenarioName.ANSWER))], _id()
+        )
+        await process.close()
+
+        updates = RecordingUpdates()
+        successor = await agents.start(updates, "successor")
+        response = await successor.resume_session(session_id, [])
+
+        assert response.config_options, response
+        assert not [u for _, u in updates.updates if isinstance(u, UserMessageChunk)]
+        assert not updates.texts()
+
+        again = await successor.prompt(
+            session_id, [_text(prompt_text(ScenarioName.THINKING))], _id()
+        )
+        assert again.stop_reason == "end_turn"
+
     async def test_close_releases_the_session_for_another_process(
         self, agents: Agents
     ) -> None:

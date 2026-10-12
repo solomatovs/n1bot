@@ -15,8 +15,8 @@ pytest.importorskip("playwright.sync_api", reason="ui-тестам нужен pl
 from chat_ui import (
     BOOT_TIMEOUT_SEC,
     ChatOpener,
-    LlmMetaReader,
     OpenChat,
+    UserLayerReader,
     login_cookies,
     watch_sockets,
 )
@@ -45,13 +45,13 @@ def stand_db(stand_database: str) -> StandDatabase:
 
 
 @pytest.fixture
-def clean_llm_settings(stand_db: StandDatabase) -> None:
-    stand_db.wipe_llm_settings()
+def clean_agent_settings(stand_db: StandDatabase) -> None:
+    stand_db.wipe_agent_user_layers()
 
 
 @pytest.fixture
-def llm_meta(stand_db: StandDatabase) -> LlmMetaReader:
-    return stand_db.llm_settings_of
+def user_layer(stand_db: StandDatabase) -> UserLayerReader:
+    return stand_db.agent_user_layer_of
 
 
 @pytest.fixture(autouse=True)

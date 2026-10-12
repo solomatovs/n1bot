@@ -62,9 +62,9 @@ from acp.schema import (
     ReleaseTerminalResponse,
     RequestPermissionResponse,
     ResourceContentBlock,
+    ResumeSessionRequest,
+    ResumeSessionResponse,
     SessionInfoUpdate,
-    SetSessionConfigOptionResponse,
-    SetSessionConfigOptionSelectRequest,
     TerminalOutputResponse,
     TextContentBlock,
     ToolCallProgress,
@@ -458,25 +458,6 @@ class AgentProcess:
             AGENT_METHODS["session_new"], request, NewSessionResponse
         )
 
-    async def set_config_option(
-        self, session_id: str, config_id: str, value: str
-    ) -> SetSessionConfigOptionResponse:
-        """Настройка сессии (режим, модель); ответ — полное состояние настроек.
-
-        Ошибки:
-        AgentRequestError — ход идёт (-32603) или значение неизвестно (-32602).
-        """
-        request = SetSessionConfigOptionSelectRequest(
-            session_id=session_id, config_id=config_id, value=value
-        )
-
-        return await self._request(
-            AGENT_METHODS["session_set_config_option"],
-            request,
-            SetSessionConfigOptionResponse,
-            lenient=True,
-        )
-
     async def load_session(
         self, session_id: str, servers: Sequence[SessionServer]
     ) -> LoadSessionResponse:
@@ -489,6 +470,21 @@ class AgentProcess:
 
         return await self._request(
             AGENT_METHODS["session_load"], request, LoadSessionResponse, lenient=True
+        )
+
+    async def resume_session(
+        self, session_id: str, servers: Sequence[SessionServer]
+    ) -> ResumeSessionResponse:
+        """Открытие сохранённой сессии без воспроизведения беседы: приёмник
+        уведомлений о прошлых ходах не получает."""
+        request = ResumeSessionRequest(
+            cwd=str(self._workdir.path),
+            session_id=session_id,
+            mcp_servers=list(servers),
+        )
+
+        return await self._request(
+            AGENT_METHODS["session_resume"], request, ResumeSessionResponse
         )
 
     async def prompt(

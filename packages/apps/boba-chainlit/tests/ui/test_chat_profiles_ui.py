@@ -42,7 +42,7 @@ SEARCH_PROFILE_TOOLS = frozenset({"diagram_save", "canvas_open"})
 
 
 @pytest.fixture(autouse=True)
-def _no_user_overrides(clean_llm_settings: None) -> None:
+def _no_user_overrides(clean_agent_settings: None) -> None:
     """Профили проверяются без личных настроек: их сохраняют соседние тесты."""
 
 

@@ -26,8 +26,16 @@ from pydantic import SecretStr
 
 from boba.chainlit.acp.chat import SessionOptions
 from boba.chainlit.acp.client import SessionUpdate
-from boba.chainlit.acp.panel import AgentPanel, AgentSetting
-from boba.chainlit.acp.settings import UserAgentSettings
+from boba.chainlit.acp.panel import AgentPanel
+from boba.chainlit.acp.settings import (
+    AgentModel,
+    AgentProvider,
+    AgentSettingsError,
+    ChatAgentSettings,
+    PermissionModeName,
+    ProviderKindName,
+    UserAgentSettings,
+)
 from boba.chainlit.canvas.remote import RemoteJournals
 from boba.chainlit.chat.feed import QuestionBody, TurnFeed
 from boba.chainlit.chat.panel_text import PanelText
@@ -46,7 +54,7 @@ from boba.chainlit.rendering.chat_view import (
     StepText,
 )
 from boba.chainlit.rendering.renderer import ChatRenderer, NoSurface
-from boba.chat.profiles import ChatProfileConfig
+from boba.chat.profiles import ChatProfileConfig, UserSetting
 from boba.identity.context import Scope
 from boba.messaging import LockToken, MemoryMessageBus, MemoryPayloadStore, TurnOutcome
 from boba.stand.refs import StandRefs
@@ -554,50 +562,125 @@ def _options() -> SessionOptions:
     return options
 
 
+def _chat(mode: PermissionModeName) -> ChatAgentSettings:
+    return ChatAgentSettings(
+        model_name="general",
+        model=AgentModel(
+            provider=AgentProvider(
+                kind=ProviderKindName.OPENAI, base_url="http://llm.example/v1"
+            ),
+            model="m",
+            sampling={},
+            context_window=32000,
+            max_output_tokens=4096,
+        ),
+        system_prompt="be brief",
+        mode=mode,
+    )
+
+
 class TestAgentPanel:
-    """Вкладки про агента: слой пользователя и настройки сессии."""
+    """Вкладки про агента: слой пользователя и выбор сессии из слоя чата."""
 
     def test_tabs_show_user_layer_and_session_options(self) -> None:
         user = UserAgentSettings(base_url="http://llm:1/v1", api_key=SecretStr("k"))
-        panel = AgentPanel(_profile(["*"]), user, _options(), PanelText("", "en-US"))
+        panel = AgentPanel(
+            _profile(["*"]), user, None, _options(), PanelText("", "en-US")
+        )
 
         tabs = {tab.id: tab for tab in panel.tabs()}
         assert set(tabs) == {"agent_tab", "session_tab"}
 
         agent = {widget.id: widget for widget in tabs["agent_tab"].inputs}
-        assert agent[AgentSetting.BASE_URL.value].initial == "http://llm:1/v1"
-        assert agent[AgentSetting.API_KEY.value].initial == ""
+        assert agent[UserSetting.AGENT_BASE_URL.value].initial == "http://llm:1/v1"
+        assert agent[UserSetting.AGENT_API_KEY.value].initial == ""
 
         session = {widget.id: widget for widget in tabs["session_tab"].inputs}
         assert set(session) == {"session_mode", "session_model"}
         assert session["session_mode"].initial == "bypassPermissions"
+        # подпись варианта → значение, которое вернёт форма
+        assert session["session_mode"].to_dict()["items"] == [
+            {"label": "Default", "value": "default"},
+            {"label": "Bypass", "value": "bypassPermissions"},
+        ]
+
+    def test_session_values_come_from_the_chat_layer(self) -> None:
+        """Агент ещё работает с прежним режимом, слой чата уже сохранён:
+        панель показывает сохранённое."""
+        panel = AgentPanel(
+            _profile(["*"]),
+            UserAgentSettings(),
+            _chat(PermissionModeName.DEFAULT),
+            _options(),
+            PanelText("", "en-US"),
+        )
+
+        tabs = {tab.id: tab for tab in panel.tabs()}
+        session = {widget.id: widget for widget in tabs["session_tab"].inputs}
+        assert session["session_mode"].initial == "default"
+        assert session["session_model"].initial == "general"
 
     def test_closed_profile_hides_the_user_layer(self) -> None:
         panel = AgentPanel(
-            _profile(["user_prompt"]),
+            _profile([]),
             UserAgentSettings(),
+            None,
             SessionOptions(),
             PanelText("", "en-US"),
         )
 
         assert panel.tabs() == []
 
-    def test_parse_keeps_the_secret_and_reports_changed_options(self) -> None:
-        saved = UserAgentSettings(api_key=SecretStr("old"), model="m1")
-        panel = AgentPanel(_profile(["*"]), saved, _options(), PanelText("", "en-US"))
+    def test_retired_setting_name_is_a_config_error(self) -> None:
+        with pytest.raises(ValueError, match="unknown settings"):
+            _profile(["user_prompt"])
 
-        edit = panel.parse(
+    def test_parse_keeps_the_secret_and_reads_the_session_choice(self) -> None:
+        saved = UserAgentSettings(api_key=SecretStr("old"), model="m1")
+        panel = AgentPanel(
+            _profile(["*"]), saved, None, _options(), PanelText("", "en-US")
+        )
+
+        change = panel.parse(
             {
-                AgentSetting.BASE_URL.value: " http://other/v1 ",
-                AgentSetting.API_KEY.value: "",
-                AgentSetting.MODEL.value: "",
+                UserSetting.AGENT_BASE_URL.value: " http://other/v1 ",
+                UserSetting.AGENT_API_KEY.value: "",
+                UserSetting.AGENT_MODEL.value: "",
                 "session_mode": "default",
                 "session_model": "general",
             }
         )
 
-        assert edit.user.base_url == "http://other/v1"
-        assert edit.user.model is None
-        assert edit.user.api_key is not None
-        assert edit.user.api_key.get_secret_value() == "old"
-        assert edit.session == {"mode": "default"}
+        assert change.user.base_url == "http://other/v1"
+        assert change.user.model is None
+        assert change.user.api_key is not None
+        assert change.user.api_key.get_secret_value() == "old"
+        assert change.mode is PermissionModeName.DEFAULT
+        assert change.model_name == "general"
+
+    def test_parse_without_session_fields_keeps_the_chat_choice(self) -> None:
+        panel = AgentPanel(
+            _profile(["*"]),
+            UserAgentSettings(),
+            None,
+            SessionOptions(),
+            PanelText("", "en-US"),
+        )
+
+        change = panel.parse({UserSetting.AGENT_MODEL.value: "picked"})
+
+        assert change.user.model == "picked"
+        assert change.mode is None
+        assert change.model_name is None
+
+    def test_parse_refuses_a_value_the_agent_did_not_offer(self) -> None:
+        panel = AgentPanel(
+            _profile(["*"]),
+            UserAgentSettings(),
+            None,
+            _options(),
+            PanelText("", "en-US"),
+        )
+
+        with pytest.raises(AgentSettingsError, match="no-such-mode"):
+            panel.parse({"session_mode": "no-such-mode"})

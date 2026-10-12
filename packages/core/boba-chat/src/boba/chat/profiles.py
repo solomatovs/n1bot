@@ -1,5 +1,5 @@
-"""Профили чата и пользовательские настройки LLM: модели секций конфига и
-правила выбора профиля под роли субъекта.
+"""Профили чата: модели секций конфига и правила выбора профиля под роли
+субъекта.
 
 Ошибки:
 RefusalError — профиль чата не выбран или недоступен ролям пользователя.
@@ -10,16 +10,9 @@ from __future__ import annotations
 import logging
 from collections.abc import Mapping
 from enum import StrEnum
-from typing import Annotated, Any, Self
+from typing import Annotated, Self
 
-from pydantic import (
-    BaseModel,
-    ConfigDict,
-    Field,
-    RootModel,
-    ValidationError,
-    model_validator,
-)
+from pydantic import BaseModel, ConfigDict, Field, RootModel, model_validator
 
 from boba.access import ProfileGrant, RoleConfig, ToolGrant
 from boba.identity.errors import RefusalError
@@ -35,9 +28,6 @@ __all__ = [
     "ProfilesSection",
     "RolesSection",
     "SelectedProfile",
-    "SettingsView",
-    "UserLlmOverrides",
-    "UserMeta",
     "UserSetting",
 ]
 
@@ -55,13 +45,16 @@ class ChatSettings(ChatModelConfig):
 
 
 class UserSetting(StrEnum):
-    """Настройки LLM, которые профиль может открыть пользователю.
+    """Настройки агента, которые профиль может открыть пользователю: адрес,
+    ключ и модель провайдера поверх профиля.
 
-    Значения совпадают с полями UserLlmOverrides и id виджетов панели;
-    подписи и описания живут в переводах chainlit (chat.settings.llm).
+    Значения — id виджетов панели чата; подписи и описания живут в
+    переводах chainlit (chat.settings.llm).
     """
 
-    USER_PROMPT = "user_prompt"
+    AGENT_BASE_URL = "agent_base_url"
+    AGENT_API_KEY = "agent_api_key"
+    AGENT_MODEL = "agent_model"
 
 
 class ChatProfileConfig(ChatSettings, ProfileGrant):
@@ -99,9 +92,9 @@ class ChatProfileConfig(ChatSettings, ProfileGrant):
     settings: StringList = Field(
         default=[],
         description=(
-            "Настройки LLM, которые пользователь может переопределять; "
-            "имена полей UserLlmOverrides, '*' — все. Пустой список — "
-            "панель настроек профилю не показывается."
+            "Настройки агента, которые пользователь может переопределять; "
+            "имена UserSetting, '*' — все. Пустой список — вкладка "
+            "настроек агента профилю не показывается."
         ),
     )
 
@@ -286,152 +279,3 @@ class ChatProfiles(ProfileCatalog):
                 return SelectedProfile(name=profile_name, config=profile)
 
         return None
-
-
-class UserLlmOverrides(BaseModel):
-    """Настройки пользователя поверх профиля; None — поле не переопределено."""
-
-    model_config = ConfigDict(extra="ignore")
-
-    user_prompt: str | None = None
-
-    def clamped(self, profile: ChatProfileConfig) -> UserLlmOverrides:
-        """Копия в пределах разрешений профиля.
-
-        Поле, не разрешённое профилем, отбрасывается — даже если пришло в
-        обход панели.
-        """
-        update: dict[str, Any] = {}
-
-        # запрет профиля сильнее любого пришедшего значения — даже мимо панели
-        for setting in UserSetting:
-            if profile.setting_allowed(setting.value):
-                continue
-
-            update[setting.value] = None
-
-        return self.model_copy(update=update)
-
-    def apply_to(self, profile: ChatProfileConfig) -> ChatSettings:
-        """Настройки хода: профиль, к промпту которого дописаны инструкции
-        пользователя."""
-        if not self.user_prompt:
-            return profile
-
-        system_prompt = f"{profile.system_prompt}\n\n{self.user_prompt}"
-
-        return profile.model_copy(update={"system_prompt": system_prompt})
-
-    @classmethod
-    def edited(
-        cls,
-        form: Mapping[str, object],
-        shown: Mapping[str, object],
-        profile: ChatProfileConfig,
-        saved: UserLlmOverrides,
-    ) -> UserLlmOverrides:
-        """Форма панели -> переопределения пользователя.
-
-        Значение, равное показанному, означает «пользователь не трогал»: его
-        прежнее состояние сохраняется. Возврат к значению профиля снимает
-        переопределение.
-        """
-        parsed = cls.model_validate(cls._cleared(form))
-
-        update: dict[str, Any] = {}
-        for setting in UserSetting:
-            name = setting.value
-            value = getattr(parsed, name)
-
-            if value == shown.get(name):
-                update[name] = getattr(saved, name)
-
-        return parsed.model_copy(update=update)
-
-    @staticmethod
-    def _cleared(values: Mapping[str, object]) -> dict[str, object]:
-        """Пустые строки формы -> None: у Select и TextInput нет None-состояния."""
-        cleared: dict[str, object] = {}
-        for name, value in values.items():
-            if isinstance(value, str) and not value.strip():
-                cleared[name] = None
-                continue
-
-            cleared[name] = value
-
-        return cleared
-
-    def stored(self) -> dict[str, Any]:
-        """Значение для users.meta: только переопределённые поля."""
-        return self.model_dump(mode="json", exclude_none=True)
-
-
-class SettingsView(BaseModel):
-    """Итоговые настройки хода: профиль, поверх которого легли личные.
-
-    Один источник правды для всех потребителей: агент берёт отсюда параметры
-    запроса, панель — что показать пользователю, сохранение — что записать
-    в users.meta.
-    """
-
-    model_config = ConfigDict(frozen=True)
-
-    profile: ChatProfileConfig
-    overrides: UserLlmOverrides
-
-    @classmethod
-    def of(
-        cls, profile: ChatProfileConfig, overrides: UserLlmOverrides
-    ) -> SettingsView:
-        """Представление с личными настройками в правах профиля."""
-        return cls(profile=profile, overrides=overrides.clamped(profile))
-
-    def agent(self) -> ChatSettings:
-        """Настройки, с которыми идёт ход."""
-        return self.overrides.apply_to(self.profile)
-
-    def value_of(self, setting: UserSetting) -> Any:
-        """Значение настройки как его видит пользователь."""
-        return getattr(self.overrides, setting.value)
-
-    def edited(
-        self,
-        form: Mapping[str, Any],
-        shown: Mapping[str, Any],
-    ) -> SettingsView:
-        """Представление после правки формы: изменённое стало личным."""
-        edited = UserLlmOverrides.edited(form, shown, self.profile, self.overrides)
-        return self.of(self.profile, edited)
-
-
-class UserMeta(BaseModel):
-    """Разбор users.meta: настройки LLM по профилям под ключом llm."""
-
-    model_config = ConfigDict(extra="ignore")
-
-    llm: dict[str, UserLlmOverrides] = {}
-
-    @classmethod
-    def of(cls, raw: Mapping[str, Any] | None) -> UserMeta:
-        """Метаданные пользователя; битые настройки деградируют до пустых.
-
-        Настройки — пользовательские данные: смена их схемы не должна
-        блокировать вход, сброс к дефолтам профиля виден в панели.
-        """
-        if raw is None:
-            return cls()
-
-        try:
-            return cls.model_validate(raw)
-        except ValidationError:
-            logging.getLogger(__name__).warning(
-                "user meta has malformed llm settings, ignoring them"
-            )
-            return cls()
-
-    def overrides_for(self, profile_name: str) -> UserLlmOverrides:
-        found = self.llm.get(profile_name)
-        if found is None:
-            return UserLlmOverrides()
-
-        return found

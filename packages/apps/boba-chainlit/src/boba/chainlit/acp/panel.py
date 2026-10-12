@@ -1,28 +1,38 @@
 """Вкладки панели настроек чата про агента: слой пользователя (адрес, ключ и
-модель провайдера поверх профиля) и настройки открытой сессии (режим, модель
-из `configOptions` агента).
+модель провайдера поверх профиля) и выбор сессии (режим разрешений, профиль
+модели из `configOptions` агента).
 
-Слой пользователя действует на новые треды: слой чата копируется с него при
-первом открытии треда. Настройки сессии применяются к открытому треду вызовом
-`session/set_config_option`. Ошибки: своих не выпускает.
+Значения вкладки «Агент» — слой пользователя, значения вкладки «Сессия» — слой
+чата треда; варианты списков присылает агент. Разобранная форма уходит
+единому пути правки AgentSettingsChanges, который пишет слои и перезапускает
+процесс агента.
+
+Ошибки:
+AgentSettingsError — в форме значение списка, которого агент не предлагал.
 """
 
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any, ClassVar
 
+from acp.schema import SessionConfigOptionSelect
 from pydantic import SecretStr
 
-from boba.chainlit.acp.chat import SessionOptions
-from boba.chainlit.acp.settings import UserAgentSettings
+from boba.chainlit.acp.chat import ConfigCategory, SessionOptions
+from boba.chainlit.acp.settings import (
+    AgentSettingsChange,
+    AgentSettingsError,
+    ChatAgentSettings,
+    PermissionModeName,
+    UserAgentSettings,
+)
 from boba.chainlit.chat.panel_text import PanelText
-from boba.chat.profiles import ChatProfileConfig
+from boba.chat.profiles import ChatProfileConfig, UserSetting
 from chainlit.input_widget import InputWidget, Select, Tab, TextInput
 
-__all__ = ["AgentPanel", "AgentPanelEdit", "AgentPanelTab", "AgentSetting"]
+__all__ = ["AgentPanel", "AgentPanelTab"]
 
 
 class AgentPanelTab(StrEnum):
@@ -32,46 +42,23 @@ class AgentPanelTab(StrEnum):
     SESSION = "session_tab"
 
 
-class AgentSetting(StrEnum):
-    """Поля слоя пользователя в панели: id виджетов и ключи переводов."""
-
-    BASE_URL = "agent_base_url"
-    API_KEY = "agent_api_key"
-    MODEL = "agent_model"
-
-
 class SessionWidget:
-    """Виджет настройки сессии: id виджета — настройка агента с префиксом."""
+    """Виджет выбора сессии: id виджета — категория настройки агента с
+    префиксом (`session_mode`, `session_model`)."""
 
     PREFIX: ClassVar[str] = "session_"
 
-    def id_of(self, config_id: str) -> str:
-        return f"{self.PREFIX}{config_id}"
-
-    def config_of(self, widget_id: str) -> str | None:
-        """Настройка агента по id виджета; None — виджет не про сессию."""
-        if not widget_id.startswith(self.PREFIX):
-            return None
-
-        return widget_id[len(self.PREFIX) :]
-
-
-@dataclass(frozen=True)
-class AgentPanelEdit:
-    """Итог разбора формы: новый слой пользователя и настройки сессии,
-    которые изменились (настройка агента → значение)."""
-
-    user: UserAgentSettings
-    session: Mapping[str, str]
+    def id_of(self, category: ConfigCategory) -> str:
+        return f"{self.PREFIX}{category.value}"
 
 
 class AgentPanel:
     """Сборка вкладок про агента и разбор их формы для одного профиля.
 
-    Создаётся обработчиками панели на запрос: слой пользователя из таблицы
-    настроек агента, настройки сессии — у агента треда вкладки (пустые, пока
-    сессии нет). Ключ провайдера в форме не показывается: пустое поле
-    оставляет сохранённый, непустое заменяет его.
+    Создаётся обработчиками панели на запрос: слой пользователя и слой чата
+    треда из таблицы настроек агента, варианты выбора сессии — у агента треда
+    вкладки (пустые, пока сессии нет). Ключ провайдера в форме не
+    показывается: пустое поле оставляет сохранённый, непустое заменяет его.
     """
 
     KEPT_HINT: ClassVar[str] = "(kept)"
@@ -81,11 +68,13 @@ class AgentPanel:
         self,
         profile: ChatProfileConfig,
         user: UserAgentSettings,
+        chat: ChatAgentSettings | None,
         options: SessionOptions,
         text: PanelText,
     ) -> None:
         self._profile = profile
         self._user = user
+        self._chat = chat
         self._options = options
         self._text = text
         self._widgets = SessionWidget()
@@ -115,28 +104,28 @@ class AgentPanel:
 
         return built
 
-    def parse(self, form: Mapping[str, Any]) -> AgentPanelEdit:
-        """Форма панели → слой пользователя и изменившиеся настройки сессии."""
+    def parse(self, form: Mapping[str, Any]) -> AgentSettingsChange:
+        """Форма панели → правка настроек: слой пользователя целиком и выбор
+        вкладки «Сессия» (None — поля в форме не было).
+
+        Ошибки:
+        AgentSettingsError — значение списка не из предложенных агентом.
+        """
         user = self._user
         if self._allowed():
             user = self._parsed_user(form)
 
-        changed: dict[str, str] = {}
-        for option in self._options.selects():
-            value = form.get(self._widgets.id_of(option.id))
-            if not isinstance(value, str):
-                continue
+        mode: PermissionModeName | None = None
+        if chosen := self._chosen(form, ConfigCategory.MODE):
+            mode = self._mode(chosen)
 
-            if value == option.current_value:
-                continue
+        model_name = self._chosen(form, ConfigCategory.MODEL)
 
-            changed[option.id] = value
-
-        return AgentPanelEdit(user=user, session=changed)
+        return AgentSettingsChange(user=user, mode=mode, model_name=model_name)
 
     def _allowed(self) -> bool:
         """Слой пользователя открыт профилем: его настройки названы `*`."""
-        for setting in AgentSetting:
+        for setting in UserSetting:
             if not self._profile.setting_allowed(setting.value):
                 return False
 
@@ -151,13 +140,13 @@ class AgentPanel:
             api_key_hint = self.KEPT_HINT
 
         return [
-            self._input(AgentSetting.BASE_URL, self._user.base_url),
-            self._input(AgentSetting.API_KEY, None, placeholder=api_key_hint),
-            self._input(AgentSetting.MODEL, self._user.model),
+            self._input(UserSetting.AGENT_BASE_URL, self._user.base_url),
+            self._input(UserSetting.AGENT_API_KEY, None, placeholder=api_key_hint),
+            self._input(UserSetting.AGENT_MODEL, self._user.model),
         ]
 
     def _input(
-        self, setting: AgentSetting, initial: str | None, placeholder: str = ""
+        self, setting: UserSetting, initial: str | None, placeholder: str = ""
     ) -> TextInput:
         shown = initial
         if shown is None:
@@ -173,29 +162,102 @@ class AgentPanel:
 
     def _session_widgets(self) -> list[InputWidget]:
         widgets: list[InputWidget] = []
-        for option in self._options.selects():
-            items: dict[str, str] = {}
-            for choice in self._choices(option.options):
-                items[choice.value] = choice.name
+        for category in ConfigCategory:
+            option = self._option(category)
+            if option is None:
+                continue
 
-            if option.current_value not in items:
-                items[option.current_value] = option.current_value
-
-            description = option.description
-            if not description:
-                description = option.name
-
-            widgets.append(
-                Select(
-                    id=self._widgets.id_of(option.id),
-                    label=self._text.field_label(self._widgets.id_of(option.id)),
-                    description=description,
-                    items=items,
-                    initial_value=option.current_value,
-                )
-            )
+            widgets.append(self._select(category, option))
 
         return widgets
+
+    def _select(
+        self, category: ConfigCategory, option: SessionConfigOptionSelect
+    ) -> Select:
+        # items у Select chainlit — подпись варианта → его значение
+        items: dict[str, str] = {}
+        for choice in self._choices(option.options):
+            items[choice.name] = choice.value
+
+        current = self._current(category, option)
+        if current not in items.values():
+            items[current] = current
+
+        description = option.description
+        if not description:
+            description = option.name
+
+        return Select(
+            id=self._widgets.id_of(category),
+            label=self._text.field_label(self._widgets.id_of(category)),
+            description=description,
+            items=items,
+            initial_value=current,
+        )
+
+    def _option(self, category: ConfigCategory) -> SessionConfigOptionSelect | None:
+        """Список агента этой категории; None — агент его не прислал."""
+        for option in self._options.selects():
+            if option.category == category.value:
+                return option
+
+        return None
+
+    def _current(
+        self, category: ConfigCategory, option: SessionConfigOptionSelect
+    ) -> str:
+        """Значение списка из слоя чата: оно применится после перезапуска,
+        даже если процесс ещё работает с прежним; без слоя — значение агента."""
+        chat = self._chat
+        if chat is None:
+            return option.current_value
+
+        if category is ConfigCategory.MODE:
+            return chat.mode.value
+
+        return chat.model_name
+
+    def _chosen(self, form: Mapping[str, Any], category: ConfigCategory) -> str | None:
+        """Выбор списка в форме; None — списка нет у агента или в форме.
+
+        Ошибки:
+        AgentSettingsError — значение не из предложенных агентом.
+        """
+        option = self._option(category)
+        if option is None:
+            return None
+
+        value = form.get(self._widgets.id_of(category))
+        if not isinstance(value, str):
+            return None
+
+        known: list[str] = [self._current(category, option)]
+        for choice in self._choices(option.options):
+            known.append(choice.value)
+
+        if value not in known:
+            msg = (
+                f"settings panel: session option {category.value!r} has no value "
+                f"{value!r}, the agent offers {sorted(known)}; pick one of them"
+            )
+            raise AgentSettingsError(msg)
+
+        return value
+
+    @staticmethod
+    def _mode(value: str) -> PermissionModeName:
+        """Ошибки:
+        AgentSettingsError — режим агента, которого чат не знает.
+        """
+        try:
+            return PermissionModeName(value)
+        except ValueError as exc:
+            known = [mode.value for mode in PermissionModeName]
+            msg = (
+                f"settings panel: permission mode {value!r} is offered by the "
+                f"agent but unknown to the chat, expected one of {known}"
+            )
+            raise AgentSettingsError(msg) from exc
 
     @staticmethod
     def _choices(options: Sequence[Any]) -> list[Any]:
@@ -213,18 +275,17 @@ class AgentPanel:
 
     def _parsed_user(self, form: Mapping[str, Any]) -> UserAgentSettings:
         api_key = self._user.api_key
-        typed = self._string(form, AgentSetting.API_KEY)
+        typed = self._string(form, UserSetting.AGENT_API_KEY)
         if typed:
             api_key = SecretStr(typed)
 
         return UserAgentSettings(
-            base_url=self._optional(form, AgentSetting.BASE_URL),
+            base_url=self._optional(form, UserSetting.AGENT_BASE_URL),
             api_key=api_key,
-            model=self._optional(form, AgentSetting.MODEL),
-            system_prompt=self._user.system_prompt,
+            model=self._optional(form, UserSetting.AGENT_MODEL),
         )
 
-    def _optional(self, form: Mapping[str, Any], setting: AgentSetting) -> str | None:
+    def _optional(self, form: Mapping[str, Any], setting: UserSetting) -> str | None:
         """Пустое поле — профильное значение, непустое — переопределение."""
         value = self._string(form, setting)
         if not value:
@@ -233,7 +294,7 @@ class AgentPanel:
         return value
 
     @staticmethod
-    def _string(form: Mapping[str, Any], setting: AgentSetting) -> str:
+    def _string(form: Mapping[str, Any], setting: UserSetting) -> str:
         value = form.get(setting.value)
         if not isinstance(value, str):
             return ""

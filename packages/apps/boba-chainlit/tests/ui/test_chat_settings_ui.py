@@ -1,29 +1,28 @@
-"""Панель настроек LLM в браузере: каждый виджет, users.meta и запрос к LLM.
+"""Панель настроек агента в браузере: вкладки «Агент» и «Сессия», слой
+пользователя в Postgres и запрос к LLM.
 
-На каждую настройку — свой прогон: состояние виджета до и после ввода, Confirm,
-содержимое users.meta.llm и переопределение профильного значения в теле запроса
-к fake llm. Сохранённое — слой пользователя настроек агента: с него копируется
-слой нового чата, а уже открытый чат живёт со своим, поэтому запрос к LLM
-сверяется в чате, открытом после сохранения. Ожидаемые значения профилей
-заданы стендом (StandConfig._use_test_profiles).
+Вкладка «Агент» — адрес, ключ и модель провайдера поверх профиля; вкладка
+«Сессия» появляется с первой сессией треда и несёт режим разрешений и профиль
+модели. Confirm сохраняет правку в слой пользователя и в слой открытого чата и
+перезапускает процесс агента, поэтому запрос к LLM сверяется и в том же чате,
+и в новом. Ожидаемые значения профилей заданы стендом
+(StandConfig._use_test_profiles).
 """
 
 from __future__ import annotations
 
 import tomllib
-from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path as FilePath
 from typing import Any
 
 import httpx
 import pytest
-from chat_ui import LlmMetaReader
+from chat_ui import UserLayerReader
 from playwright.sync_api import expect
 
 from boba.chainlit.acp.panel import AgentPanelTab
 from boba.chainlit.chat.panel_text import PanelText
-from boba.chainlit.chat.settings import PanelTab
 from boba.chat.profiles import UserSetting
 from boba.stand.ui.chat_page import ChatPage, StepKind
 from boba.stand.ui.fake_llm import ScenarioName
@@ -32,8 +31,15 @@ from boba.stand.ui.stand import StandProcess, StandUrl
 pytestmark = pytest.mark.ui
 
 ADMIN_LOGIN = "admin"
+PROFILE = "general"
 GENERAL_PROMPT = "You are the general stand assistant"
 SEARCH_PROMPT = "You are the search stand assistant"
+SESSION_MODE = "session_mode"
+SESSION_MODEL = "session_model"
+BYPASS_MODE = "Bypass permissions"
+DEFAULT_MODE = "Default"
+KEPT_HINT = "(kept)"
+ENCRYPTED_PREFIX = "enc:v1:"
 
 
 def _app_language() -> str:
@@ -75,71 +81,19 @@ class PanelSelector(StrEnum):
         return f"input#{field}"
 
     @staticmethod
-    def textarea_of(field: str) -> str:
-        return f"textarea#{field}"
-
-    @staticmethod
     def trigger_of(field: str) -> str:
         return f"button#{field}"
 
-    @staticmethod
-    def slider_of(field: str) -> str:
-        return f"#{field}[role='slider'], #{field} [role='slider']"
-
-
-class Action(StrEnum):
-    """Способ ввода значения в виджет."""
-
-    NUMBER = "number"
-    TEXT = "text"
-    SELECT = "select"
-    TAGS = "tags"
-    SLIDER = "slider"
-
-
-@dataclass(frozen=True)
-class FieldCase:
-    """Одна настройка: вкладка, жест ввода и ожидания по итогу."""
-
-    setting: UserSetting
-    tab: PanelTab
-    action: Action
-    value: str = ""
-    """Для number/text/select/tags/radio; слайдер шагает клавишей."""
-
-    meta: dict[str, Any] | None = None
-    """Ожидаемое users.meta.llm.general; None — сверяется со снимком виджета."""
-
-    payload_key: str = ""
-    payload_value: Any = None
-    integer: bool = False
-    """Слайдер целочисленной настройки: в meta уходит int, не float."""
-
-
-CASES = (
-    FieldCase(
-        setting=UserSetting.USER_PROMPT,
-        tab=PanelTab.PROMPT,
-        action=Action.TEXT,
-        value="Always answer in haiku",
-        meta={"user_prompt": "Always answer in haiku"},
-    ),
-)
-
 
 @pytest.fixture(autouse=True)
-def _fresh_settings(clean_llm_settings: None) -> None:
+def _fresh_settings(clean_agent_settings: None) -> None:
     """Каждый тест начинает без сохранённых настроек прошлых тестов."""
 
 
-def _llm_requests(llm_port: int) -> list[dict[str, Any]]:
+def _last_request(llm_port: int) -> dict[str, Any]:
     response = httpx.get(StandUrl.of(llm_port, "/requests"), timeout=5.0)
     response.raise_for_status()
-    return response.json()["requests"]
-
-
-def _last_request(llm_port: int) -> dict[str, Any]:
-    requests = _llm_requests(llm_port)
+    requests = response.json()["requests"]
     if not requests:
         raise AssertionError("fake llm got no requests")
 
@@ -163,14 +117,39 @@ def _open_settings(page: ChatPage) -> None:
     page.page.wait_for_selector(PanelSelector.TAB.value, timeout=15000)
 
 
-def _open_tab(page: ChatPage, tab: PanelTab) -> None:
+def _open_tab(page: ChatPage, tab: AgentPanelTab) -> None:
     page.page.get_by_role("tab", name=TEXT.tab(tab.value), exact=True).click()
     page.page.wait_for_timeout(300)
+
+
+def _tab_labels(page: ChatPage) -> set[str]:
+    labels: set[str] = set()
+    tabs = page.page.locator(PanelSelector.TAB.value)
+    for index in range(tabs.count()):
+        labels.add(tabs.nth(index).inner_text().strip())
+
+    return labels
 
 
 def _confirm_settings(page: ChatPage) -> None:
     page.page.locator(PanelSelector.CONFIRM.value).click()
     page.page.wait_for_timeout(SAVE_GRACE_MS)
+
+
+def _fill(page: ChatPage, setting: UserSetting, value: str) -> None:
+    page.page.fill(PanelSelector.input_of(setting.value), value)
+
+
+def _value(page: ChatPage, setting: UserSetting) -> str:
+    return page.page.locator(PanelSelector.input_of(setting.value)).input_value()
+
+
+def _save_agent_field(page: ChatPage, setting: UserSetting, value: str) -> None:
+    """Вкладка «Агент»: значение в поле и Confirm."""
+    _open_settings(page)
+    _open_tab(page, AgentPanelTab.AGENT)
+    _fill(page, setting, value)
+    _confirm_settings(page)
 
 
 def _ask_and_wait(page: ChatPage) -> None:
@@ -185,136 +164,92 @@ def _new_chat(page: ChatPage) -> None:
     page.open()
 
 
-def _widget_state(page: ChatPage, case: FieldCase) -> str:
-    """Снимок состояния виджета: тест сверяет его до и после ввода."""
-    field = case.setting.value
+class TestAgentFields:
+    """Поля вкладки «Агент»: ввод, слой пользователя и запрос к LLM."""
 
-    if case.action in (Action.NUMBER, Action.TAGS):
-        return page.page.locator(PanelSelector.input_of(field)).input_value()
-
-    if case.action is Action.TEXT:
-        return page.page.locator(PanelSelector.textarea_of(field)).input_value()
-
-    if case.action is Action.SELECT:
-        return page.page.locator(PanelSelector.trigger_of(field)).inner_text()
-
-    slider = page.page.locator(PanelSelector.slider_of(field)).first
-    value = slider.get_attribute("aria-valuenow")
-    if value is None:
-        raise AssertionError(f"slider {field} has no aria-valuenow")
-
-    return value
-
-
-def _enter_value(page: ChatPage, case: FieldCase) -> None:
-    """Ввод значения тем жестом, которым пользуется человек."""
-    field = case.setting.value
-
-    if case.action is Action.NUMBER:
-        page.page.fill(PanelSelector.input_of(field), case.value)
-        return
-
-    if case.action is Action.TEXT:
-        page.page.fill(PanelSelector.textarea_of(field), case.value)
-        return
-
-    if case.action is Action.TAGS:
-        tags = page.page.locator(PanelSelector.input_of(field))
-        tags.fill(case.value)
-        tags.press("Enter")
-        return
-
-    if case.action is Action.SELECT:
-        page.page.locator(PanelSelector.trigger_of(field)).click()
-        page.page.get_by_role("option", name=case.value, exact=True).click()
-        return
-
-    slider = page.page.locator(PanelSelector.slider_of(field)).first
-    slider.click()
-    slider.press("ArrowRight")
-    page.page.wait_for_timeout(200)
-
-
-def _expected_meta(case: FieldCase, state: str) -> dict[str, Any]:
-    """Что обязано оказаться в users.meta после сохранения."""
-    if case.meta is not None:
-        return case.meta
-
-    if case.integer:
-        return {case.setting.value: int(float(state))}
-
-    return {case.setting.value: float(state)}
-
-
-class TestEveryFieldClickable:
-    """Каждый виджет панели: состояние до ввода, после ввода и после сохранения."""
-
-    @pytest.mark.parametrize("case", CASES, ids=lambda case: case.setting.value)
-    def test_field_saves_and_overrides(
-        self,
-        chat: ChatPage,
-        llm_port: int,
-        llm_meta: LlmMetaReader,
-        case: FieldCase,
+    def test_model_applies_to_the_open_chat_and_to_new_chats(
+        self, chat: ChatPage, llm_port: int, user_layer: UserLayerReader
     ) -> None:
         _open_settings(chat)
-        _open_tab(chat, case.tab)
+        _open_tab(chat, AgentPanelTab.AGENT)
+        if _value(chat, UserSetting.AGENT_MODEL) != "":
+            raise AssertionError("model field is not empty before the edit")
 
-        before = _widget_state(chat, case)
-
-        _enter_value(chat, case)
-
-        after = _widget_state(chat, case)
-        if case.action is Action.TAGS:
-            # поле тегов очищается после Enter, введённое становится бейджем
-            badge = chat.page.locator(
-                f"{PanelSelector.MODAL.value} >> text={case.value}"
-            )
-            if not badge.count():
-                raise AssertionError(f"{case.value} tag badge is not drawn")
-        elif after == before:
-            raise AssertionError(
-                f"{case.setting.value}: DOM did not change ({before!r})"
-            )
-
+        _fill(chat, UserSetting.AGENT_MODEL, "fake-model-picked")
         _confirm_settings(chat)
 
-        saved = llm_meta(ADMIN_LOGIN)
-        expected = _expected_meta(case, after)
-        stored = saved.get("general")
-        if stored != expected:
-            raise AssertionError(f"meta.llm.general: {stored} != {expected}")
+        stored = user_layer(ADMIN_LOGIN, PROFILE)
+        if stored != {"model": "fake-model-picked"}:
+            raise AssertionError(f"user layer: {stored}")
+
+        # открытый пустой чат: агент перезапущен из нового слоя чата
+        _ask_and_wait(chat)
+        payload = _last_request(llm_port)
+        if payload.get("model") != "fake-model-picked":
+            raise AssertionError(f"model of the open chat: {payload.get('model')!r}")
+        if _system_prompt(payload) != GENERAL_PROMPT:
+            raise AssertionError(f"system prompt: {_system_prompt(payload)!r}")
 
         _new_chat(chat)
         _ask_and_wait(chat)
         payload = _last_request(llm_port)
+        if payload.get("model") != "fake-model-picked":
+            raise AssertionError(f"model of a new chat: {payload.get('model')!r}")
 
-        if case.payload_key:
-            wanted = case.payload_value
-            if wanted is None:
-                wanted = expected[case.setting.value]
+    def test_provider_url_is_stored_and_used(
+        self, chat: ChatPage, llm_port: int, user_layer: UserLayerReader
+    ) -> None:
+        url = StandUrl.of(llm_port, "/v1/")
+        _save_agent_field(chat, UserSetting.AGENT_BASE_URL, url)
 
-            sent = payload.get(case.payload_key)
-            if sent != wanted:
-                raise AssertionError(f"{case.payload_key}: {sent!r} != {wanted!r}")
+        stored = user_layer(ADMIN_LOGIN, PROFILE)
+        if stored != {"base_url": url}:
+            raise AssertionError(f"user layer: {stored}")
 
-        if case.setting is UserSetting.USER_PROMPT:
-            prompt = _system_prompt(payload)
-            if prompt != f"{GENERAL_PROMPT}\n\n{case.value}":
-                raise AssertionError(f"system prompt: {prompt!r}")
+        _ask_and_wait(chat)
+        if _last_request(llm_port).get("model") != "fake-model-general":
+            raise AssertionError("the turn did not reach the model by the saved url")
+
+    def test_api_key_is_encrypted_and_never_shown(
+        self, chat: ChatPage, user_layer: UserLayerReader
+    ) -> None:
+        _save_agent_field(chat, UserSetting.AGENT_API_KEY, "sk-ui-secret")
+
+        stored = user_layer(ADMIN_LOGIN, PROFILE)
+        if set(stored) != {"api_key"}:
+            raise AssertionError(f"user layer keys: {sorted(stored)}")
+        if not str(stored["api_key"]).startswith(ENCRYPTED_PREFIX):
+            raise AssertionError("api key is stored without encryption")
+
+        _open_settings(chat)
+        _open_tab(chat, AgentPanelTab.AGENT)
+        field = chat.page.locator(
+            PanelSelector.input_of(UserSetting.AGENT_API_KEY.value)
+        )
+        if field.input_value() != "":
+            raise AssertionError("the saved api key is shown in the panel")
+        if field.get_attribute("placeholder") != KEPT_HINT:
+            raise AssertionError(f"placeholder: {field.get_attribute('placeholder')!r}")
+
+        # пустое поле оставляет сохранённый ключ
+        _confirm_settings(chat)
+        if user_layer(ADMIN_LOGIN, PROFILE) != stored:
+            raise AssertionError("an empty key field replaced the saved key")
 
 
 class TestProfileValueBack:
-    """Нетронутая панель ничего не сохраняет."""
+    """Нетронутая панель слой пользователя не заводит."""
 
     def test_untouched_panel_stores_nothing(
-        self, chat: ChatPage, llm_port: int, llm_meta: LlmMetaReader
+        self, chat: ChatPage, llm_port: int, user_layer: UserLayerReader
     ) -> None:
         _open_settings(chat)
         _confirm_settings(chat)
 
-        if llm_meta(ADMIN_LOGIN).get("general") is not None:
-            raise AssertionError(f"stored without edits: {llm_meta(ADMIN_LOGIN)}")
+        if user_layer(ADMIN_LOGIN, PROFILE):
+            raise AssertionError(
+                f"stored without edits: {user_layer(ADMIN_LOGIN, PROFILE)}"
+            )
 
         _ask_and_wait(chat)
         payload = _last_request(llm_port)
@@ -329,6 +264,10 @@ class TestProfileValueBack:
             raise AssertionError(f"temperature: {payload.get('temperature')!r}")
         if payload.get("top_p") != 0.9:
             raise AssertionError(f"top_p: {payload.get('top_p')!r}")
+        if payload.get("model") != "fake-model-general":
+            raise AssertionError(f"model: {payload.get('model')!r}")
+        if _system_prompt(payload) != GENERAL_PROMPT:
+            raise AssertionError(f"system prompt: {_system_prompt(payload)!r}")
 
 
 class TestWidgetDescriptions:
@@ -336,115 +275,89 @@ class TestWidgetDescriptions:
 
     def test_every_widget_shows_a_description(self, chat: ChatPage) -> None:
         _open_settings(chat)
+        _open_tab(chat, AgentPanelTab.AGENT)
 
-        for tab in PanelTab:
-            _open_tab(chat, tab)
-
-            panel = chat.page.locator(PanelSelector.MODAL.value)
-            text = panel.inner_text()
-            for case in CASES:
-                if case.tab is not tab:
-                    continue
-
-                hint = TEXT.description(case.setting).split(";")[0].split(":")[0]
-                if hint[:40] not in text:
-                    raise AssertionError(
-                        f"{case.setting.value}: description is not shown"
-                    )
+        text = chat.page.locator(PanelSelector.MODAL.value).inner_text()
+        for setting in UserSetting:
+            hint = TEXT.field_description(setting.value).split(";")[0]
+            if hint[:40] not in text:
+                raise AssertionError(f"{setting.value}: description is not shown")
 
 
 class TestAllowedSettingsVisibility:
-    """Панель показывает только вкладки и виджеты, разрешённые профилем."""
+    """Панель показывает только вкладки, разрешённые профилем."""
 
-    def test_general_shows_every_tab(self, chat: ChatPage) -> None:
+    def test_general_shows_the_agent_tab_before_the_first_turn(
+        self, chat: ChatPage
+    ) -> None:
         _open_settings(chat)
-
-        labels = set()
-        tabs = chat.page.locator(PanelSelector.TAB.value)
-        for index in range(tabs.count()):
-            labels.add(tabs.nth(index).inner_text().strip())
 
         # вкладка сессии появляется после первого хода: до него настроек сессии нет
-        expected = {TEXT.tab(tab.value) for tab in PanelTab}
-        expected.add(TEXT.tab(AgentPanelTab.AGENT.value))
-        if labels != expected:
+        labels = _tab_labels(chat)
+        if labels != {TEXT.tab(AgentPanelTab.AGENT.value)}:
             raise AssertionError(f"tabs: {sorted(labels)}")
 
-    def test_general_shows_every_widget(self, chat: ChatPage) -> None:
-        _open_settings(chat)
-
-        for case in CASES:
-            _open_tab(chat, case.tab)
-
-            field = case.setting.value
-            if case.action in (Action.NUMBER, Action.TAGS):
-                selector = PanelSelector.input_of(field)
-            elif case.action is Action.TEXT:
-                selector = PanelSelector.textarea_of(field)
-            elif case.action is Action.SELECT:
-                selector = PanelSelector.trigger_of(field)
-            else:
-                selector = PanelSelector.slider_of(field)
-
+        for setting in UserSetting:
+            selector = PanelSelector.input_of(setting.value)
             if not chat.page.locator(selector).count():
-                raise AssertionError(f"widget {field} is not drawn")
+                raise AssertionError(f"widget {setting.value} is not drawn")
 
-    def test_search_shows_only_allowed_widgets(self, chat: ChatPage) -> None:
+    def test_search_hides_the_agent_tab(self, chat: ChatPage) -> None:
         chat.open_profile_menu()
         chat.select_profile("search")
+        chat.page.wait_for_timeout(1000)
 
+        # search слой пользователя не открывает: до первого хода панели нет
+        if chat.page.locator(PanelSelector.OPEN_MODAL.value).count():
+            raise AssertionError("settings button is drawn for a closed profile")
+
+        _ask_and_wait(chat)
+        chat.page.wait_for_selector(PanelSelector.OPEN_MODAL.value, timeout=15000)
         _open_settings(chat)
-
-        labels = set()
-        tabs = chat.page.locator(PanelSelector.TAB.value)
-        for index in range(tabs.count()):
-            labels.add(tabs.nth(index).inner_text().strip())
-
-        # search разрешает только user_prompt: других вкладок LLM не рисуется
-        expected = {TEXT.tab(PanelTab.PROMPT.value)}
-        if labels != expected:
+        labels = _tab_labels(chat)
+        if labels != {TEXT.tab(AgentPanelTab.SESSION.value)}:
             raise AssertionError(f"tabs: {sorted(labels)}")
-
-        _open_tab(chat, PanelTab.PROMPT)
-        allowed = PanelSelector.textarea_of(UserSetting.USER_PROMPT.value)
-        if not chat.page.locator(allowed).count():
-            raise AssertionError("user prompt input is not drawn")
 
 
 class TestSettingsLifecycle:
     def test_settings_survive_reload(self, chat: ChatPage) -> None:
-        _open_settings(chat)
-        _open_tab(chat, PanelTab.PROMPT)
-        chat.page.fill(
-            PanelSelector.textarea_of(UserSetting.USER_PROMPT.value), "stay here"
-        )
-        _confirm_settings(chat)
+        _save_agent_field(chat, UserSetting.AGENT_MODEL, "fake-model-kept")
 
         chat.page.reload(wait_until="domcontentloaded")
         chat.page.wait_for_selector("#chat-input", timeout=60000)
         chat.page.wait_for_timeout(1000)
 
         _open_settings(chat)
-        _open_tab(chat, PanelTab.PROMPT)
-        value = chat.page.locator(
-            PanelSelector.textarea_of(UserSetting.USER_PROMPT.value)
-        ).input_value()
-        if value != "stay here":
-            raise AssertionError(f"user_prompt after reload: {value!r}")
+        _open_tab(chat, AgentPanelTab.AGENT)
+        value = _value(chat, UserSetting.AGENT_MODEL)
+        if value != "fake-model-kept":
+            raise AssertionError(f"agent_model after reload: {value!r}")
 
 
-class TestSettingsAfterTurn:
-    """Панель настроек остаётся рабочей, когда в треде уже есть переписка."""
+class TestSessionTab:
+    """Вкладка «Сессия»: появляется с первой сессией треда, её выбор пишется в
+    слой чата и применяется перезапуском агента."""
 
-    def test_panel_opens_after_the_first_message(self, chat: ChatPage) -> None:
+    def test_session_tab_appears_after_the_first_message(self, chat: ChatPage) -> None:
         _ask_and_wait(chat)
 
         _open_settings(chat)
-        _open_tab(chat, PanelTab.PROMPT)
+        labels = _tab_labels(chat)
+        expected = {
+            TEXT.tab(AgentPanelTab.AGENT.value),
+            TEXT.tab(AgentPanelTab.SESSION.value),
+        }
+        if labels != expected:
+            raise AssertionError(f"tabs: {sorted(labels)}")
 
-        field = PanelSelector.textarea_of(UserSetting.USER_PROMPT.value)
-        if chat.page.locator(field).count() == 0:
-            raise AssertionError("после сообщения панель открылась без виджетов")
+        _open_tab(chat, AgentPanelTab.SESSION)
+        for field in (SESSION_MODE, SESSION_MODEL):
+            if not chat.page.locator(PanelSelector.trigger_of(field)).count():
+                raise AssertionError(f"widget {field} is not drawn")
+
+        mode = chat.page.locator(PanelSelector.trigger_of(SESSION_MODE))
+        if BYPASS_MODE not in mode.inner_text():
+            raise AssertionError(f"session mode: {mode.inner_text()!r}")
 
     def test_panel_survives_thread_resume(self, chat: ChatPage) -> None:
         """Обновление страницы треда идёт resume'ом: шестерёнка обязана вернуться."""
@@ -454,31 +367,54 @@ class TestSettingsAfterTurn:
         chat.page.wait_for_selector("#chat-input", timeout=60000)
         chat.page.wait_for_selector(PanelSelector.OPEN_MODAL.value, timeout=15000)
 
+        # сессию ещё держит процесс прежнего подключения вкладки: новый процесс —
+        # наблюдатель, вариантов выбора сессии у него нет, вкладка «Агент» на месте
         _open_settings(chat)
-        _open_tab(chat, PanelTab.PROMPT)
-
-        field = PanelSelector.textarea_of(UserSetting.USER_PROMPT.value)
-        if chat.page.locator(field).count() == 0:
+        _open_tab(chat, AgentPanelTab.AGENT)
+        field = PanelSelector.input_of(UserSetting.AGENT_MODEL.value)
+        if not chat.page.locator(field).count():
             raise AssertionError("после resume панель открылась без виджетов")
+
+    def test_changed_mode_is_shown_after_the_restart_and_the_chat_goes_on(
+        self, chat: ChatPage, llm_port: int
+    ) -> None:
+        _ask_and_wait(chat)
+        answers = chat.steps_of(StepKind.ASSISTANT.value).count()
+
+        _open_settings(chat)
+        _open_tab(chat, AgentPanelTab.SESSION)
+        chat.page.locator(PanelSelector.trigger_of(SESSION_MODE)).click()
+        chat.page.get_by_role("option", name=DEFAULT_MODE, exact=True).click()
+        _confirm_settings(chat)
+
+        # перезапуск ленту не воспроизводит: ответов столько же
+        chat.page.wait_for_timeout(3000)
+        if chat.steps_of(StepKind.ASSISTANT.value).count() != answers:
+            raise AssertionError("the feed was replayed by the restart")
+
+        _open_settings(chat)
+        _open_tab(chat, AgentPanelTab.SESSION)
+        mode = chat.page.locator(PanelSelector.trigger_of(SESSION_MODE))
+        expect(mode).to_contain_text(DEFAULT_MODE)
+        chat.page.keyboard.press("Escape")
+
+        _ask_and_wait(chat)
+        payload = _last_request(llm_port)
+        asked = [m for m in payload.get("messages", []) if m.get("role") == "user"]
+        if len(asked) != 2:
+            raise AssertionError(f"the session lost its history: {asked}")
 
 
 class TestSettingsIsolation:
     """Настройки general не текут в search: у каждого профиля свои."""
 
     def test_other_profile_keeps_its_own_settings(
-        self, chat: ChatPage, llm_port: int, llm_meta: LlmMetaReader
+        self, chat: ChatPage, llm_port: int, user_layer: UserLayerReader
     ) -> None:
-        _open_settings(chat)
-        _open_tab(chat, PanelTab.PROMPT)
-        chat.page.fill(
-            PanelSelector.textarea_of(UserSetting.USER_PROMPT.value),
-            "General-only instruction",
-        )
-        _confirm_settings(chat)
+        _save_agent_field(chat, UserSetting.AGENT_MODEL, "fake-model-general-only")
 
-        saved = llm_meta(ADMIN_LOGIN)
-        if set(saved) != {"general"}:
-            raise AssertionError(f"meta.llm keys: {sorted(saved)}")
+        if user_layer(ADMIN_LOGIN, "search"):
+            raise AssertionError(f"search layer: {user_layer(ADMIN_LOGIN, 'search')}")
 
         chat.open_profile_menu()
         chat.select_profile("search")
@@ -497,8 +433,8 @@ class TestSettingsIsolation:
 
 
 class TestOtherTabs:
-    """Настройки общие на пользователя: другая вкладка того же профиля видит их в
-    панели без перезагрузки, а её новый чат идёт уже с ними.
+    """Слой пользователя общий на пользователя: другая вкладка того же профиля
+    видит его в панели без перезагрузки, а её новый чат идёт уже с ним.
     """
 
     def test_other_tab_agent_uses_settings_saved_elsewhere(
@@ -507,30 +443,24 @@ class TestOtherTabs:
         open_chat: Any,
         stand: StandProcess,
         llm_port: int,
-        llm_meta: LlmMetaReader,
+        user_layer: UserLayerReader,
     ) -> None:
         other: ChatPage = open_chat(stand)
 
-        _open_settings(chat)
-        _open_tab(chat, PanelTab.PROMPT)
-        chat.page.fill(
-            PanelSelector.textarea_of(UserSetting.USER_PROMPT.value),
-            "Sign every answer",
-        )
-        _confirm_settings(chat)
-        assert llm_meta(ADMIN_LOGIN).get("general") == {
-            "user_prompt": "Sign every answer"
-        }
+        _save_agent_field(chat, UserSetting.AGENT_MODEL, "fake-model-shared")
+        assert user_layer(ADMIN_LOGIN, PROFILE) == {"model": "fake-model-shared"}
 
         # панель второй вкладки обновилась по сообщению шины
         _open_settings(other)
-        _open_tab(other, PanelTab.PROMPT)
+        _open_tab(other, AgentPanelTab.AGENT)
         expect(
-            other.page.locator(PanelSelector.textarea_of(UserSetting.USER_PROMPT.value))
-        ).to_have_value("Sign every answer")
+            other.page.locator(PanelSelector.input_of(UserSetting.AGENT_MODEL.value))
+        ).to_have_value("fake-model-shared")
+        other.page.keyboard.press("Escape")
 
-        # новый чат второй вкладки берёт слой пользователя: промпт с добавкой
+        # новый чат второй вкладки берёт слой пользователя
         _new_chat(other)
         _ask_and_wait(other)
-        prompt = _system_prompt(_last_request(llm_port))
-        assert prompt == f"{GENERAL_PROMPT}\n\nSign every answer"
+        payload = _last_request(llm_port)
+        assert payload.get("model") == "fake-model-shared"
+        assert _system_prompt(payload) == GENERAL_PROMPT
