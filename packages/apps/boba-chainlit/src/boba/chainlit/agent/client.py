@@ -79,8 +79,8 @@ from acp.transports import default_environment
 from acp.utils import notify_model, request_model, request_model_from_dict
 from pydantic import BaseModel, ValidationError
 
-from boba.chainlit.acp.settings import AgentWorkdir, WorkdirFile
-from boba.chainlit.acp.tokens import SessionServer
+from boba.chainlit.agent.settings import AgentWorkdir, WorkdirFile
+from boba.chainlit.agent.tokens import SessionServer
 
 __all__ = [
     "AcpClientError",

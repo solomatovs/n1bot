@@ -21,7 +21,7 @@ import pytest
 from chat_ui import UserLayerReader
 from playwright.sync_api import expect
 
-from boba.chainlit.acp.panel import AgentPanelTab
+from boba.chainlit.agent.panel import AgentPanelTab
 from boba.chainlit.chat.panel_text import PanelText
 from boba.chat.profiles import UserSetting
 from boba.stand.ui.chat_page import ChatPage, StepKind

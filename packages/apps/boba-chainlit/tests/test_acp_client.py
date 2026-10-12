@@ -22,13 +22,13 @@ from acp.schema import (
 )
 from acp_stand import AgentHistoryStand, AgentStand, FakeModel, RecordingUpdates
 
-from boba.chainlit.acp.client import (
+from boba.chainlit.agent.client import (
     AgentClient,
     AgentProcess,
     AgentRequestError,
     JsonRpcCode,
 )
-from boba.chainlit.acp.settings import AgentWorkdirs, SettingsFileBuilder
+from boba.chainlit.agent.settings import AgentWorkdirs, SettingsFileBuilder
 from boba.stand.site import Stand
 from boba.stand.ui.fake_llm import ScenarioName
 

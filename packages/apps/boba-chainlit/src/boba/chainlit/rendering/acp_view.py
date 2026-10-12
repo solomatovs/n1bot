@@ -35,7 +35,7 @@ from acp.schema import (
 from acp.schema import ContentChunk as AcpContentChunk
 from pydantic import BaseModel, ConfigDict, TypeAdapter
 
-from boba.chainlit.acp.client import SessionUpdate
+from boba.chainlit.agent.client import SessionUpdate
 from boba.chainlit.rendering.chat_view import ChatView, StepText
 from boba.toolkit.calls import CallViews
 from boba.toolkit.chain import StreamPlanError

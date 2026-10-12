@@ -50,7 +50,7 @@ from test_cli_acp import (
     call,
 )
 
-from boba.cli.acp import AcpMethod, StopReasonName
+from boba.cli.acp_server import AcpMethod, StopReasonName
 
 pytestmark = pytest.mark.anyio
 

@@ -14,7 +14,7 @@ import httpx
 from omegaconf import DictConfig
 
 from boba.auth import JwtTokens
-from boba.chainlit.acp.chat import (
+from boba.chainlit.agent.chat import (
     AgentLauncher,
     AgentSessionMeta,
     AgentSettingsChanges,
@@ -22,9 +22,9 @@ from boba.chainlit.acp.chat import (
     ThreadAgentsIndex,
     ThreadDeleter,
 )
-from boba.chainlit.acp.config import AgentConfig
-from boba.chainlit.acp.feed import AgentFeeds, BusParts, TabSurfaces
-from boba.chainlit.acp.server import (
+from boba.chainlit.agent.config import AgentConfig
+from boba.chainlit.agent.feed import AgentFeeds, BusParts, TabSurfaces
+from boba.chainlit.agent.server import (
     ChatCallers,
     ChatCallMiddleware,
     ChatMcpServer,
@@ -33,12 +33,12 @@ from boba.chainlit.acp.server import (
     HookSealing,
     PreToolUseHandler,
 )
-from boba.chainlit.acp.settings import (
+from boba.chainlit.agent.settings import (
     AgentSettingsLayers,
     AgentSettingsTable,
     ProfileModelSpecs,
 )
-from boba.chainlit.acp.tokens import McpAccessTokens, SessionServers
+from boba.chainlit.agent.tokens import McpAccessTokens, SessionServers
 from boba.chainlit.canvas.remote import RemoteJournals
 from boba.chainlit.data import PostgresDataLayer
 from boba.chainlit.data.remote_storage import FileOwners, RemoteStorageClient

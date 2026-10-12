@@ -20,8 +20,8 @@ from typing import Any, ClassVar
 from acp.schema import SessionConfigOptionSelect
 from pydantic import SecretStr
 
-from boba.chainlit.acp.chat import ConfigCategory, SessionOptions
-from boba.chainlit.acp.settings import (
+from boba.chainlit.agent.chat import ConfigCategory, SessionOptions
+from boba.chainlit.agent.settings import (
     AgentSettingsChange,
     AgentSettingsError,
     ChatAgentSettings,

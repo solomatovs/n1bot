@@ -59,7 +59,7 @@ from boba.agent.hooks import (
     PreToolUseEvent,
 )
 from boba.cancellation import RunCancellation, StopReason
-from boba.chainlit.acp.config import ChatMcpConfig, HookConfig
+from boba.chainlit.agent.config import ChatMcpConfig, HookConfig
 from boba.chat.profiles import ChatProfiles
 from boba.connection_broker.user_connections import ArmedConnections
 from boba.connections.marks import ConnectionRefusal

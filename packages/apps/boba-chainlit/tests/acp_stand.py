@@ -20,8 +20,8 @@ from acp.schema import (
 from acp.schema import ContentChunk as AcpContentChunk
 from pydantic import SecretStr
 
-from boba.chainlit.acp.client import AgentCommand, SessionUpdate, SessionUpdates
-from boba.chainlit.acp.config import (
+from boba.chainlit.agent.client import AgentCommand, SessionUpdate, SessionUpdates
+from boba.chainlit.agent.config import (
     AgentCommandConfig,
     AgentConfig,
     ChatMcpConfig,
@@ -29,7 +29,7 @@ from boba.chainlit.acp.config import (
     ModelLimitsConfig,
     PostgresAgentHistory,
 )
-from boba.chainlit.acp.settings import (
+from boba.chainlit.agent.settings import (
     AgentModel,
     AgentProvider,
     ChatAgentSettings,

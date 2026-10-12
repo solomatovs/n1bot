@@ -24,10 +24,10 @@ from chainlit.context import ChainlitContext, context_var
 from chainlit.step import StepDict
 from pydantic import SecretStr
 
-from boba.chainlit.acp.chat import SessionOptions
-from boba.chainlit.acp.client import SessionUpdate
-from boba.chainlit.acp.panel import AgentPanel
-from boba.chainlit.acp.settings import (
+from boba.chainlit.agent.chat import SessionOptions
+from boba.chainlit.agent.client import SessionUpdate
+from boba.chainlit.agent.panel import AgentPanel
+from boba.chainlit.agent.settings import (
     AgentModel,
     AgentProvider,
     AgentSettingsError,

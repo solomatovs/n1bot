@@ -27,8 +27,8 @@ from mcp.shared.auth_utils import resource_url_from_server_url
 from pydantic import SecretStr, ValidationError
 
 from boba.auth.proxy import ProxyAssertions
-from boba.chainlit.acp.config import ChatMcpConfig
-from boba.chainlit.acp.settings import AuthHeader
+from boba.chainlit.agent.config import ChatMcpConfig
+from boba.chainlit.agent.settings import AuthHeader
 from boba.mcp_client.client import (
     BearerAuth,
     HttpEndpoint,

@@ -26,9 +26,9 @@ from psycopg import sql
 from psycopg.types.json import Jsonb
 from pydantic import SecretStr, ValidationError
 
-from boba.chainlit.acp.client import AgentClient, AgentProcess
-from boba.chainlit.acp.config import PostgresAgentHistory
-from boba.chainlit.acp.settings import (
+from boba.chainlit.agent.client import AgentClient, AgentProcess
+from boba.chainlit.agent.config import PostgresAgentHistory
+from boba.chainlit.agent.settings import (
     AgentSettingsChange,
     AgentSettingsError,
     AgentSettingsLayers,

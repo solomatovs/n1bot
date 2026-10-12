@@ -15,7 +15,7 @@ from pydantic import (
 
 from boba.access import RoleConfig
 from boba.auth.config import AuthConfig
-from boba.chainlit.acp.config import AgentConfig
+from boba.chainlit.agent.config import AgentConfig
 from boba.chat.profiles import ChatProfileConfig
 from boba.krb import KerberosWorkspaceConfig
 from boba.mcp_client.client import McpServersConfig
