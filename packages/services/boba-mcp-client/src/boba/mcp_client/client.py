@@ -218,6 +218,11 @@ class McpAuthEntry(BaseModel):
     PERSONAL: ClassVar[bool] = False
     """Подключение своё у каждого пользователя клиента."""
 
+    BOBA_SERVICE: ClassVar[bool] = False
+    """Вход сервиса boba: сервер с таким входом принимает соединения
+    пользователя запечатанными, и хозяин клиента ставит на его вызовы хук
+    запечатывания."""
+
     def httpx_auth(self, resource: str) -> httpx2.Auth | None:
         """Авторизация запросов к серверу по адресу resource; None — запросы
         идут без неё.
@@ -474,6 +479,8 @@ class LocalAuth(McpAuthEntry):
     в обновлении отказал, вход повторяется целиком.
     """
 
+    BOBA_SERVICE: ClassVar[bool] = True
+
     auth: Literal["local"] = "local"
     login: str = Field(min_length=1)
     password: SecretStr
@@ -504,6 +511,7 @@ class ProxyAuth(McpAuthEntry):
     """
 
     PERSONAL: ClassVar[bool] = True
+    BOBA_SERVICE: ClassVar[bool] = True
 
     auth: Literal["proxy"] = "proxy"
     issuer: HttpLocation

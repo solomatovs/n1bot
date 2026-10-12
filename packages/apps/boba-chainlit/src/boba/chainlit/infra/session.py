@@ -49,6 +49,7 @@ from chainlit.session import WebsocketSession, ws_sessions_id
 __all__ = [
     "ChainlitSession",
     "ChainlitSessions",
+    "LiveSignIn",
     "SessionContainers",
     "current_session",
     "session_source_ref",
@@ -57,7 +58,27 @@ __all__ = [
 logger = logging.getLogger(__name__)
 
 
-class ChainlitSession(Session):
+class LiveSignIn(Protocol):
+    """Живой вход пользователя: то, что его сессия несёт сейчас.
+
+    Реализует ChainlitSession — обёртка сокет-сессии вкладки, чей токен
+    обновление сессии заменяет на месте. Держатель ключа процесса агента
+    (KeyHolder) читает через него роли и секреты входа в момент вызова, а
+    не на момент запуска агента: делегированный билет kerberos в токене
+    обновляется вместе с ним.
+    """
+
+    @abstractmethod
+    def signed_in(self) -> SessionClaims:
+        """Вход, каким его несёт токен сессии сейчас.
+
+        Ошибки:
+        AuthenticationError — токена нет либо он не принят (истёк, чужое
+            поколение сессий).
+        """
+
+
+class ChainlitSession(Session, LiveSignIn):
     """Сессия chainlit: доменный контракт плюс то, что нужно инфраструктуре.
 
     Оборачивает объект сессии, а не контекст: одна и та же обёртка годится

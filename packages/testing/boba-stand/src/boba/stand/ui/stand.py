@@ -30,6 +30,7 @@ from boba.stand.ui.toml_text import TomlText
 from boba.toolkit.mcp_names import McpToolNames
 
 __all__ = [
+    "StandAgentAuth",
     "StandApp",
     "StandConfig",
     "StandError",
@@ -112,6 +113,14 @@ class StandUrl(StrEnum):
     @classmethod
     def of(cls, port: int, path: str = "") -> str:
         return f"{cls.SCHEME}://{cls.HOST}:{port}{path}"
+
+
+class StandAgentAuth(StrEnum):
+    """Способ входа агента чата на сервис boba-mcp стенда: значение ключа
+    auth секции [mcp.servers.<имя>.endpoint] чата."""
+
+    PROXY = "proxy"
+    LOCAL = "local"
 
 
 class StandAuth(StrEnum):
@@ -338,6 +347,9 @@ class ServiceStand(StandService):
     plugins: tuple[str, ...] = ()
     """Плагины сверх набора стенда без песочницы: тест с соединениями
     пользователя включает pg, его тела идут процессами хоста."""
+    agent_auth: StandAgentAuth = StandAgentAuth.PROXY
+    """Каким входом чат и его агент ходят на сервис: proxy — от имени
+    пользователя вкладки, local — учёткой агента AGENT_LOGIN."""
 
     PROXY_SECRET: ClassVar[str] = "stand-proxy-secret"  # noqa: S105 — ключ стенда
     """Ключ утверждений входа proxy: его знают сервис и чат стенда."""
@@ -345,6 +357,10 @@ class ServiceStand(StandService):
     LOCAL_LOGIN: ClassVar[str] = "carol"
     LOCAL_PASSWORD: ClassVar[str] = "carol-pw"  # noqa: S105 — учётка стенда
     """Человек стенда для входа формой (local): роль ADM."""
+
+    AGENT_LOGIN: ClassVar[str] = "agent"
+    AGENT_PASSWORD: ClassVar[str] = "agent-pw"  # noqa: S105 — учётка стенда
+    """Учётка агента для входа local без человека: роль ADM."""
 
     CLIENT_ID: ClassVar[str] = "stand-chat"
     CLIENT_SECRET: ClassVar[str] = "stand-client-secret"  # noqa: S105 — ключ стенда
@@ -394,15 +410,28 @@ class ServiceStand(StandService):
                 "transport": "streamable-http",
                 **location,
                 "path": f"/mcp/{endpoint}",
-                "auth": {
-                    "auth": "proxy",
-                    "issuer": {**location, "path": "/"},
-                    "client_id": self.CLIENT_ID,
-                    "client_secret": self.CLIENT_SECRET,
-                    "secret": self.PROXY_SECRET,
-                },
+                "auth": self._auth(location),
             },
         }
+
+    def _auth(self, location: Mapping[str, Any]) -> dict[str, Any]:
+        """Секция auth endpoint'а по способу входа агента стенда."""
+        entries: dict[StandAgentAuth, dict[str, Any]] = {
+            StandAgentAuth.PROXY: {
+                "auth": StandAgentAuth.PROXY.value,
+                "issuer": {**location, "path": "/"},
+                "client_id": self.CLIENT_ID,
+                "client_secret": self.CLIENT_SECRET,
+                "secret": self.PROXY_SECRET,
+            },
+            StandAgentAuth.LOCAL: {
+                "auth": StandAgentAuth.LOCAL.value,
+                "login": self.AGENT_LOGIN,
+                "password": self.AGENT_PASSWORD,
+            },
+        }
+
+        return entries[self.agent_auth]
 
     def write(self) -> None:
         self.workdir.mkdir(parents=True, exist_ok=True)
@@ -444,9 +473,19 @@ class ServiceStand(StandService):
         }
         doc["auth"]["local"] = {
             "type": "local",
-            "users": {self.LOCAL_LOGIN: self.LOCAL_PASSWORD},
+            "users": {
+                self.LOCAL_LOGIN: self.LOCAL_PASSWORD,
+                self.AGENT_LOGIN: self.AGENT_PASSWORD,
+            },
             "require_roles": True,
-            "roles": {"local": {"mapping": {self.LOCAL_LOGIN: ["ADM"]}}},
+            "roles": {
+                "local": {
+                    "mapping": {
+                        self.LOCAL_LOGIN: ["ADM"],
+                        self.AGENT_LOGIN: ["ADM"],
+                    }
+                }
+            },
         }
         doc["app"]["auth"] = ["${auth.local}", "${auth.proxy}"]
         doc["session"]["generation"] = self.generation
@@ -593,6 +632,11 @@ class StandConfig(StandService):
 
     service_plugins: tuple[str, ...] = ()
     """Плагины сервиса boba-mcp стенда сверх набора без песочницы."""
+    agent_auth: StandAgentAuth = StandAgentAuth.PROXY
+    """Способ входа чата и его агента на сервис boba-mcp стенда."""
+    service_token_ttl_sec: int = 300
+    """Срок токена доступа сервиса стенда: коротким тест проверяет, что
+    агент обновляет токен сам."""
     messaging: str = ""
     """Провайдер шины [messaging]: пусто — как в конфиге отладки (память
     процесса); postgres — шина в базе стенда, общая у двух инстансов."""
@@ -616,6 +660,8 @@ class StandConfig(StandService):
             db_name=self.db_name,
             sandbox=self.sandbox,
             plugins=self.service_plugins,
+            agent_auth=self.agent_auth,
+            session_ttl_sec=self.service_token_ttl_sec,
         )
 
     @property
