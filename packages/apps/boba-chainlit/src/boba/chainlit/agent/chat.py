@@ -37,7 +37,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 import chainlit as cl
 from boba.canvas.keys import ElementProps
-from boba.chainlit.acp.client import (
+from boba.chainlit.agent.client import (
     AgentClient,
     AgentCommand,
     AgentProcess,
@@ -47,8 +47,8 @@ from boba.chainlit.acp.client import (
     SessionUpdate,
     SessionUpdates,
 )
-from boba.chainlit.acp.config import AgentConfig
-from boba.chainlit.acp.settings import (
+from boba.chainlit.agent.config import AgentConfig
+from boba.chainlit.agent.settings import (
     AgentSettingsChange,
     AgentSettingsLayers,
     AgentSettingsTable,
@@ -57,7 +57,7 @@ from boba.chainlit.acp.settings import (
     HistoryEnvironment,
     SettingsFileBuilder,
 )
-from boba.chainlit.acp.tokens import SessionServer, SessionServers
+from boba.chainlit.agent.tokens import SessionServer, SessionServers
 from boba.chainlit.chat.feed import QuestionBody, ShownElement
 from boba.chainlit.data.data_layer import ThreadDeletionListener
 from boba.chainlit.domain.fields import ThreadMetaField

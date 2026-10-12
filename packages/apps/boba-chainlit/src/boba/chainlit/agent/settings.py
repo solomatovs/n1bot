@@ -39,7 +39,7 @@ from pydantic import (
 )
 from pydantic.alias_generators import to_camel
 
-from boba.chainlit.acp.config import (
+from boba.chainlit.agent.config import (
     AgentConfig,
     AgentHistoryConfig,
     AgentHistoryKind,

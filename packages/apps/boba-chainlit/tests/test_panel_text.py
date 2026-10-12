@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import pytest
 
-from boba.chainlit.acp.panel import AgentPanelTab
+from boba.chainlit.agent.panel import AgentPanelTab
 from boba.chainlit.chat.panel_text import PanelText, PanelTextError
 from boba.chainlit.infra.session import current_session
 from boba.chat.profiles import UserSetting
