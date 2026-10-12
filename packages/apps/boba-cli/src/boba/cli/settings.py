@@ -7,17 +7,20 @@
 `env`, `hooks`, серверы MCP) сливаются по именам, списки правил
 объединяются. Итог — одна модель EffectiveSettings, из которой строятся
 профиль модели, пределы, режим, хуки и серверы MCP для ядра. Серверы MCP
-из `.mcp.json` проекта подключаются к каждой сессии; серверы с секретами
-сессия получает по протоколу (`session/new`), и их модель — тот же
-McpServerJson.
-Секреты — ключ провайдера `apiKey` и строка подключения `dsn` — лежат
-значениями в файле настроек; такой файл принимается только с правами не
-шире 0600, а в строке аргумента секреты запрещены. Чтение секрета по имени
+из ключа `mcpServers` слоёв настроек и из `.mcp.json` проекта подключаются
+к каждой сессии; серверы сессии по протоколу (`session/new`) приходят той
+же моделью McpServerJson и побеждают по имени. Способ входа на сервер —
+секция `auth` его записи (McpAuth клиента MCP): токен агент получает и
+обновляет сам.
+Секреты — ключ провайдера `apiKey`, строка подключения `dsn` и секреты
+секции `auth` сервера MCP (`token`, `password`, `clientSecret`, `secret`) —
+лежат значениями в файле настроек; такой файл принимается только с правами
+не шире 0600, а в строке аргумента секреты запрещены. Чтение секрета по имени
 переменной (`apiKeyEnv`, `dsnEnv`) остаётся для ручного запуска; окружение
 процесса читается только здесь, минимальный профиль без файлов —
 из `BOBA_LLM_*`. Режим разрешений, право на обход и серверы сессии в
 аргументах не передаются: режим — ключ `permissions` файла, серверы —
-протокол.
+ключ `mcpServers` файла либо протокол.
 
 Ошибки:
 SettingsError — файл не прочитан или не разобран, слой не проходит модель,
@@ -64,6 +67,7 @@ from boba.llm.providers import ChatModelConfig, LlmProvidersError
 from boba.mcp_client.client import (
     BearerAuth,
     HttpEndpoint,
+    McpAuth,
     McpServerConfig,
     NoAuth,
     StdioCommand,
@@ -156,6 +160,8 @@ class SecretKey(StrEnum):
     PROVIDER = "provider"
     API_KEY = "apiKey"
     DSN = "dsn"
+    MCP_SERVERS = "mcpServers"
+    AUTH = "auth"
 
 
 class HookEvent(StrEnum):
@@ -411,7 +417,10 @@ class McpClientJson(SettingsModel):
 
 
 class McpServerJson(SettingsModel):
-    """Сервер в `.mcp.json` формата Claude Code; ключи файла — как там."""
+    """Запись сервера MCP: в `.mcp.json` проекта, в ключе `mcpServers` слоя
+    настроек и в `session/new` протокола. Ключи `type`, `command`, `args`,
+    `env`, `url`, `headers` — формата `.mcp.json`; `auth` — способ входа на
+    http-сервер (McpAuth клиента MCP), None — вход решают заголовки."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -421,6 +430,15 @@ class McpServerJson(SettingsModel):
     env: Mapping[str, str] = Field(default_factory=dict)
     url: str | None = None
     headers: Mapping[str, str] = Field(default_factory=dict)
+    auth: McpAuth | None = None
+
+    def secrets(self) -> Iterator[str]:
+        """Ключи записи, под которыми лежат секреты способа входа."""
+        if self.auth is None:
+            return
+
+        for key in self.auth.secret_keys():
+            yield f"{SecretKey.AUTH.value}.{key}"
 
 
 class McpJson(SettingsModel):
@@ -441,6 +459,7 @@ class SettingsLayer(SettingsModel):
     compaction: CompactionJson | None = None
     limits: LimitsJson | None = None
     mcp: McpClientJson | None = None
+    mcp_servers: Mapping[str, McpServerJson] = Field(default_factory=dict)
     hooks: HooksSettings = Field(default_factory=dict)
     env: Mapping[str, str] = Field(default_factory=dict)
     system_prompt_file: str | None = None
@@ -464,6 +483,10 @@ class SettingsLayer(SettingsModel):
                 continue
 
             yield f"models.{name}.{SecretKey.PROVIDER.value}.{SecretKey.API_KEY.value}"
+
+        for name, server in self.mcp_servers.items():
+            for key in server.secrets():
+                yield f"{SecretKey.MCP_SERVERS.value}.{name}.{key}"
 
 
 class SecretsGuard:
@@ -554,10 +577,11 @@ class Arguments:
 
 class LayerMerge:
     """Слияние слоёв: поле побеждает полем, таблицы — по ключам, списки
-    объединяются без повторов. Секция с дискриминатором `kind` (история)
-    при смене вида заменяется целиком: поля разных видов не смешиваются."""
+    объединяются без повторов. Секция с дискриминатором — `kind` истории,
+    `auth` способа входа сервера MCP — при смене вида заменяется целиком:
+    поля разных видов не смешиваются."""
 
-    KIND: ClassVar[str] = "kind"
+    DISCRIMINATORS: ClassVar[tuple[str, ...]] = ("kind", "auth")
 
     def merged(self, lower: SettingsLayer, upper: SettingsLayer) -> SettingsLayer:
         # режим python: секреты остаются SecretStr, а не маской из режима json
@@ -587,12 +611,26 @@ class LayerMerge:
         return result
 
     def _kind_changed(self, below: Mapping[str, Any], above: Mapping[str, Any]) -> bool:
-        kind_below = below.get(self.KIND)
+        for key in self.DISCRIMINATORS:
+            if self._differs(below.get(key), above.get(key)):
+                return True
+
+        return False
+
+    @staticmethod
+    def _differs(kind_below: Any, kind_above: Any) -> bool:
+        """Вид секции сменился; ключ `auth` записи сервера — сама секция
+        входа, а не её вид, и сравнивается глубже."""
         if kind_below is None:
             return False
 
-        kind_above = above.get(self.KIND)
         if kind_above is None:
+            return False
+
+        if isinstance(kind_below, Mapping):
+            return False
+
+        if isinstance(kind_above, Mapping):
             return False
 
         return kind_below != kind_above
@@ -885,7 +923,9 @@ class PostgresBuilder:
 
 
 class McpServerBuilder:
-    """McpServerConfig клиента из записи `.mcp.json` и сроков из настроек."""
+    """McpServerConfig клиента из записи сервера и сроков из настроек. Вход
+    на http-сервер — секция `auth` записи; без неё — заголовок
+    `Authorization: Bearer` (так серверы приходят по протоколу)."""
 
     BEARER_PREFIX: ClassVar[str] = "bearer "
     AUTHORIZATION: ClassVar[str] = "authorization"
@@ -947,11 +987,26 @@ class McpServerBuilder:
             host=url.host,
             port=url.port,
             path=path,
-            auth=self._auth(name, server.headers),
+            auth=self._auth(name, server),
         )
 
-    def _auth(self, name: str, headers: Mapping[str, str]) -> NoAuth | BearerAuth:
-        auth: NoAuth | BearerAuth = NoAuth()
+    def _auth(self, name: str, server: McpServerJson) -> McpAuth:
+        declared = server.auth
+        if declared is None:
+            return self._header_auth(name, server.headers)
+
+        if server.headers:
+            msg = (
+                f"MCP server '{name}' sets both 'auth' and 'headers' "
+                f"({sorted(server.headers)}). Keep one: 'auth' describes how the "
+                "agent signs in, a header carries a ready token."
+            )
+            raise SettingsError(msg)
+
+        return declared
+
+    def _header_auth(self, name: str, headers: Mapping[str, str]) -> McpAuth:
+        auth: McpAuth = NoAuth()
         for header, value in headers.items():
             if header.lower() != self.AUTHORIZATION:
                 msg = (
@@ -1151,7 +1206,7 @@ class Settings:
             compaction=compaction,
             limits=limits,
             mcp=mcp,
-            mcp_servers=self._servers(mcp),
+            mcp_servers=self._servers(mcp, layer.mcp_servers),
             hooks=layer.hooks,
             env=layer.env,
             system_prompt=list(self._system_prompt(layer)),
@@ -1193,8 +1248,11 @@ class Settings:
                 "the appended system prompt",
             ).strip()
 
-    def _servers(self, client: McpClientJson) -> dict[str, McpServerJson]:
-        """Серверы `.mcp.json` проекта, прошедшие выбор `mcp` настроек.
+    def _servers(
+        self, client: McpClientJson, declared: Mapping[str, McpServerJson]
+    ) -> dict[str, McpServerJson]:
+        """Серверы сессий процесса: `.mcp.json` проекта, прошедшие выбор `mcp`
+        настроек, и серверы ключа `mcpServers` слоёв — они побеждают по имени.
 
         Ошибки:
         SettingsError — файл не разобран либо имя сервера не годится для
@@ -1215,15 +1273,24 @@ class Settings:
             if enabled is not None and name not in enabled:
                 continue
 
-            try:
-                self._names.checked_server(name)
-            except McpToolNameError as exc:
-                msg = f".mcp.json at {project} names a server that is refused: {exc}"
-                raise SettingsError(msg) from exc
+            self._named(name, f".mcp.json at {project}")
+            chosen[name] = server
 
+        for name, server in declared.items():
+            self._named(name, "'mcpServers' of the settings")
             chosen[name] = server
 
         return chosen
+
+    def _named(self, name: str, source: str) -> None:
+        """Ошибки:
+        SettingsError — имя сервера не годится для полных имён инструментов.
+        """
+        try:
+            self._names.checked_server(name)
+        except McpToolNameError as exc:
+            msg = f"{source} names a server that is refused: {exc}"
+            raise SettingsError(msg) from exc
 
     def _mcp_json(self, text: str, source: str) -> McpJson:
         document = self._json.parse(text, ".mcp.json", source)
