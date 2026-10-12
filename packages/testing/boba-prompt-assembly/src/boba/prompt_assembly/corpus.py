@@ -21,7 +21,12 @@ from pathlib import Path
 from typing import Iterator, Mapping, Sequence
 
 from boba.prompt_assembly.records import Encoding, JournalAddress, Json
-from boba.prompt_assembly.session import CompactionSettings, OptionsReader, SessionError, SessionOptions
+from boba.prompt_assembly.session import (
+    CompactionSettings,
+    OptionsReader,
+    SessionError,
+    SessionOptions,
+)
 
 
 class VerifyError(Exception):
@@ -138,11 +143,15 @@ class ManifestReader:
             raise VerifyError(f"reading corpus manifest {path} failed: {exc}") from exc
 
         if not isinstance(document, dict):
-            raise VerifyError(f"{path}: corpus manifest expects a JSON object, got {type(document).__name__}")
+            raise VerifyError(
+                f"{path}: corpus manifest expects a JSON object, got {type(document).__name__}"
+            )
 
         root = document.get(Field.PROJECTS_ROOT)
         if not isinstance(root, str) or not root:
-            raise VerifyError(f"{path}: {Field.PROJECTS_ROOT.value} expects a non-empty path string, got {root!r}")
+            raise VerifyError(
+                f"{path}: {Field.PROJECTS_ROOT.value} expects a non-empty path string, got {root!r}"
+            )
 
         projects = Path(root)
         if root.startswith(Field.HOME):
@@ -150,16 +159,22 @@ class ManifestReader:
 
         journals = document.get(Field.JOURNALS)
         if not isinstance(journals, list):
-            raise VerifyError(f"{path}: {Field.JOURNALS.value} expects a list of journal objects, got {journals!r}")
+            raise VerifyError(
+                f"{path}: {Field.JOURNALS.value} expects a list of journal objects, got {journals!r}"
+            )
 
         mode = document.get(Field.TOOL_CLEARING_MODE)
         if not isinstance(mode, str):
-            raise VerifyError(f"{path}: {Field.TOOL_CLEARING_MODE.value} expects a string, got {mode!r}")
+            raise VerifyError(
+                f"{path}: {Field.TOOL_CLEARING_MODE.value} expects a string, got {mode!r}"
+            )
 
         entries: list[CorpusEntry] = []
         for item in journals:
             if not isinstance(item, dict):
-                raise VerifyError(f"{path}: every journal expects an object, got {item!r}")
+                raise VerifyError(
+                    f"{path}: every journal expects an object, got {item!r}"
+                )
             entries.append(self._entry(item, path, projects))
 
         return CorpusManifest(
@@ -170,12 +185,16 @@ class ManifestReader:
             entries=tuple(entries),
         )
 
-    def options(self, manifest: CorpusManifest, entry: CorpusEntry, profile: str) -> SessionOptions:
+    def options(
+        self, manifest: CorpusManifest, entry: CorpusEntry, profile: str
+    ) -> SessionOptions:
         """Внешние параметры сессии над журналом корпуса для набора profile."""
         try:
             base = self._options.profile(profile)
         except SessionError as exc:
-            raise VerifyError(f"{manifest.path}: journal {entry.address.label}: {exc}") from exc
+            raise VerifyError(
+                f"{manifest.path}: journal {entry.address.label}: {exc}"
+            ) from exc
 
         limits = manifest.limits
         spec = entry.compaction
@@ -189,12 +208,21 @@ class ManifestReader:
                 blocking_override=spec.blocking_override,
             )
 
-        return self._options.combine(base, entry.launch.echo_api_block_order, manifest.tool_clearing_mode, limits)
+        return self._options.combine(
+            base, entry.launch.echo_api_block_order, manifest.tool_clearing_mode, limits
+        )
 
-    def _entry(self, item: Mapping[str, Json], path: Path, projects: Path) -> CorpusEntry:
+    def _entry(
+        self, item: Mapping[str, Json], path: Path, projects: Path
+    ) -> CorpusEntry:
         project = item.get(Field.PROJECT)
         session = item.get(Field.SESSION)
-        if not isinstance(project, str) or not project or not isinstance(session, str) or not session:
+        if (
+            not isinstance(project, str)
+            or not project
+            or not isinstance(session, str)
+            or not session
+        ):
             raise VerifyError(
                 f"{path}: a journal expects {Field.PROJECT.value} and {Field.SESSION.value} as non-empty strings, "
                 f"got {project!r} and {session!r}"
@@ -203,11 +231,15 @@ class ManifestReader:
         address = JournalAddress(project=project, session=session)
         scenario = item.get(Field.SCENARIO)
         if not isinstance(scenario, str):
-            raise VerifyError(f"{path}: journal {address.label} expects {Field.SCENARIO.value} as a string, got {scenario!r}")
+            raise VerifyError(
+                f"{path}: journal {address.label} expects {Field.SCENARIO.value} as a string, got {scenario!r}"
+            )
 
         case = item.get(Field.LOADER_CASE, "")
         if not isinstance(case, str):
-            raise VerifyError(f"{path}: journal {address.label} expects {Field.LOADER_CASE.value} as a string, got {case!r}")
+            raise VerifyError(
+                f"{path}: journal {address.label} expects {Field.LOADER_CASE.value} as a string, got {case!r}"
+            )
 
         compaction: CompactionSpec | None = None
         if Field.COMPACTION in item:
@@ -225,24 +257,34 @@ class ManifestReader:
 
     def _launch(self, value: Json, path: Path, address: JournalAddress) -> LaunchSpec:
         if not isinstance(value, dict):
-            raise VerifyError(f"{path}: journal {address.label} expects {Field.LAUNCH.value} as an object, got {value!r}")
+            raise VerifyError(
+                f"{path}: journal {address.label} expects {Field.LAUNCH.value} as an object, got {value!r}"
+            )
 
         profile = value.get(Field.PROFILE)
         if not isinstance(profile, str) or not profile:
-            raise VerifyError(f"{path}: journal {address.label} expects launch.profile as a non-empty string, got {profile!r}")
+            raise VerifyError(
+                f"{path}: journal {address.label} expects launch.profile as a non-empty string, got {profile!r}"
+            )
 
         echo = value.get(Field.ECHO, False)
         if not isinstance(echo, bool):
-            raise VerifyError(f"{path}: journal {address.label} expects launch.{Field.ECHO.value} as true or false, got {echo!r}")
+            raise VerifyError(
+                f"{path}: journal {address.label} expects launch.{Field.ECHO.value} as true or false, got {echo!r}"
+            )
 
         return LaunchSpec(
             profile=profile,
             echo_api_block_order=echo,
             safeguards_from_oracle=value.get(Field.SAFEGUARDS) == Field.FROM_ORACLE,
-            request_profiles=dict(self._request_profiles(value.get(Field.REQUEST_PROFILES), path, address)),
+            request_profiles=dict(
+                self._request_profiles(value.get(Field.REQUEST_PROFILES), path, address)
+            ),
         )
 
-    def _request_profiles(self, value: Json, path: Path, address: JournalAddress) -> Iterator[tuple[int, str]]:
+    def _request_profiles(
+        self, value: Json, path: Path, address: JournalAddress
+    ) -> Iterator[tuple[int, str]]:
         if value is None:
             return
 
@@ -260,9 +302,13 @@ class ManifestReader:
                 )
             yield int(line), profile
 
-    def _compaction(self, value: Json, path: Path, address: JournalAddress) -> CompactionSpec:
+    def _compaction(
+        self, value: Json, path: Path, address: JournalAddress
+    ) -> CompactionSpec:
         if not isinstance(value, dict):
-            raise VerifyError(f"{path}: journal {address.label} expects {Field.COMPACTION.value} as an object, got {value!r}")
+            raise VerifyError(
+                f"{path}: journal {address.label} expects {Field.COMPACTION.value} as an object, got {value!r}"
+            )
 
         pct = value.get(Field.PCT_OVERRIDE)
         pct_override: float | None = None
@@ -271,12 +317,16 @@ class ManifestReader:
 
         tail = value.get(Field.DEBUG_TAIL, False)
         if not isinstance(tail, bool):
-            raise VerifyError(f"{path}: journal {address.label} expects compaction.{Field.DEBUG_TAIL.value} as true or false, got {tail!r}")
+            raise VerifyError(
+                f"{path}: journal {address.label} expects compaction.{Field.DEBUG_TAIL.value} as true or false, got {tail!r}"
+            )
 
         return CompactionSpec(
             window_override=self._optional(value, Field.WINDOW_OVERRIDE, path, address),
             pct_override=pct_override,
-            blocking_override=self._optional(value, Field.BLOCKING_OVERRIDE, path, address),
+            blocking_override=self._optional(
+                value, Field.BLOCKING_OVERRIDE, path, address
+            ),
             wire_dirs=tuple(self._paths(value, Field.WIRE_DIRS, path, address)),
             wire_skip=self._count(value, Field.WIRE_SKIP, path, address),
             debug_logs=tuple(self._paths(value, Field.DEBUG_LOGS, path, address)),
@@ -286,48 +336,86 @@ class ManifestReader:
 
     def _limits(self, value: Json, path: Path) -> CompactionSettings:
         if not isinstance(value, dict):
-            raise VerifyError(f"{path}: {Field.MODEL.value} expects an object with the model limits, got {value!r}")
+            raise VerifyError(
+                f"{path}: {Field.MODEL.value} expects an object with the model limits, got {value!r}"
+            )
 
         numbers: list[int] = []
-        for key in (Field.CONTEXT_WINDOW, Field.MAX_OUTPUT_TOKENS, Field.CHARS_PER_TOKEN):
+        for key in (
+            Field.CONTEXT_WINDOW,
+            Field.MAX_OUTPUT_TOKENS,
+            Field.CHARS_PER_TOKEN,
+        ):
             number = value.get(key)
             if isinstance(number, bool) or not isinstance(number, int):
-                raise VerifyError(f"{path}: model.{key.value} expects an integer, got {number!r}")
+                raise VerifyError(
+                    f"{path}: model.{key.value} expects an integer, got {number!r}"
+                )
             numbers.append(number)
 
         try:
-            return CompactionSettings(context_window=numbers[0], max_output_tokens=numbers[1], chars_per_token=numbers[2])
+            return CompactionSettings(
+                context_window=numbers[0],
+                max_output_tokens=numbers[1],
+                chars_per_token=numbers[2],
+            )
         except SessionError as exc:
             raise VerifyError(f"{path}: {Field.MODEL.value}: {exc}") from exc
 
-    def _paths(self, holder: Mapping[str, Json], key: Field, path: Path, address: JournalAddress) -> Iterator[Path]:
+    def _paths(
+        self,
+        holder: Mapping[str, Json],
+        key: Field,
+        path: Path,
+        address: JournalAddress,
+    ) -> Iterator[Path]:
         value = holder.get(key, [])
         if not isinstance(value, list):
-            raise VerifyError(f"{path}: journal {address.label} expects compaction.{key.value} as a list of paths, got {value!r}")
+            raise VerifyError(
+                f"{path}: journal {address.label} expects compaction.{key.value} as a list of paths, got {value!r}"
+            )
 
         for item in value:
             if not isinstance(item, str):
-                raise VerifyError(f"{path}: journal {address.label} expects compaction.{key.value} items as strings, got {item!r}")
+                raise VerifyError(
+                    f"{path}: journal {address.label} expects compaction.{key.value} items as strings, got {item!r}"
+                )
             yield (path.parent / item).resolve()
 
-    def _count(self, holder: Mapping[str, Json], key: Field, path: Path, address: JournalAddress) -> int:
+    def _count(
+        self,
+        holder: Mapping[str, Json],
+        key: Field,
+        path: Path,
+        address: JournalAddress,
+    ) -> int:
         found = self._optional(holder, key, path, address)
         if found is None:
             return 0
 
         return found
 
-    def _optional(self, holder: Mapping[str, Json], key: Field, path: Path, address: JournalAddress) -> int | None:
+    def _optional(
+        self,
+        holder: Mapping[str, Json],
+        key: Field,
+        path: Path,
+        address: JournalAddress,
+    ) -> int | None:
         value = holder.get(key)
         if value is None:
             return None
 
         if isinstance(value, bool) or not isinstance(value, int):
-            raise VerifyError(f"{path}: journal {address.label} expects {key.value} as an integer, got {value!r}")
+            raise VerifyError(
+                f"{path}: journal {address.label} expects {key.value} as an integer, got {value!r}"
+            )
 
         return value
 
-    def journals(self, manifest: CorpusManifest, wanted: Sequence[JournalAddress]) -> list[CorpusEntry]:
+    def journals(
+        self, manifest: CorpusManifest, wanted: Sequence[JournalAddress]
+    ) -> list[CorpusEntry]:
         """Журналы манифеста; wanted сужает список до перечисленных адресов."""
         if not wanted:
             return list(manifest.entries)

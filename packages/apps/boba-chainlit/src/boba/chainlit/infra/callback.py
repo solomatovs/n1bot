@@ -32,8 +32,8 @@ from boba.chainlit.agent.settings import (
     AgentSettingsError,
     AgentSettingsTable,
     ChatAgentSettings,
+    SessionServersError,
 )
-from boba.chainlit.agent.tokens import McpTokenError, SessionServersError
 from boba.chainlit.canvas.panel import StreamActions
 from boba.chainlit.canvas.remote import RemoteStreams
 from boba.chainlit.canvas.tools import CanvasActions, CanvasScope
@@ -117,7 +117,6 @@ class SettingsNotice:
 AGENT_FAILURES = (
     AcpClientError,
     AgentSettingsError,
-    McpTokenError,
     McpClientError,
     SessionServersError,
     LockBusyError,

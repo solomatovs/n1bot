@@ -63,7 +63,7 @@ class Agents:
     async def start(self, updates: RecordingUpdates, thread: str = "t") -> AgentProcess:
         chat = self._model.chat_settings()
         workdir = AgentWorkdirs(self._root).create(thread)
-        workdir.write(self._builder.build(thread, chat, "jwt", []), chat.system_prompt)
+        workdir.write(self._builder.build(thread, chat, {}, "", []), chat.system_prompt)
         process = AgentProcess(
             self._stand.command(), workdir, AgentClient(updates), "0.0"
         )
@@ -100,7 +100,7 @@ class TestTurn:
     ) -> None:
         updates = RecordingUpdates()
         process = await agents.start(updates)
-        session_id = await process.new_session([])
+        session_id = await process.new_session()
         assert session_id
 
         response = await process.prompt(
@@ -120,7 +120,7 @@ class TestTurn:
     ) -> None:
         updates = RecordingUpdates()
         process = await agents.start(updates)
-        session_id = await process.new_session([])
+        session_id = await process.new_session()
         spec = {"name": "no_such_tool", "arguments": {"x": 1}}
         text = f"{ScenarioName.CALL.value} {json.dumps(spec)}"
 
@@ -137,7 +137,7 @@ class TestTurn:
     async def test_cancel_stops_the_turn_with_cancelled(self, agents: Agents) -> None:
         updates = RecordingUpdates()
         process = await agents.start(updates)
-        session_id = await process.new_session([])
+        session_id = await process.new_session()
 
         spec = {"name": "no_such_tool", "arguments": {}}
         text = f"{ScenarioName.LOOP.value} {json.dumps(spec)}"
@@ -165,7 +165,7 @@ class TestLifecycle:
         process = await agents.start(RecordingUpdates())
         workdir = process.workdir
         assert workdir.settings_path.is_file()
-        await process.new_session([])
+        await process.new_session()
 
         await process.close()
         assert not process.alive()
@@ -181,7 +181,7 @@ class TestHistory:
     ) -> None:
         first = RecordingUpdates()
         process = await agents.start(first, "holder")
-        session_id = await process.new_session([])
+        session_id = await process.new_session()
         question = _id()
         await process.prompt(
             session_id, [_text(prompt_text(ScenarioName.ANSWER))], question
@@ -190,7 +190,7 @@ class TestHistory:
 
         second = RecordingUpdates()
         observer = await agents.start(second, "observer")
-        await observer.load_session(session_id, [])
+        await observer.load_session(session_id)
 
         user_chunks = [u for _, u in second.updates if isinstance(u, UserMessageChunk)]
         assert [u.message_id for u in user_chunks] == [question]
@@ -205,7 +205,7 @@ class TestHistory:
         self, agents: Agents
     ) -> None:
         process = await agents.start(RecordingUpdates(), "holder")
-        session_id = await process.new_session([])
+        session_id = await process.new_session()
         await process.prompt(
             session_id, [_text(prompt_text(ScenarioName.ANSWER))], _id()
         )
@@ -213,7 +213,7 @@ class TestHistory:
 
         updates = RecordingUpdates()
         successor = await agents.start(updates, "successor")
-        response = await successor.resume_session(session_id, [])
+        response = await successor.resume_session(session_id)
 
         assert response.config_options, response
         assert not [u for _, u in updates.updates if isinstance(u, UserMessageChunk)]
@@ -228,13 +228,13 @@ class TestHistory:
         self, agents: Agents
     ) -> None:
         holder = await agents.start(RecordingUpdates(), "holder")
-        session_id = await holder.new_session([])
+        session_id = await holder.new_session()
         await holder.prompt(
             session_id, [_text(prompt_text(ScenarioName.ANSWER))], _id()
         )
 
         observer = await agents.start(RecordingUpdates(), "observer")
-        await observer.load_session(session_id, [])
+        await observer.load_session(session_id)
         with pytest.raises(AgentRequestError, match="held by another process"):
             await observer.prompt(
                 session_id, [_text(prompt_text(ScenarioName.ANSWER))], _id()
@@ -248,7 +248,7 @@ class TestHistory:
 
     async def test_delete_removes_the_session(self, agents: Agents) -> None:
         process = await agents.start(RecordingUpdates())
-        session_id = await process.new_session([])
+        session_id = await process.new_session()
         await process.prompt(
             session_id, [_text(prompt_text(ScenarioName.ANSWER))], _id()
         )
@@ -256,7 +256,7 @@ class TestHistory:
         await process.delete_session(session_id)
 
         with pytest.raises(AgentRequestError) as refused:
-            await process.load_session(session_id, [])
+            await process.load_session(session_id)
 
         assert refused.value.code == JsonRpcCode.RESOURCE_NOT_FOUND
 
@@ -265,7 +265,7 @@ class TestHistory:
     ) -> None:
         updates = RecordingUpdates()
         process = await agents.start(updates)
-        session_id = await process.new_session([])
+        session_id = await process.new_session()
         first = _id()
         second = _id()
         await process.prompt(
@@ -275,12 +275,12 @@ class TestHistory:
             session_id, [_text(prompt_text(ScenarioName.THINKING_ANSWER))], second
         )
 
-        forked = await process.fork_session(session_id, [], second)
+        forked = await process.fork_session(session_id, second)
         assert forked != session_id
 
         replay = RecordingUpdates()
         reader = await agents.start(replay, "reader")
-        await reader.load_session(forked, [])
+        await reader.load_session(forked)
         user_chunks = [u for _, u in replay.updates if isinstance(u, UserMessageChunk)]
         assert [u.message_id for u in user_chunks] == [first]
         assert "answer the question" not in "".join(replay.texts())

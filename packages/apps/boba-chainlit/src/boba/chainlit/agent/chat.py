@@ -6,7 +6,7 @@ TurnRenderers (feed.py).
 Ошибки:
 AcpClientError и наследники — процесс или ответ агента (client.py).
 AgentSettingsError — профиль чата не годится агенту (settings.py).
-McpTokenError, SessionServersError — серверы MCP сессии (tokens.py).
+SessionServersError — сервер MCP профиля не годится агенту (settings.py).
 DataUnavailableError — таблицы чата недоступны.
 """
 
@@ -48,6 +48,7 @@ from boba.chainlit.agent.client import (
     SessionUpdates,
 )
 from boba.chainlit.agent.config import AgentConfig
+from boba.chainlit.agent.server import KeyHolder, ProcessKeys
 from boba.chainlit.agent.settings import (
     AgentSettingsChange,
     AgentSettingsLayers,
@@ -55,17 +56,19 @@ from boba.chainlit.agent.settings import (
     AgentWorkdirs,
     ChatAgentSettings,
     HistoryEnvironment,
+    McpServerFile,
+    SessionServers,
     SettingsFileBuilder,
 )
-from boba.chainlit.agent.tokens import SessionServer, SessionServers
 from boba.chainlit.chat.feed import QuestionBody, ShownElement
 from boba.chainlit.data.data_layer import ThreadDeletionListener
 from boba.chainlit.domain.fields import ThreadMetaField
 from boba.chainlit.domain.keys import AttachmentLinks
-from boba.chainlit.infra.session import ChainlitSession
+from boba.chainlit.infra.session import ChainlitSession, LiveSignIn
 from boba.chat.profiles import SelectedProfile
 from boba.chat.threads import ThreadUpsert
 from boba.identity.errors import InternalServiceError
+from boba.mcp_client.client import McpCaller
 from boba.runtime.threads import ThreadsTable
 
 __all__ = [
@@ -75,6 +78,7 @@ __all__ = [
     "AgentSettingsChanges",
     "ConfigCategory",
     "ConfigOption",
+    "LaunchedAgent",
     "MuteUpdates",
     "PermissionKind",
     "PermissionOutcome",
@@ -153,13 +157,15 @@ class PermissionOutcome(StrEnum):
 @dataclass(frozen=True)
 class ThreadIdentity:
     """Кто и в каком треде говорит с агентом: тред, пользователь, его вход и
-    профиль чата. Собирается из сессии chainlit в обработчике."""
+    профиль чата. Собирается из сессии chainlit в обработчике. session —
+    живой вход пользователя вкладки: по нему держатель ключа процесса
+    читает роли и секреты входа в момент вызова."""
 
     thread_id: str
     user_id: UUID
     login: str
     roles: frozenset[str]
-    jwt: str
+    session: LiveSignIn
     profile: SelectedProfile
 
     @classmethod
@@ -192,7 +198,7 @@ class ThreadIdentity:
             user_id=UUID(user_id),
             login=session.identifier,
             roles=session.roles,
-            jwt=session.token,
+            session=session,
             profile=profile,
         )
 
@@ -398,19 +404,30 @@ class AskedQuestions(SessionUpdates):
 @dataclass(frozen=True)
 class AgentLaunch:
     """Заготовка запуска агента вкладки: слой чата, из которого соберётся файл
-    настроек, и серверы MCP сессии с токенами. Собирает AgentLauncher.prepare
-    до остановки прежнего процесса."""
+    настроек. Собирает AgentLauncher.prepare до остановки прежнего процесса."""
 
     chat: ChatAgentSettings
-    servers: Sequence[SessionServer]
+
+
+@dataclass(frozen=True)
+class LaunchedAgent:
+    """Запущенный процесс агента и ключ, с которым он зовёт сервер
+    инструментов чата и хук; пустой ключ — процессу входы чата не даны.
+    Отдаёт AgentLauncher, держит ThreadAgent и возвращает запуску на снятие
+    ключа (AgentLauncher.retire)."""
+
+    process: AgentProcess
+    key: str
 
 
 class AgentLauncher:
-    """Запуск процесса агента под тред: слой чата из Postgres → файл настроек
-    в приватном каталоге → процесс → рукопожатие; серверы MCP сессии с
-    заголовками собираются здесь же.
+    """Запуск процесса агента под тред: слой чата из Postgres → ключ процесса
+    → файл настроек с серверами MCP профиля в приватном каталоге → процесс →
+    рукопожатие.
 
-    Создаётся провайдером процесса; зовут ThreadAgent и ThreadDeleter.
+    Создаётся провайдером процесса; зовут ThreadAgent и ThreadDeleter. Ключ
+    процесса выдаёт и снимает реестр ProcessKeys: каждый запуск получает
+    новый ключ, остановка процесса и несостоявшийся запуск его снимают.
     """
 
     def __init__(
@@ -418,11 +435,13 @@ class AgentLauncher:
         config: AgentConfig,
         layers: AgentSettingsLayers,
         servers: SessionServers,
+        keys: ProcessKeys,
         version: str,
     ) -> None:
         self._config = config
         self._layers = layers
         self._servers = servers
+        self._keys = keys
         self._files = SettingsFileBuilder(config)
         self._workdirs = AgentWorkdirs(Path(config.process.private_dir))
         self._environment = HistoryEnvironment(config.history)
@@ -436,14 +455,13 @@ class AgentLauncher:
         self._version = version
 
     async def prepare(self, identity: ThreadIdentity) -> AgentLaunch:
-        """Слой чата треда (у нового треда копируется из слоя пользователя) и
-        серверы MCP сессии: всё, что может отказать до запуска процесса.
+        """Слой чата треда (у нового треда копируется из слоя пользователя):
+        то, что может отказать до остановки прежнего процесса.
 
         Ошибки:
         AgentSettingsError — профиль не годится агенту.
         DataUnavailableError — слой настроек недоступен.
-        McpTokenError — токен boba-mcp не получен.
-        SessionServersError — сервер профиля не годится агенту.
+        SessionServersError — сервер профиля не объявлен в [mcp.servers].
         """
         chat = await self._layers.chat_layer(
             UUID(identity.thread_id),
@@ -451,44 +469,71 @@ class AgentLauncher:
             identity.profile.name,
             identity.profile.config,
         )
-        servers = await self._servers.of(
-            identity.profile.config.mcp, identity.login, identity.roles, identity.jwt
-        )
+        self._servers.hooked(identity.profile.config.mcp)
 
-        return AgentLaunch(chat=chat, servers=tuple(servers))
+        return AgentLaunch(chat=chat)
 
     async def launch(
         self, identity: ThreadIdentity, chat: ChatAgentSettings, client: AgentClient
-    ) -> AgentProcess:
-        """Процесс под вкладку треда по слою чата, с хуком запечатывания и JWT
-        входа.
+    ) -> LaunchedAgent:
+        """Процесс под вкладку треда по слою чата: серверы профиля от имени
+        пользователя вкладки, сервер чата и хук запечатывания — с новым
+        ключом процесса.
 
         Ошибки:
         SessionServersError — сервер профиля не объявлен или не того транспорта.
         AgentProcessError — процесс не запустился.
         """
-        hooked = self._servers.hooked(identity.profile.config.mcp)
-
-        return await self.launch_settings(
-            identity.thread_id, chat, identity.jwt, hooked, client
+        names = identity.profile.config.mcp
+        key = self._keys.issue(
+            KeyHolder(
+                user_id=identity.user_id,
+                login=identity.login,
+                thread_id=identity.thread_id,
+                profile=identity.profile.name,
+                session=identity.session,
+            )
         )
+        try:
+            servers = self._servers.of(
+                names, McpCaller(login=identity.login, roles=identity.roles), key
+            )
+            process = await self.launch_settings(
+                identity.thread_id,
+                chat,
+                servers,
+                key,
+                self._servers.hooked(names),
+                client,
+            )
+        except Exception:
+            self._keys.revoke(key)
+            raise
 
-    async def launch_settings(
+        return LaunchedAgent(process=process, key=key)
+
+    def retire(self, launched: LaunchedAgent) -> None:
+        """Снимает ключ остановленного процесса: сервер чата и хук его
+        больше не принимают."""
+        self._keys.revoke(launched.key)
+
+    async def launch_settings(  # noqa: PLR0913 — файл собирается всеми частями
         self,
         thread_id: str,
         chat: ChatAgentSettings,
-        user_jwt: str,
+        servers: Mapping[str, McpServerFile],
+        key: str,
         hooked: Sequence[str],
         client: AgentClient,
     ) -> AgentProcess:
-        """Процесс по готовому слою чата; без hooked секция hooks пуста;
-        kerberos-роль истории получает окружение libkrb5.
+        """Процесс по готовому слою чата и записям серверов; без hooked секция
+        hooks пуста; kerberos-роль истории получает окружение libkrb5.
 
         Ошибки:
         AgentProcessError — процесс не запустился.
         KerberosError — билет истории по keytab не получен.
         """
-        document = self._files.build(thread_id, chat, user_jwt, hooked)
+        document = self._files.build(thread_id, chat, servers, key, hooked)
         workdir = self._workdirs.create(thread_id)
         workdir.write(document, chat.system_prompt)
         command = self._command.with_env(await self._environment.prepare())
@@ -540,8 +585,7 @@ class ThreadAgent:
         self._renderer = renderer
         self._options = options
         self._questions = AskedQuestions(renderer)
-        self._process: AgentProcess | None = None
-        self._servers: Sequence[SessionServer] = ()
+        self._launched: LaunchedAgent | None = None
         self._session_id: str | None = None
         self._asked: list[str] = []
         self._active: str | None = None
@@ -571,17 +615,17 @@ class ThreadAgent:
 
     @property
     def process(self) -> AgentProcess:
-        if self._process is None:
+        if self._launched is None:
             msg = f"agent of thread {self.thread_id}: the process is not started"
             raise InternalServiceError(internal_detail=msg, user_detail=None)
 
-        return self._process
+        return self._launched.process
 
     def turn_active(self) -> bool:
         return self._active is not None
 
     async def start(self) -> None:
-        """Процесс и серверы сессии; сессия открывается позже."""
+        """Процесс агента; сессия открывается позже."""
         async with self._gate:
             await self._launch(await self._launcher.prepare(self._identity))
 
@@ -595,7 +639,7 @@ class ThreadAgent:
 
         Ошибки:
         AgentSettingsError, DataUnavailableError — слой чата не собран.
-        McpTokenError, SessionServersError — серверы MCP сессии.
+        SessionServersError — сервер MCP профиля не годится агенту.
         AgentProcessError, AgentRequestError — процесс не запустился или
             отказал в сессии; перезапуск повторится перед следующим ходом.
         """
@@ -629,11 +673,10 @@ class ThreadAgent:
 
     async def _launch(self, launch: AgentLaunch) -> None:
         """Новый процесс по заготовке: файл настроек из слоя чата в свежем
-        приватном каталоге, рукопожатие."""
-        self._process = await self._launcher.launch(
+        приватном каталоге, новый ключ процесса, рукопожатие."""
+        self._launched = await self._launcher.launch(
             self._identity, launch.chat, AgentClient(self._questions)
         )
-        self._servers = launch.servers
 
     async def _reopen(self) -> None:
         """Сессия треда в новом процессе без воспроизведения беседы; ответ
@@ -642,7 +685,7 @@ class ThreadAgent:
         if session_id is None:
             return
 
-        response = await self.process.resume_session(session_id, self._servers)
+        response = await self.process.resume_session(session_id)
         self._options.replace(response.config_options)
 
     async def resume(self) -> bool:
@@ -659,7 +702,7 @@ class ThreadAgent:
     async def _load(self) -> bool:
         known = await self._meta.session_of(self.thread_id)
         try:
-            response = await self.process.load_session(known, self._servers)
+            response = await self.process.load_session(known)
         except AgentRequestError as exc:
             if exc.code != JsonRpcCode.RESOURCE_NOT_FOUND:
                 raise
@@ -787,16 +830,19 @@ class ThreadAgent:
 
     async def _close_process(self) -> None:
         """Прежний процесс: сессия закрыта у агента, процесс остановлен, его
-        каталог с файлом настроек удалён."""
-        process = self._process
-        if process is None:
+        каталог с файлом настроек удалён, ключ процесса снят."""
+        launched = self._launched
+        if launched is None:
             return
 
-        self._process = None
+        self._launched = None
         try:
-            await self._close_session(process)
+            await self._close_session(launched.process)
         finally:
-            await process.close()
+            try:
+                await launched.process.close()
+            finally:
+                self._launcher.retire(launched)
 
     async def _close_session(self, process: AgentProcess) -> None:
         session_id = self._session_id
@@ -813,7 +859,7 @@ class ThreadAgent:
         """Сессия хода: открытая, ветвь при правке вопроса, иначе новая."""
         current = self._session_id
         if current is None:
-            opened = await self.process.open_session(self._servers)
+            opened = await self.process.open_session()
             created = opened.session_id
             self._options.replace(opened.config_options)
             await self._meta.remember(self.thread_id, created)
@@ -825,7 +871,7 @@ class ThreadAgent:
         if question.key not in self._asked:
             return current
 
-        branch = await self.process.fork(current, self._servers, question.key)
+        branch = await self.process.fork(current, question.key)
         forked = branch.session_id
         self._options.replace(branch.config_options)
         await self._meta.remember(self.thread_id, forked)
@@ -982,8 +1028,8 @@ class AgentSettingsChanges:
 
         Ошибки:
         AgentSettingsError, DataUnavailableError — слои не записаны.
-        AgentProcessError, AgentRequestError, McpTokenError,
-        SessionServersError — настройки записаны, перезапуск не состоялся.
+        AgentProcessError, AgentRequestError, SessionServersError —
+            настройки записаны, перезапуск не состоялся.
         """
         await self._layers.change(
             UUID(identity.thread_id),
@@ -1047,7 +1093,7 @@ class ThreadDeleter(ThreadDeletionListener):
         self, thread_id: str, chat: ChatAgentSettings, session_id: str
     ) -> None:
         process = await self._launcher.launch_settings(
-            thread_id, chat, "", (), AgentClient(MuteUpdates())
+            thread_id, chat, {}, "", (), AgentClient(MuteUpdates())
         )
         try:
             await process.delete_session(session_id)

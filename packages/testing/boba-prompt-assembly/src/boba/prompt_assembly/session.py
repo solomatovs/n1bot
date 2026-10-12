@@ -35,7 +35,13 @@ from boba.prompt_assembly.compaction import (
     ThresholdPolicy,
 )
 from boba.prompt_assembly.loader import LoaderError, SessionMemory
-from boba.prompt_assembly.records import Encoding, Journal, JournalError, Json, RecordType
+from boba.prompt_assembly.records import (
+    Encoding,
+    Journal,
+    JournalError,
+    Json,
+    RecordType,
+)
 from boba.prompt_assembly.request import (
     Beta,
     LaunchParams,
@@ -144,7 +150,11 @@ class CompactionSettings:
     blocking_override: int | None = None
 
     def __post_init__(self) -> None:
-        if self.context_window <= 0 or self.max_output_tokens <= 0 or self.chars_per_token <= 0:
+        if (
+            self.context_window <= 0
+            or self.max_output_tokens <= 0
+            or self.chars_per_token <= 0
+        ):
             raise SessionError(
                 "compaction settings expect positive context_window, max_output_tokens and chars_per_token, "
                 f"got {self.context_window}, {self.max_output_tokens}, {self.chars_per_token}"
@@ -174,28 +184,44 @@ class OptionsReader:
 
     def default_compaction(self) -> CompactionSettings:
         """Пределы claude-opus-5-5 без переменных порога."""
-        return CompactionSettings(context_window=1_000_000, max_output_tokens=128_000, chars_per_token=3)
+        return CompactionSettings(
+            context_window=1_000_000, max_output_tokens=128_000, chars_per_token=3
+        )
 
     def profile(self, name: str) -> SessionOptions:
         return SessionOptions(
-            launch=self._launch_profile(name), echo_api_block_order=False, compaction=self.default_compaction()
+            launch=self._launch_profile(name),
+            echo_api_block_order=False,
+            compaction=self.default_compaction(),
         )
 
     def combine(
-        self, base: SessionOptions, echo_api_block_order: bool, tool_clearing_mode: str, compaction: CompactionSettings
+        self,
+        base: SessionOptions,
+        echo_api_block_order: bool,
+        tool_clearing_mode: str,
+        compaction: CompactionSettings,
     ) -> SessionOptions:
         """Набор с заменой того, что задано отдельно от него (манифест корпуса)."""
         launch = replace(base.launch, tool_clearing_mode=tool_clearing_mode)
-        return SessionOptions(launch=launch, echo_api_block_order=echo_api_block_order, compaction=compaction)
+        return SessionOptions(
+            launch=launch,
+            echo_api_block_order=echo_api_block_order,
+            compaction=compaction,
+        )
 
     def file(self, path: Path) -> Mapping[str, Json]:
         try:
             document: Json = json.loads(path.read_text(encoding=Encoding.UTF8))
         except (OSError, ValueError) as exc:
-            raise SessionError(f"reading launch parameters {path} failed: {exc}") from exc
+            raise SessionError(
+                f"reading launch parameters {path} failed: {exc}"
+            ) from exc
 
         if not isinstance(document, dict):
-            raise SessionError(f"{path}: launch parameters expect a JSON object, got {type(document).__name__}")
+            raise SessionError(
+                f"{path}: launch parameters expect a JSON object, got {type(document).__name__}"
+            )
 
         return document
 
@@ -204,7 +230,9 @@ class OptionsReader:
         known = self._values(Param)
         unknown = sorted(set(document) - set(known))
         if unknown:
-            raise SessionError(f"{where}: unknown launch parameter(s) {unknown}, known are {known}")
+            raise SessionError(
+                f"{where}: unknown launch parameter(s) {unknown}, known are {known}"
+            )
 
         base: SessionOptions | None = None
         name = document.get(Param.PROFILE)
@@ -227,7 +255,9 @@ class OptionsReader:
         if Param.COMPACTION in document:
             compaction = self._compaction(document[Param.COMPACTION], compaction, where)
 
-        return SessionOptions(launch=launch, echo_api_block_order=echo, compaction=compaction)
+        return SessionOptions(
+            launch=launch, echo_api_block_order=echo, compaction=compaction
+        )
 
     def _launch_profile(self, name: str) -> LaunchParams:
         if name == LaunchProfile.SUBSCRIPTION_PRINT:
@@ -237,12 +267,16 @@ class OptionsReader:
             return self._profiles.stream_json()
 
         if name == LaunchProfile.SUBAGENT_CACHE_EVICT:
-            return replace(self._profiles.subscription_print(), subagent_cache_evict=True)
+            return replace(
+                self._profiles.subscription_print(), subagent_cache_evict=True
+            )
 
         if name == LaunchProfile.SERVER_CLASSIFIER:
             return self._profiles.server_classifier(())
 
-        raise SessionError(f"launch profile {name!r} is unknown, known profiles are {self._values(LaunchProfile)}")
+        raise SessionError(
+            f"launch profile {name!r} is unknown, known profiles are {self._values(LaunchProfile)}"
+        )
 
     def _require_all(self, document: Mapping[str, Json], where: str) -> None:
         missing: list[str] = []
@@ -261,7 +295,9 @@ class OptionsReader:
             "and override single keys (--set KEY=JSON)"
         )
 
-    def _with(self, launch: LaunchParams, key: Param, value: Json, where: str) -> LaunchParams:
+    def _with(
+        self, launch: LaunchParams, key: Param, value: Json, where: str
+    ) -> LaunchParams:
         if key is Param.MODELS:
             return replace(launch, models=self._models(value, where))
 
@@ -269,11 +305,18 @@ class OptionsReader:
             return replace(launch, thinking=self._thinking(value, where))
 
         if key is Param.ENVIRONMENT_BETAS:
-            return replace(launch, environment_betas=frozenset(self._betas(value, f"{where}: {key.value}")))
+            return replace(
+                launch,
+                environment_betas=frozenset(
+                    self._betas(value, f"{where}: {key.value}")
+                ),
+            )
 
         if key is Param.SAFEGUARDS:
             if not isinstance(value, list):
-                raise SessionError(f"{where}: {key.value} expects a list, got {value!r}")
+                raise SessionError(
+                    f"{where}: {key.value} expects a list, got {value!r}"
+                )
             return replace(launch, safeguards=tuple(value))
 
         texts = (
@@ -287,7 +330,9 @@ class OptionsReader:
         )
         if key in texts:
             if not isinstance(value, str):
-                raise SessionError(f"{where}: {key.value} expects a string, got {value!r}")
+                raise SessionError(
+                    f"{where}: {key.value} expects a string, got {value!r}"
+                )
             return replace(launch, **{key.value: value})
 
         flags = (
@@ -299,75 +344,112 @@ class OptionsReader:
         )
         if key in flags:
             if not isinstance(value, bool):
-                raise SessionError(f"{where}: {key.value} expects true or false, got {value!r}")
+                raise SessionError(
+                    f"{where}: {key.value} expects true or false, got {value!r}"
+                )
             return replace(launch, **{key.value: value})
 
         return launch
 
     def _models(self, value: Json, where: str) -> dict[str, ModelFacts]:
         if not isinstance(value, dict):
-            raise SessionError(f"{where}: models expects an object of model name to facts, got {value!r}")
+            raise SessionError(
+                f"{where}: models expects an object of model name to facts, got {value!r}"
+            )
 
         models: dict[str, ModelFacts] = {}
         for name, facts in value.items():
             if not isinstance(facts, dict):
-                raise SessionError(f"{where}: models.{name} expects an object with max_tokens and betas, got {facts!r}")
+                raise SessionError(
+                    f"{where}: models.{name} expects an object with max_tokens and betas, got {facts!r}"
+                )
             limit = facts.get(Nested.MAX_TOKENS)
             if isinstance(limit, bool) or not isinstance(limit, int):
-                raise SessionError(f"{where}: models.{name}.max_tokens expects an integer, got {limit!r}")
-            betas = frozenset(self._betas(facts.get(Nested.BETAS), f"{where}: models.{name}.betas"))
+                raise SessionError(
+                    f"{where}: models.{name}.max_tokens expects an integer, got {limit!r}"
+                )
+            betas = frozenset(
+                self._betas(facts.get(Nested.BETAS), f"{where}: models.{name}.betas")
+            )
             models[name] = ModelFacts(max_tokens=limit, betas=betas)
 
         return models
 
     def _thinking(self, value: Json, where: str) -> ThinkingParam:
         if not isinstance(value, dict):
-            raise SessionError(f"{where}: thinking expects an object with type and display, got {value!r}")
+            raise SessionError(
+                f"{where}: thinking expects an object with type and display, got {value!r}"
+            )
 
         kind = value.get(Nested.TYPE)
         display = value.get(Nested.DISPLAY, "")
         if not isinstance(kind, str) or not isinstance(display, str):
-            raise SessionError(f"{where}: thinking expects type and display as strings, got {kind!r} and {display!r}")
+            raise SessionError(
+                f"{where}: thinking expects type and display as strings, got {kind!r} and {display!r}"
+            )
 
         return ThinkingParam(kind=kind, display=display)
 
     def _betas(self, value: Json, where: str) -> Iterator[Beta]:
         if not isinstance(value, list):
-            raise SessionError(f"{where} expects a list of beta header values, got {value!r}")
+            raise SessionError(
+                f"{where} expects a list of beta header values, got {value!r}"
+            )
 
         known = frozenset(Beta)
         for item in value:
             if item not in known:
-                raise SessionError(f"{where} expects known beta header values, got {item!r}; known are {self._values(Beta)}")
+                raise SessionError(
+                    f"{where} expects known beta header values, got {item!r}; known are {self._values(Beta)}"
+                )
             yield Beta(str(item))
 
     def _flag(self, document: Mapping[str, Json], key: Param, where: str) -> bool:
         value = document.get(key)
         if not isinstance(value, bool):
-            raise SessionError(f"{where}: {key.value} expects true or false, got {value!r}")
+            raise SessionError(
+                f"{where}: {key.value} expects true or false, got {value!r}"
+            )
 
         return value
 
-    def _compaction(self, value: Json, base: CompactionSettings, where: str) -> CompactionSettings:
+    def _compaction(
+        self, value: Json, base: CompactionSettings, where: str
+    ) -> CompactionSettings:
         if not isinstance(value, dict):
             raise SessionError(f"{where}: compaction expects an object, got {value!r}")
 
         known = self._values(Limits)
         unknown = sorted(set(value) - set(known))
         if unknown:
-            raise SessionError(f"{where}: compaction has unknown key(s) {unknown}, known are {known}")
+            raise SessionError(
+                f"{where}: compaction has unknown key(s) {unknown}, known are {known}"
+            )
 
         pct = base.pct_override
         if Limits.PCT_OVERRIDE in value:
-            pct = self._number(value[Limits.PCT_OVERRIDE], f"{where}: compaction.{Limits.PCT_OVERRIDE.value}")
+            pct = self._number(
+                value[Limits.PCT_OVERRIDE],
+                f"{where}: compaction.{Limits.PCT_OVERRIDE.value}",
+            )
 
         return CompactionSettings(
-            context_window=self._required(value, Limits.CONTEXT_WINDOW, base.context_window, where),
-            max_output_tokens=self._required(value, Limits.MAX_OUTPUT_TOKENS, base.max_output_tokens, where),
-            chars_per_token=self._required(value, Limits.CHARS_PER_TOKEN, base.chars_per_token, where),
-            window_override=self._optional(value, Limits.WINDOW_OVERRIDE, base.window_override, where),
+            context_window=self._required(
+                value, Limits.CONTEXT_WINDOW, base.context_window, where
+            ),
+            max_output_tokens=self._required(
+                value, Limits.MAX_OUTPUT_TOKENS, base.max_output_tokens, where
+            ),
+            chars_per_token=self._required(
+                value, Limits.CHARS_PER_TOKEN, base.chars_per_token, where
+            ),
+            window_override=self._optional(
+                value, Limits.WINDOW_OVERRIDE, base.window_override, where
+            ),
             pct_override=pct,
-            blocking_override=self._optional(value, Limits.BLOCKING_OVERRIDE, base.blocking_override, where),
+            blocking_override=self._optional(
+                value, Limits.BLOCKING_OVERRIDE, base.blocking_override, where
+            ),
         )
 
     def _values(self, members: type[StrEnum]) -> list[str]:
@@ -377,14 +459,20 @@ class OptionsReader:
 
         return sorted(values)
 
-    def _required(self, holder: Mapping[str, Json], key: Limits, fallback: int, where: str) -> int:
+    def _required(
+        self, holder: Mapping[str, Json], key: Limits, fallback: int, where: str
+    ) -> int:
         found = self._optional(holder, key, fallback, where)
         if found is None:
-            raise SessionError(f"{where}: compaction.{key.value} expects an integer, got null")
+            raise SessionError(
+                f"{where}: compaction.{key.value} expects an integer, got null"
+            )
 
         return found
 
-    def _optional(self, holder: Mapping[str, Json], key: Limits, fallback: int | None, where: str) -> int | None:
+    def _optional(
+        self, holder: Mapping[str, Json], key: Limits, fallback: int | None, where: str
+    ) -> int | None:
         if key not in holder:
             return fallback
 
@@ -393,7 +481,9 @@ class OptionsReader:
             return None
 
         if isinstance(value, bool) or not isinstance(value, int):
-            raise SessionError(f"{where}: compaction.{key.value} expects an integer or null, got {value!r}")
+            raise SessionError(
+                f"{where}: compaction.{key.value} expects an integer or null, got {value!r}"
+            )
 
         return value
 
@@ -424,9 +514,15 @@ class PromptSession:
             self.memory = SessionMemory(journal)
             self.log = CompactionLog(self.memory)
             self.clearing = IdleClearing(self.log, options.launch.tool_clearing_mode)
-            self.requests = RequestBuilder(self.memory, options.launch, self.clearing, options.echo_api_block_order)
-            self.prompt = SummaryPrompt(Path(__file__).resolve().parent / Source.SUMMARY_PROMPT)
-            self.summaries = SummaryRequestBuilder(self.requests, options.launch, self.prompt)
+            self.requests = RequestBuilder(
+                self.memory, options.launch, self.clearing, options.echo_api_block_order
+            )
+            self.prompt = SummaryPrompt(
+                Path(__file__).resolve().parent / Source.SUMMARY_PROMPT
+            )
+            self.summaries = SummaryRequestBuilder(
+                self.requests, options.launch, self.prompt
+            )
             self.policy = ThresholdPolicy(
                 context_window=options.compaction.context_window,
                 max_output_tokens=options.compaction.max_output_tokens,
@@ -434,9 +530,13 @@ class PromptSession:
                 pct_override=options.compaction.pct_override,
                 blocking_override=options.compaction.blocking_override,
             )
-            self.model = CompactionModel(self.policy, options.compaction.chars_per_token)
+            self.model = CompactionModel(
+                self.policy, options.compaction.chars_per_token
+            )
         except (LoaderError, RequestError, CompactionError) as exc:
-            raise SessionError(f"opening a session over {journal.path} failed: {exc}") from exc
+            raise SessionError(
+                f"opening a session over {journal.path} failed: {exc}"
+            ) from exc
 
     def request_lines(self) -> list[int]:
         """Строки запросов, найденные по истории."""
@@ -448,7 +548,9 @@ class PromptSession:
 
     def replay(self, request_lines: Sequence[int]) -> CompactionReplay:
         """Проигрывание проверок порога перед запросами с данных строк."""
-        return CompactionReplay(self.model, CheckTimeline(self.log, request_lines), Source.QUERY)
+        return CompactionReplay(
+            self.model, CheckTimeline(self.log, request_lines), Source.QUERY
+        )
 
 
 class Sessions:
@@ -466,7 +568,9 @@ class Sessions:
 
     def without_oracle(self, session: PromptSession) -> PromptSession:
         """Сессия над тем же журналом без записей эталона (api-request, shape, blob)."""
-        kinds = frozenset((RecordType.REQUEST.value, RecordType.SHAPE.value, RecordType.BLOB.value))
+        kinds = frozenset(
+            (RecordType.REQUEST.value, RecordType.SHAPE.value, RecordType.BLOB.value)
+        )
         return PromptSession(session.journal.without(kinds), session.options)
 
     def variant(self, session: PromptSession, launch: LaunchParams) -> PromptSession:
