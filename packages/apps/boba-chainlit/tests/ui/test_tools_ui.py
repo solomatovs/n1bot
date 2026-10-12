@@ -58,6 +58,7 @@ from boba.stand.ui.stand import (
     StandApp,
     StandConfig,
     StandProcess,
+    StandToolNames,
     StandUrl,
     free_port,
 )
@@ -310,6 +311,10 @@ class ToolCall:
     """Своя подпись вызова: различает вызовы одного инструмента в одном ходе."""
     hidden: Sequence[str] = ()
     """Аргументы, которых лента во входе шага не рисует: каналы насосов."""
+    names: StandToolNames = field(
+        default_factory=StandToolNames, repr=False, compare=False
+    )
+    """Полные имена инструментов стенда: под ними их зовёт фейковая модель."""
 
     @property
     def intent(self) -> str:
@@ -319,13 +324,17 @@ class ToolCall:
 
         return f"stand call of {self.tool}"
 
-    def request(self) -> dict[str, Any]:
-        """Вызов для сценария фейка; своя подпись едет полем intent."""
+    def sent_arguments(self) -> dict[str, Any]:
+        """Аргументы вызова; своя подпись едет полем intent."""
         arguments = dict(self.arguments)
         if self.label:
             arguments[ToolIntent.NAME] = self.label
 
-        return {"name": self.tool, "arguments": arguments}
+        return arguments
+
+    def request(self) -> dict[str, Any]:
+        """Вызов для сценария фейка: инструмент под полным именем."""
+        return {"name": self.names.full(self.tool), "arguments": self.sent_arguments()}
 
     def message(self) -> str:
         request = json.dumps(self.request(), ensure_ascii=False)
@@ -558,17 +567,17 @@ class ToolFeed:
         nodes: list[dict[str, Any]] = []
         for index, (call, _) in enumerate(calls):
             Coverage.nodes.add(call.tool)
-            request = call.request()
             nodes.append(
                 {
                     "key": f"n{index}",
-                    "tool": request["name"],
-                    "args": request["arguments"],
+                    "tool": call.tool,
+                    "args": call.sent_arguments(),
                 }
             )
 
         Coverage.called.add(WorkflowTool.NAME)
-        requests = [{"name": WorkflowTool.NAME, "arguments": {"nodes": nodes}}]
+        workflow = ToolCall(tool=WorkflowTool.NAME, arguments={"nodes": nodes})
+        requests = [workflow.request()]
 
         log_mark = self.stand.log_lines()
         message = json.dumps(requests, ensure_ascii=False)
@@ -2574,7 +2583,9 @@ class TestCoverage:
         for spec in requests[-1].get("tools") or []:
             offered.add(str(spec["function"]["name"]))
 
-        called = Coverage.called | Coverage.nodes
+        called: set[str] = set()
+        for tool in Coverage.called | Coverage.nodes:
+            called.add(call.names.full(tool))
 
         missing = offered - called
         if missing:

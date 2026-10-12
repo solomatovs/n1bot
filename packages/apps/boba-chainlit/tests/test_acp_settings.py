@@ -32,6 +32,7 @@ from boba.chainlit.acp.settings import (
     AgentSettingsTable,
     AgentWorkdirs,
     HistoryEnvironment,
+    HookMatchers,
     ProfileModelSpecs,
     SettingsFileBuilder,
     UserAgentSettings,
@@ -47,6 +48,7 @@ from boba.llm.onnx import OnnxProvider
 from boba.stand.names import StandNames
 from boba.stand.signin import SignInStand
 from boba.stand.site import Stand
+from boba.toolkit.mcp_names import McpToolNameError
 
 pytestmark = pytest.mark.anyio
 
@@ -282,6 +284,17 @@ class TestSettingsFile:
         )
         body = json.loads(document.render())
         assert "hooks" not in body or body["hooks"] == {}
+
+
+class TestHookMatchers:
+    def test_matcher_starts_with_the_literal_prefix_of_each_server(self) -> None:
+        matcher = HookMatchers().of(["boba_general", "deep.wiki"])
+
+        assert matcher == r"^mcp__boba_general__|^mcp__deep\.wiki__"
+
+    def test_server_name_that_breaks_tool_names_is_refused(self) -> None:
+        with pytest.raises(McpToolNameError, match="'my__srv'"):
+            HookMatchers().of(["my__srv"])
 
 
 class TestAgentHandshake:

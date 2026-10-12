@@ -22,7 +22,7 @@ from boba.agent.agent import Agent, AgentParts
 from boba.agent.attachments import EnvironmentSnapshot
 from boba.agent.events import AgentEvent, ControlRequestEvent, EventSink
 from boba.agent.history import HistoryStore, SessionId
-from boba.agent.hooks import McpToolOrigin, PreToolUseHooks, ToolOrigins
+from boba.agent.hooks import McpServerInfo, PreToolUseHooks
 from boba.agent.ids import Clock, SystemClock
 from boba.agent.profile import (
     CompactionSettings,
@@ -54,6 +54,7 @@ from boba.toolkit.dag import (
     ToolHints,
     ToolServer,
 )
+from boba.toolkit.mcp_names import McpToolNames
 from boba.toolkit.result import ErrorResult, MarkdownResult
 from boba.transport.http import HttpTransportConfig
 from boba.transport.http.connection import (
@@ -139,8 +140,20 @@ ENVIRONMENT = EnvironmentSnapshot.model_validate(
 )
 
 
+class StandServer(StrEnum):
+    """Стенд инструментов как сервер MCP."""
+
+    NAME = "stand"
+
+
 class StandToolName(StrEnum):
-    """Инструменты сервера стенда: имя говорит о пометках и поведении."""
+    """Инструменты сервера стенда: имя говорит о пометках и поведении.
+    Значение — имя инструмента на сервере; модель и хук видят полное."""
+
+    @property
+    def full(self) -> str:
+        """Полное имя инструмента: под ним его видят модель и хук."""
+        return McpToolNames().full(StandServer.NAME.value, self.value)
 
     LOOKUP = "lookup"
     """Читает: read_only."""
@@ -186,10 +199,11 @@ class StandArg(StrEnum):
 
 class StandTools(ToolServer):
     """Реализация ToolServer в процессе теста: инструменты с пометками,
-    задержкой, большим и пустым результатом; вызовы считаются."""
+    задержкой, большим и пустым результатом; вызовы считаются. Карточки
+    идут под полными именами сервера MCP с именем SERVER."""
 
-    SERVER: ClassVar[str] = "stand"
-    """Имя стенда как сервера MCP в происхождении инструментов."""
+    SERVER: ClassVar[str] = StandServer.NAME.value
+    """Имя стенда как сервера MCP в полных именах инструментов."""
 
     QUERY_SCHEMA: ClassVar[Mapping[str, object]] = {
         "type": "object",
@@ -207,6 +221,7 @@ class StandTools(ToolServer):
         self, features: Mapping[str, Mapping[str, object]] | None = None
     ) -> None:
         self._outcomes = NodeOutcomes()
+        self._names = McpToolNames()
         self.calls: list[DagNode] = []
         self._features: dict[str, Mapping[str, object]] = {}
         if features is not None:
@@ -236,7 +251,7 @@ class StandTools(ToolServer):
             parameters = {"type": "object", "properties": {}}
 
         return ToolCard(
-            name=name.value,
+            name=name.full,
             description=f"stand tool {name.value}",
             parameters=dict(parameters),
             views=None,
@@ -249,15 +264,11 @@ class StandTools(ToolServer):
     def features(self) -> Mapping[str, Mapping[str, object]]:
         return self._features
 
-    def origins(self) -> ToolOrigins:
-        """Происхождение инструментов стенда: сервер MCP с именем SERVER."""
-        found: dict[str, McpToolOrigin] = {}
-        for card in self._cards:
-            found[card.name] = McpToolOrigin(
-                server=self.SERVER, tool=card.name, features=self._features
-            )
+    def described(self) -> Mapping[str, McpServerInfo]:
+        """Стенд для события хука: сервер MCP с именем SERVER."""
+        info = McpServerInfo(name=self.SERVER, features=self._features)
 
-        return ToolOrigins(found)
+        return {self.SERVER: info}
 
     async def submit(
         self, calls: Sequence[DagNode]
@@ -270,7 +281,7 @@ class StandTools(ToolServer):
         return pending
 
     async def _run(self, call: DagNode) -> NodeOutcome:
-        name = StandToolName(call.tool)
+        name = StandToolName(self._names.tool_of(call.tool))
         if name is StandToolName.SLEEP:
             await asyncio.sleep(self._number(call, "seconds"))
             return self._outcomes.of(call, MarkdownResult(text="slept"), False)

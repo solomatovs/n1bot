@@ -3,7 +3,8 @@
 Стенд поднимается с двумя MCP-серверами: обычным (официальный SDK, stdio),
 который о boba не знает, и своим boba-mcp отдельным процессом по HTTP.
 Серверы получает агент треда (`session/new.mcpServers`); фейковая модель
-зовёт их инструменты под именами, которые дал сервер. Проверяется то, что
+зовёт их инструменты под полными именами (сервер и имя инструмента на
+нём), шаг ленты подписан именем без сервера. Проверяется то, что
 видит пользователь: шаг инструмента в ленте, вложение у шага и сам файл по
 ссылке вложения, итог своего сервера в его собственной модели результата.
 
@@ -181,7 +182,7 @@ class TestMcpToolInTheFeed:
     ) -> None:
         chat = open_chat(mcp_stand, "")
 
-        step = _ask(chat, "add", {"a": 2, "b": 3})
+        step = _ask(chat, "mcp__standard__add", {"a": 2, "b": 3})
 
         if "add" not in str(step.get(StepField.NAME.value)):
             raise AssertionError(f"the step is named after the mcp tool: {step}")
@@ -203,7 +204,7 @@ class TestMcpToolInTheFeed:
     ) -> None:
         chat = open_chat(mcp_stand, "")
 
-        step = _ask(chat, "picture", {})
+        step = _ask(chat, "mcp__standard__picture", {})
 
         if "file saved to the workspace" not in str(step.get(StepField.OUTPUT.value)):
             raise AssertionError(f"the model is told where the file is: {step}")
@@ -239,7 +240,7 @@ class TestOwnServerInTheFeed:
     ) -> None:
         chat = open_chat(mcp_stand, "")
 
-        step = _ask(chat, "fake_echo", {"text": "hi", "repeat": 2})
+        step = _ask(chat, "mcp__boba__fake_echo", {"text": "hi", "repeat": 2})
 
         if "fake_echo" not in str(step.get(StepField.NAME.value)):
             raise AssertionError(f"the step is named after the tool: {step}")
@@ -253,7 +254,7 @@ class TestOwnServerInTheFeed:
         вошёл в чат, приходят при входе proxy; тело исполняется от его имени."""
         chat = open_chat(mcp_stand, "")
 
-        step = _ask(chat, "fake_whoami", {})
+        step = _ask(chat, "mcp__boba__fake_whoami", {})
 
         output = str(step.get(StepField.OUTPUT.value))
         if not output.startswith(f"{CHAT_LOGIN}|{CHAT_ROLE}|"):
@@ -269,7 +270,7 @@ class TestOwnServerInTheFeed:
         пользователем, и то, что открывает панель канваса."""
         chat = open_chat(mcp_stand, "")
 
-        step = _ask(chat, "fake_scope", {})
+        step = _ask(chat, "mcp__boba__fake_scope", {})
 
         output = str(step.get(StepField.OUTPUT.value)).strip()
         thread_id = str(step.get(StepField.THREAD_ID.value))
@@ -283,7 +284,7 @@ class TestOwnServerInTheFeed:
     ) -> None:
         chat = open_chat(mcp_stand, "")
 
-        step = _ask(chat, "fake_echo", {"text": "boom", "repeat": 1})
+        step = _ask(chat, "mcp__boba__fake_echo", {"text": "boom", "repeat": 1})
 
         if "fake backend is down" not in str(step.get(StepField.OUTPUT.value)):
             raise AssertionError(f"the step shows the cause of the failure: {step}")
@@ -299,7 +300,7 @@ class TestOwnServerInTheFeed:
         треду — тем же шагом с тем же id."""
         chat = open_chat(mcp_stand, "")
 
-        live = _ask(chat, "fake_query", {"sql": "select 42", "limit": 3})
+        live = _ask(chat, "mcp__boba__fake_query", {"sql": "select 42", "limit": 3})
 
         shown = str(live.get(StepField.INPUT.value))
         if not shown.startswith("```sql\nselect 42\n```"):
@@ -332,7 +333,7 @@ class TestOwnServerInTheFeed:
         панель читает окном через клиента MCP."""
         chat = open_chat(mcp_stand, "")
 
-        _ask(chat, "fake_echo", {"text": "journal", "repeat": 1})
+        _ask(chat, "mcp__boba__fake_echo", {"text": "journal", "repeat": 1})
 
         tool = chat.expand_last_tool()
         tool.locator('[aria-label="Show tool output"]').click()

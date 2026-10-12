@@ -19,6 +19,7 @@ from boba.cancellation import StopReason
 from boba.canvas.canvas import CanvasAction, CanvasElement
 from boba.chainlit.rendering.tool import ChatElements
 from boba.toolkit.calls import CallViews, ToolCallBase, ToolCallModels, ToolIntent
+from boba.toolkit.mcp_names import McpToolNames
 from boba.toolkit.result import ToolArtifact, VisualElement
 from chainlit.config import config as chainlit_config
 from chainlit.context import context
@@ -539,7 +540,8 @@ class StreamableTools(Protocol):
 
     @abstractmethod
     def streamable(self, tool_name: str) -> bool:
-        """Ведёт ли сервер журнал вызовов этого инструмента."""
+        """Ведёт ли сервер журнал вызовов этого инструмента; имя — то, под
+        которым инструмент видит модель (у сервера MCP — полное)."""
 
 
 class ChatView:
@@ -583,6 +585,7 @@ class ChatView:
         self._journal_buttons: dict[str, CustomElement] = {}
         self._progress: dict[str, ProgressText] = {}
         self._call_views = CallViews()
+        self._names = McpToolNames()
         self._pulse = self._new_pulse(None)
 
     @property
@@ -830,11 +833,14 @@ class ChatView:
         key: str | None,
         media: Mapping[str, str] | None,
     ) -> Step:
-        """Шаг начатого вызова. media — типы содержимого аргументов
-        инструмента сервера (имя → contentMediaType): по ним рисуется вход
-        шага; None — инструмент свой либо запись истории их не несёт, и
-        вход рисует модель вызова инструмента, а без неё — json-текст."""
+        """Шаг начатого вызова. name — имя инструмента у модели: у
+        инструмента сервера MCP оно полное, а шаг подписан именем без
+        сервера. media — типы содержимого аргументов инструмента сервера
+        (имя → contentMediaType): по ним рисуется вход шага; None —
+        инструмент свой либо запись истории их не несёт, и вход рисует
+        модель вызова инструмента, а без неё — json-текст."""
         await self.seal_answer()
+        shown = self._names.tool_of(name)
 
         call_args: Mapping[str, Any] = {}
         intent = ""
@@ -842,7 +848,7 @@ class ChatView:
             call_args = ToolIntent.without(args)
             intent = ToolIntent.of(args)
 
-        label = ToolStepLabel.of(name, intent)
+        label = ToolStepLabel.of(shown, intent)
 
         step = await self._child(
             StepStatus.IDLE.title(label), StepKind.TOOL, key, StepRole.TOOL
@@ -850,7 +856,7 @@ class ChatView:
         self._tool_names[step.id] = label
 
         if call_args:
-            view = self._call_of(name, call_args, media).chat_view()
+            view = self._call_of(shown, call_args, media).chat_view()
             if view.markdown:
                 step.input = view.markdown
                 step.show_input = True
@@ -886,7 +892,8 @@ class ChatView:
         self._journal_buttons.pop(step.id, None)
 
     def _stream_button(self, name: str, key: str | None) -> CustomElement | None:
-        """Кнопка журнала вызова: только live-лента и только потоковые тулы."""
+        """Кнопка журнала вызова: только live-лента и только потоковые тулы.
+        Журнал ищется по имени у модели, подпись кнопки — имя без сервера."""
         if not self._sink.emits_elements:
             return None
 
@@ -898,7 +905,10 @@ class ChatView:
 
         element = CustomElement(
             name=CanvasElement.STREAM.value,
-            props={str(CanvasAction.CALL_ID): key, "label": name},
+            props={
+                str(CanvasAction.CALL_ID): key,
+                "label": self._names.tool_of(name),
+            },
             thread_id=self._thread_id,
         )
         element_id = self.derive_id(self._thread_id, key, StepRole.STREAM)

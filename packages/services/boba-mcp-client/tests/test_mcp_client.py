@@ -19,7 +19,7 @@ from typing import ClassVar
 
 import httpx
 import pytest
-from pydantic import BaseModel, ConfigDict, SecretStr
+from pydantic import BaseModel, ConfigDict, SecretStr, ValidationError
 
 from boba.auth.config import ProxyAuthConfig
 from boba.canvas.keys import ObjectKey
@@ -53,7 +53,6 @@ from boba.stand.ui.stand import StandApp
 from boba.stand_core.context import CallStand
 from boba.toolkit.channels import ToolChannel
 from boba.toolkit.dag import (
-    CallDag,
     DagNode,
     NodeBody,
     NodeCalls,
@@ -79,10 +78,9 @@ pytestmark = pytest.mark.anyio
 SERVER = Path(__file__).with_name("standard_server.py")
 
 
-def _config(endpoint: HttpEndpoint | StdioCommand, prefix: str = "") -> McpServerConfig:
+def _config(endpoint: HttpEndpoint | StdioCommand) -> McpServerConfig:
     return McpServerConfig(
         endpoint=endpoint,
-        prefix=prefix,
         connect_timeout_sec=20.0,
         call_timeout_sec=60.0,
     )
@@ -100,7 +98,7 @@ async def stdio() -> AsyncIterator[McpToolServer]:
     endpoint = StdioCommand(command=sys.executable, args=(str(SERVER), "stdio"))
     server = McpToolServer(
         "standard",
-        _config(endpoint, prefix="std_"),
+        _config(endpoint),
         NamedBlocks(),
         DroppedSignals(),
         CallContexts(),
@@ -160,14 +158,14 @@ async def http(http_port: int) -> AsyncIterator[McpToolServer]:
 
 
 class TestStandardServerOverStdio:
-    async def test_tools_are_offered_with_the_prefix_and_the_server_schema(
+    async def test_tools_are_offered_under_full_names_with_the_server_schema(
         self, stdio: McpToolServer
     ) -> None:
         names = sorted(tool.name for tool in stdio.tools())
         if names != TestFailureStand.STANDARD_TOOLS:
-            raise AssertionError(f"the server's tools under the prefix: {names}")
+            raise AssertionError(f"the server's tools under full names: {names}")
 
-        add = next(tool for tool in stdio.tools() if tool.name == "std_add")
+        add = next(tool for tool in stdio.tools() if tool.name == "mcp__standard__add")
         schema = add.parameters
         if not isinstance(schema, dict):
             raise AssertionError(f"the stub carries the server's JSON schema: {schema}")
@@ -179,11 +177,13 @@ class TestStandardServerOverStdio:
     async def test_annotations_become_hints(self, stdio: McpToolServer) -> None:
         by_name = {tool.name: tool for tool in stdio.tools()}
 
-        assert by_name["std_add"].hints == ToolHints(read_only=True, destructive=True)
-        assert by_name["std_shout"].hints == ToolHints(
+        assert by_name["mcp__standard__add"].hints == ToolHints(
+            read_only=True, destructive=True
+        )
+        assert by_name["mcp__standard__shout"].hints == ToolHints(
             read_only=False, destructive=False
         )
-        assert by_name["std_broken"].hints == ToolHints()
+        assert by_name["mcp__standard__broken"].hints == ToolHints()
 
     async def test_standard_server_declares_no_boba_features(
         self, stdio: McpToolServer
@@ -196,7 +196,7 @@ class TestStandardServerOverStdio:
     async def test_text_result_becomes_a_tool_message(
         self, stdio: McpToolServer
     ) -> None:
-        message = await stdio.call(_call("std_add", a=2, b=3))
+        message = await stdio.call(_call("mcp__standard__add", a=2, b=3))
 
         if message.errored or message.content != "5":
             raise AssertionError(f"the text of the result is the content: {message}")
@@ -204,13 +204,13 @@ class TestStandardServerOverStdio:
             raise AssertionError(
                 f"a plain result is a text artifact: {message.artifact}"
             )
-        if message.key != "call-std_add":
+        if message.key != "call-mcp__standard__add":
             raise AssertionError(f"the message answers its call: {message}")
 
     async def test_tool_error_is_an_error_message_with_the_server_text(
         self, stdio: McpToolServer
     ) -> None:
-        message = await stdio.call(_call("std_broken"))
+        message = await stdio.call(_call("mcp__standard__broken"))
 
         if not message.errored:
             raise AssertionError(f"isError becomes the error status: {message}")
@@ -226,7 +226,7 @@ class TestStandardServerOverStdio:
     async def test_non_text_block_is_named_in_the_text(
         self, stdio: McpToolServer
     ) -> None:
-        message = await stdio.call(_call("std_picture"))
+        message = await stdio.call(_call("mcp__standard__picture"))
 
         if "[image/png, 24 bytes]" not in str(message.content):
             raise AssertionError(f"an image block is named, not dropped: {message}")
@@ -254,7 +254,7 @@ class TestStandardServerOverStdio:
         )
         await server.open()
         try:
-            message = await server.call(_call("picture"))
+            message = await server.call(_call("mcp__standard__picture"))
         finally:
             await server.close()
 
@@ -262,7 +262,7 @@ class TestStandardServerOverStdio:
             raise AssertionError(f"the host gets the block once: {received}")
 
         call_id, index, mime, data = received[0]
-        if (call_id, index, mime) != ("call-picture", 0, "image/png"):
+        if (call_id, index, mime) != ("call-mcp__standard__picture", 0, "image/png"):
             raise AssertionError(f"the block is described to the host: {received[0]}")
         if not data.startswith(b"\x89PNG"):
             raise AssertionError(f"the host gets the decoded bytes: {data[:8]!r}")
@@ -271,7 +271,10 @@ class TestStandardServerOverStdio:
 
     async def test_calls_of_one_answer_run_together(self, stdio: McpToolServer) -> None:
         pending = await stdio.submit(
-            [_call("std_add", a=1, b=1), _call("std_shout", text="hi")]
+            [
+                _call("mcp__standard__add", a=1, b=1),
+                _call("mcp__standard__shout", text="hi"),
+            ]
         )
         first, second = await asyncio.gather(*pending)
 
@@ -281,7 +284,7 @@ class TestStandardServerOverStdio:
 
 class TestStandardServerOverHttp:
     async def test_call_goes_over_streamable_http(self, http: McpToolServer) -> None:
-        message = await http.call(_call("shout", text="over http"))
+        message = await http.call(_call("mcp__standard__shout", text="over http"))
 
         if message.content != "OVER HTTP":
             raise AssertionError(f"the call reaches the http server: {message}")
@@ -323,7 +326,7 @@ class TestUnreachableServer:
     ) -> None:
         await http.close()
 
-        message = await http.call(_call("add", a=4, b=4))
+        message = await http.call(_call("mcp__standard__add", a=4, b=4))
 
         if message.content != "8":
             raise AssertionError(f"the closed session is opened again: {message}")
@@ -348,7 +351,7 @@ class TestPublicServers:
         await self._reachable(self.DEEPWIKI)
         server = McpToolServer(
             "deepwiki",
-            _config(self.DEEPWIKI, prefix="dw_"),
+            _config(self.DEEPWIKI),
             NamedBlocks(),
             DroppedSignals(),
             CallContexts(),
@@ -358,12 +361,12 @@ class TestPublicServers:
         await server.open()
         try:
             names = [tool.name for tool in server.tools()]
-            if "dw_read_wiki_structure" not in names:
+            if "mcp__deepwiki__read_wiki_structure" not in names:
                 raise AssertionError(f"deepwiki offers its tools: {names}")
 
             message = await server.call(
                 _call(
-                    "dw_read_wiki_structure",
+                    "mcp__deepwiki__read_wiki_structure",
                     repoName="modelcontextprotocol/python-sdk",
                 )
             )
@@ -387,10 +390,14 @@ class TestPublicServers:
         await server.open()
         try:
             names = [tool.name for tool in server.tools()]
-            if "resolve-library-id" not in names:
+            if "mcp__context7__resolve-library-id" not in names:
                 raise AssertionError(f"context7 offers its tools: {names}")
 
-            tool = next(t for t in server.tools() if t.name == "resolve-library-id")
+            tool = next(
+                t
+                for t in server.tools()
+                if t.name == "mcp__context7__resolve-library-id"
+            )
             schema = tool.parameters
             if not isinstance(schema, dict):
                 raise AssertionError(f"the stub carries a JSON schema: {schema}")
@@ -399,12 +406,34 @@ class TestPublicServers:
             for name in schema.get("required", []):
                 args[name] = "fastapi"
 
-            message = await server.call(_call("resolve-library-id", **args))
+            message = await server.call(
+                _call("mcp__context7__resolve-library-id", **args)
+            )
         finally:
             await server.close()
 
         if not str(message.content).strip():
             raise AssertionError(f"context7 answers with text: {message}")
+
+
+class TestServerNames:
+    """Имя сервера входит в полные имена его инструментов: негодное имя
+    секция [mcp.servers] не принимает."""
+
+    @pytest.mark.parametrize(
+        ("name", "complaint"),
+        [("my__srv", "contains '__'"), ("srv_", "ends with '_'")],
+    )
+    def test_server_name_that_breaks_tool_names_is_refused(
+        self, name: str, complaint: str
+    ) -> None:
+        endpoint = StdioCommand(command=sys.executable, args=(str(SERVER), "stdio"))
+
+        with pytest.raises(ValidationError) as refused:
+            McpServersConfig(servers={name: _config(endpoint)})
+
+        if name not in str(refused.value) or complaint not in str(refused.value):
+            raise AssertionError(f"the refusal names the server and why: {refused}")
 
 
 class TestServersOfASession:
@@ -433,9 +462,7 @@ class TestServersOfASession:
         finally:
             await servers.stop()
 
-        offered = TestFailureStand.STANDARD_TOOLS
-        expected = [name.removeprefix("std_") for name in offered]
-        if names != expected:
+        if names != TestFailureStand.STANDARD_TOOLS:
             raise AssertionError(f"only the live server gives tools: {names}")
 
     async def test_session_without_named_servers_gets_nothing(self) -> None:
@@ -561,7 +588,7 @@ class TestScopeOfTheCall:
 
         try:
             with stand.contexts.applied(stand.context(self.THREAD)):
-                message = await server.call(_call("fake_scope"))
+                message = await server.call(_call("mcp__boba__fake_scope"))
         finally:
             await server.close()
 
@@ -596,7 +623,7 @@ class TestLinkedCalls:
         emit = DagNode.model_validate(
             {
                 "key": "call-emit",
-                "tool": "fake_emit",
+                "tool": "mcp__boba__fake_emit",
                 "args": {
                     "prefix": "a",
                     "count": 3,
@@ -609,7 +636,7 @@ class TestLinkedCalls:
         collect = DagNode.model_validate(
             {
                 "key": "call-collect",
-                "tool": "fake_collect",
+                "tool": "mcp__boba__fake_collect",
                 "args": {
                     "marker": str(marker),
                     "fail": False,
@@ -664,7 +691,7 @@ class TestLinkedCalls:
             },
         ]
         whole = DagNode.model_validate(
-            {"key": "call-wf", "tool": "workflow", "args": {"nodes": nodes}}
+            {"key": "call-wf", "tool": "mcp__boba__workflow", "args": {"nodes": nodes}}
         )
 
         dag = McpToolServer(
@@ -709,7 +736,7 @@ class TestLinkedCalls:
         emit = DagNode.model_validate(
             {
                 "key": "call-lonely",
-                "tool": "fake_emit",
+                "tool": "mcp__boba__fake_emit",
                 "args": {
                     "prefix": "a",
                     "count": 1,
@@ -787,7 +814,7 @@ class TestWorkspaceFiles:
         self, dag: McpToolServer
     ) -> None:
         names = [tool.name for tool in dag.tools()]
-        if "file_upload" in names:
+        if "mcp__boba__file_upload" in names:
             raise AssertionError(f"the client uploads files itself: {names}")
 
 
@@ -861,7 +888,7 @@ class TestBobaMcpJournal:
         heard = HeardSignals()
         server = await self._opened(boba_mcp_stand, heard)
         try:
-            call = _call("fake_progress", steps=2, pause=0.6)
+            call = _call("mcp__boba__fake_progress", steps=2, pause=0.6)
             message = await server.call(call)
         finally:
             await server.close()
@@ -895,7 +922,7 @@ class TestBobaMcpJournal:
             },
         ]
         try:
-            message = await server.call(_call("workflow", nodes=nodes))
+            message = await server.call(_call("mcp__boba__workflow", nodes=nodes))
         finally:
             await server.close()
 
@@ -922,8 +949,8 @@ class TestBobaMcpJournal:
         по ним вход шага после конца хода."""
         server = await self._opened(boba_mcp_stand, HeardSignals())
         try:
-            typed = _call("fake_query", sql="select 1", limit=5)
-            plain = _call("fake_echo", text="hi", repeat=1)
+            typed = _call("mcp__boba__fake_query", sql="select 1", limit=5)
+            plain = _call("mcp__boba__fake_echo", text="hi", repeat=1)
             asked = await server.call(typed)
             echoed = await server.call(plain)
         finally:
@@ -946,7 +973,7 @@ class TestBobaMcpJournal:
             {"key": "e", "tool": "fake_echo", "args": {"text": "hi", "repeat": 1}},
         ]
         try:
-            call = _call("workflow", nodes=nodes)
+            call = _call("mcp__boba__workflow", nodes=nodes)
             outcome = await server.call(call)
         finally:
             await server.close()
@@ -972,7 +999,7 @@ class TestBobaMcpJournal:
         heard = HeardSignals()
         server = await self._opened(boba_mcp_stand, heard)
         try:
-            call = _call("fake_echo", text="hi", repeat=2)
+            call = _call("mcp__boba__fake_echo", text="hi", repeat=2)
             message = await server.call(call)
             if message.errored:
                 raise AssertionError(f"the call succeeds: {message}")
@@ -1004,7 +1031,7 @@ class TestBobaMcpJournal:
     ) -> None:
         server = await self._opened(boba_mcp_stand, DroppedSignals())
         try:
-            call = _call("fake_echo", text="hi", repeat=2)
+            call = _call("mcp__boba__fake_echo", text="hi", repeat=2)
             message = await server.call(call)
             address = message.journal
             files = server.journal_files()
@@ -1060,7 +1087,7 @@ class TestBobaMcpJournal:
         )
         await server.open()
         try:
-            await server.call(_call("add", a=2, b=3))
+            await server.call(_call("mcp__standard__add", a=2, b=3))
             request = JournalRead(run="r", node="n", channel=ToolChannel.STDOUT)
             window = await server.journal(request)
         finally:
@@ -1125,7 +1152,7 @@ class TestSignInAsTheUser:
             if len(ports) != 1:
                 raise AssertionError(f"the user gets the port of the service: {ports}")
 
-            message = await ports[0].call(_call("fake_whoami"))
+            message = await ports[0].call(_call("mcp__boba__fake_whoami"))
         finally:
             await servers.stop()
 
@@ -1144,7 +1171,7 @@ class TestSignInAsTheUser:
         finally:
             await servers.stop()
 
-        if names != ["fake_echo"]:
+        if names != ["mcp__narrow__fake_echo"]:
             raise AssertionError(f"the endpoint decides the tools: {names}")
 
     async def test_endpoint_outside_the_roles_gives_no_port(
@@ -1183,7 +1210,7 @@ class TestBobaMcpServer:
     """Свой сервер: тот же стандартный путь плюс модель результата."""
 
     async def test_result_revives_as_its_model(self, dag: McpToolServer) -> None:
-        message = await dag.call(_call("fake_echo", text="hi", repeat=2))
+        message = await dag.call(_call("mcp__boba__fake_echo", text="hi", repeat=2))
 
         if message.errored:
             raise AssertionError(f"the call succeeds: {message}")
@@ -1197,18 +1224,20 @@ class TestBobaMcpServer:
     ) -> None:
         """Вид аргументов клиент выводит из схемы: у аргументов без типа
         содержимого особого вида нет, служебные параметры сервер не шлёт."""
-        echo = next(tool for tool in dag.tools() if tool.name == "fake_echo")
+        echo = next(tool for tool in dag.tools() if tool.name == "mcp__boba__fake_echo")
         if echo.views:
             raise AssertionError(f"plain arguments have no special view: {echo}")
 
-        workflow = next(tool for tool in dag.tools() if tool.name == CallDag.WORKFLOW)
+        workflow = next(
+            tool for tool in dag.tools() if tool.name == "mcp__boba__workflow"
+        )
         if workflow.views:
             raise AssertionError(f"a built-in node has no special view: {workflow}")
 
     async def test_failure_keeps_the_server_failure_model(
         self, dag: McpToolServer
     ) -> None:
-        message = await dag.call(_call("fake_echo", text="boom", repeat=1))
+        message = await dag.call(_call("mcp__boba__fake_echo", text="boom", repeat=1))
 
         failure = message.artifact
         if not isinstance(failure, FailureResult):
@@ -1246,7 +1275,7 @@ class TestBobaMcpServer:
             },
         ]
 
-        message = await dag.call(_call("workflow", nodes=nodes))
+        message = await dag.call(_call("mcp__boba__workflow", nodes=nodes))
 
         outcome = message.artifact
         if not isinstance(outcome, WorkflowResult):
@@ -1278,7 +1307,9 @@ class TestBobaMcpServer:
         )
         value = ConnectionSeal(SealFeature.model_validate(declared).key).seal(sealed)
 
-        message = await dag.call(_call("fake_connection_host", connection=value))
+        message = await dag.call(
+            _call("mcp__boba__fake_connection_host", connection=value)
+        )
 
         if message.errored or message.content != "db.local|orders":
             raise AssertionError(f"the body got the sealed profile: {message}")
@@ -1315,7 +1346,7 @@ class TestBobaMcpServer:
             }
         ]
 
-        message = await dag.call(_call("workflow", nodes=nodes))
+        message = await dag.call(_call("mcp__boba__workflow", nodes=nodes))
 
         outcome = message.artifact
         if not isinstance(outcome, WorkflowResult):
@@ -1332,7 +1363,9 @@ class TestBobaMcpServer:
     async def test_plain_name_is_refused_by_the_server(
         self, dag: McpToolServer
     ) -> None:
-        message = await dag.call(_call("fake_connection_host", connection="main"))
+        message = await dag.call(
+            _call("mcp__boba__fake_connection_host", connection="main")
+        )
 
         if not message.errored:
             raise AssertionError(f"an unsealed name is refused: {message}")
@@ -1495,10 +1528,12 @@ class TestBobaMcpService:
         self, service: McpToolServer
     ) -> None:
         names = [tool.name for tool in service.tools()]
-        if "bash" not in names or "workflow" not in names:
+        if "mcp__boba__bash" not in names or "mcp__boba__workflow" not in names:
             raise AssertionError(f"the service offers its plugin tools: {names}")
 
-        message = await service.call(_call("bash", command="echo from the service"))
+        message = await service.call(
+            _call("mcp__boba__bash", command="echo from the service")
+        )
 
         artifact = message.artifact
         if not isinstance(artifact, ShellResult):
@@ -1515,11 +1550,11 @@ class TestBobaMcpService:
         other = "8a1d7f2c-3b54-4e0a-9c1e-2f4b6d8a0c12"
 
         with call_stand.contexts.applied(call_stand.context(first)):
-            await service.call(_call("bash", command="echo kept > note.txt"))
-            again = await service.call(_call("bash", command="cat note.txt"))
+            await service.call(_call("mcp__boba__bash", command="echo kept > note.txt"))
+            again = await service.call(_call("mcp__boba__bash", command="cat note.txt"))
 
         with call_stand.contexts.applied(call_stand.context(other)):
-            apart = await service.call(_call("bash", command="cat note.txt"))
+            apart = await service.call(_call("mcp__boba__bash", command="cat note.txt"))
 
         seen = again.artifact
         if not isinstance(seen, ShellResult) or seen.stdout.strip() != "kept":
@@ -1536,22 +1571,21 @@ class TestFailureStand:
     списка инструментов."""
 
     STANDARD_TOOLS: ClassVar[list[str]] = [
-        "std_add",
-        "std_broken",
-        "std_die",
-        "std_large",
-        "std_picture",
-        "std_progress",
-        "std_shout",
-        "std_sleep_for",
-        "std_toggle_extra",
+        "mcp__standard__add",
+        "mcp__standard__broken",
+        "mcp__standard__die",
+        "mcp__standard__large",
+        "mcp__standard__picture",
+        "mcp__standard__progress",
+        "mcp__standard__shout",
+        "mcp__standard__sleep_for",
+        "mcp__standard__toggle_extra",
     ]
 
     async def _open(self, call_timeout_sec: float) -> McpToolServer:
         endpoint = StdioCommand(command=sys.executable, args=(str(SERVER), "stdio"))
         config = McpServerConfig(
             endpoint=endpoint,
-            prefix="std_",
             connect_timeout_sec=20.0,
             call_timeout_sec=call_timeout_sec,
         )
@@ -1569,7 +1603,7 @@ class TestFailureStand:
         return server
 
     async def test_large_result_arrives_whole(self, stdio: McpToolServer) -> None:
-        message = await stdio.call(_call("std_large", size=200_000))
+        message = await stdio.call(_call("mcp__standard__large", size=200_000))
 
         assert not message.errored, message
         assert len(str(message.content)) == 200_000
@@ -1579,7 +1613,7 @@ class TestFailureStand:
     ) -> None:
         server = await self._open(call_timeout_sec=1.0)
         try:
-            message = await server.call(_call("std_sleep_for", seconds=5.0))
+            message = await server.call(_call("mcp__standard__sleep_for", seconds=5.0))
         finally:
             await server.close()
 
@@ -1591,7 +1625,7 @@ class TestFailureStand:
     async def test_server_dying_mid_call_is_a_transport_failure(self) -> None:
         server = await self._open(call_timeout_sec=10.0)
         try:
-            message = await server.call(_call("std_die"))
+            message = await server.call(_call("mcp__standard__die"))
         finally:
             await server.close()
 
@@ -1604,13 +1638,13 @@ class TestFailureStand:
         """Список читается при открытии: сервер меняет его, уведомление
         клиент пока не слушает — это работа этапа 3 плана агента."""
         before = sorted(tool.name for tool in stdio.tools())
-        toggled = await stdio.call(_call("std_toggle_extra"))
+        toggled = await stdio.call(_call("mcp__standard__toggle_extra"))
 
         assert before == self.STANDARD_TOOLS
         assert not toggled.errored, toggled
         assert toggled.content == "extra on: True"
         assert sorted(tool.name for tool in stdio.tools()) == before
 
-        answered = await stdio.call(_call("std_extra"))
+        answered = await stdio.call(_call("mcp__standard__extra"))
 
         assert answered.errored, answered

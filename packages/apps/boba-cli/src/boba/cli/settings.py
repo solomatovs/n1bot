@@ -68,6 +68,7 @@ from boba.mcp_client.client import (
     NoAuth,
     StdioCommand,
 )
+from boba.toolkit.mcp_names import McpToolNameError, McpToolNames
 
 __all__ = [
     "Arguments",
@@ -987,6 +988,7 @@ class Settings:
         self._home = home
         self._cwd = cwd
         self._json = JsonText()
+        self._names = McpToolNames()
         self._merge = LayerMerge()
         self._guard = SecretsGuard()
 
@@ -1192,23 +1194,32 @@ class Settings:
             ).strip()
 
     def _servers(self, client: McpClientJson) -> dict[str, McpServerJson]:
-        """Серверы `.mcp.json` проекта, прошедшие выбор `mcp` настроек."""
+        """Серверы `.mcp.json` проекта, прошедшие выбор `mcp` настроек.
+
+        Ошибки:
+        SettingsError — файл не разобран либо имя сервера не годится для
+            полных имён его инструментов.
+        """
         servers: dict[str, McpServerJson] = {}
         project = self._cwd / SettingsFile.MCP.value
         if project.is_file():
             text = self._json.read_file(project, ".mcp.json")
             servers.update(self._mcp_json(text, str(project)).mcp_servers)
 
+        enabled = client.enabled_servers
         chosen: dict[str, McpServerJson] = {}
         for name, server in servers.items():
             if name in client.disabled_servers:
                 continue
 
-            if (
-                client.enabled_servers is not None
-                and name not in client.enabled_servers
-            ):
+            if enabled is not None and name not in enabled:
                 continue
+
+            try:
+                self._names.checked_server(name)
+            except McpToolNameError as exc:
+                msg = f".mcp.json at {project} names a server that is refused: {exc}"
+                raise SettingsError(msg) from exc
 
             chosen[name] = server
 
