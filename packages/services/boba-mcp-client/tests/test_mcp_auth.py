@@ -7,15 +7,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import socket
-import subprocess
-import sys
-import time
 from collections.abc import AsyncIterator, Iterator, Sequence
 from pathlib import Path
 from typing import ClassVar
 
-import httpx
 import pytest
 from pydantic import SecretStr, TypeAdapter
 
@@ -36,67 +31,15 @@ from boba.mcp_client.client import (
     NoAuth,
     ProxyAuth,
 )
+from boba.stand.service_signin import FakeServiceProcess
 from boba.toolkit.dag import DagNode
 from boba.toolrun.hosted import DirectCalls
 
 pytestmark = pytest.mark.anyio
 
 
-class AuthStand:
-    """Сервис boba-mcp стенда отдельным процессом с названным сроком токена
-    доступа: клиент видит его только по сети."""
-
-    REPO: ClassVar[Path] = Path(__file__).resolve().parents[4]
-    STAND: ClassVar[Path] = (
-        REPO / "packages" / "apps" / "boba-mcp" / "tests" / "service_stand.py"
-    )
-    HOST: ClassVar[str] = "127.0.0.1"
-    ENDPOINT: ClassVar[str] = "/mcp/service"
-    METADATA: ClassVar[str] = "/.well-known/oauth-authorization-server"
-    WAIT_SEC: ClassVar[float] = 60.0
-
-    LOGIN: ClassVar[str] = "carol"
-    PASSWORD: ClassVar[str] = "carol-pw"
-    ROLELESS: ClassVar[str] = "ghost"
-    ROLELESS_PASSWORD: ClassVar[str] = "ghost-pw"
-    CLIENT_ID: ClassVar[str] = "stand-chat"
-    CLIENT_SECRET: ClassVar[str] = "stand-client-secret"
-    PROXY_SECRET: ClassVar[str] = "stand-proxy-secret"
-
-    def __init__(self, workdir: Path, token_ttl_sec: int) -> None:
-        with socket.socket() as probe:
-            probe.bind((self.HOST, 0))
-            self.port: int = probe.getsockname()[1]
-
-        self.token_ttl_sec = token_ttl_sec
-        self._process = subprocess.Popen(
-            [
-                sys.executable,
-                str(self.STAND),
-                str(self.port),
-                str(workdir),
-                str(token_ttl_sec),
-            ]
-        )
-
-    def wait(self) -> None:
-        """Ждёт, пока сервер авторизации стенда ответит метаданными."""
-        url = f"http://{self.HOST}:{self.port}{self.METADATA}"
-        deadline = time.monotonic() + self.WAIT_SEC
-        while time.monotonic() < deadline:
-            try:
-                if httpx.get(url).status_code == httpx.codes.OK:
-                    return
-            except httpx.TransportError:
-                pass
-
-            time.sleep(0.2)
-
-        raise AssertionError(f"the stand service did not answer {url}")
-
-    def stop(self) -> None:
-        self._process.terminate()
-        self._process.wait(timeout=10)
+class AuthStand(FakeServiceProcess):
+    """Сервис стенда с записями способов входа клиента и портом к нему."""
 
     def local(self, login: str, password: str) -> LocalAuth:
         return LocalAuth(login=login, password=SecretStr(password))
