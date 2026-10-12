@@ -29,6 +29,9 @@ class Selector(StrEnum):
     INPUT = "#chat-input"
     SUBMIT = "#chat-submit"
     STEP = "[data-step-type]"
+    STEP_TOGGLE = 'button[id^="step-"]'
+    TOGGLE_STATE = "data-state"
+    OPENED = "open"
     PROFILES = "#chat-profiles"
     PROFILE_ITEM = '[data-test^="select-item:"]'
 
@@ -178,8 +181,17 @@ class ChatPage:
         return self.page.locator(Selector.of_type(step_type))
 
     def expand_process(self) -> None:
-        """Раскрывает контейнер процесса: вложенные шаги свёрнуты по умолчанию."""
-        self._expand(StepKind.RUN.value)
+        """Раскрывает контейнер процесса: вложенные шаги свёрнуты по умолчанию.
+
+        Контейнер без вложенных шагов фронт рисует строкой, которую нечем
+        раскрыть: клик по ней пропал бы, а шаги пришли бы уже в свёрнутый
+        контейнер. Поэтому клик ждёт, пока у контейнера появится раскрытие.
+        """
+        container = self.page.locator(Selector.of_type(StepKind.RUN.value)).first
+        container.locator(Selector.STEP_TOGGLE.value).first.wait_for(
+            state="attached", timeout=self.default_timeout_ms
+        )
+        self._open(container)
 
     def expand_step(self, step_type: str) -> Locator:
         """Раскрывает вложенный шаг и отдаёт его локатор: вывод тоже свёрнут."""
@@ -221,8 +233,7 @@ class ChatPage:
             msg = self._missing(f"step {step_type}", Selector.of_type(step_type))
             raise ChatPageError(msg)
 
-        node.first.click()
-        self.page.wait_for_timeout(300)
+        self._open(node.first)
 
     def _expand_last(self, step_type: str) -> None:
         node = self.page.locator(Selector.of_type(step_type))
@@ -230,7 +241,21 @@ class ChatPage:
             msg = self._missing(f"step {step_type}", Selector.of_type(step_type))
             raise ChatPageError(msg)
 
-        node.last.click()
+        self._open(node.last)
+
+    def _open(self, step: Locator) -> None:
+        """Раскрывает шаг, если он свёрнут. Клик идёт в заголовок шага и только
+        по свёрнутому: повторный клик свернул бы шаг, раскрытый раньше, а конец
+        хода сворачивает контейнер процесса сам. Шаг без содержимого фронт
+        рисует строкой без раскрытия — раскрывать нечего."""
+        toggle = step.locator(Selector.STEP_TOGGLE.value).first
+        if not toggle.count():
+            return
+
+        if toggle.get_attribute(Selector.TOGGLE_STATE.value) == Selector.OPENED.value:
+            return
+
+        toggle.click()
         self.page.wait_for_timeout(300)
 
     def await_step(self, step_type: str, timeout_ms: float | None = None) -> Locator:
