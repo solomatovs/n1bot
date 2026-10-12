@@ -35,6 +35,7 @@ from boba.prompt_assembly.records import (
 )
 
 
+
 class LoaderError(Exception):
     """Журнал не загружен."""
 
@@ -202,11 +203,7 @@ class RowKit:
 
     def __init__(self) -> None:
         self._text = JsText()
-        self._hook_prefixes = (
-            "[structured-output-enforce]",
-            "[projects-reply-gate]",
-            "You ended the turn without calling SendUserMessage.",
-        )
+        self._hook_prefixes = ("[structured-output-enforce]", "[projects-reply-gate]", "You ended the turn without calling SendUserMessage.")
         self._hook_events = ("Stop", "TeammateIdle", "TaskCreated", "TaskCompleted")
         self._retry_texts = frozenset(
             (
@@ -217,13 +214,7 @@ class RowKit:
             )
         )
         self._invisible_attachments = frozenset(
-            (
-                "thinking_drop",
-                "credential_org",
-                "prompt_snapshot",
-                "prompt_render_point",
-                "deferred_tools_record",
-            )
+            ("thinking_drop", "credential_org", "prompt_snapshot", "prompt_render_point", "deferred_tools_record")
         )
 
     def tool_use_ids(self, row: Row) -> list[str]:
@@ -431,11 +422,7 @@ class RowKit:
         if not isinstance(text, str):
             text = ""
 
-        return self._text.trim(text) not in (
-            "",
-            Phrase.NO_CONTENT,
-            Phrase.EMPTY_REMOVED,
-        )
+        return self._text.trim(text) not in ("", Phrase.NO_CONTENT, Phrase.EMPTY_REMOVED)
 
     def blank(self, blocks: Sequence[Raw]) -> bool:
         """sye: после ведущих thinking идут только пустые text-блоки, и хотя бы один есть."""
@@ -447,11 +434,7 @@ class RowKit:
             if block.get(Key.TYPE) != BlockType.TEXT:
                 return False
             text = block.get(Key.TEXT)
-            if isinstance(text, str) and self._text.trim(text) not in (
-                "",
-                Phrase.NO_CONTENT,
-                Phrase.EMPTY_REMOVED,
-            ):
+            if isinstance(text, str) and self._text.trim(text) not in ("", Phrase.NO_CONTENT, Phrase.EMPTY_REMOVED):
                 return False
             seen_text = True
 
@@ -535,9 +518,7 @@ class RowRepair:
                 return row
             if self._text.trim(content) == "":
                 return None
-            return row.with_content(
-                [{Key.TYPE.value: BlockType.TEXT.value, Key.TEXT.value: content}]
-            )
+            return row.with_content([{Key.TYPE.value: BlockType.TEXT.value, Key.TEXT.value: content}])
 
         if not isinstance(content, list):
             return None
@@ -621,9 +602,7 @@ class PreservedRelink:
 
         for uuid in uuids:
             if uuid not in messages:
-                self._notes.append(
-                    f"relink aborted: preserved uuid {uuid} is not in the transcript, nothing relinked or removed"
-                )
+                self._notes.append(f"relink aborted: preserved uuid {uuid} is not in the transcript, nothing relinked or removed")
                 return None
 
         kept = set(uuids)
@@ -646,9 +625,7 @@ class PreservedRelink:
 
         return uuids[-1]
 
-    def _resolve(
-        self, metadata: Raw, messages: Mapping[str, Row]
-    ) -> tuple[str, list[str]] | None:
+    def _resolve(self, metadata: Raw, messages: Mapping[str, Row]) -> tuple[str, list[str]] | None:
         listed = metadata.get("preservedMessages")
         if isinstance(listed, dict):
             names: list[str] = []
@@ -679,14 +656,10 @@ class PreservedRelink:
             if parent is not None:
                 cursor = messages.get(parent)
 
-        self._notes.append(
-            "relink aborted: walking preservedSegment from tail to head broke off"
-        )
+        self._notes.append("relink aborted: walking preservedSegment from tail to head broke off")
         return None
 
-    def _chain_after(
-        self, anchor: str, uuids: Sequence[str], messages: dict[str, Row]
-    ) -> None:
+    def _chain_after(self, anchor: str, uuids: Sequence[str], messages: dict[str, Row]) -> None:
         tail = uuids[-1]
         parent = anchor
 
@@ -719,9 +692,7 @@ class LeafSelector:
         self._kit = kit
         self._notes = notes
 
-    def select(
-        self, messages: Mapping[str, Row], hints: LeafHints, relinked: str | None
-    ) -> list[str]:
+    def select(self, messages: Mapping[str, Row], hints: LeafHints, relinked: str | None) -> list[str]:
         if hints.cleared:
             return []
 
@@ -731,12 +702,7 @@ class LeafSelector:
             explicit_ok = not messages[marker].sidechain
 
         fallback = hints.last_written
-        if (
-            not hints.saw_marker
-            and fallback
-            and hints.newest
-            and hints.newest != fallback
-        ):
+        if not hints.saw_marker and fallback and hints.newest and hints.newest != fallback:
             fallback = self._newest_descendant(messages, fallback)
 
         if relinked is None or explicit_ok:
@@ -761,14 +727,7 @@ class LeafSelector:
 
         return [top]
 
-    def continues(
-        self,
-        messages: Mapping[str, Row],
-        start: str,
-        marker: str,
-        direct: bool,
-        through_batch: bool,
-    ) -> bool:
+    def continues(self, messages: Mapping[str, Row], start: str, marker: str, direct: bool, through_batch: bool) -> bool:
         """Okn: ветка от start вверх проходит через marker либо через ответ, которому marker принадлежит."""
         owner: Row | None = None
         results: list[str] = []
@@ -815,12 +774,7 @@ class LeafSelector:
                 if not same_response and not self._kit.continues(row, response):
                     in_response = False
 
-            if (
-                owner is not None
-                and row is not None
-                and row.uuid == owner.uuid
-                and previous is not None
-            ):
+            if owner is not None and row is not None and row.uuid == owner.uuid and previous is not None:
                 if self._sibling_result(previous, owner_ids, results, by_attachment):
                     return True
 
@@ -831,22 +785,14 @@ class LeafSelector:
 
         return False
 
-    def _hinted(
-        self,
-        messages: Mapping[str, Row],
-        hints: LeafHints,
-        relinked: str | None,
-        fallback: str,
-    ) -> str | None:
+    def _hinted(self, messages: Mapping[str, Row], hints: LeafHints, relinked: str | None, fallback: str) -> str | None:
         leaf = ""
         if hints.prompt_leaf in messages:
             leaf = hints.prompt_leaf
 
         last = hints.last_written
         if leaf and not hints.explicit and last in messages and last != leaf:
-            if self.continues(
-                messages, last, leaf, direct=True, through_batch=not hints.strict
-            ):
+            if self.continues(messages, last, leaf, direct=True, through_batch=not hints.strict):
                 leaf = last
 
         if relinked is None and not leaf:
@@ -863,9 +809,7 @@ class LeafSelector:
 
         while row is not None:
             if row.uuid in seen:
-                self._notes.append(
-                    f"parentUuid cycle while looking for the leaf above {start}"
-                )
+                self._notes.append(f"parentUuid cycle while looking for the leaf above {start}")
                 return None
             seen.add(row.uuid)
             if row.kind in (RecordType.USER, RecordType.ASSISTANT):
@@ -907,13 +851,7 @@ class LeafSelector:
         if not hints.last_written:
             return True
 
-        return not self.continues(
-            messages,
-            hints.last_written,
-            hints.prompt_leaf,
-            direct=False,
-            through_batch=not hints.strict,
-        )
+        return not self.continues(messages, hints.last_written, hints.prompt_leaf, direct=False, through_batch=not hints.strict)
 
     def _newest_descendant(self, messages: Mapping[str, Row], root: str) -> str:
         """yr: самая поздняя по timestamp запись главной цепочки среди потомков root."""
@@ -932,9 +870,7 @@ class LeafSelector:
 
         return best
 
-    def _descends(
-        self, messages: Mapping[str, Row], start: str, below: dict[str, bool]
-    ) -> bool:
+    def _descends(self, messages: Mapping[str, Row], start: str, below: dict[str, bool]) -> bool:
         path: list[str] = []
         verdict = False
         cursor: str | None = start
@@ -956,9 +892,7 @@ class LeafSelector:
 
         return verdict
 
-    def _batch_owner(
-        self, messages: Mapping[str, Row], marker: str
-    ) -> tuple[Row | None, list[str], bool]:
+    def _batch_owner(self, messages: Mapping[str, Row], marker: str) -> tuple[Row | None, list[str], bool]:
         seen: set[str] = set()
         lowest: Row | None = None
         row = messages.get(marker)
@@ -968,60 +902,36 @@ class LeafSelector:
             lowest = row
             row = self._parent(messages, row)
 
-        if (
-            row is not None
-            and row.kind == RecordType.USER
-            and self._kit.has_block(row, BlockType.TOOL_RESULT)
-        ):
+        if row is not None and row.kind == RecordType.USER and self._kit.has_block(row, BlockType.TOOL_RESULT):
             return self._parent(messages, row), self._kit.tool_result_ids(row), False
 
         if lowest is None:
             return row, [], False
 
         call = lowest.attachment.get("toolUseID")
-        if (
-            row is None
-            or row.kind != RecordType.ASSISTANT
-            or row.message_id is None
-            or not isinstance(call, str)
-        ):
+        if row is None or row.kind != RecordType.ASSISTANT or row.message_id is None or not isinstance(call, str):
             return None, [], False
 
-        for candidate in (
-            row,
-            *self._response_rows_above(messages, row, row.message_id),
-        ):
+        for candidate in (row, *self._response_rows_above(messages, row, row.message_id)):
             if call in self._kit.tool_use_ids(candidate):
                 return candidate, [call], True
 
         return None, [], False
 
-    def _response_rows_above(
-        self, messages: Mapping[str, Row], row: Row, response: str
-    ) -> list[Row]:
+    def _response_rows_above(self, messages: Mapping[str, Row], row: Row, response: str) -> list[Row]:
         """Dkn: предки строки, пока они продолжают ход ответа."""
         result: list[Row] = []
         seen = {row.uuid}
         cursor = self._parent(messages, row)
 
-        while (
-            cursor is not None
-            and cursor.uuid not in seen
-            and self._kit.continues(cursor, response)
-        ):
+        while cursor is not None and cursor.uuid not in seen and self._kit.continues(cursor, response):
             seen.add(cursor.uuid)
             result.append(cursor)
             cursor = self._parent(messages, cursor)
 
         return result
 
-    def _sibling_result(
-        self,
-        below: Row,
-        owner_ids: Sequence[str],
-        results: Sequence[str],
-        by_attachment: bool,
-    ) -> bool:
+    def _sibling_result(self, below: Row, owner_ids: Sequence[str], results: Sequence[str], by_attachment: bool) -> bool:
         shared = False
         for result in results:
             if result in owner_ids:
@@ -1090,11 +1000,7 @@ class TranscriptIndex:
             self._take_progress(uuid, raw)
             return
 
-        if (
-            isinstance(kind, str)
-            and kind in tuple(RecordType)
-            and RecordType(kind).in_transcript()
-        ):
+        if isinstance(kind, str) and kind in tuple(RecordType) and RecordType(kind).in_transcript():
             self._take_row(Row(line=line, raw=raw))
             return
 
@@ -1119,9 +1025,7 @@ class TranscriptIndex:
         )
         return self._selector.select(self.messages, hints, relinked), hints
 
-    def metadata(
-        self, session: str, leaf: str, chain: Sequence[Row], hints: LeafHints
-    ) -> SessionMetadata:
+    def metadata(self, session: str, leaf: str, chain: Sequence[Row], hints: LeafHints) -> SessionMetadata:
         snapshots = 0
         for row in chain:
             if row.uuid in self._snapshots:
@@ -1172,22 +1076,15 @@ class TranscriptIndex:
 
         admitted = self._repair.admit(row, self.messages)
         if admitted is None:
-            self._notes.append(
-                f"line {row.line}: unreadable {row.kind} row dropped at load"
-            )
+            self._notes.append(f"line {row.line}: unreadable {row.kind} row dropped at load")
             return
 
         if admitted.uuid in self.messages:
-            self._notes.append(
-                f"line {row.line}: duplicate uuid {admitted.uuid} replaces the earlier row in place"
-            )
+            self._notes.append(f"line {row.line}: duplicate uuid {admitted.uuid} replaces the earlier row in place")
 
         self.messages[admitted.uuid] = admitted
 
-        briefing = (
-            admitted.kind == RecordType.ATTACHMENT
-            and admitted.attachment_kind == Subtype.FORK_BRIEFING
-        )
+        briefing = admitted.kind == RecordType.ATTACHMENT and admitted.attachment_kind == Subtype.FORK_BRIEFING
         if not admitted.sidechain and not briefing:
             self._last_written = admitted.uuid
             if admitted.timestamp and admitted.timestamp > self._newest_stamp:
@@ -1251,12 +1148,7 @@ class TranscriptIndex:
 
         if kind == RecordType.ATIS_LATCH:
             atis = raw.get("atis")
-            if (
-                isinstance(atis, str)
-                and atis.isascii()
-                and atis.isprintable()
-                and " " not in atis
-            ):
+            if isinstance(atis, str) and atis.isascii() and atis.isprintable() and " " not in atis:
                 self._atis[session] = atis
             return
 
@@ -1304,9 +1196,7 @@ class ChainBuilder:
         self._notes = notes
         self._text = JsText()
 
-    def pick_leaf(
-        self, messages: Mapping[str, Row], leaves: Sequence[str], cleared: bool
-    ) -> Row | None:
+    def pick_leaf(self, messages: Mapping[str, Row], leaves: Sequence[str], cleared: bool) -> Row | None:
         """Ass @211947161: самая поздняя по времени запись среди листьев либо, без листьев, во всём файле."""
         wanted = set(leaves)
         best = self._latest(messages, wanted)
@@ -1325,9 +1215,7 @@ class ChainBuilder:
 
         while cursor is not None:
             if cursor.uuid in seen:
-                self._notes.append(
-                    f"cycle in parentUuid chain at {cursor.uuid}, partial transcript returned"
-                )
+                self._notes.append(f"cycle in parentUuid chain at {cursor.uuid}, partial transcript returned")
                 break
             seen.add(cursor.uuid)
             chain.append(cursor)
@@ -1345,19 +1233,14 @@ class ChainBuilder:
         self._append_tail(messages, leaf, chain, seen)
         return chain
 
-    def _latest(
-        self, messages: Mapping[str, Row], wanted: set[str] | None
-    ) -> Row | None:
+    def _latest(self, messages: Mapping[str, Row], wanted: set[str] | None) -> Row | None:
         best: Row | None = None
         best_stamp = float("-inf")
 
         for row in messages.values():
             if row.sidechain:
                 continue
-            if wanted is not None and (
-                row.uuid not in wanted
-                or row.kind not in (RecordType.USER, RecordType.ASSISTANT)
-            ):
+            if wanted is not None and (row.uuid not in wanted or row.kind not in (RecordType.USER, RecordType.ASSISTANT)):
                 continue
             stamp = self._text.epoch_ms(row.timestamp)
             if stamp is not None and stamp > best_stamp:
@@ -1368,18 +1251,12 @@ class ChainBuilder:
 
     def _note_fallback(self, row: Row, parent: str, above: Row | None) -> None:
         if above is None:
-            self._notes.append(
-                f"line {row.line}: parent {parent} is missing or already on the chain and no row within 5000 ms precedes it, chain ends here"
-            )
+            self._notes.append(f"line {row.line}: parent {parent} is missing or already on the chain and no row within 5000 ms precedes it, chain ends here")
             return
 
-        self._notes.append(
-            f"line {row.line}: parent {parent} is missing or already on the chain, nearest earlier row at line {above.line} taken by timestamp"
-        )
+        self._notes.append(f"line {row.line}: parent {parent} is missing or already on the chain, nearest earlier row at line {above.line} taken by timestamp")
 
-    def _nearest_earlier(
-        self, messages: Mapping[str, Row], row: Row, seen: set[str]
-    ) -> Row | None:
+    def _nearest_earlier(self, messages: Mapping[str, Row], row: Row, seen: set[str]) -> Row | None:
         """pAr @211876837."""
         moment = self._text.epoch_ms(row.timestamp)
         if moment is None:
@@ -1403,9 +1280,7 @@ class ChainBuilder:
 
         return best
 
-    def _append_tail(
-        self, messages: Mapping[str, Row], leaf: Row, chain: list[Row], seen: set[str]
-    ) -> None:
+    def _append_tail(self, messages: Mapping[str, Row], leaf: Row, chain: list[Row], seen: set[str]) -> None:
         """uAr в режиме I8o: обход в глубину по детям, не являющимся user/assistant."""
         children: dict[str, list[Row]] = {}
         for row in messages.values():
@@ -1430,9 +1305,7 @@ class ChainBuilder:
     def _stamp(self, row: Row) -> str:
         return row.timestamp
 
-    def _recover_parallel(
-        self, messages: Mapping[str, Row], chain: list[Row], seen: set[str]
-    ) -> list[Row]:
+    def _recover_parallel(self, messages: Mapping[str, Row], chain: list[Row], seen: set[str]) -> list[Row]:
         """mAr: строки одного message.id и их tool_result, не лежащие на цепочке листа."""
         on_chain: list[Row] = []
         for row in chain:
@@ -1448,9 +1321,7 @@ class ChainBuilder:
             if row.kind == RecordType.ASSISTANT and row.message_id is not None:
                 by_response.setdefault(row.message_id, []).append(row)
                 continue
-            if row.kind == RecordType.USER and self._kit.has_block(
-                row, BlockType.TOOL_RESULT
-            ):
+            if row.kind == RecordType.USER and self._kit.has_block(row, BlockType.TOOL_RESULT):
                 results.append(row)
 
         attached = self._attach_results(messages, results, by_response)
@@ -1482,17 +1353,7 @@ class ChainBuilder:
                 continue
             done.add(response)
             recovery = self._recover_response(
-                first,
-                by_response.get(response, [first]),
-                chain,
-                seen,
-                attached,
-                owners,
-                order,
-                answered,
-                index,
-                children,
-                rank,
+                first, by_response.get(response, [first]), chain, seen, attached, owners, order, answered, index, children, rank
             )
             if recovery is not None:
                 found.append(recovery)
@@ -1500,16 +1361,11 @@ class ChainBuilder:
         if not found:
             return chain
 
-        self._notes.append(
-            f"parallel rows recovered for {len(found)} response(s) off the leaf chain"
-        )
+        self._notes.append(f"parallel rows recovered for {len(found)} response(s) off the leaf chain")
         return self._weave(chain, self._merge(found, order, rank), order, rank)
 
     def _attach_results(
-        self,
-        messages: Mapping[str, Row],
-        results: Sequence[Row],
-        by_response: Mapping[str, Sequence[Row]],
+        self, messages: Mapping[str, Row], results: Sequence[Row], by_response: Mapping[str, Sequence[Row]]
     ) -> dict[str, list[Row]]:
         attached: dict[str, list[Row]] = {}
         loose: list[Row] = []
@@ -1531,20 +1387,11 @@ class ChainBuilder:
         owners = self._call_owners(by_response)
         for row in loose:
             source = row.text(Key.SOURCE_ASSISTANT)
-            if (
-                source is not None
-                and source != row.parent
-                and source in messages
-                and self._same_lane(row, messages[source])
-            ):
+            if source is not None and source != row.parent and source in messages and self._same_lane(row, messages[source]):
                 self._attach(attached, source, row)
             for name in self._kit.tool_result_ids(row):
                 owner = owners.get(name)
-                if (
-                    owner is not None
-                    and owner.uuid != row.parent
-                    and self._same_lane(row, owner)
-                ):
+                if owner is not None and owner.uuid != row.parent and self._same_lane(row, owner):
                     self._attach(attached, owner.uuid, row)
 
         return attached
@@ -1557,9 +1404,7 @@ class ChainBuilder:
 
         rows.append(row)
 
-    def _call_owners(
-        self, by_response: Mapping[str, Sequence[Row]]
-    ) -> dict[str, Row | None]:
+    def _call_owners(self, by_response: Mapping[str, Sequence[Row]]) -> dict[str, Row | None]:
         owners: dict[str, Row | None] = {}
 
         for rows in by_response.values():
@@ -1577,9 +1422,7 @@ class ChainBuilder:
         return owners
 
     def _same_lane(self, first: Row, second: Row) -> bool:
-        return first.sidechain == second.sidechain and first.raw.get(
-            Key.AGENT
-        ) == second.raw.get(Key.AGENT)
+        return first.sidechain == second.sidechain and first.raw.get(Key.AGENT) == second.raw.get(Key.AGENT)
 
     def _recover_response(
         self,
@@ -1629,9 +1472,7 @@ class ChainBuilder:
                 if not self._answers_open_call(names, covered, owners, own):
                     continue
                 covered.update(names)
-                rank[result.uuid] = max(
-                    order.get(result.uuid, LoadLimit.LAST), ceiling + 0.5
-                )
+                rank[result.uuid] = max(order.get(result.uuid, LoadLimit.LAST), ceiling + 0.5)
                 direct.append(result)
 
         recovered = [*missing, *direct]
@@ -1679,9 +1520,7 @@ class ChainBuilder:
 
         return False
 
-    def _ranked(
-        self, rows: Sequence[Row], order: Mapping[str, int], rank: Mapping[str, float]
-    ) -> list[Row]:
+    def _ranked(self, rows: Sequence[Row], order: Mapping[str, int], rank: Mapping[str, float]) -> list[Row]:
         """Сортировка Ye: по назначенному месту, затем по порядку файла."""
         keyed: list[tuple[tuple[float, int], int, Row]] = []
         for position, row in enumerate(rows):
@@ -1695,11 +1534,7 @@ class ChainBuilder:
         return result
 
     def _answers_open_call(
-        self,
-        names: Sequence[str],
-        covered: set[str],
-        owners: Mapping[str, Row | None],
-        own: set[str],
+        self, names: Sequence[str], covered: set[str], owners: Mapping[str, Row | None], own: set[str]
     ) -> bool:
         for name in names:
             owner = owners.get(name)
@@ -1726,13 +1561,7 @@ class ChainBuilder:
                 if inherited is not None:
                     rank[row.uuid] = max(order.get(row.uuid, LoadLimit.LAST), inherited)
 
-    def _linear_tail(
-        self,
-        start: Row,
-        source: Row,
-        children: Mapping[str, Sequence[Row]],
-        seen: set[str],
-    ) -> list[Row]:
+    def _linear_tail(self, start: Row, source: Row, children: Mapping[str, Sequence[Row]], seen: set[str]) -> list[Row]:
         """qfe @210466315: неразветвлённый хвост из вложений/system/meta-user до конца ветки."""
         tail: list[Row] = []
         cursor: Row | None = start
@@ -1740,9 +1569,7 @@ class ChainBuilder:
         while cursor is not None:
             if cursor.uuid in seen:
                 return []
-            if cursor.raw.get(Key.SIDECHAIN) != source.raw.get(
-                Key.SIDECHAIN
-            ) or not self._kit.delivery(cursor):
+            if cursor.raw.get(Key.SIDECHAIN) != source.raw.get(Key.SIDECHAIN) or not self._kit.delivery(cursor):
                 return []
             tail.append(cursor)
             below: list[Row] = []
@@ -1757,18 +1584,11 @@ class ChainBuilder:
 
         return tail
 
-    def _rank(
-        self, row: Row, order: Mapping[str, int], rank: Mapping[str, float]
-    ) -> tuple[float, int]:
+    def _rank(self, row: Row, order: Mapping[str, int], rank: Mapping[str, float]) -> tuple[float, int]:
         place = order.get(row.uuid, LoadLimit.LAST)
         return rank.get(row.uuid, place), place
 
-    def _merge(
-        self,
-        found: list[_Recovery],
-        order: Mapping[str, int],
-        rank: Mapping[str, float],
-    ) -> list[_Recovery]:
+    def _merge(self, found: list[_Recovery], order: Mapping[str, int], rank: Mapping[str, float]) -> list[_Recovery]:
         merged: list[_Recovery] = []
 
         starts: list[tuple[int, int]] = []
@@ -1785,21 +1605,12 @@ class ChainBuilder:
             anchored: dict[str, Sequence[Row]] = dict(last.anchored)
             for uuid, tails in item.anchored.items():
                 anchored[uuid] = [*anchored.get(uuid, []), *tails]
-            merged[-1] = _Recovery(
-                start=last.start,
-                end=max(last.end, item.end),
-                recovered=recovered,
-                anchored=anchored,
-            )
+            merged[-1] = _Recovery(start=last.start, end=max(last.end, item.end), recovered=recovered, anchored=anchored)
 
         return merged
 
     def _weave(
-        self,
-        chain: Sequence[Row],
-        found: Sequence[_Recovery],
-        order: Mapping[str, int],
-        rank: Mapping[str, float],
+        self, chain: Sequence[Row], found: Sequence[_Recovery], order: Mapping[str, int], rank: Mapping[str, float]
     ) -> list[Row]:
         result: list[Row] = []
         copied = 0
@@ -1810,10 +1621,7 @@ class ChainBuilder:
             for position in range(item.start + 1, item.end):
                 row = chain[position]
                 place = order.get(row.uuid, LoadLimit.LAST)
-                while (
-                    placed < len(item.recovered)
-                    and self._rank(item.recovered[placed], order, rank)[0] < place
-                ):
+                while placed < len(item.recovered) and self._rank(item.recovered[placed], order, rank)[0] < place:
                     result.append(item.recovered[placed])
                     placed += 1
                 result.append(row)
@@ -1860,9 +1668,7 @@ class SplitRegroup:
 
         mode: dict[str, str] = {}
         for response, start in first.items():
-            mode[response] = self._mode(
-                rows, response, start, last[response], count[response]
-            )
+            mode[response] = self._mode(rows, response, start, last[response], count[response])
 
         early: dict[int, str] = {}
         moved: dict[str, list[int]] = {}
@@ -1876,9 +1682,7 @@ class SplitRegroup:
         used: set[int] = set()
         for position in range(len(rows)):
             if position not in early:
-                self._emit(
-                    rows, position, first, last, mode, early, moved, result, used
-                )
+                self._emit(rows, position, first, last, mode, early, moved, result, used)
 
         if len(result) != len(rows) or len(used) != len(rows):
             return list(rows)
@@ -1905,16 +1709,12 @@ class SplitRegroup:
                 return "delivery"
             return "boundary"
 
-        if row.kind == RecordType.SYSTEM and (
-            self._kit.boundary(row) or self._kit.local_command(row)
-        ):
+        if row.kind == RecordType.SYSTEM and (self._kit.boundary(row) or self._kit.local_command(row)):
             return "boundary"
 
         return "delivery"
 
-    def _mode(
-        self, rows: Sequence[Row], response: str, start: int, end: int, size: int
-    ) -> str:
+    def _mode(self, rows: Sequence[Row], response: str, start: int, end: int, size: int) -> str:
         mode = "whole"
         if end - start + 1 == size:
             return mode
@@ -1960,10 +1760,7 @@ class SplitRegroup:
 
         for between in range(position + 1, start):
             other = rows[between]
-            if (
-                other.kind != RecordType.ASSISTANT
-                and self._role(other, response) == "boundary"
-            ):
+            if other.kind != RecordType.ASSISTANT and self._role(other, response) == "boundary":
                 return
 
         places = moved.setdefault(response, [])
@@ -1997,11 +1794,7 @@ class SplitRegroup:
         if response is not None:
             pulled = moved.get(response, ())
 
-        if (
-            response is None
-            or first[response] != position
-            or (not split and not pulled)
-        ):
+        if response is None or first[response] != position or (not split and not pulled):
             result.append(row)
             used.add(position)
             return
@@ -2051,11 +1844,7 @@ class ToolUseFilter:
         past_assistant = False
 
         for row in reversed(rows):
-            if row.kind in (
-                RecordType.SYSTEM,
-                RecordType.PROGRESS,
-                RecordType.ATTACHMENT,
-            ):
+            if row.kind in (RecordType.SYSTEM, RecordType.PROGRESS, RecordType.ATTACHMENT):
                 continue
             if row.kind == RecordType.USER:
                 if self._kit.has_block(row, BlockType.TOOL_RESULT):
@@ -2118,11 +1907,7 @@ class ThinkingFilter:
         for position in range(len(rows) - 1, -1, -1):
             row = rows[position]
             blocks = row.blocks
-            if (
-                row.kind != RecordType.ASSISTANT
-                or not blocks
-                or self._kit.has_plain_block(blocks)
-            ):
+            if row.kind != RecordType.ASSISTANT or not blocks or self._kit.has_plain_block(blocks):
                 keep[position] = True
                 continue
             if row.message_id is not None and row.message_id in solid:
@@ -2137,34 +1922,20 @@ class ThinkingFilter:
 
         return kept
 
-    def _bridged(
-        self,
-        rows: Sequence[Row],
-        position: int,
-        keep: Mapping[int, bool],
-        substantive: set[str],
-    ) -> bool:
+    def _bridged(self, rows: Sequence[Row], position: int, keep: Mapping[int, bool], substantive: set[str]) -> bool:
         """Ответ только из thinking остаётся, если следующий ответ продолжает оборванное размышление."""
         follower = position + 1
-        while follower < len(rows) and (
-            self._kit.invisible(rows[follower]) or self._unsigned(rows[follower])
-        ):
+        while follower < len(rows) and (self._kit.invisible(rows[follower]) or self._unsigned(rows[follower])):
             follower += 1
 
         if follower >= len(rows):
             return False
 
         after = rows[follower]
-        if (
-            after.kind != RecordType.ASSISTANT
-            or not after.flag("resumedFromIncompleteThinking")
-            or not keep[follower]
-        ):
+        if after.kind != RecordType.ASSISTANT or not after.flag("resumedFromIncompleteThinking") or not keep[follower]:
             return False
 
-        if self._kit.blank(after.blocks) and not (
-            after.message_id is not None and after.message_id in substantive
-        ):
+        if self._kit.blank(after.blocks) and not (after.message_id is not None and after.message_id in substantive):
             return False
 
         return not self._unsigned(rows[position])
@@ -2200,14 +1971,8 @@ class ThinkingFilter:
         kept: list[Row] = []
 
         for row in rows:
-            blank = (
-                row.kind == RecordType.ASSISTANT
-                and bool(row.blocks)
-                and self._kit.blank(row.blocks)
-            )
-            if blank and not (
-                row.message_id is not None and row.message_id in substantive
-            ):
+            blank = row.kind == RecordType.ASSISTANT and bool(row.blocks) and self._kit.blank(row.blocks)
+            if blank and not (row.message_id is not None and row.message_id in substantive):
                 continue
             kept.append(row)
 
@@ -2240,11 +2005,7 @@ class TurnClassifier:
 
         for cursor in range(position, -1, -1):
             row = rows[cursor]
-            if row.kind in (
-                RecordType.SYSTEM,
-                RecordType.PROGRESS,
-                RecordType.ATTACHMENT,
-            ):
+            if row.kind in (RecordType.SYSTEM, RecordType.PROGRESS, RecordType.ATTACHMENT):
                 continue
             role = self._command_role(row)
             if role == "caveat":
@@ -2305,22 +2066,13 @@ class TurnClassifier:
 
         return TurnKind.INTERRUPTED_PROMPT
 
-    def _behind_attachments(
-        self, rows: Sequence[Row], last: int, skipped: list[Row]
-    ) -> TurnKind:
+    def _behind_attachments(self, rows: Sequence[Row], last: int, skipped: list[Row]) -> TurnKind:
         uncommitted = False
 
         for position in range(last, -1, -1):
             row = rows[position]
-            if row.kind in (
-                RecordType.SYSTEM,
-                RecordType.PROGRESS,
-                RecordType.ATTACHMENT,
-            ):
-                if (
-                    row.attachment_kind == Subtype.MAX_TURNS
-                    and row.attachment.get("exitCommitted") is False
-                ):
+            if row.kind in (RecordType.SYSTEM, RecordType.PROGRESS, RecordType.ATTACHMENT):
+                if row.attachment_kind == Subtype.MAX_TURNS and row.attachment.get("exitCommitted") is False:
                     uncommitted = True
                 continue
             if self._kit.queued_notification(row):
@@ -2340,9 +2092,7 @@ class TurnClassifier:
 
         return TurnKind.INTERRUPTED_TURN
 
-    def _user_behind(
-        self, rows: Sequence[Row], position: int, row: Row
-    ) -> TurnKind | None:
+    def _user_behind(self, rows: Sequence[Row], position: int, row: Row) -> TurnKind | None:
         if row.flag("isCompactSummary"):
             return TurnKind.NONE
 
@@ -2370,11 +2120,7 @@ class TurnClassifier:
     def _ends_turn(self, rows: Sequence[Row], position: int, row: Row) -> bool:
         """BXt, NXt, FXt, $Xt: результат, после которого ход считается завершённым."""
         blocks = row.blocks
-        if (
-            blocks
-            and blocks[0].get(Key.TYPE) == BlockType.TOOL_RESULT
-            and self._terminal_call(rows, position, blocks[0])
-        ):
+        if blocks and blocks[0].get(Key.TYPE) == BlockType.TOOL_RESULT and self._terminal_call(rows, position, blocks[0]):
             return True
 
         if blocks and self._all_turn_ended(blocks):
@@ -2384,17 +2130,11 @@ class TurnClassifier:
             other = rows[cursor]
             if other.kind == RecordType.ASSISTANT:
                 break
-            if (
-                other.kind == RecordType.USER
-                and self._tool_result_row(other)
-                and other.flag("toolDenialEndsTurn")
-            ):
+            if other.kind == RecordType.USER and self._tool_result_row(other) and other.flag("toolDenialEndsTurn"):
                 return True
 
         result = row.raw.get("toolUseResult")
-        return (
-            isinstance(result, dict) and result.get("backgroundedByTurnAbort") is True
-        )
+        return isinstance(result, dict) and result.get("backgroundedByTurnAbort") is True
 
     def _terminal_call(self, rows: Sequence[Row], position: int, result: Raw) -> bool:
         call = result.get(Key.TOOL_USE_ID)
@@ -2404,10 +2144,7 @@ class TurnClassifier:
             if row.kind != RecordType.ASSISTANT:
                 continue
             for block in row.blocks:
-                if (
-                    block.get(Key.TYPE) == BlockType.TOOL_USE
-                    and block.get(Key.ID) == call
-                ):
+                if block.get(Key.TYPE) == BlockType.TOOL_USE and block.get(Key.ID) == call:
                     return block.get(Key.NAME) in self._terminal_tools
 
         return False
@@ -2422,10 +2159,7 @@ class TurnClassifier:
 
     def _interrupt_text(self, row: Row) -> bool:
         """LXt."""
-        return self._kit.single_text(row.content) in (
-            Phrase.INTERRUPTED,
-            Phrase.INTERRUPTED_TOOL,
-        )
+        return self._kit.single_text(row.content) in (Phrase.INTERRUPTED, Phrase.INTERRUPTED_TOOL)
 
     def _by_shutdown(self, row: Row) -> TurnKind:
         if row.flag(Key.SHUTDOWN):
@@ -2441,10 +2175,7 @@ class TurnClassifier:
         if row.message.get("stop_reason") == "refusal":
             return False
 
-        return row.raw.get("apiError") not in (
-            "dlp_request_denied",
-            "safety_monitor_blocked",
-        )
+        return row.raw.get("apiError") not in ("dlp_request_denied", "safety_monitor_blocked")
 
     def _command_role(self, row: Row) -> str | None:
         """f1e, v9r."""
@@ -2523,9 +2254,7 @@ class SyntheticRows:
                 "stop_reason": "stop_sequence",
                 "stop_sequence": "",
                 Key.TYPE: "message",
-                Key.CONTENT: [
-                    {Key.TYPE: BlockType.TEXT.value, Key.TEXT: Phrase.NO_RESPONSE.value}
-                ],
+                Key.CONTENT: [{Key.TYPE: BlockType.TEXT.value, Key.TEXT: Phrase.NO_RESPONSE.value}],
             },
             Key.API_ERROR: False,
             Key.SESSION: self._session,
@@ -2575,9 +2304,7 @@ class Deserializer:
             )
         )
 
-    def run(
-        self, chain: Sequence[Row], rewind_anchor: str, synthetic: SyntheticRows
-    ) -> tuple[list[Row], TurnKind]:
+    def run(self, chain: Sequence[Row], rewind_anchor: str, synthetic: SyntheticRows) -> tuple[list[Row], TurnKind]:
         rows = list(self._prepared(chain, synthetic))
         regrouped = self._regroup.run(rows)
         anchored = self._ends_at(rows, rewind_anchor)
@@ -2591,14 +2318,8 @@ class Deserializer:
         if kind is TurnKind.ENDED_AT_MAX_TURNS:
             kind = TurnKind.NONE
 
-        suppressed = kind is not TurnKind.NONE and (
-            anchored or self._ends_at(current, rewind_anchor)
-        )
-        if (
-            not suppressed
-            and kind is not TurnKind.NONE
-            and self._stale_error(state, regrouped)
-        ):
+        suppressed = kind is not TurnKind.NONE and (anchored or self._ends_at(current, rewind_anchor))
+        if not suppressed and kind is not TurnKind.NONE and self._stale_error(state, regrouped):
             suppressed = True
 
         outcome = kind
@@ -2607,29 +2328,18 @@ class Deserializer:
 
         if suppressed:
             outcome = TurnKind.NONE
-            self._notes.append(
-                f"turn state {kind.value} suppressed: the tail is the rewind anchor or a stale API error"
-            )
+            self._notes.append(f"turn state {kind.value} suppressed: the tail is the rewind anchor or a stale API error")
 
         if not suppressed and kind is TurnKind.INTERRUPTED_TURN:
             if trailing:
-                calls = self._last_response_calls(
-                    regrouped, set(trailing), reset_on_error=False
-                )
+                calls = self._last_response_calls(regrouped, set(trailing), reset_on_error=False)
                 current = self._with_results(regrouped, set(trailing), calls, synthetic)
                 answered = True
             awaiting_reply = True
             outcome = TurnKind.INTERRUPTED_PROMPT
 
-        if (
-            not answered
-            and trailing
-            and not anchored
-            and not self._ends_at(current, rewind_anchor)
-        ):
-            calls = self._last_response_calls(
-                regrouped, set(trailing), reset_on_error=True
-            )
+        if not answered and trailing and not anchored and not self._ends_at(current, rewind_anchor):
+            calls = self._last_response_calls(regrouped, set(trailing), reset_on_error=True)
             if calls:
                 current = self._with_results(regrouped, calls, calls, synthetic)
 
@@ -2637,9 +2347,7 @@ class Deserializer:
         self._note_dropped(regrouped, current)
         return current, outcome
 
-    def _prepared(
-        self, chain: Sequence[Row], synthetic: SyntheticRows
-    ) -> Iterator[Row]:
+    def _prepared(self, chain: Sequence[Row], synthetic: SyntheticRows) -> Iterator[Row]:
         """Шаги zXt до перегруппировки: RXt, dun, mY, штамп id, onr, snr."""
         retracted = self._retracted(chain)
 
@@ -2647,34 +2355,18 @@ class Deserializer:
             if row.kind in (RecordType.USER, RecordType.ASSISTANT):
                 repaired = self._repair.message(row)
                 if repaired is None:
-                    self._notes.append(
-                        f"line {row.line}: unreadable {row.kind} row dropped at resume"
-                    )
+                    self._notes.append(f"line {row.line}: unreadable {row.kind} row dropped at resume")
                     continue
                 row = repaired
-            if (
-                row.kind != RecordType.SYSTEM
-                and row.uuid[: LoadLimit.RETRACT_PREFIX] in retracted
-            ):
-                self._notes.append(
-                    f"line {row.line}: row retracted by model_refusal_fallback"
-                )
+            if row.kind != RecordType.SYSTEM and row.uuid[: LoadLimit.RETRACT_PREFIX] in retracted:
+                self._notes.append(f"line {row.line}: row retracted by model_refusal_fallback")
                 continue
             if row.kind == RecordType.ATTACHMENT and not self._valid_attachment(row):
-                self._notes.append(
-                    f"line {row.line}: attachment with a malformed payload dropped"
-                )
+                self._notes.append(f"line {row.line}: attachment with a malformed payload dropped")
                 continue
-            if (
-                row.kind == RecordType.ATTACHMENT
-                and row.attachment_kind in self._ephemeral
-            ):
+            if row.kind == RecordType.ATTACHMENT and row.attachment_kind in self._ephemeral:
                 continue
-            if (
-                row.kind == RecordType.ASSISTANT
-                and row.message_id is None
-                and Key.REQUEST_ID not in row.raw
-            ):
+            if row.kind == RecordType.ASSISTANT and row.message_id is None and Key.REQUEST_ID not in row.raw:
                 row = row.with_message_id(synthetic.stamped_id())
             cleaned = self._without_broken_text(row)
             if cleaned is not None:
@@ -2754,11 +2446,7 @@ class Deserializer:
 
         kept: list[Json] = []
         for block in content:
-            if (
-                isinstance(block, dict)
-                and block.get(Key.TYPE) == BlockType.TEXT
-                and not isinstance(block.get(Key.TEXT), str)
-            ):
+            if isinstance(block, dict) and block.get(Key.TYPE) == BlockType.TEXT and not isinstance(block.get(Key.TEXT), str):
                 continue
             kept.append(block)
 
@@ -2806,9 +2494,7 @@ class Deserializer:
 
         return abs(self._now_ms - stamp) >= LoadLimit.STALE_API_ERROR_MS
 
-    def _last_response_calls(
-        self, rows: Sequence[Row], wanted: set[str], reset_on_error: bool
-    ) -> set[str]:
+    def _last_response_calls(self, rows: Sequence[Row], wanted: set[str], reset_on_error: bool) -> set[str]:
         """MXt: незакрытые вызовы последнего ответа списка."""
         seen: set[str | None] = set()
         current: str | None = None
@@ -2819,9 +2505,7 @@ class Deserializer:
         had_result = False
 
         for row in self._thinking.run(rows):
-            skipped = self._kit.virtual(row) or (
-                not reset_on_error and self._kit.synthetic_error(row)
-            )
+            skipped = self._kit.virtual(row) or (not reset_on_error and self._kit.synthetic_error(row))
             if row.kind == RecordType.ASSISTANT and not skipped:
                 if reset_on_error and self._kit.synthetic_error(row):
                     ended = True
@@ -2842,9 +2526,7 @@ class Deserializer:
                 calls = own
                 turn_open = False
                 continue
-            if (
-                row.kind == RecordType.USER and not self._kit.virtual(row)
-            ) or self._kit.local_command(row):
+            if (row.kind == RecordType.USER and not self._kit.virtual(row)) or self._kit.local_command(row):
                 if not turn_open:
                     turn_open = True
                     turn_classified = False
@@ -2852,11 +2534,7 @@ class Deserializer:
                 if self._kit.has_block(row, BlockType.TOOL_RESULT):
                     had_result = True
                 continue
-            if (
-                reset_on_error
-                and row.kind == RecordType.SYSTEM
-                and row.subtype == Subtype.REFUSAL_FALLBACK
-            ):
+            if reset_on_error and row.kind == RecordType.SYSTEM and row.subtype == Subtype.REFUSAL_FALLBACK:
                 ended = True
                 calls = set()
 
@@ -2871,13 +2549,7 @@ class Deserializer:
 
         return own
 
-    def _with_results(
-        self,
-        rows: Sequence[Row],
-        resolved: set[str],
-        calls: set[str],
-        synthetic: SyntheticRows,
-    ) -> list[Row]:
+    def _with_results(self, rows: Sequence[Row], resolved: set[str], calls: set[str], synthetic: SyntheticRows) -> list[Row]:
         """IXt: строки с незакрытыми вызовами остаются, вызовам из calls дописывается результат."""
         kept = self._thinking.run(self._tools.run(rows, resolved))
         added: list[Row] = []
@@ -2888,20 +2560,11 @@ class Deserializer:
                     added.append(synthetic.tool_result(name, row))
 
         if added:
-            self._notes.append(
-                f"{len(added)} interrupted tool_result row(s) synthesized for the last response"
-            )
+            self._notes.append(f"{len(added)} interrupted tool_result row(s) synthesized for the last response")
 
         return [*kept, *added]
 
-    def _close_turn(
-        self,
-        rows: list[Row],
-        outcome: TurnKind,
-        kind: TurnKind,
-        awaiting_reply: bool,
-        synthetic: SyntheticRows,
-    ) -> None:
+    def _close_turn(self, rows: list[Row], outcome: TurnKind, kind: TurnKind, awaiting_reply: bool, synthetic: SyntheticRows) -> None:
         """Ответ-заглушка после хвоста, на котором список кончается не ответом ассистента."""
         last = -1
         for position in range(len(rows) - 1, -1, -1):
@@ -2913,9 +2576,7 @@ class Deserializer:
             return
 
         tail = rows[last]
-        if tail.kind != RecordType.USER and not (
-            awaiting_reply and tail.kind == RecordType.ATTACHMENT
-        ):
+        if tail.kind != RecordType.USER and not (awaiting_reply and tail.kind == RecordType.ATTACHMENT):
             return
 
         if self._turns.command_tail(rows, last):
@@ -2925,17 +2586,13 @@ class Deserializer:
             return
 
         rows.insert(last + 1, synthetic.no_response())
-        self._notes.append(
-            f"synthetic assistant '{Phrase.NO_RESPONSE.value}' placed after line {tail.line} (turn state {outcome.value})"
-        )
+        self._notes.append(f"synthetic assistant '{Phrase.NO_RESPONSE.value}' placed after line {tail.line} (turn state {outcome.value})")
 
     def _note_dropped(self, before: Sequence[Row], after: Sequence[Row]) -> None:
         kept = self._kit.uuids(after)
         for row in before:
             if row.uuid not in kept:
-                self._notes.append(
-                    f"line {row.line}: {row.kind} row dropped (unresolved tool_use, thinking-only or blank)"
-                )
+                self._notes.append(f"line {row.line}: {row.kind} row dropped (unresolved tool_use, thinking-only or blank)")
 
 
 class SessionLoader:
@@ -2960,9 +2617,7 @@ class SessionLoader:
             for line, entry in self._journal.entries(upto):
                 index.take(line, entry)
         except JournalError as exc:
-            raise LoaderError(
-                f"loading {self._journal.path} as of line {upto} failed: {exc}"
-            ) from exc
+            raise LoaderError(f"loading {self._journal.path} as of line {upto} failed: {exc}") from exc
 
         skipped = self._journal.unparsed(upto)
         if skipped:
@@ -2976,16 +2631,10 @@ class SessionLoader:
             metadata = index.metadata("", "", (), hints)
             found = hints.cleared and bool(index.messages)
             if found:
-                notes.append(
-                    "explicit empty leaf marker: the session resumes with an empty history, the new prompt is a root"
-                )
+                notes.append("explicit empty leaf marker: the session resumes with an empty history, the new prompt is a root")
             if not found:
-                notes.append(
-                    "no rows or no leaf: the binary reports 'No conversation found with session ID'"
-                )
-            return self._result(
-                found, (), (), metadata, TurnKind.NONE, "", "", skipped, notes
-            )
+                notes.append("no rows or no leaf: the binary reports 'No conversation found with session ID'")
+            return self._result(found, (), (), metadata, TurnKind.NONE, "", "", skipped, notes)
 
         chain = builder.build(index.messages, leaf)
         session = leaf.text(Key.SESSION)
@@ -2997,22 +2646,10 @@ class SessionLoader:
             now_ms = time.time() * 1000
 
         synthetic = SyntheticRows(session)
-        history, turn = Deserializer(self._kit, notes, now_ms).run(
-            chain, self._anchor(hints), synthetic
-        )
+        history, turn = Deserializer(self._kit, notes, now_ms).run(chain, self._anchor(hints), synthetic)
         history, appended, next_parent = self._chained(history)
         metadata = index.metadata(session, leaf.uuid, chain, hints)
-        return self._result(
-            True,
-            history,
-            appended,
-            metadata,
-            turn,
-            leaf.uuid,
-            next_parent,
-            skipped,
-            notes,
-        )
+        return self._result(True, history, appended, metadata, turn, leaf.uuid, next_parent, skipped, notes)
 
     def _anchor(self, hints: LeafHints) -> str:
         if hints.rewound:
@@ -3063,15 +2700,9 @@ class SessionLoader:
 
         if row.kind == RecordType.ATTACHMENT and row.attachment_kind == "hook_success":
             payload = row.attachment
-            return bool(
-                payload.get(Key.CONTENT)
-                or payload.get("stdout")
-                or payload.get("stderr")
-            )
+            return bool(payload.get(Key.CONTENT) or payload.get("stdout") or payload.get("stderr"))
 
-        if row.kind in (RecordType.USER, RecordType.ASSISTANT) and isinstance(
-            row.content, list
-        ):
+        if row.kind in (RecordType.USER, RecordType.ASSISTANT) and isinstance(row.content, list):
             return bool(row.content)
 
         return True
@@ -3177,10 +2808,7 @@ class ProcessStarts:
                 ended = True
                 continue
 
-            if (
-                row.kind == RecordType.QUEUE
-                and raw.get(JournalMark.FIELD) == JournalMark.ENQUEUE
-            ):
+            if row.kind == RecordType.QUEUE and raw.get(JournalMark.FIELD) == JournalMark.ENQUEUE:
                 if enqueue == 0:
                     enqueue = number
                 continue
@@ -3276,19 +2904,11 @@ class RequestMoments:
             if answer in answers:
                 continue
             answers.add(answer)
-            self._moments.append(
-                RequestMoment(
-                    ordinal=len(self._moments) + 1, line=number, answered=True
-                )
-            )
+            self._moments.append(RequestMoment(ordinal=len(self._moments) + 1, line=number, answered=True))
 
         if last is not None and self._awaits_answer(last):
             self._moments.append(
-                RequestMoment(
-                    ordinal=len(self._moments) + 1,
-                    line=journal.line_count + 1,
-                    answered=False,
-                )
+                RequestMoment(ordinal=len(self._moments) + 1, line=journal.line_count + 1, answered=False)
             )
 
     def moments(self) -> list[RequestMoment]:
@@ -3515,13 +3135,7 @@ class SessionMemory:
             if row.uuid not in known:
                 yield row
 
-    def _place(
-        self,
-        row: Row,
-        placed: list[Row],
-        known: set[str],
-        waiting: dict[str, list[Row]],
-    ) -> None:
+    def _place(self, row: Row, placed: list[Row], known: set[str], waiting: dict[str, list[Row]]) -> None:
         placed.append(row)
         known.add(row.uuid)
 

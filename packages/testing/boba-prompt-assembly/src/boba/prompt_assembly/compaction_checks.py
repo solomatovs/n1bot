@@ -42,21 +42,8 @@ from boba.prompt_assembly.compaction import (
     Trigger,
 )
 from boba.prompt_assembly.corpus import CompactionSpec, VerifyError
-from boba.prompt_assembly.oracle import (
-    JsonDiff,
-    ReplayError,
-    ReplayHasher,
-    RequestRebuilder,
-    SessionLog,
-)
-from boba.prompt_assembly.records import (
-    BlockType,
-    Encoding,
-    Json,
-    JsNumber,
-    Key,
-    RecordType,
-)
+from boba.prompt_assembly.oracle import JsonDiff, ReplayError, ReplayHasher, RequestRebuilder, SessionLog
+from boba.prompt_assembly.records import BlockType, Encoding, Json, JsNumber, Key, RecordType
 from boba.prompt_assembly.request import RequestError
 from boba.prompt_assembly.session import PromptSession, SessionError, Sessions
 
@@ -105,9 +92,7 @@ class Report:
         self.findings.append(Finding(subject=subject, ok=ok, detail=detail))
 
     def same(self, subject: str, predicted: object, recorded: object) -> None:
-        self.add(
-            subject, predicted == recorded, f"model {predicted!r}, journal {recorded!r}"
-        )
+        self.add(subject, predicted == recorded, f"model {predicted!r}, journal {recorded!r}")
 
     @property
     def failed(self) -> int:
@@ -142,16 +127,12 @@ class WireLog:
 
     def _read(self, path: Path) -> Mapping[str, Json]:
         try:
-            raw: Json = json.loads(
-                path.read_text(encoding=Encoding.UTF8), parse_float=JsNumber
-            )
+            raw: Json = json.loads(path.read_text(encoding=Encoding.UTF8), parse_float=JsNumber)
         except (OSError, ValueError) as exc:
             raise VerifyError(f"reading wire request {path} failed: {exc}") from exc
 
         if not isinstance(raw, dict):
-            raise VerifyError(
-                f"{path}: expected a JSON object with url, headers and body, got {type(raw).__name__}"
-            )
+            raise VerifyError(f"{path}: expected a JSON object with url, headers and body, got {type(raw).__name__}")
 
         return raw
 
@@ -186,13 +167,7 @@ class SummaryWireCheck:
     целиком по контрольной сумме клиента.
     """
 
-    def __init__(
-        self,
-        session: PromptSession,
-        oracle: SessionLog,
-        hasher: ReplayHasher,
-        borrow_safeguards: bool,
-    ) -> None:
+    def __init__(self, session: PromptSession, oracle: SessionLog, hasher: ReplayHasher, borrow_safeguards: bool) -> None:
         self._session = session
         self._oracle = oracle
         self._hasher = hasher
@@ -201,14 +176,7 @@ class SummaryWireCheck:
         self._sessions = Sessions()
         self._diff = JsonDiff()
 
-    def compare(
-        self,
-        attempt: Attempt,
-        wire: Mapping[str, Json],
-        boundary: Message,
-        process_start: int,
-        report: Report,
-    ) -> None:
+    def compare(self, attempt: Attempt, wire: Mapping[str, Json], boundary: Message, process_start: int, report: Report) -> None:
         body, headers = self._parts(wire, boundary)
         wire_messages = self._messages_of(body)
         request = self._request(self._session, attempt, wire_messages, boundary, False)
@@ -220,52 +188,22 @@ class SummaryWireCheck:
             self._same_messages(wire_messages, predicted),
             f"{len(predicted)} predicted, {len(wire_messages)} on the wire {self._diff.first(wire_messages, predicted, 'messages')[:300]}",
         )
-        report.same(
-            f"{where} cache mark index",
-            request.mark_index,
-            self._marked_index(wire_messages),
-        )
-        report.same(
-            f"{where} mark has no ttl",
-            {"type": "ephemeral"},
-            self._mark_of(wire_messages),
-        )
-        report.same(
-            f"{where} fallbacks", request.body.get("fallbacks"), body.get("fallbacks")
-        )
+        report.same(f"{where} cache mark index", request.mark_index, self._marked_index(wire_messages))
+        report.same(f"{where} mark has no ttl", {"type": "ephemeral"}, self._mark_of(wire_messages))
+        report.same(f"{where} fallbacks", request.body.get("fallbacks"), body.get("fallbacks"))
         report.same(f"{where} thread", None, body.get("thread"))
-        report.same(
-            f"{where} system cache_control",
-            self._controls(request.body.get("system")),
-            self._controls(self._without_billing(body.get("system"))),
-        )
+        report.same(f"{where} system cache_control", self._controls(request.body.get("system")), self._controls(self._without_billing(body.get("system"))))
 
-        for key in (
-            "model",
-            "max_tokens",
-            "thinking",
-            "context_management",
-            "output_config",
-        ):
-            report.same(
-                f"{where} {key}",
-                self._plain(request.body.get(key)),
-                self._plain(body.get(key)),
-            )
+        for key in ("model", "max_tokens", "thinking", "context_management", "output_config"):
+            report.same(f"{where} {key}", self._plain(request.body.get(key)), self._plain(body.get(key)))
 
         if self._same_process_request(boundary.line, process_start):
-            report.same(
-                f"{where} tools",
-                self._tool_names(request.body.get("tools")),
-                self._tool_names(body.get("tools")),
-            )
+            report.same(f"{where} tools", self._tool_names(request.body.get("tools")), self._tool_names(body.get("tools")))
 
         for key, value in request.headers.items():
             report.same(f"{where} header {key}", value, headers.get(key))
 
-    def whole(
-        self, attempt: Attempt, wire: Mapping[str, Json], boundary: Message
-    ) -> Finding:
+    def whole(self, attempt: Attempt, wire: Mapping[str, Json], boundary: Message) -> Finding:
         """Тело целиком: контрольная сумма собранного запроса против тела с провода.
 
         Защёлки message-threads процесса в журнале нет — перебираются оба
@@ -285,66 +223,41 @@ class SummaryWireCheck:
 
         detail = ""
         for threads in (True, False):
-            request = self._request(
-                session, attempt, self._messages_of(body), boundary, threads
-            )
+            request = self._request(session, attempt, self._messages_of(body), boundary, threads)
             if self._hasher.request(request.body) == digest:
-                return Finding(
-                    subject=subject,
-                    ok=True,
-                    detail=f"matched with message-threads latch {threads}{borrowed}",
-                )
+                return Finding(subject=subject, ok=True, detail=f"matched with message-threads latch {threads}{borrowed}")
             detail = self._diff.first(expected, request.body, "")
 
         return Finding(subject=subject, ok=False, detail=detail)
 
-    def _with_safeguards(
-        self, safeguards: Sequence[Json], boundary: Message
-    ) -> PromptSession:
+    def _with_safeguards(self, safeguards: Sequence[Json], boundary: Message) -> PromptSession:
         launch = replace(self._session.options.launch, safeguards=tuple(safeguards))
 
         try:
             return self._sessions.variant(self._session, launch)
         except SessionError as exc:
-            raise VerifyError(
-                f"{self._session.journal.path}: opening a session with safeguards of the boundary at line {boundary.line} failed: {exc}"
-            ) from exc
+            raise VerifyError(f"{self._session.journal.path}: opening a session with safeguards of the boundary at line {boundary.line} failed: {exc}") from exc
 
     def _request(
-        self,
-        session: PromptSession,
-        attempt: Attempt,
-        wire_messages: Sequence[Mapping[str, Json]],
-        boundary: Message,
-        threads: bool,
+        self, session: PromptSession, attempt: Attempt, wire_messages: Sequence[Mapping[str, Json]], boundary: Message, threads: bool
     ) -> SummaryRequest:
         custom = self._custom_instructions(wire_messages)
         trigger = Trigger(str(boundary.metadata.get("trigger")))
 
         try:
-            return session.summaries.build(
-                attempt.to_keep[0].line, boundary.line, custom, trigger, threads
-            )
+            return session.summaries.build(attempt.to_keep[0].line, boundary.line, custom, trigger, threads)
         except CompactionError as exc:
-            raise VerifyError(
-                f"{self._session.journal.path}: building the summary request of the boundary at line {boundary.line} failed: {exc}"
-            ) from exc
+            raise VerifyError(f"{self._session.journal.path}: building the summary request of the boundary at line {boundary.line} failed: {exc}") from exc
 
-    def _parts(
-        self, wire: Mapping[str, Json], boundary: Message
-    ) -> tuple[Mapping[str, Json], Mapping[str, Json]]:
+    def _parts(self, wire: Mapping[str, Json], boundary: Message) -> tuple[Mapping[str, Json], Mapping[str, Json]]:
         body = wire.get("body")
         headers = wire.get("headers")
         if not isinstance(body, dict) or not isinstance(headers, dict):
-            raise VerifyError(
-                f"{self._session.journal.path}: wire request for boundary at line {boundary.line} expects body and headers as objects, got {type(body).__name__} and {type(headers).__name__}"
-            )
+            raise VerifyError(f"{self._session.journal.path}: wire request for boundary at line {boundary.line} expects body and headers as objects, got {type(body).__name__} and {type(headers).__name__}")
 
         return body, headers
 
-    def _expected(
-        self, headers: Mapping[str, Json], body: Mapping[str, Json]
-    ) -> dict[str, Json]:
+    def _expected(self, headers: Mapping[str, Json], body: Mapping[str, Json]) -> dict[str, Json]:
         """Тело с провода в виде эталона: без billing-блока и служебных ключей, betas из заголовка."""
         expected: dict[str, Json] = {}
 
@@ -359,11 +272,7 @@ class SummaryWireCheck:
         expected[Key.BETAS] = betas
         return expected
 
-    def _same_messages(
-        self,
-        expected: Sequence[Mapping[str, Json]],
-        actual: Sequence[Mapping[str, Json]],
-    ) -> bool:
+    def _same_messages(self, expected: Sequence[Mapping[str, Json]], actual: Sequence[Mapping[str, Json]]) -> bool:
         if len(expected) != len(actual):
             return False
 
@@ -455,9 +364,7 @@ class SummaryWireCheck:
 
         result: list[Json] = []
         for block in system:
-            if isinstance(block, dict) and str(block.get("text", "")).startswith(
-                Name.BILLING
-            ):
+            if isinstance(block, dict) and str(block.get("text", "")).startswith(Name.BILLING):
                 continue
             result.append(block)
 
@@ -511,9 +418,7 @@ class ReadStateBook:
 
         return list(result.values())
 
-    def _reads(
-        self, message: Message, window: Sequence[Message], process_start: int
-    ) -> Iterator[tuple[str, float]]:
+    def _reads(self, message: Message, window: Sequence[Message], process_start: int) -> Iterator[tuple[str, float]]:
         if message.kind == RecordType.ATTACHMENT and message.attachment_kind == "file":
             path = message.attachment.get("filename")
             if isinstance(path, str) and message.line >= process_start:
@@ -546,9 +451,7 @@ class ReadStateBook:
 class BoundaryVerifier:
     """Сверка одной границы сжатия: хвост, поля compactMetadata, сводка, вложения."""
 
-    def __init__(
-        self, journal: CompactionLog, log: Path, model: CompactionModel
-    ) -> None:
+    def __init__(self, journal: CompactionLog, log: Path, model: CompactionModel) -> None:
         self._journal = journal
         self._log = log
         self._model = model
@@ -579,14 +482,8 @@ class BoundaryVerifier:
         surfaced = self._model.forecaster.surfaced_names(current)
         forecast = self._model.forecaster.forecast(window, attempt, trigger, surfaced)
 
-        report.same(
-            f"{where} preTokens", forecast.pre_tokens, metadata.get("preTokens")
-        )
-        report.same(
-            f"{where} logicalParentUuid",
-            forecast.logical_parent,
-            boundary.raw.get("logicalParentUuid"),
-        )
+        report.same(f"{where} preTokens", forecast.pre_tokens, metadata.get("preTokens"))
+        report.same(f"{where} logicalParentUuid", forecast.logical_parent, boundary.raw.get("logicalParentUuid"))
         report.same(f"{where} parentUuid", None, boundary.raw.get("parentUuid"))
 
         preserved = metadata.get("preservedMessages")
@@ -595,81 +492,35 @@ class BoundaryVerifier:
         if isinstance(preserved, dict):
             recorded_all = preserved.get("allUuids")
             recorded_anchor = preserved.get("anchorUuid")
-        report.same(
-            f"{where} preservedMessages.allUuids",
-            list(forecast.kept_uuids),
-            recorded_all,
-        )
+        report.same(f"{where} preservedMessages.allUuids", list(forecast.kept_uuids), recorded_all)
 
         records = self._model.layout.split(self._after(boundary), attempt.to_keep)
-        report.same(
-            f"{where} anchorUuid is the summary", records.summary.uuid, recorded_anchor
-        )
-        report.same(
-            f"{where} context before summary",
-            self._expected_context(trigger, records.context),
-            self._kinds(records.context),
-        )
+        report.same(f"{where} anchorUuid is the summary", records.summary.uuid, recorded_anchor)
+        report.same(f"{where} context before summary", self._expected_context(trigger, records.context), self._kinds(records.context))
 
         if "postTokens" in metadata:
-            post = self._model.forecaster.post_tokens(
-                records.summary, self._zeroed(attempt.to_keep), records.attachments
-            )
+            post = self._model.forecaster.post_tokens(records.summary, self._zeroed(attempt.to_keep), records.attachments)
             report.same(f"{where} postTokens", post, metadata.get("postTokens"))
-            report.same(
-                f"{where} cumulativeDroppedTokens",
-                forecast.cumulative_dropped(post),
-                metadata.get("cumulativeDroppedTokens"),
-            )
+            report.same(f"{where} cumulativeDroppedTokens", forecast.cumulative_dropped(post), metadata.get("cumulativeDroppedTokens"))
 
-        report.same(
-            f"{where} preCompactDiscoveredTools",
-            list(forecast.discovered_tools),
-            metadata.get("preCompactDiscoveredTools", []),
-        )
+        report.same(f"{where} preCompactDiscoveredTools", list(forecast.discovered_tools), metadata.get("preCompactDiscoveredTools", []))
         self._verify_summary(records.summary, attempt, where, report)
-        report.add(
-            f"{where} attachment order",
-            self._model.layout.ordered(records.attachments),
-            " ".join(self._kinds(records.attachments)),
-        )
-        self._verify_files(
-            window, attempt, records.attachments, boundary, where, report
-        )
+        report.add(f"{where} attachment order", self._model.layout.ordered(records.attachments), " ".join(self._kinds(records.attachments)))
+        self._verify_files(window, attempt, records.attachments, boundary, where, report)
         self._verify_memory(boundary, records.in_memory(), where, report)
 
-    def _verify_summary(
-        self, summary: Message, attempt: Attempt, where: str, report: Report
-    ) -> None:
+    def _verify_summary(self, summary: Message, attempt: Attempt, where: str, report: Report) -> None:
         content = summary.content
         if not isinstance(content, str):
-            report.add(
-                f"{where} summary wrapper", False, "summary content is not a string"
-            )
+            report.add(f"{where} summary wrapper", False, "summary content is not a string")
             return
 
         text = self._wrapper.unwrap(content, str(self._log))
         rebuilt = self._wrapper.wrap(text, str(self._log), attempt.head_truncated, True)
-        report.add(
-            f"{where} summary wrapper",
-            bool(text) and rebuilt == content,
-            f"wrapper rebuilt from {len(text)} chars of summary",
-        )
-        report.same(
-            f"{where} summary flags",
-            (True, True),
-            (summary.is_summary, summary.raw.get("isVisibleInTranscriptOnly") is True),
-        )
+        report.add(f"{where} summary wrapper", bool(text) and rebuilt == content, f"wrapper rebuilt from {len(text)} chars of summary")
+        report.same(f"{where} summary flags", (True, True), (summary.is_summary, summary.raw.get("isVisibleInTranscriptOnly") is True))
 
-    def _verify_files(
-        self,
-        window: Sequence[Message],
-        attempt: Attempt,
-        attachments: Sequence[Message],
-        boundary: Message,
-        where: str,
-        report: Report,
-    ) -> None:
+    def _verify_files(self, window: Sequence[Message], attempt: Attempt, attachments: Sequence[Message], boundary: Message, where: str, report: Report) -> None:
         excluded = list(self._planner.read_paths(attempt.to_keep))
         excluded.extend(self._plan_paths(attachments))
         states = self._read_states.states(window, boundary.line)
@@ -685,13 +536,7 @@ class BoundaryVerifier:
 
         report.same(f"{where} restored files", predicted, recorded)
 
-    def _verify_memory(
-        self,
-        boundary: Message,
-        predicted: Sequence[Message],
-        where: str,
-        report: Report,
-    ) -> None:
+    def _verify_memory(self, boundary: Message, predicted: Sequence[Message], where: str, report: Report) -> None:
         """Окно после сжатия против перешивки хвоста при чтении журнала."""
         end = boundary.line + 1
         if predicted:
@@ -710,9 +555,7 @@ class BoundaryVerifier:
                 continue
             actual_uuids.append(message.uuid)
 
-        report.same(
-            f"{where} window order after compaction", expected_uuids, actual_uuids
-        )
+        report.same(f"{where} window order after compaction", expected_uuids, actual_uuids)
 
     def _plan_paths(self, attachments: Sequence[Message]) -> Iterator[str]:
         for message in attachments:
@@ -731,11 +574,7 @@ class BoundaryVerifier:
                 break
             if summary_seen and message.kind == RecordType.ASSISTANT:
                 break
-            if (
-                summary_seen
-                and message.kind == RecordType.USER
-                and not self._is_command(message)
-            ):
+            if summary_seen and message.kind == RecordType.USER and not self._is_command(message):
                 break
             if message.is_summary:
                 summary_seen = True
@@ -750,9 +589,7 @@ class BoundaryVerifier:
 
         return content.startswith(self._commands)
 
-    def _expected_context(
-        self, trigger: Trigger, context: Sequence[Message]
-    ) -> list[str]:
+    def _expected_context(self, trigger: Trigger, context: Sequence[Message]) -> list[str]:
         if trigger is Trigger.MANUAL:
             return []
 
@@ -787,9 +624,7 @@ class StubVerifier:
             for block in message.blocks:
                 self._verify_block(message, block, report)
 
-    def _verify_block(
-        self, message: Message, block: Mapping[str, Json], report: Report
-    ) -> None:
+    def _verify_block(self, message: Message, block: Mapping[str, Json], report: Report) -> None:
         if block.get("type") != BlockType.TOOL_RESULT:
             return
 
@@ -800,35 +635,19 @@ class StubVerifier:
 
         match = self._saved_to.search(text)
         if match is None:
-            report.add(
-                f"line {message.line}: persisted stub",
-                False,
-                "no saved path in the stub",
-            )
+            report.add(f"line {message.line}: persisted stub", False, "no saved path in the stub")
             return
 
         path = Path(match.group(1))
         try:
             stored = path.read_text(encoding=Encoding.UTF8)
         except OSError as exc:
-            report.add(
-                f"line {message.line}: persisted stub",
-                False,
-                f"reading {path} failed: {exc}",
-            )
+            report.add(f"line {message.line}: persisted stub", False, f"reading {path} failed: {exc}")
             return
 
         rebuilt = self._persistence.stub(str(path), stored)
-        report.add(
-            f"line {message.line}: persisted stub text ({path.name}, {len(stored)} chars)",
-            rebuilt == text,
-            f"{len(rebuilt)} chars rebuilt, {len(text)} in the journal",
-        )
-        report.same(
-            f"line {message.line}: stub file lives in tool-results",
-            self._directory,
-            path.parent,
-        )
+        report.add(f"line {message.line}: persisted stub text ({path.name}, {len(stored)} chars)", rebuilt == text, f"{len(rebuilt)} chars rebuilt, {len(text)} in the journal")
+        report.same(f"line {message.line}: stub file lives in tool-results", self._directory, path.parent)
 
     def _text(self, content: Json) -> str:
         if isinstance(content, str):
@@ -883,9 +702,7 @@ class CompactionVerifier:
         try:
             self._run(report, bodies)
         except (CompactionError, RequestError, ReplayError) as exc:
-            raise VerifyError(
-                f"{self._path}: verifying the compaction model failed: {exc}"
-            ) from exc
+            raise VerifyError(f"{self._path}: verifying the compaction model failed: {exc}") from exc
 
         return report, bodies
 
@@ -899,27 +716,15 @@ class CompactionVerifier:
                 attempt = self._boundaries.attempt(boundary, False)
 
             if isinstance(attempt, LadderStop):
-                report.add(
-                    f"boundary {boundary.line} ladder",
-                    False,
-                    f"model stops with {attempt.reason}, journal has a boundary",
-                )
+                report.add(f"boundary {boundary.line} ladder", False, f"model stops with {attempt.reason}, journal has a boundary")
                 continue
 
             self._boundaries.verify(boundary, attempt, report)
             wire_position = position - self._spec.wire_skip
 
             if 0 <= wire_position < len(wires):
-                self._summary.compare(
-                    attempt,
-                    wires[wire_position],
-                    boundary,
-                    self._log.process_start(boundary.line),
-                    report,
-                )
-                bodies.findings.append(
-                    self._summary.whole(attempt, wires[wire_position], boundary)
-                )
+                self._summary.compare(attempt, wires[wire_position], boundary, self._log.process_start(boundary.line), report)
+                bodies.findings.append(self._summary.whole(attempt, wires[wire_position], boundary))
 
         self._verify_first_requests(report)
         self._verify_tool_clearing(report)
@@ -936,24 +741,16 @@ class CompactionVerifier:
                 continue
             requests += 1
             predicted = self._session.clearing.tool_clearing(request.line)
-            recorded = self._clearing_edit(
-                self._rebuilder.rebuild(request).body.get("context_management")
-            )
+            recorded = self._clearing_edit(self._rebuilder.rebuild(request).body.get("context_management"))
             if predicted is not None:
                 planned += 1
             wanted: Json = None
             if predicted is not None:
                 wanted = dict(predicted)
             if self._plain(wanted) != self._plain(recorded):
-                mismatches.append(
-                    f"line {request.line}: model {predicted!r}, request {recorded!r}"
-                )
+                mismatches.append(f"line {request.line}: model {predicted!r}, request {recorded!r}")
 
-        report.add(
-            f"clear_tool_uses edit in {requests} requests ({planned} planned)",
-            not mismatches,
-            "; ".join(mismatches),
-        )
+        report.add(f"clear_tool_uses edit in {requests} requests ({planned} planned)", not mismatches, "; ".join(mismatches))
 
     def _verify_checks(self, report: Report) -> dict[int, Attempt | LadderStop]:
         """Проверки порога по журналу: исход каждой против записанного, уровни против отладочных журналов."""
@@ -964,14 +761,8 @@ class CompactionVerifier:
             check = item.check
             decision = item.decision
             levels.append(str(decision.level))
-            recorded = self._recorded(
-                check.terminal, check.boundary is not None, check.line
-            )
-            report.add(
-                f"check before line {check.line}: {decision.level} tokens={decision.tokens}",
-                item.outcome == recorded,
-                f"model {item.outcome}, journal {recorded}",
-            )
+            recorded = self._recorded(check.terminal, check.boundary is not None, check.line)
+            report.add(f"check before line {check.line}: {decision.level} tokens={decision.tokens}", item.outcome == recorded, f"model {item.outcome}, journal {recorded}")
 
             if isinstance(item.attempt, Attempt) and check.boundary is not None:
                 attempts[check.boundary.line] = item.attempt
@@ -997,26 +788,17 @@ class CompactionVerifier:
         """Первый запрос после каждой границы: собранные messages и метки против эталона."""
         for boundary in self._log.boundaries():
             for request in self._oracle.requests:
-                if (
-                    request.line < boundary.line
-                    or request.line not in self._request_lines
-                ):
+                if request.line < boundary.line or request.line not in self._request_lines:
                     continue
                 self._verify_first_request(boundary, request.line, report)
                 break
 
-    def _verify_first_request(
-        self, boundary: Message, line: int, report: Report
-    ) -> None:
+    def _verify_first_request(self, boundary: Message, line: int, report: Report) -> None:
         reference = self._rebuilder.rebuild(self._oracle.request_at(line))
         expected = reference.body.get(Key.MESSAGES)
         assembled = self._session.requests.messages(line, False)
-        marked = self._session.requests.parts.marked(
-            assembled.messages, assembled.marks, ""
-        )
-        detail = self._diff.first(
-            self._marks_only(expected), self._marks_only(marked), "messages"
-        )
+        marked = self._session.requests.parts.marked(assembled.messages, assembled.marks, "")
+        detail = self._diff.first(self._marks_only(expected), self._marks_only(marked), "messages")
         same = False
         if isinstance(expected, list):
             same = self._same(expected, assembled.messages)
@@ -1029,16 +811,12 @@ class CompactionVerifier:
             detail[:200],
         )
 
-    def _same(
-        self, expected: Sequence[Json], actual: Sequence[Mapping[str, Json]]
-    ) -> bool:
+    def _same(self, expected: Sequence[Json], actual: Sequence[Mapping[str, Json]]) -> bool:
         if len(expected) != len(actual):
             return False
 
         for left, right in zip(expected, actual):
-            if not isinstance(left, dict) or self._hasher.message(
-                left
-            ) != self._hasher.message(right):
+            if not isinstance(left, dict) or self._hasher.message(left) != self._hasher.message(right):
                 return False
 
         return True
