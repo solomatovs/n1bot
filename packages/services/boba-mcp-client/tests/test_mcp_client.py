@@ -727,7 +727,11 @@ class TestLinkedCalls:
         if [node.key for node in artifact.nodes] != ["src", "dst"]:
             raise AssertionError(f"nodes keep the names of the model: {artifact}")
         started = sorted(conduct.started)
-        if started != [("fake_collect", "call-wf_1"), ("fake_emit", "call-wf_0")]:
+        expected = [
+            ("mcp__boba__fake_collect", "call-wf_1"),
+            ("mcp__boba__fake_emit", "call-wf_0"),
+        ]
+        if started != expected:
             raise AssertionError(f"each node is a tool call of its own: {started}")
 
     async def test_lonely_stream_call_goes_as_an_ordinary_call(
@@ -1096,7 +1100,7 @@ class TestBobaMcpJournal:
         if window is not None:
             raise AssertionError(f"a standard server keeps no journal: {window}")
 
-        if heard.calls != [("standard", "call-add")]:
+        if heard.calls != [("standard", "call-mcp__standard__add")]:
             raise AssertionError(f"progress is asked of any server: {heard.calls}")
 
 
