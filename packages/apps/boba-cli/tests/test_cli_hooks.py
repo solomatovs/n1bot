@@ -522,7 +522,6 @@ class TestMcpServer:
             NamedBlocks(),
             DroppedSignals(),
             CallContexts(),
-            None,
             DirectCalls(),
         )
 

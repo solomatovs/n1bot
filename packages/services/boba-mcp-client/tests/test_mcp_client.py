@@ -102,7 +102,6 @@ async def stdio() -> AsyncIterator[McpToolServer]:
         NamedBlocks(),
         DroppedSignals(),
         CallContexts(),
-        None,
         DirectCalls(),
     )
     await server.open()
@@ -139,7 +138,6 @@ async def http(http_port: int) -> AsyncIterator[McpToolServer]:
         NamedBlocks(),
         DroppedSignals(),
         CallContexts(),
-        None,
         DirectCalls(),
     )
     for _ in range(100):
@@ -249,7 +247,6 @@ class TestStandardServerOverStdio:
             Recording(),
             DroppedSignals(),
             CallContexts(),
-            None,
             DirectCalls(),
         )
         await server.open()
@@ -299,7 +296,6 @@ class TestUnreachableServer:
             NamedBlocks(),
             DroppedSignals(),
             CallContexts(),
-            None,
             DirectCalls(),
         )
 
@@ -314,7 +310,6 @@ class TestUnreachableServer:
             NamedBlocks(),
             DroppedSignals(),
             CallContexts(),
-            None,
             DirectCalls(),
         )
 
@@ -355,7 +350,6 @@ class TestPublicServers:
             NamedBlocks(),
             DroppedSignals(),
             CallContexts(),
-            None,
             DirectCalls(),
         )
         await server.open()
@@ -384,7 +378,6 @@ class TestPublicServers:
             NamedBlocks(),
             DroppedSignals(),
             CallContexts(),
-            None,
             DirectCalls(),
         )
         await server.open()
@@ -540,7 +533,6 @@ async def dag(boba_mcp_stand: BobaMcpStand) -> AsyncIterator[McpToolServer]:
         NamedBlocks(),
         DroppedSignals(),
         CallContexts(),
-        None,
         DirectCalls(),
     )
     for _ in range(150):
@@ -574,7 +566,6 @@ class TestScopeOfTheCall:
             NamedBlocks(),
             DroppedSignals(),
             stand.contexts,
-            None,
             DirectCalls(),
         )
         for _ in range(150):
@@ -700,7 +691,6 @@ class TestLinkedCalls:
             NamedBlocks(),
             DroppedSignals(),
             CallContexts(),
-            None,
             conduct,
         )
         for _ in range(150):
@@ -868,7 +858,6 @@ class TestBobaMcpJournal:
             NamedBlocks(),
             heard,
             CallContexts(),
-            None,
             DirectCalls(),
         )
         for _ in range(150):
@@ -1082,7 +1071,6 @@ class TestBobaMcpJournal:
             NamedBlocks(),
             heard,
             CallContexts(),
-            None,
             DirectCalls(),
         )
         await server.open()
@@ -1380,7 +1368,6 @@ class TestBobaMcpServer:
             NamedBlocks(),
             DroppedSignals(),
             CallContexts(),
-            None,
             DirectCalls(),
         )
 
@@ -1500,11 +1487,10 @@ class TestBobaMcpService:
         caller = McpCaller(login="tester", roles=frozenset({"wrt"}))
         server = McpToolServer(
             "boba",
-            _config(process.endpoint()),
+            _config(process.endpoint()).on_behalf_of(caller),
             NamedBlocks(),
             DroppedSignals(),
             call_stand.contexts,
-            caller,
             DirectCalls(),
         )
         try:
@@ -1593,7 +1579,6 @@ class TestFailureStand:
             NamedBlocks(),
             DroppedSignals(),
             CallContexts(),
-            None,
             DirectCalls(),
         )
         await server.open()

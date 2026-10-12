@@ -971,7 +971,6 @@ class TestMcp:
             NamedBlocks(),
             DroppedSignals(),
             CallContexts(),
-            None,
             DirectCalls(),
         )
 

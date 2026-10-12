@@ -89,6 +89,7 @@ from starlette.routing import Route
 
 from boba.auth import SignIns
 from boba.auth.proxy import AssertionRejectedError, ProxyAssertions
+from boba.auth.signin import LoginField
 from boba.identity.context import Credential, Scope, Subject
 from boba.identity.errors import AuthenticationError, AuthorizationError
 from boba.identity.signin import ProxyRequest, SignedIn, SignInMetadata
@@ -940,17 +941,6 @@ class AuthServer(OAuthProvider):
             endpoint=cors_middleware(handler.handle, ["GET", "OPTIONS"]),
             methods=["GET", "OPTIONS"],
         )
-
-
-class LoginField(StrEnum):
-    """Поля формы входа и её адреса."""
-
-    TXN = "txn"
-    LOGIN = "login"
-    PASSWORD = "password"  # noqa: S105 — имя поля формы
-    PROOF = "proof"
-    COOKIE = "boba_mcp_login"
-    SSO = "/login/sso"
 
 
 @dataclass(frozen=True)
