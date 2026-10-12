@@ -375,9 +375,9 @@ class TestAgentTurn:
         service_since = companion.log_lines()
 
         calls = [
-            {"name": "connection_list", "arguments": {}},
+            {"name": "mcp__chat__connection_list", "arguments": {}},
             {
-                "name": "pg_query",
+                "name": "mcp__boba_general__pg_query",
                 "arguments": {
                     "connection": CONNECTION,
                     "sql": "select 1 as one",
@@ -407,7 +407,7 @@ class TestAgentTurn:
         app_log = _lines_since(app, since)
         assert any(
             f"hook: connection {CONNECTION} of kind postgres sealed in connection "
-            f"of mcp__{MCP_SERVER}__pg_query" in line
+            "of mcp__boba_general__pg_query" in line
             for line in app_log
         ), "\n".join(app_log[-40:])
 

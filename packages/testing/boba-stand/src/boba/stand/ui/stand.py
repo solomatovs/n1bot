@@ -27,6 +27,7 @@ from typing_extensions import TypeVar
 
 from boba.runtime.config import ConfigFiles
 from boba.stand.ui.toml_text import TomlText
+from boba.toolkit.mcp_names import McpToolNames
 
 __all__ = [
     "StandApp",
@@ -34,6 +35,8 @@ __all__ = [
     "StandError",
     "StandPaths",
     "StandProcess",
+    "StandServerName",
+    "StandToolNames",
     "free_port",
 ]
 
@@ -61,6 +64,43 @@ class StandPaths(StrEnum):
 
     def under(self, root: Path) -> Path:
         return root / self.value
+
+
+class StandServerName(StrEnum):
+    """Имена серверов MCP стенда чата, под которыми их получает агент треда."""
+
+    CHAT = "chat"
+    """Сервер инструментов самого чата `/chat/mcp`."""
+
+    SERVICE = "boba_{endpoint}"
+    """Endpoint сервиса boba-mcp: у каждого профиля чата свой."""
+
+    def of(self, endpoint: str) -> str:
+        return self.value.format(endpoint=endpoint)
+
+
+class StandToolNames:
+    """Полные имена инструментов стенда чата, какими их видит агент треда.
+
+    Инструменты чата (connection_list, connection_search) принадлежат
+    серверу чата, остальные — endpoint'у сервиса boba-mcp, который назван
+    профилем чата. Тест называет инструмент именем на сервере, а в сценарий
+    фейковой модели кладёт полное имя отсюда; форму имени держит
+    McpToolNames.
+    """
+
+    CHAT_TOOLS: ClassVar[tuple[str, ...]] = ("connection_list", "connection_search")
+    ENDPOINT: ClassVar[str] = "general"
+    """Endpoint профиля по умолчанию: отдаёт все инструменты сервиса."""
+
+    def __init__(self) -> None:
+        self._names = McpToolNames()
+
+    def full(self, tool: str, endpoint: str = ENDPOINT) -> str:
+        if tool in self.CHAT_TOOLS:
+            return self._names.full(StandServerName.CHAT.value, tool)
+
+        return self._names.full(StandServerName.SERVICE.of(endpoint), tool)
 
 
 class StandUrl(StrEnum):
@@ -337,7 +377,7 @@ class ServiceStand(StandService):
 
     def server_name(self, endpoint: str) -> str:
         """Имя сервера endpoint'а в секции [mcp.servers] чата."""
-        return f"boba_{endpoint}"
+        return StandServerName.SERVICE.of(endpoint)
 
     def server(self, endpoint: str) -> dict[str, Any]:
         """Секция [mcp.servers.<имя>] чата для endpoint'а сервиса."""
@@ -557,7 +597,7 @@ class StandConfig(StandService):
     """Провайдер шины [messaging]: пусто — как в конфиге отладки (память
     процесса); postgres — шина в базе стенда, общая у двух инстансов."""
 
-    CHAT_TOOLS: ClassVar[tuple[str, ...]] = ("connection_list", "connection_search")
+    CHAT_TOOLS: ClassVar[tuple[str, ...]] = StandToolNames.CHAT_TOOLS
     AGENT_MODULE: ClassVar[str] = "boba.cli.app"
     """Модуль агента ACP: стенд запускает его интерпретатором прогона."""
     """Инструменты, которые чат исполняет сам; остальные — у сервиса boba-mcp."""
@@ -669,7 +709,7 @@ class StandConfig(StandService):
             "history": dict(self.agent_history),
             "chat_mcp": {
                 "enable": self.agent_chat_mcp,
-                "name": "chat",
+                "name": StandServerName.CHAT.value,
                 "path": "/chat/mcp",
             },
             "hook": {

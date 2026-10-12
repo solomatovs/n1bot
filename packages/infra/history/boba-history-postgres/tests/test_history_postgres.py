@@ -590,9 +590,11 @@ class TestStagesOnPostgres:
             )
         )
         await served.open(SESSION, resume=False)
-        served.agent.queue.enqueue(prompt(call({"name": StandToolName.DROP.value})))
+        served.agent.queue.enqueue(prompt(call({"name": StandToolName.DROP.full})))
         question = await sink.next_question(0)
-        rule = PermissionRule(tool="drop", behavior=PermissionBehavior.ALLOW)
+        rule = PermissionRule(
+            tool="mcp__stand__drop", behavior=PermissionBehavior.ALLOW
+        )
         assert served.agent.answer(
             question.request_id, AllowAnswer(updated_permissions=[rule])
         )
@@ -608,14 +610,18 @@ class TestStagesOnPostgres:
         )
         await resumed.open(SESSION, resume=True)
         assert resumed.agent.permission_mode is PermissionMode.ACCEPT_EDITS
-        resumed.agent.queue.enqueue(prompt(call({"name": StandToolName.DROP.value})))
+        resumed.agent.queue.enqueue(prompt(call({"name": StandToolName.DROP.full})))
         await resumed.agent.settled()
-        resumed.agent.queue.enqueue(prompt(call({"name": StandToolName.NOTE.value})))
+        resumed.agent.queue.enqueue(prompt(call({"name": StandToolName.NOTE.full})))
         await resumed.agent.settled()
         await resumed.close()
 
         assert not again.questions()
-        assert [c.tool for c in tools.calls] == ["drop", "drop", "note"]
+        assert [c.tool for c in tools.calls] == [
+            "mcp__stand__drop",
+            "mcp__stand__drop",
+            "mcp__stand__note",
+        ]
 
     async def test_compaction_and_resume_after_it(
         self,
@@ -636,7 +642,7 @@ class TestStagesOnPostgres:
                 prompt(
                     call(
                         {
-                            "name": StandToolName.LARGE.value,
+                            "name": StandToolName.LARGE.full,
                             "arguments": {"size": 24_000},
                         }
                     )

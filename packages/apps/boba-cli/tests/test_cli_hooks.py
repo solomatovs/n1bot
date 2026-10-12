@@ -27,9 +27,8 @@ from boba.agent.hooks import (
     HookGroup,
     HookMatcher,
     HttpHookSpec,
-    McpToolOrigin,
+    McpServerInfo,
     PreToolUseHooks,
-    ToolOrigins,
 )
 from boba.agent.queue import QueueEntry, QueueKind
 from boba.agent.records import (
@@ -111,7 +110,7 @@ def call(*specs: dict[str, object]) -> str:
 def query_call(**arguments: object) -> str:
     merged: dict[str, object] = {**QUERY_ARGUMENTS, **arguments}
 
-    return call({"name": StandToolName.QUERY.value, "arguments": merged})
+    return call({"name": StandToolName.QUERY.full, "arguments": merged})
 
 
 def results(records: Sequence[Record] | Sequence[ChainRecord]) -> list[ToolResultBlock]:
@@ -155,7 +154,7 @@ class HookOptions:
 def hooks_for(
     handlers: Sequence[HookStandServer],
     transport: HttpHookTransport,
-    origins: ToolOrigins,
+    servers: Mapping[str, McpServerInfo],
     options: HookOptions | None = None,
 ) -> PreToolUseHooks:
     """Исполнитель хука: по группе на обработчик, все под одним матчером."""
@@ -172,7 +171,7 @@ def hooks_for(
         )
         groups.append(HookGroup(matcher=HookMatcher(options.matcher), hooks=[spec]))
 
-    return PreToolUseHooks(groups, transport, origins, CWD)
+    return PreToolUseHooks(groups, transport, servers, CWD)
 
 
 @pytest.fixture
@@ -257,9 +256,11 @@ class LinkingTools(StandTools):
 
     def __init__(self) -> None:
         super().__init__(FEATURES)
+        self.workflow = self._names.full(self.SERVER, CallDag.WORKFLOW)
+        """Полное имя инструмента workflow стенда."""
         self._cards.append(
             ToolCard(
-                name=CallDag.WORKFLOW,
+                name=self.workflow,
                 description="stand tool workflow",
                 parameters={
                     "type": "object",
@@ -275,7 +276,7 @@ class LinkingTools(StandTools):
     ) -> Sequence[asyncio.Future[NodeOutcome]]:
         pending: list[asyncio.Future[NodeOutcome]] = []
         for call in calls:
-            if call.tool != CallDag.WORKFLOW:
+            if call.tool != self.workflow:
                 pending.extend(await super().submit([call]))
                 continue
 
@@ -302,19 +303,20 @@ class TestWorkflowNodes:
         handlers: Handlers,
     ) -> None:
         handler = await handlers.start(HookStandRules())
-        stand = Stand(agents, LinkingTools())
-        hooks = hooks_for([handler], transport, stand.tools.origins())
+        tools = LinkingTools()
+        stand = Stand(agents, tools)
+        hooks = hooks_for([handler], transport, stand.tools.described())
         served = stand.served(hooks)
         session = await served.open(SESSION, resume=False)
 
         served.agent.queue.enqueue(
-            prompt(call({"name": CallDag.WORKFLOW, "arguments": {"nodes": self.NODES}}))
+            prompt(call({"name": tools.workflow, "arguments": {"nodes": self.NODES}}))
         )
         await served.agent.settled()
         await served.close()
 
         sent = stand.tools.calls
-        assert [c.tool for c in sent] == [CallDag.WORKFLOW]
+        assert [c.tool for c in sent] == ["mcp__stand__workflow"]
         assert sent[0].args[CallDag.NODES] == [
             {
                 "key": "src",
@@ -342,6 +344,30 @@ class TestWorkflowNodes:
         assert events[1].tool_input == QUERY_ARGUMENTS
         assert events[1].tool_schema == StandTools.QUERY_SCHEMA
 
+    async def test_node_named_by_the_full_name_is_the_same_tool(
+        self,
+        agents: StandAgents,
+        transport: HttpHookTransport,
+        handlers: Handlers,
+    ) -> None:
+        """Модель видит инструменты под полными именами и вправе назвать
+        узлу полное: обработчик получает то же имя, без второго сервера."""
+        handler = await handlers.start(HookStandRules())
+        tools = LinkingTools()
+        stand = Stand(agents, tools)
+        served = stand.served(hooks_for([handler], transport, tools.described()))
+        await served.open(SESSION, resume=False)
+
+        nodes = [{"key": "dst", "tool": StandToolName.LOOKUP.full}]
+        served.agent.queue.enqueue(
+            prompt(call({"name": tools.workflow, "arguments": {"nodes": nodes}}))
+        )
+        await served.agent.settled()
+        await served.close()
+
+        names = [received.event.tool_name for received in handler.app.received]
+        assert names == ["mcp__stand__workflow", "mcp__stand__lookup"]
+
     async def test_denied_node_keeps_the_whole_call_from_the_server(
         self,
         agents: StandAgents,
@@ -351,13 +377,14 @@ class TestWorkflowNodes:
         handler = await handlers.start(
             HookStandRules(denied={"mcp__stand__query": "no grant for dwh"})
         )
-        stand = Stand(agents, LinkingTools())
-        hooks = hooks_for([handler], transport, stand.tools.origins())
+        tools = LinkingTools()
+        stand = Stand(agents, tools)
+        hooks = hooks_for([handler], transport, stand.tools.described())
         served = stand.served(hooks)
         session = await served.open(SESSION, resume=False)
 
         served.agent.queue.enqueue(
-            prompt(call({"name": CallDag.WORKFLOW, "arguments": {"nodes": self.NODES}}))
+            prompt(call({"name": tools.workflow, "arguments": {"nodes": self.NODES}}))
         )
         await served.agent.settled()
         await served.close()
@@ -366,7 +393,8 @@ class TestWorkflowNodes:
         found = results(session.records())
         assert found[0].is_error is True
         assert found[0].text() == (
-            "The PreToolUse hook denied the call of workflow: no grant for dwh"
+            "The PreToolUse hook denied the call of mcp__stand__workflow: "
+            "no grant for dwh"
         )
 
 
@@ -380,7 +408,7 @@ class TestSealing:
     ) -> None:
         handler = await handlers.start(HookStandRules())
         stand = Stand(agents, StandTools(features=FEATURES))
-        hooks = hooks_for([handler], transport, stand.tools.origins())
+        hooks = hooks_for([handler], transport, stand.tools.described())
         served = stand.served(hooks)
         session = await served.open(SESSION, resume=False)
 
@@ -441,7 +469,7 @@ class TestSealing:
             )
         )
         stand = Stand(agents, StandTools())
-        hooks = hooks_for([sealing, rewriting], transport, stand.tools.origins())
+        hooks = hooks_for([sealing, rewriting], transport, stand.tools.described())
         served = stand.served(hooks)
         await served.open(SESSION, resume=False)
 
@@ -467,7 +495,7 @@ class TestSealing:
         hooks = hooks_for(
             [handler],
             transport,
-            stand.tools.origins(),
+            stand.tools.described(),
             HookOptions(matcher="mcp__other__.*"),
         )
         served = stand.served(hooks)
@@ -499,16 +527,10 @@ class TestMcpServer:
         )
 
     @staticmethod
-    def _origins(server: McpToolServer) -> ToolOrigins:
-        found: dict[str, McpToolOrigin] = {}
-        for card in server.tools():
-            found[card.name] = McpToolOrigin(
-                server="standard",
-                tool=server.remote_name(card.name),
-                features=server.features(),
-            )
+    def _described(server: McpToolServer) -> Mapping[str, McpServerInfo]:
+        info = McpServerInfo(name="standard", features=server.features())
 
-        return ToolOrigins(found)
+        return {"standard": info}
 
     async def test_standard_server_receives_the_replacement(
         self,
@@ -525,7 +547,7 @@ class TestMcpServer:
         hooks = hooks_for(
             [handler],
             transport,
-            self._origins(mcp),
+            self._described(mcp),
             HookOptions(matcher="mcp__standard__.*"),
         )
         served = Served(
@@ -541,7 +563,9 @@ class TestMcpServer:
         session = await served.open(SESSION, resume=False)
         try:
             served.agent.queue.enqueue(
-                prompt(call({"name": "shout", "arguments": {"text": "hi"}}))
+                prompt(
+                    call({"name": "mcp__standard__shout", "arguments": {"text": "hi"}})
+                )
             )
             await served.agent.settled()
         finally:
@@ -572,26 +596,26 @@ class TestDeny:
             HookStandRules(denied={"mcp__stand__drop": "no grant for drop"})
         )
         stand = Stand(agents, StandTools())
-        hooks = hooks_for([handler], transport, stand.tools.origins())
+        hooks = hooks_for([handler], transport, stand.tools.described())
         served = stand.served(hooks)
         session = await served.open(SESSION, resume=False)
 
         served.agent.queue.enqueue(
             prompt(
                 call(
-                    {"name": StandToolName.DROP.value},
-                    {"name": StandToolName.LOOKUP.value},
+                    {"name": StandToolName.DROP.full},
+                    {"name": StandToolName.LOOKUP.full},
                 )
             )
         )
         await served.agent.settled()
         await served.close()
 
-        assert [c.tool for c in stand.tools.calls] == [StandToolName.LOOKUP.value]
+        assert [c.tool for c in stand.tools.calls] == [StandToolName.LOOKUP.full]
         found = results(session.records())
         assert found[0].is_error is True
         assert found[0].text() == (
-            "The PreToolUse hook denied the call of drop: no grant for drop"
+            "The PreToolUse hook denied the call of mcp__stand__drop: no grant for drop"
         )
         assert found[1].text() == "lookup done"
         assert result_records(session.records())[0].tool_denial_kind is None
@@ -619,7 +643,7 @@ class TestFailures:
             hooks_for(
                 [handler],
                 transport,
-                blocking.tools.origins(),
+                blocking.tools.described(),
                 HookOptions(on_failure=HookFailure.BLOCK, timeout_sec=0.3),
             )
         )
@@ -640,7 +664,7 @@ class TestFailures:
             hooks_for(
                 [handler],
                 transport,
-                passing.tools.origins(),
+                passing.tools.described(),
                 HookOptions(on_failure=HookFailure.CONTINUE, timeout_sec=0.3),
             )
         )
@@ -672,7 +696,7 @@ class TestFailures:
     ) -> None:
         handler = await handlers.start(rules)
         stand = Stand(agents, StandTools())
-        served = stand.served(hooks_for([handler], transport, stand.tools.origins()))
+        served = stand.served(hooks_for([handler], transport, stand.tools.described()))
         session = await served.open(SESSION, resume=False)
 
         served.agent.queue.enqueue(prompt(query_call()))
@@ -696,12 +720,12 @@ class TestAsk:
             HookStandRules(asked={"mcp__stand__query": "confirm the connection"})
         )
         stand = Stand(agents, StandTools())
-        served = stand.served(hooks_for([handler], transport, stand.tools.origins()))
+        served = stand.served(hooks_for([handler], transport, stand.tools.described()))
         session = await served.open(SESSION, resume=False)
 
         served.agent.queue.enqueue(prompt(query_call()))
         question = await stand.sink.next_question(0)
-        assert question.request.tool_name == StandToolName.QUERY.value
+        assert question.request.tool_name == StandToolName.QUERY.full
         assert question.request.input == SEALED_QUERY
         assert served.agent.answer(question.request_id, AllowAnswer())
         await served.agent.settled()
@@ -726,7 +750,7 @@ class TestCancellation:
             hooks_for(
                 [handler],
                 transport,
-                stand.tools.origins(),
+                stand.tools.described(),
                 HookOptions(timeout_sec=10.0),
             )
         )

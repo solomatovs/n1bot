@@ -604,8 +604,8 @@ class Exchange:
                 prompt=[
                     text_block(
                         call(
-                            {"name": "shout", "arguments": {"text": "hi"}},
-                            {"name": "progress", "arguments": {"steps": 2}},
+                            {"name": "mcp__stand__shout", "arguments": {"text": "hi"}},
+                            {"name": "mcp__stand__progress", "arguments": {"steps": 2}},
                         )
                     )
                 ],

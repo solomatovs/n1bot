@@ -82,7 +82,7 @@ class StandClients:
 
     TOOLS = (
         ToolSpec(
-            name="connection_list",
+            name="mcp__chat__connection_list",
             description="lists connections",
             parameters={"type": "object", "properties": {}},
         ),
@@ -200,7 +200,9 @@ class TestBothProtocolsAnswer:
         first = await clients.ask(protocol, ScenarioName.TOOL.value, True)
 
         assert first.reply is not None, first.error
-        assert [call.name for call in first.reply.tool_calls] == ["connection_list"]
+        assert [call.name for call in first.reply.tool_calls] == [
+            "mcp__chat__connection_list"
+        ]
 
         call = first.reply.tool_calls[0]
         request = ChatRequest(

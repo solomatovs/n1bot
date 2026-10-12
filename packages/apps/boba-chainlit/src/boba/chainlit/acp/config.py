@@ -11,11 +11,19 @@ from enum import StrEnum
 from typing import Annotated, Any, Literal, Self
 
 from psycopg.conninfo import make_conninfo
-from pydantic import BaseModel, ConfigDict, Field, SecretStr, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    SecretStr,
+    field_validator,
+    model_validator,
+)
 
 from boba.db.postgres.connection import PostgresConfig
 from boba.db.postgres.connection.auth import PasswordAuth, PostgresKerberos, TrustAuth
 from boba.kerberos import KerberosPasswordAuth, KeytabAuth
+from boba.toolkit.mcp_names import McpToolNames
 
 __all__ = [
     "AgentCommandConfig",
@@ -181,7 +189,7 @@ AgentHistoryConfig = Annotated[
 
 class ChatMcpConfig(BaseModel):
     """Сервер инструментов чата `/chat/mcp` в `mcpServers` сессии: имя сервера
-    задаёт имена инструментов `mcp__<name>__<tool>` у агента."""
+    задаёт полные имена его инструментов у агента (McpToolNames)."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -192,6 +200,11 @@ class ChatMcpConfig(BaseModel):
     path: str = Field(
         min_length=1, description="Путь сервера под адресом chainlit: /chat/mcp."
     )
+
+    @field_validator("name")
+    @classmethod
+    def _named(cls, value: str) -> str:
+        return McpToolNames().checked_server(value)
 
 
 class HookConfig(BaseModel):

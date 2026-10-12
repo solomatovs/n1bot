@@ -62,6 +62,7 @@ from pydantic import (
     JsonValue,
     SecretStr,
     ValidationError,
+    field_validator,
 )
 
 from boba.auth.proxy import ProxyAssertions
@@ -90,6 +91,7 @@ from boba.toolkit.dag import (
     WorkflowNodeResult,
     WorkflowResult,
 )
+from boba.toolkit.mcp_names import McpToolNameError, McpToolNames
 from boba.toolkit.result import (
     ErrorResult,
     MarkdownResult,
@@ -450,25 +452,34 @@ class McpServerConfig(BaseModel):
 
     Адрес сервера (endpoint) и способ авторизации в нём. Сервер подключён
     тем сессиям, чей профиль клиента его называет; набор инструментов решает
-    сам сервер. prefix добавляется к именам инструментов: им разводят
-    серверы с совпавшими именами. Сроки — на подключение с инициализацией
-    и на один вызов.
+    сам сервер. Сроки — на подключение с инициализацией и на один вызов.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     endpoint: McpEndpoint
-    prefix: str = ""
     connect_timeout_sec: float = Field(gt=0)
     call_timeout_sec: float = Field(gt=0)
 
 
 class McpServersConfig(BaseModel):
-    """Секция [mcp]: MCP-серверы клиента по именам."""
+    """Секция [mcp]: MCP-серверы клиента по именам. Имя сервера входит в
+    полные имена его инструментов (McpToolNames) и проверяется их формой."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     servers: Mapping[str, McpServerConfig]
+
+    @field_validator("servers")
+    @classmethod
+    def _named(
+        cls, value: Mapping[str, McpServerConfig]
+    ) -> Mapping[str, McpServerConfig]:
+        names = McpToolNames()
+        for name in value:
+            names.checked_server(name)
+
+        return value
 
 
 class ErrorCauses:
@@ -817,35 +828,29 @@ class FileStored(BaseModel):
 class McpToolStubs:
     """Инструменты модели по списку инструментов MCP-сервера.
 
-    Создаётся портом McpToolServer. Карточка несёт имя инструмента у
-    модели (с приставкой сервера), описание, схему аргументов сервера как
-    есть и вид аргументов, который клиент сам выводит из схемы (CallViews):
-    аргумент с типом содержимого — блок кода, прочие — строкой; вызов
-    исполняет порт запросом к серверу.
+    Создаётся портом McpToolServer. Карточка несёт полное имя инструмента
+    (McpToolNames: сервер и имя на нём), описание, схему аргументов сервера
+    как есть и вид аргументов, который клиент сам выводит из схемы
+    (CallViews): аргумент с типом содержимого — блок кода, прочие —
+    строкой; вызов исполняет порт запросом к серверу.
     """
 
-    def __init__(self, prefix: str) -> None:
-        self._prefix = prefix
+    def __init__(self, server: str, names: McpToolNames) -> None:
+        self._server = server
+        self._names = names
         self._views = CallViews()
 
-    def name_of(self, tool: mt.Tool) -> str:
-        return f"{self._prefix}{tool.name}"
-
-    def remote_name(self, name: str) -> str:
-        """Имя инструмента на сервере по его имени у модели."""
-        return name.removeprefix(self._prefix)
-
-    def local_name(self, remote: str) -> str:
-        """Имя инструмента у модели по его имени на сервере."""
-        return f"{self._prefix}{remote}"
-
     def card(self, tool: mt.Tool) -> ToolCard:
+        """Ошибки:
+        McpToolNameError — имя сервера или инструмента не годится для
+            полного имени.
+        """
         description = tool.description
         if not description:
             description = tool.name
 
         return ToolCard(
-            name=self.name_of(tool),
+            name=self._names.full(self._server, tool.name),
             description=description,
             parameters=dict(tool.input_schema),
             views=self._views.seen(tool.input_schema),
@@ -894,8 +899,10 @@ class LiveCall:
     """Вызов, чьё тело сейчас исполняется: сам вызов и связка, в которой
     он идёт. Создаётся портом на время вызова."""
 
-    def __init__(self, call: DagNode, seat: LinkedSeat | None) -> None:
+    def __init__(self, call: DagNode, remote: str, seat: LinkedSeat | None) -> None:
         self.call = call
+        self.remote = remote
+        """Имя инструмента вызова на сервере."""
         self.seat = seat
         self.joined = False
         """Тело вызова присоединилось к связке."""
@@ -1301,11 +1308,14 @@ class McpToolServer(ToolServer):
         self._connection = McpConnection(
             config.endpoint, caller, config.connect_timeout_sec
         )
-        self._stubs = McpToolStubs(config.prefix)
+        self._names = McpToolNames()
+        self._stubs = McpToolStubs(name, self._names)
         self._views = CallViews()
         self._outcomes = NodeOutcomes()
         self._by_name: dict[str, ToolCard] = {}
-        """Имя инструмента у модели -> его карточка."""
+        """Полное имя инструмента -> его карточка."""
+        self._by_remote: dict[str, ToolCard] = {}
+        """Имя инструмента на сервере -> его карточка."""
         self._results = McpResults(files, name)
         self._tools: list[ToolCard] | None = None
         self._features: dict[str, Mapping[str, object]] = {}
@@ -1322,7 +1332,8 @@ class McpToolServer(ToolServer):
         """Ошибки:
         McpClientError — сервер недоступен, не отдал список инструментов,
             настройки объявленного им расширения либо вид аргументов в схеме
-            инструмента не проходят модель.
+            инструмента не проходят модель, имя сервера или инструмента не
+            годится для полного имени.
         """
         session = await self._connection.open()
         self._features = self._declared(session)
@@ -1340,17 +1351,28 @@ class McpToolServer(ToolServer):
 
         client_side = self._client_side()
         tools: list[ToolCard] = []
+        named: dict[str, ToolCard] = {}
         remote: dict[str, ToolCard] = {}
         for tool in listed:
             if tool.name in client_side:
                 continue
 
-            stub = self._stubs.card(tool)
+            try:
+                stub = self._stubs.card(tool)
+            except McpToolNameError as exc:
+                msg = (
+                    f"mcp server {self._name!r} ({self._config.endpoint.label()}): "
+                    f"naming the tool {tool.name!r} from tools/list failed: {exc}"
+                )
+                raise McpClientError(msg) from exc
+
             tools.append(stub)
-            remote[stub.name] = stub
+            named[stub.name] = stub
+            remote[tool.name] = stub
 
         self._tools = tools
-        self._by_name = remote
+        self._by_name = named
+        self._by_remote = remote
         await self._open_files()
         await self._open_journal_files()
         logger.info(
@@ -1366,7 +1388,7 @@ class McpToolServer(ToolServer):
         if not self._features:
             return False
 
-        return self._stubs.local_name(self._dags.WORKFLOW) in self._by_name
+        return self._dags.WORKFLOW in self._by_remote
 
     def _feature(
         self, identifier: str, model: type[FeatureModel]
@@ -1478,9 +1500,17 @@ class McpToolServer(ToolServer):
     def features(self) -> Mapping[str, Mapping[str, object]]:
         return self._features
 
-    def remote_name(self, name: str) -> str:
-        """Имя инструмента на сервере по его имени у модели (без приставки)."""
-        return self._stubs.remote_name(name)
+    def _remote(self, name: str) -> str | None:
+        """Имя инструмента на сервере по полному имени; None — полное имя не
+        инструмента этого сервера."""
+        parsed = self._names.parse(name)
+        if parsed is None:
+            return None
+
+        if parsed.server != self._name:
+            return None
+
+        return parsed.tool
 
     async def submit(
         self, calls: Sequence[DagNode]
@@ -1515,19 +1545,20 @@ class McpToolServer(ToolServer):
             return media
 
         for node in artifact.nodes:
-            if card := self._by_name.get(self._stubs.local_name(node.tool)):
+            if card := self._by_remote.get(node.tool):
                 media[node.call_id] = self._views.media_of(card.parameters)
 
         return media
 
     def _nodes_of(self, call: DagNode) -> Sequence[DagNode] | None:
-        """Узлы вызова инструмента-связки вызовами своих инструментов; None —
-        вызов не связка либо её узлы клиент разложить не может, и вызов
-        уходит серверу как есть."""
+        """Узлы вызова инструмента-связки вызовами своих инструментов под
+        полными именами (узел называет инструмент полным именем либо именем
+        на сервере); None — вызов не связка либо её узлы клиент разложить не
+        может, и вызов уходит серверу как есть."""
         if not self._links():
             return None
 
-        if self._stubs.remote_name(call.tool) != self._dags.WORKFLOW:
+        if self._remote(call.tool) != self._dags.WORKFLOW:
             return None
 
         try:
@@ -1535,11 +1566,15 @@ class McpToolServer(ToolServer):
         except StreamPlanError:
             return None
 
+        named: list[DagNode] = []
         for node in nodes:
-            if self._stubs.local_name(node.tool) not in self._by_name:
+            full = self._names.in_server(self._name, node.tool)
+            if full not in self._by_name:
                 return None
 
-        return nodes
+            named.append(node.model_copy(update={"tool": full}))
+
+        return named
 
     async def _nodes_called(self, call: DagNode) -> NodeOutcome:
         """Вызов инструмента-связки как вызовы его узлов.
@@ -1556,10 +1591,8 @@ class McpToolServer(ToolServer):
         group = LinkedCalls(len(nodes), self._send_linked)
         running: list[asyncio.Future[NodeOutcome]] = []
         for index, node in enumerate(nodes):
-            local = self._stubs.local_name(node.tool)
-            node_call = node.model_copy(update={"tool": local})
             seat = LinkedSeat(group, index, node.title)
-            running.append(asyncio.ensure_future(self._called(node_call, seat)))
+            running.append(asyncio.ensure_future(self._called(node, seat)))
 
         await asyncio.gather(*running)
         try:
@@ -1636,26 +1669,34 @@ class McpToolServer(ToolServer):
         отказ, с адресом журнала."""
         card = self._by_name.get(call.tool)
         if card is None:
-            failure = ErrorResult(
-                message=f"mcp server {self._name!r} has no tool {call.tool!r}",
-                error_kind=McpFailure.TOOL_ERROR,
-            )
+            return self._unknown(call)
 
-            return self._outcomes.refused(call, failure)
+        remote = self._remote(call.tool)
+        if remote is None:
+            return self._unknown(call)
 
-        live = LiveCall(call, seat)
+        live = LiveCall(call, remote, seat)
         try:
             return await self._conduct.conducted(card, call, partial(self._body, live))
         finally:
             if seat is not None and not live.joined:
                 seat.group.left()
 
+    def _unknown(self, call: DagNode) -> NodeOutcome:
+        """Отказ вызову инструмента, которого у сервера нет."""
+        failure = ErrorResult(
+            message=f"mcp server {self._name!r} has no tool {call.tool!r}",
+            error_kind=McpFailure.TOOL_ERROR,
+        )
+
+        return self._outcomes.refused(call, failure)
+
     async def _body(self, live: LiveCall, node: DagNode) -> NodeOutcome:
         """Тело узла: запрос tools/call серверу от имени вызова live. Итог —
         тот, что отдал порт сервера, с адресом журнала запуска, которым
         сервер исполнил вызов."""
         call = live.call
-        remote = self._stubs.remote_name(call.tool)
+        remote = live.remote
         arguments = call.args
         seat = live.seat
         if seat is not None:
@@ -1932,8 +1973,8 @@ class McpServers:
         return port.journal_files()
 
     def journaled(self) -> frozenset[str]:
-        """Имена инструментов подключённых серверов, которые ведут журнал
-        вызовов: у их шагов есть живой вывод."""
+        """Полные имена инструментов подключённых серверов, которые ведут
+        журнал вызовов: у их шагов есть живой вывод."""
         names: set[str] = set()
         for server in (*self._shared.values(), *self._personal.values()):
             if not server.opened:
