@@ -9,7 +9,8 @@ from __future__ import annotations
 import asyncio
 import base64
 import secrets
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Mapping, Sequence
+from dataclasses import dataclass
 from typing import Any, ClassVar
 from uuid import uuid4
 
@@ -281,6 +282,17 @@ class TestMcpRelay:
         assert "'standard'" in str(refused.value)
 
 
+@dataclass(frozen=True)
+class RelayCall:
+    """Случай вызова через ретранслятор: инструмент, аргументы модели и
+    ожидаемый ответ сервера — isError и куски его текста."""
+
+    name: str
+    arguments: Mapping[str, Any]
+    errored: bool
+    expected: Sequence[str]
+
+
 @pytest.mark.integration
 class TestRelaySealing:
     """Ретранслятор запечатывает соединения пользователя через HookSealing:
@@ -304,23 +316,23 @@ class TestRelaySealing:
         return built
 
     @pytest.mark.parametrize(
-        ("name", "arguments", "errored", "expected"),
+        "case",
         [
-            (
-                "fake_connection_host",
-                {"connection": "missing"},
-                True,
-                ["is not among the connections"],
+            RelayCall(
+                name="fake_connection_host",
+                arguments={"connection": "missing"},
+                errored=True,
+                expected=["is not among the connections"],
             ),
-            (
-                "fake_connection_host",
-                {"connection": "orders"},
-                False,
-                ["db.local|orders"],
+            RelayCall(
+                name="fake_connection_host",
+                arguments={"connection": "orders"},
+                errored=False,
+                expected=["db.local|orders"],
             ),
-            (
-                "workflow",
-                {
+            RelayCall(
+                name="workflow",
+                arguments={
                     "nodes": [
                         {
                             "key": "n0",
@@ -329,12 +341,12 @@ class TestRelaySealing:
                         }
                     ]
                 },
-                False,
-                ["db.local|orders"],
+                errored=False,
+                expected=["db.local|orders"],
             ),
-            (
-                "workflow",
-                {
+            RelayCall(
+                name="workflow",
+                arguments={
                     "nodes": [
                         {
                             "key": "n0",
@@ -343,20 +355,26 @@ class TestRelaySealing:
                         }
                     ]
                 },
-                True,
-                ["node 'n0'", "fake_connection_host", "is not among the connections"],
+                errored=True,
+                expected=[
+                    "node 'n0'",
+                    "fake_connection_host",
+                    "is not among the connections",
+                ],
             ),
-            (
-                "workflow",
-                {"nodes": [{"key": "n0", "tool": "no_such_tool", "args": {}}]},
-                True,
-                ["node 'n0'", "offers the model no tool 'no_such_tool'"],
+            RelayCall(
+                name="workflow",
+                arguments={
+                    "nodes": [{"key": "n0", "tool": "no_such_tool", "args": {}}]
+                },
+                errored=True,
+                expected=["node 'n0'", "offers the model no tool 'no_such_tool'"],
             ),
-            (
-                "workflow",
-                {"nodes": "n0"},
-                True,
-                ["does not match its schema", "nodes"],
+            RelayCall(
+                name="workflow",
+                arguments={"nodes": "n0"},
+                errored=True,
+                expected=["does not match its schema", "nodes"],
             ),
         ],
         ids=[
@@ -368,16 +386,13 @@ class TestRelaySealing:
             "off-shape-as-is",
         ],
     )
-    async def test_sealing_is_applied_to_the_call(  # noqa: PLR0913 — стенд и случай
+    async def test_sealing_is_applied_to_the_call(
         self,
         service_process: ServiceProcess,
         store: ConnectionStore,
         call_stand: CallStand,
         tab: TabSession,
-        name: str,
-        arguments: dict[str, Any],
-        errored: bool,
-        expected: list[str],
+        case: RelayCall,
     ) -> None:
         credentials = KerberosCredentialSource(None, NoRefresh())
         stand = RelayStand(lambda: store, lambda: credentials, call_stand.contexts)
@@ -420,8 +435,8 @@ class TestRelaySealing:
                     request_id="mcp:call",
                     method="tools/call",
                     params={
-                        "name": name,
-                        "arguments": arguments,
+                        "name": case.name,
+                        "arguments": case.arguments,
                         "_meta": self.ENVELOPE,
                     },
                 ),
@@ -432,6 +447,6 @@ class TestRelaySealing:
 
         assert isinstance(called, McpResultOutcome), called
         answer = mt.CallToolResult.model_validate(called.result)
-        assert answer.is_error is errored, answer
-        for part in expected:
+        assert answer.is_error is case.errored, answer
+        for part in case.expected:
             assert part in str(answer.content), answer

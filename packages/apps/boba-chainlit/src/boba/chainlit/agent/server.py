@@ -501,7 +501,7 @@ class HookSealing:
                 updated[param] = seal.seal(sealed)
 
                 logger.info(
-                    "hook: connection %s of kind %s sealed in %s of %s for %s",
+                    "sealing: connection %s of kind %s sealed in %s of %s for %s",
                     name,
                     kind,
                     param,

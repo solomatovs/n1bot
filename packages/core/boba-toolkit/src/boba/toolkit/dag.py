@@ -804,6 +804,16 @@ class NestedCallsFeature(ServerFeature):
                 )
                 raise StreamPlanError(msg)
 
+            undeclared = sorted(
+                set(node) - {self.node_key, self.node_tool, self.node_args}
+            )
+            if undeclared:
+                msg = (
+                    f"{self.tool} call: node #{index} of {self.nodes!r} carries "
+                    f"fields outside the declared shape: {', '.join(undeclared)}"
+                )
+                raise StreamPlanError(msg)
+
             raw = {
                 WorkflowField.KEY: node.get(self.node_key),
                 WorkflowField.TOOL: node.get(self.node_tool),
@@ -824,32 +834,17 @@ class NestedCallsFeature(ServerFeature):
     def replaced(
         self, arguments: Mapping[str, JsonValue], calls: Sequence[DagNode]
     ) -> dict[str, JsonValue]:
-        """Те же аргументы вызова tool, у каждого узла аргументы — args
-        соответствующего узла calls; прочие поля как есть.
-
-        Ошибки:
-        StreamPlanError — аргумент nodes не список объектов.
-        """
-        listed = arguments.get(self.nodes)
-        if not isinstance(listed, list):
-            msg = (
-                f"{self.tool} call: argument {self.nodes!r} expects a list of "
-                f"node objects, got {listed!r}"
-            )
-            raise StreamPlanError(msg)
-
+        """Те же аргументы вызова tool, узлы которого пересобраны из calls
+        по объявленной форме; прочие аргументы вызова как есть."""
         nodes: list[JsonValue] = []
-        for index, (node, call) in enumerate(zip(listed, calls, strict=True)):
-            if not isinstance(node, dict):
-                msg = (
-                    f"{self.tool} call: node #{index} of {self.nodes!r} expects "
-                    f"an object, got {node!r}"
-                )
-                raise StreamPlanError(msg)
-
-            updated = dict(node)
-            updated[self.node_args] = dict(call.args)
-            nodes.append(updated)
+        for call in calls:
+            nodes.append(
+                {
+                    self.node_key: call.key,
+                    self.node_tool: call.tool,
+                    self.node_args: dict(call.args),
+                }
+            )
 
         replaced = dict(arguments)
         replaced[self.nodes] = nodes
