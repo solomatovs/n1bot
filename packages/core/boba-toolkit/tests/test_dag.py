@@ -7,10 +7,17 @@ from collections.abc import Sequence
 from typing import Annotated, Literal
 
 import pytest
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, JsonValue, ValidationError
 
 from boba.toolkit.chain import StreamInput, StreamOutput, StreamPlan, StreamPlanError
-from boba.toolkit.dag import CallDag, DagNode, DagPlanner, DagSpec, NodeReports
+from boba.toolkit.dag import (
+    CallDag,
+    DagNode,
+    DagPlanner,
+    DagSpec,
+    NestedCallsFeature,
+    NodeReports,
+)
 from boba.toolkit.ports import Inbound, Outbound, StreamSpec
 
 
@@ -340,3 +347,92 @@ class TestNodeTitle:
     def test_unknown_call_has_no_title(self) -> None:
         if CallDag().title_of(self._call(), "call-99") is not None:
             raise AssertionError("чужой идентификатор узлом не называется")
+
+
+class TestNestedCalls:
+    """Расширение «вложенные вызовы»: форма, которую объявляет CallDag, и
+    разбор связки по ней на стороне клиента."""
+
+    @staticmethod
+    def _arguments() -> dict[str, JsonValue]:
+        nodes: list[JsonValue] = [
+            {"key": "src", "tool": "a", "args": {"out": "c1", "connection": "db"}},
+            {"key": "dst", "tool": "b", "args": {"feed": "c1"}, "call_id": "call-7"},
+        ]
+
+        return {"nodes": nodes, "note": "kept"}
+
+    def test_settings_round_trip_keeps_the_shape(self) -> None:
+        declared = CallDag().feature()
+
+        parsed = NestedCallsFeature.model_validate(declared.settings())
+
+        if parsed != declared:
+            raise AssertionError(f"объявление разбирается той же моделью: {parsed}")
+
+    def test_declared_shape_gives_the_nodes_the_server_describes(self) -> None:
+        dags = CallDag()
+        arguments = self._arguments()
+        call = DagNode.model_validate(
+            {"key": "api-1", "tool": CallDag.WORKFLOW, "args": arguments}
+        )
+
+        described: list[tuple[str, str, dict[str, JsonValue]]] = []
+        for node in dags.described(call):
+            described.append((node.key, node.tool, dict(node.args)))
+
+        parsed: list[tuple[str, str, dict[str, JsonValue]]] = []
+        for node in dags.feature().calls(arguments):
+            parsed.append((node.key, node.tool, dict(node.args)))
+
+        if parsed != described:
+            raise AssertionError(
+                f"клиент видит узлы связки так же, как сервер: {parsed} != {described}"
+            )
+
+    def test_replaced_changes_only_the_node_arguments(self) -> None:
+        nested = CallDag().feature()
+        arguments = self._arguments()
+        sealed: list[DagNode] = []
+        for node in nested.calls(arguments):
+            sealed.append(node.model_copy(update={"args": {"sealed": node.key}}))
+
+        replaced = nested.replaced(arguments, sealed)
+
+        expected = {
+            "nodes": [
+                {"key": "src", "tool": "a", "args": {"sealed": "src"}},
+                {
+                    "key": "dst",
+                    "tool": "b",
+                    "args": {"sealed": "dst"},
+                    "call_id": "call-7",
+                },
+            ],
+            "note": "kept",
+        }
+        if replaced != expected:
+            raise AssertionError(f"меняются только аргументы узлов: {replaced}")
+
+        if arguments != self._arguments():
+            raise AssertionError(f"исходные аргументы не тронуты: {arguments}")
+
+    @pytest.mark.parametrize(
+        ("arguments", "expected"),
+        [
+            ({}, "argument 'nodes' expects a list of node objects, got None"),
+            ({"nodes": ["src"]}, "node #0 of 'nodes' expects an object, got 'src'"),
+            (
+                {"nodes": [{"key": "src", "args": {}}]},
+                "node #0 of 'nodes' expects 'key', 'tool' and an object 'args'",
+            ),
+        ],
+    )
+    def test_nodes_off_the_shape_are_refused(
+        self, arguments: dict[str, JsonValue], expected: str
+    ) -> None:
+        with pytest.raises(StreamPlanError) as caught:
+            CallDag().feature().calls(arguments)
+
+        if expected not in str(caught.value):
+            raise AssertionError(f"отказ называет узел и поле: {caught.value}")

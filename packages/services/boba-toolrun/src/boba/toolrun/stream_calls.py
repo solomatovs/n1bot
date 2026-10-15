@@ -342,9 +342,10 @@ class LocalDagService(ToolServer):
 
     Клиент получает отсюда карточки инструментов для модели и шлёт вызовы.
     Модели отдаются все инструменты как есть; если среди них есть потоковые,
-    к ним добавляется workflow. Каждый вызов исполняет свой DAG: вызовы
-    одного пакета между собой не связаны, потоковые инструменты связывает
-    только вызов workflow. Отказ плана и отказ правила аргументов
+    к ним добавляется workflow, а форма его узлов объявляется клиенту
+    расширением вложенных вызовов (CallDag.feature). Каждый вызов исполняет
+    свой DAG: вызовы одного пакета между собой не связаны, потоковые
+    инструменты связывает только вызов workflow. Отказ плана и отказ правила аргументов
     (NodeArgs) — итог-ошибка вызова до старта узлов; отказ плана отдельному
     вызову называет workflow как способ связать инструменты. Выдуманное имя
     получает отказ со списком инструментов. Создаётся из обёрнутых
@@ -396,9 +397,17 @@ class LocalDagService(ToolServer):
         return self._offered
 
     def features(self) -> Mapping[str, Mapping[str, object]]:
+        """Возможности правил аргументов и, если модели предложен workflow,
+        расширение вложенных вызовов с формой его узлов."""
         declared: dict[str, Mapping[str, object]] = {}
         for rule in self._rules:
             declared.update(rule.features())
+
+        if self._workflow is None:
+            return declared
+
+        nested = self._dags.feature()
+        declared[nested.ID] = nested.settings()
 
         return declared
 

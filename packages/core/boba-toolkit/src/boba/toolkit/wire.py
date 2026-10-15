@@ -26,7 +26,13 @@ from typing import Any, ClassVar
 from pydantic import BaseModel, ConfigDict, Field
 
 from boba.toolkit.channels import JournalChannel
-from boba.toolkit.dag import DagNode, JournalAddress, NodeOutcome, NodeOutcomes
+from boba.toolkit.dag import (
+    DagNode,
+    JournalAddress,
+    NodeOutcome,
+    NodeOutcomes,
+    ServerFeature,
+)
 from boba.toolkit.result import ToolArtifact
 
 __all__ = [
@@ -66,7 +72,7 @@ class RequestFields(BaseModel):
     scope: str = Field(default="", validation_alias=SCOPE)
 
 
-class JournalFeature(BaseModel):
+class JournalFeature(ServerFeature):
     """Настройки расширения сервера «журнал вызовов».
 
     Сервер объявляет их клиенту при подключении словарём settings(); клиент
@@ -76,19 +82,13 @@ class JournalFeature(BaseModel):
     потоком, с Range).
     """
 
-    model_config = ConfigDict(frozen=True, extra="forbid")
-
     ID: ClassVar[str] = "com.boba/journal"
 
     read: str = Field(min_length=1)
     path: str = Field(min_length=1)
 
-    def settings(self) -> dict[str, object]:
-        """Настройки расширения, как они едут клиенту."""
-        return self.model_dump(mode="json")
 
-
-class FilesFeature(BaseModel):
+class FilesFeature(ServerFeature):
     """Настройки расширения сервера «файлы workspace».
 
     Сервер объявляет их клиенту при подключении словарём settings(); клиент
@@ -103,18 +103,12 @@ class FilesFeature(BaseModel):
     файлы друг друга; клиент без области работает в области пользователя.
     """
 
-    model_config = ConfigDict(frozen=True, extra="forbid")
-
     ID: ClassVar[str] = "com.boba/files"
 
     path: str = Field(min_length=1)
     upload: str = Field(min_length=1)
     workspace: str = Field(min_length=1)
     scope: str = Field(min_length=1)
-
-    def settings(self) -> dict[str, object]:
-        """Настройки расширения, как они едут клиенту."""
-        return self.model_dump(mode="json")
 
 
 class JournalRead(BaseModel):
