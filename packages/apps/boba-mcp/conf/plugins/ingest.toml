@@ -58,7 +58,7 @@ transport              = "${http}"
     retry_statuses    = { 429 = 5, 401 = 3 }
 
 [tables]
-    pg_schema         = "kb"
+    pg_schema         = "mcp"
     chunks_table      = "kb_chunks"
     collections_table = "kb_collections"
     sources_table     = "kb_sources"
