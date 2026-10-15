@@ -11,29 +11,40 @@
 --     чат рисует при воспроизведении беседы агентом;
 --   * приводит таблицы чата к раскладке, которую создаёт новое приложение;
 --   * удаляет таблицы, которые новому приложению не нужны: чекпойнты
---     langgraph и вложения elements.
--- Остальные таблицы копии (база знаний, ix, соединения, гранты, studio)
--- переносятся как есть: их раскладку приложение и индексаторы ведут сами при
--- старте.
+--     langgraph и вложения elements;
+--   * раскладывает таблицы по схемам компонентов: чат — в aid, история
+--     агента — в boba, база знаний и описания (плагины boba-mcp) — в mcp.
+-- Содержимое остальных таблиц (база знаний, соединения, гранты, ix, studio)
+-- не меняется: их раскладку приложение и индексаторы ведут сами при старте.
 --
--- Переменные psql (передаются через -v):
---   checkpoints_schema — схема чекпойнтов langgraph, например checkpoints;
---   history_schema     — схема истории агента, как [agent.history].schema
---                        в конфиге чата, например agent_history;
---   chainlit_schema    — схема данных чата, как [data_layer].schema,
---                        например chainlit;
---   chat_url           — адрес чата глазами агента, как [agent].public_url,
---                        например https://chat.example.com/boba; из него
---                        строятся ссылки на вложения вопросов.
+-- Переменные psql (передаются через -v). Схемы копии называются как в базе
+-- dev; новое приложение раскладывает таблицы по трём схемам своих
+-- компонентов: aid — чат (harness), boba — агент, mcp — сервис boba-mcp и его
+-- плагины. Имена схем можно не передавать, тогда берутся умолчания:
+--   chainlit_schema    — схема данных чата dev, по умолчанию chainlit;
+--   checkpoints_schema — схема чекпойнтов langgraph, по умолчанию checkpoints;
+--   history_schema     — схема истории агента, если она была в старой базе,
+--                        по умолчанию agent_history;
+--   kb_schema          — схема базы знаний, по умолчанию kb;
+--   describer_schema   — схема инструмента описаний, по умолчанию describer;
+--   aid_schema         — схема чата в новой базе, по умолчанию aid;
+--   boba_schema        — схема агента в новой базе, по умолчанию boba;
+--   mcp_schema         — схема boba-mcp и плагинов в новой базе, по
+--                        умолчанию mcp;
+--   chat_url           — обязательна: адрес чата глазами агента, как
+--                        [agent].public_url, например
+--                        https://chat.example.com/boba; из него строятся
+--                        ссылки на вложения вопросов.
+-- Схемы ix (индексаторы) и studio (automation, catalog) скрипт не трогает.
 --
 -- Запуск:
---   PGDATABASE=<новая база> psql -v checkpoints_schema=checkpoints \
---        -v history_schema=agent_history -v chainlit_schema=chainlit \
---        -v chat_url=https://chat.example.com/boba -f migrate.sql
+--   PGDATABASE=<новая база> psql -v chat_url=https://chat.example.com/boba \
+--        -f migrate.sql
 --
 -- Весь перевод идёт одной транзакцией: проверка, рабочие функции, извлечение,
 -- перевод, загрузка, привязка тредов, перевод оценок, сверка, приведение
--- таблиц, удаление ненужных таблиц и рабочей схемы history_migrate. Любая
+-- таблиц, удаление ненужных таблиц, раскладка по схемам и удаление рабочей
+-- схемы history_migrate. Любая
 -- ошибка или несошедшаяся сверка откатывает всё. Повторный запуск на уже
 -- приведённой базе ничего не меняет: чекпойнтов в ней нет, и скрипт сразу
 -- завершается. Отката нет: старая база не тронута, новая удаляется целиком.
@@ -42,29 +53,42 @@
 \set QUIET on
 \pset pager off
 
-\set missing false
+\if :{?chainlit_schema}
+\else
+    \set chainlit_schema chainlit
+\endif
 \if :{?checkpoints_schema}
 \else
-    \echo 'Pass the schema of the langgraph checkpoints, for example -v checkpoints_schema=checkpoints.'
-    \set missing true
+    \set checkpoints_schema checkpoints
 \endif
 \if :{?history_schema}
 \else
-    \echo 'Pass the schema of the agent history, for example -v history_schema=agent_history.'
-    \set missing true
+    \set history_schema agent_history
 \endif
-\if :{?chainlit_schema}
+\if :{?kb_schema}
 \else
-    \echo 'Pass the schema of the chat data, for example -v chainlit_schema=chainlit.'
-    \set missing true
+    \set kb_schema kb
+\endif
+\if :{?describer_schema}
+\else
+    \set describer_schema describer
+\endif
+\if :{?aid_schema}
+\else
+    \set aid_schema aid
+\endif
+\if :{?boba_schema}
+\else
+    \set boba_schema boba
+\endif
+\if :{?mcp_schema}
+\else
+    \set mcp_schema mcp
 \endif
 \if :{?chat_url}
 \else
     \echo 'Pass the chat address the agent uses, [agent].public_url, for example -v chat_url=https://chat.example.com/boba.'
-    \set missing true
-\endif
-\if :missing
-    do $$ begin raise exception 'The migration needs the psql variables named above, so nothing was changed.'; end $$;
+    do $$ begin raise exception 'The migration needs the psql variable chat_url, so nothing was changed.'; end $$;
 \endif
 
 -- Метка в поле version перенесённых записей: агент пишет туда свою версию,
@@ -75,6 +99,26 @@ select to_regclass(format('%I.checkpoints', :'checkpoints_schema')) is null as m
 \if :migrated
     \echo 'There is no table' :checkpoints_schema'.checkpoints in this database: it is migrated already or the checkpoints schema has another name, so nothing was changed.'
     \quit
+\endif
+
+-- Схемы нового приложения в копии ещё не существуют: скрипт получает их
+-- переименованием схем dev, поэтому занятое имя останавливает перенос до
+-- любых изменений.
+select coalesce(string_agg(name, ', ' order by name), '') as taken_schemas
+from (
+    values
+        (:'aid_schema', :'chainlit_schema'),
+        (:'boba_schema', :'history_schema'),
+        (:'mcp_schema', :'kb_schema')
+) as target(name, source)
+where
+    name <> source
+    and to_regnamespace(name) is not null
+\gset
+select :'taken_schemas' <> '' as targets_taken \gset
+\if :targets_taken
+    \echo 'The schemas' :taken_schemas 'of the new application already exist in this database.'
+    do $$ begin raise exception 'The target schemas must not exist before the migration (listed above), so nothing was changed. Restore the copy into a new empty database.'; end $$;
 \endif
 
 begin;
@@ -1323,13 +1367,21 @@ where
 -- обращении, а перенос пишет в неё раньше, поэтому создаёт её сам тем же
 -- определением из history_records.sql рядом; совпадение определения с кодом
 -- хранилища проверяет тест boba-history-postgres. Комментарии к таблице агент
--- допишет сам при первом обращении. Переносится только сессия, у которой в
--- истории ещё нет ни одной записи: сессию, которую агент уже вёл в старой
--- базе, перенос не трогает.
+-- допишет сам при первом обращении. Если агент уже вёл историю в старой
+-- базе, её схема сначала переименовывается в схему агента. Переносится только
+-- сессия, у которой в истории ещё нет ни одной записи: сессию, которую агент
+-- уже вёл, перенос не трогает.
 
-create schema if not exists :"history_schema";
+select
+    format('alter schema %I rename to %I', :'history_schema', :'boba_schema')
+where
+    :'history_schema' <> :'boba_schema'
+    and to_regnamespace(:'history_schema') is not null
+\gexec
 
-set local search_path to :"history_schema";
+create schema if not exists :"boba_schema";
+
+set local search_path to :"boba_schema";
 \ir history_records.sql
 reset search_path;
 
@@ -1349,14 +1401,14 @@ where
         select
             1
         from
-            :"history_schema".history_records as h
+            :"boba_schema".history_records as h
         where
             h.session_id = r.session_id
     )
 group by
     r.session_id;
 
-insert into :"history_schema".history_records (session_id, seq, type, record)
+insert into :"boba_schema".history_records (session_id, seq, type, record)
 select
     r.session_id,
     r.seq,
@@ -1589,7 +1641,7 @@ select
     format('The history holds %s records of the session, %s of them different from the %s built ones.', count(h.seq), count(h.seq) filter (where h.record <> r.record), l.records)
 from
     history_migrate.loaded as l
-    left join :"history_schema".history_records as h
+    left join :"boba_schema".history_records as h
         on h.session_id = l.session_id
     left join history_migrate.records as r
         on r.session_id = h.session_id
@@ -1616,7 +1668,7 @@ from (
             when h.record ->> 'parentUuid' is distinct from lag(h.record ->> 'uuid') over w then 'The parentUuid of the record does not name the previous record.'
         end as problem
     from
-        :"history_schema".history_records as h
+        :"boba_schema".history_records as h
         join history_migrate.loaded as l
             on l.session_id = h.session_id
     window w as (partition by h.session_id order by h.seq)
@@ -1716,7 +1768,61 @@ drop table :"checkpoints_schema".checkpoint_migrations;
 
 drop schema :"checkpoints_schema";
 
--- 10. Удаление рабочей схемы и фиксация.
+-- 10. Раскладка по схемам компонентов.
+--
+-- Новое приложение держит таблицы в трёх схемах: чат — в aid, агент — в
+-- boba, сервис boba-mcp и его плагины — в mcp. Схема чата dev целиком
+-- переименовывается в aid, а схема базы знаний — в mcp: переименование
+-- переносит таблицы вместе с индексами, ограничениями, последовательностями
+-- и функциями, и ссылки на них по oid (вычисляемая колонка kb_chunks.tsv
+-- зовёт immutable_unaccent) остаются верными. Таблицы инструмента описаний
+-- переносятся в mcp поштучно вместе со своими последовательностями, затем
+-- пустая схема describer удаляется; если схемы базы знаний нет, describer
+-- сама переименовывается в mcp. Схемы ix и studio остаются как есть.
+
+select
+    format('alter schema %I rename to %I', :'chainlit_schema', :'aid_schema')
+where
+    :'chainlit_schema' <> :'aid_schema'
+\gexec
+
+select
+    format('alter schema %I rename to %I', :'kb_schema', :'mcp_schema')
+where
+    :'kb_schema' <> :'mcp_schema'
+    and to_regnamespace(:'kb_schema') is not null
+\gexec
+
+select
+    format('alter schema %I rename to %I', :'describer_schema', :'mcp_schema')
+where
+    :'describer_schema' <> :'mcp_schema'
+    and to_regnamespace(:'describer_schema') is not null
+    and to_regnamespace(:'mcp_schema') is null
+\gexec
+
+select
+    format('alter table %I.%I set schema %I', n.nspname, c.relname, :'mcp_schema')
+from
+    pg_class as c
+    join pg_namespace as n
+        on n.oid = c.relnamespace
+where
+    n.nspname = :'describer_schema'
+    and n.nspname <> :'mcp_schema'
+    and c.relkind in ('r', 'p')
+order by
+    c.relname
+\gexec
+
+select
+    format('drop schema %I', :'describer_schema')
+where
+    :'describer_schema' <> :'mcp_schema'
+    and to_regnamespace(:'describer_schema') is not null
+\gexec
+
+-- 11. Удаление рабочей схемы и фиксация.
 
 set local client_min_messages = warning;
 
