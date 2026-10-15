@@ -75,13 +75,14 @@ from boba.mcp_adapter import (
 from boba.mcp_server.auth import (
     CallScopeError,
     CallScopes,
+    SentMeta,
     ServiceAuth,
     TokenSubjects,
 )
 from boba.mcp_server.files import FileRoutes, JournalRoutes, RouteCallers
 from boba.runtime.storage import LocalStorageConfig, StorageFactory
 from boba.toolkit.channels import JournalChannels, ToolChannel
-from boba.toolkit.dag import CallDag, DagNode, NodeReports, ToolServer
+from boba.toolkit.dag import CallDag, DagNode, ToolServer
 from boba.toolkit.failure import ValidationText
 from boba.toolkit.ports import ProgressReport
 from boba.toolkit.result import ErrorResult
@@ -160,43 +161,66 @@ class ProgressShape(Protocol):
     OwnProgress (вызов одного инструмента) и NodeProgress (связка)."""
 
     @abstractmethod
-    def shaped(self, call_id: str, report: ProgressReport) -> ProgressReport | None:
+    def shaped(
+        self, call_id: str, report: ProgressReport
+    ) -> mt.ProgressNotificationParams | None:
         """Уведомление по отчёту вызова call_id; None — отчёт не уходит."""
 
 
 class OwnProgress(ProgressShape):
     """Реализация ProgressShape вызовом одного инструмента: числа и текст
     тела идут как есть. Значение прогресса запроса обязано расти, поэтому
-    отчёт, в котором оно не выросло, не уходит."""
+    отчёт, в котором оно не выросло, не уходит. token — токен прогресса из
+    _meta запроса; None — клиент прогресса не просил, и отчёты не уходят."""
 
-    def __init__(self) -> None:
+    def __init__(self, token: mt.ProgressToken | None) -> None:
+        self._token = token
         self._sent = -1.0
 
-    def shaped(self, call_id: str, report: ProgressReport) -> ProgressReport | None:
+    def shaped(
+        self, call_id: str, report: ProgressReport
+    ) -> mt.ProgressNotificationParams | None:
+        token = self._token
+        if token is None:
+            return None
+
         if report.done <= self._sent:
             return None
 
         self._sent = report.done
 
-        return report
+        return mt.ProgressNotificationParams(
+            progress_token=token,
+            progress=report.done,
+            total=report.total,
+            message=report.message,
+        )
 
 
 class NodeProgress(ProgressShape):
     """Реализация ProgressShape связкой: отчёты нескольких узлов идут одним
     запросом. Каждый узел считает в своих единицах, поэтому значением
-    прогресса запроса служит номер отчёта связки, а итог неизвестен; чей
-    это отчёт, говорит текст — он подписан ключом узла, который узлу дал
-    автор связки (NodeReports), и числа узла, если тот назвал итог, стоят
-    в нём же. Создаётся с вызовом связки: по нему CallDag находит ключ
-    узла по идентификатору его журнала."""
+    прогресса запроса служит номер отчёта связки, а итог неизвестен; числа
+    узла, если тот назвал итог, стоят в тексте. Чей это отчёт, говорит
+    _meta уведомления: ключ узла от автора связки лежит под ключом,
+    объявленным расширением вложенных вызовов. Создаётся с вызовом связки
+    и токеном прогресса запроса, как OwnProgress: по вызову CallDag находит
+    ключ узла по идентификатору его журнала."""
 
-    def __init__(self, call: DagNode) -> None:
+    def __init__(self, call: DagNode, token: mt.ProgressToken | None) -> None:
         self._call = call
+        self._token = token
         self._dags = CallDag()
-        self._reports = NodeReports()
+        self._feature = self._dags.feature()
         self._count = 0
 
-    def shaped(self, call_id: str, report: ProgressReport) -> ProgressReport | None:
+    def shaped(
+        self, call_id: str, report: ProgressReport
+    ) -> mt.ProgressNotificationParams | None:
+        token = self._token
+        if token is None:
+            return None
+
         title = self._dags.title_of(self._call, call_id)
         if title is None:
             logger.warning(
@@ -212,8 +236,11 @@ class NodeProgress(ProgressShape):
         if report.total is not None:
             text = f"{text} ({report.done:g} of {report.total:g})"
 
-        return ProgressReport(
-            done=self._count, total=None, message=self._reports.labeled(title, text)
+        return mt.ProgressNotificationParams(
+            progress_token=token,
+            progress=self._count,
+            message=text,
+            _meta={self._feature.progress_key: title},
         )
 
 
@@ -228,8 +255,8 @@ class CallProgress:
     прогресса их не получает. Отчёты ждут в очереди, а отправляет их задача,
     заведённая start() внутри запроса: уведомление привязано к запросу, и
     из чужой задачи оно не уходит. Каким отчёт уходит клиенту, решает
-    shape: у вызова одного инструмента — как есть, у связки — с подписью
-    узла.
+    shape: у вызова одного инструмента — как есть, у связки — с ключом
+    узла в _meta.
     """
 
     POLL_SEC: ClassVar[float] = 1.0
@@ -366,8 +393,9 @@ class CallProgress:
             if shaped is None:
                 continue
 
-            await self._context.report_progress(
-                progress=shaped.done, total=shaped.total, message=shaped.message
+            notification = mt.ProgressNotification(params=shaped)
+            await self._context.session.send_notification(
+                notification, related_request_id=self._context.request_id
             )
 
 
@@ -578,6 +606,7 @@ class CallContextMiddleware(Middleware):
         self._operations = operations
         self._replies = McpReplies()
         self._scopes = CallScopes()
+        self._meta = SentMeta()
 
     async def on_call_tool(
         self,
@@ -590,6 +619,7 @@ class CallContextMiddleware(Middleware):
         subject = self._subjects.current()
         try:
             scope = self._scopes.of(subject)
+            token = self._meta.sent().progress_token
         except CallScopeError as exc:
             failure = ErrorResult(
                 message=str(exc), error_kind=ServerRefusal.INVALID_REQUEST
@@ -608,14 +638,14 @@ class CallContextMiddleware(Middleware):
             cancellation=cancellation,
         )
 
-        shape: ProgressShape = OwnProgress()
+        shape: ProgressShape = OwnProgress(token)
         if context.message.name == CallDag.WORKFLOW:
             described: dict[str, Any] = {}
             if sent := context.message.arguments:
                 described = dict(sent)
 
             shape = NodeProgress(
-                DagNode(key=run_id, tool=context.message.name, args=described)
+                DagNode(key=run_id, tool=context.message.name, args=described), token
             )
 
         progress = CallProgress(

@@ -685,21 +685,31 @@ class AcpMapping:
         )
 
     def tool_progress(self, event: ToolProgressEvent) -> schema.SessionToolCallUpdate:
-        """Ход вызова — одна строка содержимого, которая заменяет прежнюю."""
+        """Ход вызова — одна строка содержимого, которая заменяет прежнюю, и
+        `_meta` уведомления сервера как есть. Числа без итога ничего не
+        говорят: у отчёта с текстом без total строка — сам текст."""
         done = f"{event.progress:g}"
         if event.total is not None:
             done = f"{done} of {event.total:g}"
 
-        line = done
-        if event.message:
+        if not event.message:
+            line = done
+        elif event.total is None:
+            line = event.message
+        else:
             line = f"{event.message} — {done}"
 
         text = schema.TextContentBlock(text=line)
+
+        meta: dict[str, Any] | None = None
+        if event.meta:
+            meta = dict(event.meta)
 
         return schema.SessionToolCallUpdate(
             tool_call_id=event.tool_use_id,
             status=ToolStatus.IN_PROGRESS,
             content=[schema.ContentToolCallContent(content=text)],
+            field_meta=meta,
         )
 
     def usage_update(self, usage: ContextUsage) -> schema.UsageUpdate:
@@ -911,6 +921,10 @@ class CallProgressRelay:
         if message_text is None:
             message_text = ""
 
+        meta: dict[str, Any] = {}
+        if progress.meta is not None:
+            meta = progress.meta
+
         await self._sink.emit(
             ToolProgressEvent(
                 tool_use_id=self._tool_use_id,
@@ -918,6 +932,7 @@ class CallProgressRelay:
                 progress=progress.progress,
                 total=progress.total,
                 elapsed_sec=time.monotonic() - self._started,
+                meta=meta,
             )
         )
 

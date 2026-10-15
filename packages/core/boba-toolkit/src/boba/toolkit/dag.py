@@ -84,7 +84,6 @@ __all__ = [
     "NodeCalls",
     "NodeOutcome",
     "NodeOutcomes",
-    "NodeReports",
     "NodeStatus",
     "ServerFeature",
     "ToolCard",
@@ -545,21 +544,6 @@ class JournalAddress(BaseModel):
     call: str = Field(min_length=1)
 
 
-class NodeReports:
-    """Подпись отчёта о ходе работы узлом связки.
-
-    Связка идёт одним запросом, а уведомление прогресса несёт только число
-    и текст: чей это отчёт, говорит начало текста — ключ узла, который ему
-    дал автор связки. Сервер подписывает им отчёты узлов (labeled).
-    """
-
-    SEPARATOR: ClassVar[str] = ": "
-
-    def labeled(self, key: str, text: str) -> str:
-        """Текст отчёта узла key."""
-        return f"{key}{self.SEPARATOR}{text}"
-
-
 class NodeOutcome(BaseModel):
     """Итог узла: текст для модели и результат семейства; сбой — FailureResult.
 
@@ -748,6 +732,10 @@ class CallDag:
     WORKFLOW: ClassVar[str] = "workflow"
     """Имя инструмента-связки: узлы его вызова — вызовы других инструментов."""
 
+    PROGRESS_NODE: ClassVar[str] = "com.boba/node"
+    """Ключ _meta уведомления notifications/progress, под которым сервер
+    называет узел связки, чей это отчёт."""
+
     def of(self, call: DagNode) -> DagSpec:
         """DAG одного вызова.
 
@@ -786,6 +774,7 @@ class CallDag:
             node_key=WorkflowField.KEY,
             node_tool=WorkflowField.TOOL,
             node_args=WorkflowField.ARGS,
+            progress_key=self.PROGRESS_NODE,
         )
 
     def nodes_of(self, call: DagNode) -> list[DagNode]:
@@ -858,6 +847,8 @@ class NestedCallsFeature(ServerFeature):
     объявляет форму своего инструмента-связки (CallDag.feature), клиент по
     ней разбирает узлы вызова (calls) и собирает вызов обратно с другими
     аргументами узлов (replaced) — например, с запечатанными соединениями.
+    progress_key — ключ _meta уведомления notifications/progress, под
+    которым сервер называет ключ узла, чей это отчёт о ходе работы.
     """
 
     ID: ClassVar[str] = "com.boba/nested-calls"
@@ -867,6 +858,7 @@ class NestedCallsFeature(ServerFeature):
     node_key: str = Field(min_length=1)
     node_tool: str = Field(min_length=1)
     node_args: str = Field(min_length=1)
+    progress_key: str = Field(min_length=1)
 
     def calls(self, arguments: Mapping[str, JsonValue]) -> Sequence[DagNode]:
         """Узлы вызова tool с аргументами arguments.
