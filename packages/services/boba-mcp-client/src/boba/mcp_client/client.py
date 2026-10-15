@@ -1994,14 +1994,14 @@ class McpToolServer(ToolServer):
 
 
 class McpServers:
-    """MCP-серверы клиента: подключение на старте и порты для сессии.
+    """MCP-серверы клиента: порты для сессии.
 
     Создаётся сборкой приложения из секции [mcp]. Сервер с общей
-    авторизацией подключён один раз на процесс; сервер с личной (proxy)
-    — отдельно от имени каждого пользователя, по его первой сессии. start()
-    подключает общие серверы, for_session() отдаёт порты серверов,
-    названных профилем сессии; сервер, который не ответил, отказывает
-    ошибкой McpClientError тому, кто его позвал.
+    авторизацией подключается один раз на процесс, сервер с личной (proxy)
+    — от имени каждого пользователя; оба при первом обращении к ним.
+    for_session() отдаёт порты серверов, названных профилем сессии; сервер,
+    который не ответил, отказывает ошибкой McpClientError тому, кто его
+    позвал, и следующее обращение подключает его заново.
     """
 
     KEEP: ClassVar[int] = 256
@@ -2026,15 +2026,6 @@ class McpServers:
                 continue
 
             self._shared[name] = McpToolServer(name, server, signals, contexts, conduct)
-
-    async def start(self) -> None:
-        """Подключает общие серверы.
-
-        Ошибки:
-        McpClientError — общий сервер недоступен или не прошёл подключение.
-        """
-        for server in self._shared.values():
-            await server.open()
 
     async def stop(self) -> None:
         for server in self._shared.values():
@@ -2067,9 +2058,6 @@ class McpServers:
                 raise McpClientError(msg)
 
             server = await self._port(name, caller)
-            if not server.opened:
-                await server.open()
-
             ports.append(server)
 
         return ports
@@ -2092,33 +2080,21 @@ class McpServers:
 
     async def files(self, server: str, caller: McpCaller) -> McpFiles | None:
         """Файлы workspace на сервере server от имени caller; None — сервер
-        не назван в [mcp.servers] или файлов не объявил.
-
-        Ошибки:
-        McpClientError — сервер недоступен или не прошёл подключение.
-        """
+        не назван в [mcp.servers] или файлов не объявил."""
         if server not in self._configs:
             return None
 
         port = await self._port(server, caller)
-        if not port.opened:
-            await port.open()
 
         return port.files()
 
     async def journal_files(self, server: str, caller: McpCaller) -> McpFiles | None:
         """Журналы вызовов сервера server целыми файлами от имени caller;
-        None — сервер не назван или такого не объявил.
-
-        Ошибки:
-        McpClientError — сервер недоступен или не прошёл подключение.
-        """
+        None — сервер не назван или такого не объявил."""
         if server not in self._configs:
             return None
 
         port = await self._port(server, caller)
-        if not port.opened:
-            await port.open()
 
         return port.journal_files()
 
@@ -2139,13 +2115,12 @@ class McpServers:
         return frozenset(names)
 
     async def _port(self, name: str, caller: McpCaller) -> McpToolServer:
-        """Порт сервера для пользователя: общий либо его личный."""
-        shared = self._shared.get(name)
-        if shared is not None:
-            return shared
-
+        """Открытый порт сервера для пользователя: общий либо его личный."""
         key = (name, caller)
-        server = self._personal.get(key)
+        server = self._shared.get(name)
+        if server is None:
+            server = self._personal.get(key)
+
         if server is None:
             server = McpToolServer(
                 name,
@@ -2156,9 +2131,14 @@ class McpServers:
             )
             self._personal[key] = server
 
-        self._personal.move_to_end(key)
+        if key in self._personal:
+            self._personal.move_to_end(key)
+
         while len(self._personal) > self.KEEP:
             _stale, evicted = self._personal.popitem(last=False)
             await evicted.close()
+
+        if not server.opened:
+            await server.open()
 
         return server

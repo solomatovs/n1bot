@@ -51,7 +51,6 @@ async def servers(service: ServiceProcess) -> AsyncIterator[McpServers]:
         CallContexts(),
         DirectCalls(),
     )
-    await opened.start()
     try:
         yield opened
     finally:

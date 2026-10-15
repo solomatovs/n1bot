@@ -277,16 +277,10 @@ class ProfileUploads:
         caller = McpCaller(
             login=Login(user.identifier), roles=ChainlitSession.roles_of(user)
         )
-        server = profile.mcp[0]
         try:
-            files = await self._servers.files(server, caller)
+            files = await self._servers.files(profile.mcp[0], caller)
         except McpClientError as exc:
-            logger.warning(
-                "file upload is hidden for %s: mcp server %r is unavailable: %s",
-                caller.login,
-                server,
-                exc,
-            )
+            logger.warning("file upload is hidden for %s: %s", caller.login, exc)
             return False
 
         return files is not None

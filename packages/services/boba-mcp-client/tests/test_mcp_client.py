@@ -341,8 +341,10 @@ class TestPublicServers:
             await server.close()
 
         text = str(refused.value)
-        if "'deepwiki'" not in text or "initialize" not in text:
-            raise AssertionError(f"the refusal names the server and why: {text}")
+        if "'deepwiki'" not in text:
+            raise AssertionError(f"the refusal names the server: {text}")
+        if "initialize" not in text:
+            raise AssertionError(f"the refusal says why: {text}")
         if "2026-07-28" not in text:
             raise AssertionError(f"the refusal lists the expected versions: {text}")
 
@@ -416,7 +418,6 @@ class TestServersOfASession:
 
     async def test_named_servers_give_ports(self) -> None:
         servers = self._servers()
-        await servers.start()
         try:
             ports = await servers.for_session(CALLER, ["standard"])
             names = sorted(tool.name for port in ports for tool in port.tools())
@@ -426,18 +427,29 @@ class TestServersOfASession:
         if names != TestFailureStand.STANDARD_TOOLS:
             raise AssertionError(f"the named server gives its tools: {names}")
 
-    async def test_dead_server_fails_the_start_with_its_name(self) -> None:
-        ghost = _config(StdioCommand(command="/nonexistent/mcp-server"))
-        servers = self._servers(ghost=ghost)
+    async def test_dead_server_fails_its_sessions_until_it_comes_up(
+        self, tmp_path: Path
+    ) -> None:
+        command = tmp_path / "late-server"
+        servers = self._servers(late=_config(StdioCommand(command=str(command))))
         try:
-            with pytest.raises(McpClientError, match="'ghost'"):
-                await servers.start()
+            others = await servers.for_session(CALLER, ["standard"])
+            with pytest.raises(McpClientError, match="'late'"):
+                await servers.for_session(CALLER, ["late"])
+
+            command.write_text(f"#!/bin/sh\nexec {sys.executable} {SERVER} stdio\n")
+            command.chmod(0o755)
+            ports = await servers.for_session(CALLER, ["late"])
         finally:
             await servers.stop()
 
+        if not others[0].tools():
+            raise AssertionError("a dead server does not hold back other servers")
+        if not ports[0].tools():
+            raise AssertionError("the next session connects the server that came up")
+
     async def test_session_without_named_servers_gets_nothing(self) -> None:
         servers = self._servers()
-        await servers.start()
         try:
             ports = await servers.for_session(CALLER, [])
         finally:
