@@ -73,9 +73,9 @@ class TestBinary:
             session = await conn.new_session(
                 cwd=str(tmp_path), mcp_servers=[StandRegistration.STAND]
             )
-            await Steps.tool_turn_streams_updates(conn, client, session.session_id)
+            await Steps.tool_turn_streams_updates(boba, client, session.session_id)
             await Steps.permission_is_asked_and_remembered(
-                conn, client, session.session_id
+                boba, client, session.session_id
             )
         finally:
             await conn.close()
@@ -119,11 +119,11 @@ class TestBinary:
         try:
             await handshake(conn)
             session = await conn.new_session(cwd=str(tmp_path), mcp_servers=[])
-            await conn.prompt(
-                session_id=session.session_id,
-                prompt=[schema.TextContentBlock(text="Say hello in one word.")],
+            _, idle = await boba.turn(
+                client,
+                session.session_id,
+                [schema.TextContentBlock(text="Say hello in one word.")],
             )
-            idle = await client.idle(session.session_id)
             assert idle.stop_reason == StopReason.END_TURN
         finally:
             await conn.close()

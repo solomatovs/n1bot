@@ -179,7 +179,7 @@ class Pair:
 
 
 class TestTwoProcesses:
-    PROMPT = call({"name": "mcp__stand__add", "arguments": {"a": 4, "b": 5}})
+    PROMPT = call({"name": "mcp__stand__add", "arguments": {"a": 4, "b": 5}})[0].text
 
     async def test_observer_replays_and_takes_over_after_the_holder_leaves(
         self,
@@ -215,11 +215,11 @@ class TestTwoProcesses:
         session = await pair.holder_conn.new_session(
             cwd=str(cwd), mcp_servers=[StandRegistration.STAND]
         )
-        await pair.holder_conn.prompt(
-            session_id=session.session_id,
-            prompt=[acp_schema.TextContentBlock(text=self.PROMPT)],
+        _, idle = await pair.holder.turn(
+            pair.holder_client,
+            session.session_id,
+            [acp_schema.TextContentBlock(text=self.PROMPT)],
         )
-        idle = await pair.holder_client.idle(session.session_id)
         assert idle.stop_reason == StopReason.END_TURN
 
         return session.session_id
@@ -266,11 +266,11 @@ class TestTwoProcesses:
         assert listed.sessions[0].updated_at
 
     async def observer_takes_over(self, pair: Pair, session_id: str) -> None:
-        await pair.observer_conn.prompt(
-            session_id=session_id,
-            prompt=[acp_schema.TextContentBlock(text=ScenarioName.ANSWER.value)],
+        _, taken = await pair.observer.turn(
+            pair.observer_client,
+            session_id,
+            [acp_schema.TextContentBlock(text=ScenarioName.ANSWER.value)],
         )
-        taken = await pair.observer_client.idle(session_id)
         assert taken.stop_reason == StopReason.END_TURN
 
         with pytest.raises(RequestError) as back:
@@ -299,7 +299,7 @@ class TestTwoProcesses:
 
 
 class TestForkOfAHeldSession:
-    PROMPT = call({"name": "mcp__stand__add", "arguments": {"a": 1, "b": 1}})
+    PROMPT = call({"name": "mcp__stand__add", "arguments": {"a": 1, "b": 1}})[0].text
 
     async def test_observer_forks_the_held_session_and_prompts_the_branch(
         self,
@@ -317,11 +317,11 @@ class TestForkOfAHeldSession:
             )
             session_id = session.session_id
             for prompt in (self.PROMPT, ScenarioName.ANSWER.value):
-                await pair.holder_conn.prompt(
-                    session_id=session_id,
-                    prompt=[acp_schema.TextContentBlock(text=prompt)],
+                _, idle = await pair.holder.turn(
+                    pair.holder_client,
+                    session_id,
+                    [acp_schema.TextContentBlock(text=prompt)],
                 )
-                idle = await pair.holder_client.idle(session_id)
                 assert idle.stop_reason == StopReason.END_TURN
 
             await pair.observer_conn.resume_session(
@@ -351,11 +351,11 @@ class TestForkOfAHeldSession:
             branch = view.render(pair.observer_client.updates_of(branch_id))
             assert branch == original[: original.index(second_question)]
 
-            await pair.observer_conn.prompt(
-                session_id=branch_id,
-                prompt=[acp_schema.TextContentBlock(text=ScenarioName.ANSWER.value)],
+            _, taken = await pair.observer.turn(
+                pair.observer_client,
+                branch_id,
+                [acp_schema.TextContentBlock(text=ScenarioName.ANSWER.value)],
             )
-            taken = await pair.observer_client.idle(branch_id)
             assert taken.stop_reason == StopReason.END_TURN
 
             with pytest.raises(RequestError) as held:

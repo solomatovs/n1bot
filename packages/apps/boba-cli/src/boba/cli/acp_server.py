@@ -130,7 +130,7 @@ from boba.toolkit.mcp import (
     McpToolNames,
     McpToolStubs,
 )
-from boba.toolkit.result import ErrorResult, FailureResult
+from boba.toolkit.result import ErrorResult, FailureResult, ToolResultBase
 from boba.transport.acp.protocol import (
     AcpErrorCode,
     AcpTransportError,
@@ -877,7 +877,8 @@ class CallProgressRelay:
 
     async def accept(self, message: McpMessage) -> None:
         """Ошибки:
-        ValidationError — уведомление хода не проходит модель MCP.
+        RequestError — уведомление не разбирается как уведомление сервера MCP
+            (-32602).
         """
         params: Mapping[str, Any] = {}
         if message.params is not None:
@@ -887,13 +888,15 @@ class CallProgressRelay:
             notification = parse_server_notification(
                 message.method, McpVersion.V2026_07_28, params
             )
-        except KeyError:
-            logger.info(
-                "call %s: mcp/message notification %s is not progress; dropped",
-                self._tool_use_id,
-                message.method,
+        except (KeyError, ValidationError) as exc:
+            details = (
+                f"call {self._tool_use_id}: mcp/message notification "
+                f"{message.method!r} of request {message.request_id} expected an "
+                f"MCP server notification, got {repr(params)[:200]}: {exc}"
             )
-            return
+            raise RequestError.invalid_params(
+                {ErrorDataKey.DETAILS.value: details}
+            ) from exc
 
         if not isinstance(notification, mt.ProgressNotification):
             logger.info(
@@ -992,8 +995,7 @@ class AcpToolServer(ToolServer):
         message = McpMessage(
             server_id=self._server.server_id,
             request_id=self._ids.request_id(),
-            method=request.method,
-            params=params.model_dump(mode="json", by_alias=True, exclude_none=True),
+            **request.model_dump(mode="json", by_alias=True, exclude_none=True),
         )
         what = (
             f"listing the tools of MCP server '{self._server.name}' "
@@ -1008,8 +1010,14 @@ class AcpToolServer(ToolServer):
                 f"{self._limits.list_timeout_sec} s, got none"
             )
             raise SessionOpenError(msg) from exc
-        except (RequestError, AcpTransportError) as exc:
-            msg = f"{what} expected a tools/list result, got an ACP error: {exc}"
+        except RequestError as exc:
+            msg = (
+                f"{what} expected a tools/list result, got ACP error {exc.code} "
+                f"{exc}: {exc.data!r}"
+            )
+            raise SessionOpenError(msg) from exc
+        except AcpTransportError as exc:
+            msg = f"{what} expected a tools/list result, got no answer: {exc}"
             raise SessionOpenError(msg) from exc
 
         if isinstance(outcome, McpErrorOutcome):
@@ -1060,44 +1068,70 @@ class AcpToolServer(ToolServer):
         message = McpMessage(
             server_id=self._server.server_id,
             request_id=self._ids.request_id(),
-            method=request.method,
-            params=params.model_dump(mode="json", by_alias=True, exclude_none=True),
+            **request.model_dump(mode="json", by_alias=True, exclude_none=True),
         )
         relay = CallProgressRelay(self._sink, node.key)
         limit = self._limits.call_timeout_sec
+        what = (
+            f"calling tool {node.tool!r} (call {node.key}) on MCP server "
+            f"'{self._server.name}' (serverId '{self._server.server_id}')"
+        )
         try:
             async with asyncio.timeout(limit):
                 outcome = await self._side.request(message, relay.accept)
-
-            if isinstance(outcome, McpErrorOutcome):
-                error = self._results.error(node.tool, node.key, outcome.error)
-                return self._outcomes.refused(node, error)
-
-            parsed = parse_server_result(
-                request.method, McpVersion.V2026_07_28, outcome.result
-            )
-            if not isinstance(parsed, mt.CallToolResult | mt.InputRequiredResult):
-                msg = f"the answer is {type(parsed).__name__}, not a tools/call result"
-                raise TypeError(msg)
-        except (
-            TimeoutError,
-            RequestError,
-            AcpTransportError,
-            ValidationError,
-            KeyError,
-            ValueError,
-            TypeError,
-        ) as exc:
+        except TimeoutError:
             failure = ErrorResult(
                 message=(
-                    f"tool {node.tool!r} got no result from its mcp server within "
-                    f"{limit} s: {type(exc).__name__}: {exc}"
+                    f"{what} expected a tools/call result within {limit} s, got none"
                 ),
                 error_kind=McpFailure.TRANSPORT,
             )
             return self._outcomes.refused(node, failure)
+        except RequestError as exc:
+            failure = ErrorResult(
+                message=(
+                    f"{what} expected a tools/call result, got ACP error {exc.code} "
+                    f"{exc}: {exc.data!r}"
+                ),
+                error_kind=McpFailure.TRANSPORT,
+            )
+            return self._outcomes.refused(node, failure)
+        except AcpTransportError as exc:
+            failure = ErrorResult(
+                message=f"{what} expected a tools/call result, got no answer: {exc}",
+                error_kind=McpFailure.TRANSPORT,
+            )
+            return self._outcomes.refused(node, failure)
 
-        family = self._results.result(node.tool, node.key, parsed)
+        if isinstance(outcome, McpErrorOutcome):
+            error = self._results.error(node.tool, node.key, outcome.error)
+            return self._outcomes.refused(node, error)
+
+        shown = repr(outcome.result)[:200]
+        try:
+            parsed = parse_server_result(
+                request.method, McpVersion.V2026_07_28, outcome.result
+            )
+        except (ValidationError, KeyError, ValueError) as exc:
+            failure = ErrorResult(
+                message=f"{what} expected a tools/call result, got {shown}: {exc}",
+                error_kind=McpFailure.TRANSPORT,
+            )
+            return self._outcomes.refused(node, failure)
+
+        family: ToolResultBase
+        match parsed:
+            case mt.CallToolResult() | mt.InputRequiredResult():
+                family = self._results.result(node.tool, node.key, parsed)
+            case _:
+                family = ErrorResult(
+                    message=(
+                        f"{what} expected a tools/call result, got "
+                        f"{type(parsed).__name__}: {shown}"
+                    ),
+                    error_kind=McpFailure.TRANSPORT,
+                )
+
         if isinstance(family, FailureResult):
             built = self._outcomes.refused(node, family)
         else:
