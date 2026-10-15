@@ -463,6 +463,58 @@ class TestAgentTurn:
         assert not app.complaints(since), app.complaints(since)
 
 
+class TestNestedCallsFeed:
+    """Связка workflow сервера boba-mcp рисуется подшагами узлов; ход каждого
+    узла приходит его подшагу по ключу узла в `_meta` уведомления сквозь
+    сервер, ретранслятор чата и агента."""
+
+    async def test_each_node_step_gets_its_own_progress(
+        self, app: StandProcess, tab: ChatSocket, probe: PostgresConfig
+    ) -> None:
+        nodes = [
+            {
+                "key": "src",
+                "tool": "pg_stream_out",
+                "args": {
+                    "intent": "rows out",
+                    "connection": CONNECTION,
+                    "sql": "select 1 as one",
+                    "wire": "tsv",
+                    "out": "rows",
+                },
+            },
+            {
+                "key": "drain",
+                "tool": "dev_null",
+                "args": {"intent": "drain rows", "feeds": ["rows"]},
+            },
+        ]
+        calls = [{"name": "mcp__boba_general__workflow", "arguments": {"nodes": nodes}}]
+        await tab.send(f"{ScenarioName.CALL.value} {json.dumps(calls)}")
+        await tab.wait_task_end()
+
+        assert not tab.errors(), (tab.errors(), app.tail(80))
+        steps = ToolSteps(tab)
+        assert not steps.named("workflow"), tab.trace()
+
+        source = steps.named("pg_stream_out")
+        assert source, (tab.trace(), app.tail(60))
+        assert " pg_stream_out · rows out" in str(source[-1].get("name")), source[-1]
+        assert not source[-1].get("isError"), source[-1]
+
+        outputs: list[str] = []
+        for payload in source:
+            outputs.append(str(payload.get("output")))
+
+        assert any("connecting to" in output for output in outputs), outputs
+
+        drained = steps.named("dev_null")
+        assert drained, tab.trace()
+        assert " dev_null · drain rows" in str(drained[-1].get("name")), drained[-1]
+        for payload in drained:
+            assert "connecting to" not in str(payload.get("output")), payload
+
+
 def _lines_since(process: StandProcess[Any], since: int) -> list[str]:
     text = process.log_path.read_text(encoding="utf-8", errors="replace")
 
