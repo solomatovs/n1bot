@@ -20,6 +20,7 @@ from boba.messaging import (
     NoticeLevel,
     RunFinished,
     StopRequested,
+    ThreadRewound,
 )
 
 pytestmark = pytest.mark.anyio
@@ -166,3 +167,10 @@ async def test_purge_drops_stored_messages_and_restarts_seq() -> None:
     assert await bus.purge(scope) == 1
     assert await bus.replay(scope, after_seq=0) == []
     assert await bus.publish(scope, _token("a"), token) == 1
+
+
+def test_a_rewound_thread_is_published_only_by_the_turn_holder() -> None:
+    """Срез истории правкой публикует держатель хода под замком области."""
+    rewound = ThreadRewound(turn_id="turn-1", session_id="branch-1")
+
+    assert rewound.kind.requires_lock

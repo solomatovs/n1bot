@@ -474,9 +474,12 @@ async def test_delete_thread_removes_its_files(
         content="gone",
     )
     await layer.create_element(element)
-    stored = files_dir / ObjectKey.build(
-        seeded.user.id, seeded.thread_id, element.name, element.id
-    ).render()
+    stored = (
+        files_dir
+        / ObjectKey.build(
+            seeded.user.id, seeded.thread_id, element.name, element.id
+        ).render()
+    )
     assert stored.read_bytes() == b"gone"
 
     await layer.delete_thread(seeded.thread_id)

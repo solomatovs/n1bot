@@ -1,5 +1,6 @@
 """Вкладки одного пользователя синхронизируются по шине: новый тред появляется в
-списке другой вкладки без перезагрузки.
+списке другой вкладки без перезагрузки, правка вопроса в одной вкладке убирает
+хвост беседы в другой.
 """
 
 from __future__ import annotations
@@ -10,6 +11,7 @@ import pytest
 from chat_ui import ChatOpener
 from playwright.sync_api import expect
 
+from boba.stand.ui.chat_page import Selector, StepKind
 from boba.stand.ui.fake_llm import ScenarioName
 from boba.stand.ui.stand import StandProcess
 
@@ -58,3 +60,38 @@ def test_resumed_tab_learns_about_new_thread(
     second.await_idle()
 
     expect(first.page.locator(THREAD_HISTORY)).to_contain_text(probe_two)
+
+
+def test_an_edit_in_one_tab_removes_the_tail_in_another(
+    module_chats: ChatOpener, stand: StandProcess
+) -> None:
+    """Вторая вкладка треда после правки первого вопроса в первой: хвоста
+    беседы нет, правленый вопрос есть."""
+    marker = uuid4().hex[:8]
+    first = f"{ScenarioName.ANSWER.value} edit probe {marker}"
+    tail = f"{ScenarioName.ANSWER.value} tail probe {marker}"
+    edited = f"{ScenarioName.ANSWER.value} edited probe {marker}"
+
+    editing = module_chats.open(stand)
+    editing.ask(first)
+    editing.await_idle()
+    editing.ask(tail)
+    editing.await_idle()
+    editing.page.locator(THREAD_HISTORY).get_by_text(f"edit probe {marker}").click()
+    editing.page.wait_for_url("**/thread/**", timeout=15000)
+    thread_url = editing.page.url
+    editing.page.wait_for_selector(Selector.INPUT.value, timeout=60000)
+
+    other = module_chats.open(stand)
+    other.page.goto(thread_url, wait_until="domcontentloaded")
+    other.page.wait_for_selector(Selector.INPUT.value, timeout=60000)
+    questions = other.page.locator(Selector.of_type(StepKind.USER.value))
+    expect(questions.filter(has_text=f"tail probe {marker}")).to_have_count(1)
+
+    editing.page.locator(".edit-message").first.click(force=True)
+    editing.page.locator("#edit-chat-input").fill(edited)
+    editing.page.locator(".confirm-edit").click()
+    editing.await_idle()
+
+    expect(questions.filter(has_text=f"edited probe {marker}")).to_have_count(1)
+    expect(questions.filter(has_text=f"tail probe {marker}")).to_have_count(0)

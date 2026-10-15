@@ -55,8 +55,9 @@ from boba.chainlit.data.data_layer import ThreadDeletionListener
 from boba.chainlit.domain.fields import ThreadMetaField
 from boba.chainlit.domain.keys import AttachmentLinks
 from boba.chainlit.infra.session import ChainlitSession, LiveSignIn
+from boba.chainlit.rendering.renderer import ThreadRewinds
 from boba.chat.profiles import SelectedProfile
-from boba.chat.threads import ThreadUpsert
+from boba.chat.threads import DataLayerError, ThreadUpsert
 from boba.identity.errors import InternalServiceError
 from boba.runtime.threads import ThreadsTable
 from boba.transport.acp.protocol import AcpErrorCode, MetaKey
@@ -975,9 +976,11 @@ class ThreadAgent:
         return blocks
 
 
-class ThreadAgentsIndex:
+class ThreadAgentsIndex(ThreadRewinds):
     """Агенты всех вкладок инстанса по тредам: удаление треда закрывает их
-    первыми, чтобы сессия агента не осталась под замком этого процесса."""
+    первыми, чтобы сессия агента не осталась под замком этого процесса;
+    срез истории правкой из другой вкладки перерисовывает их ленты.
+    Реализация ThreadRewinds рендерера треда."""
 
     def __init__(self) -> None:
         self._agents: dict[str, list[ThreadAgent]] = {}
@@ -1006,6 +1009,40 @@ class ThreadAgentsIndex:
                 return agent
 
         return None
+
+    async def rewound(self, thread_id: str, session_id: str) -> None:
+        """Каждый агент треда не на ветке session_id перечитывает её в свою
+        вкладку; правящая вкладка уже на ветке, хвост она обрезала сама.
+        Отказ одной вкладки не оставляет без перерисовки остальные.
+
+        Ошибки:
+        InternalServiceError — какие-то вкладки не перерисованы.
+        """
+        failures: list[str] = []
+        for agent in self.of_thread(thread_id):
+            if agent.session_id == session_id:
+                continue
+
+            try:
+                await agent.reload()
+            except (AcpClientError, InternalServiceError, DataLayerError) as exc:
+                logger.error(
+                    "thread %s: a tab did not reload branch %s: %s",
+                    thread_id,
+                    session_id,
+                    exc,
+                )
+                failures.append(str(exc))
+
+        if failures:
+            msg = (
+                f"thread {thread_id}: {len(failures)} tab(s) did not show the "
+                f"branch {session_id} after an edit: " + "; ".join(failures)
+            )
+            raise InternalServiceError(
+                internal_detail=msg,
+                user_detail="The edited conversation is not shown; reload the chat",
+            )
 
     async def close_thread(self, thread_id: str) -> int:
         """Закрывает агентов треда во всех вкладках инстанса; итог — сколько."""

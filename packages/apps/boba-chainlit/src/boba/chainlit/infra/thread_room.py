@@ -282,6 +282,7 @@ class ChatRoomSurface(RenderSurface):
             UpdateView(view, thread_id, journals, root.resolved(providers.tool_media)),
             root.resolved(runtime.payload_store),
             cls(anchor, thread_id),
+            root.resolved(providers.thread_agents_index),
         )
 
 

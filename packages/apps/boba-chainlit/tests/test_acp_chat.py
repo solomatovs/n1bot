@@ -1087,6 +1087,62 @@ class TestHistory:
 
         await tab.close()
 
+    async def test_an_edit_redraws_the_other_tabs_without_the_tail(
+        self, app: StandProcess, second: StandProcess, cookie: str
+    ) -> None:
+        """Правка в одной вкладке: вкладки треда на этом и на другом инстансе
+        очищаются, перечитывают ветку без хвоста, затем видят новый ход; их
+        агенты на ветке, а не на удалённой сессии."""
+        first = f"first {ScenarioName.ANSWER.value}"
+        tail = f"tail {ScenarioName.ANSWER.value}"
+        edited = f"edited {ScenarioName.ANSWER.value}"
+        editing = ChatSocket(app, cookie, str(uuid4()))
+        await editing.open()
+        await editing.send(first)
+        await editing.wait_task_end()
+        await editing.send(tail)
+        await editing.wait_task_end()
+        assert not editing.errors(), editing.errors()
+        asked = [
+            m for m in editing.messages("user_message") if m.get("output") == first
+        ]
+        question = str(asked[-1].get("id"))
+
+        other = ChatSocket(app, cookie, editing.thread_id)
+        remote = ChatSocket(second, cookie, editing.thread_id)
+        await other.open(resumed=True)
+        await remote.open(resumed=True)
+        try:
+            marks = {other: len(other.events), remote: len(remote.events)}
+            await editing.edit(question, edited)
+            await editing.wait_task_end()
+            assert not editing.errors(), (editing.errors(), app.tail(60))
+
+            for tab, mark in marks.items():
+                await tab.wait_task_end()
+                cleared = await tab.wait_event_index("resume_thread", since=mark)
+                assert tab.events[cleared][1].get("steps") == [], tab.trace()[mark:]
+                shown = [
+                    p.get("output")
+                    for e, p in tab.events[cleared:]
+                    if e in ("new_message", "update_message")
+                    and isinstance(p, dict)
+                    and p.get("type") == "user_message"
+                ]
+                assert tail not in shown, tab.trace()[mark:]
+                assert first not in shown, tab.trace()[mark:]
+                assert edited in shown, tab.trace()[mark:]
+
+            await other.send(f"mine {ScenarioName.ANSWER.value}")
+            await other.wait_task_end()
+            refusals = other.errors()
+            assert refusals, other.trace()
+            assert HELD_TEXT in refusals[-1], refusals
+        finally:
+            await remote.end_session()
+            await other.end_session()
+            await editing.end_session()
+
     async def test_deleting_the_thread_deletes_the_agent_session(
         self, app: StandProcess, cookie: str, rows: ChatRows
     ) -> None:

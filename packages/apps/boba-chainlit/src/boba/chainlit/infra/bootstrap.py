@@ -426,6 +426,8 @@ def _eager_agent(container: Container) -> None:
     container.eager(providers.agent_settings_table)
     container.eager(providers.agent_launcher)
     container.eager(providers.thread_deleter)
+    # рендереры тредов читают его синхронно: срез истории перерисовывает вкладки
+    container.eager(providers.thread_agents_index)
     container.eager(providers.tool_media)
 
 
